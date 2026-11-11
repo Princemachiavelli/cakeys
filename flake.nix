@@ -1,0 +1,104 @@
+{
+  description = "Content-addressed identity for PKCS#11 (and later TPM) keys";
+
+  inputs = {
+    nixpkgs.url = "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.zst";
+  };
+
+  outputs =
+    { self, nixpkgs }:
+    let
+      system = "x86_64-linux";
+      pkgs = nixpkgs.legacyPackages.${system};
+      key-mgmnt = pkgs.callPackage ./nix/package.nix { };
+      pcsc-probe = pkgs.callPackage ./nix/pcsc-probe.nix { };
+      mkTest = kind: import ./nix/test.nix { inherit pkgs key-mgmnt kind; };
+    in
+    {
+      lib = import ./nix/lib.nix;
+
+      packages.${system} = {
+        default = key-mgmnt;
+        inherit key-mgmnt pcsc-probe;
+        # systemd-nspawn variant of the integration test. Needs the `uid-range` system feature
+        # (nix.conf: `system-features = ... uid-range` and `auto-allocate-uids = true`).
+        test-nspawn = mkTest "container";
+      };
+
+      # Not cached: a fresh nonce makes a new derivation each time.
+      # nix build --impure --expr '(builtins.getFlake "path:.").legacyPackages.x86_64-linux.pcscSandboxProbe { nonce = "1"; }'
+      legacyPackages.${system}.pcscSandboxProbe =
+        { nonce }:
+        pkgs.runCommand "pcsc-sandbox-probe-${nonce}" { } ''
+          rc=0
+          { id; ${pkgs.lib.getExe pcsc-probe} || rc=$?; echo "exit=$rc"; } > $out 2>&1
+        '';
+
+      apps.${system} = {
+        # Host-side PC/SC check.
+        pcsc-probe = {
+          type = "app";
+          program = pkgs.lib.getExe pcsc-probe;
+          meta.description = "Print raw PC/SC context and reader-list return codes";
+        };
+        # Same probe from inside the Nix build sandbox (needs /run/pcscd in sandbox-paths).
+        pcsc-sandbox-probe = {
+          type = "app";
+          meta.description = "Run pcsc-probe inside the Nix build sandbox (uncached)";
+          program = pkgs.lib.getExe (
+            pkgs.writeShellApplication {
+              name = "pcsc-sandbox-probe";
+              text = ''
+                out=$(nix build --impure --no-link --print-out-paths --expr \
+                  "(builtins.getFlake \"path:${self}\").legacyPackages.${system}.pcscSandboxProbe { nonce = \"$(date +%s%N)\"; }")
+                cat "$out"
+              '';
+            }
+          );
+        };
+      };
+
+      checks.${system} = {
+        inherit key-mgmnt;
+        vm = mkTest "vm";
+        lib =
+          let
+            keys = self.lib.mkKeys {
+              config = ./tests/fixtures/keys.toml;
+              lock = ./tests/fixtures/keys.lock;
+              keyMgmnt = key-mgmnt;
+              modules.softhsm = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
+            };
+            fails = e: !(builtins.tryEval e).success;
+          in
+          assert keys.signing.id.pubkeyhash == "sha256-d3++Ph3T9bppuPnNz6blK4vDij+Swy9RMmKdfQnLmPk=";
+          assert keys.signing.uri.softhsm == "pkcs11:token=kmtest;object=signing;type=private";
+          assert keys.signing.mode.softhsm == "direct";
+          assert keys.signing.rsf.softhsm == [ "token-softhsm" ];
+          assert keys.signing.functions.softhsm.CKM_ECDSA;
+          assert !(keys.signing.functions.softhsm ? CKM_SHA256_HMAC);
+          # One object, two specs with different policy on the same token.
+          assert keys.shared.specs.shared-sign.mode.softhsm == "commitment";
+          assert keys.shared.specs.shared-nosign.mode.softhsm == "wrap-rebind";
+          assert fails keys.shared.uri.softhsm; # ambiguous: several specs on one token
+          pkgs.runCommand "key-mgmnt-lib-check" { } ''
+            echo ${pkgs.lib.escapeShellArg (keys.signing.check { })} > $out
+          '';
+      };
+
+      devShells.${system}.default = pkgs.mkShell {
+        inputsFrom = [ key-mgmnt ];
+        packages = with pkgs; [
+          clippy
+          rustfmt
+          rust-analyzer
+          softhsm
+          opensc
+          openssl
+          pcsc-tools
+        ];
+      };
+
+      formatter.${system} = pkgs.nixfmt;
+    };
+}

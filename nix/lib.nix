@@ -1,0 +1,133 @@
+# Pure-eval view of keys.toml + keys.lock (PLAN.md, "Nix integration").
+# Builtins only, so it works without nixpkgs (e.g. inside a test VM).
+let
+  genAttrs =
+    names: f:
+    builtins.listToAttrs (
+      map (n: {
+        name = n;
+        value = f n;
+      }) names
+    );
+  unique = builtins.foldl' (acc: x: if builtins.elem x acc then acc else acc ++ [ x ]) [ ];
+  optionalString = c: s: if c then s else "";
+in
+{
+  /**
+    mkKeys { config, lock ?, keyMgmnt ?, modules ? { } } -> { <object> = { ... }; }
+
+    Per object:
+      type                    intrinsic type from keys.toml
+      id.<scheme>             portable material CA-IDs from the lock (e.g. id.pubkeyhash)
+      specs.<spec>.{uri,mode,specDigest,functions,rsf}.<token>
+      uri / mode / specDigest / functions / rsf .<token>
+                              shortcuts when the object has exactly one spec on that token
+      check { token ?, spec ?, scheme ? }
+                              shell command for the pseudo-FOD pre-use check; prints the URI.
+                              Interpolates config, lock and module paths, so they become inputs
+                              of the consuming derivation (recording a hash rebuilds it).
+
+    `modules.<token>` overrides the token's PKCS#11 module path (pass a store path so the
+    module is available inside the build sandbox).
+  */
+  mkKeys =
+    {
+      config,
+      lock ? null,
+      keyMgmnt ? null,
+      modules ? { },
+    }:
+    let
+      cfg = builtins.fromTOML (builtins.readFile config);
+      hasLock = lock != null && builtins.pathExists lock;
+      lk = if hasLock then builtins.fromTOML (builtins.readFile lock) else { };
+      specs = cfg.specs or { };
+      tokens = cfg.tokens or { };
+      realisations = lk.realisations or { };
+
+      rsfOf = t: [ (tokens.${t}.systemFeature or "token-${t}") ];
+
+      specView =
+        s:
+        let
+          tks = builtins.attrNames specs.${s}.tokens;
+          real =
+            t:
+            realisations.${s}.${t}
+              or (throw "key-management: spec '${s}' has no realisation on token '${t}' in the lock; run `key-mgmnt realise ${s} --token ${t} --update-lock`");
+        in
+        {
+          tokens = tks;
+          uri = genAttrs tks (t: (real t).uri);
+          mode = genAttrs tks (t: (real t).mode);
+          specDigest = genAttrs tks (t: (real t).specDigest);
+          functions = genAttrs tks (
+            t:
+            builtins.listToAttrs (
+              map (m: {
+                name = m;
+                value = true;
+              }) ((real t).mechanisms or [ ])
+            )
+          );
+          rsf = genAttrs tks rsfOf;
+        };
+
+      objectView =
+        obj: type:
+        let
+          specNames = builtins.filter (s: specs.${s}.object == obj) (builtins.attrNames specs);
+          views = genAttrs specNames specView;
+          pairs = builtins.concatMap (
+            s:
+            map (t: {
+              spec = s;
+              token = t;
+            }) views.${s}.tokens
+          ) specNames;
+          tokenNames = unique (map (p: p.token) pairs);
+          onToken =
+            t:
+            let
+              m = builtins.filter (p: p.token == t) pairs;
+            in
+            if builtins.length m == 1 then
+              views.${(builtins.head m).spec}
+            else
+              throw "key-management: object '${obj}' has several specs on token '${t}'; use specs.<spec>";
+          perToken = field: genAttrs tokenNames (t: (onToken t).${field}.${t});
+          primary = if type.class == "CKO_PRIVATE_KEY" then "pubkeyhash" else "commitment";
+        in
+        {
+          inherit type;
+          id = lk.objects.${obj}.ids or { };
+          specs = views;
+          uri = perToken "uri";
+          mode = perToken "mode";
+          specDigest = perToken "specDigest";
+          functions = perToken "functions";
+          rsf = genAttrs tokenNames rsfOf;
+          check =
+            {
+              token ? null,
+              spec ? null,
+              scheme ? primary,
+            }:
+            assert keyMgmnt != null || throw "key-management: mkKeys needs keyMgmnt for check";
+            builtins.concatStringsSep " " (
+              [
+                "${keyMgmnt}/bin/key-mgmnt"
+                "--config ${config}"
+              ]
+              ++ (if hasLock then [ "--lock ${lock}" ] else [ ])
+              ++ builtins.attrValues (builtins.mapAttrs (t: p: "--module ${t}=${p}") modules)
+              ++ [ "check ${obj}.id.${scheme}" ]
+              ++ [
+                (optionalString (token != null) "--token ${token}")
+                (optionalString (spec != null) "--spec ${spec}")
+              ]
+            );
+        };
+    in
+    builtins.mapAttrs objectView (cfg.objects or { });
+}

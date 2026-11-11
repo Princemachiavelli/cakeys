@@ -1,0 +1,520 @@
+# Key management plan
+Uniquely create, store, export/import and manage PKCS11 and TPM keys, objects, certificatse and any other type relevent.
+The core premise here is we use some content-addressed identification intead of the raw PKCS11 URI or other volatile identifier.
+This content-addressed Id can be a digest (hash) or other "one-way" mathmatical function or equivilent value (public key) already provided.
+
+Multiple contant-addressed IDs can describe the same real object; in the case that different HSM provides expose different object attributes or differ
+in exact crypto/digest functions available. This is important for interopibility between HSM/TPM/etc.
+
+A content-addressed ID that can be generated on the HSM (either direct digest or key wrapping) is preferred, otherwise using key-wrapping to export the private
+material in order to take the digest is OK (we should track the providence of how the digest/CA-ID was computed).
+
+The content-addressed ID should be mapped to the originanal (PKCS11 URI, attributes, etc.) "inputs" that were used to create it.
+
+For each object, a HAL should provide consistent PKCS11-like operations accross different PKCS11 provider backends. This is necessary
+since HSMs can vary in supported operations/features.
+
+We should use a declarative TOML input schema. Creating a key "populates" the CA identifier(s) in the input schema. (see below)
+
+Not actually sure on the usage semantics but some ideas:
+1. this can "provide" the hash for a Nix FOD (so PKCS11 objects become FODS). (myobject.digest)
+2. beside the FOD, expose the described pkcs11-URI or TPM identfier for this object  (myobject.uri.hsm-named-bob and myojbect.uri.hsm-named-sue)
+3. report the possible cryptographic operations this object can do for the given token: (myojbect.functions.hsm.hsm-named-bob.canSHA256 == true ) (and without canSha256 just prints list of supported vs non-supported in JSON)
+4. Let's explore more ideas here. Interopability with Nix (nixpkgs) is a very important feature.
+
+# Misc goils
+* Mantain transparent schema on top of existing PKCS11 and TPM primatives.
+Don't invent opinionated interfaces.
+Don't re-invent interfaces that can already be re-purposed from somwhere else.
+Maintain correct abstraction.
+Prefer minimal code. Use existing libraries and tools.
+
+---
+
+# Terminology
+
+This mirrors Nix's own split between input-addressed derivations, content-addressed outputs and the "realisations" that map one to the other.
+
+## Three levels: object (material) ← spec (policy) ← realisation (token)
+**The key material is the root, not the spec.** The same material can be held under **several specs with different attributes**, e.g. extractable on SoftHSM and non-extractable on the TPM, or sign-only in one place and decrypt-only in another. The **object type must be identical** across them.
+
+| Term | Nix analogue | Meaning |
+|---|---|---|
+| **Object** | CA output | The real material. It has a **type**, the *intrinsic* part, which must be identical across all its specs: `CKA_CLASS`, `CKA_KEY_TYPE`, and the size or curve. It is identified by **material CA-IDs**: `pubkeyhash`, `certhash`, `valuehash`, `commitment`. These depend *only* on the material and its type, never on attributes. |
+| **Spec** | derivation | The *policy* part: usage bits, `CKA_SENSITIVE`/`EXTRACTABLE`/`MODIFIABLE`/`PRIVATE`, `CKA_ALLOWED_MECHANISMS`, TPM `objectAttributes`/`authPolicy`, and so on. It references exactly one object. **Many specs can share one object.** |
+| **Spec digest** | input-addressed `.drv` hash | The hash of the canonicalized spec (policy + the object's type). It is known before any key exists. |
+| **Instance CA-ID** | — | An ID that binds material **and** attributes. The **TPM Name** is one: it hashes `objectAttributes` and `authPolicy`. It identifies a (spec, material) pair, **not** the object, so two specs over the same material have different Names. |
+| **Locator** | store path / substituter | A volatile address on one token: a PKCS#11 URI (RFC 7512), a TPM persistent handle, a context/blob file. A *cached hint*, never an identity. |
+| **Realisation** | `realisations` / lock | One (spec, token) pair: locator, identity mode, provenance, observed capabilities, plus any instance CA-ID. |
+
+Cardinalities: **object 1 ← N spec**, and **spec 1 ← N realisation** (one per token).
+
+**Names vs identity.** Object and spec names (`signing`, `signing-tpm`) are **local, human-readable handles** scoped to one config, like Nix attribute or flake-input names.
+- They bind spec, lock and Nix attributes together, including *before* a generated key has a CA-ID.
+- They are not identity. Two configs may name the same material differently; they agree on the CA-ID.
+- They are never written to a token unless the user reuses one in a locator (e.g. `CKA_LABEL`).
+- **Renaming is safe.** When the tool sees a locked CA-ID under a new name, it treats it as a rename and moves the lock entry. It must not treat it as a new object.
+
+Ways objects and specs can relate:
+- **Replicated, same policy:** one object, one spec, N realisations.
+- **Replicated, different policy:** one object, N specs (one per token or group of tokens), each with its own realisations. The attribute differences are explicit and reviewable as separate specs.
+- **Same token, two specs:** PKCS#11 allows the same key bytes in two objects with different attributes on one token (e.g. one sign-only, one decrypt-only). This is allowed. The two are told apart by their locators.
+- **Generated per token:** the same *policy* generated independently on N tokens creates **N different objects**, since the material differs. TPM primary keys work like this: the template plus a per-TPM seed gives a different key on each TPM. In the spec this is written once, as a policy template, and it expands into N objects in the lock.
+
+**Rules:**
+- **Validation rejects a spec whose type differs from its object's type.** For symmetric keys, the type is also mixed into the commitment's domain label (e.g. `"key-management/v1/CKK_AES/256"`). Otherwise the same bytes held as `CKK_AES` and as `CKK_GENERIC_SECRET` would share an ID. This holds even though wrap-rebind computes on a temporary copy of a different type.
+- **Resolve by locator, then verify by material CA-ID.** Since several specs on one token can share material, `resolve` by material CA-ID alone can legitimately match more than one object. That is only an error if the spec's own locator is ambiguous.
+- **How a replica was made constrains its attributes.** Unwrapping honours the wrapping key's `CKA_UNWRAP_TEMPLATE`. A non-extractable source cannot be replicated at all, unless the key was imported from the host onto each token. The validator checks that each spec is reachable from the object's provenance.
+- **The identity mode is per realisation** (see "Per-token identity modes"), so differing attributes can legitimately give different modes for the same object.
+
+## Input and lock shape (sketch)
+```toml
+# keys.toml (input)
+[objects.signing]                       # intrinsic type only
+class = "CKO_PRIVATE_KEY"
+key_type = "CKK_EC"
+curve = "secp256r1"
+
+[specs.signing-soft]                    # policy, references an object
+object = "signing"
+attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = true }
+tokens.softhsm = { locator = { CKA_LABEL = "signing" }, autoCreate = true }
+
+[specs.signing-tpm]
+object = "signing"
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = false }   # different policy, same material
+tokens.tpm = { locator = { handle = "0x81000010" }, identity.allow = [] }
+```
+```toml
+# keys.lock (input and updated in place)
+[objects.signing]
+ids.pubkeyhash = "sha256-…"
+
+[realisations."signing-tpm".tpm]
+spec_digest = "sha256-…"
+mode = "direct"
+tpm_name = "000b…"
+locator = "0x81000010"
+```
+
+# Prior art / landscape
+
+## Systems that address keys by a digest across storage backends
+
+### GnuPG keygrip (`gpg-agent`, `scdaemon`)
+- **What it does:** The keygrip is a hash of only the public-key parameters, independent of protocol (OpenPGP/X.509/SSH) and of storage. `private-keys-v1.d/<keygrip>.key` holds either the key itself or a *stub* that points at a smartcard. The same key on two cards has the same keygrip. This is the closest existing match to "CA-ID + locator".
+- **What's missing:**
+  - Asymmetric keys only.
+  - SHA-1 based.
+  - Smartcard via scdaemon only; there is no general PKCS#11 or TPM backend. A TPM can only be used to protect soft keys (`keyboxd`/`tpm2d`).
+  - No declarative spec, no capability reporting, and no Nix story.
+
+### Sequoia `sequoia-keystore` (Rust, LGPL-2.0-or-later)
+- **What it does:**
+  - A keystore *service*. Clients talk to it over IPC, and it multiplexes backends through a trait in `sequoia-keystore-backend`.
+  - Backends: `softkeys` and `gpg-agent` (on by default), plus `openpgp-card` and `tpm` (opt-in). Backends are compiled in.
+  - Keys are addressed by **OpenPGP fingerprint** in every backend.
+  - The TPM backend (`sequoia-keystore-tpm`, built on `sequoia-tpm`) creates keys from **YAML templates** (for example `tpm/examples/rsa2k-dec.yml`). That is a precedent for declarative TPM key specs. However, those keys are *named by TPM handle*, which is the same locator-as-identity problem this project is trying to solve.
+- **What's missing:**
+  - **PKCS#11.** There is no merged PKCS#11 backend. There is a feature request (issue #28, which prioritises PKCS#11 3.2) and a *draft* MR (!2) for YubiKey via `ykcs11`, built on `openpgp-pkcs11-sequoia`. That draft notes, as a possible future addition, having the keystore query the backend for public key material, which is exactly the CA-ID problem.
+  - **The identity is OpenPGP-specific.** A v4/v6 fingerprint hashes an OpenPGP key packet, which includes a *creation time*. So a raw PKCS#11 or TPM key has no canonical fingerprint until someone invents a creation time. The same material imported with two different timestamps gets two fingerprints. A protocol-neutral CA-ID such as an SPKI digest (or a keygrip-style hash) is needed underneath.
+  - **Symmetric keys and data objects are out of scope.** OpenPGP has no notion of HSM-resident AES or HMAC keys.
+  - **No declarative spec digest.** The YAML is an input to a tool, not a hashed, canonical identity, and nothing maps a spec to its realisations.
+  - **No model of N locators per key** with provenance for how the ID was computed.
+  - **No capability or mechanism reporting** for each token, and no attribute verification against a spec.
+  - **No Nix integration.**
+- **Worth reusing as reference:** the backend trait shape (device → key → operations), the TPM YAML template format, and `openpgp-pkcs11-sequoia` for the PKCS#11 ↔ OpenPGP glue. LGPL is fine to *depend on*, but keep that in mind before copying code.
+
+### Parsec (CNCF Sandbox, Rust)
+- **What it does:**
+  - A platform abstraction *service* (a daemon plus `parsec-client`) over PKCS#11, TPM 2.0, Mbed Crypto, Trusted Services and CryptoAuthLib. It is the origin of the `cryptoki` and `tss-esapi` crates.
+  - Its API is the **PSA Crypto API**, an Arm standard rather than Parsec's own invention. A key's attributes are `{type, bits, policy: {usage_flags, permitted_algorithms}}`.
+  - It reports capabilities through `CanDoCrypto` and `ListOpcodes`.
+  - Key identity is held in a *Key Info Manager* (KIM, on disk or sqlite) that maps an `(application, key name)` identity to a provider-specific `id` and attributes. The KIM plays the same role as this project's lock, but it is keyed by name rather than by content.
+- **Current status** (as of 2026-11, from the [coverage table](https://parallaxsecond.github.io/parsec-book/parsec_client/operations/service_api_coverage.html)):
+  - **PKCS#11 and TPM providers, both:** generate, import, destroy, export-public, sign/verify hash, and asymmetric encrypt/decrypt.
+  - **TPM provider only:** `AttestKey` and `PrepareKeyAttestation`.
+  - **Neither provider:** any symmetric key (AES, HMAC, raw data, derive), cipher/MAC/AEAD/hash operations, key agreement, or `PsaExportKey`.
+  - **Curves:** SECP-R1 only on both providers.
+  - The repo is not archived, but how active it is was not checked.
+- **What's missing for this project:**
+  - **No secret keys at all.** The on-token HMAC CA-ID cannot be computed through Parsec.
+  - **No content-addressed identity.** The KIM is keyed by name.
+  - **It does not appear to adopt keys it did not create**; the KIM must already own the mapping. (The docs don't say; verify.)
+  - **PSA attributes are a third vocabulary.** They lose TPM `authPolicy`/`objectAttributes` and PKCS#11 `CKA_EXTRACTABLE`/vendor nuances, which conflicts with "transparent schema over PKCS#11/TPM primitives".
+- **How it could be used:**
+  1. **PSA key attributes as the cross-backend *capability and policy vocabulary*** in the HAL. Keep native PKCS#11 and TPM attributes as the canonical spec, and derive the PSA view from them.
+  2. **A custom KIM keyed by CA-ID,** which would make Parsec a resolver/consumer of our realisations.
+  3. **Run the daemon and contribute upstream** whatever is missing (symmetric keys, more curves, adopting existing keys).
+
+  **Decision (2026-11-11):** use Parsec's useful shared Rust crates (`cryptoki`, `tss-esapi`, and `psa-crypto` types where they fit) and borrow its terminology (usage flags, permitted algorithms, "can do crypto"). Do **not** run the daemon or force the design through Parsec's API.
+
+### SSH (`ssh-agent`, `ssh-keygen -D`, `ssh-tpm-agent`), `age-plugin-tpm`, `age-plugin-yubikey`
+- **What they do:** Keys are referenced by their public key or a `SHA256:` fingerprint, wherever they live. This is an everyday precedent that the public key *is* the identity.
+- **What's missing:** Each covers only its own protocol, has no spec, and handles symmetric keys only implicitly or not at all.
+
+## Native identity mechanisms in the underlying standards
+
+### TPM 2.0
+- **Name.** An object's Name is `nameAlg || H(TPMT_PUBLIC)`. It binds the public key, `objectAttributes` (`fixedTPM`, `sensitiveDataOrigin`, `sign`, `decrypt`, …) and `authPolicy`. That makes it a native spec-plus-key digest, and it is **attestable**: `TPM2_Certify` signs the Name, and `TPM2_ReadPublic` returns it. This is the best CA-ID available on any backend.
+- **Primary keys are deterministic.** The template plus the hierarchy seed gives the same key every time. On one TPM the spec *is* the identity; across TPMs it is not.
+- **Locators are volatile.** Persistent handles (`0x81…`) and context/blob files can change, so they are locators only.
+- **Related tools:** `tpm2-tools`, the `tss-esapi` crate, and `tpm2-pkcs11`, which exposes TPM keys as PKCS#11 and keeps its own metadata in a sqlite store. A TPM object might therefore be reached both natively and through PKCS#11; the CA-ID must be the same on both paths.
+
+### PKCS#11
+- **`CKA_ID`.** Free-form. By convention OpenSC, NSS and p11-kit set it to SHA-1(public key), the SKI. That makes it *sometimes* stable across tokens, but only by convention and it is mutable.
+- **`CKA_UNIQUE_ID`** (3.0). Assigned by the token and read-only, but **not** stable across tokens.
+- **`CKA_PUBLIC_KEY_INFO`** (2.40+). A DER SubjectPublicKeyInfo stored *on the private key object*. When the token supports it, an SPKI digest can be computed without the matching public object.
+- **`CKA_CHECK_VALUE`.** A 3-byte KCV for secret keys and certificates. It is too short to identify anything; at most it can be a weak alias or sanity check.
+- **`CKA_ALLOWED_MECHANISMS`** together with `C_GetMechanismList`/`C_GetMechanismInfo` is the raw material for capability reporting.
+- **RFC 7512 PKCS#11 URIs** are the locator format. p11-kit has URI parsing and module configuration.
+
+### KMIP
+- **What it does:** There is a `Digest` attribute (a hash of the key block, computed by the server) and a `Unique Identifier`.
+- **What's missing:** The UID is assigned by the server, and the digest is server-local and depends on the format. The protocol and server model are heavy.
+
+### SPIFFE/SPIRE
+- **What it does:** Workload identity built on attestation plugins, including TPM.
+- **What's missing:** Keys are ephemeral, and the identity belongs to the *workload*, not the key. It is relevant only as an attestation model.
+
+## Canonical key-thumbprint formats to reuse rather than invent
+- **SPKI SHA-256** (RFC 7469 pinning): a hash of the DER SubjectPublicKeyInfo. It covers any X.509-expressible public key and is the default asymmetric CA-ID.
+- **RFC 5280 SKI method 1:** SHA-1 of the subjectPublicKey BIT STRING. Useful as a legacy alias because it matches the `CKA_ID` convention.
+- **RFC 7638 JWK Thumbprint**, plus **RFC 9278** for its URI form (`urn:ietf:params:oauth:jwk-thumbprint:sha-256:…`).
+- **RFC 9679 COSE Key Thumbprint.**
+- **multihash / multicodec** (as used by `did:key`): a self-describing `<alg><len><digest>`. This fits the requirement for several CA-IDs over different algorithms, with provenance; the `multihash` crate exists.
+- **Certificates and data objects:** SHA-256 of the DER `CKA_VALUE`.
+
+## Libraries and tools to build on (Rust / Nix)
+- `cryptoki` (PKCS#11) and `tss-esapi` (TPM ESAPI): from Parsec, both maintained.
+- RustCrypto `spki`, `der`, `x509-cert`, `sha2`: canonical SPKI encoding and hashing.
+- `toml`/`serde`: the spec and lock format. Nix reads TOML natively with `builtins.fromTOML`.
+- Test backends, all packaged in nixpkgs, which allows hermetic `nix flake check` tests:
+  - **SoftHSMv2** and **Kryoptic** (a Rust PKCS#11 soft token) as PKCS#11 tokens.
+  - **swtpm** as a TPM.
+  - `tpm2-pkcs11` to exercise the "same TPM key reached via two paths" case.
+- Consumers to generate configuration for:
+  - p11-kit (`pkcs11.conf.d`).
+  - OpenSSL `pkcs11-provider` and `tpm2-openssl`.
+  - `ssh-agent`.
+  - systemd (`systemd-cryptenroll`, `LoadCredentialEncrypted`).
+
+# What is missing (the gap this project fills)
+
+No existing project combines all of the following:
+1. **A protocol-neutral CA-ID across PKCS#11 *and* TPM.**
+   - Sequoia comes closest, but its identity is OpenPGP-specific and timestamp-dependent, and it has no PKCS#11 backend.
+   - GnuPG's keygrip is neutral, but it is SHA-1 and limited to smartcards.
+2. **CA-IDs for secret (symmetric) keys and data objects**, not just public keys.
+3. **Multiple CA-IDs per object, each with provenance:** which scheme, which algorithm, and whether it was computed on the token or on the host, and by which mechanism.
+4. **A canonical, hashable declarative spec** (the spec digest), and verification that a realised object's *live* attributes still satisfy that spec.
+5. **N locators per identity** (replicated keys), and N identities per spec (per-token generation).
+6. **Per-token capability reporting:** the intersection of the key's attributes, `CKA_ALLOWED_MECHANISMS` and the token's mechanism list.
+7. **Nix integration:** pure evaluation over a lock or realisation file, plus generated consumer configuration.
+
+# CA-ID schemes per object type
+
+Every CA-ID is stored together with its provenance: `{scheme, hash_alg, computed_by = "token" | "host", mechanism?, token?}`.
+
+| Object | Primary CA-ID | Aliases / notes |
+|---|---|---|
+| Asymmetric key (PKCS#11) | SHA-256(DER SPKI). Source the SPKI from `CKA_PUBLIC_KEY_INFO`, the public object, or `CKA_MODULUS`/`CKA_EC_POINT`. It is hashed on the host, which is fine because the input is public. | SKI (SHA-1) to match `CKA_ID`; JWK thumbprint |
+| Asymmetric key (TPM) | SHA-256(DER SPKI), so the CA-ID is the same as on PKCS#11 | TPM Name. It is TPM-specific, but it is attestable and also binds attributes and policy. |
+| Certificate | SHA-256(DER cert) | the SPKI CA-ID of the subject key, as a link |
+| Data object | SHA-256(`CKA_VALUE`) | (value must be readable) |
+| Secret key | A PRF commitment computed *on the token*, using the key itself: HMAC (`CKM_SHA256_HMAC`) or CMAC over a fixed domain-separation label, e.g. `"key-management/ca-id/v1"`. | `CKA_CHECK_VALUE` (a weak alias only) |
+
+Caveats for secret keys:
+- **The PRF commitment needs a usage bit** (`CKA_SIGN`) that the spec might otherwise forbid. Make it an explicit spec option, and record when no token-side CA-ID was possible.
+- **Wrap-then-digest:**
+  - A digest of the *wrapped blob* depends on the wrapping key and the mode. AES-KW/KWP (RFC 3394/5649) is deterministic, but GCM and RSA-OAEP are not. Such a digest is valid only as `CA-ID = f(key, wrapping key)`, and the wrapping key's CA-ID must be recorded with it.
+  - Unwrapping on the host in order to hash the *plaintext* takes the key outside the HSM boundary. It must be an explicit opt-in recorded in provenance, and it should still use the domain-separated HMAC rather than a raw hash.
+- **The same secret has the same CA-ID on every token only if every token supports the chosen PRF mechanism.** This is the case the original "multiple CA-IDs per object" requirement anticipated.
+
+# Spec canonicalization
+
+- **Inside the spec digest:** security-relevant, immutable attributes only.
+  - The referenced object's type (class, key type, size or curve). This part is shared by every spec of the object.
+  - `CKA_SENSITIVE`, `CKA_EXTRACTABLE`, `CKA_MODIFIABLE`, `CKA_TOKEN`, `CKA_PRIVATE`.
+  - Usage bits: `CKA_SIGN`, `CKA_DECRYPT`, `CKA_WRAP`, `CKA_DERIVE`, …
+  - `CKA_ALLOWED_MECHANISMS`.
+  - TPM `objectAttributes`, `authPolicy`, `nameAlg` and the parent/hierarchy.
+- **Outside the spec digest:**
+  - `CKA_LABEL` and `CKA_ID`, which are mutable and belong to the locator.
+  - `CKA_LOCAL` and `CKA_KEY_GEN_MECHANISM`, which describe how the key was realised.
+  - Vendor-defined attributes. These can be carried as per-token *extensions* that are not hashed.
+- **Encoding:** a deterministic encoding such as sorted-key canonical JSON or deterministic CBOR, so that the same TOML always hashes the same way. Attribute names follow the PKCS#11 / TPM spec names verbatim, with no invented vocabulary.
+
+
+# Decisions (2026-11-11, from RESPONSE.md)
+
+| Topic | Decision |
+|---|---|
+| Identity | **Portable CA-IDs by default; token-specific CA-IDs allowed but flagged** (see below). |
+| Nix mechanism | A **"pseudo-FOD" pre-use check** run by our tool inside the consuming derivation, not true Nix FODs. A never-cached Nix derivation is preferred only if Nix can do it cleanly; it can't today (see below). |
+| Parsec | Use its shared crates and terminology only. |
+| Locator attributes | `CKA_LABEL`/`CKA_ID` are **arbitrary user values** declared in the spec for each token. The HAL **fails if they don't resolve to exactly one object**. |
+| Token order | SoftHSMv2 (reference), then **YubiKey PIV** (via `ykcs11`, the PKCS#11 hardware on this host), then the **TPM** (`/dev/tpmrm0`), then Nitrokey (model TBD). CloudHSM and other HSMs later. **Wide HSM support is a core feature.** |
+| Key creation | **Follow the schema** (`autoCreate`, etc.). Users supply PINs, PIV management keys and any HSM-specific settings. Provider-specific warnings and checks come later. |
+| Lock | A **separate lock file** that is both an input and updated in place (like `flake.lock`). |
+| Weak identity modes | `commit-at-creation`, `host-at-import` and `token-specific` need an **explicit opt-in per (object, token)**, recorded in the lock. A weaker mode than the one locked is an error (see "Per-token identity modes"). |
+| Key classes in v1 | **Asymmetric and symmetric.** |
+| TPM access | **Both** native (`tss-esapi`) and `tpm2-pkcs11`. Native is required for TPM-only features such as PCR policies. |
+| Concurrency | **One writer** per token. |
+| "Last copy" delete guard | **Dropped.** The tool only knows the tokens listed in the config, so it cannot know whether a copy is the last one anywhere. |
+| ID string format | SRI `sha256-…` is the default rendering, but nothing depends on it. IDs are `(scheme, algorithm, bytes)` internally. |
+
+# Identity: portable vs token-specific CA-IDs
+
+Each object exposes **several** CA-IDs. The default, used in about 99% of cases, is one that is true on *every* token:
+
+| CA-ID | Portable across tokens? | Notes |
+|---|---|---|
+| `pubkeyhash`: SHA-256(DER SPKI) | **yes** | Any asymmetric key, on PKCS#11 or TPM, either path. |
+| `certhash`: SHA-256(DER cert) | **yes** | |
+| `valuehash`: SHA-256(`CKA_VALUE`) | **yes** | Readable data objects. |
+| `hmac-commitment`: HMAC/CMAC(key, label) | **yes, conditionally** | Portable only if every token holding the key supports the *same* mechanism (`CKM_SHA256_HMAC` or `CKM_AES_CMAC`). Otherwise it degrades to token-specific. |
+| `tpm-name`: TPM Name | no (TPM-only) | Still attestable, and it binds attributes and policy. |
+| `wrapped-digest`: digest of a wrapped blob | no | Depends on the wrapping key and mode. |
+| `kcv`: `CKA_CHECK_VALUE` | no | Too short to identify anything. |
+
+Rules:
+- **Portable access:** `myobject.id.pubkeyhash` (or `certhash`, …).
+- **Token-specific access:** `myobject.id.<token>` gives the ID specific to that token. Using it **emits a Nix warning** (`lib.warn`), or an **error** when `strictIdentity = true`, because identity between tokens can no longer be guaranteed.
+- **Secret keys with no common mechanism:** if a secret key's tokens share no PRF mechanism, there is no portable ID, and the spec must explicitly opt in to token-specific IDs.
+
+(The attribute name `fod` from RESPONSE.md is renamed `id` here, since these are no longer true FODs. Purely cosmetic.)
+
+## Secret-key identity (commitments)
+The problem: a non-extractable secret key (`CKA_SENSITIVE=true`, `CKA_EXTRACTABLE=false`) can never be read, so it can't be hashed. The only way to fingerprint it is to have the token **run a deterministic function with the key on a fixed input, and hash the output**. That output is a *commitment*. Because it comes from a PRF or block cipher, it is safe to publish.
+
+**Commitment methods**, in order of preference. Each needs a usage bit on the key and a mechanism on the token:
+
+| Method | Key usage needed | Typical mechanism | Applies to |
+|---|---|---|---|
+| HMAC-SHA256(key, label) | `CKA_SIGN` | `CKM_SHA256_HMAC`, TPM `TPM2_HMAC` | generic secret / HMAC keys |
+| AES-CMAC(key, label) | `CKA_SIGN` | `CKM_AES_CMAC` | AES keys |
+| AES-ECB(key, fixed block) | `CKA_ENCRYPT` (or `CKA_DECRYPT`) | `CKM_AES_ECB`, TPM `EncryptDecrypt` | AES keys. This is the full-length form of the classic KCV |
+| AES-KW(key, fixed dummy key) | `CKA_WRAP` | `CKM_AES_KEY_WRAP` (RFC 3394, deterministic) | wrap-only KEKs |
+| Host-computed at import | none | none | imported or replicated keys only. The plaintext is on the host before import anyway |
+
+- **Portability is about the mathematical function, not the API.** HMAC-SHA256 gives identical bytes whether SoftHSM's `CKM_SHA256_HMAC` or the TPM's `TPM2_HMAC` computes it. A commitment is portable when *every* token holding the key can compute the *same* function.
+- **The tool chooses at spec-validation time.** It intersects the key's allowed usages (and `CKA_ALLOWED_MECHANISMS`) with each declared token's quirks profile and picks the first common method. This happens **before** any key is created, so a failure surfaces early.
+
+### Wrap-and-rebind: commit through a temporary copy
+For keys whose own usages allow no commitment, make a short-lived copy *on the same token* that has the needed usage:
+1. **Generate** (do not import) a temporary wrapping key on the token: a **session object** (`CKA_TOKEN=false`) with `CKA_WRAP`/`CKA_UNWRAP`.
+   - Generating it on the token keeps the wrapped blob opaque to the host, even though the blob passes through host memory.
+   - Importing a host-known key would let the host unwrap the blob, which is equivalent to exporting the plaintext.
+2. `C_WrapKey` the target with the temporary key. **Any wrap mechanism works** (AES-KW/KWP, `CKM_AES_CBC_PAD`, …). Determinism doesn't matter, because the blob is unwrapped on the same token and never hashed.
+3. `C_UnwrapKey` it into a **session-object copy** whose template allows the commitment: `CKA_SIGN=true`, and **any key type the token has a function for**. The same bytes can be unwrapped as `CKK_GENERIC_SECRET` to use HMAC, or as `CKK_AES` to use CMAC/ECB.
+4. Compute the commitment on the copy. Destroy the copy and the temporary key.
+   - Because both are session objects, the token also discards them automatically if the tool crashes or the session closes. There are no orphans to clean up.
+5. Record provenance: `method = "wrap-rebind"`, the wrap mechanism, the commitment function, and the token.
+
+**Rerunning it is safe**, so `verify` can use the same steps later; this is not a one-time host computation.
+
+**Limits:**
+- **The target must have `CKA_EXTRACTABLE=true`.** `C_WrapKey` on a non-extractable key fails (`CKR_KEY_UNEXTRACTABLE`), and PKCS#11 only lets `CKA_EXTRACTABLE` go true → false, never back.
+- **No new exposure.** PKCS#11 already treats an extractable key's usage attributes as unenforceable, since anyone with wrap access can re-import it with other attributes. The trick therefore weakens nothing that `CKA_EXTRACTABLE=true` hadn't already given up. The spec validator should still state this explicitly.
+- **`CKA_WRAP_WITH_TRUSTED=true` on the target** requires a wrapping key with `CKA_TRUSTED=true`, which only the SO can set. In that case wrap-and-rebind needs SO login; the schema supplies it, consistent with "follow the schema".
+- **Token quirks:** the token must permit unwrap with a changed key type or added usage bits. This goes in the quirks profile.
+- **TPM analogue:** `TPM2_Duplicate` followed by `TPM2_Import` as a `keyedHash`/`sign` object. This is possible only for objects with `fixedTPM=0` and `fixedParent=0` whose policy allows duplication. A `fixedTPM` object is the TPM's version of non-extractable.
+
+### Commit-at-creation (keys we create, not extractable)
+1. Generate the key with the commitment usage enabled, and compute the commitment.
+2. Drop the usage with `C_SetAttributeValue` (e.g. `CKA_SIGN=false`).
+
+Limits:
+- Requires `CKA_MODIFIABLE=true` and a token that allows turning usage bits off.
+- Like host-at-import, it **cannot be re-verified later** without turning the usage back on, so `verify` falls back to checking the locator and attributes, and says so.
+
+### Per-token identity modes (explicit opt-in, decided 2026-11-11)
+The same key material can be fully verifiable on one token and not on another. Causes: a different model or mechanism set, or **different attributes on each replica**, e.g. extractable on SoftHSM but unwrapped as non-extractable on another token. The identity mode is therefore tracked **per (object, token)**, never per object.
+
+**Modes, strongest first:**
+
+| Mode | How the ID is obtained | Re-verifiable on this token? | Opt-in? |
+|---|---|---|---|
+| `direct` | hash of readable public data (SPKI, cert, data object) | yes | no |
+| `commitment` | the key's own usage computes the commitment | yes | no |
+| `wrap-rebind` | temporary session copy with commitment usage | yes | no. It is implied by `CKA_EXTRACTABLE=true`, but the lock still records it |
+| `commit-at-creation` | computed once at generation, then the usage is dropped | **no**, attributes only | **yes, per token** |
+| `host-at-import` | computed on the host from plaintext before import | **no**, attributes only (unless a mode above also works) | **yes, per token** |
+| `token-specific` | per-token commitment or TPM Name; does not match the portable ID | yes, but **not across tokens** | **yes, per token** |
+
+**Rules:**
+- **Spec.** Each token entry declares which weak modes it allows, e.g. `[objects.foo.tokens.yubikey] identity.allow = ["host-at-import"]`. The validator computes the best achievable mode for each token from its attributes and the token's quirks profile. If that mode is below `wrap-rebind` and not listed in `identity.allow` for *that* token, it is a **validation error**, raised before any key is created or imported.
+- **Lock.** It records, per (object, token): the mode actually used, its provenance (mechanism, commitment function, wrap mechanism) and the ID. **The mode is part of the lock**, so a weaker mode shows up in review just like a hash change.
+- **Downgrades.** `verify` recomputes the achievable mode every time. If it is *weaker* than the locked mode (a firmware change, a mechanism removed, attributes changed), that is an **error**, not a silent fallback. Accepting it needs a new opt-in and a lock update.
+- **Portable ID claims.** `myobject.id.<scheme>` is portable only across tokens whose mode yields that same ID. A token in `token-specific` mode is excluded, and accessing its ID gives the identity warning.
+- **Consumers choose a minimum.** The pre-use check takes a required strength, e.g. `key-mgmnt cfg myobject.id.commitment --token bob --require reverifiable`. Nix exposes `myobject.mode.<token>`, so a consumer can assert on it at eval time.
+
+### When there is no digest at all
+1. **Non-extractable key whose usages allow nothing deterministic and observable**, created elsewhere, or with `CKA_MODIFIABLE=false`. Examples: derive-only, unwrap-only, or `CKA_ALLOWED_MECHANISMS` restricted to random-IV modes. Wrap-and-rebind is impossible, so this is truly un-identifiable unless the spec loosens the policy or the key was imported (host-at-import). Treat it as a validation error unless the spec opts in to the fallbacks below.
+2. **Tokens share no common function.** For **extractable** keys this is solved by wrap-and-rebind's choice of key type at unwrap: each token can apply *any* function it has to the raw bytes, so the tool only needs one function that every token implements for *some* key type. HMAC-SHA256 is near-universal, including on the TPM. For non-extractable keys it stays token-specific.
+3. **The token cannot hold the key type at all** (e.g. YubiKey PIV and symmetric keys). The object cannot exist there, so `Unsupported` is the whole story.
+
+**Fallbacks** (explicit opt-in only):
+- **Token-specific ID:**
+  - a per-token commitment, or
+  - for TPM symmetric/keyedHash objects, the **TPM Name**. Its public `unique` field is `H(seedValue ‖ sensitive)`, a commitment the TPM computes without using the key, but the random `seedValue` differs per object.
+  
+  Either way it carries the identity warning.
+- **Host-computed at import:** stable and portable, but tokens can only *verify* it if they also support a commitment method. Otherwise `verify` can only check the locator and attributes, and must say so.
+
+Public keys, certificates and readable data objects never hit this problem: they can always be read and hashed.
+
+# Nix integration
+
+## Why not a "never cached" derivation?
+- **`__impure = true`** (experimental feature `impure-derivations`) is the only Nix mechanism that is never cached or substituted. The catch, according to the Nix manual, is that **only other impure derivations (or FODs) may depend on an impure derivation.**
+  - Using it would make every consumer of a key, and everything downstream of that consumer, impure and therefore never cached.
+  - It is still experimental. It is **not** enabled on this machine; the test in this session failed because the daemon lacks the feature.
+- **`allowSubstitutes = false`** only skips binary caches. An output already in the local store is still reused.
+- **True FODs** are substituted once their output exists, so they never touch the HSM again.
+
+**Conclusion: use the pseudo-FOD pre-use check.** Revisit `__impure` if it stabilises *and* the infectious-impurity rule is relaxed.
+
+## Pseudo-FOD pre-use check
+The consuming derivation calls the tool itself, immediately before using the key:
+
+```sh
+URI=$(key-mgmnt ${configFile} myobject.id.pubkeyhash)   # or: --token hsm-bob
+```
+
+1. **Input tracking.** `configFile`, which includes the expected CA-ID, is a store-path input of the consumer. Recording or changing a hash therefore changes the consumer's derivation hash, so it rebuilds. This is the same *tracking* property a FOD gives.
+2. **What the tool does:**
+   1. `resolve` the locator declared for the token.
+   2. Enforce **exactly one** match.
+   3. Recompute the CA-ID and check the live attributes against the spec.
+   4. Compare with the expected CA-ID.
+   5. Print the locator (a PKCS#11 URI or TPM handle) on stdout.
+3. **First use** (`autoCreate = true` on the template, and no recorded hash):
+   1. `realise` creates the key under its declared locator.
+   2. It prints `got: sha256-…`.
+   3. It **exits non-zero**, so the build fails, just like a FOD with `lib.fakeHash`.
+   
+   Retrying never creates a duplicate, because the declared locator is set at creation time. On a retry the object is found and the run turns into `HashMismatch` again, or succeeds once the hash is recorded.
+4. **Scheduling.** The consumer gets **`requiredSystemFeatures = myobject.rsf.<token>`** (e.g. `[ "token-hsm-bob" ]`). Builders that own the token advertise that feature in `system-features`.
+5. **Caching semantics are now correct.** A cached consumer output proves the key existed and matched *when that output was produced*, which is exactly when it was used. For **runtime** use (services), the same command runs as `ExecStartPre=` or as a NixOS activation check.
+
+## Sandbox access (host setup, ideally done by a NixOS module from this project)
+- **Device and socket paths through `sandbox-paths`.** This host already has `/run/pcscd` and `/etc/whonix/yubikey.pin?`. Add:
+  - `/dev/tpmrm0`;
+  - SoftHSM's token directory (or a `p11-kit server` socket);
+  - the network for network HSMs.
+- **Permissions:**
+  - **Build users (`nixbld*`) need access.** `/dev/tpmrm0` is `tss:tss 0660` here.
+  - **pcscd/polkit:** if pcscd runs with polkit, it may refuse build users. It is socket-activated here; check whether polkit is in use.
+  - The module needs udev and polkit rules or group membership for the build users. The alternative is a **`p11-kit server`** proxy socket running outside the sandbox.
+- **Credentials:**
+  - **PINs must never enter the store.** Keep the existing pattern: an optional PIN file through `sandbox-paths`, readable only by build users. Alternatively, the `p11-kit server` holds the logged-in session.
+  - **First-use `autoCreate` needs SO/user login inside the build.** Decide per token whether that is acceptable.
+
+## Exposed attributes
+- `myobject.id.pubkeyhash` and the other portable IDs (see the identity section).
+- `myobject.id.<token>`: token-specific, with a warning or error.
+- `myobject.uri.<token>`: the declared locator (PKCS#11 URI, TPM handle or context path). For pure evaluation only; consumers should prefer the tool's verified output.
+- `myobject.rsf.<token>`: `requiredSystemFeatures`.
+- `myobject.functions.<token>.<mechanism>` plus a JSON dump. This is **recorded** by `realise`, since evaluation cannot query a token.
+- `myobject.public`: the public artifact (SPKI/PEM/cert). This one can be a **true FOD**, or simply a file written from the lock, because it is pure data.
+- `lib.checkKey myobject token`: a shell snippet or `nativeBuildInputs` hook that wraps the pre-use check.
+- Generated consumer configuration: p11-kit, `pkcs11-provider`/`tpm2-openssl`, `authorized_keys`, systemd units with `ExecStartPre` checks.
+- `nix flake check` against SoftHSMv2, Kryoptic and swtpm.
+
+# Token verbs: idempotent and safe, with HTTP-style semantics
+
+Every verb is either **safe to repeat** (idempotent) or **explicitly unsafe**. There is no "usually fine" middle ground. The CA-ID plays the role of an HTTP **ETag**, and verbs take **preconditions** (`If-Match`, `If-None-Match`).
+
+| Verb | HTTP analogue | Safe? | Idempotent? | Semantics |
+|---|---|---|---|---|
+| `resolve` | GET/HEAD | yes | yes | Find by the declared locator, or by CA-ID. **Exactly one match, otherwise `Ambiguous`.** Recompute the CA-ID and return locator + attributes + capabilities. Never writes. |
+| `verify` | GET + `If-Match` | yes | yes | `resolve`, then check the CA-ID equals the expected value and the live attributes satisfy the spec. This is what the pseudo-FOD check runs. |
+| `realise` | PUT | no | **yes** | Locator absent: create (only when `autoCreate`). Present and matching the spec: no-op. Present but different: `Conflict`. Then compare the CA-ID with the expected value: `HashMismatch { got }` if none is recorded or it differs. |
+| `import` / `replicate` | PUT with known body | no | yes | The CA-ID is known before writing, so it is verified on write. |
+| `delete` | DELETE + `If-Match` | no | **yes** | Delete by locator *and* expected CA-ID. Already absent: **success**. Locator holds a different CA-ID: `PreconditionFailed`, and nothing is touched. |
+| `generate-new` | POST | no | **no** | Not exposed. |
+
+**Error classes:** `NotFound`, `Ambiguous` (locator not unique), `Conflict`, `PreconditionFailed`, `HashMismatch { got }`, `Unsupported` (missing capability or mechanism), `Unavailable` (token absent or locked).
+
+## Locator rules (formerly "slot")
+- The spec declares the locator attributes for each token: `CKA_LABEL`, `CKA_ID`, a TPM persistent handle, a blob path. They are arbitrary user values, **outside** the spec digest.
+- **`realise` sets them at creation.** That makes creation idempotent and recoverable after a crash, because an orphan is found again by its locator.
+- **Uniqueness is enforced by the HAL.** It is not enforced by PKCS#11 itself.
+- **Some providers fix the locator values themselves.** The HAL owns these quirks; see the next section.
+
+# HAL: provider-specific behaviour
+
+Wide HSM support is a core feature. Each provider gets a small **quirks profile**: the locator model, supported mechanisms, whether keys can be generated on the device, which attributes are readable, and whether creation is destructive.
+
+| Provider | Path | Known quirks to encode (verify on hardware) |
+|---|---|---|
+| **SoftHSMv2** | PKCS#11 | The reference. Arbitrary labels and IDs, HMAC/CMAC/AES-KW available. Its token directory needs to be in `sandbox-paths`. |
+| **YubiKey 5** (present: `1050:0407`, CCID) | PIV through `ykcs11` (or OpenSC) | **Fixed slots.** `CKA_ID`/labels are fixed per PIV slot, so the locator is the *slot*. **Generating into an occupied slot overwrites it**, so `realise` must use `If-None-Match` semantics. No symmetric keys (`Unsupported`). Access goes through pcscd. |
+| **Nitrokey** | HSM 2 through OpenSC `sc-hsm`, or Nitrokey 3 PIV/OpenPGP | Model TBD. |
+| **TPM 2.0** (present: `/dev/tpmrm0`) | native `tss-esapi` *and* `tpm2-pkcs11` | **PCR/policy-bound keys need the native path**: as far as I know `tpm2-pkcs11` cannot express arbitrary policies (verify). Test: `pubkeyhash` must agree between the two paths. |
+| CloudHSM, others | vendor PKCS#11 | Later. |
+
+# Effort estimate
+
+Rough sizes of the **new code**. Dependencies are `cryptoki`, `tss-esapi`, RustCrypto `spki`/`der`/`x509-cert`, `serde`/`toml`, and possibly `psa-crypto`.
+
+| Component | New code (approx.) | Notes |
+|---|---|---|
+| Spec schema, canonicalization, spec digest | 0.4–0.7k LOC Rust | |
+| CA-ID computation, provenance, portable vs token-specific | 0.6–1.0k | |
+| HAL: PKCS#11 + TPM adapters + quirks profiles | 1.5–2.5k | Grows with each provider; this is the "wide HSM support" cost |
+| Verbs, errors, lock I/O, pseudo-FOD CLI | 0.8–1.2k | |
+| Nix library + NixOS module (sandbox paths, permissions, `ExecStartPre`) | 0.5–1.0k Nix | |
+| Tests (SoftHSMv2, Kryoptic, swtpm in `flake check`; hardware tests run manually) | 0.8–1.5k | |
+| **Total** | **≈ 4.5–8k LOC** | |
+
+**How much is prior art?**
+- **By code executed:** more than 95% prior art.
+- **By engineering effort:** about **70–80%**. The identity model, verbs, the pseudo-FOD check, the provider quirks and the Nix glue are green-field.
+
+# Open questions
+
+- **Which Nitrokey model?** HSM 2 or Nitrokey 3.
+- **pcscd:** is it built with polkit on this host? If so, a rule for build users is needed, or the `p11-kit server` approach.
+
+# Next steps
+
+1. Write the spec schema (TOML), with declared locators per token and `autoCreate`, plus canonicalization and the spec digest. Test with golden vectors.
+2. Build the HAL over `cryptoki` against SoftHSMv2: `resolve` with uniqueness, `pubkeyhash` (`CKA_PUBLIC_KEY_INFO`, falling back to the public object), and `hmac-commitment`.
+3. Implement the verbs and the pseudo-FOD CLI (`key-mgmnt <config> <obj>.id.<scheme>`) with the `HashMismatch { got }` exit.
+4. Add the Nix library: `id`, `uri`, `rsf`, `functions` and `lib.checkKey`, plus a `flake check` that runs a consumer derivation against SoftHSM inside the sandbox.
+5. Add the TPM backends: native `tss-esapi` (including PCR policy) and `tpm2-pkcs11`, with a cross-path `pubkeyhash` test against swtpm, then the real `/dev/tpmrm0`.
+6. Add the YubiKey PIV quirks profile (`ykcs11`), then Nitrokey.
+7. Add a NixOS module: sandbox paths, device and pcscd permissions, and `ExecStartPre` checks.
+
+# POC status (2026-11-11)
+
+**Implemented** (Rust + `cryptoki`, built with `rustPlatform.buildRustPackage`):
+- **`key-mgmnt` CLI** with `validate`, `resolve`, `verify`, `realise [--update-lock]`, `delete [--if-match] [--update-lock]`, `check <object>.id.<scheme>` (the pseudo-FOD pre-use check) and `caps`.
+- **Exit codes:** 10 hash mismatch (`got:` on stderr), 11 not found, 12 ambiguous, 13 conflict, 14 precondition failed, 15 unsupported, 16 unavailable, 17 invalid spec.
+- **Object types:** EC P-256 (`pubkeyhash` = SHA-256 of DER SPKI, from `CKA_PUBLIC_KEY_INFO` or the public object's `CKA_EC_POINT`), plus generic-secret and AES keys.
+- **Identity modes:** `direct`, `commitment` (on-token HMAC-SHA256 over a type-bound label) and `wrap-rebind` (session KEK → wrap → unwrap a session generic-secret copy → HMAC → destroy).
+- **Weak modes:** they need a per-token opt-in and are rejected *before* any key is created. They are not implemented in the POC.
+- **Model:** object ← spec ← realisation; several specs may share one object. Locators must match exactly one object, the type and policy of the live object are checked against the spec, and identity downgrades are errors.
+- **Nix library** (`lib.mkKeys`, builtins only): `id`, `uri`, `mode`, `specDigest`, `functions`, `rsf`, `specs.<spec>.*` and `check { token; }`.
+
+**Tests:**
+- **`checks.key-mgmnt`:** unit tests, plus SoftHSM integration tests that run inside the Nix build sandbox:
+  - the TOFU flow, with no duplicate on retry;
+  - DELETE + If-Match (deleting an absent object succeeds even with no lock; a present object with no expected ID is never deleted);
+  - a host-side HMAC oracle for both secret modes;
+  - two specs sharing one material giving the same ID;
+  - the opt-in rule, conflict/ambiguous/type mismatch, and downgrade.
+- **`checks.lib`:** pure evaluation of the Nix library against fixtures.
+- **`checks.vm`:** a NixOS VM.
+  - The pseudo-FOD first-use runs inside the *guest's* Nix sandbox (key created, build fails with `got:`; a retry doesn't duplicate). Recording the hash out of band then lets the consumer build.
+  - An independent oracle (`pkcs11-tool` + `openssl`) matches `pubkeyhash`.
+  - Also covered: wrap-rebind, DELETE semantics, and the caching caveat (a cached consumer succeeds after the key is gone; `--check` fails).
+- **`packages.test-nspawn`:** the same flow in systemd-nspawn, minus the in-guest Nix build. Passes on infinitejest (2026-11-11) with `auto-allocate-uids = true` and `uid-range`. It stays out of `checks` because hosts without `uid-range` cannot build it. The test mounts a tmpfs over `/var` first, because host `extra-sandbox-paths` under `/var` make the sandbox's `/var` unwritable to the build's root.
+
+**pcscd on this host (resolved 2026-11-11):**
+- **Host and sandboxed builds both reach the YubiKey** (`nix run .#pcsc-probe`, `nix run .#pcsc-sandbox-probe`). ykcs11 lists `YubiKey PIV #39189318` (YK5, firmware 5.7.4).
+- **Host config needed for this** (in nixos_flake `hosts/infinitejest.nix`): `auto-allocate-uids` + `uid-range`, a polkit rule admitting the auto-allocated UID range, and `PrivateUsers = false` on pcscd. Upstream's `PrivateUsers=identity` maps only UIDs 0–65535, so pcscd would otherwise see build UIDs as 65534.
+- **PIV quirks observed:** labels and `CKA_ID`s are fixed per slot (e.g. "X.509 Certificate for Retired Key 1" = ID 0x05; attestation = 0x19). Retired slots 1–3 already hold certificates on this key, presumably the Secure Boot signing keys. The PIV profile must never generate into an occupied slot.

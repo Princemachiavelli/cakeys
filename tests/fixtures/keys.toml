@@ -1,0 +1,33 @@
+[tokens.softhsm]
+module = "/run/current-system/sw/lib/softhsm/libsofthsm2.so"
+tokenLabel = "kmtest"
+pinFile = "/var/lib/softhsm/pin"
+
+[tokens.yubikey]
+tokenLabel = "YubiKey PIV #12345678"
+systemFeature = "yubikey-piv"
+
+[objects.signing]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+
+[specs.signing-soft]
+object = "signing"
+attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
+tokens.softhsm = { locator = { CKA_LABEL = "signing" }, autoCreate = true }
+
+[objects.shared]
+class = "CKO_SECRET_KEY"
+keyType = "CKK_GENERIC_SECRET"
+valueLen = 32
+
+[specs.shared-sign]
+object = "shared"
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
+tokens.softhsm = { locator = { CKA_LABEL = "shared-a" }, autoCreate = true }
+
+[specs.shared-nosign]
+object = "shared"
+attributes = { CKA_SIGN = false, CKA_EXTRACTABLE = true }
+tokens.softhsm = { locator = { CKA_LABEL = "shared-b" } }
