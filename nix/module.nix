@@ -3,6 +3,7 @@
 {
   config,
   lib,
+  utils,
   ...
 }:
 let
@@ -184,32 +185,19 @@ in
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
-            ExecStart = lib.escapeShellArgs (
-              [
-                (lib.getExe cfg.package)
-                "--config"
-                "${c.config}"
-                "--lock"
-                "${c.lock}"
-              ]
-              ++ lib.concatLists (
-                lib.mapAttrsToList (t: p: [
-                  "--module"
-                  "${t}=${p}"
-                ]) c.modules
-              )
+            # Global options, then `check <object>[.id.<scheme>]` and its options; nulls drop out.
+            ExecStart = utils.escapeSystemdExecArgs (
+              [ (lib.getExe cfg.package) ]
+              ++ lib.cli.toCommandLineGNU { } {
+                config = "${c.config}";
+                lock = "${c.lock}";
+                module = lib.mapAttrsToList (t: p: "${t}=${p}") c.modules;
+              }
               ++ [
                 "check"
-                ("${c.object}" + lib.optionalString (c.scheme != null) ".id.${c.scheme}")
+                (c.object + lib.optionalString (c.scheme != null) ".id.${c.scheme}")
               ]
-              ++ lib.optionals (c.token != null) [
-                "--token"
-                c.token
-              ]
-              ++ lib.optionals (c.spec != null) [
-                "--spec"
-                c.spec
-              ]
+              ++ lib.cli.toCommandLineGNU { } { inherit (c) token spec; }
             );
           };
         }
