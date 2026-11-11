@@ -290,12 +290,12 @@ The problem: a non-extractable secret key (`CKA_SENSITIVE=true`, `CKA_EXTRACTABL
 
 **Commitment methods**, in order of preference. Each needs a usage bit on the key and a mechanism on the token:
 
-| Method | Key usage needed | Typical mechanism | Applies to |
+| Method (scheme) | Key usage needed | Typical mechanism | Applies to |
 |---|---|---|---|
-| HMAC-SHA256(key, label) | `CKA_SIGN` | `CKM_SHA256_HMAC`, TPM `TPM2_HMAC` | generic secret / HMAC keys |
-| AES-CMAC(key, label) | `CKA_SIGN` | `CKM_AES_CMAC` | AES keys |
-| AES-ECB(key, fixed block) | `CKA_ENCRYPT` (or `CKA_DECRYPT`) | `CKM_AES_ECB`, TPM `EncryptDecrypt` | AES keys. This is the full-length form of the classic KCV |
-| AES-KW(key, fixed dummy key) | `CKA_WRAP` | `CKM_AES_KEY_WRAP` (RFC 3394, deterministic) | wrap-only KEKs |
+| HMAC-SHA256(key, label) (`commitment`) | `CKA_SIGN` | `CKM_SHA256_HMAC`, TPM `TPM2_HMAC` | generic secret / HMAC keys |
+| AES-CMAC(key, label) (`cmac`) | `CKA_SIGN` | `CKM_AES_CMAC` | AES keys |
+| AES-ECB(key, fixed block) (`kcv-ecb`) | `CKA_ENCRYPT` | `CKM_AES_ECB`, TPM `EncryptDecrypt` | AES keys. This is the full-length form of the classic KCV |
+| AES-KW(key, fixed dummy key) (`kw`) | `CKA_WRAP` | `CKM_AES_KEY_WRAP` (RFC 3394, deterministic) | wrap-only KEKs |
 | Host-computed at import | none | none | imported or replicated keys only. The plaintext is on the host before import anyway |
 
 - **Portability is about the mathematical function, not the API.** HMAC-SHA256 gives identical bytes whether SoftHSM's `CKM_SHA256_HMAC` or the TPM's `TPM2_HMAC` computes it. A commitment is portable when *every* token holding the key can compute the *same* function.
@@ -516,6 +516,23 @@ Rough sizes of the **new code**. Dependencies are `cryptoki`, `tss-esapi`, RustC
 - **A difference is never an error.** Identity is enforced by the CA-IDs. On `verify`/`check`/`realise`, a different module build identity or token is a *warning*, and a different module file with the same build identity is a *note*. Build flags such as FIPS can change behaviour at the same version, so the path is kept for provenance.
 - **`realise --update-lock` re-binds** both, as a reviewable lock diff.
 - **The Nix lib exposes them** as `module.<token>` and `tokenInfo.<token>`.
+
+**Type coverage on SoftHSM (2026-11-11):**
+- **Crates do the crypto.** Public keys are decoded and re-encoded by `p256`/`p384`/`p521`, `ed25519-dalek`, `ed448` and `rsa` (the RustCrypto pkcs8 0.11 generation). Our code only picks one by curve or OID. `ed448` has no stable point-arithmetic crate yet, so Ed448 points are checked for length only.
+- **Private keys:** `CKK_EC` with `curve = secp256r1 | secp384r1 | secp521r1`, `CKK_EC_EDWARDS` with `curve = edwards25519 | edwards448`, and `CKK_RSA` of any `modulusBits`. The curve is read back from `CKA_EC_PARAMS`; for Edwards curves, the OID and PKCS#11 3.0 PrintableString forms are both accepted.
+- **Certificates** with EC or Edwards subject keys link to their key objects just like RSA certificates.
+- **AES commitments, selected by the spec's declared usage bits** (never by token defaults): `CKA_SIGN` gives `cmac`, `CKA_ENCRYPT` gives `kcv-ecb` (one domain-separated block; never CTR/GCM with a fixed nonce), and `CKA_WRAP` gives `kw` (wrap of a fixed, label-derived session key).
+  - Each scheme is a separate ID under `objects.<name>.ids`, so tokens with different usage bits never report false mismatches.
+  - A spec with several bits computes all of them. That links specs of the same material.
+  - Wrap-rebind on an AES key unwraps an AES copy and computes all three.
+  - Only the token mechanisms present are used. If none is available, the result is *unsupported*.
+- **The lock stores SHA-256 of each commitment output, never the output.** The output is a valid MAC or ciphertext under the key. A published `kw` blob in particular would let anyone feed the token a "wrapped" key of known value.
+- **`check <object>` without a scheme** verifies every ID the spec computes. `check <object>.id.<scheme>` also requires that scheme. The Nix lib's `check {}` no longer guesses a primary scheme.
+- **Tests use independent oracles:**
+  - Public keys: a hand-written DER encoder over the raw PKCS#11 attributes (P-256/384/521, Ed25519/Ed448, RSA 3072/4096), checked through both the private-key and `publicOnly` paths.
+  - Certificates: openssl-computed hashes of the P-384 and Ed25519 fixtures.
+  - AES: the `cmac`, `aes` and `aes-kw` crates over a known key value planted sensitive and non-extractable.
+- **Not covered:** DES/3DES, DSA, DH, GOST (legacy), `CKO_DATA`, and AES keys that may only `CKA_UNWRAP` or `CKA_DECRYPT`. An unwrap-only KEK has no deterministic commitment on SoftHSM: unwrapping a fixed blob fails the RFC 3394 integrity check.
 
 **NixOS module (`nixosModules.default`, nix/module.nix):**
 - **`services.key-management.sandbox.pcscd.enable`:** pcscd, `/run/pcscd` in the sandbox, a polkit rule for `nixbld` *and* the auto-allocated UID range, and `PrivateUsers = false` on pcscd when UIDs are auto-allocated.

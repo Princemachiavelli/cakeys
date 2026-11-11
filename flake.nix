@@ -97,8 +97,13 @@
           assert keys.signing.module.softhsm.version == "2.7";
           assert keys.signing.tokenInfo.softhsm.model == "SoftHSM v2";
           assert keys.shared.specs.shared-sign.module.softhsm == null; # older lock entry
-          # Certificates default to certhash.
-          assert pkgs.lib.hasInfix "check signing-cert.id.certhash" (keys.signing-cert.check { });
+          # No scheme: the CLI verifies every ID the spec computes; a scheme also requires it.
+          assert pkgs.lib.hasInfix "check signing-cert --token softhsm" (
+            keys.signing-cert.check { token = "softhsm"; }
+          );
+          assert pkgs.lib.hasInfix "check signing-cert.id.certhash" (
+            keys.signing-cert.check { scheme = "certhash"; }
+          );
           pkgs.runCommand "key-mgmnt-lib-check" { } ''
             echo ${pkgs.lib.escapeShellArg (keys.signing.check { })} > $out
           '';

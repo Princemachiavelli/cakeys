@@ -36,7 +36,8 @@ let
 
     [specs.kek-wrap]
     object = "kek"
-    attributes = { CKA_WRAP = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = true }
+    # No usage bit allows a commitment, but it is extractable: wrap-rebind.
+    attributes = { CKA_SIGN = false, CKA_ENCRYPT = false, CKA_WRAP = false, CKA_SENSITIVE = true, CKA_EXTRACTABLE = true }
     tokens.softhsm = { locator = { CKA_LABEL = "kek" }, autoCreate = true }
   '';
 
@@ -169,7 +170,11 @@ let
       with subtest("wrap-rebind identity for an extractable AES key"):
           got(expect(f"{km} realise kek-wrap --token softhsm", 10))
           expect(f"{km} realise kek-wrap --token softhsm --update-lock", 0)
-          assert 'mode = "wrap-rebind"' in machine.succeed("cat /root/keys.lock")
+          lock = machine.succeed("cat /root/keys.lock")
+          assert 'mode = "wrap-rebind"' in lock, lock
+          # The AES session copy gets every AES commitment.
+          for scheme in ["cmac", "kcv-ecb", "kw"]:
+              assert re.search(rf'^"?{scheme}"? = "sha256-', lock, re.M), (scheme, lock)
           expect(f"{km} verify kek-wrap --token softhsm", 0)
 
       with subtest("DELETE + If-Match is idempotent and guarded"):

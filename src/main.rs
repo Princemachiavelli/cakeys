@@ -164,6 +164,15 @@ fn run() -> anyhow::Result<()> {
             }
             let tok = open_token(&cfg, &modules, &token_name)?;
             let (r, _) = ops::realise(&t, &tok, &mut lock, false)?;
+            if let Some(s) = scheme {
+                if !r.ids.contains_key(s) {
+                    return Err(KmError::Unsupported(format!(
+                        "scheme '{s}' for spec '{spec_name}' on '{token_name}'; it computes {:?}",
+                        r.ids.keys().collect::<Vec<_>>()
+                    ))
+                    .into());
+                }
+            }
             println!("{}", r.uri);
         }
         Cmd::Caps { token } => {

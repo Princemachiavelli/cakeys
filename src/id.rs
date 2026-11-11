@@ -1,4 +1,7 @@
-//! CA-ID computation: SRI rendering, spec digest, SPKI normalisation, commitment label.
+//! CA-ID computation: SRI rendering, spec digest, SPKI normalisation, commitment labels.
+//!
+//! Public keys are decoded and re-encoded by the RustCrypto crates (`p256`, `p384`, `p521`,
+//! `ed25519-dalek`, `ed448`, `rsa`); this module only chooses which one by curve or OID.
 
 use crate::config::{ObjectCfg, SpecCfg};
 use crate::error::{KmError, Result};
@@ -25,30 +28,160 @@ pub fn spec_digest(object: &ObjectCfg, spec: &SpecCfg) -> String {
     sri(canonical.to_string().as_bytes())
 }
 
-/// Domain-separation label for secret-key commitments. The intrinsic type is mixed in so
-/// the same bytes held as two key types never share an ID.
-pub fn commitment_label(object: &ObjectCfg) -> Vec<u8> {
-    format!(
-        "key-management/v1/commitment/{}/{}",
-        object.key_type,
-        object.value_len.unwrap_or(0) * 8
-    )
-    .into_bytes()
+/// Secret-key commitments: a deterministic on-token operation over a public, domain-separated
+/// input. Each needs a different key usage bit and gives a different value, so each is its own
+/// scheme. The lock stores only SHA-256 of the output (`sri`), never a MAC or ciphertext that
+/// could be replayed under the key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Commit {
+    /// `CKM_SHA256_HMAC` over the label (`CKA_SIGN`, generic secrets).
+    Hmac,
+    /// `CKM_AES_CMAC` over the label (`CKA_SIGN`).
+    Cmac,
+    /// `CKM_AES_ECB` encryption of one block, the first 16 bytes of SHA-256(label): a key check
+    /// value (`CKA_ENCRYPT`). Single-block ECB only: a fixed nonce with CTR/GCM would leak.
+    KcvEcb,
+    /// `CKM_AES_KEY_WRAP` (RFC 3394, deterministic) of a fixed key, SHA-256(label) (`CKA_WRAP`).
+    Kw,
 }
 
-/// Canonical DER SPKI from any SPKI encoding (`CKA_PUBLIC_KEY_INFO`, a certificate):
-/// decode as P-256 or RSA and re-encode, so provider encoding quirks never change the hash.
-pub fn spki_canonical(spki: &[u8]) -> Result<Vec<u8>> {
-    if let Ok(key) = p256::PublicKey::from_public_key_der(spki) {
-        return encode(&key);
+impl Commit {
+    pub fn scheme(self) -> &'static str {
+        match self {
+            Commit::Hmac => "commitment",
+            Commit::Cmac => "cmac",
+            Commit::KcvEcb => "kcv-ecb",
+            Commit::Kw => "kw",
+        }
     }
-    let key = rsa::PublicKey::from_public_key_der(spki)
-        .map_err(|e| KmError::Unsupported(format!("SPKI is neither P-256 nor RSA: {e}")))?;
-    Ok(key
-        .to_public_key_der()
-        .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}")))?
-        .as_bytes()
-        .to_vec())
+
+    /// Domain-separation label. The intrinsic type is mixed in so the same bytes held as two key
+    /// types never share an ID.
+    pub fn label(self, object: &ObjectCfg) -> Vec<u8> {
+        format!(
+            "key-management/v1/{}/{}/{}",
+            self.scheme(),
+            object.key_type,
+            object.value_len.unwrap_or(0) * 8
+        )
+        .into_bytes()
+    }
+
+    /// The fixed input the token operates on: the label, or its SHA-256 (truncated to one AES
+    /// block for the KCV).
+    pub fn input(self, object: &ObjectCfg) -> Vec<u8> {
+        let label = self.label(object);
+        match self {
+            Commit::Hmac | Commit::Cmac => label,
+            Commit::KcvEcb => Sha256::digest(&label)[..16].to_vec(),
+            Commit::Kw => Sha256::digest(&label).to_vec(),
+        }
+    }
+}
+
+/// Named curves for `CKK_EC` and `CKK_EC_EDWARDS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Curve {
+    P256,
+    P384,
+    P521,
+    Ed25519,
+    Ed448,
+}
+
+const ALL_CURVES: [Curve; 5] = [Curve::P256, Curve::P384, Curve::P521, Curve::Ed25519, Curve::Ed448];
+
+impl Curve {
+    /// `curve` in keys.toml, for the given `keyType`.
+    pub fn from_cfg(key_type: &str, name: &str) -> Option<Curve> {
+        match (key_type, name) {
+            ("CKK_EC", "secp256r1" | "prime256v1" | "P-256") => Some(Curve::P256),
+            ("CKK_EC", "secp384r1" | "P-384") => Some(Curve::P384),
+            ("CKK_EC", "secp521r1" | "P-521") => Some(Curve::P521),
+            ("CKK_EC_EDWARDS", "edwards25519" | "Ed25519") => Some(Curve::Ed25519),
+            ("CKK_EC_EDWARDS", "edwards448" | "Ed448") => Some(Curve::Ed448),
+            _ => None,
+        }
+    }
+
+    pub fn edwards(self) -> bool {
+        matches!(self, Curve::Ed25519 | Curve::Ed448)
+    }
+
+    /// `CKA_EC_PARAMS` used when generating: the DER OID (RFC 5480 / RFC 8410).
+    pub fn params(self) -> &'static [u8] {
+        match self {
+            Curve::P256 => &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07],
+            Curve::P384 => &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22],
+            Curve::P521 => &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23],
+            Curve::Ed25519 => &[0x06, 0x03, 0x2b, 0x65, 0x70],
+            Curve::Ed448 => &[0x06, 0x03, 0x2b, 0x65, 0x71],
+        }
+    }
+
+    /// PKCS#11 3.0 also allows Edwards curves as a PrintableString curve name.
+    fn params_by_name(self) -> Option<&'static [u8]> {
+        match self {
+            Curve::Ed25519 => Some(b"\x13\x0cedwards25519"),
+            Curve::Ed448 => Some(b"\x13\x0aedwards448"),
+            _ => None,
+        }
+    }
+
+    /// The curve named by a token's `CKA_EC_PARAMS`.
+    pub fn from_params(params: &[u8]) -> Option<Curve> {
+        ALL_CURVES
+            .into_iter()
+            .find(|c| c.params() == params || c.params_by_name() == Some(params))
+    }
+
+    /// Canonical DER SPKI from `CKA_EC_POINT`. That is normally a DER OCTET STRING wrapping the
+    /// point (SEC1 for Weierstrass curves, RFC 8032 for Edwards); some providers return it raw.
+    pub fn spki_from_point(self, ec_point: &[u8]) -> Result<Vec<u8>> {
+        // A raw point can look like an OCTET STRING, so fall back to raw if unwrapping fails.
+        <&OctetStringRef>::from_der(ec_point)
+            .ok()
+            .and_then(|o| self.spki_from_raw(o.as_bytes()).ok())
+            .map_or_else(|| self.spki_from_raw(ec_point), Ok)
+    }
+
+    fn spki_from_raw(self, point: &[u8]) -> Result<Vec<u8>> {
+        let bad = |e: &dyn std::fmt::Display| KmError::Conflict(format!("CKA_EC_POINT is not a {self:?} point: {e}"));
+        match self {
+            Curve::P256 => encode(&p256::PublicKey::from_sec1_bytes(point).map_err(|e| bad(&e))?),
+            Curve::P384 => encode(&p384::PublicKey::from_sec1_bytes(point).map_err(|e| bad(&e))?),
+            Curve::P521 => encode(&p521::PublicKey::from_sec1_bytes(point).map_err(|e| bad(&e))?),
+            Curve::Ed25519 => encode(&ed25519_dalek::VerifyingKey::try_from(point).map_err(|e| bad(&e))?),
+            // No stable Ed448 point arithmetic crate yet: the encoding is checked for length only.
+            Curve::Ed448 => encode(&ed448::pkcs8::PublicKeyBytes(
+                point.try_into().map_err(|e| bad(&e))?,
+            )),
+        }
+    }
+}
+
+/// Canonical DER SPKI from any SPKI encoding (`CKA_PUBLIC_KEY_INFO`, a certificate): decode
+/// with the matching crate and re-encode, so provider encoding quirks never change the hash.
+pub fn spki_canonical(spki: &[u8]) -> Result<Vec<u8>> {
+    if let Ok(k) = p256::PublicKey::from_public_key_der(spki) {
+        return encode(&k);
+    }
+    if let Ok(k) = p384::PublicKey::from_public_key_der(spki) {
+        return encode(&k);
+    }
+    if let Ok(k) = p521::PublicKey::from_public_key_der(spki) {
+        return encode(&k);
+    }
+    if let Ok(k) = ed25519_dalek::VerifyingKey::from_public_key_der(spki) {
+        return encode(&k);
+    }
+    if let Ok(k) = ed448::pkcs8::PublicKeyBytes::from_public_key_der(spki) {
+        return encode(&k);
+    }
+    let key = rsa::PublicKey::from_public_key_der(spki).map_err(|e| {
+        KmError::Unsupported(format!("SPKI is not P-256/P-384/P-521, Ed25519/Ed448 or RSA: {e}"))
+    })?;
+    encode(&key)
 }
 
 /// Canonical DER SPKI from `CKA_MODULUS` and `CKA_PUBLIC_EXPONENT` (big-endian).
@@ -58,11 +191,7 @@ pub fn rsa_spki(modulus: &[u8], exponent: &[u8]) -> Result<Vec<u8>> {
         rsa::BoxedUint::from_be_slice_vartime(exponent),
     )
     .map_err(|e| KmError::Conflict(format!("invalid RSA public key: {e}")))?;
-    Ok(key
-        .to_public_key_der()
-        .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}")))?
-        .as_bytes()
-        .to_vec())
+    encode(&key)
 }
 
 /// Canonical DER SPKI of a certificate's subject key: links a certificate to its key object.
@@ -77,29 +206,13 @@ pub fn cert_spki(cert: &[u8]) -> Result<Vec<u8>> {
     spki_canonical(&spki)
 }
 
-/// Canonical DER SPKI from `CKA_EC_POINT`, which is normally a DER OCTET STRING wrapping the
-/// SEC1 point; some providers return the raw point.
-pub fn p256_spki_from_ec_point(ec_point: &[u8]) -> Result<Vec<u8>> {
-    // A raw uncompressed point also starts with 0x04, so fall back to raw if unwrapping fails.
-    let key = <&OctetStringRef>::from_der(ec_point)
-        .ok()
-        .and_then(|o| p256::PublicKey::from_sec1_bytes(o.as_bytes()).ok())
-        .map_or_else(|| p256::PublicKey::from_sec1_bytes(ec_point), Ok)
-        .map_err(|e| KmError::Conflict(format!("CKA_EC_POINT is not a P-256 point: {e}")))?;
-    encode(&key)
-}
-
-fn encode(key: &p256::PublicKey) -> Result<Vec<u8>> {
+fn encode(key: &impl EncodePublicKey) -> Result<Vec<u8>> {
     Ok(key
         .to_public_key_der()
         .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}")))?
         .as_bytes()
         .to_vec())
 }
-
-/// DER of the secp256r1 OID, as used in `CKA_EC_PARAMS`.
-pub const SECP256R1_PARAMS: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,8 +250,8 @@ mod tests {
         let raw = sk.public_key().to_sec1_bytes().to_vec();
         let mut wrapped = vec![0x04, raw.len() as u8];
         wrapped.extend_from_slice(&raw);
-        let a = p256_spki_from_ec_point(&raw).unwrap();
-        let b = p256_spki_from_ec_point(&wrapped).unwrap();
+        let a = Curve::P256.spki_from_point(&raw).unwrap();
+        let b = Curve::P256.spki_from_point(&wrapped).unwrap();
         assert_eq!(a, b);
         assert_eq!(spki_canonical(&a).unwrap(), a);
     }
@@ -148,5 +261,34 @@ mod tests {
         let n = [0xc5u8; 256];
         let a = rsa_spki(&n, &[1, 0, 1]).unwrap();
         assert_eq!(spki_canonical(&a).unwrap(), a);
+    }
+
+    #[test]
+    fn hmac_commitment_label_is_unchanged() {
+        let obj = ObjectCfg {
+            class: "CKO_SECRET_KEY".into(),
+            key_type: "CKK_GENERIC_SECRET".into(),
+            curve: None,
+            value_len: Some(32),
+            modulus_bits: None,
+        };
+        assert_eq!(Commit::Hmac.label(&obj), b"key-management/v1/commitment/CKK_GENERIC_SECRET/256");
+        assert_eq!(Commit::KcvEcb.input(&obj).len(), 16);
+        assert_eq!(Commit::Kw.input(&obj).len(), 32);
+    }
+
+    #[test]
+    fn curve_params_roundtrip_and_match_the_crates() {
+        use p256::elliptic_curve::pkcs8::AssociatedOid;
+        let oid = |o: p256::pkcs8::ObjectIdentifier| o.to_der().unwrap();
+        assert_eq!(Curve::P256.params(), oid(p256::NistP256::OID));
+        assert_eq!(Curve::P384.params(), oid(p384::NistP384::OID));
+        assert_eq!(Curve::P521.params(), oid(p521::NistP521::OID));
+        assert_eq!(Curve::Ed25519.params(), oid(ed25519_dalek::pkcs8::ALGORITHM_OID));
+        assert_eq!(Curve::Ed448.params(), oid(ed448::pkcs8::ALGORITHM_OID));
+        for c in ALL_CURVES {
+            assert_eq!(Curve::from_params(c.params()), Some(c));
+        }
+        assert_eq!(Curve::from_params(b"\x13\x0cedwards25519"), Some(Curve::Ed25519));
     }
 }

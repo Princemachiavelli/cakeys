@@ -99,12 +99,6 @@ in
             else
               throw "key-management: object '${obj}' has several specs on token '${t}'; use specs.<spec>";
           perToken = field: genAttrs tokenNames (t: (onToken t).${field}.${t});
-          primary =
-            {
-              CKO_PRIVATE_KEY = "pubkeyhash";
-              CKO_CERTIFICATE = "certhash";
-            }
-            .${type.class} or "commitment";
         in
         {
           inherit type;
@@ -121,7 +115,8 @@ in
             {
               token ? null,
               spec ? null,
-              scheme ? primary,
+              # null: whatever the spec computes; else require that scheme (e.g. "certhash").
+              scheme ? null,
             }:
             assert keyMgmnt != null || throw "key-management: mkKeys needs keyMgmnt for check";
             builtins.concatStringsSep " " (
@@ -131,7 +126,7 @@ in
               ]
               ++ (if hasLock then [ "--lock ${lock}" ] else [ ])
               ++ builtins.attrValues (builtins.mapAttrs (t: p: "--module ${t}=${p}") modules)
-              ++ [ "check ${obj}.id.${scheme}" ]
+              ++ [ "check ${obj}${optionalString (scheme != null) ".id.${scheme}"}" ]
               ++ [
                 (optionalString (token != null) "--token ${token}")
                 (optionalString (spec != null) "--spec ${spec}")

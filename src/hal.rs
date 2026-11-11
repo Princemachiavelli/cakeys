@@ -2,7 +2,7 @@
 
 use crate::config::{Locator, Mode, ModuleInfo, ObjectCfg, SpecCfg, TokenCfg, TokenInfo};
 use crate::error::{KmError, Result};
-use crate::id;
+use crate::id::{self, Commit, Curve};
 use cryptoki::context::{CInitializeArgs, Pkcs11};
 use cryptoki::error::{Error as CkError, RvError};
 use cryptoki::mechanism::{Mechanism, MechanismType};
@@ -155,11 +155,14 @@ impl Token {
                 object.key_type
             )));
         }
-        if kt == KeyType::EC {
+        if kt == KeyType::EC || kt == KeyType::EC_EDWARDS {
+            let want = curve_of(object)?;
             match self.attr(h, AttributeType::EcParams)? {
-                Some(Attribute::EcParams(p)) if p == id::SECP256R1_PARAMS => {}
+                Some(Attribute::EcParams(p)) if Curve::from_params(&p) == Some(want) => {}
                 other => {
-                    return Err(KmError::Conflict(format!("CKA_EC_PARAMS mismatch: {other:?}")))
+                    return Err(KmError::Conflict(format!(
+                        "CKA_EC_PARAMS {other:?} is not {want:?}"
+                    )))
                 }
             }
         }
@@ -228,17 +231,23 @@ impl Token {
                     .map(drop)
                     .map_err(gen)
             }
-            KeyType::EC => {
+            KeyType::EC | KeyType::EC_EDWARDS => {
+                let curve = curve_of(object)?;
+                let mech = if curve.edwards() {
+                    Mechanism::EccEdwardsKeyPairGen
+                } else {
+                    Mechanism::EccKeyPairGen
+                };
                 let mut public = common.clone();
                 public.extend([
-                    Attribute::EcParams(id::SECP256R1_PARAMS.to_vec()),
+                    Attribute::EcParams(curve.params().to_vec()),
                     Attribute::Verify(true),
                     Attribute::Private(false),
                 ]);
                 let mut private = common;
                 private.extend(policy);
                 self.session
-                    .generate_key_pair(&Mechanism::EccKeyPairGen, &public, &private)
+                    .generate_key_pair(&mech, &public, &private)
                     .map(drop)
                     .map_err(gen)
             }
@@ -277,13 +286,14 @@ impl Token {
         Ok(handles.len())
     }
 
-    /// Compute the material CA-IDs of the object using `mode`.
+    /// Compute the material CA-IDs of the object using `mode`; secret keys use `commits`.
     pub fn ids(
         &self,
         h: ObjectHandle,
         object: &ObjectCfg,
         loc: &Locator,
         mode: Mode,
+        commits: &[Commit],
     ) -> Result<BTreeMap<String, String>> {
         let mut ids = BTreeMap::new();
         match mode {
@@ -299,14 +309,14 @@ impl Token {
                 ids.insert("pubkeyhash".into(), id::sri(&self.spki(h, loc)?));
             }
             Mode::Commitment => {
-                let mac = self
-                    .session
-                    .sign(&Mechanism::Sha256Hmac, h, &id::commitment_label(object))
-                    .map_err(|e| KmError::Unsupported(format!("CKM_SHA256_HMAC: {e}")))?;
-                ids.insert("commitment".into(), id::sri(&mac));
+                for c in commits {
+                    ids.insert(c.scheme().into(), id::sri(&self.commit(h, object, *c)?));
+                }
             }
             Mode::WrapRebind => {
-                ids.insert("commitment".into(), id::sri(&self.wrap_rebind(h, object)?));
+                for (c, out) in self.wrap_rebind(h, object, commits)? {
+                    ids.insert(c.scheme().into(), id::sri(&out));
+                }
             }
             m => {
                 return Err(KmError::Unsupported(format!(
@@ -340,10 +350,18 @@ impl Token {
             }
         }
         match self.attr(h, AttributeType::KeyType)? {
-            Some(Attribute::KeyType(KeyType::EC)) => match self.attr(h, AttributeType::EcPoint)? {
-                Some(Attribute::EcPoint(p)) => id::p256_spki_from_ec_point(&p),
-                _ => Err(KmError::NotFound("no CKA_EC_POINT on this object".into())),
-            },
+            Some(Attribute::KeyType(KeyType::EC | KeyType::EC_EDWARDS)) => {
+                let a = self
+                    .session
+                    .get_attributes(h, &[AttributeType::EcParams, AttributeType::EcPoint])
+                    .map_err(ck("C_GetAttributeValue"))?;
+                match a.as_slice() {
+                    [Attribute::EcParams(params), Attribute::EcPoint(p)] => Curve::from_params(params)
+                        .ok_or_else(|| KmError::Unsupported(format!("CKA_EC_PARAMS {params:02x?}")))?
+                        .spki_from_point(p),
+                    _ => Err(KmError::NotFound("no CKA_EC_PARAMS/CKA_EC_POINT on this object".into())),
+                }
+            }
             Some(Attribute::KeyType(KeyType::RSA)) => {
                 let a = self
                     .session
@@ -358,9 +376,44 @@ impl Token {
         }
     }
 
+    /// One commitment (`id::Commit`) on the key `h`.
+    fn commit(&self, h: ObjectHandle, object: &ObjectCfg, c: Commit) -> Result<Vec<u8>> {
+        let s = &self.session;
+        let input = c.input(object);
+        let fail = |e: CkError| KmError::Unsupported(format!("{} commitment ({}): {e}", c.scheme(), commit_mechanism(c)));
+        match c {
+            Commit::Hmac => s.sign(&Mechanism::Sha256Hmac, h, &input).map_err(fail),
+            Commit::Cmac => s.sign(&Mechanism::AesCMac, h, &input).map_err(fail),
+            Commit::KcvEcb => s.encrypt(&Mechanism::AesEcb, h, &input).map_err(fail),
+            Commit::Kw => {
+                // The fixed key is public, so it is created extractable; the key under test only
+                // has to allow CKA_WRAP.
+                let fixed = s
+                    .create_object(&[
+                        Attribute::Token(false),
+                        Attribute::Class(ObjectClass::SECRET_KEY),
+                        Attribute::KeyType(KeyType::GENERIC_SECRET),
+                        Attribute::Value(input),
+                        Attribute::Sensitive(false),
+                        Attribute::Extractable(true),
+                    ])
+                    .map_err(fail)?;
+                let out = s.wrap_key(&Mechanism::AesKeyWrap, h, fixed).map_err(fail);
+                let _ = s.destroy_object(fixed);
+                out
+            }
+        }
+    }
+
     /// Commit through a temporary session copy (PLAN.md, "Wrap-and-rebind"): generate a session
-    /// wrapping key on the token, wrap, unwrap as a sign-capable generic secret, HMAC, destroy.
-    fn wrap_rebind(&self, target: ObjectHandle, object: &ObjectCfg) -> Result<Vec<u8>> {
+    /// wrapping key on the token, wrap, unwrap as a key of the same type that allows every
+    /// operation `commits` need, commit, destroy.
+    fn wrap_rebind(
+        &self,
+        target: ObjectHandle,
+        object: &ObjectCfg,
+        commits: &[Commit],
+    ) -> Result<Vec<(Commit, Vec<u8>)>> {
         let s = &self.session;
         let fail = |what: &'static str| move |e: CkError| KmError::Unsupported(format!("wrap-rebind {what}: {e}"));
         let kek = s
@@ -383,26 +436,30 @@ impl Token {
                 Mechanism::AesKeyWrap
             };
             let blob = s.wrap_key(&wrap, kek, target).map_err(fail("C_WrapKey"))?;
+            let mut template = vec![
+                Attribute::Token(false),
+                Attribute::Class(ObjectClass::SECRET_KEY),
+                Attribute::KeyType(key_type_of(object)?),
+                Attribute::Sensitive(true),
+                Attribute::Extractable(false),
+            ];
+            for c in commits {
+                template.push(match c {
+                    Commit::Hmac | Commit::Cmac => Attribute::Sign(true),
+                    Commit::KcvEcb => Attribute::Encrypt(true),
+                    Commit::Kw => Attribute::Wrap(true),
+                });
+            }
+            template.dedup();
             let copy = s
-                .unwrap_key(
-                    &wrap,
-                    kek,
-                    &blob,
-                    &[
-                        Attribute::Token(false),
-                        Attribute::Class(ObjectClass::SECRET_KEY),
-                        Attribute::KeyType(KeyType::GENERIC_SECRET),
-                        Attribute::Sign(true),
-                        Attribute::Sensitive(true),
-                        Attribute::Extractable(false),
-                    ],
-                )
+                .unwrap_key(&wrap, kek, &blob, &template)
                 .map_err(fail("C_UnwrapKey"))?;
-            let mac = s
-                .sign(&Mechanism::Sha256Hmac, copy, &id::commitment_label(object))
-                .map_err(fail("CKM_SHA256_HMAC"));
+            let out = commits
+                .iter()
+                .map(|c| Ok((*c, self.commit(copy, object, *c)?)))
+                .collect::<Result<Vec<_>>>();
             let _ = s.destroy_object(copy);
-            mac
+            out
         })();
         let _ = s.destroy_object(kek);
         result
@@ -454,12 +511,33 @@ pub fn class_of(object: &ObjectCfg) -> Result<ObjectClass> {
     }
 }
 
+/// Mechanism a commitment runs on the token.
+pub fn commit_mechanism(c: Commit) -> MechanismType {
+    match c {
+        Commit::Hmac => MechanismType::SHA256_HMAC,
+        Commit::Cmac => MechanismType::AES_CMAC,
+        Commit::KcvEcb => MechanismType::AES_ECB,
+        Commit::Kw => MechanismType::AES_KEY_WRAP,
+    }
+}
+
+pub fn curve_of(object: &ObjectCfg) -> Result<Curve> {
+    let name = object.curve.as_deref().ok_or_else(|| {
+        KmError::Validation(format!("{} keys need a curve", object.key_type))
+    })?;
+    Curve::from_cfg(&object.key_type, name).ok_or_else(|| {
+        KmError::Unsupported(format!(
+            "curve {name:?} for {} (supported: secp256r1, secp384r1, secp521r1 for CKK_EC; \
+             edwards25519, edwards448 for CKK_EC_EDWARDS)",
+            object.key_type
+        ))
+    })
+}
+
 pub fn key_type_of(object: &ObjectCfg) -> Result<KeyType> {
     match (object.class.as_str(), object.key_type.as_str()) {
-        ("CKO_PRIVATE_KEY", "CKK_EC") => match object.curve.as_deref() {
-            Some("secp256r1" | "prime256v1" | "P-256") => Ok(KeyType::EC),
-            c => Err(KmError::Unsupported(format!("curve {c:?} (POC supports secp256r1)"))),
-        },
+        ("CKO_PRIVATE_KEY", "CKK_EC") => curve_of(object).map(|_| KeyType::EC),
+        ("CKO_PRIVATE_KEY", "CKK_EC_EDWARDS") => curve_of(object).map(|_| KeyType::EC_EDWARDS),
         ("CKO_PRIVATE_KEY", "CKK_RSA") => Ok(KeyType::RSA),
         ("CKO_SECRET_KEY", "CKK_GENERIC_SECRET") => Ok(KeyType::GENERIC_SECRET),
         ("CKO_SECRET_KEY", "CKK_AES") => Ok(KeyType::AES),

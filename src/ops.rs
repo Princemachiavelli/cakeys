@@ -3,7 +3,7 @@
 use crate::config::{Config, Lock, LockRealisation, Mode, ObjectCfg, SpecCfg, SpecTokenCfg};
 use crate::error::{KmError, Result};
 use crate::hal::{self, Token};
-use crate::id;
+use crate::id::{self, Commit};
 use cryptoki::mechanism::MechanismType;
 use cryptoki::object::KeyType;
 use serde::Serialize;
@@ -43,19 +43,13 @@ impl<'a> Target<'a> {
         format!("'{}' (spec '{}') on token '{}'", self.object_name, self.spec_name, self.token_name)
     }
 
-    pub fn primary_scheme(&self) -> &'static str {
-        match self.object.class.as_str() {
-            "CKO_PRIVATE_KEY" => "pubkeyhash",
-            "CKO_CERTIFICATE" => "certhash",
-            _ => "commitment",
-        }
-    }
-
-    /// Identity schemes computed for this object (the primary one first).
+    /// Identity schemes this object type can have, in order of preference: the first one a
+    /// realisation computes is its primary scheme.
     pub fn schemes(&self) -> &'static [&'static str] {
-        match self.object.class.as_str() {
-            "CKO_PRIVATE_KEY" => &["pubkeyhash"],
-            "CKO_CERTIFICATE" => &["certhash", "pubkeyhash"],
+        match (self.object.class.as_str(), self.object.key_type.as_str()) {
+            ("CKO_PRIVATE_KEY", _) => &["pubkeyhash"],
+            ("CKO_CERTIFICATE", _) => &["certhash", "pubkeyhash"],
+            (_, "CKK_AES") => &["cmac", "kcv-ecb", "kw"],
             _ => &["commitment"],
         }
     }
@@ -93,9 +87,9 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
     }
     let kt = hal::key_type_of(t.object)?;
     let attr = |n: &str| t.spec.attributes.get(n).copied();
-    let mode = if kt == KeyType::EC || kt == KeyType::RSA {
+    let mode = if kt == KeyType::EC || kt == KeyType::EC_EDWARDS || kt == KeyType::RSA {
         Mode::Direct
-    } else if kt == KeyType::GENERIC_SECRET && attr("CKA_SIGN") == Some(true) {
+    } else if !declared_commits(t).is_empty() {
         Mode::Commitment
     } else if attr("CKA_EXTRACTABLE") == Some(true) {
         Mode::WrapRebind
@@ -104,13 +98,50 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
         return match allowed.iter().min() {
             Some(m) => Ok(*m),
             None => Err(KmError::Validation(format!(
-                "{} has no re-verifiable identity (non-extractable, no usable CKA_SIGN); \
+                "{} has no re-verifiable identity (non-extractable; no CKA_SIGN, nor CKA_ENCRYPT/CKA_WRAP on AES); \
                  opt in per token with identity.allow = [\"commit-at-creation\" | \"host-at-import\" | \"token-specific\"]",
                 t.what()
             ))),
         };
     };
     Ok(mode)
+}
+
+/// Commitments the spec's declared usage bits allow, strongest-linking first. Only declared
+/// attributes count: a token default never silently changes which identity is computed.
+fn declared_commits(t: &Target) -> Vec<Commit> {
+    let on = |n: &str| t.spec.attributes.get(n).copied() == Some(true);
+    match t.object.key_type.as_str() {
+        "CKK_GENERIC_SECRET" if on("CKA_SIGN") => vec![Commit::Hmac],
+        "CKK_AES" => [("CKA_SIGN", Commit::Cmac), ("CKA_ENCRYPT", Commit::KcvEcb), ("CKA_WRAP", Commit::Kw)]
+            .into_iter()
+            .filter(|(a, _)| on(a))
+            .map(|(_, c)| c)
+            .collect(),
+        _ => vec![],
+    }
+}
+
+/// Commitments to compute for a secret key on this token: those the spec allows (or, for a
+/// wrap-rebind copy, every one for the key type) that the token implements.
+fn commits(t: &Target, tok: &Token, mode: Mode) -> Result<Vec<Commit>> {
+    let wanted = match (mode, t.object.key_type.as_str()) {
+        (Mode::Commitment, _) => declared_commits(t),
+        (Mode::WrapRebind, "CKK_AES") => vec![Commit::Cmac, Commit::KcvEcb, Commit::Kw],
+        (Mode::WrapRebind, _) => vec![Commit::Hmac],
+        _ => return Ok(vec![]),
+    };
+    let usable: Vec<Commit> = wanted.iter().copied().filter(|c| tok.has(hal::commit_mechanism(*c))).collect();
+    if usable.is_empty() {
+        let mechs: Vec<String> = wanted.iter().map(|c| hal::commit_mechanism(*c).to_string()).collect();
+        return Err(KmError::Unsupported(format!(
+            "token '{}' implements none of {} needed for mode '{mode}' of {}",
+            tok.name,
+            mechs.join(", "),
+            t.what()
+        )));
+    }
+    Ok(usable)
 }
 
 /// Token capabilities the mode needs, checked before anything is created.
@@ -125,20 +156,18 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
     if t.on_token.auto_create {
         need.push(match hal::key_type_of(t.object)? {
             KeyType::EC => MechanismType::ECC_KEY_PAIR_GEN,
+            KeyType::EC_EDWARDS => MechanismType::ECC_EDWARDS_KEY_PAIR_GEN,
             KeyType::RSA => MechanismType::RSA_PKCS_KEY_PAIR_GEN,
             KeyType::AES => MechanismType::AES_KEY_GEN,
             _ => MechanismType::GENERIC_SECRET_KEY_GEN,
         });
     }
-    match mode {
-        Mode::Commitment => need.push(MechanismType::SHA256_HMAC),
-        Mode::WrapRebind => {
-            need.extend([MechanismType::AES_KEY_GEN, MechanismType::SHA256_HMAC]);
-            if !tok.has(MechanismType::AES_KEY_WRAP_PAD) {
-                need.push(MechanismType::AES_KEY_WRAP);
-            }
+    commits(t, tok, mode)?;
+    if mode == Mode::WrapRebind {
+        need.push(MechanismType::AES_KEY_GEN);
+        if !tok.has(MechanismType::AES_KEY_WRAP_PAD) {
+            need.push(MechanismType::AES_KEY_WRAP);
         }
-        _ => {}
     }
     match need.into_iter().find(|m| !tok.has(*m)) {
         Some(m) => Err(KmError::Unsupported(format!("token '{}' lacks {m} needed for mode '{mode}'", tok.name))),
@@ -168,6 +197,7 @@ pub fn resolve(t: &Target, tok: &Token) -> Result<Option<Resolved>> {
         return Ok(None);
     };
     tok.check(h, t.object, t.spec)?;
+    let commits = commits(t, tok, mode)?;
     Ok(Some(Resolved {
         object: t.object_name.into(),
         spec: t.spec_name.into(),
@@ -176,7 +206,7 @@ pub fn resolve(t: &Target, tok: &Token) -> Result<Option<Resolved>> {
         mode,
         public_only,
         spec_digest: id::spec_digest(t.object, t.spec),
-        ids: tok.ids(h, t.object, &t.on_token.locator, mode)?,
+        ids: tok.ids(h, t.object, &t.on_token.locator, mode, &commits)?,
     }))
 }
 
@@ -324,12 +354,17 @@ pub fn delete(t: &Target, tok: &Token, lock: &mut Lock, if_match: Option<&str>, 
     }
     // An expected identity is only required when there is something to delete.
     if let Some(h) = tok.find_key(t.object, &t.on_token.locator, false)? {
-        let scheme = t.primary_scheme();
+        let mode = plan_mode(t)?;
+        let got = tok.ids(h, t.object, &t.on_token.locator, mode, &commits(t, tok, mode)?)?;
+        let scheme = *t
+            .schemes()
+            .iter()
+            .find(|s| got.contains_key(**s))
+            .ok_or_else(|| KmError::Unsupported(format!("no identity computed for {}", t.what())))?;
         let expected = if_match
             .map(str::to_owned)
             .or_else(|| lock.objects.get(t.object_name).and_then(|o| o.ids.get(scheme)).cloned())
             .ok_or_else(|| KmError::PreconditionFailed(format!("no expected {scheme} for {}; pass --if-match", t.what())))?;
-        let got = tok.ids(h, t.object, &t.on_token.locator, plan_mode(t)?)?;
         if got.get(scheme) != Some(&expected) {
             return Err(KmError::PreconditionFailed(format!(
                 "{} holds {:?}, expected {expected}; not deleting",
