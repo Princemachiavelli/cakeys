@@ -27,3 +27,15 @@ specDigest = "sha256-qIuRBEz2PXSMKu8QQ5Mnwd9u7f6hGvsgYvL2GZh0Hk0="
 mode = "direct"
 uri = "pkcs11:token=kmtest;object=signing;type=private"
 mechanisms = ["CKM_ECDSA", "CKM_EC_KEY_PAIR_GEN"]
+
+[realisations.signing-soft.softhsm.module]
+path = "/nix/store/00000000000000000000000000000000-softhsm-2.7.0/lib/softhsm/libsofthsm2.so"
+description = "Implementation of PKCS11"
+manufacturer = "SoftHSM"
+version = "2.7"
+cryptoki = "3.2"
+
+[realisations.signing-soft.softhsm.token]
+model = "SoftHSM v2"
+serial = "624f14da21ad132f"
+firmware = "2.7"

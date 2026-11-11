@@ -190,6 +190,9 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             )));
         }
     }
+    if let Some(prev) = lock.realisations.get(t.spec_name).and_then(|m| m.get(t.token_name)) {
+        warn_provenance(t, tok, prev);
+    }
     let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
     let mut changed = false;
     for (scheme, got) in &r.ids {
@@ -214,6 +217,8 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             mode: r.mode,
             public_only: r.public_only,
             uri: r.uri.clone(),
+            module: Some(tok.module.clone()),
+            token: Some(tok.token.clone()),
             mechanisms: tok.mechanism_names(),
         };
         let slot = lock.realisations.entry(t.spec_name.into()).or_default();
@@ -222,6 +227,8 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
                 || old.mode != real.mode
                 || old.public_only != real.public_only
                 || old.uri != real.uri
+                || old.module != real.module
+                || old.token != real.token
                 || old.mechanisms != real.mechanisms
         });
         if differs {
@@ -230,6 +237,46 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
         }
     }
     Ok(changed)
+}
+
+/// Module and token identity are provenance: identity itself is enforced by the CA-IDs, so a
+/// different module build or token only warns. `realise --update-lock` re-binds them.
+fn warn_provenance(t: &Target, tok: &Token, prev: &LockRealisation) {
+    if let Some(m) = &prev.module {
+        if !m.same_build_identity(&tok.module) {
+            eprintln!(
+                "warning: {} was realised with module {} {} ({}), now {} {} ({})",
+                t.what(),
+                m.description,
+                m.version,
+                m.manufacturer,
+                tok.module.description,
+                tok.module.version,
+                tok.module.manufacturer
+            );
+        } else if m.path != tok.module.path {
+            eprintln!(
+                "note: {} was realised with module file {}, now {}",
+                t.what(),
+                m.path,
+                tok.module.path
+            );
+        }
+    }
+    if let Some(k) = &prev.token {
+        if k != &tok.token {
+            eprintln!(
+                "warning: {} was realised on token {} #{} (firmware {}), now {} #{} (firmware {})",
+                t.what(),
+                k.model,
+                k.serial,
+                k.firmware,
+                tok.token.model,
+                tok.token.serial,
+                tok.token.firmware
+            );
+        }
+    }
 }
 
 /// GET + If-Match against the lock.

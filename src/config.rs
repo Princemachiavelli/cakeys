@@ -150,6 +150,12 @@ pub struct LockRealisation {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub public_only: bool,
     pub uri: String,
+    /// PKCS#11 module that realised this (C_GetInfo, plus the loaded file).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<ModuleInfo>,
+    /// Token that holds it (C_GetTokenInfo).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<TokenInfo>,
     /// Token mechanisms observed at realisation time (for `functions.<token>`).
     #[serde(default)]
     pub mechanisms: Vec<String>,
@@ -206,4 +212,32 @@ impl Config {
             ))),
         }
     }
+}
+
+/// Module identity bound into a realisation. Everything but `path` must match on verify;
+/// `path` is provenance only (it changes on every rebuild).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModuleInfo {
+    pub path: String,
+    pub description: String,
+    pub manufacturer: String,
+    pub version: String,
+    pub cryptoki: String,
+}
+
+impl ModuleInfo {
+    /// Equal apart from `path`.
+    pub fn same_build_identity(&self, other: &Self) -> bool {
+        (&self.description, &self.manufacturer, &self.version, &self.cryptoki)
+            == (&other.description, &other.manufacturer, &other.version, &other.cryptoki)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenInfo {
+    pub model: String,
+    pub serial: String,
+    pub firmware: String,
 }

@@ -94,6 +94,9 @@
           assert keys.shared.specs.shared-sign.mode.softhsm == "commitment";
           assert keys.shared.specs.shared-nosign.mode.softhsm == "wrap-rebind";
           assert fails keys.shared.uri.softhsm; # ambiguous: several specs on one token
+          assert keys.signing.module.softhsm.version == "2.7";
+          assert keys.signing.tokenInfo.softhsm.model == "SoftHSM v2";
+          assert keys.shared.specs.shared-sign.module.softhsm == null; # older lock entry
           # Certificates default to certhash.
           assert pkgs.lib.hasInfix "check signing-cert.id.certhash" (keys.signing-cert.check { });
           pkgs.runCommand "key-mgmnt-lib-check" { } ''

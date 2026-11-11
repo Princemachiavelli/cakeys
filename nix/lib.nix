@@ -19,8 +19,8 @@ in
     Per object:
       type                    intrinsic type from keys.toml
       id.<scheme>             portable material CA-IDs from the lock (e.g. id.pubkeyhash)
-      specs.<spec>.{uri,mode,specDigest,functions,rsf}.<token>
-      uri / mode / specDigest / functions / rsf .<token>
+      specs.<spec>.{uri,mode,specDigest,module,tokenInfo,functions,rsf}.<token>
+      uri / mode / specDigest / module / tokenInfo / functions / rsf .<token>
                               shortcuts when the object has exactly one spec on that token
       check { token ?, spec ?, scheme ? }
                               shell command for the pseudo-FOD pre-use check; prints the URI.
@@ -61,6 +61,9 @@ in
           uri = genAttrs tks (t: (real t).uri);
           mode = genAttrs tks (t: (real t).mode);
           specDigest = genAttrs tks (t: (real t).specDigest);
+          # Provenance: { path, description, manufacturer, version, cryptoki } / { model, serial, firmware }.
+          module = genAttrs tks (t: (real t).module or null);
+          tokenInfo = genAttrs tks (t: (real t).token or null);
           functions = genAttrs tks (
             t:
             builtins.listToAttrs (
@@ -110,6 +113,8 @@ in
           uri = perToken "uri";
           mode = perToken "mode";
           specDigest = perToken "specDigest";
+          module = perToken "module";
+          tokenInfo = perToken "tokenInfo";
           functions = perToken "functions";
           rsf = genAttrs tokenNames rsfOf;
           check =

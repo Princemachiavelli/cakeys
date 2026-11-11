@@ -510,6 +510,13 @@ Rough sizes of the **new code**. Dependencies are `cryptoki`, `tss-esapi`, RustC
   - Each key's `pubkeyhash` (from the modulus/exponent) equals its certificate's (from X.509 parsing).
   - A derivation built in the host sandbox ran `check` for the PK key and certificate through `lib.mkKeys` successfully.
 
+**Module and token provenance (2026-11-11):**
+- **URIs are pure locators.** The lock's URIs no longer carry `module-path`. A store path in the lock has no string context, so it is never a Nix dependency (the module used comes from `modules.<token>` / `--module`), and it churned on every rebuild.
+- **Each realisation records** `module = { path, description, manufacturer, version, cryptoki }` (C_GetInfo plus the loaded file) and `token = { model, serial, firmware }`. Versions are raw `CK_VERSION` major.minor, so ykcs11 2.7.3 shows as `2.73`.
+- **A difference is never an error.** Identity is enforced by the CA-IDs. On `verify`/`check`/`realise`, a different module build identity or token is a *warning*, and a different module file with the same build identity is a *note*. Build flags such as FIPS can change behaviour at the same version, so the path is kept for provenance.
+- **`realise --update-lock` re-binds** both, as a reviewable lock diff.
+- **The Nix lib exposes them** as `module.<token>` and `tokenInfo.<token>`.
+
 **NixOS module (`nixosModules.default`, nix/module.nix):**
 - **`services.key-management.sandbox.pcscd.enable`:** pcscd, `/run/pcscd` in the sandbox, a polkit rule for `nixbld` *and* the auto-allocated UID range, and `PrivateUsers = false` on pcscd when UIDs are auto-allocated.
 - **`sandbox.uidRange.enable`:** `auto-allocate-uids` plus the `uid-range` feature.

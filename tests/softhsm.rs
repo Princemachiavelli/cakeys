@@ -544,3 +544,47 @@ fn adoption_rules_are_validated() {
         assert_eq!(code(&e.km(&["validate"])), 17, "{body} / {why}");
     }
 }
+
+#[test]
+fn module_and_token_provenance_warn_but_do_not_fail() {
+    let Some(e) = env("provenance") else { return };
+    e.config(EC.replace("ec-lifecycle", "provenance").as_str());
+    let r = ["realise", "signing-soft", "--token", "softhsm", "--update-lock"];
+    let verify = ["verify", "signing-soft", "--token", "softhsm"];
+    assert_eq!(code(&e.km(&["realise", "signing-soft", "--token", "softhsm"])), 10);
+    assert_eq!(code(&e.km(&r)), 0);
+
+    let real = &e.lock()["realisations"]["signing-soft"]["softhsm"];
+    assert_eq!(real["module"]["path"].as_str(), Some(e.module.as_str()));
+    assert_eq!(real["module"]["manufacturer"].as_str(), Some("SoftHSM"));
+    assert!(!real["module"]["version"].as_str().unwrap().is_empty());
+    assert_eq!(real["token"]["model"].as_str(), Some("SoftHSM v2"));
+    assert!(!real["uri"].as_str().unwrap().contains("module-path"), "URI is a pure locator");
+    let stderr = |o: &Output| String::from_utf8_lossy(&o.stderr).into_owned();
+    assert!(!stderr(&e.km(&verify)).contains("warning"));
+
+    let path = e.dir.join("keys.lock");
+    let original = std::fs::read_to_string(&path).unwrap();
+    let version = real["module"]["version"].as_str().unwrap().to_owned();
+
+    // A different module version: still verifies (identity is the CA-ID), with a warning.
+    std::fs::write(&path, original.replace(&format!("version = \"{version}\""), "version = \"0.0\"")).unwrap();
+    let o = e.km(&verify);
+    assert_eq!(code(&o), 0);
+    assert!(stderr(&o).contains("warning:") && stderr(&o).contains("with module"), "{}", stderr(&o));
+
+    // Same build identity, different file: a note only.
+    std::fs::write(&path, original.replace(&e.module, "/nix/store/old-softhsm/lib/libsofthsm2.so")).unwrap();
+    let o = e.km(&verify);
+    assert_eq!(code(&o), 0);
+    assert!(stderr(&o).contains("note:") && !stderr(&o).contains("warning:"), "{}", stderr(&o));
+
+    // A different token: warning.
+    std::fs::write(&path, original.replace("model = \"SoftHSM v2\"", "model = \"Other\"")).unwrap();
+    assert!(stderr(&e.km(&verify)).contains("realised on token Other"));
+
+    // Re-binding with --update-lock records the current module and token.
+    assert_eq!(code(&e.km(&r)), 0);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    assert!(!stderr(&e.km(&verify)).contains("warning"));
+}

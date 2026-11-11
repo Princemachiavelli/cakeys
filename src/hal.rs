@@ -1,6 +1,6 @@
 //! PKCS#11 backend over `cryptoki`. Transparent: PKCS#11 names in, PKCS#11 calls out.
 
-use crate::config::{Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
+use crate::config::{Locator, Mode, ModuleInfo, ObjectCfg, SpecCfg, TokenCfg, TokenInfo};
 use crate::error::{KmError, Result};
 use crate::id;
 use cryptoki::context::{CInitializeArgs, Pkcs11};
@@ -16,7 +16,8 @@ use std::collections::BTreeMap;
 pub struct Token {
     pub name: String,
     pub label: String,
-    pub module: String,
+    pub module: ModuleInfo,
+    pub token: TokenInfo,
     pub mechanisms: Vec<MechanismType>,
     session: Session,
 }
@@ -33,6 +34,14 @@ impl Token {
             .ok_or_else(|| KmError::Validation(format!("token '{name}' has no module")))?;
         let ctx = Pkcs11::new(&module).map_err(ck(&format!("loading {module}")))?;
         ctx.initialize(CInitializeArgs::OsThreads).map_err(ck("C_Initialize"))?;
+        let lib = ctx.get_library_info().map_err(ck("C_GetInfo"))?;
+        let module = ModuleInfo {
+            path: module,
+            description: lib.library_description().trim().to_owned(),
+            manufacturer: lib.manufacturer_id().trim().to_owned(),
+            version: lib.library_version().to_string(),
+            cryptoki: lib.cryptoki_version().to_string(),
+        };
         let mut slot = None;
         for s in ctx.get_slots_with_token().map_err(ck("C_GetSlotList"))? {
             let info = ctx.get_token_info(s).map_err(ck("C_GetTokenInfo"))?;
@@ -43,11 +52,18 @@ impl Token {
                         cfg.token_label
                     )));
                 }
-                slot = Some(s);
+                slot = Some((
+                    s,
+                    TokenInfo {
+                        model: info.model().trim().to_owned(),
+                        serial: info.serial_number().trim().to_owned(),
+                        firmware: info.firmware_version().to_string(),
+                    },
+                ));
             }
         }
-        let slot = slot.ok_or_else(|| {
-            KmError::Unavailable(format!("token '{}' not present in {module}", cfg.token_label))
+        let (slot, token) = slot.ok_or_else(|| {
+            KmError::Unavailable(format!("token '{}' not present in {}", cfg.token_label, module.path))
         })?;
         let mechanisms = ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?;
         let session = ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?;
@@ -61,6 +77,7 @@ impl Token {
             name: name.to_owned(),
             label: cfg.token_label.clone(),
             module,
+            token,
             mechanisms,
             session,
         })
@@ -407,11 +424,8 @@ impl Token {
             _ => "secret-key",
         };
         parts.push(format!("type={kind}"));
-        Ok(format!(
-            "pkcs11:{}?module-path={}",
-            parts.join(";"),
-            pct(self.module.as_bytes())
-        ))
+        // A pure locator: which module realised it is recorded separately (ModuleInfo).
+        Ok(format!("pkcs11:{}", parts.join(";")))
     }
 }
 
