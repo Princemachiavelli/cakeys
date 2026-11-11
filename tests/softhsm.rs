@@ -50,7 +50,12 @@ impl Env {
     }
 
     fn km(&self, args: &[&str]) -> Output {
+        self.km_env(args, &[])
+    }
+
+    fn km_env(&self, args: &[&str], envs: &[(&str, &std::path::Path)]) -> Output {
         let out = Command::new(BIN)
+            .envs(envs.iter().copied())
             .arg("--config")
             .arg(self.dir.join("keys.toml"))
             .args(args)
@@ -916,4 +921,41 @@ fn adopt_ec_and_edwards_certificates() {
         assert_eq!(e.locked_id(&cert, "certhash"), certhash, "{k}");
         assert_eq!(e.locked_id(&cert, "pubkeyhash"), pubkeyhash, "{k}: cert links to its key");
     }
+}
+
+#[test]
+fn scheme_the_token_lacks_is_refused_before_create() {
+    let Some(e) = env("token_lacks") else { return };
+    // The same token through a SoftHSM config that hides CKM_AES_CMAC.
+    let conf = std::fs::read_to_string(std::env::var("SOFTHSM2_CONF").unwrap()).unwrap();
+    let no_cmac = e.dir.join("softhsm2-no-cmac.conf");
+    std::fs::write(&no_cmac, conf + "\nslots.mechanisms = -CKM_AES_CMAC\n").unwrap();
+    let env = [("SOFTHSM2_CONF", no_cmac.as_path())];
+    e.config(
+        r#"
+[objects.k]
+class = "CKO_SECRET_KEY"
+keyType = "CKK_AES"
+valueLen = 32
+
+[specs.k]
+object = "k"
+attributes = { CKA_SIGN = true, CKA_WRAP = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
+tokens.softhsm = { locator = { CKA_LABEL = "no-cmac" }, autoCreate = true }
+"#,
+    );
+    let caps = stdout(&e.km_env(&["caps", "--token", "softhsm"], &env));
+    assert!(caps.contains("CKM_AES_KEY_WRAP\"") && !caps.contains("CKM_AES_CMAC\""), "config did not hide CMAC: {caps}");
+    // The spec allows cmac, but this token cannot compute it: refused, nothing created.
+    assert_eq!(code(&e.km_env(&["check", "k.id.cmac"], &env)), 15);
+    assert!(e.session().find_objects(&[Attribute::Label(b"no-cmac".to_vec())]).unwrap().is_empty());
+    // kw is still available: first use creates the key (TOFU: no locked hash yet).
+    assert_eq!(code(&e.km_env(&["check", "k.id.kw"], &env)), 10);
+    let o = e.km_env(&["realise", "k", "--token", "softhsm", "--update-lock"], &env);
+    assert_eq!(code(&o), 0);
+    let ids: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(ids["ids"].as_object().unwrap().keys().collect::<Vec<_>>(), ["kw"]);
+    // With CMAC back, the same key also yields cmac, linked through the locked kw.
+    assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm", "--update-lock"])), 0);
+    assert!(e.lock()["objects"]["k"]["ids"].get("cmac").is_some());
 }

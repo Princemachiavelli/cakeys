@@ -149,6 +149,15 @@ fn commits(t: &Target, tok: &Token, mode: Mode) -> Result<Vec<Commit>> {
     Ok(usable)
 }
 
+/// Schemes this spec computes on this token: `Target::schemes` narrowed to the commitments the
+/// token implements. Needs no object, so callers can refuse before anything is created.
+pub fn schemes_on(t: &Target, tok: &Token) -> Result<Vec<&'static str>> {
+    if t.object.class != "CKO_SECRET_KEY" {
+        return Ok(t.schemes());
+    }
+    Ok(commits(t, tok, plan_mode(t)?)?.iter().map(|c| c.scheme()).collect())
+}
+
 /// Token capabilities the mode needs, checked before anything is created.
 fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
     if mode.needs_opt_in() {

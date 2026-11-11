@@ -527,7 +527,7 @@ Rough sizes of the **new code**. Dependencies are `cryptoki`, `tss-esapi`, RustC
   - Wrap-rebind on an AES key unwraps an AES copy and computes all three.
   - Only the token mechanisms present are used. If none is available, the result is *unsupported*.
   - **Material is linked only through a shared scheme.** If the object already has locked IDs and none of the computed schemes is among them, `realise` refuses (*precondition failed*) instead of attaching new IDs. So a SIGN-only copy on one token and a WRAP-only copy on another cannot be bound to one object. Nothing could prove they are the same. Realise a spec that computes both schemes first.
-  - `check <object>.id.<scheme>` rejects a scheme the spec can never compute *before* opening the token, so nothing is created.
+  - `check <object>.id.<scheme>` rejects a scheme the spec can never compute *before* opening the token, and one this token cannot compute (a missing mechanism) right after opening it, before `realise`. Either way, nothing is created.
 - **The lock stores SHA-256 of each commitment output, never the output.** The output is a valid MAC or ciphertext under the key. A published `kw` blob in particular would let anyone feed the token a "wrapped" key of known value.
 - **`check <object>` without a scheme** verifies every ID the spec computes. `check <object>.id.<scheme>` also requires that scheme. The Nix lib's `check {}` no longer guesses a primary scheme.
 - **Tests use independent oracles:**

@@ -163,16 +163,17 @@ fn run() -> anyhow::Result<()> {
                 }
             }
             let tok = open_token(&cfg, &modules, &token_name)?;
-            let (r, _) = ops::realise(&t, &tok, &mut lock, false)?;
+            // The token may lack a mechanism the spec allows: refuse before realise can create.
             if let Some(s) = scheme {
-                if !r.ids.contains_key(s) {
+                let on_token = ops::schemes_on(&t, &tok)?;
+                if !on_token.contains(&s) {
                     return Err(KmError::Unsupported(format!(
-                        "scheme '{s}' for spec '{spec_name}' on '{token_name}'; it computes {:?}",
-                        r.ids.keys().collect::<Vec<_>>()
+                        "scheme '{s}' for spec '{spec_name}' on '{token_name}'; it computes {on_token:?}"
                     ))
                     .into());
                 }
             }
+            let (r, _) = ops::realise(&t, &tok, &mut lock, false)?;
             println!("{}", r.uri);
         }
         Cmd::Caps { token } => {
