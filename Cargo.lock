@@ -558,9 +558,27 @@ dependencies = [
  "clap",
  "cmac",
  "cryptoki",
+ "hmac",
+ "key-mgmnt-core",
+ "key-mgmnt-pkcs11",
+ "key-mgmnt-softhsm",
+ "key-mgmnt-ykcs11",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml",
+ "x509-cert",
+]
+
+[[package]]
+name = "key-mgmnt-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
  "ed25519-dalek",
  "ed448",
- "hmac",
  "p256",
  "p384",
  "p521",
@@ -571,6 +589,29 @@ dependencies = [
  "thiserror",
  "toml",
  "x509-cert",
+]
+
+[[package]]
+name = "key-mgmnt-pkcs11"
+version = "0.1.0"
+dependencies = [
+ "cryptoki",
+ "key-mgmnt-core",
+ "serde",
+]
+
+[[package]]
+name = "key-mgmnt-softhsm"
+version = "0.1.0"
+dependencies = [
+ "key-mgmnt-pkcs11",
+]
+
+[[package]]
+name = "key-mgmnt-ykcs11"
+version = "0.1.0"
+dependencies = [
+ "key-mgmnt-pkcs11",
 ]
 
 [[package]]

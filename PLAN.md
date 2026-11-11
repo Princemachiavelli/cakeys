@@ -456,6 +456,23 @@ Wide HSM support is a core feature. Each provider gets a small **quirks profile*
 | **TPM 2.0** (present: `/dev/tpmrm0`) | native `tss-esapi` *and* `tpm2-pkcs11` | **PCR/policy-bound keys need the native path**: as far as I know `tpm2-pkcs11` cannot express arbitrary policies (verify). Test: `pubkeyhash` must agree between the two paths. |
 | CloudHSM, others | vendor PKCS#11 | Later. |
 
+## Crate layout (2026-11-11)
+The project is a Cargo workspace, so that a PKCS#11 module's quirks live in its own crate:
+
+| Crate | Contents |
+|---|---|
+| `key-mgmnt-core` (`crates/core`) | `keys.toml`/`keys.lock`, error kinds and exit codes, CA-ID computation. No token access and no `cryptoki`. |
+| `key-mgmnt-pkcs11` (`crates/pkcs11`) | The token layer over `cryptoki`, the idempotent verbs (`ops`), the `Provider` trait and the `Registry`. |
+| `key-mgmnt-softhsm`, `key-mgmnt-ykcs11`, … | One provider per module. |
+| `key-mgmnt` (`crates/cli`) | The CLI as a library: `key_mgmnt::main(registry)`, plus a thin `main.rs`. The integration tests and fixtures live here. |
+
+**Writing a provider:**
+- **Hooks.** A provider implements `name` and `matches(&ModuleInfo)` (auto-detection from `C_GetInfo`). It overrides only the hooks its module needs: `mechanisms` (drop advertised but unusable ones), `ec_point` (repair an encoding) and `hint` (advice on errors).
+- **The fix-up rule.** A hook must return exactly what a spec-compliant module would return, so identities stay portable across modules and versions. This is also why the provider's name is not recorded in the lock.
+- **Selection.** An explicit `provider = "<name>"` on a token wins. An unknown name is a validation error. Otherwise the first registered provider whose `matches` accepts the module is used, then `generic`.
+- **Registration.** The CLI registers the built-in providers through the same public API a downstream binary uses: `key_mgmnt::main(key_mgmnt::default_registry().with(MyProvider))` (see `crates/cli/examples/custom-provider.rs`). Rust has no stable plugin ABI, so providers are linked in, not loaded.
+- **The backend-neutral trait is deferred.** The verbs still speak PKCS#11. A trait above `Token` gets extracted when the native TPM backend starts, once there is a second implementation to shape it.
+
 # Effort estimate
 
 Rough sizes of the **new code**. Dependencies are `cryptoki`, `tss-esapi`, RustCrypto `spki`/`der`/`x509-cert`, `serde`/`toml`, and possibly `psa-crypto`.

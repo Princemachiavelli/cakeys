@@ -1,8 +1,11 @@
-//! PKCS#11 backend over `cryptoki`. Transparent: PKCS#11 names in, PKCS#11 calls out.
+//! PKCS#11 token layer over `cryptoki`. Transparent: PKCS#11 names in, PKCS#11 calls out.
+//! Module-specific behaviour goes through the selected [`Provider`].
 
-use crate::config::{Locator, Mode, ModuleInfo, ObjectCfg, SpecCfg, TokenCfg, TokenInfo};
-use crate::error::{KmError, Result};
-use crate::id::{self, Commit, Curve};
+use crate::provider::{Provider, Registry};
+pub use key_mgmnt_core::config::{ModuleInfo, TokenInfo};
+use key_mgmnt_core::config::{Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
+use key_mgmnt_core::id::{self, Commit, Curve};
+use key_mgmnt_core::{KmError, Result};
 use cryptoki::context::{CInitializeArgs, Pkcs11};
 use cryptoki::error::{Error as CkError, RvError};
 use cryptoki::mechanism::{Mechanism, MechanismType};
@@ -12,13 +15,16 @@ use cryptoki::object::{
 use cryptoki::session::{Session, UserType};
 use cryptoki::types::AuthPin;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 pub struct Token {
     pub name: String,
     pub label: String,
     pub module: ModuleInfo,
     pub token: TokenInfo,
+    /// Usable mechanisms: advertised ones, filtered by the provider.
     pub mechanisms: Vec<MechanismType>,
+    pub provider: Arc<dyn Provider>,
     session: Session,
 }
 
@@ -27,7 +33,12 @@ fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
 }
 
 impl Token {
-    pub fn open(name: &str, cfg: &TokenCfg, module_override: Option<&str>) -> Result<Token> {
+    pub fn open(
+        name: &str,
+        cfg: &TokenCfg,
+        module_override: Option<&str>,
+        registry: &Registry,
+    ) -> Result<Token> {
         let module = module_override
             .map(str::to_owned)
             .or_else(|| cfg.module.clone())
@@ -42,6 +53,7 @@ impl Token {
             version: lib.library_version().to_string(),
             cryptoki: lib.cryptoki_version().to_string(),
         };
+        let provider = registry.select(cfg.provider.as_deref(), &module)?;
         let mut slot = None;
         for s in ctx.get_slots_with_token().map_err(ck("C_GetSlotList"))? {
             let info = ctx.get_token_info(s).map_err(ck("C_GetTokenInfo"))?;
@@ -65,7 +77,7 @@ impl Token {
         let (slot, token) = slot.ok_or_else(|| {
             KmError::Unavailable(format!("token '{}' not present in {}", cfg.token_label, module.path))
         })?;
-        let mechanisms = ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?;
+        let mechanisms = provider.mechanisms(ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?);
         let session = ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?;
         if let Some(pin) = read_pin(cfg)? {
             match session.login(UserType::User, Some(&AuthPin::new(pin))) {
@@ -79,6 +91,7 @@ impl Token {
             module,
             token,
             mechanisms,
+            provider,
             session,
         })
     }
@@ -358,7 +371,7 @@ impl Token {
                 match a.as_slice() {
                     [Attribute::EcParams(params), Attribute::EcPoint(p)] => Curve::from_params(params)
                         .ok_or_else(|| KmError::Unsupported(format!("CKA_EC_PARAMS {params:02x?}")))?
-                        .spki_from_point(p),
+                        .spki_from_point(&self.provider.ec_point(p)),
                     _ => Err(KmError::NotFound("no CKA_EC_PARAMS/CKA_EC_POINT on this object".into())),
                 }
             }

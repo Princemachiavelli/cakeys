@@ -959,3 +959,19 @@ tokens.softhsm = { locator = { CKA_LABEL = "no-cmac" }, autoCreate = true }
     assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm", "--update-lock"])), 0);
     assert!(e.lock()["objects"]["k"]["ids"].get("cmac").is_some());
 }
+
+#[test]
+fn provider_is_detected_or_named() {
+    let Some(e) = env("provider") else { return };
+    e.config(EC);
+    let caps = |o: &Output| serde_json::from_str::<serde_json::Value>(&stdout(o)).unwrap()["provider"].clone();
+    assert_eq!(caps(&e.km(&["caps", "--token", "softhsm"])), "softhsm", "auto-detected from C_GetInfo");
+    let path = e.dir.join("keys.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let named = |p: &str| text.replacen("tokenLabel = \"kmtest\"", &format!("tokenLabel = \"kmtest\"\nprovider = \"{p}\""), 1);
+    std::fs::write(&path, named("generic")).unwrap();
+    assert_eq!(caps(&e.km(&["caps", "--token", "softhsm"])), "generic", "explicit choice wins");
+    std::fs::write(&path, named("nope")).unwrap();
+    assert_eq!(code(&e.km(&["validate"])), 17);
+    assert_eq!(code(&e.km(&["caps", "--token", "softhsm"])), 17);
+}

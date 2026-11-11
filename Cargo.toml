@@ -1,15 +1,18 @@
-[package]
-name = "key-mgmnt"
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/pkcs11", "crates/softhsm", "crates/ykcs11", "crates/cli"]
+default-members = ["crates/cli"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "Content-addressed identity for PKCS#11 (and later TPM) objects"
 license = "MIT OR Apache-2.0"
 
-[[bin]]
-name = "key-mgmnt"
-path = "src/main.rs"
-
-[dependencies]
+[workspace.dependencies]
+key-mgmnt-core = { path = "crates/core" }
+key-mgmnt-pkcs11 = { path = "crates/pkcs11" }
+key-mgmnt-softhsm = { path = "crates/softhsm" }
+key-mgmnt-ykcs11 = { path = "crates/ykcs11" }
 anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
@@ -17,17 +20,15 @@ cryptoki = "0.10"
 rsa = { version = "0.10", default-features = false, features = ["std", "encoding"] }
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 p256 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "ecdsa"] }
+p384 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "ecdsa"] }
+p521 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "ecdsa"] }
+ed25519-dalek = { version = "3", default-features = false, features = ["alloc", "pkcs8"] }
+ed448 = { version = "0.5", default-features = false, features = ["alloc", "pkcs8"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 thiserror = "2"
 toml = "0.8"
-p384 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "ecdsa"] }
-p521 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "ecdsa"] }
-ed25519-dalek = { version = "3", default-features = false, features = ["alloc", "pkcs8"] }
-ed448 = { version = "0.5", default-features = false, features = ["alloc", "pkcs8"] }
-
-[dev-dependencies]
 aes = "0.9"
 aes-kw = "0.3"
 cmac = "0.8"

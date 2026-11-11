@@ -23,6 +23,8 @@ pub struct Config {
 pub struct TokenCfg {
     /// Path to the PKCS#11 module; can be overridden with `--module <token>=<path>`.
     pub module: Option<String>,
+    /// Provider crate handling this module's quirks; auto-detected from `C_GetInfo` if unset.
+    pub provider: Option<String>,
     pub token_label: String,
     pub pin_file: Option<PathBuf>,
     pub pin_env: Option<String>,

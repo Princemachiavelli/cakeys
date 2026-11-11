@@ -1,15 +1,12 @@
-mod config;
-mod error;
-mod hal;
-mod id;
-mod ops;
+//! The `key-mgmnt` command line, as a library so a downstream binary can link extra provider
+//! crates: `key_mgmnt::main(key_mgmnt::default_registry().with(MyProvider))`.
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use config::{load_config, load_lock, save_lock, Config};
-use error::KmError;
-use hal::Token;
-use ops::Target;
+use key_mgmnt_core::config::{load_config, load_lock, save_lock, Config};
+use key_mgmnt_core::KmError;
+use key_mgmnt_pkcs11::ops::{self, Target};
+use key_mgmnt_pkcs11::{Registry, Token};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -72,12 +69,20 @@ enum Cmd {
         #[arg(long)]
         spec: Option<String>,
     },
-    /// Print a token's mechanisms as JSON.
+    /// Print a token's provider and usable mechanisms as JSON.
     Caps { #[arg(long)] token: String },
 }
 
-fn main() -> ExitCode {
-    match run() {
+/// The providers this crate links. Built through the same public API a third party uses.
+pub fn default_registry() -> Registry {
+    Registry::new()
+        .with(key_mgmnt_softhsm::SoftHsm)
+        .with(key_mgmnt_ykcs11::Ykcs11)
+}
+
+/// Run the CLI with the given providers; maps errors to the documented exit codes.
+pub fn main(registry: Registry) -> ExitCode {
+    match run(&registry) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e:#}");
@@ -86,15 +91,20 @@ fn main() -> ExitCode {
     }
 }
 
-fn open_token(cfg: &Config, modules: &BTreeMap<String, String>, name: &str) -> Result<Token, KmError> {
+fn open_token(
+    cfg: &Config,
+    modules: &BTreeMap<String, String>,
+    registry: &Registry,
+    name: &str,
+) -> Result<Token, KmError> {
     let tcfg = cfg
         .tokens
         .get(name)
         .ok_or_else(|| KmError::Validation(format!("unknown token '{name}'")))?;
-    Token::open(name, tcfg, modules.get(name).map(String::as_str))
+    Token::open(name, tcfg, modules.get(name).map(String::as_str), registry)
 }
 
-fn run() -> anyhow::Result<()> {
+fn run(registry: &Registry) -> anyhow::Result<()> {
     let cli = Cli::parse();
     let cfg = load_config(&cli.config)?;
     let lock_path = cli.lock.clone().unwrap_or_else(|| cli.config.with_extension("lock"));
@@ -108,6 +118,15 @@ fn run() -> anyhow::Result<()> {
 
     match &cli.cmd {
         Cmd::Validate => {
+            for (name, t) in &cfg.tokens {
+                if let Some(p) = t.provider.as_deref().filter(|p| !registry.knows(p)) {
+                    return Err(KmError::Validation(format!(
+                        "token '{name}': unknown provider '{p}' (registered: generic, {})",
+                        registry.names().join(", ")
+                    ))
+                    .into());
+                }
+            }
             for (spec_name, spec) in &cfg.specs {
                 for token in spec.tokens.keys() {
                     let t = Target::new(&cfg, spec_name, token)?;
@@ -119,18 +138,18 @@ fn run() -> anyhow::Result<()> {
         }
         Cmd::Resolve { spec, token } => {
             let t = Target::new(&cfg, spec, token)?;
-            let tok = open_token(&cfg, &modules, token)?;
+            let tok = open_token(&cfg, &modules, registry, token)?;
             let r = ops::resolve(&t, &tok)?.ok_or_else(|| KmError::NotFound(format!("{spec} on {token}")))?;
             print(&r);
         }
         Cmd::Verify { spec, token } => {
             let t = Target::new(&cfg, spec, token)?;
-            let tok = open_token(&cfg, &modules, token)?;
+            let tok = open_token(&cfg, &modules, registry, token)?;
             println!("{}", ops::verify(&t, &tok, &lock)?.uri);
         }
         Cmd::Realise { spec, token, update_lock } => {
             let t = Target::new(&cfg, spec, token)?;
-            let tok = open_token(&cfg, &modules, token)?;
+            let tok = open_token(&cfg, &modules, registry, token)?;
             let (r, changed) = ops::realise(&t, &tok, &mut lock, *update_lock)?;
             if changed {
                 save_lock(&lock_path, &lock)?;
@@ -140,7 +159,7 @@ fn run() -> anyhow::Result<()> {
         }
         Cmd::Delete { spec, token, if_match, update_lock } => {
             let t = Target::new(&cfg, spec, token)?;
-            let tok = open_token(&cfg, &modules, token)?;
+            let tok = open_token(&cfg, &modules, registry, token)?;
             if ops::delete(&t, &tok, &mut lock, if_match.as_deref(), *update_lock)? {
                 save_lock(&lock_path, &lock)?;
                 eprintln!("updated {}", lock_path.display());
@@ -162,7 +181,7 @@ fn run() -> anyhow::Result<()> {
                     .into());
                 }
             }
-            let tok = open_token(&cfg, &modules, &token_name)?;
+            let tok = open_token(&cfg, &modules, registry, &token_name)?;
             // The token may lack a mechanism the spec allows: refuse before realise can create.
             if let Some(s) = scheme {
                 let on_token = ops::schemes_on(&t, &tok)?;
@@ -177,8 +196,12 @@ fn run() -> anyhow::Result<()> {
             println!("{}", r.uri);
         }
         Cmd::Caps { token } => {
-            let tok = open_token(&cfg, &modules, token)?;
-            print(&serde_json::json!({ "token": token, "mechanisms": tok.mechanism_names() }));
+            let tok = open_token(&cfg, &modules, registry, token)?;
+            print(&serde_json::json!({
+                "token": token,
+                "provider": tok.provider.name(),
+                "mechanisms": tok.mechanism_names(),
+            }));
         }
     }
     Ok(())

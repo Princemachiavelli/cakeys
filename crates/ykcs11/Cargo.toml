@@ -1,0 +1,9 @@
+[package]
+name = "key-mgmnt-ykcs11"
+description = "key-mgmnt: ykcs11 provider"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+key-mgmnt-pkcs11.workspace = true

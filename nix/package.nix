@@ -13,8 +13,7 @@ rustPlatform.buildRustPackage {
     fileset = lib.fileset.unions [
       ../Cargo.toml
       ../Cargo.lock
-      ../src
-      ../tests
+      ../crates
     ];
   };
 
@@ -32,6 +31,8 @@ rustPlatform.buildRustPackage {
     export KM_TEST_REQUIRE=1
   '';
   dontUseCargoParallelTests = true;
+  # Unit tests live in every crate, not just the CLI (the default member).
+  cargoTestFlags = [ "--workspace" ];
 
   meta = {
     description = "Content-addressed identity for PKCS#11 objects";

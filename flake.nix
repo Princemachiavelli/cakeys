@@ -77,8 +77,8 @@
         lib =
           let
             keys = self.lib.mkKeys {
-              config = ./tests/fixtures/keys.toml;
-              lock = ./tests/fixtures/keys.lock;
+              config = ./crates/cli/tests/fixtures/keys.toml;
+              lock = ./crates/cli/tests/fixtures/keys.lock;
               keyMgmnt = key-mgmnt;
               modules.softhsm = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
             };

@@ -1,9 +1,9 @@
 //! Idempotent verbs with HTTP-like semantics (PLAN.md, "Token verbs").
 
-use crate::config::{Config, Lock, LockRealisation, Mode, ObjectCfg, SpecCfg, SpecTokenCfg};
-use crate::error::{KmError, Result};
-use crate::hal::{self, Token};
-use crate::id::{self, Commit};
+use crate::token::{self as hal, Token};
+use key_mgmnt_core::config::{Config, Lock, LockRealisation, Mode, ObjectCfg, SpecCfg, SpecTokenCfg};
+use key_mgmnt_core::id::{self, Commit};
+use key_mgmnt_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
 use cryptoki::object::KeyType;
 use serde::Serialize;
