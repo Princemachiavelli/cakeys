@@ -42,7 +42,7 @@ pub fn spki_canonical(spki: &[u8]) -> Result<Vec<u8>> {
     if let Ok(key) = p256::PublicKey::from_public_key_der(spki) {
         return encode(&key);
     }
-    let key = rsa::RsaPublicKey::from_public_key_der(spki)
+    let key = rsa::PublicKey::from_public_key_der(spki)
         .map_err(|e| KmError::Unsupported(format!("SPKI is neither P-256 nor RSA: {e}")))?;
     Ok(key
         .to_public_key_der()
@@ -53,9 +53,9 @@ pub fn spki_canonical(spki: &[u8]) -> Result<Vec<u8>> {
 
 /// Canonical DER SPKI from `CKA_MODULUS` and `CKA_PUBLIC_EXPONENT` (big-endian).
 pub fn rsa_spki(modulus: &[u8], exponent: &[u8]) -> Result<Vec<u8>> {
-    let key = rsa::RsaPublicKey::new(
-        rsa::BigUint::from_bytes_be(modulus),
-        rsa::BigUint::from_bytes_be(exponent),
+    let key = rsa::PublicKey::new(
+        rsa::BoxedUint::from_be_slice_vartime(modulus),
+        rsa::BoxedUint::from_be_slice_vartime(exponent),
     )
     .map_err(|e| KmError::Conflict(format!("invalid RSA public key: {e}")))?;
     Ok(key
@@ -70,8 +70,8 @@ pub fn cert_spki(cert: &[u8]) -> Result<Vec<u8>> {
     let cert = x509_cert::Certificate::from_der(cert)
         .map_err(|e| KmError::Conflict(format!("CKA_VALUE is not an X.509 certificate: {e}")))?;
     let spki = cert
-        .tbs_certificate
-        .subject_public_key_info
+        .tbs_certificate()
+        .subject_public_key_info()
         .to_der()
         .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}")))?;
     spki_canonical(&spki)
@@ -81,7 +81,7 @@ pub fn cert_spki(cert: &[u8]) -> Result<Vec<u8>> {
 /// SEC1 point; some providers return the raw point.
 pub fn p256_spki_from_ec_point(ec_point: &[u8]) -> Result<Vec<u8>> {
     // A raw uncompressed point also starts with 0x04, so fall back to raw if unwrapping fails.
-    let key = OctetStringRef::from_der(ec_point)
+    let key = <&OctetStringRef>::from_der(ec_point)
         .ok()
         .and_then(|o| p256::PublicKey::from_sec1_bytes(o.as_bytes()).ok())
         .map_or_else(|| p256::PublicKey::from_sec1_bytes(ec_point), Ok)

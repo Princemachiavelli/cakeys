@@ -9,7 +9,7 @@ use cryptoki::mechanism::Mechanism;
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use cryptoki::session::{Session, UserType};
 use cryptoki::types::AuthPin;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
@@ -396,7 +396,7 @@ const ADOPT_PUBKEYHASH: &str = "sha256-8DQBv2fMc+z0Q5uxky0+5t9TS6MAHO07fNMqG9thH
 fn cert_object(label: &[u8], id: Option<u8>) -> Vec<Attribute> {
     let der = include_bytes!("fixtures/adopt-cert.der").to_vec();
     let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(&der).unwrap();
-    let subject = x509_cert::der::Encode::to_der(&cert.tbs_certificate.subject).unwrap();
+    let subject = x509_cert::der::Encode::to_der(cert.tbs_certificate().subject()).unwrap();
     let mut t = vec![
         Attribute::Class(ObjectClass::CERTIFICATE),
         Attribute::CertificateType(cryptoki::object::CertificateType::X_509),
@@ -415,8 +415,8 @@ fn adopt_certificate_and_public_only_key() {
     // Plant what a PIV slot exposes without login: a certificate and its public key.
     let der = include_bytes!("fixtures/adopt-cert.der").to_vec();
     let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(&der).unwrap();
-    let spki = x509_cert::der::Encode::to_der(&cert.tbs_certificate.subject_public_key_info).unwrap();
-    let rsa = <rsa::RsaPublicKey as rsa::pkcs8::DecodePublicKey>::from_public_key_der(&spki).unwrap();
+    let spki = x509_cert::der::Encode::to_der(cert.tbs_certificate().subject_public_key_info()).unwrap();
+    let rsa = <rsa::PublicKey as rsa::pkcs8::DecodePublicKey>::from_public_key_der(&spki).unwrap();
     use rsa::traits::PublicKeyParts;
     let s = e.session();
     s.create_object(&cert_object(b"adopt-cert", Some(0x42))).unwrap();
@@ -426,8 +426,8 @@ fn adopt_certificate_and_public_only_key() {
         Attribute::Token(true),
         Attribute::Label(b"adopt-key".to_vec()),
         Attribute::Id(vec![0x42]),
-        Attribute::Modulus(rsa.n().to_bytes_be()),
-        Attribute::PublicExponent(rsa.e().to_bytes_be()),
+        Attribute::Modulus(rsa.n().as_ref().to_be_bytes_trimmed_vartime().to_vec()),
+        Attribute::PublicExponent(rsa.e().to_be_bytes_trimmed_vartime().to_vec()),
     ])
     .unwrap();
     e.config(
