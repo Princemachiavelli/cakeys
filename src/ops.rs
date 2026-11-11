@@ -43,14 +43,19 @@ impl<'a> Target<'a> {
         format!("'{}' (spec '{}') on token '{}'", self.object_name, self.spec_name, self.token_name)
     }
 
-    /// Identity schemes this object type can have, in order of preference: the first one a
-    /// realisation computes is its primary scheme.
-    pub fn schemes(&self) -> &'static [&'static str] {
+    /// Identity schemes this spec can compute (from the spec alone), in order of preference:
+    /// the first one a realisation computes is its primary scheme. A token lacking a mechanism
+    /// may compute fewer.
+    pub fn schemes(&self) -> Vec<&'static str> {
         match (self.object.class.as_str(), self.object.key_type.as_str()) {
-            ("CKO_PRIVATE_KEY", _) => &["pubkeyhash"],
-            ("CKO_CERTIFICATE", _) => &["certhash", "pubkeyhash"],
-            (_, "CKK_AES") => &["cmac", "kcv-ecb", "kw"],
-            _ => &["commitment"],
+            ("CKO_PRIVATE_KEY", _) => vec!["pubkeyhash"],
+            ("CKO_CERTIFICATE", _) => vec!["certhash", "pubkeyhash"],
+            (_, "CKK_AES") => match declared_commits(self) {
+                // No usable usage bit: wrap-rebind (if extractable) computes all of them.
+                d if d.is_empty() => vec!["cmac", "kcv-ecb", "kw"],
+                d => d.iter().map(|c| c.scheme()).collect(),
+            },
+            _ => vec!["commitment"],
         }
     }
 
@@ -224,6 +229,20 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
         warn_provenance(t, tok, prev);
     }
     let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
+    // Material is only linked through a shared scheme: never attach IDs to an object when none of
+    // them can be compared with what is already locked (e.g. a CMAC-only and a KW-only spec).
+    if let Some(ids) = locked.filter(|ids| !ids.is_empty()) {
+        if !r.ids.keys().any(|s| ids.contains_key(s)) {
+            return Err(KmError::PreconditionFailed(format!(
+                "{} computes {:?} but '{}' is locked only by {:?}: nothing shows it is the same \
+                 material; realise a spec that computes both first",
+                t.what(),
+                r.ids.keys().collect::<Vec<_>>(),
+                t.object_name,
+                ids.keys().collect::<Vec<_>>()
+            )));
+        }
+    }
     let mut changed = false;
     for (scheme, got) in &r.ids {
         match locked.and_then(|ids| ids.get(scheme)) {

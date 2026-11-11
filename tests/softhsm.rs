@@ -625,11 +625,12 @@ fn aes_oracle(scheme: &str) -> String {
 fn aes_commitments_match_host_oracles() {
     let Some(e) = env("aes_commitments") else { return };
     // (spec, label, SIGN, ENCRYPT, WRAP, EXTRACTABLE, mode, schemes computed)
+    // aes-all goes first: it links the schemes the single-purpose specs then each check.
     let cases: [(&str, &str, bool, bool, bool, bool, &str, &[&str]); 5] = [
+        ("aes-all", "aes-all", true, true, true, false, "commitment", &["cmac", "kcv-ecb", "kw"]),
         ("aes-kek", "aes-kek", false, false, true, false, "commitment", &["kw"]),
         ("aes-mac", "aes-mac", true, false, false, false, "commitment", &["cmac"]),
         ("aes-enc", "aes-enc", false, true, false, false, "commitment", &["kcv-ecb"]),
-        ("aes-all", "aes-all", true, true, true, false, "commitment", &["cmac", "kcv-ecb", "kw"]),
         // No usable usage bit, but extractable: a session copy gets every AES commitment.
         ("aes-x", "aes-x", false, false, false, true, "wrap-rebind", &["cmac", "kcv-ecb", "kw"]),
     ];
@@ -690,6 +691,10 @@ fn aes_commitments_match_host_oracles() {
     assert_eq!(code(&e.km(&["check", "aes.id.cmac", "--spec", "aes-kek"])), 15);
     assert_eq!(code(&e.km(&["check", "aes.id.commitment", "--spec", "aes-kek"])), 15);
 
+    // A scheme the spec can never compute is refused before anything is created.
+    assert_eq!(code(&e.km(&["check", "kek-gen.id.cmac"])), 15);
+    assert!(s.find_objects(&[Attribute::Label(b"kek-gen".to_vec())]).unwrap().is_empty());
+
     // A generated, non-extractable KEK: stable identity across runs, deletable by it.
     let r = ["realise", "kek-gen", "--token", "softhsm"];
     let first = e.km(&r);
@@ -699,6 +704,50 @@ fn aes_commitments_match_host_oracles() {
     assert_eq!(e.locked_id("kek-gen", "kw"), got_hash(&first));
     assert_eq!(code(&e.km(&["delete", "kek-gen", "--token", "softhsm", "--update-lock"])), 0);
     assert_eq!(code(&e.km(&["verify", "kek-gen", "--token", "softhsm"])), 11);
+}
+
+#[test]
+fn disjoint_schemes_never_link_material() {
+    let Some(e) = env("disjoint") else { return };
+    // Two *different* AES keys: one may only sign (cmac), the other only wrap (kw).
+    let s = e.session();
+    for (label, value, sign, wrap) in [("only-mac", [1u8; 32], true, false), ("only-kek", [2u8; 32], false, true)] {
+        s.create_object(&[
+            Attribute::Class(ObjectClass::SECRET_KEY),
+            Attribute::KeyType(cryptoki::object::KeyType::AES),
+            Attribute::Token(true),
+            Attribute::Label(label.as_bytes().to_vec()),
+            Attribute::Value(value.to_vec()),
+            Attribute::Sign(sign),
+            Attribute::Wrap(wrap),
+            Attribute::Sensitive(true),
+            Attribute::Extractable(false),
+        ])
+        .unwrap();
+    }
+    e.config(
+        r#"
+[objects.k]
+class = "CKO_SECRET_KEY"
+keyType = "CKK_AES"
+valueLen = 32
+
+[specs.k-mac]
+object = "k"
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = false }
+tokens.softhsm = { locator = { CKA_LABEL = "only-mac" } }
+
+[specs.k-kek]
+object = "k"
+attributes = { CKA_WRAP = true, CKA_EXTRACTABLE = false }
+tokens.softhsm = { locator = { CKA_LABEL = "only-kek" } }
+"#,
+    );
+    assert_eq!(code(&e.km(&["realise", "k-mac", "--token", "softhsm", "--update-lock"])), 0);
+    // No shared scheme: the lock must not start claiming the KEK is the same material.
+    assert_eq!(code(&e.km(&["realise", "k-kek", "--token", "softhsm", "--update-lock"])), 14);
+    assert!(e.lock()["objects"]["k"]["ids"].get("kw").is_none());
+    assert!(e.lock()["realisations"].get("k-kek").is_none());
 }
 
 /// Minimal DER writer for the test oracle: independent of the crates the tool uses.
