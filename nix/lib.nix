@@ -96,7 +96,12 @@ in
             else
               throw "key-management: object '${obj}' has several specs on token '${t}'; use specs.<spec>";
           perToken = field: genAttrs tokenNames (t: (onToken t).${field}.${t});
-          primary = if type.class == "CKO_PRIVATE_KEY" then "pubkeyhash" else "commitment";
+          primary =
+            {
+              CKO_PRIVATE_KEY = "pubkeyhash";
+              CKO_CERTIFICATE = "certhash";
+            }
+            .${type.class} or "commitment";
         in
         {
           inherit type;

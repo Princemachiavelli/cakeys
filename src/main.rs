@@ -154,10 +154,10 @@ fn run() -> anyhow::Result<()> {
             let (spec_name, token_name) = cfg.pick_spec(object, spec.as_deref(), token.as_deref())?;
             let t = Target::new(&cfg, &spec_name, &token_name)?;
             if let Some(s) = scheme {
-                if s != t.primary_scheme() {
+                if !t.schemes().contains(&s) {
                     return Err(KmError::Unsupported(format!(
-                        "scheme '{s}' for '{object}'; this POC computes '{}'",
-                        t.primary_scheme()
+                        "scheme '{s}' for '{object}'; it has {:?}",
+                        t.schemes()
                     ))
                     .into());
                 }

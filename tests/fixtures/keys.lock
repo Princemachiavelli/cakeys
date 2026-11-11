@@ -3,6 +3,10 @@ version = 1
 [objects.shared.ids]
 commitment = "sha256-AGXc/28id6voDlFG989ZRKgfQETyurg2tSVPe1LBYis="
 
+[objects.signing-cert.ids]
+certhash = "sha256-lXNE6ciIfLkwGf6kf84qfibQ08d5fkPuGNKQ5KnyTMM="
+pubkeyhash = "sha256-8DQBv2fMc+z0Q5uxky0+5t9TS6MAHO07fNMqG9thHtM="
+
 [objects.signing.ids]
 pubkeyhash = "sha256-d3++Ph3T9bppuPnNz6blK4vDij+Swy9RMmKdfQnLmPk="
 

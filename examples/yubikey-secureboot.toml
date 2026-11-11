@@ -1,0 +1,68 @@
+# Adopt the Whonix Secure Boot keys (PK/KEK/db) that already live in PIV retired slots 1-3
+# of a YubiKey. Read-only: no PIN (spares PIV PIN retries), no autoCreate.
+#
+#   key-mgmnt --config examples/yubikey-secureboot.toml \
+#     --module yubikey=$(nix build --no-link --print-out-paths nixpkgs#yubico-piv-tool.out)/lib/libykcs11.so \
+#     realise whonix-pk-piv --token yubikey --update-lock
+
+[tokens.yubikey]
+tokenLabel = "YubiKey PIV #39189318"
+systemFeature = "yubikey-piv"
+
+# Retired Key 1 (PIV slot 82): CN=Whonix host PK
+[objects.whonix-pk]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 2048
+
+[specs.whonix-pk-piv]
+object = "whonix-pk"
+tokens.yubikey = { locator = { CKA_ID = "05" }, publicOnly = true }
+
+[objects.whonix-pk-cert]
+class = "CKO_CERTIFICATE"
+certificateType = "CKC_X_509"
+
+[specs.whonix-pk-cert-piv]
+object = "whonix-pk-cert"
+# CKA_ID 05 is shared with the slot's attestation certificate, so locate by label.
+tokens.yubikey = { locator = { CKA_LABEL = "X.509 Certificate for Retired Key 1" } }
+
+# Retired Key 2 (PIV slot 83): CN=Whonix host KEK
+[objects.whonix-kek]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 2048
+
+[specs.whonix-kek-piv]
+object = "whonix-kek"
+tokens.yubikey = { locator = { CKA_ID = "06" }, publicOnly = true }
+
+[objects.whonix-kek-cert]
+class = "CKO_CERTIFICATE"
+certificateType = "CKC_X_509"
+
+[specs.whonix-kek-cert-piv]
+object = "whonix-kek-cert"
+# CKA_ID 06 is shared with the slot's attestation certificate, so locate by label.
+tokens.yubikey = { locator = { CKA_LABEL = "X.509 Certificate for Retired Key 2" } }
+
+# Retired Key 3 (PIV slot 84): CN=Whonix host db
+[objects.whonix-db]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 2048
+
+[specs.whonix-db-piv]
+object = "whonix-db"
+tokens.yubikey = { locator = { CKA_ID = "07" }, publicOnly = true }
+
+[objects.whonix-db-cert]
+class = "CKO_CERTIFICATE"
+certificateType = "CKC_X_509"
+
+[specs.whonix-db-cert-piv]
+object = "whonix-db-cert"
+# CKA_ID 07 is shared with the slot's attestation certificate, so locate by label.
+tokens.yubikey = { locator = { CKA_LABEL = "X.509 Certificate for Retired Key 3" } }
+

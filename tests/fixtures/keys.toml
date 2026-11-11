@@ -17,6 +17,14 @@ object = "signing"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
 tokens.softhsm = { locator = { CKA_LABEL = "signing" }, autoCreate = true }
 
+[objects.signing-cert]
+class = "CKO_CERTIFICATE"
+certificateType = "CKC_X_509"
+
+[specs.signing-cert]
+object = "signing-cert"
+tokens.softhsm = { locator = { CKA_LABEL = "signing-cert" } }
+
 [objects.shared]
 class = "CKO_SECRET_KEY"
 keyType = "CKK_GENERIC_SECRET"

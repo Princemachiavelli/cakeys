@@ -1,0 +1,229 @@
+version = 1
+
+[objects.whonix-db.ids]
+pubkeyhash = "sha256-WIDTlaTWRgbfxWnV3ZkFfSm4FhvRh5tp6nUE/GCoOO4="
+
+[objects.whonix-db-cert.ids]
+certhash = "sha256-9R0r07PgT23TlaiY7XTNvRTEHT2rZ2zCZKpdm8T7sWY="
+pubkeyhash = "sha256-WIDTlaTWRgbfxWnV3ZkFfSm4FhvRh5tp6nUE/GCoOO4="
+
+[objects.whonix-kek.ids]
+pubkeyhash = "sha256-MabDOX1Cer17nABooLV6cfN15eqZPwPsjw2lh1SdfSM="
+
+[objects.whonix-kek-cert.ids]
+certhash = "sha256-WJGDfabt4hR/KLOkNfdb7B+XYC58lSC+aY9JMZrPUR0="
+pubkeyhash = "sha256-MabDOX1Cer17nABooLV6cfN15eqZPwPsjw2lh1SdfSM="
+
+[objects.whonix-pk.ids]
+pubkeyhash = "sha256-djAUop6ocYdPWijQvA0wOiiWUUeYtk7y2gQZQu+B6j0="
+
+[objects.whonix-pk-cert.ids]
+certhash = "sha256-GYIqs0Zncl3wM5I8YU4m3pYLgD1zIGL/mY/yVUOCw0I="
+pubkeyhash = "sha256-djAUop6ocYdPWijQvA0wOiiWUUeYtk7y2gQZQu+B6j0="
+
+[realisations.whonix-db-cert-piv.yubikey]
+specDigest = "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
+mode = "direct"
+uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;object=X.509%20Certificate%20for%20Retired%20Key%203;type=cert?module-path=/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+mechanisms = [
+    "CKM_ECDH1_DERIVE",
+    "CKM_ECDSA",
+    "CKM_ECDSA_SHA1",
+    "CKM_ECDSA_SHA256",
+    "CKM_ECDSA_SHA384",
+    "CKM_ECDSA_SHA512",
+    "CKM_EC_EDWARDS_KEY_PAIR_GEN",
+    "CKM_EC_KEY_PAIR_GEN",
+    "CKM_EC_MONTGOMERY_KEY_PAIR_GEN",
+    "CKM_EDDSA",
+    "CKM_RSA_PKCS",
+    "CKM_RSA_PKCS_KEY_PAIR_GEN",
+    "CKM_RSA_PKCS_OAEP",
+    "CKM_RSA_PKCS_PSS",
+    "CKM_RSA_X_509",
+    "CKM_SHA1_RSA_PKCS",
+    "CKM_SHA1_RSA_PKCS_PSS",
+    "CKM_SHA256",
+    "CKM_SHA256_RSA_PKCS",
+    "CKM_SHA256_RSA_PKCS_PSS",
+    "CKM_SHA384",
+    "CKM_SHA384_RSA_PKCS",
+    "CKM_SHA384_RSA_PKCS_PSS",
+    "CKM_SHA512",
+    "CKM_SHA512_RSA_PKCS",
+    "CKM_SHA512_RSA_PKCS_PSS",
+    "CKM_SHA_1",
+]
+
+[realisations.whonix-db-piv.yubikey]
+specDigest = "sha256-8k3VUT0T/6zvM/Yp6b2isKLrYOrK2vfyd7UWWz/DUiY="
+mode = "direct"
+publicOnly = true
+uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;id=%07;type=private?module-path=/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+mechanisms = [
+    "CKM_ECDH1_DERIVE",
+    "CKM_ECDSA",
+    "CKM_ECDSA_SHA1",
+    "CKM_ECDSA_SHA256",
+    "CKM_ECDSA_SHA384",
+    "CKM_ECDSA_SHA512",
+    "CKM_EC_EDWARDS_KEY_PAIR_GEN",
+    "CKM_EC_KEY_PAIR_GEN",
+    "CKM_EC_MONTGOMERY_KEY_PAIR_GEN",
+    "CKM_EDDSA",
+    "CKM_RSA_PKCS",
+    "CKM_RSA_PKCS_KEY_PAIR_GEN",
+    "CKM_RSA_PKCS_OAEP",
+    "CKM_RSA_PKCS_PSS",
+    "CKM_RSA_X_509",
+    "CKM_SHA1_RSA_PKCS",
+    "CKM_SHA1_RSA_PKCS_PSS",
+    "CKM_SHA256",
+    "CKM_SHA256_RSA_PKCS",
+    "CKM_SHA256_RSA_PKCS_PSS",
+    "CKM_SHA384",
+    "CKM_SHA384_RSA_PKCS",
+    "CKM_SHA384_RSA_PKCS_PSS",
+    "CKM_SHA512",
+    "CKM_SHA512_RSA_PKCS",
+    "CKM_SHA512_RSA_PKCS_PSS",
+    "CKM_SHA_1",
+]
+
+[realisations.whonix-kek-cert-piv.yubikey]
+specDigest = "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
+mode = "direct"
+uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;object=X.509%20Certificate%20for%20Retired%20Key%202;type=cert?module-path=/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+mechanisms = [
+    "CKM_ECDH1_DERIVE",
+    "CKM_ECDSA",
+    "CKM_ECDSA_SHA1",
+    "CKM_ECDSA_SHA256",
+    "CKM_ECDSA_SHA384",
+    "CKM_ECDSA_SHA512",
+    "CKM_EC_EDWARDS_KEY_PAIR_GEN",
+    "CKM_EC_KEY_PAIR_GEN",
+    "CKM_EC_MONTGOMERY_KEY_PAIR_GEN",
+    "CKM_EDDSA",
+    "CKM_RSA_PKCS",
+    "CKM_RSA_PKCS_KEY_PAIR_GEN",
+    "CKM_RSA_PKCS_OAEP",
+    "CKM_RSA_PKCS_PSS",
+    "CKM_RSA_X_509",
+    "CKM_SHA1_RSA_PKCS",
+    "CKM_SHA1_RSA_PKCS_PSS",
+    "CKM_SHA256",
+    "CKM_SHA256_RSA_PKCS",
+    "CKM_SHA256_RSA_PKCS_PSS",
+    "CKM_SHA384",
+    "CKM_SHA384_RSA_PKCS",
+    "CKM_SHA384_RSA_PKCS_PSS",
+    "CKM_SHA512",
+    "CKM_SHA512_RSA_PKCS",
+    "CKM_SHA512_RSA_PKCS_PSS",
+    "CKM_SHA_1",
+]
+
+[realisations.whonix-kek-piv.yubikey]
+specDigest = "sha256-8k3VUT0T/6zvM/Yp6b2isKLrYOrK2vfyd7UWWz/DUiY="
+mode = "direct"
+publicOnly = true
+uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;id=%06;type=private?module-path=/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+mechanisms = [
+    "CKM_ECDH1_DERIVE",
+    "CKM_ECDSA",
+    "CKM_ECDSA_SHA1",
+    "CKM_ECDSA_SHA256",
+    "CKM_ECDSA_SHA384",
+    "CKM_ECDSA_SHA512",
+    "CKM_EC_EDWARDS_KEY_PAIR_GEN",
+    "CKM_EC_KEY_PAIR_GEN",
+    "CKM_EC_MONTGOMERY_KEY_PAIR_GEN",
+    "CKM_EDDSA",
+    "CKM_RSA_PKCS",
+    "CKM_RSA_PKCS_KEY_PAIR_GEN",
+    "CKM_RSA_PKCS_OAEP",
+    "CKM_RSA_PKCS_PSS",
+    "CKM_RSA_X_509",
+    "CKM_SHA1_RSA_PKCS",
+    "CKM_SHA1_RSA_PKCS_PSS",
+    "CKM_SHA256",
+    "CKM_SHA256_RSA_PKCS",
+    "CKM_SHA256_RSA_PKCS_PSS",
+    "CKM_SHA384",
+    "CKM_SHA384_RSA_PKCS",
+    "CKM_SHA384_RSA_PKCS_PSS",
+    "CKM_SHA512",
+    "CKM_SHA512_RSA_PKCS",
+    "CKM_SHA512_RSA_PKCS_PSS",
+    "CKM_SHA_1",
+]
+
+[realisations.whonix-pk-cert-piv.yubikey]
+specDigest = "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
+mode = "direct"
+uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;object=X.509%20Certificate%20for%20Retired%20Key%201;type=cert?module-path=/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+mechanisms = [
+    "CKM_ECDH1_DERIVE",
+    "CKM_ECDSA",
+    "CKM_ECDSA_SHA1",
+    "CKM_ECDSA_SHA256",
+    "CKM_ECDSA_SHA384",
+    "CKM_ECDSA_SHA512",
+    "CKM_EC_EDWARDS_KEY_PAIR_GEN",
+    "CKM_EC_KEY_PAIR_GEN",
+    "CKM_EC_MONTGOMERY_KEY_PAIR_GEN",
+    "CKM_EDDSA",
+    "CKM_RSA_PKCS",
+    "CKM_RSA_PKCS_KEY_PAIR_GEN",
+    "CKM_RSA_PKCS_OAEP",
+    "CKM_RSA_PKCS_PSS",
+    "CKM_RSA_X_509",
+    "CKM_SHA1_RSA_PKCS",
+    "CKM_SHA1_RSA_PKCS_PSS",
+    "CKM_SHA256",
+    "CKM_SHA256_RSA_PKCS",
+    "CKM_SHA256_RSA_PKCS_PSS",
+    "CKM_SHA384",
+    "CKM_SHA384_RSA_PKCS",
+    "CKM_SHA384_RSA_PKCS_PSS",
+    "CKM_SHA512",
+    "CKM_SHA512_RSA_PKCS",
+    "CKM_SHA512_RSA_PKCS_PSS",
+    "CKM_SHA_1",
+]
+
+[realisations.whonix-pk-piv.yubikey]
+specDigest = "sha256-8k3VUT0T/6zvM/Yp6b2isKLrYOrK2vfyd7UWWz/DUiY="
+mode = "direct"
+publicOnly = true
+uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;id=%05;type=private?module-path=/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+mechanisms = [
+    "CKM_ECDH1_DERIVE",
+    "CKM_ECDSA",
+    "CKM_ECDSA_SHA1",
+    "CKM_ECDSA_SHA256",
+    "CKM_ECDSA_SHA384",
+    "CKM_ECDSA_SHA512",
+    "CKM_EC_EDWARDS_KEY_PAIR_GEN",
+    "CKM_EC_KEY_PAIR_GEN",
+    "CKM_EC_MONTGOMERY_KEY_PAIR_GEN",
+    "CKM_EDDSA",
+    "CKM_RSA_PKCS",
+    "CKM_RSA_PKCS_KEY_PAIR_GEN",
+    "CKM_RSA_PKCS_OAEP",
+    "CKM_RSA_PKCS_PSS",
+    "CKM_RSA_X_509",
+    "CKM_SHA1_RSA_PKCS",
+    "CKM_SHA1_RSA_PKCS_PSS",
+    "CKM_SHA256",
+    "CKM_SHA256_RSA_PKCS",
+    "CKM_SHA256_RSA_PKCS_PSS",
+    "CKM_SHA384",
+    "CKM_SHA384_RSA_PKCS",
+    "CKM_SHA384_RSA_PKCS_PSS",
+    "CKM_SHA512",
+    "CKM_SHA512_RSA_PKCS",
+    "CKM_SHA512_RSA_PKCS_PSS",
+    "CKM_SHA_1",
+]

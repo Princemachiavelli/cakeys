@@ -36,12 +36,17 @@ pub struct TokenCfg {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ObjectCfg {
     pub class: String,
+    /// `CKK_*` for keys; certificates use `certificateType = "CKC_X_509"`.
+    #[serde(alias = "certificateType")]
     pub key_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curve: Option<String>,
     /// Secret key length in bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value_len: Option<u64>,
+    /// RSA modulus size in bits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modulus_bits: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +65,11 @@ pub struct SpecTokenCfg {
     pub locator: Locator,
     #[serde(default)]
     pub auto_create: bool,
+    /// Adopt a private key through its public key object only (no login needed, e.g. to
+    /// spare PIV PIN retries). Identity is fully verified; presence and policy of the private
+    /// half are not, so this is an explicit per-token opt-in recorded in the lock.
+    #[serde(default)]
+    pub public_only: bool,
     #[serde(default)]
     pub identity: IdentityCfg,
 }
@@ -137,6 +147,8 @@ pub struct LockObject {
 pub struct LockRealisation {
     pub spec_digest: String,
     pub mode: Mode,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub public_only: bool,
     pub uri: String,
     /// Token mechanisms observed at realisation time (for `functions.<token>`).
     #[serde(default)]

@@ -36,10 +36,13 @@ fn env(name: &str) -> Option<Env> {
 impl Env {
     /// Write keys.toml: the token header plus the given objects/specs.
     fn config(&self, body: &str) {
+        // `softhsm-anon` is the same token without a PIN: it sees only public objects, like
+        // a PIV token used without login.
         let head = format!(
-            "[tokens.softhsm]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n\n",
-            self.module,
-            self.dir.join("pin").display()
+            "[tokens.softhsm]\nmodule = \"{m}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n\n\
+             [tokens.softhsm-anon]\nmodule = \"{m}\"\ntokenLabel = \"kmtest\"\n\n",
+            self.dir.join("pin").display(),
+            m = self.module,
         );
         std::fs::write(self.dir.join("keys.toml"), head + body).unwrap();
     }
@@ -382,4 +385,162 @@ tokens.softhsm = { locator = { CKA_LABEL = "downgrade" }, autoCreate = true }
     let text = std::fs::read_to_string(&path).unwrap().replace("\"wrap-rebind\"", "\"commitment\"");
     std::fs::write(&path, text).unwrap();
     assert_eq!(code(&e.km(&["verify", "d-wrap", "--token", "softhsm"])), 14);
+}
+
+/// Hashes of tests/fixtures/adopt-cert.der computed independently with openssl:
+///   sha256(cert DER) and sha256(`openssl x509 -pubkey | openssl pkey -pubin -outform DER`).
+const ADOPT_CERTHASH: &str = "sha256-lXNE6ciIfLkwGf6kf84qfibQ08d5fkPuGNKQ5KnyTMM=";
+const ADOPT_PUBKEYHASH: &str = "sha256-8DQBv2fMc+z0Q5uxky0+5t9TS6MAHO07fNMqG9thHtM=";
+
+/// Token object template for the fixture certificate (SoftHSM requires CKA_SUBJECT).
+fn cert_object(label: &[u8], id: Option<u8>) -> Vec<Attribute> {
+    let der = include_bytes!("fixtures/adopt-cert.der").to_vec();
+    let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(&der).unwrap();
+    let subject = x509_cert::der::Encode::to_der(&cert.tbs_certificate.subject).unwrap();
+    let mut t = vec![
+        Attribute::Class(ObjectClass::CERTIFICATE),
+        Attribute::CertificateType(cryptoki::object::CertificateType::X_509),
+        Attribute::Token(true),
+        Attribute::Label(label.to_vec()),
+        Attribute::Subject(subject),
+        Attribute::Value(der),
+    ];
+    t.extend(id.map(|i| Attribute::Id(vec![i])));
+    t
+}
+
+#[test]
+fn adopt_certificate_and_public_only_key() {
+    let Some(e) = env("adopt") else { return };
+    // Plant what a PIV slot exposes without login: a certificate and its public key.
+    let der = include_bytes!("fixtures/adopt-cert.der").to_vec();
+    let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(&der).unwrap();
+    let spki = x509_cert::der::Encode::to_der(&cert.tbs_certificate.subject_public_key_info).unwrap();
+    let rsa = <rsa::RsaPublicKey as rsa::pkcs8::DecodePublicKey>::from_public_key_der(&spki).unwrap();
+    use rsa::traits::PublicKeyParts;
+    let s = e.session();
+    s.create_object(&cert_object(b"adopt-cert", Some(0x42))).unwrap();
+    s.create_object(&[
+        Attribute::Class(ObjectClass::PUBLIC_KEY),
+        Attribute::KeyType(cryptoki::object::KeyType::RSA),
+        Attribute::Token(true),
+        Attribute::Label(b"adopt-key".to_vec()),
+        Attribute::Id(vec![0x42]),
+        Attribute::Modulus(rsa.n().to_bytes_be()),
+        Attribute::PublicExponent(rsa.e().to_bytes_be()),
+    ])
+    .unwrap();
+    e.config(
+        r#"
+[objects.adopted]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 2048
+
+[specs.adopted-pub]
+object = "adopted"
+tokens.softhsm-anon = { locator = { CKA_LABEL = "adopt-key" }, publicOnly = true }
+
+[specs.adopted-priv]
+object = "adopted"
+tokens.softhsm = { locator = { CKA_LABEL = "adopt-key" } }
+
+[objects.adopted-cert]
+class = "CKO_CERTIFICATE"
+certificateType = "CKC_X_509"
+
+[specs.adopted-cert]
+object = "adopted-cert"
+tokens.softhsm-anon = { locator = { CKA_LABEL = "adopt-cert" } }
+
+[specs.adopted-cert-by-id]
+object = "adopted-cert"
+tokens.softhsm-anon = { locator = { CKA_ID = "42" } }
+"#,
+    );
+    let pub_only = ["realise", "adopted-pub", "--token", "softhsm-anon", "--update-lock"];
+    assert_eq!(code(&e.km(&pub_only)), 0);
+    assert_eq!(code(&e.km(&["realise", "adopted-cert", "--token", "softhsm-anon", "--update-lock"])), 0);
+    assert_eq!(e.locked_id("adopted", "pubkeyhash"), ADOPT_PUBKEYHASH);
+    assert_eq!(e.locked_id("adopted-cert", "certhash"), ADOPT_CERTHASH);
+    assert_eq!(e.locked_id("adopted-cert", "pubkeyhash"), ADOPT_PUBKEYHASH, "cert links to its key");
+    let lock = e.lock();
+    assert_eq!(lock["realisations"]["adopted-pub"]["softhsm-anon"]["publicOnly"].as_bool(), Some(true));
+    assert!(lock["realisations"]["adopted-cert"]["softhsm-anon"].get("publicOnly").is_none());
+    let verify = e.km(&["verify", "adopted-pub", "--token", "softhsm-anon"]);
+    assert!(stdout(&verify).contains("object=adopt-key;type=private"), "consumers get the private key URI");
+    // There is no private half: without publicOnly the same locator is simply absent.
+    assert_eq!(code(&e.km(&["verify", "adopted-priv", "--token", "softhsm"])), 11);
+    // Adopted public-only keys are never deleted (only the public half would go).
+    assert_eq!(code(&e.km(&["delete", "adopted-pub", "--token", "softhsm-anon"])), 15);
+    // CKA_ID alone also matches the public key object, but certificates are looked up by class.
+    assert_eq!(code(&e.km(&["verify", "adopted-cert-by-id", "--token", "softhsm-anon"])), 0);
+}
+
+#[test]
+fn rsa_private_and_public_only_paths_agree() {
+    let Some(e) = env("rsa_paths") else { return };
+    e.config(
+        r#"
+[objects.r]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 2048
+
+[specs.r-gen]
+object = "r"
+attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
+tokens.softhsm = { locator = { CKA_LABEL = "rsa-paths" }, autoCreate = true }
+
+[specs.r-pub]
+object = "r"
+tokens.softhsm-anon = { locator = { CKA_LABEL = "rsa-paths" }, publicOnly = true }
+"#,
+    );
+    assert_eq!(code(&e.km(&["realise", "r-gen", "--token", "softhsm"])), 10);
+    assert_eq!(code(&e.km(&["realise", "r-gen", "--token", "softhsm", "--update-lock"])), 0);
+    // Same material through the public key object, without login: same locked identity.
+    assert_eq!(code(&e.km(&["realise", "r-pub", "--token", "softhsm-anon", "--update-lock"])), 0);
+    assert_eq!(code(&e.km(&["check", "r", "--spec", "r-pub"])), 0);
+}
+
+#[test]
+fn never_create_over_an_occupied_locator() {
+    let Some(e) = env("occupied") else { return };
+    let s = e.session();
+    s.create_object(&cert_object(b"occupied", None)).unwrap();
+    e.config(
+        r#"
+[objects.k]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+
+[specs.k]
+object = "k"
+tokens.softhsm = { locator = { CKA_LABEL = "occupied" }, autoCreate = true }
+"#,
+    );
+    // Like a PIV slot holding a certificate: generating there would replace its key.
+    assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm"])), 13);
+    let keys = s
+        .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"occupied".to_vec())])
+        .unwrap();
+    assert!(keys.is_empty());
+}
+
+#[test]
+fn adoption_rules_are_validated() {
+    let Some(e) = env("adoption_rules") else { return };
+    for (body, why) in [
+        ("keyType = \"CKK_RSA\"\nmodulusBits = 2048\nclass = \"CKO_PRIVATE_KEY\"", "{ CKA_LABEL = \"x\" }, publicOnly = true, autoCreate = true"),
+        ("keyType = \"CKK_RSA\"\nmodulusBits = 2048\nclass = \"CKO_PRIVATE_KEY\"", "{ CKA_LABEL = \"x\" }, publicOnly = true }\nattributes = { CKA_SIGN = true"),
+        ("certificateType = \"CKC_X_509\"\nclass = \"CKO_CERTIFICATE\"", "{ CKA_LABEL = \"x\" }, autoCreate = true"),
+        ("keyType = \"CKK_AES\"\nvalueLen = 32\nclass = \"CKO_SECRET_KEY\"", "{ CKA_LABEL = \"x\" }, publicOnly = true"),
+    ] {
+        e.config(&format!(
+            "[objects.o]\n{body}\n\n[specs.s]\nobject = \"o\"\ntokens.softhsm = {{ locator = {why} }}\n"
+        ));
+        assert_eq!(code(&e.km(&["validate"])), 17, "{body} / {why}");
+    }
 }

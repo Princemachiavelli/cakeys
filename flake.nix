@@ -17,6 +17,15 @@
     {
       lib = import ./nix/lib.nix;
 
+      nixosModules.default =
+        { lib, pkgs, ... }:
+        {
+          imports = [ ./nix/module.nix ];
+          services.key-management.package =
+            lib.mkDefault
+              self.packages.${pkgs.stdenv.hostPlatform.system}.key-mgmnt;
+        };
+
       packages.${system} = {
         default = key-mgmnt;
         inherit key-mgmnt pcsc-probe;
@@ -61,6 +70,10 @@
       checks.${system} = {
         inherit key-mgmnt;
         vm = mkTest "vm";
+        module = import ./nix/module-test.nix {
+          inherit pkgs key-mgmnt pcsc-probe;
+          module = self.nixosModules.default;
+        };
         lib =
           let
             keys = self.lib.mkKeys {
@@ -81,6 +94,8 @@
           assert keys.shared.specs.shared-sign.mode.softhsm == "commitment";
           assert keys.shared.specs.shared-nosign.mode.softhsm == "wrap-rebind";
           assert fails keys.shared.uri.softhsm; # ambiguous: several specs on one token
+          # Certificates default to certhash.
+          assert pkgs.lib.hasInfix "check signing-cert.id.certhash" (keys.signing-cert.check { });
           pkgs.runCommand "key-mgmnt-lib-check" { } ''
             echo ${pkgs.lib.escapeShellArg (keys.signing.check { })} > $out
           '';

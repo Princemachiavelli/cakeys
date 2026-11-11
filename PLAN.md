@@ -500,6 +500,24 @@ Rough sizes of the **new code**. Dependencies are `cryptoki`, `tss-esapi`, RustC
 - **Model:** object ← spec ← realisation; several specs may share one object. Locators must match exactly one object, the type and policy of the live object are checked against the spec, and identity downgrades are errors.
 - **Nix library** (`lib.mkKeys`, builtins only): `id`, `uri`, `mode`, `specDigest`, `functions`, `rsf`, `specs.<spec>.*` and `check { token; }`.
 
+**Adoption of existing keys (2026-11-11):**
+- **New object types:** RSA keys (`keyType = "CKK_RSA"`, `modulusBits`) and certificates (`class = "CKO_CERTIFICATE"`, `certificateType = "CKC_X_509"`). A certificate has `certhash` (SHA-256 of DER) plus the `pubkeyhash` of its subject key, which links it to its key object.
+- **`publicOnly = true` (per token):** verifies a private key's identity through its public key object, with no login (no PIV PIN retries spent). It is recorded in the lock. It is incompatible with `autoCreate` and with policy attributes, `delete` refuses it, and the URI handed to consumers still names the private key.
+- **If-None-Match on create:** `realise` never creates under a locator that already holds any object. This protects occupied PIV slots.
+- **ykcs11 quirk:** it reports `CKA_PUBLIC_KEY_INFO` with length 0, then rejects the fetch with `CKR_ARGUMENTS_BAD`. The HAL treats that as absent and falls back to modulus/exponent.
+- **`examples/yubikey-secureboot.{toml,lock}`:** the Whonix PK/KEK/db keys and certificates in YubiKey PIV retired slots 1–3, adopted read-only.
+  - Every `pubkeyhash` and `certhash` matches `openssl` run over `pkcs11-tool` exports.
+  - Each key's `pubkeyhash` (from the modulus/exponent) equals its certificate's (from X.509 parsing).
+  - A derivation built in the host sandbox ran `check` for the PK key and certificate through `lib.mkKeys` successfully.
+
+**NixOS module (`nixosModules.default`, nix/module.nix):**
+- **`services.key-management.sandbox.pcscd.enable`:** pcscd, `/run/pcscd` in the sandbox, a polkit rule for `nixbld` *and* the auto-allocated UID range, and `PrivateUsers = false` on pcscd when UIDs are auto-allocated.
+- **`sandbox.uidRange.enable`:** `auto-allocate-uids` plus the `uid-range` feature.
+- **`tokens.<name>.{systemFeature, sandboxPaths}`:** these extend, rather than replace, the NixOS default `system-features`.
+- **`checks.<name>`:** a oneshot `key-management-check-<name>` unit running `key-mgmnt check`, `requiredBy` the units that use the key.
+- **`checks.module`:** a VM test of all of the above, including a sandboxed pcscd connection with auto-allocated UIDs and a `uid-range` build.
+- **Status:** not yet applied to infinitejest, which still carries its hand-written equivalents.
+
 **Tests:**
 - **`checks.key-mgmnt`:** unit tests, plus SoftHSM integration tests that run inside the Nix build sandbox:
   - the TOFU flow, with no duplicate on retry;

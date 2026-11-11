@@ -3,7 +3,7 @@
 use crate::config::{ObjectCfg, SpecCfg};
 use crate::error::{KmError, Result};
 use base64::Engine;
-use p256::pkcs8::der::{asn1::OctetStringRef, Decode};
+use p256::pkcs8::der::{asn1::OctetStringRef, Decode, Encode};
 use p256::pkcs8::{DecodePublicKey, EncodePublicKey};
 use sha2::{Digest, Sha256};
 
@@ -36,11 +36,45 @@ pub fn commitment_label(object: &ObjectCfg) -> Vec<u8> {
     .into_bytes()
 }
 
-/// Canonical DER SPKI for a P-256 key from `CKA_PUBLIC_KEY_INFO` (any valid encoding).
-pub fn p256_spki_from_der(spki: &[u8]) -> Result<Vec<u8>> {
-    let key = p256::PublicKey::from_public_key_der(spki)
-        .map_err(|e| KmError::Conflict(format!("CKA_PUBLIC_KEY_INFO is not a P-256 SPKI: {e}")))?;
-    encode(&key)
+/// Canonical DER SPKI from any SPKI encoding (`CKA_PUBLIC_KEY_INFO`, a certificate):
+/// decode as P-256 or RSA and re-encode, so provider encoding quirks never change the hash.
+pub fn spki_canonical(spki: &[u8]) -> Result<Vec<u8>> {
+    if let Ok(key) = p256::PublicKey::from_public_key_der(spki) {
+        return encode(&key);
+    }
+    let key = rsa::RsaPublicKey::from_public_key_der(spki)
+        .map_err(|e| KmError::Unsupported(format!("SPKI is neither P-256 nor RSA: {e}")))?;
+    Ok(key
+        .to_public_key_der()
+        .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}")))?
+        .as_bytes()
+        .to_vec())
+}
+
+/// Canonical DER SPKI from `CKA_MODULUS` and `CKA_PUBLIC_EXPONENT` (big-endian).
+pub fn rsa_spki(modulus: &[u8], exponent: &[u8]) -> Result<Vec<u8>> {
+    let key = rsa::RsaPublicKey::new(
+        rsa::BigUint::from_bytes_be(modulus),
+        rsa::BigUint::from_bytes_be(exponent),
+    )
+    .map_err(|e| KmError::Conflict(format!("invalid RSA public key: {e}")))?;
+    Ok(key
+        .to_public_key_der()
+        .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}")))?
+        .as_bytes()
+        .to_vec())
+}
+
+/// Canonical DER SPKI of a certificate's subject key: links a certificate to its key object.
+pub fn cert_spki(cert: &[u8]) -> Result<Vec<u8>> {
+    let cert = x509_cert::Certificate::from_der(cert)
+        .map_err(|e| KmError::Conflict(format!("CKA_VALUE is not an X.509 certificate: {e}")))?;
+    let spki = cert
+        .tbs_certificate
+        .subject_public_key_info
+        .to_der()
+        .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}")))?;
+    spki_canonical(&spki)
 }
 
 /// Canonical DER SPKI from `CKA_EC_POINT`, which is normally a DER OCTET STRING wrapping the
@@ -83,6 +117,7 @@ mod tests {
             key_type: "CKK_EC".into(),
             curve: Some("secp256r1".into()),
             value_len: None,
+            modulus_bits: None,
         };
         let mk = |pairs: &[(&str, bool)]| SpecCfg {
             object: "o".into(),
@@ -105,6 +140,13 @@ mod tests {
         let a = p256_spki_from_ec_point(&raw).unwrap();
         let b = p256_spki_from_ec_point(&wrapped).unwrap();
         assert_eq!(a, b);
-        assert_eq!(p256_spki_from_der(&a).unwrap(), a);
+        assert_eq!(spki_canonical(&a).unwrap(), a);
+    }
+
+    #[test]
+    fn rsa_spki_roundtrips() {
+        let n = [0xc5u8; 256];
+        let a = rsa_spki(&n, &[1, 0, 1]).unwrap();
+        assert_eq!(spki_canonical(&a).unwrap(), a);
     }
 }

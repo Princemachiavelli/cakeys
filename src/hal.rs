@@ -6,7 +6,9 @@ use crate::id;
 use cryptoki::context::{CInitializeArgs, Pkcs11};
 use cryptoki::error::{Error as CkError, RvError};
 use cryptoki::mechanism::{Mechanism, MechanismType};
-use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass, ObjectHandle};
+use cryptoki::object::{
+    Attribute, AttributeType, CertificateType, KeyType, ObjectClass, ObjectHandle,
+};
 use cryptoki::session::{Session, UserType};
 use cryptoki::types::AuthPin;
 use std::collections::BTreeMap;
@@ -82,9 +84,23 @@ impl Token {
             .map_err(ck("C_FindObjects"))
     }
 
-    /// Exactly-one lookup of the key object (private or secret) named by the locator.
-    pub fn find_key(&self, object: &ObjectCfg, loc: &Locator) -> Result<Option<ObjectHandle>> {
-        let found = self.find(class_of(object)?, loc)?;
+    /// Every object under the locator, whatever its class (If-None-Match before creating).
+    pub fn find_any(&self, loc: &Locator) -> Result<Vec<ObjectHandle>> {
+        self.session
+            .find_objects(&locator_attrs(loc)?)
+            .map_err(ck("C_FindObjects"))
+    }
+
+    /// Exactly-one lookup of the object named by the locator: the key (private or secret) or
+    /// certificate, or the public key object when adopting public-only.
+    pub fn find_key(
+        &self,
+        object: &ObjectCfg,
+        loc: &Locator,
+        public_only: bool,
+    ) -> Result<Option<ObjectHandle>> {
+        let class = if public_only { ObjectClass::PUBLIC_KEY } else { class_of(object)? };
+        let found = self.find(class, loc)?;
         match found.len() {
             0 => Ok(None),
             1 => Ok(Some(found[0])),
@@ -106,6 +122,12 @@ impl Token {
 
     /// Check the intrinsic type and every policy attribute of the spec against the live object.
     pub fn check(&self, h: ObjectHandle, object: &ObjectCfg, spec: &SpecCfg) -> Result<()> {
+        if class_of(object)? == ObjectClass::CERTIFICATE {
+            return match self.attr(h, AttributeType::CertificateType)? {
+                Some(Attribute::CertificateType(CertificateType::X_509)) => Ok(()),
+                other => Err(KmError::Conflict(format!("CKA_CERTIFICATE_TYPE is {other:?}, not CKC_X_509"))),
+            };
+        }
         let kt = match self.attr(h, AttributeType::KeyType)? {
             Some(Attribute::KeyType(k)) => k,
             _ => return Err(KmError::Conflict("object has no CKA_KEY_TYPE".into())),
@@ -121,6 +143,18 @@ impl Token {
                 Some(Attribute::EcParams(p)) if p == id::SECP256R1_PARAMS => {}
                 other => {
                     return Err(KmError::Conflict(format!("CKA_EC_PARAMS mismatch: {other:?}")))
+                }
+            }
+        }
+        if let Some(bits) = object.modulus_bits {
+            match self.attr(h, AttributeType::Modulus)? {
+                Some(Attribute::Modulus(m)) if m.len() as u64 * 8 == bits => {}
+                other => {
+                    let have = other.and_then(|a| match a {
+                        Attribute::Modulus(m) => Some(m.len() * 8),
+                        _ => None,
+                    });
+                    return Err(KmError::Conflict(format!("RSA modulus is {have:?} bits, spec says {bits}")));
                 }
             }
         }
@@ -155,7 +189,28 @@ impl Token {
             policy.push(bool_attr(name, *v)?.1);
         }
         let gen = |e: CkError| KmError::Unsupported(format!("generating key on '{}': {e}", self.name));
+        if class_of(object)? == ObjectClass::CERTIFICATE {
+            return Err(KmError::Validation("certificates are adopted, not created".into()));
+        }
         match key_type_of(object)? {
+            KeyType::RSA => {
+                let bits = object.modulus_bits.ok_or_else(|| {
+                    KmError::Validation("RSA keys need modulusBits".into())
+                })?;
+                let mut public = common.clone();
+                public.extend([
+                    Attribute::ModulusBits(bits.into()),
+                    Attribute::PublicExponent(vec![1, 0, 1]),
+                    Attribute::Verify(true),
+                    Attribute::Private(false),
+                ]);
+                let mut private = common;
+                private.extend(policy);
+                self.session
+                    .generate_key_pair(&Mechanism::RsaPkcsKeyPairGen, &public, &private)
+                    .map(drop)
+                    .map_err(gen)
+            }
             KeyType::EC => {
                 let mut public = common.clone();
                 public.extend([
@@ -215,6 +270,14 @@ impl Token {
     ) -> Result<BTreeMap<String, String>> {
         let mut ids = BTreeMap::new();
         match mode {
+            Mode::Direct if class_of(object)? == ObjectClass::CERTIFICATE => {
+                let der = match self.attr(h, AttributeType::Value)? {
+                    Some(Attribute::Value(v)) => v,
+                    _ => return Err(KmError::Unsupported("certificate has no readable CKA_VALUE".into())),
+                };
+                ids.insert("certhash".into(), id::sri(&der));
+                ids.insert("pubkeyhash".into(), id::sri(&id::cert_spki(&der)?));
+            }
             Mode::Direct => {
                 ids.insert("pubkeyhash".into(), id::sri(&self.spki(h, loc)?));
             }
@@ -237,21 +300,44 @@ impl Token {
         Ok(ids)
     }
 
-    fn spki(&self, private: ObjectHandle, loc: &Locator) -> Result<Vec<u8>> {
-        if let Some(Attribute::PublicKeyInfo(der)) = self.attr(private, AttributeType::PublicKeyInfo)? {
-            if !der.is_empty() {
-                return id::p256_spki_from_der(&der);
-            }
+    /// SPKI of a key: from the object itself (`CKA_PUBLIC_KEY_INFO`, RSA modulus/exponent,
+    /// EC point), else from the single public key object under the same locator.
+    fn spki(&self, h: ObjectHandle, loc: &Locator) -> Result<Vec<u8>> {
+        if let Ok(spki) = self.public_spki(h) {
+            return Ok(spki);
         }
         let public = self.find(ObjectClass::PUBLIC_KEY, loc)?;
-        let public = match public.as_slice() {
-            [p] => *p,
-            [] => return Err(KmError::NotFound("no public key object to read CKA_EC_POINT from".into())),
-            _ => return Err(KmError::Ambiguous("several public key objects share the locator".into())),
-        };
-        match self.attr(public, AttributeType::EcPoint)? {
-            Some(Attribute::EcPoint(p)) => id::p256_spki_from_ec_point(&p),
-            _ => Err(KmError::Unsupported("public key has no CKA_EC_POINT".into())),
+        match public.as_slice() {
+            [p] => self.public_spki(*p),
+            [] => Err(KmError::NotFound("no public key object under the locator".into())),
+            _ => Err(KmError::Ambiguous("several public key objects share the locator".into())),
+        }
+    }
+
+    fn public_spki(&self, h: ObjectHandle) -> Result<Vec<u8>> {
+        // Optional shortcut. Some providers (ykcs11) report it with length 0 and then reject the
+        // fetch with CKR_ARGUMENTS_BAD, so any error here just means "absent".
+        if let Ok(Some(Attribute::PublicKeyInfo(der))) = self.attr(h, AttributeType::PublicKeyInfo) {
+            if !der.is_empty() {
+                return id::spki_canonical(&der);
+            }
+        }
+        match self.attr(h, AttributeType::KeyType)? {
+            Some(Attribute::KeyType(KeyType::EC)) => match self.attr(h, AttributeType::EcPoint)? {
+                Some(Attribute::EcPoint(p)) => id::p256_spki_from_ec_point(&p),
+                _ => Err(KmError::NotFound("no CKA_EC_POINT on this object".into())),
+            },
+            Some(Attribute::KeyType(KeyType::RSA)) => {
+                let a = self
+                    .session
+                    .get_attributes(h, &[AttributeType::Modulus, AttributeType::PublicExponent])
+                    .map_err(ck("C_GetAttributeValue"))?;
+                match a.as_slice() {
+                    [Attribute::Modulus(n), Attribute::PublicExponent(e)] => id::rsa_spki(n, e),
+                    _ => Err(KmError::NotFound("no CKA_MODULUS/CKA_PUBLIC_EXPONENT".into())),
+                }
+            }
+            kt => Err(KmError::Unsupported(format!("public key of type {kt:?}"))),
         }
     }
 
@@ -305,7 +391,8 @@ impl Token {
         result
     }
 
-    /// RFC 7512 URI for the key object.
+    /// RFC 7512 URI of the object consumers use: for a key adopted public-only this is still
+    /// the private key (only its verification went through the public half).
     pub fn uri(&self, object: &ObjectCfg, loc: &Locator) -> Result<String> {
         let mut parts = vec![format!("token={}", pct(self.label.as_bytes()))];
         if let Some(l) = &loc.label {
@@ -314,7 +401,11 @@ impl Token {
         if let Some(i) = &loc.id {
             parts.push(format!("id={}", pct_all(&hex_decode(i)?)));
         }
-        let kind = if class_of(object)? == ObjectClass::PRIVATE_KEY { "private" } else { "secret-key" };
+        let kind = match class_of(object)? {
+            c if c == ObjectClass::PRIVATE_KEY => "private",
+            c if c == ObjectClass::CERTIFICATE => "cert",
+            _ => "secret-key",
+        };
         parts.push(format!("type={kind}"));
         Ok(format!(
             "pkcs11:{}?module-path={}",
@@ -342,7 +433,10 @@ pub fn class_of(object: &ObjectCfg) -> Result<ObjectClass> {
     match object.class.as_str() {
         "CKO_PRIVATE_KEY" => Ok(ObjectClass::PRIVATE_KEY),
         "CKO_SECRET_KEY" => Ok(ObjectClass::SECRET_KEY),
-        c => Err(KmError::Unsupported(format!("object class {c} (POC supports CKO_PRIVATE_KEY, CKO_SECRET_KEY)"))),
+        "CKO_CERTIFICATE" => Ok(ObjectClass::CERTIFICATE),
+        c => Err(KmError::Unsupported(format!(
+            "object class {c} (POC supports CKO_PRIVATE_KEY, CKO_SECRET_KEY, CKO_CERTIFICATE)"
+        ))),
     }
 }
 
@@ -352,6 +446,7 @@ pub fn key_type_of(object: &ObjectCfg) -> Result<KeyType> {
             Some("secp256r1" | "prime256v1" | "P-256") => Ok(KeyType::EC),
             c => Err(KmError::Unsupported(format!("curve {c:?} (POC supports secp256r1)"))),
         },
+        ("CKO_PRIVATE_KEY", "CKK_RSA") => Ok(KeyType::RSA),
         ("CKO_SECRET_KEY", "CKK_GENERIC_SECRET") => Ok(KeyType::GENERIC_SECRET),
         ("CKO_SECRET_KEY", "CKK_AES") => Ok(KeyType::AES),
         (c, k) => Err(KmError::Unsupported(format!("{c}/{k}"))),
