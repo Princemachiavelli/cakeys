@@ -22,6 +22,8 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 | c0f1496 | **M3** exclusive std file lock on `<lock>.lck` across `--update-lock` runs' read-modify-write; readers never take it |
 | ea57f7a | **D3** `gc` prints stale table names (`realisations.<spec>.<token>` whose spec or token is gone, `objects.<name>` absent from the config); `gc --apply` removes exactly what it printed; live objects keep their ids |
 | 1463327 | **S15** DESIGN §3.1 scheme-strength table per class + deprecation policy: `DEPRECATED_SCHEMES` (empty, pinned), reconcile warns on deprecated locked schemes, `--update-lock` never records a new identity under one; AES order pinned |
+| 3177781 | (user) `CHECKPOINT.md`, `reports/` and `research_notes/` committed — resolves the commit-or-gitignore question |
+| 4032ca5 | **Docs pass + diagrams** staleness fixes (pop-decrypt is OAEP-SHA1; H1 fixed for every pop-*; locking/GC exist; new unit pins named) and `docs/diagrams.md` (5 Mermaid views: model, realise lifecycle, binding tree, schemes, Nix loop — all render via mermaid-cli); PLAN TODO list added |
 
 ## Done (uncommitted; compiles and passes the local gate): (empty — next task below)
 
@@ -36,7 +38,7 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 - **PLAN TODO additions:** attestation (P2-11), native TPM, PQ/kryptic.
 - **Final report to the user:**
   - Answer the in-toto/Terraform question. Neither manages or identifies PKCS#11 or TPM objects: in-toto hashes artifacts and signs metadata; Terraform's lock hashes provider packages. The securesystemslib PKCS#11 signer point is unverified recall.
-  - Ask whether to commit or gitignore `reports/` and `research_notes/`.
+  - ~~Ask whether to commit or gitignore `reports/` and `research_notes/`~~ — committed by the user (3177781).
   - **Tell the user:** stock tpm2-pkcs11 1.10.1 cannot sign with P-521 keys at all (C_SignInit → CKR_HOST_MEMORY). The upstream patch fixes it, and `upstream/tpm2-pkcs11/PR.md` is corrected. Their signed commit in `~/srcs/tpm2-pkcs11` could gain one line about it.
 
 ## Notes
