@@ -25,24 +25,11 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 | 3177781 | (user) `CHECKPOINT.md`, `reports/` and `research_notes/` committed — resolves the commit-or-gitignore question |
 | 4032ca5 | **Docs pass + diagrams** staleness fixes (pop-decrypt is OAEP-SHA1; H1 fixed for every pop-*; locking/GC exist; new unit pins named) and `docs/diagrams.md` (5 Mermaid views: model, realise lifecycle, binding tree, schemes, Nix loop — all render via mermaid-cli); PLAN TODO list added |
 | e8c2c78 | **D1** autoCreate refused up front (14) when the lock already pins the object's material; `ec_lifecycle` tail and the VM caveat reworked; `autocreate_never_fights_a_locked_identity` |
+| f4f4a59 | **config** `$NAME`/`${NAME}` path references in `pinFile`/`module` (unset or malformed → 17 at load, naming it); every spec's `object` reference validated at load; the flat spec layout kept (config is a graph; answer recorded here 2026-11-12) |
 
-## Done (uncommitted; compiles and passes the local gate): $NAME path refs + spec→object load check
+## Done (uncommitted; compiles and passes the local gate): (empty — next task below)
 
-- **`config.rs`:** `env_ref` — a whole-value `$NAME`/`${NAME}` in a token's `pinFile` or `module`
-  reads the path from the environment at load; unset or malformed → exit 17 naming it (not at
-  login time). `load_config` also validates every spec's `object` reference, also for specs no
-  token uses.
-- **Answered the user's design question** (specs nested under objects?): keep the flat layout —
-  the config is a graph (objects ← specs → tokens), nesting hides only one of the two string
-  edges, and the spec name is the CLI handle and the lock's realisation key; the Nix lib already
-  re-groups object-first for consumers.
-- **Tests:** core `env_references_and_object_refs_are_checked_at_load` (literal, `$NAME`,
-  `${NAME}`, unset, malformed `$HOME/x`, dangling object); softhsm
-  `pin_file_path_can_come_from_the_environment` (unset → 17 naming the var; set via `km_env` →
-  login + private-key realise 0).
-- **Docs:** DESIGN §4.1 (module/pinFile lines + a references bullet naming `pinEnv` as the way to
-  pass the PIN itself).
-- Local gate: softhsm 42/43 (only `hmac_key_types…`, expected); core 17/17. Nix gates pending.
+
 
 ## Then (follow-up commits)
 
