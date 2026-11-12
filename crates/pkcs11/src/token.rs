@@ -16,8 +16,7 @@ use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{
     Attribute, AttributeType, CertificateType, KeyType, ObjectClass, ObjectHandle,
 };
-use cryptoki::session::{Session, UserType};
-use cryptoki::types::AuthPin;
+use cryptoki::session::Session;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -86,12 +85,8 @@ impl Token {
         let mechanisms = provider.mechanisms(ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?);
         let session = ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?;
         let pin = read_pin(cfg)?;
-        if let Some(pin) = &pin {
-            match session.login(UserType::User, Some(&AuthPin::new(pin.clone().into()))) {
-                Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
-                Err(e) => return Err(KmError::Unavailable(format!("C_Login: {e}"))),
-            }
-        }
+        let admin = read_mgm(cfg)?;
+        provider.login(&session, pin.as_deref(), admin.as_deref())?;
         Ok(Token {
             name: name.to_owned(),
             label: cfg.token_label.clone(),
@@ -100,7 +95,7 @@ impl Token {
             mechanisms,
             provider,
             session,
-            logged_in: pin.is_some(),
+            logged_in: pin.is_some() || admin.is_some(),
         })
     }
 
@@ -939,6 +934,23 @@ fn read_pin(cfg: &TokenCfg) -> Result<Option<String>> {
         return std::fs::read_to_string(path)
             .map(|s| Some(s.trim_end_matches(['\n', '\r']).to_owned()))
             .map_err(|e| KmError::Unavailable(format!("PIN file {}: {e}", path.display())));
+    }
+    Ok(None)
+}
+
+/// The admin credential (`mgmKeyEnv`, else `mgmKeyFile`), passed to the provider's SO login. The
+/// format is the module's: ykcs11 takes the PIV management key in hex, or the PIN on devices
+/// whose management key is PIN-protected.
+fn read_mgm(cfg: &TokenCfg) -> Result<Option<String>> {
+    if let Some(var) = &cfg.mgm_key_env {
+        return std::env::var(var)
+            .map(Some)
+            .map_err(|_| KmError::Unavailable(format!("management-key env var {var} not set")));
+    }
+    if let Some(path) = &cfg.mgm_key_file {
+        return std::fs::read_to_string(path)
+            .map(|s| Some(s.trim_end_matches(['\n', '\r']).to_owned()))
+            .map_err(|e| KmError::Unavailable(format!("management-key file {}: {e}", path.display())));
     }
     Ok(None)
 }

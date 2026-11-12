@@ -28,6 +28,11 @@ pub struct TokenCfg {
     pub token_label: String,
     pub pin_file: Option<PathBuf>,
     pub pin_env: Option<String>,
+    /// The admin credential for modules whose management operations need one (ykcs11: SO login,
+    /// i.e. the PIV management key in hex — or the PIN on PIN-protected-management-key devices).
+    /// `pinEnv`/`pinFile` remain the *user* credential; this one is passed to `C_Login(CKU_SO)`.
+    pub mgm_key_file: Option<PathBuf>,
+    pub mgm_key_env: Option<String>,
     /// Nix `requiredSystemFeatures` entry; defaults to `token-<name>`. Read by the Nix library.
     #[allow(dead_code)]
     pub system_feature: Option<String>,
@@ -496,6 +501,10 @@ pub fn load_config(path: &Path) -> anyhow::Result<Config> {
             let expanded = env_ref(&p.to_string_lossy(), &format!("token '{name}': pinFile"))?;
             t.pin_file = Some(PathBuf::from(expanded));
         }
+        if let Some(m) = t.mgm_key_file.clone() {
+            let expanded = env_ref(&m.to_string_lossy(), &format!("token '{name}': mgmKeyFile"))?;
+            t.mgm_key_file = Some(PathBuf::from(expanded));
+        }
     }
     // A spec's object reference must name something, also when no token ever uses the spec.
     for (spec, s) in &cfg.specs {
@@ -569,7 +578,7 @@ pub fn save_lock(path: &Path, lock: &Lock) -> anyhow::Result<()> {
 /// update the lock takes it before `load_lock` and drops it after `save_lock`, so two concurrent
 /// runs on different tokens cannot lose each other's realisations. Readers never take it: the
 /// temporary-file rename makes each read a consistent snapshot.
-pub struct UpdateGuard(std::fs::File);
+pub struct UpdateGuard(#[allow(dead_code)] std::fs::File); // holds the lock until dropped
 
 /// Take the exclusive advisory lock on `<lock>.lck`, waiting for any other updater. The sidecar
 /// file is created if absent; a leftover one is harmless (the lock is advisory and released when

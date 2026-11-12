@@ -234,7 +234,9 @@ dependencies = [
 name = "cakeys-ykcs11"
 version = "0.1.0"
 dependencies = [
+ "cakeys-core",
  "cakeys-pkcs11",
+ "cryptoki",
 ]
 
 [[package]]

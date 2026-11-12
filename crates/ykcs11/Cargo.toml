@@ -7,3 +7,5 @@ license.workspace = true
 
 [dependencies]
 cakeys-pkcs11.workspace = true
+cakeys-core.workspace = true
+cryptoki.workspace = true

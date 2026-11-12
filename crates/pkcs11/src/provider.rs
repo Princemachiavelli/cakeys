@@ -2,7 +2,11 @@
 //! overrides only what its module gets wrong. Every fix-up must return exactly what a
 //! spec-compliant module would, so identities stay portable across modules and versions.
 
+use cryptoki::error::Error as CkError;
+use cryptoki::error::RvError;
 use cryptoki::mechanism::MechanismType;
+use cryptoki::session::{Session, UserType};
+use cryptoki::types::AuthPin;
 use cakeys_core::config::ModuleInfo;
 use cakeys_core::{KmError, Result};
 use std::borrow::Cow;
@@ -29,6 +33,26 @@ pub trait Provider: Send + Sync {
     fn hint(&self) -> Option<&'static str> {
         None
     }
+
+    /// Log the session in. The default logs in as the *user* with the PIN (`pinFile`/`pinEnv`) and
+    /// ignores `admin`. `admin` is the credential from `mgmKeyFile`/`mgmKeyEnv`, for modules whose
+    /// management operations (generate, import, delete) need a second login that a module keeps
+    /// one state for: ykcs11 overrides this to log in as SO instead, which on
+    /// PIN-protected-management-key devices also verifies the PIN, so signing works in that run.
+    fn login(&self, session: &Session, pin: Option<&str>, _admin: Option<&str>) -> Result<()> {
+        user_login(session, pin)
+    }
+}
+
+/// The default: log in as the user with the PIN, when the config gives one.
+pub fn user_login(session: &Session, pin: Option<&str>) -> Result<()> {
+    if let Some(pin) = pin {
+        match session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
+            Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
+            Err(e) => return Err(KmError::Unavailable(format!("C_Login: {e}"))),
+        }
+    }
+    Ok(())
 }
 
 /// Plain PKCS#11, used when no registered provider recognises the module.

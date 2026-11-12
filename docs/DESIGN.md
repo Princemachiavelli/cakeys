@@ -192,6 +192,7 @@ module = "/path/libfoo.so"     # or --module <name>=<path>; $NAME or ${NAME} rea
 provider = "tpm2-pkcs11"       # optional; auto-detected (§6.2)
 tokenLabel = "..."
 pinFile = "/path" | pinEnv = "VAR"     # optional; pinEnv wins if both are set; pinFile may be $NAME: the path, from the environment
+mgmKeyFile = "/path" | mgmKeyEnv = "VAR"  # optional; the admin credential for modules whose management operations need one (§6.2 ykcs11)
 systemFeature = "token-<name>"         # read by the Nix library only
 
 [objects.<name>]
@@ -396,7 +397,7 @@ Exit codes:
 
 ### 6.2 Providers
 - **Hooks:** `name`, `matches(&ModuleInfo)`, and optionally `mechanisms` (filter), `ec_point`
-  (repair) and `hint` (error advice).
+  (repair), `hint` (error advice) and `login` (the credential model).
 - **Selection:** an explicit `provider` wins; an unknown name is exit 17. Otherwise the first
   registered provider that matches, else `generic` — `provider_is_detected_or_named`, registry unit
   test.
@@ -406,7 +407,7 @@ Exit codes:
 | Provider | Quirks handled or recorded |
 |---|---|
 | softhsm | none (reference) |
-| ykcs11 | `CKA_PUBLIC_KEY_INFO` length 0 then `CKR_ARGUMENTS_BAD` (tolerated generically); fixed PIV slot IDs |
+| ykcs11 | `CKA_PUBLIC_KEY_INFO` length 0 then `CKR_ARGUMENTS_BAD` (tolerated generically); fixed PIV slot IDs; **one login state per token**: its management operations (generate, import, delete) need the SO state, so with `mgmKeyFile`/`mgmKeyEnv` set, the `login` hook logs in as SO with that credential instead of as the user — the hex management key, or the PIN on a PIN-protected-management-key device, whose SO login also card-verifies the PIN so signing and `autoCreate` work in one unattended run. Without an admin credential this is the default user login. The RW suite pins it: `rw_lifecycle_generates_proves_and_deletes_without_touch` |
 | tpm2-pkcs11 | drops `AES_KEY_GEN`/`GENERIC_SECRET_KEY_GEN` (`C_GenerateKey` unsupported); repairs the malformed P-521 `CKA_EC_POINT` (`04 85 …`; upstream draft in `upstream/tpm2-pkcs11/`) — `tpm2_*` tests |
 | p11-kit | detects the proxy; the RPC drops AES key wrap and EdDSA/Edwards mechanisms; the module behind it is hidden (set `provider` explicitly) — `p11kit_*` tests |
 
@@ -509,6 +510,7 @@ See `docs/REVIEW-2026-11-11.md`.
 | `tests/softhsm.rs` | package build | SoftHSM: lifecycle, every type and scheme against independent oracles (hand-written DER encoder, openssl-hashed fixtures, RustCrypto `hmac`/`cmac`/`aes`/`aes-kw`) |
 | `tests/tpm2.rs` | package build, `nix/tpm2-test-env.sh` | swtpm + tpm2-abrmd + tpm2-pkcs11 |
 | `tests/p11kit.rs` | package build, `nix/p11kit-test-env.sh` | SoftHSM behind `p11-kit server`, compared with direct access |
+| `tests/yubikey.rs` | opt-in, never in the Nix build (`CAKEYS_TEST_YUBIKEY_MODULE`, `_PIN`, `_MGM` — file paths; the secrets are only ever read from them) | a real YubiKey, read-write: generate into the scratch PIV slot `0x95` under the SO credential, prove possession by signing in the same run, record, verify, delete, re-adopt — each CLI run bounded, so a touch or PIN prompt fails instead of waiting (`rw_lifecycle_generates_proves_and_deletes_without_touch`) |
 | `checks.vm` / `test-nspawn` | QEMU / systemd-nspawn | the CLI flow; in the VM also the pseudo-FOD consumer built in the guest sandbox |
 | `checks.module`, `checks.tpm`, `checks.lib` | QEMU / eval | module, hook, pcscd, TPM ACL, Nix library |
 
