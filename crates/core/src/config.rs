@@ -177,15 +177,23 @@ impl Mode {
 pub enum Binding {
     /// The token signed a fresh challenge that verified on the host against that public key.
     PopSign,
+    /// The token derived the ECDH shared secret with an ephemeral host key and both sides MACed
+    /// the challenge with it (derive-only EC keys).
+    PopEcdh,
+    /// The token decrypted a host challenge (RSA-OAEP) to the expected plaintext (decrypt-only
+    /// RSA keys).
+    PopDecrypt,
     /// Only the token says the objects belong together (opt-in, or `publicOnly`).
     TokenAsserted,
 }
 
 impl Binding {
-    /// Strength, strongest 0: a realisation must never move to a higher rank.
+    /// Strength, strongest 0: a realisation must never move to a higher rank. Every `pop-*`
+    /// proves the same fact — possession of the named public key — by whichever capability the
+    /// key has.
     pub fn rank(self) -> u8 {
         match self {
-            Binding::PopSign => 0,
+            Binding::PopSign | Binding::PopEcdh | Binding::PopDecrypt => 0,
             Binding::TokenAsserted => 1,
         }
     }
@@ -585,11 +593,16 @@ mod tests {
         assert_eq!(lock.realisations["signing-soft"]["softhsm"].binding, Some(Binding::PopSign));
     }
 
-    /// Downgrade detection compares ranks: an inverted order would silently disable it.
+    /// Downgrade detection compares ranks: an inverted order would silently disable it. The
+    /// `pop-*` methods share rank 0: each proves possession of the same key.
     #[test]
     fn binding_ranks_are_pinned() {
         assert!(Binding::PopSign.rank() < Binding::TokenAsserted.rank());
         assert_eq!(Binding::PopSign.to_string(), "pop-sign");
+        assert_eq!(Binding::PopEcdh.to_string(), "pop-ecdh");
+        assert_eq!(Binding::PopDecrypt.to_string(), "pop-decrypt");
+        assert_eq!(Binding::PopEcdh.rank(), Binding::PopSign.rank());
+        assert_eq!(Binding::PopDecrypt.rank(), Binding::PopSign.rank());
         assert_eq!(Binding::TokenAsserted.to_string(), "token-asserted");
     }
 }

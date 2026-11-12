@@ -119,33 +119,45 @@ time it resolves a private key (`resolve`, `verify`, `realise`, `check`, `delete
 key to its identity:
 1. The host builds a challenge: `"cakeys/pop/v1\0" ‖ SHA-256(SPKI) ‖ 32-byte nonce` from the OS
    RNG (`crates/core/src/pop.rs`).
-2. The token signs it with the private-key object found under the locator:
-   - ECDSA with the curve's hash (P-256, secp256k1, brainpoolP256r1: SHA-256; P-384,
-     brainpoolP384r1: SHA-384; P-521: SHA-512): `CKM_ECDSA_SHA*` if offered, else `CKM_ECDSA`
-     over the host's digest;
-   - Ed25519: `CKM_EDDSA` (pure);
-   - RSA: `CKM_SHA256_RSA_PKCS`.
-3. The host verifies the signature with RustCrypto against the same canonical SPKI it hashes into
-   `rfc7093m4`. The signature is never stored.
+2. The token proves, with the private-key object found under the locator, that it holds the
+   private half of that SPKI — by whichever capability the key has (the spec's `binding`):
+   - `pop-sign` (default): the token signs the challenge:
+     - ECDSA with the curve's hash (P-256, secp256k1, brainpoolP256r1: SHA-256; P-384,
+       brainpoolP384r1: SHA-384; P-521: SHA-512): `CKM_ECDSA_SHA*` if offered, else `CKM_ECDSA`
+       over the host's digest;
+     - Ed25519: `CKM_EDDSA` (pure);
+     - RSA: `CKM_SHA256_RSA_PKCS`.
+   - `pop-ecdh` (EC keys that only derive): the host generates an ephemeral key on the same curve
+     and MACs the challenge with HMAC-SHA256 under the ECDH shared secret; the token derives the
+     same secret with `CKM_ECDH1_DERIVE` into a non-extractable session key and MACs the same
+     challenge. The MACs agree only for the matching private key.
+   - `pop-decrypt` (RSA keys that only decrypt): the host encrypts the challenge to the public key
+     with RSA-OAEP (SHA-256, MGF1-SHA256); the token decrypts with `CKM_RSA_PKCS_OAEP`. The
+     plaintext matches only for the matching private key.
+3. The host checks the proof with RustCrypto against the same canonical SPKI it hashes into
+   `rfc7093m4` (signature verification, MAC comparison, plaintext comparison — all constant
+   time where it matters). No proof value is ever stored.
 
 Outcomes:
-- **A signature that does not verify is a conflict (exit 13):** the private key under the locator
+- **A proof that does not verify is a conflict (exit 13):** the private key under the locator
   is not the one the identity names. This also applies to `delete`, so If-Match cannot pass on a
   public object beside an unrelated key.
-- **A token that refuses** (no `CKA_SIGN`, missing mechanism) is exit 15. A token error is 16.
-  A key with `CKA_ALWAYS_AUTHENTICATE` is refused (16) rather than spending a PIN entry each run.
-- **The spec must declare `CKA_SIGN = true`,** or opt out per token with
-  `binding = "token-asserted"`; otherwise it is invalid (exit 17). The rule uses declared
-  attributes only, like `declared_commits`.
-- **Opting out is needed** for keys that cannot sign, Ed448 (no RustCrypto verifier yet), and
-  tpm2-pkcs11 1.10.1 P-521 keys: its `C_SignInit` parses its own malformed `CKA_EC_POINT` and
-  fails (`upstream/tpm2-pkcs11` fixes both).
+- **A token that refuses** (no `CKA_SIGN`/`CKA_DERIVE`/`CKA_DECRYPT`, missing mechanism) is exit
+  15. A token error is 16. A key with `CKA_ALWAYS_AUTHENTICATE` is refused (16) rather than
+  spending a PIN entry each run.
+- **The spec must declare the capability the proof uses** — `CKA_SIGN = true` for `pop-sign`,
+  `CKA_DERIVE = true` for `pop-ecdh` (Weierstrass EC keys only), `CKA_DECRYPT = true` for
+  `pop-decrypt` (RSA only) — or opt out per token with `binding = "token-asserted"`; otherwise it
+  is invalid (exit 17). The rule uses declared attributes only, like `declared_commits`.
+- **Opting out is needed** for keys with no provable capability, Ed448 (no RustCrypto verifier
+  or ECDH yet), and tpm2-pkcs11 1.10.1 P-521 keys: its `C_SignInit` parses its own malformed
+  `CKA_EC_POINT` and fails (`upstream/tpm2-pkcs11` fixes both).
 - **`publicOnly` implies `token-asserted`.**
 
-The lock records the binding per realisation (`pop-sign` or `token-asserted`). A binding weaker
-than the recorded one is refused (exit 14), also under `--update-lock` —
-`binding_downgrade_is_refused`. Derive-only EC keys (ECDH) and decrypt-only RSA keys (OAEP) will
-get their own `pop-*` methods; until then they need the opt-in.
+The lock records the binding per realisation (`pop-sign`, `pop-ecdh`, `pop-decrypt` or
+`token-asserted`). The `pop-*` methods share the top rank — each proves possession of the same
+key — so a realisation never weakens unless it drops to `token-asserted`, which is refused
+(exit 14), also under `--update-lock` — `binding_downgrade_is_refused`.
 
 ## 4. Files
 
@@ -168,7 +180,7 @@ curve = "..." ; modulusBits = N ; valueLen = BYTES   # curve names are canonical
 object = "<object>"
 attributes = { CKA_SIGN = true, ... }   # settable booleans the class may carry (PKCS#11 3.2 §4), or CKA_ALLOWED_MECHANISMS = ["CKM_..."] on key objects; a wrong name or class is exit 17
 publicAttributes = { CKA_VERIFY = true, ... }   # private keys only: policy of the public key object; checked on it, in the digest only when present
-tokens.<token> = { locator = { CKA_LABEL = "...", CKA_ID = "hex" }, autoCreate = bool, publicOnly = bool, binding = "token-asserted", identity.allow = [...] }
+tokens.<token> = { locator = { CKA_LABEL = "...", CKA_ID = "hex" }, autoCreate = bool, publicOnly = bool, binding = "pop-ecdh" | "pop-decrypt" | "token-asserted", identity.allow = [...] }
 ```
 
 What may be created and adopted:
@@ -216,7 +228,7 @@ specDigest = "sha256-..."
 mode = "direct"                      # a weaker mode is refused
 schemes = ["rfc7093m4"]              # schemes this realisation computed and matched; fewer later is refused
 publicOnly = true                    # only when set
-binding = "pop-sign"                 # private keys: pop-sign | token-asserted (§3.6)
+binding = "pop-sign"                 # private keys: pop-sign | pop-ecdh | pop-decrypt | token-asserted (§3.6)
 [realisations.<spec>.<token>.policy] # every attribute of the class the token shows: booleans, plus CKA_ALLOWED_MECHANISMS on key objects
 CKA_SIGN = true ; CKA_DECRYPT = true ; CKA_EXTRACTABLE = false ; ...
 [realisations.<spec>.<token>.immutables] # keys: fixed at creation
@@ -478,7 +490,8 @@ label and the hash itself. Everything else is fixed by definition:
 - the spec digest JSON shape (`"v":1`, camelCase, `keyType` omitted when empty, `certificateType`
   and `publicAttributes` only when set; the certificate digest changed with `certificateType`,
   since the v1 lock is a draft);
-- binding names (`pop-sign`, `token-asserted`) and their rank. The challenge layout
+- binding names (`pop-sign`, `pop-ecdh`, `pop-decrypt`, `token-asserted`) and their rank (the
+  `pop-*` methods share the top rank). The challenge layout
   (`cakeys/pop/v1`) is pinned by `message_layout_is_pinned`, though nothing stored depends on it;
 - lock field names (`objects`, `ids`, `realisations`, `object`, `locator`, `specDigest`,
   `schemes`, `pairs`, `publicOnly`, `binding`, `policy`, `immutables`, `observed`, `provenance`,

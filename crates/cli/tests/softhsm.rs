@@ -1602,6 +1602,94 @@ fn binding_downgrade_is_refused() {
     assert_eq!(code(&e.km(&["validate"])), 17);
 }
 
+/// P0-1: keys that cannot sign still prove possession. `pop-ecdh` derives the shared secret into
+/// a non-extractable session key and MACs the challenge on both sides; `pop-decrypt` has the token
+/// RSA-OAEP-decrypt the challenge. A different private key under the locator fails either proof.
+#[test]
+fn derive_and_decrypt_only_keys_prove_possession() {
+    let Some(e) = env("pop-ecdh") else { return };
+    // The token is shared between runs: remove anything left under the test's locators. A session
+    // opened now sees the leftovers (they predate it); it is dropped before the realise runs.
+    let cleanup = e.session();
+    for label in ["pop-ecdh", "pop-oaep", "pop-ecdh-b"] {
+        for h in cleanup.find_objects(&[Attribute::Label(label.as_bytes().to_vec())]).unwrap() {
+            cleanup.destroy_object(h).unwrap();
+        }
+    }
+    drop(cleanup);
+    // Shapes: each proof needs its capability declared, and applies to its key type only.
+    let ec = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+              [specs.k]\nobject = \"k\"\nattributes = { CKA_DERIVE = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
+    let rsa = "[objects.r]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
+               [specs.r]\nobject = \"r\"\nattributes = { CKA_DECRYPT = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
+    for (body, token) in [
+        (&ec[..], "binding = \"pop-decrypt\""),                      // RSA proof on an EC key
+        (ec.replace("CKA_DERIVE = true, ", "").as_str(), "binding = \"pop-ecdh\""), // ... without CKA_DERIVE
+        (&rsa[..], "binding = \"pop-ecdh\""),                       // EC proof on an RSA key
+        (rsa.replace("CKA_DECRYPT = true, ", "").as_str(), "binding = \"pop-decrypt\""), // ... without CKA_DECRYPT
+    ] {
+        e.config(&format!(
+            "{body}tokens.softhsm = {{ locator = {{ CKA_LABEL = \"x\" }}, {token} }}\n"
+        ));
+        let o = e.km(&["validate"]);
+        assert_eq!(code(&o), 17, "{token}: {}", String::from_utf8_lossy(&o.stderr));
+    }
+    // The default proof (pop-sign) still needs CKA_SIGN.
+    e.config(&format!("{ec}tokens.softhsm = {{ locator = {{ CKA_LABEL = \"x\" }} }}\n"));
+    assert_eq!(code(&e.km(&["validate"])), 17);
+
+    // Derive-only EC key, proven by deriving: created, recorded as pop-ecdh, verifies.
+    e.config(&format!(
+        "{ec}tokens.softhsm = {{ locator = {{ CKA_LABEL = \"pop-ecdh\" }}, autoCreate = true, binding = \"pop-ecdh\" }}\n"
+    ));
+    assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm", "--update-lock"])), 0);
+    let real = &e.lock()["realisations"]["k"]["softhsm"];
+    assert_eq!(real["binding"].as_str(), Some("pop-ecdh"));
+    assert_eq!(code(&e.km(&["verify", "k", "--token", "softhsm"])), 0);
+    assert!(e.lock()["objects"]["k"]["ids"].get("rfc7093m4").is_some(), "the object id was recorded");
+
+    // Decrypt-only RSA key, proven by decrypting (OAEP-SHA256).
+    e.config(&format!(
+        "{rsa}tokens.softhsm = {{ locator = {{ CKA_LABEL = \"pop-oaep\" }}, autoCreate = true, binding = \"pop-decrypt\" }}\n"
+    ));
+    assert_eq!(code(&e.km(&["realise", "r", "--token", "softhsm", "--update-lock"])), 0);
+    assert_eq!(e.lock()["realisations"]["r"]["softhsm"]["binding"].as_str(), Some("pop-decrypt"));
+    assert_eq!(code(&e.km(&["verify", "r", "--token", "softhsm"])), 0);
+
+    // Back to the EC spec for the conflict phase.
+    e.config(&format!(
+        "{ec}tokens.softhsm = {{ locator = {{ CKA_LABEL = \"pop-ecdh\" }}, binding = \"pop-ecdh\" }}\n"
+    ));
+
+    // A different private key under the EC locator fails the derivation proof, like H1. A fresh
+    // session: one opened before the realise processes does not see objects they created
+    // (common/mod.rs), but everything is visible to a session opened after them.
+    let s = e.session();
+    let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let (_, other_private) = s
+        .generate_key_pair(
+            &Mechanism::EccKeyPairGen,
+            &[Attribute::Token(true), Attribute::Label(b"pop-ecdh-b".to_vec()), Attribute::EcParams(ec_params)],
+            &[
+                Attribute::Token(true),
+                Attribute::Label(b"pop-ecdh-b".to_vec()),
+                Attribute::Derive(true),
+                Attribute::Sensitive(true),
+                Attribute::Extractable(false),
+            ],
+        )
+        .unwrap();
+    let original = s
+        .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"pop-ecdh".to_vec())])
+        .unwrap()[0];
+    s.destroy_object(original).unwrap();
+    s.update_attributes(other_private, &[Attribute::Label(b"pop-ecdh".to_vec())]).unwrap();
+    let o = e.km(&["verify", "k", "--token", "softhsm"]);
+    assert_eq!(code(&o), 13);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("proof of possession failed"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm"])), 13);
+}
+
 
 #[test]
 fn commitment_label_comes_from_the_lock() {

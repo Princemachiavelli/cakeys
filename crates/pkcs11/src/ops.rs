@@ -68,8 +68,8 @@ impl<'a> Target<'a> {
     }
 }
 
-/// How `t`'s private key is bound to its identity: proven by signing unless the spec opts out
-/// (or adopts it publicOnly). `None` for every other class.
+/// How `t`'s private key is bound to its identity: proven by signing, deriving or decrypting
+/// (`pop-*`) unless the spec opts out (or adopts it publicOnly). `None` for every other class.
 pub fn binding(t: &Target) -> Option<Binding> {
     if t.object.class != "CKO_PRIVATE_KEY" {
         return None;
@@ -98,6 +98,25 @@ fn check_binding(t: &Target) -> Result<()> {
         ),
         (Some(Binding::PopSign), _) if t.spec.flag("CKA_SIGN") != Some(true) => invalid(
             "proving possession of the private key needs CKA_SIGN = true in the spec attributes; \
+             or opt in with binding = \"token-asserted\" on this token"
+                .into(),
+        ),
+        (Some(Binding::PopEcdh), _) if !matches!(t.object.key_type.as_str(), "CKK_EC" | "CKK_EC_EDWARDS") => invalid(
+            "binding = \"pop-ecdh\" proves possession by deriving: it applies to EC private keys only".into(),
+        ),
+        (Some(Binding::PopEcdh), _) if t.object.key_type == "CKK_EC_EDWARDS" => invalid(
+            "binding = \"pop-ecdh\" derives with CKM_ECDH1_DERIVE: it applies to Weierstrass EC keys, not Edwards".into(),
+        ),
+        (Some(Binding::PopEcdh), _) if t.spec.flag("CKA_DERIVE") != Some(true) => invalid(
+            "proving possession by deriving needs CKA_DERIVE = true in the spec attributes; \
+             or opt in with binding = \"token-asserted\" on this token"
+                .into(),
+        ),
+        (Some(Binding::PopDecrypt), _) if t.object.key_type != "CKK_RSA" => invalid(
+            "binding = \"pop-decrypt\" proves possession by decrypting: it applies to RSA private keys only".into(),
+        ),
+        (Some(Binding::PopDecrypt), _) if t.spec.flag("CKA_DECRYPT") != Some(true) => invalid(
+            "proving possession by decrypting needs CKA_DECRYPT = true in the spec attributes; \
              or opt in with binding = \"token-asserted\" on this token"
                 .into(),
         ),
@@ -385,7 +404,7 @@ pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>>
         mode,
         public_only,
         spec_digest: id::spec_digest(t.object, t.spec),
-        ids: tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding == Some(Binding::PopSign))?,
+        ids: tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding)?,
         binding,
         policy: tok.policy(h)?,
         immutables: tok.immutables(h),
@@ -750,8 +769,7 @@ pub fn delete(t: &Target, tok: &Token, lock: &mut Lock, if_match: Option<&str>, 
     if let Some(h) = tok.find_key(t.object, &t.on_token.locator, false)? {
         let mode = plan_mode(t)?;
         // Proven like `resolve`: If-Match must not pass on a public object beside another key.
-        let prove = binding(t) == Some(Binding::PopSign);
-        let got = tok.ids(h, t.object, &t.on_token.locator, mode, &commits(t, tok, mode)?, &commitment_label(t, lock), prove)?;
+        let got = tok.ids(h, t.object, &t.on_token.locator, mode, &commits(t, tok, mode)?, &commitment_label(t, lock), binding(t))?;
         // --if-match names the primary scheme; otherwise the first scheme the lock records.
         let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
         let primary = t.schemes().into_iter().find(|s| got.contains_key(*s));
