@@ -177,13 +177,16 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     match &cli.cmd {
         Cmd::Validate => {
             for (name, t) in &cfg.tokens {
-                if let Some(p) = t.provider.as_deref().filter(|p| !registry.knows(p)) {
-                    return Err(KmError::Validation(format!(
+                let Some(p) = t.provider.as_deref() else { continue };
+                // A named provider checks the token's options here too; an auto-detected one
+                // can only be known, and check them, once the token is opened.
+                let provider = registry.named(p).ok_or_else(|| {
+                    KmError::Validation(format!(
                         "token '{name}': unknown provider '{p}' (registered: generic, {})",
                         registry.names().join(", ")
                     ))
-                    .into());
-                }
+                })?;
+                provider.check_options(name, &t.options)?;
             }
             for (spec_name, spec) in &cfg.specs {
                 for token in spec.tokens.keys() {

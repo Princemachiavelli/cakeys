@@ -1837,7 +1837,8 @@ fn admin_credential_is_refused_where_the_user_creates_keys() {
 }
 
 /// `[tokens.<t>.options]` belong to the token's provider, which checks them when the token is
-/// opened: SoftHSM takes none, so any is refused (17) rather than silently ignored.
+/// opened (and `validate` checks them when the provider is named): SoftHSM takes none, so any is
+/// refused (17) rather than silently ignored.
 #[test]
 fn provider_options_are_checked_by_the_provider() {
     let Some(e) = env("options") else { return };
@@ -1853,6 +1854,12 @@ fn provider_options_are_checked_by_the_provider() {
     let o = e.km(&["resolve", "signing-soft", "--token", "softhsm"]);
     assert_eq!(code(&o), 17, "{}", String::from_utf8_lossy(&o.stderr));
     assert!(String::from_utf8_lossy(&o.stderr).contains("tokens.softhsm.options.tcti: provider softhsm takes no options"));
+    // With the provider named, `validate` checks them without opening the token.
+    let named = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap().replacen("tokenLabel", "provider = \"softhsm\"\ntokenLabel", 1);
+    std::fs::write(e.dir.join("keys.toml"), named).unwrap();
+    let o = e.km(&["validate"]);
+    assert_eq!(code(&o), 17, "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("provider softhsm takes no options"));
 }
 
 /// `realise` and `delete` write the lock by default; `--no-update-lock` compares only (first use

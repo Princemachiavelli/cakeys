@@ -175,7 +175,15 @@ impl Registry {
 
     /// Whether `name` is a provider this registry can select explicitly.
     pub fn knows(&self, name: &str) -> bool {
-        name == Generic.name() || self.providers.iter().any(|p| p.name() == name)
+        self.named(name).is_some()
+    }
+
+    /// The provider registered as `name` (or [`Generic`]), without loading any module.
+    pub fn named(&self, name: &str) -> Option<Arc<dyn Provider>> {
+        if name == Generic.name() {
+            return Some(Arc::new(Generic));
+        }
+        self.providers.iter().find(|p| p.name() == name).cloned()
     }
 
     /// The explicitly configured provider, else the first registered one that recognises the
