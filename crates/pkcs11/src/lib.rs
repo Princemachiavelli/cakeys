@@ -3,6 +3,7 @@
 
 pub mod ops;
 pub mod provider;
+pub mod providers;
 pub mod token;
 
 pub use provider::{Generic, Provider, Registry};

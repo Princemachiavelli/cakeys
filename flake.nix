@@ -72,6 +72,13 @@
 
       checks.${system} = {
         inherit cakeys;
+        # The CLI without its `tpm2` and `ykcs11` features: builds without tpm2-tss and sqlite.
+        minimal = cakeys.overrideAttrs {
+          pname = "cakeys-minimal";
+          cargoBuildNoDefaultFeatures = true;
+          buildInputs = [ ];
+          doCheck = false;
+        };
         vm = mkTest "vm";
         module = import ./nix/module-test.nix {
           inherit pkgs cakeys pcsc-probe;

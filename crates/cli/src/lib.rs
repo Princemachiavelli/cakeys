@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use cakeys_core::config::{gc, load_config, lock_for_update, lock_unwritable, load_lock, save_lock, Config};
 use cakeys_core::KmError;
 use cakeys_pkcs11::ops::{self, LockWrite, Notes, Target};
-use cakeys_pkcs11::{Registry, Token};
+use cakeys_pkcs11::{providers, Registry, Token};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -100,13 +100,15 @@ impl LockWriteArgs {
     }
 }
 
-/// The providers this crate links. Built through the same public API a third party uses.
+/// The providers this build links, in detection order. Built through the same public API a
+/// third party uses; `tpm2` and `ykcs11` are cargo features (both on by default).
 pub fn default_registry() -> Registry {
-    Registry::new()
-        .with(cakeys_softhsm::SoftHsm)
-        .with(cakeys_ykcs11::Ykcs11)
-        .with(cakeys_tpm2_pkcs11::Tpm2Pkcs11)
-        .with(cakeys_p11_kit::P11Kit)
+    let registry = Registry::new().with(providers::SoftHsm);
+    #[cfg(feature = "ykcs11")]
+    let registry = registry.with(cakeys_ykcs11::Ykcs11);
+    #[cfg(feature = "tpm2")]
+    let registry = registry.with(cakeys_tpm2_pkcs11::Tpm2Pkcs11);
+    registry.with(providers::P11Kit)
 }
 
 /// Run the CLI with the given providers; maps errors to the documented exit codes.

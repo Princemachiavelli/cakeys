@@ -515,7 +515,7 @@ Wide HSM support is a core feature. Each provider gets a small **quirks profile*
 | **tpm2-pkcs11** 1.10.1 (secondary reference, swtpm) | PKCS#11, `key-mgmnt-tpm2-pkcs11` | See "tpm2-pkcs11 findings" below. |
 | CloudHSM, others | vendor PKCS#11 | Later. |
 
-## Crate layout (2026-11-11)
+## Crate layout (2026-11-11; current layout: docs/DESIGN.md §6.1 — softhsm and p11-kit became built-in providers of `cakeys-pkcs11` on 2026-11-12)
 The project is a Cargo workspace, so that a PKCS#11 module's quirks live in its own crate:
 
 | Crate | Contents |

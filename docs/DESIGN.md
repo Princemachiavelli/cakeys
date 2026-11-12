@@ -497,10 +497,10 @@ Exit codes:
 ### 6.1 Crates
 | Crate | Role |
 |---|---|
-| `cakeys-core` | config, lock, errors and exit codes, CA-IDs. No `cryptoki`. |
-| `cakeys-pkcs11` | the `cryptoki` token layer (`token.rs`), verbs (`ops.rs`), `Provider` and `Registry` |
-| `cakeys-{softhsm,ykcs11,tpm2-pkcs11,p11-kit}` | one provider per module |
-| `cakeys` (crates/cli) | CLI as a library: `main(registry)`, `default_registry()`; `examples/custom-provider.rs` |
+| `cakeys-core` | No `cryptoki`, no token access: config (`config`, typed classes, key types and schemes in `types`/`id`), the boolean-attribute table (`attrs`), CA-IDs (`id`), proof-of-possession host math and signature verification (`pop`, `sig`), what a spec asks for (`plan`: `Target`, `plan_mode`), and the lock rules (`reconcile`: `compare`, `record`, `Notes`), unit-tested without an HSM |
+| `cakeys-pkcs11` | the `cryptoki` token layer (`token/`: session and SO step, policy, generation, identity, proof of possession, URIs), the verbs (`ops`), `Provider` and `Registry`, and the built-in providers without code of their own (`providers`: softhsm, p11-kit) |
+| `cakeys-{ykcs11,tpm2-pkcs11}` | providers with native paths and dependencies of their own (Yubico roots; tss-esapi, sqlite) |
+| `cakeys` (crates/cli) | CLI as a library: `main(registry)`, `default_registry()`; `examples/custom-provider.rs`. Cargo features `ykcs11` and `tpm2` (both default) link those providers; `checks.minimal` builds without them, and so without tpm2-tss and sqlite |
 
 ### 6.2 Providers
 - **Hooks:** `name`, `matches(&ModuleInfo)`, and optionally `mechanisms` (filter), `ec_point`
@@ -648,13 +648,15 @@ See `docs/REVIEW-2026-11-11.md`.
 ## 9. Testing
 | Suite | Where | What |
 |---|---|---|
-| unit | `cargo test --workspace` | digests (pinned), curves and OIDs, SPKI round-trips, registry, P-521 fix-up, hex parsing, proof-of-possession host math (both ECDH MAC sides), the deprecation register, AES strength order, the attestation scheme definitions and lock invariants, the PIV chain verifier (fixture chain + Yubico's own roots and intermediates) |
+| unit | `cargo test --workspace` | digests (pinned), curves and OIDs, SPKI round-trips, registry, P-521 fix-up, hex parsing, proof-of-possession host math (both ECDH MAC sides), the signature verifiers, the deprecation register and scheme names, AES strength order, the observed policy vectors, the attestation scheme definitions and lock invariants, the lock rules (first use, what a write may override, attestation changes, provenance warnings), the PIV chain verifier (fixture chain + Yubico's own roots and intermediates) |
 | `tests/softhsm.rs` | package build | SoftHSM: lifecycle, every type and scheme against independent oracles (hand-written DER encoder, openssl-hashed fixtures, RustCrypto `hmac`/`cmac`/`aes`/`aes-kw`) |
 | `tests/tpm2.rs` | package build, `nix/tpm2-test-env.sh` | swtpm + tpm2-abrmd + tpm2-pkcs11; the native `tpm-certify` attestation (AK provisioning and validation, reads that never provision, a lost attestation as a downgrade, cross-checks), one material attested on two tokens with an attestation each, and the travel of attested material to SoftHSM through the shared portable scheme |
 | `tests/p11kit.rs` | package build, `nix/p11kit-test-env.sh` | SoftHSM behind `p11-kit server`, compared with direct access |
 | `tests/yubikey.rs` | opt-in, never in the Nix build (`CAKEYS_TEST_YUBIKEY_MODULE`, `_PIN`, `_MGM` — file paths; the secrets are only ever read from them) | a real YubiKey, read-write: generate into the scratch PIV slot `0x95` in an SO step, then (back as the user) attest it and prove possession by signing, record, verify; `delete` refused (15) with the realisation kept; re-realise idempotent — each CLI run bounded, so a touch or PIN prompt fails instead of waiting (`rw_lifecycle_generates_attests_proves_and_refuses_delete_without_touch`) |
 | `checks.vm` / `test-nspawn` | QEMU / systemd-nspawn | the CLI flow; in the VM also the pseudo-FOD consumer built in the guest sandbox |
 | `checks.module`, `checks.tpm`, `checks.lib` | QEMU / eval | module, hook, pcscd, TPM ACL, Nix library |
+| `checks.minimal` | package build | the CLI without its `tpm2`/`ykcs11` features builds without tpm2-tss and sqlite |
+| `scripts/xversion.sh` | by hand, per refactor | a lock recorded by one build verifies, compares and re-records byte-identically with another (every class) |
 
 Hardware: the YubiKey example lock is verified read-only (no PIN), and `tests/yubikey.rs` exercises
 a real YubiKey read-write when opted in (§9 table above). `packages.test-nspawn` needs the
