@@ -77,6 +77,12 @@ pub fn canonical_scheme(name: &str) -> &str {
 pub const KNOWN_SCHEMES: [&str; 8] =
     ["rfc7093m4", "certhash", "valuehash", "commitment", "cmac", "kcv-ecb", "kcv-ecb-dec", "kw"];
 
+/// Scheme names whose computation is deprecated (docs/DESIGN.md §3.1). Identities already locked
+/// under one keep verifying — with a warning — but `realise --update-lock` never records a new one:
+/// a changed or weakened computation gets a *new* scheme name (§10), so the empty list is the
+/// "nothing is deprecated" state, pinned by test.
+pub const DEPRECATED_SCHEMES: [&str; 0] = [];
+
 /// Hash of an HMAC commitment. A key bound to a hash (`CKK_SHA384_HMAC`, ...) is committed with
 /// that hash; generic secrets use SHA-256.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -523,5 +529,13 @@ mod tests {
         }
         assert_eq!(sri(&Curve::Ed448.spki_from_point(&[7u8; 57]).unwrap()), "sha256-cfF15XCGWRqstHtN6A71S40xP0sTzTP+Kbkzd9quwyc=");
         assert_eq!(sri(&rsa_spki(&[0xc5u8; 256], &[1, 0, 1]).unwrap()), "sha256-YAhs9O2fj0M1rDBQoGcFdy9IyFxKRflfglzP6zTtER0=");
+    }
+
+    /// The deprecation register (docs/DESIGN.md §3.1, finding S15): empty today, so adding a name
+    /// is a deliberate, reviewed diff; and a deprecated name must be one this cakeys knows.
+    #[test]
+    fn the_deprecation_register_is_pinned() {
+        assert!(DEPRECATED_SCHEMES.is_empty(), "deprecating a scheme is a design decision; see docs/DESIGN.md §3.1");
+        assert!(DEPRECATED_SCHEMES.iter().all(|s| KNOWN_SCHEMES.contains(s)));
     }
 }

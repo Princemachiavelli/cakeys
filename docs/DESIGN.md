@@ -50,6 +50,28 @@ object.
   `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`.
 - **Only mechanisms the token offers are used.** If none fits, the result is *unsupported* (exit 15).
 
+**Scheme strength and deprecation** (finding S15). Per class, the schemes in the order cakeys
+prefers them — the first computed is the primary identity, and a weaker scheme is only computed
+when the spec's declared usage bits allow nothing stronger:
+
+| Class | Schemes, strongest first | Why the order |
+|---|---|---|
+| private/public keys | `rfc7093m4` | the host verifies it against the material it hashes, and the private half proves possession (§3.6) |
+| certificates | `certhash`, then `rfc7093m4` | `certhash` pins the exact bytes; `rfc7093m4` only names the subject key, which renewed certificates share |
+| data objects | `valuehash` | SHA-256 of the content, equal to Nix's flat fixed-output hash |
+| generic secret / `CKK_SHA*_HMAC` | `commitment` | HMAC over the domain-separated label (§3.3), with the key type's hash |
+| AES | `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw` | CMAC is a PRF over the whole label; each KCV exposes one fixed-block ECB relation; `kw` needs the fixed-key wrap |
+
+Deprecation:
+- **A changed or weakened computation gets a new scheme name, never an edit** (§10) — like go.sum's
+  `h1`/`h2`. The old name keeps meaning what it meant.
+- **A deprecated scheme still verifies identities already locked under it** — with a warning — but
+  `realise --update-lock` never records a *new* identity under it: migrate by realising a spec that
+  computes the replacement. (`gc` will not drop the old entry: the identity is still true.)
+- **No scheme is deprecated today.** The register is `DEPRECATED_SCHEMES` in
+  `crates/core/src/id.rs`, pinned empty by `the_deprecation_register_is_pinned`; the AES order
+  above is pinned by `aes_commit_strength_order_is_pinned`.
+
 ### 3.2 Public keys
 Public keys are decoded and re-encoded by RustCrypto crates, so provider encoding quirks never
 change a hash:

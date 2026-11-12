@@ -528,6 +528,14 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
         );
     }
     let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
+    // A deprecated computation still verifies — its identities are pinned — but the lock should
+    // move to the replacement (docs/DESIGN.md §3.1); `--update-lock` never adds a new one.
+    for scheme in locked.iter().flat_map(|ids| ids.keys()).filter(|s| id::DEPRECATED_SCHEMES.contains(&s.as_str())) {
+        eprintln!(
+            "warning: the {scheme} identity of '{}' uses a deprecated computation; migrate to its replacement (docs/DESIGN.md §3.1)",
+            t.object_name
+        );
+    }
     // Material is only linked through a shared scheme: never attach IDs to an object when none of
     // them can be compared with what is already locked (e.g. a CMAC-only and a KW-only spec).
     if let Some(ids) = locked.filter(|ids| !ids.is_empty()) {
@@ -551,6 +559,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             Some(want) => {
                 return Err(KmError::HashMismatch { what: t.what(), expected: want.clone(), got: got.clone() })
             }
+            None if update && id::DEPRECATED_SCHEMES.contains(&scheme.as_str()) => {}
             None if update => changed = true,
             None => unlocked.push((scheme, got)),
         }
@@ -610,6 +619,13 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             }
         }
         for (scheme, got) in &r.ids {
+            if id::DEPRECATED_SCHEMES.contains(&scheme.as_str()) && !entry.ids.contains_key(scheme) {
+                eprintln!(
+                    "note: {} also computes a {scheme} identity; not recorded: that computation is deprecated (docs/DESIGN.md §3.1)",
+                    t.what()
+                );
+                continue;
+            }
             entry.ids.entry(scheme.clone()).or_insert_with(|| got.clone());
         }
         let real = LockRealisation {
@@ -806,4 +822,17 @@ pub fn delete(t: &Target, tok: &Token, lock: &mut Lock, if_match: Option<&str>, 
         }
     }
     Ok(changed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The AES commitment strength order (docs/DESIGN.md §3.1, finding S15): CMAC, then the
+    /// KCVs, then KW. `declared_commits` zips usage bits with it, so the order is load-bearing:
+    /// the first enabled scheme is the primary identity.
+    #[test]
+    fn aes_commit_strength_order_is_pinned() {
+        assert_eq!(AES_COMMITS, [Commit::Cmac, Commit::KcvEcb, Commit::KcvEcbDecrypt, Commit::Kw]);
+    }
 }
