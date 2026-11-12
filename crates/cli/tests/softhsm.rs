@@ -1241,3 +1241,76 @@ fn the_lock_pins_type_spec_provenance_and_schemes() {
     std::fs::write(&path, lock_without_type).unwrap();
     assert_eq!(code(&e.km(&verify)), 17);
 }
+
+/// KNOWN GAP H1b (report "Cakeys lock file design review"), documents current behaviour:
+/// cakeys reads CKA_PUBLIC_KEY_INFO first, and SoftHSM lets a user set it on a private key without
+/// checking it. A different RSA private key carrying the old SPKI still verifies.
+#[test]
+fn known_gap_h1b_settable_public_key_info_hides_a_swapped_rsa_key() {
+    let Some(e) = env("gap_h1b") else { return };
+    e.config(
+        "[objects.r]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
+         [specs.r]\nobject = \"r\"\nattributes = { CKA_SIGN = true }\n\
+         tokens.softhsm = { locator = { CKA_LABEL = \"h1b\" }, autoCreate = true }\n",
+    );
+    assert_eq!(code(&e.km(&["realise", "r", "--token", "softhsm", "--update-lock"])), 0);
+    let s = e.session();
+    let spki_a = oracle_spki(&s, "h1b");
+    let (_, other) = s
+        .generate_key_pair(
+            &Mechanism::RsaPkcsKeyPairGen,
+            &[Attribute::Token(true), Attribute::Label(b"h1b-other".to_vec()), Attribute::ModulusBits(2048.into()), Attribute::PublicExponent(vec![1, 0, 1])],
+            &[Attribute::Token(true), Attribute::Label(b"h1b-other".to_vec()), Attribute::Sign(true)],
+        )
+        .unwrap();
+    let original = s.find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"h1b".to_vec())]).unwrap()[0];
+    s.destroy_object(original).unwrap();
+    s.update_attributes(other, &[Attribute::Label(b"h1b".to_vec()), Attribute::PublicKeyInfo(spki_a)]).unwrap();
+    drop(s);
+    assert_eq!(code(&e.km(&["verify", "r", "--token", "softhsm"])), 0, "H1b fixed? flip this assertion");
+}
+
+/// KNOWN GAP S3: a (spec, token) pair the lock has never recorded verifies on object IDs alone.
+#[test]
+fn known_gap_s3_unrecorded_token_verifies_on_ids_alone() {
+    let Some(e) = env("gap_s3") else { return };
+    let pin = e.dir.join("pin");
+    e.config(&format!(
+        "[tokens.softhsm-b]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n\n{}\
+         tokens.softhsm-b = {{ locator = {{ CKA_LABEL = \"s3\" }} }}\n",
+        e.module,
+        pin.display(),
+        EC.replace("ec-lifecycle", "s3")
+    ));
+    assert_eq!(code(&e.km(&["realise", "signing-soft", "--token", "softhsm", "--update-lock"])), 0);
+    // softhsm-b has no realisation record, yet verify passes.
+    assert_eq!(code(&e.km(&["verify", "signing-soft", "--token", "softhsm-b"])), 0, "S3 fixed? flip this assertion");
+}
+
+/// KNOWN GAP S4: turning publicOnly on for a spec without attributes is not noticed.
+#[test]
+fn known_gap_s4_public_only_flip_is_silent() {
+    let Some(e) = env("gap_s4") else { return };
+    let body = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+                [specs.k]\nobject = \"k\"\ntokens.softhsm = { locator = { CKA_LABEL = \"s4\" }, autoCreate = true }\n";
+    e.config(body);
+    assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm", "--update-lock"])), 0);
+    e.config(&body.replace("autoCreate = true", "publicOnly = true"));
+    assert_eq!(code(&e.km(&["verify", "k", "--token", "softhsm"])), 0, "S4 fixed? flip this assertion");
+}
+
+/// KNOWN GAP S8: pointing a spec at another object of the same type is an unexplained hash
+/// mismatch (exit 10) instead of "keys.toml changed".
+#[test]
+fn known_gap_s8_retargeted_spec_is_a_hash_mismatch() {
+    let Some(e) = env("gap_s8") else { return };
+    let body = "[objects.a]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+                [objects.b]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+                [specs.sa]\nobject = \"a\"\ntokens.softhsm = { locator = { CKA_LABEL = \"s8-a\" }, autoCreate = true }\n\n\
+                [specs.sb]\nobject = \"b\"\ntokens.softhsm = { locator = { CKA_LABEL = \"s8-b\" }, autoCreate = true }\n";
+    e.config(body);
+    assert_eq!(code(&e.km(&["realise", "sa", "--token", "softhsm", "--update-lock"])), 0);
+    assert_eq!(code(&e.km(&["realise", "sb", "--token", "softhsm", "--update-lock"])), 0);
+    e.config(&body.replace("[specs.sa]\nobject = \"a\"", "[specs.sa]\nobject = \"b\""));
+    assert_eq!(code(&e.km(&["verify", "sa", "--token", "softhsm"])), 10, "S8 fixed? expect 14");
+}
