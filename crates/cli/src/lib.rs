@@ -266,9 +266,7 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
                 let (locked, got) = if cakeys_core::id::is_attestation_scheme(s) {
                     let kind = cakeys_core::id::attestation_kind(s);
                     let locked = lock
-                        .realisations
-                        .get(&spec_name)
-                        .and_then(|m| m.get(&token_name))
+                        .realisation(&spec_name, &token_name)
                         .and_then(|r| r.attestation.as_ref())
                         .is_some_and(|a| Some(a.kind.as_str()) == kind);
                     (locked, r.attestation.as_ref().map(|a| a.id.clone()))

@@ -488,8 +488,8 @@ tokens.softhsm-anon = { locator = { CKA_ID = "42" } }
     let write = |lock: &toml::Value| std::fs::write(e.dir.join("keys.lock"), toml::to_string(lock).unwrap()).unwrap();
     let fragment = |objects: &[&str], specs: &[&str]| {
         let mut f = full.clone();
-        f["objects"].as_table_mut().unwrap().retain(|k, _| objects.iter().any(|o| *o == k));
-        f["realisations"].as_table_mut().unwrap().retain(|k, _| specs.iter().any(|s| *s == k));
+        f["objects"].as_table_mut().unwrap().retain(|k, _| objects.contains(&k));
+        f["realisations"].as_table_mut().unwrap().retain(|k, _| specs.contains(&k));
         f
     };
     let key = fragment(&["adopted"], &["adopted-pub"]);
@@ -1675,9 +1675,9 @@ fn derive_and_decrypt_only_keys_prove_possession() {
     let rsa = "[objects.r]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
                [specs.r]\nobject = \"r\"\nattributes = { CKA_DECRYPT = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
     for (body, token) in [
-        (&ec[..], "binding = \"pop-decrypt\""),                      // RSA proof on an EC key
+        (ec, "binding = \"pop-decrypt\""),                      // RSA proof on an EC key
         (ec.replace("CKA_DERIVE = true, ", "").as_str(), "binding = \"pop-ecdh\""), // ... without CKA_DERIVE
-        (&rsa[..], "binding = \"pop-ecdh\""),                       // EC proof on an RSA key
+        (rsa, "binding = \"pop-ecdh\""),                       // EC proof on an RSA key
         (rsa.replace("CKA_DECRYPT = true, ", "").as_str(), "binding = \"pop-decrypt\""), // ... without CKA_DECRYPT
     ] {
         e.config(&format!(
@@ -1752,7 +1752,7 @@ fn update_lock_waits_for_the_sidecar_lock() {
     assert_eq!(code(&e.km(&r)), 0);
 
     // Hold the sidecar the same way cakeys does: an exclusive std file lock.
-    let held = std::fs::File::options().write(true).create(true).open(e.dir.join("keys.lock.lck")).unwrap();
+    let held = std::fs::File::options().write(true).create(true).truncate(false).open(e.dir.join("keys.lock.lck")).unwrap();
     held.lock().unwrap();
     let spawn = |args: &[&str]| {
         std::process::Command::new(BIN)

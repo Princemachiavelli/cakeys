@@ -90,6 +90,21 @@ impl ObjectCfg {
     }
 }
 
+/// Inline-table form, as keys.toml writes it.
+impl std::fmt::Display for ObjectCfg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut fields = vec![format!("class = {:?}", self.class)];
+        if !self.key_type.is_empty() {
+            fields.push(format!("keyType = {:?}", self.key_type));
+        }
+        fields.extend(self.certificate_type.as_ref().map(|c| format!("certificateType = {c:?}")));
+        fields.extend(self.curve.as_ref().map(|c| format!("curve = {c:?}")));
+        fields.extend(self.value_len.map(|n| format!("valueLen = {n}")));
+        fields.extend(self.modulus_bits.map(|n| format!("modulusBits = {n}")));
+        write!(f, "{{ {} }}", fields.join(", "))
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SpecCfg {
@@ -177,6 +192,20 @@ pub struct Locator {
     /// Hex-encoded.
     #[serde(rename = "CKA_ID", skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+}
+
+/// Inline-table form, as keys.toml writes it: `{ CKA_LABEL = "k", CKA_ID = "01" }`.
+impl std::fmt::Display for Locator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut fields = Vec::new();
+        if let Some(l) = &self.label {
+            fields.push(format!("CKA_LABEL = {l:?}"));
+        }
+        if let Some(i) = &self.id {
+            fields.push(format!("CKA_ID = {i:?}"));
+        }
+        write!(f, "{{ {} }}", fields.join(", "))
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -419,6 +448,11 @@ impl Lock {
         Ok(self)
     }
 
+    /// The realisation of `spec` on `token`, if the lock records one.
+    pub fn realisation(&self, spec: &str, token: &str) -> Option<&LockRealisation> {
+        self.realisations.get(spec)?.get(token)
+    }
+
     /// Objects in this file that share an rfc7093m4 with `name` but are not listed as its pairs.
     pub fn unlisted_pairs(&self, name: &str) -> BTreeSet<String> {
         let listed = self.objects.get(name).map(|o| &o.pairs);
@@ -524,6 +558,19 @@ impl Immutables {
         *self == Immutables::default()
     }
 
+    fn fields(&self) -> Vec<String> {
+        let flag = |n: &str, v: Option<bool>| v.map(|b| format!("{n} = {b}"));
+        [
+            flag("CKA_LOCAL", self.local),
+            flag("CKA_NEVER_EXTRACTABLE", self.never_extractable),
+            flag("CKA_ALWAYS_SENSITIVE", self.always_sensitive),
+            self.key_gen_mechanism.as_ref().map(|m| format!("CKA_KEY_GEN_MECHANISM = {m:?}")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
     /// Flags that were `true` when recorded and are not now.
     pub fn weakened_since(&self, recorded: &Immutables) -> Vec<&'static str> {
         [
@@ -535,6 +582,13 @@ impl Immutables {
         .filter(|(_, was, now)| *was == Some(true) && *now != Some(true))
         .map(|(n, _, _)| n)
         .collect()
+    }
+}
+
+/// Inline-table form, as the lock writes it.
+impl std::fmt::Display for Immutables {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{ {} }}", self.fields().join(", "))
     }
 }
 
@@ -676,7 +730,7 @@ pub struct UpdateGuard(#[allow(dead_code)] std::fs::File); // holds the lock unt
 pub fn lock_for_update(lock_path: &Path) -> anyhow::Result<UpdateGuard> {
     let mut sidecar = lock_path.as_os_str().to_os_string();
     sidecar.push(".lck");
-    let file = std::fs::File::options().write(true).create(true).open(&sidecar)?;
+    let file = std::fs::File::options().write(true).create(true).truncate(false).open(&sidecar)?;
     file.lock().map_err(|e| anyhow::anyhow!("locking {}: {e}", sidecar.to_string_lossy()))?;
     Ok(UpdateGuard(file))
 }

@@ -29,6 +29,8 @@ pub struct Token {
     pub token: TokenInfo,
     /// Usable mechanisms: advertised ones, filtered by the provider.
     pub mechanisms: Vec<MechanismType>,
+    /// Their names, sorted: what the lock records and `caps` prints.
+    mechanism_names: Vec<String>,
     pub provider: Arc<dyn Provider>,
     session: Session,
     /// Logged in as the user: private objects are visible. Otherwise a public session.
@@ -99,6 +101,8 @@ impl Token {
             KmError::Unavailable(format!("token '{}' not present in {}", cfg.token_label, module.path))
         })?;
         let mechanisms = provider.mechanisms(ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?);
+        let mut mechanism_names: Vec<String> = mechanisms.iter().map(|m| m.to_string()).collect();
+        mechanism_names.sort();
         let session = ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?;
         let pin = read_pin(cfg)?;
         if let Some(pin) = pin.as_deref() {
@@ -113,6 +117,7 @@ impl Token {
             module,
             token,
             mechanisms,
+            mechanism_names,
             session,
             logged_in: pin.is_some(),
             cfg: cfg.clone(),
@@ -133,10 +138,8 @@ impl Token {
         self.mechanisms.contains(&m)
     }
 
-    pub fn mechanism_names(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.mechanisms.iter().map(|m| m.to_string()).collect();
-        v.sort();
-        v
+    pub fn mechanism_names(&self) -> &[String] {
+        &self.mechanism_names
     }
 
     /// The provider's attestation capability for `object`'s class, when the spec opted in:
@@ -195,7 +198,7 @@ impl Token {
             0 => Ok(None),
             1 => Ok(Some(found[0])),
             n => Err(KmError::Ambiguous(format!(
-                "{n} objects match locator {loc:?} on token '{}'",
+                "{n} objects match locator {loc} on token '{}'",
                 self.name
             ))),
         }

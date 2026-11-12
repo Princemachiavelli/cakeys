@@ -15,28 +15,23 @@ use cakeys_core::config::{Locator, ObjectCfg};
 use cakeys_pkcs11::token::ModuleInfo;
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use cakeys_core::{KmError, Result};
+use std::sync::LazyLock;
 
 pub struct Ykcs11;
 
 /// Anchors: Yubico's pinned PIV roots. The intermediate pool (the untrusted store) is only
-/// needed when a chain uses it, so parse both lazily but only once per process.
-fn anchors() -> &'static Vec<attest::Cert> {
-    static ANCHORS: std::sync::OnceLock<Vec<attest::Cert>> = std::sync::OnceLock::new();
-    ANCHORS.get_or_init(|| {
-        let mut a = pem_certs(include_str!("../roots/yubico-piv-ca-1.pem")).expect("embedded Yubico PIV root parses");
-        a.extend(pem_certs(include_str!("../roots/yubico-ca-1.pem")).expect("embedded Yubico attestation root parses"));
-        a
-    })
-}
+/// needed when a chain uses it, so both are parsed lazily, once per process.
+static ANCHORS: LazyLock<Vec<attest::Cert>> = LazyLock::new(|| {
+    let mut a = pem_certs(include_str!("../roots/yubico-piv-ca-1.pem")).expect("embedded Yubico PIV root parses");
+    a.extend(pem_certs(include_str!("../roots/yubico-ca-1.pem")).expect("embedded Yubico attestation root parses"));
+    a
+});
 
 /// The pooled intermediates a PIV chain may use: Yubico's published pool narrowed to the PIV
 /// CAs and the generic intermediates above them (`attest::piv_pool`).
-fn intermediates() -> &'static Vec<attest::Cert> {
-    static POOL: std::sync::OnceLock<Vec<attest::Cert>> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| {
-        piv_pool(pem_certs(include_str!("../roots/yubico-intermediate.pem")).expect("embedded Yubico intermediates parse"))
-    })
-}
+static INTERMEDIATES: LazyLock<Vec<attest::Cert>> = LazyLock::new(|| {
+    piv_pool(pem_certs(include_str!("../roots/yubico-intermediate.pem")).expect("embedded Yubico intermediates parse"))
+});
 
 impl Provider for Ykcs11 {
     fn name(&self) -> &'static str {
@@ -110,7 +105,7 @@ impl Provider for Ykcs11 {
             .ok_or_else(|| KmError::Unsupported("PIV attests asymmetric keys only".into()))?;
         let slot = find_attestation_cert(ctx, &id)?;
         let device = find_device_cert(ctx)?;
-        let a = verify_piv_attestation(&slot, &device, anchors(), intermediates(), spki)?;
+        let a = verify_piv_attestation(&slot, &device, &ANCHORS, &INTERMEDIATES, spki)?;
         Ok(Attested { scheme: "piv-attestation", id: a.id, root: a.root })
     }
 }
