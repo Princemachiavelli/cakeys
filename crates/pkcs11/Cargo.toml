@@ -1,11 +1,11 @@
 [package]
-name = "key-mgmnt-pkcs11"
-description = "key-mgmnt: PKCS#11 backend, verbs, and the Provider trait for module-specific behaviour"
+name = "cakeys-pkcs11"
+description = "cakeys: PKCS#11 backend, verbs, and the Provider trait for module-specific behaviour"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-key-mgmnt-core.workspace = true
+cakeys-core.workspace = true
 cryptoki.workspace = true
 serde.workspace = true

@@ -3,8 +3,8 @@
 //! spec-compliant module would, so identities stay portable across modules and versions.
 
 use cryptoki::mechanism::MechanismType;
-use key_mgmnt_core::config::ModuleInfo;
-use key_mgmnt_core::{KmError, Result};
+use cakeys_core::config::ModuleInfo;
+use cakeys_core::{KmError, Result};
 use std::borrow::Cow;
 use std::sync::Arc;
 

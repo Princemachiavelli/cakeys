@@ -1,8 +1,8 @@
 //! End-to-end tests of the CLI against a SoftHSM token.
 //!
-//! Needs `SOFTHSM2_CONF` and `KM_TEST_MODULE` (path to libsofthsm2.so) with an initialised token
+//! Needs `SOFTHSM2_CONF` and `CAKEYS_TEST_MODULE` (path to libsofthsm2.so) with an initialised token
 //! labelled `kmtest`, user PIN `1234` (the Nix build's preCheck sets this up). Tests are skipped
-//! when `KM_TEST_MODULE` is unset, unless `KM_TEST_REQUIRE=1`.
+//! when `CAKEYS_TEST_MODULE` is unset, unless `CAKEYS_TEST_REQUIRE=1`.
 
 #![allow(clippy::type_complexity)] // table-driven cases
 
@@ -18,7 +18,7 @@ use std::process::{Command, Output};
 mod common;
 use common::*;
 
-const BIN: &str = env!("CARGO_BIN_EXE_key-mgmnt");
+const BIN: &str = env!("CARGO_BIN_EXE_cakeys");
 
 struct Env {
     dir: PathBuf,
@@ -26,9 +26,9 @@ struct Env {
 }
 
 fn env(name: &str) -> Option<Env> {
-    let Ok(module) = std::env::var("KM_TEST_MODULE") else {
-        assert!(std::env::var("KM_TEST_REQUIRE").is_err(), "KM_TEST_MODULE is required");
-        eprintln!("skipping {name}: KM_TEST_MODULE not set");
+    let Ok(module) = std::env::var("CAKEYS_TEST_MODULE") else {
+        assert!(std::env::var("CAKEYS_TEST_REQUIRE").is_err(), "CAKEYS_TEST_MODULE is required");
+        eprintln!("skipping {name}: CAKEYS_TEST_MODULE not set");
         return None;
     };
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
@@ -65,7 +65,7 @@ impl Env {
             .output()
             .unwrap();
         eprintln!(
-            "$ key-mgmnt {}\n  exit={:?}\n  stdout={}\n  stderr={}",
+            "$ cakeys {}\n  exit={:?}\n  stdout={}\n  stderr={}",
             args.join(" "),
             out.status.code(),
             String::from_utf8_lossy(&out.stdout).trim(),
@@ -892,7 +892,7 @@ fn plant_secret(s: &Session, label: &str, kt: cryptoki::object::KeyType, value: 
 fn hmac_key_types_commit_with_their_own_hash() {
     use cryptoki::object::KeyType as K;
     let Some(e) = env("hmac_types") else { return };
-    if !cryptoki_hmac_types_fixed(std::env::var("KM_TEST_REQUIRE").is_ok()) {
+    if !cryptoki_hmac_types_fixed(std::env::var("CAKEYS_TEST_REQUIRE").is_ok()) {
         return;
     }
     // SoftHSM wants HMAC keys at least as long as the hash output.

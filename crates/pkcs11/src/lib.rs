@@ -1,4 +1,4 @@
-//! key-mgmnt PKCS#11 backend: the token layer over `cryptoki`, the idempotent verbs, and the
+//! cakeys PKCS#11 backend: the token layer over `cryptoki`, the idempotent verbs, and the
 //! [`Provider`] trait through which a crate adds module-specific behaviour (quirks, auto-detection).
 
 pub mod ops;

@@ -9,8 +9,8 @@
 //!   `upstream/tpm2-pkcs11/` (unfixed as of master a5156c5 and 1.10.1).
 
 use cryptoki::mechanism::MechanismType;
-use key_mgmnt_pkcs11::provider::Provider;
-use key_mgmnt_pkcs11::token::ModuleInfo;
+use cakeys_pkcs11::provider::Provider;
+use cakeys_pkcs11::token::ModuleInfo;
 use std::borrow::Cow;
 
 pub struct Tpm2Pkcs11;

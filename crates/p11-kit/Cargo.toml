@@ -1,9 +1,9 @@
 [package]
-name = "key-mgmnt-p11-kit"
-description = "key-mgmnt: p11-kit client (forwarded tokens) provider"
+name = "cakeys-p11-kit"
+description = "cakeys: p11-kit client (forwarded tokens) provider"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-key-mgmnt-pkcs11.workspace = true
+cakeys-pkcs11.workspace = true

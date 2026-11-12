@@ -11,7 +11,7 @@
 }:
 
 rustPlatform.buildRustPackage {
-  pname = "key-mgmnt";
+  pname = "cakeys";
   version = "0.1.0";
 
   src = lib.fileset.toSource {
@@ -27,7 +27,7 @@ rustPlatform.buildRustPackage {
 
   # cryptoki 0.10.1 gives KeyType::SHA224/384/512_HMAC the value of CKK_SHA256_HMAC, so those key
   # types can be neither created nor told apart. Minimal local fix until upstream has one
-  # (upstream/rust-cryptoki/). Without it, key-mgmnt refuses those key types.
+  # (upstream/rust-cryptoki/). Without it, cakeys refuses those key types.
   postPatch = ''
     applied=0
     for d in "$cargoDepsCopy"/cryptoki-0.10.1 "$cargoDepsCopy"/*/cryptoki-0.10.1; do
@@ -57,20 +57,20 @@ rustPlatform.buildRustPackage {
     printf 'directories.tokendir = %s\nobjectstore.backend = file\nlog.level = ERROR\n' \
       $TMPDIR/softhsm-tokens > $SOFTHSM2_CONF
     softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678
-    export KM_TEST_MODULE=${softhsm}/lib/softhsm/libsofthsm2.so
-    export KM_TEST_REQUIRE=1
+    export CAKEYS_TEST_MODULE=${softhsm}/lib/softhsm/libsofthsm2.so
+    export CAKEYS_TEST_REQUIRE=1
 
     # p11-kit forwarding: a second SoftHSM token behind `p11-kit server` (short socket path).
-    SOFTHSM_MODULE=$KM_TEST_MODULE bash ${./p11kit-test-env.sh} up $TMPDIR/p11
+    SOFTHSM_MODULE=$CAKEYS_TEST_MODULE bash ${./p11kit-test-env.sh} up $TMPDIR/p11
     . $TMPDIR/p11/env
-    export KM_P11KIT_CLIENT=${lib.getLib p11-kit}/lib/pkcs11/p11-kit-client.so
-    export KM_P11KIT_REQUIRE=1
+    export CAKEYS_P11KIT_CLIENT=${lib.getLib p11-kit}/lib/pkcs11/p11-kit-client.so
+    export CAKEYS_P11KIT_REQUIRE=1
 
     export HOME=$TMPDIR
     bash ${./tpm2-test-env.sh} up $TMPDIR/tpm || { tail -n 20 $TMPDIR/tpm/*.log; exit 1; }
     . $TMPDIR/tpm/env
-    export KM_TPM_MODULE=${lib.getLib tpm2-pkcs11}/lib/libtpm2_pkcs11.so
-    export KM_TPM_REQUIRE=1
+    export CAKEYS_TPM_MODULE=${lib.getLib tpm2-pkcs11}/lib/libtpm2_pkcs11.so
+    export CAKEYS_TPM_REQUIRE=1
   '';
   postCheck = ''
     bash ${./p11kit-test-env.sh} down $TMPDIR/p11
@@ -82,7 +82,7 @@ rustPlatform.buildRustPackage {
 
   meta = {
     description = "Content-addressed identity for PKCS#11 objects";
-    mainProgram = "key-mgmnt";
+    mainProgram = "cakeys";
     license = with lib.licenses; [
       mit
       asl20

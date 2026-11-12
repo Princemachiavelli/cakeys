@@ -3,7 +3,7 @@
 {
   pkgs,
   module,
-  key-mgmnt,
+  cakeys,
   pcsc-probe,
 }:
 let
@@ -71,12 +71,12 @@ let
   '';
 in
 pkgs.testers.runNixOSTest {
-  name = "key-mgmnt-module";
+  name = "cakeys-module";
 
   nodes.machine = {
     imports = [ module ];
-    services.key-management = {
-      package = key-mgmnt;
+    services.cakeys = {
+      package = cakeys;
       sandbox.pcscd.enable = true;
       sandbox.uidRange.enable = true;
       tokens.softhsm.sandboxPaths = [ stateDir ];
@@ -97,7 +97,7 @@ pkgs.testers.runNixOSTest {
       ExecStart = "${pkgs.coreutils}/bin/true";
     };
     environment.systemPackages = [
-      key-mgmnt
+      cakeys
       pkgs.softhsm
     ];
     environment.etc."km/keys.toml".source = keysToml;
@@ -115,7 +115,7 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     import re
 
-    km = "key-mgmnt --config /etc/km/keys.toml --lock /var/lib/km/keys.lock"
+    km = "cakeys --config /etc/km/keys.toml --lock /var/lib/km/keys.lock"
 
     def guest_build(attr):
         out = machine.succeed(
@@ -135,7 +135,7 @@ pkgs.testers.runNixOSTest {
             assert f in features, f"{f} missing from {features}"
         assert re.search(r"^auto-allocate-uids = true$", conf, re.M), conf
         # Token paths are granted per build by the hook, never globally.
-        assert re.search(r"^pre-build-hook = /nix/store/\S+/bin/key-mgmnt-sandbox-hook$", conf, re.M), conf
+        assert re.search(r"^pre-build-hook = /nix/store/\S+/bin/cakeys-sandbox-hook$", conf, re.M), conf
         assert "/run/pcscd" not in conf and "${stateDir}" not in conf, conf
         assert "PrivateUsers=no" in machine.succeed("systemctl show pcscd.service -p PrivateUsers")
 
@@ -171,13 +171,13 @@ pkgs.testers.runNixOSTest {
         machine.fail("systemctl start signer.service")
         machine.succeed(f"{km} realise signing-soft --token softhsm --update-lock")
         machine.succeed("systemctl start signer.service")
-        machine.succeed("systemctl is-active key-management-check-signing.service")
+        machine.succeed("systemctl is-active cakeys-check-signing.service")
         # Key gone: a fresh check (autoCreate makes a new key) no longer matches the lock.
         machine.succeed(f"{km} delete signing-soft --token softhsm")
-        machine.succeed("systemctl stop signer.service key-management-check-signing.service")
+        machine.succeed("systemctl stop signer.service cakeys-check-signing.service")
         machine.fail("systemctl start signer.service")
         assert "hash mismatch" in machine.succeed(
-            "journalctl -u key-management-check-signing.service --no-pager"
+            "journalctl -u cakeys-check-signing.service --no-pager"
         )
   '';
 }

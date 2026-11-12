@@ -6,7 +6,7 @@ Status: **draft, not filed.** Before opening it:
 - When a release with the fix is out, drop `nix/patches/cryptoki-hmac-key-types.patch` and the
   `postPatch` that applies it in `nix/package.nix`.
 
-Checked on 2026-11-11 against main `2e4ff5d` and release 0.12.1 (the bug is in both; key-mgmnt uses
+Checked on 2026-11-11 against main `2e4ff5d` and release 0.12.1 (the bug is in both; cakeys uses
 0.10.1, which has it too). There is no existing issue or PR for `SHA384_HMAC`.
 
 Local equivalent: `nix/patches/cryptoki-hmac-key-types.patch` (the same three constants, against

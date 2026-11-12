@@ -1,24 +1,24 @@
 [package]
-name = "key-mgmnt"
+name = "cakeys"
 description = "Content-addressed identity for PKCS#11 (and later TPM) objects"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "key_mgmnt"
+name = "cakeys"
 
 [[bin]]
-name = "key-mgmnt"
+name = "cakeys"
 path = "src/main.rs"
 
 [dependencies]
-key-mgmnt-core.workspace = true
-key-mgmnt-pkcs11.workspace = true
-key-mgmnt-softhsm.workspace = true
-key-mgmnt-ykcs11.workspace = true
-key-mgmnt-tpm2-pkcs11.workspace = true
-key-mgmnt-p11-kit.workspace = true
+cakeys-core.workspace = true
+cakeys-pkcs11.workspace = true
+cakeys-softhsm.workspace = true
+cakeys-ykcs11.workspace = true
+cakeys-tpm2-pkcs11.workspace = true
+cakeys-p11-kit.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true

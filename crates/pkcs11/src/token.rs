@@ -2,10 +2,10 @@
 //! Module-specific behaviour goes through the selected [`Provider`].
 
 use crate::provider::{Provider, Registry};
-pub use key_mgmnt_core::config::{ModuleInfo, TokenInfo};
-use key_mgmnt_core::config::{Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
-use key_mgmnt_core::id::{self, Commit, Curve, HmacHash};
-use key_mgmnt_core::{KmError, Result};
+pub use cakeys_core::config::{ModuleInfo, TokenInfo};
+use cakeys_core::config::{Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
+use cakeys_core::id::{self, Commit, Curve, HmacHash};
+use cakeys_core::{KmError, Result};
 use cryptoki::context::{CInitializeArgs, Pkcs11};
 use cryptoki::error::{Error as CkError, RvError};
 use cryptoki::mechanism::{Mechanism, MechanismType};

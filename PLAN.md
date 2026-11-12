@@ -1,6 +1,6 @@
 # Key management plan
 
-> **Current design and state: [`docs/DESIGN.md`](docs/DESIGN.md)** (authoritative). Review findings: [`docs/REVIEW-2026-11-11.md`](docs/REVIEW-2026-11-11.md). This file is the roadmap and the history of decisions; where it disagrees with DESIGN.md, DESIGN.md wins.
+> **Current design and state: [`docs/DESIGN.md`](docs/DESIGN.md)** (authoritative). Review findings: [`docs/REVIEW-2026-11-11.md`](docs/REVIEW-2026-11-11.md). This file is the roadmap and the history of decisions; where it disagrees with DESIGN.md, DESIGN.md wins. The project was renamed from `key-mgmnt` to **`cakeys`** on 2026-11-11; the history below uses the old name.
 
 Uniquely create, store, export/import and manage PKCS11 and TPM keys, objects, certificatse and any other type relevent.
 The core premise here is we use some content-addressed identification intead of the raw PKCS11 URI or other volatile identifier.

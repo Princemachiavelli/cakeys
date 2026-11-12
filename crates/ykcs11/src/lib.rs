@@ -1,8 +1,8 @@
 //! Yubico ykcs11 (YubiKey PIV). Its `CKA_PUBLIC_KEY_INFO` quirk (length 0, then
 //! `CKR_ARGUMENTS_BAD`) is tolerated by the generic token code for every module.
 
-use key_mgmnt_pkcs11::provider::Provider;
-use key_mgmnt_pkcs11::token::ModuleInfo;
+use cakeys_pkcs11::provider::Provider;
+use cakeys_pkcs11::token::ModuleInfo;
 
 pub struct Ykcs11;
 

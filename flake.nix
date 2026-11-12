@@ -10,12 +10,12 @@
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
-      key-mgmnt = pkgs.callPackage ./nix/package.nix { };
+      cakeys = pkgs.callPackage ./nix/package.nix { };
       pcsc-probe = pkgs.callPackage ./nix/pcsc-probe.nix { };
       mkTest =
         kind:
         import ./nix/test.nix {
-          inherit pkgs key-mgmnt kind;
+          inherit pkgs cakeys kind;
           module = self.nixosModules.default;
         };
     in
@@ -26,14 +26,14 @@
         { lib, pkgs, ... }:
         {
           imports = [ ./nix/module.nix ];
-          services.key-management.package =
+          services.cakeys.package =
             lib.mkDefault
-              self.packages.${pkgs.stdenv.hostPlatform.system}.key-mgmnt;
+              self.packages.${pkgs.stdenv.hostPlatform.system}.cakeys;
         };
 
       packages.${system} = {
-        default = key-mgmnt;
-        inherit key-mgmnt pcsc-probe;
+        default = cakeys;
+        inherit cakeys pcsc-probe;
         # systemd-nspawn variant of the integration test. Needs the `uid-range` system feature
         # (nix.conf: `system-features = ... uid-range` and `auto-allocate-uids = true`).
         test-nspawn = mkTest "container";
@@ -73,14 +73,14 @@
       };
 
       checks.${system} = {
-        inherit key-mgmnt;
+        inherit cakeys;
         vm = mkTest "vm";
         module = import ./nix/module-test.nix {
-          inherit pkgs key-mgmnt pcsc-probe;
+          inherit pkgs cakeys pcsc-probe;
           module = self.nixosModules.default;
         };
         tpm = import ./nix/tpm-test.nix {
-          inherit pkgs key-mgmnt;
+          inherit pkgs cakeys;
           module = self.nixosModules.default;
         };
         lib =
@@ -88,7 +88,7 @@
             keys = self.lib.mkKeys {
               config = ./crates/cli/tests/fixtures/keys.toml;
               lock = ./crates/cli/tests/fixtures/keys.lock;
-              keyMgmnt = key-mgmnt;
+              cakeys = cakeys;
               modules.softhsm = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
             };
             fails = e: !(builtins.tryEval e).success;
@@ -113,13 +113,13 @@
           assert pkgs.lib.hasInfix "check signing-cert.id.certhash" (
             keys.signing-cert.check { scheme = "certhash"; }
           );
-          pkgs.runCommand "key-mgmnt-lib-check" { } ''
+          pkgs.runCommand "cakeys-lib-check" { } ''
             echo ${pkgs.lib.escapeShellArg (keys.signing.check { })} > $out
           '';
       };
 
       devShells.${system}.default = pkgs.mkShell {
-        inputsFrom = [ key-mgmnt ];
+        inputsFrom = [ cakeys ];
         packages = with pkgs; [
           clippy
           rustfmt

@@ -1,4 +1,4 @@
-# Host support for key-management: token access from the Nix build sandbox, uid-range builds,
+# Host support for cakeys: token access from the Nix build sandbox, uid-range builds,
 # and pre-use identity checks for services (PLAN.md, "Nix integration").
 #
 # Token paths are not global `extra-sandbox-paths`: a pre-build-hook (nix/sandbox-hook.sh) grants
@@ -18,7 +18,7 @@ let
     mkMerge
     types
     ;
-  cfg = config.services.key-management;
+  cfg = config.services.cakeys;
   autoUids = config.nix.settings.auto-allocate-uids or false;
   # Nix defaults; NixOS only sets these when nix-daemon runs unprivileged.
   startId = config.nix.settings.start-id or 872415232;
@@ -41,12 +41,12 @@ let
     }) cfg.tokens
   );
   hook = pkgs.writeShellApplication {
-    name = "key-mgmnt-sandbox-hook";
+    name = "cakeys-sandbox-hook";
     runtimeInputs = [
       config.nix.package
       pkgs.jq
     ];
-    runtimeEnv.KM_SANDBOX_MAP = pkgs.writeText "key-mgmnt-sandbox-map.json" (builtins.toJSON hookMap);
+    runtimeEnv.CAKEYS_SANDBOX_MAP = pkgs.writeText "cakeys-sandbox-map.json" (builtins.toJSON hookMap);
     text = builtins.readFile ./sandbox-hook.sh;
   };
 
@@ -133,10 +133,10 @@ let
     };
 in
 {
-  options.services.key-management = {
+  options.services.cakeys = {
     package = mkOption {
       type = types.package;
-      description = "The key-mgmnt package.";
+      description = "The cakeys package.";
     };
 
     sandbox.pcscd.enable = mkEnableOption ''
@@ -172,8 +172,8 @@ in
       type = types.attrsOf (types.submodule checkModule);
       default = { };
       description = ''
-        Pre-use identity checks: one oneshot `key-management-check-<name>` unit each, which runs
-        `key-mgmnt check` and blocks the units in `requiredBy` unless the token holds the
+        Pre-use identity checks: one oneshot `cakeys-check-<name>` unit each, which runs
+        `cakeys check` and blocks the units in `requiredBy` unless the token holds the
         locked identity.
       '';
     };
@@ -222,7 +222,7 @@ in
       assertions = [
         {
           assertion = autoUids -> lib.mod idCount slotSize == 0;
-          message = "services.key-management.sandbox.tpm2: nix.settings.id-count must be a multiple of ${toString slotSize}";
+          message = "services.cakeys.sandbox.tpm2: nix.settings.id-count must be a multiple of ${toString slotSize}";
         }
       ];
       # Runs after the node exists (and after NixOS's tss/0660 rule), on every add/change event.
@@ -236,7 +236,7 @@ in
     (mkIf (cfg.tokens != { }) {
       assertions = lib.mapAttrsToList (n: t: {
         assertion = t.pcscd -> cfg.sandbox.pcscd.enable;
-        message = "services.key-management.tokens.${n}.pcscd needs services.key-management.sandbox.pcscd.enable";
+        message = "services.cakeys.tokens.${n}.pcscd needs services.cakeys.sandbox.pcscd.enable";
       }) cfg.tokens;
       nix.settings.system-features = lib.mapAttrsToList (_: t: t.systemFeature) cfg.tokens;
       # A plain definition: a second pre-build-hook elsewhere is a conflict, not a silent override.
@@ -246,8 +246,8 @@ in
     {
       systemd.services = lib.mapAttrs' (
         name: c:
-        lib.nameValuePair "key-management-check-${name}" {
-          description = "key-management identity check: ${c.object}";
+        lib.nameValuePair "cakeys-check-${name}" {
+          description = "cakeys identity check: ${c.object}";
           inherit (c) requiredBy environment;
           before = c.requiredBy;
           wants = lib.optional cfg.sandbox.pcscd.enable "pcscd.socket";

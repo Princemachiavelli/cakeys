@@ -11,8 +11,8 @@
 //!   that needs private objects still needs the PIN.
 //! - The socket path must be short (`sun_path`, about 107 bytes); longer ones abort the server.
 
-use key_mgmnt_pkcs11::provider::Provider;
-use key_mgmnt_pkcs11::token::ModuleInfo;
+use cakeys_pkcs11::provider::Provider;
+use cakeys_pkcs11::token::ModuleInfo;
 
 pub struct P11Kit;
 

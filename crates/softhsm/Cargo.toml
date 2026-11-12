@@ -1,9 +1,9 @@
 [package]
-name = "key-mgmnt-softhsm"
-description = "key-mgmnt: softhsm provider"
+name = "cakeys-softhsm"
+description = "cakeys: softhsm provider"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-key-mgmnt-pkcs11.workspace = true
+cakeys-pkcs11.workspace = true

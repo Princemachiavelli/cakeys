@@ -9,12 +9,12 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-key-mgmnt-core = { path = "crates/core" }
-key-mgmnt-pkcs11 = { path = "crates/pkcs11" }
-key-mgmnt-softhsm = { path = "crates/softhsm" }
-key-mgmnt-ykcs11 = { path = "crates/ykcs11" }
-key-mgmnt-tpm2-pkcs11 = { path = "crates/tpm2-pkcs11" }
-key-mgmnt-p11-kit = { path = "crates/p11-kit" }
+cakeys-core = { path = "crates/core" }
+cakeys-pkcs11 = { path = "crates/pkcs11" }
+cakeys-softhsm = { path = "crates/softhsm" }
+cakeys-ykcs11 = { path = "crates/ykcs11" }
+cakeys-tpm2-pkcs11 = { path = "crates/tpm2-pkcs11" }
+cakeys-p11-kit = { path = "crates/p11-kit" }
 anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }

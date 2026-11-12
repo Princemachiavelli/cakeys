@@ -1,8 +1,8 @@
-# key-mgmnt
+# cakeys
 
 Content-addressed identity for PKCS#11 (and later TPM) objects, as a Nix flake.
 
-Declare keys, certificates and data objects in `keys.toml`. key-mgmnt finds them on a token by a
+Declare keys, certificates and data objects in `keys.toml`. cakeys finds them on a token by a
 locator (`CKA_LABEL`/`CKA_ID`), identifies them by a **hash of their material** (a CA-ID), and
 records that hash in `keys.lock`. A label or URI can be changed or reused; the hash cannot. Every
 use, including inside a Nix build sandbox, first checks that the token still holds exactly that
@@ -36,13 +36,13 @@ tokens.softhsm = { locator = { CKA_LABEL = "signing" }, autoCreate = true }
 ```
 
 ```console
-$ key-mgmnt -c keys.toml realise signing-soft --token softhsm
+$ cakeys -c keys.toml realise signing-soft --token softhsm
 created 'signing' (spec 'signing-soft') on token 'softhsm'
 error: hash mismatch in identity of 'signing' (spec 'signing-soft') on token 'softhsm':
   specified: <none>
      got:    sha256-…            # first use: like a fixed-output derivation
-$ key-mgmnt -c keys.toml realise signing-soft --token softhsm --update-lock   # record it
-$ key-mgmnt -c keys.toml check signing     # later: verify, then print the URI
+$ cakeys -c keys.toml realise signing-soft --token softhsm --update-lock   # record it
+$ cakeys -c keys.toml check signing     # later: verify, then print the URI
 pkcs11:token=main;object=signing;type=private
 ```
 
@@ -67,10 +67,10 @@ Verbs:
 
 ```nix
 let
-  keys = key-mgmnt.lib.mkKeys {
+  keys = cakeys.lib.mkKeys {
     config = ./keys.toml;
     lock = ./keys.lock;
-    keyMgmnt = key-mgmnt.packages.x86_64-linux.default;
+    cakeys = cakeys.packages.x86_64-linux.default;
     modules.softhsm = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
   };
 in
@@ -86,7 +86,7 @@ pkgs.runCommand "signed-artifact" {
 
 A cached consumer is not rebuilt, so the token is not re-contacted; `nix build --check` forces it.
 
-The NixOS module (`nixosModules.default`, `services.key-management`) gives a token's sandbox paths,
+The NixOS module (`nixosModules.default`, `services.cakeys`) gives a token's sandbox paths,
 and pcscd or the TPM, **only to builds that require that token's feature** (through a
 pre-build-hook). It also defines check units that gate services on the key's identity. Real builds
 reach tokens only through p11-kit forwarding or a real TPM, never through a token database.
@@ -99,7 +99,7 @@ $ nix build .#test-nspawn    # the same flow in systemd-nspawn (needs the uid-ra
 $ nix develop                # cargo, clippy, softhsm, opensc
 ```
 
-Plain `cargo test` skips the token suites unless `KM_TEST_MODULE` and friends are set (see the
+Plain `cargo test` skips the token suites unless `CAKEYS_TEST_MODULE` and friends are set (see the
 test file headers). It also builds cryptoki without the local HMAC key-type patch, which the Nix
 build applies. Third-party providers can be linked in: see
 `crates/cli/examples/custom-provider.rs`.

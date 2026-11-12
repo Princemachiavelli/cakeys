@@ -1,4 +1,4 @@
-//! key-mgmnt core: `keys.toml`/`keys.lock`, error kinds and content-addressed identity (CA-IDs).
+//! cakeys core: `keys.toml`/`keys.lock`, error kinds and content-addressed identity (CA-IDs).
 //! Touches no token; backends build on it.
 
 pub mod config;

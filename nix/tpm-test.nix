@@ -4,7 +4,7 @@
 {
   pkgs,
   module,
-  key-mgmnt,
+  cakeys,
 }:
 let
   inherit (pkgs) lib;
@@ -44,8 +44,8 @@ let
 
   node = auto: {
     imports = [ module ];
-    services.key-management = {
-      package = key-mgmnt;
+    services.cakeys = {
+      package = cakeys;
       sandbox.tpm2.enable = true;
       sandbox.uidRange.enable = auto;
       tokens.tpm.sandboxPaths = [ "/dev/tpmrm0" ];
@@ -60,7 +60,7 @@ let
   };
 in
 pkgs.testers.runNixOSTest {
-  name = "key-mgmnt-tpm";
+  name = "cakeys-tpm";
 
   nodes.auto = node true;
   nodes.nixbld = node false;

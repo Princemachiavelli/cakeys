@@ -14,7 +14,7 @@ let
 in
 {
   /**
-    mkKeys { config, lock ?, keyMgmnt ?, modules ? { } } -> { <object> = { ... }; }
+    mkKeys { config, lock ?, cakeys ?, modules ? { } } -> { <object> = { ... }; }
 
     Per object:
       type                    intrinsic type from keys.toml
@@ -34,7 +34,7 @@ in
     {
       config,
       lock ? null,
-      keyMgmnt ? null,
+      cakeys ? null,
       modules ? { },
     }:
     let
@@ -54,7 +54,7 @@ in
           real =
             t:
             realisations.${s}.${t}
-              or (throw "key-management: spec '${s}' has no realisation on token '${t}' in the lock; run `key-mgmnt realise ${s} --token ${t} --update-lock`");
+              or (throw "cakeys: spec '${s}' has no realisation on token '${t}' in the lock; run `cakeys realise ${s} --token ${t} --update-lock`");
         in
         {
           tokens = tks;
@@ -97,7 +97,7 @@ in
             if builtins.length m == 1 then
               views.${(builtins.head m).spec}
             else
-              throw "key-management: object '${obj}' has several specs on token '${t}'; use specs.<spec>";
+              throw "cakeys: object '${obj}' has several specs on token '${t}'; use specs.<spec>";
           perToken = field: genAttrs tokenNames (t: (onToken t).${field}.${t});
         in
         {
@@ -118,10 +118,10 @@ in
               # null: whatever the spec computes; else require that scheme (e.g. "certhash").
               scheme ? null,
             }:
-            assert keyMgmnt != null || throw "key-management: mkKeys needs keyMgmnt for check";
+            assert cakeys != null || throw "cakeys: mkKeys needs cakeys for check";
             builtins.concatStringsSep " " (
               [
-                "${keyMgmnt}/bin/key-mgmnt"
+                "${cakeys}/bin/cakeys"
                 "--config ${config}"
               ]
               ++ (if hasLock then [ "--lock ${lock}" ] else [ ])

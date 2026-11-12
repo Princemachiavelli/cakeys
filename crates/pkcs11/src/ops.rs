@@ -1,9 +1,9 @@
 //! Idempotent verbs with HTTP-like semantics (PLAN.md, "Token verbs").
 
 use crate::token::{self as hal, Token};
-use key_mgmnt_core::config::{Config, Lock, LockRealisation, Mode, ObjectCfg, SpecCfg, SpecTokenCfg};
-use key_mgmnt_core::id::{self, Commit, HmacHash};
-use key_mgmnt_core::{KmError, Result};
+use cakeys_core::config::{Config, Lock, LockRealisation, Mode, ObjectCfg, SpecCfg, SpecTokenCfg};
+use cakeys_core::id::{self, Commit, HmacHash};
+use cakeys_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
 use cryptoki::object::KeyType;
 use serde::Serialize;
@@ -296,7 +296,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             None => unlocked.push((scheme, got)),
         }
     }
-    // A scheme not yet in the lock (e.g. one a newer key-mgmnt computes) is fine once another
+    // A scheme not yet in the lock (e.g. one a newer cakeys computes) is fine once another
     // scheme proved the identity; with nothing to compare it is first use and fails like a FOD.
     if let Some((_, got)) = unlocked.first().filter(|_| !matched) {
         return Err(KmError::HashMismatch { what: t.what(), expected: "<none>".into(), got: (*got).clone() });

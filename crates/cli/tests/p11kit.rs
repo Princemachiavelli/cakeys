@@ -1,10 +1,10 @@
 //! End-to-end tests through p11-kit forwarding: `p11-kit server` in front of a SoftHSM token
 //! (`kmp11`), reached with `p11-kit-client.so`, compared with the same token opened directly.
 //!
-//! Needs `KM_P11KIT_CLIENT` (p11-kit-client.so), `P11_KIT_SERVER_ADDRESS`, `KM_TEST_MODULE`
+//! Needs `CAKEYS_P11KIT_CLIENT` (p11-kit-client.so), `P11_KIT_SERVER_ADDRESS`, `CAKEYS_TEST_MODULE`
 //! (libsofthsm2.so, for the direct path) and `SOFTHSM2_CONF`; the server must export only
 //! `pkcs11:token=kmp11` (user PIN 1234) while the same SoftHSM also holds `kmtest`. Skipped when
-//! `KM_P11KIT_CLIENT` is unset, unless `KM_P11KIT_REQUIRE=1`.
+//! `CAKEYS_P11KIT_CLIENT` is unset, unless `CAKEYS_P11KIT_REQUIRE=1`.
 
 mod common;
 
@@ -17,7 +17,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-const BIN: &str = env!("CARGO_BIN_EXE_key-mgmnt");
+const BIN: &str = env!("CARGO_BIN_EXE_cakeys");
 
 struct Env {
     dir: PathBuf,
@@ -26,12 +26,12 @@ struct Env {
 }
 
 fn env(name: &str) -> Option<Env> {
-    let Ok(client) = std::env::var("KM_P11KIT_CLIENT") else {
-        assert!(std::env::var("KM_P11KIT_REQUIRE").is_err(), "KM_P11KIT_CLIENT is required");
-        eprintln!("skipping {name}: KM_P11KIT_CLIENT not set");
+    let Ok(client) = std::env::var("CAKEYS_P11KIT_CLIENT") else {
+        assert!(std::env::var("CAKEYS_P11KIT_REQUIRE").is_err(), "CAKEYS_P11KIT_CLIENT is required");
+        eprintln!("skipping {name}: CAKEYS_P11KIT_CLIENT not set");
         return None;
     };
-    let direct = std::env::var("KM_TEST_MODULE").expect("KM_TEST_MODULE (SoftHSM) for the direct path");
+    let direct = std::env::var("CAKEYS_TEST_MODULE").expect("CAKEYS_TEST_MODULE (SoftHSM) for the direct path");
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("p11kit-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -58,7 +58,7 @@ impl Env {
     fn km(&self, args: &[&str]) -> Output {
         let out = Command::new(BIN).arg("--config").arg(self.dir.join("keys.toml")).args(args).output().unwrap();
         eprintln!(
-            "$ key-mgmnt {}\n  exit={:?}\n  stdout={}\n  stderr={}",
+            "$ cakeys {}\n  exit={:?}\n  stdout={}\n  stderr={}",
             args.join(" "),
             out.status.code(),
             String::from_utf8_lossy(&out.stdout).trim(),

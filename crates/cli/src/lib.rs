@@ -1,12 +1,12 @@
-//! The `key-mgmnt` command line, as a library so a downstream binary can link extra provider
-//! crates: `key_mgmnt::main(key_mgmnt::default_registry().with(MyProvider))`.
+//! The `cakeys` command line, as a library so a downstream binary can link extra provider
+//! crates: `cakeys::main(cakeys::default_registry().with(MyProvider))`.
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use key_mgmnt_core::config::{load_config, load_lock, save_lock, Config};
-use key_mgmnt_core::KmError;
-use key_mgmnt_pkcs11::ops::{self, Target};
-use key_mgmnt_pkcs11::{Registry, Token};
+use cakeys_core::config::{load_config, load_lock, save_lock, Config};
+use cakeys_core::KmError;
+use cakeys_pkcs11::ops::{self, Target};
+use cakeys_pkcs11::{Registry, Token};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -20,10 +20,10 @@ use std::process::ExitCode;
 #[command(version)]
 struct Cli {
     /// Declarative input (keys.toml).
-    #[arg(short, long, env = "KM_CONFIG")]
+    #[arg(short, long, env = "CAKEYS_CONFIG")]
     config: PathBuf,
     /// Lock file; defaults to the config path with a `.lock` extension.
-    #[arg(short, long, env = "KM_LOCK")]
+    #[arg(short, long, env = "CAKEYS_LOCK")]
     lock: Option<PathBuf>,
     /// Override a token's PKCS#11 module: `<token>=<path>` (repeatable).
     #[arg(long = "module", value_name = "TOKEN=PATH")]
@@ -76,10 +76,10 @@ enum Cmd {
 /// The providers this crate links. Built through the same public API a third party uses.
 pub fn default_registry() -> Registry {
     Registry::new()
-        .with(key_mgmnt_softhsm::SoftHsm)
-        .with(key_mgmnt_ykcs11::Ykcs11)
-        .with(key_mgmnt_tpm2_pkcs11::Tpm2Pkcs11)
-        .with(key_mgmnt_p11_kit::P11Kit)
+        .with(cakeys_softhsm::SoftHsm)
+        .with(cakeys_ykcs11::Ykcs11)
+        .with(cakeys_tpm2_pkcs11::Tpm2Pkcs11)
+        .with(cakeys_p11_kit::P11Kit)
 }
 
 /// Run the CLI with the given providers; maps errors to the documented exit codes.

@@ -1,4 +1,4 @@
-# key-mgmnt design (state at 2026-11-11)
+# cakeys design (state at 2026-11-11)
 
 This is the authoritative description of what is built. `PLAN.md` is the roadmap and history;
 where the two disagree, this document wins. Review findings and open issues are tracked in
@@ -188,10 +188,10 @@ Exit codes:
 ### 6.1 Crates
 | Crate | Role |
 |---|---|
-| `key-mgmnt-core` | config, lock, errors and exit codes, CA-IDs. No `cryptoki`. |
-| `key-mgmnt-pkcs11` | the `cryptoki` token layer (`token.rs`), verbs (`ops.rs`), `Provider` and `Registry` |
-| `key-mgmnt-{softhsm,ykcs11,tpm2-pkcs11,p11-kit}` | one provider per module |
-| `key-mgmnt` (crates/cli) | CLI as a library: `main(registry)`, `default_registry()`; `examples/custom-provider.rs` |
+| `cakeys-core` | config, lock, errors and exit codes, CA-IDs. No `cryptoki`. |
+| `cakeys-pkcs11` | the `cryptoki` token layer (`token.rs`), verbs (`ops.rs`), `Provider` and `Registry` |
+| `cakeys-{softhsm,ykcs11,tpm2-pkcs11,p11-kit}` | one provider per module |
+| `cakeys` (crates/cli) | CLI as a library: `main(registry)`, `default_registry()`; `examples/custom-provider.rs` |
 
 ### 6.2 Providers
 - **Hooks:** `name`, `matches(&ModuleInfo)`, and optionally `mechanisms` (filter), `ec_point`
@@ -235,7 +235,7 @@ A consumer derivation requires the token's feature and runs `check` before using
 **Caveat:** a cached consumer is not rebuilt, so the token is not re-contacted; `nix build --check`
 forces it. The VM test covers all of this.
 
-### 7.3 NixOS module (`nixosModules.default`, `services.key-management`)
+### 7.3 NixOS module (`nixosModules.default`, `services.cakeys`)
 - **`tokens.<n>.{systemFeature, sandboxPaths, pcscd}`.** The features are added to
   `system-features`. Paths are **not** global `extra-sandbox-paths`: a pre-build-hook
   (`nix/sandbox-hook.sh`, bash + jq over `nix derivation show`) grants them only to builds whose
@@ -250,7 +250,7 @@ forces it. The VM test covers all of this.
   with `auto-allocate-uids`, each 65 536-ID slot's first UID, which is also its GID. Test:
   `checks.tpm`, with auto UIDs, uid-range, nixbld, and a stripped-ACL control.
 - **`sandbox.uidRange.enable`:** `auto-allocate-uids` and the `uid-range` feature.
-- **`checks.<n>`:** a oneshot `key-management-check-<n>` unit running `check`, required by the
+- **`checks.<n>`:** a oneshot `cakeys-check-<n>` unit running `check`, required by the
   units that use the key — `checks.module`.
 
 ### 7.4 What real builds may reach
@@ -312,7 +312,13 @@ Changing any of these changes existing IDs or locks, so none of them follows a r
 - exit codes;
 - the URI shape.
 
-Names a rename *does* change: crate names (`key-mgmnt-*`), the binary `key-mgmnt`, the NixOS
-option path `services.key-management`, unit names `key-management-check-*`, the hook binary
-`key-mgmnt-sandbox-hook`, `KM_*` environment variables, Nix library error prefixes, and the flake
-description.
+**Renamed on 2026-11-11 (`key-mgmnt` → `cakeys`).** The rename changed only names:
+- crates `key-mgmnt-*` → `cakeys-*`;
+- the binary `key-mgmnt` → `cakeys`;
+- `services.key-management` → `services.cakeys`;
+- units `key-management-check-*` → `cakeys-check-*`;
+- the hook `key-mgmnt-sandbox-hook` → `cakeys-sandbox-hook`;
+- env vars `KM_*` → `CAKEYS_*` (`CAKEYS_CONFIG`, `CAKEYS_LOCK`, test variables);
+- `mkKeys { keyMgmnt }` → `mkKeys { cakeys }`.
+
+Existing locks and IDs stay valid. `PLAN.md` keeps the old name in its history.

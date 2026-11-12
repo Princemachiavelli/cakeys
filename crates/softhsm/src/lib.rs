@@ -1,8 +1,8 @@
 //! SoftHSMv2: the reference module. No quirks; registered so `provider = "softhsm"` can be
 //! required explicitly and so it is reported by name.
 
-use key_mgmnt_pkcs11::provider::Provider;
-use key_mgmnt_pkcs11::token::ModuleInfo;
+use cakeys_pkcs11::provider::Provider;
+use cakeys_pkcs11::token::ModuleInfo;
 
 pub struct SoftHsm;
 

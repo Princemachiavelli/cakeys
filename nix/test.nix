@@ -4,7 +4,7 @@
 #   kind = "container": systemd-nspawn (needs `uid-range`); CLI flow only.
 {
   pkgs,
-  key-mgmnt,
+  cakeys,
   module,
   kind ? "vm",
 }:
@@ -51,7 +51,7 @@ let
       km = import (sp "${./lib.nix}");
       keys = km.mkKeys {
         inherit config lock;
-        keyMgmnt = sp "${key-mgmnt}";
+        cakeys = sp "${cakeys}";
         modules.softhsm = sp "${pkgs.softhsm}" + "/lib/softhsm/libsofthsm2.so";
       };
     in
@@ -68,7 +68,7 @@ let
 
   machine = {
     environment.systemPackages = [
-      key-mgmnt
+      cakeys
       pkgs.softhsm
       pkgs.opensc
       pkgs.openssl
@@ -82,8 +82,8 @@ let
     # The consumer gets the token through the module's pre-build-hook, because it requires the
     # token's feature (keys.signing.rsf.softhsm, i.e. token-softhsm).
     imports = [ module ];
-    services.key-management = {
-      package = key-mgmnt;
+    services.cakeys = {
+      package = cakeys;
       tokens.softhsm.sandboxPaths = [ stateDir ];
     };
     virtualisation.additionalPaths = [ consumer ];
@@ -91,13 +91,13 @@ let
   };
 
   test = pkgs.testers.runNixOSTest {
-    name = "key-mgmnt-${kind}";
+    name = "cakeys-${kind}";
     ${if isVM then "nodes" else "containers"}.machine = machine;
 
     testScript = ''
       import re
 
-      km = "key-mgmnt --config /root/keys.toml"
+      km = "cakeys --config /root/keys.toml"
       def build(extra="", ok=True):
           # Token objects created by root must stay usable by the sandboxed nixbld builder.
           machine.succeed("chmod -R a+rwX ${stateDir}")

@@ -19,7 +19,7 @@ up)
   # A private bus from dbus's own session.conf (the Nix sandbox has no /etc/dbus-1), on an
   # abstract socket so long directory names don't hit the 108-byte socket path limit.
   conf="$(dirname "$(dirname "$(readlink -f "$(command -v dbus-daemon)")")")/share/dbus-1/session.conf"
-  dbus-daemon --config-file="$conf" --address="unix:abstract=key-mgmnt-tpm-$$-$PORT" \
+  dbus-daemon --config-file="$conf" --address="unix:abstract=cakeys-tpm-$$-$PORT" \
     --fork --print-address=3 --print-pid=4 \
     3>"$D/dbus.addr" 4>"$D/dbus.pid" </dev/null >/dev/null 2>"$D/dbus.log"
   DBUS_SESSION_BUS_ADDRESS=$(head -1 "$D/dbus.addr")

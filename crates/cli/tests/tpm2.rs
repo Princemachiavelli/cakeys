@@ -1,8 +1,8 @@
 //! End-to-end tests against tpm2-pkcs11 on a software TPM (nix/tpm2-test-env.sh).
 //!
-//! Needs `KM_TPM_MODULE` (libtpm2_pkcs11.so), the `TPM2_PKCS11_*` environment from the harness,
+//! Needs `CAKEYS_TPM_MODULE` (libtpm2_pkcs11.so), the `TPM2_PKCS11_*` environment from the harness,
 //! a token `kmtest` with user PIN `1234`, and `tpm2_ptool` on PATH. Skipped when
-//! `KM_TPM_MODULE` is unset, unless `KM_TPM_REQUIRE=1`.
+//! `CAKEYS_TPM_MODULE` is unset, unless `CAKEYS_TPM_REQUIRE=1`.
 
 mod common;
 
@@ -16,7 +16,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-const BIN: &str = env!("CARGO_BIN_EXE_key-mgmnt");
+const BIN: &str = env!("CARGO_BIN_EXE_cakeys");
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 struct Env {
@@ -25,9 +25,9 @@ struct Env {
 }
 
 fn env(name: &str) -> Option<Env> {
-    let Ok(module) = std::env::var("KM_TPM_MODULE") else {
-        assert!(std::env::var("KM_TPM_REQUIRE").is_err(), "KM_TPM_MODULE is required");
-        eprintln!("skipping {name}: KM_TPM_MODULE not set");
+    let Ok(module) = std::env::var("CAKEYS_TPM_MODULE") else {
+        assert!(std::env::var("CAKEYS_TPM_REQUIRE").is_err(), "CAKEYS_TPM_MODULE is required");
+        eprintln!("skipping {name}: CAKEYS_TPM_MODULE not set");
         return None;
     };
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("tpm2-{name}"));
@@ -54,7 +54,7 @@ impl Env {
     fn km(&self, args: &[&str]) -> Output {
         let out = Command::new(BIN).arg("--config").arg(self.dir.join("keys.toml")).args(args).output().unwrap();
         eprintln!(
-            "$ key-mgmnt {}\n  exit={:?}\n  stdout={}\n  stderr={}",
+            "$ cakeys {}\n  exit={:?}\n  stdout={}\n  stderr={}",
             args.join(" "),
             out.status.code(),
             String::from_utf8_lossy(&out.stdout).trim(),
@@ -101,7 +101,7 @@ fn labelled(s: &Session, label: &str) -> usize {
 }
 
 /// Like `unwrap_octets`, but also accepting tpm2-pkcs11's P-521 encoding `04 85 <133 bytes>`
-/// (see key-mgmnt-tpm2-pkcs11). The oracle's independence is in building the SPKI.
+/// (see cakeys-tpm2-pkcs11). The oracle's independence is in building the SPKI.
 fn unwrap_tpm2(v: &[u8]) -> Vec<u8> {
     match v {
         [0x04, n, rest @ ..] if *n >= 0x80 && rest.len() == *n as usize => rest.to_vec(),
@@ -229,7 +229,7 @@ const HMAC384_VALUE: &[u8; 48] = b"key-management hmac-sha384 test vector, 48 by
 #[test]
 fn tpm2_imported_keys_match_openssl_and_host_hmac() {
     let Some(e) = env("imported") else { return };
-    if !cryptoki_hmac_types_fixed(std::env::var("KM_TPM_REQUIRE").is_ok()) {
+    if !cryptoki_hmac_types_fixed(std::env::var("CAKEYS_TPM_REQUIRE").is_ok()) {
         return;
     }
     e.ptool(&["import", "--algorithm=ecc", &format!("--privkey={FIXTURES}/tpm-import-p256.pem"), "--key-label=imp-p256"]);

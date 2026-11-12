@@ -144,6 +144,94 @@ dependencies = [
 ]
 
 [[package]]
+name = "cakeys"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "aes-kw",
+ "anyhow",
+ "base64",
+ "cakeys-core",
+ "cakeys-p11-kit",
+ "cakeys-pkcs11",
+ "cakeys-softhsm",
+ "cakeys-tpm2-pkcs11",
+ "cakeys-ykcs11",
+ "clap",
+ "cmac",
+ "cryptoki",
+ "hmac",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "toml",
+ "x509-cert",
+]
+
+[[package]]
+name = "cakeys-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "bp256",
+ "bp384",
+ "ed25519-dalek",
+ "ed448",
+ "k256",
+ "p256",
+ "p384",
+ "p521",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "toml",
+ "x509-cert",
+]
+
+[[package]]
+name = "cakeys-p11-kit"
+version = "0.1.0"
+dependencies = [
+ "cakeys-pkcs11",
+]
+
+[[package]]
+name = "cakeys-pkcs11"
+version = "0.1.0"
+dependencies = [
+ "cakeys-core",
+ "cryptoki",
+ "serde",
+]
+
+[[package]]
+name = "cakeys-softhsm"
+version = "0.1.0"
+dependencies = [
+ "cakeys-pkcs11",
+]
+
+[[package]]
+name = "cakeys-tpm2-pkcs11"
+version = "0.1.0"
+dependencies = [
+ "cakeys-pkcs11",
+ "cryptoki",
+]
+
+[[package]]
+name = "cakeys-ykcs11"
+version = "0.1.0"
+dependencies = [
+ "cakeys-pkcs11",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -582,94 +670,6 @@ dependencies = [
  "elliptic-curve",
  "primeorder",
  "wnaf",
-]
-
-[[package]]
-name = "key-mgmnt"
-version = "0.1.0"
-dependencies = [
- "aes",
- "aes-kw",
- "anyhow",
- "base64",
- "clap",
- "cmac",
- "cryptoki",
- "hmac",
- "key-mgmnt-core",
- "key-mgmnt-p11-kit",
- "key-mgmnt-pkcs11",
- "key-mgmnt-softhsm",
- "key-mgmnt-tpm2-pkcs11",
- "key-mgmnt-ykcs11",
- "rsa",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "toml",
- "x509-cert",
-]
-
-[[package]]
-name = "key-mgmnt-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "bp256",
- "bp384",
- "ed25519-dalek",
- "ed448",
- "k256",
- "p256",
- "p384",
- "p521",
- "rsa",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "toml",
- "x509-cert",
-]
-
-[[package]]
-name = "key-mgmnt-p11-kit"
-version = "0.1.0"
-dependencies = [
- "key-mgmnt-pkcs11",
-]
-
-[[package]]
-name = "key-mgmnt-pkcs11"
-version = "0.1.0"
-dependencies = [
- "cryptoki",
- "key-mgmnt-core",
- "serde",
-]
-
-[[package]]
-name = "key-mgmnt-softhsm"
-version = "0.1.0"
-dependencies = [
- "key-mgmnt-pkcs11",
-]
-
-[[package]]
-name = "key-mgmnt-tpm2-pkcs11"
-version = "0.1.0"
-dependencies = [
- "cryptoki",
- "key-mgmnt-pkcs11",
-]
-
-[[package]]
-name = "key-mgmnt-ykcs11"
-version = "0.1.0"
-dependencies = [
- "key-mgmnt-pkcs11",
 ]
 
 [[package]]
