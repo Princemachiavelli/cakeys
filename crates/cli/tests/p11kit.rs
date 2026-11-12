@@ -9,10 +9,7 @@
 mod common;
 
 use common::*;
-use cryptoki::context::{CInitializeArgs, Pkcs11};
 use cryptoki::object::{Attribute, KeyType, ObjectClass};
-use cryptoki::session::{Session, UserType};
-use cryptoki::types::AuthPin;
 use hmac::{Hmac, KeyInit, Mac};
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -76,18 +73,8 @@ impl Env {
         lock["objects"][object]["ids"][scheme].as_str().unwrap().to_owned()
     }
 
-    fn session(&self, module: &str) -> Session {
-        let ctx = Pkcs11::new(module).unwrap();
-        ctx.initialize(CInitializeArgs::OsThreads).unwrap();
-        let slot = ctx
-            .get_slots_with_token()
-            .unwrap()
-            .into_iter()
-            .find(|s| ctx.get_token_info(*s).unwrap().label() == "kmp11")
-            .unwrap();
-        let s = ctx.open_rw_session(slot).unwrap();
-        s.login(UserType::User, Some(&AuthPin::new("1234".into()))).unwrap();
-        s
+    fn session(&self, module: &str) -> TestSession {
+        open_session(module, "kmp11", "1234")
     }
 }
 

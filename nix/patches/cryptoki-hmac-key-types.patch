@@ -1,6 +1,6 @@
 --- a/src/object.rs
 +++ b/src/object.rs
-@@ -1193,17 +1193,17 @@
+@@ -1899,17 +1899,17 @@
  
      /// SHA384 HMAC key
      pub const SHA384_HMAC: KeyType = KeyType {

@@ -25,18 +25,18 @@ rustPlatform.buildRustPackage {
 
   cargoLock.lockFile = ../Cargo.lock;
 
-  # cryptoki 0.10.1 gives KeyType::SHA224/384/512_HMAC the value of CKK_SHA256_HMAC, so those key
+  # cryptoki 0.12.1 (and main) gives KeyType::SHA224/384/512_HMAC the value of CKK_SHA256_HMAC, so those key
   # types can be neither created nor told apart. Minimal local fix until upstream has one
   # (upstream/rust-cryptoki/). Without it, cakeys refuses those key types.
   postPatch = ''
     applied=0
-    for d in "$cargoDepsCopy"/cryptoki-0.10.1 "$cargoDepsCopy"/*/cryptoki-0.10.1; do
+    for d in "$cargoDepsCopy"/cryptoki-0.12.1 "$cargoDepsCopy"/*/cryptoki-0.12.1; do
       if [ -d "$d" ]; then
         patch -d "$d" -p1 < ${./patches/cryptoki-hmac-key-types.patch}
         applied=$((applied + 1))
       fi
     done
-    [ "$applied" = 1 ] || { echo "cryptoki-0.10.1 not found exactly once in $cargoDepsCopy" >&2; exit 1; }
+    [ "$applied" = 1 ] || { echo "cryptoki-0.12.1 not found exactly once in $cargoDepsCopy" >&2; exit 1; }
   '';
 
   # Integration tests drive a real SoftHSM token, the same SoftHSM through p11-kit forwarding,

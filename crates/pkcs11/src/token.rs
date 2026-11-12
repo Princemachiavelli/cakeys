@@ -6,7 +6,7 @@ pub use cakeys_core::config::{ModuleInfo, TokenInfo};
 use cakeys_core::config::{Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
 use cakeys_core::id::{self, Commit, Curve, HmacHash};
 use cakeys_core::{KmError, Result};
-use cryptoki::context::{CInitializeArgs, Pkcs11};
+use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::error::{Error as CkError, RvError};
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{
@@ -44,7 +44,7 @@ impl Token {
             .or_else(|| cfg.module.clone())
             .ok_or_else(|| KmError::Validation(format!("token '{name}' has no module")))?;
         let ctx = Pkcs11::new(&module).map_err(ck(&format!("loading {module}")))?;
-        ctx.initialize(CInitializeArgs::OsThreads).map_err(ck("C_Initialize"))?;
+        ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).map_err(ck("C_Initialize"))?;
         let lib = ctx.get_library_info().map_err(ck("C_GetInfo"))?;
         let module = ModuleInfo {
             path: module,
@@ -80,7 +80,7 @@ impl Token {
         let mechanisms = provider.mechanisms(ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?);
         let session = ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?;
         if let Some(pin) = read_pin(cfg)? {
-            match session.login(UserType::User, Some(&AuthPin::new(pin))) {
+            match session.login(UserType::User, Some(&AuthPin::new(pin.into()))) {
                 Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
                 Err(e) => return Err(KmError::Unavailable(format!("C_Login: {e}"))),
             }
@@ -625,7 +625,7 @@ pub fn key_type_of(object: &ObjectCfg) -> Result<KeyType> {
     }
 }
 
-/// cryptoki 0.10.1 gives `SHA224/384/512_HMAC` the value of `CKK_SHA256_HMAC` (0x2b), so such
+/// cryptoki 0.12.1 (and main) gives `SHA224/384/512_HMAC` the value of `CKK_SHA256_HMAC` (0x2b), so such
 /// keys could be neither created nor told apart. The Nix build patches it
 /// (nix/patches/cryptoki-hmac-key-types.patch); refuse rather than misidentify without the patch.
 fn hmac_key_type(kt: KeyType, raw: std::os::raw::c_ulong) -> Result<KeyType> {

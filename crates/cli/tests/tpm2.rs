@@ -7,11 +7,9 @@
 mod common;
 
 use common::*;
-use cryptoki::context::{CInitializeArgs, Pkcs11};
 use cryptoki::mechanism::Mechanism;
 use cryptoki::object::{Attribute, ObjectClass};
-use cryptoki::session::{Session, UserType};
-use cryptoki::types::AuthPin;
+use cryptoki::session::Session;
 use hmac::{Hmac, KeyInit, Mac};
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -81,18 +79,8 @@ impl Env {
 
     /// A fresh session: tpm2-pkcs11 loads the object list when a session opens, so objects
     /// created by another process afterwards are invisible to it.
-    fn session(&self) -> Session {
-        let ctx = Pkcs11::new(&self.module).unwrap();
-        ctx.initialize(CInitializeArgs::OsThreads).unwrap();
-        let slot = ctx
-            .get_slots_with_token()
-            .unwrap()
-            .into_iter()
-            .find(|s| ctx.get_token_info(*s).unwrap().label() == "kmtest")
-            .unwrap();
-        let s = ctx.open_rw_session(slot).unwrap();
-        s.login(UserType::User, Some(&AuthPin::new("1234".into()))).unwrap();
-        s
+    fn session(&self) -> TestSession {
+        open_session(&self.module, "kmtest", "1234")
     }
 }
 

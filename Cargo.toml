@@ -16,9 +16,9 @@ cakeys-ykcs11 = { path = "crates/ykcs11" }
 cakeys-tpm2-pkcs11 = { path = "crates/tpm2-pkcs11" }
 cakeys-p11-kit = { path = "crates/p11-kit" }
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 clap = { version = "4", features = ["derive", "env"] }
-cryptoki = "0.10"
+cryptoki = "0.12"
 rsa = { version = "0.10", default-features = false, features = ["std", "encoding"] }
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 p256 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "ecdsa"] }
@@ -33,7 +33,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 thiserror = "2"
-toml = "0.8"
+toml = "1"
 aes = "0.9"
 aes-kw = "0.3"
 cmac = "0.8"

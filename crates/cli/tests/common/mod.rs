@@ -2,7 +2,9 @@
 #![allow(dead_code)] // each test binary uses a subset
 
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
-use cryptoki::session::Session;
+use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
+use cryptoki::session::{Session, UserType};
+use cryptoki::types::AuthPin;
 use std::process::Output;
 
 /// Whether the linked cryptoki has the HMAC key type fix (nix/patches/); the Nix build does.
@@ -152,4 +154,42 @@ pub fn aes_commitment(key: &[u8], scheme: &str) -> String {
         n => panic!("AES key of {n} bytes"),
     };
     sri(&out)
+}
+
+/// A logged-in session on `label` that finalizes the module when dropped. cryptoki >= 0.11 no
+/// longer finalizes on drop, and tests need a fresh `C_Initialize` per session (tpm2-pkcs11 only
+/// sees objects created by other processes after one).
+pub struct TestSession {
+    session: Option<Session>,
+    ctx: Option<Pkcs11>,
+}
+
+impl std::ops::Deref for TestSession {
+    type Target = Session;
+    fn deref(&self) -> &Session {
+        self.session.as_ref().unwrap()
+    }
+}
+
+impl Drop for TestSession {
+    fn drop(&mut self) {
+        drop(self.session.take());
+        if let Some(ctx) = self.ctx.take() {
+            let _ = ctx.finalize();
+        }
+    }
+}
+
+pub fn open_session(module: &str, label: &str, pin: &str) -> TestSession {
+    let ctx = Pkcs11::new(module).unwrap();
+    ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();
+    let slot = ctx
+        .get_slots_with_token()
+        .unwrap()
+        .into_iter()
+        .find(|s| ctx.get_token_info(*s).unwrap().label() == label)
+        .unwrap();
+    let session = ctx.open_rw_session(slot).unwrap();
+    session.login(UserType::User, Some(&AuthPin::new(pin.into()))).unwrap();
+    TestSession { session: Some(session), ctx: Some(ctx) }
 }
