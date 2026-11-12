@@ -8,8 +8,11 @@
 //! integration tests pin it against the real module.
 
 use cakeys_core::{KmError, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
+
+/// The store's file name inside its directory (db.c `DB_NAME`).
+pub const DB_NAME: &str = "tpm2_pkcs11.sqlite3";
 
 /// Vendor attribute types in `tobjects.attrs` (src/lib/attrs.h of tpm2-pkcs11):
 /// `CKA_VENDOR_DEFINED | CKA_VENDOR_TPM2_DEFINED | n`.
@@ -61,9 +64,6 @@ pub struct TObject {
     pub objauth_enc: Option<String>,
 }
 
-/// Open the store directory like tpm2-pkcs11 (`<dir>/tpm2_pkcs11.sqlite3`) and read one
-/// token's rows. Read-only; the module stays the writer.
-///
 /// Columns are read as raw values, not by declared type: the module binds its hex strings and
 /// YAML with the sqlite BLOB flag even where the schema says TEXT, and the seal blobs arrive
 /// as blob-flagged hex strings.
@@ -78,14 +78,20 @@ fn text(row: &rusqlite::Row<'_>, i: usize) -> rusqlite::Result<String> {
 }
 
 impl Store {
+    /// Open the store in `dir` like tpm2-pkcs11 (`<dir>/tpm2_pkcs11.sqlite3`) and read one
+    /// token's rows. Read-only; the module stays the writer.
     pub fn open(dir: &Path, token_label: &str) -> Result<Store> {
-        let path = dir.join("tpm2_pkcs11.sqlite3");
-        let db = Connection::open(&path).map_err(|e| {
+        let path = dir.join(DB_NAME);
+        // Read-only, so a wrong directory is an error — never a fresh empty store the module
+        // might pick up later.
+        let db = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
             KmError::Unavailable(format!("opening tpm2-pkcs11 store {}: {e}", path.display()))
         })?;
-        let (pobj_id, config, objauth) = db
+        // `sealobjects.tokid` and `tobjects.tokid` reference `tokens.id` (db.c schema), not the
+        // primary `tokens.pid` that several tokens may share.
+        let (tok_id, config, objauth) = db
             .query_row(
-                "SELECT tokens.pid, pobjects.config, pobjects.objauth FROM tokens
+                "SELECT tokens.id, pobjects.config, pobjects.objauth FROM tokens
                  JOIN pobjects ON pobjects.id = tokens.pid WHERE tokens.label = ?1",
                 [token_label],
                 |r| Ok((r.get::<_, i64>(0)?, text(r, 1)?, text(r, 2)?)),
@@ -103,7 +109,7 @@ impl Store {
         let (userpub, userpriv, userauthsalt) = db
             .query_row(
                 "SELECT userpub, userpriv, userauthsalt FROM sealobjects WHERE tokid = ?1",
-                [pobj_id],
+                [tok_id],
                 |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?, text(r, 2)?)),
             )
             .map_err(|e| KmError::Unavailable(format!("reading sealobjects: {e}")))?;
@@ -118,7 +124,7 @@ impl Store {
                 .prepare("SELECT attrs FROM tobjects WHERE tokid = ?1")
                 .map_err(|e| KmError::Unavailable(format!("selecting tobjects: {e}")))?;
             let rows = stmt
-                .query_map([pobj_id], |r| text(r, 0))
+                .query_map([tok_id], |r| text(r, 0))
                 .map_err(|e| KmError::Unavailable(format!("reading tobjects: {e}")))?;
             for attrs in rows {
                 tobjects.push(parse_tobject(&attrs.map_err(|e| {

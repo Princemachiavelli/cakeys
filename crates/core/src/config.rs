@@ -32,17 +32,21 @@ pub struct TokenCfg {
     #[allow(dead_code)]
     pub system_feature: Option<String>,
     /// tpm2-pkcs11 only: TCTI connection string for the native attestation path (TPM2_Certify),
-    /// in tss-esapi `TctiNameConf` syntax (`"device:/dev/tpmrm0"`, `"tabrmd:bus_type=session"`).
-    /// Defaults to `TctiNameConf::from_environment_variable()` (`$TPM2TOOLS_TCTI`, then `$TCTI`).
+    /// in tss-esapi `TctiNameConf` syntax (`"device:/dev/tpmrm0"`, `"tabrmd:bus_type=session"`)
+    /// or a TCTI library name (`"libtss2-tcti-tabrmd.so.0:bus_type=session"`). Defaults to the
+    /// module's own `$TPM2_PKCS11_TCTI`, then `$TPM2TOOLS_TCTI`, then `$TCTI`.
     pub tcti: Option<String>,
-    /// tpm2-pkcs11 only: directory of the sqlite store backing the module, read by the native
-    /// attestation path to find the object's TPM blobs. Defaults like tpm2-pkcs11 itself:
-    /// `$TPM2_PKCS11_STORE`, else `~/.tpm2_pkcs11`, else `/etc/tpm2_pkcs11`.
+    /// tpm2-pkcs11 only: directory of the sqlite store backing the module, read (read-only) by
+    /// the native attestation path to find the object's TPM blobs. Defaults to the store
+    /// tpm2-pkcs11 itself opens: `$TPM2_PKCS11_STORE`, else the first of `/etc/tpm2_pkcs11`,
+    /// `$XDG_DATA_HOME/tpm2-pkcs11` (`~/.local/share/tpm2-pkcs11`), `~/.tpm2_pkcs11` and the
+    /// working directory that holds `tpm2_pkcs11.sqlite3`.
     pub tpm2_store: Option<String>,
     /// tpm2-pkcs11 only: persistent handle of cakeys' Attestation Key (a restricted signing key
-    /// in the owner hierarchy, created on first attest if absent, empty auth, and pinned in the
+    /// in the owner hierarchy, created by `realise` if absent, empty auth, and pinned in the
     /// lock by the `attestation.root` of the realisation). Defaults to the provider's
-    /// `DEFAULT_AK_HANDLE`; hex, e.g. `"0x81000016"`. Must not collide with another object.
+    /// `DEFAULT_AK_HANDLE`; `0x`-prefixed hex in 0x81000000..=0x817FFFFF, e.g. `"0x81000016"`.
+    /// An object already there that is not such a key is refused (13).
     pub ak_handle: Option<String>,
 }
 
@@ -311,6 +315,14 @@ impl Lock {
             if let Some((s, v)) = o.ids.iter().find(|(_, v)| !crate::id::is_sri(v)) {
                 return invalid(format!("object '{name}': {s} = \"{v}\" is not a sha256 SRI digest"));
             }
+            // Attestation IDs are per device (§3.7): the same material attested on two TPMs has
+            // two IDs, so they live on each realisation, never in the object's shared `ids`.
+            if let Some(s) = o.ids.keys().find(|s| crate::id::is_attestation_scheme(s)) {
+                return invalid(format!(
+                    "object '{name}' records the attestation scheme {s}: an attestation ID is per device \
+                     and belongs to the realisation that computed it (realisations.<spec>.<token>.attestation)"
+                ));
+            }
             if let Some(l) = o.commitment_label.as_ref().filter(|l| l.is_empty() || !l.bytes().all(|b| b.is_ascii_graphic() || b == b' ')) {
                 return invalid(format!("object '{name}': commitmentLabel {l:?} must be non-empty printable ASCII"));
             }
@@ -369,54 +381,30 @@ impl Lock {
                         if private { "required" } else { "allowed" }
                     ));
                 }
-                // Attestation evidence (§3.7): recorded exactly when the realisation computed an
-                // attestation scheme, and the kind names that scheme's evidence.
-                let scheme = r.schemes.iter().find(|s| crate::id::is_attestation_scheme(s));
-                match (&r.attestation, scheme) {
-                    (None, None) => {}
-                    (Some(a), Some(s)) => {
-                        let want = crate::id::ATTESTATION_KINDS
-                            .iter()
-                            .find(|(sch, _)| sch == s)
-                            .map(|(_, kind)| kind.to_owned())
-                            .unwrap_or_default();
-                        if a.kind != want {
-                            return invalid(format!(
-                                "realisation of '{spec}' on '{token}': attestation kind '{}' does not match its scheme '{s}' (should be '{want}')",
-                                a.kind
-                            ));
-                        }
-                        if !crate::id::is_sri(&a.root) {
-                            return invalid(format!(
-                                "realisation of '{spec}' on '{token}': attestation root \"{}\" is not a sha256 SRI digest",
-                                a.root
-                            ));
-                        }
-                    }
-                    (Some(_), None) => {
+                // Attestation evidence (§3.7): a known kind, SRI digests, and never alone — the
+                // realisation must also have matched a portable scheme, the only thing that links
+                // the same material on another token.
+                if let Some(a) = &r.attestation {
+                    if crate::id::attestation_scheme_of(&a.kind).is_none() {
                         return invalid(format!(
-                            "realisation of '{spec}' on '{token}': records attestation evidence but computed no attestation scheme"
-                        ))
+                            "realisation of '{spec}' on '{token}': unknown attestation kind '{}' (known: {:?})",
+                            a.kind,
+                            crate::id::ATTESTATION_KINDS.map(|(_, k)| k)
+                        ));
                     }
-                    (None, Some(s)) => {
+                    if let Some((field, v)) = [("root", &a.root), ("id", &a.id)].into_iter().find(|(_, v)| !crate::id::is_sri(v)) {
                         return invalid(format!(
-                            "realisation of '{spec}' on '{token}': computed attestation scheme {s} but pins no attestation evidence"
-                        ))
+                            "realisation of '{spec}' on '{token}': attestation {field} \"{v}\" is not a sha256 SRI digest"
+                        ));
                     }
-                }
-            }
-        }
-        // Attestation identities never stand alone (§3.7): they are provenance for one device
-        // and no other token can recompute them, so the object must also be locked under a
-        // portable scheme — the only thing that verifies the same material copied elsewhere.
-        for (name, o) in &self.objects {
-            if let Some(s) = o.ids.keys().find(|s| crate::id::is_attestation_scheme(s)) {
-                if !o.ids.keys().any(|other| !crate::id::is_attestation_scheme(other)) {
-                    return invalid(format!(
-                        "object '{name}' is locked only by the attestation scheme {s}: an attestation is \
-                         provenance for one device and cannot verify the same material on another token; \
-                         lock a portable scheme (rfc7093m4, or a commitment for secret keys) beside it"
-                    ));
+                    if r.schemes.is_empty() {
+                        return invalid(format!(
+                            "realisation of '{spec}' on '{token}' is locked only by its attestation: an \
+                             attestation is provenance for one device and cannot verify the same material \
+                             on another token; it needs a portable scheme (rfc7093m4, or a commitment for \
+                             secret keys) beside it"
+                        ));
+                    }
                 }
             }
         }
@@ -476,11 +464,10 @@ pub struct LockRealisation {
     /// Private keys: how the private object is bound to the identity. Absent: not recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<Binding>,
-    /// Attestation evidence this realisation pinned (§3.7 of docs/DESIGN.md): present exactly
-    /// when its `schemes` include an attestation scheme. The commitment ID itself lives in
-    /// `objects.<name>.ids`; this records the *anchor* the attestation was verified against —
-    /// the Yubico root (PIV) or the Attestation Key (TPM) — so a re-attestation by a different
-    /// device fails (14) instead of silently re-pinning provenance.
+    /// The attestation this realisation pinned (§3.7 of docs/DESIGN.md), when its spec opted in:
+    /// the per-device attestation ID and the *anchor* it was verified against — the Yubico root
+    /// (PIV) or the Attestation Key (TPM). Kept here, not in `objects.<name>.ids`: the same
+    /// material attested on two devices has two IDs, joined through the portable `schemes`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation: Option<AttestationRecord>,
     /// Every boolean attribute the object exposes for its class (`CKA_SIGN = true`, ...), as
@@ -496,14 +483,16 @@ pub struct LockRealisation {
 }
 
 /// Offline-verifiable attestation evidence pinned per realisation (§3.7 of docs/DESIGN.md).
-/// `kind` names the attestation (`yubico-piv`, `tpm-certify` — one per scheme), `root` is the
-/// SRI digest of the trust anchor the chain was verified to: the pinned Yubico root's SPKI for
-/// PIV (never the device's own overwritable slot f9), or the Attestation Key's SPKI for TPM.
+/// `kind` names the attestation (`yubico-piv`, `tpm-certify` — one per scheme, see
+/// `id::ATTESTATION_KINDS`), `root` is the SRI digest of the trust anchor the chain was verified
+/// to: the pinned Yubico root's SPKI for PIV (never the device's own overwritable slot f9), or
+/// the Attestation Key's SPKI for TPM. `id` is the attestation commitment of this device.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AttestationRecord {
     pub kind: String,
     pub root: String,
+    pub id: String,
 }
 
 /// Key attributes the token sets when the key is made, which no later operation can restore
@@ -870,55 +859,49 @@ mod tests {
         lock
     }
 
-    /// An attestation identity never stands alone (§3.7): a lock whose object records only
-    /// `piv-attestation` refuses at load, because no other token can recompute it — the same
-    /// material copied to a second HSM would have no scheme left to verify against.
+    /// Attestation IDs are per device and never stand alone (§3.7): they live on the realisation
+    /// that computed them — never in the object's shared `ids`, where the same material attested
+    /// on a second TPM would collide — and that realisation must also hold a portable scheme.
     #[test]
-    fn attestation_never_stands_alone() {
+    fn attestation_is_per_realisation_and_never_alone() {
         let path = Path::new("test.lock");
-        let mut lock = attestable_lock();
-        {
-            let o = lock.objects.get_mut("k").unwrap();
-            o.ids.remove("rfc7093m4");
-            o.ids.insert("piv-attestation".to_owned(), "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=".to_owned());
-        }
-        {
-            let real = lock.realisations.get_mut("s").unwrap().get_mut("t").unwrap();
-            real.schemes.clear(); // ids without schemes: a fragment whose realisation moved on
-        }
-        let err = lock.validate(path).unwrap_err();
-        assert!(err.to_string().contains("only by the attestation scheme"), "{err}");
+        let sri = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+        let record = |kind: &str| AttestationRecord { kind: kind.into(), root: sri.into(), id: sri.into() };
+        let real = |lock: &mut Lock| lock.realisations.get_mut("s").unwrap().get_mut("t").unwrap().clone();
+        let set = |lock: &mut Lock, r: LockRealisation| {
+            lock.realisations.get_mut("s").unwrap().insert("t".into(), r);
+        };
 
-        // Beside a portable scheme it loads, and the realisation that computed it pins its
-        // anchor: `attestation` with a matching kind, and no anchor without the scheme.
+        // In the object's ids: refused, wherever it came from.
         let mut lock = attestable_lock();
-        lock.objects
-            .get_mut("k")
-            .unwrap()
-            .ids
-            .insert("tpm-certify".to_owned(), "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=".to_owned());
-        {
-            let real = lock.realisations.get_mut("s").unwrap().get_mut("t").unwrap();
-            real.schemes.insert("tpm-certify".to_owned());
-        }
-        let err = lock.clone().validate(path).unwrap_err();
-        assert!(err.to_string().contains("pins no attestation evidence"), "{err}");
-        {
-            let real = lock.realisations.get_mut("s").unwrap().get_mut("t").unwrap();
-            real.attestation = Some(AttestationRecord {
-                kind: "yubico-piv".into(),
-                root: "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=".into(),
-            });
-        }
-        let err = lock.clone().validate(path).unwrap_err();
-        assert!(err.to_string().contains("does not match its scheme"), "{err}");
-        {
-            let real = lock.realisations.get_mut("s").unwrap().get_mut("t").unwrap();
-            real.attestation = Some(AttestationRecord {
-                kind: "tpm-certify".into(),
-                root: "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=".into(),
-            });
-        }
-        lock.validate(path).unwrap();
+        lock.objects.get_mut("k").unwrap().ids.insert("tpm-certify".to_owned(), sri.to_owned());
+        let err = lock.validate(path).unwrap_err();
+        assert!(err.to_string().contains("belongs to the realisation"), "{err}");
+
+        // On the realisation beside a portable scheme: loads.
+        let mut lock = attestable_lock();
+        let mut r = real(&mut lock);
+        r.attestation = Some(record("tpm-certify"));
+        set(&mut lock, r.clone());
+        lock.clone().validate(path).unwrap();
+
+        // Alone (a realisation whose portable schemes are gone): refused.
+        let mut alone = lock.clone();
+        let mut r2 = r.clone();
+        r2.schemes.clear();
+        set(&mut alone, r2);
+        let err = alone.validate(path).unwrap_err();
+        assert!(err.to_string().contains("locked only by its attestation"), "{err}");
+
+        // Unknown kind, or a non-SRI id: refused.
+        let mut bad = lock.clone();
+        let mut r3 = r.clone();
+        r3.attestation = Some(record("vendor-x"));
+        set(&mut bad, r3);
+        assert!(bad.validate(path).unwrap_err().to_string().contains("unknown attestation kind"));
+        let mut bad = lock;
+        r.attestation.as_mut().unwrap().id = "nope".into();
+        set(&mut bad, r);
+        assert!(bad.validate(path).unwrap_err().to_string().contains("attestation id"));
     }
 }

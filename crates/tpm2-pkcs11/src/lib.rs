@@ -50,7 +50,6 @@ impl Provider for Tpm2Pkcs11 {
     fn attestation(&self) -> Option<AttestationCap> {
         Some(AttestationCap {
             scheme: "tpm-certify",
-            kind: "tpm-certify",
             // TPM2_Certify proves any loaded object with its private area — private and secret
             // keys; public-key objects and certificates have no certifiable blob.
             classes: &["CKO_PRIVATE_KEY", "CKO_SECRET_KEY"],

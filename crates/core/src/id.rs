@@ -88,11 +88,13 @@ pub const KNOWN_SCHEMES: [&str; 10] = [
 ];
 
 /// Attestation schemes (§3.7 of docs/DESIGN.md): IDs from a vendor- or TPM-signed attestation
-/// of the key. They are *provenance* evidence for one device — a copy of the key on another
-/// token can never attest (it was imported there) — so they never stand alone: an object locked
-/// under one must also hold a portable scheme, which is what links the same material across
-/// tokens. Unlike the commitment schemes, they take no `commitmentLabel`: their input is the
-/// attestation itself, not a message the token MACs.
+/// of the key. They are *provenance* evidence for one device: the same material on another
+/// token either cannot attest (PIV attests only keys generated on the device) or attests to a
+/// different ID (a TPM's qualified Name names its own hierarchy). So they are recorded per
+/// realisation, never in an object's shared `ids`, and never stand alone: the realisation must
+/// also match a portable scheme, which is what links the same material across tokens. Unlike
+/// the commitment schemes, they take no `commitmentLabel`: their input is the attestation
+/// itself, not a message the token MACs.
 pub const ATTESTATION_SCHEMES: [&str; 2] = ["piv-attestation", "tpm-certify"];
 
 /// The lock-record `attestation.kind` for each attestation scheme (§3.7): which attestation
@@ -102,6 +104,16 @@ pub const ATTESTATION_KINDS: [(&str, &str); 2] = [("piv-attestation", "yubico-pi
 /// Whether `scheme` is an attestation scheme (§3.7): provenance evidence, never a portable link.
 pub fn is_attestation_scheme(scheme: &str) -> bool {
     ATTESTATION_SCHEMES.contains(&scheme)
+}
+
+/// The lock-record kind of an attestation scheme (`ATTESTATION_KINDS`); `None` for any other.
+pub fn attestation_kind(scheme: &str) -> Option<&'static str> {
+    ATTESTATION_KINDS.iter().find(|(s, _)| *s == scheme).map(|(_, k)| *k)
+}
+
+/// The attestation scheme a lock-record kind names (`ATTESTATION_KINDS`); `None` if unknown.
+pub fn attestation_scheme_of(kind: &str) -> Option<&'static str> {
+    ATTESTATION_KINDS.iter().find(|(_, k)| *k == kind).map(|(s, _)| *s)
 }
 
 /// The canonical encoding shared by the attestation commitment definitions: a domain-separated

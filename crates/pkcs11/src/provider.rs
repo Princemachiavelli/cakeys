@@ -33,7 +33,7 @@ pub trait Provider: Send + Sync {
     }
 
     /// The attestation commitment this provider can compute (§3.7 of docs/DESIGN.md), if any:
-    /// the scheme it records, the lock-record kind, and the object classes it can attest.
+    /// the scheme it records and the object classes it can attest.
     /// `None` (the default): this module exposes no attestation, so a spec opting into one is
     /// refused (15) before anything is created.
     fn attestation(&self) -> Option<AttestationCap> {
@@ -55,10 +55,9 @@ pub trait Provider: Send + Sync {
 /// What a provider can attest (§3.7 of docs/DESIGN.md), from [`Provider::attestation`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttestationCap {
-    /// Scheme the commitment records (one of `cakeys_core::id::ATTESTATION_SCHEMES`).
+    /// Scheme the commitment records (one of `cakeys_core::id::ATTESTATION_SCHEMES`; its
+    /// lock-record kind is `cakeys_core::id::attestation_kind`).
     pub scheme: &'static str,
-    /// Lock-record `attestation.kind` (see `cakeys_core::id::ATTESTATION_KINDS`).
-    pub kind: &'static str,
     /// Object classes (`"CKO_PRIVATE_KEY"`, ...) the attestation covers.
     pub classes: &'static [&'static str],
 }
@@ -66,7 +65,10 @@ pub struct AttestationCap {
 /// Everything an attestation may need beyond the PKCS#11 module: the session (to find the
 /// certificate objects a module exposes), the config (the native TPM path's TCTI and store) and
 /// the PIN (the TPM path unseals the token's wrapping key with it), plus the material SPKI the
-/// attestation must name (`None` for secret keys, which have none).
+/// attestation must name (`None` exactly for secret keys, which have none).
+///
+/// `provision` is true only under `realise`: a provider that keeps device state to attest with
+/// (the TPM Attestation Key) may create it then, never on a read (`resolve`, `verify`).
 pub struct AttestCtx<'a> {
     pub session: &'a Session,
     pub cfg: &'a TokenCfg,
@@ -75,18 +77,32 @@ pub struct AttestCtx<'a> {
     pub object: &'a ObjectCfg,
     pub spki: Option<&'a [u8]>,
     pub pin: Option<&'a str>,
+    pub provision: bool,
+}
+
+impl AttestCtx<'_> {
+    /// The material SPKI, required for asymmetric classes: an attestation that could not be
+    /// cross-checked against the key `rfc7093m4` names would be provenance for unknown material.
+    pub fn required_spki(&self) -> Result<Option<&[u8]>> {
+        match (self.object.class.as_str(), self.spki) {
+            ("CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY", None) => Err(KmError::Unsupported(format!(
+                "attesting a {} needs its material SPKI to cross-check against",
+                self.object.class
+            ))),
+            (_, spki) => Ok(spki),
+        }
+    }
 }
 
 /// A computed attestation commitment (§3.7 of docs/DESIGN.md): the scheme digest plus the
 /// anchor the attestation was verified against — recorded in the lock as the realisation's
-/// `attestation = { kind, root }`.
+/// `attestation = { kind, root, id }`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attested {
     pub scheme: &'static str,
     pub id: String,
     pub root: String,
 }
-
 
 /// Plain PKCS#11, used when no registered provider recognises the module.
 pub struct Generic;

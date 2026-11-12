@@ -42,8 +42,8 @@ object.
 | `kcv-ecb` | AES | AES-ECB encryption of one block (first 16 bytes of SHA-256(label)) | `CKA_ENCRYPT` | same, `tpm2_aes_key_is_identified_by_its_kcv` |
 | `kcv-ecb-dec` | AES | AES-ECB *decryption* of such a block | `CKA_DECRYPT` | `aes_128_192_and_decrypt_only_match_host_oracles` |
 | `kw` | AES | RFC 3394 key wrap of a fixed key (SHA-256(label)) | `CKA_WRAP` | `aes_commitments_match_host_oracles` |
-| `piv-attestation` | private/public keys (YubiKey PIV) | Canonical digest of what the slot's attestation certificate asserts (§3.7), verified to the pinned Yubico root | opt-in `attestation = true`, management key in the session | `fixture_chain_verifies_and_pins`, `the_yubico_roots_are_pinned` |
-| `tpm-certify` | private and secret keys on tpm2-pkcs11 tokens | Canonical digest of the Name and qualified Name a native `TPM2_Certify` attests (§3.7), host-verified against a provisioned AK | opt-in `attestation = true`, `tcti` + store + PIN | `tpm2_keys_attest_their_tpm_residence`, `tpm2_attested_material_travels_to_a_second_hsm` |
+| `piv-attestation` | private/public keys (YubiKey PIV) | Canonical digest of what the slot's attestation certificate asserts (§3.7), verified to the pinned Yubico root; per realisation | opt-in `attestation = true`, management key in the session | `fixture_chain_verifies_and_pins`, `the_yubico_roots_are_pinned`, `issuers_must_be_cas_within_their_path_length` |
+| `tpm-certify` | private and secret keys on tpm2-pkcs11 tokens | Canonical digest of the Name and qualified Name a native `TPM2_Certify` attests (§3.7), host-verified against a provisioned AK; per realisation | opt-in `attestation = true`, the module's TCTI + store, the PIN | `tpm2_keys_attest_their_tpm_residence`, `tpm2_each_token_pins_its_own_attestation`, `tpm2_attested_material_travels_to_a_second_hsm` |
 
 - **Commitment schemes never reveal what the token computed.** The lock stores only SHA-256 of the
   token's output, never a MAC or ciphertext under the key — `aes_commitments_…` asserts the raw
@@ -196,8 +196,8 @@ content-addressed identity — one per token type that can produce it:
 
 | Scheme | Token | Evidence | Anchor pinned in the lock |
 |---|---|---|---|
-| `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it). Yubico attests only keys generated on device; minting the certificate needs the PIV management key in the session | the Yubico root's SPKI |
-| `tpm-certify` | tpm2-pkcs11 tokens | a native `TPM2_Certify` (tss-esapi) over the object's Name with a fresh random nonce, host-verified; the object's TPM blobs are read from the module's store and loaded under the token's primary — `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh | the Attestation Key's SPKI |
+| `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen`. Yubico attests only keys generated on device; minting the certificate needs the PIV management key in the session | the Yubico root's SPKI |
+| `tpm-certify` | tpm2-pkcs11 tokens | a native `TPM2_Certify` (tss-esapi) over the object's Name with a fresh random nonce, host-verified; the object's TPM blobs are read (read-only) from the module's own store — found as the module finds it — and loaded under the token's primary over the module's TCTI (`$TPM2_PKCS11_TCTI`, or `tcti`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the Attestation Key's SPKI |
 
 - **The commitment hashes asserted content, never signed bytes.** A PIV certificate is minted
   per session with a random serial and a randomized ECDSA signature; a `TPMS_ATTEST` carries a
@@ -210,35 +210,54 @@ content-addressed identity — one per token type that can produce it:
 - **An attestation includes the key identity by construction.** The PIV certificate's subject
   SPKI *is* the attested key; the TPM Name covers the public area. Both schemes cross-check it
   at compute time against the SPKI the object's `rfc7093m4` hashes — an attestation of other
-  material is a conflict (13), never a second opinion. For symmetric keys (which PIV cannot
-  attest; the TPM can), there is no SPKI: the portable identity is the commitment scheme, and
-  the cross-check is that the module's `CKA_LOCAL`/`CKA_EXTRACTABLE` match the signed
-  `objectAttributes`.
-- **Attestation never replaces portable identity — and never stands alone.** A key copied to a
-  second HSM was *imported* there: it can never attest. So an object locked under an
-  attestation scheme must also hold a portable scheme (`rfc7093m4` for keys, a commitment for
-  secret keys), enforced on load (exit 17); `realise --update-lock` records them together, and
-  the attestation scheme is never a realisation's primary scheme. The copy on the second token
-  then verifies through the shared portable scheme, and its attestation scheme is only a note
-  ("not computable here") — material still links only through shared schemes (§3.5).
-- **Opt-in per spec-token** (`tokens.<t>.attestation = true` in the spec's token entry): once an
-  attestation ID is locked, a run that cannot attest fails (14) as a scheme downgrade — that
-  strictness is chosen, not sprung. A provider that attests nothing (SoftHSM, kryoptic, p11-kit)
-  refuses the opt-in up front (15, before anything is created), as does a class it cannot
-  attest (PIV: asymmetric keys only; TPM: private and secret keys — a public-key object is
-  stored without a private blob, and `TPM2_Certify` cannot attest a public-only area).
-- **The lock pins the anchor** per realisation: `attestation = { kind = "yubico-piv" |
-  "tpm-certify", root = <SRI of the anchor's SPKI> }`. A changed anchor — a re-provisioned TPM,
-  another device signing the same claims — fails (14) even under `--update-lock`, like
-  immutables: the material needs a new object name. The record is present exactly when the
-  realisation's `schemes` include the attestation scheme (checked on load, exit 17).
+  material is a conflict (13), never a second opinion; an asymmetric key is never attested
+  without that SPKI. For symmetric keys (which PIV cannot attest; the TPM can), there is no
+  SPKI: the portable identity is the commitment scheme, and the cross-check is that the
+  module's `CKA_LOCAL`/`CKA_EXTRACTABLE` match the signed `objectAttributes`.
+- **An attestation ID is per device, so it lives on the realisation.** The same material on two
+  tokens either cannot attest on the second (PIV attests only keys generated on the device) or
+  attests to a *different* ID: `TPM2_Certify` certifies imported objects too, and a TPM's
+  qualified Name names its own hierarchy — an imported HMAC's Name even differs per import (a
+  fresh `seedValue`). So the attestation ID is recorded with the realisation that computed it
+  (`attestation.id`), never in `objects.<name>.ids`, where a second TPM's ID would collide with
+  the first's — `tpm2_each_token_pins_its_own_attestation`. `tpm-certify` proves *residence* in
+  that TPM, not generation there: `sensitiveDataOrigin` (`CKA_LOCAL`) is part of the Name, so
+  an imported key's ID says so.
+- **Attestation never replaces portable identity — and never stands alone.** A realisation with
+  an attestation must also match a portable scheme (`rfc7093m4` for keys, a commitment for
+  secret keys), and an object's `ids` never hold an attestation scheme — both enforced on load
+  (exit 17). The realisations of one material on several tokens join through that shared
+  portable scheme; each keeps its own attestation, and a token that cannot attest (SoftHSM)
+  verifies through the portable scheme alone — material still links only through shared
+  schemes (§3.5).
+- **Opt-in per spec-token** (`tokens.<t>.attestation = true` in the spec's token entry): once a
+  realisation's attestation is locked, a run that cannot attest — the TPM unreachable, no PIN,
+  no Attestation Key, no attestation certificate — fails (14) as a scheme downgrade, while
+  evidence that is *wrong* keeps its own code (13). That strictness is chosen, not sprung, and
+  it is one-way: opting out again (`attestation = false`) is a downgrade too, also under
+  `--update-lock`; a realisation that should stop attesting needs a new object name. A provider
+  that attests nothing (SoftHSM, kryoptic, p11-kit) refuses the opt-in up front (15, before
+  anything is created), as does a class it cannot attest (PIV: asymmetric keys only; TPM:
+  private and secret keys — a public-key object is stored without a private blob, and
+  `TPM2_Certify` cannot attest a public-only area).
+- **The lock pins the attestation** per realisation: `attestation = { kind = "yubico-piv" |
+  "tpm-certify", root = <SRI of the anchor's SPKI>, id = <the attestation ID> }`. A changed
+  anchor — a re-provisioned TPM, another device signing the same claims — fails (14), and a
+  changed ID under the same anchor (the attested object was replaced, or its attributes or
+  policy changed) fails (10), both even under `--update-lock`, like immutables: the material
+  needs a new object name.
 - **The TPM Attestation Key** is a restricted signing key (P-256, ECDSA-SHA256, empty auth,
-  owner hierarchy) that cakeys provisions on first attest at a persistent handle and never
-  uses for anything but certify: a restricted key signs only TPM-generated structures. The
-  handle defaults to `0x81000016` (cakeys-tpm2-pkcs11 `DEFAULT_AK_HANDLE`), configurable per
-  token (`akHandle`). Trust in it is TOFU through the pinned `root`; **chaining it to the
-  Endorsement Key certificate (EK → AK via MakeCredential/ActivateCredential) is not
-  implemented yet** — until it is, the AK proves "this TPM", not "this genuine TPM".
+  owner hierarchy) that cakeys provisions at a persistent handle and never uses for anything
+  but certify: a restricted key signs only TPM-generated structures. Only `realise` provisions
+  it; `resolve`, `verify` and `check` never change the TPM, and fail (16, or 14 once locked)
+  when it is missing. A key already at the handle is used only if its public area is exactly
+  cakeys' template (restricted sign-only P-256, fixedTPM, empty policy) — anything else is a
+  conflict (13), since an unrestricted key there could sign a forged attestation. The handle
+  defaults to `0x81000016` (cakeys-tpm2-pkcs11 `DEFAULT_AK_HANDLE`), configurable per token
+  (`akHandle`, `0x`-prefixed, owner persistent range). Trust in it is TOFU through the pinned
+  `root`; **chaining it to the Endorsement Key certificate (EK → AK via
+  MakeCredential/ActivateCredential) is not implemented yet** — until it is, the AK proves
+  "this TPM", not "this genuine TPM".
 - **What each scheme proves, and what it does not.** `tpm-certify` is freshness-bound by the
   nonce: the object was loaded in that TPM *at verify time*, with the certified attributes.
   `piv-attestation` has no verifier nonce (Yubico's certificate carries none), so it proves
@@ -331,7 +350,7 @@ mode = "direct"                      # a weaker mode is refused
 schemes = ["rfc7093m4"]              # schemes this realisation computed and matched; fewer later is refused
 publicOnly = true                    # only when set
 binding = "pop-sign"                 # private keys: pop-sign | pop-ecdh | pop-decrypt | token-asserted (§3.6)
-attestation = { kind = "tpm-certify", root = "sha256-..." }   # §3.7: only when the realisation computed an attestation scheme; a changed anchor fails (14), also under --update-lock
+attestation = { kind = "tpm-certify", root = "sha256-...", id = "sha256-..." }   # §3.7: only when the spec opted in; the per-device attestation ID and its anchor; a change fails (14 anchor, 10 ID), also under --update-lock
 [realisations.<spec>.<token>.policy] # every attribute of the class the token shows: booleans, plus CKA_ALLOWED_MECHANISMS on key objects
 CKA_SIGN = true ; CKA_DECRYPT = true ; CKA_EXTRACTABLE = false ; ...
 [realisations.<spec>.<token>.immutables] # keys: fixed at creation
@@ -552,9 +571,9 @@ forces it. The VM test covers all of this.
   the binding is recorded and cannot weaken (§3.6).
 - **Attestation commitments are verified evidence, never a standalone identity** (§3.7): the
   chain or signature is checked on the host against the pinned anchor, the attested key must be
-  the material the object's portable scheme names, and an object locked under an attestation
-  scheme always carries a portable one — so the same material on a token that cannot attest
-  still verifies there, and the attestation scheme is only a note.
+  the material the object's portable scheme names, and the attestation is pinned per
+  realisation beside a portable scheme — so the same material on another token verifies there
+  through the portable scheme, attested by that token or not.
 - **Weak identity modes need an explicit per-token opt-in.** Downgrades fail.
 - **Material is linked only through a shared scheme.**
 - **The lock never holds token outputs, only their hashes.** Private data objects are not hashed.
@@ -575,10 +594,12 @@ See `docs/REVIEW-2026-11-11.md`.
   object was loaded in that TPM at verify time.
 - **The TPM Attestation Key is TOFU** (§3.7): the AK proves "this TPM", not "this genuine TPM",
   until it is chained to the Endorsement Key certificate.
-- **The PIV attestation path needs hardware to test end to end** (a YubiKey generated on
-  device, and the management key in the session — the shipped example keys are imported, so
-  Yubico attests none of them); the chain verifier itself runs on fixtures and on Yubico's own
-  published certificates.
+- **The PIV attestation path is unverified on hardware.** The chain verifier runs on fixtures and
+  on Yubico's own published certificates, but how ykcs11 exposes the certificates — the slot
+  certificate by label suffix and shared `CKA_ID`, the f9 certificate by its bare label, minted
+  at session open with the management key — is taken from ykcs11's documentation and has not
+  been exercised against a YubiKey (that needs a key generated on device and the management key
+  in the session; the shipped example keys are imported, so Yubico attests none of them).
 - **Features are self-declared.** Any user allowed to build can require a token's feature; the
   real gate is `allowed-users`.
 - **No merge rule for lock fragments.** Updates are serialized by the `<lock>.lck` sidecar (M3)
@@ -591,7 +612,7 @@ See `docs/REVIEW-2026-11-11.md`.
 |---|---|---|
 | unit | `cargo test --workspace` | digests (pinned), curves and OIDs, SPKI round-trips, registry, P-521 fix-up, hex parsing, proof-of-possession host math (both ECDH MAC sides), the deprecation register, AES strength order, the attestation scheme definitions and lock invariants, the PIV chain verifier (fixture chain + Yubico's own roots and intermediates) |
 | `tests/softhsm.rs` | package build | SoftHSM: lifecycle, every type and scheme against independent oracles (hand-written DER encoder, openssl-hashed fixtures, RustCrypto `hmac`/`cmac`/`aes`/`aes-kw`) |
-| `tests/tpm2.rs` | package build, `nix/tpm2-test-env.sh` | swtpm + tpm2-abrmd + tpm2-pkcs11; the native `tpm-certify` attestation (AK provisioning, cross-checks) and the travel of attested material to SoftHSM through the shared portable scheme |
+| `tests/tpm2.rs` | package build, `nix/tpm2-test-env.sh` | swtpm + tpm2-abrmd + tpm2-pkcs11; the native `tpm-certify` attestation (AK provisioning and validation, reads that never provision, a lost attestation as a downgrade, cross-checks), one material attested on two tokens with an attestation each, and the travel of attested material to SoftHSM through the shared portable scheme |
 | `tests/p11kit.rs` | package build, `nix/p11kit-test-env.sh` | SoftHSM behind `p11-kit server`, compared with direct access |
 | `checks.vm` / `test-nspawn` | QEMU / systemd-nspawn | the CLI flow; in the VM also the pseudo-FOD consumer built in the guest sandbox |
 | `checks.module`, `checks.tpm`, `checks.lib` | QEMU / eval | module, hook, pcscd, TPM ACL, Nix library |

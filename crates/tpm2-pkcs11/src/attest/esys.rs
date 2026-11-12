@@ -32,6 +32,7 @@ use tss_esapi::structures::{
 };
 use tss_esapi::tss2_esys as esys;
 use tss_esapi::Context;
+use zeroize::Zeroizing;
 
 /// What a certify run proved, host-verified.
 pub struct Certified {
@@ -41,8 +42,6 @@ pub struct Certified {
     pub qualified_name: Vec<u8>,
     /// The canonical SPKI of the AK: the anchor the lock pins.
     pub ak_spki: Vec<u8>,
-    /// The canonical SPKI of the attested key's material (`None` for symmetric objects).
-    pub key_spki: Option<Vec<u8>>,
     /// The signed `objectAttributes`, as the module derives CKA_LOCAL and CKA_EXTRACTABLE.
     pub local: bool,
     pub extractable: bool,
@@ -53,21 +52,70 @@ pub fn context(conf: &tss_esapi::Tcti) -> Result<Context> {
     Context::new(conf.clone()).map_err(|e| KmError::Unavailable(format!("connecting to the TPM: {e}")))
 }
 
+/// Run `f` with the transient object `handle`, then flush it whatever `f` returned. Without a
+/// resource manager (`swtpm:`, `device:/dev/tpm0`) a transient object outlives the connection,
+/// and the TPM runs out of object slots after a few runs.
+fn flushing<T>(ctx: &mut Context, handle: KeyHandle, f: impl FnOnce(&mut Context) -> Result<T>) -> Result<T> {
+    let out = f(ctx);
+    let _ = ctx.flush_context(handle.into());
+    out
+}
+
 /// The attestation key: a persistent restricted signing key in the owner hierarchy with empty
 /// auth, provisioned by cakeys on first attest and pinned by the realisation's
 /// `attestation.root`. Owner auth must be empty (swtpm, and most desktop TPMs). Returns its
 /// handle, public area and *qualified name* (the `TPMS_ATTEST.qualifiedSigner` it signs).
-pub fn attestation_key(ctx: &mut Context, handle: u32) -> Result<(KeyHandle, Public, Name)> {
+///
+/// A key already at the handle is used only if it *is* such a key — the public area of cakeys'
+/// template, restricted signing, fixedTPM: an unrestricted key there could sign a forged
+/// `TPMS_ATTEST`, and the lock would pin it on first use. Only `provision` (set under `realise`)
+/// creates one; a read never changes the TPM.
+pub fn attestation_key(ctx: &mut Context, handle: u32, provision: bool) -> Result<(KeyHandle, Public, Name)> {
     let persistent = PersistentTpmHandle::new(handle)
-        .map_err(|e| KmError::Validation(format!("akHandle {handle:#10x}: {e}")))?;
+        .map_err(|e| KmError::Validation(format!("akHandle {handle:#010x}: {e}")))?;
+    let template = ak_template()?;
     if let Ok(tr) = ctx.tr_from_tpm_public(TpmHandle::Persistent(persistent)) {
         // Already provisioned: read the key where it sits. (Evicting a persistent object again
         // would be a no-op that retires the handle.)
         let key = KeyHandle::from(tr);
-        return read_public(ctx, key).map(|(public, _name, qualified_name)| (key, public, qualified_name));
+        let (public, _name, qualified_name) = read_public(ctx, key)?;
+        check_ak(&public, &template, handle)?;
+        return Ok((key, public, qualified_name));
     }
-    // Absent: provision one. A restricted signing key may sign only TPM-generated structures
-    // (TPM2_Certify among them), never caller-chosen data.
+    if !provision {
+        return Err(KmError::Unavailable(format!(
+            "no Attestation Key at {handle:#010x} on this TPM; `realise` provisions it"
+        )));
+    }
+    let transient = ctx
+        .execute_with_session(Some(AuthSession::Password), |ctx| {
+            ctx.create_primary(Hierarchy::Owner, template, None, None, None, None)
+        })
+        .map_err(|e| {
+            KmError::Unavailable(format!(
+                "creating the Attestation Key in the owner hierarchy (is owner auth empty?): {e}"
+            ))
+        })?
+        .key_handle;
+    // The persistent copy is the key from now on; the transient one is flushed either way.
+    let persisted = flushing(ctx, transient, |ctx| {
+        ctx.execute_with_session(Some(AuthSession::Password), |ctx| {
+            ctx.evict_control(Provision::Owner, transient.into(), Persistent::Persistent(persistent))
+        })
+        .map_err(|e| {
+            KmError::Unavailable(format!(
+                "making the Attestation Key persistent at {handle:#010x} (is the handle free?): {e}"
+            ))
+        })
+    })?;
+    let key = KeyHandle::from(persisted);
+    read_public(ctx, key).map(|(public, _name, qualified_name)| (key, public, qualified_name))
+}
+
+/// The Attestation Key's public area as cakeys provisions it (`unique` left for the TPM). A
+/// restricted signing key may sign only TPM-generated structures (TPM2_Certify among them),
+/// never caller-chosen data.
+fn ak_template() -> Result<Public> {
     let params = PublicEccParametersBuilder::new()
         .with_ecc_scheme(EccScheme::EcDsa(HashScheme::new(HashingAlgorithm::Sha256)))
         .with_curve(EccCurve::NistP256)
@@ -87,33 +135,35 @@ pub fn attestation_key(ctx: &mut Context, handle: u32) -> Result<(KeyHandle, Pub
         .with_restricted(true)
         .build()
         .map_err(|e| KmError::Validation(format!("AK attributes: {e}")))?;
-    let public = PublicBuilder::new()
+    PublicBuilder::new()
         .with_public_algorithm(PublicAlgorithm::Ecc)
         .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
         .with_object_attributes(attrs)
         .with_ecc_parameters(params)
         .with_ecc_unique_identifier(EccPoint::default())
         .build()
-        .map_err(|e| KmError::Validation(format!("AK public area: {e}")))?;
-    let key = ctx
-        .execute_with_session(Some(AuthSession::Password), |ctx| {
-            ctx.create_primary(Hierarchy::Owner, public, None, None, None, None)
-        })
-        .map_err(|e| {
-            KmError::Unavailable(format!(
-                "creating the Attestation Key in the owner hierarchy (is owner auth empty?): {e}"
-            ))
-        })?
-        .key_handle;
-    ctx.execute_with_session(Some(AuthSession::Password), |ctx| {
-        ctx.evict_control(Provision::Owner, key.into(), Persistent::Persistent(persistent))
-    })
-    .map_err(|e| {
-        KmError::Unavailable(format!(
-            "making the Attestation Key persistent at {handle:#10x} (is the handle free?): {e}"
-        ))
-    })?;
-    read_public(ctx, key).map(|(public, _name, qualified_name)| (key, public, qualified_name))
+        .map_err(|e| KmError::Validation(format!("AK public area: {e}")))
+}
+
+/// Whether the key found at the AK handle is one cakeys would have provisioned: everything of
+/// the template but `unique` (the key itself) — the attributes (restricted, sign-only,
+/// fixedTPM/fixedParent, TPM-generated), the scheme and curve, the name algorithm, no policy.
+fn check_ak(public: &Public, template: &Public, handle: u32) -> Result<()> {
+    let same = match (public, template) {
+        (
+            Public::Ecc { object_attributes: a, name_hashing_algorithm: n, auth_policy: p, parameters: q, .. },
+            Public::Ecc { object_attributes: ta, name_hashing_algorithm: tn, auth_policy: tp, parameters: tq, .. },
+        ) => a == ta && n == tn && p == tp && q == tq,
+        _ => false,
+    };
+    if same {
+        return Ok(());
+    }
+    Err(KmError::Conflict(format!(
+        "the object at akHandle {handle:#010x} is not a cakeys Attestation Key (a restricted P-256 \
+         ECDSA-SHA256 signing key, fixedTPM, empty policy): an unrestricted key could sign forged \
+         attestations; free the handle or set tokens.<t>.akHandle to another"
+    )))
 }
 
 fn read_public(ctx: &mut Context, key: KeyHandle) -> Result<(Public, Name, Name)> {
@@ -136,27 +186,29 @@ fn seal_auth(pin: &[u8], salt: &str) -> Vec<u8> {
 /// Load the seal object and unseal the token's wrapping key with the user PIN — the same
 /// protocol the module runs at login (`token_unseal_wrapping_key`): the sealed payload is the
 /// wrapping key *as a hex string*, the AES key is its 32 decoded bytes.
-pub fn wrapping_key(ctx: &mut Context, store: &Store, pin: &[u8]) -> Result<Vec<u8>> {
+pub fn wrapping_key(ctx: &mut Context, store: &Store, pin: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     let auth = Auth::try_from(seal_auth(pin, &store.seal.auth_salt))
         .map_err(|e| KmError::Unavailable(format!("seal auth: {e}")))?;
     // `TPM2_Load` needs no session beyond the parent's (empty-auth password), and
     // `Esys_TR_FromTPMPublic` runs `TPM2_ReadPublic`, which takes none at all: keep both
     // outside the unseal's password session.
     let seal = load(ctx, &store.parent, &store.seal.priv_blob, &store.seal.pub_blob)?;
-    ctx.tr_set_auth(seal.into(), auth)
-        .map_err(|e| KmError::Unavailable(format!("setting the seal auth: {e}")))?;
-    let unsealed = ctx
-        .execute_with_session(Some(AuthSession::Password), |ctx| {
+    let unsealed = flushing(ctx, seal, |ctx| {
+        ctx.tr_set_auth(seal.into(), auth)
+            .map_err(|e| KmError::Unavailable(format!("setting the seal auth: {e}")))?;
+        ctx.execute_with_session(Some(AuthSession::Password), |ctx| {
             ctx.unseal(seal.into()).map_err(|e| {
                 KmError::Unavailable(format!(
                     "TPM2_Unseal of the token's wrapping key (is the user PIN right?): {e}"
                 ))
             })
-        })?;
-    let _ = ctx.flush_context(seal.into());
-    let hex = String::from_utf8(unsealed.value().to_vec())
-        .map_err(|_| KmError::Conflict("the unsealed wrapping key is not hex text".into()))?;
-    let key = super::store_hex(&hex)?;
+        })
+    })?;
+    let hex = Zeroizing::new(
+        String::from_utf8(unsealed.value().to_vec())
+            .map_err(|_| KmError::Conflict("the unsealed wrapping key is not hex text".into()))?,
+    );
+    let key = Zeroizing::new(super::store_hex(&hex)?);
     if key.len() != 32 {
         return Err(KmError::Conflict(format!("token wrapping key is {} bytes, expected 32", key.len())));
     }
@@ -165,7 +217,7 @@ pub fn wrapping_key(ctx: &mut Context, store: &Store, pin: &[u8]) -> Result<Vec<
 
 /// The GCM-wrapped object auth (`<iv>:<tag>:<ct>` hex) under the token's wrapping key, as the
 /// module's `aes256_gcm_decrypt` reads it. The plaintext is the object's authValue.
-pub fn unwrap_objauth(wrapping_key: &[u8], wrapped: &str) -> Result<Vec<u8>> {
+pub fn unwrap_objauth(wrapping_key: &[u8], wrapped: &str) -> Result<Zeroizing<Vec<u8>>> {
     let bad = || KmError::Conflict("CKA_TPM2_OBJAUTH_ENC is not <iv>:<tag>:<ct>".into());
     let mut parts = wrapped.split(':');
     let iv = super::store_hex(parts.next().ok_or_else(bad)?)?;
@@ -181,6 +233,7 @@ pub fn unwrap_objauth(wrapping_key: &[u8], wrapped: &str) -> Result<Vec<u8>> {
     let nonce: &aes_gcm::Nonce<aes_gcm::aead::consts::U12> = (&iv).into();
     cipher
         .decrypt(nonce, ct_tag.as_ref())
+        .map(Zeroizing::new)
         .map_err(|_| KmError::Conflict("the object's authValue does not decrypt under the token wrapping key".into()))
 }
 
@@ -237,14 +290,14 @@ pub fn unmarshal_public(pub_blob: &[u8]) -> Result<Public> {
 pub fn certify(
     ctx: &mut Context,
     key: KeyHandle,
-    key_auth: Vec<u8>,
+    key_auth: &[u8],
     ak: KeyHandle,
 ) -> Result<(Attest, Signature)> {
     let mut nonce = vec![0u8; 32];
     getrandom::fill(&mut nonce).map_err(|e| KmError::Unavailable(format!("OS RNG: {e}")))?;
     ctx.tr_set_auth(
         key.into(),
-        Auth::try_from(key_auth).map_err(|e| KmError::Unavailable(format!("object auth: {e}")))?,
+        Auth::try_from(key_auth.to_vec()).map_err(|e| KmError::Unavailable(format!("object auth: {e}")))?,
     )
     .map_err(|e| KmError::Unavailable(format!("setting the object auth: {e}")))?;
     let data = Data::try_from(nonce.clone()).map_err(|e| KmError::Unavailable(format!("nonce: {e}")))?;
@@ -290,15 +343,15 @@ pub fn verify_signature(signature: &Signature, ak_spki: &[u8], bytes: &[u8]) -> 
         Signature::EcDsa(ecc) => (ecc.signature_r().value().to_vec(), ecc.signature_s().value().to_vec()),
         s => return Err(KmError::Unsupported(format!("the AK signed with {s:?}, not ECDSA-SHA256"))),
     };
-    let pad = |mut v: Vec<u8>| {
-        while v.len() < 32 {
-            v.insert(0, 0);
-        }
-        v
-    };
+    // r and s are minimal big-endian integers: left-pad each to the 32-byte field size. Longer
+    // is no P-256 signature (an error, never a panic).
     let mut raw = [0u8; 64];
-    raw[..32].copy_from_slice(&pad(r));
-    raw[32..].copy_from_slice(&pad(s));
+    for (half, v) in raw.as_chunks_mut::<32>().0.iter_mut().zip([&r, &s]) {
+        let at = 32usize
+            .checked_sub(v.len())
+            .ok_or_else(|| KmError::Conflict(format!("the AK's signature has a {}-byte component; P-256 has 32", v.len())))?;
+        half[at..].copy_from_slice(v);
+    }
     let key = p256::ecdsa::VerifyingKey::from_public_key_der(ak_spki)
         .map_err(|e| KmError::Conflict(format!("the AK's public key: {e}")))?;
     let sig = p256::ecdsa::Signature::from_slice(&raw)
@@ -371,15 +424,16 @@ pub fn recompute_name(pub_blob: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Load, certify, verify and pin one key of the token (§3.7): the store row `tobj` whose
-/// PKCS#11 object is being attested. The material SPKI, when the class has one, is
-/// cross-checked against the attestation — the attested key must be the key the object's
-/// `rfc7093m4` names.
+/// PKCS#11 object is being attested. The material SPKI (present exactly for asymmetric keys)
+/// is cross-checked against the attestation — the attested key must be the key the object's
+/// `rfc7093m4` names. `provision` lets a missing Attestation Key be created (`realise` only).
 pub fn certify_key(
     ctx: &mut Context,
     store: &Store,
     tobj: &TObject,
     pin: Option<&[u8]>,
     ak_handle: u32,
+    provision: bool,
     spki: Option<&[u8]>,
 ) -> Result<Certified> {
     let pin = pin.ok_or_else(|| {
@@ -395,9 +449,25 @@ pub fn certify_key(
     let priv_blob = tobj.priv_blob.as_deref().ok_or_else(|| {
         KmError::Unsupported("the store object carries no private blob to certify".into())
     })?;
+    // The AK first: it is persistent, so nothing is left to flush if it is missing.
+    let (ak, ak_public, ak_qualified_name) = attestation_key(ctx, ak_handle, provision)?;
     let key = load(ctx, &store.parent, priv_blob, &tobj.pub_blob)?;
+    flushing(ctx, key, |ctx| certify_loaded(ctx, key, &objauth, tobj, ak, &ak_public, &ak_qualified_name, spki))
+}
+
+/// The certify and its host verification, for the object `key` loaded from `tobj`.
+#[allow(clippy::too_many_arguments)]
+fn certify_loaded(
+    ctx: &mut Context,
+    key: KeyHandle,
+    objauth: &[u8],
+    tobj: &TObject,
+    ak: KeyHandle,
+    ak_public: &Public,
+    ak_qualified_name: &Name,
+    spki: Option<&[u8]>,
+) -> Result<Certified> {
     let (live_public, live_name, live_qn) = read_public(ctx, key)?;
-    let (ak, ak_public, ak_name) = attestation_key(ctx, ak_handle)?;
     let (attest, signature) = certify(ctx, key, objauth, ak)?;
     // Host verification: the AK's signature over the exact attestation bytes, the attested
     // Names against both the store's public blob and the loaded object, and the signer.
@@ -413,23 +483,32 @@ pub fn certify_key(
     if name != live_name.value() || qualified_name != live_qn.value() {
         return Err(KmError::Conflict("the attested Names do not match the loaded object's".into()));
     }
-    let ak_material = material_of(&ak_public)?;
+    let ak_material = material_of(ak_public)?;
     let ak_spki = ak_material
         .spki
         .ok_or_else(|| KmError::Conflict("the Attestation Key exposes no public key".into()))?;
     verify_signature(&signature, &ak_spki, &attest_bytes(&attest)?)?;
-    if attest.qualified_signer().value() != ak_name.value() {
+    if attest.qualified_signer().value() != ak_qualified_name.value() {
         return Err(KmError::Conflict("the attestation was signed by another key than the AK".into()));
     }
     // The material cross-check (§3.7): the attested public area must be the same key the
-    // object's rfc7093m4 hashes — what verifies the identity on any other token.
+    // object's rfc7093m4 hashes — what verifies the identity on any other token. A symmetric
+    // PKCS#11 object backed by an asymmetric TPM object (or the reverse) is a different object.
     let material = material_of(&live_public)?;
-    if let (Some(want), Some(attested)) = (spki, &material.spki) {
-        if want != attested {
+    match (spki, &material.spki) {
+        (Some(want), Some(attested)) if want != attested.as_slice() => {
             return Err(KmError::Conflict(format!(
                 "the TPM attests the public key {}, but the object's material is {}",
                 id::sri(attested),
                 id::sri(want)
+            )));
+        }
+        (Some(_), Some(_)) | (None, None) => {}
+        (want, _) => {
+            return Err(KmError::Conflict(format!(
+                "the store object is {}, but the PKCS#11 object is {}",
+                if material.spki.is_some() { "an asymmetric key" } else { "a symmetric object" },
+                if want.is_some() { "an asymmetric key" } else { "a secret key" }
             )));
         }
     }
@@ -440,7 +519,6 @@ pub fn certify_key(
         name,
         qualified_name,
         ak_spki,
-        key_spki: material.spki,
         local: attributes.sensitive_data_origin(),
         extractable: !(attributes.fixed_tpm() || attributes.fixed_parent()),
     })

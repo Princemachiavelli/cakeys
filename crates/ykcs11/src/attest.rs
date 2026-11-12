@@ -180,15 +180,15 @@ pub struct PivAttested {
 ///
 /// `spki` is the canonical SPKI of the object's material — the same bytes its `rfc7093m4` ID
 /// hashes. The attestation must name exactly that key: this is what makes an attested identity
-/// *verifiable as key identity* on a token where no attestation exists. A copy of the key on a
-/// second HSM can never attest (it was imported there); the shared `rfc7093m4`, which the
-/// attestation's subject is checked against, still links the material.
+/// *verifiable as key identity* on a token where no attestation exists. A copy of the key on
+/// another token cannot attest (Yubico attests only keys generated on the device); the shared
+/// `rfc7093m4`, which the attestation's subject is checked against, still links the material.
 pub fn verify_piv_attestation(
     slot: &[u8],
     device: &[u8],
     anchors: &[Cert],
     pool: &[Cert],
-    spki: Option<&[u8]>,
+    spki: &[u8],
 ) -> Result<PivAttested> {
     let slot = Cert::from_der(slot.to_vec())?;
     let device = Cert::from_der(device.to_vec())?;
@@ -200,14 +200,12 @@ pub fn verify_piv_attestation(
     // The attested key is the certificate's subject: it must be the material the identity is
     // for, or the attestation attests something else (13, never a pass).
     let subject = slot.spki()?;
-    if let Some(want) = spki {
-        if want != subject {
-            return Err(KmError::Conflict(format!(
-                "the attestation names the public key {}, but the object's material is {}",
-                id::sri(&subject),
-                id::sri(want)
-            )));
-        }
+    if spki != subject {
+        return Err(KmError::Conflict(format!(
+            "the attestation names the public key {}, but the object's material is {}",
+            id::sri(&subject),
+            id::sri(spki)
+        )));
     }
     Ok(PivAttested {
         id: id::piv_attestation_id(
@@ -222,61 +220,112 @@ pub fn verify_piv_attestation(
     })
 }
 
+/// The pooled Yubico intermediates a PIV chain may pass through: the PIV attestation CAs and
+/// the generic "Attestation Intermediate" CAs above them. Yubico's published pool also holds
+/// the FIDO, OpenPGP, SD and YubiHSM attestation CAs under the same "Yubico Attestation Root
+/// 1"; a device certificate issued by one of those is not PIV evidence, so they are left out.
+pub fn piv_pool(pool: Vec<Cert>) -> Vec<Cert> {
+    pool.into_iter()
+        .filter(|c| {
+            let subject = c.parsed.tbs_certificate().subject().to_string();
+            ["CN=Yubico PIV Attestation", "CN=Yubico Attestation Intermediate"]
+                .iter()
+                .any(|p| subject.starts_with(p))
+        })
+        .collect()
+}
+
+/// `basicConstraints` (2.5.29.19).
+const BASIC_CONSTRAINTS: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.19");
+
+impl Cert {
+    /// Whether this certificate may issue a chain with `below` CA certificates under it (the
+    /// device f9 certificate counts as one): `basicConstraints` CA, within its `pathLen`.
+    fn may_issue(&self, below: u8) -> Result<()> {
+        let subject = self.parsed.tbs_certificate().subject().to_string();
+        let bc = self
+            .parsed
+            .tbs_certificate()
+            .extensions()
+            .and_then(|ext| ext.iter().find(|e| e.extn_id == BASIC_CONSTRAINTS))
+            .map(|e| x509_cert::ext::pkix::BasicConstraints::from_der(e.extn_value.as_bytes()))
+            .transpose()
+            .map_err(|e| KmError::Conflict(format!("attestation chain: '{subject}' basicConstraints: {e}")))?;
+        match bc {
+            Some(bc) if bc.ca && bc.path_len_constraint.is_none_or(|n| n >= below) => Ok(()),
+            Some(bc) if bc.ca => Err(KmError::Conflict(format!(
+                "attestation chain: '{subject}' allows {} CA certificate(s) below it, the chain has {below}",
+                bc.path_len_constraint.unwrap_or_default()
+            ))),
+            _ => Err(KmError::Conflict(format!("attestation chain: '{subject}' is not a CA"))),
+        }
+    }
+}
+
 /// Walk `cert`'s issuer chain through Yubico's pooled intermediates until a pinned anchor is
-/// reached, verifying every signature on the host; the anchor is what the lock pins. Real
-/// chains are one link (f9 ← classic root) or three (f9 ← PIV intermediate ← attestation
-/// intermediate ← root, firmware 5.7.4+).
+/// reached, verifying every signature and every issuer's `basicConstraints` on the host; the
+/// anchor is what the lock pins. Real chains are one link (f9 ← classic root) or three
+/// (f9 ← PIV intermediate ← attestation intermediate ← root, firmware 5.7.4+).
 fn chain_to_anchor<'a>(cert: &Cert, anchors: &'a [Cert], pool: &[Cert]) -> Result<&'a Cert> {
     let bad = |what: String| KmError::Conflict(format!("attestation chain: {what}"));
     let mut current = cert;
-    for _ in 0..3 {
+    // CA certificates below the next issuer, `cert` (the device certificate) included.
+    for below in 1..=3 {
         if let Some(issuer) = pool.iter().find(|c| c.issued(current)) {
+            issuer.may_issue(below)?;
             verify_signed_by(current, issuer)?;
             current = issuer;
             continue;
         }
         if let Some(anchor) = anchors.iter().find(|a| a.issued(current)) {
+            anchor.may_issue(below)?;
             verify_signed_by(current, anchor)?;
             return Ok(anchor);
         }
         return Err(bad(format!(
-            "'{}' is signed by no pinned root and no pooled intermediate",
-            String::from_utf8_lossy(&current.subject_der())
+            "'{}' is signed by no pinned root and no pooled PIV intermediate",
+            current.parsed.tbs_certificate().subject()
         )));
     }
     Err(bad("longer than 3 links; not a PIV attestation chain".into()))
+}
+
+/// Verify an ECDSA signature over `digest` with the P-256, P-384 or P-521 key `spki`: the
+/// curve comes from the key, the hash from the certificate's signature algorithm, so any
+/// pairing a signer may use (ecdsa-with-SHA256 under P-384, say) verifies.
+fn ecdsa_verify_prehash(spki: &[u8], digest: &[u8], sig: &[u8]) -> Result<bool> {
+    let bad_sig = |e: p256::ecdsa::Error| KmError::Conflict(format!("ECDSA signature: {e}"));
+    if let Ok(k) = p256::ecdsa::VerifyingKey::from_public_key_der(spki) {
+        use p256::ecdsa::signature::hazmat::PrehashVerifier;
+        let s = p256::ecdsa::Signature::from_der(sig).map_err(bad_sig)?;
+        return Ok(k.verify_prehash(digest, &s).is_ok());
+    }
+    if let Ok(k) = p384::ecdsa::VerifyingKey::from_public_key_der(spki) {
+        use p384::ecdsa::signature::hazmat::PrehashVerifier;
+        let s = p384::ecdsa::Signature::from_der(sig).map_err(bad_sig)?;
+        return Ok(k.verify_prehash(digest, &s).is_ok());
+    }
+    if let Ok(k) = p521::ecdsa::VerifyingKey::from_public_key_der(spki) {
+        use p521::ecdsa::signature::hazmat::PrehashVerifier;
+        let s = p521::ecdsa::Signature::from_der(sig).map_err(bad_sig)?;
+        return Ok(k.verify_prehash(digest, &s).is_ok());
+    }
+    Err(KmError::Conflict("the ECDSA signer is no P-256, P-384 or P-521 key".into()))
 }
 
 /// Verify that `cert`'s signature (over its original `tbsCertificate` bytes) was made by
 /// `signer`'s key, with the signature algorithm the certificate names. Verification is
 /// constant-time where the underlying crates make it so.
 fn verify_signed_by(cert: &Cert, signer: &Cert) -> Result<()> {
+    use sha2::Digest;
     let oid = cert.parsed.signature_algorithm().oid;
     let spki = signer.spki()?;
     let tbs = cert.tbs()?;
     let sig = cert.signature()?;
     let verified = match oid {
-        ECDSA_SHA256 => {
-            use p256::ecdsa::signature::Verifier;
-            let k = p256::ecdsa::VerifyingKey::from_public_key_der(&spki)
-                .map_err(|e| KmError::Conflict(format!("signer is no P-256 key: {e}")))?;
-            let s = p256::ecdsa::Signature::from_der(sig).map_err(|e| KmError::Conflict(format!("ECDSA signature: {e}")))?;
-            k.verify(tbs, &s).is_ok()
-        }
-        ECDSA_SHA384 => {
-            use p384::ecdsa::signature::Verifier;
-            let k = p384::ecdsa::VerifyingKey::from_public_key_der(&spki)
-                .map_err(|e| KmError::Conflict(format!("signer is no P-384 key: {e}")))?;
-            let s = p384::ecdsa::Signature::from_der(sig).map_err(|e| KmError::Conflict(format!("ECDSA signature: {e}")))?;
-            k.verify(tbs, &s).is_ok()
-        }
-        ECDSA_SHA512 => {
-            use p521::ecdsa::signature::Verifier;
-            let k = p521::ecdsa::VerifyingKey::from_public_key_der(&spki)
-                .map_err(|e| KmError::Conflict(format!("signer is no P-521 key: {e}")))?;
-            let s = p521::ecdsa::Signature::from_der(sig).map_err(|e| KmError::Conflict(format!("ECDSA signature: {e}")))?;
-            k.verify(tbs, &s).is_ok()
-        }
+        ECDSA_SHA256 => ecdsa_verify_prehash(&spki, &sha2::Sha256::digest(tbs), sig)?,
+        ECDSA_SHA384 => ecdsa_verify_prehash(&spki, &sha2::Sha384::digest(tbs), sig)?,
+        ECDSA_SHA512 => ecdsa_verify_prehash(&spki, &sha2::Sha512::digest(tbs), sig)?,
         RSA_SHA256 => {
             use rsa::signature::Verifier;
             let k = rsa::PublicKey::from_public_key_der(&spki)
@@ -351,6 +400,38 @@ mod tests {
         for c in &pool {
             chain_to_anchor(c, &anchors, &pool).unwrap();
         }
+        // A PIV chain passes only through the PIV CAs and the generic intermediates above them;
+        // the other products' CAs (FIDO, OpenPGP, SD, YubiHSM) issue no PIV device certificate.
+        let piv: Vec<String> = piv_pool(pem_certs(include_str!("../roots/yubico-intermediate.pem")).unwrap())
+            .iter()
+            .map(|c| c.parsed.tbs_certificate().subject().to_string())
+            .collect();
+        assert_eq!(
+            piv,
+            [
+                "CN=Yubico Attestation Intermediate A 1",
+                "CN=Yubico Attestation Intermediate B 1",
+                "CN=Yubico PIV Attestation A 1",
+                "CN=Yubico PIV Attestation B 1",
+                "CN=Yubico PIV Attestation B2 1",
+            ]
+        );
+    }
+
+    /// Every issuer in the walk must be a CA within its pathLen: Yubico's FIDO CAs carry
+    /// `pathlen:0`, so even under the pinned root they cannot issue a device certificate.
+    #[test]
+    fn issuers_must_be_cas_within_their_path_length() {
+        let pool = pem_certs(include_str!("../roots/yubico-intermediate.pem")).unwrap();
+        let named = |cn: &str| pool.iter().find(|c| c.parsed.tbs_certificate().subject().to_string() == cn).unwrap();
+        named("CN=Yubico FIDO Attestation A 1").may_issue(0).unwrap();
+        let err = named("CN=Yubico FIDO Attestation A 1").may_issue(1).unwrap_err();
+        assert!(err.to_string().contains("allows 0 CA certificate(s) below it"), "{err}");
+        named("CN=Yubico PIV Attestation A 1").may_issue(1).unwrap();
+        assert!(named("CN=Yubico PIV Attestation A 1").may_issue(2).is_err());
+        // The fixture slot certificate is an end entity (CA:FALSE).
+        let slot = Cert::from_der(der_of("slot.pem")).unwrap();
+        assert!(slot.may_issue(0).unwrap_err().to_string().contains("is not a CA"));
     }
 
     /// The fixture chain (root → device f9 → slot attestation) verifies to its anchor, and the
@@ -360,15 +441,15 @@ mod tests {
     fn fixture_chain_verifies_and_pins() {
         let anchors = pem_certs(&String::from_utf8(fixture("root.pem")).unwrap()).unwrap();
         let attested =
-            verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &anchors, &[], Some(&spki_of("slotpub.pem")))
+            verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &anchors, &[], &spki_of("slotpub.pem"))
                 .unwrap();
         assert_eq!(attested.id, "sha256-gKyFL3YX9/6UtxWv5JbcU4a5Rj5Ev9IVC0SV25gIQoc=");
         assert_eq!(attested.root, id::sri(&anchors[0].spki().unwrap()));
         // Other material: the attestation names the slot's key, not another key's.
-        let err = verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &anchors, &[], Some(&spki_of("slot2pub.pem"))).unwrap_err();
+        let err = verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &anchors, &[], &spki_of("slot2pub.pem")).unwrap_err();
         assert!(err.to_string().contains("the attestation names"), "{err}");
         // No pinned anchor: f9 overwritten with a self-made key, or another vendor's device.
-        let err = verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &[], &[], Some(&spki_of("slotpub.pem"))).unwrap_err();
+        let err = verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &[], &[], &spki_of("slotpub.pem")).unwrap_err();
         assert!(err.to_string().contains("signed by no pinned root"), "{err}");
     }
 }

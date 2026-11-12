@@ -8,8 +8,9 @@ Parked deliberately; the lock stays `version = 1`, a draft, until the reviews pa
 
 - ~~**Attestation (P2-11, lock review):**~~ **done 2026-11-12** as the attestation commitments
   (`piv-attestation`, `tpm-certify`, docs/DESIGN.md §3.7): YubiKey PIV verified to the pinned
-  Yubico root, and a native `TPM2_Certify` with a cakeys-provisioned AK — always paired with a
-  portable scheme, never standalone. Remainders still parked:
+  Yubico root, and a native `TPM2_Certify` with a cakeys-provisioned AK — pinned per
+  realisation (an attestation ID is per device), always beside a portable scheme, never
+  standalone. Review findings and their fixes: `ISSUES.md`. Remainders still parked:
   - `binding = "attested"` as an opt-in replacement for `pop-*` (the touch-free PIV case);
   - EK-chaining the AK (today the AK is TOFU through the pinned `attestation.root`);
   - vendor HSM attestation blobs (Luna PKC, Google, nShield — out-of-band, not researched).

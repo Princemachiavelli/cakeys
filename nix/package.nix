@@ -29,9 +29,10 @@ rustPlatform.buildRustPackage {
   cargoLock.lockFile = ../Cargo.lock;
 
   # tss-esapi (the native TPM2_Certify attestation path of cakeys-tpm2-pkcs11) links
-  # tpm2-tss's ESAPI and TCTI loader at build time; rusqlite falls back to the system
-  # library here, so it must resolve. The runtime closure picks the libraries up through
-  # the link.
+  # tpm2-tss's ESAPI and TCTI loader at build time; the runtime closure picks the libraries
+  # up through the link. rusqlite's `bundled` feature serves plain cargo builds, but nixpkgs'
+  # Rust builder sets LIBSQLITE3_SYS_USE_PKG_CONFIG, which makes libsqlite3-sys link the
+  # system sqlite instead — so it must be here.
   nativeBuildInputs = [ pkg-config ];
   buildInputs = [
     tpm2-tss

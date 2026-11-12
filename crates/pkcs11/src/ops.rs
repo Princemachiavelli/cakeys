@@ -8,7 +8,7 @@ use cakeys_core::config::{
 use cakeys_core::id::{self, Commit, HmacHash};
 use cakeys_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
-use cryptoki::object::KeyType;
+use cryptoki::object::{KeyType, ObjectHandle};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -416,8 +416,9 @@ pub struct Resolved {
     /// Label the commitment schemes in `ids` were computed with (none for public-material IDs).
     #[serde(rename = "commitmentLabel", skip_serializing_if = "Option::is_none")]
     pub commitment_label: Option<String>,
-    /// The attestation evidence this realisation pins (§3.7): present exactly when `ids` holds
-    /// an attestation scheme. `kind` names the evidence, `root` the anchor it verified to.
+    /// The attestation this realisation computed (§3.7), when its spec opted in: `kind` names
+    /// the evidence, `root` the anchor it verified to, `id` the per-device attestation ID. Never
+    /// in `ids`, which holds only the portable schemes shared across tokens.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attestation: Option<AttestationRecord>,
 }
@@ -431,8 +432,14 @@ fn commitment_label(t: &Target, lock: &Lock) -> String {
         .unwrap_or_else(|| id::DEFAULT_COMMITMENT_LABEL.to_owned())
 }
 
-/// GET: find by locator (exactly one), check type and attributes, compute IDs. Never writes.
+/// GET: find by locator (exactly one), check type and attributes, compute IDs. Never writes,
+/// neither the lock nor the token: a TPM Attestation Key that is not provisioned yet is an
+/// error here, and only `realise` provisions it.
 pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>> {
+    resolve_with(t, tok, lock, false)
+}
+
+fn resolve_with(t: &Target, tok: &Token, lock: &Lock, provision: bool) -> Result<Option<Resolved>> {
     let mode = plan_mode(t)?;
     let public_only = t.on_token.public_only;
     let Some(h) = tok.find_key(t.object, &t.on_token.locator, public_only)? else {
@@ -446,22 +453,11 @@ pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>>
     let commits = commits(t, tok, mode)?;
     let label = commitment_label(t, lock);
     let binding = binding(t);
-    let mut ids = tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding)?;
-    // The attestation commitment (§3.7): additional identity from signed provenance. The
-    // material SPKI it must name comes from the same source `rfc7093m4` hashed, so an
-    // attestation of other material is a conflict, not a second opinion.
-    let mut attestation = None;
-    if t.attestation_scheme(tok).is_some() {
-        let spki = match mode {
-            Mode::Direct if matches!(t.object.class.as_str(), "CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY") => {
-                Some(tok.spki(h, &t.on_token.locator)?)
-            }
-            _ => None,
-        };
-        let a = tok.attest(h, t.object, spki.as_deref())?;
-        attestation = Some(AttestationRecord { kind: id_kind(a.scheme).to_owned(), root: a.root.clone() });
-        ids.insert(a.scheme.to_owned(), a.id);
-    }
+    let ids = tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding)?;
+    let attestation = match t.attestation_scheme(tok) {
+        Some(scheme) => Some(attest(t, tok, lock, h, scheme, provision)?),
+        None => None,
+    };
     Ok(Some(Resolved {
         object: t.object_name.into(),
         spec: t.spec_name.into(),
@@ -479,14 +475,42 @@ pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>>
     }))
 }
 
-/// The lock-record `attestation.kind` for an attestation scheme (§3.7; the mapping is pinned
-/// as `ATTESTATION_KINDS`). Unknown schemes have no kind and so cannot be recorded.
-fn id_kind(scheme: &str) -> &'static str {
-    id::ATTESTATION_KINDS
-        .iter()
-        .find(|(s, _)| *s == scheme)
-        .map(|(_, kind)| *kind)
-        .unwrap_or_default()
+/// The attestation commitment (§3.7): per-device identity from signed provenance. The material
+/// SPKI it must name comes from the same source `rfc7093m4` hashed, so an attestation of other
+/// material is a conflict, not a second opinion.
+///
+/// Once the lock pins an attestation for this realisation, a run that cannot attest — the TPM
+/// unreachable, no PIN, no attestation certificate — is a scheme downgrade (14), like any
+/// scheme a realisation stops computing. Conflicts (13) and ambiguity (12) keep their codes:
+/// they say the evidence is wrong, not absent.
+fn attest(t: &Target, tok: &Token, lock: &Lock, h: ObjectHandle, scheme: &'static str, provision: bool) -> Result<AttestationRecord> {
+    let asymmetric = matches!(t.object.class.as_str(), "CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY");
+    let spki = if asymmetric { Some(tok.spki(h, &t.on_token.locator)?) } else { None };
+    let kind = id::attestation_kind(scheme)
+        .ok_or_else(|| KmError::Unsupported(format!("provider '{}' advertises unknown attestation scheme {scheme}", tok.provider.name())))?;
+    let a = match tok.attest(h, t.object, spki.as_deref(), provision) {
+        Ok(a) => a,
+        Err(e @ (KmError::Unavailable(_) | KmError::Unsupported(_) | KmError::NotFound(_))) => {
+            let locked = lock.realisations.get(t.spec_name).and_then(|m| m.get(t.token_name)).and_then(|r| r.attestation.as_ref());
+            return Err(match locked {
+                Some(was) => KmError::PreconditionFailed(format!(
+                    "identity downgrade for {}: it was realised with a {} attestation, which it cannot compute now: {e}",
+                    t.what(),
+                    was.kind
+                )),
+                None => e,
+            });
+        }
+        Err(e) => return Err(e),
+    };
+    if a.scheme != scheme {
+        return Err(KmError::Conflict(format!(
+            "provider '{}' advertises {scheme} but attested {}",
+            tok.provider.name(),
+            a.scheme
+        )));
+    }
+    Ok(AttestationRecord { kind: kind.to_owned(), root: a.root, id: a.id })
 }
 
 /// Compare computed IDs with the lock; optionally record them (only ever fills gaps).
@@ -546,12 +570,13 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
                 )));
             }
         }
-        // The attestation anchor is compared, even under --update-lock: the same material
-        // re-attested by a different anchor means a different device (or a re-provisioned
-        // TPM) signed the provenance, which is a change to review, never to re-record. A lost
-        // attestation is caught below as a scheme downgrade.
-        if let (Some(was), Some(now)) = (&prev.attestation, &r.attestation) {
-            if was != now {
+        // The attestation is compared, even under --update-lock (§3.7). A different anchor means
+        // a different device (or a re-provisioned TPM) signed the provenance; a different ID
+        // under the same anchor means the attested object changed (re-imported, other
+        // attributes or policy). Both are changes to review, never to re-record — and a lost
+        // attestation is a scheme downgrade.
+        match (&prev.attestation, &r.attestation) {
+            (Some(was), Some(now)) if was.kind != now.kind || was.root != now.root => {
                 return Err(KmError::PreconditionFailed(format!(
                     "attestation anchor for {} changed since it was realised ({} root {}, now {} root {}); \
                      the material needs a new object name",
@@ -562,6 +587,28 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
                     now.root
                 )));
             }
+            (Some(was), Some(now)) if was.id != now.id => {
+                return Err(KmError::HashMismatch {
+                    what: format!("{} ({} attestation)", t.what(), was.kind),
+                    expected: was.id.clone(),
+                    got: now.id.clone(),
+                });
+            }
+            (Some(was), None) => {
+                return Err(KmError::PreconditionFailed(format!(
+                    "identity downgrade for {}: it was realised with a {} attestation, which it no longer computes",
+                    t.what(),
+                    was.kind
+                )));
+            }
+            (None, Some(now)) if !update => {
+                eprintln!(
+                    "note: {} also has a {} attestation the lock does not record; `realise --update-lock` adds it",
+                    t.what(),
+                    now.kind
+                );
+            }
+            _ => {}
         }
         let lost: Vec<&String> = prev.schemes.iter().filter(|s| !r.ids.contains_key(*s)).collect();
         if !lost.is_empty() {
@@ -834,7 +881,7 @@ pub fn verify(t: &Target, tok: &Token, lock: &Lock) -> Result<Resolved> {
 pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, update: bool) -> Result<(Resolved, bool)> {
     let mode = plan_mode(t)?;
     check_capabilities(t, tok, mode)?;
-    let r = match resolve(t, tok, lock)? {
+    let r = match resolve_with(t, tok, lock, true)? {
         Some(r) => r,
         None if t.on_token.auto_create => {
             // D1: the lock already pins this object's material, so a fresh generation can only
@@ -862,7 +909,7 @@ pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, update: bool) -> Result
             }
             tok.create(t.object, t.spec, &t.on_token.locator)?;
             eprintln!("created {}", t.what());
-            match resolve(t, tok, lock).and_then(|r| {
+            match resolve_with(t, tok, lock, true).and_then(|r| {
                 r.ok_or_else(|| KmError::NotFound(format!("{} vanished after creation", t.what())))
             }) {
                 Ok(r) => r,

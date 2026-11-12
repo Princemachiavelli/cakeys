@@ -20,6 +20,7 @@ use cryptoki::session::{Session, UserType};
 use cryptoki::types::AuthPin;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use zeroize::Zeroizing;
 
 pub struct Token {
     pub name: String,
@@ -35,9 +36,9 @@ pub struct Token {
     /// The token's config, for provider hooks that need more than the module (the native TPM
     /// attestation path's `tcti`, `tpm2Store` and `akHandle`).
     pub cfg: TokenCfg,
-    /// The user credential, already read for login: the TPM attestation path unseals the
-    /// token's wrapping key with it. Held only for the token's lifetime, like the session.
-    pin: Option<String>,
+    /// The user credential, already read for login, kept only when the provider can attest
+    /// (the TPM attestation path unseals the token's wrapping key with it). Zeroized on drop.
+    pin: Option<Zeroizing<String>>,
 }
 
 fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
@@ -104,11 +105,11 @@ impl Token {
             module,
             token,
             mechanisms,
-            provider,
             session,
             logged_in: pin.is_some(),
             cfg: cfg.clone(),
-            pin,
+            pin: pin.filter(|_| provider.attestation().is_some()),
+            provider,
         })
     }
 
@@ -141,8 +142,9 @@ impl Token {
     /// Compute the attestation commitment for `key` (§3.7 of docs/DESIGN.md) through the
     /// provider: the module-exposed attestation certificate (PIV) or the native TPM2_Certify
     /// path (tpm2-pkcs11), verified on the host. `spki` is the material SPKI the attestation
-    /// must name (`None` for secret keys).
-    pub fn attest(&self, key: ObjectHandle, object: &ObjectCfg, spki: Option<&[u8]>) -> Result<Attested> {
+    /// must name (`None` for secret keys); `provision` lets the provider create the device
+    /// state it attests with (only `realise` sets it).
+    pub fn attest(&self, key: ObjectHandle, object: &ObjectCfg, spki: Option<&[u8]>, provision: bool) -> Result<Attested> {
         let ctx = AttestCtx {
             session: &self.session,
             cfg: &self.cfg,
@@ -150,7 +152,8 @@ impl Token {
             key,
             object,
             spki,
-            pin: self.pin.as_deref(),
+            pin: self.pin.as_ref().map(|p| p.as_str()),
+            provision,
         };
         self.provider.attest(&ctx)
     }
@@ -962,15 +965,16 @@ impl Token {
     }
 }
 
-fn read_pin(cfg: &TokenCfg) -> Result<Option<String>> {
+fn read_pin(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
     if let Some(var) = &cfg.pin_env {
         return std::env::var(var)
-            .map(Some)
+            .map(|s| Some(Zeroizing::new(s)))
             .map_err(|_| KmError::Unavailable(format!("PIN env var {var} not set")));
     }
     if let Some(path) = &cfg.pin_file {
         return std::fs::read_to_string(path)
-            .map(|s| Some(s.trim_end_matches(['\n', '\r']).to_owned()))
+            .map(Zeroizing::new)
+            .map(|s| Some(Zeroizing::new(s.trim_end_matches(['\n', '\r']).to_owned())))
             .map_err(|e| KmError::Unavailable(format!("PIN file {}: {e}", path.display())));
     }
     Ok(None)

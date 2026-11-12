@@ -9,7 +9,7 @@
 
 mod attest;
 
-use crate::attest::{pem_certs, verify_piv_attestation, ATTESTATION_LABEL};
+use crate::attest::{pem_certs, piv_pool, verify_piv_attestation, ATTESTATION_LABEL};
 use cakeys_pkcs11::provider::{AttestationCap, AttestCtx, Attested, Provider};
 use cakeys_pkcs11::token::ModuleInfo;
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
@@ -28,9 +28,13 @@ fn anchors() -> &'static Vec<attest::Cert> {
     })
 }
 
+/// The pooled intermediates a PIV chain may use: Yubico's published pool narrowed to the PIV
+/// CAs and the generic intermediates above them (`attest::piv_pool`).
 fn intermediates() -> &'static Vec<attest::Cert> {
     static POOL: std::sync::OnceLock<Vec<attest::Cert>> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| pem_certs(include_str!("../roots/yubico-intermediate.pem")).expect("embedded Yubico intermediates parse"))
+    POOL.get_or_init(|| {
+        piv_pool(pem_certs(include_str!("../roots/yubico-intermediate.pem")).expect("embedded Yubico intermediates parse"))
+    })
 }
 
 impl Provider for Ykcs11 {
@@ -45,7 +49,6 @@ impl Provider for Ykcs11 {
     fn attestation(&self) -> Option<AttestationCap> {
         Some(AttestationCap {
             scheme: "piv-attestation",
-            kind: "yubico-piv",
             // PIV attests the asymmetric keys generated on the device; secret keys, data
             // objects and certificates have none.
             classes: &["CKO_PRIVATE_KEY", "CKO_PUBLIC_KEY"],
@@ -65,9 +68,12 @@ impl Provider for Ykcs11 {
         else {
             return Err(KmError::Unsupported("the key object exposes no CKA_ID to find its attestation by".into()));
         };
+        let spki = ctx
+            .required_spki()?
+            .ok_or_else(|| KmError::Unsupported("PIV attests asymmetric keys only".into()))?;
         let slot = find_attestation_cert(ctx, &id)?;
         let device = find_device_cert(ctx)?;
-        let a = verify_piv_attestation(&slot, &device, anchors(), intermediates(), ctx.spki)?;
+        let a = verify_piv_attestation(&slot, &device, anchors(), intermediates(), spki)?;
         Ok(Attested { scheme: "piv-attestation", id: a.id, root: a.root })
     }
 }

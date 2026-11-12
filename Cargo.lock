@@ -266,6 +266,7 @@ dependencies = [
  "cryptoki",
  "serde",
  "serde_json",
+ "zeroize",
 ]
 
 [[package]]
@@ -288,6 +289,7 @@ dependencies = [
  "rusqlite",
  "sha2",
  "tss-esapi",
+ "zeroize",
 ]
 
 [[package]]
@@ -302,6 +304,7 @@ dependencies = [
  "p384",
  "p521",
  "rsa",
+ "sha2",
  "x509-cert",
 ]
 
