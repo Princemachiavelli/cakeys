@@ -39,6 +39,7 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 | ea2fa0e | **Refactor R4**: edition 2024, `rust-version = 1.89`, let chains at eleven sites; `load_config_with` takes the env lookup (no `set_var` in tests) |
 | 72a373a | **Refactor R5**: typed `ObjectClass`/`KeyType` (serde-renamed, digests unchanged) and `Scheme` (lock maps stay `String`-keyed); unknown class/key type now 17 at load (was 15 at use); YubiKey read-only verify 6/6 |
 | a1f7c76 | **Refactor R6**: core returns only `KmError` (`Io` variant, exit 1, with the file named); `anyhow` only in the CLI |
+| 5394c10 | **Refactor R7a**: the spec-only model (`Target`, `plan_mode`, binding and attribute checks, declared commitments) moves to `cakeys_core::plan`; `ObjectCfg::{curve, checked_key_type}` |
 
 ## Done (uncommitted; passes the local gate): (empty — next task below)
 
