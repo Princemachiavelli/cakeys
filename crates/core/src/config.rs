@@ -243,10 +243,51 @@ pub struct LockRealisation {
     /// Private keys: how the private object is bound to the identity. Absent: not recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<Binding>,
+    /// Every boolean attribute the object exposes for its class (`CKA_SIGN = true`, ...), as
+    /// read from the token: declared or not. A drift is a change to review.
+    pub policy: BTreeMap<String, bool>,
+    /// Attributes fixed when the object was made; one that weakens means it was replaced.
+    #[serde(default, skip_serializing_if = "Immutables::is_empty")]
+    pub immutables: Immutables,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed: Option<Observed>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<Provenance>,
+}
+
+/// Key attributes the token sets when the key is made, which no later operation can restore
+/// (PKCS#11 3.2 §4.9-4.10): `true` → `false` means the object was replaced, e.g. re-imported.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Immutables {
+    #[serde(rename = "CKA_LOCAL", default, skip_serializing_if = "Option::is_none")]
+    pub local: Option<bool>,
+    #[serde(rename = "CKA_NEVER_EXTRACTABLE", default, skip_serializing_if = "Option::is_none")]
+    pub never_extractable: Option<bool>,
+    #[serde(rename = "CKA_ALWAYS_SENSITIVE", default, skip_serializing_if = "Option::is_none")]
+    pub always_sensitive: Option<bool>,
+    /// `CKM_...`, absent when the token reports none (an imported key).
+    #[serde(rename = "CKA_KEY_GEN_MECHANISM", default, skip_serializing_if = "Option::is_none")]
+    pub key_gen_mechanism: Option<String>,
+}
+
+impl Immutables {
+    pub fn is_empty(&self) -> bool {
+        *self == Immutables::default()
+    }
+
+    /// Flags that were `true` when recorded and are not now.
+    pub fn weakened_since(&self, recorded: &Immutables) -> Vec<&'static str> {
+        [
+            ("CKA_LOCAL", recorded.local, self.local),
+            ("CKA_NEVER_EXTRACTABLE", recorded.never_extractable, self.never_extractable),
+            ("CKA_ALWAYS_SENSITIVE", recorded.always_sensitive, self.always_sensitive),
+        ]
+        .into_iter()
+        .filter(|(_, was, now)| *was == Some(true) && *now != Some(true))
+        .map(|(n, _, _)| n)
+        .collect()
+    }
 }
 
 /// Facts about the token at realisation time. Never compared.

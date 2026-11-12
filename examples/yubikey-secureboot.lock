@@ -56,6 +56,14 @@ mode = "direct"
 [realisations.whonix-db-cert-piv.yubikey.locator]
 CKA_LABEL = "X.509 Certificate for Retired Key 3"
 
+[realisations.whonix-db-cert-piv.yubikey.policy]
+CKA_COPYABLE = false
+CKA_DESTROYABLE = true
+CKA_MODIFIABLE = false
+CKA_PRIVATE = false
+CKA_TOKEN = true
+CKA_TRUSTED = false
+
 [realisations.whonix-db-cert-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;object=X.509%20Certificate%20for%20Retired%20Key%203;type=cert"
 mechanisms = [
@@ -114,6 +122,24 @@ binding = "token-asserted"
 [realisations.whonix-db-piv.yubikey.locator]
 CKA_ID = "07"
 
+[realisations.whonix-db-piv.yubikey.policy]
+CKA_COPYABLE = false
+CKA_DERIVE = false
+CKA_DESTROYABLE = true
+CKA_ENCRYPT = true
+CKA_MODIFIABLE = false
+CKA_PRIVATE = false
+CKA_TOKEN = true
+CKA_TRUSTED = false
+CKA_VERIFY = true
+CKA_VERIFY_RECOVER = false
+CKA_WRAP = false
+
+[realisations.whonix-db-piv.yubikey.immutables]
+CKA_LOCAL = true
+CKA_NEVER_EXTRACTABLE = false
+CKA_ALWAYS_SENSITIVE = false
+
 [realisations.whonix-db-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;id=%07;type=private"
 mechanisms = [
@@ -169,6 +195,14 @@ mode = "direct"
 
 [realisations.whonix-kek-cert-piv.yubikey.locator]
 CKA_LABEL = "X.509 Certificate for Retired Key 2"
+
+[realisations.whonix-kek-cert-piv.yubikey.policy]
+CKA_COPYABLE = false
+CKA_DESTROYABLE = true
+CKA_MODIFIABLE = false
+CKA_PRIVATE = false
+CKA_TOKEN = true
+CKA_TRUSTED = false
 
 [realisations.whonix-kek-cert-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;object=X.509%20Certificate%20for%20Retired%20Key%202;type=cert"
@@ -228,6 +262,24 @@ binding = "token-asserted"
 [realisations.whonix-kek-piv.yubikey.locator]
 CKA_ID = "06"
 
+[realisations.whonix-kek-piv.yubikey.policy]
+CKA_COPYABLE = false
+CKA_DERIVE = false
+CKA_DESTROYABLE = true
+CKA_ENCRYPT = true
+CKA_MODIFIABLE = false
+CKA_PRIVATE = false
+CKA_TOKEN = true
+CKA_TRUSTED = false
+CKA_VERIFY = true
+CKA_VERIFY_RECOVER = false
+CKA_WRAP = false
+
+[realisations.whonix-kek-piv.yubikey.immutables]
+CKA_LOCAL = true
+CKA_NEVER_EXTRACTABLE = false
+CKA_ALWAYS_SENSITIVE = false
+
 [realisations.whonix-kek-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;id=%06;type=private"
 mechanisms = [
@@ -283,6 +335,14 @@ mode = "direct"
 
 [realisations.whonix-pk-cert-piv.yubikey.locator]
 CKA_LABEL = "X.509 Certificate for Retired Key 1"
+
+[realisations.whonix-pk-cert-piv.yubikey.policy]
+CKA_COPYABLE = false
+CKA_DESTROYABLE = true
+CKA_MODIFIABLE = false
+CKA_PRIVATE = false
+CKA_TOKEN = true
+CKA_TRUSTED = false
 
 [realisations.whonix-pk-cert-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;object=X.509%20Certificate%20for%20Retired%20Key%201;type=cert"
@@ -341,6 +401,24 @@ binding = "token-asserted"
 
 [realisations.whonix-pk-piv.yubikey.locator]
 CKA_ID = "05"
+
+[realisations.whonix-pk-piv.yubikey.policy]
+CKA_COPYABLE = false
+CKA_DERIVE = false
+CKA_DESTROYABLE = true
+CKA_ENCRYPT = true
+CKA_MODIFIABLE = false
+CKA_PRIVATE = false
+CKA_TOKEN = true
+CKA_TRUSTED = false
+CKA_VERIFY = true
+CKA_VERIFY_RECOVER = false
+CKA_WRAP = false
+
+[realisations.whonix-pk-piv.yubikey.immutables]
+CKA_LOCAL = true
+CKA_NEVER_EXTRACTABLE = false
+CKA_ALWAYS_SENSITIVE = false
 
 [realisations.whonix-pk-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;id=%05;type=private"

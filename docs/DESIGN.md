@@ -198,6 +198,10 @@ specDigest = "sha256-..."
 mode = "direct"                      # a weaker mode is refused
 publicOnly = true                    # only when set
 binding = "pop-sign"                 # private keys: pop-sign | token-asserted (§3.6)
+[realisations.<spec>.<token>.policy] # every boolean attribute of the class the token shows
+CKA_SIGN = true ; CKA_DECRYPT = true ; CKA_EXTRACTABLE = false ; ...
+[realisations.<spec>.<token>.immutables] # keys: fixed at creation
+CKA_LOCAL = true ; CKA_NEVER_EXTRACTABLE = true ; CKA_ALWAYS_SENSITIVE = true ; CKA_KEY_GEN_MECHANISM = "CKM_..."
 
 # Observed: facts about the token; never change a verdict (optional).
 [realisations.<spec>.<token>.observed]
@@ -218,6 +222,16 @@ model = "..." ; serial = "..." ; firmware = "M.m"
   and `provenance` changes no verdict, and a lock without `version` or a compared field is
   invalid (exit 17) — `observed_and_provenance_never_change_a_verdict`. An observed mechanism the
   token no longer offers is a warning.
+- **The policy vector is closed-world.** The spec declares the attributes it requires; the lock
+  records every boolean attribute the object shows for its class, declared or not (SoftHSM EC
+  private keys, for example, default to `CKA_DECRYPT`, `CKA_UNWRAP` and `CKA_SIGN_RECOVER`). A
+  recorded attribute that changes or becomes unreadable fails `verify` (exit 14) until
+  `realise --update-lock`; a newly readable one is a note. With `publicOnly`, this is the public
+  object's vector.
+- **Immutables** (`CKA_LOCAL`, `CKA_NEVER_EXTRACTABLE`, `CKA_ALWAYS_SENSITIVE`,
+  `CKA_KEY_GEN_MECHANISM`) are compared the same way. A flag that was `true` and is not any more
+  means the object was replaced (for example, the same material re-imported). That is refused
+  even under `--update-lock`, like a downgrade — `policy_drift_and_replaced_objects_are_refused`.
 - **Writes are atomic** (temporary file, then rename), but there is no locking (finding M3).
 - **URIs are pure locators** (RFC 7512), with no `module-path`.
 - **Versions** are raw `CK_VERSION` major.minor (ykcs11 2.7.3 → `2.73`).
@@ -418,7 +432,8 @@ label and the hash itself. Everything else is fixed by definition:
 - binding names (`pop-sign`, `token-asserted`) and their rank. The challenge layout
   (`cakeys/pop/v1`) is pinned by `message_layout_is_pinned`, though nothing stored depends on it;
 - lock field names (`objects`, `ids`, `realisations`, `object`, `locator`, `specDigest`,
-  `publicOnly`, `binding`, `module`, `token`, `mechanisms`, `uri`);
+  `publicOnly`, `binding`, `policy`, `immutables`, `observed`, `provenance`, `module`, `token`,
+  `mechanisms`, `uri`);
 - `keys.toml` keys;
 - exit codes;
 - the URI shape.

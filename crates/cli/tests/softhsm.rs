@@ -623,6 +623,62 @@ fn observed_and_provenance_never_change_a_verdict() {
     assert_eq!(code(&e.km(&verify)), 17);
 }
 
+/// The lock records every boolean attribute the object shows (declared or not) and its creation
+/// facts: a later change on the token is reviewed, and a replaced object is refused outright.
+#[test]
+fn policy_drift_and_replaced_objects_are_refused() {
+    let Some(e) = env("policy") else { return };
+    e.config(
+        "[objects.k]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
+         [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true, CKA_SENSITIVE = false, CKA_EXTRACTABLE = true }\n\
+         tokens.softhsm = { locator = { CKA_LABEL = \"policy\" }, autoCreate = true }\n",
+    );
+    let r = ["realise", "k", "--token", "softhsm", "--update-lock"];
+    let verify = ["verify", "k", "--token", "softhsm"];
+    let stderr = |o: &Output| String::from_utf8_lossy(&o.stderr).into_owned();
+    assert_eq!(code(&e.km(&r)), 0);
+    let real = &e.lock()["realisations"]["k"]["softhsm"];
+    assert_eq!(real["policy"]["CKA_SIGN"].as_bool(), Some(true));
+    assert!(real["policy"].get("CKA_ENCRYPT").is_some(), "undeclared attributes are recorded too");
+    assert_eq!(real["immutables"]["CKA_LOCAL"].as_bool(), Some(true));
+    assert_eq!(real["immutables"]["CKA_KEY_GEN_MECHANISM"].as_str(), Some("CKM_AES_KEY_GEN"));
+
+    // An undeclared attribute changed on the token: a change to review, then re-record.
+    let s = e.session();
+    let find = || s.find_objects(&[Attribute::Class(ObjectClass::SECRET_KEY), Attribute::Label(b"policy".to_vec())]).unwrap()[0];
+    let h = find();
+    let encrypt = real["policy"]["CKA_ENCRYPT"].as_bool().unwrap();
+    s.update_attributes(h, &[Attribute::Encrypt(!encrypt)]).unwrap();
+    let o = e.km(&verify);
+    assert_eq!(code(&o), 14);
+    assert!(stderr(&o).contains(&format!("CKA_ENCRYPT {encrypt} -> {}", !encrypt)), "{}", stderr(&o));
+    assert_eq!(code(&e.km(&r)), 0);
+    assert_eq!(code(&e.km(&verify)), 0);
+
+    // The same material re-imported: the IDs match, but it is no longer CKA_LOCAL.
+    let value = match s.get_attributes(h, &[AttributeType::Value]).unwrap().remove(0) {
+        Attribute::Value(v) => v,
+        a => panic!("{a:?}"),
+    };
+    s.destroy_object(h).unwrap();
+    s.create_object(&[
+        Attribute::Class(ObjectClass::SECRET_KEY),
+        Attribute::KeyType(cryptoki::object::KeyType::AES),
+        Attribute::Token(true),
+        Attribute::Label(b"policy".to_vec()),
+        Attribute::Value(value),
+        Attribute::Sign(true),
+        Attribute::Encrypt(!encrypt),
+        Attribute::Sensitive(false),
+        Attribute::Extractable(true),
+    ])
+    .unwrap();
+    let o = e.km(&verify);
+    assert_eq!(code(&o), 14);
+    assert!(stderr(&o).contains("was replaced") && stderr(&o).contains("CKA_LOCAL"), "{}", stderr(&o));
+    assert_eq!(code(&e.km(&r)), 14, "also when updating");
+}
+
 /// A known AES-256 value, planted several times with different usage bits: the host knows the
 /// material, the token holds it sensitive and (mostly) non-extractable.
 const AES_VALUE: [u8; 32] = *b"key-management aes test vector!!";

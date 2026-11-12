@@ -2,7 +2,7 @@
 //! Module-specific behaviour goes through the selected [`Provider`].
 
 use crate::provider::{Provider, Registry};
-pub use cakeys_core::config::{ModuleInfo, TokenInfo};
+pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};
 use cakeys_core::config::{Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
 use cakeys_core::id::{self, Commit, Curve, HmacHash};
 use cakeys_core::pop;
@@ -224,6 +224,60 @@ impl Token {
         self.check_policy(h, spec)
     }
 
+
+    /// The observed policy vector: every boolean attribute of `h`'s class (PKCS#11 3.2 §4) the
+    /// token reports, declared in the spec or not. Unreadable ones are left out.
+    pub fn policy(&self, h: ObjectHandle) -> Result<BTreeMap<String, bool>> {
+        let class = match self.attr(h, AttributeType::Class)? {
+            Some(Attribute::Class(c)) => c,
+            _ => return Err(KmError::Conflict("object has no CKA_CLASS".into())),
+        };
+        let mut names = vec!["CKA_TOKEN", "CKA_PRIVATE", "CKA_MODIFIABLE", "CKA_COPYABLE", "CKA_DESTROYABLE"];
+        names.extend(match class {
+            ObjectClass::PRIVATE_KEY => &[
+                "CKA_DERIVE", "CKA_SENSITIVE", "CKA_DECRYPT", "CKA_SIGN", "CKA_SIGN_RECOVER", "CKA_UNWRAP",
+                "CKA_EXTRACTABLE", "CKA_WRAP_WITH_TRUSTED", "CKA_ALWAYS_AUTHENTICATE",
+            ][..],
+            ObjectClass::PUBLIC_KEY => {
+                &["CKA_DERIVE", "CKA_ENCRYPT", "CKA_VERIFY", "CKA_VERIFY_RECOVER", "CKA_WRAP", "CKA_TRUSTED"][..]
+            }
+            ObjectClass::SECRET_KEY => &[
+                "CKA_DERIVE", "CKA_SENSITIVE", "CKA_ENCRYPT", "CKA_DECRYPT", "CKA_SIGN", "CKA_VERIFY", "CKA_WRAP",
+                "CKA_UNWRAP", "CKA_EXTRACTABLE", "CKA_WRAP_WITH_TRUSTED", "CKA_TRUSTED",
+            ][..],
+            ObjectClass::CERTIFICATE => &["CKA_TRUSTED"][..],
+            _ => &[][..],
+        });
+        let mut policy = BTreeMap::new();
+        for name in names {
+            // Unsupported or unreadable on this token: not part of what it can show.
+            if let Ok(Some(a)) = self.attr(h, policy_attr_type(name)) {
+                if let Some(b) = attr_bool(&a) {
+                    policy.insert(name.to_owned(), b);
+                }
+            }
+        }
+        Ok(policy)
+    }
+
+    /// `CKA_LOCAL`, `CKA_NEVER_EXTRACTABLE`, `CKA_ALWAYS_SENSITIVE` and `CKA_KEY_GEN_MECHANISM` of a
+    /// key (empty for other classes). Unreadable values are left out.
+    pub fn immutables(&self, h: ObjectHandle) -> Immutables {
+        let flag = |t| match self.attr(h, t) {
+            Ok(Some(a)) => attr_bool(&a),
+            _ => None,
+        };
+        Immutables {
+            local: flag(AttributeType::Local),
+            never_extractable: flag(AttributeType::NeverExtractable),
+            always_sensitive: flag(AttributeType::AlwaysSensitive),
+            key_gen_mechanism: match self.attr(h, AttributeType::KeyGenMechanism) {
+                // CK_UNAVAILABLE_INFORMATION: no generation mechanism (imported).
+                Ok(Some(Attribute::KeyGenMechanism(m))) if *m != CK_UNAVAILABLE_INFORMATION => Some(m.to_string()),
+                _ => None,
+            },
+        }
+    }
     /// Every boolean policy attribute of the spec must match the live object.
     fn check_policy(&self, h: ObjectHandle, spec: &SpecCfg) -> Result<()> {
         for (name, want) in &spec.attributes {
@@ -759,6 +813,35 @@ pub fn bool_attr(name: &str, v: bool) -> Result<(AttributeType, Attribute)> {
     Ok((a.attribute_type(), a))
 }
 
+/// `CK_UNAVAILABLE_INFORMATION`: the value a token reports for an attribute it cannot give.
+const CK_UNAVAILABLE_INFORMATION: std::os::raw::c_ulong = !0;
+
+/// Attribute type of a boolean attribute in the observed policy vector.
+fn policy_attr_type(name: &str) -> AttributeType {
+    match name {
+        "CKA_TOKEN" => AttributeType::Token,
+        "CKA_PRIVATE" => AttributeType::Private,
+        "CKA_MODIFIABLE" => AttributeType::Modifiable,
+        "CKA_COPYABLE" => AttributeType::Copyable,
+        "CKA_DESTROYABLE" => AttributeType::Destroyable,
+        "CKA_DERIVE" => AttributeType::Derive,
+        "CKA_SENSITIVE" => AttributeType::Sensitive,
+        "CKA_ENCRYPT" => AttributeType::Encrypt,
+        "CKA_DECRYPT" => AttributeType::Decrypt,
+        "CKA_SIGN" => AttributeType::Sign,
+        "CKA_SIGN_RECOVER" => AttributeType::SignRecover,
+        "CKA_VERIFY" => AttributeType::Verify,
+        "CKA_VERIFY_RECOVER" => AttributeType::VerifyRecover,
+        "CKA_WRAP" => AttributeType::Wrap,
+        "CKA_UNWRAP" => AttributeType::Unwrap,
+        "CKA_EXTRACTABLE" => AttributeType::Extractable,
+        "CKA_WRAP_WITH_TRUSTED" => AttributeType::WrapWithTrusted,
+        "CKA_ALWAYS_AUTHENTICATE" => AttributeType::AlwaysAuthenticate,
+        "CKA_TRUSTED" => AttributeType::Trusted,
+        n => unreachable!("not a policy attribute: {n}"),
+    }
+}
+
 fn attr_bool(a: &Attribute) -> Option<bool> {
     match a {
         Attribute::Sign(b)
@@ -771,7 +854,18 @@ fn attr_bool(a: &Attribute) -> Option<bool> {
         | Attribute::Sensitive(b)
         | Attribute::Extractable(b)
         | Attribute::Modifiable(b)
-        | Attribute::Private(b) => Some(*b),
+        | Attribute::Private(b)
+        | Attribute::Token(b)
+        | Attribute::Copyable(b)
+        | Attribute::Destroyable(b)
+        | Attribute::SignRecover(b)
+        | Attribute::VerifyRecover(b)
+        | Attribute::WrapWithTrusted(b)
+        | Attribute::AlwaysAuthenticate(b)
+        | Attribute::Trusted(b)
+        | Attribute::Local(b)
+        | Attribute::NeverExtractable(b)
+        | Attribute::AlwaysSensitive(b) => Some(*b),
         _ => None,
     }
 }

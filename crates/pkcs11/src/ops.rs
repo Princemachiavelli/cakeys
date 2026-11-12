@@ -2,7 +2,8 @@
 
 use crate::token::{self as hal, Token};
 use cakeys_core::config::{
-    Binding, Config, Locator, Lock, LockRealisation, Mode, ObjectCfg, Observed, Provenance, SpecCfg, SpecTokenCfg,
+    Binding, Config, Immutables, Locator, Lock, LockRealisation, Mode, ObjectCfg, Observed, Provenance, SpecCfg,
+    SpecTokenCfg,
 };
 use cakeys_core::id::{self, Commit, HmacHash};
 use cakeys_core::{KmError, Result};
@@ -270,6 +271,10 @@ pub struct Resolved {
     /// Private keys: how the private object was bound to `ids` (proven when `pop-sign`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binding: Option<Binding>,
+    /// The observed policy vector and immutables of the object found (§4.2 of docs/DESIGN.md).
+    pub policy: BTreeMap<String, bool>,
+    #[serde(skip_serializing_if = "Immutables::is_empty")]
+    pub immutables: Immutables,
     /// Label the commitment schemes in `ids` were computed with (none for public-material IDs).
     #[serde(rename = "commitmentLabel", skip_serializing_if = "Option::is_none")]
     pub commitment_label: Option<String>,
@@ -305,6 +310,8 @@ pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>>
         spec_digest: id::spec_digest(t.object, t.spec),
         ids: tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding == Some(Binding::PopSign))?,
         binding,
+        policy: tok.policy(h)?,
+        immutables: tok.immutables(h),
         commitment_label: (!commits.is_empty()).then_some(label),
     }))
 }
@@ -364,6 +371,46 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
                     "binding downgrade for {}: locked binding '{was}', now only '{now}'",
                     t.what()
                 )));
+            }
+        }
+        // Fixed at creation: weaker now means the object was replaced (also when updating).
+        let weakened = r.immutables.weakened_since(&prev.immutables);
+        if !weakened.is_empty() {
+            return Err(KmError::PreconditionFailed(format!(
+                "{} was replaced since it was realised: {} no longer true; a new object needs a new name",
+                t.what(),
+                weakened.join(", ")
+            )));
+        }
+        // The token's object changed (policy set since, or another object with the same
+        // material): review, like a changed spec.
+        if !update {
+            let mut diff: Vec<String> = prev
+                .policy
+                .iter()
+                .filter(|(n, was)| r.policy.get(*n) != Some(was))
+                .map(|(n, was)| format!("{n} {was} -> {}", r.policy.get(n).map_or("unreadable".into(), |b| b.to_string())))
+                .collect();
+            if prev.immutables != r.immutables {
+                diff.push(format!(
+                    "immutables {} -> {}",
+                    serde_json::to_string(&prev.immutables).unwrap_or_default(),
+                    serde_json::to_string(&r.immutables).unwrap_or_default()
+                ));
+            }
+            if !diff.is_empty() {
+                return Err(KmError::PreconditionFailed(format!(
+                    "{} changed on the token since it was realised ({}); review, then `realise --update-lock`",
+                    t.what(),
+                    diff.join(", ")
+                )));
+            }
+            let new: Vec<&String> = r.policy.keys().filter(|n| !prev.policy.contains_key(*n)).collect();
+            if !new.is_empty() {
+                eprintln!(
+                    "note: {} also reports {new:?}, which the lock does not record; `realise --update-lock` adds them",
+                    t.what()
+                );
             }
         }
     }
@@ -451,6 +498,8 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             mode: r.mode,
             public_only: r.public_only,
             binding: r.binding,
+            policy: r.policy.clone(),
+            immutables: r.immutables.clone(),
             observed: Some(Observed { uri: r.uri.clone(), mechanisms: tok.mechanism_names() }),
             provenance: Some(Provenance {
                 provider: tok.provider.name().to_owned(),
