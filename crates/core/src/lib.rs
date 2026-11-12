@@ -5,6 +5,7 @@ pub mod attrs;
 pub mod config;
 pub mod error;
 pub mod id;
+pub mod plan;
 pub mod pop;
 pub mod sig;
 pub mod types;

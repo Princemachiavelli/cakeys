@@ -97,6 +97,33 @@ impl ObjectCfg {
             self.curve = Some(c.name().to_owned());
         }
     }
+
+    /// The curve of an EC or Edwards key (`curve`, for `keyType`).
+    pub fn curve(&self) -> Result<crate::id::Curve> {
+        let kt = self.key_type.map_or("", KeyType::name);
+        let name = self.curve.as_deref().ok_or_else(|| KmError::Validation(format!("{kt} keys need a curve")))?;
+        self.key_type.and_then(|k| crate::id::Curve::from_cfg(k, name)).ok_or_else(|| {
+            if crate::id::CURVES_WITHOUT_CRATE.contains(&name) {
+                return KmError::Unsupported(format!("curve {name:?}: no RustCrypto crate validates and encodes it yet"));
+            }
+            KmError::Unsupported(format!(
+                "curve {name:?} for {kt} (supported: secp256r1, secp384r1, secp521r1, secp256k1, \
+                 brainpoolP256r1, brainpoolP384r1 for CKK_EC; edwards25519, edwards448 for \
+                 CKK_EC_EDWARDS)"
+            ))
+        })
+    }
+
+    /// The key type, if this class can have it (and, for EC and Edwards keys, a supported curve);
+    /// any other pairing is unsupported (15).
+    pub fn checked_key_type(&self) -> Result<KeyType> {
+        match (self.class, self.key_type) {
+            (c, Some(k @ (KeyType::Ec | KeyType::EcEdwards))) if c.is_asymmetric() => self.curve().map(|_| k),
+            (c, Some(KeyType::Rsa)) if c.is_asymmetric() => Ok(KeyType::Rsa),
+            (ObjectClass::SecretKey, Some(k)) if !k.is_asymmetric() => Ok(k),
+            (c, k) => Err(KmError::Unsupported(format!("{c}/{}", k.map_or("", KeyType::name)))),
+        }
+    }
 }
 
 /// Inline-table form, as keys.toml writes it.

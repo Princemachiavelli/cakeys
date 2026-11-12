@@ -1088,37 +1088,23 @@ pub fn commit_mechanism(c: Commit) -> MechanismType {
 }
 
 pub fn curve_of(object: &ObjectCfg) -> Result<Curve> {
-    let kt = object.key_type.map_or("", Kt::name);
-    let name = object.curve.as_deref().ok_or_else(|| KmError::Validation(format!("{kt} keys need a curve")))?;
-    object.key_type.and_then(|k| Curve::from_cfg(k, name)).ok_or_else(|| {
-        if id::CURVES_WITHOUT_CRATE.contains(&name) {
-            return KmError::Unsupported(format!(
-                "curve {name:?}: no RustCrypto crate validates and encodes it yet"
-            ));
-        }
-        KmError::Unsupported(format!(
-            "curve {name:?} for {kt} (supported: secp256r1, secp384r1, secp521r1, secp256k1, \
-             brainpoolP256r1, brainpoolP384r1 for CKK_EC; edwards25519, edwards448 for \
-             CKK_EC_EDWARDS)"
-        ))
-    })
+    object.curve()
 }
 
-/// The `cryptoki` key type of a configured key; a key type its class cannot have is unsupported.
+/// The `cryptoki` key type of a configured key (`ObjectCfg::checked_key_type`).
 pub fn key_type_of(object: &ObjectCfg) -> Result<KeyType> {
-    match (object.class, object.key_type) {
-        (c, Some(Kt::Ec)) if c.is_asymmetric() => curve_of(object).map(|_| KeyType::EC),
-        (c, Some(Kt::EcEdwards)) if c.is_asymmetric() => curve_of(object).map(|_| KeyType::EC_EDWARDS),
-        (c, Some(Kt::Rsa)) if c.is_asymmetric() => Ok(KeyType::RSA),
-        (Class::SecretKey, Some(Kt::GenericSecret)) => Ok(KeyType::GENERIC_SECRET),
-        (Class::SecretKey, Some(Kt::Aes)) => Ok(KeyType::AES),
-        (Class::SecretKey, Some(Kt::Sha1Hmac)) => Ok(KeyType::SHA_1_HMAC),
-        (Class::SecretKey, Some(Kt::Sha224Hmac)) => hmac_key_type(KeyType::SHA224_HMAC, 0x2e),
-        (Class::SecretKey, Some(Kt::Sha256Hmac)) => Ok(KeyType::SHA256_HMAC),
-        (Class::SecretKey, Some(Kt::Sha384Hmac)) => hmac_key_type(KeyType::SHA384_HMAC, 0x2c),
-        (Class::SecretKey, Some(Kt::Sha512Hmac)) => hmac_key_type(KeyType::SHA512_HMAC, 0x2d),
-        (c, k) => Err(KmError::Unsupported(format!("{c}/{}", k.map_or("", Kt::name)))),
-    }
+    Ok(match object.checked_key_type()? {
+        Kt::Ec => KeyType::EC,
+        Kt::EcEdwards => KeyType::EC_EDWARDS,
+        Kt::Rsa => KeyType::RSA,
+        Kt::GenericSecret => KeyType::GENERIC_SECRET,
+        Kt::Aes => KeyType::AES,
+        Kt::Sha1Hmac => KeyType::SHA_1_HMAC,
+        Kt::Sha224Hmac => hmac_key_type(KeyType::SHA224_HMAC, 0x2e)?,
+        Kt::Sha256Hmac => KeyType::SHA256_HMAC,
+        Kt::Sha384Hmac => hmac_key_type(KeyType::SHA384_HMAC, 0x2c)?,
+        Kt::Sha512Hmac => hmac_key_type(KeyType::SHA512_HMAC, 0x2d)?,
+    })
 }
 
 /// cryptoki 0.12.1 (and main) gives `SHA224/384/512_HMAC` the value of `CKK_SHA256_HMAC` (0x2b), so such
