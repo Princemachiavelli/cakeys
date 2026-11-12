@@ -44,6 +44,7 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 | 460c567 | **Refactor R8**: `check` verb logic (scheme gating before the token opens, compare-only realise, locked-scheme rule) moves into `ops::check` |
 | 006e5b7 | **Refactor R9**: `token.rs` split into `token/` (`mod`, `policy`, `generate`, `identity`, `possession`, `uri`), moved unchanged |
 | 2af04df | **Refactor R10**: softhsm and p11-kit are `cakeys_pkcs11::providers`; the CLI's `tpm2`/`ykcs11` features (default on); `checks.minimal` builds without tpm2-tss and sqlite |
+| abb23f7, 90b91b9 | **Refactor R11** (format change): `tcti`/`tpm2Store`/`akHandle` move under `[tokens.<t>.options]`, parsed by the provider (`Tpm2Options`, unknown names 17 at open; `validate` checks them when `provider` is named; any option on a provider without options 17). Gates: flake check (SoftHSM 46, tpm2 8, p11kit 4, core 30, `checks.minimal`), nspawn, xversion byte-identical, YubiKey read-only 6/6, YubiKey RW suite (adopt path; SO generation not rerun) |
 
 ## Done (uncommitted; passes the local gate): (empty — next task below)
 
@@ -56,6 +57,7 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
   - **D3 (committed ea57f7a):**
   - **S15 (committed 1463327):**
 - **PLAN TODO additions:** attestation (P2-11), native TPM, PQ/kryptic.
+- **Refactor R0–R11 (2026-11-12 code review): done**, see `docs/REFACTOR-2026-11-12.md` "Outcome" (format change: tpm2 settings under `[tokens.<t>.options]`; unknown class/key type 17 at load). Open: push (not yet approved); the YubiKey SO generation path was not rerun on hardware after the split (slot 0x95 holds a key; rerunning needs `ykman piv keys delete 95`, ask first).
 - **Final report to the user:**
   - Answer the in-toto/Terraform question. Neither manages or identifies PKCS#11 or TPM objects: in-toto hashes artifacts and signs metadata; Terraform's lock hashes provider packages. The securesystemslib PKCS#11 signer point is unverified recall.
   - ~~Ask whether to commit or gitignore `reports/` and `research_notes/`~~ — committed by the user (3177781).
@@ -65,3 +67,4 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 
 - **Local test loop:** `export SCRATCH=/tmp/opencode SOFTHSM2_CONF=$SCRATCH/shsm/softhsm2.conf HOME=$SCRATCH` (tokendir `$SCRATCH/shsm/tokens`), `CAKEYS_TEST_MODULE=<softhsm in the devshell>/lib/softhsm/libsofthsm2.so`, then `cargo test --test softhsm -- --test-threads=1`. A failed run leaves objects on the shared token: `rm -rf $SCRATCH/shsm/tokens` and re-init (`softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678`) before rerunning. `hmac_key_types…` fails locally because cryptoki is unpatched; that is expected.
 - **YubiKey verify:** build the binary to a scratch link (`nix build .#default -o $SCRATCH/cakeys`), because `./result` gets replaced by the nspawn build.
+- **Cross-version check:** `scripts/xversion.sh record <old-cakeys> <dir>` once (a c58cb2b-recorded baseline lives in the session scratchpad only), then `scripts/xversion.sh check <new-cakeys> <dir>` after each change; inside `nix develop` (softhsm2-util, pkcs11-tool).
