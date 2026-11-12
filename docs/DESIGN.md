@@ -514,7 +514,8 @@ See `docs/REVIEW-2026-11-11.md`.
 | `checks.vm` / `test-nspawn` | QEMU / systemd-nspawn | the CLI flow; in the VM also the pseudo-FOD consumer built in the guest sandbox |
 | `checks.module`, `checks.tpm`, `checks.lib` | QEMU / eval | module, hook, pcscd, TPM ACL, Nix library |
 
-Hardware: the YubiKey example lock is verified read-only (no PIN). `packages.test-nspawn` needs the
+Hardware: the YubiKey example lock is verified read-only (no PIN), and `tests/yubikey.rs` exercises
+a real YubiKey read-write when opted in (§9 table above). `packages.test-nspawn` needs the
 `uid-range` feature, so it is outside `checks`.
 
 ## 10. Frozen identifiers, and what makes a lock portable
