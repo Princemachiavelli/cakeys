@@ -491,16 +491,14 @@ fn attest(t: &Target, tok: &Token, lock: &Lock, h: ObjectHandle, scheme: &'stati
 fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: bool) -> Result<bool> {
     // The lock pins the type its IDs were computed for: a different type is different material,
     // so say so instead of reporting a hash mismatch (also when updating).
-    if let Some(locked) = lock.objects.get(t.object_name).and_then(|o| o.object_type.as_ref()) {
-        if locked != t.object {
-            return Err(KmError::PreconditionFailed(format!(
-                "the type of object '{}' in keys.toml changed since it was locked: locked {}, now {}; \
-                 different material needs a new object name",
-                t.object_name,
-                locked,
-                t.object
-            )));
-        }
+    if let Some(locked) = lock.objects.get(t.object_name).and_then(|o| o.object_type.as_ref()) && locked != t.object {
+        return Err(KmError::PreconditionFailed(format!(
+            "the type of object '{}' in keys.toml changed since it was locked: locked {}, now {}; \
+             different material needs a new object name",
+            t.object_name,
+            locked,
+            t.object
+        )));
     }
     if let Some(prev) = lock.realisation(t.spec_name, t.token_name) {
         // Like a lockfile out of date: keys.toml changed what this realisation is (another
@@ -535,13 +533,11 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
                 t, prev.mode, r.mode
             )));
         }
-        if let (Some(was), Some(now)) = (prev.binding, r.binding) {
-            if now.rank() > was.rank() {
-                return Err(KmError::PreconditionFailed(format!(
-                    "binding downgrade for {}: locked binding '{was}', now only '{now}'",
-                    t
-                )));
-            }
+        if let (Some(was), Some(now)) = (prev.binding, r.binding) && now.rank() > was.rank() {
+            return Err(KmError::PreconditionFailed(format!(
+                "binding downgrade for {}: locked binding '{was}', now only '{now}'",
+                t
+            )));
         }
         // The attestation is compared, even when realise writes the lock (§3.7). A different anchor means
         // a different device (or a re-provisioned TPM) signed the provenance; a different ID
@@ -652,17 +648,15 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
     }
     // Material is only linked through a shared scheme: never attach IDs to an object when none of
     // them can be compared with what is already locked (e.g. a CMAC-only and a KW-only spec).
-    if let Some(ids) = locked.filter(|ids| !ids.is_empty()) {
-        if !r.ids.keys().any(|s| ids.contains_key(s)) {
-            return Err(KmError::PreconditionFailed(format!(
-                "{} computes {:?} but '{}' is locked only by {:?}: nothing shows it is the same \
-                 material; realise a spec that computes both first",
-                t,
-                r.ids.keys().collect::<Vec<_>>(),
-                t.object_name,
-                ids.keys().collect::<Vec<_>>()
-            )));
-        }
+    if let Some(ids) = locked.filter(|ids| !ids.is_empty()) && !r.ids.keys().any(|s| ids.contains_key(s)) {
+        return Err(KmError::PreconditionFailed(format!(
+            "{} computes {:?} but '{}' is locked only by {:?}: nothing shows it is the same \
+             material; realise a spec that computes both first",
+            t,
+            r.ids.keys().collect::<Vec<_>>(),
+            t.object_name,
+            ids.keys().collect::<Vec<_>>()
+        )));
     }
     let mut changed = false;
     let mut matched = false;
@@ -726,11 +720,9 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             entry.object_type = Some(t.object.clone());
             changed = true;
         }
-        if let Some(label) = &r.commitment_label {
-            if entry.commitment_label.as_ref().is_none_or(|l| l != label) {
-                entry.commitment_label = Some(label.clone());
-                changed = true;
-            }
+        if let Some(label) = &r.commitment_label && entry.commitment_label.as_ref().is_none_or(|l| l != label) {
+            entry.commitment_label = Some(label.clone());
+            changed = true;
         }
         for (scheme, got) in &r.ids {
             if id::DEPRECATED_SCHEMES.contains(&scheme.as_str()) && !entry.ids.contains_key(scheme) {
@@ -951,12 +943,10 @@ pub fn delete(t: &Target, tok: &Token, lock: &mut Lock, if_match: Option<&str>, 
         eprintln!("destroyed {n} object(s) for {}", t);
     }
     let mut changed = false;
-    if update {
-        if let Some(m) = lock.realisations.get_mut(t.spec_name) {
-            changed = m.remove(t.token_name).is_some();
-            if m.is_empty() {
-                lock.realisations.remove(t.spec_name);
-            }
+    if update && let Some(m) = lock.realisations.get_mut(t.spec_name) {
+        changed = m.remove(t.token_name).is_some();
+        if m.is_empty() {
+            lock.realisations.remove(t.spec_name);
         }
     }
     Ok(changed)

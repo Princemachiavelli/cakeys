@@ -621,6 +621,11 @@ pub struct Provenance {
 }
 
 pub fn load_config(path: &Path) -> anyhow::Result<Config> {
+    load_config_with(path, &|name| std::env::var(name).ok())
+}
+
+/// [`load_config`], with `env` looking up the variables `$NAME` path references name.
+pub fn load_config_with(path: &Path, env: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<Config> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
     let mut cfg: Config =
@@ -630,14 +635,14 @@ pub fn load_config(path: &Path) -> anyhow::Result<Config> {
     }
     for (name, t) in &mut cfg.tokens {
         if let Some(m) = t.module.clone() {
-            t.module = Some(env_ref(&m, &format!("token '{name}': module"))?);
+            t.module = Some(env_ref(&m, &format!("token '{name}': module"), env)?);
         }
         if let Some(p) = t.pin_file.clone() {
-            let expanded = env_ref(&p.to_string_lossy(), &format!("token '{name}': pinFile"))?;
+            let expanded = env_ref(&p.to_string_lossy(), &format!("token '{name}': pinFile"), env)?;
             t.pin_file = Some(PathBuf::from(expanded));
         }
         if let Some(m) = t.mgm_key_file.clone() {
-            let expanded = env_ref(&m.to_string_lossy(), &format!("token '{name}': mgmKeyFile"))?;
+            let expanded = env_ref(&m.to_string_lossy(), &format!("token '{name}': mgmKeyFile"), env)?;
             t.mgm_key_file = Some(PathBuf::from(expanded));
         }
         // An SO step logs the user out; without a user PIN to return to, the new private key
@@ -675,7 +680,7 @@ pub fn load_config(path: &Path) -> anyhow::Result<Config> {
 /// the environment variable `NAME` when the config is loaded, so one shared `keys.toml` can carry
 /// a machine-specific pin file or module path. A value with no leading `$` is a literal path; a
 /// malformed or unset reference fails at load (exit 17), naming it — not at login time.
-fn env_ref(value: &str, what: &str) -> anyhow::Result<String> {
+fn env_ref(value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<String> {
     let name = match value.strip_prefix('$') {
         Some(rest) => rest.strip_prefix('{').and_then(|r| r.strip_suffix('}')).unwrap_or(rest),
         None => return Ok(value.to_owned()),
@@ -686,7 +691,7 @@ fn env_ref(value: &str, what: &str) -> anyhow::Result<String> {
         ))
         .into());
     }
-    std::env::var(name).map_err(|_| {
+    env(name).ok_or_else(|| {
         KmError::Validation(format!("{what}: environment variable {name} (\"{value}\") is not set")).into()
     })
 }
@@ -880,7 +885,11 @@ mod tests {
         let load = |body: &str| {
             let p = dir.join("keys.toml");
             std::fs::write(&p, body).unwrap();
-            load_config(&p)
+            load_config_with(&p, &|name| match name {
+                "KM_UNIT_TEST_PIN" => Some("/env/pin".to_owned()),
+                "KM_UNIT_TEST_MGM" => Some("/env/mgm".to_owned()),
+                _ => None,
+            })
         };
         let head = "[tokens.t]\ntokenLabel = \"x\"\n";
         // A literal path loads as-is; $NAME and ${NAME} expand.
@@ -888,9 +897,7 @@ mod tests {
             load(&format!("{head}pinFile = \"/literal/pin\"\n")).unwrap().tokens["t"].pin_file,
             Some(PathBuf::from("/literal/pin"))
         );
-        std::env::set_var("KM_UNIT_TEST_PIN", "/env/pin");
         let cfg = load(&format!("{head}pinFile = \"$KM_UNIT_TEST_PIN\"\nmodule = \"${{KM_UNIT_TEST_PIN}}\"\n")).unwrap();
-        std::env::remove_var("KM_UNIT_TEST_PIN");
         assert_eq!(cfg.tokens["t"].pin_file, Some(PathBuf::from("/env/pin")));
         assert_eq!(cfg.tokens["t"].module.as_deref(), Some("/env/pin"));
         // An unset variable fails at load, naming it; so does a malformed reference.
@@ -899,9 +906,7 @@ mod tests {
         let err = load(&format!("{head}pinFile = \"$HOME/x\"\n")).unwrap_err();
         assert!(err.to_string().contains("neither $NAME"), "{err}");
         // mgmKeyFile expands the same way; an admin credential only comes with a user PIN.
-        std::env::set_var("KM_UNIT_TEST_MGM", "/env/mgm");
         let cfg = load(&format!("{head}pinFile = \"/p\"\nmgmKeyFile = \"$KM_UNIT_TEST_MGM\"\n")).unwrap();
-        std::env::remove_var("KM_UNIT_TEST_MGM");
         assert_eq!(cfg.tokens["t"].mgm_key_file, Some(PathBuf::from("/env/mgm")));
         for admin in ["mgmKeyFile = \"/so\"", "mgmKeyEnv = \"SO\""] {
             let err = load(&format!("{head}{admin}\n")).unwrap_err();

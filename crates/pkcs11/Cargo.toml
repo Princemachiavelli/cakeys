@@ -3,6 +3,7 @@ name = "cakeys-pkcs11"
 description = "cakeys: PKCS#11 backend, verbs, and the Provider trait for module-specific behaviour"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

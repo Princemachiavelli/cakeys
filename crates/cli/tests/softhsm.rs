@@ -724,7 +724,7 @@ fn a_second_private_key_under_the_same_id_is_ambiguous() {
     let Some(e) = env("dup_id") else { return };
     let s = e.session();
     let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
-    let gen = |label: &[u8]| {
+    let generate = |label: &[u8]| {
         let common = [Attribute::Token(true), Attribute::Label(label.to_vec()), Attribute::Id(vec![0x77])];
         s.generate_key_pair(
             &Mechanism::EccKeyPairGen,
@@ -733,7 +733,7 @@ fn a_second_private_key_under_the_same_id_is_ambiguous() {
         )
         .unwrap()
     };
-    gen(b"dup-id-a");
+    generate(b"dup-id-a");
     e.config(
         "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\n\
@@ -747,7 +747,7 @@ fn a_second_private_key_under_the_same_id_is_ambiguous() {
     assert_eq!(lock["realisations"]["k-pub"]["softhsm-anon"]["observed"]["session"].as_str(), Some("public"));
     let uri = lock["realisations"]["k"]["softhsm"]["observed"]["uri"].as_str().unwrap();
     assert!(uri.contains(";serial="), "{uri}");
-    gen(b"dup-id-b");
+    generate(b"dup-id-b");
     let o = e.km(&["verify", "k", "--token", "softhsm"]);
     assert_eq!(code(&o), 12);
     assert!(String::from_utf8_lossy(&o.stderr).contains("share CKA_ID %77"), "{}", String::from_utf8_lossy(&o.stderr));
@@ -1237,15 +1237,15 @@ fn curves_and_rsa_sizes_match_an_independent_der_oracle() {
     assert_eq!(code(&e.km(&["validate"])), 0);
     let s = e.session();
     for (k, _) in kinds {
-        let gen = format!("{k}-gen");
-        assert_eq!(code(&e.km(&["realise", &gen, "--token", "softhsm", "--no-update-lock"])), 10, "{k}");
-        assert_eq!(code(&e.km(&["realise", &gen, "--token", "softhsm", "--update-lock"])), 0, "{k}");
+        let spec = format!("{k}-gen");
+        assert_eq!(code(&e.km(&["realise", &spec, "--token", "softhsm", "--no-update-lock"])), 10, "{k}");
+        assert_eq!(code(&e.km(&["realise", &spec, "--token", "softhsm", "--update-lock"])), 0, "{k}");
         assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki(&s, k)), "{k}");
         let binding = if k == "ed448" { "token-asserted" } else { "pop-sign" };
-        assert_eq!(e.lock()["realisations"][&gen]["softhsm"]["binding"].as_str(), Some(binding), "{k}");
+        assert_eq!(e.lock()["realisations"][&spec]["softhsm"]["binding"].as_str(), Some(binding), "{k}");
         // A fresh challenge each run: repeat to catch encoding quirks (high-S, short r or s).
         for _ in 0..8 {
-            assert_eq!(code(&e.km(&["verify", &gen, "--token", "softhsm"])), 0, "{k}");
+            assert_eq!(code(&e.km(&["verify", &spec, "--token", "softhsm"])), 0, "{k}");
         }
         // Same identity through the public key object, without login.
         let pubs = format!("{k}-pub");

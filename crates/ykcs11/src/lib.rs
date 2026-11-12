@@ -139,15 +139,15 @@ fn find_attestation_cert(ctx: &AttestCtx<'_>, id: &[u8]) -> Result<Vec<u8>> {
         };
         // The f9 device certificate shares the prefix but not the key's CKA_ID; require a
         // non-empty slot suffix so the two can never be confused.
-        if let Some(Attribute::Label(l)) = label {
-            if String::from_utf8_lossy(&l).strip_prefix(&label_prefix).is_some_and(|slot| !slot.is_empty()) {
-                match ctx.session.get_attributes(h, &[AttributeType::Value]) {
-                    Ok(v) => match v.into_iter().next() {
-                        Some(Attribute::Value(der)) => certs.push(der),
-                        _ => return Err(KmError::Unsupported("the attestation certificate has no readable CKA_VALUE".into())),
-                    },
-                    Err(e) => return Err(KmError::Unavailable(format!("C_GetAttributeValue (attestation): {e}"))),
-                }
+        if let Some(Attribute::Label(l)) = label
+            && String::from_utf8_lossy(&l).strip_prefix(&label_prefix).is_some_and(|slot| !slot.is_empty())
+        {
+            match ctx.session.get_attributes(h, &[AttributeType::Value]) {
+                Ok(v) => match v.into_iter().next() {
+                    Some(Attribute::Value(der)) => certs.push(der),
+                    _ => return Err(KmError::Unsupported("the attestation certificate has no readable CKA_VALUE".into())),
+                },
+                Err(e) => return Err(KmError::Unavailable(format!("C_GetAttributeValue (attestation): {e}"))),
             }
         }
     }

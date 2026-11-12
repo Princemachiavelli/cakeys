@@ -72,12 +72,12 @@ const CLASSES: [&str; 5] = ["CKO_PRIVATE_KEY", "CKO_PUBLIC_KEY", "CKO_SECRET_KEY
 /// `CKA_ALLOWED_MECHANISMS`: the one non-boolean policy attribute, on key objects only.
 pub const ALLOWED_MECHANISMS: &str = "CKA_ALLOWED_MECHANISMS";
 
-fn bools(class: &str, want: impl Fn(Use) -> bool) -> impl Iterator<Item = &'static str> {
+fn bools(class: &str, want: fn(Use) -> bool) -> impl Iterator<Item = &'static str> + use<> {
     COMMON.iter().chain(of_class(class)).filter(move |(_, u)| want(*u)).map(|(n, _)| *n)
 }
 
 /// The booleans of `class` the observed policy vector records.
-pub fn observed(class: &str) -> impl Iterator<Item = &'static str> {
+pub fn observed(class: &str) -> impl Iterator<Item = &'static str> + use<> {
     bools(class, |u| u != Use::Declared)
 }
 

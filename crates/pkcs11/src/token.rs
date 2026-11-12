@@ -318,21 +318,17 @@ impl Token {
         for name in attrs::observed(&class) {
             let Some(t) = bool_attr(name, false).map(|a| a.attribute_type()) else { continue };
             // Unsupported or unreadable on this token: not part of what it can show.
-            if let Ok(Some(a)) = self.attr(h, t) {
-                if let Some(b) = attr_bool(&a) {
-                    policy.insert(name.to_owned(), AttrValue::Bool(b));
-                }
+            if let Ok(Some(a)) = self.attr(h, t) && let Some(b) = attr_bool(&a) {
+                policy.insert(name.to_owned(), AttrValue::Bool(b));
             }
         }
         if attrs::has_allowed_mechanisms(&class) {
             // An empty list is not reported: it is indistinguishable from absent and means none.
-            if let Ok(Some(Attribute::AllowedMechanisms(m))) = self.attr(h, AttributeType::AllowedMechanisms) {
-                if !m.is_empty() {
-                    policy.insert(
-                        "CKA_ALLOWED_MECHANISMS".to_owned(),
-                        AttrValue::mechanisms(m.iter().map(|m| m.to_string())),
-                    );
-                }
+            if let Ok(Some(Attribute::AllowedMechanisms(m))) = self.attr(h, AttributeType::AllowedMechanisms) && !m.is_empty() {
+                policy.insert(
+                    "CKA_ALLOWED_MECHANISMS".to_owned(),
+                    AttrValue::mechanisms(m.iter().map(|m| m.to_string())),
+                );
             }
         }
         Ok(policy)
@@ -406,10 +402,8 @@ impl Token {
                 }
                 _ => return Err(KmError::Ambiguous("several public key objects share the locator".into())),
             };
-            if let (Some(a), Some(b)) = (self.material_spki(p)?, self.material_spki(h)?) {
-                if a != b {
-                    return Err(KmError::Conflict("the public key object under the locator holds another key".into()));
-                }
+            if let (Some(a), Some(b)) = (self.material_spki(p)?, self.material_spki(h)?) && a != b {
+                return Err(KmError::Conflict("the public key object under the locator holds another key".into()));
             }
             p
         };
@@ -486,7 +480,7 @@ impl Token {
         let mut common = vec![Attribute::Token(true)];
         common.extend(locator_attrs(loc)?);
         let policy = self.policy_template(&spec.attributes)?;
-        let gen = |e: CkError| self.unsupported(format!("generating key on '{}': {e}", self.name));
+        let refused = |e: CkError| self.unsupported(format!("generating key on '{}': {e}", self.name));
         let class = class_of(object)?;
         if class != ObjectClass::PRIVATE_KEY && class != ObjectClass::SECRET_KEY {
             return Err(KmError::Validation(format!("{} objects are adopted, not created", object.class)));
@@ -520,7 +514,7 @@ impl Token {
                 self.session
                     .generate_key_pair(&Mechanism::RsaPkcsKeyPairGen, &public, &private)
                     .map(drop)
-                    .map_err(gen)
+                    .map_err(refused)
             }
             KeyType::EC | KeyType::EC_EDWARDS => {
                 let curve = curve_of(object)?;
@@ -537,7 +531,7 @@ impl Token {
                 self.session
                     .generate_key_pair(&mech, &public, &private)
                     .map(drop)
-                    .map_err(gen)
+                    .map_err(refused)
             }
             kt => {
                 let len = object.value_len.ok_or_else(|| {
@@ -555,7 +549,7 @@ impl Token {
                     Attribute::ValueLen(len.into()),
                 ]);
                 t.extend(policy);
-                self.session.generate_key(&mech, &t).map(drop).map_err(gen)
+                self.session.generate_key(&mech, &t).map(drop).map_err(refused)
             }
         }
     }
@@ -570,13 +564,13 @@ impl Token {
         if handles.is_empty() {
             return Ok(0);
         }
-        if matches!(class, ObjectClass::PRIVATE_KEY | ObjectClass::PUBLIC_KEY | ObjectClass::SECRET_KEY) {
-            if let Some(advice) = self.provider.keeps_destroyed_keys(loc) {
-                return Err(KmError::Unsupported(format!(
-                    "deleting {} on '{}': {advice}",
-                    object.class, self.name
-                )));
-            }
+        if matches!(class, ObjectClass::PRIVATE_KEY | ObjectClass::PUBLIC_KEY | ObjectClass::SECRET_KEY)
+            && let Some(advice) = self.provider.keeps_destroyed_keys(loc)
+        {
+            return Err(KmError::Unsupported(format!(
+                "deleting {} on '{}': {advice}",
+                object.class, self.name
+            )));
         }
         let run = || {
             for h in &handles {

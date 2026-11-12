@@ -145,15 +145,13 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
         _ => false,
     };
     // Refused before any token is touched: never a key created and then not recorded.
-    if writes {
-        if let Some(why) = lock_unwritable(&lock_path) {
-            let opt_out = if matches!(cli.cmd, Cmd::Gc { .. }) { "drop --apply" } else { "pass --no-update-lock" };
-            return Err(KmError::PreconditionFailed(format!(
-                "cannot write the lock {}: {why}; {opt_out} to compare without writing",
-                lock_path.display()
-            ))
-            .into());
-        }
+    if writes && let Some(why) = lock_unwritable(&lock_path) {
+        let opt_out = if matches!(cli.cmd, Cmd::Gc { .. }) { "drop --apply" } else { "pass --no-update-lock" };
+        return Err(KmError::PreconditionFailed(format!(
+            "cannot write the lock {}: {why}; {opt_out} to compare without writing",
+            lock_path.display()
+        ))
+        .into());
     }
     let _update_guard = if writes { Some(lock_for_update(&lock_path)?) } else { None };
     let mut lock = load_lock(&lock_path)?;

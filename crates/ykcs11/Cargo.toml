@@ -3,6 +3,7 @@ name = "cakeys-ykcs11"
 description = "cakeys: ykcs11 provider (YubiKey PIV), with the piv-attestation commitment"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

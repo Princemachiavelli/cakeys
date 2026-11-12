@@ -3,6 +3,7 @@ name = "cakeys-tpm2-pkcs11"
 description = "cakeys: tpm2-pkcs11 provider, with the native TPM2_Certify attestation commitment"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

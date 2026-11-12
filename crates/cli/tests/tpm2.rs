@@ -196,15 +196,15 @@ fn tpm2_generated_keys_match_der_oracle() {
     }
     e.config(&body);
     for (k, _) in kinds {
-        let gen = format!("{k}-gen");
-        let first = e.km(&["realise", &gen, "--token", "tpm", "--no-update-lock"]);
+        let spec = format!("{k}-gen");
+        let first = e.km(&["realise", &spec, "--token", "tpm", "--no-update-lock"]);
         assert_eq!(code(&first), 10, "{k}");
-        assert_eq!(got_hash(&e.km(&["realise", &gen, "--token", "tpm", "--no-update-lock"])), got_hash(&first), "{k}: no duplicate");
-        assert_eq!(code(&e.km(&["realise", &gen, "--token", "tpm", "--update-lock"])), 0, "{k}");
+        assert_eq!(got_hash(&e.km(&["realise", &spec, "--token", "tpm", "--no-update-lock"])), got_hash(&first), "{k}: no duplicate");
+        assert_eq!(code(&e.km(&["realise", &spec, "--token", "tpm", "--update-lock"])), 0, "{k}");
         // A session opened now: tpm2-pkcs11 sessions don't see objects created after they opened.
         assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki_with(&e.session(), k, unwrap_tpm2)), "{k}");
         let binding = if k == "tpm-p521" { "token-asserted" } else { "pop-sign" };
-        assert_eq!(e.lock()["realisations"][&gen]["tpm"]["binding"].as_str(), Some(binding), "{k}");
+        assert_eq!(e.lock()["realisations"][&spec]["tpm"]["binding"].as_str(), Some(binding), "{k}");
         let pubs = format!("{k}-pub");
         assert_eq!(code(&e.km(&["realise", &pubs, "--token", "tpm-anon", "--update-lock"])), 0, "{k}");
     }
