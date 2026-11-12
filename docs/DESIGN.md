@@ -215,6 +215,15 @@ build patches it with `nix/patches/cryptoki-hmac-key-types.patch`, applied in `p
 `$cargoDepsCopy`. Without the patch, those types are refused (`hmac_key_type`), and tests skip
 unless required. Upstream draft: `upstream/rust-cryptoki/`.
 
+### 6.4 Dependencies
+Policy: always the latest release. Audit on every dependency change by comparing
+`[workspace.dependencies]` with crates.io, and the flake's nixpkgs input.
+- **2026-11-11:** every crate is on its latest release (cryptoki 0.12.1, RustCrypto 0.14/pkcs8 0.11
+  generation, toml 1.x, base64 0.23, clap 4, serde 1, thiserror 2, anyhow 1). nixpkgs is from
+  2026-11-06.
+- **Pinned on purpose:** none. The cryptoki HMAC key-type patch is a local fix on top of the latest
+  release.
+
 ## 7. Nix integration
 
 ### 7.1 Library (`lib.mkKeys`, builtins only)

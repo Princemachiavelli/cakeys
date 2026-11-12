@@ -532,6 +532,25 @@ Rough sizes of the **new code**. Dependencies are `cryptoki`, `tss-esapi`, RustC
 
 # Next steps
 
+## kryoptic as a reference token, and post-quantum (planned 2026-11-11)
+**kryoptic** (nixpkgs 1.5.3, Rust, OpenSSL 3.5 backend) becomes the third reference token after SoftHSM and tpm2-pkcs11. It is the one that implements PKCS#11 **3.2**. Its `pkcs11-tool -M` lists `ML-KEM` (key pair generation, key sizes 800–1568), `ML-DSA` with `HASH-ML-DSA-*` (1312–2592), and `SLH-DSA` with `HASH-SLH-DSA-*` (32–64). SoftHSM 2.7 has none of these.
+
+Steps:
+1. **Provider and harness.**
+   - A `cakeys-kryoptic` provider crate.
+   - A test harness like SoftHSM's: `KRYOPTIC_CONF` with a sqlite slot, and a token created with `C_InitToken`.
+   - Run the existing classical suites against it too, as a second software reference.
+2. **cryptoki ≥ 0.11 for the PKCS#11 3.2 API.** Done: cakeys is on 0.12.1. That gives `CKK_ML_DSA`/`CKK_ML_KEM`/`CKK_SLH_DSA`, `CKA_PARAMETER_SET` (`CKP_ML_DSA_44/65/87`, …) and `C_EncapsulateKey`/`C_DecapsulateKey`.
+3. **Identity: `pubkeyhash`, unchanged.**
+   - Build the SPKI from the public key and parameter set; confirm exactly how kryoptic exposes the public key (`CKA_VALUE` and `CKA_PARAMETER_SET`).
+   - Canonicalize with `ml-dsa` 0.1.2 and `ml-kem` 0.3.4. Both are stable and use `pkcs8` 0.11, the same generation as our stack.
+   - `slh-dsa` 0.1.0 has no SPKI support (0.2 is a release candidate), so either wait for it or check length only, as for Ed448.
+   - ML-KEM private keys are identified by their encapsulation key. Shared secrets are ordinary secret keys (existing schemes).
+4. **Config:** `keyType = "CKK_ML_DSA"` plus a new `parameterSet = "ML-DSA-65"`. It is omitted from the spec digest when unset, so existing digests are unchanged.
+5. **Oracles:** OpenSSL 3.5.9 (nixpkgs) generates ML-DSA/ML-KEM/SLH-DSA keys and certificates; hash their SPKI on the host.
+6. **p11-kit gate.** Test whether p11-kit forwards PKCS#11 3.2 (`C_EncapsulateKey`, ML-DSA parameters such as `CK_SIGN_ADDITIONAL_CONTEXT`). Its RPC already drops EdDSA, and real builds go through p11-kit, so do this first.
+7. **Hardware:** none of our tokens has PQ (YubiKey PIV, TPM 2.0 hardware). Composite (hybrid) keys come later.
+
 - **More reference implementations** (from NEXT.md): an **OP-TEE PKCS#11 TA in QEMU** (an Arm TrustZone token). QEMU's emulated TPM is already one (`checks.tpm`, and swtpm in the package tests).
 
 1. Write the spec schema (TOML), with declared locators per token and `autoCreate`, plus canonicalization and the spec digest. Test with golden vectors.
