@@ -1690,6 +1690,40 @@ fn derive_and_decrypt_only_keys_prove_possession() {
     assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm"])), 13);
 }
 
+/// M3: `--update-lock` holds an advisory lock on `<lock>.lck` across its read-modify-write. While
+/// the sidecar lock is held by someone else, a second updater waits and a reader proceeds.
+#[test]
+fn update_lock_waits_for_the_sidecar_lock() {
+    let Some(e) = env("m3-flock") else { return };
+    e.config(EC.replace("ec-lifecycle", "m3-flock").as_str());
+    let r = ["realise", "signing-soft", "--token", "softhsm", "--update-lock"];
+    assert_eq!(code(&e.km(&r)), 0);
+
+    // Hold the sidecar the same way cakeys does: an exclusive std file lock.
+    let held = std::fs::File::options().write(true).create(true).open(e.dir.join("keys.lock.lck")).unwrap();
+    held.lock().unwrap();
+    let spawn = |args: &[&str]| {
+        std::process::Command::new(BIN)
+            .arg("--config")
+            .arg(e.dir.join("keys.toml"))
+            .args(args)
+            .spawn()
+            .unwrap()
+    };
+    // A reader never takes it: verify finishes while it is held.
+    let mut reader = spawn(&["verify", "signing-soft", "--token", "softhsm"]);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(reader.try_wait().unwrap().is_some(), "verify waited for the sidecar lock");
+    assert!(reader.wait().unwrap().success());
+    // An updater waits: it cannot finish while the lock is held.
+    let mut updater = spawn(&r);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(updater.try_wait().unwrap().is_none(), "the updater did not wait for the sidecar lock");
+    drop(held);
+    assert_eq!(updater.wait().unwrap().code(), Some(0));
+    assert_eq!(code(&e.km(&["verify", "signing-soft", "--token", "softhsm"])), 0);
+}
+
 
 #[test]
 fn commitment_label_comes_from_the_lock() {

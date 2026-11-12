@@ -525,6 +525,23 @@ pub fn save_lock(path: &Path, lock: &Lock) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The advisory lock held around the lock file's read-modify-write (finding M3). A run that may
+/// update the lock takes it before `load_lock` and drops it after `save_lock`, so two concurrent
+/// runs on different tokens cannot lose each other's realisations. Readers never take it: the
+/// temporary-file rename makes each read a consistent snapshot.
+pub struct UpdateGuard(std::fs::File);
+
+/// Take the exclusive advisory lock on `<lock>.lck`, waiting for any other updater. The sidecar
+/// file is created if absent; a leftover one is harmless (the lock is advisory and released when
+/// its holder exits).
+pub fn lock_for_update(lock_path: &Path) -> anyhow::Result<UpdateGuard> {
+    let mut sidecar = lock_path.as_os_str().to_os_string();
+    sidecar.push(".lck");
+    let file = std::fs::File::options().write(true).create(true).open(&sidecar)?;
+    file.lock().map_err(|e| anyhow::anyhow!("locking {}: {e}", sidecar.to_string_lossy()))?;
+    Ok(UpdateGuard(file))
+}
+
 impl Config {
     /// Find the spec to use for `object` on `token` (either may be omitted if unambiguous).
     pub fn pick_spec(

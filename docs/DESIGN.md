@@ -281,7 +281,11 @@ model = "..." ; serial = "..." ; firmware = "M.m"
 - **`schemes`** records which schemes a realisation computed and matched, so the lock shows which
   realisation established which ID. A realisation that later computes fewer is refused like a
   mode downgrade (exit 14).
-- **Writes are atomic** (temporary file, then rename), but there is no locking (finding M3).
+- **Writes are atomic** (temporary file, then rename), and a run that may update the lock holds an
+  advisory exclusive lock on `<lock>.lck` across its read-modify-write (finding M3), so concurrent
+  updaters on different tokens queue instead of losing each other's realisations. Readers never
+  take it: the rename makes each read a consistent snapshot. A leftover `.lck` is harmless
+  (advisory, released when its holder exits) — `update_lock_waits_for_the_sidecar_lock`.
 - **URIs are pure locators** (RFC 7512), with no `module-path`. They carry the token `serial`
   (tokens may share a label) and always the object `type`.
 - **One private key per `CKA_ID`.** Consumers such as OpenSSH pick the first private key whose

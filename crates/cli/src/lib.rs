@@ -3,7 +3,7 @@
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use cakeys_core::config::{load_config, load_lock, save_lock, Config};
+use cakeys_core::config::{load_config, lock_for_update, load_lock, save_lock, Config};
 use cakeys_core::KmError;
 use cakeys_pkcs11::ops::{self, Target};
 use cakeys_pkcs11::{Registry, Token};
@@ -110,6 +110,14 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
     let cli = Cli::parse();
     let cfg = load_config(&cli.config)?;
     let lock_path = cli.lock.clone().unwrap_or_else(|| cli.config.with_extension("lock"));
+    // A run that may write the lock holds its advisory sidecar lock across load and save (M3),
+    // so concurrent updaters queue instead of losing each other's writes. Held to the end of run.
+    let _update_guard = match &cli.cmd {
+        Cmd::Realise { update_lock: true, .. } | Cmd::Delete { update_lock: true, .. } => {
+            Some(lock_for_update(&lock_path)?)
+        }
+        _ => None,
+    };
     let mut lock = load_lock(&lock_path)?;
     let modules: BTreeMap<String, String> = cli
         .modules
