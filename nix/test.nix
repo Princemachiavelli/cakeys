@@ -193,10 +193,11 @@ let
         with subtest("caveat: a cached consumer does not re-contact the token; --check does"):
             # The key was deleted above, yet the consumer still "builds": it is cached.
             build("--arg lock /root/keys.lock.built")
-            # Forcing a rebuild re-runs the pre-use check: autoCreate makes a new key, which does
-            # not match the locked identity.
+            # Forcing a rebuild re-runs the pre-use check: the lock pins the deleted key's
+            # material, so autoCreate is refused (14) instead of regenerating different
+            # material that could never match.
             out = build("--arg lock /root/keys.lock.built --check", ok=False)
-            assert "hash mismatch" in out, out
+            assert "the lock already pins object" in out, out
       ''}
     '';
   };

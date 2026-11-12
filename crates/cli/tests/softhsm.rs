@@ -166,9 +166,12 @@ fn ec_lifecycle() {
     )
     .unwrap();
 
-    // A re-created key is new material: it must not satisfy the locked identity.
-    assert_eq!(code(&e.km(&r)), 10);
-    assert_eq!(code(&e.km(&del)), 14, "locked id no longer matches the object under the locator");
+    // A re-created key is new material: the lock pins the old identity, so autoCreate is
+    // refused up front (D1) and regeneration can never satisfy it.
+    let o = e.km(&r);
+    assert_eq!(code(&o), 14);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("autoCreate"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(code(&e.km(&del)), 0, "nothing was created, so absent is success again");
 }
 
 #[test]
@@ -566,6 +569,52 @@ tokens.softhsm = { locator = { CKA_LABEL = "occupied" }, autoCreate = true }
         .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"occupied".to_vec())])
         .unwrap();
     assert!(keys.is_empty());
+}
+
+/// D1: when the lock already pins an object's material, autoCreate is refused before anything is
+/// created — generated material could never match. The same material adopted (or already under the
+/// locator) still realises; autoCreate is harmless then.
+#[test]
+fn autocreate_never_fights_a_locked_identity() {
+    let Some(e) = env("d1") else { return };
+    let second = "[specs.second-slot]\nobject = \"signing\"\nattributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
+    e.config(EC.replace("ec-lifecycle", "d1-first").as_str());
+    assert_eq!(code(&e.km(&["realise", "signing-soft", "--token", "softhsm", "--update-lock"])), 0);
+    let id = e.locked_id("signing", "rfc7093m4");
+
+    // A second spec over the same object, an empty locator, autoCreate: refused up front (14),
+    // naming the pinned scheme — also with --update-lock — and nothing is created.
+    e.config(&format!(
+        "{}{second}tokens.softhsm = {{ locator = {{ CKA_LABEL = \"d1-second\" }}, autoCreate = true }}\n",
+        EC.replace("ec-lifecycle", "d1-first")
+    ));
+    for args in [
+        &["realise", "second-slot", "--token", "softhsm"][..],
+        &["realise", "second-slot", "--token", "softhsm", "--update-lock"][..],
+    ] {
+        let o = e.km(args);
+        assert_eq!(code(&o), 14, "{args:?}");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(err.contains("autoCreate") && err.contains("rfc7093m4"), "{err}");
+    }
+    let s = e.session(); // opened after the runs, so it sees anything they could have created
+    assert!(
+        s.find_objects(&[Attribute::Label(b"d1-second".to_vec())]).unwrap().is_empty(),
+        "nothing was created"
+    );
+
+    // The same material under the locator still realises (like `two_specs_same_material`): the
+    // second spec adopts it — autoCreate present is fine when resolve finds the object — and
+    // records a second realisation of the one object.
+    e.config(&format!(
+        "{}{second}tokens.softhsm = {{ locator = {{ CKA_LABEL = \"d1-first\" }}, autoCreate = true }}\n",
+        EC.replace("ec-lifecycle", "d1-first")
+    ));
+    assert_eq!(code(&e.km(&["realise", "second-slot", "--token", "softhsm", "--update-lock"])), 0);
+    let lock = e.lock();
+    assert!(lock["realisations"]["second-slot"]["softhsm"].is_table());
+    assert_eq!(lock["realisations"]["second-slot"]["softhsm"]["object"].as_str(), Some("signing"));
+    assert_eq!(e.locked_id("signing", "rfc7093m4"), id, "the object keeps its one identity");
 }
 
 #[test]

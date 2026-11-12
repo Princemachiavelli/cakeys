@@ -210,7 +210,10 @@ tokens.<token> = { locator = { CKA_LABEL = "...", CKA_ID = "hex" }, autoCreate =
 What may be created and adopted:
 - **`autoCreate`** is allowed for private and secret keys only. Certificates, public keys and data
   objects are adopted — `adoption_rules_are_validated`, `standalone_public_key_objects`,
-  `data_objects_…`.
+  `data_objects_…`. When the lock already pins the object's material (ids recorded, from this or
+  another token), `autoCreate` is refused (14) before anything is created: generated material
+  could never match (D1) — `autocreate_never_fights_a_locked_identity`. Put the same material
+  under the locator instead, or give the token's key its own object name.
 - **`CKK_SHA*_HMAC` keys** cannot be generated (PKCS#11 has no mechanism for them) —
   `hmac_key_types_commit_with_their_own_hash`.
 - **`publicOnly`** verifies a private key through its public-key object, without login (it spares
@@ -354,7 +357,7 @@ model = "..." ; serial = "..." ; firmware = "M.m"
 | `validate` | Static check of modes, opt-ins, types and provider names; touches no token. |
 | `resolve <spec> --token` | GET: find (exactly one), check type and policy, compute IDs, print JSON. Never writes. |
 | `verify <spec> --token` | GET with If-Match against the lock; prints the URI. |
-| `realise <spec> --token [--update-lock]` | PUT. If absent and `autoCreate`: **If-None-Match** — never create when anything sits under the locator (`never_create_over_an_occupied_locator`). Then create, compute and compare. If the identity of a just-created object cannot be established, it is destroyed (`tpm2_identity_failure_after_create_leaves_nothing`). Re-running never duplicates (`ec_lifecycle`). |
+| `realise <spec> --token [--update-lock]` | PUT. If absent and `autoCreate`: refused (14) when the lock already pins the object's material — generated material could never match (D1, `autocreate_never_fights_a_locked_identity`). **If-None-Match** — never create when anything sits under the locator (`never_create_over_an_occupied_locator`). Then create, compute and compare. If the identity of a just-created object cannot be established, it is destroyed (`tpm2_identity_failure_after_create_leaves_nothing`). Re-running never duplicates (`ec_lifecycle`). |
 | `delete <spec> --token [--if-match ID] [--update-lock]` | DELETE with If-Match. Absent is success, even without a lock; a present object with no expected ID is never deleted (`ec_lifecycle`). `--update-lock` removes the realisation but keeps `objects.<name>.ids`, since the material may live on other tokens. |
 | `check <obj>[.id.<scheme>] [--token] [--spec]` | The pseudo-FOD pre-use check: realise without writing the lock, print the URI. Schemes the spec or token can never compute are refused before anything is created (`scheme_the_token_lacks_is_refused_before_create`). |
 | `gc [--apply]` | Print lock entries `keys.toml` no longer names, as table names; `--apply` removes exactly what it printed, holding the update lock (M3). Live objects keep their `ids` (`gc_prints_then_removes_stale_entries`). |

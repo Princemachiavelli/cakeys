@@ -51,7 +51,9 @@ flowchart TD
     VAL --> FIND["find by locator<br/>(CKA_LABEL / CKA_ID)"]
     FIND -- "several objects match" --> X12(["exit 12 ambiguous"])
     FIND -- "absent, autoCreate off" --> X11(["exit 11 not found"])
-    FIND -- "absent, autoCreate on" --> CREATE["create into the empty locator only<br/>(If-None-Match)"]
+    FIND -- "absent, autoCreate on" --> PIN{"lock already pins this<br/>object's material? (D1)"}
+    PIN -- "yes: generation could<br/>never match" --> X14b(["exit 14: same material under<br/>the locator, or a new object name"])
+    PIN -- no --> CREATE["create into the empty locator only<br/>(If-None-Match)"]
     FIND -- "found (or just created)" --> RESOLVE
     CREATE --> RESOLVE["resolve: read type · policy · material<br/>compute CA-IDs (schemes, strongest first)<br/>private keys: prove possession"]
     RESOLVE -- "proof does not verify" --> X13a(["exit 13 conflict"])

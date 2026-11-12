@@ -742,6 +742,19 @@ pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, update: bool) -> Result
     let r = match resolve(t, tok, lock)? {
         Some(r) => r,
         None if t.on_token.auto_create => {
+            // D1: the lock already pins this object's material, so a fresh generation can only
+            // end in a mismatch; refuse before anything is created. (Had this token held the
+            // same material, resolve above would have found it.)
+            if let Some(ids) = lock.objects.get(t.object_name).map(|o| &o.ids).filter(|ids| !ids.is_empty()) {
+                return Err(KmError::PreconditionFailed(format!(
+                    "{}: the lock already pins object '{}' ({}); autoCreate would generate \
+                     different material that can never match; put the same material under the \
+                     locator, or give this token's key its own object name",
+                    t.what(),
+                    t.object_name,
+                    ids.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
+                )));
+            }
             // If-None-Match: never create over anything else under the locator. On a PIV
             // token, generating into an occupied slot would silently replace its key.
             let present = tok.find_any(&t.on_token.locator)?;

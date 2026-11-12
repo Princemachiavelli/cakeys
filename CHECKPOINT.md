@@ -25,9 +25,24 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 | 3177781 | (user) `CHECKPOINT.md`, `reports/` and `research_notes/` committed — resolves the commit-or-gitignore question |
 | 4032ca5 | **Docs pass + diagrams** staleness fixes (pop-decrypt is OAEP-SHA1; H1 fixed for every pop-*; locking/GC exist; new unit pins named) and `docs/diagrams.md` (5 Mermaid views: model, realise lifecycle, binding tree, schemes, Nix loop — all render via mermaid-cli); PLAN TODO list added |
 
-## Done (uncommitted; compiles and passes the local gate): (empty — next task below)
+## Done (uncommitted; compiles and passes the local gate): D1 (autoCreate vs a locked identity)
 
-
+- **`ops.rs` `realise`:** in the autoCreate branch (locator empty), refuse up front (exit 14) when
+  the lock already pins the object's material — generated material could never match; the message
+  names the pinned schemes and the two ways out (same material under the locator, or a new object
+  name). resolve above already found any material that *is* present, so autoCreate is never
+  consulted then.
+- **`ec_lifecycle` tail reworked:** its last segment relied on the *late* behavior (re-create,
+  mismatch 10); it now asserts the early refusal (14) and that nothing was created (delete of the
+  absent object succeeds). The "delete refuses wrong material" semantics stay covered by h1
+  (proof failure 13 on delete).
+- **Tests:** `autocreate_never_fights_a_locked_identity`: second spec over a locked object with
+  an empty locator is refused before anything is created (14, with and without `--update-lock`,
+  token left empty); repointed at the material's locator it adopts it (autoCreate present is
+  harmless) and records the second realisation; the object keeps its one identity.
+- **Docs:** REVIEW D1 fixed; DESIGN §4.1 autoCreate bullet + §5 realise row; diagrams.md
+  lifecycle gained the D1 branch (re-rendered).
+- Local gate: softhsm 41/42 (only `hmac_key_types…`, expected). Nix gates running at last update.
 
 ## Then (follow-up commits)
 
