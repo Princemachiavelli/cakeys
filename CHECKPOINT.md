@@ -26,33 +26,11 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 | 4032ca5 | **Docs pass + diagrams** staleness fixes (pop-decrypt is OAEP-SHA1; H1 fixed for every pop-*; locking/GC exist; new unit pins named) and `docs/diagrams.md` (5 Mermaid views: model, realise lifecycle, binding tree, schemes, Nix loop — all render via mermaid-cli); PLAN TODO list added |
 | e8c2c78 | **D1** autoCreate refused up front (14) when the lock already pins the object's material; `ec_lifecycle` tail and the VM caveat reworked; `autocreate_never_fights_a_locked_identity` |
 | f4f4a59 | **config** `$NAME`/`${NAME}` path references in `pinFile`/`module` (unset or malformed → 17 at load, naming it); every spec's `object` reference validated at load; the flat spec layout kept (config is a graph; answer recorded here 2026-11-12) |
+| 4e4587c | **RW YubiKey** `mgmKeyFile`/`mgmKeyEnv` (admin credential: hex mgm key, or the PIN on PIN-protected-mgm devices — the SO login then also verifies the PIN, so generate + pop-sign work in one unattended run); provider `login` hook; opt-in `tests/yubikey.rs` (scratch slot `0x95`, full lifecycle, every run bounded — no touch needed, checked on hardware first); production slots untouched, re-verified 6/6 |
 
-## Done (uncommitted; passes the local gate): RW YubiKey suite + the admin-credential (SO) login
+## Done (uncommitted; passes the local gate): (empty — next task below)
 
-- **Empirics (probe, unattended):** this YubiKey's management key is **PIN-protected** (fw 5.7), so
-  `C_Login(CKU_SO, <PIN>)` is the admin credential (the `piv_mnmgt_key.txt` hex key and the default
-  key are both refused — that file is for another device). The SO-with-PIN login also card-verifies
-  the PIN, so **generation and signing work in one SO session**; user and SO states cannot coexist;
-  and **no touch is needed** for login, generate, sign or destroy (every probe step ran
-  non-interactively, and each cakeys run is bounded at 30s in the test, so a policy change to
-  touch-required fails loudly instead of hanging).
-- **`config.rs`:** `mgmKeyFile`/`mgmKeyEnv` (env wins, `$NAME` expansion), read as the admin
-  credential.
-- **`provider.rs`:** new `login(session, pin, admin)` hook; default = the previous user login.
-- **`token.rs`:** `read_mgm`; `Token::open` delegates login to the provider.
-- **`ykcs11`:** `login` override — SO state with the admin credential (hex mgm key, or the PIN on
-  PIN-protected devices), else the default user login. Generation, import and delete need it; PIV
-  keys cannot be erased, only their cert objects.
-- **`crates/cli/tests/yubikey.rs`** (opt-in: `CAKEYS_TEST_YUBIKEY_MODULE` + `_PIN` + `_MGM` file
-  paths; never in the Nix build; secrets only ever read by the CLI from those paths):
-  `rw_lifecycle_generates_proves_and_deletes_without_touch` — generate into scratch PIV slot
-  `0x95` (`CKA_ID 0x18`, far from the production 82-84), first use 10, record with **pop-sign
-  proved in the same SO run**, verify, delete (realisation gone, object id kept, leftover key
-  attested → verify 14), re-adopt (same id), verify. Production specs re-verified read-only 6/6
-  after all of it.
-- **Docs:** DESIGN §4.1 mgmKey lines, §6.2 login hook + ykcs11 row, §9 yubikey suite row.
-- Local gate: softhsm 42/43 (only `hmac_key_types…`, expected); core 17; pkcs11 4. Nix gates
-  running at last update.
+- Notes kept for reference: this YubiKey's mgm key is PIN-protected (fw 5.7) — the `piv_mnmgt_key.txt` hex key and the default key are both refused (that file is for another device); PIV keys cannot be erased, only their cert objects, and ykcs11 keeps attesting the leftover key (hence delete → verify 14, re-adopt same id).
 
 ## Then (follow-up commits)
 
