@@ -1,7 +1,8 @@
 # Draft PR for tpm2-software/tpm2-pkcs11
 
 Status: **draft, not filed.** Before opening it:
-- Add your DCO sign-off: `git am` the patch, then `git commit --amend -s`.
+- Signed off in ~/srcs/tpm2-pkcs11. Consider adding to the commit message: "The library's own
+  C_SignInit parses it too, so P-521 keys could not sign (CKR_HOST_MEMORY)." (found 2026-11-11).
 - Upstream requires the PR to pass their CI. The checks below ran through
   nixpkgs' build with `--enable-integration`, not their Docker image.
 
@@ -59,8 +60,16 @@ Testing, through nixpkgs' tpm2-pkcs11 1.10.1 build (`--enable-unit
   `openssl pkey` reads it, and its SHA-256 equals the SubjectPublicKeyInfo
   hash an independent strict DER consumer computes from `CKA_EC_POINT`.
 
-Signing and verification were already fine for P-521; the bug only affects
-consumers that parse `CKA_EC_POINT`.
+The library's own sign path parses the attribute too
+(`ssl_util_attrs_to_evp()` from `sign_opdata_new()`), so P-521 keys cannot
+sign at all on 1.10.1. Both `CKM_ECDSA` and `CKM_ECDSA_SHA512` fail in
+`C_SignInit`:
+
+    ERROR ... src/lib/ssl_util.c: d2i_ASN1_OCTET_STRING: ... too long
+    error: PKCS11 function C_SignInit failed: rv = CKR_HOST_MEMORY (0x2)
+
+With the patch, in a fresh token store, both mechanisms sign (132-byte
+signatures).
 
 Side note, not changed here: when `asn1_format_ec_point_uncompressed()` gets
 an odd-length hex coordinate, it prepends `"00"` (two digits) where one

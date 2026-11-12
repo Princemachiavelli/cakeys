@@ -75,6 +75,10 @@ pub struct SpecTokenCfg {
     pub public_only: bool,
     #[serde(default)]
     pub identity: IdentityCfg,
+    /// `"token-asserted"`: do not prove possession of the private key, for keys that cannot sign
+    /// anything the host can verify. Recorded in the lock; `publicOnly` implies it.
+    #[serde(default)]
+    pub binding: Option<Binding>,
 }
 
 /// Arbitrary user values naming the object on one token. Not part of the spec digest.
@@ -111,6 +115,33 @@ pub enum Mode {
 impl Mode {
     pub fn needs_opt_in(self) -> bool {
         self > Mode::WrapRebind
+    }
+}
+
+/// How a private-key object is bound to the public key its identity hashes (docs/DESIGN.md §3.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Binding {
+    /// The token signed a fresh challenge that verified on the host against that public key.
+    PopSign,
+    /// Only the token says the objects belong together (opt-in, or `publicOnly`).
+    TokenAsserted,
+}
+
+impl Binding {
+    /// Strength, strongest 0: a realisation must never move to a higher rank.
+    pub fn rank(self) -> u8 {
+        match self {
+            Binding::PopSign => 0,
+            Binding::TokenAsserted => 1,
+        }
+    }
+}
+
+impl std::fmt::Display for Binding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = serde_json::to_value(self).map_err(|_| std::fmt::Error)?;
+        write!(f, "{}", s.as_str().unwrap_or_default())
     }
 }
 
@@ -196,13 +227,16 @@ impl Lock {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct LockRealisation {
     pub spec_digest: String,
     pub mode: Mode,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub public_only: bool,
+    /// Private keys: how the private object is bound to the identity. Absent: not recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<Binding>,
     pub uri: String,
     /// PKCS#11 module that realised this (C_GetInfo, plus the loaded file).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -304,4 +338,17 @@ pub struct TokenInfo {
     pub model: String,
     pub serial: String,
     pub firmware: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Downgrade detection compares ranks: an inverted order would silently disable it.
+    #[test]
+    fn binding_ranks_are_pinned() {
+        assert!(Binding::PopSign.rank() < Binding::TokenAsserted.rank());
+        assert_eq!(Binding::PopSign.to_string(), "pop-sign");
+        assert_eq!(Binding::TokenAsserted.to_string(), "token-asserted");
+    }
 }

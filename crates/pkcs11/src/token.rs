@@ -5,9 +5,11 @@ use crate::provider::{Provider, Registry};
 pub use cakeys_core::config::{ModuleInfo, TokenInfo};
 use cakeys_core::config::{Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
 use cakeys_core::id::{self, Commit, Curve, HmacHash};
+use cakeys_core::pop;
 use cakeys_core::{KmError, Result};
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::error::{Error as CkError, RvError};
+use cryptoki::mechanism::eddsa::{EddsaParams, EddsaSignatureScheme};
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{
     Attribute, AttributeType, CertificateType, KeyType, ObjectClass, ObjectHandle,
@@ -325,7 +327,9 @@ impl Token {
         Ok(handles.len())
     }
 
-    /// Compute the material CA-IDs of the object using `mode`; secret keys use `commits`.
+    /// Compute the material CA-IDs of the object using `mode`; secret keys use `commits`. With
+    /// `prove`, `h` is a private key whose possession is proven against the public key hashed.
+    #[allow(clippy::too_many_arguments)] // two callers (resolve, delete), each passing all of them
     pub fn ids(
         &self,
         h: ObjectHandle,
@@ -334,6 +338,7 @@ impl Token {
         mode: Mode,
         commits: &[Commit],
         commitment_label: &str,
+        prove: bool,
     ) -> Result<BTreeMap<String, String>> {
         let mut ids = BTreeMap::new();
         match mode {
@@ -354,7 +359,11 @@ impl Token {
                 ids.insert("valuehash".into(), id::sri(&value));
             }
             Mode::Direct => {
-                ids.insert("rfc7093m4".into(), id::sri(&self.spki(h, loc)?));
+                let spki = self.spki(h, loc)?;
+                if prove {
+                    self.prove_possession(h, object, &spki)?;
+                }
+                ids.insert("rfc7093m4".into(), id::sri(&spki));
             }
             Mode::Commitment => {
                 for c in commits {
@@ -430,6 +439,59 @@ impl Token {
         }
     }
 
+
+    /// Proof of possession (`cakeys_core::pop`): sign a fresh challenge with the private key `h`
+    /// and verify it on the host against `spki`, the public key its identity hashes. A signature
+    /// that does not verify is a `Conflict`; a token that cannot sign is `Unsupported` or
+    /// `Unavailable`, never a pass.
+    fn prove_possession(&self, h: ObjectHandle, object: &ObjectCfg, spki: &[u8]) -> Result<()> {
+        // A context-specific login per signature (PIV signing slot) would spend PIN retries.
+        if let Some(Attribute::AlwaysAuthenticate(true)) = self.attr(h, AttributeType::AlwaysAuthenticate)? {
+            return Err(KmError::Unavailable(format!(
+                "the private key on token '{}' is CKA_ALWAYS_AUTHENTICATE; proving possession would need a \
+                 PIN entry per run; adopt it publicOnly, or opt in with binding = \"token-asserted\"",
+                self.name
+            )));
+        }
+        let msg = pop::challenge(spki)?;
+        let (mech, data) = match key_type_of(object)? {
+            KeyType::EC => {
+                let hash = pop::EcdsaHash::for_curve(curve_of(object)?)
+                    .ok_or_else(|| KmError::Unsupported(format!("ECDSA on {}", object.curve.as_deref().unwrap_or("?"))))?;
+                let hashed = match hash {
+                    pop::EcdsaHash::Sha256 => (Mechanism::EcdsaSha256, MechanismType::ECDSA_SHA256),
+                    pop::EcdsaHash::Sha384 => (Mechanism::EcdsaSha384, MechanismType::ECDSA_SHA384),
+                    pop::EcdsaHash::Sha512 => (Mechanism::EcdsaSha512, MechanismType::ECDSA_SHA512),
+                };
+                if self.has(hashed.1) {
+                    (hashed.0, msg.clone())
+                } else {
+                    (Mechanism::Ecdsa, hash.digest(&msg))
+                }
+            }
+            KeyType::EC_EDWARDS => (Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Pure)), msg.clone()),
+            KeyType::RSA => (Mechanism::Sha256RsaPkcs, msg.clone()),
+            kt => return Err(KmError::Unsupported(format!("proof of possession for {kt}"))),
+        };
+        if !self.has(mech.mechanism_type()) {
+            return Err(self.unsupported(format!(
+                "token '{}' lacks {} to prove possession of the private key; opt in with binding = \"token-asserted\"",
+                self.name,
+                mech.mechanism_type()
+            )));
+        }
+        let sig = self.session.sign(&mech, h, &data).map_err(|e| match e {
+            CkError::Pkcs11(RvError::KeyFunctionNotPermitted | RvError::MechanismInvalid | RvError::KeyTypeInconsistent, _) => {
+                self.unsupported(format!(
+                    "token '{}' refused to sign with the private key ({e}); proving possession needs CKA_SIGN, \
+                     or opt in with binding = \"token-asserted\"",
+                    self.name
+                ))
+            }
+            e => KmError::Unavailable(format!("C_Sign (proof of possession) on token '{}': {e}", self.name)),
+        })?;
+        pop::verify(spki, &msg, &sig)
+    }
     /// SPKI from the key material attributes of `h`; `None` when it carries none (e.g. an EC
     /// private key without `CKA_EC_POINT`).
     fn material_spki(&self, h: ObjectHandle) -> Result<Option<Vec<u8>>> {

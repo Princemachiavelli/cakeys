@@ -4,5 +4,6 @@
 pub mod config;
 pub mod error;
 pub mod id;
+pub mod pop;
 
 pub use error::{KmError, Result};

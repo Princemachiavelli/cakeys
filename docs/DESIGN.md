@@ -57,13 +57,18 @@ change a hash:
 - `ed25519-dalek`, `ed448` (length check only: there is no stable Ed448 arithmetic crate);
 - `rsa` (1024–8192 bits).
 
-Where the public key comes from, in order:
-1. `CKA_PUBLIC_KEY_INFO` on the object. Errors are treated as absent: ykcs11 reports length 0, then
+Where the public key comes from, in order (key material first, never what the module merely asserts):
+1. The object's own material: RSA modulus and exponent, or `CKA_EC_PARAMS`/`CKA_EC_POINT`. The point
+   may be a DER OCTET STRING or raw.
+2. Otherwise, the material of the single public-key object under the same locator (SoftHSM EC and
+   Edwards private keys carry no point). The private key is bound to it by proof of possession
+   (§3.6).
+3. Otherwise, `CKA_PUBLIC_KEY_INFO`. Errors are treated as absent: ykcs11 reports length 0, then
    fails.
-2. RSA modulus and exponent, or `CKA_EC_PARAMS`/`CKA_EC_POINT`. The point may be a DER OCTET STRING
-   or raw.
-3. Otherwise, the single public-key object under the same locator.
-   **Known gap H1:** that object is not cryptographically bound to the private key (§8.2).
+
+Wherever `CKA_PUBLIC_KEY_INFO` is present it must agree with the material, or the result is a
+conflict (exit 13): modules may let it be set without checking —
+`h1b_a_forged_public_key_info_is_a_conflict`.
 
 Supported curves:
 - `CKK_EC`: secp256r1 (alias prime256v1, P-256), secp384r1, secp521r1, secp256k1, brainpoolP256r1,
@@ -108,6 +113,40 @@ Strongest first. The mode is recorded per realisation; a downgrade fails (exit 1
   - An explicitly requested `check <obj>.id.<scheme>` needs that scheme locked.
   - Test: `a_new_scheme_missing_from_the_lock_is_a_note_unless_requested`.
 
+### 3.6 Proof of possession (`binding`)
+A private key's identity hashes a public key, which may come from a separate object (§3.2). Each
+time it resolves a private key (`resolve`, `verify`, `realise`, `check`, `delete`), cakeys binds the
+key to its identity:
+1. The host builds a challenge: `"cakeys/pop/v1\0" ‖ SHA-256(SPKI) ‖ 32-byte nonce` from the OS
+   RNG (`crates/core/src/pop.rs`).
+2. The token signs it with the private-key object found under the locator:
+   - ECDSA with the curve's hash (P-256, secp256k1, brainpoolP256r1: SHA-256; P-384,
+     brainpoolP384r1: SHA-384; P-521: SHA-512): `CKM_ECDSA_SHA*` if offered, else `CKM_ECDSA`
+     over the host's digest;
+   - Ed25519: `CKM_EDDSA` (pure);
+   - RSA: `CKM_SHA256_RSA_PKCS`.
+3. The host verifies the signature with RustCrypto against the same canonical SPKI it hashes into
+   `rfc7093m4`. The signature is never stored.
+
+Outcomes:
+- **A signature that does not verify is a conflict (exit 13):** the private key under the locator
+  is not the one the identity names. This also applies to `delete`, so If-Match cannot pass on a
+  public object beside an unrelated key.
+- **A token that refuses** (no `CKA_SIGN`, missing mechanism) is exit 15. A token error is 16.
+  A key with `CKA_ALWAYS_AUTHENTICATE` is refused (16) rather than spending a PIN entry each run.
+- **The spec must declare `CKA_SIGN = true`,** or opt out per token with
+  `binding = "token-asserted"`; otherwise it is invalid (exit 17). The rule uses declared
+  attributes only, like `declared_commits`.
+- **Opting out is needed** for keys that cannot sign, Ed448 (no RustCrypto verifier yet), and
+  tpm2-pkcs11 1.10.1 P-521 keys: its `C_SignInit` parses its own malformed `CKA_EC_POINT` and
+  fails (`upstream/tpm2-pkcs11` fixes both).
+- **`publicOnly` implies `token-asserted`.**
+
+The lock records the binding per realisation (`pop-sign` or `token-asserted`). A binding weaker
+than the recorded one is refused (exit 14), also under `--update-lock` —
+`binding_downgrade_is_refused`. Derive-only EC keys (ECDH) and decrypt-only RSA keys (OAEP) will
+get their own `pop-*` methods; until then they need the opt-in.
+
 ## 4. Files
 
 ### 4.1 `keys.toml`
@@ -127,7 +166,7 @@ curve = "..." ; modulusBits = N ; valueLen = BYTES
 [specs.<name>]
 object = "<object>"
 attributes = { CKA_SIGN = true, ... }   # CKA_SIGN/VERIFY/ENCRYPT/DECRYPT/WRAP/UNWRAP/DERIVE/SENSITIVE/EXTRACTABLE/MODIFIABLE/PRIVATE
-tokens.<token> = { locator = { CKA_LABEL = "...", CKA_ID = "hex" }, autoCreate = bool, publicOnly = bool, identity.allow = [...] }
+tokens.<token> = { locator = { CKA_LABEL = "...", CKA_ID = "hex" }, autoCreate = bool, publicOnly = bool, binding = "token-asserted", identity.allow = [...] }
 ```
 
 What may be created and adopted:
@@ -139,6 +178,7 @@ What may be created and adopted:
 - **`publicOnly`** verifies a private key through its public-key object, without login (it spares
   PIV PIN retries). It forbids `autoCreate` and policy attributes, and `delete` refuses it —
   `adopt_certificate_and_public_only_key`.
+- **`binding = "token-asserted"`** skips the proof of possession for a private key (§3.6).
 
 ### 4.2 `keys.lock` (input, updated in place)
 ```toml
@@ -153,6 +193,7 @@ rfc7093m4 = "sha256-..."            # scheme -> SRI
 specDigest = "sha256-..."
 mode = "direct"
 publicOnly = true                    # only when set
+binding = "pop-sign"                 # private keys: pop-sign | token-asserted (§3.6)
 uri = "pkcs11:token=...;object=...;id=%..;type=private|public|cert|secret-key|data"
 mechanisms = ["CKM_..."]             # usable mechanisms at realisation time
 provider = "softhsm"                 # provider that handled the module (provenance)
@@ -301,6 +342,8 @@ forces it. The VM test covers all of this.
 - **Locators never create over occupied slots** (If-None-Match), and never match more than one
   object.
 - **Type and policy of the live object** must match the spec.
+- **Private keys prove possession** of the key their identity names, unless opted out per token;
+  the binding is recorded and cannot weaken (§3.6).
 - **Weak identity modes need an explicit per-token opt-in.** Downgrades fail.
 - **Material is linked only through a shared scheme.**
 - **The lock never holds token outputs, only their hashes.** Private data objects are not hashed.
@@ -310,8 +353,9 @@ forces it. The VM test covers all of this.
 
 ### 8.2 Not enforced / known gaps
 See `docs/REVIEW-2026-11-11.md`.
-- **H1: EC/Edwards private keys on SoftHSM.** Their identity comes from an unbound public object
-  under the locator. Reproduced by `known_gap_ec_private_identity_comes_from_an_unbound_public_object`.
+- **`token-asserted` bindings are unproven.** With the opt-in or `publicOnly`, a private key is
+  tied to its identity only by the token's word (H1 is fixed for `pop-sign` keys:
+  `h1_a_private_key_beside_an_unbound_public_object_is_a_conflict`).
 - **Features are self-declared.** Any user allowed to build can require a token's feature; the
   real gate is `allowed-users`.
 - **There is no lock GC, and no locking.**
@@ -349,8 +393,10 @@ label and the hash itself. Everything else is fixed by definition:
   mode names;
 - the SRI form `sha256-<base64>`;
 - the spec digest JSON shape (`"v":1`, camelCase, empty `keyType` omitted);
-- lock field names (`objects`, `ids`, `realisations`, `specDigest`, `publicOnly`, `module`,
-  `token`, `mechanisms`, `uri`);
+- binding names (`pop-sign`, `token-asserted`) and their rank. The challenge layout
+  (`cakeys/pop/v1`) is pinned by `message_layout_is_pinned`, though nothing stored depends on it;
+- lock field names (`objects`, `ids`, `realisations`, `specDigest`, `publicOnly`, `binding`,
+  `module`, `token`, `mechanisms`, `uri`);
 - `keys.toml` keys;
 - exit codes;
 - the URI shape.

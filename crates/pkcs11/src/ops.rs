@@ -1,7 +1,7 @@
 //! Idempotent verbs with HTTP-like semantics (PLAN.md, "Token verbs").
 
 use crate::token::{self as hal, Token};
-use cakeys_core::config::{Config, Lock, LockRealisation, Mode, ObjectCfg, SpecCfg, SpecTokenCfg};
+use cakeys_core::config::{Binding, Config, Lock, LockRealisation, Mode, ObjectCfg, SpecCfg, SpecTokenCfg};
 use cakeys_core::id::{self, Commit, HmacHash};
 use cakeys_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
@@ -65,9 +65,42 @@ impl<'a> Target<'a> {
     }
 }
 
+/// How `t`'s private key is bound to its identity: proven by signing unless the spec opts out
+/// (or adopts it publicOnly). `None` for every other class.
+pub fn binding(t: &Target) -> Option<Binding> {
+    if t.object.class != "CKO_PRIVATE_KEY" {
+        return None;
+    }
+    if t.on_token.public_only {
+        return Some(Binding::TokenAsserted);
+    }
+    Some(t.on_token.binding.unwrap_or(Binding::PopSign))
+}
+
+/// A private key must be able to prove possession, or say explicitly that it does not.
+fn check_binding(t: &Target) -> Result<()> {
+    let invalid = |why: String| Err(KmError::Validation(format!("{}: {why}", t.what())));
+    match (binding(t), t.on_token.binding) {
+        (None, Some(b)) => invalid(format!("binding = \"{b}\" applies to private keys only")),
+        (Some(Binding::TokenAsserted), Some(Binding::PopSign)) => {
+            invalid("publicOnly cannot prove possession (binding = \"pop-sign\")".into())
+        }
+        (Some(Binding::PopSign), _) if t.object.curve.as_deref().is_some_and(|c| c == "edwards448" || c == "Ed448") => {
+            invalid("cakeys has no Ed448 verifier to prove possession with; opt in with binding = \"token-asserted\"".into())
+        }
+        (Some(Binding::PopSign), _) if t.spec.attributes.get("CKA_SIGN") != Some(&true) => invalid(
+            "proving possession of the private key needs CKA_SIGN = true in the spec attributes; \
+             or opt in with binding = \"token-asserted\" on this token"
+                .into(),
+        ),
+        _ => Ok(()),
+    }
+}
+
 /// Best identity mode achievable from the spec alone; weak modes need a per-token opt-in.
 pub fn plan_mode(t: &Target) -> Result<Mode> {
     let invalid = |why: &str| Err(KmError::Validation(format!("{}: {why}", t.what())));
+    check_binding(t)?;
     if t.on_token.public_only {
         if t.object.class != "CKO_PRIVATE_KEY" {
             return invalid("publicOnly applies to private keys only");
@@ -232,6 +265,9 @@ pub struct Resolved {
     #[serde(rename = "specDigest")]
     pub spec_digest: String,
     pub ids: BTreeMap<String, String>,
+    /// Private keys: how the private object was bound to `ids` (proven when `pop-sign`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binding: Option<Binding>,
     /// Label the commitment schemes in `ids` were computed with (none for public-material IDs).
     #[serde(rename = "commitmentLabel", skip_serializing_if = "Option::is_none")]
     pub commitment_label: Option<String>,
@@ -256,6 +292,7 @@ pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>>
     tok.check(h, t.object, t.spec)?;
     let commits = commits(t, tok, mode)?;
     let label = commitment_label(t, lock);
+    let binding = binding(t);
     Ok(Some(Resolved {
         object: t.object_name.into(),
         spec: t.spec_name.into(),
@@ -264,7 +301,8 @@ pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>>
         mode,
         public_only,
         spec_digest: id::spec_digest(t.object, t.spec),
-        ids: tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label)?,
+        ids: tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding == Some(Binding::PopSign))?,
+        binding,
         commitment_label: (!commits.is_empty()).then_some(label),
     }))
 }
@@ -298,6 +336,14 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
                 "identity downgrade for {}: locked mode '{}', now only '{}'",
                 t.what(), prev.mode, r.mode
             )));
+        }
+        if let (Some(was), Some(now)) = (prev.binding, r.binding) {
+            if now.rank() > was.rank() {
+                return Err(KmError::PreconditionFailed(format!(
+                    "binding downgrade for {}: locked binding '{was}', now only '{now}'",
+                    t.what()
+                )));
+            }
         }
     }
     if let Some(prev) = lock.realisations.get(t.spec_name).and_then(|m| m.get(t.token_name)) {
@@ -370,6 +416,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             spec_digest: r.spec_digest.clone(),
             mode: r.mode,
             public_only: r.public_only,
+            binding: r.binding,
             uri: r.uri.clone(),
             module: Some(tok.module.clone()),
             token: Some(tok.token.clone()),
@@ -378,18 +425,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             mechanisms: tok.mechanism_names(),
         };
         let slot = lock.realisations.entry(t.spec_name.into()).or_default();
-        let differs = slot.get(t.token_name).is_none_or(|old| {
-            old.spec_digest != real.spec_digest
-                || old.mode != real.mode
-                || old.public_only != real.public_only
-                || old.uri != real.uri
-                || old.module != real.module
-                || old.token != real.token
-                || old.provider != real.provider
-                || old.cakeys_version != real.cakeys_version
-                || old.mechanisms != real.mechanisms
-        });
-        if differs {
+        if slot.get(t.token_name) != Some(&real) {
             slot.insert(t.token_name.into(), real);
             changed = true;
         }
@@ -500,7 +536,9 @@ pub fn delete(t: &Target, tok: &Token, lock: &mut Lock, if_match: Option<&str>, 
     // An expected identity is only required when there is something to delete.
     if let Some(h) = tok.find_key(t.object, &t.on_token.locator, false)? {
         let mode = plan_mode(t)?;
-        let got = tok.ids(h, t.object, &t.on_token.locator, mode, &commits(t, tok, mode)?, &commitment_label(t, lock))?;
+        // Proven like `resolve`: If-Match must not pass on a public object beside another key.
+        let prove = binding(t) == Some(Binding::PopSign);
+        let got = tok.ids(h, t.object, &t.on_token.locator, mode, &commits(t, tok, mode)?, &commitment_label(t, lock), prove)?;
         // --if-match names the primary scheme; otherwise the first scheme the lock records.
         let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
         let primary = t.schemes().into_iter().find(|s| got.contains_key(*s));

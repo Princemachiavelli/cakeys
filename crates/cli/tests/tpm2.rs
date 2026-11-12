@@ -61,9 +61,12 @@ impl Env {
         out
     }
 
+    fn lock(&self) -> toml::Value {
+        toml::from_str(&std::fs::read_to_string(self.dir.join("keys.lock")).unwrap()).unwrap()
+    }
+
     fn locked_id(&self, object: &str, scheme: &str) -> String {
-        let lock: toml::Value = toml::from_str(&std::fs::read_to_string(self.dir.join("keys.lock")).unwrap()).unwrap();
-        lock["objects"][object]["ids"][scheme].as_str().unwrap().to_owned()
+        self.lock()["objects"][object]["ids"][scheme].as_str().unwrap().to_owned()
     }
 
     /// `tpm2_ptool <args> --label kmtest --userpin 1234 --path $TPM2_PKCS11_STORE`.
@@ -130,6 +133,7 @@ curve = "edwards25519"
 
 [specs.ed]
 object = "ed"
+attributes = { CKA_SIGN = true }
 tokens.tpm = { locator = { CKA_LABEL = "refusal-ed" }, autoCreate = true }
 
 [objects.aes]
@@ -172,10 +176,13 @@ fn tpm2_generated_keys_match_der_oracle() {
     ];
     let mut body = String::new();
     for (k, ty) in kinds {
+        // tpm2-pkcs11 1.10.1 cannot sign with its P-521 keys: C_SignInit parses its own malformed
+        // CKA_EC_POINT and fails (CKR_HOST_MEMORY; upstream/tpm2-pkcs11 fixes both).
+        let binding = if k == "tpm-p521" { ", binding = \"token-asserted\"" } else { "" };
         body += &format!(
             "[objects.{k}]\nclass = \"CKO_PRIVATE_KEY\"\n{ty}\n\n\
              [specs.{k}-gen]\nobject = \"{k}\"\nattributes = {{ CKA_SIGN = true }}\n\
-             tokens.tpm = {{ locator = {{ CKA_LABEL = \"{k}\" }}, autoCreate = true }}\n\n\
+             tokens.tpm = {{ locator = {{ CKA_LABEL = \"{k}\" }}, autoCreate = true{binding} }}\n\n\
              [specs.{k}-pub]\nobject = \"{k}\"\n\
              tokens.tpm-anon = {{ locator = {{ CKA_LABEL = \"{k}\" }}, publicOnly = true }}\n\n"
         );
@@ -189,6 +196,8 @@ fn tpm2_generated_keys_match_der_oracle() {
         assert_eq!(code(&e.km(&["realise", &gen, "--token", "tpm", "--update-lock"])), 0, "{k}");
         // A session opened now: tpm2-pkcs11 sessions don't see objects created after they opened.
         assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki_with(&e.session(), k, unwrap_tpm2)), "{k}");
+        let binding = if k == "tpm-p521" { "token-asserted" } else { "pop-sign" };
+        assert_eq!(e.lock()["realisations"][&gen]["tpm"]["binding"].as_str(), Some(binding), "{k}");
         let pubs = format!("{k}-pub");
         assert_eq!(code(&e.km(&["realise", &pubs, "--token", "tpm-anon", "--update-lock"])), 0, "{k}");
     }
@@ -200,7 +209,7 @@ fn tpm2_identity_failure_after_create_leaves_nothing() {
     // Without the provider, tpm2-pkcs11's P-521 point is rejected after the key was generated.
     e.config(
         "[objects.p]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp521r1\"\n\n\
-         [specs.p]\nobject = \"p\"\ntokens.tpm-generic = { locator = { CKA_LABEL = \"orphan-p521\" }, autoCreate = true }\n",
+         [specs.p]\nobject = \"p\"\nattributes = { CKA_SIGN = true }\ntokens.tpm-generic = { locator = { CKA_LABEL = \"orphan-p521\" }, autoCreate = true }\n",
     );
     let o = e.km(&["realise", "p", "--token", "tpm-generic"]);
     assert_eq!(code(&o), 13);
@@ -237,6 +246,7 @@ curve = "secp256r1"
 
 [specs.p256]
 object = "p256"
+attributes = { CKA_SIGN = true }
 tokens.tpm = { locator = { CKA_LABEL = "imp-p256" } }
 
 [objects.rsa]

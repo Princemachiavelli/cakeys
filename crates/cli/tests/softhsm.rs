@@ -297,10 +297,11 @@ tokens.softhsm = { locator = { CKA_LABEL = "conflict" }, autoCreate = true }
 [specs.k-nosign]
 object = "k"
 attributes = { CKA_SIGN = false }
-tokens.softhsm = { locator = { CKA_LABEL = "conflict" }, autoCreate = true }
+tokens.softhsm = { locator = { CKA_LABEL = "conflict" }, autoCreate = true, binding = "token-asserted" }
 
 [specs.k-dup]
 object = "k"
+attributes = { CKA_SIGN = true }
 tokens.softhsm = { locator = { CKA_LABEL = "dup" } }
 
 [objects.g]
@@ -427,6 +428,7 @@ tokens.softhsm-anon = { locator = { CKA_LABEL = "adopt-key" }, publicOnly = true
 
 [specs.adopted-priv]
 object = "adopted"
+attributes = { CKA_SIGN = true }
 tokens.softhsm = { locator = { CKA_LABEL = "adopt-key" } }
 
 [objects.adopted-cert]
@@ -502,6 +504,7 @@ curve = "secp256r1"
 
 [specs.k]
 object = "k"
+attributes = { CKA_SIGN = true }
 tokens.softhsm = { locator = { CKA_LABEL = "occupied" }, autoCreate = true }
 "#,
     );
@@ -728,11 +731,13 @@ fn curves_and_rsa_sizes_match_an_independent_der_oracle() {
     ];
     let mut body = String::new();
     for (k, ty) in kinds {
+        // No Ed448 verifier on the host: possession cannot be proven, so it is an explicit opt-in.
+        let binding = if k == "ed448" { ", binding = \"token-asserted\"" } else { "" };
         body += &format!(
             "[objects.{k}]\nclass = \"CKO_PRIVATE_KEY\"\n{ty}\n\n\
              [specs.{k}-gen]\nobject = \"{k}\"\n\
              attributes = {{ CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }}\n\
-             tokens.softhsm = {{ locator = {{ CKA_LABEL = \"{k}\" }}, autoCreate = true }}\n\n\
+             tokens.softhsm = {{ locator = {{ CKA_LABEL = \"{k}\" }}, autoCreate = true{binding} }}\n\n\
              [specs.{k}-pub]\nobject = \"{k}\"\n\
              tokens.softhsm-anon = {{ locator = {{ CKA_LABEL = \"{k}\" }}, publicOnly = true }}\n\n"
         );
@@ -745,10 +750,21 @@ fn curves_and_rsa_sizes_match_an_independent_der_oracle() {
         assert_eq!(code(&e.km(&["realise", &gen, "--token", "softhsm"])), 10, "{k}");
         assert_eq!(code(&e.km(&["realise", &gen, "--token", "softhsm", "--update-lock"])), 0, "{k}");
         assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki(&s, k)), "{k}");
+        let binding = if k == "ed448" { "token-asserted" } else { "pop-sign" };
+        assert_eq!(e.lock()["realisations"][&gen]["softhsm"]["binding"].as_str(), Some(binding), "{k}");
+        // A fresh challenge each run: repeat to catch encoding quirks (high-S, short r or s).
+        for _ in 0..8 {
+            assert_eq!(code(&e.km(&["verify", &gen, "--token", "softhsm"])), 0, "{k}");
+        }
         // Same identity through the public key object, without login.
         let pubs = format!("{k}-pub");
         assert_eq!(code(&e.km(&["realise", &pubs, "--token", "softhsm-anon", "--update-lock"])), 0, "{k}");
+        assert_eq!(e.lock()["realisations"][&pubs]["softhsm-anon"]["binding"].as_str(), Some("token-asserted"), "{k}");
     }
+    // Without the opt-in, an Ed448 key is refused up front.
+    e.config(&body.replace(", binding = \"token-asserted\"", ""));
+    assert_eq!(code(&e.km(&["validate"])), 17);
+    e.config(&body);
     // The curve is part of the object type: a P-384 key does not satisfy a P-256 spec.
     let text = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
     std::fs::write(
@@ -1092,22 +1108,22 @@ fn brainpool_p512_is_refused_clearly() {
     let Some(e) = env("bp512") else { return };
     e.config(
         "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"brainpoolP512r1\"\n\n\
-         [specs.k]\nobject = \"k\"\ntokens.softhsm = { locator = { CKA_LABEL = \"bp512\" }, autoCreate = true }\n",
+         [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\ntokens.softhsm = { locator = { CKA_LABEL = \"bp512\" }, autoCreate = true }\n",
     );
     let o = e.km(&["validate"]);
     assert_eq!(code(&o), 15);
     assert!(String::from_utf8_lossy(&o.stderr).contains("no RustCrypto crate"));
 }
 
-/// KNOWN GAP (docs/REVIEW-2026-11-11.md, H1), documents current behaviour: SoftHSM EC private
-/// keys expose no public key, so their identity is read from the public key object under the same
-/// locator, which nothing binds to the private key. Replace the private key, keep the public
-/// object: `verify` still passes. When H1 is fixed this must fail (flip the assertion).
+/// H1 (docs/REVIEW-2026-11-11.md): SoftHSM EC private keys expose no public key, so their
+/// identity is read from the public key object under the same locator. Replace the private key,
+/// keep the public object: the proof of possession fails, a conflict.
 #[test]
-fn known_gap_ec_private_identity_comes_from_an_unbound_public_object() {
+fn h1_a_private_key_beside_an_unbound_public_object_is_a_conflict() {
     let Some(e) = env("gap_h1") else { return };
     e.config(EC.replace("ec-lifecycle", "gap-a").as_str());
     assert_eq!(code(&e.km(&["realise", "signing-soft", "--token", "softhsm", "--update-lock"])), 0);
+    assert_eq!(e.lock()["realisations"]["signing-soft"]["softhsm"]["binding"].as_str(), Some("pop-sign"));
     let s = e.session();
     let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
     let (_, other_private) = s
@@ -1122,8 +1138,29 @@ fn known_gap_ec_private_identity_comes_from_an_unbound_public_object() {
         .unwrap()[0];
     s.destroy_object(original).unwrap();
     s.update_attributes(other_private, &[Attribute::Label(b"gap-a".to_vec())]).unwrap();
-    // Different private key under the locator, same public object: not detected today.
-    assert_eq!(code(&e.km(&["verify", "signing-soft", "--token", "softhsm"])), 0, "H1 fixed? flip this assertion");
+    // Different private key under the locator, same public object.
+    let verify = e.km(&["verify", "signing-soft", "--token", "softhsm"]);
+    assert_eq!(code(&verify), 13);
+    assert!(String::from_utf8_lossy(&verify.stderr).contains("proof of possession failed"));
+    // So is deleting: If-Match must not pass on the public object alone.
+    assert_eq!(code(&e.km(&["delete", "signing-soft", "--token", "softhsm"])), 13);
+}
+
+/// A recorded proof of possession cannot silently become a token assertion.
+#[test]
+fn binding_downgrade_is_refused() {
+    let Some(e) = env("binding") else { return };
+    let body = EC.replace("ec-lifecycle", "binding");
+    e.config(&body);
+    assert_eq!(code(&e.km(&["realise", "signing-soft", "--token", "softhsm", "--update-lock"])), 0);
+    let opted_out = body.replace("autoCreate = true", "autoCreate = true, binding = \"token-asserted\"");
+    assert_ne!(opted_out, body);
+    e.config(&opted_out);
+    assert_eq!(code(&e.km(&["verify", "signing-soft", "--token", "softhsm"])), 14);
+    assert_eq!(code(&e.km(&["realise", "signing-soft", "--token", "softhsm", "--update-lock"])), 14);
+    // Without CKA_SIGN and without the opt-in, the spec is invalid.
+    e.config(&body.replace("CKA_SIGN = true", "CKA_SIGN = false"));
+    assert_eq!(code(&e.km(&["validate"])), 17);
 }
 
 
@@ -1294,7 +1331,7 @@ fn known_gap_s3_unrecorded_token_verifies_on_ids_alone() {
 fn known_gap_s4_public_only_flip_is_silent() {
     let Some(e) = env("gap_s4") else { return };
     let body = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
-                [specs.k]\nobject = \"k\"\ntokens.softhsm = { locator = { CKA_LABEL = \"s4\" }, autoCreate = true }\n";
+                [specs.k]\nobject = \"k\"\ntokens.softhsm = { locator = { CKA_LABEL = \"s4\" }, autoCreate = true, binding = \"token-asserted\" }\n";
     e.config(body);
     assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm", "--update-lock"])), 0);
     e.config(&body.replace("autoCreate = true", "publicOnly = true"));
@@ -1308,8 +1345,8 @@ fn known_gap_s8_retargeted_spec_is_a_hash_mismatch() {
     let Some(e) = env("gap_s8") else { return };
     let body = "[objects.a]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
                 [objects.b]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
-                [specs.sa]\nobject = \"a\"\ntokens.softhsm = { locator = { CKA_LABEL = \"s8-a\" }, autoCreate = true }\n\n\
-                [specs.sb]\nobject = \"b\"\ntokens.softhsm = { locator = { CKA_LABEL = \"s8-b\" }, autoCreate = true }\n";
+                [specs.sa]\nobject = \"a\"\nattributes = { CKA_SIGN = true }\ntokens.softhsm = { locator = { CKA_LABEL = \"s8-a\" }, autoCreate = true }\n\n\
+                [specs.sb]\nobject = \"b\"\nattributes = { CKA_SIGN = true }\ntokens.softhsm = { locator = { CKA_LABEL = \"s8-b\" }, autoCreate = true }\n";
     e.config(body);
     assert_eq!(code(&e.km(&["realise", "sa", "--token", "softhsm", "--update-lock"])), 0);
     assert_eq!(code(&e.km(&["realise", "sb", "--token", "softhsm", "--update-lock"])), 0);

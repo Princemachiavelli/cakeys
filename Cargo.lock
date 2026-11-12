@@ -178,8 +178,10 @@ dependencies = [
  "base64",
  "bp256",
  "bp384",
+ "ecdsa",
  "ed25519-dalek",
  "ed448",
+ "getrandom",
  "k256",
  "p256",
  "p384",
@@ -669,6 +671,7 @@ dependencies = [
  "ecdsa",
  "elliptic-curve",
  "primeorder",
+ "sha2",
  "wnaf",
 ]
 

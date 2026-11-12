@@ -19,21 +19,23 @@ anyhow = "1"
 base64 = "0.23"
 clap = { version = "4", features = ["derive", "env"] }
 cryptoki = "0.12"
-rsa = { version = "0.10", default-features = false, features = ["std", "encoding"] }
+rsa = { version = "0.10", default-features = false, features = ["std", "encoding", "pkcs1v15"] }
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 p256 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "ecdsa"] }
 p384 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "ecdsa"] }
 p521 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "ecdsa"] }
-k256 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "arithmetic"] }
-bp256 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "arithmetic"] }
-bp384 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "arithmetic"] }
+k256 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "arithmetic", "ecdsa"] }
+bp256 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "arithmetic", "ecdsa"] }
+bp384 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "arithmetic", "ecdsa"] }
 ed25519-dalek = { version = "3", default-features = false, features = ["alloc", "pkcs8"] }
 ed448 = { version = "0.5", default-features = false, features = ["alloc", "pkcs8"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.11"
+sha2 = { version = "0.11", features = ["oid"] }
 thiserror = "2"
 toml = "1"
+getrandom = "0.4"
+ecdsa = { version = "0.17", default-features = false, features = ["std", "algorithm"] }
 aes = "0.9"
 aes-kw = "0.3"
 cmac = "0.8"

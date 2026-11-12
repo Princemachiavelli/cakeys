@@ -6,7 +6,8 @@ Declare keys, certificates and data objects in `keys.toml`. cakeys finds them on
 locator (`CKA_LABEL`/`CKA_ID`), identifies them by a **hash of their material** (a CA-ID), and
 records that hash in `keys.lock`. A label or URI can be changed or reused; the hash cannot. Every
 use, including inside a Nix build sandbox, first checks that the token still holds exactly that
-material.
+material. A private key also proves possession: it signs a fresh challenge, which the host
+verifies against the public key it hashed.
 
 Status: proof of concept.
 - **Tested** against SoftHSM, tpm2-pkcs11 (swtpm, QEMU vTPM) and SoftHSM behind p11-kit forwarding.

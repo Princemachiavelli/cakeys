@@ -218,6 +218,7 @@ curve = "edwards25519"
 
 [specs.ed]
 object = "ed"
+attributes = { CKA_SIGN = true }
 tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-ed" }, autoCreate = true }
 
 [objects.aes-x]
@@ -255,7 +256,7 @@ fn p11kit_login_is_per_client() {
     let Some(e) = env("login") else { return };
     e.config(
         "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
-         [specs.k]\nobject = \"k\"\ntokens.fwd = { locator = { CKA_LABEL = \"fwd-login\" }, autoCreate = true }\n\
+         [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\ntokens.fwd = { locator = { CKA_LABEL = \"fwd-login\" }, autoCreate = true }\n\
          tokens.fwd-anon = { locator = { CKA_LABEL = \"fwd-login\" } }\n\n\
          [specs.k-pub]\nobject = \"k\"\ntokens.fwd-anon = { locator = { CKA_LABEL = \"fwd-login\" }, publicOnly = true }\n",
     );
