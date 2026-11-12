@@ -188,10 +188,10 @@ key — so a realisation never weakens unless it drops to `token-asserted`, whic
 ### 4.1 `keys.toml`
 ```toml
 [tokens.<name>]
-module = "/path/libfoo.so"     # or --module <name>=<path>
+module = "/path/libfoo.so"     # or --module <name>=<path>; $NAME or ${NAME} reads the path from the environment (17 if unset)
 provider = "tpm2-pkcs11"       # optional; auto-detected (§6.2)
 tokenLabel = "..."
-pinFile = "/path" | pinEnv = "VAR"     # optional; pinEnv wins if both are set
+pinFile = "/path" | pinEnv = "VAR"     # optional; pinEnv wins if both are set; pinFile may be $NAME: the path, from the environment
 systemFeature = "token-<name>"         # read by the Nix library only
 
 [objects.<name>]
@@ -208,6 +208,12 @@ tokens.<token> = { locator = { CKA_LABEL = "...", CKA_ID = "hex" }, autoCreate =
 ```
 
 What may be created and adopted:
+- **References are checked at load** (exit 17): a spec's `object` must name an `[objects.<name>]`
+  table — also when nothing uses the spec — and a `$NAME`/`${NAME}` path reference (in `pinFile`
+  or `module`) must name a set environment variable; one shared `keys.toml` can then carry
+  machine-specific paths. `pinEnv = "VAR"` remains the way to pass the *PIN itself* through the
+  environment — `env_references_and_object_refs_are_checked_at_load`,
+  `pin_file_path_can_come_from_the_environment`.
 - **`autoCreate`** is allowed for private and secret keys only. Certificates, public keys and data
   objects are adopted — `adoption_rules_are_validated`, `standalone_public_key_objects`,
   `data_objects_…`. When the lock already pins the object's material (ids recorded, from this or

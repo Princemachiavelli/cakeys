@@ -488,6 +488,26 @@ pub fn load_config(path: &Path) -> anyhow::Result<Config> {
     for o in cfg.objects.values_mut() {
         o.canonicalize();
     }
+    for (name, t) in &mut cfg.tokens {
+        if let Some(m) = t.module.clone() {
+            t.module = Some(env_ref(&m, &format!("token '{name}': module"))?);
+        }
+        if let Some(p) = t.pin_file.clone() {
+            let expanded = env_ref(&p.to_string_lossy(), &format!("token '{name}': pinFile"))?;
+            t.pin_file = Some(PathBuf::from(expanded));
+        }
+    }
+    // A spec's object reference must name something, also when no token ever uses the spec.
+    for (spec, s) in &cfg.specs {
+        if !cfg.objects.contains_key(&s.object) {
+            return Err(KmError::Validation(format!(
+                "{}: spec '{spec}' references unknown object '{}'",
+                path.display(),
+                s.object
+            ))
+            .into());
+        }
+    }
     for s in cfg.specs.values_mut() {
         for v in s.attributes.values_mut().chain(s.public_attributes.values_mut()) {
             if let AttrValue::Mechanisms(m) = v {
@@ -496,6 +516,26 @@ pub fn load_config(path: &Path) -> anyhow::Result<Config> {
         }
     }
     Ok(cfg)
+}
+
+/// A whole-value environment reference in a path field: `$NAME` or `${NAME}` becomes the value of
+/// the environment variable `NAME` when the config is loaded, so one shared `keys.toml` can carry
+/// a machine-specific pin file or module path. A value with no leading `$` is a literal path; a
+/// malformed or unset reference fails at load (exit 17), naming it — not at login time.
+fn env_ref(value: &str, what: &str) -> anyhow::Result<String> {
+    let name = match value.strip_prefix('$') {
+        Some(rest) => rest.strip_prefix('{').and_then(|r| r.strip_suffix('}')).unwrap_or(rest),
+        None => return Ok(value.to_owned()),
+    };
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(KmError::Validation(format!(
+            "{what}: \"{value}\" is neither $NAME, ${{NAME}} nor a literal path"
+        ))
+        .into());
+    }
+    std::env::var(name).map_err(|_| {
+        KmError::Validation(format!("{what}: environment variable {name} (\"{value}\") is not set")).into()
+    })
 }
 
 pub fn load_lock(path: &Path) -> anyhow::Result<Lock> {
@@ -647,6 +687,43 @@ mod tests {
         let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/keys.lock"));
         let lock = load_lock(path).unwrap();
         assert_eq!(lock.realisations["signing-soft"]["softhsm"].binding, Some(Binding::PopSign));
+    }
+
+    /// `$NAME`/`${NAME}` in `pinFile` and `module` read the path from the environment; an unset or
+    /// malformed reference is invalid at load (17), and a spec must reference an existing object.
+    #[test]
+    fn env_references_and_object_refs_are_checked_at_load() {
+        let dir = std::env::temp_dir().join("cakeys-load-config-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let load = |body: &str| {
+            let p = dir.join("keys.toml");
+            std::fs::write(&p, body).unwrap();
+            load_config(&p)
+        };
+        let head = "[tokens.t]\ntokenLabel = \"x\"\n";
+        // A literal path loads as-is; $NAME and ${NAME} expand.
+        assert_eq!(
+            load(&format!("{head}pinFile = \"/literal/pin\"\n")).unwrap().tokens["t"].pin_file,
+            Some(PathBuf::from("/literal/pin"))
+        );
+        std::env::set_var("KM_UNIT_TEST_PIN", "/env/pin");
+        let cfg = load(&format!("{head}pinFile = \"$KM_UNIT_TEST_PIN\"\nmodule = \"${{KM_UNIT_TEST_PIN}}\"\n")).unwrap();
+        std::env::remove_var("KM_UNIT_TEST_PIN");
+        assert_eq!(cfg.tokens["t"].pin_file, Some(PathBuf::from("/env/pin")));
+        assert_eq!(cfg.tokens["t"].module.as_deref(), Some("/env/pin"));
+        // An unset variable fails at load, naming it; so does a malformed reference.
+        let err = load(&format!("{head}pinFile = \"$KM_UNIT_TEST_UNSET\"\n")).unwrap_err();
+        assert!(err.to_string().contains("KM_UNIT_TEST_UNSET"), "{err}");
+        let err = load(&format!("{head}pinFile = \"$HOME/x\"\n")).unwrap_err();
+        assert!(err.to_string().contains("neither $NAME"), "{err}");
+        // A spec's object reference must exist, also when nothing uses the spec.
+        let err = load(&format!(
+            "{head}\n[objects.o]\nclass = \"CKO_DATA\"\n\n[specs.s]\nobject = \"missing\"\ntokens = {{}}\n"
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown object 'missing'"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Downgrade detection compares ranks: an inverted order would silently disable it. The

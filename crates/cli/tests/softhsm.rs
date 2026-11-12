@@ -1773,6 +1773,34 @@ fn update_lock_waits_for_the_sidecar_lock() {
     assert_eq!(code(&e.km(&["verify", "signing-soft", "--token", "softhsm"])), 0);
 }
 
+/// `pinFile = "$NAME"` reads the pin file's path from the environment: unset, the config is
+/// invalid (17) before any token is opened; set, the PIN loads and a private-key realise works.
+#[test]
+fn pin_file_path_can_come_from_the_environment() {
+    let Some(e) = env("pin-env") else { return };
+    std::fs::write(
+        e.dir.join("keys.toml"),
+        format!(
+            "[tokens.softhsm]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"$KM_E2E_PIN\"\n\n{}",
+            e.module,
+            EC.replace("ec-lifecycle", "pin-env")
+        ),
+    )
+    .unwrap();
+    // Unset: refused at load, naming the variable.
+    let o = e.km(&["validate"]);
+    assert_eq!(code(&o), 17);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("KM_E2E_PIN"), "{}", String::from_utf8_lossy(&o.stderr));
+    // Set: the pin file loads, the login works, the private key realises.
+    let pin = e.dir.join("pin");
+    let o = e.km_env(
+        &["realise", "signing-soft", "--token", "softhsm", "--update-lock"],
+        &[("KM_E2E_PIN", &pin)],
+    );
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(e.lock()["realisations"]["signing-soft"]["softhsm"].is_table());
+}
+
 /// D3: `gc` prints lock entries whose spec or token is gone from keys.toml, and removes exactly
 /// what it printed with `--apply`. Live objects keep their ids.
 #[test]

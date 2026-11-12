@@ -24,25 +24,25 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 | 1463327 | **S15** DESIGN §3.1 scheme-strength table per class + deprecation policy: `DEPRECATED_SCHEMES` (empty, pinned), reconcile warns on deprecated locked schemes, `--update-lock` never records a new identity under one; AES order pinned |
 | 3177781 | (user) `CHECKPOINT.md`, `reports/` and `research_notes/` committed — resolves the commit-or-gitignore question |
 | 4032ca5 | **Docs pass + diagrams** staleness fixes (pop-decrypt is OAEP-SHA1; H1 fixed for every pop-*; locking/GC exist; new unit pins named) and `docs/diagrams.md` (5 Mermaid views: model, realise lifecycle, binding tree, schemes, Nix loop — all render via mermaid-cli); PLAN TODO list added |
+| e8c2c78 | **D1** autoCreate refused up front (14) when the lock already pins the object's material; `ec_lifecycle` tail and the VM caveat reworked; `autocreate_never_fights_a_locked_identity` |
 
-## Done (uncommitted; compiles and passes the local gate): D1 (autoCreate vs a locked identity)
+## Done (uncommitted; compiles and passes the local gate): $NAME path refs + spec→object load check
 
-- **`ops.rs` `realise`:** in the autoCreate branch (locator empty), refuse up front (exit 14) when
-  the lock already pins the object's material — generated material could never match; the message
-  names the pinned schemes and the two ways out (same material under the locator, or a new object
-  name). resolve above already found any material that *is* present, so autoCreate is never
-  consulted then.
-- **`ec_lifecycle` tail reworked:** its last segment relied on the *late* behavior (re-create,
-  mismatch 10); it now asserts the early refusal (14) and that nothing was created (delete of the
-  absent object succeeds). The "delete refuses wrong material" semantics stay covered by h1
-  (proof failure 13 on delete).
-- **Tests:** `autocreate_never_fights_a_locked_identity`: second spec over a locked object with
-  an empty locator is refused before anything is created (14, with and without `--update-lock`,
-  token left empty); repointed at the material's locator it adopts it (autoCreate present is
-  harmless) and records the second realisation; the object keeps its one identity.
-- **Docs:** REVIEW D1 fixed; DESIGN §4.1 autoCreate bullet + §5 realise row; diagrams.md
-  lifecycle gained the D1 branch (re-rendered).
-- Local gate: softhsm 41/42 (only `hmac_key_types…`, expected). Nix gates running at last update.
+- **`config.rs`:** `env_ref` — a whole-value `$NAME`/`${NAME}` in a token's `pinFile` or `module`
+  reads the path from the environment at load; unset or malformed → exit 17 naming it (not at
+  login time). `load_config` also validates every spec's `object` reference, also for specs no
+  token uses.
+- **Answered the user's design question** (specs nested under objects?): keep the flat layout —
+  the config is a graph (objects ← specs → tokens), nesting hides only one of the two string
+  edges, and the spec name is the CLI handle and the lock's realisation key; the Nix lib already
+  re-groups object-first for consumers.
+- **Tests:** core `env_references_and_object_refs_are_checked_at_load` (literal, `$NAME`,
+  `${NAME}`, unset, malformed `$HOME/x`, dangling object); softhsm
+  `pin_file_path_can_come_from_the_environment` (unset → 17 naming the var; set via `km_env` →
+  login + private-key realise 0).
+- **Docs:** DESIGN §4.1 (module/pinFile lines + a references bullet naming `pinEnv` as the way to
+  pass the PIN itself).
+- Local gate: softhsm 42/43 (only `hmac_key_types…`, expected); core 17/17. Nix gates pending.
 
 ## Then (follow-up commits)
 
