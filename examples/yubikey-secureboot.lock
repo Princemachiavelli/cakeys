@@ -1,5 +1,8 @@
 version = 1
 
+[objects.whonix-db]
+pairs = ["whonix-db-cert"]
+
 [objects.whonix-db.type]
 class = "CKO_PRIVATE_KEY"
 keyType = "CKK_RSA"
@@ -7,6 +10,9 @@ modulusBits = 2048
 
 [objects.whonix-db.ids]
 rfc7093m4 = "sha256-WIDTlaTWRgbfxWnV3ZkFfSm4FhvRh5tp6nUE/GCoOO4="
+
+[objects.whonix-db-cert]
+pairs = ["whonix-db"]
 
 [objects.whonix-db-cert.type]
 class = "CKO_CERTIFICATE"
@@ -16,6 +22,9 @@ keyType = "CKC_X_509"
 certhash = "sha256-9R0r07PgT23TlaiY7XTNvRTEHT2rZ2zCZKpdm8T7sWY="
 rfc7093m4 = "sha256-WIDTlaTWRgbfxWnV3ZkFfSm4FhvRh5tp6nUE/GCoOO4="
 
+[objects.whonix-kek]
+pairs = ["whonix-kek-cert"]
+
 [objects.whonix-kek.type]
 class = "CKO_PRIVATE_KEY"
 keyType = "CKK_RSA"
@@ -23,6 +32,9 @@ modulusBits = 2048
 
 [objects.whonix-kek.ids]
 rfc7093m4 = "sha256-MabDOX1Cer17nABooLV6cfN15eqZPwPsjw2lh1SdfSM="
+
+[objects.whonix-kek-cert]
+pairs = ["whonix-kek"]
 
 [objects.whonix-kek-cert.type]
 class = "CKO_CERTIFICATE"
@@ -32,6 +44,9 @@ keyType = "CKC_X_509"
 certhash = "sha256-WJGDfabt4hR/KLOkNfdb7B+XYC58lSC+aY9JMZrPUR0="
 rfc7093m4 = "sha256-MabDOX1Cer17nABooLV6cfN15eqZPwPsjw2lh1SdfSM="
 
+[objects.whonix-pk]
+pairs = ["whonix-pk-cert"]
+
 [objects.whonix-pk.type]
 class = "CKO_PRIVATE_KEY"
 keyType = "CKK_RSA"
@@ -39,6 +54,9 @@ modulusBits = 2048
 
 [objects.whonix-pk.ids]
 rfc7093m4 = "sha256-djAUop6ocYdPWijQvA0wOiiWUUeYtk7y2gQZQu+B6j0="
+
+[objects.whonix-pk-cert]
+pairs = ["whonix-pk"]
 
 [objects.whonix-pk-cert.type]
 class = "CKO_CERTIFICATE"
@@ -52,6 +70,10 @@ rfc7093m4 = "sha256-djAUop6ocYdPWijQvA0wOiiWUUeYtk7y2gQZQu+B6j0="
 object = "whonix-db-cert"
 specDigest = "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
 mode = "direct"
+schemes = [
+    "certhash",
+    "rfc7093m4",
+]
 
 [realisations.whonix-db-cert-piv.yubikey.locator]
 CKA_LABEL = "X.509 Certificate for Retired Key 3"
@@ -116,6 +138,7 @@ firmware = "5.74"
 object = "whonix-db"
 specDigest = "sha256-8k3VUT0T/6zvM/Yp6b2isKLrYOrK2vfyd7UWWz/DUiY="
 mode = "direct"
+schemes = ["rfc7093m4"]
 publicOnly = true
 binding = "token-asserted"
 
@@ -192,6 +215,10 @@ firmware = "5.74"
 object = "whonix-kek-cert"
 specDigest = "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
 mode = "direct"
+schemes = [
+    "certhash",
+    "rfc7093m4",
+]
 
 [realisations.whonix-kek-cert-piv.yubikey.locator]
 CKA_LABEL = "X.509 Certificate for Retired Key 2"
@@ -256,6 +283,7 @@ firmware = "5.74"
 object = "whonix-kek"
 specDigest = "sha256-8k3VUT0T/6zvM/Yp6b2isKLrYOrK2vfyd7UWWz/DUiY="
 mode = "direct"
+schemes = ["rfc7093m4"]
 publicOnly = true
 binding = "token-asserted"
 
@@ -332,6 +360,10 @@ firmware = "5.74"
 object = "whonix-pk-cert"
 specDigest = "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
 mode = "direct"
+schemes = [
+    "certhash",
+    "rfc7093m4",
+]
 
 [realisations.whonix-pk-cert-piv.yubikey.locator]
 CKA_LABEL = "X.509 Certificate for Retired Key 1"
@@ -396,6 +428,7 @@ firmware = "5.74"
 object = "whonix-pk"
 specDigest = "sha256-8k3VUT0T/6zvM/Yp6b2isKLrYOrK2vfyd7UWWz/DUiY="
 mode = "direct"
+schemes = ["rfc7093m4"]
 publicOnly = true
 binding = "token-asserted"
 

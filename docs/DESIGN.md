@@ -189,6 +189,7 @@ commitmentLabel = "key-management/v1" # required when ids holds a commitment sch
 class = "..." ; keyType = "..." ; curve = "..." ; valueLen = N ; modulusBits = N
 [objects.<object>.ids]
 rfc7093m4 = "sha256-..."            # scheme -> SRI
+# pairs = ["<object>"]              # (in [objects.<object>]) objects sharing its rfc7093m4: key <-> certificate
 
 # Compared: verification fails (14) when keys.toml or the token disagrees. All required.
 [realisations.<spec>.<token>]
@@ -196,6 +197,7 @@ object = "<object>"                 # the object this spec realised
 locator = { CKA_LABEL = "...", CKA_ID = "hex" }  # where it was found
 specDigest = "sha256-..."
 mode = "direct"                      # a weaker mode is refused
+schemes = ["rfc7093m4"]              # schemes this realisation computed and matched; fewer later is refused
 publicOnly = true                    # only when set
 binding = "pop-sign"                 # private keys: pop-sign | token-asserted (§3.6)
 [realisations.<spec>.<token>.policy] # every boolean attribute of the class the token shows
@@ -232,6 +234,19 @@ model = "..." ; serial = "..." ; firmware = "M.m"
   `CKA_KEY_GEN_MECHANISM`) are compared the same way. A flag that was `true` and is not any more
   means the object was replaced (for example, the same material re-imported). That is refused
   even under `--update-lock`, like a downgrade — `policy_drift_and_replaced_objects_are_refused`.
+- **Loading checks the lock's own invariants** (exit 17, never a hash mismatch) —
+  `lock_invariants_are_checked`:
+  - every ID and `specDigest` is a `sha256-` SRI digest of 32 bytes; a `commitmentLabel` is
+    non-empty printable ASCII;
+  - a realisation's `object` is in the lock, and its `schemes` are among that object's IDs;
+  - **one object per material:** no two objects of one class share an ID under one scheme
+    (a certificate's `rfc7093m4` is exempt: it names the subject key, which renewed
+    certificates share). `realise --update-lock` refuses to record a second name (exit 14);
+  - **`pairs`** lists exactly the other objects with the same `rfc7093m4`, symmetrically: the
+    key ↔ certificate relation is explicit and checked, not implied.
+- **`schemes`** records which schemes a realisation computed and matched, so the lock shows which
+  realisation established which ID. A realisation that later computes fewer is refused like a
+  mode downgrade (exit 14).
 - **Writes are atomic** (temporary file, then rename), but there is no locking (finding M3).
 - **URIs are pure locators** (RFC 7512), with no `module-path`.
 - **Versions** are raw `CK_VERSION` major.minor (ykcs11 2.7.3 → `2.73`).
@@ -432,8 +447,8 @@ label and the hash itself. Everything else is fixed by definition:
 - binding names (`pop-sign`, `token-asserted`) and their rank. The challenge layout
   (`cakeys/pop/v1`) is pinned by `message_layout_is_pinned`, though nothing stored depends on it;
 - lock field names (`objects`, `ids`, `realisations`, `object`, `locator`, `specDigest`,
-  `publicOnly`, `binding`, `policy`, `immutables`, `observed`, `provenance`, `module`, `token`,
-  `mechanisms`, `uri`);
+  `schemes`, `pairs`, `publicOnly`, `binding`, `policy`, `immutables`, `observed`, `provenance`,
+  `module`, `token`, `mechanisms`, `uri`);
 - `keys.toml` keys;
 - exit codes;
 - the URI shape.

@@ -34,6 +34,7 @@ object = "shared"
 locator = { CKA_LABEL = "shared-b" }
 specDigest = "sha256-2l4R3cS4v8E8lJ0y5DxB2cbWm2y5H6V3H9oT2VcSx1Q="
 mode = "wrap-rebind"
+schemes = ["commitment"]
 policy = { CKA_EXTRACTABLE = true, CKA_SENSITIVE = true, CKA_SIGN = false, CKA_TOKEN = true }
 
 [realisations.shared-nosign.softhsm.observed]
@@ -45,6 +46,7 @@ object = "shared"
 locator = { CKA_LABEL = "shared-a" }
 specDigest = "sha256-yVLLNPOa4rNsRbODzKVTkUj2NDJYBrUBlEonNBIh/tQ="
 mode = "commitment"
+schemes = ["commitment"]
 policy = { CKA_EXTRACTABLE = false, CKA_SENSITIVE = true, CKA_SIGN = true, CKA_TOKEN = true }
 
 [realisations.shared-sign.softhsm.observed]
@@ -56,6 +58,7 @@ object = "signing"
 locator = { CKA_LABEL = "signing" }
 specDigest = "sha256-qIuRBEz2PXSMKu8QQ5Mnwd9u7f6hGvsgYvL2GZh0Hk0="
 mode = "direct"
+schemes = ["rfc7093m4"]
 binding = "pop-sign"
 policy = { CKA_EXTRACTABLE = false, CKA_SENSITIVE = true, CKA_SIGN = true, CKA_TOKEN = true }
 immutables = { CKA_LOCAL = true, CKA_NEVER_EXTRACTABLE = true, CKA_ALWAYS_SENSITIVE = true, CKA_KEY_GEN_MECHANISM = "CKM_EC_KEY_PAIR_GEN" }

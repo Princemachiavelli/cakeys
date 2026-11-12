@@ -4,7 +4,7 @@
 
 use crate::error::{KmError, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
@@ -177,6 +177,10 @@ pub struct LockObject {
     /// Material CA-IDs: scheme -> SRI hash.
     #[serde(default)]
     pub ids: BTreeMap<String, String>,
+    /// Other objects with the same public key (`rfc7093m4`): a key and its certificate, a private
+    /// and a public key object. Recorded by cakeys, symmetric, and checked on load.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub pairs: BTreeSet<String>,
 }
 
 impl LockObject {
@@ -219,7 +223,72 @@ impl Lock {
                 path.display()
             )));
         }
+        let invalid = |msg: String| Err(KmError::Validation(format!("{}: {msg}", path.display())));
+        for (name, o) in &self.objects {
+            if let Some((s, v)) = o.ids.iter().find(|(_, v)| !crate::id::is_sri(v)) {
+                return invalid(format!("object '{name}': {s} = \"{v}\" is not a sha256 SRI digest"));
+            }
+            if let Some(l) = o.commitment_label.as_ref().filter(|l| l.is_empty() || !l.bytes().all(|b| b.is_ascii_graphic() || b == b' ')) {
+                return invalid(format!("object '{name}': commitmentLabel {l:?} must be non-empty printable ASCII"));
+            }
+        }
+        for (spec, by_token) in &self.realisations {
+            for (token, r) in by_token {
+                let what = format!("realisation of '{spec}' on '{token}'");
+                if !crate::id::is_sri(&r.spec_digest) {
+                    return invalid(format!("{what}: specDigest \"{}\" is not a sha256 SRI digest", r.spec_digest));
+                }
+                let Some(o) = self.objects.get(&r.object) else {
+                    return invalid(format!("{what}: object '{}' is not in the lock", r.object));
+                };
+                if let Some(s) = r.schemes.iter().find(|s| !o.ids.contains_key(*s)) {
+                    return invalid(format!("{what}: scheme {s} is not among the IDs of '{}'", r.object));
+                }
+            }
+        }
+        // One object per material: two objects of one class with the same ID are the same thing
+        // under two names. A certificate's rfc7093m4 names its subject key, which several
+        // certificates may share.
+        let mut seen: BTreeMap<(&str, &str, &str), &str> = BTreeMap::new();
+        for (name, o) in &self.objects {
+            let class = o.object_type.as_ref().map_or("", |t| t.class.as_str());
+            for (s, v) in o.ids.iter().filter(|(s, _)| !(class == "CKO_CERTIFICATE" && *s == "rfc7093m4")) {
+                if let Some(other) = seen.insert((s, class, v), name) {
+                    return invalid(format!(
+                        "objects '{other}' and '{name}' are the same {class} material ({s} {v}); use one object"
+                    ));
+                }
+            }
+        }
+        let pairs = self.computed_pairs();
+        for (name, o) in &self.objects {
+            let want = pairs.get(name).cloned().unwrap_or_default();
+            if o.pairs != want {
+                return invalid(format!(
+                    "object '{name}' lists pairs {:?}, but the objects sharing its rfc7093m4 are {want:?}",
+                    o.pairs
+                ));
+            }
+        }
         Ok(self)
+    }
+
+    /// For every object, the other objects with the same public key (`rfc7093m4`).
+    pub fn computed_pairs(&self) -> BTreeMap<String, BTreeSet<String>> {
+        let key = |o: &LockObject| o.ids.get("rfc7093m4").cloned();
+        self.objects
+            .iter()
+            .filter_map(|(name, o)| {
+                let k = key(o)?;
+                let others: BTreeSet<String> = self
+                    .objects
+                    .iter()
+                    .filter(|(n, p)| *n != name && key(p).as_ref() == Some(&k))
+                    .map(|(n, _)| n.clone())
+                    .collect();
+                (!others.is_empty()).then(|| (name.clone(), others))
+            })
+            .collect()
     }
 }
 
@@ -238,6 +307,9 @@ pub struct LockRealisation {
     pub locator: Locator,
     pub spec_digest: String,
     pub mode: Mode,
+    /// The identity schemes this realisation computed and matched: computing fewer later is a
+    /// downgrade. Also shows which realisation established which locked ID.
+    pub schemes: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub public_only: bool,
     /// Private keys: how the private object is bound to the identity. Absent: not recorded.

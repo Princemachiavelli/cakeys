@@ -21,6 +21,14 @@ pub fn sri(bytes: &[u8]) -> String {
     )
 }
 
+/// Whether `s` is an SRI SHA-256 digest as `sri` writes it: `sha256-` and 32 bytes in padded
+/// standard base64.
+pub fn is_sri(s: &str) -> bool {
+    s.strip_prefix("sha256-")
+        .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
+        .is_some_and(|d| d.len() == 32)
+}
+
 /// Hash of the canonical JSON of (object type, policy attributes).
 pub fn spec_digest(object: &ObjectCfg, spec: &SpecCfg) -> String {
     let doc = serde_json::json!({

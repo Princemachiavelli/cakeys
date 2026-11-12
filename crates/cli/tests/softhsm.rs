@@ -458,6 +458,10 @@ tokens.softhsm-anon = { locator = { CKA_ID = "42" } }
     assert_eq!(e.locked_id("adopted", "rfc7093m4"), ADOPT_PUBKEYHASH);
     assert_eq!(e.locked_id("adopted-cert", "certhash"), ADOPT_CERTHASH);
     assert_eq!(e.locked_id("adopted-cert", "rfc7093m4"), ADOPT_PUBKEYHASH, "cert links to its key");
+    // The relation is explicit in the lock, and checked when it is loaded.
+    let lock = e.lock();
+    assert_eq!(lock["objects"]["adopted-cert"]["pairs"].as_array().unwrap(), &vec![toml::Value::from("adopted")]);
+    assert_eq!(lock["objects"]["adopted"]["pairs"].as_array().unwrap(), &vec![toml::Value::from("adopted-cert")]);
     let lock = e.lock();
     assert_eq!(lock["realisations"]["adopted-pub"]["softhsm-anon"]["publicOnly"].as_bool(), Some(true));
     assert!(lock["realisations"]["adopted-cert"]["softhsm-anon"].get("publicOnly").is_none());
@@ -621,6 +625,61 @@ fn observed_and_provenance_never_change_a_verdict() {
     objectless["realisations"]["signing-soft"]["softhsm"].as_table_mut().unwrap().remove("object");
     write(&objectless);
     assert_eq!(code(&e.km(&verify)), 17);
+}
+
+/// A malformed or self-contradictory lock is invalid (exit 17), not a hash mismatch; the same
+/// material is never recorded under two names; computing fewer schemes than recorded is refused.
+#[test]
+fn lock_invariants_are_checked() {
+    let Some(e) = env("invariants") else { return };
+    let body = EC.replace("ec-lifecycle", "invariants")
+        + "\n[objects.twin]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+           [specs.twin]\nobject = \"twin\"\nattributes = { CKA_SIGN = true }\n\
+           tokens.softhsm = { locator = { CKA_LABEL = \"invariants\" } }\n";
+    e.config(&body);
+    let verify = ["verify", "signing-soft", "--token", "softhsm"];
+    assert_eq!(code(&e.km(&["realise", "signing-soft", "--token", "softhsm", "--update-lock"])), 0);
+    let good = e.lock();
+    assert_eq!(good["realisations"]["signing-soft"]["softhsm"]["schemes"].as_array().unwrap().len(), 1);
+    // The same key under a second object name is refused when recording.
+    assert_eq!(code(&e.km(&["realise", "twin", "--token", "softhsm", "--update-lock"])), 14);
+    assert!(e.lock().get("objects").unwrap().get("twin").is_none());
+
+    let write = |lock: &toml::Value| std::fs::write(e.dir.join("keys.lock"), toml::to_string(lock).unwrap()).unwrap();
+    let edit = |f: &dyn Fn(&mut toml::Value)| {
+        let mut lock = good.clone();
+        f(&mut lock);
+        write(&lock);
+        code(&e.km(&verify))
+    };
+    assert_eq!(edit(&|l| l["objects"]["signing"]["ids"]["rfc7093m4"] = "sha256-AAAA".into()), 17);
+    assert_eq!(edit(&|l| l["realisations"]["signing-soft"]["softhsm"]["specDigest"] = "abc".into()), 17);
+    let set = |l: &mut toml::Value, k: &str, v: toml::Value| {
+        l["objects"]["signing"].as_table_mut().unwrap().insert(k.into(), v);
+    };
+    assert_eq!(edit(&|l| set(l, "commitmentLabel", "".into())), 17);
+    assert_eq!(edit(&|l| set(l, "pairs", toml::Value::Array(vec!["nope".into()]))), 17);
+    assert_eq!(
+        edit(&|l| {
+            let s = l["objects"]["signing"].clone();
+            l["objects"].as_table_mut().unwrap().insert("twin".into(), s);
+        }),
+        17,
+        "same material twice"
+    );
+    assert_eq!(edit(&|l| l["realisations"]["signing-soft"]["softhsm"]["schemes"] = toml::Value::Array(vec!["certhash".into()])), 17);
+    // A scheme the realisation established but no longer computes: a downgrade.
+    let valuehash = sri(b"recorded by an imaginary earlier version");
+    assert_eq!(
+        edit(&|l| {
+            l["objects"]["signing"]["ids"].as_table_mut().unwrap().insert("valuehash".into(), valuehash.clone().into());
+            l["realisations"]["signing-soft"]["softhsm"]["schemes"] =
+                toml::Value::Array(vec!["rfc7093m4".into(), "valuehash".into()]);
+        }),
+        14
+    );
+    write(&good);
+    assert_eq!(code(&e.km(&verify)), 0);
 }
 
 /// The lock records every boolean attribute the object shows (declared or not) and its creation
@@ -1108,6 +1167,9 @@ fn a_new_scheme_missing_from_the_lock_is_a_note_unless_requested() {
          [objects.u.type]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n[objects.u.ids]\ncmac = \"{}\"\n",
         aes_commitment(&key, "cmac")
     ));
+    let mut old = e.lock();
+    old["realisations"]["u"]["softhsm"]["schemes"] = toml::Value::Array(vec!["cmac".into()]);
+    std::fs::write(e.dir.join("keys.lock"), toml::to_string(&old).unwrap()).unwrap();
     let v = e.km(&["verify", "u", "--token", "softhsm"]);
     assert_eq!(code(&v), 0);
     assert!(String::from_utf8_lossy(&v.stderr).contains("kcv-ecb identity the lock does not record"));
@@ -1358,7 +1420,7 @@ fn the_lock_pins_type_spec_provenance_and_schemes() {
     assert!(stderr(&o).contains("note:") && stderr(&o).contains("cakeys 0.0.0") && !stderr(&o).contains("warning:"), "{}", stderr(&o));
 
     // 4. A scheme this cakeys does not know is reported by name, not silently skipped.
-    std::fs::write(&path, locked.replace("[objects.signing.ids]\n", "[objects.signing.ids]\nfuturehash = \"sha256-AAAA\"\n")).unwrap();
+    std::fs::write(&path, locked.replace("[objects.signing.ids]\n", "[objects.signing.ids]\nfuturehash = \"sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=\"\n")).unwrap();
     let o = e.km(&verify);
     assert_eq!(code(&o), 0);
     assert!(stderr(&o).contains("futurehash") && stderr(&o).contains("does not know"), "{}", stderr(&o));

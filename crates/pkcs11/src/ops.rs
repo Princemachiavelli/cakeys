@@ -373,6 +373,13 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
                 )));
             }
         }
+        let lost: Vec<&String> = prev.schemes.iter().filter(|s| !r.ids.contains_key(*s)).collect();
+        if !lost.is_empty() {
+            return Err(KmError::PreconditionFailed(format!(
+                "identity downgrade for {}: it was realised with {lost:?}, which it no longer computes",
+                t.what()
+            )));
+        }
         // Fixed at creation: weaker now means the object was replaced (also when updating).
         let weakened = r.immutables.weakened_since(&prev.immutables);
         if !weakened.is_empty() {
@@ -477,6 +484,17 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
         }
     }
     if update {
+        // One object per material (checked again on load): refuse to record the same material
+        // under a second name.
+        let class = t.object.class.as_str();
+        for (name, o) in lock.objects.iter().filter(|(n, o)| *n != t.object_name && o.object_type.as_ref().is_some_and(|ty| ty.class == class)) {
+            if let Some((s, _)) = r.ids.iter().find(|(s, v)| !(class == "CKO_CERTIFICATE" && *s == "rfc7093m4") && o.ids.get(*s) == Some(v)) {
+                return Err(KmError::PreconditionFailed(format!(
+                    "{} is the same material as object '{name}' ({s}); use that object instead of a second name",
+                    t.what()
+                )));
+            }
+        }
         let entry = lock.objects.entry(t.object_name.into()).or_default();
         if entry.object_type.is_none() {
             entry.object_type = Some(t.object.clone());
@@ -496,6 +514,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             locator: t.on_token.locator.clone(),
             spec_digest: r.spec_digest.clone(),
             mode: r.mode,
+            schemes: r.ids.keys().cloned().collect(),
             public_only: r.public_only,
             binding: r.binding,
             policy: r.policy.clone(),
@@ -512,6 +531,14 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
         if slot.get(t.token_name) != Some(&real) {
             slot.insert(t.token_name.into(), real);
             changed = true;
+        }
+        let pairs = lock.computed_pairs();
+        for (name, o) in lock.objects.iter_mut() {
+            let want = pairs.get(name).cloned().unwrap_or_default();
+            if o.pairs != want {
+                o.pairs = want;
+                changed = true;
+            }
         }
     }
     Ok(changed)
