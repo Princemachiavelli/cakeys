@@ -297,6 +297,9 @@ pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>>
         return Ok(None);
     };
     tok.check(h, t.object, t.spec)?;
+    if matches!(t.object.class.as_str(), "CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY" | "CKO_CERTIFICATE") {
+        tok.check_unique_private_id(h)?;
+    }
     let commits = commits(t, tok, mode)?;
     let label = commitment_label(t, lock);
     let binding = binding(t);
@@ -519,7 +522,11 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             binding: r.binding,
             policy: r.policy.clone(),
             immutables: r.immutables.clone(),
-            observed: Some(Observed { uri: r.uri.clone(), mechanisms: tok.mechanism_names() }),
+            observed: Some(Observed {
+                uri: r.uri.clone(),
+                session: if tok.logged_in { "user" } else { "public" }.to_owned(),
+                mechanisms: tok.mechanism_names(),
+            }),
             provenance: Some(Provenance {
                 provider: tok.provider.name().to_owned(),
                 cakeys_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -547,6 +554,12 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
 /// `observed` and `provenance` never change a verdict: identity is enforced by the CA-IDs, so a
 /// different module build or token only warns. `realise --update-lock` re-binds them.
 fn warn_provenance(t: &Target, tok: &Token, prev: &LockRealisation) {
+    if prev.observed.as_ref().is_some_and(|o| o.session == "user") && !tok.logged_in {
+        eprintln!(
+            "warning: {} was realised in a user session; this public session cannot see other private keys under its CKA_ID",
+            t.what()
+        );
+    }
     if let Some(o) = &prev.observed {
         let gone: Vec<&str> =
             o.mechanisms.iter().map(String::as_str).filter(|m| !tok.mechanism_names().iter().any(|n| n == m)).collect();

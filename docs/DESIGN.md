@@ -207,7 +207,8 @@ CKA_LOCAL = true ; CKA_NEVER_EXTRACTABLE = true ; CKA_ALWAYS_SENSITIVE = true ; 
 
 # Observed: facts about the token; never change a verdict (optional).
 [realisations.<spec>.<token>.observed]
-uri = "pkcs11:token=...;object=...;id=%..;type=private|public|cert|secret-key|data"
+uri = "pkcs11:token=...;serial=...;object=...;id=%..;type=private|public|cert|secret-key|data"
+session = "user"                     # user (logged in) or public: what the duplicate-ID check could see
 mechanisms = ["CKM_..."]             # usable mechanisms; feeds functions.<token> in Nix
 
 # Provenance: what produced the record; differences warn or note (optional).
@@ -248,7 +249,13 @@ model = "..." ; serial = "..." ; firmware = "M.m"
   realisation established which ID. A realisation that later computes fewer is refused like a
   mode downgrade (exit 14).
 - **Writes are atomic** (temporary file, then rename), but there is no locking (finding M3).
-- **URIs are pure locators** (RFC 7512), with no `module-path`.
+- **URIs are pure locators** (RFC 7512), with no `module-path`. They carry the token `serial`
+  (tokens may share a label) and always the object `type`.
+- **One private key per `CKA_ID`.** Consumers such as OpenSSH pick the first private key whose
+  `CKA_ID` matches. With a login, another private key under the same `CKA_ID` as a private key,
+  public key or certificate being resolved is ambiguous (exit 12). A public session cannot see
+  private keys, so `observed.session` records which view the check had; going from `user` to
+  `public` warns — `a_second_private_key_under_the_same_id_is_ambiguous`.
 - **Versions** are raw `CK_VERSION` major.minor (ykcs11 2.7.3 → `2.73`).
 - **Provenance:** a different module build identity or token is a *warning*; only a different
   module file is a *note*. Neither fails — `module_and_token_provenance_warn_but_do_not_fail`.

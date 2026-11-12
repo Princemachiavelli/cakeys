@@ -39,6 +39,7 @@ policy = { CKA_EXTRACTABLE = true, CKA_SENSITIVE = true, CKA_SIGN = false, CKA_T
 
 [realisations.shared-nosign.softhsm.observed]
 uri = "pkcs11:token=kmtest;object=shared-b;type=secret-key"
+session = "user"
 mechanisms = ["CKM_AES_KEY_WRAP", "CKM_SHA256_HMAC"]
 
 [realisations.shared-sign.softhsm]
@@ -51,6 +52,7 @@ policy = { CKA_EXTRACTABLE = false, CKA_SENSITIVE = true, CKA_SIGN = true, CKA_T
 
 [realisations.shared-sign.softhsm.observed]
 uri = "pkcs11:token=kmtest;object=shared-a;type=secret-key"
+session = "user"
 mechanisms = ["CKM_SHA256_HMAC"]
 
 [realisations.signing-soft.softhsm]
@@ -65,6 +67,7 @@ immutables = { CKA_LOCAL = true, CKA_NEVER_EXTRACTABLE = true, CKA_ALWAYS_SENSIT
 
 [realisations.signing-soft.softhsm.observed]
 uri = "pkcs11:token=kmtest;object=signing;type=private"
+session = "user"
 mechanisms = ["CKM_ECDSA", "CKM_EC_KEY_PAIR_GEN"]
 
 [realisations.signing-soft.softhsm.provenance]

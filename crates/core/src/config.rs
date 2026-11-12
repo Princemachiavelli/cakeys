@@ -366,8 +366,10 @@ impl Immutables {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Observed {
-    /// RFC 7512 URI of the object (derived from the token label and locator).
+    /// RFC 7512 URI of the object (derived from the token label, serial and locator).
     pub uri: String,
+    /// `user` (logged in: private objects and duplicate private-key IDs were visible) or `public`.
+    pub session: String,
     /// Usable mechanisms (feeds `functions.<token>` in the Nix library). One that has since gone
     /// from the token is a warning.
     #[serde(default)]

@@ -44,7 +44,7 @@ error: hash mismatch in identity of 'signing' (spec 'signing-soft') on token 'so
      got:    sha256-…            # first use: like a fixed-output derivation
 $ cakeys -c keys.toml realise signing-soft --token softhsm --update-lock   # record it
 $ cakeys -c keys.toml check signing     # later: verify, then print the URI
-pkcs11:token=main;object=signing;type=private
+pkcs11:token=main;serial=...;object=signing;type=private
 ```
 
 Verbs:

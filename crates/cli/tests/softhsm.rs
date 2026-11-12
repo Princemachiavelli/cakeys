@@ -128,7 +128,8 @@ fn ec_lifecycle() {
 
     let verify = e.km(&["verify", "signing-soft", "--token", "softhsm"]);
     assert_eq!(code(&verify), 0);
-    assert!(stdout(&verify).starts_with("pkcs11:token=kmtest;object=ec-lifecycle;type=private"));
+    let uri = stdout(&verify);
+    assert!(uri.starts_with("pkcs11:token=kmtest;serial=") && uri.contains(";object=ec-lifecycle;type=private"), "{uri}");
     let check = e.km(&["check", "signing.id.rfc7093m4"]);
     assert_eq!(code(&check), 0);
     // `pubkeyhash` is an input alias of rfc7093m4.
@@ -625,6 +626,44 @@ fn observed_and_provenance_never_change_a_verdict() {
     objectless["realisations"]["signing-soft"]["softhsm"].as_table_mut().unwrap().remove("object");
     write(&objectless);
     assert_eq!(code(&e.km(&verify)), 17);
+}
+
+/// A consumer that picks the private key by CKA_ID (OpenSSH) must get this one: with a login,
+/// another private key under the same CKA_ID is ambiguous. The lock records the session kind.
+#[test]
+fn a_second_private_key_under_the_same_id_is_ambiguous() {
+    let Some(e) = env("dup_id") else { return };
+    let s = e.session();
+    let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let gen = |label: &[u8]| {
+        let common = [Attribute::Token(true), Attribute::Label(label.to_vec()), Attribute::Id(vec![0x77])];
+        s.generate_key_pair(
+            &Mechanism::EccKeyPairGen,
+            &[&common[..], &[Attribute::EcParams(ec_params.clone())]].concat(),
+            &[&common[..], &[Attribute::Sign(true)]].concat(),
+        )
+        .unwrap()
+    };
+    gen(b"dup-id-a");
+    e.config(
+        "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\n\
+         tokens.softhsm = { locator = { CKA_LABEL = \"dup-id-a\" } }\n\n\
+         [specs.k-pub]\nobject = \"k\"\ntokens.softhsm-anon = { locator = { CKA_LABEL = \"dup-id-a\" }, publicOnly = true }\n",
+    );
+    assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm", "--update-lock"])), 0);
+    assert_eq!(code(&e.km(&["realise", "k-pub", "--token", "softhsm-anon", "--update-lock"])), 0);
+    let lock = e.lock();
+    assert_eq!(lock["realisations"]["k"]["softhsm"]["observed"]["session"].as_str(), Some("user"));
+    assert_eq!(lock["realisations"]["k-pub"]["softhsm-anon"]["observed"]["session"].as_str(), Some("public"));
+    let uri = lock["realisations"]["k"]["softhsm"]["observed"]["uri"].as_str().unwrap();
+    assert!(uri.contains(";serial="), "{uri}");
+    gen(b"dup-id-b");
+    let o = e.km(&["verify", "k", "--token", "softhsm"]);
+    assert_eq!(code(&o), 12);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("share CKA_ID %77"), "{}", String::from_utf8_lossy(&o.stderr));
+    // A public session cannot see the other private key: it passes, as the lock says it would.
+    assert_eq!(code(&e.km(&["verify", "k-pub", "--token", "softhsm-anon"])), 0);
 }
 
 /// A malformed or self-contradictory lock is invalid (exit 17), not a hash mismatch; the same

@@ -28,6 +28,8 @@ pub struct Token {
     pub mechanisms: Vec<MechanismType>,
     pub provider: Arc<dyn Provider>,
     session: Session,
+    /// Logged in as the user: private objects are visible. Otherwise a public session.
+    pub logged_in: bool,
 }
 
 fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
@@ -81,8 +83,9 @@ impl Token {
         })?;
         let mechanisms = provider.mechanisms(ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?);
         let session = ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?;
-        if let Some(pin) = read_pin(cfg)? {
-            match session.login(UserType::User, Some(&AuthPin::new(pin.into()))) {
+        let pin = read_pin(cfg)?;
+        if let Some(pin) = &pin {
+            match session.login(UserType::User, Some(&AuthPin::new(pin.clone().into()))) {
                 Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
                 Err(e) => return Err(KmError::Unavailable(format!("C_Login: {e}"))),
             }
@@ -95,6 +98,7 @@ impl Token {
             mechanisms,
             provider,
             session,
+            logged_in: pin.is_some(),
         })
     }
 
@@ -149,6 +153,33 @@ impl Token {
                 self.name
             ))),
         }
+    }
+
+    /// Consumers that select a key by `CKA_ID` (OpenSSH takes the first private key with the
+    /// certificate's or public key's ID) must find exactly this one: refuse when another private
+    /// key shares `h`'s `CKA_ID`. Only a logged-in session can see private keys; a public session
+    /// checks nothing (the lock records which it was).
+    pub fn check_unique_private_id(&self, h: ObjectHandle) -> Result<()> {
+        if !self.logged_in {
+            return Ok(());
+        }
+        let id = match self.attr(h, AttributeType::Id)? {
+            Some(Attribute::Id(id)) if !id.is_empty() => id,
+            _ => return Ok(()),
+        };
+        let keys = self
+            .session
+            .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Id(id.clone())])
+            .map_err(ck("C_FindObjects"))?;
+        if keys.len() > 1 {
+            return Err(KmError::Ambiguous(format!(
+                "{} private keys on token '{}' share CKA_ID {}; a consumer selecting by ID may use another key",
+                keys.len(),
+                self.name,
+                pct_all(&id)
+            )));
+        }
+        Ok(())
     }
 
     fn attr(&self, h: ObjectHandle, t: AttributeType) -> Result<Option<Attribute>> {
@@ -681,7 +712,11 @@ impl Token {
     /// RFC 7512 URI of the object consumers use: for a key adopted public-only this is still
     /// the private key (only its verification went through the public half).
     pub fn uri(&self, object: &ObjectCfg, loc: &Locator) -> Result<String> {
+        // The serial tells apart tokens that share a label (RFC 7512 `serial`).
         let mut parts = vec![format!("token={}", pct(self.label.as_bytes()))];
+        if !self.token.serial.is_empty() {
+            parts.push(format!("serial={}", pct(self.token.serial.as_bytes())));
+        }
         if let Some(l) = &loc.label {
             parts.push(format!("object={}", pct(l.as_bytes())));
         }

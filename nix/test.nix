@@ -145,7 +145,7 @@ let
                 machine.succeed("cp /root/keys.lock /root/keys.lock.built")
                 out = build("--arg lock /root/keys.lock.built")
                 uri = machine.succeed(f"cat {out.strip().splitlines()[-1]}").strip()
-                assert uri.startswith("pkcs11:token=kmtest;object=signing;type=private"), uri
+                assert uri.startswith("pkcs11:token=kmtest;serial=") and uri.endswith(";object=signing;type=private"), uri
           ''
         else
           ''

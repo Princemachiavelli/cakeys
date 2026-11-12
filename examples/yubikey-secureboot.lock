@@ -87,7 +87,8 @@ CKA_TOKEN = true
 CKA_TRUSTED = false
 
 [realisations.whonix-db-cert-piv.yubikey.observed]
-uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;object=X.509%20Certificate%20for%20Retired%20Key%203;type=cert"
+uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;serial=39189318;object=X.509%20Certificate%20for%20Retired%20Key%203;type=cert"
+session = "public"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -164,7 +165,8 @@ CKA_NEVER_EXTRACTABLE = false
 CKA_ALWAYS_SENSITIVE = false
 
 [realisations.whonix-db-piv.yubikey.observed]
-uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;id=%07;type=private"
+uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;serial=39189318;id=%07;type=private"
+session = "public"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -232,7 +234,8 @@ CKA_TOKEN = true
 CKA_TRUSTED = false
 
 [realisations.whonix-kek-cert-piv.yubikey.observed]
-uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;object=X.509%20Certificate%20for%20Retired%20Key%202;type=cert"
+uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;serial=39189318;object=X.509%20Certificate%20for%20Retired%20Key%202;type=cert"
+session = "public"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -309,7 +312,8 @@ CKA_NEVER_EXTRACTABLE = false
 CKA_ALWAYS_SENSITIVE = false
 
 [realisations.whonix-kek-piv.yubikey.observed]
-uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;id=%06;type=private"
+uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;serial=39189318;id=%06;type=private"
+session = "public"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -377,7 +381,8 @@ CKA_TOKEN = true
 CKA_TRUSTED = false
 
 [realisations.whonix-pk-cert-piv.yubikey.observed]
-uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;object=X.509%20Certificate%20for%20Retired%20Key%201;type=cert"
+uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;serial=39189318;object=X.509%20Certificate%20for%20Retired%20Key%201;type=cert"
+session = "public"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -454,7 +459,8 @@ CKA_NEVER_EXTRACTABLE = false
 CKA_ALWAYS_SENSITIVE = false
 
 [realisations.whonix-pk-piv.yubikey.observed]
-uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;id=%05;type=private"
+uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;serial=39189318;id=%05;type=private"
+session = "public"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
