@@ -454,6 +454,7 @@ Wide HSM support is a core feature. Each provider gets a small **quirks profile*
 | **YubiKey 5** (present: `1050:0407`, CCID) | PIV through `ykcs11` (or OpenSC) | **Fixed slots.** `CKA_ID`/labels are fixed per PIV slot, so the locator is the *slot*. **Generating into an occupied slot overwrites it**, so `realise` must use `If-None-Match` semantics. No symmetric keys (`Unsupported`). Access goes through pcscd. |
 | **Nitrokey** | HSM 2 through OpenSC `sc-hsm`, or Nitrokey 3 PIV/OpenPGP | Model TBD. |
 | **TPM 2.0** (present: `/dev/tpmrm0`) | native `tss-esapi` *and* `tpm2-pkcs11` | **PCR/policy-bound keys need the native path**: as far as I know `tpm2-pkcs11` cannot express arbitrary policies (verify). Test: `pubkeyhash` must agree between the two paths. |
+| **tpm2-pkcs11** 1.10.1 (secondary reference, swtpm) | PKCS#11, `key-mgmnt-tpm2-pkcs11` | See "tpm2-pkcs11 findings" below. |
 | CloudHSM, others | vendor PKCS#11 | Later. |
 
 ## Crate layout (2026-11-11)
@@ -552,6 +553,30 @@ Rough sizes of the **new code**. Dependencies are `cryptoki`, `tss-esapi`, RustC
   - Certificates: openssl-computed hashes of the P-384 and Ed25519 fixtures.
   - AES: the `cmac`, `aes` and `aes-kw` crates over a known key value planted sensitive and non-extractable.
 - **Not covered:** DES/3DES, DSA, DH, GOST (legacy), `CKO_DATA`, and AES keys that may only `CKA_UNWRAP` or `CKA_DECRYPT`. An unwrap-only KEK has no deterministic commitment on SoftHSM: unwrapping a fixed blob fails the RFC 3394 integrity check.
+
+**tpm2-pkcs11 as the secondary reference (2026-11-11):**
+- **Works:**
+  - P-256, P-384 and P-521 (with the fix-up below) and RSA 2048/3072, both generated and adopted through `publicOnly`.
+  - EC and RSA keys imported with `tpm2_ptool import`; their `pubkeyhash` matches openssl over the PEM.
+  - HMAC keys: `CKK_SHA256_HMAC` is a standard key type and is now accepted. Imported with a known value, the HMAC `commitment` matches a host-computed HMAC. The key type is part of the label, so the same bytes held as `CKK_GENERIC_SECRET` have a different ID.
+  - AES keys made with `tpm2_ptool addkey`, through `kcv-ecb`.
+- **Not available** (no mechanism; refused before anything is created): CMAC, AES key wrap (so neither `kw` nor wrap-rebind), Edwards curves. RSA 4096 is refused by swtpm.
+- **Quirks, handled by the `key-mgmnt-tpm2-pkcs11` provider:**
+  - **`C_GenerateKey` returns `CKR_FUNCTION_NOT_SUPPORTED`** although `CKM_AES_KEY_GEN` is advertised. The provider drops `CKM_AES_KEY_GEN` and `CKM_GENERIC_SECRET_KEY_GEN` from the usable mechanisms, so `autoCreate` of a secret key is refused up front, with a hint to use `tpm2_ptool addkey`/`import` and adopt.
+  - **P-521 `CKA_EC_POINT` has a malformed DER length:** `04 85 …` instead of `04 81 85 …`. The length is always written as one byte, in both `src/lib/tpm.c` and `tools/tpm2_pkcs11/utils.py`; P-256/P-384 points are short enough to escape it. The provider re-encodes exactly that form; anything else still meets the strict parser. This is an upstream bug worth reporting.
+- **Quirks that need no code:**
+  - `tpm2_ptool import` does not support P-521 at all, so trimmed-coordinate imports cannot arise.
+  - Imported keys are `CKA_EXTRACTABLE = true`.
+  - `CKA_ID` is empty for generated keys and random hex for `tpm2_ptool` keys.
+  - The token serial is all zeros on swtpm.
+  - A session does not see objects created by another process after it opened. key-mgmnt opens a fresh session per run.
+- **A refused `realise` leaves nothing behind (generic).** If the identity of a just-created object cannot be established, `realise` destroys what it created. If-None-Match guaranteed the locator was empty. Seen with the P-521 bug when the provider is disabled (`provider = "generic"`).
+- **Test harness (`nix/tpm2-test-env.sh`):** swtpm, a private D-Bus from dbus's packaged `session.conf` on an abstract socket, tpm2-abrmd, and token `kmtest`. `tpm2_ptool` needs the resource manager; without one it runs out of TPM object slots. It runs in the package's `preCheck`, so `checks.key-mgmnt` exercises tpm2-pkcs11 in the Nix sandbox.
+- **Oracles:**
+  - Generated public keys: the hand-written DER oracle. For P-521 it applies the same length repair; the independence lies in building the SPKI, and the p521 crate checks the point is on the curve.
+  - Imported keys: openssl over the fixture PEMs (test-only keys).
+  - HMAC: computed on the host.
+  - AES: a consistency check only, because tpm2-pkcs11 cannot import AES keys. The independent AES oracle runs on SoftHSM.
 
 **NixOS module (`nixosModules.default`, nix/module.nix):**
 - **`services.key-management.sandbox.pcscd.enable`:** pcscd, `/run/pcscd` in the sandbox, a polkit rule for `nixbld` *and* the auto-allocated UID range, and `PrivateUsers = false` on pcscd when UIDs are auto-allocated.

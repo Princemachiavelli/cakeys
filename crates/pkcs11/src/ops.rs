@@ -117,7 +117,7 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
 fn declared_commits(t: &Target) -> Vec<Commit> {
     let on = |n: &str| t.spec.attributes.get(n).copied() == Some(true);
     match t.object.key_type.as_str() {
-        "CKK_GENERIC_SECRET" if on("CKA_SIGN") => vec![Commit::Hmac],
+        "CKK_GENERIC_SECRET" | "CKK_SHA256_HMAC" if on("CKA_SIGN") => vec![Commit::Hmac],
         "CKK_AES" => [("CKA_SIGN", Commit::Cmac), ("CKA_ENCRYPT", Commit::KcvEcb), ("CKA_WRAP", Commit::Kw)]
             .into_iter()
             .filter(|(a, _)| on(a))
@@ -139,7 +139,7 @@ fn commits(t: &Target, tok: &Token, mode: Mode) -> Result<Vec<Commit>> {
     let usable: Vec<Commit> = wanted.iter().copied().filter(|c| tok.has(hal::commit_mechanism(*c))).collect();
     if usable.is_empty() {
         let mechs: Vec<String> = wanted.iter().map(|c| hal::commit_mechanism(*c).to_string()).collect();
-        return Err(KmError::Unsupported(format!(
+        return Err(tok.unsupported(format!(
             "token '{}' implements none of {} needed for mode '{mode}' of {}",
             tok.name,
             mechs.join(", "),
@@ -184,7 +184,11 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
         }
     }
     match need.into_iter().find(|m| !tok.has(*m)) {
-        Some(m) => Err(KmError::Unsupported(format!("token '{}' lacks {m} needed for mode '{mode}'", tok.name))),
+        Some(m) => Err(tok.unsupported(format!(
+            "token '{}' lacks {m} needed for mode '{mode}' of {}",
+            tok.name,
+            t.what()
+        ))),
         None => Ok(()),
     }
 }
@@ -364,7 +368,18 @@ pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, update: bool) -> Result
             }
             tok.create(t.object, t.spec, &t.on_token.locator)?;
             eprintln!("created {}", t.what());
-            resolve(t, tok)?.ok_or_else(|| KmError::NotFound(format!("{} vanished after creation", t.what())))?
+            match resolve(t, tok).and_then(|r| {
+                r.ok_or_else(|| KmError::NotFound(format!("{} vanished after creation", t.what())))
+            }) {
+                Ok(r) => r,
+                Err(e) => {
+                    // The locator was empty before (If-None-Match), so this removes only what we
+                    // just made: a refused realise leaves nothing behind.
+                    let n = tok.destroy(t.object, &t.on_token.locator).unwrap_or(0);
+                    eprintln!("removed {n} object(s) just created for {}: its identity could not be established", t.what());
+                    return Err(e);
+                }
+            }
         }
         None => return Err(KmError::NotFound(format!("{} (autoCreate is off)", t.what()))),
     };

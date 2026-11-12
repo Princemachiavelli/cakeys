@@ -562,6 +562,7 @@ dependencies = [
  "key-mgmnt-core",
  "key-mgmnt-pkcs11",
  "key-mgmnt-softhsm",
+ "key-mgmnt-tpm2-pkcs11",
  "key-mgmnt-ykcs11",
  "rsa",
  "serde",
@@ -604,6 +605,14 @@ dependencies = [
 name = "key-mgmnt-softhsm"
 version = "0.1.0"
 dependencies = [
+ "key-mgmnt-pkcs11",
+]
+
+[[package]]
+name = "key-mgmnt-tpm2-pkcs11"
+version = "0.1.0"
+dependencies = [
+ "cryptoki",
  "key-mgmnt-pkcs11",
 ]
 

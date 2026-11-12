@@ -96,6 +96,14 @@ impl Token {
         })
     }
 
+    /// An `Unsupported` error carrying the provider's advice, if it has any.
+    pub fn unsupported(&self, msg: String) -> KmError {
+        match self.provider.hint() {
+            Some(h) => KmError::Unsupported(format!("{msg} (hint for {}: {h})", self.provider.name())),
+            None => KmError::Unsupported(msg),
+        }
+    }
+
     pub fn has(&self, m: MechanismType) -> bool {
         self.mechanisms.contains(&m)
     }
@@ -221,7 +229,7 @@ impl Token {
         for (name, v) in &spec.attributes {
             policy.push(bool_attr(name, *v)?.1);
         }
-        let gen = |e: CkError| KmError::Unsupported(format!("generating key on '{}': {e}", self.name));
+        let gen = |e: CkError| self.unsupported(format!("generating key on '{}': {e}", self.name));
         if class_of(object)? == ObjectClass::CERTIFICATE {
             return Err(KmError::Validation("certificates are adopted, not created".into()));
         }
@@ -554,6 +562,7 @@ pub fn key_type_of(object: &ObjectCfg) -> Result<KeyType> {
         ("CKO_PRIVATE_KEY", "CKK_RSA") => Ok(KeyType::RSA),
         ("CKO_SECRET_KEY", "CKK_GENERIC_SECRET") => Ok(KeyType::GENERIC_SECRET),
         ("CKO_SECRET_KEY", "CKK_AES") => Ok(KeyType::AES),
+        ("CKO_SECRET_KEY", "CKK_SHA256_HMAC") => Ok(KeyType::SHA256_HMAC),
         (c, k) => Err(KmError::Unsupported(format!("{c}/{k}"))),
     }
 }
