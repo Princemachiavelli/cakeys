@@ -286,7 +286,6 @@ dependencies = [
  "cakeys-pkcs11",
  "cryptoki",
  "getrandom",
- "p256",
  "rusqlite",
  "sha2",
  "tss-esapi",
@@ -301,10 +300,6 @@ dependencies = [
  "cakeys-core",
  "cakeys-pkcs11",
  "cryptoki",
- "p256",
- "p384",
- "p521",
- "rsa",
  "sha2",
  "x509-cert",
 ]

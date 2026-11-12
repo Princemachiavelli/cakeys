@@ -8,14 +8,13 @@
 //! Verification uses the RustCrypto crates; no proof value is ever stored.
 
 use crate::error::{KmError, Result};
-use crate::id::Curve;
-use ecdsa::signature::hazmat::PrehashVerifier;
-use ecdsa::signature::Verifier;
+use crate::sig;
+pub use crate::sig::EcdsaHash;
 use hmac::{Hmac, KeyInit, Mac};
 use elliptic_curve::sec1::ToSec1Point;
 use elliptic_curve::{ecdh::EphemeralSecret, Generate, PublicKey};
 use p256::pkcs8::DecodePublicKey;
-use sha2::{Digest, Sha256, Sha384, Sha512};
+use sha2::{Digest, Sha256};
 
 /// Domain separator: the challenge is never a valid encoding of anything else a key signs
 /// (certificates, CMS, SSH, ...), since none of those start with this ASCII text.
@@ -33,34 +32,7 @@ pub fn challenge(spki: &[u8]) -> Result<Vec<u8>> {
     Ok(message(spki, &nonce))
 }
 
-/// Hash for ECDSA on each Weierstrass curve: the one matching its strength (FIPS 186-5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EcdsaHash {
-    Sha256,
-    Sha384,
-    Sha512,
-}
-
-impl EcdsaHash {
-    pub fn for_curve(curve: Curve) -> Option<EcdsaHash> {
-        match curve {
-            Curve::P256 | Curve::Secp256k1 | Curve::BrainpoolP256r1 => Some(EcdsaHash::Sha256),
-            Curve::P384 | Curve::BrainpoolP384r1 => Some(EcdsaHash::Sha384),
-            Curve::P521 => Some(EcdsaHash::Sha512),
-            Curve::Ed25519 | Curve::Ed448 => None,
-        }
-    }
-
-    pub fn digest(self, msg: &[u8]) -> Vec<u8> {
-        match self {
-            EcdsaHash::Sha256 => Sha256::digest(msg).to_vec(),
-            EcdsaHash::Sha384 => Sha384::digest(msg).to_vec(),
-            EcdsaHash::Sha512 => Sha512::digest(msg).to_vec(),
-        }
-    }
-}
-
-/// Verify `sig` over `msg` with the key in `spki`, as the token produced it:
+/// Verify `sig` over `msg` with the key in `spki`, as the token produced it (`crate::sig`):
 /// - ECDSA: raw `r ‖ s` (PKCS#11) over the curve's hash of `msg` (`EcdsaHash::for_curve`);
 /// - Ed25519: pure EdDSA over `msg`;
 /// - RSA: PKCS#1 v1.5 with SHA-256 over `msg`.
@@ -68,42 +40,24 @@ impl EcdsaHash {
 /// A signature that does not verify is a `Conflict`: the private key is not the one the
 /// identity names. Ed448 has no verifier yet (`Unsupported`).
 pub fn verify(spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
-    let bad = |e: &dyn std::fmt::Display| {
-        KmError::Conflict(format!(
-            "proof of possession failed: the private key did not sign for the public key {} ({e})",
-            crate::id::sri(spki)
-        ))
-    };
-    macro_rules! ecdsa {
-        ($curve:ty, $hash:expr) => {
-            if let Ok(k) = p256::elliptic_curve::PublicKey::<$curve>::from_public_key_der(spki) {
-                // Either s is valid ECDSA; secp256k1's verifier insists on the low one.
-                let sig = ecdsa::Signature::<$curve>::from_slice(sig).map_err(|e| bad(&e))?.normalize_s();
-                return ecdsa::VerifyingKey::<$curve>::from(k)
-                    .verify_prehash(&$hash.digest(msg), &sig)
-                    .map_err(|e| bad(&e));
-            }
-        };
-    }
-    ecdsa!(p256::NistP256, EcdsaHash::Sha256);
-    ecdsa!(p384::NistP384, EcdsaHash::Sha384);
-    ecdsa!(p521::NistP521, EcdsaHash::Sha512);
-    ecdsa!(k256::Secp256k1, EcdsaHash::Sha256);
-    ecdsa!(bp256::BrainpoolP256r1, EcdsaHash::Sha256);
-    ecdsa!(bp384::BrainpoolP384r1, EcdsaHash::Sha384);
-    if let Ok(k) = ed25519_dalek::VerifyingKey::from_public_key_der(spki) {
-        let sig = ed25519_dalek::Signature::from_slice(sig).map_err(|e| bad(&e))?;
-        return k.verify_strict(msg, &sig).map_err(|e| bad(&e));
-    }
-    if ed448::pkcs8::PublicKeyBytes::from_public_key_der(spki).is_ok() {
-        return Err(KmError::Unsupported(
+    let verdict = sig::ecdsa(spki, msg, sig, sig::Encoding::Raw, None)
+        .or_else(|| sig::ed25519(spki, msg, sig))
+        .or_else(|| sig::rsa_pkcs1v15::<Sha256>(spki, msg, sig));
+    match verdict {
+        Some(v) => v.map_err(|e| {
+            KmError::Conflict(format!(
+                "proof of possession failed: the private key did not sign for the public key {} ({e})",
+                crate::id::sri(spki)
+            ))
+        }),
+        None if ed448::pkcs8::PublicKeyBytes::from_public_key_der(spki).is_ok() => Err(KmError::Unsupported(
             "no Ed448 signature verifier to prove possession with; opt in with binding = \"token-asserted\"".into(),
-        ));
+        )),
+        None => Err(KmError::Unsupported(format!(
+            "proof of possession for the public key {}: not an ECDSA, Ed25519 or RSA key",
+            crate::id::sri(spki)
+        ))),
     }
-    let key = rsa::PublicKey::from_public_key_der(spki)
-        .map_err(|e| KmError::Unsupported(format!("proof of possession for this SPKI: {e}")))?;
-    let sig = rsa::pkcs1v15::Signature::try_from(sig).map_err(|e| bad(&e))?;
-    rsa::pkcs1v15::VerifyingKey::<Sha256>::new(key).verify(msg, &sig).map_err(|e| bad(&e))
 }
 
 /// The host side of a `pop-ecdh` proof: an ephemeral key on `curve`, the shared secret derived

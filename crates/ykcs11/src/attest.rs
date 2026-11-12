@@ -15,7 +15,6 @@ use cakeys_core::id;
 use cakeys_core::{KmError, Result};
 use x509_cert::der::asn1::ObjectIdentifier;
 use x509_cert::der::{Decode, Encode};
-use p256::pkcs8::DecodePublicKey;
 use x509_cert::certificate::Certificate;
 
 /// The label prefix ykcs11 gives every slot's attestation certificate (suffix: the slot, e.g.
@@ -290,68 +289,29 @@ fn chain_to_anchor<'a>(cert: &Cert, anchors: &'a [Cert], pool: &[Cert]) -> Resul
     Err(bad("longer than 3 links; not a PIV attestation chain".into()))
 }
 
-/// Verify an ECDSA signature over `digest` with the P-256, P-384 or P-521 key `spki`: the
-/// curve comes from the key, the hash from the certificate's signature algorithm, so any
-/// pairing a signer may use (ecdsa-with-SHA256 under P-384, say) verifies.
-fn ecdsa_verify_prehash(spki: &[u8], digest: &[u8], sig: &[u8]) -> Result<bool> {
-    let bad_sig = |e: p256::ecdsa::Error| KmError::Conflict(format!("ECDSA signature: {e}"));
-    if let Ok(k) = p256::ecdsa::VerifyingKey::from_public_key_der(spki) {
-        use p256::ecdsa::signature::hazmat::PrehashVerifier;
-        let s = p256::ecdsa::Signature::from_der(sig).map_err(bad_sig)?;
-        return Ok(k.verify_prehash(digest, &s).is_ok());
-    }
-    if let Ok(k) = p384::ecdsa::VerifyingKey::from_public_key_der(spki) {
-        use p384::ecdsa::signature::hazmat::PrehashVerifier;
-        let s = p384::ecdsa::Signature::from_der(sig).map_err(bad_sig)?;
-        return Ok(k.verify_prehash(digest, &s).is_ok());
-    }
-    if let Ok(k) = p521::ecdsa::VerifyingKey::from_public_key_der(spki) {
-        use p521::ecdsa::signature::hazmat::PrehashVerifier;
-        let s = p521::ecdsa::Signature::from_der(sig).map_err(bad_sig)?;
-        return Ok(k.verify_prehash(digest, &s).is_ok());
-    }
-    Err(KmError::Conflict("the ECDSA signer is no P-256, P-384 or P-521 key".into()))
-}
-
 /// Verify that `cert`'s signature (over its original `tbsCertificate` bytes) was made by
-/// `signer`'s key, with the signature algorithm the certificate names. Verification is
-/// constant-time where the underlying crates make it so.
+/// `signer`'s key, with the signature algorithm the certificate names: ECDSA (DER) with the
+/// hash the algorithm names, whatever the curve, or RSA PKCS#1 v1.5 (`cakeys_core::sig`).
 fn verify_signed_by(cert: &Cert, signer: &Cert) -> Result<()> {
-    use sha2::Digest;
-    let oid = cert.parsed.signature_algorithm().oid;
+    use cakeys_core::sig::{self, EcdsaHash, Encoding};
     let spki = signer.spki()?;
-    let tbs = cert.tbs()?;
-    let sig = cert.signature()?;
-    let verified = match oid {
-        ECDSA_SHA256 => ecdsa_verify_prehash(&spki, &sha2::Sha256::digest(tbs), sig)?,
-        ECDSA_SHA384 => ecdsa_verify_prehash(&spki, &sha2::Sha384::digest(tbs), sig)?,
-        ECDSA_SHA512 => ecdsa_verify_prehash(&spki, &sha2::Sha512::digest(tbs), sig)?,
-        RSA_SHA256 => {
-            use rsa::signature::Verifier;
-            let k = rsa::PublicKey::from_public_key_der(&spki)
-                .map_err(|e| KmError::Conflict(format!("parsing RSA key: {e}")))?;
-            let s = rsa::pkcs1v15::Signature::try_from(sig).map_err(|e| KmError::Conflict(format!("RSA signature: {e}")))?;
-            rsa::pkcs1v15::VerifyingKey::<rsa::sha2::Sha256>::new(k).verify(tbs, &s).is_ok()
-        }
-        RSA_SHA384 => {
-            use rsa::signature::Verifier;
-            let k = rsa::PublicKey::from_public_key_der(&spki)
-                .map_err(|e| KmError::Conflict(format!("parsing RSA key: {e}")))?;
-            let s = rsa::pkcs1v15::Signature::try_from(sig).map_err(|e| KmError::Conflict(format!("RSA signature: {e}")))?;
-            rsa::pkcs1v15::VerifyingKey::<rsa::sha2::Sha384>::new(k).verify(tbs, &s).is_ok()
-        }
-        RSA_SHA512 => {
-            use rsa::signature::Verifier;
-            let k = rsa::PublicKey::from_public_key_der(&spki)
-                .map_err(|e| KmError::Conflict(format!("parsing RSA key: {e}")))?;
-            let s = rsa::pkcs1v15::Signature::try_from(sig).map_err(|e| KmError::Conflict(format!("RSA signature: {e}")))?;
-            rsa::pkcs1v15::VerifyingKey::<rsa::sha2::Sha512>::new(k).verify(tbs, &s).is_ok()
-        }
+    let (tbs, s) = (cert.tbs()?, cert.signature()?);
+    let ecdsa = |hash| sig::ecdsa(&spki, tbs, s, Encoding::Der, Some(hash));
+    let verdict = match cert.parsed.signature_algorithm().oid {
+        ECDSA_SHA256 => ecdsa(EcdsaHash::Sha256),
+        ECDSA_SHA384 => ecdsa(EcdsaHash::Sha384),
+        ECDSA_SHA512 => ecdsa(EcdsaHash::Sha512),
+        RSA_SHA256 => sig::rsa_pkcs1v15::<sha2::Sha256>(&spki, tbs, s),
+        RSA_SHA384 => sig::rsa_pkcs1v15::<sha2::Sha384>(&spki, tbs, s),
+        RSA_SHA512 => sig::rsa_pkcs1v15::<sha2::Sha512>(&spki, tbs, s),
         oid => return Err(KmError::Unsupported(format!("signature algorithm {oid}"))),
     };
-    verified.then_some(()).ok_or_else(|| {
-        KmError::Conflict(format!("certificate signature does not verify against {}", id::sri(&spki)))
-    })
+    let sri = id::sri(&spki);
+    match verdict {
+        Some(Ok(())) => Ok(()),
+        Some(Err(e)) => Err(KmError::Conflict(format!("certificate signature does not verify against {sri}: {e}"))),
+        None => Err(KmError::Conflict(format!("the signer {sri} holds no key for the certificate's signature algorithm"))),
+    }
 }
 
 #[cfg(test)]

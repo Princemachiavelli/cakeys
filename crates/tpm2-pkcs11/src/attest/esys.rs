@@ -337,8 +337,7 @@ pub fn attest_bytes(attest: &Attest) -> Result<Vec<u8>> {
 /// Verify the AK's ECDSA-SHA256 signature over the attestation bytes, on the host: the TPM
 /// offers `TPM2_VerifySignature`, but verification must not be the prover's.
 pub fn verify_signature(signature: &Signature, ak_spki: &[u8], bytes: &[u8]) -> Result<()> {
-    use p256::ecdsa::signature::Verifier;
-    use p256::pkcs8::DecodePublicKey;
+    use cakeys_core::sig::{self, EcdsaHash, Encoding};
     let (r, s) = match signature {
         Signature::EcDsa(ecc) => (ecc.signature_r().value().to_vec(), ecc.signature_s().value().to_vec()),
         s => return Err(KmError::Unsupported(format!("the AK signed with {s:?}, not ECDSA-SHA256"))),
@@ -352,12 +351,11 @@ pub fn verify_signature(signature: &Signature, ak_spki: &[u8], bytes: &[u8]) -> 
             .ok_or_else(|| KmError::Conflict(format!("the AK's signature has a {}-byte component; P-256 has 32", v.len())))?;
         half[at..].copy_from_slice(v);
     }
-    let key = p256::ecdsa::VerifyingKey::from_public_key_der(ak_spki)
-        .map_err(|e| KmError::Conflict(format!("the AK's public key: {e}")))?;
-    let sig = p256::ecdsa::Signature::from_slice(&raw)
-        .map_err(|e| KmError::Conflict(format!("the AK's signature: {e}")))?;
-    key.verify(bytes, &sig)
-        .map_err(|_| KmError::Conflict("the attestation signature does not verify against the pinned AK".into()))
+    match sig::ecdsa(ak_spki, bytes, &raw, Encoding::Raw, Some(EcdsaHash::Sha256)) {
+        Some(Ok(())) => Ok(()),
+        Some(Err(_)) => Err(KmError::Conflict("the attestation signature does not verify against the pinned AK".into())),
+        None => Err(KmError::Conflict("the AK's public key is not an ECDSA key".into())),
+    }
 }
 
 /// The canonical SPKI of a TPM public area plus the `objectAttributes` it carries (for the

@@ -6,5 +6,6 @@ pub mod config;
 pub mod error;
 pub mod id;
 pub mod pop;
+pub mod sig;
 
 pub use error::{KmError, Result};
