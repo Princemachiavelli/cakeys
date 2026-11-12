@@ -34,6 +34,7 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 | 57287ef | **Merge** `attestation-commitments` into main: main's `mgmKeyFile`/`mgmKeyEnv` names with the branch's SO-scoped rules (the `login` hook replaced by `manages_as_so`/`check_create`/`keeps_destroyed_keys`); `tests/yubikey.rs` opts into attestation and expects `delete` → 15; RW suite passed on the device, and generation with the PIN as SO credential checked by hand on 9a |
 | a6ae39d | **Lock writes by default** (user decision 2026-11-12): `realise`/`delete` write the lock unless `--no-update-lock` (`--update-lock` = the explicit default; both → usage error); writes still only fill gaps; refused (14) up front, before any token, inside a Nix build sandbox (`NIX_BUILD_TOP` without `IN_NIX_SHELL`) or with an unwritable lock/directory (`access(2)`); `check`/`verify`/`resolve` unaffected; test harnesses clear `NIX_BUILD_TOP` |
 | 6a599ff, 3e5d06f | **Refactor R0/R1** (docs/REFACTOR-2026-11-12.md): `scripts/xversion.sh` cross-version lock check (c58cb2b-recorded locks of every class verify, compare and re-record byte-identically); `LazyLock` anchors, `Lock::realisation`, mechanism names computed once, `Display` for `Target`/`Locator`/`Immutables`/`ObjectCfg` in messages |
+| 3e26201 | **Refactor R2**: one boolean-attribute table (`cakeys_core::attrs`: per class, declarable vs observed; one macro row per attribute maps it to cryptoki); observed vectors pinned |
 
 ## Done (uncommitted; passes the local gate): (empty — next task below)
 
