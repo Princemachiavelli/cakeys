@@ -3,7 +3,7 @@
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use cakeys_core::config::{load_config, lock_for_update, load_lock, save_lock, Config};
+use cakeys_core::config::{gc, load_config, lock_for_update, load_lock, save_lock, Config};
 use cakeys_core::KmError;
 use cakeys_pkcs11::ops::{self, Target};
 use cakeys_pkcs11::{Registry, Token};
@@ -60,6 +60,12 @@ enum Cmd {
         #[arg(long)]
         update_lock: bool,
     },
+    /// Print lock entries whose spec or object is gone from the config; --apply removes them.
+    Gc {
+        /// Remove exactly the printed entries.
+        #[arg(long)]
+        apply: bool,
+    },
     /// Pseudo-FOD pre-use check: `<object>.id.<scheme>`. Realises (respecting autoCreate),
     /// verifies against the lock, and prints the URI on stdout. Never writes the lock.
     Check {
@@ -113,9 +119,9 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
     // A run that may write the lock holds its advisory sidecar lock across load and save (M3),
     // so concurrent updaters queue instead of losing each other's writes. Held to the end of run.
     let _update_guard = match &cli.cmd {
-        Cmd::Realise { update_lock: true, .. } | Cmd::Delete { update_lock: true, .. } => {
-            Some(lock_for_update(&lock_path)?)
-        }
+        Cmd::Realise { update_lock: true, .. }
+        | Cmd::Delete { update_lock: true, .. }
+        | Cmd::Gc { apply: true } => Some(lock_for_update(&lock_path)?),
         _ => None,
     };
     let mut lock = load_lock(&lock_path)?;
@@ -173,6 +179,20 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
             if ops::delete(&t, &tok, &mut lock, if_match.as_deref(), *update_lock)? {
                 save_lock(&lock_path, &lock)?;
                 eprintln!("updated {}", lock_path.display());
+            }
+        }
+        Cmd::Gc { apply } => {
+            let stale = gc(&cfg, &mut lock, *apply);
+            for entry in &stale {
+                println!("{entry}");
+            }
+            if stale.is_empty() {
+                eprintln!("nothing to collect: every lock entry is named by the config");
+            } else if *apply {
+                save_lock(&lock_path, &lock)?;
+                eprintln!("updated {} ({} entries removed)", lock_path.display(), stale.len());
+            } else {
+                eprintln!("{} stale entries; pass --apply to remove them", stale.len());
             }
         }
         Cmd::Check { reference, token, spec } => {

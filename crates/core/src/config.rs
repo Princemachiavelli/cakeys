@@ -542,6 +542,45 @@ pub fn lock_for_update(lock_path: &Path) -> anyhow::Result<UpdateGuard> {
     Ok(UpdateGuard(file))
 }
 
+/// Lock entries `cfg` no longer names (finding D3): every `[realisations.<spec>.<token>]` whose
+/// spec or token is gone from keys.toml, and every `[objects.<name>]` absent from it — printed by
+/// `gc` as table names, removed with `--apply`. Live objects keep their `ids` however few specs
+/// use them; only entries whose whole subject is gone are collected. With `remove`, exactly the
+/// returned entries are dropped.
+pub fn gc(cfg: &Config, lock: &mut Lock, remove: bool) -> Vec<String> {
+    let mut stale = Vec::new();
+    for (spec, tokens) in &lock.realisations {
+        let gone = |t: &&String| match cfg.specs.get(spec) {
+            None => true,
+            Some(s) => !s.tokens.contains_key(*t),
+        };
+        stale.extend(tokens.keys().filter(gone).map(|t| format!("realisations.{spec}.{t}")));
+    }
+    stale.extend(
+        lock.objects
+            .keys()
+            .filter(|o| !cfg.objects.contains_key(*o))
+            .map(|o| format!("objects.{o}")),
+    );
+    if remove {
+        let mut empty = Vec::new();
+        for (spec, tokens) in &mut lock.realisations {
+            tokens.retain(|t, _| match cfg.specs.get(spec) {
+                None => false,
+                Some(s) => s.tokens.contains_key(t),
+            });
+            if tokens.is_empty() {
+                empty.push(spec.clone());
+            }
+        }
+        for spec in empty {
+            lock.realisations.remove(&spec);
+        }
+        lock.objects.retain(|o, _| cfg.objects.contains_key(o));
+    }
+    stale
+}
+
 impl Config {
     /// Find the spec to use for `object` on `token` (either may be omitted if unambiguous).
     pub fn pick_spec(

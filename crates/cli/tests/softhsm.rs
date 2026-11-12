@@ -1724,6 +1724,60 @@ fn update_lock_waits_for_the_sidecar_lock() {
     assert_eq!(code(&e.km(&["verify", "signing-soft", "--token", "softhsm"])), 0);
 }
 
+/// D3: `gc` prints lock entries whose spec or token is gone from keys.toml, and removes exactly
+/// what it printed with `--apply`. Live objects keep their ids.
+#[test]
+fn gc_prints_then_removes_stale_entries() {
+    let Some(e) = env("gc") else { return };
+    let object = "[objects.signing]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n";
+    e.config(EC.replace("ec-lifecycle", "gc-key").as_str());
+    assert_eq!(code(&e.km(&["realise", "signing-soft", "--token", "softhsm", "--update-lock"])), 0);
+    let id = e.locked_id("signing", "rfc7093m4");
+
+    // Nothing stale: prints nothing, and --apply writes nothing.
+    for args in [&["gc"][..], &["gc", "--apply"][..]] {
+        let o = e.km(args);
+        assert_eq!(code(&o), 0, "{args:?}");
+        assert_eq!(stdout(&o), "");
+    }
+    assert!(e.lock()["realisations"]["signing-soft"]["softhsm"].is_table());
+    assert_eq!(e.locked_id("signing", "rfc7093m4"), id);
+
+    // The spec is gone: its realisation is stale, printed as the table name; --apply removes it
+    // but keeps the object's ids (the material may live on elsewhere).
+    e.config(object);
+    let o = e.km(&["gc"]);
+    assert_eq!(code(&o), 0);
+    assert_eq!(stdout(&o), "realisations.signing-soft.softhsm");
+    assert!(e.lock()["realisations"]["signing-soft"]["softhsm"].is_table(), "not removed before --apply");
+    let o = e.km(&["gc", "--apply"]);
+    assert_eq!(code(&o), 0);
+    assert_eq!(stdout(&o), "realisations.signing-soft.softhsm");
+    assert!(e.lock().get("realisations").and_then(|r| r.get("signing-soft")).is_none());
+    assert_eq!(e.locked_id("signing", "rfc7093m4"), id);
+
+    // Re-recorded, then the spec loses the token: the same realisation is stale again.
+    let spec_body = "[specs.signing-soft]\nobject = \"signing\"\nattributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
+    let spec_no_token = format!("{spec_body}tokens = {{}}\n");
+    let spec_full = format!(
+        "{spec_body}tokens.softhsm = {{ locator = {{ CKA_LABEL = \"gc-key\" }}, autoCreate = true }}\n"
+    );
+    e.config(&format!("{object}\n{spec_full}"));
+    assert_eq!(code(&e.km(&["realise", "signing-soft", "--token", "softhsm", "--update-lock"])), 0);
+    e.config(&format!("{object}\n{spec_no_token}"));
+    assert_eq!(stdout(&e.km(&["gc"])), "realisations.signing-soft.softhsm");
+    assert_eq!(code(&e.km(&["gc", "--apply"])), 0);
+    assert!(e.lock().get("realisations").and_then(|r| r.get("signing-soft")).is_none());
+
+    // The object too is gone from keys.toml: its record is collected.
+    e.config("");
+    assert_eq!(stdout(&e.km(&["gc"])), "objects.signing");
+    assert!(e.lock()["objects"]["signing"].is_table(), "not removed before --apply");
+    assert_eq!(code(&e.km(&["gc", "--apply"])), 0);
+    assert!(e.lock().get("objects").and_then(|o| o.get("signing")).is_none());
+    assert_eq!(stdout(&e.km(&["gc"])), "");
+}
+
 
 #[test]
 fn commitment_label_comes_from_the_lock() {

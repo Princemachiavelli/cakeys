@@ -286,6 +286,10 @@ model = "..." ; serial = "..." ; firmware = "M.m"
   updaters on different tokens queue instead of losing each other's realisations. Readers never
   take it: the rename makes each read a consistent snapshot. A leftover `.lck` is harmless
   (advisory, released when its holder exits) — `update_lock_waits_for_the_sidecar_lock`.
+- **`gc`** collects entries the config no longer names (finding D3): every
+  `[realisations.<spec>.<token>]` whose spec dropped the token and every `[objects.<name>]` gone
+  from `keys.toml`. It prints the stale table names and removes exactly those with `--apply`; live
+  objects keep their `ids`, since the same material may live on other tokens or come back.
 - **URIs are pure locators** (RFC 7512), with no `module-path`. They carry the token `serial`
   (tokens may share a label) and always the object `type`.
 - **One private key per `CKA_ID`.** Consumers such as OpenSSH pick the first private key whose
@@ -329,6 +333,7 @@ model = "..." ; serial = "..." ; firmware = "M.m"
 | `realise <spec> --token [--update-lock]` | PUT. If absent and `autoCreate`: **If-None-Match** — never create when anything sits under the locator (`never_create_over_an_occupied_locator`). Then create, compute and compare. If the identity of a just-created object cannot be established, it is destroyed (`tpm2_identity_failure_after_create_leaves_nothing`). Re-running never duplicates (`ec_lifecycle`). |
 | `delete <spec> --token [--if-match ID] [--update-lock]` | DELETE with If-Match. Absent is success, even without a lock; a present object with no expected ID is never deleted (`ec_lifecycle`). `--update-lock` removes the realisation but keeps `objects.<name>.ids`, since the material may live on other tokens. |
 | `check <obj>[.id.<scheme>] [--token] [--spec]` | The pseudo-FOD pre-use check: realise without writing the lock, print the URI. Schemes the spec or token can never compute are refused before anything is created (`scheme_the_token_lacks_is_refused_before_create`). |
+| `gc [--apply]` | Print lock entries `keys.toml` no longer names, as table names; `--apply` removes exactly what it printed, holding the update lock (M3). Live objects keep their `ids` (`gc_prints_then_removes_stale_entries`). |
 | `caps --token` | Provider and usable mechanisms, as JSON. |
 
 Exit codes:
