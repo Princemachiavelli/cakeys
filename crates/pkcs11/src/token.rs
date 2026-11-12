@@ -723,6 +723,28 @@ fn pct_all(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    /// Known answers for the parts of each scheme's definition that live here: which HMAC hash a
+    /// key type commits with, and which mechanism each commitment runs (docs/DESIGN.md §10).
+    #[test]
+    fn commitment_mechanisms_are_pinned() {
+        for (key_type, hash, mech) in [
+            ("CKK_GENERIC_SECRET", HmacHash::Sha256, MechanismType::SHA256_HMAC),
+            ("CKK_SHA_1_HMAC", HmacHash::Sha1, MechanismType::SHA1_HMAC),
+            ("CKK_SHA224_HMAC", HmacHash::Sha224, MechanismType::SHA224_HMAC),
+            ("CKK_SHA256_HMAC", HmacHash::Sha256, MechanismType::SHA256_HMAC),
+            ("CKK_SHA384_HMAC", HmacHash::Sha384, MechanismType::SHA384_HMAC),
+            ("CKK_SHA512_HMAC", HmacHash::Sha512, MechanismType::SHA512_HMAC),
+        ] {
+            assert_eq!(HmacHash::for_key_type(key_type), Some(hash), "{key_type}");
+            assert_eq!(commit_mechanism(Commit::Hmac(hash)), mech, "{key_type}");
+        }
+        assert_eq!(HmacHash::for_key_type("CKK_AES"), None);
+        assert_eq!(commit_mechanism(Commit::Cmac), MechanismType::AES_CMAC);
+        assert_eq!(commit_mechanism(Commit::KcvEcb), MechanismType::AES_ECB);
+        assert_eq!(commit_mechanism(Commit::KcvEcbDecrypt), MechanismType::AES_ECB);
+        assert_eq!(commit_mechanism(Commit::Kw), MechanismType::AES_KEY_WRAP);
+    }
+
     #[test]
     fn hex_decode_rejects_non_hex_without_panicking() {
         assert_eq!(hex_decode("0aFF").unwrap(), [0x0a, 0xff]);

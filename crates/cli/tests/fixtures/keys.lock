@@ -5,12 +5,26 @@ version = 1
 [objects.shared]
 commitmentLabel = "key-management/v1"
 
+[objects.shared.type]
+class = "CKO_SECRET_KEY"
+keyType = "CKK_GENERIC_SECRET"
+valueLen = 32
+
 [objects.shared.ids]
 commitment = "sha256-AGXc/28id6voDlFG989ZRKgfQETyurg2tSVPe1LBYis="
+
+[objects.signing-cert.type]
+class = "CKO_CERTIFICATE"
+keyType = "CKC_X_509"
 
 [objects.signing-cert.ids]
 certhash = "sha256-lXNE6ciIfLkwGf6kf84qfibQ08d5fkPuGNKQ5KnyTMM="
 pubkeyhash = "sha256-8DQBv2fMc+z0Q5uxky0+5t9TS6MAHO07fNMqG9thHtM="
+
+[objects.signing.type]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
 
 [objects.signing.ids]
 pubkeyhash = "sha256-d3++Ph3T9bppuPnNz6blK4vDij+Swy9RMmKdfQnLmPk="

@@ -271,7 +271,28 @@ pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>>
 
 /// Compare computed IDs with the lock; optionally record them (only ever fills gaps).
 fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: bool) -> Result<bool> {
+    // The lock pins the type its IDs were computed for: a different type is different material,
+    // so say so instead of reporting a hash mismatch (also when updating).
+    if let Some(locked) = lock.objects.get(t.object_name).and_then(|o| o.object_type.as_ref()) {
+        if locked != t.object {
+            return Err(KmError::PreconditionFailed(format!(
+                "the type of object '{}' in keys.toml changed since it was locked: locked {}, now {}; \
+                 different material needs a new object name",
+                t.object_name,
+                serde_json::to_string(locked).unwrap_or_default(),
+                serde_json::to_string(t.object).unwrap_or_default()
+            )));
+        }
+    }
     if let Some(prev) = lock.realisations.get(t.spec_name).and_then(|m| m.get(t.token_name)) {
+        // Like a lockfile out of date: the policy changed, so the lock must be re-recorded.
+        if !update && prev.spec_digest != r.spec_digest {
+            return Err(KmError::PreconditionFailed(format!(
+                "spec '{}' changed in keys.toml since it was realised on '{}' (spec digest {} -> {}); \
+                 review the change, then `realise --update-lock`",
+                t.spec_name, t.token_name, prev.spec_digest, r.spec_digest
+            )));
+        }
         if r.mode > prev.mode {
             return Err(KmError::PreconditionFailed(format!(
                 "identity downgrade for {}: locked mode '{}', now only '{}'",
@@ -321,8 +342,21 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             t.what()
         );
     }
+    // Locked schemes not checked now: unknown to this cakeys (e.g. from a newer one), or not
+    // computable for this spec on this token.
+    for scheme in locked.into_iter().flat_map(|ids| ids.keys()).filter(|s| !r.ids.contains_key(*s)) {
+        if id::KNOWN_SCHEMES.contains(&scheme.as_str()) {
+            eprintln!("note: {} is not checked by its {scheme} identity here (not computable for this spec on this token)", t.what());
+        } else {
+            eprintln!("warning: the lock records a {scheme} identity for '{}' that this cakeys does not know; it is not checked", t.object_name);
+        }
+    }
     if update {
         let entry = lock.objects.entry(t.object_name.into()).or_default();
+        if entry.object_type.is_none() {
+            entry.object_type = Some(t.object.clone());
+            changed = true;
+        }
         if let Some(label) = &r.commitment_label {
             if entry.commitment_label.as_ref().is_none_or(|l| l != label) {
                 entry.commitment_label = Some(label.clone());
@@ -339,6 +373,8 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             uri: r.uri.clone(),
             module: Some(tok.module.clone()),
             token: Some(tok.token.clone()),
+            provider: Some(tok.provider.name().to_owned()),
+            cakeys_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
             mechanisms: tok.mechanism_names(),
         };
         let slot = lock.realisations.entry(t.spec_name.into()).or_default();
@@ -349,6 +385,8 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
                 || old.uri != real.uri
                 || old.module != real.module
                 || old.token != real.token
+                || old.provider != real.provider
+                || old.cakeys_version != real.cakeys_version
                 || old.mechanisms != real.mechanisms
         });
         if differs {
@@ -362,6 +400,12 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
 /// Module and token identity are provenance: identity itself is enforced by the CA-IDs, so a
 /// different module build or token only warns. `realise --update-lock` re-binds them.
 fn warn_provenance(t: &Target, tok: &Token, prev: &LockRealisation) {
+    if let Some(p) = prev.provider.as_deref().filter(|p| *p != tok.provider.name()) {
+        eprintln!("warning: {} was realised with provider {p}, now {}", t.what(), tok.provider.name());
+    }
+    if let Some(v) = prev.cakeys_version.as_deref().filter(|v| *v != env!("CARGO_PKG_VERSION")) {
+        eprintln!("note: {} was realised by cakeys {v}, now {}", t.what(), env!("CARGO_PKG_VERSION"));
+    }
     if let Some(m) = &prev.module {
         if !m.same_build_identity(&tok.module) {
             eprintln!(

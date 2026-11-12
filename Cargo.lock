@@ -207,6 +207,7 @@ dependencies = [
  "cakeys-core",
  "cryptoki",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

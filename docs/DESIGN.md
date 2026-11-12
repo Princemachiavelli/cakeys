@@ -145,6 +145,8 @@ What may be created and adopted:
 version = 1                          # any other version is refused
 [objects.<object>]
 commitmentLabel = "key-management/v1" # required when ids holds a commitment scheme
+[objects.<object>.type]              # required with ids: the type the IDs were computed for
+class = "..." ; keyType = "..." ; curve = "..." ; valueLen = N ; modulusBits = N
 [objects.<object>.ids]
 pubkeyhash = "sha256-..."            # scheme -> SRI
 [realisations.<spec>.<token>]
@@ -153,6 +155,8 @@ mode = "direct"
 publicOnly = true                    # only when set
 uri = "pkcs11:token=...;object=...;id=%..;type=private|public|cert|secret-key|data"
 mechanisms = ["CKM_..."]             # usable mechanisms at realisation time
+provider = "softhsm"                 # provider that handled the module (provenance)
+cakeysVersion = "0.1.0"              # cakeys that realised it (provenance)
 [realisations.<spec>.<token>.module] # C_GetInfo and the loaded file (provenance)
 path = "..." ; description = "..." ; manufacturer = "..." ; version = "M.m" ; cryptoki = "M.m"
 [realisations.<spec>.<token>.token]  # C_GetTokenInfo
@@ -165,8 +169,16 @@ model = "..." ; serial = "..." ; firmware = "M.m"
 - **Provenance:** a different module build identity or token is a *warning*; only a different
   module file is a *note*. Neither fails — `module_and_token_provenance_warn_but_do_not_fail`.
 - **The spec digest** is the SHA-256 of canonical JSON `{"v":1,"type":<object, camelCase, empty
-  keyType omitted>,"attributes":<sorted>}`. Pinned by `spec_digests_are_pinned`. It is recorded
-  but not compared on verify (finding M4).
+  keyType omitted>,"attributes":<…>}`, with keys sorted at every level explicitly (independent of
+  serde_json features). Pinned by `spec_digests_are_pinned`. **It is compared:** a spec changed
+  since it was realised fails `verify`/`check` (exit 14) until `realise --update-lock` re-records
+  it, like a lockfile that is out of date.
+- **A changed object type** in `keys.toml` (anything in `type`, curve aliases included) is refused
+  with exit 14, naming the change, also under `--update-lock`: different material needs a new
+  object name. Test: `the_lock_pins_type_spec_provenance_and_schemes`.
+- **Provenance:** a different `provider` is a warning; a different `cakeysVersion` is a note.
+- **Locked schemes that are not checked** are reported: unknown to this cakeys → warning, naming
+  the scheme; known but not computable for this spec on this token → note.
 
 ## 5. Verbs (HTTP-like) and exit codes
 
@@ -302,7 +314,6 @@ See `docs/REVIEW-2026-11-11.md`.
   under the locator. Reproduced by `known_gap_ec_private_identity_comes_from_an_unbound_public_object`.
 - **Features are self-declared.** Any user allowed to build can require a token's feature; the
   real gate is `allowed-users`.
-- **The spec digest is not compared** on verify.
 - **There is no lock GC, and no locking.**
 - **p11-kit hides the module behind it,** so the lock records p11-kit as the module.
 
@@ -328,6 +339,12 @@ label and the hash itself. Everything else is fixed by definition:
   §3. A changed computation is a *new* scheme name, never an edit. The known-answer test
   `scheme_definitions_are_pinned` pins each one: the bytes every commitment scheme feeds the
   token, and the `pubkeyhash` of fixed keys on every curve and RSA (canonical encoding included).
+- **The lock records everything else an ID depends on:** the object `type` (key type and length
+  feed the commitment label), the commitment label, the spec digest, and as provenance the
+  module, token, provider and cakeys version. A changed `keys.toml` is reported as such, never as
+  an unexplained hash mismatch.
+- **Known answers for scheme mappings:** `commitment_mechanisms_are_pinned` fixes which HMAC hash
+  each key type uses and which mechanism each scheme runs.
 - **Further frozen identifiers:** the label layout `<label>/<scheme>/<keyType>/<bits>` and the
   mode names;
 - the SRI form `sha256-<base64>`;

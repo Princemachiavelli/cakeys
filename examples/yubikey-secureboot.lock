@@ -1,21 +1,48 @@
 version = 1
 
+[objects.whonix-db.type]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 2048
+
 [objects.whonix-db.ids]
 pubkeyhash = "sha256-WIDTlaTWRgbfxWnV3ZkFfSm4FhvRh5tp6nUE/GCoOO4="
+
+[objects.whonix-db-cert.type]
+class = "CKO_CERTIFICATE"
+keyType = "CKC_X_509"
 
 [objects.whonix-db-cert.ids]
 certhash = "sha256-9R0r07PgT23TlaiY7XTNvRTEHT2rZ2zCZKpdm8T7sWY="
 pubkeyhash = "sha256-WIDTlaTWRgbfxWnV3ZkFfSm4FhvRh5tp6nUE/GCoOO4="
 
+[objects.whonix-kek.type]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 2048
+
 [objects.whonix-kek.ids]
 pubkeyhash = "sha256-MabDOX1Cer17nABooLV6cfN15eqZPwPsjw2lh1SdfSM="
+
+[objects.whonix-kek-cert.type]
+class = "CKO_CERTIFICATE"
+keyType = "CKC_X_509"
 
 [objects.whonix-kek-cert.ids]
 certhash = "sha256-WJGDfabt4hR/KLOkNfdb7B+XYC58lSC+aY9JMZrPUR0="
 pubkeyhash = "sha256-MabDOX1Cer17nABooLV6cfN15eqZPwPsjw2lh1SdfSM="
 
+[objects.whonix-pk.type]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 2048
+
 [objects.whonix-pk.ids]
 pubkeyhash = "sha256-djAUop6ocYdPWijQvA0wOiiWUUeYtk7y2gQZQu+B6j0="
+
+[objects.whonix-pk-cert.type]
+class = "CKO_CERTIFICATE"
+keyType = "CKC_X_509"
 
 [objects.whonix-pk-cert.ids]
 certhash = "sha256-GYIqs0Zncl3wM5I8YU4m3pYLgD1zIGL/mY/yVUOCw0I="
@@ -25,6 +52,8 @@ pubkeyhash = "sha256-djAUop6ocYdPWijQvA0wOiiWUUeYtk7y2gQZQu+B6j0="
 specDigest = "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
 mode = "direct"
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;object=X.509%20Certificate%20for%20Retired%20Key%203;type=cert"
+provider = "ykcs11"
+cakeysVersion = "0.1.0"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -56,7 +85,7 @@ mechanisms = [
 ]
 
 [realisations.whonix-db-cert-piv.yubikey.module]
-path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
@@ -72,6 +101,8 @@ specDigest = "sha256-8k3VUT0T/6zvM/Yp6b2isKLrYOrK2vfyd7UWWz/DUiY="
 mode = "direct"
 publicOnly = true
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;id=%07;type=private"
+provider = "ykcs11"
+cakeysVersion = "0.1.0"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -103,7 +134,7 @@ mechanisms = [
 ]
 
 [realisations.whonix-db-piv.yubikey.module]
-path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
@@ -118,6 +149,8 @@ firmware = "5.74"
 specDigest = "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
 mode = "direct"
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;object=X.509%20Certificate%20for%20Retired%20Key%202;type=cert"
+provider = "ykcs11"
+cakeysVersion = "0.1.0"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -149,7 +182,7 @@ mechanisms = [
 ]
 
 [realisations.whonix-kek-cert-piv.yubikey.module]
-path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
@@ -165,6 +198,8 @@ specDigest = "sha256-8k3VUT0T/6zvM/Yp6b2isKLrYOrK2vfyd7UWWz/DUiY="
 mode = "direct"
 publicOnly = true
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;id=%06;type=private"
+provider = "ykcs11"
+cakeysVersion = "0.1.0"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -196,7 +231,7 @@ mechanisms = [
 ]
 
 [realisations.whonix-kek-piv.yubikey.module]
-path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
@@ -211,6 +246,8 @@ firmware = "5.74"
 specDigest = "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
 mode = "direct"
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;object=X.509%20Certificate%20for%20Retired%20Key%201;type=cert"
+provider = "ykcs11"
+cakeysVersion = "0.1.0"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -242,7 +279,7 @@ mechanisms = [
 ]
 
 [realisations.whonix-pk-cert-piv.yubikey.module]
-path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
@@ -258,6 +295,8 @@ specDigest = "sha256-8k3VUT0T/6zvM/Yp6b2isKLrYOrK2vfyd7UWWz/DUiY="
 mode = "direct"
 publicOnly = true
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;id=%05;type=private"
+provider = "ykcs11"
+cakeysVersion = "0.1.0"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -289,7 +328,7 @@ mechanisms = [
 ]
 
 [realisations.whonix-pk-piv.yubikey.module]
-path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"

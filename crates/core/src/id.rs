@@ -21,14 +21,28 @@ pub fn sri(bytes: &[u8]) -> String {
     )
 }
 
-/// Hash of the canonical JSON of (object type, policy attributes). Sorted keys via BTreeMap.
+/// Hash of the canonical JSON of (object type, policy attributes).
 pub fn spec_digest(object: &ObjectCfg, spec: &SpecCfg) -> String {
-    let canonical = serde_json::json!({
+    let doc = serde_json::json!({
         "v": 1,
         "type": object,
         "attributes": spec.attributes,
     });
-    sri(canonical.to_string().as_bytes())
+    sri(canonical_json(doc).to_string().as_bytes())
+}
+
+/// Object keys sorted at every level, inserted in that order: the serialization is the same
+/// whether or not serde_json's `preserve_order` feature is enabled somewhere in the build.
+fn canonical_json(v: serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(map) => {
+            let sorted: std::collections::BTreeMap<String, serde_json::Value> =
+                map.into_iter().map(|(k, v)| (k, canonical_json(v))).collect();
+            serde_json::Value::Object(sorted.into_iter().collect())
+        }
+        serde_json::Value::Array(a) => serde_json::Value::Array(a.into_iter().map(canonical_json).collect()),
+        v => v,
+    }
 }
 
 /// Commitment label for objects the lock does not know yet. The lock records, per object, the
@@ -38,6 +52,10 @@ pub const DEFAULT_COMMITMENT_LABEL: &str = "key-management/v1";
 
 /// Schemes computed from a commitment label (all `Commit` variants).
 pub const COMMITMENT_SCHEMES: [&str; 5] = ["commitment", "cmac", "kcv-ecb", "kcv-ecb-dec", "kw"];
+
+/// Every scheme this version defines (§3.1 of docs/DESIGN.md).
+pub const KNOWN_SCHEMES: [&str; 8] =
+    ["pubkeyhash", "certhash", "valuehash", "commitment", "cmac", "kcv-ecb", "kcv-ecb-dec", "kw"];
 
 /// Hash of an HMAC commitment. A key bound to a hash (`CKK_SHA384_HMAC`, ...) is committed with
 /// that hash; generic secrets use SHA-256.

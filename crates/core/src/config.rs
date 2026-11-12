@@ -144,6 +144,10 @@ pub struct LockObject {
     /// `ids` holds a commitment scheme; verification uses it, never the code default.
     #[serde(default, rename = "commitmentLabel", skip_serializing_if = "Option::is_none")]
     pub commitment_label: Option<String>,
+    /// The object type the IDs were computed for (required with `ids`). A `keys.toml` whose type
+    /// differs is refused rather than reported as a hash mismatch.
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub object_type: Option<ObjectCfg>,
     /// Material CA-IDs: scheme -> SRI hash.
     #[serde(default)]
     pub ids: BTreeMap<String, String>,
@@ -174,6 +178,12 @@ impl Lock {
                 path.display()
             )));
         }
+        if let Some((name, _)) = self.objects.iter().find(|(_, o)| !o.ids.is_empty() && o.object_type.is_none()) {
+            return Err(KmError::Validation(format!(
+                "{}: object '{name}' has IDs but no type",
+                path.display()
+            )));
+        }
         Ok(self)
     }
 }
@@ -192,6 +202,12 @@ pub struct LockRealisation {
     /// Token that holds it (C_GetTokenInfo).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<TokenInfo>,
+    /// Provider that handled the module (provenance: fix-ups must not change identity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// cakeys version that realised it (provenance).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cakeys_version: Option<String>,
     /// Token mechanisms observed at realisation time (for `functions.<token>`).
     #[serde(default)]
     pub mechanisms: Vec<String>,

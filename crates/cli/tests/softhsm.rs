@@ -148,7 +148,10 @@ fn ec_lifecycle() {
     // Restore the original locked identity for the final check.
     std::fs::write(
         e.dir.join("keys.lock"),
-        format!("version = 1\n[objects.signing.ids]\npubkeyhash = \"{got}\"\n"),
+        format!(
+            "version = 1\n[objects.signing.type]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\
+             [objects.signing.ids]\npubkeyhash = \"{got}\"\n"
+        ),
     )
     .unwrap();
 
@@ -981,7 +984,8 @@ fn a_new_scheme_missing_from_the_lock_is_a_note_unless_requested() {
     std::fs::write(
         e.dir.join("keys.lock"),
         format!(
-            "version = 1\n[objects.u]\ncommitmentLabel = \"key-management/v1\"\n[objects.u.ids]\ncmac = \"{}\"\n",
+            "version = 1\n[objects.u]\ncommitmentLabel = \"key-management/v1\"\n\
+             [objects.u.type]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n[objects.u.ids]\ncmac = \"{}\"\n",
             aes_commitment(&key, "cmac")
         ),
     )
@@ -1137,7 +1141,7 @@ fn commitment_label_comes_from_the_lock() {
         sri(&m.finalize().into_bytes())
     };
     let path = e.dir.join("keys.lock");
-    let lock = |text: String| std::fs::write(&path, text).unwrap();
+    let lock = |text: String| std::fs::write(&path, text.replace("{M_TYPE}", M_TYPE)).unwrap();
     let verify = ["verify", "m", "--token", "softhsm"];
 
     // A new object gets the default label, and the lock records it.
@@ -1149,15 +1153,83 @@ fn commitment_label_comes_from_the_lock() {
 
     // Another label in the lock is the one used (not the code default)...
     let custom = "example.org/keys/v1";
-    lock(format!("version = 1\n[objects.m]\ncommitmentLabel = \"{custom}\"\n[objects.m.ids]\ncommitment = \"{}\"\n", hmac(custom)));
+    lock(format!("version = 1\n[objects.m]\ncommitmentLabel = \"{custom}\"\n{{M_TYPE}}[objects.m.ids]\ncommitment = \"{}\"\n", hmac(custom)));
     assert_eq!(code(&e.km(&verify)), 0);
     // ...so a hash made with any other label does not match it.
-    lock(format!("version = 1\n[objects.m]\ncommitmentLabel = \"{custom}\"\n[objects.m.ids]\ncommitment = \"{}\"\n", hmac("key-management/v1")));
+    lock(format!("version = 1\n[objects.m]\ncommitmentLabel = \"{custom}\"\n{{M_TYPE}}[objects.m.ids]\ncommitment = \"{}\"\n", hmac("key-management/v1")));
     assert_eq!(code(&e.km(&verify)), 10);
 
     // Commitment IDs require the label; other lock versions are refused.
-    lock(format!("version = 1\n[objects.m.ids]\ncommitment = \"{}\"\n", hmac("key-management/v1")));
+    lock(format!("version = 1\n{{M_TYPE}}[objects.m.ids]\ncommitment = \"{}\"\n", hmac("key-management/v1")));
     assert_eq!(code(&e.km(&verify)), 17);
     lock("version = 2\n".into());
+    assert_eq!(code(&e.km(&verify)), 17);
+}
+
+
+const M_TYPE: &str = "[objects.m.type]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = 32\n";
+
+#[test]
+fn the_lock_pins_type_spec_provenance_and_schemes() {
+    let Some(e) = env("pins") else { return };
+    e.config(EC.replace("ec-lifecycle", "pins").as_str());
+    let toml = e.dir.join("keys.toml");
+    let path = e.dir.join("keys.lock");
+    let config = std::fs::read_to_string(&toml).unwrap();
+    let r = ["realise", "signing-soft", "--token", "softhsm", "--update-lock"];
+    let verify = ["verify", "signing-soft", "--token", "softhsm"];
+    let stderr = |o: &Output| String::from_utf8_lossy(&o.stderr).into_owned();
+    assert_eq!(code(&e.km(&r)), 0);
+    let locked = std::fs::read_to_string(&path).unwrap();
+    let lock: toml::Value = toml::from_str(&locked).unwrap();
+    assert_eq!(lock["objects"]["signing"]["type"]["curve"].as_str(), Some("secp256r1"));
+    let real = &lock["realisations"]["signing-soft"]["softhsm"];
+    assert_eq!(real["provider"].as_str(), Some("softhsm"));
+    assert!(real["cakeysVersion"].as_str().is_some_and(|v| !v.is_empty()));
+
+    // 1. A changed object type is named as such (an alias is a different recorded type, too),
+    //    also with --update-lock.
+    std::fs::write(&toml, config.replace("curve = \"secp256r1\"", "curve = \"P-256\"")).unwrap();
+    let o = e.km(&verify);
+    assert_eq!(code(&o), 14);
+    assert!(stderr(&o).contains("type of object 'signing' in keys.toml changed"), "{}", stderr(&o));
+    assert_eq!(code(&e.km(&r)), 14);
+    std::fs::write(&toml, &config).unwrap();
+
+    // 2. A changed spec (still satisfied by the token) needs the lock re-recorded.
+    std::fs::write(&toml, config.replace("CKA_EXTRACTABLE = false }", "CKA_EXTRACTABLE = false, CKA_PRIVATE = true }")).unwrap();
+    let o = e.km(&verify);
+    assert_eq!(code(&o), 14);
+    assert!(stderr(&o).contains("spec 'signing-soft' changed in keys.toml"), "{}", stderr(&o));
+    assert_eq!(code(&e.km(&r)), 0);
+    assert_eq!(code(&e.km(&verify)), 0);
+    std::fs::write(&toml, &config).unwrap();
+    assert_eq!(code(&e.km(&r)), 0);
+    let locked = std::fs::read_to_string(&path).unwrap();
+
+    // 3. Provenance: another provider warns, another cakeys version is a note.
+    std::fs::write(&path, locked.replace("provider = \"softhsm\"", "provider = \"other\"")).unwrap();
+    let o = e.km(&verify);
+    assert_eq!(code(&o), 0);
+    assert!(stderr(&o).contains("warning:") && stderr(&o).contains("provider other"), "{}", stderr(&o));
+    let version = real["cakeysVersion"].as_str().unwrap();
+    std::fs::write(&path, locked.replace(&format!("cakeysVersion = \"{version}\""), "cakeysVersion = \"0.0.0\"")).unwrap();
+    let o = e.km(&verify);
+    assert_eq!(code(&o), 0);
+    assert!(stderr(&o).contains("note:") && stderr(&o).contains("cakeys 0.0.0") && !stderr(&o).contains("warning:"), "{}", stderr(&o));
+
+    // 4. A scheme this cakeys does not know is reported by name, not silently skipped.
+    std::fs::write(&path, locked.replace("[objects.signing.ids]\n", "[objects.signing.ids]\nfuturehash = \"sha256-AAAA\"\n")).unwrap();
+    let o = e.km(&verify);
+    assert_eq!(code(&o), 0);
+    assert!(stderr(&o).contains("futurehash") && stderr(&o).contains("does not know"), "{}", stderr(&o));
+
+    // IDs without a type are an incomplete lock.
+    let lock_without_type = locked
+        .lines()
+        .filter(|l| !["[objects.signing.type]", "class = \"CKO_PRIVATE_KEY\"", "keyType = \"CKK_EC\"", "curve = \"secp256r1\""].contains(l))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&path, lock_without_type).unwrap();
     assert_eq!(code(&e.km(&verify)), 17);
 }
