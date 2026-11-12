@@ -13,7 +13,7 @@ A spec is policy *about* an object; a realisation is one object's life on one to
 flowchart LR
     subgraph TOML["keys.toml — input, never written by cakeys"]
         direction TB
-        T["[tokens.&lt;name&gt;]<br/>module · tokenLabel · pinFile/pinEnv · systemFeature"]
+        T["[tokens.&lt;name&gt;]<br/>module · tokenLabel · pinFile/pinEnv · mgmKeyFile/mgmKeyEnv · systemFeature"]
         O["[objects.&lt;name&gt;]<br/>class · keyType · certificateType ·<br/>curve / modulusBits / valueLen"]
         S["[specs.&lt;name&gt;]<br/>object → one object only<br/>attributes · publicAttributes<br/>tokens.&lt;t&gt;: locator · autoCreate ·<br/>publicOnly · binding · identity.allow"]
         S -- references --> O

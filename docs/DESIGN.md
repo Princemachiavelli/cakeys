@@ -42,7 +42,7 @@ object.
 | `kcv-ecb` | AES | AES-ECB encryption of one block (first 16 bytes of SHA-256(label)) | `CKA_ENCRYPT` | same, `tpm2_aes_key_is_identified_by_its_kcv` |
 | `kcv-ecb-dec` | AES | AES-ECB *decryption* of such a block | `CKA_DECRYPT` | `aes_128_192_and_decrypt_only_match_host_oracles` |
 | `kw` | AES | RFC 3394 key wrap of a fixed key (SHA-256(label)) | `CKA_WRAP` | `aes_commitments_match_host_oracles` |
-| `piv-attestation` | private/public keys (YubiKey PIV) | Canonical digest of what the slot's attestation certificate asserts (§3.7), verified to the pinned Yubico root; per realisation | opt-in `attestation = true`, management key in the session | `fixture_chain_verifies_and_pins`, `the_yubico_roots_are_pinned`, `issuers_must_be_cas_within_their_path_length` |
+| `piv-attestation` | private/public keys (YubiKey PIV) | Canonical digest of what the slot's attestation certificate asserts (§3.7), verified to the pinned Yubico root; per realisation | opt-in `attestation = true` (no login needed to read the certificates) | `fixture_chain_verifies_and_pins`, `the_yubico_roots_are_pinned`, `issuers_must_be_cas_within_their_path_length` |
 | `tpm-certify` | private and secret keys on tpm2-pkcs11 tokens | Canonical digest of the Name and qualified Name a native `TPM2_Certify` attests (§3.7), host-verified against a provisioned AK; per realisation | opt-in `attestation = true`, the module's TCTI + store, the PIN | `tpm2_keys_attest_their_tpm_residence`, `tpm2_each_token_pins_its_own_attestation`, `tpm2_attested_material_travels_to_a_second_hsm` |
 
 - **Commitment schemes never reveal what the token computed.** The lock stores only SHA-256 of the
@@ -196,7 +196,7 @@ content-addressed identity — one per token type that can produce it:
 
 | Scheme | Token | Evidence | Anchor pinned in the lock |
 |---|---|---|---|
-| `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen`. Yubico attests only keys generated on device; minting the certificate needs the PIV management key in the session | the Yubico root's SPKI |
+| `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen`. Yubico attests only keys generated on device; ykcs11 mints the certificate when it lists the slot, with no login | the Yubico root's SPKI |
 | `tpm-certify` | tpm2-pkcs11 tokens | a native `TPM2_Certify` (tss-esapi) over the object's Name with a fresh random nonce, host-verified; the object's TPM blobs are read (read-only) from the module's own store — found as the module finds it — and loaded under the token's primary over the module's TCTI (`$TPM2_PKCS11_TCTI`, or `tcti`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the Attestation Key's SPKI |
 
 - **The commitment hashes asserted content, never signed bytes.** A PIV certificate is minted
@@ -276,6 +276,7 @@ module = "/path/libfoo.so"     # or --module <name>=<path>; $NAME or ${NAME} rea
 provider = "tpm2-pkcs11"       # optional; auto-detected (§6.2)
 tokenLabel = "..."
 pinFile = "/path" | pinEnv = "VAR"     # optional; pinEnv wins if both are set; pinFile may be $NAME: the path, from the environment
+mgmKeyFile = "/path" | mgmKeyEnv = "VAR"  # optional; admin (SO) credential for modules that create keys only as SO (ykcs11: the PIV management key in hex, or the PIN when the management key is PIN-protected); mgmKeyEnv wins; mgmKeyFile may be $NAME; needs pinFile/pinEnv (17)
 systemFeature = "token-<name>"         # read by the Nix library only
 
 [objects.<name>]
@@ -302,6 +303,13 @@ What may be created and adopted:
   machine-specific paths. `pinEnv = "VAR"` remains the way to pass the *PIN itself* through the
   environment — `env_references_and_object_refs_are_checked_at_load`,
   `pin_file_path_can_come_from_the_environment`.
+- **The admin credential (`mgmKeyFile`/`mgmKeyEnv`) is read only to create or delete, and only where the module requires it.** A
+  provider declares that its module creates and destroys objects only in an SO session
+  (ykcs11 does); on any other provider the field is refused (17) when the token opens, since an
+  SO there cannot do what the user does — `admin_credential_is_refused_where_the_user_creates_keys`.
+  Login state is per token, so the step logs the user out, logs in as SO, generates (or
+  destroys), logs out and logs the user back in; the SO credential is read just before and
+  zeroized after. `resolve`, `verify` and `check` never read it.
 - **`autoCreate`** is allowed for private and secret keys only. Certificates, public keys and data
   objects are adopted — `adoption_rules_are_validated`, `standalone_public_key_objects`,
   `data_objects_…`. When the lock already pins the object's material (ids recorded, from this or
@@ -452,8 +460,8 @@ model = "..." ; serial = "..." ; firmware = "M.m"
 | `validate` | Static check of modes, opt-ins, types and provider names; touches no token. |
 | `resolve <spec> --token` | GET: find (exactly one), check type and policy, compute IDs, print JSON. Never writes. |
 | `verify <spec> --token` | GET with If-Match against the lock; prints the URI. |
-| `realise <spec> --token [--update-lock]` | PUT. If absent and `autoCreate`: refused (14) when the lock already pins the object's material — generated material could never match (D1, `autocreate_never_fights_a_locked_identity`). **If-None-Match** — never create when anything sits under the locator (`never_create_over_an_occupied_locator`). Then create, compute and compare. If the identity of a just-created object cannot be established, it is destroyed (`tpm2_identity_failure_after_create_leaves_nothing`). Re-running never duplicates (`ec_lifecycle`). |
-| `delete <spec> --token [--if-match ID] [--update-lock]` | DELETE with If-Match. Absent is success, even without a lock; a present object with no expected ID is never deleted (`ec_lifecycle`). `--update-lock` removes the realisation but keeps `objects.<name>.ids`, since the material may live on other tokens. |
+| `realise <spec> --token [--update-lock]` | PUT. If absent and `autoCreate`: refused (14) when the lock already pins the object's material — generated material could never match (D1, `autocreate_never_fights_a_locked_identity`). **If-None-Match** — never create when anything sits under the locator (`never_create_over_an_occupied_locator`). Then create, compute and compare. If the identity of a just-created object cannot be established, it is destroyed (`tpm2_identity_failure_after_create_leaves_nothing`); on a module that cannot delete keys (ykcs11) the key stays and the message says so. Re-running never duplicates (`ec_lifecycle`). |
+| `delete <spec> --token [--if-match ID] [--update-lock]` | DELETE with If-Match. Absent is success, even without a lock; a present object with no expected ID is never deleted (`ec_lifecycle`); a key on a module whose delete leaves it in place (ykcs11) is refused (15), never claimed. `--update-lock` removes the realisation but keeps `objects.<name>.ids`, since the material may live on other tokens. |
 | `check <obj>[.id.<scheme>] [--token] [--spec]` | The pseudo-FOD pre-use check: realise without writing the lock, print the URI. Schemes the spec or token can never compute are refused before anything is created (`scheme_the_token_lacks_is_refused_before_create`). |
 | `gc [--apply]` | Print lock entries `keys.toml` no longer names, as table names; `--apply` removes exactly what it printed, holding the update lock (M3). Live objects keep their `ids` (`gc_prints_then_removes_stale_entries`). |
 | `caps --token` | Provider and usable mechanisms, as JSON. |
@@ -495,7 +503,7 @@ Exit codes:
 | Provider | Quirks handled or recorded |
 |---|---|
 | softhsm | none (reference); attests nothing |
-| ykcs11 | `CKA_PUBLIC_KEY_INFO` length 0 then `CKR_ARGUMENTS_BAD` (tolerated generically); fixed PIV slot IDs; the `piv-attestation` commitment: per-slot attestation certificates found by their label/`CKA_ID`, chain-verified to the embedded Yubico roots (`roots/`, §3.7) |
+| ykcs11 | `CKA_PUBLIC_KEY_INFO` length 0 then `CKR_ARGUMENTS_BAD` (tolerated generically); fixed PIV slot IDs and labels: `autoCreate` needs a locator of `CKA_ID` alone naming a key slot (`01`–`04`: 9a/9c/9d/9e, `05`–`18`: 82–95; 17 otherwise) and `mgmKeyFile`/`mgmKeyEnv` (the management key in hex, or the PIN on a PIN-protected-management-key device), since ykcs11 generates only as SO; **keys cannot be deleted** — `C_DestroyObject` clears only the slot's certificate and the key stays, so `delete` (and the cleanup after a failed `realise`) refuses (15), naming `ykman piv keys delete <slot>`; the `piv-attestation` commitment: per-slot attestation certificates found by their label/`CKA_ID`, chain-verified to the embedded Yubico roots (`roots/`, §3.7) |
 | tpm2-pkcs11 | drops `AES_KEY_GEN`/`GENERIC_SECRET_KEY_GEN` (`C_GenerateKey` unsupported); repairs the malformed P-521 `CKA_EC_POINT` (`04 85 …`; upstream draft in `upstream/tpm2-pkcs11/`) — `tpm2_*` tests; the `tpm-certify` commitment: a native `TPM2_Certify` through tss-esapi and the module's sqlite store (§3.7) |
 | p11-kit | detects the proxy; the RPC drops AES key wrap and EdDSA/Edwards mechanisms; the module behind it is hidden (set `provider` explicitly) — `p11kit_*` tests; attests nothing itself (what the proxied module exposes decides, but the provider name does not reach it: opt in only against the real module) |
 
@@ -594,12 +602,15 @@ See `docs/REVIEW-2026-11-11.md`.
   object was loaded in that TPM at verify time.
 - **The TPM Attestation Key is TOFU** (§3.7): the AK proves "this TPM", not "this genuine TPM",
   until it is chained to the Endorsement Key certificate.
-- **The PIV attestation path is unverified on hardware.** The chain verifier runs on fixtures and
-  on Yubico's own published certificates, but how ykcs11 exposes the certificates — the slot
-  certificate by label suffix and shared `CKA_ID`, the f9 certificate by its bare label, minted
-  at session open with the management key — is taken from ykcs11's documentation and has not
-  been exercised against a YubiKey (that needs a key generated on device and the management key
-  in the session; the shipped example keys are imported, so Yubico attests none of them).
+- **The PIV path is verified by hand on one YubiKey, not in CI.** On a YubiKey 5C NFC FIPS
+  (firmware 5.7.4, ykcs11 2.7.3): ykcs11 exposes the slot attestation certificate by label
+  suffix and shared `CKA_ID`, and the f9 certificate by its bare label, with no login at all;
+  the chains (slot → f9 → `Yubico PIV Attestation B 1` → `Yubico Attestation Intermediate B 1`
+  → `Yubico Attestation Root 1`) verify, also with openssl; `realise --update-lock`, `verify`
+  and `check` pass on keys generated on device, a tampered ID is 10, a tampered root or an
+  opt-out 14, an imported key under a locked attestation 14 and unlocked 15; `autoCreate` with
+  `mgmKeyFile` generates; and `C_DestroyObject` was confirmed to leave the key in the slot. The
+  shipped example keys are imported, so Yubico attests none of them, and no suite runs this.
 - **Features are self-declared.** Any user allowed to build can require a token's feature; the
   real gate is `allowed-users`.
 - **No merge rule for lock fragments.** Updates are serialized by the `<lock>.lck` sidecar (M3)

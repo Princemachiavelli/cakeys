@@ -915,9 +915,19 @@ pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, update: bool) -> Result
                 Ok(r) => r,
                 Err(e) => {
                     // The locator was empty before (If-None-Match), so this removes only what we
-                    // just made: a refused realise leaves nothing behind.
-                    let n = tok.destroy(t.object, &t.on_token.locator).unwrap_or(0);
-                    eprintln!("removed {n} object(s) just created for {}: its identity could not be established", t.what());
+                    // just made: a refused realise leaves nothing behind, unless the module cannot
+                    // delete keys (ykcs11), which is then said rather than claimed.
+                    match tok.destroy(t.object, &t.on_token.locator) {
+                        Ok(n) => eprintln!(
+                            "removed {n} object(s) just created for {}: its identity could not be established",
+                            t.what()
+                        ),
+                        Err(d) => eprintln!(
+                            "the key just created for {} is still on the token (its identity could not be \
+                             established, and removing it failed: {d})",
+                            t.what()
+                        ),
+                    }
                     return Err(e);
                 }
             }

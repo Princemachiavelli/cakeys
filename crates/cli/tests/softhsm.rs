@@ -1801,6 +1801,37 @@ fn pin_file_path_can_come_from_the_environment() {
     assert!(e.lock()["realisations"]["signing-soft"]["softhsm"].is_table());
 }
 
+/// The admin credential (`mgmKeyFile`/`mgmKeyEnv`) is for modules that create keys as Security
+/// Officer (ykcs11). SoftHSM creates them as the user, so it is refused (17) when the token
+/// opens, before anything is created or the credential is read; without a user PIN to return to
+/// it is invalid at load.
+#[test]
+fn admin_credential_is_refused_where_the_user_creates_keys() {
+    let Some(e) = env("mgm-key") else { return };
+    let pin = e.dir.join("pin");
+    let toml = |extra: &str| {
+        format!(
+            "[tokens.softhsm]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\n{extra}\n\n{}",
+            e.module,
+            EC.replace("ec-lifecycle", "mgm-key")
+        )
+    };
+    let missing = e.dir.join("never-read");
+    for admin in [format!("mgmKeyFile = \"{}\"", missing.display()), "mgmKeyEnv = \"KM_E2E_NEVER_SET\"".to_owned()] {
+        std::fs::write(e.dir.join("keys.toml"), toml(&format!("pinFile = \"{}\"\n{admin}", pin.display()))).unwrap();
+        for verb in ["realise", "resolve"] {
+            let o = e.km(&[verb, "signing-soft", "--token", "softhsm"]);
+            assert_eq!(code(&o), 17, "{admin} {verb}: {}", String::from_utf8_lossy(&o.stderr));
+            assert!(String::from_utf8_lossy(&o.stderr).contains("only for modules that create keys as Security Officer"));
+        }
+    }
+    // No user PIN: invalid at load.
+    std::fs::write(e.dir.join("keys.toml"), toml(&format!("mgmKeyFile = \"{}\"", missing.display()))).unwrap();
+    let o = e.km(&["validate"]);
+    assert_eq!(code(&o), 17);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("needs a user PIN"));
+}
+
 /// D3: `gc` prints lock entries whose spec or token is gone from keys.toml, and removes exactly
 /// what it printed with `--apply`. Live objects keep their ids.
 #[test]

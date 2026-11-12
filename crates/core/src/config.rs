@@ -28,6 +28,14 @@ pub struct TokenCfg {
     pub token_label: String,
     pub pin_file: Option<PathBuf>,
     pub pin_env: Option<String>,
+    /// The admin (Security Officer) credential, for modules that create and destroy objects only
+    /// in an SO session — ykcs11: the PIV management key in hex, or the PIN on a device whose
+    /// management key is PIN-protected. `pinFile`/`pinEnv` remain the *user* credential. Read
+    /// just before such a step, never by `resolve`, `verify` or `check`; the user session is
+    /// restored afterwards, so a user PIN is required. `mgmKeyEnv` wins if both are set;
+    /// `mgmKeyFile` may be `$NAME`, like `pinFile`. Refused on a provider that does not need it.
+    pub mgm_key_file: Option<PathBuf>,
+    pub mgm_key_env: Option<String>,
     /// Nix `requiredSystemFeatures` entry; defaults to `token-<name>`. Read by the Nix library.
     #[allow(dead_code)]
     pub system_feature: Option<String>,
@@ -574,6 +582,19 @@ pub fn load_config(path: &Path) -> anyhow::Result<Config> {
             let expanded = env_ref(&p.to_string_lossy(), &format!("token '{name}': pinFile"))?;
             t.pin_file = Some(PathBuf::from(expanded));
         }
+        if let Some(m) = t.mgm_key_file.clone() {
+            let expanded = env_ref(&m.to_string_lossy(), &format!("token '{name}': mgmKeyFile"))?;
+            t.mgm_key_file = Some(PathBuf::from(expanded));
+        }
+        // An SO step logs the user out; without a user PIN to return to, the new private key
+        // could not be found again, let alone proven.
+        if (t.mgm_key_file.is_some() || t.mgm_key_env.is_some()) && t.pin_file.is_none() && t.pin_env.is_none() {
+            return Err(KmError::Validation(format!(
+                "{}: token '{name}': mgmKeyFile/mgmKeyEnv needs a user PIN (pinFile or pinEnv) to return to the user session",
+                path.display()
+            ))
+            .into());
+        }
     }
     // A spec's object reference must name something, also when no token ever uses the spec.
     for (spec, s) in &cfg.specs {
@@ -795,6 +816,15 @@ mod tests {
         assert!(err.to_string().contains("KM_UNIT_TEST_UNSET"), "{err}");
         let err = load(&format!("{head}pinFile = \"$HOME/x\"\n")).unwrap_err();
         assert!(err.to_string().contains("neither $NAME"), "{err}");
+        // mgmKeyFile expands the same way; an admin credential only comes with a user PIN.
+        std::env::set_var("KM_UNIT_TEST_MGM", "/env/mgm");
+        let cfg = load(&format!("{head}pinFile = \"/p\"\nmgmKeyFile = \"$KM_UNIT_TEST_MGM\"\n")).unwrap();
+        std::env::remove_var("KM_UNIT_TEST_MGM");
+        assert_eq!(cfg.tokens["t"].mgm_key_file, Some(PathBuf::from("/env/mgm")));
+        for admin in ["mgmKeyFile = \"/so\"", "mgmKeyEnv = \"SO\""] {
+            let err = load(&format!("{head}{admin}\n")).unwrap_err();
+            assert!(err.to_string().contains("needs a user PIN"), "{err}");
+        }
         // A spec's object reference must exist, also when nothing uses the spec.
         let err = load(&format!(
             "{head}\n[objects.o]\nclass = \"CKO_DATA\"\n\n[specs.s]\nobject = \"missing\"\ntokens = {{}}\n"

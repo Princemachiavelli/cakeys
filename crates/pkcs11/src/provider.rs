@@ -5,7 +5,7 @@
 use cryptoki::mechanism::MechanismType;
 use cryptoki::object::ObjectHandle;
 use cryptoki::session::Session;
-use cakeys_core::config::{ModuleInfo, ObjectCfg, TokenCfg};
+use cakeys_core::config::{Locator, ModuleInfo, ObjectCfg, TokenCfg};
 use cakeys_core::{KmError, Result};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -29,6 +29,26 @@ pub trait Provider: Send + Sync {
 
     /// Advice appended when the module cannot do something the spec asks for.
     fn hint(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Whether the module creates and destroys token objects only in a Security Officer session
+    /// (ykcs11: the PIV management key). Then `tokens.<t>.mgmKeyFile`/`mgmKeyEnv` is used for exactly those
+    /// steps; elsewhere it is refused, since an SO there cannot do what the user does.
+    fn manages_as_so(&self) -> bool {
+        false
+    }
+
+    /// Refuse a generation the module would carry out somewhere other than under `loc`, before
+    /// anything is created (ykcs11 places the key by `CKA_ID` and ignores `CKA_LABEL`).
+    fn check_create(&self, _object: &ObjectCfg, _loc: &Locator) -> Result<()> {
+        Ok(())
+    }
+
+    /// `Some(advice)` when the module's `C_DestroyObject` reports success but leaves the key on
+    /// the device (ykcs11 only clears the slot's certificate): deleting is then refused (15)
+    /// instead of claimed, and the advice names how to remove the key.
+    fn keeps_destroyed_keys(&self, _loc: &Locator) -> Option<String> {
         None
     }
 
