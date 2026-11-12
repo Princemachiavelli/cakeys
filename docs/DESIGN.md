@@ -74,6 +74,12 @@ Supported curves:
 ### 3.3 Commitment label
 `key-management/v1/<scheme>/<keyType>/<bits>`, built in `crates/core/src/id.rs`
 (`COMMITMENT_LABEL_PREFIX`, **frozen**, §10).
+- **The label is never written to a token.** It is only the fixed message the token MACs or
+  encrypts to compute a secret key's ID. Labels, `CKA_ID`s, attributes and URIs stay entirely the
+  user's. It is part of the scheme's definition (like a hash function's constants): every party
+  computing the scheme must use the same bytes, and a distinctive string keeps the operation from
+  coinciding with another protocol's use of the key. Its text is historical; changing it would be a
+  new scheme version (`v2`) and change every secret-key ID.
 - **The key type is part of the label,** so the same bytes held as two types never share an ID.
 - **`bits`** is `8 × valueLen`. It is 0 when `valueLen` is unset (finding L11).
 

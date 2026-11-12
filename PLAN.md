@@ -532,6 +532,18 @@ Rough sizes of the **new code**. Dependencies are `cryptoki`, `tss-esapi`, RustC
 
 # Next steps
 
+## TODO: opt-in keystores with an `idPrefix` (2026-11-11)
+- **Today cakeys imposes nothing on token objects.** Locators (`CKA_LABEL`/`CKA_ID`) and attributes are the user's. The commitment label `key-management/v1` is only an input to the ID computation and never reaches a token (DESIGN §3.3).
+- **Proposal:** an explicit, non-default (but recommended) grouping in `keys.toml`, a *keystore*: a set of objects and specs with shared settings. Its optional `idPrefix` would be prepended to `CKA_LABEL` and/or `CKA_ID`, so it is obvious on the token which objects cakeys manages.
+- **Uses:**
+  - telling managed objects apart from foreign ones;
+  - a future `gc`/inventory verb;
+  - safer If-None-Match, since prefixed locators cannot collide with foreign objects.
+- **Open questions:**
+  - How the prefix composes with fixed PIV slot IDs (prefix labels only?).
+  - Whether the prefix enters the spec digest. Probably not, since locators are not identity.
+  - Migrating existing objects.
+
 ## kryoptic as a reference token, and post-quantum (planned 2026-11-11)
 **kryoptic** (nixpkgs 1.5.3, Rust, OpenSSL 3.5 backend) becomes the third reference token after SoftHSM and tpm2-pkcs11. It is the one that implements PKCS#11 **3.2**. Its `pkcs11-tool -M` lists `ML-KEM` (key pair generation, key sizes 800–1568), `ML-DSA` with `HASH-ML-DSA-*` (1312–2592), and `SLH-DSA` with `HASH-SLH-DSA-*` (32–64). SoftHSM 2.7 has none of these.
 
