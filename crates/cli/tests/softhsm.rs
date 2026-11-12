@@ -476,6 +476,43 @@ tokens.softhsm-anon = { locator = { CKA_ID = "42" } }
     let by_id = ["realise", "adopted-cert-by-id", "--token", "softhsm-anon"];
     assert_eq!(code(&e.km(&by_id)), 14, "same certificate, but not recorded under this spec yet");
     assert_eq!(code(&e.km(&[&by_id[..], &["--update-lock"]].concat())), 0);
+
+    // Locks split per object and join again: a pair partner in another fragment is allowed.
+    let full = e.lock();
+    let write = |lock: &toml::Value| std::fs::write(e.dir.join("keys.lock"), toml::to_string(lock).unwrap()).unwrap();
+    let fragment = |objects: &[&str], specs: &[&str]| {
+        let mut f = full.clone();
+        f["objects"].as_table_mut().unwrap().retain(|k, _| objects.iter().any(|o| *o == k));
+        f["realisations"].as_table_mut().unwrap().retain(|k, _| specs.iter().any(|s| *s == k));
+        f
+    };
+    let key = fragment(&["adopted"], &["adopted-pub"]);
+    let cert = fragment(&["adopted-cert"], &["adopted-cert", "adopted-cert-by-id"]);
+    write(&key);
+    assert_eq!(code(&e.km(&["verify", "adopted-pub", "--token", "softhsm-anon"])), 0);
+    write(&cert);
+    assert_eq!(code(&e.km(&["verify", "adopted-cert", "--token", "softhsm-anon"])), 0);
+    let mut joined = key.clone();
+    for part in ["objects", "realisations"] {
+        joined[part].as_table_mut().unwrap().extend(cert[part].as_table().unwrap().clone());
+    }
+    assert_eq!(joined, full);
+    // Partners that share the key but are not listed: a note, and --update-lock records them.
+    let mut unlisted = full.clone();
+    for o in ["adopted", "adopted-cert"] {
+        unlisted["objects"][o].as_table_mut().unwrap().remove("pairs");
+    }
+    write(&unlisted);
+    let o = e.km(&["verify", "adopted-pub", "--token", "softhsm-anon"]);
+    assert_eq!(code(&o), 0);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("not listed as its pairs"));
+    assert_eq!(code(&e.km(&["realise", "adopted-pub", "--token", "softhsm-anon", "--update-lock"])), 0);
+    assert_eq!(e.lock(), full);
+    // A listed partner that is present must list back.
+    let mut one_sided = full.clone();
+    one_sided["objects"]["adopted"].as_table_mut().unwrap().remove("pairs");
+    write(&one_sided);
+    assert_eq!(code(&e.km(&["verify", "adopted-pub", "--token", "softhsm-anon"])), 17);
 }
 
 #[test]
@@ -697,7 +734,15 @@ fn lock_invariants_are_checked() {
         l["objects"]["signing"].as_table_mut().unwrap().insert(k.into(), v);
     };
     assert_eq!(edit(&|l| set(l, "commitmentLabel", "".into())), 17);
-    assert_eq!(edit(&|l| set(l, "pairs", toml::Value::Array(vec!["nope".into()]))), 17);
+    assert_eq!(edit(&|l| set(l, "pairs", toml::Value::Array(vec!["signing".into()]))), 17);
+    assert_eq!(edit(&|l| set(l, "pairs", toml::Value::Array(vec!["in-another-fragment".into()]))), 0);
+    assert_eq!(
+        edit(&|l| {
+            l["realisations"]["signing-soft"]["softhsm"].as_table_mut().unwrap().remove("binding");
+        }),
+        17,
+        "a private key realisation must record its binding"
+    );
     assert_eq!(
         edit(&|l| {
             let s = l["objects"]["signing"].clone();

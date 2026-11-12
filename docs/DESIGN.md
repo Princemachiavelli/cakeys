@@ -243,8 +243,11 @@ model = "..." ; serial = "..." ; firmware = "M.m"
   - **one object per material:** no two objects of one class share an ID under one scheme
     (a certificate's `rfc7093m4` is exempt: it names the subject key, which renewed
     certificates share). `realise --update-lock` refuses to record a second name (exit 14);
-  - **`pairs`** lists exactly the other objects with the same `rfc7093m4`, symmetrically: the
-    key ↔ certificate relation is explicit and checked, not implied.
+  - **`pairs`** makes the key ↔ certificate relation explicit: objects that share an
+    `rfc7093m4`. A listed partner present in the file must share it and list back; one that is
+    absent may live in another fragment, so locks still split and join per object. Partners
+    present but unlisted are a note, and `--update-lock` records them;
+  - a private-key realisation records its `binding`, and no other class has one.
 - **`schemes`** records which schemes a realisation computed and matched, so the lock shows which
   realisation established which ID. A realisation that later computes fewer is refused like a
   mode downgrade (exit 14).

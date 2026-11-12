@@ -260,17 +260,46 @@ impl Lock {
                 }
             }
         }
-        let pairs = self.computed_pairs();
+        // A listed partner that is in this file must share the public key and list back; one
+        // that is not may live in another lock fragment (locks can be split and joined).
         for (name, o) in &self.objects {
-            let want = pairs.get(name).cloned().unwrap_or_default();
-            if o.pairs != want {
-                return invalid(format!(
-                    "object '{name}' lists pairs {:?}, but the objects sharing its rfc7093m4 are {want:?}",
-                    o.pairs
-                ));
+            for p in &o.pairs {
+                if p == name {
+                    return invalid(format!("object '{name}' lists itself as a pair"));
+                }
+                let Some(other) = self.objects.get(p) else { continue };
+                let shared = o.ids.get("rfc7093m4").is_some_and(|k| other.ids.get("rfc7093m4") == Some(k));
+                if !shared || !other.pairs.contains(name) {
+                    return invalid(format!(
+                        "object '{name}' lists '{p}' as a pair, but they {}",
+                        if shared { "do not list each other" } else { "do not share an rfc7093m4" }
+                    ));
+                }
+            }
+        }
+        for (spec, by_token) in &self.realisations {
+            for (token, r) in by_token {
+                let private = self.objects[&r.object].object_type.as_ref().is_some_and(|t| t.class == "CKO_PRIVATE_KEY");
+                if private != r.binding.is_some() {
+                    return invalid(format!(
+                        "realisation of '{spec}' on '{token}': binding is {} for private keys and only for them",
+                        if private { "required" } else { "allowed" }
+                    ));
+                }
             }
         }
         Ok(self)
+    }
+
+    /// Objects in this file that share an rfc7093m4 with `name` but are not listed as its pairs.
+    pub fn unlisted_pairs(&self, name: &str) -> BTreeSet<String> {
+        let listed = self.objects.get(name).map(|o| &o.pairs);
+        self.computed_pairs()
+            .remove(name)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| listed.is_none_or(|l| !l.contains(p)))
+            .collect()
     }
 
     /// For every object, the other objects with the same public key (`rfc7093m4`).

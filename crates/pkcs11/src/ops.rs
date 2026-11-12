@@ -427,6 +427,13 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
     if let Some(prev) = lock.realisations.get(t.spec_name).and_then(|m| m.get(t.token_name)) {
         warn_provenance(t, tok, prev);
     }
+    let unlisted = lock.unlisted_pairs(t.object_name);
+    if !update && !unlisted.is_empty() {
+        eprintln!(
+            "note: {unlisted:?} share the public key of '{}' but are not listed as its pairs; `realise --update-lock` records them",
+            t.object_name
+        );
+    }
     let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
     // Material is only linked through a shared scheme: never attach IDs to an object when none of
     // them can be compared with what is already locked (e.g. a CMAC-only and a KW-only spec).
@@ -539,9 +546,12 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             slot.insert(t.token_name.into(), real);
             changed = true;
         }
+        // Partners in this file are recomputed; listed ones from other fragments are kept.
         let pairs = lock.computed_pairs();
+        let present: Vec<String> = lock.objects.keys().cloned().collect();
         for (name, o) in lock.objects.iter_mut() {
-            let want = pairs.get(name).cloned().unwrap_or_default();
+            let mut want = pairs.get(name).cloned().unwrap_or_default();
+            want.extend(o.pairs.iter().filter(|p| !present.contains(p)).cloned());
             if o.pairs != want {
                 o.pairs = want;
                 changed = true;
