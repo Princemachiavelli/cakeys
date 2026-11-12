@@ -44,7 +44,7 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 | 460c567 | **Refactor R8**: `check` verb logic (scheme gating before the token opens, compare-only realise, locked-scheme rule) moves into `ops::check` |
 | 006e5b7 | **Refactor R9**: `token.rs` split into `token/` (`mod`, `policy`, `generate`, `identity`, `possession`, `uri`), moved unchanged |
 | 2af04df | **Refactor R10**: softhsm and p11-kit are `cakeys_pkcs11::providers`; the CLI's `tpm2`/`ykcs11` features (default on); `checks.minimal` builds without tpm2-tss and sqlite |
-| abb23f7, 90b91b9 | **Refactor R11** (format change): `tcti`/`tpm2Store`/`akHandle` move under `[tokens.<t>.options]`, parsed by the provider (`Tpm2Options`, unknown names 17 at open; `validate` checks them when `provider` is named; any option on a provider without options 17). Gates: flake check (SoftHSM 46, tpm2 8, p11kit 4, core 30, `checks.minimal`), nspawn, xversion byte-identical, YubiKey read-only 6/6, YubiKey RW suite (adopt path; SO generation not rerun) |
+| abb23f7, 90b91b9 | **Refactor R11** (format change): `tcti`/`tpm2Store`/`akHandle` move under `[tokens.<t>.options]`, parsed by the provider (`Tpm2Options`, unknown names 17 at open; `validate` checks them when `provider` is named; any option on a provider without options 17). Gates: flake check (SoftHSM 46, tpm2 8, p11kit 4, core 30, `checks.minimal`), nspawn, xversion byte-identical, YubiKey read-only 6/6, YubiKey RW suite (adopt path, then generation into an emptied slot 0x95) |
 
 ## Done (uncommitted; passes the local gate): (empty — next task below)
 
@@ -57,7 +57,7 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
   - **D3 (committed ea57f7a):**
   - **S15 (committed 1463327):**
 - **PLAN TODO additions:** attestation (P2-11), native TPM, PQ/kryptic.
-- **Refactor R0–R11 (2026-11-12 code review): done**, see `docs/REFACTOR-2026-11-12.md` "Outcome" (format change: tpm2 settings under `[tokens.<t>.options]`; unknown class/key type 17 at load). Open: push (not yet approved); the YubiKey SO generation path was not rerun on hardware after the split (slot 0x95 holds a key; rerunning needs `ykman piv keys delete 95`, ask first).
+- **Refactor R0–R11 (2026-11-12 code review): done**, see `docs/REFACTOR-2026-11-12.md` "Outcome" (format change: tpm2 settings under `[tokens.<t>.options]`; unknown class/key type 17 at load). Open: push (not yet approved). The YubiKey SO generation path was rerun on hardware after `ykman piv keys delete 95` (approved): generated, attested, pop-sign, verify, delete refused, re-realise idempotent; production slots verified 6/6.
 - **Final report to the user:**
   - Answer the in-toto/Terraform question. Neither manages or identifies PKCS#11 or TPM objects: in-toto hashes artifacts and signs metadata; Terraform's lock hashes provider packages. The securesystemslib PKCS#11 signer point is unverified recall.
   - ~~Ask whether to commit or gitignore `reports/` and `research_notes/`~~ — committed by the user (3177781).
