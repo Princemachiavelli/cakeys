@@ -4,6 +4,8 @@
 
 ## TODO (deferred, from the 2026-11-11 reviews)
 
+- **Refactor (2026-11-12 code review):** tracked in [`docs/REFACTOR-2026-11-12.md`](docs/REFACTOR-2026-11-12.md) (R0–R11).
+
 Parked deliberately; the lock stays `version = 1`, a draft, until the reviews pass.
 
 - ~~**Attestation (P2-11, lock review):**~~ **done 2026-11-12** as the attestation commitments
