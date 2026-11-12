@@ -35,6 +35,7 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 | a6ae39d | **Lock writes by default** (user decision 2026-11-12): `realise`/`delete` write the lock unless `--no-update-lock` (`--update-lock` = the explicit default; both → usage error); writes still only fill gaps; refused (14) up front, before any token, inside a Nix build sandbox (`NIX_BUILD_TOP` without `IN_NIX_SHELL`) or with an unwritable lock/directory (`access(2)`); `check`/`verify`/`resolve` unaffected; test harnesses clear `NIX_BUILD_TOP` |
 | 6a599ff, 3e5d06f | **Refactor R0/R1** (docs/REFACTOR-2026-11-12.md): `scripts/xversion.sh` cross-version lock check (c58cb2b-recorded locks of every class verify, compare and re-record byte-identically); `LazyLock` anchors, `Lock::realisation`, mechanism names computed once, `Display` for `Target`/`Locator`/`Immutables`/`ObjectCfg` in messages |
 | 3e26201 | **Refactor R2**: one boolean-attribute table (`cakeys_core::attrs`: per class, declarable vs observed; one macro row per attribute maps it to cryptoki); observed vectors pinned |
+| 6715c81 | **Refactor R3**: one signature verifier module (`cakeys_core::sig`: ECDSA raw/DER over every supported curve, Ed25519, RSA PKCS#1 v1.5 generic over the digest) behind pop, the PIV chain and the TPM AK; ykcs11/tpm2 drop direct p256/p384/p521/rsa deps |
 
 ## Done (uncommitted; passes the local gate): (empty — next task below)
 
