@@ -5,7 +5,8 @@
 //!   `import` and adopt them.
 //! - `CKA_EC_POINT` of P-521 keys has a malformed DER length: `04 85 <133 bytes>` instead of
 //!   `04 81 85 <133 bytes>` (the length is always written as one byte; both `src/lib/tpm.c` and
-//!   `tools/tpm2_pkcs11/utils.py`). Shorter points are unaffected.
+//!   `tools/tpm2_pkcs11/utils.py`). Shorter points are unaffected. Upstream fix drafted in
+//!   `upstream/tpm2-pkcs11/` (unfixed as of master a5156c5 and 1.10.1).
 
 use cryptoki::mechanism::MechanismType;
 use key_mgmnt_pkcs11::provider::Provider;

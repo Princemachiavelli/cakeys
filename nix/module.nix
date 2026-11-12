@@ -1,8 +1,12 @@
 # Host support for key-management: token access from the Nix build sandbox, uid-range builds,
 # and pre-use identity checks for services (PLAN.md, "Nix integration").
+#
+# Token paths are not global `extra-sandbox-paths`: a pre-build-hook (nix/sandbox-hook.sh) grants
+# them only to builds whose `requiredSystemFeatures` name the token's system feature.
 {
   config,
   lib,
+  pkgs,
   utils,
   ...
 }:
@@ -20,6 +24,22 @@ let
   startId = config.nix.settings.start-id or 872415232;
   idCount = config.nix.settings.id-count or 8388608;
 
+  # feature -> sandbox paths, merged over tokens that share a feature.
+  hookMap = lib.zipAttrsWith (_: lib.concatLists) (
+    lib.mapAttrsToList (_: t: {
+      ${t.systemFeature} = t.sandboxPaths ++ lib.optional t.pcscd "/run/pcscd";
+    }) cfg.tokens
+  );
+  hook = pkgs.writeShellApplication {
+    name = "key-mgmnt-sandbox-hook";
+    runtimeInputs = [
+      config.nix.package
+      pkgs.jq
+    ];
+    runtimeEnv.KM_SANDBOX_MAP = pkgs.writeText "key-mgmnt-sandbox-map.json" (builtins.toJSON hookMap);
+    text = builtins.readFile ./sandbox-hook.sh;
+  };
+
   tokenModule =
     { name, ... }:
     {
@@ -30,13 +50,22 @@ let
           description = "System feature advertised for this token; consumers put it in `requiredSystemFeatures`.";
         };
         sandboxPaths = mkOption {
-          type = types.listOf types.str;
+          type = types.listOf (types.strMatching "/[^\n=]*(=/[^\n=]*)?");
           default = [ ];
           example = [
             "/var/lib/softhsm"
-            "/etc/km/yubikey.pin?"
+            "/etc/km/yubikey.pin"
           ];
-          description = "Paths builds need for this token (token storage, sockets, PIN files). A trailing `?` makes a path optional.";
+          description = ''
+            Paths builds requiring `systemFeature` get in their sandbox (token storage, sockets,
+            PIN files), as `/path` or `/target=/source`. Granted per build by the pre-build-hook,
+            and only if they exist.
+          '';
+        };
+        pcscd = mkOption {
+          type = types.bool;
+          default = false;
+          description = "Also grant pcscd's socket (`/run/pcscd`); needs `sandbox.pcscd.enable`.";
         };
       };
     };
@@ -101,9 +130,9 @@ in
     };
 
     sandbox.pcscd.enable = mkEnableOption ''
-      smart cards in the Nix build sandbox through pcscd: enables pcscd, exposes its socket to
-      builds and lets build users past pcscd's polkit check (nixbld users, or the
-      auto-allocated UID range when `nix.settings.auto-allocate-uids` is set)
+      smart cards in the Nix build sandbox through pcscd: enables pcscd and lets build users
+      past its polkit check (nixbld users, or the auto-allocated UID range when
+      `nix.settings.auto-allocate-uids` is set). Tokens with `pcscd = true` get its socket
     '';
 
     sandbox.uidRange.enable = mkEnableOption ''
@@ -114,7 +143,12 @@ in
     tokens = mkOption {
       type = types.attrsOf (types.submodule tokenModule);
       default = { };
-      description = "Tokens builds on this host may use.";
+      description = ''
+        Tokens builds on this host may use. Each advertises its `systemFeature`, and builds that
+        require that feature get its `sandboxPaths` from a pre-build-hook. Features are
+        self-declared by derivations: this keeps tokens out of unrelated builds, it does not
+        authenticate who asks (that is `nix.settings.allowed-users`).
+      '';
     };
 
     checks = mkOption {
@@ -143,7 +177,6 @@ in
 
     (mkIf cfg.sandbox.pcscd.enable {
       services.pcscd.enable = true;
-      nix.settings.extra-sandbox-paths = [ "/run/pcscd" ];
       # Build users have no session, so pcscd's polkit check would refuse them.
       # Auto-allocated UIDs have no passwd entry: polkit reports them as the decimal UID.
       security.polkit.extraConfig = ''
@@ -169,8 +202,13 @@ in
     })
 
     (mkIf (cfg.tokens != { }) {
+      assertions = lib.mapAttrsToList (n: t: {
+        assertion = t.pcscd -> cfg.sandbox.pcscd.enable;
+        message = "services.key-management.tokens.${n}.pcscd needs services.key-management.sandbox.pcscd.enable";
+      }) cfg.tokens;
       nix.settings.system-features = lib.mapAttrsToList (_: t: t.systemFeature) cfg.tokens;
-      nix.settings.extra-sandbox-paths = lib.concatMap (t: t.sandboxPaths) (lib.attrValues cfg.tokens);
+      # A plain definition: a second pre-build-hook elsewhere is a conflict, not a silent override.
+      nix.settings.pre-build-hook = lib.getExe hook;
     })
 
     {

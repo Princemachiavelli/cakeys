@@ -1,0 +1,216 @@
+From a3614e5ee95d4a9f4d0f1de03589ae50a9c8f4e8 Mon Sep 17 00:00:00 2001
+From: Josh Hoffer <hoffer.joshua@gmail.com>
+Date: Wed, 11 Nov 2026 16:32:12 -0800
+Subject: [PATCH] tpm: encode the P-521 CKA_EC_POINT as DER
+
+CKA_EC_POINT is the DER encoding of an OCTET STRING holding the X9.62
+uncompressed point. The header was built by hand as 0x04 <len> with the
+length always in one byte, but DER allows that short form only below
+128 bytes: the 133-byte NIST P-521 point needs the long form,
+0x04 0x81 0x85. P-256 (65 bytes) and P-384 (97 bytes) are unaffected.
+
+Strict DER parsers reject the value, e.g. pkcs11-tool --read-object
+fails on P-521 public keys with "cannot obtain and parse EC_POINT".
+
+Let OpenSSL encode the OCTET STRING in the library (as the old TODO
+suggested), emit the long form in tpm2_ptool's
+asn1_format_ec_point_uncompressed(), and add an integration test that
+decodes the P-521 CKA_EC_POINT with d2i_ASN1_OCTET_STRING().
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/lib/tpm.c                      | 36 +++++++-------
+ test/integration/pkcs-keygen.int.c | 75 ++++++++++++++++++++++++++++++
+ tools/tpm2_pkcs11/utils.py         | 14 ++++--
+ 3 files changed, 101 insertions(+), 24 deletions(-)
+
+diff --git a/src/lib/tpm.c b/src/lib/tpm.c
+index 675fc42..7a4c9a2 100644
+--- a/src/lib/tpm.c
++++ b/src/lib/tpm.c
+@@ -3600,34 +3600,30 @@ static CK_RV tpm_object_data_populate_ecc(TPM2B_PUBLIC *out_pub, tpm_object_data
+         goto out;
+     }
+ 
+-    if (len > 255) {
+-        LOGE("Length must fit within a byte, got %zd", len);
+-        goto out;
+-    }
+-
+     /*
+-     * Build a DER encoded uncompressed representation of the points
+-     * per X9.62.
+-     *
+-     * TODO get better link to documentation around this or build
+-     * with OSSL.
++     * CKA_EC_POINT is the DER encoding of the X9.62 ECPoint, an OCTET STRING
++     * holding the uncompressed point. Let OpenSSL encode it: DER needs the long
++     * length form for 128 bytes or more, e.g. 0x04 0x81 0x85 for the 133-byte
++     * NIST P-521 point, which a hand-built "0x04 <len>" header gets wrong.
+      */
+-    size_t tmp = 0;
+-    safe_add(tmp, len, 2);
+-    char *padded_data = malloc(tmp);
+-    if (!padded_data) {
++    ASN1_OCTET_STRING *os = ASN1_OCTET_STRING_new();
++    if (!os || !ASN1_OCTET_STRING_set(os, mydata, len)) {
++        ASN1_OCTET_STRING_free(os);
+         LOGE("oom");
+         goto out;
+     }
+ 
+-    padded_data[0] = 4;
+-    padded_data[1] = len;
+-    memcpy(&padded_data[2], mydata, len);
++    unsigned char *der = NULL;
++    int derlen = i2d_ASN1_OCTET_STRING(os, &der);
++    ASN1_OCTET_STRING_free(os);
++    if (derlen <= 0) {
++        SSL_UTIL_LOGE("i2d_ASN1_OCTET_STRING");
++        goto out;
++    }
+ 
+-    safe_adde(len, 2);
+     bool r = attr_list_add_buf(objdata->attrs, CKA_EC_POINT,
+-            (CK_BYTE_PTR)padded_data, len);
+-    free(padded_data);
++            (CK_BYTE_PTR)der, derlen);
++    OPENSSL_free(der);
+     if (!r) {
+         goto out;
+     }
+diff --git a/test/integration/pkcs-keygen.int.c b/test/integration/pkcs-keygen.int.c
+index 6b1f26e..e36cf82 100644
+--- a/test/integration/pkcs-keygen.int.c
++++ b/test/integration/pkcs-keygen.int.c
+@@ -2,6 +2,7 @@
+ 
+ #include <inttypes.h>
+ 
++#include <openssl/asn1.h>
+ #include <openssl/evp.h>
+ #include <openssl/err.h>
+ #include <openssl/rsa.h>
+@@ -536,6 +537,78 @@ static void test_ecc_keygen_CKA_DERIVE_CK_TRUE(void **state) {
+     assert_int_equal(rv, CKR_OK);
+ }
+ 
++/*
++ * CKA_EC_POINT must be a DER OCTET STRING. The 133-byte NIST P-521 point needs
++ * the long length form (0x04 0x81 0x85 ...), which a one-byte length gets wrong.
++ */
++static void test_ecc_keygen_p521_ec_point_is_der(void **state) {
++
++    test_info *ti = test_info_from_state(state);
++    CK_SESSION_HANDLE session = ti->handle;
++
++    CK_BBOOL ck_true = CK_TRUE;
++    CK_BYTE id[] = "p521-ec-point-id";
++    CK_UTF8CHAR label[] = "p521-ec-point-label";
++
++    /* secp521r1 */
++    CK_BYTE ec_params[] = {
++        0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23
++    };
++
++    CK_ATTRIBUTE pub[] = {
++        ADD_ATTR_BASE(CKA_TOKEN,   ck_true),
++        ADD_ATTR_ARRAY(CKA_ID, id),
++        ADD_ATTR_BASE(CKA_VERIFY, ck_true),
++        ADD_ATTR_ARRAY(CKA_EC_PARAMS, ec_params),
++        ADD_ATTR_STR(CKA_LABEL, label)
++    };
++
++    CK_ATTRIBUTE priv[] = {
++        ADD_ATTR_ARRAY(CKA_ID, id),
++        ADD_ATTR_BASE(CKA_SIGN, ck_true),
++        ADD_ATTR_BASE(CKA_PRIVATE, ck_true),
++        ADD_ATTR_BASE(CKA_TOKEN,   ck_true),
++        ADD_ATTR_STR(CKA_LABEL, label)
++    };
++
++    CK_MECHANISM mech = {
++        .mechanism = CKM_EC_KEY_PAIR_GEN,
++        .pParameter = NULL,
++        .ulParameterLen = 0
++    };
++
++    CK_OBJECT_HANDLE pubkey;
++    CK_OBJECT_HANDLE privkey;
++
++    user_login(session);
++
++    CK_RV rv = C_GenerateKeyPair (session,
++            &mech,
++            pub, ARRAY_LEN(pub),
++            priv, ARRAY_LEN(priv),
++            &pubkey, &privkey);
++    if (rv == CKR_CURVE_NOT_SUPPORTED || rv == CKR_ATTRIBUTE_VALUE_INVALID) {
++        skip(); /* the TPM does not implement NIST P-521 */
++    }
++    assert_int_equal(rv, CKR_OK);
++
++    CK_BYTE ec_point[256];
++    CK_ATTRIBUTE a = { CKA_EC_POINT, ec_point, sizeof(ec_point) };
++    rv = C_GetAttributeValue(session, pubkey, &a, 1);
++    assert_int_equal(rv, CKR_OK);
++
++    /* 0x04 0x81 0x85 followed by the uncompressed point 0x04 || X || Y */
++    assert_int_equal(a.ulValueLen, 3 + 133);
++
++    const unsigned char *p = ec_point;
++    ASN1_OCTET_STRING *os = d2i_ASN1_OCTET_STRING(NULL, &p, a.ulValueLen);
++    assert_non_null(os);
++    assert_int_equal(p - ec_point, a.ulValueLen);
++    assert_int_equal(ASN1_STRING_length(os), 133);
++    assert_int_equal(ASN1_STRING_get0_data(os)[0], 0x04);
++    ASN1_OCTET_STRING_free(os);
++}
++
+ static void test_destroy(void **state) {
+ 
+     test_info *ti = test_info_from_state(state);
+@@ -1410,6 +1483,8 @@ int main() {
+                 test_setup, test_teardown),
+         cmocka_unit_test_setup_teardown(test_ecc_keygen_p11tool_templ,
+             test_setup, test_teardown),
++        cmocka_unit_test_setup_teardown(test_ecc_keygen_p521_ec_point_is_der,
++            test_setup, test_teardown),
+         cmocka_unit_test_setup_teardown(test_rsa_keygen_p11tool_templ,
+             test_setup, test_teardown),
+         cmocka_unit_test_setup_teardown(test_keygen_keytype,
+diff --git a/tools/tpm2_pkcs11/utils.py b/tools/tpm2_pkcs11/utils.py
+index c18db9d..3928121 100644
+--- a/tools/tpm2_pkcs11/utils.py
++++ b/tools/tpm2_pkcs11/utils.py
+@@ -241,17 +241,23 @@ def asn1_format_ec_point_uncompressed(x, y):
+     len_y = len_y // 2
+     len_x = len_x // 2
+ 
+-    # ensure that the binary representation fits into a byte
++    # ensure that the binary representation fits into a one-byte DER length
+     total_len = len_y + len_x + 1
+     if (total_len > 255):
+         raise RuntimeError(
+             "Length of X and Y plus uncompressed format byte greater than 255")
+ 
+-    # The uncompressed point format is:
++    # The uncompressed point format is a DER OCTET STRING:
+     # <asn1 octet hdr> <len> <uncompressed point format byte> <X> <Y>
+-    # 04 <len> <X> <Y>
++    # 04 <len> 04 <X> <Y>
++    # DER uses the short length form below 128 bytes and the long form
++    # (81 <len>) above, e.g. for the 133-byte NIST P-521 point.
++    if total_len < 0x80:
++        der_len = "{:02x}".format(total_len)
++    else:
++        der_len = "81{:02x}".format(total_len)
+ 
+-    s = "04{len:02x}04{X}{Y}".format(len=total_len, X=x, Y=y)
++    s = "04{len}04{X}{Y}".format(len=der_len, X=x, Y=y)
+ 
+     return s
+ 
+-- 
+2.56.0
+

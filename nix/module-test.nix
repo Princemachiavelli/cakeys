@@ -28,21 +28,37 @@ let
     tokens.softhsm = { locator = { CKA_LABEL = "signing" }, autoCreate = true }
   '';
 
+  # What a build's sandbox sees: pcscd reachability and the SoftHSM state directory.
+  sandboxProbe = pkgs.writeText "sandbox-probe.sh" ''
+    # Structured-attrs builds get their outputs from the attrs file, not the environment.
+    if [ -n "''${NIX_ATTRS_SH_FILE:-}" ]; then . "$NIX_ATTRS_SH_FILE"; out=''${outputs[out]}; fi
+    {
+      ${pcsc-probe}/bin/pcsc-probe
+      if [ -d ${stateDir} ]; then echo softhsm-dir=yes; else echo softhsm-dir=no; fi
+    } > "$out" 2>&1
+  '';
+
   # Built inside the guest (store paths re-attached with builtins.storePath).
   guestBuilds = pkgs.writeText "builds.nix" ''
     { nonce }:
     let
       sp = builtins.storePath;
       bash = sp "${pkgs.bash}" + "/bin/bash";
-    in
-    {
-      # pcscd from the sandbox: must connect (no reader in the VM).
-      pcsc = derivation {
-        name = "pcsc-probe-''${nonce}";
+      # What the sandbox of a build with these features sees.
+      probe = name: features: extra: derivation ({
+        name = "''${name}-''${nonce}";
         system = "${system}";
         builder = bash;
-        args = [ "-c" "''${sp "${pcsc-probe}"}/bin/pcsc-probe > $out 2>&1; echo exit=$? >> $out" ];
-      };
+        requiredSystemFeatures = features;
+        args = [ (sp "${sandboxProbe}") ];
+      } // extra);
+    in
+    {
+      # pcscd only for the pcsc token's feature (no reader in the VM, so "connected" is the goal).
+      pcsc = probe "pcsc" [ "token-pcsc" ] { };
+      softhsm = probe "softhsm" [ "token-softhsm" ] { };
+      plain = probe "plain" [ ] { };
+      structured = probe "structured" [ "token-pcsc" ] { __structuredAttrs = true; };
       # uid-range: root inside the build with a full 65536-UID range.
       uidRange = derivation {
         name = "uid-range-''${nonce}";
@@ -64,6 +80,7 @@ pkgs.testers.runNixOSTest {
       sandbox.pcscd.enable = true;
       sandbox.uidRange.enable = true;
       tokens.softhsm.sandboxPaths = [ stateDir ];
+      tokens.pcsc.pcscd = true;
       checks.signing = {
         config = keysToml;
         lock = "/var/lib/km/keys.lock";
@@ -114,17 +131,29 @@ pkgs.testers.runNixOSTest {
         m = re.search(r"^system-features = (.*)$", conf, re.M)
         assert m, conf
         features = m.group(1).split()
-        for f in ["uid-range", "token-softhsm", "nixos-test", "kvm"]:
+        for f in ["uid-range", "token-softhsm", "token-pcsc", "nixos-test", "kvm"]:
             assert f in features, f"{f} missing from {features}"
         assert re.search(r"^auto-allocate-uids = true$", conf, re.M), conf
-        assert "/run/pcscd" in conf and "${stateDir}" in conf, conf
+        # Token paths are granted per build by the hook, never globally.
+        assert re.search(r"^pre-build-hook = /nix/store/\S+/bin/key-mgmnt-sandbox-hook$", conf, re.M), conf
+        assert "/run/pcscd" not in conf and "${stateDir}" not in conf, conf
         assert "PrivateUsers=no" in machine.succeed("systemctl show pcscd.service -p PrivateUsers")
 
     with subtest("pcscd is reachable from the sandbox with auto-allocated build UIDs"):
-        out = guest_build("pcsc")
+        for attr in ["pcsc", "structured"]:
+            out = guest_build(attr)
+            print(attr, out)
+            assert "SCardEstablishContext: 0x00000000" in out, out
+            assert "0x8010002e" in out, out  # connected; the VM simply has no reader
+            assert "softhsm-dir=no" in out, out
+
+    with subtest("the hook grants token paths only to builds requiring the token's feature"):
+        out = guest_build("softhsm")
         print(out)
-        assert "SCardEstablishContext: 0x00000000" in out, out
-        assert "0x8010002e" in out, out  # connected; the VM simply has no reader
+        assert "softhsm-dir=yes" in out and "SCardEstablishContext: 0x00000000" not in out, out
+        out = guest_build("plain")
+        print(out)
+        assert "softhsm-dir=no" in out and "SCardEstablishContext: 0x00000000" not in out, out
 
     with subtest("uid-range builds run"):
         out = guest_build("uidRange")

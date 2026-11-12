@@ -12,7 +12,12 @@
       pkgs = nixpkgs.legacyPackages.${system};
       key-mgmnt = pkgs.callPackage ./nix/package.nix { };
       pcsc-probe = pkgs.callPackage ./nix/pcsc-probe.nix { };
-      mkTest = kind: import ./nix/test.nix { inherit pkgs key-mgmnt kind; };
+      mkTest =
+        kind:
+        import ./nix/test.nix {
+          inherit pkgs key-mgmnt kind;
+          module = self.nixosModules.default;
+        };
     in
     {
       lib = import ./nix/lib.nix;

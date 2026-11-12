@@ -399,18 +399,35 @@ URI=$(key-mgmnt ${configFile} myobject.id.pubkeyhash)   # or: --token hsm-bob
 4. **Scheduling.** The consumer gets **`requiredSystemFeatures = myobject.rsf.<token>`** (e.g. `[ "token-hsm-bob" ]`). Builders that own the token advertise that feature in `system-features`.
 5. **Caching semantics are now correct.** A cached consumer output proves the key existed and matched *when that output was produced*, which is exactly when it was used. For **runtime** use (services), the same command runs as `ExecStartPre=` or as a NixOS activation check.
 
-## Sandbox access (host setup, ideally done by a NixOS module from this project)
-- **Device and socket paths through `sandbox-paths`.** This host already has `/run/pcscd` and `/etc/whonix/yubikey.pin?`. Add:
-  - `/dev/tpmrm0`;
-  - SoftHSM's token directory (or a `p11-kit server` socket);
-  - the network for network HSMs.
-- **Permissions:**
-  - **Build users (`nixbld*`) need access.** `/dev/tpmrm0` is `tss:tss 0660` here.
-  - **pcscd/polkit:** if pcscd runs with polkit, it may refuse build users. It is socket-activated here; check whether polkit is in use.
-  - The module needs udev and polkit rules or group membership for the build users. The alternative is a **`p11-kit server`** proxy socket running outside the sandbox.
-- **Credentials:**
-  - **PINs must never enter the store.** Keep the existing pattern: an optional PIN file through `sandbox-paths`, readable only by build users. Alternatively, the `p11-kit server` holds the logged-in session.
-  - **First-use `autoCreate` needs SO/user login inside the build.** Decide per token whether that is acceptable.
+## Sandbox access (host setup: `nixosModules.default`)
+**Per-build access through a pre-build-hook (2026-11-11).** Global `extra-sandbox-paths` reach every build on the host. Instead, the module installs `nix.settings.pre-build-hook` (`nix/sandbox-hook.sh`, bash + jq over `nix derivation show`). The hook grants a token's paths only to builds whose `requiredSystemFeatures` name that token's `systemFeature`.
+- **Protocol (Nix 2.35.3 source).** nix-daemon runs the hook as root for every sandboxed build, with the `.drv` path and the sandbox directory. Stdout is `extra-sandbox-paths`, then `/path` or `/target=/source` lines, then a blank line. There is no optional `?` form, so the hook only emits paths that exist.
+- **Feature sources.** The hook reads features from the env string (plain derivations), from `structuredAttrs` (JSON v4, Nix 2.33+), and from `env.__json` (older JSON).
+- **Paths come only from the module's map** (`tokens.<n>.sandboxPaths`, plus `/run/pcscd` when `tokens.<n>.pcscd`). The derivation merely selects entries.
+- **Contract.** The hook always exits 0, writes nothing but the protocol to stdout, and grants nothing on any error. A failing hook would fail every build. Recovery for trusted users: `--option pre-build-hook ""`.
+- **One hook only.** `pre-build-hook` is set with a plain definition, so a second hook elsewhere in the configuration is a merge conflict rather than a silent override.
+- **Features are self-declared.** Any user allowed to build can require `token-x`. The hook keeps tokens out of unrelated builds; it does not authenticate the requester. The gate on who may build at all is `nix.settings.allowed-users`.
+- **One source for feature names.** Consumers take the feature from `lib.mkKeys` (`rsf`, from keys.toml's `systemFeature`, default `token-<name>`). The module's `tokens.<n>.systemFeature` has the same default. Keep the token names equal.
+- **Tests (`checks.module`).** The positive and negative builds cover pcscd (plain and structured attrs) and the SoftHSM directory. Neither is in `nix.conf`'s `extra-sandbox-paths`. `checks.vm`'s in-guest pseudo-FOD consumer gets its token through the hook.
+
+**Build identities (Nix 2.35.3 source, confirmed on this host).** Device permissions are checked against the build's host IDs:
+- **With build users:** `nixbldN`, with the `nixbld` GID.
+- **With `auto-allocate-uids`:**
+  - The Linux sandbox always uses a user namespace, and the build's host GID equals its UID. That UID is the first ID of a 65 536-ID slot: `start-id + i·65536`, so 128 slots with the default `id-count`.
+  - Supplementary groups are dropped.
+  - Probe: `uid_map 1000 872480768 1`, `gid_map 100 872480768 1`, no groups.
+- **For ACLs, that means** a device such as `/dev/tpmrm0` can be opened to every possible build with one ACL holding `g:nixbld` and the 128 slot GIDs. A 128-entry ACL is accepted on tmpfs.
+- **To verify in the TPM VM test:** that ACLs work on devtmpfs through the build's user namespace, and that udev applies the rule (`udevadm trigger` on a live host).
+- **It depends on Nix internals** (slot size, always a user namespace), so the module computes the slot GIDs from `start-id`/`id-count` and asserts `id-count % 65536 == 0`.
+
+**tpm2-pkcs11 store: read-only by default** (to decide with the TPM VM test).
+- **Using a key does not need write access.** The store holds TPM-wrapped key blobs and the PIN-wrapped auth; signing reads it.
+- **Write access is below the PIN.** Through PKCS#11 a PIN guards operations, but anyone who can write the SQLite file can delete or corrupt tokens and keys without one. The store is the only copy of each wrapped key, so that loss is permanent. On a YubiKey, destructive operations need the PIN or management key.
+- **Write access only buys `autoCreate` inside a build,** and on tpm2-pkcs11 only for EC/RSA, since secret keys cannot be generated there at all. It also covers SQLite housekeeping.
+- **The hook changes the calculation:** only builds requiring the TPM feature see the store, so a per-token writable opt-in is reasonable. It stays off by default.
+- **Unverified:** that tpm2-pkcs11 never needs to write on open, e.g. for a schema upgrade or recovery of a leftover journal.
+
+**Credentials:** PINs never enter the store. Use a PIN file granted through the hook, readable by build users, or a `p11-kit server` holding the session.
 
 ## Exposed attributes
 - `myobject.id.pubkeyhash` and the other portable IDs (see the identity section).

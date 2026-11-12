@@ -5,17 +5,18 @@
 {
   pkgs,
   key-mgmnt,
+  module,
   kind ? "vm",
 }:
 let
   inherit (pkgs) lib;
   isVM = kind == "vm";
   stateDir = "/var/lib/softhsm";
-  module = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
+  softhsmLib = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
 
   keysToml = pkgs.writeText "keys.toml" ''
     [tokens.softhsm]
-    module = "${module}"
+    module = "${softhsmLib}"
     tokenLabel = "kmtest"
     pinFile = "${stateDir}/pin"
 
@@ -78,12 +79,15 @@ let
     systemd.tmpfiles.rules = [ "d ${stateDir}/tokens 0777 root root -" ];
   }
   // lib.optionalAttrs isVM {
-    virtualisation.additionalPaths = [ consumer ];
-    nix.settings = {
-      substituters = lib.mkForce [ ];
-      system-features = [ "token-softhsm" ];
-      extra-sandbox-paths = [ stateDir ];
+    # The consumer gets the token through the module's pre-build-hook, because it requires the
+    # token's feature (keys.signing.rsf.softhsm, i.e. token-softhsm).
+    imports = [ module ];
+    services.key-management = {
+      package = key-mgmnt;
+      tokens.softhsm.sandboxPaths = [ stateDir ];
     };
+    virtualisation.additionalPaths = [ consumer ];
+    nix.settings.substituters = lib.mkForce [ ];
   };
 
   test = pkgs.testers.runNixOSTest {
@@ -154,7 +158,7 @@ let
 
       with subtest("independent oracle: pkcs11-tool + openssl agree with pubkeyhash"):
           machine.succeed(
-              "pkcs11-tool --module ${module} --token-label kmtest --read-object --type pubkey"
+              "pkcs11-tool --module ${softhsmLib} --token-label kmtest --read-object --type pubkey"
               " --label signing -o /root/pub.der"
           )
           oracle = "sha256-" + machine.succeed(
