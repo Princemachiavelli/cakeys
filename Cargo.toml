@@ -42,3 +42,6 @@ aes-kw = "0.3"
 cmac = "0.8"
 hmac = "0.13"
 sha1 = "0.11"
+tss-esapi = "7.7"
+rusqlite = { version = "0.42", features = ["bundled"] }
+aes-gcm = "0.11"

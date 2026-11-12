@@ -27,9 +27,40 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 | e8c2c78 | **D1** autoCreate refused up front (14) when the lock already pins the object's material; `ec_lifecycle` tail and the VM caveat reworked; `autocreate_never_fights_a_locked_identity` |
 | f4f4a59 | **config** `$NAME`/`${NAME}` path references in `pinFile`/`module` (unset or malformed → 17 at load, naming it); every spec's `object` reference validated at load; the flat spec layout kept (config is a graph; answer recorded here 2026-11-12) |
 
-## Done (uncommitted; compiles and passes the local gate): (empty — next task below)
+## Done (branch `attestation-commitments`, commit TBD; `nix build .#cakeys` green — every
+suite, including both new swtpm attestation tests and the P-521 orphan test against stock
+tpm2-pkcs11 1.10.1):
 
-
+- **Attestation commitments (P2-11, un-parked by user request 2026-11-12), branch
+  `attestation-commitments`:** two new schemes (`piv-attestation`, `tpm-certify`), always
+  paired with a portable scheme, never standalone (load invariant + docs/DESIGN.md §3.7):
+  - `cakeys-core`: scheme registry (`ATTESTATION_SCHEMES`, `ATTESTATION_KINDS`), canonical
+    digest definitions (`piv_attestation_id`, `tpm_certify_id`), `attestation = true` opt-in on
+    the spec's token entry, TPM native token fields (`tcti`, `tpm2Store`, `akHandle`), the
+    per-realisation `attestation = { kind, root }` record (compared: a changed anchor is 14,
+    even under `--update-lock`), and the lock invariants (attestation never alone; record
+    present exactly with its scheme).
+  - `cakeys-pkcs11`: `Provider::attestation()`/`attest()` hooks; preflight refusals (15) before
+    anything is created; the attestation ID merged beside the portable one in `resolve`.
+  - `cakeys-ykcs11`: the slot's attestation certificate found by label/`CKA_ID`, chain-verified
+    on the host to the embedded Yubico roots (`roots/`, both the classic PIV root and
+    "Yubico Attestation Root 1" with the intermediate pool), X.509 signature dispatch
+    (ECDSA P-256/384/521, RSA PKCS#1v1.5 SHA-256/384/512), canonical digest over the asserted
+    fields, subject-SPKI cross-check against `rfc7093m4`.
+  - `cakeys-tpm2-pkcs11`: the native `TPM2_Certify` path — tss-esapi + the module's sqlite
+    store (blobs, seal unseal with the PIN, AES-GCM objauth unwrap), a cakeys-provisioned
+    restricted signing AK at `0x81000016`, fresh nonce per run, host-side verification of the
+    ECDSA-SHA256 signature over the re-marshaled `TPMS_ATTEST`, Name recomputed from the store
+    blob, material cross-check, and CKA_LOCAL/CKA_EXTRACTABLE vs the signed attributes.
+  - Tests: unit (definitions, invariants, PIV fixtures, Yubico's own roots/intermediates),
+    `tpm2_keys_attest_their_tpm_residence` and
+    `tpm2_attested_material_travels_to_a_second_hsm` (the user's portability requirement) on
+    swtpm; nix: `tpm2-tss` + `pkg-config` + `sqlite` in package, devshell gains the TPM test
+    tools. Local gate: `nix develop --command bash /tmp/opencode/tpmtest.sh` (swtpm + abrmd +
+    a token, then `cargo test --test tpm2 -- --test-threads=1`); beware stray daemons from
+    earlier manual runs (`pkill -x swtpm tpm2-abrmd`, not `pkill -f` — the pattern matches the
+    harness shell) and that plain devshells need the tcti lib on `LD_LIBRARY_PATH` when no
+    PKCS#11 module has been loaded yet.
 
 ## Then (follow-up commits)
 

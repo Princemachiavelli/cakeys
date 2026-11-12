@@ -1,7 +1,7 @@
 //! PKCS#11 token layer over `cryptoki`. Transparent: PKCS#11 names in, PKCS#11 calls out.
 //! Module-specific behaviour goes through the selected [`Provider`].
 
-use crate::provider::{Provider, Registry};
+use crate::provider::{AttestationCap, AttestCtx, Attested, Provider, Registry};
 pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};
 use cakeys_core::config::{AttrValue, Binding, Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
 use cakeys_core::id::{self, Commit, Curve, HmacHash};
@@ -32,6 +32,12 @@ pub struct Token {
     session: Session,
     /// Logged in as the user: private objects are visible. Otherwise a public session.
     pub logged_in: bool,
+    /// The token's config, for provider hooks that need more than the module (the native TPM
+    /// attestation path's `tcti`, `tpm2Store` and `akHandle`).
+    pub cfg: TokenCfg,
+    /// The user credential, already read for login: the TPM attestation path unseals the
+    /// token's wrapping key with it. Held only for the token's lifetime, like the session.
+    pin: Option<String>,
 }
 
 fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
@@ -86,8 +92,8 @@ impl Token {
         let mechanisms = provider.mechanisms(ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?);
         let session = ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?;
         let pin = read_pin(cfg)?;
-        if let Some(pin) = &pin {
-            match session.login(UserType::User, Some(&AuthPin::new(pin.clone().into()))) {
+        if let Some(pin) = pin.as_deref() {
+            match session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
                 Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
                 Err(e) => return Err(KmError::Unavailable(format!("C_Login: {e}"))),
             }
@@ -101,6 +107,8 @@ impl Token {
             provider,
             session,
             logged_in: pin.is_some(),
+            cfg: cfg.clone(),
+            pin,
         })
     }
 
@@ -120,6 +128,31 @@ impl Token {
         let mut v: Vec<String> = self.mechanisms.iter().map(|m| m.to_string()).collect();
         v.sort();
         v
+    }
+
+    /// The provider's attestation capability for `object`'s class, when the spec opted in:
+    /// `None` when this module attests nothing (or not this class).
+    pub fn attestation_cap(&self, object: &ObjectCfg) -> Option<AttestationCap> {
+        self.provider
+            .attestation()
+            .filter(|cap| cap.classes.contains(&object.class.as_str()))
+    }
+
+    /// Compute the attestation commitment for `key` (§3.7 of docs/DESIGN.md) through the
+    /// provider: the module-exposed attestation certificate (PIV) or the native TPM2_Certify
+    /// path (tpm2-pkcs11), verified on the host. `spki` is the material SPKI the attestation
+    /// must name (`None` for secret keys).
+    pub fn attest(&self, key: ObjectHandle, object: &ObjectCfg, spki: Option<&[u8]>) -> Result<Attested> {
+        let ctx = AttestCtx {
+            session: &self.session,
+            cfg: &self.cfg,
+            token_name: &self.name,
+            key,
+            object,
+            spki,
+            pin: self.pin.as_deref(),
+        };
+        self.provider.attest(&ctx)
     }
 
     pub fn find(&self, class: ObjectClass, loc: &Locator) -> Result<Vec<ObjectHandle>> {
@@ -561,7 +594,7 @@ impl Token {
     ///
     /// Whenever `CKA_PUBLIC_KEY_INFO` is present it must agree with the material: modules may let
     /// it be set without checking (SoftHSM, kryoptic), so it is never trusted on its own.
-    fn spki(&self, h: ObjectHandle, loc: &Locator) -> Result<Vec<u8>> {
+    pub(crate) fn spki(&self, h: ObjectHandle, loc: &Locator) -> Result<Vec<u8>> {
         let spki = match self.material_spki(h)? {
             Some(spki) => spki,
             None => match self.find(ObjectClass::PUBLIC_KEY, loc)?.as_slice() {

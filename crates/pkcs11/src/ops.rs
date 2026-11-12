@@ -2,8 +2,8 @@
 
 use crate::token::{self as hal, Token};
 use cakeys_core::config::{
-    AttrValue, Binding, Config, Immutables, Locator, Lock, LockRealisation, Mode, ObjectCfg, Observed, Provenance, SpecCfg,
-    SpecTokenCfg,
+    AttestationRecord, AttrValue, Binding, Config, Immutables, Locator, Lock, LockRealisation, Mode, ObjectCfg, Observed,
+    Provenance, SpecCfg, SpecTokenCfg,
 };
 use cakeys_core::id::{self, Commit, HmacHash};
 use cakeys_core::{KmError, Result};
@@ -66,7 +66,22 @@ impl<'a> Target<'a> {
     fn is_certificate(&self) -> bool {
         self.object.class == "CKO_CERTIFICATE"
     }
+
+    /// The attestation scheme this spec's token computes when opted in (`attestation = true`),
+    /// if the provider attests this class at all (§3.7 of docs/DESIGN.md).
+    fn attestation_scheme(&self, tok: &Token) -> Option<&'static str> {
+        self.on_token
+            .attestation
+            .then(|| tok.attestation_cap(self.object))
+            .flatten()
+            .map(|c| c.scheme)
+    }
 }
+
+/// `attestation = true` applies to key objects only: PIV attests asymmetric keys, TPM2_Certify
+/// any TPM-resident object — but certificates and data objects are not keys, and no attestation
+/// scheme exists for them.
+const ATTESTABLE_CLASSES: [&str; 3] = ["CKO_PRIVATE_KEY", "CKO_PUBLIC_KEY", "CKO_SECRET_KEY"];
 
 /// How `t`'s private key is bound to its identity: proven by signing, deriving or decrypting
 /// (`pop-*`) unless the spec opts out (or adopts it publicOnly). `None` for every other class.
@@ -208,6 +223,9 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
             return invalid("publicOnly cannot verify private-key policy attributes; leave attributes empty");
         }
     }
+    if t.on_token.attestation && !ATTESTABLE_CLASSES.contains(&t.object.class.as_str()) {
+        return invalid("attestation = true applies to key objects only (PIV attests asymmetric keys, TPM2_Certify any TPM-resident object)");
+    }
     if matches!(t.object.class.as_str(), "CKO_PUBLIC_KEY" | "CKO_DATA") {
         if t.on_token.auto_create {
             return invalid("public keys and data objects are adopted, not created");
@@ -295,12 +313,18 @@ fn commits(t: &Target, tok: &Token, mode: Mode) -> Result<Vec<Commit>> {
 }
 
 /// Schemes this spec computes on this token: `Target::schemes` narrowed to the commitments the
-/// token implements. Needs no object, so callers can refuse before anything is created.
+/// token implements, plus the attestation scheme when the spec opted in and the provider
+/// attests the class (§3.7). Needs no object, so callers can refuse before anything is created.
 pub fn schemes_on(t: &Target, tok: &Token) -> Result<Vec<&'static str>> {
-    if t.object.class != "CKO_SECRET_KEY" {
-        return Ok(t.schemes());
+    let mut v = if t.object.class != "CKO_SECRET_KEY" {
+        t.schemes()
+    } else {
+        commits(t, tok, plan_mode(t)?)?.iter().map(|c| c.scheme()).collect()
+    };
+    if let Some(s) = t.attestation_scheme(tok) {
+        v.push(s);
     }
-    Ok(commits(t, tok, plan_mode(t)?)?.iter().map(|c| c.scheme()).collect())
+    Ok(v)
 }
 
 /// Token capabilities the mode needs, checked before anything is created.
@@ -310,6 +334,28 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
             "identity mode '{mode}' (opted in for {}) is not implemented in this POC",
             t.what()
         )));
+    }
+    // An attestation the provider cannot compute is refused up front (15), like a scheme the
+    // token lacks: it is part of the identity this realisation promises from now on.
+    if t.on_token.attestation {
+        match tok.provider.attestation() {
+            None => {
+                return Err(tok.unsupported(format!(
+                    "{} opts into attestation, but provider '{}' attests nothing on this module",
+                    t.what(),
+                    tok.provider.name()
+                )))
+            }
+            Some(cap) if !cap.classes.contains(&t.object.class.as_str()) => {
+                return Err(tok.unsupported(format!(
+                    "{} opts into attestation, but provider '{}' attests only {:?}",
+                    t.what(),
+                    tok.provider.name(),
+                    cap.classes
+                )))
+            }
+            Some(_) => {}
+        }
     }
     let mut need = Vec::new();
     if t.on_token.auto_create && t.object.key_type.starts_with("CKK_SHA") && t.object.key_type.ends_with("_HMAC") {
@@ -370,6 +416,10 @@ pub struct Resolved {
     /// Label the commitment schemes in `ids` were computed with (none for public-material IDs).
     #[serde(rename = "commitmentLabel", skip_serializing_if = "Option::is_none")]
     pub commitment_label: Option<String>,
+    /// The attestation evidence this realisation pins (§3.7): present exactly when `ids` holds
+    /// an attestation scheme. `kind` names the evidence, `root` the anchor it verified to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<AttestationRecord>,
 }
 
 /// The label to compute `t`'s commitments with: the one the lock records for the object, else the
@@ -396,6 +446,22 @@ pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>>
     let commits = commits(t, tok, mode)?;
     let label = commitment_label(t, lock);
     let binding = binding(t);
+    let mut ids = tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding)?;
+    // The attestation commitment (§3.7): additional identity from signed provenance. The
+    // material SPKI it must name comes from the same source `rfc7093m4` hashed, so an
+    // attestation of other material is a conflict, not a second opinion.
+    let mut attestation = None;
+    if t.attestation_scheme(tok).is_some() {
+        let spki = match mode {
+            Mode::Direct if matches!(t.object.class.as_str(), "CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY") => {
+                Some(tok.spki(h, &t.on_token.locator)?)
+            }
+            _ => None,
+        };
+        let a = tok.attest(h, t.object, spki.as_deref())?;
+        attestation = Some(AttestationRecord { kind: id_kind(a.scheme).to_owned(), root: a.root.clone() });
+        ids.insert(a.scheme.to_owned(), a.id);
+    }
     Ok(Some(Resolved {
         object: t.object_name.into(),
         spec: t.spec_name.into(),
@@ -404,12 +470,23 @@ pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>>
         mode,
         public_only,
         spec_digest: id::spec_digest(t.object, t.spec),
-        ids: tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding)?,
+        ids,
         binding,
         policy: tok.policy(h)?,
         immutables: tok.immutables(h),
         commitment_label: (!commits.is_empty()).then_some(label),
+        attestation,
     }))
+}
+
+/// The lock-record `attestation.kind` for an attestation scheme (§3.7; the mapping is pinned
+/// as `ATTESTATION_KINDS`). Unknown schemes have no kind and so cannot be recorded.
+fn id_kind(scheme: &str) -> &'static str {
+    id::ATTESTATION_KINDS
+        .iter()
+        .find(|(s, _)| *s == scheme)
+        .map(|(_, kind)| *kind)
+        .unwrap_or_default()
 }
 
 /// Compare computed IDs with the lock; optionally record them (only ever fills gaps).
@@ -466,6 +543,23 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
                 return Err(KmError::PreconditionFailed(format!(
                     "binding downgrade for {}: locked binding '{was}', now only '{now}'",
                     t.what()
+                )));
+            }
+        }
+        // The attestation anchor is compared, even under --update-lock: the same material
+        // re-attested by a different anchor means a different device (or a re-provisioned
+        // TPM) signed the provenance, which is a change to review, never to re-record. A lost
+        // attestation is caught below as a scheme downgrade.
+        if let (Some(was), Some(now)) = (&prev.attestation, &r.attestation) {
+            if was != now {
+                return Err(KmError::PreconditionFailed(format!(
+                    "attestation anchor for {} changed since it was realised ({} root {}, now {} root {}); \
+                     the material needs a new object name",
+                    t.what(),
+                    was.kind,
+                    was.root,
+                    now.kind,
+                    now.root
                 )));
             }
         }
@@ -636,6 +730,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             schemes: r.ids.keys().cloned().collect(),
             public_only: r.public_only,
             binding: r.binding,
+            attestation: r.attestation.clone(),
             policy: r.policy.clone(),
             immutables: r.immutables.clone(),
             observed: Some(Observed {

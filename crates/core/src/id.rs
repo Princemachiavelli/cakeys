@@ -74,8 +74,78 @@ pub fn canonical_scheme(name: &str) -> &str {
 }
 
 /// Every scheme this version defines (§3.1 of docs/DESIGN.md).
-pub const KNOWN_SCHEMES: [&str; 8] =
-    ["rfc7093m4", "certhash", "valuehash", "commitment", "cmac", "kcv-ecb", "kcv-ecb-dec", "kw"];
+pub const KNOWN_SCHEMES: [&str; 10] = [
+    "rfc7093m4",
+    "certhash",
+    "valuehash",
+    "commitment",
+    "cmac",
+    "kcv-ecb",
+    "kcv-ecb-dec",
+    "kw",
+    "piv-attestation",
+    "tpm-certify",
+];
+
+/// Attestation schemes (§3.7 of docs/DESIGN.md): IDs from a vendor- or TPM-signed attestation
+/// of the key. They are *provenance* evidence for one device — a copy of the key on another
+/// token can never attest (it was imported there) — so they never stand alone: an object locked
+/// under one must also hold a portable scheme, which is what links the same material across
+/// tokens. Unlike the commitment schemes, they take no `commitmentLabel`: their input is the
+/// attestation itself, not a message the token MACs.
+pub const ATTESTATION_SCHEMES: [&str; 2] = ["piv-attestation", "tpm-certify"];
+
+/// The lock-record `attestation.kind` for each attestation scheme (§3.7): which attestation
+/// evidence produced the ID. One kind per scheme, pinned so a lock names its evidence exactly.
+pub const ATTESTATION_KINDS: [(&str, &str); 2] = [("piv-attestation", "yubico-piv"), ("tpm-certify", "tpm-certify")];
+
+/// Whether `scheme` is an attestation scheme (§3.7): provenance evidence, never a portable link.
+pub fn is_attestation_scheme(scheme: &str) -> bool {
+    ATTESTATION_SCHEMES.contains(&scheme)
+}
+
+/// The canonical encoding shared by the attestation commitment definitions: a domain-separated
+/// tag, then each field as a u32 length prefix and its bytes, so no field can bleed into the
+/// next (§3.7, §10).
+fn attest_encoding(tag: &[u8], fields: &[&[u8]]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(tag.len() + fields.len() * 8);
+    v.extend_from_slice(tag);
+    for f in fields {
+        v.extend_from_slice(&(f.len() as u32).to_le_bytes());
+        v.extend_from_slice(f);
+    }
+    v
+}
+
+/// The `piv-attestation` commitment (§3.7): what a YubiKey PIV attestation certificate *asserts*,
+/// not its bytes. The certificate is generated on demand with a random serial and a randomized
+/// ECDSA signature, so hashing the DER would be unstable; these fields are the stable claims.
+/// `issuer_spki` is the device attestation key in slot f9 (pinned per realisation through the
+/// verified chain to the Yubico root), `subject_spki` is the attested key — the same public key
+/// the object's `rfc7093m4` hashes, which the caller must have checked — and the rest are the
+/// Yubico extension values (1.3.6.1.4.1.41482.3.3/.3.7/.3.8/.3.9), empty when the cert omits one.
+pub fn piv_attestation_id(
+    issuer_spki: &[u8],
+    subject_spki: &[u8],
+    firmware: &[u8],
+    serial: &[u8],
+    pin_touch_policy: &[u8],
+    formfactor: &[u8],
+) -> String {
+    sri(&attest_encoding(
+        b"cakeys/piv-attestation/v1\0",
+        &[issuer_spki, subject_spki, firmware, serial, pin_touch_policy, formfactor],
+    ))
+}
+
+/// The `tpm-certify` commitment (§3.7): the Name and qualified Name a `TPM2_Certify` statement
+/// attests, signed by an Attestation Key. The Name is `nameAlg ‖ H(TPMT_PUBLIC)` — it covers the
+/// public key, every `objectAttributes` bit and the `authPolicy` — and the qualified Name places
+/// the object in its hierarchy. The qualifying data (host nonce) proves freshness and is
+/// verification evidence only: never part of the ID.
+pub fn tpm_certify_id(name: &[u8], qualified_name: &[u8]) -> String {
+    sri(&attest_encoding(b"cakeys/tpm-certify/v1\0", &[name, qualified_name]))
+}
 
 /// Scheme names whose computation is deprecated (docs/DESIGN.md §3.1). Identities already locked
 /// under one keep verifying — with a warning — but `realise --update-lock` never records a new one:
@@ -537,5 +607,28 @@ mod tests {
     fn the_deprecation_register_is_pinned() {
         assert!(DEPRECATED_SCHEMES.is_empty(), "deprecating a scheme is a design decision; see docs/DESIGN.md §3.1");
         assert!(DEPRECATED_SCHEMES.iter().all(|s| KNOWN_SCHEMES.contains(s)));
+    }
+
+    /// The attestation commitment definitions (docs/DESIGN.md §3.7, §10): each scheme's canonical
+    /// input, pinned. The attestations are verified evidence — Yubico PIV certificate chain,
+    /// TPM2_Certify over the object's Name — and the canonical encoding below is what an ID is
+    /// the SHA-256 of, so a change here breaks locks and must be a new scheme name instead.
+    #[test]
+    fn attestation_definitions_are_pinned() {
+        assert!(ATTESTATION_SCHEMES.iter().all(|s| KNOWN_SCHEMES.contains(s)));
+        assert_eq!(
+            ATTESTATION_KINDS,
+            [("piv-attestation", "yubico-piv"), ("tpm-certify", "tpm-certify")]
+        );
+        // piv-attestation: domain tag, then issuer SPKI (f9 device key), subject SPKI (the key),
+        // firmware (1.3.6.1.4.1.41482.3.3), serial (.3.7), PIN/touch policy (.3.8), formfactor
+        // (.3.9) — length-prefixed in that order, absent extensions as empty fields.
+        assert_eq!(
+            piv_attestation_id(b"issuer", b"subject", b"\x05\x07\x04", b"\x00\x01\x02\x03", b"\x04\x01", b"\x05"),
+            "sha256-Ag0O41w4o5kTLdmBZotdL9DKXHQKn36fPRTUWXLpTJY="
+        );
+        // tpm-certify: domain tag, then the attested Name (nameAlg tag + H(TPMT_PUBLIC)) and the
+        // qualified Name. The freshness nonce is verification evidence and never part of the ID.
+        assert_eq!(tpm_certify_id(b"\x00\x0bname", b"\x00\x0bqn"), "sha256-gtESMfaa12qwnzF1o9xnvKzbZUFlO7WOTHi4aj52aq0=");
     }
 }

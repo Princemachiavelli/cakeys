@@ -3,7 +3,9 @@
 //! spec-compliant module would, so identities stay portable across modules and versions.
 
 use cryptoki::mechanism::MechanismType;
-use cakeys_core::config::ModuleInfo;
+use cryptoki::object::ObjectHandle;
+use cryptoki::session::Session;
+use cakeys_core::config::{ModuleInfo, ObjectCfg, TokenCfg};
 use cakeys_core::{KmError, Result};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -29,7 +31,62 @@ pub trait Provider: Send + Sync {
     fn hint(&self) -> Option<&'static str> {
         None
     }
+
+    /// The attestation commitment this provider can compute (§3.7 of docs/DESIGN.md), if any:
+    /// the scheme it records, the lock-record kind, and the object classes it can attest.
+    /// `None` (the default): this module exposes no attestation, so a spec opting into one is
+    /// refused (15) before anything is created.
+    fn attestation(&self) -> Option<AttestationCap> {
+        None
+    }
+
+    /// Compute the attestation commitment for `key` on its token (called only when the spec
+    /// opted in and [`Provider::attestation`] covers the class). Returns the canonical scheme
+    /// digest plus the anchor it was verified to. A missing attestation is an error naming the
+    /// reason (e.g. an imported key, or a session that could not attest), never a pass; an
+    /// attestation that names other material than `ctx.spki` is a conflict (13).
+    fn attest(&self, _ctx: &AttestCtx<'_>) -> Result<Attested> {
+        // Unreachable in practice: the caller checks `attestation()` first. Kept as an error so
+        // a provider advertising a capability must actually implement it.
+        Err(KmError::Unsupported(format!("{} exposes no attestation", self.name())))
+    }
 }
+
+/// What a provider can attest (§3.7 of docs/DESIGN.md), from [`Provider::attestation`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttestationCap {
+    /// Scheme the commitment records (one of `cakeys_core::id::ATTESTATION_SCHEMES`).
+    pub scheme: &'static str,
+    /// Lock-record `attestation.kind` (see `cakeys_core::id::ATTESTATION_KINDS`).
+    pub kind: &'static str,
+    /// Object classes (`"CKO_PRIVATE_KEY"`, ...) the attestation covers.
+    pub classes: &'static [&'static str],
+}
+
+/// Everything an attestation may need beyond the PKCS#11 module: the session (to find the
+/// certificate objects a module exposes), the config (the native TPM path's TCTI and store) and
+/// the PIN (the TPM path unseals the token's wrapping key with it), plus the material SPKI the
+/// attestation must name (`None` for secret keys, which have none).
+pub struct AttestCtx<'a> {
+    pub session: &'a Session,
+    pub cfg: &'a TokenCfg,
+    pub token_name: &'a str,
+    pub key: ObjectHandle,
+    pub object: &'a ObjectCfg,
+    pub spki: Option<&'a [u8]>,
+    pub pin: Option<&'a str>,
+}
+
+/// A computed attestation commitment (§3.7 of docs/DESIGN.md): the scheme digest plus the
+/// anchor the attestation was verified against — recorded in the lock as the realisation's
+/// `attestation = { kind, root }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attested {
+    pub scheme: &'static str,
+    pub id: String,
+    pub root: String,
+}
+
 
 /// Plain PKCS#11, used when no registered provider recognises the module.
 pub struct Generic;

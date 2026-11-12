@@ -112,13 +112,20 @@ flowchart LR
     CM -- weaker --> K1["kcv-ecb"]
     K1 -- weaker --> K2["kcv-ecb-dec"]
     K2 -- weaker --> KW["kw"]
+    YK["YubiKey PIV keys<br/>(opt-in, §3.7)"] -. "always beside rfc7093m4" .-> PA["piv-attestation<br/>the slot certificate's asserted<br/>claims, verified to the<br/>pinned Yubico root"]
+    TP["tpm2-pkcs11 keys<br/>(opt-in, §3.7)"] -. "always beside a portable scheme" .-> TC["tpm-certify<br/>TPM2_Certify over the Name,<br/>fresh nonce, host-verified<br/>against the pinned AK"]
     style CM fill:#dfe
     style KW fill:#fdd
+    style PA fill:#fed
+    style TC fill:#fed
 ```
 
 Only the declared usage bits decide which commitment schemes run (CKA_SIGN → cmac,
 CKA_ENCRYPT → kcv-ecb, …); the first computed is the primary scheme, and the lock stores only
-SHA-256 of the token's output, never a MAC or ciphertext under the key.
+SHA-256 of the token's output, never a MAC or ciphertext under the key. The attestation schemes
+(`attestation = true`) are provenance, not portable identity: a copy of the material on a second
+HSM can never attest, so they are recorded only beside a portable scheme, which is what the
+second token verifies against.
 
 ## 5. Usage: the Nix loop
 

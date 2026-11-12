@@ -42,6 +42,8 @@ object.
 | `kcv-ecb` | AES | AES-ECB encryption of one block (first 16 bytes of SHA-256(label)) | `CKA_ENCRYPT` | same, `tpm2_aes_key_is_identified_by_its_kcv` |
 | `kcv-ecb-dec` | AES | AES-ECB *decryption* of such a block | `CKA_DECRYPT` | `aes_128_192_and_decrypt_only_match_host_oracles` |
 | `kw` | AES | RFC 3394 key wrap of a fixed key (SHA-256(label)) | `CKA_WRAP` | `aes_commitments_match_host_oracles` |
+| `piv-attestation` | private/public keys (YubiKey PIV) | Canonical digest of what the slot's attestation certificate asserts (§3.7), verified to the pinned Yubico root | opt-in `attestation = true`, management key in the session | `fixture_chain_verifies_and_pins`, `the_yubico_roots_are_pinned` |
+| `tpm-certify` | private and secret keys on tpm2-pkcs11 tokens | Canonical digest of the Name and qualified Name a native `TPM2_Certify` attests (§3.7), host-verified against a provisioned AK | opt-in `attestation = true`, `tcti` + store + PIN | `tpm2_keys_attest_their_tpm_residence`, `tpm2_attested_material_travels_to_a_second_hsm` |
 
 - **Commitment schemes never reveal what the token computed.** The lock stores only SHA-256 of the
   token's output, never a MAC or ciphertext under the key — `aes_commitments_…` asserts the raw
@@ -50,6 +52,9 @@ object.
   defaults. The preference order (the first computed is the primary scheme) is
   `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`.
 - **Only mechanisms the token offers are used.** If none fits, the result is *unsupported* (exit 15).
+- **Attestation schemes are computed only by explicit opt-in** (`attestation = true` on the spec's
+  token entry, §3.7): they promise TPM- or vendor-signed provenance from then on, and a run that
+  cannot attest would otherwise turn every previously-attested realisation into a downgrade.
 
 **Scheme strength and deprecation** (finding S15). Per class, the schemes in the order cakeys
 prefers them — the first computed is the primary identity, and a weaker scheme is only computed
@@ -183,6 +188,66 @@ The lock records the binding per realisation (`pop-sign`, `pop-ecdh`, `pop-decry
 key — so a realisation never weakens unless it drops to `token-asserted`, which is refused
 (exit 14), also under `--update-lock` — `binding_downgrade_is_refused`.
 
+### 3.7 Attestation commitments (`piv-attestation`, `tpm-certify`)
+
+Attestation is *signed provenance*: a vendor or the TPM signs what a key is and where it was
+made, and the host verifies the signature to a pinned anchor. Two schemes turn it into a
+content-addressed identity — one per token type that can produce it:
+
+| Scheme | Token | Evidence | Anchor pinned in the lock |
+|---|---|---|---|
+| `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it). Yubico attests only keys generated on device; minting the certificate needs the PIV management key in the session | the Yubico root's SPKI |
+| `tpm-certify` | tpm2-pkcs11 tokens | a native `TPM2_Certify` (tss-esapi) over the object's Name with a fresh random nonce, host-verified; the object's TPM blobs are read from the module's store and loaded under the token's primary — `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh | the Attestation Key's SPKI |
+
+- **The commitment hashes asserted content, never signed bytes.** A PIV certificate is minted
+  per session with a random serial and a randomized ECDSA signature; a `TPMS_ATTEST` carries a
+  per-run nonce and clock. `piv-attestation` hashes the certificate's stable claims (issuer
+  SPKI, subject SPKI, firmware, serial, PIN/touch policy, form factor extensions), and
+  `tpm-certify` the attested Name and qualified Name (`cakeys/tpm-certify/v1`, `id.rs`; the
+  definitions are pinned by `attestation_definitions_are_pinned`). The Name is
+  `nameAlg ‖ H(TPMT_PUBLIC)`, so it covers the key, every `objectAttributes` bit and the
+  `authPolicy`.
+- **An attestation includes the key identity by construction.** The PIV certificate's subject
+  SPKI *is* the attested key; the TPM Name covers the public area. Both schemes cross-check it
+  at compute time against the SPKI the object's `rfc7093m4` hashes — an attestation of other
+  material is a conflict (13), never a second opinion. For symmetric keys (which PIV cannot
+  attest; the TPM can), there is no SPKI: the portable identity is the commitment scheme, and
+  the cross-check is that the module's `CKA_LOCAL`/`CKA_EXTRACTABLE` match the signed
+  `objectAttributes`.
+- **Attestation never replaces portable identity — and never stands alone.** A key copied to a
+  second HSM was *imported* there: it can never attest. So an object locked under an
+  attestation scheme must also hold a portable scheme (`rfc7093m4` for keys, a commitment for
+  secret keys), enforced on load (exit 17); `realise --update-lock` records them together, and
+  the attestation scheme is never a realisation's primary scheme. The copy on the second token
+  then verifies through the shared portable scheme, and its attestation scheme is only a note
+  ("not computable here") — material still links only through shared schemes (§3.5).
+- **Opt-in per spec-token** (`tokens.<t>.attestation = true` in the spec's token entry): once an
+  attestation ID is locked, a run that cannot attest fails (14) as a scheme downgrade — that
+  strictness is chosen, not sprung. A provider that attests nothing (SoftHSM, kryoptic, p11-kit)
+  refuses the opt-in up front (15, before anything is created), as does a class it cannot
+  attest (PIV: asymmetric keys only; TPM: private and secret keys — a public-key object is
+  stored without a private blob, and `TPM2_Certify` cannot attest a public-only area).
+- **The lock pins the anchor** per realisation: `attestation = { kind = "yubico-piv" |
+  "tpm-certify", root = <SRI of the anchor's SPKI> }`. A changed anchor — a re-provisioned TPM,
+  another device signing the same claims — fails (14) even under `--update-lock`, like
+  immutables: the material needs a new object name. The record is present exactly when the
+  realisation's `schemes` include the attestation scheme (checked on load, exit 17).
+- **The TPM Attestation Key** is a restricted signing key (P-256, ECDSA-SHA256, empty auth,
+  owner hierarchy) that cakeys provisions on first attest at a persistent handle and never
+  uses for anything but certify: a restricted key signs only TPM-generated structures. The
+  handle defaults to `0x81000016` (cakeys-tpm2-pkcs11 `DEFAULT_AK_HANDLE`), configurable per
+  token (`akHandle`). Trust in it is TOFU through the pinned `root`; **chaining it to the
+  Endorsement Key certificate (EK → AK via MakeCredential/ActivateCredential) is not
+  implemented yet** — until it is, the AK proves "this TPM", not "this genuine TPM".
+- **What each scheme proves, and what it does not.** `tpm-certify` is freshness-bound by the
+  nonce: the object was loaded in that TPM *at verify time*, with the certified attributes.
+  `piv-attestation` has no verifier nonce (Yubico's certificate carries none), so it proves
+  the claims but not liveness — a malicious module could replay an old certificate; it is
+  [attested] provenance, not [crypto] proof of presence. Neither scheme can say anything about
+  other tokens: exclusivity stays [unobservable] (§8.2).
+- **Vendor HSM attestations** (Luna PKC, Google Cloud HSM, nShield) are out-of-band formats,
+  not researched (see the review's gap): reserved for a future scheme each, never guessed.
+
 ## 4. Files
 
 ### 4.1 `keys.toml`
@@ -204,8 +269,12 @@ curve = "..." ; modulusBits = N ; valueLen = BYTES   # curve names are canonical
 object = "<object>"
 attributes = { CKA_SIGN = true, ... }   # settable booleans the class may carry (PKCS#11 3.2 §4), or CKA_ALLOWED_MECHANISMS = ["CKM_..."] on key objects; a wrong name or class is exit 17
 publicAttributes = { CKA_VERIFY = true, ... }   # private keys only: policy of the public key object; checked on it, in the digest only when present
-tokens.<token> = { locator = { CKA_LABEL = "...", CKA_ID = "hex" }, autoCreate = bool, publicOnly = bool, binding = "pop-ecdh" | "pop-decrypt" | "token-asserted", identity.allow = [...] }
+tokens.<token> = { locator = { CKA_LABEL = "...", CKA_ID = "hex" }, autoCreate = bool, publicOnly = bool, binding = "pop-ecdh" | "pop-decrypt" | "token-asserted", attestation = bool, identity.allow = [...] }
 ```
+
+`tokens.<t>.attestation = true` (in a spec's token entry) opts into the attestation commitment
+(§3.7). Token-level TPM fields for the native certify path (`tcti`, `tpm2Store`, `akHandle`)
+are §3.7 and the `TokenCfg` docs.
 
 What may be created and adopted:
 - **References are checked at load** (exit 17): a spec's `object` must name an `[objects.<name>]`
@@ -262,6 +331,7 @@ mode = "direct"                      # a weaker mode is refused
 schemes = ["rfc7093m4"]              # schemes this realisation computed and matched; fewer later is refused
 publicOnly = true                    # only when set
 binding = "pop-sign"                 # private keys: pop-sign | pop-ecdh | pop-decrypt | token-asserted (§3.6)
+attestation = { kind = "tpm-certify", root = "sha256-..." }   # §3.7: only when the realisation computed an attestation scheme; a changed anchor fails (14), also under --update-lock
 [realisations.<spec>.<token>.policy] # every attribute of the class the token shows: booleans, plus CKA_ALLOWED_MECHANISMS on key objects
 CKA_SIGN = true ; CKA_DECRYPT = true ; CKA_EXTRACTABLE = false ; ...
 [realisations.<spec>.<token>.immutables] # keys: fixed at creation
@@ -405,10 +475,10 @@ Exit codes:
 
 | Provider | Quirks handled or recorded |
 |---|---|
-| softhsm | none (reference) |
-| ykcs11 | `CKA_PUBLIC_KEY_INFO` length 0 then `CKR_ARGUMENTS_BAD` (tolerated generically); fixed PIV slot IDs |
-| tpm2-pkcs11 | drops `AES_KEY_GEN`/`GENERIC_SECRET_KEY_GEN` (`C_GenerateKey` unsupported); repairs the malformed P-521 `CKA_EC_POINT` (`04 85 …`; upstream draft in `upstream/tpm2-pkcs11/`) — `tpm2_*` tests |
-| p11-kit | detects the proxy; the RPC drops AES key wrap and EdDSA/Edwards mechanisms; the module behind it is hidden (set `provider` explicitly) — `p11kit_*` tests |
+| softhsm | none (reference); attests nothing |
+| ykcs11 | `CKA_PUBLIC_KEY_INFO` length 0 then `CKR_ARGUMENTS_BAD` (tolerated generically); fixed PIV slot IDs; the `piv-attestation` commitment: per-slot attestation certificates found by their label/`CKA_ID`, chain-verified to the embedded Yubico roots (`roots/`, §3.7) |
+| tpm2-pkcs11 | drops `AES_KEY_GEN`/`GENERIC_SECRET_KEY_GEN` (`C_GenerateKey` unsupported); repairs the malformed P-521 `CKA_EC_POINT` (`04 85 …`; upstream draft in `upstream/tpm2-pkcs11/`) — `tpm2_*` tests; the `tpm-certify` commitment: a native `TPM2_Certify` through tss-esapi and the module's sqlite store (§3.7) |
+| p11-kit | detects the proxy; the RPC drops AES key wrap and EdDSA/Edwards mechanisms; the module behind it is hidden (set `provider` explicitly) — `p11kit_*` tests; attests nothing itself (what the proxied module exposes decides, but the provider name does not reach it: opt in only against the real module) |
 
 ### 6.3 cryptoki patch
 cryptoki ≤ 0.12.1 gives `KeyType::SHA224/384/512_HMAC` the value of `CKK_SHA256_HMAC`. The Nix
@@ -480,6 +550,11 @@ forces it. The VM test covers all of this.
 - **Type and policy of the live object** must match the spec.
 - **Private keys prove possession** of the key their identity names, unless opted out per token;
   the binding is recorded and cannot weaken (§3.6).
+- **Attestation commitments are verified evidence, never a standalone identity** (§3.7): the
+  chain or signature is checked on the host against the pinned anchor, the attested key must be
+  the material the object's portable scheme names, and an object locked under an attestation
+  scheme always carries a portable one — so the same material on a token that cannot attest
+  still verifies there, and the attestation scheme is only a note.
 - **Weak identity modes need an explicit per-token opt-in.** Downgrades fail.
 - **Material is linked only through a shared scheme.**
 - **The lock never holds token outputs, only their hashes.** Private data objects are not hashed.
@@ -495,6 +570,15 @@ See `docs/REVIEW-2026-11-11.md`.
   tied to its identity only by the token's word (H1 is fixed for every `pop-*` proof —
   `h1_a_private_key_beside_an_unbound_public_object_is_a_conflict`,
   `derive_and_decrypt_only_keys_prove_possession`).
+- **`piv-attestation` proves no liveness** (no verifier nonce in Yubico's certificate, §3.7):
+  a malicious module could replay an old one. `tpm-certify` is nonce-bound, so it proves the
+  object was loaded in that TPM at verify time.
+- **The TPM Attestation Key is TOFU** (§3.7): the AK proves "this TPM", not "this genuine TPM",
+  until it is chained to the Endorsement Key certificate.
+- **The PIV attestation path needs hardware to test end to end** (a YubiKey generated on
+  device, and the management key in the session — the shipped example keys are imported, so
+  Yubico attests none of them); the chain verifier itself runs on fixtures and on Yubico's own
+  published certificates.
 - **Features are self-declared.** Any user allowed to build can require a token's feature; the
   real gate is `allowed-users`.
 - **No merge rule for lock fragments.** Updates are serialized by the `<lock>.lck` sidecar (M3)
@@ -505,9 +589,9 @@ See `docs/REVIEW-2026-11-11.md`.
 ## 9. Testing
 | Suite | Where | What |
 |---|---|---|
-| unit | `cargo test --workspace` | digests (pinned), curves and OIDs, SPKI round-trips, registry, P-521 fix-up, hex parsing, proof-of-possession host math (both ECDH MAC sides), the deprecation register and AES strength order |
+| unit | `cargo test --workspace` | digests (pinned), curves and OIDs, SPKI round-trips, registry, P-521 fix-up, hex parsing, proof-of-possession host math (both ECDH MAC sides), the deprecation register, AES strength order, the attestation scheme definitions and lock invariants, the PIV chain verifier (fixture chain + Yubico's own roots and intermediates) |
 | `tests/softhsm.rs` | package build | SoftHSM: lifecycle, every type and scheme against independent oracles (hand-written DER encoder, openssl-hashed fixtures, RustCrypto `hmac`/`cmac`/`aes`/`aes-kw`) |
-| `tests/tpm2.rs` | package build, `nix/tpm2-test-env.sh` | swtpm + tpm2-abrmd + tpm2-pkcs11 |
+| `tests/tpm2.rs` | package build, `nix/tpm2-test-env.sh` | swtpm + tpm2-abrmd + tpm2-pkcs11; the native `tpm-certify` attestation (AK provisioning, cross-checks) and the travel of attested material to SoftHSM through the shared portable scheme |
 | `tests/p11kit.rs` | package build, `nix/p11kit-test-env.sh` | SoftHSM behind `p11-kit server`, compared with direct access |
 | `checks.vm` / `test-nspawn` | QEMU / systemd-nspawn | the CLI flow; in the VM also the pseudo-FOD consumer built in the guest sandbox |
 | `checks.module`, `checks.tpm`, `checks.lib` | QEMU / eval | module, hook, pcscd, TPM ACL, Nix library |
@@ -533,6 +617,12 @@ label and the hash itself. Everything else is fixed by definition:
   each key type uses and which mechanism each scheme runs.
 - **Further frozen identifiers:** the label layout `<label>/<scheme>/<keyType>/<bits>` and the
   mode names;
+- the SRI form `sha256-<base64>`;
+- the attestation commitment encodings: `cakeys/piv-attestation/v1` and `cakeys/tpm-certify/v1`,
+  each a domain tag followed by length-prefixed fields (`attestation_definitions_are_pinned`),
+  the attestation scheme names (`piv-attestation`, `tpm-certify`), the lock-record kinds
+  (`yubico-piv`, `tpm-certify`) and the pinned anchors: the embedded Yubico root SPKIs
+  (`the_yubico_roots_are_pinned`) and the AK handle `0x81000016` (`DEFAULT_AK_HANDLE`);
 - the SRI form `sha256-<base64>`;
 - the spec digest JSON shape (`"v":1`, camelCase, `keyType` omitted when empty, `certificateType`
   and `publicAttributes` only when set; the certificate digest changed with `certificateType`,

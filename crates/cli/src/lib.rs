@@ -203,10 +203,15 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
             let (spec_name, token_name) = cfg.pick_spec(object, spec.as_deref(), token.as_deref())?;
             let t = Target::new(&cfg, &spec_name, &token_name)?;
             if let Some(s) = scheme {
-                if !t.schemes().contains(&s) {
+                // The schemes the spec can compute, plus the attestation schemes when the token
+                // entry opted in (§3.7): schemes_on narrows them to what this token computes.
+                let mut possible = t.schemes();
+                if t.on_token.attestation {
+                    possible.extend(cakeys_core::id::ATTESTATION_SCHEMES.iter().copied());
+                }
+                if !possible.contains(&s) {
                     return Err(KmError::Unsupported(format!(
-                        "scheme '{s}' for '{object}'; it has {:?}",
-                        t.schemes()
+                        "scheme '{s}' for '{object}'; it has {possible:?}"
                     ))
                     .into());
                 }

@@ -6,8 +6,11 @@
   tpm2-pkcs11,
   tpm2-tools,
   tpm2-abrmd,
+  tpm2-tss,
+  sqlite,
   dbus,
   p11-kit,
+  pkg-config,
 }:
 
 rustPlatform.buildRustPackage {
@@ -24,6 +27,16 @@ rustPlatform.buildRustPackage {
   };
 
   cargoLock.lockFile = ../Cargo.lock;
+
+  # tss-esapi (the native TPM2_Certify attestation path of cakeys-tpm2-pkcs11) links
+  # tpm2-tss's ESAPI and TCTI loader at build time; rusqlite falls back to the system
+  # library here, so it must resolve. The runtime closure picks the libraries up through
+  # the link.
+  nativeBuildInputs = [ pkg-config ];
+  buildInputs = [
+    tpm2-tss
+    sqlite
+  ];
 
   # cryptoki 0.12.1 (and main) gives KeyType::SHA224/384/512_HMAC the value of CKK_SHA256_HMAC, so those key
   # types can be neither created nor told apart. Minimal local fix until upstream has one
