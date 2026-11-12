@@ -980,7 +980,10 @@ fn a_new_scheme_missing_from_the_lock_is_a_note_unless_requested() {
     // A lock written by a version that only knew cmac.
     std::fs::write(
         e.dir.join("keys.lock"),
-        format!("version = 1\n[objects.u.ids]\ncmac = \"{}\"\n", aes_commitment(&key, "cmac")),
+        format!(
+            "version = 1\n[objects.u]\ncommitmentLabel = \"key-management/v1\"\n[objects.u.ids]\ncmac = \"{}\"\n",
+            aes_commitment(&key, "cmac")
+        ),
     )
     .unwrap();
     let v = e.km(&["verify", "u", "--token", "softhsm"]);
@@ -1115,4 +1118,46 @@ fn known_gap_ec_private_identity_comes_from_an_unbound_public_object() {
     s.update_attributes(other_private, &[Attribute::Label(b"gap-a".to_vec())]).unwrap();
     // Different private key under the locator, same public object: not detected today.
     assert_eq!(code(&e.km(&["verify", "signing-soft", "--token", "softhsm"])), 0, "H1 fixed? flip this assertion");
+}
+
+
+#[test]
+fn commitment_label_comes_from_the_lock() {
+    let Some(e) = env("label") else { return };
+    let value = *b"commitment label test vector 32B";
+    plant_secret(&e.session(), "label-mac", cryptoki::object::KeyType::GENERIC_SECRET, &value, &[Attribute::Sign(true)]);
+    e.config(
+        "[objects.m]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = 32\n\n\
+         [specs.m]\nobject = \"m\"\nattributes = { CKA_SIGN = true }\n\
+         tokens.softhsm = { locator = { CKA_LABEL = \"label-mac\" } }\n",
+    );
+    let hmac = |label: &str| {
+        let mut m = <Hmac<sha2::Sha256> as KeyInit>::new_from_slice(&value).unwrap();
+        m.update(format!("{label}/commitment/CKK_GENERIC_SECRET/256").as_bytes());
+        sri(&m.finalize().into_bytes())
+    };
+    let path = e.dir.join("keys.lock");
+    let lock = |text: String| std::fs::write(&path, text).unwrap();
+    let verify = ["verify", "m", "--token", "softhsm"];
+
+    // A new object gets the default label, and the lock records it.
+    assert_eq!(code(&e.km(&["realise", "m", "--token", "softhsm", "--update-lock"])), 0);
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.starts_with("version = 1"), "{text}");
+    assert!(text.contains("commitmentLabel = \"key-management/v1\""), "{text}");
+    assert_eq!(e.locked_id("m", "commitment"), hmac("key-management/v1"));
+
+    // Another label in the lock is the one used (not the code default)...
+    let custom = "example.org/keys/v1";
+    lock(format!("version = 1\n[objects.m]\ncommitmentLabel = \"{custom}\"\n[objects.m.ids]\ncommitment = \"{}\"\n", hmac(custom)));
+    assert_eq!(code(&e.km(&verify)), 0);
+    // ...so a hash made with any other label does not match it.
+    lock(format!("version = 1\n[objects.m]\ncommitmentLabel = \"{custom}\"\n[objects.m.ids]\ncommitment = \"{}\"\n", hmac("key-management/v1")));
+    assert_eq!(code(&e.km(&verify)), 10);
+
+    // Commitment IDs require the label; other lock versions are refused.
+    lock(format!("version = 1\n[objects.m.ids]\ncommitment = \"{}\"\n", hmac("key-management/v1")));
+    assert_eq!(code(&e.km(&verify)), 17);
+    lock("version = 2\n".into());
+    assert_eq!(code(&e.km(&verify)), 17);
 }

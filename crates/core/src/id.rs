@@ -31,9 +31,13 @@ pub fn spec_digest(object: &ObjectCfg, spec: &SpecCfg) -> String {
     sri(canonical.to_string().as_bytes())
 }
 
-/// Prefix of every commitment label. FROZEN: it is hashed into every secret-key ID, so it must
-/// never change, also not when the project is renamed (docs/DESIGN.md, "Frozen identifiers").
-pub const COMMITMENT_LABEL_PREFIX: &str = "key-management/v1";
+/// Commitment label for objects the lock does not know yet. The lock records, per object, the
+/// label its commitments were computed with, and that recorded value is what verification uses:
+/// changing this default never breaks an existing lock (docs/DESIGN.md §3.3).
+pub const DEFAULT_COMMITMENT_LABEL: &str = "key-management/v1";
+
+/// Schemes computed from a commitment label (all `Commit` variants).
+pub const COMMITMENT_SCHEMES: [&str; 5] = ["commitment", "cmac", "kcv-ecb", "kcv-ecb-dec", "kw"];
 
 /// Hash of an HMAC commitment. A key bound to a hash (`CKK_SHA384_HMAC`, ...) is committed with
 /// that hash; generic secrets use SHA-256.
@@ -91,11 +95,11 @@ impl Commit {
         }
     }
 
-    /// Domain-separation label. The intrinsic type is mixed in so the same bytes held as two key
-    /// types never share an ID.
-    pub fn label(self, object: &ObjectCfg) -> Vec<u8> {
+    /// Domain-separation label `<commitment label>/<scheme>/<keyType>/<bits>`. The intrinsic type
+    /// is mixed in so the same bytes held as two key types never share an ID.
+    pub fn label(self, commitment_label: &str, object: &ObjectCfg) -> Vec<u8> {
         format!(
-            "{COMMITMENT_LABEL_PREFIX}/{}/{}/{}",
+            "{commitment_label}/{}/{}/{}",
             self.scheme(),
             object.key_type,
             object.value_len.unwrap_or(0) * 8
@@ -105,8 +109,8 @@ impl Commit {
 
     /// The fixed input the token operates on: the label, or its SHA-256 (truncated to one AES
     /// block for the KCV).
-    pub fn input(self, object: &ObjectCfg) -> Vec<u8> {
-        let label = self.label(object);
+    pub fn input(self, commitment_label: &str, object: &ObjectCfg) -> Vec<u8> {
+        let label = self.label(commitment_label, object);
         match self {
             Commit::Hmac(_) | Commit::Cmac => label,
             Commit::KcvEcb | Commit::KcvEcbDecrypt => Sha256::digest(&label)[..16].to_vec(),
@@ -344,11 +348,11 @@ mod tests {
             modulus_bits: None,
         };
         assert_eq!(
-            Commit::Hmac(HmacHash::Sha256).label(&obj),
+            Commit::Hmac(HmacHash::Sha256).label(DEFAULT_COMMITMENT_LABEL, &obj),
             b"key-management/v1/commitment/CKK_GENERIC_SECRET/256"
         );
-        assert_eq!(Commit::KcvEcb.input(&obj).len(), 16);
-        assert_eq!(Commit::Kw.input(&obj).len(), 32);
+        assert_eq!(Commit::KcvEcb.input(DEFAULT_COMMITMENT_LABEL, &obj).len(), 16);
+        assert_eq!(Commit::Kw.input(DEFAULT_COMMITMENT_LABEL, &obj).len(), 32);
     }
 
     #[test]
@@ -402,5 +406,45 @@ mod tests {
             mk("CKO_SECRET_KEY", "CKK_GENERIC_SECRET", None, Some(32), None, &[("CKA_SIGN", true), ("CKA_EXTRACTABLE", true)]),
             "sha256-itlUiIf3R6LLNeujs4Htvzd/3jwJRS/nxRhr5Cgh+FM="
         );
+    }
+
+    /// Known-answer tests: each scheme's definition, pinned. A code or crate change that alters
+    /// any of these breaks existing locks, so it must fail here, not in a user's lock. A scheme
+    /// whose computation changes needs a new name (docs/DESIGN.md §10).
+    #[test]
+    fn scheme_definitions_are_pinned() {
+        let obj = |kt: &str, len: u64| ObjectCfg {
+            class: "CKO_SECRET_KEY".into(),
+            key_type: kt.into(),
+            curve: None,
+            value_len: Some(len),
+            modulus_bits: None,
+        };
+        // What each commitment scheme feeds the token (the token's output is then hashed).
+        for (kt, len, c, want) in [
+            ("CKK_GENERIC_SECRET", 32, Commit::Hmac(HmacHash::Sha256), "sha256-3gML2yTFq/QAofi+p2ao7a9fEgIbaglLT0YCQcqvjLk="),
+            ("CKK_SHA384_HMAC", 48, Commit::Hmac(HmacHash::Sha384), "sha256-HUtAzPAIg8HRIIURRy0TrTY8eNLoxo48/G3LuEDdMbw="),
+            ("CKK_AES", 32, Commit::Cmac, "sha256-u42TmSUu/rRjWDQH7LYM7fJHAKe/B81julPRAManfus="),
+            ("CKK_AES", 32, Commit::KcvEcb, "sha256-L1W0lzlDj7Pcu44tnVa/ekyQRHsIybF5gUIsG/oi270="),
+            ("CKK_AES", 16, Commit::KcvEcbDecrypt, "sha256-Ht1do336beKCgXkt86UdPfbUUdqLPc7Md3/3IybSftI="),
+            ("CKK_AES", 32, Commit::Kw, "sha256-woiHkSVHlbF2VQCQbiHKffrxo2ShyBOMzsdtKDPtH7c="),
+        ] {
+            assert_eq!(sri(&c.input(DEFAULT_COMMITMENT_LABEL, &obj(kt, len))), want, "{kt} {}", c.scheme());
+        }
+        // pubkeyhash: canonical SPKI from fixed points (compressed secp256k1 input normalizes).
+        let unhex = |h: &str| (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
+        for (c, point, want) in [
+            (Curve::P256, "041e18532fd4754c02f3041d9c75ceb33b83ffd81ac7ce4fe882ccb1c98bc5896ea46c311c4e2ff40dd96a3653e6e45445d32dfe486eced75c7a90c6a18881c0a3", "sha256-zpfsINQ2YaGbIVyy43ammNC0qiqltMeFTpFr0FCC/O4="),
+            (Curve::P384, "04b01bfc4a2d7fe2095e6627cc5caf9abd153d5b551fe7f6da615da9d1bfd101e8d191e85902c0a34eaa3a16e666880b73059f658c4d6a6e57c0959de80109b0fa6b56bd63d1d5701a93d15322f2267a15526641c60cd07c912a6df58aa993d89b", "sha256-lZsez90QHDfJQWpTPfCv+eHf7LY4NpyFH+EQZ4VjmpM="),
+            (Curve::P521, "0400e885ae400c9674eeca8cf31f686419a33138db4aae8a20067d62c94d600bb2a48d989aa95f9615d4e5bacdc044e179803072f8f133e115d25e96c556e469bd8ad3000e07af1f79c99b5ac75a49f120cd7e8cc995d00929df0d37d943d81b55a306d6c8c0eedf8732041f03d073625aef81f59ec165a6a8f6a86db7d2aa72536d3c9bb7", "sha256-VALfpeeRcX+xETHLs6jCtUC7CIqf5XNBivx3le/NX6w="),
+            (Curve::Secp256k1, "02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f", "sha256-GGiTh3jiylXXEKyGdFCFl7SIJeh1A/vhl3c13ILSdfs="),
+            (Curve::BrainpoolP256r1, "04028ec4ffd1f989083b4dea1542e8f61d15c28deb3a61ddadffba11ab76d1d8d75eb8e2d46ec7c23353469bd0ed08c292152987e4367f977a3ff80e1a086c4348", "sha256-EUqjIIpLZdllAsykMZpqcQaXQ/2tBFOD7+Yx3QkfTjU="),
+            (Curve::BrainpoolP384r1, "0449dd247f168d73664a8f26ace5d9f34aad77f84998edbbcec898f92d30a4548f4d274c98a08d172afd0d5c86342c8efd16522b32f0dbc8afc0a5493b8d7e09237df15ee7a8b257edac927f7b6d0a5a7de561ecfff0151f73b9070e385e8be376", "sha256-StxntL+EMsY/zm/T3hOEDDruXh8aVrTAFM6j1kaknC0="),
+            (Curve::Ed25519, "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", "sha256-BuP9j9opu2CrWVV95h7bCuzbIxE0vjDnW0Vfjht5L6k="),
+        ] {
+            assert_eq!(sri(&c.spki_from_point(&unhex(point)).unwrap()), want, "{c:?}");
+        }
+        assert_eq!(sri(&Curve::Ed448.spki_from_point(&[7u8; 57]).unwrap()), "sha256-cfF15XCGWRqstHtN6A71S40xP0sTzTP+Kbkzd9quwyc=");
+        assert_eq!(sri(&rsa_spki(&[0xc5u8; 256], &[1, 0, 1]).unwrap()), "sha256-YAhs9O2fj0M1rDBQoGcFdy9IyFxKRflfglzP6zTtER0=");
     }
 }

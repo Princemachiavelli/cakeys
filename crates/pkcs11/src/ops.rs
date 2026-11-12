@@ -232,10 +232,22 @@ pub struct Resolved {
     #[serde(rename = "specDigest")]
     pub spec_digest: String,
     pub ids: BTreeMap<String, String>,
+    /// Label the commitment schemes in `ids` were computed with (none for public-material IDs).
+    #[serde(rename = "commitmentLabel", skip_serializing_if = "Option::is_none")]
+    pub commitment_label: Option<String>,
+}
+
+/// The label to compute `t`'s commitments with: the one the lock records for the object, else the
+/// default for objects the lock does not know yet.
+fn commitment_label(t: &Target, lock: &Lock) -> String {
+    lock.objects
+        .get(t.object_name)
+        .and_then(|o| o.commitment_label.clone())
+        .unwrap_or_else(|| id::DEFAULT_COMMITMENT_LABEL.to_owned())
 }
 
 /// GET: find by locator (exactly one), check type and attributes, compute IDs. Never writes.
-pub fn resolve(t: &Target, tok: &Token) -> Result<Option<Resolved>> {
+pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>> {
     let mode = plan_mode(t)?;
     let public_only = t.on_token.public_only;
     let Some(h) = tok.find_key(t.object, &t.on_token.locator, public_only)? else {
@@ -243,6 +255,7 @@ pub fn resolve(t: &Target, tok: &Token) -> Result<Option<Resolved>> {
     };
     tok.check(h, t.object, t.spec)?;
     let commits = commits(t, tok, mode)?;
+    let label = commitment_label(t, lock);
     Ok(Some(Resolved {
         object: t.object_name.into(),
         spec: t.spec_name.into(),
@@ -251,7 +264,8 @@ pub fn resolve(t: &Target, tok: &Token) -> Result<Option<Resolved>> {
         mode,
         public_only,
         spec_digest: id::spec_digest(t.object, t.spec),
-        ids: tok.ids(h, t.object, &t.on_token.locator, mode, &commits)?,
+        ids: tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label)?,
+        commitment_label: (!commits.is_empty()).then_some(label),
     }))
 }
 
@@ -309,6 +323,12 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
     }
     if update {
         let entry = lock.objects.entry(t.object_name.into()).or_default();
+        if let Some(label) = &r.commitment_label {
+            if entry.commitment_label.as_ref().is_none_or(|l| l != label) {
+                entry.commitment_label = Some(label.clone());
+                changed = true;
+            }
+        }
         for (scheme, got) in &r.ids {
             entry.ids.entry(scheme.clone()).or_insert_with(|| got.clone());
         }
@@ -381,7 +401,7 @@ fn warn_provenance(t: &Target, tok: &Token, prev: &LockRealisation) {
 
 /// GET + If-Match against the lock.
 pub fn verify(t: &Target, tok: &Token, lock: &Lock) -> Result<Resolved> {
-    let r = resolve(t, tok)?.ok_or_else(|| KmError::NotFound(t.what()))?;
+    let r = resolve(t, tok, lock)?.ok_or_else(|| KmError::NotFound(t.what()))?;
     reconcile(t, tok, &r, &mut lock.clone(), false)?;
     Ok(r)
 }
@@ -391,7 +411,7 @@ pub fn verify(t: &Target, tok: &Token, lock: &Lock) -> Result<Resolved> {
 pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, update: bool) -> Result<(Resolved, bool)> {
     let mode = plan_mode(t)?;
     check_capabilities(t, tok, mode)?;
-    let r = match resolve(t, tok)? {
+    let r = match resolve(t, tok, lock)? {
         Some(r) => r,
         None if t.on_token.auto_create => {
             // If-None-Match: never create over anything else under the locator. On a PIV
@@ -406,7 +426,7 @@ pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, update: bool) -> Result
             }
             tok.create(t.object, t.spec, &t.on_token.locator)?;
             eprintln!("created {}", t.what());
-            match resolve(t, tok).and_then(|r| {
+            match resolve(t, tok, lock).and_then(|r| {
                 r.ok_or_else(|| KmError::NotFound(format!("{} vanished after creation", t.what())))
             }) {
                 Ok(r) => r,
@@ -436,7 +456,7 @@ pub fn delete(t: &Target, tok: &Token, lock: &mut Lock, if_match: Option<&str>, 
     // An expected identity is only required when there is something to delete.
     if let Some(h) = tok.find_key(t.object, &t.on_token.locator, false)? {
         let mode = plan_mode(t)?;
-        let got = tok.ids(h, t.object, &t.on_token.locator, mode, &commits(t, tok, mode)?)?;
+        let got = tok.ids(h, t.object, &t.on_token.locator, mode, &commits(t, tok, mode)?, &commitment_label(t, lock))?;
         // --if-match names the primary scheme; otherwise the first scheme the lock records.
         let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
         let primary = t.schemes().into_iter().find(|s| got.contains_key(*s));

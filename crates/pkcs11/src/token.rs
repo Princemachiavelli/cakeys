@@ -333,6 +333,7 @@ impl Token {
         loc: &Locator,
         mode: Mode,
         commits: &[Commit],
+        commitment_label: &str,
     ) -> Result<BTreeMap<String, String>> {
         let mut ids = BTreeMap::new();
         match mode {
@@ -357,11 +358,11 @@ impl Token {
             }
             Mode::Commitment => {
                 for c in commits {
-                    ids.insert(c.scheme().into(), id::sri(&self.commit(h, object, *c)?));
+                    ids.insert(c.scheme().into(), id::sri(&self.commit(h, object, *c, commitment_label)?));
                 }
             }
             Mode::WrapRebind => {
-                for (c, out) in self.wrap_rebind(h, object, commits)? {
+                for (c, out) in self.wrap_rebind(h, object, commits, commitment_label)? {
                     ids.insert(c.scheme().into(), id::sri(&out));
                 }
             }
@@ -424,9 +425,9 @@ impl Token {
     }
 
     /// One commitment (`id::Commit`) on the key `h`.
-    fn commit(&self, h: ObjectHandle, object: &ObjectCfg, c: Commit) -> Result<Vec<u8>> {
+    fn commit(&self, h: ObjectHandle, object: &ObjectCfg, c: Commit, commitment_label: &str) -> Result<Vec<u8>> {
         let s = &self.session;
-        let input = c.input(object);
+        let input = c.input(commitment_label, object);
         let fail = |e: CkError| KmError::Unsupported(format!("{} commitment ({}): {e}", c.scheme(), commit_mechanism(c)));
         match c {
             Commit::Hmac(hash) => {
@@ -470,6 +471,7 @@ impl Token {
         target: ObjectHandle,
         object: &ObjectCfg,
         commits: &[Commit],
+        commitment_label: &str,
     ) -> Result<Vec<(Commit, Vec<u8>)>> {
         let s = &self.session;
         let fail = |what: &'static str| move |e: CkError| KmError::Unsupported(format!("wrap-rebind {what}: {e}"));
@@ -514,7 +516,7 @@ impl Token {
                 .map_err(fail("C_UnwrapKey"))?;
             let out = commits
                 .iter()
-                .map(|c| Ok((*c, self.commit(copy, object, *c)?)))
+                .map(|c| Ok((*c, self.commit(copy, object, *c, commitment_label)?)))
                 .collect::<Result<Vec<_>>>();
             let _ = s.destroy_object(copy);
             out

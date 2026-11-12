@@ -2,6 +2,9 @@
 # produced by cakeys. Do not use as reference data (real digests differ).
 version = 1
 
+[objects.shared]
+commitmentLabel = "key-management/v1"
+
 [objects.shared.ids]
 commitment = "sha256-AGXc/28id6voDlFG989ZRKgfQETyurg2tSVPe1LBYis="
 

@@ -72,14 +72,18 @@ Supported curves:
 - brainpoolP512r1 is refused, because no RustCrypto crate supports it — `brainpool_p512_is_refused_clearly`.
 
 ### 3.3 Commitment label
-`key-management/v1/<scheme>/<keyType>/<bits>`, built in `crates/core/src/id.rs`
-(`COMMITMENT_LABEL_PREFIX`, **frozen**, §10).
+The token computes on `<commitment label>/<scheme>/<keyType>/<bits>`, built in
+`crates/core/src/id.rs`.
+- **The lock records the commitment label per object** (`objects.<name>.commitmentLabel`), and
+  verification always uses the recorded value. The code only supplies the default
+  (`DEFAULT_COMMITMENT_LABEL = "key-management/v1"`) for objects the lock does not know yet. A
+  future default, or a configurable label such as the planned keystore `idPrefix`, never breaks an
+  existing lock. Lock objects are self-contained, so lock files can be joined or split per object.
+  Tests: `commitment_label_comes_from_the_lock`, which proves a non-default label in the lock is
+  used, and that commitment IDs without a label are refused (exit 17).
 - **The label is never written to a token.** It is only the fixed message the token MACs or
-  encrypts to compute a secret key's ID. Labels, `CKA_ID`s, attributes and URIs stay entirely the
-  user's. It is part of the scheme's definition (like a hash function's constants): every party
-  computing the scheme must use the same bytes, and a distinctive string keeps the operation from
-  coinciding with another protocol's use of the key. Its text is historical; changing it would be a
-  new scheme version (`v2`) and change every secret-key ID.
+  encrypts to compute a secret key's ID; labels, `CKA_ID`s, attributes and URIs stay the user's.
+  A distinctive string keeps the operation from coinciding with another protocol's use of the key.
 - **The key type is part of the label,** so the same bytes held as two types never share an ID.
 - **`bits`** is `8 × valueLen`. It is 0 when `valueLen` is unset (finding L11).
 
@@ -138,7 +142,9 @@ What may be created and adopted:
 
 ### 4.2 `keys.lock` (input, updated in place)
 ```toml
-version = 1
+version = 1                          # any other version is refused
+[objects.<object>]
+commitmentLabel = "key-management/v1" # required when ids holds a commitment scheme
 [objects.<object>.ids]
 pubkeyhash = "sha256-..."            # scheme -> SRI
 [realisations.<spec>.<token>]
@@ -313,12 +319,17 @@ See `docs/REVIEW-2026-11-11.md`.
 Hardware: the YubiKey example lock is verified read-only (no PIN). `packages.test-nspawn` needs the
 `uid-range` feature, so it is outside `checks`.
 
-## 10. Frozen identifiers
-Changing any of these changes existing IDs or locks, so none of them follows a rename:
-- the commitment label prefix `key-management/v1`, and the label field order
-  `<scheme>/<keyType>/<bits>`;
-- scheme names (`pubkeyhash`, `certhash`, `valuehash`, `commitment`, `cmac`, `kcv-ecb`,
-  `kcv-ecb-dec`, `kw`) and mode names;
+## 10. Frozen identifiers, and what makes a lock portable
+A `keys.toml` and its `keys.lock` must verify the same way under any later cakeys, like a
+dependency lock. The lock records the values that determine each ID: scheme name, commitment
+label and the hash itself. Everything else is fixed by definition:
+- **Scheme definitions are immutable.** A scheme name (`pubkeyhash`, `certhash`, `valuehash`,
+  `commitment`, `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`) always denotes exactly the computation in
+  §3. A changed computation is a *new* scheme name, never an edit. The known-answer test
+  `scheme_definitions_are_pinned` pins each one: the bytes every commitment scheme feeds the
+  token, and the `pubkeyhash` of fixed keys on every curve and RSA (canonical encoding included).
+- **Further frozen identifiers:** the label layout `<label>/<scheme>/<keyType>/<bits>` and the
+  mode names;
 - the SRI form `sha256-<base64>`;
 - the spec digest JSON shape (`"v":1`, camelCase, empty `keyType` omitted);
 - lock field names (`objects`, `ids`, `realisations`, `specDigest`, `publicOnly`, `module`,

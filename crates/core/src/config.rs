@@ -134,15 +134,48 @@ pub struct Lock {
 }
 
 fn lock_version() -> u32 {
-    1
+    LOCK_VERSION
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LockObject {
+    /// Label the object's commitment schemes were computed with. Required whenever
+    /// `ids` holds a commitment scheme; verification uses it, never the code default.
+    #[serde(default, rename = "commitmentLabel", skip_serializing_if = "Option::is_none")]
+    pub commitment_label: Option<String>,
     /// Material CA-IDs: scheme -> SRI hash.
     #[serde(default)]
     pub ids: BTreeMap<String, String>,
+}
+
+impl LockObject {
+    fn has_commitments(&self) -> bool {
+        self.ids.keys().any(|s| crate::id::COMMITMENT_SCHEMES.contains(&s.as_str()))
+    }
+}
+
+/// The lock format version. Unpublished, so its schema changes in place.
+pub const LOCK_VERSION: u32 = 1;
+
+impl Lock {
+    /// Refuse other versions, and objects with commitment IDs but no label.
+    fn validate(self, path: &Path) -> Result<Lock> {
+        if self.version != LOCK_VERSION {
+            return Err(KmError::Validation(format!(
+                "{}: lock version {} is not supported (this cakeys reads {LOCK_VERSION})",
+                path.display(),
+                self.version
+            )));
+        }
+        if let Some((name, _)) = self.objects.iter().find(|(_, o)| o.has_commitments() && o.commitment_label.is_none()) {
+            return Err(KmError::Validation(format!(
+                "{}: object '{name}' has commitment IDs but no commitmentLabel",
+                path.display()
+            )));
+        }
+        Ok(self)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -172,10 +205,13 @@ pub fn load_config(path: &Path) -> anyhow::Result<Config> {
 
 pub fn load_lock(path: &Path) -> anyhow::Result<Lock> {
     match std::fs::read_to_string(path) {
-        Ok(text) => Ok(toml::from_str(&text)
-            .map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?),
+        Ok(text) => {
+            let lock: Lock = toml::from_str(&text)
+                .map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
+            Ok(lock.validate(path)?)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Lock {
-            version: 1,
+            version: LOCK_VERSION,
             ..Default::default()
         }),
         Err(e) => Err(anyhow::anyhow!("reading {}: {e}", path.display())),

@@ -141,7 +141,7 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
         Cmd::Resolve { spec, token } => {
             let t = Target::new(&cfg, spec, token)?;
             let tok = open_token(&cfg, &modules, registry, token)?;
-            let r = ops::resolve(&t, &tok)?.ok_or_else(|| KmError::NotFound(format!("{spec} on {token}")))?;
+            let r = ops::resolve(&t, &tok, &lock)?.ok_or_else(|| KmError::NotFound(format!("{spec} on {token}")))?;
             print(&r);
         }
         Cmd::Verify { spec, token } => {
