@@ -151,8 +151,8 @@ let
         else
           ''
             with subtest("first use creates the key and fails with got:"):
-                first = got(expect(f"{km} realise signing-soft --token softhsm", 10))
-                assert got(expect(f"{km} realise signing-soft --token softhsm", 10)) == first
+                first = got(expect(f"{km} realise signing-soft --token softhsm --no-update-lock", 10))
+                assert got(expect(f"{km} realise signing-soft --token softhsm --no-update-lock", 10)) == first
                 expect(f"{km} realise signing-soft --token softhsm --update-lock", 0)
           ''
       }
@@ -173,7 +173,7 @@ let
           assert expect(f"{km} check signing.id.rfc7093m4", 0).startswith("pkcs11:")
 
       with subtest("wrap-rebind identity for an extractable AES key"):
-          got(expect(f"{km} realise kek-wrap --token softhsm", 10))
+          got(expect(f"{km} realise kek-wrap --token softhsm --no-update-lock", 10))
           expect(f"{km} realise kek-wrap --token softhsm --update-lock", 0)
           lock = machine.succeed("cat /root/keys.lock")
           assert 'mode = "wrap-rebind"' in lock, lock

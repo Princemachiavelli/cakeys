@@ -28,3 +28,4 @@ toml.workspace = true
 getrandom.workspace = true
 ecdsa.workspace = true
 x509-cert.workspace = true
+libc.workspace = true

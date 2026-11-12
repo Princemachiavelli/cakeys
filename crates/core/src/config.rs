@@ -553,7 +553,7 @@ pub struct Observed {
 }
 
 /// What produced the record. Differences warn (module build, token, provider) or note (module
-/// file, cakeys version); `realise --update-lock` re-binds them.
+/// file, cakeys version); `realise` re-binds them.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Provenance {
@@ -679,6 +679,34 @@ pub fn lock_for_update(lock_path: &Path) -> anyhow::Result<UpdateGuard> {
     let file = std::fs::File::options().write(true).create(true).open(&sidecar)?;
     file.lock().map_err(|e| anyhow::anyhow!("locking {}: {e}", sidecar.to_string_lossy()))?;
     Ok(UpdateGuard(file))
+}
+
+/// Why this run cannot write the lock at `lock_path`, if it cannot. A run that writes by default
+/// (`realise`, `delete`) asks before it touches a token, so an unwritable lock is a refusal up
+/// front — never a key created and then not recorded — unless `--no-update-lock` was passed.
+/// - Inside a Nix build sandbox (`NIX_BUILD_TOP` set, `IN_NIX_SHELL` not: `nix develop` sets
+///   both) a write is lost: the lock is a read-only store path, or a copy thrown away with the
+///   build.
+/// - Otherwise the lock file, if present, and its directory (temporary file, rename and the
+///   `.lck` sidecar) must be writable by this user (`access(2)`, so a read-only mount counts).
+pub fn lock_unwritable(lock_path: &Path) -> Option<String> {
+    if std::env::var_os("NIX_BUILD_TOP").is_some() && std::env::var_os("IN_NIX_SHELL").is_none() {
+        return Some("this run is inside a Nix build sandbox, where a lock write would be lost".into());
+    }
+    let writable = |p: &Path| {
+        use std::os::unix::ffi::OsStrExt;
+        std::ffi::CString::new(p.as_os_str().as_bytes())
+            // SAFETY: a valid NUL-terminated path; access(2) only reads it.
+            .is_ok_and(|c| unsafe { libc::access(c.as_ptr(), libc::W_OK) } == 0)
+    };
+    if lock_path.exists() && !writable(lock_path) {
+        return Some(format!("{} is not writable", lock_path.display()));
+    }
+    let dir = lock_path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    if !writable(dir) {
+        return Some(format!("the lock's directory {} is not writable", dir.display()));
+    }
+    None
 }
 
 /// Lock entries `cfg` no longer names (finding D3): every `[realisations.<spec>.<token>]` whose

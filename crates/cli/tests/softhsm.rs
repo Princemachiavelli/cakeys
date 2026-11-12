@@ -55,7 +55,10 @@ impl Env {
     }
 
     fn km_env(&self, args: &[&str], envs: &[(&str, &std::path::Path)]) -> Output {
+        // The suite itself runs in a Nix build: only a test that sets NIX_BUILD_TOP means it.
         let out = Command::new(BIN)
+            .env_remove("NIX_BUILD_TOP")
+            .env_remove("IN_NIX_SHELL")
             .envs(envs.iter().copied())
             .arg("--config")
             .arg(self.dir.join("keys.toml"))
@@ -109,7 +112,7 @@ tokens.softhsm = { locator = { CKA_LABEL = "ec-lifecycle" }, autoCreate = true }
 fn ec_lifecycle() {
     let Some(e) = env("ec_lifecycle") else { return };
     e.config(EC);
-    let r = ["realise", "signing-soft", "--token", "softhsm"];
+    let r = ["realise", "signing-soft", "--token", "softhsm", "--no-update-lock"];
 
     // First use: creates, then fails like a FOD with a fake hash.
     let first = e.km(&r);
@@ -122,7 +125,7 @@ fn ec_lifecycle() {
     assert_eq!(code(&e.km(&["resolve", "signing-soft", "--token", "softhsm"])), 0);
 
     // Record it; now realise is a no-op success.
-    assert_eq!(code(&e.km(&[&r[..], &["--update-lock"]].concat())), 0);
+    assert_eq!(code(&e.km(&recording(&r))), 0);
     assert_eq!(e.locked_id("signing", "rfc7093m4"), got);
     assert_eq!(code(&e.km(&r)), 0);
 
@@ -149,12 +152,12 @@ fn ec_lifecycle() {
 
     // Deleting something that never existed succeeds even with no expected identity anywhere.
     std::fs::remove_file(e.dir.join("keys.lock")).unwrap();
-    assert_eq!(code(&e.km(&["delete", "signing-soft", "--token", "softhsm"])), 0);
+    assert_eq!(code(&e.km(&["delete", "signing-soft", "--token", "softhsm", "--no-update-lock"])), 0);
     // ...but a present object with no expected identity is never deleted blindly.
     assert_eq!(code(&e.km(&r)), 10);
-    assert_eq!(code(&e.km(&["delete", "signing-soft", "--token", "softhsm"])), 14);
+    assert_eq!(code(&e.km(&["delete", "signing-soft", "--token", "softhsm", "--no-update-lock"])), 14);
     assert_eq!(code(&e.km(&["verify", "signing-soft", "--token", "softhsm"])), 10);
-    assert_eq!(code(&e.km(&[&r[..], &["--update-lock"]].concat())), 0);
+    assert_eq!(code(&e.km(&recording(&r))), 0);
     assert_eq!(code(&e.km(&del)), 0);
     // Restore the original locked identity for the final check.
     std::fs::write(
@@ -244,7 +247,7 @@ tokens.softhsm = { locator = { CKA_LABEL = "shared-b" } }
     );
     assert_eq!(code(&e.km(&["realise", "shared-sign", "--token", "softhsm", "--update-lock"])), 0);
     // No autoCreate on the second spec: absent is NotFound, not a silent create.
-    assert_eq!(code(&e.km(&["realise", "shared-nosign", "--token", "softhsm"])), 11);
+    assert_eq!(code(&e.km(&["realise", "shared-nosign", "--token", "softhsm", "--no-update-lock"])), 11);
     let s = e.session();
     let a = s.find_objects(&[Attribute::Label(b"shared-a".to_vec())]).unwrap()[0];
     s.copy_object(a, &[Attribute::Label(b"shared-b".to_vec()), Attribute::Sign(false)])
@@ -281,13 +284,13 @@ tokens.softhsm = {{ locator = {{ CKA_LABEL = "locked" }}, autoCreate = true, ide
     };
     e.config(&spec(""));
     assert_eq!(code(&e.km(&["validate"])), 17);
-    assert_eq!(code(&e.km(&["realise", "locked-down", "--token", "softhsm"])), 17);
+    assert_eq!(code(&e.km(&["realise", "locked-down", "--token", "softhsm", "--no-update-lock"])), 17);
     e.config(&spec("\"host-at-import\""));
     let v = e.km(&["validate"]);
     assert_eq!(code(&v), 0);
     assert!(stdout(&v).contains("host-at-import (opted in)"));
     // Opted in but not implemented: refused before anything is created.
-    assert_eq!(code(&e.km(&["realise", "locked-down", "--token", "softhsm"])), 15);
+    assert_eq!(code(&e.km(&["realise", "locked-down", "--token", "softhsm", "--no-update-lock"])), 15);
     assert!(e.session().find_objects(&[Attribute::Label(b"locked".to_vec())]).unwrap().is_empty());
 }
 
@@ -329,7 +332,7 @@ tokens.softhsm = { locator = { CKA_LABEL = "typed" } }
     );
     assert_eq!(code(&e.km(&["realise", "k-sign", "--token", "softhsm", "--update-lock"])), 0);
     // Same locator, different policy: the live object doesn't satisfy the spec.
-    assert_eq!(code(&e.km(&["realise", "k-nosign", "--token", "softhsm"])), 13);
+    assert_eq!(code(&e.km(&["realise", "k-nosign", "--token", "softhsm", "--no-update-lock"])), 13);
 
     let s = e.session();
     let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
@@ -474,11 +477,11 @@ tokens.softhsm-anon = { locator = { CKA_ID = "42" } }
     // There is no private half: without publicOnly the same locator is simply absent.
     assert_eq!(code(&e.km(&["verify", "adopted-priv", "--token", "softhsm"])), 11);
     // Adopted public-only keys are never deleted (only the public half would go).
-    assert_eq!(code(&e.km(&["delete", "adopted-pub", "--token", "softhsm-anon"])), 15);
+    assert_eq!(code(&e.km(&["delete", "adopted-pub", "--token", "softhsm-anon", "--no-update-lock"])), 15);
     // CKA_ID alone also matches the public key object, but certificates are looked up by class.
-    let by_id = ["realise", "adopted-cert-by-id", "--token", "softhsm-anon"];
+    let by_id = ["realise", "adopted-cert-by-id", "--token", "softhsm-anon", "--no-update-lock"];
     assert_eq!(code(&e.km(&by_id)), 14, "same certificate, but not recorded under this spec yet");
-    assert_eq!(code(&e.km(&[&by_id[..], &["--update-lock"]].concat())), 0);
+    assert_eq!(code(&e.km(&recording(&by_id))), 0);
 
     // Locks split per object and join again: a pair partner in another fragment is allowed.
     let full = e.lock();
@@ -538,7 +541,7 @@ object = "r"
 tokens.softhsm-anon = { locator = { CKA_LABEL = "rsa-paths" }, publicOnly = true }
 "#,
     );
-    assert_eq!(code(&e.km(&["realise", "r-gen", "--token", "softhsm"])), 10);
+    assert_eq!(code(&e.km(&["realise", "r-gen", "--token", "softhsm", "--no-update-lock"])), 10);
     assert_eq!(code(&e.km(&["realise", "r-gen", "--token", "softhsm", "--update-lock"])), 0);
     // Same material through the public key object, without login: same locked identity.
     assert_eq!(code(&e.km(&["realise", "r-pub", "--token", "softhsm-anon", "--update-lock"])), 0);
@@ -564,7 +567,7 @@ tokens.softhsm = { locator = { CKA_LABEL = "occupied" }, autoCreate = true }
 "#,
     );
     // Like a PIV slot holding a certificate: generating there would replace its key.
-    assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm"])), 13);
+    assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm", "--no-update-lock"])), 13);
     let keys = s
         .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"occupied".to_vec())])
         .unwrap();
@@ -589,7 +592,7 @@ fn autocreate_never_fights_a_locked_identity() {
         EC.replace("ec-lifecycle", "d1-first")
     ));
     for args in [
-        &["realise", "second-slot", "--token", "softhsm"][..],
+        &["realise", "second-slot", "--token", "softhsm", "--no-update-lock"][..],
         &["realise", "second-slot", "--token", "softhsm", "--update-lock"][..],
     ] {
         let o = e.km(args);
@@ -639,7 +642,7 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     e.config(EC.replace("ec-lifecycle", "provenance").as_str());
     let r = ["realise", "signing-soft", "--token", "softhsm", "--update-lock"];
     let verify = ["verify", "signing-soft", "--token", "softhsm"];
-    assert_eq!(code(&e.km(&["realise", "signing-soft", "--token", "softhsm"])), 10);
+    assert_eq!(code(&e.km(&["realise", "signing-soft", "--token", "softhsm", "--no-update-lock"])), 10);
     assert_eq!(code(&e.km(&r)), 0);
 
     let real = &e.lock()["realisations"]["signing-soft"]["softhsm"];
@@ -895,7 +898,7 @@ fn allowed_mechanisms_and_public_attributes() {
     };
     // A mechanism the token does not offer: refused before anything is created.
     e.config(&spec("\"CKM_BOGUS\"", "CKA_VERIFY = false"));
-    assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm"])), 15);
+    assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm", "--no-update-lock"])), 15);
     assert!(
         s.find_objects(&[Attribute::Label(b"attrs".to_vec())]).unwrap().is_empty(),
         "nothing was created"
@@ -1148,11 +1151,11 @@ fn aes_commitments_match_host_oracles() {
     assert!(s.find_objects(&[Attribute::Label(b"kek-gen".to_vec())]).unwrap().is_empty());
 
     // A generated, non-extractable KEK: stable identity across runs, deletable by it.
-    let r = ["realise", "kek-gen", "--token", "softhsm"];
+    let r = ["realise", "kek-gen", "--token", "softhsm", "--no-update-lock"];
     let first = e.km(&r);
     assert_eq!(code(&first), 10);
     assert_eq!(got_hash(&e.km(&r)), got_hash(&first));
-    assert_eq!(code(&e.km(&[&r[..], &["--update-lock"]].concat())), 0);
+    assert_eq!(code(&e.km(&recording(&r))), 0);
     assert_eq!(e.locked_id("kek-gen", "kw"), got_hash(&first));
     assert_eq!(code(&e.km(&["delete", "kek-gen", "--token", "softhsm", "--update-lock"])), 0);
     assert_eq!(code(&e.km(&["verify", "kek-gen", "--token", "softhsm"])), 11);
@@ -1235,7 +1238,7 @@ fn curves_and_rsa_sizes_match_an_independent_der_oracle() {
     let s = e.session();
     for (k, _) in kinds {
         let gen = format!("{k}-gen");
-        assert_eq!(code(&e.km(&["realise", &gen, "--token", "softhsm"])), 10, "{k}");
+        assert_eq!(code(&e.km(&["realise", &gen, "--token", "softhsm", "--no-update-lock"])), 10, "{k}");
         assert_eq!(code(&e.km(&["realise", &gen, "--token", "softhsm", "--update-lock"])), 0, "{k}");
         assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki(&s, k)), "{k}");
         let binding = if k == "ed448" { "token-asserted" } else { "pop-sign" };
@@ -1431,7 +1434,7 @@ fn hmac_key_types_commit_with_their_own_hash() {
         assert_eq!(e.locked_id(name, "commitment"), want, "{name}");
     }
     // There is no key generation for hash-bound HMAC types: refused up front, nothing created.
-    let o = e.km(&["realise", "gen384", "--token", "softhsm"]);
+    let o = e.km(&["realise", "gen384", "--token", "softhsm", "--no-update-lock"]);
     assert_eq!(code(&o), 15);
     assert!(String::from_utf8_lossy(&o.stderr).contains("no key generation for CKK_SHA384_HMAC"));
     assert!(s.find_objects(&[Attribute::Label(b"hmac-gen384".to_vec())]).unwrap().is_empty());
@@ -1631,7 +1634,7 @@ fn h1_a_private_key_beside_an_unbound_public_object_is_a_conflict() {
     assert_eq!(code(&verify), 13);
     assert!(String::from_utf8_lossy(&verify.stderr).contains("proof of possession failed"));
     // So is deleting: If-Match must not pass on the public object alone.
-    assert_eq!(code(&e.km(&["delete", "signing-soft", "--token", "softhsm"])), 13);
+    assert_eq!(code(&e.km(&["delete", "signing-soft", "--token", "softhsm", "--no-update-lock"])), 13);
 }
 
 /// A recorded proof of possession cannot silently become a token assertion.
@@ -1736,7 +1739,7 @@ fn derive_and_decrypt_only_keys_prove_possession() {
     let o = e.km(&["verify", "k", "--token", "softhsm"]);
     assert_eq!(code(&o), 13);
     assert!(String::from_utf8_lossy(&o.stderr).contains("proof of possession failed"), "{}", String::from_utf8_lossy(&o.stderr));
-    assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm"])), 13);
+    assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm", "--no-update-lock"])), 13);
 }
 
 /// M3: `--update-lock` holds an advisory lock on `<lock>.lck` across its read-modify-write. While
@@ -1753,6 +1756,7 @@ fn update_lock_waits_for_the_sidecar_lock() {
     held.lock().unwrap();
     let spawn = |args: &[&str]| {
         std::process::Command::new(BIN)
+            .env_remove("NIX_BUILD_TOP")
             .arg("--config")
             .arg(e.dir.join("keys.toml"))
             .args(args)
@@ -1830,6 +1834,62 @@ fn admin_credential_is_refused_where_the_user_creates_keys() {
     let o = e.km(&["validate"]);
     assert_eq!(code(&o), 17);
     assert!(String::from_utf8_lossy(&o.stderr).contains("needs a user PIN"));
+}
+
+/// `realise` and `delete` write the lock by default; `--no-update-lock` compares only (first use
+/// is then 10 and nothing is written). Where the lock cannot be written — a Nix build sandbox, a
+/// read-only lock, a read-only directory — a writing run is refused (14) before the token is
+/// touched, naming `--no-update-lock`; `check` never writes and is unaffected.
+#[test]
+fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(e) = env("lock-default") else { return };
+    e.config(&EC.replace("ec-lifecycle", "lock-default"));
+    let r = ["realise", "signing-soft", "--token", "softhsm"];
+    let compare = [&r[..], &["--no-update-lock"]].concat();
+    let lock = e.dir.join("keys.lock");
+    let refused = |o: &Output, why: &str| {
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        assert_eq!(code(o), 14, "{err}");
+        assert!(err.contains(why) && err.contains("--no-update-lock"), "{err}");
+    };
+
+    // Compare only: first use is 10 and the lock is not created.
+    assert_eq!(code(&e.km(&compare)), 10);
+    assert!(!lock.exists());
+    // Both spellings at once are a usage error.
+    assert_eq!(code(&e.km(&[&r[..], &["--update-lock", "--no-update-lock"]].concat())), 2);
+    // The default records first use and succeeds.
+    assert_eq!(code(&e.km(&r)), 0);
+    assert!(e.lock()["realisations"]["signing-soft"]["softhsm"].is_table());
+
+    // In a Nix build sandbox a writing run is refused up front, delete included; comparing and
+    // `check` work there.
+    let sandbox = [("NIX_BUILD_TOP", e.dir.as_path())];
+    refused(&e.km_env(&r, &sandbox), "Nix build sandbox");
+    refused(&e.km_env(&["delete", "signing-soft", "--token", "softhsm"], &sandbox), "Nix build sandbox");
+    assert_eq!(code(&e.km_env(&compare, &sandbox)), 0);
+    assert_eq!(code(&e.km_env(&["check", "signing.id.rfc7093m4"], &sandbox)), 0);
+
+    // A read-only lock (unless running as root, which access(2) lets write anyway).
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o444)).unwrap();
+    if std::fs::OpenOptions::new().append(true).open(&lock).is_err() {
+        refused(&e.km(&r), "is not writable");
+        assert_eq!(code(&e.km(&compare)), 0);
+    }
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    // A read-only directory with no lock in it yet: the write would need a new file there.
+    let ro = e.dir.join("ro");
+    std::fs::create_dir_all(&ro).unwrap();
+    std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+    if std::fs::File::create(ro.join("probe")).is_err() {
+        let elsewhere = ro.join("keys.lock");
+        let elsewhere = elsewhere.to_str().unwrap();
+        refused(&e.km(&[&["--lock", elsewhere][..], &r[..]].concat()), "directory");
+        assert_eq!(code(&e.km(&[&["--lock", elsewhere][..], &compare[..]].concat())), 10);
+    }
+    std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 /// D3: `gc` prints lock entries whose spec or token is gone from keys.toml, and removes exactly

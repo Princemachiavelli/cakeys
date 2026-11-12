@@ -22,6 +22,12 @@ pub fn code(o: &Output) -> i32 {
     o.status.code().unwrap()
 }
 
+/// The writing form of a compare-only `realise`/`delete` argument list: `--no-update-lock`
+/// dropped, `--update-lock` (the default, said explicitly) added.
+pub fn recording<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    args.iter().copied().filter(|a| *a != "--no-update-lock").chain(["--update-lock"]).collect()
+}
+
 pub fn got_hash(o: &Output) -> String {
     let err = String::from_utf8_lossy(&o.stderr);
     let line = err.lines().find(|l| l.trim_start().starts_with("got:")).expect("no got: line");

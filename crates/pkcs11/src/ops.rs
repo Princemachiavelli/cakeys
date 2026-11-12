@@ -549,7 +549,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             if !diff.is_empty() {
                 return Err(KmError::PreconditionFailed(format!(
                     "spec '{}' changed in keys.toml since it was realised on '{}' ({}); \
-                     review the change, then `realise --update-lock`",
+                     review the change, then `realise`",
                     t.spec_name,
                     t.token_name,
                     diff.join(", ")
@@ -570,7 +570,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
                 )));
             }
         }
-        // The attestation is compared, even under --update-lock (§3.7). A different anchor means
+        // The attestation is compared, even when realise writes the lock (§3.7). A different anchor means
         // a different device (or a re-provisioned TPM) signed the provenance; a different ID
         // under the same anchor means the attested object changed (re-imported, other
         // attributes or policy). Both are changes to review, never to re-record — and a lost
@@ -603,7 +603,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             }
             (None, Some(now)) if !update => {
                 eprintln!(
-                    "note: {} also has a {} attestation the lock does not record; `realise --update-lock` adds it",
+                    "note: {} also has a {} attestation the lock does not record; `realise` adds it",
                     t.what(),
                     now.kind
                 );
@@ -644,7 +644,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             }
             if !diff.is_empty() {
                 return Err(KmError::PreconditionFailed(format!(
-                    "{} changed on the token since it was realised ({}); review, then `realise --update-lock`",
+                    "{} changed on the token since it was realised ({}); review, then `realise`",
                     t.what(),
                     diff.join(", ")
                 )));
@@ -652,7 +652,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             let new: Vec<&String> = r.policy.keys().filter(|n| !prev.policy.contains_key(*n)).collect();
             if !new.is_empty() {
                 eprintln!(
-                    "note: {} also reports {new:?}, which the lock does not record; `realise --update-lock` adds them",
+                    "note: {} also reports {new:?}, which the lock does not record; `realise` adds them",
                     t.what()
                 );
             }
@@ -664,13 +664,13 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
     let unlisted = lock.unlisted_pairs(t.object_name);
     if !update && !unlisted.is_empty() {
         eprintln!(
-            "note: {unlisted:?} share the public key of '{}' but are not listed as its pairs; `realise --update-lock` records them",
+            "note: {unlisted:?} share the public key of '{}' but are not listed as its pairs; `realise` records them",
             t.object_name
         );
     }
     let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
     // A deprecated computation still verifies — its identities are pinned — but the lock should
-    // move to the replacement (docs/DESIGN.md §3.1); `--update-lock` never adds a new one.
+    // move to the replacement (docs/DESIGN.md §3.1); a lock write never adds a new one.
     for scheme in locked.iter().flat_map(|ids| ids.keys()).filter(|s| id::DEPRECATED_SCHEMES.contains(&s.as_str())) {
         eprintln!(
             "warning: the {scheme} identity of '{}' uses a deprecated computation; migrate to its replacement (docs/DESIGN.md §3.1)",
@@ -715,7 +715,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
     if !update && lock.realisations.get(t.spec_name).and_then(|m| m.get(t.token_name)).is_none() {
         return Err(KmError::PreconditionFailed(format!(
             "{} matches the locked identity, but the lock records no realisation of spec '{}' on \
-             token '{}'; review, then `realise --update-lock`",
+             token '{}'; review, then `realise`",
             t.what(),
             t.spec_name,
             t.token_name
@@ -723,7 +723,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
     }
     for (scheme, _) in &unlocked {
         eprintln!(
-            "note: {} also has a {scheme} identity the lock does not record; `realise --update-lock` adds it",
+            "note: {} also has a {scheme} identity the lock does not record; `realise` adds it",
             t.what()
         );
     }
@@ -813,7 +813,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
 }
 
 /// `observed` and `provenance` never change a verdict: identity is enforced by the CA-IDs, so a
-/// different module build or token only warns. `realise --update-lock` re-binds them.
+/// different module build or token only warns. `realise` re-binds them.
 fn warn_provenance(t: &Target, tok: &Token, prev: &LockRealisation) {
     if prev.observed.as_ref().is_some_and(|o| o.session == "user") && !tok.logged_in {
         eprintln!(

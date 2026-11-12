@@ -39,18 +39,22 @@ tokens.softhsm = { locator = { CKA_LABEL = "signing" }, autoCreate = true }
 ```
 
 ```console
-$ cakeys -c keys.toml realise signing-soft --token softhsm
+$ cakeys -c keys.toml realise signing-soft --token softhsm --no-update-lock
 created 'signing' (spec 'signing-soft') on token 'softhsm'
 error: hash mismatch in identity of 'signing' (spec 'signing-soft') on token 'softhsm':
   specified: <none>
-     got:    sha256-…            # first use: like a fixed-output derivation
-$ cakeys -c keys.toml realise signing-soft --token softhsm --update-lock   # record it
-$ cakeys -c keys.toml check signing     # later: verify, then print the URI
+     got:    sha256-…            # compare only: like a fixed-output derivation
+$ cakeys -c keys.toml realise signing-soft --token softhsm   # record it (the default); review the keys.lock diff
+$ cakeys -c keys.toml check signing     # later: verify, then print the URI (never writes)
 pkcs11:token=main;serial=...;object=signing;type=private
 ```
 
+`realise` and `delete` write the lock by default, filling gaps only — a locked ID is never
+overwritten. Where the lock cannot be written (a Nix build sandbox, a read-only lock or
+directory) they refuse up front unless `--no-update-lock` is passed.
+
 Verbs:
-- `validate`, `resolve`, `verify`, `realise [--update-lock]`, `delete [--if-match] [--update-lock]`,
+- `validate`, `resolve`, `verify`, `realise [--no-update-lock]`, `delete [--if-match] [--no-update-lock]`,
   `check <object>[.id.<scheme>]`, `gc [--apply]` and `caps`.
 - They behave like HTTP verbs: safe to repeat, never create over an occupied locator, never delete
   an unexpected object. `gc` prints lock entries the config no longer names and removes exactly

@@ -73,6 +73,7 @@ impl Env {
     /// Run the CLI bounded in time: a touch or PIN prompt fails the test instead of hanging it.
     fn km(&self, args: &[&str]) -> Output {
         let mut child = Command::new(BIN)
+            .env_remove("NIX_BUILD_TOP")
             .arg("--config")
             .arg(self.dir.join("keys.toml"))
             .args(args)
@@ -140,7 +141,7 @@ fn code(o: &Output) -> i32 {
 fn rw_lifecycle_generates_attests_proves_and_refuses_delete_without_touch() {
     let Some(e) = env("yubikey_rw") else { return };
     e.config();
-    let r = ["realise", "rw-test-yubikey", "--token", "yubikey"];
+    let r = ["realise", "rw-test-yubikey", "--token", "yubikey", "--no-update-lock"];
     let record = ["realise", "rw-test-yubikey", "--token", "yubikey", "--update-lock"];
 
     // First use: the key is generated (SO login) and identified; nothing is locked yet.

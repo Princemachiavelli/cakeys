@@ -3,7 +3,7 @@
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use cakeys_core::config::{gc, load_config, lock_for_update, load_lock, save_lock, Config};
+use cakeys_core::config::{gc, load_config, lock_for_update, lock_unwritable, load_lock, save_lock, Config};
 use cakeys_core::KmError;
 use cakeys_pkcs11::ops::{self, Target};
 use cakeys_pkcs11::{Registry, Token};
@@ -40,16 +40,18 @@ enum Cmd {
     Resolve { spec: String, #[arg(long)] token: String },
     /// Resolve, then compare with the lock (If-Match). Prints the PKCS#11 URI.
     Verify { spec: String, #[arg(long)] token: String },
-    /// Create under the declared locator if absent and autoCreate is set, then compare with the lock.
+    /// Create under the declared locator if absent and autoCreate is set, then compare with the
+    /// lock, recording what it lacks (missing hashes and realisation details; never overwriting
+    /// a hash) unless --no-update-lock.
     Realise {
         spec: String,
         #[arg(long)]
         token: String,
-        /// Record missing hashes and realisation details in the lock (never overwrites a hash).
-        #[arg(long)]
-        update_lock: bool,
+        #[command(flatten)]
+        write: LockWrite,
     },
-    /// Delete by locator if it holds the expected identity. Absent is success.
+    /// Delete by locator if it holds the expected identity, and remove its realisation from the
+    /// lock unless --no-update-lock. Absent is success.
     Delete {
         spec: String,
         #[arg(long)]
@@ -57,8 +59,8 @@ enum Cmd {
         /// Expected CA-ID; defaults to the locked one.
         #[arg(long)]
         if_match: Option<String>,
-        #[arg(long)]
-        update_lock: bool,
+        #[command(flatten)]
+        write: LockWrite,
     },
     /// Print lock entries whose spec or object is gone from the config; --apply removes them.
     Gc {
@@ -77,6 +79,25 @@ enum Cmd {
     },
     /// Print a token's provider and usable mechanisms as JSON.
     Caps { #[arg(long)] token: String },
+}
+
+/// Whether `realise`/`delete` write the lock: by default they do, like `nix build` with
+/// `flake.lock`. Where the lock cannot be written (a Nix build sandbox, a read-only lock or
+/// directory) the run is refused up front unless `--no-update-lock` says so explicitly.
+#[derive(clap::Args)]
+struct LockWrite {
+    /// Compare with the lock only; never write it (first use is then exit 10 with `got:`).
+    #[arg(long, conflicts_with = "update_lock")]
+    no_update_lock: bool,
+    /// Write the lock (the default; kept so existing scripts can say it).
+    #[arg(long)]
+    update_lock: bool,
+}
+
+impl LockWrite {
+    fn enabled(&self) -> bool {
+        !self.no_update_lock
+    }
 }
 
 /// The providers this crate links. Built through the same public API a third party uses.
@@ -118,12 +139,23 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
     let lock_path = cli.lock.clone().unwrap_or_else(|| cli.config.with_extension("lock"));
     // A run that may write the lock holds its advisory sidecar lock across load and save (M3),
     // so concurrent updaters queue instead of losing each other's writes. Held to the end of run.
-    let _update_guard = match &cli.cmd {
-        Cmd::Realise { update_lock: true, .. }
-        | Cmd::Delete { update_lock: true, .. }
-        | Cmd::Gc { apply: true } => Some(lock_for_update(&lock_path)?),
-        _ => None,
+    let writes = match &cli.cmd {
+        Cmd::Realise { write, .. } | Cmd::Delete { write, .. } => write.enabled(),
+        Cmd::Gc { apply } => *apply,
+        _ => false,
     };
+    // Refused before any token is touched: never a key created and then not recorded.
+    if writes {
+        if let Some(why) = lock_unwritable(&lock_path) {
+            let opt_out = if matches!(cli.cmd, Cmd::Gc { .. }) { "drop --apply" } else { "pass --no-update-lock" };
+            return Err(KmError::PreconditionFailed(format!(
+                "cannot write the lock {}: {why}; {opt_out} to compare without writing",
+                lock_path.display()
+            ))
+            .into());
+        }
+    }
+    let _update_guard = if writes { Some(lock_for_update(&lock_path)?) } else { None };
     let mut lock = load_lock(&lock_path)?;
     let modules: BTreeMap<String, String> = cli
         .modules
@@ -163,20 +195,20 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
             let tok = open_token(&cfg, &modules, registry, token)?;
             println!("{}", ops::verify(&t, &tok, &lock)?.uri);
         }
-        Cmd::Realise { spec, token, update_lock } => {
+        Cmd::Realise { spec, token, write } => {
             let t = Target::new(&cfg, spec, token)?;
             let tok = open_token(&cfg, &modules, registry, token)?;
-            let (r, changed) = ops::realise(&t, &tok, &mut lock, *update_lock)?;
+            let (r, changed) = ops::realise(&t, &tok, &mut lock, write.enabled())?;
             if changed {
                 save_lock(&lock_path, &lock)?;
                 eprintln!("updated {}", lock_path.display());
             }
             print(&r);
         }
-        Cmd::Delete { spec, token, if_match, update_lock } => {
+        Cmd::Delete { spec, token, if_match, write } => {
             let t = Target::new(&cfg, spec, token)?;
             let tok = open_token(&cfg, &modules, registry, token)?;
-            if ops::delete(&t, &tok, &mut lock, if_match.as_deref(), *update_lock)? {
+            if ops::delete(&t, &tok, &mut lock, if_match.as_deref(), write.enabled())? {
                 save_lock(&lock_path, &lock)?;
                 eprintln!("updated {}", lock_path.display());
             }

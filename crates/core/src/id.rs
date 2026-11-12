@@ -160,7 +160,7 @@ pub fn tpm_certify_id(name: &[u8], qualified_name: &[u8]) -> String {
 }
 
 /// Scheme names whose computation is deprecated (docs/DESIGN.md §3.1). Identities already locked
-/// under one keep verifying — with a warning — but `realise --update-lock` never records a new one:
+/// under one keep verifying — with a warning — but `realise` never records a new one:
 /// a changed or weakened computation gets a *new* scheme name (§10), so the empty list is the
 /// "nothing is deprecated" state, pinned by test.
 pub const DEPRECATED_SCHEMES: [&str; 0] = [];

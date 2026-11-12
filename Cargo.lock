@@ -238,6 +238,7 @@ dependencies = [
  "getrandom",
  "hmac",
  "k256",
+ "libc",
  "p256",
  "p384",
  "p521",

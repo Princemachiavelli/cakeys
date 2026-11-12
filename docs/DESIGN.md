@@ -72,7 +72,7 @@ Deprecation:
 - **A changed or weakened computation gets a new scheme name, never an edit** (§10) — like go.sum's
   `h1`/`h2`. The old name keeps meaning what it meant.
 - **A deprecated scheme still verifies identities already locked under it** — with a warning — but
-  `realise --update-lock` never records a *new* identity under it: migrate by realising a spec that
+  `realise` never records a *new* identity under it: migrate by realising a spec that
   computes the replacement. (`gc` will not drop the old entry: the identity is still true.)
 - **No scheme is deprecated today.** The register is `DEPRECATED_SCHEMES` in
   `crates/core/src/id.rs`, pinned empty by `the_deprecation_register_is_pinned`; the AES order
@@ -134,10 +134,21 @@ Strongest first. The mode is recorded per realisation; a downgrade fails (exit 1
 - **Identities are only linked through a shared scheme.** If an object already has locked IDs and
   none of the computed schemes is among them, `realise` fails (exit 14) instead of attaching new
   IDs — `disjoint_schemes_never_link_material`.
-- **`--update-lock` only fills gaps.** It never overwrites a locked ID.
+- **`realise` and `delete` write the lock by default, and a write only fills gaps.** Like
+  `nix build` with `flake.lock`: what the lock lacks is recorded (first use included), but a
+  locked ID, anchor, binding, type or immutable is never overwritten — those changes fail even
+  when the lock is written. `--no-update-lock` compares only (`--update-lock` names the
+  default). First use is trust on first use, so the review is the `keys.lock` diff.
+- **Where the lock cannot be written, a writing run is refused (14) before any token is
+  touched** — never a key created and then not recorded — naming `--no-update-lock`: inside a
+  Nix build sandbox (`NIX_BUILD_TOP` set without `IN_NIX_SHELL`, which `nix develop` also
+  sets), where a write would be lost with the build, or when the lock file or its directory is
+  not writable (`access(2)`). `check`, `verify` and `resolve` never write and are unaffected —
+  `lock_is_written_by_default_and_refused_where_it_cannot_be`.
 - **A computed scheme missing from an otherwise matching lock is a note.** This happens, for
   example, when a newer version computes more schemes.
-  - With nothing to compare, it is first use: hash mismatch (exit 10), printing `got:`.
+  - With nothing to compare, it is first use: `realise` records it; `--no-update-lock`,
+    `verify` and `check` fail with a hash mismatch (exit 10), printing `got:`.
   - An explicitly requested `check <obj>.id.<scheme>` needs that scheme locked.
   - Test: `a_new_scheme_missing_from_the_lock_is_a_note_unless_requested`.
 
@@ -186,7 +197,7 @@ Outcomes:
 The lock records the binding per realisation (`pop-sign`, `pop-ecdh`, `pop-decrypt` or
 `token-asserted`). The `pop-*` methods share the top rank — each proves possession of the same
 key — so a realisation never weakens unless it drops to `token-asserted`, which is refused
-(exit 14), also under `--update-lock` — `binding_downgrade_is_refused`.
+(exit 14), also when the lock is written — `binding_downgrade_is_refused`.
 
 ### 3.7 Attestation commitments (`piv-attestation`, `tpm-certify`)
 
@@ -234,8 +245,8 @@ content-addressed identity — one per token type that can produce it:
   realisation's attestation is locked, a run that cannot attest — the TPM unreachable, no PIN,
   no Attestation Key, no attestation certificate — fails (14) as a scheme downgrade, while
   evidence that is *wrong* keeps its own code (13). That strictness is chosen, not sprung, and
-  it is one-way: opting out again (`attestation = false`) is a downgrade too, also under
-  `--update-lock`; a realisation that should stop attesting needs a new object name. A provider
+  it is one-way: opting out again (`attestation = false`) is a downgrade too, also when
+  the lock is written; a realisation that should stop attesting needs a new object name. A provider
   that attests nothing (SoftHSM, kryoptic, p11-kit) refuses the opt-in up front (15, before
   anything is created), as does a class it cannot attest (PIV: asymmetric keys only; TPM:
   private and secret keys — a public-key object is stored without a private blob, and
@@ -244,7 +255,7 @@ content-addressed identity — one per token type that can produce it:
   "tpm-certify", root = <SRI of the anchor's SPKI>, id = <the attestation ID> }`. A changed
   anchor — a re-provisioned TPM, another device signing the same claims — fails (14), and a
   changed ID under the same anchor (the attested object was replaced, or its attributes or
-  policy changed) fails (10), both even under `--update-lock`, like immutables: the material
+  policy changed) fails (10), both even when the lock is written, like immutables: the material
   needs a new object name.
 - **The TPM Attestation Key** is a restricted signing key (P-256, ECDSA-SHA256, empty auth,
   owner hierarchy) that cakeys provisions at a persistent handle and never uses for anything
@@ -358,7 +369,7 @@ mode = "direct"                      # a weaker mode is refused
 schemes = ["rfc7093m4"]              # schemes this realisation computed and matched; fewer later is refused
 publicOnly = true                    # only when set
 binding = "pop-sign"                 # private keys: pop-sign | pop-ecdh | pop-decrypt | token-asserted (§3.6)
-attestation = { kind = "tpm-certify", root = "sha256-...", id = "sha256-..." }   # §3.7: only when the spec opted in; the per-device attestation ID and its anchor; a change fails (14 anchor, 10 ID), also under --update-lock
+attestation = { kind = "tpm-certify", root = "sha256-...", id = "sha256-..." }   # §3.7: only when the spec opted in; the per-device attestation ID and its anchor; a change fails (14 anchor, 10 ID), also when the lock is written
 [realisations.<spec>.<token>.policy] # every attribute of the class the token shows: booleans, plus CKA_ALLOWED_MECHANISMS on key objects
 CKA_SIGN = true ; CKA_DECRYPT = true ; CKA_EXTRACTABLE = false ; ...
 [realisations.<spec>.<token>.immutables] # keys: fixed at creation
@@ -389,12 +400,12 @@ model = "..." ; serial = "..." ; firmware = "M.m"
   (SoftHSM EC private keys, for example, default to `CKA_DECRYPT`, `CKA_UNWRAP` and
   `CKA_SIGN_RECOVER`) and, on key objects, `CKA_ALLOWED_MECHANISMS` when the token reports a
   non-empty list. A recorded attribute that changes or becomes unreadable fails `verify` (exit 14)
-  until `realise --update-lock`; a newly readable one is a note. With `publicOnly`, this is the
+  until `realise`; a newly readable one is a note. With `publicOnly`, this is the
   public object's vector.
 - **Immutables** (`CKA_LOCAL`, `CKA_NEVER_EXTRACTABLE`, `CKA_ALWAYS_SENSITIVE`,
   `CKA_KEY_GEN_MECHANISM`) are compared the same way. A flag that was `true` and is not any more
   means the object was replaced (for example, the same material re-imported). That is refused
-  even under `--update-lock`, like a downgrade — `policy_drift_and_replaced_objects_are_refused`.
+  even when the lock is written, like a downgrade — `policy_drift_and_replaced_objects_are_refused`.
 - **Loading checks the lock's own invariants** (exit 17, never a hash mismatch) —
   `lock_invariants_are_checked`:
   - every ID and `specDigest` is a `sha256-` SRI digest of 32 bytes; a `commitmentLabel` is
@@ -402,11 +413,11 @@ model = "..." ; serial = "..." ; firmware = "M.m"
   - a realisation's `object` is in the lock, and its `schemes` are among that object's IDs;
   - **one object per material:** no two objects of one class share an ID under one scheme
     (a certificate's `rfc7093m4` is exempt: it names the subject key, which renewed
-    certificates share). `realise --update-lock` refuses to record a second name (exit 14);
+    certificates share). `realise` refuses to record a second name (exit 14);
   - **`pairs`** makes the key ↔ certificate relation explicit: objects that share an
     `rfc7093m4`. A listed partner present in the file must share it and list back; one that is
     absent may live in another fragment, so locks still split and join per object. Partners
-    present but unlisted are a note, and `--update-lock` records them;
+    present but unlisted are a note, and `realise` records them;
   - a private-key realisation records its `binding`, and no other class has one.
 - **`schemes`** records which schemes a realisation computed and matched, so the lock shows which
   realisation established which ID. A realisation that later computes fewer is refused like a
@@ -441,12 +452,12 @@ model = "..." ; serial = "..." ; firmware = "M.m"
   objects live, not only what they are — `s3_an_unrecorded_token_is_a_precondition_failure`.
   First use, with no locked IDs to compare, is still exit 10 with `got:`.
 - **The record is compared** with keys.toml: a different `object`, `locator`, `publicOnly` or spec
-  digest fails `verify`/`check` (exit 14, naming each change) until `realise --update-lock`
+  digest fails `verify`/`check` (exit 14, naming each change) until `realise`
   re-records it, like a lockfile that is out of date — `s4_a_public_only_flip_is_a_spec_change`,
   `s8_a_retargeted_spec_is_a_spec_change`. A changed locator or object is never reported as an
   unexplained hash mismatch.
-- **A changed object type** in `keys.toml` is refused with exit 14, naming the change, also under
-  `--update-lock`: different material needs a new object name. Curve aliases are canonicalized on
+- **A changed object type** in `keys.toml` is refused with exit 14, naming the change, also when
+  the lock is written: different material needs a new object name. Curve aliases are canonicalized on
   load (in `keys.toml` and in the lock's recorded types), so they are the same type and need
   nothing — `the_lock_pins_type_spec_provenance_and_schemes`.
 - **Provenance:** a different `provider` is a warning; a different `cakeysVersion` is a note.
@@ -460,8 +471,8 @@ model = "..." ; serial = "..." ; firmware = "M.m"
 | `validate` | Static check of modes, opt-ins, types and provider names; touches no token. |
 | `resolve <spec> --token` | GET: find (exactly one), check type and policy, compute IDs, print JSON. Never writes. |
 | `verify <spec> --token` | GET with If-Match against the lock; prints the URI. |
-| `realise <spec> --token [--update-lock]` | PUT. If absent and `autoCreate`: refused (14) when the lock already pins the object's material — generated material could never match (D1, `autocreate_never_fights_a_locked_identity`). **If-None-Match** — never create when anything sits under the locator (`never_create_over_an_occupied_locator`). Then create, compute and compare. If the identity of a just-created object cannot be established, it is destroyed (`tpm2_identity_failure_after_create_leaves_nothing`); on a module that cannot delete keys (ykcs11) the key stays and the message says so. Re-running never duplicates (`ec_lifecycle`). |
-| `delete <spec> --token [--if-match ID] [--update-lock]` | DELETE with If-Match. Absent is success, even without a lock; a present object with no expected ID is never deleted (`ec_lifecycle`); a key on a module whose delete leaves it in place (ykcs11) is refused (15), never claimed. `--update-lock` removes the realisation but keeps `objects.<name>.ids`, since the material may live on other tokens. |
+| `realise <spec> --token [--no-update-lock]` | PUT, recording what the lock lacks (§3.5). If absent and `autoCreate`: refused (14) when the lock already pins the object's material — generated material could never match (D1, `autocreate_never_fights_a_locked_identity`). **If-None-Match** — never create when anything sits under the locator (`never_create_over_an_occupied_locator`). Then create, compute and compare. If the identity of a just-created object cannot be established, it is destroyed (`tpm2_identity_failure_after_create_leaves_nothing`); on a module that cannot delete keys (ykcs11) the key stays and the message says so. Re-running never duplicates (`ec_lifecycle`). |
+| `delete <spec> --token [--if-match ID] [--no-update-lock]` | DELETE with If-Match. Absent is success, even without a lock; a present object with no expected ID is never deleted (`ec_lifecycle`); a key on a module whose delete leaves it in place (ykcs11) is refused (15), never claimed. Unless `--no-update-lock`, it removes the realisation but keeps `objects.<name>.ids`, since the material may live on other tokens. |
 | `check <obj>[.id.<scheme>] [--token] [--spec]` | The pseudo-FOD pre-use check: realise without writing the lock, print the URI. Schemes the spec or token can never compute are refused before anything is created (`scheme_the_token_lacks_is_refused_before_create`). |
 | `gc [--apply]` | Print lock entries `keys.toml` no longer names, as table names; `--apply` removes exactly what it printed, holding the update lock (M3). Live objects keep their `ids` (`gc_prints_then_removes_stale_entries`). |
 | `caps --token` | Provider and usable mechanisms, as JSON. |
@@ -544,13 +555,14 @@ shared  = keys.shared { token = "softhsm"; spec = "shared-sign"; };  # several s
   is recorded in the lock — the first-use pseudo-FOD flow; only the realisation's own fields
   throw on a missing record.
 - A call that does not name exactly one pair throws, listing the choices — so does a missing
-  realisation, naming the `realise --update-lock` command to run.
+  realisation, naming the `realise` command to run.
 - Tested by `checks.lib` (synthetic fixture) and `checks.vm` (consumer built in the guest sandbox).
 
 ### 7.2 Pseudo-FOD check
 A consumer derivation requires the token's feature and runs `check` before using the URI.
-1. **First use** creates the key (with `autoCreate`) and fails with `got:`.
-2. Record the ID out of band (`realise --update-lock`).
+1. **First use** creates the key (with `autoCreate`) and fails with `got:` — `check` never
+   writes, and in the sandbox it could not.
+2. Record the ID out of band (`realise`, outside the sandbox; it writes the lock by default).
 3. Every later build verifies first.
 
 **Caveat:** a cached consumer is not rebuilt, so the token is not re-contacted; `nix build --check`
@@ -621,7 +633,7 @@ See `docs/REVIEW-2026-11-11.md`.
   (firmware 5.7.4, ykcs11 2.7.3): ykcs11 exposes the slot attestation certificate by label
   suffix and shared `CKA_ID`, and the f9 certificate by its bare label, with no login at all;
   the chains (slot → f9 → `Yubico PIV Attestation B 1` → `Yubico Attestation Intermediate B 1`
-  → `Yubico Attestation Root 1`) verify, also with openssl; `realise --update-lock`, `verify`
+  → `Yubico Attestation Root 1`) verify, also with openssl; `realise`, `verify`
   and `check` pass on keys generated on device, a tampered ID is 10, a tampered root or an
   opt-out 14, an imported key under a locked attestation 14 and unlocked 15; `autoCreate` with
   `mgmKeyFile` generates; and `C_DestroyObject` was confirmed to leave the key in the slot. The

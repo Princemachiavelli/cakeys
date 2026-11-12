@@ -105,7 +105,7 @@ in
           pick = chosen args;
           real =
             realisations.${pick.spec}.${pick.token}
-              or (fail "spec '${pick.spec}' has no realisation on token '${pick.token}' in the lock; run `cakeys realise ${pick.spec} --token ${pick.token} --update-lock`");
+              or (fail "spec '${pick.spec}' has no realisation on token '${pick.token}' in the lock; run `cakeys realise ${pick.spec} --token ${pick.token}`");
           ids = lk.objects.${obj}.ids or { };
         in
         # seq pick: the call itself resolves the (spec, token) pair — missing or ambiguous throws

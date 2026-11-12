@@ -53,7 +53,7 @@ impl Env {
     }
 
     fn km(&self, args: &[&str]) -> Output {
-        let out = Command::new(BIN).arg("--config").arg(self.dir.join("keys.toml")).args(args).output().unwrap();
+        let out = Command::new(BIN).env_remove("NIX_BUILD_TOP").arg("--config").arg(self.dir.join("keys.toml")).args(args).output().unwrap();
         eprintln!(
             "$ cakeys {}\n  exit={:?}\n  stdout={}\n  stderr={}",
             args.join(" "),
@@ -243,7 +243,7 @@ tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-kek" }, autoCreate = true }
 "#,
     );
     for (spec, label) in [("ed", "fwd-refused-ed"), ("aes-x", "fwd-refused-aes-x"), ("aes-kek", "fwd-refused-kek")] {
-        let o = e.km(&["realise", spec, "--token", "fwd"]);
+        let o = e.km(&["realise", spec, "--token", "fwd", "--no-update-lock"]);
         assert_eq!(code(&o), 15, "{spec}");
         assert!(String::from_utf8_lossy(&o.stderr).contains("forwarded by p11-kit"), "{spec}: hint");
         let left = e.session(&e.direct).find_objects(&[Attribute::Label(label.as_bytes().to_vec())]).unwrap();
@@ -264,7 +264,7 @@ fn p11kit_login_is_per_client() {
     // Another client of the same server holds a logged-in session meanwhile...
     let held = e.session(&e.client);
     // ...yet a client without the PIN still cannot see the private key; the public half works.
-    assert_eq!(code(&e.km(&["realise", "k", "--token", "fwd-anon"])), 11);
+    assert_eq!(code(&e.km(&["realise", "k", "--token", "fwd-anon", "--no-update-lock"])), 11);
     assert_eq!(code(&e.km(&["realise", "k-pub", "--token", "fwd-anon", "--update-lock"])), 0);
     drop(held);
 }

@@ -173,7 +173,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("systemctl start signer.service")
         machine.succeed("systemctl is-active cakeys-check-signing.service")
         # Key gone: a fresh check (autoCreate makes a new key) no longer matches the lock.
-        machine.succeed(f"{km} delete signing-soft --token softhsm")
+        machine.succeed(f"{km} delete signing-soft --token softhsm --no-update-lock")
         machine.succeed("systemctl stop signer.service cakeys-check-signing.service")
         machine.fail("systemctl start signer.service")
         assert "hash mismatch" in machine.succeed(

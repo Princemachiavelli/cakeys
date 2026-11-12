@@ -45,7 +45,7 @@ like a fixed-output derivation: record the printed hash out of band.
 ```mermaid
 flowchart TD
     START(["cakeys realise &lt;spec&gt; --token &lt;t&gt;"]) --> GUARD
-    GUARD["--update-lock takes the exclusive lock<br/>on &lt;lock&gt;.lck for the whole run"]
+    GUARD["a writing run (the default) takes the exclusive lock<br/>on &lt;lock&gt;.lck for the whole run"]
     GUARD --> VAL["validate: mode, binding, attribute shapes,<br/>certificateType, per-class names"]
     VAL -- "invalid spec" --> X17(["exit 17"])
     VAL --> FIND["find by locator<br/>(CKA_LABEL / CKA_ID)"]
@@ -61,8 +61,8 @@ flowchart TD
     RESOLVE --> RECONCILE{"reconcile with the lock"}
     RECONCILE -- "no locked id to compare (first use)" --> X10(["exit 10, prints got: sha256-…"])
     RECONCILE -- "id differs" --> X13b(["exit 13 hash mismatch"])
-    RECONCILE -- "object / locator / spec digest / binding /<br/>mode / policy / immutables changed" --> X14(["exit 14: review,<br/>then --update-lock"])
-    RECONCILE -- "everything matches" --> OK(["exit 0 — URI printed;<br/>--update-lock records the realisation"])
+    RECONCILE -- "object / locator / spec digest / binding /<br/>mode / policy / immutables changed" --> X14(["exit 14: review,<br/>then realise again"])
+    RECONCILE -- "everything matches" --> OK(["exit 0 — URI printed;<br/>the realisation recorded unless --no-update-lock"])
 ```
 
 `verify` is the same walk without the create; `check` is `realise` that never writes the lock;
@@ -137,7 +137,7 @@ flowchart LR
     DRV -->|"requiredSystemFeatures =<br/>[ token-&lt;name&gt; ]"| HOOK["Nix pre-build hook<br/>(nix/sandbox-hook.sh)"]
     HOOK -->|"grants the token's device/socket<br/>only to builds asking for its feature"| SB["build sandbox"]
     SB --> CHK["cakeys check &lt;obj&gt;.id.&lt;scheme&gt;"]
-    CHK -->|"first use: autoCreate, then fail<br/>with got: sha256-…"| OOB["record out of band:<br/>cakeys realise --update-lock"]
+    CHK -->|"first use: autoCreate, then fail<br/>with got: sha256-…"| OOB["record out of band:<br/>cakeys realise"]
     OOB -.-> KL
     CHK -->|"every later build: the CA-ID<br/>is recomputed and compared"| URI["pkcs11: URI on stdout"]
 ```
