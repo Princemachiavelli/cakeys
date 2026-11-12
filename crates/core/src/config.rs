@@ -155,17 +155,12 @@ impl std::fmt::Display for Mode {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Lock {
-    #[serde(default = "lock_version")]
     pub version: u32,
     #[serde(default)]
     pub objects: BTreeMap<String, LockObject>,
     /// spec name -> token name -> realisation
     #[serde(default)]
     pub realisations: BTreeMap<String, BTreeMap<String, LockRealisation>>,
-}
-
-fn lock_version() -> u32 {
-    LOCK_VERSION
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -194,7 +189,8 @@ impl LockObject {
 pub const LOCK_VERSION: u32 = 1;
 
 impl Lock {
-    /// Refuse other versions, and objects with commitment IDs but no label.
+    /// Refuse other versions (the version is required), and objects with commitment IDs but no
+    /// label.
     fn validate(self, path: &Path) -> Result<Lock> {
         if self.version != LOCK_VERSION {
             return Err(KmError::Validation(format!(
@@ -227,6 +223,12 @@ impl Lock {
     }
 }
 
+/// One realisation of a spec on a token. Fields fall in three classes (docs/DESIGN.md §4.2):
+/// - **compared** (top level): verification fails when they differ from keys.toml or the token;
+/// - **`observed`**: recorded facts about the token that never change a verdict;
+/// - **`provenance`**: what produced the record; differences only warn.
+///
+/// Stripping `observed` and `provenance` from a lock never changes a verdict.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct LockRealisation {
@@ -241,22 +243,36 @@ pub struct LockRealisation {
     /// Private keys: how the private object is bound to the identity. Absent: not recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<Binding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed: Option<Observed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Provenance>,
+}
+
+/// Facts about the token at realisation time. Never compared.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Observed {
+    /// RFC 7512 URI of the object (derived from the token label and locator).
     pub uri: String,
-    /// PKCS#11 module that realised this (C_GetInfo, plus the loaded file).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub module: Option<ModuleInfo>,
-    /// Token that holds it (C_GetTokenInfo).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token: Option<TokenInfo>,
-    /// Provider that handled the module (provenance: fix-ups must not change identity).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    /// cakeys version that realised it (provenance).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cakeys_version: Option<String>,
-    /// Token mechanisms observed at realisation time (for `functions.<token>`).
+    /// Usable mechanisms (feeds `functions.<token>` in the Nix library). One that has since gone
+    /// from the token is a warning.
     #[serde(default)]
     pub mechanisms: Vec<String>,
+}
+
+/// What produced the record. Differences warn (module build, token, provider) or note (module
+/// file, cakeys version); `realise --update-lock` re-binds them.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Provenance {
+    /// Provider that handled the module (fix-ups must not change identity).
+    pub provider: String,
+    pub cakeys_version: String,
+    /// PKCS#11 module (C_GetInfo, plus the loaded file).
+    pub module: ModuleInfo,
+    /// Token that holds the object (C_GetTokenInfo).
+    pub token: TokenInfo,
 }
 
 pub fn load_config(path: &Path) -> anyhow::Result<Config> {
@@ -347,6 +363,14 @@ pub struct TokenInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The synthetic Nix-library fixture must stay a valid lock of the current schema.
+    #[test]
+    fn fixture_lock_parses() {
+        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/keys.lock"));
+        let lock = load_lock(path).unwrap();
+        assert_eq!(lock.realisations["signing-soft"]["softhsm"].binding, Some(Binding::PopSign));
+    }
 
     /// Downgrade detection compares ranks: an inverted order would silently disable it.
     #[test]

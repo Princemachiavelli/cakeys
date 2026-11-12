@@ -552,17 +552,17 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     assert_eq!(code(&e.km(&r)), 0);
 
     let real = &e.lock()["realisations"]["signing-soft"]["softhsm"];
-    assert_eq!(real["module"]["path"].as_str(), Some(e.module.as_str()));
-    assert_eq!(real["module"]["manufacturer"].as_str(), Some("SoftHSM"));
-    assert!(!real["module"]["version"].as_str().unwrap().is_empty());
-    assert_eq!(real["token"]["model"].as_str(), Some("SoftHSM v2"));
-    assert!(!real["uri"].as_str().unwrap().contains("module-path"), "URI is a pure locator");
+    assert_eq!(real["provenance"]["module"]["path"].as_str(), Some(e.module.as_str()));
+    assert_eq!(real["provenance"]["module"]["manufacturer"].as_str(), Some("SoftHSM"));
+    assert!(!real["provenance"]["module"]["version"].as_str().unwrap().is_empty());
+    assert_eq!(real["provenance"]["token"]["model"].as_str(), Some("SoftHSM v2"));
+    assert!(!real["observed"]["uri"].as_str().unwrap().contains("module-path"), "URI is a pure locator");
     let stderr = |o: &Output| String::from_utf8_lossy(&o.stderr).into_owned();
     assert!(!stderr(&e.km(&verify)).contains("warning"));
 
     let path = e.dir.join("keys.lock");
     let original = std::fs::read_to_string(&path).unwrap();
-    let version = real["module"]["version"].as_str().unwrap().to_owned();
+    let version = real["provenance"]["module"]["version"].as_str().unwrap().to_owned();
 
     // A different module version: still verifies (identity is the CA-ID), with a warning.
     std::fs::write(&path, original.replace(&format!("version = \"{version}\""), "version = \"0.0\"")).unwrap();
@@ -584,6 +584,43 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     assert_eq!(code(&e.km(&r)), 0);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     assert!(!stderr(&e.km(&verify)).contains("warning"));
+}
+
+/// The field classes are real: removing `observed` and `provenance` changes no verdict, while the
+/// compared fields and the version are required.
+#[test]
+fn observed_and_provenance_never_change_a_verdict() {
+    let Some(e) = env("classes") else { return };
+    e.config(EC.replace("ec-lifecycle", "classes").as_str());
+    let verify = ["verify", "signing-soft", "--token", "softhsm"];
+    assert_eq!(code(&e.km(&["realise", "signing-soft", "--token", "softhsm", "--update-lock"])), 0);
+    let full = e.lock();
+    let strip = |mut lock: toml::Value| {
+        let real = lock["realisations"]["signing-soft"]["softhsm"].as_table_mut().unwrap();
+        assert!(real.remove("observed").is_some() && real.remove("provenance").is_some());
+        lock
+    };
+    let write = |lock: &toml::Value| std::fs::write(e.dir.join("keys.lock"), toml::to_string(lock).unwrap()).unwrap();
+    write(&strip(full.clone()));
+    assert_eq!(code(&e.km(&verify)), 0);
+    // A wrong ID is still a mismatch, a missing record still a precondition failure.
+    let mut wrong = strip(full.clone());
+    wrong["objects"]["signing"]["ids"]["rfc7093m4"] = sri(b"other").into();
+    write(&wrong);
+    assert_eq!(code(&e.km(&verify)), 10);
+    let mut unrecorded = full.clone();
+    unrecorded["realisations"].as_table_mut().unwrap().clear();
+    write(&unrecorded);
+    assert_eq!(code(&e.km(&verify)), 14);
+    // Required: the version, and every compared field.
+    let mut versionless = full.clone();
+    versionless.as_table_mut().unwrap().remove("version");
+    write(&versionless);
+    assert_eq!(code(&e.km(&verify)), 17);
+    let mut objectless = full.clone();
+    objectless["realisations"]["signing-soft"]["softhsm"].as_table_mut().unwrap().remove("object");
+    write(&objectless);
+    assert_eq!(code(&e.km(&verify)), 17);
 }
 
 /// A known AES-256 value, planted several times with different usage bits: the host knows the
@@ -1230,8 +1267,8 @@ fn the_lock_pins_type_spec_provenance_and_schemes() {
     let lock: toml::Value = toml::from_str(&locked).unwrap();
     assert_eq!(lock["objects"]["signing"]["type"]["curve"].as_str(), Some("secp256r1"));
     let real = &lock["realisations"]["signing-soft"]["softhsm"];
-    assert_eq!(real["provider"].as_str(), Some("softhsm"));
-    assert!(real["cakeysVersion"].as_str().is_some_and(|v| !v.is_empty()));
+    assert_eq!(real["provenance"]["provider"].as_str(), Some("softhsm"));
+    assert!(real["provenance"]["cakeysVersion"].as_str().is_some_and(|v| !v.is_empty()));
 
     // 1. A changed object type is named as such (an alias is a different recorded type, too),
     //    also with --update-lock.
@@ -1258,7 +1295,7 @@ fn the_lock_pins_type_spec_provenance_and_schemes() {
     let o = e.km(&verify);
     assert_eq!(code(&o), 0);
     assert!(stderr(&o).contains("warning:") && stderr(&o).contains("provider other"), "{}", stderr(&o));
-    let version = real["cakeysVersion"].as_str().unwrap();
+    let version = real["provenance"]["cakeysVersion"].as_str().unwrap();
     std::fs::write(&path, locked.replace(&format!("cakeysVersion = \"{version}\""), "cakeysVersion = \"0.0.0\"")).unwrap();
     let o = e.km(&verify);
     assert_eq!(code(&o), 0);

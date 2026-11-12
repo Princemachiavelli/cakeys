@@ -34,6 +34,8 @@ object = "shared"
 locator = { CKA_LABEL = "shared-b" }
 specDigest = "sha256-2l4R3cS4v8E8lJ0y5DxB2cbWm2y5H6V3H9oT2VcSx1Q="
 mode = "wrap-rebind"
+
+[realisations.shared-nosign.softhsm.observed]
 uri = "pkcs11:token=kmtest;object=shared-b;type=secret-key"
 mechanisms = ["CKM_AES_KEY_WRAP", "CKM_SHA256_HMAC"]
 
@@ -42,26 +44,34 @@ object = "shared"
 locator = { CKA_LABEL = "shared-a" }
 specDigest = "sha256-yVLLNPOa4rNsRbODzKVTkUj2NDJYBrUBlEonNBIh/tQ="
 mode = "commitment"
+
+[realisations.shared-sign.softhsm.observed]
 uri = "pkcs11:token=kmtest;object=shared-a;type=secret-key"
 mechanisms = ["CKM_SHA256_HMAC"]
 
 [realisations.signing-soft.softhsm]
 object = "signing"
 locator = { CKA_LABEL = "signing" }
-binding = "pop-sign"
 specDigest = "sha256-qIuRBEz2PXSMKu8QQ5Mnwd9u7f6hGvsgYvL2GZh0Hk0="
 mode = "direct"
+binding = "pop-sign"
+
+[realisations.signing-soft.softhsm.observed]
 uri = "pkcs11:token=kmtest;object=signing;type=private"
 mechanisms = ["CKM_ECDSA", "CKM_EC_KEY_PAIR_GEN"]
 
-[realisations.signing-soft.softhsm.module]
+[realisations.signing-soft.softhsm.provenance]
+provider = "softhsm"
+cakeysVersion = "0.1.0"
+
+[realisations.signing-soft.softhsm.provenance.module]
 path = "/nix/store/00000000000000000000000000000000-softhsm-2.7.0/lib/softhsm/libsofthsm2.so"
 description = "Implementation of PKCS11"
 manufacturer = "SoftHSM"
 version = "2.7"
 cryptoki = "3.2"
 
-[realisations.signing-soft.softhsm.token]
+[realisations.signing-soft.softhsm.provenance.token]
 model = "SoftHSM v2"
 serial = "624f14da21ad132f"
 firmware = "2.7"

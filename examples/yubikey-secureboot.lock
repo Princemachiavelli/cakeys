@@ -52,9 +52,12 @@ rfc7093m4 = "sha256-djAUop6ocYdPWijQvA0wOiiWUUeYtk7y2gQZQu+B6j0="
 object = "whonix-db-cert"
 specDigest = "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
 mode = "direct"
+
+[realisations.whonix-db-cert-piv.yubikey.locator]
+CKA_LABEL = "X.509 Certificate for Retired Key 3"
+
+[realisations.whonix-db-cert-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;object=X.509%20Certificate%20for%20Retired%20Key%203;type=cert"
-provider = "ykcs11"
-cakeysVersion = "0.1.0"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -85,17 +88,18 @@ mechanisms = [
     "CKM_SHA_1",
 ]
 
-[realisations.whonix-db-cert-piv.yubikey.locator]
-CKA_LABEL = "X.509 Certificate for Retired Key 3"
+[realisations.whonix-db-cert-piv.yubikey.provenance]
+provider = "ykcs11"
+cakeysVersion = "0.1.0"
 
-[realisations.whonix-db-cert-piv.yubikey.module]
+[realisations.whonix-db-cert-piv.yubikey.provenance.module]
 path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
 cryptoki = "3.0"
 
-[realisations.whonix-db-cert-piv.yubikey.token]
+[realisations.whonix-db-cert-piv.yubikey.provenance.token]
 model = "YubiKey YK5"
 serial = "39189318"
 firmware = "5.74"
@@ -106,9 +110,12 @@ specDigest = "sha256-8k3VUT0T/6zvM/Yp6b2isKLrYOrK2vfyd7UWWz/DUiY="
 mode = "direct"
 publicOnly = true
 binding = "token-asserted"
+
+[realisations.whonix-db-piv.yubikey.locator]
+CKA_ID = "07"
+
+[realisations.whonix-db-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;id=%07;type=private"
-provider = "ykcs11"
-cakeysVersion = "0.1.0"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -139,17 +146,18 @@ mechanisms = [
     "CKM_SHA_1",
 ]
 
-[realisations.whonix-db-piv.yubikey.locator]
-CKA_ID = "07"
+[realisations.whonix-db-piv.yubikey.provenance]
+provider = "ykcs11"
+cakeysVersion = "0.1.0"
 
-[realisations.whonix-db-piv.yubikey.module]
+[realisations.whonix-db-piv.yubikey.provenance.module]
 path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
 cryptoki = "3.0"
 
-[realisations.whonix-db-piv.yubikey.token]
+[realisations.whonix-db-piv.yubikey.provenance.token]
 model = "YubiKey YK5"
 serial = "39189318"
 firmware = "5.74"
@@ -158,9 +166,12 @@ firmware = "5.74"
 object = "whonix-kek-cert"
 specDigest = "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
 mode = "direct"
+
+[realisations.whonix-kek-cert-piv.yubikey.locator]
+CKA_LABEL = "X.509 Certificate for Retired Key 2"
+
+[realisations.whonix-kek-cert-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;object=X.509%20Certificate%20for%20Retired%20Key%202;type=cert"
-provider = "ykcs11"
-cakeysVersion = "0.1.0"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -191,17 +202,18 @@ mechanisms = [
     "CKM_SHA_1",
 ]
 
-[realisations.whonix-kek-cert-piv.yubikey.locator]
-CKA_LABEL = "X.509 Certificate for Retired Key 2"
+[realisations.whonix-kek-cert-piv.yubikey.provenance]
+provider = "ykcs11"
+cakeysVersion = "0.1.0"
 
-[realisations.whonix-kek-cert-piv.yubikey.module]
+[realisations.whonix-kek-cert-piv.yubikey.provenance.module]
 path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
 cryptoki = "3.0"
 
-[realisations.whonix-kek-cert-piv.yubikey.token]
+[realisations.whonix-kek-cert-piv.yubikey.provenance.token]
 model = "YubiKey YK5"
 serial = "39189318"
 firmware = "5.74"
@@ -212,9 +224,12 @@ specDigest = "sha256-8k3VUT0T/6zvM/Yp6b2isKLrYOrK2vfyd7UWWz/DUiY="
 mode = "direct"
 publicOnly = true
 binding = "token-asserted"
+
+[realisations.whonix-kek-piv.yubikey.locator]
+CKA_ID = "06"
+
+[realisations.whonix-kek-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;id=%06;type=private"
-provider = "ykcs11"
-cakeysVersion = "0.1.0"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -245,17 +260,18 @@ mechanisms = [
     "CKM_SHA_1",
 ]
 
-[realisations.whonix-kek-piv.yubikey.locator]
-CKA_ID = "06"
+[realisations.whonix-kek-piv.yubikey.provenance]
+provider = "ykcs11"
+cakeysVersion = "0.1.0"
 
-[realisations.whonix-kek-piv.yubikey.module]
+[realisations.whonix-kek-piv.yubikey.provenance.module]
 path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
 cryptoki = "3.0"
 
-[realisations.whonix-kek-piv.yubikey.token]
+[realisations.whonix-kek-piv.yubikey.provenance.token]
 model = "YubiKey YK5"
 serial = "39189318"
 firmware = "5.74"
@@ -264,9 +280,12 @@ firmware = "5.74"
 object = "whonix-pk-cert"
 specDigest = "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
 mode = "direct"
+
+[realisations.whonix-pk-cert-piv.yubikey.locator]
+CKA_LABEL = "X.509 Certificate for Retired Key 1"
+
+[realisations.whonix-pk-cert-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;object=X.509%20Certificate%20for%20Retired%20Key%201;type=cert"
-provider = "ykcs11"
-cakeysVersion = "0.1.0"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -297,17 +316,18 @@ mechanisms = [
     "CKM_SHA_1",
 ]
 
-[realisations.whonix-pk-cert-piv.yubikey.locator]
-CKA_LABEL = "X.509 Certificate for Retired Key 1"
+[realisations.whonix-pk-cert-piv.yubikey.provenance]
+provider = "ykcs11"
+cakeysVersion = "0.1.0"
 
-[realisations.whonix-pk-cert-piv.yubikey.module]
+[realisations.whonix-pk-cert-piv.yubikey.provenance.module]
 path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
 cryptoki = "3.0"
 
-[realisations.whonix-pk-cert-piv.yubikey.token]
+[realisations.whonix-pk-cert-piv.yubikey.provenance.token]
 model = "YubiKey YK5"
 serial = "39189318"
 firmware = "5.74"
@@ -318,9 +338,12 @@ specDigest = "sha256-8k3VUT0T/6zvM/Yp6b2isKLrYOrK2vfyd7UWWz/DUiY="
 mode = "direct"
 publicOnly = true
 binding = "token-asserted"
+
+[realisations.whonix-pk-piv.yubikey.locator]
+CKA_ID = "05"
+
+[realisations.whonix-pk-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;id=%05;type=private"
-provider = "ykcs11"
-cakeysVersion = "0.1.0"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -351,17 +374,18 @@ mechanisms = [
     "CKM_SHA_1",
 ]
 
-[realisations.whonix-pk-piv.yubikey.locator]
-CKA_ID = "05"
+[realisations.whonix-pk-piv.yubikey.provenance]
+provider = "ykcs11"
+cakeysVersion = "0.1.0"
 
-[realisations.whonix-pk-piv.yubikey.module]
+[realisations.whonix-pk-piv.yubikey.provenance.module]
 path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
 cryptoki = "3.0"
 
-[realisations.whonix-pk-piv.yubikey.token]
+[realisations.whonix-pk-piv.yubikey.provenance.token]
 model = "YubiKey YK5"
 serial = "39189318"
 firmware = "5.74"

@@ -58,19 +58,19 @@ in
         in
         {
           tokens = tks;
-          uri = genAttrs tks (t: (real t).uri);
+          uri = genAttrs tks (t: (real t).observed.uri or null);
           mode = genAttrs tks (t: (real t).mode);
           specDigest = genAttrs tks (t: (real t).specDigest);
           # Provenance: { path, description, manufacturer, version, cryptoki } / { model, serial, firmware }.
-          module = genAttrs tks (t: (real t).module or null);
-          tokenInfo = genAttrs tks (t: (real t).token or null);
+          module = genAttrs tks (t: (real t).provenance.module or null);
+          tokenInfo = genAttrs tks (t: (real t).provenance.token or null);
           functions = genAttrs tks (
             t:
             builtins.listToAttrs (
               map (m: {
                 name = m;
                 value = true;
-              }) ((real t).mechanisms or [ ])
+              }) ((real t).observed.mechanisms or [ ])
             )
           );
           rsf = genAttrs tks rsfOf;

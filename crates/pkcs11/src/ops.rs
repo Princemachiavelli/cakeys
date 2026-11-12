@@ -1,7 +1,9 @@
 //! Idempotent verbs with HTTP-like semantics (PLAN.md, "Token verbs").
 
 use crate::token::{self as hal, Token};
-use cakeys_core::config::{Binding, Config, Locator, Lock, LockRealisation, Mode, ObjectCfg, SpecCfg, SpecTokenCfg};
+use cakeys_core::config::{
+    Binding, Config, Locator, Lock, LockRealisation, Mode, ObjectCfg, Observed, Provenance, SpecCfg, SpecTokenCfg,
+};
 use cakeys_core::id::{self, Commit, HmacHash};
 use cakeys_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
@@ -449,12 +451,13 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             mode: r.mode,
             public_only: r.public_only,
             binding: r.binding,
-            uri: r.uri.clone(),
-            module: Some(tok.module.clone()),
-            token: Some(tok.token.clone()),
-            provider: Some(tok.provider.name().to_owned()),
-            cakeys_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-            mechanisms: tok.mechanism_names(),
+            observed: Some(Observed { uri: r.uri.clone(), mechanisms: tok.mechanism_names() }),
+            provenance: Some(Provenance {
+                provider: tok.provider.name().to_owned(),
+                cakeys_version: env!("CARGO_PKG_VERSION").to_owned(),
+                module: tok.module.clone(),
+                token: tok.token.clone(),
+            }),
         };
         let slot = lock.realisations.entry(t.spec_name.into()).or_default();
         if slot.get(t.token_name) != Some(&real) {
@@ -465,49 +468,54 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
     Ok(changed)
 }
 
-/// Module and token identity are provenance: identity itself is enforced by the CA-IDs, so a
+/// `observed` and `provenance` never change a verdict: identity is enforced by the CA-IDs, so a
 /// different module build or token only warns. `realise --update-lock` re-binds them.
 fn warn_provenance(t: &Target, tok: &Token, prev: &LockRealisation) {
-    if let Some(p) = prev.provider.as_deref().filter(|p| *p != tok.provider.name()) {
-        eprintln!("warning: {} was realised with provider {p}, now {}", t.what(), tok.provider.name());
-    }
-    if let Some(v) = prev.cakeys_version.as_deref().filter(|v| *v != env!("CARGO_PKG_VERSION")) {
-        eprintln!("note: {} was realised by cakeys {v}, now {}", t.what(), env!("CARGO_PKG_VERSION"));
-    }
-    if let Some(m) = &prev.module {
-        if !m.same_build_identity(&tok.module) {
+    if let Some(o) = &prev.observed {
+        let gone: Vec<&str> =
+            o.mechanisms.iter().map(String::as_str).filter(|m| !tok.mechanism_names().iter().any(|n| n == m)).collect();
+        if !gone.is_empty() {
             eprintln!(
-                "warning: {} was realised with module {} {} ({}), now {} {} ({})",
+                "warning: {} was realised where the token offered {}, which it no longer does (functions.<token> in Nix)",
                 t.what(),
-                m.description,
-                m.version,
-                m.manufacturer,
-                tok.module.description,
-                tok.module.version,
-                tok.module.manufacturer
-            );
-        } else if m.path != tok.module.path {
-            eprintln!(
-                "note: {} was realised with module file {}, now {}",
-                t.what(),
-                m.path,
-                tok.module.path
+                gone.join(", ")
             );
         }
     }
-    if let Some(k) = &prev.token {
-        if k != &tok.token {
-            eprintln!(
-                "warning: {} was realised on token {} #{} (firmware {}), now {} #{} (firmware {})",
-                t.what(),
-                k.model,
-                k.serial,
-                k.firmware,
-                tok.token.model,
-                tok.token.serial,
-                tok.token.firmware
-            );
-        }
+    let Some(p) = &prev.provenance else { return };
+    if p.provider != tok.provider.name() {
+        eprintln!("warning: {} was realised with provider {}, now {}", t.what(), p.provider, tok.provider.name());
+    }
+    if p.cakeys_version != env!("CARGO_PKG_VERSION") {
+        eprintln!("note: {} was realised by cakeys {}, now {}", t.what(), p.cakeys_version, env!("CARGO_PKG_VERSION"));
+    }
+    let m = &p.module;
+    if !m.same_build_identity(&tok.module) {
+        eprintln!(
+            "warning: {} was realised with module {} {} ({}), now {} {} ({})",
+            t.what(),
+            m.description,
+            m.version,
+            m.manufacturer,
+            tok.module.description,
+            tok.module.version,
+            tok.module.manufacturer
+        );
+    } else if m.path != tok.module.path {
+        eprintln!("note: {} was realised with module file {}, now {}", t.what(), m.path, tok.module.path);
+    }
+    let k = &p.token;
+    if k != &tok.token {
+        eprintln!(
+            "warning: {} was realised on token {} #{} (firmware {}), now {} #{} (firmware {})",
+            t.what(),
+            k.model,
+            k.serial,
+            k.firmware,
+            tok.token.model,
+            tok.token.serial,
+            tok.token.firmware
+        );
     }
 }
 

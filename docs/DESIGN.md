@@ -182,30 +182,42 @@ What may be created and adopted:
 
 ### 4.2 `keys.lock` (input, updated in place)
 ```toml
-version = 1                          # any other version is refused
+version = 1                          # required; any other version is refused (v1 is a draft, §10)
 [objects.<object>]
 commitmentLabel = "key-management/v1" # required when ids holds a commitment scheme
 [objects.<object>.type]              # required with ids: the type the IDs were computed for
 class = "..." ; keyType = "..." ; curve = "..." ; valueLen = N ; modulusBits = N
 [objects.<object>.ids]
 rfc7093m4 = "sha256-..."            # scheme -> SRI
+
+# Compared: verification fails (14) when keys.toml or the token disagrees. All required.
 [realisations.<spec>.<token>]
 object = "<object>"                 # the object this spec realised
 locator = { CKA_LABEL = "...", CKA_ID = "hex" }  # where it was found
 specDigest = "sha256-..."
-mode = "direct"
+mode = "direct"                      # a weaker mode is refused
 publicOnly = true                    # only when set
 binding = "pop-sign"                 # private keys: pop-sign | token-asserted (§3.6)
+
+# Observed: facts about the token; never change a verdict (optional).
+[realisations.<spec>.<token>.observed]
 uri = "pkcs11:token=...;object=...;id=%..;type=private|public|cert|secret-key|data"
-mechanisms = ["CKM_..."]             # usable mechanisms at realisation time
-provider = "softhsm"                 # provider that handled the module (provenance)
-cakeysVersion = "0.1.0"              # cakeys that realised it (provenance)
-[realisations.<spec>.<token>.module] # C_GetInfo and the loaded file (provenance)
+mechanisms = ["CKM_..."]             # usable mechanisms; feeds functions.<token> in Nix
+
+# Provenance: what produced the record; differences warn or note (optional).
+[realisations.<spec>.<token>.provenance]
+provider = "softhsm"
+cakeysVersion = "0.1.0"
+[realisations.<spec>.<token>.provenance.module] # C_GetInfo and the loaded file
 path = "..." ; description = "..." ; manufacturer = "..." ; version = "M.m" ; cryptoki = "M.m"
-[realisations.<spec>.<token>.token]  # C_GetTokenInfo
+[realisations.<spec>.<token>.provenance.token]  # C_GetTokenInfo
 model = "..." ; serial = "..." ; firmware = "M.m"
 ```
 
+- **Every realisation field has one class:** compared, observed or provenance. Removing `observed`
+  and `provenance` changes no verdict, and a lock without `version` or a compared field is
+  invalid (exit 17) — `observed_and_provenance_never_change_a_verdict`. An observed mechanism the
+  token no longer offers is a warning.
 - **Writes are atomic** (temporary file, then rename), but there is no locking (finding M3).
 - **URIs are pure locators** (RFC 7512), with no `module-path`.
 - **Versions** are raw `CK_VERSION` major.minor (ykcs11 2.7.3 → `2.73`).
@@ -385,7 +397,8 @@ Hardware: the YubiKey example lock is verified read-only (no PIN). `packages.tes
 
 ## 10. Frozen identifiers, and what makes a lock portable
 A `keys.toml` and its `keys.lock` must verify the same way under any later cakeys, like a
-dependency lock. The lock records the values that determine each ID: scheme name, commitment
+dependency lock. **Lock version 1 is a draft:** it is unpublished and changes in place until every
+review passes it; only then is it frozen, and later changes get a new version. The lock records the values that determine each ID: scheme name, commitment
 label and the hash itself. Everything else is fixed by definition:
 - **Scheme definitions are immutable.** A scheme name (`rfc7093m4`, `certhash`, `valuehash`,
   `commitment`, `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`) always denotes exactly the computation in
