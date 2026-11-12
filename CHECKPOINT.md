@@ -27,25 +27,9 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 | e8c2c78 | **D1** autoCreate refused up front (14) when the lock already pins the object's material; `ec_lifecycle` tail and the VM caveat reworked; `autocreate_never_fights_a_locked_identity` |
 | f4f4a59 | **config** `$NAME`/`${NAME}` path references in `pinFile`/`module` (unset or malformed → 17 at load, naming it); every spec's `object` reference validated at load; the flat spec layout kept (config is a graph; answer recorded here 2026-11-12) |
 | 4e4587c | **RW YubiKey** `mgmKeyFile`/`mgmKeyEnv` (admin credential: hex mgm key, or the PIN on PIN-protected-mgm devices — the SO login then also verifies the PIN, so generate + pop-sign work in one unattended run); provider `login` hook; opt-in `tests/yubikey.rs` (scratch slot `0x95`, full lifecycle, every run bounded — no touch needed, checked on hardware first); production slots untouched, re-verified 6/6 |
+| db51e74 | **Nix API** one calling convention: `keys.<object> { token?, spec?, scheme? }` → plain data (`id`, `uri`, `mode`, `specDigest`, `module`, `tokenInfo`, `functions`, `rsf`, `check`); call-time resolution errors; `check`/`id`/`type`/`rsf` stay usable before first lock |
 
-## Done (uncommitted; passes the local gate): one Nix calling convention (the object is a function)
-
-- **`nix/lib.nix` rewritten:** every object is now a *function* — `keys.<object> { token ?, spec ?,
-  scheme ? }` → plain data (`type`, `id`, `spec`, `token`, `uri`, `mode`, `specDigest`, `module`,
-  `tokenInfo`, `functions`, `rsf`, `check`). No more parallel formats (the `specs.<spec>.<field>.<token>`
-  map, the per-token shortcuts, and `check`-as-function are all gone).
-  - The call resolves the (spec, token) pair — args optional when exactly one; a call that doesn't
-    name one pair throws listing the choices (eagerly: the *call* throws, not attribute access).
-  - `check` is now a plain string in the result, and the resolved pair is passed to the CLI
-    explicitly. Like `id`/`type`/`rsf` it works before anything is locked (first-use flow); only
-    the realisation's own fields throw on a missing record (fixed after the first lib-check run
-    caught me making `real` eager, which broke first-use `check`).
-- **Consumers updated:** the VM consumer (`nix/test.nix`) and the lib self-check (`flake.nix`
-  `checks.lib`, extended: ambiguity and missing-pair now assert the *call* throws).
-- **Docs:** DESIGN §7.1 rewritten; README Nix example; diagrams.md Nix-loop label.
-- Chose per-object-function over `(keys { token })`: mixed-token setups (signing on SoftHSM, kek
-  on YubiKey) would need a call per token; the object call takes `spec`/`scheme` too.
-- Local gate: `checks.lib` green; `nix fmt` clean. Full gates running at last update.
+## Done (uncommitted; passes the local gate): (empty — next task below)
 
 - Notes kept for reference: this YubiKey's mgm key is PIN-protected (fw 5.7) — the `piv_mnmgt_key.txt` hex key and the default key are both refused (that file is for another device); PIV keys cannot be erased, only their cert objects, and ykcs11 keeps attesting the leftover key (hence delete → verify 14, re-adopt same id).
 
