@@ -2,7 +2,8 @@
 
 This is the authoritative description of what is built. `PLAN.md` is the roadmap and history;
 where the two disagree, this document wins. Review findings and open issues are tracked in
-`docs/REVIEW-2026-11-11.md`.
+`docs/REVIEW-2026-11-11.md`. Visual overviews of the model, the verbs and the Nix loop are in
+`docs/diagrams.md`.
 
 ## 1. Purpose
 
@@ -154,8 +155,9 @@ key to its identity:
      same secret with `CKM_ECDH1_DERIVE` into a non-extractable session key and MACs the same
      challenge. The MACs agree only for the matching private key.
    - `pop-decrypt` (RSA keys that only decrypt): the host encrypts the challenge to the public key
-     with RSA-OAEP (SHA-256, MGF1-SHA256); the token decrypts with `CKM_RSA_PKCS_OAEP`. The
-     plaintext matches only for the matching private key.
+     with RSA-OAEP (SHA-1, MGF1-SHA1 — the PKCS#11 baseline; SoftHSM implements no other OAEP);
+     the token decrypts with `CKM_RSA_PKCS_OAEP`. The plaintext matches only for the matching
+     private key.
 3. The host checks the proof with RustCrypto against the same canonical SPKI it hashes into
    `rfc7093m4` (signature verification, MAC comparison, plaintext comparison — all constant
    time where it matters). No proof value is ever stored.
@@ -472,6 +474,8 @@ forces it. The VM test covers all of this.
 - **Weak identity modes need an explicit per-token opt-in.** Downgrades fail.
 - **Material is linked only through a shared scheme.**
 - **The lock never holds token outputs, only their hashes.** Private data objects are not hashed.
+- **Lock updates are serialized** by the advisory `<lock>.lck` sidecar; readers get consistent
+  snapshots through the atomic rename — `update_lock_waits_for_the_sidecar_lock`.
 - **Refused operations leave nothing behind:** checks before creating, and cleanup after a failed
   identity.
 - **Token paths reach only builds that require the token's feature.**
@@ -479,17 +483,20 @@ forces it. The VM test covers all of this.
 ### 8.2 Not enforced / known gaps
 See `docs/REVIEW-2026-11-11.md`.
 - **`token-asserted` bindings are unproven.** With the opt-in or `publicOnly`, a private key is
-  tied to its identity only by the token's word (H1 is fixed for `pop-sign` keys:
-  `h1_a_private_key_beside_an_unbound_public_object_is_a_conflict`).
+  tied to its identity only by the token's word (H1 is fixed for every `pop-*` proof —
+  `h1_a_private_key_beside_an_unbound_public_object_is_a_conflict`,
+  `derive_and_decrypt_only_keys_prove_possession`).
 - **Features are self-declared.** Any user allowed to build can require a token's feature; the
   real gate is `allowed-users`.
-- **There is no lock GC, and no locking.**
+- **No merge rule for lock fragments.** Updates are serialized by the `<lock>.lck` sidecar (M3)
+  and stale entries are collected by `gc` (D3), but two hand-edited lock fragments still need a
+  manual `git merge` (S16).
 - **p11-kit hides the module behind it,** so the lock records p11-kit as the module.
 
 ## 9. Testing
 | Suite | Where | What |
 |---|---|---|
-| unit | `cargo test --workspace` | digests (pinned), curves and OIDs, SPKI round-trips, registry, P-521 fix-up, hex parsing |
+| unit | `cargo test --workspace` | digests (pinned), curves and OIDs, SPKI round-trips, registry, P-521 fix-up, hex parsing, proof-of-possession host math (both ECDH MAC sides), the deprecation register and AES strength order |
 | `tests/softhsm.rs` | package build | SoftHSM: lifecycle, every type and scheme against independent oracles (hand-written DER encoder, openssl-hashed fixtures, RustCrypto `hmac`/`cmac`/`aes`/`aes-kw`) |
 | `tests/tpm2.rs` | package build, `nix/tpm2-test-env.sh` | swtpm + tpm2-abrmd + tpm2-pkcs11 |
 | `tests/p11kit.rs` | package build, `nix/p11kit-test-env.sh` | SoftHSM behind `p11-kit server`, compared with direct access |

@@ -1,6 +1,24 @@
 # Key management plan
 
-> **Current design and state: [`docs/DESIGN.md`](docs/DESIGN.md)** (authoritative). Review findings: [`docs/REVIEW-2026-11-11.md`](docs/REVIEW-2026-11-11.md). This file is the roadmap and the history of decisions; where it disagrees with DESIGN.md, DESIGN.md wins. The project was renamed from `key-mgmnt` to **`cakeys`** on 2026-11-11; the history below uses the old name.
+> **Current design and state: [`docs/DESIGN.md`](docs/DESIGN.md)** (authoritative). Review findings: [`docs/REVIEW-2026-11-11.md`](docs/REVIEW-2026-11-11.md). Visual overviews: [`docs/diagrams.md`](docs/diagrams.md). This file is the roadmap and the history of decisions; where it disagrees with DESIGN.md, DESIGN.md wins. The project was renamed from `key-mgmnt` to **`cakeys`** on 2026-11-11; the history below uses the old name.
+
+## TODO (deferred, from the 2026-11-11 reviews)
+
+Parked deliberately; the lock stays `version = 1`, a draft, until the reviews pass.
+
+- **Attestation (P2-11, lock review):** record an `attestation` per realisation — YubiKey PIV
+  attestation verified to the pinned Yubico root (not the device's own slot f9 self-cert), or
+  `TPM2_Certify` with an EK-chained AK. A new binding level `attested` would sit above the
+  `pop-*`s and replace them only by explicit opt-in. Note the shipped YubiKey keys are imported,
+  and Yubico attests only keys generated on-device.
+- **Native TPM backend:** `tss-esapi` beside tpm2-pkcs11 — PCR/policy-bound keys need the native
+  path; `pubkeyhash` must agree across both paths (swtpm + the real `/dev/tpmrm0`).
+- **Post-quantum:** no token here has PQ hardware (YubiKey PIV, TPM 2.0); map the PKCS#11 v3
+  PQ key types (`CKK_*ML*`, `CKA_PARAMETER_SET`) and the kryptic module when they matter.
+- **Lock merge rule (S16 remainder):** M3 serializes updaters and D3 collects stale entries, but
+  two hand-edited lock fragments still need a manual merge.
+- **M1/M2 (open, code review):** read-only sessions for read-only verbs; read the PIV PIN
+  counters (`CKF_USER_PIN_FINAL_TRY` …) before login.
 
 Uniquely create, store, export/import and manage PKCS11 and TPM keys, objects, certificatse and any other type relevent.
 The core premise here is we use some content-addressed identification intead of the raw PKCS11 URI or other volatile identifier.

@@ -6,13 +6,15 @@ Declare keys, certificates and data objects in `keys.toml`. cakeys finds them on
 locator (`CKA_LABEL`/`CKA_ID`), identifies them by a **hash of their material** (a CA-ID), and
 records that hash in `keys.lock`. A label or URI can be changed or reused; the hash cannot. Every
 use, including inside a Nix build sandbox, first checks that the token still holds exactly that
-material. A private key also proves possession: it signs a fresh challenge, which the host
-verifies against the public key it hashed.
+material. A private key also proves possession: by signing, deriving (ECDH) or decrypting (OAEP) a
+fresh challenge — whichever capability the key declares — which the host checks against the public
+key it hashed.
 
 Status: proof of concept.
 - **Tested** against SoftHSM, tpm2-pkcs11 (swtpm, QEMU vTPM) and SoftHSM behind p11-kit forwarding.
 - **Verified read-only** against a YubiKey (PIV).
 - **Design and current state:** [`docs/DESIGN.md`](docs/DESIGN.md).
+- **At a glance (diagrams):** [`docs/diagrams.md`](docs/diagrams.md).
 - **Open review findings:** [`docs/REVIEW-2026-11-11.md`](docs/REVIEW-2026-11-11.md).
 - **Roadmap and history:** [`PLAN.md`](PLAN.md).
 
@@ -49,9 +51,10 @@ pkcs11:token=main;serial=...;object=signing;type=private
 
 Verbs:
 - `validate`, `resolve`, `verify`, `realise [--update-lock]`, `delete [--if-match] [--update-lock]`,
-  `check <object>[.id.<scheme>]` and `caps`.
+  `check <object>[.id.<scheme>]`, `gc [--apply]` and `caps`.
 - They behave like HTTP verbs: safe to repeat, never create over an occupied locator, never delete
-  an unexpected object.
+  an unexpected object. `gc` prints lock entries the config no longer names and removes exactly
+  what it printed with `--apply`.
 - Exit codes: 10 hash mismatch, 11 not found, 12 ambiguous, 13 conflict, 14 precondition failed,
   15 unsupported, 16 unavailable, 17 invalid spec.
 
