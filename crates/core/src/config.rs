@@ -627,14 +627,14 @@ pub struct Provenance {
     pub token: TokenInfo,
 }
 
-pub fn load_config(path: &Path) -> anyhow::Result<Config> {
+pub fn load_config(path: &Path) -> Result<Config> {
     load_config_with(path, &|name| std::env::var(name).ok())
 }
 
 /// [`load_config`], with `env` looking up the variables `$NAME` path references name.
-pub fn load_config_with(path: &Path, env: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<Config> {
+pub fn load_config_with(path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<Config> {
     let text = std::fs::read_to_string(path)
-        .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+        .map_err(KmError::io(format_args!("reading {}", path.display())))?;
     let mut cfg: Config =
         toml::from_str(&text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
     for o in cfg.objects.values_mut() {
@@ -658,8 +658,7 @@ pub fn load_config_with(path: &Path, env: &dyn Fn(&str) -> Option<String>) -> an
             return Err(KmError::Validation(format!(
                 "{}: token '{name}': mgmKeyFile/mgmKeyEnv needs a user PIN (pinFile or pinEnv) to return to the user session",
                 path.display()
-            ))
-            .into());
+            )));
         }
     }
     // A spec's object reference must name something, also when no token ever uses the spec.
@@ -669,8 +668,7 @@ pub fn load_config_with(path: &Path, env: &dyn Fn(&str) -> Option<String>) -> an
                 "{}: spec '{spec}' references unknown object '{}'",
                 path.display(),
                 s.object
-            ))
-            .into());
+            )));
         }
     }
     for s in cfg.specs.values_mut() {
@@ -687,7 +685,7 @@ pub fn load_config_with(path: &Path, env: &dyn Fn(&str) -> Option<String>) -> an
 /// the environment variable `NAME` when the config is loaded, so one shared `keys.toml` can carry
 /// a machine-specific pin file or module path. A value with no leading `$` is a literal path; a
 /// malformed or unset reference fails at load (exit 17), naming it — not at login time.
-fn env_ref(value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<String> {
+fn env_ref(value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<String> {
     let name = match value.strip_prefix('$') {
         Some(rest) => rest.strip_prefix('{').and_then(|r| r.strip_suffix('}')).unwrap_or(rest),
         None => return Ok(value.to_owned()),
@@ -695,15 +693,14 @@ fn env_ref(value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>) -> any
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(KmError::Validation(format!(
             "{what}: \"{value}\" is neither $NAME, ${{NAME}} nor a literal path"
-        ))
-        .into());
+        )));
     }
     env(name).ok_or_else(|| {
-        KmError::Validation(format!("{what}: environment variable {name} (\"{value}\") is not set")).into()
+        KmError::Validation(format!("{what}: environment variable {name} (\"{value}\") is not set"))
     })
 }
 
-pub fn load_lock(path: &Path) -> anyhow::Result<Lock> {
+pub fn load_lock(path: &Path) -> Result<Lock> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
             let mut lock: Lock = toml::from_str(&text)
@@ -718,15 +715,15 @@ pub fn load_lock(path: &Path) -> anyhow::Result<Lock> {
             version: LOCK_VERSION,
             ..Default::default()
         }),
-        Err(e) => Err(anyhow::anyhow!("reading {}: {e}", path.display())),
+        Err(e) => Err(KmError::io(format!("reading {}", path.display()))(e)),
     }
 }
 
-pub fn save_lock(path: &Path, lock: &Lock) -> anyhow::Result<()> {
-    let text = toml::to_string_pretty(lock)?;
+pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
+    let text = toml::to_string_pretty(lock).map_err(|e| KmError::Io(format!("encoding {}: {e}", path.display())))?;
     let tmp = path.with_extension("lock.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)?;
+    std::fs::write(&tmp, text).map_err(KmError::io(format!("writing {}", tmp.display())))?;
+    std::fs::rename(&tmp, path).map_err(KmError::io(format!("renaming {} to {}", tmp.display(), path.display())))?;
     Ok(())
 }
 
@@ -739,11 +736,16 @@ pub struct UpdateGuard(#[allow(dead_code)] std::fs::File); // holds the lock unt
 /// Take the exclusive advisory lock on `<lock>.lck`, waiting for any other updater. The sidecar
 /// file is created if absent; a leftover one is harmless (the lock is advisory and released when
 /// its holder exits).
-pub fn lock_for_update(lock_path: &Path) -> anyhow::Result<UpdateGuard> {
+pub fn lock_for_update(lock_path: &Path) -> Result<UpdateGuard> {
     let mut sidecar = lock_path.as_os_str().to_os_string();
     sidecar.push(".lck");
-    let file = std::fs::File::options().write(true).create(true).truncate(false).open(&sidecar)?;
-    file.lock().map_err(|e| anyhow::anyhow!("locking {}: {e}", sidecar.to_string_lossy()))?;
+    let file = std::fs::File::options()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&sidecar)
+        .map_err(KmError::io(format!("opening {}", sidecar.to_string_lossy())))?;
+    file.lock().map_err(KmError::io(format!("locking {}", sidecar.to_string_lossy())))?;
     Ok(UpdateGuard(file))
 }
 
@@ -939,7 +941,7 @@ mod tests {
         for object in ["class = \"CKO_OTP_KEY\"", "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES3\""] {
             std::fs::write(&p, format!("[objects.o]\n{object}\n")).unwrap();
             let err = load_config(&p).unwrap_err();
-            assert!(matches!(err.downcast_ref::<KmError>(), Some(KmError::Validation(_))), "{err}");
+            assert!(matches!(err, KmError::Validation(_)), "{err}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

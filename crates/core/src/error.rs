@@ -22,6 +22,9 @@ pub enum KmError {
     Unavailable(String),
     #[error("invalid spec: {0}")]
     Validation(String),
+    /// Reading or writing a file failed (exit 1, like any other failure outside the verbs).
+    #[error("{0}")]
+    Io(String),
 }
 
 impl KmError {
@@ -35,8 +38,16 @@ impl KmError {
             KmError::Unsupported(_) => 15,
             KmError::Unavailable(_) => 16,
             KmError::Validation(_) => 17,
+            KmError::Io(_) => 1,
         }
     }
 }
 
 pub type Result<T, E = KmError> = std::result::Result<T, E>;
+
+impl KmError {
+    /// An I/O error, with what was being done: `.map_err(KmError::io(format!("reading {p}")))`.
+    pub fn io(what: impl std::fmt::Display) -> impl FnOnce(std::io::Error) -> KmError {
+        move |e| KmError::Io(format!("{what}: {e}"))
+    }
+}
