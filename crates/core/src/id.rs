@@ -31,6 +31,10 @@ pub fn spec_digest(object: &ObjectCfg, spec: &SpecCfg) -> String {
     sri(canonical.to_string().as_bytes())
 }
 
+/// Prefix of every commitment label. FROZEN: it is hashed into every secret-key ID, so it must
+/// never change, also not when the project is renamed (docs/DESIGN.md, "Frozen identifiers").
+pub const COMMITMENT_LABEL_PREFIX: &str = "key-management/v1";
+
 /// Hash of an HMAC commitment. A key bound to a hash (`CKK_SHA384_HMAC`, ...) is committed with
 /// that hash; generic secrets use SHA-256.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +95,7 @@ impl Commit {
     /// types never share an ID.
     pub fn label(self, object: &ObjectCfg) -> Vec<u8> {
         format!(
-            "key-management/v1/{}/{}/{}",
+            "{COMMITMENT_LABEL_PREFIX}/{}/{}/{}",
             self.scheme(),
             object.key_type,
             object.value_len.unwrap_or(0) * 8

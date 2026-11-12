@@ -131,6 +131,7 @@
         ];
       };
 
-      formatter.${system} = pkgs.nixfmt;
+      # nixfmt-tree formats the tree; bare nixfmt would wait on stdin.
+      formatter.${system} = pkgs.nixfmt-tree;
     };
 }

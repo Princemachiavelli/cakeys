@@ -217,8 +217,9 @@ impl Config {
     }
 }
 
-/// Module identity bound into a realisation. Everything but `path` must match on verify;
-/// `path` is provenance only (it changes on every rebuild).
+/// Module that realised an object (`C_GetInfo` plus the loaded file). Provenance only: on verify a
+/// different build identity is a warning and a different `path` alone is a note; identity itself
+/// is enforced by the CA-IDs.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModuleInfo {

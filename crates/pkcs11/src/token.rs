@@ -690,7 +690,8 @@ fn locator_attrs(loc: &Locator) -> Result<Vec<Attribute>> {
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
+    // ASCII only: byte slicing below would panic inside a multi-byte character.
+    if !s.is_ascii() || !s.len().is_multiple_of(2) {
         return Err(KmError::Validation(format!("CKA_ID '{s}' is not hex")));
     }
     (0..s.len())
@@ -714,4 +715,17 @@ fn pct(bytes: &[u8]) -> String {
 
 fn pct_all(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("%{b:02X}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_decode_rejects_non_hex_without_panicking() {
+        assert_eq!(hex_decode("0aFF").unwrap(), [0x0a, 0xff]);
+        for bad in ["0", "zz", "aéb", "éé", "0x12"] {
+            assert!(matches!(hex_decode(bad), Err(KmError::Validation(_))), "{bad}");
+        }
+    }
 }

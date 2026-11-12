@@ -1101,3 +1101,30 @@ fn brainpool_p512_is_refused_clearly() {
     assert_eq!(code(&o), 15);
     assert!(String::from_utf8_lossy(&o.stderr).contains("no RustCrypto crate"));
 }
+
+/// KNOWN GAP (docs/REVIEW-2026-11-11.md, H1), documents current behaviour: SoftHSM EC private
+/// keys expose no public key, so their identity is read from the public key object under the same
+/// locator, which nothing binds to the private key. Replace the private key, keep the public
+/// object: `verify` still passes. When H1 is fixed this must fail (flip the assertion).
+#[test]
+fn known_gap_ec_private_identity_comes_from_an_unbound_public_object() {
+    let Some(e) = env("gap_h1") else { return };
+    e.config(EC.replace("ec-lifecycle", "gap-a").as_str());
+    assert_eq!(code(&e.km(&["realise", "signing-soft", "--token", "softhsm", "--update-lock"])), 0);
+    let s = e.session();
+    let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let (_, other_private) = s
+        .generate_key_pair(
+            &Mechanism::EccKeyPairGen,
+            &[Attribute::Token(true), Attribute::Label(b"gap-b".to_vec()), Attribute::EcParams(ec_params)],
+            &[Attribute::Token(true), Attribute::Label(b"gap-b".to_vec()), Attribute::Sign(true), Attribute::Sensitive(true), Attribute::Extractable(false)],
+        )
+        .unwrap();
+    let original = s
+        .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"gap-a".to_vec())])
+        .unwrap()[0];
+    s.destroy_object(original).unwrap();
+    s.update_attributes(other_private, &[Attribute::Label(b"gap-a".to_vec())]).unwrap();
+    // Different private key under the locator, same public object: not detected today.
+    assert_eq!(code(&e.km(&["verify", "signing-soft", "--token", "softhsm"])), 0, "H1 fixed? flip this assertion");
+}

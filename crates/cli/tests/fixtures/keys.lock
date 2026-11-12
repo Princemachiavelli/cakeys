@@ -1,3 +1,5 @@
+# SYNTHETIC fixture for the Nix library check (checks.lib): hand-written values, not
+# produced by key-mgmnt. Do not use as reference data (real digests differ).
 version = 1
 
 [objects.shared.ids]
