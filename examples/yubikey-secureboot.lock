@@ -6,7 +6,7 @@ keyType = "CKK_RSA"
 modulusBits = 2048
 
 [objects.whonix-db.ids]
-pubkeyhash = "sha256-WIDTlaTWRgbfxWnV3ZkFfSm4FhvRh5tp6nUE/GCoOO4="
+rfc7093m4 = "sha256-WIDTlaTWRgbfxWnV3ZkFfSm4FhvRh5tp6nUE/GCoOO4="
 
 [objects.whonix-db-cert.type]
 class = "CKO_CERTIFICATE"
@@ -14,7 +14,7 @@ keyType = "CKC_X_509"
 
 [objects.whonix-db-cert.ids]
 certhash = "sha256-9R0r07PgT23TlaiY7XTNvRTEHT2rZ2zCZKpdm8T7sWY="
-pubkeyhash = "sha256-WIDTlaTWRgbfxWnV3ZkFfSm4FhvRh5tp6nUE/GCoOO4="
+rfc7093m4 = "sha256-WIDTlaTWRgbfxWnV3ZkFfSm4FhvRh5tp6nUE/GCoOO4="
 
 [objects.whonix-kek.type]
 class = "CKO_PRIVATE_KEY"
@@ -22,7 +22,7 @@ keyType = "CKK_RSA"
 modulusBits = 2048
 
 [objects.whonix-kek.ids]
-pubkeyhash = "sha256-MabDOX1Cer17nABooLV6cfN15eqZPwPsjw2lh1SdfSM="
+rfc7093m4 = "sha256-MabDOX1Cer17nABooLV6cfN15eqZPwPsjw2lh1SdfSM="
 
 [objects.whonix-kek-cert.type]
 class = "CKO_CERTIFICATE"
@@ -30,7 +30,7 @@ keyType = "CKC_X_509"
 
 [objects.whonix-kek-cert.ids]
 certhash = "sha256-WJGDfabt4hR/KLOkNfdb7B+XYC58lSC+aY9JMZrPUR0="
-pubkeyhash = "sha256-MabDOX1Cer17nABooLV6cfN15eqZPwPsjw2lh1SdfSM="
+rfc7093m4 = "sha256-MabDOX1Cer17nABooLV6cfN15eqZPwPsjw2lh1SdfSM="
 
 [objects.whonix-pk.type]
 class = "CKO_PRIVATE_KEY"
@@ -38,7 +38,7 @@ keyType = "CKK_RSA"
 modulusBits = 2048
 
 [objects.whonix-pk.ids]
-pubkeyhash = "sha256-djAUop6ocYdPWijQvA0wOiiWUUeYtk7y2gQZQu+B6j0="
+rfc7093m4 = "sha256-djAUop6ocYdPWijQvA0wOiiWUUeYtk7y2gQZQu+B6j0="
 
 [objects.whonix-pk-cert.type]
 class = "CKO_CERTIFICATE"
@@ -46,7 +46,7 @@ keyType = "CKC_X_509"
 
 [objects.whonix-pk-cert.ids]
 certhash = "sha256-GYIqs0Zncl3wM5I8YU4m3pYLgD1zIGL/mY/yVUOCw0I="
-pubkeyhash = "sha256-djAUop6ocYdPWijQvA0wOiiWUUeYtk7y2gQZQu+B6j0="
+rfc7093m4 = "sha256-djAUop6ocYdPWijQvA0wOiiWUUeYtk7y2gQZQu+B6j0="
 
 [realisations.whonix-db-cert-piv.yubikey]
 specDigest = "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="

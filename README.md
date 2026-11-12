@@ -58,8 +58,8 @@ Verbs:
 
 | Class | Types | Identity |
 |---|---|---|
-| private/public keys | EC P-256/384/521, secp256k1, brainpoolP256r1/P384r1; Ed25519/Ed448; RSA 1024–8192 | `pubkeyhash` (SHA-256 of canonical SPKI) |
-| certificates | X.509 | `certhash` plus the subject key's `pubkeyhash` |
+| private/public keys | EC P-256/384/521, secp256k1, brainpoolP256r1/P384r1; Ed25519/Ed448; RSA 1024–8192 | `rfc7093m4` (SHA-256 of canonical SPKI) |
+| certificates | X.509 | `certhash` plus the subject key's `rfc7093m4` |
 | secret keys | AES-128/192/256; generic secrets; `CKK_SHA{1,224,256,384,512}_HMAC` | on-token commitments: `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`, `commitment` (HMAC) |
 | data objects | public `CKO_DATA` | `valuehash` (SHA-256 of the value) |
 

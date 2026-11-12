@@ -178,6 +178,14 @@ impl Lock {
                 path.display()
             )));
         }
+        for (name, o) in &self.objects {
+            if let Some((alias, scheme)) = crate::id::SCHEME_ALIASES.iter().find(|(a, _)| o.ids.contains_key(*a)) {
+                return Err(KmError::Validation(format!(
+                    "{}: object '{name}' records '{alias}', which is an input alias; the lock uses '{scheme}'",
+                    path.display()
+                )));
+            }
+        }
         if let Some((name, _)) = self.objects.iter().find(|(_, o)| !o.ids.is_empty() && o.object_type.is_none()) {
             return Err(KmError::Validation(format!(
                 "{}: object '{name}' has IDs but no type",

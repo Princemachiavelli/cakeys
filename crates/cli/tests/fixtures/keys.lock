@@ -19,7 +19,7 @@ keyType = "CKC_X_509"
 
 [objects.signing-cert.ids]
 certhash = "sha256-lXNE6ciIfLkwGf6kf84qfibQ08d5fkPuGNKQ5KnyTMM="
-pubkeyhash = "sha256-8DQBv2fMc+z0Q5uxky0+5t9TS6MAHO07fNMqG9thHtM="
+rfc7093m4 = "sha256-8DQBv2fMc+z0Q5uxky0+5t9TS6MAHO07fNMqG9thHtM="
 
 [objects.signing.type]
 class = "CKO_PRIVATE_KEY"
@@ -27,7 +27,7 @@ keyType = "CKK_EC"
 curve = "secp256r1"
 
 [objects.signing.ids]
-pubkeyhash = "sha256-d3++Ph3T9bppuPnNz6blK4vDij+Swy9RMmKdfQnLmPk="
+rfc7093m4 = "sha256-d3++Ph3T9bppuPnNz6blK4vDij+Swy9RMmKdfQnLmPk="
 
 [realisations.shared-nosign.softhsm]
 specDigest = "sha256-2l4R3cS4v8E8lJ0y5DxB2cbWm2y5H6V3H9oT2VcSx1Q="

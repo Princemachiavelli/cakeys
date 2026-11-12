@@ -188,7 +188,7 @@ fn tpm2_generated_keys_match_der_oracle() {
         assert_eq!(got_hash(&e.km(&["realise", &gen, "--token", "tpm"])), got_hash(&first), "{k}: no duplicate");
         assert_eq!(code(&e.km(&["realise", &gen, "--token", "tpm", "--update-lock"])), 0, "{k}");
         // A session opened now: tpm2-pkcs11 sessions don't see objects created after they opened.
-        assert_eq!(e.locked_id(k, "pubkeyhash"), sri(&oracle_spki_with(&e.session(), k, unwrap_tpm2)), "{k}");
+        assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki_with(&e.session(), k, unwrap_tpm2)), "{k}");
         let pubs = format!("{k}-pub");
         assert_eq!(code(&e.km(&["realise", &pubs, "--token", "tpm-anon", "--update-lock"])), 0, "{k}");
     }
@@ -208,7 +208,7 @@ fn tpm2_identity_failure_after_create_leaves_nothing() {
     assert_eq!(labelled(&e.session(), "orphan-p521"), 0);
 }
 
-/// openssl-computed pubkeyhashes of the import fixtures (test-only keys).
+/// openssl-computed rfc7093m4 IDs of the import fixtures (test-only keys).
 const IMPORT_P256: &str = "sha256-0ymh9vfz8P3lnbdlAXskvxwoDAfUJNEIbsv0KEupcSg=";
 const IMPORT_RSA2048: &str = "sha256-kRE6YzH4EXmqqAKhbLhb0z6/57mcGvHKrm4F4omLIn4=";
 const HMAC_VALUE: &[u8; 32] = b"key-management hmac test vector!";
@@ -273,8 +273,8 @@ tokens.tpm = { locator = { CKA_LABEL = "imp-hmac384" } }
     for (spec, token) in [("p256", "tpm"), ("rsa", "tpm-anon"), ("hmac", "tpm"), ("hmac384", "tpm")] {
         assert_eq!(code(&e.km(&["realise", spec, "--token", token, "--update-lock"])), 0, "{spec}");
     }
-    assert_eq!(e.locked_id("p256", "pubkeyhash"), IMPORT_P256);
-    assert_eq!(e.locked_id("rsa", "pubkeyhash"), IMPORT_RSA2048);
+    assert_eq!(e.locked_id("p256", "rfc7093m4"), IMPORT_P256);
+    assert_eq!(e.locked_id("rsa", "rfc7093m4"), IMPORT_RSA2048);
     let mut mac = <Hmac<sha2::Sha256> as KeyInit>::new_from_slice(HMAC_VALUE).unwrap();
     mac.update(b"key-management/v1/commitment/CKK_SHA256_HMAC/256");
     assert_eq!(e.locked_id("hmac", "commitment"), sri(&mac.finalize().into_bytes()));

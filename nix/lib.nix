@@ -18,7 +18,7 @@ in
 
     Per object:
       type                    intrinsic type from keys.toml
-      id.<scheme>             portable material CA-IDs from the lock (e.g. id.pubkeyhash)
+      id.<scheme>             portable material CA-IDs from the lock (e.g. id.rfc7093m4)
       specs.<spec>.{uri,mode,specDigest,module,tokenInfo,functions,rsf}.<token>
       uri / mode / specDigest / module / tokenInfo / functions / rsf .<token>
                               shortcuts when the object has exactly one spec on that token
@@ -102,7 +102,12 @@ in
         in
         {
           inherit type;
-          id = lk.objects.${obj}.ids or { };
+          # `pubkeyhash` is an input alias of rfc7093m4 (the lock only uses the scheme name).
+          id =
+            let
+              ids = lk.objects.${obj}.ids or { };
+            in
+            ids // (if ids ? rfc7093m4 then { pubkeyhash = ids.rfc7093m4; } else { });
           specs = views;
           uri = perToken "uri";
           mode = perToken "mode";

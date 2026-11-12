@@ -169,7 +169,7 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
         }
         Cmd::Check { reference, token, spec } => {
             let (object, scheme) = match reference.split_once(".id.") {
-                Some((o, s)) => (o, Some(s)),
+                Some((o, s)) => (o, Some(cakeys_core::id::canonical_scheme(s))),
                 None => (reference.as_str(), None),
             };
             let (spec_name, token_name) = cfg.pick_spec(object, spec.as_deref(), token.as_deref())?;

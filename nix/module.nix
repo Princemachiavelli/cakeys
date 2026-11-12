@@ -100,7 +100,7 @@ let
         scheme = mkOption {
           type = types.nullOr types.str;
           default = null;
-          description = "Identity scheme (`pubkeyhash`, `certhash`, `commitment`); null for the object's primary one.";
+          description = "Identity scheme (`rfc7093m4`, `certhash`, `commitment`); null for the object's primary one.";
         };
         token = mkOption {
           type = types.nullOr types.str;

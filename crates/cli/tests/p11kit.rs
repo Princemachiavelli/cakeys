@@ -187,7 +187,7 @@ tokens.fwd = { locator = { CKA_LABEL = "fwd-hmac" } }
         assert_eq!(code(&e.km(&["realise", k, "--token", "direct", "--update-lock"])), 0, "{k}: direct agrees");
         let pubs = format!("{k}-pub");
         assert_eq!(code(&e.km(&["realise", &pubs, "--token", "fwd-anon", "--update-lock"])), 0, "{k}");
-        assert_eq!(e.locked_id(k, "pubkeyhash"), sri(&oracle_spki(&e.session(&e.direct), k)), "{k}");
+        assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki(&e.session(&e.direct), k)), "{k}");
     }
 
     // AES: p11-kit forwards CMAC and ECB but not key wrap, so the forwarded path computes two of

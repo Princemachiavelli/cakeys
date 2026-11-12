@@ -343,7 +343,7 @@ impl Token {
                     _ => return Err(KmError::Unsupported("certificate has no readable CKA_VALUE".into())),
                 };
                 ids.insert("certhash".into(), id::sri(&der));
-                ids.insert("pubkeyhash".into(), id::sri(&id::cert_spki(&der)?));
+                ids.insert("rfc7093m4".into(), id::sri(&id::cert_spki(&der)?));
             }
             Mode::Direct if class_of(object)? == ObjectClass::DATA => {
                 // SHA-256 of the content: the same SRI hash as a flat Nix fixed-output hash.
@@ -354,7 +354,7 @@ impl Token {
                 ids.insert("valuehash".into(), id::sri(&value));
             }
             Mode::Direct => {
-                ids.insert("pubkeyhash".into(), id::sri(&self.spki(h, loc)?));
+                ids.insert("rfc7093m4".into(), id::sri(&self.spki(h, loc)?));
             }
             Mode::Commitment => {
                 for c in commits {

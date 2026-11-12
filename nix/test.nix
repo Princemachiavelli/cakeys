@@ -156,7 +156,7 @@ let
           ''
       }
 
-      with subtest("independent oracle: pkcs11-tool + openssl agree with pubkeyhash"):
+      with subtest("independent oracle: pkcs11-tool + openssl agree with rfc7093m4"):
           machine.succeed(
               "pkcs11-tool --module ${softhsmLib} --token-label kmtest --read-object --type pubkey"
               " --label signing -o /root/pub.der"
@@ -169,7 +169,7 @@ let
 
       with subtest("verify and check print the URI"):
           assert expect(f"{km} verify signing-soft --token softhsm", 0).startswith("pkcs11:")
-          assert expect(f"{km} check signing.id.pubkeyhash", 0).startswith("pkcs11:")
+          assert expect(f"{km} check signing.id.rfc7093m4", 0).startswith("pkcs11:")
 
       with subtest("wrap-rebind identity for an extractable AES key"):
           got(expect(f"{km} realise kek-wrap --token softhsm", 10))

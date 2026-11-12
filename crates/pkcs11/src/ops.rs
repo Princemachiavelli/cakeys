@@ -48,8 +48,8 @@ impl<'a> Target<'a> {
     /// may compute fewer.
     pub fn schemes(&self) -> Vec<&'static str> {
         match (self.object.class.as_str(), self.object.key_type.as_str()) {
-            ("CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY", _) => vec!["pubkeyhash"],
-            ("CKO_CERTIFICATE", _) => vec!["certhash", "pubkeyhash"],
+            ("CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY", _) => vec!["rfc7093m4"],
+            ("CKO_CERTIFICATE", _) => vec!["certhash", "rfc7093m4"],
             ("CKO_DATA", _) => vec!["valuehash"],
             (_, "CKK_AES") => match declared_commits(self) {
                 // No usable usage bit: wrap-rebind (if extractable) computes all of them.

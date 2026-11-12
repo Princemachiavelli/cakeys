@@ -26,9 +26,7 @@
         { lib, pkgs, ... }:
         {
           imports = [ ./nix/module.nix ];
-          services.cakeys.package =
-            lib.mkDefault
-              self.packages.${pkgs.stdenv.hostPlatform.system}.cakeys;
+          services.cakeys.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.cakeys;
         };
 
       packages.${system} = {
@@ -93,7 +91,8 @@
             };
             fails = e: !(builtins.tryEval e).success;
           in
-          assert keys.signing.id.pubkeyhash == "sha256-d3++Ph3T9bppuPnNz6blK4vDij+Swy9RMmKdfQnLmPk=";
+          assert keys.signing.id.rfc7093m4 == "sha256-d3++Ph3T9bppuPnNz6blK4vDij+Swy9RMmKdfQnLmPk=";
+          assert keys.signing.id.pubkeyhash == keys.signing.id.rfc7093m4; # input alias
           assert keys.signing.uri.softhsm == "pkcs11:token=kmtest;object=signing;type=private";
           assert keys.signing.mode.softhsm == "direct";
           assert keys.signing.rsf.softhsm == [ "token-softhsm" ];

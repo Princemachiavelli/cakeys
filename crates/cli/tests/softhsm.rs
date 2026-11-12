@@ -115,14 +115,16 @@ fn ec_lifecycle() {
 
     // Record it; now realise is a no-op success.
     assert_eq!(code(&e.km(&[&r[..], &["--update-lock"]].concat())), 0);
-    assert_eq!(e.locked_id("signing", "pubkeyhash"), got);
+    assert_eq!(e.locked_id("signing", "rfc7093m4"), got);
     assert_eq!(code(&e.km(&r)), 0);
 
     let verify = e.km(&["verify", "signing-soft", "--token", "softhsm"]);
     assert_eq!(code(&verify), 0);
     assert!(stdout(&verify).starts_with("pkcs11:token=kmtest;object=ec-lifecycle;type=private"));
-    let check = e.km(&["check", "signing.id.pubkeyhash"]);
+    let check = e.km(&["check", "signing.id.rfc7093m4"]);
     assert_eq!(code(&check), 0);
+    // `pubkeyhash` is an input alias of rfc7093m4.
+    assert_eq!(stdout(&e.km(&["check", "signing.id.pubkeyhash"])), stdout(&check));
     assert_eq!(stdout(&check), stdout(&verify));
     assert_eq!(code(&e.km(&["check", "signing.id.commitment"])), 15);
 
@@ -150,7 +152,7 @@ fn ec_lifecycle() {
         e.dir.join("keys.lock"),
         format!(
             "version = 1\n[objects.signing.type]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\
-             [objects.signing.ids]\npubkeyhash = \"{got}\"\n"
+             [objects.signing.ids]\nrfc7093m4 = \"{got}\"\n"
         ),
     )
     .unwrap();
@@ -443,9 +445,9 @@ tokens.softhsm-anon = { locator = { CKA_ID = "42" } }
     let pub_only = ["realise", "adopted-pub", "--token", "softhsm-anon", "--update-lock"];
     assert_eq!(code(&e.km(&pub_only)), 0);
     assert_eq!(code(&e.km(&["realise", "adopted-cert", "--token", "softhsm-anon", "--update-lock"])), 0);
-    assert_eq!(e.locked_id("adopted", "pubkeyhash"), ADOPT_PUBKEYHASH);
+    assert_eq!(e.locked_id("adopted", "rfc7093m4"), ADOPT_PUBKEYHASH);
     assert_eq!(e.locked_id("adopted-cert", "certhash"), ADOPT_CERTHASH);
-    assert_eq!(e.locked_id("adopted-cert", "pubkeyhash"), ADOPT_PUBKEYHASH, "cert links to its key");
+    assert_eq!(e.locked_id("adopted-cert", "rfc7093m4"), ADOPT_PUBKEYHASH, "cert links to its key");
     let lock = e.lock();
     assert_eq!(lock["realisations"]["adopted-pub"]["softhsm-anon"]["publicOnly"].as_bool(), Some(true));
     assert!(lock["realisations"]["adopted-cert"]["softhsm-anon"].get("publicOnly").is_none());
@@ -742,7 +744,7 @@ fn curves_and_rsa_sizes_match_an_independent_der_oracle() {
         let gen = format!("{k}-gen");
         assert_eq!(code(&e.km(&["realise", &gen, "--token", "softhsm"])), 10, "{k}");
         assert_eq!(code(&e.km(&["realise", &gen, "--token", "softhsm", "--update-lock"])), 0, "{k}");
-        assert_eq!(e.locked_id(k, "pubkeyhash"), sri(&oracle_spki(&s, k)), "{k}");
+        assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki(&s, k)), "{k}");
         // Same identity through the public key object, without login.
         let pubs = format!("{k}-pub");
         assert_eq!(code(&e.km(&["realise", &pubs, "--token", "softhsm-anon", "--update-lock"])), 0, "{k}");
@@ -800,13 +802,13 @@ fn adopt_ec_and_edwards_certificates() {
         );
     }
     e.config(&body);
-    for (k, _, _, _, certhash, pubkeyhash) in fixtures {
+    for (k, _, _, _, certhash, rfc7093m4) in fixtures {
         assert_eq!(code(&e.km(&["realise", k, "--token", "softhsm-anon", "--update-lock"])), 0, "{k}");
         let cert = format!("{k}-cert");
         assert_eq!(code(&e.km(&["realise", &cert, "--token", "softhsm-anon", "--update-lock"])), 0, "{k}");
-        assert_eq!(e.locked_id(k, "pubkeyhash"), pubkeyhash, "{k}");
+        assert_eq!(e.locked_id(k, "rfc7093m4"), rfc7093m4, "{k}");
         assert_eq!(e.locked_id(&cert, "certhash"), certhash, "{k}");
-        assert_eq!(e.locked_id(&cert, "pubkeyhash"), pubkeyhash, "{k}: cert links to its key");
+        assert_eq!(e.locked_id(&cert, "rfc7093m4"), rfc7093m4, "{k}: cert links to its key");
     }
 }
 
@@ -1031,9 +1033,9 @@ fn standalone_public_key_objects() {
     );
     let o = e.km(&["realise", "anchor", "--token", "softhsm-anon", "--update-lock"]);
     assert_eq!(code(&o), 0);
-    assert_eq!(e.locked_id("anchor", "pubkeyhash"), P384_PUBKEYHASH, "matches openssl over the certificate's key");
+    assert_eq!(e.locked_id("anchor", "rfc7093m4"), P384_PUBKEYHASH, "matches openssl over the certificate's key");
     assert!(stdout(&e.km(&["verify", "anchor", "--token", "softhsm-anon"])).ends_with("object=standalone-pub;type=public"));
-    assert_eq!(code(&e.km(&["check", "anchor.id.pubkeyhash", "--token", "softhsm-anon"])), 0);
+    assert_eq!(code(&e.km(&["check", "anchor.id.rfc7093m4", "--token", "softhsm-anon"])), 0);
     // Deletable by identity; then absent.
     assert_eq!(code(&e.km(&["delete", "anchor", "--token", "softhsm", "--update-lock"])), 0);
     assert_eq!(code(&e.km(&["verify", "anchor", "--token", "softhsm-anon"])), 11);
@@ -1223,6 +1225,12 @@ fn the_lock_pins_type_spec_provenance_and_schemes() {
     let o = e.km(&verify);
     assert_eq!(code(&o), 0);
     assert!(stderr(&o).contains("futurehash") && stderr(&o).contains("does not know"), "{}", stderr(&o));
+
+    // The alias is input-only: a lock recording `pubkeyhash` is refused with a rename hint.
+    std::fs::write(&path, locked.replace("rfc7093m4 = ", "pubkeyhash = ")).unwrap();
+    let o = e.km(&verify);
+    assert_eq!(code(&o), 17);
+    assert!(stderr(&o).contains("the lock uses 'rfc7093m4'"), "{}", stderr(&o));
 
     // IDs without a type are an incomplete lock.
     let lock_without_type = locked

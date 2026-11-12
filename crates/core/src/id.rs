@@ -53,9 +53,17 @@ pub const DEFAULT_COMMITMENT_LABEL: &str = "key-management/v1";
 /// Schemes computed from a commitment label (all `Commit` variants).
 pub const COMMITMENT_SCHEMES: [&str; 5] = ["commitment", "cmac", "kcv-ecb", "kcv-ecb-dec", "kw"];
 
+/// Input-only aliases for scheme names (CLI and Nix library); a lock always uses the scheme name.
+pub const SCHEME_ALIASES: [(&str, &str); 1] = [("pubkeyhash", "rfc7093m4")];
+
+/// The scheme name for `name`, resolving input aliases.
+pub fn canonical_scheme(name: &str) -> &str {
+    SCHEME_ALIASES.iter().find(|(a, _)| *a == name).map_or(name, |(_, s)| s)
+}
+
 /// Every scheme this version defines (§3.1 of docs/DESIGN.md).
 pub const KNOWN_SCHEMES: [&str; 8] =
-    ["pubkeyhash", "certhash", "valuehash", "commitment", "cmac", "kcv-ecb", "kcv-ecb-dec", "kw"];
+    ["rfc7093m4", "certhash", "valuehash", "commitment", "cmac", "kcv-ecb", "kcv-ecb-dec", "kw"];
 
 /// Hash of an HMAC commitment. A key bound to a hash (`CKK_SHA384_HMAC`, ...) is committed with
 /// that hash; generic secrets use SHA-256.
@@ -449,7 +457,7 @@ mod tests {
         ] {
             assert_eq!(sri(&c.input(DEFAULT_COMMITMENT_LABEL, &obj(kt, len))), want, "{kt} {}", c.scheme());
         }
-        // pubkeyhash: canonical SPKI from fixed points (compressed secp256k1 input normalizes).
+        // rfc7093m4: canonical SPKI from fixed points (compressed secp256k1 input normalizes).
         let unhex = |h: &str| (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
         for (c, point, want) in [
             (Curve::P256, "041e18532fd4754c02f3041d9c75ceb33b83ffd81ac7ce4fe882ccb1c98bc5896ea46c311c4e2ff40dd96a3653e6e45445d32dfe486eced75c7a90c6a18881c0a3", "sha256-zpfsINQ2YaGbIVyy43ammNC0qiqltMeFTpFr0FCC/O4="),

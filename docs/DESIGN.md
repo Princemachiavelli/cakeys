@@ -33,7 +33,7 @@ object.
 
 | Scheme | Objects | Input | Requires | Tests |
 |---|---|---|---|---|
-| `pubkeyhash` | private/public keys, certificates | SHA-256 of the canonical DER SubjectPublicKeyInfo (§3.2) | readable public key | `curves_and_rsa_sizes_…`, `adopt_*`, `standalone_public_key_objects`, VM oracle (pkcs11-tool + openssl) |
+| `rfc7093m4` (input alias `pubkeyhash`) | private/public keys, certificates | RFC 7093 §2 method 4: the hash (here SHA-256, named by the SRI prefix) of the DER SubjectPublicKeyInfo, applied to the *canonical* SPKI (re-encoded, EC points uncompressed; §3.2) | readable public key | `curves_and_rsa_sizes_…`, `adopt_*`, `standalone_public_key_objects`, VM oracle (pkcs11-tool + openssl) |
 | `certhash` | X.509 certificates | SHA-256 of the certificate DER | readable `CKA_VALUE` | `adopt_certificate_…`, `adopt_ec_and_edwards_certificates` |
 | `valuehash` | public data objects | SHA-256 of `CKA_VALUE` (equals Nix's flat fixed-output hash) | `CKA_PRIVATE=false` | `data_objects_are_identified_by_their_public_value` |
 | `commitment` | generic secrets, `CKK_SHA*_HMAC` | HMAC over the label (§3.3), using the key type's hash | `CKA_SIGN` | `secret_commitments_match_host_hmac`, `hmac_key_types_commit_with_their_own_hash`, `tpm2_imported_keys_…` |
@@ -148,7 +148,7 @@ commitmentLabel = "key-management/v1" # required when ids holds a commitment sch
 [objects.<object>.type]              # required with ids: the type the IDs were computed for
 class = "..." ; keyType = "..." ; curve = "..." ; valueLen = N ; modulusBits = N
 [objects.<object>.ids]
-pubkeyhash = "sha256-..."            # scheme -> SRI
+rfc7093m4 = "sha256-..."            # scheme -> SRI
 [realisations.<spec>.<token>]
 specDigest = "sha256-..."
 mode = "direct"
@@ -334,11 +334,11 @@ Hardware: the YubiKey example lock is verified read-only (no PIN). `packages.tes
 A `keys.toml` and its `keys.lock` must verify the same way under any later cakeys, like a
 dependency lock. The lock records the values that determine each ID: scheme name, commitment
 label and the hash itself. Everything else is fixed by definition:
-- **Scheme definitions are immutable.** A scheme name (`pubkeyhash`, `certhash`, `valuehash`,
+- **Scheme definitions are immutable.** A scheme name (`rfc7093m4`, `certhash`, `valuehash`,
   `commitment`, `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`) always denotes exactly the computation in
   §3. A changed computation is a *new* scheme name, never an edit. The known-answer test
   `scheme_definitions_are_pinned` pins each one: the bytes every commitment scheme feeds the
-  token, and the `pubkeyhash` of fixed keys on every curve and RSA (canonical encoding included).
+  token, and the `rfc7093m4` of fixed keys on every curve and RSA (canonical encoding included).
 - **The lock records everything else an ID depends on:** the object `type` (key type and length
   feed the commitment label), the commitment label, the spec digest, and as provenance the
   module, token, provider and cakeys version. A changed `keys.toml` is reported as such, never as
