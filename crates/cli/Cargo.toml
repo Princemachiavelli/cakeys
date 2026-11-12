@@ -31,6 +31,7 @@ base64.workspace = true
 cmac.workspace = true
 cryptoki.workspace = true
 hmac.workspace = true
+sha1.workspace = true
 rsa.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

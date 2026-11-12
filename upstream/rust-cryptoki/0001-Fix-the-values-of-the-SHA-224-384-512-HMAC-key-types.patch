@@ -1,0 +1,70 @@
+From 59cdffc83b0e36d93a0092cdf89fee0579adf154 Mon Sep 17 00:00:00 2001
+From: Josh Hoffer <hoffer.joshua@gmail.com>
+Date: Wed, 11 Nov 2026 18:00:50 -0800
+Subject: [PATCH] Fix the values of the SHA-224/384/512 HMAC key types
+
+KeyType::SHA224_HMAC, SHA384_HMAC and SHA512_HMAC were all defined with
+CKK_SHA256_HMAC (0x2b). Keys of these types could not be created, and
+since TryFrom<CK_KEY_TYPE> maps CKK_SHA224_HMAC (0x2e), CKK_SHA384_HMAC
+(0x2c) and CKK_SHA512_HMAC (0x2d) to these constants, a CKA_KEY_TYPE read
+from a token converted back to CKK_SHA256_HMAC.
+
+Use the matching CKK_* values and add a unit test that every HMAC key type
+round-trips through TryFrom<CK_KEY_TYPE>.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ cryptoki/src/object.rs | 25 ++++++++++++++++++++++---
+ 1 file changed, 22 insertions(+), 3 deletions(-)
+
+diff --git a/cryptoki/src/object.rs b/cryptoki/src/object.rs
+index 4ad07b2..98d4ab4 100644
+--- a/cryptoki/src/object.rs
++++ b/cryptoki/src/object.rs
+@@ -1899,17 +1899,17 @@ impl KeyType {
+ 
+     /// SHA384 HMAC key
+     pub const SHA384_HMAC: KeyType = KeyType {
+-        val: CKK_SHA256_HMAC,
++        val: CKK_SHA384_HMAC,
+     };
+ 
+     /// SHA512 HMAC key
+     pub const SHA512_HMAC: KeyType = KeyType {
+-        val: CKK_SHA256_HMAC,
++        val: CKK_SHA512_HMAC,
+     };
+ 
+     /// SHA224 HMAC key
+     pub const SHA224_HMAC: KeyType = KeyType {
+-        val: CKK_SHA256_HMAC,
++        val: CKK_SHA224_HMAC,
+     };
+ 
+     /// SEED key
+@@ -2428,3 +2428,22 @@ impl TryFrom<CK_VALIDATION_AUTHORITY_TYPE> for ValidationAuthorityType {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn hmac_key_types_round_trip() {
++        for raw in [
++            CKK_SHA_1_HMAC,
++            CKK_SHA224_HMAC,
++            CKK_SHA256_HMAC,
++            CKK_SHA384_HMAC,
++            CKK_SHA512_HMAC,
++        ] {
++            let key_type = KeyType::try_from(raw).unwrap();
++            assert_eq!(CK_KEY_TYPE::from(key_type), raw, "{key_type}");
++        }
++    }
++}
+-- 
+2.56.0
+

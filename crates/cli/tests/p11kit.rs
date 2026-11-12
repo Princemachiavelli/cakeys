@@ -210,7 +210,7 @@ tokens.fwd = { locator = { CKA_LABEL = "fwd-hmac" } }
     assert_eq!(e.ids(&o).as_object().unwrap().keys().collect::<Vec<_>>(), ["cmac", "kcv-ecb"]);
     assert_eq!(code(&e.km(&["realise", "aes", "--token", "direct", "--update-lock"])), 0);
     for scheme in ["cmac", "kcv-ecb", "kw"] {
-        assert_eq!(e.locked_id("aes", scheme), aes_commitment(&AES_VALUE, scheme), "{scheme}");
+        assert_eq!(e.locked_id("aes", scheme), aes_commitment(&AES_VALUE[..], scheme), "{scheme}");
     }
 
     assert_eq!(code(&e.km(&["realise", "hmac", "--token", "fwd", "--update-lock"])), 0);

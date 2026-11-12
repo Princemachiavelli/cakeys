@@ -5,6 +5,17 @@ use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use cryptoki::session::Session;
 use std::process::Output;
 
+/// Whether the linked cryptoki has the HMAC key type fix (nix/patches/); the Nix build does.
+/// Without it, tests needing SHA-224/384/512 HMAC keys skip, unless `require` (then they fail).
+pub fn cryptoki_hmac_types_fixed(require: bool) -> bool {
+    let fixed = std::os::raw::c_ulong::from(cryptoki::object::KeyType::SHA384_HMAC) == 0x2c;
+    assert!(fixed || !require, "cryptoki lacks the HMAC key type fix (nix/patches/cryptoki-hmac-key-types.patch)");
+    if !fixed {
+        eprintln!("skipping: cryptoki lacks the HMAC key type fix; run through the Nix build");
+    }
+    fixed
+}
+
 pub fn code(o: &Output) -> i32 {
     o.status.code().unwrap()
 }
@@ -101,29 +112,44 @@ pub fn oracle_spki_with(s: &Session, label: &str, unwrap: fn(&[u8]) -> Vec<u8>) 
 }
 
 
-/// Host oracle for the AES commitments (`cmac`, `kcv-ecb`, `kw`) of a known 256-bit key.
-pub fn aes_commitment(key: &[u8; 32], scheme: &str) -> String {
-    use aes::cipher::{BlockCipherEncrypt, KeyInit};
+/// Host oracle for the AES commitments (`cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`) of a known
+/// AES-128/192/256 key.
+pub fn aes_commitment(key: &[u8], scheme: &str) -> String {
+    use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
     use cmac::Mac;
-    let label = format!("key-management/v1/{scheme}/CKK_AES/256");
+    let label = format!("key-management/v1/{scheme}/CKK_AES/{}", key.len() * 8);
     let digest = <sha2::Sha256 as sha2::Digest>::digest(label.as_bytes());
-    let out = match scheme {
-        "cmac" => {
-            let mut m = <cmac::Cmac<aes::Aes256> as KeyInit>::new_from_slice(key).unwrap();
-            m.update(label.as_bytes());
-            m.finalize().into_bytes().to_vec()
-        }
-        "kcv-ecb" => {
-            let mut block = aes::Block::default();
-            block.copy_from_slice(&digest[..16]);
-            aes::Aes256::new_from_slice(key).unwrap().encrypt_block(&mut block);
-            block.to_vec()
-        }
-        "kw" => {
-            let mut buf = [0u8; 40];
-            aes_kw::KwAes256::new_from_slice(key).unwrap().wrap_key(&digest, &mut buf).unwrap().to_vec()
-        }
-        s => panic!("{s}"),
+    let mut block = aes::Block::default();
+    block.copy_from_slice(&digest[..16]);
+    macro_rules! with_cipher {
+        ($aes:ty, $kw:ty) => {
+            match scheme {
+                "cmac" => {
+                    let mut m = <cmac::Cmac<$aes> as KeyInit>::new_from_slice(key).unwrap();
+                    m.update(label.as_bytes());
+                    m.finalize().into_bytes().to_vec()
+                }
+                "kcv-ecb" => {
+                    <$aes>::new_from_slice(key).unwrap().encrypt_block(&mut block);
+                    block.to_vec()
+                }
+                "kcv-ecb-dec" => {
+                    <$aes>::new_from_slice(key).unwrap().decrypt_block(&mut block);
+                    block.to_vec()
+                }
+                "kw" => {
+                    let mut buf = [0u8; 40];
+                    <$kw>::new_from_slice(key).unwrap().wrap_key(&digest, &mut buf).unwrap().to_vec()
+                }
+                s => panic!("{s}"),
+            }
+        };
+    }
+    let out = match key.len() {
+        16 => with_cipher!(aes::Aes128, aes_kw::KwAes128),
+        24 => with_cipher!(aes::Aes192, aes_kw::KwAes192),
+        32 => with_cipher!(aes::Aes256, aes_kw::KwAes256),
+        n => panic!("AES key of {n} bytes"),
     };
     sri(&out)
 }

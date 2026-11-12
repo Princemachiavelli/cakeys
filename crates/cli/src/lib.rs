@@ -195,6 +195,18 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
                 }
             }
             let (r, _) = ops::realise(&t, &tok, &mut lock, false)?;
+            // An explicitly requested scheme must itself be locked (and so verified), not just
+            // computed next to another scheme that matched.
+            if let Some(s) = scheme {
+                if lock.objects.get(&t.spec.object).and_then(|o| o.ids.get(s)).is_none() {
+                    return Err(KmError::HashMismatch {
+                        what: format!("'{object}' (scheme {s})"),
+                        expected: "<none>".into(),
+                        got: r.ids.get(s).cloned().unwrap_or_default(),
+                    }
+                    .into());
+                }
+            }
             println!("{}", r.uri);
         }
         Cmd::Caps { token } => {

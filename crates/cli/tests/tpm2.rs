@@ -224,15 +224,22 @@ fn tpm2_identity_failure_after_create_leaves_nothing() {
 const IMPORT_P256: &str = "sha256-0ymh9vfz8P3lnbdlAXskvxwoDAfUJNEIbsv0KEupcSg=";
 const IMPORT_RSA2048: &str = "sha256-kRE6YzH4EXmqqAKhbLhb0z6/57mcGvHKrm4F4omLIn4=";
 const HMAC_VALUE: &[u8; 32] = b"key-management hmac test vector!";
+const HMAC384_VALUE: &[u8; 48] = b"key-management hmac-sha384 test vector, 48 bytes";
 
 #[test]
 fn tpm2_imported_keys_match_openssl_and_host_hmac() {
     let Some(e) = env("imported") else { return };
+    if !cryptoki_hmac_types_fixed(std::env::var("KM_TPM_REQUIRE").is_ok()) {
+        return;
+    }
     e.ptool(&["import", "--algorithm=ecc", &format!("--privkey={FIXTURES}/tpm-import-p256.pem"), "--key-label=imp-p256"]);
     e.ptool(&["import", "--algorithm=rsa", &format!("--privkey={FIXTURES}/tpm-import-rsa2048.pem"), "--key-label=imp-rsa"]);
     let hmac_file = e.dir.join("hmac.bin");
     std::fs::write(&hmac_file, HMAC_VALUE).unwrap();
     e.ptool(&["import", "--algorithm=hmac:sha256", &format!("--privkey={}", hmac_file.display()), "--key-label=imp-hmac"]);
+    let hmac384_file = e.dir.join("hmac384.bin");
+    std::fs::write(&hmac384_file, HMAC384_VALUE).unwrap();
+    e.ptool(&["import", "--algorithm=hmac:sha384", &format!("--privkey={}", hmac384_file.display()), "--key-label=imp-hmac384"]);
     e.config(
         r#"
 [objects.p256]
@@ -263,9 +270,19 @@ valueLen = 32
 object = "hmac"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
 tokens.tpm = { locator = { CKA_LABEL = "imp-hmac" } }
+
+[objects.hmac384]
+class = "CKO_SECRET_KEY"
+keyType = "CKK_SHA384_HMAC"
+valueLen = 48
+
+[specs.hmac384]
+object = "hmac384"
+attributes = { CKA_SIGN = true }
+tokens.tpm = { locator = { CKA_LABEL = "imp-hmac384" } }
 "#,
     );
-    for (spec, token) in [("p256", "tpm"), ("rsa", "tpm-anon"), ("hmac", "tpm")] {
+    for (spec, token) in [("p256", "tpm"), ("rsa", "tpm-anon"), ("hmac", "tpm"), ("hmac384", "tpm")] {
         assert_eq!(code(&e.km(&["realise", spec, "--token", token, "--update-lock"])), 0, "{spec}");
     }
     assert_eq!(e.locked_id("p256", "pubkeyhash"), IMPORT_P256);
@@ -273,6 +290,10 @@ tokens.tpm = { locator = { CKA_LABEL = "imp-hmac" } }
     let mut mac = <Hmac<sha2::Sha256> as KeyInit>::new_from_slice(HMAC_VALUE).unwrap();
     mac.update(b"key-management/v1/commitment/CKK_SHA256_HMAC/256");
     assert_eq!(e.locked_id("hmac", "commitment"), sri(&mac.finalize().into_bytes()));
+    // An HMAC-SHA384 key is committed with HMAC-SHA384 (the TPM binds the key to its hash).
+    let mut mac = <Hmac<sha2::Sha384> as KeyInit>::new_from_slice(HMAC384_VALUE).unwrap();
+    mac.update(b"key-management/v1/commitment/CKK_SHA384_HMAC/384");
+    assert_eq!(e.locked_id("hmac384", "commitment"), sri(&mac.finalize().into_bytes()));
 }
 
 #[test]

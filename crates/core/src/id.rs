@@ -10,6 +10,9 @@ use p256::pkcs8::der::{asn1::OctetStringRef, Decode, Encode};
 use p256::pkcs8::{DecodePublicKey, EncodePublicKey};
 use sha2::{Digest, Sha256};
 
+type Bp256 = p256::elliptic_curve::PublicKey<bp256::BrainpoolP256r1>;
+type Bp384 = p256::elliptic_curve::PublicKey<bp384::BrainpoolP384r1>;
+
 /// `sha256-<base64>`: drops straight into a Nix `outputHash`, but nothing depends on it.
 pub fn sri(bytes: &[u8]) -> String {
     format!(
@@ -28,19 +31,47 @@ pub fn spec_digest(object: &ObjectCfg, spec: &SpecCfg) -> String {
     sri(canonical.to_string().as_bytes())
 }
 
+/// Hash of an HMAC commitment. A key bound to a hash (`CKK_SHA384_HMAC`, ...) is committed with
+/// that hash; generic secrets use SHA-256.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HmacHash {
+    Sha1,
+    Sha224,
+    Sha256,
+    Sha384,
+    Sha512,
+}
+
+impl HmacHash {
+    /// The HMAC hash for a secret key type, if it is an HMAC-capable type.
+    pub fn for_key_type(key_type: &str) -> Option<HmacHash> {
+        match key_type {
+            "CKK_GENERIC_SECRET" | "CKK_SHA256_HMAC" => Some(HmacHash::Sha256),
+            "CKK_SHA_1_HMAC" => Some(HmacHash::Sha1),
+            "CKK_SHA224_HMAC" => Some(HmacHash::Sha224),
+            "CKK_SHA384_HMAC" => Some(HmacHash::Sha384),
+            "CKK_SHA512_HMAC" => Some(HmacHash::Sha512),
+            _ => None,
+        }
+    }
+}
+
 /// Secret-key commitments: a deterministic on-token operation over a public, domain-separated
 /// input. Each needs a different key usage bit and gives a different value, so each is its own
 /// scheme. The lock stores only SHA-256 of the output (`sri`), never a MAC or ciphertext that
 /// could be replayed under the key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Commit {
-    /// `CKM_SHA256_HMAC` over the label (`CKA_SIGN`, generic secrets).
-    Hmac,
+    /// HMAC over the label (`CKA_SIGN`; generic secrets and HMAC key types), with the hash the
+    /// key type implies. One scheme: the key type is in the label, so types never share an ID.
+    Hmac(HmacHash),
     /// `CKM_AES_CMAC` over the label (`CKA_SIGN`).
     Cmac,
     /// `CKM_AES_ECB` encryption of one block, the first 16 bytes of SHA-256(label): a key check
     /// value (`CKA_ENCRYPT`). Single-block ECB only: a fixed nonce with CTR/GCM would leak.
     KcvEcb,
+    /// `CKM_AES_ECB` decryption of one such block (`CKA_DECRYPT`): for decrypt-only keys.
+    KcvEcbDecrypt,
     /// `CKM_AES_KEY_WRAP` (RFC 3394, deterministic) of a fixed key, SHA-256(label) (`CKA_WRAP`).
     Kw,
 }
@@ -48,9 +79,10 @@ pub enum Commit {
 impl Commit {
     pub fn scheme(self) -> &'static str {
         match self {
-            Commit::Hmac => "commitment",
+            Commit::Hmac(_) => "commitment",
             Commit::Cmac => "cmac",
             Commit::KcvEcb => "kcv-ecb",
+            Commit::KcvEcbDecrypt => "kcv-ecb-dec",
             Commit::Kw => "kw",
         }
     }
@@ -72,8 +104,8 @@ impl Commit {
     pub fn input(self, object: &ObjectCfg) -> Vec<u8> {
         let label = self.label(object);
         match self {
-            Commit::Hmac | Commit::Cmac => label,
-            Commit::KcvEcb => Sha256::digest(&label)[..16].to_vec(),
+            Commit::Hmac(_) | Commit::Cmac => label,
+            Commit::KcvEcb | Commit::KcvEcbDecrypt => Sha256::digest(&label)[..16].to_vec(),
             Commit::Kw => Sha256::digest(&label).to_vec(),
         }
     }
@@ -85,11 +117,26 @@ pub enum Curve {
     P256,
     P384,
     P521,
+    Secp256k1,
+    BrainpoolP256r1,
+    BrainpoolP384r1,
     Ed25519,
     Ed448,
 }
 
-const ALL_CURVES: [Curve; 5] = [Curve::P256, Curve::P384, Curve::P521, Curve::Ed25519, Curve::Ed448];
+const ALL_CURVES: [Curve; 8] = [
+    Curve::P256,
+    Curve::P384,
+    Curve::P521,
+    Curve::Secp256k1,
+    Curve::BrainpoolP256r1,
+    Curve::BrainpoolP384r1,
+    Curve::Ed25519,
+    Curve::Ed448,
+];
+
+/// Named curves tokens offer that have no RustCrypto crate to validate and encode them with.
+pub const CURVES_WITHOUT_CRATE: [&str; 1] = ["brainpoolP512r1"];
 
 impl Curve {
     /// `curve` in keys.toml, for the given `keyType`.
@@ -98,6 +145,9 @@ impl Curve {
             ("CKK_EC", "secp256r1" | "prime256v1" | "P-256") => Some(Curve::P256),
             ("CKK_EC", "secp384r1" | "P-384") => Some(Curve::P384),
             ("CKK_EC", "secp521r1" | "P-521") => Some(Curve::P521),
+            ("CKK_EC", "secp256k1") => Some(Curve::Secp256k1),
+            ("CKK_EC", "brainpoolP256r1") => Some(Curve::BrainpoolP256r1),
+            ("CKK_EC", "brainpoolP384r1") => Some(Curve::BrainpoolP384r1),
             ("CKK_EC_EDWARDS", "edwards25519" | "Ed25519") => Some(Curve::Ed25519),
             ("CKK_EC_EDWARDS", "edwards448" | "Ed448") => Some(Curve::Ed448),
             _ => None,
@@ -114,6 +164,9 @@ impl Curve {
             Curve::P256 => &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07],
             Curve::P384 => &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22],
             Curve::P521 => &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23],
+            Curve::Secp256k1 => &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x0a],
+            Curve::BrainpoolP256r1 => &[0x06, 0x09, 0x2b, 0x24, 0x03, 0x03, 0x02, 0x08, 0x01, 0x01, 0x07],
+            Curve::BrainpoolP384r1 => &[0x06, 0x09, 0x2b, 0x24, 0x03, 0x03, 0x02, 0x08, 0x01, 0x01, 0x0b],
             Curve::Ed25519 => &[0x06, 0x03, 0x2b, 0x65, 0x70],
             Curve::Ed448 => &[0x06, 0x03, 0x2b, 0x65, 0x71],
         }
@@ -151,6 +204,9 @@ impl Curve {
             Curve::P256 => encode(&p256::PublicKey::from_sec1_bytes(point).map_err(|e| bad(&e))?),
             Curve::P384 => encode(&p384::PublicKey::from_sec1_bytes(point).map_err(|e| bad(&e))?),
             Curve::P521 => encode(&p521::PublicKey::from_sec1_bytes(point).map_err(|e| bad(&e))?),
+            Curve::Secp256k1 => encode(&k256::PublicKey::from_sec1_bytes(point).map_err(|e| bad(&e))?),
+            Curve::BrainpoolP256r1 => encode(&Bp256::from_sec1_bytes(point).map_err(|e| bad(&e))?),
+            Curve::BrainpoolP384r1 => encode(&Bp384::from_sec1_bytes(point).map_err(|e| bad(&e))?),
             Curve::Ed25519 => encode(&ed25519_dalek::VerifyingKey::try_from(point).map_err(|e| bad(&e))?),
             // No stable Ed448 point arithmetic crate yet: the encoding is checked for length only.
             Curve::Ed448 => encode(&ed448::pkcs8::PublicKeyBytes(
@@ -172,6 +228,15 @@ pub fn spki_canonical(spki: &[u8]) -> Result<Vec<u8>> {
     if let Ok(k) = p521::PublicKey::from_public_key_der(spki) {
         return encode(&k);
     }
+    if let Ok(k) = k256::PublicKey::from_public_key_der(spki) {
+        return encode(&k);
+    }
+    if let Ok(k) = Bp256::from_public_key_der(spki) {
+        return encode(&k);
+    }
+    if let Ok(k) = Bp384::from_public_key_der(spki) {
+        return encode(&k);
+    }
     if let Ok(k) = ed25519_dalek::VerifyingKey::from_public_key_der(spki) {
         return encode(&k);
     }
@@ -179,7 +244,9 @@ pub fn spki_canonical(spki: &[u8]) -> Result<Vec<u8>> {
         return encode(&k);
     }
     let key = rsa::PublicKey::from_public_key_der(spki).map_err(|e| {
-        KmError::Unsupported(format!("SPKI is not P-256/P-384/P-521, Ed25519/Ed448 or RSA: {e}"))
+        KmError::Unsupported(format!(
+            "SPKI is not P-256/P-384/P-521, secp256k1, brainpoolP256r1/P384r1, Ed25519/Ed448 or RSA: {e}"
+        ))
     })?;
     encode(&key)
 }
@@ -272,7 +339,10 @@ mod tests {
             value_len: Some(32),
             modulus_bits: None,
         };
-        assert_eq!(Commit::Hmac.label(&obj), b"key-management/v1/commitment/CKK_GENERIC_SECRET/256");
+        assert_eq!(
+            Commit::Hmac(HmacHash::Sha256).label(&obj),
+            b"key-management/v1/commitment/CKK_GENERIC_SECRET/256"
+        );
         assert_eq!(Commit::KcvEcb.input(&obj).len(), 16);
         assert_eq!(Commit::Kw.input(&obj).len(), 32);
     }
@@ -284,11 +354,49 @@ mod tests {
         assert_eq!(Curve::P256.params(), oid(p256::NistP256::OID));
         assert_eq!(Curve::P384.params(), oid(p384::NistP384::OID));
         assert_eq!(Curve::P521.params(), oid(p521::NistP521::OID));
+        assert_eq!(Curve::Secp256k1.params(), oid(k256::Secp256k1::OID));
+        assert_eq!(Curve::BrainpoolP256r1.params(), oid(bp256::BrainpoolP256r1::OID));
+        assert_eq!(Curve::BrainpoolP384r1.params(), oid(bp384::BrainpoolP384r1::OID));
         assert_eq!(Curve::Ed25519.params(), oid(ed25519_dalek::pkcs8::ALGORITHM_OID));
         assert_eq!(Curve::Ed448.params(), oid(ed448::pkcs8::ALGORITHM_OID));
         for c in ALL_CURVES {
             assert_eq!(Curve::from_params(c.params()), Some(c));
         }
         assert_eq!(Curve::from_params(b"\x13\x0cedwards25519"), Some(Curve::Ed25519));
+    }
+
+    #[test]
+    fn spec_digests_are_pinned() {
+        let mk = |class: &str, kt: &str, curve: Option<&str>, vl: Option<u64>, bits: Option<u64>, attrs: &[(&str, bool)]| {
+            let o = ObjectCfg {
+                class: class.into(),
+                key_type: kt.into(),
+                curve: curve.map(Into::into),
+                value_len: vl,
+                modulus_bits: bits,
+            };
+            let s = SpecCfg {
+                object: "x".into(),
+                attributes: attrs.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+                tokens: BTreeMap::new(),
+            };
+            spec_digest(&o, &s)
+        };
+        assert_eq!(
+            mk("CKO_CERTIFICATE", "CKC_X_509", None, None, None, &[]),
+            "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
+        );
+        assert_eq!(
+            mk("CKO_PRIVATE_KEY", "CKK_RSA", None, None, Some(2048), &[]),
+            "sha256-8k3VUT0T/6zvM/Yp6b2isKLrYOrK2vfyd7UWWz/DUiY="
+        );
+        assert_eq!(
+            mk("CKO_PRIVATE_KEY", "CKK_EC", Some("secp256r1"), None, None, &[("CKA_SIGN", true), ("CKA_SENSITIVE", true), ("CKA_EXTRACTABLE", false)]),
+            "sha256-ZTVELcTP+fshDL1IjnlOuVcNW/f0rw8a71Ztk5IRwns="
+        );
+        assert_eq!(
+            mk("CKO_SECRET_KEY", "CKK_GENERIC_SECRET", None, Some(32), None, &[("CKA_SIGN", true), ("CKA_EXTRACTABLE", true)]),
+            "sha256-itlUiIf3R6LLNeujs4Htvzd/3jwJRS/nxRhr5Cgh+FM="
+        );
     }
 }

@@ -38,8 +38,9 @@ pub struct TokenCfg {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ObjectCfg {
     pub class: String,
-    /// `CKK_*` for keys; certificates use `certificateType = "CKC_X_509"`.
-    #[serde(alias = "certificateType")]
+    /// `CKK_*` for keys; certificates use `certificateType = "CKC_X_509"`; data objects have none.
+    /// Omitted from the spec digest when empty, so existing digests are unchanged.
+    #[serde(default, alias = "certificateType", skip_serializing_if = "String::is_empty")]
     pub key_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curve: Option<String>,

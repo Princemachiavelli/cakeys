@@ -4,7 +4,7 @@
 use crate::provider::{Provider, Registry};
 pub use key_mgmnt_core::config::{ModuleInfo, TokenInfo};
 use key_mgmnt_core::config::{Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
-use key_mgmnt_core::id::{self, Commit, Curve};
+use key_mgmnt_core::id::{self, Commit, Curve, HmacHash};
 use key_mgmnt_core::{KmError, Result};
 use cryptoki::context::{CInitializeArgs, Pkcs11};
 use cryptoki::error::{Error as CkError, RvError};
@@ -160,10 +160,22 @@ impl Token {
 
     /// Check the intrinsic type and every policy attribute of the spec against the live object.
     pub fn check(&self, h: ObjectHandle, object: &ObjectCfg, spec: &SpecCfg) -> Result<()> {
-        if class_of(object)? == ObjectClass::CERTIFICATE {
+        let class = class_of(object)?;
+        if class == ObjectClass::CERTIFICATE {
             return match self.attr(h, AttributeType::CertificateType)? {
                 Some(Attribute::CertificateType(CertificateType::X_509)) => Ok(()),
                 other => Err(KmError::Conflict(format!("CKA_CERTIFICATE_TYPE is {other:?}, not CKC_X_509"))),
+            };
+        }
+        if class == ObjectClass::DATA {
+            // Its identity is a hash of the value: for a private value (a password, a PIN) that
+            // hash in the lock would be an offline guessing oracle.
+            return match self.attr(h, AttributeType::Private)? {
+                Some(Attribute::Private(false)) => self.check_policy(h, spec),
+                other => Err(KmError::Unsupported(format!(
+                    "data object is CKA_PRIVATE ({other:?}): its value hash would let anyone with \
+                     the lock guess the value offline; only public data objects are supported"
+                ))),
             };
         }
         let kt = match self.attr(h, AttributeType::KeyType)? {
@@ -207,6 +219,11 @@ impl Token {
                 }
             }
         }
+        self.check_policy(h, spec)
+    }
+
+    /// Every boolean policy attribute of the spec must match the live object.
+    fn check_policy(&self, h: ObjectHandle, spec: &SpecCfg) -> Result<()> {
         for (name, want) in &spec.attributes {
             let (t, _) = bool_attr(name, *want)?;
             match self.attr(h, t)?.as_ref().and_then(attr_bool) {
@@ -230,8 +247,9 @@ impl Token {
             policy.push(bool_attr(name, *v)?.1);
         }
         let gen = |e: CkError| self.unsupported(format!("generating key on '{}': {e}", self.name));
-        if class_of(object)? == ObjectClass::CERTIFICATE {
-            return Err(KmError::Validation("certificates are adopted, not created".into()));
+        let class = class_of(object)?;
+        if class != ObjectClass::PRIVATE_KEY && class != ObjectClass::SECRET_KEY {
+            return Err(KmError::Validation(format!("{} objects are adopted, not created", object.class)));
         }
         match key_type_of(object)? {
             KeyType::RSA => {
@@ -326,6 +344,14 @@ impl Token {
                 ids.insert("certhash".into(), id::sri(&der));
                 ids.insert("pubkeyhash".into(), id::sri(&id::cert_spki(&der)?));
             }
+            Mode::Direct if class_of(object)? == ObjectClass::DATA => {
+                // SHA-256 of the content: the same SRI hash as a flat Nix fixed-output hash.
+                let value = match self.attr(h, AttributeType::Value)? {
+                    Some(Attribute::Value(v)) => v,
+                    _ => return Err(KmError::Unsupported("data object has no readable CKA_VALUE".into())),
+                };
+                ids.insert("valuehash".into(), id::sri(&value));
+            }
             Mode::Direct => {
                 ids.insert("pubkeyhash".into(), id::sri(&self.spki(h, loc)?));
             }
@@ -403,9 +429,19 @@ impl Token {
         let input = c.input(object);
         let fail = |e: CkError| KmError::Unsupported(format!("{} commitment ({}): {e}", c.scheme(), commit_mechanism(c)));
         match c {
-            Commit::Hmac => s.sign(&Mechanism::Sha256Hmac, h, &input).map_err(fail),
+            Commit::Hmac(hash) => {
+                let m = match hash {
+                    HmacHash::Sha1 => Mechanism::Sha1Hmac,
+                    HmacHash::Sha224 => Mechanism::Sha224Hmac,
+                    HmacHash::Sha256 => Mechanism::Sha256Hmac,
+                    HmacHash::Sha384 => Mechanism::Sha384Hmac,
+                    HmacHash::Sha512 => Mechanism::Sha512Hmac,
+                };
+                s.sign(&m, h, &input).map_err(fail)
+            }
             Commit::Cmac => s.sign(&Mechanism::AesCMac, h, &input).map_err(fail),
             Commit::KcvEcb => s.encrypt(&Mechanism::AesEcb, h, &input).map_err(fail),
+            Commit::KcvEcbDecrypt => s.decrypt(&Mechanism::AesEcb, h, &input).map_err(fail),
             Commit::Kw => {
                 // The fixed key is public, so it is created extractable; the key under test only
                 // has to allow CKA_WRAP.
@@ -466,8 +502,9 @@ impl Token {
             ];
             for c in commits {
                 template.push(match c {
-                    Commit::Hmac | Commit::Cmac => Attribute::Sign(true),
+                    Commit::Hmac(_) | Commit::Cmac => Attribute::Sign(true),
                     Commit::KcvEcb => Attribute::Encrypt(true),
+                    Commit::KcvEcbDecrypt => Attribute::Decrypt(true),
                     Commit::Kw => Attribute::Wrap(true),
                 });
             }
@@ -498,7 +535,9 @@ impl Token {
         }
         let kind = match class_of(object)? {
             c if c == ObjectClass::PRIVATE_KEY => "private",
+            c if c == ObjectClass::PUBLIC_KEY => "public",
             c if c == ObjectClass::CERTIFICATE => "cert",
+            c if c == ObjectClass::DATA => "data",
             _ => "secret-key",
         };
         parts.push(format!("type={kind}"));
@@ -525,9 +564,12 @@ pub fn class_of(object: &ObjectCfg) -> Result<ObjectClass> {
     match object.class.as_str() {
         "CKO_PRIVATE_KEY" => Ok(ObjectClass::PRIVATE_KEY),
         "CKO_SECRET_KEY" => Ok(ObjectClass::SECRET_KEY),
+        "CKO_PUBLIC_KEY" => Ok(ObjectClass::PUBLIC_KEY),
         "CKO_CERTIFICATE" => Ok(ObjectClass::CERTIFICATE),
+        "CKO_DATA" => Ok(ObjectClass::DATA),
         c => Err(KmError::Unsupported(format!(
-            "object class {c} (POC supports CKO_PRIVATE_KEY, CKO_SECRET_KEY, CKO_CERTIFICATE)"
+            "object class {c} (supported: CKO_PRIVATE_KEY, CKO_PUBLIC_KEY, CKO_SECRET_KEY, \
+             CKO_CERTIFICATE, CKO_DATA)"
         ))),
     }
 }
@@ -535,9 +577,13 @@ pub fn class_of(object: &ObjectCfg) -> Result<ObjectClass> {
 /// Mechanism a commitment runs on the token.
 pub fn commit_mechanism(c: Commit) -> MechanismType {
     match c {
-        Commit::Hmac => MechanismType::SHA256_HMAC,
+        Commit::Hmac(HmacHash::Sha1) => MechanismType::SHA1_HMAC,
+        Commit::Hmac(HmacHash::Sha224) => MechanismType::SHA224_HMAC,
+        Commit::Hmac(HmacHash::Sha256) => MechanismType::SHA256_HMAC,
+        Commit::Hmac(HmacHash::Sha384) => MechanismType::SHA384_HMAC,
+        Commit::Hmac(HmacHash::Sha512) => MechanismType::SHA512_HMAC,
         Commit::Cmac => MechanismType::AES_CMAC,
-        Commit::KcvEcb => MechanismType::AES_ECB,
+        Commit::KcvEcb | Commit::KcvEcbDecrypt => MechanismType::AES_ECB,
         Commit::Kw => MechanismType::AES_KEY_WRAP,
     }
 }
@@ -547,9 +593,15 @@ pub fn curve_of(object: &ObjectCfg) -> Result<Curve> {
         KmError::Validation(format!("{} keys need a curve", object.key_type))
     })?;
     Curve::from_cfg(&object.key_type, name).ok_or_else(|| {
+        if id::CURVES_WITHOUT_CRATE.contains(&name) {
+            return KmError::Unsupported(format!(
+                "curve {name:?}: no RustCrypto crate validates and encodes it yet"
+            ));
+        }
         KmError::Unsupported(format!(
-            "curve {name:?} for {} (supported: secp256r1, secp384r1, secp521r1 for CKK_EC; \
-             edwards25519, edwards448 for CKK_EC_EDWARDS)",
+            "curve {name:?} for {} (supported: secp256r1, secp384r1, secp521r1, secp256k1, \
+             brainpoolP256r1, brainpoolP384r1 for CKK_EC; edwards25519, edwards448 for \
+             CKK_EC_EDWARDS)",
             object.key_type
         ))
     })
@@ -557,13 +609,33 @@ pub fn curve_of(object: &ObjectCfg) -> Result<Curve> {
 
 pub fn key_type_of(object: &ObjectCfg) -> Result<KeyType> {
     match (object.class.as_str(), object.key_type.as_str()) {
-        ("CKO_PRIVATE_KEY", "CKK_EC") => curve_of(object).map(|_| KeyType::EC),
-        ("CKO_PRIVATE_KEY", "CKK_EC_EDWARDS") => curve_of(object).map(|_| KeyType::EC_EDWARDS),
-        ("CKO_PRIVATE_KEY", "CKK_RSA") => Ok(KeyType::RSA),
+        ("CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY", "CKK_EC") => curve_of(object).map(|_| KeyType::EC),
+        ("CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY", "CKK_EC_EDWARDS") => {
+            curve_of(object).map(|_| KeyType::EC_EDWARDS)
+        }
+        ("CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY", "CKK_RSA") => Ok(KeyType::RSA),
         ("CKO_SECRET_KEY", "CKK_GENERIC_SECRET") => Ok(KeyType::GENERIC_SECRET),
         ("CKO_SECRET_KEY", "CKK_AES") => Ok(KeyType::AES),
+        ("CKO_SECRET_KEY", "CKK_SHA_1_HMAC") => Ok(KeyType::SHA_1_HMAC),
+        ("CKO_SECRET_KEY", "CKK_SHA224_HMAC") => hmac_key_type(KeyType::SHA224_HMAC, 0x2e),
         ("CKO_SECRET_KEY", "CKK_SHA256_HMAC") => Ok(KeyType::SHA256_HMAC),
+        ("CKO_SECRET_KEY", "CKK_SHA384_HMAC") => hmac_key_type(KeyType::SHA384_HMAC, 0x2c),
+        ("CKO_SECRET_KEY", "CKK_SHA512_HMAC") => hmac_key_type(KeyType::SHA512_HMAC, 0x2d),
         (c, k) => Err(KmError::Unsupported(format!("{c}/{k}"))),
+    }
+}
+
+/// cryptoki 0.10.1 gives `SHA224/384/512_HMAC` the value of `CKK_SHA256_HMAC` (0x2b), so such
+/// keys could be neither created nor told apart. The Nix build patches it
+/// (nix/patches/cryptoki-hmac-key-types.patch); refuse rather than misidentify without the patch.
+fn hmac_key_type(kt: KeyType, raw: std::os::raw::c_ulong) -> Result<KeyType> {
+    if std::os::raw::c_ulong::from(kt) == raw {
+        Ok(kt)
+    } else {
+        Err(KmError::Unsupported(format!(
+            "{kt}: this build's cryptoki maps it to CKK_SHA256_HMAC; build with \
+             nix/patches/cryptoki-hmac-key-types.patch applied"
+        )))
     }
 }
 

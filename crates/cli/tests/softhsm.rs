@@ -585,28 +585,7 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
 const AES_VALUE: [u8; 32] = *b"key-management aes test vector!!";
 
 fn aes_oracle(scheme: &str) -> String {
-    use aes::cipher::{BlockCipherEncrypt, KeyInit as _};
-    let label = format!("key-management/v1/{scheme}/CKK_AES/256");
-    let digest = <sha2::Sha256 as sha2::Digest>::digest(label.as_bytes());
-    let out = match scheme {
-        "cmac" => {
-            let mut m = <cmac::Cmac<aes::Aes256> as KeyInit>::new_from_slice(&AES_VALUE).unwrap();
-            m.update(label.as_bytes());
-            m.finalize().into_bytes().to_vec()
-        }
-        "kcv-ecb" => {
-            let mut block = aes::Block::default();
-            block.copy_from_slice(&digest[..16]);
-            aes::Aes256::new_from_slice(&AES_VALUE).unwrap().encrypt_block(&mut block);
-            block.to_vec()
-        }
-        "kw" => {
-            let mut buf = [0u8; 40];
-            aes_kw::KwAes256::new_from_slice(&AES_VALUE).unwrap().wrap_key(&digest, &mut buf).unwrap().to_vec()
-        }
-        s => panic!("{s}"),
-    };
-    sri(&out)
+    aes_commitment(&AES_VALUE, scheme)
 }
 
 #[test]
@@ -620,7 +599,7 @@ fn aes_commitments_match_host_oracles() {
         ("aes-mac", "aes-mac", true, false, false, false, "commitment", &["cmac"]),
         ("aes-enc", "aes-enc", false, true, false, false, "commitment", &["kcv-ecb"]),
         // No usable usage bit, but extractable: a session copy gets every AES commitment.
-        ("aes-x", "aes-x", false, false, false, true, "wrap-rebind", &["cmac", "kcv-ecb", "kw"]),
+        ("aes-x", "aes-x", false, false, false, true, "wrap-rebind", &["cmac", "kcv-ecb", "kcv-ecb-dec", "kw"]),
     ];
     let s = e.session();
     let mut body = String::from(
@@ -662,7 +641,8 @@ fn aes_commitments_match_host_oracles() {
         assert_eq!(got, schemes, "{spec}");
         assert_eq!(r["mode"].as_str(), Some(mode), "{spec}");
     }
-    for scheme in ["cmac", "kcv-ecb", "kw"] {
+    // cmac/kcv-ecb/kw are unchanged by kcv-ecb-dec joining (it only adds an ID).
+    for scheme in ["cmac", "kcv-ecb", "kcv-ecb-dec", "kw"] {
         assert_eq!(e.locked_id("aes", scheme), aes_oracle(scheme), "{scheme}");
     }
     // The lock never holds the token output itself, only its hash.
@@ -747,6 +727,9 @@ fn curves_and_rsa_sizes_match_an_independent_der_oracle() {
         ("p521", "keyType = \"CKK_EC\"\ncurve = \"P-521\""),
         ("ed25519", "keyType = \"CKK_EC_EDWARDS\"\ncurve = \"edwards25519\""),
         ("ed448", "keyType = \"CKK_EC_EDWARDS\"\ncurve = \"Ed448\""),
+        ("secp256k1", "keyType = \"CKK_EC\"\ncurve = \"secp256k1\""),
+        ("bp256", "keyType = \"CKK_EC\"\ncurve = \"brainpoolP256r1\""),
+        ("bp384", "keyType = \"CKK_EC\"\ncurve = \"brainpoolP384r1\""),
         ("rsa3072", "keyType = \"CKK_RSA\"\nmodulusBits = 3072"),
         ("rsa4096", "keyType = \"CKK_RSA\"\nmodulusBits = 4096"),
     ];
@@ -887,4 +870,234 @@ fn provider_is_detected_or_named() {
     std::fs::write(&path, named("nope")).unwrap();
     assert_eq!(code(&e.km(&["validate"])), 17);
     assert_eq!(code(&e.km(&["caps", "--token", "softhsm"])), 17);
+}
+
+
+/// Plant a secret key with a known value (the host oracle knows it).
+fn plant_secret(s: &Session, label: &str, kt: cryptoki::object::KeyType, value: &[u8], attrs: &[Attribute]) {
+    let mut t = vec![
+        Attribute::Class(ObjectClass::SECRET_KEY),
+        Attribute::KeyType(kt),
+        Attribute::Token(true),
+        Attribute::Label(label.as_bytes().to_vec()),
+        Attribute::Value(value.to_vec()),
+        Attribute::Sensitive(true),
+        Attribute::Extractable(false),
+    ];
+    t.extend_from_slice(attrs);
+    s.create_object(&t).unwrap();
+}
+
+#[test]
+fn hmac_key_types_commit_with_their_own_hash() {
+    use cryptoki::object::KeyType as K;
+    let Some(e) = env("hmac_types") else { return };
+    if !cryptoki_hmac_types_fixed(std::env::var("KM_TEST_REQUIRE").is_ok()) {
+        return;
+    }
+    // SoftHSM wants HMAC keys at least as long as the hash output.
+    let material = *b"hmac key types test vector, long enough for every hash in the set";
+    let types = [
+        ("CKK_SHA_1_HMAC", K::SHA_1_HMAC, 20),
+        ("CKK_SHA224_HMAC", K::SHA224_HMAC, 28),
+        ("CKK_SHA256_HMAC", K::SHA256_HMAC, 32),
+        ("CKK_SHA384_HMAC", K::SHA384_HMAC, 48),
+        ("CKK_SHA512_HMAC", K::SHA512_HMAC, 64),
+    ];
+    let s = e.session();
+    let mut body = String::new();
+    for (name, kt, len) in types {
+        let label = format!("hmac-{name}");
+        plant_secret(&s, &label, kt, &material[..len], &[Attribute::Sign(true)]);
+        body += &format!(
+            "[objects.{name}]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"{name}\"\nvalueLen = {len}\n\n\
+             [specs.{name}]\nobject = \"{name}\"\nattributes = {{ CKA_SIGN = true, CKA_EXTRACTABLE = false }}\n\
+             tokens.softhsm = {{ locator = {{ CKA_LABEL = \"{label}\" }} }}\n\n"
+        );
+    }
+    body += "[objects.gen384]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_SHA384_HMAC\"\nvalueLen = 48\n\n\
+             [specs.gen384]\nobject = \"gen384\"\nattributes = { CKA_SIGN = true, CKA_EXTRACTABLE = false }\n\
+             tokens.softhsm = { locator = { CKA_LABEL = \"hmac-gen384\" }, autoCreate = true }\n";
+    e.config(&body);
+    for (name, _, len) in types {
+        assert_eq!(code(&e.km(&["realise", name, "--token", "softhsm", "--update-lock"])), 0, "{name}");
+        let label = format!("key-management/v1/commitment/{name}/{}", len * 8);
+        let value = &material[..len];
+        let mac = |out: Vec<u8>| sri(&out);
+        let want = match name {
+            "CKK_SHA_1_HMAC" => mac({ let mut m = <Hmac<sha1::Sha1> as KeyInit>::new_from_slice(value).unwrap(); m.update(label.as_bytes()); m.finalize().into_bytes().to_vec() }),
+            "CKK_SHA224_HMAC" => mac({ let mut m = <Hmac<sha2::Sha224> as KeyInit>::new_from_slice(value).unwrap(); m.update(label.as_bytes()); m.finalize().into_bytes().to_vec() }),
+            "CKK_SHA256_HMAC" => mac({ let mut m = <Hmac<sha2::Sha256> as KeyInit>::new_from_slice(value).unwrap(); m.update(label.as_bytes()); m.finalize().into_bytes().to_vec() }),
+            "CKK_SHA384_HMAC" => mac({ let mut m = <Hmac<sha2::Sha384> as KeyInit>::new_from_slice(value).unwrap(); m.update(label.as_bytes()); m.finalize().into_bytes().to_vec() }),
+            _ => mac({ let mut m = <Hmac<sha2::Sha512> as KeyInit>::new_from_slice(value).unwrap(); m.update(label.as_bytes()); m.finalize().into_bytes().to_vec() }),
+        };
+        assert_eq!(e.locked_id(name, "commitment"), want, "{name}");
+    }
+    // There is no key generation for hash-bound HMAC types: refused up front, nothing created.
+    let o = e.km(&["realise", "gen384", "--token", "softhsm"]);
+    assert_eq!(code(&o), 15);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("no key generation for CKK_SHA384_HMAC"));
+    assert!(s.find_objects(&[Attribute::Label(b"hmac-gen384".to_vec())]).unwrap().is_empty());
+}
+
+#[test]
+fn aes_128_192_and_decrypt_only_match_host_oracles() {
+    let Some(e) = env("aes_sizes") else { return };
+    let s = e.session();
+    let all = [Attribute::Sign(true), Attribute::Encrypt(true), Attribute::Decrypt(true), Attribute::Wrap(true)];
+    let k128 = *b"aes-128 vector!!";
+    let k192 = *b"aes-192 test vector 24B!";
+    let k256 = *b"aes-256 decrypt-only vector 32B!";
+    plant_secret(&s, "aes-128", cryptoki::object::KeyType::AES, &k128, &all);
+    plant_secret(&s, "aes-192", cryptoki::object::KeyType::AES, &k192, &all);
+    plant_secret(&s, "aes-dec", cryptoki::object::KeyType::AES, &k256, &[Attribute::Decrypt(true), Attribute::Encrypt(false), Attribute::Sign(false), Attribute::Wrap(false)]);
+    let spec = |name: &str, len: usize, attrs: &str, label: &str| {
+        format!(
+            "[objects.{name}]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = {len}\n\n\
+             [specs.{name}]\nobject = \"{name}\"\nattributes = {{ {attrs}, CKA_EXTRACTABLE = false }}\n\
+             tokens.softhsm = {{ locator = {{ CKA_LABEL = \"{label}\" }} }}\n\n"
+        )
+    };
+    let every = "CKA_SIGN = true, CKA_ENCRYPT = true, CKA_DECRYPT = true, CKA_WRAP = true";
+    e.config(&(spec("a128", 16, every, "aes-128") + &spec("a192", 24, every, "aes-192") + &spec("adec", 32, "CKA_DECRYPT = true", "aes-dec")));
+    for (name, key, schemes) in [
+        ("a128", &k128[..], &["cmac", "kcv-ecb", "kcv-ecb-dec", "kw"][..]),
+        ("a192", &k192[..], &["cmac", "kcv-ecb", "kcv-ecb-dec", "kw"][..]),
+        ("adec", &k256[..], &["kcv-ecb-dec"][..]),
+    ] {
+        let o = e.km(&["realise", name, "--token", "softhsm", "--update-lock"]);
+        assert_eq!(code(&o), 0, "{name}");
+        let r: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+        assert_eq!(r["ids"].as_object().unwrap().keys().collect::<Vec<_>>(), schemes, "{name}");
+        for scheme in schemes {
+            assert_eq!(e.locked_id(name, scheme), aes_commitment(key, scheme), "{name} {scheme}");
+        }
+    }
+    // The decrypt-only key is now identifiable (before kcv-ecb-dec it needed an opt-in mode).
+    assert_eq!(code(&e.km(&["check", "adec"])), 0);
+}
+
+#[test]
+fn a_new_scheme_missing_from_the_lock_is_a_note_unless_requested() {
+    let Some(e) = env("upgrade") else { return };
+    let key = *b"upgrade rule aes test vector 32B";
+    plant_secret(&e.session(), "upgrade-aes", cryptoki::object::KeyType::AES, &key, &[Attribute::Sign(true), Attribute::Encrypt(true)]);
+    e.config(
+        "[objects.u]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
+         [specs.u]\nobject = \"u\"\nattributes = { CKA_SIGN = true, CKA_ENCRYPT = true }\n\
+         tokens.softhsm = { locator = { CKA_LABEL = \"upgrade-aes\" } }\n",
+    );
+    // First use: nothing to compare, fails like a FOD.
+    assert_eq!(code(&e.km(&["verify", "u", "--token", "softhsm"])), 10);
+    // A lock written by a version that only knew cmac.
+    std::fs::write(
+        e.dir.join("keys.lock"),
+        format!("version = 1\n[objects.u.ids]\ncmac = \"{}\"\n", aes_commitment(&key, "cmac")),
+    )
+    .unwrap();
+    let v = e.km(&["verify", "u", "--token", "softhsm"]);
+    assert_eq!(code(&v), 0);
+    assert!(String::from_utf8_lossy(&v.stderr).contains("kcv-ecb identity the lock does not record"));
+    assert_eq!(code(&e.km(&["check", "u"])), 0);
+    assert_eq!(code(&e.km(&["check", "u.id.cmac"])), 0);
+    // Asking for the scheme explicitly requires it to be locked.
+    assert_eq!(code(&e.km(&["check", "u.id.kcv-ecb"])), 10);
+    assert_eq!(code(&e.km(&["realise", "u", "--token", "softhsm", "--update-lock"])), 0);
+    assert_eq!(code(&e.km(&["check", "u.id.kcv-ecb"])), 0);
+    // A wrong locked value still fails, whatever else matches.
+    let text = std::fs::read_to_string(e.dir.join("keys.lock")).unwrap();
+    let wrong = text.replace(&aes_commitment(&key, "kcv-ecb"), "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+    std::fs::write(e.dir.join("keys.lock"), wrong).unwrap();
+    assert_eq!(code(&e.km(&["verify", "u", "--token", "softhsm"])), 10);
+}
+
+#[test]
+fn standalone_public_key_objects() {
+    let Some(e) = env("public_keys") else { return };
+    let der: &[u8] = include_bytes!("fixtures/adopt-cert-p384.der");
+    let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(der).unwrap();
+    let point = cert.tbs_certificate().subject_public_key_info().subject_public_key.raw_bytes().to_vec();
+    e.session()
+        .create_object(&[
+            Attribute::Class(ObjectClass::PUBLIC_KEY),
+            Attribute::KeyType(cryptoki::object::KeyType::EC),
+            Attribute::Token(true),
+            Attribute::Label(b"standalone-pub".to_vec()),
+            Attribute::Verify(true),
+            Attribute::EcParams(P384.to_vec()),
+            Attribute::EcPoint(tlv(0x04, &point)),
+        ])
+        .unwrap();
+    e.config(
+        "[objects.anchor]\nclass = \"CKO_PUBLIC_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp384r1\"\n\n\
+         [specs.anchor]\nobject = \"anchor\"\nattributes = { CKA_VERIFY = true }\n\
+         tokens.softhsm-anon = { locator = { CKA_LABEL = \"standalone-pub\" } }\n\
+         tokens.softhsm = { locator = { CKA_LABEL = \"standalone-pub\" } }\n",
+    );
+    let o = e.km(&["realise", "anchor", "--token", "softhsm-anon", "--update-lock"]);
+    assert_eq!(code(&o), 0);
+    assert_eq!(e.locked_id("anchor", "pubkeyhash"), P384_PUBKEYHASH, "matches openssl over the certificate's key");
+    assert!(stdout(&e.km(&["verify", "anchor", "--token", "softhsm-anon"])).ends_with("object=standalone-pub;type=public"));
+    assert_eq!(code(&e.km(&["check", "anchor.id.pubkeyhash", "--token", "softhsm-anon"])), 0);
+    // Deletable by identity; then absent.
+    assert_eq!(code(&e.km(&["delete", "anchor", "--token", "softhsm", "--update-lock"])), 0);
+    assert_eq!(code(&e.km(&["verify", "anchor", "--token", "softhsm-anon"])), 11);
+    // Public keys are adopted, not created.
+    let text = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
+    std::fs::write(e.dir.join("keys.toml"), text.replace("\"standalone-pub\" } }\ntokens.softhsm =", "\"standalone-pub\" }, autoCreate = true }\ntokens.softhsm =")).unwrap();
+    assert_eq!(code(&e.km(&["validate"])), 17);
+}
+
+#[test]
+fn data_objects_are_identified_by_their_public_value() {
+    let Some(e) = env("data") else { return };
+    let value = b"key-management data object payload\n".to_vec();
+    let s = e.session();
+    let data = |label: &str, private: bool| {
+        vec![
+            Attribute::Class(ObjectClass::DATA),
+            Attribute::Token(true),
+            Attribute::Private(private),
+            Attribute::Label(label.as_bytes().to_vec()),
+            Attribute::Application(b"key-management test".to_vec()),
+            Attribute::Value(value.clone()),
+        ]
+    };
+    s.create_object(&data("data-public", false)).unwrap();
+    s.create_object(&data("data-private", true)).unwrap();
+    e.config(
+        "[objects.blob]\nclass = \"CKO_DATA\"\n\n\
+         [specs.blob]\nobject = \"blob\"\nattributes = { CKA_PRIVATE = false }\n\
+         tokens.softhsm-anon = { locator = { CKA_LABEL = \"data-public\" } }\n\n\
+         [objects.secret-blob]\nclass = \"CKO_DATA\"\n\n\
+         [specs.secret-blob]\nobject = \"secret-blob\"\n\
+         tokens.softhsm = { locator = { CKA_LABEL = \"data-private\" } }\n",
+    );
+    assert_eq!(code(&e.km(&["realise", "blob", "--token", "softhsm-anon", "--update-lock"])), 0);
+    // valuehash is SHA-256 of the content: the same SRI hash as a flat Nix fixed-output hash.
+    assert_eq!(e.locked_id("blob", "valuehash"), sri(&value));
+    assert!(stdout(&e.km(&["verify", "blob", "--token", "softhsm-anon"])).ends_with("object=data-public;type=data"));
+    assert_eq!(code(&e.km(&["check", "blob.id.valuehash"])), 0);
+    // A private value's hash would be an offline guessing oracle: refused, nothing recorded.
+    let o = e.km(&["realise", "secret-blob", "--token", "softhsm", "--update-lock"]);
+    assert_eq!(code(&o), 15);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("CKA_PRIVATE"));
+    let lock = std::fs::read_to_string(e.dir.join("keys.lock")).unwrap();
+    assert!(!lock.contains("secret-blob"), "{lock}");
+    // Data objects are adopted, not created.
+    let text = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
+    std::fs::write(e.dir.join("keys.toml"), text.replace("\"data-public\" } }", "\"data-public\" }, autoCreate = true }")).unwrap();
+    assert_eq!(code(&e.km(&["validate"])), 17);
+}
+
+#[test]
+fn brainpool_p512_is_refused_clearly() {
+    let Some(e) = env("bp512") else { return };
+    e.config(
+        "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"brainpoolP512r1\"\n\n\
+         [specs.k]\nobject = \"k\"\ntokens.softhsm = { locator = { CKA_LABEL = \"bp512\" }, autoCreate = true }\n",
+    );
+    let o = e.km(&["validate"]);
+    assert_eq!(code(&o), 15);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("no RustCrypto crate"));
 }

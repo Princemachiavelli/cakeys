@@ -584,6 +584,23 @@ Rough sizes of the **new code**. Dependencies are `cryptoki`, `tss-esapi`, RustC
   - AES: the `cmac`, `aes` and `aes-kw` crates over a known key value planted sensitive and non-extractable.
 - **Not covered:** DES/3DES, DSA, DH, GOST (legacy), `CKO_DATA`, and AES keys that may only `CKA_UNWRAP` or `CKA_DECRYPT`. An unwrap-only KEK has no deterministic commitment on SoftHSM: unwrapping a fixed blob fails the RFC 3394 integrity check.
 
+**More types (2026-11-11):**
+- **HMAC key types** `CKK_SHA_1_HMAC`, `CKK_SHA224_HMAC`, `CKK_SHA256_HMAC`, `CKK_SHA384_HMAC` and `CKK_SHA512_HMAC`.
+  - **Identity:** the `commitment` scheme, using HMAC with the key type's own hash. The key type is in the label, so types never share an ID. Generic secrets keep HMAC-SHA256.
+  - **No `autoCreate`:** PKCS#11 has no key generation for the hash-bound types (`CKM_GENERIC_SECRET_KEY_GEN` makes `CKK_GENERIC_SECRET`), so it is refused up front.
+  - **Oracles:** SoftHSM keys with known values (each at least as long as its hash output, which SoftHSM requires) and a tpm2-pkcs11 `hmac:sha384` import match host HMACs.
+  - **cryptoki 0.10.1 bug:** cryptoki (≤ 0.12.1 and main) gives `KeyType::SHA224/384/512_HMAC` the value 0x2b. The Nix build applies `nix/patches/cryptoki-hmac-key-types.patch` to the vendored crate sources (`postPatch`, `$cargoDepsCopy`). Without the patch, key-mgmnt refuses those three types and the tests skip them. Upstream fix drafted in `upstream/rust-cryptoki/`.
+- **AES-128/192:** all four schemes match the host oracle, which now handles 128, 192 and 256 bits.
+- **Decrypt-only AES (`kcv-ecb-dec`):** single-block ECB *decryption* of the domain-separated block, enabled by `CKA_DECRYPT`. Wrap-rebind computes it too, after `cmac` and `kcv-ecb` and before `kw` in order of preference. A decrypt-only key no longer needs an opt-in mode. Unwrap-only keys remain impossible.
+- **Stand-alone public keys (`CKO_PUBLIC_KEY`):** adopted only, identified by `pubkeyhash`, URI `type=public`, with policy attributes such as `CKA_VERIFY` checked.
+- **Data objects (`CKO_DATA`):**
+  - **Identity:** `valuehash`, the SHA-256 of `CKA_VALUE`. That is the same SRI hash as a flat (not NAR) Nix fixed-output hash of the content.
+  - **Adopted only,** URI `type=data`.
+  - **Private data objects are refused.** A hash of a low-entropy private value (password, PIN) in the lock would be an offline guessing oracle.
+- **Curves:** secp256k1, brainpoolP256r1 and brainpoolP384r1 (`k256`/`bp256`/`bp384`), checked against the DER oracle on SoftHSM. brainpoolP512r1 has no RustCrypto crate and is refused with that reason.
+- **Upgrade rule:** a newly computed scheme that the lock does not record is only a note once another scheme matched; with nothing to compare it is still first use (exit 10). An explicitly requested `check <obj>.id.<scheme>` needs that scheme locked.
+- **Spec digests are pinned** by a unit test (certificate and RSA digests from the YubiKey lock). `keyType` became optional for data objects without changing any digest.
+
 **tpm2-pkcs11 as the secondary reference (2026-11-11):**
 - **Works:**
   - P-256, P-384 and P-521 (with the fix-up below) and RSA 2048/3072, both generated and adopted through `publicOnly`.
