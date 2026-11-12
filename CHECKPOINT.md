@@ -36,6 +36,7 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 | 6a599ff, 3e5d06f | **Refactor R0/R1** (docs/REFACTOR-2026-11-12.md): `scripts/xversion.sh` cross-version lock check (c58cb2b-recorded locks of every class verify, compare and re-record byte-identically); `LazyLock` anchors, `Lock::realisation`, mechanism names computed once, `Display` for `Target`/`Locator`/`Immutables`/`ObjectCfg` in messages |
 | 3e26201 | **Refactor R2**: one boolean-attribute table (`cakeys_core::attrs`: per class, declarable vs observed; one macro row per attribute maps it to cryptoki); observed vectors pinned |
 | 6715c81 | **Refactor R3**: one signature verifier module (`cakeys_core::sig`: ECDSA raw/DER over every supported curve, Ed25519, RSA PKCS#1 v1.5 generic over the digest) behind pop, the PIV chain and the TPM AK; ykcs11/tpm2 drop direct p256/p384/p521/rsa deps |
+| ea2fa0e | **Refactor R4**: edition 2024, `rust-version = 1.89`, let chains at eleven sites; `load_config_with` takes the env lookup (no `set_var` in tests) |
 
 ## Done (uncommitted; passes the local gate): (empty — next task below)
 
