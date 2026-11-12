@@ -1,9 +1,7 @@
 //! Idempotent verbs with HTTP-like semantics (PLAN.md, "Token verbs").
 
 use crate::token::{self as hal, Token};
-use cakeys_core::config::{
-    AttestationRecord, Lock, Mode, Observed, Provenance, Session,
-};
+use cakeys_core::config::{AttestationRecord, Config, Lock, Mode, Observed, Provenance, Session};
 use cakeys_core::id::{self, Commit, HmacHash, Scheme};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
@@ -341,4 +339,75 @@ pub fn delete(t: &Target, tok: &Token, lock: &mut Lock, if_match: Option<&str>, 
         }
     }
     Ok(changed)
+}
+
+/// The pseudo-FOD pre-use check of `reference` (`<object>` or `<object>.id.<scheme>`): pick the
+/// (spec, token) pair, realise without writing (respecting autoCreate) and compare with the lock.
+/// A requested scheme must be one the spec computes on this token — refused (15) before the
+/// token is opened, or before anything is created — and must itself be locked, not merely
+/// computed beside another scheme that matched (10 with its `got:`). `open` opens the token.
+pub fn check(
+    cfg: &Config,
+    reference: &str,
+    spec: Option<&str>,
+    token: Option<&str>,
+    open: impl FnOnce(&str) -> Result<Token>,
+    lock: &mut Lock,
+    notes: &mut Notes,
+) -> Result<Resolved> {
+    let (object, requested) = match reference.split_once(".id.") {
+        Some((o, s)) => (o, Some(s)),
+        None => (reference, None),
+    };
+    let (spec_name, token_name) = cfg.pick_spec(object, spec, token)?;
+    let t = Target::new(cfg, &spec_name, &token_name)?;
+    let names = |v: &[Scheme]| v.iter().map(|s| s.name()).collect::<Vec<_>>();
+    // The schemes the spec can compute; an attestation scheme (§3.7) depends on the token's
+    // provider, so only schemes_on below can tell whether this one computes it.
+    let scheme = match requested {
+        None => None,
+        Some(name) => match Scheme::from_input(name) {
+            Some(s) if (t.on_token.attestation && s.is_attestation()) || t.schemes().contains(&s) => Some(s),
+            _ => {
+                return Err(KmError::Unsupported(format!(
+                    "scheme '{}' for '{object}'; it has {:?}{}",
+                    Scheme::from_input(name).map_or(name, |s| s.name()),
+                    names(&t.schemes()),
+                    if t.on_token.attestation { " plus its token's attestation scheme" } else { "" }
+                )));
+            }
+        },
+    };
+    let tok = open(&token_name)?;
+    // The token may lack a mechanism the spec allows: refuse before realise can create.
+    if let Some(s) = scheme {
+        let on_token = schemes_on(&t, &tok)?;
+        if !on_token.contains(&s) {
+            return Err(KmError::Unsupported(format!(
+                "scheme '{s}' for spec '{spec_name}' on '{token_name}'; it computes {:?}",
+                names(&on_token)
+            )));
+        }
+    }
+    let (r, _) = realise(&t, &tok, lock, LockWrite::Compare, notes)?;
+    // An attestation is locked on this realisation (§3.7), not on the object.
+    if let Some(s) = scheme {
+        let (locked, got) = if s.is_attestation() {
+            let locked = lock
+                .realisation(&spec_name, &token_name)
+                .and_then(|r| r.attestation.as_ref())
+                .is_some_and(|a| Some(a.kind.as_str()) == s.attestation_kind());
+            (locked, r.attestation.as_ref().map(|a| a.id.clone()))
+        } else {
+            (lock.objects.get(t.object_name).is_some_and(|o| o.ids.contains_key(s.name())), r.ids.get(s.name()).cloned())
+        };
+        if !locked {
+            return Err(KmError::HashMismatch {
+                what: format!("'{object}' (scheme {s})"),
+                expected: "<none>".into(),
+                got: got.unwrap_or_default(),
+            });
+        }
+    }
+    Ok(r)
 }
