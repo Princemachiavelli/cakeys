@@ -91,6 +91,11 @@ fn check_binding(t: &Target) -> Result<()> {
         (Some(Binding::PopSign), _) if t.object.curve.as_deref().is_some_and(|c| c == "edwards448" || c == "Ed448") => {
             invalid("cakeys has no Ed448 verifier to prove possession with; opt in with binding = \"token-asserted\"".into())
         }
+        (Some(Binding::PopSign), _) if t.spec.flag("CKA_ALWAYS_AUTHENTICATE") == Some(true) => invalid(
+            "CKA_ALWAYS_AUTHENTICATE = true needs a login per signature, and so would proving \
+             possession; adopt it publicOnly, or opt in with binding = \"token-asserted\""
+                .to_string(),
+        ),
         (Some(Binding::PopSign), _) if t.spec.flag("CKA_SIGN") != Some(true) => invalid(
             "proving possession of the private key needs CKA_SIGN = true in the spec attributes; \
              or opt in with binding = \"token-asserted\" on this token"
@@ -100,23 +105,65 @@ fn check_binding(t: &Target) -> Result<()> {
     }
 }
 
-/// Best identity mode achievable from the spec alone; weak modes need a per-token opt-in.
-pub fn plan_mode(t: &Target) -> Result<Mode> {
-    let invalid = |why: &str| Err(KmError::Validation(format!("{}: {why}", t.what())));
-    check_binding(t)?;
-    // Attribute shapes: only CKA_ALLOWED_MECHANISMS takes a mechanism list, every other
-    // attribute is a boolean the token layer can set (this also validates its name).
-    for (name, v) in t.spec.attributes.iter().chain(t.spec.public_attributes.iter()) {
+/// The common booleans every class may declare (PKCS#11 3.2 §4.2).
+const COMMON_ATTRS: [&str; 4] = ["CKA_PRIVATE", "CKA_MODIFIABLE", "CKA_COPYABLE", "CKA_DESTROYABLE"];
+
+/// Usage and policy booleans a class may declare beyond the common ones (PKCS#11 3.2 §4);
+/// `CKA_ALLOWED_MECHANISMS` takes a mechanism list and only key objects may declare it.
+fn declarable(class: &str) -> &'static [&'static str] {
+    match class {
+        "CKO_PRIVATE_KEY" => &[
+            "CKA_SIGN", "CKA_SIGN_RECOVER", "CKA_DECRYPT", "CKA_UNWRAP", "CKA_DERIVE", "CKA_SENSITIVE",
+            "CKA_EXTRACTABLE", "CKA_ALWAYS_AUTHENTICATE", "CKA_WRAP_WITH_TRUSTED", "CKA_ALLOWED_MECHANISMS",
+        ][..],
+        "CKO_PUBLIC_KEY" => &[
+            "CKA_VERIFY", "CKA_VERIFY_RECOVER", "CKA_ENCRYPT", "CKA_WRAP", "CKA_DERIVE", "CKA_TRUSTED",
+            "CKA_ALLOWED_MECHANISMS",
+        ][..],
+        "CKO_SECRET_KEY" => &[
+            "CKA_ENCRYPT", "CKA_DECRYPT", "CKA_SIGN", "CKA_SIGN_RECOVER", "CKA_VERIFY", "CKA_VERIFY_RECOVER",
+            "CKA_WRAP", "CKA_UNWRAP", "CKA_DERIVE", "CKA_SENSITIVE", "CKA_EXTRACTABLE", "CKA_WRAP_WITH_TRUSTED",
+            "CKA_TRUSTED", "CKA_ALLOWED_MECHANISMS",
+        ][..],
+        "CKO_CERTIFICATE" => &["CKA_TRUSTED"][..],
+        _ => &[][..],
+    }
+}
+
+/// Declared attributes must be settable booleans (or a mechanism list for `CKA_ALLOWED_MECHANISMS`)
+/// that the class can carry.
+fn check_declared(t: &Target, class: &str, attrs: &BTreeMap<String, AttrValue>) -> Result<()> {
+    for (name, v) in attrs {
         match v {
             AttrValue::Mechanisms(_) if name != "CKA_ALLOWED_MECHANISMS" => {
-                return invalid(&format!("{name}: only CKA_ALLOWED_MECHANISMS takes a mechanism list"));
+                return Err(KmError::Validation(format!(
+                    "{}: {name}: only CKA_ALLOWED_MECHANISMS takes a mechanism list",
+                    t.what()
+                )));
             }
             AttrValue::Bool(_) => {
                 hal::bool_attr(name, false)?;
             }
             _ => {}
         }
+        if !COMMON_ATTRS.contains(&name.as_str()) && !declarable(class).contains(&name.as_str()) {
+            return Err(KmError::Validation(format!(
+                "{}: {name} does not apply to {class} objects",
+                t.what()
+            )));
+        }
     }
+    Ok(())
+}
+
+/// Best identity mode achievable from the spec alone; weak modes need a per-token opt-in.
+pub fn plan_mode(t: &Target) -> Result<Mode> {
+    let invalid = |why: &str| Err(KmError::Validation(format!("{}: {why}", t.what())));
+    check_binding(t)?;
+    // Attribute shapes and names, per class: a private key's `publicAttributes` shape its public
+    // key object.
+    check_declared(t, &t.object.class, &t.spec.attributes)?;
+    check_declared(t, "CKO_PUBLIC_KEY", &t.spec.public_attributes)?;
     if !t.spec.public_attributes.is_empty() && t.object.class != "CKO_PRIVATE_KEY" {
         return invalid("publicAttributes apply to private keys only");
     }
@@ -155,10 +202,12 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
         if t.on_token.auto_create {
             return invalid("certificates are adopted, not created");
         }
-        if !t.spec.attributes.is_empty() {
-            return invalid("certificates take no policy attributes");
-        }
         return Ok(Mode::Direct);
+    }
+    // CKA_TRUSTED is set by the token's security officer (or recorded on an adopted object), never
+    // by generation.
+    if t.on_token.auto_create && t.spec.flag("CKA_TRUSTED") == Some(true) {
+        return invalid("CKA_TRUSTED = true cannot be generated; adopt the object instead of autoCreate");
     }
     let kt = hal::key_type_of(t.object)?;
     let attr = |n: &str| t.spec.flag(n);

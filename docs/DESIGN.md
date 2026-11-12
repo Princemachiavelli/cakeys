@@ -166,7 +166,7 @@ curve = "..." ; modulusBits = N ; valueLen = BYTES   # curve names are canonical
 
 [specs.<name>]
 object = "<object>"
-attributes = { CKA_SIGN = true, ... }   # CKA_SIGN/VERIFY/ENCRYPT/DECRYPT/WRAP/UNWRAP/DERIVE/SENSITIVE/EXTRACTABLE/MODIFIABLE/PRIVATE, or CKA_ALLOWED_MECHANISMS = ["CKM_..."]
+attributes = { CKA_SIGN = true, ... }   # settable booleans the class may carry (PKCS#11 3.2 §4), or CKA_ALLOWED_MECHANISMS = ["CKM_..."] on key objects; a wrong name or class is exit 17
 publicAttributes = { CKA_VERIFY = true, ... }   # private keys only: policy of the public key object; checked on it, in the digest only when present
 tokens.<token> = { locator = { CKA_LABEL = "...", CKA_ID = "hex" }, autoCreate = bool, publicOnly = bool, binding = "token-asserted", identity.allow = [...] }
 ```
@@ -181,6 +181,21 @@ What may be created and adopted:
   PIV PIN retries). It forbids `autoCreate` and policy attributes, and `delete` refuses it —
   `adopt_certificate_and_public_only_key`.
 - **`binding = "token-asserted"`** skips the proof of possession for a private key (§3.6).
+- **Declared attribute names must fit the class** (PKCS#11 3.2 §4): every class may carry the
+  common `CKA_PRIVATE`, `CKA_MODIFIABLE`, `CKA_COPYABLE` and `CKA_DESTROYABLE`; private keys add
+  `CKA_SIGN`, `CKA_SIGN_RECOVER`, `CKA_DECRYPT`, `CKA_UNWRAP`, `CKA_DERIVE`, `CKA_SENSITIVE`,
+  `CKA_EXTRACTABLE`, `CKA_ALWAYS_AUTHENTICATE` and `CKA_WRAP_WITH_TRUSTED`; public keys `CKA_VERIFY`,
+  `CKA_VERIFY_RECOVER`, `CKA_ENCRYPT`, `CKA_WRAP`, `CKA_DERIVE` and `CKA_TRUSTED`; secret keys all of
+  the key booleans; certificates `CKA_TRUSTED`; `CKA_ALLOWED_MECHANISMS` only on key objects.
+  Anything else is invalid (exit 17) — `attributes_are_validated_per_class`. Certificates therefore
+  take policy attributes: declare what the object shows (`CKA_TRUSTED = true` must match an object
+  the token's security officer already trusted; users cannot set it).
+- **`CKA_ALWAYS_AUTHENTICATE = true` refuses `binding = "pop-sign"`** (exit 17): proving possession
+  would spend a PIN entry per run. A key that carries the attribute without declaring it is refused
+  at run time (16, §3.6).
+- **`CKA_TRUSTED = true` refuses `autoCreate`** (exit 17): generation cannot set it.
+- **Not expressible:** `CKA_WRAP_TEMPLATE`, `CKA_UNWRAP_TEMPLATE`, `CKA_DERIVE_TEMPLATE` and
+  `CKA_CERTIFICATE_CATEGORY` — cryptoki 0.12 maps none of them.
 
 ### 4.2 `keys.lock` (input, updated in place)
 ```toml

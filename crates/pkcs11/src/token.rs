@@ -924,6 +924,13 @@ pub fn bool_attr(name: &str, v: bool) -> Result<(AttributeType, Attribute)> {
         "CKA_EXTRACTABLE" => Attribute::Extractable(v),
         "CKA_MODIFIABLE" => Attribute::Modifiable(v),
         "CKA_PRIVATE" => Attribute::Private(v),
+        "CKA_COPYABLE" => Attribute::Copyable(v),
+        "CKA_DESTROYABLE" => Attribute::Destroyable(v),
+        "CKA_SIGN_RECOVER" => Attribute::SignRecover(v),
+        "CKA_VERIFY_RECOVER" => Attribute::VerifyRecover(v),
+        "CKA_WRAP_WITH_TRUSTED" => Attribute::WrapWithTrusted(v),
+        "CKA_ALWAYS_AUTHENTICATE" => Attribute::AlwaysAuthenticate(v),
+        "CKA_TRUSTED" => Attribute::Trusted(v),
         n => return Err(KmError::Validation(format!("unsupported policy attribute {n}"))),
     };
     Ok((a.attribute_type(), a))

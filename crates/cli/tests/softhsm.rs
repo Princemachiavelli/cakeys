@@ -936,6 +936,85 @@ fn an_undeclared_mechanism_list_is_observed_policy() {
     assert_eq!(code(&e.km(&["verify", "k", "--token", "softhsm"])), 0);
 }
 
+/// P2-10: declared attribute names must fit the class (PKCS#11 3.2 §4), the extra booleans are
+/// settable, and the new refusals apply: `CKA_ALWAYS_AUTHENTICATE = true` cannot prove possession,
+/// and `CKA_TRUSTED = true` cannot be generated.
+#[test]
+fn attributes_are_validated_per_class() {
+    let Some(e) = env("attr-class") else { return };
+    for (object, attrs) in [
+        (
+            "certificateType = \"CKC_X_509\"\nclass = \"CKO_CERTIFICATE\"",
+            "attributes = { CKA_SIGN = true }",
+        ),
+        (
+            "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"",
+            "attributes = { CKA_TRUSTED = true }",
+        ),
+        (
+            "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"",
+            "publicAttributes = { CKA_ALWAYS_AUTHENTICATE = true }",
+        ),
+        (
+            "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32",
+            "attributes = { CKA_ALWAYS_AUTHENTICATE = true }",
+        ),
+        (
+            "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"",
+            "attributes = { CKA_SIGN = [\"CKM_ECDSA\"] }",
+        ),
+    ] {
+        e.config(&format!(
+            "[objects.o]\n{object}\n\n[specs.s]\nobject = \"o\"\n{attrs}\n\
+             tokens.softhsm = {{ locator = {{ CKA_LABEL = \"x\" }} }}\n"
+        ));
+        let o = e.km(&["validate"]);
+        assert_eq!(code(&o), 17, "{attrs}: {}", String::from_utf8_lossy(&o.stderr));
+    }
+
+    // Proving possession with CKA_ALWAYS_AUTHENTICATE would spend a PIN entry per run.
+    e.config(
+        "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.s]\nobject = \"o\"\nattributes = { CKA_SIGN = true, CKA_ALWAYS_AUTHENTICATE = true }\n\
+         tokens.softhsm = { locator = { CKA_LABEL = \"x\" } }\n",
+    );
+    assert_eq!(code(&e.km(&["validate"])), 17);
+
+    // CKA_TRUSTED is set by the token's security officer, never by generation.
+    e.config(
+        "[objects.o]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
+         [specs.s]\nobject = \"o\"\nattributes = { CKA_TRUSTED = true }\n\
+         tokens.softhsm = { locator = { CKA_LABEL = \"trusted\" }, autoCreate = true }\n",
+    );
+    assert_eq!(code(&e.km(&["validate"])), 17);
+
+    // The extra booleans are settable: the key is created with them, the policy records them, and
+    // binding = "token-asserted" replaces the impossible proof of possession.
+    let s = e.session();
+    // The token is shared between runs: remove anything left under the test's locator.
+    for h in s.find_objects(&[Attribute::Label(b"always-auth".to_vec())]).unwrap() {
+        s.destroy_object(h).unwrap();
+    }
+    e.config(
+        "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.s]\nobject = \"o\"\n\
+         attributes = { CKA_SIGN = true, CKA_ALWAYS_AUTHENTICATE = true, CKA_DESTROYABLE = true }\n\
+         tokens.softhsm = { locator = { CKA_LABEL = \"always-auth\" }, autoCreate = true, binding = \"token-asserted\" }\n",
+    );
+    assert_eq!(code(&e.km(&["realise", "s", "--token", "softhsm", "--update-lock"])), 0);
+    let policy = &e.lock()["realisations"]["s"]["softhsm"]["policy"];
+    assert_eq!(policy["CKA_ALWAYS_AUTHENTICATE"].as_bool(), Some(true), "{policy}");
+    let private = s
+        .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"always-auth".to_vec())])
+        .unwrap()[0];
+    let Attribute::AlwaysAuthenticate(aa) = &s.get_attributes(private, &[AttributeType::AlwaysAuthenticate]).unwrap()[0]
+    else {
+        panic!("no CKA_ALWAYS_AUTHENTICATE on the private half")
+    };
+    assert!(*aa, "the template set CKA_ALWAYS_AUTHENTICATE");
+    assert_eq!(code(&e.km(&["verify", "s", "--token", "softhsm"])), 0);
+}
+
 /// A known AES-256 value, planted several times with different usage bits: the host knows the
 /// material, the token holds it sensitive and (mostly) non-extractable.
 const AES_VALUE: [u8; 32] = *b"key-management aes test vector!!";
