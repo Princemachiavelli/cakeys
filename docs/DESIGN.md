@@ -265,7 +265,7 @@ content-addressed identity — one per token type that can produce it:
   cakeys' template (restricted sign-only P-256, fixedTPM, empty policy) — anything else is a
   conflict (13), since an unrestricted key there could sign a forged attestation. The handle
   defaults to `0x81000016` (cakeys-tpm2-pkcs11 `DEFAULT_AK_HANDLE`), configurable per token
-  (`akHandle`, `0x`-prefixed, owner persistent range). Trust in it is TOFU through the pinned
+  (`options.akHandle`, `0x`-prefixed, owner persistent range). Trust in it is TOFU through the pinned
   `root`; **chaining it to the Endorsement Key certificate (EK → AK via
   MakeCredential/ActivateCredential) is not implemented yet** — until it is, the AK proves
   "this TPM", not "this genuine TPM".
@@ -290,6 +290,11 @@ pinFile = "/path" | pinEnv = "VAR"     # optional; pinEnv wins if both are set; 
 mgmKeyFile = "/path" | mgmKeyEnv = "VAR"  # optional; admin (SO) credential for modules that create keys only as SO (ykcs11: the PIV management key in hex, or the PIN when the management key is PIN-protected); mgmKeyEnv wins; mgmKeyFile may be $NAME; needs pinFile/pinEnv (17)
 systemFeature = "token-<name>"         # read by the Nix library only
 
+[tokens.<name>.options]        # the provider's own settings, checked when the token opens (17 for an unknown name, or any option on a provider that takes none)
+tcti = "device:/dev/tpmrm0"    # tpm2-pkcs11: TPM2_Certify TCTI (default: the module's $TPM2_PKCS11_TCTI, then $TPM2TOOLS_TCTI, $TCTI)
+tpm2Store = "~/.tpm2_pkcs11"   # tpm2-pkcs11: the module's sqlite store (default: where tpm2-pkcs11 looks)
+akHandle = "0x81000016"        # tpm2-pkcs11: cakeys' Attestation Key handle (§3.7)
+
 [objects.<name>]
 class = "CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY" | "CKO_SECRET_KEY" | "CKO_CERTIFICATE" | "CKO_DATA"
 keyType = "CKK_EC" | ...        # keys; certificates and data objects take none
@@ -304,8 +309,8 @@ tokens.<token> = { locator = { CKA_LABEL = "...", CKA_ID = "hex" }, autoCreate =
 ```
 
 `tokens.<t>.attestation = true` (in a spec's token entry) opts into the attestation commitment
-(§3.7). Token-level TPM fields for the native certify path (`tcti`, `tpm2Store`, `akHandle`)
-are §3.7 and the `TokenCfg` docs.
+(§3.7). The tpm2-pkcs11 settings of the native certify path (`tcti`, `tpm2Store`, `akHandle`)
+live in the token's `[tokens.<name>.options]` (§3.7; `Tpm2Options`).
 
 What may be created and adopted:
 - **References are checked at load** (exit 17): a spec's `object` must name an `[objects.<name>]`
@@ -504,7 +509,8 @@ Exit codes:
 
 ### 6.2 Providers
 - **Hooks:** `name`, `matches(&ModuleInfo)`, and optionally `mechanisms` (filter), `ec_point`
-  (repair), `hint` (error advice), `manages_as_so`/`check_create`/`keeps_destroyed_keys` (key
+  (repair), `hint` (error advice), `check_options` (the token's `[tokens.<t>.options]`; the
+  default refuses any), `manages_as_so`/`check_create`/`keeps_destroyed_keys` (key
   management on modules that create only as SO or cannot delete keys: ykcs11) and
   `attestation`/`attest` (§3.7).
 - **Selection:** an explicit `provider` wins; an unknown name is exit 17. Otherwise the first

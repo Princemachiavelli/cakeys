@@ -41,23 +41,20 @@ pub struct TokenCfg {
     /// Nix `requiredSystemFeatures` entry; defaults to `token-<name>`. Read by the Nix library.
     #[allow(dead_code)]
     pub system_feature: Option<String>,
-    /// tpm2-pkcs11 only: TCTI connection string for the native attestation path (TPM2_Certify),
-    /// in tss-esapi `TctiNameConf` syntax (`"device:/dev/tpmrm0"`, `"tabrmd:bus_type=session"`)
-    /// or a TCTI library name (`"libtss2-tcti-tabrmd.so.0:bus_type=session"`). Defaults to the
-    /// module's own `$TPM2_PKCS11_TCTI`, then `$TPM2TOOLS_TCTI`, then `$TCTI`.
-    pub tcti: Option<String>,
-    /// tpm2-pkcs11 only: directory of the sqlite store backing the module, read (read-only) by
-    /// the native attestation path to find the object's TPM blobs. Defaults to the store
-    /// tpm2-pkcs11 itself opens: `$TPM2_PKCS11_STORE`, else the first of `/etc/tpm2_pkcs11`,
-    /// `$XDG_DATA_HOME/tpm2-pkcs11` (`~/.local/share/tpm2-pkcs11`), `~/.tpm2_pkcs11` and the
-    /// working directory that holds `tpm2_pkcs11.sqlite3`.
-    pub tpm2_store: Option<String>,
-    /// tpm2-pkcs11 only: persistent handle of cakeys' Attestation Key (a restricted signing key
-    /// in the owner hierarchy, created by `realise` if absent, empty auth, and pinned in the
-    /// lock by the `attestation.root` of the realisation). Defaults to the provider's
-    /// `DEFAULT_AK_HANDLE`; `0x`-prefixed hex in 0x81000000..=0x817FFFFF, e.g. `"0x81000016"`.
-    /// An object already there that is not such a key is refused (13).
-    pub ak_handle: Option<String>,
+    /// Settings only the token's provider understands, as `[tokens.<t>.options]` (tpm2-pkcs11:
+    /// `tcti`, `tpm2Store`, `akHandle`). The provider checks them when the token is opened, and
+    /// one that takes none refuses any (17).
+    #[serde(default)]
+    pub options: Options,
+}
+
+/// A token's provider-specific settings (`[tokens.<t>.options]`), parsed by the provider.
+pub type Options = toml::Table;
+
+/// Parse a token's `options` into the provider's own settings type, which should deny unknown
+/// fields: a typo is invalid (17), naming the token.
+pub fn parse_options<T: serde::de::DeserializeOwned>(token: &str, options: &Options) -> Result<T> {
+    options.clone().try_into().map_err(|e| KmError::Validation(format!("tokens.{token}.options: {e}")))
 }
 
 /// Intrinsic object type: identical across every spec of the object.

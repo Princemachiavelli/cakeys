@@ -47,7 +47,7 @@ pub struct Token {
     /// Logged in as the user: private objects are visible. Otherwise a public session.
     pub logged_in: bool,
     /// The token's config, for provider hooks that need more than the module (the native TPM
-    /// attestation path's `tcti`, `tpm2Store` and `akHandle`).
+    /// attestation path's `options`: `tcti`, `tpm2Store` and `akHandle`).
     pub cfg: TokenCfg,
     /// The user credential, already read for login, kept only when the provider can attest
     /// (the TPM attestation path unseals the token's wrapping key with it) or an SO step must
@@ -81,6 +81,7 @@ impl Token {
             cryptoki: lib.cryptoki_version().to_string(),
         };
         let provider = registry.select(cfg.provider.as_deref(), &module)?;
+        provider.check_options(name, &cfg.options)?;
         if has_admin(cfg) && !provider.manages_as_so() {
             return Err(KmError::Validation(format!(
                 "token '{name}': mgmKeyFile/mgmKeyEnv is only for modules that create keys as \

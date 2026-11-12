@@ -367,7 +367,7 @@ fn tpm2_keys_attest_their_tpm_residence() {
     // configured handle. Reads never provision one, so the second verify fails the same way.
     let base = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
     let alt = |handle: &str| {
-        base.replacen("tokenLabel = \"kmtest\"\n", &format!("tokenLabel = \"kmtest\"\nakHandle = \"{handle}\"\n"), 1)
+        base.replacen("tokenLabel = \"kmtest\"\n", &format!("tokenLabel = \"kmtest\"\noptions = {{ akHandle = \"{handle}\" }}\n"), 1)
     };
     std::fs::write(e.dir.join("keys.toml"), alt("0x81000017")).unwrap();
     for _ in 0..2 {

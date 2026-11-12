@@ -5,7 +5,7 @@
 use cryptoki::mechanism::MechanismType;
 use cryptoki::object::ObjectHandle;
 use cryptoki::session::Session;
-use cakeys_core::config::{Locator, ModuleInfo, ObjectCfg, TokenCfg};
+use cakeys_core::config::{Locator, ModuleInfo, ObjectCfg, Options, TokenCfg};
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass;
 use cakeys_core::{KmError, Result};
@@ -32,6 +32,19 @@ pub trait Provider: Send + Sync {
     /// Advice appended when the module cannot do something the spec asks for.
     fn hint(&self) -> Option<&'static str> {
         None
+    }
+
+    /// Check `token`'s `[tokens.<t>.options]` when it is opened: a provider with settings parses
+    /// them (`cakeys_core::config::parse_options`, unknown names refused); the default takes none,
+    /// so any option is refused (17) rather than silently ignored.
+    fn check_options(&self, token: &str, options: &Options) -> Result<()> {
+        match options.keys().next() {
+            None => Ok(()),
+            Some(k) => Err(KmError::Validation(format!(
+                "tokens.{token}.options.{k}: provider {} takes no options",
+                self.name()
+            ))),
+        }
     }
 
     /// Whether the module creates and destroys token objects only in a Security Officer session

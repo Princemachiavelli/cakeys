@@ -1836,6 +1836,25 @@ fn admin_credential_is_refused_where_the_user_creates_keys() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("needs a user PIN"));
 }
 
+/// `[tokens.<t>.options]` belong to the token's provider, which checks them when the token is
+/// opened: SoftHSM takes none, so any is refused (17) rather than silently ignored.
+#[test]
+fn provider_options_are_checked_by_the_provider() {
+    let Some(e) = env("options") else { return };
+    std::fs::write(
+        e.dir.join("keys.toml"),
+        format!(
+            "[tokens.softhsm]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\noptions = {{ tcti = \"device:/dev/tpmrm0\" }}\n\n{}",
+            e.module,
+            EC.replace("ec-lifecycle", "options")
+        ),
+    )
+    .unwrap();
+    let o = e.km(&["resolve", "signing-soft", "--token", "softhsm"]);
+    assert_eq!(code(&o), 17, "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("tokens.softhsm.options.tcti: provider softhsm takes no options"));
+}
+
 /// `realise` and `delete` write the lock by default; `--no-update-lock` compares only (first use
 /// is then 10 and nothing is written). Where the lock cannot be written — a Nix build sandbox, a
 /// read-only lock, a read-only directory — a writing run is refused (14) before the token is

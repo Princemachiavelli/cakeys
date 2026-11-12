@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+serde.workspace = true
 cakeys-core.workspace = true
 cakeys-pkcs11.workspace = true
 cryptoki.workspace = true
@@ -16,3 +17,6 @@ aes-gcm.workspace = true
 sha2.workspace = true
 getrandom.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+toml.workspace = true

@@ -18,6 +18,7 @@ pub mod attest;
 use cakeys_pkcs11::provider::{AttestationCap, AttestCtx, Attested, Provider};
 use cakeys_pkcs11::token::ModuleInfo;
 use cakeys_core::Result;
+use cakeys_core::config::Options;
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass;
 use cryptoki::mechanism::MechanismType;
@@ -56,6 +57,10 @@ impl Provider for Tpm2Pkcs11 {
             // keys; public-key objects and certificates have no certifiable blob.
             classes: &[ObjectClass::PrivateKey, ObjectClass::SecretKey],
         })
+    }
+
+    fn check_options(&self, token: &str, options: &Options) -> Result<()> {
+        attest::Tpm2Options::of(token, options).map(drop)
     }
 
     fn attest(&self, ctx: &AttestCtx<'_>) -> Result<Attested> {

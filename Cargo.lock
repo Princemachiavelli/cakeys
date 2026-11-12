@@ -268,7 +268,9 @@ dependencies = [
  "cryptoki",
  "getrandom",
  "rusqlite",
+ "serde",
  "sha2",
+ "toml",
  "tss-esapi",
  "zeroize",
 ]
