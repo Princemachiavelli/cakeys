@@ -77,16 +77,23 @@ let
     cakeys = cakeys.packages.x86_64-linux.default;
     modules.softhsm = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
   };
+  # One calling convention: the object is a function naming its (spec, token) pair
+  # (the arguments are optional when the object has exactly one).
+  signing = keys.signing { token = "softhsm"; };
 in
 pkgs.runCommand "signed-artifact" {
   # Only hosts that advertise the token's feature build this.
-  requiredSystemFeatures = keys.signing.rsf.softhsm;
+  requiredSystemFeatures = signing.rsf;
 } ''
   # Pre-use check: fails the build unless the token holds the locked material.
-  uri=$(${keys.signing.check { token = "softhsm"; }})
+  uri=$(${signing.check})
   # ... sign with "$uri" ...
 ''
 ```
+
+`signing` is plain data from the resolved pair: `id.<scheme>`, `uri`, `mode`, `specDigest`,
+`module`, `tokenInfo`, `functions`, `rsf` and `check` (use `scheme = "certhash"` to require one
+identity).
 
 A cached consumer is not rebuilt, so the token is not re-contacted; `nix build --check` forces it.
 

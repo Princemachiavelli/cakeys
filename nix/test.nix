@@ -54,6 +54,7 @@ let
         cakeys = sp "${cakeys}";
         modules.softhsm = sp "${pkgs.softhsm}" + "/lib/softhsm/libsofthsm2.so";
       };
+      signing = keys.signing { token = "softhsm"; };
     in
     derivation {
       name = "uses-signing-key";
@@ -61,8 +62,8 @@ let
       builder = sp "${pkgs.bash}" + "/bin/bash";
       PATH = sp "${pkgs.coreutils}" + "/bin";
       SOFTHSM2_CONF = "${stateDir}/softhsm2.conf";
-      requiredSystemFeatures = keys.signing.rsf.softhsm;
-      args = [ "-c" "uri=$(${"$"}{keys.signing.check { token = "softhsm"; }}) && echo \"$uri\" > $out" ];
+      requiredSystemFeatures = signing.rsf;
+      args = [ "-c" "uri=$(${"$"}{signing.check}) && echo \"$uri\" > $out" ];
     }
   '';
 
@@ -80,7 +81,7 @@ let
   }
   // lib.optionalAttrs isVM {
     # The consumer gets the token through the module's pre-build-hook, because it requires the
-    # token's feature (keys.signing.rsf.softhsm, i.e. token-softhsm).
+    # token's feature ((keys.signing { token = "softhsm"; }).rsf, i.e. token-softhsm).
     imports = [ module ];
     services.cakeys = {
       package = cakeys;

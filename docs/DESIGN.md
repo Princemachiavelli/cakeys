@@ -429,12 +429,24 @@ Policy: always the latest release. Audit on every dependency change by comparing
 ## 7. Nix integration
 
 ### 7.1 Library (`lib.mkKeys`, builtins only)
-Per object it exposes `type`, `id.<scheme>`, and `specs.<spec>.{uri,mode,specDigest,module,tokenInfo,functions,rsf}.<token>`.
-- **Per-token shortcuts** throw if several specs share a token.
-- **`check { token?, spec?, scheme? }`** gives the shell command for the pre-use check.
-  Interpolating config, lock and module makes them build inputs. `scheme = null` verifies whatever
-  the spec computes.
-- **`rsf`** gives the token's system feature, for `requiredSystemFeatures`.
+One calling convention: **every object is a function**. The call resolves the object's one
+(spec, token) pair — the arguments are optional when there is exactly one — and returns plain
+data, so consumers destructure once and reuse:
+
+```nix
+signing = keys.signing { token = "softhsm"; };      # { } when the object has one pair
+shared  = keys.shared { token = "softhsm"; spec = "shared-sign"; };  # several specs on one token
+```
+- The result carries `type`, `id.<scheme>` (`pubkeyhash` is an input alias), the resolved
+  `spec`/`token`, and the pair's realisation: `uri`, `mode`, `specDigest`, `module`, `tokenInfo`,
+  `functions` (mechanism → `true`), `rsf` and `check`.
+- **`check`** is the shell command for the pre-use check (prints the URI); `scheme = "certhash"`
+  requires that identity, and the resolved pair is passed explicitly. Interpolating config, lock
+  and module makes them build inputs. Like `id`, `type` and `rsf`, it is usable before anything
+  is recorded in the lock — the first-use pseudo-FOD flow; only the realisation's own fields
+  throw on a missing record.
+- A call that does not name exactly one pair throws, listing the choices — so does a missing
+  realisation, naming the `realise --update-lock` command to run.
 - Tested by `checks.lib` (synthetic fixture) and `checks.vm` (consumer built in the guest sandbox).
 
 ### 7.2 Pseudo-FOD check

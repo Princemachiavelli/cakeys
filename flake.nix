@@ -90,30 +90,41 @@
               modules.softhsm = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
             };
             fails = e: !(builtins.tryEval e).success;
+            # One calling convention: the object is a function naming its (spec, token) pair.
+            signing = keys.signing { token = "softhsm"; };
+            shared-sign = keys.shared {
+              token = "softhsm";
+              spec = "shared-sign";
+            };
+            shared-nosign = keys.shared {
+              token = "softhsm";
+              spec = "shared-nosign";
+            };
+            signing-cert = keys.signing-cert { token = "softhsm"; };
           in
-          assert keys.signing.id.rfc7093m4 == "sha256-d3++Ph3T9bppuPnNz6blK4vDij+Swy9RMmKdfQnLmPk=";
-          assert keys.signing.id.pubkeyhash == keys.signing.id.rfc7093m4; # input alias
-          assert keys.signing.uri.softhsm == "pkcs11:token=kmtest;object=signing;type=private";
-          assert keys.signing.mode.softhsm == "direct";
-          assert keys.signing.rsf.softhsm == [ "token-softhsm" ];
-          assert keys.signing.functions.softhsm.CKM_ECDSA;
-          assert !(keys.signing.functions.softhsm ? CKM_SHA256_HMAC);
+          assert signing.id.rfc7093m4 == "sha256-d3++Ph3T9bppuPnNz6blK4vDij+Swy9RMmKdfQnLmPk=";
+          assert signing.id.pubkeyhash == signing.id.rfc7093m4; # input alias
+          assert signing.uri == "pkcs11:token=kmtest;object=signing;type=private";
+          assert signing.mode == "direct";
+          assert signing.spec == "signing-soft" && signing.token == "softhsm";
+          assert signing.rsf == [ "token-softhsm" ];
+          assert signing.functions.CKM_ECDSA;
+          assert !(signing.functions ? CKM_SHA256_HMAC);
           # One object, two specs with different policy on the same token.
-          assert keys.shared.specs.shared-sign.mode.softhsm == "commitment";
-          assert keys.shared.specs.shared-nosign.mode.softhsm == "wrap-rebind";
-          assert fails keys.shared.uri.softhsm; # ambiguous: several specs on one token
-          assert keys.signing.module.softhsm.version == "2.7";
-          assert keys.signing.tokenInfo.softhsm.model == "SoftHSM v2";
-          assert keys.shared.specs.shared-sign.module.softhsm == null; # older lock entry
+          assert shared-sign.mode == "commitment";
+          assert shared-nosign.mode == "wrap-rebind";
+          assert fails (keys.shared { token = "softhsm"; }); # ambiguous: several specs on one token
+          assert fails (keys.signing { token = "elsewhere"; }); # no such pair
+          assert signing.module.version == "2.7";
+          assert signing.tokenInfo.model == "SoftHSM v2";
+          assert shared-sign.module == null; # older lock entry
           # No scheme: the CLI verifies every ID the spec computes; a scheme also requires it.
-          assert pkgs.lib.hasInfix "check signing-cert --token softhsm" (
-            keys.signing-cert.check { token = "softhsm"; }
-          );
+          assert pkgs.lib.hasInfix "check signing-cert --token softhsm" signing-cert.check;
           assert pkgs.lib.hasInfix "check signing-cert.id.certhash" (
-            keys.signing-cert.check { scheme = "certhash"; }
+            (keys.signing-cert { scheme = "certhash"; }).check
           );
           pkgs.runCommand "cakeys-lib-check" { } ''
-            echo ${pkgs.lib.escapeShellArg (keys.signing.check { })} > $out
+            echo ${pkgs.lib.escapeShellArg (keys.signing { }).check} > $out
           '';
       };
 
