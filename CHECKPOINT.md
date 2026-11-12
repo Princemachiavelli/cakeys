@@ -38,6 +38,7 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 | 6715c81 | **Refactor R3**: one signature verifier module (`cakeys_core::sig`: ECDSA raw/DER over every supported curve, Ed25519, RSA PKCS#1 v1.5 generic over the digest) behind pop, the PIV chain and the TPM AK; ykcs11/tpm2 drop direct p256/p384/p521/rsa deps |
 | ea2fa0e | **Refactor R4**: edition 2024, `rust-version = 1.89`, let chains at eleven sites; `load_config_with` takes the env lookup (no `set_var` in tests) |
 | 72a373a | **Refactor R5**: typed `ObjectClass`/`KeyType` (serde-renamed, digests unchanged) and `Scheme` (lock maps stay `String`-keyed); unknown class/key type now 17 at load (was 15 at use); YubiKey read-only verify 6/6 |
+| a1f7c76 | **Refactor R6**: core returns only `KmError` (`Io` variant, exit 1, with the file named); `anyhow` only in the CLI |
 
 ## Done (uncommitted; passes the local gate): (empty — next task below)
 
