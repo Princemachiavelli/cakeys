@@ -1,0 +1,377 @@
+//! PKCS#11 token layer over `cryptoki`. Transparent: PKCS#11 names in, PKCS#11 calls out.
+//! Module-specific behaviour goes through the selected [`Provider`].
+
+use crate::provider::{AttestationCap, AttestCtx, Attested, Provider, Registry};
+pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};
+use cakeys_core::attrs;
+use cakeys_core::config::{AttrValue, Binding, Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
+use cakeys_core::id::{self, Commit, Curve, HmacHash, Scheme};
+use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
+use cakeys_core::{KmError, Result};
+use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
+use cryptoki::error::{Error as CkError, RvError};
+use cryptoki::mechanism::eddsa::{EddsaParams, EddsaSignatureScheme};
+use cryptoki::mechanism::elliptic_curve::{EcKdf, Ecdh1DeriveParams};
+use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsOaepParams, PkcsOaepSource};
+use cryptoki::mechanism::{Mechanism, MechanismType};
+use cryptoki::object::{
+    Attribute, AttributeType, CertificateType, KeyType, ObjectClass, ObjectHandle,
+};
+use cryptoki::session::{Session, UserType};
+use cryptoki::types::AuthPin;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use zeroize::Zeroizing;
+
+mod generate;
+mod identity;
+mod policy;
+mod possession;
+mod uri;
+
+pub use identity::commit_mechanism;
+pub use policy::bool_attr;
+use uri::{locator_attrs, pct_all};
+
+pub struct Token {
+    pub name: String,
+    pub label: String,
+    pub module: ModuleInfo,
+    pub token: TokenInfo,
+    /// Usable mechanisms: advertised ones, filtered by the provider.
+    pub mechanisms: Vec<MechanismType>,
+    /// Their names, sorted: what the lock records and `caps` prints.
+    mechanism_names: Vec<String>,
+    pub provider: Arc<dyn Provider>,
+    session: Session,
+    /// Logged in as the user: private objects are visible. Otherwise a public session.
+    pub logged_in: bool,
+    /// The token's config, for provider hooks that need more than the module (the native TPM
+    /// attestation path's `tcti`, `tpm2Store` and `akHandle`).
+    pub cfg: TokenCfg,
+    /// The user credential, already read for login, kept only when the provider can attest
+    /// (the TPM attestation path unseals the token's wrapping key with it) or an SO step must
+    /// log the user back in afterwards (`mgmKeyFile`/`mgmKeyEnv`). Zeroized on drop.
+    pin: Option<Zeroizing<String>>,
+}
+
+fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
+    move |e| KmError::Unavailable(format!("{context}: {e}"))
+}
+
+impl Token {
+    pub fn open(
+        name: &str,
+        cfg: &TokenCfg,
+        module_override: Option<&str>,
+        registry: &Registry,
+    ) -> Result<Token> {
+        let module = module_override
+            .map(str::to_owned)
+            .or_else(|| cfg.module.clone())
+            .ok_or_else(|| KmError::Validation(format!("token '{name}' has no module")))?;
+        let ctx = Pkcs11::new(&module).map_err(ck(&format!("loading {module}")))?;
+        ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).map_err(ck("C_Initialize"))?;
+        let lib = ctx.get_library_info().map_err(ck("C_GetInfo"))?;
+        let module = ModuleInfo {
+            path: module,
+            description: lib.library_description().trim().to_owned(),
+            manufacturer: lib.manufacturer_id().trim().to_owned(),
+            version: lib.library_version().to_string(),
+            cryptoki: lib.cryptoki_version().to_string(),
+        };
+        let provider = registry.select(cfg.provider.as_deref(), &module)?;
+        if has_admin(cfg) && !provider.manages_as_so() {
+            return Err(KmError::Validation(format!(
+                "token '{name}': mgmKeyFile/mgmKeyEnv is only for modules that create keys as \
+                 Security Officer (ykcs11); provider {} creates them as the user",
+                provider.name()
+            )));
+        }
+        let mut slot = None;
+        for s in ctx.get_slots_with_token().map_err(ck("C_GetSlotList"))? {
+            let info = ctx.get_token_info(s).map_err(ck("C_GetTokenInfo"))?;
+            if info.label() == cfg.token_label {
+                if slot.is_some() {
+                    return Err(KmError::Ambiguous(format!(
+                        "several tokens labelled '{}'",
+                        cfg.token_label
+                    )));
+                }
+                slot = Some((
+                    s,
+                    TokenInfo {
+                        model: info.model().trim().to_owned(),
+                        serial: info.serial_number().trim().to_owned(),
+                        firmware: info.firmware_version().to_string(),
+                    },
+                ));
+            }
+        }
+        let (slot, token) = slot.ok_or_else(|| {
+            KmError::Unavailable(format!("token '{}' not present in {}", cfg.token_label, module.path))
+        })?;
+        let mechanisms = provider.mechanisms(ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?);
+        let mut mechanism_names: Vec<String> = mechanisms.iter().map(|m| m.to_string()).collect();
+        mechanism_names.sort();
+        let session = ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?;
+        let pin = read_pin(cfg)?;
+        if let Some(pin) = pin.as_deref() {
+            match session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
+                Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
+                Err(e) => return Err(KmError::Unavailable(format!("C_Login: {e}"))),
+            }
+        }
+        Ok(Token {
+            name: name.to_owned(),
+            label: cfg.token_label.clone(),
+            module,
+            token,
+            mechanisms,
+            mechanism_names,
+            session,
+            logged_in: pin.is_some(),
+            cfg: cfg.clone(),
+            pin: pin.filter(|_| provider.attestation().is_some() || has_admin(cfg)),
+            provider,
+        })
+    }
+
+    /// An `Unsupported` error carrying the provider's advice, if it has any.
+    pub fn unsupported(&self, msg: String) -> KmError {
+        match self.provider.hint() {
+            Some(h) => KmError::Unsupported(format!("{msg} (hint for {}: {h})", self.provider.name())),
+            None => KmError::Unsupported(msg),
+        }
+    }
+
+    pub fn has(&self, m: MechanismType) -> bool {
+        self.mechanisms.contains(&m)
+    }
+
+    pub fn mechanism_names(&self) -> &[String] {
+        &self.mechanism_names
+    }
+
+    /// The provider's attestation capability for `object`'s class, when the spec opted in:
+    /// `None` when this module attests nothing (or not this class).
+    pub fn attestation_cap(&self, object: &ObjectCfg) -> Option<AttestationCap> {
+        self.provider
+            .attestation()
+            .filter(|cap| cap.classes.contains(&object.class))
+    }
+
+    /// Compute the attestation commitment for `key` (§3.7 of docs/DESIGN.md) through the
+    /// provider: the module-exposed attestation certificate (PIV) or the native TPM2_Certify
+    /// path (tpm2-pkcs11), verified on the host. `spki` is the material SPKI the attestation
+    /// must name (`None` for secret keys); `provision` lets the provider create the device
+    /// state it attests with (only `realise` sets it).
+    pub fn attest(&self, key: ObjectHandle, object: &ObjectCfg, spki: Option<&[u8]>, provision: bool) -> Result<Attested> {
+        let ctx = AttestCtx {
+            session: &self.session,
+            cfg: &self.cfg,
+            token_name: &self.name,
+            key,
+            object,
+            spki,
+            pin: self.pin.as_ref().map(|p| p.as_str()),
+            provision,
+        };
+        self.provider.attest(&ctx)
+    }
+
+    pub fn find(&self, class: ObjectClass, loc: &Locator) -> Result<Vec<ObjectHandle>> {
+        let mut template = vec![Attribute::Class(class)];
+        template.extend(locator_attrs(loc)?);
+        self.session
+            .find_objects(&template)
+            .map_err(ck("C_FindObjects"))
+    }
+
+    /// Every object under the locator, whatever its class (If-None-Match before creating).
+    pub fn find_any(&self, loc: &Locator) -> Result<Vec<ObjectHandle>> {
+        self.session
+            .find_objects(&locator_attrs(loc)?)
+            .map_err(ck("C_FindObjects"))
+    }
+
+    /// Exactly-one lookup of the object named by the locator: the key (private or secret) or
+    /// certificate, or the public key object when adopting public-only.
+    pub fn find_key(
+        &self,
+        object: &ObjectCfg,
+        loc: &Locator,
+        public_only: bool,
+    ) -> Result<Option<ObjectHandle>> {
+        let class = if public_only { ObjectClass::PUBLIC_KEY } else { class_of(object) };
+        let found = self.find(class, loc)?;
+        match found.len() {
+            0 => Ok(None),
+            1 => Ok(Some(found[0])),
+            n => Err(KmError::Ambiguous(format!(
+                "{n} objects match locator {loc} on token '{}'",
+                self.name
+            ))),
+        }
+    }
+
+    /// Consumers that select a key by `CKA_ID` (OpenSSH takes the first private key with the
+    /// certificate's or public key's ID) must find exactly this one: refuse when another private
+    /// key shares `h`'s `CKA_ID`. Only a logged-in session can see private keys; a public session
+    /// checks nothing (the lock records which it was).
+    pub fn check_unique_private_id(&self, h: ObjectHandle) -> Result<()> {
+        if !self.logged_in {
+            return Ok(());
+        }
+        let id = match self.attr(h, AttributeType::Id)? {
+            Some(Attribute::Id(id)) if !id.is_empty() => id,
+            _ => return Ok(()),
+        };
+        let keys = self
+            .session
+            .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Id(id.clone())])
+            .map_err(ck("C_FindObjects"))?;
+        if keys.len() > 1 {
+            return Err(KmError::Ambiguous(format!(
+                "{} private keys on token '{}' share CKA_ID {}; a consumer selecting by ID may use another key",
+                keys.len(),
+                self.name,
+                pct_all(&id)
+            )));
+        }
+        Ok(())
+    }
+
+    fn attr(&self, h: ObjectHandle, t: AttributeType) -> Result<Option<Attribute>> {
+        Ok(self
+            .session
+            .get_attributes(h, &[t])
+            .map_err(ck("C_GetAttributeValue"))?
+            .into_iter()
+            .next())
+    }
+
+    /// Run `step` in a Security Officer session (`mgmKeyFile`/`mgmKeyEnv`), for modules that
+    /// create and destroy objects only as SO, then return to the user session. Login state is
+    /// per token, so the user is logged out first. The admin credential is read here, never at
+    /// open, and zeroized when the step ends.
+    fn as_so<T>(&self, what: &str, step: impl FnOnce() -> Result<T>) -> Result<T> {
+        let so = read_mgm(&self.cfg)?.ok_or_else(|| {
+            self.unsupported(format!(
+                "{what} on '{}' needs a Security Officer session: set tokens.{}.mgmKeyFile or mgmKeyEnv",
+                self.name, self.name
+            ))
+        })?;
+        if self.logged_in {
+            self.session.logout().map_err(ck("C_Logout"))?;
+        }
+        let out = match self.session.login(UserType::So, Some(&AuthPin::new(so.as_str().to_owned().into()))) {
+            Ok(()) => {
+                let out = step();
+                let logout = self.session.logout().map_err(ck("C_Logout (SO)"));
+                out.and_then(|v| logout.map(|()| v))
+            }
+            Err(e) => Err(KmError::Unavailable(format!(
+                "C_Login (SO) with mgmKeyFile/mgmKeyEnv: {e}; it must hold the module's admin \
+                 credential (ykcs11: the PIV management key in hex, or the PIN on a device whose \
+                 management key is PIN-protected)"
+            ))),
+        };
+        drop(so);
+        if self.logged_in {
+            let pin = self.pin.as_deref().ok_or_else(|| KmError::Unavailable("no user PIN to log back in with".into()))?;
+            match self.session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
+                Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
+                Err(e) => return Err(KmError::Unavailable(format!("C_Login (back to the user): {e}"))),
+            }
+        }
+        out
+    }
+}
+
+fn read_pin(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
+    if let Some(var) = &cfg.pin_env {
+        return std::env::var(var)
+            .map(|s| Some(Zeroizing::new(s)))
+            .map_err(|_| KmError::Unavailable(format!("PIN env var {var} not set")));
+    }
+    if let Some(path) = &cfg.pin_file {
+        return std::fs::read_to_string(path)
+            .map(Zeroizing::new)
+            .map(|s| Some(Zeroizing::new(s.trim_end_matches(['\n', '\r']).to_owned())))
+            .map_err(|e| KmError::Unavailable(format!("PIN file {}: {e}", path.display())));
+    }
+    Ok(None)
+}
+
+fn has_admin(cfg: &TokenCfg) -> bool {
+    cfg.mgm_key_file.is_some() || cfg.mgm_key_env.is_some()
+}
+
+/// The admin credential (`mgmKeyEnv`, else `mgmKeyFile`), read only for an SO step. The format
+/// is the module's: ykcs11 takes the PIV management key in hex, or the PIN on devices whose
+/// management key is PIN-protected.
+fn read_mgm(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
+    if let Some(var) = &cfg.mgm_key_env {
+        return std::env::var(var)
+            .map(|s| Some(Zeroizing::new(s)))
+            .map_err(|_| KmError::Unavailable(format!("management-key env var {var} not set")));
+    }
+    if let Some(path) = &cfg.mgm_key_file {
+        return std::fs::read_to_string(path)
+            .map(Zeroizing::new)
+            .map(|s| Some(Zeroizing::new(s.trim_end_matches(['\n', '\r']).to_owned())))
+            .map_err(|e| KmError::Unavailable(format!("management-key file {}: {e}", path.display())));
+    }
+    Ok(None)
+}
+
+/// The `cryptoki` class of a configured object.
+pub fn class_of(object: &ObjectCfg) -> ObjectClass {
+    match object.class {
+        Class::PrivateKey => ObjectClass::PRIVATE_KEY,
+        Class::SecretKey => ObjectClass::SECRET_KEY,
+        Class::PublicKey => ObjectClass::PUBLIC_KEY,
+        Class::Certificate => ObjectClass::CERTIFICATE,
+        Class::Data => ObjectClass::DATA,
+    }
+}
+
+/// The configured class a token reports, if cakeys manages it.
+fn managed_class(class: ObjectClass) -> Option<Class> {
+    Class::ALL.iter().copied().find(|c| class_of(&ObjectCfg::new(*c, None)) == class)
+}
+
+pub fn curve_of(object: &ObjectCfg) -> Result<Curve> {
+    object.curve()
+}
+
+/// The `cryptoki` key type of a configured key (`ObjectCfg::checked_key_type`).
+pub fn key_type_of(object: &ObjectCfg) -> Result<KeyType> {
+    Ok(match object.checked_key_type()? {
+        Kt::Ec => KeyType::EC,
+        Kt::EcEdwards => KeyType::EC_EDWARDS,
+        Kt::Rsa => KeyType::RSA,
+        Kt::GenericSecret => KeyType::GENERIC_SECRET,
+        Kt::Aes => KeyType::AES,
+        Kt::Sha1Hmac => KeyType::SHA_1_HMAC,
+        Kt::Sha224Hmac => hmac_key_type(KeyType::SHA224_HMAC, 0x2e)?,
+        Kt::Sha256Hmac => KeyType::SHA256_HMAC,
+        Kt::Sha384Hmac => hmac_key_type(KeyType::SHA384_HMAC, 0x2c)?,
+        Kt::Sha512Hmac => hmac_key_type(KeyType::SHA512_HMAC, 0x2d)?,
+    })
+}
+
+/// cryptoki 0.12.1 (and main) gives `SHA224/384/512_HMAC` the value of `CKK_SHA256_HMAC` (0x2b), so such
+/// keys could be neither created nor told apart. The Nix build patches it
+/// (nix/patches/cryptoki-hmac-key-types.patch); refuse rather than misidentify without the patch.
+fn hmac_key_type(kt: KeyType, raw: std::os::raw::c_ulong) -> Result<KeyType> {
+    if std::os::raw::c_ulong::from(kt) == raw {
+        Ok(kt)
+    } else {
+        Err(KmError::Unsupported(format!(
+            "{kt}: this build's cryptoki maps it to CKK_SHA256_HMAC; build with \
+             nix/patches/cryptoki-hmac-key-types.patch applied"
+        )))
+    }
+}
