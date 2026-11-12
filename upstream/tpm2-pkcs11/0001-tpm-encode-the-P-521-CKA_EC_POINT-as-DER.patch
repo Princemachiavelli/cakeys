@@ -1,21 +1,15 @@
-From a3614e5ee95d4a9f4d0f1de03589ae50a9c8f4e8 Mon Sep 17 00:00:00 2001
-From: Josh Hoffer <hoffer.joshua@gmail.com>
-Date: Wed, 11 Nov 2026 16:32:12 -0800
+From 4c3c5b125a3307235f55bc0eb69e26fd10c2b375 Mon Sep 17 00:00:00 2001
+From: Josh Hoffer <jhoffer@sansorgan.es>
+Date: Wed, 11 Nov 2026 18:42:51 -0800
 Subject: [PATCH] tpm: encode the P-521 CKA_EC_POINT as DER
 
-CKA_EC_POINT is the DER encoding of an OCTET STRING holding the X9.62
-uncompressed point. The header was built by hand as 0x04 <len> with the
-length always in one byte, but DER allows that short form only below
-128 bytes: the 133-byte NIST P-521 point needs the long form,
-0x04 0x81 0x85. P-256 (65 bytes) and P-384 (97 bytes) are unaffected.
-
-Strict DER parsers reject the value, e.g. pkcs11-tool --read-object
-fails on P-521 public keys with "cannot obtain and parse EC_POINT".
-
-Let OpenSSL encode the OCTET STRING in the library (as the old TODO
-suggested), emit the long form in tpm2_ptool's
-asn1_format_ec_point_uncompressed(), and add an integration test that
-decodes the P-521 CKA_EC_POINT with d2i_ASN1_OCTET_STRING().
+CKA_EC_POINT is a DER OCTET STRING, but its header was built by hand
+with a one-byte length, which DER only allows below 128 bytes. The
+133-byte NIST P-521 point therefore came out as 04 85 ... instead of
+04 81 85 ..., and strict parsers such as pkcs11-tool --read-object
+reject it. Encode it with i2d_ASN1_OCTET_STRING in the library, emit
+the long form in tpm2_ptool, and add an integration test that decodes
+the P-521 point with d2i_ASN1_OCTET_STRING.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---

@@ -1,15 +1,12 @@
-From 59cdffc83b0e36d93a0092cdf89fee0579adf154 Mon Sep 17 00:00:00 2001
-From: Josh Hoffer <hoffer.joshua@gmail.com>
-Date: Wed, 11 Nov 2026 18:00:50 -0800
+From 2f2825e210099ef9a6214e6e3f85aba9d93dc94a Mon Sep 17 00:00:00 2001
+From: Josh Hoffer <jhoffer@sansorgan.es>
+Date: Wed, 11 Nov 2026 18:42:28 -0800
 Subject: [PATCH] Fix the values of the SHA-224/384/512 HMAC key types
 
-KeyType::SHA224_HMAC, SHA384_HMAC and SHA512_HMAC were all defined with
-CKK_SHA256_HMAC (0x2b). Keys of these types could not be created, and
-since TryFrom<CK_KEY_TYPE> maps CKK_SHA224_HMAC (0x2e), CKK_SHA384_HMAC
-(0x2c) and CKK_SHA512_HMAC (0x2d) to these constants, a CKA_KEY_TYPE read
-from a token converted back to CKK_SHA256_HMAC.
-
-Use the matching CKK_* values and add a unit test that every HMAC key type
+KeyType::SHA224_HMAC, SHA384_HMAC and SHA512_HMAC were defined as
+CKK_SHA256_HMAC, so keys of these types could not be created and a
+CKA_KEY_TYPE read from a token came back as CKK_SHA256_HMAC. Use the
+matching CKK_* values and add a test that every HMAC key type
 round-trips through TryFrom<CK_KEY_TYPE>.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
