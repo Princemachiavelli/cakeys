@@ -1,4 +1,7 @@
 # Key management plan
+
+> **Current design and state: [`docs/DESIGN.md`](docs/DESIGN.md)** (authoritative). Review findings: [`docs/REVIEW-2026-11-11.md`](docs/REVIEW-2026-11-11.md). This file is the roadmap and the history of decisions; where it disagrees with DESIGN.md, DESIGN.md wins.
+
 Uniquely create, store, export/import and manage PKCS11 and TPM keys, objects, certificatse and any other type relevent.
 The core premise here is we use some content-addressed identification intead of the raw PKCS11 URI or other volatile identifier.
 This content-addressed Id can be a digest (hash) or other "one-way" mathmatical function or equivilent value (public key) already provided.
@@ -529,6 +532,8 @@ Rough sizes of the **new code**. Dependencies are `cryptoki`, `tss-esapi`, RustC
 
 # Next steps
 
+- **More reference implementations** (from NEXT.md): an **OP-TEE PKCS#11 TA in QEMU** (an Arm TrustZone token). QEMU's emulated TPM is already one (`checks.tpm`, and swtpm in the package tests).
+
 1. Write the spec schema (TOML), with declared locators per token and `autoCreate`, plus canonicalization and the spec digest. Test with golden vectors.
 2. Build the HAL over `cryptoki` against SoftHSMv2: `resolve` with uniqueness, `pubkeyhash` (`CKA_PUBLIC_KEY_INFO`, falling back to the public object), and `hmac-commitment`.
 3. Implement the verbs and the pseudo-FOD CLI (`key-mgmnt <config> <obj>.id.<scheme>`) with the `HashMismatch { got }` exit.
@@ -538,6 +543,8 @@ Rough sizes of the **new code**. Dependencies are `cryptoki`, `tss-esapi`, RustC
 7. Add a NixOS module: sandbox paths, device and pcscd permissions, and `ExecStartPre` checks.
 
 # POC status (2026-11-11)
+
+> History of what was built, in order. The current state is described in `docs/DESIGN.md`.
 
 **Implemented** (Rust + `cryptoki`, built with `rustPlatform.buildRustPackage`):
 - **`key-mgmnt` CLI** with `validate`, `resolve`, `verify`, `realise [--update-lock]`, `delete [--if-match] [--update-lock]`, `check <object>.id.<scheme>` (the pseudo-FOD pre-use check) and `caps`.
