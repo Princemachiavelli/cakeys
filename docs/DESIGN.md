@@ -190,6 +190,8 @@ class = "..." ; keyType = "..." ; curve = "..." ; valueLen = N ; modulusBits = N
 [objects.<object>.ids]
 rfc7093m4 = "sha256-..."            # scheme -> SRI
 [realisations.<spec>.<token>]
+object = "<object>"                 # the object this spec realised
+locator = { CKA_LABEL = "...", CKA_ID = "hex" }  # where it was found
 specDigest = "sha256-..."
 mode = "direct"
 publicOnly = true                    # only when set
@@ -211,9 +213,16 @@ model = "..." ; serial = "..." ; firmware = "M.m"
   module file is a *note*. Neither fails — `module_and_token_provenance_warn_but_do_not_fail`.
 - **The spec digest** is the SHA-256 of canonical JSON `{"v":1,"type":<object, camelCase, empty
   keyType omitted>,"attributes":<…>}`, with keys sorted at every level explicitly (independent of
-  serde_json features). Pinned by `spec_digests_are_pinned`. **It is compared:** a spec changed
-  since it was realised fails `verify`/`check` (exit 14) until `realise --update-lock` re-records
-  it, like a lockfile that is out of date.
+  serde_json features). Pinned by `spec_digests_are_pinned`.
+- **A realisation record is required.** `verify`/`check` of a (spec, token) pair the lock does not
+  record fails (exit 14) even when the material matches the locked IDs: the lock describes where
+  objects live, not only what they are — `s3_an_unrecorded_token_is_a_precondition_failure`.
+  First use, with no locked IDs to compare, is still exit 10 with `got:`.
+- **The record is compared** with keys.toml: a different `object`, `locator`, `publicOnly` or spec
+  digest fails `verify`/`check` (exit 14, naming each change) until `realise --update-lock`
+  re-records it, like a lockfile that is out of date — `s4_a_public_only_flip_is_a_spec_change`,
+  `s8_a_retargeted_spec_is_a_spec_change`. A changed locator or object is never reported as an
+  unexplained hash mismatch.
 - **A changed object type** in `keys.toml` (anything in `type`, curve aliases included) is refused
   with exit 14, naming the change, also under `--update-lock`: different material needs a new
   object name. Test: `the_lock_pins_type_spec_provenance_and_schemes`.
@@ -395,8 +404,8 @@ label and the hash itself. Everything else is fixed by definition:
 - the spec digest JSON shape (`"v":1`, camelCase, empty `keyType` omitted);
 - binding names (`pop-sign`, `token-asserted`) and their rank. The challenge layout
   (`cakeys/pop/v1`) is pinned by `message_layout_is_pinned`, though nothing stored depends on it;
-- lock field names (`objects`, `ids`, `realisations`, `specDigest`, `publicOnly`, `binding`,
-  `module`, `token`, `mechanisms`, `uri`);
+- lock field names (`objects`, `ids`, `realisations`, `object`, `locator`, `specDigest`,
+  `publicOnly`, `binding`, `module`, `token`, `mechanisms`, `uri`);
 - `keys.toml` keys;
 - exit codes;
 - the URI shape.

@@ -1,7 +1,7 @@
 //! Idempotent verbs with HTTP-like semantics (PLAN.md, "Token verbs").
 
 use crate::token::{self as hal, Token};
-use cakeys_core::config::{Binding, Config, Lock, LockRealisation, Mode, ObjectCfg, SpecCfg, SpecTokenCfg};
+use cakeys_core::config::{Binding, Config, Locator, Lock, LockRealisation, Mode, ObjectCfg, SpecCfg, SpecTokenCfg};
 use cakeys_core::id::{self, Commit, HmacHash};
 use cakeys_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
@@ -323,13 +323,32 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
         }
     }
     if let Some(prev) = lock.realisations.get(t.spec_name).and_then(|m| m.get(t.token_name)) {
-        // Like a lockfile out of date: the policy changed, so the lock must be re-recorded.
-        if !update && prev.spec_digest != r.spec_digest {
-            return Err(KmError::PreconditionFailed(format!(
-                "spec '{}' changed in keys.toml since it was realised on '{}' (spec digest {} -> {}); \
-                 review the change, then `realise --update-lock`",
-                t.spec_name, t.token_name, prev.spec_digest, r.spec_digest
-            )));
+        // Like a lockfile out of date: keys.toml changed what this realisation is (another
+        // object, locator, publicOnly or policy), so the lock must be re-recorded after review.
+        if !update {
+            let json = |l: &Locator| serde_json::to_string(l).unwrap_or_default();
+            let mut diff = Vec::new();
+            if prev.object != t.object_name {
+                diff.push(format!("object '{}' -> '{}'", prev.object, t.object_name));
+            }
+            if prev.locator != t.on_token.locator {
+                diff.push(format!("locator {} -> {}", json(&prev.locator), json(&t.on_token.locator)));
+            }
+            if prev.public_only != r.public_only {
+                diff.push(format!("publicOnly {} -> {}", prev.public_only, r.public_only));
+            }
+            if prev.spec_digest != r.spec_digest {
+                diff.push(format!("spec digest {} -> {}", prev.spec_digest, r.spec_digest));
+            }
+            if !diff.is_empty() {
+                return Err(KmError::PreconditionFailed(format!(
+                    "spec '{}' changed in keys.toml since it was realised on '{}' ({}); \
+                     review the change, then `realise --update-lock`",
+                    t.spec_name,
+                    t.token_name,
+                    diff.join(", ")
+                )));
+            }
         }
         if r.mode > prev.mode {
             return Err(KmError::PreconditionFailed(format!(
@@ -382,6 +401,17 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
     if let Some((_, got)) = unlocked.first().filter(|_| !matched) {
         return Err(KmError::HashMismatch { what: t.what(), expected: "<none>".into(), got: (*got).clone() });
     }
+    // The material matches, but the lock does not say this spec is realised on this token: the
+    // lock describes where objects live, not only what they are.
+    if !update && lock.realisations.get(t.spec_name).and_then(|m| m.get(t.token_name)).is_none() {
+        return Err(KmError::PreconditionFailed(format!(
+            "{} matches the locked identity, but the lock records no realisation of spec '{}' on \
+             token '{}'; review, then `realise --update-lock`",
+            t.what(),
+            t.spec_name,
+            t.token_name
+        )));
+    }
     for (scheme, _) in &unlocked {
         eprintln!(
             "note: {} also has a {scheme} identity the lock does not record; `realise --update-lock` adds it",
@@ -413,6 +443,8 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             entry.ids.entry(scheme.clone()).or_insert_with(|| got.clone());
         }
         let real = LockRealisation {
+            object: t.object_name.to_owned(),
+            locator: t.on_token.locator.clone(),
             spec_digest: r.spec_digest.clone(),
             mode: r.mode,
             public_only: r.public_only,

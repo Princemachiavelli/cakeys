@@ -82,13 +82,13 @@ pub struct SpecTokenCfg {
 }
 
 /// Arbitrary user values naming the object on one token. Not part of the spec digest.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Locator {
-    #[serde(rename = "CKA_LABEL")]
+    #[serde(rename = "CKA_LABEL", skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// Hex-encoded.
-    #[serde(rename = "CKA_ID")]
+    #[serde(rename = "CKA_ID", skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 }
 
@@ -230,6 +230,10 @@ impl Lock {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct LockRealisation {
+    /// The object this spec realised and the locator it was found under: a spec pointed at
+    /// another object or locator in keys.toml is a change to review, not a hash mismatch.
+    pub object: String,
+    pub locator: Locator,
     pub spec_digest: String,
     pub mode: Mode,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

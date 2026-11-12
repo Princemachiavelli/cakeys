@@ -80,6 +80,14 @@ impl Env {
         self.lock()["objects"][object]["ids"][scheme].as_str().unwrap().to_owned()
     }
 
+    /// Replace the lock with a hand-written one, keeping the realisations already recorded (the
+    /// part under test is `objects`).
+    fn write_lock_keeping_realisations(&self, text: &str) {
+        let mut lock: toml::Table = toml::from_str(text).unwrap();
+        lock.insert("realisations".into(), self.lock()["realisations"].clone());
+        std::fs::write(self.dir.join("keys.lock"), toml::to_string(&lock).unwrap()).unwrap();
+    }
+
     fn session(&self) -> TestSession {
         open_session(&self.module, "kmtest", "1234")
     }
@@ -460,7 +468,9 @@ tokens.softhsm-anon = { locator = { CKA_ID = "42" } }
     // Adopted public-only keys are never deleted (only the public half would go).
     assert_eq!(code(&e.km(&["delete", "adopted-pub", "--token", "softhsm-anon"])), 15);
     // CKA_ID alone also matches the public key object, but certificates are looked up by class.
-    assert_eq!(code(&e.km(&["verify", "adopted-cert-by-id", "--token", "softhsm-anon"])), 0);
+    let by_id = ["realise", "adopted-cert-by-id", "--token", "softhsm-anon"];
+    assert_eq!(code(&e.km(&by_id)), 14, "same certificate, but not recorded under this spec yet");
+    assert_eq!(code(&e.km(&[&by_id[..], &["--update-lock"]].concat())), 0);
 }
 
 #[test]
@@ -998,16 +1008,13 @@ fn a_new_scheme_missing_from_the_lock_is_a_note_unless_requested() {
     );
     // First use: nothing to compare, fails like a FOD.
     assert_eq!(code(&e.km(&["verify", "u", "--token", "softhsm"])), 10);
+    assert_eq!(code(&e.km(&["realise", "u", "--token", "softhsm", "--update-lock"])), 0);
     // A lock written by a version that only knew cmac.
-    std::fs::write(
-        e.dir.join("keys.lock"),
-        format!(
-            "version = 1\n[objects.u]\ncommitmentLabel = \"key-management/v1\"\n\
-             [objects.u.type]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n[objects.u.ids]\ncmac = \"{}\"\n",
-            aes_commitment(&key, "cmac")
-        ),
-    )
-    .unwrap();
+    e.write_lock_keeping_realisations(&format!(
+        "version = 1\n[objects.u]\ncommitmentLabel = \"key-management/v1\"\n\
+         [objects.u.type]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n[objects.u.ids]\ncmac = \"{}\"\n",
+        aes_commitment(&key, "cmac")
+    ));
     let v = e.km(&["verify", "u", "--token", "softhsm"]);
     assert_eq!(code(&v), 0);
     assert!(String::from_utf8_lossy(&v.stderr).contains("kcv-ecb identity the lock does not record"));
@@ -1180,7 +1187,7 @@ fn commitment_label_comes_from_the_lock() {
         sri(&m.finalize().into_bytes())
     };
     let path = e.dir.join("keys.lock");
-    let lock = |text: String| std::fs::write(&path, text.replace("{M_TYPE}", M_TYPE)).unwrap();
+    let lock = |text: String| e.write_lock_keeping_realisations(&text.replace("{M_TYPE}", M_TYPE));
     let verify = ["verify", "m", "--token", "softhsm"];
 
     // A new object gets the default label, and the lock records it.
@@ -1309,9 +1316,9 @@ fn h1b_a_forged_public_key_info_is_a_conflict() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("disagrees with the key material"));
 }
 
-/// KNOWN GAP S3: a (spec, token) pair the lock has never recorded verifies on object IDs alone.
+/// S3: a (spec, token) pair the lock has never recorded does not verify on object IDs alone.
 #[test]
-fn known_gap_s3_unrecorded_token_verifies_on_ids_alone() {
+fn s3_an_unrecorded_token_is_a_precondition_failure() {
     let Some(e) = env("gap_s3") else { return };
     let pin = e.dir.join("pin");
     e.config(&format!(
@@ -1322,26 +1329,30 @@ fn known_gap_s3_unrecorded_token_verifies_on_ids_alone() {
         EC.replace("ec-lifecycle", "s3")
     ));
     assert_eq!(code(&e.km(&["realise", "signing-soft", "--token", "softhsm", "--update-lock"])), 0);
-    // softhsm-b has no realisation record, yet verify passes.
-    assert_eq!(code(&e.km(&["verify", "signing-soft", "--token", "softhsm-b"])), 0, "S3 fixed? flip this assertion");
+    let verify = ["verify", "signing-soft", "--token", "softhsm-b"];
+    assert_eq!(code(&e.km(&verify)), 14);
+    assert_eq!(code(&e.km(&["realise", "signing-soft", "--token", "softhsm-b", "--update-lock"])), 0);
+    assert_eq!(code(&e.km(&verify)), 0);
 }
 
-/// KNOWN GAP S4: turning publicOnly on for a spec without attributes is not noticed.
+/// S4: turning publicOnly on is a change to keys.toml, also for a spec without attributes.
 #[test]
-fn known_gap_s4_public_only_flip_is_silent() {
+fn s4_a_public_only_flip_is_a_spec_change() {
     let Some(e) = env("gap_s4") else { return };
     let body = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
                 [specs.k]\nobject = \"k\"\ntokens.softhsm = { locator = { CKA_LABEL = \"s4\" }, autoCreate = true, binding = \"token-asserted\" }\n";
     e.config(body);
     assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm", "--update-lock"])), 0);
     e.config(&body.replace("autoCreate = true", "publicOnly = true"));
-    assert_eq!(code(&e.km(&["verify", "k", "--token", "softhsm"])), 0, "S4 fixed? flip this assertion");
+    let verify = e.km(&["verify", "k", "--token", "softhsm"]);
+    assert_eq!(code(&verify), 14);
+    assert!(String::from_utf8_lossy(&verify.stderr).contains("publicOnly false -> true"));
 }
 
-/// KNOWN GAP S8: pointing a spec at another object of the same type is an unexplained hash
-/// mismatch (exit 10) instead of "keys.toml changed".
+/// S8: pointing a spec at another object, or another locator, is reported as a keys.toml change
+/// (exit 14), not as an unexplained hash mismatch.
 #[test]
-fn known_gap_s8_retargeted_spec_is_a_hash_mismatch() {
+fn s8_a_retargeted_spec_is_a_spec_change() {
     let Some(e) = env("gap_s8") else { return };
     let body = "[objects.a]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
                 [objects.b]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
@@ -1350,6 +1361,14 @@ fn known_gap_s8_retargeted_spec_is_a_hash_mismatch() {
     e.config(body);
     assert_eq!(code(&e.km(&["realise", "sa", "--token", "softhsm", "--update-lock"])), 0);
     assert_eq!(code(&e.km(&["realise", "sb", "--token", "softhsm", "--update-lock"])), 0);
+    let lock = e.lock();
+    assert_eq!(lock["realisations"]["sa"]["softhsm"]["object"].as_str(), Some("a"));
+    assert_eq!(lock["realisations"]["sa"]["softhsm"]["locator"]["CKA_LABEL"].as_str(), Some("s8-a"));
     e.config(&body.replace("[specs.sa]\nobject = \"a\"", "[specs.sa]\nobject = \"b\""));
-    assert_eq!(code(&e.km(&["verify", "sa", "--token", "softhsm"])), 10, "S8 fixed? expect 14");
+    let verify = e.km(&["verify", "sa", "--token", "softhsm"]);
+    assert_eq!(code(&verify), 14);
+    assert!(String::from_utf8_lossy(&verify.stderr).contains("object 'a' -> 'b'"));
+    // The same object under another locator: also a change to review.
+    e.config(&body.replace("CKA_LABEL = \"s8-a\"", "CKA_LABEL = \"s8-b\""));
+    assert_eq!(code(&e.km(&["verify", "sa", "--token", "softhsm"])), 14);
 }

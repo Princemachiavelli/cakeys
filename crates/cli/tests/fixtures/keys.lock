@@ -30,18 +30,25 @@ curve = "secp256r1"
 rfc7093m4 = "sha256-d3++Ph3T9bppuPnNz6blK4vDij+Swy9RMmKdfQnLmPk="
 
 [realisations.shared-nosign.softhsm]
+object = "shared"
+locator = { CKA_LABEL = "shared-b" }
 specDigest = "sha256-2l4R3cS4v8E8lJ0y5DxB2cbWm2y5H6V3H9oT2VcSx1Q="
 mode = "wrap-rebind"
 uri = "pkcs11:token=kmtest;object=shared-b;type=secret-key"
 mechanisms = ["CKM_AES_KEY_WRAP", "CKM_SHA256_HMAC"]
 
 [realisations.shared-sign.softhsm]
+object = "shared"
+locator = { CKA_LABEL = "shared-a" }
 specDigest = "sha256-yVLLNPOa4rNsRbODzKVTkUj2NDJYBrUBlEonNBIh/tQ="
 mode = "commitment"
 uri = "pkcs11:token=kmtest;object=shared-a;type=secret-key"
 mechanisms = ["CKM_SHA256_HMAC"]
 
 [realisations.signing-soft.softhsm]
+object = "signing"
+locator = { CKA_LABEL = "signing" }
+binding = "pop-sign"
 specDigest = "sha256-qIuRBEz2PXSMKu8QQ5Mnwd9u7f6hGvsgYvL2GZh0Hk0="
 mode = "direct"
 uri = "pkcs11:token=kmtest;object=signing;type=private"
