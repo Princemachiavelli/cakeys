@@ -7,6 +7,7 @@
 //! attrs serialized by libyaml with explicit tags). It is *not* a stable interface; the
 //! integration tests pin it against the real module.
 
+use cakeys_core::types::ObjectClass;
 use cakeys_core::{KmError, Result};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
@@ -165,12 +166,12 @@ impl Store {
 }
 
 /// The class the PKCS#11 `ObjectCfg` maps to in the store, for row matching.
-pub fn store_class(class: &str) -> Result<i64> {
+pub fn store_class(class: ObjectClass) -> Result<i64> {
     match class {
         // CKO_PUBLIC_KEY objects are the public half of a pair: stored without a private blob,
         // and TPM2_Certify cannot attest a public-only area.
-        "CKO_PRIVATE_KEY" => Ok(CLASS_PRIVATE_KEY),
-        "CKO_SECRET_KEY" => Ok(CLASS_SECRET_KEY),
+        ObjectClass::PrivateKey => Ok(CLASS_PRIVATE_KEY),
+        ObjectClass::SecretKey => Ok(CLASS_SECRET_KEY),
         c => Err(KmError::Unsupported(format!(
             "TPM2_Certify attests private and secret keys (TPM-resident, private area loaded), not {c}"
         ))),

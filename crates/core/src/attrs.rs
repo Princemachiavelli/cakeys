@@ -3,6 +3,8 @@
 //! `CKA_TOKEN` is observed but never declared (every managed object is a token object), and a
 //! secret key's `CKA_SIGN_RECOVER`/`CKA_VERIFY_RECOVER` may be declared but are not observed.
 
+use crate::types::ObjectClass;
+
 /// How cakeys uses a boolean attribute of a class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Use {
@@ -24,10 +26,10 @@ const COMMON: &[(&str, Use)] = &[
 ];
 
 /// Usage and policy booleans of each class beyond the common ones.
-fn of_class(class: &str) -> &'static [(&'static str, Use)] {
+fn of_class(class: ObjectClass) -> &'static [(&'static str, Use)] {
     use Use::*;
     match class {
-        "CKO_PRIVATE_KEY" => &[
+        ObjectClass::PrivateKey => &[
             ("CKA_DERIVE", Both),
             ("CKA_SENSITIVE", Both),
             ("CKA_DECRYPT", Both),
@@ -38,7 +40,7 @@ fn of_class(class: &str) -> &'static [(&'static str, Use)] {
             ("CKA_WRAP_WITH_TRUSTED", Both),
             ("CKA_ALWAYS_AUTHENTICATE", Both),
         ],
-        "CKO_PUBLIC_KEY" => &[
+        ObjectClass::PublicKey => &[
             ("CKA_DERIVE", Both),
             ("CKA_ENCRYPT", Both),
             ("CKA_VERIFY", Both),
@@ -46,7 +48,7 @@ fn of_class(class: &str) -> &'static [(&'static str, Use)] {
             ("CKA_WRAP", Both),
             ("CKA_TRUSTED", Both),
         ],
-        "CKO_SECRET_KEY" => &[
+        ObjectClass::SecretKey => &[
             ("CKA_DERIVE", Both),
             ("CKA_SENSITIVE", Both),
             ("CKA_ENCRYPT", Both),
@@ -61,39 +63,36 @@ fn of_class(class: &str) -> &'static [(&'static str, Use)] {
             ("CKA_WRAP_WITH_TRUSTED", Both),
             ("CKA_TRUSTED", Both),
         ],
-        "CKO_CERTIFICATE" => &[("CKA_TRUSTED", Both)],
-        _ => &[],
+        ObjectClass::Certificate => &[("CKA_TRUSTED", Both)],
+        ObjectClass::Data => &[],
     }
 }
-
-/// The classes with a row in the table.
-const CLASSES: [&str; 5] = ["CKO_PRIVATE_KEY", "CKO_PUBLIC_KEY", "CKO_SECRET_KEY", "CKO_CERTIFICATE", "CKO_DATA"];
 
 /// `CKA_ALLOWED_MECHANISMS`: the one non-boolean policy attribute, on key objects only.
 pub const ALLOWED_MECHANISMS: &str = "CKA_ALLOWED_MECHANISMS";
 
-fn bools(class: &str, want: fn(Use) -> bool) -> impl Iterator<Item = &'static str> + use<> {
+fn bools(class: ObjectClass, want: fn(Use) -> bool) -> impl Iterator<Item = &'static str> + use<> {
     COMMON.iter().chain(of_class(class)).filter(move |(_, u)| want(*u)).map(|(n, _)| *n)
 }
 
 /// The booleans of `class` the observed policy vector records.
-pub fn observed(class: &str) -> impl Iterator<Item = &'static str> + use<> {
+pub fn observed(class: ObjectClass) -> impl Iterator<Item = &'static str> + use<> {
     bools(class, |u| u != Use::Declared)
 }
 
 /// Whether a spec may declare the boolean `name` on a `class` object.
-pub fn declarable(class: &str, name: &str) -> bool {
+pub fn declarable(class: ObjectClass, name: &str) -> bool {
     bools(class, |u| u != Use::Observed).any(|n| n == name)
 }
 
 /// Whether `name` is a boolean some class may declare.
 pub fn is_declarable_bool(name: &str) -> bool {
-    CLASSES.iter().any(|c| declarable(c, name))
+    ObjectClass::ALL.iter().any(|c| declarable(*c, name))
 }
 
 /// Whether a `class` object may carry `CKA_ALLOWED_MECHANISMS`.
-pub fn has_allowed_mechanisms(class: &str) -> bool {
-    matches!(class, "CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY" | "CKO_SECRET_KEY")
+pub fn has_allowed_mechanisms(class: ObjectClass) -> bool {
+    class.is_key()
 }
 
 #[cfg(test)]
@@ -106,25 +105,25 @@ mod tests {
         let v = |c| observed(c).collect::<Vec<_>>().join(" ");
         let common = "CKA_TOKEN CKA_PRIVATE CKA_MODIFIABLE CKA_COPYABLE CKA_DESTROYABLE";
         assert_eq!(
-            v("CKO_PRIVATE_KEY"),
+            v(ObjectClass::PrivateKey),
             format!("{common} CKA_DERIVE CKA_SENSITIVE CKA_DECRYPT CKA_SIGN CKA_SIGN_RECOVER CKA_UNWRAP CKA_EXTRACTABLE CKA_WRAP_WITH_TRUSTED CKA_ALWAYS_AUTHENTICATE")
         );
-        assert_eq!(v("CKO_PUBLIC_KEY"), format!("{common} CKA_DERIVE CKA_ENCRYPT CKA_VERIFY CKA_VERIFY_RECOVER CKA_WRAP CKA_TRUSTED"));
+        assert_eq!(v(ObjectClass::PublicKey), format!("{common} CKA_DERIVE CKA_ENCRYPT CKA_VERIFY CKA_VERIFY_RECOVER CKA_WRAP CKA_TRUSTED"));
         assert_eq!(
-            v("CKO_SECRET_KEY"),
+            v(ObjectClass::SecretKey),
             format!("{common} CKA_DERIVE CKA_SENSITIVE CKA_ENCRYPT CKA_DECRYPT CKA_SIGN CKA_VERIFY CKA_WRAP CKA_UNWRAP CKA_EXTRACTABLE CKA_WRAP_WITH_TRUSTED CKA_TRUSTED")
         );
-        assert_eq!(v("CKO_CERTIFICATE"), format!("{common} CKA_TRUSTED"));
-        assert_eq!(v("CKO_DATA"), common);
+        assert_eq!(v(ObjectClass::Certificate), format!("{common} CKA_TRUSTED"));
+        assert_eq!(v(ObjectClass::Data), common);
     }
 
     #[test]
     fn declarable_differs_from_observed_only_where_documented() {
         assert!(!is_declarable_bool("CKA_TOKEN"));
-        assert!(declarable("CKO_SECRET_KEY", "CKA_SIGN_RECOVER"));
-        assert!(!observed("CKO_SECRET_KEY").any(|n| n == "CKA_SIGN_RECOVER"));
-        assert!(declarable("CKO_DATA", "CKA_PRIVATE"));
-        assert!(!declarable("CKO_CERTIFICATE", "CKA_SIGN"));
+        assert!(declarable(ObjectClass::SecretKey, "CKA_SIGN_RECOVER"));
+        assert!(!observed(ObjectClass::SecretKey).any(|n| n == "CKA_SIGN_RECOVER"));
+        assert!(declarable(ObjectClass::Data, "CKA_PRIVATE"));
+        assert!(!declarable(ObjectClass::Certificate, "CKA_SIGN"));
         assert!(!is_declarable_bool("CKA_LOCAL"), "immutables are never declared");
     }
 }

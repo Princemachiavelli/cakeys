@@ -5,6 +5,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use cakeys_core::config::{gc, load_config, lock_for_update, lock_unwritable, load_lock, save_lock, Config};
 use cakeys_core::KmError;
+use cakeys_core::id::Scheme;
 use cakeys_pkcs11::ops::{self, Target};
 use cakeys_pkcs11::{Registry, Token};
 use std::collections::BTreeMap;
@@ -226,32 +227,38 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
             }
         }
         Cmd::Check { reference, token, spec } => {
-            let (object, scheme) = match reference.split_once(".id.") {
-                Some((o, s)) => (o, Some(cakeys_core::id::canonical_scheme(s))),
+            let (object, requested) = match reference.split_once(".id.") {
+                Some((o, s)) => (o, Some(s)),
                 None => (reference.as_str(), None),
             };
             let (spec_name, token_name) = cfg.pick_spec(object, spec.as_deref(), token.as_deref())?;
             let t = Target::new(&cfg, &spec_name, &token_name)?;
+            let names = |v: &[Scheme]| v.iter().map(|s| s.name()).collect::<Vec<_>>();
             // The schemes the spec can compute; an attestation scheme (§3.7) depends on the
             // token's provider, so only schemes_on below can tell whether this one computes it.
-            if let Some(s) = scheme {
-                let attested = t.on_token.attestation && cakeys_core::id::is_attestation_scheme(s);
-                if !attested && !t.schemes().contains(&s) {
-                    return Err(KmError::Unsupported(format!(
-                        "scheme '{s}' for '{object}'; it has {:?}{}",
-                        t.schemes(),
-                        if t.on_token.attestation { " plus its token's attestation scheme" } else { "" }
-                    ))
-                    .into());
-                }
-            }
+            let scheme = match requested {
+                None => None,
+                Some(name) => match Scheme::from_input(name) {
+                    Some(s) if (t.on_token.attestation && s.is_attestation()) || t.schemes().contains(&s) => Some(s),
+                    _ => {
+                        return Err(KmError::Unsupported(format!(
+                            "scheme '{}' for '{object}'; it has {:?}{}",
+                            Scheme::from_input(name).map_or(name, |s| s.name()),
+                            names(&t.schemes()),
+                            if t.on_token.attestation { " plus its token's attestation scheme" } else { "" }
+                        ))
+                        .into());
+                    }
+                },
+            };
             let tok = open_token(&cfg, &modules, registry, &token_name)?;
             // The token may lack a mechanism the spec allows: refuse before realise can create.
             if let Some(s) = scheme {
                 let on_token = ops::schemes_on(&t, &tok)?;
                 if !on_token.contains(&s) {
                     return Err(KmError::Unsupported(format!(
-                        "scheme '{s}' for spec '{spec_name}' on '{token_name}'; it computes {on_token:?}"
+                        "scheme '{s}' for spec '{spec_name}' on '{token_name}'; it computes {:?}",
+                        names(&on_token)
                     ))
                     .into());
                 }
@@ -261,15 +268,14 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
             // computed next to another scheme that matched. An attestation is locked on this
             // realisation (§3.7), not on the object.
             if let Some(s) = scheme {
-                let (locked, got) = if cakeys_core::id::is_attestation_scheme(s) {
-                    let kind = cakeys_core::id::attestation_kind(s);
+                let (locked, got) = if s.is_attestation() {
                     let locked = lock
                         .realisation(&spec_name, &token_name)
                         .and_then(|r| r.attestation.as_ref())
-                        .is_some_and(|a| Some(a.kind.as_str()) == kind);
+                        .is_some_and(|a| Some(a.kind.as_str()) == s.attestation_kind());
                     (locked, r.attestation.as_ref().map(|a| a.id.clone()))
                 } else {
-                    (lock.objects.get(&t.spec.object).is_some_and(|o| o.ids.contains_key(s)), r.ids.get(s).cloned())
+                    (lock.objects.get(&t.spec.object).is_some_and(|o| o.ids.contains_key(s.name())), r.ids.get(s.name()).cloned())
                 };
                 if !locked {
                     return Err(KmError::HashMismatch {

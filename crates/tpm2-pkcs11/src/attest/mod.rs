@@ -6,6 +6,7 @@ pub mod esys;
 pub mod store;
 
 use cakeys_pkcs11::provider::{AttestCtx, Attested};
+use cakeys_core::id::Scheme;
 use cakeys_core::{KmError, Result};
 use cryptoki::object::{Attribute, AttributeType};
 use std::path::{Path, PathBuf};
@@ -139,7 +140,7 @@ pub fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
         Err(_) => None,
     };
     let spki = ctx.required_spki()?;
-    let class = store::store_class(&ctx.object.class)?;
+    let class = store::store_class(ctx.object.class)?;
     let store = store::Store::open(&store_dir(ctx)?, &ctx.cfg.token_label)?;
     let tobj = store.find(&cka_id, label.as_deref(), class)?;
     let conf = tcti(ctx)?;
@@ -164,7 +165,7 @@ pub fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
         )));
     }
     Ok(Attested {
-        scheme: "tpm-certify",
+        scheme: Scheme::TpmCertify,
         id: cakeys_core::id::tpm_certify_id(&certified.name, &certified.qualified_name),
         root: cakeys_core::id::sri(&certified.ak_spki),
     })

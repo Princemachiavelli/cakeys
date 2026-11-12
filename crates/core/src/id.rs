@@ -4,6 +4,7 @@
 //! `ed25519-dalek`, `ed448`, `rsa`); this module only chooses which one by curve or OID.
 
 use crate::config::{ObjectCfg, SpecCfg};
+use crate::types::KeyType;
 use crate::error::{KmError, Result};
 use base64::Engine;
 use p256::pkcs8::der::{asn1::OctetStringRef, Decode, Encode};
@@ -62,58 +63,114 @@ fn canonical_json(v: serde_json::Value) -> serde_json::Value {
 /// changing this default never breaks an existing lock (docs/DESIGN.md §3.3).
 pub const DEFAULT_COMMITMENT_LABEL: &str = "key-management/v1";
 
-/// Schemes computed from a commitment label (all `Commit` variants).
-pub const COMMITMENT_SCHEMES: [&str; 5] = ["commitment", "cmac", "kcv-ecb", "kcv-ecb-dec", "kw"];
-
-/// Input-only aliases for scheme names (CLI and Nix library); a lock always uses the scheme name.
-pub const SCHEME_ALIASES: [(&str, &str); 1] = [("pubkeyhash", "rfc7093m4")];
-
-/// The scheme name for `name`, resolving input aliases.
-pub fn canonical_scheme(name: &str) -> &str {
-    SCHEME_ALIASES.iter().find(|(a, _)| *a == name).map_or(name, |(_, s)| s)
+/// The identity schemes this version defines (§3.1 of docs/DESIGN.md). The lock keys its IDs by
+/// [`Scheme::name`]; it keeps them as strings, so a scheme from a newer cakeys still loads (and
+/// is reported as unchecked) instead of failing the whole lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Scheme {
+    Rfc7093m4,
+    Certhash,
+    Valuehash,
+    /// HMAC over the commitment label (`Commit::Hmac`).
+    Commitment,
+    Cmac,
+    KcvEcb,
+    KcvEcbDec,
+    Kw,
+    PivAttestation,
+    TpmCertify,
 }
 
-/// Every scheme this version defines (§3.1 of docs/DESIGN.md).
-pub const KNOWN_SCHEMES: [&str; 10] = [
-    "rfc7093m4",
-    "certhash",
-    "valuehash",
-    "commitment",
-    "cmac",
-    "kcv-ecb",
-    "kcv-ecb-dec",
-    "kw",
-    "piv-attestation",
-    "tpm-certify",
-];
+impl Scheme {
+    pub const ALL: [Scheme; 10] = [
+        Scheme::Rfc7093m4,
+        Scheme::Certhash,
+        Scheme::Valuehash,
+        Scheme::Commitment,
+        Scheme::Cmac,
+        Scheme::KcvEcb,
+        Scheme::KcvEcbDec,
+        Scheme::Kw,
+        Scheme::PivAttestation,
+        Scheme::TpmCertify,
+    ];
 
-/// Attestation schemes (§3.7 of docs/DESIGN.md): IDs from a vendor- or TPM-signed attestation
-/// of the key. They are *provenance* evidence for one device: the same material on another
-/// token either cannot attest (PIV attests only keys generated on the device) or attests to a
-/// different ID (a TPM's qualified Name names its own hierarchy). So they are recorded per
-/// realisation, never in an object's shared `ids`, and never stand alone: the realisation must
-/// also match a portable scheme, which is what links the same material across tokens. Unlike
-/// the commitment schemes, they take no `commitmentLabel`: their input is the attestation
-/// itself, not a message the token MACs.
-pub const ATTESTATION_SCHEMES: [&str; 2] = ["piv-attestation", "tpm-certify"];
+    /// Schemes whose computation is deprecated (docs/DESIGN.md §3.1). Identities already locked
+    /// under one keep verifying — with a warning — but `realise` never records a new one: a
+    /// changed or weakened computation gets a *new* scheme name (§10), so the empty list is the
+    /// "nothing is deprecated" state, pinned by test.
+    pub const DEPRECATED: [Scheme; 0] = [];
 
-/// The lock-record `attestation.kind` for each attestation scheme (§3.7): which attestation
-/// evidence produced the ID. One kind per scheme, pinned so a lock names its evidence exactly.
-pub const ATTESTATION_KINDS: [(&str, &str); 2] = [("piv-attestation", "yubico-piv"), ("tpm-certify", "tpm-certify")];
+    /// Input-only aliases (CLI and Nix library); a lock always uses the scheme name.
+    pub const ALIASES: [(&str, Scheme); 1] = [("pubkeyhash", Scheme::Rfc7093m4)];
 
-/// Whether `scheme` is an attestation scheme (§3.7): provenance evidence, never a portable link.
-pub fn is_attestation_scheme(scheme: &str) -> bool {
-    ATTESTATION_SCHEMES.contains(&scheme)
+    /// The name the lock records.
+    pub fn name(self) -> &'static str {
+        match self {
+            Scheme::Rfc7093m4 => "rfc7093m4",
+            Scheme::Certhash => "certhash",
+            Scheme::Valuehash => "valuehash",
+            Scheme::Commitment => "commitment",
+            Scheme::Cmac => "cmac",
+            Scheme::KcvEcb => "kcv-ecb",
+            Scheme::KcvEcbDec => "kcv-ecb-dec",
+            Scheme::Kw => "kw",
+            Scheme::PivAttestation => "piv-attestation",
+            Scheme::TpmCertify => "tpm-certify",
+        }
+    }
+
+    /// The scheme a lock names, exactly (no aliases: the lock refuses them).
+    pub fn from_name(name: &str) -> Option<Scheme> {
+        Scheme::ALL.into_iter().find(|s| s.name() == name)
+    }
+
+    /// The scheme a user names on input, resolving aliases.
+    pub fn from_input(name: &str) -> Option<Scheme> {
+        Scheme::ALIASES.iter().find(|(a, _)| *a == name).map(|(_, s)| *s).or_else(|| Scheme::from_name(name))
+    }
+
+    /// Computed from a commitment label (every `Commit` variant).
+    pub fn is_commitment(self) -> bool {
+        matches!(self, Scheme::Commitment | Scheme::Cmac | Scheme::KcvEcb | Scheme::KcvEcbDec | Scheme::Kw)
+    }
+
+    /// Attestation schemes (§3.7 of docs/DESIGN.md): IDs from a vendor- or TPM-signed
+    /// attestation of the key. They are *provenance* evidence for one device: the same material
+    /// on another token either cannot attest (PIV attests only keys generated on the device) or
+    /// attests to a different ID (a TPM's qualified Name names its own hierarchy). So they are
+    /// recorded per realisation, never in an object's shared `ids`, and never stand alone: the
+    /// realisation must also match a portable scheme, which is what links the same material
+    /// across tokens. Unlike the commitment schemes, they take no `commitmentLabel`: their input
+    /// is the attestation itself, not a message the token MACs.
+    pub fn is_attestation(self) -> bool {
+        self.attestation_kind().is_some()
+    }
+
+    /// The lock-record `attestation.kind` of an attestation scheme (§3.7): which evidence
+    /// produced the ID. One kind per scheme, pinned so a lock names its evidence exactly.
+    pub fn attestation_kind(self) -> Option<&'static str> {
+        match self {
+            Scheme::PivAttestation => Some("yubico-piv"),
+            Scheme::TpmCertify => Some("tpm-certify"),
+            _ => None,
+        }
+    }
+
+    /// The attestation scheme a lock-record kind names.
+    pub fn from_attestation_kind(kind: &str) -> Option<Scheme> {
+        Scheme::ALL.into_iter().find(|s| s.attestation_kind() == Some(kind))
+    }
+
+    pub fn is_deprecated(self) -> bool {
+        Scheme::DEPRECATED.contains(&self)
+    }
 }
 
-/// The lock-record kind of an attestation scheme (`ATTESTATION_KINDS`); `None` for any other.
-pub fn attestation_kind(scheme: &str) -> Option<&'static str> {
-    ATTESTATION_KINDS.iter().find(|(s, _)| *s == scheme).map(|(_, k)| *k)
-}
-
-/// The attestation scheme a lock-record kind names (`ATTESTATION_KINDS`); `None` if unknown.
-pub fn attestation_scheme_of(kind: &str) -> Option<&'static str> {
-    ATTESTATION_KINDS.iter().find(|(_, k)| *k == kind).map(|(s, _)| *s)
+impl std::fmt::Display for Scheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
 }
 
 /// The canonical encoding shared by the attestation commitment definitions: a domain-separated
@@ -159,12 +216,6 @@ pub fn tpm_certify_id(name: &[u8], qualified_name: &[u8]) -> String {
     sri(&attest_encoding(b"cakeys/tpm-certify/v1\0", &[name, qualified_name]))
 }
 
-/// Scheme names whose computation is deprecated (docs/DESIGN.md §3.1). Identities already locked
-/// under one keep verifying — with a warning — but `realise` never records a new one:
-/// a changed or weakened computation gets a *new* scheme name (§10), so the empty list is the
-/// "nothing is deprecated" state, pinned by test.
-pub const DEPRECATED_SCHEMES: [&str; 0] = [];
-
 /// Hash of an HMAC commitment. A key bound to a hash (`CKK_SHA384_HMAC`, ...) is committed with
 /// that hash; generic secrets use SHA-256.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,13 +229,13 @@ pub enum HmacHash {
 
 impl HmacHash {
     /// The HMAC hash for a secret key type, if it is an HMAC-capable type.
-    pub fn for_key_type(key_type: &str) -> Option<HmacHash> {
+    pub fn for_key_type(key_type: KeyType) -> Option<HmacHash> {
         match key_type {
-            "CKK_GENERIC_SECRET" | "CKK_SHA256_HMAC" => Some(HmacHash::Sha256),
-            "CKK_SHA_1_HMAC" => Some(HmacHash::Sha1),
-            "CKK_SHA224_HMAC" => Some(HmacHash::Sha224),
-            "CKK_SHA384_HMAC" => Some(HmacHash::Sha384),
-            "CKK_SHA512_HMAC" => Some(HmacHash::Sha512),
+            KeyType::GenericSecret | KeyType::Sha256Hmac => Some(HmacHash::Sha256),
+            KeyType::Sha1Hmac => Some(HmacHash::Sha1),
+            KeyType::Sha224Hmac => Some(HmacHash::Sha224),
+            KeyType::Sha384Hmac => Some(HmacHash::Sha384),
+            KeyType::Sha512Hmac => Some(HmacHash::Sha512),
             _ => None,
         }
     }
@@ -211,13 +262,13 @@ pub enum Commit {
 }
 
 impl Commit {
-    pub fn scheme(self) -> &'static str {
+    pub fn scheme(self) -> Scheme {
         match self {
-            Commit::Hmac(_) => "commitment",
-            Commit::Cmac => "cmac",
-            Commit::KcvEcb => "kcv-ecb",
-            Commit::KcvEcbDecrypt => "kcv-ecb-dec",
-            Commit::Kw => "kw",
+            Commit::Hmac(_) => Scheme::Commitment,
+            Commit::Cmac => Scheme::Cmac,
+            Commit::KcvEcb => Scheme::KcvEcb,
+            Commit::KcvEcbDecrypt => Scheme::KcvEcbDec,
+            Commit::Kw => Scheme::Kw,
         }
     }
 
@@ -227,7 +278,7 @@ impl Commit {
         format!(
             "{commitment_label}/{}/{}/{}",
             self.scheme(),
-            object.key_type,
+            object.key_type.map_or("", KeyType::name),
             object.value_len.unwrap_or(0) * 8
         )
         .into_bytes()
@@ -274,16 +325,16 @@ pub const CURVES_WITHOUT_CRATE: [&str; 1] = ["brainpoolP512r1"];
 
 impl Curve {
     /// `curve` in keys.toml, for the given `keyType`.
-    pub fn from_cfg(key_type: &str, name: &str) -> Option<Curve> {
+    pub fn from_cfg(key_type: KeyType, name: &str) -> Option<Curve> {
         match (key_type, name) {
-            ("CKK_EC", "secp256r1" | "prime256v1" | "P-256") => Some(Curve::P256),
-            ("CKK_EC", "secp384r1" | "P-384") => Some(Curve::P384),
-            ("CKK_EC", "secp521r1" | "P-521") => Some(Curve::P521),
-            ("CKK_EC", "secp256k1") => Some(Curve::Secp256k1),
-            ("CKK_EC", "brainpoolP256r1") => Some(Curve::BrainpoolP256r1),
-            ("CKK_EC", "brainpoolP384r1") => Some(Curve::BrainpoolP384r1),
-            ("CKK_EC_EDWARDS", "edwards25519" | "Ed25519") => Some(Curve::Ed25519),
-            ("CKK_EC_EDWARDS", "edwards448" | "Ed448") => Some(Curve::Ed448),
+            (KeyType::Ec, "secp256r1" | "prime256v1" | "P-256") => Some(Curve::P256),
+            (KeyType::Ec, "secp384r1" | "P-384") => Some(Curve::P384),
+            (KeyType::Ec, "secp521r1" | "P-521") => Some(Curve::P521),
+            (KeyType::Ec, "secp256k1") => Some(Curve::Secp256k1),
+            (KeyType::Ec, "brainpoolP256r1") => Some(Curve::BrainpoolP256r1),
+            (KeyType::Ec, "brainpoolP384r1") => Some(Curve::BrainpoolP384r1),
+            (KeyType::EcEdwards, "edwards25519" | "Ed25519") => Some(Curve::Ed25519),
+            (KeyType::EcEdwards, "edwards448" | "Ed448") => Some(Curve::Ed448),
             _ => None,
         }
     }
@@ -432,6 +483,11 @@ fn encode(key: &impl EncodePublicKey) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::config::AttrValue;
+
+    /// An object type from its PKCS#11 names (`""`: no key type).
+    fn cfg(class: &str, key_type: &str) -> ObjectCfg {
+        ObjectCfg::new(class.parse().unwrap(), (!key_type.is_empty()).then(|| key_type.parse().unwrap()))
+    }
     use std::collections::BTreeMap;
 
     #[test]
@@ -442,10 +498,8 @@ mod tests {
     #[test]
     fn spec_digest_ignores_attribute_order_but_not_values() {
         let obj = ObjectCfg {
-            class: "CKO_PRIVATE_KEY".into(),
-            key_type: "CKK_EC".into(),
             curve: Some("secp256r1".into()),
-            ..Default::default()
+            ..cfg("CKO_PRIVATE_KEY", "CKK_EC")
         };
         let mk = |pairs: &[(&str, bool)]| SpecCfg {
             object: "o".into(),
@@ -500,10 +554,8 @@ mod tests {
     #[test]
     fn hmac_commitment_label_is_unchanged() {
         let obj = ObjectCfg {
-            class: "CKO_SECRET_KEY".into(),
-            key_type: "CKK_GENERIC_SECRET".into(),
             value_len: Some(32),
-            ..Default::default()
+            ..cfg("CKO_SECRET_KEY", "CKK_GENERIC_SECRET")
         };
         assert_eq!(
             Commit::Hmac(HmacHash::Sha256).label(DEFAULT_COMMITMENT_LABEL, &obj),
@@ -535,12 +587,10 @@ mod tests {
     fn spec_digests_are_pinned() {
         let mk = |class: &str, kt: &str, curve: Option<&str>, vl: Option<u64>, bits: Option<u64>, attrs: &[(&str, bool)]| {
             let o = ObjectCfg {
-                class: class.into(),
-                key_type: kt.into(),
                 curve: curve.map(Into::into),
                 value_len: vl,
                 modulus_bits: bits,
-                ..Default::default()
+                ..cfg(class, kt)
             };
             let s = SpecCfg {
                 object: "x".into(),
@@ -552,7 +602,7 @@ mod tests {
         };
         // The certificate type lives in `certificateType` (this digest changed when it did, and
         // is pinned since: the RSA, EC and generic-secret digests below must not move).
-        let cert = ObjectCfg { class: "CKO_CERTIFICATE".into(), certificate_type: Some("CKC_X_509".into()), ..Default::default() };
+        let cert = ObjectCfg { certificate_type: Some("CKC_X_509".into()), ..cfg("CKO_CERTIFICATE", "") };
         let none = SpecCfg {
             object: "x".into(),
             attributes: BTreeMap::new(),
@@ -580,10 +630,8 @@ mod tests {
     #[test]
     fn scheme_definitions_are_pinned() {
         let obj = |kt: &str, len: u64| ObjectCfg {
-            class: "CKO_SECRET_KEY".into(),
-            key_type: kt.into(),
             value_len: Some(len),
-            ..Default::default()
+            ..cfg("CKO_SECRET_KEY", kt)
         };
         // What each commitment scheme feeds the token (the token's output is then hashed).
         for (kt, len, c, want) in [
@@ -617,8 +665,21 @@ mod tests {
     /// is a deliberate, reviewed diff; and a deprecated name must be one this cakeys knows.
     #[test]
     fn the_deprecation_register_is_pinned() {
-        assert!(DEPRECATED_SCHEMES.is_empty(), "deprecating a scheme is a design decision; see docs/DESIGN.md §3.1");
-        assert!(DEPRECATED_SCHEMES.iter().all(|s| KNOWN_SCHEMES.contains(s)));
+        assert!(Scheme::DEPRECATED.is_empty(), "deprecating a scheme is a design decision; see docs/DESIGN.md §3.1");
+    }
+
+    /// Scheme names are lock keys: renaming one breaks every lock that records it (§10).
+    #[test]
+    fn scheme_names_are_pinned() {
+        let names: Vec<&str> = Scheme::ALL.into_iter().map(Scheme::name).collect();
+        assert_eq!(
+            names,
+            ["rfc7093m4", "certhash", "valuehash", "commitment", "cmac", "kcv-ecb", "kcv-ecb-dec", "kw", "piv-attestation", "tpm-certify"]
+        );
+        let commitments: Vec<&str> = Scheme::ALL.into_iter().filter(|s| s.is_commitment()).map(Scheme::name).collect();
+        assert_eq!(commitments, ["commitment", "cmac", "kcv-ecb", "kcv-ecb-dec", "kw"]);
+        assert_eq!(Scheme::from_input("pubkeyhash"), Some(Scheme::Rfc7093m4));
+        assert_eq!(Scheme::from_name("pubkeyhash"), None, "a lock never uses an alias");
     }
 
     /// The attestation commitment definitions (docs/DESIGN.md §3.7, §10): each scheme's canonical
@@ -627,11 +688,8 @@ mod tests {
     /// the SHA-256 of, so a change here breaks locks and must be a new scheme name instead.
     #[test]
     fn attestation_definitions_are_pinned() {
-        assert!(ATTESTATION_SCHEMES.iter().all(|s| KNOWN_SCHEMES.contains(s)));
-        assert_eq!(
-            ATTESTATION_KINDS,
-            [("piv-attestation", "yubico-piv"), ("tpm-certify", "tpm-certify")]
-        );
+        let kinds: Vec<(&str, &str)> = Scheme::ALL.into_iter().filter_map(|s| Some((s.name(), s.attestation_kind()?))).collect();
+        assert_eq!(kinds, [("piv-attestation", "yubico-piv"), ("tpm-certify", "tpm-certify")]);
         // piv-attestation: domain tag, then issuer SPKI (f9 device key), subject SPKI (the key),
         // firmware (1.3.6.1.4.1.41482.3.3), serial (.3.7), PIN/touch policy (.3.8), formfactor
         // (.3.9) — length-prefixed in that order, absent extensions as empty fields.

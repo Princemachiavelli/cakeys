@@ -6,7 +6,8 @@ use cakeys_core::config::{
     Provenance, SpecCfg, SpecTokenCfg,
 };
 use cakeys_core::attrs;
-use cakeys_core::id::{self, Commit, HmacHash};
+use cakeys_core::id::{self, Commit, HmacHash, Scheme};
+use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
 use cryptoki::object::{KeyType, ObjectHandle};
@@ -46,27 +47,27 @@ impl<'a> Target<'a> {
     /// Identity schemes this spec can compute (from the spec alone), in order of preference:
     /// the first one a realisation computes is its primary scheme. A token lacking a mechanism
     /// may compute fewer.
-    pub fn schemes(&self) -> Vec<&'static str> {
-        match (self.object.class.as_str(), self.object.key_type.as_str()) {
-            ("CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY", _) => vec!["rfc7093m4"],
-            ("CKO_CERTIFICATE", _) => vec!["certhash", "rfc7093m4"],
-            ("CKO_DATA", _) => vec!["valuehash"],
-            (_, "CKK_AES") => match declared_commits(self) {
+    pub fn schemes(&self) -> Vec<Scheme> {
+        match (self.object.class, self.object.key_type) {
+            (Class::PrivateKey | Class::PublicKey, _) => vec![Scheme::Rfc7093m4],
+            (Class::Certificate, _) => vec![Scheme::Certhash, Scheme::Rfc7093m4],
+            (Class::Data, _) => vec![Scheme::Valuehash],
+            (_, Some(Kt::Aes)) => match declared_commits(self) {
                 // No usable usage bit: wrap-rebind (if extractable) computes all of them.
                 d if d.is_empty() => AES_COMMITS.iter().map(|c| c.scheme()).collect(),
                 d => d.iter().map(|c| c.scheme()).collect(),
             },
-            _ => vec!["commitment"],
+            _ => vec![Scheme::Commitment],
         }
     }
 
     fn is_certificate(&self) -> bool {
-        self.object.class == "CKO_CERTIFICATE"
+        self.object.class == Class::Certificate
     }
 
     /// The attestation scheme this spec's token computes when opted in (`attestation = true`),
     /// if the provider attests this class at all (§3.7 of docs/DESIGN.md).
-    fn attestation_scheme(&self, tok: &Token) -> Option<&'static str> {
+    fn attestation_scheme(&self, tok: &Token) -> Option<Scheme> {
         self.on_token
             .attestation
             .then(|| tok.attestation_cap(self.object))
@@ -82,15 +83,11 @@ impl std::fmt::Display for Target<'_> {
     }
 }
 
-/// `attestation = true` applies to key objects only: PIV attests asymmetric keys, TPM2_Certify
-/// any TPM-resident object — but certificates and data objects are not keys, and no attestation
-/// scheme exists for them.
-const ATTESTABLE_CLASSES: [&str; 3] = ["CKO_PRIVATE_KEY", "CKO_PUBLIC_KEY", "CKO_SECRET_KEY"];
 
 /// How `t`'s private key is bound to its identity: proven by signing, deriving or decrypting
 /// (`pop-*`) unless the spec opts out (or adopts it publicOnly). `None` for every other class.
 pub fn binding(t: &Target) -> Option<Binding> {
-    if t.object.class != "CKO_PRIVATE_KEY" {
+    if t.object.class != Class::PrivateKey {
         return None;
     }
     if t.on_token.public_only {
@@ -120,10 +117,10 @@ fn check_binding(t: &Target) -> Result<()> {
              or opt in with binding = \"token-asserted\" on this token"
                 .into(),
         ),
-        (Some(Binding::PopEcdh), _) if !matches!(t.object.key_type.as_str(), "CKK_EC" | "CKK_EC_EDWARDS") => invalid(
+        (Some(Binding::PopEcdh), _) if !matches!(t.object.key_type, Some(Kt::Ec | Kt::EcEdwards)) => invalid(
             "binding = \"pop-ecdh\" proves possession by deriving: it applies to EC private keys only".into(),
         ),
-        (Some(Binding::PopEcdh), _) if t.object.key_type == "CKK_EC_EDWARDS" => invalid(
+        (Some(Binding::PopEcdh), _) if t.object.key_type == Some(Kt::EcEdwards) => invalid(
             "binding = \"pop-ecdh\" derives with CKM_ECDH1_DERIVE: it applies to Weierstrass EC keys, not Edwards".into(),
         ),
         (Some(Binding::PopEcdh), _) if t.spec.flag("CKA_DERIVE") != Some(true) => invalid(
@@ -131,7 +128,7 @@ fn check_binding(t: &Target) -> Result<()> {
              or opt in with binding = \"token-asserted\" on this token"
                 .into(),
         ),
-        (Some(Binding::PopDecrypt), _) if t.object.key_type != "CKK_RSA" => invalid(
+        (Some(Binding::PopDecrypt), _) if t.object.key_type != Some(Kt::Rsa) => invalid(
             "binding = \"pop-decrypt\" proves possession by decrypting: it applies to RSA private keys only".into(),
         ),
         (Some(Binding::PopDecrypt), _) if t.spec.flag("CKA_DECRYPT") != Some(true) => invalid(
@@ -145,7 +142,7 @@ fn check_binding(t: &Target) -> Result<()> {
 
 /// Declared attributes must be settable booleans (or a mechanism list for `CKA_ALLOWED_MECHANISMS`)
 /// that the class can carry (`cakeys_core::attrs`).
-fn check_declared(t: &Target, class: &str, declared: &BTreeMap<String, AttrValue>) -> Result<()> {
+fn check_declared(t: &Target, class: Class, declared: &BTreeMap<String, AttrValue>) -> Result<()> {
     for (name, v) in declared {
         let applies = match v {
             AttrValue::Mechanisms(_) if name != attrs::ALLOWED_MECHANISMS => {
@@ -170,9 +167,9 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
     check_binding(t)?;
     // Attribute shapes and names, per class: a private key's `publicAttributes` shape its public
     // key object.
-    check_declared(t, &t.object.class, &t.spec.attributes)?;
-    check_declared(t, "CKO_PUBLIC_KEY", &t.spec.public_attributes)?;
-    if !t.spec.public_attributes.is_empty() && t.object.class != "CKO_PRIVATE_KEY" {
+    check_declared(t, t.object.class, &t.spec.attributes)?;
+    check_declared(t, Class::PublicKey, &t.spec.public_attributes)?;
+    if !t.spec.public_attributes.is_empty() && t.object.class != Class::PrivateKey {
         return invalid("publicAttributes apply to private keys only");
     }
     // The certificate type lives in `certificateType`; `keyType` names nothing on a certificate.
@@ -183,11 +180,11 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
         None if t.is_certificate() => return invalid("certificates need certificateType = \"CKC_X_509\""),
         None => {}
     }
-    if t.is_certificate() && !t.object.key_type.is_empty() {
+    if t.is_certificate() && t.object.key_type.is_some() {
         return invalid("certificates take no keyType");
     }
     if t.on_token.public_only {
-        if t.object.class != "CKO_PRIVATE_KEY" {
+        if t.object.class != Class::PrivateKey {
             return invalid("publicOnly applies to private keys only");
         }
         if t.on_token.auto_create {
@@ -197,14 +194,16 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
             return invalid("publicOnly cannot verify private-key policy attributes; leave attributes empty");
         }
     }
-    if t.on_token.attestation && !ATTESTABLE_CLASSES.contains(&t.object.class.as_str()) {
+    // PIV attests asymmetric keys, TPM2_Certify any TPM-resident object; certificates and data
+    // objects are not keys, and no attestation scheme exists for them.
+    if t.on_token.attestation && !t.object.class.is_key() {
         return invalid("attestation = true applies to key objects only (PIV attests asymmetric keys, TPM2_Certify any TPM-resident object)");
     }
-    if matches!(t.object.class.as_str(), "CKO_PUBLIC_KEY" | "CKO_DATA") {
+    if matches!(t.object.class, Class::PublicKey | Class::Data) {
         if t.on_token.auto_create {
             return invalid("public keys and data objects are adopted, not created");
         }
-        if t.object.class == "CKO_PUBLIC_KEY" {
+        if t.object.class == Class::PublicKey {
             hal::key_type_of(t.object)?;
         }
         return Ok(Mode::Direct);
@@ -246,14 +245,14 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
 /// attributes count: a token default never silently changes which identity is computed.
 fn declared_commits(t: &Target) -> Vec<Commit> {
     let on = |n: &str| t.spec.flag(n) == Some(true);
-    match t.object.key_type.as_str() {
-        "CKK_AES" => ["CKA_SIGN", "CKA_ENCRYPT", "CKA_DECRYPT", "CKA_WRAP"]
+    match t.object.key_type {
+        Some(Kt::Aes) => ["CKA_SIGN", "CKA_ENCRYPT", "CKA_DECRYPT", "CKA_WRAP"]
             .into_iter()
             .zip(AES_COMMITS)
             .filter(|(a, _)| on(a))
             .map(|(_, c)| c)
             .collect(),
-        kt => match HmacHash::for_key_type(kt) {
+        kt => match kt.and_then(HmacHash::for_key_type) {
             Some(hash) if on("CKA_SIGN") => vec![Commit::Hmac(hash)],
             _ => vec![],
         },
@@ -267,10 +266,10 @@ const AES_COMMITS: [Commit; 4] = [Commit::Cmac, Commit::KcvEcb, Commit::KcvEcbDe
 /// Commitments to compute for a secret key on this token: those the spec allows (or, for a
 /// wrap-rebind copy, every one for the key type) that the token implements.
 fn commits(t: &Target, tok: &Token, mode: Mode) -> Result<Vec<Commit>> {
-    let wanted = match (mode, t.object.key_type.as_str()) {
+    let wanted = match (mode, t.object.key_type) {
         (Mode::Commitment, _) => declared_commits(t),
-        (Mode::WrapRebind, "CKK_AES") => AES_COMMITS.to_vec(),
-        (Mode::WrapRebind, kt) => HmacHash::for_key_type(kt).map(Commit::Hmac).into_iter().collect(),
+        (Mode::WrapRebind, Some(Kt::Aes)) => AES_COMMITS.to_vec(),
+        (Mode::WrapRebind, kt) => kt.and_then(HmacHash::for_key_type).map(Commit::Hmac).into_iter().collect(),
         _ => return Ok(vec![]),
     };
     let usable: Vec<Commit> = wanted.iter().copied().filter(|c| tok.has(hal::commit_mechanism(*c))).collect();
@@ -289,8 +288,8 @@ fn commits(t: &Target, tok: &Token, mode: Mode) -> Result<Vec<Commit>> {
 /// Schemes this spec computes on this token: `Target::schemes` narrowed to the commitments the
 /// token implements, plus the attestation scheme when the spec opted in and the provider
 /// attests the class (§3.7). Needs no object, so callers can refuse before anything is created.
-pub fn schemes_on(t: &Target, tok: &Token) -> Result<Vec<&'static str>> {
-    let mut v = if t.object.class != "CKO_SECRET_KEY" {
+pub fn schemes_on(t: &Target, tok: &Token) -> Result<Vec<Scheme>> {
+    let mut v = if t.object.class != Class::SecretKey {
         t.schemes()
     } else {
         commits(t, tok, plan_mode(t)?)?.iter().map(|c| c.scheme()).collect()
@@ -320,26 +319,26 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
                     tok.provider.name()
                 )))
             }
-            Some(cap) if !cap.classes.contains(&t.object.class.as_str()) => {
+            Some(cap) if !cap.classes.contains(&t.object.class) => {
                 return Err(tok.unsupported(format!(
                     "{} opts into attestation, but provider '{}' attests only {:?}",
                     t,
                     tok.provider.name(),
-                    cap.classes
+                    cap.classes.iter().map(|c| c.name()).collect::<Vec<_>>()
                 )))
             }
             Some(_) => {}
         }
     }
     let mut need = Vec::new();
-    if t.on_token.auto_create && t.object.key_type.starts_with("CKK_SHA") && t.object.key_type.ends_with("_HMAC") {
+    if t.on_token.auto_create && let Some(kt) = t.object.key_type.filter(|k| k.is_hash_bound_hmac()) {
         // CKM_GENERIC_SECRET_KEY_GEN makes CKK_GENERIC_SECRET keys; there is no mechanism for
         // the hash-bound HMAC types (SoftHSM: CKR_TEMPLATE_INCONSISTENT).
         return Err(tok.unsupported(format!(
             "{}: PKCS#11 has no key generation for {}; generate a CKK_GENERIC_SECRET with CKA_SIGN, \
              or create the key elsewhere and adopt it",
             t,
-            t.object.key_type
+            kt
         )));
     }
     if t.on_token.auto_create {
@@ -420,7 +419,7 @@ fn resolve_with(t: &Target, tok: &Token, lock: &Lock, provision: bool) -> Result
         return Ok(None);
     };
     tok.check(h, t.object, t.spec)?;
-    if matches!(t.object.class.as_str(), "CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY" | "CKO_CERTIFICATE") {
+    if t.object.class.is_asymmetric() || t.object.class == Class::Certificate {
         tok.check_unique_private_id(h)?;
     }
     tok.check_public_half(h, t.spec, &t.on_token.locator, public_only)?;
@@ -457,10 +456,11 @@ fn resolve_with(t: &Target, tok: &Token, lock: &Lock, provision: bool) -> Result
 /// unreachable, no PIN, no attestation certificate — is a scheme downgrade (14), like any
 /// scheme a realisation stops computing. Conflicts (13) and ambiguity (12) keep their codes:
 /// they say the evidence is wrong, not absent.
-fn attest(t: &Target, tok: &Token, lock: &Lock, h: ObjectHandle, scheme: &'static str, provision: bool) -> Result<AttestationRecord> {
-    let asymmetric = matches!(t.object.class.as_str(), "CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY");
+fn attest(t: &Target, tok: &Token, lock: &Lock, h: ObjectHandle, scheme: Scheme, provision: bool) -> Result<AttestationRecord> {
+    let asymmetric = t.object.class.is_asymmetric();
     let spki = if asymmetric { Some(tok.spki(h, &t.on_token.locator)?) } else { None };
-    let kind = id::attestation_kind(scheme)
+    let kind = scheme
+        .attestation_kind()
         .ok_or_else(|| KmError::Unsupported(format!("provider '{}' advertises unknown attestation scheme {scheme}", tok.provider.name())))?;
     let a = match tok.attest(h, t.object, spki.as_deref(), provision) {
         Ok(a) => a,
@@ -640,7 +640,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
     let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
     // A deprecated computation still verifies — its identities are pinned — but the lock should
     // move to the replacement (docs/DESIGN.md §3.1); a lock write never adds a new one.
-    for scheme in locked.iter().flat_map(|ids| ids.keys()).filter(|s| id::DEPRECATED_SCHEMES.contains(&s.as_str())) {
+    for scheme in locked.iter().flat_map(|ids| ids.keys()).filter(|s| Scheme::from_name(s).is_some_and(Scheme::is_deprecated)) {
         eprintln!(
             "warning: the {scheme} identity of '{}' uses a deprecated computation; migrate to its replacement (docs/DESIGN.md §3.1)",
             t.object_name
@@ -667,7 +667,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             Some(want) => {
                 return Err(KmError::HashMismatch { what: t.to_string(), expected: want.clone(), got: got.clone() })
             }
-            None if update && id::DEPRECATED_SCHEMES.contains(&scheme.as_str()) => {}
+            None if update && Scheme::from_name(scheme).is_some_and(Scheme::is_deprecated) => {}
             None if update => changed = true,
             None => unlocked.push((scheme, got)),
         }
@@ -697,7 +697,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
     // Locked schemes not checked now: unknown to this cakeys (e.g. from a newer one), or not
     // computable for this spec on this token.
     for scheme in locked.into_iter().flat_map(|ids| ids.keys()).filter(|s| !r.ids.contains_key(*s)) {
-        if id::KNOWN_SCHEMES.contains(&scheme.as_str()) {
+        if Scheme::from_name(scheme).is_some() {
             eprintln!("note: {} is not checked by its {scheme} identity here (not computable for this spec on this token)", t);
         } else {
             eprintln!("warning: the lock records a {scheme} identity for '{}' that this cakeys does not know; it is not checked", t.object_name);
@@ -706,9 +706,9 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
     if update {
         // One object per material (checked again on load): refuse to record the same material
         // under a second name.
-        let class = t.object.class.as_str();
+        let class = t.object.class;
         for (name, o) in lock.objects.iter().filter(|(n, o)| *n != t.object_name && o.object_type.as_ref().is_some_and(|ty| ty.class == class)) {
-            if let Some((s, _)) = r.ids.iter().find(|(s, v)| !(class == "CKO_CERTIFICATE" && *s == "rfc7093m4") && o.ids.get(*s) == Some(v)) {
+            if let Some((s, _)) = r.ids.iter().find(|(s, v)| !(class == Class::Certificate && *s == Scheme::Rfc7093m4.name()) && o.ids.get(*s) == Some(v)) {
                 return Err(KmError::PreconditionFailed(format!(
                     "{} is the same material as object '{name}' ({s}); use that object instead of a second name",
                     t
@@ -725,7 +725,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             changed = true;
         }
         for (scheme, got) in &r.ids {
-            if id::DEPRECATED_SCHEMES.contains(&scheme.as_str()) && !entry.ids.contains_key(scheme) {
+            if Scheme::from_name(scheme).is_some_and(Scheme::is_deprecated) && !entry.ids.contains_key(scheme) {
                 eprintln!(
                     "note: {} also computes a {scheme} identity; not recorded: that computation is deprecated (docs/DESIGN.md §3.1)",
                     t
@@ -918,23 +918,23 @@ pub fn delete(t: &Target, tok: &Token, lock: &mut Lock, if_match: Option<&str>, 
         let got = tok.ids(h, t.object, &t.on_token.locator, mode, &commits(t, tok, mode)?, &commitment_label(t, lock), binding(t))?;
         // --if-match names the primary scheme; otherwise the first scheme the lock records.
         let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
-        let primary = t.schemes().into_iter().find(|s| got.contains_key(*s));
+        let primary = t.schemes().into_iter().find(|s| got.contains_key(s.name()));
         let (scheme, expected) = match if_match {
             Some(want) => (primary, Some(want.to_owned())),
             None => t
                 .schemes()
                 .into_iter()
-                .filter(|s| got.contains_key(*s))
-                .find_map(|s| locked.and_then(|ids| ids.get(s)).map(|w| (Some(s), Some(w.clone()))))
+                .filter(|s| got.contains_key(s.name()))
+                .find_map(|s| locked.and_then(|ids| ids.get(s.name())).map(|w| (Some(s), Some(w.clone()))))
                 .unwrap_or((primary, None)),
         };
         let scheme = scheme.ok_or_else(|| KmError::Unsupported(format!("no identity computed for {}", t)))?;
         let expected = expected
             .ok_or_else(|| KmError::PreconditionFailed(format!("no expected {scheme} for {}; pass --if-match", t)))?;
-        if got.get(scheme) != Some(&expected) {
+        if got.get(scheme.name()) != Some(&expected) {
             return Err(KmError::PreconditionFailed(format!(
                 "{} holds {:?}, expected {expected}; not deleting",
-                t, got.get(scheme)
+                t, got.get(scheme.name())
             )));
         }
     }

@@ -3,6 +3,8 @@
 //! Our own keys are camelCase (Nix-friendly); PKCS#11 names (`CKA_*`, `CKO_*`, `CKK_*`) are verbatim.
 
 use crate::error::{KmError, Result};
+use crate::id::Scheme;
+use crate::types::{KeyType, ObjectClass};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -59,13 +61,13 @@ pub struct TokenCfg {
 }
 
 /// Intrinsic object type: identical across every spec of the object.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ObjectCfg {
-    pub class: String,
-    /// `CKK_*` for keys; empty (and omitted) for certificates and data objects.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub key_type: String,
+    pub class: ObjectClass,
+    /// For keys; absent for certificates and data objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_type: Option<KeyType>,
     /// `CKC_*` for certificates (`CKC_X_509`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub certificate_type: Option<String>,
@@ -82,9 +84,16 @@ pub struct ObjectCfg {
 }
 
 impl ObjectCfg {
+    /// An object of `class` (and `key_type`) with no further type attributes.
+    pub fn new(class: ObjectClass, key_type: Option<KeyType>) -> ObjectCfg {
+        ObjectCfg { class, key_type, certificate_type: None, curve: None, value_len: None, modulus_bits: None }
+    }
+
     /// Replace a curve alias by its canonical name (unknown names are left for validation).
     pub fn canonicalize(&mut self) {
-        if let Some(c) = self.curve.as_deref().and_then(|c| crate::id::Curve::from_cfg(&self.key_type, c)) {
+        if let Some(kt) = self.key_type
+            && let Some(c) = self.curve.as_deref().and_then(|c| crate::id::Curve::from_cfg(kt, c))
+        {
             self.curve = Some(c.name().to_owned());
         }
     }
@@ -93,10 +102,8 @@ impl ObjectCfg {
 /// Inline-table form, as keys.toml writes it.
 impl std::fmt::Display for ObjectCfg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut fields = vec![format!("class = {:?}", self.class)];
-        if !self.key_type.is_empty() {
-            fields.push(format!("keyType = {:?}", self.key_type));
-        }
+        let mut fields = vec![format!("class = \"{}\"", self.class)];
+        fields.extend(self.key_type.map(|k| format!("keyType = \"{k}\"")));
         fields.extend(self.certificate_type.as_ref().map(|c| format!("certificateType = {c:?}")));
         fields.extend(self.curve.as_ref().map(|c| format!("curve = {c:?}")));
         fields.extend(self.value_len.map(|n| format!("valueLen = {n}")));
@@ -309,7 +316,7 @@ pub struct LockObject {
 
 impl LockObject {
     fn has_commitments(&self) -> bool {
-        self.ids.keys().any(|s| crate::id::COMMITMENT_SCHEMES.contains(&s.as_str()))
+        self.ids.keys().any(|s| Scheme::from_name(s).is_some_and(Scheme::is_commitment))
     }
 }
 
@@ -334,7 +341,7 @@ impl Lock {
             )));
         }
         for (name, o) in &self.objects {
-            if let Some((alias, scheme)) = crate::id::SCHEME_ALIASES.iter().find(|(a, _)| o.ids.contains_key(*a)) {
+            if let Some((alias, scheme)) = Scheme::ALIASES.iter().find(|(a, _)| o.ids.contains_key(*a)) {
                 return Err(KmError::Validation(format!(
                     "{}: object '{name}' records '{alias}', which is an input alias; the lock uses '{scheme}'",
                     path.display()
@@ -354,7 +361,7 @@ impl Lock {
             }
             // Attestation IDs are per device (§3.7): the same material attested on two TPMs has
             // two IDs, so they live on each realisation, never in the object's shared `ids`.
-            if let Some(s) = o.ids.keys().find(|s| crate::id::is_attestation_scheme(s)) {
+            if let Some(s) = o.ids.keys().find(|s| Scheme::from_name(s).is_some_and(Scheme::is_attestation)) {
                 return invalid(format!(
                     "object '{name}' records the attestation scheme {s}: an attestation ID is per device \
                      and belongs to the realisation that computed it (realisations.<spec>.<token>.attestation)"
@@ -383,8 +390,8 @@ impl Lock {
         // certificates may share.
         let mut seen: BTreeMap<(&str, &str, &str), &str> = BTreeMap::new();
         for (name, o) in &self.objects {
-            let class = o.object_type.as_ref().map_or("", |t| t.class.as_str());
-            for (s, v) in o.ids.iter().filter(|(s, _)| !(class == "CKO_CERTIFICATE" && *s == "rfc7093m4")) {
+            let class = o.object_type.as_ref().map_or("", |t| t.class.name());
+            for (s, v) in o.ids.iter().filter(|(s, _)| !(class == ObjectClass::Certificate.name() && *s == Scheme::Rfc7093m4.name())) {
                 if let Some(other) = seen.insert((s, class, v), name) {
                     return invalid(format!(
                         "objects '{other}' and '{name}' are the same {class} material ({s} {v}); use one object"
@@ -411,7 +418,7 @@ impl Lock {
         }
         for (spec, by_token) in &self.realisations {
             for (token, r) in by_token {
-                let private = self.objects[&r.object].object_type.as_ref().is_some_and(|t| t.class == "CKO_PRIVATE_KEY");
+                let private = self.objects[&r.object].object_type.as_ref().is_some_and(|t| t.class == ObjectClass::PrivateKey);
                 if private != r.binding.is_some() {
                     return invalid(format!(
                         "realisation of '{spec}' on '{token}': binding is {} for private keys and only for them",
@@ -422,11 +429,11 @@ impl Lock {
                 // realisation must also have matched a portable scheme, the only thing that links
                 // the same material on another token.
                 if let Some(a) = &r.attestation {
-                    if crate::id::attestation_scheme_of(&a.kind).is_none() {
+                    if Scheme::from_attestation_kind(&a.kind).is_none() {
                         return invalid(format!(
                             "realisation of '{spec}' on '{token}': unknown attestation kind '{}' (known: {:?})",
                             a.kind,
-                            crate::id::ATTESTATION_KINDS.map(|(_, k)| k)
+                            Scheme::ALL.into_iter().filter_map(Scheme::attestation_kind).collect::<Vec<_>>()
                         ));
                     }
                     if let Some((field, v)) = [("root", &a.root), ("id", &a.id)].into_iter().find(|(_, v)| !crate::id::is_sri(v)) {
@@ -921,6 +928,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A class or key type cakeys does not manage is invalid when keys.toml loads (17), not when
+    /// a token is first asked for it.
+    #[test]
+    fn unknown_classes_and_key_types_are_invalid_at_load() {
+        let dir = std::env::temp_dir().join("cakeys-load-types-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("keys.toml");
+        for object in ["class = \"CKO_OTP_KEY\"", "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES3\""] {
+            std::fs::write(&p, format!("[objects.o]\n{object}\n")).unwrap();
+            let err = load_config(&p).unwrap_err();
+            assert!(matches!(err.downcast_ref::<KmError>(), Some(KmError::Validation(_))), "{err}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Downgrade detection compares ranks: an inverted order would silently disable it. The
     /// `pop-*` methods share rank 0: each proves possession of the same key.
     #[test]
@@ -946,7 +969,7 @@ mod tests {
         lock.objects.insert(
             "k".into(),
             LockObject {
-                object_type: Some(ObjectCfg { class: "CKO_PRIVATE_KEY".into(), key_type: "CKK_EC".into(), curve: Some("secp256r1".into()), ..Default::default() }),
+                object_type: Some(ObjectCfg { curve: Some("secp256r1".into()), ..ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::Ec)) }),
                 ids,
                 ..Default::default()
             },

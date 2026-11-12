@@ -6,6 +6,8 @@ use cryptoki::mechanism::MechanismType;
 use cryptoki::object::ObjectHandle;
 use cryptoki::session::Session;
 use cakeys_core::config::{Locator, ModuleInfo, ObjectCfg, TokenCfg};
+use cakeys_core::id::Scheme;
+use cakeys_core::types::ObjectClass;
 use cakeys_core::{KmError, Result};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -75,11 +77,11 @@ pub trait Provider: Send + Sync {
 /// What a provider can attest (§3.7 of docs/DESIGN.md), from [`Provider::attestation`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttestationCap {
-    /// Scheme the commitment records (one of `cakeys_core::id::ATTESTATION_SCHEMES`; its
-    /// lock-record kind is `cakeys_core::id::attestation_kind`).
-    pub scheme: &'static str,
-    /// Object classes (`"CKO_PRIVATE_KEY"`, ...) the attestation covers.
-    pub classes: &'static [&'static str],
+    /// Scheme the commitment records (an attestation scheme: `Scheme::is_attestation`; its
+    /// lock-record kind is `Scheme::attestation_kind`).
+    pub scheme: Scheme,
+    /// Object classes the attestation covers.
+    pub classes: &'static [ObjectClass],
 }
 
 /// Everything an attestation may need beyond the PKCS#11 module: the session (to find the
@@ -104,8 +106,8 @@ impl AttestCtx<'_> {
     /// The material SPKI, required for asymmetric classes: an attestation that could not be
     /// cross-checked against the key `rfc7093m4` names would be provenance for unknown material.
     pub fn required_spki(&self) -> Result<Option<&[u8]>> {
-        match (self.object.class.as_str(), self.spki) {
-            ("CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY", None) => Err(KmError::Unsupported(format!(
+        match (self.object.class, self.spki) {
+            (c, None) if c.is_asymmetric() => Err(KmError::Unsupported(format!(
                 "attesting a {} needs its material SPKI to cross-check against",
                 self.object.class
             ))),
@@ -119,7 +121,7 @@ impl AttestCtx<'_> {
 /// `attestation = { kind, root, id }`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attested {
-    pub scheme: &'static str,
+    pub scheme: Scheme,
     pub id: String,
     pub root: String,
 }

@@ -18,6 +18,8 @@ pub mod attest;
 use cakeys_pkcs11::provider::{AttestationCap, AttestCtx, Attested, Provider};
 use cakeys_pkcs11::token::ModuleInfo;
 use cakeys_core::Result;
+use cakeys_core::id::Scheme;
+use cakeys_core::types::ObjectClass;
 use cryptoki::mechanism::MechanismType;
 use std::borrow::Cow;
 
@@ -49,10 +51,10 @@ impl Provider for Tpm2Pkcs11 {
 
     fn attestation(&self) -> Option<AttestationCap> {
         Some(AttestationCap {
-            scheme: "tpm-certify",
+            scheme: Scheme::TpmCertify,
             // TPM2_Certify proves any loaded object with its private area — private and secret
             // keys; public-key objects and certificates have no certifiable blob.
-            classes: &["CKO_PRIVATE_KEY", "CKO_SECRET_KEY"],
+            classes: &[ObjectClass::PrivateKey, ObjectClass::SecretKey],
         })
     }
 

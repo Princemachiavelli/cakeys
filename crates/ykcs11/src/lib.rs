@@ -14,6 +14,8 @@ use cakeys_pkcs11::provider::{AttestationCap, AttestCtx, Attested, Provider};
 use cakeys_core::config::{Locator, ObjectCfg};
 use cakeys_pkcs11::token::ModuleInfo;
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
+use cakeys_core::id::Scheme;
+use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
 use std::sync::LazyLock;
 
@@ -80,10 +82,10 @@ impl Provider for Ykcs11 {
 
     fn attestation(&self) -> Option<AttestationCap> {
         Some(AttestationCap {
-            scheme: "piv-attestation",
+            scheme: Scheme::PivAttestation,
             // PIV attests the asymmetric keys generated on the device; secret keys, data
             // objects and certificates have none.
-            classes: &["CKO_PRIVATE_KEY", "CKO_PUBLIC_KEY"],
+            classes: &[Class::PrivateKey, Class::PublicKey],
         })
     }
 
@@ -106,7 +108,7 @@ impl Provider for Ykcs11 {
         let slot = find_attestation_cert(ctx, &id)?;
         let device = find_device_cert(ctx)?;
         let a = verify_piv_attestation(&slot, &device, &ANCHORS, &INTERMEDIATES, spki)?;
-        Ok(Attested { scheme: "piv-attestation", id: a.id, root: a.root })
+        Ok(Attested { scheme: Scheme::PivAttestation, id: a.id, root: a.root })
     }
 }
 
@@ -207,7 +209,7 @@ mod tests {
             assert_eq!(piv_slot(bad), None, "{bad}");
         }
         let loc = |label: Option<&str>, id: Option<&str>| Locator { label: label.map(Into::into), id: id.map(Into::into) };
-        let obj = ObjectCfg::default();
+        let obj = ObjectCfg::new(Class::PrivateKey, Some(cakeys_core::types::KeyType::Ec));
         assert!(Ykcs11.check_create(&obj, &loc(None, Some("01"))).is_ok());
         assert!(matches!(Ykcs11.check_create(&obj, &loc(Some("x"), Some("01"))), Err(KmError::Validation(_))));
         assert!(matches!(Ykcs11.check_create(&obj, &loc(None, Some("19"))), Err(KmError::Validation(_))));

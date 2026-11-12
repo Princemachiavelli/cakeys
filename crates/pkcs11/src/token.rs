@@ -5,7 +5,8 @@ use crate::provider::{AttestationCap, AttestCtx, Attested, Provider, Registry};
 pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};
 use cakeys_core::attrs;
 use cakeys_core::config::{AttrValue, Binding, Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
-use cakeys_core::id::{self, Commit, Curve, HmacHash};
+use cakeys_core::id::{self, Commit, Curve, HmacHash, Scheme};
+use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::pop;
 use cakeys_core::{KmError, Result};
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
@@ -148,7 +149,7 @@ impl Token {
     pub fn attestation_cap(&self, object: &ObjectCfg) -> Option<AttestationCap> {
         self.provider
             .attestation()
-            .filter(|cap| cap.classes.contains(&object.class.as_str()))
+            .filter(|cap| cap.classes.contains(&object.class))
     }
 
     /// Compute the attestation commitment for `key` (§3.7 of docs/DESIGN.md) through the
@@ -193,7 +194,7 @@ impl Token {
         loc: &Locator,
         public_only: bool,
     ) -> Result<Option<ObjectHandle>> {
-        let class = if public_only { ObjectClass::PUBLIC_KEY } else { class_of(object)? };
+        let class = if public_only { ObjectClass::PUBLIC_KEY } else { class_of(object) };
         let found = self.find(class, loc)?;
         match found.len() {
             0 => Ok(None),
@@ -243,7 +244,7 @@ impl Token {
 
     /// Check the intrinsic type and every policy attribute of the spec against the live object.
     pub fn check(&self, h: ObjectHandle, object: &ObjectCfg, spec: &SpecCfg) -> Result<()> {
-        let class = class_of(object)?;
+        let class = class_of(object);
         if class == ObjectClass::CERTIFICATE {
             return match self.attr(h, AttributeType::CertificateType)? {
                 Some(Attribute::CertificateType(CertificateType::X_509)) => Ok(()),
@@ -268,7 +269,7 @@ impl Token {
         if kt != key_type_of(object)? {
             return Err(KmError::Conflict(format!(
                 "CKA_KEY_TYPE is {kt}, spec object type says {}",
-                object.key_type
+                object.key_type.map_or("", Kt::name)
             )));
         }
         if kt == KeyType::EC || kt == KeyType::EC_EDWARDS {
@@ -311,18 +312,18 @@ impl Token {
     /// `CKA_ALLOWED_MECHANISMS` on key objects when readable. Unreadable ones are left out.
     pub fn policy(&self, h: ObjectHandle) -> Result<BTreeMap<String, AttrValue>> {
         let class = match self.attr(h, AttributeType::Class)? {
-            Some(Attribute::Class(c)) => c.to_string(),
+            Some(Attribute::Class(c)) => managed_class(c).ok_or_else(|| KmError::Unsupported(format!("object class {c}")))?,
             _ => return Err(KmError::Conflict("object has no CKA_CLASS".into())),
         };
         let mut policy = BTreeMap::new();
-        for name in attrs::observed(&class) {
+        for name in attrs::observed(class) {
             let Some(t) = bool_attr(name, false).map(|a| a.attribute_type()) else { continue };
             // Unsupported or unreadable on this token: not part of what it can show.
             if let Ok(Some(a)) = self.attr(h, t) && let Some(b) = attr_bool(&a) {
                 policy.insert(name.to_owned(), AttrValue::Bool(b));
             }
         }
-        if attrs::has_allowed_mechanisms(&class) {
+        if attrs::has_allowed_mechanisms(class) {
             // An empty list is not reported: it is indistinguishable from absent and means none.
             if let Ok(Some(Attribute::AllowedMechanisms(m))) = self.attr(h, AttributeType::AllowedMechanisms) && !m.is_empty() {
                 policy.insert(
@@ -481,7 +482,7 @@ impl Token {
         common.extend(locator_attrs(loc)?);
         let policy = self.policy_template(&spec.attributes)?;
         let refused = |e: CkError| self.unsupported(format!("generating key on '{}': {e}", self.name));
-        let class = class_of(object)?;
+        let class = class_of(object);
         if class != ObjectClass::PRIVATE_KEY && class != ObjectClass::SECRET_KEY {
             return Err(KmError::Validation(format!("{} objects are adopted, not created", object.class)));
         }
@@ -556,7 +557,7 @@ impl Token {
 
     /// Destroy the key and any public half sharing its locator.
     pub fn destroy(&self, object: &ObjectCfg, loc: &Locator) -> Result<usize> {
-        let class = class_of(object)?;
+        let class = class_of(object);
         let mut handles = self.find(class, loc)?;
         if class == ObjectClass::PRIVATE_KEY {
             handles.extend(self.find(ObjectClass::PUBLIC_KEY, loc)?);
@@ -601,37 +602,37 @@ impl Token {
     ) -> Result<BTreeMap<String, String>> {
         let mut ids = BTreeMap::new();
         match mode {
-            Mode::Direct if class_of(object)? == ObjectClass::CERTIFICATE => {
+            Mode::Direct if class_of(object) == ObjectClass::CERTIFICATE => {
                 let der = match self.attr(h, AttributeType::Value)? {
                     Some(Attribute::Value(v)) => v,
                     _ => return Err(KmError::Unsupported("certificate has no readable CKA_VALUE".into())),
                 };
-                ids.insert("certhash".into(), id::sri(&der));
-                ids.insert("rfc7093m4".into(), id::sri(&id::cert_spki(&der)?));
+                ids.insert(Scheme::Certhash.name().into(), id::sri(&der));
+                ids.insert(Scheme::Rfc7093m4.name().into(), id::sri(&id::cert_spki(&der)?));
             }
-            Mode::Direct if class_of(object)? == ObjectClass::DATA => {
+            Mode::Direct if class_of(object) == ObjectClass::DATA => {
                 // SHA-256 of the content: the same SRI hash as a flat Nix fixed-output hash.
                 let value = match self.attr(h, AttributeType::Value)? {
                     Some(Attribute::Value(v)) => v,
                     _ => return Err(KmError::Unsupported("data object has no readable CKA_VALUE".into())),
                 };
-                ids.insert("valuehash".into(), id::sri(&value));
+                ids.insert(Scheme::Valuehash.name().into(), id::sri(&value));
             }
             Mode::Direct => {
                 let spki = self.spki(h, loc)?;
                 if let Some(b) = binding.filter(|b| b != &Binding::TokenAsserted) {
                     self.prove_binding(h, object, &spki, b)?;
                 }
-                ids.insert("rfc7093m4".into(), id::sri(&spki));
+                ids.insert(Scheme::Rfc7093m4.name().into(), id::sri(&spki));
             }
             Mode::Commitment => {
                 for c in commits {
-                    ids.insert(c.scheme().into(), id::sri(&self.commit(h, object, *c, commitment_label)?));
+                    ids.insert(c.scheme().name().into(), id::sri(&self.commit(h, object, *c, commitment_label)?));
                 }
             }
             Mode::WrapRebind => {
                 for (c, out) in self.wrap_rebind(h, object, commits, commitment_label)? {
-                    ids.insert(c.scheme().into(), id::sri(&out));
+                    ids.insert(c.scheme().name().into(), id::sri(&out));
                 }
             }
             m => {
@@ -1006,7 +1007,7 @@ impl Token {
         if let Some(i) = &loc.id {
             parts.push(format!("id={}", pct_all(&hex_decode(i)?)));
         }
-        let kind = match class_of(object)? {
+        let kind = match class_of(object) {
             c if c == ObjectClass::PRIVATE_KEY => "private",
             c if c == ObjectClass::PUBLIC_KEY => "public",
             c if c == ObjectClass::CERTIFICATE => "cert",
@@ -1056,18 +1057,20 @@ fn read_mgm(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
     Ok(None)
 }
 
-pub fn class_of(object: &ObjectCfg) -> Result<ObjectClass> {
-    match object.class.as_str() {
-        "CKO_PRIVATE_KEY" => Ok(ObjectClass::PRIVATE_KEY),
-        "CKO_SECRET_KEY" => Ok(ObjectClass::SECRET_KEY),
-        "CKO_PUBLIC_KEY" => Ok(ObjectClass::PUBLIC_KEY),
-        "CKO_CERTIFICATE" => Ok(ObjectClass::CERTIFICATE),
-        "CKO_DATA" => Ok(ObjectClass::DATA),
-        c => Err(KmError::Unsupported(format!(
-            "object class {c} (supported: CKO_PRIVATE_KEY, CKO_PUBLIC_KEY, CKO_SECRET_KEY, \
-             CKO_CERTIFICATE, CKO_DATA)"
-        ))),
+/// The `cryptoki` class of a configured object.
+pub fn class_of(object: &ObjectCfg) -> ObjectClass {
+    match object.class {
+        Class::PrivateKey => ObjectClass::PRIVATE_KEY,
+        Class::SecretKey => ObjectClass::SECRET_KEY,
+        Class::PublicKey => ObjectClass::PUBLIC_KEY,
+        Class::Certificate => ObjectClass::CERTIFICATE,
+        Class::Data => ObjectClass::DATA,
     }
+}
+
+/// The configured class a token reports, if cakeys manages it.
+fn managed_class(class: ObjectClass) -> Option<Class> {
+    Class::ALL.iter().copied().find(|c| class_of(&ObjectCfg::new(*c, None)) == class)
 }
 
 /// Mechanism a commitment runs on the token.
@@ -1085,39 +1088,36 @@ pub fn commit_mechanism(c: Commit) -> MechanismType {
 }
 
 pub fn curve_of(object: &ObjectCfg) -> Result<Curve> {
-    let name = object.curve.as_deref().ok_or_else(|| {
-        KmError::Validation(format!("{} keys need a curve", object.key_type))
-    })?;
-    Curve::from_cfg(&object.key_type, name).ok_or_else(|| {
+    let kt = object.key_type.map_or("", Kt::name);
+    let name = object.curve.as_deref().ok_or_else(|| KmError::Validation(format!("{kt} keys need a curve")))?;
+    object.key_type.and_then(|k| Curve::from_cfg(k, name)).ok_or_else(|| {
         if id::CURVES_WITHOUT_CRATE.contains(&name) {
             return KmError::Unsupported(format!(
                 "curve {name:?}: no RustCrypto crate validates and encodes it yet"
             ));
         }
         KmError::Unsupported(format!(
-            "curve {name:?} for {} (supported: secp256r1, secp384r1, secp521r1, secp256k1, \
+            "curve {name:?} for {kt} (supported: secp256r1, secp384r1, secp521r1, secp256k1, \
              brainpoolP256r1, brainpoolP384r1 for CKK_EC; edwards25519, edwards448 for \
-             CKK_EC_EDWARDS)",
-            object.key_type
+             CKK_EC_EDWARDS)"
         ))
     })
 }
 
+/// The `cryptoki` key type of a configured key; a key type its class cannot have is unsupported.
 pub fn key_type_of(object: &ObjectCfg) -> Result<KeyType> {
-    match (object.class.as_str(), object.key_type.as_str()) {
-        ("CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY", "CKK_EC") => curve_of(object).map(|_| KeyType::EC),
-        ("CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY", "CKK_EC_EDWARDS") => {
-            curve_of(object).map(|_| KeyType::EC_EDWARDS)
-        }
-        ("CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY", "CKK_RSA") => Ok(KeyType::RSA),
-        ("CKO_SECRET_KEY", "CKK_GENERIC_SECRET") => Ok(KeyType::GENERIC_SECRET),
-        ("CKO_SECRET_KEY", "CKK_AES") => Ok(KeyType::AES),
-        ("CKO_SECRET_KEY", "CKK_SHA_1_HMAC") => Ok(KeyType::SHA_1_HMAC),
-        ("CKO_SECRET_KEY", "CKK_SHA224_HMAC") => hmac_key_type(KeyType::SHA224_HMAC, 0x2e),
-        ("CKO_SECRET_KEY", "CKK_SHA256_HMAC") => Ok(KeyType::SHA256_HMAC),
-        ("CKO_SECRET_KEY", "CKK_SHA384_HMAC") => hmac_key_type(KeyType::SHA384_HMAC, 0x2c),
-        ("CKO_SECRET_KEY", "CKK_SHA512_HMAC") => hmac_key_type(KeyType::SHA512_HMAC, 0x2d),
-        (c, k) => Err(KmError::Unsupported(format!("{c}/{k}"))),
+    match (object.class, object.key_type) {
+        (c, Some(Kt::Ec)) if c.is_asymmetric() => curve_of(object).map(|_| KeyType::EC),
+        (c, Some(Kt::EcEdwards)) if c.is_asymmetric() => curve_of(object).map(|_| KeyType::EC_EDWARDS),
+        (c, Some(Kt::Rsa)) if c.is_asymmetric() => Ok(KeyType::RSA),
+        (Class::SecretKey, Some(Kt::GenericSecret)) => Ok(KeyType::GENERIC_SECRET),
+        (Class::SecretKey, Some(Kt::Aes)) => Ok(KeyType::AES),
+        (Class::SecretKey, Some(Kt::Sha1Hmac)) => Ok(KeyType::SHA_1_HMAC),
+        (Class::SecretKey, Some(Kt::Sha224Hmac)) => hmac_key_type(KeyType::SHA224_HMAC, 0x2e),
+        (Class::SecretKey, Some(Kt::Sha256Hmac)) => Ok(KeyType::SHA256_HMAC),
+        (Class::SecretKey, Some(Kt::Sha384Hmac)) => hmac_key_type(KeyType::SHA384_HMAC, 0x2c),
+        (Class::SecretKey, Some(Kt::Sha512Hmac)) => hmac_key_type(KeyType::SHA512_HMAC, 0x2d),
+        (c, k) => Err(KmError::Unsupported(format!("{c}/{}", k.map_or("", Kt::name)))),
     }
 }
 
@@ -1240,17 +1240,17 @@ mod tests {
     #[test]
     fn commitment_mechanisms_are_pinned() {
         for (key_type, hash, mech) in [
-            ("CKK_GENERIC_SECRET", HmacHash::Sha256, MechanismType::SHA256_HMAC),
-            ("CKK_SHA_1_HMAC", HmacHash::Sha1, MechanismType::SHA1_HMAC),
-            ("CKK_SHA224_HMAC", HmacHash::Sha224, MechanismType::SHA224_HMAC),
-            ("CKK_SHA256_HMAC", HmacHash::Sha256, MechanismType::SHA256_HMAC),
-            ("CKK_SHA384_HMAC", HmacHash::Sha384, MechanismType::SHA384_HMAC),
-            ("CKK_SHA512_HMAC", HmacHash::Sha512, MechanismType::SHA512_HMAC),
+            ("CKK_GENERIC_SECRET".parse::<Kt>().unwrap(), HmacHash::Sha256, MechanismType::SHA256_HMAC),
+            ("CKK_SHA_1_HMAC".parse::<Kt>().unwrap(), HmacHash::Sha1, MechanismType::SHA1_HMAC),
+            ("CKK_SHA224_HMAC".parse::<Kt>().unwrap(), HmacHash::Sha224, MechanismType::SHA224_HMAC),
+            ("CKK_SHA256_HMAC".parse::<Kt>().unwrap(), HmacHash::Sha256, MechanismType::SHA256_HMAC),
+            ("CKK_SHA384_HMAC".parse::<Kt>().unwrap(), HmacHash::Sha384, MechanismType::SHA384_HMAC),
+            ("CKK_SHA512_HMAC".parse::<Kt>().unwrap(), HmacHash::Sha512, MechanismType::SHA512_HMAC),
         ] {
             assert_eq!(HmacHash::for_key_type(key_type), Some(hash), "{key_type}");
             assert_eq!(commit_mechanism(Commit::Hmac(hash)), mech, "{key_type}");
         }
-        assert_eq!(HmacHash::for_key_type("CKK_AES"), None);
+        assert_eq!(HmacHash::for_key_type(Kt::Aes), None);
         assert_eq!(commit_mechanism(Commit::Cmac), MechanismType::AES_CMAC);
         assert_eq!(commit_mechanism(Commit::KcvEcb), MechanismType::AES_ECB);
         assert_eq!(commit_mechanism(Commit::KcvEcbDecrypt), MechanismType::AES_ECB);
@@ -1260,7 +1260,7 @@ mod tests {
     /// Every boolean the core table names maps to a `cryptoki` attribute, and back.
     #[test]
     fn every_tabled_boolean_maps_to_cryptoki() {
-        for class in ["CKO_PRIVATE_KEY", "CKO_PUBLIC_KEY", "CKO_SECRET_KEY", "CKO_CERTIFICATE", "CKO_DATA"] {
+        for &class in Class::ALL {
             for name in attrs::observed(class) {
                 assert_eq!(bool_attr(name, true).as_ref().and_then(attr_bool), Some(true), "{name}");
             }

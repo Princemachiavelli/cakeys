@@ -7,5 +7,6 @@ pub mod error;
 pub mod id;
 pub mod pop;
 pub mod sig;
+pub mod types;
 
 pub use error::{KmError, Result};
