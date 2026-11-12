@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use cakeys_core::config::{gc, load_config, lock_for_update, lock_unwritable, load_lock, save_lock, Config};
 use cakeys_core::KmError;
 use cakeys_core::id::Scheme;
-use cakeys_pkcs11::ops::{self, Target};
+use cakeys_pkcs11::ops::{self, LockWrite, Notes, Target};
 use cakeys_pkcs11::{Registry, Token};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -49,7 +49,7 @@ enum Cmd {
         #[arg(long)]
         token: String,
         #[command(flatten)]
-        write: LockWrite,
+        write: LockWriteArgs,
     },
     /// Delete by locator if it holds the expected identity, and remove its realisation from the
     /// lock unless --no-update-lock. Absent is success.
@@ -61,7 +61,7 @@ enum Cmd {
         #[arg(long)]
         if_match: Option<String>,
         #[command(flatten)]
-        write: LockWrite,
+        write: LockWriteArgs,
     },
     /// Print lock entries whose spec or object is gone from the config; --apply removes them.
     Gc {
@@ -86,7 +86,7 @@ enum Cmd {
 /// `flake.lock`. Where the lock cannot be written (a Nix build sandbox, a read-only lock or
 /// directory) the run is refused up front unless `--no-update-lock` says so explicitly.
 #[derive(clap::Args)]
-struct LockWrite {
+struct LockWriteArgs {
     /// Compare with the lock only; never write it (first use is then exit 10 with `got:`).
     #[arg(long, conflicts_with = "update_lock")]
     no_update_lock: bool,
@@ -95,9 +95,9 @@ struct LockWrite {
     update_lock: bool,
 }
 
-impl LockWrite {
-    fn enabled(&self) -> bool {
-        !self.no_update_lock
+impl LockWriteArgs {
+    fn mode(&self) -> LockWrite {
+        if self.no_update_lock { LockWrite::Compare } else { LockWrite::Record }
     }
 }
 
@@ -135,13 +135,23 @@ fn open_token(
 }
 
 fn run(registry: &Registry) -> anyhow::Result<()> {
+    let mut notes = Notes::default();
+    let result = dispatch(registry, &mut notes);
+    // Before the error line, if any: what the run noticed on the way is never lost to a failure.
+    for line in notes.lines() {
+        eprintln!("{line}");
+    }
+    result
+}
+
+fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     let cli = Cli::parse();
     let cfg = load_config(&cli.config)?;
     let lock_path = cli.lock.clone().unwrap_or_else(|| cli.config.with_extension("lock"));
     // A run that may write the lock holds its advisory sidecar lock across load and save (M3),
     // so concurrent updaters queue instead of losing each other's writes. Held to the end of run.
     let writes = match &cli.cmd {
-        Cmd::Realise { write, .. } | Cmd::Delete { write, .. } => write.enabled(),
+        Cmd::Realise { write, .. } | Cmd::Delete { write, .. } => write.mode() == LockWrite::Record,
         Cmd::Gc { apply } => *apply,
         _ => false,
     };
@@ -192,24 +202,24 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
         Cmd::Verify { spec, token } => {
             let t = Target::new(&cfg, spec, token)?;
             let tok = open_token(&cfg, &modules, registry, token)?;
-            println!("{}", ops::verify(&t, &tok, &lock)?.uri);
+            println!("{}", ops::verify(&t, &tok, &lock, notes)?.uri);
         }
         Cmd::Realise { spec, token, write } => {
             let t = Target::new(&cfg, spec, token)?;
             let tok = open_token(&cfg, &modules, registry, token)?;
-            let (r, changed) = ops::realise(&t, &tok, &mut lock, write.enabled())?;
+            let (r, changed) = ops::realise(&t, &tok, &mut lock, write.mode(), notes)?;
             if changed {
                 save_lock(&lock_path, &lock)?;
-                eprintln!("updated {}", lock_path.display());
+                notes.say(format!("updated {}", lock_path.display()));
             }
             print(&r);
         }
         Cmd::Delete { spec, token, if_match, write } => {
             let t = Target::new(&cfg, spec, token)?;
             let tok = open_token(&cfg, &modules, registry, token)?;
-            if ops::delete(&t, &tok, &mut lock, if_match.as_deref(), write.enabled())? {
+            if ops::delete(&t, &tok, &mut lock, if_match.as_deref(), write.mode(), notes)? {
                 save_lock(&lock_path, &lock)?;
-                eprintln!("updated {}", lock_path.display());
+                notes.say(format!("updated {}", lock_path.display()));
             }
         }
         Cmd::Gc { apply } => {
@@ -263,7 +273,7 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
                     .into());
                 }
             }
-            let (r, _) = ops::realise(&t, &tok, &mut lock, false)?;
+            let (r, _) = ops::realise(&t, &tok, &mut lock, LockWrite::Compare, notes)?;
             // An explicitly requested scheme must itself be locked (and so verified), not just
             // computed next to another scheme that matched. An attestation is locked on this
             // realisation (§3.7), not on the object.

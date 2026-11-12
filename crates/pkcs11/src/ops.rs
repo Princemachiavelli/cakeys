@@ -2,18 +2,18 @@
 
 use crate::token::{self as hal, Token};
 use cakeys_core::config::{
-    AttestationRecord, AttrValue, Binding, Immutables, Lock, LockRealisation, Mode, Observed, Provenance,
+    AttestationRecord, Lock, Mode, Observed, Provenance, Session,
 };
 use cakeys_core::id::{self, Commit, HmacHash, Scheme};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
 use cryptoki::object::{KeyType, ObjectHandle};
-use serde::Serialize;
-use std::collections::BTreeMap;
 
 pub use cakeys_core::plan::{Target, binding, plan_mode};
 use cakeys_core::plan::{AES_COMMITS, declared_commits};
+pub use cakeys_core::reconcile::{Facts, LockWrite, Notes, Resolved};
+use cakeys_core::reconcile::{self, commitment_label};
 
 /// The attestation scheme `t`'s token computes when opted in (`attestation = true`), if the
 /// provider attests this class at all (§3.7 of docs/DESIGN.md).
@@ -125,44 +125,6 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
     }
 }
 
-#[derive(Debug, Serialize)]
-pub struct Resolved {
-    pub object: String,
-    pub spec: String,
-    pub token: String,
-    pub uri: String,
-    pub mode: Mode,
-    #[serde(rename = "publicOnly")]
-    pub public_only: bool,
-    #[serde(rename = "specDigest")]
-    pub spec_digest: String,
-    pub ids: BTreeMap<String, String>,
-    /// Private keys: how the private object was bound to `ids` (proven when `pop-sign`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub binding: Option<Binding>,
-    /// The observed policy vector and immutables of the object found (§4.2 of docs/DESIGN.md).
-    pub policy: BTreeMap<String, AttrValue>,
-    #[serde(skip_serializing_if = "Immutables::is_empty")]
-    pub immutables: Immutables,
-    /// Label the commitment schemes in `ids` were computed with (none for public-material IDs).
-    #[serde(rename = "commitmentLabel", skip_serializing_if = "Option::is_none")]
-    pub commitment_label: Option<String>,
-    /// The attestation this realisation computed (§3.7), when its spec opted in: `kind` names
-    /// the evidence, `root` the anchor it verified to, `id` the per-device attestation ID. Never
-    /// in `ids`, which holds only the portable schemes shared across tokens.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub attestation: Option<AttestationRecord>,
-}
-
-/// The label to compute `t`'s commitments with: the one the lock records for the object, else the
-/// default for objects the lock does not know yet.
-fn commitment_label(t: &Target, lock: &Lock) -> String {
-    lock.objects
-        .get(t.object_name)
-        .and_then(|o| o.commitment_label.clone())
-        .unwrap_or_else(|| id::DEFAULT_COMMITMENT_LABEL.to_owned())
-}
-
 /// GET: find by locator (exactly one), check type and attributes, compute IDs. Never writes,
 /// neither the lock nor the token: a TPM Attestation Key that is not provisioned yet is an
 /// error here, and only `realise` provisions it.
@@ -245,363 +207,34 @@ fn attest(t: &Target, tok: &Token, lock: &Lock, h: ObjectHandle, scheme: Scheme,
     Ok(AttestationRecord { kind: kind.to_owned(), root: a.root, id: a.id })
 }
 
-/// Compare computed IDs with the lock; optionally record them (only ever fills gaps).
-fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: bool) -> Result<bool> {
-    // The lock pins the type its IDs were computed for: a different type is different material,
-    // so say so instead of reporting a hash mismatch (also when updating).
-    if let Some(locked) = lock.objects.get(t.object_name).and_then(|o| o.object_type.as_ref()) && locked != t.object {
-        return Err(KmError::PreconditionFailed(format!(
-            "the type of object '{}' in keys.toml changed since it was locked: locked {}, now {}; \
-             different material needs a new object name",
-            t.object_name,
-            locked,
-            t.object
-        )));
-    }
-    if let Some(prev) = lock.realisation(t.spec_name, t.token_name) {
-        // Like a lockfile out of date: keys.toml changed what this realisation is (another
-        // object, locator, publicOnly or policy), so the lock must be re-recorded after review.
-        if !update {
-            let mut diff = Vec::new();
-            if prev.object != t.object_name {
-                diff.push(format!("object '{}' -> '{}'", prev.object, t.object_name));
-            }
-            if prev.locator != t.on_token.locator {
-                diff.push(format!("locator {} -> {}", prev.locator, t.on_token.locator));
-            }
-            if prev.public_only != r.public_only {
-                diff.push(format!("publicOnly {} -> {}", prev.public_only, r.public_only));
-            }
-            if prev.spec_digest != r.spec_digest {
-                diff.push(format!("spec digest {} -> {}", prev.spec_digest, r.spec_digest));
-            }
-            if !diff.is_empty() {
-                return Err(KmError::PreconditionFailed(format!(
-                    "spec '{}' changed in keys.toml since it was realised on '{}' ({}); \
-                     review the change, then `realise`",
-                    t.spec_name,
-                    t.token_name,
-                    diff.join(", ")
-                )));
-            }
-        }
-        if r.mode > prev.mode {
-            return Err(KmError::PreconditionFailed(format!(
-                "identity downgrade for {}: locked mode '{}', now only '{}'",
-                t, prev.mode, r.mode
-            )));
-        }
-        if let (Some(was), Some(now)) = (prev.binding, r.binding) && now.rank() > was.rank() {
-            return Err(KmError::PreconditionFailed(format!(
-                "binding downgrade for {}: locked binding '{was}', now only '{now}'",
-                t
-            )));
-        }
-        // The attestation is compared, even when realise writes the lock (§3.7). A different anchor means
-        // a different device (or a re-provisioned TPM) signed the provenance; a different ID
-        // under the same anchor means the attested object changed (re-imported, other
-        // attributes or policy). Both are changes to review, never to re-record — and a lost
-        // attestation is a scheme downgrade.
-        match (&prev.attestation, &r.attestation) {
-            (Some(was), Some(now)) if was.kind != now.kind || was.root != now.root => {
-                return Err(KmError::PreconditionFailed(format!(
-                    "attestation anchor for {} changed since it was realised ({} root {}, now {} root {}); \
-                     the material needs a new object name",
-                    t,
-                    was.kind,
-                    was.root,
-                    now.kind,
-                    now.root
-                )));
-            }
-            (Some(was), Some(now)) if was.id != now.id => {
-                return Err(KmError::HashMismatch {
-                    what: format!("{} ({} attestation)", t, was.kind),
-                    expected: was.id.clone(),
-                    got: now.id.clone(),
-                });
-            }
-            (Some(was), None) => {
-                return Err(KmError::PreconditionFailed(format!(
-                    "identity downgrade for {}: it was realised with a {} attestation, which it no longer computes",
-                    t,
-                    was.kind
-                )));
-            }
-            (None, Some(now)) if !update => {
-                eprintln!(
-                    "note: {} also has a {} attestation the lock does not record; `realise` adds it",
-                    t,
-                    now.kind
-                );
-            }
-            _ => {}
-        }
-        let lost: Vec<&String> = prev.schemes.iter().filter(|s| !r.ids.contains_key(*s)).collect();
-        if !lost.is_empty() {
-            return Err(KmError::PreconditionFailed(format!(
-                "identity downgrade for {}: it was realised with {lost:?}, which it no longer computes",
-                t
-            )));
-        }
-        // Fixed at creation: weaker now means the object was replaced (also when updating).
-        let weakened = r.immutables.weakened_since(&prev.immutables);
-        if !weakened.is_empty() {
-            return Err(KmError::PreconditionFailed(format!(
-                "{} was replaced since it was realised: {} no longer true; a new object needs a new name",
-                t,
-                weakened.join(", ")
-            )));
-        }
-        // The token's object changed (policy set since, or another object with the same
-        // material): review, like a changed spec.
-        if !update {
-            let mut diff: Vec<String> = prev
-                .policy
-                .iter()
-                .filter(|(n, was)| r.policy.get(*n) != Some(was))
-                .map(|(n, was)| format!("{n} {was} -> {}", r.policy.get(n).map_or("unreadable".into(), |b| b.to_string())))
-                .collect();
-            if prev.immutables != r.immutables {
-                diff.push(format!(
-                    "immutables {} -> {}",
-                    prev.immutables,
-                    r.immutables
-                ));
-            }
-            if !diff.is_empty() {
-                return Err(KmError::PreconditionFailed(format!(
-                    "{} changed on the token since it was realised ({}); review, then `realise`",
-                    t,
-                    diff.join(", ")
-                )));
-            }
-            let new: Vec<&String> = r.policy.keys().filter(|n| !prev.policy.contains_key(*n)).collect();
-            if !new.is_empty() {
-                eprintln!(
-                    "note: {} also reports {new:?}, which the lock does not record; `realise` adds them",
-                    t
-                );
-            }
-        }
-    }
-    if let Some(prev) = lock.realisation(t.spec_name, t.token_name) {
-        warn_provenance(t, tok, prev);
-    }
-    let unlisted = lock.unlisted_pairs(t.object_name);
-    if !update && !unlisted.is_empty() {
-        eprintln!(
-            "note: {unlisted:?} share the public key of '{}' but are not listed as its pairs; `realise` records them",
-            t.object_name
-        );
-    }
-    let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
-    // A deprecated computation still verifies — its identities are pinned — but the lock should
-    // move to the replacement (docs/DESIGN.md §3.1); a lock write never adds a new one.
-    for scheme in locked.iter().flat_map(|ids| ids.keys()).filter(|s| Scheme::from_name(s).is_some_and(Scheme::is_deprecated)) {
-        eprintln!(
-            "warning: the {scheme} identity of '{}' uses a deprecated computation; migrate to its replacement (docs/DESIGN.md §3.1)",
-            t.object_name
-        );
-    }
-    // Material is only linked through a shared scheme: never attach IDs to an object when none of
-    // them can be compared with what is already locked (e.g. a CMAC-only and a KW-only spec).
-    if let Some(ids) = locked.filter(|ids| !ids.is_empty()) && !r.ids.keys().any(|s| ids.contains_key(s)) {
-        return Err(KmError::PreconditionFailed(format!(
-            "{} computes {:?} but '{}' is locked only by {:?}: nothing shows it is the same \
-             material; realise a spec that computes both first",
-            t,
-            r.ids.keys().collect::<Vec<_>>(),
-            t.object_name,
-            ids.keys().collect::<Vec<_>>()
-        )));
-    }
-    let mut changed = false;
-    let mut matched = false;
-    let mut unlocked = Vec::new();
-    for (scheme, got) in &r.ids {
-        match locked.and_then(|ids| ids.get(scheme)) {
-            Some(want) if want == got => matched = true,
-            Some(want) => {
-                return Err(KmError::HashMismatch { what: t.to_string(), expected: want.clone(), got: got.clone() })
-            }
-            None if update && Scheme::from_name(scheme).is_some_and(Scheme::is_deprecated) => {}
-            None if update => changed = true,
-            None => unlocked.push((scheme, got)),
-        }
-    }
-    // A scheme not yet in the lock (e.g. one a newer cakeys computes) is fine once another
-    // scheme proved the identity; with nothing to compare it is first use and fails like a FOD.
-    if let Some((_, got)) = unlocked.first().filter(|_| !matched) {
-        return Err(KmError::HashMismatch { what: t.to_string(), expected: "<none>".into(), got: (*got).clone() });
-    }
-    // The material matches, but the lock does not say this spec is realised on this token: the
-    // lock describes where objects live, not only what they are.
-    if !update && lock.realisation(t.spec_name, t.token_name).is_none() {
-        return Err(KmError::PreconditionFailed(format!(
-            "{} matches the locked identity, but the lock records no realisation of spec '{}' on \
-             token '{}'; review, then `realise`",
-            t,
-            t.spec_name,
-            t.token_name
-        )));
-    }
-    for (scheme, _) in &unlocked {
-        eprintln!(
-            "note: {} also has a {scheme} identity the lock does not record; `realise` adds it",
-            t
-        );
-    }
-    // Locked schemes not checked now: unknown to this cakeys (e.g. from a newer one), or not
-    // computable for this spec on this token.
-    for scheme in locked.into_iter().flat_map(|ids| ids.keys()).filter(|s| !r.ids.contains_key(*s)) {
-        if Scheme::from_name(scheme).is_some() {
-            eprintln!("note: {} is not checked by its {scheme} identity here (not computable for this spec on this token)", t);
-        } else {
-            eprintln!("warning: the lock records a {scheme} identity for '{}' that this cakeys does not know; it is not checked", t.object_name);
-        }
-    }
-    if update {
-        // One object per material (checked again on load): refuse to record the same material
-        // under a second name.
-        let class = t.object.class;
-        for (name, o) in lock.objects.iter().filter(|(n, o)| *n != t.object_name && o.object_type.as_ref().is_some_and(|ty| ty.class == class)) {
-            if let Some((s, _)) = r.ids.iter().find(|(s, v)| !(class == Class::Certificate && *s == Scheme::Rfc7093m4.name()) && o.ids.get(*s) == Some(v)) {
-                return Err(KmError::PreconditionFailed(format!(
-                    "{} is the same material as object '{name}' ({s}); use that object instead of a second name",
-                    t
-                )));
-            }
-        }
-        let entry = lock.objects.entry(t.object_name.into()).or_default();
-        if entry.object_type.is_none() {
-            entry.object_type = Some(t.object.clone());
-            changed = true;
-        }
-        if let Some(label) = &r.commitment_label && entry.commitment_label.as_ref().is_none_or(|l| l != label) {
-            entry.commitment_label = Some(label.clone());
-            changed = true;
-        }
-        for (scheme, got) in &r.ids {
-            if Scheme::from_name(scheme).is_some_and(Scheme::is_deprecated) && !entry.ids.contains_key(scheme) {
-                eprintln!(
-                    "note: {} also computes a {scheme} identity; not recorded: that computation is deprecated (docs/DESIGN.md §3.1)",
-                    t
-                );
-                continue;
-            }
-            entry.ids.entry(scheme.clone()).or_insert_with(|| got.clone());
-        }
-        let real = LockRealisation {
-            object: t.object_name.to_owned(),
-            locator: t.on_token.locator.clone(),
-            spec_digest: r.spec_digest.clone(),
-            mode: r.mode,
-            schemes: r.ids.keys().cloned().collect(),
-            public_only: r.public_only,
-            binding: r.binding,
-            attestation: r.attestation.clone(),
-            policy: r.policy.clone(),
-            immutables: r.immutables.clone(),
-            observed: Some(Observed {
-                uri: r.uri.clone(),
-                session: if tok.logged_in { "user" } else { "public" }.to_owned(),
-                mechanisms: tok.mechanism_names().to_vec(),
-            }),
-            provenance: Some(Provenance {
-                provider: tok.provider.name().to_owned(),
-                cakeys_version: env!("CARGO_PKG_VERSION").to_owned(),
-                module: tok.module.clone(),
-                token: tok.token.clone(),
-            }),
-        };
-        let slot = lock.realisations.entry(t.spec_name.into()).or_default();
-        if slot.get(t.token_name) != Some(&real) {
-            slot.insert(t.token_name.into(), real);
-            changed = true;
-        }
-        // Partners in this file are recomputed; listed ones from other fragments are kept.
-        let pairs = lock.computed_pairs();
-        let present: Vec<String> = lock.objects.keys().cloned().collect();
-        for (name, o) in lock.objects.iter_mut() {
-            let mut want = pairs.get(name).cloned().unwrap_or_default();
-            want.extend(o.pairs.iter().filter(|p| !present.contains(p)).cloned());
-            if o.pairs != want {
-                o.pairs = want;
-                changed = true;
-            }
-        }
-    }
-    Ok(changed)
-}
-
-/// `observed` and `provenance` never change a verdict: identity is enforced by the CA-IDs, so a
-/// different module build or token only warns. `realise` re-binds them.
-fn warn_provenance(t: &Target, tok: &Token, prev: &LockRealisation) {
-    if prev.observed.as_ref().is_some_and(|o| o.session == "user") && !tok.logged_in {
-        eprintln!(
-            "warning: {} was realised in a user session; this public session cannot see other private keys under its CKA_ID",
-            t
-        );
-    }
-    if let Some(o) = &prev.observed {
-        let gone: Vec<&str> =
-            o.mechanisms.iter().filter(|m| !tok.mechanism_names().contains(m)).map(String::as_str).collect();
-        if !gone.is_empty() {
-            eprintln!(
-                "warning: {} was realised where the token offered {}, which it no longer does (functions.<token> in Nix)",
-                t,
-                gone.join(", ")
-            );
-        }
-    }
-    let Some(p) = &prev.provenance else { return };
-    if p.provider != tok.provider.name() {
-        eprintln!("warning: {} was realised with provider {}, now {}", t, p.provider, tok.provider.name());
-    }
-    if p.cakeys_version != env!("CARGO_PKG_VERSION") {
-        eprintln!("note: {} was realised by cakeys {}, now {}", t, p.cakeys_version, env!("CARGO_PKG_VERSION"));
-    }
-    let m = &p.module;
-    if !m.same_build_identity(&tok.module) {
-        eprintln!(
-            "warning: {} was realised with module {} {} ({}), now {} {} ({})",
-            t,
-            m.description,
-            m.version,
-            m.manufacturer,
-            tok.module.description,
-            tok.module.version,
-            tok.module.manufacturer
-        );
-    } else if m.path != tok.module.path {
-        eprintln!("note: {} was realised with module file {}, now {}", t, m.path, tok.module.path);
-    }
-    let k = &p.token;
-    if k != &tok.token {
-        eprintln!(
-            "warning: {} was realised on token {} #{} (firmware {}), now {} #{} (firmware {})",
-            t,
-            k.model,
-            k.serial,
-            k.firmware,
-            tok.token.model,
-            tok.token.serial,
-            tok.token.firmware
-        );
+/// What this run sees of `tok` (session, mechanisms, module, token), for the lock to record or
+/// compare.
+fn facts(tok: &Token, r: &Resolved) -> Facts {
+    Facts {
+        observed: Observed {
+            uri: r.uri.clone(),
+            session: if tok.logged_in { Session::User } else { Session::Public },
+            mechanisms: tok.mechanism_names().to_vec(),
+        },
+        provenance: Provenance {
+            provider: tok.provider.name().to_owned(),
+            cakeys_version: env!("CARGO_PKG_VERSION").to_owned(),
+            module: tok.module.clone(),
+            token: tok.token.clone(),
+        },
     }
 }
 
 /// GET + If-Match against the lock.
-pub fn verify(t: &Target, tok: &Token, lock: &Lock) -> Result<Resolved> {
+pub fn verify(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Resolved> {
     let r = resolve(t, tok, lock)?.ok_or_else(|| KmError::NotFound(t.to_string()))?;
-    reconcile(t, tok, &r, &mut lock.clone(), false)?;
+    reconcile::compare(t, &r, lock, &facts(tok, &r), LockWrite::Compare, notes)?;
     Ok(r)
 }
 
 /// PUT: create under the declared locator if absent (and `autoCreate`), then compare with the lock.
 /// Re-running never creates a second object: the locator finds the first one.
-pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, update: bool) -> Result<(Resolved, bool)> {
+pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes: &mut Notes) -> Result<(Resolved, bool)> {
     let mode = plan_mode(t)?;
     check_capabilities(t, tok, mode)?;
     let r = match resolve_with(t, tok, lock, true)? {
@@ -631,7 +264,7 @@ pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, update: bool) -> Result
                 )));
             }
             tok.create(t.object, t.spec, &t.on_token.locator)?;
-            eprintln!("created {}", t);
+            notes.say(format!("created {t}"));
             match resolve_with(t, tok, lock, true).and_then(|r| {
                 r.ok_or_else(|| KmError::NotFound(format!("{} vanished after creation", t)))
             }) {
@@ -641,15 +274,15 @@ pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, update: bool) -> Result
                     // just made: a refused realise leaves nothing behind, unless the module cannot
                     // delete keys (ykcs11), which is then said rather than claimed.
                     match tok.destroy(t.object, &t.on_token.locator) {
-                        Ok(n) => eprintln!(
+                        Ok(n) => notes.say(format!(
                             "removed {n} object(s) just created for {}: its identity could not be established",
                             t
-                        ),
-                        Err(d) => eprintln!(
+                        )),
+                        Err(d) => notes.say(format!(
                             "the key just created for {} is still on the token (its identity could not be \
                              established, and removing it failed: {d})",
                             t
-                        ),
+                        )),
                     }
                     return Err(e);
                 }
@@ -657,12 +290,12 @@ pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, update: bool) -> Result
         }
         None => return Err(KmError::NotFound(format!("{} (autoCreate is off)", t))),
     };
-    let changed = reconcile(t, tok, &r, lock, update)?;
+    let changed = reconcile::reconcile(t, &r, lock, &facts(tok, &r), write, notes)?;
     Ok((r, changed))
 }
 
 /// DELETE + If-Match. Absent is success; a different object under the locator is left alone.
-pub fn delete(t: &Target, tok: &Token, lock: &mut Lock, if_match: Option<&str>, update: bool) -> Result<bool> {
+pub fn delete(t: &Target, tok: &Token, lock: &mut Lock, if_match: Option<&str>, write: LockWrite, notes: &mut Notes) -> Result<bool> {
     if t.on_token.public_only {
         return Err(KmError::Unsupported(format!(
             "{} is adopted publicOnly; deleting would remove only the public half",
@@ -698,10 +331,10 @@ pub fn delete(t: &Target, tok: &Token, lock: &mut Lock, if_match: Option<&str>, 
     }
     let n = tok.destroy(t.object, &t.on_token.locator)?;
     if n > 0 {
-        eprintln!("destroyed {n} object(s) for {}", t);
+        notes.say(format!("destroyed {n} object(s) for {t}"));
     }
     let mut changed = false;
-    if update && let Some(m) = lock.realisations.get_mut(t.spec_name) {
+    if write == LockWrite::Record && let Some(m) = lock.realisations.get_mut(t.spec_name) {
         changed = m.remove(t.token_name).is_some();
         if m.is_empty() {
             lock.realisations.remove(t.spec_name);

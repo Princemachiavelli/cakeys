@@ -632,12 +632,22 @@ impl std::fmt::Display for Immutables {
 pub struct Observed {
     /// RFC 7512 URI of the object (derived from the token label, serial and locator).
     pub uri: String,
-    /// `user` (logged in: private objects and duplicate private-key IDs were visible) or `public`.
-    pub session: String,
+    /// Logged in (private objects and duplicate private-key IDs were visible) or not.
+    pub session: Session,
     /// Usable mechanisms (feeds `functions.<token>` in the Nix library). One that has since gone
     /// from the token is a warning.
     #[serde(default)]
     pub mechanisms: Vec<String>,
+}
+
+/// The session a realisation was observed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Session {
+    /// Logged in as the user.
+    User,
+    /// No login: public objects only.
+    Public,
 }
 
 /// What produced the record. Differences warn (module build, token, provider) or note (module

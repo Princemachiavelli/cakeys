@@ -264,8 +264,6 @@ version = "0.1.0"
 dependencies = [
  "cakeys-core",
  "cryptoki",
- "serde",
- "serde_json",
  "zeroize",
 ]
 
