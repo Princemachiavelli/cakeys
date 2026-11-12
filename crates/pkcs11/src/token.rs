@@ -3,6 +3,7 @@
 
 use crate::provider::{AttestationCap, AttestCtx, Attested, Provider, Registry};
 pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};
+use cakeys_core::attrs;
 use cakeys_core::config::{AttrValue, Binding, Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
 use cakeys_core::id::{self, Commit, Curve, HmacHash};
 use cakeys_core::pop;
@@ -305,40 +306,25 @@ impl Token {
     }
 
 
-    /// The observed policy vector: every boolean attribute of `h`'s class (PKCS#11 3.2 §4) the
-    /// token reports, declared in the spec or not, plus `CKA_ALLOWED_MECHANISMS` on key objects
-    /// when readable. Unreadable ones are left out.
+    /// The observed policy vector: every boolean attribute of `h`'s class (PKCS#11 3.2 §4,
+    /// `cakeys_core::attrs::observed`) the token reports, declared in the spec or not, plus
+    /// `CKA_ALLOWED_MECHANISMS` on key objects when readable. Unreadable ones are left out.
     pub fn policy(&self, h: ObjectHandle) -> Result<BTreeMap<String, AttrValue>> {
         let class = match self.attr(h, AttributeType::Class)? {
-            Some(Attribute::Class(c)) => c,
+            Some(Attribute::Class(c)) => c.to_string(),
             _ => return Err(KmError::Conflict("object has no CKA_CLASS".into())),
         };
-        let mut names = vec!["CKA_TOKEN", "CKA_PRIVATE", "CKA_MODIFIABLE", "CKA_COPYABLE", "CKA_DESTROYABLE"];
-        names.extend(match class {
-            ObjectClass::PRIVATE_KEY => &[
-                "CKA_DERIVE", "CKA_SENSITIVE", "CKA_DECRYPT", "CKA_SIGN", "CKA_SIGN_RECOVER", "CKA_UNWRAP",
-                "CKA_EXTRACTABLE", "CKA_WRAP_WITH_TRUSTED", "CKA_ALWAYS_AUTHENTICATE",
-            ][..],
-            ObjectClass::PUBLIC_KEY => {
-                &["CKA_DERIVE", "CKA_ENCRYPT", "CKA_VERIFY", "CKA_VERIFY_RECOVER", "CKA_WRAP", "CKA_TRUSTED"][..]
-            }
-            ObjectClass::SECRET_KEY => &[
-                "CKA_DERIVE", "CKA_SENSITIVE", "CKA_ENCRYPT", "CKA_DECRYPT", "CKA_SIGN", "CKA_VERIFY", "CKA_WRAP",
-                "CKA_UNWRAP", "CKA_EXTRACTABLE", "CKA_WRAP_WITH_TRUSTED", "CKA_TRUSTED",
-            ][..],
-            ObjectClass::CERTIFICATE => &["CKA_TRUSTED"][..],
-            _ => &[][..],
-        });
         let mut policy = BTreeMap::new();
-        for name in names {
+        for name in attrs::observed(&class) {
+            let Some(t) = bool_attr(name, false).map(|a| a.attribute_type()) else { continue };
             // Unsupported or unreadable on this token: not part of what it can show.
-            if let Ok(Some(a)) = self.attr(h, policy_attr_type(name)) {
+            if let Ok(Some(a)) = self.attr(h, t) {
                 if let Some(b) = attr_bool(&a) {
                     policy.insert(name.to_owned(), AttrValue::Bool(b));
                 }
             }
         }
-        if matches!(class, ObjectClass::PRIVATE_KEY | ObjectClass::PUBLIC_KEY | ObjectClass::SECRET_KEY) {
+        if attrs::has_allowed_mechanisms(&class) {
             // An empty list is not reported: it is indistinguishable from absent and means none.
             if let Ok(Some(Attribute::AllowedMechanisms(m))) = self.attr(h, AttributeType::AllowedMechanisms) {
                 if !m.is_empty() {
@@ -397,7 +383,7 @@ impl Token {
                 _ => None,
             });
         }
-        let (t, _) = bool_attr(name, false)?;
+        let t = bool_attr(name, false).ok_or_else(|| unsupported_attr(name))?.attribute_type();
         Ok(self.attr(h, t)?.as_ref().and_then(attr_bool).map(AttrValue::Bool))
     }
 
@@ -436,7 +422,7 @@ impl Token {
         attrs
             .iter()
             .map(|(name, v)| match v {
-                AttrValue::Bool(b) => Ok(bool_attr(name, *b)?.1),
+                AttrValue::Bool(b) => bool_attr(name, *b).ok_or_else(|| unsupported_attr(name)),
                 AttrValue::Mechanisms(names) => names
                     .iter()
                     .map(|n| {
@@ -1155,88 +1141,59 @@ fn hmac_key_type(kt: KeyType, raw: std::os::raw::c_ulong) -> Result<KeyType> {
     }
 }
 
-/// Boolean policy attributes the spec may set.
-pub fn bool_attr(name: &str, v: bool) -> Result<(AttributeType, Attribute)> {
-    let a = match name {
-        "CKA_SIGN" => Attribute::Sign(v),
-        "CKA_VERIFY" => Attribute::Verify(v),
-        "CKA_ENCRYPT" => Attribute::Encrypt(v),
-        "CKA_DECRYPT" => Attribute::Decrypt(v),
-        "CKA_WRAP" => Attribute::Wrap(v),
-        "CKA_UNWRAP" => Attribute::Unwrap(v),
-        "CKA_DERIVE" => Attribute::Derive(v),
-        "CKA_SENSITIVE" => Attribute::Sensitive(v),
-        "CKA_EXTRACTABLE" => Attribute::Extractable(v),
-        "CKA_MODIFIABLE" => Attribute::Modifiable(v),
-        "CKA_PRIVATE" => Attribute::Private(v),
-        "CKA_COPYABLE" => Attribute::Copyable(v),
-        "CKA_DESTROYABLE" => Attribute::Destroyable(v),
-        "CKA_SIGN_RECOVER" => Attribute::SignRecover(v),
-        "CKA_VERIFY_RECOVER" => Attribute::VerifyRecover(v),
-        "CKA_WRAP_WITH_TRUSTED" => Attribute::WrapWithTrusted(v),
-        "CKA_ALWAYS_AUTHENTICATE" => Attribute::AlwaysAuthenticate(v),
-        "CKA_TRUSTED" => Attribute::Trusted(v),
-        n => return Err(KmError::Validation(format!("unsupported policy attribute {n}"))),
+/// Every boolean attribute cakeys reads or sets, by its PKCS#11 name: which class carries which
+/// is `cakeys_core::attrs`; this is only the mapping to `cryptoki`.
+macro_rules! bool_attrs {
+    ($($name:literal => $variant:ident),* $(,)?) => {
+        /// The boolean attribute `name` with value `v`; `None` for any other name.
+        pub fn bool_attr(name: &str, v: bool) -> Option<Attribute> {
+            match name {
+                $($name => Some(Attribute::$variant(v)),)*
+                _ => None,
+            }
+        }
+
+        /// The value of a boolean attribute; `None` for any other attribute.
+        fn attr_bool(a: &Attribute) -> Option<bool> {
+            match a {
+                $(Attribute::$variant(b))|* => Some(*b),
+                _ => None,
+            }
+        }
     };
-    Ok((a.attribute_type(), a))
+}
+
+bool_attrs! {
+    "CKA_TOKEN" => Token,
+    "CKA_PRIVATE" => Private,
+    "CKA_MODIFIABLE" => Modifiable,
+    "CKA_COPYABLE" => Copyable,
+    "CKA_DESTROYABLE" => Destroyable,
+    "CKA_SIGN" => Sign,
+    "CKA_SIGN_RECOVER" => SignRecover,
+    "CKA_VERIFY" => Verify,
+    "CKA_VERIFY_RECOVER" => VerifyRecover,
+    "CKA_ENCRYPT" => Encrypt,
+    "CKA_DECRYPT" => Decrypt,
+    "CKA_WRAP" => Wrap,
+    "CKA_UNWRAP" => Unwrap,
+    "CKA_DERIVE" => Derive,
+    "CKA_SENSITIVE" => Sensitive,
+    "CKA_EXTRACTABLE" => Extractable,
+    "CKA_WRAP_WITH_TRUSTED" => WrapWithTrusted,
+    "CKA_ALWAYS_AUTHENTICATE" => AlwaysAuthenticate,
+    "CKA_TRUSTED" => Trusted,
+    "CKA_LOCAL" => Local,
+    "CKA_NEVER_EXTRACTABLE" => NeverExtractable,
+    "CKA_ALWAYS_SENSITIVE" => AlwaysSensitive,
+}
+
+fn unsupported_attr(name: &str) -> KmError {
+    KmError::Validation(format!("unsupported policy attribute {name}"))
 }
 
 /// `CK_UNAVAILABLE_INFORMATION`: the value a token reports for an attribute it cannot give.
 const CK_UNAVAILABLE_INFORMATION: std::os::raw::c_ulong = !0;
-
-/// Attribute type of a boolean attribute in the observed policy vector.
-fn policy_attr_type(name: &str) -> AttributeType {
-    match name {
-        "CKA_TOKEN" => AttributeType::Token,
-        "CKA_PRIVATE" => AttributeType::Private,
-        "CKA_MODIFIABLE" => AttributeType::Modifiable,
-        "CKA_COPYABLE" => AttributeType::Copyable,
-        "CKA_DESTROYABLE" => AttributeType::Destroyable,
-        "CKA_DERIVE" => AttributeType::Derive,
-        "CKA_SENSITIVE" => AttributeType::Sensitive,
-        "CKA_ENCRYPT" => AttributeType::Encrypt,
-        "CKA_DECRYPT" => AttributeType::Decrypt,
-        "CKA_SIGN" => AttributeType::Sign,
-        "CKA_SIGN_RECOVER" => AttributeType::SignRecover,
-        "CKA_VERIFY" => AttributeType::Verify,
-        "CKA_VERIFY_RECOVER" => AttributeType::VerifyRecover,
-        "CKA_WRAP" => AttributeType::Wrap,
-        "CKA_UNWRAP" => AttributeType::Unwrap,
-        "CKA_EXTRACTABLE" => AttributeType::Extractable,
-        "CKA_WRAP_WITH_TRUSTED" => AttributeType::WrapWithTrusted,
-        "CKA_ALWAYS_AUTHENTICATE" => AttributeType::AlwaysAuthenticate,
-        "CKA_TRUSTED" => AttributeType::Trusted,
-        n => unreachable!("not a policy attribute: {n}"),
-    }
-}
-
-fn attr_bool(a: &Attribute) -> Option<bool> {
-    match a {
-        Attribute::Sign(b)
-        | Attribute::Verify(b)
-        | Attribute::Encrypt(b)
-        | Attribute::Decrypt(b)
-        | Attribute::Wrap(b)
-        | Attribute::Unwrap(b)
-        | Attribute::Derive(b)
-        | Attribute::Sensitive(b)
-        | Attribute::Extractable(b)
-        | Attribute::Modifiable(b)
-        | Attribute::Private(b)
-        | Attribute::Token(b)
-        | Attribute::Copyable(b)
-        | Attribute::Destroyable(b)
-        | Attribute::SignRecover(b)
-        | Attribute::VerifyRecover(b)
-        | Attribute::WrapWithTrusted(b)
-        | Attribute::AlwaysAuthenticate(b)
-        | Attribute::Trusted(b)
-        | Attribute::Local(b)
-        | Attribute::NeverExtractable(b)
-        | Attribute::AlwaysSensitive(b) => Some(*b),
-        _ => None,
-    }
-}
 
 fn locator_attrs(loc: &Locator) -> Result<Vec<Attribute>> {
     let mut v = Vec::new();
@@ -1304,6 +1261,20 @@ mod tests {
         assert_eq!(commit_mechanism(Commit::KcvEcb), MechanismType::AES_ECB);
         assert_eq!(commit_mechanism(Commit::KcvEcbDecrypt), MechanismType::AES_ECB);
         assert_eq!(commit_mechanism(Commit::Kw), MechanismType::AES_KEY_WRAP);
+    }
+
+    /// Every boolean the core table names maps to a `cryptoki` attribute, and back.
+    #[test]
+    fn every_tabled_boolean_maps_to_cryptoki() {
+        for class in ["CKO_PRIVATE_KEY", "CKO_PUBLIC_KEY", "CKO_SECRET_KEY", "CKO_CERTIFICATE", "CKO_DATA"] {
+            for name in attrs::observed(class) {
+                assert_eq!(bool_attr(name, true).as_ref().and_then(attr_bool), Some(true), "{name}");
+            }
+        }
+        for name in ["CKA_SIGN_RECOVER", "CKA_VERIFY_RECOVER", "CKA_LOCAL", "CKA_NEVER_EXTRACTABLE", "CKA_ALWAYS_SENSITIVE"] {
+            assert_eq!(bool_attr(name, false).as_ref().and_then(attr_bool), Some(false), "{name}");
+        }
+        assert!(bool_attr("CKA_ALLOWED_MECHANISMS", true).is_none());
     }
 
     #[test]

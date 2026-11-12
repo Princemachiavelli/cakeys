@@ -5,6 +5,7 @@ use cakeys_core::config::{
     AttestationRecord, AttrValue, Binding, Config, Immutables, Lock, LockRealisation, Mode, ObjectCfg, Observed,
     Provenance, SpecCfg, SpecTokenCfg,
 };
+use cakeys_core::attrs;
 use cakeys_core::id::{self, Commit, HmacHash};
 use cakeys_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
@@ -142,52 +143,22 @@ fn check_binding(t: &Target) -> Result<()> {
     }
 }
 
-/// The common booleans every class may declare (PKCS#11 3.2 §4.2).
-const COMMON_ATTRS: [&str; 4] = ["CKA_PRIVATE", "CKA_MODIFIABLE", "CKA_COPYABLE", "CKA_DESTROYABLE"];
-
-/// Usage and policy booleans a class may declare beyond the common ones (PKCS#11 3.2 §4);
-/// `CKA_ALLOWED_MECHANISMS` takes a mechanism list and only key objects may declare it.
-fn declarable(class: &str) -> &'static [&'static str] {
-    match class {
-        "CKO_PRIVATE_KEY" => &[
-            "CKA_SIGN", "CKA_SIGN_RECOVER", "CKA_DECRYPT", "CKA_UNWRAP", "CKA_DERIVE", "CKA_SENSITIVE",
-            "CKA_EXTRACTABLE", "CKA_ALWAYS_AUTHENTICATE", "CKA_WRAP_WITH_TRUSTED", "CKA_ALLOWED_MECHANISMS",
-        ][..],
-        "CKO_PUBLIC_KEY" => &[
-            "CKA_VERIFY", "CKA_VERIFY_RECOVER", "CKA_ENCRYPT", "CKA_WRAP", "CKA_DERIVE", "CKA_TRUSTED",
-            "CKA_ALLOWED_MECHANISMS",
-        ][..],
-        "CKO_SECRET_KEY" => &[
-            "CKA_ENCRYPT", "CKA_DECRYPT", "CKA_SIGN", "CKA_SIGN_RECOVER", "CKA_VERIFY", "CKA_VERIFY_RECOVER",
-            "CKA_WRAP", "CKA_UNWRAP", "CKA_DERIVE", "CKA_SENSITIVE", "CKA_EXTRACTABLE", "CKA_WRAP_WITH_TRUSTED",
-            "CKA_TRUSTED", "CKA_ALLOWED_MECHANISMS",
-        ][..],
-        "CKO_CERTIFICATE" => &["CKA_TRUSTED"][..],
-        _ => &[][..],
-    }
-}
-
 /// Declared attributes must be settable booleans (or a mechanism list for `CKA_ALLOWED_MECHANISMS`)
-/// that the class can carry.
-fn check_declared(t: &Target, class: &str, attrs: &BTreeMap<String, AttrValue>) -> Result<()> {
-    for (name, v) in attrs {
-        match v {
-            AttrValue::Mechanisms(_) if name != "CKA_ALLOWED_MECHANISMS" => {
-                return Err(KmError::Validation(format!(
-                    "{}: {name}: only CKA_ALLOWED_MECHANISMS takes a mechanism list",
-                    t
-                )));
+/// that the class can carry (`cakeys_core::attrs`).
+fn check_declared(t: &Target, class: &str, declared: &BTreeMap<String, AttrValue>) -> Result<()> {
+    for (name, v) in declared {
+        let applies = match v {
+            AttrValue::Mechanisms(_) if name != attrs::ALLOWED_MECHANISMS => {
+                return Err(KmError::Validation(format!("{t}: {name}: only CKA_ALLOWED_MECHANISMS takes a mechanism list")));
             }
-            AttrValue::Bool(_) => {
-                hal::bool_attr(name, false)?;
+            AttrValue::Mechanisms(_) => attrs::has_allowed_mechanisms(class),
+            AttrValue::Bool(_) if !attrs::is_declarable_bool(name) => {
+                return Err(KmError::Validation(format!("unsupported policy attribute {name}")));
             }
-            _ => {}
-        }
-        if !COMMON_ATTRS.contains(&name.as_str()) && !declarable(class).contains(&name.as_str()) {
-            return Err(KmError::Validation(format!(
-                "{}: {name} does not apply to {class} objects",
-                t
-            )));
+            AttrValue::Bool(_) => attrs::declarable(class, name),
+        };
+        if !applies {
+            return Err(KmError::Validation(format!("{t}: {name} does not apply to {class} objects")));
         }
     }
     Ok(())
