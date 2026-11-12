@@ -3,14 +3,16 @@
 //! Needs `CAKEYS_TEST_YUBIKEY_MODULE` (path to libykcs11.so), `CAKEYS_TEST_YUBIKEY_PIN` (path to
 //! a file holding the PIV PIN) and `CAKEYS_TEST_YUBIKEY_MGM` (path to a file holding the admin
 //! credential: the PIV management key in hex, or the PIN on a PIN-protected-management-key
-//! device, which the SO login then also verifies as the PIN). Tests are skipped when any is
-//! unset — they never run in the Nix build — and the secrets are only ever read by the CLI from
-//! these paths: never printed, never stored, never committed.
+//! device). The CLI uses it only for the SO step that generates the key, then logs the user back
+//! in. Tests are skipped when any is unset — they never run in the Nix build — and the secrets
+//! are only ever read by the CLI from these paths: never printed, never stored, never committed.
 //!
 //! The scratch slot is PIV Retired Key 20 (slot `0x95`, `CKA_ID 0x18`): production slots are
-//! never touched. A PIV key cannot be erased, so the test adopts whatever a previous run left
-//! in the slot and only deletes the cert objects around it. Every CLI run is bounded in time:
-//! a touch or a PIN prompt would hang the run and fail the test instead of waiting for a user.
+//! never touched. ykcs11 cannot erase a PIV key (its `C_DestroyObject` clears only the slot's
+//! certificate), so `delete` is refused and the test adopts whatever a previous run left in the
+//! slot; `ykman piv keys delete 95` empties it to exercise generation again. Every CLI run is
+//! bounded in time: a touch or a PIN prompt would hang the run and fail the test instead of
+//! waiting for a user.
 
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use std::path::PathBuf;
@@ -55,7 +57,7 @@ impl Env {
                  pinFile = \"{pin}\"\nmgmKeyFile = \"{mgm}\"\n\n\
                  [objects.rw-test]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
                  [specs.rw-test-yubikey]\nobject = \"rw-test\"\nattributes = {{ CKA_SIGN = true }}\n\
-                 tokens.yubikey = {{ locator = {{ CKA_ID = \"18\" }}, autoCreate = true }}\n",
+                 tokens.yubikey = {{ locator = {{ CKA_ID = \"18\" }}, autoCreate = true, attestation = true }}\n",
                 m = self.module,
                 pin = self.pin,
                 mgm = self.mgm,
@@ -131,11 +133,11 @@ fn code(o: &Output) -> i32 {
 }
 
 /// Read-write on real hardware: generate into the scratch PIV slot under the SO (management-key)
-/// credential, prove possession by signing in the same run (no touch, no prompt), record, verify,
-/// delete, and adopt whatever the slot still holds — PIV keys are not erasable, only their cert
-/// objects are, and ykcs11 keeps attesting the key.
+/// credential, back in the user session attest it and prove possession by signing (no touch, no
+/// prompt), record, verify; `delete` is refused (15) because ykcs11 would leave the key in the
+/// slot, so the realisation stays and verifies.
 #[test]
-fn rw_lifecycle_generates_proves_and_deletes_without_touch() {
+fn rw_lifecycle_generates_attests_proves_and_refuses_delete_without_touch() {
     let Some(e) = env("yubikey_rw") else { return };
     e.config();
     let r = ["realise", "rw-test-yubikey", "--token", "yubikey"];
@@ -152,13 +154,15 @@ fn rw_lifecycle_generates_proves_and_deletes_without_touch() {
         .to_owned();
     assert!(got.starts_with("sha256-"), "{got}");
 
-    // Record it: the pop-sign proof ran in the same (SO) session — the PIN-credential SO login
-    // of a PIN-protected-management-key device also verifies the PIN — and is recorded.
+    // Record it: the pop-sign proof and the attestation ran in the user session, and are recorded.
     let recorded = e.km(&record);
     assert_eq!(code(&recorded), 0, "{}", String::from_utf8_lossy(&recorded.stderr));
     let lock = e.lock();
     let real = &lock["realisations"]["rw-test-yubikey"]["yubikey"];
     assert_eq!(real["binding"].as_str(), Some("pop-sign"), "possession proven by signing, not asserted");
+    assert_eq!(real["attestation"]["kind"].as_str(), Some("yubico-piv"), "generated on device, so attested");
+    assert!(real["attestation"]["id"].as_str().is_some_and(|id| id.starts_with("sha256-")));
+    assert!(lock["objects"]["rw-test"]["ids"].get("piv-attestation").is_none(), "the attestation is per realisation");
     assert_eq!(real["object"].as_str(), Some("rw-test"));
     assert_eq!(
         lock["objects"]["rw-test"]["ids"]["rfc7093m4"].as_str(),
@@ -172,27 +176,22 @@ fn rw_lifecycle_generates_proves_and_deletes_without_touch() {
     let verified = e.km(&verify);
     assert_eq!(code(&verified), 0, "{}", String::from_utf8_lossy(&verified.stderr));
 
-    // Delete: the realisation goes, the object's id stays (delete keeps ids), and the PIV slot
-    // keeps its key — ykcs11 attests it — so a verify is the honest precondition failure.
+    // Delete is refused: ykcs11 would clear only the slot's certificate and report success while
+    // the key stays. Nothing changes — the lock keeps the realisation and it still verifies.
     let del = ["delete", "rw-test-yubikey", "--token", "yubikey", "--update-lock"];
     let deleted = e.km(&del);
-    assert_eq!(code(&deleted), 0, "{}", String::from_utf8_lossy(&deleted.stderr));
-    assert!(e.lock().get("realisations").and_then(|r| r.get("rw-test-yubikey")).is_none());
-    assert_eq!(
-        e.lock()["objects"]["rw-test"]["ids"]["rfc7093m4"].as_str(),
-        Some(got.as_str()),
-        "the object id survives the delete"
-    );
-    let after = e.km(&verify);
-    assert_eq!(code(&after), 14, "material still matches, but the realisation is gone");
+    assert_eq!(code(&deleted), 15, "{}", String::from_utf8_lossy(&deleted.stderr));
+    assert!(String::from_utf8_lossy(&deleted.stderr).contains("ykman piv keys delete 95"));
+    assert!(e.lock()["realisations"]["rw-test-yubikey"]["yubikey"].is_table(), "the realisation stays");
+    assert_eq!(code(&e.km(&verify)), 0);
 
-    // Re-realise adopts what the slot still holds: same key, same id, no new generation needed.
+    // Re-realising is idempotent: the same key, the same id, nothing generated.
     let again = e.km(&record);
     assert_eq!(code(&again), 0, "{}", String::from_utf8_lossy(&again.stderr));
+    assert!(!String::from_utf8_lossy(&again.stderr).contains("created"), "nothing generated");
     assert_eq!(
         e.lock()["objects"]["rw-test"]["ids"]["rfc7093m4"].as_str(),
         Some(got.as_str()),
-        "the leftover key keeps its identity"
+        "the key keeps its identity"
     );
-    assert_eq!(code(&e.km(&verify)), 0);
 }

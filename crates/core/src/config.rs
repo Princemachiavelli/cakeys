@@ -18,7 +18,7 @@ pub struct Config {
     pub specs: BTreeMap<String, SpecCfg>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TokenCfg {
     /// Path to the PKCS#11 module; can be overridden with `--module <token>=<path>`.
@@ -28,14 +28,34 @@ pub struct TokenCfg {
     pub token_label: String,
     pub pin_file: Option<PathBuf>,
     pub pin_env: Option<String>,
-    /// The admin credential for modules whose management operations need one (ykcs11: SO login,
-    /// i.e. the PIV management key in hex — or the PIN on PIN-protected-management-key devices).
-    /// `pinEnv`/`pinFile` remain the *user* credential; this one is passed to `C_Login(CKU_SO)`.
+    /// The admin (Security Officer) credential, for modules that create and destroy objects only
+    /// in an SO session — ykcs11: the PIV management key in hex, or the PIN on a device whose
+    /// management key is PIN-protected. `pinFile`/`pinEnv` remain the *user* credential. Read
+    /// just before such a step, never by `resolve`, `verify` or `check`; the user session is
+    /// restored afterwards, so a user PIN is required. `mgmKeyEnv` wins if both are set;
+    /// `mgmKeyFile` may be `$NAME`, like `pinFile`. Refused on a provider that does not need it.
     pub mgm_key_file: Option<PathBuf>,
     pub mgm_key_env: Option<String>,
     /// Nix `requiredSystemFeatures` entry; defaults to `token-<name>`. Read by the Nix library.
     #[allow(dead_code)]
     pub system_feature: Option<String>,
+    /// tpm2-pkcs11 only: TCTI connection string for the native attestation path (TPM2_Certify),
+    /// in tss-esapi `TctiNameConf` syntax (`"device:/dev/tpmrm0"`, `"tabrmd:bus_type=session"`)
+    /// or a TCTI library name (`"libtss2-tcti-tabrmd.so.0:bus_type=session"`). Defaults to the
+    /// module's own `$TPM2_PKCS11_TCTI`, then `$TPM2TOOLS_TCTI`, then `$TCTI`.
+    pub tcti: Option<String>,
+    /// tpm2-pkcs11 only: directory of the sqlite store backing the module, read (read-only) by
+    /// the native attestation path to find the object's TPM blobs. Defaults to the store
+    /// tpm2-pkcs11 itself opens: `$TPM2_PKCS11_STORE`, else the first of `/etc/tpm2_pkcs11`,
+    /// `$XDG_DATA_HOME/tpm2-pkcs11` (`~/.local/share/tpm2-pkcs11`), `~/.tpm2_pkcs11` and the
+    /// working directory that holds `tpm2_pkcs11.sqlite3`.
+    pub tpm2_store: Option<String>,
+    /// tpm2-pkcs11 only: persistent handle of cakeys' Attestation Key (a restricted signing key
+    /// in the owner hierarchy, created by `realise` if absent, empty auth, and pinned in the
+    /// lock by the `attestation.root` of the realisation). Defaults to the provider's
+    /// `DEFAULT_AK_HANDLE`; `0x`-prefixed hex in 0x81000000..=0x817FFFFF, e.g. `"0x81000016"`.
+    /// An object already there that is not such a key is refused (13).
+    pub ak_handle: Option<String>,
 }
 
 /// Intrinsic object type: identical across every spec of the object.
@@ -137,6 +157,15 @@ pub struct SpecTokenCfg {
     /// anything the host can verify. Recorded in the lock; `publicOnly` implies it.
     #[serde(default)]
     pub binding: Option<Binding>,
+    /// Opt in to the attestation commitment (§3.7 of docs/DESIGN.md): compute the provider's
+    /// attestation scheme for this key on this token (YubiKey PIV attestation verified to the
+    /// pinned Yubico root; a native `TPM2_Certify` for tpm2-pkcs11) and require it ever after —
+    /// a realisation that stops computing it is a scheme downgrade (exit 14). The attestation
+    /// ID never replaces the portable one: it is recorded only beside `rfc7093m4` (keys) or a
+    /// commitment scheme (secret keys), which is what verifies the same material copied to
+    /// another token, where no attestation can exist.
+    #[serde(default)]
+    pub attestation: bool,
 }
 
 /// Arbitrary user values naming the object on one token. Not part of the spec digest.
@@ -294,6 +323,14 @@ impl Lock {
             if let Some((s, v)) = o.ids.iter().find(|(_, v)| !crate::id::is_sri(v)) {
                 return invalid(format!("object '{name}': {s} = \"{v}\" is not a sha256 SRI digest"));
             }
+            // Attestation IDs are per device (§3.7): the same material attested on two TPMs has
+            // two IDs, so they live on each realisation, never in the object's shared `ids`.
+            if let Some(s) = o.ids.keys().find(|s| crate::id::is_attestation_scheme(s)) {
+                return invalid(format!(
+                    "object '{name}' records the attestation scheme {s}: an attestation ID is per device \
+                     and belongs to the realisation that computed it (realisations.<spec>.<token>.attestation)"
+                ));
+            }
             if let Some(l) = o.commitment_label.as_ref().filter(|l| l.is_empty() || !l.bytes().all(|b| b.is_ascii_graphic() || b == b' ')) {
                 return invalid(format!("object '{name}': commitmentLabel {l:?} must be non-empty printable ASCII"));
             }
@@ -351,6 +388,31 @@ impl Lock {
                         "realisation of '{spec}' on '{token}': binding is {} for private keys and only for them",
                         if private { "required" } else { "allowed" }
                     ));
+                }
+                // Attestation evidence (§3.7): a known kind, SRI digests, and never alone — the
+                // realisation must also have matched a portable scheme, the only thing that links
+                // the same material on another token.
+                if let Some(a) = &r.attestation {
+                    if crate::id::attestation_scheme_of(&a.kind).is_none() {
+                        return invalid(format!(
+                            "realisation of '{spec}' on '{token}': unknown attestation kind '{}' (known: {:?})",
+                            a.kind,
+                            crate::id::ATTESTATION_KINDS.map(|(_, k)| k)
+                        ));
+                    }
+                    if let Some((field, v)) = [("root", &a.root), ("id", &a.id)].into_iter().find(|(_, v)| !crate::id::is_sri(v)) {
+                        return invalid(format!(
+                            "realisation of '{spec}' on '{token}': attestation {field} \"{v}\" is not a sha256 SRI digest"
+                        ));
+                    }
+                    if r.schemes.is_empty() {
+                        return invalid(format!(
+                            "realisation of '{spec}' on '{token}' is locked only by its attestation: an \
+                             attestation is provenance for one device and cannot verify the same material \
+                             on another token; it needs a portable scheme (rfc7093m4, or a commitment for \
+                             secret keys) beside it"
+                        ));
+                    }
                 }
             }
         }
@@ -410,6 +472,12 @@ pub struct LockRealisation {
     /// Private keys: how the private object is bound to the identity. Absent: not recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<Binding>,
+    /// The attestation this realisation pinned (§3.7 of docs/DESIGN.md), when its spec opted in:
+    /// the per-device attestation ID and the *anchor* it was verified against — the Yubico root
+    /// (PIV) or the Attestation Key (TPM). Kept here, not in `objects.<name>.ids`: the same
+    /// material attested on two devices has two IDs, joined through the portable `schemes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<AttestationRecord>,
     /// Every boolean attribute the object exposes for its class (`CKA_SIGN = true`, ...), as
     /// read from the token: declared or not. A drift is a change to review.
     pub policy: BTreeMap<String, AttrValue>,
@@ -420,6 +488,19 @@ pub struct LockRealisation {
     pub observed: Option<Observed>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<Provenance>,
+}
+
+/// Offline-verifiable attestation evidence pinned per realisation (§3.7 of docs/DESIGN.md).
+/// `kind` names the attestation (`yubico-piv`, `tpm-certify` — one per scheme, see
+/// `id::ATTESTATION_KINDS`), `root` is the SRI digest of the trust anchor the chain was verified
+/// to: the pinned Yubico root's SPKI for PIV (never the device's own overwritable slot f9), or
+/// the Attestation Key's SPKI for TPM. `id` is the attestation commitment of this device.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AttestationRecord {
+    pub kind: String,
+    pub root: String,
+    pub id: String,
 }
 
 /// Key attributes the token sets when the key is made, which no later operation can restore
@@ -504,6 +585,15 @@ pub fn load_config(path: &Path) -> anyhow::Result<Config> {
         if let Some(m) = t.mgm_key_file.clone() {
             let expanded = env_ref(&m.to_string_lossy(), &format!("token '{name}': mgmKeyFile"))?;
             t.mgm_key_file = Some(PathBuf::from(expanded));
+        }
+        // An SO step logs the user out; without a user PIN to return to, the new private key
+        // could not be found again, let alone proven.
+        if (t.mgm_key_file.is_some() || t.mgm_key_env.is_some()) && t.pin_file.is_none() && t.pin_env.is_none() {
+            return Err(KmError::Validation(format!(
+                "{}: token '{name}': mgmKeyFile/mgmKeyEnv needs a user PIN (pinFile or pinEnv) to return to the user session",
+                path.display()
+            ))
+            .into());
         }
     }
     // A spec's object reference must name something, also when no token ever uses the spec.
@@ -726,6 +816,15 @@ mod tests {
         assert!(err.to_string().contains("KM_UNIT_TEST_UNSET"), "{err}");
         let err = load(&format!("{head}pinFile = \"$HOME/x\"\n")).unwrap_err();
         assert!(err.to_string().contains("neither $NAME"), "{err}");
+        // mgmKeyFile expands the same way; an admin credential only comes with a user PIN.
+        std::env::set_var("KM_UNIT_TEST_MGM", "/env/mgm");
+        let cfg = load(&format!("{head}pinFile = \"/p\"\nmgmKeyFile = \"$KM_UNIT_TEST_MGM\"\n")).unwrap();
+        std::env::remove_var("KM_UNIT_TEST_MGM");
+        assert_eq!(cfg.tokens["t"].mgm_key_file, Some(PathBuf::from("/env/mgm")));
+        for admin in ["mgmKeyFile = \"/so\"", "mgmKeyEnv = \"SO\""] {
+            let err = load(&format!("{head}{admin}\n")).unwrap_err();
+            assert!(err.to_string().contains("needs a user PIN"), "{err}");
+        }
         // A spec's object reference must exist, also when nothing uses the spec.
         let err = load(&format!(
             "{head}\n[objects.o]\nclass = \"CKO_DATA\"\n\n[specs.s]\nobject = \"missing\"\ntokens = {{}}\n"
@@ -746,5 +845,93 @@ mod tests {
         assert_eq!(Binding::PopEcdh.rank(), Binding::PopSign.rank());
         assert_eq!(Binding::PopDecrypt.rank(), Binding::PopSign.rank());
         assert_eq!(Binding::TokenAsserted.to_string(), "token-asserted");
+    }
+
+    /// A minimal valid lock with one object and realisation, for the attestation-invariant
+    /// tests: the caller mutates it and expects `validate` to accept or refuse.
+    fn attestable_lock() -> Lock {
+        let mut ids = BTreeMap::new();
+        ids.insert("rfc7093m4".to_owned(), "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=".to_owned());
+        let mut lock = Lock {
+            version: LOCK_VERSION,
+            ..Default::default()
+        };
+        lock.objects.insert(
+            "k".into(),
+            LockObject {
+                object_type: Some(ObjectCfg { class: "CKO_PRIVATE_KEY".into(), key_type: "CKK_EC".into(), curve: Some("secp256r1".into()), ..Default::default() }),
+                ids,
+                ..Default::default()
+            },
+        );
+        lock.realisations.insert(
+            "s".into(),
+            [(
+                "t".into(),
+                LockRealisation {
+                    object: "k".into(),
+                    locator: Locator { label: Some("k".into()), id: None },
+                    spec_digest: "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=".into(),
+                    mode: Mode::Direct,
+                    schemes: ["rfc7093m4".to_owned()].into_iter().collect(),
+                    public_only: false,
+                    binding: Some(Binding::PopSign),
+                    attestation: None,
+                    policy: BTreeMap::new(),
+                    immutables: Immutables::default(),
+                    observed: None,
+                    provenance: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+        lock
+    }
+
+    /// Attestation IDs are per device and never stand alone (§3.7): they live on the realisation
+    /// that computed them — never in the object's shared `ids`, where the same material attested
+    /// on a second TPM would collide — and that realisation must also hold a portable scheme.
+    #[test]
+    fn attestation_is_per_realisation_and_never_alone() {
+        let path = Path::new("test.lock");
+        let sri = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+        let record = |kind: &str| AttestationRecord { kind: kind.into(), root: sri.into(), id: sri.into() };
+        let real = |lock: &mut Lock| lock.realisations.get_mut("s").unwrap().get_mut("t").unwrap().clone();
+        let set = |lock: &mut Lock, r: LockRealisation| {
+            lock.realisations.get_mut("s").unwrap().insert("t".into(), r);
+        };
+
+        // In the object's ids: refused, wherever it came from.
+        let mut lock = attestable_lock();
+        lock.objects.get_mut("k").unwrap().ids.insert("tpm-certify".to_owned(), sri.to_owned());
+        let err = lock.validate(path).unwrap_err();
+        assert!(err.to_string().contains("belongs to the realisation"), "{err}");
+
+        // On the realisation beside a portable scheme: loads.
+        let mut lock = attestable_lock();
+        let mut r = real(&mut lock);
+        r.attestation = Some(record("tpm-certify"));
+        set(&mut lock, r.clone());
+        lock.clone().validate(path).unwrap();
+
+        // Alone (a realisation whose portable schemes are gone): refused.
+        let mut alone = lock.clone();
+        let mut r2 = r.clone();
+        r2.schemes.clear();
+        set(&mut alone, r2);
+        let err = alone.validate(path).unwrap_err();
+        assert!(err.to_string().contains("locked only by its attestation"), "{err}");
+
+        // Unknown kind, or a non-SRI id: refused.
+        let mut bad = lock.clone();
+        let mut r3 = r.clone();
+        r3.attestation = Some(record("vendor-x"));
+        set(&mut bad, r3);
+        assert!(bad.validate(path).unwrap_err().to_string().contains("unknown attestation kind"));
+        let mut bad = lock;
+        r.attestation.as_mut().unwrap().id = "nope".into();
+        set(&mut bad, r);
+        assert!(bad.validate(path).unwrap_err().to_string().contains("attestation id"));
     }
 }

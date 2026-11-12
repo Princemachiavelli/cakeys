@@ -7,10 +7,18 @@
 //!   `04 81 85 <133 bytes>` (the length is always written as one byte; both `src/lib/tpm.c` and
 //!   `tools/tpm2_pkcs11/utils.py`). Shorter points are unaffected. Upstream fix drafted in
 //!   `upstream/tpm2-pkcs11/` (unfixed as of master a5156c5 and 1.10.1).
+//!
+//! It is also the one module with usable attestation reachable outside PKCS#11: the
+//! `tpm-certify` commitment (docs/DESIGN.md §3.7) certifies the token's keys natively with
+//! `TPM2_Certify` — the module itself exposes no attestation, so `attest` reaches the TPM
+//! through tss-esapi and the module's sqlite store (see [`attest`]).
 
-use cryptoki::mechanism::MechanismType;
-use cakeys_pkcs11::provider::Provider;
+pub mod attest;
+
+use cakeys_pkcs11::provider::{AttestationCap, AttestCtx, Attested, Provider};
 use cakeys_pkcs11::token::ModuleInfo;
+use cakeys_core::Result;
+use cryptoki::mechanism::MechanismType;
 use std::borrow::Cow;
 
 pub struct Tpm2Pkcs11;
@@ -37,6 +45,19 @@ impl Provider for Tpm2Pkcs11 {
 
     fn hint(&self) -> Option<&'static str> {
         Some("secret keys cannot be generated through tpm2-pkcs11; create them with `tpm2_ptool addkey` or `tpm2_ptool import` and adopt them (no autoCreate)")
+    }
+
+    fn attestation(&self) -> Option<AttestationCap> {
+        Some(AttestationCap {
+            scheme: "tpm-certify",
+            // TPM2_Certify proves any loaded object with its private area — private and secret
+            // keys; public-key objects and certificates have no certifiable blob.
+            classes: &["CKO_PRIVATE_KEY", "CKO_SECRET_KEY"],
+        })
+    }
+
+    fn attest(&self, ctx: &AttestCtx<'_>) -> Result<Attested> {
+        attest::attest(ctx)
     }
 }
 

@@ -13,7 +13,7 @@ A spec is policy *about* an object; a realisation is one object's life on one to
 flowchart LR
     subgraph TOML["keys.toml — input, never written by cakeys"]
         direction TB
-        T["[tokens.&lt;name&gt;]<br/>module · tokenLabel · pinFile/pinEnv · systemFeature"]
+        T["[tokens.&lt;name&gt;]<br/>module · tokenLabel · pinFile/pinEnv · mgmKeyFile/mgmKeyEnv · systemFeature"]
         O["[objects.&lt;name&gt;]<br/>class · keyType · certificateType ·<br/>curve / modulusBits / valueLen"]
         S["[specs.&lt;name&gt;]<br/>object → one object only<br/>attributes · publicAttributes<br/>tokens.&lt;t&gt;: locator · autoCreate ·<br/>publicOnly · binding · identity.allow"]
         S -- references --> O
@@ -112,13 +112,20 @@ flowchart LR
     CM -- weaker --> K1["kcv-ecb"]
     K1 -- weaker --> K2["kcv-ecb-dec"]
     K2 -- weaker --> KW["kw"]
+    YK["YubiKey PIV keys<br/>(opt-in, §3.7)"] -. "per realisation,<br/>beside rfc7093m4" .-> PA["piv-attestation<br/>the slot certificate's asserted<br/>claims, verified to the<br/>pinned Yubico root"]
+    TP["tpm2-pkcs11 keys<br/>(opt-in, §3.7)"] -. "per realisation,<br/>beside a portable scheme" .-> TC["tpm-certify<br/>TPM2_Certify over the Name,<br/>fresh nonce, host-verified<br/>against the pinned AK"]
     style CM fill:#dfe
     style KW fill:#fdd
+    style PA fill:#fed
+    style TC fill:#fed
 ```
 
 Only the declared usage bits decide which commitment schemes run (CKA_SIGN → cmac,
 CKA_ENCRYPT → kcv-ecb, …); the first computed is the primary scheme, and the lock stores only
-SHA-256 of the token's output, never a MAC or ciphertext under the key.
+SHA-256 of the token's output, never a MAC or ciphertext under the key. The attestation schemes
+(`attestation = true`) are provenance for one device, not portable identity: the same material
+on another token attests differently or not at all, so each attestation is recorded on its own
+realisation, beside a portable scheme — which is what links the tokens' copies.
 
 ## 5. Usage: the Nix loop
 

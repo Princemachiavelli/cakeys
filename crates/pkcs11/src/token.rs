@@ -1,7 +1,7 @@
 //! PKCS#11 token layer over `cryptoki`. Transparent: PKCS#11 names in, PKCS#11 calls out.
 //! Module-specific behaviour goes through the selected [`Provider`].
 
-use crate::provider::{Provider, Registry};
+use crate::provider::{AttestationCap, AttestCtx, Attested, Provider, Registry};
 pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};
 use cakeys_core::config::{AttrValue, Binding, Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
 use cakeys_core::id::{self, Commit, Curve, HmacHash};
@@ -16,9 +16,11 @@ use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{
     Attribute, AttributeType, CertificateType, KeyType, ObjectClass, ObjectHandle,
 };
-use cryptoki::session::Session;
+use cryptoki::session::{Session, UserType};
+use cryptoki::types::AuthPin;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use zeroize::Zeroizing;
 
 pub struct Token {
     pub name: String,
@@ -31,6 +33,13 @@ pub struct Token {
     session: Session,
     /// Logged in as the user: private objects are visible. Otherwise a public session.
     pub logged_in: bool,
+    /// The token's config, for provider hooks that need more than the module (the native TPM
+    /// attestation path's `tcti`, `tpm2Store` and `akHandle`).
+    pub cfg: TokenCfg,
+    /// The user credential, already read for login, kept only when the provider can attest
+    /// (the TPM attestation path unseals the token's wrapping key with it) or an SO step must
+    /// log the user back in afterwards (`mgmKeyFile`/`mgmKeyEnv`). Zeroized on drop.
+    pin: Option<Zeroizing<String>>,
 }
 
 fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
@@ -59,6 +68,13 @@ impl Token {
             cryptoki: lib.cryptoki_version().to_string(),
         };
         let provider = registry.select(cfg.provider.as_deref(), &module)?;
+        if has_admin(cfg) && !provider.manages_as_so() {
+            return Err(KmError::Validation(format!(
+                "token '{name}': mgmKeyFile/mgmKeyEnv is only for modules that create keys as \
+                 Security Officer (ykcs11); provider {} creates them as the user",
+                provider.name()
+            )));
+        }
         let mut slot = None;
         for s in ctx.get_slots_with_token().map_err(ck("C_GetSlotList"))? {
             let info = ctx.get_token_info(s).map_err(ck("C_GetTokenInfo"))?;
@@ -85,17 +101,23 @@ impl Token {
         let mechanisms = provider.mechanisms(ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?);
         let session = ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?;
         let pin = read_pin(cfg)?;
-        let admin = read_mgm(cfg)?;
-        provider.login(&session, pin.as_deref(), admin.as_deref())?;
+        if let Some(pin) = pin.as_deref() {
+            match session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
+                Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
+                Err(e) => return Err(KmError::Unavailable(format!("C_Login: {e}"))),
+            }
+        }
         Ok(Token {
             name: name.to_owned(),
             label: cfg.token_label.clone(),
             module,
             token,
             mechanisms,
-            provider,
             session,
-            logged_in: pin.is_some() || admin.is_some(),
+            logged_in: pin.is_some(),
+            cfg: cfg.clone(),
+            pin: pin.filter(|_| provider.attestation().is_some() || has_admin(cfg)),
+            provider,
         })
     }
 
@@ -115,6 +137,33 @@ impl Token {
         let mut v: Vec<String> = self.mechanisms.iter().map(|m| m.to_string()).collect();
         v.sort();
         v
+    }
+
+    /// The provider's attestation capability for `object`'s class, when the spec opted in:
+    /// `None` when this module attests nothing (or not this class).
+    pub fn attestation_cap(&self, object: &ObjectCfg) -> Option<AttestationCap> {
+        self.provider
+            .attestation()
+            .filter(|cap| cap.classes.contains(&object.class.as_str()))
+    }
+
+    /// Compute the attestation commitment for `key` (§3.7 of docs/DESIGN.md) through the
+    /// provider: the module-exposed attestation certificate (PIV) or the native TPM2_Certify
+    /// path (tpm2-pkcs11), verified on the host. `spki` is the material SPKI the attestation
+    /// must name (`None` for secret keys); `provision` lets the provider create the device
+    /// state it attests with (only `realise` sets it).
+    pub fn attest(&self, key: ObjectHandle, object: &ObjectCfg, spki: Option<&[u8]>, provision: bool) -> Result<Attested> {
+        let ctx = AttestCtx {
+            session: &self.session,
+            cfg: &self.cfg,
+            token_name: &self.name,
+            key,
+            object,
+            spki,
+            pin: self.pin.as_ref().map(|p| p.as_str()),
+            provision,
+        };
+        self.provider.attest(&ctx)
     }
 
     pub fn find(&self, class: ObjectClass, loc: &Locator) -> Result<Vec<ObjectHandle>> {
@@ -399,6 +448,52 @@ impl Token {
     }
 
     pub fn create(&self, object: &ObjectCfg, spec: &SpecCfg, loc: &Locator) -> Result<()> {
+        self.provider.check_create(object, loc)?;
+        if self.provider.manages_as_so() {
+            self.as_so("generating a key", || self.generate(object, spec, loc))
+        } else {
+            self.generate(object, spec, loc)
+        }
+    }
+
+    /// Run `step` in a Security Officer session (`mgmKeyFile`/`mgmKeyEnv`), for modules that
+    /// create and destroy objects only as SO, then return to the user session. Login state is
+    /// per token, so the user is logged out first. The admin credential is read here, never at
+    /// open, and zeroized when the step ends.
+    fn as_so<T>(&self, what: &str, step: impl FnOnce() -> Result<T>) -> Result<T> {
+        let so = read_mgm(&self.cfg)?.ok_or_else(|| {
+            self.unsupported(format!(
+                "{what} on '{}' needs a Security Officer session: set tokens.{}.mgmKeyFile or mgmKeyEnv",
+                self.name, self.name
+            ))
+        })?;
+        if self.logged_in {
+            self.session.logout().map_err(ck("C_Logout"))?;
+        }
+        let out = match self.session.login(UserType::So, Some(&AuthPin::new(so.as_str().to_owned().into()))) {
+            Ok(()) => {
+                let out = step();
+                let logout = self.session.logout().map_err(ck("C_Logout (SO)"));
+                out.and_then(|v| logout.map(|()| v))
+            }
+            Err(e) => Err(KmError::Unavailable(format!(
+                "C_Login (SO) with mgmKeyFile/mgmKeyEnv: {e}; it must hold the module's admin \
+                 credential (ykcs11: the PIV management key in hex, or the PIN on a device whose \
+                 management key is PIN-protected)"
+            ))),
+        };
+        drop(so);
+        if self.logged_in {
+            let pin = self.pin.as_deref().ok_or_else(|| KmError::Unavailable("no user PIN to log back in with".into()))?;
+            match self.session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
+                Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
+                Err(e) => return Err(KmError::Unavailable(format!("C_Login (back to the user): {e}"))),
+            }
+        }
+        out
+    }
+
+    fn generate(&self, object: &ObjectCfg, spec: &SpecCfg, loc: &Locator) -> Result<()> {
         let mut common = vec![Attribute::Token(true)];
         common.extend(locator_attrs(loc)?);
         let policy = self.policy_template(&spec.attributes)?;
@@ -478,16 +573,33 @@ impl Token {
 
     /// Destroy the key and any public half sharing its locator.
     pub fn destroy(&self, object: &ObjectCfg, loc: &Locator) -> Result<usize> {
-        let mut handles = self.find(class_of(object)?, loc)?;
-        if class_of(object)? == ObjectClass::PRIVATE_KEY {
+        let class = class_of(object)?;
+        let mut handles = self.find(class, loc)?;
+        if class == ObjectClass::PRIVATE_KEY {
             handles.extend(self.find(ObjectClass::PUBLIC_KEY, loc)?);
         }
-        for h in &handles {
-            self.session
-                .destroy_object(*h)
-                .map_err(ck("C_DestroyObject"))?;
+        if handles.is_empty() {
+            return Ok(0);
         }
-        Ok(handles.len())
+        if matches!(class, ObjectClass::PRIVATE_KEY | ObjectClass::PUBLIC_KEY | ObjectClass::SECRET_KEY) {
+            if let Some(advice) = self.provider.keeps_destroyed_keys(loc) {
+                return Err(KmError::Unsupported(format!(
+                    "deleting {} on '{}': {advice}",
+                    object.class, self.name
+                )));
+            }
+        }
+        let run = || {
+            for h in &handles {
+                self.session.destroy_object(*h).map_err(ck("C_DestroyObject"))?;
+            }
+            Ok(handles.len())
+        };
+        if self.provider.manages_as_so() {
+            self.as_so("deleting", run)
+        } else {
+            run()
+        }
     }
 
     /// Compute the material CA-IDs of the object using `mode`; secret keys use `commits`. With
@@ -556,7 +668,7 @@ impl Token {
     ///
     /// Whenever `CKA_PUBLIC_KEY_INFO` is present it must agree with the material: modules may let
     /// it be set without checking (SoftHSM, kryoptic), so it is never trusted on its own.
-    fn spki(&self, h: ObjectHandle, loc: &Locator) -> Result<Vec<u8>> {
+    pub(crate) fn spki(&self, h: ObjectHandle, loc: &Locator) -> Result<Vec<u8>> {
         let spki = match self.material_spki(h)? {
             Some(spki) => spki,
             None => match self.find(ObjectClass::PUBLIC_KEY, loc)?.as_slice() {
@@ -924,32 +1036,38 @@ impl Token {
     }
 }
 
-fn read_pin(cfg: &TokenCfg) -> Result<Option<String>> {
+fn read_pin(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
     if let Some(var) = &cfg.pin_env {
         return std::env::var(var)
-            .map(Some)
+            .map(|s| Some(Zeroizing::new(s)))
             .map_err(|_| KmError::Unavailable(format!("PIN env var {var} not set")));
     }
     if let Some(path) = &cfg.pin_file {
         return std::fs::read_to_string(path)
-            .map(|s| Some(s.trim_end_matches(['\n', '\r']).to_owned()))
+            .map(Zeroizing::new)
+            .map(|s| Some(Zeroizing::new(s.trim_end_matches(['\n', '\r']).to_owned())))
             .map_err(|e| KmError::Unavailable(format!("PIN file {}: {e}", path.display())));
     }
     Ok(None)
 }
 
-/// The admin credential (`mgmKeyEnv`, else `mgmKeyFile`), passed to the provider's SO login. The
-/// format is the module's: ykcs11 takes the PIV management key in hex, or the PIN on devices
-/// whose management key is PIN-protected.
-fn read_mgm(cfg: &TokenCfg) -> Result<Option<String>> {
+fn has_admin(cfg: &TokenCfg) -> bool {
+    cfg.mgm_key_file.is_some() || cfg.mgm_key_env.is_some()
+}
+
+/// The admin credential (`mgmKeyEnv`, else `mgmKeyFile`), read only for an SO step. The format
+/// is the module's: ykcs11 takes the PIV management key in hex, or the PIN on devices whose
+/// management key is PIN-protected.
+fn read_mgm(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
     if let Some(var) = &cfg.mgm_key_env {
         return std::env::var(var)
-            .map(Some)
+            .map(|s| Some(Zeroizing::new(s)))
             .map_err(|_| KmError::Unavailable(format!("management-key env var {var} not set")));
     }
     if let Some(path) = &cfg.mgm_key_file {
         return std::fs::read_to_string(path)
-            .map(|s| Some(s.trim_end_matches(['\n', '\r']).to_owned()))
+            .map(Zeroizing::new)
+            .map(|s| Some(Zeroizing::new(s.trim_end_matches(['\n', '\r']).to_owned())))
             .map_err(|e| KmError::Unavailable(format!("management-key file {}: {e}", path.display())));
     }
     Ok(None)

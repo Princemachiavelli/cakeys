@@ -2,13 +2,13 @@
 
 use crate::token::{self as hal, Token};
 use cakeys_core::config::{
-    AttrValue, Binding, Config, Immutables, Locator, Lock, LockRealisation, Mode, ObjectCfg, Observed, Provenance, SpecCfg,
-    SpecTokenCfg,
+    AttestationRecord, AttrValue, Binding, Config, Immutables, Locator, Lock, LockRealisation, Mode, ObjectCfg, Observed,
+    Provenance, SpecCfg, SpecTokenCfg,
 };
 use cakeys_core::id::{self, Commit, HmacHash};
 use cakeys_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
-use cryptoki::object::KeyType;
+use cryptoki::object::{KeyType, ObjectHandle};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -66,7 +66,22 @@ impl<'a> Target<'a> {
     fn is_certificate(&self) -> bool {
         self.object.class == "CKO_CERTIFICATE"
     }
+
+    /// The attestation scheme this spec's token computes when opted in (`attestation = true`),
+    /// if the provider attests this class at all (§3.7 of docs/DESIGN.md).
+    fn attestation_scheme(&self, tok: &Token) -> Option<&'static str> {
+        self.on_token
+            .attestation
+            .then(|| tok.attestation_cap(self.object))
+            .flatten()
+            .map(|c| c.scheme)
+    }
 }
+
+/// `attestation = true` applies to key objects only: PIV attests asymmetric keys, TPM2_Certify
+/// any TPM-resident object — but certificates and data objects are not keys, and no attestation
+/// scheme exists for them.
+const ATTESTABLE_CLASSES: [&str; 3] = ["CKO_PRIVATE_KEY", "CKO_PUBLIC_KEY", "CKO_SECRET_KEY"];
 
 /// How `t`'s private key is bound to its identity: proven by signing, deriving or decrypting
 /// (`pop-*`) unless the spec opts out (or adopts it publicOnly). `None` for every other class.
@@ -208,6 +223,9 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
             return invalid("publicOnly cannot verify private-key policy attributes; leave attributes empty");
         }
     }
+    if t.on_token.attestation && !ATTESTABLE_CLASSES.contains(&t.object.class.as_str()) {
+        return invalid("attestation = true applies to key objects only (PIV attests asymmetric keys, TPM2_Certify any TPM-resident object)");
+    }
     if matches!(t.object.class.as_str(), "CKO_PUBLIC_KEY" | "CKO_DATA") {
         if t.on_token.auto_create {
             return invalid("public keys and data objects are adopted, not created");
@@ -295,12 +313,18 @@ fn commits(t: &Target, tok: &Token, mode: Mode) -> Result<Vec<Commit>> {
 }
 
 /// Schemes this spec computes on this token: `Target::schemes` narrowed to the commitments the
-/// token implements. Needs no object, so callers can refuse before anything is created.
+/// token implements, plus the attestation scheme when the spec opted in and the provider
+/// attests the class (§3.7). Needs no object, so callers can refuse before anything is created.
 pub fn schemes_on(t: &Target, tok: &Token) -> Result<Vec<&'static str>> {
-    if t.object.class != "CKO_SECRET_KEY" {
-        return Ok(t.schemes());
+    let mut v = if t.object.class != "CKO_SECRET_KEY" {
+        t.schemes()
+    } else {
+        commits(t, tok, plan_mode(t)?)?.iter().map(|c| c.scheme()).collect()
+    };
+    if let Some(s) = t.attestation_scheme(tok) {
+        v.push(s);
     }
-    Ok(commits(t, tok, plan_mode(t)?)?.iter().map(|c| c.scheme()).collect())
+    Ok(v)
 }
 
 /// Token capabilities the mode needs, checked before anything is created.
@@ -310,6 +334,28 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
             "identity mode '{mode}' (opted in for {}) is not implemented in this POC",
             t.what()
         )));
+    }
+    // An attestation the provider cannot compute is refused up front (15), like a scheme the
+    // token lacks: it is part of the identity this realisation promises from now on.
+    if t.on_token.attestation {
+        match tok.provider.attestation() {
+            None => {
+                return Err(tok.unsupported(format!(
+                    "{} opts into attestation, but provider '{}' attests nothing on this module",
+                    t.what(),
+                    tok.provider.name()
+                )))
+            }
+            Some(cap) if !cap.classes.contains(&t.object.class.as_str()) => {
+                return Err(tok.unsupported(format!(
+                    "{} opts into attestation, but provider '{}' attests only {:?}",
+                    t.what(),
+                    tok.provider.name(),
+                    cap.classes
+                )))
+            }
+            Some(_) => {}
+        }
     }
     let mut need = Vec::new();
     if t.on_token.auto_create && t.object.key_type.starts_with("CKK_SHA") && t.object.key_type.ends_with("_HMAC") {
@@ -370,6 +416,11 @@ pub struct Resolved {
     /// Label the commitment schemes in `ids` were computed with (none for public-material IDs).
     #[serde(rename = "commitmentLabel", skip_serializing_if = "Option::is_none")]
     pub commitment_label: Option<String>,
+    /// The attestation this realisation computed (§3.7), when its spec opted in: `kind` names
+    /// the evidence, `root` the anchor it verified to, `id` the per-device attestation ID. Never
+    /// in `ids`, which holds only the portable schemes shared across tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<AttestationRecord>,
 }
 
 /// The label to compute `t`'s commitments with: the one the lock records for the object, else the
@@ -381,8 +432,14 @@ fn commitment_label(t: &Target, lock: &Lock) -> String {
         .unwrap_or_else(|| id::DEFAULT_COMMITMENT_LABEL.to_owned())
 }
 
-/// GET: find by locator (exactly one), check type and attributes, compute IDs. Never writes.
+/// GET: find by locator (exactly one), check type and attributes, compute IDs. Never writes,
+/// neither the lock nor the token: a TPM Attestation Key that is not provisioned yet is an
+/// error here, and only `realise` provisions it.
 pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>> {
+    resolve_with(t, tok, lock, false)
+}
+
+fn resolve_with(t: &Target, tok: &Token, lock: &Lock, provision: bool) -> Result<Option<Resolved>> {
     let mode = plan_mode(t)?;
     let public_only = t.on_token.public_only;
     let Some(h) = tok.find_key(t.object, &t.on_token.locator, public_only)? else {
@@ -396,6 +453,11 @@ pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>>
     let commits = commits(t, tok, mode)?;
     let label = commitment_label(t, lock);
     let binding = binding(t);
+    let ids = tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding)?;
+    let attestation = match t.attestation_scheme(tok) {
+        Some(scheme) => Some(attest(t, tok, lock, h, scheme, provision)?),
+        None => None,
+    };
     Ok(Some(Resolved {
         object: t.object_name.into(),
         spec: t.spec_name.into(),
@@ -404,12 +466,51 @@ pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>>
         mode,
         public_only,
         spec_digest: id::spec_digest(t.object, t.spec),
-        ids: tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding)?,
+        ids,
         binding,
         policy: tok.policy(h)?,
         immutables: tok.immutables(h),
         commitment_label: (!commits.is_empty()).then_some(label),
+        attestation,
     }))
+}
+
+/// The attestation commitment (§3.7): per-device identity from signed provenance. The material
+/// SPKI it must name comes from the same source `rfc7093m4` hashed, so an attestation of other
+/// material is a conflict, not a second opinion.
+///
+/// Once the lock pins an attestation for this realisation, a run that cannot attest — the TPM
+/// unreachable, no PIN, no attestation certificate — is a scheme downgrade (14), like any
+/// scheme a realisation stops computing. Conflicts (13) and ambiguity (12) keep their codes:
+/// they say the evidence is wrong, not absent.
+fn attest(t: &Target, tok: &Token, lock: &Lock, h: ObjectHandle, scheme: &'static str, provision: bool) -> Result<AttestationRecord> {
+    let asymmetric = matches!(t.object.class.as_str(), "CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY");
+    let spki = if asymmetric { Some(tok.spki(h, &t.on_token.locator)?) } else { None };
+    let kind = id::attestation_kind(scheme)
+        .ok_or_else(|| KmError::Unsupported(format!("provider '{}' advertises unknown attestation scheme {scheme}", tok.provider.name())))?;
+    let a = match tok.attest(h, t.object, spki.as_deref(), provision) {
+        Ok(a) => a,
+        Err(e @ (KmError::Unavailable(_) | KmError::Unsupported(_) | KmError::NotFound(_))) => {
+            let locked = lock.realisations.get(t.spec_name).and_then(|m| m.get(t.token_name)).and_then(|r| r.attestation.as_ref());
+            return Err(match locked {
+                Some(was) => KmError::PreconditionFailed(format!(
+                    "identity downgrade for {}: it was realised with a {} attestation, which it cannot compute now: {e}",
+                    t.what(),
+                    was.kind
+                )),
+                None => e,
+            });
+        }
+        Err(e) => return Err(e),
+    };
+    if a.scheme != scheme {
+        return Err(KmError::Conflict(format!(
+            "provider '{}' advertises {scheme} but attested {}",
+            tok.provider.name(),
+            a.scheme
+        )));
+    }
+    Ok(AttestationRecord { kind: kind.to_owned(), root: a.root, id: a.id })
 }
 
 /// Compare computed IDs with the lock; optionally record them (only ever fills gaps).
@@ -468,6 +569,46 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
                     t.what()
                 )));
             }
+        }
+        // The attestation is compared, even under --update-lock (§3.7). A different anchor means
+        // a different device (or a re-provisioned TPM) signed the provenance; a different ID
+        // under the same anchor means the attested object changed (re-imported, other
+        // attributes or policy). Both are changes to review, never to re-record — and a lost
+        // attestation is a scheme downgrade.
+        match (&prev.attestation, &r.attestation) {
+            (Some(was), Some(now)) if was.kind != now.kind || was.root != now.root => {
+                return Err(KmError::PreconditionFailed(format!(
+                    "attestation anchor for {} changed since it was realised ({} root {}, now {} root {}); \
+                     the material needs a new object name",
+                    t.what(),
+                    was.kind,
+                    was.root,
+                    now.kind,
+                    now.root
+                )));
+            }
+            (Some(was), Some(now)) if was.id != now.id => {
+                return Err(KmError::HashMismatch {
+                    what: format!("{} ({} attestation)", t.what(), was.kind),
+                    expected: was.id.clone(),
+                    got: now.id.clone(),
+                });
+            }
+            (Some(was), None) => {
+                return Err(KmError::PreconditionFailed(format!(
+                    "identity downgrade for {}: it was realised with a {} attestation, which it no longer computes",
+                    t.what(),
+                    was.kind
+                )));
+            }
+            (None, Some(now)) if !update => {
+                eprintln!(
+                    "note: {} also has a {} attestation the lock does not record; `realise --update-lock` adds it",
+                    t.what(),
+                    now.kind
+                );
+            }
+            _ => {}
         }
         let lost: Vec<&String> = prev.schemes.iter().filter(|s| !r.ids.contains_key(*s)).collect();
         if !lost.is_empty() {
@@ -636,6 +777,7 @@ fn reconcile(t: &Target, tok: &Token, r: &Resolved, lock: &mut Lock, update: boo
             schemes: r.ids.keys().cloned().collect(),
             public_only: r.public_only,
             binding: r.binding,
+            attestation: r.attestation.clone(),
             policy: r.policy.clone(),
             immutables: r.immutables.clone(),
             observed: Some(Observed {
@@ -739,7 +881,7 @@ pub fn verify(t: &Target, tok: &Token, lock: &Lock) -> Result<Resolved> {
 pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, update: bool) -> Result<(Resolved, bool)> {
     let mode = plan_mode(t)?;
     check_capabilities(t, tok, mode)?;
-    let r = match resolve(t, tok, lock)? {
+    let r = match resolve_with(t, tok, lock, true)? {
         Some(r) => r,
         None if t.on_token.auto_create => {
             // D1: the lock already pins this object's material, so a fresh generation can only
@@ -767,15 +909,25 @@ pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, update: bool) -> Result
             }
             tok.create(t.object, t.spec, &t.on_token.locator)?;
             eprintln!("created {}", t.what());
-            match resolve(t, tok, lock).and_then(|r| {
+            match resolve_with(t, tok, lock, true).and_then(|r| {
                 r.ok_or_else(|| KmError::NotFound(format!("{} vanished after creation", t.what())))
             }) {
                 Ok(r) => r,
                 Err(e) => {
                     // The locator was empty before (If-None-Match), so this removes only what we
-                    // just made: a refused realise leaves nothing behind.
-                    let n = tok.destroy(t.object, &t.on_token.locator).unwrap_or(0);
-                    eprintln!("removed {n} object(s) just created for {}: its identity could not be established", t.what());
+                    // just made: a refused realise leaves nothing behind, unless the module cannot
+                    // delete keys (ykcs11), which is then said rather than claimed.
+                    match tok.destroy(t.object, &t.on_token.locator) {
+                        Ok(n) => eprintln!(
+                            "removed {n} object(s) just created for {}: its identity could not be established",
+                            t.what()
+                        ),
+                        Err(d) => eprintln!(
+                            "the key just created for {} is still on the token (its identity could not be \
+                             established, and removing it failed: {d})",
+                            t.what()
+                        ),
+                    }
                     return Err(e);
                 }
             }

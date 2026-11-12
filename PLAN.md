@@ -6,13 +6,18 @@
 
 Parked deliberately; the lock stays `version = 1`, a draft, until the reviews pass.
 
-- **Attestation (P2-11, lock review):** record an `attestation` per realisation — YubiKey PIV
-  attestation verified to the pinned Yubico root (not the device's own slot f9 self-cert), or
-  `TPM2_Certify` with an EK-chained AK. A new binding level `attested` would sit above the
-  `pop-*`s and replace them only by explicit opt-in. Note the shipped YubiKey keys are imported,
-  and Yubico attests only keys generated on-device.
+- ~~**Attestation (P2-11, lock review):**~~ **done 2026-11-12** as the attestation commitments
+  (`piv-attestation`, `tpm-certify`, docs/DESIGN.md §3.7): YubiKey PIV verified to the pinned
+  Yubico root, and a native `TPM2_Certify` with a cakeys-provisioned AK — pinned per
+  realisation (an attestation ID is per device), always beside a portable scheme, never
+  standalone. Review findings and their fixes: `ISSUES.md`. Remainders still parked:
+  - `binding = "attested"` as an opt-in replacement for `pop-*` (the touch-free PIV case);
+  - EK-chaining the AK (today the AK is TOFU through the pinned `attestation.root`);
+  - vendor HSM attestation blobs (Luna PKC, Google, nShield — out-of-band, not researched).
 - **Native TPM backend:** `tss-esapi` beside tpm2-pkcs11 — PCR/policy-bound keys need the native
-  path; `pubkeyhash` must agree across both paths (swtpm + the real `/dev/tpmrm0`).
+  path; `pubkeyhash` must agree across both paths (swtpm + the real `/dev/tpmrm0`). The
+  attestation path (§3.7) now speaks tss-esapi for TPM2_Certify and the store; the rest of the
+  native backend (policy specs, locators, `tpm2-name`) stays parked.
 - **Post-quantum:** no token here has PQ hardware (YubiKey PIV, TPM 2.0); map the PKCS#11 v3
   PQ key types (`CKK_*ML*`, `CKA_PARAMETER_SET`) and the kryptic module when they matter.
 - **Lock merge rule (S16 remainder):** M3 serializes updaters and D3 collects stale entries, but

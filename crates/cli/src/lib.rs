@@ -202,11 +202,15 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
             };
             let (spec_name, token_name) = cfg.pick_spec(object, spec.as_deref(), token.as_deref())?;
             let t = Target::new(&cfg, &spec_name, &token_name)?;
+            // The schemes the spec can compute; an attestation scheme (§3.7) depends on the
+            // token's provider, so only schemes_on below can tell whether this one computes it.
             if let Some(s) = scheme {
-                if !t.schemes().contains(&s) {
+                let attested = t.on_token.attestation && cakeys_core::id::is_attestation_scheme(s);
+                if !attested && !t.schemes().contains(&s) {
                     return Err(KmError::Unsupported(format!(
-                        "scheme '{s}' for '{object}'; it has {:?}",
-                        t.schemes()
+                        "scheme '{s}' for '{object}'; it has {:?}{}",
+                        t.schemes(),
+                        if t.on_token.attestation { " plus its token's attestation scheme" } else { "" }
                     ))
                     .into());
                 }
@@ -224,13 +228,26 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
             }
             let (r, _) = ops::realise(&t, &tok, &mut lock, false)?;
             // An explicitly requested scheme must itself be locked (and so verified), not just
-            // computed next to another scheme that matched.
+            // computed next to another scheme that matched. An attestation is locked on this
+            // realisation (§3.7), not on the object.
             if let Some(s) = scheme {
-                if lock.objects.get(&t.spec.object).and_then(|o| o.ids.get(s)).is_none() {
+                let (locked, got) = if cakeys_core::id::is_attestation_scheme(s) {
+                    let kind = cakeys_core::id::attestation_kind(s);
+                    let locked = lock
+                        .realisations
+                        .get(&spec_name)
+                        .and_then(|m| m.get(&token_name))
+                        .and_then(|r| r.attestation.as_ref())
+                        .is_some_and(|a| Some(a.kind.as_str()) == kind);
+                    (locked, r.attestation.as_ref().map(|a| a.id.clone()))
+                } else {
+                    (lock.objects.get(&t.spec.object).is_some_and(|o| o.ids.contains_key(s)), r.ids.get(s).cloned())
+                };
+                if !locked {
                     return Err(KmError::HashMismatch {
                         what: format!("'{object}' (scheme {s})"),
                         expected: "<none>".into(),
-                        got: r.ids.get(s).cloned().unwrap_or_default(),
+                        got: got.unwrap_or_default(),
                     }
                     .into());
                 }

@@ -138,6 +138,13 @@
           opensc
           openssl
           pcsc-tools
+          tpm2-tss
+          pkg-config
+          swtpm
+          tpm2-abrmd
+          tpm2-tools
+          tpm2-pkcs11
+          dbus
         ];
       };
 

@@ -2,12 +2,10 @@
 //! overrides only what its module gets wrong. Every fix-up must return exactly what a
 //! spec-compliant module would, so identities stay portable across modules and versions.
 
-use cryptoki::error::Error as CkError;
-use cryptoki::error::RvError;
 use cryptoki::mechanism::MechanismType;
-use cryptoki::session::{Session, UserType};
-use cryptoki::types::AuthPin;
-use cakeys_core::config::ModuleInfo;
+use cryptoki::object::ObjectHandle;
+use cryptoki::session::Session;
+use cakeys_core::config::{Locator, ModuleInfo, ObjectCfg, TokenCfg};
 use cakeys_core::{KmError, Result};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -34,25 +32,96 @@ pub trait Provider: Send + Sync {
         None
     }
 
-    /// Log the session in. The default logs in as the *user* with the PIN (`pinFile`/`pinEnv`) and
-    /// ignores `admin`. `admin` is the credential from `mgmKeyFile`/`mgmKeyEnv`, for modules whose
-    /// management operations (generate, import, delete) need a second login that a module keeps
-    /// one state for: ykcs11 overrides this to log in as SO instead, which on
-    /// PIN-protected-management-key devices also verifies the PIN, so signing works in that run.
-    fn login(&self, session: &Session, pin: Option<&str>, _admin: Option<&str>) -> Result<()> {
-        user_login(session, pin)
+    /// Whether the module creates and destroys token objects only in a Security Officer session
+    /// (ykcs11: the PIV management key). Then `tokens.<t>.mgmKeyFile`/`mgmKeyEnv` is used for exactly those
+    /// steps; elsewhere it is refused, since an SO there cannot do what the user does.
+    fn manages_as_so(&self) -> bool {
+        false
+    }
+
+    /// Refuse a generation the module would carry out somewhere other than under `loc`, before
+    /// anything is created (ykcs11 places the key by `CKA_ID` and ignores `CKA_LABEL`).
+    fn check_create(&self, _object: &ObjectCfg, _loc: &Locator) -> Result<()> {
+        Ok(())
+    }
+
+    /// `Some(advice)` when the module's `C_DestroyObject` reports success but leaves the key on
+    /// the device (ykcs11 only clears the slot's certificate): deleting is then refused (15)
+    /// instead of claimed, and the advice names how to remove the key.
+    fn keeps_destroyed_keys(&self, _loc: &Locator) -> Option<String> {
+        None
+    }
+
+    /// The attestation commitment this provider can compute (§3.7 of docs/DESIGN.md), if any:
+    /// the scheme it records and the object classes it can attest.
+    /// `None` (the default): this module exposes no attestation, so a spec opting into one is
+    /// refused (15) before anything is created.
+    fn attestation(&self) -> Option<AttestationCap> {
+        None
+    }
+
+    /// Compute the attestation commitment for `key` on its token (called only when the spec
+    /// opted in and [`Provider::attestation`] covers the class). Returns the canonical scheme
+    /// digest plus the anchor it was verified to. A missing attestation is an error naming the
+    /// reason (e.g. an imported key, or a session that could not attest), never a pass; an
+    /// attestation that names other material than `ctx.spki` is a conflict (13).
+    fn attest(&self, _ctx: &AttestCtx<'_>) -> Result<Attested> {
+        // Unreachable in practice: the caller checks `attestation()` first. Kept as an error so
+        // a provider advertising a capability must actually implement it.
+        Err(KmError::Unsupported(format!("{} exposes no attestation", self.name())))
     }
 }
 
-/// The default: log in as the user with the PIN, when the config gives one.
-pub fn user_login(session: &Session, pin: Option<&str>) -> Result<()> {
-    if let Some(pin) = pin {
-        match session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
-            Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
-            Err(e) => return Err(KmError::Unavailable(format!("C_Login: {e}"))),
+/// What a provider can attest (§3.7 of docs/DESIGN.md), from [`Provider::attestation`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttestationCap {
+    /// Scheme the commitment records (one of `cakeys_core::id::ATTESTATION_SCHEMES`; its
+    /// lock-record kind is `cakeys_core::id::attestation_kind`).
+    pub scheme: &'static str,
+    /// Object classes (`"CKO_PRIVATE_KEY"`, ...) the attestation covers.
+    pub classes: &'static [&'static str],
+}
+
+/// Everything an attestation may need beyond the PKCS#11 module: the session (to find the
+/// certificate objects a module exposes), the config (the native TPM path's TCTI and store) and
+/// the PIN (the TPM path unseals the token's wrapping key with it), plus the material SPKI the
+/// attestation must name (`None` exactly for secret keys, which have none).
+///
+/// `provision` is true only under `realise`: a provider that keeps device state to attest with
+/// (the TPM Attestation Key) may create it then, never on a read (`resolve`, `verify`).
+pub struct AttestCtx<'a> {
+    pub session: &'a Session,
+    pub cfg: &'a TokenCfg,
+    pub token_name: &'a str,
+    pub key: ObjectHandle,
+    pub object: &'a ObjectCfg,
+    pub spki: Option<&'a [u8]>,
+    pub pin: Option<&'a str>,
+    pub provision: bool,
+}
+
+impl AttestCtx<'_> {
+    /// The material SPKI, required for asymmetric classes: an attestation that could not be
+    /// cross-checked against the key `rfc7093m4` names would be provenance for unknown material.
+    pub fn required_spki(&self) -> Result<Option<&[u8]>> {
+        match (self.object.class.as_str(), self.spki) {
+            ("CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY", None) => Err(KmError::Unsupported(format!(
+                "attesting a {} needs its material SPKI to cross-check against",
+                self.object.class
+            ))),
+            (_, spki) => Ok(spki),
         }
     }
-    Ok(())
+}
+
+/// A computed attestation commitment (§3.7 of docs/DESIGN.md): the scheme digest plus the
+/// anchor the attestation was verified against — recorded in the lock as the realisation's
+/// `attestation = { kind, root, id }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attested {
+    pub scheme: &'static str,
+    pub id: String,
+    pub root: String,
 }
 
 /// Plain PKCS#11, used when no registered provider recognises the module.
