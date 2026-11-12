@@ -42,6 +42,7 @@ Work on the design-review tiers. The lock stays `version = 1`, a draft. Native T
 | 5394c10 | **Refactor R7a**: the spec-only model (`Target`, `plan_mode`, binding and attribute checks, declared commitments) moves to `cakeys_core::plan`; `ObjectCfg::{curve, checked_key_type}` |
 | ea130db | **Refactor R7b**: `cakeys_core::reconcile` (`compare` + `record`, `LockWrite`, `Facts`); `Notes` replace the library `eprintln!`s and print on success and error; `Observed.session` is an enum; four HSM-free lock-rule unit tests; YubiKey read-only verify 6/6 |
 | 460c567 | **Refactor R8**: `check` verb logic (scheme gating before the token opens, compare-only realise, locked-scheme rule) moves into `ops::check` |
+| 006e5b7 | **Refactor R9**: `token.rs` split into `token/` (`mod`, `policy`, `generate`, `identity`, `possession`, `uri`), moved unchanged |
 
 ## Done (uncommitted; passes the local gate): (empty — next task below)
 
