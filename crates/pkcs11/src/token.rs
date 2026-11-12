@@ -375,28 +375,64 @@ impl Token {
         Ok(ids)
     }
 
-    /// SPKI of a key: from the object itself (`CKA_PUBLIC_KEY_INFO`, RSA modulus/exponent,
-    /// EC point), else from the single public key object under the same locator.
+    /// Canonical SPKI of a key, from key material rather than from what the module asserts:
+    /// 1. the object's own material (RSA modulus/exponent, EC params and point);
+    /// 2. else the single public key object under the locator (EC/Edwards private keys expose no
+    ///    point; possession of the private half is proven separately);
+    /// 3. else `CKA_PUBLIC_KEY_INFO`.
+    ///
+    /// Whenever `CKA_PUBLIC_KEY_INFO` is present it must agree with the material: modules may let
+    /// it be set without checking (SoftHSM, kryoptic), so it is never trusted on its own.
     fn spki(&self, h: ObjectHandle, loc: &Locator) -> Result<Vec<u8>> {
-        if let Ok(spki) = self.public_spki(h) {
-            return Ok(spki);
-        }
-        let public = self.find(ObjectClass::PUBLIC_KEY, loc)?;
-        match public.as_slice() {
-            [p] => self.public_spki(*p),
-            [] => Err(KmError::NotFound("no public key object under the locator".into())),
-            _ => Err(KmError::Ambiguous("several public key objects share the locator".into())),
+        let spki = match self.material_spki(h)? {
+            Some(spki) => spki,
+            None => match self.find(ObjectClass::PUBLIC_KEY, loc)?.as_slice() {
+                [p] => {
+                    let spki = match self.material_spki(*p)? {
+                        Some(spki) => spki,
+                        None => self.public_key_info(*p).ok_or_else(|| {
+                            KmError::NotFound("the public key object exposes no key material".into())
+                        })??,
+                    };
+                    self.cross_check(*p, &spki)?;
+                    spki
+                }
+                [] => match self.public_key_info(h) {
+                    Some(spki) => spki?,
+                    None => return Err(KmError::NotFound("no public key object under the locator".into())),
+                },
+                _ => return Err(KmError::Ambiguous("several public key objects share the locator".into())),
+            },
+        };
+        self.cross_check(h, &spki)?;
+        Ok(spki)
+    }
+
+    /// `CKA_PUBLIC_KEY_INFO`, canonicalized; `None` when absent, empty or unreadable (ykcs11
+    /// reports length 0 and then fails the fetch with CKR_ARGUMENTS_BAD).
+    fn public_key_info(&self, h: ObjectHandle) -> Option<Result<Vec<u8>>> {
+        match self.attr(h, AttributeType::PublicKeyInfo) {
+            Ok(Some(Attribute::PublicKeyInfo(der))) if !der.is_empty() => Some(id::spki_canonical(&der)),
+            _ => None,
         }
     }
 
-    fn public_spki(&self, h: ObjectHandle) -> Result<Vec<u8>> {
-        // Optional shortcut. Some providers (ykcs11) report it with length 0 and then reject the
-        // fetch with CKR_ARGUMENTS_BAD, so any error here just means "absent".
-        if let Ok(Some(Attribute::PublicKeyInfo(der))) = self.attr(h, AttributeType::PublicKeyInfo) {
-            if !der.is_empty() {
-                return id::spki_canonical(&der);
-            }
+    /// Fail when the object's `CKA_PUBLIC_KEY_INFO` names a different key than its material.
+    fn cross_check(&self, h: ObjectHandle, spki: &[u8]) -> Result<()> {
+        match self.public_key_info(h) {
+            Some(Ok(asserted)) if asserted != spki => Err(KmError::Conflict(format!(
+                "token '{}' reports a CKA_PUBLIC_KEY_INFO ({}) that disagrees with the key material ({})",
+                self.name,
+                id::sri(&asserted),
+                id::sri(spki)
+            ))),
+            _ => Ok(()),
         }
+    }
+
+    /// SPKI from the key material attributes of `h`; `None` when it carries none (e.g. an EC
+    /// private key without `CKA_EC_POINT`).
+    fn material_spki(&self, h: ObjectHandle) -> Result<Option<Vec<u8>>> {
         match self.attr(h, AttributeType::KeyType)? {
             Some(Attribute::KeyType(KeyType::EC | KeyType::EC_EDWARDS)) => {
                 let a = self
@@ -406,8 +442,9 @@ impl Token {
                 match a.as_slice() {
                     [Attribute::EcParams(params), Attribute::EcPoint(p)] => Curve::from_params(params)
                         .ok_or_else(|| KmError::Unsupported(format!("CKA_EC_PARAMS {params:02x?}")))?
-                        .spki_from_point(&self.provider.ec_point(p)),
-                    _ => Err(KmError::NotFound("no CKA_EC_PARAMS/CKA_EC_POINT on this object".into())),
+                        .spki_from_point(&self.provider.ec_point(p))
+                        .map(Some),
+                    _ => Ok(None),
                 }
             }
             Some(Attribute::KeyType(KeyType::RSA)) => {
@@ -416,8 +453,8 @@ impl Token {
                     .get_attributes(h, &[AttributeType::Modulus, AttributeType::PublicExponent])
                     .map_err(ck("C_GetAttributeValue"))?;
                 match a.as_slice() {
-                    [Attribute::Modulus(n), Attribute::PublicExponent(e)] => id::rsa_spki(n, e),
-                    _ => Err(KmError::NotFound("no CKA_MODULUS/CKA_PUBLIC_EXPONENT".into())),
+                    [Attribute::Modulus(n), Attribute::PublicExponent(e)] => id::rsa_spki(n, e).map(Some),
+                    _ => Ok(None),
                 }
             }
             kt => Err(KmError::Unsupported(format!("public key of type {kt:?}"))),

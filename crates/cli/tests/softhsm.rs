@@ -1242,11 +1242,11 @@ fn the_lock_pins_type_spec_provenance_and_schemes() {
     assert_eq!(code(&e.km(&verify)), 17);
 }
 
-/// KNOWN GAP H1b (report "Cakeys lock file design review"), documents current behaviour:
-/// cakeys reads CKA_PUBLIC_KEY_INFO first, and SoftHSM lets a user set it on a private key without
-/// checking it. A different RSA private key carrying the old SPKI still verifies.
+/// H1b (report "Cakeys lock file design review"): SoftHSM lets a user set CKA_PUBLIC_KEY_INFO on a
+/// private key without checking it. cakeys reads the key material first and only cross-checks the
+/// asserted SPKI, so a different RSA private key carrying the old SPKI is a conflict.
 #[test]
-fn known_gap_h1b_settable_public_key_info_hides_a_swapped_rsa_key() {
+fn h1b_a_forged_public_key_info_is_a_conflict() {
     let Some(e) = env("gap_h1b") else { return };
     e.config(
         "[objects.r]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
@@ -1267,7 +1267,9 @@ fn known_gap_h1b_settable_public_key_info_hides_a_swapped_rsa_key() {
     s.destroy_object(original).unwrap();
     s.update_attributes(other, &[Attribute::Label(b"h1b".to_vec()), Attribute::PublicKeyInfo(spki_a)]).unwrap();
     drop(s);
-    assert_eq!(code(&e.km(&["verify", "r", "--token", "softhsm"])), 0, "H1b fixed? flip this assertion");
+    let o = e.km(&["verify", "r", "--token", "softhsm"]);
+    assert_eq!(code(&o), 13);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("disagrees with the key material"));
 }
 
 /// KNOWN GAP S3: a (spec, token) pair the lock has never recorded verifies on object IDs alone.
