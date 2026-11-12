@@ -24,6 +24,16 @@ let
   startId = config.nix.settings.start-id or 872415232;
   idCount = config.nix.settings.id-count or 8388608;
 
+  # Host GIDs builds run with: the nixbld group, or with auto-allocate-uids one GID per 65536-ID
+  # slot (Nix's Linux sandbox always uses a user namespace there and sets gid = the slot's first
+  # uid; supplementary groups are dropped). PLAN.md, "Build identities".
+  slotSize = 65536;
+  buildGids =
+    if autoUids then
+      lib.genList (i: startId + i * slotSize) (idCount / slotSize)
+    else
+      [ config.users.groups.nixbld.gid ];
+
   # feature -> sandbox paths, merged over tokens that share a feature.
   hookMap = lib.zipAttrsWith (_: lib.concatLists) (
     lib.mapAttrsToList (_: t: {
@@ -135,6 +145,13 @@ in
       `nix.settings.auto-allocate-uids` is set). Tokens with `pcscd = true` get its socket
     '';
 
+    sandbox.tpm2.enable = mkEnableOption ''
+      the TPM resource manager (`/dev/tpmrm*`) for builds: a udev rule adds an ACL granting
+      read/write to every build GID (the nixbld group, or each auto-allocated UID slot). Builds
+      still only see the device if a token lists it in `sandboxPaths` and they require that
+      token's feature. Builds select it with `TPM2TOOLS_TCTI`/`TPM2_PKCS11_TCTI=device:/dev/tpmrm0`
+    '';
+
     sandbox.uidRange.enable = mkEnableOption ''
       builds that require the `uid-range` system feature (e.g. systemd-nspawn NixOS tests).
       Turns on `auto-allocate-uids`, so builds no longer run as nixbld users
@@ -199,6 +216,21 @@ in
       # Upstream PrivateUsers=identity maps only UIDs 0-65535, so pcscd would see
       # auto-allocated build UIDs as 65534 and polkit would never match them.
       systemd.services.pcscd.serviceConfig.PrivateUsers = mkIf autoUids false;
+    })
+
+    (mkIf cfg.sandbox.tpm2.enable {
+      assertions = [
+        {
+          assertion = autoUids -> lib.mod idCount slotSize == 0;
+          message = "services.key-management.sandbox.tpm2: nix.settings.id-count must be a multiple of ${toString slotSize}";
+        }
+      ];
+      # Runs after the node exists (and after NixOS's tss/0660 rule), on every add/change event.
+      services.udev.extraRules = ''
+        KERNEL=="tpmrm[0-9]*", RUN+="${pkgs.acl}/bin/setfacl -m ${
+          lib.concatMapStringsSep "," (g: "g:${toString g}:rw") buildGids
+        } /dev/%k"
+      '';
     })
 
     (mkIf (cfg.tokens != { }) {

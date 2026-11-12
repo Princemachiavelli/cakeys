@@ -400,6 +400,14 @@ URI=$(key-mgmnt ${configFile} myobject.id.pubkeyhash)   # or: --token hsm-bob
 5. **Caching semantics are now correct.** A cached consumer output proves the key existed and matched *when that output was produced*, which is exactly when it was used. For **runtime** use (services), the same command runs as `ExecStartPre=` or as a NixOS activation check.
 
 ## Sandbox access (host setup: `nixosModules.default`)
+**What real builds may reach (decided 2026-11-11).** Only two things:
+- **A p11-kit forwarding socket.** `p11-kit server` runs outside the sandbox with the real module loaded; the build talks PKCS#11 over the socket.
+- **A real TPM** (`/dev/tpmrm0`).
+
+**Token databases are never exposed raw.** A SoftHSM token directory holds the keys encrypted under a PIN-derived key: reading it allows offline PIN guessing and then key extraction, and writing it allows tampering. SoftHSM is only the test reference; the VM tests' SoftHSM sandbox path exists for testing only.
+- **tpm2-pkcs11's SQLite store is not SoftHSM.** It holds TPM-wrapped blobs that only that TPM can load, and its PIN checks are enforced by the TPM, including dictionary-attack lockout. Even so, real builds should use it through `p11-kit server` (a socket), not as a file.
+- **Direct `/dev/tpmrm0` is for the native TPM backend.** There, keys are persistent handles or context blobs, with no extra database.
+
 **Per-build access through a pre-build-hook (2026-11-11).** Global `extra-sandbox-paths` reach every build on the host. Instead, the module installs `nix.settings.pre-build-hook` (`nix/sandbox-hook.sh`, bash + jq over `nix derivation show`). The hook grants a token's paths only to builds whose `requiredSystemFeatures` name that token's `systemFeature`.
 - **Protocol (Nix 2.35.3 source).** nix-daemon runs the hook as root for every sandboxed build, with the `.drv` path and the sandbox directory. Stdout is `extra-sandbox-paths`, then `/path` or `/target=/source` lines, then a blank line. There is no optional `?` form, so the hook only emits paths that exist.
 - **Feature sources.** The hook reads features from the env string (plain derivations), from `structuredAttrs` (JSON v4, Nix 2.33+), and from `env.__json` (older JSON).
@@ -417,10 +425,15 @@ URI=$(key-mgmnt ${configFile} myobject.id.pubkeyhash)   # or: --token hsm-bob
   - Supplementary groups are dropped.
   - Probe: `uid_map 1000 872480768 1`, `gid_map 100 872480768 1`, no groups.
 - **For ACLs, that means** a device such as `/dev/tpmrm0` can be opened to every possible build with one ACL holding `g:nixbld` and the 128 slot GIDs. A 128-entry ACL is accepted on tmpfs.
-- **To verify in the TPM VM test:** that ACLs work on devtmpfs through the build's user namespace, and that udev applies the rule (`udevadm trigger` on a live host).
+- **Implemented and tested.** `services.key-management.sandbox.tpm2.enable` adds a udev rule that sets this ACL on `/dev/tpmrm*`. `checks.tpm` is a VM with a QEMU vTPM and two nodes, one with auto-allocated UIDs and one with nixbld users:
+  - The ACL lists the 128 slot GIDs, or GID 30000 on the nixbld node.
+  - A build requiring `token-tpm` runs `tpm2_getrandom` through `device:/dev/tpmrm0`. This works with auto-allocated UIDs (UID = GID = slot 0), in a `uid-range` build (root in the sandbox maps to the slot's first ID), and with nixbld users.
+  - A build without the feature does not see the device.
+  - After `setfacl -b`, the same build gets `Permission denied`; a udev change event (`udevadm trigger`) restores access.
+  - So ACLs on devtmpfs work through the build's user namespace. On a live host the rule applies at the next add/change event.
 - **It depends on Nix internals** (slot size, always a user namespace), so the module computes the slot GIDs from `start-id`/`id-count` and asserts `id-count % 65536 == 0`.
 
-**tpm2-pkcs11 store: read-only by default** (to decide with the TPM VM test).
+**tpm2-pkcs11 store (superseded: real builds reach tpm2-pkcs11 through `p11-kit server`, see above).**
 - **Using a key does not need write access.** The store holds TPM-wrapped key blobs and the PIN-wrapped auth; signing reads it.
 - **Write access is below the PIN.** Through PKCS#11 a PIN guards operations, but anyone who can write the SQLite file can delete or corrupt tokens and keys without one. The store is the only copy of each wrapped key, so that loss is permanent. On a YubiKey, destructive operations need the PIN or management key.
 - **Write access only buys `autoCreate` inside a build,** and on tpm2-pkcs11 only for EC/RSA, since secret keys cannot be generated there at all. It also covers SQLite housekeeping.

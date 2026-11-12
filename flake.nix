@@ -79,6 +79,10 @@
           inherit pkgs key-mgmnt pcsc-probe;
           module = self.nixosModules.default;
         };
+        tpm = import ./nix/tpm-test.nix {
+          inherit pkgs key-mgmnt;
+          module = self.nixosModules.default;
+        };
         lib =
           let
             keys = self.lib.mkKeys {
