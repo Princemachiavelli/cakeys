@@ -16,7 +16,7 @@ pairs = ["whonix-db"]
 
 [objects.whonix-db-cert.type]
 class = "CKO_CERTIFICATE"
-keyType = "CKC_X_509"
+certificateType = "CKC_X_509"
 
 [objects.whonix-db-cert.ids]
 certhash = "sha256-9R0r07PgT23TlaiY7XTNvRTEHT2rZ2zCZKpdm8T7sWY="
@@ -38,7 +38,7 @@ pairs = ["whonix-kek"]
 
 [objects.whonix-kek-cert.type]
 class = "CKO_CERTIFICATE"
-keyType = "CKC_X_509"
+certificateType = "CKC_X_509"
 
 [objects.whonix-kek-cert.ids]
 certhash = "sha256-WJGDfabt4hR/KLOkNfdb7B+XYC58lSC+aY9JMZrPUR0="
@@ -60,7 +60,7 @@ pairs = ["whonix-pk"]
 
 [objects.whonix-pk-cert.type]
 class = "CKO_CERTIFICATE"
-keyType = "CKC_X_509"
+certificateType = "CKC_X_509"
 
 [objects.whonix-pk-cert.ids]
 certhash = "sha256-GYIqs0Zncl3wM5I8YU4m3pYLgD1zIGL/mY/yVUOCw0I="
@@ -68,7 +68,7 @@ rfc7093m4 = "sha256-djAUop6ocYdPWijQvA0wOiiWUUeYtk7y2gQZQu+B6j0="
 
 [realisations.whonix-db-cert-piv.yubikey]
 object = "whonix-db-cert"
-specDigest = "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
+specDigest = "sha256-1RYKnSVKlK3XckaD3EScGIoGyQgH4NyCvkrCm7Y6+Cs="
 mode = "direct"
 schemes = [
     "certhash",
@@ -124,7 +124,7 @@ provider = "ykcs11"
 cakeysVersion = "0.1.0"
 
 [realisations.whonix-db-cert-piv.yubikey.provenance.module]
-path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
@@ -215,7 +215,7 @@ firmware = "5.74"
 
 [realisations.whonix-kek-cert-piv.yubikey]
 object = "whonix-kek-cert"
-specDigest = "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
+specDigest = "sha256-1RYKnSVKlK3XckaD3EScGIoGyQgH4NyCvkrCm7Y6+Cs="
 mode = "direct"
 schemes = [
     "certhash",
@@ -271,7 +271,7 @@ provider = "ykcs11"
 cakeysVersion = "0.1.0"
 
 [realisations.whonix-kek-cert-piv.yubikey.provenance.module]
-path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
@@ -362,7 +362,7 @@ firmware = "5.74"
 
 [realisations.whonix-pk-cert-piv.yubikey]
 object = "whonix-pk-cert"
-specDigest = "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
+specDigest = "sha256-1RYKnSVKlK3XckaD3EScGIoGyQgH4NyCvkrCm7Y6+Cs="
 mode = "direct"
 schemes = [
     "certhash",
@@ -418,7 +418,7 @@ provider = "ykcs11"
 cakeysVersion = "0.1.0"
 
 [realisations.whonix-pk-cert-piv.yubikey.provenance.module]
-path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"

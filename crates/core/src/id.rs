@@ -29,13 +29,17 @@ pub fn is_sri(s: &str) -> bool {
         .is_some_and(|d| d.len() == 32)
 }
 
-/// Hash of the canonical JSON of (object type, policy attributes).
+/// Hash of the canonical JSON of (object type, policy attributes, public-half attributes).
 pub fn spec_digest(object: &ObjectCfg, spec: &SpecCfg) -> String {
-    let doc = serde_json::json!({
+    let mut doc = serde_json::json!({
         "v": 1,
         "type": object,
         "attributes": spec.attributes,
     });
+    // Only when declared, so the digests of specs without it are unchanged.
+    if !spec.public_attributes.is_empty() {
+        doc["publicAttributes"] = serde_json::json!(spec.public_attributes);
+    }
     sri(canonical_json(doc).to_string().as_bytes())
 }
 
@@ -196,6 +200,20 @@ impl Curve {
         }
     }
 
+    /// The canonical `curve` name, as recorded in the lock.
+    pub fn name(self) -> &'static str {
+        match self {
+            Curve::P256 => "secp256r1",
+            Curve::P384 => "secp384r1",
+            Curve::P521 => "secp521r1",
+            Curve::Secp256k1 => "secp256k1",
+            Curve::BrainpoolP256r1 => "brainpoolP256r1",
+            Curve::BrainpoolP384r1 => "brainpoolP384r1",
+            Curve::Ed25519 => "edwards25519",
+            Curve::Ed448 => "edwards448",
+        }
+    }
+
     pub fn edwards(self) -> bool {
         matches!(self, Curve::Ed25519 | Curve::Ed448)
     }
@@ -325,6 +343,7 @@ fn encode(key: &impl EncodePublicKey) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AttrValue;
     use std::collections::BTreeMap;
 
     #[test]
@@ -338,12 +357,12 @@ mod tests {
             class: "CKO_PRIVATE_KEY".into(),
             key_type: "CKK_EC".into(),
             curve: Some("secp256r1".into()),
-            value_len: None,
-            modulus_bits: None,
+            ..Default::default()
         };
         let mk = |pairs: &[(&str, bool)]| SpecCfg {
             object: "o".into(),
-            attributes: pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect::<BTreeMap<_, _>>(),
+            attributes: pairs.iter().map(|(k, v)| (k.to_string(), AttrValue::Bool(*v))).collect::<BTreeMap<_, _>>(),
+            public_attributes: BTreeMap::new(),
             tokens: BTreeMap::new(),
         };
         let a = spec_digest(&obj, &mk(&[("CKA_SIGN", true), ("CKA_SENSITIVE", true)]));
@@ -351,6 +370,24 @@ mod tests {
         let c = spec_digest(&obj, &mk(&[("CKA_SENSITIVE", false), ("CKA_SIGN", true)]));
         assert_eq!(a, b);
         assert_ne!(a, c);
+        // A reordered mechanism list is the same set: the same digest. (`load_config` sorts
+        // declared lists through `AttrValue::mechanisms`, so the digest only sees sorted ones.)
+        let list = |names: &[&str]| SpecCfg {
+            object: "o".into(),
+            attributes: [("CKA_ALLOWED_MECHANISMS".to_owned(), AttrValue::mechanisms(names.iter().map(|s| s.to_string())))]
+                .into_iter()
+                .collect(),
+            public_attributes: BTreeMap::new(),
+            tokens: BTreeMap::new(),
+        };
+        assert_eq!(
+            spec_digest(&obj, &list(&["CKM_ECDSA", "CKM_ECDSA_SHA256"])),
+            spec_digest(&obj, &list(&["CKM_ECDSA_SHA256", "CKM_ECDSA"]))
+        );
+        // `publicAttributes` take part only when declared.
+        let mut with_public = mk(&[]);
+        with_public.public_attributes.insert("CKA_VERIFY".into(), AttrValue::Bool(true));
+        assert_ne!(spec_digest(&obj, &mk(&[])), spec_digest(&obj, &with_public));
     }
 
     #[test]
@@ -377,9 +414,8 @@ mod tests {
         let obj = ObjectCfg {
             class: "CKO_SECRET_KEY".into(),
             key_type: "CKK_GENERIC_SECRET".into(),
-            curve: None,
             value_len: Some(32),
-            modulus_bits: None,
+            ..Default::default()
         };
         assert_eq!(
             Commit::Hmac(HmacHash::Sha256).label(DEFAULT_COMMITMENT_LABEL, &obj),
@@ -416,18 +452,26 @@ mod tests {
                 curve: curve.map(Into::into),
                 value_len: vl,
                 modulus_bits: bits,
+                ..Default::default()
             };
             let s = SpecCfg {
                 object: "x".into(),
-                attributes: attrs.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+                attributes: attrs.iter().map(|(k, v)| (k.to_string(), AttrValue::Bool(*v))).collect(),
+                public_attributes: BTreeMap::new(),
                 tokens: BTreeMap::new(),
             };
             spec_digest(&o, &s)
         };
-        assert_eq!(
-            mk("CKO_CERTIFICATE", "CKC_X_509", None, None, None, &[]),
-            "sha256-noKljWvl1rKxRb3BFem4wdjP4ssY9O8CaK9GePRzsqk="
-        );
+        // The certificate type lives in `certificateType` (this digest changed when it did, and
+        // is pinned since: the RSA, EC and generic-secret digests below must not move).
+        let cert = ObjectCfg { class: "CKO_CERTIFICATE".into(), certificate_type: Some("CKC_X_509".into()), ..Default::default() };
+        let none = SpecCfg {
+            object: "x".into(),
+            attributes: BTreeMap::new(),
+            public_attributes: BTreeMap::new(),
+            tokens: BTreeMap::new(),
+        };
+        assert_eq!(spec_digest(&cert, &none), "sha256-1RYKnSVKlK3XckaD3EScGIoGyQgH4NyCvkrCm7Y6+Cs=");
         assert_eq!(
             mk("CKO_PRIVATE_KEY", "CKK_RSA", None, None, Some(2048), &[]),
             "sha256-8k3VUT0T/6zvM/Yp6b2isKLrYOrK2vfyd7UWWz/DUiY="
@@ -450,9 +494,8 @@ mod tests {
         let obj = |kt: &str, len: u64| ObjectCfg {
             class: "CKO_SECRET_KEY".into(),
             key_type: kt.into(),
-            curve: None,
             value_len: Some(len),
-            modulus_bits: None,
+            ..Default::default()
         };
         // What each commitment scheme feeds the token (the token's output is then hashed).
         for (kt, len, c, want) in [

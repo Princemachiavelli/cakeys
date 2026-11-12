@@ -34,14 +34,18 @@ pub struct TokenCfg {
 }
 
 /// Intrinsic object type: identical across every spec of the object.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ObjectCfg {
     pub class: String,
-    /// `CKK_*` for keys; certificates use `certificateType = "CKC_X_509"`; data objects have none.
-    /// Omitted from the spec digest when empty, so existing digests are unchanged.
-    #[serde(default, alias = "certificateType", skip_serializing_if = "String::is_empty")]
+    /// `CKK_*` for keys; empty (and omitted) for certificates and data objects.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub key_type: String,
+    /// `CKC_*` for certificates (`CKC_X_509`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate_type: Option<String>,
+    /// Canonical curve name after loading (`secp256r1`, not `P-256`), so an alias is never a
+    /// different type or spec digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curve: Option<String>,
     /// Secret key length in bytes.
@@ -52,14 +56,63 @@ pub struct ObjectCfg {
     pub modulus_bits: Option<u64>,
 }
 
+impl ObjectCfg {
+    /// Replace a curve alias by its canonical name (unknown names are left for validation).
+    pub fn canonicalize(&mut self) {
+        if let Some(c) = self.curve.as_deref().and_then(|c| crate::id::Curve::from_cfg(&self.key_type, c)) {
+            self.curve = Some(c.name().to_owned());
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SpecCfg {
     pub object: String,
-    /// Policy attributes (`CKA_SIGN = true`, ...). Part of the spec digest.
+    /// Policy attributes of the object (`CKA_SIGN = true`, `CKA_ALLOWED_MECHANISMS = [...]`).
+    /// Part of the spec digest.
     #[serde(default)]
-    pub attributes: BTreeMap<String, bool>,
+    pub attributes: BTreeMap<String, AttrValue>,
+    /// Policy attributes of a private key's public key object (`CKA_VERIFY = true`, ...): set
+    /// when generating, checked on the public object. In the spec digest only when present.
+    #[serde(default, rename = "publicAttributes")]
+    pub public_attributes: BTreeMap<String, AttrValue>,
     pub tokens: BTreeMap<String, SpecTokenCfg>,
+}
+
+impl SpecCfg {
+    /// A declared boolean attribute.
+    pub fn flag(&self, name: &str) -> Option<bool> {
+        match self.attributes.get(name) {
+            Some(AttrValue::Bool(b)) => Some(*b),
+            _ => None,
+        }
+    }
+}
+
+/// A policy attribute value: a boolean, or a set of `CKM_*` names (`CKA_ALLOWED_MECHANISMS`),
+/// kept sorted and without duplicates so its order never changes a digest.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum AttrValue {
+    Bool(bool),
+    Mechanisms(Vec<String>),
+}
+
+impl AttrValue {
+    pub fn mechanisms(names: impl IntoIterator<Item = String>) -> AttrValue {
+        let set: BTreeSet<String> = names.into_iter().collect();
+        AttrValue::Mechanisms(set.into_iter().collect())
+    }
+}
+
+impl std::fmt::Display for AttrValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AttrValue::Bool(b) => write!(f, "{b}"),
+            AttrValue::Mechanisms(m) => write!(f, "[{}]", m.join(", ")),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -346,7 +399,7 @@ pub struct LockRealisation {
     pub binding: Option<Binding>,
     /// Every boolean attribute the object exposes for its class (`CKA_SIGN = true`, ...), as
     /// read from the token: declared or not. A drift is a change to review.
-    pub policy: BTreeMap<String, bool>,
+    pub policy: BTreeMap<String, AttrValue>,
     /// Attributes fixed when the object was made; one that weakens means it was replaced.
     #[serde(default, skip_serializing_if = "Immutables::is_empty")]
     pub immutables: Immutables,
@@ -422,14 +475,30 @@ pub struct Provenance {
 pub fn load_config(path: &Path) -> anyhow::Result<Config> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
-    toml::from_str(&text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display())).into())
+    let mut cfg: Config =
+        toml::from_str(&text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
+    for o in cfg.objects.values_mut() {
+        o.canonicalize();
+    }
+    for s in cfg.specs.values_mut() {
+        for v in s.attributes.values_mut().chain(s.public_attributes.values_mut()) {
+            if let AttrValue::Mechanisms(m) = v {
+                *v = AttrValue::mechanisms(std::mem::take(m));
+            }
+        }
+    }
+    Ok(cfg)
 }
 
 pub fn load_lock(path: &Path) -> anyhow::Result<Lock> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
-            let lock: Lock = toml::from_str(&text)
+            let mut lock: Lock = toml::from_str(&text)
                 .map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
+            // Recorded types compare equal to canonicalized keys.toml types.
+            for t in lock.objects.values_mut().filter_map(|o| o.object_type.as_mut()) {
+                t.canonicalize();
+            }
             Ok(lock.validate(path)?)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Lock {

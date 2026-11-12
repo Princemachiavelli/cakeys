@@ -3,7 +3,7 @@
 
 use crate::provider::{Provider, Registry};
 pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};
-use cakeys_core::config::{Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
+use cakeys_core::config::{AttrValue, Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
 use cakeys_core::id::{self, Commit, Curve, HmacHash};
 use cakeys_core::pop;
 use cakeys_core::{KmError, Result};
@@ -257,8 +257,9 @@ impl Token {
 
 
     /// The observed policy vector: every boolean attribute of `h`'s class (PKCS#11 3.2 §4) the
-    /// token reports, declared in the spec or not. Unreadable ones are left out.
-    pub fn policy(&self, h: ObjectHandle) -> Result<BTreeMap<String, bool>> {
+    /// token reports, declared in the spec or not, plus `CKA_ALLOWED_MECHANISMS` on key objects
+    /// when readable. Unreadable ones are left out.
+    pub fn policy(&self, h: ObjectHandle) -> Result<BTreeMap<String, AttrValue>> {
         let class = match self.attr(h, AttributeType::Class)? {
             Some(Attribute::Class(c)) => c,
             _ => return Err(KmError::Conflict("object has no CKA_CLASS".into())),
@@ -284,7 +285,18 @@ impl Token {
             // Unsupported or unreadable on this token: not part of what it can show.
             if let Ok(Some(a)) = self.attr(h, policy_attr_type(name)) {
                 if let Some(b) = attr_bool(&a) {
-                    policy.insert(name.to_owned(), b);
+                    policy.insert(name.to_owned(), AttrValue::Bool(b));
+                }
+            }
+        }
+        if matches!(class, ObjectClass::PRIVATE_KEY | ObjectClass::PUBLIC_KEY | ObjectClass::SECRET_KEY) {
+            // An empty list is not reported: it is indistinguishable from absent and means none.
+            if let Ok(Some(Attribute::AllowedMechanisms(m))) = self.attr(h, AttributeType::AllowedMechanisms) {
+                if !m.is_empty() {
+                    policy.insert(
+                        "CKA_ALLOWED_MECHANISMS".to_owned(),
+                        AttrValue::mechanisms(m.iter().map(|m| m.to_string())),
+                    );
                 }
             }
         }
@@ -309,35 +321,108 @@ impl Token {
             },
         }
     }
-    /// Every boolean policy attribute of the spec must match the live object.
+    /// Every declared policy attribute of the spec must match the live object.
     fn check_policy(&self, h: ObjectHandle, spec: &SpecCfg) -> Result<()> {
-        for (name, want) in &spec.attributes {
-            let (t, _) = bool_attr(name, *want)?;
-            match self.attr(h, t)?.as_ref().and_then(attr_bool) {
-                Some(have) if have == *want => {}
-                have => {
-                    return Err(KmError::Conflict(format!(
-                        "{name} is {have:?} on token '{}', spec wants {want}",
-                        self.name
-                    )))
-                }
+        self.check_attrs(h, &spec.attributes, "")
+    }
+
+    fn check_attrs(&self, h: ObjectHandle, attrs: &BTreeMap<String, AttrValue>, what: &str) -> Result<()> {
+        for (name, want) in attrs {
+            let have = self.attr_value(h, name)?;
+            if have.as_ref() != Some(want) {
+                return Err(KmError::Conflict(format!(
+                    "{what}{name} is {} on token '{}', spec wants {want}",
+                    have.map_or("unreadable".into(), |v| v.to_string()),
+                    self.name
+                )));
             }
         }
         Ok(())
     }
 
+    /// A policy attribute as the spec writes it.
+    fn attr_value(&self, h: ObjectHandle, name: &str) -> Result<Option<AttrValue>> {
+        if name == "CKA_ALLOWED_MECHANISMS" {
+            return Ok(match self.attr(h, AttributeType::AllowedMechanisms)? {
+                Some(Attribute::AllowedMechanisms(m)) => Some(AttrValue::mechanisms(m.iter().map(|m| m.to_string()))),
+                _ => None,
+            });
+        }
+        let (t, _) = bool_attr(name, false)?;
+        Ok(self.attr(h, t)?.as_ref().and_then(attr_bool).map(AttrValue::Bool))
+    }
+
+    /// `publicAttributes`, checked on the public key object of the pair: `h` itself when adopting
+    /// publicOnly, else the single public key object under the locator, which must hold the
+    /// same public key as `h`.
+    pub fn check_public_half(&self, h: ObjectHandle, spec: &SpecCfg, loc: &Locator, public_only: bool) -> Result<()> {
+        if spec.public_attributes.is_empty() {
+            return Ok(());
+        }
+        let p = if public_only {
+            h
+        } else {
+            let p = match self.find(ObjectClass::PUBLIC_KEY, loc)?.as_slice() {
+                [p] => *p,
+                [] => {
+                    return Err(KmError::NotFound(
+                        "publicAttributes are declared, but there is no public key object under the locator".into(),
+                    ))
+                }
+                _ => return Err(KmError::Ambiguous("several public key objects share the locator".into())),
+            };
+            if let (Some(a), Some(b)) = (self.material_spki(p)?, self.material_spki(h)?) {
+                if a != b {
+                    return Err(KmError::Conflict("the public key object under the locator holds another key".into()));
+                }
+            }
+            p
+        };
+        self.check_attrs(p, &spec.public_attributes, "public key object: ")
+    }
+
+    /// Template attributes for declared policy values. Mechanism names must be ones the token
+    /// offers.
+    fn policy_template(&self, attrs: &BTreeMap<String, AttrValue>) -> Result<Vec<Attribute>> {
+        attrs
+            .iter()
+            .map(|(name, v)| match v {
+                AttrValue::Bool(b) => Ok(bool_attr(name, *b)?.1),
+                AttrValue::Mechanisms(names) => names
+                    .iter()
+                    .map(|n| {
+                        self.mechanisms.iter().copied().find(|m| m.to_string() == *n).ok_or_else(|| {
+                            self.unsupported(format!("{name}: token '{}' does not offer {n}", self.name))
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()
+                    .map(Attribute::AllowedMechanisms),
+            })
+            .collect()
+    }
+
     pub fn create(&self, object: &ObjectCfg, spec: &SpecCfg, loc: &Locator) -> Result<()> {
         let mut common = vec![Attribute::Token(true)];
         common.extend(locator_attrs(loc)?);
-        let mut policy = Vec::new();
-        for (name, v) in &spec.attributes {
-            policy.push(bool_attr(name, *v)?.1);
-        }
+        let policy = self.policy_template(&spec.attributes)?;
         let gen = |e: CkError| self.unsupported(format!("generating key on '{}': {e}", self.name));
         let class = class_of(object)?;
         if class != ObjectClass::PRIVATE_KEY && class != ObjectClass::SECRET_KEY {
             return Err(KmError::Validation(format!("{} objects are adopted, not created", object.class)));
         }
+        // Defaults for the public half of a pair, left out when the declared attributes set the
+        // same type (the template may not carry a type twice).
+        let public_half = |public: &mut Vec<Attribute>| -> Result<()> {
+            public.extend(self.policy_template(&spec.public_attributes)?);
+            let declared = |n| spec.attributes.contains_key(n) || spec.public_attributes.contains_key(n);
+            if !declared("CKA_VERIFY") {
+                public.push(Attribute::Verify(true));
+            }
+            if !declared("CKA_PRIVATE") {
+                public.push(Attribute::Private(false));
+            }
+            Ok(())
+        };
         match key_type_of(object)? {
             KeyType::RSA => {
                 let bits = object.modulus_bits.ok_or_else(|| {
@@ -347,9 +432,8 @@ impl Token {
                 public.extend([
                     Attribute::ModulusBits(bits.into()),
                     Attribute::PublicExponent(vec![1, 0, 1]),
-                    Attribute::Verify(true),
-                    Attribute::Private(false),
                 ]);
+                public_half(&mut public)?;
                 let mut private = common;
                 private.extend(policy);
                 self.session
@@ -365,11 +449,8 @@ impl Token {
                     Mechanism::EccKeyPairGen
                 };
                 let mut public = common.clone();
-                public.extend([
-                    Attribute::EcParams(curve.params().to_vec()),
-                    Attribute::Verify(true),
-                    Attribute::Private(false),
-                ]);
+                public.extend([Attribute::EcParams(curve.params().to_vec())]);
+                public_half(&mut public)?;
                 let mut private = common;
                 private.extend(policy);
                 self.session

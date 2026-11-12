@@ -6,7 +6,7 @@
 
 #![allow(clippy::type_complexity)] // table-driven cases
 
-use cryptoki::mechanism::Mechanism;
+use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use cryptoki::session::Session;
 use hmac::{Hmac, KeyInit, Mac};
@@ -822,6 +822,120 @@ fn policy_drift_and_replaced_objects_are_refused() {
     assert_eq!(code(&e.km(&r)), 14, "also when updating");
 }
 
+/// P2-10: `CKA_ALLOWED_MECHANISMS` and `publicAttributes` are set when generating, checked on
+/// the object (and on the public half), and a mechanism list the spec no longer names is a
+/// conflict like any other attribute mismatch.
+#[test]
+fn allowed_mechanisms_and_public_attributes() {
+    let Some(e) = env("attrs") else { return };
+    // The token is shared between runs: remove anything left under the test's locators.
+    let s = e.session();
+    for c in [ObjectClass::PRIVATE_KEY, ObjectClass::PUBLIC_KEY] {
+        for h in s.find_objects(&[Attribute::Class(c), Attribute::Label(b"attrs".to_vec())]).unwrap() {
+            s.destroy_object(h).unwrap();
+        }
+    }
+    let spec = |mechs: &str, public: &str| {
+        format!(
+            "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.k]\nobject = \"k\"\n\
+             attributes = {{ CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false, CKA_ALLOWED_MECHANISMS = [{mechs}] }}\n\
+             publicAttributes = {{ {public} }}\n\
+             tokens.softhsm = {{ locator = {{ CKA_LABEL = \"attrs\" }}, autoCreate = true }}\n"
+        )
+    };
+    // A mechanism the token does not offer: refused before anything is created.
+    e.config(&spec("\"CKM_BOGUS\"", "CKA_VERIFY = false"));
+    assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm"])), 15);
+    assert!(
+        s.find_objects(&[Attribute::Label(b"attrs".to_vec())]).unwrap().is_empty(),
+        "nothing was created"
+    );
+
+    // Created with the restriction; the public half honors publicAttributes (the default
+    // CKA_VERIFY = true is left out where they override it).
+    e.config(&spec("\"CKM_ECDSA\", \"CKM_ECDSA_SHA256\"", "CKA_VERIFY = false"));
+    assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm", "--update-lock"])), 0);
+    let digest = e.lock()["realisations"]["k"]["softhsm"]["specDigest"].as_str().unwrap().to_owned();
+    let policy = &e.lock()["realisations"]["k"]["softhsm"]["policy"]["CKA_ALLOWED_MECHANISMS"];
+    assert_eq!(policy.as_array().map(|a| a.len()), Some(2), "{policy}");
+    assert_eq!(policy[0].as_str(), Some("CKM_ECDSA"), "{policy}");
+    let public = s
+        .find_objects(&[Attribute::Class(ObjectClass::PUBLIC_KEY), Attribute::Label(b"attrs".to_vec())])
+        .unwrap()[0];
+    let Attribute::Verify(verify) = &s.get_attributes(public, &[AttributeType::Verify]).unwrap()[0] else {
+        panic!("no CKA_VERIFY on the public half")
+    };
+    assert!(!*verify, "publicAttributes = {{ CKA_VERIFY = false }}");
+    assert_eq!(code(&e.km(&["verify", "k", "--token", "softhsm"])), 0);
+
+    // The same set in another order is the same spec: same digest, no change to review.
+    e.config(&spec("\"CKM_ECDSA_SHA256\", \"CKM_ECDSA\"", "CKA_VERIFY = false"));
+    assert_eq!(code(&e.km(&["verify", "k", "--token", "softhsm"])), 0);
+    assert_eq!(e.lock()["realisations"]["k"]["softhsm"]["specDigest"].as_str(), Some(digest.as_str()));
+
+    // A different set does not satisfy the object: a conflict naming the attribute.
+    e.config(&spec("\"CKM_ECDSA_SHA256\"", "CKA_VERIFY = false"));
+    let o = e.km(&["verify", "k", "--token", "softhsm"]);
+    assert_eq!(code(&o), 13);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("CKA_ALLOWED_MECHANISMS"));
+    e.config(&spec("\"CKM_ECDSA\", \"CKM_ECDSA_SHA256\"", "CKA_VERIFY = false"));
+
+    // A changed public half is a conflict; without it publicAttributes cannot be checked (11).
+    s.update_attributes(public, &[Attribute::Verify(true)]).unwrap();
+    assert_eq!(code(&e.km(&["verify", "k", "--token", "softhsm"])), 13);
+    s.update_attributes(public, &[Attribute::Verify(false)]).unwrap();
+    s.destroy_object(public).unwrap();
+    assert_eq!(code(&e.km(&["verify", "k", "--token", "softhsm"])), 11);
+}
+
+/// P2-10: `CKA_ALLOWED_MECHANISMS` joins the observed policy vector. It is read-only once set
+/// (PKCS#11 3.2 §4), so it cannot drift on the token; a lock recorded before cakeys observed it
+/// still verifies, with a note, and `realise --update-lock` records it.
+#[test]
+fn an_undeclared_mechanism_list_is_observed_policy() {
+    let Some(e) = env("attrs-drift") else { return };
+    let s = e.session();
+    // The token is shared between runs: remove anything left under the test's locators.
+    for c in [ObjectClass::PRIVATE_KEY, ObjectClass::PUBLIC_KEY] {
+        for h in s.find_objects(&[Attribute::Class(c), Attribute::Label(b"attrs-drift".to_vec())]).unwrap() {
+            s.destroy_object(h).unwrap();
+        }
+    }
+    let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let common = [
+        Attribute::Token(true),
+        Attribute::Label(b"attrs-drift".to_vec()),
+        Attribute::AllowedMechanisms(vec![MechanismType::ECDSA, MechanismType::ECDSA_SHA256]),
+    ];
+    s.generate_key_pair(
+        &Mechanism::EccKeyPairGen,
+        &[&common[..], &[Attribute::EcParams(ec_params.clone())]].concat(),
+        &[&common[..], &[Attribute::Sign(true), Attribute::Sensitive(true), Attribute::Extractable(false)]].concat(),
+    )
+    .unwrap();
+    e.config(
+        "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n\
+         tokens.softhsm = { locator = { CKA_LABEL = \"attrs-drift\" } }\n",
+    );
+    assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm", "--update-lock"])), 0);
+    let policy = &e.lock()["realisations"]["k"]["softhsm"]["policy"];
+    assert_eq!(policy.get("CKA_ALLOWED_MECHANISMS").map(|m| m.as_array().unwrap().len()), Some(2), "{policy}");
+
+    // A lock that does not record the list (e.g. written by an older cakeys) still verifies.
+    let path = e.dir.join("keys.lock");
+    let text = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("CKA_ALLOWED_MECHANISMS = [\n    \"CKM_ECDSA\",\n    \"CKM_ECDSA_SHA256\",\n]\n", "");
+    std::fs::write(&path, text).unwrap();
+    let o = e.km(&["verify", "k", "--token", "softhsm"]);
+    assert_eq!(code(&o), 0);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("CKA_ALLOWED_MECHANISMS"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm", "--update-lock"])), 0);
+    assert_eq!(code(&e.km(&["verify", "k", "--token", "softhsm"])), 0);
+}
+
 /// A known AES-256 value, planted several times with different usage bits: the host knows the
 /// material, the token holds it sensitive and (mostly) non-extractable.
 const AES_VALUE: [u8; 32] = *b"key-management aes test vector!!";
@@ -1472,13 +1586,11 @@ fn the_lock_pins_type_spec_provenance_and_schemes() {
     assert_eq!(real["provenance"]["provider"].as_str(), Some("softhsm"));
     assert!(real["provenance"]["cakeysVersion"].as_str().is_some_and(|v| !v.is_empty()));
 
-    // 1. A changed object type is named as such (an alias is a different recorded type, too),
-    //    also with --update-lock.
+    // 1. A curve alias is the same object type: keys.toml and the lock canonicalize it, so
+    //    nothing changed and nothing needs re-recording.
     std::fs::write(&toml, config.replace("curve = \"secp256r1\"", "curve = \"P-256\"")).unwrap();
-    let o = e.km(&verify);
-    assert_eq!(code(&o), 14);
-    assert!(stderr(&o).contains("type of object 'signing' in keys.toml changed"), "{}", stderr(&o));
-    assert_eq!(code(&e.km(&r)), 14);
+    assert_eq!(code(&e.km(&verify)), 0);
+    assert_eq!(code(&e.km(&r)), 0);
     std::fs::write(&toml, &config).unwrap();
 
     // 2. A changed spec (still satisfied by the token) needs the lock re-recorded.

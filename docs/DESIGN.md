@@ -160,12 +160,14 @@ systemFeature = "token-<name>"         # read by the Nix library only
 
 [objects.<name>]
 class = "CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY" | "CKO_SECRET_KEY" | "CKO_CERTIFICATE" | "CKO_DATA"
-keyType = "CKK_EC" | ... ; certificateType = "CKC_X_509"   # none for data objects
-curve = "..." ; modulusBits = N ; valueLen = BYTES
+keyType = "CKK_EC" | ...        # keys; certificates and data objects take none
+certificateType = "CKC_X_509"   # certificates only (exit 17 otherwise)
+curve = "..." ; modulusBits = N ; valueLen = BYTES   # curve names are canonicalized on load (P-256 -> secp256r1)
 
 [specs.<name>]
 object = "<object>"
-attributes = { CKA_SIGN = true, ... }   # CKA_SIGN/VERIFY/ENCRYPT/DECRYPT/WRAP/UNWRAP/DERIVE/SENSITIVE/EXTRACTABLE/MODIFIABLE/PRIVATE
+attributes = { CKA_SIGN = true, ... }   # CKA_SIGN/VERIFY/ENCRYPT/DECRYPT/WRAP/UNWRAP/DERIVE/SENSITIVE/EXTRACTABLE/MODIFIABLE/PRIVATE, or CKA_ALLOWED_MECHANISMS = ["CKM_..."]
+publicAttributes = { CKA_VERIFY = true, ... }   # private keys only: policy of the public key object; checked on it, in the digest only when present
 tokens.<token> = { locator = { CKA_LABEL = "...", CKA_ID = "hex" }, autoCreate = bool, publicOnly = bool, binding = "token-asserted", identity.allow = [...] }
 ```
 
@@ -186,7 +188,7 @@ version = 1                          # required; any other version is refused (v
 [objects.<object>]
 commitmentLabel = "key-management/v1" # required when ids holds a commitment scheme
 [objects.<object>.type]              # required with ids: the type the IDs were computed for
-class = "..." ; keyType = "..." ; curve = "..." ; valueLen = N ; modulusBits = N
+class = "..." ; keyType = "..." ; certificateType = "..." ; curve = "..." ; valueLen = N ; modulusBits = N
 [objects.<object>.ids]
 rfc7093m4 = "sha256-..."            # scheme -> SRI
 # pairs = ["<object>"]              # (in [objects.<object>]) objects sharing its rfc7093m4: key <-> certificate
@@ -200,7 +202,7 @@ mode = "direct"                      # a weaker mode is refused
 schemes = ["rfc7093m4"]              # schemes this realisation computed and matched; fewer later is refused
 publicOnly = true                    # only when set
 binding = "pop-sign"                 # private keys: pop-sign | token-asserted (§3.6)
-[realisations.<spec>.<token>.policy] # every boolean attribute of the class the token shows
+[realisations.<spec>.<token>.policy] # every attribute of the class the token shows: booleans, plus CKA_ALLOWED_MECHANISMS on key objects
 CKA_SIGN = true ; CKA_DECRYPT = true ; CKA_EXTRACTABLE = false ; ...
 [realisations.<spec>.<token>.immutables] # keys: fixed at creation
 CKA_LOCAL = true ; CKA_NEVER_EXTRACTABLE = true ; CKA_ALWAYS_SENSITIVE = true ; CKA_KEY_GEN_MECHANISM = "CKM_..."
@@ -226,11 +228,12 @@ model = "..." ; serial = "..." ; firmware = "M.m"
   invalid (exit 17) — `observed_and_provenance_never_change_a_verdict`. An observed mechanism the
   token no longer offers is a warning.
 - **The policy vector is closed-world.** The spec declares the attributes it requires; the lock
-  records every boolean attribute the object shows for its class, declared or not (SoftHSM EC
-  private keys, for example, default to `CKA_DECRYPT`, `CKA_UNWRAP` and `CKA_SIGN_RECOVER`). A
-  recorded attribute that changes or becomes unreadable fails `verify` (exit 14) until
-  `realise --update-lock`; a newly readable one is a note. With `publicOnly`, this is the public
-  object's vector.
+  records every attribute the object shows for its class, declared or not — the booleans
+  (SoftHSM EC private keys, for example, default to `CKA_DECRYPT`, `CKA_UNWRAP` and
+  `CKA_SIGN_RECOVER`) and, on key objects, `CKA_ALLOWED_MECHANISMS` when the token reports a
+  non-empty list. A recorded attribute that changes or becomes unreadable fails `verify` (exit 14)
+  until `realise --update-lock`; a newly readable one is a note. With `publicOnly`, this is the
+  public object's vector.
 - **Immutables** (`CKA_LOCAL`, `CKA_NEVER_EXTRACTABLE`, `CKA_ALWAYS_SENSITIVE`,
   `CKA_KEY_GEN_MECHANISM`) are compared the same way. A flag that was `true` and is not any more
   means the object was replaced (for example, the same material re-imported). That is refused
@@ -262,9 +265,12 @@ model = "..." ; serial = "..." ; firmware = "M.m"
 - **Versions** are raw `CK_VERSION` major.minor (ykcs11 2.7.3 → `2.73`).
 - **Provenance:** a different module build identity or token is a *warning*; only a different
   module file is a *note*. Neither fails — `module_and_token_provenance_warn_but_do_not_fail`.
-- **The spec digest** is the SHA-256 of canonical JSON `{"v":1,"type":<object, camelCase, empty
-  keyType omitted>,"attributes":<…>}`, with keys sorted at every level explicitly (independent of
-  serde_json features). Pinned by `spec_digests_are_pinned`.
+- **The spec digest** is the SHA-256 of canonical JSON `{"v":1,"type":<object, camelCase>,
+  "attributes":<…>}`, with keys sorted at every level explicitly (independent of serde_json
+  features). Attribute values are typed: booleans, and `CKA_ALLOWED_MECHANISMS` as a sorted,
+  duplicate-free list; `certificateType` and `publicAttributes` take part only when set, under
+  their own key. Curves are canonical (`secp256r1`, never an alias), so a curve alias is the same
+  type and the same digest. Pinned by `spec_digests_are_pinned`.
 - **A realisation record is required.** `verify`/`check` of a (spec, token) pair the lock does not
   record fails (exit 14) even when the material matches the locked IDs: the lock describes where
   objects live, not only what they are — `s3_an_unrecorded_token_is_a_precondition_failure`.
@@ -274,9 +280,10 @@ model = "..." ; serial = "..." ; firmware = "M.m"
   re-records it, like a lockfile that is out of date — `s4_a_public_only_flip_is_a_spec_change`,
   `s8_a_retargeted_spec_is_a_spec_change`. A changed locator or object is never reported as an
   unexplained hash mismatch.
-- **A changed object type** in `keys.toml` (anything in `type`, curve aliases included) is refused
-  with exit 14, naming the change, also under `--update-lock`: different material needs a new
-  object name. Test: `the_lock_pins_type_spec_provenance_and_schemes`.
+- **A changed object type** in `keys.toml` is refused with exit 14, naming the change, also under
+  `--update-lock`: different material needs a new object name. Curve aliases are canonicalized on
+  load (in `keys.toml` and in the lock's recorded types), so they are the same type and need
+  nothing — `the_lock_pins_type_spec_provenance_and_schemes`.
 - **Provenance:** a different `provider` is a warning; a different `cakeysVersion` is a note.
 - **Locked schemes that are not checked** are reported: unknown to this cakeys → warning, naming
   the scheme; known but not computable for this spec on this token → note.
@@ -453,7 +460,9 @@ label and the hash itself. Everything else is fixed by definition:
 - **Further frozen identifiers:** the label layout `<label>/<scheme>/<keyType>/<bits>` and the
   mode names;
 - the SRI form `sha256-<base64>`;
-- the spec digest JSON shape (`"v":1`, camelCase, empty `keyType` omitted);
+- the spec digest JSON shape (`"v":1`, camelCase, `keyType` omitted when empty, `certificateType`
+  and `publicAttributes` only when set; the certificate digest changed with `certificateType`,
+  since the v1 lock is a draft);
 - binding names (`pop-sign`, `token-asserted`) and their rank. The challenge layout
   (`cakeys/pop/v1`) is pinned by `message_layout_is_pinned`, though nothing stored depends on it;
 - lock field names (`objects`, `ids`, `realisations`, `object`, `locator`, `specDigest`,

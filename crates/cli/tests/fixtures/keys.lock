@@ -15,7 +15,7 @@ commitment = "sha256-AGXc/28id6voDlFG989ZRKgfQETyurg2tSVPe1LBYis="
 
 [objects.signing-cert.type]
 class = "CKO_CERTIFICATE"
-keyType = "CKC_X_509"
+certificateType = "CKC_X_509"
 
 [objects.signing-cert.ids]
 certhash = "sha256-lXNE6ciIfLkwGf6kf84qfibQ08d5fkPuGNKQ5KnyTMM="

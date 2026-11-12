@@ -2,7 +2,7 @@
 
 use crate::token::{self as hal, Token};
 use cakeys_core::config::{
-    Binding, Config, Immutables, Locator, Lock, LockRealisation, Mode, ObjectCfg, Observed, Provenance, SpecCfg,
+    AttrValue, Binding, Config, Immutables, Locator, Lock, LockRealisation, Mode, ObjectCfg, Observed, Provenance, SpecCfg,
     SpecTokenCfg,
 };
 use cakeys_core::id::{self, Commit, HmacHash};
@@ -91,7 +91,7 @@ fn check_binding(t: &Target) -> Result<()> {
         (Some(Binding::PopSign), _) if t.object.curve.as_deref().is_some_and(|c| c == "edwards448" || c == "Ed448") => {
             invalid("cakeys has no Ed448 verifier to prove possession with; opt in with binding = \"token-asserted\"".into())
         }
-        (Some(Binding::PopSign), _) if t.spec.attributes.get("CKA_SIGN") != Some(&true) => invalid(
+        (Some(Binding::PopSign), _) if t.spec.flag("CKA_SIGN") != Some(true) => invalid(
             "proving possession of the private key needs CKA_SIGN = true in the spec attributes; \
              or opt in with binding = \"token-asserted\" on this token"
                 .into(),
@@ -104,6 +104,33 @@ fn check_binding(t: &Target) -> Result<()> {
 pub fn plan_mode(t: &Target) -> Result<Mode> {
     let invalid = |why: &str| Err(KmError::Validation(format!("{}: {why}", t.what())));
     check_binding(t)?;
+    // Attribute shapes: only CKA_ALLOWED_MECHANISMS takes a mechanism list, every other
+    // attribute is a boolean the token layer can set (this also validates its name).
+    for (name, v) in t.spec.attributes.iter().chain(t.spec.public_attributes.iter()) {
+        match v {
+            AttrValue::Mechanisms(_) if name != "CKA_ALLOWED_MECHANISMS" => {
+                return invalid(&format!("{name}: only CKA_ALLOWED_MECHANISMS takes a mechanism list"));
+            }
+            AttrValue::Bool(_) => {
+                hal::bool_attr(name, false)?;
+            }
+            _ => {}
+        }
+    }
+    if !t.spec.public_attributes.is_empty() && t.object.class != "CKO_PRIVATE_KEY" {
+        return invalid("publicAttributes apply to private keys only");
+    }
+    // The certificate type lives in `certificateType`; `keyType` names nothing on a certificate.
+    match t.object.certificate_type.as_deref() {
+        Some("CKC_X_509") if t.is_certificate() => {}
+        Some(_) if t.is_certificate() => return invalid("certificateType must be CKC_X_509"),
+        Some(_) => return invalid("certificateType applies to certificates only"),
+        None if t.is_certificate() => return invalid("certificates need certificateType = \"CKC_X_509\""),
+        None => {}
+    }
+    if t.is_certificate() && !t.object.key_type.is_empty() {
+        return invalid("certificates take no keyType");
+    }
     if t.on_token.public_only {
         if t.object.class != "CKO_PRIVATE_KEY" {
             return invalid("publicOnly applies to private keys only");
@@ -131,13 +158,10 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
         if !t.spec.attributes.is_empty() {
             return invalid("certificates take no policy attributes");
         }
-        if t.object.key_type != "CKC_X_509" {
-            return invalid("certificateType must be CKC_X_509");
-        }
         return Ok(Mode::Direct);
     }
     let kt = hal::key_type_of(t.object)?;
-    let attr = |n: &str| t.spec.attributes.get(n).copied();
+    let attr = |n: &str| t.spec.flag(n);
     let mode = if kt == KeyType::EC || kt == KeyType::EC_EDWARDS || kt == KeyType::RSA {
         Mode::Direct
     } else if !declared_commits(t).is_empty() {
@@ -161,7 +185,7 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
 /// Commitments the spec's declared usage bits allow, strongest-linking first. Only declared
 /// attributes count: a token default never silently changes which identity is computed.
 fn declared_commits(t: &Target) -> Vec<Commit> {
-    let on = |n: &str| t.spec.attributes.get(n).copied() == Some(true);
+    let on = |n: &str| t.spec.flag(n) == Some(true);
     match t.object.key_type.as_str() {
         "CKK_AES" => ["CKA_SIGN", "CKA_ENCRYPT", "CKA_DECRYPT", "CKA_WRAP"]
             .into_iter()
@@ -272,7 +296,7 @@ pub struct Resolved {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binding: Option<Binding>,
     /// The observed policy vector and immutables of the object found (§4.2 of docs/DESIGN.md).
-    pub policy: BTreeMap<String, bool>,
+    pub policy: BTreeMap<String, AttrValue>,
     #[serde(skip_serializing_if = "Immutables::is_empty")]
     pub immutables: Immutables,
     /// Label the commitment schemes in `ids` were computed with (none for public-material IDs).
@@ -300,6 +324,7 @@ pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>>
     if matches!(t.object.class.as_str(), "CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY" | "CKO_CERTIFICATE") {
         tok.check_unique_private_id(h)?;
     }
+    tok.check_public_half(h, t.spec, &t.on_token.locator, public_only)?;
     let commits = commits(t, tok, mode)?;
     let label = commitment_label(t, lock);
     let binding = binding(t);
