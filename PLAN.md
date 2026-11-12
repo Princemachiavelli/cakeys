@@ -440,7 +440,7 @@ URI=$(key-mgmnt ${configFile} myobject.id.pubkeyhash)   # or: --token hsm-bob
 - **The hook changes the calculation:** only builds requiring the TPM feature see the store, so a per-token writable opt-in is reasonable. It stays off by default.
 - **Unverified:** that tpm2-pkcs11 never needs to write on open, e.g. for a schema upgrade or recovery of a leftover journal.
 
-**Credentials:** PINs never enter the store. Use a PIN file granted through the hook, readable by build users, or a `p11-kit server` holding the session.
+**Credentials:** PINs never enter the store. A build that uses private objects needs the PIN, through a PIN file granted by the hook and readable by build users. `p11-kit server` cannot hold a login for its clients: login is per client connection (tested). `publicOnly` checks need no PIN.
 
 ## Exposed attributes
 - `myobject.id.pubkeyhash` and the other portable IDs (see the identity section).
@@ -494,7 +494,7 @@ The project is a Cargo workspace, so that a PKCS#11 module's quirks live in its 
 |---|---|
 | `key-mgmnt-core` (`crates/core`) | `keys.toml`/`keys.lock`, error kinds and exit codes, CA-ID computation. No token access and no `cryptoki`. |
 | `key-mgmnt-pkcs11` (`crates/pkcs11`) | The token layer over `cryptoki`, the idempotent verbs (`ops`), the `Provider` trait and the `Registry`. |
-| `key-mgmnt-softhsm`, `key-mgmnt-ykcs11`, … | One provider per module. |
+| `key-mgmnt-softhsm`, `key-mgmnt-ykcs11`, `key-mgmnt-tpm2-pkcs11`, `key-mgmnt-p11-kit` | One provider per module. |
 | `key-mgmnt` (`crates/cli`) | The CLI as a library: `key_mgmnt::main(registry)`, plus a thin `main.rs`. The integration tests and fixtures live here. |
 
 **Writing a provider:**
@@ -607,6 +607,24 @@ Rough sizes of the **new code**. Dependencies are `cryptoki`, `tss-esapi`, RustC
   - Imported keys: openssl over the fixture PEMs (test-only keys).
   - HMAC: computed on the host.
   - AES: a consistency check only, because tpm2-pkcs11 cannot import AES keys. The independent AES oracle runs on SoftHSM.
+
+**p11-kit forwarding (2026-11-11), the path for real builds.** `p11-kit server` serves a token on a socket, and builds load `p11-kit-client.so`. Provider crate: `key-mgmnt-p11-kit`. Test suite: `tests/p11kit.rs`, which puts a SoftHSM token behind the server in the package build and compares it with direct access. Observed with p11-kit 0.26.5:
+- **The module behind the proxy is hidden.** `C_GetInfo` describes p11-kit ("PKCS#11 Kit Proxy Module" 1.1, Cryptoki 3.2), so provider auto-detection yields `p11-kit` and the lock records p11-kit as the module. `C_GetTokenInfo` is forwarded unchanged. To apply the real module's fix-ups, e.g. tpm2-pkcs11's P-521 repair, name its provider explicitly (`provider = "tpm2-pkcs11"`).
+- **The RPC drops mechanisms it cannot marshal:** `CKM_AES_KEY_WRAP`, `CKM_AES_KEY_WRAP_PAD`, `CKM_EC_EDWARDS_KEY_PAIR_GEN`, `CKM_EDDSA` and `CKM_AES_CBC_ENCRYPT_DATA`. Through p11-kit there is therefore no `kw` commitment, no wrap-rebind and no Edwards key generation. These are refused before anything is created, with a p11-kit hint.
+  - AES specs that declare several usage bits still link with direct access, through `cmac`/`kcv-ecb`.
+  - A WRAP-only AES key cannot be identified through p11-kit at all.
+- **Login is per client.** While one client holds a logged-in session, another client without a PIN still cannot see private objects; `publicOnly` works.
+- **The server exports only the tokens in its URI** (`pkcs11:token=kmp11`): another token of the same SoftHSM is not present.
+- **The socket path must fit `sun_path`.** A long path makes the server abort on an assertion (`strlen (address) < sizeof (sa.sun_path) - 1`).
+- **Socket access.** By default the socket is owner-only (`srwx--x--x`). `p11-kit server -u/-g` give it to one user or group; auto-allocated build UIDs need the same per-slot ACL as `/dev/tpmrm0`.
+- **What agrees:**
+  - P-256/P-521/RSA-3072 generated through p11-kit give the same `pubkeyhash` when opened directly and through `publicOnly`, and match the DER oracle.
+  - AES `cmac`/`kcv-ecb` and the HMAC `commitment` match the host oracles.
+  - The SoftHSM suite passes unchanged on the same SoftHSM.
+- **Still to do (module and VM test):**
+  - A `p11-kit server` service per token, running as a dedicated user with the token's storage.
+  - The socket ACL'd for the build GIDs and granted by the pre-build-hook.
+  - A consumer in the sandbox that sees only the socket, never the database.
 
 **NixOS module (`nixosModules.default`, nix/module.nix):**
 - **`services.key-management.sandbox.pcscd.enable`:** pcscd, `/run/pcscd` in the sandbox, a polkit rule for `nixbld` *and* the auto-allocated UID range, and `PrivateUsers = false` on pcscd when UIDs are auto-allocated.

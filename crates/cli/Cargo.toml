@@ -18,6 +18,7 @@ key-mgmnt-pkcs11.workspace = true
 key-mgmnt-softhsm.workspace = true
 key-mgmnt-ykcs11.workspace = true
 key-mgmnt-tpm2-pkcs11.workspace = true
+key-mgmnt-p11-kit.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true

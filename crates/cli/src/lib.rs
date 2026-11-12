@@ -79,6 +79,7 @@ pub fn default_registry() -> Registry {
         .with(key_mgmnt_softhsm::SoftHsm)
         .with(key_mgmnt_ykcs11::Ykcs11)
         .with(key_mgmnt_tpm2_pkcs11::Tpm2Pkcs11)
+        .with(key_mgmnt_p11_kit::P11Kit)
 }
 
 /// Run the CLI with the given providers; maps errors to the documented exit codes.

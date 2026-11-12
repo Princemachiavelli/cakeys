@@ -7,6 +7,7 @@
   tpm2-tools,
   tpm2-abrmd,
   dbus,
+  p11-kit,
 }:
 
 rustPlatform.buildRustPackage {
@@ -24,8 +25,9 @@ rustPlatform.buildRustPackage {
 
   cargoLock.lockFile = ../Cargo.lock;
 
-  # Integration tests drive a real SoftHSM token and tpm2-pkcs11 on a software TPM (behind
-  # tpm2-abrmd on a private D-Bus) inside the build sandbox.
+  # Integration tests drive a real SoftHSM token, the same SoftHSM through p11-kit forwarding,
+  # and tpm2-pkcs11 on a software TPM (behind tpm2-abrmd on a private D-Bus) inside the build
+  # sandbox.
   nativeCheckInputs = [
     softhsm
     swtpm
@@ -33,6 +35,7 @@ rustPlatform.buildRustPackage {
     tpm2-tools
     tpm2-abrmd
     dbus
+    p11-kit
   ];
   preCheck = ''
     export SOFTHSM2_CONF=$TMPDIR/softhsm2.conf
@@ -43,6 +46,12 @@ rustPlatform.buildRustPackage {
     export KM_TEST_MODULE=${softhsm}/lib/softhsm/libsofthsm2.so
     export KM_TEST_REQUIRE=1
 
+    # p11-kit forwarding: a second SoftHSM token behind `p11-kit server` (short socket path).
+    SOFTHSM_MODULE=$KM_TEST_MODULE bash ${./p11kit-test-env.sh} up $TMPDIR/p11
+    . $TMPDIR/p11/env
+    export KM_P11KIT_CLIENT=${lib.getLib p11-kit}/lib/pkcs11/p11-kit-client.so
+    export KM_P11KIT_REQUIRE=1
+
     export HOME=$TMPDIR
     bash ${./tpm2-test-env.sh} up $TMPDIR/tpm || { tail -n 20 $TMPDIR/tpm/*.log; exit 1; }
     . $TMPDIR/tpm/env
@@ -50,6 +59,7 @@ rustPlatform.buildRustPackage {
     export KM_TPM_REQUIRE=1
   '';
   postCheck = ''
+    bash ${./p11kit-test-env.sh} down $TMPDIR/p11
     bash ${./tpm2-test-env.sh} down $TMPDIR/tpm
   '';
   dontUseCargoParallelTests = true;

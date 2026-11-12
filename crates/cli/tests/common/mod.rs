@@ -100,3 +100,30 @@ pub fn oracle_spki_with(s: &Session, label: &str, unwrap: fn(&[u8]) -> Vec<u8>) 
     }
 }
 
+
+/// Host oracle for the AES commitments (`cmac`, `kcv-ecb`, `kw`) of a known 256-bit key.
+pub fn aes_commitment(key: &[u8; 32], scheme: &str) -> String {
+    use aes::cipher::{BlockCipherEncrypt, KeyInit};
+    use cmac::Mac;
+    let label = format!("key-management/v1/{scheme}/CKK_AES/256");
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(label.as_bytes());
+    let out = match scheme {
+        "cmac" => {
+            let mut m = <cmac::Cmac<aes::Aes256> as KeyInit>::new_from_slice(key).unwrap();
+            m.update(label.as_bytes());
+            m.finalize().into_bytes().to_vec()
+        }
+        "kcv-ecb" => {
+            let mut block = aes::Block::default();
+            block.copy_from_slice(&digest[..16]);
+            aes::Aes256::new_from_slice(key).unwrap().encrypt_block(&mut block);
+            block.to_vec()
+        }
+        "kw" => {
+            let mut buf = [0u8; 40];
+            aes_kw::KwAes256::new_from_slice(key).unwrap().wrap_key(&digest, &mut buf).unwrap().to_vec()
+        }
+        s => panic!("{s}"),
+    };
+    sri(&out)
+}

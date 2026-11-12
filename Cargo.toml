@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/pkcs11", "crates/softhsm", "crates/ykcs11", "crates/tpm2-pkcs11", "crates/cli"]
+members = ["crates/core", "crates/pkcs11", "crates/softhsm", "crates/ykcs11", "crates/tpm2-pkcs11", "crates/p11-kit", "crates/cli"]
 default-members = ["crates/cli"]
 
 [workspace.package]
@@ -14,6 +14,7 @@ key-mgmnt-pkcs11 = { path = "crates/pkcs11" }
 key-mgmnt-softhsm = { path = "crates/softhsm" }
 key-mgmnt-ykcs11 = { path = "crates/ykcs11" }
 key-mgmnt-tpm2-pkcs11 = { path = "crates/tpm2-pkcs11" }
+key-mgmnt-p11-kit = { path = "crates/p11-kit" }
 anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }

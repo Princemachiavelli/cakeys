@@ -560,6 +560,7 @@ dependencies = [
  "cryptoki",
  "hmac",
  "key-mgmnt-core",
+ "key-mgmnt-p11-kit",
  "key-mgmnt-pkcs11",
  "key-mgmnt-softhsm",
  "key-mgmnt-tpm2-pkcs11",
@@ -590,6 +591,13 @@ dependencies = [
  "thiserror",
  "toml",
  "x509-cert",
+]
+
+[[package]]
+name = "key-mgmnt-p11-kit"
+version = "0.1.0"
+dependencies = [
+ "key-mgmnt-pkcs11",
 ]
 
 [[package]]
