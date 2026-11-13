@@ -301,6 +301,10 @@ impl Mode {
 pub enum Binding {
     /// The token signed a fresh challenge that verified on the host against that public key.
     PopSign,
+    /// `pop-sign` on a `CKA_ALWAYS_AUTHENTICATE` key: the same proof, with the per-use
+    /// `C_Login(CKU_CONTEXT_SPECIFIC)` the key demands before it signs. Derived from the
+    /// observed attribute and recorded in the lock; never written in keys.toml.
+    PopSignPin,
     /// The token derived the ECDH shared secret with an ephemeral host key and both sides `MACed`
     /// the challenge with it (derive-only EC keys).
     PopEcdh,
@@ -314,11 +318,12 @@ pub enum Binding {
 impl Binding {
     /// Strength, strongest 0: a realisation must never move to a higher rank. Every `pop-*`
     /// proves the same fact — possession of the named public key — by whichever capability the
-    /// key has.
+    /// key has. `pop-sign-pin` proves it too: its per-use PIN is recorded by the observed
+    /// `CKA_ALWAYS_AUTHENTICATE` bit in the policy, not by a weaker rank.
     #[must_use]
     pub fn rank(self) -> u8 {
         match self {
-            Binding::PopSign | Binding::PopEcdh | Binding::PopDecrypt => 0,
+            Binding::PopSign | Binding::PopSignPin | Binding::PopEcdh | Binding::PopDecrypt => 0,
             Binding::TokenAsserted => 1,
         }
     }
@@ -1069,8 +1074,10 @@ mod tests {
     fn binding_ranks_are_pinned() {
         assert!(Binding::PopSign.rank() < Binding::TokenAsserted.rank());
         assert_eq!(Binding::PopSign.to_string(), "pop-sign");
+        assert_eq!(Binding::PopSignPin.to_string(), "pop-sign-pin");
         assert_eq!(Binding::PopEcdh.to_string(), "pop-ecdh");
         assert_eq!(Binding::PopDecrypt.to_string(), "pop-decrypt");
+        assert_eq!(Binding::PopSignPin.rank(), Binding::PopSign.rank());
         assert_eq!(Binding::PopEcdh.rank(), Binding::PopSign.rank());
         assert_eq!(Binding::PopDecrypt.rank(), Binding::PopSign.rank());
         assert_eq!(Binding::TokenAsserted.to_string(), "token-asserted");

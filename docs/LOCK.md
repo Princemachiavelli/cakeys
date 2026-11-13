@@ -103,7 +103,8 @@ mode = "direct"
 # The schemes this realisation computed and matched: computing fewer later is a downgrade (14).
 schemes = ["rfc7093m4"]
 # How the private key was bound to the public key its identity hashes: the token signed a fresh
-# challenge the host verified (pop-sign; or pop-ecdh, pop-decrypt). `token-asserted` means the
+# challenge the host verified (pop-sign; pop-sign-pin when the key is CKA_ALWAYS_AUTHENTICATE and
+# each signature took a context-specific login; or pop-ecdh, pop-decrypt). `token-asserted` means the
 # token's word only. Dropping from any pop-* to token-asserted is refused (14).
 binding = "pop-sign"
 

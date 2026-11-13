@@ -178,6 +178,16 @@ key to its identity:
        over the host's digest;
      - Ed25519: `CKM_EDDSA` (pure);
      - RSA: `CKM_SHA256_RSA_PKCS`.
+
+     On a key the token reports `CKA_ALWAYS_AUTHENTICATE` (declared or not), the same proof runs
+     under the key's per-use policy and is recorded as **`pop-sign-pin`**:
+     `C_SignInit → C_Login(CKU_CONTEXT_SPECIFIC) → C_SignUpdate → C_SignFinal`, once, with the
+     PIN that opened the session, never retried
+     ([`CKA_ALWAYS_AUTHENTICATE.md`](CKA_ALWAYS_AUTHENTICATE.md)). It is multi-part because
+     cryptoki 0.12 has no other point for the login, so the single-part-only mechanisms
+     (`CKM_EDDSA`, raw `CKM_ECDSA`) and a module that refuses to sign in parts (SoftHSM's
+     `CKM_ECDSA_SHA*`) are refused (15); a declared always-authenticate Edwards key is invalid
+     (17). A cryptoki patch for a single-part sign after `C_SignInit` would lift both.
    - `pop-ecdh` (EC keys that only derive): the host generates an ephemeral key on the same curve
      and MACs the challenge with HMAC-SHA256 under the ECDH shared secret; the token derives the
      same secret with `CKM_ECDH1_DERIVE` into a non-extractable session key and MACs the same
@@ -196,8 +206,9 @@ Outcomes:
   is not the one the identity names. This also applies to `delete`, so If-Match cannot pass on a
   public object beside an unrelated key.
 - **A token that refuses** (no `CKA_SIGN`/`CKA_DERIVE`/`CKA_DECRYPT`, missing mechanism) is exit
-  15. A token error is 16. A key with `CKA_ALWAYS_AUTHENTICATE` is refused (16) rather than
-  spending a PIN entry each run.
+  15. A token error is 16, as is a failed context-specific login. `pop-ecdh` and `pop-decrypt`
+  have no per-use login: a `CKA_ALWAYS_AUTHENTICATE` key that only derives or decrypts is refused
+  (16).
 - **The spec must declare the capability the proof uses** — `CKA_SIGN = true` for `pop-sign`,
   `CKA_DERIVE = true` for `pop-ecdh` (Weierstrass EC keys only), `CKA_DECRYPT = true` for
   `pop-decrypt` (RSA only) — or opt out per token with `binding = "token-asserted"`; otherwise it
@@ -206,9 +217,11 @@ Outcomes:
   or ECDH yet), and tpm2-pkcs11 1.10.1 P-521 keys: its `C_SignInit` parses its own malformed
   `CKA_EC_POINT` and fails (`upstream/tpm2-pkcs11` fixes both).
 - **`publicOnly` implies `token-asserted`.**
+- **`pop-sign-pin` is recorded, never configured:** `binding = "pop-sign-pin"` in keys.toml is
+  invalid (17); `pop-sign` (the default) becomes it on an always-authenticate key.
 
-The lock records the binding per realisation (`pop-sign`, `pop-ecdh`, `pop-decrypt` or
-`token-asserted`). The `pop-*` methods share the top rank — each proves possession of the same
+The lock records the binding per realisation (`pop-sign`, `pop-sign-pin`, `pop-ecdh`,
+`pop-decrypt` or `token-asserted`). The `pop-*` methods share the top rank — each proves possession of the same
 key — so a realisation never weakens unless it drops to `token-asserted`, which is refused
 (exit 14), also when the lock is written — `binding_downgrade_is_refused`.
 
@@ -364,9 +377,10 @@ What may be created and adopted:
   Anything else is invalid (exit 17) — `attributes_are_validated_per_class`. Certificates therefore
   take policy attributes: declare what the object shows (`CKA_TRUSTED = true` must match an object
   the token's security officer already trusted; users cannot set it).
-- **`CKA_ALWAYS_AUTHENTICATE = true` refuses `binding = "pop-sign"`** (exit 17): proving possession
-  would spend a PIN entry per run. A key that carries the attribute without declaring it is refused
-  at run time (16, §3.6).
+- **`CKA_ALWAYS_AUTHENTICATE = true` proves possession with a PIN per use** (`pop-sign-pin`, §3.6):
+  a successful context-specific login with the session's PIN spends no retry. An Edwards key that
+  declares it is invalid (exit 17) until cryptoki can sign single-part after the login —
+  `always_authenticate_keys_prove_possession_with_a_per_use_pin`.
 - **`CKA_TRUSTED = true` refuses `autoCreate`** (exit 17): generation cannot set it.
 - **Not expressible:** `CKA_WRAP_TEMPLATE`, `CKA_UNWRAP_TEMPLATE`, `CKA_DERIVE_TEMPLATE` and
   `CKA_CERTIFICATE_CATEGORY` — cryptoki 0.12 maps none of them.
@@ -393,7 +407,7 @@ specDigest = "sha256-..."
 mode = "direct"                      # a weaker mode is refused
 schemes = ["rfc7093m4"]              # schemes this realisation computed and matched; fewer later is refused
 publicOnly = true                    # only when set
-binding = "pop-sign"                 # private keys: pop-sign | pop-ecdh | pop-decrypt | token-asserted (§3.6)
+binding = "pop-sign"                 # private keys: pop-sign | pop-sign-pin | pop-ecdh | pop-decrypt | token-asserted (§3.6)
 attestation = { kind = "tpm-certify", root = "sha256-...", id = "sha256-..." }   # §3.7: only when the spec opted in; the per-device attestation ID and its anchor; a change fails (14 anchor, 10 ID), also when the lock is written
 [realisations.<spec>.<token>.policy] # every attribute of the class the token shows: booleans, plus CKA_ALLOWED_MECHANISMS on key objects
 CKA_SIGN = true ; CKA_DECRYPT = true ; CKA_EXTRACTABLE = false ; ...
@@ -745,7 +759,7 @@ label and the hash itself. Everything else is fixed by definition:
 - the spec digest JSON shape (`"v":1`, camelCase, `keyType` omitted when empty, `certificateType`
   and `publicAttributes` only when set; the certificate digest changed with `certificateType`,
   since the v1 lock is a draft);
-- binding names (`pop-sign`, `pop-ecdh`, `pop-decrypt`, `token-asserted`) and their rank (the
+- binding names (`pop-sign`, `pop-sign-pin`, `pop-ecdh`, `pop-decrypt`, `token-asserted`) and their rank (the
   `pop-*` methods share the top rank). The challenge layout
   (`cakeys/pop/v1`) is pinned by `message_layout_is_pinned`, though nothing stored depends on it;
 - lock field names (`objects`, `ids`, `realisations`, `object`, `locator`, `specDigest`,

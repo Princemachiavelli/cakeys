@@ -5,10 +5,38 @@ use super::*;
 use cakeys_core::pop;
 
 impl Token {
-    /// Proof of possession (`cakeys_core::pop`, docs/DESIGN.md §3.6), by the spec's `binding`:
-    /// the private key `h` proves, by whichever capability it has, that it holds the private
-    /// half of `spki`, the public key its identity hashes. A proof that does not verify is a
-    /// `Conflict`; a token that cannot prove is `Unsupported` or `Unavailable`, never a pass.
+    /// The binding the private key `h` is proven and recorded with, from the `planned` one
+    /// (`cakeys_core::plan::binding`): `pop-sign` becomes `pop-sign-pin` when the token reports
+    /// the key `CKA_ALWAYS_AUTHENTICATE` — the observed attribute, declared or not
+    /// (`docs/CKA_ALWAYS_AUTHENTICATE.md`).
+    ///
+    /// # Errors
+    ///
+    /// `Unavailable` for `pop-ecdh`/`pop-decrypt` on a `CKA_ALWAYS_AUTHENTICATE` key: only the
+    /// sign path does the per-use login.
+    pub fn recorded_binding(&self, h: ObjectHandle, planned: Option<Binding>) -> Result<Option<Binding>> {
+        let Some(b) = planned.filter(|b| b != &Binding::TokenAsserted) else { return Ok(planned) };
+        let always =
+            matches!(self.attr(h, AttributeType::AlwaysAuthenticate)?, Some(Attribute::AlwaysAuthenticate(true)));
+        Ok(Some(match b {
+            _ if !always => b,
+            Binding::PopSign | Binding::PopSignPin => Binding::PopSignPin,
+            _ => {
+                return Err(KmError::Unavailable(format!(
+                    "the private key on token '{}' is CKA_ALWAYS_AUTHENTICATE; only binding = \"pop-sign\" \
+                     proves possession with its per-use PIN; adopt it publicOnly, or opt in with binding = \
+                     \"token-asserted\"",
+                    self.name
+                )));
+            }
+        }))
+    }
+
+    /// Proof of possession (`cakeys_core::pop`, docs/DESIGN.md §3.6), by the [recorded
+    /// binding](Self::recorded_binding): the private key `h` proves, by whichever capability it
+    /// has, that it holds the private half of `spki`, the public key its identity hashes. A proof
+    /// that does not verify is a `Conflict`; a token that cannot prove is `Unsupported` or
+    /// `Unavailable`, never a pass.
     pub(super) fn prove_binding(
         &self,
         h: ObjectHandle,
@@ -16,25 +44,26 @@ impl Token {
         spki: &[u8],
         binding: Binding,
     ) -> Result<()> {
-        // A context-specific login per proof (PIV signing slot) would spend PIN retries.
-        if let Some(Attribute::AlwaysAuthenticate(true)) = self.attr(h, AttributeType::AlwaysAuthenticate)? {
-            return Err(KmError::Unavailable(format!(
-                "the private key on token '{}' is CKA_ALWAYS_AUTHENTICATE; proving possession would need a \
-                 PIN entry per run; adopt it publicOnly, or opt in with binding = \"token-asserted\"",
-                self.name
-            )));
-        }
         let msg = pop::challenge(spki)?;
         match binding {
-            Binding::PopSign => self.prove_sign(h, object, spki, &msg),
+            Binding::PopSign => self.prove_sign(h, object, spki, &msg, false),
+            Binding::PopSignPin => self.prove_sign(h, object, spki, &msg, true),
             Binding::PopEcdh => self.prove_ecdh(h, spki, &msg),
             Binding::PopDecrypt => self.prove_decrypt(h, spki, &msg),
             Binding::TokenAsserted => Ok(()),
         }
     }
 
-    /// `pop-sign`: the token signs the challenge; the host verifies the signature.
-    fn prove_sign(&self, h: ObjectHandle, object: &ObjectCfg, spki: &[u8], msg: &[u8]) -> Result<()> {
+    /// `pop-sign`: the token signs the challenge; the host verifies the signature. With
+    /// `per_use_pin` (`pop-sign-pin`), the signature is authorized by a context-specific login.
+    fn prove_sign(
+        &self,
+        h: ObjectHandle,
+        object: &ObjectCfg,
+        spki: &[u8],
+        msg: &[u8],
+        per_use_pin: bool,
+    ) -> Result<()> {
         let (mech, data) = match key_type_of(object)? {
             KeyType::EC => {
                 let hash = pop::EcdsaHash::for_curve(curve_of(object)?).ok_or_else(|| {
@@ -58,7 +87,7 @@ impl Token {
                 mech.mechanism_type()
             )));
         }
-        let sig = self.session.sign(&mech, h, &data).map_err(|e| match e {
+        let refused = |e: CkError| match e {
             CkError::Pkcs11(
                 RvError::KeyFunctionNotPermitted | RvError::MechanismInvalid | RvError::KeyTypeInconsistent,
                 _,
@@ -68,8 +97,74 @@ impl Token {
                 self.name
             )),
             e => KmError::Unavailable(format!("C_Sign (proof of possession) on token '{}': {e}", self.name)),
-        })?;
+        };
+        let sig = if per_use_pin {
+            self.sign_with_pin(&mech, h, &data, refused)?
+        } else {
+            self.session.sign(&mech, h, &data).map_err(refused)?
+        };
         pop::verify(spki, msg, &sig)
+    }
+
+    /// Sign under a `CKA_ALWAYS_AUTHENTICATE` key's per-use policy: the context-specific login
+    /// must come after `C_SignInit` and before the signature (PKCS#11 3.2 §5.1). Exactly once, never
+    /// retried: the PIN is the one that opened the session, so it cannot be wrong and a successful
+    /// login spends no retry; a failure (another actor locked the PIN meanwhile) is `Unavailable`.
+    ///
+    /// cryptoki 0.12's single-part `Session::sign` issues `C_SignInit` and `C_Sign` in one call,
+    /// leaving no point for the login, so this uses the multi-part `C_SignUpdate`/`C_SignFinal`
+    /// and refuses the single-part-only mechanisms (`CKM_EDDSA`, raw `CKM_ECDSA`) — and whatever
+    /// a module will not sign in parts (`SoftHSM`: every `CKM_ECDSA_SHA*`) — as `Unsupported`.
+    // TODO(cryptoki): patch cryptoki with a public single-part `C_Sign` after `sign_init` (like
+    // the patches in nix/patches/, PR draft in upstream/rust-cryptoki/) and upstream it, then
+    // sign single-part here: every key type then proves possession under its per-use PIN
+    // (Ed25519, raw ECDSA, and ECDSA on modules without multi-part ECDSA, like SoftHSM).
+    fn sign_with_pin(
+        &self,
+        mech: &Mechanism,
+        h: ObjectHandle,
+        data: &[u8],
+        refused: impl Fn(CkError) -> KmError,
+    ) -> Result<Vec<u8>> {
+        if matches!(mech, Mechanism::Ecdsa | Mechanism::Eddsa(_)) {
+            return Err(self.unsupported(format!(
+                "token '{}' would prove possession of a CKA_ALWAYS_AUTHENTICATE key with {}, which signs \
+                 in one part only and leaves cakeys no point for the per-use login; opt in with \
+                 binding = \"token-asserted\"",
+                self.name,
+                mech.mechanism_type()
+            )));
+        }
+        let pin = self.pin.as_deref().ok_or_else(|| {
+            KmError::Unavailable(format!(
+                "token '{}': the private key is CKA_ALWAYS_AUTHENTICATE and needs the user PIN per use; \
+                 configure pinFile or pinEnv",
+                self.name
+            ))
+        })?;
+        self.session.sign_init(mech, h).map_err(&refused)?;
+        if let Err(e) = self.session.login(UserType::ContextSpecific, Some(&AuthPin::new(pin.to_owned().into()))) {
+            // C_SignFinal always ends the operation: the session stays usable for the next proof.
+            let _ = self.session.sign_final();
+            return Err(KmError::Unavailable(format!(
+                "C_Login(CKU_CONTEXT_SPECIFIC) for the CKA_ALWAYS_AUTHENTICATE key on token '{}': {e}; \
+                 not retried",
+                self.name
+            )));
+        }
+        self.session.sign_update(data).map_err(|e| match e {
+            // The operation was started and authorized: the module only refuses it in parts.
+            CkError::Pkcs11(RvError::OperationNotInitialized | RvError::FunctionNotSupported, _) => {
+                self.unsupported(format!(
+                    "token '{}' does not sign with {} in parts ({e}), the only way cakeys can log in per \
+                     use for a CKA_ALWAYS_AUTHENTICATE key; opt in with binding = \"token-asserted\"",
+                    self.name,
+                    mech.mechanism_type()
+                ))
+            }
+            e => refused(e),
+        })?;
+        self.session.sign_final().map_err(refused)
     }
 
     /// `pop-ecdh`: the host holds an ephemeral key and the MAC of the challenge under the shared

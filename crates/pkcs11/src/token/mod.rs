@@ -55,12 +55,14 @@ struct PinState {
 struct Pin {
     locked: bool,
     final_try: bool,
+    /// A login failed since the last success, but retries remain: a warning, never a refusal.
+    count_low: bool,
 }
 
 impl Pin {
     /// Refuse a login as `who` (user or SO) the counters say must not be tried.
     fn guard(self, token: &str, who: &str) -> Result<()> {
-        let Pin { locked, final_try } = self;
+        let Pin { locked, final_try, .. } = self;
         if locked {
             return Err(KmError::Unavailable(format!(
                 "token '{token}': the {who} PIN is locked (CKF_{}_PIN_LOCKED); unlock it with the vendor's tools",
@@ -108,9 +110,10 @@ pub struct Token {
     pub cfg: TokenCfg,
     /// The PIN counters at open, checked before every login (M2).
     pins: PinState,
-    /// The user credential, already read for login, kept only when the provider can attest
-    /// (the TPM attestation path unseals the token's wrapping key with it) or an SO step must
-    /// log the user back in afterwards (`mgmKeyFile`/`mgmKeyEnv`). Zeroized on drop.
+    /// The user credential, already read for login, kept for what needs it again: the
+    /// context-specific login of a `CKA_ALWAYS_AUTHENTICATE` proof, the TPM attestation path
+    /// (it unseals the token's wrapping key with it) and logging the user back in after an SO
+    /// step (`mgmKeyFile`/`mgmKeyEnv`). Zeroized on drop.
     pin: Option<Zeroizing<String>>,
 }
 
@@ -173,8 +176,16 @@ impl Token {
                         firmware: info.firmware_version().to_string(),
                     },
                     PinState {
-                        user: Pin { locked: info.user_pin_locked(), final_try: info.user_pin_final_try() },
-                        so: Pin { locked: info.so_pin_locked(), final_try: info.so_pin_final_try() },
+                        user: Pin {
+                            locked: info.user_pin_locked(),
+                            final_try: info.user_pin_final_try(),
+                            count_low: info.user_pin_count_low(),
+                        },
+                        so: Pin {
+                            locked: info.so_pin_locked(),
+                            final_try: info.so_pin_final_try(),
+                            count_low: info.so_pin_count_low(),
+                        },
                     },
                     info.write_protected(),
                 ));
@@ -223,7 +234,7 @@ impl Token {
             logged_in: pin.is_some(),
             cfg: cfg.clone(),
             pins,
-            pin: pin.filter(|_| provider.attestation().is_some() || has_admin(cfg)),
+            pin,
             provider,
         })
     }
@@ -234,6 +245,19 @@ impl Token {
             Some(h) => KmError::Unsupported(format!("{msg} (hint for {}: {h})", self.provider.name())),
             None => KmError::Unsupported(msg),
         }
+    }
+
+    /// A warning for the run when the user PIN counters at open reported a failed login
+    /// (`CKF_USER_PIN_COUNT_LOW`) and cakeys logged in: retries remain, so it is no refusal.
+    #[must_use]
+    pub fn pin_warning(&self) -> Option<String> {
+        (self.logged_in && self.pins.user.count_low).then(|| {
+            format!(
+                "token '{}': a user PIN login failed since the last success (CKF_USER_PIN_COUNT_LOW); check \
+                 the PIN source before a wrong one spends more retries",
+                self.name
+            )
+        })
     }
 
     /// The session itself, for the probe's raw `C_*` calls (crate-internal: the normal verbs

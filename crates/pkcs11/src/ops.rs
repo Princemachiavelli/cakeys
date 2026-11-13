@@ -195,7 +195,8 @@ fn resolve_with(t: &Target, tok: &Token, lock: &Lock, provision: bool) -> Result
     tok.check_public_half(h, t.spec, &t.on_token.locator, public_only)?;
     let commits = commits(t, tok, mode)?;
     let label = commitment_label(t, lock);
-    let binding = binding(t);
+    // Observed, not planned: a CKA_ALWAYS_AUTHENTICATE key records the `pop-sign-pin` it proves.
+    let binding = tok.recorded_binding(h, binding(t))?;
     let ids = tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding)?;
     let attestation = match attestation_scheme(t, tok) {
         Some(scheme) => Some(attest(t, tok, lock, h, scheme, provision)?),
@@ -402,7 +403,7 @@ pub fn delete(
             mode,
             &commits(t, tok, mode)?,
             &commitment_label(t, lock),
-            binding(t),
+            tok.recorded_binding(h, binding(t))?,
         )?;
         // --if-match names the primary scheme; otherwise the first scheme the lock records.
         let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
@@ -490,6 +491,9 @@ pub fn check(
     // Read-only unless the spec may create the object (M1).
     let access = if t.on_token.auto_create { hal::Access::Write } else { hal::Access::Read };
     let tok = open(&token_name, access)?;
+    if let Some(w) = tok.pin_warning() {
+        notes.warn(w);
+    }
     // The token may lack a mechanism the spec allows: refuse before realise can create.
     if let Some(s) = scheme {
         let on_token = schemes_on(&t, &tok)?;

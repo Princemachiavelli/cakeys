@@ -1001,8 +1001,9 @@ fn an_undeclared_mechanism_list_is_observed_policy() {
 }
 
 /// P2-10: declared attribute names must fit the class (PKCS#11 3.2 §4), the extra booleans are
-/// settable, and the new refusals apply: `CKA_ALWAYS_AUTHENTICATE = true` cannot prove possession,
-/// and `CKA_TRUSTED = true` cannot be generated.
+/// settable, and the refusals apply: `binding = "pop-sign-pin"` is recorded, never configured, an
+/// always-authenticate Edwards key cannot prove possession, and `CKA_TRUSTED = true` cannot be
+/// generated.
 #[test]
 fn attributes_are_validated_per_class() {
     let Some(e) = env("attr-class") else { return };
@@ -1033,9 +1034,24 @@ fn attributes_are_validated_per_class() {
         assert_eq!(code(&o), 17, "{attrs}: {}", String::from_utf8_lossy(&o.stderr));
     }
 
-    // Proving possession with CKA_ALWAYS_AUTHENTICATE would spend a PIN entry per run.
+    // CKA_ALWAYS_AUTHENTICATE proves possession with a PIN per use (pop-sign, the default)...
     e.config(
         "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.s]\nobject = \"o\"\nattributes = { CKA_SIGN = true, CKA_ALWAYS_AUTHENTICATE = true }\n\
+         tokens.ref = { locator = { CKA_LABEL = \"x\" } }\n",
+    );
+    let o = e.km(&["validate"]);
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    // ...but pop-sign-pin is what the lock records, never what keys.toml asks for.
+    e.config(
+        "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.s]\nobject = \"o\"\nattributes = { CKA_SIGN = true, CKA_ALWAYS_AUTHENTICATE = true }\n\
+         tokens.ref = { locator = { CKA_LABEL = \"x\" }, binding = \"pop-sign-pin\" }\n",
+    );
+    assert_eq!(code(&e.km(&["validate"])), 17);
+    // CKM_EDDSA signs in one part only, leaving no point for the per-use login.
+    e.config(
+        "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC_EDWARDS\"\ncurve = \"edwards25519\"\n\n\
          [specs.s]\nobject = \"o\"\nattributes = { CKA_SIGN = true, CKA_ALWAYS_AUTHENTICATE = true }\n\
          tokens.ref = { locator = { CKA_LABEL = \"x\" } }\n",
     );
@@ -1075,6 +1091,59 @@ fn attributes_are_validated_per_class() {
     };
     assert!(*aa, "the template set CKA_ALWAYS_AUTHENTICATE");
     assert_eq!(code(&e.km(&["verify", "s", "--token", "ref"])), 0);
+}
+
+/// `docs/CKA_ALWAYS_AUTHENTICATE.md`: a `CKA_ALWAYS_AUTHENTICATE` key proves possession under its
+/// per-use policy (`C_SignInit → C_Login(CKU_CONTEXT_SPECIFIC) → C_Sign`, multi-part), and the
+/// lock records `pop-sign-pin` from the attribute the token reports, declared or not.
+#[test]
+fn always_authenticate_keys_prove_possession_with_a_per_use_pin() {
+    let Some(e) = env("always-auth-pop") else { return };
+    let s = e.session();
+    for label in ["always-auth-rsa", "always-auth-ec"] {
+        for h in s.find_objects(&[Attribute::Label(label.as_bytes().to_vec())]).unwrap() {
+            s.destroy_object(h).unwrap();
+        }
+    }
+    let spec = |key: &str, label: &str, attributes: &str| {
+        format!(
+            "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\n{key}\n\n[specs.s]\nobject = \"o\"\n\
+             attributes = {{ {attributes} }}\n\
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"{label}\" }}, autoCreate = true }}\n"
+        )
+    };
+    let rsa = "keyType = \"CKK_RSA\"\nmodulusBits = 2048";
+    let declared = "CKA_SIGN = true, CKA_ALWAYS_AUTHENTICATE = true, CKA_DESTROYABLE = true";
+    e.config(&spec(rsa, "always-auth-rsa", declared));
+    let o = e.km(&["realise", "s", "--token", "ref", "--update-lock"]);
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    let r = &e.lock()["realisations"]["s"]["ref"];
+    assert_eq!(r["binding"].as_str(), Some("pop-sign-pin"), "{r}");
+    assert_eq!(r["policy"]["CKA_ALWAYS_AUTHENTICATE"].as_bool(), Some(true), "{r}");
+    let o = e.km(&["verify", "s", "--token", "ref"]);
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+
+    // The module enforces the policy: signing without the context-specific login fails, so the
+    // proof above did log in rather than sign freely.
+    let private = s
+        .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"always-auth-rsa".to_vec())])
+        .unwrap()[0];
+    assert!(s.sign(&Mechanism::Sha256RsaPkcs, private, b"challenge").is_err(), "signed without re-authenticating");
+
+    // Undeclared, the attribute the token reports still decides: same proof, same record.
+    e.config(&spec(rsa, "always-auth-rsa", "CKA_SIGN = true"));
+    let o = e.km(&["resolve", "s", "--token", "ref"]);
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    let resolved: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(resolved["binding"].as_str(), Some("pop-sign-pin"), "{resolved}");
+
+    // ECDSA proves the same way where the module signs it in parts; elsewhere the refusal is
+    // unsupported (15), never a pass (the single-part path needs a cryptoki patch).
+    std::fs::remove_file(e.dir.join("keys.lock")).unwrap();
+    e.config(&spec("keyType = \"CKK_EC\"\ncurve = \"secp256r1\"", "always-auth-ec", declared));
+    let o = e.km(&["realise", "s", "--token", "ref", "--no-update-lock"]);
+    let want = if REF.ecdsa_in_parts { 10 } else { 15 };
+    assert_eq!(code(&o), want, "{}", String::from_utf8_lossy(&o.stderr));
 }
 
 /// A known AES-256 value, planted several times with different usage bits: the host knows the

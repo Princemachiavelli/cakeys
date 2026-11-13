@@ -34,6 +34,9 @@ pub struct Reference {
     pub model: &'static str,
     /// Curves (`keys.toml` names) it cannot generate: refused as unsupported (15).
     pub missing_curves: &'static [&'static str],
+    /// Whether it signs ECDSA-SHA* in parts (`C_SignUpdate`): the only point cakeys has for a
+    /// `CKA_ALWAYS_AUTHENTICATE` key's per-use login. `SoftHSM` signs those single-part only.
+    pub ecdsa_in_parts: bool,
     /// Its committed capability profile: name, and path under profiles/.
     pub profile: (&'static str, &'static str),
     /// The module's configuration (`conf_var`'s file) with one mechanism hidden.
@@ -48,6 +51,7 @@ pub const SOFTHSM: Reference = Reference {
     manufacturer: "SoftHSM",
     model: "SoftHSM v2",
     missing_curves: &[],
+    ecdsa_in_parts: false,
     profile: ("softhsm/2.7", "modules/softhsm/2.7.toml"),
     hide_mechanism: |conf, m| format!("{conf}\nslots.mechanisms = -{m}\n"),
 };
@@ -63,6 +67,7 @@ pub const KRYOPTIC: Reference = Reference {
     manufacturer: "Kryoptic",
     model: "v1",
     missing_curves: &["secp256k1", "brainpoolP256r1", "brainpoolP384r1"],
+    ecdsa_in_parts: true,
     profile: ("kryoptic/1.5", "modules/kryoptic/1.5.toml"),
     hide_mechanism: |conf, m| format!("{conf}\nmechanisms = [\"DENY\", \"{m}\"]\n"),
 };

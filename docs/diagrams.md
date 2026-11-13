@@ -96,7 +96,8 @@ flowchart TD
 ```
 
 All `pop-*` share the top binding rank: each proves possession of the same key. A key carrying
-`CKA_ALWAYS_AUTHENTICATE` is refused at run time (16) — a proof would spend a PIN entry per run.
+`CKA_ALWAYS_AUTHENTICATE` signs after a context-specific login with the session's PIN and records
+`pop-sign-pin` ([`CKA_ALWAYS_AUTHENTICATE.md`](CKA_ALWAYS_AUTHENTICATE.md)).
 
 ## 4. Identity: one object, several schemes
 

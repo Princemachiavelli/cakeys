@@ -256,7 +256,24 @@ pub fn main(registry: &Registry) -> ExitCode {
     }
 }
 
+/// Open a token for a verb; a PIN counter that reports an earlier failed login is a warning.
 fn open_token(
+    cfg: &Config,
+    modules: &BTreeMap<String, String>,
+    registry: &Registry,
+    name: &str,
+    access: Access,
+    notes: &mut Notes,
+) -> Result<Token, KmError> {
+    let tok = open_quiet(cfg, modules, registry, name, access)?;
+    if let Some(w) = tok.pin_warning() {
+        notes.warn(w);
+    }
+    Ok(tok)
+}
+
+/// [`open_token`] without the warning, for callers that report it themselves (`ops::check`).
+fn open_quiet(
     cfg: &Config,
     modules: &BTreeMap<String, String>,
     registry: &Registry,
@@ -458,18 +475,18 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
         }
         Cmd::Resolve { spec, token } => {
             let t = Target::new(&cfg, spec, token)?;
-            let tok = open_token(&cfg, &modules, registry, token, Access::Read)?;
+            let tok = open_token(&cfg, &modules, registry, token, Access::Read, notes)?;
             let r = ops::resolve(&t, &tok, &lock)?.ok_or_else(|| KmError::NotFound(format!("{spec} on {token}")))?;
             print(&r);
         }
         Cmd::Verify { spec, token } => {
             let t = Target::new(&cfg, spec, token)?;
-            let tok = open_token(&cfg, &modules, registry, token, Access::Read)?;
+            let tok = open_token(&cfg, &modules, registry, token, Access::Read, notes)?;
             println!("{}", ops::verify(&t, &tok, &lock, notes)?.uri);
         }
         Cmd::Realise { spec, token, write } => {
             let t = Target::new(&cfg, spec, token)?;
-            let tok = open_token(&cfg, &modules, registry, token, Access::Write)?;
+            let tok = open_token(&cfg, &modules, registry, token, Access::Write, notes)?;
             let (r, changed) = ops::realise(&t, &tok, &mut lock, write.mode(), notes)?;
             if changed {
                 save_lock(&lock_path, &lock)?;
@@ -479,7 +496,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
         }
         Cmd::Delete { spec, token, if_match, write } => {
             let t = Target::new(&cfg, spec, token)?;
-            let tok = open_token(&cfg, &modules, registry, token, Access::Write)?;
+            let tok = open_token(&cfg, &modules, registry, token, Access::Write, notes)?;
             if ops::delete(&t, &tok, &mut lock, if_match.as_deref(), write.mode(), notes)? {
                 save_lock(&lock_path, &lock)?;
                 notes.say(format!("updated {}", lock_path.display()));
@@ -500,12 +517,12 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
             }
         }
         Cmd::Check { reference, token, spec } => {
-            let open = |name: &str, access| open_token(&cfg, &modules, registry, name, access);
+            let open = |name: &str, access| open_quiet(&cfg, &modules, registry, name, access);
             let r = ops::check(&cfg, reference, spec.as_deref(), token.as_deref(), open, &mut lock, notes)?;
             println!("{}", r.uri);
         }
         Cmd::Caps { token } => {
-            let tok = open_token(&cfg, &modules, registry, token, Access::Read)?;
+            let tok = open_token(&cfg, &modules, registry, token, Access::Read, notes)?;
             print(&serde_json::json!({
                 "token": token,
                 "provider": tok.provider.name(),
@@ -533,7 +550,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
         }
         Cmd::Transport { spec, token, out } => {
             let t = Target::new(&cfg, spec, token)?;
-            let tok = open_token(&cfg, &modules, registry, token, Access::Read)?;
+            let tok = open_token(&cfg, &modules, registry, token, Access::Read, notes)?;
             let text = migrate::transport(&t, &tok, &lock, notes)?.to_toml();
             match out {
                 Some(path) => {
@@ -546,7 +563,8 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
         Cmd::Supports { .. } => run_supports(&cli.cmd, &cfg, notes)?,
         Cmd::Probe { token, write, out, name, diff, profiles_dir } => {
             let tcfg = cfg.tokens.get(token).ok_or_else(|| KmError::Validation(format!("unknown token '{token}'")))?;
-            let tok = open_token(&cfg, &modules, registry, token, if *write { Access::Write } else { Access::Read })?;
+            let tok =
+                open_token(&cfg, &modules, registry, token, if *write { Access::Write } else { Access::Read }, notes)?;
             // cryptoki drops from C_GetMechanismList every mechanism it cannot name, so through
             // an unpatched binding the advertisement is short (kryoptic's CKM_AES_KEY_WRAP_KWP
             // [run]): such a build may print a probe, never write or judge a committed one.
@@ -787,7 +805,7 @@ impl Moves<'_> {
 
     /// A token's capabilities: from the open token, else from what the lock recorded there.
     fn side(&self, name: &str, notes: &mut Notes) -> Result<(Side, &'static str), KmError> {
-        match open_token(self.cfg, self.modules, self.registry, name, Access::Read) {
+        match open_token(self.cfg, self.modules, self.registry, name, Access::Read, notes) {
             Ok(tok) => Ok((migrate::side(&tok)?, "token")),
             Err(e) => match migrate::side_from_lock(name, self.lock, self.registry) {
                 Some(side) => {

@@ -73,6 +73,8 @@ impl std::fmt::Display for Target<'_> {
 
 /// How `t`'s private key is bound to its identity: proven by signing, deriving or decrypting
 /// (`pop-*`) unless the spec opts out (or adopts it publicOnly). `None` for every other class.
+/// This is the planned method; the proof records `pop-sign-pin` for `pop-sign` when the token
+/// reports the key `CKA_ALWAYS_AUTHENTICATE` (`docs/CKA_ALWAYS_AUTHENTICATE.md`).
 #[must_use]
 pub fn binding(t: &Target) -> Option<Binding> {
     if t.object.class != Class::PrivateKey {
@@ -88,6 +90,11 @@ pub fn binding(t: &Target) -> Option<Binding> {
 fn check_binding(t: &Target) -> Result<()> {
     let invalid = |why: String| Err(KmError::Validation(format!("{t}: {why}")));
     match (binding(t), t.on_token.binding) {
+        (_, Some(Binding::PopSignPin)) => invalid(
+            "binding = \"pop-sign-pin\" is recorded, not configured: write \"pop-sign\" (the default); \
+             a CKA_ALWAYS_AUTHENTICATE key proves it with a PIN per use"
+                .into(),
+        ),
         (None, Some(b)) => invalid(format!("binding = \"{b}\" applies to private keys only")),
         (Some(Binding::TokenAsserted), Some(Binding::PopSign)) => {
             invalid("publicOnly cannot prove possession (binding = \"pop-sign\")".into())
@@ -98,11 +105,18 @@ fn check_binding(t: &Target) -> Result<()> {
                     .into(),
             )
         }
-        (Some(Binding::PopSign), _) if t.spec.flag("CKA_ALWAYS_AUTHENTICATE") == Some(true) => invalid(
-            "CKA_ALWAYS_AUTHENTICATE = true needs a login per signature, and so would proving \
-             possession; adopt it publicOnly, or opt in with binding = \"token-asserted\""
-                .to_string(),
-        ),
+        // The per-use login needs a multi-part signature (cryptoki has no other point for it),
+        // and CKM_EDDSA is single-part only.
+        (Some(Binding::PopSign), _)
+            if t.object.key_type == Some(Kt::EcEdwards) && t.spec.flag("CKA_ALWAYS_AUTHENTICATE") == Some(true) =>
+        {
+            invalid(
+                "a CKA_ALWAYS_AUTHENTICATE Edwards key cannot prove possession yet: its per-use login needs \
+                 a multi-part signature, and CKM_EDDSA is single-part only; opt in with binding = \
+                 \"token-asserted\""
+                    .into(),
+            )
+        }
         (Some(Binding::PopSign), _) if t.spec.flag("CKA_SIGN") != Some(true) => invalid(
             "proving possession of the private key needs CKA_SIGN = true in the spec attributes; \
              or opt in with binding = \"token-asserted\" on this token"
