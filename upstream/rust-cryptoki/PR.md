@@ -1,6 +1,7 @@
 # Draft PR for parallaxsecond/rust-cryptoki
 
 Status: **draft, not filed.** Before opening it:
+
 - Add your DCO sign-off; rust-cryptoki commits carry `Signed-off-by`. Run `git am` on the patch, then
   `git commit --amend -s`.
 - When a release with the fix is out, drop `nix/patches/cryptoki-hmac-key-types.patch` and the
@@ -29,6 +30,7 @@ pub const SHA384_HMAC: KeyType = KeyType {
 ```
 
 That breaks both directions:
+
 - **Writing.** `Attribute::KeyType(KeyType::SHA384_HMAC)` creates a `CKK_SHA256_HMAC` key. SoftHSM
   then rejects `CKM_SHA384_HMAC` on it with `CKR_KEY_TYPE_INCONSISTENT`.
 - **Reading.** `TryFrom<CK_KEY_TYPE>` maps `CKK_SHA224_HMAC` (0x2e), `CKK_SHA384_HMAC` (0x2c) and

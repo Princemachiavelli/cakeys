@@ -65,4 +65,3 @@ certificateType = "CKC_X_509"
 object = "whonix-db-cert"
 # CKA_ID 07 is shared with the slot's attestation certificate, so locate by label.
 tokens.yubikey = { locator = { CKA_LABEL = "X.509 Certificate for Retired Key 3" } }
-

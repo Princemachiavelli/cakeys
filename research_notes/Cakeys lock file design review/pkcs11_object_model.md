@@ -34,11 +34,13 @@ The cakeys files cited are local repo paths:
 ## Q1. Object classes and attributes in PKCS#11 3.0 / 3.1 / 3.2, classified by role
 
 ### Takeaway
+
 PKCS#11 3.2 has eleven object classes, of which five are storage objects RFC 7512 can address and cakeys handles (data, certificate, public/private/secret key); 3.2 adds `CKO_TRUST`, `CKO_VALIDATION`, ML-DSA/ML-KEM/SLH-DSA/XMSS and several token-computed attributes. Every key attribute falls into one of five roles: intrinsic material, mutable policy, one-way lifecycle, token-assigned provenance, or informational locator (full table under Inferences).
 
 ### Cited Findings
 
 **Object model basics**
+
 - "An object consists of a set of attributes, each of which has a given value." Objects are "always well-formed". "A token can hold several identical objects, i.e., it is permissible for two or more objects to have exactly the same values for all their attributes." Objects may also carry vendor-specific attributes. — [3.2 §4](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html)
 - Objects are created by these functions — [3.2 §4.1.1](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html):
   - `C_CreateObject`, `C_GenerateKey` and `C_GenerateKeyPair`;
@@ -95,6 +97,7 @@ PKCS#11 3.2 has eleven object classes, of which five are storage objects RFC 751
 - **Already present in 3.0 base:** `CKA_UNIQUE_ID` (13 mentions), `CKO_PROFILE`, `CKA_PUBLIC_KEY_INFO`, `CKA_COPYABLE`, `CKA_DESTROYABLE` and `CKA_ALWAYS_AUTHENTICATE`. — [3.0 base](https://docs.oasis-open.org/pkcs11/pkcs11-base/v3.0/os/pkcs11-base-v3.0-os.html)
 
 **Common storage attributes (Table 19)**
+
 - The attributes are `CKA_TOKEN` (default false), `CKA_PRIVATE` (default "token-specific"), `CKA_MODIFIABLE` (default true), `CKA_LABEL` (default empty), `CKA_COPYABLE` (default true; "Can't be set to TRUE once it is set to FALSE"), `CKA_DESTROYABLE` (default true) and `CKA_UNIQUE_ID` (footnotes 2,4,6). — [3.2 §4.4, Table 19](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html)
 - "Only the CKA_LABEL attribute can be modified after the object is created." `CKA_TOKEN`, `CKA_PRIVATE` and `CKA_MODIFIABLE` can be changed while copying. — [3.2 §4.4](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html)
 - `C_CopyObject` may also change `CKA_DESTROYABLE`. The four "special" attributes are TOKEN, PRIVATE, MODIFIABLE and DESTROYABLE. — [3.2 §4.1.3](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html)
@@ -114,6 +117,7 @@ PKCS#11 3.2 has eleven object classes, of which five are storage objects RFC 751
 | `CKA_OBJECT_VALIDATION_FLAGS` | 4,6,9,12 (3.2) |
 
 Semantics from the same section:
+
 - Dates are "for reference only; Cryptoki does not attach any special meaning to them".
 - `CKA_LOCAL` is true "if and only if the value of the key was originally generated on the token by a C_GenerateKey or C_GenerateKeyPair call", or it is a `C_CopyObject` copy of such a key.
 - `CKA_KEY_GEN_MECHANISM` is valid only if `CKA_LOCAL` is true; otherwise it is `CK_UNAVAILABLE_INFORMATION`.
@@ -121,6 +125,7 @@ Semantics from the same section:
 Source: [3.2 §4.8.2, Table 26](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html).
 
 **Public key attributes (Table 27)**
+
 - Usage and type: `CKA_SUBJECT`, `CKA_ENCRYPT`, `CKA_VERIFY`, `CKA_VERIFY_RECOVER`, `CKA_WRAP` and `CKA_ENCAPSULATE` (all 8; usage bits also 9).
 - Wrapping: `CKA_TRUSTED` (10) and `CKA_WRAP_TEMPLATE`.
 - `CKA_PUBLIC_KEY_INFO`: "MAY be empty, DEFAULT derived from the underlying public key data".
@@ -129,6 +134,7 @@ Source: [3.2 §4.8.2, Table 26](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v
 Source: [3.2 §4.9, Table 27](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html).
 
 **Private key attributes (Table 29)**
+
 - Usage: `CKA_SUBJECT` (8), `CKA_DECRYPT`/`CKA_SIGN`/`CKA_SIGN_RECOVER`/`CKA_UNWRAP`/`CKA_DECAPSULATE` (8,9).
 - Lifecycle: `CKA_SENSITIVE` (8,11), `CKA_EXTRACTABLE` (8,12), `CKA_ALWAYS_SENSITIVE` and `CKA_NEVER_EXTRACTABLE` (2,4,6), `CKA_WRAP_WITH_TRUSTED` (11).
 - Templates and authentication: `CKA_UNWRAP_TEMPLATE`, `CKA_ALWAYS_AUTHENTICATE`, `CKA_DERIVE_TEMPLATE`.
@@ -140,6 +146,7 @@ Source: [3.2 §4.9, Table 27](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.
 Source: [3.2 §4.10, Table 29](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html).
 
 **Secret key attributes (Table 30)**
+
 - `CKA_SENSITIVE` (8,11; "default CK_FALSE"); the usage bits (8,9); `CKA_EXTRACTABLE` (8,12); `CKA_ALWAYS_SENSITIVE`/`CKA_NEVER_EXTRACTABLE` (2,4,6).
 - `CKA_CHECK_VALUE`, `CKA_WRAP_WITH_TRUSTED` (11), `CKA_TRUSTED` (10), and the WRAP/UNWRAP/DERIVE templates.
 - **KCV.** It is 3 bytes. It "should not be usable to obtain any part of the key value" and is non-unique. "If supported, … always supplied … even if … CKA_ENCRYPT is set to CK_FALSE".
@@ -149,6 +156,7 @@ Source: [3.2 §4.10, Table 29](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3
 Source: [3.2 §4.11, Table 30](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html).
 
 **Certificate attributes (Tables 21–22)**
+
 - Common: `CKA_CERTIFICATE_TYPE` (1), `CKA_TRUSTED` (10), `CKA_CERTIFICATE_CATEGORY`, `CKA_CHECK_VALUE`, `CKA_START_DATE`/`END_DATE` and `CKA_PUBLIC_KEY_INFO`.
 - `CKA_CHECK_VALUE` is "the first three bytes of the SHA-1 hash of the certificate object's CKA_VALUE".
 - `CKA_CERTIFICATE_TYPE` and `CKA_CERTIFICATE_CATEGORY` "may not be modified after an object is created". `CKA_TRUSTED` "MUST be set by a token initialization application or by the token's SO. Trusted certificates cannot be modified".
@@ -168,6 +176,7 @@ Source: [3.2 §4.6.2–4.6.3](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.
 | AES (`CKK_AES`) | `CKA_VALUE` (1,4,6,7; 16/24/32 bytes) and `CKA_VALUE_LEN` (2,3). KCV: first 3 bytes of ECB encryption of a zero block. | [3.2 §6.10.2, Table 105](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html) |
 
 **PQ keys (3.2)**
+
 - **ML-DSA public key** (`CKK_ML_DSA`): `CKA_PARAMETER_SET` (1,3) and `CKA_VALUE` (1,4), the "Public key as defined in [FIPS 204]". This is a raw encoding, not SPKI. — [3.2 §6.67.2, Table 280](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html)
 - **ML-DSA private key:**
   - Attributes: `CKA_PARAMETER_SET` (1,4,6), `CKA_SEED` (4,6,7; ξ) and `CKA_VALUE` (1,4,6,7; sk).
@@ -185,6 +194,7 @@ Source: [3.2 §4.6.2–4.6.3](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.
 Source: [3.2 §6.8.2, §6.65–6.66](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html).
 
 **Reading attributes (`C_GetAttributeValue`, §5.7.5)**
+
 - An attribute that "cannot be revealed because the object is sensitive or unextractable" yields `CK_UNAVAILABLE_INFORMATION` and `CKR_ATTRIBUTE_SENSITIVE`. An attribute the object lacks yields `CKR_ATTRIBUTE_TYPE_INVALID`.
 - These "do not denote true errors": the call "MUST nonetheless have processed every attribute in the template".
 - Array attributes (templates) have `CKF_ARRAY_ATTRIBUTE` set.
@@ -215,6 +225,7 @@ Source: [3.2 §5.7.5](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkc
 | **Informational / locator** (mutable) | `CKA_LABEL` (all), `CKA_ID` (keys and X.509 certs), `CKA_START_DATE`/`END_DATE` (keys), `CKA_SUBJECT` (keys), `CKA_ISSUER`/`CKA_SERIAL_NUMBER` (certs), `CKA_APPLICATION`/`CKA_OBJECT_ID` (data; spec does not mark them modifiable) | |
 
 **Two "only X is modifiable" statements must be read together.**
+
 - §4.4 says only `CKA_LABEL` is modifiable among the *common storage* attributes.
 - Key tables mark `CKA_ID`, the dates, `CKA_SUBJECT`, `CKA_DERIVE`, all usage bits, `CKA_SENSITIVE`, `CKA_EXTRACTABLE` and `CKA_PUBLIC_KEY_INFO` (private keys) with footnote 8.
 - The effective mutable set on a key with `CKA_MODIFIABLE=true` is therefore {label, id, dates, subject, usage bits, one-way SENSITIVE/EXTRACTABLE, private-key PUBLIC_KEY_INFO}.
@@ -224,6 +235,7 @@ Source: [3.2 §5.7.5](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkc
 **For EC, Edwards, ML-DSA, ML-KEM and SLH-DSA private keys, the spec gives no public-key attribute except the optional `CKA_PUBLIC_KEY_INFO`.** H1 in cakeys (an EC private identity read from a separate public object) is therefore a spec-level property. It is not only a SoftHSM quirk.
 
 ### Gaps
+
 - **The 3.0 "Current Mechanisms" document was not downloaded.** Statements about when `CKA_EC_POINT`, `CKA_DERIVE_TEMPLATE` (absent from the 3.0 base text, present in 3.1 Table 29) or the Edwards key types were introduced are not verified per version.
 - **The figure/table conversion dropped part of Table 14** (common object attributes; only `CKA_CLASS` rendered). It also truncated some names, e.g. `A_DERIVE_TEMPLATE` in Table 30. The content was cross-checked against the text.
 - **The `CKA_ALLOWED_MECHANISMS` modifiability** is inferred from the absence of footnote 8. The spec text does not state it.
@@ -231,6 +243,7 @@ Source: [3.2 §5.7.5](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkc
 ## Q2. Immutability, one-way attributes, token-set attributes, and provenance signals
 
 ### Takeaway
+
 Spec-immutable attributes give a stable basis for "same object" checks:
 
 - material (modulus, EC params, parameter set, cert `CKA_VALUE`);
@@ -241,6 +254,7 @@ Usage bits, `CKA_ID` and `CKA_LABEL` are mutable whenever `CKA_MODIFIABLE=true`.
 The provenance flags are only as trustworthy as the module that reports them. ykcs11 hard-codes `ALWAYS_SENSITIVE`/`NEVER_EXTRACTABLE`=TRUE. tpm2-pkcs11 keeps all attributes in a host-side SQLite store.
 
 ### Cited Findings
+
 - **Modification is token-dependent:**
   - "attributes which Cryptoki specifies are modifiable may actually not be modifiable on some tokens";
   - modifiability "might depend on the values of certain attributes";
@@ -294,6 +308,7 @@ The provenance flags are only as trustworthy as the module that reports them. yk
   Source: [AWS CloudHSM attribute tables](https://docs.aws.amazon.com/cloudhsm/latest/userguide/pkcs11-attributes-interpreting.html).
 
 ### Inferences
+
 - **A change in any spec-immutable attribute between two observations means the object was replaced** (destroyed and recreated, or a different object now answers the locator). It does not mean the object was modified. This covers `LOCAL`, `KEY_GEN_MECHANISM`, `ALWAYS_SENSITIVE`, `NEVER_EXTRACTABLE`, `UNIQUE_ID`, `CRC64` and `CERTIFICATE_CATEGORY`. Recording them per realisation gives replace-in-place detection that does not depend on material.
 - **The provenance flags are per object instance, not per material.** The same AES key can be `LOCAL=true` on the token that generated it and `LOCAL=false` after an unwrap onto another token. They belong in `realisations.<spec>.<token>`, not in `objects.<name>`.
 - **One-way attributes give a meaningful "downgrade" notion:**
@@ -311,6 +326,7 @@ The provenance flags are only as trustworthy as the module that reports them. yk
   cakeys `public_spki()` reads `CKA_PUBLIC_KEY_INFO` *first* (`crates/pkcs11/src/token.rs` `public_spki`). That affects RSA private keys too, even though their `CKA_MODULUS` is immutable. This widens H1 beyond "EC/Edwards on SoftHSM".
 
 ### Gaps
+
 - **It was not tested whether any module verifies an application-supplied `CKA_PUBLIC_CRC64_VALUE` on `C_CreateObject`.** Footnote 1 makes the application supply it. If modules accept it unverified, it binds only generated keys.
 - **The behaviour of nShield, Luna and Utimaco for `ALWAYS_SENSITIVE`/`NEVER_EXTRACTABLE`/`LOCAL` after unwrap or import was not researched.**
 - **Whether ykcs11's metadata path reports origin IMPORTED for imported keys on firmware ≥5.3** was not verified against hardware. Code reading suggests it does.
@@ -318,6 +334,7 @@ The provenance flags are only as trustworthy as the module that reports them. yk
 ## Q3. Is `CKA_UNIQUE_ID` a usable stable identifier? How real tokens populate key attributes
 
 ### Takeaway
+
 `CKA_UNIQUE_ID` (since 3.0) is token-generated and read-only. It is only guaranteed unique among objects visible to a session, and it MAY be reused after `C_InitToken`. It is an instance handle, not a content identity.
 
 Among open-source modules, only kryoptic populates it (random UUIDv4). SoftHSM 2.7.0, tpm2-pkcs11, ykcs11 and OpenSC define it but do not implement it. Securosys Primus does not support it. CloudHSM does not list it, and Luna uses a vendor `CKA_OUID` instead.
@@ -325,6 +342,7 @@ Among open-source modules, only kryoptic populates it (random UUIDv4). SoftHSM 2
 It is at most an optional, per-realisation replace-in-place tripwire.
 
 ### Cited Findings
+
 - **Spec semantics:**
   - "Any time a new object is created, a value for CKA_UNIQUE_ID MUST be generated by the token."
   - Values "MUST be unique across all objects visible to any particular session, and SHOULD be unique across all objects created by the token. Reinitializing the token, such as by calling C_InitToken, MAY cause reuse."
@@ -369,6 +387,7 @@ It is at most an optional, per-realisation replace-in-place tripwire.
 - **p11-kit RPC 0.26.5** has typed serializers for array attributes (`CKA_WRAP_TEMPLATE`, `CKA_DERIVE_TEMPLATE`, `CKA_ALLOWED_MECHANISMS`) and a default branch for other attribute types, so unknown attributes are still forwarded. — [p11-kit/rpc-message.c](https://github.com/p11-glue/p11-kit/blob/0.26.5/p11-kit/rpc-message.c) (`map_attribute_to_value_type`, ~796–880)
 
 ### Inferences
+
 - **`CKA_UNIQUE_ID` cannot serve as a CA-ID or a lock identity:**
   - it is random (kryoptic);
   - it changes on copy, import or backup-restore to another token;
@@ -383,6 +402,7 @@ It is at most an optional, per-realisation replace-in-place tripwire.
   - The lock records `token.firmware`, which tells which path applied. Recording the path itself would be better.
 
 ### Gaps
+
 - **nShield (Entrust) behaviour was not researched:** `CKA_UNIQUE_ID`, `CKA_PUBLIC_KEY_INFO` on private keys, `CKA_LOCAL` on imported keys. The same holds for Luna beyond the search summary, and for Utimaco.
 - **Whether CloudHSM populates `CKA_PUBLIC_KEY_INFO` at all** is not stated in its tables.
 - **OpenSC's PKCS#15 framework** (smart cards via `opensc-pkcs11.so`) was not traced for which key attributes it synthesises. It is known to synthesise most attributes from PKCS#15 metadata, but that was not verified here.
@@ -390,11 +410,13 @@ It is at most an optional, per-realisation replace-in-place tripwire.
 ## Q4. RFC 7512 URIs: which components identify an object; how consumers select objects; "pure locator" implications
 
 ### Takeaway
+
 RFC 7512 object identification uses only `object` (`CKA_LABEL`), `id` (`CKA_ID`) and `type` (class). Token, slot and library components narrow the search space. Query attributes (`pin-source`, `pin-value`, `module-name`, `module-path`) are explicitly *not* identity.
 
 Missing attributes act as wildcards, and real consumers bind keys by `CKA_ID` (OpenSSH), not by label. A cakeys URI that verified one object can therefore select a different object in a consumer unless it carries every locator attribute cakeys used, plus `type`. Adding a token-assigned `serial` would also help.
 
 ### Cited Findings
+
 - **Path attributes** — [RFC 7512 §2.3](https://datatracker.ietf.org/doc/html/rfc7512):
   - token: `token`, `manufacturer`, `serial`, `model`;
   - library: `library-manufacturer`, `library-description`, `library-version`;
@@ -436,6 +458,7 @@ Missing attributes act as wildcards, and real consumers bind keys by `CKA_ID` (O
 - **The cakeys YubiKey example** locates the private keys by `CKA_ID` and the certificates by `CKA_LABEL`, because "CKA_ID 05 is shared with the slot's attestation certificate". — `examples/yubikey-secureboot.toml`
 
 ### Inferences
+
 - **Locator divergence.** cakeys proves "exactly one object of class C matches {label, id}" on the token it opened. A consumer receiving the URI applies the same template, so as long as the URI includes `type` and every locator field, they agree on the *same token*. Two caveats follow.
   - **Token selection.** `token=` is the user-settable token label (`C_InitToken`), which is not guaranteed unique across modules or slots. `serial=` comes from `C_GetTokenInfo`, is token-assigned, and is already recorded in the lock (`realisations.*.token.serial`). Adding `serial=` (and possibly `model=`/`manufacturer=`) to the emitted URI keeps it a pure locator while narrowing it to the device the lock describes.
   - **Login state.** `Token::open` logs in whenever a PIN source is configured, regardless of `publicOnly`. When no PIN is configured, as in the YubiKey example, cakeys' ambiguity check runs in a public session, so `CKA_PRIVATE=true` objects are invisible (§5.7.7). A logged-in consumer may then see two matches under the same locator (e.g., a second private key with the same `CKA_ID`) where cakeys saw one. The lock should record that the uniqueness check was done in a public session.
@@ -443,6 +466,7 @@ Missing attributes act as wildcards, and real consumers bind keys by `CKA_ID` (O
 - **`module-path` belongs out of the URI.** Leaving it out is consistent with RFC 7512's own preference for `module-name` and its security caveat. Provenance of the module is better recorded in the lock, as cakeys does.
 
 ### Gaps
+
 - **GnuTLS/p11tool selection rules were not traced in source:** `gnutls_pkcs11_privkey_import_url` and whether it pairs by `CKA_ID`. Neither were libp11 engine matching for sbsigntools, nor systemd-cryptenroll/cryptsetup token plugins, which store a PKCS#11 URI in the LUKS2 token and use the matched certificate's public key with the private key found by the URI.
 - **OpenSC `pkcs11-tool`'s selection rules were not traced:** `--id`/`--label`/`--type` filters, and whether it requires uniqueness or takes the first match.
 - **Whether upstream OpenSSH (as opposed to distribution patches) accepts RFC 7512 URIs** in `PKCS11Provider`/`ssh-add -s` was not confirmed in this pass.
@@ -451,6 +475,7 @@ Missing attributes act as wildcards, and real consumers bind keys by `CKA_ID` (O
 ## Q5. Typical usage patterns: generation templates, cert+key pairing by CKA_ID, PIV fixed slots, sessions/login, C_SetAttributeValue
 
 ### Takeaway
+
 Real deployments rely on four conventions:
 
 - the *public* template carries the domain (EC params, modulus bits, parameter set);
@@ -461,6 +486,7 @@ Real deployments rely on four conventions:
 Visibility depends on login, and every mutable attribute can be changed by anyone holding the user PIN unless `CKA_MODIFIABLE=false`.
 
 ### Cited Findings
+
 - **Generation templates:**
   - "when generating an EC private key, the EC domain parameters are not specified in the key's template … [they] are specified in the template for the EC public key". — [3.2 §6.3.4](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html)
   - The same holds for the ML-DSA parameter set. — [3.2 §6.67.3](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html)
@@ -488,15 +514,18 @@ Visibility depends on login, and every mutable attribute can be changed by anyon
 - **cakeys spec booleans** are limited to SIGN, VERIFY, ENCRYPT, DECRYPT, WRAP, UNWRAP, DERIVE, SENSITIVE, EXTRACTABLE, MODIFIABLE and PRIVATE. — `crates/pkcs11/src/token.rs` `bool_attr()`; `docs/DESIGN.md` §4.1
 
 ### Inferences
+
 - **The generated public half's attributes are fixed by cakeys code, not by the spec.** These are `VERIFY=true`, `PRIVATE=false` and the public exponent. They are not part of the spec digest and are never checked on verify. A public object whose `CKA_VERIFY`/`CKA_ENCRYPT`/`CKA_WRAP`/`CKA_TRUSTED`/`CKA_WRAP_TEMPLATE` was later changed would go unnoticed.
 - **PIV tokens make policy immutable and partly implicit.** PIN and touch policy are not PKCS#11 attributes, except `ALWAYS_AUTHENTICATE` for PIN-always. Touch policy is invisible in PKCS#11 and observable only via attestation or metadata. For "config+lock completely describes state", the YubiKey's PIN/touch policy has to come from the attestation certificate (Q6).
 
 ### Gaps
+
 - **Typical HSM vendor generation-template conventions were not surveyed.** These include `CKA_ALLOWED_MECHANISMS` use, and wrap/unwrap templates for key escrow (e.g., the CloudHSM trusted-wrapping workflow).
 
 ## Q6. Gap analysis: what cakeys records, checks, ignores or cannot observe; what config+lock need to "completely describe" an object
 
 ### Takeaway
+
 cakeys pins material (CA-IDs), intrinsic type, a declared subset of eleven boolean policy attributes, locator/URI and module provenance, but not the object's full observed policy, its provenance flags, non-boolean policy, certificate or public-half policy, or a cryptographic private↔public binding (H1, widened by SoftHSM's unverified `CKA_PUBLIC_KEY_INFO`). Non-extractable secret values and PIV PIN/touch policy are unobservable through PKCS#11 and need commitments or attestation.
 
 ### Cited Findings
@@ -521,6 +550,7 @@ cakeys pins material (CA-IDs), intrinsic type, a declared subset of eleven boole
 | Cert ↔ key relationship | separate objects | equal `pubkeyhash` values appear in both objects' `ids` (e.g. `whonix-db` and `whonix-db-cert`) | not asserted as a relation | `examples/yubikey-secureboot.lock` |
 
 **Spec facts that bear on completeness**
+
 - **Defaults are token-specific (footnote 9):**
   - `CKA_PRIVATE`'s default is "token-specific, and may depend on the values of other attributes" ([3.2 §4.4](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html)).
   - CloudHSM defaults `CKA_SIGN`/`CKA_VERIFY` to True for generated AES/generic secret keys, and `CKA_EXTRACTABLE` to True ([AWS](https://docs.aws.amazon.com/cloudhsm/latest/userguide/pkcs11-attributes-interpreting.html)).
@@ -530,13 +560,15 @@ cakeys pins material (CA-IDs), intrinsic type, a declared subset of eleven boole
 - **The review's open items** (H1, M1 read-write sessions, D5 unwrap-only AES has no deterministic identity) are listed in `docs/REVIEW-2026-11-11.md`.
 
 ### Inferences
+
 These are the recommendations for the config/lock schema.
 
 **1. Make policy closed-world.** "Completely describes" fails today. An undeclared attribute takes a token-specific default (footnote 9; CloudHSM defaults AES `CKA_SIGN=true`) and is never read. Two options:
-   - (a) **Validate that a spec declares every policy attribute applicable to its class.** Per class this is all footnote-8 usage bits plus SENSITIVE, EXTRACTABLE, PRIVATE, MODIFIABLE, COPYABLE, DESTROYABLE, ALWAYS_AUTHENTICATE (private), WRAP_WITH_TRUSTED and TRUSTED.
-   - (b) **Record in each realisation the full observed policy vector** (`policy = { CKA_SIGN = true, … }`, every applicable boolean the module answers) and compare it on verify. Drift in an undeclared attribute becomes a conflict or a warning.
 
-   (b) is backwards-compatible with existing specs and also captures module defaults. (a) is what a "declarative" config would demand. A combination is possible: a spec may stay partial, and the lock pins the rest.
+- (a) **Validate that a spec declares every policy attribute applicable to its class.** Per class this is all footnote-8 usage bits plus SENSITIVE, EXTRACTABLE, PRIVATE, MODIFIABLE, COPYABLE, DESTROYABLE, ALWAYS_AUTHENTICATE (private), WRAP_WITH_TRUSTED and TRUSTED.
+- (b) **Record in each realisation the full observed policy vector** (`policy = { CKA_SIGN = true, … }`, every applicable boolean the module answers) and compare it on verify. Drift in an undeclared attribute becomes a conflict or a warning.
+
+(b) is backwards-compatible with existing specs and also captures module defaults. (a) is what a "declarative" config would demand. A combination is possible: a spec may stay partial, and the lock pins the rest.
 
 **2. Extend the spec's value type beyond `bool`:**
 
@@ -550,41 +582,46 @@ These are the recommendations for the config/lock schema.
    Add the missing booleans too: COPYABLE, DESTROYABLE, ALWAYS_AUTHENTICATE, WRAP_WITH_TRUSTED, SIGN_RECOVER, VERIFY_RECOVER, ENCAPSULATE, DECAPSULATE, TOKEN. This changes the spec-digest JSON, so a frozen-identifier v2 is needed (`docs/DESIGN.md` §10).
 
 **3. Record provenance flags per realisation, compared as immutable:** `local`, `keyGenMechanism`, `alwaysSensitive`, `neverExtractable`, `objectValidationFlags` (3.2), `publicCrc64` (3.2), `uniqueId` (when present), and the cert's `certificateCategory`/`trusted`.
-   - They are spec read-only, so any change between realise and verify means the object instance was replaced. That justifies at least a warning, and a policy-configurable error.
-   - Do not put them in `objects.<n>`: the same material legitimately differs per token (generated vs unwrapped).
-   - Attribute them to the module, because ykcs11 hard-codes two of them and tpm2-pkcs11 stores them in a host file.
-   - Optionally let the spec *require* provenance, e.g. `requireLocal = true` or `requireNeverExtractable = true`, which is the declarative counterpart.
+
+- They are spec read-only, so any change between realise and verify means the object instance was replaced. That justifies at least a warning, and a policy-configurable error.
+- Do not put them in `objects.<n>`: the same material legitimately differs per token (generated vs unwrapped).
+- Attribute them to the module, because ykcs11 hard-codes two of them and tpm2-pkcs11 stores them in a host file.
+- Optionally let the spec *require* provenance, e.g. `requireLocal = true` or `requireNeverExtractable = true`, which is the declarative counterpart.
 
 **4. Fix the public-key source order (H1 and its widening):**
-   - Derive the SPKI from spec-immutable components when they exist: RSA `CKA_MODULUS`+`CKA_PUBLIC_EXPONENT` (footnotes 1,4,6) and `CKA_EC_POINT` on public objects.
-   - Use private-key `CKA_PUBLIC_KEY_INFO` only as a cross-check that must agree. On SoftHSM it is `ck8` and unverified.
-   - Where the private object has no public material (EC/Edwards/PQ by spec; SoftHSM, CloudHSM), bind via proof-of-possession, as REVIEW H1 proposes. That means sign a fresh challenge, ECDH or KEM-decapsulate, or RSA-decrypt.
-   - Record the binding method in the realisation, e.g. `binding = "self" | "pop-sign" | "pop-ecdh" | "unbound"`. Treat `unbound` like `publicOnly`: an explicit, recorded opt-in.
-   - The 3.2 `CKA_PUBLIC_CRC64_VALUE` on a *generated* private key could serve as a cheap consistency check between private and public objects on honest 3.2 tokens. It is a non-cryptographic CRC and is application-supplied on import, so it is not a security binding.
+
+- Derive the SPKI from spec-immutable components when they exist: RSA `CKA_MODULUS`+`CKA_PUBLIC_EXPONENT` (footnotes 1,4,6) and `CKA_EC_POINT` on public objects.
+- Use private-key `CKA_PUBLIC_KEY_INFO` only as a cross-check that must agree. On SoftHSM it is `ck8` and unverified.
+- Where the private object has no public material (EC/Edwards/PQ by spec; SoftHSM, CloudHSM), bind via proof-of-possession, as REVIEW H1 proposes. That means sign a fresh challenge, ECDH or KEM-decapsulate, or RSA-decrypt.
+- Record the binding method in the realisation, e.g. `binding = "self" | "pop-sign" | "pop-ecdh" | "unbound"`. Treat `unbound` like `publicOnly`: an explicit, recorded opt-in.
+- The 3.2 `CKA_PUBLIC_CRC64_VALUE` on a *generated* private key could serve as a cheap consistency check between private and public objects on honest 3.2 tokens. It is a non-cryptographic CRC and is application-supplied on import, so it is not a security binding.
 
 **5. Declare cert/key pairing explicitly.** Consumers pair by `CKA_ID` (OpenSSH), so a spec or lock relation is useful, e.g. `pairs = ["whonix-db-cert"]`. cakeys would then assert that every object of the paired classes under the consumer-visible `CKA_ID` has the same `pubkeyhash`, and that the private key proves possession. Today the lock contains equal `pubkeyhash` values for `whonix-db` and `whonix-db-cert`, but no check ties them together.
 
 **6. Cover the policy cakeys cannot yet express:**
-   - **Certificates.** Policy attributes on certificate specs are refused today (`ops.rs`). So a certificate's `CKA_PRIVATE`/`CKA_MODIFIABLE`/`CKA_TRUSTED`/`CKA_CERTIFICATE_CATEGORY` are neither declared nor recorded. The mutable `CKA_ID`/`CKA_ISSUER`/`CKA_SERIAL_NUMBER` are not recorded either. Allowing a certificate-specific attribute set, or recording the observed values per realisation, would close this.
-   - **The public half of a key pair.** Read its policy when the spec covers a key pair: `CKA_VERIFY`/`ENCRYPT`/`WRAP`/`TRUSTED`/`WRAP_TEMPLATE` and `CKA_MODIFIABLE`.
+
+- **Certificates.** Policy attributes on certificate specs are refused today (`ops.rs`). So a certificate's `CKA_PRIVATE`/`CKA_MODIFIABLE`/`CKA_TRUSTED`/`CKA_CERTIFICATE_CATEGORY` are neither declared nor recorded. The mutable `CKA_ID`/`CKA_ISSUER`/`CKA_SERIAL_NUMBER` are not recorded either. Allowing a certificate-specific attribute set, or recording the observed values per realisation, would close this.
+- **The public half of a key pair.** Read its policy when the spec covers a key pair: `CKA_VERIFY`/`ENCRYPT`/`WRAP`/`TRUSTED`/`WRAP_TEMPLATE` and `CKA_MODIFIABLE`.
 
 **7. Use commitments or attestation for what is unobservable:**
-   - **Non-extractable secret values.** cakeys' commitment schemes cover these already. Standard `CKA_CHECK_VALUE` is at most a weak corroborator or an opt-in fallback for D5 unwrap-only AES keys, and must not be identity:
-     - it is 24-bit, optional and deletable;
-     - its algorithm is fixed per key type by the spec (AES = ECB zero block; generic secret = SHA-1 of the value).
 
-     If used, it would be a new scheme name per key type (e.g. `kcv-std`).
-   - **PIV PIN/touch policy and "generated on device".** Not expressible in PKCS#11 except `ALWAYS_AUTHENTICATE`. The YubiKey attestation certificate, under the device attestation key in slot f9 and chained to the Yubico root, covers them. Record its hash and parsed policy per realisation (`attestation = { kind = "piv", sha256 = …, pinPolicy, touchPolicy, origin }`).
-   - **TPM-backed keys.** Use TPM2_Certify of the object's attributes (`fixedTPM`, `sensitiveDataOrigin`) instead of tpm2-pkcs11's host-side PKCS#11 attributes.
-   - **HSMs.** Use vendor key attestation where available (not researched; Gap).
+- **Non-extractable secret values.** cakeys' commitment schemes cover these already. Standard `CKA_CHECK_VALUE` is at most a weak corroborator or an opt-in fallback for D5 unwrap-only AES keys, and must not be identity:
+  - it is 24-bit, optional and deletable;
+  - its algorithm is fixed per key type by the spec (AES = ECB zero block; generic secret = SHA-1 of the value).
+
+  If used, it would be a new scheme name per key type (e.g. `kcv-std`).
+- **PIV PIN/touch policy and "generated on device".** Not expressible in PKCS#11 except `ALWAYS_AUTHENTICATE`. The YubiKey attestation certificate, under the device attestation key in slot f9 and chained to the Yubico root, covers them. Record its hash and parsed policy per realisation (`attestation = { kind = "piv", sha256 = …, pinPolicy, touchPolicy, origin }`).
+- **TPM-backed keys.** Use TPM2_Certify of the object's attributes (`fixedTPM`, `sensitiveDataOrigin`) instead of tpm2-pkcs11's host-side PKCS#11 attributes.
+- **HSMs.** Use vendor key attestation where available (not researched; Gap).
 
 **8. Record the instance identifier when it exists.** Store `CKA_UNIQUE_ID` (or a vendor equivalent such as Luna `CKA_OUID`, if confirmed readable) per realisation as an instance pin. It must never be a CA-ID: it is random, per token and reusable after `C_InitToken`. Only kryoptic populates it among cakeys-relevant modules.
 
 **9. Locator and URI:**
-   - Emit `serial=` (token-assigned, already in the lock) alongside `token=` in the URI.
-   - Ensure `type` and every locator field are always present.
-   - Note in the lock whether the uniqueness check ran in a public or a user session. A public session hides `CKA_PRIVATE=true` duplicates (§5.7.7), which matters for `publicOnly`.
-   - Consider checking, when logged in, that no *other* class sharing the `CKA_ID` (e.g. a second private key) exists, since consumers resolve by `CKA_ID`.
+
+- Emit `serial=` (token-assigned, already in the lock) alongside `token=` in the URI.
+- Ensure `type` and every locator field are always present.
+- Note in the lock whether the uniqueness check ran in a public or a user session. A public session hides `CKA_PRIVATE=true` duplicates (§5.7.7), which matters for `publicOnly`.
+- Consider checking, when logged in, that no *other* class sharing the `CKA_ID` (e.g. a second private key) exists, since consumers resolve by `CKA_ID`.
 
 **10. PQ readiness.** Add `parameterSet` (`CKP_ML_DSA_44/65/87`, `CKP_ML_KEM_*`, `CKP_SLH_DSA_*`) to `ObjectCfg` and `objects.<n>.type`. The public value is raw `CKA_VALUE` (FIPS 204/203/205 encodings), not SPKI. A `pubkeyhash` for PQ keys must fix an SPKI wrapping (algorithm OIDs, parameter-set mapping) as a new, frozen scheme definition, or define a new scheme over the raw value plus parameter set. Expect vendor deviations: CloudHSM uses `CKA_CLOUDHSM_PARAMETER_SET`, and ML-DSA import is not supported there.
 
@@ -599,6 +636,7 @@ These are the recommendations for the config/lock schema.
 | Unobservable | sensitive values, PIV PIN/touch policy, TPM origin, HSM key origin | commitments and attestations only |
 
 ### Gaps
+
 - **Vendor key-attestation formats were not researched:** CloudHSM key attestation, Luna, nShield (Security World/KeySafe certificates), Utimaco. This blocks a concrete "attestation" schema beyond YubiKey PIV and TPM2.
 - **How tokens behave when a spec asks for `CKA_SENSITIVE=false` on a private key is untested,** i.e. whether `ALWAYS_SENSITIVE` is then false. The same holds for whether SoftHSM enforces the one-way rules on `C_SetAttributeValue`.
 - **The IETF LAMPS SPKI encodings for ML-DSA, ML-KEM and SLH-DSA** (RFC numbers and final OIDs) were not checked in this pass. They are needed before freezing a PQ `pubkeyhash` scheme.

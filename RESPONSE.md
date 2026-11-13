@@ -1,6 +1,6 @@
 > One hash, not two: if the FOD output is the public key's DER encoding (or the certificate, or the 32-byte HMAC value for a secret key), the FOD hash is the key's identity digest. One hash in the lock.
 Ideally yes but we need to allow multiple for variation between HSM. So myobject.fod.myhsm-named-bob gives the hsm specific digest.
-In 99% of cases we should use myobject.fod.pubkeyhash or similar always-true value. Actually HSM specific CA identifier should emit warning/error because we can no longer garentee identity between TOKENS/HSMs.
+In 99% of cases we should use myobject.fod.pubkeyhash or similar always-true value. Actually HSM specific CA identifier should emit warning/error because we can no longer guarantee identity between TOKENS/HSMs.
 
 > Caveat: once a FOD output is in the store or a binary cache, Nix never contacts the HSM again. A successful build proves the key existed once, not that it still does. Checking that it's still present needs a separate step, for example a check at NixOS activation.
 Is there a way to prevent a Nix derivation from being cached at all?
@@ -12,7 +12,7 @@ The key-mgmnt will run the necessary pKCS11 operations to check that the key exi
 If this is first-use, the key will be created (i.e autoCreate=true is set in config for this template), then it gets FOD but forces build to fail i.e just like how
 Nix FODs work but not "actually" a Nix FOD.
 
-The real deraviton arround this gets requiredSystemFeatures like myObject.rsf.hsm-named-bob.
+The real derivation around this gets requiredSystemFeatures like myObject.rsf.hsm-named-bob.
 
 If Nix can do the above in a isolated derivation that's never cached, that's better but otherwise do this "pseudo-FOD" pre-use method.
 
@@ -23,14 +23,14 @@ Just use useful shared Rust crates and terms. Don't force over-use of it.
 Not quite sure what you mean. I think we must CKA_LABEL/CKA_ID to be arbitrary values. To the above "pseudo-FOD" pre-use check, we make throw failure if HSM contains
 non-unique URIs. (The HAL layer should build in PKCS11 provider specific checks like this).
 
-> 2. For now: Softhsm as referenc and starting point. Then Yubikey, Nitrokey, and HSM. Yubikey and HSM are present on system now. We will add CloudHSM and other HSM provides later.
+> 2. For now: Softhsm as reference and starting point. Then Yubikey, Nitrokey, and HSM. Yubikey and HSM are present on system now. We will add CloudHSM and other HSM provides later.
 Wide HSM support is an important feature.
 
 > 3. Both.
 
 > 4. I think both. Unless tpm2-pkcs11 can handle TPM specific things like PCR bindings.
 
-> 5. One writter is fine.
+> 5. One writer is fine.
 
 > 6. Deleting the last copy? How would our tool know what's the last copy?
 

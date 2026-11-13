@@ -16,8 +16,14 @@ up)
   p11-kit server -f -n "$D/p11.sock" --provider "$SOFTHSM_MODULE" 'pkcs11:token=kmp11' \
     </dev/null >"$D/server.log" 2>&1 &
   echo $! >"$D/server.pid"
-  for _ in $(seq 50); do [ -S "$D/p11.sock" ] && break; sleep 0.1; done
-  [ -S "$D/p11.sock" ] || { cat "$D/server.log" >&2; exit 1; }
+  for _ in $(seq 50); do
+    [ -S "$D/p11.sock" ] && break
+    sleep 0.1
+  done
+  [ -S "$D/p11.sock" ] || {
+    cat "$D/server.log" >&2
+    exit 1
+  }
   echo "export P11_KIT_SERVER_ADDRESS='unix:path=$D/p11.sock'" >"$D/env"
   ;;
 down)

@@ -35,7 +35,10 @@ E
   # shellcheck source=/dev/null
   . "$D/env"
   # Wait for the resource manager; each probe is bounded (a missing abrmd would block forever).
-  for _ in $(seq 50); do timeout 2 tpm2_getcap properties-fixed >/dev/null 2>&1 && break; sleep 0.1; done
+  for _ in $(seq 50); do
+    timeout 2 tpm2_getcap properties-fixed >/dev/null 2>&1 && break
+    sleep 0.1
+  done
   timeout 5 tpm2_getcap properties-fixed >/dev/null
   tpm2_ptool init --path "$D/store" >/dev/null
   tpm2_ptool addtoken --pid=1 --label=kmtest --sopin=5678 --userpin=1234 --path "$D/store" >/dev/null

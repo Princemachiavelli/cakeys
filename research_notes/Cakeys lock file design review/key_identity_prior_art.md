@@ -1,6 +1,7 @@
 # Prior art for content-addressed and declarative key/credential management, compared with cakeys (state: 2026-11-11)
 
 Scope note. The cakeys baseline used for every comparison below is `docs/DESIGN.md` (2026-11-11) and `README.md` in `/home/jhoffer/srcs/key-management`. Its key facts:
+
 - **Identity schemes:** `pubkeyhash` is SHA-256 of canonical DER SPKI, re-encoded through RustCrypto. `certhash` and `valuehash` are SHA-256 of the DER or value. For secret keys, the token computes `commitment` / `cmac` / `kcv-ecb` / `kcv-ecb-dec` / `kw` over the label `<commitmentLabel>/<scheme>/<keyType>/<bits>`, and only SHA-256 of the token's output is stored.
 - **The lock:** records type, commitment label, spec digest and per-realisation provenance. Scheme definitions are frozen.
 - **Behaviour:** first use is a "got:" mismatch, as with a Nix FOD. Locators are `CKA_LABEL`/`CKA_ID`.
@@ -12,6 +13,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 ## Q1. Content-addressed key identity: which schemes define canonicalization precisely, and which had ambiguity bugs?
 
 ### Takeaway
+
 - **Byte-exact definitions:** OpenPGP v4/v6 fingerprints, the SSH fingerprint, RFC 7638 JWK and RFC 9679 COSE thumbprints, RFC 7093 method 4 SKI (SHA-256 over the whole DER SPKI, the same input as cakeys' `pubkeyhash`) and TUF keyids (SHA-256 over canonical JSON of the key) all define their input exactly. GnuPG's keygrip is defined only by libgcrypt code.
 - **Definitions that leave room for ambiguity:**
   - JWK and COSE thumbprints say outright that they identify a key only if a single unambiguous representation is used.
@@ -23,6 +25,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 ### Cited Findings
 
 **OpenPGP (RFC 9580, July 2024)**
+
 - **v4 fingerprint:** SHA-1 over `0x99 ‖ 2-octet length ‖ entire Public Key packet` starting at the version field. The Key ID is the low 64 bits. — [RFC 9580 §5.5.4.2](https://www.rfc-editor.org/rfc/rfc9580.html#section-5.5.4.2)
 - **v6 fingerprint:** SHA-256 over `0x9B ‖ 4-octet length ‖ Public Key packet`, with an explicit 4-octet length for the key material. The Key ID is the *high* 64 bits. — [RFC 9580 §5.5.4.3](https://www.rfc-editor.org/rfc/rfc9580.html#section-5.5.4.3)
 - **Creation time is hashed:** both v4 and v6 hash a 4-octet "timestamp of key creation". The same RSA material as a v3, v4 or v6 key "will have different Key IDs as well as different fingerprints". — [RFC 9580 §5.5.4](https://www.rfc-editor.org/rfc/rfc9580.html#section-5.5.4)
@@ -31,6 +34,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 - **Historical attack (Evil32):** colliding 32-bit short key IDs were generated for every key in the Web of Trust strong set, at "4 seconds to generate a colliding 32bit key id on a GPU". Key servers accepted keys with colliding IDs, and GPG imported both. — [Evil 32](https://evil32.com/)
 
 **GnuPG keygrip (libgcrypt)**
+
 - **Definition:** the keygrip is "the SHA-1 hash of the public key parameters expressed in a way depending on the algorithm". It accepts public, private, protected or shadowed (stub) key S-expressions, so a card stub and the soft key share a grip. — [libgcrypt cipher/pubkey.c `_gcry_pk_get_keygrip`](https://github.com/gpg/libgcrypt/blob/master/cipher/pubkey.c)
 - **RSA:** the keygrip hashes only the raw bytes of the modulus `n`. — [libgcrypt cipher/rsa.c `compute_keygrip`](https://github.com/gpg/libgcrypt/blob/master/cipher/rsa.c)
 - **ECC:** the keygrip hashes the curve domain parameters `p, a, b, g, n` plus `q`, filled in from the curve name.
@@ -42,16 +46,19 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
   So the canonical form is defined by implementation special cases, not by a specification. — [libgcrypt cipher/ecc.c `compute_keygrip`](https://github.com/gpg/libgcrypt/blob/master/cipher/ecc.c)
 
 **SSH**
+
 - **Historical:** RFC 4716 defines the SSH fingerprint as MD5 of the RFC 4253 public-key blob, shown as colon-separated hex. — [RFC 4716 §4](https://www.rfc-editor.org/rfc/rfc4716.html#section-4)
 - **Current:** OpenSSH `ssh-keygen -E` accepts `md5` or `sha256`; "The default is 'sha256'". — [ssh-keygen(1)](https://man.openbsd.org/ssh-keygen.1)
 
 **X.509 SubjectKeyIdentifier**
+
 - **RFC 5280 methods:** (1) SHA-1 of the subjectPublicKey BIT STRING value, or (2) a 0100 type field plus the low 60 bits of that SHA-1. "Other methods of generating unique numbers are also acceptable." "Applications are not required to verify that key identifiers match." — [RFC 5280 §4.2.1.2](https://www.rfc-editor.org/rfc/rfc5280.html#section-4.2.1.2)
 - **RFC 7093 methods 1–3** (Informational): SHA-256, SHA-384 or SHA-512 of the BIT STRING, truncated to the leftmost 160 bits.
 - **RFC 7093 method 4:** the hash of the DER-encoded *whole* SubjectPublicKeyInfo. Its example is an untruncated SHA-256.
 - **RFC 7093 on hash strength:** collision resistance "[is] not needed for key identifiers". — [RFC 7093 §2](https://www.rfc-editor.org/rfc/rfc7093.html)
 
 **JWK thumbprint (RFC 7638) and thumbprint URI (RFC 9278)**
+
 - **Procedure:**
   - Use only the required members: EC `crv,kty,x,y`; RSA `e,kty,n`; oct `k,kty`.
   - Sort them lexicographically by code point.
@@ -61,6 +68,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 - **URI form:** RFC 9278 defines `urn:ietf:params:oauth:jwk-thumbprint:<hash-alg>:<value>`, which makes the hash algorithm explicit. — [RFC 9278 §3](https://www.rfc-editor.org/rfc/rfc9278.html#section-3)
 
 **COSE Key Thumbprint (RFC 9679, Dec 2024, Standards Track)**
+
 - **Procedure:**
   - Use only the required parameters, `kid` excluded.
   - EC2 points must be uncompressed.
@@ -74,6 +82,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
   — [RFC 9679](https://www.rfc-editor.org/rfc/rfc9679.html)
 
 **TUF keyids, and the advisory caused by multiple keyids per key**
+
 - **Current TUF spec** (v1.0.37, dated 2026-10-08):
   - KEYID is "a hexdigest of the SHA-256 hash of the canonical form of the key".
   - Root keyids "MUST be correct for the specified KEY. Clients MUST calculate each KEYID to verify this is correct".
@@ -95,9 +104,11 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 - **A separate, later go-tuf issue (CVE-2026-23992):** improper validation of the delegation threshold, so a threshold of 0 could disable integrity checks. Affects v2.3.0 and earlier, fixed in 2.3.1. — reported via [GitLab advisory DB](https://advisories.gitlab.com/pkg/golang/github.com/theupdateframework/go-tuf/v2/CVE-2026-23992/) (seen in search results only; primary advisory not fetched)
 
 **DSSE (the envelope Sigstore and in-toto use)**
+
 - `KEYID` is an "Optional, unauthenticated hint … It **MUST NOT** be used for security decisions; it may only be used to narrow the selection of possible keys to try." — [DSSE protocol.md](https://github.com/secure-systems-lab/dsse/blob/master/protocol.md)
 
 **PKCS#11** (v3.2, OASIS Standard, 03 June 2026)
+
 - **`CKA_UNIQUE_ID`** is generated by the token. It "MUST be unique across all objects visible to any particular session, and SHOULD be unique across all objects created by the token". "Reinitializing the token … MAY cause reuse". It is read-only. — [PKCS#11 v3.2 §4.4.1](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html)
 - **`CKA_CHECK_VALUE` (KCV):**
   - It is 3 bytes and "operates like a fingerprint, or checksum of the key". It is meant to "cross-check symmetric keys against other systems where the same key is shared".
@@ -114,6 +125,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
   — [PKCS#11 v3.2 §4.6.3, §6.8, §6.10, §6.58](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/os/pkcs11-spec-v3.2-os.html)
 
 **KMIP 2.1**
+
 - **Unique Identifier:** "generated by the key management system". It is required to be unique only "within the identifier space managed by a single key management system", SHOULD be globally unique, and is immutable until destroyed.
 - **Digest attribute:**
   - It is a digest of the Key Material. If that material is a structure, the digest is taken over its TTLV encoding.
@@ -125,6 +137,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
   — [KMIP 2.1 §4.21 "Digest" and "Unique Identifier"](https://docs.oasis-open.org/kmip/kmip-spec/v2.1/os/kmip-spec-v2.1-os.html)
 
 **AWS KMS imported key material: a cloud identity for secret material derived from content**
+
 - **Derivation and re-import check:** AWS KMS "assigns a unique identifier to the key material based on the KMS key ID and the imported key material". On re-import with a specified `KeyMaterialId`, KMS "Computes the identifier … Matches the computed identifier against the specified key material ID".
 - **Format:** `KeyMaterialId` is 64 lowercase hex characters (256 bits).
 - **Mismatch:** a mismatch fails with `IncorrectKeyMaterialException` ("not the same key material that was previously imported").
@@ -133,6 +146,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
   — [AWS KMS API: ImportKeyMaterial](https://docs.aws.amazon.com/kms/latest/APIReference/API_ImportKeyMaterial.html)
 
 **Sequoia keystore: PKCS#11 backend now merged** **[PLAN.md correction]**
+
 - **Status:**
   - Issue #28 ("Add support for signing/decrypting messages using PKCS#11 tokens") is *closed* (2025-12-15).
   - MR !126 "cryptoki: New backend." was merged 2025-12-19, and MR !133 was merged 2026-07-05.
@@ -149,9 +163,11 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 - **How it handles the creation-time problem:** `sq-cryptoki` writes the fingerprint inputs into **`CKA_ID`**, for example `pgp:v4:eddsa:20251219T093551Z:oil-yard-given` (version, algorithm, creation timestamp and a label). — [sequoia-keystore cryptoki/README.md](https://gitlab.com/sequoia-pgp/sequoia-keystore/-/blob/main/cryptoki/README.md)
 
 **Parsec KIM**
+
 - The Key Info Manager stores "an `id`, which is the reference to a key in the specific provider" plus "attributes". It maps "key identities" (application and key *name*) to provider metadata in SQLite (recommended) or on disk (to be deprecated). — [Parsec book: Key Info Managers](https://github.com/parallaxsecond/parsec-book/blob/main/src/parsec_service/key_info_managers.md)
 
 ### Inferences
+
 - **cakeys `pubkeyhash` is exactly RFC 7093 method 4 with an untruncated SHA-256.** cakeys can cite it as such: "SHA-256 SPKI digest, RFC 7093 §2 method 4". It is *not* the RFC 5280 SKI, nor the OpenSC/NSS `CKA_ID` convention, which hash only the BIT STRING with SHA-1.
 - **Canonicalization ranking:**
   - **Precise:** RFC 9580 fingerprints, RFC 7638 and RFC 9679 thumbprints (both rely on a stated canonical encoding), RFC 7093 method 4 (DER is canonical) and TUF's canonical-JSON keyid.
@@ -166,6 +182,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 - **Sequoia's CKA_ID workaround** confirms PLAN.md's critique: an OpenPGP fingerprint cannot be derived from token material alone. Sequoia stores the missing creation time in a *mutable* locator attribute (CKA_ID). If that CKA_ID is rewritten, the fingerprint changes while the key does not.
 
 ### Gaps
+
 - **Sigstore:** I did not fetch Sigstore docs on how `cosign`/Fulcio/Rekor compute key IDs. Only the DSSE "unauthenticated hint" rule was verified.
 - **securesystemslib:** not checked for whether its keyid still hashes the `keyid_hash_algorithms` field.
 - **go-tuf issue #368** (removing `keyid_hash_algorithms`): resolution not checked.
@@ -180,12 +197,14 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 ## Q2. Declarative and stateful key management: how do existing systems declare keys and record state?
 
 ### Takeaway
+
 - **Locators, not identities.** Mainstream declarative and secret-management tools reference HSM keys by locator: Vault Enterprise managed keys and the OpenBao PKCS#11 seal use `key_label`/`key_id` plus `slot`/`token_label`.
 - **Recipient public keys in Nix tools.** agenix, sops-nix and age plugins name recipients by public key or OpenPGP fingerprint.
 - **Plaintext state.** Terraform's state file is a plaintext store that may contain secrets.
 - **Few check identity before use.** None of the systems checked stores a content hash of a secret key, and few verify identity before use. The best is age-plugin-yubikey, which checks a 4-byte public-key tag before using a PIV slot.
 
 ### Cited Findings
+
 - **HashiCorp Vault managed keys** (Enterprise only for PKCS#11):
   - The PKCS#11 backend identifies a key by `key_label` or `key_id` ("ID of the key as assigned by the HSM"), plus `slot` or `token_label`, `mechanism`, `pin` and a `library` stanza.
   - No parameter checks a key fingerprint.
@@ -229,6 +248,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 - **Sequoia cryptoki backend:** its only declarative input is `[[modules]] path = …`. Key creation is imperative (`sq-cryptoki key generate`). — [sequoia-keystore cryptoki/README.md](https://gitlab.com/sequoia-pgp/sequoia-keystore/-/blob/main/cryptoki/README.md)
 
 ### Inferences
+
 - **Terraform vs cakeys.** Terraform's state file is the nearest "lock" analogue in IaC. It is a *cache of provider-reported attributes* (secrets included), not a set of identities recomputed before every use. cakeys' rule that "the lock never holds token outputs, only their hashes" matches the direction Terraform has taken with ephemeral and write-only values.
 - **The Terraform dependency lock is the closest IaC precedent for DESIGN §10's "like a dependency lock" framing.** It also stores several hash schemes per artefact and accepts a match on *any one* of them, and it names its first install as TOFU.
   - cakeys is stricter in two ways. Every locked scheme that can be computed is checked, and disjoint schemes never link.
@@ -242,6 +262,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
   - cakeys could treat a TPM-backed realisation's `authPolicy` (PCR policy) as part of its spec digest, as the TPM Name does natively. This is unverified this round.
 
 ### Gaps
+
 - **Not researched (budget):** Keyfactor/EJBCA crypto-token configuration as code, Thales CipherTrust and Entrust KeyControl Terraform providers, AWS CloudHSM configuration-as-code, Ansible/Salt HSM modules, OpenSSL `pkcs11-provider` URI handling, and the internals of SPIRE's `tpm_devid` node attestor and `kmip` key manager. Only their existence was confirmed.
 - **sops metadata:** not confirmed from a primary source (the `getsops.io/docs` page fetched without that content). This covers per-recipient entries, the `mac` field and `lastmodified`.
 - **Nix FOD-for-secrets patterns** (e.g. impure derivations, `requiredSystemFeatures` gating): no published projects found or checked.
@@ -251,12 +272,14 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 ## Q3. Does any system commit to secret-key identity with an on-device MAC/KCV like cakeys' commitments? What are the exact KCV definitions?
 
 ### Takeaway
+
 - **KCVs are the industry's on-device commitment for secret keys.** They are short, at most 3 bytes for the legacy zero-block method and at most 5 bytes for the CMAC method, computed over a fixed all-zero (or all-0x01) input, and published raw.
 - **Where cakeys differs:** it uses domain-separated labels, stores only SHA-256 of the full output, and has several schemes. It is stronger as an identity but not interoperable with vendor KCVs.
 - **Unkeyed hashes elsewhere.** PKCS#11 generic-secret KCVs and KMIP Digests hash the secret itself, which RFC 9679 warns against for low-entropy keys.
 - **Closest cloud analogue:** AWS KMS `KeyMaterialId`, a 256-bit identifier derived from the key ID and the key material, verified on re-import.
 
 ### Cited Findings
+
 - **ANSI X9.24-1-2017 Annex A and PCI PIN Security Req. 15-1** (as quoted by Wikipedia; primary is paywalled):
   - **Two methods.** "TDEA may use either method. AES must only use the CMAC method."
   - **Method 1:** encrypt "an all binary zeros block … using the leftmost n-bits of the result; where n is at most 24 bits (6 hex digits/3 bytes)".
@@ -284,6 +307,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 - **RFC 9679** on thumbprinting symmetric keys: only random keys of at least 128 bits, never low-entropy secrets. — [RFC 9679 Security Considerations](https://www.rfc-editor.org/rfc/rfc9679.html)
 
 ### Inferences
+
 - **Yes, on-device commitments to secret keys are standard practice.** That is the KCV, but it is designed as a checksum (3–5 bytes, collisions expected), not an identity.
 - **cakeys schemes vs standard KCVs:**
   - cakeys `cmac` is CMAC over a label, not the zero block.
@@ -300,6 +324,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
   - Re-import compares a computed value with an expected one, which is If-Match semantics.
 
 ### Gaps
+
 - **Exact normative text is paywalled** for X9.24-1-2017 Annex A, X9.143-2022 and TR-31:2018 (the KC/KP optional block format, including the algorithm-indicator byte that distinguishes legacy from CMAC KCVs). Only secondary and vendor sources were available. IBM's page renders by JS and was seen only via search snippet.
 - **Undocumented:** how AWS derives `KeyMaterialId` (hash function, inputs) is not disclosed.
 - **Not checked:** whether any HSM vendor exposes a *labelled* MAC-based key identity (as opposed to a KCV) as a first-class attribute.
@@ -309,6 +334,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 ## Q4. Documented failure modes and attacks: key substitution, fingerprint collisions, TOFU, stale state
 
 ### Takeaway
+
 - **Most common failure: multiple non-canonical identifiers for one key,** which breaks counting and deduplication (go-tuf).
 - **Truncated or short identifiers** can be brute-forced (OpenPGP short IDs, Evil32) or are expected to collide (KCVs).
 - **Identity that depends on metadata outside the key:** the creation time in OpenPGP fingerprints, a sort order or exponent padding in JWK.
@@ -318,6 +344,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 - **Locators trusted as identity** (Vault/OpenBao labels).
 
 ### Cited Findings
+
 - **Duplicate keyids defeat threshold counting:** the same key under SHA-256 and SHA-512 keyids counted twice in go-tuf < 0.3.2. — [GHSA-3633-5h82-39pq](https://github.com/advisories/GHSA-3633-5h82-39pq)
 - **Keyid collisions across roles escalate privilege:** a snapshot key can be used to sign root if both share a keyid. — [TAP 12 Rationale](https://github.com/theupdateframework/taps/blob/master/tap12.md)
 - **Short key IDs can be forged:** 32-bit OpenPGP key ID collisions in 4 s on a GPU, and key servers accepted the duplicates (historical; GnuPG since patched). — [Evil 32](https://evil32.com/)
@@ -334,6 +361,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 - **Unauthenticated fallback key:** the systemd-creds `null` key provides no confidentiality or authenticity, and is refused only on SecureBoot+TPM2 systems. — [systemd-creds(1)](https://github.com/systemd/systemd/blob/main/man/systemd-creds.xml)
 
 ### Inferences
+
 - **Lessons for cakeys' multi-scheme lock (from TUF):**
   1. Never treat two IDs of different schemes as two objects. cakeys already links only through a shared scheme.
   2. If cakeys ever gets anything count-like (k-of-n tokens, "the key exists on ≥2 tokens", lock GC, dedupe), count *objects* by verified material, not IDs.
@@ -352,6 +380,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
   - **Remaining staleness risk:** Nix caching. A cached consumer is not rebuilt, so the token is not re-checked (README). Pair runtime `cakeys-check-*` units with any long-lived cached artefact.
 
 ### Gaps
+
 - **Not searched for:** documented real-world incidents of HSM label reuse or substitution (e.g. CVEs in PKCS#11 consumers that pick the wrong object by label).
 - **Not checked:** PKCS#11 attacks on KCV leakage (e.g. Clulow/Bortolozzo-style attribute attacks).
 
@@ -360,6 +389,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 ## Q5. Is anything doing essentially what cakeys does? Comparison matrix, plus lessons to adopt or avoid
 
 ### Takeaway
+
 - **No surveyed system combines all of cakeys' features.** These are a protocol-neutral content hash for asymmetric keys, *secret* keys and data objects; a declarative spec with a canonical digest; a lock of identities plus provenance; and mandatory recomputation before use, including inside the Nix sandbox.
 - **Partial overlaps:**
   - Sequoia keystore, which now has PKCS#11; identity is the OpenPGP fingerprint, and it is imperative.
@@ -369,6 +399,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
   - GnuPG keygrip (protocol-neutral, SHA-1, asymmetric only).
 
 ### Cited Findings
+
 - **Sequoia keystore cryptoki:**
   - OpenPGP fingerprint identity, with a module-path TOML config.
   - Imperative `sq-cryptoki key generate`.
@@ -413,6 +444,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 | cert-manager / SPIRE | Keys regenerated (ephemeral identity) | — | CRDs / HCL | k8s Secret / disk | — | SPIRE: disk, memory, AWS/GCP/Azure KMS, Vault, KMIP key managers; TPM only for node attestation | — | No, by design |
 
 **Ideas worth adopting:**
+
 1. **Name the `pubkeyhash` construction by standard**, "RFC 7093 §2 method 4, SHA-256, untruncated". Optionally add new schemes `jwk-thumbprint` (RFC 7638) and `cose-thumbprint` (RFC 9679), exportable in RFC 9278 / RFC 9679 URI form (`urn:ietf:params:oauth:jwk-thumbprint:sha-256:…`, `urn:ietf:params:oauth:ckt:sha-256:…`) for JOSE/COSE/OAuth DPoP consumers.
    - Their inputs are canonical JWK JSON and deterministic COSE CBOR, *not* DER SPKI, so they must be computed separately.
    - `pubkeyhash` cannot be relabelled as a JWK/COSE thumbprint.
@@ -424,6 +456,7 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 6. **Borrow AWS KMS's If-Match semantics for import.** Importing known material onto another token with `--if-match <CA-ID>` should create, compute, compare and destroy on mismatch. cakeys already does create-then-destroy on identity failure.
 
 **Things to avoid:**
+
 - **No identity inputs outside the key material and the frozen label.** Creation time (OpenPGP), mutable `CKA_ID` metadata (Sequoia's `pgp:v4:…:timestamp` workaround), and server- or token-assigned IDs (KMIP UID, `CKA_UNIQUE_ID`, Parsec KIM) are all out.
 - **No unkeyed hashes of secret material** (PKCS#11 generic-secret KCV, KMIP Digest, JWK `oct` thumbprints). Keep using MACs over a label.
 - **No per-object choice of hash algorithm** that yields several "equal" IDs for one key (go-tuf `keyid_hash_algorithms`). cakeys' fixed per-scheme definition, where a new computation means a new scheme name, is the right model. TAP 12's "any method" flexibility should *not* be copied for the identity itself.
@@ -431,11 +464,13 @@ PLAN.md's earlier "Prior art / landscape" survey was re-checked here. Correction
 - **Never let secret values or token outputs into the lock,** unlike Terraform state. DESIGN.md already enforces this.
 
 **Corrections to PLAN.md's survey:**
+
 - **Sequoia:** now has a merged PKCS#11 ("cryptoki") backend (Dec 2025 and Jul 2026). Issue #28 is closed. The backend stores OpenPGP fingerprint inputs in `CKA_ID`.
 - **PKCS#11 `CKA_CHECK_VALUE`:** described as "for secret keys and certificates". Correct, but note the generic-secret/ChaCha20 variant is an unkeyed SHA-1 of the value, and the certificate variant is SHA-1 of the DER.
 - **PKCS#11 3.2 is now an OASIS Standard** (03 June 2026). PLAN mentions only 3.0 and 2.40 features.
 
 ### Gaps
+
 - **Not verified this round:** the matrix cells for the Sequoia TPM YAML templates and Parsec's symmetric support. Those come from PLAN.md or remain "?".
 - **No exhaustive registry or GitHub search** was done for niche projects, e.g. "hsm-as-code" or "pkcs11 terraform provider" community repos. A small unknown project with a similar design cannot be ruled out.
 - **Not researched:** Keyfactor/EJBCA, Thales/Entrust/CloudHSM config-as-code and OpenSSL pkcs11-provider, due to the tool-call budget.

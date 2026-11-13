@@ -19,14 +19,14 @@ km() { "$bin" --config "$dir/keys.toml" "$@"; }
 
 record() {
   rm -rf "$dir" && mkdir -p "$dir/tokens"
-  printf 'directories.tokendir = %s\nobjectstore.backend = file\n' "$dir/tokens" > "$SOFTHSM2_CONF"
-  softhsm2-util --init-token --free --label xv --pin 1234 --so-pin 5678 > /dev/null
-  printf 1234 > "$dir/pin"
+  printf 'directories.tokendir = %s\nobjectstore.backend = file\n' "$dir/tokens" >"$SOFTHSM2_CONF"
+  softhsm2-util --init-token --free --label xv --pin 1234 --so-pin 5678 >/dev/null
+  printf 1234 >"$dir/pin"
   local p11=(pkcs11-tool --module "$module" --token-label xv --login --pin 1234)
-  "${p11[@]}" --write-object "$fixtures/adopt-cert.der" --type cert --label cert > /dev/null
-  printf 'xversion data' > "$dir/data.bin"
-  "${p11[@]}" --write-object "$dir/data.bin" --type data --label data > /dev/null
-  cat > "$dir/keys.toml" <<EOF
+  "${p11[@]}" --write-object "$fixtures/adopt-cert.der" --type cert --label cert >/dev/null
+  printf 'xversion data' >"$dir/data.bin"
+  "${p11[@]}" --write-object "$dir/data.bin" --type data --label data >/dev/null
+  cat >"$dir/keys.toml" <<EOF
 [tokens.soft]
 module = "$module"
 tokenLabel = "xv"
@@ -102,7 +102,7 @@ object = "data"
 tokens.soft = { locator = { CKA_LABEL = "data" } }
 EOF
   for s in "${specs[@]}"; do
-    km realise "$s" --token soft > "$dir/resolve.$s.json"
+    km realise "$s" --token soft >"$dir/resolve.$s.json"
   done
   cp "$dir/keys.lock" "$dir/base.lock"
   echo "recorded ${#specs[@]} specs with $bin into $dir/base.lock"
@@ -111,12 +111,18 @@ EOF
 check() {
   cp "$dir/base.lock" "$dir/keys.lock"
   for s in "${specs[@]}"; do
-    km verify "$s" --token soft > /dev/null
-    km realise "$s" --token soft --no-update-lock > /dev/null
-    km resolve "$s" --token soft | diff -u "$dir/resolve.$s.json" - || { echo "resolve output of $s changed" >&2; exit 1; }
-    km realise "$s" --token soft > /dev/null 2>&1
+    km verify "$s" --token soft >/dev/null
+    km realise "$s" --token soft --no-update-lock >/dev/null
+    km resolve "$s" --token soft | diff -u "$dir/resolve.$s.json" - || {
+      echo "resolve output of $s changed" >&2
+      exit 1
+    }
+    km realise "$s" --token soft >/dev/null 2>&1
   done
-  diff -u "$dir/base.lock" "$dir/keys.lock" || { echo "re-recording changed the lock" >&2; exit 1; }
+  diff -u "$dir/base.lock" "$dir/keys.lock" || {
+    echo "re-recording changed the lock" >&2
+    exit 1
+  }
   echo "ok: ${#specs[@]} specs verify, compare and re-record byte-identically with $bin"
 }
 

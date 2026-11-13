@@ -9,6 +9,7 @@ labelled **(search summary)**.
 ## Q1. What do mature lock files record per entry (identity, source, integrity, resolved inputs)?
 
 ### Takeaway
+
 Every mature format separates **what was asked for** (the manifest or `original` spec), **what it resolved to** (the
 locked, final coordinates), and **an integrity digest of the content**. The better ones also record a
 digest of the *inputs* that produced each entry, so staleness is detected per entry. cakeys already has all
@@ -16,6 +17,7 @@ three layers: `keys.toml`; realisations (locator/URI); and `objects.*.ids` plus 
 input digest covers only part of the realisation's inputs.
 
 ### Cited Findings
+
 - **Go `go.sum`**:
   - Each line is "a module path, a version (possibly ending with `/go.mod`), and a hash".
   - The `/go.mod` suffix means the hash covers only the module's `go.mod` file. Otherwise it covers the files in the module `.zip`. So one coordinate has two separately hashed artefacts. — [Go Modules Reference, go.sum files](https://go.dev/ref/mod#go-sum-files)
@@ -63,6 +65,7 @@ input digest covers only part of the realisation's inputs.
   — `crates/core/src/config.rs` (`Lock`, `LockObject`, `LockRealisation`); `docs/DESIGN.md` §4.2
 
 ### Inferences
+
 - **The layers map onto cakeys** as follows:
 
   | Prior-art layer | cakeys field |
@@ -81,18 +84,22 @@ input digest covers only part of the realisation's inputs.
   lock, so the lock alone can be audited (see the cakeys gaps under Q6).
 
 ### Gaps
+
 - I did not fetch pnpm's or Yarn Berry's lockfile specs (e.g. Yarn's `__metadata.cacheKey` or pnpm's `settings`), so their per-entry fields are not covered.
 - I did not fetch Cargo.lock's per-package field documentation. From the format itself: `name`, `version`, `source`, `checksum`, `dependencies`. That is not verified against a fetched page in this session.
 
 ## Q2. What makes a lock "complete" rather than "underdefined"? Formal and semi-formal treatments
 
 ### Takeaway
+
 No source gives a single formal definition of lock completeness. Several converge on a usable semi-formal one:
+
 1. Every input that can change the output is either recorded with a digest or fixed by a named, immutable definition.
 2. The recorded set is explicit, so a verifier can **reject anything it does not understand**.
 3. Execution-specific data is quarantined from identity.
 
 ### Cited Findings
+
 - **Reproducible builds**:
   - Definition: "A build is reproducible if given the same source code, build environment and build instructions … any party can recreate bit-by-bit identical copies of all specified artifacts."
   - The relevant environment attributes "would usually include dependencies and their versions, build configuration flags and environment variables … as far as they are used by the build system". "It is preferable to reduce this set of attributes."
@@ -121,6 +128,7 @@ No source gives a single formal definition of lock completeness. Several converg
   — `docs/DESIGN.md` §10
 
 ### Inferences
+
 - **Proposed operational test for "not underdefined"**, assembled from SLSA L3 completeness, Bazel `error` mode,
   reproducible-builds, Nix FOD and PEP 751. For every lock field and every value an ID depends on, exactly one of these holds:
   - **(a)** it is recorded in the lock and compared on verify;
@@ -140,6 +148,7 @@ No source gives a single formal definition of lock completeness. Several converg
   That rule is a definitional premise, and it should be listed among the frozen premises.
 
 ### Gaps
+
 - I did not fetch Dolstra's PhD thesis ("The Purely Functional Software Deployment Model", 2006), which treats extensional and intensional stores formally. RFC 62 is the secondary source used here.
 - I found no formal (proof-style) definition of lock-file completeness in any source. The test above is a synthesis.
 - in-toto layouts/links and Debian `.buildinfo` were not fetched. The reproducible-builds definition page does not mention `.buildinfo`.
@@ -147,8 +156,10 @@ No source gives a single formal definition of lock completeness. Several converg
 ## Q3. How do tools pin algorithm identity, and how do they handle algorithm upgrades?
 
 ### Takeaway
+
 Every robust scheme puts an **explicit algorithm or version tag next to the digest**. They differ on *who decides what
 counts as a match*:
+
 - **SRI**: the strongest known algorithm wins; unknown algorithms are ignored.
 - **in-toto**: ANY accepted algorithm matching is enough; unknown ones are ignored.
 - **Go**: `h1` only today, with `h2` reserved for the future.
@@ -157,6 +168,7 @@ The upgrade path is always **add a new tag, never redefine an old one**. cakeys 
 names and the SRI prefix.
 
 ### Cited Findings
+
 - **Go**: "The hash column consists of an algorithm name (like `h1`) and a base64-encoded cryptographic hash … Currently, SHA-256 (`h1`) is the only supported hash algorithm. If a vulnerability in SHA-256 is discovered in the future, support will be added for another algorithm (named `h2` and so on)." — [Go Modules Reference, go.sum files](https://go.dev/ref/mod#go-sum-files)
 - **SRI format and required algorithms**: integrity metadata uses the CSP `hash-source` form, i.e. algorithm, `-`, base64. User agents "MUST support the SHA-256, SHA-384, and SHA-512". — [W3C SRI 2 (WD 2026-03-20)](https://www.w3.org/TR/sri-2/)
 - **SRI with several hashes**:
@@ -195,6 +207,7 @@ names and the SRI prefix.
   — `docs/DESIGN.md` §3.1, §3.5, §10; `crates/pkcs11/src/ops.rs` `reconcile`
 
 ### Inferences
+
 - **The scheme name plays the role of Go's `h1` and Nix's `outputHashMode`; the SRI prefix plays the role of `outputHashAlgo`.**
   For commitment schemes the SRI prefix describes only the *outer* SHA-256 over the token output. The HMAC/CMAC algorithm is implied by scheme
   plus `type`. That is acceptable only because `type` is recorded and compared (DESIGN §4.2). It should be stated as such in §10.
@@ -211,13 +224,16 @@ names and the SRI prefix.
   (`Lock::validate`).
 
 ### Gaps
+
 - I found no source describing how Go would *migrate* existing `h1` lines if `h2` were introduced, e.g. whether both would be kept. The reference only reserves the name.
 - I did not verify npm's behaviour when `integrity` holds several space-separated SRI tokens.
 
 ## Q4. Format versioning, unknown fields and migration
 
 ### Takeaway
+
 The mature pattern is a schema version (not a tool version), with per-change variants:
+
 - readers accept older variants and keep writing the version they found;
 - a new variant becomes the default only later;
 - the major/minor split decides "refuse" vs "warn" for content a reader does not know.
@@ -226,6 +242,7 @@ cakeys's `version = 1` currently names several schemas ("Unpublished, so its sch
 user's own standard that is the most underdefined part of the lock.
 
 ### Cited Findings
+
 - **Cargo** (search summary):
   - Every lock format change is a new `ResolveVersion` variant.
   - V1 had no version marker and kept checksums in `[metadata]`.
@@ -271,6 +288,7 @@ user's own standard that is the most underdefined part of the lock.
   — `crates/core/src/config.rs`; `git log -- crates/core/src/config.rs`
 
 ### Inferences
+
 - **`version = 1` is ambiguous.** It denotes at least three schemas: before `commitmentLabel`, before `type`, and the current one.
   - A lock written between those commits validates differently today. For example, a v1 lock with commitment IDs but no `commitmentLabel` is now refused.
   - Recommendation: before publishing, freeze the current schema as a version, and from then on make every change a new version, Cargo-style.
@@ -291,6 +309,7 @@ user's own standard that is the most underdefined part of the lock.
   write) is a good model. Under `--update-lock` cakeys writes whatever it parsed, so the rule is a policy decision to make before v2.
 
 ### Gaps
+
 - The Cargo version history above could not be confirmed from a fetched primary page (docs URLs returned 404). It rests on search summaries of the ResolveVersion docs and Cargo source.
 - I found no documented `MODULE.bazel.lock` `lockFileVersion` migration policy.
 - I did not check pnpm's `lockfileVersion` rules (e.g. `'6.0'` → `'9.0'`).
@@ -298,12 +317,14 @@ user's own standard that is the most underdefined part of the lock.
 ## Q5. Provenance vs identity: which fields are compared and which are informational?
 
 ### Takeaway
+
 The clearest prior art (SLSA, PEP 751, Bazel) puts identity-determining inputs and execution metadata in **different
 structures**. Informational data is explicitly marked as unable to affect the outcome. Tool-version fields in the
 lock itself are a known source of churn. cakeys has the right intent but mixes the classes inside one realisation table.
 It also decides the class field by field in code, not by schema.
 
 ### Cited Findings
+
 - **SLSA keeps inputs and execution apart**: `buildDefinition` "describes all of the inputs to the build", while `runDetails` holds "Details specific to this particular execution". — [SLSA Provenance v1.0](https://slsa.dev/spec/v1.0/provenance)
 - **PEP 751**:
   - `created-by` records "the name of the tool used to create the lock file". It is not referenced by the installation steps.
@@ -343,6 +364,7 @@ It also decides the class field by field in code, not by schema.
 - **`cakeysVersion` causes churn.** `cakeys_version` and `module` (including the `/nix/store/…` `path`) are in the `differs` test. Any `realise --update-lock` after a cakeys or nixpkgs bump therefore rewrites every realisation it touches. The example lock pins `path = "/nix/store/iffdlp93…-yubico-piv-tool-2.7.3/lib/libykcs11.so"`. — `crates/pkcs11/src/ops.rs` `reconcile`; `examples/yubikey-secureboot.lock`
 
 ### Inferences
+
 - **Make the compare/provenance split a schema property, not a code property.** For example:
   - `[realisations.<spec>.<token>]` holds the compared fields: `object`, `specDigest`, `mode`, `publicOnly`, `uri`, or a locator digest.
   - `[realisations.<spec>.<token>.provenance]` holds the informational fields: `module`, `token`, `provider`, `cakeysVersion`, `mechanisms`.
@@ -364,17 +386,20 @@ It also decides the class field by field in code, not by schema.
   `publicOnly` with attributes is already caught through `specDigest`.
 
 ### Gaps
+
 - I found no prior-art lock that records hardware-token identity (serial or firmware). The nearest analogues are Bazel's OS/arch keys and PEP 751 `environments`. Whether `token.serial` should be compared (binding a realisation to one physical token) or remain provenance is a cakeys design decision with no direct precedent.
 
 ## Q6. Determinism, merge and multi-writer behaviour, `--locked`/`--frozen` semantics, and implications for the cakeys lock
 
 ### Takeaway
+
 Mature tools give the lock deterministic output (sorted, schema-ordered, line-friendly), flat entries that merge, and a
 three-way verification switch: update, check-only, use-as-is. They also say which sections are union-mergeable and which must
 be regenerated. cakeys is already deterministic, flat and FOD-like, and `verify`/`check` act as `--locked`. Its remaining
 gaps are in versioning, field classification, the object binding of realisations, and concurrency.
 
 ### Cited Findings
+
 - **uv**:
   - With `--locked`, "If the lockfile is not up-to-date, uv will raise an error instead of updating the lockfile".
   - `--frozen` uses "the lockfile without checking if it is up-to-date".
@@ -426,12 +451,14 @@ gaps are in versioning, field classification, the object binding of realisations
 ### Inferences
 
 #### Verification semantics mapped to cakeys
+
 - **`verify` / `check`** ≈ uv `--locked`, Bazel `error`, and the Nix FOD check. That is correct.
 - **`realise --update-lock`** ≈ Bazel `update`, but with Go-style append-only IDs. That is correct: "only fills gaps" is the FOD and go.sum property.
 - **There is no `--frozen` equivalent (use without checking), and none should be added.** The tool's whole premise is the check.
 - **There is no `tidy`/GC (D3).** Go and Bazel both drop entries no longer needed. A `gc` verb that prints, then applies, matches `go mod tidy`.
 
 #### Merge and multi-writer
+
 - **cakeys's TOML layout is already the merge-friendly kind.** It has flat per-object and per-(spec, token) tables, sorted keys and one-line values.
   The 27-line `mechanisms` arrays and volatile provenance are what will conflict in practice.
 - **Declare a merge rule per section, Bazel-style:**
@@ -445,6 +472,7 @@ gaps are in versioning, field classification, the object binding of realisations
   files. I found no lockfile tool that documents cross-process locking in these sources (see Gaps).
 
 #### Join and split
+
 - **Prior art splits locks by scope.**
   - Go keeps a workspace-level `go.work.sum` that "keeps track of hashes used by the workspace that are not in collective
     workspace modules' `go.sum` files". That is a join file layered over the per-module locks — [Go Modules Reference](https://go.dev/ref/mod).
@@ -461,6 +489,7 @@ gaps are in versioning, field classification, the object binding of realisations
   - Cost: verification must join the files, and a missing realisation file must be "not realised here", never "unverified".
 
 #### Determinism decision to record
+
 - **cakeys does not need a canonical byte form for the lock itself** as long as nothing hashes or signs the lock. Byte-level formatting
   depends on the `toml` crate version, which is noise rather than semantics.
 - **Record this decision in DESIGN §10.** If lock signing (TUF/Sigstore-style) or a lock-level digest is ever added, a canonical
@@ -468,6 +497,7 @@ gaps are in versioning, field classification, the object binding of realisations
   so that part is fine.
 
 #### Already aligned with prior art (keep)
+
 - **New computation means a new scheme name.** This matches go.sum's `h1`→`h2` and Nix `outputHashMode`.
 - **The SRI `sha256-` prefix on every ID.** This matches Nix and SRI.
 - **A versioned digest preimage** (`"v":1` in the spec-digest JSON).
@@ -479,6 +509,7 @@ gaps are in versioning, field classification, the object binding of realisations
 - **Sorted maps and sorted mechanisms; atomic rename.**
 
 #### Gaps in the current cakeys lock (confirmed against code at `8889898`)
+
 1. **G1 — `version = 1` is underdefined.** The schema changed in place at least twice (`90d5353`, `8889898`), and an absent
    `version` defaults to *current*. Fix:
    - make `version` required;
@@ -519,6 +550,7 @@ gaps are in versioning, field classification, the object binding of realisations
     This follows SLSA's warning that "internal" parameters "MAY be necessary for reproducing".
 
 #### Decide-against list (deliberately not adopted, with reason)
+
 - **A whole-`keys.toml` content hash** (Poetry `content-hash`): it invalidates the whole lock on any edit and conflicts on every merge. Use per-entry digests (G2, G3).
 - **A transparency log or signatures** (Go sumdb, TUF, Sigstore): no public registry and no untrusted proxy exists. The token is the source of truth, rechecked on each use. Revisit only if locks are distributed to third parties.
 - **`--frozen`, i.e. use without verifying**: it contradicts the purpose.
@@ -526,6 +558,7 @@ gaps are in versioning, field classification, the object binding of realisations
 - **A canonical byte form for the lock**: not needed until the lock is hashed or signed. Record this as a decision.
 
 ### Gaps
+
 - **Sigstore/Rekor** was not fetched. Its relevance is limited to lock signing or transparency, which is on the decide-against list.
 - **npm `npm ci`** (fails on a package.json/lock mismatch) and npm's automatic git-conflict resolution are not documented on the package-lock page fetched, so they are not cited.
 - **Nix flake CLI flags** (`--no-update-lock-file`, `--no-write-lock-file`, `--recreate-lock-file`) are not on the flake page fetched, so they are not cited.

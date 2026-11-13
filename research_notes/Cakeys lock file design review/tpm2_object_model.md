@@ -1,19 +1,23 @@
 # TPM 2.0 object model: identity, state, and how a cakeys config + lock could describe TPM objects
 
 Scope note: all spec citations are to the **TPM 2.0 Library Specification, Version 185** (cover date 12 March 2026), the current published revision as of November 2026, unless a different revision is named. Section and table numbers move between revisions; they were checked against the text extracted from the v185 PDFs:
-- Part 1 (Architecture): https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf, abbreviated **P1**
-- Part 2 (Structures): https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_2_Structures_Version_185_pub_c0a962a931.pdf, abbreviated **P2**
-- Part 3 (Commands): https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf, abbreviated **P3**
+
+- Part 1 (Architecture): <https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf>, abbreviated **P1**
+- Part 2 (Structures): <https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_2_Structures_Version_185_pub_c0a962a931.pdf>, abbreviated **P2**
+- Part 3 (Commands): <https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf>, abbreviated **P3**
 
 cakeys context comes from `docs/DESIGN.md`, `crates/core/src/config.rs`, `PLAN.md` and `docs/REVIEW-2026-11-11.md` in the repo (local files, read 2026-11-11).
 
 ## Q1. TPM 2.0 object structure and the Name as a built-in content address (spec revisions, TPMT_PUBLIC, TPMT_SENSITIVE, TPM2B_PRIVATE, Name, Qualified Name, parent and hierarchy)
 
 ### Takeaway
+
 A TPM object is a public area (`TPMT_PUBLIC`) plus a sensitive area (`TPMT_SENSITIVE`). The sensitive area leaves the TPM only as an encrypted, parent-specific `TPM2B_PRIVATE` blob. The object's **Name** is `nameAlg ‖ H_nameAlg(TPMT_PUBLIC)`. It is a native content address over type, attributes, authPolicy, parameters and the public key (or, for symmetric objects, a salted hash of the secret). It excludes the parent, hierarchy, handle, blob and authValue. Those are captured by the **Qualified Name**, `QN_B = H(QN_parent ‖ Name_B)`, which chains the Names of all ancestors.
 
 ### Cited Findings
+
 **Spec revisions**
+
 - The TCG lists these TPM 2.0 Library revisions — [TCG library page](https://trustedcomputinggroup.org/resource/tpm-library-specification/):
 
   | Revision | Date | Parts |
@@ -42,6 +46,7 @@ A TPM object is a public area (`TPMT_PUBLIC`) plus a sensitive area (`TPMT_SENSI
   — [P1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf), [P2](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_2_Structures_Version_185_pub_c0a962a931.pdf)
 
 **TPMT_PUBLIC (P2 §12.2.4, Table 235)**
+
 - Fields: `type` (TPMI_ALG_PUBLIC), `nameAlg` (+TPMI_ALG_HASH, may be NULL), `objectAttributes` (TPMA_OBJECT), `authPolicy` (TPM2B_DIGEST, computed with nameAlg; the Empty Policy when absent), `[type]parameters` (TPMU_PUBLIC_PARMS), `[type]unique` (TPMU_PUBLIC_ID).
 - The spec defines the Name directly: "The Name of the object is nameAlg concatenated with the digest of this structure using nameAlg."
 - P1 §23.2 Table 34 groups the attributes into five classes:
@@ -102,6 +107,7 @@ A TPM object is a public area (`TPMT_PUBLIC`) plus a sensitive area (`TPMT_SENSI
   | 1 | 1 | 1 | not supported |
 
 **unique, and the binding between public and sensitive areas**
+
 - The `unique` field holds a different value for each object type — P1 §24.5.3.2–24.5.3.7, Equation 48. [P1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf)
 
   | Object type | `unique` |
@@ -111,6 +117,7 @@ A TPM object is a public area (`TPMT_PUBLIC`) plus a sensitive area (`TPMT_SENSI
   | ML-DSA, ML-KEM | the public key |
   | KEYEDHASH (HMAC key or sealed data) | `H_nameAlg(obfuscate ‖ key)`, where obfuscate is `seedValue.buffer` and key is `sensitive.bits.buffer` |
   | SYMCIPHER | the same formula as KEYEDHASH |
+
 - Rationale for the obfuscation:
   - It prevents an offline guess of low-entropy secrets from `unique`.
   - It prevents identity theft: an attacker cannot pair an arbitrary sensitive area with a known public area, which would subvert `TPM2_PolicySecret`.
@@ -120,6 +127,7 @@ A TPM object is a public area (`TPMT_PUBLIC`) plus a sensitive area (`TPMT_SENSI
 - RSA `exponent = 0` in `TPMS_RSA_PARMS` means the default 2^16+1. Support for other exponents is optional, and "use of other exponents in duplicated keys is not recommended" — P2 §12.2.3.4. [P2](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_2_Structures_Version_185_pub_c0a962a931.pdf)
 
 **TPMT_SENSITIVE, the private area and TPM2B_PRIVATE**
+
 - `TPMT_SENSITIVE` holds `sensitiveType`, `authValue` (TPM2B_AUTH, no longer than the nameAlg digest), `seedValue` and `[sensitiveType]sensitive` — P2 §12.3.2.4 Table 240. [P2](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_2_Structures_Version_185_pub_c0a962a931.pdf)
   - `seedValue` is the size of the nameAlg digest.
   - For a parent it is the optional protection seed; for other objects it is the obfuscation value.
@@ -144,20 +152,24 @@ A TPM object is a public area (`TPMT_PUBLIC`) plus a sensitive area (`TPMT_SENSI
 — [P1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf)
 
 **Qualified Name (P1 §23.5)**
+
 - `QN_B := H_B(QN_A ‖ NAME_B)` when A is B's Storage Parent. The Name and QN of a Primary Seed are its handle, so a primary's QN is `H_nameAlg(hierarchy handle ‖ Primary Object Name)`. For `TPM_RH_NULL` both are `TPM_RH_NULL`.
 - "The QN of an object is included in its certification to indicate that the key is being used in a different environment (ancestry) than the one in which it was created."
 - Creation data includes the parent's Name and QN.
 
 — [P1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf)
+
 - fixedTPM SET: "The hierarchy of the object, as indicated by its Qualified Name, may not change." — P2 Table 37, bit 1. [P2](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_2_Structures_Version_185_pub_c0a962a931.pdf)
 - tpm2-tools documentation likewise says the qualified name "serves as proof of the objects parents" — [tpm2_readpublic(1)](https://man.archlinux.org/man/extra/tpm2-tools/tpm2_readpublic.1.en)
 - tpm2-pytss `get_name()` computes the Name on the host from a `TPM2B_PUBLIC` without asking the TPM — [tpm2-pytss docs](https://tpm2-pytss.readthedocs.io/en/1.0.0/types.html)
 
 **Saved contexts**
+
 - `TPMS_CONTEXT` metadata (sequence, savedHandle, hierarchy) is normative. The enclosed `TPMS_CONTEXT_DATA` is vendor-specific and encrypted, with fresh protection values on every save — P1 §27.2. [P1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf)
 - stClear objects' saved contexts are invalidated by Startup(CLEAR) — P2 Table 37, bit 2. [P2](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_2_Structures_Version_185_pub_c0a962a931.pdf)
 
 ### Inferences
+
 - **The Name is a "spec + material" digest, which PLAN calls an instance CA-ID.**
   - It changes when any attribute, the authPolicy, nameAlg, a scheme or a parameter changes, even for the same key.
   - It does **not** change with the parent, the hierarchy, the handle, the authValue (`ObjectChangeAuth`) or the blob bytes.
@@ -174,6 +186,7 @@ A TPM object is a public area (`TPMT_PUBLIC`) plus a sensitive area (`TPMT_SENSI
 - **Compute the Name on the host.** The verifier should hash the `TPMT_PUBLIC` returned by `TPM2_ReadPublic` itself and compare. Trusting the TPM-reported name field alone is not enough. tpm2-pytss's `get_name()` is an example of the host-side computation; whether systemd computes the Name on the host was not checked.
 
 ### Gaps
+
 - The revision in which `x509sign`, `firmwareLimited` and `svnLimited` (TPMA_OBJECT bits 19, 8, 9) were introduced was not verified (likely 1.59 and 1.83 respectively, but unconfirmed).
 - Part 0 (the v185 deprecation list) was not read.
 - The exact ECC `unique` encoding was not checked. Are `x`/`y` always left-padded to field size by real TPMs, or can leading zeros be stripped? This matters for SPKI canonicalisation; cf. the existing tpm2-pkcs11 P-521 `CKA_EC_POINT` repair in DESIGN §6.2.
@@ -181,20 +194,25 @@ A TPM object is a public area (`TPMT_PUBLIC`) plus a sensitive area (`TPMT_SENSI
 ## Q2. Hierarchies, seeds, primary-key determinism, persistence, contexts, duplication, NV indexes, PCRs and policy digests
 
 ### Takeaway
+
 Primary objects are a **derivation**: `TPM2_CreatePrimary(hierarchy, template)` deterministically regenerates the same key from the hierarchy's Primary Seed and *all bits* of the template. The determinism holds only on one TPM, under one seed epoch and one implementation.
+
 - The algorithm is a vendor choice.
 - It changed from KDFa to DRBG at 1.38.
 - It is reset by `TPM2_Clear` (storage seed) or `ChangeEPS`.
 - It is cut off by firmware-limited hierarchies.
 
 Ordinary objects are random and must be persisted:
+
 - as a blob under a parent, or
 - in NV via `TPM2_EvictControl`, at handles 0x81000000–0x817FFFFF for the owner and 0x81800000–0x81FFFFFF for the platform.
 
 Policies are content-addressed by construction. The `authPolicy` is a hash chain over policy assertions. `PolicyAuthorize` and `PolicyAuthorizeNV` let a stable digest delegate to a signed or NV-stored policy. systemd-pcrlock uses `PolicyAuthorizeNV` for exactly this reason, and its `pcrlock.json` is effectively a lock file.
 
 ### Cited Findings
+
 **Seeds**
+
 - Primary Seeds never leave the TPM — P1 §11.1, §11.4. [P1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf)
 
   | Seed | Hierarchy and what it generates | Changed by | Effect of a change |
@@ -224,6 +242,7 @@ Policies are content-addressed by construction. The `authPolicy` is a hash chain
 - **Implied parent attributes.** For a primary, the parent is treated as having fixedParent, fixedTPM, decrypt and restricted SET, plus firmwareLimited/svnLimited when the hierarchy is a firmware- or SVN-limited one — P3 §24.1.1. [P3](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf)
 
 **Firmware-limited and SVN-limited objects (P1 §41)**
+
 - A firmwareLimited object is "cryptographically limited to the current firmware of the TPM":
   - `fwSecret := KDFa(hashAlg, bootloaderSecret, "FW_SECRET", H(tpmFw.image), ...)`.
   - svnLimited objects are reachable by firmware with SVN ≥ the object's.
@@ -232,6 +251,7 @@ Policies are content-addressed by construction. The `authPolicy` is a hash chain
   — [P1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf)
 
 **Persistence and handles**
+
 - `TPM2_EvictControl` moves a loaded object to a persistent handle, or removes one — P1 §34.3; P3 §28.5. [P1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf)
   - It is not allowed for NULL-hierarchy or stClear objects, or their descendants.
   - Owner handles are 0x81000000–0x817FFFFF; platform handles are 0x81800000–0x81FFFFFF.
@@ -242,6 +262,7 @@ Policies are content-addressed by construction. The `authPolicy` is a hash chain
 - systemd derives the SRK template from the "TCG TPM v2.0 Provisioning Guidance" §7.5.1 and the EK Credential Profile — [systemd tpm2-util.c](https://github.com/systemd/systemd/blob/main/src/shared/tpm2-util.c)
 
 **Duplication**
+
 - Duplication makes an object a child of an additional parent, on the same or another TPM — P1 §20.3. [P1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf)
   - It requires a policy session whose policy sets `commandCode = TPM_CC_Duplicate`.
   - The outer wrapper uses the new parent's KEM; the inner wrapper is a symmetric key.
@@ -259,6 +280,7 @@ Policies are content-addressed by construction. The `authPolicy` is a hash chain
 - `TPM2_Import` rejects `objectPublic` with fixedTPM or fixedParent SET. It checks public/sensitive binding once at import when the new parent is fixedTPM, and otherwise on every load — P3 §13.3. [P3](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf)
 
 **NV indexes**
+
 - NV Name = `nameAlg ‖ H(TPMS_NV_PUBLIC)`. For the non-legacy NV handle types (MSO 0x11/0x12), it is `H(TPMU_NV_PUBLIC_2)`; the revision that introduced them was not established — P1 §13. [P1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf)
   - `TPMS_NV_PUBLIC` holds nvIndex, nameAlg, attributes (TPMA_NV), authPolicy and the data size — P2 §13.6 Table 251.
   - **The Name changes** when `TPMA_NV_WRITTEN` becomes SET and when the index is write- or read-locked.
@@ -267,6 +289,7 @@ Policies are content-addressed by construction. The `authPolicy` is a hash chain
 - NV index types (P1 §34.2.6.2–34.2.6.6): ordinary, counter, bit field, extend and PIN (PIN Pass/Fail). The PIN types can limit how often an object is used — P1 §34.2.8.1. [P1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf)
 
 **Policy digests (the content-addressed policy identity)**
+
 - `TPM2_PolicyPCR`: `policyDigest_new := H_policyAlg(policyDigest_old ‖ TPM_CC_PolicyPCR ‖ pcrs ‖ digestTPM)` — P3 §23.7. [P3](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf)
 - `TPM2_PolicyAuthorize`: checks a signature by `keySign` over `approvedPolicy ‖ policyRef`, then resets the digest and applies `PolicyUpdate(TPM_CC_PolicyAuthorize, keySign, policyRef)`. The resulting authPolicy depends only on the **signer's Name** and policyRef — P3 §23.16. [P3](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf)
 - `TPM2_PolicyAuthorizeNV`: compares the session digest with the NV contents, resets, then sets `policyDigest_new := H(policyDigest_old ‖ TPM_CC_PolicyAuthorizeNV ‖ nvIndex→Name)` — P3 §23.22, Eq. 9. [P3](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf)
@@ -279,6 +302,7 @@ Policies are content-addressed by construction. The `authPolicy` is a hash chain
   — [P1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf)
 
 **systemd-pcrlock**
+
 - What it does — [systemd-pcrlock(8)](https://www.freedesktop.org/software/systemd/man/latest/systemd-pcrlock.html):
   - It predicts PCR values from the firmware and userspace event logs plus `*.pcrlock` component files.
   - It builds a policy of `PolicyPCR` and `PolicyOR`, written to an **NV index** (allocated on first run).
@@ -290,6 +314,7 @@ Policies are content-addressed by construction. The `authPolicy` is a hash chain
 - The policy JSON fields systemd parses (all mandatory): `pcrBank`, `pcrValues`, `nvIndex`, `nvHandle`, `nvPublic`, `srkHandle`, `pinPublic` and `pinPrivate` — [systemd tpm2-util.c, `tpm2_pcrlock_policy_from_json`](https://github.com/systemd/systemd/blob/main/src/shared/tpm2-util.c)
 
 **Creation data and creation PCRs**
+
 - Create and CreatePrimary return `TPMS_CREATION_DATA` with these fields — P1 §24.4, §24.8; P2 §15.1 Table 261:
   - `pcrSelect`, `pcrDigest` (selected PCRs at creation);
   - `locality`;
@@ -299,6 +324,7 @@ Policies are content-addressed by construction. The `authPolicy` is a hash chain
   plus a ticket so that `TPM2_CertifyCreation` can later prove the TPM created the object. "The creation data will act as a form of certification of the object that is most useful when fixedTPM is CLEAR." — [P1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf), [P2](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_2_Structures_Version_185_pub_c0a962a931.pdf)
 
 ### Inferences
+
 - **A primary key is a pure derivation, the closest TPM analogue to a Nix input-addressed derivation.** Its output key is a function of (TPM implementation, seed epoch, hierarchy, template). The template, i.e. the spec, is fully known in advance, but the output differs per TPM and after `TPM2_Clear`. This matches PLAN's "generated per token" case. The lock must record the resulting Name/SPKI **per realisation** and treat a changed output on the same TPM as "the seed or firmware changed", a distinct diagnostic.
 - **The hierarchy's identity can be fingerprinted.** The Name of a standard-template primary, such as the TCG SRK template under the owner seed or the EK under the EPS, acts as a "seed epoch ID". The TPM exposes no seed identifier, so this is the only observable stand-in. systemd's `tpm2_srk` field (a serialized ESYS_TR of the SRK) is precedent for pinning the parent in metadata.
 - **An NV index's identity is state-dependent.** The Name shifts with WRITTEN, WRITELOCKED and READLOCKED. A lock entry must pin the NV public area in its *expected steady state*, e.g. WRITTEN=1. The `PolicyAuthorizeNV` digest commits to that exact Name.
@@ -316,6 +342,7 @@ Policies are content-addressed by construction. The `authPolicy` is a hash chain
   - The same concern applies to `TPM2_LoadExternal` public-only objects in the NULL hierarchy.
 
 ### Gaps
+
 - Whether `TPM2_Certify` can certify a public-only persistent object was not checked. It needs the object's ADMIN authorization, and a v185 public-only object may or may not satisfy it.
 - Whether the input `authValue`, `inSensitive` or `outsideInfo` affects primary derivation was not confirmed. P1 §24.6.3 names only seed, template hash and a use string. `outsideInfo` and `creationPCR` presumably only affect creation data, and caller-supplied symmetric primary data presumably replaces the derived sensitive part. Neither was verified in P3 §24.1 detail.
 - Vendor behaviour in practice was not checked: whether a given TPM model still uses KDFa, or reproduces the same SRK after a firmware update.
@@ -323,7 +350,9 @@ Policies are content-addressed by construction. The `authPolicy` is a hash chain
 ## Q3. Attestation: proving an object is TPM-resident with given attributes
 
 ### Takeaway
+
 `TPM2_Certify` signs `TPMS_ATTEST{magic=TPM_GENERATED, type, qualifiedSigner, extraData(nonce), clockInfo, firmwareVersion, attested={name, qualifiedName}}` with an Attestation Key. The verifier needs the object's `TPMT_PUBLIC`: it recomputes the Name, matches it, and reads `fixedTPM` and `sensitiveDataOrigin` from the attested public area. Given a trusted AK chain (AK → EK via MakeCredential/ActivateCredential → EK certificate from the manufacturer), this proves:
+
 - the key was generated inside a genuine TPM;
 - it can never leave that TPM;
 - it carries exactly the declared policy.
@@ -331,6 +360,7 @@ Policies are content-addressed by construction. The `authPolicy` is a hash chain
 No standard PKCS#11 mechanism can prove that property. Vendor attestation exists outside the standard, e.g. YubiKey PIV attestation certificates. These signed structures can be stored in a lock and **verified offline** without the TPM.
 
 ### Cited Findings
+
 - **Attestation commands and keys.**
   - Commands: `TPM2_Quote` (PCRs), `TPM2_GetTime`, the audit digests and `TPM2_Certify` (objects).
   - "The highest confidence is provided by a fixedTPM, restricted signing key that is created on a TPM with a certificate from the TPM manufacturer."
@@ -371,6 +401,7 @@ No standard PKCS#11 mechanism can prove that property. Vendor attestation exists
 - **v185 Firmware-Limited Attestation Keys** exist so that relying parties can attest the TPM's own firmware — P1 §41.1, §41.9. [P1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf)
 
 ### Inferences
+
 - **What attestation proves for a cakeys lock.** A `TPM2_Certify` over the realised object, nonce'd with something lock-bound such as the spec digest, combined with the stored `TPMT_PUBLIC`, gives an offline-verifiable proof of three things:
   1. The Name matches, so the public key, attributes and authPolicy are exactly as locked.
   2. `fixedTPM ∧ fixedParent ∧ sensitiveDataOrigin` holds, i.e. TPM-generated and non-duplicable: the TPM equivalent of PKCS#11 `CKA_LOCAL ∧ CKA_NEVER_EXTRACTABLE`, but *signed*.
@@ -385,13 +416,16 @@ No standard PKCS#11 mechanism can prove that property. Vendor attestation exists
 - **Where `firmwareVersion` comes from.** It is obfuscated for Storage-hierarchy AKs. Use an Endorsement-hierarchy AK, or `TPM2_GetCapability(TPM_PT_FIRMWARE_VERSION_1/2)` directly, for lock provenance; compare it like the PKCS#11 token firmware is compared today (warn, don't fail).
 
 ### Gaps
+
 - TCG "TPM 2.0 Keys for Device Identity and Attestation" (IAK/IDevID) was not read. It defines manufacturer-certified AKs that would shortcut the EK→AK activation step.
 - The verification rules for chaining a duplicated key (fixedTPM=0) back to an origin were not researched.
 
 ## Q4. Typical usage and tooling (tpm2-tools, ESAPI/FAPI, tss-esapi, tpm2-pkcs11, systemd, ssh-tpm-agent, age-plugin-tpm, keylime, Nix)
 
 ### Takeaway
+
 Real-world TPM usage converges on four patterns:
+
 1. A **well-known SRK at 0x81000001**, with ordinary child keys stored as **blobs** outside the TPM. The blobs are TSS2 key files, sqlite rows or LUKS2 token JSON.
 2. **Sealed keyedHash secrets** bound to PCR or pcrlock policies (systemd-cryptenroll and systemd-creds).
 3. **EK/AK attestation** (keylime).
@@ -400,7 +434,9 @@ Real-world TPM usage converges on four patterns:
 Each tool's metadata already records parts of what a lock needs: policy hash, PCR mask and bank, primary algorithm, and a parent pin (systemd's `tpm2_srk`). None records the *object's own* Name as an identity that is checked before use.
 
 ### Cited Findings
+
 **FAPI (tpm2-tss)** — [fapi-profile.md](https://github.com/tpm2-software/tpm2-tss/blob/master/doc/fapi-profile.md), [fapi-config.md](https://github.com/tpm2-software/tpm2-tss/blob/master/doc/fapi-config.md)
+
 - The JSON **profile** fixes, for all keys:
   - nameAlg;
   - the asymmetric type, scheme, curve or keyBits and exponent;
@@ -412,6 +448,7 @@ Each tool's metadata already records parts of what a lock needs: policy hash, PC
 - The **config** file names the profile, `user_dir`/`system_dir` keystores, the TCTI, `system_pcrs`, `ek_cert_less` and `ek_fingerprint`.
 
 **tpm2-pkcs11**
+
 - All objects live under a **persistent primary in the owner hierarchy**. Its handle is stored as a serialized ESYS_TR in the store. — [tpm2-pkcs11 ARCHITECTURE.md](https://github.com/tpm2-software/tpm2-pkcs11/blob/master/docs/ARCHITECTURE.md)
   - Per token, two sealed objects (SO and USER) are unsealed with the salted PIN, yielding an AES-256 wrapping key.
   - That key GCM-wraps every object's authValue.
@@ -421,6 +458,7 @@ Each tool's metadata already records parts of what a lock needs: policy hash, PC
 - **Vendor attributes.** Inside `tobjects.attrs` it keeps `CKA_TPM2_OBJAUTH_ENC`, `CKA_TPM2_PUB_BLOB`, `CKA_TPM2_PRIV_BLOB`, `CKA_TPM2_ENC_BLOB` and `CKA_TPM2_SERIALIZED_TR` — [tpm2-pkcs11 src/lib/attrs.h](https://github.com/tpm2-software/tpm2-pkcs11/blob/master/src/lib/attrs.h), [src/lib/object.c](https://github.com/tpm2-software/tpm2-pkcs11/blob/master/src/lib/object.c)
 
 **systemd-cryptenroll (LUKS2 token `systemd-tpm2`)** — [systemd tpm2-util.c, `tpm2_make_luks2_json`](https://github.com/systemd/systemd/blob/main/src/shared/tpm2-util.c)
+
 - The token JSON records:
   - `tpm2-blob` (the sealed object's pub and priv);
   - `tpm2-pcrs`, `tpm2-pcr-bank`, `tpm2-primary-alg`, `tpm2-policy-hash`, `tpm2-pin`;
@@ -434,6 +472,7 @@ Each tool's metadata already records parts of what a lock needs: policy hash, PC
 - The legacy path, used for older sealed data, created a **transient** primary from a fixed template, flushed it, and relied on re-deriving "the exact same template" — [systemd tpm2-util.c](https://github.com/systemd/systemd/blob/main/src/shared/tpm2-util.c)
 
 **TSS2 key files (`-----BEGIN TSS2 PRIVATE KEY-----`)**
+
 - The ASN.1 is `TPMKey ::= SEQUENCE { type OID, emptyAuth [0], policy [1], secret [2], authPolicy [3], description [4], rsaParent [5], parent INTEGER, pubkey OCTET STRING, privkey OCTET STRING }`.
 - `type` is one of three OIDs:
 
@@ -449,6 +488,7 @@ Each tool's metadata already records parts of what a lock needs: policy hash, PC
 — [TPM 2 Key Format draft](https://www.hansenpartnership.com/draft-bottomley-tpm2-keys.html)
 
 **ssh-tpm-agent and age-plugin-tpm** — [ssh-tpm-agent README](https://github.com/Foxboron/ssh-tpm-agent), [age-plugin-tpm README](https://github.com/Foxboron/age-plugin-tpm)
+
 - ssh-tpm-agent stores TPM-sealed SSH keys in `.tpm` files using that TSS2 key format.
 - It supports:
   - import of existing keys;
@@ -457,13 +497,16 @@ Each tool's metadata already records parts of what a lock needs: policy hash, PC
 - age-plugin-tpm creates age identities whose keys are created on the TPM and sealed outside it, with an optional PIN.
 
 **tss-esapi (Rust)** — [crates.io tss-esapi](https://crates.io/crates/tss-esapi)
+
 - The latest stable release is **7.7.0** (2026-04-24).
 - The 8.0 line is in alpha: 8.0.0-alpha.4, 2026-10-09.
 
 **Keylime**
+
 - Agent, registrar and verifier; EK/AK enrollment via MakeCredential/ActivateCredential; quotes plus UEFI/IMA logs — [keylime design overview](https://keylime-docs.readthedocs.io/en/latest/design/overview.html)
 
 **cakeys today**
+
 - TPM is reached through tpm2-pkcs11, which lacks `C_GenerateKey` for AES and generic secrets and needs a P-521 `CKA_EC_POINT` repair.
 - `sandbox.tpm2.enable` sets an ACL on `/dev/tpmrm*` for build users.
 - PLAN says a native backend is needed for PCR and policy keys.
@@ -471,6 +514,7 @@ Each tool's metadata already records parts of what a lock needs: policy hash, PC
 — `docs/DESIGN.md` §6.2, §7.3; `PLAN.md` "Target tokens" (local repo)
 
 ### Inferences
+
 - **Pattern 1 (SRK + blob) maps cleanly onto cakeys' realisation and locator model.**
   - The locator is either a persistent handle or a blob reference: a TSS2 key file path, or a tpm2-pkcs11 row through PKCS#11.
   - The **parent pin** (the SRK Name) belongs in the lock. systemd's `tpm2_srk` is a serialized ESYS_TR, a format that carries the object's Name, which makes it an existing precedent for pinning the parent. Exactly how systemd checks it on unseal was not traced.
@@ -479,6 +523,7 @@ Each tool's metadata already records parts of what a lock needs: policy hash, PC
 - **FAPI profiles are a declarative precedent for spec-level defaults** (nameAlg, schemes, SRK template). FAPI's keystore paths, however, are locators, not identities: the same locator-as-identity problem PLAN raises for sequoia's TPM backend.
 
 ### Gaps
+
 - **NixOS** `security.tpm2.*` options (enable, pkcs11, abrmd, tctiEnvironment) and nixpkgs versions of tpm2-tss, tpm2-tools and tpm2-pkcs11 were not verified in this pass.
 - **systemd-creds** (`--with-key=tpm2`, host+tpm2) was not read.
 - **FAPI keystore path semantics** (`/HS/SRK/...`, `/P_<profile>/...`) and the FAPI JSON policy language were not read in detail.
@@ -488,6 +533,7 @@ Each tool's metadata already records parts of what a lock needs: policy hash, PC
 ## Q5. Mapping proposal for cakeys config + lock (intrinsic type / identity / location / provenance), and tpm2-pkcs11 versus a native backend
 
 ### Takeaway
+
 Map the TPM onto cakeys' three levels as follows:
 
 | cakeys level | TPM content | Where the IDs live |
@@ -497,6 +543,7 @@ Map the TPM onto cakeys' three levels as follows:
 | **realisation** | the instance identity, location and provenance | see below |
 
 The realisation records:
+
 - **instance identity:** the Name, plus the stored `TPM2B_PUBLIC` so it can be recomputed offline;
 - **location:** hierarchy, parent Name/QN, persistent handle or blob reference;
 - **provenance:** manufacturer, firmware and spec revision, an EK certificate hash or seed fingerprint, and an optional `TPM2_Certify` attestation.
@@ -504,7 +551,9 @@ The realisation records:
 tpm2-pkcs11 collapses all TPM policy into `CKA_EXTRACTABLE ↔ !(fixedTPM|fixedParent)` and `CKA_LOCAL ↔ sensitiveDataOrigin`. It loses authPolicy, PCR binding, nameAlg, userWithAuth/adminWithPolicy, noDA, restricted, the Name and QN, and attestation. A native backend is required for any of these to be declared or verified.
 
 ### Cited Findings
+
 **How tpm2-pkcs11 maps attributes** — [tpm2-pkcs11 src/lib/tpm.c](https://github.com/tpm2-software/tpm2-pkcs11/blob/master/src/lib/tpm.c)
+
 - On read:
   - `CKA_EXTRACTABLE = !(objattrs & (FIXEDTPM|FIXEDPARENT))`;
   - `CKA_ALWAYS_SENSITIVE = !extractable`;
@@ -519,6 +568,7 @@ tpm2-pkcs11 collapses all TPM policy into `CKA_EXTRACTABLE ↔ !(fixedTPM|fixedP
 — [ARCHITECTURE.md](https://github.com/tpm2-software/tpm2-pkcs11/blob/master/docs/ARCHITECTURE.md)
 
 **Spec facts the mapping depends on**
+
 - Name = nameAlg ‖ H(TPMT_PUBLIC) — P2 §12.2.4. [P2](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_2_Structures_Version_185_pub_c0a962a931.pdf)
 - QN chains the parents — P1 §23.5. [P1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Architecture_Version_185_pub_2a3392dc49.pdf)
 - The authValue is in the sensitive area, not the Name; changing it gives a new private blob — P2 Table 240; P3 §12.8. [P3](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf)
@@ -546,18 +596,21 @@ tpm2-pkcs11 collapses all TPM policy into `CKA_EXTRACTABLE ↔ !(fixedTPM|fixedP
 | `TPM_PT_MANUFACTURER`, vendor strings, firmware version 1/2, spec revision (`TPM_PT_REVISION`), SVN | provenance | realisation `tpm` table (like today's `token` C_GetTokenInfo table) |
 
 **Re-import under another parent.** For the same material and the same public area:
+
 - the Name is equal, so the instance ID matches;
 - the QN differs, the parent differs and the blob differs.
 
 The lock should treat equal `tpm2-name` + `pubkeyhash` with a changed parent as a **move**, a location change reported as a note. It should not be treated as new material.
 
 **The spec digest is frozen (DESIGN §10).** The current digest is canonical JSON `{"v":1,"type":…,"attributes":<boolean CKA_*>}`, so adding `tpm.*` policy fields changes its shape. There are two options; this note does not pick one.
+
 - **(a)** A new digest version (`"v":2`) with TPM fields in canonical JSON.
 - **(b)** For TPM specs, use the Name of the marshaled template `TPMT_PUBLIC` (with empty `unique`, or the primary's `unique` input) as the digest input. That encoding is canonical by the TPM spec (P1 §13: "The Name of a public area template is computed in the same way as the Name of a Transient Object"), which avoids canonical-JSON pitfalls. It does not cover non-TPMT fields such as the parent or locator, which are not identity anyway.
 
 **Two specs over the same material** (e.g. sign-only versus decrypt-only, or with/without a PCR policy) give two Names and one `pubkeyhash`. This matches PLAN's object ← N specs.
 
 **Symmetric and keyedHash objects**
+
 - **TPM2_Create** with a TPM-generated or caller-supplied key: the Name is random per object (random `seedValue`), so it is a token-specific ID. It must be paired with a portable commitment computed by the TPM:
   - `TPM2_HMAC` for keyedHash sign objects → the existing `commitment` scheme;
   - `TPM2_EncryptDecrypt` for symcipher with the encrypt bit (bit 18) → `kcv-ecb`, or decrypt → `kcv-ecb-dec`;
@@ -570,11 +623,13 @@ The lock should treat equal `tpm2-name` + `pubkeyhash` with a changed parent as 
 - **Sealed data** (keyedHash, sign=decrypt=0): the Name is a salted commitment over the data. A `valuehash` is possible only by unsealing, which needs auth or policy satisfaction.
 
 **PCR and policy recording**
+
 - Record the **authPolicy digest** as part of the spec, and the **policy definition** as its own declared entity, so cakeys can recompute the digest on the host. The definition is an ordered list of assertions (PolicyPCR with selection + expected digest, PolicyAuthorize with signer Name + policyRef, PolicyAuthorizeNV with NV public area, PolicySecret, PolicyCommandCode, PolicyOR branches).
 - Prefer indirection (`PolicyAuthorize`/`PolicyAuthorizeNV`) for anything PCR-based. The key's Name then stays stable while the PCR prediction lives in an NV index (pcrlock) or in signed policies. Each of those is its own lockable entity: an NV index with a Name, and a signer with a `pubkeyhash`.
 - Record the PCR bank and selection explicitly, never as a default.
 
 **Primary keys ("derived per token")**
+
 - The spec holds the template, including the `unique` input (e.g. empty, or a diversifier), plus the hierarchy.
 - The lock holds one realisation per TPM with:
   - the resulting Name and `pubkeyhash`;
@@ -582,6 +637,7 @@ The lock should treat equal `tpm2-name` + `pubkeyhash` with a changed parent as 
 - `verify` re-runs `CreatePrimary`, or reads the persistent handle, and compares. When the output differs and the `seedFingerprint` changed too, report "hierarchy seed changed (TPM2_Clear/ChangeEPS) or firmware changed primary derivation" (P1 §11.4.1) instead of a bare hash mismatch.
 
 **Config sketch (`keys.toml`, illustrative)**
+
 ```toml
 [tokens.tpm]
 backend = "tpm2"                       # native (tss-esapi); PKCS#11 tokens keep module=
@@ -625,6 +681,7 @@ tokens.tpm = { locator = { keyFile = "hmac.tss2" }, identity.allow = [] }
 ```
 
 **Lock sketch (`keys.lock`, illustrative)**
+
 ```toml
 [objects.signing.ids]
 pubkeyhash = "sha256-…"                # same value as via tpm2-pkcs11 / SoftHSM
@@ -670,6 +727,7 @@ nvPublic = "base64 TPMS_NV_PUBLIC"
 ```
 
 **Verification (verify/check) for a native TPM realisation**
+
 1. Resolve the locator: the persistent handle, or load the key file under the parent.
 2. **Bind the parent cryptographically, not only through `ReadPublic`.** Under v185 public-only persistence, a public-only SRK would pass a Name comparison.
    - **Salted session.** Start a session salted to the *locked* parent public area (`tpmKey` = parent; P1 §16.6.11 Eq. 23). Only a TPM holding the parent's private key can decrypt the salt.
@@ -686,17 +744,20 @@ nvPublic = "base64 TPMS_NV_PUBLIC"
    | unrestricted decrypt | ECDH or decrypt with an ephemeral host key |
    | restricted decrypt (SRK, storage primaries) | cannot decrypt arbitrary data, so use the salted-session method of step 2 |
    | restricted sign (AK) | `TPM2_Hash` → ticket → `TPM2_Sign`, or self-`Certify` |
+
 6. Optionally `TPM2_Certify` with a pinned AK, for `attested` mode.
 
 The lock never stores secrets or blobs as identity, only public areas and hashes, which is consistent with DESIGN §8.1.
 
 **tpm2-pkcs11 versus native**
+
 - Through PKCS#11, cakeys can verify `pubkeyhash`, the commitment schemes, `CKA_EXTRACTABLE` (= fixedTPM|fixedParent) and `CKA_LOCAL` (= sensitiveDataOrigin).
 - It cannot verify: authPolicy/PCR binding, nameAlg, userWithAuth/adminWithPolicy, noDA, restricted, encryptedDuplication, stClear, the parent or QN, or attestation.
 - Its derivation of `CKA_ALWAYS_SENSITIVE`/`CKA_NEVER_EXTRACTABLE` from fixedTPM|fixedParent is lossy: it is not tracked over the object's history.
 - Realisations through the two paths should share `objects.ids` (`pubkeyhash`/commitments). Only the native realisation carries `tpm2-name`, unless tpm2-pkcs11's vendor `CKA_TPM2_PUB_BLOB` turns out to be readable (see Gaps).
 
 ### Gaps
+
 - Not verified whether `CKA_TPM2_PUB_BLOB` is returned by `C_GetAttributeValue` to PKCS#11 clients. If it is, the Name is computable on the tpm2-pkcs11 path as well and the two paths could cross-check `tpm2-name`. An easy test in the existing `tests/tpm2.rs` harness.
 - Not verified on hardware or swtpm that `TPM2_Import` with a caller-chosen `seedValue` yields a deterministic, cross-TPM Name for symmetric keys. The inference rests on P1 §24.5.3 and P3 §13.3 binding checks.
 - Not verified whether tpm2-pkcs11 reports `CKA_PUBLIC_EXPONENT` as 65537 for TPM keys with exponent 0. If it reports 0, cross-path `pubkeyhash` agreement needs a provider fix-up.
