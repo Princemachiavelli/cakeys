@@ -117,12 +117,7 @@ impl Token {
         if class_of(object) == ObjectClass::PRIVATE_KEY {
             let spki = self.spki(h, loc)?;
             for p in self.find(ObjectClass::PUBLIC_KEY, loc)? {
-                let held = match self.material_spki(p) {
-                    Ok(Some(s)) => Some(s),
-                    Ok(None) => self.public_key_info(p).and_then(Result::ok),
-                    Err(_) => None,
-                };
-                if held.as_ref() == Some(&spki) {
+                if self.held_spki(p).as_ref() == Some(&spki) {
                     handles.push(p);
                 } else {
                     left += 1;

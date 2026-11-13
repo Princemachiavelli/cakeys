@@ -2409,24 +2409,28 @@ fn create_records_what_it_made_before_a_failure() {
     assert_eq!(code(&o), 16, "{}", stderr(&o));
     assert!(recorded("a-one"), "{}", e.lock());
 
-    // The second token is another token of the same module: it opens (whatever creating on it
-    // without a login then says), and the first key is recorded.
+    // The second token is another token of the same module: it opens, refuses to create where a
+    // session without login cannot see private objects (16), and the first key is recorded.
     e.config(&body("two", "ref-anon"));
     let o = e.km(&["create"]);
     let err = stderr(&o);
     assert!(!err.contains("already been initialized"), "{err}");
+    assert_eq!(code(&o), 16, "{err}");
+    assert!(err.contains("cannot see private objects"), "{err}");
     assert!(recorded("a-two"), "{}", e.lock());
 
     assert_eq!(e.code(&["create", "--token", "typo"]), 17);
     assert_eq!(e.code(&["create", "a-two", "--token", "ref-anon"]), 11);
 }
 
-/// `delete` removes the object it identified and a private key's public half only when that
-/// holds the same key: a public key object of other material under the locator is left, and so
-/// is a lone public key once the private key is gone. A session without login cannot see the
-/// private key, so it never reports it absent (16).
+/// A public key object of another key under a private key's locator is a conflict (13) for
+/// every verb that resolves: a consumer selecting the public half by the locator would get it.
+/// `delete` still removes only what it identified — the private key, and its public half only
+/// when that holds the same key — so the foreign object and, once the private key is gone, a lone
+/// public key are left. A session without login cannot see the private key, so it never reports
+/// it absent (16).
 #[test]
-fn delete_removes_only_what_it_identified() {
+fn a_foreign_public_key_conflicts_and_is_never_deleted() {
     let Some(e) = env("delete_identified") else { return };
     let s = e.session();
     s.clear(&["del-rsa", "del-other"]);
@@ -2472,6 +2476,13 @@ tokens.ref = { locator = { CKA_LABEL = "del-other" }, autoCreate = true }
     planted.extend(s.get_attributes(other, &[AttributeType::Modulus, AttributeType::PublicExponent]).unwrap());
     s.create_object(&planted).unwrap();
     assert_eq!(of_class(ObjectClass::PUBLIC_KEY, "del-rsa").len(), 2);
+    for verb in ["verify", "resolve"] {
+        let o = e.km(&[verb, "k", "--token", "ref"]);
+        assert_eq!(code(&o), 13, "{verb}: {}", stderr(&o));
+        assert!(stderr(&o).contains("holds another key"), "{verb}");
+    }
+    assert_eq!(e.code(&["check", "k", "--token", "ref"]), 13);
+
     let del = |token| e.km(&["delete", "k", "--token", token, "--no-update-lock"]);
     assert_eq!(code(&del("ref-anon")), 16);
     assert_eq!(of_class(ObjectClass::PRIVATE_KEY, "del-rsa").len(), 1, "nothing deleted unseen");

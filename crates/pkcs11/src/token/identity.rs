@@ -100,9 +100,53 @@ impl Token {
         Ok(spki)
     }
 
+    /// Consumers may select a key's public half by the locator alone (`pkcs11:object=…;type=public`):
+    /// every public key object under the locator of the private key `h` must hold `h`'s own
+    /// public key. Checked on every resolve, declared `publicAttributes` or not.
+    ///
+    /// # Errors
+    ///
+    /// `Conflict` (13) for a public key object holding another key, or exposing no key material
+    /// to compare; whatever [`Self::spki`] refuses for `h`.
+    pub fn check_public_objects(&self, h: ObjectHandle, loc: &Locator) -> Result<()> {
+        let spki = self.spki(h, loc)?;
+        for p in self.find(ObjectClass::PUBLIC_KEY, loc)? {
+            match self.held_spki(p) {
+                Some(held) if held == spki => {}
+                Some(held) => {
+                    return Err(KmError::Conflict(format!(
+                        "a public key object under locator {loc} on token '{}' holds another key ({}) than the \
+                         private key ({}); a consumer selecting the public half by the locator would get it",
+                        self.name,
+                        id::sri(&held),
+                        id::sri(&spki)
+                    )));
+                }
+                None => {
+                    return Err(KmError::Conflict(format!(
+                        "a public key object under locator {loc} on token '{}' exposes no key material, so it \
+                         cannot be told apart from another key's",
+                        self.name
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The public key a public key object holds: its material, else its `CKA_PUBLIC_KEY_INFO`;
+    /// `None` when it exposes neither in a form cakeys reads.
+    pub(super) fn held_spki(&self, p: ObjectHandle) -> Option<Vec<u8>> {
+        match self.material_spki(p) {
+            Ok(Some(s)) => Some(s),
+            Ok(None) => self.public_key_info(p).and_then(Result::ok),
+            Err(_) => None,
+        }
+    }
+
     /// `CKA_PUBLIC_KEY_INFO`, canonicalized; `None` when absent, empty or unreadable (ykcs11
     /// reports length 0 and then fails the fetch with `CKR_ARGUMENTS_BAD`).
-    pub(super) fn public_key_info(&self, h: ObjectHandle) -> Option<Result<Vec<u8>>> {
+    fn public_key_info(&self, h: ObjectHandle) -> Option<Result<Vec<u8>>> {
         match self.attr(h, AttributeType::PublicKeyInfo) {
             Ok(Some(Attribute::PublicKeyInfo(der))) if !der.is_empty() => Some(id::spki_canonical(&der)),
             _ => None,

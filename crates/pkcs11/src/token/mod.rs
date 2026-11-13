@@ -149,6 +149,7 @@ impl Token {
     /// refuses, or an admin credential on a provider that creates as the user; `Ambiguous`
     /// when several slots carry the label; `Unavailable` when no slot does, the module
     /// cannot be loaded, any `C_*` call fails, or the PIN (env var or file) cannot be read.
+    // TODO(NEXT.md §1, minor): extract the slot search; ~100 lines.
     pub fn open(
         name: &str,
         cfg: &TokenCfg,

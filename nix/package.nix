@@ -109,6 +109,7 @@ rustPlatform.buildRustPackage {
     bash ${./p11kit-test-env.sh} down $TMPDIR/p11
     bash ${./tpm2-test-env.sh} down $TMPDIR/tpm
   '';
+  # One thread: the token suites open a session per test on one module (NEXT.md §1, minor).
   dontUseCargoParallelTests = true;
   # Unit tests live in every crate, not just the CLI (the default member).
   cargoTestFlags = [ "--workspace" ];

@@ -176,7 +176,8 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
 /// # Errors
 ///
 /// `NotFound` when the locator finds no object, `Ambiguous` when it finds several; `Conflict`
-/// for a wrong type or policy; `Unsupported`/`Unavailable` when the object cannot be proven or
+/// for a wrong type or policy, or — for a private key — a public key object under the locator
+/// that holds another key; `Unsupported`/`Unavailable` when the object cannot be proven or
 /// attested as the spec requires.
 pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>> {
     resolve_with(t, tok, lock, false)
@@ -194,6 +195,10 @@ fn resolve_with(t: &Target, tok: &Token, lock: &Lock, provision: bool) -> Result
     }
     tok.check_public_half(h, t.spec, &t.on_token.locator, public_only)?;
     let Computed { ids, binding, commitment_label } = compute_ids(t, tok, lock, h, mode)?;
+    // After the IDs, so a swapped private key still reports its failed proof first.
+    if t.object.class == Class::PrivateKey && !public_only {
+        tok.check_public_objects(h, &t.on_token.locator)?;
+    }
     let attestation = match attestation_scheme(t, tok) {
         Some(scheme) => Some(attest(t, tok, lock, h, scheme, provision)?),
         None => None,
@@ -321,7 +326,8 @@ pub fn verify(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result
 ///
 /// Whatever `resolve` returns for the object once found; for the creation: `NotFound` when
 /// absent and `autoCreate` is off, `PreconditionFailed` (D1) when the lock already pins the
-/// object's material, `Conflict` when the locator is occupied by another class; also
+/// object's material, `Unavailable` when a session without login cannot see the locator,
+/// `Conflict` when the locator is occupied by another class; also
 /// `plan_mode`/`check_capabilities` rejections (`Validation`, `Unsupported`) before anything
 /// is created, and `compare`'s on the realised object.
 pub fn realise(
@@ -343,8 +349,9 @@ pub fn realise(
 }
 
 /// Create `t`'s object, which `resolve` did not find, and resolve it. Refused before anything is
-/// created when the lock pins the object (D1) or anything sits under the locator; what was
-/// created is removed again when its identity cannot be established.
+/// created when the lock pins the object (D1), a session without login cannot see the locator,
+/// or anything sits under it; what was created is removed again when its identity cannot be
+/// established.
 fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Resolved> {
     // D1: the lock already pins this object's material, so a fresh generation can only end in a
     // mismatch; refuse before anything is created. (Had this token held the same material,
@@ -360,7 +367,15 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
         )));
     }
     // If-None-Match: never create over anything else under the locator. On a PIV token,
-    // generating into an occupied slot would silently replace its key.
+    // generating into an occupied slot would silently replace its key. A session without login
+    // sees no private object, so it cannot tell the locator is free.
+    if !tok.logged_in {
+        return Err(KmError::Unavailable(format!(
+            "{t}: a session without login cannot see private objects under the locator, so it cannot \
+             tell the locator is free; configure pinFile or pinEnv for token '{}'",
+            t.token_name
+        )));
+    }
     let present = tok.find_any(&t.on_token.locator)?;
     if !present.is_empty() {
         return Err(KmError::Conflict(format!(

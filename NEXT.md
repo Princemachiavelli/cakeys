@@ -18,6 +18,17 @@ backend, post-quantum, lock merge, keystores, the attestation remainders) stay p
       profile (`diff::read_only`), as a note — possible since phase 3.
 - [x] **Probe leftovers**: a killed run's `cakeys-probe-NN` objects are found before probing
       (refused or cleaned), never reported as a delete failure.
+- [ ] **Minor (review 2026-11-13): `Token::open` and the profile set.** `Token::open`
+      (crates/pkcs11/src/token/mod.rs) is ~100 lines: extract the slot search (label match,
+      `TokenInfo`, PIN counters). `resolution::resolve` re-parses the embedded profiles
+      (`Set::embedded()`) on every token open, so `create` over several tokens parses them
+      once per token: parse once per process (`OnceLock`).
+- [ ] **Minor (review 2026-11-13): the token suites crash when run in parallel.** Plain
+      `cargo test` with the token env vars set runs the suite's tests on several threads, each
+      opening its own `TestSession` on the same module in the test process: one finalizes the
+      module under the others (SIGSEGV seen with SoftHSM). The Nix build runs them on one thread
+      (`dontUseCargoParallelTests`). Fix: one process-wide session per module in
+      `tests/common`, or a lock around `open_session`; until then, pass `--test-threads=1`.
 
 ## 2. Migration (MIGRATE.md phases 2–5)
 

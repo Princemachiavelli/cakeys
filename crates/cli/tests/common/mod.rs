@@ -361,6 +361,8 @@ impl Drop for TestSession {
     }
 }
 
+// TODO(NEXT.md §1, minor): sessions opened on several test threads finalize the module under
+// each other (SIGSEGV); the Nix build runs the suites on one thread.
 pub fn open_session(module: &str, label: &str, pin: &str) -> TestSession {
     let ctx = Pkcs11::new(module).unwrap();
     ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();

@@ -73,6 +73,7 @@ pub fn resolve(
     token: Option<&TokenInfo>,
     provider: &str,
 ) -> Result<Resolved, String> {
+    // TODO(NEXT.md §1, minor): parsed again on every token open; parse once per process.
     let set = Set::embedded()?;
     let mut out = Resolved::default();
 
