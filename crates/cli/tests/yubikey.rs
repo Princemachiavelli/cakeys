@@ -196,3 +196,42 @@ fn rw_lifecycle_generates_attests_proves_and_refuses_delete_without_touch() {
         "the key keeps its identity"
     );
 }
+
+/// The read-only probe of the device here (docs/PROVIDERS.md D10): ykcs11/2.7's match keys,
+/// advertisement and reported RSA range are what this `YubiKey` shows, and the write probes are
+/// refused even on a token marked scratch — ykcs11 creates only as SO, into device slots. Needs
+/// only `CAKEYS_TEST_YUBIKEY_MODULE`: no PIN, nothing written; the diff only with the patched
+/// cryptoki (the Nix build's). Another firmware than the
+/// profile's drifts by design (exit 15, the rows named): probe it and record a new pair.
+#[test]
+fn the_read_only_probe_conforms() {
+    let Ok(module) = std::env::var("CAKEYS_TEST_YUBIKEY_MODULE") else {
+        eprintln!("skipping the_read_only_probe_conforms: CAKEYS_TEST_YUBIKEY_MODULE not set");
+        return;
+    };
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("yubikey-probe");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("keys.toml"),
+        format!(
+            "[tokens.yubikey]\nmodule = \"{module}\"\ntokenLabel = \"{}\"\nscratch = true\n",
+            yubikey_label(&module)
+        ),
+    )
+    .unwrap();
+    // No credentials: the read-only probe needs none, and the write probes must not get far.
+    let e = Env { dir, module, pin: String::new(), mgm: String::new() };
+    let write = e.km(&["probe", "--token", "yubikey", "--write"]);
+    assert_eq!(code(&write), 17);
+    assert!(String::from_utf8_lossy(&write.stderr).contains("Security Officer"));
+    // The diff needs the patched cryptoki (an unpatched one drops mechanisms it cannot name, and
+    // the probe refuses to judge through it): a cargo build here has it only in the Nix build.
+    // By hand: `nix build .#cakeys`, then `result/bin/cakeys probe --token <yk> --diff ykcs11/2.7`.
+    if std::os::raw::c_ulong::from(cryptoki::object::KeyType::SHA384_HMAC) != 0x2c {
+        eprintln!("skipping the ykcs11/2.7 diff: this build's cryptoki is unpatched");
+        return;
+    }
+    let out = e.km(&["probe", "--token", "yubikey", "--diff", "ykcs11/2.7"]);
+    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+}

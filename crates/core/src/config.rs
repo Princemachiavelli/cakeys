@@ -47,6 +47,11 @@ pub struct TokenCfg {
     /// Nix `requiredSystemFeatures` entry; defaults to `token-<name>`. Read by the Nix library.
     #[allow(dead_code)]
     pub system_feature: Option<String>,
+    /// Marks the token as expendable for the probe (docs/PROVIDERS.md phase 3): its write
+    /// probes generate, wrap, unwrap and destroy objects, so `probe --write` runs them only
+    /// here and is refused (17) on any other token. Never read by any other verb.
+    #[serde(default)]
+    pub scratch: bool,
     /// Settings only the token's provider understands, as `[tokens.<t>.options]` (tpm2-pkcs11:
     /// `tcti`, `tpm2Store`, `akHandle`). The provider checks them when the token is opened, and
     /// one that takes none refuses any (17).

@@ -34,6 +34,8 @@ pub struct Reference {
     pub model: &'static str,
     /// Curves (`keys.toml` names) it cannot generate: refused as unsupported (15).
     pub missing_curves: &'static [&'static str],
+    /// Its committed capability profile: name, and path under profiles/.
+    pub profile: (&'static str, &'static str),
     /// The module's configuration (`conf_var`'s file) with one mechanism hidden.
     pub hide_mechanism: fn(conf: &str, mechanism: &str) -> String,
 }
@@ -46,6 +48,7 @@ pub const SOFTHSM: Reference = Reference {
     manufacturer: "SoftHSM",
     model: "SoftHSM v2",
     missing_curves: &[],
+    profile: ("softhsm/2.7", "modules/softhsm/2.7.toml"),
     hide_mechanism: |conf, m| format!("{conf}\nslots.mechanisms = -{m}\n"),
 };
 
@@ -60,11 +63,46 @@ pub const KRYOPTIC: Reference = Reference {
     manufacturer: "Kryoptic",
     model: "v1",
     missing_curves: &["secp256k1", "brainpoolP256r1", "brainpoolP384r1"],
+    profile: ("kryoptic/1.5", "modules/kryoptic/1.5.toml"),
     hide_mechanism: |conf, m| format!("{conf}\nmechanisms = [\"DENY\", \"{m}\"]\n"),
 };
 
 pub fn code(o: &Output) -> i32 {
     o.status.code().unwrap()
+}
+
+/// A committed capability profile's file (profiles/, docs/PROVIDERS.md): what the conformance
+/// tests regenerate and compare byte for byte.
+pub fn committed_profile(path: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles").join(path)
+}
+
+/// The conformance check every reference token runs (docs/PROVIDERS.md phase 3): the committed
+/// module profile `name` (at `path` under profiles/) is exactly what a fresh probe of token
+/// `token` observes, and regenerating it — the maintenance flow — changes no byte. `km` runs
+/// the CLI against the test's keys.toml; `scratch` is a file the regeneration may write.
+pub fn assert_profile_conforms(
+    km: impl Fn(&[&str]) -> Output,
+    token: &str,
+    name: &str,
+    path: &str,
+    scratch: &std::path::Path,
+) {
+    let probe = km(&["probe", "--token", token, "--write", "--diff", name]);
+    assert_eq!(code(&probe), 0, "a fresh probe drifts from {name}: {}", String::from_utf8_lossy(&probe.stderr));
+    let committed = std::fs::read(committed_profile(path)).unwrap();
+    std::fs::write(scratch, &committed).unwrap();
+    let out = scratch.to_str().unwrap();
+    assert_eq!(code(&km(&["probe", "--token", token, "--write", "--diff", name, "--out", out])), 0);
+    assert!(
+        std::fs::read(scratch).unwrap() == committed,
+        "{path} is not what the probe generates: regenerate it with `cakeys probe --token <t> --write \
+         --diff {name} --out profiles/{path}`, never by hand"
+    );
+    // A read-only probe conforms on what it observes; it may never overwrite the file.
+    assert_eq!(code(&km(&["probe", "--token", token, "--diff", name])), 0);
+    assert_eq!(code(&km(&["probe", "--token", token, "--out", out])), 17);
+    assert_eq!(std::fs::read(scratch).unwrap(), committed, "a read-only probe overwrote the file");
 }
 
 /// The writing form of a compare-only `realise`/`delete` argument list: `--no-update-lock`

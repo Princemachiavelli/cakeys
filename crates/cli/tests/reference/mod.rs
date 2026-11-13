@@ -37,10 +37,12 @@ fn env(name: &str) -> Option<Env> {
 impl Env {
     /// Write keys.toml: the token header plus the given objects/specs.
     fn config(&self, body: &str) {
+        // `ref` is scratch: the reference suite's token is created for the run and thrown
+        // away, which is exactly what the probe's write probes demand (PROVIDERS.md phase 3).
         // `ref-anon` is the same token without a PIN: it sees only public objects, like
         // a PIV token used without login.
         let head = format!(
-            "[tokens.ref]\nmodule = \"{m}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n\n\
+            "[tokens.ref]\nmodule = \"{m}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nscratch = true\n\n\
              [tokens.ref-anon]\nmodule = \"{m}\"\ntokenLabel = \"kmtest\"\n\n",
             self.dir.join("pin").display(),
             m = self.module,
@@ -2296,4 +2298,22 @@ fn s8_a_retargeted_spec_is_a_spec_change() {
     // The same object under another locator: also a change to review.
     e.config(&body.replace("CKA_LABEL = \"s8-a\"", "CKA_LABEL = \"s8-b\""));
     assert_eq!(code(&e.km(&["verify", "sa", "--token", "ref"])), 14);
+}
+
+/// The committed module profile is probe output (docs/PROVIDERS.md phase 3): a fresh probe of
+/// the reference token conforms to it, regenerating it changes no byte, and the write probes
+/// are refused on a token keys.toml does not mark scratch.
+#[test]
+fn the_committed_profile_is_what_the_probe_observes() {
+    let Some(e) = env("profile_conformance") else { return };
+    // Through an unpatched cryptoki the advertisement is short; the probe refuses to judge.
+    if !cryptoki_hmac_types_fixed(std::env::var(REF.require_var).is_ok()) {
+        return;
+    }
+    e.config("");
+    let (name, path) = REF.profile;
+    assert_profile_conforms(|args| e.km(args), "ref", name, path, &e.dir.join("profile.toml"));
+    let anon = e.km(&["probe", "--token", "ref-anon", "--write"]);
+    assert_eq!(code(&anon), 17);
+    assert!(String::from_utf8_lossy(&anon.stderr).contains("not marked scratch"));
 }

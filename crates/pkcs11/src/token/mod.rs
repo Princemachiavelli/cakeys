@@ -42,6 +42,12 @@ pub struct Token {
     pub mechanisms: Vec<MechanismType>,
     /// Their names, sorted: what the lock records and `caps` prints.
     mechanism_names: Vec<String>,
+    /// What `C_GetMechanismList` returned, sorted: the drift baseline the probe records as
+    /// a profile's `advertise` list (D2).
+    pub advertised: Vec<String>,
+    /// The RSA key-pair generation's key-size range as `C_GetMechanismInfo` reports it, when
+    /// the module advertises `CKM_RSA_PKCS_KEY_PAIR_GEN`: the probe's reported bounds.
+    pub rsa_bits: Option<(u64, u64)>,
     pub provider: Arc<dyn Provider>,
     /// The resolved capability profiles (docs/PROVIDERS.md): the module profile and the
     /// delta layers between cakeys and it, with the notes resolution noticed on the way.
@@ -120,8 +126,16 @@ impl Token {
         // provider (D9), the binding layer is always in the stack, a forwarder the module
         // names and the config's extras with it. What the stack subtracts filters the
         // advertisement; a token with no resolved profile keeps the provider's own filter.
-        let profiles = crate::resolution::resolve(cfg, &module, provider.name()).map_err(KmError::Validation)?;
+        let profiles =
+            crate::resolution::resolve(cfg, &module, Some(&token), provider.name()).map_err(KmError::Validation)?;
         let advertised = ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?;
+        let mut advertised_names: Vec<String> = advertised.iter().map(std::string::ToString::to_string).collect();
+        advertised_names.sort();
+        let rsa_bits = advertised
+            .contains(&MechanismType::RSA_PKCS_KEY_PAIR_GEN)
+            .then(|| ctx.get_mechanism_info(slot, MechanismType::RSA_PKCS_KEY_PAIR_GEN).ok())
+            .flatten()
+            .map(|i| (i.min_key_size() as u64, i.max_key_size() as u64));
         let stack_decides = profiles.module.is_some() || profiles.layers.len() > 1;
         let mechanisms = if stack_decides {
             advertised
@@ -148,6 +162,8 @@ impl Token {
             token,
             mechanisms,
             mechanism_names,
+            advertised: advertised_names,
+            rsa_bits,
             profiles,
             session,
             logged_in: pin.is_some(),
@@ -163,6 +179,12 @@ impl Token {
             Some(h) => KmError::Unsupported(format!("{msg} (hint for {}: {h})", self.provider.name())),
             None => KmError::Unsupported(msg),
         }
+    }
+
+    /// The session itself, for the probe's raw `C_*` calls (crate-internal: the normal verbs
+    /// go through the methods above).
+    pub(crate) fn raw(&self) -> &Session {
+        &self.session
     }
 
     pub fn has(&self, m: MechanismType) -> bool {

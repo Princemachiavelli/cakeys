@@ -45,9 +45,10 @@ pub fn side_from_lock(token: &str, lock: &Lock, registry: &Registry) -> Option<R
     let mechanisms: Vec<String> = mechanisms.into_iter().collect();
     // The lock records the module and the token it ran against: resolve what the profiles say
     // about exactly that (the forwarder, the binding layer), like an open would.
-    let module = recorded.iter().find_map(|r| r.provenance.as_ref().map(|p| p.module.clone()))?;
+    let (module, token_info) =
+        recorded.iter().find_map(|r| r.provenance.as_ref().map(|p| (p.module.clone(), p.token.clone())))?;
     let cfg = TokenCfg { provider: Some(provider.clone()), ..lockless_token_cfg() };
-    let resolved = resolution::resolve(&cfg, &module, &provider).ok()?;
+    let resolved = resolution::resolve(&cfg, &module, Some(&token_info), &provider).ok()?;
     if resolved.module.is_none() {
         return Some(Ok(registry.named(&provider)?.migration(token, &mechanisms)));
     }
@@ -58,7 +59,7 @@ pub fn side_from_lock(token: &str, lock: &Lock, registry: &Registry) -> Option<R
 /// the file lists (`None`: a provider this build does not link).
 #[must_use]
 pub fn side_from_transport(t: &Transport, registry: &Registry) -> Option<Result<Side>> {
-    let resolved = resolution::resolve(&lockless_token_cfg(), &moduleless_info(), &t.provider).ok()?;
+    let resolved = resolution::resolve(&lockless_token_cfg(), &moduleless_info(), None, &t.provider).ok()?;
     match resolved.module {
         Some(ref p) => Some(side_of(p, &resolved, &t.token, &t.provider, &t.mechanisms)),
         None => Some(Ok(registry.named(&t.provider)?.migration(&t.token, &t.mechanisms))),
@@ -70,7 +71,7 @@ pub fn side_from_transport(t: &Transport, registry: &Registry) -> Option<Result<
 #[must_use]
 pub fn unwrap_refusals(tok: &Token) -> Vec<&str> {
     let mut out: Vec<&str> =
-        tok.profiles.module.as_ref().map(|p| p.unwrap.refuse.iter().map(String::as_str).collect()).unwrap_or_default();
+        tok.profiles.module.iter().flat_map(|p| p.unwrap.refuse.iter().flatten().map(String::as_str)).collect();
     out.sort_unstable();
     out.dedup();
     out
@@ -96,8 +97,9 @@ fn side_of(module: &Profile, stack: &Resolved, token: &str, provider: &str, mech
     if let Some(unwraps) = m.and_then(|m| m.unwraps) {
         side.unwraps = unwraps;
     }
-    if !module.wrap.oaep.is_empty() {
-        side.oaep = module.wrap.oaep.iter().map(|h| oaep_hash(h).map_err(|e| who(&e))).collect::<Result<_>>()?;
+    // Never probed keeps the spec-compliant default; probed and empty means no OAEP method.
+    if let Some(oaep) = &module.wrap.oaep {
+        side.oaep = oaep.iter().map(|h| oaep_hash(h).map_err(|e| who(&e))).collect::<Result<_>>()?;
     }
     if let Some(rows) = m.map(|m| &m.public_accepts).filter(|r| !r.is_empty()) {
         side.public_import =
@@ -176,6 +178,7 @@ fn lockless_token_cfg() -> TokenCfg {
         mgm_key_file: None,
         mgm_key_env: None,
         system_feature: None,
+        scratch: false,
         options: toml::Table::new(),
     }
 }

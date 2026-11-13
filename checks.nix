@@ -61,16 +61,19 @@
     }
     expect 15 --profile softhsm/2.7 --layer p11-kit/0.26 CKM_AES_KEY_WRAP
     # The cryptoki binding layer is always in the stack; this Nix build's cryptoki carries the
-    # key-type fix, so it subtracts nothing and a partial module profile answers unknown.
+    # key-type fix, so it subtracts nothing: the probed module profile decides. It advertises
+    # the SHA-512 HMAC mechanism; the key type has no generate row, so it answers unknown.
     expect 16 --profile softhsm/2.7 CKK_SHA512_HMAC
-    expect 16 --profile softhsm/2.7 CKM_SHA512_HMAC
+    expect 0 --profile softhsm/2.7 CKM_SHA512_HMAC
     expect 16 --profile softhsm/2.7 CKM_NOT_A_MECHANISM
     expect 0 --profile softhsm/2.7 secp256r1
     expect 0 --profile softhsm/2.7 --oaep
     expect 15 --profile kryoptic/1.5 secp256k1
-    expect 15 --profile tpm2-pkcs11/1.10 --layer swtpm --bits 4096 CKK_RSA
-    # A class listing on a partial module profile: every member unknown, never a guess.
-    expect 16 --class pq --profile softhsm/2.7
+    expect 15 --profile tpm2-pkcs11/1.10+swtpm --bits 4096 CKK_RSA
+    # The same fact, factored out by hand into the swtpm layer.
+    expect 15 --profile tpm2-pkcs11 --layer swtpm --bits 4096 CKK_RSA
+    # A class listing on a probed module profile: SoftHSM advertises no PQ mechanism.
+    expect 15 --class pq --profile softhsm/2.7
     # A binding without the fix, modelled through --profiles (D11): the layer subtracts.
     sim=$TMPDIR/unpatched-binding
     mkdir -p $sim

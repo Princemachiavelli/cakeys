@@ -1,5 +1,9 @@
-# The software TPM under tpm2-pkcs11: D10's hardware layer, matched on what C_GetTokenInfo
-# gives. A real TPM under the same module profile is a different hardware layer.
+# Hand-maintained, never generated: a fact factored out of the observed pair profile
+# tpm2-pkcs11/1.10+swtpm by reading tpm2-pkcs11's source. The probe measures a module and the
+# hardware under it together and cannot tell whose refusal is whose; this one is the TPM's —
+# tpm2-pkcs11's handle_modulus asks the TPM (tpm_find_max_rsa_keysize, src/lib/tpm.c) [src],
+# and swtpm answers 3072 [run]. Its curve refusals (secp256k1, brainpool) are the module's own
+# NID table (nid_to_tpm2alg) [src], so they stay in the pair profile and are not here.
 profile = "swtpm"
 mode = "delta"
 

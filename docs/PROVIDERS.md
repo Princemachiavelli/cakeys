@@ -99,18 +99,20 @@ the lock).
 
 ## The probe
 
-`cakeys probe --token <t> [--scratch] [--out <file>] [--diff <profile>]` — the profile compiler:
+`cakeys probe --token <t> [--write] [--out <file>] [--diff <profile>] [--name <profile>]` — the
+profile compiler:
 
 - Read-only probes, safe on production tokens: mechanism list and per-mechanism info, token and
   module info, `CKO_PROFILE` claims, how existing objects are encoded.
 - Write probes — generating each type and curve, wrapping and unwrapping with each mechanism and
-  OAEP hash, unwrap templates, attribute defaults, delete-really-deletes — only with
-  `[tokens.<t>.scratch]` in keys.toml, refused otherwise.
+  OAEP hash, unwrap templates, attribute defaults, delete-really-deletes — only with `--write`
+  on a token keys.toml marks `scratch = true`, refused (17) otherwise.
 - Output: a generated profile plus a diff against what a shipped profile claims.
 
 That gives conformance (the shipped SoftHSM and kryoptic profiles must equal a fresh probe —
 hand-maintained provider data becomes a re-verifiable artifact), drift detection (probe a new
-module build, diff), and vendor onboarding without writing a crate.
+module build, diff), and vendor onboarding without writing a crate. What phase 3 built of this
+list, and what it left, is in its results below.
 
 ## Prior art
 
@@ -152,11 +154,22 @@ module build, diff), and vendor onboarding without writing a crate.
 - **D9.** Profiles match on the manufacturer and the expressed module version (`C_GetInfo`), with
   the tokenInfo versions as secondary evidence — never a module digest: a rebuild of the same SO
   is a different hash with no behavioural difference. A module that hides its version (kryoptic
-  reports 0.0 [run]) matches on manufacturer alone, flagged low-evidence.
+  reports 0.0 [run]) matches on manufacturer alone, flagged low-evidence. *Revised in phase 3:*
+  a profile records all four keys — manufacturer, module version (omitted when hidden as 0.0),
+  token model and firmware — and resolution prefers the one matching the most; a hidden
+  version is matched by the firmware (kryoptic's token firmware is its real version, 1.5),
+  always with a note.
 - **D10.** Hardware layers match on what `C_GetTokenInfo` gives (model, hardwareVersion,
   firmwareVersion); the userspace (module) version is the module profile's key, so the effective
   profile is the pair (module profile, hardware layer). Phase 3 probes the YubiKey present here at
-  its current firmware — no wider matrix.
+  its current firmware — no wider matrix. *Revised in phase 3:* a probe measures a module and the
+  hardware under it together, and nothing in PKCS#11 tells whose refusal is whose (tpm2-pkcs11
+  refuses secp256k1 in its own NID table, while its RSA cap is the TPM's [src]). So an observed
+  profile is a module-on-hardware pair, named module first (`tpm2-pkcs11/1.10+swtpm`; software
+  tokens keep plain names, the module being the hardware), and hardware layers are hand-made
+  factorings of such a pair (profiles/hardware/swtpm.toml), never probe output. A token whose
+  hardware has no pair yet resolves the nearest one for what the module advertises only:
+  generation, wrapping and unwrapping answer unknown.
 - **D11.** TOML, like keys.toml and the lock, so Nix reads profiles directly. p11-kit's `.module`
   files are flat key/value (`module`, `priority`, `enable-in`, `x-*`) and cannot carry mechanism
   lists, modes or evidence, so they are not the interchange; one of their `x-` keys may later
@@ -169,7 +182,7 @@ module build, diff), and vendor onboarding without writing a crate.
 | 0 | **Done 2026-11-12.** Baseline generator (OASIS 3.2 headers → TOML), pinned by a test | ≈300 lines, 2–3 days |
 | 1 | **Done 2026-11-12.** The model, modes, intersection, queries, and the `supports` query | ≈500, 4–5 days |
 | 2 | **Done 2026-11-12.** Resolution (match keys, layers), wiring `mechanisms()`, migrate `Side` and the binding layer into profiles | ≈400, 3–4 days |
-| 3 | `probe`: the ~25 probes, the scratch guard, profile + diff; the conformance check in checks; the opt-in YubiKey probe | ≈700, 5–7 days |
+| 3 | **Done 2026-11-13.** `probe`: the scratch guard, profile + diff, generated profiles; the conformance check in the reference suites; the opt-in YubiKey probe (not yet all ~25 probes: see its results) | ≈700, 5–7 days |
 | 4 | The static `validate` gate, the wider Nix check (the query part moved here from phase 4 into phases 1's `supports`) | ≈300, 2–3 days |
 
 ### Phase 0 and 1 results (2026-11-12)
@@ -243,6 +256,76 @@ Not done here, flagged:
 
 ≈2.2k lines, 2–3 weeks, in line with docs/PROVIDER_PROFILE.md's estimate.
 
+### Phase 3 results (2026-11-13)
+
+The probe (crates/pkcs11/src/probe.rs, `cakeys probe`) generates the committed module profiles,
+and the reference suites check on every build that they are exactly what it observes:
+
+- **Read-only probes**: `C_GetInfo` (manufacturer, version), `C_GetTokenInfo` (model,
+  firmware; never the serial, so a profile regenerates identically), `C_GetMechanismList` (the
+  `advertise` list, D2) and `C_GetMechanismInfo` for RSA key-pair generation (the reported
+  `min-bits`/`max-bits`).
+- **Write probes**, only with `--write` on a token marked `scratch = true` and logged in;
+  refused (17) otherwise, and always for a provider that creates as SO (ykcs11): key pairs per
+  baseline curve (`can`/`cannot`) and per RSA size 1024–4096 (`can-bits`/`cannot-bits`); the
+  advertised secret-key generation (a refusal is a `subtract` row); RSA-OAEP with SHA-1 and
+  SHA-256 (MGF1 of the same hash), counted only when the key unwraps back (`wrap.oaep`); the
+  `CKA_VALUE_LEN` unwrap-template rule (`unwrap.refuse`); delete-really-deletes (a note when
+  objects stay). Every run destroys what it made. Notes carry `CKR_*` names, not the binding's
+  prose, so they are stable across cryptoki releases.
+- **Absent is not empty**: `wrap.oaep` and `unwrap.refuse` are absent when never probed (a
+  spec-compliant default) and `[]` when probed with nothing working (no OAEP method planned).
+- **RSA sizes**: an observed size decides; outside the reported range is no; a size between two
+  that generated is yes; any other untried size is unknown. Observed: SoftHSM reports
+  512–16384, kryoptic 1024–16384, tpm2-pkcs11 on swtpm 1024–3072 (it asks the TPM).
+- **The diff** (`cakeys_profile::diff`) compares the observable rows — the match keys,
+  `advertise`, the generate rows, `subtract.mechanisms`, `wrap.oaep`, `unwrap.refuse`,
+  `restrict` — never names, notes or `[migration]`; without `--write`, only what a read-only
+  probe sees. Drift is exit 15 with each row named.
+- **The binding is a layer for the probe too** (D3): cryptoki drops from
+  `C_GetMechanismList` every mechanism it cannot name, so through an unpatched binding
+  kryoptic's `CKM_AES_KEY_WRAP_KWP` vanishes from the advertisement [run]. Profiles are
+  probed with the Nix-built cakeys (the patched binding); any other build may print a probe
+  but refuses (17) to write or diff one, and the conformance tests skip there.
+- **Maintenance**: `probe --token <t> --write --diff <profile> --out <file>` regenerates a
+  committed file: the claimed name kept, its `[migration]` claims (the one section the probe
+  does not observe) preserved. `--out` refuses a file that does not parse, and any existing
+  file from a read-only probe. `--name` names a new pair.
+- **Conformance** (tests/reference/, tests/tpm2.rs): on the reference tokens of every Nix
+  build, a fresh probe of SoftHSM, kryoptic and tpm2-pkcs11-on-swtpm conforms, regenerating
+  each committed file changes no byte, and the scratch guard refuses. tests/p11kit.rs checks
+  that through p11-kit SoftHSM advertises exactly its profile minus the p11-kit layer.
+  tests/yubikey.rs (opt-in, real hardware, no credentials) checks ykcs11/2.7's read-only rows.
+
+What the probe found against the repo's earlier evidence:
+
+- kryoptic: OAEP with SHA-1 and SHA-256 both round-trip and `CKA_VALUE_LEN` is accepted in
+  unwrap templates (MIGRATE.md's spike agrees); secp256k1 and brainpool are refused
+  (`CKR_GENERAL_ERROR`); it advertises the PKCS#11 3.2 PQ mechanisms.
+- SoftHSM: OAEP SHA-1 only (SHA-256 is `CKR_ARGUMENTS_BAD` even with MGF1-SHA256); every
+  baseline curve generates.
+- tpm2-pkcs11 1.10: reports Cryptoki 2.40; `CKM_AES_KEY_GEN` advertised but
+  `CKR_FUNCTION_NOT_SUPPORTED` (the old `CKM_GENERIC_SECRET_KEY_GEN` claim is gone: it is not
+  advertised); no edwards generation.
+- p11-kit's client filters `C_GetMechanismList`: it hides eight of SoftHSM's mechanisms, three
+  of them (`CKM_CONCATENATE_*`) missing from the layer until now. Its `C_GetInfo` reports
+  version 1.1, not the 0.26 the layer's match records (detection uses the manufacturer).
+- ykcs11 (yubico-piv-tool 2.7.3) reports version 2.73 and manufacturer
+  `Yubico (www.yubico.com)`: the hand profile's "2.7"/"Yubico" never matched, so every ykcs11
+  token resolved low-evidence. ykcs11/2.7 stays hand-maintained, its read-only rows now copied
+  from a probe of the YubiKey 5 (firmware 5.74 as `C_GetTokenInfo` encodes 5.7.4).
+
+Not done here, flagged:
+
+- **D4's claims**: no `CKO_PROFILE` read and no claims section yet.
+- **More probes**: PQ parameter sets (kryoptic advertises ML-DSA/ML-KEM/SLH-DSA key-pair
+  generation; `supports CKP_ML_DSA_65` stays unknown), AES-KW/KWP round-trips, the HMAC key
+  types, `C_GetMechanismInfo` beyond RSA, attribute defaults, existing-object encodings.
+- **D5's token-open assertion** (a read-only probe against the resolved profile at every open):
+  possible now that the read-only diff conforms; unscheduled.
+- A killed probe run leaves `cakeys-probe-NN` objects, which the next run's leftover check
+  would report as a delete failure.
+
 Order against MIGRATE.md: phases 0–2 land **before MIGRATE phase 3**, so the wrapping code
 consumes the template rules as data (that plan's risk #1); the probe runs alongside MIGRATE
 phases 3–4.
@@ -251,8 +334,9 @@ phases 3–4.
 
 - **Algebra**: modes, intersection, by-class queries; an unknown module resolves to a
   conservative profile that says so loudly.
-- **Conformance**: a fresh probe of each reference token equals its shipped profile (a
-  `checks` entry, like `checks.formatting`).
+- **Conformance**: a fresh probe of each reference token equals its shipped profile, and
+  regenerates it byte for byte (done: the reference suites in the package's check phase, which
+  every Nix build of `cakeys` runs, rather than a separate `checks` entry).
 - **Drift**: a profile with one edited row makes the probe's diff non-empty and names the row.
 - **Static gate**: keys.toml asking kryoptic for secp256k1, or a `kw` commitment through p11-kit,
   fails `validate` citing the profile — no token present.

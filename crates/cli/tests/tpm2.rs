@@ -45,7 +45,8 @@ impl Env {
         let token = |name: &str, extra: &str| {
             format!("[tokens.{name}]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\n{extra}\n", self.module)
         };
-        let head = token("tpm", &format!("pinFile = \"{}\"", pin.display()))
+        // `tpm` is scratch: the swtpm token is created for the run (the probe's write probes).
+        let head = token("tpm", &format!("pinFile = \"{}\"\nscratch = true", pin.display()))
             + &token("tpm-anon", "")
             + &token("tpm-generic", &format!("pinFile = \"{}\"\nprovider = \"generic\"", pin.display()));
         std::fs::write(self.dir.join("keys.toml"), head + body).unwrap();
@@ -561,4 +562,18 @@ fn tpm2_attested_material_travels_to_a_second_hsm() {
     let o = e.km(&["realise", "hmac-attest-soft", "--token", "soft", "--no-update-lock"]);
     assert_eq!(code(&o), 15);
     assert!(String::from_utf8_lossy(&o.stderr).contains("attests nothing"), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+/// The committed pair profile tpm2-pkcs11/1.10+swtpm is probe output (docs/PROVIDERS.md
+/// phase 3): what this module does on this TPM, measured together. A fresh probe conforms and
+/// regenerating it changes no byte.
+#[test]
+fn the_committed_profile_is_what_the_probe_observes() {
+    let Some(e) = env("profile_conformance") else { return };
+    if !cryptoki_hmac_types_fixed(std::env::var("CAKEYS_TPM_REQUIRE").is_ok()) {
+        return;
+    }
+    e.config("");
+    let (name, path) = ("tpm2-pkcs11/1.10+swtpm", "modules/tpm2-pkcs11/1.10+swtpm.toml");
+    assert_profile_conforms(|args| e.km(args), "tpm", name, path, &e.dir.join("profile.toml"));
 }

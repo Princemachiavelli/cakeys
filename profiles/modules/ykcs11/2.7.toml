@@ -1,12 +1,48 @@
-# Yubico ykcs11 2.7 (PIV), observed on a YubiKey 5, firmware 5.7.4 [run]. The piv-attestation
-# commitment and the PIV slot placement stay in the provider crate (PROVIDERS.md D6).
+# Yubico ykcs11 2.7 (PIV, yubico-piv-tool 2.7.3) on a YubiKey 5 — a module-on-hardware pair, like
+# every profile. Hand-maintained, never generated: ykcs11 creates only as SO into device slots, so
+# the probe refuses its write probes. Two parts:
+# - [match], advertise and the reported RSA range are read-only probe output, copied from
+#   `cakeys probe --token <yubikey>` (YubiKey 5C NFC FIPS, firmware 5.7.4, 2026-11-13) and
+#   checked by tests/yubikey.rs's opt-in read-only probe (`--diff ykcs11/2.7`).
+# - Everything else is this repo's claims ([run]/[src] evidence). The piv-attestation
+#   commitment and the PIV slot placement stay in the provider crate (PROVIDERS.md D6).
 profile = "ykcs11/2.7"
 mode = "observed"
-partial = true
+advertise = [
+  "CKM_ECDH1_DERIVE",
+  "CKM_ECDSA",
+  "CKM_ECDSA_SHA1",
+  "CKM_ECDSA_SHA256",
+  "CKM_ECDSA_SHA384",
+  "CKM_ECDSA_SHA512",
+  "CKM_EC_EDWARDS_KEY_PAIR_GEN",
+  "CKM_EC_KEY_PAIR_GEN",
+  "CKM_EC_MONTGOMERY_KEY_PAIR_GEN",
+  "CKM_EDDSA",
+  "CKM_RSA_PKCS",
+  "CKM_RSA_PKCS_KEY_PAIR_GEN",
+  "CKM_RSA_PKCS_OAEP",
+  "CKM_RSA_PKCS_PSS",
+  "CKM_RSA_X_509",
+  "CKM_SHA1_RSA_PKCS",
+  "CKM_SHA1_RSA_PKCS_PSS",
+  "CKM_SHA256",
+  "CKM_SHA256_RSA_PKCS",
+  "CKM_SHA256_RSA_PKCS_PSS",
+  "CKM_SHA384",
+  "CKM_SHA384_RSA_PKCS",
+  "CKM_SHA384_RSA_PKCS_PSS",
+  "CKM_SHA512",
+  "CKM_SHA512_RSA_PKCS",
+  "CKM_SHA512_RSA_PKCS_PSS",
+  "CKM_SHA_1",
+]
 
 [match]
-manufacturer = "Yubico"
-module-version = "2.7"
+manufacturer = "Yubico (www.yubico.com)"
+module-version = "2.73"
+model = "YubiKey YK5"
+firmware = "5.74"
 
 [generate."CKK_RSA"]
 min-bits = 1024

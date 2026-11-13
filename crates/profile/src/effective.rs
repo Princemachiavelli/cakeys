@@ -128,6 +128,13 @@ impl<'a> Effective<'a> {
             if l.subtract.key_types.iter().any(|k| k == key_type) {
                 return Verdict::no(&l.profile, l.notes.get(key_type).cloned().or(l.subtract.note.clone()));
             }
+            // A layer's `cannot` rows (the hardware under the module refusing a curve, D10);
+            // its `can` rows mean nothing in delta mode, where the module decides the rest.
+            if let Some(item) = item
+                && l.generate.get(key_type).is_some_and(|row| row.cannot.iter().any(|c| c == item))
+            {
+                return Verdict::no(&l.profile, l.notes.get(item).cloned());
+            }
             for r in &l.restrict {
                 if r.operation == "generate"
                     && r.key_type == key_type
@@ -144,10 +151,31 @@ impl<'a> Effective<'a> {
         let Some(row) = m.generate.get(key_type) else {
             return Verdict::Unknown { why: format!("module profile {} records no {key_type} generation", m.profile) };
         };
-        if let Some(bits) = bits
-            && (row.max_bits.is_some_and(|max| bits > max) || row.min_bits.is_some_and(|min| bits < min))
-        {
-            return Verdict::no(&m.profile, m.notes.get(key_type).cloned());
+        if let Some(bits) = bits {
+            // What the probe saw decides; then the range the module reports; then, for a
+            // probed row, only a size between two that generated is yes — the rest of what was
+            // never tried is unknown.
+            let size_note = || m.notes.get(&format!("{key_type} at {bits}")).cloned();
+            if row.cannot_bits.contains(&bits) {
+                return Verdict::no(&m.profile, size_note());
+            }
+            if row.can_bits.contains(&bits) {
+                return Verdict::yes(&m.profile, None);
+            }
+            if row.max_bits.is_some_and(|max| bits > max) || row.min_bits.is_some_and(|min| bits < min) {
+                return Verdict::no(&m.profile, m.notes.get(key_type).cloned());
+            }
+            let tried = row.can_bits.iter().chain(&row.cannot_bits);
+            if tried.clone().next().is_some() {
+                let (lo, hi) = (row.can_bits.iter().min(), row.can_bits.iter().max());
+                if lo.is_some_and(|lo| *lo < bits) && hi.is_some_and(|hi| bits < *hi) {
+                    return Verdict::yes(&m.profile, None);
+                }
+                let tried: Vec<String> = tried.map(u32::to_string).collect();
+                return Verdict::Unknown {
+                    why: format!("module profile {} probed {} bits only", m.profile, tried.join(", ")),
+                };
+            }
         }
         if let Some(item) = item {
             if row.can.iter().any(|c| c == item) {
@@ -220,11 +248,17 @@ impl<'a> Effective<'a> {
     pub fn oaep(&self) -> Vec<(String, Verdict)> {
         match self.module {
             None => vec![("OAEP".into(), Verdict::Unknown { why: "no module profile selected".into() })],
-            Some(m) if m.wrap.oaep.is_empty() => vec![(
-                "OAEP".into(),
-                Verdict::Unknown { why: format!("module profile {} records no OAEP hashes", m.profile) },
-            )],
-            Some(m) => m.wrap.oaep.iter().map(|h| (h.clone(), Verdict::yes(&m.profile, m.notes.get("oaep")))).collect(),
+            Some(m) => match m.wrap.oaep.as_deref() {
+                None => vec![(
+                    "OAEP".into(),
+                    Verdict::Unknown { why: format!("module profile {} records no OAEP probe", m.profile) },
+                )],
+                // Probed, and no hash round-trips.
+                Some([]) => vec![("OAEP".into(), Verdict::no(&m.profile, m.notes.get("oaep").cloned()))],
+                Some(hashes) => {
+                    hashes.iter().map(|h| (h.clone(), Verdict::yes(&m.profile, m.notes.get("oaep")))).collect()
+                }
+            },
         }
     }
 }

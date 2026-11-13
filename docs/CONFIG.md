@@ -45,6 +45,10 @@ tokenLabel = "main"
 # The user PIN, read from a file (or `pinEnv = "VAR"`: the PIN itself from the environment).
 # Without a PIN cakeys opens a public session and sees only public objects.
 pinFile = "/var/lib/softhsm/pin"
+# Marks the token expendable for `cakeys probe --write` (docs/PROVIDERS.md): its write probes
+# generate, wrap, unwrap and destroy objects, so they run only on a token marked scratch and
+# are refused (17) on any other. No other verb reads it. Never on a token holding real keys:
+# scratch = true
 
 [tokens.tpm]
 module = "/run/current-system/sw/lib/libtpm2_pkcs11.so"
@@ -56,10 +60,12 @@ pinFile = "$TPM_PIN_FILE"
 # C_GetInfo; naming it is needed behind p11-kit, which hides the module behind it.
 provider = "tpm2-pkcs11"
 # Delta capability layers between cakeys and the token (docs/PROVIDERS.md), by name or family:
-# the hardware under the module (swtpm), or anything else the stack applies. The cryptoki
-# binding layer is always applied (and heals itself when its fix is in); p11-kit is detected
-# from the module. Unknown names refuse (17).
-profiles = ["swtpm"]
+# hand-maintained facts factored out of an observed profile (swtpm's RSA cap), or anything else
+# the stack applies. The module profile itself — what this module does on this kind of
+# hardware — is chosen from C_GetInfo and C_GetTokenInfo, not named here. The cryptoki binding
+# layer is always applied (and heals itself when its fix is in); p11-kit is detected from the
+# module. Unknown names refuse (17). This token is a real TPM, so not swtpm's:
+# profiles = ["swtpm"]
 # The Nix library's feature name for builds that need this token (default "token-<name>").
 systemFeature = "token-tpm"
 

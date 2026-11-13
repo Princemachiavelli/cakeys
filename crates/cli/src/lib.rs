@@ -166,6 +166,30 @@ enum Cmd {
         #[arg(long = "profiles")]
         profiles_dir: Option<PathBuf>,
     },
+    /// Generate the token's capability profile by probing it (docs/PROVIDERS.md phase 3):
+    /// read-only probes always; with --write, the probes that generate, wrap, unwrap and
+    /// delete — only on a token keys.toml marks scratch, refused (17) on any other. With
+    /// --diff, the result is compared against a committed profile: any difference is
+    /// printed and the exit is 15.
+    Probe {
+        #[arg(long)]
+        token: String,
+        /// Also run the write probes, against a scratch token only.
+        #[arg(long)]
+        write: bool,
+        /// Write the generated profile here; default: stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Name the generated profile, e.g. `tpm2-pkcs11/1.10+swtpm` for a module on one kind of
+        /// hardware; default: the claimed profile's name with --diff, else `<provider>/<version>`.
+        #[arg(long)]
+        name: Option<String>,
+        /// Diff against this profile (name or family), from the embedded set or --profiles.
+        #[arg(long)]
+        diff: Option<String>,
+        #[arg(long = "profiles")]
+        profiles_dir: Option<PathBuf>,
+    },
 }
 
 /// How `export` and `migrate` may move material.
@@ -504,7 +528,105 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
                 .into());
             }
         }
+        Cmd::Probe { token, write, out, name, diff, profiles_dir } => {
+            let tcfg = cfg.tokens.get(token).ok_or_else(|| KmError::Validation(format!("unknown token '{token}'")))?;
+            let tok = open_token(&cfg, &modules, registry, token)?;
+            // cryptoki drops from C_GetMechanismList every mechanism it cannot name, so through
+            // an unpatched binding the advertisement is short (kryoptic's CKM_AES_KEY_WRAP_KWP
+            // [run]): such a build may print a probe, never write or judge a committed one.
+            if !cakeys_pkcs11::binding::patched() {
+                if out.is_some() || diff.is_some() {
+                    return Err(KmError::Validation(
+                        "this build's cryptoki lacks the Nix patches and drops the mechanisms it \
+                         cannot name from C_GetMechanismList: probe with the Nix-built cakeys to \
+                         write or diff a profile"
+                            .into(),
+                    )
+                    .into());
+                }
+                notes.note("probe: this build's cryptoki is unpatched: the advertise list may be short");
+            }
+            let mut probed = cakeys_pkcs11::probe::probe(&tok, tcfg, *write)?;
+            for why in &probed.undetermined {
+                notes.note(format_args!("probe: {why}"));
+            }
+            let validation = |e: String| -> anyhow::Error { KmError::Validation(e).into() };
+            let mut set = cakeys_profile::Set::embedded()
+                .map_err(validation)
+                .with_context(|| "the embedded profiles do not parse")?;
+            if let Some(dir) = profiles_dir {
+                set = set.with_dir(dir).map_err(validation)?;
+            }
+            // Regeneration is the --diff + --out flow: the profile takes the claimed profile's
+            // name (a module that hides its version — kryoptic reports 0.0 — still regenerates
+            // its committed profile, whose name is the repo's, D9) and keeps the one section
+            // the probe does not generate, the [migration] claims. Everything else is probe
+            // output, written wholesale.
+            let claimed = diff.as_deref().map(|name| set.find(name).map_err(validation)).transpose()?;
+            if let Some(n) = name {
+                probed.profile.profile.clone_from(n);
+            } else if let Some(claimed) = claimed {
+                probed.profile.profile.clone_from(&claimed.profile);
+            }
+            match out {
+                Some(path) => write_profile(path, &mut probed.profile, *write, notes)?,
+                None => print!("{}", probed.profile.to_toml()),
+            }
+            if let Some(claimed) = claimed {
+                let name = &claimed.profile;
+                // A read-only probe observes only the match keys, the advertisement and the
+                // reported key sizes, so only those can conform or drift.
+                let lines = if *write {
+                    cakeys_profile::diff(&probed.profile, claimed)
+                } else {
+                    cakeys_profile::diff::read_only(&probed.profile, claimed)
+                };
+                if lines.is_empty() {
+                    notes.say(format!("{}: the profile conforms to {name}", tok.name));
+                } else {
+                    // stderr: stdout may be carrying the generated profile.
+                    for line in &lines {
+                        eprintln!("{line}");
+                    }
+                    return Err(KmError::Unsupported(format!(
+                        "{}: {} row{} differ from profile {name}",
+                        tok.name,
+                        lines.len(),
+                        if lines.len() == 1 { "" } else { "s" }
+                    ))
+                    .into());
+                }
+            }
+        }
     }
+    Ok(())
+}
+
+/// Write a generated profile to `path`, keeping the one section the probe does not generate:
+/// the file's [migration] claims (MIGRATE.md evidence, never probe-observable). Refused onto
+/// an existing file that does not parse (regenerating it would silently drop those claims),
+/// and onto any existing file from a read-only probe (it would drop every write-probe row).
+fn write_profile(
+    path: &std::path::Path,
+    profile: &mut cakeys_profile::Profile,
+    write: bool,
+    notes: &mut Notes,
+) -> anyhow::Result<()> {
+    if let Ok(text) = std::fs::read_to_string(path) {
+        if !write {
+            return Err(KmError::Validation(format!(
+                "{}: a read-only probe would overwrite its generate, wrap and unwrap rows; pass --write",
+                path.display()
+            ))
+            .into());
+        }
+        let old = cakeys_profile::Profile::from_toml(&text).map_err(|e| {
+            KmError::Validation(format!("{}: not a profile, refusing to overwrite: {e}", path.display()))
+        })?;
+        profile.migration = old.migration;
+    }
+    std::fs::write(path, profile.to_toml()).with_context(|| format!("writing {}", path.display()))?;
+    notes.say(format!("wrote {}", path.display()));
     Ok(())
 }
 

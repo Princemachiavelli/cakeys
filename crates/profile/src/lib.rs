@@ -15,11 +15,13 @@
 //! build embeds, plus any a caller adds from a directory (D11).
 
 pub mod baseline;
+pub mod diff;
 pub mod effective;
 pub mod embedded;
 pub mod profile;
 
 pub use baseline::Baseline;
+pub use diff::diff;
 pub use effective::{Effective, Verdict};
 pub use profile::{AcceptRow, GenerateRow, MatchInfo, Migration, Mode, PlaintextKind, Profile};
 
@@ -156,7 +158,15 @@ mod tests {
         let names: Vec<_> = set.profiles.iter().map(|p| p.profile.as_str()).collect();
         assert_eq!(
             names,
-            ["swtpm", "cryptoki/0.12", "p11-kit/0.26", "kryoptic/1.5", "softhsm/2.7", "tpm2-pkcs11/1.10", "ykcs11/2.7"]
+            [
+                "swtpm",
+                "cryptoki/0.12",
+                "p11-kit/0.26",
+                "kryoptic/1.5",
+                "softhsm/2.7",
+                "tpm2-pkcs11/1.10+swtpm",
+                "ykcs11/2.7"
+            ]
         );
         // find: exact name, unique family, a family of none, an unknown name.
         assert_eq!(set.find("softhsm/2.7").unwrap().profile, "softhsm/2.7");
@@ -170,8 +180,14 @@ mod tests {
         let layers = [p11];
         let eff = Effective::new(b, Some(softhsm), &layers);
         assert!(matches!(eff.mechanism("CKM_AES_KEY_WRAP"), Verdict::No { by, .. } if by == "p11-kit/0.26"));
-        assert!(matches!(eff.mechanism("CKM_SHA512_HMAC"), Verdict::Unknown { .. })); // partial module
-        assert_eq!(set.find("softhsm/2.7").unwrap().wrap.oaep.as_slice(), ["SHA-1".to_owned()].as_slice());
+        // The probe-verified profile carries the full `C_GetMechanismList`, so SHA-512 HMAC is
+        // decided Yes where the partial hand profile once left it Unknown.
+        assert!(matches!(eff.mechanism("CKM_SHA512_HMAC"), Verdict::Yes { .. }));
+        assert_eq!(set.find("softhsm/2.7").unwrap().wrap.oaep.as_deref(), Some(["SHA-1".to_owned()].as_slice()));
+        // A partial module profile (no advertisement recorded) answers Unknown, never a guess.
+        let partial = Profile::from_toml("profile = \"m/1\"\nmode = \"observed\"\npartial = true\n").unwrap();
+        let eff = Effective::new(b, Some(&partial), &[]);
+        assert!(matches!(eff.mechanism("CKM_SHA512_HMAC"), Verdict::Unknown { .. }));
 
         // The cryptoki layer kills the SHA-512 HMAC key type in an unpatched binding [run];
         // whether this build's binding is patched is crates/pkcs11's runtime check.
@@ -185,17 +201,39 @@ mod tests {
         // The migration rows are data: ykcs11's PIV import and tpm2's ptool import.
         let yk = set.find("ykcs11/2.7").unwrap();
         assert_eq!(yk.migration.as_ref().unwrap().plaintext_accepts.len(), 3);
-        let tpm2 = set.find("tpm2-pkcs11/1.10").unwrap();
+        let tpm2 = set.find("tpm2-pkcs11/1.10+swtpm").unwrap();
         assert_eq!(tpm2.migration.as_ref().unwrap().plaintext_accepts.len(), 3);
 
         // swtpm caps RSA generation at 3072 bits (D10's hardware layer, [run]).
         let swtpm = set.find("swtpm").unwrap();
-        let tpm2 = set.find("tpm2-pkcs11/1.10").unwrap();
+        let tpm2 = set.find("tpm2-pkcs11/1.10+swtpm").unwrap();
         let swtpm_layers = [swtpm];
         let eff = Effective::new(b, Some(tpm2), &swtpm_layers[..]);
         assert!(matches!(
             eff.generate("CKK_RSA", None, Some(4096)),
             Verdict::No { by, .. } if by == "swtpm"
         ));
+        // The pair profile decides on its own what the probe observed: the refused size and the
+        // curves; sizes it never tried answer unknown, not the range the module reports.
+        let pair = Effective::new(b, Some(tpm2), &[]);
+        assert!(matches!(pair.generate("CKK_RSA", None, Some(4096)), Verdict::No { .. }));
+        assert!(matches!(pair.generate("CKK_RSA", None, Some(2048)), Verdict::Yes { .. }));
+        assert!(matches!(pair.generate("CKK_RSA", None, Some(8192)), Verdict::No { .. } | Verdict::Unknown { .. }));
+        assert!(matches!(pair.curve("secp256k1"), Verdict::No { .. }));
+    }
+
+    /// A probed-empty row (`oaep = []`) survives the emitter and answers no; an absent one is
+    /// unprobed and answers unknown.
+    #[test]
+    fn probed_empty_is_not_unprobed() {
+        let set = Set::embedded().unwrap();
+        let b = set.baseline().unwrap();
+        let none = Profile::from_toml("profile = \"m/1\"\nmode = \"observed\"\n[wrap]\noaep = []\n").unwrap();
+        let back = Profile::from_toml(&none.to_toml()).unwrap();
+        assert_eq!(back.wrap.oaep, Some(Vec::new()));
+        assert!(matches!(Effective::new(b, Some(&back), &[]).oaep()[0].1, Verdict::No { .. }));
+        let unprobed = Profile::from_toml("profile = \"m/1\"\nmode = \"observed\"\n").unwrap();
+        assert_eq!(Profile::from_toml(&unprobed.to_toml()).unwrap().wrap.oaep, None);
+        assert!(matches!(Effective::new(b, Some(&unprobed), &[]).oaep()[0].1, Verdict::Unknown { .. }));
     }
 }

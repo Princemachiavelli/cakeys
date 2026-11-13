@@ -277,3 +277,32 @@ fn p11kit_login_is_per_client() {
     assert_eq!(code(&e.km(&["realise", "k-pub", "--token", "fwd-anon", "--update-lock"])), 0);
     drop(held);
 }
+
+/// The p11-kit layer profile against the forwarder itself (docs/PROVIDERS.md phase 3): probed
+/// through p11-kit, `SoftHSM` advertises exactly what its committed profile advertises minus
+/// what profiles/layers/p11-kit.toml subtracts — the client filters `C_GetMechanismList` — and
+/// the probe sees p11-kit's identity, not the module's.
+#[test]
+fn the_forwarder_subtracts_exactly_its_layer() {
+    let Some(e) = env("probe_forwarded") else { return };
+    if !cryptoki_hmac_types_fixed(std::env::var("CAKEYS_P11KIT_REQUIRE").is_ok()) {
+        return;
+    }
+    e.config("");
+    let read = |path: &str| -> toml::Value {
+        toml::from_str(&std::fs::read_to_string(committed_profile(path)).unwrap()).unwrap()
+    };
+    let names = |v: &toml::Value| -> std::collections::BTreeSet<String> {
+        v.as_array().unwrap().iter().map(|m| m.as_str().unwrap().to_owned()).collect()
+    };
+    let module = names(&read("modules/softhsm/2.7.toml")["advertise"]);
+    let layer = names(&read("layers/p11-kit.toml")["subtract"]["mechanisms"]);
+    assert!(layer.is_subset(&module), "the layer subtracts what SoftHSM never advertises");
+    let out = e.km(&["probe", "--token", "fwd"]);
+    assert_eq!(code(&out), 0);
+    let probed: toml::Value = toml::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    let forwarded = names(&probed["advertise"]);
+    let expected: std::collections::BTreeSet<String> = module.difference(&layer).cloned().collect();
+    assert_eq!(forwarded, expected, "p11-kit forwards a different list than its layer profile says");
+    assert_eq!(probed["match"]["manufacturer"].as_str(), Some("PKCS#11 Kit"));
+}

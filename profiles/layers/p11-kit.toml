@@ -1,6 +1,8 @@
 # p11-kit's client module (p11-kit-client.so), forwarding any module served by `p11-kit
 # server` over a socket. Observed with 0.26.5 [run]. C_GetInfo describes p11-kit, not the
 # module behind it: name that module's profile too (its provider's provider = "...").
+# Hand-maintained, never generated: tests/p11kit.rs probes SoftHSM through it and checks that
+# exactly these mechanisms vanish from C_GetMechanismList (the client filters the list).
 profile = "p11-kit/0.26"
 mode = "delta"
 
@@ -15,6 +17,9 @@ mechanisms = [
   "CKM_EC_EDWARDS_KEY_PAIR_GEN",
   "CKM_EDDSA",
   "CKM_AES_CBC_ENCRYPT_DATA",
+  "CKM_CONCATENATE_BASE_AND_DATA",
+  "CKM_CONCATENATE_BASE_AND_KEY",
+  "CKM_CONCATENATE_DATA_AND_BASE",
 ]
 note = "the RPC does not marshal these mechanisms [run]"
 
