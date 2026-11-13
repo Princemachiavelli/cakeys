@@ -11,15 +11,20 @@ use cryptoki::mechanism::Mechanism;
 use cryptoki::object::{Attribute, ObjectClass};
 use cryptoki::session::Session;
 use hmac::{Hmac, KeyInit, Mac};
-use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Command;
 
-const BIN: &str = env!("CARGO_BIN_EXE_cakeys");
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 struct Env {
-    dir: PathBuf,
+    w: Workdir,
     module: String,
+}
+
+impl std::ops::Deref for Env {
+    type Target = Workdir;
+    fn deref(&self) -> &Workdir {
+        &self.w
+    }
 }
 
 fn env(name: &str) -> Option<Env> {
@@ -28,11 +33,7 @@ fn env(name: &str) -> Option<Env> {
         eprintln!("skipping {name}: CAKEYS_TPM_MODULE not set");
         return None;
     };
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("tpm2-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("pin"), "1234\n").unwrap();
-    Some(Env { dir, module })
+    Some(Env { w: Workdir::new(&format!("tpm2-{name}")), module })
 }
 
 impl Env {
@@ -49,33 +50,7 @@ impl Env {
         let head = token("tpm", &format!("pinFile = \"{}\"\nscratch = true", pin.display()))
             + &token("tpm-anon", "")
             + &token("tpm-generic", &format!("pinFile = \"{}\"\nprovider = \"generic\"", pin.display()));
-        std::fs::write(self.dir.join("keys.toml"), head + body).unwrap();
-    }
-
-    fn km(&self, args: &[&str]) -> Output {
-        let out = Command::new(BIN)
-            .env_remove("NIX_BUILD_TOP")
-            .arg("--config")
-            .arg(self.dir.join("keys.toml"))
-            .args(args)
-            .output()
-            .unwrap();
-        eprintln!(
-            "$ cakeys {}\n  exit={:?}\n  stdout={}\n  stderr={}",
-            args.join(" "),
-            out.status.code(),
-            String::from_utf8_lossy(&out.stdout).trim(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-        out
-    }
-
-    fn lock(&self) -> toml::Value {
-        toml::from_str(&std::fs::read_to_string(self.dir.join("keys.lock")).unwrap()).unwrap()
-    }
-
-    fn locked_id(&self, object: &str, scheme: &str) -> String {
-        self.lock()["objects"][object]["ids"][scheme].as_str().unwrap().to_owned()
+        self.write_config(&(head + body));
     }
 
     /// The attestation a realisation pins (§3.7: per realisation, never in the object's ids).
@@ -92,7 +67,7 @@ impl Env {
             .args(["--label=kmtest", "--userpin=1234", &format!("--path={store}")])
             .output()
             .unwrap();
-        assert!(out.status.success(), "tpm2_ptool {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success(), "tpm2_ptool {args:?}: {}", stderr(&out));
     }
 
     /// A fresh session: tpm2-pkcs11 loads the object list when a session opens, so objects
@@ -171,12 +146,12 @@ tokens.tpm = { locator = { CKA_LABEL = "refusal-aes" } }
     for (spec, label) in [("aes-gen", "refusal-aes-gen"), ("hmac-gen", "refusal-hmac-gen")] {
         let o = e.km(&["realise", spec, "--token", "tpm", "--no-update-lock"]);
         assert_eq!(code(&o), 15, "{spec}");
-        assert!(String::from_utf8_lossy(&o.stderr).contains("tpm2_ptool addkey"), "{spec}");
+        assert!(stderr(&o).contains("tpm2_ptool addkey"), "{spec}");
         assert_eq!(labelled(&e.session(), label), 0, "{spec}");
     }
-    assert_eq!(code(&e.km(&["realise", "ed", "--token", "tpm", "--no-update-lock"])), 15);
+    assert_eq!(e.code(&["realise", "ed", "--token", "tpm", "--no-update-lock"]), 15);
     // No CKM_AES_CMAC: a sign-only AES spec has no commitment here.
-    assert_eq!(code(&e.km(&["realise", "aes-mac", "--token", "tpm", "--no-update-lock"])), 15);
+    assert_eq!(e.code(&["realise", "aes-mac", "--token", "tpm", "--no-update-lock"]), 15);
 }
 
 #[test]
@@ -213,13 +188,13 @@ fn tpm2_generated_keys_match_der_oracle() {
             got_hash(&first),
             "{k}: no duplicate"
         );
-        assert_eq!(code(&e.km(&["realise", &spec, "--token", "tpm", "--update-lock"])), 0, "{k}");
+        assert_eq!(e.code(&["realise", &spec, "--token", "tpm", "--update-lock"]), 0, "{k}");
         // A session opened now: tpm2-pkcs11 sessions don't see objects created after they opened.
         assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki_with(&e.session(), k, unwrap_tpm2)), "{k}");
         let binding = if k == "tpm-p521" { "token-asserted" } else { "pop-sign" };
         assert_eq!(e.lock()["realisations"][&spec]["tpm"]["binding"].as_str(), Some(binding), "{k}");
         let pubs = format!("{k}-pub");
-        assert_eq!(code(&e.km(&["realise", &pubs, "--token", "tpm-anon", "--update-lock"])), 0, "{k}");
+        assert_eq!(e.code(&["realise", &pubs, "--token", "tpm-anon", "--update-lock"]), 0, "{k}");
     }
 }
 
@@ -233,7 +208,7 @@ fn tpm2_identity_failure_after_create_leaves_nothing() {
     );
     let o = e.km(&["realise", "p", "--token", "tpm-generic", "--no-update-lock"]);
     assert_eq!(code(&o), 13);
-    assert!(String::from_utf8_lossy(&o.stderr).contains("removed 2 object(s) just created"));
+    assert!(stderr(&o).contains("removed 2 object(s) just created"));
     assert_eq!(labelled(&e.session(), "orphan-p521"), 0);
 }
 
@@ -321,7 +296,7 @@ tokens.tpm = { locator = { CKA_LABEL = "imp-hmac384" } }
 "#,
     );
     for (spec, token) in [("p256", "tpm"), ("rsa", "tpm-anon"), ("hmac", "tpm"), ("hmac384", "tpm")] {
-        assert_eq!(code(&e.km(&["realise", spec, "--token", token, "--update-lock"])), 0, "{spec}");
+        assert_eq!(e.code(&["realise", spec, "--token", token, "--update-lock"]), 0, "{spec}");
     }
     assert_eq!(e.locked_id("p256", "rfc7093m4"), IMPORT_P256);
     assert_eq!(e.locked_id("rsa", "rfc7093m4"), IMPORT_RSA2048);
@@ -349,8 +324,8 @@ fn tpm2_aes_key_is_identified_by_its_kcv() {
     let first = e.km(&r);
     assert_eq!(code(&first), 10);
     assert_eq!(got_hash(&e.km(&r)), got_hash(&first));
-    assert_eq!(code(&e.km(&recording(&r))), 0);
-    assert_eq!(code(&e.km(&["check", "aes.id.kcv-ecb"])), 0);
+    assert_eq!(e.code(&recording(&r)), 0);
+    assert_eq!(e.code(&["check", "aes.id.kcv-ecb"]), 0);
 
     let s = e.session();
     let h =
@@ -379,7 +354,7 @@ fn tpm2_keys_attest_their_tpm_residence() {
     let ids = got["ids"].as_object().unwrap();
     assert_eq!(ids.len(), 1, "only the portable rfc7093m4 is an object ID: {ids:?}");
     assert!(got["attestation"]["id"].as_str().unwrap().starts_with("sha256-"));
-    assert_eq!(code(&e.km(&recording(&r))), 0);
+    assert_eq!(e.code(&recording(&r)), 0);
     // The lock: the attestation lives on the realisation (per device), the portable ID on the
     // object; the realisation pins the AK beside its attestation ID.
     assert!(e.lock()["objects"]["p256"]["ids"].get("tpm-certify").is_none());
@@ -390,8 +365,8 @@ fn tpm2_keys_attest_their_tpm_residence() {
     assert!(att["root"].as_str().unwrap().starts_with("sha256-"));
     assert_ne!(att["id"].as_str(), Some(e.locked_id("p256", "rfc7093m4").as_str()));
     // Verify is a fresh certify run: a new nonce, the same stable Name.
-    assert_eq!(code(&e.km(&["verify", "p256", "--token", "tpm"])), 0);
-    assert_eq!(code(&e.km(&["check", "p256.id.tpm-certify", "--token", "tpm"])), 0);
+    assert_eq!(e.code(&["verify", "p256", "--token", "tpm"]), 0);
+    assert_eq!(e.code(&["check", "p256.id.tpm-certify", "--token", "tpm"]), 0);
     // The AK is persistent at the default handle: a second run reuses it, so the root is stable.
     let again = e.km(&["resolve", "p256", "--token", "tpm"]);
     let got: serde_json::Value = serde_json::from_str(&stdout(&again)).unwrap();
@@ -410,8 +385,8 @@ fn tpm2_keys_attest_their_tpm_residence() {
     std::fs::write(e.dir.join("keys.toml"), alt("0x81000017")).unwrap();
     for _ in 0..2 {
         let o = e.km(&["verify", "p256", "--token", "tpm"]);
-        assert_eq!(code(&o), 14, "{}", String::from_utf8_lossy(&o.stderr));
-        assert!(String::from_utf8_lossy(&o.stderr).contains("no Attestation Key at 0x81000017"));
+        assert_eq!(code(&o), 14, "{}", stderr(&o));
+        assert!(stderr(&o).contains("no Attestation Key at 0x81000017"));
     }
     // A key at the AK handle that is not a restricted signing key is never trusted as the AK:
     // an unrestricted one could sign a forged attestation.
@@ -421,12 +396,12 @@ fn tpm2_keys_attest_their_tpm_residence() {
         vec!["tpm2_evictcontrol", "-C", "o", "-c", ctx.to_str().unwrap(), "0x81000018"],
     ] {
         let out = Command::new(args[0]).args(&args[1..]).output().unwrap();
-        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
     }
     std::fs::write(e.dir.join("keys.toml"), alt("0x81000018")).unwrap();
     let o = e.km(&r);
-    assert_eq!(code(&o), 13, "{}", String::from_utf8_lossy(&o.stderr));
-    assert!(String::from_utf8_lossy(&o.stderr).contains("is not a cakeys Attestation Key"));
+    assert_eq!(code(&o), 13, "{}", stderr(&o));
+    assert!(stderr(&o).contains("is not a cakeys Attestation Key"));
     std::fs::write(e.dir.join("keys.toml"), &base).unwrap();
 
     // HMAC keys attest too (TPM2_Certify covers any loaded object), pairing with `commitment`.
@@ -444,7 +419,7 @@ fn tpm2_keys_attest_their_tpm_residence() {
              [specs.hmac]\nobject = \"hmac\"\nattributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n\
              tokens.tpm = { locator = { CKA_LABEL = \"attest-hmac\" }, attestation = true }\n",
         );
-        assert_eq!(code(&e.km(&["realise", "hmac", "--token", "tpm", "--update-lock"])), 0);
+        assert_eq!(e.code(&["realise", "hmac", "--token", "tpm", "--update-lock"]), 0);
         assert!(e.lock()["objects"]["hmac"]["ids"].get("commitment").is_some());
         assert!(e.locked_attestation("hmac", "tpm")["id"].as_str().is_some());
     }
@@ -463,7 +438,7 @@ fn tpm2_each_token_pins_its_own_attestation() {
     let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
     let ptool = |args: &[&str]| {
         let out = Command::new("tpm2_ptool").args(args).arg(format!("--path={store}")).output().unwrap();
-        assert!(out.status.success(), "tpm2_ptool {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success(), "tpm2_ptool {args:?}: {}", stderr(&out));
     };
     ptool(&["addtoken", "--pid=1", "--label=kmtest2", "--sopin=5678", "--userpin=1234"]);
     let hmac_file = e.dir.join("hmac.bin");
@@ -487,8 +462,8 @@ fn tpm2_each_token_pins_its_own_attestation() {
          tokens.tpm2 = {{ locator = {{ CKA_LABEL = \"two-hmac\" }}, attestation = true }}\n",
         e.module
     ));
-    assert_eq!(code(&e.km(&["realise", "hmac", "--token", "tpm", "--update-lock"])), 0);
-    assert_eq!(code(&e.km(&["realise", "hmac", "--token", "tpm2", "--update-lock"])), 0);
+    assert_eq!(e.code(&["realise", "hmac", "--token", "tpm", "--update-lock"]), 0);
+    assert_eq!(e.code(&["realise", "hmac", "--token", "tpm2", "--update-lock"]), 0);
     let lock = e.lock();
     let ids = lock["objects"]["hmac"]["ids"].as_table().unwrap();
     assert_eq!(ids.keys().collect::<Vec<_>>(), ["commitment"], "{ids:?}");
@@ -496,7 +471,7 @@ fn tpm2_each_token_pins_its_own_attestation() {
     assert_ne!(one["id"].as_str(), two["id"].as_str(), "two imports, two TPM objects, two attestations");
     assert_eq!(one["root"].as_str(), two["root"].as_str(), "one TPM, one AK");
     for t in ["tpm", "tpm2"] {
-        assert_eq!(code(&e.km(&["verify", "hmac", "--token", t])), 0);
+        assert_eq!(e.code(&["verify", "hmac", "--token", t]), 0);
     }
 }
 
@@ -546,8 +521,8 @@ fn tpm2_attested_material_travels_to_a_second_hsm() {
         .unwrap();
     // The portable identity first, from the token without attestation; the TPM realisation
     // then joins the same object through the shared commitment scheme, pinning its attestation.
-    assert_eq!(code(&e.km(&["realise", "hmac-soft", "--token", "soft", "--update-lock"])), 0);
-    assert_eq!(code(&e.km(&["realise", "hmac-tpm", "--token", "tpm", "--update-lock"])), 0);
+    assert_eq!(e.code(&["realise", "hmac-soft", "--token", "soft", "--update-lock"]), 0);
+    assert_eq!(e.code(&["realise", "hmac-tpm", "--token", "tpm", "--update-lock"]), 0);
     let lock = e.lock();
     let ids = lock["objects"]["hmac"]["ids"].as_table().unwrap();
     assert_eq!(ids.keys().collect::<Vec<_>>(), ["commitment"], "the portable ID only: {ids:?}");
@@ -556,12 +531,12 @@ fn tpm2_attested_material_travels_to_a_second_hsm() {
     assert_eq!(e.locked_id("hmac", "commitment"), sri(&mac.finalize().into_bytes()));
     assert!(e.locked_attestation("hmac-tpm", "tpm")["id"].as_str().unwrap().starts_with("sha256-"));
     // The copy on the second HSM verifies through the commitment; the TPM through both.
-    assert_eq!(code(&e.km(&["verify", "hmac-soft", "--token", "soft"])), 0);
-    assert_eq!(code(&e.km(&["verify", "hmac-tpm", "--token", "tpm"])), 0);
+    assert_eq!(e.code(&["verify", "hmac-soft", "--token", "soft"]), 0);
+    assert_eq!(e.code(&["verify", "hmac-tpm", "--token", "tpm"]), 0);
     // Opting into attestation on a module that attests nothing is refused up front (15).
     let o = e.km(&["realise", "hmac-attest-soft", "--token", "soft", "--no-update-lock"]);
     assert_eq!(code(&o), 15);
-    assert!(String::from_utf8_lossy(&o.stderr).contains("attests nothing"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(stderr(&o).contains("attests nothing"), "{}", stderr(&o));
 }
 
 /// The committed pair profile tpm2-pkcs11/1.10+swtpm is probe output (docs/PROVIDERS.md

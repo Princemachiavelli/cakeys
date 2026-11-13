@@ -11,15 +11,19 @@ mod common;
 use common::*;
 use cryptoki::object::{Attribute, KeyType, ObjectClass};
 use hmac::{Hmac, KeyInit, Mac};
-use std::path::PathBuf;
-use std::process::{Command, Output};
-
-const BIN: &str = env!("CARGO_BIN_EXE_cakeys");
+use std::process::Output;
 
 struct Env {
-    dir: PathBuf,
+    w: Workdir,
     client: String,
     direct: String,
+}
+
+impl std::ops::Deref for Env {
+    type Target = Workdir;
+    fn deref(&self) -> &Workdir {
+        &self.w
+    }
 }
 
 fn env(name: &str) -> Option<Env> {
@@ -29,11 +33,7 @@ fn env(name: &str) -> Option<Env> {
         return None;
     };
     let direct = std::env::var("CAKEYS_TEST_MODULE").expect("CAKEYS_TEST_MODULE (SoftHSM) for the direct path");
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("p11kit-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("pin"), "1234\n").unwrap();
-    Some(Env { dir, client, direct })
+    Some(Env { w: Workdir::new(&format!("p11kit-{name}")), client, direct })
 }
 
 impl Env {
@@ -49,35 +49,12 @@ impl Env {
             + &token("fwd-softhsm", &self.client, "kmp11", &format!("{pin}\nprovider = \"softhsm\""))
             + &token("fwd-other", &self.client, "kmtest", &pin)
             + &token("direct", &self.direct, "kmp11", &pin);
-        std::fs::write(self.dir.join("keys.toml"), head + body).unwrap();
-    }
-
-    fn km(&self, args: &[&str]) -> Output {
-        let out = Command::new(BIN)
-            .env_remove("NIX_BUILD_TOP")
-            .arg("--config")
-            .arg(self.dir.join("keys.toml"))
-            .args(args)
-            .output()
-            .unwrap();
-        eprintln!(
-            "$ cakeys {}\n  exit={:?}\n  stdout={}\n  stderr={}",
-            args.join(" "),
-            out.status.code(),
-            String::from_utf8_lossy(&out.stdout).trim(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-        out
+        self.write_config(&(head + body));
     }
 
     #[expect(clippy::unused_self, reason = "the fixture helpers sit in an impl so the call sites read uniformly")]
     fn ids(&self, o: &Output) -> serde_json::Value {
         serde_json::from_str::<serde_json::Value>(&stdout(o)).unwrap()["ids"].clone()
-    }
-
-    fn locked_id(&self, object: &str, scheme: &str) -> String {
-        let lock: toml::Value = toml::from_str(&std::fs::read_to_string(self.dir.join("keys.lock")).unwrap()).unwrap();
-        lock["objects"][object]["ids"][scheme].as_str().unwrap().to_owned()
     }
 
     #[expect(clippy::unused_self, reason = "the fixture helpers sit in an impl so the call sites read uniformly")]
@@ -112,7 +89,7 @@ fn p11kit_forwards_a_filtered_view() {
     // Naming the provider behind the proxy applies its behaviour.
     assert_eq!(caps(&e, "fwd-softhsm")["provider"], "softhsm");
     // The server exports only the token in its URI; the same SoftHSM's other token is invisible.
-    assert_eq!(code(&e.km(&["caps", "--token", "fwd-other"])), 16);
+    assert_eq!(e.code(&["caps", "--token", "fwd-other"]), 16);
 }
 
 /// A test-only AES-256 value planted on the token, known to the host.
@@ -192,10 +169,10 @@ tokens.fwd = { locator = { CKA_LABEL = "fwd-hmac" } }
 
     // Generated through the forwarded token, then the same object opened directly: one identity.
     for (k, _) in kinds {
-        assert_eq!(code(&e.km(&["realise", k, "--token", "fwd", "--update-lock"])), 0, "{k}");
-        assert_eq!(code(&e.km(&["realise", k, "--token", "direct", "--update-lock"])), 0, "{k}: direct agrees");
+        assert_eq!(e.code(&["realise", k, "--token", "fwd", "--update-lock"]), 0, "{k}");
+        assert_eq!(e.code(&["realise", k, "--token", "direct", "--update-lock"]), 0, "{k}: direct agrees");
         let pubs = format!("{k}-pub");
-        assert_eq!(code(&e.km(&["realise", &pubs, "--token", "fwd-anon", "--update-lock"])), 0, "{k}");
+        assert_eq!(e.code(&["realise", &pubs, "--token", "fwd-anon", "--update-lock"]), 0, "{k}");
         assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki(&e.session(&e.direct), k)), "{k}");
     }
 
@@ -204,12 +181,12 @@ tokens.fwd = { locator = { CKA_LABEL = "fwd-hmac" } }
     let o = e.km(&["realise", "aes", "--token", "fwd", "--update-lock"]);
     assert_eq!(code(&o), 0);
     assert_eq!(e.ids(&o).as_object().unwrap().keys().collect::<Vec<_>>(), ["cmac", "kcv-ecb"]);
-    assert_eq!(code(&e.km(&["realise", "aes", "--token", "direct", "--update-lock"])), 0);
+    assert_eq!(e.code(&["realise", "aes", "--token", "direct", "--update-lock"]), 0);
     for scheme in ["cmac", "kcv-ecb", "kw"] {
         assert_eq!(e.locked_id("aes", scheme), aes_commitment(&AES_VALUE[..], scheme), "{scheme}");
     }
 
-    assert_eq!(code(&e.km(&["realise", "hmac", "--token", "fwd", "--update-lock"])), 0);
+    assert_eq!(e.code(&["realise", "hmac", "--token", "fwd", "--update-lock"]), 0);
     let mut mac = <Hmac<sha2::Sha256> as KeyInit>::new_from_slice(&HMAC_VALUE).unwrap();
     mac.update(b"key-management/v1/commitment/CKK_GENERIC_SECRET/256");
     assert_eq!(e.locked_id("hmac", "commitment"), sri(&mac.finalize().into_bytes()));
@@ -254,7 +231,7 @@ tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-kek" }, autoCreate = true }
     for (spec, label) in [("ed", "fwd-refused-ed"), ("aes-x", "fwd-refused-aes-x"), ("aes-kek", "fwd-refused-kek")] {
         let o = e.km(&["realise", spec, "--token", "fwd", "--no-update-lock"]);
         assert_eq!(code(&o), 15, "{spec}");
-        assert!(String::from_utf8_lossy(&o.stderr).contains("forwarded by p11-kit"), "{spec}: hint");
+        assert!(stderr(&o).contains("forwarded by p11-kit"), "{spec}: hint");
         let left = e.session(&e.direct).find_objects(&[Attribute::Label(label.as_bytes().to_vec())]).unwrap();
         assert!(left.is_empty(), "{spec}: nothing created");
     }
@@ -269,12 +246,12 @@ fn p11kit_login_is_per_client() {
          tokens.fwd-anon = { locator = { CKA_LABEL = \"fwd-login\" } }\n\n\
          [specs.k-pub]\nobject = \"k\"\ntokens.fwd-anon = { locator = { CKA_LABEL = \"fwd-login\" }, publicOnly = true }\n",
     );
-    assert_eq!(code(&e.km(&["realise", "k", "--token", "fwd", "--update-lock"])), 0);
+    assert_eq!(e.code(&["realise", "k", "--token", "fwd", "--update-lock"]), 0);
     // Another client of the same server holds a logged-in session meanwhile...
     let held = e.session(&e.client);
     // ...yet a client without the PIN still cannot see the private key; the public half works.
-    assert_eq!(code(&e.km(&["realise", "k", "--token", "fwd-anon", "--no-update-lock"])), 11);
-    assert_eq!(code(&e.km(&["realise", "k-pub", "--token", "fwd-anon", "--update-lock"])), 0);
+    assert_eq!(e.code(&["realise", "k", "--token", "fwd-anon", "--no-update-lock"]), 11);
+    assert_eq!(e.code(&["realise", "k-pub", "--token", "fwd-anon", "--update-lock"]), 0);
     drop(held);
 }
 

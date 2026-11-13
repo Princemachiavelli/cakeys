@@ -5,7 +5,8 @@ use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use cryptoki::session::{Session, UserType};
 use cryptoki::types::AuthPin;
-use std::process::Output;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 
 /// Whether the linked cryptoki has the HMAC key type fix (nix/patches/); the Nix build does.
 /// Without it, tests needing SHA-224/384/512 HMAC keys skip, unless `require` (then they fail).
@@ -124,6 +125,71 @@ pub fn got_hash(o: &Output) -> String {
 
 pub fn stdout(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_owned()
+}
+
+pub fn stderr(o: &Output) -> String {
+    String::from_utf8_lossy(&o.stderr).into_owned()
+}
+
+/// A test's scratch directory — keys.toml, keys.lock and a PIN file holding `1234` — and the
+/// `cakeys` runs against it. Each suite's `Env` holds one (and derefs to it) beside its own
+/// skip/require gate and token header.
+pub struct Workdir {
+    pub dir: PathBuf,
+}
+
+impl Workdir {
+    /// A fresh directory `name` under the integration tests' tmpdir.
+    pub fn new(name: &str) -> Workdir {
+        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pin"), "1234\n").unwrap();
+        Workdir { dir }
+    }
+
+    pub fn write_config(&self, text: &str) {
+        std::fs::write(self.dir.join("keys.toml"), text).unwrap();
+    }
+
+    pub fn km(&self, args: &[&str]) -> Output {
+        self.km_env(args, &[])
+    }
+
+    /// `cakeys --config keys.toml <args>` with `envs` set, logged for the test's output. The
+    /// suites themselves run in a Nix build: only a test that sets `NIX_BUILD_TOP` means it.
+    pub fn km_env(&self, args: &[&str], envs: &[(&str, &Path)]) -> Output {
+        let out = Command::new(env!("CARGO_BIN_EXE_cakeys"))
+            .env_remove("NIX_BUILD_TOP")
+            .env_remove("IN_NIX_SHELL")
+            .envs(envs.iter().copied())
+            .arg("--config")
+            .arg(self.dir.join("keys.toml"))
+            .args(args)
+            .output()
+            .unwrap();
+        eprintln!(
+            "$ cakeys {}\n  exit={:?}\n  stdout={}\n  stderr={}",
+            args.join(" "),
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).trim(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        out
+    }
+
+    /// The exit code of [`Self::km`].
+    pub fn code(&self, args: &[&str]) -> i32 {
+        code(&self.km(args))
+    }
+
+    pub fn lock(&self) -> toml::Value {
+        toml::from_str(&std::fs::read_to_string(self.dir.join("keys.lock")).unwrap()).unwrap()
+    }
+
+    pub fn locked_id(&self, object: &str, scheme: &str) -> String {
+        self.lock()["objects"][object]["ids"][scheme].as_str().unwrap().to_owned()
+    }
 }
 
 pub fn sri(bytes: &[u8]) -> String {
@@ -269,6 +335,20 @@ impl std::ops::Deref for TestSession {
     type Target = Session;
     fn deref(&self) -> &Session {
         self.session.as_ref().unwrap()
+    }
+}
+
+impl TestSession {
+    /// Every object labelled `label`.
+    pub fn labelled(&self, label: &str) -> Vec<cryptoki::object::ObjectHandle> {
+        self.find_objects(&[Attribute::Label(label.as_bytes().to_vec())]).unwrap()
+    }
+
+    /// Destroy every object labelled with one of `labels`: the token is shared between runs.
+    pub fn clear(&self, labels: &[&str]) {
+        for h in labels.iter().flat_map(|l| self.labelled(l)) {
+            self.destroy_object(h).unwrap();
+        }
     }
 }
 
