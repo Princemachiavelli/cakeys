@@ -57,12 +57,16 @@ what the specification promises.
 
 ## Plan, in order
 
-1. **Reference tokens and cross-reference tests (kryoptic done 2026-11-12; cross-reference
-   tests next).** Add kryoptic as a third
+1. **Reference tokens and cross-reference tests (done 2026-11-12).** Add kryoptic as a third
    software reference beside SoftHSM and tpm2-pkcs11, run the shared suite on it, then test that
    behaviour is consistent across every reference: the same material gives the same IDs, the
    same scenario the same verdict, on SoftHSM, kryoptic, p11-kit and tpm2-pkcs11 where each
    supports it. This is the only defence against module behaviour.
+   - Done: kryoptic runs the shared suite (`tests/reference/`, 46 tests on each software
+     reference), and `tests/references.rs` plants the same material on SoftHSM, kryoptic (raw
+     and DER Edwards points), SoftHSM behind p11-kit and tpm2-pkcs11, realises it into one lock
+     and compares IDs and verdicts. A deliberately different HMAC value on one reference fails
+     it, as it should.
 2. **proptest and cargo-fuzz**, added alongside or after step 1. No new toolchain; runs in
    `nix flake check`. One to two days.
 3. **A Quint model of the lock rules and an Alloy model of the lock structure**, including the
