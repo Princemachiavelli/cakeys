@@ -1,6 +1,8 @@
- Can a Provider crate "just" be used to express what subset of PKCS11 the vendor provider is compatible with. Or can we enumerate (plan) these compatibility tests with just the cakeys-pkcs11 crate and pkcs11 SO module?
+# Provider Profiles
 
-Mostly yes to both, with one firm line.
+Q: Can a Provider crate "just" be used to express what subset of PKCS11 the vendor provider is compatible with. Or can we enumerate (plan) these compatibility tests with just the cakeys-pkcs11 crate and pkcs11 SO module?
+
+A: Mostly yes to both, with one firm line.
 
 1. Most of a provider can be data rather than code.
 
