@@ -79,6 +79,42 @@ types (generic secrets work), and `CKA_WRAP_WITH_TRUSTED` per module (phase 3b).
   then) or keeps the method unavailable in unpatched builds.
 - The names and formats below are frozen.
 
+### Phase 1 results (2026-11-12)
+
+The planner and `--dry-run`; nothing moves yet.
+
+- `cakeys_core::migrate`: the frozen `Exposure` and `Method` names (pinned by a unit test), the
+  capability model (`Side`, `Accept`, `PlaintextImport`, `VendorMethod`), and `plan()`, pure,
+  with ten unit tests: sealed between the software references (SHA-1 OAEP with `SoftHSM`,
+  SHA-256 between kryoptic tokens), exportability fixed at creation, public objects, the direct
+  OAEP method without AES key wrap (p11-kit), host paths behind the flag and only for types the
+  target takes, `CKA_WRAP_WITH_TRUSTED` (enforced with a trusted transport, else impossible, never
+  through the host), files, and vendor methods at their declared level. The transport file
+  (`Transport`) checks that its identity is the hash of its public key.
+- `Provider::migration` (pkcs11): the generic PKCS#11 profile by default; `SoftHSM` OAEP SHA-1
+  only; ykcs11 never exports and imports certificates and RSA 1024–4096, P-256/384 and Ed25519
+  keys from plaintext; tpm2-pkcs11 never exports, imports EC P-256/384, RSA up to 3072 and the
+  HMAC key types through `tpm2_ptool`, and certificates, data and RSA public keys. This is the
+  hook vendor crates add their methods through (D10).
+- `cakeys_pkcs11::migrate`: each side's capabilities from the open token, else from the lock
+  (the recorded provider and observed mechanisms), else from a transport file; the source's
+  objects from the lock; the transport key (`transport`), which must be an RSA private key that
+  may unwrap, is not extractable, and verifies against the lock.
+- CLI: `export [<object>] --token <t> (--target <t> | --transport <file> | --to-file pkcs8|pkcs12)`,
+  `migrate [<object>] --from <a> --to <b>`, both with `--dry-run [--json]
+  [--allow-host-plaintext]`, exit 15 when any object cannot move as invoked; without
+  `--dry-run` they are refused (15) until phase 2. `transport <spec> --token <t> [--out <file>]`.
+- Tests (`tests/references.rs`, every reference): the plan per target (sealed softhsm→kryoptic
+  with SHA-1 and kryoptic→kryoptic with SHA-256, `tpm2-ptool` behind the flag with the residence
+  note, `host-pkcs8` into p11-kit, `pkcs12` to a file, a non-extractable key refused, a mixed run
+  is 15); the transport file carries the locked identity, an export plans from it alone, an
+  edited one is refused (17), and only an RSA private key can be a transport key.
+
+Not yet, carried to later phases: `import --dry-run` (it needs a bundle: phase 3), the planner
+does not know whether a target's module supports a curve it has no list for (checked at import),
+and a transport key proves possession only with `pop-decrypt` today (it needs `CKA_DECRYPT`,
+hence the note recommending an unwrap-only key; an unwrap-based proof would remove that).
+
 ### Frozen names and formats
 
 Exposure levels (D2): `public`, `enforced`, `sealed`, `host`, `file`; a plan that cannot move an
@@ -275,7 +311,7 @@ disk. `--dry-run` without objects plans every object the source token holds a re
 | Phase | Scope | Estimate |
 |---|---|---|
 | 0 | **Done 2026-11-12.** Finish the spike [todo items above]; cryptoki KWP patch and upstream PR draft; freeze method names, the bundle format and `origin` | 2–3 days |
-| 1 | Planner and `--dry-run` (core: capabilities, method choice, reasons); the provider hook for import/export capabilities and vendor methods (D10); the transport file; no material moves. Useful alone: it answers "what could move, and how?" | ≈700 + 500 lines, 4–5 days |
+| 1 | **Done 2026-11-12.** Planner and `--dry-run` (core: capabilities, method choice, reasons); the provider hook for import/export capabilities and vendor methods (D10); the transport file; no material moves. Useful alone: it answers "what could move, and how?" | ≈700 + 500 lines, 4–5 days |
 | 2 | `public`: certificates, public keys, data objects | ≈200 + 200, 1–2 days |
 | 3 | `sealed` between PKCS#11 modules: the `transport` verb, the composed RSA-OAEP + AES-KWP method, the direct OAEP method, bundles, import with identity check and cleanup, `migrate` | ≈800 + 700, 6–8 days |
 | 3b | `enforced`: the admin credential on PKCS#11 modules, `transport --trusted`, `CKA_WRAP_WITH_TRUSTED` keys | ≈300 + 250, 3–4 days |

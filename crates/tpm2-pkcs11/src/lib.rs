@@ -18,6 +18,7 @@ pub mod attest;
 use cakeys_core::Result;
 use cakeys_core::config::Options;
 use cakeys_core::id::Scheme;
+use cakeys_core::migrate::{Accept, PlaintextImport, Side};
 use cakeys_core::types::ObjectClass;
 use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, Provider};
 use cakeys_pkcs11::token::ModuleInfo;
@@ -44,6 +45,32 @@ impl Provider for Tpm2Pkcs11 {
 
     fn ec_point<'a>(&self, raw: &'a [u8]) -> Cow<'a, [u8]> {
         fix_ec_point(raw)
+    }
+
+    /// TPM-bound keys never leave (`C_WrapKey` and `C_UnwrapKey` are unsupported). Keys come in
+    /// through `tpm2_ptool import` from plaintext: EC P-256 and P-384 (not P-521), RSA up to
+    /// 3072 bits (swtpm refuses 4096), and the HMAC key types; `C_CreateObject` makes
+    /// certificates, data objects and RSA public keys (read in source; MIGRATE.md).
+    fn migration(&self, token: &str, mechanisms: &[String]) -> Side {
+        use cakeys_core::types::KeyType;
+        let ec =
+            Accept { curves: vec!["secp256r1", "secp384r1"], ..Accept::key(ObjectClass::PrivateKey, &[KeyType::Ec]) };
+        let rsa = Accept { modulus_bits: Some((1024, 3072)), ..Accept::key(ObjectClass::PrivateKey, &[KeyType::Rsa]) };
+        let hmac = Accept::key(
+            ObjectClass::SecretKey,
+            &[KeyType::Sha1Hmac, KeyType::Sha224Hmac, KeyType::Sha256Hmac, KeyType::Sha384Hmac, KeyType::Sha512Hmac],
+        );
+        Side {
+            exports: false,
+            unwraps: false,
+            public_import: vec![
+                Accept::class(ObjectClass::Certificate),
+                Accept::class(ObjectClass::Data),
+                Accept::key(ObjectClass::PublicKey, &[KeyType::Rsa]),
+            ],
+            plaintext_import: Some(PlaintextImport::Tpm2Ptool(vec![ec, rsa, hmac])),
+            ..Side::pkcs11(token, self.name(), mechanisms.iter().cloned())
+        }
     }
 
     fn hint(&self) -> Option<&'static str> {

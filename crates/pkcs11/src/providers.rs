@@ -3,6 +3,7 @@
 
 use crate::provider::Provider;
 use cakeys_core::config::ModuleInfo;
+use cakeys_core::migrate::{OaepHash, Side};
 
 /// `SoftHSMv2`: the reference module. No quirks; registered so `provider = "softhsm"` can be
 /// required explicitly and so it is reported by name.
@@ -15,6 +16,12 @@ impl Provider for SoftHsm {
 
     fn matches(&self, m: &ModuleInfo) -> bool {
         m.manufacturer == "SoftHSM"
+    }
+
+    /// `SoftHSM` lists `CKM_RSA_PKCS_OAEP` but implements it with SHA-1 only: SHA-256 is
+    /// `CKR_ARGUMENTS_BAD` (MIGRATE.md spike).
+    fn migration(&self, token: &str, mechanisms: &[String]) -> Side {
+        Side { oaep: vec![OaepHash::Sha1], ..Side::pkcs11(token, self.name(), mechanisms.iter().cloned()) }
     }
 }
 

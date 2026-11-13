@@ -12,7 +12,8 @@ mod attest;
 use crate::attest::{ATTESTATION_LABEL, pem_certs, piv_pool, verify_piv_attestation};
 use cakeys_core::config::{Locator, ObjectCfg};
 use cakeys_core::id::Scheme;
-use cakeys_core::types::ObjectClass as Class;
+use cakeys_core::migrate::{Accept, PlaintextImport, Side};
+use cakeys_core::types::{KeyType, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, Provider};
 use cakeys_pkcs11::token::ModuleInfo;
@@ -47,6 +48,23 @@ impl Provider for Ykcs11 {
     /// ykcs11 generates (and deletes) only after `C_Login(CKU_SO)` with the PIV management key.
     fn manages_as_so(&self) -> bool {
         true
+    }
+
+    /// PIV keys never leave the device (`C_WrapKey` and `C_UnwrapKey` are unsupported). As SO,
+    /// ykcs11 imports certificates, and private keys from plaintext into a slot: RSA 1024–4096,
+    /// EC P-256 and P-384 (the curve inferred from the scalar's length), Ed25519 (its
+    /// `C_CreateObject`, read in source; MIGRATE.md). Imported keys are never attested.
+    fn migration(&self, token: &str, mechanisms: &[String]) -> Side {
+        let rsa = Accept { modulus_bits: Some((1024, 4096)), ..Accept::key(Class::PrivateKey, &[KeyType::Rsa]) };
+        let ec = Accept { curves: vec!["secp256r1", "secp384r1"], ..Accept::key(Class::PrivateKey, &[KeyType::Ec]) };
+        let ed = Accept { curves: vec!["edwards25519"], ..Accept::key(Class::PrivateKey, &[KeyType::EcEdwards]) };
+        Side {
+            exports: false,
+            unwraps: false,
+            public_import: vec![Accept::class(Class::Certificate)],
+            plaintext_import: Some(PlaintextImport::PivImport(vec![rsa, ec, ed])),
+            ..Side::pkcs11(token, self.name(), mechanisms.iter().cloned())
+        }
     }
 
     /// ykcs11 generates into the slot the template's `CKA_ID` names and gives each slot fixed

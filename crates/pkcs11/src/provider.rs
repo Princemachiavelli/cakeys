@@ -4,6 +4,7 @@
 
 use cakeys_core::config::{Locator, ModuleInfo, ObjectCfg, Options, TokenCfg};
 use cakeys_core::id::Scheme;
+use cakeys_core::migrate::Side;
 use cakeys_core::types::ObjectClass;
 use cakeys_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
@@ -99,6 +100,14 @@ pub trait Provider: Send + Sync {
         // Unreachable in practice: the caller checks `attestation()` first. Kept as an error so
         // a provider advertising a capability must actually implement it.
         Err(KmError::Unsupported(format!("{} exposes no attestation", self.name())))
+    }
+
+    /// What this module can do to move keys (MIGRATE.md): which side of an export or import it
+    /// can be, through which mechanisms, and any methods of its own (`Side::vendor`, D10). The
+    /// default is a spec-compliant PKCS#11 module: it wraps and unwraps with what it lists and
+    /// imports with `C_CreateObject`.
+    fn migration(&self, token: &str, mechanisms: &[String]) -> Side {
+        Side::pkcs11(token, self.name(), mechanisms.iter().cloned())
     }
 }
 

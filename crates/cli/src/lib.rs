@@ -4,6 +4,8 @@
 use anyhow::Context;
 use cakeys_core::KmError;
 use cakeys_core::config::{Config, gc, load_config, load_lock, lock_for_update, lock_unwritable, save_lock};
+use cakeys_core::migrate::{Exposure, Method, Side, Transport};
+use cakeys_pkcs11::migrate::{self, Allow, FileFormat, Plan, To};
 use cakeys_pkcs11::ops::{self, LockWrite, Notes, Target};
 use cakeys_pkcs11::{Registry, Token, providers};
 use clap::{Parser, Subcommand};
@@ -90,6 +92,70 @@ enum Cmd {
         #[arg(long)]
         token: String,
     },
+    /// Plan exporting objects realised on a token, shaped for a target (MIGRATE.md): per object,
+    /// the method, how exposed the material is on the way, and why not when it cannot move. Only
+    /// --dry-run is implemented; exports move nothing yet.
+    Export {
+        /// The object to export; default: every object realised on --token.
+        object: Option<String>,
+        /// The source token.
+        #[arg(long)]
+        token: String,
+        /// The intended target token in keys.toml: its capabilities are read from the open token,
+        /// else from what the lock recorded there.
+        #[arg(long, required_unless_present_any = ["transport", "to_file"])]
+        target: Option<String>,
+        /// The target's transport file (`cakeys transport`), for a target this host cannot reach.
+        #[arg(long, conflicts_with = "target")]
+        transport: Option<PathBuf>,
+        /// Export to a passphrase-protected file instead of a token.
+        #[arg(long, value_enum, conflicts_with_all = ["target", "transport"])]
+        to_file: Option<FileArg>,
+        #[command(flatten)]
+        how: MoveArgs,
+    },
+    /// Plan moving objects from one token to another, both reachable from this host (MIGRATE.md).
+    /// Only --dry-run is implemented.
+    Migrate {
+        /// The object to move; default: every object realised on --from.
+        object: Option<String>,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[command(flatten)]
+        how: MoveArgs,
+    },
+    /// Write the transport file for a transport key (MIGRATE.md D3): an RSA private key that may
+    /// unwrap, realised and locked on the target. Exports to this token wrap to it.
+    Transport {
+        spec: String,
+        #[arg(long)]
+        token: String,
+        /// Where to write it; default: stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
+/// How `export` and `migrate` may move material.
+#[derive(clap::Args)]
+struct MoveArgs {
+    /// Print the plan and move nothing (the only mode implemented so far).
+    #[arg(long)]
+    dry_run: bool,
+    /// Print the plan as JSON.
+    #[arg(long)]
+    json: bool,
+    /// Allow the `host` and `file` paths: plaintext in this process's memory (MIGRATE.md D2).
+    #[arg(long)]
+    allow_host_plaintext: bool,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum FileArg {
+    Pkcs8,
+    Pkcs12,
 }
 
 /// Whether `realise`/`delete` write the lock: by default they do, like `nix build` with
@@ -263,8 +329,144 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
                 "mechanisms": tok.mechanism_names(),
             }));
         }
+        Cmd::Export { object, token, target, transport, to_file, how } => {
+            let dest = match (target, transport, to_file) {
+                (_, _, Some(FileArg::Pkcs8)) => Dest::File(FileFormat::Pkcs8),
+                (_, _, Some(FileArg::Pkcs12)) => Dest::File(FileFormat::Pkcs12),
+                (_, Some(path), None) => Dest::Transport(path),
+                (Some(t), None, None) => Dest::Token(t),
+                (None, None, None) => unreachable!("clap requires one of --target, --transport, --to-file"),
+            };
+            let moves = Moves { cfg: &cfg, modules: &modules, registry, lock: &lock };
+            moves.plan(object.as_deref(), token, &dest, how, notes)?;
+        }
+        Cmd::Migrate { object, from, to, how } => {
+            let moves = Moves { cfg: &cfg, modules: &modules, registry, lock: &lock };
+            moves.plan(object.as_deref(), from, &Dest::Token(to), how, notes)?;
+        }
+        Cmd::Transport { spec, token, out } => {
+            let t = Target::new(&cfg, spec, token)?;
+            let tok = open_token(&cfg, &modules, registry, token)?;
+            let text = migrate::transport(&t, &tok, &lock, notes)?.to_toml();
+            match out {
+                Some(path) => {
+                    std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;
+                    notes.say(format!("wrote {}", path.display()));
+                }
+                None => print!("{text}"),
+            }
+        }
     }
     Ok(())
+}
+
+/// Where `export` or `migrate` sends the material.
+enum Dest<'a> {
+    Token(&'a str),
+    Transport(&'a std::path::Path),
+    File(FileFormat),
+}
+
+/// What planning a move reads: keys.toml for the tokens, the lock for the objects.
+struct Moves<'a> {
+    cfg: &'a Config,
+    modules: &'a BTreeMap<String, String>,
+    registry: &'a Registry,
+    lock: &'a cakeys_core::config::Lock,
+}
+
+impl Moves<'_> {
+    /// Plan each object's move from `from` to `dest` and print it (MIGRATE.md D9); 15 when any
+    /// object cannot move as invoked. Moving is not implemented yet: without --dry-run, refused.
+    fn plan(
+        &self,
+        object: Option<&str>,
+        from: &str,
+        dest: &Dest,
+        how: &MoveArgs,
+        notes: &mut Notes,
+    ) -> anyhow::Result<()> {
+        if !how.dry_run {
+            return Err(KmError::Unsupported(
+                "export and migrate move nothing yet: only --dry-run is implemented (MIGRATE.md phase 1; \
+                 phase 2 moves public objects, phase 3 sealed keys)"
+                    .into(),
+            )
+            .into());
+        }
+        let materials = migrate::materials(self.lock, from, object)?;
+        let (source, source_from) = self.side(from, notes)?;
+        let mut allow = Allow { host_plaintext: how.allow_host_plaintext, ..Allow::default() };
+        let (target, target_from, to_name) = match dest {
+            Dest::Token(name) => {
+                let (side, from) = self.side(name, notes)?;
+                (Some(side), from, (*name).to_owned())
+            }
+            Dest::Transport(path) => {
+                let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+                let t = Transport::parse(&text, path)?;
+                // Phase 3b sets this only after the source's SO marked the key trusted there.
+                allow.trusted_transport = t.trusted;
+                let side = migrate::side_from_transport(&t, self.registry).ok_or_else(|| {
+                    KmError::Unsupported(format!("{}: provider '{}' is not in this build", path.display(), t.provider))
+                })?;
+                (Some(side), "transport file", t.token)
+            }
+            Dest::File(f) => (None, "-", format!("{f:?} file").to_lowercase()),
+        };
+        let to = target.as_ref().map_or_else(
+            || To::File(if let Dest::File(f) = dest { *f } else { unreachable!("only a file has no side") }),
+            To::Token,
+        );
+        let plans: Vec<Plan> = materials.iter().map(|m| migrate::plan(m, &source, &to, allow)).collect();
+        if how.json {
+            print(&serde_json::json!({
+                "from": from,
+                "to": to_name,
+                "capabilities": { "from": source_from, "to": target_from },
+                "plans": plans,
+            }));
+        } else {
+            println!(
+                "{from} -> {to_name} (capabilities: {from} from the {source_from}, {to_name} from the {target_from})"
+            );
+            for p in &plans {
+                let method = p.method.as_ref().map_or_else(|| "-".to_owned(), Method::name);
+                let exposure = p.exposure.map_or("-", Exposure::name);
+                let status = if p.ready { "ready" } else { "blocked" };
+                println!("  {:<24} {method:<26} {exposure:<9} {status}", p.object);
+                for r in &p.reasons {
+                    println!("      - {r}");
+                }
+                for n in &p.notes {
+                    println!("      note: {n}");
+                }
+            }
+        }
+        let blocked = plans.iter().filter(|p| !p.ready).count();
+        if blocked > 0 {
+            return Err(
+                KmError::Unsupported(format!("{blocked} of {} objects cannot move as invoked", plans.len())).into()
+            );
+        }
+        Ok(())
+    }
+
+    /// A token's capabilities: from the open token, else from what the lock recorded there.
+    fn side(&self, name: &str, notes: &mut Notes) -> Result<(Side, &'static str), KmError> {
+        match open_token(self.cfg, self.modules, self.registry, name) {
+            Ok(tok) => Ok((migrate::side(&tok), "token")),
+            Err(e) => match migrate::side_from_lock(name, self.lock, self.registry) {
+                Some(side) => {
+                    notes.note(format_args!(
+                        "capabilities of '{name}' come from the lock: the token did not open ({e})"
+                    ));
+                    Ok((side, "lock"))
+                }
+                None => Err(e),
+            },
+        }
+    }
 }
 
 fn print<T: serde::Serialize>(v: &T) {
