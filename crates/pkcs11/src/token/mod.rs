@@ -115,6 +115,20 @@ pub struct Token {
     /// (it unseals the token's wrapping key with it) and logging the user back in after an SO
     /// step (`mgmKeyFile`/`mgmKeyEnv`). Zeroized on drop.
     pin: Option<Zeroizing<String>>,
+    /// Last: fields drop in declaration order, so the session is closed before the module is
+    /// finalized.
+    _module: Finalize,
+}
+
+/// Calls `C_Finalize` when dropped (cryptoki 0.12 never does): a module library may stay loaded
+/// after its last handle is gone (`SoftHSM` does), and another of its tokens opened later in the
+/// process would then fail `C_Initialize` with `CKR_CRYPTOKI_ALREADY_INITIALIZED`.
+struct Finalize(Pkcs11);
+
+impl Drop for Finalize {
+    fn drop(&mut self) {
+        let _ = self.0.clone().finalize();
+    }
 }
 
 fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
@@ -124,6 +138,10 @@ fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
 impl Token {
     /// Open the token named `name`: load the module, find the slot whose token label matches,
     /// read its capabilities, and log in as the user when a PIN is configured.
+    ///
+    /// Keep at most one `Token` of a module open at a time: tokens of one module share its
+    /// library, which this initializes (and dropping the `Token`, or a failed open, finalizes),
+    /// so a second open meanwhile fails with `CKR_CRYPTOKI_ALREADY_INITIALIZED`.
     ///
     /// # Errors
     ///
@@ -144,6 +162,9 @@ impl Token {
             .ok_or_else(|| KmError::Validation(format!("token '{name}' has no module")))?;
         let ctx = Pkcs11::new(&module).map_err(ck(&format!("loading {module}")))?;
         ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).map_err(ck("C_Initialize"))?;
+        // From here every return finalizes, a failed open too.
+        let module_guard = Finalize(ctx);
+        let ctx = &module_guard.0;
         let lib = ctx.get_library_info().map_err(ck("C_GetInfo"))?;
         let module = ModuleInfo {
             path: module,
@@ -219,7 +240,7 @@ impl Token {
         };
         let mut mechanism_names: Vec<String> = mechanisms.iter().map(std::string::ToString::to_string).collect();
         mechanism_names.sort();
-        let (session, pin) = session(&ctx, slot, name, cfg, access, write_protected, pins)?;
+        let (session, pin) = session(ctx, slot, name, cfg, access, write_protected, pins)?;
         Ok(Token {
             name: name.to_owned(),
             label: cfg.token_label.clone(),
@@ -236,6 +257,7 @@ impl Token {
             pins,
             pin,
             provider,
+            _module: module_guard,
         })
     }
 

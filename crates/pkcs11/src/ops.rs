@@ -393,11 +393,13 @@ pub fn create(
     realise(&Target { on_token: &on_token, ..*t }, tok, lock, write, notes)
 }
 
-/// DELETE + If-Match. Absent is success; a different object under the locator is left alone.
+/// DELETE + If-Match. Absent is success; only the object identified (and a private key's public
+/// half holding the same key) is removed: anything else under the locator is left alone.
 ///
 /// # Errors
 ///
 /// `Unsupported` for a `publicOnly` adoption or when no identity can be computed to check;
+/// `Unavailable` when a session without login finds no private object (it cannot see one);
 /// `PreconditionFailed` when there is nothing to check against (no `--if-match`, no locked
 /// ID) or the token holds another ID than expected. `destroy` keeps its own refusals (15).
 pub fn delete(
@@ -413,14 +415,15 @@ pub fn delete(
             "{t} is adopted publicOnly; deleting would remove only the public half"
         )));
     }
+    let loc = &t.on_token.locator;
     // An expected identity is only required when there is something to delete.
-    if let Some(h) = tok.find_key(t.object, &t.on_token.locator, false)? {
+    if let Some(h) = tok.find_key(t.object, loc, false)? {
         let mode = plan_mode(t)?;
         // Proven like `resolve`: If-Match must not pass on a public object beside another key.
         let got = tok.ids(
             h,
             t.object,
-            &t.on_token.locator,
+            loc,
             mode,
             &commits(t, tok, mode)?,
             &commitment_label(t, lock),
@@ -448,10 +451,18 @@ pub fn delete(
                 got.get(scheme.name())
             )));
         }
-    }
-    let n = tok.destroy(t.object, &t.on_token.locator)?;
-    if n > 0 {
+        let (n, left) = tok.destroy_identified(h, t.object, loc)?;
         notes.say(format!("destroyed {n} object(s) for {t}"));
+        if left > 0 {
+            notes
+                .note(format_args!("left {left} public key object(s) under the locator of {t}: they hold another key"));
+        }
+    } else if !tok.logged_in && matches!(t.object.class, Class::PrivateKey | Class::SecretKey) {
+        return Err(KmError::Unavailable(format!(
+            "{t}: a session without login cannot see private objects, so it cannot tell the key is absent; \
+             configure pinFile or pinEnv for token '{}'",
+            t.token_name
+        )));
     }
     let mut changed = false;
     if write == LockWrite::Record

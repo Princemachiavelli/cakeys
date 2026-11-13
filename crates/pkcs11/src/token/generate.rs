@@ -84,19 +84,53 @@ impl Token {
         }
     }
 
-    /// Destroy the key and any public half sharing its locator.
+    /// Destroy every object of the key's class under its locator, and any public half there: only
+    /// for what a creation just put under a locator that was empty before (`realise` cleaning up
+    /// after itself). `delete` removes what it identified, through [`Self::destroy_identified`].
     ///
     /// # Errors
     ///
-    /// `Unsupported` (15) when the provider cannot actually erase keys (ykcs11); a failure to
-    /// destroy is `Unavailable`, naming the token. An empty locator destroys nothing, not an
-    /// error.
+    /// As [`Self::destroy_identified`]. An empty locator destroys nothing, not an error.
     pub fn destroy(&self, object: &ObjectCfg, loc: &Locator) -> Result<usize> {
         let class = class_of(object);
         let mut handles = self.find(class, loc)?;
         if class == ObjectClass::PRIVATE_KEY {
             handles.extend(self.find(ObjectClass::PUBLIC_KEY, loc)?);
         }
+        self.destroy_handles(object, loc, &handles)
+    }
+
+    /// Destroy the object `h`, identified by the caller, and — for a private key — the public key
+    /// objects under its locator that hold its public key. A public key object holding another
+    /// key (or none cakeys can read) is left alone. Returns (destroyed, left).
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` (15) when the provider cannot actually erase keys (ykcs11); a failure to
+    /// destroy is `Unavailable`, naming the token.
+    pub fn destroy_identified(&self, h: ObjectHandle, object: &ObjectCfg, loc: &Locator) -> Result<(usize, usize)> {
+        let mut handles = vec![h];
+        let mut left = 0;
+        if class_of(object) == ObjectClass::PRIVATE_KEY {
+            let spki = self.spki(h, loc)?;
+            for p in self.find(ObjectClass::PUBLIC_KEY, loc)? {
+                let held = match self.material_spki(p) {
+                    Ok(Some(s)) => Some(s),
+                    Ok(None) => self.public_key_info(p).and_then(Result::ok),
+                    Err(_) => None,
+                };
+                if held.as_ref() == Some(&spki) {
+                    handles.push(p);
+                } else {
+                    left += 1;
+                }
+            }
+        }
+        Ok((self.destroy_handles(object, loc, &handles)?, left))
+    }
+
+    fn destroy_handles(&self, object: &ObjectCfg, loc: &Locator, handles: &[ObjectHandle]) -> Result<usize> {
+        let class = class_of(object);
         if handles.is_empty() {
             return Ok(0);
         }
@@ -106,7 +140,7 @@ impl Token {
             return Err(KmError::Unsupported(format!("deleting {} on '{}': {advice}", object.class, self.name)));
         }
         let run = || {
-            for h in &handles {
+            for h in handles {
                 self.session.destroy_object(*h).map_err(ck("C_DestroyObject"))?;
             }
             Ok(handles.len())

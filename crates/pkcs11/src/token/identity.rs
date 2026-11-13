@@ -99,7 +99,7 @@ impl Token {
 
     /// `CKA_PUBLIC_KEY_INFO`, canonicalized; `None` when absent, empty or unreadable (ykcs11
     /// reports length 0 and then fails the fetch with `CKR_ARGUMENTS_BAD`).
-    fn public_key_info(&self, h: ObjectHandle) -> Option<Result<Vec<u8>>> {
+    pub(super) fn public_key_info(&self, h: ObjectHandle) -> Option<Result<Vec<u8>>> {
         match self.attr(h, AttributeType::PublicKeyInfo) {
             Ok(Some(Attribute::PublicKeyInfo(der))) if !der.is_empty() => Some(id::spki_canonical(&der)),
             _ => None,

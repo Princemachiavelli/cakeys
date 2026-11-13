@@ -3,7 +3,7 @@
 
 use anyhow::Context;
 use cakeys_core::KmError;
-use cakeys_core::config::{Config, gc, load_config, load_lock, lock_for_update, lock_unwritable, save_lock};
+use cakeys_core::config::{Config, Lock, gc, load_config, load_lock, lock_for_update, lock_unwritable, save_lock};
 use cakeys_core::migrate::{Exposure, Method, Side, Transport};
 use cakeys_pkcs11::migrate::{self, Allow, FileFormat, Plan, To};
 use cakeys_pkcs11::ops::{self, LockWrite, Notes, Target};
@@ -274,7 +274,7 @@ pub fn main(registry: &Registry) -> ExitCode {
 /// token then needs that same material, which only importing or migrating can put there).
 // TODO(NEXT.md §2, "one creation token"): a multi-token object is created on whichever of its
 // pairs comes first in config order; keys.toml should name the creation token instead.
-fn not_created(t: &Target, lock: &cakeys_core::config::Lock) -> Option<String> {
+fn not_created(t: &Target, lock: &Lock) -> Option<String> {
     use cakeys_core::types::ObjectClass as Class;
     if !matches!(t.object.class, Class::PrivateKey | Class::SecretKey) {
         return Some(format!("{} objects are adopted, not created", t.object.class));
@@ -289,6 +289,79 @@ fn not_created(t: &Target, lock: &cakeys_core::config::Lock) -> Option<String> {
             t.object_name
         )
     })
+}
+
+/// The (spec, token) pairs `create` selects, in config order. A name that selects nothing is
+/// refused like the other verbs refuse it: an unknown spec (11) or token (17), or a spec without
+/// that token (11).
+fn create_pairs<'a>(
+    cfg: &'a Config,
+    spec: Option<&str>,
+    token: Option<&str>,
+) -> Result<Vec<(&'a str, &'a str)>, KmError> {
+    if let Some(s) = spec
+        && !cfg.specs.contains_key(s)
+    {
+        return Err(KmError::NotFound(format!("spec '{s}'")));
+    }
+    if let Some(t) = token
+        && !cfg.tokens.contains_key(t)
+    {
+        return Err(KmError::Validation(format!("unknown token '{t}'")));
+    }
+    if let (Some(s), Some(t)) = (spec, token) {
+        Target::new(cfg, s, t)?;
+    }
+    Ok(cfg
+        .specs
+        .iter()
+        .filter(|(n, _)| spec.is_none_or(|s| s == n.as_str()))
+        .flat_map(|(n, s)| s.tokens.keys().map(move |t| (n.as_str(), t.as_str())))
+        .filter(|(_, t)| token.is_none_or(|w| w == *t))
+        .collect())
+}
+
+/// `create` over `pairs`: what it created, whether the lock changed, and the failure that ended
+/// it, if any — every step of a pair, opening its token included, ends the run there, after
+/// which the caller still records what was created before.
+///
+/// At most one token is open at a time: tokens of one module share its library, which a second
+/// open would initialize again (`CKR_CRYPTOKI_ALREADY_INITIALIZED`).
+fn create(
+    cfg: &Config,
+    pairs: &[(&str, &str)],
+    named: bool,
+    open: &dyn Fn(&str, &mut Notes) -> Result<Token, KmError>,
+    lock: &mut Lock,
+    write: LockWrite,
+    notes: &mut Notes,
+) -> (Vec<ops::Resolved>, bool, Option<KmError>) {
+    let (mut created, mut changed) = (Vec::new(), false);
+    let mut current: Option<Token> = None;
+    for &(spec_name, token_name) in pairs {
+        let mut pair = || -> Result<Option<(ops::Resolved, bool)>, KmError> {
+            let t = Target::new(cfg, spec_name, token_name)?;
+            if !named && let Some(why) = not_created(&t, lock) {
+                notes.note(format_args!("create: skipped {t}: {why}"));
+                return Ok(None);
+            }
+            if current.as_ref().is_none_or(|tok| tok.name != token_name) {
+                drop(current.take()); // finalizes its module before the next open
+                current = Some(open(token_name, notes)?);
+            }
+            let tok = current.as_ref().expect("opened above");
+            ops::create(&t, tok, lock, write, notes).map(Some)
+        };
+        match pair() {
+            Ok(Some((r, c))) => {
+                changed |= c;
+                created.push(r);
+            }
+            Ok(None) => {}
+            Err(e) => return (created, changed, Some(e)),
+        }
+    }
+    (created, changed, None)
 }
 
 /// Open a token for a verb; a PIN counter that reports an earlier failed login is a warning.
@@ -532,44 +605,10 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
             print(&r);
         }
         Cmd::Create { spec, token, write } => {
-            if let Some(s) = spec
-                && !cfg.specs.contains_key(s)
-            {
-                return Err(KmError::NotFound(format!("spec '{s}'")).into());
-            }
-            let pairs: Vec<(&String, &String)> = cfg
-                .specs
-                .iter()
-                .filter(|(n, _)| spec.as_ref().is_none_or(|s| s == *n))
-                .flat_map(|(n, s)| s.tokens.keys().map(move |t| (n, t)))
-                .filter(|(_, t)| token.as_ref().is_none_or(|w| w == *t))
-                .collect();
+            let pairs = create_pairs(&cfg, spec.as_deref(), token.as_deref())?;
+            let open = |name: &str, notes: &mut Notes| open_token(&cfg, &modules, registry, name, Access::Write, notes);
             let named = spec.is_some() && token.is_some();
-            let (mut created, mut changed, mut failed) = (Vec::new(), false, None);
-            let mut opened: BTreeMap<&str, Token> = BTreeMap::new();
-            for (spec_name, token_name) in pairs {
-                let t = Target::new(&cfg, spec_name, token_name)?;
-                if !named && let Some(why) = not_created(&t, &lock) {
-                    notes.note(format_args!("create: skipped {t}: {why}"));
-                    continue;
-                }
-                let tok = match opened.entry(token_name) {
-                    std::collections::btree_map::Entry::Occupied(o) => o.into_mut(),
-                    std::collections::btree_map::Entry::Vacant(v) => {
-                        v.insert(open_token(&cfg, &modules, registry, token_name, Access::Write, notes)?)
-                    }
-                };
-                match ops::create(&t, tok, &mut lock, write.mode(), notes) {
-                    Ok((r, c)) => {
-                        changed |= c;
-                        created.push(r);
-                    }
-                    Err(e) => {
-                        failed = Some(e);
-                        break;
-                    }
-                }
-            }
+            let (created, changed, failed) = create(&cfg, &pairs, named, &open, &mut lock, write.mode(), notes);
             // What was created before a failure is recorded all the same: never a key made and lost.
             if changed {
                 save_lock(&lock_path, &lock)?;
@@ -803,7 +842,7 @@ struct Moves<'a> {
     cfg: &'a Config,
     modules: &'a BTreeMap<String, String>,
     registry: &'a Registry,
-    lock: &'a cakeys_core::config::Lock,
+    lock: &'a Lock,
 }
 
 impl Moves<'_> {

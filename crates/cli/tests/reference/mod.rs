@@ -2437,3 +2437,121 @@ fn create_makes_keys_without_autocreate() {
     assert_eq!(code(&e.km(&["create", "ec", "--token", "ref"])), 14);
     assert!(s.find_objects(&[Attribute::Label(b"create-ec".to_vec())]).unwrap().is_empty(), "nothing regenerated");
 }
+
+/// `create` over tokens of one module (`ref` and `ref-anon` share it) opens one at a time, so the
+/// second token opens at all; a pair that fails — opening its token included — leaves what was
+/// created before it recorded; and a name that selects nothing is refused (17, 11), never an
+/// empty success.
+#[test]
+fn create_records_what_it_made_before_a_failure() {
+    let Some(e) = env("create_failure") else { return };
+    let s = e.session();
+    for label in ["create2-one", "create2-two", "create2-second"] {
+        for h in s.find_objects(&[Attribute::Label(label.as_bytes().to_vec())]).unwrap() {
+            s.destroy_object(h).unwrap();
+        }
+    }
+    // Spec `a-<first>` on `ref` sorts before `b-second` on `second`.
+    let body = |first: &str, second: &str| {
+        format!(
+            "[tokens.gone]\nmodule = \"/nonexistent/libgone.so\"\ntokenLabel = \"gone\"\n\n\
+             [objects.{first}]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [objects.second]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
+             [specs.a-{first}]\nobject = \"{first}\"\nattributes = {{ CKA_SIGN = true }}\n\
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"create2-{first}\" }} }}\n\n\
+             [specs.b-second]\nobject = \"second\"\nattributes = {{ CKA_EXTRACTABLE = true }}\n\
+             tokens.{second} = {{ locator = {{ CKA_LABEL = \"create2-second\" }} }}\n"
+        )
+    };
+    let recorded = |spec: &str| e.lock()["realisations"][spec]["ref"].is_table();
+
+    // The second token cannot be opened at all: the first key is recorded anyway.
+    e.config(&body("one", "gone"));
+    let o = e.km(&["create"]);
+    assert_eq!(code(&o), 16, "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(recorded("a-one"), "{}", e.lock());
+
+    // The second token is another token of the same module: it opens (whatever creating on it
+    // without a login then says), and the first key is recorded.
+    e.config(&body("two", "ref-anon"));
+    let o = e.km(&["create"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!err.contains("already been initialized"), "{err}");
+    assert!(recorded("a-two"), "{}", e.lock());
+
+    assert_eq!(code(&e.km(&["create", "--token", "typo"])), 17);
+    assert_eq!(code(&e.km(&["create", "a-two", "--token", "ref-anon"])), 11);
+}
+
+/// `delete` removes the object it identified and a private key's public half only when that
+/// holds the same key: a public key object of other material under the locator is left, and so
+/// is a lone public key once the private key is gone. A session without login cannot see the
+/// private key, so it never reports it absent (16).
+#[test]
+fn delete_removes_only_what_it_identified() {
+    let Some(e) = env("delete_identified") else { return };
+    let s = e.session();
+    for label in ["del-rsa", "del-other"] {
+        for h in s.find_objects(&[Attribute::Label(label.as_bytes().to_vec())]).unwrap() {
+            s.destroy_object(h).unwrap();
+        }
+    }
+    e.config(
+        r#"
+[objects.k]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 2048
+
+[objects.other]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 2048
+
+[specs.k]
+object = "k"
+attributes = { CKA_SIGN = true }
+tokens.ref = { locator = { CKA_LABEL = "del-rsa" }, autoCreate = true }
+tokens.ref-anon = { locator = { CKA_LABEL = "del-rsa" } }
+
+[specs.other]
+object = "other"
+attributes = { CKA_SIGN = true }
+tokens.ref = { locator = { CKA_LABEL = "del-other" }, autoCreate = true }
+"#,
+    );
+    for spec in ["k", "other"] {
+        assert_eq!(code(&e.km(&["realise", spec, "--token", "ref"])), 0);
+    }
+    let of_class = |class, label: &str| {
+        s.find_objects(&[Attribute::Class(class), Attribute::Label(label.as_bytes().to_vec())]).unwrap()
+    };
+    let modulus = |h| s.get_attributes(h, &[AttributeType::Modulus]).unwrap();
+    // Another key's public half, planted under the locator.
+    let other = of_class(ObjectClass::PUBLIC_KEY, "del-other")[0];
+    let mut planted = vec![
+        Attribute::Class(ObjectClass::PUBLIC_KEY),
+        Attribute::KeyType(cryptoki::object::KeyType::RSA),
+        Attribute::Token(true),
+        Attribute::Label(b"del-rsa".to_vec()),
+    ];
+    planted.extend(s.get_attributes(other, &[AttributeType::Modulus, AttributeType::PublicExponent]).unwrap());
+    s.create_object(&planted).unwrap();
+    assert_eq!(of_class(ObjectClass::PUBLIC_KEY, "del-rsa").len(), 2);
+
+    let del = |token| e.km(&["delete", "k", "--token", token, "--no-update-lock"]);
+    assert_eq!(code(&del("ref-anon")), 16);
+    assert_eq!(of_class(ObjectClass::PRIVATE_KEY, "del-rsa").len(), 1, "nothing deleted unseen");
+
+    let o = del("ref");
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("left 1 public key object(s)"));
+    assert_eq!(of_class(ObjectClass::PRIVATE_KEY, "del-rsa").len(), 0, "the identified private key is gone");
+    let left = of_class(ObjectClass::PUBLIC_KEY, "del-rsa");
+    assert_eq!(left.len(), 1);
+    assert_eq!(modulus(left[0]), modulus(other), "the planted key is the one left");
+
+    // Absent now: success, and the lone public key is still not identified, so it stays.
+    assert_eq!(code(&del("ref")), 0);
+    assert_eq!(of_class(ObjectClass::PUBLIC_KEY, "del-rsa").len(), 1);
+}
