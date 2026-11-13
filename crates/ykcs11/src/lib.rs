@@ -4,8 +4,8 @@
 //!
 //! What lives here is the `piv-attestation` commitment (docs/DESIGN.md §3.7): the provider
 //! finds the module-exposed attestation certificates, and the pure chain verification and
-//! canonical digest are in [`attest`] — verified against both a fixture chain and Yubico's
-//! own published roots and intermediates.
+//! canonical digest are in the private `attest` module — verified against both a fixture chain
+//! and Yubico's own published roots and intermediates.
 
 mod attest;
 

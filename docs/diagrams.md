@@ -13,16 +13,16 @@ A spec is policy *about* an object; a realisation is one object's life on one to
 flowchart LR
     subgraph TOML["keys.toml — input, never written by cakeys"]
         direction TB
-        T["[tokens.&lt;name&gt;]<br/>module · tokenLabel · pinFile/pinEnv · mgmKeyFile/mgmKeyEnv · systemFeature"]
+        T["[tokens.&lt;name&gt;]<br/>module · provider · tokenLabel · pinFile/pinEnv · mgmKeyFile/mgmKeyEnv ·<br/>systemFeature · options (the provider's own)"]
         O["[objects.&lt;name&gt;]<br/>class · keyType · certificateType ·<br/>curve / modulusBits / valueLen"]
-        S["[specs.&lt;name&gt;]<br/>object → one object only<br/>attributes · publicAttributes<br/>tokens.&lt;t&gt;: locator · autoCreate ·<br/>publicOnly · binding · identity.allow"]
+        S["[specs.&lt;name&gt;]<br/>object → one object only<br/>attributes · publicAttributes<br/>tokens.&lt;t&gt;: locator · autoCreate ·<br/>publicOnly · binding · attestation · identity.allow"]
         S -- references --> O
     end
 
     subgraph LOCK["keys.lock — version = 1 (draft), updated in place"]
         direction TB
         LO["[objects.&lt;name&gt;]<br/>type · commitmentLabel · pairs<br/>ids: scheme → sha256-… (SRI)"]
-        LR["[realisations.&lt;spec&gt;.&lt;token&gt;]<br/>compared: object · locator · specDigest · mode ·<br/>schemes · publicOnly · binding · policy · immutables<br/>observed: uri · session · mechanisms<br/>provenance: provider · cakeysVersion · module · token"]
+        LR["[realisations.&lt;spec&gt;.&lt;token&gt;]<br/>compared: object · locator · specDigest · mode ·<br/>schemes · publicOnly · binding · attestation · policy · immutables<br/>observed: uri · session · mechanisms<br/>provenance: provider · cakeysVersion · module · token"]
         LR -- "object / schemes name" --> LO
     end
 
@@ -39,13 +39,15 @@ flowchart LR
 
 ## 2. A verb's life: `realise` (PUT)
 
-Every use recomputes the identity from the token and compares it with the lock. First use fails
-like a fixed-output derivation: record the printed hash out of band.
+Every use recomputes the identity from the token and compares it with the lock. `realise`
+records first use in the lock by default; with `--no-update-lock` (and in `check`) first use
+fails like a fixed-output derivation, printing the hash to record.
 
 ```mermaid
 flowchart TD
     START(["cakeys realise &lt;spec&gt; --token &lt;t&gt;"]) --> GUARD
     GUARD["a writing run (the default) takes the exclusive lock<br/>on &lt;lock&gt;.lck for the whole run"]
+    GUARD -- "Nix build sandbox, or the lock<br/>is not writable" --> X14w(["exit 14 before any token is touched:<br/>pass --no-update-lock"])
     GUARD --> VAL["validate: mode, binding, attribute shapes,<br/>certificateType, per-class names"]
     VAL -- "invalid spec" --> X17(["exit 17"])
     VAL --> FIND["find by locator<br/>(CKA_LABEL / CKA_ID)"]
@@ -59,13 +61,14 @@ flowchart TD
     RESOLVE -- "proof does not verify" --> X13a(["exit 13 conflict"])
     RESOLVE -- "token refuses / lacks the mechanism" --> X15(["exit 15 unsupported"])
     RESOLVE --> RECONCILE{"reconcile with the lock"}
-    RECONCILE -- "no locked id to compare (first use)" --> X10(["exit 10, prints got: sha256-…"])
-    RECONCILE -- "id differs" --> X13b(["exit 13 hash mismatch"])
+    RECONCILE -- "first use, --no-update-lock" --> X10(["exit 10, prints got: sha256-…"])
+    RECONCILE -- "id differs" --> X10b(["exit 10 hash mismatch,<br/>also when the lock is written"])
     RECONCILE -- "object / locator / spec digest / binding /<br/>mode / policy / immutables changed" --> X14(["exit 14: review,<br/>then realise again"])
-    RECONCILE -- "everything matches" --> OK(["exit 0 — URI printed;<br/>the realisation recorded unless --no-update-lock"])
+    RECONCILE -- "matches, or first use (default)" --> OK(["exit 0 — resolved JSON printed;<br/>what the lock lacked is recorded<br/>unless --no-update-lock"])
 ```
 
-`verify` is the same walk without the create; `check` is `realise` that never writes the lock;
+`verify` is the same walk without the create, and prints the URI; `check` is `realise` that never
+writes the lock, and prints the URI;
 `delete` proves possession once more so If-Match cannot pass on a bystander object; `gc` prints
 lock entries the config no longer names and removes them with `--apply`.
 
@@ -98,7 +101,7 @@ All `pop-*` share the top binding rank: each proves possession of the same key. 
 ## 4. Identity: one object, several schemes
 
 The lock may hold several ids per object — one per *scheme*, each an SRI digest. A scheme is
-frozen forever (§10 of DESIGN): a changed computation gets a new name, and `DEPRECATED_SCHEMES`
+frozen forever (§10 of DESIGN): a changed computation gets a new name, and `Scheme::DEPRECATED`
 (empty today) is the deprecation register.
 
 ```mermaid

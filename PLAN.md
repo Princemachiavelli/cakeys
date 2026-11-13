@@ -4,7 +4,7 @@
 
 ## TODO (deferred, from the 2026-11-11 reviews)
 
-- **Refactor (2026-11-12 code review):** tracked in [`docs/REFACTOR-2026-11-12.md`](docs/REFACTOR-2026-11-12.md) (R0–R11).
+- ~~**Refactor (2026-11-12 code review):**~~ **done 2026-11-12**, see [`docs/REFACTOR-2026-11-12.md`](docs/REFACTOR-2026-11-12.md) (R0–R11, "Outcome").
 
 Parked deliberately; the lock stays `version = 1`, a draft, until the reviews pass.
 
@@ -21,7 +21,7 @@ Parked deliberately; the lock stays `version = 1`, a draft, until the reviews pa
   attestation path (§3.7) now speaks tss-esapi for TPM2_Certify and the store; the rest of the
   native backend (policy specs, locators, `tpm2-name`) stays parked.
 - **Post-quantum:** no token here has PQ hardware (YubiKey PIV, TPM 2.0); map the PKCS#11 v3
-  PQ key types (`CKK_*ML*`, `CKA_PARAMETER_SET`) and the kryptic module when they matter.
+  PQ key types (`CKK_*ML*`, `CKA_PARAMETER_SET`) and the kryoptic module when they matter.
 - **Lock merge rule (S16 remainder):** M3 serializes updaters and D3 collects stale entries, but
   two hand-edited lock fragments still need a manual merge.
 - **M1/M2 (open, code review):** read-only sessions for read-only verbs; read the PIV PIN
@@ -574,7 +574,7 @@ Rough sizes of the **new code**. Dependencies are `cryptoki`, `tss-esapi`, RustC
 
 Steps:
 1. **Provider and harness.**
-   - A `cakeys-kryoptic` provider crate.
+   - A kryoptic provider: built into `cakeys_pkcs11::providers` like softhsm, unless it needs code or dependencies of its own (then its own crate, like ykcs11).
    - A test harness like SoftHSM's: `KRYOPTIC_CONF` with a sqlite slot, and a token created with `C_InitToken`.
    - Run the existing classical suites against it too, as a second software reference.
 2. **cryptoki ≥ 0.11 for the PKCS#11 3.2 API.** Done: cakeys is on 0.12.1. That gives `CKK_ML_DSA`/`CKK_ML_KEM`/`CKK_SLH_DSA`, `CKA_PARAMETER_SET` (`CKP_ML_DSA_44/65/87`, …) and `C_EncapsulateKey`/`C_DecapsulateKey`.
@@ -589,6 +589,8 @@ Steps:
 7. **Hardware:** none of our tokens has PQ (YubiKey PIV, TPM 2.0 hardware). Composite (hybrid) keys come later.
 
 - **More reference implementations** (from NEXT.md): an **OP-TEE PKCS#11 TA in QEMU** (an Arm TrustZone token). QEMU's emulated TPM is already one (`checks.tpm`, and swtpm in the package tests).
+
+Original build order (2026-11-11; all done except the native TPM backend and Nitrokey):
 
 1. Write the spec schema (TOML), with declared locators per token and `autoCreate`, plus canonicalization and the spec digest. Test with golden vectors.
 2. Build the HAL over `cryptoki` against SoftHSMv2: `resolve` with uniqueness, `pubkeyhash` (`CKA_PUBLIC_KEY_INFO`, falling back to the public object), and `hmac-commitment`.

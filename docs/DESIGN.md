@@ -1,4 +1,4 @@
-# cakeys design (state at 2026-11-11)
+# cakeys design (state at 2026-11-12)
 
 This is the authoritative description of what is built. `PLAN.md` is the roadmap and history;
 where the two disagree, this document wins. Review findings and open issues are tracked in
@@ -74,7 +74,7 @@ Deprecation:
 - **A deprecated scheme still verifies identities already locked under it** — with a warning — but
   `realise` never records a *new* identity under it: migrate by realising a spec that
   computes the replacement. (`gc` will not drop the old entry: the identity is still true.)
-- **No scheme is deprecated today.** The register is `DEPRECATED_SCHEMES` in
+- **No scheme is deprecated today.** The register is `Scheme::DEPRECATED` in
   `crates/core/src/id.rs`, pinned empty by `the_deprecation_register_is_pinned`; the AES order
   above is pinned by `aes_commit_strength_order_is_pinned`.
 
@@ -208,7 +208,7 @@ content-addressed identity — one per token type that can produce it:
 | Scheme | Token | Evidence | Anchor pinned in the lock |
 |---|---|---|---|
 | `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen`. Yubico attests only keys generated on device; ykcs11 mints the certificate when it lists the slot, with no login | the Yubico root's SPKI |
-| `tpm-certify` | tpm2-pkcs11 tokens | a native `TPM2_Certify` (tss-esapi) over the object's Name with a fresh random nonce, host-verified; the object's TPM blobs are read (read-only) from the module's own store — found as the module finds it — and loaded under the token's primary over the module's TCTI (`$TPM2_PKCS11_TCTI`, or `tcti`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the Attestation Key's SPKI |
+| `tpm-certify` | tpm2-pkcs11 tokens | a native `TPM2_Certify` (tss-esapi) over the object's Name with a fresh random nonce, host-verified; the object's TPM blobs are read (read-only) from the module's own store — `options.tpm2Store`, else found as the module finds it — and loaded under the token's primary over the module's TCTI (`options.tcti`, else `$TPM2_PKCS11_TCTI`, `$TPM2TOOLS_TCTI`, `$TCTI`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the Attestation Key's SPKI |
 
 - **The commitment hashes asserted content, never signed bytes.** A PIV certificate is minted
   per session with a random serial and a randomized ECDSA signature; a `TPMS_ATTEST` carries a
@@ -476,7 +476,7 @@ model = "..." ; serial = "..." ; firmware = "M.m"
 | `validate` | Static check of modes, opt-ins, types and provider names; touches no token. |
 | `resolve <spec> --token` | GET: find (exactly one), check type and policy, compute IDs, print JSON. Never writes. |
 | `verify <spec> --token` | GET with If-Match against the lock; prints the URI. |
-| `realise <spec> --token [--no-update-lock]` | PUT, recording what the lock lacks (§3.5). If absent and `autoCreate`: refused (14) when the lock already pins the object's material — generated material could never match (D1, `autocreate_never_fights_a_locked_identity`). **If-None-Match** — never create when anything sits under the locator (`never_create_over_an_occupied_locator`). Then create, compute and compare. If the identity of a just-created object cannot be established, it is destroyed (`tpm2_identity_failure_after_create_leaves_nothing`); on a module that cannot delete keys (ykcs11) the key stays and the message says so. Re-running never duplicates (`ec_lifecycle`). |
+| `realise <spec> --token [--no-update-lock]` | PUT, recording what the lock lacks (§3.5), and prints the resolved JSON. If absent and `autoCreate`: refused (14) when the lock already pins the object's material — generated material could never match (D1, `autocreate_never_fights_a_locked_identity`). **If-None-Match** — never create when anything sits under the locator (`never_create_over_an_occupied_locator`). Then create, compute and compare. If the identity of a just-created object cannot be established, it is destroyed (`tpm2_identity_failure_after_create_leaves_nothing`); on a module that cannot delete keys (ykcs11) the key stays and the message says so. Re-running never duplicates (`ec_lifecycle`). |
 | `delete <spec> --token [--if-match ID] [--no-update-lock]` | DELETE with If-Match. Absent is success, even without a lock; a present object with no expected ID is never deleted (`ec_lifecycle`); a key on a module whose delete leaves it in place (ykcs11) is refused (15), never claimed. Unless `--no-update-lock`, it removes the realisation but keeps `objects.<name>.ids`, since the material may live on other tokens. |
 | `check <obj>[.id.<scheme>] [--token] [--spec]` | The pseudo-FOD pre-use check: realise without writing the lock, print the URI. Schemes the spec or token can never compute are refused before anything is created (`scheme_the_token_lacks_is_refused_before_create`). |
 | `gc [--apply]` | Print lock entries `keys.toml` no longer names, as table names; `--apply` removes exactly what it printed, holding the update lock (M3). Live objects keep their `ids` (`gc_prints_then_removes_stale_entries`). |
@@ -494,8 +494,9 @@ Exit codes:
 | 14 | precondition failed |
 | 15 | unsupported |
 | 16 | unavailable |
-| 17 | invalid spec |
-| 1 | other |
+| 17 | invalid config, lock, spec or token options |
+| 1 | I/O or other |
+| 2 | command-line usage (clap) |
 
 ## 6. Architecture
 
@@ -540,6 +541,8 @@ Policy: always the latest release. Audit on every dependency change by comparing
   2026-11-06.
 - **Pinned on purpose:** none. The cryptoki HMAC key-type patch is a local fix on top of the latest
   release.
+- **Toolchain:** edition 2024, `rust-version = 1.89` (the workspace's MSRV; Nix builds with the
+  nixpkgs rustc).
 
 ## 7. Nix integration
 
@@ -643,7 +646,9 @@ See `docs/REVIEW-2026-11-11.md`.
   and `check` pass on keys generated on device, a tampered ID is 10, a tampered root or an
   opt-out 14, an imported key under a locked attestation 14 and unlocked 15; `autoCreate` with
   `mgmKeyFile` generates; and `C_DestroyObject` was confirmed to leave the key in the slot. The
-  shipped example keys are imported, so Yubico attests none of them, and no suite runs this.
+  shipped example keys are imported, so Yubico attests none of them. The opt-in
+  `tests/yubikey.rs` (§9) repeats the read-write path on scratch slot `0x95` — last run
+  2026-11-12 on an emptied slot, so generation ran — but nothing runs it automatically.
 - **Features are self-declared.** Any user allowed to build can require a token's feature; the
   real gate is `allowed-users`.
 - **No merge rule for lock fragments.** Updates are serialized by the `<lock>.lck` sidecar (M3)
@@ -692,7 +697,6 @@ label and the hash itself. Everything else is fixed by definition:
   the attestation scheme names (`piv-attestation`, `tpm-certify`), the lock-record kinds
   (`yubico-piv`, `tpm-certify`) and the pinned anchors: the embedded Yubico root SPKIs
   (`the_yubico_roots_are_pinned`) and the AK handle `0x81000016` (`DEFAULT_AK_HANDLE`);
-- the SRI form `sha256-<base64>`;
 - the spec digest JSON shape (`"v":1`, camelCase, `keyType` omitted when empty, `certificateType`
   and `publicAttributes` only when set; the certificate digest changed with `certificateType`,
   since the v1 lock is a draft);

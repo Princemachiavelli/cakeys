@@ -12,7 +12,9 @@ key it hashed.
 
 Status: proof of concept.
 - **Tested** against SoftHSM, tpm2-pkcs11 (swtpm, QEMU vTPM) and SoftHSM behind p11-kit forwarding.
-- **Verified read-only** against a YubiKey (PIV).
+- **Tested by hand on a YubiKey 5** (PIV through ykcs11), not in CI: adopted keys verify
+  read-only, and an opt-in read-write suite generates a key in a scratch slot (as SO with the
+  management key), attests it, proves possession and verifies it.
 - **Design and current state:** [`docs/DESIGN.md`](docs/DESIGN.md).
 - **At a glance (diagrams):** [`docs/diagrams.md`](docs/diagrams.md).
 - **Open review findings:** [`docs/REVIEW-2026-11-11.md`](docs/REVIEW-2026-11-11.md).
@@ -44,7 +46,7 @@ created 'signing' (spec 'signing-soft') on token 'softhsm'
 error: hash mismatch in identity of 'signing' (spec 'signing-soft') on token 'softhsm':
   specified: <none>
      got:    sha256-…            # compare only: like a fixed-output derivation
-$ cakeys -c keys.toml realise signing-soft --token softhsm   # record it (the default); review the keys.lock diff
+$ cakeys -c keys.toml realise signing-soft --token softhsm   # record it (the default), print the resolved JSON; review the keys.lock diff
 $ cakeys -c keys.toml check signing     # later: verify, then print the URI (never writes)
 pkcs11:token=main;serial=...;object=signing;type=private
 ```
@@ -60,7 +62,7 @@ Verbs:
   an unexpected object. `gc` prints lock entries the config no longer names and removes exactly
   what it printed with `--apply`.
 - Exit codes: 10 hash mismatch, 11 not found, 12 ambiguous, 13 conflict, 14 precondition failed,
-  15 unsupported, 16 unavailable, 17 invalid spec.
+  15 unsupported, 16 unavailable, 17 invalid config, lock or spec; 1 I/O or other, 2 usage.
 
 ## Supported objects
 
@@ -70,6 +72,11 @@ Verbs:
 | certificates | X.509 | `certhash` plus the subject key's `rfc7093m4` |
 | secret keys | AES-128/192/256; generic secrets; `CKK_SHA{1,224,256,384,512}_HMAC` | on-token commitments: `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`, `commitment` (HMAC) |
 | data objects | public `CKO_DATA` | `valuehash` (SHA-256 of the value) |
+
+Opt-in attestation (`attestation = true` on a spec's token entry) adds signed provenance:
+`piv-attestation` (YubiKey PIV, verified to the pinned Yubico root) and `tpm-certify`
+(tpm2-pkcs11, a native `TPM2_Certify`). It is recorded per realisation beside the portable ID,
+never instead of it.
 
 ## Nix
 
@@ -109,14 +116,15 @@ reach tokens only through p11-kit forwarding or a real TPM, never through a toke
 ## Development
 
 ```console
-$ nix flake check            # unit, SoftHSM, tpm2-pkcs11 (swtpm), p11-kit, VM, module and TPM ACL tests
+$ nix flake check            # unit, SoftHSM, tpm2-pkcs11 (swtpm), p11-kit, VM, module and TPM ACL tests, minimal build
 $ nix build .#test-nspawn    # the same flow in systemd-nspawn (needs the uid-range feature)
 $ nix develop                # cargo, clippy, softhsm, opensc
 ```
 
 Plain `cargo test` skips the token suites unless `CAKEYS_TEST_MODULE` and friends are set (see the
 test file headers). It also builds cryptoki without the local HMAC key-type patch, which the Nix
-build applies. Third-party providers can be linked in: see
-`crates/cli/examples/custom-provider.rs`.
+build applies. The `tpm2` and `ykcs11` providers are default cargo features;
+`--no-default-features` builds without tpm2-tss and sqlite. Third-party providers can be linked
+in: see `crates/cli/examples/custom-provider.rs`.
 
 License: MIT OR Apache-2.0.
