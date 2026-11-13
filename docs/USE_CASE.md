@@ -108,3 +108,20 @@ Nix:
      URIs.
    - To decide whether (a) earns a place in keys.toml or (b) plus a documented pattern is
      enough, and whether "different" must require a shared scheme to be meaningful.
+
+2. **Other languages use a key the way they use a file or an HTTP endpoint: a defined resource
+   whose use can fail, in a known set of ways.** A program names a key (an object in keys.toml,
+   pinned in keys.lock) and asks for it; it gets the verified URI and IDs — never key material —
+   or an error it can handle like a missing file or a failed request, instead of trusting a URI
+   it cannot check.
+   - *The failures are already defined:* the exit codes map onto the errors such code handles
+     today — not found (11; ENOENT, 404), conflict (13; 409), precondition failed (14; 412),
+     unavailable (16; EIO, 503), hash mismatch (10; an integrity error, like a failed checksum),
+     invalid config (17).
+   - *Options:* (a) the CLI as the binding — any language runs `cakeys check` per use and reads
+     its JSON and exit code; works today, but makes the output a stable contract; (b) a library
+     with a C ABI over `cakeys-pkcs11`, wrapped per language ([`SCOPE.md`](SCOPE.md), "Library or crate use", waits
+     for such a consumer); (c) native packages per language.
+   - To decide: which of these is the contract; and the gap between check and use — a program
+     that checks, then opens the URI with its own PKCS#11 library, races a swapped key, which a
+     library could close by handing back the session and handle it verified.
