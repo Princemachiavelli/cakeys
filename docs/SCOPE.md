@@ -62,6 +62,19 @@ spec-compliant module would.
 - **Remote keystores beyond p11-kit forwarding** (KMIP, cloud KMS), as a backend crate if ever.
 - **Build systems other than Nix.** The CLI works anywhere; only the Nix integration is
   maintained.
+- **Changing an existing object's policy** (question, 2026-11-13). Today a live object whose
+  policy differs from its spec is a conflict (13), and drift from the recorded policy fails
+  `verify` (14) until `realise`; cakeys never writes attributes. The open question is a verb
+  that, when the *material* still matches the lock, accepts the spec's policy differences,
+  applies them with `C_SetAttributeValue`, reports per attribute whether the token took it,
+  then re-reads the object and records the new policy and `specDigest` (the object's IDs do not
+  change). PKCS#11 bounds what it could do: nothing on a `CKA_MODIFIABLE = false` object;
+  one-way changes only (`CKA_SENSITIVE` and `CKA_WRAP_WITH_TRUSTED` false → true,
+  `CKA_EXTRACTABLE` true → false); `CKA_TRUSTED` needs the SO; immutables never change; and
+  modules may refuse more (ykcs11, tpm2-pkcs11). To decide: whether it fits "records and
+  verifies, does not decide how keys are managed"; tightening only, or loosening too where a
+  token allows it; and whether a loosened key stays the same realisation or must be treated as
+  a downgrade.
 
 ## Minimize (some, but keep it small)
 
