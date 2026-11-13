@@ -4,6 +4,8 @@
 #   cakeys --config examples/yubikey-secureboot.toml \
 #     --module yubikey=$(nix build --no-link --print-out-paths nixpkgs#yubico-piv-tool.out)/lib/libykcs11.so \
 #     realise whonix-pk-piv --token yubikey
+#
+# What each line means, and how the lock it produces reads: docs/CONFIG.md and docs/LOCK.md.
 
 [tokens.yubikey]
 tokenLabel = "YubiKey PIV #39189318"

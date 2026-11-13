@@ -19,6 +19,8 @@ Status: proof of concept.
   management key), attests it, proves possession and verifies it.
 - **Design and current state:** [`docs/DESIGN.md`](docs/DESIGN.md).
 - **At a glance (diagrams):** [`docs/diagrams.md`](docs/diagrams.md).
+- **The two files, annotated:** [`docs/CONFIG.md`](docs/CONFIG.md) (`keys.toml`) and
+  [`docs/LOCK.md`](docs/LOCK.md) (`keys.lock`): what each line does, and why the tables are split.
 - **Open review findings:** [`docs/REVIEW-2026-11-11.md`](docs/REVIEW-2026-11-11.md).
 - **Roadmap and history:** [`PLAN.md`](PLAN.md).
 

@@ -295,6 +295,8 @@ content-addressed identity — one per token type that can produce it:
 
 ### 4.1 `keys.toml`
 
+Annotated, with the reasons behind each table: [`CONFIG.md`](CONFIG.md).
+
 ```toml
 [tokens.<name>]
 module = "/path/libfoo.so"     # or --module <name>=<path>; $NAME or ${NAME} reads the path from the environment (17 if unset)
@@ -370,6 +372,8 @@ What may be created and adopted:
   `CKA_CERTIFICATE_CATEGORY` — cryptoki 0.12 maps none of them.
 
 ### 4.2 `keys.lock` (input, updated in place)
+
+Annotated, with the reasons behind each table: [`LOCK.md`](LOCK.md).
 
 ```toml
 version = 1                          # required; any other version is refused (v1 is a draft, §10)

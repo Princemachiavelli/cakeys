@@ -202,7 +202,7 @@ provider = "ykcs11"
 cakeysVersion = "0.1.0"
 
 [realisations.whonix-db-piv.yubikey.provenance.module]
-path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
@@ -349,7 +349,7 @@ provider = "ykcs11"
 cakeysVersion = "0.1.0"
 
 [realisations.whonix-kek-piv.yubikey.provenance.module]
-path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
@@ -496,7 +496,7 @@ provider = "ykcs11"
 cakeysVersion = "0.1.0"
 
 [realisations.whonix-pk-piv.yubikey.provenance.module]
-path = "/nix/store/iffdlp93r9zlbg2xvlk43xjs5wvdb3sq-yubico-piv-tool-2.7.3/lib/libykcs11.so"
+path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
