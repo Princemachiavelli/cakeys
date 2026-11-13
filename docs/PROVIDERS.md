@@ -168,7 +168,7 @@ module build, diff), and vendor onboarding without writing a crate.
 |---|---|---|
 | 0 | **Done 2026-11-12.** Baseline generator (OASIS 3.2 headers → TOML), pinned by a test | ≈300 lines, 2–3 days |
 | 1 | **Done 2026-11-12.** The model, modes, intersection, queries, and the `supports` query | ≈500, 4–5 days |
-| 2 | Resolution (match keys, layers), the profile-backed `Provider`, wiring `mechanisms()`, migrate `Side` and unwrap templates to profiles | ≈400, 3–4 days |
+| 2 | **Done 2026-11-12.** Resolution (match keys, layers), wiring `mechanisms()`, migrate `Side` and the binding layer into profiles | ≈400, 3–4 days |
 | 3 | `probe`: the ~25 probes, the scratch guard, profile + diff; the conformance check in checks; the opt-in YubiKey probe | ≈700, 5–7 days |
 | 4 | The static `validate` gate, the wider Nix check (the query part moved here from phase 4 into phases 1's `supports`) | ≈300, 2–3 days |
 
@@ -196,20 +196,50 @@ dependency on the rest of cakeys, so the existing provider code is untouched:
   `provider`), repeatable `--layer`, `--bits`, `--class`, `--oaep`, `--profiles <dir>` (D11).
   `checks.profiles` runs the nine pinned query cases against the built binary.
 
-Kept out on purpose (the transparency rule): the provider trait, the token layer, the lock and
-the fixture configs are unchanged — `supports` reads keys.toml but touches no token, and every
-command still requires `--config`. The structural steps that remain, each flagged:
+Kept out on purpose (the transparency rule): the provider trait and its behaviour hooks, the
+lock and the fixture configs were unchanged — `supports` read keys.toml but touched no token,
+and every command still required `--config`. The structural steps phase 2 then took, and the
+ones it still defers, are with its results below.
 
-- **Phase 2 is where existing code changes.** Wiring `Provider::mechanisms`/`migration` and
-  the unwrap templates to read profiles replaces bodies in crates/pkcs11; the lock gains the
-  profile name in provenance (D8, a lock-v1 in-place change); profile auto-detection at token
-  open (D9's match keys) lands there too.
-- **Phase 3's scratch guard** adds a `scratch` key to `[tokens.<t>]` in keys.toml (a config
-  schema addition), and the probe fills the `advertise` lists that today make mechanism
-  queries answer unknown.
-- The cryptoki layer ships as `cryptoki/0.12-unpatched`, applied explicitly: a patched
-  (nix-built) cakeys names no layer. A build-time selection between the two would be a build
-  change; it is deliberately not attempted.
+### Phase 2 results (2026-11-12)
+
+The token layer resolves each open token's capability stack, and the profiles decide what the
+planner and the mechanism list see:
+
+- **The binding layer is automatic and self-healing** (D3): renamed to `cryptoki/0.12` and
+  injected into every stack — `Token::open`, `supports`, and the lock- and transport-file
+  planners alike. What it subtracts is decided at run time
+  (crates/pkcs11/src/binding.rs): a cryptoki with the HMAC key-type fix — the Nix patches, or
+  the upstream PRs released — subtracts nothing, so the patch fixes the bug *and* the layer
+  records it, and the answer heals itself when upstream ships. `checks.profiles` models an
+  unpatched binding through `--profiles` to keep that path tested from a patched build.
+- **Resolution** (crates/pkcs11/src/resolution.rs): the binding layer first; a forwarder
+  recognised from the module itself (`p11-kit/0.26` when `C_GetInfo` names "PKCS#11 Kit",
+  the hidden module still reachable through `provider = "..."`); `tokens.<t>.profiles = [...]`
+  for the rest (swtpm; a config schema addition, CONFIG.md); the module profile by provider
+  family, its version matched against what `C_GetInfo` expresses — the one committed version of
+  a family matching by manufacturer alone, flagged low-evidence in the resolution notes
+  (kryoptic reports 0.0 [run]).
+- **`mechanisms()` is data**: the advertisement filtered by the resolved stack's subtractions;
+  `Tpm2Pkcs11`'s override is deleted, its rows in profiles/modules/tpm2-pkcs11/1.10.toml. A
+  token with no resolved profile keeps the provider's own filter.
+- **`Side` is data**: the migration capability rows (`[migration]`: exports/unwraps,
+  `plaintext-import` and its `accepts`, `public-accepts`; `wrap.oaep` for the hashes) are built
+  from the module profile wherever one resolves — `SoftHsm::migration`, `Ykcs11::migration`
+  and `Tpm2Pkcs11::migration` are deleted. The layer subtractions apply to the plan too: an
+  unpatched binding drops the KWP method and the SHA-2 HMAC accept rows.
+- **`caps` prints the stack** it decided by; `unwrap_refusals` exposes the template rules for
+  MIGRATE phase 3 to consume.
+
+Not done here, flagged:
+
+- **D8 (the lock records the profile name) is deferred** to MIGRATE's lock change: `Provenance`
+  has `deny_unknown_fields`, so adding a field breaks `xversion.sh`'s byte-identical re-record
+  of existing locks — the break must happen once, with MIGRATE D7's `origin`, not now.
+- The unwrap-template rules (`unwrap.refuse`) are defined and exposed but unconsumed: MIGRATE
+  phase 3, where the wrapping code exists, is their consumer.
+- **Phase 3's scratch guard** still adds a `scratch` key to `[tokens.<t>]` in keys.toml, and
+  the probe still fills the `advertise` lists that today make mechanism queries answer unknown.
 
 ≈2.2k lines, 2–3 weeks, in line with docs/PROVIDER_PROFILE.md's estimate.
 

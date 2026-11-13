@@ -1,41 +1,195 @@
 //! Export and import against tokens and the lock (MIGRATE.md): each side's capabilities, the
-//! objects a source holds, and the transport key. The decisions are `cakeys_core::migrate`'s.
+//! objects a source holds, and the transport key. The decisions are `cakeys_core::migrate`'s;
+//! each side's capabilities come from the token's resolved capability profiles
+//! (docs/PROVIDERS.md phase 2) when one is committed for its provider, else from the
+//! provider's own `migration` hook.
 
 use crate::ops::{self, Notes, Target};
+use crate::resolution::{self, Resolved};
 use crate::{Registry, Token};
-use cakeys_core::config::{AttrValue, Lock};
-use cakeys_core::migrate::{Material, Side, Transport};
+use cakeys_core::config::{AttrValue, Lock, ModuleInfo, TokenCfg};
+use cakeys_core::migrate::{Accept, Material, OaepHash, PlaintextImport, Side, Transport};
 use cakeys_core::types::{KeyType, ObjectClass};
 use cakeys_core::{KmError, Result};
+use cakeys_profile::{PlaintextKind, Profile};
 use std::collections::BTreeSet;
+use std::str::FromStr;
 
 pub use cakeys_core::migrate::{Allow, FileFormat, Plan, To, plan};
 
-/// A token's capabilities, from the open token: its provider's profile over its usable
-/// mechanisms.
-#[must_use]
-pub fn side(tok: &Token) -> Side {
-    tok.provider.migration(&tok.name, tok.mechanism_names())
+/// A token's capabilities, from the open token: its resolved capability profile over its
+/// usable mechanisms, the layers' subtractions included; the provider's `migration` hook
+/// when no module profile is committed for it.
+///
+/// # Errors
+///
+/// The mapping error when a committed profile's migration rows name something the baseline
+/// does not know: a commit-time bug in the profile, named with its profile.
+pub fn side(tok: &Token) -> Result<Side> {
+    match &tok.profiles.module {
+        Some(p) => side_of(p, &tok.profiles, &tok.name, tok.provider.name(), tok.mechanism_names()),
+        None => Ok(tok.provider.migration(&tok.name, tok.mechanism_names())),
+    }
 }
 
 /// A token's capabilities from the lock alone, for a token this host cannot open: the provider
-/// its realisations recorded and the union of their observed mechanisms. `None` when the lock
-/// records nothing on the token, or a provider this build does not link.
+/// its realisations recorded, the union of their observed mechanisms, and the profiles that
+/// resolve from what the lock recorded. `None` when the lock records nothing on the token, or
+/// a provider this build does not link.
 #[must_use]
-pub fn side_from_lock(token: &str, lock: &Lock, registry: &Registry) -> Option<Side> {
+pub fn side_from_lock(token: &str, lock: &Lock, registry: &Registry) -> Option<Result<Side>> {
     let recorded: Vec<_> = lock.realisations.values().filter_map(|by_token| by_token.get(token)).collect();
     let provider = recorded.iter().find_map(|r| r.provenance.as_ref().map(|p| p.provider.clone()))?;
     let mechanisms: BTreeSet<String> =
         recorded.iter().filter_map(|r| r.observed.as_ref()).flat_map(|o| o.mechanisms.iter().cloned()).collect();
     let mechanisms: Vec<String> = mechanisms.into_iter().collect();
-    Some(registry.named(&provider)?.migration(token, &mechanisms))
+    // The lock records the module and the token it ran against: resolve what the profiles say
+    // about exactly that (the forwarder, the binding layer), like an open would.
+    let module = recorded.iter().find_map(|r| r.provenance.as_ref().map(|p| p.module.clone()))?;
+    let cfg = TokenCfg { provider: Some(provider.clone()), ..lockless_token_cfg() };
+    let resolved = resolution::resolve(&cfg, &module, &provider).ok()?;
+    if resolved.module.is_none() {
+        return Some(Ok(registry.named(&provider)?.migration(token, &mechanisms)));
+    }
+    Some(side_of(resolved.module.as_ref()?, &resolved, token, &provider, &mechanisms))
 }
 
 /// A target's capabilities from its transport file: its provider's profile over the mechanisms
 /// the file lists (`None`: a provider this build does not link).
 #[must_use]
-pub fn side_from_transport(t: &Transport, registry: &Registry) -> Option<Side> {
-    Some(registry.named(&t.provider)?.migration(&t.token, &t.mechanisms))
+pub fn side_from_transport(t: &Transport, registry: &Registry) -> Option<Result<Side>> {
+    let resolved = resolution::resolve(&lockless_token_cfg(), &moduleless_info(), &t.provider).ok()?;
+    match resolved.module {
+        Some(ref p) => Some(side_of(p, &resolved, &t.token, &t.provider, &t.mechanisms)),
+        None => Some(Ok(registry.named(&t.provider)?.migration(&t.token, &t.mechanisms))),
+    }
+}
+
+/// The per-module unwrap-template rules, as data (MIGRATE.md D6): what the wrapping code of
+/// MIGRATE phase 3 must drop from a target's unwrap template (`SoftHSM`: `CKA_VALUE_LEN`).
+#[must_use]
+pub fn unwrap_refusals(tok: &Token) -> Vec<&str> {
+    let mut out: Vec<&str> =
+        tok.profiles.module.as_ref().map(|p| p.unwrap.refuse.iter().map(String::as_str).collect()).unwrap_or_default();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Build a [`Side`] from a module profile over a resolved stack: the spec-compliant base,
+/// with the profile's migration rows (and its wrap hashes) applied, the layers' mechanism and
+/// key-type subtractions honoured.
+///
+/// # Errors
+///
+/// The mapping error when a row names a class, key type, curve or hash the baseline does not
+/// know, naming the profile and the row.
+fn side_of(module: &Profile, stack: &Resolved, token: &str, provider: &str, mechanisms: &[String]) -> Result<Side> {
+    let who = |what: &str| KmError::Validation(format!("module profile {}: {what}", module.profile));
+    let mut side = Side::pkcs11(token, provider, mechanisms.iter().cloned());
+    // What the stack subtracts: the advertisement's broken rows and every layer's drops.
+    side.mechanisms.retain(|m| !stack.subtracted_mechanisms().contains(m.as_str()));
+    let m = module.migration.as_ref();
+    if let Some(exports) = m.and_then(|m| m.exports) {
+        side.exports = exports;
+    }
+    if let Some(unwraps) = m.and_then(|m| m.unwraps) {
+        side.unwraps = unwraps;
+    }
+    if !module.wrap.oaep.is_empty() {
+        side.oaep = module.wrap.oaep.iter().map(|h| oaep_hash(h).map_err(|e| who(&e))).collect::<Result<_>>()?;
+    }
+    if let Some(rows) = m.map(|m| &m.public_accepts).filter(|r| !r.is_empty()) {
+        side.public_import =
+            rows.iter().filter_map(|r| accept_of(r, stack).map_err(|e| who(&e)).transpose()).collect::<Result<_>>()?;
+    }
+    if let Some(kind) = m.and_then(|m| m.plaintext_import) {
+        let rows: &[cakeys_profile::AcceptRow] = m.map(|m| m.plaintext_accepts.as_slice()).unwrap_or_default();
+        let accepts: Vec<Accept> =
+            rows.iter().filter_map(|r| accept_of(r, stack).map_err(|e| who(&e)).transpose()).collect::<Result<_>>()?;
+        side.plaintext_import = Some(match kind {
+            PlaintextKind::CreateObject => PlaintextImport::CreateObject,
+            PlaintextKind::Tpm2Ptool => PlaintextImport::Tpm2Ptool(accepts),
+            PlaintextKind::PivImport => PlaintextImport::PivImport(accepts),
+        });
+    }
+    Ok(side)
+}
+
+/// One migration accept row, as the planner's [`Accept`], or [`None`] when a layer subtracts
+/// every key type the row names: the binding cannot name them, so they are not imported
+/// through it either.
+fn accept_of(row: &cakeys_profile::AcceptRow, stack: &Resolved) -> std::result::Result<Option<Accept>, String> {
+    let class = ObjectClass::from_str(&row.class).map_err(|e| format!("{}: {e}", row.class))?;
+    let key_types: std::result::Result<Vec<KeyType>, String> = row
+        .key_types
+        .iter()
+        .filter(|k| !stack.subtracted_key_types().contains(k.as_str()))
+        .map(|k| KeyType::from_str(k).map_err(|e| format!("{k}: {e}")))
+        .collect();
+    let key_types = key_types?;
+    if !row.key_types.is_empty() && key_types.is_empty() {
+        return Ok(None);
+    }
+    let curves: std::result::Result<Vec<&'static str>, String> = row
+        .curves
+        .iter()
+        .map(|c| {
+            cakeys_profile::baseline::CURVES
+                .iter()
+                .copied()
+                .find(|known| known.eq(&c.as_str()))
+                .ok_or_else(|| format!("unknown curve: {c}"))
+        })
+        .collect();
+    Ok(Some(Accept {
+        class,
+        key_types,
+        curves: curves?,
+        modulus_bits: match (row.min_bits, row.max_bits) {
+            (Some(lo), Some(hi)) => Some((lo, hi)),
+            (None, Some(hi)) => Some((0, hi)),
+            (Some(lo), None) => Some((lo, u32::MAX)),
+            (None, None) => None,
+        },
+    }))
+}
+
+/// `SHA-1`/`SHA-256` as [`OaepHash`]es.
+fn oaep_hash(name: &str) -> std::result::Result<OaepHash, String> {
+    match name {
+        "SHA-1" => Ok(OaepHash::Sha1),
+        "SHA-256" => Ok(OaepHash::Sha256),
+        other => Err(format!("unknown OAEP hash: {other}")),
+    }
+}
+
+/// A minimal token config for resolution from records: nothing extra, the provider pinned.
+fn lockless_token_cfg() -> TokenCfg {
+    TokenCfg {
+        module: None,
+        provider: None,
+        profiles: vec![],
+        token_label: String::new(),
+        pin_file: None,
+        pin_env: None,
+        mgm_key_file: None,
+        mgm_key_env: None,
+        system_feature: None,
+        options: toml::Table::new(),
+    }
+}
+
+/// The `ModuleInfo` a transport file implies: only the provider is known, so nothing to
+/// detect a forwarder from — the binding layer still applies.
+fn moduleless_info() -> ModuleInfo {
+    ModuleInfo {
+        path: String::new(),
+        description: String::new(),
+        manufacturer: String::new(),
+        version: String::new(),
+        cryptoki: String::new(),
+    }
 }
 
 /// The objects realised on `token` (only `object`, if given), with what the planner needs from

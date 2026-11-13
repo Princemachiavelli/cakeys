@@ -55,6 +55,11 @@ pinFile = "$TPM_PIN_FILE"
 # Optional: the provider (the module's quirks profile, DESIGN §6.2) is normally detected from
 # C_GetInfo; naming it is needed behind p11-kit, which hides the module behind it.
 provider = "tpm2-pkcs11"
+# Delta capability layers between cakeys and the token (docs/PROVIDERS.md), by name or family:
+# the hardware under the module (swtpm), or anything else the stack applies. The cryptoki
+# binding layer is always applied (and heals itself when its fix is in); p11-kit is detected
+# from the module. Unknown names refuse (17).
+profiles = ["swtpm"]
 # The Nix library's feature name for builds that need this token (default "token-<name>").
 systemFeature = "token-tpm"
 

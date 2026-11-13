@@ -1,15 +1,18 @@
-# The cryptoki binding this cakeys was built against, without the Nix patches: the one layer
-# whose answers differ per build (D11). The Nix build applies both patches, so a nix-built
-# cakeys subtracts nothing and names no layer; a plain `cargo build` is this file.
-profile = "cryptoki/0.12-unpatched"
+# The cryptoki binding this cakeys runs against — the one layer between cakeys and every
+# module, applied automatically (PROVIDERS.md D3). Its rows are what cryptoki 0.12.1 breaks;
+# a binding with the fix (the Nix patches, or the upstream PRs released) subtracts nothing:
+# cakeys detects that at run time (crates/pkcs11/src/binding.rs), so the layer records the
+# fix as soon as the implementation carries it.
+profile = "cryptoki/0.12"
 mode = "delta"
 
 [subtract]
 mechanisms = ["CKM_AES_KEY_WRAP_KWP"]
 key-types = ["CKK_SHA224_HMAC", "CKK_SHA384_HMAC", "CKK_SHA512_HMAC"]
-note = "cryptoki 0.12.1 without the Nix patches (cryptoki-hmac-key-types, cryptoki-aes-key-wrap-kwp) [run]"
+note = "cryptoki 0.12.1 without the key-type fix (upstream/rust-cryptoki); a patched binding subtracts nothing"
 
 [notes]
 CKK_SHA224_HMAC = "cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart"
 CKK_SHA384_HMAC = "cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart"
 CKK_SHA512_HMAC = "cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart"
+CKM_AES_KEY_WRAP_KWP = "cryptoki 0.12.1 has no constant for it; a patched binding names it (nix/patches/cryptoki-aes-key-wrap-kwp.patch)"

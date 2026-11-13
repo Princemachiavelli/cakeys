@@ -36,11 +36,16 @@ pub struct Token {
     pub label: String,
     pub module: ModuleInfo,
     pub token: TokenInfo,
-    /// Usable mechanisms: advertised ones, filtered by the provider.
+    /// Usable mechanisms: advertised ones, minus what the resolved capability profiles
+    /// subtract (the module's advertised-but-broken rows and every layer's), else minus
+    /// what the provider's override drops.
     pub mechanisms: Vec<MechanismType>,
     /// Their names, sorted: what the lock records and `caps` prints.
     mechanism_names: Vec<String>,
     pub provider: Arc<dyn Provider>,
+    /// The resolved capability profiles (docs/PROVIDERS.md): the module profile and the
+    /// delta layers between cakeys and it, with the notes resolution noticed on the way.
+    pub profiles: crate::resolution::Resolved,
     session: Session,
     /// Logged in as the user: private objects are visible. Otherwise a public session.
     pub logged_in: bool,
@@ -111,7 +116,21 @@ impl Token {
         let (slot, token) = slot.ok_or_else(|| {
             KmError::Unavailable(format!("token '{}' not present in {}", cfg.token_label, module.path))
         })?;
-        let mechanisms = provider.mechanisms(ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?);
+        // The capability profiles (docs/PROVIDERS.md phase 2): the module profile follows the
+        // provider (D9), the binding layer is always in the stack, a forwarder the module
+        // names and the config's extras with it. What the stack subtracts filters the
+        // advertisement; a token with no resolved profile keeps the provider's own filter.
+        let profiles = crate::resolution::resolve(cfg, &module, provider.name()).map_err(KmError::Validation)?;
+        let advertised = ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?;
+        let stack_decides = profiles.module.is_some() || profiles.layers.len() > 1;
+        let mechanisms = if stack_decides {
+            advertised
+                .into_iter()
+                .filter(|m| !profiles.subtracted_mechanisms().contains(m.to_string().as_str()))
+                .collect()
+        } else {
+            provider.mechanisms(advertised)
+        };
         let mut mechanism_names: Vec<String> = mechanisms.iter().map(std::string::ToString::to_string).collect();
         mechanism_names.sort();
         let session = ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?;
@@ -129,6 +148,7 @@ impl Token {
             token,
             mechanisms,
             mechanism_names,
+            profiles,
             session,
             logged_in: pin.is_some(),
             cfg: cfg.clone(),

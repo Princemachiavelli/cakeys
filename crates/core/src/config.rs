@@ -27,6 +27,12 @@ pub struct TokenCfg {
     pub module: Option<String>,
     /// Provider crate handling this module's quirks; auto-detected from `C_GetInfo` if unset.
     pub provider: Option<String>,
+    /// Delta capability layers to compose over the module profile (docs/PROVIDERS.md), by name
+    /// or family: the hardware under the module (`swtpm`), or anything else between cakeys
+    /// and it. The cryptoki binding layer is always applied; p11-kit is detected from the
+    /// module itself. Unknown names refuse (17).
+    #[serde(default)]
+    pub profiles: Vec<String>,
     pub token_label: String,
     pub pin_file: Option<PathBuf>,
     pub pin_env: Option<String>,

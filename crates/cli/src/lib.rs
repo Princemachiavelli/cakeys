@@ -240,10 +240,19 @@ fn open_token(
     Token::open(name, tcfg, modules.get(name).map(String::as_str), registry)
 }
 
+/// What the `supports` query resolved and answered.
+struct Support {
+    /// The resolved module profile's name ("(none)" without one).
+    module: String,
+    /// The stack's layer names, the binding layer first.
+    layers: Vec<String>,
+    /// One verdict per asked name.
+    verdicts: Vec<(String, cakeys_profile::Verdict)>,
+}
+
 /// Resolve what the `supports` query asks (docs/PROVIDERS.md): the embedded profiles plus
 /// any `--profiles` directory, the module profile (named, or through a token's `provider`),
-/// the delta layers on top, and the answers. Returns the resolved module profile's name for
-/// the run's notes, and one verdict per asked name.
+/// the delta layers on top, and the answers.
 #[allow(clippy::too_many_arguments)] // one parameter per CLI flag: grouping them buys nothing
 fn supports(
     cfg: &Config,
@@ -255,7 +264,7 @@ fn supports(
     name: Option<&str>,
     bits: Option<u32>,
     profiles_dir: Option<&std::path::Path>,
-) -> anyhow::Result<(String, Vec<(String, cakeys_profile::Verdict)>)> {
+) -> anyhow::Result<Support> {
     let validation = |e: String| -> anyhow::Error { KmError::Validation(e).into() };
     let mut set =
         cakeys_profile::Set::embedded().map_err(validation).with_context(|| "the embedded profiles do not parse")?;
@@ -273,10 +282,20 @@ fn supports(
         }
         (None, None) => None,
     };
-    let resolved: Vec<&cakeys_profile::Profile> =
-        layers.iter().map(|l| set.find(l)).collect::<Result<_, _>>().map_err(validation)?;
+    // The cryptoki binding layer is always in the stack (docs/PROVIDERS.md phase 2): what it
+    // subtracts is decided by the build this binary runs against, so an explicit `--layer
+    // cryptoki/0.12` adds nothing it has not already decided.
+    let mut resolved: Vec<cakeys_profile::Profile> = vec![cakeys_pkcs11::binding::layer().map_err(validation)?];
+    for l in layers {
+        let p = set.find(l).map_err(validation)?.clone();
+        if p.profile == "cryptoki/0.12" {
+            continue;
+        }
+        resolved.push(p);
+    }
+    let stack: Vec<&cakeys_profile::Profile> = resolved.iter().collect();
     let baseline = set.baseline().map_err(validation)?;
-    let eff = cakeys_profile::Effective::new(baseline, module, &resolved);
+    let eff = cakeys_profile::Effective::new(baseline, module, &stack);
     let verdicts = if let Some(class) = class {
         eff.class(class).ok_or_else(|| {
             KmError::Validation(format!(
@@ -293,7 +312,8 @@ fn supports(
         unreachable!("clap requires a name, --class or --oaep")
     };
     let module_name = module.map_or_else(|| "(none)".to_owned(), |m| m.profile.clone());
-    Ok((module_name, verdicts))
+    let stack_names: Vec<String> = resolved.iter().map(|p| p.profile.clone()).collect();
+    Ok(Support { module: module_name, layers: stack_names, verdicts })
 }
 
 fn run(registry: &Registry) -> anyhow::Result<()> {
@@ -412,6 +432,10 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
             print(&serde_json::json!({
                 "token": token,
                 "provider": tok.provider.name(),
+                "profiles": {
+                    "module": tok.profiles.module_name(),
+                    "layers": tok.profiles.layer_names(),
+                },
                 "mechanisms": tok.mechanism_names(),
             }));
         }
@@ -454,15 +478,19 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
                 *bits,
                 profiles_dir.as_deref(),
             )?;
-            notes.note(format_args!("profiles: module {}, layers [{}] (docs/PROVIDERS.md)", eff.0, layers.join(", ")));
-            for (n, v) in &eff.1 {
+            notes.note(format_args!(
+                "profiles: module {}, layers [{}] (docs/PROVIDERS.md)",
+                eff.module,
+                eff.layers.join(", ")
+            ));
+            for (n, v) in &eff.verdicts {
                 println!("{n}: {v}");
             }
-            let any_no = eff.1.iter().any(|(_, v)| matches!(v, cakeys_profile::Verdict::No { .. }));
-            let any_unknown = eff.1.iter().any(|(_, v)| matches!(v, cakeys_profile::Verdict::Unknown { .. }));
+            let any_no = eff.verdicts.iter().any(|(_, v)| matches!(v, cakeys_profile::Verdict::No { .. }));
+            let any_unknown = eff.verdicts.iter().any(|(_, v)| matches!(v, cakeys_profile::Verdict::Unknown { .. }));
             if any_no {
                 let names: Vec<&str> = eff
-                    .1
+                    .verdicts
                     .iter()
                     .filter(|(_, v)| matches!(v, cakeys_profile::Verdict::No { .. }))
                     .map(|(n, _)| n.as_str())
@@ -527,9 +555,15 @@ impl Moves<'_> {
                 let t = Transport::parse(&text, path)?;
                 // Phase 3b sets this only after the source's SO marked the key trusted there.
                 allow.trusted_transport = t.trusted;
-                let side = migrate::side_from_transport(&t, self.registry).ok_or_else(|| {
-                    KmError::Unsupported(format!("{}: provider '{}' is not in this build", path.display(), t.provider))
-                })?;
+                let side = migrate::side_from_transport(&t, self.registry)
+                    .ok_or_else(|| {
+                        KmError::Unsupported(format!(
+                            "{}: provider '{}' is not in this build",
+                            path.display(),
+                            t.provider
+                        ))
+                    })?
+                    .map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
                 (Some(side), "transport file", t.token)
             }
             Dest::File(f) => (None, "-", format!("{f:?} file").to_lowercase()),
@@ -575,13 +609,13 @@ impl Moves<'_> {
     /// A token's capabilities: from the open token, else from what the lock recorded there.
     fn side(&self, name: &str, notes: &mut Notes) -> Result<(Side, &'static str), KmError> {
         match open_token(self.cfg, self.modules, self.registry, name) {
-            Ok(tok) => Ok((migrate::side(&tok), "token")),
+            Ok(tok) => Ok((migrate::side(&tok)?, "token")),
             Err(e) => match migrate::side_from_lock(name, self.lock, self.registry) {
                 Some(side) => {
                     notes.note(format_args!(
                         "capabilities of '{name}' come from the lock: the token did not open ({e})"
                     ));
-                    Ok((side, "lock"))
+                    Ok((side?, "lock"))
                 }
                 None => Err(e),
             },

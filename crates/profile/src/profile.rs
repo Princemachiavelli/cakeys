@@ -89,6 +89,56 @@ pub struct Restrict {
     pub note: Option<String>,
 }
 
+/// How plaintext material gets into a token (the `host` paths), as data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlaintextKind {
+    /// `C_CreateObject` with the key's attributes (any module that accepts it).
+    CreateObject,
+    /// `tpm2_ptool import`.
+    Tpm2Ptool,
+    /// ykcs11's `C_CreateObject` as SO into a PIV slot.
+    PivImport,
+}
+
+/// One row of what a module's import paths take: a class, and optionally only some key types,
+/// curves, or an inclusive RSA modulus range (empty: any).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct AcceptRow {
+    pub class: String,
+    #[serde(default, rename = "key-types")]
+    pub key_types: Vec<String>,
+    #[serde(default)]
+    pub curves: Vec<String>,
+    #[serde(default, rename = "min-bits")]
+    pub min_bits: Option<u32>,
+    #[serde(default, rename = "max-bits")]
+    pub max_bits: Option<u32>,
+}
+
+/// How a module moves keys (MIGRATE.md D2/D10), as data. Absent fields mean a spec-compliant
+/// PKCS#11 module: it wraps and unwraps with what it lists and imports public objects and
+/// plaintext keys with `C_CreateObject`. The OAEP hashes come from `wrap.oaep`, the one row
+/// the `--oaep` query shares.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct Migration {
+    /// Whether the module ever wraps a key out (`C_WrapKey`): ykcs11 and tpm2-pkcs11 never.
+    #[serde(default)]
+    pub exports: Option<bool>,
+    /// Whether the module unwraps a key in (`C_UnwrapKey`).
+    #[serde(default)]
+    pub unwraps: Option<bool>,
+    /// How plaintext private and secret keys get in, if at all.
+    #[serde(default, rename = "plaintext-import")]
+    pub plaintext_import: Option<PlaintextKind>,
+    /// What the plaintext import takes.
+    #[serde(default, rename = "plaintext-accepts", alias = "plaintext_accepts")]
+    pub plaintext_accepts: Vec<AcceptRow>,
+    /// Public objects `C_CreateObject` takes; the spec-compliant classes when empty.
+    #[serde(default, rename = "public-accepts")]
+    pub public_accepts: Vec<AcceptRow>,
+}
+
 /// One capability profile: `profile` names it ("family/version"), `mode` picks its semantics,
 /// and the rest are its rows.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -118,6 +168,9 @@ pub struct Profile {
     pub generate: BTreeMap<String, GenerateRow>,
     #[serde(default)]
     pub unwrap: Unwrap,
+    /// How the module moves keys (MIGRATE.md), when it deviates from a spec-compliant module.
+    #[serde(default)]
+    pub migration: Option<Migration>,
     #[serde(default)]
     pub restrict: Vec<Restrict>,
     /// Freeform evidence, keyed by the name each note explains (shown in verdicts).

@@ -18,6 +18,32 @@ can = ["secp256r1", "secp384r1"]
 [generate."CKK_EC_EDWARDS"]
 can = ["edwards25519"]
 
+# PIV keys never leave the device and come in only through ykcs11's `C_CreateObject` as SO,
+# into the slot the locator names [src]. Imported keys are never attested.
+[migration]
+exports = false
+unwraps = false
+plaintext-import = "piv-import"
+
+[[migration.public-accepts]]
+class = "CKO_CERTIFICATE"
+
+[[migration.plaintext-accepts]]
+class = "CKO_PRIVATE_KEY"
+key-types = ["CKK_RSA"]
+min-bits = 1024
+max-bits = 4096
+
+[[migration.plaintext-accepts]]
+class = "CKO_PRIVATE_KEY"
+key-types = ["CKK_EC"]
+curves = ["secp256r1", "secp384r1"]
+
+[[migration.plaintext-accepts]]
+class = "CKO_PRIVATE_KEY"
+key-types = ["CKK_EC_EDWARDS"]
+curves = ["edwards25519"]
+
 [notes]
 so = "creates and destroys only after C_Login(CKU_SO) with the PIV management key [src]"
 destroy = "C_DestroyObject writes an empty certificate and leaves the key in the slot; delete it with ykman [run]"

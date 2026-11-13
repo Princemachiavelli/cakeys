@@ -21,7 +21,7 @@ pub mod profile;
 
 pub use baseline::Baseline;
 pub use effective::{Effective, Verdict};
-pub use profile::{GenerateRow, MatchInfo, Mode, Profile};
+pub use profile::{AcceptRow, GenerateRow, MatchInfo, Migration, Mode, PlaintextKind, Profile};
 
 use std::path::Path;
 
@@ -97,6 +97,13 @@ impl Set {
         self.baselines.first().map(|(_, b)| b).ok_or_else(|| "no baseline loaded".to_owned())
     }
 
+    /// Every loaded profile, in load order: what resolution iterates to match modules and
+    /// forwarders by their `match` rows.
+    #[must_use]
+    pub fn all(&self) -> &[Profile] {
+        &self.profiles
+    }
+
     /// The profile named `name`, by its exact name ("softhsm/2.7") or, when only one version of
     /// the family is loaded, by its family ("softhsm") — what a keys.toml `provider` names.
     ///
@@ -149,15 +156,7 @@ mod tests {
         let names: Vec<_> = set.profiles.iter().map(|p| p.profile.as_str()).collect();
         assert_eq!(
             names,
-            [
-                "swtpm",
-                "cryptoki/0.12-unpatched",
-                "p11-kit/0.26",
-                "kryoptic/1.5",
-                "softhsm/2.7",
-                "tpm2-pkcs11/1.10",
-                "ykcs11/2.7"
-            ]
+            ["swtpm", "cryptoki/0.12", "p11-kit/0.26", "kryoptic/1.5", "softhsm/2.7", "tpm2-pkcs11/1.10", "ykcs11/2.7"]
         );
         // find: exact name, unique family, a family of none, an unknown name.
         assert_eq!(set.find("softhsm/2.7").unwrap().profile, "softhsm/2.7");
@@ -174,14 +173,20 @@ mod tests {
         assert!(matches!(eff.mechanism("CKM_SHA512_HMAC"), Verdict::Unknown { .. })); // partial module
         assert_eq!(set.find("softhsm/2.7").unwrap().wrap.oaep.as_slice(), ["SHA-1".to_owned()].as_slice());
 
-        // The cryptoki layer kills the SHA-512 HMAC key type (unpatched builds, [run]).
-        let cryptoki = set.find("cryptoki/0.12-unpatched").unwrap();
+        // The cryptoki layer kills the SHA-512 HMAC key type in an unpatched binding [run];
+        // whether this build's binding is patched is crates/pkcs11's runtime check.
+        let cryptoki = set.find("cryptoki/0.12").unwrap();
         let cryptoki_layers = [cryptoki];
         let eff = Effective::new(b, Some(softhsm), &cryptoki_layers[..]);
         assert!(matches!(
             eff.generate("CKK_SHA512_HMAC", None, None),
-            Verdict::No { by, .. } if by == "cryptoki/0.12-unpatched"
+            Verdict::No { by, .. } if by == "cryptoki/0.12"
         ));
+        // The migration rows are data: ykcs11's PIV import and tpm2's ptool import.
+        let yk = set.find("ykcs11/2.7").unwrap();
+        assert_eq!(yk.migration.as_ref().unwrap().plaintext_accepts.len(), 3);
+        let tpm2 = set.find("tpm2-pkcs11/1.10").unwrap();
+        assert_eq!(tpm2.migration.as_ref().unwrap().plaintext_accepts.len(), 3);
 
         // swtpm caps RSA generation at 3072 bits (D10's hardware layer, [run]).
         let swtpm = set.find("swtpm").unwrap();
