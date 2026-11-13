@@ -1,4 +1,4 @@
-//! The native TPM2_Certify attestation path for tpm2-pkcs11 tokens (docs/DESIGN.md §3.7).
+//! The native `TPM2_Certify` attestation path for tpm2-pkcs11 tokens (docs/DESIGN.md §3.7).
 //!
 //! tpm2-pkcs11 exposes no attestation through PKCS#11, so cakeys reaches the TPM itself:
 //! the object's TPM blobs are read from the module's store, loaded under the token's primary
@@ -7,7 +7,7 @@
 //! `TPM2_Certify` signs the object's Name — so a store that lies about what it holds cannot
 //! produce a matching attestation.
 //!
-//! Everything the host can check, it checks itself: the attestation is verified with RustCrypto
+//! Everything the host can check, it checks itself: the attestation is verified with `RustCrypto`
 //! against the AK's public key, its Name is recomputed from the store's public blob, and the
 //! key material it names is cross-checked against the object's SPKI. The qualifying data is a
 //! fresh random nonce, so the response proves the object is *currently loaded in that TPM*.
@@ -42,7 +42,7 @@ pub struct Certified {
     pub qualified_name: Vec<u8>,
     /// The canonical SPKI of the AK: the anchor the lock pins.
     pub ak_spki: Vec<u8>,
-    /// The signed `objectAttributes`, as the module derives CKA_LOCAL and CKA_EXTRACTABLE.
+    /// The signed `objectAttributes`, as the module derives `CKA_LOCAL` and `CKA_EXTRACTABLE`.
     pub local: bool,
     pub extractable: bool,
 }
@@ -113,7 +113,7 @@ pub fn attestation_key(ctx: &mut Context, handle: u32, provision: bool) -> Resul
 }
 
 /// The Attestation Key's public area as cakeys provisions it (`unique` left for the TPM). A
-/// restricted signing key may sign only TPM-generated structures (TPM2_Certify among them),
+/// restricted signing key may sign only TPM-generated structures (`TPM2_Certify` among them),
 /// never caller-chosen data.
 fn ak_template() -> Result<Public> {
     let params = PublicEccParametersBuilder::new()
@@ -270,11 +270,15 @@ fn blobs(priv_blob: &[u8], pub_blob: &[u8]) -> Result<(Private, Public)> {
 }
 
 /// Unmarshal a marshaled `TPM2B_PUBLIC` (as the store holds it) into a tss-esapi `Public`.
+#[allow(unsafe_code)]
 pub fn unmarshal_public(pub_blob: &[u8]) -> Result<Public> {
     let mut public = esys::TPM2B_PUBLIC::default();
     let mut offset = 0u64;
+    // SAFETY: `pub_blob` is valid for reads of `pub_blob.len()` bytes, and `offset` and
+    // `public` are valid, distinct locals the callee only writes through the pointers given;
+    // it touches nothing else.
     let rc = unsafe {
-        esys::Tss2_MU_TPM2B_PUBLIC_Unmarshal(pub_blob.as_ptr(), pub_blob.len() as u64, &mut offset, &mut public)
+        esys::Tss2_MU_TPM2B_PUBLIC_Unmarshal(pub_blob.as_ptr(), pub_blob.len() as u64, &raw mut offset, &raw mut public)
     };
     if rc != 0 {
         return Err(KmError::Conflict(format!("the store's public blob does not unmarshal (rc 0x{rc:x})")));
@@ -314,15 +318,26 @@ pub fn certify(ctx: &mut Context, key: KeyHandle, key_auth: &[u8], ak: KeyHandle
 /// The exact bytes the TPM signed: the `TPMS_ATTEST` re-marshaled. TPM marshaling is canonical
 /// and the magic field — which the safe view drops — is part of the signature, so an
 /// attestation that did not come from a TPM never verifies.
+///
+/// # Panics
+///
+/// Only if the marshaller reports more bytes than the 4096-byte buffer it filled, which it
+/// cannot.
+#[allow(unsafe_code)]
 pub fn attest_bytes(attest: &Attest) -> Result<Vec<u8>> {
     let ffi = esys::TPMS_ATTEST::from(attest.clone());
     let mut buf = vec![0u8; 4096];
     let mut offset = 0u64;
-    let rc = unsafe { esys::Tss2_MU_TPMS_ATTEST_Marshal(&ffi, buf.as_mut_ptr(), buf.len() as u64, &mut offset) };
+    // SAFETY: `ffi` is fully initialized and `buf` 4096 zeroed bytes, so all pointers are
+    // valid for the whole call; the marshaller reads only `ffi`, writes only within the
+    // buffer, and advances `offset` by no more than it wrote.
+    let rc = unsafe {
+        esys::Tss2_MU_TPMS_ATTEST_Marshal(&raw const ffi, buf.as_mut_ptr(), buf.len() as u64, &raw mut offset)
+    };
     if rc != 0 {
         return Err(KmError::Unavailable(format!("marshaling the attestation (rc 0x{rc:x})")));
     }
-    buf.truncate(offset as usize);
+    buf.truncate(usize::try_from(offset).expect("the marshaller never advances past the buffer it filled"));
     Ok(buf)
 }
 
@@ -397,7 +412,7 @@ pub fn recompute_name(pub_blob: &[u8]) -> Result<Vec<u8>> {
     let truncated = || KmError::Conflict("the store's public blob is truncated".into());
     let size = u16::from_be_bytes(*pub_blob.first_chunk::<2>().ok_or_else(truncated)?) as usize;
     let tpmt = pub_blob.get(2..2 + size).ok_or_else(truncated)?;
-    let name_alg = u16::from_be_bytes(tpmt.get(2..4).ok_or_else(truncated)?.try_into().unwrap());
+    let name_alg = u16::from_be_bytes(tpmt.get(2..4).and_then(|s| s.try_into().ok()).ok_or_else(truncated)?);
     let hash = match name_alg {
         0x000B => sha2::Sha256::digest(tpmt).to_vec(),
         0x000C => sha2::Sha384::digest(tpmt).to_vec(),

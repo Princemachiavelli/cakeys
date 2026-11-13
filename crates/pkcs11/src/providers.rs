@@ -4,7 +4,7 @@
 use crate::provider::Provider;
 use cakeys_core::config::ModuleInfo;
 
-/// SoftHSMv2: the reference module. No quirks; registered so `provider = "softhsm"` can be
+/// `SoftHSMv2`: the reference module. No quirks; registered so `provider = "softhsm"` can be
 /// required explicitly and so it is reported by name.
 pub struct SoftHsm;
 

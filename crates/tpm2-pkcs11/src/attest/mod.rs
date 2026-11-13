@@ -27,7 +27,7 @@ pub fn store_hex(s: &str) -> Result<Vec<u8>> {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Tpm2Options {
-    /// TCTI connection string for the native attestation path (TPM2_Certify),
+    /// TCTI connection string for the native attestation path (`TPM2_Certify`),
     /// in tss-esapi `TctiNameConf` syntax (`"device:/dev/tpmrm0"`, `"tabrmd:bus_type=session"`)
     /// or a TCTI library name (`"libtss2-tcti-tabrmd.so.0:bus_type=session"`). Defaults to the
     /// module's own `$TPM2_PKCS11_TCTI`, then `$TPM2TOOLS_TCTI`, then `$TCTI`.
@@ -203,7 +203,7 @@ pub fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
     })
 }
 
-/// CKA_LOCAL and CKA_EXTRACTABLE of the live object, as the module reports them.
+/// `CKA_LOCAL` and `CKA_EXTRACTABLE` of the live object, as the module reports them.
 fn module_reports(ctx: &AttestCtx<'_>) -> Result<(bool, bool)> {
     let attrs = ctx
         .session

@@ -1,5 +1,5 @@
 //! The `cakeys` command line, as a library so a downstream binary can link extra provider
-//! crates: `cakeys::main(cakeys::default_registry().with(MyProvider))`.
+//! crates: `cakeys::main(&cakeys::default_registry().with(MyProvider))`.
 
 use anyhow::Context;
 use cakeys_core::KmError;
@@ -123,8 +123,8 @@ pub fn default_registry() -> Registry {
 }
 
 /// Run the CLI with the given providers; maps errors to the documented exit codes.
-pub fn main(registry: Registry) -> ExitCode {
-    match run(&registry) {
+pub fn main(registry: &Registry) -> ExitCode {
+    match run(registry) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e:#}");

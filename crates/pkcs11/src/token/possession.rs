@@ -76,13 +76,13 @@ impl Token {
     /// session key and MACs the challenge with it. The MACs agree only if the token's private key
     /// is the one `spki` names.
     fn prove_ecdh(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
-        let ch = pop::ecdh_challenge(spki, msg)?;
         fn lacking(t: &Token, what: &str) -> KmError {
             t.unsupported(format!(
                 "token '{}' lacks {what} to prove possession of the private key; opt in with binding = \"token-asserted\"",
                 t.name
             ))
         }
+        let ch = pop::ecdh_challenge(spki, msg)?;
         if !self.has(MechanismType::ECDH1_DERIVE) {
             return Err(lacking(self, "CKM_ECDH1_DERIVE"));
         }

@@ -5,7 +5,7 @@
 //! its identity even when the public key comes from a separate public-key object (H1 in
 //! docs/REVIEW-2026-11-11.md).
 //!
-//! Verification uses the RustCrypto crates; no proof value is ever stored.
+//! Verification uses the `RustCrypto` crates; no proof value is ever stored.
 
 use crate::error::{KmError, Result};
 use crate::sig;
@@ -15,6 +15,7 @@ use elliptic_curve::{Generate, PublicKey, ecdh::EphemeralSecret};
 use hmac::{Hmac, KeyInit, Mac};
 use p256::pkcs8::DecodePublicKey;
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 /// Domain separator: the challenge is never a valid encoding of anything else a key signs
 /// (certificates, CMS, SSH, ...), since none of those start with this ASCII text.
@@ -34,7 +35,7 @@ pub fn challenge(spki: &[u8]) -> Result<Vec<u8>> {
 
 /// Verify `sig` over `msg` with the key in `spki`, as the token produced it (`crate::sig`):
 /// - ECDSA: raw `r ‖ s` (PKCS#11) over the curve's hash of `msg` (`EcdsaHash::for_curve`);
-/// - Ed25519: pure EdDSA over `msg`;
+/// - Ed25519: pure `EdDSA` over `msg`;
 /// - RSA: PKCS#1 v1.5 with SHA-256 over `msg`.
 ///
 /// A signature that does not verify is a `Conflict`: the private key is not the one the
@@ -98,7 +99,7 @@ pub fn ecdh_challenge(spki: &[u8], msg: &[u8]) -> Result<EcdhChallenge> {
 }
 
 /// Start a `pop-decrypt` proof of possession: `msg` encrypted to the public key in `spki` with
-/// RSA-OAEP (SHA-1, MGF1-SHA1, empty label — the PKCS#11 baseline SoftHSM implements). Only the
+/// RSA-OAEP (SHA-1, MGF1-SHA1, empty label — the PKCS#11 baseline `SoftHSM` implements). Only the
 /// matching private key decrypts it back to `msg`, which the token does with `CKM_RSA_PKCS_OAEP`.
 pub fn oaep_challenge(spki: &[u8], msg: &[u8]) -> Result<Vec<u8>> {
     let key = rsa::PublicKey::from_public_key_der(spki)
@@ -114,9 +115,11 @@ fn mac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
     mac.finalize().into_bytes().to_vec()
 }
 
-/// Constant-time equality of a proof's expected and actual value; only the length is observable.
+/// Constant-time equality of a proof's expected and actual value; only the length is
+/// observable. `subtle`'s (already a transitive `RustCrypto` dependency), not a hand-rolled XOR
+/// fold the optimizer could turn into an early exit.
 pub fn ct_eq(expected: &[u8], got: &[u8]) -> bool {
-    expected.len() == got.len() && expected.iter().zip(got).fold(0u8, |diff, (a, b)| diff | a ^ b) == 0
+    bool::from(expected.ct_eq(got))
 }
 
 #[cfg(test)]

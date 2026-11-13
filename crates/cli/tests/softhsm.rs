@@ -1,4 +1,4 @@
-//! End-to-end tests of the CLI against a SoftHSM token.
+//! End-to-end tests of the CLI against a `SoftHSM` token.
 //!
 //! Needs `SOFTHSM2_CONF` and `CAKEYS_TEST_MODULE` (path to libsofthsm2.so) with an initialised token
 //! labelled `kmtest`, user PIN `1234` (the Nix build's preCheck sets this up). Tests are skipped
@@ -293,7 +293,7 @@ tokens.softhsm = {{ locator = {{ CKA_LABEL = "locked" }}, autoCreate = true, ide
     assert!(stdout(&v).contains("host-at-import (opted in)"));
     // Opted in but not implemented: refused before anything is created.
     assert_eq!(code(&e.km(&["realise", "locked-down", "--token", "softhsm", "--no-update-lock"])), 15);
-    assert!(e.session().find_objects(&[Attribute::Label(b"locked".to_vec())]).unwrap().is_empty());
+    assert_eq!(e.session().find_objects(&[Attribute::Label(b"locked".to_vec())]).unwrap(), []);
 }
 
 #[test]
@@ -395,7 +395,7 @@ const ADOPT_PUBKEYHASH: &str = "sha256-8DQBv2fMc+z0Q5uxky0+5t9TS6MAHO07fNMqG9thH
 
 const ADOPT_CERT: &[u8] = include_bytes!("fixtures/adopt-cert.der");
 
-/// Token object template for a fixture certificate (SoftHSM requires CKA_SUBJECT).
+/// Token object template for a fixture certificate (`SoftHSM` requires `CKA_SUBJECT`).
 fn cert_object(der: &[u8], label: &[u8], id: Option<u8>) -> Vec<Attribute> {
     let der = der.to_vec();
     let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(&der).unwrap();
@@ -414,12 +414,12 @@ fn cert_object(der: &[u8], label: &[u8], id: Option<u8>) -> Vec<Attribute> {
 
 #[test]
 fn adopt_certificate_and_public_only_key() {
+    use rsa::traits::PublicKeyParts;
     let Some(e) = env("adopt") else { return };
     // Plant what a PIV slot exposes without login: a certificate and its public key.
     let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(ADOPT_CERT).unwrap();
     let spki = x509_cert::der::Encode::to_der(cert.tbs_certificate().subject_public_key_info()).unwrap();
     let rsa = <rsa::PublicKey as rsa::pkcs8::DecodePublicKey>::from_public_key_der(&spki).unwrap();
-    use rsa::traits::PublicKeyParts;
     let s = e.session();
     s.create_object(&cert_object(ADOPT_CERT, b"adopt-cert", Some(0x42))).unwrap();
     s.create_object(&[
@@ -572,7 +572,7 @@ tokens.softhsm = { locator = { CKA_LABEL = "occupied" }, autoCreate = true }
     assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm", "--no-update-lock"])), 13);
     let keys =
         s.find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"occupied".to_vec())]).unwrap();
-    assert!(keys.is_empty());
+    assert_eq!(keys, []);
 }
 
 /// D1: when the lock already pins an object's material, autoCreate is refused before anything is
@@ -655,7 +655,7 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     let real = &e.lock()["realisations"]["signing-soft"]["softhsm"];
     assert_eq!(real["provenance"]["module"]["path"].as_str(), Some(e.module.as_str()));
     assert_eq!(real["provenance"]["module"]["manufacturer"].as_str(), Some("SoftHSM"));
-    assert!(!real["provenance"]["module"]["version"].as_str().unwrap().is_empty());
+    assert_ne!(real["provenance"]["module"]["version"].as_str().unwrap(), "");
     assert_eq!(real["provenance"]["token"]["model"].as_str(), Some("SoftHSM v2"));
     assert!(!real["observed"]["uri"].as_str().unwrap().contains("module-path"), "URI is a pure locator");
     let stderr = |o: &Output| String::from_utf8_lossy(&o.stderr).into_owned();
@@ -724,8 +724,8 @@ fn observed_and_provenance_never_change_a_verdict() {
     assert_eq!(code(&e.km(&verify)), 17);
 }
 
-/// A consumer that picks the private key by CKA_ID (OpenSSH) must get this one: with a login,
-/// another private key under the same CKA_ID is ambiguous. The lock records the session kind.
+/// A consumer that picks the private key by `CKA_ID` (OpenSSH) must get this one: with a login,
+/// another private key under the same `CKA_ID` is ambiguous. The lock records the session kind.
 #[test]
 fn a_second_private_key_under_the_same_id_is_ambiguous() {
     let Some(e) = env("dup_id") else { return };
@@ -919,7 +919,7 @@ fn allowed_mechanisms_and_public_attributes() {
     assert_eq!(code(&e.km(&["realise", "k", "--token", "softhsm", "--update-lock"])), 0);
     let digest = e.lock()["realisations"]["k"]["softhsm"]["specDigest"].as_str().unwrap().to_owned();
     let policy = &e.lock()["realisations"]["k"]["softhsm"]["policy"]["CKA_ALLOWED_MECHANISMS"];
-    assert_eq!(policy.as_array().map(|a| a.len()), Some(2), "{policy}");
+    assert_eq!(policy.as_array().map(std::vec::Vec::len), Some(2), "{policy}");
     assert_eq!(policy[0].as_str(), Some("CKM_ECDSA"), "{policy}");
     let public =
         s.find_objects(&[Attribute::Class(ObjectClass::PUBLIC_KEY), Attribute::Label(b"attrs".to_vec())]).unwrap()[0];
@@ -1158,7 +1158,7 @@ fn aes_commitments_match_host_oracles() {
 
     // A scheme the spec can never compute is refused before anything is created.
     assert_eq!(code(&e.km(&["check", "kek-gen.id.cmac"])), 15);
-    assert!(s.find_objects(&[Attribute::Label(b"kek-gen".to_vec())]).unwrap().is_empty());
+    assert_eq!(s.find_objects(&[Attribute::Label(b"kek-gen".to_vec())]).unwrap(), []);
 
     // A generated, non-extractable KEK: stable identity across runs, deletable by it.
     let r = ["realise", "kek-gen", "--token", "softhsm", "--no-update-lock"];
@@ -1279,7 +1279,7 @@ fn curves_and_rsa_sizes_match_an_independent_der_oracle() {
     assert_eq!(code(&e.km(&["resolve", "p384-gen", "--token", "softhsm"])), 13);
 }
 
-/// openssl-computed hashes of the EC and Edwards fixture certificates (see ADOPT_CERTHASH).
+/// openssl-computed hashes of the EC and Edwards fixture certificates (see `ADOPT_CERTHASH`).
 const P384_CERTHASH: &str = "sha256-N9KvOrT63A5pe2lyZhomsSGisv5jxm7uGH0BBaDvT8w=";
 const P384_PUBKEYHASH: &str = "sha256-vOGGK+vjgXw92IhWaKP7ud6cGe6qS9UCctpXq6zZmZo=";
 const ED25519_CERTHASH: &str = "sha256-vLKP3eF+jeIMpcIz0K9c8oiCVsbvDve+uBUYho+aOmU=";
@@ -1309,7 +1309,7 @@ fn adopt_ec_and_edwards_certificates() {
     ];
     let mut body = String::new();
     for (i, (k, der, params, ty, _, _)) in fixtures.iter().enumerate() {
-        let id = 0x50 + i as u8;
+        let id = 0x50 + u8::try_from(i).unwrap();
         s.create_object(&cert_object(der, format!("{k}-cert").as_bytes(), Some(id))).unwrap();
         // What a PIV slot exposes without login: the certificate and its public key.
         let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(der).unwrap();
@@ -1373,7 +1373,7 @@ tokens.softhsm = { locator = { CKA_LABEL = "no-cmac" }, autoCreate = true }
     );
     // The spec allows cmac, but this token cannot compute it: refused, nothing created.
     assert_eq!(code(&e.km_env(&["check", "k.id.cmac"], &env)), 15);
-    assert!(e.session().find_objects(&[Attribute::Label(b"no-cmac".to_vec())]).unwrap().is_empty());
+    assert_eq!(e.session().find_objects(&[Attribute::Label(b"no-cmac".to_vec())]).unwrap(), []);
     // kw is still available: first use creates the key (TOFU: no locked hash yet).
     assert_eq!(code(&e.km_env(&["check", "k.id.kw"], &env)), 10);
     let o = e.km_env(&["realise", "k", "--token", "softhsm", "--update-lock"], &env);
@@ -1486,7 +1486,7 @@ fn hmac_key_types_commit_with_their_own_hash() {
     let o = e.km(&["realise", "gen384", "--token", "softhsm", "--no-update-lock"]);
     assert_eq!(code(&o), 15);
     assert!(String::from_utf8_lossy(&o.stderr).contains("no key generation for CKK_SHA384_HMAC"));
-    assert!(s.find_objects(&[Attribute::Label(b"hmac-gen384".to_vec())]).unwrap().is_empty());
+    assert_eq!(s.find_objects(&[Attribute::Label(b"hmac-gen384".to_vec())]).unwrap(), []);
 }
 
 #[test]
@@ -1684,7 +1684,7 @@ fn brainpool_p512_is_refused_clearly() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("no RustCrypto crate"));
 }
 
-/// H1 (docs/REVIEW-2026-11-11.md): SoftHSM EC private keys expose no public key, so their
+/// H1 (docs/REVIEW-2026-11-11.md): `SoftHSM` EC private keys expose no public key, so their
 /// identity is read from the public key object under the same locator. Replace the private key,
 /// keep the public object: the proof of possession fails, a conflict.
 #[test]
@@ -1887,7 +1887,7 @@ fn pin_file_path_can_come_from_the_environment() {
 }
 
 /// The admin credential (`mgmKeyFile`/`mgmKeyEnv`) is for modules that create keys as Security
-/// Officer (ykcs11). SoftHSM creates them as the user, so it is refused (17) when the token
+/// Officer (ykcs11). `SoftHSM` creates them as the user, so it is refused (17) when the token
 /// opens, before anything is created or the credential is read; without a user PIN to return to
 /// it is invalid at load.
 #[test]
@@ -1920,7 +1920,7 @@ fn admin_credential_is_refused_where_the_user_creates_keys() {
 }
 
 /// `[tokens.<t>.options]` belong to the token's provider, which checks them when the token is
-/// opened (and `validate` checks them when the provider is named): SoftHSM takes none, so any is
+/// opened (and `validate` checks them when the provider is named): `SoftHSM` takes none, so any is
 /// refused (17) rather than silently ignored.
 #[test]
 fn provider_options_are_checked_by_the_provider() {
@@ -2200,7 +2200,7 @@ fn the_lock_pins_type_spec_provenance_and_schemes() {
     assert_eq!(code(&e.km(&verify)), 17);
 }
 
-/// H1b (report "Cakeys lock file design review"): SoftHSM lets a user set CKA_PUBLIC_KEY_INFO on a
+/// H1b (report "Cakeys lock file design review"): `SoftHSM` lets a user set `CKA_PUBLIC_KEY_INFO` on a
 /// private key without checking it. cakeys reads the key material first and only cross-checks the
 /// asserted SPKI, so a different RSA private key carrying the old SPKI is a conflict.
 #[test]

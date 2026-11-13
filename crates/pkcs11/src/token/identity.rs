@@ -20,18 +20,16 @@ impl Token {
         let mut ids = BTreeMap::new();
         match mode {
             Mode::Direct if class_of(object) == ObjectClass::CERTIFICATE => {
-                let der = match self.attr(h, AttributeType::Value)? {
-                    Some(Attribute::Value(v)) => v,
-                    _ => return Err(KmError::Unsupported("certificate has no readable CKA_VALUE".into())),
+                let Some(Attribute::Value(der)) = self.attr(h, AttributeType::Value)? else {
+                    return Err(KmError::Unsupported("certificate has no readable CKA_VALUE".into()));
                 };
                 ids.insert(Scheme::Certhash.name().into(), id::sri(&der));
                 ids.insert(Scheme::Rfc7093m4.name().into(), id::sri(&id::cert_spki(&der)?));
             }
             Mode::Direct if class_of(object) == ObjectClass::DATA => {
                 // SHA-256 of the content: the same SRI hash as a flat Nix fixed-output hash.
-                let value = match self.attr(h, AttributeType::Value)? {
-                    Some(Attribute::Value(v)) => v,
-                    _ => return Err(KmError::Unsupported("data object has no readable CKA_VALUE".into())),
+                let Some(Attribute::Value(value)) = self.attr(h, AttributeType::Value)? else {
+                    return Err(KmError::Unsupported("data object has no readable CKA_VALUE".into()));
                 };
                 ids.insert(Scheme::Valuehash.name().into(), id::sri(&value));
             }
@@ -64,7 +62,7 @@ impl Token {
     /// 3. else `CKA_PUBLIC_KEY_INFO`.
     ///
     /// Whenever `CKA_PUBLIC_KEY_INFO` is present it must agree with the material: modules may let
-    /// it be set without checking (SoftHSM, kryoptic), so it is never trusted on its own.
+    /// it be set without checking (`SoftHSM`, kryoptic), so it is never trusted on its own.
     pub(crate) fn spki(&self, h: ObjectHandle, loc: &Locator) -> Result<Vec<u8>> {
         let spki = match self.material_spki(h)? {
             Some(spki) => spki,
@@ -91,7 +89,7 @@ impl Token {
     }
 
     /// `CKA_PUBLIC_KEY_INFO`, canonicalized; `None` when absent, empty or unreadable (ykcs11
-    /// reports length 0 and then fails the fetch with CKR_ARGUMENTS_BAD).
+    /// reports length 0 and then fails the fetch with `CKR_ARGUMENTS_BAD`).
     fn public_key_info(&self, h: ObjectHandle) -> Option<Result<Vec<u8>>> {
         match self.attr(h, AttributeType::PublicKeyInfo) {
             Ok(Some(Attribute::PublicKeyInfo(der))) if !der.is_empty() => Some(id::spki_canonical(&der)),

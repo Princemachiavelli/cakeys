@@ -1,0 +1,27 @@
+# cargo-deny (NEXT.md §1): dependency advisories against the pinned RustSec database, plus
+# licenses, duplicate crates and sources. `checks.deny` in the flake runs it offline in the
+# Nix sandbox — the advisory database is the advisory-db flake input, never a build-time
+# fetch — so every check here is reproducible with the flake.lock.
+#
+# The rsa Marvin timing advisory (RUSTSEC-2023-0071) needs no ignore: the database marks the
+# 0.10 series patched (`patched = [">= 0.10.0"]`), which is what the workspace pins, and cakeys
+# uses rsa on the host for public-key operations only either way.
+
+[advisories]
+# Offline there is no registry index to check yanked-ness against, and the lockfile pins the
+# exact versions anyway; the notes cargo-deny prints instead are fine.
+yanked = "allow"
+
+[licenses]
+# Every license the dependency graph carries. r-efi (an LGPL-2.1-or-later option),
+# aho-corasick and memchr (Unlicense options) and fiat-crypto (BSD-1-Clause option) all also
+# offer one of the two licenses below, so they are satisfied without listing their extras.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception", # target-lexicon
+  "BSD-3-Clause",                   # curve25519-dalek, ed25519-dalek, subtle
+  "ISC",                            # libloading
+  "Unicode-3.0",                    # unicode-ident, beside MIT OR Apache-2.0
+  "Zlib",                           # foldhash
+]

@@ -1,4 +1,4 @@
-//! Yubico ykcs11 (YubiKey PIV). Two quirks are handled generically elsewhere: its
+//! Yubico ykcs11 (`YubiKey` PIV). Two quirks are handled generically elsewhere: its
 //! `CKA_PUBLIC_KEY_INFO` reports length 0 and then `CKR_ARGUMENTS_BAD` (tolerated by the
 //! token layer for every module), and its fixed per-slot `CKA_LABEL`/`CKA_ID` set.
 //!
@@ -71,7 +71,7 @@ impl Provider for Ykcs11 {
 
     /// ykcs11's `C_DestroyObject` writes an empty certificate to the slot and hides the slot's
     /// objects for the rest of the session; the key stays and is listed again by the next one
-    /// (verified on a YubiKey 5, firmware 5.7.4, ykcs11 2.7.3).
+    /// (verified on a `YubiKey` 5, firmware 5.7.4, ykcs11 2.7.3).
     fn keeps_destroyed_keys(&self, loc: &Locator) -> Option<String> {
         let slot = loc.id.as_deref().and_then(piv_slot).map_or("<slot>".to_owned(), |s| format!("{s:02x}"));
         Some(format!(
@@ -207,7 +207,7 @@ fn find_device_cert(ctx: &AttestCtx<'_>) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
-    /// ykcs11's fixed CKA_ID table: 01-04 the four PIV slots, 05-18 the twenty retired slots;
+    /// ykcs11's fixed `CKA_ID` table: 01-04 the four PIV slots, 05-18 the twenty retired slots;
     /// 19 (f9, the device attestation key) and anything else is no key slot to generate into.
     #[test]
     fn cka_ids_map_to_piv_slots() {

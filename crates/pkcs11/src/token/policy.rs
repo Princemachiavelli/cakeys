@@ -23,9 +23,8 @@ impl Token {
                 ))),
             };
         }
-        let kt = match self.attr(h, AttributeType::KeyType)? {
-            Some(Attribute::KeyType(k)) => k,
-            _ => return Err(KmError::Conflict("object has no CKA_KEY_TYPE".into())),
+        let Some(Attribute::KeyType(kt)) = self.attr(h, AttributeType::KeyType)? else {
+            return Err(KmError::Conflict("object has no CKA_KEY_TYPE".into()));
         };
         if kt != key_type_of(object)? {
             return Err(KmError::Conflict(format!(
@@ -88,7 +87,7 @@ impl Token {
             {
                 policy.insert(
                     "CKA_ALLOWED_MECHANISMS".to_owned(),
-                    AttrValue::mechanisms(m.iter().map(|m| m.to_string())),
+                    AttrValue::mechanisms(m.iter().map(std::string::ToString::to_string)),
                 );
             }
         }
@@ -136,7 +135,9 @@ impl Token {
     fn attr_value(&self, h: ObjectHandle, name: &str) -> Result<Option<AttrValue>> {
         if name == "CKA_ALLOWED_MECHANISMS" {
             return Ok(match self.attr(h, AttributeType::AllowedMechanisms)? {
-                Some(Attribute::AllowedMechanisms(m)) => Some(AttrValue::mechanisms(m.iter().map(|m| m.to_string()))),
+                Some(Attribute::AllowedMechanisms(m)) => {
+                    Some(AttrValue::mechanisms(m.iter().map(std::string::ToString::to_string)))
+                }
                 _ => None,
             });
         }

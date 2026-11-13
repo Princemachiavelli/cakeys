@@ -7,6 +7,12 @@
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # The RustSec advisory database for checks.deny, pinned like any other input: the Nix
+    # sandbox has no network, so cargo-deny cannot clone it at build time.
+    advisory-db = {
+      url = "github:rustsec/advisory-db";
+      flake = false;
+    };
   };
 
   outputs =
@@ -14,6 +20,7 @@
       self,
       nixpkgs,
       treefmt-nix,
+      advisory-db,
     }:
     let
       system = "x86_64-linux";
@@ -83,6 +90,32 @@
         inherit cakeys;
         # `nix fmt` would change nothing: every formatter and linter in treefmt.nix passes.
         formatting = treefmt.config.build.check self;
+        # Clippy with -D warnings (NEXT.md §2): plain clippy is clean, and the workspace
+        # lints (Cargo.toml [workspace.lints]: unsafe_code deny, a pedantic subset) travel
+        # with every build, editor and this check.
+        clippy = cakeys.overrideAttrs (old: {
+          pname = "cakeys-clippy";
+          # The lint replaces the build and the tests, so the integration-test inputs are
+          # not needed; the vendored deps and the cryptoki patch are inherited.
+          nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.clippy ];
+          nativeCheckInputs = [ ];
+          buildPhase = ''
+            runHook preBuild
+            cargo clippy --workspace --all-targets -- -D warnings
+            runHook postBuild
+          '';
+          installPhase = ''
+            mkdir -p $out
+          '';
+          doCheck = false;
+        });
+        # cargo-deny (NEXT.md §1): advisories against the pinned RustSec database, licenses,
+        # duplicate crates and sources — offline, from the advisory-db input and the
+        # vendored Cargo.lock. Configuration: deny.toml.
+        deny = pkgs.callPackage ./nix/deny.nix {
+          inherit advisory-db;
+          inherit (cakeys) cargoDeps;
+        };
         # The CLI without its `tpm2` and `ykcs11` features: builds without tpm2-tss and sqlite.
         minimal = cakeys.overrideAttrs {
           pname = "cakeys-minimal";

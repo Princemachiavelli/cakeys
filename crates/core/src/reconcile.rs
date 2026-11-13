@@ -168,8 +168,7 @@ pub fn compare(
             && now.rank() > was.rank()
         {
             return Err(KmError::PreconditionFailed(format!(
-                "binding downgrade for {}: locked binding '{was}', now only '{now}'",
-                t
+                "binding downgrade for {t}: locked binding '{was}', now only '{now}'"
             )));
         }
         // The attestation is compared, even when realise writes the lock (§3.7). A different anchor means
@@ -209,8 +208,7 @@ pub fn compare(
         let lost: Vec<&String> = prev.schemes.iter().filter(|s| !r.ids.contains_key(*s)).collect();
         if !lost.is_empty() {
             return Err(KmError::PreconditionFailed(format!(
-                "identity downgrade for {}: it was realised with {lost:?}, which it no longer computes",
-                t
+                "identity downgrade for {t}: it was realised with {lost:?}, which it no longer computes"
             )));
         }
         // Fixed at creation: weaker now means the object was replaced (also when updating).
@@ -230,7 +228,10 @@ pub fn compare(
                 .iter()
                 .filter(|(n, was)| r.policy.get(*n) != Some(was))
                 .map(|(n, was)| {
-                    format!("{n} {was} -> {}", r.policy.get(n).map_or("unreadable".into(), |b| b.to_string()))
+                    format!(
+                        "{n} {was} -> {}",
+                        r.policy.get(n).map_or("unreadable".into(), std::string::ToString::to_string)
+                    )
                 })
                 .collect();
             if prev.immutables != r.immutables {
@@ -246,8 +247,7 @@ pub fn compare(
             let new: Vec<&String> = r.policy.keys().filter(|n| !prev.policy.contains_key(*n)).collect();
             if !new.is_empty() {
                 notes.note(format_args!(
-                    "{} also reports {new:?}, which the lock does not record; `realise` adds them",
-                    t
+                    "{t} also reports {new:?}, which the lock does not record; `realise` adds them"
                 ));
             }
         }
@@ -315,15 +315,14 @@ pub fn compare(
         )));
     }
     for (scheme, _) in &unlocked {
-        notes.note(format_args!("{} also has a {scheme} identity the lock does not record; `realise` adds it", t));
+        notes.note(format_args!("{t} also has a {scheme} identity the lock does not record; `realise` adds it"));
     }
     // Locked schemes not checked now: unknown to this cakeys (e.g. from a newer one), or not
     // computable for this spec on this token.
     for scheme in locked.into_iter().flat_map(|ids| ids.keys()).filter(|s| !r.ids.contains_key(*s)) {
         if Scheme::from_name(scheme).is_some() {
             notes.note(format_args!(
-                "{} is not checked by its {scheme} identity here (not computable for this spec on this token)",
-                t
+                "{t} is not checked by its {scheme} identity here (not computable for this spec on this token)"
             ));
         } else {
             notes.warn(format_args!(
@@ -353,8 +352,7 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
             .find(|(s, v)| !(class == Class::Certificate && *s == Scheme::Rfc7093m4.name()) && o.ids.get(*s) == Some(v))
         {
             return Err(KmError::PreconditionFailed(format!(
-                "{} is the same material as object '{name}' ({s}); use that object instead of a second name",
-                t
+                "{t} is the same material as object '{name}' ({s}); use that object instead of a second name"
             )));
         }
     }
@@ -372,8 +370,7 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
     for (scheme, got) in &r.ids {
         if Scheme::from_name(scheme).is_some_and(Scheme::is_deprecated) && !entry.ids.contains_key(scheme) {
             notes.note(format_args!(
-                    "{} also computes a {scheme} identity; not recorded: that computation is deprecated (docs/DESIGN.md §3.1)",
-                    t
+                    "{t} also computes a {scheme} identity; not recorded: that computation is deprecated (docs/DESIGN.md §3.1)"
                 ));
             continue;
         }
@@ -404,7 +401,7 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
     // Partners in this file are recomputed; listed ones from other fragments are kept.
     let pairs = lock.computed_pairs();
     let present: Vec<String> = lock.objects.keys().cloned().collect();
-    for (name, o) in lock.objects.iter_mut() {
+    for (name, o) in &mut lock.objects {
         let mut want = pairs.get(name).cloned().unwrap_or_default();
         want.extend(o.pairs.iter().filter(|p| !present.contains(p)).cloned());
         if o.pairs != want {

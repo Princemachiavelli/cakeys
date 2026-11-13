@@ -220,9 +220,8 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
         return match allowed.iter().min() {
             Some(m) => Ok(*m),
             None => Err(KmError::Validation(format!(
-                "{} has no re-verifiable identity (non-extractable; no CKA_SIGN, nor CKA_ENCRYPT/CKA_DECRYPT/CKA_WRAP on AES); \
-                 opt in per token with identity.allow = [\"commit-at-creation\" | \"host-at-import\" | \"token-specific\"]",
-                t
+                "{t} has no re-verifiable identity (non-extractable; no CKA_SIGN, nor CKA_ENCRYPT/CKA_DECRYPT/CKA_WRAP on AES); \
+                 opt in per token with identity.allow = [\"commit-at-creation\" | \"host-at-import\" | \"token-specific\"]"
             ))),
         };
     };

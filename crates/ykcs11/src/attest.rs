@@ -1,4 +1,4 @@
-//! YubiKey PIV attestation (`piv-attestation`, docs/DESIGN.md §3.7), verified on the host.
+//! `YubiKey` PIV attestation (`piv-attestation`, docs/DESIGN.md §3.7), verified on the host.
 //!
 //! ykcs11 exposes, per key slot, the on-demand attestation certificate the device signed with
 //! its attestation key in slot f9 (`"X.509 Certificate for PIV Attestation 9a"`, sharing the
@@ -212,7 +212,7 @@ pub fn verify_piv_attestation(
 
 /// The pooled Yubico intermediates a PIV chain may pass through: the PIV attestation CAs and
 /// the generic "Attestation Intermediate" CAs above them. Yubico's published pool also holds
-/// the FIDO, OpenPGP, SD and YubiHSM attestation CAs under the same "Yubico Attestation Root
+/// the FIDO, `OpenPGP`, SD and `YubiHSM` attestation CAs under the same "Yubico Attestation Root
 /// 1"; a device certificate issued by one of those is not PIV evidence, so they are left out.
 pub fn piv_pool(pool: Vec<Cert>) -> Vec<Cert> {
     pool.into_iter()

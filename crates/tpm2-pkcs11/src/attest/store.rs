@@ -24,7 +24,7 @@ const ATTR_OBJAUTH_ENC: i64 = 0x8F00_0001; // CKA_TPM2_OBJAUTH_ENC
 const ATTR_PUB_BLOB: i64 = 0x8F00_0002; // CKA_TPM2_PUB_BLOB
 const ATTR_PRIV_BLOB: i64 = 0x8F00_0003; // CKA_TPM2_PRIV_BLOB
 
-/// `CKO_PRIVATE_KEY`, `CKO_PUBLIC_KEY`, `CKO_SECRET_KEY` (CKO_DATA and CKO_CERTIFICATE have no
+/// `CKO_PRIVATE_KEY`, `CKO_PUBLIC_KEY`, `CKO_SECRET_KEY` (`CKO_DATA` and `CKO_CERTIFICATE` have no
 /// TPM blobs to certify).
 const CLASS_PRIVATE_KEY: i64 = 3;
 
@@ -32,7 +32,7 @@ const CLASS_SECRET_KEY: i64 = 4;
 
 /// Everything the attestation path needs from one token's store.
 pub struct Store {
-    /// The token's primary parent: a persistent TPM handle (from the serialized ESYS_TR in
+    /// The token's primary parent: a persistent TPM handle (from the serialized `ESYS_TR` in
     /// `pobjects.config`) with its auth value (`pobjects.objauth`, plaintext, empty by default).
     pub parent: Parent,
     /// The user seal object, whose unseal needs the PIN and yields the token wrapping key.
@@ -169,7 +169,7 @@ pub fn store_class(class: ObjectClass) -> Result<i64> {
     }
 }
 
-/// `pobjects.config` is YAML `{esys-tr: <hex>, transient: false}`; the serialized ESYS_TR is
+/// `pobjects.config` is YAML `{esys-tr: <hex>, transient: false}`; the serialized `ESYS_TR` is
 /// `TPM2_HANDLE (BE) ‖ TPM2B_NAME ‖ rsrcType (BE, 1 = key) ‖ TPM2B_PUBLIC`. Only the persistent
 /// parent form is supported — transient primaries would need re-derivation from the template.
 fn parse_parent(config: &str, objauth: &str) -> Result<Parent> {

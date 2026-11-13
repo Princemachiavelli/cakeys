@@ -1,6 +1,6 @@
 //! CA-ID computation: SRI rendering, spec digest, SPKI normalisation, commitment labels.
 //!
-//! Public keys are decoded and re-encoded by the RustCrypto crates (`p256`, `p384`, `p521`,
+//! Public keys are decoded and re-encoded by the `RustCrypto` crates (`p256`, `p384`, `p521`,
 //! `ed25519-dalek`, `ed448`, `rsa`); this module only chooses which one by curve or OID.
 
 use crate::config::{ObjectCfg, SpecCfg};
@@ -42,7 +42,7 @@ pub fn spec_digest(object: &ObjectCfg, spec: &SpecCfg) -> String {
 }
 
 /// Object keys sorted at every level, inserted in that order: the serialization is the same
-/// whether or not serde_json's `preserve_order` feature is enabled somewhere in the build.
+/// whether or not `serde_json`'s `preserve_order` feature is enabled somewhere in the build.
 fn canonical_json(v: serde_json::Value) -> serde_json::Value {
     match v {
         serde_json::Value::Object(map) => {
@@ -177,13 +177,15 @@ fn attest_encoding(tag: &[u8], fields: &[&[u8]]) -> Vec<u8> {
     let mut v = Vec::with_capacity(tag.len() + fields.len() * 8);
     v.extend_from_slice(tag);
     for f in fields {
-        v.extend_from_slice(&(f.len() as u32).to_le_bytes());
+        v.extend_from_slice(
+            &(u32::try_from(f.len()).expect("an attestation field is far shorter than 4 GiB")).to_le_bytes(),
+        );
         v.extend_from_slice(f);
     }
     v
 }
 
-/// The `piv-attestation` commitment (§3.7): what a YubiKey PIV attestation certificate *asserts*,
+/// The `piv-attestation` commitment (§3.7): what a `YubiKey` PIV attestation certificate *asserts*,
 /// not its bytes. The certificate is generated on demand with a random serial and a randomized
 /// ECDSA signature, so hashing the DER would be unstable; these fields are the stable claims.
 /// `issuer_spki` is the device attestation key in slot f9 (pinned per realisation through the
@@ -317,7 +319,7 @@ const ALL_CURVES: [Curve; 8] = [
     Curve::Ed448,
 ];
 
-/// Named curves tokens offer that have no RustCrypto crate to validate and encode them with.
+/// Named curves tokens offer that have no `RustCrypto` crate to validate and encode them with.
 pub const CURVES_WITHOUT_CRATE: [&str; 1] = ["brainpoolP512r1"];
 
 impl Curve {
@@ -368,7 +370,7 @@ impl Curve {
         }
     }
 
-    /// PKCS#11 3.0 also allows Edwards curves as a PrintableString curve name.
+    /// PKCS#11 3.0 also allows Edwards curves as a `PrintableString` curve name.
     fn params_by_name(self) -> Option<&'static [u8]> {
         match self {
             Curve::Ed25519 => Some(b"\x13\x0cedwards25519"),
@@ -504,7 +506,7 @@ mod tests {
             object: "o".into(),
             attributes: [(
                 "CKA_ALLOWED_MECHANISMS".to_owned(),
-                AttrValue::mechanisms(names.iter().map(|s| s.to_string())),
+                AttrValue::mechanisms(names.iter().map(std::string::ToString::to_string)),
             )]
             .into_iter()
             .collect(),
@@ -525,7 +527,7 @@ mod tests {
     fn ec_point_wrapped_and_raw_agree() {
         let sk = p256::SecretKey::from_slice(&[7u8; 32]).unwrap();
         let raw = sk.public_key().to_sec1_bytes().to_vec();
-        let mut wrapped = vec![0x04, raw.len() as u8];
+        let mut wrapped = vec![0x04, u8::try_from(raw.len()).unwrap()];
         wrapped.extend_from_slice(&raw);
         let a = Curve::P256.spki_from_point(&raw).unwrap();
         let b = Curve::P256.spki_from_point(&wrapped).unwrap();
@@ -734,7 +736,7 @@ mod tests {
 
     /// The attestation commitment definitions (docs/DESIGN.md §3.7, §10): each scheme's canonical
     /// input, pinned. The attestations are verified evidence — Yubico PIV certificate chain,
-    /// TPM2_Certify over the object's Name — and the canonical encoding below is what an ID is
+    /// `TPM2_Certify` over the object's Name — and the canonical encoding below is what an ID is
     /// the SHA-256 of, so a change here breaks locks and must be a new scheme name instead.
     #[test]
     fn attestation_definitions_are_pinned() {

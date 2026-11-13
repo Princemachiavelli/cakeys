@@ -103,7 +103,7 @@ impl Token {
             KmError::Unavailable(format!("token '{}' not present in {}", cfg.token_label, module.path))
         })?;
         let mechanisms = provider.mechanisms(ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?);
-        let mut mechanism_names: Vec<String> = mechanisms.iter().map(|m| m.to_string()).collect();
+        let mut mechanism_names: Vec<String> = mechanisms.iter().map(std::string::ToString::to_string).collect();
         mechanism_names.sort();
         let session = ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?;
         let pin = read_pin(cfg)?;
@@ -151,7 +151,7 @@ impl Token {
     }
 
     /// Compute the attestation commitment for `key` (§3.7 of docs/DESIGN.md) through the
-    /// provider: the module-exposed attestation certificate (PIV) or the native TPM2_Certify
+    /// provider: the module-exposed attestation certificate (PIV) or the native `TPM2_Certify`
     /// path (tpm2-pkcs11), verified on the host. `spki` is the material SPKI the attestation
     /// must name (`None` for secret keys); `provision` lets the provider create the device
     /// state it attests with (only `realise` sets it).

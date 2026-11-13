@@ -1,4 +1,4 @@
-//! End-to-end tests of the CLI against a real YubiKey (PIV, through ykcs11), read-write.
+//! End-to-end tests of the CLI against a real `YubiKey` (PIV, through ykcs11), read-write.
 //!
 //! Needs `CAKEYS_TEST_YUBIKEY_MODULE` (path to libykcs11.so), `CAKEYS_TEST_YUBIKEY_PIN` (path to
 //! a file holding the PIV PIN) and `CAKEYS_TEST_YUBIKEY_MGM` (path to a file holding the admin
@@ -20,7 +20,7 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_cakeys");
-/// YubiKey operations are interactive hardware calls in the worst case; none of the tested ones
+/// `YubiKey` operations are interactive hardware calls in the worst case; none of the tested ones
 /// needs presence, and the bound turns a policy change (touch) into a test failure.
 const RUN_LIMIT: Duration = Duration::from_secs(30);
 
@@ -116,7 +116,7 @@ impl Env {
     }
 }
 
-/// The label of the first YubiKey the module sees, so the config names the right token.
+/// The label of the first `YubiKey` the module sees, so the config names the right token.
 fn yubikey_label(module: &str) -> String {
     let ctx = Pkcs11::new(module).unwrap();
     ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();

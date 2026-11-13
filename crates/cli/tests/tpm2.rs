@@ -1,6 +1,6 @@
 //! End-to-end tests against tpm2-pkcs11 on a software TPM (nix/tpm2-test-env.sh).
 //!
-//! Needs `CAKEYS_TPM_MODULE` (libtpm2_pkcs11.so), the `TPM2_PKCS11_*` environment from the harness,
+//! Needs `CAKEYS_TPM_MODULE` (`libtpm2_pkcs11.so`), the `TPM2_PKCS11_*` environment from the harness,
 //! a token `kmtest` with user PIN `1234`, and `tpm2_ptool` on PATH. Skipped when
 //! `CAKEYS_TPM_MODULE` is unset, unless `CAKEYS_TPM_REQUIRE=1`.
 
@@ -357,7 +357,7 @@ fn tpm2_aes_key_is_identified_by_its_kcv() {
     assert_eq!(e.locked_id("aes", "kcv-ecb"), sri(&kcv));
 }
 
-/// The `tpm-certify` commitment (§3.7 of docs/DESIGN.md): a native TPM2_Certify over the
+/// The `tpm-certify` commitment (§3.7 of docs/DESIGN.md): a native `TPM2_Certify` over the
 /// object's Name, host-verified against a provisioned AK, and cross-checked against the
 /// material `rfc7093m4` names.
 #[test]
@@ -498,7 +498,7 @@ fn tpm2_each_token_pins_its_own_attestation() {
 }
 
 /// The user's portability requirement (§3.7): attestation is provenance for one device. A copy
-/// of the same material on a token that attests nothing (here SoftHSM) verifies through the
+/// of the same material on a token that attests nothing (here `SoftHSM`) verifies through the
 /// portable commitment alone; the TPM realisation's attestation stays on that realisation.
 #[test]
 fn tpm2_attested_material_travels_to_a_second_hsm() {

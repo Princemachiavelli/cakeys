@@ -1,9 +1,9 @@
-//! End-to-end tests through p11-kit forwarding: `p11-kit server` in front of a SoftHSM token
+//! End-to-end tests through p11-kit forwarding: `p11-kit server` in front of a `SoftHSM` token
 //! (`kmp11`), reached with `p11-kit-client.so`, compared with the same token opened directly.
 //!
 //! Needs `CAKEYS_P11KIT_CLIENT` (p11-kit-client.so), `P11_KIT_SERVER_ADDRESS`, `CAKEYS_TEST_MODULE`
 //! (libsofthsm2.so, for the direct path) and `SOFTHSM2_CONF`; the server must export only
-//! `pkcs11:token=kmp11` (user PIN 1234) while the same SoftHSM also holds `kmtest`. Skipped when
+//! `pkcs11:token=kmp11` (user PIN 1234) while the same `SoftHSM` also holds `kmtest`. Skipped when
 //! `CAKEYS_P11KIT_CLIENT` is unset, unless `CAKEYS_P11KIT_REQUIRE=1`.
 
 mod common;
@@ -38,7 +38,7 @@ fn env(name: &str) -> Option<Env> {
 
 impl Env {
     /// Tokens: `fwd` (through p11-kit), `fwd-anon` (no PIN), `fwd-softhsm` (provider named),
-    /// `fwd-other` (a token the server does not export) and `direct` (SoftHSM itself).
+    /// `fwd-other` (a token the server does not export) and `direct` (`SoftHSM` itself).
     fn config(&self, body: &str) {
         let pin = format!("pinFile = \"{}\"", self.dir.join("pin").display());
         let token = |name: &str, module: &str, label: &str, extra: &str| {

@@ -164,6 +164,9 @@ impl Registry {
         Self::default()
     }
 
+    /// Extend the registry with another provider, builder-style: the registry it returns is
+    /// the one to use (the `#[must_use]` is load-bearing — the input is consumed).
+    #[must_use]
     pub fn with(mut self, p: impl Provider + 'static) -> Self {
         self.providers.push(Arc::new(p));
         self

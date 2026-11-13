@@ -206,7 +206,7 @@ pub struct SpecTokenCfg {
     #[serde(default)]
     pub binding: Option<Binding>,
     /// Opt in to the attestation commitment (§3.7 of docs/DESIGN.md): compute the provider's
-    /// attestation scheme for this key on this token (YubiKey PIV attestation verified to the
+    /// attestation scheme for this key on this token (`YubiKey` PIV attestation verified to the
     /// pinned Yubico root; a native `TPM2_Certify` for tpm2-pkcs11) and require it ever after —
     /// a realisation that stops computing it is a scheme downgrade (exit 14). The attestation
     /// ID never replaces the portable one: it is recorded only beside `rfc7093m4` (keys) or a
@@ -273,7 +273,7 @@ impl Mode {
 pub enum Binding {
     /// The token signed a fresh challenge that verified on the host against that public key.
     PopSign,
-    /// The token derived the ECDH shared secret with an ephemeral host key and both sides MACed
+    /// The token derived the ECDH shared secret with an ephemeral host key and both sides `MACed`
     /// the challenge with it (derive-only EC keys).
     PopEcdh,
     /// The token decrypted a host challenge (RSA-OAEP) to the expected plaintext (decrypt-only
@@ -666,9 +666,9 @@ pub struct Provenance {
     /// Provider that handled the module (fix-ups must not change identity).
     pub provider: String,
     pub cakeys_version: String,
-    /// PKCS#11 module (C_GetInfo, plus the loaded file).
+    /// PKCS#11 module (`C_GetInfo`, plus the loaded file).
     pub module: ModuleInfo,
-    /// Token that holds the object (C_GetTokenInfo).
+    /// Token that holds the object (`C_GetTokenInfo`).
     pub token: TokenInfo,
 }
 
@@ -795,15 +795,16 @@ pub fn lock_for_update(lock_path: &Path) -> Result<UpdateGuard> {
 /// - Otherwise the lock file, if present, and its directory (temporary file, rename and the
 ///   `.lck` sidecar) must be writable by this user (`access(2)`, so a read-only mount counts).
 pub fn lock_unwritable(lock_path: &Path) -> Option<String> {
-    if std::env::var_os("NIX_BUILD_TOP").is_some() && std::env::var_os("IN_NIX_SHELL").is_none() {
-        return Some("this run is inside a Nix build sandbox, where a lock write would be lost".into());
-    }
-    let writable = |p: &Path| {
+    #[allow(unsafe_code)] // access(2) only reads the path; the CString is a valid NUL-terminated one
+    fn writable(p: &Path) -> bool {
         use std::os::unix::ffi::OsStrExt;
         std::ffi::CString::new(p.as_os_str().as_bytes())
             // SAFETY: a valid NUL-terminated path; access(2) only reads it.
             .is_ok_and(|c| unsafe { libc::access(c.as_ptr(), libc::W_OK) } == 0)
-    };
+    }
+    if std::env::var_os("NIX_BUILD_TOP").is_some() && std::env::var_os("IN_NIX_SHELL").is_none() {
+        return Some("this run is inside a Nix build sandbox, where a lock write would be lost".into());
+    }
     if lock_path.exists() && !writable(lock_path) {
         return Some(format!("{} is not writable", lock_path.display()));
     }
@@ -858,9 +859,9 @@ impl Config {
             .flat_map(|(n, s)| s.tokens.keys().map(move |t| (n.clone(), t.clone())))
             .filter(|(_, t)| token.is_none_or(|w| w == t))
             .collect();
-        match pairs.len() {
-            1 => Ok(pairs.into_iter().next().unwrap()),
-            0 => Err(KmError::NotFound(format!("no spec for object '{object}' on token {token:?}"))),
+        match pairs.as_slice() {
+            [pair] => Ok(pair.clone()),
+            [] => Err(KmError::NotFound(format!("no spec for object '{object}' on token {token:?}"))),
             _ => Err(KmError::Ambiguous(format!(
                 "object '{object}' has several (spec, token) pairs {pairs:?}; pass --spec/--token"
             ))),

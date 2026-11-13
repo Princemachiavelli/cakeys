@@ -49,10 +49,10 @@ pub fn tlv(tag: u8, body: &[u8]) -> Vec<u8> {
     let mut v = vec![tag];
     let n = body.len();
     if n < 0x80 {
-        v.push(n as u8);
+        v.push(u8::try_from(n).unwrap());
     } else {
         let len: Vec<u8> = n.to_be_bytes().into_iter().skip_while(|b| *b == 0).collect();
-        v.push(0x80 | len.len() as u8);
+        v.push(0x80 | u8::try_from(len.len()).unwrap());
         v.extend(len);
     }
     v.extend_from_slice(body);
@@ -100,21 +100,18 @@ pub fn oracle_spki_with(s: &Session, label: &str, unwrap: fn(&[u8]) -> Vec<u8>) 
         .find_objects(&[Attribute::Class(ObjectClass::PUBLIC_KEY), Attribute::Label(label.as_bytes().to_vec())])
         .unwrap()[0];
     let a = s.get_attributes(h, &[AttributeType::KeyType]).unwrap();
-    match a[0] {
-        Attribute::KeyType(cryptoki::object::KeyType::RSA) => {
-            let a = s.get_attributes(h, &[AttributeType::Modulus, AttributeType::PublicExponent]).unwrap();
-            let (Attribute::Modulus(n), Attribute::PublicExponent(e)) = (&a[0], &a[1]) else { panic!() };
-            let rsa = [0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00];
-            spki(&rsa, &tlv(0x30, &[der_uint(n), der_uint(e)].concat()))
-        }
-        _ => {
-            let a = s.get_attributes(h, &[AttributeType::EcParams, AttributeType::EcPoint]).unwrap();
-            let (Attribute::EcParams(p), Attribute::EcPoint(q)) = (&a[0], &a[1]) else { panic!() };
-            let point = unwrap(q);
-            match p.as_slice() {
-                ED25519 | ED448 => spki(p, &point),
-                _ => spki(&[EC_PUBLIC_KEY, p.as_slice()].concat(), &point),
-            }
+    if let Attribute::KeyType(cryptoki::object::KeyType::RSA) = a[0] {
+        let a = s.get_attributes(h, &[AttributeType::Modulus, AttributeType::PublicExponent]).unwrap();
+        let (Attribute::Modulus(n), Attribute::PublicExponent(e)) = (&a[0], &a[1]) else { panic!() };
+        let rsa = [0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00];
+        spki(&rsa, &tlv(0x30, &[der_uint(n), der_uint(e)].concat()))
+    } else {
+        let a = s.get_attributes(h, &[AttributeType::EcParams, AttributeType::EcPoint]).unwrap();
+        let (Attribute::EcParams(p), Attribute::EcPoint(q)) = (&a[0], &a[1]) else { panic!() };
+        let point = unwrap(q);
+        match p.as_slice() {
+            ED25519 | ED448 => spki(p, &point),
+            _ => spki(&[EC_PUBLIC_KEY, p.as_slice()].concat(), &point),
         }
     }
 }

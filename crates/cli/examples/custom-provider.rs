@@ -18,5 +18,5 @@ impl Provider for Acme {
 }
 
 fn main() -> ExitCode {
-    cakeys::main(cakeys::default_registry().with(Acme))
+    cakeys::main(&cakeys::default_registry().with(Acme))
 }

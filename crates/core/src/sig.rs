@@ -1,5 +1,5 @@
 //! Signature verification shared by every proof cakeys checks on the host: proof of possession
-//! (`pop`), the YubiKey PIV attestation chain and the TPM Attestation Key's `TPM2_Certify`
+//! (`pop`), the `YubiKey` PIV attestation chain and the TPM Attestation Key's `TPM2_Certify`
 //! signature. Each function answers `None` when the SPKI is not a key it verifies, so callers can
 //! try the next algorithm; `Some(Err(why))` covers a malformed signature and one that does not
 //! verify alike. Callers word their own errors.

@@ -45,10 +45,10 @@ fn commits(t: &Target, tok: &Token, mode: Mode) -> Result<Vec<Commit>> {
 /// token implements, plus the attestation scheme when the spec opted in and the provider
 /// attests the class (§3.7). Needs no object, so callers can refuse before anything is created.
 pub fn schemes_on(t: &Target, tok: &Token) -> Result<Vec<Scheme>> {
-    let mut v = if t.object.class != Class::SecretKey {
-        t.schemes()
-    } else {
+    let mut v = if t.object.class == Class::SecretKey {
         commits(t, tok, plan_mode(t)?)?.iter().map(|c| c.scheme()).collect()
+    } else {
+        t.schemes()
     };
     if let Some(s) = attestation_scheme(t, tok) {
         v.push(s);
@@ -60,8 +60,7 @@ pub fn schemes_on(t: &Target, tok: &Token) -> Result<Vec<Scheme>> {
 fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
     if mode.needs_opt_in() {
         return Err(KmError::Unsupported(format!(
-            "identity mode '{mode}' (opted in for {}) is not implemented in this POC",
-            t
+            "identity mode '{mode}' (opted in for {t}) is not implemented in this POC"
         )));
     }
     // An attestation the provider cannot compute is refused up front (15), like a scheme the
@@ -93,9 +92,8 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
         // CKM_GENERIC_SECRET_KEY_GEN makes CKK_GENERIC_SECRET keys; there is no mechanism for
         // the hash-bound HMAC types (SoftHSM: CKR_TEMPLATE_INCONSISTENT).
         return Err(tok.unsupported(format!(
-            "{}: PKCS#11 has no key generation for {}; generate a CKK_GENERIC_SECRET with CKA_SIGN, \
-             or create the key elsewhere and adopt it",
-            t, kt
+            "{t}: PKCS#11 has no key generation for {kt}; generate a CKK_GENERIC_SECRET with CKA_SIGN, \
+             or create the key elsewhere and adopt it"
         )));
     }
     if t.on_token.auto_create {
@@ -276,7 +274,7 @@ pub fn realise(
             tok.create(t.object, t.spec, &t.on_token.locator)?;
             notes.say(format!("created {t}"));
             match resolve_with(t, tok, lock, true)
-                .and_then(|r| r.ok_or_else(|| KmError::NotFound(format!("{} vanished after creation", t))))
+                .and_then(|r| r.ok_or_else(|| KmError::NotFound(format!("{t} vanished after creation"))))
             {
                 Ok(r) => r,
                 Err(e) => {
@@ -285,20 +283,18 @@ pub fn realise(
                     // delete keys (ykcs11), which is then said rather than claimed.
                     match tok.destroy(t.object, &t.on_token.locator) {
                         Ok(n) => notes.say(format!(
-                            "removed {n} object(s) just created for {}: its identity could not be established",
-                            t
+                            "removed {n} object(s) just created for {t}: its identity could not be established"
                         )),
                         Err(d) => notes.say(format!(
-                            "the key just created for {} is still on the token (its identity could not be \
-                             established, and removing it failed: {d})",
-                            t
+                            "the key just created for {t} is still on the token (its identity could not be \
+                             established, and removing it failed: {d})"
                         )),
                     }
                     return Err(e);
                 }
             }
         }
-        None => return Err(KmError::NotFound(format!("{} (autoCreate is off)", t))),
+        None => return Err(KmError::NotFound(format!("{t} (autoCreate is off)"))),
     };
     let changed = reconcile::reconcile(t, &r, lock, &facts(tok, &r), write, notes)?;
     Ok((r, changed))
@@ -315,8 +311,7 @@ pub fn delete(
 ) -> Result<bool> {
     if t.on_token.public_only {
         return Err(KmError::Unsupported(format!(
-            "{} is adopted publicOnly; deleting would remove only the public half",
-            t
+            "{t} is adopted publicOnly; deleting would remove only the public half"
         )));
     }
     // An expected identity is only required when there is something to delete.
@@ -344,9 +339,9 @@ pub fn delete(
                 .find_map(|s| locked.and_then(|ids| ids.get(s.name())).map(|w| (Some(s), Some(w.clone()))))
                 .unwrap_or((primary, None)),
         };
-        let scheme = scheme.ok_or_else(|| KmError::Unsupported(format!("no identity computed for {}", t)))?;
+        let scheme = scheme.ok_or_else(|| KmError::Unsupported(format!("no identity computed for {t}")))?;
         let expected = expected
-            .ok_or_else(|| KmError::PreconditionFailed(format!("no expected {scheme} for {}; pass --if-match", t)))?;
+            .ok_or_else(|| KmError::PreconditionFailed(format!("no expected {scheme} for {t}; pass --if-match")))?;
         if got.get(scheme.name()) != Some(&expected) {
             return Err(KmError::PreconditionFailed(format!(
                 "{} holds {:?}, expected {expected}; not deleting",

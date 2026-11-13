@@ -32,6 +32,7 @@ ed448 = { version = "0.5", default-features = false, features = ["alloc", "pkcs8
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = { version = "0.11", features = ["oid"] }
+subtle = { version = "2", default-features = false }
 thiserror = "2"
 toml = "1"
 getrandom = { version = "0.4", features = ["sys_rng"] }
@@ -46,3 +47,23 @@ rusqlite = { version = "0.42", features = ["bundled"] }
 aes-gcm = "0.11"
 zeroize = "1"
 libc = "0.2"
+
+# Inherited by every member with `[lints] workspace = true`. `cargo clippy` (checks.clippy)
+# runs with `-D warnings`, so everything here is clean at the stated level.
+[workspace.lints.rust]
+# The two exemptions are `#[allow]`ed and carry `// SAFETY:` comments: the TPM marshalling
+# FFI (crates/tpm2-pkcs11/src/attest/esys.rs) and access(2) (crates/core/src/config.rs).
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+# Everything pedantic except the subset below, which does not pay for itself here.
+pedantic = { level = "warn", priority = -1 }
+enum_glob_use = "allow"                      # cryptoki's flag sets read better globbed
+format_collect = "allow"                     # the hex builders read best as map-format-collect
+format_push_string = "allow"                 # test-fixture TOML bodies are appended as += format!(...)
+many_single_char_names = "allow"             # curve math and test bindings stay short
+missing_errors_doc = "allow"                 # error behavior is documented in prose on each fn
+must_use_candidate = "allow"                 # nearly every candidate is a plain lookup in an internal workspace
+too_many_lines = "allow"                     # long linear verify functions beat arbitrary splits
+unused_self = "allow"                        # test fixtures group their helpers in impl blocks on purpose
+wildcard_imports = "allow"                   # `use super::*` is the token/ module pattern
