@@ -11,6 +11,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
+use crate::REF;
 use crate::common::*;
 
 const BIN: &str = env!("CARGO_BIN_EXE_cakeys");
@@ -21,9 +22,9 @@ struct Env {
 }
 
 fn env(name: &str) -> Option<Env> {
-    let Ok(module) = std::env::var("CAKEYS_TEST_MODULE") else {
-        assert!(std::env::var("CAKEYS_TEST_REQUIRE").is_err(), "CAKEYS_TEST_MODULE is required");
-        eprintln!("skipping {name}: CAKEYS_TEST_MODULE not set");
+    let Ok(module) = std::env::var(REF.module_var) else {
+        assert!(std::env::var(REF.require_var).is_err(), "{} is required", REF.module_var);
+        eprintln!("skipping {name}: {} not set", REF.module_var);
         return None;
     };
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
@@ -649,9 +650,9 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
 
     let real = &e.lock()["realisations"]["signing-soft"]["ref"];
     assert_eq!(real["provenance"]["module"]["path"].as_str(), Some(e.module.as_str()));
-    assert_eq!(real["provenance"]["module"]["manufacturer"].as_str(), Some("SoftHSM"));
+    assert_eq!(real["provenance"]["module"]["manufacturer"].as_str(), Some(REF.manufacturer));
     assert_ne!(real["provenance"]["module"]["version"].as_str().unwrap(), "");
-    assert_eq!(real["provenance"]["token"]["model"].as_str(), Some("SoftHSM v2"));
+    assert_eq!(real["provenance"]["token"]["model"].as_str(), Some(REF.model));
     assert!(!real["observed"]["uri"].as_str().unwrap().contains("module-path"), "URI is a pure locator");
     let stderr = |o: &Output| String::from_utf8_lossy(&o.stderr).into_owned();
     assert!(!stderr(&e.km(&verify)).contains("warning"));
@@ -660,8 +661,9 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     let original = std::fs::read_to_string(&path).unwrap();
     let version = real["provenance"]["module"]["version"].as_str().unwrap().to_owned();
 
-    // A different module version: still verifies (identity is the CA-ID), with a warning.
-    std::fs::write(&path, original.replace(&format!("version = \"{version}\""), "version = \"0.0\"")).unwrap();
+    // A different module version: still verifies (identity is the CA-ID), with a warning. Not
+    // 0.0: kryoptic reports that as its library version.
+    std::fs::write(&path, original.replace(&format!("version = \"{version}\""), "version = \"99.99\"")).unwrap();
     let o = e.km(&verify);
     assert_eq!(code(&o), 0);
     assert!(stderr(&o).contains("warning:") && stderr(&o).contains("with module"), "{}", stderr(&o));
@@ -673,7 +675,7 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     assert!(stderr(&o).contains("note:") && !stderr(&o).contains("warning:"), "{}", stderr(&o));
 
     // A different token: warning.
-    std::fs::write(&path, original.replace("model = \"SoftHSM v2\"", "model = \"Other\"")).unwrap();
+    std::fs::write(&path, original.replace(&format!("model = \"{}\"", REF.model), "model = \"Other\"")).unwrap();
     assert!(stderr(&e.km(&verify)).contains("realised on token Other"));
 
     // Re-binding with --update-lock records the current module and token.
@@ -1244,8 +1246,15 @@ fn curves_and_rsa_sizes_match_an_independent_der_oracle() {
     e.config(&body);
     assert_eq!(code(&e.km(&["validate"])), 0);
     let s = e.session();
-    for (k, _) in kinds {
+    for (k, ty) in kinds {
         let spec = format!("{k}-gen");
+        // A curve the reference lacks is refused as unsupported, and nothing is left behind.
+        if REF.missing_curves.iter().any(|c| ty.ends_with(&format!("curve = \"{c}\""))) {
+            let o = e.km(&["realise", &spec, "--token", "ref", "--update-lock"]);
+            assert_eq!(code(&o), 15, "{k}: {}", String::from_utf8_lossy(&o.stderr));
+            assert_eq!(s.find_objects(&[Attribute::Label(k.as_bytes().to_vec())]).unwrap(), [], "{k}");
+            continue;
+        }
         assert_eq!(code(&e.km(&["realise", &spec, "--token", "ref", "--no-update-lock"])), 10, "{k}");
         assert_eq!(code(&e.km(&["realise", &spec, "--token", "ref", "--update-lock"])), 0, "{k}");
         assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki(&s, k)), "{k}");
@@ -1347,11 +1356,11 @@ fn adopt_ec_and_edwards_certificates() {
 #[test]
 fn scheme_the_token_lacks_is_refused_before_create() {
     let Some(e) = env("token_lacks") else { return };
-    // The same token through a SoftHSM config that hides CKM_AES_CMAC.
-    let conf = std::fs::read_to_string(std::env::var("SOFTHSM2_CONF").unwrap()).unwrap();
-    let no_cmac = e.dir.join("softhsm2-no-cmac.conf");
-    std::fs::write(&no_cmac, conf + "\nslots.mechanisms = -CKM_AES_CMAC\n").unwrap();
-    let env = [("SOFTHSM2_CONF", no_cmac.as_path())];
+    // The same token through a module config that hides CKM_AES_CMAC.
+    let conf = std::fs::read_to_string(std::env::var(REF.conf_var).unwrap()).unwrap();
+    let no_cmac = e.dir.join("no-cmac.conf");
+    std::fs::write(&no_cmac, (REF.hide_mechanism)(&conf, "CKM_AES_CMAC")).unwrap();
+    let env = [(REF.conf_var, no_cmac.as_path())];
     e.config(
         r#"
 [objects.k]
@@ -1389,7 +1398,7 @@ fn provider_is_detected_or_named() {
     let Some(e) = env("provider") else { return };
     e.config(EC);
     let caps = |o: &Output| serde_json::from_str::<serde_json::Value>(&stdout(o)).unwrap()["provider"].clone();
-    assert_eq!(caps(&e.km(&["caps", "--token", "ref"])), "softhsm", "auto-detected from C_GetInfo");
+    assert_eq!(caps(&e.km(&["caps", "--token", "ref"])), REF.provider, "auto-detected from C_GetInfo");
     let path = e.dir.join("keys.toml");
     let text = std::fs::read_to_string(&path).unwrap();
     let named =
@@ -1679,9 +1688,19 @@ fn brainpool_p512_is_refused_clearly() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("no RustCrypto crate"));
 }
 
+/// A private key swapped under its locator is a conflict (13), reached by one of two routes: where
+/// the private key exposes no public key (`SoftHSM` EC and Edwards keys), the proof of possession
+/// fails; where it carries its own `CKA_PUBLIC_KEY_INFO` (kryoptic), the cross-check against the
+/// locked material refuses it before any proof runs.
+fn assert_swapped_key_conflict(o: &Output) {
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(code(o), 13, "{err}");
+    assert!(err.contains("proof of possession failed") || err.contains("disagrees with the key material"), "{err}");
+}
+
 /// H1 (docs/REVIEW-2026-11-11.md): `SoftHSM` EC private keys expose no public key, so their
 /// identity is read from the public key object under the same locator. Replace the private key,
-/// keep the public object: the proof of possession fails, a conflict.
+/// keep the public object: a conflict (`assert_swapped_key_conflict`).
 #[test]
 fn h1_a_private_key_beside_an_unbound_public_object_is_a_conflict() {
     let Some(e) = env("gap_h1") else { return };
@@ -1708,9 +1727,7 @@ fn h1_a_private_key_beside_an_unbound_public_object_is_a_conflict() {
     s.destroy_object(original).unwrap();
     s.update_attributes(other_private, &[Attribute::Label(b"gap-a".to_vec())]).unwrap();
     // Different private key under the locator, same public object.
-    let verify = e.km(&["verify", "signing-soft", "--token", "ref"]);
-    assert_eq!(code(&verify), 13);
-    assert!(String::from_utf8_lossy(&verify.stderr).contains("proof of possession failed"));
+    assert_swapped_key_conflict(&e.km(&["verify", "signing-soft", "--token", "ref"]));
     // So is deleting: If-Match must not pass on the public object alone.
     assert_eq!(code(&e.km(&["delete", "signing-soft", "--token", "ref", "--no-update-lock"])), 13);
 }
@@ -1810,13 +1827,7 @@ fn derive_and_decrypt_only_keys_prove_possession() {
         .unwrap()[0];
     s.destroy_object(original).unwrap();
     s.update_attributes(other_private, &[Attribute::Label(b"pop-ecdh".to_vec())]).unwrap();
-    let o = e.km(&["verify", "k", "--token", "ref"]);
-    assert_eq!(code(&o), 13);
-    assert!(
-        String::from_utf8_lossy(&o.stderr).contains("proof of possession failed"),
-        "{}",
-        String::from_utf8_lossy(&o.stderr)
-    );
+    assert_swapped_key_conflict(&e.km(&["verify", "k", "--token", "ref"]));
     assert_eq!(code(&e.km(&["realise", "k", "--token", "ref", "--no-update-lock"])), 13);
 }
 
@@ -1915,8 +1926,8 @@ fn admin_credential_is_refused_where_the_user_creates_keys() {
 }
 
 /// `[tokens.<t>.options]` belong to the token's provider, which checks them when the token is
-/// opened (and `validate` checks them when the provider is named): `SoftHSM` takes none, so any is
-/// refused (17) rather than silently ignored.
+/// opened (and `validate` checks them when the provider is named): the reference providers take
+/// none, so any is refused (17) rather than silently ignored.
 #[test]
 fn provider_options_are_checked_by_the_provider() {
     let Some(e) = env("options") else { return };
@@ -1931,17 +1942,18 @@ fn provider_options_are_checked_by_the_provider() {
     .unwrap();
     let o = e.km(&["resolve", "signing-soft", "--token", "ref"]);
     assert_eq!(code(&o), 17, "{}", String::from_utf8_lossy(&o.stderr));
-    assert!(String::from_utf8_lossy(&o.stderr).contains("tokens.ref.options.tcti: provider softhsm takes no options"));
+    let refused = format!("provider {} takes no options", REF.provider);
+    assert!(String::from_utf8_lossy(&o.stderr).contains(&format!("tokens.ref.options.tcti: {refused}")));
     // With the provider named, `validate` checks them without opening the token.
     let named = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap().replacen(
         "tokenLabel",
-        "provider = \"softhsm\"\ntokenLabel",
+        &format!("provider = \"{}\"\ntokenLabel", REF.provider),
         1,
     );
     std::fs::write(e.dir.join("keys.toml"), named).unwrap();
     let o = e.km(&["validate"]);
     assert_eq!(code(&o), 17, "{}", String::from_utf8_lossy(&o.stderr));
-    assert!(String::from_utf8_lossy(&o.stderr).contains("provider softhsm takes no options"));
+    assert!(String::from_utf8_lossy(&o.stderr).contains(&refused));
 }
 
 /// `realise` and `delete` write the lock by default; `--no-update-lock` compares only (first use
@@ -2123,7 +2135,7 @@ fn the_lock_pins_type_spec_provenance_and_schemes() {
     let lock: toml::Value = toml::from_str(&locked).unwrap();
     assert_eq!(lock["objects"]["signing"]["type"]["curve"].as_str(), Some("secp256r1"));
     let real = &lock["realisations"]["signing-soft"]["ref"];
-    assert_eq!(real["provenance"]["provider"].as_str(), Some("softhsm"));
+    assert_eq!(real["provenance"]["provider"].as_str(), Some(REF.provider));
     assert!(real["provenance"]["cakeysVersion"].as_str().is_some_and(|v| !v.is_empty()));
 
     // 1. A curve alias is the same object type: keys.toml and the lock canonicalize it, so
@@ -2146,7 +2158,7 @@ fn the_lock_pins_type_spec_provenance_and_schemes() {
     let locked = std::fs::read_to_string(&path).unwrap();
 
     // 3. Provenance: another provider warns, another cakeys version is a note.
-    std::fs::write(&path, locked.replace("provider = \"softhsm\"", "provider = \"other\"")).unwrap();
+    std::fs::write(&path, locked.replace(&format!("provider = \"{}\"", REF.provider), "provider = \"other\"")).unwrap();
     let o = e.km(&verify);
     assert_eq!(code(&o), 0);
     assert!(stderr(&o).contains("warning:") && stderr(&o).contains("provider other"), "{}", stderr(&o));

@@ -18,6 +18,29 @@ impl Provider for SoftHsm {
     }
 }
 
+/// kryoptic: a PKCS#11 3.2 software token (`OpenSSL` backend), a reference beside `SoftHSM`.
+/// No fix-ups needed; observed with kryoptic 1.5.4:
+///
+/// - Edwards `CKA_EC_POINT` is the raw point (3.2), or DER with `KRYOPTIC_EC_POINT_ENCODING=DER`;
+///   cakeys reads both, to the same identity.
+/// - Private keys carry `CKA_PUBLIC_KEY_INFO` of their own material, so a private key swapped
+///   under a locator fails the cross-check against the locked material (13) before the proof of
+///   possession runs.
+/// - `C_GetInfo` reports library version 0.0, so provenance tells kryoptic builds apart only by
+///   the module file and the token firmware (1.5).
+/// - secp256k1 and the brainpool curves cannot be generated (unsupported, 15).
+pub struct Kryoptic;
+
+impl Provider for Kryoptic {
+    fn name(&self) -> &'static str {
+        "kryoptic"
+    }
+
+    fn matches(&self, m: &ModuleInfo) -> bool {
+        m.manufacturer == "Kryoptic"
+    }
+}
+
 /// p11-kit's client module (`p11-kit-client.so`), forwarding a token served by `p11-kit server`
 /// over a socket: how real builds reach tokens. Observed with p11-kit 0.26.5:
 ///

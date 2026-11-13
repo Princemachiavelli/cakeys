@@ -115,7 +115,7 @@ impl LockWriteArgs {
 /// third party uses; `tpm2` and `ykcs11` are cargo features (both on by default).
 #[must_use]
 pub fn default_registry() -> Registry {
-    let registry = Registry::new().with(providers::SoftHsm);
+    let registry = Registry::new().with(providers::SoftHsm).with(providers::Kryoptic);
     #[cfg(feature = "ykcs11")]
     let registry = registry.with(cakeys_ykcs11::Ykcs11);
     #[cfg(feature = "tpm2")]

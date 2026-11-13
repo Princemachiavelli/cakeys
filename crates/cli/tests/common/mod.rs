@@ -18,6 +18,51 @@ pub fn cryptoki_hmac_types_fixed(require: bool) -> bool {
     fixed
 }
 
+/// A software PKCS#11 token the shared suite (`tests/reference/`) runs against: the facts the
+/// suite needs about it, so its tests assert the same verdicts on every reference.
+pub struct Reference {
+    /// Path of the module; the suite skips when it is unset.
+    pub module_var: &'static str,
+    /// When set, a missing module fails instead of skipping.
+    pub require_var: &'static str,
+    /// The module's own configuration file.
+    pub conf_var: &'static str,
+    /// The provider cakeys detects from `C_GetInfo`.
+    pub provider: &'static str,
+    /// `C_GetInfo` manufacturer and `C_GetTokenInfo` model, as recorded in provenance.
+    pub manufacturer: &'static str,
+    pub model: &'static str,
+    /// Curves (`keys.toml` names) it cannot generate: refused as unsupported (15).
+    pub missing_curves: &'static [&'static str],
+    /// The module's configuration (`conf_var`'s file) with one mechanism hidden.
+    pub hide_mechanism: fn(conf: &str, mechanism: &str) -> String,
+}
+
+pub const SOFTHSM: Reference = Reference {
+    module_var: "CAKEYS_TEST_MODULE",
+    require_var: "CAKEYS_TEST_REQUIRE",
+    conf_var: "SOFTHSM2_CONF",
+    provider: "softhsm",
+    manufacturer: "SoftHSM",
+    model: "SoftHSM v2",
+    missing_curves: &[],
+    hide_mechanism: |conf, m| format!("{conf}\nslots.mechanisms = -{m}\n"),
+};
+
+/// kryoptic 1.5.4 (its `OpenSSL` backend) generates none of secp256k1 or the brainpool curves. The
+/// harness (nix/package.nix) ends `KRYOPTIC_CONF` with the token's `[[slots]]` table, so an
+/// appended key belongs to it.
+pub const KRYOPTIC: Reference = Reference {
+    module_var: "CAKEYS_KRYOPTIC_MODULE",
+    require_var: "CAKEYS_KRYOPTIC_REQUIRE",
+    conf_var: "KRYOPTIC_CONF",
+    provider: "kryoptic",
+    manufacturer: "Kryoptic",
+    model: "v1",
+    missing_curves: &["secp256k1", "brainpoolP256r1", "brainpoolP384r1"],
+    hide_mechanism: |conf, m| format!("{conf}\nmechanisms = [\"DENY\", \"{m}\"]\n"),
+};
+
 pub fn code(o: &Output) -> i32 {
     o.status.code().unwrap()
 }
@@ -109,7 +154,14 @@ pub fn oracle_spki_with(s: &Session, label: &str, unwrap: fn(&[u8]) -> Vec<u8>) 
     } else {
         let a = s.get_attributes(h, &[AttributeType::EcParams, AttributeType::EcPoint]).unwrap();
         let (Attribute::EcParams(p), Attribute::EcPoint(q)) = (&a[0], &a[1]) else { panic!() };
-        let point = unwrap(q);
+        // PKCS#11 3.2 holds Edwards points raw (kryoptic's default); earlier modules wrap them
+        // in an OCTET STRING. The raw length is exact, two bytes short of the wrapped form.
+        let raw = match p.as_slice() {
+            ED25519 => Some(32),
+            ED448 => Some(57),
+            _ => None,
+        };
+        let point = if raw == Some(q.len()) { q.clone() } else { unwrap(q) };
         match p.as_slice() {
             ED25519 | ED448 => spki(p, &point),
             _ => spki(&[EC_PUBLIC_KEY, p.as_slice()].concat(), &point),

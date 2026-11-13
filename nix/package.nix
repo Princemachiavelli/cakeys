@@ -2,6 +2,8 @@
   lib,
   rustPlatform,
   softhsm,
+  kryoptic,
+  opensc,
   swtpm,
   tpm2-pkcs11,
   tpm2-tools,
@@ -53,7 +55,7 @@ rustPlatform.buildRustPackage {
     [ "$applied" = 1 ] || { echo "cryptoki-0.12.1 not found exactly once in $cargoDepsCopy" >&2; exit 1; }
   '';
 
-  # Integration tests drive a real SoftHSM token, the same SoftHSM through p11-kit forwarding,
+  # Integration tests drive real SoftHSM and kryoptic tokens, SoftHSM through p11-kit forwarding,
   # and tpm2-pkcs11 on a software TPM (behind tpm2-abrmd on a private D-Bus) inside the build
   # sandbox.
   nativeCheckInputs = [
@@ -64,6 +66,7 @@ rustPlatform.buildRustPackage {
     tpm2-abrmd
     dbus
     p11-kit
+    opensc
   ];
   preCheck = ''
     export SOFTHSM2_CONF=$TMPDIR/softhsm2.conf
@@ -73,6 +76,16 @@ rustPlatform.buildRustPackage {
     softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678
     export CAKEYS_TEST_MODULE=${softhsm}/lib/softhsm/libsofthsm2.so
     export CAKEYS_TEST_REQUIRE=1
+
+    # kryoptic (PKCS#11 3.2): the shared reference suite runs against it too. The slot table
+    # ends the file: the suite appends a mechanism deny list to it (tests/common/mod.rs).
+    export KRYOPTIC_CONF=$TMPDIR/kryoptic.conf
+    printf '[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' $TMPDIR/kryoptic.sql > $KRYOPTIC_CONF
+    export CAKEYS_KRYOPTIC_MODULE=${kryoptic}/lib/libkryoptic_pkcs11.so
+    pkcs11-tool --module $CAKEYS_KRYOPTIC_MODULE --init-token --slot 1 --so-pin 5678 --label kmtest > /dev/null
+    pkcs11-tool --module $CAKEYS_KRYOPTIC_MODULE --token-label kmtest --login --login-type so \
+      --so-pin 5678 --init-pin --pin 1234 > /dev/null
+    export CAKEYS_KRYOPTIC_REQUIRE=1
 
     # p11-kit forwarding: a second SoftHSM token behind `p11-kit server` (short socket path).
     SOFTHSM_MODULE=$CAKEYS_TEST_MODULE bash ${./p11kit-test-env.sh} up $TMPDIR/p11

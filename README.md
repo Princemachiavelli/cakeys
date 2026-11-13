@@ -12,7 +12,8 @@ key it hashed.
 
 Status: proof of concept.
 
-- **Tested** against SoftHSM, tpm2-pkcs11 (swtpm, QEMU vTPM) and SoftHSM behind p11-kit forwarding.
+- **Tested** against SoftHSM and kryoptic (one shared suite), tpm2-pkcs11 (swtpm, QEMU vTPM) and
+  SoftHSM behind p11-kit forwarding.
 - **Tested by hand on a YubiKey 5** (PIV through ykcs11), not in CI: adopted keys verify
   read-only, and an opt-in read-write suite generates a key in a scratch slot (as SO with the
   management key), attests it, proves possession and verifies it.
@@ -121,7 +122,7 @@ reach tokens only through p11-kit forwarding or a real TPM, never through a toke
 $ nix flake check            # unit, SoftHSM, tpm2-pkcs11 (swtpm), p11-kit, VM, module and TPM ACL tests, minimal build, formatting
 $ nix fmt                    # treefmt.nix: rustfmt, nixfmt, taplo, shfmt, rumdl, keep-sorted; statix, deadnix, shellcheck, typos
 $ nix build .#test-nspawn    # the same flow in systemd-nspawn (needs the uid-range feature)
-$ nix develop                # cargo, clippy, softhsm, opensc
+$ nix develop                # cargo, clippy, softhsm, kryoptic, opensc
 ```
 
 Plain `cargo test` skips the token suites unless `CAKEYS_TEST_MODULE` and friends are set (see the

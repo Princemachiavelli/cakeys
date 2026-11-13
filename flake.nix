@@ -194,6 +194,7 @@
           rustfmt
           rust-analyzer
           softhsm
+          kryoptic
           opensc
           openssl
           pcsc-tools

@@ -6,3 +6,5 @@
 
 mod common;
 mod reference;
+
+const REF: &common::Reference = &common::SOFTHSM;

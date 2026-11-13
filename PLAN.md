@@ -5,7 +5,7 @@
 ## TODO (deferred, from the 2026-11-11 reviews)
 
 - ~~**Refactor (2026-11-12 code review):**~~ **done 2026-11-12**, see [`docs/REFACTOR-2026-11-12.md`](docs/REFACTOR-2026-11-12.md) (R0–R11, "Outcome").
-- **Verification (2026-11-12):** [`docs/VERIFICATION.md`](docs/VERIFICATION.md) — reference tokens and cross-reference tests first (kryoptic in progress), then proptest/cargo-fuzz, Quint/Alloy design models, Tamarin, Kani; Verus/Aeneas only for a carved-out kernel.
+- **Verification (2026-11-12):** [`docs/VERIFICATION.md`](docs/VERIFICATION.md) — reference tokens and cross-reference tests first (kryoptic done; cross-reference tests next), then proptest/cargo-fuzz, Quint/Alloy design models, Tamarin, Kani; Verus/Aeneas only for a carved-out kernel.
 
 Parked deliberately; the lock stays `version = 1`, a draft, until the reviews pass.
 
@@ -620,7 +620,7 @@ Rough sizes of the **new code**. Dependencies are `cryptoki`, `tss-esapi`, RustC
 
 Steps:
 
-1. **Provider and harness.**
+1. **Provider and harness.** Done 2026-11-12: `cakeys_pkcs11::providers::Kryoptic`, the harness in `nix/package.nix`, and the shared suite (`tests/reference/`) passing on kryoptic 1.5.4 as on SoftHSM.
    - A kryoptic provider: built into `cakeys_pkcs11::providers` like softhsm, unless it needs code or dependencies of its own (then its own crate, like ykcs11).
    - A test harness like SoftHSM's: `KRYOPTIC_CONF` with a sqlite slot, and a token created with `C_InitToken`.
    - Run the existing classical suites against it too, as a second software reference.

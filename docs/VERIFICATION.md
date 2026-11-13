@@ -57,7 +57,8 @@ what the specification promises.
 
 ## Plan, in order
 
-1. **Reference tokens and cross-reference tests (in progress).** Add kryoptic as a third
+1. **Reference tokens and cross-reference tests (kryoptic done 2026-11-12; cross-reference
+   tests next).** Add kryoptic as a third
    software reference beside SoftHSM and tpm2-pkcs11, run the shared suite on it, then test that
    behaviour is consistent across every reference: the same material gives the same IDs, the
    same scenario the same verdict, on SoftHSM, kryoptic, p11-kit and tpm2-pkcs11 where each
