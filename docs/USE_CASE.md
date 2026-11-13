@@ -113,7 +113,7 @@ Nix:
    whose use can fail, in a known set of ways.** A program names a key (an object in keys.toml,
    pinned in keys.lock) and asks for it; it gets the verified URI and IDs — never key material —
    or an error it can handle like a missing file or a failed request, instead of trusting a URI
-   it cannot check.
+   it cannot check. Written up in [`CONTRACT.md`](CONTRACT.md).
    - *The failures are already defined:* the exit codes map onto the errors such code handles
      today — not found (11; ENOENT, 404), conflict (13; 409), precondition failed (14; 412),
      unavailable (16; EIO, 503), hash mismatch (10; an integrity error, like a failed checksum),

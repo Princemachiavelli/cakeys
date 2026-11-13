@@ -18,6 +18,8 @@ Status: proof of concept.
   read-only, and an opt-in read-write suite generates a key in a scratch slot (as SO with the
   management key), attests it, proves possession and verifies it.
 - **Use cases (problems and questions, one line each):** [`docs/USE_CASE.md`](docs/USE_CASE.md).
+- **Using keys from other languages (proposal):** [`docs/CONTRACT.md`](docs/CONTRACT.md): a key as a
+  declared resource whose use fails in known ways, like a file or an HTTP endpoint.
 - **Design and current state:** [`docs/DESIGN.md`](docs/DESIGN.md).
 - **See it run:** `nix run .#demo` walks through pinned identity, the Nix view, drift, one
   identity across two modules, and export plans, on throwaway SoftHSM and kryoptic tokens.
