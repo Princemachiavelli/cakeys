@@ -493,7 +493,7 @@ model = "..." ; serial = "..." ; firmware = "M.m"
 
 | Verb | Semantics |
 |---|---|
-| `validate` | Static check of modes, opt-ins, types and provider names; touches no token. |
+| `validate` | Static check of modes, opt-ins, types and provider names; touches no token. Then the capability-profile gate (docs/PROVIDERS.md phase 4): each spec's needs — its commitments' mechanisms, generating its type, curve and size when `autoCreate`, an attestation — against its token's profiles, resolved from the lock's recorded module and token or keys.toml's `provider`; a profile's *no* is refused (15) naming the profile, *unknown* is a note. |
 | `resolve <spec> --token` | GET: find (exactly one), check type and policy, compute IDs, print JSON. Never writes. |
 | `verify <spec> --token` | GET with If-Match against the lock; prints the URI. |
 | `realise <spec> --token [--no-update-lock]` | PUT, recording what the lock lacks (§3.5), and prints the resolved JSON. If absent and `autoCreate`: refused (14) when the lock already pins the object's material — generated material could never match (D1, `autocreate_never_fights_a_locked_identity`). **If-None-Match** — never create when anything sits under the locator (`never_create_over_an_occupied_locator`). Then create, compute and compare. If the identity of a just-created object cannot be established, it is destroyed (`tpm2_identity_failure_after_create_leaves_nothing`); on a module that cannot delete keys (ykcs11) the key stays and the message says so. Re-running never duplicates (`ec_lifecycle`). |

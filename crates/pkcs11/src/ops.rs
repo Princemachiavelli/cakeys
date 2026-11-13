@@ -19,15 +19,24 @@ fn attestation_scheme(t: &Target, tok: &Token) -> Option<Scheme> {
     t.on_token.attestation.then(|| tok.attestation_cap(t.object)).flatten().map(|c| c.scheme)
 }
 
-/// Commitments to compute for a secret key on this token: those the spec allows (or, for a
-/// wrap-rebind copy, every one for the key type) that the token implements.
-fn commits(t: &Target, tok: &Token, mode: Mode) -> Result<Vec<Commit>> {
-    let wanted = match (mode, t.object.key_type) {
+/// The commitments a secret key's spec allows (or, for a wrap-rebind copy, every one for the
+/// key type), whatever the token: empty for every other mode.
+fn wanted_commits(t: &Target, mode: Mode) -> Vec<Commit> {
+    match (mode, t.object.key_type) {
         (Mode::Commitment, _) => declared_commits(t),
         (Mode::WrapRebind, Some(Kt::Aes)) => AES_COMMITS.to_vec(),
         (Mode::WrapRebind, kt) => kt.and_then(HmacHash::for_key_type).map(Commit::Hmac).into_iter().collect(),
-        _ => return Ok(vec![]),
-    };
+        _ => vec![],
+    }
+}
+
+/// Commitments to compute for a secret key on this token: those the spec allows (or, for a
+/// wrap-rebind copy, every one for the key type) that the token implements.
+fn commits(t: &Target, tok: &Token, mode: Mode) -> Result<Vec<Commit>> {
+    let wanted = wanted_commits(t, mode);
+    if wanted.is_empty() {
+        return Ok(vec![]);
+    }
     let usable: Vec<Commit> = wanted.iter().copied().filter(|c| tok.has(hal::commit_mechanism(*c))).collect();
     if usable.is_empty() {
         let mechs: Vec<String> = wanted.iter().map(|c| hal::commit_mechanism(*c).to_string()).collect();
@@ -61,64 +70,101 @@ pub fn schemes_on(t: &Target, tok: &Token) -> Result<Vec<Scheme>> {
     Ok(v)
 }
 
-/// Token capabilities the mode needs, checked before anything is created.
-fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
+/// What a target needs of its token, whatever the token: the one source of truth for the live
+/// check before anything is created ([`check_capabilities`]) and the static gate against the
+/// capability profiles ([`static_gate`], docs/PROVIDERS.md phase 4).
+pub struct Needs {
+    /// Mechanism groups in check order: the token must implement at least one of each.
+    pub groups: Vec<Vec<MechanismType>>,
+    /// The spec generates the object (`autoCreate`): its key type, curve and size must be
+    /// generatable.
+    pub generates: bool,
+}
+
+/// [`Needs`] of `t` in `mode`.
+///
+/// # Errors
+///
+/// `Unsupported` for what no token can do: an opted-in identity mode this build does not
+/// implement, or generating a hash-bound HMAC key type (PKCS#11 has no mechanism for it).
+pub fn needs(t: &Target, mode: Mode) -> Result<Needs> {
     if mode.needs_opt_in() {
         return Err(KmError::Unsupported(format!(
             "identity mode '{mode}' (opted in for {t}) is not implemented in this POC"
         )));
     }
-    // An attestation the provider cannot compute is refused up front (15), like a scheme the
-    // token lacks: it is part of the identity this realisation promises from now on.
-    if t.on_token.attestation {
-        match tok.provider.attestation() {
-            None => {
-                return Err(tok.unsupported(format!(
-                    "{} opts into attestation, but provider '{}' attests nothing on this module",
-                    t,
-                    tok.provider.name()
-                )));
-            }
-            Some(cap) if !cap.classes.contains(&t.object.class) => {
-                return Err(tok.unsupported(format!(
-                    "{} opts into attestation, but provider '{}' attests only {:?}",
-                    t,
-                    tok.provider.name(),
-                    cap.classes.iter().map(|c| c.name()).collect::<Vec<_>>()
-                )));
-            }
-            Some(_) => {}
-        }
-    }
-    let mut need = Vec::new();
     if t.on_token.auto_create
         && let Some(kt) = t.object.key_type.filter(|k| k.is_hash_bound_hmac())
     {
         // CKM_GENERIC_SECRET_KEY_GEN makes CKK_GENERIC_SECRET keys; there is no mechanism for
         // the hash-bound HMAC types (SoftHSM: CKR_TEMPLATE_INCONSISTENT).
-        return Err(tok.unsupported(format!(
+        return Err(KmError::Unsupported(format!(
             "{t}: PKCS#11 has no key generation for {kt}; generate a CKK_GENERIC_SECRET with CKA_SIGN, \
              or create the key elsewhere and adopt it"
         )));
     }
+    let mut groups = Vec::new();
+    // The commitments first: a token implementing none of them is the more telling refusal.
+    let commits = wanted_commits(t, mode);
+    if !commits.is_empty() {
+        groups.push(commits.iter().map(|c| hal::commit_mechanism(*c)).collect());
+    }
     if t.on_token.auto_create {
-        need.push(match hal::key_type_of(t.object)? {
+        groups.push(vec![match hal::key_type_of(t.object)? {
             KeyType::EC => MechanismType::ECC_KEY_PAIR_GEN,
             KeyType::EC_EDWARDS => MechanismType::ECC_EDWARDS_KEY_PAIR_GEN,
             KeyType::RSA => MechanismType::RSA_PKCS_KEY_PAIR_GEN,
             KeyType::AES => MechanismType::AES_KEY_GEN,
             _ => MechanismType::GENERIC_SECRET_KEY_GEN,
-        });
+        }]);
     }
-    commits(t, tok, mode)?;
     if mode == Mode::WrapRebind {
-        need.push(MechanismType::AES_KEY_GEN);
-        if !tok.has(MechanismType::AES_KEY_WRAP_PAD) {
-            need.push(MechanismType::AES_KEY_WRAP);
-        }
+        groups.push(vec![MechanismType::AES_KEY_GEN]);
+        groups.push(vec![MechanismType::AES_KEY_WRAP_PAD, MechanismType::AES_KEY_WRAP]);
     }
-    match need.into_iter().find(|m| !tok.has(*m)) {
-        Some(m) => Err(tok.unsupported(format!("token '{}' lacks {m} needed for mode '{mode}' of {}", tok.name, t))),
+    Ok(Needs { groups, generates: t.on_token.auto_create })
+}
+
+/// The refusal for a mechanism group the token lacks.
+fn lacking(token: &str, group: &[MechanismType], mode: Mode, t: &Target) -> String {
+    if let [m] = group {
+        return format!("token '{token}' lacks {m} needed for mode '{mode}' of {t}");
+    }
+    let names: Vec<String> = group.iter().map(ToString::to_string).collect();
+    format!("token '{token}' implements none of {} needed for mode '{mode}' of {t}", names.join(", "))
+}
+
+/// An attestation the provider cannot compute is refused up front (15), like a scheme the
+/// token lacks: it is part of the identity the realisation promises from now on.
+pub(crate) fn check_attestation(
+    t: &Target,
+    provider: &dyn crate::provider::Provider,
+) -> std::result::Result<(), String> {
+    if !t.on_token.attestation {
+        return Ok(());
+    }
+    match provider.attestation() {
+        None => {
+            Err(format!("{t} opts into attestation, but provider '{}' attests nothing on this module", provider.name()))
+        }
+        Some(cap) if !cap.classes.contains(&t.object.class) => Err(format!(
+            "{t} opts into attestation, but provider '{}' attests only {:?}",
+            provider.name(),
+            cap.classes.iter().map(|c| c.name()).collect::<Vec<_>>()
+        )),
+        Some(_) => Ok(()),
+    }
+}
+
+/// Token capabilities the mode needs, checked before anything is created.
+fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
+    let needs = needs(t, mode).map_err(|e| match e {
+        KmError::Unsupported(m) => tok.unsupported(m),
+        e => e,
+    })?;
+    check_attestation(t, tok.provider.as_ref()).map_err(|m| tok.unsupported(m))?;
+    match needs.groups.iter().find(|g| !g.iter().any(|m| tok.has(*m))) {
+        Some(g) => Err(tok.unsupported(lacking(&tok.name, g, mode, t))),
         None => Ok(()),
     }
 }

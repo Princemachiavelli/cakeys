@@ -409,13 +409,49 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
                 })?;
                 provider.check_options(name, &t.options)?;
             }
+            // The static gate (docs/PROVIDERS.md phase 4): each target's needs against its token's
+            // capability profiles, resolved from keys.toml and the lock — no token opened.
+            let mut stacks = BTreeMap::new();
+            for (name, t) in &cfg.tokens {
+                match cakeys_pkcs11::gate::stack(name, t, &lock)? {
+                    Ok(stack) => {
+                        stacks.insert(name.as_str(), stack);
+                    }
+                    Err(why) => notes.note(format_args!("validate: {why}")),
+                }
+            }
+            let mut refusals = Vec::new();
             for (spec_name, spec) in &cfg.specs {
                 for token in spec.tokens.keys() {
                     let t = Target::new(&cfg, spec_name, token)?;
                     let mode = ops::plan_mode(&t)?;
                     let note = if mode.needs_opt_in() { " (opted in)" } else { "" };
                     println!("{spec_name} on {token}: mode {mode}{note}");
+                    if let Some(stack) = stacks.get(token.as_str()) {
+                        let v = cakeys_pkcs11::gate::check(&t, mode, stack, registry)?;
+                        for n in &v.notes {
+                            notes.note(format_args!("validate: {n}"));
+                        }
+                        refusals.extend(v.refusals);
+                    }
                 }
+            }
+            for (name, stack) in &stacks {
+                for n in &stack.resolved.notes {
+                    notes.note(format_args!("validate: token '{name}' ({}): {n}", stack.source));
+                }
+            }
+            if !refusals.is_empty() {
+                for r in &refusals {
+                    eprintln!("{r}");
+                }
+                return Err(KmError::Unsupported(format!(
+                    "{} target{} need{} what the capability profiles say the token cannot do",
+                    refusals.len(),
+                    if refusals.len() == 1 { "" } else { "s" },
+                    if refusals.len() == 1 { "s" } else { "" }
+                ))
+                .into());
             }
         }
         Cmd::Resolve { spec, token } => {

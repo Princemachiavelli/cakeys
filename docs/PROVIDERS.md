@@ -206,7 +206,7 @@ list, and what it left, is in its results below.
 | 1 | **Done 2026-11-12.** The model, modes, intersection, queries, and the `supports` query | ≈500, 4–5 days |
 | 2 | **Done 2026-11-12.** Resolution (match keys, layers), wiring `mechanisms()`, migrate `Side` and the binding layer into profiles | ≈400, 3–4 days |
 | 3 | **Done 2026-11-13.** `probe`: the scratch guard, profile + diff, generated profiles; the conformance check in the reference suites; the opt-in YubiKey probe (not yet all ~25 probes: see its results) | ≈700, 5–7 days |
-| 4 | The static `validate` gate, the wider Nix check (the query part moved here from phase 4 into phases 1's `supports`) | ≈300, 2–3 days |
+| 4 | **Done 2026-11-13.** The static `validate` gate; the Nix check runs it (the query part moved into phase 1's `supports`) | ≈300, 2–3 days |
 | 5 | D12: `[match.fields]` and their generic matching; the standard 3.2 fields (validation objects, session validation flags, `CKF_ERROR_STATE`); the observing provider hook, first for ykcs11's FIPS mode (the YubiKey 5C NFC FIPS here) and the TPM's `TPM_PT_MODES`; `tokens.<t>.require` checked at token open (14). Independent of phase 4 | ≈400, 3–4 days |
 
 ### Phase 0 and 1 results (2026-11-12)
@@ -349,6 +349,29 @@ Not done here, flagged:
   possible now that the read-only diff conforms; unscheduled.
 - A killed probe run leaves `cakeys-probe-NN` objects, which the next run's leftover check
   would report as a delete failure.
+
+### Phase 4 results (2026-11-13)
+
+`validate` gains the static gate (crates/pkcs11/src/gate.rs): what each spec needs of its
+token, against the token's capability profiles, with no token opened.
+
+- **One source of truth for the needs**: `ops::needs` lists them as mechanism groups (the
+  declared commitments, the key generation, wrap-rebind's AES generation and key wrap — at
+  least one of each group), plus whether the spec generates, and refuses what no token can do
+  (an unimplemented opted-in mode, generating a hash-bound HMAC type). The live check before
+  creation and the static gate both consume it.
+- **The profiles resolve statically** from the module and token a realisation recorded in the
+  lock (all four match keys, D9/D12), else from keys.toml's `provider` (the version and
+  hardware then unchecked, said in a note); `tokens.<t>.profiles` layers apply as at open, and
+  an unknown one is 17. A token with neither source is skipped with a note.
+- **Verdicts**: a group is satisfied by any member the profiles say yes to; all *no* is a
+  refusal naming the deciding profile; anything *unknown* is a note. With `autoCreate`, the
+  object's type, curve and size must be generatable by the same rule; an attestation the
+  provider cannot produce is refused. Every refusal is printed, then the exit is 15; config
+  errors (17) still come first.
+- **Tests**: tests/validate.rs and checks.profiles, token-free — kryoptic generating secp256k1
+  and a `kw` commitment through p11-kit are refused naming `kryoptic/1.5` and `p11-kit/0.26`;
+  the fixture with a recorded SoftHSM lock resolves `softhsm/2.7` and passes.
 
 Order against MIGRATE.md: phases 0–2 land **before MIGRATE phase 3**, so the wrapping code
 consumes the template rules as data (that plan's risk #1); the probe runs alongside MIGRATE

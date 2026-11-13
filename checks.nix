@@ -80,6 +80,14 @@
     mkdir -p $sim
     printf 'profile = "cryptoki-sim"\nmode = "delta"\n[subtract]\nkey-types = ["CKK_SHA224_HMAC", "CKK_SHA384_HMAC", "CKK_SHA512_HMAC"]\nnote = "a binding without the key-type fix"\n' > $sim/layer.toml
     expect 15 --profile softhsm/2.7 --layer cryptoki-sim --profiles $sim CKK_SHA512_HMAC
+    # The static gate (phase 4): `validate` against the profiles, no token opened. kryoptic
+    # generating secp256k1 and a `kw` commitment through p11-kit are refused (15); the fixture
+    # with a recorded SoftHSM lock passes.
+    q() { "${cakeys}/bin/cakeys" --config "$@" validate; }
+    expect 15 ${./crates/cli/tests/fixtures/gate.toml}
+    cp ${./crates/cli/tests/fixtures/keys.toml} keys.toml
+    cp ${./crates/cli/tests/fixtures/keys.lock} keys.lock
+    expect 0 keys.toml
   '';
   module = import ./nix/module-test.nix {
     inherit pkgs cakeys pcsc-probe;

@@ -185,7 +185,7 @@ fn lockless_token_cfg() -> TokenCfg {
 
 /// The `ModuleInfo` a transport file implies: only the provider is known, so nothing to
 /// detect a forwarder from — the binding layer still applies.
-fn moduleless_info() -> ModuleInfo {
+pub(crate) fn moduleless_info() -> ModuleInfo {
     ModuleInfo {
         path: String::new(),
         description: String::new(),

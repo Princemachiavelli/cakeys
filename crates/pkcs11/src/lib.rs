@@ -4,6 +4,7 @@
 //! per token in [`resolution`] with the binding layer of [`binding`] always in the stack.
 
 pub mod binding;
+pub mod gate;
 pub mod migrate;
 pub mod ops;
 pub mod probe;

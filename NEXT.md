@@ -10,7 +10,7 @@ backend, post-quantum, lock merge, keystores, the attestation remainders) stay p
 - [x] **Commands that need no keys.toml stop requiring `--config`** (`supports`, `probe` with
       `--module`, …) — deferred from PROVIDERS phase 1. Done: only `supports --profile` qualifies
       (`probe` needs the token's config); others exit 2 naming `--config`.
-- [ ] **PROVIDERS phase 4**: the static `validate` gate (each spec's demands against its
+- [x] **PROVIDERS phase 4**: the static `validate` gate (each spec's demands against its
       token's effective profile, no token attached) and the wider Nix check.
 - [ ] **M1/M2**: read-only sessions for read-only verbs; read the PIV PIN counters
       (`CKF_USER_PIN_FINAL_TRY` …) before login.

@@ -1,0 +1,48 @@
+# The static gate's fixture (docs/PROVIDERS.md phase 4, tests/validate.rs, checks.profiles):
+# validate checks each spec against its token's capability profiles with no token attached,
+# so the module paths are never opened.
+[tokens.kry]
+module = "/nonexistent/libkryoptic_pkcs11.so"
+tokenLabel = "x"
+provider = "kryoptic"
+
+[tokens.fwd]
+module = "/nonexistent/p11-kit-client.so"
+tokenLabel = "x"
+provider = "softhsm"
+profiles = ["p11-kit"]
+
+[tokens.unknown]
+module = "/nonexistent/x.so"
+tokenLabel = "x"
+
+[objects.k1]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256k1"
+
+[objects.p256]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+
+[objects.aes]
+class = "CKO_SECRET_KEY"
+keyType = "CKK_AES"
+valueLen = 32
+
+[specs.k1-kry]
+object = "k1"
+attributes = { CKA_SIGN = true }
+tokens.kry = { locator = { CKA_LABEL = "k1" }, autoCreate = true }
+
+[specs.p256-kry]
+object = "p256"
+attributes = { CKA_SIGN = true }
+tokens.kry = { locator = { CKA_LABEL = "p256" }, autoCreate = true }
+tokens.unknown = { locator = { CKA_LABEL = "p256" } }
+
+[specs.aes-kw]
+object = "aes"
+attributes = { CKA_WRAP = true }
+tokens.fwd = { locator = { CKA_LABEL = "aes" } }
