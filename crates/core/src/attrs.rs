@@ -82,16 +82,19 @@ pub fn observed(class: ObjectClass) -> impl Iterator<Item = &'static str> + use<
 }
 
 /// Whether a spec may declare the boolean `name` on a `class` object.
+#[must_use]
 pub fn declarable(class: ObjectClass, name: &str) -> bool {
     bools(class, |u| u != Use::Observed).any(|n| n == name)
 }
 
 /// Whether `name` is a boolean some class may declare.
+#[must_use]
 pub fn is_declarable_bool(name: &str) -> bool {
     ObjectClass::ALL.iter().any(|c| declarable(*c, name))
 }
 
 /// Whether a `class` object may carry `CKA_ALLOWED_MECHANISMS`.
+#[must_use]
 pub fn has_allowed_mechanisms(class: ObjectClass) -> bool {
     class.is_key()
 }

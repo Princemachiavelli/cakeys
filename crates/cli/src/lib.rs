@@ -113,6 +113,7 @@ impl LockWriteArgs {
 
 /// The providers this build links, in detection order. Built through the same public API a
 /// third party uses; `tpm2` and `ykcs11` are cargo features (both on by default).
+#[must_use]
 pub fn default_registry() -> Registry {
     let registry = Registry::new().with(providers::SoftHsm);
     #[cfg(feature = "ykcs11")]

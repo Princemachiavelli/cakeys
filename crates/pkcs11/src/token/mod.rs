@@ -341,6 +341,7 @@ fn read_mgm(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
 }
 
 /// The `cryptoki` class of a configured object.
+#[must_use]
 pub fn class_of(object: &ObjectCfg) -> ObjectClass {
     match object.class {
         Class::PrivateKey => ObjectClass::PRIVATE_KEY,

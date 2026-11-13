@@ -44,6 +44,7 @@ impl<'a> Target<'a> {
     /// Identity schemes this spec can compute (from the spec alone), in order of preference:
     /// the first one a realisation computes is its primary scheme. A token lacking a mechanism
     /// may compute fewer.
+    #[must_use]
     pub fn schemes(&self) -> Vec<Scheme> {
         match (self.object.class, self.object.key_type) {
             (Class::PrivateKey | Class::PublicKey, _) => vec![Scheme::Rfc7093m4],
@@ -72,6 +73,7 @@ impl std::fmt::Display for Target<'_> {
 
 /// How `t`'s private key is bound to its identity: proven by signing, deriving or decrypting
 /// (`pop-*`) unless the spec opts out (or adopts it publicOnly). `None` for every other class.
+#[must_use]
 pub fn binding(t: &Target) -> Option<Binding> {
     if t.object.class != Class::PrivateKey {
         return None;

@@ -61,6 +61,7 @@ impl Notes {
         self.0.push(format!("warning: {msg}"));
     }
 
+    #[must_use]
     pub fn lines(&self) -> &[String] {
         &self.0
     }
@@ -83,6 +84,7 @@ pub struct Facts {
 
 /// The label to compute `t`'s commitments with: the one the lock records for the object, else the
 /// default for objects the lock does not know yet.
+#[must_use]
 pub fn commitment_label(t: &Target, lock: &Lock) -> String {
     lock.objects
         .get(t.object_name)

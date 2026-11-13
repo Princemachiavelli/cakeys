@@ -86,6 +86,7 @@ pub struct ObjectCfg {
 
 impl ObjectCfg {
     /// An object of `class` (and `key_type`) with no further type attributes.
+    #[must_use]
     pub fn new(class: ObjectClass, key_type: Option<KeyType>) -> ObjectCfg {
         ObjectCfg { class, key_type, certificate_type: None, curve: None, value_len: None, modulus_bits: None }
     }
@@ -169,6 +170,7 @@ pub struct SpecCfg {
 
 impl SpecCfg {
     /// A declared boolean attribute.
+    #[must_use]
     pub fn flag(&self, name: &str) -> Option<bool> {
         match self.attributes.get(name) {
             Some(AttrValue::Bool(b)) => Some(*b),
@@ -276,6 +278,7 @@ pub enum Mode {
 }
 
 impl Mode {
+    #[must_use]
     pub fn needs_opt_in(self) -> bool {
         self > Mode::WrapRebind
     }
@@ -301,6 +304,7 @@ impl Binding {
     /// Strength, strongest 0: a realisation must never move to a higher rank. Every `pop-*`
     /// proves the same fact — possession of the named public key — by whichever capability the
     /// key has.
+    #[must_use]
     pub fn rank(self) -> u8 {
         match self {
             Binding::PopSign | Binding::PopEcdh | Binding::PopDecrypt => 0,
@@ -506,11 +510,13 @@ impl Lock {
     }
 
     /// The realisation of `spec` on `token`, if the lock records one.
+    #[must_use]
     pub fn realisation(&self, spec: &str, token: &str) -> Option<&LockRealisation> {
         self.realisations.get(spec)?.get(token)
     }
 
     /// Objects in this file that share an rfc7093m4 with `name` but are not listed as its pairs.
+    #[must_use]
     pub fn unlisted_pairs(&self, name: &str) -> BTreeSet<String> {
         let listed = self.objects.get(name).map(|o| &o.pairs);
         self.computed_pairs()
@@ -522,6 +528,7 @@ impl Lock {
     }
 
     /// For every object, the other objects with the same public key (`rfc7093m4`).
+    #[must_use]
     pub fn computed_pairs(&self) -> BTreeMap<String, BTreeSet<String>> {
         let key = |o: &LockObject| o.ids.get("rfc7093m4").cloned();
         self.objects
@@ -611,6 +618,7 @@ pub struct Immutables {
 }
 
 impl Immutables {
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         *self == Immutables::default()
     }
@@ -629,6 +637,7 @@ impl Immutables {
     }
 
     /// Flags that were `true` when recorded and are not now.
+    #[must_use]
     pub fn weakened_since(&self, recorded: &Immutables) -> Vec<&'static str> {
         [
             ("CKA_LOCAL", recorded.local, self.local),
@@ -833,6 +842,7 @@ pub fn lock_for_update(lock_path: &Path) -> Result<UpdateGuard> {
 ///   build.
 /// - Otherwise the lock file, if present, and its directory (temporary file, rename and the
 ///   `.lck` sidecar) must be writable by this user (`access(2)`, so a read-only mount counts).
+#[must_use]
 pub fn lock_unwritable(lock_path: &Path) -> Option<String> {
     #[allow(unsafe_code)] // access(2) only reads the path; the CString is a valid NUL-terminated one
     fn writable(p: &Path) -> bool {
@@ -928,6 +938,7 @@ pub struct ModuleInfo {
 
 impl ModuleInfo {
     /// Equal apart from `path`.
+    #[must_use]
     pub fn same_build_identity(&self, other: &Self) -> bool {
         (&self.description, &self.manufacturer, &self.version, &self.cryptoki)
             == (&other.description, &other.manufacturer, &other.version, &other.cryptoki)

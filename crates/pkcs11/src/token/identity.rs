@@ -252,6 +252,7 @@ impl Token {
 }
 
 /// Mechanism a commitment runs on the token.
+#[must_use]
 pub fn commit_mechanism(c: Commit) -> MechanismType {
     match c {
         Commit::Hmac(HmacHash::Sha1) => MechanismType::SHA1_HMAC,

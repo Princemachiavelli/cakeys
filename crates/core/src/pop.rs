@@ -22,6 +22,7 @@ use subtle::ConstantTimeEq;
 pub const DOMAIN: &[u8] = b"cakeys/pop/v1\0";
 
 /// `DOMAIN ‖ SHA-256(spki) ‖ nonce`.
+#[must_use]
 pub fn message(spki: &[u8], nonce: &[u8; 32]) -> Vec<u8> {
     [DOMAIN, Sha256::digest(spki).as_slice(), nonce].concat()
 }
@@ -135,6 +136,7 @@ fn mac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
 /// Constant-time equality of a proof's expected and actual value; only the length is
 /// observable. `subtle`'s (already a transitive `RustCrypto` dependency), not a hand-rolled XOR
 /// fold the optimizer could turn into an early exit.
+#[must_use]
 pub fn ct_eq(expected: &[u8], got: &[u8]) -> bool {
     bool::from(expected.ct_eq(got))
 }

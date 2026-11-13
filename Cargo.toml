@@ -56,8 +56,7 @@ libc = "0.2"
 unsafe_code = "deny"
 
 [workspace.lints.clippy]
-# Everything pedantic except the one blanket below: nearly every must_use_candidate is a
-# plain lookup in an internal workspace, and nothing ignores a result today. Every other
-# exemption is a per-site #[allow] with its reason, so a new occurrence anywhere warns.
+# Pedantic in full: no blanket allows. Where a lint does not fit, the exemption is a per-site
+# #[allow] with its reason (or, for must_use_candidate, the #[must_use] the lint suggests), so a
+# new occurrence anywhere warns.
 pedantic = { level = "warn", priority = -1 }
-must_use_candidate = "allow"

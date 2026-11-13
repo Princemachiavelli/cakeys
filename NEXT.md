@@ -17,8 +17,9 @@ entry). The plan, and what became of it:
    -- -D warnings` over the same build environment as the package.
 3. **`[workspace.lints]`.** `unsafe_code = "deny"` (the two exemptions are `#[allow]`ed:
    `crates/tpm2-pkcs11/src/attest/esys.rs`, `crates/core/src/config.rs`) plus `clippy::pedantic`
-   with one blanket allow (`must_use_candidate`: plain lookups in an internal workspace) —
-   the ~230 warnings pedantic reported are fixed, and every other exemption is a per-site
+   in full — no blanket allows. The ~230 warnings pedantic reported are fixed, the 59
+   `must_use_candidate` sites carry the `#[must_use]` the lint suggests (pure functions;
+   nothing in the workspace discards one), and every other exemption is a per-site
    `#[allow]` with its reason, so a new occurrence anywhere warns.
 4. **`// SAFETY:` comments.** On both `Tss2_MU_*` blocks in `esys.rs`; `config.rs`'s already
    had one.

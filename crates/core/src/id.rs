@@ -15,12 +15,14 @@ type Bp256 = p256::elliptic_curve::PublicKey<bp256::BrainpoolP256r1>;
 type Bp384 = p256::elliptic_curve::PublicKey<bp384::BrainpoolP384r1>;
 
 /// `sha256-<base64>`: drops straight into a Nix `outputHash`, but nothing depends on it.
+#[must_use]
 pub fn sri(bytes: &[u8]) -> String {
     format!("sha256-{}", base64::engine::general_purpose::STANDARD.encode(Sha256::digest(bytes)))
 }
 
 /// Whether `s` is an SRI SHA-256 digest as `sri` writes it: `sha256-` and 32 bytes in padded
 /// standard base64.
+#[must_use]
 pub fn is_sri(s: &str) -> bool {
     s.strip_prefix("sha256-")
         .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
@@ -28,6 +30,7 @@ pub fn is_sri(s: &str) -> bool {
 }
 
 /// Hash of the canonical JSON of (object type, policy attributes, public-half attributes).
+#[must_use]
 pub fn spec_digest(object: &ObjectCfg, spec: &SpecCfg) -> String {
     let mut doc = serde_json::json!({
         "v": 1,
@@ -102,6 +105,7 @@ impl Scheme {
     pub const ALIASES: [(&str, Scheme); 1] = [("pubkeyhash", Scheme::Rfc7093m4)];
 
     /// The name the lock records.
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Scheme::Rfc7093m4 => "rfc7093m4",
@@ -118,16 +122,19 @@ impl Scheme {
     }
 
     /// The scheme a lock names, exactly (no aliases: the lock refuses them).
+    #[must_use]
     pub fn from_name(name: &str) -> Option<Scheme> {
         Scheme::ALL.into_iter().find(|s| s.name() == name)
     }
 
     /// The scheme a user names on input, resolving aliases.
+    #[must_use]
     pub fn from_input(name: &str) -> Option<Scheme> {
         Scheme::ALIASES.iter().find(|(a, _)| *a == name).map(|(_, s)| *s).or_else(|| Scheme::from_name(name))
     }
 
     /// Computed from a commitment label (every `Commit` variant).
+    #[must_use]
     pub fn is_commitment(self) -> bool {
         matches!(self, Scheme::Commitment | Scheme::Cmac | Scheme::KcvEcb | Scheme::KcvEcbDec | Scheme::Kw)
     }
@@ -140,12 +147,14 @@ impl Scheme {
     /// realisation must also match a portable scheme, which is what links the same material
     /// across tokens. Unlike the commitment schemes, they take no `commitmentLabel`: their input
     /// is the attestation itself, not a message the token MACs.
+    #[must_use]
     pub fn is_attestation(self) -> bool {
         self.attestation_kind().is_some()
     }
 
     /// The lock-record `attestation.kind` of an attestation scheme (§3.7): which evidence
     /// produced the ID. One kind per scheme, pinned so a lock names its evidence exactly.
+    #[must_use]
     pub fn attestation_kind(self) -> Option<&'static str> {
         match self {
             Scheme::PivAttestation => Some("yubico-piv"),
@@ -155,10 +164,12 @@ impl Scheme {
     }
 
     /// The attestation scheme a lock-record kind names.
+    #[must_use]
     pub fn from_attestation_kind(kind: &str) -> Option<Scheme> {
         Scheme::ALL.into_iter().find(|s| s.attestation_kind() == Some(kind))
     }
 
+    #[must_use]
     pub fn is_deprecated(self) -> bool {
         Scheme::DEPRECATED.contains(&self)
     }
@@ -192,6 +203,7 @@ fn attest_encoding(tag: &[u8], fields: &[&[u8]]) -> Vec<u8> {
 /// verified chain to the Yubico root), `subject_spki` is the attested key — the same public key
 /// the object's `rfc7093m4` hashes, which the caller must have checked — and the rest are the
 /// Yubico extension values (1.3.6.1.4.1.41482.3.3/.3.7/.3.8/.3.9), empty when the cert omits one.
+#[must_use]
 pub fn piv_attestation_id(
     issuer_spki: &[u8],
     subject_spki: &[u8],
@@ -211,6 +223,7 @@ pub fn piv_attestation_id(
 /// public key, every `objectAttributes` bit and the `authPolicy` — and the qualified Name places
 /// the object in its hierarchy. The qualifying data (host nonce) proves freshness and is
 /// verification evidence only: never part of the ID.
+#[must_use]
 pub fn tpm_certify_id(name: &[u8], qualified_name: &[u8]) -> String {
     sri(&attest_encoding(b"cakeys/tpm-certify/v1\0", &[name, qualified_name]))
 }
@@ -228,6 +241,7 @@ pub enum HmacHash {
 
 impl HmacHash {
     /// The HMAC hash for a secret key type, if it is an HMAC-capable type.
+    #[must_use]
     pub fn for_key_type(key_type: KeyType) -> Option<HmacHash> {
         match key_type {
             KeyType::GenericSecret | KeyType::Sha256Hmac => Some(HmacHash::Sha256),
@@ -261,6 +275,7 @@ pub enum Commit {
 }
 
 impl Commit {
+    #[must_use]
     pub fn scheme(self) -> Scheme {
         match self {
             Commit::Hmac(_) => Scheme::Commitment,
@@ -285,6 +300,7 @@ impl Commit {
 
     /// The fixed input the token operates on: the label, or its SHA-256 (truncated to one AES
     /// block for the KCV).
+    #[must_use]
     pub fn input(self, commitment_label: &str, object: &ObjectCfg) -> Vec<u8> {
         let label = self.label(commitment_label, object);
         match self {
@@ -324,6 +340,7 @@ pub const CURVES_WITHOUT_CRATE: [&str; 1] = ["brainpoolP512r1"];
 
 impl Curve {
     /// `curve` in keys.toml, for the given `keyType`.
+    #[must_use]
     pub fn from_cfg(key_type: KeyType, name: &str) -> Option<Curve> {
         match (key_type, name) {
             (KeyType::Ec, "secp256r1" | "prime256v1" | "P-256") => Some(Curve::P256),
@@ -339,6 +356,7 @@ impl Curve {
     }
 
     /// The canonical `curve` name, as recorded in the lock.
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Curve::P256 => "secp256r1",
@@ -352,11 +370,13 @@ impl Curve {
         }
     }
 
+    #[must_use]
     pub fn edwards(self) -> bool {
         matches!(self, Curve::Ed25519 | Curve::Ed448)
     }
 
     /// `CKA_EC_PARAMS` used when generating: the DER OID (RFC 5480 / RFC 8410).
+    #[must_use]
     pub fn params(self) -> &'static [u8] {
         match self {
             Curve::P256 => &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07],
@@ -380,6 +400,7 @@ impl Curve {
     }
 
     /// The curve named by a token's `CKA_EC_PARAMS`.
+    #[must_use]
     pub fn from_params(params: &[u8]) -> Option<Curve> {
         ALL_CURVES.into_iter().find(|c| c.params() == params || c.params_by_name() == Some(params))
     }

@@ -72,6 +72,7 @@ impl Provider for Tpm2Pkcs11 {
 
 /// Re-encode exactly the malformed form `04 <len> <len bytes>` with `len >= 0x80` as proper DER
 /// (`04 81 <len> ...`). Anything else is passed through untouched for the strict parser.
+#[must_use]
 pub fn fix_ec_point(raw: &[u8]) -> Cow<'_, [u8]> {
     match raw {
         [0x04, len, rest @ ..] if *len >= 0x80 && rest.len() == *len as usize => {

@@ -22,6 +22,7 @@ pub enum EcdsaHash {
 }
 
 impl EcdsaHash {
+    #[must_use]
     pub fn for_curve(curve: Curve) -> Option<EcdsaHash> {
         match curve {
             Curve::P256 | Curve::Secp256k1 | Curve::BrainpoolP256r1 => Some(EcdsaHash::Sha256),
@@ -31,6 +32,7 @@ impl EcdsaHash {
         }
     }
 
+    #[must_use]
     pub fn digest(self, msg: &[u8]) -> Vec<u8> {
         match self {
             EcdsaHash::Sha256 => Sha256::digest(msg).to_vec(),
@@ -50,6 +52,7 @@ pub enum Encoding {
 /// ECDSA over `msg` with the key in `spki` (P-256/384/521, secp256k1, brainpoolP256r1/P384r1),
 /// hashed with `hash`, or with the curve's own hash when `None`. Either `s` is accepted:
 /// secp256k1's verifier insists on the low one, so it is normalized first.
+#[must_use]
 pub fn ecdsa(spki: &[u8], msg: &[u8], sig: &[u8], encoding: Encoding, hash: Option<EcdsaHash>) -> Verdict {
     macro_rules! curve {
         ($curve:ty, $own:expr) => {
@@ -79,6 +82,7 @@ pub fn ecdsa(spki: &[u8], msg: &[u8], sig: &[u8], encoding: Encoding, hash: Opti
 }
 
 /// Pure Ed25519 over `msg` (strict verification).
+#[must_use]
 pub fn ed25519(spki: &[u8], msg: &[u8], sig: &[u8]) -> Verdict {
     let k = ed25519_dalek::VerifyingKey::from_public_key_der(spki).ok()?;
     Some(
@@ -89,6 +93,7 @@ pub fn ed25519(spki: &[u8], msg: &[u8], sig: &[u8]) -> Verdict {
 }
 
 /// RSA PKCS#1 v1.5 over `msg` with the digest `D`.
+#[must_use]
 pub fn rsa_pkcs1v15<D>(spki: &[u8], msg: &[u8], sig: &[u8]) -> Verdict
 where
     D: Digest + sha2::digest::const_oid::AssociatedOid,

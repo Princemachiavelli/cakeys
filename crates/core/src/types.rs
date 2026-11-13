@@ -68,11 +68,13 @@ pkcs11_names! {
 
 impl ObjectClass {
     /// Private, public and secret keys: the classes with key attributes.
+    #[must_use]
     pub fn is_key(self) -> bool {
         matches!(self, ObjectClass::PrivateKey | ObjectClass::PublicKey | ObjectClass::SecretKey)
     }
 
     /// The two halves of a key pair.
+    #[must_use]
     pub fn is_asymmetric(self) -> bool {
         matches!(self, ObjectClass::PrivateKey | ObjectClass::PublicKey)
     }
@@ -80,11 +82,13 @@ impl ObjectClass {
 
 impl KeyType {
     /// The halves of a key pair have these types; the rest are secret keys.
+    #[must_use]
     pub fn is_asymmetric(self) -> bool {
         matches!(self, KeyType::Rsa | KeyType::Ec | KeyType::EcEdwards)
     }
 
     /// The HMAC key types bound to one hash (`CKK_SHA*_HMAC`), which PKCS#11 cannot generate.
+    #[must_use]
     pub fn is_hash_bound_hmac(self) -> bool {
         matches!(
             self,

@@ -24,6 +24,7 @@ pub enum KmError {
 }
 
 impl KmError {
+    #[must_use]
     pub fn exit_code(&self) -> u8 {
         match self {
             KmError::HashMismatch { .. } => 10,

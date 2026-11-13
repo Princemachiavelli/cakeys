@@ -179,6 +179,7 @@ pub struct Registry {
 }
 
 impl Registry {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -191,16 +192,19 @@ impl Registry {
         self
     }
 
+    #[must_use]
     pub fn names(&self) -> Vec<&'static str> {
         self.providers.iter().map(|p| p.name()).collect()
     }
 
     /// Whether `name` is a provider this registry can select explicitly.
+    #[must_use]
     pub fn knows(&self, name: &str) -> bool {
         self.named(name).is_some()
     }
 
     /// The provider registered as `name` (or [`Generic`]), without loading any module.
+    #[must_use]
     pub fn named(&self, name: &str) -> Option<Arc<dyn Provider>> {
         if name == Generic.name() {
             return Some(Arc::new(Generic));
