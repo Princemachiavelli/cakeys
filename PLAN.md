@@ -6,6 +6,7 @@
 
 - ~~**Refactor (2026-11-12 code review):**~~ **done 2026-11-12**, see [`docs/REFACTOR-2026-11-12.md`](docs/REFACTOR-2026-11-12.md) (R0–R11, "Outcome").
 - **Verification (2026-11-12):** [`docs/VERIFICATION.md`](docs/VERIFICATION.md) — reference tokens and cross-reference tests first (both done 2026-11-12, `tests/references.rs`), then proptest/cargo-fuzz (done 2026-11-12), Quint/Alloy design models, Tamarin, Kani; Verus/Aeneas only for a carved-out kernel.
+- **Export and import (2026-11-12, planned):** [`MIGRATE.md`](MIGRATE.md) — native `export`/`import`/`migrate` per backend, token-to-token wrapping where possible, `--dry-run`, target-aware formats; phases 0–7.
 
 Parked deliberately; the lock stays `version = 1`, a draft, until the reviews pass.
 
