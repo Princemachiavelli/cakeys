@@ -3,13 +3,22 @@
 
   inputs = {
     nixpkgs.url = "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.zst";
+    treefmt-nix = {
+      url = "github:numtide/treefmt-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      treefmt-nix,
+    }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
+      treefmt = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
       cakeys = pkgs.callPackage ./nix/package.nix { };
       pcsc-probe = pkgs.callPackage ./nix/pcsc-probe.nix { };
       mkTest =
@@ -72,6 +81,8 @@
 
       checks.${system} = {
         inherit cakeys;
+        # `nix fmt` would change nothing: every formatter and linter in treefmt.nix passes.
+        formatting = treefmt.config.build.check self;
         # The CLI without its `tpm2` and `ykcs11` features: builds without tpm2-tss and sqlite.
         minimal = cakeys.overrideAttrs {
           pname = "cakeys-minimal";
@@ -93,7 +104,7 @@
             keys = self.lib.mkKeys {
               config = ./crates/cli/tests/fixtures/keys.toml;
               lock = ./crates/cli/tests/fixtures/keys.lock;
-              cakeys = cakeys;
+              inherit cakeys;
               modules.softhsm = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
             };
             fails = e: !(builtins.tryEval e).success;
@@ -127,9 +138,8 @@
           assert shared-sign.module == null; # older lock entry
           # No scheme: the CLI verifies every ID the spec computes; a scheme also requires it.
           assert pkgs.lib.hasInfix "check signing-cert --token softhsm" signing-cert.check;
-          assert pkgs.lib.hasInfix "check signing-cert.id.certhash" (
-            (keys.signing-cert { scheme = "certhash"; }).check
-          );
+          assert pkgs.lib.hasInfix "check signing-cert.id.certhash"
+            (keys.signing-cert { scheme = "certhash"; }).check;
           pkgs.runCommand "cakeys-lib-check" { } ''
             echo ${pkgs.lib.escapeShellArg (keys.signing { }).check} > $out
           '';
@@ -155,7 +165,7 @@
         ];
       };
 
-      # nixfmt-tree formats the tree; bare nixfmt would wait on stdin.
-      formatter.${system} = pkgs.nixfmt-tree;
+      # treefmt over the whole tree (treefmt.nix): formatters and linters, one command.
+      formatter.${system} = treefmt.config.build.wrapper;
     };
 }

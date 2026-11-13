@@ -1,6 +1,7 @@
 # Draft PR for tpm2-software/tpm2-pkcs11
 
 Status: **draft, not filed.** Before opening it:
+
 - Signed off in ~/srcs/tpm2-pkcs11. Consider adding to the commit message: "The library's own
   C_SignInit parses it too, so P-521 keys could not sign (CKR_HOST_MEMORY)." (found 2026-11-11).
 - Upstream requires the PR to pass their CI. The checks below ran through
@@ -9,8 +10,8 @@ Status: **draft, not filed.** Before opening it:
 Checked on 2026-11-11 against master `a5156c5` (2026-10-10) and release
 1.10.1: both still have the bug (`src/lib/tpm.c:3624`,
 `tools/tpm2_pkcs11/utils.py:254`). There is no existing issue or PR: the
-searches for P-521/secp521r1/EC_POINT length/DER length only hit unrelated
-#579, #742 and #953.
+searches for P-521/secp521r1/EC_POINT length/DER length only hit the
+unrelated #579, #742 and #953.
 
 ---
 
@@ -40,6 +41,7 @@ Strict DER parsers reject the attribute. With 1.10.1 on swtpm:
 The same export works for `EC:secp384r1`.
 
 Changes:
+
 - **library:** encode the point with `i2d_ASN1_OCTET_STRING()`, as the
   existing TODO suggested, instead of a hand-built header. The `len > 255`
   guard and the manual buffer go away.
@@ -52,6 +54,7 @@ Changes:
 
 Testing, through nixpkgs' tpm2-pkcs11 1.10.1 build (`--enable-unit
 --enable-integration`, swtpm):
+
 - with the patch: `# TOTAL: 28  # PASS: 26  # SKIP: 2  # FAIL: 0`;
 - with only the new test, without the fix:
   `FAIL: test/integration/pkcs-keygen.int`

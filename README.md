@@ -11,6 +11,7 @@ fresh challenge — whichever capability the key declares — which the host che
 key it hashed.
 
 Status: proof of concept.
+
 - **Tested** against SoftHSM, tpm2-pkcs11 (swtpm, QEMU vTPM) and SoftHSM behind p11-kit forwarding.
 - **Tested by hand on a YubiKey 5** (PIV through ykcs11), not in CI: adopted keys verify
   read-only, and an opt-in read-write suite generates a key in a scratch slot (as SO with the
@@ -56,6 +57,7 @@ overwritten. Where the lock cannot be written (a Nix build sandbox, a read-only 
 directory) they refuse up front unless `--no-update-lock` is passed.
 
 Verbs:
+
 - `validate`, `resolve`, `verify`, `realise [--no-update-lock]`, `delete [--if-match] [--no-update-lock]`,
   `check <object>[.id.<scheme>]`, `gc [--apply]` and `caps`.
 - They behave like HTTP verbs: safe to repeat, never create over an occupied locator, never delete
@@ -116,7 +118,8 @@ reach tokens only through p11-kit forwarding or a real TPM, never through a toke
 ## Development
 
 ```console
-$ nix flake check            # unit, SoftHSM, tpm2-pkcs11 (swtpm), p11-kit, VM, module and TPM ACL tests, minimal build
+$ nix flake check            # unit, SoftHSM, tpm2-pkcs11 (swtpm), p11-kit, VM, module and TPM ACL tests, minimal build, formatting
+$ nix fmt                    # treefmt.nix: rustfmt, nixfmt, taplo, shfmt, rumdl, keep-sorted; statix, deadnix, shellcheck, typos
 $ nix build .#test-nspawn    # the same flow in systemd-nspawn (needs the uid-range feature)
 $ nix develop                # cargo, clippy, softhsm, opensc
 ```

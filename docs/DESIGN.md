@@ -29,6 +29,7 @@ check runs inside the build sandbox as a pseudo fixed-output check.
 ## 3. Identity
 
 ### 3.1 Schemes
+
 Each scheme is one CA-ID kind, stored as `sha256-<base64>` (SRI). The lock may hold several per
 object.
 
@@ -69,6 +70,7 @@ when the spec's declared usage bits allow nothing stronger:
 | AES | `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw` | CMAC is a PRF over the whole label; each KCV exposes one fixed-block ECB relation; `kw` needs the fixed-key wrap |
 
 Deprecation:
+
 - **A changed or weakened computation gets a new scheme name, never an edit** (§10) — like go.sum's
   `h1`/`h2`. The old name keeps meaning what it meant.
 - **A deprecated scheme still verifies identities already locked under it** — with a warning — but
@@ -79,13 +81,16 @@ Deprecation:
   above is pinned by `aes_commit_strength_order_is_pinned`.
 
 ### 3.2 Public keys
+
 Public keys are decoded and re-encoded by RustCrypto crates, so provider encoding quirks never
 change a hash:
+
 - `p256`, `p384`, `p521`, `k256`, `bp256`, `bp384`;
 - `ed25519-dalek`, `ed448` (length check only: there is no stable Ed448 arithmetic crate);
 - `rsa` (1024–8192 bits).
 
 Where the public key comes from, in order (key material first, never what the module merely asserts):
+
 1. The object's own material: RSA modulus and exponent, or `CKA_EC_PARAMS`/`CKA_EC_POINT`. The point
    may be a DER OCTET STRING or raw.
 2. Otherwise, the material of the single public-key object under the same locator (SoftHSM EC and
@@ -99,14 +104,17 @@ conflict (exit 13): modules may let it be set without checking —
 `h1b_a_forged_public_key_info_is_a_conflict`.
 
 Supported curves:
+
 - `CKK_EC`: secp256r1 (alias prime256v1, P-256), secp384r1, secp521r1, secp256k1, brainpoolP256r1,
   brainpoolP384r1.
 - `CKK_EC_EDWARDS`: edwards25519, edwards448.
 - brainpoolP512r1 is refused, because no RustCrypto crate supports it — `brainpool_p512_is_refused_clearly`.
 
 ### 3.3 Commitment label
+
 The token computes on `<commitment label>/<scheme>/<keyType>/<bits>`, built in
 `crates/core/src/id.rs`.
+
 - **The lock records the commitment label per object** (`objects.<name>.commitmentLabel`), and
   verification always uses the recorded value. The code only supplies the default
   (`DEFAULT_COMMITMENT_LABEL = "key-management/v1"`) for objects the lock does not know yet. A
@@ -121,6 +129,7 @@ The token computes on `<commitment label>/<scheme>/<keyType>/<bits>`, built in
 - **`bits`** is `8 × valueLen`. It is 0 when `valueLen` is unset (finding L11).
 
 ### 3.4 Identity modes
+
 Strongest first. The mode is recorded per realisation; a downgrade fails (exit 14) — `downgrade_is_an_error`.
 
 | Mode | Used for |
@@ -131,6 +140,7 @@ Strongest first. The mode is recorded per realisation; a downgrade fails (exit 1
 | `commit-at-creation`, `host-at-import`, `token-specific` | **not implemented**. Need an explicit per-token `identity.allow` opt-in and are refused before anything is created — `weak_modes_need_per_token_opt_in`. |
 
 ### 3.5 Linking and upgrades
+
 - **Identities are only linked through a shared scheme.** If an object already has locked IDs and
   none of the computed schemes is among them, `realise` fails (exit 14) instead of attaching new
   IDs — `disjoint_schemes_never_link_material`.
@@ -153,9 +163,11 @@ Strongest first. The mode is recorded per realisation; a downgrade fails (exit 1
   - Test: `a_new_scheme_missing_from_the_lock_is_a_note_unless_requested`.
 
 ### 3.6 Proof of possession (`binding`)
+
 A private key's identity hashes a public key, which may come from a separate object (§3.2). Each
 time it resolves a private key (`resolve`, `verify`, `realise`, `check`, `delete`), cakeys binds the
 key to its identity:
+
 1. The host builds a challenge: `"cakeys/pop/v1\0" ‖ SHA-256(SPKI) ‖ 32-byte nonce` from the OS
    RNG (`crates/core/src/pop.rs`).
 2. The token proves, with the private-key object found under the locator, that it holds the
@@ -179,6 +191,7 @@ key to its identity:
    time where it matters). No proof value is ever stored.
 
 Outcomes:
+
 - **A proof that does not verify is a conflict (exit 13):** the private key under the locator
   is not the one the identity names. This also applies to `delete`, so If-Match cannot pass on a
   public object beside an unrelated key.
@@ -281,6 +294,7 @@ content-addressed identity — one per token type that can produce it:
 ## 4. Files
 
 ### 4.1 `keys.toml`
+
 ```toml
 [tokens.<name>]
 module = "/path/libfoo.so"     # or --module <name>=<path>; $NAME or ${NAME} reads the path from the environment (17 if unset)
@@ -313,6 +327,7 @@ tokens.<token> = { locator = { CKA_LABEL = "...", CKA_ID = "hex" }, autoCreate =
 live in the token's `[tokens.<name>.options]` (§3.7; `Tpm2Options`).
 
 What may be created and adopted:
+
 - **References are checked at load** (exit 17): a spec's `object` must name an `[objects.<name>]`
   table — also when nothing uses the spec — and a `$NAME`/`${NAME}` path reference (in `pinFile`
   or `module`) must name a set environment variable; one shared `keys.toml` can then carry
@@ -355,6 +370,7 @@ What may be created and adopted:
   `CKA_CERTIFICATE_CATEGORY` — cryptoki 0.12 maps none of them.
 
 ### 4.2 `keys.lock` (input, updated in place)
+
 ```toml
 version = 1                          # required; any other version is refused (v1 is a draft, §10)
 [objects.<object>]
@@ -501,6 +517,7 @@ Exit codes:
 ## 6. Architecture
 
 ### 6.1 Crates
+
 | Crate | Role |
 |---|---|
 | `cakeys-core` | No `cryptoki`, no token access: config (`config`, typed classes, key types and schemes in `types`/`id`), the boolean-attribute table (`attrs`), CA-IDs (`id`), proof-of-possession host math and signature verification (`pop`, `sig`), what a spec asks for (`plan`: `Target`, `plan_mode`), and the lock rules (`reconcile`: `compare`, `record`, `Notes`), unit-tested without an HSM |
@@ -509,6 +526,7 @@ Exit codes:
 | `cakeys` (crates/cli) | CLI as a library: `main(registry)`, `default_registry()`; `examples/custom-provider.rs`. Cargo features `ykcs11` and `tpm2` (both default) link those providers; `checks.minimal` builds without them, and so without tpm2-tss and sqlite |
 
 ### 6.2 Providers
+
 - **Hooks:** `name`, `matches(&ModuleInfo)`, and optionally `mechanisms` (filter), `ec_point`
   (repair), `hint` (error advice), `check_options` (the token's `[tokens.<t>.options]`; the
   default refuses any), `manages_as_so`/`check_create`/`keeps_destroyed_keys` (key
@@ -528,14 +546,17 @@ Exit codes:
 | p11-kit | detects the proxy; the RPC drops AES key wrap and EdDSA/Edwards mechanisms; the module behind it is hidden (set `provider` explicitly) — `p11kit_*` tests; attests nothing itself (what the proxied module exposes decides, but the provider name does not reach it: opt in only against the real module) |
 
 ### 6.3 cryptoki patch
+
 cryptoki ≤ 0.12.1 gives `KeyType::SHA224/384/512_HMAC` the value of `CKK_SHA256_HMAC`. The Nix
 build patches it with `nix/patches/cryptoki-hmac-key-types.patch`, applied in `postPatch` to
 `$cargoDepsCopy`. Without the patch, those types are refused (`hmac_key_type`), and tests skip
 unless required. Upstream draft: `upstream/rust-cryptoki/`.
 
 ### 6.4 Dependencies
+
 Policy: always the latest release. Audit on every dependency change by comparing
-`[workspace.dependencies]` with crates.io, and the flake's nixpkgs input.
+`[workspace.dependencies]` with crates.io, and the flake inputs (nixpkgs, treefmt-nix).
+
 - **2026-11-11:** every crate is on its latest release (cryptoki 0.12.1, RustCrypto 0.14/pkcs8 0.11
   generation, toml 1.x, base64 0.23, clap 4, serde 1, thiserror 2, anyhow 1). nixpkgs is from
   2026-11-06.
@@ -547,6 +568,7 @@ Policy: always the latest release. Audit on every dependency change by comparing
 ## 7. Nix integration
 
 ### 7.1 Library (`lib.mkKeys`, builtins only)
+
 One calling convention: **every object is a function**. The call resolves the object's one
 (spec, token) pair — the arguments are optional when there is exactly one — and returns plain
 data, so consumers destructure once and reuse:
@@ -555,6 +577,7 @@ data, so consumers destructure once and reuse:
 signing = keys.signing { token = "softhsm"; };      # { } when the object has one pair
 shared  = keys.shared { token = "softhsm"; spec = "shared-sign"; };  # several specs on one token
 ```
+
 - The result carries `type`, `id.<scheme>` (`pubkeyhash` is an input alias), the resolved
   `spec`/`token`, and the pair's realisation: `uri`, `mode`, `specDigest`, `module`, `tokenInfo`,
   `functions` (mechanism → `true`), `rsf` and `check`.
@@ -568,7 +591,9 @@ shared  = keys.shared { token = "softhsm"; spec = "shared-sign"; };  # several s
 - Tested by `checks.lib` (synthetic fixture) and `checks.vm` (consumer built in the guest sandbox).
 
 ### 7.2 Pseudo-FOD check
+
 A consumer derivation requires the token's feature and runs `check` before using the URI.
+
 1. **First use** creates the key (with `autoCreate`) and fails with `got:` — `check` never
    writes, and in the sandbox it could not.
 2. Record the ID out of band (`realise`, outside the sandbox; it writes the lock by default).
@@ -578,6 +603,7 @@ A consumer derivation requires the token's feature and runs `check` before using
 forces it. The VM test covers all of this.
 
 ### 7.3 NixOS module (`nixosModules.default`, `services.cakeys`)
+
 - **`tokens.<n>.{systemFeature, sandboxPaths, pcscd}`.** The features are added to
   `system-features`. Paths are **not** global `extra-sandbox-paths`: a pre-build-hook
   (`nix/sandbox-hook.sh`, bash + jq over `nix derivation show`) grants them only to builds whose
@@ -596,6 +622,7 @@ forces it. The VM test covers all of this.
   units that use the key — `checks.module`.
 
 ### 7.4 What real builds may reach
+
 - **Allowed:** a **p11-kit forwarding socket** (`p11-kit server` outside the sandbox) or a **real
   TPM** (`/dev/tpmrm0`).
 - **Never** a token database: SoftHSM files allow offline PIN guessing and key extraction.
@@ -606,6 +633,7 @@ forces it. The VM test covers all of this.
 ## 8. Security model
 
 ### 8.1 Enforced (with tests)
+
 - **Identity is the CA-ID.** Every check recomputes it from the token and compares it with the lock.
 - **Locators never create over occupied slots** (If-None-Match), and never match more than one
   object.
@@ -628,7 +656,9 @@ forces it. The VM test covers all of this.
 - **Token paths reach only builds that require the token's feature.**
 
 ### 8.2 Not enforced / known gaps
+
 See `docs/REVIEW-2026-11-11.md`.
+
 - **`token-asserted` bindings are unproven.** With the opt-in or `publicOnly`, a private key is
   tied to its identity only by the token's word (H1 is fixed for every `pop-*` proof —
   `h1_a_private_key_beside_an_unbound_public_object_is_a_conflict`,
@@ -657,6 +687,7 @@ See `docs/REVIEW-2026-11-11.md`.
 - **p11-kit hides the module behind it,** so the lock records p11-kit as the module.
 
 ## 9. Testing
+
 | Suite | Where | What |
 |---|---|---|
 | unit | `cargo test --workspace` | digests (pinned), curves and OIDs, SPKI round-trips, registry, P-521 fix-up, hex parsing, proof-of-possession host math (both ECDH MAC sides), the signature verifiers, the deprecation register and scheme names, AES strength order, the observed policy vectors, the attestation scheme definitions and lock invariants, the lock rules (first use, what a write may override, attestation changes, provenance warnings), the PIV chain verifier (fixture chain + Yubico's own roots and intermediates) |
@@ -667,6 +698,7 @@ See `docs/REVIEW-2026-11-11.md`.
 | `checks.vm` / `test-nspawn` | QEMU / systemd-nspawn | the CLI flow; in the VM also the pseudo-FOD consumer built in the guest sandbox |
 | `checks.module`, `checks.tpm`, `checks.lib` | QEMU / eval | module, hook, pcscd, TPM ACL, Nix library |
 | `checks.minimal` | package build | the CLI without its `tpm2`/`ykcs11` features builds without tpm2-tss and sqlite |
+| `checks.formatting` | treefmt | `nix fmt` would change nothing: the formatters and linters in `treefmt.nix` (rustfmt with `rustfmt.toml`, nixfmt, taplo, shfmt, rumdl, keep-sorted, statix, deadnix, shellcheck, typos) |
 | `scripts/xversion.sh` | by hand, per refactor | a lock recorded by one build verifies, compares and re-records byte-identically with another (every class) |
 
 Hardware: the YubiKey example lock is verified read-only (no PIN), and `tests/yubikey.rs` exercises
@@ -674,10 +706,12 @@ a real YubiKey read-write when opted in (§9 table above). `packages.test-nspawn
 `uid-range` feature, so it is outside `checks`.
 
 ## 10. Frozen identifiers, and what makes a lock portable
+
 A `keys.toml` and its `keys.lock` must verify the same way under any later cakeys, like a
 dependency lock. **Lock version 1 is a draft:** it is unpublished and changes in place until every
 review passes it; only then is it frozen, and later changes get a new version. The lock records the values that determine each ID: scheme name, commitment
 label and the hash itself. Everything else is fixed by definition:
+
 - **Scheme definitions are immutable.** A scheme name (`rfc7093m4`, `certhash`, `valuehash`,
   `commitment`, `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`) always denotes exactly the computation in
   §3. A changed computation is a *new* scheme name, never an edit. The known-answer test
@@ -711,6 +745,7 @@ label and the hash itself. Everything else is fixed by definition:
 - the URI shape.
 
 **Renamed on 2026-11-11 (`key-mgmnt` → `cakeys`).** The rename changed only names:
+
 - crates `key-mgmnt-*` → `cakeys-*`;
 - the binary `key-mgmnt` → `cakeys`;
 - `services.key-management` → `services.cakeys`;

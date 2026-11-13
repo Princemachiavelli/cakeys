@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # cakeys pre-build-hook: give a build the sandbox paths of the tokens whose system feature it
 # requires, and nothing to any other build.
 #

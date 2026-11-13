@@ -68,8 +68,8 @@ in
             {
               token ? null,
               spec ? null,
-              # null: whatever the spec computes; else require that identity (e.g. "certhash").
-              scheme ? null,
+              # The call's other arguments (`scheme`), already checked by its own pattern.
+              ...
             }:
             let
               matching = builtins.filter (
@@ -99,6 +99,7 @@ in
         args@{
           token ? null,
           spec ? null,
+          # null: whatever the spec computes; else require that identity (e.g. "certhash").
           scheme ? null,
         }:
         let
@@ -118,8 +119,7 @@ in
           # `pubkeyhash` is an input alias of rfc7093m4 (the lock only uses the scheme name).
           id = ids // (if ids ? rfc7093m4 then { pubkeyhash = ids.rfc7093m4; } else { });
           uri = real.observed.uri or null;
-          mode = real.mode;
-          specDigest = real.specDigest;
+          inherit (real) mode specDigest;
           # Provenance: { path, description, manufacturer, version, cryptoki } / { model, serial, firmware }.
           module = real.provenance.module or null;
           tokenInfo = real.provenance.token or null;
