@@ -17,6 +17,7 @@ Status: proof of concept.
 - **Tested by hand on a YubiKey 5** (PIV through ykcs11), not in CI: adopted keys verify
   read-only, and an opt-in read-write suite generates a key in a scratch slot (as SO with the
   management key), attests it, proves possession and verifies it.
+- **Use cases (problems and questions, one line each):** [`docs/USE_CASE.md`](docs/USE_CASE.md).
 - **Design and current state:** [`docs/DESIGN.md`](docs/DESIGN.md).
 - **At a glance (diagrams):** [`docs/diagrams.md`](docs/diagrams.md).
 - **The two files, annotated:** [`docs/CONFIG.md`](docs/CONFIG.md) (`keys.toml`) and
