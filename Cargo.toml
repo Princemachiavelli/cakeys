@@ -2,6 +2,7 @@
 resolver = "2"
 members = ["crates/core", "crates/pkcs11", "crates/ykcs11", "crates/tpm2-pkcs11", "crates/cli"]
 default-members = ["crates/cli"]
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.1.0"

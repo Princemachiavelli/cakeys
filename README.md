@@ -121,6 +121,7 @@ reach tokens only through p11-kit forwarding or a real TPM, never through a toke
 ```console
 $ nix flake check            # unit, SoftHSM, tpm2-pkcs11 (swtpm), p11-kit, VM, module and TPM ACL tests, minimal build, formatting
 $ nix fmt                    # treefmt.nix: rustfmt, nixfmt, taplo, shfmt, rumdl, keep-sorted; statix, deadnix, shellcheck, typos
+$ nix run .#fuzz -- lock      # fuzz one target (public_key, certificate, lock, config) until stopped
 $ nix build .#test-nspawn    # the same flow in systemd-nspawn (needs the uid-range feature)
 $ nix develop                # cargo, clippy, softhsm, kryoptic, opensc
 ```

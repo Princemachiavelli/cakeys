@@ -67,8 +67,18 @@ what the specification promises.
      and DER Edwards points), SoftHSM behind p11-kit and tpm2-pkcs11, realises it into one lock
      and compares IDs and verdicts. A deliberately different HMAC value on one reference fails
      it, as it should.
-2. **proptest and cargo-fuzz**, added alongside or after step 1. No new toolchain; runs in
+2. **proptest and cargo-fuzz (done 2026-11-12).** No new toolchain; runs in
    `nix flake check`. One to two days.
+   - Done: `crates/core/tests/properties.rs` (the lock rules, the encodings, parsers that never
+     panic; disabling the binding-downgrade or the shared-scheme rule fails it), and four
+     cargo-fuzz targets in `fuzz/` on the stable rustc: a fixed-seed smoke run in
+     `checks.fuzz`, long runs with `nix run .#fuzz`. About 9 million inputs found no crash.
+   - Found: a `valueLen` above 2^61 bytes overflows the commitment label's bit count: over
+     the full `u64` range the label property fails with an overflow panic (debug builds); a
+     release build, which does not check overflow, would wrap to another length's label.
+     keys.toml now refuses `valueLen` above 2^32 − 1 at load (17).
+   - Not yet: the PIV chain verifier and `TPMS_ATTEST` parsing (private modules of their
+     provider crates) and the P-521 point fix-up have no fuzz target.
 3. **A Quint model of the lock rules and an Alloy model of the lock structure**, including the
    merge rule (S16). A few days each.
 4. **Tamarin models of proof of possession and attestation.** A few days of specialist work;

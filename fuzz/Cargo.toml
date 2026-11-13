@@ -1,0 +1,44 @@
+[package]
+name = "cakeys-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace (and lock): libfuzzer-sys never enters the product's dependency graph.
+[workspace]
+
+[dependencies]
+cakeys-core = { path = "../crates/core" }
+libfuzzer-sys = "0.4.13"
+
+[[bin]]
+name = "public_key"
+path = "fuzz_targets/public_key.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "certificate"
+path = "fuzz_targets/certificate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lock"
+path = "fuzz_targets/lock.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false

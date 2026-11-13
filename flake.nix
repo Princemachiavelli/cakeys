@@ -35,6 +35,8 @@
         inherit advisory-db;
         inherit (cakeys) cargoDeps;
       };
+      # cargo-fuzz (fuzz/): a fixed-seed smoke run in checks.fuzz, and apps.fuzz for long runs.
+      fuzz = pkgs.callPackage ./nix/fuzz.nix { };
       mkTest =
         kind:
         import ./nix/test.nix {
@@ -77,6 +79,12 @@
           program = pkgs.lib.getExe deny.online;
           meta.description = "cargo-deny with current yanked flags: fetch the live index, then the pinned-database check with --deny yanked";
         };
+        # Fuzz one target for as long as you like: nix run .#fuzz -- lock -max_total_time=600
+        fuzz = {
+          type = "app";
+          program = pkgs.lib.getExe fuzz.run;
+          meta.description = "Run a cargo-fuzz target (public_key, certificate, lock, config) from the repository root";
+        };
         # Host-side PC/SC check.
         pcsc-probe = {
           type = "app";
@@ -104,6 +112,8 @@
         inherit cakeys;
         # `nix fmt` would change nothing: every formatter and linter in treefmt.nix passes.
         formatting = treefmt.config.build.check self;
+        # Every fuzz target, built with libFuzzer, for a fixed seed and input count.
+        fuzz = fuzz.smoke;
         # Clippy with -D warnings (NEXT.md §2): plain clippy is clean, and the workspace
         # lints (Cargo.toml [workspace.lints]: unsafe_code deny, clippy::pedantic with one
         # blanket allow) travel with every build, editor and this check.
