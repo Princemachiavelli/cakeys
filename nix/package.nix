@@ -43,12 +43,15 @@ rustPlatform.buildRustPackage {
 
   # cryptoki 0.12.1 (and main) gives KeyType::SHA224/384/512_HMAC the value of CKK_SHA256_HMAC, so those key
   # types can be neither created nor told apart. Minimal local fix until upstream has one
-  # (upstream/rust-cryptoki/). Without it, cakeys refuses those key types.
+  # (upstream/rust-cryptoki/). Without it, cakeys refuses those key types. It also has no
+  # CKM_AES_KEY_WRAP_KWP (RFC 5649 under its PKCS#11 3.0 ID, which kryoptic offers): the second
+  # patch adds it for export and import (MIGRATE.md). The constant is already in cryptoki-sys.
   postPatch = ''
     applied=0
     for d in "$cargoDepsCopy"/cryptoki-0.12.1 "$cargoDepsCopy"/*/cryptoki-0.12.1; do
       if [ -d "$d" ]; then
         patch -d "$d" -p1 < ${./patches/cryptoki-hmac-key-types.patch}
+        patch -d "$d" -p1 < ${./patches/cryptoki-aes-key-wrap-kwp.patch}
         applied=$((applied + 1))
       fi
     done

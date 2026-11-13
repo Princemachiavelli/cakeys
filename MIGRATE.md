@@ -49,17 +49,96 @@ key is composed from its two halves (decision D4).
 
 ## Spike (2026-11-12, SoftHSM 2.7.0 ↔ kryoptic 1.5.4, pkcs11-tool)
 
-| Path | Result |
-|---|---|
-| AES-KW, both directions, a 32-byte AES key | same bytes after unwrap |
-| SoftHSM AES-KW-PAD (0x210A) ↔ kryoptic AES-KWP (0x210B), both directions, 20- and 32-byte secrets | same bytes: one format (RFC 5649), two mechanism IDs |
-| EC P-256 private key (the `tpm-import-p256` fixture) wrapped with PAD/KWP, both directions | the unwrapped key signs a message that verifies against the fixture's public key |
-| RSA-OAEP (SHA-1, MGF1-SHA1) carrying a 32-byte KEK to an RSA-3072 key on the other token, both directions | same bytes |
-| RSA-OAEP SHA-256 | kryoptic ↔ kryoptic only; SoftHSM refuses it |
-| Unwrap templates | SoftHSM refuses `CKA_VALUE_LEN` (`CKR_ATTRIBUTE_READ_ONLY`); kryoptic sets no `CKA_SIGN` on an unwrapped private key unless the template does |
+| Path                                                                                                                                                                                                            | Result                                                                                                                                               |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AES-KW, both directions, a 32-byte AES key                                                                                                                                                                      | same bytes after unwrap                                                                                                                              |
+| SoftHSM AES-KW-PAD (0x210A) ↔ kryoptic AES-KWP (0x210B), both directions, 20- and 32-byte secrets                                                                                                               | same bytes: one format (RFC 5649), two mechanism IDs                                                                                                 |
+| EC P-256 private key (the `tpm-import-p256` fixture) wrapped with PAD/KWP, both directions                                                                                                                      | the unwrapped key signs a message that verifies against the fixture's public key                                                                     |
+| RSA-OAEP (SHA-1, MGF1-SHA1) carrying a 32-byte KEK to an RSA-3072 key on the other token, both directions                                                                                                       | same bytes                                                                                                                                           |
+| RSA-OAEP SHA-256                                                                                                                                                                                                | kryoptic ↔ kryoptic only; SoftHSM refuses it                                                                                                         |
+| Unwrap templates                                                                                                                                                                                                | SoftHSM refuses `CKA_VALUE_LEN` (`CKR_ATTRIBUTE_READ_ONLY`); kryoptic sets no `CKA_SIGN` on an unwrapped private key unless the template does        |
+| RSA-2048 private key (the `tpm-import-rsa2048` fixture), PAD/KWP, both directions                                                                                                                               | the unwrapped key signs (`CKM_SHA256_RSA_PKCS`) for the fixture's public key                                                                         |
+| The composed method end to end: a fresh AES KEK on the source, RSA-OAEP-wrapped to the target's RSA-3072 transport key; the P-256 key wrapped under the KEK (PAD/KWP); the target unwraps the KEK, then the key | works SoftHSM → kryoptic and kryoptic → SoftHSM (OAEP SHA-1), kryoptic → kryoptic (OAEP SHA-256); the key signs for the fixture's public key         |
+| A 32-byte generic secret, AES-KW, both directions                                                                                                                                                               | same bytes                                                                                                                                           |
+| p11-kit forwarding SoftHSM: mechanisms that can wrap                                                                                                                                                            | only `CKM_RSA_PKCS`, `CKM_RSA_PKCS_OAEP` and `CKM_DES_ECB`: AES-KW and AES-KW-PAD are dropped, so private keys have no `sealed` path through p11-kit |
 
-Not covered yet [todo]: RSA and Edwards private keys, HMAC key types, p11-kit, and the
-composed two-step wrap end to end (both halves work separately).
+Still [todo]: Edwards private keys (pkcs11-tool cannot unwrap `CKK_EC_EDWARDS`; phase 3 tests it
+with cakeys' own unwrap), OAEP wrapping through p11-kit (pkcs11-tool failed to generate a key
+pair through the client, which cakeys' own p11-kit suite does; phase 3), the `CKK_SHA*_HMAC` key
+types (generic secrets work), and `CKA_WRAP_WITH_TRUSTED` per module (phase 3b).
+
+### Phase 0 results (2026-11-12)
+
+- The spike above, completed except the [todo] items, which move to the phases that build them.
+- `nix/patches/cryptoki-aes-key-wrap-kwp.patch` adds `MechanismType::AES_KEY_WRAP_KWP` and
+  `Mechanism::AesKeyWrapKwp` to cryptoki 0.12.1 (applied in `postPatch` like the HMAC fix; the
+  constant was already in cryptoki-sys 0.5); upstream draft in
+  `upstream/rust-cryptoki/PR-KWP.md`. Unlike the HMAC fix, it adds an enum variant, so a plain
+  `cargo build` without the patch cannot name it: phase 3, the first code that wraps, either
+  vendors the patched crate through `[patch.crates-io]` (if upstream has not released it by
+  then) or keeps the method unavailable in unpatched builds.
+- The names and formats below are frozen.
+
+### Frozen names and formats
+
+Exposure levels (D2): `public`, `enforced`, `sealed`, `host`, `file`; a plan that cannot move an
+object says `impossible` with its reasons.
+
+Methods (D4): `public`, `rsa-oaep-sha1+aes-kwp`, `rsa-oaep-sha256+aes-kwp`, `rsa-oaep-sha1`,
+`rsa-oaep-sha256`, `host-pkcs8`, `host-raw`, `tpm2-ptool`, `piv-import`, `tpm-duplicate`,
+`pkcs8-pbes2`, `pkcs12`, and `vendor:<provider>/<name>`. `host-pkcs8` and `host-raw` are the
+host path into a PKCS#11 target (`C_CreateObject`); `tpm2-ptool` and `piv-import` are the host
+path into those providers.
+
+The transport file (`cakeys transport`, D3):
+
+```toml
+format = "cakeys-transport"
+version = 1
+token = "kryoptic"              # the target token's name in keys.toml
+provider = "kryoptic"
+object = "import-kek"           # the transport key's object, realised and locked on the target
+rfc7093m4 = "sha256-..."        # its locked identity: SHA-256 of the canonical SPKI below
+spki = "<base64 DER>"           # the public key the source wraps to
+trusted = false                 # marked CKA_TRUSTED on the source (phase 3b)
+mechanisms = ["CKM_AES_KEY_WRAP_KWP", "CKM_RSA_PKCS_OAEP"]   # the target's, for offline planning
+```
+
+The export bundle (`cakeys export`, D5), one per object:
+
+```toml
+format = "cakeys-export"
+version = 1
+object = "signing"
+method = "rsa-oaep-sha1+aes-kwp"
+exposure = "sealed"
+commitmentLabel = "key-management/v1"   # secret keys, as in the lock
+[type]                                  # as in the lock
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+[ids]                                   # as in the source's lock; import must reproduce them
+rfc7093m4 = "sha256-..."
+[source]                                # provenance, as in the source realisation
+token = "softhsm"
+provider = "softhsm"
+[transport]                             # the key the material is wrapped to
+object = "import-kek"
+rfc7093m4 = "sha256-..."
+[wrapped]                               # base64; `value` instead for `public`
+kek = "..."                             # the AES KEK under RSA-OAEP
+key = "..."                             # the key under the KEK (RFC 5649)
+```
+
+The lock's target realisation (D7):
+
+```toml
+[realisations.<spec>.<token>.provenance.origin]
+from = "softhsm"
+method = "rsa-oaep-sha1+aes-kwp"
+exposure = "sealed"
+declared = true                         # only for a vendor method: its level as declared
+```
 
 ## Decisions
 
@@ -195,7 +274,7 @@ disk. `--dry-run` without objects plans every object the source token holds a re
 
 | Phase | Scope | Estimate |
 |---|---|---|
-| 0 | Finish the spike [todo items above]; cryptoki KWP patch and upstream PR draft; freeze method names, the bundle format and `origin` | 2–3 days |
+| 0 | **Done 2026-11-12.** Finish the spike [todo items above]; cryptoki KWP patch and upstream PR draft; freeze method names, the bundle format and `origin` | 2–3 days |
 | 1 | Planner and `--dry-run` (core: capabilities, method choice, reasons); the provider hook for import/export capabilities and vendor methods (D10); the transport file; no material moves. Useful alone: it answers "what could move, and how?" | ≈700 + 500 lines, 4–5 days |
 | 2 | `public`: certificates, public keys, data objects | ≈200 + 200, 1–2 days |
 | 3 | `sealed` between PKCS#11 modules: the `transport` verb, the composed RSA-OAEP + AES-KWP method, the direct OAEP method, bundles, import with identity check and cleanup, `migrate` | ≈800 + 700, 6–8 days |
