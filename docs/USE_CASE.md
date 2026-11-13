@@ -84,3 +84,24 @@ Nix:
    the module's build and path; the next `verify` notes a rebuild and warns on a new version.
 10. **Did an edit to keys.toml change what a deployed key is?** A type change is refused outright,
     and a policy change fails every check until it is reviewed and re-recorded with `realise`.
+
+## Open (to decide)
+
+1. **Applications assert how their keys relate: these are the same key, those are different.**
+   Two products may need the very same key (one object, specs on each product's token), or
+   keys that must never coincide (a release key and a test key; one key per tenant).
+   - *Already enforced:* within one lock, an object's IDs are the same on every token that holds
+     it, and two objects of one class never share an ID under a scheme (exit 14 on `realise`,
+     17 for a lock that does). Across separate locks — two repositories, two products — nothing
+     is compared. Material is only ever compared under a scheme both sides compute, so two keys
+     with no scheme in common can be shown neither the same nor different.
+   - *Options:* (a) declarative assertions in keys.toml (for example "objects A and B differ",
+     "spec S on product X and spec T on product Y are the same object"), checked by `validate`
+     against the lock and by `verify`/`check` against the tokens; (b) build-time assertions in
+     Nix code over `lib.mkKeys` results — `assert (a { }).id.rfc7093m4 != (b { }).id.rfc7093m4;`
+     works today, also across two `mkKeys` of two locks, and fails evaluation; (c) runtime
+     assertions in the program, which gets only URIs: a URI says where a key is, not what it
+     is, so the program would have to ask cakeys (`resolve` prints the IDs) rather than compare
+     URIs.
+   - To decide whether (a) earns a place in keys.toml or (b) plus a documented pattern is
+     enough, and whether "different" must require a shared scheme to be meaningful.
