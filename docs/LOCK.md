@@ -153,11 +153,15 @@ mechanisms = ["CKM_ECDSA", "CKM_ECDSA_SHA256"]   # ... trimmed
 provider = "softhsm"
 cakeysVersion = "0.1.0"
 
-# Which PKCS#11 library answered (C_GetInfo and the file loaded). A different build identity
-# (description, manufacturer, version, cryptoki) warns; the same build from another path — a
-# Nix rebuild — is only a note.
+# Which PKCS#11 library answered: C_GetInfo, and the file the dynamic loader mapped (symlinks
+# resolved, whatever named it: keys.toml's module, its $NAME, --module or a bare name found by
+# the library search) with its hash. A different build identity (description, manufacturer,
+# version, cryptoki) warns, and so does another hash at the same path (replaced in place, which
+# a path outside the Nix store cannot show); the same build from another path — a Nix rebuild —
+# is only a note.
 [realisations.ec.soft.provenance.module]
 path = "/nix/store/xb35g93pcvyyjrpjq1l6brdx6x8v3z6w-softhsm-2.7.0/lib/softhsm/libsofthsm2.so"
+hash = "sha256-Pwmq/S/L0HNdKn4lLgttPZw1nUufTAT2+wgyB3cYOZk="
 description = "Implementation of PKCS11"
 manufacturer = "SoftHSM"
 version = "2.7"      # raw CK_VERSION major.minor (ykcs11 2.7.3 shows as "2.73")

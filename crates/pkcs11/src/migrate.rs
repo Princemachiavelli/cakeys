@@ -188,6 +188,7 @@ fn lockless_token_cfg() -> TokenCfg {
 pub(crate) fn moduleless_info() -> ModuleInfo {
     ModuleInfo {
         path: String::new(),
+        hash: None,
         description: String::new(),
         manufacturer: String::new(),
         version: String::new(),

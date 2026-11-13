@@ -23,7 +23,12 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TokenCfg {
-    /// Path to the PKCS#11 module; can be overridden with `--module <token>=<path>`.
+    /// The PKCS#11 module: a path, or `$NAME`/`${NAME}` read from the environment when the token
+    /// is opened ([`TokenCfg::module_path`]). It is per machine, so it may be left out and given
+    /// per run with `--module <token>=<path>` (what `lib.mkKeys`'s `modules.<token>` passes), which
+    /// replaces it unexpanded. A bare file name is the dynamic loader's library search
+    /// (`LD_LIBRARY_PATH`; on NixOS nothing else). The lock records the file actually loaded and
+    /// its hash, as provenance only.
     pub module: Option<String>,
     /// Provider crate handling this module's quirks; auto-detected from `C_GetInfo` if unset.
     pub provider: Option<String>,
@@ -63,6 +68,18 @@ pub struct TokenCfg {
 
 /// A token's provider-specific settings (`[tokens.<t>.options]`), parsed by the provider.
 pub type Options = toml::Table;
+
+impl TokenCfg {
+    /// The module to load, its `$NAME` reference resolved by `env` now: resolved when the token
+    /// is opened, so an unset one fails only a run that uses this token without `--module`.
+    ///
+    /// # Errors
+    ///
+    /// `Validation` when `module` names an unset variable.
+    pub fn module_path(&self, token: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<String>> {
+        self.module.as_deref().map(|m| env_ref(m, &format!("token '{token}': module"), env)).transpose()
+    }
+}
 
 /// Parse a token's `options` into the provider's own settings type, which should deny unknown
 /// fields: a typo is invalid (17), naming the token.
@@ -465,6 +482,11 @@ impl Lock {
                         if private { "required" } else { "allowed" }
                     ));
                 }
+                if let Some(h) =
+                    r.provenance.as_ref().and_then(|p| p.module.hash.as_ref()).filter(|h| !crate::id::is_sri(h))
+                {
+                    return Err(format!("{what}: provenance module hash \"{h}\" is not a sha256 SRI digest"));
+                }
                 // Attestation evidence (§3.7): a known kind, SRI digests, and never alone — the
                 // realisation must also have matched a portable scheme, the only thing that links
                 // the same material on another token.
@@ -766,8 +788,10 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
         }
     }
     for (name, t) in &mut cfg.tokens {
-        if let Some(m) = t.module.clone() {
-            t.module = Some(env_ref(&m, &format!("token '{name}': module"), env)?);
+        // The module resolves when the token is opened ([`TokenCfg::module_path`]): `--module`
+        // may replace it, and a run never needs another token's module. Only its form is checked.
+        if let Some(m) = &t.module {
+            env_ref(m, &format!("token '{name}': module"), &|_| Some(String::new()))?;
         }
         if let Some(p) = t.pin_file.clone() {
             let expanded = env_ref(&p.to_string_lossy(), &format!("token '{name}': pinFile"), env)?;
@@ -807,9 +831,10 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
 }
 
 /// A whole-value environment reference in a path field: `$NAME` or `${NAME}` becomes the value of
-/// the environment variable `NAME` when the config is loaded, so one shared `keys.toml` can carry
-/// a machine-specific pin file or module path. A value with no leading `$` is a literal path; a
-/// malformed or unset reference fails at load (exit 17), naming it — not at login time.
+/// the environment variable `NAME`, so one shared `keys.toml` can carry a machine-specific pin
+/// file or module path. A value with no leading `$` is a literal path. A malformed reference fails
+/// at load (exit 17), and so does an unset one in `pinFile`/`mgmKeyFile`; `module` resolves when
+/// its token is opened ([`TokenCfg::module_path`]), so `--module` can stand in for it.
 fn env_ref(value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<String> {
     let name = match value.strip_prefix('$') {
         Some(rest) => rest.strip_prefix('{').and_then(|r| r.strip_suffix('}')).unwrap_or(rest),
@@ -975,12 +1000,18 @@ impl Config {
 }
 
 /// Module that realised an object (`C_GetInfo` plus the loaded file). Provenance only: on verify a
-/// different build identity is a warning and a different `path` alone is a note; identity itself
-/// is enforced by the CA-IDs.
+/// different build identity is a warning, and so is a different `hash` at the same `path` (the
+/// file replaced in place: the case a path outside the Nix store cannot show); a different
+/// `path` alone (a Nix rebuild) is a note. Identity itself is enforced by the CA-IDs.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModuleInfo {
+    /// The file the dynamic loader mapped, symlinks resolved — whatever named it in keys.toml or
+    /// with `--module` (a bare name, a profile symlink, `$NAME`).
     pub path: String,
+    /// SRI SHA-256 of that file; absent when it could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
     pub description: String,
     pub manufacturer: String,
     pub version: String,
@@ -988,7 +1019,7 @@ pub struct ModuleInfo {
 }
 
 impl ModuleInfo {
-    /// Equal apart from `path`.
+    /// Equal apart from the file (`path`, `hash`).
     #[must_use]
     pub fn same_build_identity(&self, other: &Self) -> bool {
         (&self.description, &self.manufacturer, &self.version, &self.cryptoki)
@@ -1041,12 +1072,22 @@ mod tests {
         let cfg =
             load(&format!("{head}pinFile = \"$KM_UNIT_TEST_PIN\"\nmodule = \"${{KM_UNIT_TEST_PIN}}\"\n")).unwrap();
         assert_eq!(cfg.tokens["t"].pin_file, Some(PathBuf::from("/env/pin")));
-        assert_eq!(cfg.tokens["t"].module.as_deref(), Some("/env/pin"));
+        assert_eq!(
+            cfg.tokens["t"].module_path("t", &|_| Some("/env/pin".to_owned())).unwrap().as_deref(),
+            Some("/env/pin")
+        );
         // An unset variable fails at load, naming it; so does a malformed reference.
         let err = load(&format!("{head}pinFile = \"$KM_UNIT_TEST_UNSET\"\n")).unwrap_err();
         assert!(err.to_string().contains("KM_UNIT_TEST_UNSET"), "{err}");
         let err = load(&format!("{head}pinFile = \"$HOME/x\"\n")).unwrap_err();
         assert!(err.to_string().contains("neither $NAME"), "{err}");
+        // A module resolves when its token is opened, not at load: an unset variable fails only a
+        // run that opens that token without --module (a Nix build sandbox sets none); a
+        // malformed reference still fails at load.
+        let unset = load(&format!("{head}module = \"$KM_UNIT_TEST_UNSET\"\n")).unwrap();
+        let err = unset.tokens["t"].module_path("t", &|_| None).unwrap_err();
+        assert!(err.to_string().contains("KM_UNIT_TEST_UNSET"), "{err}");
+        assert!(load(&format!("{head}module = \"$HOME/x.so\"\n")).is_err());
         // mgmKeyFile expands the same way; an admin credential only comes with a user PIN.
         let cfg = load(&format!("{head}pinFile = \"/p\"\nmgmKeyFile = \"$KM_UNIT_TEST_MGM\"\n")).unwrap();
         assert_eq!(cfg.tokens["t"].mgm_key_file, Some(PathBuf::from("/env/mgm")));

@@ -38,7 +38,11 @@ plus the less obvious ones.
 # ── Tokens ──────────────────────────────────────────────────────────────────────────────
 
 [tokens.softhsm]
-# The PKCS#11 module. A store path is fine; `--module softhsm=<path>` overrides it per run.
+# The PKCS#11 module, which is per machine: a path; "$NAME"/"${NAME}", read from the environment
+# when the token is opened; or left out and given per run with `--module softhsm=<path>` (what
+# lib.mkKeys's `modules.softhsm` passes in a Nix build; it also replaces a configured one). A bare
+# file name is the dynamic loader's search (LD_LIBRARY_PATH; on NixOS nothing else). The lock
+# records the file actually loaded and its hash, as provenance only.
 module = "/run/current-system/sw/lib/softhsm/libsofthsm2.so"
 # Which token of the module: matched against C_GetTokenInfo's label.
 tokenLabel = "main"

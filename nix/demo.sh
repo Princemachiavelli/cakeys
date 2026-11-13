@@ -119,14 +119,19 @@ echo 1234 >pin
 export CAKEYS_CONFIG=$work/keys.toml
 
 cat >keys.toml <<EOF
-# Two tokens behind two different PKCS#11 modules.
+# Two tokens behind two different PKCS#11 modules. Where a module lives is per machine, so
+# keys.toml names a variable this machine sets (\$NAME, read when the token is opened), not
+# a path. Alternatives: leave module out and pass --module soft=<path> per run — what
+# lib.mkKeys's modules.<token> does with a store path in a Nix build — or a bare file name,
+# which is the dynamic loader's search (LD_LIBRARY_PATH; on NixOS nothing else). Whatever
+# names it, keys.lock records the file actually loaded and its hash, as provenance only.
 [tokens.soft]
-module = "$SOFTHSM_MODULE"
+module = "\$SOFTHSM_MODULE"
 tokenLabel = "demo"
 pinFile = "$work/pin"
 
 [tokens.kryo]
-module = "$KRYOPTIC_MODULE"
+module = "\$KRYOPTIC_MODULE"
 tokenLabel = "demo"
 pinFile = "$work/pin"
 
@@ -172,6 +177,9 @@ limit=13 expect 0 cakeys realise signing --token soft
 echo "keys.lock: the identity per object; per token, how it was realised (and the policy,"
 echo "mechanisms and provenance it observed, cut here):"
 show sed -n '1,/^\[realisations.signing.soft.policy\]/p' keys.lock
+echo "Provenance, never a verdict: the module file actually loaded (the variable resolved) and"
+echo "its hash. Another path is a note; the same path with other content (replaced in place) warns."
+show sed -n '/^\[realisations.signing.soft.provenance.module\]/,/^cryptoki/p' keys.lock
 echo "From now on every use is checked against the lock: identity, policy and binding."
 expect 0 cakeys verify signing --token soft
 wait_key
@@ -188,6 +196,10 @@ let keys = (import $CAKEYS_LIB).mkKeys {
   config = ./keys.toml;
   lock = ./keys.lock;
   cakeys = "$(dirname "$bin")";
+  # The module for the build's pre-use check (passed as --module soft=…, in place of keys.toml's
+  # \$SOFTHSM_MODULE, which a build sandbox does not set). In a flake:
+  # modules.soft = "\${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
+  modules.soft = "$SOFTHSM_MODULE";
 };
 in { inherit (keys.signing { }) id uri requiredSystemFeatures check; }
 EOF

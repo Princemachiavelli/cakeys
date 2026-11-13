@@ -218,6 +218,7 @@ mod tests {
     fn module(manufacturer: &str, version: &str) -> ModuleInfo {
         ModuleInfo {
             path: "/x.so".into(),
+            hash: None,
             description: "d".into(),
             manufacturer: manufacturer.into(),
             version: version.into(),

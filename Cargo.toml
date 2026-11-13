@@ -54,8 +54,9 @@ libc = "0.2"
 # Inherited by every member with `[lints] workspace = true`. `cargo clippy` (checks.clippy)
 # runs with `-D warnings`, so everything here is clean at the stated level.
 [workspace.lints.rust]
-# The two exemptions are `#[expect]`ed and carry `// SAFETY:` comments: the TPM marshalling
-# FFI (crates/tpm2-pkcs11/src/attest/esys.rs) and access(2) (crates/core/src/config.rs).
+# The exemptions are `#[expect]`ed and carry `// SAFETY:` comments: the TPM marshalling
+# FFI (crates/tpm2-pkcs11/src/attest/esys.rs), access(2) (crates/core/src/config.rs) and the
+# loader lookup of the module file the lock records (crates/pkcs11/src/token/mod.rs).
 unsafe_code = "deny"
 
 [workspace.lints.clippy]

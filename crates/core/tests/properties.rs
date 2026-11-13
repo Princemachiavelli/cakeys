@@ -57,6 +57,7 @@ fn facts() -> Facts {
             cakeys_version: "0.1.0".into(),
             module: ModuleInfo {
                 path: "/m.so".into(),
+                hash: None,
                 description: "m".into(),
                 manufacturer: "x".into(),
                 version: "1.0".into(),

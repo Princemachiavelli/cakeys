@@ -149,7 +149,6 @@ impl Token {
     /// refuses, or an admin credential on a provider that creates as the user; `Ambiguous`
     /// when several slots carry the label; `Unavailable` when no slot does, the module
     /// cannot be loaded, any `C_*` call fails, or the PIN (env var or file) cannot be read.
-    // TODO(NEXT.md §1, minor): extract the slot search; ~100 lines.
     pub fn open(
         name: &str,
         cfg: &TokenCfg,
@@ -157,23 +156,17 @@ impl Token {
         registry: &Registry,
         access: Access,
     ) -> Result<Token> {
-        let module = module_override
-            .map(str::to_owned)
-            .or_else(|| cfg.module.clone())
-            .ok_or_else(|| KmError::Validation(format!("token '{name}' has no module")))?;
+        let module = match module_override {
+            Some(m) => Some(m.to_owned()),
+            None => cfg.module_path(name, &|var| std::env::var(var).ok())?,
+        }
+        .ok_or_else(|| KmError::Validation(format!("token '{name}' has no module (set module, or pass --module)")))?;
         let ctx = Pkcs11::new(&module).map_err(ck(&format!("loading {module}")))?;
         ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).map_err(ck("C_Initialize"))?;
         // From here every return finalizes, a failed open too.
         let module_guard = Finalize(ctx);
         let ctx = &module_guard.0;
-        let lib = ctx.get_library_info().map_err(ck("C_GetInfo"))?;
-        let module = ModuleInfo {
-            path: module,
-            description: lib.library_description().trim().to_owned(),
-            manufacturer: lib.manufacturer_id().trim().to_owned(),
-            version: lib.library_version().to_string(),
-            cryptoki: lib.cryptoki_version().to_string(),
-        };
+        let module = module_info(ctx, module)?;
         let provider = registry.select(cfg.provider.as_deref(), &module)?;
         provider.check_options(name, &cfg.options)?;
         if has_admin(cfg) && !provider.manages_as_so() {
@@ -183,39 +176,7 @@ impl Token {
                 provider.name()
             )));
         }
-        let mut slot = None;
-        for s in ctx.get_slots_with_token().map_err(ck("C_GetSlotList"))? {
-            let info = ctx.get_token_info(s).map_err(ck("C_GetTokenInfo"))?;
-            if info.label() == cfg.token_label {
-                if slot.is_some() {
-                    return Err(KmError::Ambiguous(format!("several tokens labelled '{}'", cfg.token_label)));
-                }
-                slot = Some((
-                    s,
-                    TokenInfo {
-                        model: info.model().trim().to_owned(),
-                        serial: info.serial_number().trim().to_owned(),
-                        firmware: info.firmware_version().to_string(),
-                    },
-                    PinState {
-                        user: Pin {
-                            locked: info.user_pin_locked(),
-                            final_try: info.user_pin_final_try(),
-                            count_low: info.user_pin_count_low(),
-                        },
-                        so: Pin {
-                            locked: info.so_pin_locked(),
-                            final_try: info.so_pin_final_try(),
-                            count_low: info.so_pin_count_low(),
-                        },
-                    },
-                    info.write_protected(),
-                ));
-            }
-        }
-        let (slot, token, pins, write_protected) = slot.ok_or_else(|| {
-            KmError::Unavailable(format!("token '{}' not present in {}", cfg.token_label, module.path))
-        })?;
+        let FoundSlot { slot, token, pins, write_protected } = find_slot(ctx, &cfg.token_label, &module.path)?;
         // The capability profiles (docs/PROVIDERS.md phase 2): the module profile follows the
         // provider (D9), the binding layer is always in the stack, a forwarder the module
         // names and the config's extras with it. What the stack subtracts filters the
@@ -446,6 +407,96 @@ impl Token {
         }
         out
     }
+}
+
+/// What a module says about itself (`C_GetInfo`), and the file the loader mapped for `module` with
+/// its hash: the lock's module provenance.
+fn module_info(ctx: &Pkcs11, module: String) -> Result<ModuleInfo> {
+    let lib = ctx.get_library_info().map_err(ck("C_GetInfo"))?;
+    let path = loaded_path(&module).unwrap_or(module);
+    Ok(ModuleInfo {
+        hash: std::fs::read(&path).ok().map(|bytes| id::sri(&bytes)),
+        path,
+        description: lib.library_description().trim().to_owned(),
+        manufacturer: lib.manufacturer_id().trim().to_owned(),
+        version: lib.library_version().to_string(),
+        cryptoki: lib.cryptoki_version().to_string(),
+    })
+}
+
+/// The one slot whose token is labelled `label`, with what `C_GetTokenInfo` says of it.
+struct FoundSlot {
+    slot: cryptoki::slot::Slot,
+    token: TokenInfo,
+    pins: PinState,
+    write_protected: bool,
+}
+
+/// [`FoundSlot`] for `label` among the module's slots with a token.
+///
+/// # Errors
+///
+/// `Ambiguous` when several carry the label, `Unavailable` when none does or a `C_*` call fails.
+fn find_slot(ctx: &Pkcs11, label: &str, module_path: &str) -> Result<FoundSlot> {
+    let mut found = None;
+    for slot in ctx.get_slots_with_token().map_err(ck("C_GetSlotList"))? {
+        let info = ctx.get_token_info(slot).map_err(ck("C_GetTokenInfo"))?;
+        if info.label() != label {
+            continue;
+        }
+        if found.is_some() {
+            return Err(KmError::Ambiguous(format!("several tokens labelled '{label}'")));
+        }
+        found = Some(FoundSlot {
+            slot,
+            token: TokenInfo {
+                model: info.model().trim().to_owned(),
+                serial: info.serial_number().trim().to_owned(),
+                firmware: info.firmware_version().to_string(),
+            },
+            pins: PinState {
+                user: Pin {
+                    locked: info.user_pin_locked(),
+                    final_try: info.user_pin_final_try(),
+                    count_low: info.user_pin_count_low(),
+                },
+                so: Pin {
+                    locked: info.so_pin_locked(),
+                    final_try: info.so_pin_final_try(),
+                    count_low: info.so_pin_count_low(),
+                },
+            },
+            write_protected: info.write_protected(),
+        });
+    }
+    found.ok_or_else(|| KmError::Unavailable(format!("token '{label}' not present in {module_path}")))
+}
+
+/// The file the dynamic loader mapped for `module`, symlinks resolved — what the lock records as
+/// provenance, whatever named it: a bare file name (the loader's library search), a
+/// `/run/current-system` symlink or a store path. Asked of the loader itself (`dladdr` on the
+/// module's `C_GetFunctionList`), so it is the file whose code runs. `None` if it cannot tell.
+#[expect(unsafe_code, reason = "dlopen(RTLD_NOLOAD)/dlsym/dladdr only look up the loaded module")]
+fn loaded_path(module: &str) -> Option<String> {
+    let name = std::ffi::CString::new(module).ok()?;
+    // SAFETY: a valid NUL-terminated name; RTLD_NOLOAD returns the library `Pkcs11::new` already
+    // loaded (adding a reference, released below) and never loads or initializes anything.
+    let handle = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_NOLOAD) };
+    if handle.is_null() {
+        return None;
+    }
+    // SAFETY: `handle` is a live handle and the symbol name NUL-terminated; the address is only
+    // looked up, never called.
+    let symbol = unsafe { libc::dlsym(handle, c"C_GetFunctionList".as_ptr()) };
+    // SAFETY: an all-zero `Dl_info` is valid (null pointers); `dladdr` fills it for `symbol`.
+    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+    // SAFETY: as above; `dli_fname` is a NUL-terminated string owned by the loader, copied out
+    // before the handle is released (and the module stays loaded through cryptoki's handle).
+    let file = (!symbol.is_null() && unsafe { libc::dladdr(symbol, &raw mut info) } != 0 && !info.dli_fname.is_null())
+        .then(|| unsafe { std::ffi::CStr::from_ptr(info.dli_fname) }.to_string_lossy().into_owned());
+    // SAFETY: releases only the reference taken above.
+    unsafe { libc::dlclose(handle) };
+    std::fs::canonicalize(file?).ok()?.into_os_string().into_string().ok()
 }
 
 /// Open the session `access` asks for (M1) and log in as the user when a PIN is configured —

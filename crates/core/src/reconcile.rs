@@ -477,6 +477,12 @@ fn warn_provenance(t: &Target, prev: &LockRealisation, now: &Facts, notes: &mut 
         ));
     } else if m.path != nm.path {
         notes.note(format_args!("{t} was realised with module file {}, now {}", m.path, nm.path));
+    } else if let (Some(was), Some(now)) = (&m.hash, &nm.hash)
+        && was != now
+    {
+        // Same file name, other content: replaced in place, which a path outside the Nix store
+        // cannot show.
+        notes.warn(format_args!("{t} was realised with module file {} of hash {was}, now {now}", m.path));
     }
     let (k, nk) = (&p.token, &n.token);
     if k != nk {
@@ -535,6 +541,7 @@ mod tests {
                 cakeys_version: "0.1.0".into(),
                 module: ModuleInfo {
                     path: "/m.so".into(),
+                    hash: None,
                     description: "m".into(),
                     manufacturer: "x".into(),
                     version: module_version.into(),
@@ -641,5 +648,32 @@ mod tests {
             "{:?}",
             notes.lines()
         );
+    }
+
+    /// The module file's hash: other content at the same path warns (replaced in place, which a
+    /// path outside the Nix store cannot show); another path is a note, as a Nix rebuild.
+    #[test]
+    fn a_module_replaced_in_place_warns() {
+        let cfg = config();
+        let t = Target::new(&cfg, "s", "t").unwrap();
+        let with = |path: &str, hash: &str| {
+            let mut f = facts("1");
+            f.provenance.module.path = path.into();
+            f.provenance.module.hash = Some(hash.into());
+            f
+        };
+        let mut lock = empty_lock();
+        reconcile(&t, &resolved(&t), &mut lock, &with("/m.so", SRI_A), LockWrite::Record, &mut Notes::default())
+            .unwrap();
+        let notes = |f: &Facts| {
+            let mut n = Notes::default();
+            compare(&t, &resolved(&t), &lock, f, LockWrite::Compare, &mut n).unwrap();
+            n.lines().to_vec()
+        };
+        assert_eq!(notes(&with("/m.so", SRI_A)), Vec::<String>::new());
+        let replaced = notes(&with("/m.so", SRI_B));
+        assert!(replaced.iter().any(|l| l.starts_with("warning: ") && l.contains("of hash")), "{replaced:?}");
+        let moved = notes(&with("/rebuilt/m.so", SRI_B));
+        assert!(!moved.is_empty() && moved.iter().all(|l| l.starts_with("note: ")), "{moved:?}");
     }
 }

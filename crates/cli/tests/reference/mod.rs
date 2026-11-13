@@ -618,7 +618,10 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     assert_eq!(e.code(&r), 0);
 
     let real = &e.lock()["realisations"]["signing-soft"]["ref"];
-    assert_eq!(real["provenance"]["module"]["path"].as_str(), Some(e.module.as_str()));
+    // The file actually loaded, symlinks resolved: provenance only.
+    let loaded = std::fs::canonicalize(&e.module).unwrap();
+    let loaded = loaded.to_str().unwrap();
+    assert_eq!(real["provenance"]["module"]["path"].as_str(), Some(loaded));
     assert_eq!(real["provenance"]["module"]["manufacturer"].as_str(), Some(REF.manufacturer));
     assert_ne!(real["provenance"]["module"]["version"].as_str().unwrap(), "");
     assert_eq!(real["provenance"]["token"]["model"].as_str(), Some(REF.model));
@@ -637,10 +640,19 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     assert!(stderr(&o).contains("warning:") && stderr(&o).contains("with module"), "{}", stderr(&o));
 
     // Same build identity, different file: a note only.
-    std::fs::write(&path, original.replace(&e.module, "/nix/store/old-softhsm/lib/libsofthsm2.so")).unwrap();
+    std::fs::write(&path, original.replace(loaded, "/nix/store/old-softhsm/lib/libsofthsm2.so")).unwrap();
     let o = e.km(&verify);
     assert_eq!(code(&o), 0);
     assert!(stderr(&o).contains("note:") && !stderr(&o).contains("warning:"), "{}", stderr(&o));
+
+    // The file's hash is recorded too; other content at the same path (replaced in place, as
+    // outside the Nix store) is a warning.
+    let hash = real["provenance"]["module"]["hash"].as_str().unwrap().to_owned();
+    assert_eq!(hash, sri(&std::fs::read(loaded).unwrap()));
+    std::fs::write(&path, original.replace(&hash, "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=")).unwrap();
+    let o = e.km(&verify);
+    assert_eq!(code(&o), 0);
+    assert!(stderr(&o).contains("warning:") && stderr(&o).contains("of hash"), "{}", stderr(&o));
 
     // A different token: warning.
     std::fs::write(&path, original.replace(&format!("model = \"{}\"", REF.model), "model = \"Other\"")).unwrap();
@@ -649,6 +661,29 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     // Re-binding with --update-lock records the current module and token.
     assert_eq!(e.code(&r), 0);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+
+    // The lock records the file the loader mapped, symlinks resolved, whatever named it: a
+    // symlink given with --module, or a bare file name found by the library search.
+    let module_path = |o: &Output| {
+        assert_eq!(code(o), 0, "{}", stderr(o));
+        e.lock()["realisations"]["signing-soft"]["ref"]["provenance"]["module"]["path"].as_str().unwrap().to_owned()
+    };
+    let link = e.dir.join("module.so");
+    std::os::unix::fs::symlink(&e.module, &link).unwrap();
+    let via_link = format!("ref={}", link.display());
+    assert_eq!(module_path(&e.km(&[&["--module", via_link.as_str()][..], &r[..]].concat())), loaded);
+    let module = std::path::Path::new(&e.module);
+    let bare = format!("ref={}", module.file_name().unwrap().to_str().unwrap());
+    let search = [("LD_LIBRARY_PATH", module.parent().unwrap())];
+    assert_eq!(module_path(&e.km_env(&[&["--module", bare.as_str()][..], &r[..]].concat(), &search)), loaded);
+    // A per-machine `module = "$NAME"`: unset, it is invalid (17) unless --module replaces it
+    // first, as lib.mkKeys does in a build sandbox that sets no such variable.
+    let toml = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
+    e.write_config(&toml.replace(&format!("module = \"{}\"", e.module), "module = \"$CAKEYS_TEST_UNSET_MODULE\""));
+    let o = e.km(&verify);
+    assert_eq!(code(&o), 17);
+    assert!(stderr(&o).contains("CAKEYS_TEST_UNSET_MODULE"), "{}", stderr(&o));
+    assert_eq!(e.code(&[&["--module", via_link.as_str()][..], &verify[..]].concat()), 0);
     assert!(!stderr(&e.km(&verify)).contains("warning"));
 }
 

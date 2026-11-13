@@ -424,8 +424,8 @@ mechanisms = ["CKM_..."]             # usable mechanisms; feeds functions.<token
 [realisations.<spec>.<token>.provenance]
 provider = "softhsm"
 cakeysVersion = "0.1.0"
-[realisations.<spec>.<token>.provenance.module] # C_GetInfo and the loaded file
-path = "..." ; description = "..." ; manufacturer = "..." ; version = "M.m" ; cryptoki = "M.m"
+[realisations.<spec>.<token>.provenance.module] # C_GetInfo, and the file the loader mapped
+path = "/nix/store/…/libsofthsm2.so" ; hash = "sha256-…" ; description = "..." ; manufacturer = "..." ; version = "M.m" ; cryptoki = "M.m"
 [realisations.<spec>.<token>.provenance.token]  # C_GetTokenInfo
 model = "..." ; serial = "..." ; firmware = "M.m"
 ```
@@ -478,8 +478,12 @@ model = "..." ; serial = "..." ; firmware = "M.m"
   private keys, so `observed.session` records which view the check had; going from `user` to
   `public` warns — `a_second_private_key_under_the_same_id_is_ambiguous`.
 - **Versions** are raw `CK_VERSION` major.minor (ykcs11 2.7.3 → `2.73`).
-- **Provenance:** a different module build identity or token is a *warning*; only a different
-  module file is a *note*. Neither fails — `module_and_token_provenance_warn_but_do_not_fail`.
+- **Provenance:** a different module build identity or token is a *warning*, and so is a
+  different module file `hash` at the same `path` (the file replaced in place, which a path
+  outside the Nix store cannot show); only a different module file `path` is a *note*. None
+  fails — `module_and_token_provenance_warn_but_do_not_fail`. The `path` is the file the dynamic
+  loader mapped, symlinks resolved, whatever named it (`$NAME`, `--module`, a bare name found
+  by the library search).
 - **The spec digest** is the SHA-256 of canonical JSON `{"v":1,"type":<object, camelCase>,
   "attributes":<…>}`, with keys sorted at every level explicitly (independent of serde_json
   features). Attribute values are typed: booleans, and `CKA_ALLOWED_MECHANISMS` as a sorted,
