@@ -26,6 +26,7 @@ ykcs11 = ["dep:cakeys-ykcs11"]
 [dependencies]
 cakeys-core.workspace = true
 cakeys-pkcs11.workspace = true
+cakeys-profile.workspace = true
 cakeys-ykcs11 = { workspace = true, optional = true }
 cakeys-tpm2-pkcs11 = { workspace = true, optional = true }
 anyhow.workspace = true

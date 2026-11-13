@@ -1,0 +1,10 @@
+# The software TPM under tpm2-pkcs11: D10's hardware layer, matched on what C_GetTokenInfo
+# gives. A real TPM under the same module profile is a different hardware layer.
+profile = "swtpm"
+mode = "delta"
+
+[[restrict]]
+operation = "generate"
+key-type = "CKK_RSA"
+max-bits = 3072
+note = "swtpm refuses 4096-bit RSA [run]"

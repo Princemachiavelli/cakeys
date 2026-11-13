@@ -25,6 +25,9 @@ rustPlatform.buildRustPackage {
       ../Cargo.toml
       ../Cargo.lock
       ../crates
+      # The capability profiles (docs/PROVIDERS.md): embedded in the binary, and the vendored
+      # OASIS headers the pinned baseline-regeneration test reads.
+      ../profiles
     ];
   };
 

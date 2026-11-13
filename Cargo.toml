@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/pkcs11", "crates/ykcs11", "crates/tpm2-pkcs11", "crates/cli"]
+members = ["crates/core", "crates/profile", "crates/pkcs11", "crates/ykcs11", "crates/tpm2-pkcs11", "crates/cli"]
 default-members = ["crates/cli"]
 exclude = ["fuzz"]
 
@@ -13,6 +13,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 cakeys-core = { path = "crates/core" }
 cakeys-pkcs11 = { path = "crates/pkcs11" }
+cakeys-profile = { path = "crates/profile" }
 cakeys-ykcs11 = { path = "crates/ykcs11" }
 cakeys-tpm2-pkcs11 = { path = "crates/tpm2-pkcs11" }
 anyhow = "1"

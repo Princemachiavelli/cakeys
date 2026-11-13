@@ -1,0 +1,22 @@
+# p11-kit's client module (p11-kit-client.so), forwarding any module served by `p11-kit
+# server` over a socket. Observed with 0.26.5 [run]. C_GetInfo describes p11-kit, not the
+# module behind it: name that module's profile too (its provider's provider = "...").
+profile = "p11-kit/0.26"
+mode = "delta"
+
+[match]
+manufacturer = "PKCS#11 Kit"
+module-version = "0.26"
+
+[subtract]
+mechanisms = [
+  "CKM_AES_KEY_WRAP",
+  "CKM_AES_KEY_WRAP_PAD",
+  "CKM_EC_EDWARDS_KEY_PAIR_GEN",
+  "CKM_EDDSA",
+  "CKM_AES_CBC_ENCRYPT_DATA",
+]
+note = "the RPC does not marshal these mechanisms [run]"
+
+[notes]
+module = "the module behind the forwarder is hidden: set `provider` in keys.toml to its provider for module-specific fix-ups"

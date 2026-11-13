@@ -45,6 +45,31 @@
     doCheck = false;
   };
   vm = mkTest "vm";
+  # The capability-profile query (docs/PROVIDERS.md): static answers from the profiles embedded
+  # in the binary, no token needed. yes -> 0, no -> 15, unknown -> 16.
+  profiles = pkgs.runCommand "cakeys-profiles" { } ''
+    set -u
+    q() { "${cakeys}/bin/cakeys" --config ${./crates/cli/tests/fixtures/keys.toml} supports "$@"; }
+    expect() {
+      want=$1
+      shift
+      # The builder runs with set -e: a wanted nonzero exit must be caught, not end the script.
+      code=0
+      got=$(q "$@" 2>&1) || code=$?
+      printf '%s => exit %s (want %s)\n%s\n' "$*" "$code" "$want" "$got" >> $out
+      [ "$code" = "$want" ] || { echo "FAIL: $* (exit $code, want $want)" >&2; exit 1; }
+    }
+    expect 15 --profile softhsm/2.7 --layer p11-kit/0.26 CKM_AES_KEY_WRAP
+    expect 15 --profile softhsm/2.7 --layer cryptoki/0.12-unpatched CKK_SHA512_HMAC
+    expect 16 --profile softhsm/2.7 CKM_SHA512_HMAC
+    expect 16 --profile softhsm/2.7 CKM_NOT_A_MECHANISM
+    expect 0 --profile softhsm/2.7 secp256r1
+    expect 0 --profile softhsm/2.7 --oaep
+    expect 15 --profile kryoptic/1.5 secp256k1
+    expect 15 --profile tpm2-pkcs11/1.10 --layer swtpm --bits 4096 CKK_RSA
+    # A class listing on a partial module profile: every member unknown, never a guess.
+    expect 16 --class pq --profile softhsm/2.7
+  '';
   module = import ./nix/module-test.nix {
     inherit pkgs cakeys pcsc-probe;
     module = self.nixosModules.default;

@@ -1,0 +1,18 @@
+# kryoptic 1.5.x, the second reference module. C_GetInfo reports library version 0.0 [run]:
+# D9's low-evidence match, by manufacturer alone.
+profile = "kryoptic/1.5"
+mode = "observed"
+partial = true
+
+[match]
+manufacturer = "Kryoptic"
+module-version = "1.5"
+
+[generate."CKK_EC"]
+can = ["secp256r1", "secp384r1", "secp521r1"]
+cannot = ["secp256k1", "brainpoolP256r1", "brainpoolP384r1"]
+
+[notes]
+secp256k1 = "unsupported by kryoptic's generation [run]"
+brainpoolP256r1 = "unsupported by kryoptic's generation [run]"
+brainpoolP384r1 = "unsupported by kryoptic's generation [run]"

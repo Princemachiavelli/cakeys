@@ -1,0 +1,23 @@
+# Yubico ykcs11 2.7 (PIV), observed on a YubiKey 5, firmware 5.7.4 [run]. The piv-attestation
+# commitment and the PIV slot placement stay in the provider crate (PROVIDERS.md D6).
+profile = "ykcs11/2.7"
+mode = "observed"
+partial = true
+
+[match]
+manufacturer = "Yubico"
+module-version = "2.7"
+
+[generate."CKK_RSA"]
+min-bits = 1024
+max-bits = 4096
+
+[generate."CKK_EC"]
+can = ["secp256r1", "secp384r1"]
+
+[generate."CKK_EC_EDWARDS"]
+can = ["edwards25519"]
+
+[notes]
+so = "creates and destroys only after C_Login(CKU_SO) with the PIV management key [src]"
+destroy = "C_DestroyObject writes an empty certificate and leaves the key in the slot; delete it with ykman [run]"

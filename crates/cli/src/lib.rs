@@ -136,6 +136,36 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Ask the capability profiles what a vendor SO version supports (docs/PROVIDERS.md):
+    /// pure data, no token touched. NAME is a mechanism (`CKM_*`), key type (`CKK_*`),
+    /// parameter set (`CKP_*`) or curve; `--bits` asks for an RSA size; `--class` lists a
+    /// baseline class; `--oaep` lists the wrap hashes. Exit 0 yes, 15 no, 16 unknown.
+    Supports {
+        /// What to ask about: `CKM_*`, `CKK_*`, `CKP_*` or a curve name.
+        #[arg(required_unless_present_any = ["class", "oaep"])]
+        name: Option<String>,
+        /// The module profile, e.g. softhsm/2.7 (or its family, when only one is loaded).
+        #[arg(long, conflicts_with = "token")]
+        profile: Option<String>,
+        /// The token in keys.toml whose `provider` names the profile family.
+        #[arg(long)]
+        token: Option<String>,
+        /// A delta layer on top, repeatable: p11-kit/0.26, cryptoki/0.12-unpatched, swtpm.
+        #[arg(long = "layer")]
+        layers: Vec<String>,
+        /// List the members of a baseline class (pq, hmac, key-wrap, oaep) with verdicts.
+        #[arg(long)]
+        class: Option<String>,
+        /// List the RSA-OAEP hashes usable for wrapping.
+        #[arg(long)]
+        oaep: bool,
+        /// An RSA modulus size to ask about (with a `CKK_RSA` query).
+        #[arg(long)]
+        bits: Option<u32>,
+        /// A directory of extra or replacement profile files, read recursively (D11).
+        #[arg(long = "profiles")]
+        profiles_dir: Option<PathBuf>,
+    },
 }
 
 /// How `export` and `migrate` may move material.
@@ -208,6 +238,62 @@ fn open_token(
 ) -> Result<Token, KmError> {
     let tcfg = cfg.tokens.get(name).ok_or_else(|| KmError::Validation(format!("unknown token '{name}'")))?;
     Token::open(name, tcfg, modules.get(name).map(String::as_str), registry)
+}
+
+/// Resolve what the `supports` query asks (docs/PROVIDERS.md): the embedded profiles plus
+/// any `--profiles` directory, the module profile (named, or through a token's `provider`),
+/// the delta layers on top, and the answers. Returns the resolved module profile's name for
+/// the run's notes, and one verdict per asked name.
+#[allow(clippy::too_many_arguments)] // one parameter per CLI flag: grouping them buys nothing
+fn supports(
+    cfg: &Config,
+    profile: Option<&str>,
+    token: Option<&str>,
+    layers: &[String],
+    class: Option<&str>,
+    oaep: bool,
+    name: Option<&str>,
+    bits: Option<u32>,
+    profiles_dir: Option<&std::path::Path>,
+) -> anyhow::Result<(String, Vec<(String, cakeys_profile::Verdict)>)> {
+    let validation = |e: String| -> anyhow::Error { KmError::Validation(e).into() };
+    let mut set =
+        cakeys_profile::Set::embedded().map_err(validation).with_context(|| "the embedded profiles do not parse")?;
+    if let Some(dir) = profiles_dir {
+        set = set.with_dir(dir).map_err(validation).with_context(|| format!("--profiles {}", dir.display()))?;
+    }
+    let module = match (profile, token) {
+        (Some(p), _) => Some(set.find(p).map_err(validation)?),
+        (None, Some(t)) => {
+            let tcfg = cfg.tokens.get(t).ok_or_else(|| KmError::Validation(format!("unknown token '{t}'")))?;
+            let family = tcfg.provider.as_deref().ok_or_else(|| {
+                KmError::Validation(format!("token '{t}' names no provider; set tokens.{t}.provider or pass --profile"))
+            })?;
+            Some(set.find(family).map_err(validation)?)
+        }
+        (None, None) => None,
+    };
+    let resolved: Vec<&cakeys_profile::Profile> =
+        layers.iter().map(|l| set.find(l)).collect::<Result<_, _>>().map_err(validation)?;
+    let baseline = set.baseline().map_err(validation)?;
+    let eff = cakeys_profile::Effective::new(baseline, module, &resolved);
+    let verdicts = if let Some(class) = class {
+        eff.class(class).ok_or_else(|| {
+            KmError::Validation(format!(
+                "no class '{class}' in baseline {} (classes: {})",
+                baseline.baseline,
+                baseline.class.keys().cloned().collect::<Vec<_>>().join(", ")
+            ))
+        })?
+    } else if oaep {
+        eff.oaep()
+    } else if let Some(name) = name {
+        vec![(name.to_owned(), eff.query(name, bits))]
+    } else {
+        unreachable!("clap requires a name, --class or --oaep")
+    };
+    let module_name = module.map_or_else(|| "(none)".to_owned(), |m| m.profile.clone());
+    Ok((module_name, verdicts))
 }
 
 fn run(registry: &Registry) -> anyhow::Result<()> {
@@ -354,6 +440,40 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
                     notes.say(format!("wrote {}", path.display()));
                 }
                 None => print!("{text}"),
+            }
+        }
+        Cmd::Supports { name, profile, token, layers, class, oaep, bits, profiles_dir } => {
+            let eff = supports(
+                &cfg,
+                profile.as_deref(),
+                token.as_deref(),
+                layers,
+                class.as_deref(),
+                *oaep,
+                name.as_deref(),
+                *bits,
+                profiles_dir.as_deref(),
+            )?;
+            notes.note(format_args!("profiles: module {}, layers [{}] (docs/PROVIDERS.md)", eff.0, layers.join(", ")));
+            for (n, v) in &eff.1 {
+                println!("{n}: {v}");
+            }
+            let any_no = eff.1.iter().any(|(_, v)| matches!(v, cakeys_profile::Verdict::No { .. }));
+            let any_unknown = eff.1.iter().any(|(_, v)| matches!(v, cakeys_profile::Verdict::Unknown { .. }));
+            if any_no {
+                let names: Vec<&str> = eff
+                    .1
+                    .iter()
+                    .filter(|(_, v)| matches!(v, cakeys_profile::Verdict::No { .. }))
+                    .map(|(n, _)| n.as_str())
+                    .collect();
+                return Err(KmError::Unsupported(format!("not supported: {}", names.join(", "))).into());
+            }
+            if any_unknown {
+                return Err(KmError::Unavailable(
+                    "the profiles do not decide this: run the probe (PROVIDERS.md phase 3) or a fuller profile".into(),
+                )
+                .into());
             }
         }
     }

@@ -1,0 +1,25 @@
+# SoftHSM 2.7, the reference module. Rows carry this repo's evidence ([run]: the reference
+# suite, the MIGRATE.md spike); the advertise list is left to `cakeys probe` (PROVIDERS.md
+# phase 3), so mechanism membership answers unknown until then.
+profile = "softhsm/2.7"
+mode = "observed"
+partial = true
+
+[match]
+manufacturer = "SoftHSM"
+module-version = "2.7"
+
+# The OAEP hashes actually implemented for wrapping: SHA-256 is CKR_ARGUMENTS_BAD [run].
+[wrap]
+oaep = ["SHA-1"]
+
+# MIGRATE.md D6's per-module template rule, as data [run].
+[unwrap]
+refuse = ["CKA_VALUE_LEN"]
+
+[generate."CKK_EC"]
+can = ["secp256r1"]
+
+[notes]
+CKA_VALUE_LEN = "CKR_ATTRIBUTE_READ_ONLY in an unwrap template [run]"
+oaep = "CKM_RSA_PKCS_OAEP with SHA-256 is CKR_ARGUMENTS_BAD; SHA-1 only [run]"

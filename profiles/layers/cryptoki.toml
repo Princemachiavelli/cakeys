@@ -1,0 +1,15 @@
+# The cryptoki binding this cakeys was built against, without the Nix patches: the one layer
+# whose answers differ per build (D11). The Nix build applies both patches, so a nix-built
+# cakeys subtracts nothing and names no layer; a plain `cargo build` is this file.
+profile = "cryptoki/0.12-unpatched"
+mode = "delta"
+
+[subtract]
+mechanisms = ["CKM_AES_KEY_WRAP_KWP"]
+key-types = ["CKK_SHA224_HMAC", "CKK_SHA384_HMAC", "CKK_SHA512_HMAC"]
+note = "cryptoki 0.12.1 without the Nix patches (cryptoki-hmac-key-types, cryptoki-aes-key-wrap-kwp) [run]"
+
+[notes]
+CKK_SHA224_HMAC = "cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart"
+CKK_SHA384_HMAC = "cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart"
+CKK_SHA512_HMAC = "cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart"

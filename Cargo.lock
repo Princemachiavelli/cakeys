@@ -206,6 +206,7 @@ dependencies = [
  "base64",
  "cakeys-core",
  "cakeys-pkcs11",
+ "cakeys-profile",
  "cakeys-tpm2-pkcs11",
  "cakeys-ykcs11",
  "clap",
@@ -258,6 +259,14 @@ dependencies = [
  "cakeys-core",
  "cryptoki",
  "zeroize",
+]
+
+[[package]]
+name = "cakeys-profile"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml",
 ]
 
 [[package]]
