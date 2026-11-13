@@ -1,5 +1,6 @@
 //! The material CA-IDs: the canonical SPKI of a key, and the secret-key commitments (directly or through a wrap-and-rebind copy).
 
+#[allow(clippy::wildcard_imports)] // the token/ split files work on the parent module's imports (R9)
 use super::*;
 
 impl Token {

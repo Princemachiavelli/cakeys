@@ -153,6 +153,7 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
     result
 }
 
+#[allow(clippy::too_many_lines)] // one match over the verbs; splitting it buys nothing
 fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     let cli = Cli::parse();
     let cfg = load_config(&cli.config)?;

@@ -8,8 +8,11 @@
 # uses rsa on the host for public-key operations only either way.
 
 [advisories]
-# Offline there is no registry index to check yanked-ness against, and the lockfile pins the
-# exact versions anyway; the notes cargo-deny prints instead are fine.
+# Yanked-ness is crates.io registry metadata, not a RustSec advisory, so it cannot come from
+# the advisory-db input, and the sandbox has no network to read the live index from. Here
+# (offline) the level is allow; the yanked check is the one thing that needs the network,
+# so it is an app instead: `nix run .#deny-online` reads the current index for every locked
+# crate and re-runs this check with --deny yanked.
 yanked = "allow"
 
 [licenses]

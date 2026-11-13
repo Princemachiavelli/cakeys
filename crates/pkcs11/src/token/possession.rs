@@ -1,5 +1,6 @@
 //! Proof of possession on the token (`cakeys_core::pop`, docs/DESIGN.md §3.6): sign, derive or decrypt a fresh challenge the host checks.
 
+#[allow(clippy::wildcard_imports)] // the token/ split files work on the parent module's imports (R9)
 use super::*;
 use cakeys_core::pop;
 

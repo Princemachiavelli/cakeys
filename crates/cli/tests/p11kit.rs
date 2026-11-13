@@ -70,6 +70,7 @@ impl Env {
         out
     }
 
+    #[allow(clippy::unused_self)] // the fixture helpers sit in an impl so the call sites read uniformly
     fn ids(&self, o: &Output) -> serde_json::Value {
         serde_json::from_str::<serde_json::Value>(&stdout(o)).unwrap()["ids"].clone()
     }
@@ -79,6 +80,7 @@ impl Env {
         lock["objects"][object]["ids"][scheme].as_str().unwrap().to_owned()
     }
 
+    #[allow(clippy::unused_self)] // the fixture helpers sit in an impl so the call sites read uniformly
     fn session(&self, module: &str) -> TestSession {
         open_session(module, "kmp11", "1234")
     }
@@ -118,6 +120,7 @@ const AES_VALUE: [u8; 32] = *b"p11-kit forwarding aes vector!!!";
 const HMAC_VALUE: [u8; 32] = *b"p11-kit forwarding hmac vector!!";
 
 #[test]
+#[allow(clippy::format_push_string)] // the fixture TOML bodies are appended as += format!(...)
 fn p11kit_and_direct_paths_agree() {
     let Some(e) = env("agree") else { return };
     let s = e.session(&e.direct);

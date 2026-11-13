@@ -27,6 +27,7 @@ const COMMON: &[(&str, Use)] = &[
 
 /// Usage and policy booleans of each class beyond the common ones.
 fn of_class(class: ObjectClass) -> &'static [(&'static str, Use)] {
+    #[allow(clippy::enum_glob_use)] // the tables read as Both/Declared, cakeys' own two-variant enum
     use Use::*;
     match class {
         ObjectClass::PrivateKey => &[

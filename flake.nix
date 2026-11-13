@@ -28,6 +28,13 @@
       treefmt = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
       cakeys = pkgs.callPackage ./nix/package.nix { };
       pcsc-probe = pkgs.callPackage ./nix/pcsc-probe.nix { };
+      # cargo-deny (NEXT.md §1): the sandboxed checks.deny (advisories against the pinned
+      # RustSec database, licenses, bans, sources) and the online apps.deny-online (yanked —
+      # registry metadata the sandbox has no network for). Configuration: deny.toml.
+      deny = pkgs.callPackage ./nix/deny.nix {
+        inherit advisory-db;
+        inherit (cakeys) cargoDeps;
+      };
       mkTest =
         kind:
         import ./nix/test.nix {
@@ -63,6 +70,13 @@
         '';
 
       apps.${system} = {
+        # The one cargo-deny check the sandbox cannot make: yanked releases, against the live
+        # crates.io index (see the `deny` binding above). Network, host-side, uncached.
+        deny-online = {
+          type = "app";
+          program = pkgs.lib.getExe deny.online;
+          meta.description = "cargo-deny with current yanked flags: fetch the live index, then the pinned-database check with --deny yanked";
+        };
         # Host-side PC/SC check.
         pcsc-probe = {
           type = "app";
@@ -91,8 +105,8 @@
         # `nix fmt` would change nothing: every formatter and linter in treefmt.nix passes.
         formatting = treefmt.config.build.check self;
         # Clippy with -D warnings (NEXT.md §2): plain clippy is clean, and the workspace
-        # lints (Cargo.toml [workspace.lints]: unsafe_code deny, a pedantic subset) travel
-        # with every build, editor and this check.
+        # lints (Cargo.toml [workspace.lints]: unsafe_code deny, clippy::pedantic with one
+        # blanket allow) travel with every build, editor and this check.
         clippy = cakeys.overrideAttrs (old: {
           pname = "cakeys-clippy";
           # The lint replaces the build and the tests, so the integration-test inputs are
@@ -109,13 +123,8 @@
           '';
           doCheck = false;
         });
-        # cargo-deny (NEXT.md §1): advisories against the pinned RustSec database, licenses,
-        # duplicate crates and sources — offline, from the advisory-db input and the
-        # vendored Cargo.lock. Configuration: deny.toml.
-        deny = pkgs.callPackage ./nix/deny.nix {
-          inherit advisory-db;
-          inherit (cakeys) cargoDeps;
-        };
+        # cargo-deny offline (see the `deny` binding above): reproducible with the flake.lock.
+        deny = deny.check;
         # The CLI without its `tpm2` and `ykcs11` features: builds without tpm2-tss and sqlite.
         minimal = cakeys.overrideAttrs {
           pname = "cakeys-minimal";

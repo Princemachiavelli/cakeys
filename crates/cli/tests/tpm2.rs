@@ -83,6 +83,7 @@ impl Env {
     }
 
     /// `tpm2_ptool <args> --label kmtest --userpin 1234 --path $TPM2_PKCS11_STORE`.
+    #[allow(clippy::unused_self)] // the fixture helpers sit in an impl so the call sites read uniformly
     fn ptool(&self, args: &[&str]) {
         let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
         let out = Command::new("tpm2_ptool")
@@ -178,6 +179,7 @@ tokens.tpm = { locator = { CKA_LABEL = "refusal-aes" } }
 }
 
 #[test]
+#[allow(clippy::format_push_string)] // the fixture TOML bodies are appended as += format!(...)
 fn tpm2_generated_keys_match_der_oracle() {
     let Some(e) = env("generated") else { return };
     let kinds = [

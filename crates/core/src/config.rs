@@ -366,6 +366,7 @@ pub const LOCK_VERSION: u32 = 1;
 impl Lock {
     /// Refuse other versions (the version is required), and objects with commitment IDs but no
     /// label.
+    #[allow(clippy::too_many_lines)] // one linear invariant checklist; a split would scatter the finding numbers
     fn validate(self, path: &Path) -> Result<Lock> {
         if self.version != LOCK_VERSION {
             return Err(KmError::Validation(format!(

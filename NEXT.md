@@ -9,12 +9,17 @@ entry). The plan, and what became of it:
    The expected RUSTSEC-2023-0071 ignore turned out not to be needed: the current database
    marks the rsa 0.10 series patched (`patched = [">= 0.10.0"]`), which is what the workspace
    pins — verified against the pinned database with a scratch rsa 0.9.0 project, where the
-   advisory does fire.
+   advisory does fire. Yanked stays allowed offline (yanked-ness is registry metadata, not an
+   advisory, and the sandbox has no network); `nix run .#deny-online` runs the same check on
+   the host with the live index and `--deny yanked` — verified to fire on a hand-locked
+   yanked version (cargo refuses to resolve one, so what it guards is a yank after locking).
 2. **Clippy in `nix flake check`.** `checks.clippy`: `cargo clippy --workspace --all-targets
    -- -D warnings` over the same build environment as the package.
 3. **`[workspace.lints]`.** `unsafe_code = "deny"` (the two exemptions are `#[allow]`ed:
    `crates/tpm2-pkcs11/src/attest/esys.rs`, `crates/core/src/config.rs`) plus `clippy::pedantic`
-   minus a documented allow list; the ~230 warnings pedantic reported are fixed.
+   with one blanket allow (`must_use_candidate`: plain lookups in an internal workspace) —
+   the ~230 warnings pedantic reported are fixed, and every other exemption is a per-site
+   `#[allow]` with its reason, so a new occurrence anywhere warns.
 4. **`// SAFETY:` comments.** On both `Tss2_MU_*` blocks in `esys.rs`; `config.rs`'s already
    had one.
 5. **Constant-time comparison from a crate.** `pop::ct_eq` is now `subtle::ConstantTimeEq`

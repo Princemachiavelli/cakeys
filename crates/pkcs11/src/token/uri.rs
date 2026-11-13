@@ -1,5 +1,6 @@
 //! RFC 7512 URIs and the locator attributes they are built from.
 
+#[allow(clippy::wildcard_imports)] // the token/ split files work on the parent module's imports (R9)
 use super::*;
 
 impl Token {
@@ -71,6 +72,7 @@ fn pct(bytes: &[u8]) -> String {
         .collect()
 }
 
+#[allow(clippy::format_collect)] // the hex builder reads best as map-format-collect
 pub(super) fn pct_all(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("%{b:02X}")).collect()
 }

@@ -123,6 +123,7 @@ pub fn reconcile(
 /// `HashMismatch` (10) when the token's material hashes to another ID than the lock pins;
 /// `PreconditionFailed` (14) for a type change, a downgrade, a replaced object, an attestation
 /// anchor change, or a first use compared without the write.
+#[allow(clippy::too_many_lines)] // every lock rule in exit-code order; a split would scatter the finding numbers
 pub fn compare(
     t: &Target,
     r: &Resolved,
@@ -426,6 +427,7 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
 
 /// `observed` and `provenance` never change a verdict: identity is enforced by the CA-IDs, so a
 /// different module build or token only warns. `realise` re-binds them.
+#[allow(clippy::many_single_char_names)] // the prev/now module and token pairs stay short
 fn warn_provenance(t: &Target, prev: &LockRealisation, now: &Facts, notes: &mut Notes) {
     if prev.observed.as_ref().is_some_and(|o| o.session == Session::User) && now.observed.session != Session::User {
         notes.warn(format_args!(

@@ -831,6 +831,7 @@ fn lock_invariants_are_checked() {
 /// The lock records every boolean attribute the object shows (declared or not) and its creation
 /// facts: a later change on the token is reviewed, and a replaced object is refused outright.
 #[test]
+#[allow(clippy::many_single_char_names)] // the env/session/handle fixture bindings stay short
 fn policy_drift_and_replaced_objects_are_refused() {
     let Some(e) = env("policy") else { return };
     e.config(
@@ -1086,6 +1087,7 @@ fn aes_oracle(scheme: &str) -> String {
 }
 
 #[test]
+#[allow(clippy::format_push_string)] // the fixture TOML bodies are appended as += format!(...)
 fn aes_commitments_match_host_oracles() {
     let Some(e) = env("aes_commitments") else { return };
     // (spec, label, SIGN, ENCRYPT, WRAP, EXTRACTABLE, mode, schemes computed)
@@ -1216,6 +1218,7 @@ tokens.softhsm = { locator = { CKA_LABEL = "only-kek" } }
 }
 
 #[test]
+#[allow(clippy::format_push_string)] // the fixture TOML bodies are appended as += format!(...)
 fn curves_and_rsa_sizes_match_an_independent_der_oracle() {
     let Some(e) = env("curves") else { return };
     let kinds = [
@@ -1286,6 +1289,7 @@ const ED25519_CERTHASH: &str = "sha256-vLKP3eF+jeIMpcIz0K9c8oiCVsbvDve+uBUYho+aO
 const ED25519_PUBKEYHASH: &str = "sha256-LmLQD9g76Y3XJI3Wu72BFxjm/HLImLgqJazAeCNi4lY=";
 
 #[test]
+#[allow(clippy::format_push_string)] // the fixture TOML bodies are appended as += format!(...)
 fn adopt_ec_and_edwards_certificates() {
     let Some(e) = env("adopt_ec") else { return };
     let s = e.session();
@@ -1418,6 +1422,7 @@ fn plant_secret(s: &Session, label: &str, kt: cryptoki::object::KeyType, value: 
 }
 
 #[test]
+#[allow(clippy::format_push_string)] // the fixture TOML bodies are appended as += format!(...)
 fn hmac_key_types_commit_with_their_own_hash() {
     use cryptoki::object::KeyType as K;
     let Some(e) = env("hmac_types") else { return };

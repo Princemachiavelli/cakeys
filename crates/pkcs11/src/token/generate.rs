@@ -1,5 +1,6 @@
 //! Creating and destroying objects (in an SO session where the module needs one).
 
+#[allow(clippy::wildcard_imports)] // the token/ split files work on the parent module's imports (R9)
 use super::*;
 
 impl Token {
