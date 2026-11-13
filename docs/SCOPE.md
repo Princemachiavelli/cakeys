@@ -75,6 +75,20 @@ spec-compliant module would.
   verifies, does not decide how keys are managed"; tightening only, or loosening too where a
   token allows it; and whether a loosened key stays the same realisation or must be treated as
   a downgrade.
+- **Signing the lock file** (idea, 2026-11-13). The lock is the trust root of every check:
+  whoever can edit `keys.lock` can re-pin an object to their own key, and `check` then passes.
+  Today its integrity is the repository's (review, signed commits, the flake's `narHash`). The
+  idea: every lock write (`realise`, `create`, `delete`, `gc --apply`) signs the canonical lock
+  bytes — with a token key cakeys itself manages, e.g. a PIV signature slot (`pop-sign-pin`) —
+  into a detached `keys.lock.sig`, and `check`/`verify` refuse a lock that does not verify.
+  The hard part is the anchor: the verifying public key must live where the lock's editor
+  cannot also change it (the NixOS module, the builder, another repository), or an attacker
+  re-signs with their own key and swaps the pin. To decide: what this adds over signed commits
+  and review; where the anchor lives and how the Nix `check` (sandboxed) gets it; the cost of a
+  token signature (PIN, touch) on every lock write; key rotation and several signers (approval
+  by two people); lock fragments and merges (S16), which invalidate a signature; and whether
+  `keys.toml` must be covered too (the lock carries each spec's `specDigest` and locator, but
+  not the token entries).
 
 ## Minimize (some, but keep it small)
 
