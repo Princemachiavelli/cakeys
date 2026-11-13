@@ -11,11 +11,12 @@ Evidence tags on every backend claim: **[run]** verified by running it (the spik
 
 ## How complex
 
-About **4k lines** (≈2.2k production, ≈1.8k tests) and **3½–5 weeks** for one person, for
-phases 0–5 below: dry-run, public objects, token-to-token wrapping between PKCS#11 modules,
-plaintext-through-host imports into tpm2-pkcs11 and a YubiKey. That is +45% on today's ≈5k
-production lines. The native TPM duplication format (phase 6) is another ≈1k lines and 1½–2
-weeks, and the riskiest piece; vendor HSMs (phase 7) wait for hardware.
+About **5k lines** (≈2.8k production, ≈2.3k tests) and **4½–6½ weeks** for one person, for
+phases 0–5 below: dry-run, public objects, token-to-token wrapping between PKCS#11 modules
+(with token-enforced trusted wrapping), plaintext-through-host imports into tpm2-pkcs11 and a
+YubiKey, and passphrase-protected files. That is +55% on today's ≈5k production lines. The
+native TPM duplication format (phase 6) is another ≈1k lines and 1½–2 weeks, and the riskiest
+piece; vendor providers (phase 7) get their hook in phase 1 and their methods with hardware.
 
 What drives the risk:
 
@@ -68,22 +69,30 @@ that later claims otherwise was replaced. Every spec cakeys ships today declares
 `CKA_EXTRACTABLE = false`, so none of those keys can move. A key meant to migrate must be
 declared extractable from the start; `--dry-run` says this first, per object.
 
-**D2. Exposure is named honestly, per object, in four levels.**
+**D2. Exposure is named honestly, per object, strongest first.**
 
 - `public`: certificates, public keys, public data objects. Nothing secret moves.
+- `enforced`: `sealed`, and the source token itself allows no other wrapping: the key carries
+  `CKA_WRAP_WITH_TRUSTED`, and the only wrapping keys the token accepts are ones its SO marked
+  `CKA_TRUSTED` (the transport key, D3).
 - `sealed`: the material leaves the source only wrapped under a key that lives on the target
-  token, and is unwrapped there. The host never sees it. This is the default and the goal.
+  token, and is unwrapped there. The host never sees it. The default.
 - `host`: the material is in plaintext in cakeys' memory, never on disk or the wire, and
   zeroized after. Needed wherever the target only imports plaintext (a YubiKey, `tpm2_ptool`,
   the TPM duplication format built on the host). Only with `--allow-host-plaintext`.
+- `file`: the material leaves as a passphrase-protected file (PKCS#8 or PKCS#12, D4) for a target
+  cakeys cannot reach. Plaintext-equivalent at rest, guarded only by the passphrase. Only with
+  `--allow-host-plaintext` and a `--passphrase-file`.
 - `impossible`: not extractable, a source that never exports, a key type the target lacks.
 
-What the token enforces is weaker than "sealed" suggests: a key with `CKA_EXTRACTABLE = true` can
-be wrapped by any logged-in session under a key that session made, so "sealed" describes what
-cakeys does, not what an attacker with the PIN could do. The one token-enforced restriction is
-`CKA_WRAP_WITH_TRUSTED`, with a transport key the SO marked `CKA_TRUSTED`. Supporting it needs the
-SO credential on PKCS#11 modules other than ykcs11 (today `mgmKeyFile` is refused there): its own
-phase if wanted (open question 1).
+Why `enforced` is its own level: a key with only `CKA_EXTRACTABLE = true` can be wrapped by any
+logged-in session under a key that session made, so `sealed` describes what cakeys does, not
+what an attacker with the PIN could do. `CKA_WRAP_WITH_TRUSTED` is the one restriction the token
+enforces (decided 2026-11-12: supported, phase 3b). It needs the SO on the source: the admin
+credential (`mgmKeyFile`, today refused outside ykcs11) becomes allowed on PKCS#11 modules for
+this step, which marks the transport key trusted on the source (`cakeys transport --trusted`).
+How each module scopes `CKA_TRUSTED` to the key that wraps (the transport public key for direct
+OAEP, the per-export KEK for the composed method) is [todo] per module.
 
 **D3. The transport key is an ordinary locked object.** The target holds an RSA key pair
 (`CKA_UNWRAP = true`, `CKA_DECRYPT = false`, non-extractable) declared in keys.toml like any
@@ -110,9 +119,13 @@ token, else the transport file.
 | `tpm2-ptool` | EC (not P-521), RSA, HMAC | `host-pkcs8`/`host-raw`, then `tpm2_ptool import` |
 | `piv-import` | RSA, EC P-256/384, Ed25519 | `host-pkcs8`, then ykcs11 `C_CreateObject` as SO into the slot the locator names |
 | `tpm-duplicate` | keys for a TPM target | a duplication blob built on the host to the target parent's public key (phase 6) |
+| `pkcs8-pbes2` | private keys | `host-pkcs8`, written as an EncryptedPrivateKeyInfo (PBES2: PBKDF2-HMAC-SHA256 or scrypt, AES-256) under the passphrase: `file` exposure (decided 2026-11-12, phase 4b) |
+| `pkcs12` | a private key with its certificate | `host-pkcs8` and the certificate, as a PKCS#12 file under the passphrase (what Java, Windows and cloud key vaults import): `file` exposure |
+| `vendor:<provider>/<name>` | as the provider declares | a provider crate's own path (D10) |
 
 The OAEP hash is the strongest both sides support: SHA-256 between kryoptic tokens, SHA-1 with
-SoftHSM. The method names are frozen once released, recorded in DESIGN §10.
+SoftHSM. Import also reads `pkcs8-pbes2` and `pkcs12` files (`host` exposure on the way in).
+The method names are frozen once released, recorded in DESIGN §10.
 
 **D5. The bundle is a new versioned file.** Export writes one TOML file per object, never
 plaintext: the version, the object's type, IDs and commitment label (from the source lock), the
@@ -136,7 +149,8 @@ tampered or swapped blob fails either way. The bundle may cross untrusted channe
   those rules.
 
 **D7. The lock changes only on the target.** The target realisation gains
-`provenance.origin = { from = "<token>", method = "<method>", exposure = "sealed" | "host" }`:
+`provenance.origin = { from = "<token>", method = "<method>", exposure = "<level>" }` (D2; for a vendor
+method, the level it declared):
 provenance, so it never decides a verdict. The source's lock entry is unchanged: the lock
 records state, not events. Lock v1 is still a draft, so this changes it in place; the
 cross-version check (`scripts/xversion.sh`) must still re-record existing locks byte-identically.
@@ -151,6 +165,18 @@ per-object plan: method, exposure, and the reasons for everything impossible. Th
 executes the same plan. `--dry-run` prints it as a table, or as JSON with `--json`, and exits 15
 when anything is impossible. Because both share one code path, the main test is a property: for
 every source, target and class in the reference matrix, the dry-run verdict equals the outcome.
+
+**D10. Provider crates add their own methods, under a declared exposure.** A provider (the
+quirks crate of a vendor HSM: Luna, CloudHSM, nShield, or a vendor's own tooling) can contribute
+export and import methods next to the built-in ones, named `vendor:<provider>/<name>` and frozen
+like the built-ins. Each declares the exposure level it achieves (D2), the classes and key types
+it moves, and what it needs (mechanisms, a tool on `PATH`, the admin credential). The planner
+treats them like built-ins, preferring the strongest exposure, and `--dry-run` lists them with
+their declared level, marked as declared: cakeys cannot check a vendor's claim, so it records it
+(`provenance.origin`) rather than vouching for it. What a vendor method never decides is the
+identity: after any import, cakeys realises the object as usual, and the identity, its mode
+(`direct`, `commitment`, …) and the binding come from that realise against the lock, exactly as
+for a key that was never moved.
 
 ## Command line
 
@@ -170,13 +196,15 @@ disk. `--dry-run` without objects plans every object the source token holds a re
 | Phase | Scope | Estimate |
 |---|---|---|
 | 0 | Finish the spike [todo items above]; cryptoki KWP patch and upstream PR draft; freeze method names, the bundle format and `origin` | 2–3 days |
-| 1 | Planner and `--dry-run` (core: capabilities, method choice, reasons); the transport file; no material moves. Useful alone: it answers "what could move, and how?" | ≈600 + 400 lines, 4–5 days |
+| 1 | Planner and `--dry-run` (core: capabilities, method choice, reasons); the provider hook for import/export capabilities and vendor methods (D10); the transport file; no material moves. Useful alone: it answers "what could move, and how?" | ≈700 + 500 lines, 4–5 days |
 | 2 | `public`: certificates, public keys, data objects | ≈200 + 200, 1–2 days |
 | 3 | `sealed` between PKCS#11 modules: the `transport` verb, the composed RSA-OAEP + AES-KWP method, the direct OAEP method, bundles, import with identity check and cleanup, `migrate` | ≈800 + 700, 6–8 days |
+| 3b | `enforced`: the admin credential on PKCS#11 modules, `transport --trusted`, `CKA_WRAP_WITH_TRUSTED` keys | ≈300 + 250, 3–4 days |
 | 4 | `host` paths: `--allow-host-plaintext`, zeroized buffers, and tpm2-pkcs11 import through `tpm2_ptool` (a runtime dependency for that provider) | ≈350 + 300, 3–4 days |
+| 4b | `file`: `pkcs8-pbes2` and `pkcs12` export and import, `--passphrase-file` | ≈300 + 250, 3–4 days |
 | 5 | YubiKey import through ykcs11 as SO, identities checked on the host first; the hardware test overwrites scratch slot 0x95 (ask before running) | ≈250 + 200, 2–3 days |
 | 6 | Native `tpm-duplicate`: a host-built duplication blob, `TPM2_Import` through tss-esapi | ≈600 + 400, 6–10 days |
-| 7 | Vendor HSM providers (Luna, CloudHSM, nShield): provider hooks over their mechanisms and tools | design only until hardware |
+| 7 | Vendor methods (D10) for Luna, CloudHSM, nShield and others, in their provider crates, over their mechanisms and tools | with hardware |
 
 ## Tests
 
@@ -192,15 +220,16 @@ disk. `--dry-run` without objects plans every object the source token holds a re
 - **Cleanup**: a failed import leaves nothing behind (and, on a YubiKey, writes nothing).
 - **Formats**: a property test and a fuzz target for the bundle parser; known-answer tests pin the
   method encodings, like `scheme_definitions_are_pinned`.
+- **Vendor methods**: a test provider declares a method; `--dry-run` lists it under its declared
+  level, the run uses it, and the realise after import alone decides the identity.
 - **Hardware**: an opt-in YubiKey import into slot 0x95 (`tests/yubikey.rs`).
 
 ## Open questions
 
-1. `CKA_WRAP_WITH_TRUSTED`: worth the SO-credential work on PKCS#11 modules, so "sealed" becomes
-   token-enforced? (D2)
-2. Should export also offer a passphrase-protected PKCS#8 or PKCS#12 file, for targets cakeys
-   cannot reach? This is a plaintext-equivalent at rest; probably not by default.
-3. Batch behaviour: one bundle per object, or one per run? (Per object keeps the identity check
+Decided 2026-11-12: `CKA_WRAP_WITH_TRUSTED` is supported (D2, phase 3b), and export offers
+passphrase-protected PKCS#8 and PKCS#12 files (D4, phase 4b).
+
+1. Batch behaviour: one bundle per object, or one per run? (Per object keeps the identity check
    per object, and partial failures simple.)
-4. Does a migrated key keep its object name on the target? (Yes, if it is the same material:
+2. Does a migrated key keep its object name on the target? (Yes, if it is the same material:
    that is the lock's model. A different object name would be different material.)
