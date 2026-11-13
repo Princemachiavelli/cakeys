@@ -21,9 +21,10 @@ use std::process::ExitCode;
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
-    /// Declarative input (keys.toml).
+    /// Declarative input (keys.toml). Every verb needs it except `supports --profile`, which
+    /// reads only the capability profiles.
     #[arg(short, long, env = "CAKEYS_CONFIG")]
-    config: PathBuf,
+    config: Option<PathBuf>,
     /// Lock file; defaults to the config path with a `.lock` extension.
     #[arg(short, long, env = "CAKEYS_LOCK")]
     lock: Option<PathBuf>,
@@ -353,8 +354,22 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
 #[allow(clippy::too_many_lines)] // one match over the verbs; splitting it buys nothing
 fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let cfg = load_config(&cli.config)?;
-    let lock_path = cli.lock.clone().unwrap_or_else(|| cli.config.with_extension("lock"));
+    let config = match (&cli.config, &cli.cmd) {
+        (Some(path), _) => path.clone(),
+        // Pure data over the profiles (docs/PROVIDERS.md): nothing in keys.toml to read.
+        (None, Cmd::Supports { token: None, .. }) => return run_supports(&cli.cmd, &Config::default(), notes),
+        (None, _) => {
+            use clap::CommandFactory as _;
+            Cli::command()
+                .error(
+                    clap::error::ErrorKind::MissingRequiredArgument,
+                    "--config <CONFIG> (or CAKEYS_CONFIG) is required: only `supports --profile` runs without a keys.toml",
+                )
+                .exit()
+        }
+    };
+    let cfg = load_config(&config)?;
+    let lock_path = cli.lock.clone().unwrap_or_else(|| config.with_extension("lock"));
     // A run that may write the lock holds its advisory sidecar lock across load and save (M3),
     // so concurrent updaters queue instead of losing each other's writes. Held to the end of run.
     let writes = match &cli.cmd {
@@ -490,44 +505,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
                 None => print!("{text}"),
             }
         }
-        Cmd::Supports { name, profile, token, layers, class, oaep, bits, profiles_dir } => {
-            let eff = supports(
-                &cfg,
-                profile.as_deref(),
-                token.as_deref(),
-                layers,
-                class.as_deref(),
-                *oaep,
-                name.as_deref(),
-                *bits,
-                profiles_dir.as_deref(),
-            )?;
-            notes.note(format_args!(
-                "profiles: module {}, layers [{}] (docs/PROVIDERS.md)",
-                eff.module,
-                eff.layers.join(", ")
-            ));
-            for (n, v) in &eff.verdicts {
-                println!("{n}: {v}");
-            }
-            let any_no = eff.verdicts.iter().any(|(_, v)| matches!(v, cakeys_profile::Verdict::No { .. }));
-            let any_unknown = eff.verdicts.iter().any(|(_, v)| matches!(v, cakeys_profile::Verdict::Unknown { .. }));
-            if any_no {
-                let names: Vec<&str> = eff
-                    .verdicts
-                    .iter()
-                    .filter(|(_, v)| matches!(v, cakeys_profile::Verdict::No { .. }))
-                    .map(|(n, _)| n.as_str())
-                    .collect();
-                return Err(KmError::Unsupported(format!("not supported: {}", names.join(", "))).into());
-            }
-            if any_unknown {
-                return Err(KmError::Unavailable(
-                    "the profiles do not decide this: run the probe (PROVIDERS.md phase 3) or a fuller profile".into(),
-                )
-                .into());
-            }
-        }
+        Cmd::Supports { .. } => run_supports(&cli.cmd, &cfg, notes)?,
         Cmd::Probe { token, write, out, name, diff, profiles_dir } => {
             let tcfg = cfg.tokens.get(token).ok_or_else(|| KmError::Validation(format!("unknown token '{token}'")))?;
             let tok = open_token(&cfg, &modules, registry, token)?;
@@ -627,6 +605,47 @@ fn write_profile(
     }
     std::fs::write(path, profile.to_toml()).with_context(|| format!("writing {}", path.display()))?;
     notes.say(format!("wrote {}", path.display()));
+    Ok(())
+}
+
+/// The `supports` verb: answers from the capability profiles alone (docs/PROVIDERS.md), so it
+/// runs with an empty `cfg` when there is no keys.toml and no `--token` to look up.
+fn run_supports(cmd: &Cmd, cfg: &Config, notes: &mut Notes) -> anyhow::Result<()> {
+    let Cmd::Supports { name, profile, token, layers, class, oaep, bits, profiles_dir } = cmd else {
+        unreachable!("run_supports is called for the supports verb only")
+    };
+    let eff = supports(
+        cfg,
+        profile.as_deref(),
+        token.as_deref(),
+        layers,
+        class.as_deref(),
+        *oaep,
+        name.as_deref(),
+        *bits,
+        profiles_dir.as_deref(),
+    )?;
+    notes.note(format_args!("profiles: module {}, layers [{}] (docs/PROVIDERS.md)", eff.module, eff.layers.join(", ")));
+    for (n, v) in &eff.verdicts {
+        println!("{n}: {v}");
+    }
+    let any_no = eff.verdicts.iter().any(|(_, v)| matches!(v, cakeys_profile::Verdict::No { .. }));
+    let any_unknown = eff.verdicts.iter().any(|(_, v)| matches!(v, cakeys_profile::Verdict::Unknown { .. }));
+    if any_no {
+        let names: Vec<&str> = eff
+            .verdicts
+            .iter()
+            .filter(|(_, v)| matches!(v, cakeys_profile::Verdict::No { .. }))
+            .map(|(n, _)| n.as_str())
+            .collect();
+        return Err(KmError::Unsupported(format!("not supported: {}", names.join(", "))).into());
+    }
+    if any_unknown {
+        return Err(KmError::Unavailable(
+            "the profiles do not decide this: run the probe (PROVIDERS.md phase 3) or a fuller profile".into(),
+        )
+        .into());
+    }
     Ok(())
 }
 

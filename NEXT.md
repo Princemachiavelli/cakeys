@@ -1,33 +1,47 @@
-# Next: Rust and crypto-library best practices (2026-11-12) — done
+# Next: round out the feature set (2026-11-13)
 
-All five items from the plan at deb0365 are implemented (uncommitted; CHECKPOINT.md has the
-entry). The plan, and what became of it:
+Decided with the user after PROVIDERS phase 3 (45db101): finish the work in progress, then
+refine and add test coverage. "Feature-complete" is everything through MIGRATE phase 5; native
+TPM duplication (MIGRATE 6), vendor methods (MIGRATE 7) and the items PLAN.md parks (native TPM
+backend, post-quantum, lock merge, keystores, the attestation remainders) stay parked.
 
-1. **Dependency advisories (`cargo-deny`).** `deny.toml` + the `advisory-db` flake input +
-   `checks.deny` (`nix/deny.nix`): the database is pinned and the crate graph vendored from
-   `Cargo.lock`, so the check runs offline in the sandbox (licenses, bans and sources too).
-   The expected RUSTSEC-2023-0071 ignore turned out not to be needed: the current database
-   marks the rsa 0.10 series patched (`patched = [">= 0.10.0"]`), which is what the workspace
-   pins — verified against the pinned database with a scratch rsa 0.9.0 project, where the
-   advisory does fire. Yanked stays allowed offline (yanked-ness is registry metadata, not an
-   advisory, and the sandbox has no network); `nix run .#deny-online` runs the same check on
-   the host with the live index and `--deny yanked` — verified to fire on a hand-locked
-   yanked version (cargo refuses to resolve one, so what it guards is a yank after locking).
-2. **Clippy in `nix flake check`.** `checks.clippy`: `cargo clippy --workspace --all-targets
-   -- -D warnings` over the same build environment as the package.
-3. **`[workspace.lints]`.** `unsafe_code = "deny"` (the two exemptions are `#[allow]`ed:
-   `crates/tpm2-pkcs11/src/attest/esys.rs`, `crates/core/src/config.rs`) plus `clippy::pedantic`
-   in full — no blanket allows. The ~230 warnings pedantic reported are fixed, the 59
-   `must_use_candidate` sites carry the `#[must_use]` the lint suggests (pure functions;
-   nothing in the workspace discards one), and every other exemption is a per-site
-   `#[allow]` with its reason, so a new occurrence anywhere warns.
-4. **`// SAFETY:` comments.** On both `Tss2_MU_*` blocks in `esys.rs`; `config.rs`'s already
-   had one.
-5. **Constant-time comparison from a crate.** `pop::ct_eq` is now `subtle::ConstantTimeEq`
-   (also a direct dependency of cakeys-core), covering both proof comparisons (`pop-ecdh`
-   and `pop-decrypt`).
+## 1. Cleanups (≈2 days)
 
-The "already done right" list below is unchanged.
+- [x] **Commands that need no keys.toml stop requiring `--config`** (`supports`, `probe` with
+      `--module`, …) — deferred from PROVIDERS phase 1. Done: only `supports --profile` qualifies
+      (`probe` needs the token's config); others exit 2 naming `--config`.
+- [ ] **PROVIDERS phase 4**: the static `validate` gate (each spec's demands against its
+      token's effective profile, no token attached) and the wider Nix check.
+- [ ] **M1/M2**: read-only sessions for read-only verbs; read the PIV PIN counters
+      (`CKF_USER_PIN_FINAL_TRY` …) before login.
+- [ ] **D5**: at token open, a read-only check of the live token against its resolved
+      profile (`diff::read_only`), as a note — possible since phase 3.
+- [ ] **Probe leftovers**: a killed run's `cakeys-probe-NN` objects are found before probing
+      (refused or cleaned), never reported as a delete failure.
+
+## 2. Migration (MIGRATE.md phases 2–5)
+
+- [ ] **Phase 2** `public`: certificates, public keys, data objects.
+- [ ] **Phase 3** `sealed`: the `transport` verb, RSA-OAEP + AES-KWP and direct OAEP, bundles,
+      import with identity check and cleanup, `migrate`. Consumes the profiles' `wrap.oaep` and
+      `unwrap.refuse`. **D8** (the lock records the resolved profile name) lands in the same lock
+      change as MIGRATE D7's `origin`, so the draft lock format changes once.
+- [ ] **Phase 4** `host`: `--allow-host-plaintext`, zeroized buffers, `tpm2_ptool` import.
+- [ ] **Phase 5** YubiKey import through ykcs11 as SO (the hardware test overwrites scratch slot
+      0x95: ask before running).
+
+## 3. PROVIDERS phase 5 (D12)
+
+- [ ] `[match.fields]`, the standard 3.2 fields, the observing provider hook (ykcs11 FIPS mode
+      on the YubiKey 5C NFC FIPS here, the TPM's `TPM_PT_MODES`), `tokens.<t>.require` (14).
+
+## 4. Refine and cover (docs/VERIFICATION.md's next steps)
+
+- [ ] Measure first: line coverage (`cargo-llvm-cov`) and mutation testing (`cargo-mutants`)
+      in Nix, so new tests go where the gaps are.
+- [ ] Fuzz the unfuzzed parsers: the PIV chain, `TPMS_ATTEST`, the P-521 fix-up, profile
+      emit/parse round trips.
+- [ ] Kani on the parsers; a Quint model of the lock rules.
 
 ## Already done right
 

@@ -49,7 +49,8 @@
   # in the binary, no token needed. yes -> 0, no -> 15, unknown -> 16.
   profiles = pkgs.runCommand "cakeys-profiles" { } ''
     set -u
-    q() { "${cakeys}/bin/cakeys" --config ${./crates/cli/tests/fixtures/keys.toml} supports "$@"; }
+    # No keys.toml: `supports --profile` reads only the profiles.
+    q() { "${cakeys}/bin/cakeys" supports "$@"; }
     expect() {
       want=$1
       shift

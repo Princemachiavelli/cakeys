@@ -501,6 +501,9 @@ model = "..." ; serial = "..." ; firmware = "M.m"
 | `check <obj>[.id.<scheme>] [--token] [--spec]` | The pseudo-FOD pre-use check: realise without writing the lock, print the URI. Schemes the spec or token can never compute are refused before anything is created (`scheme_the_token_lacks_is_refused_before_create`). |
 | `gc [--apply]` | Print lock entries `keys.toml` no longer names, as table names; `--apply` removes exactly what it printed, holding the update lock (M3). Live objects keep their `ids` (`gc_prints_then_removes_stale_entries`). |
 | `caps --token` | Provider and usable mechanisms, as JSON. |
+| `export`, `migrate` `--dry-run`; `transport` | Plan moving objects to a target (MIGRATE.md): per object the method, the exposure on the way, or why it cannot move. Only planning is implemented; `transport` writes a target's transport file. |
+| `supports [--profile \| --token] NAME` | Ask the capability profiles (docs/PROVIDERS.md) what a module supports: pure data, no token touched; 0 yes, 15 no, 16 unknown. With `--profile` it needs no keys.toml. |
+| `probe --token [--write] [--diff P] [--out F]` | Generate a token's capability profile by probing it; `--write` only on a token marked `scratch` (17 otherwise); `--diff` drift is 15. |
 
 Exit codes:
 
