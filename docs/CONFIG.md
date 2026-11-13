@@ -125,7 +125,8 @@ attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
 # Private keys only: the policy of the matching public key object.
 publicAttributes = { CKA_VERIFY = true }
 # Where it lives on `softhsm`: a locator (must match exactly one object, or 12), and
-# `autoCreate` to generate it when the locator is empty (never over an occupied one).
+# `autoCreate` to let first use (`realise`, `check`) generate it when the locator is empty (never
+# over an occupied one). `cakeys create` generates it explicitly either way.
 tokens.softhsm = { locator = { CKA_LABEL = "signing", CKA_ID = "0e" }, autoCreate = true }
 
 [specs.backup-kek-wrap]
@@ -173,8 +174,9 @@ tokens.softhsm = { locator = { CKA_LABEL = "release-note" } }
   realisation is the pair (spec, token): the lock records one per pair.
 - **References are checked at load (17):** a spec's `object` must exist, even if nothing uses the
   spec; a `$NAME` path reference must name a set variable.
-- **`autoCreate` is for private and secret keys.** Certificates, public keys and data objects are
-  adopted. When the lock already pins the object's material, `autoCreate` is refused (14): newly
+- **`autoCreate` is for private and secret keys**, and only opts the first-use flows in; `cakeys
+  create` makes them explicitly without it. Certificates, public keys and data objects are
+  adopted. When the lock already pins the object's material, creating is refused (14): newly
   generated material could never match.
 - **Weak identity modes need `identity.allow`** on the spec's token entry (for example
   `identity = { allow = ["commit-at-creation"] }`); none is implemented yet, and they are refused

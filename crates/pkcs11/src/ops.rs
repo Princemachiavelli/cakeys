@@ -325,9 +325,10 @@ pub fn realise(
             // same material, resolve above would have found it.)
             if let Some(ids) = lock.objects.get(t.object_name).map(|o| &o.ids).filter(|ids| !ids.is_empty()) {
                 return Err(KmError::PreconditionFailed(format!(
-                    "{}: the lock already pins object '{}' ({}); autoCreate would generate \
-                     different material that can never match; put the same material under the \
-                     locator, or give this token's key its own object name",
+                    "{}: the lock already pins object '{}' ({}); creating it (autoCreate or \
+                     `cakeys create`) would generate different material that can never match; put \
+                     the same material under the locator, or give this token's key its own object \
+                     name",
                     t,
                     t.object_name,
                     ids.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
@@ -366,10 +367,30 @@ pub fn realise(
                 }
             }
         }
-        None => return Err(KmError::NotFound(format!("{t} (autoCreate is off)"))),
+        None => return Err(KmError::NotFound(format!("{t} (autoCreate is off; `cakeys create` makes it)"))),
     };
     let changed = reconcile::reconcile(t, &r, lock, &facts(tok, &r), write, notes)?;
     Ok((r, changed))
+}
+
+/// PUT, asked for explicitly: [`realise`] as if the pair's entry set `autoCreate`, which only
+/// opts the first-use flows (`realise`, `check`) into creating. Every guard of a creation
+/// applies: the class must be one cakeys generates, the lock must not pin the object's material
+/// already (D1), and nothing may sit under the locator; an object already there is found and
+/// compared, never replaced.
+///
+/// # Errors
+///
+/// As [`realise`], with creation always allowed.
+pub fn create(
+    t: &Target,
+    tok: &Token,
+    lock: &mut Lock,
+    write: LockWrite,
+    notes: &mut Notes,
+) -> Result<(Resolved, bool)> {
+    let on_token = cakeys_core::config::SpecTokenCfg { auto_create: true, ..t.on_token.clone() };
+    realise(&Target { on_token: &on_token, ..*t }, tok, lock, write, notes)
 }
 
 /// DELETE + If-Match. Absent is success; a different object under the locator is left alone.

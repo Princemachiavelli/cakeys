@@ -64,11 +64,13 @@ directory) they refuse up front unless `--no-update-lock` is passed.
 
 Verbs:
 
-- `validate`, `resolve`, `verify`, `realise [--no-update-lock]`, `delete [--if-match] [--no-update-lock]`,
-  `check <object>[.id.<scheme>]`, `gc [--apply]` and `caps`.
+- `validate`, `resolve`, `verify`, `realise [--no-update-lock]`, `create [<spec>] [--token]`,
+  `delete [--if-match] [--no-update-lock]`, `check <object>[.id.<scheme>]`, `gc [--apply]` and
+  `caps`.
 - They behave like HTTP verbs: safe to repeat, never create over an occupied locator, never delete
-  an unexpected object. `gc` prints lock entries the config no longer names and removes exactly
-  what it printed with `--apply`.
+  an unexpected object. `realise` and `check` create only where `autoCreate` opts first use in;
+  `create` makes every key the lock does not pin yet, explicitly. `gc` prints lock entries the
+  config no longer names and removes exactly what it printed with `--apply`.
 - Exit codes: 10 hash mismatch, 11 not found, 12 ambiguous, 13 conflict, 14 precondition failed,
   15 unsupported, 16 unavailable, 17 invalid config, lock or spec; 1 I/O or other, 2 usage.
 

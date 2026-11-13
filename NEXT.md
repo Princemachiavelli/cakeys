@@ -29,6 +29,15 @@ backend, post-quantum, lock merge, keystores, the attestation remainders) stay p
 - [ ] **Phase 4** `host`: `--allow-host-plaintext`, zeroized buffers, `tpm2_ptool` import.
 - [ ] **Phase 5** YubiKey import through ykcs11 as SO (the hardware test overwrites scratch slot
       0x95: ask before running).
+- [ ] **Multi-token objects: one creation token** (2026-11-13). An object whose specs name
+      several tokens has no rule for *where* it is born: `cakeys create` takes config order and
+      `autoCreate` whichever pair runs first, and every other token can then only adopt the same
+      material. Let keys.toml name the creation token (or provider) per object, so `create` and
+      `autoCreate` generate only there — `autoCreate` on another token is invalid (17) — and the
+      other tokens adopt it: through cakeys' `export`/`migrate` (phase 3) or any outside tool
+      (`pkcs11-tool`, `ykman`, `tpm2_ptool`), checked against the locked identity either way.
+      Then `create` can say "import from <creation token>" for those tokens instead of today's
+      generic skip note (`not_created`, crates/cli/src/lib.rs).
 
 ## 3. PROVIDERS phase 5 (D12)
 

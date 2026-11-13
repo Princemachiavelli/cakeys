@@ -218,7 +218,7 @@ impl std::fmt::Display for AttrValue {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SpecTokenCfg {
     pub locator: Locator,
@@ -271,7 +271,7 @@ impl std::fmt::Display for Locator {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IdentityCfg {
     /// Weak identity modes explicitly allowed on this token.

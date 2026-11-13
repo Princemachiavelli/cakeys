@@ -2386,3 +2386,54 @@ fn the_committed_profile_is_what_the_probe_observes() {
     assert_eq!(code(&anon), 17);
     assert!(String::from_utf8_lossy(&anon.stderr).contains("not marked scratch"));
 }
+
+/// `cakeys create` makes keys whether or not the spec sets autoCreate, which only opts the
+/// first-use flows in: every unpinned pair, once, with every guard of a creation — a pinned
+/// object absent from its token is refused (14), never regenerated.
+#[test]
+fn create_makes_keys_without_autocreate() {
+    let Some(e) = env("create") else { return };
+    let s = e.session();
+    for label in ["create-ec", "create-aes"] {
+        for h in s.find_objects(&[Attribute::Label(label.as_bytes().to_vec())]).unwrap() {
+            s.destroy_object(h).unwrap();
+        }
+    }
+    e.config(
+        "[objects.ec]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [objects.aes]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
+         [specs.ec]\nobject = \"ec\"\nattributes = { CKA_SIGN = true, CKA_DESTROYABLE = true }\n\
+         tokens.ref = { locator = { CKA_LABEL = \"create-ec\" } }\n\n\
+         [specs.aes]\nobject = \"aes\"\nattributes = { CKA_EXTRACTABLE = true }\n\
+         tokens.ref = { locator = { CKA_LABEL = \"create-aes\" } }\n",
+    );
+    // Without autoCreate, the first-use flow finds nothing and makes nothing.
+    assert_eq!(code(&e.km(&["realise", "ec", "--token", "ref"])), 11);
+
+    // Every unpinned pair on the token, created and recorded.
+    let o = e.km(&["create", "--token", "ref"]);
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    let made: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(made.as_array().map(Vec::len), Some(2), "{made}");
+    let lock = e.lock();
+    for spec in ["ec", "aes"] {
+        assert!(lock["realisations"][spec]["ref"].is_table(), "{spec}: {lock}");
+    }
+    assert_eq!(code(&e.km(&["verify", "ec", "--token", "ref"])), 0);
+
+    // Again: both are pinned now, so nothing is created twice.
+    let o = e.km(&["create", "--token", "ref"]);
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(stdout(&o), "[]");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("already pins object 'ec'"));
+    assert_eq!(s.find_objects(&[Attribute::Label(b"create-ec".to_vec())]).unwrap().len(), 2);
+
+    // A named pair goes through: found and compared when present...
+    assert_eq!(code(&e.km(&["create", "ec", "--token", "ref"])), 0);
+    // ...and refused, never regenerated, when the lock pins material the token lost.
+    for h in s.find_objects(&[Attribute::Label(b"create-ec".to_vec())]).unwrap() {
+        s.destroy_object(h).unwrap();
+    }
+    assert_eq!(code(&e.km(&["create", "ec", "--token", "ref"])), 14);
+    assert!(s.find_objects(&[Attribute::Label(b"create-ec".to_vec())]).unwrap().is_empty(), "nothing regenerated");
+}

@@ -62,6 +62,19 @@ enum Cmd {
         #[command(flatten)]
         write: LockWriteArgs,
     },
+    /// Create keys explicitly, autoCreate or not (it only opts the first-use flows in): every
+    /// (spec, token) pair selected whose object the lock does not pin yet, then record them like
+    /// realise; pinned, adopted-only and publicOnly pairs are skipped with a note. Naming both
+    /// SPEC and --token creates that pair or says why not. Prints the realised objects as JSON.
+    Create {
+        /// Only this spec; default: every spec.
+        spec: Option<String>,
+        /// Only this token; default: every token.
+        #[arg(long)]
+        token: Option<String>,
+        #[command(flatten)]
+        write: LockWriteArgs,
+    },
     /// Delete by locator if it holds the expected identity, and remove its realisation from the
     /// lock unless --no-update-lock. Absent is success.
     Delete {
@@ -256,6 +269,28 @@ pub fn main(registry: &Registry) -> ExitCode {
     }
 }
 
+/// Why `create` without a named pair leaves `t` alone: a class cakeys adopts rather than
+/// generates, a publicOnly adoption, or an object whose material the lock already pins (another
+/// token then needs that same material, which only importing or migrating can put there).
+// TODO(NEXT.md §2, "one creation token"): a multi-token object is created on whichever of its
+// pairs comes first in config order; keys.toml should name the creation token instead.
+fn not_created(t: &Target, lock: &cakeys_core::config::Lock) -> Option<String> {
+    use cakeys_core::types::ObjectClass as Class;
+    if !matches!(t.object.class, Class::PrivateKey | Class::SecretKey) {
+        return Some(format!("{} objects are adopted, not created", t.object.class));
+    }
+    if t.on_token.public_only {
+        return Some("publicOnly adopts the public half only".into());
+    }
+    lock.objects.get(t.object_name).filter(|o| !o.ids.is_empty()).map(|_| {
+        format!(
+            "the lock already pins object '{}' (`verify` checks it; a token without it needs that same \
+             material imported, never a new key)",
+            t.object_name
+        )
+    })
+}
+
 /// Open a token for a verb; a PIN counter that reports an earlier failed login is a warning.
 fn open_token(
     cfg: &Config,
@@ -392,7 +427,9 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     // A run that may write the lock holds its advisory sidecar lock across load and save (M3),
     // so concurrent updaters queue instead of losing each other's writes. Held to the end of run.
     let writes = match &cli.cmd {
-        Cmd::Realise { write, .. } | Cmd::Delete { write, .. } => write.mode() == LockWrite::Record,
+        Cmd::Realise { write, .. } | Cmd::Create { write, .. } | Cmd::Delete { write, .. } => {
+            write.mode() == LockWrite::Record
+        }
         Cmd::Gc { apply } => *apply,
         _ => false,
     };
@@ -493,6 +530,55 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
                 notes.say(format!("updated {}", lock_path.display()));
             }
             print(&r);
+        }
+        Cmd::Create { spec, token, write } => {
+            if let Some(s) = spec
+                && !cfg.specs.contains_key(s)
+            {
+                return Err(KmError::NotFound(format!("spec '{s}'")).into());
+            }
+            let pairs: Vec<(&String, &String)> = cfg
+                .specs
+                .iter()
+                .filter(|(n, _)| spec.as_ref().is_none_or(|s| s == *n))
+                .flat_map(|(n, s)| s.tokens.keys().map(move |t| (n, t)))
+                .filter(|(_, t)| token.as_ref().is_none_or(|w| w == *t))
+                .collect();
+            let named = spec.is_some() && token.is_some();
+            let (mut created, mut changed, mut failed) = (Vec::new(), false, None);
+            let mut opened: BTreeMap<&str, Token> = BTreeMap::new();
+            for (spec_name, token_name) in pairs {
+                let t = Target::new(&cfg, spec_name, token_name)?;
+                if !named && let Some(why) = not_created(&t, &lock) {
+                    notes.note(format_args!("create: skipped {t}: {why}"));
+                    continue;
+                }
+                let tok = match opened.entry(token_name) {
+                    std::collections::btree_map::Entry::Occupied(o) => o.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(v) => {
+                        v.insert(open_token(&cfg, &modules, registry, token_name, Access::Write, notes)?)
+                    }
+                };
+                match ops::create(&t, tok, &mut lock, write.mode(), notes) {
+                    Ok((r, c)) => {
+                        changed |= c;
+                        created.push(r);
+                    }
+                    Err(e) => {
+                        failed = Some(e);
+                        break;
+                    }
+                }
+            }
+            // What was created before a failure is recorded all the same: never a key made and lost.
+            if changed {
+                save_lock(&lock_path, &lock)?;
+                notes.say(format!("updated {}", lock_path.display()));
+            }
+            print(&created);
+            if let Some(e) = failed {
+                return Err(e.into());
+            }
         }
         Cmd::Delete { spec, token, if_match, write } => {
             let t = Target::new(&cfg, spec, token)?;

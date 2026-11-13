@@ -54,12 +54,18 @@ indent() {
 		END { if (NR > max) printf "  … (%d more lines)\n", NR - max }'
 }
 
-# Run a command, show it and its output, and require the exit code `want`.
+# Run a command, show it and its output, and require the exit code `want`. With `jqf` set, its
+# stdout goes through `jq -c "$jqf"` (the exit code stays the command's).
 expect() {
   local want=$1 code=0 out
   shift
-  printf '%s$ %s%s\n' "$dim" "$*" "$reset"
-  out=$("$@" 2>&1) || code=$?
+  if [ -n "${jqf:-}" ]; then
+    printf '%s$ %s | jq -c '"'"'%s'"'"'%s\n' "$dim" "$*" "$jqf" "$reset"
+    out=$( ("$@" | jq -c "$jqf") 2>&1) || code=$?
+  else
+    printf '%s$ %s%s\n' "$dim" "$*" "$reset"
+    out=$("$@" 2>&1) || code=$?
+  fi
   [ -n "$out" ] && indent <<<"$out"
   if [ "$code" = "$want" ]; then
     printf '  %s→ exit %s (%s)%s\n' "$green" "$code" "${meaning[$code]:-}" "$reset"
@@ -265,7 +271,7 @@ curve = "secp256r1"
 [specs.movable]
 object = "movable"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
-tokens.soft = { locator = { CKA_LABEL = "movable" }, autoCreate = true }
+tokens.soft = { locator = { CKA_LABEL = "movable" } }
 
 [objects.fixed]
 class = "CKO_PRIVATE_KEY"
@@ -275,10 +281,11 @@ curve = "secp256r1"
 [specs.fixed]
 object = "fixed"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = false }
-tokens.soft = { locator = { CKA_LABEL = "fixed" }, autoCreate = true }
+tokens.soft = { locator = { CKA_LABEL = "fixed" } }
 EOF
-limit=13 expect 0 cakeys realise movable --token soft
-limit=13 expect 0 cakeys realise fixed --token soft
+echo "No autoCreate here: that only lets first use create. Keys are created explicitly, every"
+echo "pair the lock does not pin yet (signing and shared are pinned, so they are left alone):"
+jqf='.[] | {object, token, rfc7093m4: .ids.rfc7093m4}' expect 0 cakeys create --token soft
 echo "An extractable key moves sealed: wrapped to a transport key the target generates."
 expect 0 cakeys export movable --token soft --target kryo --dry-run
 echo "A non-extractable key never leaves its token, whatever the target can do."
