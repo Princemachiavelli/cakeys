@@ -20,6 +20,12 @@ pub struct Target<'a> {
 }
 
 impl<'a> Target<'a> {
+    /// The spec and the object it realises, as named, plus its policy on `token_name`.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` if keys.toml names no such spec, or the spec no such token; `Validation` if
+    /// the spec references an unknown object, or `[tokens]` has no entry named `token_name`.
     pub fn new(cfg: &'a Config, spec_name: &'a str, token_name: &'a str) -> Result<Self> {
         let spec = cfg.specs.get(spec_name).ok_or_else(|| KmError::NotFound(format!("spec '{spec_name}'")))?;
         let (object_name, object) = cfg.objects.get_key_value(&spec.object).ok_or_else(|| {
@@ -148,6 +154,11 @@ fn check_declared(t: &Target, class: Class, declared: &BTreeMap<String, AttrValu
 }
 
 /// Best identity mode achievable from the spec alone; weak modes need a per-token opt-in.
+///
+/// # Errors
+///
+/// `Validation` for a spec whose binding, attributes or identity opt-ins do not fit the
+/// object's class (checked here, so no object is ever created for an unusable spec).
 pub fn plan_mode(t: &Target) -> Result<Mode> {
     let invalid = |why: &str| Err(KmError::Validation(format!("{t}: {why}")));
     check_binding(t)?;

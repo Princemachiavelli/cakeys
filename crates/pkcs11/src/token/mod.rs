@@ -58,6 +58,15 @@ fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
 }
 
 impl Token {
+    /// Open the token named `name`: load the module, find the slot whose token label matches,
+    /// read its capabilities, and log in as the user when a PIN is configured.
+    ///
+    /// # Errors
+    ///
+    /// `Validation` for a token with no module, an unknown provider, options its provider
+    /// refuses, or an admin credential on a provider that creates as the user; `Ambiguous`
+    /// when several slots carry the label; `Unavailable` when no slot does, the module
+    /// cannot be loaded, any `C_*` call fails, or the PIN (env var or file) cannot be read.
     pub fn open(name: &str, cfg: &TokenCfg, module_override: Option<&str>, registry: &Registry) -> Result<Token> {
         let module = module_override
             .map(str::to_owned)
@@ -155,6 +164,13 @@ impl Token {
     /// path (tpm2-pkcs11), verified on the host. `spki` is the material SPKI the attestation
     /// must name (`None` for secret keys); `provision` lets the provider create the device
     /// state it attests with (only `realise` sets it).
+    ///
+    /// # Errors
+    ///
+    /// Whatever the provider's attestation path cannot establish: `Unsupported` when the
+    /// provider attests no class like this, `Unavailable` when the token has none to give
+    /// (an imported key, a session that could not attest), `Conflict` when it names other
+    /// material than `spki`.
     pub fn attest(
         &self,
         key: ObjectHandle,
@@ -175,6 +191,12 @@ impl Token {
         self.provider.attest(&ctx)
     }
 
+    /// Every object of `class` under the locator.
+    ///
+    /// # Errors
+    ///
+    /// `Validation` when the locator names neither `CKA_LABEL` nor `CKA_ID` or its `CKA_ID`
+    /// is not hex; `Unavailable` when `C_FindObjects` fails.
     pub fn find(&self, class: ObjectClass, loc: &Locator) -> Result<Vec<ObjectHandle>> {
         let mut template = vec![Attribute::Class(class)];
         template.extend(locator_attrs(loc)?);
@@ -182,12 +204,21 @@ impl Token {
     }
 
     /// Every object under the locator, whatever its class (If-None-Match before creating).
+    ///
+    /// # Errors
+    ///
+    /// `Validation` for a locator naming neither `CKA_LABEL` nor `CKA_ID` (or a non-hex
+    /// `CKA_ID`); `Unavailable` when `C_FindObjects` fails.
     pub fn find_any(&self, loc: &Locator) -> Result<Vec<ObjectHandle>> {
         self.session.find_objects(&locator_attrs(loc)?).map_err(ck("C_FindObjects"))
     }
 
     /// Exactly-one lookup of the object named by the locator: the key (private or secret) or
     /// certificate, or the public key object when adopting public-only.
+    ///
+    /// # Errors
+    ///
+    /// `Ambiguous` when several objects match the locator; whatever `find` refuses.
     pub fn find_key(&self, object: &ObjectCfg, loc: &Locator, public_only: bool) -> Result<Option<ObjectHandle>> {
         let class = if public_only { ObjectClass::PUBLIC_KEY } else { class_of(object) };
         let found = self.find(class, loc)?;
@@ -202,6 +233,10 @@ impl Token {
     /// certificate's or public key's ID) must find exactly this one: refuse when another private
     /// key shares `h`'s `CKA_ID`. Only a logged-in session can see private keys; a public session
     /// checks nothing (the lock records which it was).
+    ///
+    /// # Errors
+    ///
+    /// `Ambiguous` (12) when another private key on the token shares the `CKA_ID`.
     pub fn check_unique_private_id(&self, h: ObjectHandle) -> Result<()> {
         if !self.logged_in {
             return Ok(());
@@ -321,11 +356,22 @@ fn managed_class(class: ObjectClass) -> Option<Class> {
     Class::ALL.iter().copied().find(|c| class_of(&ObjectCfg::new(*c, None)) == class)
 }
 
+/// The configured curve, after load-time canonicalization.
+///
+/// # Errors
+///
+/// Whatever `ObjectCfg::curve` rejects: `Validation` when the object names no curve,
+/// `Unsupported` for one without a `RustCrypto` crate.
 pub fn curve_of(object: &ObjectCfg) -> Result<Curve> {
     object.curve()
 }
 
 /// The `cryptoki` key type of a configured key (`ObjectCfg::checked_key_type`).
+///
+/// # Errors
+///
+/// Whatever `checked_key_type` rejects: `Unsupported` for a class/key-type pairing cakeys
+/// does not manage (and `Validation` when an EC or Edwards key names no curve).
 pub fn key_type_of(object: &ObjectCfg) -> Result<KeyType> {
     Ok(match object.checked_key_type()? {
         Kt::Ec => KeyType::EC,

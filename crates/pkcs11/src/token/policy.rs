@@ -4,6 +4,12 @@ use super::*;
 
 impl Token {
     /// Check the intrinsic type and every policy attribute of the spec against the live object.
+    ///
+    /// # Errors
+    ///
+    /// `Conflict` whenever the token's object is not the declared type (missing
+    /// `CKA_KEY_TYPE`, another curve, modulus or length) or violates a declared policy
+    /// attribute; `Unsupported` for an object class cakeys does not manage.
     pub fn check(&self, h: ObjectHandle, object: &ObjectCfg, spec: &SpecCfg) -> Result<()> {
         let class = class_of(object);
         if class == ObjectClass::CERTIFICATE {
@@ -63,6 +69,11 @@ impl Token {
     /// The observed policy vector: every boolean attribute of `h`'s class (PKCS#11 3.2 §4,
     /// `cakeys_core::attrs::observed`) the token reports, declared in the spec or not, plus
     /// `CKA_ALLOWED_MECHANISMS` on key objects when readable. Unreadable ones are left out.
+    ///
+    /// # Errors
+    ///
+    /// `Conflict` when the object exposes no `CKA_CLASS`; `Unsupported` for a class cakeys
+    /// does not manage.
     pub fn policy(&self, h: ObjectHandle) -> Result<BTreeMap<String, AttrValue>> {
         let class = match self.attr(h, AttributeType::Class)? {
             Some(Attribute::Class(c)) => {
@@ -148,6 +159,12 @@ impl Token {
     /// `publicAttributes`, checked on the public key object of the pair: `h` itself when adopting
     /// publicOnly, else the single public key object under the locator, which must hold the
     /// same public key as `h`.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` when the pair's public half is absent under the locator, `Ambiguous` when
+    /// several share it, `Conflict` when it holds another key, and whatever `check_attrs`
+    /// rejects on the public object itself.
     pub fn check_public_half(&self, h: ObjectHandle, spec: &SpecCfg, loc: &Locator, public_only: bool) -> Result<()> {
         if spec.public_attributes.is_empty() {
             return Ok(());

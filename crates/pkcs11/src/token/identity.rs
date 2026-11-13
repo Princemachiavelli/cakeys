@@ -6,6 +6,14 @@ impl Token {
     /// Compute the material CA-IDs of the object using `mode`; secret keys use `commits`. With
     /// `binding`, `h` is a private key whose possession of the public key hashed is proven
     /// (`None`, or `TokenAsserted`, proves nothing).
+    ///
+    /// # Errors
+    ///
+    /// `Conflict` when the token's own cross-checks disagree (a `CKA_PUBLIC_KEY_INFO` that is
+    /// not the object's material, a wrong `CKA_KEY_TYPE`); `NotFound`/`Ambiguous` when the
+    /// public half the object's identity needs is absent or duplicated under the locator;
+    /// `Unsupported` for an unimplemented mode, unreadable material or a curve/mechanism the
+    /// token exposes but cakeys cannot use.
     #[allow(clippy::too_many_arguments)] // two callers (resolve, delete), each passing all of them
     pub fn ids(
         &self,

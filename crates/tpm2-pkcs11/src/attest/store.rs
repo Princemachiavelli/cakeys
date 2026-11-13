@@ -81,6 +81,12 @@ fn text(row: &rusqlite::Row<'_>, i: usize) -> rusqlite::Result<String> {
 impl Store {
     /// Open the store in `dir` like tpm2-pkcs11 (`<dir>/tpm2_pkcs11.sqlite3`) and read one
     /// token's rows. Read-only; the module stays the writer.
+    ///
+    /// # Errors
+    ///
+    /// `Unavailable` when the database cannot be opened, a query fails, or a row's attrs
+    /// cannot be parsed (a wrong directory is an error, never a fresh store the module might
+    /// pick up); `NotFound` when the store holds no token with the label.
     pub fn open(dir: &Path, token_label: &str) -> Result<Store> {
         let path = dir.join(DB_NAME);
         // Read-only, so a wrong directory is an error — never a fresh empty store the module
@@ -133,6 +139,11 @@ impl Store {
     /// reports one) that can be certified: what the PKCS#11 handle being attested must
     /// correspond to, and carrying a private blob (`TPM2_Certify` cannot attest a public-only
     /// area).
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` when no row carries the `CKA_ID`; `Ambiguous` when several do (a label
+    /// narrows it, but never silently picks).
     pub fn find(&self, cka_id: &[u8], label: Option<&[u8]>, class: i64) -> Result<&TObject> {
         let id = || cka_id.iter().map(|b| format!("{b:02x}")).collect::<String>();
         let matches: Vec<&TObject> = self
@@ -157,6 +168,11 @@ impl Store {
 }
 
 /// The class the PKCS#11 `ObjectCfg` maps to in the store, for row matching.
+///
+/// # Errors
+///
+/// `Unsupported` for a class the store keeps no key rows for (certificates, data objects:
+/// nothing to certify).
 pub fn store_class(class: ObjectClass) -> Result<i64> {
     match class {
         // CKO_PUBLIC_KEY objects are the public half of a pair: stored without a private blob,

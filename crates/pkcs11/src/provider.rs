@@ -37,6 +37,11 @@ pub trait Provider: Send + Sync {
     /// Check `token`'s `[tokens.<t>.options]` when it is opened: a provider with settings parses
     /// them (`cakeys_core::config::parse_options`, unknown names refused); the default takes none,
     /// so any option is refused (17) rather than silently ignored.
+    ///
+    /// # Errors
+    ///
+    /// `Validation` for any option on a provider that takes none; a provider with settings
+    /// adds whatever its own parsing refuses.
     fn check_options(&self, token: &str, options: &Options) -> Result<()> {
         match options.keys().next() {
             None => Ok(()),
@@ -56,6 +61,10 @@ pub trait Provider: Send + Sync {
 
     /// Refuse a generation the module would carry out somewhere other than under `loc`, before
     /// anything is created (ykcs11 places the key by `CKA_ID` and ignores `CKA_LABEL`).
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` when the locator cannot name where the module will actually put the key.
     fn check_create(&self, _object: &ObjectCfg, _loc: &Locator) -> Result<()> {
         Ok(())
     }
@@ -80,6 +89,12 @@ pub trait Provider: Send + Sync {
     /// digest plus the anchor it was verified to. A missing attestation is an error naming the
     /// reason (e.g. an imported key, or a session that could not attest), never a pass; an
     /// attestation that names other material than `ctx.spki` is a conflict (13).
+    ///
+    /// # Errors
+    ///
+    /// Whatever the module's attestation path cannot establish: `Unsupported` (this default:
+    /// the provider advertises none), `Unavailable` when the token has none to give, `Conflict`
+    /// when it names other material than `ctx.spki`.
     fn attest(&self, _ctx: &AttestCtx<'_>) -> Result<Attested> {
         // Unreachable in practice: the caller checks `attestation()` first. Kept as an error so
         // a provider advertising a capability must actually implement it.
@@ -118,6 +133,10 @@ pub struct AttestCtx<'a> {
 impl AttestCtx<'_> {
     /// The material SPKI, required for asymmetric classes: an attestation that could not be
     /// cross-checked against the key `rfc7093m4` names would be provenance for unknown material.
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` when an asymmetric class has no SPKI to check against.
     pub fn required_spki(&self) -> Result<Option<&[u8]>> {
         match (self.object.class, self.spki) {
             (c, None) if c.is_asymmetric() => Err(KmError::Unsupported(format!(
@@ -191,6 +210,10 @@ impl Registry {
 
     /// The explicitly configured provider, else the first registered one that recognises the
     /// module, else [`Generic`].
+    ///
+    /// # Errors
+    ///
+    /// `Validation` when `explicit` names a provider this registry does not have.
     pub fn select(&self, explicit: Option<&str>, module: &ModuleInfo) -> Result<Arc<dyn Provider>> {
         if let Some(name) = explicit {
             if name == Generic.name() {

@@ -386,6 +386,10 @@ impl Curve {
 
     /// Canonical DER SPKI from `CKA_EC_POINT`. That is normally a DER OCTET STRING wrapping the
     /// point (SEC1 for Weierstrass curves, RFC 8032 for Edwards); some providers return it raw.
+    ///
+    /// # Errors
+    ///
+    /// `Conflict` if the value — wrapped or raw — is not a valid point of this curve.
     pub fn spki_from_point(self, ec_point: &[u8]) -> Result<Vec<u8>> {
         // A raw point can look like an OCTET STRING, so fall back to raw if unwrapping fails.
         <&OctetStringRef>::from_der(ec_point)
@@ -412,6 +416,10 @@ impl Curve {
 
 /// Canonical DER SPKI from any SPKI encoding (`CKA_PUBLIC_KEY_INFO`, a certificate): decode
 /// with the matching crate and re-encode, so provider encoding quirks never change the hash.
+///
+/// # Errors
+///
+/// `Unsupported` if the input is a syntactically valid SPKI of no key type cakeys hashes.
 pub fn spki_canonical(spki: &[u8]) -> Result<Vec<u8>> {
     if let Ok(k) = p256::PublicKey::from_public_key_der(spki) {
         return encode(&k);
@@ -446,6 +454,10 @@ pub fn spki_canonical(spki: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Canonical DER SPKI from `CKA_MODULUS` and `CKA_PUBLIC_EXPONENT` (big-endian).
+///
+/// # Errors
+///
+/// `Conflict` if the values are not a valid RSA public key (for instance, an even modulus).
 pub fn rsa_spki(modulus: &[u8], exponent: &[u8]) -> Result<Vec<u8>> {
     let key = rsa::PublicKey::new(
         rsa::BoxedUint::from_be_slice_vartime(modulus),
@@ -456,6 +468,11 @@ pub fn rsa_spki(modulus: &[u8], exponent: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Canonical DER SPKI of a certificate's subject key: links a certificate to its key object.
+///
+/// # Errors
+///
+/// `Conflict` if the value is not a parsable X.509 certificate, or its subject key is one
+/// `spki_canonical` refuses (also `Unsupported` in that case).
 pub fn cert_spki(cert: &[u8]) -> Result<Vec<u8>> {
     let cert = x509_cert::Certificate::from_der(cert)
         .map_err(|e| KmError::Conflict(format!("CKA_VALUE is not an X.509 certificate: {e}")))?;

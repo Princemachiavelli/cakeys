@@ -27,6 +27,10 @@ pub fn message(spki: &[u8], nonce: &[u8; 32]) -> Vec<u8> {
 }
 
 /// A challenge with a fresh 32-byte nonce from the OS.
+///
+/// # Errors
+///
+/// `Unavailable` if the OS random number generator fails.
 pub fn challenge(spki: &[u8]) -> Result<Vec<u8>> {
     let mut nonce = [0u8; 32];
     getrandom::fill(&mut nonce).map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}")))?;
@@ -38,8 +42,11 @@ pub fn challenge(spki: &[u8]) -> Result<Vec<u8>> {
 /// - Ed25519: pure `EdDSA` over `msg`;
 /// - RSA: PKCS#1 v1.5 with SHA-256 over `msg`.
 ///
-/// A signature that does not verify is a `Conflict`: the private key is not the one the
-/// identity names. Ed448 has no verifier yet (`Unsupported`).
+/// # Errors
+///
+/// `Conflict` when the signature does not verify: the private key is not the one the identity
+/// names. `Unsupported` for an Ed448 key (no verifier yet: opt in with
+/// `binding = "token-asserted"`) or a key that is none of the three above.
 pub fn verify(spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
     let verdict = sig::ecdsa(spki, msg, sig, sig::Encoding::Raw, None)
         .or_else(|| sig::ed25519(spki, msg, sig))
@@ -74,6 +81,11 @@ pub struct EcdhChallenge {
 /// key in `spki` and MAC `msg` with the shared secret it and the private half of `spki` would
 /// derive. The token derives the same secret with `CKM_ECDH1_DERIVE` and `peer`, and MACs the same
 /// `msg`; the MACs match only if the token's private key is the one `spki` names.
+///
+/// # Errors
+///
+/// `Unsupported` if the key's curve has no `RustCrypto` ECDH; `Unavailable` if the OS random
+/// number generator fails.
 pub fn ecdh_challenge(spki: &[u8], msg: &[u8]) -> Result<EcdhChallenge> {
     let mut rng = getrandom::SysRng;
     macro_rules! ecdh {
@@ -101,6 +113,11 @@ pub fn ecdh_challenge(spki: &[u8], msg: &[u8]) -> Result<EcdhChallenge> {
 /// Start a `pop-decrypt` proof of possession: `msg` encrypted to the public key in `spki` with
 /// RSA-OAEP (SHA-1, MGF1-SHA1, empty label — the PKCS#11 baseline `SoftHSM` implements). Only the
 /// matching private key decrypts it back to `msg`, which the token does with `CKM_RSA_PKCS_OAEP`.
+///
+/// # Errors
+///
+/// `Unsupported` if `spki` is not an RSA key; `Unavailable` if the OS random number generator
+/// or the encryption fails (for instance, `msg` is too long for the modulus).
 pub fn oaep_challenge(spki: &[u8], msg: &[u8]) -> Result<Vec<u8>> {
     let key = rsa::PublicKey::from_public_key_der(spki)
         .map_err(|e| KmError::Unsupported(format!("proof of possession for this SPKI: {e}")))?;

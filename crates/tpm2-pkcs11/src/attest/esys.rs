@@ -48,6 +48,10 @@ pub struct Certified {
 }
 
 /// Open a context to the same TPM the module talks to.
+///
+/// # Errors
+///
+/// `Unavailable` when the TCTI connection cannot be made.
 pub fn context(conf: &tss_esapi::Tcti) -> Result<Context> {
     Context::new(conf.clone()).map_err(|e| KmError::Unavailable(format!("connecting to the TPM: {e}")))
 }
@@ -70,6 +74,12 @@ fn flushing<T>(ctx: &mut Context, handle: KeyHandle, f: impl FnOnce(&mut Context
 /// template, restricted signing, fixedTPM: an unrestricted key there could sign a forged
 /// `TPMS_ATTEST`, and the lock would pin it on first use. Only `provision` (set under `realise`)
 /// creates one; a read never changes the TPM.
+///
+/// # Errors
+///
+/// `Validation` for a malformed handle; `Unavailable` when no key sits there and `provision`
+/// is off (or creating/evicting one fails); `Conflict` when the object at the handle is not a
+/// cakeys Attestation Key.
 pub fn attestation_key(ctx: &mut Context, handle: u32, provision: bool) -> Result<(KeyHandle, Public, Name)> {
     let persistent =
         PersistentTpmHandle::new(handle).map_err(|e| KmError::Validation(format!("akHandle {handle:#010x}: {e}")))?;
@@ -186,6 +196,11 @@ fn seal_auth(pin: &[u8], salt: &str) -> Vec<u8> {
 /// Load the seal object and unseal the token's wrapping key with the user PIN — the same
 /// protocol the module runs at login (`token_unseal_wrapping_key`): the sealed payload is the
 /// wrapping key *as a hex string*, the AES key is its 32 decoded bytes.
+///
+/// # Errors
+///
+/// `Unavailable` when the seal object cannot be loaded or the unseal fails (a wrong PIN, in
+/// practice); `Conflict` when the unsealed payload is not 32 bytes of hex text.
 pub fn wrapping_key(ctx: &mut Context, store: &Store, pin: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     let auth = Auth::try_from(seal_auth(pin, &store.seal.auth_salt))
         .map_err(|e| KmError::Unavailable(format!("seal auth: {e}")))?;
@@ -214,6 +229,11 @@ pub fn wrapping_key(ctx: &mut Context, store: &Store, pin: &[u8]) -> Result<Zero
 
 /// The GCM-wrapped object auth (`<iv>:<tag>:<ct>` hex) under the token's wrapping key, as the
 /// module's `aes256_gcm_decrypt` reads it. The plaintext is the object's authValue.
+///
+/// # Errors
+///
+/// `Conflict` when the value is not `<iv>:<tag>:<ct>` with the right lengths, or does not
+/// decrypt under the token's wrapping key.
 pub fn unwrap_objauth(wrapping_key: &[u8], wrapped: &str) -> Result<Zeroizing<Vec<u8>>> {
     let bad = || KmError::Conflict("CKA_TPM2_OBJAUTH_ENC is not <iv>:<tag>:<ct>".into());
     let mut parts = wrapped.split(':');
@@ -270,6 +290,10 @@ fn blobs(priv_blob: &[u8], pub_blob: &[u8]) -> Result<(Private, Public)> {
 }
 
 /// Unmarshal a marshaled `TPM2B_PUBLIC` (as the store holds it) into a tss-esapi `Public`.
+///
+/// # Errors
+///
+/// `Conflict` when the blob does not unmarshal, or is not a public area tss-esapi accepts.
 #[allow(unsafe_code)]
 pub fn unmarshal_public(pub_blob: &[u8]) -> Result<Public> {
     let mut public = esys::TPM2B_PUBLIC::default();
@@ -288,6 +312,12 @@ pub fn unmarshal_public(pub_blob: &[u8]) -> Result<Public> {
 
 /// Certify the loaded `key` with the AK: a fresh random nonce as qualifying data (freshness),
 /// both authorizations by password.
+///
+/// # Errors
+///
+/// `Unavailable` when the OS RNG, the auth setup or `TPM2_Certify` fails; `Conflict` when the
+/// response is not a certify statement for this run's nonce — never another statement or a
+/// replay.
 pub fn certify(ctx: &mut Context, key: KeyHandle, key_auth: &[u8], ak: KeyHandle) -> Result<(Attest, Signature)> {
     let mut nonce = vec![0u8; 32];
     getrandom::fill(&mut nonce).map_err(|e| KmError::Unavailable(format!("OS RNG: {e}")))?;
@@ -323,6 +353,10 @@ pub fn certify(ctx: &mut Context, key: KeyHandle, key_auth: &[u8], ak: KeyHandle
 ///
 /// Only if the marshaller reports more bytes than the 4096-byte buffer it filled, which it
 /// cannot.
+///
+/// # Errors
+///
+/// `Unavailable` if the attestation cannot be re-marshaled (a TPM2 command error code).
 #[allow(unsafe_code)]
 pub fn attest_bytes(attest: &Attest) -> Result<Vec<u8>> {
     let ffi = esys::TPMS_ATTEST::from(attest.clone());
@@ -343,6 +377,11 @@ pub fn attest_bytes(attest: &Attest) -> Result<Vec<u8>> {
 
 /// Verify the AK's ECDSA-SHA256 signature over the attestation bytes, on the host: the TPM
 /// offers `TPM2_VerifySignature`, but verification must not be the prover's.
+///
+/// # Errors
+///
+/// `Unsupported` when the AK signed with something other than ECDSA-SHA256; `Conflict` when
+/// the signature does not verify against the pinned AK, or a component is too long for P-256.
 pub fn verify_signature(signature: &Signature, ak_spki: &[u8], bytes: &[u8]) -> Result<()> {
     use cakeys_core::sig::{self, EcdsaHash, Encoding};
     let (r, s) = match signature {
@@ -375,6 +414,13 @@ pub struct Material {
     pub attributes: ObjectAttributes,
 }
 
+/// The canonical SPKI and signed attributes of a public area: what the module's objects can be
+/// cross-checked against.
+///
+/// # Errors
+///
+/// `Unsupported` for a TPM curve cakeys encodes no SPKI for; `Conflict` when the unique field
+/// is not a valid point or RSA key.
 pub fn material_of(public: &Public) -> Result<Material> {
     match public {
         Public::Ecc { object_attributes, parameters, unique, .. } => {
@@ -407,6 +453,11 @@ pub fn material_of(public: &Public) -> Result<Material> {
 /// Recompute the Name of a public blob on the host — `nameAlg ‖ H(TPMT_PUBLIC)` over the
 /// store's own marshaled bytes (the blob content after its size prefix) — independently of
 /// both the TPM and tss-esapi's view of it.
+///
+/// # Errors
+///
+/// `Conflict` when the blob is truncated (a size prefix past its end); `Unsupported` for a
+/// `nameAlg` that is not SHA-256/384/512.
 pub fn recompute_name(pub_blob: &[u8]) -> Result<Vec<u8>> {
     use sha2::Digest;
     let truncated = || KmError::Conflict("the store's public blob is truncated".into());
@@ -428,6 +479,13 @@ pub fn recompute_name(pub_blob: &[u8]) -> Result<Vec<u8>> {
 /// PKCS#11 object is being attested. The material SPKI (present exactly for asymmetric keys)
 /// is cross-checked against the attestation — the attested key must be the key the object's
 /// `rfc7093m4` names. `provision` lets a missing Attestation Key be created (`realise` only).
+///
+/// # Errors
+///
+/// `Unavailable` without a PIN to unseal the object's auth value, or when any TPM call
+/// fails; `Conflict` when the store row or the attestation disagrees (a Name that is not the
+/// blob's, another signer, other material than `spki`); `Unsupported` when the store object
+/// has no private blob to certify.
 pub fn certify_key(
     ctx: &mut Context,
     store: &Store,

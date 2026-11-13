@@ -5,6 +5,11 @@ use super::*;
 impl Token {
     /// RFC 7512 URI of the object consumers use: for a key adopted public-only this is still
     /// the private key (only its verification went through the public half).
+    ///
+    /// # Errors
+    ///
+    /// `Validation` when the locator names neither `CKA_LABEL` nor `CKA_ID`, or its `CKA_ID`
+    /// is not hex.
     pub fn uri(&self, object: &ObjectCfg, loc: &Locator) -> Result<String> {
         // The serial tells apart tokens that share a label (RFC 7512 `serial`).
         let mut parts = vec![format!("token={}", pct(self.label.as_bytes()))];

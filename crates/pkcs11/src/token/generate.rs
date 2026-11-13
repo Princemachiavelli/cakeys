@@ -3,6 +3,15 @@
 use super::*;
 
 impl Token {
+    /// Create `object` on the token under `loc`, as `spec` declares it. The provider checks the
+    /// generation first, and a module that creates only in a Security Officer session runs it
+    /// that way (the admin credential of keys.toml, the user PIN restored afterwards).
+    ///
+    /// # Errors
+    ///
+    /// `Validation` for a class cakeys adopts rather than creates, or a key type missing its
+    /// size (`modulusBits`, `valueLen`); a generation the module refuses is `Unsupported`,
+    /// naming the token and the `C_*` failure.
     pub fn create(&self, object: &ObjectCfg, spec: &SpecCfg, loc: &Locator) -> Result<()> {
         self.provider.check_create(object, loc)?;
         if self.provider.manages_as_so() {
@@ -75,6 +84,12 @@ impl Token {
     }
 
     /// Destroy the key and any public half sharing its locator.
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` (15) when the provider cannot actually erase keys (ykcs11); a failure to
+    /// destroy is `Unavailable`, naming the token. An empty locator destroys nothing, not an
+    /// error.
     pub fn destroy(&self, object: &ObjectCfg, loc: &Locator) -> Result<usize> {
         let class = class_of(object);
         let mut handles = self.find(class, loc)?;

@@ -53,6 +53,10 @@ pub type Options = toml::Table;
 
 /// Parse a token's `options` into the provider's own settings type, which should deny unknown
 /// fields: a typo is invalid (17), naming the token.
+///
+/// # Errors
+///
+/// `Validation` if the table does not fit `T`: an unknown option name or a bad value.
 pub fn parse_options<T: serde::de::DeserializeOwned>(token: &str, options: &Options) -> Result<T> {
     options.clone().try_into().map_err(|e| KmError::Validation(format!("tokens.{token}.options: {e}")))
 }
@@ -96,6 +100,11 @@ impl ObjectCfg {
     }
 
     /// The curve of an EC or Edwards key (`curve`, for `keyType`).
+    ///
+    /// # Errors
+    ///
+    /// `Validation` when the object names no curve; `Unsupported` when the named curve has no
+    /// `RustCrypto` crate to validate and encode it, or is not one of the supported ones.
     pub fn curve(&self) -> Result<crate::id::Curve> {
         let kt = self.key_type.map_or("", KeyType::name);
         let name = self.curve.as_deref().ok_or_else(|| KmError::Validation(format!("{kt} keys need a curve")))?;
@@ -115,6 +124,11 @@ impl ObjectCfg {
 
     /// The key type, if this class can have it (and, for EC and Edwards keys, a supported curve);
     /// any other pairing is unsupported (15).
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` for a class/key-type pairing cakeys does not manage, and whatever `curve`
+    /// rejects for EC and Edwards keys (`Validation` when the object names no curve).
     pub fn checked_key_type(&self) -> Result<KeyType> {
         match (self.class, self.key_type) {
             (c, Some(k @ (KeyType::Ec | KeyType::EcEdwards))) if c.is_asymmetric() => self.curve().map(|_| k),
@@ -672,11 +686,24 @@ pub struct Provenance {
     pub token: TokenInfo,
 }
 
+/// Read and check keys.toml; `$NAME` path references read the process environment.
+///
+/// # Errors
+///
+/// Whatever [`load_config_with`] rejects: `Io` if the file cannot be read; `Validation` for
+/// a schema violation, a malformed or unset `$NAME` path reference, an admin credential
+/// without a user PIN to return to, or a spec that references an unknown object.
 pub fn load_config(path: &Path) -> Result<Config> {
     load_config_with(path, &|name| std::env::var(name).ok())
 }
 
 /// [`load_config`], with `env` looking up the variables `$NAME` path references name.
+///
+/// # Errors
+///
+/// `Io` if the file cannot be read; `Validation` for a schema violation, a malformed or unset
+/// `$NAME` path reference, an admin credential without a user PIN to return to, or a spec that
+/// references an object keys.toml does not define.
 pub fn load_config_with(path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<Config> {
     let text = std::fs::read_to_string(path).map_err(KmError::io(format_args!("reading {}", path.display())))?;
     let mut cfg: Config = toml::from_str(&text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
@@ -740,6 +767,10 @@ fn env_ref(value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>) -> Res
         .ok_or_else(|| KmError::Validation(format!("{what}: environment variable {name} (\"{value}\") is not set")))
 }
 
+/// # Errors
+///
+/// `Io` if the file exists but cannot be read; `Validation` if it is not a valid lock of the
+/// current schema. An absent file is an empty lock, not an error.
 pub fn load_lock(path: &Path) -> Result<Lock> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
@@ -756,6 +787,9 @@ pub fn load_lock(path: &Path) -> Result<Lock> {
     }
 }
 
+/// # Errors
+///
+/// `Io` if the lock cannot be encoded, or the temporary write or rename fails.
 pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
     let text = toml::to_string_pretty(lock).map_err(|e| KmError::Io(format!("encoding {}: {e}", path.display())))?;
     let tmp = path.with_extension("lock.tmp");
@@ -773,6 +807,10 @@ pub struct UpdateGuard(#[allow(dead_code)] std::fs::File); // holds the lock unt
 /// Take the exclusive advisory lock on `<lock>.lck`, waiting for any other updater. The sidecar
 /// file is created if absent; a leftover one is harmless (the lock is advisory and released when
 /// its holder exits).
+///
+/// # Errors
+///
+/// `Io` if the sidecar file cannot be opened or the advisory lock cannot be taken.
 pub fn lock_for_update(lock_path: &Path) -> Result<UpdateGuard> {
     let mut sidecar = lock_path.as_os_str().to_os_string();
     sidecar.push(".lck");
@@ -851,6 +889,11 @@ pub fn gc(cfg: &Config, lock: &mut Lock, remove: bool) -> Vec<String> {
 
 impl Config {
     /// Find the spec to use for `object` on `token` (either may be omitted if unambiguous).
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` when no (spec, token) pair matches; `Ambiguous` when several do and
+    /// `--spec`/`--token` has to narrow it.
     pub fn pick_spec(&self, object: &str, spec: Option<&str>, token: Option<&str>) -> Result<(String, String)> {
         let pairs: Vec<(String, String)> = self
             .specs

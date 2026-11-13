@@ -44,6 +44,11 @@ fn commits(t: &Target, tok: &Token, mode: Mode) -> Result<Vec<Commit>> {
 /// Schemes this spec computes on this token: `Target::schemes` narrowed to the commitments the
 /// token implements, plus the attestation scheme when the spec opted in and the provider
 /// attests the class (§3.7). Needs no object, so callers can refuse before anything is created.
+///
+/// # Errors
+///
+/// `Unsupported` if the token implements none of the spec's commitments (or `plan_mode`
+/// rejects the spec).
 pub fn schemes_on(t: &Target, tok: &Token) -> Result<Vec<Scheme>> {
     let mut v = if t.object.class == Class::SecretKey {
         commits(t, tok, plan_mode(t)?)?.iter().map(|c| c.scheme()).collect()
@@ -121,6 +126,12 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
 /// GET: find by locator (exactly one), check type and attributes, compute IDs. Never writes,
 /// neither the lock nor the token: a TPM Attestation Key that is not provisioned yet is an
 /// error here, and only `realise` provisions it.
+///
+/// # Errors
+///
+/// `NotFound` when the locator finds no object, `Ambiguous` when it finds several; `Conflict`
+/// for a wrong type or policy; `Unsupported`/`Unavailable` when the object cannot be proven or
+/// attested as the spec requires.
 pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>> {
     resolve_with(t, tok, lock, false)
 }
@@ -228,6 +239,12 @@ fn facts(tok: &Token, r: &Resolved) -> Facts {
 }
 
 /// GET + If-Match against the lock.
+///
+/// # Errors
+///
+/// `NotFound` when resolve found nothing; whatever `compare` rejects — `HashMismatch` (10)
+/// when the token's IDs differ from the lock, `PreconditionFailed` (14) for a realisation
+/// that moved.
 pub fn verify(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Resolved> {
     let r = resolve(t, tok, lock)?.ok_or_else(|| KmError::NotFound(t.to_string()))?;
     reconcile::compare(t, &r, lock, &facts(tok, &r), LockWrite::Compare, notes)?;
@@ -236,6 +253,14 @@ pub fn verify(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result
 
 /// PUT: create under the declared locator if absent (and `autoCreate`), then compare with the lock.
 /// Re-running never creates a second object: the locator finds the first one.
+///
+/// # Errors
+///
+/// Whatever `resolve` returns for the object once found; for the creation: `NotFound` when
+/// absent and `autoCreate` is off, `PreconditionFailed` (D1) when the lock already pins the
+/// object's material, `Conflict` when the locator is occupied by another class; also
+/// `plan_mode`/`check_capabilities` rejections (`Validation`, `Unsupported`) before anything
+/// is created, and `compare`'s on the realised object.
 pub fn realise(
     t: &Target,
     tok: &Token,
@@ -301,6 +326,12 @@ pub fn realise(
 }
 
 /// DELETE + If-Match. Absent is success; a different object under the locator is left alone.
+///
+/// # Errors
+///
+/// `Unsupported` for a `publicOnly` adoption or when no identity can be computed to check;
+/// `PreconditionFailed` when there is nothing to check against (no `--if-match`, no locked
+/// ID) or the token holds another ID than expected. `destroy` keeps its own refusals (15).
 pub fn delete(
     t: &Target,
     tok: &Token,
@@ -371,6 +402,13 @@ pub fn delete(
 /// A requested scheme must be one the spec computes on this token — refused (15) before the
 /// token is opened, or before anything is created — and must itself be locked, not merely
 /// computed beside another scheme that matched (10 with its `got:`). `open` opens the token.
+///
+/// # Errors
+///
+/// `Unsupported` (15) for a scheme the spec does not compute on this token; `HashMismatch`
+/// (10) when a requested scheme is computed but not locked (its `got:` shows the computed
+/// ID); plus `pick_spec`/`Target::new`/`realise` failures — the reference and the pair must
+/// exist, and the realisation must compare clean.
 pub fn check(
     cfg: &Config,
     reference: &str,

@@ -19,6 +19,10 @@ use std::path::{Path, PathBuf};
 pub const DEFAULT_AK_HANDLE: u32 = 0x8100_0016;
 
 /// One hex-text attribute, shared by the store and the unsealed wrapping key.
+///
+/// # Errors
+///
+/// `Validation` if the value is not even-length hex.
 pub fn store_hex(s: &str) -> Result<Vec<u8>> {
     store::hex(s)
 }
@@ -49,6 +53,11 @@ pub struct Tpm2Options {
 impl Tpm2Options {
     /// Parse and check `token`'s options: unknown names and a malformed `akHandle` are invalid
     /// (17) when the token is opened, not first at attestation.
+    ///
+    /// # Errors
+    ///
+    /// `Validation` for an unknown option name or a `akHandle`/`tcti`/`tpm2Store` value
+    /// that cannot be used.
     pub fn of(token: &str, options: &Options) -> Result<Tpm2Options> {
         let o: Tpm2Options = parse_options(token, options)?;
         o.ak_handle(token)?;
@@ -151,6 +160,13 @@ fn tcti(cfg: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<tss_esapi::Tcti> {
 
 /// Run the whole attestation: find the store row for the PKCS#11 object, certify the TPM
 /// object it names, and cross-check the module's story against the TPM's signature.
+///
+/// # Errors
+///
+/// `Unsupported` when the key object exposes no `CKA_ID` to find its store row by;
+/// `Unavailable` when the store cannot be opened or the object's module attributes cannot
+/// be read; `Conflict` when the module's story and the TPM's signature disagree; plus
+/// whatever `certify_key` rejects (PIN, auth, names, material cross-check).
 pub fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
     // The store row is found the way the module finds the object: by the locator's CKA_ID
     // (and label), within the key's class.

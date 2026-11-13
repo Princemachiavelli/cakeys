@@ -92,6 +92,12 @@ pub fn commitment_label(t: &Target, lock: &Lock) -> String {
 
 /// Compare `r` with the lock, then, with `LockWrite::Record`, record what the lock lacks (only
 /// ever filling gaps). Whether the lock changed.
+///
+/// # Errors
+///
+/// Whatever `compare` rejects: `HashMismatch` when the token's material hashes to another ID
+/// than the lock pins, `PreconditionFailed` for a realisation that moved (type, downgrade,
+/// replaced object, attestation anchor) or a first use under `LockWrite::Compare`.
 pub fn reconcile(
     t: &Target,
     r: &Resolved,
@@ -111,6 +117,12 @@ pub fn reconcile(
 /// With `LockWrite::Record`, a changed spec or policy and a first use are what the write is for,
 /// so they pass (and are not noted); type changes, downgrades, a replaced object, an attestation
 /// anchor change and a hash mismatch fail either way.
+///
+/// # Errors
+///
+/// `HashMismatch` (10) when the token's material hashes to another ID than the lock pins;
+/// `PreconditionFailed` (14) for a type change, a downgrade, a replaced object, an attestation
+/// anchor change, or a first use compared without the write.
 pub fn compare(
     t: &Target,
     r: &Resolved,
