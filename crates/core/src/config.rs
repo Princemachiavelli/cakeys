@@ -716,9 +716,27 @@ pub fn load_config(path: &Path) -> Result<Config> {
 /// references an object keys.toml does not define.
 pub fn load_config_with(path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<Config> {
     let text = std::fs::read_to_string(path).map_err(KmError::io(format_args!("reading {}", path.display())))?;
-    let mut cfg: Config = toml::from_str(&text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
-    for o in cfg.objects.values_mut() {
+    parse_config_with(&text, path, env)
+}
+
+/// [`load_config_with`] on text already read; `path` only names it in messages.
+///
+/// # Errors
+///
+/// `Validation`, as [`load_config_with`].
+pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<Config> {
+    let mut cfg: Config = toml::from_str(text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
+    for (name, o) in &mut cfg.objects {
         o.canonicalize();
+        // The commitment label carries 8 × valueLen bits (docs/DESIGN.md §3.3): bound it so that
+        // never overflows (tests/properties.rs: `commitment_labels_are_injective`).
+        if o.value_len.is_some_and(|n| n > u64::from(u32::MAX)) {
+            return Err(KmError::Validation(format!(
+                "{}: object '{name}': valueLen {} bytes is out of range",
+                path.display(),
+                o.value_len.unwrap_or_default()
+            )));
+        }
     }
     for (name, t) in &mut cfg.tokens {
         if let Some(m) = t.module.clone() {
@@ -783,18 +801,24 @@ fn env_ref(value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>) -> Res
 /// current schema. An absent file is an empty lock, not an error.
 pub fn load_lock(path: &Path) -> Result<Lock> {
     match std::fs::read_to_string(path) {
-        Ok(text) => {
-            let mut lock: Lock =
-                toml::from_str(&text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
-            // Recorded types compare equal to canonicalized keys.toml types.
-            for t in lock.objects.values_mut().filter_map(|o| o.object_type.as_mut()) {
-                t.canonicalize();
-            }
-            Ok(lock.validate(path)?)
-        }
+        Ok(text) => parse_lock(&text, path),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Lock { version: LOCK_VERSION, ..Default::default() }),
         Err(e) => Err(KmError::io(format!("reading {}", path.display()))(e)),
     }
+}
+
+/// [`load_lock`] on text already read; `path` only names it in messages.
+///
+/// # Errors
+///
+/// `Validation` if it is not a valid lock of the current schema.
+pub fn parse_lock(text: &str, path: &Path) -> Result<Lock> {
+    let mut lock: Lock = toml::from_str(text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
+    // Recorded types compare equal to canonicalized keys.toml types.
+    for t in lock.objects.values_mut().filter_map(|o| o.object_type.as_mut()) {
+        t.canonicalize();
+    }
+    lock.validate(path)
 }
 
 /// # Errors
