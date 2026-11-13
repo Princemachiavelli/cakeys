@@ -19,6 +19,8 @@ Status: proof of concept.
   management key), attests it, proves possession and verifies it.
 - **Use cases (problems and questions, one line each):** [`docs/USE_CASE.md`](docs/USE_CASE.md).
 - **Design and current state:** [`docs/DESIGN.md`](docs/DESIGN.md).
+- **See it run:** `nix run .#demo` walks through pinned identity, the Nix view, drift, one
+  identity across two modules, and export plans, on throwaway SoftHSM and kryoptic tokens.
 - **At a glance (diagrams):** [`docs/diagrams.md`](docs/diagrams.md).
 - **The two files, annotated:** [`docs/CONFIG.md`](docs/CONFIG.md) (`keys.toml`) and
   [`docs/LOCK.md`](docs/LOCK.md) (`keys.lock`): what each line does, and why the tables are split.
@@ -124,6 +126,7 @@ reach tokens only through p11-kit forwarding or a real TPM, never through a toke
 ```console
 $ nix flake check            # unit, SoftHSM, tpm2-pkcs11 (swtpm), p11-kit, VM, module and TPM ACL tests, minimal build, formatting
 $ nix fmt                    # treefmt.nix: rustfmt, nixfmt, taplo, shfmt, rumdl, keep-sorted; statix, deadnix, shellcheck, typos
+$ nix run .#demo             # the walkthrough (nix/demo.sh); checks.demo runs it straight through
 $ nix run .#fuzz -- lock      # fuzz one target (public_key, certificate, lock, config) until stopped
 $ nix build .#test-nspawn    # the same flow in systemd-nspawn (needs the uid-range feature)
 $ nix develop                # cargo, clippy, softhsm, kryoptic, opensc

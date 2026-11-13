@@ -37,6 +37,8 @@
       };
       # cargo-fuzz (fuzz/): a fixed-seed smoke run in checks.fuzz, and apps.fuzz for long runs.
       fuzz = pkgs.callPackage ./nix/fuzz.nix { };
+      # The walkthrough of cakeys' main ideas on SoftHSM and kryoptic: apps.demo, checks.demo.
+      demo = pkgs.callPackage ./nix/demo.nix { inherit cakeys; };
       mkTest =
         kind:
         import ./nix/test.nix {
@@ -72,6 +74,12 @@
         '';
 
       apps.${system} = {
+        # nix run .#demo (-- --keep to leave the tokens and keys.toml for poking around)
+        demo = {
+          type = "app";
+          program = pkgs.lib.getExe demo.demo;
+          meta.description = "Walk through cakeys on two software tokens: pinned identity, the Nix view, drift, one identity across modules, export plans";
+        };
         # The one cargo-deny check the sandbox cannot make: yanked releases, against the live
         # crates.io index (see the `deny` binding above). Network, host-side, uncached.
         deny-online = {
@@ -116,6 +124,7 @@
           pcsc-probe
           treefmt
           deny
+          demo
           fuzz
           mkTest
           ;

@@ -7,6 +7,7 @@
   pcsc-probe,
   treefmt,
   deny,
+  demo,
   fuzz,
   mkTest,
 }:
@@ -37,6 +38,8 @@
   });
   # cargo-deny offline (see the `deny` binding in flake.nix): reproducible with the flake.lock.
   deny = deny.check;
+  # nix/demo.sh straight through: every step's expected exit code still holds.
+  demo = demo.check;
   # The CLI without its `tpm2` and `ykcs11` features: builds without tpm2-tss and sqlite.
   minimal = cakeys.overrideAttrs {
     pname = "cakeys-minimal";
