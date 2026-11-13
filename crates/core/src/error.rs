@@ -1,4 +1,4 @@
-//! Error classes with HTTP-like semantics and stable exit codes (see PLAN.md, "Token verbs").
+//! Error classes with HTTP-like semantics and stable exit codes (docs/DESIGN.md §5).
 
 #[derive(Debug, thiserror::Error)]
 pub enum KmError {

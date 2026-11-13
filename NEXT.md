@@ -47,7 +47,7 @@ backend, post-quantum, lock merge, keystores, the attestation remainders) stay p
       other tokens adopt it: through cakeys' `export`/`migrate` (phase 3) or any outside tool
       (`pkcs11-tool`, `ykman`, `tpm2_ptool`), checked against the locked identity either way.
       Then `create` can say "import from <creation token>" for those tokens instead of today's
-      generic skip note (`not_created`, crates/cli/src/lib.rs).
+      generic skip note (`not_created`, crates/pkcs11/src/ops.rs).
 
 ## 3. PROVIDERS phase 5 (D12)
 

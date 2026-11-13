@@ -1,4 +1,4 @@
-//! Idempotent verbs with HTTP-like semantics (PLAN.md, "Token verbs").
+//! Idempotent verbs with HTTP-like semantics (docs/DESIGN.md §5).
 
 use crate::token::{self as hal, Token};
 use cakeys_core::config::{AttestationRecord, Config, Lock, Mode, Observed, Provenance, Session};
@@ -424,6 +424,121 @@ pub fn create(
 ) -> Result<(Resolved, bool)> {
     let on_token = cakeys_core::config::SpecTokenCfg { auto_create: true, ..t.on_token.clone() };
     realise(&Target { on_token: &on_token, ..*t }, tok, lock, write, notes)
+}
+
+/// Why `create` without a named pair leaves `t` alone: a class cakeys adopts rather than
+/// generates, a publicOnly adoption, or an object whose material the lock already pins (another
+/// token then needs that same material, which only importing or migrating can put there).
+// TODO(NEXT.md §2, "one creation token"): a multi-token object is created on whichever of its
+// pairs comes first in config order; keys.toml should name the creation token instead.
+fn not_created(t: &Target, lock: &Lock) -> Option<String> {
+    if !matches!(t.object.class, Class::PrivateKey | Class::SecretKey) {
+        return Some(format!("{} objects are adopted, not created", t.object.class));
+    }
+    if t.on_token.public_only {
+        return Some("publicOnly adopts the public half only".into());
+    }
+    lock.objects.get(t.object_name).filter(|o| !o.ids.is_empty()).map(|_| {
+        format!(
+            "the lock already pins object '{}' (`verify` checks it; a token without it needs that same \
+             material imported, never a new key)",
+            t.object_name
+        )
+    })
+}
+
+/// The (spec, token) pairs `create` selects, in config order.
+///
+/// # Errors
+///
+/// A name that selects nothing is refused like the other verbs refuse it: an unknown spec
+/// (`NotFound`) or token (`Validation`), or a spec without that token (`NotFound`).
+pub fn create_pairs<'a>(cfg: &'a Config, spec: Option<&str>, token: Option<&str>) -> Result<Vec<(&'a str, &'a str)>> {
+    if let Some(s) = spec
+        && !cfg.specs.contains_key(s)
+    {
+        return Err(KmError::NotFound(format!("spec '{s}'")));
+    }
+    if let Some(t) = token
+        && !cfg.tokens.contains_key(t)
+    {
+        return Err(KmError::Validation(format!("unknown token '{t}'")));
+    }
+    if let (Some(s), Some(t)) = (spec, token) {
+        Target::new(cfg, s, t)?;
+    }
+    Ok(cfg
+        .specs
+        .iter()
+        .filter(|(n, _)| spec.is_none_or(|s| s == n.as_str()))
+        .flat_map(|(n, s)| s.tokens.keys().map(move |t| (n.as_str(), t.as_str())))
+        .filter(|(_, t)| token.is_none_or(|w| w == *t))
+        .collect())
+}
+
+/// What [`create_selected`] did.
+pub struct Created {
+    /// The realised objects, in the order they were created.
+    pub created: Vec<Resolved>,
+    /// Whether the lock changed: the caller saves it, also when `failed` is set — never a key
+    /// made and lost.
+    pub changed: bool,
+    /// The failure that ended the run, if any.
+    pub failed: Option<KmError>,
+}
+
+/// The `create` verb: [`create`] over every selected pair ([`create_pairs`]) whose object the
+/// lock does not pin yet; pinned, adopted-only and publicOnly pairs are skipped with a note,
+/// unless both `spec` and `token` name the pair. Every step of a pair, opening its token
+/// included, ends the run there, reported in [`Created::failed`] beside what was created
+/// before.
+///
+/// At most one token is open at a time: tokens of one module share its library, which a second
+/// open would initialize again (`CKR_CRYPTOKI_ALREADY_INITIALIZED`).
+///
+/// # Errors
+///
+/// [`create_pairs`]' refusals, before any token is opened.
+pub fn create_selected(
+    cfg: &Config,
+    spec: Option<&str>,
+    token: Option<&str>,
+    open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
+    lock: &mut Lock,
+    write: LockWrite,
+    notes: &mut Notes,
+) -> Result<Created> {
+    let pairs = create_pairs(cfg, spec, token)?;
+    let named = spec.is_some() && token.is_some();
+    let mut out = Created { created: Vec::new(), changed: false, failed: None };
+    let mut current: Option<Token> = None;
+    for (spec_name, token_name) in pairs {
+        let mut pair = || -> Result<Option<(Resolved, bool)>> {
+            let t = Target::new(cfg, spec_name, token_name)?;
+            if !named && let Some(why) = not_created(&t, lock) {
+                notes.note(format_args!("create: skipped {t}: {why}"));
+                return Ok(None);
+            }
+            // Another token's module is finalized (dropped) before the next open.
+            let tok = match current.take().filter(|tok| tok.name == token_name) {
+                Some(tok) => current.insert(tok),
+                None => current.insert(open(token_name, notes)?),
+            };
+            create(&t, tok, lock, write, notes).map(Some)
+        };
+        match pair() {
+            Ok(Some((r, c))) => {
+                out.changed |= c;
+                out.created.push(r);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                out.failed = Some(e);
+                break;
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// DELETE + If-Match. Absent is success; only the object identified (and a private key's public

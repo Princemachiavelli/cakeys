@@ -117,8 +117,8 @@ pub fn reconcile(
 
 /// Every rule a realisation must pass against the lock, in the order that decides the exit code.
 /// With `LockWrite::Record`, a changed spec or policy and a first use are what the write is for,
-/// so they pass (and are not noted); type changes, downgrades, a replaced object, an attestation
-/// anchor change and a hash mismatch fail either way.
+/// so they pass here (`record` says what it accepted); type changes, downgrades, a replaced
+/// object, an attestation anchor change and a hash mismatch fail either way.
 ///
 /// # Errors
 ///
@@ -168,6 +168,20 @@ pub fn compare(
 /// Like a lockfile out of date: keys.toml changed what this realisation is (another object,
 /// locator, publicOnly or policy), so the lock must be re-recorded after review.
 fn spec_unchanged(t: &Target, r: &Resolved, prev: &LockRealisation) -> Result<()> {
+    let diff = spec_diff(t, r, prev);
+    if diff.is_empty() {
+        return Ok(());
+    }
+    Err(KmError::PreconditionFailed(format!(
+        "spec '{}' changed in keys.toml since it was realised on '{}' ({}); review the change, then `realise`",
+        t.spec_name,
+        t.token_name,
+        diff.join(", ")
+    )))
+}
+
+/// What keys.toml now says of this realisation that the lock does not.
+fn spec_diff(t: &Target, r: &Resolved, prev: &LockRealisation) -> Vec<String> {
     let mut diff = Vec::new();
     if prev.object != t.object_name {
         diff.push(format!("object '{}' -> '{}'", prev.object, t.object_name));
@@ -181,15 +195,7 @@ fn spec_unchanged(t: &Target, r: &Resolved, prev: &LockRealisation) -> Result<()
     if prev.spec_digest != r.spec_digest {
         diff.push(format!("spec digest {} -> {}", prev.spec_digest, r.spec_digest));
     }
-    if diff.is_empty() {
-        return Ok(());
-    }
-    Err(KmError::PreconditionFailed(format!(
-        "spec '{}' changed in keys.toml since it was realised on '{}' ({}); review the change, then `realise`",
-        t.spec_name,
-        t.token_name,
-        diff.join(", ")
-    )))
+    diff
 }
 
 /// What the realisation proved when it was locked, it must still prove — also when `realise`
@@ -264,17 +270,7 @@ fn no_downgrade(t: &Target, r: &Resolved, prev: &LockRealisation, update: bool, 
 /// The token's object changed (policy set since, or another object with the same material):
 /// review, like a changed spec.
 fn object_unchanged(t: &Target, r: &Resolved, prev: &LockRealisation, notes: &mut Notes) -> Result<()> {
-    let mut diff: Vec<String> = prev
-        .policy
-        .iter()
-        .filter(|(n, was)| r.policy.get(*n) != Some(was))
-        .map(|(n, was)| {
-            format!("{n} {was} -> {}", r.policy.get(n).map_or("unreadable".into(), std::string::ToString::to_string))
-        })
-        .collect();
-    if prev.immutables != r.immutables {
-        diff.push(format!("immutables {} -> {}", prev.immutables, r.immutables));
-    }
+    let diff = object_diff(r, prev);
     if !diff.is_empty() {
         return Err(KmError::PreconditionFailed(format!(
             "{} changed on the token since it was realised ({}); review, then `realise`",
@@ -287,6 +283,22 @@ fn object_unchanged(t: &Target, r: &Resolved, prev: &LockRealisation, notes: &mu
         notes.note(format_args!("{t} also reports {new:?}, which the lock does not record; `realise` adds them"));
     }
     Ok(())
+}
+
+/// What the token's object now shows that the lock recorded otherwise.
+fn object_diff(r: &Resolved, prev: &LockRealisation) -> Vec<String> {
+    let mut diff: Vec<String> = prev
+        .policy
+        .iter()
+        .filter(|(n, was)| r.policy.get(*n) != Some(was))
+        .map(|(n, was)| {
+            format!("{n} {was} -> {}", r.policy.get(n).map_or("unreadable".into(), std::string::ToString::to_string))
+        })
+        .collect();
+    if prev.immutables != r.immutables {
+        diff.push(format!("immutables {} -> {}", prev.immutables, r.immutables));
+    }
+    diff
 }
 
 /// The IDs against the object's locked ones: a mismatch is 10, and so is a first use when only
@@ -366,6 +378,11 @@ fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut 
 
 /// Record `r` in the lock: the object's type, commitment label and IDs it lacks, this
 /// realisation, and the pairs. Never overwrites an ID. Whether the lock changed.
+///
+/// A realisation already in the lock is replaced, and every difference `compare` would have
+/// refused without the write is said, one line each: the lock's diff is the review, so nothing
+/// enters it unannounced. What keys.toml changed is a note; what changed on the token, which
+/// nobody edited, is a warning.
 fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut Notes) -> Result<bool> {
     let mut changed = false;
     // One object per material (checked again on load): refuse to record the same material
@@ -423,6 +440,17 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
         observed: Some(facts.observed.clone()),
         provenance: Some(facts.provenance.clone()),
     };
+    if let Some(prev) = lock.realisation(t.spec_name, t.token_name) {
+        for d in spec_diff(t, r, prev) {
+            notes.note(format_args!("re-recorded {t}: {d} (keys.toml)"));
+        }
+        for d in object_diff(r, prev) {
+            notes.warn(format_args!("re-recorded {t}: {d} (changed on the token)"));
+        }
+        for (n, now) in r.policy.iter().filter(|(n, _)| !prev.policy.contains_key(*n)) {
+            notes.note(format_args!("re-recorded {t}: {n} {now}, which the lock did not record"));
+        }
+    }
     let slot = lock.realisations.entry(t.spec_name.into()).or_default();
     if slot.get(t.token_name) != Some(&real) {
         slot.insert(t.token_name.into(), real);
@@ -611,6 +639,35 @@ mod tests {
             );
             assert!(matches!(check(&other, write), Err(KmError::HashMismatch { .. })));
         }
+    }
+
+    /// What a write accepts, it says: a changed spec is a note, a policy attribute that changed on
+    /// the token a warning, and an unchanged realisation says nothing.
+    #[test]
+    fn a_write_says_what_it_rerecorded() {
+        let cfg = config();
+        let t = Target::new(&cfg, "s", "t").unwrap();
+        let mut lock = empty_lock();
+        reconcile(&t, &resolved(&t), &mut lock, &facts("1"), LockWrite::Record, &mut Notes::default()).unwrap();
+        let drifted = Resolved {
+            spec_digest: SRI_B.into(),
+            policy: [("CKA_SIGN".to_owned(), AttrValue::Bool(false)), ("CKA_UNWRAP".to_owned(), AttrValue::Bool(true))]
+                .into(),
+            ..resolved(&t)
+        };
+        let mut notes = Notes::default();
+        assert!(reconcile(&t, &drifted, &mut lock, &facts("1"), LockWrite::Record, &mut notes).unwrap());
+        let lines = notes.lines();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[0].starts_with("note: re-recorded") && lines[0].contains("spec digest"), "{lines:?}");
+        assert!(
+            lines[1].starts_with("warning: re-recorded") && lines[1].contains("CKA_SIGN true -> false"),
+            "{lines:?}"
+        );
+        assert!(lines[2].starts_with("note: re-recorded") && lines[2].contains("CKA_UNWRAP true"), "{lines:?}");
+        let mut again = Notes::default();
+        assert!(!reconcile(&t, &drifted, &mut lock, &facts("1"), LockWrite::Record, &mut again).unwrap());
+        assert!(again.lines().is_empty(), "{:?}", again.lines());
     }
 
     /// A pinned attestation is compared even when writing: another anchor is a different device

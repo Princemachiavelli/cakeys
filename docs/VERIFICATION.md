@@ -6,7 +6,7 @@ pinned nixpkgs.
 
 ## Where the bugs have come from
 
-The review registers (`docs/REVIEW-2026-11-11.md`, `ISSUES.md`) show three kinds:
+The review registers (`docs/REVIEW-2026-11-11.md`, `docs/working/ISSUES.md`) show three kinds:
 
 | Kind | Examples | What catches it |
 |---|---|---|

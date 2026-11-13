@@ -237,7 +237,7 @@ impl Token {
         }
     }
 
-    /// Commit through a temporary session copy (PLAN.md, "Wrap-and-rebind"): generate a session
+    /// Commit through a temporary session copy (docs/DESIGN.md §3.4; the reasoning: PLAN.md, "Wrap-and-rebind"): generate a session
     /// wrapping key on the token, wrap, unwrap as a key of the same type that allows every
     /// operation `commits` need, commit, destroy.
     fn wrap_rebind(

@@ -84,7 +84,14 @@ A program that runs `check` and then opens the URI with its own PKCS#11 library 
 moment after it was verified. A key swapped in that moment passes. The Nix pre-use check has the
 same gap, bounded by the build.
 
-- With (a), the gap stays; it is narrow, and a swap still fails the next check.
+- With (a), the gap stays; it is narrow, and a swap still fails the next check. This is
+  accepted (2026-11-13) as the contract: the same one a program has with a file it checks and
+  then opens, or an HTTP resource it validates and then fetches. What cakeys promises is
+  *verified at check time*.
+- An option under (a): `check` also returns the time it verified, so a caller can refuse a
+  result older than it tolerates. That bounds how stale a verification may be; it does not
+  close the gap (a swap one second after the check passes any age limit), and a cached Nix
+  build has no check to age.
 - With (b), the library could close it by handing the program the session and object handle it
   verified, so the program signs with exactly that object. That ties the program to the
   library's PKCS#11 session rather than its own.
@@ -93,7 +100,7 @@ same gap, bounded by the build.
 
 1. Which option is the contract: (a) alone, or (a) now and (b) when a consumer asks.
 2. For (a): the JSON schema's version and stability promise, and whether `check` grows a
-   `--json` form returning the URI with the IDs it was verified by.
+   `--json` form returning the URI with the IDs it was verified by and the time it verified.
 3. Whether closing the check-then-use gap is worth binding programs to the library's session.
 4. How a binding surfaces notes and warnings (provenance drift, a PIN counter running low): a
    side channel, a log, or dropped.

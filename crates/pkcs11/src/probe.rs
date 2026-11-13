@@ -461,6 +461,85 @@ fn probe_wrapping(made: &mut Made, profile: &mut Profile, transport: (ObjectHand
     }
 }
 
+/// What the `probe` verb asks beyond the probing itself.
+pub struct Request<'a> {
+    /// Also run the write probes ([`probe`]).
+    pub write: bool,
+    /// Name the generated profile; default: `claimed`'s name, else `<provider>/<version>`.
+    pub name: Option<&'a str>,
+    /// The committed profile the result is diffed against, if any.
+    pub claimed: Option<&'a Profile>,
+    /// The result is written to a file or judged against `claimed`, not only printed.
+    pub kept: bool,
+}
+
+/// The `probe` verb: probe `tok` and name the result. What the probe could not decide is
+/// noted.
+///
+/// Regeneration is the diff-and-write flow: the profile takes the claimed profile's name (a
+/// module that hides its version — kryoptic reports 0.0 — still regenerates its committed
+/// profile, whose name is the repo's, D9).
+///
+/// # Errors
+///
+/// `Validation` (17) when the result would be kept but this build's cryptoki is unpatched;
+/// [`probe`]'s own refusals.
+pub fn generate(tok: &Token, cfg: &TokenCfg, req: &Request, notes: &mut crate::ops::Notes) -> Result<Profile> {
+    // cryptoki drops from C_GetMechanismList every mechanism it cannot name, so through
+    // an unpatched binding the advertisement is short (kryoptic's CKM_AES_KEY_WRAP_KWP
+    // [run]): such a build may print a probe, never write or judge a committed one.
+    if !crate::binding::patched() {
+        if req.kept {
+            return Err(KmError::Validation(
+                "this build's cryptoki lacks the Nix patches and drops the mechanisms it \
+                 cannot name from C_GetMechanismList: probe with the Nix-built cakeys to \
+                 write or diff a profile"
+                    .into(),
+            ));
+        }
+        notes.note("probe: this build's cryptoki is unpatched: the advertise list may be short");
+    }
+    let mut probed = probe(tok, cfg, req.write)?;
+    for why in &probed.undetermined {
+        notes.note(format_args!("probe: {why}"));
+    }
+    if let Some(n) = req.name {
+        n.clone_into(&mut probed.profile.profile);
+    } else if let Some(claimed) = req.claimed {
+        probed.profile.profile.clone_from(&claimed.profile);
+    }
+    Ok(probed.profile)
+}
+
+/// The rows in which a generated profile differs from the committed `claimed`; none means it
+/// conforms. A read-only probe observes only the match keys, the advertisement and the
+/// reported key sizes, so only those can conform or drift.
+#[must_use]
+pub fn drift(generated: &Profile, claimed: &Profile, write: bool) -> Vec<String> {
+    if write { cakeys_profile::diff(generated, claimed) } else { cakeys_profile::diff::read_only(generated, claimed) }
+}
+
+/// Keep, in a generated `profile` about to replace the file with content `existing` (named
+/// `shown` in messages), the one section the probe does not generate: the file's [migration]
+/// claims (MIGRATE.md evidence, never probe-observable).
+///
+/// # Errors
+///
+/// `Validation` (17) for a file that does not parse (regenerating it would silently drop
+/// those claims), and for any existing file from a read-only probe (it would drop every
+/// write-probe row).
+pub fn keep_claims(profile: &mut Profile, existing: &str, shown: &str, write: bool) -> Result<()> {
+    if !write {
+        return Err(KmError::Validation(format!(
+            "{shown}: a read-only probe would overwrite its generate, wrap and unwrap rows; pass --write"
+        )));
+    }
+    let old = Profile::from_toml(existing)
+        .map_err(|e| KmError::Validation(format!("{shown}: not a profile, refusing to overwrite: {e}")))?;
+    profile.migration = old.migration;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

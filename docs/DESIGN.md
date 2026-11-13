@@ -1,8 +1,9 @@
-# cakeys design (state at 2026-11-12)
+# cakeys design (state at 2026-11-13)
 
 This is the authoritative description of what is built. `PLAN.md` is the roadmap and history;
 where the two disagree, this document wins. Review findings and open issues are tracked in
-`docs/REVIEW-2026-11-11.md`. Visual overviews of the model, the verbs and the Nix loop are in
+`docs/REVIEW-2026-11-11.md` (code) and `docs/REVIEW-2026-11-13.md` (architecture); the map of
+the repository is `docs/ARCHITECTURE.md`. Visual overviews of the model, the verbs and the Nix loop are in
 `docs/diagrams.md`.
 
 ## 1. Purpose
@@ -10,8 +11,9 @@ where the two disagree, this document wins. Review findings and open issues are 
 Declare PKCS#11 (and later TPM) objects in a file, and address them by a **content-addressed
 identity (CA-ID)**: a hash of the object's material, not a name. Names (labels, IDs, URIs, slot
 numbers) are only *locators*: arbitrary, mutable, and not identity. A lock file records each
-object's CA-IDs. Every use first proves that the token still holds that material. In Nix this
-check runs inside the build sandbox as a pseudo fixed-output check.
+object's CA-IDs. A check before each use proves that the token still holds that material: the
+guarantee is *verified at check time*, like a file checked and then opened (§8.2 names the
+window). In Nix this check runs inside the build sandbox as a pseudo fixed-output check.
 
 ## 2. Model
 
@@ -149,6 +151,10 @@ Strongest first. The mode is recorded per realisation; a downgrade fails (exit 1
   locked ID, anchor, binding, type or immutable is never overwritten — those changes fail even
   when the lock is written. `--no-update-lock` compares only (`--update-lock` names the
   default). First use is trust on first use, so the review is the `keys.lock` diff.
+- **A write that replaces a realisation says what it accepted,** one line each (`re-recorded
+  …`): what keys.toml changed (locator, object, `publicOnly`, spec digest) and policy
+  attributes the lock did not record are notes; a policy attribute or immutable that changed
+  on the token, which nobody edited, is a warning — `a_write_says_what_it_rerecorded`.
 - **Where the lock cannot be written, a writing run is refused (14) before any token is
   touched** — never a key created and then not recorded — naming `--no-update-lock`: inside a
   Nix build sandbox (`NIX_BUILD_TOP` set without `IN_NIX_SHELL`, which `nix develop` also
@@ -547,14 +553,16 @@ Exit codes:
 | Crate | Role |
 |---|---|
 | `cakeys-core` | No `cryptoki`, no token access: config (`config`, typed classes, key types and schemes in `types`/`id`), the boolean-attribute table (`attrs`), CA-IDs (`id`), proof-of-possession host math and signature verification (`pop`, `sig`), what a spec asks for (`plan`: `Target`, `plan_mode`), and the lock rules (`reconcile`: `compare`, `record`, `Notes`), unit-tested without an HSM |
-| `cakeys-pkcs11` | the `cryptoki` token layer (`token/`: session and SO step, policy, generation, identity, proof of possession, URIs), the verbs (`ops`), `Provider` and `Registry`, and the built-in providers without code of their own (`providers`: softhsm, kryoptic, p11-kit) |
+| `cakeys-profile` | Capability profiles as data (docs/PROVIDERS.md): the baseline generated from the vendored PKCS#11 headers, the embedded module and layer profiles (`profiles/`), the effective view of a stack (`Effective`, `Verdict`) and the profile diff. No token access |
+| `cakeys-pkcs11` | the `cryptoki` token layer (`token/`: session and SO step, policy, generation, identity, proof of possession, URIs), the verbs (`ops`, with `create` over its selected pairs; `supports`; `probe`; `migrate`, the move planning), profile resolution and the static gate (`resolution`, `binding`, `gate`), `Provider` and `Registry`, and the built-in providers without code of their own (`providers`: softhsm, kryoptic, p11-kit) |
 | `cakeys-{ykcs11,tpm2-pkcs11}` | providers with native paths and dependencies of their own (Yubico roots; tss-esapi, sqlite) |
-| `cakeys` (crates/cli) | CLI as a library: `main(registry)`, `default_registry()`; `examples/custom-provider.rs`. Cargo features `ykcs11` and `tpm2` (both default) link those providers; `checks.minimal` builds without them, and so without tpm2-tss and sqlite |
+| `cakeys` (crates/cli) | Arguments, files and printing only — the verbs' logic is in `cakeys-pkcs11`, so another front end need not reimplement it (`validate`'s loop over the gate is the one exception left). CLI as a library: `main(registry)`, `default_registry()`; `examples/custom-provider.rs`. Cargo features `ykcs11` and `tpm2` (both default) link those providers; `checks.minimal` builds without them, and so without tpm2-tss and sqlite |
 
 ### 6.2 Providers
 
-- **Hooks:** `name`, `matches(&ModuleInfo)`, and optionally `mechanisms` (filter), `ec_point`
-  (repair), `hint` (error advice), `check_options` (the token's `[tokens.<t>.options]`; the
+- **Hooks:** `name`, `matches(&ModuleInfo)`, and optionally `mechanisms` (filter) and
+  `migration` (both overridden by no in-tree provider today: the capability profiles answer
+  them; kept for real-world HSM providers, review A4), `ec_point` (repair), `hint` (error advice), `check_options` (the token's `[tokens.<t>.options]`; the
   default refuses any), `manages_as_so`/`check_create`/`keeps_destroyed_keys` (key
   management on modules that create only as SO or cannot delete keys: ykcs11) and
   `attestation`/`attest` (§3.7).
@@ -562,7 +570,8 @@ Exit codes:
   registered provider that matches, else `generic` — `provider_is_detected_or_named`, registry unit
   test.
 - **The fix-up rule:** a hook must return exactly what a spec-compliant module would, so
-  identities are portable. That is also why the provider is not recorded in the lock.
+  identities are portable. That is also why the provider never takes part in an identity: the
+  lock records it only as provenance (`provenance.provider`, §4.2), where a change warns.
 
 | Provider | Quirks handled or recorded |
 |---|---|
@@ -684,8 +693,31 @@ forces it. The VM test covers all of this.
 
 ### 8.2 Not enforced / known gaps
 
-See `docs/REVIEW-2026-11-11.md`.
+See `docs/REVIEW-2026-11-11.md` and, for the threat model these follow from,
+`docs/REVIEW-2026-11-13.md`.
 
+- **The check is not the use.** A consumer opens the key by its URI after `check` returns; a
+  key swapped in between is not seen until the next check. This is the contract of a file or
+  an HTTP resource — checked, then used — and is accepted as such (docs/CONTRACT.md, "The gap
+  between check and use").
+- **A build served from the Nix cache contacts no token** (§7.2); `nix build --check` forces
+  the check.
+- **The lock is the trust root, and is not signed.** Whoever can change `keys.lock` (or
+  `keys.toml`) can re-pin an object. Until the lock is signed (docs/SCOPE.md, "Signing the lock
+  file"), both files must live in version control whose history is signed and reviewed.
+- **A commitment ID lets anyone holding the lock test guesses of a low-entropy secret.** The
+  ID is SHA-256 of a MAC, under the key, of a public label (§3.3): for a random key it reveals
+  nothing usable, but for a passphrase or other guessable value held as `CKK_GENERIC_SECRET`
+  (or an HMAC key type) each guess can be checked offline against the lock. Private data
+  objects are not hashed for this reason; secret keys are, on the assumption that they are
+  random. Do not commit a lock that pins a guessable secret (review A9).
+- **`tpm-certify` is experimental and pending review** (review A8): it reads tpm2-pkcs11's
+  private store (sqlite schema, YAML attributes, the sealed wrapping key), which the module
+  does not offer as a stable interface, and it does not yet refuse a module version it was not
+  tested with.
+- **The schema accepts options that are not implemented** (review A6): `identity.allow` and
+  the modes `commit-at-creation`, `host-at-import` and `token-specific` parse and validate,
+  then every verb refuses them (15).
 - **`token-asserted` bindings are unproven.** With the opt-in or `publicOnly`, a private key is
   tied to its identity only by the token's word (H1 is fixed for every `pop-*` proof —
   `h1_a_private_key_beside_an_unbound_public_object_is_a_conflict`,

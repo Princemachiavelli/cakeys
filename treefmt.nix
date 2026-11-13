@@ -10,8 +10,8 @@ let
       "MD025" # several top-level headings: PLAN.md is a set of documents in one file
       "MD036" # bold paragraph labels: the research notes use them as run-in headings
     ];
-    # RESPONSE.md is a reply verbatim: one quoted question after another, each answered inline.
-    per-file-ignores."RESPONSE.md" = [
+    # docs/working/RESPONSE.md is a reply verbatim: one quoted question after another, each answered inline.
+    per-file-ignores."docs/working/RESPONSE.md" = [
       "MD028"
       "MD041"
     ];

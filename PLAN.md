@@ -14,7 +14,7 @@ Parked deliberately; the lock stays `version = 1`, a draft, until the reviews pa
   (`piv-attestation`, `tpm-certify`, docs/DESIGN.md §3.7): YubiKey PIV verified to the pinned
   Yubico root, and a native `TPM2_Certify` with a cakeys-provisioned AK — pinned per
   realisation (an attestation ID is per device), always beside a portable scheme, never
-  standalone. Review findings and their fixes: `ISSUES.md`. Remainders still parked:
+  standalone. Review findings and their fixes: `docs/working/ISSUES.md`. Remainders still parked:
   - `binding = "attested"` as an opt-in replacement for `pop-*` (the touch-free PIV case);
   - EK-chaining the AK (today the AK is TOFU through the pinned `attestation.root`);
   - vendor HSM attestation blobs (Luna PKC, Google, nShield — out-of-band, not researched).
@@ -295,7 +295,7 @@ Caveats for secret keys:
   - Vendor-defined attributes. These can be carried as per-token *extensions* that are not hashed.
 - **Encoding:** a deterministic encoding such as sorted-key canonical JSON or deterministic CBOR, so that the same TOML always hashes the same way. Attribute names follow the PKCS#11 / TPM spec names verbatim, with no invented vocabulary.
 
-# Decisions (2026-11-11, from RESPONSE.md)
+# Decisions (2026-11-11, from docs/working/RESPONSE.md)
 
 | Topic | Decision |
 |---|---|

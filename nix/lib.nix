@@ -1,4 +1,4 @@
-# Pure-eval view of keys.toml + keys.lock (PLAN.md, "Nix integration").
+# Pure-eval view of keys.toml + keys.lock (docs/DESIGN.md §7.1).
 # Builtins only, so it works without nixpkgs (e.g. inside a test VM).
 let
   optionalString = c: s: if c then s else "";

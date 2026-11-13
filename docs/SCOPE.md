@@ -77,7 +77,9 @@ spec-compliant module would.
   a downgrade.
 - **Signing the lock file** (idea, 2026-11-13). The lock is the trust root of every check:
   whoever can edit `keys.lock` can re-pin an object to their own key, and `check` then passes.
-  Today its integrity is the repository's (review, signed commits, the flake's `narHash`). The
+  Today its integrity is the repository's (review, signed commits, the flake's `narHash`):
+  until the lock is signed, the stated requirement is that `keys.lock` and `keys.toml` live in
+  version control whose history is signed and reviewed (decided 2026-11-13). The
   idea: every lock write (`realise`, `create`, `delete`, `gc --apply`) signs the canonical lock
   bytes — with a token key cakeys itself manages, e.g. a PIV signature slot (`pop-sign-pin`) —
   into a detached `keys.lock.sig`, and `check`/`verify` refuse a lock that does not verify.

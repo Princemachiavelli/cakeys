@@ -295,7 +295,7 @@ pub struct IdentityCfg {
     pub allow: Vec<Mode>,
 }
 
-/// Identity modes, strongest first (see PLAN.md, "Per-token identity modes").
+/// Identity modes, strongest first (docs/DESIGN.md §3.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Mode {

@@ -4,9 +4,10 @@ Content-addressed identity for PKCS#11 (and later TPM) objects, as a Nix flake.
 
 Declare keys, certificates and data objects in `keys.toml`. cakeys finds them on a token by a
 locator (`CKA_LABEL`/`CKA_ID`), identifies them by a **hash of their material** (a CA-ID), and
-records that hash in `keys.lock`. A label or URI can be changed or reused; the hash cannot. Every
-use, including inside a Nix build sandbox, first checks that the token still holds exactly that
-material. A private key also proves possession: by signing, deriving (ECDH) or decrypting (OAEP) a
+records that hash in `keys.lock`. A label or URI can be changed or reused; the hash cannot. A check
+before each use, including inside a Nix build sandbox, verifies that the token still holds exactly
+that material (verified at check time: the key is then opened by its URI, like a file checked and
+then read). A private key also proves possession: by signing, deriving (ECDH) or decrypting (OAEP) a
 fresh challenge — whichever capability the key declares — which the host checks against the public
 key it hashed.
 
@@ -26,7 +27,9 @@ Status: proof of concept.
 - **At a glance (diagrams):** [`docs/diagrams.md`](docs/diagrams.md).
 - **The two files, annotated:** [`docs/CONFIG.md`](docs/CONFIG.md) (`keys.toml`) and
   [`docs/LOCK.md`](docs/LOCK.md) (`keys.lock`): what each line does, and why the tables are split.
-- **Open review findings:** [`docs/REVIEW-2026-11-11.md`](docs/REVIEW-2026-11-11.md).
+- **Map of the repository:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+- **Open review findings:** [`docs/REVIEW-2026-11-11.md`](docs/REVIEW-2026-11-11.md) (code) and
+  [`docs/REVIEW-2026-11-13.md`](docs/REVIEW-2026-11-13.md) (architecture, with the threat model).
 - **Roadmap and history:** [`PLAN.md`](PLAN.md).
 
 ## Example
@@ -61,15 +64,17 @@ pkcs11:token=main;serial=...;object=signing;type=private
 ```
 
 `realise` and `delete` write the lock by default, filling gaps only — a locked ID is never
-overwritten. Where the lock cannot be written (a Nix build sandbox, a read-only lock or
+overwritten. A realisation that changed (its locator, spec or policy attributes) is re-recorded,
+and each accepted change is printed (`re-recorded …`). Where the lock cannot be written (a Nix build sandbox, a read-only lock or
 directory) they refuse up front unless `--no-update-lock` is passed.
 
 Verbs:
 
 - `validate`, `resolve`, `verify`, `realise [--no-update-lock]`, `create [<spec>] [--token]`,
   `delete [--if-match] [--no-update-lock]`, `check <object>[.id.<scheme>]`, `gc [--apply]` and
-  `caps`.
-- They behave like HTTP verbs: safe to repeat, never create over an occupied locator, never delete
+  `caps`; `supports` and `probe` for the capability profiles; `export`, `migrate` (`--dry-run`
+  plans only) and `transport`.
+- The first group behaves like HTTP verbs: safe to repeat, never create over an occupied locator, never delete
   an unexpected object. `realise` and `check` create only where `autoCreate` opts first use in;
   `create` makes every key the lock does not pin yet, explicitly. `gc` prints lock entries the
   config no longer names and removes exactly what it printed with `--apply`.

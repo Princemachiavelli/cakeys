@@ -262,3 +262,118 @@ pub fn transport(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
     let spki = tok.spki(h, &t.on_token.locator)?;
     Transport::new(&tok.name, tok.provider.name(), t.object_name, &spki, tok.mechanism_names())
 }
+
+/// Where `export` or `migrate` sends the material.
+pub enum Dest<'a> {
+    /// A token in keys.toml.
+    Token(&'a str),
+    /// A target this host cannot reach, by its transport file: the parsed file, and how to
+    /// name it in messages.
+    Transport(&'a Transport, &'a str),
+    File(FileFormat),
+}
+
+/// What to plan moving.
+pub struct Request<'a> {
+    /// Only this object; default: every object realised on `from`.
+    pub object: Option<&'a str>,
+    /// The source token.
+    pub from: &'a str,
+    pub dest: Dest<'a>,
+    /// Allow the `host` and `file` paths: plaintext in this process's memory (MIGRATE.md D2).
+    pub host_plaintext: bool,
+}
+
+/// The plans of one invocation (MIGRATE.md D9).
+pub struct Moves {
+    /// The destination's name: the target token, or the file format.
+    pub to: String,
+    /// Where each side's capabilities came from: the open `token`, the `lock`, the `transport
+    /// file`, or `-` for a file.
+    pub source_from: &'static str,
+    pub target_from: &'static str,
+    pub plans: Vec<Plan>,
+}
+
+impl Moves {
+    /// Whether every object can move as invoked.
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` (15) when any plan is blocked.
+    pub fn ready(&self) -> Result<()> {
+        let blocked = self.plans.iter().filter(|p| !p.ready).count();
+        if blocked > 0 {
+            return Err(KmError::Unsupported(format!(
+                "{blocked} of {} objects cannot move as invoked",
+                self.plans.len()
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Plan each object's move as `req` asks, from what the lock pins. `open` opens a token
+/// read-only; one that does not open is planned from what the lock recorded there.
+///
+/// # Errors
+///
+/// [`materials`]' refusals; a side that neither opens nor is recorded in the lock (the open's
+/// error); `Unsupported` for a transport file of a provider this build does not link, and
+/// `Validation` when its profile does not map.
+pub fn plan_moves(
+    lock: &Lock,
+    registry: &Registry,
+    req: &Request,
+    open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
+    notes: &mut Notes,
+) -> Result<Moves> {
+    let materials = materials(lock, req.from, req.object)?;
+    let mut side = |name: &str| side_or_lock(name, lock, registry, open, notes);
+    let (source, source_from) = side(req.from)?;
+    let mut allow = Allow { host_plaintext: req.host_plaintext, ..Allow::default() };
+    let (target, target_from, to_name) = match &req.dest {
+        Dest::Token(name) => {
+            let (side, from) = side(name)?;
+            (Some(side), from, (*name).to_owned())
+        }
+        Dest::Transport(t, shown) => {
+            // Phase 3b sets this only after the source's SO marked the key trusted there.
+            allow.trusted_transport = t.trusted;
+            let side = side_from_transport(t, registry)
+                .ok_or_else(|| {
+                    KmError::Unsupported(format!("{shown}: provider '{}' is not in this build", t.provider))
+                })?
+                .map_err(|e| KmError::Validation(format!("{shown}: {e}")))?;
+            (Some(side), "transport file", t.token.clone())
+        }
+        Dest::File(f) => (None, "-", format!("{f:?} file").to_lowercase()),
+    };
+    let to = match (&target, &req.dest) {
+        (Some(side), _) => To::Token(side),
+        (None, Dest::File(f)) => To::File(*f),
+        (None, _) => unreachable!("only a file has no side"),
+    };
+    let plans = materials.iter().map(|m| plan(m, &source, &to, allow)).collect();
+    Ok(Moves { to: to_name, source_from, target_from, plans })
+}
+
+/// A token's capabilities: from the open token, else from what the lock recorded there.
+fn side_or_lock(
+    name: &str,
+    lock: &Lock,
+    registry: &Registry,
+    open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
+    notes: &mut Notes,
+) -> Result<(Side, &'static str)> {
+    match open(name, notes) {
+        Ok(tok) => Ok((side(&tok)?, "token")),
+        Err(e) => match side_from_lock(name, lock, registry) {
+            Some(side) => {
+                notes.note(format_args!("capabilities of '{name}' come from the lock: the token did not open ({e})"));
+                Ok((side?, "lock"))
+            }
+            None => Err(e),
+        },
+    }
+}
