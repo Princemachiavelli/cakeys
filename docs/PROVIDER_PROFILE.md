@@ -7,16 +7,16 @@ Mostly yes to both, with one firm line.
 A provider today mixes two kinds of knowledge:
 
 ┌───────────────────────────┬────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┬───────────────────────┐
-│           Kind            │                                                        Examples                                                        │      Needs code?      │
+│ Kind            │                                                        Examples                                                        │ Needs code? │
 ├───────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────┤
-│ Capabilities and quirks a │ usable mechanisms; OAEP hashes actually implemented (SoftHSM: SHA-1 only); curves it can generate (kryoptic: no        │ No. A declarative     │
-│  module shows through     │ secp256k1); unwrap-template rules (SoftHSM rejects CKA_VALUE_LEN; kryoptic sets no usage unless asked); raw or DER     │ profile can express   │
-│ PKCS#11                   │ Edwards points; whether private keys carry CKA_PUBLIC_KEY_INFO; whether create/delete need the admin (SO) login;       │ all of it             │
-│                           │ whether delete really deletes                                                                                          │                       │
+│ Capabilities and quirks a │ usable mechanisms; OAEP hashes actually implemented (SoftHSM: SHA-1 only); curves it can generate (kryoptic: no        │ No. A declarative │
+│ module shows through │ secp256k1); unwrap-template rules (SoftHSM rejects CKA_VALUE_LEN; kryoptic sets no usage unless asked); raw or DER │ profile can express │
+│ PKCS#11 │ Edwards points; whether private keys carry CKA_PUBLIC_KEY_INFO; whether create/delete need the admin (SO) login; │ all of it │
+│ │ whether delete really deletes │ │
 ├───────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────┤
-│ Behaviour outside         │ tpm2's P-521 point repair; YubiKey attestation and its pinned roots; TPM2_Certify; tpm2_ptool; vendor export/import    │ Yes. This stays in a  │
-│ PKCS#11, or data that has │ tools                                                                                                                  │ provider crate        │
-│  to be rewritten          │                                                                                                                        │                       │
+│ Behaviour outside │ tpm2's P-521 point repair; YubiKey attestation and its pinned roots; TPM2_Certify; tpm2_ptool; vendor export/import    │ Yes. This stays in a │
+│ PKCS#11, or data that has │ tools │ provider crate        │
+│ to be rewritten │                                                                                                                        │ │
 └───────────────────────────┴────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┴───────────────────────┘
 
 So a provider crate could shrink to a profile (TOML, embedded or loadable) plus hooks only where code is unavoidable. A vendor whose module needs no fix-ups would need no Rust at all: provider = "<profile>" would be enough. That's a reasonable future step, and it fits the scope rule that vendor knowledge lives outside the core.
@@ -33,6 +33,7 @@ Everything in the first row can be probed through the module itself. The referen
   - Vendor onboarding: a vendor, or you with a new HSM, can find what works without writing a crate.
 
 Where probing stops:
+
 - Destructive facts on real hardware. ykcs11's delete that leaves the key is only observable by deleting, so on a YubiKey it can only be probed on a scratch slot.
 - What a module only claims to do. A module can show behaviour without that being the reason behind it; a probe records observations, not explanations.
 - Anything outside PKCS#11: attestation formats, trust anchors, vendor tools. Those still need code.
