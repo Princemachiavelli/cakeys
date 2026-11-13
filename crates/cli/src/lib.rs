@@ -3,7 +3,9 @@
 
 use anyhow::Context;
 use cakeys_core::KmError;
-use cakeys_core::config::{Config, Lock, gc, load_config, load_lock, lock_for_update, lock_unwritable, save_lock};
+use cakeys_core::config::{
+    Config, Lock, TokenCfg, gc, load_config, load_lock, lock_for_update, lock_unwritable, save_lock,
+};
 use cakeys_core::migrate::{Exposure, Method, Side, Transport};
 use cakeys_pkcs11::migrate::{self, Allow, FileFormat, Plan, To};
 use cakeys_pkcs11::ops::{self, LockWrite, Notes, Target};
@@ -11,7 +13,7 @@ use cakeys_pkcs11::token::Access;
 use cakeys_pkcs11::{Registry, Token, providers};
 use clap::{Parser, Subcommand};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// Content-addressed identity for PKCS#11 objects.
@@ -155,56 +157,64 @@ enum Cmd {
     /// pure data, no token touched. NAME is a mechanism (`CKM_*`), key type (`CKK_*`),
     /// parameter set (`CKP_*`) or curve; `--bits` asks for an RSA size; `--class` lists a
     /// baseline class; `--oaep` lists the wrap hashes. Exit 0 yes, 15 no, 16 unknown.
-    Supports {
-        /// What to ask about: `CKM_*`, `CKK_*`, `CKP_*` or a curve name.
-        #[arg(required_unless_present_any = ["class", "oaep"])]
-        name: Option<String>,
-        /// The module profile, e.g. softhsm/2.7 (or its family, when only one is loaded).
-        #[arg(long, conflicts_with = "token")]
-        profile: Option<String>,
-        /// The token in keys.toml whose `provider` names the profile family.
-        #[arg(long)]
-        token: Option<String>,
-        /// A delta layer on top, repeatable: p11-kit/0.26, cryptoki/0.12-unpatched, swtpm.
-        #[arg(long = "layer")]
-        layers: Vec<String>,
-        /// List the members of a baseline class (pq, hmac, key-wrap, oaep) with verdicts.
-        #[arg(long)]
-        class: Option<String>,
-        /// List the RSA-OAEP hashes usable for wrapping.
-        #[arg(long)]
-        oaep: bool,
-        /// An RSA modulus size to ask about (with a `CKK_RSA` query).
-        #[arg(long)]
-        bits: Option<u32>,
-        /// A directory of extra or replacement profile files, read recursively (D11).
-        #[arg(long = "profiles")]
-        profiles_dir: Option<PathBuf>,
-    },
+    Supports(SupportsArgs),
     /// Generate the token's capability profile by probing it (docs/PROVIDERS.md phase 3):
     /// read-only probes always; with --write, the probes that generate, wrap, unwrap and
     /// delete — only on a token keys.toml marks scratch, refused (17) on any other. With
     /// --diff, the result is compared against a committed profile: any difference is
     /// printed and the exit is 15.
-    Probe {
-        #[arg(long)]
-        token: String,
-        /// Also run the write probes, against a scratch token only.
-        #[arg(long)]
-        write: bool,
-        /// Write the generated profile here; default: stdout.
-        #[arg(long)]
-        out: Option<PathBuf>,
-        /// Name the generated profile, e.g. `tpm2-pkcs11/1.10+swtpm` for a module on one kind of
-        /// hardware; default: the claimed profile's name with --diff, else `<provider>/<version>`.
-        #[arg(long)]
-        name: Option<String>,
-        /// Diff against this profile (name or family), from the embedded set or --profiles.
-        #[arg(long)]
-        diff: Option<String>,
-        #[arg(long = "profiles")]
-        profiles_dir: Option<PathBuf>,
-    },
+    Probe(ProbeArgs),
+}
+
+/// The `supports` query.
+#[derive(clap::Args)]
+struct SupportsArgs {
+    /// What to ask about: `CKM_*`, `CKK_*`, `CKP_*` or a curve name.
+    #[arg(required_unless_present_any = ["class", "oaep"])]
+    name: Option<String>,
+    /// The module profile, e.g. softhsm/2.7 (or its family, when only one is loaded).
+    #[arg(long, conflicts_with = "token")]
+    profile: Option<String>,
+    /// The token in keys.toml whose `provider` names the profile family.
+    #[arg(long)]
+    token: Option<String>,
+    /// A delta layer on top, repeatable: p11-kit/0.26, cryptoki/0.12-unpatched, swtpm.
+    #[arg(long = "layer")]
+    layers: Vec<String>,
+    /// List the members of a baseline class (pq, hmac, key-wrap, oaep) with verdicts.
+    #[arg(long)]
+    class: Option<String>,
+    /// List the RSA-OAEP hashes usable for wrapping.
+    #[arg(long)]
+    oaep: bool,
+    /// An RSA modulus size to ask about (with a `CKK_RSA` query).
+    #[arg(long)]
+    bits: Option<u32>,
+    /// A directory of extra or replacement profile files, read recursively (D11).
+    #[arg(long = "profiles")]
+    profiles_dir: Option<PathBuf>,
+}
+
+/// What `probe` probes, and where the result goes.
+#[derive(clap::Args)]
+struct ProbeArgs {
+    #[arg(long)]
+    token: String,
+    /// Also run the write probes, against a scratch token only.
+    #[arg(long)]
+    write: bool,
+    /// Write the generated profile here; default: stdout.
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Name the generated profile, e.g. `tpm2-pkcs11/1.10+swtpm` for a module on one kind of
+    /// hardware; default: the claimed profile's name with --diff, else `<provider>/<version>`.
+    #[arg(long)]
+    name: Option<String>,
+    /// Diff against this profile (name or family), from the embedded set or --profiles.
+    #[arg(long)]
+    diff: Option<String>,
+    #[arg(long = "profiles")]
+    profiles_dir: Option<PathBuf>,
 }
 
 /// How `export` and `migrate` may move material.
@@ -304,10 +314,8 @@ fn create_pairs<'a>(
     {
         return Err(KmError::NotFound(format!("spec '{s}'")));
     }
-    if let Some(t) = token
-        && !cfg.tokens.contains_key(t)
-    {
-        return Err(KmError::Validation(format!("unknown token '{t}'")));
+    if let Some(t) = token {
+        token_cfg(cfg, t)?;
     }
     if let (Some(s), Some(t)) = (spec, token) {
         Target::new(cfg, s, t)?;
@@ -327,7 +335,7 @@ fn create_pairs<'a>(
 ///
 /// At most one token is open at a time: tokens of one module share its library, which a second
 /// open would initialize again (`CKR_CRYPTOKI_ALREADY_INITIALIZED`).
-fn create(
+fn create_each(
     cfg: &Config,
     pairs: &[(&str, &str)],
     named: bool,
@@ -388,8 +396,25 @@ fn open_quiet(
     name: &str,
     access: Access,
 ) -> Result<Token, KmError> {
-    let tcfg = cfg.tokens.get(name).ok_or_else(|| KmError::Validation(format!("unknown token '{name}'")))?;
-    Token::open(name, tcfg, modules.get(name).map(String::as_str), registry, access)
+    Token::open(name, token_cfg(cfg, name)?, modules.get(name).map(String::as_str), registry, access)
+}
+
+/// keys.toml's entry for the token `name`.
+fn token_cfg<'a>(cfg: &'a Config, name: &str) -> Result<&'a TokenCfg, KmError> {
+    cfg.tokens.get(name).ok_or_else(|| KmError::Validation(format!("unknown token '{name}'")))
+}
+
+/// The embedded capability profiles, plus any `--profiles` directory (D11).
+fn profile_set(dir: Option<&Path>) -> anyhow::Result<cakeys_profile::Set> {
+    let set =
+        cakeys_profile::Set::embedded().map_err(KmError::Validation).context("the embedded profiles do not parse")?;
+    match dir {
+        Some(dir) => Ok(set
+            .with_dir(dir)
+            .map_err(KmError::Validation)
+            .with_context(|| format!("--profiles {}", dir.display()))?),
+        None => Ok(set),
+    }
 }
 
 /// What the `supports` query resolved and answered.
@@ -405,67 +430,73 @@ struct Support {
 /// Resolve what the `supports` query asks (docs/PROVIDERS.md): the embedded profiles plus
 /// any `--profiles` directory, the module profile (named, or through a token's `provider`),
 /// the delta layers on top, and the answers.
-#[allow(clippy::too_many_arguments)] // one parameter per CLI flag: grouping them buys nothing
-fn supports(
-    cfg: &Config,
-    profile: Option<&str>,
-    token: Option<&str>,
-    layers: &[String],
-    class: Option<&str>,
-    oaep: bool,
-    name: Option<&str>,
-    bits: Option<u32>,
-    profiles_dir: Option<&std::path::Path>,
-) -> anyhow::Result<Support> {
-    let validation = |e: String| -> anyhow::Error { KmError::Validation(e).into() };
-    let mut set =
-        cakeys_profile::Set::embedded().map_err(validation).with_context(|| "the embedded profiles do not parse")?;
-    if let Some(dir) = profiles_dir {
-        set = set.with_dir(dir).map_err(validation).with_context(|| format!("--profiles {}", dir.display()))?;
-    }
-    let module = match (profile, token) {
-        (Some(p), _) => Some(set.find(p).map_err(validation)?),
+fn supports(cfg: &Config, a: &SupportsArgs) -> anyhow::Result<Support> {
+    let set = profile_set(a.profiles_dir.as_deref())?;
+    let find = |name: &str| set.find(name).map_err(KmError::Validation);
+    let module = match (&a.profile, &a.token) {
+        (Some(p), _) => Some(find(p)?),
         (None, Some(t)) => {
-            let tcfg = cfg.tokens.get(t).ok_or_else(|| KmError::Validation(format!("unknown token '{t}'")))?;
-            let family = tcfg.provider.as_deref().ok_or_else(|| {
+            let family = token_cfg(cfg, t)?.provider.as_deref().ok_or_else(|| {
                 KmError::Validation(format!("token '{t}' names no provider; set tokens.{t}.provider or pass --profile"))
             })?;
-            Some(set.find(family).map_err(validation)?)
+            Some(find(family)?)
         }
         (None, None) => None,
     };
     // The cryptoki binding layer is always in the stack (docs/PROVIDERS.md phase 2): what it
     // subtracts is decided by the build this binary runs against, so an explicit `--layer
     // cryptoki/0.12` adds nothing it has not already decided.
-    let mut resolved: Vec<cakeys_profile::Profile> = vec![cakeys_pkcs11::binding::layer().map_err(validation)?];
-    for l in layers {
-        let p = set.find(l).map_err(validation)?.clone();
-        if p.profile == "cryptoki/0.12" {
-            continue;
+    let mut resolved: Vec<cakeys_profile::Profile> =
+        vec![cakeys_pkcs11::binding::layer().map_err(KmError::Validation)?];
+    for l in &a.layers {
+        let p = find(l)?;
+        if p.profile != "cryptoki/0.12" {
+            resolved.push(p.clone());
         }
-        resolved.push(p);
     }
     let stack: Vec<&cakeys_profile::Profile> = resolved.iter().collect();
-    let baseline = set.baseline().map_err(validation)?;
+    let baseline = set.baseline().map_err(KmError::Validation)?;
     let eff = cakeys_profile::Effective::new(baseline, module, &stack);
-    let verdicts = if let Some(class) = class {
-        eff.class(class).ok_or_else(|| {
+    let verdicts = match (&a.class, &a.name) {
+        (Some(class), _) => eff.class(class).ok_or_else(|| {
             KmError::Validation(format!(
                 "no class '{class}' in baseline {} (classes: {})",
                 baseline.baseline,
                 baseline.class.keys().cloned().collect::<Vec<_>>().join(", ")
             ))
-        })?
-    } else if oaep {
-        eff.oaep()
-    } else if let Some(name) = name {
-        vec![(name.to_owned(), eff.query(name, bits))]
-    } else {
-        unreachable!("clap requires a name, --class or --oaep")
+        })?,
+        (None, _) if a.oaep => eff.oaep(),
+        (None, Some(name)) => vec![(name.clone(), eff.query(name, a.bits))],
+        (None, None) => unreachable!("clap requires a name, --class or --oaep"),
     };
-    let module_name = module.map_or_else(|| "(none)".to_owned(), |m| m.profile.clone());
-    let stack_names: Vec<String> = resolved.iter().map(|p| p.profile.clone()).collect();
-    Ok(Support { module: module_name, layers: stack_names, verdicts })
+    Ok(Support {
+        module: module.map_or_else(|| "(none)".to_owned(), |m| m.profile.clone()),
+        layers: resolved.iter().map(|p| p.profile.clone()).collect(),
+        verdicts,
+    })
+}
+
+/// The `supports` verb: answers from the capability profiles alone (docs/PROVIDERS.md), so it
+/// runs with an empty `cfg` when there is no keys.toml and no `--token` to look up.
+fn run_supports(cfg: &Config, a: &SupportsArgs, notes: &mut Notes) -> anyhow::Result<()> {
+    use cakeys_profile::Verdict;
+    let s = supports(cfg, a)?;
+    notes.note(format_args!("profiles: module {}, layers [{}] (docs/PROVIDERS.md)", s.module, s.layers.join(", ")));
+    for (n, v) in &s.verdicts {
+        println!("{n}: {v}");
+    }
+    let no: Vec<&str> =
+        s.verdicts.iter().filter(|(_, v)| matches!(v, Verdict::No { .. })).map(|(n, _)| n.as_str()).collect();
+    if !no.is_empty() {
+        return Err(KmError::Unsupported(format!("not supported: {}", no.join(", "))).into());
+    }
+    if s.verdicts.iter().any(|(_, v)| matches!(v, Verdict::Unknown { .. })) {
+        return Err(KmError::Unavailable(
+            "the profiles do not decide this: run the probe (PROVIDERS.md phase 3) or a fuller profile".into(),
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn run(registry: &Registry) -> anyhow::Result<()> {
@@ -478,13 +509,14 @@ fn run(registry: &Registry) -> anyhow::Result<()> {
     result
 }
 
-#[allow(clippy::too_many_lines)] // one match over the verbs; splitting it buys nothing
+/// Parse the arguments, then load keys.toml and the lock — refusing up front a run that may write
+/// a lock it cannot — and run the verb.
 fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = match (&cli.config, &cli.cmd) {
         (Some(path), _) => path.clone(),
         // Pure data over the profiles (docs/PROVIDERS.md): nothing in keys.toml to read.
-        (None, Cmd::Supports { token: None, .. }) => return run_supports(&cli.cmd, &Config::default(), notes),
+        (None, Cmd::Supports(a)) if a.token.is_none() => return run_supports(&Config::default(), a, notes),
         (None, _) => {
             use clap::CommandFactory as _;
             Cli::command()
@@ -495,6 +527,12 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
                 .exit()
         }
     };
+    let modules: BTreeMap<String, String> = cli
+        .modules
+        .iter()
+        .map(|m| m.split_once('=').map(|(t, p)| (t.to_owned(), p.to_owned())))
+        .collect::<Option<_>>()
+        .context("--module expects TOKEN=PATH")?;
     let cfg = load_config(&config)?;
     let lock_path = cli.lock.clone().unwrap_or_else(|| config.with_extension("lock"));
     // A run that may write the lock holds its advisory sidecar lock across load and save (M3),
@@ -516,339 +554,279 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
         .into());
     }
     let _update_guard = if writes { Some(lock_for_update(&lock_path)?) } else { None };
-    let mut lock = load_lock(&lock_path)?;
-    let modules: BTreeMap<String, String> = cli
-        .modules
-        .iter()
-        .map(|m| m.split_once('=').map(|(t, p)| (t.to_owned(), p.to_owned())))
-        .collect::<Option<_>>()
-        .context("--module expects TOKEN=PATH")?;
+    let lock = load_lock(&lock_path)?;
+    Run { cfg, modules, registry, lock, lock_path }.verb(&cli.cmd, notes)
+}
 
-    match &cli.cmd {
-        Cmd::Validate => {
-            for (name, t) in &cfg.tokens {
-                let Some(p) = t.provider.as_deref() else { continue };
-                // A named provider checks the token's options here too; an auto-detected one
-                // can only be known, and check them, once the token is opened.
-                let provider = registry.named(p).ok_or_else(|| {
-                    KmError::Validation(format!(
-                        "token '{name}': unknown provider '{p}' (registered: generic, {})",
-                        registry.names().join(", ")
-                    ))
-                })?;
-                provider.check_options(name, &t.options)?;
+/// What a verb works with once the arguments are parsed: keys.toml, the lock and where it is
+/// saved, and how tokens are opened.
+struct Run<'a> {
+    cfg: Config,
+    modules: BTreeMap<String, String>,
+    registry: &'a Registry,
+    lock: Lock,
+    lock_path: PathBuf,
+}
+
+impl Run<'_> {
+    fn verb(&mut self, cmd: &Cmd, notes: &mut Notes) -> anyhow::Result<()> {
+        match cmd {
+            Cmd::Validate => self.validate(notes),
+            Cmd::Resolve { spec, token } => {
+                let t = Target::new(&self.cfg, spec, token)?;
+                let tok = self.open(token, Access::Read, notes)?;
+                let r = ops::resolve(&t, &tok, &self.lock)?
+                    .ok_or_else(|| KmError::NotFound(format!("{spec} on {token}")))?;
+                print(&r)
             }
-            // The static gate (docs/PROVIDERS.md phase 4): each target's needs against its token's
-            // capability profiles, resolved from keys.toml and the lock — no token opened.
-            let mut stacks = BTreeMap::new();
-            for (name, t) in &cfg.tokens {
-                match cakeys_pkcs11::gate::stack(name, t, &lock)? {
-                    Ok(stack) => {
-                        stacks.insert(name.as_str(), stack);
+            Cmd::Verify { spec, token } => {
+                let t = Target::new(&self.cfg, spec, token)?;
+                let tok = self.open(token, Access::Read, notes)?;
+                println!("{}", ops::verify(&t, &tok, &self.lock, notes)?.uri);
+                Ok(())
+            }
+            Cmd::Realise { spec, token, write } => {
+                let t = Target::new(&self.cfg, spec, token)?;
+                let tok = self.open(token, Access::Write, notes)?;
+                let (r, changed) = ops::realise(&t, &tok, &mut self.lock, write.mode(), notes)?;
+                self.save(changed, notes)?;
+                print(&r)
+            }
+            Cmd::Create { spec, token, write } => self.create(spec.as_deref(), token.as_deref(), write.mode(), notes),
+            Cmd::Delete { spec, token, if_match, write } => {
+                let t = Target::new(&self.cfg, spec, token)?;
+                let tok = self.open(token, Access::Write, notes)?;
+                let changed = ops::delete(&t, &tok, &mut self.lock, if_match.as_deref(), write.mode(), notes)?;
+                self.save(changed, notes)
+            }
+            Cmd::Gc { apply } => {
+                let stale = gc(&self.cfg, &mut self.lock, *apply);
+                for entry in &stale {
+                    println!("{entry}");
+                }
+                if stale.is_empty() {
+                    eprintln!("nothing to collect: every lock entry is named by the config");
+                } else if *apply {
+                    save_lock(&self.lock_path, &self.lock)?;
+                    eprintln!("updated {} ({} entries removed)", self.lock_path.display(), stale.len());
+                } else {
+                    eprintln!("{} stale entries; pass --apply to remove them", stale.len());
+                }
+                Ok(())
+            }
+            Cmd::Check { reference, token, spec } => {
+                let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
+                let open = |name: &str, access| open_quiet(cfg, modules, registry, name, access);
+                let r = ops::check(cfg, reference, spec.as_deref(), token.as_deref(), open, &mut self.lock, notes)?;
+                println!("{}", r.uri);
+                Ok(())
+            }
+            Cmd::Caps { token } => {
+                let tok = self.open(token, Access::Read, notes)?;
+                print(&serde_json::json!({
+                    "token": token,
+                    "provider": tok.provider.name(),
+                    "profiles": {
+                        "module": tok.profiles.module_name(),
+                        "layers": tok.profiles.layer_names(),
+                    },
+                    "mechanisms": tok.mechanism_names(),
+                }))
+            }
+            Cmd::Export { object, token, target, transport, to_file, how } => {
+                let dest = match (target, transport, to_file) {
+                    (_, _, Some(FileArg::Pkcs8)) => Dest::File(FileFormat::Pkcs8),
+                    (_, _, Some(FileArg::Pkcs12)) => Dest::File(FileFormat::Pkcs12),
+                    (_, Some(path), None) => Dest::Transport(path),
+                    (Some(t), None, None) => Dest::Token(t),
+                    (None, None, None) => unreachable!("clap requires one of --target, --transport, --to-file"),
+                };
+                self.plan_moves(object.as_deref(), token, &dest, how, notes)
+            }
+            Cmd::Migrate { object, from, to, how } => {
+                self.plan_moves(object.as_deref(), from, &Dest::Token(to), how, notes)
+            }
+            Cmd::Transport { spec, token, out } => {
+                let t = Target::new(&self.cfg, spec, token)?;
+                let tok = self.open(token, Access::Read, notes)?;
+                let text = migrate::transport(&t, &tok, &self.lock, notes)?.to_toml();
+                match out {
+                    Some(path) => {
+                        std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;
+                        notes.say(format!("wrote {}", path.display()));
                     }
-                    Err(why) => notes.note(format_args!("validate: {why}")),
+                    None => print!("{text}"),
                 }
+                Ok(())
             }
-            let mut refusals = Vec::new();
-            for (spec_name, spec) in &cfg.specs {
-                for token in spec.tokens.keys() {
-                    let t = Target::new(&cfg, spec_name, token)?;
-                    let mode = ops::plan_mode(&t)?;
-                    let note = if mode.needs_opt_in() { " (opted in)" } else { "" };
-                    println!("{spec_name} on {token}: mode {mode}{note}");
-                    if let Some(stack) = stacks.get(token.as_str()) {
-                        let v = cakeys_pkcs11::gate::check(&t, mode, stack, registry)?;
-                        for n in &v.notes {
-                            notes.note(format_args!("validate: {n}"));
-                        }
-                        refusals.extend(v.refusals);
-                    }
-                }
-            }
-            for (name, stack) in &stacks {
-                for n in &stack.resolved.notes {
-                    notes.note(format_args!("validate: token '{name}' ({}): {n}", stack.source));
-                }
-            }
-            if !refusals.is_empty() {
-                for r in &refusals {
-                    eprintln!("{r}");
-                }
-                return Err(KmError::Unsupported(format!(
-                    "{} target{} need{} what the capability profiles say the token cannot do",
-                    refusals.len(),
-                    if refusals.len() == 1 { "" } else { "s" },
-                    if refusals.len() == 1 { "s" } else { "" }
+            Cmd::Supports(a) => run_supports(&self.cfg, a, notes),
+            Cmd::Probe(a) => self.probe(a, notes),
+        }
+    }
+
+    fn open(&self, name: &str, access: Access, notes: &mut Notes) -> Result<Token, KmError> {
+        open_token(&self.cfg, &self.modules, self.registry, name, access, notes)
+    }
+
+    /// Save the lock if the verb changed it.
+    fn save(&self, changed: bool, notes: &mut Notes) -> anyhow::Result<()> {
+        if changed {
+            save_lock(&self.lock_path, &self.lock)?;
+            notes.say(format!("updated {}", self.lock_path.display()));
+        }
+        Ok(())
+    }
+
+    /// `validate`: each token's options (with a named provider), then the static gate
+    /// (docs/PROVIDERS.md phase 4) — each target's needs against its token's capability
+    /// profiles, resolved from keys.toml and the lock. No token is opened.
+    fn validate(&self, notes: &mut Notes) -> anyhow::Result<()> {
+        for (name, t) in &self.cfg.tokens {
+            let Some(p) = t.provider.as_deref() else { continue };
+            // A named provider checks the token's options here too; an auto-detected one
+            // can only be known, and check them, once the token is opened.
+            let provider = self.registry.named(p).ok_or_else(|| {
+                KmError::Validation(format!(
+                    "token '{name}': unknown provider '{p}' (registered: generic, {})",
+                    self.registry.names().join(", ")
                 ))
+            })?;
+            provider.check_options(name, &t.options)?;
+        }
+        let mut stacks = BTreeMap::new();
+        for (name, t) in &self.cfg.tokens {
+            match cakeys_pkcs11::gate::stack(name, t, &self.lock)? {
+                Ok(stack) => {
+                    stacks.insert(name.as_str(), stack);
+                }
+                Err(why) => notes.note(format_args!("validate: {why}")),
+            }
+        }
+        let mut refusals = Vec::new();
+        for (spec_name, spec) in &self.cfg.specs {
+            for token in spec.tokens.keys() {
+                let t = Target::new(&self.cfg, spec_name, token)?;
+                let mode = ops::plan_mode(&t)?;
+                let note = if mode.needs_opt_in() { " (opted in)" } else { "" };
+                println!("{spec_name} on {token}: mode {mode}{note}");
+                if let Some(stack) = stacks.get(token.as_str()) {
+                    let v = cakeys_pkcs11::gate::check(&t, mode, stack, self.registry)?;
+                    for n in &v.notes {
+                        notes.note(format_args!("validate: {n}"));
+                    }
+                    refusals.extend(v.refusals);
+                }
+            }
+        }
+        for (name, stack) in &stacks {
+            for n in &stack.resolved.notes {
+                notes.note(format_args!("validate: token '{name}' ({}): {n}", stack.source));
+            }
+        }
+        if refusals.is_empty() {
+            return Ok(());
+        }
+        for r in &refusals {
+            eprintln!("{r}");
+        }
+        let one = refusals.len() == 1;
+        Err(KmError::Unsupported(format!(
+            "{} target{} need{} what the capability profiles say the token cannot do",
+            refusals.len(),
+            if one { "" } else { "s" },
+            if one { "s" } else { "" }
+        ))
+        .into())
+    }
+
+    /// `create`: every selected pair ([`create_pairs`]), then the lock records what was created,
+    /// also when a later pair failed — never a key made and lost.
+    fn create(
+        &mut self,
+        spec: Option<&str>,
+        token: Option<&str>,
+        write: LockWrite,
+        notes: &mut Notes,
+    ) -> anyhow::Result<()> {
+        let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
+        let pairs = create_pairs(cfg, spec, token)?;
+        let open = |name: &str, notes: &mut Notes| open_token(cfg, modules, registry, name, Access::Write, notes);
+        let named = spec.is_some() && token.is_some();
+        let (created, changed, failed) = create_each(cfg, &pairs, named, &open, &mut self.lock, write, notes);
+        self.save(changed, notes)?;
+        print(&created)?;
+        failed.map_or(Ok(()), |e| Err(e.into()))
+    }
+
+    /// `probe`: generate the token's capability profile, print or write it, and diff it against
+    /// a committed one.
+    fn probe(&self, a: &ProbeArgs, notes: &mut Notes) -> anyhow::Result<()> {
+        let tcfg = token_cfg(&self.cfg, &a.token)?;
+        let tok = self.open(&a.token, if a.write { Access::Write } else { Access::Read }, notes)?;
+        // cryptoki drops from C_GetMechanismList every mechanism it cannot name, so through
+        // an unpatched binding the advertisement is short (kryoptic's CKM_AES_KEY_WRAP_KWP
+        // [run]): such a build may print a probe, never write or judge a committed one.
+        if !cakeys_pkcs11::binding::patched() {
+            if a.out.is_some() || a.diff.is_some() {
+                return Err(KmError::Validation(
+                    "this build's cryptoki lacks the Nix patches and drops the mechanisms it \
+                     cannot name from C_GetMechanismList: probe with the Nix-built cakeys to \
+                     write or diff a profile"
+                        .into(),
+                )
                 .into());
             }
+            notes.note("probe: this build's cryptoki is unpatched: the advertise list may be short");
         }
-        Cmd::Resolve { spec, token } => {
-            let t = Target::new(&cfg, spec, token)?;
-            let tok = open_token(&cfg, &modules, registry, token, Access::Read, notes)?;
-            let r = ops::resolve(&t, &tok, &lock)?.ok_or_else(|| KmError::NotFound(format!("{spec} on {token}")))?;
-            print(&r);
+        let mut probed = cakeys_pkcs11::probe::probe(&tok, tcfg, a.write)?;
+        for why in &probed.undetermined {
+            notes.note(format_args!("probe: {why}"));
         }
-        Cmd::Verify { spec, token } => {
-            let t = Target::new(&cfg, spec, token)?;
-            let tok = open_token(&cfg, &modules, registry, token, Access::Read, notes)?;
-            println!("{}", ops::verify(&t, &tok, &lock, notes)?.uri);
+        let set = profile_set(a.profiles_dir.as_deref())?;
+        // Regeneration is the --diff + --out flow: the profile takes the claimed profile's
+        // name (a module that hides its version — kryoptic reports 0.0 — still regenerates
+        // its committed profile, whose name is the repo's, D9) and keeps the one section
+        // the probe does not generate, the [migration] claims. Everything else is probe
+        // output, written wholesale.
+        let claimed = a.diff.as_deref().map(|name| set.find(name).map_err(KmError::Validation)).transpose()?;
+        if let Some(n) = &a.name {
+            probed.profile.profile.clone_from(n);
+        } else if let Some(claimed) = claimed {
+            probed.profile.profile.clone_from(&claimed.profile);
         }
-        Cmd::Realise { spec, token, write } => {
-            let t = Target::new(&cfg, spec, token)?;
-            let tok = open_token(&cfg, &modules, registry, token, Access::Write, notes)?;
-            let (r, changed) = ops::realise(&t, &tok, &mut lock, write.mode(), notes)?;
-            if changed {
-                save_lock(&lock_path, &lock)?;
-                notes.say(format!("updated {}", lock_path.display()));
-            }
-            print(&r);
+        match &a.out {
+            Some(path) => write_profile(path, &mut probed.profile, a.write, notes)?,
+            None => print!("{}", probed.profile.to_toml()),
         }
-        Cmd::Create { spec, token, write } => {
-            let pairs = create_pairs(&cfg, spec.as_deref(), token.as_deref())?;
-            let open = |name: &str, notes: &mut Notes| open_token(&cfg, &modules, registry, name, Access::Write, notes);
-            let named = spec.is_some() && token.is_some();
-            let (created, changed, failed) = create(&cfg, &pairs, named, &open, &mut lock, write.mode(), notes);
-            // What was created before a failure is recorded all the same: never a key made and lost.
-            if changed {
-                save_lock(&lock_path, &lock)?;
-                notes.say(format!("updated {}", lock_path.display()));
-            }
-            print(&created);
-            if let Some(e) = failed {
-                return Err(e.into());
-            }
+        let Some(claimed) = claimed else { return Ok(()) };
+        let name = &claimed.profile;
+        // A read-only probe observes only the match keys, the advertisement and the
+        // reported key sizes, so only those can conform or drift.
+        let lines = if a.write {
+            cakeys_profile::diff(&probed.profile, claimed)
+        } else {
+            cakeys_profile::diff::read_only(&probed.profile, claimed)
+        };
+        if lines.is_empty() {
+            notes.say(format!("{}: the profile conforms to {name}", tok.name));
+            return Ok(());
         }
-        Cmd::Delete { spec, token, if_match, write } => {
-            let t = Target::new(&cfg, spec, token)?;
-            let tok = open_token(&cfg, &modules, registry, token, Access::Write, notes)?;
-            if ops::delete(&t, &tok, &mut lock, if_match.as_deref(), write.mode(), notes)? {
-                save_lock(&lock_path, &lock)?;
-                notes.say(format!("updated {}", lock_path.display()));
-            }
+        // stderr: stdout may be carrying the generated profile.
+        for line in &lines {
+            eprintln!("{line}");
         }
-        Cmd::Gc { apply } => {
-            let stale = gc(&cfg, &mut lock, *apply);
-            for entry in &stale {
-                println!("{entry}");
-            }
-            if stale.is_empty() {
-                eprintln!("nothing to collect: every lock entry is named by the config");
-            } else if *apply {
-                save_lock(&lock_path, &lock)?;
-                eprintln!("updated {} ({} entries removed)", lock_path.display(), stale.len());
-            } else {
-                eprintln!("{} stale entries; pass --apply to remove them", stale.len());
-            }
-        }
-        Cmd::Check { reference, token, spec } => {
-            let open = |name: &str, access| open_quiet(&cfg, &modules, registry, name, access);
-            let r = ops::check(&cfg, reference, spec.as_deref(), token.as_deref(), open, &mut lock, notes)?;
-            println!("{}", r.uri);
-        }
-        Cmd::Caps { token } => {
-            let tok = open_token(&cfg, &modules, registry, token, Access::Read, notes)?;
-            print(&serde_json::json!({
-                "token": token,
-                "provider": tok.provider.name(),
-                "profiles": {
-                    "module": tok.profiles.module_name(),
-                    "layers": tok.profiles.layer_names(),
-                },
-                "mechanisms": tok.mechanism_names(),
-            }));
-        }
-        Cmd::Export { object, token, target, transport, to_file, how } => {
-            let dest = match (target, transport, to_file) {
-                (_, _, Some(FileArg::Pkcs8)) => Dest::File(FileFormat::Pkcs8),
-                (_, _, Some(FileArg::Pkcs12)) => Dest::File(FileFormat::Pkcs12),
-                (_, Some(path), None) => Dest::Transport(path),
-                (Some(t), None, None) => Dest::Token(t),
-                (None, None, None) => unreachable!("clap requires one of --target, --transport, --to-file"),
-            };
-            let moves = Moves { cfg: &cfg, modules: &modules, registry, lock: &lock };
-            moves.plan(object.as_deref(), token, &dest, how, notes)?;
-        }
-        Cmd::Migrate { object, from, to, how } => {
-            let moves = Moves { cfg: &cfg, modules: &modules, registry, lock: &lock };
-            moves.plan(object.as_deref(), from, &Dest::Token(to), how, notes)?;
-        }
-        Cmd::Transport { spec, token, out } => {
-            let t = Target::new(&cfg, spec, token)?;
-            let tok = open_token(&cfg, &modules, registry, token, Access::Read, notes)?;
-            let text = migrate::transport(&t, &tok, &lock, notes)?.to_toml();
-            match out {
-                Some(path) => {
-                    std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;
-                    notes.say(format!("wrote {}", path.display()));
-                }
-                None => print!("{text}"),
-            }
-        }
-        Cmd::Supports { .. } => run_supports(&cli.cmd, &cfg, notes)?,
-        Cmd::Probe { token, write, out, name, diff, profiles_dir } => {
-            let tcfg = cfg.tokens.get(token).ok_or_else(|| KmError::Validation(format!("unknown token '{token}'")))?;
-            let tok =
-                open_token(&cfg, &modules, registry, token, if *write { Access::Write } else { Access::Read }, notes)?;
-            // cryptoki drops from C_GetMechanismList every mechanism it cannot name, so through
-            // an unpatched binding the advertisement is short (kryoptic's CKM_AES_KEY_WRAP_KWP
-            // [run]): such a build may print a probe, never write or judge a committed one.
-            if !cakeys_pkcs11::binding::patched() {
-                if out.is_some() || diff.is_some() {
-                    return Err(KmError::Validation(
-                        "this build's cryptoki lacks the Nix patches and drops the mechanisms it \
-                         cannot name from C_GetMechanismList: probe with the Nix-built cakeys to \
-                         write or diff a profile"
-                            .into(),
-                    )
-                    .into());
-                }
-                notes.note("probe: this build's cryptoki is unpatched: the advertise list may be short");
-            }
-            let mut probed = cakeys_pkcs11::probe::probe(&tok, tcfg, *write)?;
-            for why in &probed.undetermined {
-                notes.note(format_args!("probe: {why}"));
-            }
-            let validation = |e: String| -> anyhow::Error { KmError::Validation(e).into() };
-            let mut set = cakeys_profile::Set::embedded()
-                .map_err(validation)
-                .with_context(|| "the embedded profiles do not parse")?;
-            if let Some(dir) = profiles_dir {
-                set = set.with_dir(dir).map_err(validation)?;
-            }
-            // Regeneration is the --diff + --out flow: the profile takes the claimed profile's
-            // name (a module that hides its version — kryoptic reports 0.0 — still regenerates
-            // its committed profile, whose name is the repo's, D9) and keeps the one section
-            // the probe does not generate, the [migration] claims. Everything else is probe
-            // output, written wholesale.
-            let claimed = diff.as_deref().map(|name| set.find(name).map_err(validation)).transpose()?;
-            if let Some(n) = name {
-                probed.profile.profile.clone_from(n);
-            } else if let Some(claimed) = claimed {
-                probed.profile.profile.clone_from(&claimed.profile);
-            }
-            match out {
-                Some(path) => write_profile(path, &mut probed.profile, *write, notes)?,
-                None => print!("{}", probed.profile.to_toml()),
-            }
-            if let Some(claimed) = claimed {
-                let name = &claimed.profile;
-                // A read-only probe observes only the match keys, the advertisement and the
-                // reported key sizes, so only those can conform or drift.
-                let lines = if *write {
-                    cakeys_profile::diff(&probed.profile, claimed)
-                } else {
-                    cakeys_profile::diff::read_only(&probed.profile, claimed)
-                };
-                if lines.is_empty() {
-                    notes.say(format!("{}: the profile conforms to {name}", tok.name));
-                } else {
-                    // stderr: stdout may be carrying the generated profile.
-                    for line in &lines {
-                        eprintln!("{line}");
-                    }
-                    return Err(KmError::Unsupported(format!(
-                        "{}: {} row{} differ from profile {name}",
-                        tok.name,
-                        lines.len(),
-                        if lines.len() == 1 { "" } else { "s" }
-                    ))
-                    .into());
-                }
-            }
-        }
+        Err(KmError::Unsupported(format!(
+            "{}: {} row{} differ from profile {name}",
+            tok.name,
+            lines.len(),
+            if lines.len() == 1 { "" } else { "s" }
+        ))
+        .into())
     }
-    Ok(())
-}
 
-/// Write a generated profile to `path`, keeping the one section the probe does not generate:
-/// the file's [migration] claims (MIGRATE.md evidence, never probe-observable). Refused onto
-/// an existing file that does not parse (regenerating it would silently drop those claims),
-/// and onto any existing file from a read-only probe (it would drop every write-probe row).
-fn write_profile(
-    path: &std::path::Path,
-    profile: &mut cakeys_profile::Profile,
-    write: bool,
-    notes: &mut Notes,
-) -> anyhow::Result<()> {
-    if let Ok(text) = std::fs::read_to_string(path) {
-        if !write {
-            return Err(KmError::Validation(format!(
-                "{}: a read-only probe would overwrite its generate, wrap and unwrap rows; pass --write",
-                path.display()
-            ))
-            .into());
-        }
-        let old = cakeys_profile::Profile::from_toml(&text).map_err(|e| {
-            KmError::Validation(format!("{}: not a profile, refusing to overwrite: {e}", path.display()))
-        })?;
-        profile.migration = old.migration;
-    }
-    std::fs::write(path, profile.to_toml()).with_context(|| format!("writing {}", path.display()))?;
-    notes.say(format!("wrote {}", path.display()));
-    Ok(())
-}
-
-/// The `supports` verb: answers from the capability profiles alone (docs/PROVIDERS.md), so it
-/// runs with an empty `cfg` when there is no keys.toml and no `--token` to look up.
-fn run_supports(cmd: &Cmd, cfg: &Config, notes: &mut Notes) -> anyhow::Result<()> {
-    let Cmd::Supports { name, profile, token, layers, class, oaep, bits, profiles_dir } = cmd else {
-        unreachable!("run_supports is called for the supports verb only")
-    };
-    let eff = supports(
-        cfg,
-        profile.as_deref(),
-        token.as_deref(),
-        layers,
-        class.as_deref(),
-        *oaep,
-        name.as_deref(),
-        *bits,
-        profiles_dir.as_deref(),
-    )?;
-    notes.note(format_args!("profiles: module {}, layers [{}] (docs/PROVIDERS.md)", eff.module, eff.layers.join(", ")));
-    for (n, v) in &eff.verdicts {
-        println!("{n}: {v}");
-    }
-    let any_no = eff.verdicts.iter().any(|(_, v)| matches!(v, cakeys_profile::Verdict::No { .. }));
-    let any_unknown = eff.verdicts.iter().any(|(_, v)| matches!(v, cakeys_profile::Verdict::Unknown { .. }));
-    if any_no {
-        let names: Vec<&str> = eff
-            .verdicts
-            .iter()
-            .filter(|(_, v)| matches!(v, cakeys_profile::Verdict::No { .. }))
-            .map(|(n, _)| n.as_str())
-            .collect();
-        return Err(KmError::Unsupported(format!("not supported: {}", names.join(", "))).into());
-    }
-    if any_unknown {
-        return Err(KmError::Unavailable(
-            "the profiles do not decide this: run the probe (PROVIDERS.md phase 3) or a fuller profile".into(),
-        )
-        .into());
-    }
-    Ok(())
-}
-
-/// Where `export` or `migrate` sends the material.
-enum Dest<'a> {
-    Token(&'a str),
-    Transport(&'a std::path::Path),
-    File(FileFormat),
-}
-
-/// What planning a move reads: keys.toml for the tokens, the lock for the objects.
-struct Moves<'a> {
-    cfg: &'a Config,
-    modules: &'a BTreeMap<String, String>,
-    registry: &'a Registry,
-    lock: &'a Lock,
-}
-
-impl Moves<'_> {
     /// Plan each object's move from `from` to `dest` and print it (MIGRATE.md D9); 15 when any
     /// object cannot move as invoked. Moving is not implemented yet: without --dry-run, refused.
-    fn plan(
+    fn plan_moves(
         &self,
         object: Option<&str>,
         from: &str,
@@ -864,7 +842,7 @@ impl Moves<'_> {
             )
             .into());
         }
-        let materials = migrate::materials(self.lock, from, object)?;
+        let materials = migrate::materials(&self.lock, from, object)?;
         let (source, source_from) = self.side(from, notes)?;
         let mut allow = Allow { host_plaintext: how.allow_host_plaintext, ..Allow::default() };
         let (target, target_from, to_name) = match dest {
@@ -890,10 +868,11 @@ impl Moves<'_> {
             }
             Dest::File(f) => (None, "-", format!("{f:?} file").to_lowercase()),
         };
-        let to = target.as_ref().map_or_else(
-            || To::File(if let Dest::File(f) = dest { *f } else { unreachable!("only a file has no side") }),
-            To::Token,
-        );
+        let to = match (&target, dest) {
+            (Some(side), _) => To::Token(side),
+            (None, Dest::File(f)) => To::File(*f),
+            (None, _) => unreachable!("only a file has no side"),
+        };
         let plans: Vec<Plan> = materials.iter().map(|m| migrate::plan(m, &source, &to, allow)).collect();
         if how.json {
             print(&serde_json::json!({
@@ -901,7 +880,7 @@ impl Moves<'_> {
                 "to": to_name,
                 "capabilities": { "from": source_from, "to": target_from },
                 "plans": plans,
-            }));
+            }))?;
         } else {
             println!(
                 "{from} -> {to_name} (capabilities: {from} from the {source_from}, {to_name} from the {target_from})"
@@ -930,9 +909,9 @@ impl Moves<'_> {
 
     /// A token's capabilities: from the open token, else from what the lock recorded there.
     fn side(&self, name: &str, notes: &mut Notes) -> Result<(Side, &'static str), KmError> {
-        match open_token(self.cfg, self.modules, self.registry, name, Access::Read, notes) {
+        match self.open(name, Access::Read, notes) {
             Ok(tok) => Ok((migrate::side(&tok)?, "token")),
-            Err(e) => match migrate::side_from_lock(name, self.lock, self.registry) {
+            Err(e) => match migrate::side_from_lock(name, &self.lock, self.registry) {
                 Some(side) => {
                     notes.note(format_args!(
                         "capabilities of '{name}' come from the lock: the token did not open ({e})"
@@ -945,6 +924,42 @@ impl Moves<'_> {
     }
 }
 
-fn print<T: serde::Serialize>(v: &T) {
-    println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
+/// Write a generated profile to `path`, keeping the one section the probe does not generate:
+/// the file's [migration] claims (MIGRATE.md evidence, never probe-observable). Refused onto
+/// an existing file that does not parse (regenerating it would silently drop those claims),
+/// and onto any existing file from a read-only probe (it would drop every write-probe row).
+fn write_profile(
+    path: &Path,
+    profile: &mut cakeys_profile::Profile,
+    write: bool,
+    notes: &mut Notes,
+) -> anyhow::Result<()> {
+    if let Ok(text) = std::fs::read_to_string(path) {
+        if !write {
+            return Err(KmError::Validation(format!(
+                "{}: a read-only probe would overwrite its generate, wrap and unwrap rows; pass --write",
+                path.display()
+            ))
+            .into());
+        }
+        let old = cakeys_profile::Profile::from_toml(&text).map_err(|e| {
+            KmError::Validation(format!("{}: not a profile, refusing to overwrite: {e}", path.display()))
+        })?;
+        profile.migration = old.migration;
+    }
+    std::fs::write(path, profile.to_toml()).with_context(|| format!("writing {}", path.display()))?;
+    notes.say(format!("wrote {}", path.display()));
+    Ok(())
+}
+
+/// Where `export` or `migrate` sends the material.
+enum Dest<'a> {
+    Token(&'a str),
+    Transport(&'a Path),
+    File(FileFormat),
+}
+
+fn print<T: serde::Serialize>(v: &T) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string_pretty(v)?);
+    Ok(())
 }

@@ -1,6 +1,9 @@
 //! The object's type and policy: what the spec declares, checked against what the token reports; the observed policy vector and immutables; and the mapping of boolean attributes to `cryptoki`.
 
-#[allow(clippy::wildcard_imports)] // the token/ split files work on the parent module's imports (R9)
+#[allow(
+    clippy::wildcard_imports,
+    reason = "the token/ split files work on the parent module's imports (R9); `expect` is not fulfilled on a `use` item"
+)]
 use super::*;
 
 impl Token {

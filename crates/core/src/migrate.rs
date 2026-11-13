@@ -304,7 +304,7 @@ pub struct Plan {
     pub notes: Vec<String>,
 }
 
-#[allow(clippy::ref_option)] // serde's serialize_with hands the field by reference
+#[expect(clippy::ref_option, reason = "serde's serialize_with hands the field by reference")]
 fn method_name<S: serde::Serializer>(m: &Option<Method>, s: S) -> Result<S::Ok, S::Error> {
     match m {
         Some(m) => s.serialize_str(&m.name()),

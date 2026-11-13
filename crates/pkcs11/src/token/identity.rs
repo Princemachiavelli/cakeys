@@ -1,6 +1,9 @@
 //! The material CA-IDs: the canonical SPKI of a key, and the secret-key commitments (directly or through a wrap-and-rebind copy).
 
-#[allow(clippy::wildcard_imports)] // the token/ split files work on the parent module's imports (R9)
+#[allow(
+    clippy::wildcard_imports,
+    reason = "the token/ split files work on the parent module's imports (R9); `expect` is not fulfilled on a `use` item"
+)]
 use super::*;
 
 impl Token {
@@ -15,7 +18,7 @@ impl Token {
     /// public half the object's identity needs is absent or duplicated under the locator;
     /// `Unsupported` for an unimplemented mode, unreadable material or a curve/mechanism the
     /// token exposes but cakeys cannot use.
-    #[allow(clippy::too_many_arguments)] // two callers (resolve, delete), each passing all of them
+    #[expect(clippy::too_many_arguments, reason = "one caller (`ops::compute_ids`), the one place they meet")]
     pub fn ids(
         &self,
         h: ObjectHandle,

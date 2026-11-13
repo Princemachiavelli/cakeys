@@ -294,7 +294,7 @@ fn blobs(priv_blob: &[u8], pub_blob: &[u8]) -> Result<(Private, Public)> {
 /// # Errors
 ///
 /// `Conflict` when the blob does not unmarshal, or is not a public area tss-esapi accepts.
-#[allow(unsafe_code)]
+#[expect(unsafe_code, reason = "Tss_MU unmarshalling FFI; each call carries a SAFETY comment")]
 pub fn unmarshal_public(pub_blob: &[u8]) -> Result<Public> {
     let mut public = esys::TPM2B_PUBLIC::default();
     let mut offset = 0u64;
@@ -357,7 +357,7 @@ pub fn certify(ctx: &mut Context, key: KeyHandle, key_auth: &[u8], ak: KeyHandle
 /// # Errors
 ///
 /// `Unavailable` if the attestation cannot be re-marshaled (a TPM2 command error code).
-#[allow(unsafe_code)]
+#[expect(unsafe_code, reason = "Tss_MU marshalling FFI; each call carries a SAFETY comment")]
 pub fn attest_bytes(attest: &Attest) -> Result<Vec<u8>> {
     let ffi = esys::TPMS_ATTEST::from(attest.clone());
     let mut buf = vec![0u8; 4096];
@@ -517,7 +517,10 @@ pub fn certify_key(
 }
 
 /// The certify and its host verification, for the object `key` loaded from `tobj`.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the loaded key, its auth, the store object and the AK triple, all from one caller"
+)]
 fn certify_loaded(
     ctx: &mut Context,
     key: KeyHandle,

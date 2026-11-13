@@ -1,5 +1,5 @@
 //! Helpers shared by the integration tests: CLI output parsing and an independent DER oracle.
-#![allow(dead_code)] // each test binary uses a subset
+#![allow(dead_code, reason = "each test binary uses a subset")]
 
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
@@ -183,7 +183,10 @@ pub fn oracle_spki(s: &Session, label: &str) -> Vec<u8> {
 }
 
 /// As [`oracle_spki`], with a custom `CKA_EC_POINT` unwrapper (for a module's known bug).
-#[allow(clippy::many_single_char_names)] // the DER-oracle bindings mirror the names in the specs they hand-roll
+#[expect(
+    clippy::many_single_char_names,
+    reason = "the DER-oracle bindings mirror the names in the specs they hand-roll"
+)]
 pub fn oracle_spki_with(s: &Session, label: &str, unwrap: fn(&[u8]) -> Vec<u8>) -> Vec<u8> {
     let h = s
         .find_objects(&[Attribute::Class(ObjectClass::PUBLIC_KEY), Attribute::Label(label.as_bytes().to_vec())])

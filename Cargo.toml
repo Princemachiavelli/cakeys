@@ -54,12 +54,14 @@ libc = "0.2"
 # Inherited by every member with `[lints] workspace = true`. `cargo clippy` (checks.clippy)
 # runs with `-D warnings`, so everything here is clean at the stated level.
 [workspace.lints.rust]
-# The two exemptions are `#[allow]`ed and carry `// SAFETY:` comments: the TPM marshalling
+# The two exemptions are `#[expect]`ed and carry `// SAFETY:` comments: the TPM marshalling
 # FFI (crates/tpm2-pkcs11/src/attest/esys.rs) and access(2) (crates/core/src/config.rs).
 unsafe_code = "deny"
 
 [workspace.lints.clippy]
 # Pedantic in full: no blanket allows. Where a lint does not fit, the exemption is a per-site
-# #[allow] with its reason (or, for must_use_candidate, the #[must_use] the lint suggests), so a
-# new occurrence anywhere warns.
+# #[expect(lint, reason = "...")] (or, for must_use_candidate, the #[must_use] the lint
+# suggests), so a new occurrence anywhere warns and an exemption that no longer fires does too.
+# #[allow(..., reason)] only where #[expect] cannot be fulfilled (on a `use` item) or would not
+# be in every test binary.
 pedantic = { level = "warn", priority = -1 }

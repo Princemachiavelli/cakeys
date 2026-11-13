@@ -161,7 +161,7 @@ impl Env {
     }
 
     /// `tpm2_ptool <args>` on the tpm2 reference's token.
-    #[allow(clippy::unused_self)] // beside the other planting helpers
+    #[expect(clippy::unused_self, reason = "beside the other planting helpers")]
     fn ptool(&self, args: &[&str]) {
         let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
         let out = Command::new("tpm2_ptool")

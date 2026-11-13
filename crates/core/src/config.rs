@@ -48,7 +48,6 @@ pub struct TokenCfg {
     // TODO: decide whether this belongs in keys.toml (unused by Rust; nix/lib.nix reads it) or
     // only in the NixOS module (`services.cakeys.tokens.<n>.systemFeature`, which today must be
     // kept equal by hand). Decide with the further Nix integration and usage tests.
-    #[allow(dead_code)]
     pub system_feature: Option<String>,
     /// Marks the token as expendable for the probe (docs/PROVIDERS.md phase 3): its write
     /// probes generate, wrap, unwrap and destroy objects, so `probe --write` runs them only
@@ -387,9 +386,9 @@ impl LockObject {
 pub const LOCK_VERSION: u32 = 1;
 
 impl Lock {
-    /// Refuse other versions (the version is required), and objects with commitment IDs but no
-    /// label.
-    #[allow(clippy::too_many_lines)] // one linear invariant checklist; a split would scatter the finding numbers
+    /// Refuse other versions (the version is required), then every lock invariant: each object's
+    /// IDs and label, each realisation against its object, one object per material, and pairs
+    /// that list each other.
     fn validate(self, path: &Path) -> Result<Lock> {
         if self.version != LOCK_VERSION {
             return Err(KmError::Validation(format!(
@@ -398,33 +397,36 @@ impl Lock {
                 self.version
             )));
         }
-        if let Some((name, _)) = self.objects.iter().find(|(_, o)| o.has_commitments() && o.commitment_label.is_none())
-        {
-            return Err(KmError::Validation(format!(
-                "{}: object '{name}' has commitment IDs but no commitmentLabel",
-                path.display()
-            )));
-        }
+        let invalid = |msg: String| KmError::Validation(format!("{}: {msg}", path.display()));
+        self.check_objects().map_err(invalid)?;
+        self.check_realisations().map_err(invalid)?;
+        self.check_one_object_per_material().map_err(invalid)?;
+        self.check_pairs().map_err(invalid)?;
+        Ok(self)
+    }
+
+    /// Each object's IDs are SRI digests under lock scheme names, need a type, and — for
+    /// commitments — a printable label.
+    fn check_objects(&self) -> std::result::Result<(), String> {
         for (name, o) in &self.objects {
-            if let Some((alias, scheme)) = Scheme::ALIASES.iter().find(|(a, _)| o.ids.contains_key(*a)) {
-                return Err(KmError::Validation(format!(
-                    "{}: object '{name}' records '{alias}', which is an input alias; the lock uses '{scheme}'",
-                    path.display()
-                )));
+            if o.has_commitments() && o.commitment_label.is_none() {
+                return Err(format!("object '{name}' has commitment IDs but no commitmentLabel"));
             }
-        }
-        if let Some((name, _)) = self.objects.iter().find(|(_, o)| !o.ids.is_empty() && o.object_type.is_none()) {
-            return Err(KmError::Validation(format!("{}: object '{name}' has IDs but no type", path.display())));
-        }
-        let invalid = |msg: String| Err(KmError::Validation(format!("{}: {msg}", path.display())));
-        for (name, o) in &self.objects {
+            if let Some((alias, scheme)) = Scheme::ALIASES.iter().find(|(a, _)| o.ids.contains_key(*a)) {
+                return Err(format!(
+                    "object '{name}' records '{alias}', which is an input alias; the lock uses '{scheme}'"
+                ));
+            }
+            if !o.ids.is_empty() && o.object_type.is_none() {
+                return Err(format!("object '{name}' has IDs but no type"));
+            }
             if let Some((s, v)) = o.ids.iter().find(|(_, v)| !crate::id::is_sri(v)) {
-                return invalid(format!("object '{name}': {s} = \"{v}\" is not a sha256 SRI digest"));
+                return Err(format!("object '{name}': {s} = \"{v}\" is not a sha256 SRI digest"));
             }
             // Attestation IDs are per device (§3.7): the same material attested on two TPMs has
             // two IDs, so they live on each realisation, never in the object's shared `ids`.
             if let Some(s) = o.ids.keys().find(|s| Scheme::from_name(s).is_some_and(Scheme::is_attestation)) {
-                return invalid(format!(
+                return Err(format!(
                     "object '{name}' records the attestation scheme {s}: an attestation ID is per device \
                      and belongs to the realisation that computed it (realisations.<spec>.<token>.attestation)"
                 ));
@@ -434,26 +436,67 @@ impl Lock {
                 .as_ref()
                 .filter(|l| l.is_empty() || !l.bytes().all(|b| b.is_ascii_graphic() || b == b' '))
             {
-                return invalid(format!("object '{name}': commitmentLabel {l:?} must be non-empty printable ASCII"));
+                return Err(format!("object '{name}': commitmentLabel {l:?} must be non-empty printable ASCII"));
             }
         }
+        Ok(())
+    }
+
+    /// Each realisation names an object of the lock and schemes among its IDs, a binding exactly
+    /// when the object is a private key, and attestation evidence of a known kind that never
+    /// stands alone.
+    fn check_realisations(&self) -> std::result::Result<(), String> {
         for (spec, by_token) in &self.realisations {
             for (token, r) in by_token {
                 let what = format!("realisation of '{spec}' on '{token}'");
                 if !crate::id::is_sri(&r.spec_digest) {
-                    return invalid(format!("{what}: specDigest \"{}\" is not a sha256 SRI digest", r.spec_digest));
+                    return Err(format!("{what}: specDigest \"{}\" is not a sha256 SRI digest", r.spec_digest));
                 }
                 let Some(o) = self.objects.get(&r.object) else {
-                    return invalid(format!("{what}: object '{}' is not in the lock", r.object));
+                    return Err(format!("{what}: object '{}' is not in the lock", r.object));
                 };
                 if let Some(s) = r.schemes.iter().find(|s| !o.ids.contains_key(*s)) {
-                    return invalid(format!("{what}: scheme {s} is not among the IDs of '{}'", r.object));
+                    return Err(format!("{what}: scheme {s} is not among the IDs of '{}'", r.object));
+                }
+                let private = o.object_type.as_ref().is_some_and(|t| t.class == ObjectClass::PrivateKey);
+                if private != r.binding.is_some() {
+                    return Err(format!(
+                        "{what}: binding is {} for private keys and only for them",
+                        if private { "required" } else { "allowed" }
+                    ));
+                }
+                // Attestation evidence (§3.7): a known kind, SRI digests, and never alone — the
+                // realisation must also have matched a portable scheme, the only thing that links
+                // the same material on another token.
+                let Some(a) = &r.attestation else { continue };
+                if Scheme::from_attestation_kind(&a.kind).is_none() {
+                    return Err(format!(
+                        "{what}: unknown attestation kind '{}' (known: {:?})",
+                        a.kind,
+                        Scheme::ALL.into_iter().filter_map(Scheme::attestation_kind).collect::<Vec<_>>()
+                    ));
+                }
+                if let Some((field, v)) =
+                    [("root", &a.root), ("id", &a.id)].into_iter().find(|(_, v)| !crate::id::is_sri(v))
+                {
+                    return Err(format!("{what}: attestation {field} \"{v}\" is not a sha256 SRI digest"));
+                }
+                if r.schemes.is_empty() {
+                    return Err(format!(
+                        "{what} is locked only by its attestation: an attestation is provenance for one \
+                         device and cannot verify the same material on another token; it needs a portable \
+                         scheme (rfc7093m4, or a commitment for secret keys) beside it"
+                    ));
                 }
             }
         }
-        // One object per material: two objects of one class with the same ID are the same thing
-        // under two names. A certificate's rfc7093m4 names its subject key, which several
-        // certificates may share.
+        Ok(())
+    }
+
+    /// One object per material: two objects of one class with the same ID are the same thing
+    /// under two names. A certificate's rfc7093m4 names its subject key, which several
+    /// certificates may share.
+    fn check_one_object_per_material(&self) -> std::result::Result<(), String> {
         let mut seen: BTreeMap<(&str, &str, &str), &str> = BTreeMap::new();
         for (name, o) in &self.objects {
             let class = o.object_type.as_ref().map_or("", |t| t.class.name());
@@ -463,69 +506,34 @@ impl Lock {
                 .filter(|(s, _)| !(class == ObjectClass::Certificate.name() && *s == Scheme::Rfc7093m4.name()))
             {
                 if let Some(other) = seen.insert((s, class, v), name) {
-                    return invalid(format!(
+                    return Err(format!(
                         "objects '{other}' and '{name}' are the same {class} material ({s} {v}); use one object"
                     ));
                 }
             }
         }
-        // A listed partner that is in this file must share the public key and list back; one
-        // that is not may live in another lock fragment (locks can be split and joined).
+        Ok(())
+    }
+
+    /// A listed partner that is in this file must share the public key and list back; one that is
+    /// not may live in another lock fragment (locks can be split and joined).
+    fn check_pairs(&self) -> std::result::Result<(), String> {
         for (name, o) in &self.objects {
             for p in &o.pairs {
                 if p == name {
-                    return invalid(format!("object '{name}' lists itself as a pair"));
+                    return Err(format!("object '{name}' lists itself as a pair"));
                 }
                 let Some(other) = self.objects.get(p) else { continue };
                 let shared = o.ids.get("rfc7093m4").is_some_and(|k| other.ids.get("rfc7093m4") == Some(k));
                 if !shared || !other.pairs.contains(name) {
-                    return invalid(format!(
+                    return Err(format!(
                         "object '{name}' lists '{p}' as a pair, but they {}",
                         if shared { "do not list each other" } else { "do not share an rfc7093m4" }
                     ));
                 }
             }
         }
-        for (spec, by_token) in &self.realisations {
-            for (token, r) in by_token {
-                let private =
-                    self.objects[&r.object].object_type.as_ref().is_some_and(|t| t.class == ObjectClass::PrivateKey);
-                if private != r.binding.is_some() {
-                    return invalid(format!(
-                        "realisation of '{spec}' on '{token}': binding is {} for private keys and only for them",
-                        if private { "required" } else { "allowed" }
-                    ));
-                }
-                // Attestation evidence (§3.7): a known kind, SRI digests, and never alone — the
-                // realisation must also have matched a portable scheme, the only thing that links
-                // the same material on another token.
-                if let Some(a) = &r.attestation {
-                    if Scheme::from_attestation_kind(&a.kind).is_none() {
-                        return invalid(format!(
-                            "realisation of '{spec}' on '{token}': unknown attestation kind '{}' (known: {:?})",
-                            a.kind,
-                            Scheme::ALL.into_iter().filter_map(Scheme::attestation_kind).collect::<Vec<_>>()
-                        ));
-                    }
-                    if let Some((field, v)) =
-                        [("root", &a.root), ("id", &a.id)].into_iter().find(|(_, v)| !crate::id::is_sri(v))
-                    {
-                        return invalid(format!(
-                            "realisation of '{spec}' on '{token}': attestation {field} \"{v}\" is not a sha256 SRI digest"
-                        ));
-                    }
-                    if r.schemes.is_empty() {
-                        return invalid(format!(
-                            "realisation of '{spec}' on '{token}' is locked only by its attestation: an \
-                             attestation is provenance for one device and cannot verify the same material \
-                             on another token; it needs a portable scheme (rfc7093m4, or a commitment for \
-                             secret keys) beside it"
-                        ));
-                    }
-                }
-            }
-        }
-        Ok(self)
+        Ok(())
     }
 
     /// The realisation of `spec` on `token`, if the lock records one.
@@ -840,13 +848,20 @@ pub fn parse_lock(text: &str, path: &Path) -> Result<Lock> {
     lock.validate(path)
 }
 
+/// Write the lock through a temporary file synced before it is renamed over the old one, so a
+/// crash leaves the old lock or the new one, never a truncated one.
+///
 /// # Errors
 ///
-/// `Io` if the lock cannot be encoded, or the temporary write or rename fails.
+/// `Io` if the lock cannot be encoded, or the temporary write, sync or rename fails.
 pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
+    use std::io::Write as _;
     let text = toml::to_string_pretty(lock).map_err(|e| KmError::Io(format!("encoding {}: {e}", path.display())))?;
     let tmp = path.with_extension("lock.tmp");
-    std::fs::write(&tmp, text).map_err(KmError::io(format!("writing {}", tmp.display())))?;
+    let mut file = std::fs::File::create(&tmp).map_err(KmError::io(format!("creating {}", tmp.display())))?;
+    file.write_all(text.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(KmError::io(format!("writing {}", tmp.display())))?;
     std::fs::rename(&tmp, path).map_err(KmError::io(format!("renaming {} to {}", tmp.display(), path.display())))?;
     Ok(())
 }
@@ -855,7 +870,9 @@ pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
 /// update the lock takes it before `load_lock` and drops it after `save_lock`, so two concurrent
 /// runs on different tokens cannot lose each other's realisations. Readers never take it: the
 /// temporary-file rename makes each read a consistent snapshot.
-pub struct UpdateGuard(#[allow(dead_code)] std::fs::File); // holds the lock until dropped
+pub struct UpdateGuard(
+    #[expect(dead_code, reason = "held, never read: the lock is released when it drops")] std::fs::File,
+);
 
 /// Take the exclusive advisory lock on `<lock>.lck`, waiting for any other updater. The sidecar
 /// file is created if absent; a leftover one is harmless (the lock is advisory and released when
@@ -887,7 +904,7 @@ pub fn lock_for_update(lock_path: &Path) -> Result<UpdateGuard> {
 ///   `.lck` sidecar) must be writable by this user (`access(2)`, so a read-only mount counts).
 #[must_use]
 pub fn lock_unwritable(lock_path: &Path) -> Option<String> {
-    #[allow(unsafe_code)] // access(2) only reads the path; the CString is a valid NUL-terminated one
+    #[expect(unsafe_code, reason = "access(2) only reads the path; the CString is a valid NUL-terminated one")]
     fn writable(p: &Path) -> bool {
         use std::os::unix::ffi::OsStrExt;
         std::ffi::CString::new(p.as_os_str().as_bytes())
@@ -913,29 +930,20 @@ pub fn lock_unwritable(lock_path: &Path) -> Option<String> {
 /// use them; only entries whose whole subject is gone are collected. With `remove`, exactly the
 /// returned entries are dropped.
 pub fn gc(cfg: &Config, lock: &mut Lock, remove: bool) -> Vec<String> {
-    let mut stale = Vec::new();
-    for (spec, tokens) in &lock.realisations {
-        let gone = |t: &&String| match cfg.specs.get(spec) {
-            None => true,
-            Some(s) => !s.tokens.contains_key(*t),
-        };
-        stale.extend(tokens.keys().filter(gone).map(|t| format!("realisations.{spec}.{t}")));
-    }
+    let named = |spec: &str, token: &str| cfg.specs.get(spec).is_some_and(|s| s.tokens.contains_key(token));
+    let mut stale: Vec<String> = lock
+        .realisations
+        .iter()
+        .flat_map(|(spec, tokens)| {
+            tokens.keys().filter(|t| !named(spec, t)).map(move |t| format!("realisations.{spec}.{t}"))
+        })
+        .collect();
     stale.extend(lock.objects.keys().filter(|o| !cfg.objects.contains_key(*o)).map(|o| format!("objects.{o}")));
     if remove {
-        let mut empty = Vec::new();
         for (spec, tokens) in &mut lock.realisations {
-            tokens.retain(|t, _| match cfg.specs.get(spec) {
-                None => false,
-                Some(s) => s.tokens.contains_key(t),
-            });
-            if tokens.is_empty() {
-                empty.push(spec.clone());
-            }
+            tokens.retain(|t, _| named(spec, t));
         }
-        for spec in empty {
-            lock.realisations.remove(&spec);
-        }
+        lock.realisations.retain(|_, tokens| !tokens.is_empty());
         lock.objects.retain(|o, _| cfg.objects.contains_key(o));
     }
     stale

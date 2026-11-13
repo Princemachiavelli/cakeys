@@ -193,11 +193,7 @@ fn resolve_with(t: &Target, tok: &Token, lock: &Lock, provision: bool) -> Result
         tok.check_unique_private_id(h)?;
     }
     tok.check_public_half(h, t.spec, &t.on_token.locator, public_only)?;
-    let commits = commits(t, tok, mode)?;
-    let label = commitment_label(t, lock);
-    // Observed, not planned: a CKA_ALWAYS_AUTHENTICATE key records the `pop-sign-pin` it proves.
-    let binding = tok.recorded_binding(h, binding(t))?;
-    let ids = tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding)?;
+    let Computed { ids, binding, commitment_label } = compute_ids(t, tok, lock, h, mode)?;
     let attestation = match attestation_scheme(t, tok) {
         Some(scheme) => Some(attest(t, tok, lock, h, scheme, provision)?),
         None => None,
@@ -214,9 +210,29 @@ fn resolve_with(t: &Target, tok: &Token, lock: &Lock, provision: bool) -> Result
         binding,
         policy: tok.policy(h)?,
         immutables: tok.immutables(h),
-        commitment_label: (!commits.is_empty()).then_some(label),
+        commitment_label,
         attestation,
     }))
+}
+
+/// What [`compute_ids`] establishes about an object.
+struct Computed {
+    ids: std::collections::BTreeMap<String, String>,
+    /// How a private key is bound: observed, not planned (a `CKA_ALWAYS_AUTHENTICATE` key
+    /// records the `pop-sign-pin` it proved).
+    binding: Option<cakeys_core::config::Binding>,
+    /// The label the commitments were computed with, when there are any.
+    commitment_label: Option<String>,
+}
+
+/// The material IDs of `t`'s object `h` on `tok` in `mode` — a private key proving possession
+/// on the way — as `resolve` and `delete` (If-Match) compute them.
+fn compute_ids(t: &Target, tok: &Token, lock: &Lock, h: ObjectHandle, mode: Mode) -> Result<Computed> {
+    let commits = commits(t, tok, mode)?;
+    let label = commitment_label(t, lock);
+    let binding = tok.recorded_binding(h, binding(t))?;
+    let ids = tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding)?;
+    Ok(Computed { ids, binding, commitment_label: (!commits.is_empty()).then_some(label) })
 }
 
 /// The attestation commitment (§3.7): per-device identity from signed provenance. The material
@@ -319,58 +335,60 @@ pub fn realise(
     check_capabilities(t, tok, mode)?;
     let r = match resolve_with(t, tok, lock, true)? {
         Some(r) => r,
-        None if t.on_token.auto_create => {
-            // D1: the lock already pins this object's material, so a fresh generation can only
-            // end in a mismatch; refuse before anything is created. (Had this token held the
-            // same material, resolve above would have found it.)
-            if let Some(ids) = lock.objects.get(t.object_name).map(|o| &o.ids).filter(|ids| !ids.is_empty()) {
-                return Err(KmError::PreconditionFailed(format!(
-                    "{}: the lock already pins object '{}' ({}); creating it (autoCreate or \
-                     `cakeys create`) would generate different material that can never match; put \
-                     the same material under the locator, or give this token's key its own object \
-                     name",
-                    t,
-                    t.object_name,
-                    ids.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
-                )));
-            }
-            // If-None-Match: never create over anything else under the locator. On a PIV
-            // token, generating into an occupied slot would silently replace its key.
-            let present = tok.find_any(&t.on_token.locator)?;
-            if !present.is_empty() {
-                return Err(KmError::Conflict(format!(
-                    "{} objects of another class already sit under the locator of {}; refusing to create",
-                    present.len(),
-                    t
-                )));
-            }
-            tok.create(t.object, t.spec, &t.on_token.locator)?;
-            notes.say(format!("created {t}"));
-            match resolve_with(t, tok, lock, true)
-                .and_then(|r| r.ok_or_else(|| KmError::NotFound(format!("{t} vanished after creation"))))
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    // The locator was empty before (If-None-Match), so this removes only what we
-                    // just made: a refused realise leaves nothing behind, unless the module cannot
-                    // delete keys (ykcs11), which is then said rather than claimed.
-                    match tok.destroy(t.object, &t.on_token.locator) {
-                        Ok(n) => notes.say(format!(
-                            "removed {n} object(s) just created for {t}: its identity could not be established"
-                        )),
-                        Err(d) => notes.say(format!(
-                            "the key just created for {t} is still on the token (its identity could not be \
-                             established, and removing it failed: {d})"
-                        )),
-                    }
-                    return Err(e);
-                }
-            }
-        }
+        None if t.on_token.auto_create => create_absent(t, tok, lock, notes)?,
         None => return Err(KmError::NotFound(format!("{t} (autoCreate is off; `cakeys create` makes it)"))),
     };
     let changed = reconcile::reconcile(t, &r, lock, &facts(tok, &r), write, notes)?;
     Ok((r, changed))
+}
+
+/// Create `t`'s object, which `resolve` did not find, and resolve it. Refused before anything is
+/// created when the lock pins the object (D1) or anything sits under the locator; what was
+/// created is removed again when its identity cannot be established.
+fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Resolved> {
+    // D1: the lock already pins this object's material, so a fresh generation can only end in a
+    // mismatch; refuse before anything is created. (Had this token held the same material,
+    // resolve would have found it.)
+    if let Some(ids) = lock.objects.get(t.object_name).map(|o| &o.ids).filter(|ids| !ids.is_empty()) {
+        return Err(KmError::PreconditionFailed(format!(
+            "{}: the lock already pins object '{}' ({}); creating it (autoCreate or `cakeys create`) \
+             would generate different material that can never match; put the same material under \
+             the locator, or give this token's key its own object name",
+            t,
+            t.object_name,
+            ids.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
+        )));
+    }
+    // If-None-Match: never create over anything else under the locator. On a PIV token,
+    // generating into an occupied slot would silently replace its key.
+    let present = tok.find_any(&t.on_token.locator)?;
+    if !present.is_empty() {
+        return Err(KmError::Conflict(format!(
+            "{} objects of another class already sit under the locator of {}; refusing to create",
+            present.len(),
+            t
+        )));
+    }
+    tok.create(t.object, t.spec, &t.on_token.locator)?;
+    notes.say(format!("created {t}"));
+    let e = match resolve_with(t, tok, lock, true) {
+        Ok(Some(r)) => return Ok(r),
+        Ok(None) => KmError::NotFound(format!("{t} vanished after creation")),
+        Err(e) => e,
+    };
+    // The locator was empty before (If-None-Match), so this removes only what we just made: a
+    // refused realise leaves nothing behind, unless the module cannot delete keys (ykcs11),
+    // which is then said rather than claimed.
+    match tok.destroy(t.object, &t.on_token.locator) {
+        Ok(n) => {
+            notes.say(format!("removed {n} object(s) just created for {t}: its identity could not be established"));
+        }
+        Err(d) => notes.say(format!(
+            "the key just created for {t} is still on the token (its identity could not be established, \
+             and removing it failed: {d})"
+        )),
+    }
+    Err(e)
 }
 
 /// PUT, asked for explicitly: [`realise`] as if the pair's entry set `autoCreate`, which only
@@ -418,17 +436,8 @@ pub fn delete(
     let loc = &t.on_token.locator;
     // An expected identity is only required when there is something to delete.
     if let Some(h) = tok.find_key(t.object, loc, false)? {
-        let mode = plan_mode(t)?;
         // Proven like `resolve`: If-Match must not pass on a public object beside another key.
-        let got = tok.ids(
-            h,
-            t.object,
-            loc,
-            mode,
-            &commits(t, tok, mode)?,
-            &commitment_label(t, lock),
-            tok.recorded_binding(h, binding(t))?,
-        )?;
+        let got = compute_ids(t, tok, lock, h, plan_mode(t)?)?.ids;
         // --if-match names the primary scheme; otherwise the first scheme the lock records.
         let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
         let primary = t.schemes().into_iter().find(|s| got.contains_key(s.name()));

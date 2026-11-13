@@ -1,6 +1,9 @@
 //! Proof of possession on the token (`cakeys_core::pop`, docs/DESIGN.md §3.6): sign, derive or decrypt a fresh challenge the host checks.
 
-#[allow(clippy::wildcard_imports)] // the token/ split files work on the parent module's imports (R9)
+#[allow(
+    clippy::wildcard_imports,
+    reason = "the token/ split files work on the parent module's imports (R9); `expect` is not fulfilled on a `use` item"
+)]
 use super::*;
 use cakeys_core::pop;
 
@@ -81,23 +84,9 @@ impl Token {
             kt => return Err(KmError::Unsupported(format!("proof of possession for {kt}"))),
         };
         if !self.has(mech.mechanism_type()) {
-            return Err(self.unsupported(format!(
-                "token '{}' lacks {} to prove possession of the private key; opt in with binding = \"token-asserted\"",
-                self.name,
-                mech.mechanism_type()
-            )));
+            return Err(self.lacks_for_proof(mech.mechanism_type()));
         }
-        let refused = |e: CkError| match e {
-            CkError::Pkcs11(
-                RvError::KeyFunctionNotPermitted | RvError::MechanismInvalid | RvError::KeyTypeInconsistent,
-                _,
-            ) => self.unsupported(format!(
-                "token '{}' refused to sign with the private key ({e}); proving possession needs CKA_SIGN, \
-                     or opt in with binding = \"token-asserted\"",
-                self.name
-            )),
-            e => KmError::Unavailable(format!("C_Sign (proof of possession) on token '{}': {e}", self.name)),
-        };
+        let refused = self.proof_failed("C_Sign", "sign", "CKA_SIGN");
         let sig = if per_use_pin {
             self.sign_with_pin(&mech, h, &data, refused)?
         } else {
@@ -172,18 +161,9 @@ impl Token {
     /// session key and MACs the challenge with it. The MACs agree only if the token's private key
     /// is the one `spki` names.
     fn prove_ecdh(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
-        fn lacking(t: &Token, what: &str) -> KmError {
-            t.unsupported(format!(
-                "token '{}' lacks {what} to prove possession of the private key; opt in with binding = \"token-asserted\"",
-                t.name
-            ))
-        }
         let ch = pop::ecdh_challenge(spki, msg)?;
-        if !self.has(MechanismType::ECDH1_DERIVE) {
-            return Err(lacking(self, "CKM_ECDH1_DERIVE"));
-        }
-        if !self.has(MechanismType::SHA256_HMAC) {
-            return Err(lacking(self, "CKM_SHA256_HMAC"));
+        if let Some(m) = [MechanismType::ECDH1_DERIVE, MechanismType::SHA256_HMAC].into_iter().find(|m| !self.has(*m)) {
+            return Err(self.lacks_for_proof(m));
         }
         let derived = self
             .session
@@ -199,17 +179,7 @@ impl Token {
                     Attribute::Sign(true),
                 ],
             )
-            .map_err(|e| match e {
-                CkError::Pkcs11(
-                    RvError::KeyFunctionNotPermitted | RvError::MechanismInvalid | RvError::KeyTypeInconsistent,
-                    _,
-                ) => self.unsupported(format!(
-                    "token '{}' refused to derive with the private key ({e}); proving possession needs CKA_DERIVE, \
-                         or opt in with binding = \"token-asserted\"",
-                    self.name
-                )),
-                e => KmError::Unavailable(format!("C_DeriveKey (proof of possession) on token '{}': {e}", self.name)),
-            })?;
+            .map_err(self.proof_failed("C_DeriveKey", "derive", "CKA_DERIVE"))?;
         // A session object: dropped with the session even if destroying it fails here.
         let tag = self
             .session
@@ -235,10 +205,7 @@ impl Token {
     /// the one `spki` names.
     fn prove_decrypt(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
         if !self.has(MechanismType::RSA_PKCS_OAEP) {
-            return Err(self.unsupported(format!(
-                "token '{}' lacks CKM_RSA_PKCS_OAEP to prove possession of the private key; opt in with binding = \"token-asserted\"",
-                self.name
-            )));
+            return Err(self.lacks_for_proof(MechanismType::RSA_PKCS_OAEP));
         }
         let cipher = pop::oaep_challenge(spki, msg)?;
         let plain = self
@@ -252,17 +219,7 @@ impl Token {
                 h,
                 &cipher,
             )
-            .map_err(|e| match e {
-                CkError::Pkcs11(
-                    RvError::KeyFunctionNotPermitted | RvError::MechanismInvalid | RvError::KeyTypeInconsistent,
-                    _,
-                ) => self.unsupported(format!(
-                    "token '{}' refused to decrypt with the private key ({e}); proving possession needs CKA_DECRYPT, \
-                         or opt in with binding = \"token-asserted\"",
-                    self.name
-                )),
-                e => KmError::Unavailable(format!("C_Decrypt (proof of possession) on token '{}': {e}", self.name)),
-            })?;
+            .map_err(self.proof_failed("C_Decrypt", "decrypt", "CKA_DECRYPT"))?;
         if !pop::ct_eq(msg, &plain) {
             return Err(KmError::Conflict(format!(
                 "proof of possession failed: the private key did not decrypt for the public key {}",
@@ -270,5 +227,29 @@ impl Token {
             )));
         }
         Ok(())
+    }
+
+    /// The token lacks the mechanism `m` a proof needs: `Unsupported`, with the opt-out.
+    fn lacks_for_proof(&self, m: MechanismType) -> KmError {
+        self.unsupported(format!(
+            "token '{}' lacks {m} to prove possession of the private key; opt in with binding = \"token-asserted\"",
+            self.name
+        ))
+    }
+
+    /// How a proof's `call` failing maps: a key the token will not `op` with is `Unsupported` (the
+    /// spec needs `attr`, or the opt-out); any other failure is `Unavailable`.
+    fn proof_failed(&self, call: &'static str, op: &'static str, attr: &'static str) -> impl Fn(CkError) -> KmError {
+        move |e| match e {
+            CkError::Pkcs11(
+                RvError::KeyFunctionNotPermitted | RvError::MechanismInvalid | RvError::KeyTypeInconsistent,
+                _,
+            ) => self.unsupported(format!(
+                "token '{}' refused to {op} with the private key ({e}); proving possession needs {attr}, or opt \
+                 in with binding = \"token-asserted\"",
+                self.name
+            )),
+            e => KmError::Unavailable(format!("{call} (proof of possession) on token '{}': {e}", self.name)),
+        }
     }
 }

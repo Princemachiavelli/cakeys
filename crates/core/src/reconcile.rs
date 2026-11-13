@@ -125,7 +125,6 @@ pub fn reconcile(
 /// `HashMismatch` (10) when the token's material hashes to another ID than the lock pins;
 /// `PreconditionFailed` (14) for a type change, a downgrade, a replaced object, an attestation
 /// anchor change, or a first use compared without the write.
-#[allow(clippy::too_many_lines)] // every lock rule in exit-code order; a split would scatter the finding numbers
 pub fn compare(
     t: &Target,
     r: &Resolved,
@@ -147,127 +146,13 @@ pub fn compare(
         )));
     }
     if let Some(prev) = lock.realisation(t.spec_name, t.token_name) {
-        // Like a lockfile out of date: keys.toml changed what this realisation is (another
-        // object, locator, publicOnly or policy), so the lock must be re-recorded after review.
         if !update {
-            let mut diff = Vec::new();
-            if prev.object != t.object_name {
-                diff.push(format!("object '{}' -> '{}'", prev.object, t.object_name));
-            }
-            if prev.locator != t.on_token.locator {
-                diff.push(format!("locator {} -> {}", prev.locator, t.on_token.locator));
-            }
-            if prev.public_only != r.public_only {
-                diff.push(format!("publicOnly {} -> {}", prev.public_only, r.public_only));
-            }
-            if prev.spec_digest != r.spec_digest {
-                diff.push(format!("spec digest {} -> {}", prev.spec_digest, r.spec_digest));
-            }
-            if !diff.is_empty() {
-                return Err(KmError::PreconditionFailed(format!(
-                    "spec '{}' changed in keys.toml since it was realised on '{}' ({}); \
-                     review the change, then `realise`",
-                    t.spec_name,
-                    t.token_name,
-                    diff.join(", ")
-                )));
-            }
+            spec_unchanged(t, r, prev)?;
         }
-        if r.mode > prev.mode {
-            return Err(KmError::PreconditionFailed(format!(
-                "identity downgrade for {}: locked mode '{}', now only '{}'",
-                t, prev.mode, r.mode
-            )));
-        }
-        if let (Some(was), Some(now)) = (prev.binding, r.binding)
-            && now.rank() > was.rank()
-        {
-            return Err(KmError::PreconditionFailed(format!(
-                "binding downgrade for {t}: locked binding '{was}', now only '{now}'"
-            )));
-        }
-        // The attestation is compared, even when realise writes the lock (§3.7). A different anchor means
-        // a different device (or a re-provisioned TPM) signed the provenance; a different ID
-        // under the same anchor means the attested object changed (re-imported, other
-        // attributes or policy). Both are changes to review, never to re-record — and a lost
-        // attestation is a scheme downgrade.
-        match (&prev.attestation, &r.attestation) {
-            (Some(was), Some(now)) if was.kind != now.kind || was.root != now.root => {
-                return Err(KmError::PreconditionFailed(format!(
-                    "attestation anchor for {} changed since it was realised ({} root {}, now {} root {}); \
-                     the material needs a new object name",
-                    t, was.kind, was.root, now.kind, now.root
-                )));
-            }
-            (Some(was), Some(now)) if was.id != now.id => {
-                return Err(KmError::HashMismatch {
-                    what: format!("{} ({} attestation)", t, was.kind),
-                    expected: was.id.clone(),
-                    got: now.id.clone(),
-                });
-            }
-            (Some(was), None) => {
-                return Err(KmError::PreconditionFailed(format!(
-                    "identity downgrade for {}: it was realised with a {} attestation, which it no longer computes",
-                    t, was.kind
-                )));
-            }
-            (None, Some(now)) if !update => {
-                notes.note(format_args!(
-                    "{} also has a {} attestation the lock does not record; `realise` adds it",
-                    t, now.kind
-                ));
-            }
-            _ => {}
-        }
-        let lost: Vec<&String> = prev.schemes.iter().filter(|s| !r.ids.contains_key(*s)).collect();
-        if !lost.is_empty() {
-            return Err(KmError::PreconditionFailed(format!(
-                "identity downgrade for {t}: it was realised with {lost:?}, which it no longer computes"
-            )));
-        }
-        // Fixed at creation: weaker now means the object was replaced (also when updating).
-        let weakened = r.immutables.weakened_since(&prev.immutables);
-        if !weakened.is_empty() {
-            return Err(KmError::PreconditionFailed(format!(
-                "{} was replaced since it was realised: {} no longer true; a new object needs a new name",
-                t,
-                weakened.join(", ")
-            )));
-        }
-        // The token's object changed (policy set since, or another object with the same
-        // material): review, like a changed spec.
+        no_downgrade(t, r, prev, update, notes)?;
         if !update {
-            let mut diff: Vec<String> = prev
-                .policy
-                .iter()
-                .filter(|(n, was)| r.policy.get(*n) != Some(was))
-                .map(|(n, was)| {
-                    format!(
-                        "{n} {was} -> {}",
-                        r.policy.get(n).map_or("unreadable".into(), std::string::ToString::to_string)
-                    )
-                })
-                .collect();
-            if prev.immutables != r.immutables {
-                diff.push(format!("immutables {} -> {}", prev.immutables, r.immutables));
-            }
-            if !diff.is_empty() {
-                return Err(KmError::PreconditionFailed(format!(
-                    "{} changed on the token since it was realised ({}); review, then `realise`",
-                    t,
-                    diff.join(", ")
-                )));
-            }
-            let new: Vec<&String> = r.policy.keys().filter(|n| !prev.policy.contains_key(*n)).collect();
-            if !new.is_empty() {
-                notes.note(format_args!(
-                    "{t} also reports {new:?}, which the lock does not record; `realise` adds them"
-                ));
-            }
+            object_unchanged(t, r, prev, notes)?;
         }
-    }
-    if let Some(prev) = lock.realisation(t.spec_name, t.token_name) {
         warn_provenance(t, prev, facts, notes);
     }
     let unlisted = lock.unlisted_pairs(t.object_name);
@@ -277,6 +162,136 @@ pub fn compare(
             t.object_name
         ));
     }
+    compare_ids(t, r, lock, update, notes)
+}
+
+/// Like a lockfile out of date: keys.toml changed what this realisation is (another object,
+/// locator, publicOnly or policy), so the lock must be re-recorded after review.
+fn spec_unchanged(t: &Target, r: &Resolved, prev: &LockRealisation) -> Result<()> {
+    let mut diff = Vec::new();
+    if prev.object != t.object_name {
+        diff.push(format!("object '{}' -> '{}'", prev.object, t.object_name));
+    }
+    if prev.locator != t.on_token.locator {
+        diff.push(format!("locator {} -> {}", prev.locator, t.on_token.locator));
+    }
+    if prev.public_only != r.public_only {
+        diff.push(format!("publicOnly {} -> {}", prev.public_only, r.public_only));
+    }
+    if prev.spec_digest != r.spec_digest {
+        diff.push(format!("spec digest {} -> {}", prev.spec_digest, r.spec_digest));
+    }
+    if diff.is_empty() {
+        return Ok(());
+    }
+    Err(KmError::PreconditionFailed(format!(
+        "spec '{}' changed in keys.toml since it was realised on '{}' ({}); review the change, then `realise`",
+        t.spec_name,
+        t.token_name,
+        diff.join(", ")
+    )))
+}
+
+/// What the realisation proved when it was locked, it must still prove — also when `realise`
+/// writes the lock: its mode, binding, attestation and schemes, and the immutables fixed when the
+/// object was made.
+fn no_downgrade(t: &Target, r: &Resolved, prev: &LockRealisation, update: bool, notes: &mut Notes) -> Result<()> {
+    if r.mode > prev.mode {
+        return Err(KmError::PreconditionFailed(format!(
+            "identity downgrade for {}: locked mode '{}', now only '{}'",
+            t, prev.mode, r.mode
+        )));
+    }
+    if let (Some(was), Some(now)) = (prev.binding, r.binding)
+        && now.rank() > was.rank()
+    {
+        return Err(KmError::PreconditionFailed(format!(
+            "binding downgrade for {t}: locked binding '{was}', now only '{now}'"
+        )));
+    }
+    // The attestation is compared, even when realise writes the lock (§3.7). A different anchor means
+    // a different device (or a re-provisioned TPM) signed the provenance; a different ID
+    // under the same anchor means the attested object changed (re-imported, other
+    // attributes or policy). Both are changes to review, never to re-record — and a lost
+    // attestation is a scheme downgrade.
+    match (&prev.attestation, &r.attestation) {
+        (Some(was), Some(now)) if was.kind != now.kind || was.root != now.root => {
+            return Err(KmError::PreconditionFailed(format!(
+                "attestation anchor for {} changed since it was realised ({} root {}, now {} root {}); \
+                 the material needs a new object name",
+                t, was.kind, was.root, now.kind, now.root
+            )));
+        }
+        (Some(was), Some(now)) if was.id != now.id => {
+            return Err(KmError::HashMismatch {
+                what: format!("{} ({} attestation)", t, was.kind),
+                expected: was.id.clone(),
+                got: now.id.clone(),
+            });
+        }
+        (Some(was), None) => {
+            return Err(KmError::PreconditionFailed(format!(
+                "identity downgrade for {}: it was realised with a {} attestation, which it no longer computes",
+                t, was.kind
+            )));
+        }
+        (None, Some(now)) if !update => {
+            notes.note(format_args!(
+                "{} also has a {} attestation the lock does not record; `realise` adds it",
+                t, now.kind
+            ));
+        }
+        _ => {}
+    }
+    let lost: Vec<&String> = prev.schemes.iter().filter(|s| !r.ids.contains_key(*s)).collect();
+    if !lost.is_empty() {
+        return Err(KmError::PreconditionFailed(format!(
+            "identity downgrade for {t}: it was realised with {lost:?}, which it no longer computes"
+        )));
+    }
+    // Fixed at creation: weaker now means the object was replaced (also when updating).
+    let weakened = r.immutables.weakened_since(&prev.immutables);
+    if !weakened.is_empty() {
+        return Err(KmError::PreconditionFailed(format!(
+            "{} was replaced since it was realised: {} no longer true; a new object needs a new name",
+            t,
+            weakened.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+/// The token's object changed (policy set since, or another object with the same material):
+/// review, like a changed spec.
+fn object_unchanged(t: &Target, r: &Resolved, prev: &LockRealisation, notes: &mut Notes) -> Result<()> {
+    let mut diff: Vec<String> = prev
+        .policy
+        .iter()
+        .filter(|(n, was)| r.policy.get(*n) != Some(was))
+        .map(|(n, was)| {
+            format!("{n} {was} -> {}", r.policy.get(n).map_or("unreadable".into(), std::string::ToString::to_string))
+        })
+        .collect();
+    if prev.immutables != r.immutables {
+        diff.push(format!("immutables {} -> {}", prev.immutables, r.immutables));
+    }
+    if !diff.is_empty() {
+        return Err(KmError::PreconditionFailed(format!(
+            "{} changed on the token since it was realised ({}); review, then `realise`",
+            t,
+            diff.join(", ")
+        )));
+    }
+    let new: Vec<&String> = r.policy.keys().filter(|n| !prev.policy.contains_key(*n)).collect();
+    if !new.is_empty() {
+        notes.note(format_args!("{t} also reports {new:?}, which the lock does not record; `realise` adds them"));
+    }
+    Ok(())
+}
+
+/// The IDs against the object's locked ones: a mismatch is 10, and so is a first use when only
+/// comparing; then the realisation itself must be locked (14). Notes what is not checked.
+fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut Notes) -> Result<()> {
     let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
     // A deprecated computation still verifies — its identities are pinned — but the lock should
     // move to the replacement (docs/DESIGN.md §3.1); a lock write never adds a new one.
@@ -429,7 +444,7 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
 
 /// `observed` and `provenance` never change a verdict: identity is enforced by the CA-IDs, so a
 /// different module build or token only warns. `realise` re-binds them.
-#[allow(clippy::many_single_char_names)] // the prev/now module and token pairs stay short
+#[expect(clippy::many_single_char_names, reason = "the prev/now module and token pairs stay short")]
 fn warn_provenance(t: &Target, prev: &LockRealisation, now: &Facts, notes: &mut Notes) {
     if prev.observed.as_ref().is_some_and(|o| o.session == Session::User) && now.observed.session != Session::User {
         notes.warn(format_args!(

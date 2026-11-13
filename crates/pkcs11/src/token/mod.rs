@@ -479,19 +479,9 @@ fn session(
     Ok((session, pin))
 }
 
+/// The user PIN (`pinEnv`, else `pinFile`).
 fn read_pin(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
-    if let Some(var) = &cfg.pin_env {
-        return std::env::var(var)
-            .map(|s| Some(Zeroizing::new(s)))
-            .map_err(|_| KmError::Unavailable(format!("PIN env var {var} not set")));
-    }
-    if let Some(path) = &cfg.pin_file {
-        return std::fs::read_to_string(path)
-            .map(Zeroizing::new)
-            .map(|s| Some(Zeroizing::new(s.trim_end_matches(['\n', '\r']).to_owned())))
-            .map_err(|e| KmError::Unavailable(format!("PIN file {}: {e}", path.display())));
-    }
-    Ok(None)
+    read_secret("PIN", cfg.pin_env.as_deref(), cfg.pin_file.as_deref())
 }
 
 fn has_admin(cfg: &TokenCfg) -> bool {
@@ -502,18 +492,22 @@ fn has_admin(cfg: &TokenCfg) -> bool {
 /// is the module's: ykcs11 takes the PIV management key in hex, or the PIN on devices whose
 /// management key is PIN-protected.
 fn read_mgm(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
-    if let Some(var) = &cfg.mgm_key_env {
+    read_secret("management-key", cfg.mgm_key_env.as_deref(), cfg.mgm_key_file.as_deref())
+}
+
+/// A credential from the environment variable `var`, else the file `path` (its trailing newline
+/// dropped); neither configured is `None`, a configured one that cannot be read `Unavailable`.
+fn read_secret(what: &str, var: Option<&str>, path: Option<&std::path::Path>) -> Result<Option<Zeroizing<String>>> {
+    if let Some(var) = var {
         return std::env::var(var)
             .map(|s| Some(Zeroizing::new(s)))
-            .map_err(|_| KmError::Unavailable(format!("management-key env var {var} not set")));
+            .map_err(|_| KmError::Unavailable(format!("{what} env var {var} not set")));
     }
-    if let Some(path) = &cfg.mgm_key_file {
-        return std::fs::read_to_string(path)
-            .map(Zeroizing::new)
-            .map(|s| Some(Zeroizing::new(s.trim_end_matches(['\n', '\r']).to_owned())))
-            .map_err(|e| KmError::Unavailable(format!("management-key file {}: {e}", path.display())));
-    }
-    Ok(None)
+    let Some(path) = path else { return Ok(None) };
+    std::fs::read_to_string(path)
+        .map(Zeroizing::new)
+        .map(|s| Some(Zeroizing::new(s.trim_end_matches(['\n', '\r']).to_owned())))
+        .map_err(|e| KmError::Unavailable(format!("{what} file {}: {e}", path.display())))
 }
 
 /// The `cryptoki` class of a configured object.
