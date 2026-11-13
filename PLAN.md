@@ -5,6 +5,7 @@
 ## TODO (deferred, from the 2026-11-11 reviews)
 
 - ~~**Refactor (2026-11-12 code review):**~~ **done 2026-11-12**, see [`docs/REFACTOR-2026-11-12.md`](docs/REFACTOR-2026-11-12.md) (R0–R11, "Outcome").
+- **Verification (2026-11-12):** [`docs/VERIFICATION.md`](docs/VERIFICATION.md) — reference tokens and cross-reference tests first (kryoptic in progress), then proptest/cargo-fuzz, Quint/Alloy design models, Tamarin, Kani; Verus/Aeneas only for a carved-out kernel.
 
 Parked deliberately; the lock stays `version = 1`, a draft, until the reviews pass.
 
