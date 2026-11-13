@@ -99,7 +99,10 @@ Nix:
      "spec S on product X and spec T on product Y are the same object"), checked by `validate`
      against the lock and by `verify`/`check` against the tokens; (b) build-time assertions in
      Nix code over `lib.mkKeys` results — `assert (a { }).id.rfc7093m4 != (b { }).id.rfc7093m4;`
-     works today, also across two `mkKeys` of two locks, and fails evaluation; (c) runtime
+     works today, also across two `mkKeys` of two locks, and fails evaluation — but it compares
+     only what the locks pin, touching no token; that each token holds what its lock pins is the
+     job of each consumer's `check` at build time (type, policy, proof of possession), so the
+     guarantee covers builds that ran it; (c) runtime
      assertions in the program, which gets only URIs: a URI says where a key is, not what it
      is, so the program would have to ask cakeys (`resolve` prints the IDs) rather than compare
      URIs.
