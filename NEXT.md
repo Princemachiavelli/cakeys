@@ -12,11 +12,11 @@ backend, post-quantum, lock merge, keystores, the attestation remainders) stay p
       (`probe` needs the token's config); others exit 2 naming `--config`.
 - [x] **PROVIDERS phase 4**: the static `validate` gate (each spec's demands against its
       token's effective profile, no token attached) and the wider Nix check.
-- [ ] **M1/M2**: read-only sessions for read-only verbs; read the PIV PIN counters
+- [x] **M1/M2** (0ea445e): read-only sessions for read-only verbs; read the PIV PIN counters
       (`CKF_USER_PIN_FINAL_TRY` …) before login.
 - [ ] **D5**: at token open, a read-only check of the live token against its resolved
       profile (`diff::read_only`), as a note — possible since phase 3.
-- [ ] **Probe leftovers**: a killed run's `cakeys-probe-NN` objects are found before probing
+- [x] **Probe leftovers**: a killed run's `cakeys-probe-NN` objects are found before probing
       (refused or cleaned), never reported as a delete failure.
 
 ## 2. Migration (MIGRATE.md phases 2–5)

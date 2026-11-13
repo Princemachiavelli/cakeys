@@ -176,6 +176,29 @@ impl Made<'_> {
             .cloned()
             .collect()
     }
+
+    /// Destroy what an earlier, interrupted run left (`cakeys-probe-NN`, its own labels on a
+    /// scratch token), so this run's leftover check reports only this run. Returns the labels
+    /// cleaned.
+    fn clear_stale(&self) -> Vec<String> {
+        let mut cleaned = Vec::new();
+        let Ok(all) = self.session.find_objects(&[]) else { return cleaned };
+        for h in all {
+            let label = match self.session.get_attributes(h, &[cryptoki::object::AttributeType::Label]) {
+                Ok(attrs) => match attrs.into_iter().next() {
+                    Some(Attribute::Label(l)) => String::from_utf8_lossy(&l).into_owned(),
+                    _ => continue,
+                },
+                Err(_) => continue,
+            };
+            if label.starts_with("cakeys-probe-") && self.session.destroy_object(h).is_ok() {
+                cleaned.push(label);
+            }
+        }
+        cleaned.sort();
+        cleaned.dedup();
+        cleaned
+    }
 }
 
 /// The write probes: key pairs per curve and RSA size, the secret-key generation the module
@@ -184,6 +207,11 @@ impl Made<'_> {
 /// and the leftover check turns "delete really deletes" into a note.
 fn write_probes(tok: &Token, profile: &mut Profile, undetermined: &mut Vec<String>) {
     let mut made = Made { session: tok.raw(), handles: Vec::new(), labels: Vec::new(), n: 0 };
+    let stale = made.clear_stale();
+    if !stale.is_empty() {
+        // Not a profile row: an interrupted run is not something the module does.
+        undetermined.push(format!("destroyed objects an interrupted probe left: {}", stale.join(", ")));
+    }
     probe_curves(&mut made, profile);
     let transport = probe_rsa(&mut made, profile);
     let aes = probe_secrets(tok, &mut made, profile);
