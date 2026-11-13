@@ -53,7 +53,13 @@ impl Env {
     }
 
     fn km(&self, args: &[&str]) -> Output {
-        let out = Command::new(BIN).env_remove("NIX_BUILD_TOP").arg("--config").arg(self.dir.join("keys.toml")).args(args).output().unwrap();
+        let out = Command::new(BIN)
+            .env_remove("NIX_BUILD_TOP")
+            .arg("--config")
+            .arg(self.dir.join("keys.toml"))
+            .args(args)
+            .output()
+            .unwrap();
         eprintln!(
             "$ cakeys {}\n  exit={:?}\n  stdout={}\n  stderr={}",
             args.join(" "),

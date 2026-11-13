@@ -4,10 +4,10 @@
 //! `ed25519-dalek`, `ed448`, `rsa`); this module only chooses which one by curve or OID.
 
 use crate::config::{ObjectCfg, SpecCfg};
-use crate::types::KeyType;
 use crate::error::{KmError, Result};
+use crate::types::KeyType;
 use base64::Engine;
-use p256::pkcs8::der::{asn1::OctetStringRef, Decode, Encode};
+use p256::pkcs8::der::{Decode, Encode, asn1::OctetStringRef};
 use p256::pkcs8::{DecodePublicKey, EncodePublicKey};
 use sha2::{Digest, Sha256};
 
@@ -16,10 +16,7 @@ type Bp384 = p256::elliptic_curve::PublicKey<bp384::BrainpoolP384r1>;
 
 /// `sha256-<base64>`: drops straight into a Nix `outputHash`, but nothing depends on it.
 pub fn sri(bytes: &[u8]) -> String {
-    format!(
-        "sha256-{}",
-        base64::engine::general_purpose::STANDARD.encode(Sha256::digest(bytes))
-    )
+    format!("sha256-{}", base64::engine::general_purpose::STANDARD.encode(Sha256::digest(bytes)))
 }
 
 /// Whether `s` is an SRI SHA-256 digest as `sri` writes it: `sha256-` and 32 bytes in padded
@@ -382,9 +379,7 @@ impl Curve {
 
     /// The curve named by a token's `CKA_EC_PARAMS`.
     pub fn from_params(params: &[u8]) -> Option<Curve> {
-        ALL_CURVES
-            .into_iter()
-            .find(|c| c.params() == params || c.params_by_name() == Some(params))
+        ALL_CURVES.into_iter().find(|c| c.params() == params || c.params_by_name() == Some(params))
     }
 
     /// Canonical DER SPKI from `CKA_EC_POINT`. That is normally a DER OCTET STRING wrapping the
@@ -408,9 +403,7 @@ impl Curve {
             Curve::BrainpoolP384r1 => encode(&Bp384::from_sec1_bytes(point).map_err(|e| bad(&e))?),
             Curve::Ed25519 => encode(&ed25519_dalek::VerifyingKey::try_from(point).map_err(|e| bad(&e))?),
             // No stable Ed448 point arithmetic crate yet: the encoding is checked for length only.
-            Curve::Ed448 => encode(&ed448::pkcs8::PublicKeyBytes(
-                point.try_into().map_err(|e| bad(&e))?,
-            )),
+            Curve::Ed448 => encode(&ed448::pkcs8::PublicKeyBytes(point.try_into().map_err(|e| bad(&e))?)),
         }
     }
 }
@@ -473,11 +466,7 @@ pub fn cert_spki(cert: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn encode(key: &impl EncodePublicKey) -> Result<Vec<u8>> {
-    Ok(key
-        .to_public_key_der()
-        .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}")))?
-        .as_bytes()
-        .to_vec())
+    Ok(key.to_public_key_der().map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}")))?.as_bytes().to_vec())
 }
 #[cfg(test)]
 mod tests {
@@ -497,10 +486,7 @@ mod tests {
 
     #[test]
     fn spec_digest_ignores_attribute_order_but_not_values() {
-        let obj = ObjectCfg {
-            curve: Some("secp256r1".into()),
-            ..cfg("CKO_PRIVATE_KEY", "CKK_EC")
-        };
+        let obj = ObjectCfg { curve: Some("secp256r1".into()), ..cfg("CKO_PRIVATE_KEY", "CKK_EC") };
         let mk = |pairs: &[(&str, bool)]| SpecCfg {
             object: "o".into(),
             attributes: pairs.iter().map(|(k, v)| (k.to_string(), AttrValue::Bool(*v))).collect::<BTreeMap<_, _>>(),
@@ -516,9 +502,12 @@ mod tests {
         // declared lists through `AttrValue::mechanisms`, so the digest only sees sorted ones.)
         let list = |names: &[&str]| SpecCfg {
             object: "o".into(),
-            attributes: [("CKA_ALLOWED_MECHANISMS".to_owned(), AttrValue::mechanisms(names.iter().map(|s| s.to_string())))]
-                .into_iter()
-                .collect(),
+            attributes: [(
+                "CKA_ALLOWED_MECHANISMS".to_owned(),
+                AttrValue::mechanisms(names.iter().map(|s| s.to_string())),
+            )]
+            .into_iter()
+            .collect(),
             public_attributes: BTreeMap::new(),
             tokens: BTreeMap::new(),
         };
@@ -553,10 +542,7 @@ mod tests {
 
     #[test]
     fn hmac_commitment_label_is_unchanged() {
-        let obj = ObjectCfg {
-            value_len: Some(32),
-            ..cfg("CKO_SECRET_KEY", "CKK_GENERIC_SECRET")
-        };
+        let obj = ObjectCfg { value_len: Some(32), ..cfg("CKO_SECRET_KEY", "CKK_GENERIC_SECRET") };
         assert_eq!(
             Commit::Hmac(HmacHash::Sha256).label(DEFAULT_COMMITMENT_LABEL, &obj),
             b"key-management/v1/commitment/CKK_GENERIC_SECRET/256"
@@ -585,21 +571,17 @@ mod tests {
 
     #[test]
     fn spec_digests_are_pinned() {
-        let mk = |class: &str, kt: &str, curve: Option<&str>, vl: Option<u64>, bits: Option<u64>, attrs: &[(&str, bool)]| {
-            let o = ObjectCfg {
-                curve: curve.map(Into::into),
-                value_len: vl,
-                modulus_bits: bits,
-                ..cfg(class, kt)
+        let mk =
+            |class: &str, kt: &str, curve: Option<&str>, vl: Option<u64>, bits: Option<u64>, attrs: &[(&str, bool)]| {
+                let o = ObjectCfg { curve: curve.map(Into::into), value_len: vl, modulus_bits: bits, ..cfg(class, kt) };
+                let s = SpecCfg {
+                    object: "x".into(),
+                    attributes: attrs.iter().map(|(k, v)| (k.to_string(), AttrValue::Bool(*v))).collect(),
+                    public_attributes: BTreeMap::new(),
+                    tokens: BTreeMap::new(),
+                };
+                spec_digest(&o, &s)
             };
-            let s = SpecCfg {
-                object: "x".into(),
-                attributes: attrs.iter().map(|(k, v)| (k.to_string(), AttrValue::Bool(*v))).collect(),
-                public_attributes: BTreeMap::new(),
-                tokens: BTreeMap::new(),
-            };
-            spec_digest(&o, &s)
-        };
         // The certificate type lives in `certificateType` (this digest changed when it did, and
         // is pinned since: the RSA, EC and generic-secret digests below must not move).
         let cert = ObjectCfg { certificate_type: Some("CKC_X_509".into()), ..cfg("CKO_CERTIFICATE", "") };
@@ -615,11 +597,25 @@ mod tests {
             "sha256-8k3VUT0T/6zvM/Yp6b2isKLrYOrK2vfyd7UWWz/DUiY="
         );
         assert_eq!(
-            mk("CKO_PRIVATE_KEY", "CKK_EC", Some("secp256r1"), None, None, &[("CKA_SIGN", true), ("CKA_SENSITIVE", true), ("CKA_EXTRACTABLE", false)]),
+            mk(
+                "CKO_PRIVATE_KEY",
+                "CKK_EC",
+                Some("secp256r1"),
+                None,
+                None,
+                &[("CKA_SIGN", true), ("CKA_SENSITIVE", true), ("CKA_EXTRACTABLE", false)]
+            ),
             "sha256-ZTVELcTP+fshDL1IjnlOuVcNW/f0rw8a71Ztk5IRwns="
         );
         assert_eq!(
-            mk("CKO_SECRET_KEY", "CKK_GENERIC_SECRET", None, Some(32), None, &[("CKA_SIGN", true), ("CKA_EXTRACTABLE", true)]),
+            mk(
+                "CKO_SECRET_KEY",
+                "CKK_GENERIC_SECRET",
+                None,
+                Some(32),
+                None,
+                &[("CKA_SIGN", true), ("CKA_EXTRACTABLE", true)]
+            ),
             "sha256-itlUiIf3R6LLNeujs4Htvzd/3jwJRS/nxRhr5Cgh+FM="
         );
     }
@@ -629,14 +625,21 @@ mod tests {
     /// whose computation changes needs a new name (docs/DESIGN.md §10).
     #[test]
     fn scheme_definitions_are_pinned() {
-        let obj = |kt: &str, len: u64| ObjectCfg {
-            value_len: Some(len),
-            ..cfg("CKO_SECRET_KEY", kt)
-        };
+        let obj = |kt: &str, len: u64| ObjectCfg { value_len: Some(len), ..cfg("CKO_SECRET_KEY", kt) };
         // What each commitment scheme feeds the token (the token's output is then hashed).
         for (kt, len, c, want) in [
-            ("CKK_GENERIC_SECRET", 32, Commit::Hmac(HmacHash::Sha256), "sha256-3gML2yTFq/QAofi+p2ao7a9fEgIbaglLT0YCQcqvjLk="),
-            ("CKK_SHA384_HMAC", 48, Commit::Hmac(HmacHash::Sha384), "sha256-HUtAzPAIg8HRIIURRy0TrTY8eNLoxo48/G3LuEDdMbw="),
+            (
+                "CKK_GENERIC_SECRET",
+                32,
+                Commit::Hmac(HmacHash::Sha256),
+                "sha256-3gML2yTFq/QAofi+p2ao7a9fEgIbaglLT0YCQcqvjLk=",
+            ),
+            (
+                "CKK_SHA384_HMAC",
+                48,
+                Commit::Hmac(HmacHash::Sha384),
+                "sha256-HUtAzPAIg8HRIIURRy0TrTY8eNLoxo48/G3LuEDdMbw=",
+            ),
             ("CKK_AES", 32, Commit::Cmac, "sha256-u42TmSUu/rRjWDQH7LYM7fJHAKe/B81julPRAManfus="),
             ("CKK_AES", 32, Commit::KcvEcb, "sha256-L1W0lzlDj7Pcu44tnVa/ekyQRHsIybF5gUIsG/oi270="),
             ("CKK_AES", 16, Commit::KcvEcbDecrypt, "sha256-Ht1do336beKCgXkt86UdPfbUUdqLPc7Md3/3IybSftI="),
@@ -645,20 +648,56 @@ mod tests {
             assert_eq!(sri(&c.input(DEFAULT_COMMITMENT_LABEL, &obj(kt, len))), want, "{kt} {}", c.scheme());
         }
         // rfc7093m4: canonical SPKI from fixed points (compressed secp256k1 input normalizes).
-        let unhex = |h: &str| (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
+        let unhex = |h: &str| {
+            (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>()
+        };
         for (c, point, want) in [
-            (Curve::P256, "041e18532fd4754c02f3041d9c75ceb33b83ffd81ac7ce4fe882ccb1c98bc5896ea46c311c4e2ff40dd96a3653e6e45445d32dfe486eced75c7a90c6a18881c0a3", "sha256-zpfsINQ2YaGbIVyy43ammNC0qiqltMeFTpFr0FCC/O4="),
-            (Curve::P384, "04b01bfc4a2d7fe2095e6627cc5caf9abd153d5b551fe7f6da615da9d1bfd101e8d191e85902c0a34eaa3a16e666880b73059f658c4d6a6e57c0959de80109b0fa6b56bd63d1d5701a93d15322f2267a15526641c60cd07c912a6df58aa993d89b", "sha256-lZsez90QHDfJQWpTPfCv+eHf7LY4NpyFH+EQZ4VjmpM="),
-            (Curve::P521, "0400e885ae400c9674eeca8cf31f686419a33138db4aae8a20067d62c94d600bb2a48d989aa95f9615d4e5bacdc044e179803072f8f133e115d25e96c556e469bd8ad3000e07af1f79c99b5ac75a49f120cd7e8cc995d00929df0d37d943d81b55a306d6c8c0eedf8732041f03d073625aef81f59ec165a6a8f6a86db7d2aa72536d3c9bb7", "sha256-VALfpeeRcX+xETHLs6jCtUC7CIqf5XNBivx3le/NX6w="),
-            (Curve::Secp256k1, "02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f", "sha256-GGiTh3jiylXXEKyGdFCFl7SIJeh1A/vhl3c13ILSdfs="),
-            (Curve::BrainpoolP256r1, "04028ec4ffd1f989083b4dea1542e8f61d15c28deb3a61ddadffba11ab76d1d8d75eb8e2d46ec7c23353469bd0ed08c292152987e4367f977a3ff80e1a086c4348", "sha256-EUqjIIpLZdllAsykMZpqcQaXQ/2tBFOD7+Yx3QkfTjU="),
-            (Curve::BrainpoolP384r1, "0449dd247f168d73664a8f26ace5d9f34aad77f84998edbbcec898f92d30a4548f4d274c98a08d172afd0d5c86342c8efd16522b32f0dbc8afc0a5493b8d7e09237df15ee7a8b257edac927f7b6d0a5a7de561ecfff0151f73b9070e385e8be376", "sha256-StxntL+EMsY/zm/T3hOEDDruXh8aVrTAFM6j1kaknC0="),
-            (Curve::Ed25519, "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", "sha256-BuP9j9opu2CrWVV95h7bCuzbIxE0vjDnW0Vfjht5L6k="),
+            (
+                Curve::P256,
+                "041e18532fd4754c02f3041d9c75ceb33b83ffd81ac7ce4fe882ccb1c98bc5896ea46c311c4e2ff40dd96a3653e6e45445d32dfe486eced75c7a90c6a18881c0a3",
+                "sha256-zpfsINQ2YaGbIVyy43ammNC0qiqltMeFTpFr0FCC/O4=",
+            ),
+            (
+                Curve::P384,
+                "04b01bfc4a2d7fe2095e6627cc5caf9abd153d5b551fe7f6da615da9d1bfd101e8d191e85902c0a34eaa3a16e666880b73059f658c4d6a6e57c0959de80109b0fa6b56bd63d1d5701a93d15322f2267a15526641c60cd07c912a6df58aa993d89b",
+                "sha256-lZsez90QHDfJQWpTPfCv+eHf7LY4NpyFH+EQZ4VjmpM=",
+            ),
+            (
+                Curve::P521,
+                "0400e885ae400c9674eeca8cf31f686419a33138db4aae8a20067d62c94d600bb2a48d989aa95f9615d4e5bacdc044e179803072f8f133e115d25e96c556e469bd8ad3000e07af1f79c99b5ac75a49f120cd7e8cc995d00929df0d37d943d81b55a306d6c8c0eedf8732041f03d073625aef81f59ec165a6a8f6a86db7d2aa72536d3c9bb7",
+                "sha256-VALfpeeRcX+xETHLs6jCtUC7CIqf5XNBivx3le/NX6w=",
+            ),
+            (
+                Curve::Secp256k1,
+                "02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f",
+                "sha256-GGiTh3jiylXXEKyGdFCFl7SIJeh1A/vhl3c13ILSdfs=",
+            ),
+            (
+                Curve::BrainpoolP256r1,
+                "04028ec4ffd1f989083b4dea1542e8f61d15c28deb3a61ddadffba11ab76d1d8d75eb8e2d46ec7c23353469bd0ed08c292152987e4367f977a3ff80e1a086c4348",
+                "sha256-EUqjIIpLZdllAsykMZpqcQaXQ/2tBFOD7+Yx3QkfTjU=",
+            ),
+            (
+                Curve::BrainpoolP384r1,
+                "0449dd247f168d73664a8f26ace5d9f34aad77f84998edbbcec898f92d30a4548f4d274c98a08d172afd0d5c86342c8efd16522b32f0dbc8afc0a5493b8d7e09237df15ee7a8b257edac927f7b6d0a5a7de561ecfff0151f73b9070e385e8be376",
+                "sha256-StxntL+EMsY/zm/T3hOEDDruXh8aVrTAFM6j1kaknC0=",
+            ),
+            (
+                Curve::Ed25519,
+                "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+                "sha256-BuP9j9opu2CrWVV95h7bCuzbIxE0vjDnW0Vfjht5L6k=",
+            ),
         ] {
             assert_eq!(sri(&c.spki_from_point(&unhex(point)).unwrap()), want, "{c:?}");
         }
-        assert_eq!(sri(&Curve::Ed448.spki_from_point(&[7u8; 57]).unwrap()), "sha256-cfF15XCGWRqstHtN6A71S40xP0sTzTP+Kbkzd9quwyc=");
-        assert_eq!(sri(&rsa_spki(&[0xc5u8; 256], &[1, 0, 1]).unwrap()), "sha256-YAhs9O2fj0M1rDBQoGcFdy9IyFxKRflfglzP6zTtER0=");
+        assert_eq!(
+            sri(&Curve::Ed448.spki_from_point(&[7u8; 57]).unwrap()),
+            "sha256-cfF15XCGWRqstHtN6A71S40xP0sTzTP+Kbkzd9quwyc="
+        );
+        assert_eq!(
+            sri(&rsa_spki(&[0xc5u8; 256], &[1, 0, 1]).unwrap()),
+            "sha256-YAhs9O2fj0M1rDBQoGcFdy9IyFxKRflfglzP6zTtER0="
+        );
     }
 
     /// The deprecation register (docs/DESIGN.md §3.1, finding S15): empty today, so adding a name
@@ -674,7 +713,18 @@ mod tests {
         let names: Vec<&str> = Scheme::ALL.into_iter().map(Scheme::name).collect();
         assert_eq!(
             names,
-            ["rfc7093m4", "certhash", "valuehash", "commitment", "cmac", "kcv-ecb", "kcv-ecb-dec", "kw", "piv-attestation", "tpm-certify"]
+            [
+                "rfc7093m4",
+                "certhash",
+                "valuehash",
+                "commitment",
+                "cmac",
+                "kcv-ecb",
+                "kcv-ecb-dec",
+                "kw",
+                "piv-attestation",
+                "tpm-certify"
+            ]
         );
         let commitments: Vec<&str> = Scheme::ALL.into_iter().filter(|s| s.is_commitment()).map(Scheme::name).collect();
         assert_eq!(commitments, ["commitment", "cmac", "kcv-ecb", "kcv-ecb-dec", "kw"]);
@@ -688,7 +738,8 @@ mod tests {
     /// the SHA-256 of, so a change here breaks locks and must be a new scheme name instead.
     #[test]
     fn attestation_definitions_are_pinned() {
-        let kinds: Vec<(&str, &str)> = Scheme::ALL.into_iter().filter_map(|s| Some((s.name(), s.attestation_kind()?))).collect();
+        let kinds: Vec<(&str, &str)> =
+            Scheme::ALL.into_iter().filter_map(|s| Some((s.name(), s.attestation_kind()?))).collect();
         assert_eq!(kinds, [("piv-attestation", "yubico-piv"), ("tpm-certify", "tpm-certify")]);
         // piv-attestation: domain tag, then issuer SPKI (f9 device key), subject SPKI (the key),
         // firmware (1.3.6.1.4.1.41482.3.3), serial (.3.7), PIN/touch policy (.3.8), formfactor
@@ -699,6 +750,9 @@ mod tests {
         );
         // tpm-certify: domain tag, then the attested Name (nameAlg tag + H(TPMT_PUBLIC)) and the
         // qualified Name. The freshness nonce is verification evidence and never part of the ID.
-        assert_eq!(tpm_certify_id(b"\x00\x0bname", b"\x00\x0bqn"), "sha256-gtESMfaa12qwnzF1o9xnvKzbZUFlO7WOTHi4aj52aq0=");
+        assert_eq!(
+            tpm_certify_id(b"\x00\x0bname", b"\x00\x0bqn"),
+            "sha256-gtESMfaa12qwnzF1o9xnvKzbZUFlO7WOTHi4aj52aq0="
+        );
     }
 }

@@ -106,12 +106,19 @@ mod tests {
         let common = "CKA_TOKEN CKA_PRIVATE CKA_MODIFIABLE CKA_COPYABLE CKA_DESTROYABLE";
         assert_eq!(
             v(ObjectClass::PrivateKey),
-            format!("{common} CKA_DERIVE CKA_SENSITIVE CKA_DECRYPT CKA_SIGN CKA_SIGN_RECOVER CKA_UNWRAP CKA_EXTRACTABLE CKA_WRAP_WITH_TRUSTED CKA_ALWAYS_AUTHENTICATE")
+            format!(
+                "{common} CKA_DERIVE CKA_SENSITIVE CKA_DECRYPT CKA_SIGN CKA_SIGN_RECOVER CKA_UNWRAP CKA_EXTRACTABLE CKA_WRAP_WITH_TRUSTED CKA_ALWAYS_AUTHENTICATE"
+            )
         );
-        assert_eq!(v(ObjectClass::PublicKey), format!("{common} CKA_DERIVE CKA_ENCRYPT CKA_VERIFY CKA_VERIFY_RECOVER CKA_WRAP CKA_TRUSTED"));
+        assert_eq!(
+            v(ObjectClass::PublicKey),
+            format!("{common} CKA_DERIVE CKA_ENCRYPT CKA_VERIFY CKA_VERIFY_RECOVER CKA_WRAP CKA_TRUSTED")
+        );
         assert_eq!(
             v(ObjectClass::SecretKey),
-            format!("{common} CKA_DERIVE CKA_SENSITIVE CKA_ENCRYPT CKA_DECRYPT CKA_SIGN CKA_VERIFY CKA_WRAP CKA_UNWRAP CKA_EXTRACTABLE CKA_WRAP_WITH_TRUSTED CKA_TRUSTED")
+            format!(
+                "{common} CKA_DERIVE CKA_SENSITIVE CKA_ENCRYPT CKA_DECRYPT CKA_SIGN CKA_VERIFY CKA_WRAP CKA_UNWRAP CKA_EXTRACTABLE CKA_WRAP_WITH_TRUSTED CKA_TRUSTED"
+            )
         );
         assert_eq!(v(ObjectClass::Certificate), format!("{common} CKA_TRUSTED"));
         assert_eq!(v(ObjectClass::Data), common);

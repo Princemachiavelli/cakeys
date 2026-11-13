@@ -37,11 +37,7 @@ impl Token {
             let want = curve_of(object)?;
             match self.attr(h, AttributeType::EcParams)? {
                 Some(Attribute::EcParams(p)) if Curve::from_params(&p) == Some(want) => {}
-                other => {
-                    return Err(KmError::Conflict(format!(
-                        "CKA_EC_PARAMS {other:?} is not {want:?}"
-                    )))
-                }
+                other => return Err(KmError::Conflict(format!("CKA_EC_PARAMS {other:?} is not {want:?}"))),
             }
         }
         if let Some(bits) = object.modulus_bits {
@@ -59,9 +55,7 @@ impl Token {
         if let Some(len) = object.value_len {
             match self.attr(h, AttributeType::ValueLen)? {
                 Some(Attribute::ValueLen(v)) if *v == len => {}
-                other => {
-                    return Err(KmError::Conflict(format!("CKA_VALUE_LEN mismatch: {other:?}")))
-                }
+                other => return Err(KmError::Conflict(format!("CKA_VALUE_LEN mismatch: {other:?}"))),
             }
         }
         self.check_policy(h, spec)
@@ -72,20 +66,26 @@ impl Token {
     /// `CKA_ALLOWED_MECHANISMS` on key objects when readable. Unreadable ones are left out.
     pub fn policy(&self, h: ObjectHandle) -> Result<BTreeMap<String, AttrValue>> {
         let class = match self.attr(h, AttributeType::Class)? {
-            Some(Attribute::Class(c)) => managed_class(c).ok_or_else(|| KmError::Unsupported(format!("object class {c}")))?,
+            Some(Attribute::Class(c)) => {
+                managed_class(c).ok_or_else(|| KmError::Unsupported(format!("object class {c}")))?
+            }
             _ => return Err(KmError::Conflict("object has no CKA_CLASS".into())),
         };
         let mut policy = BTreeMap::new();
         for name in attrs::observed(class) {
             let Some(t) = bool_attr(name, false).map(|a| a.attribute_type()) else { continue };
             // Unsupported or unreadable on this token: not part of what it can show.
-            if let Ok(Some(a)) = self.attr(h, t) && let Some(b) = attr_bool(&a) {
+            if let Ok(Some(a)) = self.attr(h, t)
+                && let Some(b) = attr_bool(&a)
+            {
                 policy.insert(name.to_owned(), AttrValue::Bool(b));
             }
         }
         if attrs::has_allowed_mechanisms(class) {
             // An empty list is not reported: it is indistinguishable from absent and means none.
-            if let Ok(Some(Attribute::AllowedMechanisms(m))) = self.attr(h, AttributeType::AllowedMechanisms) && !m.is_empty() {
+            if let Ok(Some(Attribute::AllowedMechanisms(m))) = self.attr(h, AttributeType::AllowedMechanisms)
+                && !m.is_empty()
+            {
                 policy.insert(
                     "CKA_ALLOWED_MECHANISMS".to_owned(),
                     AttrValue::mechanisms(m.iter().map(|m| m.to_string())),
@@ -159,11 +159,13 @@ impl Token {
                 [] => {
                     return Err(KmError::NotFound(
                         "publicAttributes are declared, but there is no public key object under the locator".into(),
-                    ))
+                    ));
                 }
                 _ => return Err(KmError::Ambiguous("several public key objects share the locator".into())),
             };
-            if let (Some(a), Some(b)) = (self.material_spki(p)?, self.material_spki(h)?) && a != b {
+            if let (Some(a), Some(b)) = (self.material_spki(p)?, self.material_spki(h)?)
+                && a != b
+            {
                 return Err(KmError::Conflict("the public key object under the locator holds another key".into()));
             }
             p
@@ -258,7 +260,9 @@ mod tests {
                 assert_eq!(bool_attr(name, true).as_ref().and_then(attr_bool), Some(true), "{name}");
             }
         }
-        for name in ["CKA_SIGN_RECOVER", "CKA_VERIFY_RECOVER", "CKA_LOCAL", "CKA_NEVER_EXTRACTABLE", "CKA_ALWAYS_SENSITIVE"] {
+        for name in
+            ["CKA_SIGN_RECOVER", "CKA_VERIFY_RECOVER", "CKA_LOCAL", "CKA_NEVER_EXTRACTABLE", "CKA_ALWAYS_SENSITIVE"]
+        {
             assert_eq!(bool_attr(name, false).as_ref().and_then(attr_bool), Some(false), "{name}");
         }
         assert!(bool_attr("CKA_ALLOWED_MECHANISMS", true).is_none());

@@ -52,7 +52,13 @@ impl Env {
     }
 
     fn km(&self, args: &[&str]) -> Output {
-        let out = Command::new(BIN).env_remove("NIX_BUILD_TOP").arg("--config").arg(self.dir.join("keys.toml")).args(args).output().unwrap();
+        let out = Command::new(BIN)
+            .env_remove("NIX_BUILD_TOP")
+            .arg("--config")
+            .arg(self.dir.join("keys.toml"))
+            .args(args)
+            .output()
+            .unwrap();
         eprintln!(
             "$ cakeys {}\n  exit={:?}\n  stdout={}\n  stderr={}",
             args.join(" "),
@@ -199,7 +205,11 @@ fn tpm2_generated_keys_match_der_oracle() {
         let spec = format!("{k}-gen");
         let first = e.km(&["realise", &spec, "--token", "tpm", "--no-update-lock"]);
         assert_eq!(code(&first), 10, "{k}");
-        assert_eq!(got_hash(&e.km(&["realise", &spec, "--token", "tpm", "--no-update-lock"])), got_hash(&first), "{k}: no duplicate");
+        assert_eq!(
+            got_hash(&e.km(&["realise", &spec, "--token", "tpm", "--no-update-lock"])),
+            got_hash(&first),
+            "{k}: no duplicate"
+        );
         assert_eq!(code(&e.km(&["realise", &spec, "--token", "tpm", "--update-lock"])), 0, "{k}");
         // A session opened now: tpm2-pkcs11 sessions don't see objects created after they opened.
         assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki_with(&e.session(), k, unwrap_tpm2)), "{k}");
@@ -236,14 +246,34 @@ fn tpm2_imported_keys_match_openssl_and_host_hmac() {
     if !cryptoki_hmac_types_fixed(std::env::var("CAKEYS_TPM_REQUIRE").is_ok()) {
         return;
     }
-    e.ptool(&["import", "--algorithm=ecc", &format!("--privkey={FIXTURES}/tpm-import-p256.pem"), "--key-label=imp-p256"]);
-    e.ptool(&["import", "--algorithm=rsa", &format!("--privkey={FIXTURES}/tpm-import-rsa2048.pem"), "--key-label=imp-rsa"]);
+    e.ptool(&[
+        "import",
+        "--algorithm=ecc",
+        &format!("--privkey={FIXTURES}/tpm-import-p256.pem"),
+        "--key-label=imp-p256",
+    ]);
+    e.ptool(&[
+        "import",
+        "--algorithm=rsa",
+        &format!("--privkey={FIXTURES}/tpm-import-rsa2048.pem"),
+        "--key-label=imp-rsa",
+    ]);
     let hmac_file = e.dir.join("hmac.bin");
     std::fs::write(&hmac_file, HMAC_VALUE).unwrap();
-    e.ptool(&["import", "--algorithm=hmac:sha256", &format!("--privkey={}", hmac_file.display()), "--key-label=imp-hmac"]);
+    e.ptool(&[
+        "import",
+        "--algorithm=hmac:sha256",
+        &format!("--privkey={}", hmac_file.display()),
+        "--key-label=imp-hmac",
+    ]);
     let hmac384_file = e.dir.join("hmac384.bin");
     std::fs::write(&hmac384_file, HMAC384_VALUE).unwrap();
-    e.ptool(&["import", "--algorithm=hmac:sha384", &format!("--privkey={}", hmac384_file.display()), "--key-label=imp-hmac384"]);
+    e.ptool(&[
+        "import",
+        "--algorithm=hmac:sha384",
+        &format!("--privkey={}", hmac384_file.display()),
+        "--key-label=imp-hmac384",
+    ]);
     e.config(
         r#"
 [objects.p256]
@@ -320,7 +350,8 @@ fn tpm2_aes_key_is_identified_by_its_kcv() {
     assert_eq!(code(&e.km(&["check", "aes.id.kcv-ecb"])), 0);
 
     let s = e.session();
-    let h = s.find_objects(&[Attribute::Class(ObjectClass::SECRET_KEY), Attribute::Label(b"kcv-aes".to_vec())]).unwrap()[0];
+    let h =
+        s.find_objects(&[Attribute::Class(ObjectClass::SECRET_KEY), Attribute::Label(b"kcv-aes".to_vec())]).unwrap()[0];
     let block = &<sha2::Sha256 as sha2::Digest>::digest(b"key-management/v1/kcv-ecb/CKK_AES/256")[..16];
     let kcv = s.encrypt(&Mechanism::AesEcb, h, block).unwrap();
     assert_eq!(e.locked_id("aes", "kcv-ecb"), sri(&kcv));
@@ -367,7 +398,11 @@ fn tpm2_keys_attest_their_tpm_residence() {
     // configured handle. Reads never provision one, so the second verify fails the same way.
     let base = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
     let alt = |handle: &str| {
-        base.replacen("tokenLabel = \"kmtest\"\n", &format!("tokenLabel = \"kmtest\"\noptions = {{ akHandle = \"{handle}\" }}\n"), 1)
+        base.replacen(
+            "tokenLabel = \"kmtest\"\n",
+            &format!("tokenLabel = \"kmtest\"\noptions = {{ akHandle = \"{handle}\" }}\n"),
+            1,
+        )
     };
     std::fs::write(e.dir.join("keys.toml"), alt("0x81000017")).unwrap();
     for _ in 0..2 {
@@ -395,7 +430,12 @@ fn tpm2_keys_attest_their_tpm_residence() {
     if cryptoki_hmac_types_fixed(false) {
         let hmac_file = e.dir.join("hmac.bin");
         std::fs::write(&hmac_file, HMAC_VALUE).unwrap();
-        e.ptool(&["import", "--algorithm=hmac:sha256", &format!("--privkey={}", hmac_file.display()), "--key-label=attest-hmac"]);
+        e.ptool(&[
+            "import",
+            "--algorithm=hmac:sha256",
+            &format!("--privkey={}", hmac_file.display()),
+            "--key-label=attest-hmac",
+        ]);
         e.config(
             "[objects.hmac]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_SHA256_HMAC\"\nvalueLen = 32\n\n\
              [specs.hmac]\nobject = \"hmac\"\nattributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n\
@@ -472,7 +512,12 @@ fn tpm2_attested_material_travels_to_a_second_hsm() {
     // attestable: SoftHSM attests nothing).
     let hmac_file = e.dir.join("hmac.bin");
     std::fs::write(&hmac_file, HMAC_VALUE).unwrap();
-    e.ptool(&["import", "--algorithm=hmac:sha256", &format!("--privkey={}", hmac_file.display()), "--key-label=travel-hmac"]);
+    e.ptool(&[
+        "import",
+        "--algorithm=hmac:sha256",
+        &format!("--privkey={}", hmac_file.display()),
+        "--key-label=travel-hmac",
+    ]);
     e.config(&format!(
         "[tokens.soft]\nmodule = \"{soft}\"\ntokenLabel = \"kmtest\"\npinFile = \"{pin}\"\n\n\
          [objects.hmac]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_SHA256_HMAC\"\nvalueLen = 32\n\n\

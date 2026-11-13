@@ -11,11 +11,7 @@ pub enum KmError {
     #[error("precondition failed: {0}")]
     PreconditionFailed(String),
     #[error("hash mismatch in identity of {what}:\n  specified: {expected}\n     got:    {got}")]
-    HashMismatch {
-        what: String,
-        expected: String,
-        got: String,
-    },
+    HashMismatch { what: String, expected: String, got: String },
     #[error("unsupported: {0}")]
     Unsupported(String),
     #[error("unavailable: {0}")]

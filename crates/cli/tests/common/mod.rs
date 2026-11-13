@@ -1,8 +1,8 @@
 //! Helpers shared by the integration tests: CLI output parsing and an independent DER oracle.
 #![allow(dead_code)] // each test binary uses a subset
 
-use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
+use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use cryptoki::session::{Session, UserType};
 use cryptoki::types::AuthPin;
 use std::process::Output;
@@ -118,7 +118,6 @@ pub fn oracle_spki_with(s: &Session, label: &str, unwrap: fn(&[u8]) -> Vec<u8>) 
         }
     }
 }
-
 
 /// Host oracle for the AES commitments (`cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`) of a known
 /// AES-128/192/256 key.

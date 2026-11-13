@@ -8,10 +8,10 @@ use cakeys_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
 use cryptoki::object::{KeyType, ObjectHandle};
 
-pub use cakeys_core::plan::{Target, binding, plan_mode};
 use cakeys_core::plan::{AES_COMMITS, declared_commits};
-pub use cakeys_core::reconcile::{Facts, LockWrite, Notes, Resolved};
+pub use cakeys_core::plan::{Target, binding, plan_mode};
 use cakeys_core::reconcile::{self, commitment_label};
+pub use cakeys_core::reconcile::{Facts, LockWrite, Notes, Resolved};
 
 /// The attestation scheme `t`'s token computes when opted in (`attestation = true`), if the
 /// provider attests this class at all (§3.7 of docs/DESIGN.md).
@@ -73,7 +73,7 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
                     "{} opts into attestation, but provider '{}' attests nothing on this module",
                     t,
                     tok.provider.name()
-                )))
+                )));
             }
             Some(cap) if !cap.classes.contains(&t.object.class) => {
                 return Err(tok.unsupported(format!(
@@ -81,20 +81,21 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
                     t,
                     tok.provider.name(),
                     cap.classes.iter().map(|c| c.name()).collect::<Vec<_>>()
-                )))
+                )));
             }
             Some(_) => {}
         }
     }
     let mut need = Vec::new();
-    if t.on_token.auto_create && let Some(kt) = t.object.key_type.filter(|k| k.is_hash_bound_hmac()) {
+    if t.on_token.auto_create
+        && let Some(kt) = t.object.key_type.filter(|k| k.is_hash_bound_hmac())
+    {
         // CKM_GENERIC_SECRET_KEY_GEN makes CKK_GENERIC_SECRET keys; there is no mechanism for
         // the hash-bound HMAC types (SoftHSM: CKR_TEMPLATE_INCONSISTENT).
         return Err(tok.unsupported(format!(
             "{}: PKCS#11 has no key generation for {}; generate a CKK_GENERIC_SECRET with CKA_SIGN, \
              or create the key elsewhere and adopt it",
-            t,
-            kt
+            t, kt
         )));
     }
     if t.on_token.auto_create {
@@ -114,11 +115,7 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
         }
     }
     match need.into_iter().find(|m| !tok.has(*m)) {
-        Some(m) => Err(tok.unsupported(format!(
-            "token '{}' lacks {m} needed for mode '{mode}' of {}",
-            tok.name,
-            t
-        ))),
+        Some(m) => Err(tok.unsupported(format!("token '{}' lacks {m} needed for mode '{mode}' of {}", tok.name, t))),
         None => Ok(()),
     }
 }
@@ -174,12 +171,22 @@ fn resolve_with(t: &Target, tok: &Token, lock: &Lock, provision: bool) -> Result
 /// unreachable, no PIN, no attestation certificate — is a scheme downgrade (14), like any
 /// scheme a realisation stops computing. Conflicts (13) and ambiguity (12) keep their codes:
 /// they say the evidence is wrong, not absent.
-fn attest(t: &Target, tok: &Token, lock: &Lock, h: ObjectHandle, scheme: Scheme, provision: bool) -> Result<AttestationRecord> {
+fn attest(
+    t: &Target,
+    tok: &Token,
+    lock: &Lock,
+    h: ObjectHandle,
+    scheme: Scheme,
+    provision: bool,
+) -> Result<AttestationRecord> {
     let asymmetric = t.object.class.is_asymmetric();
     let spki = if asymmetric { Some(tok.spki(h, &t.on_token.locator)?) } else { None };
-    let kind = scheme
-        .attestation_kind()
-        .ok_or_else(|| KmError::Unsupported(format!("provider '{}' advertises unknown attestation scheme {scheme}", tok.provider.name())))?;
+    let kind = scheme.attestation_kind().ok_or_else(|| {
+        KmError::Unsupported(format!(
+            "provider '{}' advertises unknown attestation scheme {scheme}",
+            tok.provider.name()
+        ))
+    })?;
     let a = match tok.attest(h, t.object, spki.as_deref(), provision) {
         Ok(a) => a,
         Err(e @ (KmError::Unavailable(_) | KmError::Unsupported(_) | KmError::NotFound(_))) => {
@@ -187,8 +194,7 @@ fn attest(t: &Target, tok: &Token, lock: &Lock, h: ObjectHandle, scheme: Scheme,
             return Err(match locked {
                 Some(was) => KmError::PreconditionFailed(format!(
                     "identity downgrade for {}: it was realised with a {} attestation, which it cannot compute now: {e}",
-                    t,
-                    was.kind
+                    t, was.kind
                 )),
                 None => e,
             });
@@ -232,7 +238,13 @@ pub fn verify(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result
 
 /// PUT: create under the declared locator if absent (and `autoCreate`), then compare with the lock.
 /// Re-running never creates a second object: the locator finds the first one.
-pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes: &mut Notes) -> Result<(Resolved, bool)> {
+pub fn realise(
+    t: &Target,
+    tok: &Token,
+    lock: &mut Lock,
+    write: LockWrite,
+    notes: &mut Notes,
+) -> Result<(Resolved, bool)> {
     let mode = plan_mode(t)?;
     check_capabilities(t, tok, mode)?;
     let r = match resolve_with(t, tok, lock, true)? {
@@ -263,9 +275,9 @@ pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes
             }
             tok.create(t.object, t.spec, &t.on_token.locator)?;
             notes.say(format!("created {t}"));
-            match resolve_with(t, tok, lock, true).and_then(|r| {
-                r.ok_or_else(|| KmError::NotFound(format!("{} vanished after creation", t)))
-            }) {
+            match resolve_with(t, tok, lock, true)
+                .and_then(|r| r.ok_or_else(|| KmError::NotFound(format!("{} vanished after creation", t))))
+            {
                 Ok(r) => r,
                 Err(e) => {
                     // The locator was empty before (If-None-Match), so this removes only what we
@@ -293,7 +305,14 @@ pub fn realise(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes
 }
 
 /// DELETE + If-Match. Absent is success; a different object under the locator is left alone.
-pub fn delete(t: &Target, tok: &Token, lock: &mut Lock, if_match: Option<&str>, write: LockWrite, notes: &mut Notes) -> Result<bool> {
+pub fn delete(
+    t: &Target,
+    tok: &Token,
+    lock: &mut Lock,
+    if_match: Option<&str>,
+    write: LockWrite,
+    notes: &mut Notes,
+) -> Result<bool> {
     if t.on_token.public_only {
         return Err(KmError::Unsupported(format!(
             "{} is adopted publicOnly; deleting would remove only the public half",
@@ -304,7 +323,15 @@ pub fn delete(t: &Target, tok: &Token, lock: &mut Lock, if_match: Option<&str>, 
     if let Some(h) = tok.find_key(t.object, &t.on_token.locator, false)? {
         let mode = plan_mode(t)?;
         // Proven like `resolve`: If-Match must not pass on a public object beside another key.
-        let got = tok.ids(h, t.object, &t.on_token.locator, mode, &commits(t, tok, mode)?, &commitment_label(t, lock), binding(t))?;
+        let got = tok.ids(
+            h,
+            t.object,
+            &t.on_token.locator,
+            mode,
+            &commits(t, tok, mode)?,
+            &commitment_label(t, lock),
+            binding(t),
+        )?;
         // --if-match names the primary scheme; otherwise the first scheme the lock records.
         let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
         let primary = t.schemes().into_iter().find(|s| got.contains_key(s.name()));
@@ -323,7 +350,8 @@ pub fn delete(t: &Target, tok: &Token, lock: &mut Lock, if_match: Option<&str>, 
         if got.get(scheme.name()) != Some(&expected) {
             return Err(KmError::PreconditionFailed(format!(
                 "{} holds {:?}, expected {expected}; not deleting",
-                t, got.get(scheme.name())
+                t,
+                got.get(scheme.name())
             )));
         }
     }
@@ -332,7 +360,9 @@ pub fn delete(t: &Target, tok: &Token, lock: &mut Lock, if_match: Option<&str>, 
         notes.say(format!("destroyed {n} object(s) for {t}"));
     }
     let mut changed = false;
-    if write == LockWrite::Record && let Some(m) = lock.realisations.get_mut(t.spec_name) {
+    if write == LockWrite::Record
+        && let Some(m) = lock.realisations.get_mut(t.spec_name)
+    {
         changed = m.remove(t.token_name).is_some();
         if m.is_empty() {
             lock.realisations.remove(t.spec_name);
@@ -399,7 +429,10 @@ pub fn check(
                 .is_some_and(|a| Some(a.kind.as_str()) == s.attestation_kind());
             (locked, r.attestation.as_ref().map(|a| a.id.clone()))
         } else {
-            (lock.objects.get(t.object_name).is_some_and(|o| o.ids.contains_key(s.name())), r.ids.get(s.name()).cloned())
+            (
+                lock.objects.get(t.object_name).is_some_and(|o| o.ids.contains_key(s.name())),
+                r.ids.get(s.name()).cloned(),
+            )
         };
         if !locked {
             return Err(KmError::HashMismatch {

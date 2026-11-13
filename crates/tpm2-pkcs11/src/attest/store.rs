@@ -85,9 +85,8 @@ impl Store {
         let path = dir.join(DB_NAME);
         // Read-only, so a wrong directory is an error — never a fresh empty store the module
         // might pick up later.
-        let db = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
-            KmError::Unavailable(format!("opening tpm2-pkcs11 store {}: {e}", path.display()))
-        })?;
+        let db = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| KmError::Unavailable(format!("opening tpm2-pkcs11 store {}: {e}", path.display())))?;
         // `sealobjects.tokid` and `tobjects.tokid` reference `tokens.id` (db.c schema), not the
         // primary `tokens.pid` that several tokens may share.
         let (tok_id, config, objauth) = db
@@ -98,27 +97,20 @@ impl Store {
                 |r| Ok((r.get::<_, i64>(0)?, text(r, 1)?, text(r, 2)?)),
             )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => KmError::NotFound(format!(
-                    "token '{token_label}' in the tpm2-pkcs11 store {}",
-                    path.display()
-                )),
+                rusqlite::Error::QueryReturnedNoRows => {
+                    KmError::NotFound(format!("token '{token_label}' in the tpm2-pkcs11 store {}", path.display()))
+                }
                 e => KmError::Unavailable(format!("reading pobjects: {e}")),
             })?;
         let parent = parse_parent(&config, &objauth)?;
         // The seal blobs arrive as raw marshaled `TPM2B_`s (sqlite BLOB values), the auth salt
         // as its hex string.
         let (userpub, userpriv, userauthsalt) = db
-            .query_row(
-                "SELECT userpub, userpriv, userauthsalt FROM sealobjects WHERE tokid = ?1",
-                [tok_id],
-                |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?, text(r, 2)?)),
-            )
+            .query_row("SELECT userpub, userpriv, userauthsalt FROM sealobjects WHERE tokid = ?1", [tok_id], |r| {
+                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?, text(r, 2)?))
+            })
             .map_err(|e| KmError::Unavailable(format!("reading sealobjects: {e}")))?;
-        let seal = Seal {
-            pub_blob: userpub,
-            priv_blob: userpriv,
-            auth_salt: userauthsalt,
-        };
+        let seal = Seal { pub_blob: userpub, priv_blob: userpriv, auth_salt: userauthsalt };
         let mut tobjects = Vec::new();
         {
             let mut stmt = db
@@ -128,9 +120,8 @@ impl Store {
                 .query_map([tok_id], |r| text(r, 0))
                 .map_err(|e| KmError::Unavailable(format!("reading tobjects: {e}")))?;
             for attrs in rows {
-                tobjects.push(parse_tobject(&attrs.map_err(|e| {
-                    KmError::Unavailable(format!("reading a tobject: {e}"))
-                })?)?);
+                tobjects
+                    .push(parse_tobject(&attrs.map_err(|e| KmError::Unavailable(format!("reading a tobject: {e}")))?)?);
             }
         }
         Ok(Store { parent, seal, tobjects })
@@ -184,7 +175,9 @@ pub fn store_class(class: ObjectClass) -> Result<i64> {
 fn parse_parent(config: &str, objauth: &str) -> Result<Parent> {
     let bad = |what: &str| KmError::Unavailable(format!("tpm2-pkcs11 store: primary object: {what}"));
     if !config.contains("esys-tr") {
-        return Err(bad("the token's primary is transient; attestation needs a persistent one (tpm2_ptool init default)"));
+        return Err(bad(
+            "the token's primary is transient; attestation needs a persistent one (tpm2_ptool init default)",
+        ));
     }
     let blob = config
         .split('"')
@@ -192,11 +185,14 @@ fn parse_parent(config: &str, objauth: &str) -> Result<Parent> {
         .and_then(|h| hex(h).ok())
         .ok_or_else(|| bad("esys-tr is not a hex blob"))?;
     let mut rest = blob.as_slice();
-    let be32 = |r: &mut &[u8]| r.first_chunk::<4>().map(|b| u32::from_be_bytes(*b)).inspect(|_| {
-        *r = &r[4..];
-    });
+    let be32 = |r: &mut &[u8]| {
+        r.first_chunk::<4>().map(|b| u32::from_be_bytes(*b)).inspect(|_| {
+            *r = &r[4..];
+        })
+    };
     let Some(handle) = be32(&mut rest) else { return Err(bad("esys-tr has no handle")) };
-    let name_len = rest.first_chunk::<2>().map(|b| u16::from_be_bytes(*b) as usize).ok_or_else(|| bad("esys-tr has no name"))?;
+    let name_len =
+        rest.first_chunk::<2>().map(|b| u16::from_be_bytes(*b) as usize).ok_or_else(|| bad("esys-tr has no name"))?;
     rest = rest.get(2 + name_len..).ok_or_else(|| bad("esys-tr name is truncated"))?;
     match be32(&mut rest) {
         Some(1) => {}
@@ -284,8 +280,5 @@ pub(crate) fn hex(s: &str) -> Result<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
         return Err(bad());
     }
-    s.as_bytes()
-        .chunks(2)
-        .map(|p| Ok(nibble(p[0])? << 4 | nibble(p[1])?))
-        .collect()
+    s.as_bytes().chunks(2).map(|p| Ok(nibble(p[0])? << 4 | nibble(p[1])?)).collect()
 }

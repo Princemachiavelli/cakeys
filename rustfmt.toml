@@ -1,0 +1,3 @@
+# Matches the code as written: long lines, one-line struct literals and calls where they fit.
+max_width = 120
+use_small_heuristics = "Max"

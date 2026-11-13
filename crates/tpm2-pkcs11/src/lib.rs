@@ -15,12 +15,12 @@
 
 pub mod attest;
 
-use cakeys_pkcs11::provider::{AttestationCap, AttestCtx, Attested, Provider};
-use cakeys_pkcs11::token::ModuleInfo;
 use cakeys_core::Result;
 use cakeys_core::config::Options;
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass;
+use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, Provider};
+use cakeys_pkcs11::token::ModuleInfo;
 use cryptoki::mechanism::MechanismType;
 use std::borrow::Cow;
 
@@ -47,7 +47,9 @@ impl Provider for Tpm2Pkcs11 {
     }
 
     fn hint(&self) -> Option<&'static str> {
-        Some("secret keys cannot be generated through tpm2-pkcs11; create them with `tpm2_ptool addkey` or `tpm2_ptool import` and adopt them (no autoCreate)")
+        Some(
+            "secret keys cannot be generated through tpm2-pkcs11; create them with `tpm2_ptool addkey` or `tpm2_ptool import` and adopt them (no autoCreate)",
+        )
     }
 
     fn attestation(&self) -> Option<AttestationCap> {

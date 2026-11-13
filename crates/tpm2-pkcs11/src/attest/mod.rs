@@ -5,12 +5,12 @@
 pub mod esys;
 pub mod store;
 
-use cakeys_pkcs11::provider::{AttestCtx, Attested};
+use cakeys_core::config::{Options, parse_options};
 use cakeys_core::id::Scheme;
-use cakeys_core::config::{parse_options, Options};
 use cakeys_core::{KmError, Result};
-use serde::Deserialize;
+use cakeys_pkcs11::provider::{AttestCtx, Attested};
 use cryptoki::object::{Attribute, AttributeType};
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 /// cakeys' Attestation Key, provisioned at this persistent handle on first attest when
@@ -95,16 +95,12 @@ fn store_dir(cfg: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<PathBuf> {
         home.map(|h| h.join(".tpm2_pkcs11")),
         std::env::current_dir().ok(),
     ];
-    candidates
-        .into_iter()
-        .flatten()
-        .find(|d| Path::new(d).join(store::DB_NAME).is_file())
-        .ok_or_else(|| {
-            KmError::Unavailable(format!(
-                "no tpm2-pkcs11 store for token '{}': set tokens.{}.options.tpm2Store or TPM2_PKCS11_STORE",
-                cfg.token_name, cfg.token_name
-            ))
-        })
+    candidates.into_iter().flatten().find(|d| Path::new(d).join(store::DB_NAME).is_file()).ok_or_else(|| {
+        KmError::Unavailable(format!(
+            "no tpm2-pkcs11 store for token '{}': set tokens.{}.options.tpm2Store or TPM2_PKCS11_STORE",
+            cfg.token_name, cfg.token_name
+        ))
+    })
 }
 
 /// The leading `~` of a `tpm2Store` path, when the shell could not expand it.
@@ -249,9 +245,16 @@ mod tests {
         let o = opts("tcti = \"device:/dev/tpmrm0\"\ntpm2Store = \"~/s\"\nakHandle = \"0x81000017\"").unwrap();
         assert_eq!(o.ak_handle("tpm").unwrap(), 0x8100_0017);
         assert_eq!(opts("").unwrap().ak_handle("tpm").unwrap(), DEFAULT_AK_HANDLE);
-        for (bad, why) in [("tctl = \"x\"", "unknown field"), ("akHandle = \"81000017\"", "0x prefix"), ("akHandle = \"0x01\"", "owner range")] {
+        for (bad, why) in [
+            ("tctl = \"x\"", "unknown field"),
+            ("akHandle = \"81000017\"", "0x prefix"),
+            ("akHandle = \"0x01\"", "owner range"),
+        ] {
             let err = opts(bad).unwrap_err();
-            assert!(matches!(&err, KmError::Validation(m) if m.contains("tokens.tpm.options") && m.contains(why)), "{bad}: {err}");
+            assert!(
+                matches!(&err, KmError::Validation(m) if m.contains("tokens.tpm.options") && m.contains(why)),
+                "{bad}: {err}"
+            );
         }
     }
 }

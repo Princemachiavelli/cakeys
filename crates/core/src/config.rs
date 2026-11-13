@@ -101,7 +101,9 @@ impl ObjectCfg {
         let name = self.curve.as_deref().ok_or_else(|| KmError::Validation(format!("{kt} keys need a curve")))?;
         self.key_type.and_then(|k| crate::id::Curve::from_cfg(k, name)).ok_or_else(|| {
             if crate::id::CURVES_WITHOUT_CRATE.contains(&name) {
-                return KmError::Unsupported(format!("curve {name:?}: no RustCrypto crate validates and encodes it yet"));
+                return KmError::Unsupported(format!(
+                    "curve {name:?}: no RustCrypto crate validates and encodes it yet"
+                ));
             }
             KmError::Unsupported(format!(
                 "curve {name:?} for {kt} (supported: secp256r1, secp384r1, secp521r1, secp256k1, \
@@ -358,7 +360,8 @@ impl Lock {
                 self.version
             )));
         }
-        if let Some((name, _)) = self.objects.iter().find(|(_, o)| o.has_commitments() && o.commitment_label.is_none()) {
+        if let Some((name, _)) = self.objects.iter().find(|(_, o)| o.has_commitments() && o.commitment_label.is_none())
+        {
             return Err(KmError::Validation(format!(
                 "{}: object '{name}' has commitment IDs but no commitmentLabel",
                 path.display()
@@ -373,10 +376,7 @@ impl Lock {
             }
         }
         if let Some((name, _)) = self.objects.iter().find(|(_, o)| !o.ids.is_empty() && o.object_type.is_none()) {
-            return Err(KmError::Validation(format!(
-                "{}: object '{name}' has IDs but no type",
-                path.display()
-            )));
+            return Err(KmError::Validation(format!("{}: object '{name}' has IDs but no type", path.display())));
         }
         let invalid = |msg: String| Err(KmError::Validation(format!("{}: {msg}", path.display())));
         for (name, o) in &self.objects {
@@ -391,7 +391,11 @@ impl Lock {
                      and belongs to the realisation that computed it (realisations.<spec>.<token>.attestation)"
                 ));
             }
-            if let Some(l) = o.commitment_label.as_ref().filter(|l| l.is_empty() || !l.bytes().all(|b| b.is_ascii_graphic() || b == b' ')) {
+            if let Some(l) = o
+                .commitment_label
+                .as_ref()
+                .filter(|l| l.is_empty() || !l.bytes().all(|b| b.is_ascii_graphic() || b == b' '))
+            {
                 return invalid(format!("object '{name}': commitmentLabel {l:?} must be non-empty printable ASCII"));
             }
         }
@@ -415,7 +419,11 @@ impl Lock {
         let mut seen: BTreeMap<(&str, &str, &str), &str> = BTreeMap::new();
         for (name, o) in &self.objects {
             let class = o.object_type.as_ref().map_or("", |t| t.class.name());
-            for (s, v) in o.ids.iter().filter(|(s, _)| !(class == ObjectClass::Certificate.name() && *s == Scheme::Rfc7093m4.name())) {
+            for (s, v) in o
+                .ids
+                .iter()
+                .filter(|(s, _)| !(class == ObjectClass::Certificate.name() && *s == Scheme::Rfc7093m4.name()))
+            {
                 if let Some(other) = seen.insert((s, class, v), name) {
                     return invalid(format!(
                         "objects '{other}' and '{name}' are the same {class} material ({s} {v}); use one object"
@@ -442,7 +450,8 @@ impl Lock {
         }
         for (spec, by_token) in &self.realisations {
             for (token, r) in by_token {
-                let private = self.objects[&r.object].object_type.as_ref().is_some_and(|t| t.class == ObjectClass::PrivateKey);
+                let private =
+                    self.objects[&r.object].object_type.as_ref().is_some_and(|t| t.class == ObjectClass::PrivateKey);
                 if private != r.binding.is_some() {
                     return invalid(format!(
                         "realisation of '{spec}' on '{token}': binding is {} for private keys and only for them",
@@ -460,7 +469,9 @@ impl Lock {
                             Scheme::ALL.into_iter().filter_map(Scheme::attestation_kind).collect::<Vec<_>>()
                         ));
                     }
-                    if let Some((field, v)) = [("root", &a.root), ("id", &a.id)].into_iter().find(|(_, v)| !crate::id::is_sri(v)) {
+                    if let Some((field, v)) =
+                        [("root", &a.root), ("id", &a.id)].into_iter().find(|(_, v)| !crate::id::is_sri(v))
+                    {
                         return invalid(format!(
                             "realisation of '{spec}' on '{token}': attestation {field} \"{v}\" is not a sha256 SRI digest"
                         ));
@@ -667,10 +678,8 @@ pub fn load_config(path: &Path) -> Result<Config> {
 
 /// [`load_config`], with `env` looking up the variables `$NAME` path references name.
 pub fn load_config_with(path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<Config> {
-    let text = std::fs::read_to_string(path)
-        .map_err(KmError::io(format_args!("reading {}", path.display())))?;
-    let mut cfg: Config =
-        toml::from_str(&text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
+    let text = std::fs::read_to_string(path).map_err(KmError::io(format_args!("reading {}", path.display())))?;
+    let mut cfg: Config = toml::from_str(&text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
     for o in cfg.objects.values_mut() {
         o.canonicalize();
     }
@@ -725,30 +734,24 @@ fn env_ref(value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>) -> Res
         None => return Ok(value.to_owned()),
     };
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err(KmError::Validation(format!(
-            "{what}: \"{value}\" is neither $NAME, ${{NAME}} nor a literal path"
-        )));
+        return Err(KmError::Validation(format!("{what}: \"{value}\" is neither $NAME, ${{NAME}} nor a literal path")));
     }
-    env(name).ok_or_else(|| {
-        KmError::Validation(format!("{what}: environment variable {name} (\"{value}\") is not set"))
-    })
+    env(name)
+        .ok_or_else(|| KmError::Validation(format!("{what}: environment variable {name} (\"{value}\") is not set")))
 }
 
 pub fn load_lock(path: &Path) -> Result<Lock> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
-            let mut lock: Lock = toml::from_str(&text)
-                .map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
+            let mut lock: Lock =
+                toml::from_str(&text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
             // Recorded types compare equal to canonicalized keys.toml types.
             for t in lock.objects.values_mut().filter_map(|o| o.object_type.as_mut()) {
                 t.canonicalize();
             }
             Ok(lock.validate(path)?)
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Lock {
-            version: LOCK_VERSION,
-            ..Default::default()
-        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Lock { version: LOCK_VERSION, ..Default::default() }),
         Err(e) => Err(KmError::io(format!("reading {}", path.display()))(e)),
     }
 }
@@ -825,12 +828,7 @@ pub fn gc(cfg: &Config, lock: &mut Lock, remove: bool) -> Vec<String> {
         };
         stale.extend(tokens.keys().filter(gone).map(|t| format!("realisations.{spec}.{t}")));
     }
-    stale.extend(
-        lock.objects
-            .keys()
-            .filter(|o| !cfg.objects.contains_key(*o))
-            .map(|o| format!("objects.{o}")),
-    );
+    stale.extend(lock.objects.keys().filter(|o| !cfg.objects.contains_key(*o)).map(|o| format!("objects.{o}")));
     if remove {
         let mut empty = Vec::new();
         for (spec, tokens) in &mut lock.realisations {
@@ -852,12 +850,7 @@ pub fn gc(cfg: &Config, lock: &mut Lock, remove: bool) -> Vec<String> {
 
 impl Config {
     /// Find the spec to use for `object` on `token` (either may be omitted if unambiguous).
-    pub fn pick_spec(
-        &self,
-        object: &str,
-        spec: Option<&str>,
-        token: Option<&str>,
-    ) -> Result<(String, String)> {
+    pub fn pick_spec(&self, object: &str, spec: Option<&str>, token: Option<&str>) -> Result<(String, String)> {
         let pairs: Vec<(String, String)> = self
             .specs
             .iter()
@@ -867,9 +860,7 @@ impl Config {
             .collect();
         match pairs.len() {
             1 => Ok(pairs.into_iter().next().unwrap()),
-            0 => Err(KmError::NotFound(format!(
-                "no spec for object '{object}' on token {token:?}"
-            ))),
+            0 => Err(KmError::NotFound(format!("no spec for object '{object}' on token {token:?}"))),
             _ => Err(KmError::Ambiguous(format!(
                 "object '{object}' has several (spec, token) pairs {pairs:?}; pass --spec/--token"
             ))),
@@ -940,7 +931,8 @@ mod tests {
             load(&format!("{head}pinFile = \"/literal/pin\"\n")).unwrap().tokens["t"].pin_file,
             Some(PathBuf::from("/literal/pin"))
         );
-        let cfg = load(&format!("{head}pinFile = \"$KM_UNIT_TEST_PIN\"\nmodule = \"${{KM_UNIT_TEST_PIN}}\"\n")).unwrap();
+        let cfg =
+            load(&format!("{head}pinFile = \"$KM_UNIT_TEST_PIN\"\nmodule = \"${{KM_UNIT_TEST_PIN}}\"\n")).unwrap();
         assert_eq!(cfg.tokens["t"].pin_file, Some(PathBuf::from("/env/pin")));
         assert_eq!(cfg.tokens["t"].module.as_deref(), Some("/env/pin"));
         // An unset variable fails at load, naming it; so does a malformed reference.
@@ -998,14 +990,14 @@ mod tests {
     fn attestable_lock() -> Lock {
         let mut ids = BTreeMap::new();
         ids.insert("rfc7093m4".to_owned(), "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=".to_owned());
-        let mut lock = Lock {
-            version: LOCK_VERSION,
-            ..Default::default()
-        };
+        let mut lock = Lock { version: LOCK_VERSION, ..Default::default() };
         lock.objects.insert(
             "k".into(),
             LockObject {
-                object_type: Some(ObjectCfg { curve: Some("secp256r1".into()), ..ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::Ec)) }),
+                object_type: Some(ObjectCfg {
+                    curve: Some("secp256r1".into()),
+                    ..ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::Ec))
+                }),
                 ids,
                 ..Default::default()
             },

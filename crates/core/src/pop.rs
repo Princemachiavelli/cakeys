@@ -10,9 +10,9 @@
 use crate::error::{KmError, Result};
 use crate::sig;
 pub use crate::sig::EcdsaHash;
-use hmac::{Hmac, KeyInit, Mac};
 use elliptic_curve::sec1::ToSec1Point;
-use elliptic_curve::{ecdh::EphemeralSecret, Generate, PublicKey};
+use elliptic_curve::{Generate, PublicKey, ecdh::EphemeralSecret};
+use hmac::{Hmac, KeyInit, Mac};
 use p256::pkcs8::DecodePublicKey;
 use sha2::{Digest, Sha256};
 
@@ -94,10 +94,7 @@ pub fn ecdh_challenge(spki: &[u8], msg: &[u8]) -> Result<EcdhChallenge> {
     ecdh!(k256::Secp256k1);
     ecdh!(bp256::BrainpoolP256r1);
     ecdh!(bp384::BrainpoolP384r1);
-    Err(KmError::Unsupported(format!(
-        "no RustCrypto ECDH for the public key {}",
-        crate::id::sri(spki)
-    )))
+    Err(KmError::Unsupported(format!("no RustCrypto ECDH for the public key {}", crate::id::sri(spki))))
 }
 
 /// Start a `pop-decrypt` proof of possession: `msg` encrypted to the public key in `spki` with
@@ -119,8 +116,7 @@ fn mac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
 
 /// Constant-time equality of a proof's expected and actual value; only the length is observable.
 pub fn ct_eq(expected: &[u8], got: &[u8]) -> bool {
-    expected.len() == got.len()
-        && expected.iter().zip(got).fold(0u8, |diff, (a, b)| diff | a ^ b) == 0
+    expected.len() == got.len() && expected.iter().zip(got).fold(0u8, |diff, (a, b)| diff | a ^ b) == 0
 }
 
 #[cfg(test)]
@@ -142,7 +138,7 @@ mod tests {
 
     #[test]
     fn a_signature_by_another_key_is_a_conflict() {
-        use p256::ecdsa::{signature::hazmat::PrehashSigner, Signature, SigningKey};
+        use p256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner};
         use p256::pkcs8::EncodePublicKey;
         let k1 = SigningKey::from_slice(&[1u8; 32]).unwrap();
         let k2 = SigningKey::from_slice(&[2u8; 32]).unwrap();
@@ -157,7 +153,7 @@ mod tests {
 
     #[test]
     fn the_ecdh_mac_matches_on_both_sides() {
-        use p256::elliptic_curve::{ecdh::diffie_hellman, NonZeroScalar};
+        use p256::elliptic_curve::{NonZeroScalar, ecdh::diffie_hellman};
         use p256::pkcs8::EncodePublicKey;
         // The token side, played on the host: derive with the private key and the challenge's
         // ephemeral point; the MACs must agree.
@@ -178,13 +174,7 @@ mod tests {
     fn ecdh_needs_a_supported_curve() {
         use ed25519_dalek::pkcs8::EncodePublicKey;
         // Edwards keys have no RustCrypto ECDH here: refused, not silently misproven.
-        let spki = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
-            .verifying_key()
-            .to_public_key_der()
-            .unwrap();
-        assert!(matches!(
-            ecdh_challenge(spki.as_bytes(), b"m"),
-            Err(KmError::Unsupported(_))
-        ));
+        let spki = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]).verifying_key().to_public_key_der().unwrap();
+        assert!(matches!(ecdh_challenge(spki.as_bytes(), b"m"), Err(KmError::Unsupported(_))));
     }
 }

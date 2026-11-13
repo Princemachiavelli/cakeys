@@ -6,8 +6,8 @@ pub mod config;
 pub mod error;
 pub mod id;
 pub mod plan;
-pub mod reconcile;
 pub mod pop;
+pub mod reconcile;
 pub mod sig;
 pub mod types;
 

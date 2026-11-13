@@ -5,8 +5,8 @@
 //! verify alike. Callers word their own errors.
 
 use crate::id::Curve;
-use ecdsa::signature::hazmat::PrehashVerifier;
 use ecdsa::signature::Verifier;
+use ecdsa::signature::hazmat::PrehashVerifier;
 use p256::pkcs8::DecodePublicKey;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 
@@ -63,7 +63,9 @@ pub fn ecdsa(spki: &[u8], msg: &[u8], sig: &[u8], encoding: Encoding, hash: Opti
                     Err(e) => return Some(Err(e.to_string())),
                 };
                 let digest = hash.unwrap_or($own).digest(msg);
-                return Some(ecdsa::VerifyingKey::<$curve>::from(k).verify_prehash(&digest, &sig).map_err(|e| e.to_string()));
+                return Some(
+                    ecdsa::VerifyingKey::<$curve>::from(k).verify_prehash(&digest, &sig).map_err(|e| e.to_string()),
+                );
             }
         };
     }
@@ -107,15 +109,24 @@ mod tests {
     /// message does not, and a key of another kind answers `None`.
     #[test]
     fn ecdsa_encodings_and_kinds() {
-        use p256::ecdsa::{signature::hazmat::PrehashSigner, Signature, SigningKey};
+        use p256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner};
         use p256::pkcs8::EncodePublicKey;
         let k = SigningKey::from_slice(&[3u8; 32]).unwrap();
         let spki = k.verifying_key().to_public_key_der().unwrap();
         let s: Signature = k.sign_prehash(&EcdsaHash::Sha384.digest(b"m")).unwrap();
         assert_eq!(ecdsa(spki.as_bytes(), b"m", &s.to_bytes(), Encoding::Raw, Some(EcdsaHash::Sha384)), Some(Ok(())));
-        assert_eq!(ecdsa(spki.as_bytes(), b"m", s.to_der().as_bytes(), Encoding::Der, Some(EcdsaHash::Sha384)), Some(Ok(())));
-        assert!(matches!(ecdsa(spki.as_bytes(), b"x", &s.to_bytes(), Encoding::Raw, Some(EcdsaHash::Sha384)), Some(Err(_))));
-        assert!(matches!(ecdsa(spki.as_bytes(), b"m", &s.to_bytes(), Encoding::Raw, None), Some(Err(_))), "P-256's own hash is SHA-256");
+        assert_eq!(
+            ecdsa(spki.as_bytes(), b"m", s.to_der().as_bytes(), Encoding::Der, Some(EcdsaHash::Sha384)),
+            Some(Ok(()))
+        );
+        assert!(matches!(
+            ecdsa(spki.as_bytes(), b"x", &s.to_bytes(), Encoding::Raw, Some(EcdsaHash::Sha384)),
+            Some(Err(_))
+        ));
+        assert!(
+            matches!(ecdsa(spki.as_bytes(), b"m", &s.to_bytes(), Encoding::Raw, None), Some(Err(_))),
+            "P-256's own hash is SHA-256"
+        );
         assert_eq!(rsa_pkcs1v15::<Sha256>(spki.as_bytes(), b"m", &s.to_bytes()), None);
         assert_eq!(ed25519(spki.as_bytes(), b"m", &s.to_bytes()), None);
     }

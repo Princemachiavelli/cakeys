@@ -9,14 +9,14 @@
 
 mod attest;
 
-use crate::attest::{pem_certs, piv_pool, verify_piv_attestation, ATTESTATION_LABEL};
-use cakeys_pkcs11::provider::{AttestationCap, AttestCtx, Attested, Provider};
+use crate::attest::{ATTESTATION_LABEL, pem_certs, piv_pool, verify_piv_attestation};
 use cakeys_core::config::{Locator, ObjectCfg};
-use cakeys_pkcs11::token::ModuleInfo;
-use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
+use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, Provider};
+use cakeys_pkcs11::token::ModuleInfo;
+use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use std::sync::LazyLock;
 
 pub struct Ykcs11;
@@ -102,9 +102,8 @@ impl Provider for Ykcs11 {
         else {
             return Err(KmError::Unsupported("the key object exposes no CKA_ID to find its attestation by".into()));
         };
-        let spki = ctx
-            .required_spki()?
-            .ok_or_else(|| KmError::Unsupported("PIV attests asymmetric keys only".into()))?;
+        let spki =
+            ctx.required_spki()?.ok_or_else(|| KmError::Unsupported("PIV attests asymmetric keys only".into()))?;
         let slot = find_attestation_cert(ctx, &id)?;
         let device = find_device_cert(ctx)?;
         let a = verify_piv_attestation(&slot, &device, &ANCHORS, &INTERMEDIATES, spki)?;
@@ -147,7 +146,11 @@ fn find_attestation_cert(ctx: &AttestCtx<'_>, id: &[u8]) -> Result<Vec<u8>> {
             match ctx.session.get_attributes(h, &[AttributeType::Value]) {
                 Ok(v) => match v.into_iter().next() {
                     Some(Attribute::Value(der)) => certs.push(der),
-                    _ => return Err(KmError::Unsupported("the attestation certificate has no readable CKA_VALUE".into())),
+                    _ => {
+                        return Err(KmError::Unsupported(
+                            "the attestation certificate has no readable CKA_VALUE".into(),
+                        ));
+                    }
                 },
                 Err(e) => return Err(KmError::Unavailable(format!("C_GetAttributeValue (attestation): {e}"))),
             }
@@ -169,14 +172,21 @@ fn find_attestation_cert(ctx: &AttestCtx<'_>, id: &[u8]) -> Result<Vec<u8>> {
 fn find_device_cert(ctx: &AttestCtx<'_>) -> Result<Vec<u8>> {
     let found = ctx
         .session
-        .find_objects(&[Attribute::Class(ObjectClass::CERTIFICATE), Attribute::Label(ATTESTATION_LABEL.as_bytes().to_vec())])
+        .find_objects(&[
+            Attribute::Class(ObjectClass::CERTIFICATE),
+            Attribute::Label(ATTESTATION_LABEL.as_bytes().to_vec()),
+        ])
         .map_err(|e| KmError::Unavailable(format!("C_FindObjects (device attestation): {e}")))?;
     let mut certs = Vec::new();
     for h in found {
         match ctx.session.get_attributes(h, &[AttributeType::Value]) {
             Ok(v) => match v.into_iter().next() {
                 Some(Attribute::Value(der)) => certs.push(der),
-                _ => return Err(KmError::Unsupported("the device attestation certificate has no readable CKA_VALUE".into())),
+                _ => {
+                    return Err(KmError::Unsupported(
+                        "the device attestation certificate has no readable CKA_VALUE".into(),
+                    ));
+                }
             },
             Err(e) => return Err(KmError::Unavailable(format!("C_GetAttributeValue (device attestation): {e}"))),
         }
@@ -208,7 +218,8 @@ mod tests {
         for bad in ["00", "19", "1", "0101", "zz", ""] {
             assert_eq!(piv_slot(bad), None, "{bad}");
         }
-        let loc = |label: Option<&str>, id: Option<&str>| Locator { label: label.map(Into::into), id: id.map(Into::into) };
+        let loc =
+            |label: Option<&str>, id: Option<&str>| Locator { label: label.map(Into::into), id: id.map(Into::into) };
         let obj = ObjectCfg::new(Class::PrivateKey, Some(cakeys_core::types::KeyType::Ec));
         assert!(Ykcs11.check_create(&obj, &loc(None, Some("01"))).is_ok());
         assert!(matches!(Ykcs11.check_create(&obj, &loc(Some("x"), Some("01"))), Err(KmError::Validation(_))));

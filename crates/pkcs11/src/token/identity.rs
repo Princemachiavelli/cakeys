@@ -52,11 +52,7 @@ impl Token {
                     ids.insert(c.scheme().name().into(), id::sri(&out));
                 }
             }
-            m => {
-                return Err(KmError::Unsupported(format!(
-                    "identity mode '{m}' is not implemented in this POC"
-                )))
-            }
+            m => return Err(KmError::Unsupported(format!("identity mode '{m}' is not implemented in this POC"))),
         }
         Ok(ids)
     }
@@ -151,7 +147,8 @@ impl Token {
     fn commit(&self, h: ObjectHandle, object: &ObjectCfg, c: Commit, commitment_label: &str) -> Result<Vec<u8>> {
         let s = &self.session;
         let input = c.input(commitment_label, object);
-        let fail = |e: CkError| KmError::Unsupported(format!("{} commitment ({}): {e}", c.scheme(), commit_mechanism(c)));
+        let fail =
+            |e: CkError| KmError::Unsupported(format!("{} commitment ({}): {e}", c.scheme(), commit_mechanism(c)));
         match c {
             Commit::Hmac(hash) => {
                 let m = match hash {
@@ -234,9 +231,7 @@ impl Token {
                 });
             }
             template.dedup();
-            let copy = s
-                .unwrap_key(&wrap, kek, &blob, &template)
-                .map_err(fail("C_UnwrapKey"))?;
+            let copy = s.unwrap_key(&wrap, kek, &blob, &template).map_err(fail("C_UnwrapKey"))?;
             let out = commits
                 .iter()
                 .map(|c| Ok((*c, self.commit(copy, object, *c, commitment_label)?)))

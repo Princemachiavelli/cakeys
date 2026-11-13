@@ -36,14 +36,10 @@ impl Token {
         };
         match key_type_of(object)? {
             KeyType::RSA => {
-                let bits = object.modulus_bits.ok_or_else(|| {
-                    KmError::Validation("RSA keys need modulusBits".into())
-                })?;
+                let bits =
+                    object.modulus_bits.ok_or_else(|| KmError::Validation("RSA keys need modulusBits".into()))?;
                 let mut public = common.clone();
-                public.extend([
-                    Attribute::ModulusBits(bits.into()),
-                    Attribute::PublicExponent(vec![1, 0, 1]),
-                ]);
+                public.extend([Attribute::ModulusBits(bits.into()), Attribute::PublicExponent(vec![1, 0, 1])]);
                 public_half(&mut public)?;
                 let mut private = common;
                 private.extend(policy);
@@ -54,30 +50,18 @@ impl Token {
             }
             KeyType::EC | KeyType::EC_EDWARDS => {
                 let curve = curve_of(object)?;
-                let mech = if curve.edwards() {
-                    Mechanism::EccEdwardsKeyPairGen
-                } else {
-                    Mechanism::EccKeyPairGen
-                };
+                let mech = if curve.edwards() { Mechanism::EccEdwardsKeyPairGen } else { Mechanism::EccKeyPairGen };
                 let mut public = common.clone();
                 public.extend([Attribute::EcParams(curve.params().to_vec())]);
                 public_half(&mut public)?;
                 let mut private = common;
                 private.extend(policy);
-                self.session
-                    .generate_key_pair(&mech, &public, &private)
-                    .map(drop)
-                    .map_err(refused)
+                self.session.generate_key_pair(&mech, &public, &private).map(drop).map_err(refused)
             }
             kt => {
-                let len = object.value_len.ok_or_else(|| {
-                    KmError::Validation("secret keys need valueLen (bytes)".into())
-                })?;
-                let mech = if kt == KeyType::AES {
-                    Mechanism::AesKeyGen
-                } else {
-                    Mechanism::GenericSecretKeyGen
-                };
+                let len =
+                    object.value_len.ok_or_else(|| KmError::Validation("secret keys need valueLen (bytes)".into()))?;
+                let mech = if kt == KeyType::AES { Mechanism::AesKeyGen } else { Mechanism::GenericSecretKeyGen };
                 let mut t = common;
                 t.extend([
                     Attribute::Class(ObjectClass::SECRET_KEY),
@@ -103,10 +87,7 @@ impl Token {
         if matches!(class, ObjectClass::PRIVATE_KEY | ObjectClass::PUBLIC_KEY | ObjectClass::SECRET_KEY)
             && let Some(advice) = self.provider.keeps_destroyed_keys(loc)
         {
-            return Err(KmError::Unsupported(format!(
-                "deleting {} on '{}': {advice}",
-                object.class, self.name
-            )));
+            return Err(KmError::Unsupported(format!("deleting {} on '{}': {advice}", object.class, self.name)));
         }
         let run = || {
             for h in &handles {
@@ -114,10 +95,6 @@ impl Token {
             }
             Ok(handles.len())
         };
-        if self.provider.manages_as_so() {
-            self.as_so("deleting", run)
-        } else {
-            run()
-        }
+        if self.provider.manages_as_so() { self.as_so("deleting", run) } else { run() }
     }
 }

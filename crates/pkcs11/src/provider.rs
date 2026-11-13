@@ -2,13 +2,13 @@
 //! overrides only what its module gets wrong. Every fix-up must return exactly what a
 //! spec-compliant module would, so identities stay portable across modules and versions.
 
-use cryptoki::mechanism::MechanismType;
-use cryptoki::object::ObjectHandle;
-use cryptoki::session::Session;
 use cakeys_core::config::{Locator, ModuleInfo, ObjectCfg, Options, TokenCfg};
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass;
 use cakeys_core::{KmError, Result};
+use cryptoki::mechanism::MechanismType;
+use cryptoki::object::ObjectHandle;
+use cryptoki::session::Session;
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -200,12 +200,7 @@ impl Registry {
                 ))
             });
         }
-        Ok(self
-            .providers
-            .iter()
-            .find(|p| p.matches(module))
-            .cloned()
-            .unwrap_or_else(|| Arc::new(Generic)))
+        Ok(self.providers.iter().find(|p| p.matches(module)).cloned().unwrap_or_else(|| Arc::new(Generic)))
     }
 }
 

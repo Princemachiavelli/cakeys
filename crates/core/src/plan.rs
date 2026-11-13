@@ -21,14 +21,10 @@ pub struct Target<'a> {
 
 impl<'a> Target<'a> {
     pub fn new(cfg: &'a Config, spec_name: &'a str, token_name: &'a str) -> Result<Self> {
-        let spec = cfg
-            .specs
-            .get(spec_name)
-            .ok_or_else(|| KmError::NotFound(format!("spec '{spec_name}'")))?;
-        let (object_name, object) = cfg
-            .objects
-            .get_key_value(&spec.object)
-            .ok_or_else(|| KmError::Validation(format!("spec '{spec_name}' references unknown object '{}'", spec.object)))?;
+        let spec = cfg.specs.get(spec_name).ok_or_else(|| KmError::NotFound(format!("spec '{spec_name}'")))?;
+        let (object_name, object) = cfg.objects.get_key_value(&spec.object).ok_or_else(|| {
+            KmError::Validation(format!("spec '{spec_name}' references unknown object '{}'", spec.object))
+        })?;
         let on_token = spec
             .tokens
             .get(token_name)
@@ -89,7 +85,10 @@ fn check_binding(t: &Target) -> Result<()> {
             invalid("publicOnly cannot prove possession (binding = \"pop-sign\")".into())
         }
         (Some(Binding::PopSign), _) if t.object.curve.as_deref().is_some_and(|c| c == "edwards448" || c == "Ed448") => {
-            invalid("cakeys has no Ed448 verifier to prove possession with; opt in with binding = \"token-asserted\"".into())
+            invalid(
+                "cakeys has no Ed448 verifier to prove possession with; opt in with binding = \"token-asserted\""
+                    .into(),
+            )
         }
         (Some(Binding::PopSign), _) if t.spec.flag("CKA_ALWAYS_AUTHENTICATE") == Some(true) => invalid(
             "CKA_ALWAYS_AUTHENTICATE = true needs a login per signature, and so would proving \
@@ -101,11 +100,12 @@ fn check_binding(t: &Target) -> Result<()> {
              or opt in with binding = \"token-asserted\" on this token"
                 .into(),
         ),
-        (Some(Binding::PopEcdh), _) if !matches!(t.object.key_type, Some(Kt::Ec | Kt::EcEdwards)) => invalid(
-            "binding = \"pop-ecdh\" proves possession by deriving: it applies to EC private keys only".into(),
-        ),
+        (Some(Binding::PopEcdh), _) if !matches!(t.object.key_type, Some(Kt::Ec | Kt::EcEdwards)) => {
+            invalid("binding = \"pop-ecdh\" proves possession by deriving: it applies to EC private keys only".into())
+        }
         (Some(Binding::PopEcdh), _) if t.object.key_type == Some(Kt::EcEdwards) => invalid(
-            "binding = \"pop-ecdh\" derives with CKM_ECDH1_DERIVE: it applies to Weierstrass EC keys, not Edwards".into(),
+            "binding = \"pop-ecdh\" derives with CKM_ECDH1_DERIVE: it applies to Weierstrass EC keys, not Edwards"
+                .into(),
         ),
         (Some(Binding::PopEcdh), _) if t.spec.flag("CKA_DERIVE") != Some(true) => invalid(
             "proving possession by deriving needs CKA_DERIVE = true in the spec attributes; \
@@ -130,7 +130,9 @@ fn check_declared(t: &Target, class: Class, declared: &BTreeMap<String, AttrValu
     for (name, v) in declared {
         let applies = match v {
             AttrValue::Mechanisms(_) if name != attrs::ALLOWED_MECHANISMS => {
-                return Err(KmError::Validation(format!("{t}: {name}: only CKA_ALLOWED_MECHANISMS takes a mechanism list")));
+                return Err(KmError::Validation(format!(
+                    "{t}: {name}: only CKA_ALLOWED_MECHANISMS takes a mechanism list"
+                )));
             }
             AttrValue::Mechanisms(_) => attrs::has_allowed_mechanisms(class),
             AttrValue::Bool(_) if !attrs::is_declarable_bool(name) => {
@@ -181,7 +183,9 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
     // PIV attests asymmetric keys, TPM2_Certify any TPM-resident object; certificates and data
     // objects are not keys, and no attestation scheme exists for them.
     if t.on_token.attestation && !t.object.class.is_key() {
-        return invalid("attestation = true applies to key objects only (PIV attests asymmetric keys, TPM2_Certify any TPM-resident object)");
+        return invalid(
+            "attestation = true applies to key objects only (PIV attests asymmetric keys, TPM2_Certify any TPM-resident object)",
+        );
     }
     if matches!(t.object.class, Class::PublicKey | Class::Data) {
         if t.on_token.auto_create {

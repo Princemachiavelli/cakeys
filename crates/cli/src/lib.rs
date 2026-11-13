@@ -2,11 +2,11 @@
 //! crates: `cakeys::main(cakeys::default_registry().with(MyProvider))`.
 
 use anyhow::Context;
-use clap::{Parser, Subcommand};
-use cakeys_core::config::{gc, load_config, lock_for_update, lock_unwritable, load_lock, save_lock, Config};
 use cakeys_core::KmError;
+use cakeys_core::config::{Config, gc, load_config, load_lock, lock_for_update, lock_unwritable, save_lock};
 use cakeys_pkcs11::ops::{self, LockWrite, Notes, Target};
-use cakeys_pkcs11::{providers, Registry, Token};
+use cakeys_pkcs11::{Registry, Token, providers};
+use clap::{Parser, Subcommand};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -37,9 +37,17 @@ enum Cmd {
     /// Check the spec statically (identity modes, opt-ins, types). Touches no token.
     Validate,
     /// Find the object by its locator and print its identity as JSON. Never writes.
-    Resolve { spec: String, #[arg(long)] token: String },
+    Resolve {
+        spec: String,
+        #[arg(long)]
+        token: String,
+    },
     /// Resolve, then compare with the lock (If-Match). Prints the PKCS#11 URI.
-    Verify { spec: String, #[arg(long)] token: String },
+    Verify {
+        spec: String,
+        #[arg(long)]
+        token: String,
+    },
     /// Create under the declared locator if absent and autoCreate is set, then compare with the
     /// lock, recording what it lacks (missing hashes and realisation details; never overwriting
     /// a hash) unless --no-update-lock.
@@ -78,7 +86,10 @@ enum Cmd {
         spec: Option<String>,
     },
     /// Print a token's provider and usable mechanisms as JSON.
-    Caps { #[arg(long)] token: String },
+    Caps {
+        #[arg(long)]
+        token: String,
+    },
 }
 
 /// Whether `realise`/`delete` write the lock: by default they do, like `nix build` with
@@ -128,10 +139,7 @@ fn open_token(
     registry: &Registry,
     name: &str,
 ) -> Result<Token, KmError> {
-    let tcfg = cfg
-        .tokens
-        .get(name)
-        .ok_or_else(|| KmError::Validation(format!("unknown token '{name}'")))?;
+    let tcfg = cfg.tokens.get(name).ok_or_else(|| KmError::Validation(format!("unknown token '{name}'")))?;
     Token::open(name, tcfg, modules.get(name).map(String::as_str), registry)
 }
 

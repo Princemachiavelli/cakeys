@@ -3,7 +3,9 @@
 //! run has to say besides its verdict (drift it tolerates, provenance changes, unchecked
 //! schemes) goes into [`Notes`], which the caller prints whether or not the run succeeded.
 
-use crate::config::{AttestationRecord, AttrValue, Binding, Immutables, Lock, LockRealisation, Mode, Observed, Provenance, Session};
+use crate::config::{
+    AttestationRecord, AttrValue, Binding, Immutables, Lock, LockRealisation, Mode, Observed, Provenance, Session,
+};
 use crate::id::{self, Scheme};
 use crate::plan::Target;
 use crate::types::ObjectClass as Class;
@@ -90,7 +92,14 @@ pub fn commitment_label(t: &Target, lock: &Lock) -> String {
 
 /// Compare `r` with the lock, then, with `LockWrite::Record`, record what the lock lacks (only
 /// ever filling gaps). Whether the lock changed.
-pub fn reconcile(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, write: LockWrite, notes: &mut Notes) -> Result<bool> {
+pub fn reconcile(
+    t: &Target,
+    r: &Resolved,
+    lock: &mut Lock,
+    facts: &Facts,
+    write: LockWrite,
+    notes: &mut Notes,
+) -> Result<bool> {
     compare(t, r, lock, facts, write, notes)?;
     match write {
         LockWrite::Compare => Ok(false),
@@ -102,17 +111,24 @@ pub fn reconcile(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, write
 /// With `LockWrite::Record`, a changed spec or policy and a first use are what the write is for,
 /// so they pass (and are not noted); type changes, downgrades, a replaced object, an attestation
 /// anchor change and a hash mismatch fail either way.
-pub fn compare(t: &Target, r: &Resolved, lock: &Lock, facts: &Facts, write: LockWrite, notes: &mut Notes) -> Result<()> {
+pub fn compare(
+    t: &Target,
+    r: &Resolved,
+    lock: &Lock,
+    facts: &Facts,
+    write: LockWrite,
+    notes: &mut Notes,
+) -> Result<()> {
     let update = write == LockWrite::Record;
     // The lock pins the type its IDs were computed for: a different type is different material,
     // so say so instead of reporting a hash mismatch (also when updating).
-    if let Some(locked) = lock.objects.get(t.object_name).and_then(|o| o.object_type.as_ref()) && locked != t.object {
+    if let Some(locked) = lock.objects.get(t.object_name).and_then(|o| o.object_type.as_ref())
+        && locked != t.object
+    {
         return Err(KmError::PreconditionFailed(format!(
             "the type of object '{}' in keys.toml changed since it was locked: locked {}, now {}; \
              different material needs a new object name",
-            t.object_name,
-            locked,
-            t.object
+            t.object_name, locked, t.object
         )));
     }
     if let Some(prev) = lock.realisation(t.spec_name, t.token_name) {
@@ -148,7 +164,9 @@ pub fn compare(t: &Target, r: &Resolved, lock: &Lock, facts: &Facts, write: Lock
                 t, prev.mode, r.mode
             )));
         }
-        if let (Some(was), Some(now)) = (prev.binding, r.binding) && now.rank() > was.rank() {
+        if let (Some(was), Some(now)) = (prev.binding, r.binding)
+            && now.rank() > was.rank()
+        {
             return Err(KmError::PreconditionFailed(format!(
                 "binding downgrade for {}: locked binding '{was}', now only '{now}'",
                 t
@@ -164,11 +182,7 @@ pub fn compare(t: &Target, r: &Resolved, lock: &Lock, facts: &Facts, write: Lock
                 return Err(KmError::PreconditionFailed(format!(
                     "attestation anchor for {} changed since it was realised ({} root {}, now {} root {}); \
                      the material needs a new object name",
-                    t,
-                    was.kind,
-                    was.root,
-                    now.kind,
-                    now.root
+                    t, was.kind, was.root, now.kind, now.root
                 )));
             }
             (Some(was), Some(now)) if was.id != now.id => {
@@ -181,15 +195,13 @@ pub fn compare(t: &Target, r: &Resolved, lock: &Lock, facts: &Facts, write: Lock
             (Some(was), None) => {
                 return Err(KmError::PreconditionFailed(format!(
                     "identity downgrade for {}: it was realised with a {} attestation, which it no longer computes",
-                    t,
-                    was.kind
+                    t, was.kind
                 )));
             }
             (None, Some(now)) if !update => {
                 notes.note(format_args!(
                     "{} also has a {} attestation the lock does not record; `realise` adds it",
-                    t,
-                    now.kind
+                    t, now.kind
                 ));
             }
             _ => {}
@@ -217,14 +229,12 @@ pub fn compare(t: &Target, r: &Resolved, lock: &Lock, facts: &Facts, write: Lock
                 .policy
                 .iter()
                 .filter(|(n, was)| r.policy.get(*n) != Some(was))
-                .map(|(n, was)| format!("{n} {was} -> {}", r.policy.get(n).map_or("unreadable".into(), |b| b.to_string())))
+                .map(|(n, was)| {
+                    format!("{n} {was} -> {}", r.policy.get(n).map_or("unreadable".into(), |b| b.to_string()))
+                })
                 .collect();
             if prev.immutables != r.immutables {
-                diff.push(format!(
-                    "immutables {} -> {}",
-                    prev.immutables,
-                    r.immutables
-                ));
+                diff.push(format!("immutables {} -> {}", prev.immutables, r.immutables));
             }
             if !diff.is_empty() {
                 return Err(KmError::PreconditionFailed(format!(
@@ -255,7 +265,9 @@ pub fn compare(t: &Target, r: &Resolved, lock: &Lock, facts: &Facts, write: Lock
     let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
     // A deprecated computation still verifies — its identities are pinned — but the lock should
     // move to the replacement (docs/DESIGN.md §3.1); a lock write never adds a new one.
-    for scheme in locked.iter().flat_map(|ids| ids.keys()).filter(|s| Scheme::from_name(s).is_some_and(Scheme::is_deprecated)) {
+    for scheme in
+        locked.iter().flat_map(|ids| ids.keys()).filter(|s| Scheme::from_name(s).is_some_and(Scheme::is_deprecated))
+    {
         notes.warn(format_args!(
             "the {scheme} identity of '{}' uses a deprecated computation; migrate to its replacement (docs/DESIGN.md §3.1)",
             t.object_name
@@ -263,7 +275,9 @@ pub fn compare(t: &Target, r: &Resolved, lock: &Lock, facts: &Facts, write: Lock
     }
     // Material is only linked through a shared scheme: never attach IDs to an object when none of
     // them can be compared with what is already locked (e.g. a CMAC-only and a KW-only spec).
-    if let Some(ids) = locked.filter(|ids| !ids.is_empty()) && !r.ids.keys().any(|s| ids.contains_key(s)) {
+    if let Some(ids) = locked.filter(|ids| !ids.is_empty())
+        && !r.ids.keys().any(|s| ids.contains_key(s))
+    {
         return Err(KmError::PreconditionFailed(format!(
             "{} computes {:?} but '{}' is locked only by {:?}: nothing shows it is the same \
              material; realise a spec that computes both first",
@@ -279,7 +293,7 @@ pub fn compare(t: &Target, r: &Resolved, lock: &Lock, facts: &Facts, write: Lock
         match locked.and_then(|ids| ids.get(scheme)) {
             Some(want) if want == got => matched = true,
             Some(want) => {
-                return Err(KmError::HashMismatch { what: t.to_string(), expected: want.clone(), got: got.clone() })
+                return Err(KmError::HashMismatch { what: t.to_string(), expected: want.clone(), got: got.clone() });
             }
             // Recorded by `record` (a deprecated one is not).
             None if update => {}
@@ -297,24 +311,25 @@ pub fn compare(t: &Target, r: &Resolved, lock: &Lock, facts: &Facts, write: Lock
         return Err(KmError::PreconditionFailed(format!(
             "{} matches the locked identity, but the lock records no realisation of spec '{}' on \
              token '{}'; review, then `realise`",
-            t,
-            t.spec_name,
-            t.token_name
+            t, t.spec_name, t.token_name
         )));
     }
     for (scheme, _) in &unlocked {
-        notes.note(format_args!(
-            "{} also has a {scheme} identity the lock does not record; `realise` adds it",
-            t
-        ));
+        notes.note(format_args!("{} also has a {scheme} identity the lock does not record; `realise` adds it", t));
     }
     // Locked schemes not checked now: unknown to this cakeys (e.g. from a newer one), or not
     // computable for this spec on this token.
     for scheme in locked.into_iter().flat_map(|ids| ids.keys()).filter(|s| !r.ids.contains_key(*s)) {
         if Scheme::from_name(scheme).is_some() {
-            notes.note(format_args!("{} is not checked by its {scheme} identity here (not computable for this spec on this token)", t));
+            notes.note(format_args!(
+                "{} is not checked by its {scheme} identity here (not computable for this spec on this token)",
+                t
+            ));
         } else {
-            notes.warn(format_args!("the lock records a {scheme} identity for '{}' that this cakeys does not know; it is not checked", t.object_name));
+            notes.warn(format_args!(
+                "the lock records a {scheme} identity for '{}' that this cakeys does not know; it is not checked",
+                t.object_name
+            ));
         }
     }
     Ok(())
@@ -324,69 +339,79 @@ pub fn compare(t: &Target, r: &Resolved, lock: &Lock, facts: &Facts, write: Lock
 /// realisation, and the pairs. Never overwrites an ID. Whether the lock changed.
 fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut Notes) -> Result<bool> {
     let mut changed = false;
-        // One object per material (checked again on load): refuse to record the same material
-        // under a second name.
-        let class = t.object.class;
-        for (name, o) in lock.objects.iter().filter(|(n, o)| *n != t.object_name && o.object_type.as_ref().is_some_and(|ty| ty.class == class)) {
-            if let Some((s, _)) = r.ids.iter().find(|(s, v)| !(class == Class::Certificate && *s == Scheme::Rfc7093m4.name()) && o.ids.get(*s) == Some(v)) {
-                return Err(KmError::PreconditionFailed(format!(
-                    "{} is the same material as object '{name}' ({s}); use that object instead of a second name",
-                    t
-                )));
-            }
+    // One object per material (checked again on load): refuse to record the same material
+    // under a second name.
+    let class = t.object.class;
+    for (name, o) in lock
+        .objects
+        .iter()
+        .filter(|(n, o)| *n != t.object_name && o.object_type.as_ref().is_some_and(|ty| ty.class == class))
+    {
+        if let Some((s, _)) = r
+            .ids
+            .iter()
+            .find(|(s, v)| !(class == Class::Certificate && *s == Scheme::Rfc7093m4.name()) && o.ids.get(*s) == Some(v))
+        {
+            return Err(KmError::PreconditionFailed(format!(
+                "{} is the same material as object '{name}' ({s}); use that object instead of a second name",
+                t
+            )));
         }
-        let entry = lock.objects.entry(t.object_name.into()).or_default();
-        if entry.object_type.is_none() {
-            entry.object_type = Some(t.object.clone());
-            changed = true;
-        }
-        if let Some(label) = &r.commitment_label && entry.commitment_label.as_ref().is_none_or(|l| l != label) {
-            entry.commitment_label = Some(label.clone());
-            changed = true;
-        }
-        for (scheme, got) in &r.ids {
-            if Scheme::from_name(scheme).is_some_and(Scheme::is_deprecated) && !entry.ids.contains_key(scheme) {
-                notes.note(format_args!(
+    }
+    let entry = lock.objects.entry(t.object_name.into()).or_default();
+    if entry.object_type.is_none() {
+        entry.object_type = Some(t.object.clone());
+        changed = true;
+    }
+    if let Some(label) = &r.commitment_label
+        && entry.commitment_label.as_ref().is_none_or(|l| l != label)
+    {
+        entry.commitment_label = Some(label.clone());
+        changed = true;
+    }
+    for (scheme, got) in &r.ids {
+        if Scheme::from_name(scheme).is_some_and(Scheme::is_deprecated) && !entry.ids.contains_key(scheme) {
+            notes.note(format_args!(
                     "{} also computes a {scheme} identity; not recorded: that computation is deprecated (docs/DESIGN.md §3.1)",
                     t
                 ));
-                continue;
-            }
-            if !entry.ids.contains_key(scheme) {
-                entry.ids.insert(scheme.clone(), got.clone());
-                changed = true;
-            }
+            continue;
         }
-        let real = LockRealisation {
-            object: t.object_name.to_owned(),
-            locator: t.on_token.locator.clone(),
-            spec_digest: r.spec_digest.clone(),
-            mode: r.mode,
-            schemes: r.ids.keys().cloned().collect(),
-            public_only: r.public_only,
-            binding: r.binding,
-            attestation: r.attestation.clone(),
-            policy: r.policy.clone(),
-            immutables: r.immutables.clone(),
+        if !entry.ids.contains_key(scheme) {
+            entry.ids.insert(scheme.clone(), got.clone());
+            changed = true;
+        }
+    }
+    let real = LockRealisation {
+        object: t.object_name.to_owned(),
+        locator: t.on_token.locator.clone(),
+        spec_digest: r.spec_digest.clone(),
+        mode: r.mode,
+        schemes: r.ids.keys().cloned().collect(),
+        public_only: r.public_only,
+        binding: r.binding,
+        attestation: r.attestation.clone(),
+        policy: r.policy.clone(),
+        immutables: r.immutables.clone(),
         observed: Some(facts.observed.clone()),
         provenance: Some(facts.provenance.clone()),
     };
-        let slot = lock.realisations.entry(t.spec_name.into()).or_default();
-        if slot.get(t.token_name) != Some(&real) {
-            slot.insert(t.token_name.into(), real);
+    let slot = lock.realisations.entry(t.spec_name.into()).or_default();
+    if slot.get(t.token_name) != Some(&real) {
+        slot.insert(t.token_name.into(), real);
+        changed = true;
+    }
+    // Partners in this file are recomputed; listed ones from other fragments are kept.
+    let pairs = lock.computed_pairs();
+    let present: Vec<String> = lock.objects.keys().cloned().collect();
+    for (name, o) in lock.objects.iter_mut() {
+        let mut want = pairs.get(name).cloned().unwrap_or_default();
+        want.extend(o.pairs.iter().filter(|p| !present.contains(p)).cloned());
+        if o.pairs != want {
+            o.pairs = want;
             changed = true;
         }
-        // Partners in this file are recomputed; listed ones from other fragments are kept.
-        let pairs = lock.computed_pairs();
-        let present: Vec<String> = lock.objects.keys().cloned().collect();
-        for (name, o) in lock.objects.iter_mut() {
-            let mut want = pairs.get(name).cloned().unwrap_or_default();
-            want.extend(o.pairs.iter().filter(|p| !present.contains(p)).cloned());
-            if o.pairs != want {
-                o.pairs = want;
-                changed = true;
-            }
-        }
+    }
     Ok(changed)
 }
 
@@ -399,7 +424,8 @@ fn warn_provenance(t: &Target, prev: &LockRealisation, now: &Facts, notes: &mut 
         ));
     }
     if let Some(o) = &prev.observed {
-        let gone: Vec<&str> = o.mechanisms.iter().filter(|m| !now.observed.mechanisms.contains(m)).map(String::as_str).collect();
+        let gone: Vec<&str> =
+            o.mechanisms.iter().filter(|m| !now.observed.mechanisms.contains(m)).map(String::as_str).collect();
         if !gone.is_empty() {
             notes.warn(format_args!(
                 "{t} was realised where the token offered {}, which it no longer does (functions.<token> in Nix)",
@@ -471,7 +497,11 @@ mod tests {
 
     fn facts(module_version: &str) -> Facts {
         Facts {
-            observed: Observed { uri: "pkcs11:token=t".into(), session: Session::User, mechanisms: vec!["CKM_ECDSA".into()] },
+            observed: Observed {
+                uri: "pkcs11:token=t".into(),
+                session: Session::User,
+                mechanisms: vec!["CKM_ECDSA".into()],
+            },
             provenance: Provenance {
                 provider: "generic".into(),
                 cakeys_version: "0.1.0".into(),
@@ -523,19 +553,27 @@ mod tests {
         let check = |r: &Resolved, write| compare(&t, r, &lock, &facts("1"), write, &mut Notes::default());
 
         let drifted = Resolved { spec_digest: SRI_B.into(), ..resolved(&t) };
-        assert!(matches!(check(&drifted, LockWrite::Compare), Err(KmError::PreconditionFailed(m)) if m.contains("changed in keys.toml")));
+        assert!(
+            matches!(check(&drifted, LockWrite::Compare), Err(KmError::PreconditionFailed(m)) if m.contains("changed in keys.toml"))
+        );
         check(&drifted, LockWrite::Record).unwrap();
 
         let policy = Resolved { policy: [("CKA_SIGN".to_owned(), AttrValue::Bool(false))].into(), ..resolved(&t) };
-        assert!(matches!(check(&policy, LockWrite::Compare), Err(KmError::PreconditionFailed(m)) if m.contains("changed on the token")));
+        assert!(
+            matches!(check(&policy, LockWrite::Compare), Err(KmError::PreconditionFailed(m)) if m.contains("changed on the token"))
+        );
         check(&policy, LockWrite::Record).unwrap();
 
         let weaker = Resolved { binding: Some(Binding::TokenAsserted), ..resolved(&t) };
         let replaced = Resolved { immutables: Immutables { local: Some(false), ..Default::default() }, ..resolved(&t) };
         let other = Resolved { ids: [("rfc7093m4".to_owned(), SRI_B.to_owned())].into(), ..resolved(&t) };
         for write in [LockWrite::Compare, LockWrite::Record] {
-            assert!(matches!(check(&weaker, write), Err(KmError::PreconditionFailed(m)) if m.contains("binding downgrade")));
-            assert!(matches!(check(&replaced, write), Err(KmError::PreconditionFailed(m)) if m.contains("was replaced")));
+            assert!(
+                matches!(check(&weaker, write), Err(KmError::PreconditionFailed(m)) if m.contains("binding downgrade"))
+            );
+            assert!(
+                matches!(check(&replaced, write), Err(KmError::PreconditionFailed(m)) if m.contains("was replaced"))
+            );
             assert!(matches!(check(&other, write), Err(KmError::HashMismatch { .. })));
         }
     }
@@ -551,11 +589,14 @@ mod tests {
             ..resolved(&t)
         };
         let mut lock = empty_lock();
-        reconcile(&t, &attested(SRI_A, SRI_A), &mut lock, &facts("1"), LockWrite::Record, &mut Notes::default()).unwrap();
+        reconcile(&t, &attested(SRI_A, SRI_A), &mut lock, &facts("1"), LockWrite::Record, &mut Notes::default())
+            .unwrap();
         let check = |r: &Resolved| compare(&t, r, &lock, &facts("1"), LockWrite::Record, &mut Notes::default());
         assert!(matches!(check(&attested(SRI_B, SRI_A)), Err(KmError::PreconditionFailed(m)) if m.contains("anchor")));
         assert!(matches!(check(&attested(SRI_A, SRI_B)), Err(KmError::HashMismatch { .. })));
-        assert!(matches!(check(&resolved(&t)), Err(KmError::PreconditionFailed(m)) if m.contains("no longer computes")));
+        assert!(
+            matches!(check(&resolved(&t)), Err(KmError::PreconditionFailed(m)) if m.contains("no longer computes"))
+        );
     }
 
     /// Provenance never changes a verdict: a different module build is a warning in the notes.
@@ -567,6 +608,10 @@ mod tests {
         reconcile(&t, &resolved(&t), &mut lock, &facts("1"), LockWrite::Record, &mut Notes::default()).unwrap();
         let mut notes = Notes::default();
         compare(&t, &resolved(&t), &lock, &facts("2"), LockWrite::Compare, &mut notes).unwrap();
-        assert!(notes.lines().iter().any(|l| l.starts_with("warning: ") && l.contains("realised with module m 1")), "{:?}", notes.lines());
+        assert!(
+            notes.lines().iter().any(|l| l.starts_with("warning: ") && l.contains("realised with module m 1")),
+            "{:?}",
+            notes.lines()
+        );
     }
 }

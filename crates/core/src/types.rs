@@ -86,7 +86,10 @@ impl KeyType {
 
     /// The HMAC key types bound to one hash (`CKK_SHA*_HMAC`), which PKCS#11 cannot generate.
     pub fn is_hash_bound_hmac(self) -> bool {
-        matches!(self, KeyType::Sha1Hmac | KeyType::Sha224Hmac | KeyType::Sha256Hmac | KeyType::Sha384Hmac | KeyType::Sha512Hmac)
+        matches!(
+            self,
+            KeyType::Sha1Hmac | KeyType::Sha224Hmac | KeyType::Sha256Hmac | KeyType::Sha384Hmac | KeyType::Sha512Hmac
+        )
     }
 }
 

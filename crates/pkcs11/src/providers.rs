@@ -42,6 +42,8 @@ impl Provider for P11Kit {
     }
 
     fn hint(&self) -> Option<&'static str> {
-        Some("the token is forwarded by p11-kit, whose RPC does not carry AES key wrap or EdDSA/Edwards mechanisms; the module behind it is hidden, so set `provider` to its provider for module-specific fix-ups")
+        Some(
+            "the token is forwarded by p11-kit, whose RPC does not carry AES key wrap or EdDSA/Edwards mechanisms; the module behind it is hidden, so set `provider` to its provider for module-specific fix-ups",
+        )
     }
 }

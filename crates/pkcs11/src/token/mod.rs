@@ -1,10 +1,10 @@
 //! PKCS#11 token layer over `cryptoki`. Transparent: PKCS#11 names in, PKCS#11 calls out.
 //! Module-specific behaviour goes through the selected [`Provider`].
 
-use crate::provider::{AttestationCap, AttestCtx, Attested, Provider, Registry};
-pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};
+use crate::provider::{AttestCtx, AttestationCap, Attested, Provider, Registry};
 use cakeys_core::attrs;
 use cakeys_core::config::{AttrValue, Binding, Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
+pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};
 use cakeys_core::id::{self, Commit, Curve, HmacHash, Scheme};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
@@ -14,9 +14,7 @@ use cryptoki::mechanism::eddsa::{EddsaParams, EddsaSignatureScheme};
 use cryptoki::mechanism::elliptic_curve::{EcKdf, Ecdh1DeriveParams};
 use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsOaepParams, PkcsOaepSource};
 use cryptoki::mechanism::{Mechanism, MechanismType};
-use cryptoki::object::{
-    Attribute, AttributeType, CertificateType, KeyType, ObjectClass, ObjectHandle,
-};
+use cryptoki::object::{Attribute, AttributeType, CertificateType, KeyType, ObjectClass, ObjectHandle};
 use cryptoki::session::{Session, UserType};
 use cryptoki::types::AuthPin;
 use std::collections::BTreeMap;
@@ -60,12 +58,7 @@ fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
 }
 
 impl Token {
-    pub fn open(
-        name: &str,
-        cfg: &TokenCfg,
-        module_override: Option<&str>,
-        registry: &Registry,
-    ) -> Result<Token> {
+    pub fn open(name: &str, cfg: &TokenCfg, module_override: Option<&str>, registry: &Registry) -> Result<Token> {
         let module = module_override
             .map(str::to_owned)
             .or_else(|| cfg.module.clone())
@@ -94,10 +87,7 @@ impl Token {
             let info = ctx.get_token_info(s).map_err(ck("C_GetTokenInfo"))?;
             if info.label() == cfg.token_label {
                 if slot.is_some() {
-                    return Err(KmError::Ambiguous(format!(
-                        "several tokens labelled '{}'",
-                        cfg.token_label
-                    )));
+                    return Err(KmError::Ambiguous(format!("several tokens labelled '{}'", cfg.token_label)));
                 }
                 slot = Some((
                     s,
@@ -157,9 +147,7 @@ impl Token {
     /// The provider's attestation capability for `object`'s class, when the spec opted in:
     /// `None` when this module attests nothing (or not this class).
     pub fn attestation_cap(&self, object: &ObjectCfg) -> Option<AttestationCap> {
-        self.provider
-            .attestation()
-            .filter(|cap| cap.classes.contains(&object.class))
+        self.provider.attestation().filter(|cap| cap.classes.contains(&object.class))
     }
 
     /// Compute the attestation commitment for `key` (§3.7 of docs/DESIGN.md) through the
@@ -167,7 +155,13 @@ impl Token {
     /// path (tpm2-pkcs11), verified on the host. `spki` is the material SPKI the attestation
     /// must name (`None` for secret keys); `provision` lets the provider create the device
     /// state it attests with (only `realise` sets it).
-    pub fn attest(&self, key: ObjectHandle, object: &ObjectCfg, spki: Option<&[u8]>, provision: bool) -> Result<Attested> {
+    pub fn attest(
+        &self,
+        key: ObjectHandle,
+        object: &ObjectCfg,
+        spki: Option<&[u8]>,
+        provision: bool,
+    ) -> Result<Attested> {
         let ctx = AttestCtx {
             session: &self.session,
             cfg: &self.cfg,
@@ -184,35 +178,23 @@ impl Token {
     pub fn find(&self, class: ObjectClass, loc: &Locator) -> Result<Vec<ObjectHandle>> {
         let mut template = vec![Attribute::Class(class)];
         template.extend(locator_attrs(loc)?);
-        self.session
-            .find_objects(&template)
-            .map_err(ck("C_FindObjects"))
+        self.session.find_objects(&template).map_err(ck("C_FindObjects"))
     }
 
     /// Every object under the locator, whatever its class (If-None-Match before creating).
     pub fn find_any(&self, loc: &Locator) -> Result<Vec<ObjectHandle>> {
-        self.session
-            .find_objects(&locator_attrs(loc)?)
-            .map_err(ck("C_FindObjects"))
+        self.session.find_objects(&locator_attrs(loc)?).map_err(ck("C_FindObjects"))
     }
 
     /// Exactly-one lookup of the object named by the locator: the key (private or secret) or
     /// certificate, or the public key object when adopting public-only.
-    pub fn find_key(
-        &self,
-        object: &ObjectCfg,
-        loc: &Locator,
-        public_only: bool,
-    ) -> Result<Option<ObjectHandle>> {
+    pub fn find_key(&self, object: &ObjectCfg, loc: &Locator, public_only: bool) -> Result<Option<ObjectHandle>> {
         let class = if public_only { ObjectClass::PUBLIC_KEY } else { class_of(object) };
         let found = self.find(class, loc)?;
         match found.len() {
             0 => Ok(None),
             1 => Ok(Some(found[0])),
-            n => Err(KmError::Ambiguous(format!(
-                "{n} objects match locator {loc} on token '{}'",
-                self.name
-            ))),
+            n => Err(KmError::Ambiguous(format!("{n} objects match locator {loc} on token '{}'", self.name))),
         }
     }
 
@@ -244,12 +226,7 @@ impl Token {
     }
 
     fn attr(&self, h: ObjectHandle, t: AttributeType) -> Result<Option<Attribute>> {
-        Ok(self
-            .session
-            .get_attributes(h, &[t])
-            .map_err(ck("C_GetAttributeValue"))?
-            .into_iter()
-            .next())
+        Ok(self.session.get_attributes(h, &[t]).map_err(ck("C_GetAttributeValue"))?.into_iter().next())
     }
 
     /// Run `step` in a Security Officer session (`mgmKeyFile`/`mgmKeyEnv`), for modules that
@@ -280,7 +257,8 @@ impl Token {
         };
         drop(so);
         if self.logged_in {
-            let pin = self.pin.as_deref().ok_or_else(|| KmError::Unavailable("no user PIN to log back in with".into()))?;
+            let pin =
+                self.pin.as_deref().ok_or_else(|| KmError::Unavailable("no user PIN to log back in with".into()))?;
             match self.session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
                 Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
                 Err(e) => return Err(KmError::Unavailable(format!("C_Login (back to the user): {e}"))),

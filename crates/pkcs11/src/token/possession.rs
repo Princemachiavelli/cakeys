@@ -8,7 +8,13 @@ impl Token {
     /// the private key `h` proves, by whichever capability it has, that it holds the private
     /// half of `spki`, the public key its identity hashes. A proof that does not verify is a
     /// `Conflict`; a token that cannot prove is `Unsupported` or `Unavailable`, never a pass.
-    pub(super) fn prove_binding(&self, h: ObjectHandle, object: &ObjectCfg, spki: &[u8], binding: Binding) -> Result<()> {
+    pub(super) fn prove_binding(
+        &self,
+        h: ObjectHandle,
+        object: &ObjectCfg,
+        spki: &[u8],
+        binding: Binding,
+    ) -> Result<()> {
         // A context-specific login per proof (PIV signing slot) would spend PIN retries.
         if let Some(Attribute::AlwaysAuthenticate(true)) = self.attr(h, AttributeType::AlwaysAuthenticate)? {
             return Err(KmError::Unavailable(format!(
@@ -30,18 +36,15 @@ impl Token {
     fn prove_sign(&self, h: ObjectHandle, object: &ObjectCfg, spki: &[u8], msg: &[u8]) -> Result<()> {
         let (mech, data) = match key_type_of(object)? {
             KeyType::EC => {
-                let hash = pop::EcdsaHash::for_curve(curve_of(object)?)
-                    .ok_or_else(|| KmError::Unsupported(format!("ECDSA on {}", object.curve.as_deref().unwrap_or("?"))))?;
+                let hash = pop::EcdsaHash::for_curve(curve_of(object)?).ok_or_else(|| {
+                    KmError::Unsupported(format!("ECDSA on {}", object.curve.as_deref().unwrap_or("?")))
+                })?;
                 let hashed = match hash {
                     pop::EcdsaHash::Sha256 => (Mechanism::EcdsaSha256, MechanismType::ECDSA_SHA256),
                     pop::EcdsaHash::Sha384 => (Mechanism::EcdsaSha384, MechanismType::ECDSA_SHA384),
                     pop::EcdsaHash::Sha512 => (Mechanism::EcdsaSha512, MechanismType::ECDSA_SHA512),
                 };
-                if self.has(hashed.1) {
-                    (hashed.0, msg.to_vec())
-                } else {
-                    (Mechanism::Ecdsa, hash.digest(msg))
-                }
+                if self.has(hashed.1) { (hashed.0, msg.to_vec()) } else { (Mechanism::Ecdsa, hash.digest(msg)) }
             }
             KeyType::EC_EDWARDS => (Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Pure)), msg.to_vec()),
             KeyType::RSA => (Mechanism::Sha256RsaPkcs, msg.to_vec()),
@@ -55,13 +58,14 @@ impl Token {
             )));
         }
         let sig = self.session.sign(&mech, h, &data).map_err(|e| match e {
-            CkError::Pkcs11(RvError::KeyFunctionNotPermitted | RvError::MechanismInvalid | RvError::KeyTypeInconsistent, _) => {
-                self.unsupported(format!(
-                    "token '{}' refused to sign with the private key ({e}); proving possession needs CKA_SIGN, \
+            CkError::Pkcs11(
+                RvError::KeyFunctionNotPermitted | RvError::MechanismInvalid | RvError::KeyTypeInconsistent,
+                _,
+            ) => self.unsupported(format!(
+                "token '{}' refused to sign with the private key ({e}); proving possession needs CKA_SIGN, \
                      or opt in with binding = \"token-asserted\"",
-                    self.name
-                ))
-            }
+                self.name
+            )),
             e => KmError::Unavailable(format!("C_Sign (proof of possession) on token '{}': {e}", self.name)),
         })?;
         pop::verify(spki, msg, &sig)
@@ -85,7 +89,8 @@ impl Token {
         if !self.has(MechanismType::SHA256_HMAC) {
             return Err(lacking(self, "CKM_SHA256_HMAC"));
         }
-        let derived = self.session
+        let derived = self
+            .session
             .derive_key(
                 &Mechanism::Ecdh1Derive(Ecdh1DeriveParams::new(EcKdf::null(), &ch.peer)),
                 h,
@@ -99,13 +104,14 @@ impl Token {
                 ],
             )
             .map_err(|e| match e {
-                CkError::Pkcs11(RvError::KeyFunctionNotPermitted | RvError::MechanismInvalid | RvError::KeyTypeInconsistent, _) => {
-                    self.unsupported(format!(
-                        "token '{}' refused to derive with the private key ({e}); proving possession needs CKA_DERIVE, \
+                CkError::Pkcs11(
+                    RvError::KeyFunctionNotPermitted | RvError::MechanismInvalid | RvError::KeyTypeInconsistent,
+                    _,
+                ) => self.unsupported(format!(
+                    "token '{}' refused to derive with the private key ({e}); proving possession needs CKA_DERIVE, \
                          or opt in with binding = \"token-asserted\"",
-                        self.name
-                    ))
-                }
+                    self.name
+                )),
                 e => KmError::Unavailable(format!("C_DeriveKey (proof of possession) on token '{}': {e}", self.name)),
             })?;
         // A session object: dropped with the session even if destroying it fails here.
@@ -115,7 +121,9 @@ impl Token {
             .inspect_err(|_| {
                 let _ = self.session.destroy_object(derived);
             })
-            .map_err(|e| KmError::Unavailable(format!("C_Sign (ECDH proof of possession) on token '{}': {e}", self.name)))?;
+            .map_err(|e| {
+                KmError::Unavailable(format!("C_Sign (ECDH proof of possession) on token '{}': {e}", self.name))
+            })?;
         let _ = self.session.destroy_object(derived);
         if !pop::ct_eq(&ch.mac, &tag) {
             return Err(KmError::Conflict(format!(
@@ -137,7 +145,8 @@ impl Token {
             )));
         }
         let cipher = pop::oaep_challenge(spki, msg)?;
-        let plain = self.session
+        let plain = self
+            .session
             .decrypt(
                 &Mechanism::RsaPkcsOaep(PkcsOaepParams::new(
                     MechanismType::SHA1,
@@ -148,13 +157,14 @@ impl Token {
                 &cipher,
             )
             .map_err(|e| match e {
-                CkError::Pkcs11(RvError::KeyFunctionNotPermitted | RvError::MechanismInvalid | RvError::KeyTypeInconsistent, _) => {
-                    self.unsupported(format!(
-                        "token '{}' refused to decrypt with the private key ({e}); proving possession needs CKA_DECRYPT, \
+                CkError::Pkcs11(
+                    RvError::KeyFunctionNotPermitted | RvError::MechanismInvalid | RvError::KeyTypeInconsistent,
+                    _,
+                ) => self.unsupported(format!(
+                    "token '{}' refused to decrypt with the private key ({e}); proving possession needs CKA_DECRYPT, \
                          or opt in with binding = \"token-asserted\"",
-                        self.name
-                    ))
-                }
+                    self.name
+                )),
                 e => KmError::Unavailable(format!("C_Decrypt (proof of possession) on token '{}': {e}", self.name)),
             })?;
         if !pop::ct_eq(msg, &plain) {

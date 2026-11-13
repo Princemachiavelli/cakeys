@@ -13,9 +13,9 @@
 use base64::Engine;
 use cakeys_core::id;
 use cakeys_core::{KmError, Result};
+use x509_cert::certificate::Certificate;
 use x509_cert::der::asn1::ObjectIdentifier;
 use x509_cert::der::{Decode, Encode};
-use x509_cert::certificate::Certificate;
 
 /// The label prefix ykcs11 gives every slot's attestation certificate (suffix: the slot, e.g.
 /// "9a"); the slot f9 device certificate itself has the bare label without a suffix.
@@ -45,17 +45,14 @@ pub struct Cert {
 
 impl Cert {
     pub fn from_der(der: Vec<u8>) -> Result<Cert> {
-        let parsed = Certificate::from_der(&der)
-            .map_err(|e| KmError::Conflict(format!("parsing certificate: {e}")))?;
+        let parsed = Certificate::from_der(&der).map_err(|e| KmError::Conflict(format!("parsing certificate: {e}")))?;
         Ok(Cert { der, parsed })
     }
 
     /// The bytes the signature was computed over: the `tbsCertificate` sliced from the
     /// certificate's original DER, never re-encoded, so verification is exact.
     fn tbs(&self) -> Result<&[u8]> {
-        tlv_children(&self.der)?
-            .next()
-            .ok_or_else(|| KmError::Conflict("certificate has no tbsCertificate".into()))
+        tlv_children(&self.der)?.next().ok_or_else(|| KmError::Conflict("certificate has no tbsCertificate".into()))
     }
 
     /// The raw signature value: the BIT STRING content, minus the unused-bits byte.
@@ -153,16 +150,9 @@ pub fn pem_certs(pem: &str) -> Result<Vec<Cert>> {
     pem.split("-----BEGIN CERTIFICATE-----")
         .skip(1)
         .map(|block| {
-            let body: String = block
-                .split("-----END CERTIFICATE-----")
-                .next()
-                .unwrap_or_default()
-                .lines()
-                .map(str::trim)
-                .collect();
-            Cert::from_der(
-                b64.decode(body).map_err(|e| KmError::Validation(format!("pem body: {e}")))?,
-            )
+            let body: String =
+                block.split("-----END CERTIFICATE-----").next().unwrap_or_default().lines().map(str::trim).collect();
+            Cert::from_der(b64.decode(body).map_err(|e| KmError::Validation(format!("pem body: {e}")))?)
         })
         .collect()
 }
@@ -194,8 +184,9 @@ pub fn verify_piv_attestation(
     // The device certificate must chain to a pinned root, and the slot certificate must be
     // signed by that same device attestation key.
     let anchor = chain_to_anchor(&device, anchors, pool)?;
-    verify_signed_by(&slot, &device)
-        .map_err(|e| KmError::Conflict(format!("the slot attestation certificate is not signed by the device attestation key: {e}")))?;
+    verify_signed_by(&slot, &device).map_err(|e| {
+        KmError::Conflict(format!("the slot attestation certificate is not signed by the device attestation key: {e}"))
+    })?;
     // The attested key is the certificate's subject: it must be the material the identity is
     // for, or the attestation attests something else (13, never a pass).
     let subject = slot.spki()?;
@@ -227,9 +218,7 @@ pub fn piv_pool(pool: Vec<Cert>) -> Vec<Cert> {
     pool.into_iter()
         .filter(|c| {
             let subject = c.parsed.tbs_certificate().subject().to_string();
-            ["CN=Yubico PIV Attestation", "CN=Yubico Attestation Intermediate"]
-                .iter()
-                .any(|p| subject.starts_with(p))
+            ["CN=Yubico PIV Attestation", "CN=Yubico Attestation Intermediate"].iter().any(|p| subject.starts_with(p))
         })
         .collect()
 }
@@ -310,7 +299,9 @@ fn verify_signed_by(cert: &Cert, signer: &Cert) -> Result<()> {
     match verdict {
         Some(Ok(())) => Ok(()),
         Some(Err(e)) => Err(KmError::Conflict(format!("certificate signature does not verify against {sri}: {e}"))),
-        None => Err(KmError::Conflict(format!("the signer {sri} holds no key for the certificate's signature algorithm"))),
+        None => {
+            Err(KmError::Conflict(format!("the signer {sri} holds no key for the certificate's signature algorithm")))
+        }
     }
 }
 
@@ -406,10 +397,13 @@ mod tests {
         assert_eq!(attested.id, "sha256-gKyFL3YX9/6UtxWv5JbcU4a5Rj5Ev9IVC0SV25gIQoc=");
         assert_eq!(attested.root, id::sri(&anchors[0].spki().unwrap()));
         // Other material: the attestation names the slot's key, not another key's.
-        let err = verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &anchors, &[], &spki_of("slot2pub.pem")).unwrap_err();
+        let err =
+            verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &anchors, &[], &spki_of("slot2pub.pem"))
+                .unwrap_err();
         assert!(err.to_string().contains("the attestation names"), "{err}");
         // No pinned anchor: f9 overwritten with a self-made key, or another vendor's device.
-        let err = verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &[], &[], &spki_of("slotpub.pem")).unwrap_err();
+        let err = verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &[], &[], &spki_of("slotpub.pem"))
+            .unwrap_err();
         assert!(err.to_string().contains("signed by no pinned root"), "{err}");
     }
 }
