@@ -137,7 +137,7 @@ realisation, beside a portable scheme — which is what links the tokens' copies
 flowchart LR
     KT["keys.toml"] --> MK["lib.mkKeys { cakeys }"]
     KL["keys.lock"] --> MK
-    MK -->|"keys.&lt;object&gt; { token, spec, scheme }<br/>→ uri · rsf · id · check"| DRV["consumer derivation"]
+    MK -->|"keys.&lt;object&gt; { token, spec, scheme }<br/>→ uri · requiredSystemFeatures · id · check"| DRV["consumer derivation"]
     DRV -->|"requiredSystemFeatures =<br/>[ token-&lt;name&gt; ]"| HOOK["Nix pre-build hook<br/>(nix/sandbox-hook.sh)"]
     HOOK -->|"grants the token's device/socket<br/>only to builds asking for its feature"| SB["build sandbox"]
     SB --> CHK["cakeys check &lt;obj&gt;.id.&lt;scheme&gt;"]

@@ -54,6 +54,8 @@ let
     { name, ... }:
     {
       options = {
+        # TODO: keys.toml's `tokens.<t>.systemFeature` duplicates this (crates/core/src/config.rs);
+        # decide which one owns it with the further Nix integration and usage tests.
         systemFeature = mkOption {
           type = types.str;
           default = "token-${name}";

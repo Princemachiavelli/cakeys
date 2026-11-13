@@ -23,7 +23,9 @@ in
       spec / token   the resolved pair
       uri / mode / specDigest / module / tokenInfo / functions
                      from the pair's realisation (observed and provenance)
-      rsf            the token's `requiredSystemFeatures` entry
+      requiredSystemFeatures
+                     the token's system feature (keys.toml `tokens.<t>.systemFeature`, default
+                     `token-<t>`), as the list a derivation's `requiredSystemFeatures` takes
       check          shell command for the pseudo-FOD pre-use check, printing the URI; the
                      resolved pair is passed explicitly, and `scheme` requires that identity.
                      Interpolates config, lock and module paths, so they become inputs of the
@@ -49,7 +51,7 @@ in
       tokens = cfg.tokens or { };
       realisations = lk.realisations or { };
 
-      rsfOf = t: [ (tokens.${t}.systemFeature or "token-${t}") ];
+      featuresOf = t: [ (tokens.${t}.systemFeature or "token-${t}") ];
 
       objectView =
         obj: type:
@@ -111,8 +113,9 @@ in
         in
         # seq pick: the call itself resolves the (spec, token) pair — missing or ambiguous throws
         # here, whether or not any attribute of the result is demanded. The realisation stays
-        # lazy: `check`, `id`, `type` and `rsf` are usable before anything is recorded in the
-        # lock (the first-use pseudo-FOD flow), and only the realisation's own fields throw.
+        # lazy: `check`, `id`, `type` and `requiredSystemFeatures` are usable before anything is
+        # recorded in the lock (the first-use pseudo-FOD flow), and only the realisation's own
+        # fields throw.
         builtins.seq pick {
           inherit type;
           inherit (pick) spec token;
@@ -129,7 +132,7 @@ in
               value = true;
             }) (real.observed.mechanisms or [ ])
           );
-          rsf = rsfOf pick.token;
+          requiredSystemFeatures = featuresOf pick.token;
           check =
             assert cakeys != null || throw "cakeys: mkKeys needs cakeys for check";
             builtins.concatStringsSep " " (

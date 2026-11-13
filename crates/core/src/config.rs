@@ -45,6 +45,9 @@ pub struct TokenCfg {
     pub mgm_key_file: Option<PathBuf>,
     pub mgm_key_env: Option<String>,
     /// Nix `requiredSystemFeatures` entry; defaults to `token-<name>`. Read by the Nix library.
+    // TODO: decide whether this belongs in keys.toml (unused by Rust; nix/lib.nix reads it) or
+    // only in the NixOS module (`services.cakeys.tokens.<n>.systemFeature`, which today must be
+    // kept equal by hand). Decide with the further Nix integration and usage tests.
     #[allow(dead_code)]
     pub system_feature: Option<String>,
     /// Marks the token as expendable for the probe (docs/PROVIDERS.md phase 3): its write

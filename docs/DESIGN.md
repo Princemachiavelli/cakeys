@@ -602,12 +602,12 @@ shared  = keys.shared { token = "softhsm"; spec = "shared-sign"; };  # several s
 
 - The result carries `type`, `id.<scheme>` (`pubkeyhash` is an input alias), the resolved
   `spec`/`token`, and the pair's realisation: `uri`, `mode`, `specDigest`, `module`, `tokenInfo`,
-  `functions` (mechanism → `true`), `rsf` and `check`.
+  `functions` (mechanism → `true`), `requiredSystemFeatures` and `check`.
 - **`check`** is the shell command for the pre-use check (prints the URI); `scheme = "certhash"`
   requires that identity, and the resolved pair is passed explicitly. Interpolating config, lock
-  and module makes them build inputs. Like `id`, `type` and `rsf`, it is usable before anything
-  is recorded in the lock — the first-use pseudo-FOD flow; only the realisation's own fields
-  throw on a missing record.
+  and module makes them build inputs. Like `id`, `type` and `requiredSystemFeatures`, it is usable
+  before anything is recorded in the lock — the first-use pseudo-FOD flow; only the realisation's
+  own fields throw on a missing record.
 - A call that does not name exactly one pair throws, listing the choices — so does a missing
   realisation, naming the `realise` command to run.
 - Tested by `checks.lib` (synthetic fixture) and `checks.vm` (consumer built in the guest sandbox).

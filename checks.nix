@@ -126,7 +126,7 @@
     assert signing.uri == "pkcs11:token=kmtest;object=signing;type=private";
     assert signing.mode == "direct";
     assert signing.spec == "signing-soft" && signing.token == "softhsm";
-    assert signing.rsf == [ "token-softhsm" ];
+    assert signing.requiredSystemFeatures == [ "token-softhsm" ];
     assert signing.functions.CKM_ECDSA;
     assert !(signing.functions ? CKM_SHA256_HMAC);
     # One object, two specs with different policy on the same token.

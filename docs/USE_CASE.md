@@ -76,7 +76,7 @@ Nix:
 
 6. **Which key does this derivation actually use?** `keys.<object> { … }.id` is the content hash
    of the material, not a label, and the build's `check` fails if the token disagrees.
-7. **Can this builder build it?** `requiredSystemFeatures = key.rsf` limits it to builders that
+7. **Can this builder build it?** `requiredSystemFeatures = key.requiredSystemFeatures` limits it to builders that
    advertise the token's feature.
 8. **Can Nix code tell what a token can do with a key?** `key.functions` (for example
    `functions.CKM_ECDSA`) lists the mechanisms the token offered, at evaluation time.

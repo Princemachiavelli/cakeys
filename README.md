@@ -102,7 +102,7 @@ let
 in
 pkgs.runCommand "signed-artifact" {
   # Only hosts that advertise the token's feature build this.
-  requiredSystemFeatures = signing.rsf;
+  requiredSystemFeatures = signing.requiredSystemFeatures;
 } ''
   # Pre-use check: fails the build unless the token holds the locked material.
   uri=$(${signing.check})
@@ -111,7 +111,7 @@ pkgs.runCommand "signed-artifact" {
 ```
 
 `signing` is plain data from the resolved pair: `id.<scheme>`, `uri`, `mode`, `specDigest`,
-`module`, `tokenInfo`, `functions`, `rsf` and `check` (use `scheme = "certhash"` to require one
+`module`, `tokenInfo`, `functions`, `requiredSystemFeatures` and `check` (use `scheme = "certhash"` to require one
 identity).
 
 A cached consumer is not rebuilt, so the token is not re-contacted; `nix build --check` forces it.

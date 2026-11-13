@@ -183,7 +183,7 @@ let keys = (import $CAKEYS_LIB).mkKeys {
   lock = ./keys.lock;
   cakeys = "$(dirname "$bin")";
 };
-in { inherit (keys.signing { }) id uri rsf check; }
+in { inherit (keys.signing { }) id uri requiredSystemFeatures check; }
 EOF
   show cat keys.nix
   printf '%s$ nix-instantiate --eval --strict --json keys.nix | jq .%s\n' "$dim" "$reset"
