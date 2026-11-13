@@ -31,6 +31,54 @@ pub use identity::commit_mechanism;
 pub use policy::bool_attr;
 use uri::{locator_attrs, pct_all};
 
+/// The session a verb opens (M1, docs/REVIEW-2026-11-11.md): read-only for the verbs that only
+/// read — a write-protected token (`CKF_WRITE_PROTECTED`) refuses read-write sessions, and the
+/// session objects reading needs (a key-wrap copy, an ECDH secret) are allowed in read-only
+/// ones — read-write only to create or destroy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    Read,
+    Write,
+}
+
+/// The PIN counters `C_GetTokenInfo` reports (M2): a login on the final try or a locked PIN is
+/// refused before it is attempted, so a wrong PIN file never spends the last retry (PIV allows
+/// few).
+#[derive(Debug, Clone, Copy, Default)]
+struct PinState {
+    user: Pin,
+    so: Pin,
+}
+
+/// One PIN's counters.
+#[derive(Debug, Clone, Copy, Default)]
+struct Pin {
+    locked: bool,
+    final_try: bool,
+}
+
+impl Pin {
+    /// Refuse a login as `who` (user or SO) the counters say must not be tried.
+    fn guard(self, token: &str, who: &str) -> Result<()> {
+        let Pin { locked, final_try } = self;
+        if locked {
+            return Err(KmError::Unavailable(format!(
+                "token '{token}': the {who} PIN is locked (CKF_{}_PIN_LOCKED); unlock it with the vendor's tools",
+                who.to_uppercase()
+            )));
+        }
+        if final_try {
+            return Err(KmError::Unavailable(format!(
+                "token '{token}': one {who} PIN try is left before it locks (CKF_{}_PIN_FINAL_TRY); cakeys will \
+                 not spend it on a PIN file that may be wrong — log in once by hand with the right PIN to reset \
+                 the counter",
+                who.to_uppercase()
+            )));
+        }
+        Ok(())
+    }
+}
+
 pub struct Token {
     pub name: String,
     pub label: String,
@@ -58,6 +106,8 @@ pub struct Token {
     /// The token's config, for provider hooks that need more than the module (the native TPM
     /// attestation path's `options`: `tcti`, `tpm2Store` and `akHandle`).
     pub cfg: TokenCfg,
+    /// The PIN counters at open, checked before every login (M2).
+    pins: PinState,
     /// The user credential, already read for login, kept only when the provider can attest
     /// (the TPM attestation path unseals the token's wrapping key with it) or an SO step must
     /// log the user back in afterwards (`mgmKeyFile`/`mgmKeyEnv`). Zeroized on drop.
@@ -78,7 +128,13 @@ impl Token {
     /// refuses, or an admin credential on a provider that creates as the user; `Ambiguous`
     /// when several slots carry the label; `Unavailable` when no slot does, the module
     /// cannot be loaded, any `C_*` call fails, or the PIN (env var or file) cannot be read.
-    pub fn open(name: &str, cfg: &TokenCfg, module_override: Option<&str>, registry: &Registry) -> Result<Token> {
+    pub fn open(
+        name: &str,
+        cfg: &TokenCfg,
+        module_override: Option<&str>,
+        registry: &Registry,
+        access: Access,
+    ) -> Result<Token> {
         let module = module_override
             .map(str::to_owned)
             .or_else(|| cfg.module.clone())
@@ -116,10 +172,15 @@ impl Token {
                         serial: info.serial_number().trim().to_owned(),
                         firmware: info.firmware_version().to_string(),
                     },
+                    PinState {
+                        user: Pin { locked: info.user_pin_locked(), final_try: info.user_pin_final_try() },
+                        so: Pin { locked: info.so_pin_locked(), final_try: info.so_pin_final_try() },
+                    },
+                    info.write_protected(),
                 ));
             }
         }
-        let (slot, token) = slot.ok_or_else(|| {
+        let (slot, token, pins, write_protected) = slot.ok_or_else(|| {
             KmError::Unavailable(format!("token '{}' not present in {}", cfg.token_label, module.path))
         })?;
         // The capability profiles (docs/PROVIDERS.md phase 2): the module profile follows the
@@ -147,14 +208,7 @@ impl Token {
         };
         let mut mechanism_names: Vec<String> = mechanisms.iter().map(std::string::ToString::to_string).collect();
         mechanism_names.sort();
-        let session = ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?;
-        let pin = read_pin(cfg)?;
-        if let Some(pin) = pin.as_deref() {
-            match session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
-                Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
-                Err(e) => return Err(KmError::Unavailable(format!("C_Login: {e}"))),
-            }
-        }
+        let (session, pin) = session(&ctx, slot, name, cfg, access, write_protected, pins)?;
         Ok(Token {
             name: name.to_owned(),
             label: cfg.token_label.clone(),
@@ -168,6 +222,7 @@ impl Token {
             session,
             logged_in: pin.is_some(),
             cfg: cfg.clone(),
+            pins,
             pin: pin.filter(|_| provider.attestation().is_some() || has_admin(cfg)),
             provider,
         })
@@ -317,6 +372,7 @@ impl Token {
                 self.name, self.name
             ))
         })?;
+        self.pins.so.guard(&self.name, "SO")?;
         if self.logged_in {
             self.session.logout().map_err(ck("C_Logout"))?;
         }
@@ -343,6 +399,38 @@ impl Token {
         }
         out
     }
+}
+
+/// Open the session `access` asks for (M1) and log in as the user when a PIN is configured —
+/// unless the counters say the login must not be tried (M2).
+fn session(
+    ctx: &Pkcs11,
+    slot: cryptoki::slot::Slot,
+    name: &str,
+    cfg: &TokenCfg,
+    access: Access,
+    write_protected: bool,
+    pins: PinState,
+) -> Result<(Session, Option<Zeroizing<String>>)> {
+    let session = match access {
+        Access::Read => ctx.open_ro_session(slot).map_err(ck("C_OpenSession (read-only)"))?,
+        Access::Write if write_protected => {
+            return Err(KmError::Unsupported(format!(
+                "token '{name}' is write-protected (CKF_WRITE_PROTECTED): it can be read, never created on or \
+                 deleted from"
+            )));
+        }
+        Access::Write => ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?,
+    };
+    let pin = read_pin(cfg)?;
+    if let Some(pin) = pin.as_deref() {
+        pins.user.guard(name, "user")?;
+        match session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
+            Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
+            Err(e) => return Err(KmError::Unavailable(format!("C_Login: {e}"))),
+        }
+    }
+    Ok((session, pin))
 }
 
 fn read_pin(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {

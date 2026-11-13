@@ -460,7 +460,7 @@ pub fn check(
     reference: &str,
     spec: Option<&str>,
     token: Option<&str>,
-    open: impl FnOnce(&str) -> Result<Token>,
+    open: impl FnOnce(&str, hal::Access) -> Result<Token>,
     lock: &mut Lock,
     notes: &mut Notes,
 ) -> Result<Resolved> {
@@ -487,7 +487,9 @@ pub fn check(
             }
         },
     };
-    let tok = open(&token_name)?;
+    // Read-only unless the spec may create the object (M1).
+    let access = if t.on_token.auto_create { hal::Access::Write } else { hal::Access::Read };
+    let tok = open(&token_name, access)?;
     // The token may lack a mechanism the spec allows: refuse before realise can create.
     if let Some(s) = scheme {
         let on_token = schemes_on(&t, &tok)?;
