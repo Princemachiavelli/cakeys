@@ -7,15 +7,18 @@ What cakeys is for, in one line each. How it works: [`DESIGN.md`](DESIGN.md); th
 
 General:
 
-1. **We set up HSM B as a copy of HSM A: are the keys really the same?** Realise each spec on
-   both tokens into one lock; the IDs are hashes of the material, so a different key on B fails
-   with a hash mismatch (10).
+1. **We cloned HSM A onto HSM B with the vendor's backup/restore: are the keys really the same?**
+   Realise each spec on A, then on B into the same lock: B's copy must hash to A's locked IDs
+   (a different key fails with 10), and B never generates its own (`autoCreate` is refused once
+   the material is locked). cakeys verifies the copy; the HSM's tools make it.
 2. **We created new keys on our HSM: are they set up correctly for our software?** The spec
    declares type (curve, size) and policy (sign-only, non-extractable, …); a key of another type
    is refused (13) and any policy difference is reported (14).
 3. **We are moving keys from vendor A's HSM to vendor B's: did the export and import carry the
-   same material?** Realise the same object on both; matching IDs under a shared scheme prove it
-   (only the per-device attestation differs, by design).
+   same material?** After the import, realise the object on B into A's lock: identities are
+   deterministic functions of the material (a hash of the public key, or a MAC over a fixed label
+   for a secret key), so the copy matches under any scheme both compute; only the per-device
+   attestation differs, by design.
 4. **Our backup HSM was last used three years ago: the IDs and labels look right, but is the
    material what we expect?** `verify` recomputes every identity from the token and compares it
    with the committed lock; labels only locate, they prove nothing.
