@@ -174,6 +174,29 @@ list, and what it left, is in its results below.
   files are flat key/value (`module`, `priority`, `enable-in`, `x-*`) and cannot carry mechanism
   lists, modes or evidence, so they are not the interchange; one of their `x-` keys may later
   point at a cakeys profile.
+- **D12.** A token's *mode* is a match axis like its model and firmware: the same module on the
+  same hardware behaves differently in FIPS-approved mode (no SHA-1 OAEP, no small RSA, no
+  non-approved curves), so it is a different observed profile. Modes enter as **match fields** —
+  data, never logic:
+  - *Who reports them*: generic code reads the standard ones from PKCS#11 3.2 — the
+    `CKO_VALIDATION` objects (`CKA_VALIDATION_TYPE`, `_LEVEL`, `_CERTIFICATE_IDENTIFIER`, …),
+    `C_GetSessionValidationFlags` (`CKS_LAST_VALIDATION_OK`) and the token's `CKF_ERROR_STATE`
+    [spec]. A vendor crate adds its own through a provider hook that only *observes* (D6), for
+    what lives outside PKCS#11: a YubiKey FIPS's approved mode (its management interface, not
+    ykcs11), a TPM's `TPM_PT_MODES` (`TPM2_GetCapability`).
+  - *Where they live*: in the one profile schema, `[match.fields]` beside the four fixed keys;
+    vendor fields are prefixed with the provider name (`"ykcs11.fips-mode" = "approved"`),
+    standard ones are not. The probe records every field reported; the diff compares them like
+    the other match keys, so conformance covers them.
+  - *How they match*: one generic rule for every field — absent from the profile matches
+    anything, recorded must equal the token's value; the profile matching the most fields wins;
+    a mismatch resolves the advertise and subtract rows only (D10's fallback). No vendor code
+    runs in resolution: what a profile matches is readable from the profile.
+  - *Requiring a mode is policy, not capability*: keys.toml says it per token
+    (`tokens.<t>.require = { fips = "approved" }`), and cakeys checks it against the **live**
+    token's fields when the token opens, before any key is used — never against a profile. A
+    token not in the required mode, or in `CKF_ERROR_STATE`, is refused with 14 (precondition
+    failed, DESIGN §5). docs/USE_CASE.md, problem 7.
 
 ## Phases
 
@@ -184,6 +207,7 @@ list, and what it left, is in its results below.
 | 2 | **Done 2026-11-12.** Resolution (match keys, layers), wiring `mechanisms()`, migrate `Side` and the binding layer into profiles | ≈400, 3–4 days |
 | 3 | **Done 2026-11-13.** `probe`: the scratch guard, profile + diff, generated profiles; the conformance check in the reference suites; the opt-in YubiKey probe (not yet all ~25 probes: see its results) | ≈700, 5–7 days |
 | 4 | The static `validate` gate, the wider Nix check (the query part moved here from phase 4 into phases 1's `supports`) | ≈300, 2–3 days |
+| 5 | D12: `[match.fields]` and their generic matching; the standard 3.2 fields (validation objects, session validation flags, `CKF_ERROR_STATE`); the observing provider hook, first for ykcs11's FIPS mode (the YubiKey 5C NFC FIPS here) and the TPM's `TPM_PT_MODES`; `tokens.<t>.require` checked at token open (14). Independent of phase 4 | ≈400, 3–4 days |
 
 ### Phase 0 and 1 results (2026-11-12)
 

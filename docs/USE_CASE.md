@@ -25,21 +25,34 @@ General:
 5. **We updated our signing server and now cannot sign: what changed?** The lock records which
    PKCS#11 module and token produced each entry, so running `verify` with the new module before
    deploying shows the module change and whether every key still resolves and proves possession.
+6. **Does this token still behave the way our tooling was tested against?** A vendor update, a
+   new firmware or another model can change what a token lists, generates or wraps.
+   `cakeys probe --token <t> --diff <profile>` compares the token with its committed capability
+   profile (docs/PROVIDERS.md); read-only, it is safe on a production token, and on a scratch
+   token `--write` also tests generation, wrapping and unwrapping. Every drifted row is named
+   (15). The profiles cakeys ships are checked this way against their reference tokens on every
+   build.
+7. **A key may only be used on a token running in FIPS-approved mode.** *Planned*
+   (docs/PROVIDERS.md D12): keys.toml requires the mode per token, and cakeys checks it from the
+   live token before any use — the PKCS#11 3.2 validation objects and flags where the module has
+   them, the vendor's own query where it does not (a YubiKey FIPS's approved mode, a TPM's
+   `TPM_PT_MODES`) — refusing (14) a token that is not in it, or that reports a failed
+   self-test.
 
 Nix:
 
-6. **A derivation signs a release with an HSM key, but a PKCS#11 URI in it proves nothing about
+8. **A derivation signs a release with an HSM key, but a PKCS#11 URI in it proves nothing about
    which key signs.** The build runs `cakeys check` first, like a fixed-output derivation: it fails
    unless the token holds exactly the locked material.
-7. **The build sandbox should not see every token on the builder.** The NixOS module's pre-build
+9. **The build sandbox should not see every token on the builder.** The NixOS module's pre-build
    hook grants a token's device or socket only to builds whose `requiredSystemFeatures` name that
    token.
-8. **Builds reach tokens through p11-kit forwarding, never the token's database: is the forwarded
-   token the one we recorded?** Realise through p11-kit and directly into one lock; the IDs must
-   match.
-9. **A service must not start with the wrong key, or with none.** `services.cakeys.checks.<name>`
-   adds a oneshot unit running `check`, required by the units that use the key.
-10. **Key identities should be pinned in the repository like any other input.** `keys.lock` is
+10. **Builds reach tokens through p11-kit forwarding, never the token's database: is the forwarded
+    token the one we recorded?** Realise through p11-kit and directly into one lock; the IDs must
+    match.
+11. **A service must not start with the wrong key, or with none.** `services.cakeys.checks.<name>`
+    adds a oneshot unit running `check`, required by the units that use the key.
+12. **Key identities should be pinned in the repository like any other input.** `keys.lock` is
     committed next to `flake.lock`, every change is a reviewable diff, and `lib.mkKeys` exposes the
     IDs, URIs and check commands to Nix code.
 
