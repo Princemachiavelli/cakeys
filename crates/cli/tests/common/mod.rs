@@ -224,6 +224,10 @@ pub fn committed_profile(path: &str) -> std::path::PathBuf {
 /// module profile `name` (at `path` under profiles/) is exactly what a fresh probe of token
 /// `token` observes, and regenerating it — the maintenance flow — changes no byte. `km` runs
 /// the CLI against the test's keys.toml; `scratch` is a file the regeneration may write.
+///
+/// One write probe only: it diffs and regenerates in the same run. A second would see what the
+/// first left behind on modules that cannot destroy everything they make (tpm2-pkcs11's sealed
+/// derived secrets: profiles/modules/tpm2-pkcs11/1.10+amd-ftpm.toml, `derive.destroy`).
 pub fn assert_profile_conforms(
     km: impl Fn(&[&str]) -> Output,
     token: &str,
@@ -231,12 +235,11 @@ pub fn assert_profile_conforms(
     path: &str,
     scratch: &std::path::Path,
 ) {
-    let probe = km(&["probe", "--token", token, "--write", "--diff", name]);
-    assert_eq!(code(&probe), 0, "a fresh probe drifts from {name}: {}", String::from_utf8_lossy(&probe.stderr));
     let committed = std::fs::read(committed_profile(path)).unwrap();
     std::fs::write(scratch, &committed).unwrap();
     let out = scratch.to_str().unwrap();
-    assert_eq!(code(&km(&["probe", "--token", token, "--write", "--diff", name, "--out", out])), 0);
+    let probe = km(&["probe", "--token", token, "--write", "--diff", name, "--out", out]);
+    assert_eq!(code(&probe), 0, "a fresh probe drifts from {name}: {}", String::from_utf8_lossy(&probe.stderr));
     assert!(
         std::fs::read(scratch).unwrap() == committed,
         "{path} is not what the probe generates: regenerate it with `caprobe probe --token <t> --write \
