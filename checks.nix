@@ -28,7 +28,7 @@
     nativeCheckInputs = [ ];
     buildPhase = ''
       runHook preBuild
-      cargo clippy --workspace --all-targets -- -D warnings
+      cargo clippy --workspace --all-targets --features camigrate/kwp -- -D warnings
       runHook postBuild
     '';
     installPhase = ''

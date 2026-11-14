@@ -3,6 +3,7 @@
 //! and writes transport files, and moves nothing. A library, so a downstream binary can link
 //! extra provider crates: `camigrate::main(&camigrate::default_registry().with(MyProvider))`.
 
+pub mod bundle;
 mod plan;
 mod public;
 mod tokens;
@@ -364,5 +365,19 @@ fn target_target<'a>(
             "object '{object}' has several specs on token '{to}' ({}); pass --spec",
             several.join(", ")
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A binding patched to name `CKM_AES_KEY_WRAP_KWP` (the Nix build's) is built with the `kwp`
+    /// feature that uses it: the patch without the feature would plan a method the run cannot
+    /// perform.
+    #[test]
+    fn the_kwp_feature_comes_with_the_patched_binding() {
+        assert!(
+            !cakeys_pkcs11::binding::patched() || cfg!(feature = "kwp"),
+            "the patched cryptoki is linked without camigrate's `kwp` feature (nix/package.nix buildFeatures)"
+        );
     }
 }

@@ -13,6 +13,7 @@ cargo-fuzz = true
 
 [dependencies]
 cakeys-core = { path = "../crates/core" }
+camigrate = { path = "../crates/camigrate", default-features = false }
 libfuzzer-sys = "0.4.13"
 
 [[bin]]
@@ -39,6 +40,13 @@ bench = false
 [[bin]]
 name = "config"
 path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bundle"
+path = "fuzz_targets/bundle.rs"
 test = false
 doc = false
 bench = false

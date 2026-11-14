@@ -190,6 +190,7 @@ object = "signing"
 method = "rsa-oaep-sha1+aes-kwp"
 exposure = "sealed"
 commitmentLabel = "key-management/v1"   # secret keys, as in the lock
+publicKey = "<base64 SPKI DER>"         # private keys: the public half the target creates; its hash is ids.rfc7093m4 (added in phase 3)
 [type]                                  # as in the lock
 class = "CKO_PRIVATE_KEY"
 keyType = "CKK_EC"

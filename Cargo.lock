@@ -332,6 +332,7 @@ dependencies = [
  "clap",
  "cmac",
  "cryptoki",
+ "proptest",
  "rsa",
  "serde",
  "serde_json",

@@ -126,6 +126,9 @@ rustPlatform.buildRustPackage {
   dontUseCargoParallelTests = true;
   # Unit tests live in every crate, not just the CLI (the default member).
   cargoTestFlags = [ "--workspace" ];
+  # RFC 5649 key wrap under CKM_AES_KEY_WRAP_KWP (kryoptic's name for it): only the patched
+  # cryptoki above can name the mechanism, so camigrate uses it only with this feature.
+  buildFeatures = [ "camigrate/kwp" ];
 
   meta = {
     description = "Content-addressed identity for PKCS#11 objects";

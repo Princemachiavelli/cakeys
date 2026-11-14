@@ -20,6 +20,11 @@ path = "src/main.rs"
 default = ["tpm2", "ykcs11"]
 tpm2 = ["cakeys-cli-common/tpm2"]
 ykcs11 = ["cakeys-cli-common/ykcs11"]
+# RFC 5649 key wrap under CKM_AES_KEY_WRAP_KWP (kryoptic names it so; SoftHSM names it _PAD,
+# which every build has). Needs the patched cryptoki of the Nix build (nix/patches), which names
+# the mechanism: a plain cargo build has no such constant, and plans without it (the unpatched
+# binding layer subtracts it).
+kwp = []
 
 [dependencies]
 cakeys-cli-common = { workspace = true, default-features = false }
@@ -39,6 +44,7 @@ toml.workspace = true
 # The integration tests include crates/cli/tests/common (one harness for every tool), and with
 # it its dependencies.
 [dev-dependencies]
+proptest.workspace = true
 aes.workspace = true
 aes-kw.workspace = true
 cmac.workspace = true

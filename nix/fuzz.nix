@@ -27,16 +27,18 @@ let
     "certificate"
     "lock"
     "config"
+    "bundle"
   ];
 
   # Seed corpora from the test fixtures: certificates, their and the import keys' SPKIs, a
-  # lock and a config. Called from the repository root.
+  # lock, a config and a bundle. Called from the repository root.
   seed = ''
     F=crates/cli/tests/fixtures
     for t in ${lib.concatStringsSep " " targets}; do mkdir -p "fuzz/corpus/$t"; done
     cp --update=none "$F"/*.der fuzz/corpus/certificate/
     cp --update=none "$F/keys.lock" fuzz/corpus/lock/
     cp --update=none "$F/keys.toml" fuzz/corpus/config/
+    cp --update=none crates/camigrate/tests/fixtures/sample.bundle.toml fuzz/corpus/bundle/
     for p in "$F"/*.pem; do
       openssl pkey -in "$p" -pubout -outform DER -out "fuzz/corpus/public_key/$(basename "$p" .pem).spki"
     done
@@ -54,8 +56,8 @@ in
       root = ../.;
       fileset = lib.fileset.unions [
         ../Cargo.toml
-        ../crates/core
-        ../crates/cli/tests/fixtures
+        ../crates
+        ../profiles
         ../fuzz/Cargo.toml
         ../fuzz/Cargo.lock
         ../fuzz/fuzz_targets
