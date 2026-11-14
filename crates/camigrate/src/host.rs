@@ -6,7 +6,7 @@
 //! dropped. The import is then recorded through `ops::realise_import`, the lock rules `cakeys
 //! realise` uses, so the identity is checked as for any move; a mismatch removes what was made.
 
-use crate::public::Moved;
+use crate::public::{Moved, already_there, roll_back};
 use crate::sealed::{create_public_half, rfc5649};
 use cakeys_core::config::{Lock, Origin};
 use cakeys_core::migrate::{Exposure, Method};
@@ -37,14 +37,15 @@ pub fn import(
     method: &Method,
     notes: &mut Notes,
 ) -> Result<Moved> {
-    if lock.realisation(dst.spec_name, dst.token_name).is_some() {
-        ops::verify(dst, to, lock, notes)?;
+    if already_there(dst, to, lock, notes)? {
         return Ok(Moved::AlreadyThere);
     }
     ops::verify(src, from, lock, notes)?;
     let loc = &src.on_token.locator;
     let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string()))?;
     let spki = (src.object.class == Class::PrivateKey).then(|| from.spki(h, loc)).transpose()?;
+    // The target first: nothing is in plaintext yet when it refuses.
+    free_locator(dst, to, spki.as_deref())?;
     let kwp = rfc5649(from)
         .ok_or_else(|| from.unsupported(format!("'{}' offers no RFC 5649 key wrap to hand the key over", from.name)))?;
     let plain = from.extract(h, &kwp)?;
@@ -69,8 +70,7 @@ pub(crate) fn create_and_record(
     origin: Origin,
     notes: &mut Notes,
 ) -> Result<Moved> {
-    if lock.realisation(dst.spec_name, dst.token_name).is_some() {
-        ops::verify(dst, to, lock, notes)?;
+    if already_there(dst, to, lock, notes)? {
         return Ok(Moved::AlreadyThere);
     }
     // The identity on the host first, before anything is written: a token that cannot delete
@@ -87,6 +87,24 @@ pub(crate) fn create_and_record(
             });
         }
     }
+    let occupied = free_locator(dst, to, spki)?;
+    let mut made = Vec::new();
+    let created = create(dst, to, plain, spki.filter(|_| occupied.public_half.is_none()), &mut made)
+        .and_then(|()| ops::realise_import(dst, to, lock, origin, notes));
+    match created {
+        Ok(_) => Ok(Moved::Imported),
+        Err(err) => Err(roll_back(dst, to, &made, err, notes)),
+    }
+}
+
+/// If-None-Match before a key is created under `dst` (docs/CAMIGRATE.md D6): only a logged-in
+/// session sees everything under the locator, and nothing a key of its class would collide
+/// with may sit there (`Token::occupied`). What is there, with the public half to reuse.
+///
+/// # Errors
+///
+/// `Unavailable` (16) without login; `Conflict` (13) for a colliding object.
+pub(crate) fn free_locator(dst: &Target, to: &Token, spki: Option<&[u8]>) -> Result<cakeys_pkcs11::token::Occupied> {
     if !to.logged_in {
         return Err(KmError::Unavailable(format!(
             "{dst}: a session without login cannot tell the locator is free; configure pinFile or pinEnv for \
@@ -102,21 +120,7 @@ pub(crate) fn create_and_record(
             occupied.colliding, dst.object.class
         )));
     }
-    let mut made = Vec::new();
-    let created = create(dst, to, plain, spki.filter(|_| occupied.public_half.is_none()), &mut made)
-        .and_then(|()| ops::realise_import(dst, to, lock, origin, notes));
-    match created {
-        Ok(_) => Ok(Moved::Imported),
-        Err(err) => {
-            // Exactly what this import made: other objects may share the locator.
-            match to.destroy_handles(dst.object, &dst.on_token.locator, &made) {
-                Ok(0) => {}
-                Ok(n) => notes.say(format!("removed {n} object(s) just imported for {dst}: {err}")),
-                Err(d) => notes.say(format!("what was just imported for {dst} is still on the token ({d})")),
-            }
-            Err(err)
-        }
-    }
+    Ok(occupied)
 }
 
 /// Move `src`'s key on `from` into the tpm2-pkcs11 token `target` holds by `tpm2_ptool import`
@@ -138,16 +142,15 @@ pub fn import_ptool(
 ) -> Result<Moved> {
     let gone = || KmError::Unavailable(format!("{dst}: the target token is not open"));
     let to = target.as_ref().ok_or_else(gone)?;
-    if lock.realisation(dst.spec_name, dst.token_name).is_some() {
-        ops::verify(dst, to, lock, notes)?;
+    if already_there(dst, to, lock, notes)? {
         return Ok(Moved::AlreadyThere);
     }
     ops::verify(src, from, lock, notes)?;
     let loc = &src.on_token.locator;
     let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string()))?;
     let spki = (src.object.class == Class::PrivateKey).then(|| from.spki(h, loc)).transpose()?;
-    let occupied = to.occupied(dst.object, &dst.on_token.locator, spki.as_deref())?;
-    if occupied.colliding > 0 || occupied.public_half.is_some() {
+    let occupied = free_locator(dst, to, spki.as_deref())?;
+    if occupied.public_half.is_some() {
         return Err(KmError::Conflict(format!(
             "objects already sit under the locator of {dst}, and the lock records no realisation there; \
              refusing to import over them"

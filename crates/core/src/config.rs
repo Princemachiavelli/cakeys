@@ -1044,6 +1044,11 @@ fn check_transport_keys(cfg: &Config) -> std::result::Result<(), String> {
         if !rsa {
             return Err(format!("{what}: a transport key is an RSA private key, and '{}' is not", s.object));
         }
+        // What it protects is no better guarded than it (camigrate refuses a smaller one found
+        // on a token too).
+        if let Some(bits) = cfg.objects.get(&s.object).and_then(|o| o.modulus_bits).filter(|b| *b < 2048) {
+            return Err(format!("{what}: a transport key has at least 2048 bits, and '{}' declares {bits}", s.object));
+        }
         if s.flag("CKA_UNWRAP") != Some(true) || s.flag("CKA_EXTRACTABLE") != Some(false) {
             return Err(format!(
                 "{what}: a transport key declares CKA_UNWRAP = true and CKA_EXTRACTABLE = false in its attributes"

@@ -89,9 +89,11 @@ fn export_plans_follow_each_sides_capabilities() {
     }
     let (c, v) = plan(soft, &["movable", "--to-file", "pkcs12", "--allow-host-plaintext"]);
     assert_eq!((c, first(&v)), (0, (some("pkcs12"), some("file"), Some(true))), "{v}");
-    // Every object on the source: one plan each, 15 since one cannot move.
+    // Every object on the source: one plan each. Without names the export takes what can move,
+    // so its plan is 0 with the blocked one shown, as the export itself is.
     let (c, v) = plan(soft, &["--target", "kryoptic"]);
-    assert_eq!((c, v["plans"].as_array().map(Vec::len)), (15, Some(2)), "{v}");
+    assert_eq!((c, v["plans"].as_array().map(Vec::len)), (0, Some(2)), "{v}");
+    assert_eq!(v["plans"].as_array().unwrap().iter().filter(|p| p["ready"] == false).count(), 1, "{v}");
     let o = e.km(soft, &["export", "movable", "--token", "softhsm", "--target", "kryoptic"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let bundle: toml::Table = toml::from_str(&stdout(&o)).unwrap();
@@ -321,6 +323,19 @@ fn public_moves_do_what_the_plan_says() {
         let ready = plan["plans"][0]["ready"].as_bool().unwrap();
         assert_eq!(code(&o) == 0, ready, "{spec}: the dry run's exit and its plan disagree");
         let before = std::fs::read(&lock_path).unwrap();
+        if ready {
+            // The same verdict for `export`: a public object needs no transport key (neither
+            // token names one here), so its bundle names none, and a dry-run import accepts it.
+            let out = e.dir.join(format!("{spec}.bundle.toml"));
+            let out = out.to_str().unwrap();
+            let exported = e.km(s, &["export", c.name, "--token", s.name, "--target", d.name, "--out", out]);
+            assert_eq!(code(&exported), 0, "{spec}: export: {}", stderr(&exported));
+            let bundle: toml::Value = toml::from_str(&std::fs::read_to_string(out).unwrap()).unwrap();
+            assert!(bundle.get("transport").is_none() && bundle.get("kek").is_none(), "{spec}: {bundle}");
+            let checked = e.km(d, &["import", "--token", d.name, "--in", out, "--spec", &spec, "--dry-run"]);
+            assert_eq!(code(&checked), 0, "{spec}: import --dry-run: {}", stderr(&checked));
+            assert_eq!(std::fs::read(&lock_path).unwrap(), before, "{spec}: an export or a dry run changed the lock");
+        }
         let o = e.km(s, &args);
         let row = format!("{spec}: plan {}, move exit {}", if ready { "ready" } else { "blocked" }, code(&o));
         if ready {
@@ -741,6 +756,21 @@ fn bundle_keys(e: &Env, soft: &Ref, kry: &Ref) {
     }
 }
 
+/// `--transport-key` names the transport key and `--lock` the lock file, as `transportWith` and
+/// the default path do: a plan with either is the plan without, and one naming a spec that is no
+/// transport key there, or a lock that records nothing, is blocked.
+fn named_transport_key_and_lock(e: &Env, soft: &Ref) {
+    let plan = ["export", "ek1", "--token", "softhsm", "--target", "kryoptic", "--dry-run"];
+    let with = |extra: &[&str]| code(&e.km(soft, &[&plan[..], extra].concat()));
+    assert_eq!(with(&["--transport-key", "tk-kryoptic"]), 0);
+    assert_eq!(with(&["--transport-key", "ek1-kry"]), 15);
+    let copy = e.dir.join("copy.lock");
+    std::fs::copy(e.dir.join("keys.lock"), &copy).unwrap();
+    let locked = |lock: &std::path::Path| code(&e.km(soft, &[&["--lock", lock.to_str().unwrap()], &plan[..]].concat()));
+    assert_eq!(locked(&copy), 0);
+    assert_eq!(locked(&e.dir.join("absent.lock")), 14);
+}
+
 /// `export` of `objects` from `SoftHSM` to kryoptic, into a bundle file: its path.
 fn export_bundle(e: &Env, soft: &Ref, objects: &[&str]) -> std::path::PathBuf {
     let path = e.dir.join(format!("{}.bundle.toml", objects.join("+")));
@@ -766,6 +796,7 @@ fn bundles_carry_every_key_of_an_export() {
     bundle_keys(&e, soft, kry);
     let export = |objects: &[&str]| export_bundle(&e, soft, objects);
     let lock_path = e.dir.join("keys.lock");
+    named_transport_key_and_lock(&e, soft);
     let import = |path: &std::path::Path| e.km(kry, &["import", "--token", "kryoptic", "--in", path.to_str().unwrap()]);
     let empty = |label: &str| open_session(&kry.module, kry.token_label, "1234").labelled(label).is_empty();
     let read = |p: &std::path::Path| -> toml::Value { toml::from_str(&std::fs::read_to_string(p).unwrap()).unwrap() };
@@ -1124,11 +1155,32 @@ fn plant_fixture_key(soft: &Ref, kry: &Ref) {
 const FIXTURE_CERT: &[u8] = include_bytes!("../../cli/tests/fixtures/tpm-import-p256-cert.der");
 const P256_PARAMS: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
 
+/// `import --dry-run` of the key file `p12` on kryoptic checks it against the lock and the
+/// token and changes neither; a `--spec` that selects nothing is refused (17).
+fn key_file_dry_run(e: &Env, kry: &Ref, p12: &std::path::Path, pass: &std::path::Path) {
+    let before = std::fs::read(e.dir.join("keys.lock")).unwrap();
+    let dry = |extra: &[&str]| {
+        let (file, pass) = (p12.to_str().unwrap(), pass.to_str().unwrap());
+        let args = ["import", "--token", "kryoptic", "--in", file, "--passphrase-file", pass];
+        e.km(kry, &[&args[..], &["--allow-host-plaintext", "--dry-run"], extra].concat())
+    };
+    let o = dry(&[]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let said = stdout(&o);
+    assert!(said.contains("fk by pkcs12 (file)") && said.contains("its certificate: ready"), "{said}");
+    assert_eq!(std::fs::read(e.dir.join("keys.lock")).unwrap(), before, "a dry run changed the lock");
+    for spec in ["nosuch", "fk-soft"] {
+        let o = dry(&["--spec", spec]);
+        assert_eq!(code(&o), 17, "--spec {spec}: {}", stderr(&o));
+    }
+}
+
 /// Key files (docs/CAMIGRATE.md D2 `file`, phase 4b): one private key leaves `SoftHSM` through the host
 /// as encrypted PKCS#8 or as PKCS#12 with the certificate the lock pairs with it, mode 0600,
 /// unreadable without the passphrase. kryoptic imports the PKCS#12 (key and certificate) after a
-/// wrong passphrase was refused (10) leaving nothing, records it as from a `file`, and verifies
-/// both; the PKCS#8 of the same key is then already there.
+/// wrong passphrase was refused (17: bad input, not other material) and a `--dry-run` checked
+/// it, both leaving nothing, records it as from a `file`, and verifies both; the PKCS#8 of the
+/// same key is then already there. A `--spec` that selects nothing is refused (17).
 #[test]
 fn key_files_carry_one_key_and_its_certificate() {
     let Some(e) = env("key-files") else { return };
@@ -1198,12 +1250,14 @@ fn key_files_carry_one_key_and_its_certificate() {
             ],
         )
     };
+    let untouched = |what: &str| {
+        assert!(open_session(&kry.module, kry.token_label, "1234").labelled("xf-k").is_empty(), "{what} left objects");
+    };
     let o = import(&p12, &wrong);
-    assert_eq!(code(&o), 10, "{}", stderr(&o));
-    assert!(
-        open_session(&kry.module, kry.token_label, "1234").labelled("xf-k").is_empty(),
-        "a refused file left objects"
-    );
+    assert_eq!(code(&o), 17, "{}", stderr(&o));
+    untouched("a refused file");
+    key_file_dry_run(&e, kry, &p12, &pass);
+    untouched("a dry run");
     let o = import(&p12, &pass);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();

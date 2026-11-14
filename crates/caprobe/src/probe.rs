@@ -1,5 +1,4 @@
-//! The profile compiler (docs/CAPROBE.md; the analysis in
-//! `docs/CAPROBE.md`):
+//! The profile compiler (docs/CAPROBE.md):
 //! read-only probes record what a module shows through PKCS#11, and write probes — only on a
 //! token keys.toml marks `scratch`, or in the one slot it names `scratchId` — establish what it
 //! actually does. The output is a profile in the committed format, diffable against what a
@@ -217,11 +216,13 @@ fn check_slot(tok: &Token, id: &[u8]) -> Result<()> {
     }
     let mut certs = Vec::new();
     for h in find(&[Attribute::Class(ObjectClass::CERTIFICATE), Attribute::Id(id.to_vec())])? {
-        if let Ok(v) = s.get_attributes(h, &[AttributeType::Value])
-            && let Some(Attribute::Value(der)) = v.into_iter().next()
-        {
-            certs.push(der);
-        }
+        // A certificate that cannot be read counts as one that is not the placeholder (its empty
+        // value parses as no certificate): what the probe cannot see is never presumed scratch.
+        let der = match s.get_attributes(h, &[AttributeType::Value]).map(|v| v.into_iter().next()) {
+            Ok(Some(Attribute::Value(der))) => der,
+            _ => Vec::new(),
+        };
+        certs.push(der);
     }
     if tok.provider.scratch_occupant(id, &certs) {
         return Ok(());

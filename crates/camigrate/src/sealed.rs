@@ -8,7 +8,8 @@
 //! source and target); each is imported, checked and rolled back on its own.
 
 use crate::bundle::{BUNDLE_FORMAT, BUNDLE_VERSION, Bundle, Entry, Source, TransportRef, encode};
-use crate::public::{Moved, public_key};
+use crate::host::free_locator;
+use crate::public::{Moved, already_there, public_key, roll_back};
 use crate::tokens::unwrap_refusals;
 use cakeys_core::config::{Lock, Origin};
 use cakeys_core::migrate::{Exposure, Method};
@@ -40,7 +41,8 @@ pub struct Item<'a> {
 }
 
 /// Wrap every item's key on `from` to `transport`, as one bundle — all or nothing: a key that
-/// cannot be wrapped fails the export, and no bundle is made. Each source realisation is verified
+/// cannot be wrapped fails the export, and no bundle is made. Public objects need no transport
+/// key: a bundle of them alone names none, and nothing is created on the source. Each source realisation is verified
 /// against the lock first; the transport public key and the composed methods' shared KEK are
 /// session objects on the source, destroyed again whatever happens.
 ///
@@ -48,39 +50,35 @@ pub struct Item<'a> {
 ///
 /// Whatever `ops::verify` refuses; `NotFound` for a key not under its locator; `Unsupported`
 /// (15) for a method this build or the source cannot perform, or a `C_WrapKey` the source
-/// refuses.
+/// refuses; `PreconditionFailed` for a key to wrap and no transport key.
 pub fn export(
     items: &[Item],
     from: &Token,
     lock: &Lock,
-    transport: &TransportKey,
+    transport: Option<&TransportKey>,
     notes: &mut Notes,
 ) -> Result<Bundle> {
-    let mut found = Vec::new();
-    for item in items {
-        let src = &item.src;
-        // A public object travels as it is: its bytes, read and verified on the source.
-        let public = if item.method == Method::Public {
-            Some(crate::public::material(src, from, lock, notes)?)
-        } else {
-            ops::verify(src, from, lock, notes)?;
-            None
-        };
-        let locked = lock.objects.get(src.object_name).filter(|o| !o.ids.is_empty()).ok_or_else(|| {
-            KmError::PreconditionFailed(format!("{src}: the lock pins no IDs for object '{}'", src.object_name))
-        })?;
-        let object_type = locked.object_type.clone().ok_or_else(|| {
-            KmError::PreconditionFailed(format!("{src}: the lock records no type for object '{}'", src.object_name))
-        })?;
-        let held = if let Some(bytes) = public {
-            Held::Public(bytes)
-        } else {
-            let loc = &src.on_token.locator;
-            let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string()))?;
-            Held::Key(h, (src.object.class == Class::PrivateKey).then(|| from.spki(h, loc)).transpose()?)
-        };
-        found.push((item, locked, object_type, held));
-    }
+    let found = hold(items, from, lock, notes)?;
+    let source = Source { token: from.name.clone(), provider: from.provider.name().into() };
+    let wraps = found.iter().any(|(.., held)| matches!(held, Held::Key(..)));
+    let Some(transport) = transport.filter(|_| wraps) else {
+        if wraps {
+            return Err(KmError::PreconditionFailed(format!(
+                "exporting keys from '{}' needs the target's transport key to wrap them to",
+                from.name
+            )));
+        }
+        // Public objects only: nothing to wrap, so no transport key and nothing made on the source.
+        let keys = found.iter().map(|(item, locked, object_type, held)| entry(item, locked, object_type, held, None));
+        return Ok(Bundle {
+            format: BUNDLE_FORMAT.into(),
+            version: BUNDLE_VERSION,
+            kek: None,
+            source,
+            transport: None,
+            keys: keys.collect(),
+        });
+    };
     // An enforced key wraps only under the transport key's trusted copy (`transport --trusted`),
     // the composed method by CKM_RSA_AES_KEY_WRAP: the source trusts no key-encryption key.
     let trusted = if items.iter().any(|i| i.exposure == Exposure::Enforced) {
@@ -115,30 +113,18 @@ pub fn export(
             .iter()
             .map(|(item, locked, object_type, held)| {
                 let refused = |what: &str, e| refused(&format!("{}: {what}", item.src), e);
-                let (public_key, wrapped, value, own_kek) = match held {
-                    Held::Key(h, public_key) => {
+                let wrapped = match held {
+                    Held::Key(h, _) => {
                         let wrapping = Wrapping {
                             tpub: if item.exposure == Exposure::Enforced { trusted.unwrap_or(tpub) } else { tpub },
                             kek: kek.as_ref().map(|k| k.0),
                             modulus,
                         };
-                        let (own_kek, blob) = wrap(from, &wrapping, *h, &item.method, item.exposure, &refused)?;
-                        (public_key.as_deref().map(encode), Some(encode(&blob)), None, own_kek.as_deref().map(encode))
+                        Some(wrap(from, &wrapping, *h, &item.method, item.exposure, &refused)?)
                     }
-                    Held::Public(bytes) => (None, None, Some(encode(bytes)), None),
+                    Held::Public(_) => None,
                 };
-                Ok(Entry {
-                    object: item.src.object_name.into(),
-                    method: item.method.name(),
-                    exposure: item.exposure,
-                    commitment_label: locked.commitment_label.clone(),
-                    public_key,
-                    kek: own_kek,
-                    wrapped,
-                    value,
-                    object_type: object_type.clone(),
-                    ids: locked.ids.clone(),
-                })
+                Ok(entry(item, locked, object_type, held, wrapped))
             })
             .collect::<Result<Vec<Entry>>>();
         if let Some((k, _)) = &kek {
@@ -152,10 +138,77 @@ pub fn export(
         format: BUNDLE_FORMAT.into(),
         version: BUNDLE_VERSION,
         kek,
-        source: Source { token: from.name.clone(), provider: from.provider.name().into() },
-        transport: TransportRef { object: transport.object.clone(), rfc7093m4: transport.rfc7093m4.clone() },
+        source,
+        transport: Some(TransportRef { object: transport.object.clone(), rfc7093m4: transport.rfc7093m4.clone() }),
         keys,
     })
+}
+
+/// One object's bundle entry: a public object's bytes, or a key's `wrapped` blob with its own
+/// wrapped KEK when it has one ([`wrap`]'s result).
+fn entry(
+    item: &Item,
+    locked: &cakeys_core::config::LockObject,
+    object_type: &cakeys_core::config::ObjectCfg,
+    held: &Held,
+    wrapped: Option<(Option<Vec<u8>>, Vec<u8>)>,
+) -> Entry {
+    let (public_key, value) = match held {
+        Held::Key(_, public_key) => (public_key.as_deref().map(encode), None),
+        Held::Public(bytes) => (None, Some(encode(bytes))),
+    };
+    let (kek, wrapped) = match wrapped {
+        Some((own_kek, blob)) => (own_kek.as_deref().map(encode), Some(encode(&blob))),
+        None => (None, None),
+    };
+    Entry {
+        object: item.src.object_name.into(),
+        method: item.method.name(),
+        exposure: item.exposure,
+        commitment_label: locked.commitment_label.clone(),
+        public_key,
+        kek,
+        wrapped,
+        value,
+        object_type: object_type.clone(),
+        ids: locked.ids.clone(),
+    }
+}
+
+/// Each item as the source holds it, verified against the lock first: the object as the lock
+/// pins it, its type, and its handle or bytes.
+fn hold<'a>(
+    items: &'a [Item<'a>],
+    from: &Token,
+    lock: &'a Lock,
+    notes: &mut Notes,
+) -> Result<Vec<(&'a Item<'a>, &'a cakeys_core::config::LockObject, cakeys_core::config::ObjectCfg, Held)>> {
+    let mut found = Vec::new();
+    for item in items {
+        let src = &item.src;
+        // A public object travels as it is: its bytes, read and verified on the source.
+        let public = if item.method == Method::Public {
+            Some(crate::public::material(src, from, lock, notes)?)
+        } else {
+            ops::verify(src, from, lock, notes)?;
+            None
+        };
+        let locked = lock.objects.get(src.object_name).filter(|o| !o.ids.is_empty()).ok_or_else(|| {
+            KmError::PreconditionFailed(format!("{src}: the lock pins no IDs for object '{}'", src.object_name))
+        })?;
+        let object_type = locked.object_type.clone().ok_or_else(|| {
+            KmError::PreconditionFailed(format!("{src}: the lock records no type for object '{}'", src.object_name))
+        })?;
+        let held = if let Some(bytes) = public {
+            Held::Public(bytes)
+        } else {
+            let loc = &src.on_token.locator;
+            let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string()))?;
+            Held::Key(h, (src.object.class == Class::PrivateKey).then(|| from.spki(h, loc)).transpose()?)
+        };
+        found.push((item, locked, object_type, held));
+    }
+    Ok(found)
 }
 
 /// What an export found of one object on the source: a key (its handle, and a private key's
@@ -179,6 +232,8 @@ fn kek(
         Attribute::ValueLen(32.into()),
         Attribute::Token(false),
         Attribute::Wrap(true),
+        // It leaves only wrapped to the transport key: never readable, whatever the module's default.
+        Attribute::Sensitive(true),
         Attribute::Extractable(true),
     ];
     let kek = session.generate_key(&Mechanism::AesKeyGen, &template).map_err(|e| refused("making the KEK", e))?;
@@ -282,12 +337,11 @@ pub fn import(
     e: &Entry,
     dst: &Target,
     to: &Token,
-    tr: &Target,
+    tr: Option<&Target>,
     lock: &mut Lock,
     notes: &mut Notes,
 ) -> Result<Moved> {
-    if lock.realisation(dst.spec_name, dst.token_name).is_some() {
-        ops::verify(dst, to, lock, notes)?;
+    if already_there(dst, to, lock, notes)? {
         return Ok(Moved::AlreadyThere);
     }
     if e.method == Method::Public.name() {
@@ -305,15 +359,7 @@ pub fn import(
     });
     match created {
         Ok(_) => Ok(Moved::Imported),
-        Err(err) => {
-            // Exactly what the import made: other objects may share the locator (preflight).
-            match to.destroy_handles(dst.object, &dst.on_token.locator, &made) {
-                Ok(0) => {}
-                Ok(n) => notes.say(format!("removed {n} object(s) just imported for {dst}: {err}")),
-                Err(d) => notes.say(format!("what was just imported for {dst} is still on the token ({d})")),
-            }
-            Err(err)
-        }
+        Err(err) => Err(roll_back(dst, to, &made, err, notes)),
     }
 }
 
@@ -329,7 +375,7 @@ pub fn preflight(
     e: &Entry,
     dst: &Target,
     to: &Token,
-    tr: &Target,
+    tr: Option<&Target>,
     lock: &Lock,
     notes: &mut Notes,
 ) -> Result<Preflight> {
@@ -338,28 +384,15 @@ pub fn preflight(
         crate::public::preflight(dst, to, &e.public_value().map_err(KmError::Validation)?)?;
         return Ok(Preflight { unwrapping: None, public_half: None });
     }
+    let tr = tr.ok_or_else(|| no_transport(dst))?;
     ops::verify(tr, to, lock, notes)?;
     let unwrapping = to
         .find_key(tr.object, &tr.on_token.locator, false)?
         .ok_or_else(|| KmError::NotFound(format!("{tr}: the transport key")))?;
-    if !to.logged_in {
-        return Err(KmError::Unavailable(format!(
-            "{dst}: a session without login cannot tell the locator is free; configure pinFile or pinEnv for \
-             token '{}'",
-            dst.token_name
-        )));
-    }
     // Per class (`Token::occupied`): a certificate beside the key is no collision, and a public
     // key object already holding the bundle's public key is the key's public half, reused.
     let spki = e.public_spki().map_err(KmError::Validation)?;
-    let occupied = to.occupied(dst.object, &dst.on_token.locator, spki.as_deref())?;
-    if occupied.colliding > 0 {
-        return Err(KmError::Conflict(format!(
-            "{} object(s) a {} would collide with already sit under the locator of {dst}, and the lock \
-             records no realisation there; refusing to import over them",
-            occupied.colliding, dst.object.class
-        )));
-    }
+    let occupied = free_locator(dst, to, spki.as_deref())?;
     Ok(Preflight { unwrapping: Some(unwrapping), public_half: occupied.public_half })
 }
 
@@ -370,9 +403,17 @@ pub struct Preflight {
     pub public_half: Option<ObjectHandle>,
 }
 
+/// A wrapped key in a bundle whose transport key is not realised on the target.
+fn no_transport(dst: &Target) -> KmError {
+    KmError::PreconditionFailed(format!(
+        "{dst}: the bundle's transport key is not realised on '{}' under a spec keys.toml names",
+        dst.token_name
+    ))
+}
+
 /// The bundle's key `e` against the lock: the same object, type, IDs and commitment label,
-/// wrapped to the transport key `tr` realises.
-fn check_against_lock(b: &Bundle, e: &Entry, dst: &Target, tr: &Target, lock: &Lock) -> Result<()> {
+/// and — for a wrapped key — wrapped to the transport key `tr` realises.
+fn check_against_lock(b: &Bundle, e: &Entry, dst: &Target, tr: Option<&Target>, lock: &Lock) -> Result<()> {
     if e.object != dst.object_name {
         return Err(KmError::Validation(format!("{dst}: the bundle's key is object '{}'", e.object)));
     }
@@ -404,12 +445,17 @@ fn check_against_lock(b: &Bundle, e: &Entry, dst: &Target, tr: &Target, lock: &L
             format!("{:?}", e.commitment_label),
         ));
     }
+    // A public object is wrapped to nothing.
+    if e.wrapped.is_none() {
+        return Ok(());
+    }
+    let (Some(tr), Some(named)) = (tr, &b.transport) else { return Err(no_transport(dst)) };
     let tr_id = lock.objects.get(tr.object_name).and_then(|o| o.ids.get("rfc7093m4"));
-    if b.transport.object != tr.object_name || tr_id != Some(&b.transport.rfc7093m4) {
+    if named.object != tr.object_name || tr_id != Some(&named.rfc7093m4) {
         return Err(mismatch(
             "transport key",
             format!("{} {}", tr.object_name, tr_id.map_or("<none>", String::as_str)),
-            format!("{} {}", b.transport.object, b.transport.rfc7093m4),
+            format!("{} {}", named.object, named.rfc7093m4),
         ));
     }
     Ok(())
@@ -466,6 +512,8 @@ fn create(
                 Attribute::KeyType(KeyType::AES),
                 Attribute::Token(false),
                 Attribute::Unwrap(true),
+                Attribute::Sensitive(true),
+                Attribute::Extractable(false),
             ];
             let kek = session
                 .unwrap_key(&oaep(*hash), unwrapping, &kek_blob, &kek_template)
@@ -537,6 +585,25 @@ pub(crate) fn rfc5649(tok: &Token) -> Option<Mechanism<'static>> {
         return Some(Mechanism::AesKeyWrapKwp);
     }
     None
+}
+
+/// The smallest RSA transport key, in bits: what it protects is no better guarded than it, and
+/// the planner's direct-OAEP limit (`plan::OAEP_DIRECT_MAX`) assumes at least this.
+pub const TRANSPORT_MIN_BITS: usize = 2048;
+
+/// Refuse a transport key smaller than [`TRANSPORT_MIN_BITS`].
+///
+/// # Errors
+///
+/// `Validation` for an SPKI that is no RSA key, or one too small.
+pub fn check_transport_size(spki: &[u8]) -> Result<()> {
+    let bits = rsa_parts(spki)?.0.len() * 8;
+    if bits < TRANSPORT_MIN_BITS {
+        return Err(KmError::Validation(format!(
+            "a transport key is an RSA key of at least {TRANSPORT_MIN_BITS} bits; this one has {bits}"
+        )));
+    }
+    Ok(())
 }
 
 /// An RSA public key's modulus and public exponent, from its SPKI.

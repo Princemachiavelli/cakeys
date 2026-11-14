@@ -155,8 +155,8 @@ pub fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
         To::File(format) => {
             if trusted_only {
                 blocked.push("CKA_WRAP_WITH_TRUSTED: it cannot be written to a file".into());
-            } else if !host_extractable(ty, from) {
-                blocked.push(format!("{} offers no AES key wrap to bring it to the host", from.token));
+            } else if !host_extractable(from) {
+                blocked.push(format!("{} offers no RFC 5649 key wrap to bring it to the host", from.token));
             } else {
                 match format {
                     FileFormat::Pkcs8 if ty.class == ObjectClass::PrivateKey => {
@@ -279,16 +279,15 @@ fn sealed(
 }
 
 /// The largest secret key RSA-OAEP carries directly under a 2048-bit transport key with SHA-256
-/// (256 - 2 × 32 - 2 bytes); larger transport keys carry more.
+/// (256 - 2 × 32 - 2 bytes); larger transport keys carry more, and none is smaller
+/// (`sealed::check_transport_size`).
 const OAEP_DIRECT_MAX: u64 = 190;
 
 /// Whether the source can hand the material to the host: wrapped under a session key cakeys
-/// knows, then unwrapped in memory.
-fn host_extractable(ty: &ObjectCfg, from: &Side) -> bool {
-    match ty.class {
-        ObjectClass::SecretKey => from.has("CKM_AES_KEY_WRAP") || from.kwp(),
-        _ => from.kwp(),
-    }
+/// knows, then unwrapped in memory. Every class by RFC 5649, the one wrap `Token::extract`
+/// undoes; RFC 3394 alone (`CKM_AES_KEY_WRAP`) is not taken.
+fn host_extractable(from: &Side) -> bool {
+    from.kwp()
 }
 
 /// The `host` methods into a token.
@@ -304,8 +303,8 @@ fn host(
         blocked.push(format!("{} ({}) imports no key material", dst.token, dst.provider));
         return;
     };
-    if !host_extractable(ty, from) {
-        blocked.push(format!("{} offers no AES key wrap to bring it to the host", from.token));
+    if !host_extractable(from) {
+        blocked.push(format!("{} offers no RFC 5649 key wrap to bring it to the host", from.token));
         return;
     }
     let method = match path {

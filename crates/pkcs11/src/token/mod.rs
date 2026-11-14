@@ -30,6 +30,7 @@ mod uri;
 
 pub use identity::commit_mechanism;
 pub use policy::bool_attr;
+pub use possession::proof_mechanisms;
 pub use uri::locator_attrs;
 use uri::pct_all;
 

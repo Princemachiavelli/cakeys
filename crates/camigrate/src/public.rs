@@ -40,8 +40,7 @@ pub fn import(
     lock: &mut Lock,
     notes: &mut Notes,
 ) -> Result<Moved> {
-    if lock.realisation(dst.spec_name, dst.token_name).is_some() {
-        ops::verify(dst, to, lock, notes)?;
+    if already_there(dst, to, lock, notes)? {
         return Ok(Moved::AlreadyThere);
     }
     let bytes = material(src, from, lock, notes)?;
@@ -85,8 +84,7 @@ pub fn material(src: &Target, from: &Token, lock: &Lock, notes: &mut Notes) -> R
 /// `ops::realise_import` refuses — a hash mismatch (10) included — with what was created removed
 /// again.
 pub fn create(dst: &Target, to: &Token, bytes: &[u8], from: &str, lock: &mut Lock, notes: &mut Notes) -> Result<Moved> {
-    if lock.realisation(dst.spec_name, dst.token_name).is_some() {
-        ops::verify(dst, to, lock, notes)?;
+    if already_there(dst, to, lock, notes)? {
         return Ok(Moved::AlreadyThere);
     }
     let template = template(dst, to, bytes)?;
@@ -105,16 +103,33 @@ pub fn create(dst: &Target, to: &Token, bytes: &[u8], from: &str, lock: &mut Loc
         Origin { from: from.to_owned(), method: Method::Public.name(), exposure: Exposure::Public, declared: false };
     match ops::realise_import(dst, to, lock, origin, notes) {
         Ok(_) => Ok(Moved::Imported),
-        Err(e) => {
-            // Only what this import created: other objects may share the locator.
-            match to.destroy_handles(dst.object, &dst.on_token.locator, created.as_slice()) {
-                Ok(0) => {}
-                Ok(n) => notes.say(format!("removed {n} object(s) just imported for {dst}: {e}")),
-                Err(d) => notes.say(format!("the object just imported for {dst} is still on the token ({d})")),
-            }
-            Err(e)
-        }
+        Err(e) => Err(roll_back(dst, to, created.as_slice(), e, notes)),
     }
+}
+
+/// Whether the lock already records `dst`'s realisation: then it is verified, and a re-run
+/// moves nothing.
+///
+/// # Errors
+///
+/// Whatever `ops::verify` refuses of a recorded realisation.
+pub(crate) fn already_there(dst: &Target, to: &Token, lock: &Lock, notes: &mut Notes) -> Result<bool> {
+    if lock.realisation(dst.spec_name, dst.token_name).is_none() {
+        return Ok(false);
+    }
+    ops::verify(dst, to, lock, notes)?;
+    Ok(true)
+}
+
+/// After a failed import: remove exactly the objects it `made` (others may share the locator),
+/// say what happened, and hand back the failure `err`.
+pub(crate) fn roll_back(dst: &Target, to: &Token, made: &[ObjectHandle], err: KmError, notes: &mut Notes) -> KmError {
+    match to.destroy_handles(dst.object, &dst.on_token.locator, made) {
+        Ok(0) => {}
+        Ok(n) => notes.say(format!("removed {n} object(s) just imported for {dst}: {err}")),
+        Err(d) => notes.say(format!("what was just imported for {dst} is still on the token ({d})")),
+    }
+    err
 }
 
 /// If-None-Match before [`create`] (docs/CAMIGRATE.md D6), per class (`Token::occupied`): the key and

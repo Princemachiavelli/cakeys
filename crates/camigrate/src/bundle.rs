@@ -32,7 +32,10 @@ pub struct Bundle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kek: Option<String>,
     pub source: Source,
-    pub transport: TransportRef,
+    /// The transport key the wrapped keys are sealed to; absent exactly when the bundle carries
+    /// public objects only, which need none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<TransportRef>,
     /// One entry per object, each object once.
     pub keys: Vec<Entry>,
 }
@@ -92,8 +95,9 @@ pub struct TransportRef {
 impl Bundle {
     /// Read a bundle, checking its form: the format and version, at least one key and each object
     /// once, sealed methods this camigrate knows with the KEK exactly when a composed one needs it
-    /// (one OAEP hash for it), base64 blobs, SRI IDs, and public keys whose hash is the
-    /// `rfc7093m4` they claim. That the IDs are the lock's is the import's check.
+    /// (one OAEP hash for it), a transport key exactly when a key is wrapped, each exposure one
+    /// its method can have, base64 blobs, SRI IDs, and public keys whose hash is the `rfc7093m4`
+    /// they claim. That the IDs are the lock's is the import's check.
     ///
     /// # Errors
     ///
@@ -127,6 +131,21 @@ impl Bundle {
                 Method::RsaOaepAesKwp(_) | Method::RsaOaep(_) | Method::Public => {}
                 _ => return Err(invalid(format!("method {} does not travel in a bundle", e.method))),
             }
+            // What the entry says of its exposure must be what its method can be: an import
+            // records it. `sealed` against `enforced` is the source's word (only the source
+            // knows what its token would have refused), except that a key with its own KEK came
+            // out by CKM_RSA_AES_KEY_WRAP, the enforced composed method.
+            let exposure_fits = match (&method, e.exposure) {
+                (Method::Public, Exposure::Public) | (Method::RsaOaep(_), Exposure::Sealed | Exposure::Enforced) => {
+                    true
+                }
+                (Method::RsaOaepAesKwp(_), Exposure::Enforced) => e.kek.is_some(),
+                (Method::RsaOaepAesKwp(_), Exposure::Sealed) => e.kek.is_none(),
+                _ => false,
+            };
+            if !exposure_fits {
+                return Err(invalid(format!("method {} does not move a key {}", e.method, e.exposure)));
+            }
             match (method == Method::Public, &e.wrapped, &e.value) {
                 (false, Some(_), None) => {
                     e.wrapped_key().map_err(invalid)?;
@@ -154,16 +173,24 @@ impl Bundle {
             _ => return Err(invalid("composed methods of several OAEP hashes share one kek".into())),
         }
         b.wrapped_kek().map_err(invalid)?;
-        if !cakeys_core::id::is_sri(&b.transport.rfc7093m4) {
-            return Err(invalid(format!("\"{}\" is not a sha256 SRI digest", b.transport.rfc7093m4)));
+        let wraps = b.keys.iter().any(|e| e.wrapped.is_some());
+        match &b.transport {
+            Some(t) if !cakeys_core::id::is_sri(&t.rfc7093m4) => {
+                return Err(invalid(format!("\"{}\" is not a sha256 SRI digest", t.rfc7093m4)));
+            }
+            None if wraps => return Err(invalid("wrapped keys, but no transport key they are wrapped to".into())),
+            _ => {}
         }
         Ok(b)
     }
 
     /// The bundle's text.
-    #[must_use]
-    pub fn to_toml(&self) -> String {
-        toml::to_string(self).unwrap_or_default()
+    ///
+    /// # Errors
+    ///
+    /// `Unavailable` when it does not serialize: never an empty file in its place.
+    pub fn to_toml(&self) -> Result<String> {
+        toml::to_string(self).map_err(|e| KmError::Unavailable(format!("serializing the bundle: {e}")))
     }
 
     /// The wrapped KEK's bytes.
@@ -263,7 +290,7 @@ mod tests {
             version: BUNDLE_VERSION,
             kek: Some(encode(b"kek")),
             source: Source { token: "softhsm".into(), provider: "softhsm".into() },
-            transport: TransportRef { object: "import-kek".into(), rfc7093m4: cakeys_core::id::sri(b"t") },
+            transport: Some(TransportRef { object: "import-kek".into(), rfc7093m4: cakeys_core::id::sri(b"t") }),
             keys: vec![aes("backup-kek", "rsa-oaep-sha1+aes-kwp"), aes("db-kek", "rsa-oaep-sha1+aes-kwp")],
         }
     }
@@ -273,7 +300,7 @@ mod tests {
     #[test]
     fn the_format_is_pinned_and_round_trips() {
         let b = sample();
-        let text = b.to_toml();
+        let text = b.to_toml().unwrap();
         let path = std::path::Path::new("b.toml");
         assert_eq!(Bundle::parse(&text, path).unwrap(), b);
         let table: toml::Table = toml::from_str(&text).unwrap();
@@ -296,12 +323,13 @@ mod tests {
     /// What the form check refuses (17): another format, no keys or one twice, a composed method
     /// without the KEK or a KEK nothing uses, composed methods of two hashes under one KEK, a
     /// method that cannot travel in a bundle, a key without its wrapped bytes or a public object
-    /// without its value, bad base64, a public key `rfc7093m4` does not name.
+    /// without its value, wrapped keys without a transport key, an exposure the method cannot
+    /// have, bad base64, a public key `rfc7093m4` does not name.
     #[test]
     fn malformed_bundles_are_refused() {
         let path = std::path::Path::new("b.toml");
         let refused = |b: Bundle, what: &str| {
-            let e = Bundle::parse(&b.to_toml(), path).unwrap_err();
+            let e = Bundle::parse(&b.to_toml().unwrap(), path).unwrap_err();
             assert!(e.exit_code() == 17 && e.to_string().contains(what), "{what}: {e}");
         };
         let direct = || vec![aes("backup-kek", "rsa-oaep-sha1")];
@@ -313,12 +341,12 @@ mod tests {
         // An enforced key carries its own KEK: no shared one needed, and only a composed key has one.
         let own =
             Entry { kek: Some(encode(b"own")), exposure: Exposure::Enforced, ..aes("e", "rsa-oaep-sha1+aes-kwp") };
-        Bundle::parse(&Bundle { kek: None, keys: vec![own.clone()], ..sample() }.to_toml(), path).unwrap();
+        Bundle::parse(&Bundle { kek: None, keys: vec![own.clone()], ..sample() }.to_toml().unwrap(), path).unwrap();
         refused(
             Bundle { kek: None, keys: vec![Entry { method: "rsa-oaep-sha1".into(), ..own }], ..sample() },
             "takes no kek of its own",
         );
-        Bundle::parse(&Bundle { kek: None, keys: direct(), ..sample() }.to_toml(), path).unwrap();
+        Bundle::parse(&Bundle { kek: None, keys: direct(), ..sample() }.to_toml().unwrap(), path).unwrap();
         let two = vec![aes("a", "rsa-oaep-sha1+aes-kwp"), aes("b", "rsa-oaep-sha256+aes-kwp")];
         refused(Bundle { keys: two, ..sample() }, "several OAEP hashes");
         refused(Bundle { keys: vec![aes("k", "host-pkcs8")], ..sample() }, "does not travel in a bundle");
@@ -330,13 +358,13 @@ mod tests {
             ..aes("c", "public")
         };
         Bundle::parse(
-            &Bundle { keys: vec![aes("k", "rsa-oaep-sha1+aes-kwp"), cert.clone()], ..sample() }.to_toml(),
+            &Bundle { keys: vec![aes("k", "rsa-oaep-sha1+aes-kwp"), cert.clone()], ..sample() }.to_toml().unwrap(),
             path,
         )
         .unwrap();
         refused(Bundle { keys: vec![Entry { value: None, ..cert.clone() }], kek: None, ..sample() }, "needs a value");
         refused(
-            Bundle { keys: vec![Entry { wrapped: Some(encode(b"k")), ..cert }], kek: None, ..sample() },
+            Bundle { keys: vec![Entry { wrapped: Some(encode(b"k")), ..cert.clone() }], kek: None, ..sample() },
             "needs a value",
         );
         refused(
@@ -344,6 +372,19 @@ mod tests {
             "needs a wrapped key",
         );
         refused(Bundle { keys: vec![aes("k", "rsa-aes")], ..sample() }, "unknown method");
+        // A transport key exactly when a key is wrapped: public objects alone name none.
+        Bundle::parse(
+            &Bundle { keys: vec![cert.clone()], kek: None, transport: None, ..sample() }.to_toml().unwrap(),
+            path,
+        )
+        .unwrap();
+        refused(Bundle { transport: None, ..sample() }, "no transport key");
+        // An exposure its method cannot have: an import would record it.
+        let claims = |e: Entry, exposure| Bundle { keys: vec![Entry { exposure, ..e }], ..sample() };
+        refused(claims(aes("k", "rsa-oaep-sha1+aes-kwp"), Exposure::Enforced), "does not move a key enforced");
+        refused(claims(aes("k", "rsa-oaep-sha1+aes-kwp"), Exposure::Host), "does not move a key host");
+        refused(claims(aes("k", "rsa-oaep-sha1+aes-kwp"), Exposure::Public), "does not move a key public");
+        refused(Bundle { kek: None, ..claims(cert.clone(), Exposure::Sealed) }, "does not move a key sealed");
         refused(Bundle { kek: Some("!".into()), ..sample() }, "kek");
         let n = [0xc5u8; 256];
         let spki = cakeys_core::id::rsa_spki(&n, &[1, 0, 1]).unwrap();
@@ -373,7 +414,7 @@ mod tests {
                 .map(|o| Entry { commitment_label: Some(label.clone()), wrapped: Some(encode(&key)), ..aes(o, "rsa-oaep-sha1+aes-kwp") })
                 .collect();
             let b = Bundle { kek: Some(encode(&kek)), keys, ..sample() };
-            let back = Bundle::parse(&b.to_toml(), std::path::Path::new("b.toml")).unwrap();
+            let back = Bundle::parse(&b.to_toml().unwrap(), std::path::Path::new("b.toml")).unwrap();
             proptest::prop_assert_eq!(back, b);
         }
     }

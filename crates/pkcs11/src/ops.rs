@@ -348,7 +348,8 @@ pub fn realise(
 /// # Errors
 ///
 /// `NotFound` when the object is not under the locator; whatever [`realise`] refuses for an
-/// object it found, a hash mismatch (10) included.
+/// object it found, a hash mismatch (10) included; `PreconditionFailed` when the lock pins no
+/// ID for the object (`reconcile` refuses an import that would be a first use).
 pub fn realise_import(
     t: &Target,
     tok: &Token,

@@ -22,6 +22,9 @@ use zeroize::Zeroizing;
 pub const PBKDF2_ITERATIONS: u32 = 600_000;
 /// PKCS#12 KDF iterations for the MAC key (integrity only; the key is under PBES2 above).
 const MAC_ITERATIONS: i32 = 10_000;
+/// The most KDF iterations a key file read here may ask for: a file is input, and its count is
+/// otherwise how long this process hangs.
+const MAX_ITERATIONS: u32 = 10_000_000;
 const ID_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.1");
 const ID_SHA256: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.1");
 const ID_LOCAL_KEY_ID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.21");
@@ -137,15 +140,12 @@ fn mac(pass: &str, salt: &[u8], iterations: i32, data: &[u8]) -> Result<Vec<u8>>
 /// # Errors
 ///
 /// `Validation` (17) for a file that is neither, a PKCS#12 without a MAC or with another MAC
-/// digest than SHA-256, without exactly one key, or with an encrypted (rather than plain) bag
-/// container; `HashMismatch` (10) for a wrong passphrase (the MAC, or the padding check).
+/// digest than SHA-256, without exactly one key, with an encrypted (rather than plain) bag
+/// container, with an iteration count out of range, or for a wrong passphrase (the MAC, or the
+/// padding check): bad input, never the "other material than the lock pins" that 10 means.
 pub fn read(bytes: &[u8], pass: &str) -> Result<Read> {
     use cakeys_core::migrate::Method;
-    let wrong = || KmError::HashMismatch {
-        what: "the key file's passphrase".into(),
-        expected: "the passphrase it was written with".into(),
-        got: "another".into(),
-    };
+    let wrong = || bad("it does not open under this passphrase (a wrong passphrase, or a damaged file)");
     if bytes.starts_with(b"-----BEGIN ENCRYPTED PRIVATE KEY-----") {
         let text = std::str::from_utf8(bytes).map_err(bad)?;
         let (label, der) = der::pem::decode_vec(text.as_bytes()).map_err(bad)?;
@@ -160,6 +160,9 @@ pub fn read(bytes: &[u8], pass: &str) -> Result<Read> {
     let mac_data = pfx.mac_data.ok_or_else(|| bad("a PKCS#12 without a MAC"))?;
     if mac_data.mac.algorithm.oid != ID_SHA256 {
         return Err(bad(format!("a PKCS#12 MAC by {}, not SHA-256", mac_data.mac.algorithm.oid)));
+    }
+    if !u32::try_from(mac_data.iterations).is_ok_and(|n| (1..=MAX_ITERATIONS).contains(&n)) {
+        return Err(bad(format!("a PKCS#12 MAC of {} iterations", mac_data.iterations)));
     }
     let want = mac(pass, mac_data.mac_salt.as_bytes(), mac_data.iterations, &auth_safe)?;
     if !cakeys_core::pop::ct_eq(&want, mac_data.mac.digest.as_bytes()) {
@@ -195,7 +198,13 @@ fn octets(info: &ContentInfo) -> Result<Vec<u8>> {
 /// The PKCS#8 in an `EncryptedPrivateKeyInfo` under `pass`; `None` when it does not decrypt
 /// (a wrong passphrase fails the padding check), or is no such structure.
 fn decrypt(der: &[u8], pass: &str) -> Option<Zeroizing<Vec<u8>>> {
-    let doc = EncryptedPrivateKeyInfoRef::try_from(der).ok()?.decrypt(pass).ok()?;
+    let info = EncryptedPrivateKeyInfoRef::try_from(der).ok()?;
+    // The file names its own PBKDF2 iteration count: bounded, like the PKCS#12 MAC's.
+    let iterations = info.encryption_algorithm.pbes2().and_then(|p| p.kdf.pbkdf2()).map(|k| k.iteration_count);
+    if iterations.is_some_and(|n| n > MAX_ITERATIONS) {
+        return None;
+    }
+    let doc = info.decrypt(pass).ok()?;
     Some(Zeroizing::new(doc.as_bytes().to_vec()))
 }
 
@@ -207,7 +216,7 @@ mod tests {
         der::pem::decode_vec(include_bytes!("../../cli/tests/fixtures/tpm-import-p256.pem")).unwrap().1
     }
 
-    /// Both formats round-trip under the passphrase, a wrong one is 10, and the PKCS#12 carries
+    /// Both formats round-trip under the passphrase, a wrong one is 17, and the PKCS#12 carries
     /// the certificate.
     #[test]
     fn key_files_round_trip_and_refuse_another_passphrase() {
@@ -219,12 +228,12 @@ mod tests {
             (r.pkcs8.as_slice(), r.certificate, r.method),
             (key.as_slice(), None, cakeys_core::migrate::Method::Pkcs8Pbes2)
         );
-        assert!(matches!(read(pem.as_bytes(), "other"), Err(KmError::HashMismatch { .. })));
+        assert!(matches!(read(pem.as_bytes(), "other"), Err(KmError::Validation(_))));
         let cert = include_bytes!("../../cli/tests/fixtures/adopt-cert.der");
         let p12 = write_pkcs12(&key, cert, "pass phrase", b"id").unwrap();
         let r = read(&p12, "pass phrase").unwrap();
         assert_eq!((r.pkcs8.as_slice(), r.certificate.as_deref()), (key.as_slice(), Some(cert.as_slice())));
-        assert!(matches!(read(&p12, "other"), Err(KmError::HashMismatch { .. })));
+        assert!(matches!(read(&p12, "other"), Err(KmError::Validation(_))));
         assert!(matches!(read(b"not a key file", "x"), Err(KmError::Validation(_))));
     }
 }

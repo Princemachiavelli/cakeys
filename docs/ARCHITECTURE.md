@@ -23,7 +23,7 @@ nix/            packages (regular and crane), lib.mkKeys, NixOS module, sandbox 
                 tests, token test environments, demo, fuzz, deny, cryptoki patches
 fuzz/           cargo-fuzz targets
 examples/       a real YubiKey secure-boot keys.toml and keys.lock
-upstream/       PR drafts for rust-cryptoki and tpm2-pkcs11
+upstream/       PR drafts for rust-cryptoki, tpm2-pkcs11 and SoftHSM
 scripts/        regen-profiles.sh, xversion.sh
 docs/           this documentation; docs/archive/ holds dated reviews and working notes
 reports/, research_notes/   the lock-format design review and its research

@@ -78,8 +78,8 @@ pub fn side_from_transport(t: &Transport, registry: &Registry) -> Option<Result<
     }
 }
 
-/// The per-module unwrap-template rules, as data (docs/CAMIGRATE.md D6): what the wrapping code of
-/// docs/CAMIGRATE.md phase 3 must drop from a target's unwrap template (`SoftHSM`: `CKA_VALUE_LEN`).
+/// The per-module unwrap-template rules, as data (docs/CAMIGRATE.md D6): what `sealed::import`
+/// drops from a target's unwrap template (`SoftHSM`: `CKA_VALUE_LEN`).
 #[must_use]
 pub fn unwrap_refusals(tok: &Token) -> Vec<&str> {
     let mut out: Vec<&str> =
@@ -486,6 +486,7 @@ pub fn locked_transport(t: &Target, lock: &Lock, notes: &mut Notes) -> Result<Op
     let spki = base64::engine::general_purpose::STANDARD
         .decode(k)
         .map_err(|e| KmError::Validation(format!("{t}: the lock's publicKey: {e}")))?;
+    crate::sealed::check_transport_size(&spki)?;
     Ok(Some(crate::sealed::TransportKey { object: t.object_name.to_owned(), rfc7093m4: id.clone(), spki }))
 }
 

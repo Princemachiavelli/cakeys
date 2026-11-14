@@ -88,12 +88,15 @@ pub fn import(ctx: &ImportCtx<'_>) -> Result<()> {
 fn pem(der: &[u8]) -> Zeroizing<Vec<u8>> {
     use base64::Engine as _;
     let b64 = Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(der));
-    let mut out = Zeroizing::new(b"-----BEGIN PRIVATE KEY-----\n".to_vec());
+    // At its final size from the start: growing it would free unzeroized copies of the key.
+    let (head, tail) = (b"-----BEGIN PRIVATE KEY-----\n", b"-----END PRIVATE KEY-----\n");
+    let mut out = Zeroizing::new(Vec::with_capacity(head.len() + b64.len() + b64.len() / 64 + 1 + tail.len()));
+    out.extend_from_slice(head);
     for line in b64.as_bytes().chunks(64) {
         out.extend_from_slice(line);
         out.push(b'\n');
     }
-    out.extend_from_slice(b"-----END PRIVATE KEY-----\n");
+    out.extend_from_slice(tail);
     out
 }
 

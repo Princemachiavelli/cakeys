@@ -48,6 +48,11 @@ impl Token {
         binding: Binding,
     ) -> Result<()> {
         let msg = pop::challenge(spki)?;
+        for group in proof_mechanisms(object, binding)? {
+            if !group.iter().any(|m| self.has(*m)) {
+                return Err(self.lacks_for_proof(group[group.len() - 1]));
+            }
+        }
         match binding {
             Binding::PopSign => self.prove_sign(h, object, spki, &msg, false),
             Binding::PopSignPin => self.prove_sign(h, object, spki, &msg, true),
@@ -70,23 +75,22 @@ impl Token {
     ) -> Result<()> {
         let (mech, data) = match key_type_of(object)? {
             KeyType::EC => {
-                let hash = pop::EcdsaHash::for_curve(curve_of(object)?).ok_or_else(|| {
-                    KmError::Unsupported(format!("ECDSA on {}", object.curve.as_deref().unwrap_or("?")))
-                })?;
+                let hash = ecdsa_hash(object)?;
                 let hashed = match hash {
-                    pop::EcdsaHash::Sha256 => (Mechanism::EcdsaSha256, MechanismType::ECDSA_SHA256),
-                    pop::EcdsaHash::Sha384 => (Mechanism::EcdsaSha384, MechanismType::ECDSA_SHA384),
-                    pop::EcdsaHash::Sha512 => (Mechanism::EcdsaSha512, MechanismType::ECDSA_SHA512),
+                    pop::EcdsaHash::Sha256 => Mechanism::EcdsaSha256,
+                    pop::EcdsaHash::Sha384 => Mechanism::EcdsaSha384,
+                    pop::EcdsaHash::Sha512 => Mechanism::EcdsaSha512,
                 };
-                if self.has(hashed.1) { (hashed.0, msg.to_vec()) } else { (Mechanism::Ecdsa, hash.digest(msg)) }
+                if self.has(hashed.mechanism_type()) {
+                    (hashed, msg.to_vec())
+                } else {
+                    (Mechanism::Ecdsa, hash.digest(msg))
+                }
             }
             KeyType::EC_EDWARDS => (Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Pure)), msg.to_vec()),
             KeyType::RSA => (Mechanism::Sha256RsaPkcs, msg.to_vec()),
             kt => return Err(KmError::Unsupported(format!("proof of possession for {kt}"))),
         };
-        if !self.has(mech.mechanism_type()) {
-            return Err(self.lacks_for_proof(mech.mechanism_type()));
-        }
         let refused = self.proof_failed("C_Sign", "sign", "CKA_SIGN");
         let sig = if per_use_pin {
             self.sign_with_pin(&mech, h, &data, refused)?
@@ -165,9 +169,6 @@ impl Token {
     /// [`Self::prove_ecdh_extractable`] instead.
     fn prove_ecdh(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
         let ch = pop::ecdh_challenge(spki, msg)?;
-        if !self.has(MechanismType::ECDH1_DERIVE) {
-            return Err(self.lacks_for_proof(MechanismType::ECDH1_DERIVE));
-        }
         let sealed = self.profiles.module.as_ref().and_then(|p| p.derive.sealed) != Some(false);
         if !sealed || !self.has(MechanismType::SHA256_HMAC) {
             return self.prove_ecdh_extractable(h, spki, &ch);
@@ -275,9 +276,6 @@ impl Token {
     /// decrypts it with the private key. The plaintext matches only if the token's private key is
     /// the one `spki` names.
     fn prove_decrypt(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
-        if !self.has(MechanismType::RSA_PKCS_OAEP) {
-            return Err(self.lacks_for_proof(MechanismType::RSA_PKCS_OAEP));
-        }
         let cipher = pop::oaep_challenge(spki, msg)?;
         let plain = self
             .session
@@ -306,11 +304,6 @@ impl Token {
     /// token, so a transport key proves possession without `CKA_DECRYPT`.
     fn prove_unwrap(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
         self.check_unwraps()?;
-        for m in [MechanismType::RSA_PKCS_OAEP, MechanismType::SHA256_HMAC] {
-            if !self.has(m) {
-                return Err(self.lacks_for_proof(m));
-            }
-        }
         let ch = pop::unwrap_challenge(spki, msg)?;
         let mech = Mechanism::RsaPkcsOaep(PkcsOaepParams::new(
             MechanismType::SHA1,
@@ -398,4 +391,41 @@ impl Token {
             e => KmError::Unavailable(format!("{call} (proof of possession) on token '{}': {e}", self.name)),
         }
     }
+}
+
+/// The hash ECDSA signs a proof with on `object`'s curve.
+fn ecdsa_hash(object: &ObjectCfg) -> Result<pop::EcdsaHash> {
+    pop::EcdsaHash::for_curve(curve_of(object)?)
+        .ok_or_else(|| KmError::Unsupported(format!("ECDSA on {}", object.curve.as_deref().unwrap_or("?"))))
+}
+
+/// The mechanisms a proof of possession by `binding` uses on a private key of `object`'s type:
+/// the token must offer at least one of each group. The one list both the proof itself
+/// ([`Token::prove_binding`]) and camigrate's planner check, so a plan never promises a proof the
+/// target then refuses. An ECDSA proof prefers the curve's hashed mechanism and falls back to
+/// raw `CKM_ECDSA` over a host-side digest.
+///
+/// # Errors
+///
+/// `Unsupported` for a key type or curve no proof is defined for.
+pub fn proof_mechanisms(object: &ObjectCfg, binding: Binding) -> Result<Vec<Vec<MechanismType>>> {
+    Ok(match binding {
+        Binding::TokenAsserted => vec![],
+        Binding::PopSign | Binding::PopSignPin => match key_type_of(object)? {
+            KeyType::EC => {
+                let hashed = match ecdsa_hash(object)? {
+                    pop::EcdsaHash::Sha256 => MechanismType::ECDSA_SHA256,
+                    pop::EcdsaHash::Sha384 => MechanismType::ECDSA_SHA384,
+                    pop::EcdsaHash::Sha512 => MechanismType::ECDSA_SHA512,
+                };
+                vec![vec![hashed, MechanismType::ECDSA]]
+            }
+            KeyType::EC_EDWARDS => vec![vec![MechanismType::EDDSA]],
+            KeyType::RSA => vec![vec![MechanismType::SHA256_RSA_PKCS]],
+            kt => return Err(KmError::Unsupported(format!("proof of possession for {kt}"))),
+        },
+        Binding::PopEcdh => vec![vec![MechanismType::ECDH1_DERIVE]],
+        Binding::PopDecrypt => vec![vec![MechanismType::RSA_PKCS_OAEP]],
+        Binding::PopUnwrap => vec![vec![MechanismType::RSA_PKCS_OAEP], vec![MechanismType::SHA256_HMAC]],
+    })
 }

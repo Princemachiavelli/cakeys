@@ -33,6 +33,7 @@ impl Transport {
     pub fn new(token: &str, provider: &str, object: &str, spki: &[u8], mechanisms: &[String]) -> Result<Transport> {
         use base64::Engine;
         let spki = cakeys_core::id::spki_canonical(spki)?;
+        crate::sealed::check_transport_size(&spki)?;
         Ok(Transport {
             format: TRANSPORT_FORMAT.into(),
             version: TRANSPORT_VERSION,
@@ -46,7 +47,7 @@ impl Transport {
     }
 
     /// Read a transport file, checking that its identity is the hash of its public key: a file
-    /// edited to wrap to another key fails here, and against the lock (`check_locked`).
+    /// edited to wrap to another key fails here, and against the lock (`tokens::pinned`).
     ///
     /// # Errors
     ///
@@ -72,9 +73,12 @@ impl Transport {
     }
 
     /// The file's text.
-    #[must_use]
-    pub fn to_toml(&self) -> String {
-        toml::to_string(self).unwrap_or_default()
+    ///
+    /// # Errors
+    ///
+    /// `Unavailable` when it does not serialize: never an empty file in its place.
+    pub fn to_toml(&self) -> Result<String> {
+        toml::to_string(self).map_err(|e| KmError::Unavailable(format!("serializing the transport file: {e}")))
     }
 
     /// The canonical SPKI DER.
@@ -96,11 +100,9 @@ impl Transport {
     ///
     /// As [`Self::spki`].
     pub fn key(&self) -> Result<crate::sealed::TransportKey> {
-        Ok(crate::sealed::TransportKey {
-            object: self.object.clone(),
-            rfc7093m4: self.rfc7093m4.clone(),
-            spki: self.spki()?,
-        })
+        let spki = self.spki()?;
+        crate::sealed::check_transport_size(&spki)?;
+        Ok(crate::sealed::TransportKey { object: self.object.clone(), rfc7093m4: self.rfc7093m4.clone(), spki })
     }
 }
 

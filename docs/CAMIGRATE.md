@@ -21,7 +21,7 @@ $ camigrate export <object> --token <source> --to-file pkcs8|pkcs12 --out <file>
     --passphrase-file <file> --allow-host-plaintext
 $ camigrate import --token <target> --in <bundle|file> [--spec <s> ...] [--dry-run] \
     [--passphrase-file <file> --allow-host-plaintext]
-$ camigrate migrate [<object> ...] --from <a> --to <b> [--spec <s>] [--transport-key <spec>] \
+$ camigrate migrate [<object> ...] --from <a> --to <b> [--spec <s> ...] [--transport-key <spec>] \
     [--dry-run [--json]] [--allow-host-plaintext]
 ```
 
@@ -29,15 +29,24 @@ $ camigrate migrate [<object> ...] --from <a> --to <b> [--spec <s>] [--transport
   reachable from this host. Without objects it plans every object the source holds a
   realisation of.
 - `--dry-run` prints the plan (a table, or JSON) and changes nothing. The real run executes the
-  same plan (D9).
+  same plan (D9), and exits as the dry run did: an `export` without names takes what can move,
+  so its dry run is 15 only when nothing can. On `import` it checks the bundle, or the key file, against the lock and the
+  token, and imports nothing.
+- `--spec` names the spec to realise an object under where its object has several on the
+  target. One that selects nothing (an unknown spec, or one of an object that is not moving
+  there) is refused (17).
+- A bundle of public objects alone needs no transport key and names none.
+- A transport key has at least 2048 bits (keys.toml, a transport file and a key found on a
+  token are each held to it).
 - Every writing verb is refused inside a Nix build (D8). The lock is written under `cakeys`'
   rules (the `.lck` sidecar lock, written whole or not at all).
 
 Exit codes (the table: [CAKEYS.md](CAKEYS.md#exit-codes)): 0 done; 10 the material's identity
-differs from the lock (also a wrong passphrase); 13 the target refused (a tampered bundle, a
+differs from the lock; 13 the target refused (a tampered bundle, a
 failed proof of possession, an occupied PIV slot); 14 the lock pins no IDs for the object; 15
 an object cannot move as invoked, or the target lacks a capability; 17 invalid input (keys.toml,
-a transport file, a bundle, another key's IDs).
+a transport file, a bundle, another key's IDs, a key file that does not open under the
+passphrase given: 10 is kept for material that differs from the lock).
 
 ## Decisions
 
@@ -176,13 +185,14 @@ kek = "..."                             # the AES KEK under RSA-OAEP, shared by 
 [source]                                # provenance, as in the source realisation
 token = "softhsm"
 provider = "softhsm"
-[transport]                             # the key the material is wrapped to
+[transport]                             # the key the keys are wrapped to; absent when only public objects travel
 object = "import-kek"
 rfc7093m4 = "sha256-..."
 [[keys]]                                # one per key, each object once
 object = "signing"
 method = "rsa-oaep-sha1+aes-kwp"
-exposure = "sealed"
+exposure = "sealed"                     # what its method can be: sealed or enforced for a wrapped key (an own
+                                        # kek means enforced), public for a public object; anything else is 17
 commitmentLabel = "key-management/v1"   # secret keys, as in the lock
 publicKey = "<base64 SPKI DER>"         # private keys: the public half the target creates; its hash is ids.rfc7093m4
 # kek = "..."                           # an `enforced` key's own KEK (CKM_RSA_AES_KEY_WRAP's first part)
@@ -209,7 +219,8 @@ Key files: `pkcs8-pbes2` is a PEM `ENCRYPTED PRIVATE KEY` (PBES2, PBKDF2-HMAC-SH
 iterations, AES-256-CBC). `pkcs12` holds the same encrypted key in a shrouded key bag beside the
 certificate the lock pairs with the object, both tagged with one `localKeyId`, under an
 HMAC-SHA256 MAC (PKCS#12 KDF, 10 000 iterations). One key per file, mode 0600. An imported file
-names no object: the key's `rfc7093m4` finds the locked private key.
+names no object: the key's `rfc7093m4` finds the locked private key. A file asking for more than
+10 000 000 KDF iterations is refused.
 
 The lock's target realisation (D7):
 
@@ -245,7 +256,7 @@ All phases ran on 2026-11-12 (0, 1) and 2026-11-14 (2–5); the test names are i
 | 3 | `sealed` (`sealed.rs`): bundles, `export --out`, `import`, `migrate`; one creation token per object (`createOn`); `transportWith` and `pop-unwrap` | SoftHSM's unwrapped `CKA_VALUE_LEN` (`secret-unwraps = false`); p11-kit needs its `provider` named (the layer's `requires-provider`) |
 | 3b | `enforced`: `transport --trusted`, `CKM_RSA_AES_KEY_WRAP` (third cryptoki patch, `nix/patches/cryptoki-rsa-aes-key-wrap.patch`), the bundle's per-entry `kek` | both modules refuse a wrap-with-trusted key under an untrusted key; `CKA_TRUSTED` is set only at creation and only by the SO; kryoptic cannot trust an RSA public key [run: one-off PyKCS11 and Rust test programs, not kept, recorded in the profiles' `[manual."trusted-wrap"]`] |
 | 4 | `host` (`host.rs`): `Token::extract`, `cakeys_core::plaintext`, `tpm2-ptool` through an in-memory file (`/proc/<pid>/fd/N`, since `tpm2_import` inherits no descriptor) | the key enters `tpm2_ptool`'s Python process, and its user PIN is on that process's command line (no other option [src]): both stated as plan notes. The planner blocks moves the target could not prove (Ed25519 into p11-kit) |
-| 4b | `file` (`file.rs`): `pkcs8-pbes2` and `pkcs12` export and import; `pkcs5`, `pkcs12` 0.2 and `cms` 0.3 (release candidates, same RustCrypto line as `der` 0.8) | a wrong passphrase is 10 and leaves nothing |
+| 4b | `file` (`file.rs`): `pkcs8-pbes2` and `pkcs12` export and import; `pkcs5`, `pkcs12` 0.2 and `cms` 0.3 (release candidates, same RustCrypto line as `der` 0.8) | a wrong passphrase is 17 and leaves nothing |
 | 5 | `piv-import`, as SO, the identity checked on the host first | YubiKey 5C NFC FIPS 5.7.4, ykcs11 2.7.3 (`tests/yubikey.rs`, opt-in): a P-256 key from SoftHSM moved into retired slot 95 and proved possession; a second import into the occupied slot was refused (13) before anything was written. The slot was emptied by hand beforehand (no delete in ykcs11) |
 
 Not built: phase 6, native `tpm-duplicate` (a host-built duplication blob, `TPM2_Import` through
