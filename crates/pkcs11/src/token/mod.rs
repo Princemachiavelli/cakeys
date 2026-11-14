@@ -138,6 +138,15 @@ fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
     move |e| KmError::Unavailable(format!("{context}: {e}"))
 }
 
+/// What [`Token::occupied`] found under a locator.
+#[derive(Debug, Default)]
+pub struct Occupied {
+    /// Objects a creation there would collide with.
+    pub colliding: usize,
+    /// A public key object holding the key's public key, to reuse rather than create.
+    pub public_half: Option<ObjectHandle>,
+}
+
 impl Token {
     /// Open the token named `name`: load the module, find the slot whose token label matches,
     /// read its capabilities, and log in as the user when a PIN is configured.
@@ -330,7 +339,8 @@ impl Token {
         self.session.find_objects(&template).map_err(ck("C_FindObjects"))
     }
 
-    /// Every object under the locator, whatever its class (If-None-Match before creating).
+    /// Every object under the locator, whatever its class (If-None-Match before generating: a key
+    /// made now belongs with nothing already there).
     ///
     /// # Errors
     ///
@@ -338,6 +348,36 @@ impl Token {
     /// `CKA_ID`); `Unavailable` when `C_FindObjects` fails.
     pub fn find_any(&self, loc: &Locator) -> Result<Vec<ObjectHandle>> {
         self.session.find_objects(&locator_attrs(loc)?).map_err(ck("C_FindObjects"))
+    }
+
+    /// If-None-Match before importing `object` under `loc`, per class: PKCS#11's convention puts a
+    /// key, its public key and its certificate under one `CKA_ID` (and often one `CKA_LABEL`), so
+    /// only what the creation would collide with counts — an object of its class, and for a
+    /// private key any public key object that does not hold `spki`. A public key object that
+    /// holds `spki` (`None`: not known yet, so none does) is no collision but the public half
+    /// to reuse; for a public key object it is the object itself, already there.
+    ///
+    /// # Errors
+    ///
+    /// `Validation` for a locator naming neither `CKA_LABEL` nor `CKA_ID` (or a non-hex
+    /// `CKA_ID`); `Unavailable` when `C_FindObjects` fails.
+    pub fn occupied(&self, object: &ObjectCfg, loc: &Locator, spki: Option<&[u8]>) -> Result<Occupied> {
+        let class = class_of(object);
+        let mut out = Occupied::default();
+        if class != ObjectClass::PUBLIC_KEY {
+            out.colliding = self.find(class, loc)?.len();
+        }
+        if matches!(class, ObjectClass::PRIVATE_KEY | ObjectClass::PUBLIC_KEY) {
+            for p in self.find(ObjectClass::PUBLIC_KEY, loc)? {
+                match spki {
+                    Some(s) if out.public_half.is_none() && self.held_spki(p).as_deref() == Some(s) => {
+                        out.public_half = Some(p);
+                    }
+                    _ => out.colliding += 1,
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Exactly-one lookup of the object named by the locator: the key (private or secret) or

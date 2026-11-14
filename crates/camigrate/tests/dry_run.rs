@@ -347,6 +347,84 @@ fn public_moves_do_what_the_plan_says() {
     assert!(rows.iter().any(|r| r.contains("ready")), "no public move was planned ready");
 }
 
+/// The locator guard is per class (`Token::occupied`): PKCS#11 puts a key, its public key and
+/// its certificate under one label, so they move into one target label in either order. The
+/// key's import and the public key object's share one public key object (whichever comes first
+/// creates it, the other records it); a second object of a class already there is still 13,
+/// leaving nothing.
+#[test]
+#[expect(clippy::format_push_string, reason = "the fixture TOML bodies are appended as += format!(...)")]
+fn objects_sharing_a_locator_move_in_any_order() {
+    let Some(e) = env("shared-locator") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
+    let (Some(soft), Some(kry)) = (named("softhsm"), named("kryoptic")) else {
+        eprintln!("skipping shared-locator: needs the softhsm and kryoptic references");
+        return;
+    };
+    open_session(&kry.module, kry.token_label, "1234").clear(&["sl-a", "sl-b"]);
+    let src = open_session(&soft.module, soft.token_label, "1234");
+    src.clear(&["sl-k1", "sl-k2", "sl-crt1", "sl-crt2"]);
+    for (label, der) in [("sl-crt1", CERT_RSA), ("sl-crt2", CERT_P384)] {
+        let cert = x509_cert::Certificate::from_der(der).unwrap();
+        src.create_object(&[
+            Attribute::Class(ObjectClass::CERTIFICATE),
+            Attribute::CertificateType(CertificateType::X_509),
+            Attribute::Subject(cert.tbs_certificate().subject().to_der().unwrap()),
+            Attribute::Value(der.to_vec()),
+            Attribute::Token(true),
+            Attribute::Label(label.as_bytes().to_vec()),
+        ])
+        .unwrap();
+    }
+    drop(src);
+    let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+    let ec_pub = "class = \"CKO_PUBLIC_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+    let cert = "class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"";
+    let movable = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n";
+    let mut body = transport_key(kry);
+    for (n, target) in [("1", "sl-a"), ("2", "sl-b")] {
+        let (k, kp, c) = (format!("k{n}"), format!("k{n}-pub"), format!("crt{n}"));
+        body += &format!(
+            "[objects.{k}]\n{ec}\ncreateOn = \"softhsm\"\n\n[objects.{kp}]\n{ec_pub}\n\n[objects.{c}]\n{cert}\n\n"
+        );
+        body += &Env::spec(&format!("{k}-soft"), &k, movable, &[soft], &format!("sl-k{n}"), ", autoCreate = true");
+        body += &Env::spec(&format!("{kp}-soft"), &kp, "", &[soft], &format!("sl-k{n}"), "");
+        body += &Env::spec(&format!("{c}-soft"), &c, "", &[soft], &format!("sl-crt{n}"), "");
+        body += &Env::spec(&format!("{k}-kry"), &k, movable, &[kry], target, "");
+        body += &Env::spec(&format!("{kp}-kry"), &kp, "", &[kry], target, "");
+        body += &Env::spec(&format!("{c}-kry"), &c, "", &[kry], target, "");
+    }
+    // A second certificate for the first target label: a collision of its class.
+    body += &Env::spec("crt2-kry-a", "crt2", "", &[kry], "sl-a", "");
+    names_transport(&e, &body, |r| r.name == "kryoptic");
+    assert_eq!(code(&e.cakeys(kry, &["realise", "tk-kryoptic", "--token", "kryoptic"])), 0);
+    for spec in ["k1-soft", "k1-pub-soft", "crt1-soft", "k2-soft", "k2-pub-soft", "crt2-soft"] {
+        let o = e.cakeys(soft, &["realise", spec, "--token", "softhsm"]);
+        assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
+    }
+    let on_target = |label: &str| open_session(&kry.module, kry.token_label, "1234").labelled(label).len();
+    let mv = |object: &str, spec: &str| {
+        let o = e.km(soft, &["migrate", object, "--from", "softhsm", "--to", "kryoptic", "--spec", spec]);
+        assert_eq!(code(&o), 0, "{object}: {}", stderr(&o));
+        let v = e.cakeys(kry, &["verify", spec, "--token", "kryoptic"]);
+        assert_eq!(code(&v), 0, "{spec}: {}", stderr(&v));
+    };
+    // The key first: its import creates the public half, which the public key object then is.
+    mv("k1", "k1-kry");
+    mv("k1-pub", "k1-pub-kry");
+    mv("crt1", "crt1-kry");
+    assert_eq!(on_target("sl-a"), 3, "a key, one public key object and a certificate");
+    // The other order: the certificate and the public key object first, the key reusing it.
+    mv("crt2", "crt2-kry");
+    mv("k2-pub", "k2-pub-kry");
+    mv("k2", "k2-kry");
+    assert_eq!(on_target("sl-b"), 3, "a key, one public key object and a certificate");
+    // A second certificate under 'sl-a' collides with the first: 13, nothing left.
+    let o = e.km(soft, &["migrate", "crt2", "--from", "softhsm", "--to", "kryoptic", "--spec", "crt2-kry-a"]);
+    assert_eq!(code(&o), 13, "{}", stderr(&o));
+    assert_eq!(on_target("sl-a"), 3, "the refused certificate left an object");
+}
+
 /// The transport key of reference `r` (MIGRATE.md D3), as keys.toml text: an RSA key that only
 /// unwraps and never leaves the token, proven by unwrapping (`pop-unwrap`). Its token names it
 /// with [`names_transport`].

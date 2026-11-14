@@ -373,7 +373,13 @@ is what sealed avoids. Version 1 is a draft and changed in place, like the lock.
 
 **D6. Import is a realise that creates from a bundle.**
 
-- It keeps If-None-Match: never into an occupied locator.
+- It keeps If-None-Match, per class: never over an object of its class under the locator. A
+  key, its public key and its certificate share one `CKA_ID` (and often one label) by PKCS#11
+  convention, so they move into one locator in any order; a public key object already holding
+  the key's public key is reused (by the key's import) or recorded (as the public key object),
+  never duplicated. A failed import removes exactly what it created. Generating (`autoCreate`)
+  still refuses over anything under the locator: a certificate already there certifies another
+  key.
 - It is the sanctioned exception to "`autoCreate` is refused when the lock already pins the
   material" (review finding D1, DESIGN §4.1): that refusal exists because generated material could not
   match, while imported material must.

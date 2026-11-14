@@ -30,8 +30,9 @@ pub enum Moved {
 ///
 /// # Errors
 ///
-/// Whatever `ops::verify` refuses on the source; `Conflict` (13) when something sits under the
-/// target locator without a realisation of `dst`; `Unavailable` (16) for a target session
+/// Whatever `ops::verify` refuses on the source; `Conflict` (13) when an object of its class
+/// sits under the target locator without a realisation of `dst` (a public key object holding
+/// the same key is that object: recorded, not created again); `Unavailable` (16) for a target session
 /// without login; `Unsupported` (15) when the target refuses `C_CreateObject`; and, after the
 /// creation, whatever `ops::realise_import` refuses — a hash mismatch (10) included — with what
 /// was created removed again.
@@ -58,21 +59,30 @@ pub fn import(
             dst.token_name
         )));
     }
-    let present = to.find_any(&dst.on_token.locator)?;
-    if !present.is_empty() {
+    // Per class (`Token::occupied`): the key and certificate a public object usually sits beside
+    // are no collision, and a public key a key's import already created there is this object.
+    let spki = match src.object.class {
+        Class::PublicKey => Some(from.spki(one(from, src)?, &src.on_token.locator)?),
+        _ => None,
+    };
+    let occupied = to.occupied(dst.object, &dst.on_token.locator, spki.as_deref())?;
+    if occupied.colliding > 0 {
         return Err(KmError::Conflict(format!(
-            "{} object(s) already sit under the locator of {dst}, and the lock records no realisation \
-             there; refusing to import over them",
-            present.len()
+            "{} object(s) of its class already sit under the locator of {dst}, and the lock records no \
+             realisation there; refusing to import over them",
+            occupied.colliding
         )));
     }
     let create = || {
         to.raw()
             .create_object(&template)
-            .map(drop)
             .map_err(|e| to.unsupported(format!("{dst}: importing into '{}': C_CreateObject: {e}", to.name)))
     };
-    if to.provider.manages_as_so() { to.as_so("importing an object", create) } else { create() }?;
+    let created = match occupied.public_half {
+        Some(_) => None,
+        None if to.provider.manages_as_so() => Some(to.as_so("importing an object", create)?),
+        None => Some(create()?),
+    };
     let origin = Origin {
         from: src.token_name.to_owned(),
         method: Method::Public.name(),
@@ -82,8 +92,9 @@ pub fn import(
     match ops::realise_import(dst, to, lock, origin, notes) {
         Ok(_) => Ok(Moved::Imported),
         Err(e) => {
-            // The locator was empty before (above), so this removes only what was just created.
-            match to.destroy(dst.object, &dst.on_token.locator) {
+            // Only what this import created: other objects may share the locator.
+            match to.destroy_handles(dst.object, &dst.on_token.locator, created.as_slice()) {
+                Ok(0) => {}
                 Ok(n) => notes.say(format!("removed {n} object(s) just imported for {dst}: {e}")),
                 Err(d) => notes.say(format!("the object just imported for {dst} is still on the token ({d})")),
             }

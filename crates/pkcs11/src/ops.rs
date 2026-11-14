@@ -413,6 +413,8 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
             t.token_name
         )));
     }
+    // Any class, unlike an import (`Token::occupied`): a certificate already there certifies
+    // some other key, never one generated now.
     let present = tok.find_any(&t.on_token.locator)?;
     if !present.is_empty() {
         return Err(KmError::Conflict(format!(

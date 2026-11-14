@@ -141,7 +141,12 @@ impl Token {
         Ok((self.destroy_handles(object, loc, &handles)?, left))
     }
 
-    fn destroy_handles(&self, object: &ObjectCfg, loc: &Locator, handles: &[ObjectHandle]) -> Result<usize> {
+    /// Destroy exactly `handles` (what a failed import created), as `object` under `loc` would be.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::destroy`].
+    pub fn destroy_handles(&self, object: &ObjectCfg, loc: &Locator, handles: &[ObjectHandle]) -> Result<usize> {
         let class = class_of(object);
         if handles.is_empty() {
             return Ok(0);

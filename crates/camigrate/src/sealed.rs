@@ -190,9 +190,10 @@ pub fn import(
         ops::verify(dst, to, lock, notes)?;
         return Ok(Moved::AlreadyThere);
     }
-    let unwrapping = preflight(b, e, dst, to, tr, lock, notes)?;
+    let ready = preflight(b, e, dst, to, tr, lock, notes)?;
     let method = e.method().map_err(KmError::Validation)?;
-    let created = create(b, e, dst, to, unwrapping, &method).and_then(|()| {
+    let mut made = Vec::new();
+    let created = create(b, e, dst, to, &ready, &method, &mut made).and_then(|()| {
         let origin =
             Origin { from: b.source.token.clone(), method: e.method.clone(), exposure: e.exposure, declared: false };
         ops::realise_import(dst, to, lock, origin, notes)
@@ -200,8 +201,8 @@ pub fn import(
     match created {
         Ok(_) => Ok(Moved::Imported),
         Err(err) => {
-            // The locator was empty before (preflight): this removes only what the import made.
-            match to.destroy(dst.object, &dst.on_token.locator) {
+            // Exactly what the import made: other objects may share the locator (preflight).
+            match to.destroy_handles(dst.object, &dst.on_token.locator, &made) {
                 Ok(0) => {}
                 Ok(n) => notes.say(format!("removed {n} object(s) just imported for {dst}: {err}")),
                 Err(d) => notes.say(format!("what was just imported for {dst} is still on the token ({d})")),
@@ -226,7 +227,7 @@ pub fn preflight(
     tr: &Target,
     lock: &Lock,
     notes: &mut Notes,
-) -> Result<ObjectHandle> {
+) -> Result<Preflight> {
     check_against_lock(b, e, dst, tr, lock)?;
     ops::verify(tr, to, lock, notes)?;
     let unwrapping = to
@@ -239,15 +240,25 @@ pub fn preflight(
             dst.token_name
         )));
     }
-    let present = to.find_any(&dst.on_token.locator)?;
-    if !present.is_empty() {
+    // Per class (`Token::occupied`): a certificate beside the key is no collision, and a public
+    // key object already holding the bundle's public key is the key's public half, reused.
+    let spki = e.public_spki().map_err(KmError::Validation)?;
+    let occupied = to.occupied(dst.object, &dst.on_token.locator, spki.as_deref())?;
+    if occupied.colliding > 0 {
         return Err(KmError::Conflict(format!(
-            "{} object(s) already sit under the locator of {dst}, and the lock records no realisation there; \
-             refusing to import over them",
-            present.len()
+            "{} object(s) a {} would collide with already sit under the locator of {dst}, and the lock \
+             records no realisation there; refusing to import over them",
+            occupied.colliding, dst.object.class
         )));
     }
-    Ok(unwrapping)
+    Ok(Preflight { unwrapping, public_half: occupied.public_half })
+}
+
+/// What [`preflight`] established: the transport key to unwrap with, and a public key object
+/// already holding the key's public key, reused rather than created.
+pub struct Preflight {
+    pub unwrapping: ObjectHandle,
+    pub public_half: Option<ObjectHandle>,
 }
 
 /// The bundle's key `e` against the lock: the same object, type, IDs and commitment label,
@@ -298,7 +309,16 @@ fn check_against_lock(b: &Bundle, e: &Entry, dst: &Target, tr: &Target, lock: &L
 /// Create the key under `dst` from the bundle's key `e`: a private key's public half first (from
 /// its public key, as `generate` makes it), then the key unwrapped with the target spec's
 /// attributes as its template, less what this module refuses in one (MIGRATE.md D6).
-fn create(b: &Bundle, e: &Entry, dst: &Target, to: &Token, unwrapping: ObjectHandle, method: &Method) -> Result<()> {
+fn create(
+    b: &Bundle,
+    e: &Entry,
+    dst: &Target,
+    to: &Token,
+    ready: &Preflight,
+    method: &Method,
+    made: &mut Vec<ObjectHandle>,
+) -> Result<()> {
+    let unwrapping = ready.unwrapping;
     let session = to.raw();
     let refused = |what: &str, e: cryptoki::error::Error| {
         KmError::Conflict(format!(
@@ -307,7 +327,7 @@ fn create(b: &Bundle, e: &Entry, dst: &Target, to: &Token, unwrapping: ObjectHan
         ))
     };
     let loc = locator_attrs(&dst.on_token.locator)?;
-    if let Some(spki) = e.public_spki().map_err(KmError::Validation)? {
+    if let Some(spki) = e.public_spki().map_err(KmError::Validation)?.filter(|_| ready.public_half.is_none()) {
         let mut t = vec![Attribute::Token(true), Attribute::Class(ObjectClass::PUBLIC_KEY)];
         t.extend(loc.iter().cloned());
         t.extend(public_key(dst, &spki)?);
@@ -319,9 +339,11 @@ fn create(b: &Bundle, e: &Entry, dst: &Target, to: &Token, unwrapping: ObjectHan
         if !declared("CKA_PRIVATE") {
             t.push(Attribute::Private(false));
         }
-        session
-            .create_object(&t)
-            .map_err(|e| to.unsupported(format!("{dst}: the public half: C_CreateObject: {e}")))?;
+        made.push(
+            session
+                .create_object(&t)
+                .map_err(|e| to.unsupported(format!("{dst}: the public half: C_CreateObject: {e}")))?,
+        );
     }
     let refusals = unwrap_refusals(to);
     let declared = dst.spec.attributes.iter().filter(|(n, _)| !refusals.contains(&n.as_str()));
@@ -351,12 +373,17 @@ fn create(b: &Bundle, e: &Entry, dst: &Target, to: &Token, unwrapping: ObjectHan
             let unwrapped =
                 session.unwrap_key(&kwp, kek, &key, &template).map_err(|e| refused("unwrapping the key", e));
             let _ = session.destroy_object(kek);
-            unwrapped.map(drop)
+            made.push(unwrapped?);
+            Ok(())
         }
-        Method::RsaOaep(hash) => session
-            .unwrap_key(&oaep(*hash), unwrapping, &key, &template)
-            .map(drop)
-            .map_err(|e| refused("unwrapping the key", e)),
+        Method::RsaOaep(hash) => {
+            made.push(
+                session
+                    .unwrap_key(&oaep(*hash), unwrapping, &key, &template)
+                    .map_err(|e| refused("unwrapping the key", e))?,
+            );
+            Ok(())
+        }
         other => Err(KmError::Unsupported(format!("{other} is not a sealed method"))),
     }
 }
