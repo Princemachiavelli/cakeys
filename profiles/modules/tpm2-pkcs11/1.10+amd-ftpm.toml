@@ -142,3 +142,7 @@ evidence = "[run] kernel log 'tpm2_map_response_header: out of slots for 0x80000
 [manual."store"]
 finding = "Probed on a dedicated tpm2-pkcs11 store created with `tpm2_ptool init --transient-parent tpm2-tools-ecc-default`: nothing persistent or in NV on the TPM, the platform's own handles (0x81000001, 0x81000002, the EK 0x81010001) and its NV indices untouched, and no wrong PIN tried (DA lockout counter 0 before and after). The tpm-certify attestation needs a persistent primary, so it is not available on such a store and was not tested here."
 evidence = "[run] tpm2_getcap handles-persistent, handles-nv-index and properties-variable before and after, 2026-11-13; crates/tpm2-pkcs11/src/attest/store.rs parse_parent"
+
+[manual."unwraps"]
+finding = "C_UnwrapKey is CKR_FUNCTION_NOT_SUPPORTED, though key generation accepts CKA_UNWRAP = true: an unwrap-only RSA key generates, and its pop-unwrap proof then fails. So binding = \"pop-unwrap\" is refused (15) before anything is generated; a tpm2-pkcs11 transport key would prove possession with pop-decrypt, and no sealed import reaches this module anyway (unwraps = false)."
+evidence = "[run] crates/cli/tests/ftpm.rs unwrap_only_keys_cannot_prove_possession on the AMD fTPM (firmware 3.87.0.5) through nix/ftpm-test-env.sh, before the up-front refusal, 2026-11-13: persistent handles and DA lockout counter (0) unchanged"

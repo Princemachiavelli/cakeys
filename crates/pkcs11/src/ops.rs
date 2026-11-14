@@ -163,6 +163,9 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
         e => e,
     })?;
     check_attestation(t, tok.provider.as_ref()).map_err(|m| tok.unsupported(m))?;
+    if cakeys_core::plan::binding(t) == Some(cakeys_core::config::Binding::PopUnwrap) {
+        tok.check_unwraps()?;
+    }
     match needs.groups.iter().find(|g| !g.iter().any(|m| tok.has(*m))) {
         Some(g) => Err(tok.unsupported(lacking(&tok.name, g, mode, t))),
         None => Ok(()),

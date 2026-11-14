@@ -305,6 +305,7 @@ impl Token {
     /// agree only if the token's private key is the one `spki` names; no plaintext leaves the
     /// token, so a transport key proves possession without `CKA_DECRYPT`.
     fn prove_unwrap(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
+        self.check_unwraps()?;
         for m in [MechanismType::RSA_PKCS_OAEP, MechanismType::SHA256_HMAC] {
             if !self.has(m) {
                 return Err(self.lacks_for_proof(m));
@@ -351,6 +352,26 @@ impl Token {
         Ok(())
     }
 
+    /// `pop-unwrap` needs a module that unwraps at all: one whose profile says it never does
+    /// (`[migration] unwraps = false`: tpm2-pkcs11, ykcs11) is refused before anything is
+    /// generated or unwrapped.
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` (15) on such a module.
+    pub fn check_unwraps(&self) -> Result<()> {
+        let profile = self.profiles.module.as_ref();
+        if profile.and_then(|p| p.migration.as_ref()).and_then(|m| m.unwraps) == Some(false) {
+            return Err(self.unsupported(format!(
+                "token '{}' never unwraps (C_UnwrapKey; profile {}), so binding = \"pop-unwrap\" cannot prove \
+                 possession there: use pop-decrypt or pop-sign, or opt in with binding = \"token-asserted\"",
+                self.name,
+                profile.map_or("?", |p| p.profile.as_str())
+            )));
+        }
+        Ok(())
+    }
+
     /// The token lacks the mechanism `m` a proof needs: `Unsupported`, with the opt-out.
     fn lacks_for_proof(&self, m: MechanismType) -> KmError {
         self.unsupported(format!(
@@ -364,7 +385,10 @@ impl Token {
     fn proof_failed(&self, call: &'static str, op: &'static str, attr: &'static str) -> impl Fn(CkError) -> KmError {
         move |e| match e {
             CkError::Pkcs11(
-                RvError::KeyFunctionNotPermitted | RvError::MechanismInvalid | RvError::KeyTypeInconsistent,
+                RvError::KeyFunctionNotPermitted
+                | RvError::MechanismInvalid
+                | RvError::KeyTypeInconsistent
+                | RvError::FunctionNotSupported,
                 _,
             ) => self.unsupported(format!(
                 "token '{}' refused to {op} with the private key ({e}); proving possession needs {attr}, or opt \

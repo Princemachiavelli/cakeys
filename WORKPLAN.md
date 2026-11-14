@@ -243,12 +243,13 @@ matrix: the plan's verdict equals the outcome.
       keys.toml names where an object is born; `create` and `autoCreate` generate only there,
       and `autoCreate` on another token is invalid (17). This changes `cakeys`, not only
       `camigrate`: propose the keys.toml field name and stop for agreement before building it.
-- [ ] **`pop-unwrap` on hardware**, before stage 4 is done. It is observed on SoftHSM and
-      kryoptic only. tpm2-pkcs11: an unwrap-only RSA key in the test store, reached through
-      `nix/ftpm-test-env.sh` (never the persistent handles). YubiKey: an RSA key in a retired
-      slot (90–95) beside the `pop-decrypt` row of `tests/yubikey.rs`. ykcs11 may not implement
-      `C_UnwrapKey` at all; then the proof is unsupported there (15), a YubiKey transport key
-      keeps `pop-decrypt`, and the profile records the finding.
+- [x] **`pop-unwrap` on hardware** (2026-11-13). Neither module unwraps, so the proof is
+      refused there (15) before anything is generated, and both profiles record why
+      (`[manual."unwraps"]`). AMD fTPM through `nix/ftpm-test-env.sh`: tpm2-pkcs11 generates an
+      unwrap-only RSA key, then `C_UnwrapKey` is `CKR_FUNCTION_NOT_SUPPORTED` (`tests/ftpm.rs`;
+      persistent handles and lockout counter unchanged). YubiKey, read-only: ykcs11 flags no
+      mechanism for unwrap, and every PIV key reports `CKA_UNWRAP = false`; no slot was
+      written.
 - [ ] **Phase 3b** `enforced`: the admin credential, `transport --trusted`,
       `CKA_WRAP_WITH_TRUSTED`.
 - [ ] **Phase 4** `host`: `--allow-host-plaintext`, zeroized buffers, `tpm2_ptool` import.

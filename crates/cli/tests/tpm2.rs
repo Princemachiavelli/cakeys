@@ -541,3 +541,19 @@ fn tpm2_attested_material_travels_to_a_second_hsm() {
     assert_eq!(code(&o), 15);
     assert!(stderr(&o).contains("attests nothing"), "{}", stderr(&o));
 }
+
+/// `pop-unwrap` (a transport key's proof, MIGRATE.md D3): tpm2-pkcs11 never unwraps (its
+/// profile's `unwraps = false`; `C_UnwrapKey` is `CKR_FUNCTION_NOT_SUPPORTED` on the real TPM,
+/// tests/ftpm.rs), so an unwrap-only key is refused as unsupported (15) before it is generated.
+#[test]
+fn unwrap_only_keys_are_refused_before_generation() {
+    let Some(e) = env("unwrap") else { return };
+    e.config(
+        "[objects.u]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
+         [specs.u]\nobject = \"u\"\nattributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }\n\
+         tokens.tpm = { locator = { CKA_LABEL = \"refusal-unwrap\" }, autoCreate = true, binding = \"pop-unwrap\" }\n",
+    );
+    let o = e.km(&["realise", "u", "--token", "tpm", "--no-update-lock"]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("never unwraps") && !stderr(&o).contains("created"), "{}", stderr(&o));
+}

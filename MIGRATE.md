@@ -333,7 +333,9 @@ with no new trust mechanism. On a TPM target the transport key can also carry a 
 attestation (TPM residence of the unwrapping key).
 
 - **It proves possession by unwrapping** (`binding = "pop-unwrap"`): a host secret unwrapped
-  into a non-extractable session key that MACs the challenge, so it needs no `CKA_DECRYPT`. One
+  into a non-extractable session key that MACs the challenge, so it needs no `CKA_DECRYPT`.
+  SoftHSM and kryoptic do it [run]; tpm2-pkcs11 and ykcs11 never unwrap, so it is refused there
+  (15) before anything is generated [run, their profiles' `[manual."unwraps"]`]. One
   that also decrypts is warned about, never refused: whoever holds the target's PIN could
   `C_Decrypt` a bundle's key-encryption key out of the token. (That PIN holder can extract an
   extractable moved key anyway; sealed protects the material on the way, not from the target.)

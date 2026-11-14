@@ -117,6 +117,10 @@ evidence = "[run] `ykman info` and `ykman piv info` on the probed device: PIV 'F
 finding = "Creates and destroys only after C_Login(CKU_SO) with the PIV management key, into the slot the template's CKA_ID names (01-04: 9a/9c/9d/9e, 05-18: retired 82-95); CKA_LABEL is ignored. A 48- or 64-hex-digit management key logs in without a PIN verification, so no PIN retry is spent; on a PIN-protected management key the PIN works too, and is verified."
 evidence = "[src] ykcs11/ykcs11.c C_Login, ykcs11/token.c token_login, ykcs11/objects.c check_*_pubkey_template"
 
+[manual."unwraps"]
+finding = "Nothing unwraps: no mechanism carries CKF_UNWRAP or CKF_WRAP (RSA-OAEP is encrypt/decrypt only), every PIV key reports CKA_UNWRAP = false, and there is no AES or HMAC for a pop-unwrap proof's session key. So a YubiKey is never a sealed target and cannot hold a transportWith key; binding = \"pop-unwrap\" is refused (15) before anything is generated. Its import path is plaintext as SO (MIGRATE.md phase 5)."
+evidence = "[run] pkcs11-tool --list-mechanisms on YubiKey 5C NFC FIPS 5.7.4, ykcs11 2.7.3, read-only, 2026-11-13; the CKA_UNWRAP = false recorded by tests/yubikey.rs for its P-384, Ed25519 and RSA-2048 keys"
+
 [manual."x25519"]
 finding = "X25519 cannot be generated through ykcs11 2.7.3 by a spec-conformant caller: its key-pair template accepts CKA_EC_PARAMS only as the bytes `13 0b 'curve25519'`, a PrintableString whose length byte (11) disagrees with its 10 characters. The OID (1.3.101.110) and the well-formed name `13 0a 'curve25519'` are both refused (CKR_ATTRIBUTE_VALUE_INVALID). Its X25519 objects report the same malformed CKA_EC_PARAMS. Whether this device generates X25519 at all, approved mode or not, is not observable through ykcs11; cakeys has no Montgomery key type yet either."
 evidence = "[src] yubico-piv-tool 2.7.3 ykcs11/objects.c: the X25519 define (line 43) and check_x_pubkey_template; [run] the probe's curve25519 refusals, 2026-11-13"

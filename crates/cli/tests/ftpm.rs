@@ -89,3 +89,19 @@ fn keys_generate_and_prove_possession_each_way() {
     );
     assert_eq!(e.code(&["realise", "big", "--token", "ftpm", "--no-update-lock"]), 15);
 }
+
+/// `pop-unwrap` (a transport key's proof, MIGRATE.md D3) on the real TPM: tpm2-pkcs11 never
+/// unwraps (`C_UnwrapKey` is `CKR_FUNCTION_NOT_SUPPORTED` [run], its profile's `unwraps =
+/// false`), so an unwrap-only key is refused as unsupported (15) before anything is generated.
+#[test]
+fn unwrap_only_keys_cannot_prove_possession() {
+    let Some(e) = env("unwrap") else { return };
+    e.config(
+        "[objects.u]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
+         [specs.u]\nobject = \"u\"\nattributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }\n\
+         tokens.ftpm = { locator = { CKA_LABEL = \"ftpm-unwrap\" }, autoCreate = true, binding = \"pop-unwrap\" }\n",
+    );
+    let o = e.km(&["realise", "u", "--token", "ftpm", "--update-lock"]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("never unwraps") && !stderr(&o).contains("created"), "{}", stderr(&o));
+}
