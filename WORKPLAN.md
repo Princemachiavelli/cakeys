@@ -35,8 +35,10 @@ the rules. Read these before starting:
   `nix shell nixpkgs#<name> -c …`.
 - Use `rg`, not `grep`. Shell scripts start with `#!/usr/bin/env bash`.
 - Format with `nix fmt -- --no-cache` (the cache has missed files before).
-- The gate for every stage is `nix flake check`, all checks passing. It takes several minutes;
-  run `nix develop -c cargo clippy --workspace --all-targets -- -D warnings` and the unit tests
+- The gate for every commit is `nix build .#checks-crane-only`: every check but the fuzz smoke
+  run, on the crane build (its dependencies cached per `Cargo.lock`), a few minutes. A stage
+  ends with `nix flake check`, all checks passing. Run
+  `nix develop -c cargo clippy --workspace --all-targets -- -D warnings` and the unit tests
   first. Clippy is pedantic: a function that can panic needs a `# Panics` section, and
   exemptions are per-site `#[expect(lint, reason = "…")]`.
 - `nix flake check` sees only files git knows: `git add` new files before running it.

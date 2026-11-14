@@ -1,142 +1,35 @@
+# cakeys, caprobe and camigrate: the regular `buildRustPackage` build (packages.cakeys). What it
+# shares with the crane build the checks use is in nix/package-common.nix.
 {
   lib,
+  callPackage,
   rustPlatform,
-  softhsm,
-  kryoptic,
-  opensc,
-  swtpm,
-  tpm2-pkcs11,
-  tpm2-tools,
-  tpm2-abrmd,
-  tpm2-tss,
-  sqlite,
-  dbus,
-  p11-kit,
-  pkg-config,
 }:
+let
+  common = callPackage ./package-common.nix { };
+in
+rustPlatform.buildRustPackage (
+  common.args
+  // {
+    cargoLock.lockFile = ../Cargo.lock;
 
-rustPlatform.buildRustPackage {
-  pname = "cakeys";
-  version = "0.1.0";
+    # The cryptoki patches (nix/package-common.nix), on the vendored copy.
+    postPatch = ''
+      applied=0
+      for d in "$cargoDepsCopy"/cryptoki-${common.cryptoki.version} "$cargoDepsCopy"/*/cryptoki-${common.cryptoki.version}; do
+        if [ -d "$d" ]; then
+      ${
+        lib.concatMapStrings (p: "    patch -d \"$d\" -p1 < ${p}\n") common.cryptoki.patches
+      }    applied=$((applied + 1))
+        fi
+      done
+      [ "$applied" = 1 ] || { echo "cryptoki-${common.cryptoki.version} not found exactly once in $cargoDepsCopy" >&2; exit 1; }
+    '';
 
-  src = lib.fileset.toSource {
-    root = ../.;
-    fileset = lib.fileset.unions [
-      ../Cargo.toml
-      ../Cargo.lock
-      ../crates
-      # The capability profiles (docs/PROVIDERS.md): embedded in the binary, and the vendored
-      # OASIS headers the pinned baseline-regeneration test reads.
-      ../profiles
-    ];
-  };
-
-  cargoLock.lockFile = ../Cargo.lock;
-
-  # The tools of one workspace (docs/SCOPE.md, "Three tools"), from one build whose check phase
-  # tests them together, each in its own output: `out` holds cakeys, `caprobe` the module
-  # measurer and `camigrate` the key mover, so cakeys' closure carries neither.
-  outputs = [
-    "out"
-    "caprobe"
-    "camigrate"
-  ];
-  postInstall = ''
-    moveToOutput bin/caprobe "$caprobe"
-    moveToOutput bin/camigrate "$camigrate"
-  '';
-
-  # tss-esapi (the native TPM2_Certify attestation path of cakeys-tpm2-pkcs11) links
-  # tpm2-tss's ESAPI and TCTI loader at build time; the runtime closure picks the libraries
-  # up through the link. rusqlite's `bundled` feature serves plain cargo builds, but nixpkgs'
-  # Rust builder sets LIBSQLITE3_SYS_USE_PKG_CONFIG, which makes libsqlite3-sys link the
-  # system sqlite instead — so it must be here.
-  nativeBuildInputs = [ pkg-config ];
-  buildInputs = [
-    tpm2-tss
-    sqlite
-  ];
-
-  # cryptoki 0.12.1 (and main) gives KeyType::SHA224/384/512_HMAC the value of CKK_SHA256_HMAC, so those key
-  # types can be neither created nor told apart. Minimal local fix until upstream has one
-  # (upstream/rust-cryptoki/). Without it, cakeys refuses those key types. It also has no
-  # CKM_AES_KEY_WRAP_KWP (RFC 5649 under its PKCS#11 3.0 ID, which kryoptic offers): the second
-  # patch adds it for export and import (MIGRATE.md). The constant is already in cryptoki-sys.
-  postPatch = ''
-    applied=0
-    for d in "$cargoDepsCopy"/cryptoki-0.12.1 "$cargoDepsCopy"/*/cryptoki-0.12.1; do
-      if [ -d "$d" ]; then
-        patch -d "$d" -p1 < ${./patches/cryptoki-hmac-key-types.patch}
-        patch -d "$d" -p1 < ${./patches/cryptoki-aes-key-wrap-kwp.patch}
-        applied=$((applied + 1))
-      fi
-    done
-    [ "$applied" = 1 ] || { echo "cryptoki-0.12.1 not found exactly once in $cargoDepsCopy" >&2; exit 1; }
-  '';
-
-  # Integration tests drive real SoftHSM and kryoptic tokens, SoftHSM through p11-kit forwarding,
-  # and tpm2-pkcs11 on a software TPM (behind tpm2-abrmd on a private D-Bus) inside the build
-  # sandbox.
-  nativeCheckInputs = [
-    softhsm
-    swtpm
-    tpm2-pkcs11
-    tpm2-tools
-    tpm2-abrmd
-    dbus
-    p11-kit
-    opensc
-  ];
-  preCheck = ''
-    export SOFTHSM2_CONF=$TMPDIR/softhsm2.conf
-    mkdir -p $TMPDIR/softhsm-tokens
-    printf 'directories.tokendir = %s\nobjectstore.backend = file\nlog.level = ERROR\n' \
-      $TMPDIR/softhsm-tokens > $SOFTHSM2_CONF
-    softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678
-    export CAKEYS_TEST_MODULE=${softhsm}/lib/softhsm/libsofthsm2.so
-    export CAKEYS_TEST_REQUIRE=1
-
-    # kryoptic (PKCS#11 3.2): the shared reference suite runs against it too. The slot table
-    # ends the file: the suite appends a mechanism deny list to it (tests/common/mod.rs).
-    export KRYOPTIC_CONF=$TMPDIR/kryoptic.conf
-    printf '[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' $TMPDIR/kryoptic.sql > $KRYOPTIC_CONF
-    export CAKEYS_KRYOPTIC_MODULE=${kryoptic}/lib/libkryoptic_pkcs11.so
-    pkcs11-tool --module $CAKEYS_KRYOPTIC_MODULE --init-token --slot 1 --so-pin 5678 --label kmtest > /dev/null
-    pkcs11-tool --module $CAKEYS_KRYOPTIC_MODULE --token-label kmtest --login --login-type so \
-      --so-pin 5678 --init-pin --pin 1234 > /dev/null
-    export CAKEYS_KRYOPTIC_REQUIRE=1
-
-    # p11-kit forwarding: a second SoftHSM token behind `p11-kit server` (short socket path).
-    SOFTHSM_MODULE=$CAKEYS_TEST_MODULE bash ${./p11kit-test-env.sh} up $TMPDIR/p11
-    . $TMPDIR/p11/env
-    export CAKEYS_P11KIT_CLIENT=${lib.getLib p11-kit}/lib/pkcs11/p11-kit-client.so
-    export CAKEYS_P11KIT_REQUIRE=1
-
-    export HOME=$TMPDIR
-    bash ${./tpm2-test-env.sh} up $TMPDIR/tpm || { tail -n 20 $TMPDIR/tpm/*.log; exit 1; }
-    . $TMPDIR/tpm/env
-    export CAKEYS_TPM_MODULE=${lib.getLib tpm2-pkcs11}/lib/libtpm2_pkcs11.so
-    export CAKEYS_TPM_REQUIRE=1
-  '';
-  postCheck = ''
-    bash ${./p11kit-test-env.sh} down $TMPDIR/p11
-    bash ${./tpm2-test-env.sh} down $TMPDIR/tpm
-  '';
-  # One thread: the token suites open a session per test on one module (NEXT.md §1, minor).
-  dontUseCargoParallelTests = true;
-  # Unit tests live in every crate, not just the CLI (the default member).
-  cargoTestFlags = [ "--workspace" ];
-  # RFC 5649 key wrap under CKM_AES_KEY_WRAP_KWP (kryoptic's name for it): only the patched
-  # cryptoki above can name the mechanism, so camigrate uses it only with this feature.
-  buildFeatures = [ "camigrate/kwp" ];
-
-  meta = {
-    description = "Content-addressed identity for PKCS#11 objects";
-    mainProgram = "cakeys";
-    license = with lib.licenses; [
-      mit
-      asl20
-    ];
-    platforms = lib.platforms.linux;
-  };
-}
+    # One thread: the token suites open a session per test on one module (NEXT.md §1, minor).
+    dontUseCargoParallelTests = true;
+    # Unit tests live in every crate, not just the tools (the default members).
+    cargoTestFlags = [ "--workspace" ];
+    buildFeatures = common.features;
+  }
+)

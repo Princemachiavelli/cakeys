@@ -13,6 +13,8 @@
       url = "github:rustsec/advisory-db";
       flake = false;
     };
+    # Rust builds with their dependencies built once per Cargo.lock (nix/package.nix).
+    crane.url = "github:ipetkov/crane";
   };
 
   outputs =
@@ -21,24 +23,31 @@
       nixpkgs,
       treefmt-nix,
       advisory-db,
+      crane,
     }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
       treefmt = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
       # cakeys and the tools around it (pkgs.nix).
-      local = import ./pkgs.nix { inherit pkgs advisory-db; };
+      local = import ./pkgs.nix {
+        inherit pkgs advisory-db;
+        craneLib = crane.mkLib pkgs;
+      };
       inherit (local)
         cakeys
+        cakeys-crane
         caprobe
         camigrate
         pcsc-probe
         mezura
         ;
+      # The integration tests run the crane build (nix/package-crane.nix), as every check does.
       mkTest =
         kind:
         import ./nix/test.nix {
-          inherit pkgs cakeys kind;
+          inherit pkgs kind;
+          cakeys = cakeys-crane;
           module = self.nixosModules.default;
         };
     in
@@ -56,10 +65,16 @@
         default = cakeys;
         inherit
           cakeys
+          cakeys-crane
           caprobe
           camigrate
           pcsc-probe
           ;
+        # Every check but the fuzz smoke run, whose build cannot reuse crane's dependencies: the
+        # gate while working (`nix build .#checks-crane-only`); `nix flake check` adds the fuzz run.
+        checks-crane-only = pkgs.linkFarm "checks-crane-only" (
+          builtins.removeAttrs self.checks.${system} [ "fuzz" ]
+        );
         # systemd-nspawn variant of the integration test. Needs the `uid-range` system feature
         # (nix.conf: `system-features = ... uid-range` and `auto-allocate-uids = true`).
         test-nspawn = mkTest "container";
@@ -94,12 +109,13 @@
           mkTest
           ;
         inherit (local)
-          cakeys
           pcsc-probe
           deny
-          demo
           fuzz
           ;
+        # Every check runs the crane build (packages.cakeys-crane).
+        cakeys = local.cakeys-crane;
+        demo = local.demo-crane;
       };
 
       devShells.${system}.default = pkgs.mkShell {

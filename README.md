@@ -140,7 +140,9 @@ reach tokens only through p11-kit forwarding or a real TPM, never through a toke
 ## Development
 
 ```console
-$ nix flake check            # unit, SoftHSM, tpm2-pkcs11 (swtpm), p11-kit, VM, module and TPM ACL tests, minimal build, formatting
+$ nix flake check            # unit, SoftHSM, tpm2-pkcs11 (swtpm), p11-kit, VM, module and TPM ACL tests, minimal build, formatting, fuzz smoke run
+$ nix build .#checks-crane-only  # the same without the fuzz smoke run: what changes rebuild is only cakeys' own crates
+$ nix build .#cakeys         # the regular buildRustPackage build (nix/package.nix); the checks use crane's (nix/package-crane.nix)
 $ nix fmt                    # treefmt.nix: rustfmt, nixfmt, taplo, shfmt, rumdl, keep-sorted; statix, deadnix, shellcheck, typos
 $ nix run .#demo             # the walkthrough (nix/demo.sh); checks.demo runs it straight through
 $ nix run .#fuzz -- lock      # fuzz one target (public_key, certificate, lock, config) until stopped

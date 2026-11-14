@@ -12,42 +12,22 @@
   mkTest,
 }:
 {
+  # The crane build (nix/package-crane.nix) with its tests; every check below runs it. The
+  # regular build (packages.cakeys, nix/package.nix) shares its source, patches, features and
+  # test environment (nix/package-common.nix) and is built on demand: `nix build .#cakeys`.
   inherit cakeys;
   # `nix fmt` would change nothing: every formatter and linter in treefmt.nix passes.
   formatting = treefmt.config.build.check self;
   # Every fuzz target, built with libFuzzer, for a fixed seed and input count.
   fuzz = fuzz.smoke;
-  # Clippy with -D warnings (NEXT.md §2): plain clippy is clean, and the workspace
-  # lints (Cargo.toml [workspace.lints]: unsafe_code deny, clippy::pedantic with one
-  # blanket allow) travel with every build, editor and this check.
-  clippy = cakeys.overrideAttrs (old: {
-    pname = "cakeys-clippy";
-    # The lint replaces the build and the tests, so the integration-test inputs are
-    # not needed; the vendored deps and the cryptoki patch are inherited.
-    nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.clippy ];
-    nativeCheckInputs = [ ];
-    buildPhase = ''
-      runHook preBuild
-      cargo clippy --workspace --all-targets --features camigrate/kwp -- -D warnings
-      runHook postBuild
-    '';
-    installPhase = ''
-      mkdir -p $out $caprobe $camigrate
-    '';
-    doCheck = false;
-  });
+  # Clippy with -D warnings over every target (nix/package-crane.nix).
+  inherit (cakeys) clippy;
   # cargo-deny offline (see `deny` in pkgs.nix): reproducible with the flake.lock.
   deny = deny.check;
   # nix/demo.sh straight through: every step's expected exit code still holds.
   demo = demo.check;
-  # cakeys, caprobe and camigrate without their `tpm2` and `ykcs11` features: build without
-  # tpm2-tss and sqlite.
-  minimal = cakeys.overrideAttrs {
-    pname = "cakeys-minimal";
-    cargoBuildNoDefaultFeatures = true;
-    buildInputs = [ ];
-    doCheck = false;
-  };
+  # cakeys, caprobe and camigrate without their `tpm2` and `ykcs11` features (nix/package-crane.nix).
+  inherit (cakeys) minimal;
   vm = mkTest "vm";
   # The capability-profile query (docs/PROVIDERS.md, `caprobe supports`): static answers from the
   # profiles embedded in the binary, no token needed. yes -> 0, no -> 15, unknown -> 16.
