@@ -1,0 +1,43 @@
+[package]
+name = "camigrate"
+description = "Move keys between PKCS#11 tokens, checked against keys.lock (cakeys)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "camigrate"
+
+[[bin]]
+name = "camigrate"
+path = "src/main.rs"
+
+[features]
+default = ["tpm2", "ykcs11"]
+tpm2 = ["cakeys-cli-common/tpm2"]
+ykcs11 = ["cakeys-cli-common/ykcs11"]
+
+[dependencies]
+cakeys-cli-common = { workspace = true, default-features = false }
+cakeys-core.workspace = true
+cakeys-pkcs11.workspace = true
+cakeys-profile.workspace = true
+anyhow.workspace = true
+base64.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+# The integration tests include crates/cli/tests/common (one harness for every tool), and with
+# it its dependencies.
+[dev-dependencies]
+aes.workspace = true
+aes-kw.workspace = true
+cmac.workspace = true
+cryptoki.workspace = true
+sha2.workspace = true

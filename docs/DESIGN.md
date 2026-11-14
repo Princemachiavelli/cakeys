@@ -547,9 +547,10 @@ model = "..." ; serial = "..." ; firmware = "M.m"
 
 ## 5. Verbs (HTTP-like) and exit codes
 
-The verbs are `cakeys`'s, except the three that measure modules: `caprobe caps`, `supports` and
-`probe` ([`SCOPE.md`](SCOPE.md), "Three tools"). Both binaries take `--config` and `--module` and
-share the exit codes; `caprobe` never reads the lock.
+The verbs are `cakeys`'s, except the three that measure modules — `caprobe caps`, `supports` and
+`probe` — and the three that move keys — `camigrate export`, `migrate` and `transport`
+([`SCOPE.md`](SCOPE.md), "Three tools"). The binaries take `--config` and `--module` and share
+the exit codes; `caprobe` never reads the lock, and `camigrate` does not write it yet.
 
 | Verb | Semantics |
 |---|---|
@@ -562,7 +563,7 @@ share the exit codes; `caprobe` never reads the lock.
 | `check <obj>[.id.<scheme>] [--token] [--spec]` | The pseudo-FOD pre-use check: realise without writing the lock, print the URI. Schemes the spec or token can never compute are refused before anything is created (`scheme_the_token_lacks_is_refused_before_create`). |
 | `gc [--apply]` | Print lock entries `keys.toml` no longer names, as table names; `--apply` removes exactly what it printed, holding the update lock (M3). Live objects keep their `ids` (`gc_prints_then_removes_stale_entries`). |
 | `caprobe caps --token` | Provider, resolved capability profiles and usable mechanisms, as JSON. |
-| `export`, `migrate` `--dry-run`; `transport` | Plan moving objects to a target (MIGRATE.md): per object the method, the exposure on the way, or why it cannot move. Only planning is implemented; `transport` writes a target's transport file. |
+| `camigrate export`, `migrate` `--dry-run`; `camigrate transport` | Plan moving objects to a target (MIGRATE.md): per object the method, the exposure on the way, or why it cannot move. Only planning is implemented; `transport` writes a target's transport file. |
 | `caprobe supports [--profile \| --token] NAME` | Ask the capability profiles (docs/PROVIDERS.md) what a module supports: pure data, no token touched; 0 yes, 15 no, 16 unknown. With `--profile` it needs no keys.toml. |
 | `caprobe probe --token [--write] [--diff P] [--out F]` | Generate a token's capability profile by probing it; `--write` only on a token marked `scratch` (17 otherwise); `--diff` drift is 15. |
 
@@ -588,13 +589,14 @@ Exit codes:
 
 | Crate | Role |
 |---|---|
-| `cakeys-core` | No `cryptoki`, no token access: config (`config`, typed classes, key types and schemes in `types`/`id`), the boolean-attribute table (`attrs`), CA-IDs (`id`), proof-of-possession host math and signature verification (`pop`, `sig`), what a spec asks for (`plan`: `Target`, `plan_mode`), and the lock rules (`reconcile`: `compare`, `record`, `Notes`), unit-tested without an HSM |
+| `cakeys-core` | No `cryptoki`, no token access: config (`config`, typed classes, key types and schemes in `types`/`id`), the boolean-attribute table (`attrs`), CA-IDs (`id`), proof-of-possession host math and signature verification (`pop`, `sig`), what a spec asks for (`plan`: `Target`, `plan_mode`), the lock rules (`reconcile`: `compare`, `record`, `Notes`), and what the lock and providers name about moving keys (`migrate`: the frozen method names and exposure levels, the capability model `Provider::migration` returns), unit-tested without an HSM |
 | `cakeys-profile` | Capability profiles as data (docs/PROVIDERS.md), read and resolved: the baseline, the embedded module and layer profiles (`profiles/`), and the effective view of a stack (`Effective`, `Verdict`). No token access, and nothing that writes a profile |
-| `cakeys-pkcs11` | the `cryptoki` token layer (`token/`: session and SO step, policy, generation, identity, proof of possession, URIs), the verbs (`ops`, with `create` over its selected pairs; `migrate`, the move planning), profile resolution and the static gate (`resolution`, `binding`, `gate`), `Provider` and `Registry`, and the built-in providers without code of their own (`providers`: softhsm, kryoptic, p11-kit) |
+| `cakeys-pkcs11` | the `cryptoki` token layer (`token/`: session and SO step, policy, generation, identity, proof of possession, URIs), the verbs (`ops`, with `create` over its selected pairs), profile resolution and the static gate (`resolution`, `binding`, `gate`), `Provider` and `Registry`, and the built-in providers without code of their own (`providers`: softhsm, kryoptic, p11-kit) |
 | `cakeys-{ykcs11,tpm2-pkcs11}` | providers with native paths and dependencies of their own (Yubico roots; tss-esapi, sqlite) |
 | `cakeys-cli-common` | What the command lines share: `default_registry()` (cargo features `ykcs11` and `tpm2`, both default, link those providers), opening a token keys.toml names, printing notes, the exit-code mapping |
 | `cakeys` (crates/cli) | Arguments, files and printing only — the verbs' logic is in `cakeys-pkcs11`, so another front end need not reimplement it (`validate`'s loop over the gate is the one exception left). CLI as a library: `main(registry)`, `default_registry()`; `examples/custom-provider.rs`. Its features `ykcs11` and `tpm2` forward to `cakeys-cli-common`; `checks.minimal` builds both binaries without them, and so without tpm2-tss and sqlite |
 | `caprobe` (crates/caprobe) | The module measurer: `caps`, `supports` and `probe`, the profile emitter and diff, and (test-only) the baseline generator from the vendored PKCS#11 headers. Its own library and binary (`main(registry)`), in its own Nix output, so `cakeys` links no probe code |
+| `camigrate` (crates/camigrate) | The key mover: `export`, `migrate` and `transport`, the planner (`plan`), the transport file, and each side's capabilities from the token, the lock or a transport file (`tokens`). Its own library and binary (`main(registry)`), in its own Nix output; `cakeys` depends on none of it |
 
 ### 6.2 Providers
 

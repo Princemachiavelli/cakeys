@@ -83,6 +83,14 @@ types (generic secrets work), and `CKA_WRAP_WITH_TRUSTED` per module (phase 3b).
 
 The planner and `--dry-run`; nothing moves yet.
 
+Since WORKPLAN stage 3 all of it is `camigrate`'s (docs/SCOPE.md, "Three tools"): the planner
+(`plan()`, `Material`, `Allow`, `FileFormat`) is crates/camigrate/src/plan.rs, the transport file
+crates/camigrate/src/transport.rs, what was `cakeys_pkcs11::migrate` crates/camigrate/src/tokens.rs,
+the verbs `camigrate export`, `migrate` and `transport`, and the dry-run matrix
+crates/camigrate/tests/dry_run.rs. `cakeys_core::migrate` keeps what the lock and the providers
+name: the frozen `Exposure` and `Method` names with their pinning test, and the capability model
+the `Provider::migration` hook returns. The bullets below name the places as built.
+
 - `cakeys_core::migrate`: the frozen `Exposure` and `Method` names (pinned by a unit test), the
   capability model (`Side`, `Accept`, `PlaintextImport`, `VendorMethod`), and `plan()`, pure,
   with ten unit tests: sealed between the software references (SHA-1 OAEP with `SoftHSM`,
@@ -126,7 +134,7 @@ Methods (D4): `public`, `rsa-oaep-sha1+aes-kwp`, `rsa-oaep-sha256+aes-kwp`, `rsa
 host path into a PKCS#11 target (`C_CreateObject`); `tpm2-ptool` and `piv-import` are the host
 path into those providers.
 
-The transport file (`cakeys transport`, D3):
+The transport file (`camigrate transport`, D3):
 
 ```toml
 format = "cakeys-transport"
@@ -140,7 +148,7 @@ trusted = false                 # marked CKA_TRUSTED on the source (phase 3b)
 mechanisms = ["CKM_AES_KEY_WRAP_KWP", "CKM_RSA_PKCS_OAEP"]   # the target's, for offline planning
 ```
 
-The export bundle (`cakeys export`, D5), one per object:
+The export bundle (`camigrate export`, D5), one per object:
 
 ```toml
 format = "cakeys-export"
@@ -205,7 +213,7 @@ logged-in session under a key that session made, so `sealed` describes what cake
 what an attacker with the PIN could do. `CKA_WRAP_WITH_TRUSTED` is the one restriction the token
 enforces (decided 2026-11-12: supported, phase 3b). It needs the SO on the source: the admin
 credential (`mgmKeyFile`, today refused outside ykcs11) becomes allowed on PKCS#11 modules for
-this step, which marks the transport key trusted on the source (`cakeys transport --trusted`).
+this step, which marks the transport key trusted on the source (`camigrate transport --trusted`).
 How each module scopes `CKA_TRUSTED` to the key that wraps (the transport public key for direct
 OAEP, the per-export KEK for the composed method) is [todo] per module.
 
@@ -216,7 +224,7 @@ public key whose hash matches the locked identity, so the lock is the authentica
 with no new trust mechanism. On a TPM target the transport key can also carry a `tpm-certify`
 attestation (TPM residence of the unwrapping key).
 
-`cakeys transport <spec> --token <target> --out <file>` writes what an offline export needs: the
+`camigrate transport <spec> --token <target> --out <file>` writes what an offline export needs: the
 public key, its identity, the target's provider and mechanisms. When both tokens are reachable
 from one host, export reads that directly.
 
@@ -296,11 +304,11 @@ for a key that was never moved.
 ## Command line
 
 ```console
-$ cakeys transport import-kek --token kryoptic --out kryoptic.transport.toml
-$ cakeys export signing --token softhsm --target kryoptic [--transport kryoptic.transport.toml] \
+$ camigrate transport import-kek --token kryoptic --out kryoptic.transport.toml
+$ camigrate export signing --token softhsm --target kryoptic [--transport kryoptic.transport.toml] \
     --out signing.export.toml [--dry-run] [--allow-host-plaintext]
-$ cakeys import signing-kry --token kryoptic --in signing.export.toml [--dry-run] [--no-update-lock]
-$ cakeys migrate signing --from softhsm --to kryoptic [--spec signing-kry] [--dry-run]
+$ camigrate import signing-kry --token kryoptic --in signing.export.toml [--dry-run] [--no-update-lock]
+$ camigrate migrate signing --from softhsm --to kryoptic [--spec signing-kry] [--dry-run]
 ```
 
 `migrate` is export plus import in one process when both tokens are reachable, with no bundle on

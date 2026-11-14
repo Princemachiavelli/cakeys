@@ -58,6 +58,21 @@ impl Resolved {
     }
 }
 
+/// The `ModuleInfo` of a module nobody has seen yet — keys.toml's provider alone (the static
+/// gate) or a transport file's — so nothing to detect a forwarder from; the binding layer still
+/// applies.
+#[must_use]
+pub fn moduleless_info() -> ModuleInfo {
+    ModuleInfo {
+        path: String::new(),
+        hash: None,
+        description: String::new(),
+        manufacturer: String::new(),
+        version: String::new(),
+        cryptoki: String::new(),
+    }
+}
+
 /// Resolve a token's profiles: `provider` is the selected provider's name (or the explicitly
 /// configured one, which may name the profile exactly, e.g. `provider = "softhsm/2.7"`);
 /// `token` is what `C_GetTokenInfo` gave, when there is a token (its firmware matches a module

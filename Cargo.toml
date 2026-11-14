@@ -9,8 +9,9 @@ members = [
   "crates/cli-common",
   "crates/cli",
   "crates/caprobe",
+  "crates/camigrate",
 ]
-default-members = ["crates/cli", "crates/caprobe"]
+default-members = ["crates/cli", "crates/caprobe", "crates/camigrate"]
 exclude = ["fuzz"]
 
 [workspace.package]

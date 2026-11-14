@@ -75,7 +75,13 @@ impl Token {
     ///
     /// Whenever `CKA_PUBLIC_KEY_INFO` is present it must agree with the material: modules may let
     /// it be set without checking (`SoftHSM`, kryoptic), so it is never trusted on its own.
-    pub(crate) fn spki(&self, h: ObjectHandle, loc: &Locator) -> Result<Vec<u8>> {
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` or `Ambiguous` when no single public key object stands in for missing material;
+    /// `Conflict` when `CKA_PUBLIC_KEY_INFO` disagrees with the material; whatever reading or
+    /// re-encoding the key refuses.
+    pub fn spki(&self, h: ObjectHandle, loc: &Locator) -> Result<Vec<u8>> {
         let spki = match self.material_spki(h)? {
             Some(spki) => spki,
             None => match self.find(ObjectClass::PUBLIC_KEY, loc)?.as_slice() {

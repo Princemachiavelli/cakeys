@@ -3,8 +3,9 @@
 { pkgs, advisory-db }:
 rec {
   cakeys = pkgs.callPackage ./nix/package.nix { };
-  # The module measurer (docs/SCOPE.md, "Three tools"): an output of the same build.
-  inherit (cakeys) caprobe;
+  # The module measurer and the key mover (docs/SCOPE.md, "Three tools"): outputs of the same
+  # build.
+  inherit (cakeys) caprobe camigrate;
   pcsc-probe = pkgs.callPackage ./nix/pcsc-probe.nix { };
   mezura = pkgs.callPackage ./nix/mezura.nix { };
   # cargo-deny (NEXT.md §1): the sandboxed checks.deny (advisories against the pinned

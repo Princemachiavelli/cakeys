@@ -10,6 +10,7 @@ let
     name = "cakeys-demo";
     runtimeInputs = with pkgs; [
       cakeys
+      cakeys.camigrate
       softhsm
       opensc
       openssl

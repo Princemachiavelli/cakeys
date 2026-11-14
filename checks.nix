@@ -32,7 +32,7 @@
       runHook postBuild
     '';
     installPhase = ''
-      mkdir -p $out $caprobe
+      mkdir -p $out $caprobe $camigrate
     '';
     doCheck = false;
   });
@@ -40,8 +40,8 @@
   deny = deny.check;
   # nix/demo.sh straight through: every step's expected exit code still holds.
   demo = demo.check;
-  # cakeys and caprobe without their `tpm2` and `ykcs11` features: build without tpm2-tss and
-  # sqlite.
+  # cakeys, caprobe and camigrate without their `tpm2` and `ykcs11` features: build without
+  # tpm2-tss and sqlite.
   minimal = cakeys.overrideAttrs {
     pname = "cakeys-minimal";
     cargoBuildNoDefaultFeatures = true;

@@ -1,7 +1,9 @@
-//! Helpers shared by the integration tests of `cakeys` and `caprobe` (each includes this file):
-//! running the package's own binary, the token headers of each suite's keys.toml, CLI output
-//! parsing and an independent DER oracle.
+//! Helpers shared by the integration tests of `cakeys`, `caprobe` and `camigrate` (each includes
+//! this file): running the package's own binary, the token headers of each suite's keys.toml,
+//! the cross-reference harness ([`xref`]), CLI output parsing and an independent DER oracle.
 #![allow(dead_code, reason = "each test binary uses a subset")]
+
+pub mod xref;
 
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
@@ -13,11 +15,32 @@ use std::time::{Duration, Instant};
 
 /// The binary under test, and its name for the logs: the including package's own (Cargo sets
 /// `CARGO_BIN_EXE_<name>` only for the package's binaries).
-pub const BIN: &str = match (option_env!("CARGO_BIN_EXE_cakeys"), option_env!("CARGO_BIN_EXE_caprobe")) {
-    (Some(b), _) | (None, Some(b)) => b,
-    (None, None) => panic!("included by a package with neither a cakeys nor a caprobe binary"),
+pub const BIN: &str = match (
+    option_env!("CARGO_BIN_EXE_cakeys"),
+    option_env!("CARGO_BIN_EXE_caprobe"),
+    option_env!("CARGO_BIN_EXE_camigrate"),
+) {
+    (Some(b), _, _) | (None, Some(b), _) | (None, None, Some(b)) => b,
+    (None, None, None) => panic!("included by a package with no cakeys, caprobe or camigrate binary"),
 };
-pub const TOOL: &str = if option_env!("CARGO_BIN_EXE_cakeys").is_some() { "cakeys" } else { "caprobe" };
+pub const TOOL: &str = match (option_env!("CARGO_BIN_EXE_cakeys"), option_env!("CARGO_BIN_EXE_caprobe")) {
+    (Some(_), _) => "cakeys",
+    (None, Some(_)) => "caprobe",
+    (None, None) => "camigrate",
+};
+
+/// Another binary of this workspace, beside [`BIN`] in the target directory. Cargo gives a test
+/// only its own package's binaries; `cargo test --workspace` (the Nix check phase) builds them
+/// all before any test runs.
+///
+/// # Panics
+///
+/// When that binary is not built (`cargo test -p <package>` alone): build the workspace first.
+pub fn sibling(name: &str) -> PathBuf {
+    let path = Path::new(BIN).with_file_name(name);
+    assert!(path.exists(), "{} is not built: run `cargo build --workspace` first", path.display());
+    path
+}
 
 /// The value of the suite variable `var` (a module path), else `None` with a skip message —
 /// unless `require` is set, which makes a missing one a failure.

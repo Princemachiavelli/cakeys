@@ -31,6 +31,7 @@
       inherit (local)
         cakeys
         caprobe
+        camigrate
         pcsc-probe
         mezura
         ;
@@ -53,7 +54,12 @@
 
       packages.${system} = {
         default = cakeys;
-        inherit cakeys caprobe pcsc-probe;
+        inherit
+          cakeys
+          caprobe
+          camigrate
+          pcsc-probe
+          ;
         # systemd-nspawn variant of the integration test. Needs the `uid-range` system feature
         # (nix.conf: `system-features = ... uid-range` and `auto-allocate-uids = true`).
         test-nspawn = mkTest "container";
@@ -71,6 +77,7 @@
       apps.${system} = import ./apps.nix {
         inherit pkgs;
         inherit (local)
+          camigrate
           caprobe
           demo
           deny

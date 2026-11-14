@@ -318,6 +318,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "camigrate"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "aes-kw",
+ "anyhow",
+ "base64",
+ "cakeys-cli-common",
+ "cakeys-core",
+ "cakeys-pkcs11",
+ "cakeys-profile",
+ "clap",
+ "cmac",
+ "cryptoki",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml",
+]
+
+[[package]]
 name = "caprobe"
 version = "0.1.0"
 dependencies = [

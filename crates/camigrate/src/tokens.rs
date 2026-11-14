@@ -1,22 +1,22 @@
 //! Export and import against tokens and the lock (MIGRATE.md): each side's capabilities, the
-//! objects a source holds, and the transport key. The decisions are `cakeys_core::migrate`'s;
-//! each side's capabilities come from the token's resolved capability profiles
-//! (docs/PROVIDERS.md phase 2) when one is committed for its provider, else from the
-//! provider's own `migration` hook.
+//! objects a source holds, and the transport key. The decisions are [`crate::plan`]'s; each
+//! side's capabilities come from the token's resolved capability profiles (docs/PROVIDERS.md
+//! phase 2) when one is committed for its provider, else from the provider's own `migration`
+//! hook.
 
-use crate::ops::{self, Notes, Target};
-use crate::resolution::{self, Resolved};
-use crate::{Registry, Token};
-use cakeys_core::config::{AttrValue, Lock, ModuleInfo, Observation, TokenCfg, TokenObservation};
-use cakeys_core::migrate::{Accept, Material, PlaintextImport, Side, Transport};
+use crate::plan::{Allow, FileFormat, Material, Plan, To, plan};
+use crate::transport::Transport;
+use cakeys_core::config::{AttrValue, Lock, Observation, TokenCfg, TokenObservation};
+use cakeys_core::migrate::{Accept, PlaintextImport, Side};
 use cakeys_core::pop::OaepHash;
 use cakeys_core::types::{KeyType, ObjectClass};
 use cakeys_core::{KmError, Result};
+use cakeys_pkcs11::ops::{self, Notes, Target};
+use cakeys_pkcs11::resolution::{self, Resolved, moduleless_info};
+use cakeys_pkcs11::{Registry, Token};
 use cakeys_profile::{PlaintextKind, Profile};
 use std::collections::BTreeSet;
 use std::str::FromStr;
-
-pub use cakeys_core::migrate::{Allow, FileFormat, Plan, To, plan};
 
 /// A token's capabilities, from the open token: its resolved capability profile over its
 /// usable mechanisms, the layers' subtractions included; the provider's `migration` hook
@@ -65,6 +65,7 @@ pub fn side_from_transport(t: &Transport, registry: &Registry) -> Option<Result<
 /// The per-module unwrap-template rules, as data (MIGRATE.md D6): what the wrapping code of
 /// MIGRATE phase 3 must drop from a target's unwrap template (`SoftHSM`: `CKA_VALUE_LEN`).
 #[must_use]
+#[expect(dead_code, reason = "defined ahead of its consumer: the unwrap template of MIGRATE phase 3")]
 pub fn unwrap_refusals(tok: &Token) -> Vec<&str> {
     let mut out: Vec<&str> =
         tok.profiles.module.iter().flat_map(|p| p.unwrap.refuse.iter().flatten().map(String::as_str)).collect();
@@ -180,19 +181,6 @@ fn lockless_token_cfg() -> TokenCfg {
     }
 }
 
-/// The `ModuleInfo` a transport file implies: only the provider is known, so nothing to
-/// detect a forwarder from — the binding layer still applies.
-pub(crate) fn moduleless_info() -> ModuleInfo {
-    ModuleInfo {
-        path: String::new(),
-        hash: None,
-        description: String::new(),
-        manufacturer: String::new(),
-        version: String::new(),
-        cryptoki: String::new(),
-    }
-}
-
 /// The objects realised on `token` (only `object`, if given), with what the planner needs from
 /// the lock: the object's type and one realisation's recorded policy and immutables.
 ///
@@ -224,7 +212,7 @@ pub fn materials<'a>(lock: &'a Lock, token: &str, object: Option<&str>) -> Resul
     Ok(out)
 }
 
-/// The transport key's public half (`cakeys transport`, MIGRATE.md D3). The spec must name an
+/// The transport key's public half (`camigrate transport`, MIGRATE.md D3). The spec must name an
 /// RSA private key that may unwrap and never leaves the token, and its realisation must verify
 /// against the lock: the locked identity is what makes the public key trustworthy to a source.
 ///

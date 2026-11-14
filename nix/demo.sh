@@ -273,8 +273,8 @@ wait_key
 # ── Act 5 ───────────────────────────────────────────────────────────────────────────────────
 
 act "5. Moving keys, planned from each side's capabilities" \
-  "Export is planned per object from what both modules can do (MIGRATE.md); moving the" \
-  "material is not implemented yet, so only --dry-run runs."
+  "camigrate plans an export per object from what both modules can do (MIGRATE.md); moving" \
+  "the material is not implemented yet, so only --dry-run runs."
 append <<'EOF'
 
 [objects.movable]
@@ -301,10 +301,10 @@ echo "No autoCreate here: that only lets first use create. Keys are created expl
 echo "pair the lock does not pin yet (signing and shared are pinned, so they are left alone):"
 jqf='.[] | {object, token, rfc7093m4: .ids.rfc7093m4}' expect 0 cakeys create --token soft
 echo "An extractable key moves sealed: wrapped to a transport key the target generates."
-expect 0 cakeys export movable --token soft --target kryo --dry-run
+expect 0 camigrate export movable --token soft --target kryo --dry-run
 echo "A non-extractable key never leaves its token, whatever the target can do."
-expect 15 cakeys export fixed --token soft --target kryo --dry-run
-expect 15 cakeys export movable --token soft --target kryo
+expect 15 camigrate export fixed --token soft --target kryo --dry-run
+expect 15 camigrate export movable --token soft --target kryo
 
 act "Done" \
   "Next: the NixOS VM test runs act 1 inside a real Nix build sandbox, with a consumer" \

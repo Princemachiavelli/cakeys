@@ -2,6 +2,7 @@
 # the sandbox.
 {
   pkgs,
+  camigrate,
   caprobe,
   demo,
   deny,
@@ -16,6 +17,12 @@ let
   };
 in
 {
+  # nix run .#camigrate -- --config keys.toml export <object> --token <t> --target <t2> --dry-run
+  camigrate = {
+    type = "app";
+    program = "${camigrate}/bin/camigrate";
+    meta.description = "Move keys between PKCS#11 tokens: plan exports and migrations (--dry-run), write transport files";
+  };
   # nix run .#caprobe -- --config keys.toml probe --token <t> --diff <profile>
   caprobe = {
     type = "app";

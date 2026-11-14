@@ -12,8 +12,8 @@ vendor's) plug in through the `Provider` trait.
 ## Three tools
 
 Decided 2026-11-13 ([`WORKPLAN.md`](../WORKPLAN.md) D1–D6): one workspace, one flake, three
-binaries, each with its own job. `caprobe` is built (WORKPLAN stage 2). **Planned:** `camigrate`
-(stage 3); until it lands, `cakeys` still carries the migration verbs.
+binaries, each with its own job, all three built (WORKPLAN stages 2 and 3). `camigrate` plans
+moves and writes transport files so far; moving material is MIGRATE.md phases 2–5 (stage 4).
 
 | Tool | Job | Verbs and parts | What it may do |
 |---|---|---|---|
@@ -38,7 +38,7 @@ export hooks on the `Provider` trait and never depend on `camigrate`.
   (`lib.mkKeys`), and the NixOS module (the sandbox hook, check units).
 - **Verify before use.** The pseudo-fixed-output `check`, proof of possession, type and policy
   checks.
-- **Keystore import and export** ([`MIGRATE.md`](../MIGRATE.md)), in `camigrate` only (planned, stage 3). The
+- **Keystore import and export** ([`MIGRATE.md`](../MIGRATE.md)), in `camigrate` only. The
   planner and `--dry-run`, standard PKCS#11 wrapping and unwrapping, transport keys, bundles,
   and the standard file formats (PKCS#8, PKCS#12), with every path's exposure named.
 - **Measuring modules** ([`PROVIDERS.md`](PROVIDERS.md)), in `caprobe` only. Capability

@@ -55,7 +55,7 @@ pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Res
     };
     let (module, token, source) = match recorded {
         Some((m, t)) => (m.clone(), Some(t.clone()), "the lock's recorded module and token"),
-        None => (crate::migrate::moduleless_info(), None, "keys.toml's provider"),
+        None => (crate::resolution::moduleless_info(), None, "keys.toml's provider"),
     };
     // What resolution cannot decide without the token (several profiles of a family, none
     // matching) is not a config error here: the open decides it.

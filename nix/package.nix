@@ -35,13 +35,15 @@ rustPlatform.buildRustPackage {
 
   # The tools of one workspace (docs/SCOPE.md, "Three tools"), from one build whose check phase
   # tests them together, each in its own output: `out` holds cakeys, `caprobe` the module
-  # measurer, so cakeys' closure carries no probe code.
+  # measurer and `camigrate` the key mover, so cakeys' closure carries neither.
   outputs = [
     "out"
     "caprobe"
+    "camigrate"
   ];
   postInstall = ''
     moveToOutput bin/caprobe "$caprobe"
+    moveToOutput bin/camigrate "$camigrate"
   '';
 
   # tss-esapi (the native TPM2_Certify attestation path of cakeys-tpm2-pkcs11) links
