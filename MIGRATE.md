@@ -321,6 +321,28 @@ a file imports into a token: `file` exposure, only with `--allow-host-plaintext`
   verified, the PKCS#8 then already there), and round-trip and wrong-passphrase unit tests. A new
   fixture: a self-signed certificate for the `tpm-import-p256` key.
 
+### Phase 5 results (2026-11-14, WORKPLAN stage 4)
+
+A key moves into a YubiKey's PIV slot through the host (`piv-import`), as Security Officer.
+
+- **The path** is the host path of phase 4: the key in memory, then ykcs11 `C_CreateObject` as SO
+  (the admin credential, `mgmKeyFile`) into the slot the target locator's `CKA_ID` names, without
+  a public half: ykcs11 creates no public key objects (its profile accepts certificates only), it
+  derives the public key from the slot.
+- **The identity on the host first**, for every host import: the plaintext key's public key must
+  hash to the locked `rfc7093m4`, or the move is 10 before anything is written — on a YubiKey
+  nothing can be taken back, since ykcs11 cannot erase a key.
+- **No replacing.** An occupied slot is refused (13): the import never overwrites a key. The
+  hardware test needed slot 95 empty, so it was emptied by hand first (yubikit `delete_key` and
+  `delete_certificate`, the management key read from its file); deleting and replacing a slot's
+  key is a future feature (TODO.md).
+- **No attestation**: a target spec with `attestation = true` is refused at planning (D8).
+- **Hardware run** (2026-11-14, YubiKey 5C NFC FIPS, firmware 5.7.4, ykcs11 2.7.3;
+  `crates/camigrate/tests/yubikey.rs`, opt-in): a P-256 key made extractable on SoftHSM moved
+  into slot 95 by `piv-import`, recorded with the `host` exposure, and `cakeys verify` proved
+  possession there; a second import into the now occupied slot was refused (13) before anything
+  was written. Slots 82–84 were not touched, and no PIN was tried but the right one.
+
 ### Frozen names and formats
 
 Exposure levels (D2): `public`, `enforced`, `sealed`, `host`, `file`; a plan that cannot move an
@@ -569,7 +591,7 @@ disk. `--dry-run` without objects plans every object the source token holds a re
 | 3b | **Done 2026-11-14.** `enforced`: the admin credential on PKCS#11 modules, `transport --trusted`, `CKA_WRAP_WITH_TRUSTED` keys | ≈300 + 250, 3–4 days |
 | 4 | **Done 2026-11-14.** `host` paths: `--allow-host-plaintext`, zeroized buffers, and tpm2-pkcs11 import through `tpm2_ptool` (a runtime dependency for that provider) | ≈350 + 300, 3–4 days |
 | 4b | **Done 2026-11-14.** `file`: `pkcs8-pbes2` and `pkcs12` export and import, `--passphrase-file` | ≈300 + 250, 3–4 days |
-| 5 | YubiKey import through ykcs11 as SO, identities checked on the host first; the hardware test overwrites scratch slot 0x95 (ask before running) | ≈250 + 200, 2–3 days |
+| 5 | **Done 2026-11-14.** YubiKey import through ykcs11 as SO, identities checked on the host first; the hardware test overwrites scratch slot 0x95 (ask before running) | ≈250 + 200, 2–3 days |
 | 6 | Native `tpm-duplicate`: a host-built duplication blob, `TPM2_Import` through tss-esapi | ≈600 + 400, 6–10 days |
 | 7 | Vendor methods (D10) for Luna, CloudHSM, nShield and others, in their provider crates, over their mechanisms and tools | with hardware |
 
