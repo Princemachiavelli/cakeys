@@ -64,6 +64,7 @@ fn facts() -> Facts {
                 cryptoki: "3.0".into(),
             },
             token: TokenInfo { model: "m".into(), serial: "1".into(), firmware: "1.0".into() },
+            extra: std::collections::BTreeMap::new(),
         },
     }
 }

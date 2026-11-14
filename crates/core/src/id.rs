@@ -29,7 +29,12 @@ pub fn is_sri(s: &str) -> bool {
         .is_some_and(|d| d.len() == 32)
 }
 
-/// Hash of the canonical JSON of (object type, policy attributes, public-half attributes).
+/// Hash of the canonical JSON (RFC 8785, JCS) of (object type, policy attributes, public-half
+/// attributes).
+///
+/// # Panics
+///
+/// Never: the document holds only strings, booleans and small integers, which always canonicalize.
 #[must_use]
 pub fn spec_digest(object: &ObjectCfg, spec: &SpecCfg) -> String {
     let mut doc = serde_json::json!({
@@ -41,21 +46,9 @@ pub fn spec_digest(object: &ObjectCfg, spec: &SpecCfg) -> String {
     if !spec.public_attributes.is_empty() {
         doc["publicAttributes"] = serde_json::json!(spec.public_attributes);
     }
-    sri(canonical_json(doc).to_string().as_bytes())
-}
-
-/// Object keys sorted at every level, inserted in that order: the serialization is the same
-/// whether or not `serde_json`'s `preserve_order` feature is enabled somewhere in the build.
-fn canonical_json(v: serde_json::Value) -> serde_json::Value {
-    match v {
-        serde_json::Value::Object(map) => {
-            let sorted: std::collections::BTreeMap<String, serde_json::Value> =
-                map.into_iter().map(|(k, v)| (k, canonical_json(v))).collect();
-            serde_json::Value::Object(sorted.into_iter().collect())
-        }
-        serde_json::Value::Array(a) => serde_json::Value::Array(a.into_iter().map(canonical_json).collect()),
-        v => v,
-    }
+    // RFC 8785 (JCS): keys sorted at every level, no whitespace. The document holds only
+    // strings, booleans and small integers, which every JSON library serializes alike.
+    sri(serde_jcs::to_string(&doc).expect("a JSON value of strings, booleans and integers canonicalizes").as_bytes())
 }
 
 /// Commitment label for objects the lock does not know yet. The lock records, per object, the
@@ -689,9 +682,7 @@ mod tests {
             assert_eq!(sri(&c.input(DEFAULT_COMMITMENT_LABEL, &obj(kt, len))), want, "{kt} {}", c.scheme());
         }
         // rfc7093m4: canonical SPKI from fixed points (compressed secp256k1 input normalizes).
-        let unhex = |h: &str| {
-            (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>()
-        };
+        let unhex = |h: &str| crate::hex::decode(h).unwrap();
         for (c, point, want) in [
             (
                 Curve::P256,

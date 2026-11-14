@@ -29,9 +29,9 @@ use tss_esapi::interface_types::session_handles::AuthSession;
 use tss_esapi::interface_types::structure_tags::AttestationType;
 use tss_esapi::structures::{
     Attest, AttestInfo, Auth, Data, EccPoint, EccScheme, HashScheme, KeyDerivationFunctionScheme, Name, Private,
-    Public, PublicBuilder, PublicEccParametersBuilder, Signature, SignatureScheme,
+    Public, PublicBuffer, PublicBuilder, PublicEccParametersBuilder, Signature, SignatureScheme,
 };
-use tss_esapi::tss2_esys as esys;
+use tss_esapi::traits::{Marshall, UnMarshall};
 use zeroize::Zeroizing;
 
 /// What a certify run proved, host-verified.
@@ -294,20 +294,10 @@ fn blobs(priv_blob: &[u8], pub_blob: &[u8]) -> Result<(Private, Public)> {
 /// # Errors
 ///
 /// `Conflict` when the blob does not unmarshal, or is not a public area tss-esapi accepts.
-#[expect(unsafe_code, reason = "Tss_MU unmarshalling FFI; each call carries a SAFETY comment")]
 pub fn unmarshal_public(pub_blob: &[u8]) -> Result<Public> {
-    let mut public = esys::TPM2B_PUBLIC::default();
-    let mut offset = 0u64;
-    // SAFETY: `pub_blob` is valid for reads of `pub_blob.len()` bytes, and `offset` and
-    // `public` are valid, distinct locals the callee only writes through the pointers given;
-    // it touches nothing else.
-    let rc = unsafe {
-        esys::Tss2_MU_TPM2B_PUBLIC_Unmarshal(pub_blob.as_ptr(), pub_blob.len() as u64, &raw mut offset, &raw mut public)
-    };
-    if rc != 0 {
-        return Err(KmError::Conflict(format!("the store's public blob does not unmarshal (rc 0x{rc:x})")));
-    }
-    Public::try_from(public).map_err(|e| KmError::Conflict(format!("the store's public blob: {e}")))
+    PublicBuffer::unmarshall(pub_blob)
+        .map_err(|e| KmError::Conflict(format!("the store's public blob does not unmarshal: {e}")))
+        .and_then(|b| Public::try_from(b).map_err(|e| KmError::Conflict(format!("the store's public blob: {e}"))))
 }
 
 /// Certify the loaded `key` with the AK: a fresh random nonce as qualifying data (freshness),
@@ -349,30 +339,11 @@ pub fn certify(ctx: &mut Context, key: KeyHandle, key_auth: &[u8], ak: KeyHandle
 /// and the magic field — which the safe view drops — is part of the signature, so an
 /// attestation that did not come from a TPM never verifies.
 ///
-/// # Panics
-///
-/// Only if the marshaller reports more bytes than the 4096-byte buffer it filled, which it
-/// cannot.
-///
 /// # Errors
 ///
 /// `Unavailable` if the attestation cannot be re-marshaled (a TPM2 command error code).
-#[expect(unsafe_code, reason = "Tss_MU marshalling FFI; each call carries a SAFETY comment")]
 pub fn attest_bytes(attest: &Attest) -> Result<Vec<u8>> {
-    let ffi = esys::TPMS_ATTEST::from(attest.clone());
-    let mut buf = vec![0u8; 4096];
-    let mut offset = 0u64;
-    // SAFETY: `ffi` is fully initialized and `buf` 4096 zeroed bytes, so all pointers are
-    // valid for the whole call; the marshaller reads only `ffi`, writes only within the
-    // buffer, and advances `offset` by no more than it wrote.
-    let rc = unsafe {
-        esys::Tss2_MU_TPMS_ATTEST_Marshal(&raw const ffi, buf.as_mut_ptr(), buf.len() as u64, &raw mut offset)
-    };
-    if rc != 0 {
-        return Err(KmError::Unavailable(format!("marshaling the attestation (rc 0x{rc:x})")));
-    }
-    buf.truncate(usize::try_from(offset).expect("the marshaller never advances past the buffer it filled"));
-    Ok(buf)
+    attest.marshall().map_err(|e| KmError::Unavailable(format!("marshaling the attestation: {e}")))
 }
 
 /// Verify the AK's ECDSA-SHA256 signature over the attestation bytes, on the host: the TPM

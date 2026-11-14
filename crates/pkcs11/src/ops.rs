@@ -303,6 +303,7 @@ fn facts(tok: &Token, r: &Resolved) -> Facts {
             cakeys_version: env!("CARGO_PKG_VERSION").to_owned(),
             module: tok.module.clone(),
             token: tok.token.clone(),
+            extra: std::collections::BTreeMap::new(),
         },
     }
 }

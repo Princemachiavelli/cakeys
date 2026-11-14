@@ -6,7 +6,28 @@ research in `reports/` reached the same conclusion for the lock design ("no surv
 combines…").
 
 There are a few places, though, where the code re-implements something a dependency it already
-has, or a standard crate, does better. This is a survey only; nothing was changed.
+has, or a standard crate, does better.
+
+## Status (2026-11-13, branch `reduce-2026-11-13`)
+
+The survey below is as written; this is what was done with it.
+
+| Item | Done | Notes |
+|---|---|---|
+| tss-esapi marshalling | Yes | `PublicBuffer::unmarshall` and `Attest::marshall`; both `unsafe` blocks gone |
+| ykcs11 DER and PEM | Yes | `load_pem_chain`, `signature().raw_bytes()`, and `der`'s `Reader::tlv_bytes` for the TBS bytes (no derive needed); ykcs11 no longer depends on base64 |
+| Hex decoders | Yes | `cakeys_core::hex::decode` over `base16ct`; `piv_slot` no longer accepts `+1` |
+| tpm2-pkcs11 YAML | Yes | `serde_norway`; `pobjects.config` goes through it too. The module writes some attributes twice, so the map needs its own small visitor and the swap saves no lines. The store parser now has unit tests on rows the module wrote (`crates/tpm2-pkcs11/tests/fixtures`). A row that is not YAML is refused, where a broken line used to be skipped |
+| `save_lock` | Yes | `tempfile` (unique name, removed on failure), plus a directory sync. `tempfile` does not sync the directory itself, contrary to the table below; that is two lines of std |
+| `access(2)` | Yes | `rustix::fs::access`; cakeys-core no longer depends on libc. One `unsafe` exemption is left (the loader lookup) |
+| `serde_jcs` | Yes | `spec_digests_are_pinned` passes unchanged, so no digest moved |
+| Unknown provenance keys | Yes | `Provenance.extra`; they load with a warning and survive a rewrite. Every other table still refuses unknown keys |
+| `schemars` | No | It publishes a schema, which CONTRACT.md lists under "To decide" |
+| Lock signing | No | Still an open question |
+
+Net: about 90 fewer lines of non-test Rust, 80 lines of new tests, and ten new crates in the
+lock file: `serde_norway`, `unsafe-libyaml-norway`, `ryu`, `serde_jcs`, `ryu-js`, `tempfile`,
+`fastrand`, `rustix`, `linux-raw-sys` and `errno` (`base16ct` was already there).
 
 ## Re-implementations worth replacing
 

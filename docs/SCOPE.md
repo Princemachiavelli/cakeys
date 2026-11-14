@@ -101,7 +101,7 @@ spec-compliant module would.
   zeroized, never written in plaintext.
 - **State cakeys creates on tokens.** Transport keys, the TPM Attestation Key: explicit, and
   declared in keys.toml wherever possible.
-- **Unsafe code and FFI.** Only where a library forces it (`access(2)`, TSS marshalling), each
+- **Unsafe code and FFI.** Only where a library forces it (the loader lookup of the module file), each
   site allowed explicitly with its reason.
 
 ## Out of scope

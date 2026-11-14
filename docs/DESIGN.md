@@ -508,8 +508,8 @@ model = "..." ; serial = "..." ; firmware = "M.m"
   fails — `module_and_token_provenance_warn_but_do_not_fail`. The `path` is the file the dynamic
   loader mapped, symlinks resolved, whatever named it (`$NAME`, `--module`, a bare name found
   by the library search).
-- **The spec digest** is the SHA-256 of canonical JSON `{"v":1,"type":<object, camelCase>,
-  "attributes":<…>}`, with keys sorted at every level explicitly (independent of serde_json
+- **The spec digest** is the SHA-256 of the RFC 8785 (JCS) form of `{"v":1,"type":<object, camelCase>,
+  "attributes":<…>}`: keys sorted at every level, no whitespace (`serde_jcs`; the pinned digests
   features). Attribute values are typed: booleans, and `CKA_ALLOWED_MECHANISMS` as a sorted,
   duplicate-free list; `certificateType` and `publicAttributes` take part only when set, under
   their own key. Curves are canonical (`secp256r1`, never an alias), so a curve alias is the same

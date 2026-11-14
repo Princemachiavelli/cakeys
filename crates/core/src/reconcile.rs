@@ -494,6 +494,13 @@ fn warn_provenance(t: &Target, prev: &LockRealisation, now: &Facts, notes: &mut 
     }
     let Some(p) = &prev.provenance else { return };
     let n = &now.provenance;
+    if !p.extra.is_empty() {
+        let keys: Vec<&str> = p.extra.keys().map(String::as_str).collect();
+        notes.warn(format_args!(
+            "{t}: the lock records provenance this cakeys does not know ({}); kept, not checked",
+            keys.join(", ")
+        ));
+    }
     if p.provider != n.provider {
         notes.warn(format_args!("{t} was realised with provider {}, now {}", p.provider, n.provider));
     }
@@ -580,6 +587,7 @@ mod tests {
                     cryptoki: "3.0".into(),
                 },
                 token: TokenInfo { model: "m".into(), serial: "1".into(), firmware: "1.0".into() },
+                extra: BTreeMap::new(),
             },
         }
     }

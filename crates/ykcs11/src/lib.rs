@@ -149,10 +149,8 @@ impl Provider for Ykcs11 {
 /// The PIV key slot ykcs11 places a `CKA_ID` in (hex, one byte): 01-04 are 9a/9c/9d/9e, 05-18 the
 /// retired slots 82-95 (ykcs11's fixed object table).
 fn piv_slot(id: &str) -> Option<u8> {
-    if id.len() != 2 {
-        return None;
-    }
-    match u8::from_str_radix(id, 16).ok()? {
+    let [n] = cakeys_core::hex::decode(id)?[..] else { return None };
+    match n {
         n @ 1..=4 => Some([0x9a, 0x9c, 0x9d, 0x9e][usize::from(n) - 1]),
         n @ 5..=0x18 => Some(0x82 + (n - 5)),
         _ => None,
@@ -264,9 +262,7 @@ mod tests {
 
     /// The DER of a one-certificate PEM fixture.
     fn der(pem: &str) -> Vec<u8> {
-        use base64::Engine;
-        let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
-        base64::engine::general_purpose::STANDARD.decode(body).unwrap()
+        x509_cert::der::pem::decode_vec(pem.as_bytes()).unwrap().1
     }
 
     /// The probe's scratch guard: a slot is overwritable only while it holds ykcs11's own

@@ -17,11 +17,12 @@ cakeys-profile = { path = "crates/profile" }
 cakeys-ykcs11 = { path = "crates/ykcs11" }
 cakeys-tpm2-pkcs11 = { path = "crates/tpm2-pkcs11" }
 anyhow = "1"
+base16ct = { version = "1", features = ["alloc"] }
 base64 = "0.23"
 clap = { version = "4", features = ["derive", "env"] }
 cryptoki = "0.12"
 rsa = { version = "0.10", default-features = false, features = ["std", "encoding", "pkcs1v15"] }
-x509-cert = { version = "0.3", default-features = false, features = ["std"] }
+x509-cert = { version = "0.3", default-features = false, features = ["std", "pem"] }
 p256 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "ecdsa"] }
 p384 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "ecdsa"] }
 p521 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "ecdsa"] }
@@ -32,6 +33,7 @@ elliptic-curve = { version = "0.14", default-features = false, features = ["ecdh
 ed25519-dalek = { version = "3", default-features = false, features = ["alloc", "pkcs8"] }
 ed448 = { version = "0.5", default-features = false, features = ["alloc", "pkcs8"] }
 serde = { version = "1", features = ["derive"] }
+serde_jcs = "0.2"
 serde_json = "1"
 sha2 = { version = "0.11", features = ["oid"] }
 subtle = { version = "2", default-features = false }
@@ -45,18 +47,20 @@ aes-kw = "0.3"
 cmac = "0.8"
 hmac = "0.13"
 sha1 = "0.11"
+serde_norway = "0.9"
 tss-esapi = "7.7"
 rusqlite = { version = "0.42", features = ["bundled"] }
 aes-gcm = "0.11"
 zeroize = "1"
 libc = "0.2"
+rustix = { version = "1", features = ["fs"] }
+tempfile = "3"
 
 # Inherited by every member with `[lints] workspace = true`. `cargo clippy` (checks.clippy)
 # runs with `-D warnings`, so everything here is clean at the stated level.
 [workspace.lints.rust]
-# The exemptions are `#[expect]`ed and carry `// SAFETY:` comments: the TPM marshalling
-# FFI (crates/tpm2-pkcs11/src/attest/esys.rs), access(2) (crates/core/src/config.rs) and the
-# loader lookup of the module file the lock records (crates/pkcs11/src/token/mod.rs).
+# The one exemption is `#[expect]`ed and carries `// SAFETY:` comments: the loader lookup of the
+# module file the lock records (crates/pkcs11/src/token/mod.rs).
 unsafe_code = "deny"
 
 [workspace.lints.clippy]

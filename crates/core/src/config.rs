@@ -739,9 +739,12 @@ pub enum Session {
 }
 
 /// What produced the record. Differences warn (module build, token, provider) or note (module
-/// file, cakeys version); `realise` re-binds them.
+/// file, cakeys version); `realise` re-binds them. The one lock table that takes keys this cakeys
+/// does not know: they never change a verdict, so a lock a newer cakeys wrote still loads, and
+/// they are kept (`extra`) when the lock is rewritten — only re-recording the realisation,
+/// which replaces its provenance, drops them.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
 pub struct Provenance {
     /// Provider that handled the module (fix-ups must not change identity).
     pub provider: String,
@@ -750,6 +753,9 @@ pub struct Provenance {
     pub module: ModuleInfo,
     /// Token that holds the object (`C_GetTokenInfo`).
     pub token: TokenInfo,
+    /// Keys of a newer cakeys, as read.
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, toml::Value>,
 }
 
 /// Read and check keys.toml; `$NAME` path references read the process environment.
@@ -809,7 +815,7 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
             t.mgm_key_file = Some(PathBuf::from(expanded));
         }
         if let Some(id) = &t.scratch_id
-            && (id.is_empty() || id.len() % 2 != 0 || !id.bytes().all(|b| b.is_ascii_hexdigit()))
+            && crate::hex::decode(id).is_none_or(|b| b.is_empty())
         {
             return Err(KmError::Validation(format!(
                 "{}: token '{name}': scratchId {id:?} is not a hex CKA_ID",
@@ -888,7 +894,8 @@ pub fn parse_lock(text: &str, path: &Path) -> Result<Lock> {
     lock.validate(path)
 }
 
-/// Write the lock through a temporary file synced before it is renamed over the old one, so a
+/// Write the lock through a temporary file synced before it is renamed over the old one (and the
+/// directory synced after), so a
 /// crash leaves the old lock or the new one, never a truncated one.
 ///
 /// # Errors
@@ -896,14 +903,22 @@ pub fn parse_lock(text: &str, path: &Path) -> Result<Lock> {
 /// `Io` if the lock cannot be encoded, or the temporary write, sync or rename fails.
 pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
     use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
     let text = toml::to_string_pretty(lock).map_err(|e| KmError::Io(format!("encoding {}: {e}", path.display())))?;
-    let tmp = path.with_extension("lock.tmp");
-    let mut file = std::fs::File::create(&tmp).map_err(KmError::io(format!("creating {}", tmp.display())))?;
-    file.write_all(text.as_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(KmError::io(format!("writing {}", tmp.display())))?;
-    std::fs::rename(&tmp, path).map_err(KmError::io(format!("renaming {} to {}", tmp.display(), path.display())))?;
-    Ok(())
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    // A uniquely named file beside the lock (the same filesystem, for the rename), removed if
+    // this run fails before the rename; created like any new file (0666 under the umask).
+    let mut tmp = tempfile::Builder::new()
+        .prefix(".keys.lock.")
+        .permissions(std::fs::Permissions::from_mode(0o666))
+        .tempfile_in(dir)
+        .map_err(KmError::io(format!("creating a temporary file in {}", dir.display())))?;
+    tmp.write_all(text.as_bytes())
+        .and_then(|()| tmp.as_file().sync_all())
+        .map_err(KmError::io(format!("writing {}", tmp.path().display())))?;
+    tmp.persist(path).map_err(|e| KmError::Io(format!("renaming over {}: {}", path.display(), e.error)))?;
+    // The rename itself is durable once the directory is synced.
+    std::fs::File::open(dir).and_then(|d| d.sync_all()).map_err(KmError::io(format!("syncing {}", dir.display())))
 }
 
 /// The advisory lock held around the lock file's read-modify-write (finding M3). A run that may
@@ -944,13 +959,7 @@ pub fn lock_for_update(lock_path: &Path) -> Result<UpdateGuard> {
 ///   `.lck` sidecar) must be writable by this user (`access(2)`, so a read-only mount counts).
 #[must_use]
 pub fn lock_unwritable(lock_path: &Path) -> Option<String> {
-    #[expect(unsafe_code, reason = "access(2) only reads the path; the CString is a valid NUL-terminated one")]
-    fn writable(p: &Path) -> bool {
-        use std::os::unix::ffi::OsStrExt;
-        std::ffi::CString::new(p.as_os_str().as_bytes())
-            // SAFETY: a valid NUL-terminated path; access(2) only reads it.
-            .is_ok_and(|c| unsafe { libc::access(c.as_ptr(), libc::W_OK) } == 0)
-    }
+    let writable = |p: &Path| rustix::fs::access(p, rustix::fs::Access::WRITE_OK).is_ok();
     if std::env::var_os("NIX_BUILD_TOP").is_some() && std::env::var_os("IN_NIX_SHELL").is_none() {
         return Some("this run is inside a Nix build sandbox, where a lock write would be lost".into());
     }
@@ -1060,6 +1069,38 @@ mod tests {
         let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/keys.lock"));
         let lock = load_lock(path).unwrap();
         assert_eq!(lock.realisations["signing-soft"]["softhsm"].binding, Some(Binding::PopSign));
+    }
+
+    /// Provenance keys of a newer cakeys load and survive a rewrite (the TUF re-serialization
+    /// rule); anywhere else an unknown key is still a refused lock.
+    #[test]
+    fn unknown_provenance_keys_are_kept_on_rewrite() {
+        let fixture = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/keys.lock"));
+        let text = std::fs::read_to_string(fixture).unwrap();
+        let known = "provider = \"softhsm\"\ncakeysVersion = \"0.1.0\"\n";
+        assert!(text.contains(known));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.lock");
+        std::fs::write(&path, text.replacen(known, &format!("{known}builder = \"ci-7\"\nrun = {{ id = 3 }}\n"), 1))
+            .unwrap();
+        let lock = load_lock(&path).unwrap();
+        let extra = |l: &Lock| l.realisations["signing-soft"]["softhsm"].provenance.as_ref().unwrap().extra.clone();
+        assert_eq!(extra(&lock).keys().collect::<Vec<_>>(), ["builder", "run"]);
+        save_lock(&path, &lock).unwrap();
+        assert_eq!(extra(&load_lock(&path).unwrap()), extra(&lock));
+        // The rename left nothing behind but the lock.
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        // A compared table takes no unknown key.
+        std::fs::write(
+            &path,
+            text.replacen(
+                "[realisations.signing-soft.softhsm]\n",
+                "[realisations.signing-soft.softhsm]\nbuilder = \"ci-7\"\n",
+                1,
+            ),
+        )
+        .unwrap();
+        assert!(matches!(load_lock(&path), Err(KmError::Validation(_))));
     }
 
     /// `$NAME`/`${NAME}` in `pinFile` and `module` read the path from the environment; an unset or

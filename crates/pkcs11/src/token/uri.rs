@@ -54,15 +54,7 @@ pub(super) fn locator_attrs(loc: &Locator) -> Result<Vec<Attribute>> {
 }
 
 pub(super) fn hex_decode(s: &str) -> Result<Vec<u8>> {
-    // ASCII only: byte slicing below would panic inside a multi-byte character.
-    if !s.is_ascii() || !s.len().is_multiple_of(2) {
-        return Err(KmError::Validation(format!("CKA_ID '{s}' is not hex")));
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16))
-        .collect::<std::result::Result<_, _>>()
-        .map_err(|_| KmError::Validation(format!("CKA_ID '{s}' is not hex")))
+    cakeys_core::hex::decode(s).ok_or_else(|| KmError::Validation(format!("CKA_ID '{s}' is not hex")))
 }
 
 fn pct(bytes: &[u8]) -> String {

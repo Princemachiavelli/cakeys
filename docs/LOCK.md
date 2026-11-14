@@ -86,7 +86,10 @@ they mean different things to a verdict:
 | **Observed** | `observed.*` | facts about the token; a warning at most |
 | **Provenance** | `provenance.*` | what produced the record; a warning or a note |
 
-Removing `observed` and `provenance` entirely changes no verdict (tested). The compared fields
+Removing `observed` and `provenance` entirely changes no verdict (tested). `provenance` is also
+the one table that takes keys this cakeys does not know (a newer version's): they load with a
+warning and are kept when the lock is rewritten; an unknown key anywhere else is refused (17).
+The compared fields
 are required.
 
 ```toml

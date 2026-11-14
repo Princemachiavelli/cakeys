@@ -10,12 +10,11 @@
 //! generates the certificate on demand with a random serial and a randomized ECDSA signature,
 //! so only the asserted content is stable.
 
-use base64::Engine;
 use cakeys_core::id;
 use cakeys_core::{KmError, Result};
 use x509_cert::certificate::Certificate;
 use x509_cert::der::asn1::ObjectIdentifier;
-use x509_cert::der::{Decode, Encode};
+use x509_cert::der::{Decode, Encode, Header, Reader, SliceReader};
 
 /// The label prefix ykcs11 gives every slot's attestation certificate (suffix: the slot, e.g.
 /// "9a"); the slot f9 device certificate itself has the bare label without a suffix.
@@ -52,16 +51,17 @@ impl Cert {
     /// The bytes the signature was computed over: the `tbsCertificate` sliced from the
     /// certificate's original DER, never re-encoded, so verification is exact.
     fn tbs(&self) -> Result<&[u8]> {
-        tlv_children(&self.der)?.next().ok_or_else(|| KmError::Conflict("certificate has no tbsCertificate".into()))
+        // Certificate is SEQUENCE { tbsCertificate, signatureAlgorithm, signature }: the first
+        // TLV after the outer header, header included.
+        let mut reader = SliceReader::new(&self.der).map_err(|e| KmError::Conflict(format!("certificate DER: {e}")))?;
+        Header::decode(&mut reader)
+            .and_then(|_| reader.tlv_bytes())
+            .map_err(|e| KmError::Conflict(format!("certificate has no tbsCertificate: {e}")))
     }
 
     /// The raw signature value: the BIT STRING content, minus the unused-bits byte.
-    fn signature(&self) -> Result<&[u8]> {
-        tlv_children(&self.der)?
-            .nth(2)
-            .and_then(|sig| tlv_content(sig))
-            .and_then(|c| c.strip_prefix(&[0]))
-            .ok_or_else(|| KmError::Conflict("certificate has no signature BIT STRING".into()))
+    fn signature(&self) -> &[u8] {
+        self.parsed.signature().raw_bytes()
     }
 
     /// The subject's canonical SPKI — for the device certificate, the attestation key itself.
@@ -100,60 +100,13 @@ impl Cert {
     }
 }
 
-/// Iterate the TLVs (tag, length, value) inside the DER object `der` itself must be.
-fn tlv_children(der: &[u8]) -> Result<impl Iterator<Item = &[u8]>> {
-    // The certificate is SEQUENCE { tbsCertificate, signatureAlgorithm, signature }: yield the
-    // full bytes of each child (header included), so the first is the exact signed TBS.
-    let content = tlv_content(der).ok_or_else(|| KmError::Conflict("certificate is not DER".into()))?;
-    let mut rest = content;
-    let iter = std::iter::from_fn(move || {
-        if rest.is_empty() {
-            return None;
-        }
-        let len = tlv_len(rest)?;
-        let (tlv, next) = rest.split_at(len);
-        rest = next;
-        Some(tlv)
-    });
-    Ok(iter)
-}
-
-/// The content of one TLV: `[tag, len..., content]` → `content`.
-fn tlv_content(tlv: &[u8]) -> Option<&[u8]> {
-    tlv.get(tlv_header_len(tlv)?..)
-}
-
-/// The header length of one TLV (tag plus its length bytes).
-fn tlv_header_len(tlv: &[u8]) -> Option<usize> {
-    Some(match *tlv.get(1)? {
-        n if n < 0x80 => 2,
-        0x81 => 3,
-        0x82 => 4,
-        _ => return None,
-    })
-}
-
-/// The total length of one TLV (header + content).
-fn tlv_len(tlv: &[u8]) -> Option<usize> {
-    let [_, l, rest @ ..] = tlv else { return None };
-    match *l {
-        n if n < 0x80 => Some(2 + n as usize),
-        0x81 => rest.first().map(|n| 3 + *n as usize),
-        0x82 => rest.get(..2).map(|b| 4 + u16::from_be_bytes(b.try_into().unwrap()) as usize),
-        _ => None,
-    }
-}
-
 /// Parse every PEM `CERTIFICATE` block of `pem` (the embedded anchor and pool files).
 pub fn pem_certs(pem: &str) -> Result<Vec<Cert>> {
-    let b64 = base64::engine::general_purpose::STANDARD;
-    pem.split("-----BEGIN CERTIFICATE-----")
-        .skip(1)
-        .map(|block| {
-            let body: String =
-                block.split("-----END CERTIFICATE-----").next().unwrap_or_default().lines().map(str::trim).collect();
-            Cert::from_der(b64.decode(body).map_err(|e| KmError::Validation(format!("pem body: {e}")))?)
-        })
+    let bad = |e| KmError::Validation(format!("pem certificates: {e}"));
+    Certificate::load_pem_chain(pem.as_bytes())
+        .map_err(bad)?
+        .into_iter()
+        .map(|parsed| Ok(Cert { der: parsed.to_der().map_err(bad)?, parsed }))
         .collect()
 }
 
@@ -284,7 +237,7 @@ fn chain_to_anchor<'a>(cert: &Cert, anchors: &'a [Cert], pool: &[Cert]) -> Resul
 fn verify_signed_by(cert: &Cert, signer: &Cert) -> Result<()> {
     use cakeys_core::sig::{self, EcdsaHash, Encoding};
     let spki = signer.spki()?;
-    let (tbs, s) = (cert.tbs()?, cert.signature()?);
+    let (tbs, s) = (cert.tbs()?, cert.signature());
     let ecdsa = |hash| sig::ecdsa(&spki, tbs, s, Encoding::Der, Some(hash));
     let verdict = match cert.parsed.signature_algorithm().oid {
         ECDSA_SHA256 => ecdsa(EcdsaHash::Sha256),
@@ -322,9 +275,7 @@ mod tests {
 
     /// A fixture certificate's DER, from its PEM.
     fn der_of(name: &str) -> Vec<u8> {
-        let pem = String::from_utf8(fixture(name)).unwrap();
-        let body = pem.lines().filter(|l| !l.starts_with("---")).collect::<String>();
-        base64::engine::general_purpose::STANDARD.decode(body).unwrap()
+        x509_cert::der::pem::decode_vec(&fixture(name)).unwrap().1
     }
 
     /// The embedded Yubico anchors and intermediate pool parse, and every published

@@ -183,7 +183,10 @@ fn target(tok: &Token, cfg: &TokenCfg) -> Result<Target> {
                 tok.name, tok.name
             )));
         }
-        return Ok(Target::Slot(hex(id)));
+        // The config loader has already validated it.
+        let id =
+            cakeys_core::hex::decode(id).ok_or_else(|| KmError::Validation(format!("scratchId {id:?} is not hex")))?;
+        return Ok(Target::Slot(id));
     }
     if cfg.scratch_id.is_some() {
         return Err(KmError::Validation(format!(
@@ -201,11 +204,6 @@ fn target(tok: &Token, cfg: &TokenCfg) -> Result<Target> {
         )));
     }
     Ok(Target::Labels)
-}
-
-/// A hex `CKA_ID` the config loader has already validated.
-fn hex(id: &str) -> Vec<u8> {
-    (0..id.len()).step_by(2).filter_map(|i| u8::from_str_radix(&id[i..i + 2], 16).ok()).collect()
 }
 
 /// Refuse a scratch slot holding anything but the provider's own placeholder from an earlier
@@ -1066,11 +1064,5 @@ mod tests {
         // Worked with one hash: usable, the other hash's failure a note only.
         assert_eq!(profile.notes["CKM_RSA_PKCS_OAEP"], "RSA-2048 decrypt SHA-256: CKR_ARGUMENTS_BAD");
         assert!(!profile.notes.contains_key("CKM_ECDSA"));
-    }
-
-    #[test]
-    fn scratch_ids_decode_as_the_config_validated_them() {
-        assert_eq!(hex("18"), [0x18]);
-        assert_eq!(hex("0aff"), [0x0a, 0xff]);
     }
 }
