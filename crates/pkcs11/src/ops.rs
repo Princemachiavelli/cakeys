@@ -1,7 +1,7 @@
 //! Idempotent verbs with HTTP-like semantics (docs/DESIGN.md §5).
 
 use crate::token::{self as hal, Token};
-use cakeys_core::config::{AttestationRecord, Config, Lock, Mode, Observation, Observed, Session};
+use cakeys_core::config::{AttestationRecord, Config, Lock, Mode, Observation, Observed, Origin, Session};
 use cakeys_core::id::{self, Commit, HmacHash, Scheme};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
@@ -303,6 +303,7 @@ fn facts(tok: &Token, r: &Resolved) -> Facts {
             token: Some(tok.token.clone()),
             extra: std::collections::BTreeMap::new(),
         },
+        origin: None,
     }
 }
 
@@ -337,14 +338,49 @@ pub fn realise(
     write: LockWrite,
     notes: &mut Notes,
 ) -> Result<(Resolved, bool)> {
+    realise_as(t, tok, lock, write, t.on_token.auto_create, None, notes)
+}
+
+/// Record an object camigrate just imported (MIGRATE.md D6, D7): [`realise`] without creating,
+/// through the same lock rules, with the realisation's `provenance.origin` saying where the
+/// material came from. The lock must already pin the object's IDs (they came from the source),
+/// so a different material is a mismatch (10), never a new identity.
+///
+/// # Errors
+///
+/// `NotFound` when the object is not under the locator; whatever [`realise`] refuses for an
+/// object it found, a hash mismatch (10) included.
+pub fn realise_import(
+    t: &Target,
+    tok: &Token,
+    lock: &mut Lock,
+    origin: Origin,
+    notes: &mut Notes,
+) -> Result<(Resolved, bool)> {
+    realise_as(t, tok, lock, LockWrite::Record, false, Some(origin), notes)
+}
+
+/// [`realise`]'s one code path: `create` allows creating an absent object, `origin` records an
+/// import's history.
+fn realise_as(
+    t: &Target,
+    tok: &Token,
+    lock: &mut Lock,
+    write: LockWrite,
+    create: bool,
+    origin: Option<Origin>,
+    notes: &mut Notes,
+) -> Result<(Resolved, bool)> {
     let mode = plan_mode(t)?;
     check_capabilities(t, tok, mode)?;
     let r = match resolve_with(t, tok, lock, true)? {
         Some(r) => r,
-        None if t.on_token.auto_create => create_absent(t, tok, lock, notes)?,
+        None if create => create_absent(t, tok, lock, notes)?,
+        None if t.on_token.auto_create => return Err(KmError::NotFound(format!("{t}: not under its locator"))),
         None => return Err(KmError::NotFound(format!("{t} (autoCreate is off; `cakeys create` makes it)"))),
     };
-    let changed = reconcile::reconcile(t, &r, lock, &facts(tok, &r), write, notes)?;
+    let facts = Facts { origin, ..facts(tok, &r) };
+    let changed = reconcile::reconcile(t, &r, lock, &facts, write, notes)?;
     Ok((r, changed))
 }
 

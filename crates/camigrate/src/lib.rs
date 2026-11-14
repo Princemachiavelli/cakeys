@@ -4,13 +4,14 @@
 //! extra provider crates: `camigrate::main(&camigrate::default_registry().with(MyProvider))`.
 
 mod plan;
+mod public;
 mod tokens;
 mod transport;
 
 use anyhow::Context as _;
 use cakeys_cli_common::{module_overrides, open_token, print};
 use cakeys_core::KmError;
-use cakeys_core::config::{Config, Lock, load_config, load_lock};
+use cakeys_core::config::{Config, Lock, load_config, load_lock, lock_for_update, lock_unwritable, save_lock};
 use cakeys_core::migrate::{Exposure, Method};
 use cakeys_pkcs11::Registry;
 use cakeys_pkcs11::ops::{Notes, Target};
@@ -69,8 +70,9 @@ enum Cmd {
         #[command(flatten)]
         how: MoveArgs,
     },
-    /// Plan moving objects from one token to another, both reachable from this host (MIGRATE.md).
-    /// Only --dry-run is implemented.
+    /// Move objects from one token to another, both reachable from this host (MIGRATE.md):
+    /// each is created on --to and recorded in the lock with where it came from. Public
+    /// objects (certificates, public keys, data) move; keys only with --dry-run so far.
     Migrate {
         /// The object to move; default: every object realised on --from.
         object: Option<String>,
@@ -78,6 +80,9 @@ enum Cmd {
         from: String,
         #[arg(long)]
         to: String,
+        /// The spec to realise each object under on --to, when its object has several there.
+        #[arg(long)]
+        spec: Option<String>,
         #[command(flatten)]
         how: MoveArgs,
     },
@@ -119,15 +124,26 @@ pub fn main(registry: &Registry) -> ExitCode {
     cakeys_cli_common::main(|notes| dispatch(registry, notes))
 }
 
-/// Parse the arguments, load keys.toml and the lock, and run the verb. Nothing here writes the
-/// lock yet.
+/// Parse the arguments, then load keys.toml and the lock — refusing up front a run that writes a
+/// lock it cannot (MIGRATE.md D8: never inside a Nix build) — and run the verb.
 fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     let cli = Cli::parse();
     let modules = module_overrides(&cli.modules)?;
     let cfg = load_config(&cli.config)?;
     let lock_path = cli.lock.clone().unwrap_or_else(|| cli.config.with_extension("lock"));
+    // Only a real `migrate` writes the lock; it holds the advisory sidecar lock across load and
+    // save, as cakeys' writing verbs do.
+    let writes = matches!(&cli.cmd, Cmd::Migrate { how, .. } if !how.dry_run);
+    if writes && let Some(why) = lock_unwritable(&lock_path) {
+        return Err(KmError::PreconditionFailed(format!(
+            "cannot write the lock {}: {why}; moving keys records them there",
+            lock_path.display()
+        ))
+        .into());
+    }
+    let _update_guard = if writes { Some(lock_for_update(&lock_path)?) } else { None };
     let lock = load_lock(&lock_path)?;
-    let run = Run { cfg, modules, registry, lock };
+    let mut run = Run { cfg, modules, registry, lock, lock_path };
     match &cli.cmd {
         Cmd::Export { object, token, target, transport, to_file, how } => {
             let dest = match (target, transport, to_file) {
@@ -139,7 +155,12 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
             };
             run.plan_moves(object.as_deref(), token, &dest, how, notes)
         }
-        Cmd::Migrate { object, from, to, how } => run.plan_moves(object.as_deref(), from, &Dest::Token(to), how, notes),
+        Cmd::Migrate { object, from, to, how, .. } if how.dry_run => {
+            run.plan_moves(object.as_deref(), from, &Dest::Token(to), how, notes)
+        }
+        Cmd::Migrate { object, from, to, spec, how } => {
+            run.migrate(object.as_deref(), from, to, spec.as_deref(), how, notes)
+        }
         Cmd::Transport { spec, token, out } => {
             let t = Target::new(&run.cfg, spec, token)?;
             let tok = open_token(&run.cfg, &run.modules, registry, token, Access::Read, notes)?;
@@ -163,6 +184,7 @@ struct Run<'a> {
     modules: BTreeMap<String, String>,
     registry: &'a Registry,
     lock: Lock,
+    lock_path: PathBuf,
 }
 
 /// Where `export` or `migrate` sends the material.
@@ -174,7 +196,7 @@ enum Dest<'a> {
 
 impl Run<'_> {
     /// Plan each object's move from `from` to `dest` and print it (MIGRATE.md D9); 15 when any
-    /// object cannot move as invoked. Moving is not implemented yet: without --dry-run, refused.
+    /// object cannot move as invoked. Export writes no bundle yet: without --dry-run, refused.
     fn plan_moves(
         &self,
         object: Option<&str>,
@@ -185,12 +207,78 @@ impl Run<'_> {
     ) -> anyhow::Result<()> {
         if !how.dry_run {
             return Err(KmError::Unsupported(
-                "export and migrate move nothing yet: only --dry-run is implemented (MIGRATE.md phase 1; \
-                 phase 2 moves public objects, phase 3 sealed keys)"
+                "export writes no bundle yet: only --dry-run is implemented (bundles come with MIGRATE.md \
+                 phase 3); `migrate` moves public objects between reachable tokens"
                     .into(),
             )
             .into());
         }
+        Ok(self.plan(object, from, dest, how, notes)?.ready()?)
+    }
+
+    /// `migrate` for real (MIGRATE.md phase 2): plan and print as `--dry-run` does, refuse (15)
+    /// before anything moves when an object cannot move or needs a method not built yet, then
+    /// move each object and record it. What moved before a failure is still recorded, never a
+    /// copy left on the target without its realisation.
+    fn migrate(
+        &mut self,
+        object: Option<&str>,
+        from: &str,
+        to: &str,
+        spec: Option<&str>,
+        how: &MoveArgs,
+        notes: &mut Notes,
+    ) -> anyhow::Result<()> {
+        let moves = self.plan(object, from, &Dest::Token(to), how, notes)?;
+        moves.ready()?;
+        if let Some(p) = moves.plans.iter().find(|p| p.method != Some(Method::Public)) {
+            let method = p.method.as_ref().map_or_else(|| "-".to_owned(), Method::name);
+            return Err(KmError::Unsupported(format!(
+                "{}: moving by {method} is MIGRATE.md phase 3; only public objects move so far (pass \
+                 --dry-run for the plan)",
+                p.object
+            ))
+            .into());
+        }
+        let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
+        let source = open_token(cfg, modules, registry, from, Access::Read, notes)?;
+        let target = open_token(cfg, modules, registry, to, Access::Write, notes)?;
+        let (mut changed, mut failed) = (false, None);
+        for p in &moves.plans {
+            let pair = source_target(cfg, &self.lock, &p.object, from)
+                .and_then(|src| Ok((src, target_target(cfg, &p.object, to, spec)?)));
+            let outcome =
+                pair.and_then(|(src, dst)| public::import(&src, &source, &dst, &target, &mut self.lock, notes));
+            match outcome {
+                Ok(public::Moved::Imported) => {
+                    changed = true;
+                    notes.say(format!("moved {} from {from} to {to} (public)", p.object));
+                }
+                Ok(public::Moved::AlreadyThere) => {
+                    notes.note(format_args!("{} is already on {to} and verifies; nothing to move", p.object));
+                }
+                Err(e) => {
+                    failed = Some(e);
+                    break;
+                }
+            }
+        }
+        if changed {
+            save_lock(&self.lock_path, &self.lock)?;
+            notes.say(format!("updated {}", self.lock_path.display()));
+        }
+        failed.map_or(Ok(()), |e| Err(e.into()))
+    }
+
+    /// Plan each object's move and print the plans, as a table or as JSON.
+    fn plan(
+        &self,
+        object: Option<&str>,
+        from: &str,
+        dest: &Dest,
+        how: &MoveArgs,
+        notes: &mut Notes,
+    ) -> anyhow::Result<tokens::Moves> {
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
         let open = |name: &str, notes: &mut Notes| open_token(cfg, modules, registry, name, Access::Read, notes);
         let transport = match dest {
@@ -234,6 +322,47 @@ impl Run<'_> {
                 }
             }
         }
-        Ok(moves.ready()?)
+        Ok(moves)
+    }
+}
+
+/// The source of `object` on `from`: the spec of a realisation the lock records there.
+fn source_target<'a>(cfg: &'a Config, lock: &Lock, object: &str, from: &'a str) -> cakeys_core::Result<Target<'a>> {
+    let spec = lock
+        .realisations
+        .iter()
+        .find(|(_, by_token)| by_token.get(from).is_some_and(|r| r.object == object))
+        .and_then(|(spec, _)| cfg.specs.get_key_value(spec).map(|(name, _)| name.as_str()))
+        .ok_or_else(|| {
+            KmError::PreconditionFailed(format!(
+                "object '{object}' has no realisation on '{from}' under a spec keys.toml still names"
+            ))
+        })?;
+    Target::new(cfg, spec, from)
+}
+
+/// Where `object` goes on `to`: its one spec there, or the one `--spec` names.
+fn target_target<'a>(
+    cfg: &'a Config,
+    object: &str,
+    to: &'a str,
+    spec: Option<&str>,
+) -> cakeys_core::Result<Target<'a>> {
+    let specs: Vec<&str> = cfg
+        .specs
+        .iter()
+        .filter(|(name, s)| s.object == object && s.tokens.contains_key(to) && spec.is_none_or(|n| n == *name))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    match specs.as_slice() {
+        [one] => Target::new(cfg, one, to),
+        [] => Err(KmError::Validation(match spec {
+            Some(n) => format!("spec '{n}' does not realise object '{object}' on token '{to}'"),
+            None => format!("keys.toml has no spec of object '{object}' on token '{to}' to import it under"),
+        })),
+        several => Err(KmError::Validation(format!(
+            "object '{object}' has several specs on token '{to}' ({}); pass --spec",
+            several.join(", ")
+        ))),
     }
 }

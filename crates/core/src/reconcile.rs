@@ -5,7 +5,7 @@
 
 use crate::config::{
     AttestationRecord, AttrValue, Binding, Immutables, Lock, LockRealisation, Mode, ModuleInfo, Observation, Observed,
-    Session,
+    Origin, Provenance, Session,
 };
 use crate::id::{self, Scheme};
 use crate::plan::Target;
@@ -85,6 +85,9 @@ pub struct Facts {
     pub observed: Observed,
     /// What the run saw of the module and token, recorded as an `observations` entry.
     pub observation: Observation,
+    /// Where an imported object came from (MIGRATE.md D7), for the realisation camigrate records
+    /// right after the import; `None` for every other run, which keeps what the lock recorded.
+    pub origin: Option<Origin>,
 }
 
 /// The label to compute `t`'s commitments with: the one the lock records for the object, else the
@@ -444,11 +447,15 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
         immutables: r.immutables.clone(),
         observation: Some(facts.observation.digest()),
         observed: Some(facts.observed.clone()),
-        // The object's history (an import's `origin`) stays with the object it describes.
-        provenance: lock
-            .realisation(t.spec_name, t.token_name)
-            .filter(|prev| prev.object == t.object_name)
-            .and_then(|prev| prev.provenance.clone()),
+        // The object's history: an import's `origin`, else what the lock recorded for this same
+        // object (another object under the spec has another history).
+        provenance: match &facts.origin {
+            Some(o) => Some(Provenance { origin: Some(o.clone()) }),
+            None => lock
+                .realisation(t.spec_name, t.token_name)
+                .filter(|prev| prev.object == t.object_name)
+                .and_then(|prev| prev.provenance.clone()),
+        },
     };
     if let Some(prev) = lock.realisation(t.spec_name, t.token_name) {
         for d in spec_diff(t, r, prev) {
@@ -572,7 +579,7 @@ fn warn_module(t: &Target, m: &ModuleInfo, nm: &ModuleInfo, notes: &mut Notes) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, Origin, Provenance, TokenInfo};
+    use crate::config::{Config, TokenInfo};
 
     const SRI_A: &str = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
     const SRI_B: &str = "sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564=";
@@ -625,6 +632,7 @@ mod tests {
                 token: Some(TokenInfo { model: "m".into(), serial: "1".into(), firmware: "1.0".into() }),
                 extra: BTreeMap::new(),
             },
+            origin: None,
         }
     }
 
@@ -753,6 +761,29 @@ mod tests {
             "{:?}",
             notes.lines()
         );
+    }
+
+    /// An import records where the material came from (MIGRATE.md D7); a later plain realise of
+    /// the same object keeps it, and the lock still loads.
+    #[test]
+    fn an_import_records_its_origin_and_a_realise_keeps_it() {
+        let cfg = config();
+        let t = Target::new(&cfg, "s", "t").unwrap();
+        let mut lock = empty_lock();
+        let origin = Origin {
+            from: "softhsm".into(),
+            method: "public".into(),
+            exposure: crate::migrate::Exposure::Public,
+            declared: false,
+        };
+        let imported = Facts { origin: Some(origin.clone()), ..facts("1") };
+        reconcile(&t, &resolved(&t), &mut lock, &imported, LockWrite::Record, &mut Notes::default()).unwrap();
+        let recorded = |lock: &Lock| lock.realisation("s", "t").unwrap().provenance.clone();
+        assert_eq!(recorded(&lock), Some(Provenance { origin: Some(origin.clone()) }));
+        reconcile(&t, &resolved(&t), &mut lock, &facts("2"), LockWrite::Record, &mut Notes::default()).unwrap();
+        assert_eq!(recorded(&lock), Some(Provenance { origin: Some(origin) }));
+        let text = toml::to_string_pretty(&lock).unwrap();
+        crate::config::parse_lock(&text, std::path::Path::new("keys.lock")).unwrap();
     }
 
     /// One entry per distinct observation (review A3): a re-record under another module build

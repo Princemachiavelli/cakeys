@@ -123,6 +123,39 @@ does not know whether a target's module supports a curve it has no list for (che
 and a transport key proves possession only with `pop-decrypt` today (it needs `CKA_DECRYPT`,
 hence the note recommending an unwrap-only key; an unwrap-based proof would remove that).
 
+### Phase 2 results (2026-11-14, WORKPLAN stage 4)
+
+Public objects move: `camigrate migrate [<object>] --from <a> --to <b> [--spec <s>]` without
+`--dry-run`, between two tokens this host reaches.
+
+- The run plans and prints exactly what `--dry-run` prints, then refuses (15) before anything
+  moves when an object cannot move or needs a method not built yet (every key method: phase 3).
+- Per object (crates/camigrate/src/public.rs): the source realisation is verified against the
+  lock; the material is what that check established — a public key rebuilt from its canonical
+  SPKI (an EC or Edwards point as a DER OCTET STRING beside the curve's parameters, an RSA key as
+  modulus and exponent), a certificate's subject, issuer and serial from its DER, a data object's
+  value. It is created on the target with `CKA_TOKEN`, the target spec's locator and its
+  declared attributes (the template, D6: a public data object's spec says `CKA_PRIVATE = false`),
+  never over an occupied locator, and recorded through `ops::realise_import` — `cakeys realise`'s
+  code path, which writes `provenance.origin` (`method = "public"`, `exposure = "public"`). A
+  mismatch is 10, and what was created is removed again.
+- What moved before a failure is still recorded. A re-run finds the target's realisation,
+  verifies it and moves nothing. `--spec` picks the target spec when the object has several on
+  the target. The lock is written under the same rules as `cakeys`' (refused inside a Nix build,
+  D8; the `.lck` sidecar lock).
+- Test (crates/camigrate/tests/dry_run.rs, the dry-run property for these rows): for a
+  certificate, a data object and RSA, P-384 and Ed25519 public keys, every source and target
+  reference, the plan's verdict is the outcome. A ready move exits 0, records its `origin`, and
+  `cakeys verify` accepts it on the target (so `cakeys` loads a lock camigrate wrote); a re-run
+  changes nothing. A blocked one exits 15 with the lock unchanged and nothing on the target.
+- A capability claim the property corrected: tpm2-pkcs11 creates data objects only private
+  (`CKA_PRIVATE = true`, it seals the value [src]), and cakeys identifies only public ones, so
+  its profiles no longer list `CKO_DATA` among the public objects it accepts (a `[manual]`
+  finding records why; the table above and the phase 1 notes predate it).
+
+Carried to phase 3, which lists them: the bundle (its `value` form for public objects),
+`export --out` and `import`.
+
 ### Frozen names and formats
 
 Exposure levels (D2): `public`, `enforced`, `sealed`, `host`, `file`; a plan that cannot move an
@@ -320,7 +353,7 @@ disk. `--dry-run` without objects plans every object the source token holds a re
 |---|---|---|
 | 0 | **Done 2026-11-12.** Finish the spike [todo items above]; cryptoki KWP patch and upstream PR draft; freeze method names, the bundle format and `origin` | 2–3 days |
 | 1 | **Done 2026-11-12.** Planner and `--dry-run` (core: capabilities, method choice, reasons); the provider hook for import/export capabilities and vendor methods (D10); the transport file; no material moves. Useful alone: it answers "what could move, and how?" | ≈700 + 500 lines, 4–5 days |
-| 2 | `public`: certificates, public keys, data objects | ≈200 + 200, 1–2 days |
+| 2 | **Done 2026-11-14.** `public`: certificates, public keys, data objects | ≈200 + 200, 1–2 days |
 | 3 | `sealed` between PKCS#11 modules: the `transport` verb, the composed RSA-OAEP + AES-KWP method, the direct OAEP method, bundles, import with identity check and cleanup, `migrate` | ≈800 + 700, 6–8 days |
 | 3b | `enforced`: the admin credential on PKCS#11 modules, `transport --trusted`, `CKA_WRAP_WITH_TRUSTED` keys | ≈300 + 250, 3–4 days |
 | 4 | `host` paths: `--allow-host-plaintext`, zeroized buffers, and tpm2-pkcs11 import through `tpm2_ptool` (a runtime dependency for that provider) | ≈350 + 300, 3–4 days |

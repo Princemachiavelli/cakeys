@@ -29,7 +29,8 @@ mod uri;
 
 pub use identity::commit_mechanism;
 pub use policy::bool_attr;
-use uri::{locator_attrs, pct_all};
+pub use uri::locator_attrs;
+use uri::pct_all;
 
 /// The session a verb opens (M1, docs/REVIEW-2026-11-11.md): read-only for the verbs that only
 /// read — a write-protected token (`CKF_WRITE_PROTECTED`) refuses read-write sessions, and the

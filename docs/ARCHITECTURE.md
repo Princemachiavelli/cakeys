@@ -217,7 +217,7 @@ The binary column is each verb's owner ([`SCOPE.md`](SCOPE.md), "Three tools").
 | `delete` | `cakeys` | write | write (default) | Delete if the identity matches; drop the realisation |
 | `gc` | `cakeys` | none | write with `--apply` | Drop lock entries the config no longer names |
 | `caps`, `supports`, `probe` | `caprobe` | read (`probe --write`: scratch token only) | none | Mechanisms; profile queries; profile generation and drift |
-| `export`, `migrate`, `transport` | `camigrate` | read | read | Plans only (`--dry-run`); nothing moves yet |
+| `export`, `migrate`, `transport` | `camigrate` | read; `migrate` writes the target | read; `migrate` writes | `migrate` moves public objects (MIGRATE phase 2); keys are plans only (`--dry-run`) |
 | `import` | `camigrate` (planned, stage 4) | write | write | Not built yet (MIGRATE.md phase 3) |
 
 Exit codes are the error model: 10 hash mismatch, 11 not found, 12 ambiguous, 13 conflict,

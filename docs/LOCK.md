@@ -154,7 +154,7 @@ uri = "pkcs11:token=xv;serial=b19136a55523f406;object=ec;id=%0E;type=private"
 session = "user"
 ```
 
-A key moved in by `camigrate` (planned, WORKPLAN stage 4) also records where it came from. It is
+An object moved in by `camigrate` (public objects since MIGRATE phase 2) also records where it came from. It is
 the object's history, so re-recording the same object keeps it:
 
 ```toml

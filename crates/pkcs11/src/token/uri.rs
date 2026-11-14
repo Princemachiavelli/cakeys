@@ -39,7 +39,12 @@ impl Token {
     }
 }
 
-pub(super) fn locator_attrs(loc: &Locator) -> Result<Vec<Attribute>> {
+/// The template attributes that put an object under `loc`: `CKA_LABEL` and/or `CKA_ID`.
+///
+/// # Errors
+///
+/// `Validation` for a locator with neither, or a `CKA_ID` that is not hex.
+pub fn locator_attrs(loc: &Locator) -> Result<Vec<Attribute>> {
     let mut v = Vec::new();
     if let Some(l) = &loc.label {
         v.push(Attribute::Label(l.as_bytes().to_vec()));

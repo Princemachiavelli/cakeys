@@ -332,10 +332,12 @@ dependencies = [
  "clap",
  "cmac",
  "cryptoki",
+ "rsa",
  "serde",
  "serde_json",
  "sha2",
  "toml",
+ "x509-cert",
 ]
 
 [[package]]

@@ -207,9 +207,14 @@ impl Token {
         self.check_attrs(p, &spec.public_attributes, "public key object: ")
     }
 
-    /// Template attributes for declared policy values. Mechanism names must be ones the token
-    /// offers.
-    pub(super) fn policy_template(&self, attrs: &BTreeMap<String, AttrValue>) -> Result<Vec<Attribute>> {
+    /// Template attributes for declared policy values (a spec's `attributes`), as creation and
+    /// import put them on the object. Mechanism names must be ones the token offers.
+    ///
+    /// # Errors
+    ///
+    /// `Validation` for an attribute cakeys cannot set; `Unsupported` for a mechanism the token
+    /// does not offer.
+    pub fn policy_template(&self, attrs: &BTreeMap<String, AttrValue>) -> Result<Vec<Attribute>> {
         attrs
             .iter()
             .map(|(name, v)| match v {

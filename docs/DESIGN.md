@@ -550,7 +550,7 @@ model = "..." ; serial = "..." ; firmware = "M.m"
 The verbs are `cakeys`'s, except the three that measure modules — `caprobe caps`, `supports` and
 `probe` — and the three that move keys — `camigrate export`, `migrate` and `transport`
 ([`SCOPE.md`](SCOPE.md), "Three tools"). The binaries take `--config` and `--module` and share
-the exit codes; `caprobe` never reads the lock, and `camigrate` does not write it yet.
+the exit codes; `caprobe` never reads the lock, and `camigrate migrate` writes it through `cakeys realise`'s code path.
 
 | Verb | Semantics |
 |---|---|
@@ -563,7 +563,7 @@ the exit codes; `caprobe` never reads the lock, and `camigrate` does not write i
 | `check <obj>[.id.<scheme>] [--token] [--spec]` | The pseudo-FOD pre-use check: realise without writing the lock, print the URI. Schemes the spec or token can never compute are refused before anything is created (`scheme_the_token_lacks_is_refused_before_create`). |
 | `gc [--apply]` | Print lock entries `keys.toml` no longer names, as table names; `--apply` removes exactly what it printed, holding the update lock (M3). Live objects keep their `ids` (`gc_prints_then_removes_stale_entries`). |
 | `caprobe caps --token` | Provider, resolved capability profiles and usable mechanisms, as JSON. |
-| `camigrate export`, `migrate` `--dry-run`; `camigrate transport` | Plan moving objects to a target (MIGRATE.md): per object the method, the exposure on the way, or why it cannot move. Only planning is implemented; `transport` writes a target's transport file. |
+| `camigrate export`, `migrate`; `camigrate transport` | Plan moving objects to a target (MIGRATE.md): per object the method, the exposure on the way, or why it cannot move (`--dry-run`). `migrate` moves public objects between reachable tokens (phase 2): created under the target spec, recorded through `realise`'s code path with `provenance.origin`, removed again on a mismatch (10); keys are planned only. `transport` writes a target's transport file. |
 | `caprobe supports [--profile \| --token] NAME` | Ask the capability profiles (docs/PROVIDERS.md) what a module supports: pure data, no token touched; 0 yes, 15 no, 16 unknown. With `--profile` it needs no keys.toml. |
 | `caprobe probe --token [--write] [--diff P] [--out F]` | Generate a token's capability profile by probing it; `--write` only on a token marked `scratch` (17 otherwise); `--diff` drift is 15. |
 

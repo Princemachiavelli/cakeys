@@ -66,6 +66,7 @@ fn facts() -> Facts {
             token: Some(TokenInfo { model: "m".into(), serial: "1".into(), firmware: "1.0".into() }),
             ..Observation::default()
         },
+        origin: None,
     }
 }
 

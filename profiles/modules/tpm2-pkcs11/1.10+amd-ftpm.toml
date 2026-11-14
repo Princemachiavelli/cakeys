@@ -87,9 +87,6 @@ plaintext-import = "tpm2-ptool"
 class = "CKO_CERTIFICATE"
 
 [[migration.public-accepts]]
-class = "CKO_DATA"
-
-[[migration.public-accepts]]
 class = "CKO_PUBLIC_KEY"
 key-types = ["CKK_RSA"]
 
@@ -129,6 +126,10 @@ key-types = ["CKK_SHA_1_HMAC", "CKK_SHA256_HMAC"]
 "edwards448" = "generation refused: CKR_MECHANISM_INVALID"
 "secp256k1" = "generation refused: CKR_CURVE_NOT_SUPPORTED"
 "secp521r1" = "generation refused: CKR_GENERAL_ERROR"
+
+[manual."data-objects"]
+finding = "tpm2-pkcs11 creates a data object only with CKA_PRIVATE = true (it seals CKA_VALUE), and cakeys identifies only public data objects (a value hash in the lock would let anyone guess a private value offline). So no public-accepts row for CKO_DATA: a data object cannot move to this module."
+evidence = "[src] tpm2-pkcs11 1.10.1 src/lib/object.c handle_data_object: 'CKA_PRIVATE cannot be CK_FALSE' (CKR_ATTRIBUTE_VALUE_INVALID); [run] crates/camigrate/tests/dry_run.rs planting a public data object on swtpm, 2026-11-14"
 
 [manual."hash-algorithms"]
 finding = "The TPM implements SHA-1 and SHA-256 only (no SHA-384 or SHA-512; PCR banks sha1 and sha256), which is why tpm2-pkcs11's SHA-384/512 ECDSA and RSA-PSS fail here with 'structure is the wrong size' from TPM2_Sign. Its curves are NIST P-256, P-384 and BN-P256 (which cakeys does not name). The [migration] rows are claims sized to this, not tested: tpm2_ptool import of P-384, RSA-2048 and SHA-1/SHA-256 HMAC keys."
