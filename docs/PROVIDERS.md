@@ -265,6 +265,7 @@ planner and the mechanism list see:
   `Tpm2Pkcs11`'s override is deleted, its rows in profiles/modules/tpm2-pkcs11/1.10.toml. A
   token with no resolved profile keeps the provider's own filter.
 - **`Side` is data**: the migration capability rows (`[migration]`: exports/unwraps,
+  `secret-unwraps` (phase 3: SoftHSM leaves an unwrapped secret key's length 0),
   `plaintext-import` and its `accepts`, `public-accepts`; `wrap.oaep` for the hashes) are built
   from the module profile wherever one resolves — `SoftHsm::migration`, `Ykcs11::migration`
   and `Tpm2Pkcs11::migration` are deleted. The layer subtractions apply to the plan too: an

@@ -90,6 +90,9 @@ min-bits = 512
 max-bits = 16384
 can-bits = [1024, 2048, 3072, 4096]
 
+[migration]
+secret-unwraps = false
+
 [notes]
 "CKA_VALUE_LEN" = "CKR_ATTRIBUTE_READ_ONLY in an unwrap template"
 "CKM_RSA_PKCS_OAEP" = "RSA-2048 decrypt SHA-256: CKR_ARGUMENTS_BAD"
@@ -97,3 +100,7 @@ can-bits = [1024, 2048, 3072, 4096]
 "curve25519" = "generation refused: CKR_MECHANISM_INVALID"
 "curve448" = "generation refused: CKR_MECHANISM_INVALID"
 "oaep" = "SHA-256: wrapping fails: CKR_ARGUMENTS_BAD"
+
+[manual."secret-unwraps"]
+finding = "C_UnwrapKey stores an unwrapped secret key's CKA_VALUE but never its CKA_VALUE_LEN, which then reads 0, and a template that sets it is refused (CKR_ATTRIBUTE_READ_ONLY, [unwrap] refuse). cakeys' type check reads the length, so a secret key imported sealed into SoftHSM cannot be verified there: the [migration] claim secret-unwraps = false makes the plan say so. Private keys unwrap whole."
+evidence = "[src] SoftHSM 2.7.0 src/lib/SoftHSM.cpp C_UnwrapKey (sets CKA_VALUE only); [run] crates/camigrate/tests/dry_run.rs, an AES key unwrapped from kryoptic reporting CKA_VALUE_LEN 0, 2026-11-14"

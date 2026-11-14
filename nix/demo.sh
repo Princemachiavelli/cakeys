@@ -273,19 +273,21 @@ wait_key
 # ── Act 5 ───────────────────────────────────────────────────────────────────────────────────
 
 act "5. Moving keys, planned from each side's capabilities" \
-  "camigrate plans an export per object from what both modules can do (MIGRATE.md); moving" \
-  "the material is not implemented yet, so only --dry-run runs."
+  "camigrate plans an export per object from what both modules can do (MIGRATE.md), then" \
+  "moves the key sealed: through the host only wrapped, and recorded with where it came from."
 append <<'EOF'
 
 [objects.movable]
 class = "CKO_PRIVATE_KEY"
 keyType = "CKK_EC"
 curve = "secp256r1"
+createOn = "soft"
 
 [specs.movable]
 object = "movable"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
 tokens.soft = { locator = { CKA_LABEL = "movable" } }
+tokens.kryo = { locator = { CKA_LABEL = "movable" } }
 
 [objects.fixed]
 class = "CKO_PRIVATE_KEY"
@@ -300,11 +302,30 @@ EOF
 echo "No autoCreate here: that only lets first use create. Keys are created explicitly, every"
 echo "pair the lock does not pin yet (signing and shared are pinned, so they are left alone):"
 jqf='.[] | {object, token, rfc7093m4: .ids.rfc7093m4}' expect 0 cakeys create --token soft
-echo "An extractable key moves sealed: wrapped to a transport key the target generates."
+echo "movable is born on soft (createOn), so kryo can only receive it. A sealed move needs a"
+echo "transport key on the target: an RSA key there that may unwrap and never leaves it."
+expect 15 camigrate export movable --token soft --target kryo --dry-run
+append <<'EOF'
+
+[objects.transport]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 3072
+
+[specs.transport]
+object = "transport"
+attributes = { CKA_UNWRAP = true, CKA_DECRYPT = true, CKA_EXTRACTABLE = false }
+tokens.kryo = { locator = { CKA_LABEL = "transport" }, binding = "pop-decrypt" }
+EOF
+jqf='.[] | {object, token}' expect 0 cakeys create --token kryo
+echo "Now the plan is ready; a non-extractable key never leaves its token, whatever the target can do."
 expect 0 camigrate export movable --token soft --target kryo --dry-run
-echo "A non-extractable key never leaves its token, whatever the target can do."
 expect 15 camigrate export fixed --token soft --target kryo --dry-run
-expect 15 camigrate export movable --token soft --target kryo
+echo "The move: wrapped on soft to kryo's transport key, unwrapped on kryo, checked against the lock."
+expect 0 camigrate migrate movable --from soft --to kryo
+echo "The lock keeps one identity for movable and records where kryo's copy came from:"
+show awk '/^\[realisations.movable.kryo.provenance.origin\]/ { n = 4 } n-- > 0' keys.lock
+expect 0 cakeys verify movable --token kryo
 
 act "Done" \
   "Next: the NixOS VM test runs act 1 inside a real Nix build sandbox, with a consumer" \

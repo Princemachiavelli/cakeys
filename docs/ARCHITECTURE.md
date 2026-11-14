@@ -217,8 +217,8 @@ The binary column is each verb's owner ([`SCOPE.md`](SCOPE.md), "Three tools").
 | `delete` | `cakeys` | write | write (default) | Delete if the identity matches; drop the realisation |
 | `gc` | `cakeys` | none | write with `--apply` | Drop lock entries the config no longer names |
 | `caps`, `supports`, `probe` | `caprobe` | read (`probe --write`: scratch token only) | none | Mechanisms; profile queries; profile generation and drift |
-| `export`, `migrate`, `transport` | `camigrate` | read; `migrate` writes the target | read; `migrate` writes | `migrate` moves public objects (MIGRATE phase 2); keys are plans only (`--dry-run`) |
-| `import` | `camigrate` (planned, stage 4) | write | write | Not built yet (MIGRATE.md phase 3) |
+| `export`, `migrate`, `transport` | `camigrate` | read; `migrate` writes the target | read; `migrate` writes | Plans (`--dry-run`); `migrate` moves public objects and sealed keys, `export` writes a bundle (MIGRATE phases 2 and 3) |
+| `import` | `camigrate` | write | write | A bundle, checked against the lock, unwrapped with the transport key, recorded with its `origin` (MIGRATE phase 3) |
 
 Exit codes are the error model: 10 hash mismatch, 11 not found, 12 ambiguous, 13 conflict,
 14 precondition failed, 15 unsupported, 16 unavailable, 17 invalid input, 1 I/O, 2 usage.
@@ -307,7 +307,7 @@ against independent oracles (openssl, hand-written DER, RustCrypto MACs).
 | Three binaries (`cakeys`, `caprobe`, `camigrate`) | Built ([`WORKPLAN.md`](../WORKPLAN.md) D1–D6, stages 2 and 3), one Nix output each |
 | `tpm-certify` | Built; tested on swtpm; Attestation Key is trust-on-first-use (no EK chain). Experimental, pending review: it reads tpm2-pkcs11's private store and has no version guard yet (review A8). Stays in `cakeys-tpm2-pkcs11` (WORKPLAN D4); the guard and a real-TPM test are planned for WORKPLAN stage 5 |
 | Capability profiles | Phases 0–4 built; phase 5 (FIPS mode) planned. Measuring is `caprobe`'s (WORKPLAN stage 2); `cakeys` reads and resolves them |
-| Migration | In scope, in `camigrate` (review A5, decided; WORKPLAN stage 3). Planner and `--dry-run` only; phases 2–5 planned for stage 4 |
+| Migration | In scope, in `camigrate` (review A5, decided; WORKPLAN stage 3). Public objects (phase 2) and sealed keys between PKCS#11 modules (phase 3) move, tested over the reference matrix; `createOn` names where an object is born. Phases 3b–5 (`enforced`, `host`, `file`, YubiKey import) planned |
 | `check` creating on first use (`autoCreate`) | Built; open decision whether to keep it (review A7) |
 | Identity modes `commit-at-creation`, `host-at-import`, `token-specific`; `identity.allow` | Pending implementation: in the config schema, refused (15) by every verb (review A6) |
 | `systemFeature` | Declared in both keys.toml and the NixOS module, kept equal by hand; one owner pending (review A6) |

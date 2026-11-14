@@ -13,7 +13,7 @@ vendor's) plug in through the `Provider` trait.
 
 Decided 2026-11-13 ([`WORKPLAN.md`](../WORKPLAN.md) D1–D6): one workspace, one flake, three
 binaries, each with its own job, all three built (WORKPLAN stages 2 and 3). `camigrate` moves
-public objects and plans the rest so far; moving keys is MIGRATE.md phases 3–5 (stage 4).
+public objects, and keys sealed between PKCS#11 modules; the host and file paths are to come.
 
 | Tool | Job | Verbs and parts | What it may do |
 |---|---|---|---|

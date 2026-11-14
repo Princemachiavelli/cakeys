@@ -107,7 +107,8 @@ pub fn commitment_label(t: &Target, lock: &Lock) -> String {
 ///
 /// Whatever `compare` rejects: `HashMismatch` when the token's material hashes to another ID
 /// than the lock pins, `PreconditionFailed` for a realisation that moved (type, downgrade,
-/// replaced object, attestation anchor) or a first use under `LockWrite::Compare`.
+/// replaced object, attestation anchor) or a first use under `LockWrite::Compare`; and
+/// `PreconditionFailed` for an import (`facts.origin`) of an object the lock pins no IDs for.
 pub fn reconcile(
     t: &Target,
     r: &Resolved,
@@ -116,6 +117,15 @@ pub fn reconcile(
     write: LockWrite,
     notes: &mut Notes,
 ) -> Result<bool> {
+    // An import is checked against the IDs its source recorded: without them it would be a first
+    // use, recording whatever the target holds (MIGRATE.md D6).
+    if facts.origin.is_some() && lock.objects.get(t.object_name).is_none_or(|o| o.ids.is_empty()) {
+        return Err(KmError::PreconditionFailed(format!(
+            "{t}: an import needs the IDs the lock pins for object '{}', and it pins none; realise it on \
+             its source first",
+            t.object_name
+        )));
+    }
     compare(t, r, lock, facts, write, notes)?;
     match write {
         LockWrite::Compare => Ok(false),
@@ -777,6 +787,18 @@ mod tests {
             declared: false,
         };
         let imported = Facts { origin: Some(origin.clone()), ..facts("1") };
+        // Never a first use: without the IDs the source recorded nothing would check the material.
+        let first = reconcile(&t, &resolved(&t), &mut lock, &imported, LockWrite::Record, &mut Notes::default());
+        assert!(matches!(first, Err(KmError::PreconditionFailed(m)) if m.contains("an import needs the IDs")));
+        assert!(lock.realisations.is_empty() && lock.objects.is_empty());
+        lock.objects.insert(
+            "k".into(),
+            crate::config::LockObject {
+                object_type: Some(t.object.clone()),
+                ids: [("rfc7093m4".to_owned(), SRI_A.to_owned())].into(),
+                ..Default::default()
+            },
+        );
         reconcile(&t, &resolved(&t), &mut lock, &imported, LockWrite::Record, &mut Notes::default()).unwrap();
         let recorded = |lock: &Lock| lock.realisation("s", "t").unwrap().provenance.clone();
         assert_eq!(recorded(&lock), Some(Provenance { origin: Some(origin.clone()) }));

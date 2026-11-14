@@ -211,6 +211,14 @@ fn sealed(
         blocked.push(format!("{} ({}) unwraps nothing", dst.token, dst.provider));
         return;
     }
+    if m.ty.class == ObjectClass::SecretKey && !dst.secret_unwraps {
+        blocked.push(format!(
+            "{} ({}) unwraps a secret key without its length (CKA_VALUE_LEN), so its type cannot be checked \
+             there",
+            dst.token, dst.provider
+        ));
+        return;
+    }
     let exposure = if trusted_only {
         if !allow.trusted_transport {
             blocked.push(

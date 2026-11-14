@@ -197,6 +197,9 @@ pub struct Side {
     pub exports: bool,
     /// Whether the module unwraps a key in (`C_UnwrapKey`).
     pub unwraps: bool,
+    /// Whether a secret key it unwraps reports its length (`CKA_VALUE_LEN`), which the import's
+    /// type check reads: `SoftHSM` leaves it 0.
+    pub secret_unwraps: bool,
     /// The OAEP hashes the module implements for wrapping, not only lists.
     pub oaep: Vec<OaepHash>,
     /// Public objects it accepts from their value or DER.
@@ -218,6 +221,7 @@ impl Side {
             mechanisms: mechanisms.into_iter().collect(),
             exports: true,
             unwraps: true,
+            secret_unwraps: true,
             oaep: vec![OaepHash::Sha1, OaepHash::Sha256],
             public_import: [ObjectClass::Certificate, ObjectClass::PublicKey, ObjectClass::Data]
                 .into_iter()

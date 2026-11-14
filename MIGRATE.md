@@ -156,6 +156,51 @@ Public objects move: `camigrate migrate [<object>] --from <a> --to <b> [--spec <
 Carried to phase 3, which lists them: the bundle (its `value` form for public objects),
 `export --out` and `import`.
 
+### Phase 3 results (2026-11-14, WORKPLAN stage 4)
+
+Keys move sealed between PKCS#11 modules: `camigrate migrate` (both tokens reachable), and
+`export --out` / `import --in` with a bundle between them.
+
+- **One creation token per object** (NEXT.md §2): `createOn = "<token>"` on the object
+  (docs/CONFIG.md). `create` and `autoCreate` generate it only there; `autoCreate` on another
+  token, or on several without `createOn`, is invalid (17); `create` on another token is refused
+  and its skip note names the import.
+- **The transport key** (D3) is a key of the target's own keys.toml entry and lock: an RSA key
+  that unwraps and never leaves the token, found by the planner (`--transport-key <spec>` when
+  there are several). A sealed plan without one is blocked, with the reason. A transport file is
+  used only when the source's lock pins its key (D3: the lock is the channel); one that is merely
+  self-consistent is refused.
+- **Export** (crates/camigrate/src/sealed.rs) verifies the source against the lock, loads the
+  transport public key as a session object, and wraps by the plan's method: the composed one
+  wraps a fresh session AES-256 KEK with RSA-OAEP and the key under it with RFC 5649 (the
+  `_PAD` or `_KWP` mechanism the source names; `_KWP` needs the Nix build's patched cryptoki,
+  the `kwp` feature), the direct one wraps a small secret key with RSA-OAEP. Session objects are
+  destroyed whatever happens. A real `export` writes one object's bundle; it is refused inside a
+  Nix build (D8).
+- **Import** checks the bundle against the lock before it touches the target: the same object,
+  type, IDs and commitment label, and the transport key the lock pins and the target holds (its
+  realisation verified); the locator empty. It then creates a private key's public half from the
+  bundle's `publicKey` (new in the bundle format, "Frozen names and formats"), unwraps the key
+  with the target spec's attributes as the template (less the profile's `unwrap.refuse`), and
+  records it through `ops::realise_import` with its `origin`. An import of an object the lock pins
+  no IDs for is refused (14) before anything is created (`reconcile`). Whatever fails after the
+  first object is created removes everything under the locator. Exit codes, each pinned by a
+  test: another key's IDs 17 (form) or 10 (the lock's); tampered blobs 13 (they do not unwrap);
+  another key's blobs 13 for a private key (the proof of possession fails) and 10 for a secret
+  key (the commitment differs). `import --no-update-lock` is not built: an import that is not
+  recorded is the orphan the lock rules exist to prevent.
+- **`migrate`** is export then import in one process, the bundle in memory, on the plan's method.
+- **A capability the property corrected:** SoftHSM's `C_UnwrapKey` never sets an unwrapped
+  secret key's `CKA_VALUE_LEN` (it reads 0) and refuses it in the template [src], so its type
+  cannot be checked there. A new `[migration]` claim, `secret-unwraps = false` (with a `[manual]`
+  finding), makes the plan block sealed secret keys into SoftHSM.
+- **Tests** (crates/camigrate/tests/dry_run.rs): the dry-run property over P-256, Ed25519,
+  RSA-2048, AES-256 and generic-secret keys made extractable on each source (`createOn`), to every
+  other reference holding a transport key; a ready move exits 0, records its `origin` and
+  `cakeys verify` accepts the key on the target (with its proof of possession), a blocked one is
+  15 with nothing changed. The bundle round trip, the refusals above, `import --dry-run`, and a
+  transport file the lock does not pin. The bundle parser has unit, property and fuzz tests.
+
 ### Frozen names and formats
 
 Exposure levels (D2): `public`, `enforced`, `sealed`, `host`, `file`; a plan that cannot move an
@@ -341,8 +386,8 @@ for a key that was never moved.
 $ camigrate transport import-kek --token kryoptic --out kryoptic.transport.toml
 $ camigrate export signing --token softhsm --target kryoptic [--transport kryoptic.transport.toml] \
     --out signing.export.toml [--dry-run] [--allow-host-plaintext]
-$ camigrate import signing-kry --token kryoptic --in signing.export.toml [--dry-run] [--no-update-lock]
-$ camigrate migrate signing --from softhsm --to kryoptic [--spec signing-kry] [--dry-run]
+$ camigrate import signing-kry --token kryoptic --in signing.export.toml [--dry-run]
+$ camigrate migrate signing --from softhsm --to kryoptic [--spec signing-kry] [--transport-key <spec>] [--dry-run]
 ```
 
 `migrate` is export plus import in one process when both tokens are reachable, with no bundle on
@@ -355,7 +400,7 @@ disk. `--dry-run` without objects plans every object the source token holds a re
 | 0 | **Done 2026-11-12.** Finish the spike [todo items above]; cryptoki KWP patch and upstream PR draft; freeze method names, the bundle format and `origin` | 2–3 days |
 | 1 | **Done 2026-11-12.** Planner and `--dry-run` (core: capabilities, method choice, reasons); the provider hook for import/export capabilities and vendor methods (D10); the transport file; no material moves. Useful alone: it answers "what could move, and how?" | ≈700 + 500 lines, 4–5 days |
 | 2 | **Done 2026-11-14.** `public`: certificates, public keys, data objects | ≈200 + 200, 1–2 days |
-| 3 | `sealed` between PKCS#11 modules: the `transport` verb, the composed RSA-OAEP + AES-KWP method, the direct OAEP method, bundles, import with identity check and cleanup, `migrate` | ≈800 + 700, 6–8 days |
+| 3 | **Done 2026-11-14.** `sealed` between PKCS#11 modules: the `transport` verb, the composed RSA-OAEP + AES-KWP method, the direct OAEP method, bundles, import with identity check and cleanup, `migrate` | ≈800 + 700, 6–8 days |
 | 3b | `enforced`: the admin credential on PKCS#11 modules, `transport --trusted`, `CKA_WRAP_WITH_TRUSTED` keys | ≈300 + 250, 3–4 days |
 | 4 | `host` paths: `--allow-host-plaintext`, zeroized buffers, and tpm2-pkcs11 import through `tpm2_ptool` (a runtime dependency for that provider) | ≈350 + 300, 3–4 days |
 | 4b | `file`: `pkcs8-pbes2` and `pkcs12` export and import, `--passphrase-file` | ≈300 + 250, 3–4 days |

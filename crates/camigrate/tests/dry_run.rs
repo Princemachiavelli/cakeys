@@ -18,8 +18,9 @@ use x509_cert::der::{Decode as _, Encode as _};
 /// `export --dry-run` (MIGRATE.md phase 1): the plan follows each side's capabilities. Between
 /// the software references, the composed sealed method with the strongest OAEP hash both
 /// implement; to tpm2-pkcs11 and through p11-kit (whose RPC drops AES key wrap) only through the
-/// host, behind the flag; to a file behind the flag; a key made non-extractable never. Nothing
-/// moves without --dry-run yet.
+/// host, behind the flag; to a file behind the flag; a key made non-extractable never. A sealed
+/// plan needs a transport key realised on the target (MIGRATE.md D3), and without --dry-run the
+/// export writes the bundle.
 #[test]
 fn export_plans_follow_each_sides_capabilities() {
     let Some(e) = env("export-plan") else { return };
@@ -37,7 +38,8 @@ fn export_plans_follow_each_sides_capabilities() {
         + &p256("movable-k")
         + &Env::spec("movable", "movable", &attrs(true), &[soft], "xref-mv", ", autoCreate = true")
         + &Env::spec("fixed", "fixed", &attrs(false), &[soft], "xref-fx", ", autoCreate = true")
-        + &Env::spec("movable-k", "movable-k", &attrs(true), &[kry], "xref-mvk", ", autoCreate = true");
+        + &Env::spec("movable-k", "movable-k", &attrs(true), &[kry], "xref-mvk", ", autoCreate = true")
+        + &e.refs.iter().filter(|r| r.name.starts_with("kryoptic")).map(transport_key).collect::<String>();
     e.config(&body);
     for (spec, r) in [("movable", soft), ("fixed", soft), ("movable-k", kry)] {
         assert_eq!(code(&e.cakeys(r, &["realise", spec, "--token", r.name])), 0, "{spec}");
@@ -55,6 +57,13 @@ fn export_plans_follow_each_sides_capabilities() {
     };
     let some = |s: &str| Some(s.to_owned());
 
+    let (c, v) = plan(soft, &["movable", "--target", "kryoptic"]);
+    assert_eq!((c, first(&v)), (15, (some("rsa-oaep-sha1+aes-kwp"), some("sealed"), Some(false))), "{v}");
+    assert!(v["plans"][0]["reasons"][0].as_str().unwrap().contains("no transport key is realised"), "{v}");
+    for r in e.refs.iter().filter(|r| r.name.starts_with("kryoptic")) {
+        let o = e.cakeys(r, &["realise", &format!("tk-{}", r.name), "--token", r.name]);
+        assert_eq!(code(&o), 0, "{}", stderr(&o));
+    }
     let (c, v) = plan(soft, &["movable", "--target", "kryoptic"]);
     assert_eq!(c, 0, "{v}");
     assert_eq!(first(&v), (some("rsa-oaep-sha1+aes-kwp"), some("sealed"), Some(true)), "{v}");
@@ -84,8 +93,10 @@ fn export_plans_follow_each_sides_capabilities() {
     let (c, v) = plan(soft, &["--target", "kryoptic"]);
     assert_eq!((c, v["plans"].as_array().map(Vec::len)), (15, Some(2)), "{v}");
     let o = e.km(soft, &["export", "movable", "--token", "softhsm", "--target", "kryoptic"]);
-    assert_eq!(code(&o), 15);
-    assert!(String::from_utf8_lossy(&o.stderr).contains("only --dry-run"));
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let bundle: toml::Table = toml::from_str(&stdout(&o)).unwrap();
+    assert_eq!(bundle["method"].as_str(), Some("rsa-oaep-sha1+aes-kwp"));
+    assert_eq!(bundle["transport"]["object"].as_str(), Some("tk-kryoptic"));
 }
 
 /// `camigrate transport` (MIGRATE.md D3) writes the transport key's public half with its locked
@@ -334,4 +345,266 @@ fn public_moves_do_what_the_plan_says() {
     }
     eprintln!("public moves:\n  {}", rows.join("\n  "));
     assert!(rows.iter().any(|r| r.contains("ready")), "no public move was planned ready");
+}
+
+/// The transport key of reference `r` (MIGRATE.md D3), as keys.toml text: an RSA key that may
+/// unwrap and never leaves the token, proven by decrypting (`pop-decrypt` needs `CKA_DECRYPT`).
+fn transport_key(r: &Ref) -> String {
+    format!("[objects.tk-{0}]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 3072\n\n", r.name)
+        + &Env::spec(
+            &format!("tk-{}", r.name),
+            &format!("tk-{}", r.name),
+            "attributes = { CKA_UNWRAP = true, CKA_DECRYPT = true, CKA_EXTRACTABLE = false }\n",
+            &[r],
+            &format!("tk-{}", r.name),
+            ", autoCreate = true, binding = \"pop-decrypt\"",
+        )
+}
+
+/// One key class of the sealed matrix: its keys.toml type and the attributes its specs declare
+/// (extractable, or it could never move: MIGRATE.md D1).
+struct Key {
+    name: &'static str,
+    ty: &'static str,
+    attributes: &'static str,
+}
+
+const KEYS: [Key; 5] = [
+    Key {
+        name: "k-p256",
+        ty: "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"",
+        attributes: "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n",
+    },
+    Key {
+        name: "k-ed25519",
+        ty: "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC_EDWARDS\"\ncurve = \"edwards25519\"",
+        attributes: "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n",
+    },
+    Key {
+        name: "k-rsa",
+        ty: "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048",
+        attributes: "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n",
+    },
+    Key {
+        name: "k-aes",
+        ty: "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32",
+        attributes: "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n",
+    },
+    Key {
+        name: "k-hmac",
+        ty: "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = 32",
+        attributes: "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n",
+    },
+];
+
+/// The dry-run property for the sealed rows (MIGRATE.md D9, phase 3): for every key class,
+/// source and target reference, `migrate --dry-run`'s verdict is the outcome. Each key is
+/// generated on its source (`createOn`), each target holds a transport key. A ready move exits
+/// 0, records its `origin`, and `cakeys verify` then accepts the key on the target — proving
+/// possession, so the unwrapped key is the locked one; a blocked one is 15 with the lock
+/// unchanged and nothing on the target.
+#[test]
+#[expect(clippy::format_push_string, reason = "the fixture TOML bodies are appended as += format!(...)")]
+fn sealed_moves_do_what_the_plan_says() {
+    let Some(e) = env("sealed-moves") else { return };
+    // Sources make extractable keys: not tpm2-pkcs11 (its keys never leave the TPM), and not
+    // Edwards keys through p11-kit (the RPC drops their generation); kryoptic-der reads kryoptic.
+    let generates =
+        |r: &Ref, k: &Key| matches!(r.plant, Plant::Create) && !(k.name == "k-ed25519" && r.name == "p11kit");
+    let same_token = |a: &Ref, b: &Ref| a.module == b.module && a.token_label == b.token_label;
+    let pairs: Vec<(&Key, &Ref, &Ref)> = KEYS
+        .iter()
+        .flat_map(|k| e.refs.iter().map(move |s| (k, s)))
+        .filter(|(k, s)| generates(s, k))
+        .flat_map(|(k, s)| e.refs.iter().filter(move |d| !same_token(s, d)).map(move |d| (k, s, d)))
+        .collect();
+    let object = |k: &Key, s: &Ref| format!("{}-{}", k.name, s.name);
+    let target_label = |k: &Key, s: &Ref, d: &Ref| format!("cm-{}-{}-{}", k.name, s.name, d.name);
+    let target_spec = |k: &Key, s: &Ref, d: &Ref| format!("{}-{}-{}", k.name, s.name, d.name);
+    let unwraps = |d: &Ref| d.plant != Plant::Ptool;
+    let mut body = e.refs.iter().filter(|d| unwraps(d)).map(transport_key).collect::<String>();
+    for k in &KEYS {
+        for s in e.refs.iter().filter(|s| generates(s, k)) {
+            let o = object(k, s);
+            body += &format!("[objects.{o}]\n{}\ncreateOn = \"{}\"\n\n", k.ty, s.name);
+            body += &Env::spec(&format!("{o}-src"), &o, k.attributes, &[s], &format!("cm-{o}"), ", autoCreate = true");
+        }
+    }
+    for (k, s, d) in &pairs {
+        body += &Env::spec(&target_spec(k, s, d), &object(k, s), k.attributes, &[d], &target_label(k, s, d), "");
+    }
+    e.config(&body);
+    // p11-kit hides the module behind it, so its capabilities are a spec-compliant module's until
+    // keys.toml names that module's provider (DESIGN §6.2): this one forwards `SoftHSM`, whose
+    // unwrapped secret keys lose their length (`secret-unwraps = false`).
+    let config = e.dir.join("keys.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, text.replace("[tokens.p11kit]\n", "[tokens.p11kit]\nprovider = \"softhsm\"\n")).unwrap();
+    for d in e.refs.iter().filter(|d| unwraps(d)) {
+        let o = e.cakeys(d, &["realise", &format!("tk-{}", d.name), "--token", d.name]);
+        assert_eq!(code(&o), 0, "transport key on {}: {}", d.name, stderr(&o));
+    }
+    for k in &KEYS {
+        for s in e.refs.iter().filter(|s| generates(s, k)) {
+            let spec = format!("{}-src", object(k, s));
+            let o = e.cakeys(s, &["realise", &spec, "--token", s.name]);
+            assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
+        }
+    }
+    let lock_path = e.dir.join("keys.lock");
+    let mut rows = Vec::new();
+    for (k, s, d) in &pairs {
+        let (spec, o) = (target_spec(k, s, d), object(k, s));
+        let args = ["migrate", o.as_str(), "--from", s.name, "--to", d.name, "--spec", &spec];
+        let out = e.km(s, &[&args[..], &["--dry-run", "--json"]].concat());
+        let plan: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let ready = plan["plans"][0]["ready"].as_bool().unwrap();
+        assert_eq!(code(&out) == 0, ready, "{spec}: the dry run's exit and its plan disagree");
+        let method = plan["plans"][0]["method"].as_str().unwrap_or("-").to_owned();
+        let before = std::fs::read(&lock_path).unwrap();
+        let out = e.km(s, &args);
+        let row =
+            format!("{spec}: {method}, plan {}, move exit {}", if ready { "ready" } else { "blocked" }, code(&out));
+        if ready {
+            assert_eq!(code(&out), 0, "{row}: {}", stderr(&out));
+            let lock: toml::Value = toml::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
+            let origin = &lock["realisations"][spec.as_str()][d.name]["provenance"]["origin"];
+            assert_eq!(origin["from"].as_str(), Some(s.name), "{row}");
+            assert_eq!(origin["method"].as_str(), Some(method.as_str()), "{row}");
+            let v = e.cakeys(d, &["verify", &spec, "--token", d.name]);
+            assert_eq!(code(&v), 0, "{row}: cakeys verify: {}", stderr(&v));
+        } else {
+            assert_eq!(code(&out), 15, "{row}: {}", stderr(&out));
+            assert_eq!(std::fs::read(&lock_path).unwrap(), before, "{row}: a refused move changed the lock");
+            let left = open_session(&d.module, d.token_label, "1234").labelled(&target_label(k, s, d));
+            assert!(left.is_empty(), "{row}: a refused move left objects on the target");
+        }
+        rows.push(row);
+    }
+    eprintln!("sealed moves:\n  {}", rows.join("\n  "));
+    assert!(rows.iter().any(|r| r.contains("plan ready")), "no sealed move was planned ready");
+}
+
+/// A bundle crosses untrusted channels (MIGRATE.md D5, D6): `export --out` writes it and
+/// `import --in` reads it, checked against the lock before the target is touched — another key's
+/// IDs are 17 or 10 — and after: tampered bytes do not unwrap (13), and the blobs of another
+/// key unwrap into material that is not the locked one (a private key fails its proof of possession,
+/// 13; a secret key its commitment, 10). Neither leaves anything
+/// on the target. A transport file for a key the lock does not pin is no channel at all.
+#[test]
+fn bundles_are_checked_against_the_lock() {
+    let Some(e) = env("bundles") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
+    let (Some(soft), Some(kry)) = (named("softhsm"), named("kryoptic")) else {
+        eprintln!("skipping bundles: needs the softhsm and kryoptic references");
+        return;
+    };
+    let key = |o: &str, ty: &str| {
+        format!("[objects.{o}]\n{ty}\ncreateOn = \"softhsm\"\n\n")
+            + &Env::spec(
+                &format!("{o}-soft"),
+                o,
+                "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n",
+                &[soft],
+                &format!("xb-{o}"),
+                ", autoCreate = true",
+            )
+            + &Env::spec(
+                &format!("{o}-kry"),
+                o,
+                "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n",
+                &[kry],
+                &format!("xb-{o}"),
+                "",
+            )
+    };
+    let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+    let aes = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32";
+    e.config(&(transport_key(kry) + &key("ek1", ec) + &key("ek2", ec) + &key("sk1", aes) + &key("sk2", aes)));
+    assert_eq!(code(&e.cakeys(kry, &["realise", "tk-kryoptic", "--token", "kryoptic"])), 0);
+    for spec in ["ek1-soft", "ek2-soft", "sk1-soft", "sk2-soft"] {
+        assert_eq!(code(&e.cakeys(soft, &["realise", spec, "--token", "softhsm"])), 0, "{spec}");
+    }
+    let export = |o: &str| {
+        let path = e.dir.join(format!("{o}.bundle.toml"));
+        let out = path.to_str().unwrap().to_owned();
+        let r = e.km(soft, &["export", o, "--token", "softhsm", "--target", "kryoptic", "--out", &out]);
+        assert_eq!(code(&r), 0, "export {o}: {}", stderr(&r));
+        path
+    };
+    let (ek1, ek2) = (export("ek1"), export("ek2"));
+    let text = std::fs::read_to_string(&ek1).unwrap();
+    let lock_path = e.dir.join("keys.lock");
+    let import = |path: &std::path::Path| {
+        e.km(kry, &["import", "ek1-kry", "--token", "kryoptic", "--in", path.to_str().unwrap()])
+    };
+    let empty = || open_session(&kry.module, kry.token_label, "1234").labelled("xb-ek1").is_empty();
+    let refused = |text: String, want: i32, what: &str| {
+        let path = e.dir.join("altered.bundle.toml");
+        std::fs::write(&path, text).unwrap();
+        let before = std::fs::read(&lock_path).unwrap();
+        let o = import(&path);
+        assert_eq!(code(&o), want, "{what}: {}", stderr(&o));
+        assert!(empty(), "{what}: left objects on the target");
+        assert_eq!(std::fs::read(&lock_path).unwrap(), before, "{what}: changed the lock");
+    };
+    let b: toml::Value = toml::from_str(&text).unwrap();
+    let key_blob = b["wrapped"]["key"].as_str().unwrap();
+    // Another key's IDs alone: the form check refuses them, the public key no longer theirs (17).
+    let ids = b["ids"]["rfc7093m4"].as_str().unwrap();
+    let other: toml::Value = toml::from_str(&std::fs::read_to_string(&ek2).unwrap()).unwrap();
+    let other_ids = other["ids"]["rfc7093m4"].as_str().unwrap();
+    refused(text.replace(ids, other_ids), 17, "the IDs of another key");
+    // With its public key too: consistent, but not what the lock pins for 'ek1' (10), before the
+    // target is touched.
+    let public = b["publicKey"].as_str().unwrap();
+    let relabelled = text.replace(ids, other_ids).replace(public, other["publicKey"].as_str().unwrap());
+    refused(relabelled, 10, "another key's IDs and public key");
+    // A flipped byte in the wrapped key: RFC 5649's integrity check refuses it.
+    refused(text.replace(key_blob, &base64_flip(key_blob)), 13, "a tampered blob");
+    // The other key's blobs, wrapped to the same transport key: unwrapped, then refused by
+    // identity and removed again.
+    let other_wrapped = other["wrapped"].clone();
+    let mut swapped = b.clone();
+    swapped["wrapped"] = other_wrapped;
+    // A private key's identity is its public key, which the bundle carries: the other key's
+    // private half fails the proof of possession (13).
+    refused(toml::to_string(&swapped).unwrap(), 13, "another private key's blobs");
+    // A secret key's identity is its commitment, computed from the unwrapped key: 10.
+    let (sk1, sk2) = (export("sk1"), export("sk2"));
+    let mut swapped: toml::Value = toml::from_str(&std::fs::read_to_string(&sk1).unwrap()).unwrap();
+    let sk2: toml::Value = toml::from_str(&std::fs::read_to_string(&sk2).unwrap()).unwrap();
+    swapped["wrapped"] = sk2["wrapped"].clone();
+    let path = e.dir.join("swapped-secret.bundle.toml");
+    std::fs::write(&path, toml::to_string(&swapped).unwrap()).unwrap();
+    let o = e.km(kry, &["import", "sk1-kry", "--token", "kryoptic", "--in", path.to_str().unwrap()]);
+    assert_eq!(code(&o), 10, "another secret key's blobs: {}", stderr(&o));
+    assert!(open_session(&kry.module, kry.token_label, "1234").labelled("xb-sk1").is_empty(), "left behind");
+    // The bundle itself: a dry run checks it, the import records it, and cakeys verifies it.
+    assert_eq!(
+        code(&e.km(kry, &["import", "ek1-kry", "--token", "kryoptic", "--in", ek1.to_str().unwrap(), "--dry-run"])),
+        0
+    );
+    assert!(empty(), "the dry run imported");
+    let o = import(&ek1);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&e.cakeys(kry, &["verify", "ek1-kry", "--token", "kryoptic"])), 0);
+    // A transport file for a key the lock does not pin: the plan refuses to wrap to it.
+    let rogue = e.dir.join("rogue.transport.toml");
+    let file = e.km(kry, &["transport", "tk-kryoptic", "--token", "kryoptic", "--out", rogue.to_str().unwrap()]);
+    assert_eq!(code(&file), 0, "{}", stderr(&file));
+    let t = std::fs::read_to_string(&rogue).unwrap().replace("object = \"tk-kryoptic\"", "object = \"ek2\"");
+    std::fs::write(&rogue, t).unwrap();
+    let o = e.km(soft, &["export", "ek2", "--token", "softhsm", "--transport", rogue.to_str().unwrap(), "--dry-run"]);
+    assert_eq!(code(&o), 15, "{}", stdout(&o));
+    assert!(stdout(&o).contains("is not the"), "{}", stdout(&o));
+}
+
+/// `text`, base64, with one byte of what it encodes flipped.
+fn base64_flip(text: &str) -> String {
+    use base64::Engine as _;
+    let mut bytes = base64::engine::general_purpose::STANDARD.decode(text).unwrap();
+    let mid = bytes.len() / 2;
+    bytes[mid] ^= 0x01;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }

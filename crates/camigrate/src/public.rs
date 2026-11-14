@@ -130,7 +130,7 @@ fn template(src: &Target, from: &Token, dst: &Target, to: &Token) -> Result<Vec<
 /// The public key's material from its canonical SPKI, in PKCS#11's encoding: an EC or Edwards
 /// point as a DER OCTET STRING beside the curve's parameters, an RSA key as its modulus and
 /// exponent.
-fn public_key(src: &Target, spki: &[u8]) -> Result<Vec<Attribute>> {
+pub(crate) fn public_key(src: &Target, spki: &[u8]) -> Result<Vec<Attribute>> {
     let bad = |e: &dyn std::fmt::Display| KmError::Conflict(format!("{src}: the locked public key: {e}"));
     if src.object.key_type == Some(cakeys_core::types::KeyType::Rsa) {
         let key = rsa::PublicKey::from_public_key_der(spki).map_err(|e| bad(&e))?;

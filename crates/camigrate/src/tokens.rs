@@ -7,7 +7,7 @@
 use crate::plan::{Allow, FileFormat, Material, Plan, To, plan};
 use crate::transport::Transport;
 use cakeys_core::config::{AttrValue, Lock, Observation, TokenCfg, TokenObservation};
-use cakeys_core::migrate::{Accept, PlaintextImport, Side};
+use cakeys_core::migrate::{Accept, Method, PlaintextImport, Side};
 use cakeys_core::pop::OaepHash;
 use cakeys_core::types::{KeyType, ObjectClass};
 use cakeys_core::{KmError, Result};
@@ -65,7 +65,6 @@ pub fn side_from_transport(t: &Transport, registry: &Registry) -> Option<Result<
 /// The per-module unwrap-template rules, as data (MIGRATE.md D6): what the wrapping code of
 /// MIGRATE phase 3 must drop from a target's unwrap template (`SoftHSM`: `CKA_VALUE_LEN`).
 #[must_use]
-#[expect(dead_code, reason = "defined ahead of its consumer: the unwrap template of MIGRATE phase 3")]
 pub fn unwrap_refusals(tok: &Token) -> Vec<&str> {
     let mut out: Vec<&str> =
         tok.profiles.module.iter().flat_map(|p| p.unwrap.refuse.iter().flatten().map(String::as_str)).collect();
@@ -93,6 +92,9 @@ fn side_of(module: &Profile, stack: &Resolved, token: &str, provider: &str, mech
     }
     if let Some(unwraps) = m.and_then(|m| m.unwraps) {
         side.unwraps = unwraps;
+    }
+    if let Some(secret) = m.and_then(|m| m.secret_unwraps) {
+        side.secret_unwraps = secret;
     }
     // Never probed keeps the spec-compliant default; probed and empty means no OAEP method.
     if let Some(oaep) = &module.wrap.oaep {
@@ -267,6 +269,8 @@ pub struct Request<'a> {
     pub dest: Dest<'a>,
     /// Allow the `host` and `file` paths: plaintext in this process's memory (MIGRATE.md D2).
     pub host_plaintext: bool,
+    /// The target's transport key, by its spec, when several are realised there (MIGRATE.md D3).
+    pub transport_key: Option<&'a str>,
 }
 
 /// The plans of one invocation (MIGRATE.md D9).
@@ -339,7 +343,21 @@ pub fn plan_moves(
         (None, Dest::File(f)) => To::File(*f),
         (None, _) => unreachable!("only a file has no side"),
     };
-    let plans = materials.iter().map(|m| plan(m, &source, &to, allow)).collect();
+    let mut plans: Vec<Plan> = materials.iter().map(|m| plan(m, &source, &to, allow)).collect();
+    // A sealed move needs the transport key it wraps to: realised on a target token, or pinned by
+    // this lock when it comes as a file (D3: the lock is the authenticated channel).
+    let sealed = |p: &Plan| matches!(p.method, Some(Method::RsaOaepAesKwp(_) | Method::RsaOaep(_)));
+    let missing = match &req.dest {
+        Dest::Token(name) => transport_spec(lock, name, req.transport_key).err(),
+        Dest::Transport(t, shown) => pinned(lock, t).err().map(|e| format!("{shown}: {e}")),
+        Dest::File(_) => None,
+    };
+    if let Some(why) = missing {
+        for p in plans.iter_mut().filter(|p| p.ready && sealed(p)) {
+            p.ready = false;
+            p.reasons.push(why.clone());
+        }
+    }
     Ok(Moves { to: to_name, source_from, target_from, plans })
 }
 
@@ -372,5 +390,59 @@ fn side_or_lock(
             Ok((side?, "lock"))
         }
         None => Err(e),
+    }
+}
+
+/// The spec of the transport key realised on `token` (MIGRATE.md D3): an RSA private key whose
+/// recorded policy unwraps and never leaves the token. `chosen` names one by spec; without it,
+/// there must be exactly one.
+///
+/// # Errors
+///
+/// Why there is no such key, or which to choose between.
+pub fn transport_spec<'a>(lock: &'a Lock, token: &str, chosen: Option<&str>) -> std::result::Result<&'a str, String> {
+    let is_true = |p: &std::collections::BTreeMap<String, AttrValue>, n: &str| p.get(n) == Some(&AttrValue::Bool(true));
+    let candidates: Vec<&str> = lock
+        .realisations
+        .iter()
+        .filter_map(|(spec, by_token)| by_token.get(token).map(|r| (spec, r)))
+        .filter(|(spec, r)| {
+            let rsa = lock
+                .objects
+                .get(&r.object)
+                .and_then(|o| o.object_type.as_ref())
+                .is_some_and(|t| t.class == ObjectClass::PrivateKey && t.key_type == Some(KeyType::Rsa));
+            rsa && is_true(&r.policy, "CKA_UNWRAP")
+                && !is_true(&r.policy, "CKA_EXTRACTABLE")
+                && chosen.is_none_or(|c| c == spec.as_str())
+        })
+        .map(|(spec, _)| spec.as_str())
+        .collect();
+    match candidates.as_slice() {
+        [one] => Ok(one),
+        [] => Err(match chosen {
+            Some(c) => format!("'{c}' is no transport key realised on '{token}'"),
+            None => format!(
+                "no transport key is realised on '{token}' (MIGRATE.md D3): declare an RSA key there that may \
+                 unwrap and never leaves the token, and realise it"
+            ),
+        }),
+        several => Err(format!(
+            "several transport keys are realised on '{token}' ({}): pass --transport-key",
+            several.join(", ")
+        )),
+    }
+}
+
+/// A transport file's key is the one the lock pins for its object.
+///
+/// # Errors
+///
+/// Why it is not.
+pub fn pinned(lock: &Lock, t: &Transport) -> std::result::Result<(), String> {
+    match lock.objects.get(&t.object).and_then(|o| o.ids.get("rfc7093m4")) {
+        Some(id) if *id == t.rfc7093m4 => Ok(()),
+        Some(id) => Err(format!("its key {} is not the {id} the lock pins for '{}'", t.rfc7093m4, t.object)),
+        None => Err(format!("the lock pins no key for its object '{}', so nothing vouches for it", t.object)),
     }
 }

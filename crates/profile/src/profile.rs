@@ -184,6 +184,10 @@ pub struct Migration {
     /// Whether the module unwraps a key in (`C_UnwrapKey`).
     #[serde(default)]
     pub unwraps: Option<bool>,
+    /// Whether a secret key it unwraps reports its length (`CKA_VALUE_LEN`), which the import's
+    /// type check reads: `SoftHSM` leaves it 0 and refuses it in the template (default: yes).
+    #[serde(default, rename = "secret-unwraps")]
+    pub secret_unwraps: Option<bool>,
     /// How plaintext private and secret keys get in, if at all.
     #[serde(default, rename = "plaintext-import")]
     pub plaintext_import: Option<PlaintextKind>,

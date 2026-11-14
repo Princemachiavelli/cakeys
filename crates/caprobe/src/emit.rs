@@ -201,6 +201,9 @@ pub fn profile(p: &Profile) -> String {
         if let Some(b) = m.unwraps {
             let _ = writeln!(s, "unwraps = {b}");
         }
+        if let Some(b) = m.secret_unwraps {
+            let _ = writeln!(s, "secret-unwraps = {b}");
+        }
         if let Some(k) = m.plaintext_import {
             let _ = writeln!(
                 s,
