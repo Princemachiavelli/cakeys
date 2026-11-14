@@ -126,6 +126,13 @@
     assert signing.id.pubkeyhash == signing.id.rfc7093m4; # input alias
     assert signing.uri == "pkcs11:token=kmtest;object=signing;type=private";
     assert signing.mode == "direct";
+    # `createOn` is where the object is born, not part of its type.
+    assert
+      signing.type == {
+        class = "CKO_PRIVATE_KEY";
+        keyType = "CKK_EC";
+        curve = "secp256r1";
+      };
     assert signing.spec == "signing-soft" && signing.token == "softhsm";
     assert signing.requiredSystemFeatures == [ "token-softhsm" ];
     assert signing.functions.CKM_ECDSA;

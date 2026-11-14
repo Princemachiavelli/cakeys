@@ -353,6 +353,7 @@ class = "CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY" | "CKO_SECRET_KEY" | "CKO_CERTIFICA
 keyType = "CKK_EC" | ...        # keys; certificates and data objects take none
 certificateType = "CKC_X_509"   # certificates only (exit 17 otherwise)
 curve = "..." ; modulusBits = N ; valueLen = BYTES   # curve names are canonicalized on load (P-256 -> secp256r1); valueLen at most 2^32 - 1 (17)
+createOn = "<token>"            # where the object is born when its specs name several tokens; not part of its type (below)
 
 [specs.<name>]
 object = "<object>"
@@ -386,6 +387,12 @@ What may be created and adopted:
   another token), `autoCreate` is refused (14) before anything is created: generated material
   could never match (D1) — `autocreate_never_fights_a_locked_identity`. Put the same material
   under the locator instead, or give the token's key its own object name.
+- **`createOn`** names the token an object is born on: `create` and `autoCreate` generate it only
+  there, `create` on another token is refused (17) and its skip note names the import
+  (`camigrate migrate`). `autoCreate` on another token, or on several without `createOn`, is
+  invalid at load (17) — `create_on_names_where_an_object_is_born`,
+  `create_happens_on_the_create_on_token_only`. It is kept apart from the object's type: the lock
+  and the spec digest never see it.
 - **`CKK_SHA*_HMAC` keys** cannot be generated (PKCS#11 has no mechanism for them) —
   `hmac_key_types_commit_with_their_own_hash`.
 - **`publicOnly`** verifies a private key through its public-key object, without login (it spares

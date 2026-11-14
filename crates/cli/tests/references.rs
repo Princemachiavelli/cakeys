@@ -452,3 +452,31 @@ fn the_same_scenario_gets_the_same_verdict_on_every_reference() {
 }
 
 const EC_P256_PARAMS: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+
+/// `createOn` (keys.toml): an object on several tokens is born on the one it names. `create`
+/// makes it there only, says the other token needs it imported, and refuses a pair on the other
+/// token by name (17) before touching it.
+#[test]
+fn create_happens_on_the_create_on_token_only() {
+    let Some(e) = env("create-on") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
+    let (Some(soft), Some(kry)) = (named("softhsm"), named("kryoptic")) else {
+        eprintln!("skipping create-on: needs the softhsm and kryoptic references");
+        return;
+    };
+    for r in [soft, kry] {
+        open_session(&r.module, r.token_label, "1234").clear(&["xref-born"]);
+    }
+    let body = "[objects.born]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\
+                createOn = \"softhsm\"\n\n"
+        .to_owned()
+        + &Env::spec("born", "born", "attributes = { CKA_SIGN = true }\n", &[soft, kry], "xref-born", "");
+    e.config(&body);
+    let o = e.km(soft, &["create", "born"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(stderr(&o).contains("is created on 'softhsm' (createOn)"), "{}", stderr(&o));
+    assert_eq!(open_session(&soft.module, soft.token_label, "1234").labelled("xref-born").len(), 2, "the pair");
+    assert_eq!(open_session(&kry.module, kry.token_label, "1234").labelled("xref-born"), []);
+    assert_eq!(code(&e.km(kry, &["create", "born", "--token", "kryoptic"])), 17);
+    assert_eq!(open_session(&kry.module, kry.token_label, "1234").labelled("xref-born"), []);
+}

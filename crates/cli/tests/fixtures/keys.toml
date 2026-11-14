@@ -11,6 +11,7 @@ systemFeature = "yubikey-piv"
 class = "CKO_PRIVATE_KEY"
 keyType = "CKK_EC"
 curve = "secp256r1"
+createOn = "softhsm"
 
 [specs.signing-soft]
 object = "signing"

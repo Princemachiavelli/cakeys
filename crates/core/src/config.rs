@@ -18,6 +18,11 @@ pub struct Config {
     pub objects: BTreeMap<String, ObjectCfg>,
     #[serde(default)]
     pub specs: BTreeMap<String, SpecCfg>,
+    /// Where each object is born (`[objects.<name>].createOn`, a token name): `create` and
+    /// `autoCreate` generate it only there, and its other tokens get the same material by import
+    /// (camigrate). Kept apart from [`ObjectCfg`], the material's type, which the lock records.
+    #[serde(skip)]
+    pub create_on: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -939,7 +944,11 @@ pub fn load_config_with(path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Re
 ///
 /// `Validation`, as [`load_config_with`].
 pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<Config> {
-    let mut cfg: Config = toml::from_str(text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
+    let invalid = |e: &dyn std::fmt::Display| KmError::Validation(format!("{}: {e}", path.display()));
+    let mut table: toml::Table = toml::from_str(text).map_err(|e| invalid(&e))?;
+    let create_on = take_create_on(&mut table).map_err(|e| invalid(&e))?;
+    let mut cfg: Config = table.try_into().map_err(|e| invalid(&e))?;
+    cfg.create_on = create_on;
     for (name, o) in &mut cfg.objects {
         o.canonicalize();
         // The commitment label carries 8 × valueLen bits (docs/DESIGN.md §3.3): bound it so that
@@ -1000,7 +1009,69 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
             }
         }
     }
+    check_creation(&cfg).map_err(|e| invalid(&e))?;
     Ok(cfg)
+}
+
+/// Take each object's `createOn` out of the parsed keys.toml, so the rest of the object table is
+/// its material type ([`ObjectCfg`]) alone.
+fn take_create_on(table: &mut toml::Table) -> std::result::Result<BTreeMap<String, String>, String> {
+    let mut out = BTreeMap::new();
+    let Some(toml::Value::Table(objects)) = table.get_mut("objects") else { return Ok(out) };
+    for (name, o) in objects.iter_mut() {
+        let Some(o) = o.as_table_mut() else { continue };
+        match o.remove("createOn") {
+            Some(toml::Value::String(token)) => {
+                out.insert(name.clone(), token);
+            }
+            Some(v) => return Err(format!("object '{name}': createOn = {v} is not a token name")),
+            None => {}
+        }
+    }
+    Ok(out)
+}
+
+/// Where each object may be created (docs/CONFIG.md, `createOn`): a `createOn` names a token the
+/// object has a spec on, and only that token may `autoCreate` it; without one, at most one token
+/// may, so where material is born is never decided by which pair runs first.
+fn check_creation(cfg: &Config) -> std::result::Result<(), String> {
+    for (object, token) in &cfg.create_on {
+        if !cfg.tokens.contains_key(token) {
+            return Err(format!("object '{object}': createOn names unknown token '{token}'"));
+        }
+        if !cfg.specs.values().any(|s| s.object == *object && s.tokens.contains_key(token)) {
+            return Err(format!("object '{object}': createOn = \"{token}\", but no spec realises it on '{token}'"));
+        }
+    }
+    for object in cfg.objects.keys() {
+        let mut creating: Vec<&str> = cfg
+            .specs
+            .values()
+            .filter(|s| s.object == *object)
+            .flat_map(|s| s.tokens.iter().filter(|(_, t)| t.auto_create).map(|(name, _)| name.as_str()))
+            .collect();
+        creating.sort_unstable();
+        creating.dedup();
+        match cfg.create_on.get(object) {
+            Some(born) => {
+                if let Some(other) = creating.iter().find(|t| **t != born.as_str()) {
+                    return Err(format!(
+                        "object '{object}' is created on '{born}' (createOn), so autoCreate on '{other}' would \
+                         generate different material; '{other}' gets it by import (camigrate migrate)"
+                    ));
+                }
+            }
+            None if creating.len() > 1 => {
+                return Err(format!(
+                    "object '{object}' has autoCreate on several tokens ({}): name the one it is born on with \
+                     createOn; the others get it by import",
+                    creating.join(", ")
+                ));
+            }
+            None => {}
+        }
+    }
+    Ok(())
 }
 
 /// A whole-value environment reference in a path field: `$NAME` or `${NAME}` becomes the value of
@@ -1300,6 +1371,36 @@ mod tests {
         let stale = gc(&cfg, &mut lock, true);
         assert_eq!(stale.len(), 3, "{stale:?}");
         assert!(lock.realisations.is_empty() && lock.observations.is_empty());
+    }
+
+    /// `createOn` names where an object is born, apart from its type; only that token may
+    /// `autoCreate` it, and without it at most one token may. Anything else is invalid (17).
+    #[test]
+    fn create_on_names_where_an_object_is_born() {
+        let load = |object_extra: &str, a_auto: bool, b_auto: bool| {
+            let text = format!(
+                "[tokens.a]\ntokenLabel = \"a\"\n[tokens.b]\ntokenLabel = \"b\"\n\n\
+                 [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n{object_extra}\n\n\
+                 [specs.k]\nobject = \"k\"\n\
+                 tokens.a = {{ locator = {{ CKA_LABEL = \"k\" }}, autoCreate = {a_auto} }}\n\
+                 tokens.b = {{ locator = {{ CKA_LABEL = \"k\" }}, autoCreate = {b_auto} }}\n"
+            );
+            parse_config_with(&text, Path::new("keys.toml"), &|_| None)
+        };
+        let cfg = load("createOn = \"a\"", true, false).unwrap();
+        assert_eq!(cfg.create_on.get("k").map(String::as_str), Some("a"));
+        // The type is the material alone: it compares equal to one without createOn.
+        assert_eq!(cfg.objects["k"], load("", false, false).unwrap().objects["k"]);
+        let refused = |r: Result<Config>, what: &str| {
+            let e = r.unwrap_err();
+            assert!(matches!(e, KmError::Validation(_)) && e.to_string().contains(what), "{e}");
+        };
+        refused(load("createOn = \"a\"", true, true), "autoCreate on 'b'");
+        refused(load("", true, true), "autoCreate on several tokens");
+        refused(load("createOn = \"c\"", false, false), "unknown token 'c'");
+        refused(load("createOn = 3", false, false), "is not a token name");
+        // One token creating, without createOn: as before.
+        load("", true, false).unwrap();
     }
 
     /// `$NAME`/`${NAME}` in `pinFile` and `module` read the path from the environment; an unset or

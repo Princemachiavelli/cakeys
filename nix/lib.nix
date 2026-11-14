@@ -179,5 +179,8 @@ in
             );
         };
     in
-    builtins.mapAttrs objectView (cfg.objects or { });
+    # `createOn` says where the object is born, not what it is: the type is the rest.
+    builtins.mapAttrs (obj: o: objectView obj (builtins.removeAttrs o [ "createOn" ])) (
+      cfg.objects or { }
+    );
 }

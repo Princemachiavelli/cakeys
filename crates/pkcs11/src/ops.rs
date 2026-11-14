@@ -450,7 +450,8 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
 ///
 /// # Errors
 ///
-/// As [`realise`], with creation always allowed.
+/// As [`realise`], with creation always allowed; `Validation` (17) on a token other than the
+/// object's `createOn`, before the token is touched.
 pub fn create(
     t: &Target,
     tok: &Token,
@@ -458,18 +459,34 @@ pub fn create(
     write: LockWrite,
     notes: &mut Notes,
 ) -> Result<(Resolved, bool)> {
+    if let Some(why) = born_elsewhere(t) {
+        return Err(KmError::Validation(format!("{t}: {why}")));
+    }
     let on_token = cakeys_core::config::SpecTokenCfg { auto_create: true, ..t.on_token.clone() };
     realise(&Target { on_token: &on_token, ..*t }, tok, lock, write, notes)
 }
 
+/// Why `t`'s token may not create its object: keys.toml names another as its `createOn`.
+fn born_elsewhere(t: &Target) -> Option<String> {
+    t.create_on.filter(|born| *born != t.token_name).map(|born| {
+        format!(
+            "object '{}' is created on '{born}' (createOn); import it from there (camigrate migrate {} --from \
+             {born} --to {})",
+            t.object_name, t.object_name, t.token_name
+        )
+    })
+}
+
 /// Why `create` without a named pair leaves `t` alone: a class cakeys adopts rather than
-/// generates, a publicOnly adoption, or an object whose material the lock already pins (another
-/// token then needs that same material, which only importing or migrating can put there).
-// TODO(NEXT.md §2, "one creation token"): a multi-token object is created on whichever of its
-// pairs comes first in config order; keys.toml should name the creation token instead.
+/// generates, a publicOnly adoption, an object born on another token (`createOn`), or an object
+/// whose material the lock already pins (another token then needs that same material, which
+/// only importing or migrating can put there).
 fn not_created(t: &Target, lock: &Lock) -> Option<String> {
     if !matches!(t.object.class, Class::PrivateKey | Class::SecretKey) {
         return Some(format!("{} objects are adopted, not created", t.object.class));
+    }
+    if let Some(why) = born_elsewhere(t) {
+        return Some(why);
     }
     if t.on_token.public_only {
         return Some("publicOnly adopts the public half only".into());

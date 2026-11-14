@@ -104,6 +104,11 @@ class = "CKO_PRIVATE_KEY"
 keyType = "CKK_EC"
 # Canonicalized on load: "P-256" and "prime256v1" are the same type as "secp256r1".
 curve = "secp256r1"
+# Where the key is born, when its specs name several tokens: `create` and `autoCreate` generate
+# it only on this token, and the others get the same material by import (`camigrate migrate`).
+# Only this token may set `autoCreate` (17 otherwise); without `createOn`, at most one token
+# may. Not part of the type: the lock and the spec digest never see it.
+createOn = "softhsm"
 
 [objects.agreement]
 class = "CKO_PRIVATE_KEY"
@@ -190,6 +195,9 @@ tokens.softhsm = { locator = { CKA_LABEL = "release-note" } }
   create` makes them explicitly without it. Certificates, public keys and data objects are
   adopted. When the lock already pins the object's material, creating is refused (14): newly
   generated material could never match.
+- **One birthplace per object:** an object whose specs name several tokens is generated on its
+  `createOn` token only; `autoCreate` elsewhere, or on several tokens without `createOn`, is
+  invalid (17). The other tokens get the same material by import (`camigrate`).
 - **Weak identity modes need `identity.allow`** on the spec's token entry (for example
   `identity = { allow = ["commit-at-creation"] }`); none is implemented yet, and they are refused
   before anything is created.

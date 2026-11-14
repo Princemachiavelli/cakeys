@@ -17,6 +17,8 @@ pub struct Target<'a> {
     pub object: &'a ObjectCfg,
     pub token_name: &'a str,
     pub on_token: &'a SpecTokenCfg,
+    /// The token the object is born on (`createOn`), when keys.toml names one.
+    pub create_on: Option<&'a str>,
 }
 
 impl<'a> Target<'a> {
@@ -38,7 +40,8 @@ impl<'a> Target<'a> {
         if !cfg.tokens.contains_key(token_name) {
             return Err(KmError::Validation(format!("unknown token '{token_name}'")));
         }
-        Ok(Target { spec_name, spec, object_name, object, token_name, on_token })
+        let create_on = cfg.create_on.get(object_name).map(String::as_str);
+        Ok(Target { spec_name, spec, object_name, object, token_name, on_token, create_on })
     }
 
     /// Identity schemes this spec can compute (from the spec alone), in order of preference:
