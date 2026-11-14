@@ -73,6 +73,20 @@ pub(crate) fn create_and_record(
         ops::verify(dst, to, lock, notes)?;
         return Ok(Moved::AlreadyThere);
     }
+    // The identity on the host first, before anything is written: a token that cannot delete
+    // what it imported (a YubiKey's PIV slot) must never receive the wrong key.
+    if dst.object.class == Class::PrivateKey {
+        let got =
+            cakeys_core::id::sri(&cakeys_core::id::spki_canonical(&cakeys_core::plaintext::spki_of_pkcs8(plain)?)?);
+        let locked = lock.objects.get(dst.object_name).and_then(|o| o.ids.get("rfc7093m4"));
+        if locked != Some(&got) {
+            return Err(KmError::HashMismatch {
+                what: format!("{dst}: the key to import"),
+                expected: locked.cloned().unwrap_or_else(|| "a locked rfc7093m4".into()),
+                got,
+            });
+        }
+    }
     if !to.logged_in {
         return Err(KmError::Unavailable(format!(
             "{dst}: a session without login cannot tell the locator is free; configure pinFile or pinEnv for \
@@ -169,7 +183,9 @@ pub fn import_ptool(
 /// Create the key under `dst` from `plain`: a private key's public half first (unless one is
 /// there already), then the key with the target spec's attributes.
 fn create(dst: &Target, to: &Token, plain: &[u8], spki: Option<&[u8]>, made: &mut Vec<ObjectHandle>) -> Result<()> {
-    if let Some(spki) = spki {
+    // A module that makes no public key objects (ykcs11: PIV derives the public key from the
+    // slot) gets the private key alone.
+    if let Some(spki) = spki.filter(|_| to.accepts_public_key_objects()) {
         made.push(create_public_half(dst, to, spki)?);
     }
     let mut base = vec![

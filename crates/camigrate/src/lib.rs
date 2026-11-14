@@ -470,6 +470,7 @@ impl Run<'_> {
                     | Method::HostPkcs8
                     | Method::HostRaw
                     | Method::Tpm2Ptool
+                    | Method::PivImport
             )
         };
         if let Some(p) = moves.plans.iter().find(|p| !p.method.as_ref().is_some_and(built)) {
@@ -512,7 +513,7 @@ impl Run<'_> {
                         let bundle = sealed::export(&[item], &source, lock, &key, notes)?;
                         sealed::import(&bundle, &bundle.keys[0], &dst, target, &tr, lock, notes)
                     }
-                    Some(method @ (Method::HostPkcs8 | Method::HostRaw)) => {
+                    Some(method @ (Method::HostPkcs8 | Method::HostRaw | Method::PivImport)) => {
                         host::import(&src, &source, &dst, target, lock, method, notes)
                     }
                     _ => public::import(&src, &source, &dst, target, lock, notes),
@@ -606,6 +607,16 @@ impl Run<'_> {
             {
                 p.ready = false;
                 p.reasons.push(why);
+            }
+            // An imported PIV key is never attested (MIGRATE.md D8): a spec asking for it never holds.
+            if let (true, Some(Method::PivImport), Some(to)) = (p.ready, &p.method, target_token)
+                && target_target(cfg, &p.object, to, None).is_ok_and(|dst| dst.on_token.attestation)
+            {
+                p.ready = false;
+                p.reasons.push(format!(
+                    "'{to}' asks for an attestation of '{}', and an imported PIV key has none",
+                    p.object
+                ));
             }
         }
         let (to_name, source_from, target_from, plans) =
