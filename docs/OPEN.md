@@ -119,18 +119,17 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 
 ## Engineering
 
-- **The token suites under parallel `cargo test`** crash (one test finalizes the module under
-  the others); the Nix build runs them on one thread. One session per module in `tests/common`
-  would fix it, and would let `cargo-nextest` take about 40 s off the check phase, once each
-  suite has its own token.
+- **The token suites under a plain parallel `cargo test`** still crash (one test finalizes the
+  module under the others in one process): the crane check phase runs them under
+  `cargo-nextest` with a token set per test (DEVELOPMENT.md), as the coverage report does; the
+  regular build and the mutation report run on one thread against shared tokens. One session per module in
+  `tests/common` would fix the plain run.
 - **Profiles are parsed on every token open**: parse once per process (`OnceLock`).
 - **Closing what the reports show** (`packages.coverage`, `packages.mutants`, DEVELOPMENT.md):
   no unit test in `core` pins the lock's load-time invariants or the transport-key rules (the
   token suites reach them, a plain `cargo test` does not); the sealed path with OAEP SHA-256
   and the host path's occupied-locator and rollback branches run in no test; the YubiKey
   provider and the probe's scratch-slot guard only in the opt-in hardware tests.
-- **A token set per test**, so the suites can run in parallel (`cargo-nextest`) and stop
-  depending on what the test before left on the shared tokens.
 - **Fuzz the remaining parsers**: the PIV chain, the P-521 fix-up, profile emit and parse.
 - **Design models** (DEVELOPMENT.md): Quint or TLA+ for the lock rules, Alloy for the lock's
   structure and S16, Tamarin for proof of possession and attestation, Kani for small pure

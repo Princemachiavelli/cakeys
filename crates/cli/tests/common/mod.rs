@@ -302,10 +302,18 @@ pub struct Workdir {
     pub dir: PathBuf,
 }
 
+/// The directory of one test under the integration tests' tmpdir, which every package and test
+/// binary shares: named for both, so suites that run at once (and the shared reference suite,
+/// which two binaries run under the same test names) never meet in one.
+pub fn test_dir(name: &str) -> PathBuf {
+    let binary = concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_CRATE_NAME"));
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("{binary}-{name}"))
+}
+
 impl Workdir {
     /// A fresh directory `name` under the integration tests' tmpdir.
     pub fn new(name: &str) -> Workdir {
-        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+        let dir = test_dir(name);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("pin"), "1234\n").unwrap();

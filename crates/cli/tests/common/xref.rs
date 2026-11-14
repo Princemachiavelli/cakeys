@@ -62,7 +62,7 @@ pub fn env(name: &str) -> Option<Env> {
         eprintln!("skipping {name}: fewer than two reference tokens set");
         return None;
     }
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("xref-{name}"));
+    let dir = super::test_dir(&format!("xref-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("pin"), "1234\n").unwrap();

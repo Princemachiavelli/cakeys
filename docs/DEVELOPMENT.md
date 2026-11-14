@@ -19,6 +19,12 @@ The OS is NixOS: there is no system `cargo`, `python3` or `perl`.
 - The token suites (SoftHSM, kryoptic, p11-kit, swtpm) run only in the Nix build's check phase;
   under plain `cargo test` they skip. A change to token behaviour is not tested until a Nix check
   has run.
+- The checks run the tests under `cargo-nextest`, one process per test, each through
+  `nix/test-tokens.sh`: a SoftHSM token and a kryoptic database of its own (copies of
+  templates), and for the suites that use them its own `p11-kit server` and swtpm. So the
+  tests run in parallel (268 tests in about 40 s; the camigrate suite alone took 130 s on one
+  thread) and none depends on what another left on a token. `nix build .#cakeys-crane` is
+  that run alone, the quickest way to test a change to token behaviour.
 - `nix flake check` sees only files git knows: `git add` new files first.
 - `packages.cakeys` is the regular `buildRustPackage` build, `packages.cakeys-crane` the crane
   build the checks use; `nix/package-common.nix` holds what they share.

@@ -151,6 +151,13 @@ in
           --so-pin 5678 --init-pin --pin 1234 > /dev/null
         export CAKEYS_KRYOPTIC_REQUIRE=1
 
+        # The templates of a per-test token set (nix/test-tokens.sh, the crane check phase): the
+        # two software tokens as just initialised, before any test or the forwarder touches them.
+        export CAKEYS_TOKEN_TEMPLATE=$TMPDIR/token-template
+        mkdir -p $CAKEYS_TOKEN_TEMPLATE
+        cp -r $TMPDIR/softhsm-tokens $TMPDIR/kryoptic.sql $CAKEYS_TOKEN_TEMPLATE/
+        export CAKEYS_P11KIT_ENV_SH=${./p11kit-test-env.sh} CAKEYS_TPM_ENV_SH=${./tpm2-test-env.sh}
+
         # p11-kit forwarding: a second SoftHSM token behind `p11-kit server` (short socket path).
         SOFTHSM_MODULE=$CAKEYS_TEST_MODULE bash ${./p11kit-test-env.sh} up $TMPDIR/p11
         . $TMPDIR/p11/env

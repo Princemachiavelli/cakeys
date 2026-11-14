@@ -7,7 +7,9 @@
   callPackage,
   craneLib,
   rustc,
+  stdenv,
   cargo-mutants,
+  cargo-nextest,
   # See nix/package-common.nix.
   withTpm2 ? null,
 }:
@@ -32,6 +34,9 @@ let
       else
         drv;
   };
+
+  # cargo's target runner, as an environment variable: what wraps every test process.
+  runner = "CARGO_TARGET_${stdenv.hostPlatform.rust.cargoEnvVarTarget}_RUNNER";
 
   # What the dependencies' build and every build on it share. Unit tests live in every crate,
   # not just the tools (the default members).
@@ -126,8 +131,15 @@ craneLib.buildPackage (
   // base
   // {
     inherit cargoArtifacts;
-    # One thread: the token suites open a session per test on one module (docs/OPEN.md, "Engineering").
-    cargoTestExtraArgs = "-- --test-threads=1";
+    # cargo-nextest: one process per test, each through nix/test-tokens.sh (cargo's target
+    # runner), which gives it a token set of its own: the suites run in parallel, and no test
+    # sees what another left on a token. The coverage report runs them the same way; the regular
+    # build (nix/package.nix) and the mutation report on one thread against the shared tokens.
+    nativeBuildInputs = base.nativeBuildInputs ++ [ cargo-nextest ];
+    ${runner} = "bash ${./test-tokens.sh}";
+    cargoTestCommand = "cargo nextest run \${CARGO_PROFILE:+--cargo-profile $CARGO_PROFILE}";
+    # No progress bar: the build log is not a terminal, whatever nextest sees.
+    cargoTestExtraArgs = "--no-fail-fast --show-progress none";
     passthru = {
       # Clippy with -D warnings over every target: the workspace lints (Cargo.toml
       # [workspace.lints]: unsafe_code deny, clippy::pedantic with one blanket allow) travel with
@@ -188,10 +200,13 @@ craneLib.buildPackage (
           # The llvm-tools of this rustc's own LLVM: nixpkgs' rustc ships no llvm-tools-preview.
           LLVM_COV = "${rustc.llvmPackages.llvm}/bin/llvm-cov";
           LLVM_PROFDATA = "${rustc.llvmPackages.llvm}/bin/llvm-profdata";
-          nativeBuildInputs = base.nativeBuildInputs ++ common.args.nativeCheckInputs;
-          # The token test environment, around the build phase: cargo-llvm-cov tests there.
+          nativeBuildInputs = base.nativeBuildInputs ++ common.args.nativeCheckInputs ++ [ cargo-nextest ];
+          # The token test environment, around the build phase: cargo-llvm-cov tests there, under
+          # cargo-nextest with a token set per test, as the check phase does.
           preBuild = common.args.preCheck;
-          cargoLlvmCovExtraArgs = "--no-report -- --test-threads=1";
+          ${runner} = "bash ${./test-tokens.sh}";
+          cargoLlvmCovCommand = "nextest";
+          cargoLlvmCovExtraArgs = "--no-report --no-fail-fast --show-progress none";
           postBuild = ''
             mkdir -p $out
             cargo llvm-cov report --release --lcov --output-path $out/lcov.info
