@@ -24,6 +24,12 @@ rec {
   };
   # cargo-fuzz (fuzz/): a fixed-seed smoke run in checks.fuzz, and apps.fuzz for long runs.
   fuzz = pkgs.callPackage ./nix/fuzz.nix { };
+  # SoftHSM with the upstream/softhsm/ patch (CKA_VALUE_LEN on unwrapped keys, SoftHSMv2 #628),
+  # and the same with SoftHSM's own test suite run: checks.softhsm-unwrap-value-len.
+  softhsm-unwrap-value-len = pkgs.callPackage ./nix/softhsm-unwrap-value-len.nix { };
+  softhsm-unwrap-value-len-tested = pkgs.callPackage ./nix/softhsm-unwrap-value-len.nix {
+    withTests = true;
+  };
   # The walkthrough of cakeys' main ideas on SoftHSM and kryoptic: apps.demo, checks.demo.
   demo = pkgs.callPackage ./nix/demo.nix { inherit cakeys; };
   # The demo the checks run, on the crane build.

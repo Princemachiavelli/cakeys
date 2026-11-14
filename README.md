@@ -9,7 +9,8 @@ check before each use, including inside a Nix build sandbox, verifies that the t
 exactly that material; a private key also proves possession of it, by signing, deriving,
 decrypting or unwrapping a fresh challenge the host checks.
 
-Status: proof of concept, x86_64-linux, lock format `version = 1` still a draft. Tested against
+Status: proof of concept, on x86_64-linux, aarch64-linux and aarch64-darwin (without the TPM
+provider), lock format `version = 1` still a draft. Tested against
 SoftHSM, kryoptic, tpm2-pkcs11 (swtpm) and SoftHSM behind p11-kit in every Nix build, and by hand
 on a YubiKey 5C NFC FIPS and an AMD fTPM. `nix run .#demo` walks through it on throwaway tokens.
 

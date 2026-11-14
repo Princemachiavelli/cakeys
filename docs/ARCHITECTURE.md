@@ -161,4 +161,8 @@ build plans without them. Upstream drafts: `upstream/rust-cryptoki/`.
 Policy: the latest release of everything, audited on every dependency change against crates.io
 and the flake inputs. Pinned on purpose: none, beyond the local patches above. `pkcs12` 0.2 and
 `cms` 0.3 are release candidates of the RustCrypto line `der` 0.8 and `x509-cert` 0.3 belong
-to. Edition 2024, `rust-version = 1.89`; Nix builds with the nixpkgs rustc. x86_64-linux only.
+to. Edition 2024, `rust-version = 1.89`; Nix builds with the nixpkgs rustc.
+
+The flake serves x86_64-linux, aarch64-linux and aarch64-darwin. Darwin builds the tools without
+the `tpm2` feature (no tpm2-tss there; `withTpm2` in `nix/package-common.nix`, which also builds
+that configuration on Linux) and has no NixOS tests, PC/SC sandbox probe or fuzz smoke run.

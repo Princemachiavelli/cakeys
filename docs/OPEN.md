@@ -108,8 +108,10 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 
 - **SoftHSM**: `C_UnwrapKey` stores an unwrapped secret key's `CKA_VALUE` but never its
   `CKA_VALUE_LEN` (reads 0), and refuses `CKA_VALUE_LEN` in the template
-  (`CKR_ATTRIBUTE_READ_ONLY`; src/lib/SoftHSM.cpp). File an issue or a fix; a fixed release gets
-  its own profile without `secret-unwraps = false`.
+  (`CKR_ATTRIBUTE_READ_ONLY`; SoftHSMv2 #628). A fix is drafted in `upstream/softhsm/` (not
+  filed: PR #650 covers the same change, so comment there or file with a link), and
+  `checks.softhsm-unwrap-value-len` tests it on a patched SoftHSM. A fixed release gets its own
+  profile without `secret-unwraps = false`.
 - **rust-cryptoki**: the HMAC key-type fix, `CKM_AES_KEY_WRAP_KWP` and `CKM_RSA_AES_KEY_WRAP`
   (`upstream/rust-cryptoki/`); later, array attributes and single-part sign after a
   context-specific login.

@@ -10,6 +10,7 @@
   demo,
   fuzz,
   mkTest,
+  softhsm-unwrap-value-len-tested,
 }:
 {
   # The crane build (nix/package-crane.nix) with its tests; every check below runs it. The
@@ -26,6 +27,19 @@
   demo = demo.check;
   # cakeys, caprobe and camigrate without their `tpm2` and `ykcs11` features (nix/package-crane.nix).
   inherit (cakeys) minimal;
+  # SoftHSM with upstream/softhsm/ (SoftHSMv2 #628): its own test suite, extended by the patch,
+  # passes, and an unwrapped AES key reports CKA_VALUE_LEN 32 under every wrapping mechanism.
+  softhsm-unwrap-value-len =
+    pkgs.runCommand "softhsm-unwrap-value-len"
+      {
+        nativeBuildInputs = [
+          softhsm-unwrap-value-len-tested
+          (pkgs.python3.withPackages (p: [ p.python-pkcs11 ]))
+        ];
+      }
+      ''
+        bash ${./upstream/softhsm}/repro.sh ${softhsm-unwrap-value-len-tested}/lib/softhsm/libsofthsm2.so | tee $out
+      '';
   # The capability-profile query (docs/CAPROBE.md, `caprobe supports`): static answers from the
   # profiles embedded in the binary, no token needed. yes -> 0, no -> 15, unknown -> 16.
   profiles = pkgs.runCommand "cakeys-profiles" { } ''

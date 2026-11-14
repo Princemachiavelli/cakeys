@@ -87,6 +87,7 @@
             cakeys-crane
             caprobe
             camigrate
+            softhsm-unwrap-value-len
             ;
           # Every check but the fuzz smoke run, whose build cannot reuse crane's dependencies: the
           # gate while working (`nix build .#checks-crane-only`); `nix flake check` adds the fuzz run.
@@ -157,6 +158,7 @@
             pcsc-probe
             deny
             fuzz
+            softhsm-unwrap-value-len-tested
             ;
           # Every check runs the crane build (packages.cakeys-crane).
           cakeys = local.cakeys-crane;
