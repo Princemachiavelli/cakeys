@@ -24,7 +24,12 @@ The OS is NixOS: there is no system `cargo`, `python3` or `perl`.
   templates), and for the suites that use them its own `p11-kit server` and swtpm. So the
   tests run in parallel (268 tests in about 40 s; the camigrate suite alone took 130 s on one
   thread) and none depends on what another left on a token. `nix build .#cakeys-crane` is
-  that run alone, the quickest way to test a change to token behaviour.
+  that run alone.
+- `scripts/local-tests.sh [nextest arguments]` is the same run outside Nix, seconds per test:
+  the quickest way to test a change to token behaviour. It builds against the patched cryptoki
+  (the patches `nix/package-common.nix` lists, applied under `target/local-tests/`, in a copy of
+  the tree so `Cargo.lock` stays as it is), refuses to run when cryptoki does not resolve to
+  that copy, and requires every reference token, so nothing skips. A Nix check still decides.
 - `nix flake check` sees only files git knows: `git add` new files first.
 - `packages.cakeys` is the regular `buildRustPackage` build, `packages.cakeys-crane` the crane
   build the checks use; `nix/package-common.nix` holds what they share.

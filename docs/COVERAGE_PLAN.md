@@ -133,11 +133,12 @@ module behind a p11-kit server with an environment of its own.
 - **A dry run promised moves into a token without a user PIN**, which the move then refused
   (16). `migrate` and `import` now refuse such a target before planning, dry run included
   (`needs_login`), and the two in-path checks that guarded the same thing are gone.
-- **Open, from reading the code (not run)**: the planner may promise a proof of possession it
-  cannot give. `unprovable` checks only that the target has the proof's mechanism, so a target
-  spec declaring `CKA_ALWAYS_AUTHENTICATE` on an EC key would be planned ready on SoftHSM,
-  whose `CKM_ECDSA_SHA256` signs in one part only, while the per-use login needs it in parts:
-  the move would fail after the import (15). No profile row records "signs in parts" yet.
+- **Open**: the planner promises a proof of possession it cannot give [run]. `unprovable`
+  checks only that the target has the proof's mechanism. A target spec declaring
+  `CKA_ALWAYS_AUTHENTICATE` on an EC key moving kryoptic → SoftHSM is planned ready (the dry
+  run exits 0), but the per-use login needs `CKM_ECDSA_SHA256` in parts, which SoftHSM signs
+  in one part only: the real move unwraps the key, fails the proof (15) and removes it again.
+  No profile row records "signs in parts" yet.
 
 ## Tier 3: SoftHSM posing as a YubiKey
 
