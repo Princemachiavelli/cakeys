@@ -23,6 +23,7 @@
   pkg-config,
   tpm2-tss,
   sqlite,
+  coreutils,
 }:
 let
   targets = [
@@ -110,6 +111,8 @@ in
       stdenv.cc
       openssl
       pkg-config
+      # The seed step's `cp --update=none` is GNU; darwin's own cp has no --update.
+      coreutils
     ];
     # The tpm2-pkcs11 targets link tpm2-tss and sqlite, found through pkg-config.
     runtimeEnv.PKG_CONFIG_PATH = lib.makeSearchPath "lib/pkgconfig" [

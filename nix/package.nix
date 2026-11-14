@@ -4,9 +4,13 @@
   lib,
   callPackage,
   rustPlatform,
+  # See nix/package-common.nix.
+  withTpm2 ? null,
 }:
 let
-  common = callPackage ./package-common.nix { };
+  common = callPackage ./package-common.nix (
+    lib.optionalAttrs (withTpm2 != null) { inherit withTpm2; }
+  );
 in
 rustPlatform.buildRustPackage (
   common.args
@@ -29,7 +33,8 @@ rustPlatform.buildRustPackage (
     # One thread: the token suites open a session per test on one module (docs/OPEN.md, "Engineering").
     dontUseCargoParallelTests = true;
     # Unit tests live in every crate, not just the tools (the default members).
-    cargoTestFlags = [ "--workspace" ];
+    cargoTestFlags = common.cargoScope;
+    buildNoDefaultFeatures = common.noDefaultFeatures;
     buildFeatures = common.features;
   }
 )

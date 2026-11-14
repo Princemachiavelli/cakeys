@@ -18,8 +18,6 @@
   inherit cakeys;
   # `nix fmt` would change nothing: every formatter and linter in treefmt.nix passes.
   formatting = treefmt.config.build.check self;
-  # Every fuzz target, built with libFuzzer, for a fixed seed and input count.
-  fuzz = fuzz.smoke;
   # Clippy with -D warnings over every target (nix/package-crane.nix).
   inherit (cakeys) clippy;
   # cargo-deny offline (see `deny` in pkgs.nix): reproducible with the flake.lock.
@@ -28,7 +26,6 @@
   demo = demo.check;
   # cakeys, caprobe and camigrate without their `tpm2` and `ykcs11` features (nix/package-crane.nix).
   inherit (cakeys) minimal;
-  vm = mkTest "vm";
   # The capability-profile query (docs/CAPROBE.md, `caprobe supports`): static answers from the
   # profiles embedded in the binary, no token needed. yes -> 0, no -> 15, unknown -> 16.
   profiles = pkgs.runCommand "cakeys-profiles" { } ''
@@ -73,14 +70,6 @@
     cp ${./crates/cli/tests/fixtures/keys.lock} keys.lock
     expect 0 keys.toml
   '';
-  module = import ./nix/module-test.nix {
-    inherit pkgs cakeys pcsc-probe;
-    module = self.nixosModules.default;
-  };
-  tpm = import ./nix/tpm-test.nix {
-    inherit pkgs cakeys;
-    module = self.nixosModules.default;
-  };
   lib =
     let
       keys = self.lib.mkKeys {
@@ -135,4 +124,19 @@
     pkgs.runCommand "cakeys-lib-check" { } ''
       echo ${pkgs.lib.escapeShellArg (keys.signing { }).check} > $out
     '';
+}
+# Linux hosts only: the NixOS VM tests, and the fuzz smoke run, whose targets include the
+# tpm2-pkcs11 store and TPMS_ATTEST parsers (tpm2-tss is not packaged for darwin).
+// pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+  # Every fuzz target, built with libFuzzer, for a fixed seed and input count.
+  fuzz = fuzz.smoke;
+  vm = mkTest "vm";
+  module = import ./nix/module-test.nix {
+    inherit pkgs cakeys pcsc-probe;
+    module = self.nixosModules.default;
+  };
+  tpm = import ./nix/tpm-test.nix {
+    inherit pkgs cakeys;
+    module = self.nixosModules.default;
+  };
 }

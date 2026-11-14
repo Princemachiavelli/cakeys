@@ -19,7 +19,7 @@ let
     ];
     runtimeEnv = {
       SOFTHSM_MODULE = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
-      KRYOPTIC_MODULE = "${pkgs.kryoptic}/lib/libkryoptic_pkcs11.so";
+      KRYOPTIC_MODULE = "${pkgs.kryoptic}/lib/libkryoptic_pkcs11${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
       CAKEYS_LIB = ./lib.nix;
     };
     text = builtins.readFile ./demo.sh;

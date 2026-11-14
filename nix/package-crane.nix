@@ -6,10 +6,17 @@
   lib,
   callPackage,
   craneLib,
+  # See nix/package-common.nix.
+  withTpm2 ? null,
 }:
 let
-  common = callPackage ./package-common.nix { };
+  common = callPackage ./package-common.nix (
+    lib.optionalAttrs (withTpm2 != null) { inherit withTpm2; }
+  );
   features = "--features ${lib.concatStringsSep "," common.features}";
+  scope = lib.escapeShellArgs (
+    common.cargoScope ++ lib.optional common.noDefaultFeatures "--no-default-features"
+  );
 
   # The cryptoki patches (nix/package-common.nix), on crane's vendored copy.
   cargoVendorDir = craneLib.vendorCargoDeps {
@@ -38,7 +45,7 @@ let
     # What nixpkgs' Rust builder sets: libsqlite3-sys links the system sqlite (buildInputs).
     LIBSQLITE3_SYS_USE_PKG_CONFIG = 1;
     strictDeps = true;
-    cargoExtraArgs = "--locked --workspace ${features}";
+    cargoExtraArgs = "--locked ${scope} ${features}";
   };
   cargoArtifacts = craneLib.buildDepsOnly base;
 
@@ -47,7 +54,7 @@ let
   minimal = base // {
     pname = "cakeys-minimal";
     buildInputs = [ ];
-    cargoExtraArgs = "--locked --no-default-features ${features}";
+    cargoExtraArgs = "--locked --no-default-features --features camigrate/kwp";
     doCheck = false;
   };
 in

@@ -4,6 +4,7 @@
 # adds only what is its own.
 {
   lib,
+  stdenv,
   softhsm,
   kryoptic,
   opensc,
@@ -16,7 +17,18 @@
   dbus,
   p11-kit,
   pkg-config,
+  # The tpm2 feature (cakeys-tpm2-pkcs11) is Linux only: tss-esapi-sys ships no prebuilt bindings
+  # for aarch64-darwin, and tpm2-pkcs11 and its tools are not packaged there, so there is no
+  # module for it to attest. Darwin builds the tools with ykcs11 alone; `withTpm2 = false` builds
+  # and tests that configuration on Linux too:
+  #   nix build --impure --expr '(builtins.getFlake "path:.").packages.x86_64-linux.cakeys.override { withTpm2 = false; }'
+  withTpm2 ? stdenv.hostPlatform.isLinux,
 }:
+let
+  tpm2 = withTpm2;
+  # kryoptic's module is a .dylib on darwin; SoftHSM's and p11-kit's client stay .so.
+  inherit (stdenv.hostPlatform.extensions) sharedLibrary;
+in
 {
   # cryptoki 0.12.1 (and main) gives KeyType::SHA224/384/512_HMAC the value of CKK_SHA256_HMAC, so those key
   # types can be neither created nor told apart. Minimal local fix until upstream has one
@@ -37,7 +49,26 @@
 
   # The mechanisms only the patched cryptoki above can name (CKM_AES_KEY_WRAP_KWP,
   # CKM_RSA_AES_KEY_WRAP): camigrate uses them only with this feature.
-  features = [ "camigrate/kwp" ];
+  features = [
+    "camigrate/kwp"
+  ]
+  ++ lib.optionals (!tpm2) [
+    "cakeys/ykcs11"
+    "caprobe/ykcs11"
+    "camigrate/ykcs11"
+  ];
+  # Without tpm2, the default features (tpm2 and ykcs11) are off and ykcs11 comes back through
+  # `features`.
+  noDefaultFeatures = !tpm2;
+  # What the tests and clippy cover: the workspace, less the TPM crate where tpm2 is off (a
+  # crate excluded but still pulled in by a default feature would be built anyway).
+  cargoScope = [
+    "--workspace"
+  ]
+  ++ lib.optionals (!tpm2) [
+    "--exclude"
+    "cakeys-tpm2-pkcs11"
+  ];
 
   # The derivation attributes both builders take as they are.
   args = {
@@ -75,23 +106,25 @@
     # Rust builder sets LIBSQLITE3_SYS_USE_PKG_CONFIG, which makes libsqlite3-sys link the
     # system sqlite instead — so it must be here (and crane's build sets it itself).
     nativeBuildInputs = [ pkg-config ];
-    buildInputs = [
+    buildInputs = lib.optionals tpm2 [
       tpm2-tss
       sqlite
     ];
 
     # Integration tests drive real SoftHSM and kryoptic tokens, SoftHSM through p11-kit forwarding,
-    # and tpm2-pkcs11 on a software TPM (behind tpm2-abrmd on a private D-Bus) inside the build
-    # sandbox.
+    # and, with tpm2, tpm2-pkcs11 on a software TPM (behind tpm2-abrmd on a private D-Bus) inside
+    # the build sandbox.
     nativeCheckInputs = [
       softhsm
+      p11-kit
+      opensc
+    ]
+    ++ lib.optionals tpm2 [
       swtpm
       tpm2-pkcs11
       tpm2-tools
       tpm2-abrmd
       dbus
-      p11-kit
-      opensc
     ];
     preCheck = ''
       export SOFTHSM2_CONF=$TMPDIR/softhsm2.conf
@@ -106,7 +139,7 @@
       # ends the file: the suite appends a mechanism deny list to it (tests/common/mod.rs).
       export KRYOPTIC_CONF=$TMPDIR/kryoptic.conf
       printf '[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' $TMPDIR/kryoptic.sql > $KRYOPTIC_CONF
-      export CAKEYS_KRYOPTIC_MODULE=${kryoptic}/lib/libkryoptic_pkcs11.so
+      export CAKEYS_KRYOPTIC_MODULE=${kryoptic}/lib/libkryoptic_pkcs11${sharedLibrary}
       pkcs11-tool --module $CAKEYS_KRYOPTIC_MODULE --init-token --slot 1 --so-pin 5678 --label kmtest > /dev/null
       pkcs11-tool --module $CAKEYS_KRYOPTIC_MODULE --token-label kmtest --login --login-type so \
         --so-pin 5678 --init-pin --pin 1234 > /dev/null
@@ -119,6 +152,8 @@
       export CAKEYS_P11KIT_REQUIRE=1
 
       export HOME=$TMPDIR
+    ''
+    + lib.optionalString tpm2 ''
       bash ${./tpm2-test-env.sh} up $TMPDIR/tpm || { tail -n 20 $TMPDIR/tpm/*.log; exit 1; }
       . $TMPDIR/tpm/env
       export CAKEYS_TPM_MODULE=${lib.getLib tpm2-pkcs11}/lib/libtpm2_pkcs11.so
@@ -126,6 +161,8 @@
     '';
     postCheck = ''
       bash ${./p11kit-test-env.sh} down $TMPDIR/p11
+    ''
+    + lib.optionalString tpm2 ''
       bash ${./tpm2-test-env.sh} down $TMPDIR/tpm
     '';
 
@@ -136,7 +173,7 @@
         mit
         asl20
       ];
-      platforms = lib.platforms.linux;
+      platforms = lib.platforms.linux ++ lib.platforms.darwin;
     };
   };
 }
