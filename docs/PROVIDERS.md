@@ -256,7 +256,10 @@ planner and the mechanism list see:
   unpatched binding through `--profiles` to keep that path tested from a patched build.
 - **Resolution** (crates/pkcs11/src/resolution.rs): the binding layer first; a forwarder
   recognised from the module itself (`p11-kit/0.26` when `C_GetInfo` names "PKCS#11 Kit",
-  the hidden module still reachable through `provider = "..."`); `tokens.<t>.profiles = [...]`
+  the hidden module still reachable through `provider = "..."`; a layer marked
+  `requires-provider = true` says so, its `notes."requires-provider"` saying what the
+  passthrough carries, and camigrate's plan warns while no provider is named past it);
+  `tokens.<t>.profiles = [...]`
   for the rest (swtpm; a config schema addition, CONFIG.md); the module profile by provider
   family, its version matched against what `C_GetInfo` expresses — the one committed version of
   a family matching by manufacturer alone, flagged low-evidence in the resolution notes

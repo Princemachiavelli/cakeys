@@ -38,17 +38,33 @@ pub fn side(tok: &Token) -> Result<Side> {
 /// module and token it recorded. `None` when the observation records no provider, or one this
 /// build does not link.
 #[must_use]
-pub fn side_from_lock(token: &str, observed: &Observation, registry: &Registry) -> Option<Result<Side>> {
+pub fn side_from_lock(
+    token: &str,
+    observed: &Observation,
+    registry: &Registry,
+    notes: &mut Notes,
+) -> Option<Result<Side>> {
     let provider = observed.provider.clone()?;
     // The lock records the module and the token it ran against: resolve what the profiles say
     // about exactly that (the forwarder, the binding layer), like an open would.
     let (module, token_info) = (observed.module.as_ref()?, observed.token.as_ref()?);
     let cfg = TokenCfg { provider: Some(provider.clone()), ..lockless_token_cfg() };
     let resolved = resolution::resolve(&cfg, module, Some(token_info), &provider).ok()?;
+    warn_hidden(token, &resolved, notes);
     if resolved.module.is_none() {
         return Some(Ok(registry.named(&provider)?.migration(token, &observed.mechanisms)));
     }
     Some(side_of(resolved.module.as_ref()?, &resolved, token, &provider, &observed.mechanisms))
+}
+
+/// A token behind a passthrough that hides its module (a `requires-provider` layer) is planned
+/// as a spec-compliant module until keys.toml names that module's provider: say so loudly.
+fn warn_hidden(token: &str, resolved: &Resolved, notes: &mut Notes) {
+    if let Some(why) = &resolved.hidden {
+        notes.warn(format_args!(
+            "'{token}' is planned as a spec-compliant module: {why}; set `provider` in [tokens.{token}]"
+        ));
+    }
 }
 
 /// A target's capabilities from its transport file: its provider's profile over the mechanisms
@@ -361,7 +377,8 @@ pub fn plan_moves(
     Ok(Moves { to: to_name, source_from, target_from, plans })
 }
 
-/// A token's capabilities: from the open token, else from what the lock recorded there.
+/// A token's capabilities: from the open token, else from what the lock recorded there. A
+/// passthrough with no provider named behind it is planned as a spec-compliant module, loudly.
 fn side_or_lock(
     name: &str,
     lock: &Lock,
@@ -370,7 +387,10 @@ fn side_or_lock(
     notes: &mut Notes,
 ) -> Result<(Side, &'static str)> {
     let e = match open(name, notes) {
-        Ok(tok) => return Ok((side(&tok)?, "token")),
+        Ok(tok) => {
+            warn_hidden(name, &tok.profiles, notes);
+            return Ok((side(&tok)?, "token"));
+        }
         Err(e) => e,
     };
     let observed = match lock.token_observation(name) {
@@ -384,7 +404,7 @@ fn side_or_lock(
             return Err(e);
         }
     };
-    match side_from_lock(name, observed, registry) {
+    match side_from_lock(name, observed, registry, notes) {
         Some(side) => {
             notes.note(format_args!("capabilities of '{name}' come from the lock: the token did not open ({e})"));
             Ok((side?, "lock"))

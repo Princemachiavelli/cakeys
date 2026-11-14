@@ -439,7 +439,11 @@ fn sealed_moves_do_what_the_plan_says() {
     // unwrapped secret keys lose their length (`secret-unwraps = false`).
     let config = e.dir.join("keys.toml");
     let text = std::fs::read_to_string(&config).unwrap();
-    std::fs::write(&config, text.replace("[tokens.p11kit]\n", "[tokens.p11kit]\nprovider = \"softhsm\"\n")).unwrap();
+    let provider = |p: &str| {
+        let named = if p.is_empty() { String::new() } else { format!("provider = \"{p}\"\n") };
+        std::fs::write(&config, text.replace("[tokens.p11kit]\n", &format!("[tokens.p11kit]\n{named}"))).unwrap();
+    };
+    provider("softhsm");
     for d in e.refs.iter().filter(|d| unwraps(d)) {
         let o = e.cakeys(d, &["realise", &format!("tk-{}", d.name), "--token", d.name]);
         assert_eq!(code(&o), 0, "transport key on {}: {}", d.name, stderr(&o));
@@ -450,6 +454,22 @@ fn sealed_moves_do_what_the_plan_says() {
             let o = e.cakeys(s, &["realise", &spec, "--token", s.name]);
             assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
         }
+    }
+    // Unnamed, the module behind p11-kit is planned as spec-compliant, with a warning; named, its
+    // own claims decide: `SoftHSM`'s blocks a secret key, kryoptic's does not.
+    let (kry, p11) = (e.refs.iter().find(|r| r.name == "kryoptic"), e.refs.iter().find(|r| r.name == "p11kit"));
+    if let (Some(s), Some(d)) = (kry, p11) {
+        let (spec, o) = (target_spec(&KEYS[3], s, d), object(&KEYS[3], s));
+        for (named, ready, warned) in [("", true, true), ("softhsm", false, false), ("kryoptic", true, false)] {
+            provider(named);
+            let args = ["migrate", &o, "--from", s.name, "--to", d.name, "--spec", &spec, "--dry-run", "--json"];
+            let out = e.km(s, &args);
+            let plan: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+            let row = format!("{spec} with provider '{named}'");
+            assert_eq!(plan["plans"][0]["ready"].as_bool(), Some(ready), "{row}: {plan}");
+            assert_eq!(stderr(&out).contains("planned as a spec-compliant module"), warned, "{row}: {}", stderr(&out));
+        }
+        provider("softhsm");
     }
     let lock_path = e.dir.join("keys.lock");
     let mut rows = Vec::new();

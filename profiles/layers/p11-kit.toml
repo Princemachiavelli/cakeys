@@ -5,6 +5,7 @@
 # exactly these mechanisms vanish from C_GetMechanismList (the client filters the list).
 profile = "p11-kit/0.26"
 mode = "delta"
+requires-provider = true
 
 [match]
 manufacturer = "PKCS#11 Kit"
@@ -24,4 +25,4 @@ mechanisms = [
 note = "the RPC does not marshal these mechanisms [run]"
 
 [notes]
-module = "the module behind the forwarder is hidden: set `provider` in keys.toml to its provider for module-specific fix-ups"
+requires-provider = "p11-kit is a passthrough with limits of its own (the mechanisms its RPC drops); the module behind it is hidden, so none of that module's quirks apply until keys.toml names its `provider`"

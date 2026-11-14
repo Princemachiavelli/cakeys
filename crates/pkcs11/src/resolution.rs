@@ -22,6 +22,9 @@ pub struct Resolved {
     /// What resolution noticed on the way (a low-evidence version match, ...): `caps` prints
     /// them, so a resolved stack is never a silent guess.
     pub notes: Vec<String>,
+    /// A layer that hides the module behind it (`requires-provider`) while keys.toml names no
+    /// provider for that module: the layer's name and its note. A plan warns with it.
+    pub hidden: Option<String>,
 }
 
 impl Resolved {
@@ -119,6 +122,14 @@ pub fn resolve(
         }
         let p = set.find(name)?;
         out.layers.push(p.clone());
+    }
+
+    // A passthrough hides the module behind it: only a provider named past the passthrough's own
+    // family (an observation records the detected one) says what that module is.
+    let named = |l: &Profile| cfg.provider.as_deref().is_some_and(|p| p != l.family() && p != l.profile);
+    if let Some(l) = out.layers.iter().find(|l| l.requires_provider && !named(l)) {
+        let why = l.notes.get("requires-provider").map_or("it hides the module behind it", String::as_str);
+        out.hidden = Some(format!("{}: {why}", l.profile));
     }
 
     // 4. The module profile: the configured provider (family, or exact profile name), else
@@ -375,6 +386,21 @@ mod tests {
         assert_eq!(r.module_name(), Some("softhsm/2.7"));
         assert_eq!(r.layer_names(), ["cryptoki/0.12", "p11-kit/0.26"]);
         assert!(r.subtracted_mechanisms().contains("CKM_AES_KEY_WRAP"));
+        assert_eq!(r.hidden, None);
+    }
+
+    #[test]
+    fn a_passthrough_hides_its_module_until_a_provider_is_named() {
+        // Unnamed, or named as the passthrough itself (what an observation records): hidden.
+        let p11 = module("PKCS#11 Kit", "0.26");
+        for named in [None, Some("p11-kit"), Some("p11-kit/0.26")] {
+            let r = resolve(&cfg(named, &[]), &p11, None, "p11-kit").unwrap();
+            assert!(r.hidden.as_deref().is_some_and(|h| h.starts_with("p11-kit/0.26: ")), "{named:?}: {:?}", r.hidden);
+        }
+        let r = resolve(&cfg(Some("kryoptic"), &[]), &p11, None, "p11-kit").unwrap();
+        assert_eq!(r.hidden, None);
+        // A module that is no passthrough hides nothing.
+        assert_eq!(resolve(&cfg(None, &[]), &module("SoftHSM", "2.7"), None, "softhsm").unwrap().hidden, None);
     }
 
     #[test]

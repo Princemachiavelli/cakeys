@@ -211,6 +211,11 @@ pub struct Profile {
     /// membership questions answer unknown rather than guessing.
     #[serde(default)]
     pub partial: bool,
+    /// A passthrough (p11-kit) that hides the module behind it: no claim of that module applies
+    /// until keys.toml names its `provider`, so a plan through it warns. `notes."requires-provider"`
+    /// says what the passthrough does carry.
+    #[serde(default, rename = "requires-provider")]
+    pub requires_provider: bool,
     #[serde(default)]
     pub r#match: MatchInfo,
     /// What `C_GetMechanismList` returns; the drift baseline once the probe records it.

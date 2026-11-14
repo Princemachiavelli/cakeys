@@ -98,6 +98,7 @@ pub fn probe(tok: &Token, cfg: &TokenCfg, write: bool) -> Result<Probed> {
         profile: format!("{}/{}", tok.provider.name(), tok.module.version),
         mode: Mode::Observed,
         partial: false,
+        requires_provider: false,
         // Every match key there is: the module and the hardware it ran on. No serial — it
         // changes with every token re-initialisation, and a profile must regenerate identically.
         r#match: MatchInfo {

@@ -184,6 +184,9 @@ pub fn profile(p: &Profile) -> String {
             Mode::Delta => "delta",
         }
     );
+    if p.requires_provider {
+        let _ = writeln!(s, "requires-provider = true");
+    }
     if p.partial {
         let _ = writeln!(s, "partial = true");
     }

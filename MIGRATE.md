@@ -194,6 +194,11 @@ Keys move sealed between PKCS#11 modules: `camigrate migrate` (both tokens reach
   secret key's `CKA_VALUE_LEN` (it reads 0) and refuses it in the template [src], so its type
   cannot be checked there. A new `[migration]` claim, `secret-unwraps = false` (with a `[manual]`
   finding), makes the plan block sealed secret keys into SoftHSM.
+- **p11-kit hides the module behind it,** so no claim of that module's applies until keys.toml
+  names its `provider`. Unnamed, the plan assumes a spec-compliant module and warns that the
+  provider should be set: any layer marked `requires-provider` (p11-kit's) does this, its own
+  note saying what it carries. It claims nothing about the module behind it (SoftHSM's quirk is
+  not p11-kit's, and kryoptic behind it is unaffected).
 - **Tests** (crates/camigrate/tests/dry_run.rs): the dry-run property over P-256, Ed25519,
   RSA-2048, AES-256 and generic-secret keys made extractable on each source (`createOn`), to every
   other reference holding a transport key; a ready move exits 0, records its `origin` and
