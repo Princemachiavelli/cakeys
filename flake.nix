@@ -26,20 +26,9 @@
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
       treefmt = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
-      cakeys = pkgs.callPackage ./nix/package.nix { };
-      pcsc-probe = pkgs.callPackage ./nix/pcsc-probe.nix { };
-      mezura = pkgs.callPackage ./nix/mezura.nix { };
-      # cargo-deny (NEXT.md §1): the sandboxed checks.deny (advisories against the pinned
-      # RustSec database, licenses, bans, sources) and the online apps.deny-online (yanked —
-      # registry metadata the sandbox has no network for). Configuration: deny.toml.
-      deny = pkgs.callPackage ./nix/deny.nix {
-        inherit advisory-db;
-        inherit (cakeys) cargoDeps;
-      };
-      # cargo-fuzz (fuzz/): a fixed-seed smoke run in checks.fuzz, and apps.fuzz for long runs.
-      fuzz = pkgs.callPackage ./nix/fuzz.nix { };
-      # The walkthrough of cakeys' main ideas on SoftHSM and kryoptic: apps.demo, checks.demo.
-      demo = pkgs.callPackage ./nix/demo.nix { inherit cakeys; };
+      # cakeys and the tools around it (pkgs.nix).
+      local = import ./pkgs.nix { inherit pkgs advisory-db; };
+      inherit (local) cakeys pcsc-probe mezura;
       mkTest =
         kind:
         import ./nix/test.nix {
@@ -74,60 +63,29 @@
           { id; ${pkgs.lib.getExe pcsc-probe} || rc=$?; echo "exit=$rc"; } > $out 2>&1
         '';
 
-      apps.${system} = {
-        # nix run .#demo (-- --keep to leave the tokens and keys.toml for poking around)
-        demo = {
-          type = "app";
-          program = pkgs.lib.getExe demo.demo;
-          meta.description = "Walk through cakeys on two software tokens: pinned identity, the Nix view, drift, one identity across modules, export plans";
-        };
-        # The one cargo-deny check the sandbox cannot make: yanked releases, against the live
-        # crates.io index (see the `deny` binding above). Network, host-side, uncached.
-        deny-online = {
-          type = "app";
-          program = pkgs.lib.getExe deny.online;
-          meta.description = "cargo-deny with current yanked flags: fetch the live index, then the pinned-database check with --deny yanked";
-        };
-        # Fuzz one target for as long as you like: nix run .#fuzz -- lock -max_total_time=600
-        fuzz = {
-          type = "app";
-          program = pkgs.lib.getExe fuzz.run;
-          meta.description = "Run a cargo-fuzz target (public_key, certificate, lock, config) from the repository root";
-        };
-        # Host-side PC/SC check.
-        pcsc-probe = {
-          type = "app";
-          program = pkgs.lib.getExe pcsc-probe;
-          meta.description = "Print raw PC/SC context and reader-list return codes";
-        };
-        # Same probe from inside the Nix build sandbox (needs /run/pcscd in sandbox-paths).
-        pcsc-sandbox-probe = {
-          type = "app";
-          meta.description = "Run pcsc-probe inside the Nix build sandbox (uncached)";
-          program = pkgs.lib.getExe (
-            pkgs.writeShellApplication {
-              name = "pcsc-sandbox-probe";
-              text = ''
-                out=$(nix build --impure --no-link --print-out-paths --expr \
-                  "(builtins.getFlake \"path:${self}\").legacyPackages.${system}.pcscSandboxProbe { nonce = \"$(date +%s%N)\"; }")
-                cat "$out"
-              '';
-            }
-          );
-        };
+      apps.${system} = import ./apps.nix {
+        inherit pkgs self;
+        inherit (local)
+          demo
+          deny
+          fuzz
+          pcsc-probe
+          ;
       };
 
       checks.${system} = import ./checks.nix {
         inherit
           pkgs
           self
+          treefmt
+          mkTest
+          ;
+        inherit (local)
           cakeys
           pcsc-probe
-          treefmt
           deny
           demo
           fuzz
-          mkTest
           ;
       };
 
