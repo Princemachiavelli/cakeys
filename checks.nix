@@ -10,6 +10,7 @@
   demo,
   fuzz,
   mkTest,
+  softhsm-unwrap-value-len-tested,
 }:
 {
   inherit cakeys;
@@ -48,6 +49,19 @@
     doCheck = false;
   };
   vm = mkTest "vm";
+  # SoftHSM with upstream/softhsm/ (SoftHSMv2 #628): its own test suite, extended by the patch,
+  # passes, and an unwrapped AES key reports CKA_VALUE_LEN 32 under every wrapping mechanism.
+  softhsm-unwrap-value-len =
+    pkgs.runCommand "softhsm-unwrap-value-len"
+      {
+        nativeBuildInputs = [
+          softhsm-unwrap-value-len-tested
+          (pkgs.python3.withPackages (p: [ p.python-pkcs11 ]))
+        ];
+      }
+      ''
+        bash ${./upstream/softhsm}/repro.sh ${softhsm-unwrap-value-len-tested}/lib/softhsm/libsofthsm2.so | tee $out
+      '';
   # The capability-profile query (docs/PROVIDERS.md): static answers from the profiles embedded
   # in the binary, no token needed. yes -> 0, no -> 15, unknown -> 16.
   profiles = pkgs.runCommand "cakeys-profiles" { } ''

@@ -97,3 +97,7 @@ can-bits = [1024, 2048, 3072, 4096]
 "curve25519" = "generation refused: CKR_MECHANISM_INVALID"
 "curve448" = "generation refused: CKR_MECHANISM_INVALID"
 "oaep" = "SHA-256: wrapping fails: CKR_ARGUMENTS_BAD"
+
+[manual."unwrap-value-len"]
+finding = "C_UnwrapKey leaves CKA_VALUE_LEN of an unwrapped AES key at 0 (CKA_VALUE is right, 32 bytes for AES-256) with CKM_AES_KEY_WRAP, CKM_AES_KEY_WRAP_PAD and CKM_RSA_PKCS_OAEP, and a template cannot set it: that is the CKR_ATTRIBUTE_READ_ONLY refusal in unwrap.refuse, which is what PKCS#11 asks (v2.40 4.1.2, footnote 6: the mechanism supplies it). A spec with value-len therefore fails `check` on a SoftHSM-unwrapped key. Fixed by upstream/softhsm/ (SoftHSMv2 #628, not yet released); the probe cannot see it, because it never reads the unwrapped key's CKA_VALUE_LEN."
+evidence = "[run] upstream/softhsm/repro.sh against nixpkgs' softhsm 2.7.0: CKA_VALUE_LEN=0 for all three mechanisms, 32 with the patch, 2026-11-13; [src] SoftHSM.cpp C_UnwrapKey stores CKA_VALUE only (2.7.0 and main 7380895); [src] crates/pkcs11/src/token/policy.rs, the `CKA_VALUE_LEN mismatch` branch of a spec's value-len"

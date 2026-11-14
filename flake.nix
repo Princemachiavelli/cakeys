@@ -49,6 +49,7 @@
       packages.${system} = {
         default = cakeys;
         inherit cakeys pcsc-probe;
+        inherit (local) softhsm-unwrap-value-len;
         # systemd-nspawn variant of the integration test. Needs the `uid-range` system feature
         # (nix.conf: `system-features = ... uid-range` and `auto-allocate-uids = true`).
         test-nspawn = mkTest "container";
@@ -86,6 +87,7 @@
           deny
           demo
           fuzz
+          softhsm-unwrap-value-len-tested
           ;
       };
 
