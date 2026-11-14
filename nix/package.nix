@@ -1,5 +1,6 @@
 {
   lib,
+  stdenv,
   rustPlatform,
   softhsm,
   kryoptic,
@@ -15,6 +16,26 @@
   pkg-config,
 }:
 
+let
+  # The tpm2 feature (cakeys-tpm2-pkcs11) is Linux only: tss-esapi-sys ships no prebuilt bindings
+  # for aarch64-darwin, and tpm2-pkcs11 and its tools are not packaged there, so there is no
+  # module for it to attest. Darwin builds the CLI with ykcs11 alone.
+  tpm2 = stdenv.hostPlatform.isLinux;
+  # What `cargo test` and clippy (checks.clippy) cover: the workspace, less the TPM crate and
+  # with the CLI's features narrowed where tpm2 is off. A crate excluded but still a default
+  # feature would be built anyway.
+  cargoScope = [
+    "--workspace"
+  ]
+  ++ lib.optionals (!tpm2) [
+    "--exclude"
+    "cakeys-tpm2-pkcs11"
+    "--no-default-features"
+    "--features"
+    "cakeys/ykcs11"
+  ];
+  sharedLibrary = stdenv.hostPlatform.extensions.sharedLibrary;
+in
 rustPlatform.buildRustPackage {
   pname = "cakeys";
   version = "0.1.0";
@@ -39,10 +60,16 @@ rustPlatform.buildRustPackage {
   # Rust builder sets LIBSQLITE3_SYS_USE_PKG_CONFIG, which makes libsqlite3-sys link the
   # system sqlite instead — so it must be here.
   nativeBuildInputs = [ pkg-config ];
-  buildInputs = [
+  buildInputs = lib.optionals tpm2 [
     tpm2-tss
     sqlite
   ];
+  buildNoDefaultFeatures = !tpm2;
+  buildFeatures = lib.optional (!tpm2) "ykcs11";
+  # The test run's features come from cargoScope (cargoTestFlags): the hook's own flags would
+  # repeat them unqualified, which `--workspace` rejects.
+  checkNoDefaultFeatures = false;
+  checkFeatures = [ ];
 
   # cryptoki 0.12.1 (and main) gives KeyType::SHA224/384/512_HMAC the value of CKK_SHA256_HMAC, so those key
   # types can be neither created nor told apart. Minimal local fix until upstream has one
@@ -62,17 +89,19 @@ rustPlatform.buildRustPackage {
   '';
 
   # Integration tests drive real SoftHSM and kryoptic tokens, SoftHSM through p11-kit forwarding,
-  # and tpm2-pkcs11 on a software TPM (behind tpm2-abrmd on a private D-Bus) inside the build
-  # sandbox.
+  # and, on Linux, tpm2-pkcs11 on a software TPM (behind tpm2-abrmd on a private D-Bus) inside
+  # the build sandbox.
   nativeCheckInputs = [
     softhsm
+    p11-kit
+    opensc
+  ]
+  ++ lib.optionals tpm2 [
     swtpm
     tpm2-pkcs11
     tpm2-tools
     tpm2-abrmd
     dbus
-    p11-kit
-    opensc
   ];
   preCheck = ''
     export SOFTHSM2_CONF=$TMPDIR/softhsm2.conf
@@ -87,7 +116,7 @@ rustPlatform.buildRustPackage {
     # ends the file: the suite appends a mechanism deny list to it (tests/common/mod.rs).
     export KRYOPTIC_CONF=$TMPDIR/kryoptic.conf
     printf '[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' $TMPDIR/kryoptic.sql > $KRYOPTIC_CONF
-    export CAKEYS_KRYOPTIC_MODULE=${kryoptic}/lib/libkryoptic_pkcs11.so
+    export CAKEYS_KRYOPTIC_MODULE=${kryoptic}/lib/libkryoptic_pkcs11${sharedLibrary}
     pkcs11-tool --module $CAKEYS_KRYOPTIC_MODULE --init-token --slot 1 --so-pin 5678 --label kmtest > /dev/null
     pkcs11-tool --module $CAKEYS_KRYOPTIC_MODULE --token-label kmtest --login --login-type so \
       --so-pin 5678 --init-pin --pin 1234 > /dev/null
@@ -100,6 +129,8 @@ rustPlatform.buildRustPackage {
     export CAKEYS_P11KIT_REQUIRE=1
 
     export HOME=$TMPDIR
+  ''
+  + lib.optionalString tpm2 ''
     bash ${./tpm2-test-env.sh} up $TMPDIR/tpm || { tail -n 20 $TMPDIR/tpm/*.log; exit 1; }
     . $TMPDIR/tpm/env
     export CAKEYS_TPM_MODULE=${lib.getLib tpm2-pkcs11}/lib/libtpm2_pkcs11.so
@@ -107,12 +138,16 @@ rustPlatform.buildRustPackage {
   '';
   postCheck = ''
     bash ${./p11kit-test-env.sh} down $TMPDIR/p11
+  ''
+  + lib.optionalString tpm2 ''
     bash ${./tpm2-test-env.sh} down $TMPDIR/tpm
   '';
   # One thread: the token suites open a session per test on one module (NEXT.md §1, minor).
   dontUseCargoParallelTests = true;
   # Unit tests live in every crate, not just the CLI (the default member).
-  cargoTestFlags = [ "--workspace" ];
+  cargoTestFlags = cargoScope;
+
+  passthru = { inherit cargoScope; };
 
   meta = {
     description = "Content-addressed identity for PKCS#11 objects";
@@ -121,6 +156,6 @@ rustPlatform.buildRustPackage {
       mit
       asl20
     ];
-    platforms = lib.platforms.linux;
+    platforms = lib.platforms.linux ++ lib.platforms.darwin;
   };
 }

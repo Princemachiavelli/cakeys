@@ -28,7 +28,7 @@
     nativeCheckInputs = [ ];
     buildPhase = ''
       runHook preBuild
-      cargo clippy --workspace --all-targets -- -D warnings
+      cargo clippy ${pkgs.lib.escapeShellArgs cakeys.cargoScope} --all-targets -- -D warnings
       runHook postBuild
     '';
     installPhase = ''
@@ -44,10 +44,10 @@
   minimal = cakeys.overrideAttrs {
     pname = "cakeys-minimal";
     cargoBuildNoDefaultFeatures = true;
+    cargoBuildFeatures = [ ];
     buildInputs = [ ];
     doCheck = false;
   };
-  vm = mkTest "vm";
   # The capability-profile query (docs/PROVIDERS.md): static answers from the profiles embedded
   # in the binary, no token needed. yes -> 0, no -> 15, unknown -> 16.
   profiles = pkgs.runCommand "cakeys-profiles" { } ''
@@ -92,14 +92,6 @@
     cp ${./crates/cli/tests/fixtures/keys.lock} keys.lock
     expect 0 keys.toml
   '';
-  module = import ./nix/module-test.nix {
-    inherit pkgs cakeys pcsc-probe;
-    module = self.nixosModules.default;
-  };
-  tpm = import ./nix/tpm-test.nix {
-    inherit pkgs cakeys;
-    module = self.nixosModules.default;
-  };
   lib =
     let
       keys = self.lib.mkKeys {
@@ -147,4 +139,16 @@
     pkgs.runCommand "cakeys-lib-check" { } ''
       echo ${pkgs.lib.escapeShellArg (keys.signing { }).check} > $out
     '';
+}
+# NixOS VM tests: Linux hosts only.
+// pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+  vm = mkTest "vm";
+  module = import ./nix/module-test.nix {
+    inherit pkgs cakeys pcsc-probe;
+    module = self.nixosModules.default;
+  };
+  tpm = import ./nix/tpm-test.nix {
+    inherit pkgs cakeys;
+    module = self.nixosModules.default;
+  };
 }

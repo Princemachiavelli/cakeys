@@ -34,6 +34,9 @@ in
     program = pkgs.lib.getExe fuzz.run;
     meta.description = "Run a cargo-fuzz target (public_key, certificate, lock, config) from the repository root";
   };
+}
+# The PC/SC probes check pcscd's socket from the host and from the Linux build sandbox.
+// pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
   # Host-side PC/SC check.
   pcsc-probe = {
     type = "app";

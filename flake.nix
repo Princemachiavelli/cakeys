@@ -23,18 +23,36 @@
       advisory-db,
     }:
     let
-      system = "x86_64-linux";
-      pkgs = nixpkgs.legacyPackages.${system};
-      treefmt = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
-      # cakeys and the tools around it (pkgs.nix).
-      local = import ./pkgs.nix { inherit pkgs advisory-db; };
-      inherit (local) cakeys pcsc-probe mezura;
-      mkTest =
-        kind:
-        import ./nix/test.nix {
-          inherit pkgs cakeys kind;
-          module = self.nixosModules.default;
-        };
+      inherit (nixpkgs) lib;
+      # aarch64-darwin builds the CLI without its tpm2 feature (nix/package.nix); the NixOS
+      # tests, the PC/SC sandbox probe and the TPM tools are Linux only.
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "aarch64-darwin"
+      ];
+      # One evaluation per system, shared by every output: nixpkgs, treefmt, and cakeys and the
+      # tools around it (pkgs.nix).
+      perSystem = lib.genAttrs systems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          local = import ./pkgs.nix { inherit pkgs advisory-db; };
+        in
+        {
+          inherit system pkgs local;
+          inherit (pkgs.stdenv.hostPlatform) isLinux;
+          treefmt = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
+          mkTest =
+            kind:
+            import ./nix/test.nix {
+              inherit pkgs kind;
+              inherit (local) cakeys;
+              module = self.nixosModules.default;
+            };
+        }
+      );
+      forAllSystems = f: lib.mapAttrs (_: f) perSystem;
     in
     {
       lib = import ./nix/lib.nix;
@@ -46,72 +64,122 @@
           services.cakeys.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.cakeys;
         };
 
-      packages.${system} = {
-        default = cakeys;
-        inherit cakeys pcsc-probe;
-        # systemd-nspawn variant of the integration test. Needs the `uid-range` system feature
-        # (nix.conf: `system-features = ... uid-range` and `auto-allocate-uids = true`).
-        test-nspawn = mkTest "container";
-      };
+      packages = forAllSystems (
+        {
+          local,
+          isLinux,
+          mkTest,
+          ...
+        }:
+        {
+          default = local.cakeys;
+          inherit (local) cakeys;
+        }
+        // lib.optionalAttrs isLinux {
+          inherit (local) pcsc-probe;
+          # systemd-nspawn variant of the integration test. Needs the `uid-range` system feature
+          # (nix.conf: `system-features = ... uid-range` and `auto-allocate-uids = true`).
+          test-nspawn = mkTest "container";
+        }
+      );
 
       # Not cached: a fresh nonce makes a new derivation each time.
       # nix build --impure --expr '(builtins.getFlake "path:.").legacyPackages.x86_64-linux.pcscSandboxProbe { nonce = "1"; }'
-      legacyPackages.${system}.pcscSandboxProbe =
-        { nonce }:
-        import ./nix/pcsc-sandbox-probe.nix {
-          inherit system pcsc-probe nonce;
-          inherit (pkgs) bash coreutils;
-        };
+      legacyPackages = forAllSystems (
+        {
+          system,
+          pkgs,
+          local,
+          isLinux,
+          ...
+        }:
+        lib.optionalAttrs isLinux {
+          pcscSandboxProbe =
+            { nonce }:
+            import ./nix/pcsc-sandbox-probe.nix {
+              inherit system nonce;
+              inherit (local) pcsc-probe;
+              inherit (pkgs) bash coreutils;
+            };
+        }
+      );
 
-      apps.${system} = import ./apps.nix {
-        inherit pkgs;
-        inherit (local)
-          demo
-          deny
-          fuzz
-          pcsc-probe
-          ;
-      };
+      apps = forAllSystems (
+        { pkgs, local, ... }:
+        import ./apps.nix {
+          inherit pkgs;
+          inherit (local)
+            demo
+            deny
+            fuzz
+            pcsc-probe
+            ;
+        }
+      );
 
-      checks.${system} = import ./checks.nix {
-        inherit
-          pkgs
-          self
-          treefmt
-          mkTest
-          ;
-        inherit (local)
-          cakeys
-          pcsc-probe
-          deny
-          demo
-          fuzz
-          ;
-      };
+      checks = forAllSystems (
+        {
+          pkgs,
+          local,
+          treefmt,
+          mkTest,
+          ...
+        }:
+        import ./checks.nix {
+          inherit
+            pkgs
+            self
+            treefmt
+            mkTest
+            ;
+          inherit (local)
+            cakeys
+            pcsc-probe
+            deny
+            demo
+            fuzz
+            ;
+        }
+      );
 
-      devShells.${system}.default = pkgs.mkShell {
-        inputsFrom = [ cakeys ];
-        packages = with pkgs; [
-          clippy
-          rustfmt
-          rust-analyzer
-          softhsm
-          kryoptic
-          opensc
-          openssl
-          pcsc-tools
-          tpm2-tss
-          pkg-config
-          swtpm
-          tpm2-abrmd
-          tpm2-tools
-          tpm2-pkcs11
-          dbus
-          mezura
-        ];
-      };
+      devShells = forAllSystems (
+        {
+          pkgs,
+          local,
+          isLinux,
+          ...
+        }:
+        {
+          default = pkgs.mkShell {
+            inputsFrom = [ local.cakeys ];
+            packages =
+              with pkgs;
+              [
+                clippy
+                rustfmt
+                rust-analyzer
+                softhsm
+                kryoptic
+                opensc
+                openssl
+                pcsc-tools
+                pkg-config
+                local.mezura
+              ]
+              # The TPM stack the tpm2 tests and probes run on (nix/tpm2-test-env.sh).
+              ++ lib.optionals isLinux [
+                tpm2-tss
+                swtpm
+                tpm2-abrmd
+                tpm2-tools
+                tpm2-pkcs11
+                dbus
+              ];
+          };
+        }
+      );
 
       # treefmt over the whole tree (treefmt.nix): formatters and linters, one command.
-      formatter.${system} = treefmt.config.build.wrapper;
+      formatter = forAllSystems ({ treefmt, ... }: treefmt.config.build.wrapper);
     };
 }
