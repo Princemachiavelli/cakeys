@@ -28,6 +28,7 @@
       treefmt = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
       cakeys = pkgs.callPackage ./nix/package.nix { };
       pcsc-probe = pkgs.callPackage ./nix/pcsc-probe.nix { };
+      mezura = pkgs.callPackage ./nix/mezura.nix { };
       # cargo-deny (NEXT.md §1): the sandboxed checks.deny (advisories against the pinned
       # RustSec database, licenses, bans, sources) and the online apps.deny-online (yanked —
       # registry metadata the sandbox has no network for). Configuration: deny.toml.
@@ -148,6 +149,7 @@
           tpm2-tools
           tpm2-pkcs11
           dbus
+          mezura
         ];
       };
 
