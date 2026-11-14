@@ -49,6 +49,46 @@ backend, post-quantum, lock merge, keystores, the attestation remainders) stay p
       Then `create` can say "import from <creation token>" for those tokens instead of today's
       generic skip note (`not_created`, crates/pkcs11/src/ops.rs).
 
+## 2b. Hardware profiles (2026-11-13)
+
+- [x] **YubiKey**: ykcs11/2.7 is probe output from a scratch slot (`scratchId`), with
+      operation probes and `[manual]` findings; Ed25519 generation by name, `pop-ecdh` on
+      ykcs11 and tpm2-pkcs11, P-384/Ed25519/RSA-2048/RSA-3072 hardware tests
+      (docs/PROVIDERS.md, "Probe on hardware"). The test slots are retired 90–95.
+- [x] **fTPM** (AMD Ryzen 7 5700G, firmware 3.87): `tpm2-pkcs11/1.10+amd-ftpm` is probe
+      output (nix/ftpm-test-env.sh: tpm2-abrmd over /dev/tpmrm0, a fresh transient-parent
+      store; tests/ftpm.rs, opt-in). Pairs of one module now resolve by their hardware, and
+      tie with module rows only when no token says which.
+- [ ] **tpm-certify on a real TPM**: needs a persistent primary and an Attestation Key; the
+      test store's primary is transient on purpose. Decide where (which handle) before
+      testing it on a TPM the platform uses.
+- [ ] **X25519 / Montgomery keys**: no key type in id.rs (SPKI, host X25519); ykcs11 cannot
+      generate them anyway ([manual.x25519]).
+- [ ] **FIPS mode as a match field** (D12): ykcs11/2.7 was probed in approved mode, so it
+      may refuse on a non-FIPS 5.7.4 what that device can do ([manual.fips-mode]).
+
+## 2c. Replay (docs/REVIEW-2026-11-13.md, "Replay") — minor, maybe
+
+Secret keys cannot be replay-safe in general: their IDs are fingerprints (`assurance =
+"fingerprint"`, done), since a verifier with no secret cannot check a fresh answer. These narrow
+the gap without closing it.
+
+- [ ] **Maybe: `tpm-certify` for secret keys on a real TPM.** `TPM2_Certify` is nonce-bound,
+      so a TPM-held secret key gets `assurance = "proof"` (the code already says so). It needs
+      a persistent primary and an AK on the platform's TPM (see the tpm-certify item in 2b), and
+      the AK proves "the same TPM", not "a genuine TPM", until the EK chain exists (A8).
+- [ ] **Maybe: a challenge bank.** `realise` asks the token N random challenges, and each
+      check asks one and compares its digest. Where the challenges live decides what it buys:
+  - **In the lock:** public, so only probabilistic against an observer of past checks.
+  - **On the token itself:** buys nothing. The token and every module on its path see the
+    challenges and the answers, and nobody else could compute an answer without the key
+    anyway, so a hidden input adds nothing over today's fixed one.
+  - **Host-held and secret** (a sealed file, or sealed to the TPM), each challenge used once:
+    defends against a module, forwarder or token compromised *after* `realise`, until the bank
+    runs out. It needs mutable host state (consumption), which the sandboxed `check` does not
+    have, and it never helps against a token that was already malicious at `realise`, since it
+    answered every challenge then.
+
 ## 3. PROVIDERS phase 5 (D12)
 
 - [ ] `[match.fields]`, the standard 3.2 fields, the observing provider hook (ykcs11 FIPS mode

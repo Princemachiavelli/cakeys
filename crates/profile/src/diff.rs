@@ -10,7 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 ///
 /// Never compared: the profiles' names (the probe names by provider and expressed version, a
 /// module that hides it names differently), `partial` (whether the probe has filled the rows
-/// is not a claim), the notes (human evidence), and the rows no probe observes yet — the
+/// is not a claim), the notes and `[manual]` findings (human evidence), and the rows no probe
+/// observes yet — the
 /// migration rows and the layer subtractions (data until MIGRATE phase 3
 /// exercises them).
 #[must_use]
@@ -19,6 +20,15 @@ pub fn diff(generated: &Profile, claimed: &Profile) -> Vec<String> {
     sets("subtract.mechanisms", &generated.subtract.mechanisms, &claimed.subtract.mechanisms, &mut out);
     probed("wrap.oaep", generated.wrap.oaep.as_deref(), claimed.wrap.oaep.as_deref(), &mut out);
     probed("unwrap.refuse", generated.unwrap.refuse.as_deref(), claimed.unwrap.refuse.as_deref(), &mut out);
+    probed("decrypt.oaep", generated.decrypt.oaep.as_deref(), claimed.decrypt.oaep.as_deref(), &mut out);
+    for (what, row) in [
+        ("derive.sealed", (|p: &Profile| p.derive.sealed) as fn(&Profile) -> Option<bool>),
+        ("derive.key-attribute", |p| p.derive.key_attribute),
+        ("derive.read-only", |p| p.derive.read_only),
+    ] {
+        let shown = |p| row(p).map(|b| b.to_string());
+        optional(what, shown(generated).as_ref(), shown(claimed).as_ref(), &mut out);
+    }
     restrictions(generated, claimed, &mut out);
     for (kt, (g, c)) in rows(generated, claimed) {
         match (g, c) {
@@ -30,6 +40,7 @@ pub fn diff(generated: &Profile, claimed: &Profile) -> Vec<String> {
                 let bits = |v: &[u32]| v.iter().map(u32::to_string).collect::<Vec<_>>();
                 sets(&format!("generate.{kt}.can-bits"), &bits(&g.can_bits), &bits(&c.can_bits), &mut out);
                 sets(&format!("generate.{kt}.cannot-bits"), &bits(&g.cannot_bits), &bits(&c.cannot_bits), &mut out);
+                sets(&format!("generate.{kt}.by-name"), &g.by_name, &c.by_name, &mut out);
             }
             (None, None) => {}
         }
@@ -160,7 +171,8 @@ mod tests {
             "softhsm/2.7",
             "advertise = [\"CKM_AES_KEY_WRAP\"]\n[match]\nmanufacturer = \"SoftHSM\"\nmodule-version = \"2.7\"\n\
              [wrap]\noaep = [\"SHA-1\"]\n[generate.\"CKK_EC\"]\ncan = [\"secp256r1\"]\nmin-bits = 1024\n\
-             [migration]\nexports = false\n[notes]\nhuman = \"evidence\"",
+             [migration]\nexports = false\n[notes]\nhuman = \"evidence\"\n\
+             [manual.so]\nfinding = \"by hand\"\nevidence = \"[run]\"",
         );
         assert_eq!(diff(&generated, &claimed), Vec::<String>::new());
     }

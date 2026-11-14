@@ -16,8 +16,10 @@ Status: proof of concept.
 - **Tested** against SoftHSM and kryoptic (one shared suite), tpm2-pkcs11 (swtpm, QEMU vTPM) and
   SoftHSM behind p11-kit forwarding.
 - **Tested by hand on a YubiKey 5** (PIV through ykcs11), not in CI: adopted keys verify
-  read-only, and an opt-in read-write suite generates a key in a scratch slot (as SO with the
-  management key), attests it, proves possession and verifies it.
+  read-only, and an opt-in read-write suite generates P-256, P-384, Ed25519, RSA-2048 and
+  RSA-3072 keys in scratch slots (as SO with the management key), attests each, proves
+  possession by signing, deriving or decrypting, and verifies it. Its capability profile is
+  probe output from a scratch slot (`scratchId`), with hand findings kept apart in `[manual]`.
 - **Use cases (problems and questions, one line each):** [`docs/USE_CASE.md`](docs/USE_CASE.md).
 - **Using keys from other languages (proposal):** [`docs/CONTRACT.md`](docs/CONTRACT.md): a key as a
   declared resource whose use fails in known ways, like a file or an HTTP endpoint.
@@ -120,8 +122,11 @@ pkgs.runCommand "signed-artifact" {
 ```
 
 `signing` is plain data from the resolved pair: `id.<scheme>`, `uri`, `mode`, `specDigest`,
-`module`, `tokenInfo`, `functions`, `requiredSystemFeatures` and `check` (use `scheme = "certhash"` to require one
-identity).
+`module`, `tokenInfo`, `functions`, `assurance`, `requiredSystemFeatures` and `check` (use
+`scheme = "certhash"` to require one identity). `assurance` says what the check establishes
+against a token that may lie: `proof` (a fresh challenge), `fingerprint` (a secret key's
+commitment: replayable by whatever saw it once) or `public` (public bytes), per the replay
+analysis in [`docs/REVIEW-2026-11-13.md`](docs/REVIEW-2026-11-13.md).
 
 A cached consumer is not rebuilt, so the token is not re-contacted; `nix build --check` forces it.
 

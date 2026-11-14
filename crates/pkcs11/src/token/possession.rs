@@ -159,38 +159,41 @@ impl Token {
     /// `pop-ecdh`: the host holds an ephemeral key and the MAC of the challenge under the shared
     /// secret; the token derives the same secret with `CKM_ECDH1_DERIVE` into a non-extractable
     /// session key and MACs the challenge with it. The MACs agree only if the token's private key
-    /// is the one `spki` names.
+    /// is the one `spki` names. A token without HMAC, or whose profile says it derives only into
+    /// an extractable secret (`derive.sealed = false`: ykcs11 [src]), proves by
+    /// [`Self::prove_ecdh_extractable`] instead.
     fn prove_ecdh(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
         let ch = pop::ecdh_challenge(spki, msg)?;
-        if let Some(m) = [MechanismType::ECDH1_DERIVE, MechanismType::SHA256_HMAC].into_iter().find(|m| !self.has(*m)) {
-            return Err(self.lacks_for_proof(m));
+        if !self.has(MechanismType::ECDH1_DERIVE) {
+            return Err(self.lacks_for_proof(MechanismType::ECDH1_DERIVE));
         }
-        let derived = self
-            .session
-            .derive_key(
-                &Mechanism::Ecdh1Derive(Ecdh1DeriveParams::new(EcKdf::null(), &ch.peer)),
-                h,
-                &[
-                    Attribute::Token(false),
-                    Attribute::Class(ObjectClass::SECRET_KEY),
-                    Attribute::KeyType(KeyType::GENERIC_SECRET),
-                    Attribute::Sensitive(true),
-                    Attribute::Extractable(false),
-                    Attribute::Sign(true),
-                ],
-            )
-            .map_err(self.proof_failed("C_DeriveKey", "derive", "CKA_DERIVE"))?;
+        let sealed = self.profiles.module.as_ref().and_then(|p| p.derive.sealed) != Some(false);
+        if !sealed || !self.has(MechanismType::SHA256_HMAC) {
+            return self.prove_ecdh_extractable(h, spki, &ch);
+        }
+        let (derived, rw) = self.derive_for_proof(
+            h,
+            &ch.peer,
+            &[
+                Attribute::Token(false),
+                Attribute::Class(ObjectClass::SECRET_KEY),
+                Attribute::KeyType(KeyType::GENERIC_SECRET),
+                Attribute::Sensitive(true),
+                Attribute::Extractable(false),
+                Attribute::Sign(true),
+            ],
+        )?;
+        let session = rw.as_ref().unwrap_or(&self.session);
         // A session object: dropped with the session even if destroying it fails here.
-        let tag = self
-            .session
+        let tag = session
             .sign(&Mechanism::Sha256Hmac, derived, msg)
             .inspect_err(|_| {
-                let _ = self.session.destroy_object(derived);
+                let _ = session.destroy_object(derived);
             })
             .map_err(|e| {
                 KmError::Unavailable(format!("C_Sign (ECDH proof of possession) on token '{}': {e}", self.name))
             })?;
-        let _ = self.session.destroy_object(derived);
+        let _ = session.destroy_object(derived);
         if !pop::ct_eq(&ch.mac, &tag) {
             return Err(KmError::Conflict(format!(
                 "proof of possession failed: the private key did not derive for the public key {}",
@@ -198,6 +201,73 @@ impl Token {
             )));
         }
         Ok(())
+    }
+
+    /// `pop-ecdh` on a token that derives only into an extractable secret: the token derives
+    /// into a session object, the host reads its `CKA_VALUE` and compares it with the shared
+    /// secret it computed itself. The secret belongs to a single-use ephemeral key the host
+    /// generated, so reading it reveals nothing the host did not already hold.
+    fn prove_ecdh_extractable(&self, h: ObjectHandle, spki: &[u8], ch: &pop::EcdhChallenge) -> Result<()> {
+        let (derived, rw) = self.derive_for_proof(
+            h,
+            &ch.peer,
+            &[
+                Attribute::Token(false),
+                Attribute::Class(ObjectClass::SECRET_KEY),
+                Attribute::KeyType(KeyType::GENERIC_SECRET),
+                Attribute::Sensitive(false),
+                Attribute::Extractable(true),
+            ],
+        )?;
+        let session = rw.as_ref().unwrap_or(&self.session);
+        let value = session.get_attributes(derived, &[AttributeType::Value]);
+        // A session object: dropped with the session even if destroying it fails here.
+        let _ = session.destroy_object(derived);
+        let value = match value.map(|v| v.into_iter().next()) {
+            Ok(Some(Attribute::Value(v))) => v,
+            Ok(_) => {
+                return Err(KmError::Unavailable(format!(
+                    "token '{}': the derived secret has no CKA_VALUE",
+                    self.name
+                )));
+            }
+            Err(e) => {
+                return Err(KmError::Unavailable(format!(
+                    "C_GetAttributeValue (ECDH proof of possession) on token '{}': {e}",
+                    self.name
+                )));
+            }
+        };
+        if !pop::ct_eq(&ch.secret, &value) {
+            return Err(KmError::Conflict(format!(
+                "proof of possession failed: the private key did not derive for the public key {}",
+                id::sri(spki)
+            )));
+        }
+        Ok(())
+    }
+
+    /// `C_DeriveKey` for a proof, against the ephemeral `peer`: in the verb's session, else —
+    /// refused there as read-only (tpm2-pkcs11 keeps derived secrets as store rows, so it
+    /// derives only in a read-write session, `derive.read-only = false` [run]) — in a read-write
+    /// session opened for it, returned so the secret is used and destroyed where it lives.
+    fn derive_for_proof(
+        &self,
+        h: ObjectHandle,
+        peer: &[u8],
+        template: &[Attribute],
+    ) -> Result<(ObjectHandle, Option<Session>)> {
+        let mech = Mechanism::Ecdh1Derive(Ecdh1DeriveParams::new(EcKdf::null(), peer));
+        let failed = self.proof_failed("C_DeriveKey", "derive", "CKA_DERIVE");
+        match self.session.derive_key(&mech, h, template) {
+            Ok(derived) => Ok((derived, None)),
+            Err(CkError::Pkcs11(RvError::SessionReadOnly, _)) => {
+                let rw = self.extra_session(Access::Write)?;
+                let derived = rw.derive_key(&mech, h, template).map_err(failed)?;
+                Ok((derived, Some(rw)))
+            }
+            Err(e) => Err(failed(e)),
+        }
     }
 
     /// `pop-decrypt`: the host encrypts the challenge to the public key with RSA-OAEP; the token

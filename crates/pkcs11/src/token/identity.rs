@@ -168,7 +168,7 @@ impl Token {
 
     /// SPKI from the key material attributes of `h`; `None` when it carries none (e.g. an EC
     /// private key without `CKA_EC_POINT`).
-    pub(super) fn material_spki(&self, h: ObjectHandle) -> Result<Option<Vec<u8>>> {
+    pub(crate) fn material_spki(&self, h: ObjectHandle) -> Result<Option<Vec<u8>>> {
         match self.attr(h, AttributeType::KeyType)? {
             Some(Attribute::KeyType(KeyType::EC | KeyType::EC_EDWARDS)) => {
                 let a = self

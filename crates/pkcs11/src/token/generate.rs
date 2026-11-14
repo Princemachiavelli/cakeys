@@ -64,12 +64,26 @@ impl Token {
             KeyType::EC | KeyType::EC_EDWARDS => {
                 let curve = curve_of(object)?;
                 let mech = if curve.edwards() { Mechanism::EccEdwardsKeyPairGen } else { Mechanism::EccKeyPairGen };
-                let mut public = common.clone();
-                public.extend([Attribute::EcParams(curve.params().to_vec())]);
-                public_half(&mut public)?;
-                let mut private = common;
+                let public_with = |params: &[u8]| -> Result<Vec<Attribute>> {
+                    let mut public = common.clone();
+                    public.push(Attribute::EcParams(params.to_vec()));
+                    public_half(&mut public)?;
+                    Ok(public)
+                };
+                let mut private = common.clone();
                 private.extend(policy);
-                self.session.generate_key_pair(&mech, &public, &private).map(drop).map_err(refused)
+                // The OID first; a module that takes the curve only by name (ykcs11's
+                // edwards25519, a profile's `by-name` row [src]) gets PKCS#11 3.0's
+                // PrintableString form. The identity is the same: the SPKI, not the params.
+                let by_oid = self.session.generate_key_pair(&mech, &public_with(curve.params())?, &private);
+                match (by_oid, curve.params_by_name()) {
+                    (Err(e), Some(name)) => {
+                        self.session.generate_key_pair(&mech, &public_with(name)?, &private).map_err(|_| e)
+                    }
+                    (other, _) => other,
+                }
+                .map(drop)
+                .map_err(refused)
             }
             kt => {
                 let len =

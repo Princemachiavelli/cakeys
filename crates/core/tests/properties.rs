@@ -112,6 +112,7 @@ fn resolved(t: &Target, v: &Variant) -> Resolved {
         spec_digest: if v.spec_changed { id::sri(b"another spec") } else { id::spec_digest(t.object, t.spec) },
         ids: [("rfc7093m4".to_owned(), id::sri(&[u8::from(v.material)]))].into(),
         binding: Some(v.binding),
+        assurance: cakeys_core::plan::assurance(t.object.class, Some(v.binding), None),
         policy: [("CKA_SIGN", v.policy[0]), ("CKA_DECRYPT", v.policy[1])]
             .into_iter()
             .map(|(n, b)| (n.to_owned(), AttrValue::Bool(b)))
@@ -134,6 +135,7 @@ fn aes(t: &Target, material: u8, schemes: &[&str]) -> Resolved {
         spec_digest: id::spec_digest(t.object, t.spec),
         ids: schemes.iter().map(|s| ((*s).to_owned(), id::sri(format!("{material}/{s}").as_bytes()))).collect(),
         binding: None,
+        assurance: cakeys_core::plan::Assurance::Fingerprint,
         policy: std::collections::BTreeMap::new(),
         immutables: Immutables::default(),
         commitment_label: Some(id::DEFAULT_COMMITMENT_LABEL.into()),

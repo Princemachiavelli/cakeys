@@ -132,6 +132,9 @@
     # One object, two specs with different policy on the same token.
     assert shared-sign.mode == "commitment";
     assert shared-nosign.mode == "wrap-rebind";
+    # The replay labels: a proven private key, a secret key's fingerprint.
+    assert signing.assurance == "proof";
+    assert shared-sign.assurance == "fingerprint";
     assert fails (keys.shared { token = "softhsm"; }); # ambiguous: several specs on one token
     assert fails (keys.signing { token = "elsewhere"; }); # no such pair
     assert signing.module.version == "2.7";

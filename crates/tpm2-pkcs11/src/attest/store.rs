@@ -126,8 +126,8 @@ impl Store {
                 .query_map([tok_id], |r| text(r, 0))
                 .map_err(|e| KmError::Unavailable(format!("reading tobjects: {e}")))?;
             for attrs in rows {
-                tobjects
-                    .push(parse_tobject(&attrs.map_err(|e| KmError::Unavailable(format!("reading a tobject: {e}")))?)?);
+                let attrs = attrs.map_err(|e| KmError::Unavailable(format!("reading a tobject: {e}")))?;
+                tobjects.extend(parse_tobject(&attrs)?);
             }
         }
         Ok(Store { parent, seal, tobjects })
@@ -224,7 +224,10 @@ fn parse_parent(config: &str, objauth: &str) -> Result<Parent> {
 /// One `tobjects.attrs` row: block YAML with explicit tags — `? !!int "258" : !!str "a1..."`.
 /// Values cakeys needs are integers, booleans and hex strings; sequences (only
 /// `CKA_ALLOWED_MECHANISMS` and friends) are skipped whole, including their continuation lines.
-fn parse_tobject(attrs: &str) -> Result<TObject> {
+/// `None` for a row without TPM key material (no `CKA_TPM2_PUB_BLOB`): an ECDH-derived secret,
+/// which tpm2-pkcs11 1.10 keeps as a store row even from a `CKA_TOKEN = false` template [run] —
+/// never certifiable, and no reason to refuse the rest of the store.
+fn parse_tobject(attrs: &str) -> Result<Option<TObject>> {
     let bad = |what: &str| KmError::Unavailable(format!("tpm2-pkcs11 store: object attrs: {what}"));
     let mut class = None;
     let mut cka_label = None;
@@ -271,14 +274,8 @@ fn parse_tobject(attrs: &str) -> Result<TObject> {
             _ => {}
         }
     }
-    Ok(TObject {
-        class: class.ok_or_else(|| bad("no CKA_CLASS"))?,
-        cka_label,
-        cka_id,
-        pub_blob: pub_blob.ok_or_else(|| bad("no CKA_TPM2_PUB_BLOB"))?,
-        priv_blob,
-        objauth_enc,
-    })
+    let class = class.ok_or_else(|| bad("no CKA_CLASS"))?;
+    Ok(pub_blob.map(|pub_blob| TObject { class, cka_label, cka_id, pub_blob, priv_blob, objauth_enc }))
 }
 
 /// Decode one hex string attribute (tpm2-pkcs11 stores all buffers as hex text).

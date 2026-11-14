@@ -391,7 +391,8 @@ impl Curve {
     }
 
     /// PKCS#11 3.0 also allows Edwards curves as a `PrintableString` curve name.
-    fn params_by_name(self) -> Option<&'static [u8]> {
+    #[must_use]
+    pub fn params_by_name(self) -> Option<&'static [u8]> {
         match self {
             Curve::Ed25519 => Some(b"\x13\x0cedwards25519"),
             Curve::Ed448 => Some(b"\x13\x0aedwards448"),

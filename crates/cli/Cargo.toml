@@ -55,3 +55,7 @@ required-features = ["tpm2"]
 [[test]]
 name = "yubikey"
 required-features = ["ykcs11"]
+
+[[test]]
+name = "ftpm"
+required-features = ["tpm2"]

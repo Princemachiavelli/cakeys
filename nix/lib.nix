@@ -23,6 +23,9 @@ in
       spec / token   the resolved pair
       uri / mode / specDigest / module / tokenInfo / functions
                      from the pair's realisation (observed and provenance)
+      assurance      what its check establishes against a token that may lie: "proof" (a
+                     fresh challenge), "fingerprint" (a secret key's commitment: replayable),
+                     "public" (public bytes); derived from the lock, as `cakeys` derives it
       requiredSystemFeatures
                      the token's system feature (keys.toml `tokens.<t>.systemFeature`, default
                      `token-<t>`), as the list a derivation's `requiredSystemFeatures` takes
@@ -123,6 +126,25 @@ in
           id = ids // (if ids ? rfc7093m4 then { pubkeyhash = ids.rfc7093m4; } else { });
           uri = real.observed.uri or null;
           inherit (real) mode specDigest;
+          # What the check establishes against a token that may lie (cakeys_core::plan::assurance,
+          # docs/REVIEW-2026-11-13.md "Replay"): "proof" (a fresh challenge the host verified),
+          # "fingerprint" (a secret key's commitment, replayable by whatever saw it once) or
+          # "public" (a hash of public bytes).
+          assurance =
+            if (real.attestation.kind or null) == "tpm-certify" then
+              "proof"
+            else if
+              type.class == "CKO_PRIVATE_KEY"
+              && !builtins.elem (real.binding or null) [
+                null
+                "token-asserted"
+              ]
+            then
+              "proof"
+            else if type.class == "CKO_SECRET_KEY" then
+              "fingerprint"
+            else
+              "public";
           # Provenance: { path, description, manufacturer, version, cryptoki } / { model, serial, firmware }.
           module = real.provenance.module or null;
           tokenInfo = real.provenance.token or null;

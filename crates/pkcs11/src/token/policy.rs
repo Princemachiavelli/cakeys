@@ -89,9 +89,7 @@ impl Token {
         for name in attrs::observed(class) {
             let Some(t) = bool_attr(name, false).map(|a| a.attribute_type()) else { continue };
             // Unsupported or unreadable on this token: not part of what it can show.
-            if let Ok(Some(a)) = self.attr(h, t)
-                && let Some(b) = attr_bool(&a)
-            {
+            if let Ok(Some(b)) = self.flag(h, t) {
                 policy.insert(name.to_owned(), AttrValue::Bool(b));
             }
         }
@@ -157,7 +155,21 @@ impl Token {
             });
         }
         let t = bool_attr(name, false).ok_or_else(|| unsupported_attr(name))?.attribute_type();
-        Ok(self.attr(h, t)?.as_ref().and_then(attr_bool).map(AttrValue::Bool))
+        Ok(self.flag(h, t)?.map(AttrValue::Bool))
+    }
+
+    /// A boolean policy attribute as the module reports it, repaired by the provider where the
+    /// module misreports it (`Provider::policy_flag`).
+    fn flag(&self, h: ObjectHandle, t: AttributeType) -> Result<Option<bool>> {
+        let Some(reported) = self.attr(h, t)?.as_ref().and_then(attr_bool) else { return Ok(None) };
+        let private_key_type = || match self.attr(h, AttributeType::Class) {
+            Ok(Some(Attribute::Class(ObjectClass::PRIVATE_KEY))) => match self.attr(h, AttributeType::KeyType) {
+                Ok(Some(Attribute::KeyType(kt))) => Some(kt),
+                _ => None,
+            },
+            _ => None,
+        };
+        Ok(Some(self.provider.policy_flag(t, reported, &private_key_type)))
     }
 
     /// `publicAttributes`, checked on the public key object of the pair: `h` itself when adopting

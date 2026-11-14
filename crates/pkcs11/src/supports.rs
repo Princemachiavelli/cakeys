@@ -65,14 +65,28 @@ impl Support {
 /// provider, or a query that asks nothing.
 pub fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
     let find = |name: &str| set.find(name).map_err(KmError::Validation);
+    // A family with pairs on several kinds of hardware (tpm2-pkcs11/1.10+swtpm, +amd-ftpm):
+    // the hardware layer asked for names the pair, as in token resolution.
+    let find_module = |name: &str, hardware: &[String]| {
+        set.find(name)
+            .or_else(|e| {
+                let named: Vec<&Profile> = set
+                    .all()
+                    .iter()
+                    .filter(|p| p.family() == name && hardware.iter().any(|h| p.profile.ends_with(&format!("+{h}"))))
+                    .collect();
+                if let [p] = named.as_slice() { Ok(*p) } else { Err(e) }
+            })
+            .map_err(KmError::Validation)
+    };
     let module = match (q.profile, q.token) {
-        (Some(p), _) => Some(find(p)?),
+        (Some(p), _) => Some(find_module(p, q.layers)?),
         (None, Some(t)) => {
             let token = cfg.tokens.get(t).ok_or_else(|| KmError::Validation(format!("unknown token '{t}'")))?;
             let family = token.provider.as_deref().ok_or_else(|| {
                 KmError::Validation(format!("token '{t}' names no provider; set tokens.{t}.provider or pass --profile"))
             })?;
-            Some(find(family)?)
+            Some(find_module(family, &token.profiles)?)
         }
         (None, None) => None,
     };

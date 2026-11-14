@@ -112,6 +112,8 @@ functions = [
 curves = [
   "brainpoolP256r1",
   "brainpoolP384r1",
+  "curve25519",
+  "curve448",
   "edwards25519",
   "edwards448",
   "secp256k1",

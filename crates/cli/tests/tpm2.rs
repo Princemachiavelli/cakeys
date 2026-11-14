@@ -212,6 +212,25 @@ fn tpm2_identity_failure_after_create_leaves_nothing() {
     assert_eq!(labelled(&e.session(), "orphan-p521"), 0);
 }
 
+/// `pop-ecdh` on tpm2-pkcs11: it derives, but cannot MAC with a sealed derived secret (its
+/// `C_SignInit` wants a `CKA_ALLOWED_MECHANISMS` the derived object lacks), so the committed
+/// profile says `derive.sealed = false` and the proof compares an extractable derived secret
+/// instead. Before the probe recorded that, every ECDH proof here failed.
+#[test]
+fn tpm2_proves_possession_by_deriving() {
+    let Some(e) = env("ecdh") else { return };
+    e.config(
+        "[objects.p]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.p]\nobject = \"p\"\nattributes = { CKA_DERIVE = true }\n\
+         tokens.tpm = { locator = { CKA_LABEL = \"ecdh-p256\" }, autoCreate = true, binding = \"pop-ecdh\" }\n",
+    );
+    let o = e.km(&["realise", "p", "--token", "tpm", "--update-lock"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(e.lock()["realisations"]["p"]["tpm"]["binding"].as_str(), Some("pop-ecdh"));
+    let o = e.km(&["verify", "p", "--token", "tpm"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+}
+
 /// openssl-computed rfc7093m4 IDs of the import fixtures (test-only keys).
 const IMPORT_P256: &str = "sha256-0ymh9vfz8P3lnbdlAXskvxwoDAfUJNEIbsv0KEupcSg=";
 const IMPORT_RSA2048: &str = "sha256-kRE6YzH4EXmqqAKhbLhb0z6/57mcGvHKrm4F4omLIn4=";

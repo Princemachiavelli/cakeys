@@ -28,6 +28,9 @@ pub struct Resolved {
     /// Private keys: how the private object was bound to `ids` (proven when `pop-sign`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binding: Option<Binding>,
+    /// What the check establishes against a token that may lie: a fresh proof, a replayable
+    /// fingerprint, or public bytes (`plan::assurance`; derived, never in the lock).
+    pub assurance: crate::plan::Assurance,
     /// The observed policy vector and immutables of the object found (§4.2 of docs/DESIGN.md).
     pub policy: BTreeMap<String, AttrValue>,
     #[serde(skip_serializing_if = "Immutables::is_empty")]
@@ -550,6 +553,7 @@ mod tests {
             spec_digest: id::spec_digest(t.object, t.spec),
             ids: [("rfc7093m4".to_owned(), SRI_A.to_owned())].into(),
             binding: Some(Binding::PopSign),
+            assurance: crate::plan::Assurance::Proof,
             policy: [("CKA_SIGN".to_owned(), AttrValue::Bool(true))].into(),
             immutables: Immutables { local: Some(true), ..Default::default() },
             commitment_label: None,

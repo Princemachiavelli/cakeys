@@ -103,6 +103,8 @@ pub struct Token {
     /// delta layers between cakeys and it, with the notes resolution noticed on the way.
     pub profiles: crate::resolution::Resolved,
     session: Session,
+    /// The slot holding the token, for a second session ([`Token::extra_session`]).
+    slot: cryptoki::slot::Slot,
     /// Logged in as the user: private objects are visible. Otherwise a public session.
     pub logged_in: bool,
     /// The token's config, for provider hooks that need more than the module (the native TPM
@@ -117,7 +119,7 @@ pub struct Token {
     pin: Option<Zeroizing<String>>,
     /// Last: fields drop in declaration order, so the session is closed before the module is
     /// finalized.
-    _module: Finalize,
+    library: Finalize,
 }
 
 /// Calls `C_Finalize` when dropped (cryptoki 0.12 never does): a module library may stay loaded
@@ -214,12 +216,13 @@ impl Token {
             rsa_bits,
             profiles,
             session,
+            slot,
             logged_in: pin.is_some(),
             cfg: cfg.clone(),
             pins,
             pin,
             provider,
-            _module: module_guard,
+            library: module_guard,
         })
     }
 
@@ -248,6 +251,19 @@ impl Token {
     /// go through the methods above).
     pub(crate) fn raw(&self) -> &Session {
         &self.session
+    }
+
+    /// A second session on the token, for a step the module refuses in the verb's own: a
+    /// read-only verb's proof by deriving on tpm2-pkcs11, which keeps derived secrets as store
+    /// rows and so derives only in a read-write session [run]. Login state belongs to the
+    /// token, shared by every session of the process, and object handles are valid in all of
+    /// them (PKCS#11 base §5.6), so it needs no login and finds the same key.
+    pub(crate) fn extra_session(&self, access: Access) -> Result<Session> {
+        let ctx = &self.library.0;
+        match access {
+            Access::Read => ctx.open_ro_session(self.slot).map_err(ck("C_OpenSession (read-only)")),
+            Access::Write => ctx.open_rw_session(self.slot).map_err(ck("C_OpenSession")),
+        }
     }
 
     pub fn has(&self, m: MechanismType) -> bool {
@@ -373,7 +389,7 @@ impl Token {
     /// create and destroy objects only as SO, then return to the user session. Login state is
     /// per token, so the user is logged out first. The admin credential is read here, never at
     /// open, and zeroized when the step ends.
-    fn as_so<T>(&self, what: &str, step: impl FnOnce() -> Result<T>) -> Result<T> {
+    pub(crate) fn as_so<T>(&self, what: &str, step: impl FnOnce() -> Result<T>) -> Result<T> {
         let so = read_mgm(&self.cfg)?.ok_or_else(|| {
             self.unsupported(format!(
                 "{what} on '{}' needs a Security Officer session: set tokens.{}.mgmKeyFile or mgmKeyEnv",
@@ -536,7 +552,7 @@ fn read_pin(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
     read_secret("PIN", cfg.pin_env.as_deref(), cfg.pin_file.as_deref())
 }
 
-fn has_admin(cfg: &TokenCfg) -> bool {
+pub(crate) fn has_admin(cfg: &TokenCfg) -> bool {
     cfg.mgm_key_file.is_some() || cfg.mgm_key_env.is_some()
 }
 

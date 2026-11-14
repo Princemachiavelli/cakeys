@@ -86,6 +86,51 @@ pub fn binding(t: &Target) -> Option<Binding> {
     Some(t.on_token.binding.unwrap_or(Binding::PopSign))
 }
 
+/// What a realisation's check establishes against a module or token that may lie (the replay
+/// analysis in docs/REVIEW-2026-11-13.md). Derived from the class, the recorded binding and the
+/// attestation kind, never stored: the lock already holds all three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Assurance {
+    /// Possession proven over a fresh challenge the host verifies: a `pop-*` binding, or a
+    /// nonce-bound attestation (`tpm-certify`). Replaying an earlier answer fails.
+    Proof,
+    /// A secret key's commitment: the token's deterministic output over a fixed input. It shows
+    /// the material is the locked one, but anything that saw the output once can replay it; the
+    /// host holds no key to check a fresh challenge with.
+    Fingerprint,
+    /// A hash of public bytes (public keys, certificates, data objects, and private keys adopted
+    /// `token-asserted` or `publicOnly`): whoever has the bytes passes.
+    Public,
+}
+
+impl Assurance {
+    /// The name the JSON output and the Nix view use.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Assurance::Proof => "proof",
+            Assurance::Fingerprint => "fingerprint",
+            Assurance::Public => "public",
+        }
+    }
+}
+
+/// The [`Assurance`] of a realisation of an object of `class`, recorded with `binding` and an
+/// attestation of `attestation_kind` (the lock record's `kind`).
+#[must_use]
+pub fn assurance(class: Class, binding: Option<Binding>, attestation_kind: Option<&str>) -> Assurance {
+    // TPM2_Certify signs a fresh nonce over the loaded object: proof of presence for any class.
+    if attestation_kind == Scheme::TpmCertify.attestation_kind() {
+        return Assurance::Proof;
+    }
+    match (class, binding) {
+        (Class::PrivateKey, Some(b)) if b != Binding::TokenAsserted => Assurance::Proof,
+        (Class::SecretKey, _) => Assurance::Fingerprint,
+        _ => Assurance::Public,
+    }
+}
+
 /// A private key must be able to prove possession, or say explicitly that it does not.
 fn check_binding(t: &Target) -> Result<()> {
     let invalid = |why: String| Err(KmError::Validation(format!("{t}: {why}")));
@@ -280,6 +325,33 @@ pub const AES_COMMITS: [Commit; 4] = [Commit::Cmac, Commit::KcvEcb, Commit::KcvE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The replay table (docs/REVIEW-2026-11-13.md): only a fresh, host-verified answer is a
+    /// proof; a secret key's commitment is a fingerprint; public bytes are public.
+    #[test]
+    fn assurance_follows_the_replay_table() {
+        use Assurance::{Fingerprint, Proof, Public};
+        let cases = [
+            (Class::PrivateKey, Some(Binding::PopSign), None, Proof),
+            (Class::PrivateKey, Some(Binding::PopSignPin), None, Proof),
+            (Class::PrivateKey, Some(Binding::PopEcdh), None, Proof),
+            (Class::PrivateKey, Some(Binding::PopDecrypt), None, Proof),
+            (Class::PrivateKey, Some(Binding::TokenAsserted), None, Public),
+            // A replayable attestation upgrades nothing; a nonce-bound one is a proof.
+            (Class::PrivateKey, Some(Binding::TokenAsserted), Some("yubico-piv"), Public),
+            (Class::PrivateKey, Some(Binding::TokenAsserted), Some("tpm-certify"), Proof),
+            (Class::SecretKey, None, None, Fingerprint),
+            (Class::SecretKey, None, Some("tpm-certify"), Proof),
+            (Class::PublicKey, None, None, Public),
+            (Class::Certificate, None, None, Public),
+            (Class::Data, None, None, Public),
+        ];
+        for (class, binding, kind, want) in cases {
+            assert_eq!(assurance(class, binding, kind), want, "{class:?} {binding:?} {kind:?}");
+        }
+        assert_eq!(serde_json::to_string(&Fingerprint).unwrap(), "\"fingerprint\"");
+        assert_eq!(Proof.name(), "proof");
+    }
 
     /// The AES commitment strength order (docs/DESIGN.md §3.1, finding S15): CMAC, then the
     /// KCVs, then KW. `declared_commits` zips usage bits with it, so the order is load-bearing:

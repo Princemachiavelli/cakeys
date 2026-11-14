@@ -23,7 +23,7 @@ pub mod profile;
 pub use baseline::Baseline;
 pub use diff::diff;
 pub use effective::{Effective, Verdict};
-pub use profile::{AcceptRow, GenerateRow, MatchInfo, Migration, Mode, PlaintextKind, Profile};
+pub use profile::{AcceptRow, GenerateRow, Manual, MatchInfo, Migration, Mode, PlaintextKind, Profile};
 
 use std::path::Path;
 
@@ -164,6 +164,7 @@ mod tests {
                 "p11-kit/0.26",
                 "kryoptic/1.5",
                 "softhsm/2.7",
+                "tpm2-pkcs11/1.10+amd-ftpm",
                 "tpm2-pkcs11/1.10+swtpm",
                 "ykcs11/2.7"
             ]

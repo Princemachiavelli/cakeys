@@ -123,24 +123,21 @@ pub fn resolve(
         return Ok(out);
     }
     let fit = |p: &Profile| Fit::of(p, module, token);
-    let chosen = match candidates.as_slice() {
-        [] => return Ok(out),
-        [p] => *p,
-        _ => candidates
-            .iter()
-            .filter(|p| fit(p).version != Some(false))
-            .max_by_key(|p| fit(p).hardware_keys())
-            .copied()
-            .ok_or_else(|| {
-                format!(
-                    "several module profiles for '{family}' and none records version '{}': name one \
-                     exactly in tokens.<token>.provider ({})",
-                    module.version,
-                    candidates.iter().map(|p| p.profile.as_str()).collect::<Vec<_>>().join(", ")
-                )
-            })?,
-    };
+    let Some((chosen, tied)) = choose(&candidates, &out.layers, module, token, family)? else { return Ok(out) };
     let mut p = chosen.clone();
+    if tied.len() > 1 && token.is_none() {
+        // Pairs of one module on several kinds of hardware, and no token to tell which: what
+        // the module lists is taken from one of them; what generates, wraps, unwraps and
+        // decrypts depends on the hardware — unknown, as for hardware no pair was observed on.
+        out.notes.push(format!(
+            "module profiles {} fit equally and the hardware is not known here: using {}'s module \
+             rows, its generate, wrap, unwrap and decrypt rows are not used (unknown); name the \
+             hardware in tokens.<token>.profiles, or the pair in provider",
+            tied.iter().map(|p| p.profile.as_str()).collect::<Vec<_>>().join(", "),
+            p.profile
+        ));
+        clear_hardware_rows(&mut p);
+    }
     let f = fit(&p);
     let seen = |x: Option<&String>| x.map_or_else(|| "unrecorded".to_owned(), |x| format!("'{x}'"));
     match (&p.r#match.module_version, f.firmware) {
@@ -178,12 +175,57 @@ pub fn resolve(
             seen(token.map(|t| &t.model)),
             seen(token.map(|t| &t.firmware))
         ));
-        p.generate.clear();
-        p.wrap.oaep = None;
-        p.unwrap.refuse = None;
+        clear_hardware_rows(&mut p);
     }
     out.module = Some(p);
     Ok(out)
+}
+
+/// The module profile among a family's `candidates`, with the ones that fit it equally well.
+/// Ranked by: a configured hardware layer naming the pair (`profiles = ["swtpm"]` ->
+/// `tpm2-pkcs11/1.10+swtpm`), then the token's model and firmware; a profile recording another
+/// module version is out. `None` for a family with no profile.
+///
+/// # Errors
+///
+/// Several candidates and none records the module's version.
+fn choose<'a>(
+    candidates: &[&'a Profile],
+    layers: &[Profile],
+    module: &ModuleInfo,
+    token: Option<&TokenInfo>,
+    family: &str,
+) -> Result<Option<(&'a Profile, Vec<&'a Profile>)>, String> {
+    let fit = |p: &Profile| Fit::of(p, module, token);
+    let named_hardware = |p: &Profile| layers.iter().any(|l| p.profile.ends_with(&format!("+{}", l.profile)));
+    match candidates {
+        [] => Ok(None),
+        [p] => Ok(Some((*p, vec![*p]))),
+        _ => {
+            let eligible: Vec<&Profile> =
+                candidates.iter().filter(|p| fit(p).version != Some(false)).copied().collect();
+            let rank = |p: &Profile| (named_hardware(p), fit(p).hardware_keys());
+            let best = eligible.iter().map(|p| rank(p)).max().ok_or_else(|| {
+                format!(
+                    "several module profiles for '{family}' and none records version '{}': name one \
+                     exactly in tokens.<token>.provider ({})",
+                    module.version,
+                    candidates.iter().map(|p| p.profile.as_str()).collect::<Vec<_>>().join(", ")
+                )
+            })?;
+            let tied: Vec<&Profile> = eligible.into_iter().filter(|p| rank(p) == best).collect();
+            Ok(Some((tied[0], tied)))
+        }
+    }
+}
+
+/// Drop a pair profile's rows that depend on the hardware it was observed on: what generates,
+/// wraps, unwraps and decrypts there answers unknown on other or unknown hardware.
+fn clear_hardware_rows(p: &mut Profile) {
+    p.generate.clear();
+    p.wrap.oaep = None;
+    p.unwrap.refuse = None;
+    p.decrypt.oaep = None;
 }
 
 /// How a module profile's match keys meet a token: per key, whether it matches (`None`: the
@@ -238,6 +280,7 @@ mod tests {
             mgm_key_env: None,
             system_feature: None,
             scratch: false,
+            scratch_id: None,
             options: toml::Table::new(),
         }
     }
@@ -281,10 +324,33 @@ mod tests {
         let r = resolve(&cfg(None, &[]), &module("tpm2-software.github.io", "1.10"), Some(&infineon), "tpm2-pkcs11")
             .unwrap();
         let m = r.module.as_ref().unwrap();
-        assert_eq!(m.profile, "tpm2-pkcs11/1.10+swtpm");
+        assert!(m.profile.starts_with("tpm2-pkcs11/1.10+"), "{}", m.profile);
         assert!(!m.advertise.is_empty() && !m.subtract.mechanisms.is_empty());
         assert!(m.generate.is_empty() && m.wrap.oaep.is_none() && m.unwrap.refuse.is_none());
+        assert!(m.decrypt.oaep.is_none());
         assert_eq!(r.notes.len(), 1, "{:?}", r.notes);
+    }
+
+    #[test]
+    fn pairs_of_one_module_resolve_by_their_hardware() {
+        let tpm2 = module("tpm2-software.github.io", "1.10");
+        let resolved = |cfg: &TokenCfg, token: Option<&TokenInfo>| {
+            let r = resolve(cfg, &tpm2, token, "tpm2-pkcs11").unwrap();
+            (r.module.unwrap(), r.notes)
+        };
+        // The token's model and firmware pick the pair observed on that hardware, rows intact.
+        let amd = TokenInfo { model: "AMD".into(), serial: "s".into(), firmware: "3.87".into() };
+        let (m, notes) = resolved(&cfg(None, &[]), Some(&amd));
+        assert_eq!(m.profile, "tpm2-pkcs11/1.10+amd-ftpm");
+        assert!(!m.generate.is_empty() && notes.is_empty(), "{notes:?}");
+        let sw = TokenInfo { model: "SW   TPM".into(), serial: "s".into(), firmware: "36.37".into() };
+        assert_eq!(resolved(&cfg(None, &[]), Some(&sw)).0.profile, "tpm2-pkcs11/1.10+swtpm");
+        // No token (validate by provider alone): a configured hardware layer names the pair ...
+        assert_eq!(resolved(&cfg(None, &["swtpm"]), None).0.profile, "tpm2-pkcs11/1.10+swtpm");
+        // ... else the pairs tie: module rows only, the hardware's unknown, and said so.
+        let (m, notes) = resolved(&cfg(None, &[]), None);
+        assert!(m.generate.is_empty() && m.decrypt.oaep.is_none());
+        assert!(notes.iter().any(|n| n.contains("fit equally")), "{notes:?}");
     }
 
     #[test]

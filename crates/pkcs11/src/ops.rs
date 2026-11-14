@@ -213,6 +213,7 @@ fn resolve_with(t: &Target, tok: &Token, lock: &Lock, provision: bool) -> Result
         spec_digest: id::spec_digest(t.object, t.spec),
         ids,
         binding,
+        assurance: cakeys_core::plan::assurance(t.object.class, binding, attestation.as_ref().map(|a| a.kind.as_str())),
         policy: tok.policy(h)?,
         immutables: tok.immutables(h),
         commitment_label,

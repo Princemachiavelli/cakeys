@@ -2,7 +2,8 @@
 # with `cakeys probe --token <t> --write --diff <profile> --out <this file>`; the
 # conformance test re-probes and compares on every build. A profile is what the
 # probe measured: this module on this token's hardware, together. Only [migration]
-# is not probe output: it is this repo's claims, preserved across regenerations.
+# and [manual] are not probe output: this repo's claims and hand findings,
+# preserved across regenerations.
 profile = "softhsm/2.7"
 mode = "observed"
 advertise = [
@@ -67,11 +68,22 @@ oaep = ["SHA-1"]
 [unwrap]
 refuse = ["CKA_VALUE_LEN"]
 
+[decrypt]
+oaep = ["SHA-1"]
+
+[derive]
+sealed = true
+key-attribute = true
+read-only = true
+
 [generate."CKK_EC"]
 can = ["secp256r1", "secp384r1", "secp521r1", "secp256k1", "brainpoolP256r1", "brainpoolP384r1"]
 
 [generate."CKK_EC_EDWARDS"]
 can = ["edwards25519", "edwards448"]
+
+[generate."CKK_EC_MONTGOMERY"]
+cannot = ["curve25519", "curve448"]
 
 [generate."CKK_RSA"]
 min-bits = 512
@@ -80,5 +92,8 @@ can-bits = [1024, 2048, 3072, 4096]
 
 [notes]
 "CKA_VALUE_LEN" = "CKR_ATTRIBUTE_READ_ONLY in an unwrap template"
+"CKM_RSA_PKCS_OAEP" = "RSA-2048 decrypt SHA-256: CKR_ARGUMENTS_BAD"
 "cryptoki" = "the module reports Cryptoki 3.2"
+"curve25519" = "generation refused: CKR_MECHANISM_INVALID"
+"curve448" = "generation refused: CKR_MECHANISM_INVALID"
 "oaep" = "SHA-256: wrapping fails: CKR_ARGUMENTS_BAD"

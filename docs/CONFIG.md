@@ -85,8 +85,16 @@ tokenLabel = "YubiKey PIV #39189318"
 pinFile = "/run/secrets/piv-pin"
 # The admin (SO) credential, for modules that create keys only as SO (ykcs11: the PIV
 # management key in hex, or the PIN when the management key is PIN-protected). Read only to
-# create or delete, and only where the provider needs it; refused elsewhere (17).
+# create or delete, and only where the provider needs it; refused elsewhere (17). The hex
+# management key logs in without a PIN verification, so it spends no PIN retry; the PIN does.
 mgmKeyFile = "/run/secrets/piv-mgm"
+# A device like this holds real keys beside expendable ones, so `scratch` cannot mark it. For a
+# module that creates only as SO into slots named by CKA_ID (ykcs11), `scratchId` names the one
+# slot `probe --write` may overwrite (hex CKA_ID: 17 is retired slot 94). Each probe generation
+# replaces the slot's key and the last one stays (PIV cannot erase a key). The probe refuses a
+# slot holding anything but ykcs11's own placeholder from an earlier generation (17), so a typo
+# never reaches a real key. No other verb reads it.
+# scratchId = "17"
 
 # ── Objects: the material ───────────────────────────────────────────────────────────────
 

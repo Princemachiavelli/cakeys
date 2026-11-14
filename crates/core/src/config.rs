@@ -59,6 +59,13 @@ pub struct TokenCfg {
     /// here and is refused (17) on any other token. Never read by any other verb.
     #[serde(default)]
     pub scratch: bool,
+    /// The one `CKA_ID` (hex) the write probes may generate into, on a token whose module
+    /// creates only as Security Officer into fixed device slots named by `CKA_ID` (ykcs11): such
+    /// a token holds real keys beside the scratch slot, so `scratch` cannot mark all of it. Each
+    /// probe generation replaces the slot's key, and what the last one generated stays (PIV
+    /// cannot erase a key). The probe still refuses a slot holding anything but its provider's
+    /// own placeholder (`Provider::scratch_occupant`). Never read by any other verb.
+    pub scratch_id: Option<String>,
     /// Settings only the token's provider understands, as `[tokens.<t>.options]` (tpm2-pkcs11:
     /// `tcti`, `tpm2Store`, `akHandle`). The provider checks them when the token is opened, and
     /// one that takes none refuses any (17).
@@ -800,6 +807,14 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
         if let Some(m) = t.mgm_key_file.clone() {
             let expanded = env_ref(&m.to_string_lossy(), &format!("token '{name}': mgmKeyFile"), env)?;
             t.mgm_key_file = Some(PathBuf::from(expanded));
+        }
+        if let Some(id) = &t.scratch_id
+            && (id.is_empty() || id.len() % 2 != 0 || !id.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(KmError::Validation(format!(
+                "{}: token '{name}': scratchId {id:?} is not a hex CKA_ID",
+                path.display()
+            )));
         }
         // An SO step logs the user out; without a user PIN to return to, the new private key
         // could not be found again, let alone proven.

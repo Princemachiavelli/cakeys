@@ -76,6 +76,10 @@ pub struct EcdhChallenge {
     pub peer: Vec<u8>,
     /// HMAC-SHA256 over `msg` keyed with the shared secret.
     pub mac: Vec<u8>,
+    /// The shared secret itself, for a token that derives only into an extractable secret
+    /// (ykcs11 [src]): the token's derived value is compared with it instead of a MAC. Secret
+    /// only to the two ephemeral parties, and used once.
+    pub secret: Vec<u8>,
 }
 
 /// Start a `pop-ecdh` proof of possession: generate an ephemeral key on the curve of the public
@@ -98,6 +102,7 @@ pub fn ecdh_challenge(spki: &[u8], msg: &[u8]) -> Result<EcdhChallenge> {
                 return Ok(EcdhChallenge {
                     peer: eph.public_key().to_sec1_point(false).as_bytes().to_vec(),
                     mac: mac_sha256(shared.raw_secret_bytes(), msg),
+                    secret: shared.raw_secret_bytes().to_vec(),
                 });
             }
         };
@@ -120,10 +125,35 @@ pub fn ecdh_challenge(spki: &[u8], msg: &[u8]) -> Result<EcdhChallenge> {
 /// `Unsupported` if `spki` is not an RSA key; `Unavailable` if the OS random number generator
 /// or the encryption fails (for instance, `msg` is too long for the modulus).
 pub fn oaep_challenge(spki: &[u8], msg: &[u8]) -> Result<Vec<u8>> {
+    rsa_encrypt(spki, RsaPadding::Oaep(crate::migrate::OaepHash::Sha1), msg)
+}
+
+/// The RSA encryption paddings the probe tries a module's `C_Decrypt` with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RsaPadding {
+    /// PKCS#1 v1.5 (`CKM_RSA_PKCS`).
+    Pkcs1v15,
+    /// OAEP with MGF1 of the same hash and an empty label (`CKM_RSA_PKCS_OAEP`).
+    Oaep(crate::migrate::OaepHash),
+}
+
+/// `msg` encrypted to the RSA public key in `spki` with `padding`.
+///
+/// # Errors
+///
+/// `Unsupported` if `spki` is not an RSA key; `Unavailable` if the OS random number generator
+/// or the encryption fails (for instance, `msg` is too long for the modulus).
+pub fn rsa_encrypt(spki: &[u8], padding: RsaPadding, msg: &[u8]) -> Result<Vec<u8>> {
+    use crate::migrate::OaepHash;
     let key = rsa::PublicKey::from_public_key_der(spki)
-        .map_err(|e| KmError::Unsupported(format!("proof of possession for this SPKI: {e}")))?;
-    key.encrypt(&mut getrandom::SysRng, rsa::Oaep::<sha1::Sha1>::new(), msg)
-        .map_err(|e| KmError::Unavailable(format!("RSA-OAEP challenge: {e}")))
+        .map_err(|e| KmError::Unsupported(format!("RSA encryption to this SPKI: {e}")))?;
+    let rng = &mut getrandom::SysRng;
+    match padding {
+        RsaPadding::Pkcs1v15 => key.encrypt(rng, rsa::Pkcs1v15Encrypt, msg),
+        RsaPadding::Oaep(OaepHash::Sha1) => key.encrypt(rng, rsa::Oaep::<sha1::Sha1>::new(), msg),
+        RsaPadding::Oaep(OaepHash::Sha256) => key.encrypt(rng, rsa::Oaep::<Sha256>::new(), msg),
+    }
+    .map_err(|e| KmError::Unavailable(format!("RSA encryption: {e}")))
 }
 
 /// HMAC-SHA256 over `msg` keyed with `key`; HMAC takes any key length.

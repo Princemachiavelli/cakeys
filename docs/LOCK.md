@@ -105,7 +105,11 @@ schemes = ["rfc7093m4"]
 # How the private key was bound to the public key its identity hashes: the token signed a fresh
 # challenge the host verified (pop-sign; pop-sign-pin when the key is CKA_ALWAYS_AUTHENTICATE and
 # each signature took a context-specific login; or pop-ecdh, pop-decrypt). `token-asserted` means the
-# token's word only. Dropping from any pop-* to token-asserted is refused (14).
+# token's word only. Dropping from any pop-* to token-asserted is refused (14). Not stored, but
+# derived from the binding, the class and the attestation kind: the `assurance` that `realise`
+# and the Nix view report. A pop-* binding (or a tpm-certify attestation) is a "proof" no replay
+# passes; a secret key's commitment is a "fingerprint" that anything which saw it can replay;
+# public bytes are "public" (docs/REVIEW-2026-11-13.md, "Replay").
 binding = "pop-sign"
 
 # Where it was found. Recorded so a moved locator is reported as a moved locator (14), not as an

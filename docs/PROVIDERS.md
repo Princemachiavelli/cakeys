@@ -373,6 +373,74 @@ token, against the token's capability profiles, with no token opened.
   and a `kw` commitment through p11-kit are refused naming `kryoptic/1.5` and `p11-kit/0.26`;
   the fixture with a recorded SoftHSM lock resolves `softhsm/2.7` and passes.
 
+### Probe on hardware: operations, SO slots, hand findings (2026-11-13)
+
+The YubiKey's profile was hand-maintained because the probe refused SO-only modules. Now
+ykcs11/2.7 is probe output, and the probe tests what each key can *do*, not only what it
+generates:
+
+- **Scratch slots** (`tokens.<t>.scratchId`, CONFIG.md): for a module that creates only as SO
+  into slots named by `CKA_ID` (ykcs11), the write probes generate into the one slot named, in
+  an SO session. The slot must be empty or hold only the provider's own placeholder
+  (`Provider::scratch_occupant`: ykcs11's self-issued `CN=YubiKey PIV Slot <slot>`, serial 0).
+  Anything else is refused (17) before anything is written. No delete or wrap probes run there:
+  PIV cannot erase a key, and wrapping needs a second object.
+- **Operation probes**: on the first key of each kind, every advertised signing, ECDH and
+  decryption mechanism. Results are checked on the host where cakeys can verify (`sig`, `pop`).
+  D2 holds: a mechanism that fails on every key is a `subtract` row, a partial failure a note.
+  New rows:
+  - `decrypt.oaep`: the OAEP hashes `C_Decrypt` takes.
+  - `derive.sealed`: whether a sealed, MAC-able derived secret works.
+  - `derive.key-attribute`: the `CKA_DERIVE` a key that derived reports.
+  - `derive.read-only`: whether it derives in a read-only session.
+  - `generate.<kt>.by-name`: curves taken only as a `PrintableString` name.
+  - `CKK_EC_MONTGOMERY` generation; `curve25519`/`curve448` are in the baseline vocabulary.
+- **`[manual]`**: findings a person made, each with `finding` and `evidence`. The probe
+  preserves the section like `[migration]` and the diff never compares it, so a reader always
+  knows which rows were observed and which were written by hand.
+- **Regeneration**: `scripts/regen-profiles.sh` sets up the three reference tokens the way the
+  check phase does and regenerates their files; the YubiKey test regenerates ykcs11/2.7.
+
+What the probes found, and what changed because of it:
+
+- **ykcs11 on a YubiKey 5C NFC FIPS (5.7.4, PIV in FIPS-approved mode)**:
+  - It generates P-256, P-384, Ed25519 and RSA 2048–4096. It refuses RSA-1024, P-521,
+    secp256k1, brainpool, Ed448 and X25519.
+  - Ed25519 is accepted only by name, so cakeys' generation now falls back to the name form.
+  - Its X25519 template wants a malformed `PrintableString` [src] (`[manual.x25519]`).
+  - ECDH works only into an extractable secret, and there is no HMAC. `pop-ecdh` now has an
+    extractable path: the host compares the derived value with the shared secret it computed.
+  - Every key reports `CKA_DERIVE = false` from a fixed table. The provider repairs that
+    (`Provider::policy_flag`), like tpm2's P-521 point.
+  - The FIPS mode is a `[manual]` finding until D12's match fields can separate the mode.
+- **tpm2-pkcs11 1.10**:
+  - It derives, but `C_SignInit` with a derived secret fails because the secret lacks
+    `CKA_ALLOWED_MECHANISMS`. That failure leaks a reference, so neither the secret nor its
+    base key can be destroyed afterwards, and derived secrets are kept as store rows even from
+    `CKA_TOKEN = false`. So `pop-ecdh` had never worked there.
+  - Now `derive.sealed = false` sends it down the extractable path.
+  - `derive.read-only = false` (it refuses to derive in a read-only session) sends the proof to
+    a read-write session opened for it.
+  - The attestation's store reader skips rows without TPM key material instead of refusing the
+    whole store.
+- **SoftHSM and kryoptic**: no operation failed. SoftHSM's OAEP decryption takes SHA-1 only, as
+  its wrapping does.
+- **tpm2-pkcs11 on an AMD fTPM** (`tpm2-pkcs11/1.10+amd-ftpm`, a second pair of one module):
+  - It generates P-256, P-384 and RSA up to 2048.
+  - The TPM has SHA-1 and SHA-256 only, so SHA-384/512 ECDSA and RSA-PSS are `subtract` rows.
+  - It is probed through tpm2-abrmd (nix/ftpm-test-env.sh). The kernel resource manager alone
+    runs out of its 3 slots on tpm2-pkcs11's undestroyable objects, and every later call then
+    fails ([manual.resource-manager]).
+  - Resolution now ranks pairs by a hardware layer the config names, then by the token's model
+    and firmware. Without a token (`validate` by provider), tied pairs give their module rows
+    only, with a note.
+
+Still open:
+
+- **ECDH with Montgomery keys**: not probed; cakeys has no Montgomery key type.
+- **SHA-224 RSA-PSS**: not probed; the binding has no `Mechanism` variant for it.
+- **Delete in a scratch slot**: not probed (`[manual.destroy]`).
+
 Order against MIGRATE.md: phases 0–2 land **before MIGRATE phase 3**, so the wrapping code
 consumes the template rules as data (that plan's risk #1); the probe runs alongside MIGRATE
 phases 3–4.

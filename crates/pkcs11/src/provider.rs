@@ -8,7 +8,7 @@ use cakeys_core::migrate::Side;
 use cakeys_core::types::ObjectClass;
 use cakeys_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
-use cryptoki::object::ObjectHandle;
+use cryptoki::object::{AttributeType, KeyType, ObjectHandle};
 use cryptoki::session::Session;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -28,6 +28,21 @@ pub trait Provider: Send + Sync {
     /// Repair a module's `CKA_EC_POINT` encoding.
     fn ec_point<'a>(&self, raw: &'a [u8]) -> Cow<'a, [u8]> {
         Cow::Borrowed(raw)
+    }
+
+    /// Repair a boolean policy attribute (`CKA_SIGN`, `CKA_DERIVE`, ...) the module misreports:
+    /// `reported` is what it returned for `attr`, `private_key_type` reads the object's key type
+    /// when it is a private key. The policy check and the lock's recorded policy both see the
+    /// result, so it must be what a spec-compliant module would report (ykcs11's fixed table
+    /// says `CKA_DERIVE` false on keys its `C_DeriveKey` derives with). The profile keeps the
+    /// raw observation (`derive.key-attribute`).
+    fn policy_flag(
+        &self,
+        _attr: AttributeType,
+        reported: bool,
+        _private_key_type: &dyn Fn() -> Option<KeyType>,
+    ) -> bool {
+        reported
     }
 
     /// Advice appended when the module cannot do something the spec asks for.
@@ -75,6 +90,14 @@ pub trait Provider: Send + Sync {
     /// instead of claimed, and the advice names how to remove the key.
     fn keeps_destroyed_keys(&self, _loc: &Locator) -> Option<String> {
         None
+    }
+
+    /// Whether the certificates `certs` (DER) found under the probe's scratch `CKA_ID` (`id`)
+    /// show a slot holding only what this module itself wrote when it generated the slot's key —
+    /// the only occupant the write probe may replace (`tokens.<t>.scratchId`). Anything else may
+    /// be a real key, so the probe refuses it. The default recognises none.
+    fn scratch_occupant(&self, _id: &[u8], _certs: &[Vec<u8>]) -> bool {
+        false
     }
 
     /// The attestation commitment this provider can compute (§3.7 of docs/DESIGN.md), if any:

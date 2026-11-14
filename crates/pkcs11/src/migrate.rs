@@ -179,6 +179,7 @@ fn lockless_token_cfg() -> TokenCfg {
         mgm_key_env: None,
         system_feature: None,
         scratch: false,
+        scratch_id: None,
         options: toml::Table::new(),
     }
 }

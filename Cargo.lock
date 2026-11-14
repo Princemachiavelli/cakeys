@@ -259,7 +259,9 @@ dependencies = [
  "cakeys-core",
  "cakeys-profile",
  "cryptoki",
+ "getrandom",
  "libc",
+ "sha2",
  "toml",
  "zeroize",
 ]

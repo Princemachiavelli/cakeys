@@ -1197,6 +1197,8 @@ fn aes_commitments_match_host_oracles() {
         let got: Vec<&str> = r["ids"].as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(got, schemes, "{spec}");
         assert_eq!(r["mode"].as_str(), Some(mode), "{spec}");
+        // A commitment is a fingerprint: replayable by whatever saw it once (no fresh proof).
+        assert_eq!(r["assurance"].as_str(), Some("fingerprint"), "{spec}");
     }
     // cmac/kcv-ecb/kw are unchanged by kcv-ecb-dec joining (it only adds an ID).
     for scheme in ["cmac", "kcv-ecb", "kcv-ecb-dec", "kw"] {
@@ -1317,10 +1319,15 @@ fn curves_and_rsa_sizes_match_an_independent_der_oracle() {
             continue;
         }
         assert_eq!(e.code(&["realise", &spec, "--token", "ref", "--no-update-lock"]), 10, "{k}");
-        assert_eq!(e.code(&["realise", &spec, "--token", "ref", "--update-lock"]), 0, "{k}");
+        let o = e.km(&["realise", &spec, "--token", "ref", "--update-lock"]);
+        assert_eq!(code(&o), 0, "{k}");
         assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki(&s, k)), "{k}");
         let binding = if k == "ed448" { "token-asserted" } else { "pop-sign" };
         assert_eq!(e.lock()["realisations"][&spec]["ref"]["binding"].as_str(), Some(binding), "{k}");
+        // A proven key is a proof; one only the token asserts is public bytes.
+        let r: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+        let assurance = if k == "ed448" { "public" } else { "proof" };
+        assert_eq!(r["assurance"].as_str(), Some(assurance), "{k}");
         // A fresh challenge each run: repeat to catch encoding quirks (high-S, short r or s).
         for _ in 0..8 {
             assert_eq!(e.code(&["verify", &spec, "--token", "ref"]), 0, "{k}");

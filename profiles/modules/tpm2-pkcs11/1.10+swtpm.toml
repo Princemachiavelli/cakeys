@@ -2,7 +2,8 @@
 # with `cakeys probe --token <t> --write --diff <profile> --out <this file>`; the
 # conformance test re-probes and compares on every build. A profile is what the
 # probe measured: this module on this token's hardware, together. Only [migration]
-# is not probe output: it is this repo's claims, preserved across regenerations.
+# and [manual] are not probe output: this repo's claims and hand findings,
+# preserved across regenerations.
 profile = "tpm2-pkcs11/1.10+swtpm"
 mode = "observed"
 advertise = [
@@ -48,6 +49,14 @@ module-version = "1.10"
 model = "SW   TPM"
 firmware = "36.37"
 
+[decrypt]
+oaep = ["SHA-1", "SHA-256"]
+
+[derive]
+sealed = false
+key-attribute = true
+read-only = false
+
 [subtract]
 mechanisms = ["CKM_AES_KEY_GEN"]
 
@@ -57,6 +66,9 @@ cannot = ["secp256k1", "brainpoolP256r1", "brainpoolP384r1"]
 
 [generate."CKK_EC_EDWARDS"]
 cannot = ["edwards25519", "edwards448"]
+
+[generate."CKK_EC_MONTGOMERY"]
+cannot = ["curve25519", "curve448"]
 
 [generate."CKK_RSA"]
 min-bits = 1024
@@ -100,6 +112,12 @@ key-types = ["CKK_SHA_1_HMAC", "CKK_SHA224_HMAC", "CKK_SHA256_HMAC", "CKK_SHA384
 "brainpoolP256r1" = "generation refused: CKR_CURVE_NOT_SUPPORTED"
 "brainpoolP384r1" = "generation refused: CKR_CURVE_NOT_SUPPORTED"
 "cryptoki" = "the module reports Cryptoki 2.40"
+"curve25519" = "generation refused: CKR_MECHANISM_INVALID"
+"curve448" = "generation refused: CKR_MECHANISM_INVALID"
+"derive.destroy" = "secp256r1: the sealed derived secret cannot be destroyed: CKR_FUNCTION_FAILED"
+"derive.read-only" = "secp256r1: in a read-only session: CKR_SESSION_READ_ONLY"
+"derive.sealed" = "derives into a sealed secret, but HMAC with it fails: CKR_GENERAL_ERROR"
+"destroy" = "C_DestroyObject leaves objects behind: cakeys-probe-01"
 "edwards25519" = "generation refused: CKR_MECHANISM_INVALID"
 "edwards448" = "generation refused: CKR_MECHANISM_INVALID"
 "secp256k1" = "generation refused: CKR_CURVE_NOT_SUPPORTED"

@@ -54,6 +54,47 @@ pub struct Wrap {
     pub oaep: Option<Vec<String>>,
 }
 
+/// What decryption a module actually implements with its private keys (`decrypt = { oaep =
+/// [...] }`): the RSA-OAEP hashes (MGF1 of the same hash) that decrypt what the host encrypted
+/// to the key, which `pop-decrypt` needs. Absent: never probed; `[]`: probed, none decrypts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct Decrypt {
+    #[serde(default)]
+    pub oaep: Option<Vec<String>>,
+}
+
+/// How a module derives with `CKM_ECDH1_DERIVE` (`derive = { sealed = ... }`): whether it
+/// derives into a sealed secret (`CKA_SENSITIVE`, not `CKA_EXTRACTABLE`), which `pop-ecdh`
+/// MACs with when it can. ykcs11 derives only into an extractable secret [src]. And what
+/// `CKA_DERIVE` the base key reports although it derived (`key-attribute`): ykcs11 reports
+/// false on every key, from a fixed table [src], so a spec asking `CKA_DERIVE = true` of it can
+/// never be met while ECDH works. And whether it derives in a read-only session (`read-only`):
+/// tpm2-pkcs11 keeps derived secrets as store rows, so it refuses there [run]. Absent: never
+/// probed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct Derive {
+    #[serde(default)]
+    pub sealed: Option<bool>,
+    #[serde(default, rename = "key-attribute")]
+    pub key_attribute: Option<bool>,
+    #[serde(default, rename = "read-only")]
+    pub read_only: Option<bool>,
+}
+
+/// A finding a person made rather than the probe (`[manual.<key>]`): a fact the probe cannot
+/// observe, or one it does not reach yet. Kept apart from the probe's rows so a reader always
+/// knows which is which: the probe preserves the section across regenerations like
+/// `[migration]`, and the diff never compares it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Manual {
+    /// What was found.
+    pub finding: String,
+    /// How: the command or source that shows it, with its date and an evidence tag (`[run]`,
+    /// `[src]`, `[spec]`).
+    pub evidence: String,
+}
+
 /// The per-module unwrap-template rules, as data (MIGRATE.md D6's provider hook): attributes
 /// the module refuses in a template (`SoftHSM: CKA_VALUE_LEN`). Absent: never probed; `[]`:
 /// probed, and the module refuses none.
@@ -82,6 +123,10 @@ pub struct GenerateRow {
     pub can_bits: Vec<u32>,
     #[serde(default, rename = "cannot-bits")]
     pub cannot_bits: Vec<u32>,
+    /// Curves in `can` that generate only when `CKA_EC_PARAMS` names them (PKCS#11 3.0's
+    /// `PrintableString` form), never by OID: ykcs11's Edwards and Montgomery curves [src].
+    #[serde(default, rename = "by-name")]
+    pub by_name: Vec<String>,
 }
 
 /// A layer's numeric restriction, intersected with every other layer's (D3): swtpm refuses
@@ -179,6 +224,10 @@ pub struct Profile {
     pub generate: BTreeMap<String, GenerateRow>,
     #[serde(default)]
     pub unwrap: Unwrap,
+    #[serde(default)]
+    pub decrypt: Decrypt,
+    #[serde(default)]
+    pub derive: Derive,
     /// How the module moves keys (MIGRATE.md), when it deviates from a spec-compliant module.
     #[serde(default)]
     pub migration: Option<Migration>,
@@ -187,6 +236,9 @@ pub struct Profile {
     /// Freeform evidence, keyed by the name each note explains (shown in verdicts).
     #[serde(default)]
     pub notes: BTreeMap<String, String>,
+    /// What people found by hand ([`Manual`]): never probe output.
+    #[serde(default)]
+    pub manual: BTreeMap<String, Manual>,
 }
 
 /// A TOML basic-string body for `s`: quotes, backslashes and control characters escaped.
@@ -275,6 +327,35 @@ fn match_toml(m: &MatchInfo, s: &mut String) {
     }
 }
 
+/// The `[generate.<key type>]` sections for [`Profile::to_toml`], each with its non-empty rows.
+fn generate_toml(generate: &BTreeMap<String, GenerateRow>, s: &mut String) {
+    use std::fmt::Write as _;
+    for (kt, row) in generate {
+        let _ = writeln!(s, "\n[generate.\"{}\"]", toml_str(kt));
+        if !row.can.is_empty() {
+            let _ = writeln!(s, "{}", toml_array("can", &row.can));
+        }
+        if !row.cannot.is_empty() {
+            let _ = writeln!(s, "{}", toml_array("cannot", &row.cannot));
+        }
+        if let Some(b) = row.min_bits {
+            let _ = writeln!(s, "min-bits = {b}");
+        }
+        if let Some(b) = row.max_bits {
+            let _ = writeln!(s, "max-bits = {b}");
+        }
+        if !row.can_bits.is_empty() {
+            let _ = writeln!(s, "can-bits = [{}]", bits_list(&row.can_bits));
+        }
+        if !row.cannot_bits.is_empty() {
+            let _ = writeln!(s, "cannot-bits = [{}]", bits_list(&row.cannot_bits));
+        }
+        if !row.by_name.is_empty() {
+            let _ = writeln!(s, "{}", toml_array("by-name", &row.by_name));
+        }
+    }
+}
+
 /// The wrap, unwrap and subtract sections for [`Profile::to_toml`]: the probed rows even when
 /// empty (probed, none — distinct from never probed), the subtraction only when non-empty.
 fn filters_toml(p: &Profile, s: &mut String) {
@@ -284,6 +365,19 @@ fn filters_toml(p: &Profile, s: &mut String) {
     }
     if let Some(refuse) = &p.unwrap.refuse {
         let _ = writeln!(s, "\n[unwrap]\n{}", toml_array("refuse", refuse));
+    }
+    if let Some(oaep) = &p.decrypt.oaep {
+        let _ = writeln!(s, "\n[decrypt]\n{}", toml_array("oaep", oaep));
+    }
+    let rows =
+        [("sealed", p.derive.sealed), ("key-attribute", p.derive.key_attribute), ("read-only", p.derive.read_only)];
+    if rows.iter().any(|(_, v)| v.is_some()) {
+        let _ = writeln!(s, "\n[derive]");
+        for (k, v) in rows {
+            if let Some(v) = v {
+                let _ = writeln!(s, "{k} = {v}");
+            }
+        }
     }
     if !p.subtract.mechanisms.is_empty() || !p.subtract.key_types.is_empty() {
         let _ = writeln!(s, "\n[subtract]");
@@ -319,9 +413,9 @@ impl Profile {
     /// Emit the profile as TOML, the committed format with only its non-empty sections: what
     /// the probe writes, `--out` prints, and the committed module profiles are regenerated
     /// from — never edited by hand (docs/PROVIDERS.md: the conformance test re-probes the
-    /// reference tokens and compares on every build). The one section the probe does not
-    /// generate, `[migration]`, carries this repo's claims (MIGRATE.md evidence) and the
-    /// probe preserves it across regenerations.
+    /// reference tokens and compares on every build). The two sections the probe does not
+    /// generate are preserved by it across regenerations: `[migration]`, this repo's claims
+    /// (MIGRATE.md evidence), and `[manual]`, what people found by hand.
     #[must_use]
     pub fn to_toml(&self) -> String {
         use std::fmt::Write as _;
@@ -332,7 +426,8 @@ impl Profile {
              # with `cakeys probe --token <t> --write --diff <profile> --out <this file>`; the\n\
              # conformance test re-probes and compares on every build. A profile is what the\n\
              # probe measured: this module on this token's hardware, together. Only [migration]\n\
-             # is not probe output: it is this repo's claims, preserved across regenerations."
+             # and [manual] are not probe output: this repo's claims and hand findings,\n\
+             # preserved across regenerations."
         );
         let _ = writeln!(s, "profile = \"{}\"", toml_str(&self.profile));
         let _ = writeln!(
@@ -351,27 +446,7 @@ impl Profile {
         }
         match_toml(&self.r#match, &mut s);
         filters_toml(self, &mut s);
-        for (kt, row) in &self.generate {
-            let _ = writeln!(s, "\n[generate.\"{}\"]", toml_str(kt));
-            if !row.can.is_empty() {
-                let _ = writeln!(s, "{}", toml_array("can", &row.can));
-            }
-            if !row.cannot.is_empty() {
-                let _ = writeln!(s, "{}", toml_array("cannot", &row.cannot));
-            }
-            if let Some(b) = row.min_bits {
-                let _ = writeln!(s, "min-bits = {b}");
-            }
-            if let Some(b) = row.max_bits {
-                let _ = writeln!(s, "max-bits = {b}");
-            }
-            if !row.can_bits.is_empty() {
-                let _ = writeln!(s, "can-bits = [{}]", bits_list(&row.can_bits));
-            }
-            if !row.cannot_bits.is_empty() {
-                let _ = writeln!(s, "cannot-bits = [{}]", bits_list(&row.cannot_bits));
-            }
-        }
+        generate_toml(&self.generate, &mut s);
         if let Some(m) = &self.migration {
             let _ = writeln!(s, "\n[migration]");
             if let Some(b) = m.exports {
@@ -418,6 +493,11 @@ impl Profile {
                 let _ = writeln!(s, "\"{}\" = \"{}\"", toml_str(k), toml_str(v));
             }
         }
+        for (k, m) in &self.manual {
+            let _ = writeln!(s, "\n[manual.\"{}\"]", toml_str(k));
+            let _ = writeln!(s, "finding = \"{}\"", toml_str(&m.finding));
+            let _ = writeln!(s, "evidence = \"{}\"", toml_str(&m.evidence));
+        }
         s
     }
 }
@@ -440,6 +520,23 @@ mod tests {
         assert_eq!(back.notes.get("token"), Some(&nasty.to_owned()));
         // And the emitter never writes a raw control byte, whatever the text.
         assert!(!text.bytes().any(|b| b < 0x20 && b != b'\n' && b != b'\t'));
+    }
+
+    #[test]
+    fn every_probed_and_hand_row_round_trips() {
+        let text = "profile = \"t\"\nmode = \"observed\"\n\n[decrypt]\noaep = []\n\n[derive]\nsealed = false\nkey-attribute = false\nread-only = true\n\n\
+                    [generate.\"CKK_EC_EDWARDS\"]\ncan = [\"edwards25519\"]\nby-name = [\"edwards25519\"]\n\n\
+                    [manual.\"fips\"]\nfinding = \"approved mode \\\"on\\\"\"\nevidence = \"[run] ykman piv info\"\n";
+        let profile = Profile::from_toml(text).unwrap();
+        assert_eq!(profile.decrypt.oaep, Some(Vec::new()), "probed and empty, not absent");
+        assert_eq!(profile.derive.sealed, Some(false));
+        assert_eq!(profile.derive.key_attribute, Some(false));
+        assert_eq!(profile.derive.read_only, Some(true));
+        assert_eq!(profile.generate["CKK_EC_EDWARDS"].by_name, ["edwards25519"]);
+        assert_eq!(profile.manual["fips"].evidence, "[run] ykman piv info");
+        assert_eq!(Profile::from_toml(&profile.to_toml()).unwrap(), profile);
+        // A hand finding without its evidence is no finding.
+        assert!(Profile::from_toml("profile = \"t\"\nmode = \"observed\"\n[manual.x]\nfinding = \"y\"\n").is_err());
     }
 
     #[test]
