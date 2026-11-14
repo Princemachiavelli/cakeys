@@ -9,7 +9,9 @@
 
 [tokens.yubikey]
 tokenLabel = "YubiKey PIV #39189318"
-systemFeature = "yubikey-piv"
+# The host names this token `yubikey-piv` (services.cakeys.tokens.yubikey-piv), so builds need
+# the feature its module advertises: featurePrefix ("token-") and that name.
+systemFeature = "token-yubikey-piv"
 
 # Retired Key 1 (PIV slot 82): CN=Whonix host PK
 [objects.whonix-pk]

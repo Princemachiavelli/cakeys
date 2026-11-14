@@ -5,7 +5,7 @@ pinFile = "/var/lib/softhsm/pin"
 
 [tokens.yubikey]
 tokenLabel = "YubiKey PIV #12345678"
-systemFeature = "yubikey-piv"
+systemFeature = "token-yubikey-piv"
 
 [objects.signing]
 class = "CKO_PRIVATE_KEY"
