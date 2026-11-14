@@ -234,20 +234,26 @@ Exit: `cakeys --help` lists no migration verb, and `cargo tree -p cakeys` shows 
 review. Every phase ends with its rows of the dry-run property passing over the reference
 matrix: the plan's verdict equals the outcome.
 
-- [ ] **Phase 2** `public`: certificates, public keys, data objects.
-- [ ] **Phase 3** `sealed`: `transport`, RSA-OAEP + AES-KWP and direct OAEP, bundles, import
+- [x] **Phase 2** `public`: certificates, public keys, data objects.
+- [x] **Phase 3** `sealed`: `transport`, RSA-OAEP + AES-KWP and direct OAEP, bundles, import
       with identity check and cleanup, `migrate`. Writes `provenance.origin`.
-- [ ] **One creation token per object** (NEXT.md §2, "Multi-token objects"), with phase 3.
+- [x] **One creation token per object** (NEXT.md §2, "Multi-token objects"), with phase 3.
       keys.toml names where an object is born; `create` and `autoCreate` generate only there,
       and `autoCreate` on another token is invalid (17). This changes `cakeys`, not only
       `camigrate`: propose the keys.toml field name and stop for agreement before building it.
+- [ ] **`pop-unwrap` on hardware**, before stage 4 is done. It is observed on SoftHSM and
+      kryoptic only. tpm2-pkcs11: an unwrap-only RSA key in the test store, reached through
+      `nix/ftpm-test-env.sh` (never the persistent handles). YubiKey: an RSA key in a retired
+      slot (90–95) beside the `pop-decrypt` row of `tests/yubikey.rs`. ykcs11 may not implement
+      `C_UnwrapKey` at all; then the proof is unsupported there (15), a YubiKey transport key
+      keeps `pop-decrypt`, and the profile records the finding.
 - [ ] **Phase 3b** `enforced`: the admin credential, `transport --trusted`,
       `CKA_WRAP_WITH_TRUSTED`.
 - [ ] **Phase 4** `host`: `--allow-host-plaintext`, zeroized buffers, `tpm2_ptool` import.
 - [ ] **Phase 4b** `file`: `pkcs8-pbes2` and `pkcs12`, `--passphrase-file`.
 - [ ] **Phase 5** YubiKey import through ykcs11 as Security Officer. Ask before running the
       hardware test (it overwrites slot 95).
-- [ ] A fuzz target and a property test for the bundle parser (`fuzz/`, `nix/fuzz.nix`).
+- [x] A fuzz target and a property test for the bundle parser (`fuzz/`, `nix/fuzz.nix`).
 
 Rules specific to this stage:
 

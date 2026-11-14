@@ -178,11 +178,12 @@ Keys move sealed between PKCS#11 modules: `camigrate migrate` (both tokens reach
   wraps a fresh session AES-256 KEK with RSA-OAEP and the key under it with RFC 5649 (the
   `_PAD` or `_KWP` mechanism the source names; `_KWP` needs the Nix build's patched cryptoki,
   the `kwp` feature), the direct one wraps a small secret key with RSA-OAEP. Session objects are
-  destroyed whatever happens. A real `export` writes one bundle of every key it names (default:
-  every key on the token, public objects left out with a note), the composed method's KEK
-  shared by them. It is all or nothing: an object that cannot move fails it before anything is
-  wrapped, and `--out` is written through a temporary file, whole or not at all. It is refused
-  inside a Nix build (D8).
+  destroyed whatever happens. A real `export` writes one bundle of every key it names, the
+  composed method's KEK shared by them. Named objects are all or nothing: one that cannot move
+  fails the export before anything is wrapped. Without names it exports every key on the token
+  that can move, and warns about each that cannot (a non-extractable key) and leaves it out;
+  public objects are left out with a note. `--out` is written through a temporary file, whole
+  or not at all. It is refused inside a Nix build (D8).
 - **Import** takes each key of the bundle on its own, under the spec that realises its object on
   the target (`--spec`, repeatable, only when an object has several): a key that fails is
   reported and leaves nothing, the others still import and are recorded, and the run exits
@@ -466,8 +467,9 @@ disk. `--dry-run` without objects plans every object the source token holds a re
 
 Decided 2026-11-12: `CKA_WRAP_WITH_TRUSTED` is supported (D2, phase 3b), and export offers
 passphrase-protected PKCS#8 and PKCS#12 files (D4, phase 4b). Decided 2026-11-14: one bundle
-per export (a source and a target), all or nothing on export; on import each key on its own,
-the failures reported at the end (D5).
+per export (a source and a target); named objects export all or nothing, an export without
+names takes what can move and warns about the rest; on import each key on its own, each
+failure reported and the run exiting with the first (D5).
 
 1. Does a migrated key keep its object name on the target? (Yes, if it is the same material:
    that is the lock's model. A different object name would be different material.)

@@ -52,11 +52,12 @@ struct Cli {
 enum Cmd {
     /// Export objects realised on a token, shaped for a target (MIGRATE.md): with --dry-run, per
     /// object the method, how exposed the material is on the way, and why not when it cannot
-    /// move; else the keys, sealed to the target's transport key, as one bundle for `import` —
-    /// all or nothing: an object that cannot move fails the export and no bundle is written.
+    /// move; else the keys, sealed to the target's transport key, as one bundle for `import`.
+    /// Named objects are all or nothing: one that cannot move fails the export and no bundle is
+    /// written.
     Export {
-        /// The objects to export; default: every object realised on --token (public objects
-        /// left out with a note: `migrate` moves them).
+        /// The objects to export; default: every key realised on --token that can move (the
+        /// others warned about; public objects left out with a note: `migrate` moves them).
         objects: Vec<String>,
         /// The source token.
         #[arg(long)]
@@ -253,9 +254,10 @@ impl Run<'_> {
 
     /// `export` for real: plan as `--dry-run` does, then wrap every key to the target's
     /// transport key — the one the lock records for the token, else the open token's, or a
-    /// transport file the lock pins — and write them as one bundle. All or nothing: an object
-    /// that cannot move fails the export before anything is wrapped, and the bundle is written
-    /// whole or not at all. Nothing on either token changes.
+    /// transport file the lock pins — and write them as one bundle. Named objects are all or
+    /// nothing: one that cannot move fails the export before anything is wrapped. Without names,
+    /// every key that can move is exported and the others are warned about. The bundle is
+    /// written whole or not at all; nothing on either token changes.
     fn export(
         &self,
         objects: &[&str],
@@ -266,10 +268,18 @@ impl Run<'_> {
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
         let moves = self.plan(objects, from, dest, how, false, notes)?;
-        moves.ready()?;
+        // Named objects are all or nothing; without names, whatever can move does, and what
+        // cannot (a key made non-extractable, ...) is warned about and left out.
+        if !objects.is_empty() {
+            moves.ready()?;
+        }
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
         let mut items = Vec::new();
         for p in &moves.plans {
+            if !p.ready {
+                notes.warn(format_args!("{}: left out of the bundle: {}", p.object, p.reasons.join("; ")));
+                continue;
+            }
             match &p.method {
                 Some(method @ (Method::RsaOaepAesKwp(_) | Method::RsaOaep(_))) => items.push(sealed::Item {
                     src: source_target(cfg, &self.lock, &p.object, from)?,

@@ -587,7 +587,8 @@ fn bundles_are_checked_against_the_lock() {
 }
 
 /// The keys the bundle tests move: P-256 `ek1`, `ek2` and AES `sk1`, `sk2`, each born on `SoftHSM`
-/// (`createOn`) with a spec on kryoptic, whose transport key is realised.
+/// (`createOn`) with a spec on kryoptic, whose transport key is realised; and `nx`, a P-256 key
+/// made non-extractable there, which never moves.
 fn bundle_keys(e: &Env, soft: &Ref, kry: &Ref) {
     let key = |o: &str, ty: &str| {
         format!("[objects.{o}]\n{ty}\ncreateOn = \"softhsm\"\n\n")
@@ -610,10 +611,19 @@ fn bundle_keys(e: &Env, soft: &Ref, kry: &Ref) {
     };
     let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
     let aes = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32";
-    let body = transport_key(kry) + &key("ek1", ec) + &key("ek2", ec) + &key("sk1", aes) + &key("sk2", aes);
+    let fixed = "[objects.nx]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n".to_owned()
+        + &Env::spec(
+            "nx-soft",
+            "nx",
+            "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = false }\n",
+            &[soft],
+            "xb-nx",
+            ", autoCreate = true",
+        );
+    let body = transport_key(kry) + &key("ek1", ec) + &key("ek2", ec) + &key("sk1", aes) + &key("sk2", aes) + &fixed;
     names_transport(e, &body, |r| r.name == "kryoptic");
     assert_eq!(code(&e.cakeys(kry, &["realise", "tk-kryoptic", "--token", "kryoptic"])), 0);
-    for spec in ["ek1-soft", "ek2-soft", "sk1-soft", "sk2-soft"] {
+    for spec in ["ek1-soft", "ek2-soft", "sk1-soft", "sk2-soft", "nx-soft"] {
         assert_eq!(code(&e.cakeys(soft, &["realise", spec, "--token", "softhsm"])), 0, "{spec}");
     }
 }
@@ -630,8 +640,8 @@ fn export_bundle(e: &Env, soft: &Ref, objects: &[&str]) -> std::path::PathBuf {
 
 /// One bundle per export (MIGRATE.md D5): every key, one shared KEK. Each key imports on its
 /// own: one that fails leaves nothing while the others are imported and recorded, and the run
-/// exits with the failure. An export is all or nothing: an object that cannot move writes no
-/// bundle.
+/// exits with the failure. Named objects export all or nothing: one that cannot move writes no
+/// bundle; without names, what cannot move is warned about and left out.
 #[test]
 fn bundles_carry_every_key_of_an_export() {
     let Some(e) = env("multi-bundles") else { return };
@@ -671,8 +681,22 @@ fn bundles_carry_every_key_of_an_export() {
     let o = import(&both);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(code(&e.cakeys(kry, &["verify", "sk1-kry", "--token", "kryoptic"])), 0);
-    // All or nothing on export: an object that cannot move fails it, and no bundle is written.
+    // Without names, every key that can move: the non-extractable one is warned about, left out.
+    let out = e.dir.join("all.bundle.toml");
+    let r = e.km(soft, &["export", "--token", "softhsm", "--target", "kryoptic", "--out", out.to_str().unwrap()]);
+    assert_eq!(code(&r), 0, "{}", stderr(&r));
+    assert!(stderr(&r).contains("nx: left out of the bundle: not extractable"), "{}", stderr(&r));
+    let objects: Vec<String> =
+        read(&out)["keys"].as_array().unwrap().iter().map(|k| k["object"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(objects, ["ek1", "ek2", "sk1", "sk2"]);
+    // Named, all or nothing: an object that cannot move fails the export, and no bundle is written.
     let out = e.dir.join("never.bundle.toml");
+    let r = e.km(
+        soft,
+        &["export", "ek2", "nx", "--token", "softhsm", "--target", "kryoptic", "--out", out.to_str().unwrap()],
+    );
+    assert_eq!(code(&r), 15, "{}", stderr(&r));
+    assert!(!out.exists(), "a failed export wrote a bundle");
     let r = e.km(
         soft,
         &["export", "ek2", "nosuch", "--token", "softhsm", "--target", "kryoptic", "--out", out.to_str().unwrap()],
