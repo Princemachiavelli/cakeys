@@ -13,7 +13,10 @@ cmd=$1 D=$2 PORT=${3:-23211}
 case $cmd in
 up)
   mkdir -p "$D/state" "$D/store"
-  swtpm socket --tpmstate dir="$D/state" --tpm2 \
+  # The TPM profile is pinned, not left to swtpm's default: it sets what the TPM generates
+  # (default-v1 caps RSA at 3072, default-v2 allows 4096), and profiles/hardware/swtpm.toml and
+  # the tpm2-pkcs11/1.10+swtpm pair were measured on default-v1.
+  swtpm socket --tpmstate dir="$D/state" --tpm2 --profile name=default-v1 \
     --server type=tcp,port="$PORT" --ctrl type=tcp,port=$((PORT + 1)) \
     --flags not-need-init,startup-clear --daemon --pid file="$D/swtpm.pid" --log file="$D/swtpm.log"
   # A private bus from dbus's own session.conf (the Nix sandbox has no /etc/dbus-1), on an

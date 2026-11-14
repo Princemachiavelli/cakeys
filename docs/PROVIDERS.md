@@ -62,9 +62,11 @@ subtract. Known today:
   `CKM_EC_EDWARDS_KEY_PAIR_GEN` and `CKM_EDDSA` from the RPC [run].
 - the cryptoki binding build: SHA-224/384/512 HMAC key types and `CKM_AES_KEY_WRAP_KWP` without
   the Nix patches [run] — the one layer whose subtraction answers differ per cakeys build.
-- the token hardware under the module: swtpm refuses RSA-4096 [run]; YubiKey firmware versions
+- the token hardware under the module: swtpm refuses RSA-4096 on a TPM state with libtpms's
+  default-v1 profile, its default, and accepts it on default-v2 [run]; YubiKey firmware versions
   differ under the same ykcs11. Matched on `C_GetTokenInfo`'s model and hardware/firmware
-  versions (D10).
+  versions (D10), where those tell the hardware apart: swtpm's TPM profile shows in neither, so
+  its layer names the default state and is chosen by name.
 
 `supports(x) = ⋀ layers`: any layer's subtraction kills it; else the observed module set decides.
 
