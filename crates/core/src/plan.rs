@@ -190,6 +190,14 @@ fn check_binding(t: &Target) -> Result<()> {
              or opt in with binding = \"token-asserted\" on this token"
                 .into(),
         ),
+        (Some(Binding::PopUnwrap), _) if t.object.key_type != Some(Kt::Rsa) => invalid(
+            "binding = \"pop-unwrap\" proves possession by unwrapping: it applies to RSA private keys only".into(),
+        ),
+        (Some(Binding::PopUnwrap), _) if t.spec.flag("CKA_UNWRAP") != Some(true) => invalid(
+            "proving possession by unwrapping needs CKA_UNWRAP = true in the spec attributes; \
+             or opt in with binding = \"token-asserted\" on this token"
+                .into(),
+        ),
         _ => Ok(()),
     }
 }
@@ -339,6 +347,7 @@ mod tests {
             (Class::PrivateKey, Some(Binding::PopSignPin), None, Proof),
             (Class::PrivateKey, Some(Binding::PopEcdh), None, Proof),
             (Class::PrivateKey, Some(Binding::PopDecrypt), None, Proof),
+            (Class::PrivateKey, Some(Binding::PopUnwrap), None, Proof),
             (Class::PrivateKey, Some(Binding::TokenAsserted), None, Public),
             // A replayable attestation upgrades nothing; a nonce-bound one is a proof.
             (Class::PrivateKey, Some(Binding::TokenAsserted), Some("yubico-piv"), Public),

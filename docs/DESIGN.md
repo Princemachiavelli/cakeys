@@ -220,6 +220,11 @@ key to its identity:
      with RSA-OAEP (SHA-1, MGF1-SHA1 — the PKCS#11 baseline; SoftHSM implements no other OAEP);
      the token decrypts with `CKM_RSA_PKCS_OAEP`. The plaintext matches only for the matching
      private key.
+   - `pop-unwrap` (RSA keys that only unwrap: transport keys, MIGRATE.md D3): the host wraps a
+     fresh 32-byte secret to the public key with the same OAEP; the token unwraps it with
+     `CKM_RSA_PKCS_OAEP` into a sensitive, non-extractable session `CKK_GENERIC_SECRET` and
+     HMAC-SHA256s the challenge with it, which the host checks against its own MAC. No plaintext
+     leaves the token, so the key needs no `CKA_DECRYPT`.
 3. The host checks the proof with RustCrypto against the same canonical SPKI it hashes into
    `rfc7093m4` (signature verification, MAC comparison, plaintext comparison — all constant
    time where it matters). No proof value is ever stored.
@@ -229,13 +234,13 @@ Outcomes:
 - **A proof that does not verify is a conflict (exit 13):** the private key under the locator
   is not the one the identity names. This also applies to `delete`, so If-Match cannot pass on a
   public object beside an unrelated key.
-- **A token that refuses** (no `CKA_SIGN`/`CKA_DERIVE`/`CKA_DECRYPT`, missing mechanism) is exit
-  15. A token error is 16, as is a failed context-specific login. `pop-ecdh` and `pop-decrypt`
-  have no per-use login: a `CKA_ALWAYS_AUTHENTICATE` key that only derives or decrypts is refused
-  (16).
+- **A token that refuses** (no `CKA_SIGN`/`CKA_DERIVE`/`CKA_DECRYPT`/`CKA_UNWRAP`, missing
+  mechanism) is exit 15. A token error is 16, as is a failed context-specific login. `pop-ecdh`,
+  `pop-decrypt` and `pop-unwrap` have no per-use login: a `CKA_ALWAYS_AUTHENTICATE` key that only
+  derives, decrypts or unwraps is refused (16).
 - **The spec must declare the capability the proof uses** — `CKA_SIGN = true` for `pop-sign`,
   `CKA_DERIVE = true` for `pop-ecdh` (Weierstrass EC keys only), `CKA_DECRYPT = true` for
-  `pop-decrypt` (RSA only) — or opt out per token with `binding = "token-asserted"`; otherwise it
+  `pop-decrypt` and `CKA_UNWRAP = true` for `pop-unwrap` (RSA only) — or opt out per token with `binding = "token-asserted"`; otherwise it
   is invalid (exit 17). The rule uses declared attributes only, like `declared_commits`.
 - **Opting out is needed** for keys with no provable capability, Ed448 (no RustCrypto verifier
   or ECDH yet), and tpm2-pkcs11 1.10.1 P-521 keys: its `C_SignInit` parses its own malformed
@@ -245,7 +250,7 @@ Outcomes:
   invalid (17); `pop-sign` (the default) becomes it on an always-authenticate key.
 
 The lock records the binding per realisation (`pop-sign`, `pop-sign-pin`, `pop-ecdh`,
-`pop-decrypt` or `token-asserted`). The `pop-*` methods share the top rank — each proves possession of the same
+`pop-decrypt`, `pop-unwrap` or `token-asserted`). The `pop-*` methods share the top rank — each proves possession of the same
 key — so a realisation never weakens unless it drops to `token-asserted`, which is refused
 (exit 14), also when the lock is written — `binding_downgrade_is_refused`.
 
@@ -359,7 +364,7 @@ createOn = "<token>"            # where the object is born when its specs name s
 object = "<object>"
 attributes = { CKA_SIGN = true, ... }   # settable booleans the class may carry (PKCS#11 3.2 §4), or CKA_ALLOWED_MECHANISMS = ["CKM_..."] on key objects; a wrong name or class is exit 17
 publicAttributes = { CKA_VERIFY = true, ... }   # private keys only: policy of the public key object; checked on it, in the digest only when present
-tokens.<token> = { locator = { CKA_LABEL = "...", CKA_ID = "hex" }, autoCreate = bool, publicOnly = bool, binding = "pop-ecdh" | "pop-decrypt" | "token-asserted", attestation = bool, identity.allow = [...] }
+tokens.<token> = { locator = { CKA_LABEL = "...", CKA_ID = "hex" }, autoCreate = bool, publicOnly = bool, binding = "pop-ecdh" | "pop-decrypt" | "pop-unwrap" | "token-asserted", attestation = bool, identity.allow = [...] }
 ```
 
 `tokens.<t>.attestation = true` (in a spec's token entry) opts into the attestation commitment
@@ -438,7 +443,7 @@ specDigest = "sha256-..."
 mode = "direct"                      # a weaker mode is refused
 schemes = ["rfc7093m4"]              # schemes this realisation computed and matched; fewer later is refused
 publicOnly = true                    # only when set
-binding = "pop-sign"                 # private keys: pop-sign | pop-sign-pin | pop-ecdh | pop-decrypt | token-asserted (§3.6)
+binding = "pop-sign"                 # private keys: pop-sign | pop-sign-pin | pop-ecdh | pop-decrypt | pop-unwrap | token-asserted (§3.6)
 attestation = { kind = "tpm-certify", root = "sha256-...", id = "sha256-..." }   # §3.7: only when the spec opted in; the per-device attestation ID and its anchor; a change fails (14 anchor, 10 ID), also when the lock is written
 [realisations.<spec>.<token>.policy] # every attribute of the class the token shows: booleans, plus CKA_ALLOWED_MECHANISMS on key objects
 CKA_SIGN = true ; CKA_DECRYPT = true ; CKA_EXTRACTABLE = false ; ...
@@ -843,7 +848,7 @@ label and the hash itself. Everything else is fixed by definition:
 - the spec digest JSON shape (`"v":1`, camelCase, `keyType` omitted when empty, `certificateType`
   and `publicAttributes` only when set; the certificate digest changed with `certificateType`,
   since the v1 lock is a draft);
-- binding names (`pop-sign`, `pop-sign-pin`, `pop-ecdh`, `pop-decrypt`, `token-asserted`) and their rank (the
+- binding names (`pop-sign`, `pop-sign-pin`, `pop-ecdh`, `pop-decrypt`, `pop-unwrap`, `token-asserted`) and their rank (the
   `pop-*` methods share the top rank). The challenge layout
   (`cakeys/pop/v1`) is pinned by `message_layout_is_pinned`, though nothing stored depends on it;
 - lock field names (`objects`, `ids`, `realisations`, `object`, `locator`, `specDigest`,

@@ -1836,25 +1836,31 @@ fn binding_downgrade_is_refused() {
 
 /// P0-1: keys that cannot sign still prove possession. `pop-ecdh` derives the shared secret into
 /// a non-extractable session key and MACs the challenge on both sides; `pop-decrypt` has the token
-/// RSA-OAEP-decrypt the challenge. A different private key under the locator fails either proof.
+/// RSA-OAEP-decrypt the challenge; `pop-unwrap` has it unwrap a host secret into a non-extractable
+/// session key and MAC with it (a transport key, MIGRATE.md D3). A different private key under the
+/// locator fails the proof.
 #[test]
 fn derive_and_decrypt_only_keys_prove_possession() {
     let Some(e) = env("pop-ecdh") else { return };
     // The token is shared between runs: remove anything left under the test's locators. A session
     // opened now sees the leftovers (they predate it); it is dropped before the realise runs.
     let cleanup = e.session();
-    cleanup.clear(&["pop-ecdh", "pop-oaep", "pop-ecdh-b"]);
+    cleanup.clear(&["pop-ecdh", "pop-oaep", "pop-unwrap", "pop-ecdh-b"]);
     drop(cleanup);
     // Shapes: each proof needs its capability declared, and applies to its key type only.
     let ec = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
               [specs.k]\nobject = \"k\"\nattributes = { CKA_DERIVE = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
     let rsa = "[objects.r]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
                [specs.r]\nobject = \"r\"\nattributes = { CKA_DECRYPT = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
+    let unwrap = "[objects.u]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
+                  [specs.u]\nobject = \"u\"\nattributes = { CKA_UNWRAP = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
     for (body, token) in [
         (ec, "binding = \"pop-decrypt\""), // RSA proof on an EC key
         (ec.replace("CKA_DERIVE = true, ", "").as_str(), "binding = \"pop-ecdh\""), // ... without CKA_DERIVE
         (rsa, "binding = \"pop-ecdh\""),   // EC proof on an RSA key
         (rsa.replace("CKA_DECRYPT = true, ", "").as_str(), "binding = \"pop-decrypt\""), // ... without CKA_DECRYPT
+        (ec, "binding = \"pop-unwrap\""),  // RSA unwrap proof on an EC key
+        (unwrap.replace("CKA_UNWRAP = true, ", "").as_str(), "binding = \"pop-unwrap\""), // ... without CKA_UNWRAP
     ] {
         e.config(&format!("{body}tokens.ref = {{ locator = {{ CKA_LABEL = \"x\" }}, {token} }}\n"));
         let o = e.km(&["validate"]);
@@ -1881,6 +1887,15 @@ fn derive_and_decrypt_only_keys_prove_possession() {
     assert_eq!(e.code(&["realise", "r", "--token", "ref", "--update-lock"]), 0);
     assert_eq!(e.lock()["realisations"]["r"]["ref"]["binding"].as_str(), Some("pop-decrypt"));
     assert_eq!(e.code(&["verify", "r", "--token", "ref"]), 0);
+
+    // Unwrap-only RSA key, proven by unwrapping: no CKA_DECRYPT, nothing leaves the token.
+    e.config(&format!(
+        "{unwrap}tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-unwrap\" }}, autoCreate = true, binding = \"pop-unwrap\" }}\n"
+    ));
+    let o = e.km(&["realise", "u", "--token", "ref", "--update-lock"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(e.lock()["realisations"]["u"]["ref"]["binding"].as_str(), Some("pop-unwrap"));
+    assert_eq!(e.code(&["verify", "u", "--token", "ref"]), 0);
 
     // Back to the EC spec for the conflict phase.
     e.config(&format!("{ec}tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-ecdh\" }}, binding = \"pop-ecdh\" }}\n"));

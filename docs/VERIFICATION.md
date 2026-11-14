@@ -46,7 +46,7 @@ what the specification promises.
   a realisation's `schemes` within its object's IDs, and lock fragments that split and join — the
   merge rule S16 still lacks.
 - **Tamarin, the proofs and attestations.** A malicious module cannot make `verify` pass for a
-  different key under `pop-sign`, `pop-ecdh` or `pop-decrypt`; `piv-attestation` can be replayed
+  different key under `pop-sign`, `pop-ecdh`, `pop-decrypt` or `pop-unwrap`; `piv-attestation` can be replayed
   and `tpm-certify` cannot (both documented in DESIGN §8.2 as known; a model confirms or refutes
   them).
 - **proptest, the core crate.** Recording is monotone; comparing right after recording passes;

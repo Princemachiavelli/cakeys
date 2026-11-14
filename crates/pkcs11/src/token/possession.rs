@@ -15,7 +15,7 @@ impl Token {
     ///
     /// # Errors
     ///
-    /// `Unavailable` for `pop-ecdh`/`pop-decrypt` on a `CKA_ALWAYS_AUTHENTICATE` key: only the
+    /// `Unavailable` for `pop-ecdh`/`pop-decrypt`/`pop-unwrap` on a `CKA_ALWAYS_AUTHENTICATE` key: only the
     /// sign path does the per-use login.
     pub fn recorded_binding(&self, h: ObjectHandle, planned: Option<Binding>) -> Result<Option<Binding>> {
         let Some(b) = planned.filter(|b| b != &Binding::TokenAsserted) else { return Ok(planned) };
@@ -53,6 +53,7 @@ impl Token {
             Binding::PopSignPin => self.prove_sign(h, object, spki, &msg, true),
             Binding::PopEcdh => self.prove_ecdh(h, spki, &msg),
             Binding::PopDecrypt => self.prove_decrypt(h, spki, &msg),
+            Binding::PopUnwrap => self.prove_unwrap(h, spki, &msg),
             Binding::TokenAsserted => Ok(()),
         }
     }
@@ -293,6 +294,57 @@ impl Token {
         if !pop::ct_eq(msg, &plain) {
             return Err(KmError::Conflict(format!(
                 "proof of possession failed: the private key did not decrypt for the public key {}",
+                id::sri(spki)
+            )));
+        }
+        Ok(())
+    }
+
+    /// `pop-unwrap`: the host wraps a fresh secret to the public key with RSA-OAEP; the token
+    /// unwraps it into a non-extractable session key and MACs the challenge with it. The MACs
+    /// agree only if the token's private key is the one `spki` names; no plaintext leaves the
+    /// token, so a transport key proves possession without `CKA_DECRYPT`.
+    fn prove_unwrap(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
+        for m in [MechanismType::RSA_PKCS_OAEP, MechanismType::SHA256_HMAC] {
+            if !self.has(m) {
+                return Err(self.lacks_for_proof(m));
+            }
+        }
+        let ch = pop::unwrap_challenge(spki, msg)?;
+        let mech = Mechanism::RsaPkcsOaep(PkcsOaepParams::new(
+            MechanismType::SHA1,
+            PkcsMgfType::MGF1_SHA1,
+            PkcsOaepSource::empty(),
+        ));
+        let template = [
+            Attribute::Token(false),
+            Attribute::Class(ObjectClass::SECRET_KEY),
+            Attribute::KeyType(KeyType::GENERIC_SECRET),
+            Attribute::Sensitive(true),
+            Attribute::Extractable(false),
+            Attribute::Sign(true),
+        ];
+        let failed = self.proof_failed("C_UnwrapKey", "unwrap", "CKA_UNWRAP");
+        // Like a derive: a module that keeps session keys as store rows unwraps only read-write.
+        let (key, rw) = match self.session.unwrap_key(&mech, h, &ch.wrapped, &template) {
+            Ok(k) => (k, None),
+            Err(CkError::Pkcs11(RvError::SessionReadOnly, _)) => {
+                let rw = self.extra_session(Access::Write)?;
+                let k = rw.unwrap_key(&mech, h, &ch.wrapped, &template).map_err(failed)?;
+                (k, Some(rw))
+            }
+            Err(e) => return Err(failed(e)),
+        };
+        let session = rw.as_ref().unwrap_or(&self.session);
+        // A session object: dropped with the session even if destroying it fails here.
+        let tag = session.sign(&Mechanism::Sha256Hmac, key, msg);
+        let _ = session.destroy_object(key);
+        let tag = tag.map_err(|e| {
+            KmError::Unavailable(format!("C_Sign (unwrap proof of possession) on token '{}': {e}", self.name))
+        })?;
+        if !pop::ct_eq(&ch.mac, &tag) {
+            return Err(KmError::Conflict(format!(
+                "proof of possession failed: the private key did not unwrap for the public key {}",
                 id::sri(spki)
             )));
         }

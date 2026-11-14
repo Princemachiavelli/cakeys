@@ -342,6 +342,9 @@ pub enum Binding {
     /// The token decrypted a host challenge (RSA-OAEP) to the expected plaintext (decrypt-only
     /// RSA keys).
     PopDecrypt,
+    /// The token unwrapped a host secret (RSA-OAEP) into a non-extractable session key and both
+    /// sides `MACed` the challenge with it (unwrap-only RSA keys: transport keys, MIGRATE.md D3).
+    PopUnwrap,
     /// Only the token says the objects belong together (opt-in, or `publicOnly`).
     TokenAsserted,
 }
@@ -354,7 +357,7 @@ impl Binding {
     #[must_use]
     pub fn rank(self) -> u8 {
         match self {
-            Binding::PopSign | Binding::PopSignPin | Binding::PopEcdh | Binding::PopDecrypt => 0,
+            Binding::PopSign | Binding::PopSignPin | Binding::PopEcdh | Binding::PopDecrypt | Binding::PopUnwrap => 0,
             Binding::TokenAsserted => 1,
         }
     }
@@ -1485,9 +1488,11 @@ mod tests {
         assert_eq!(Binding::PopSignPin.to_string(), "pop-sign-pin");
         assert_eq!(Binding::PopEcdh.to_string(), "pop-ecdh");
         assert_eq!(Binding::PopDecrypt.to_string(), "pop-decrypt");
+        assert_eq!(Binding::PopUnwrap.to_string(), "pop-unwrap");
         assert_eq!(Binding::PopSignPin.rank(), Binding::PopSign.rank());
         assert_eq!(Binding::PopEcdh.rank(), Binding::PopSign.rank());
         assert_eq!(Binding::PopDecrypt.rank(), Binding::PopSign.rank());
+        assert_eq!(Binding::PopUnwrap.rank(), Binding::PopSign.rank());
         assert_eq!(Binding::TokenAsserted.to_string(), "token-asserted");
     }
 

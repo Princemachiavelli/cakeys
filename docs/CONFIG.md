@@ -167,7 +167,8 @@ object = "agreement"
 attributes = { CKA_DERIVE = true }
 # Proof of possession (§3.6): by default the token signs a fresh challenge (`pop-sign`). A key
 # that can only derive proves it by ECDH (`pop-ecdh`), an RSA key that can only decrypt by
-# OAEP (`pop-decrypt`); `token-asserted` opts out (recorded, and never a silent downgrade).
+# OAEP (`pop-decrypt`), one that can only unwrap by unwrapping a host secret (`pop-unwrap`);
+# `token-asserted` opts out (recorded, and never a silent downgrade).
 tokens.softhsm = { locator = { CKA_LABEL = "derive-only" }, binding = "pop-ecdh" }
 
 [specs.firmware-cert-piv]

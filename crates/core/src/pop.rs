@@ -128,6 +128,34 @@ pub fn oaep_challenge(spki: &[u8], msg: &[u8]) -> Result<Vec<u8>> {
     rsa_encrypt(spki, RsaPadding::Oaep(OaepHash::Sha1), msg)
 }
 
+/// The host side of a `pop-unwrap` proof: a fresh secret wrapped to the public key, and the MAC
+/// of the challenge under it that the token must reproduce.
+pub struct UnwrapChallenge {
+    /// The secret, RSA-OAEP (SHA-1) to the public key, for the token's `C_UnwrapKey`.
+    pub wrapped: Vec<u8>,
+    /// HMAC-SHA256 over `msg` keyed with the secret.
+    pub mac: Vec<u8>,
+}
+
+/// Start a `pop-unwrap` proof of possession: a fresh 32-byte secret, wrapped to the public key in
+/// `spki` with RSA-OAEP (SHA-1, the baseline `pop-decrypt` uses), and the MAC of `msg` under it.
+/// The token unwraps it with `CKM_RSA_PKCS_OAEP` into a non-extractable session key and MACs the
+/// same `msg`; the MACs match only if the token's private key is the one `spki` names. Nothing
+/// leaves the token in plaintext: the key needs `CKA_UNWRAP`, never `CKA_DECRYPT`.
+///
+/// # Errors
+///
+/// `Unsupported` if `spki` is not an RSA key; `Unavailable` if the OS random number generator
+/// or the encryption fails.
+pub fn unwrap_challenge(spki: &[u8], msg: &[u8]) -> Result<UnwrapChallenge> {
+    let mut secret = [0u8; 32];
+    getrandom::fill(&mut secret).map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}")))?;
+    Ok(UnwrapChallenge {
+        wrapped: rsa_encrypt(spki, RsaPadding::Oaep(OaepHash::Sha1), &secret)?,
+        mac: mac_sha256(&secret, msg),
+    })
+}
+
 /// The RSA-OAEP hash, with MGF1 of the same hash: a transport wrap's and an OAEP proof's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OaepHash {
@@ -226,6 +254,20 @@ mod tests {
         assert!(ct_eq(&ch.mac, &ch.mac.clone()));
         let flipped: Vec<u8> = ch.mac.iter().copied().rev().collect();
         assert!(!ct_eq(&ch.mac, &flipped));
+    }
+
+    #[test]
+    fn the_unwrap_mac_matches_on_both_sides() {
+        use rsa::pkcs8::EncodePublicKey;
+        // The token side, played on the host: decrypt the wrapped secret and MAC with it.
+        let private = rsa::PrivateKey::new(&mut getrandom::SysRng, 2048).unwrap();
+        let spki = private.to_public_key().to_public_key_der().unwrap();
+        let msg = message(spki.as_bytes(), &[0u8; 32]);
+        let ch = unwrap_challenge(spki.as_bytes(), &msg).unwrap();
+        let secret = private.decrypt(rsa::Oaep::<sha1::Sha1>::new(), &ch.wrapped).unwrap();
+        assert_eq!(secret.len(), 32);
+        assert_eq!(mac_sha256(&secret, &msg), ch.mac);
+        assert_ne!(unwrap_challenge(spki.as_bytes(), &msg).unwrap().mac, ch.mac, "a fresh secret each time");
     }
 
     #[test]
