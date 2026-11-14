@@ -562,3 +562,105 @@ fn unwrap_only_keys_are_refused_before_generation() {
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("never unwraps") && !stderr(&o).contains("created"), "{}", stderr(&o));
 }
+
+/// The value of attribute `ty` in a tpm2-pkcs11 store row's attrs (YAML with explicit tags,
+/// one `? !!int "<type>"` / `: !!<tag> "<value>"` pair per attribute).
+fn row_value(attrs: &str, ty: u64) -> String {
+    let key = format!("? !!int \"{ty}\"\n");
+    let at = attrs.find(&key).unwrap_or_else(|| panic!("no attribute {ty} in\n{attrs}")) + key.len();
+    let value = &attrs[at..];
+    let start = value.find('"').unwrap() + 1;
+    value[start..start + value[start..].find('"').unwrap()].to_owned()
+}
+
+/// Rewrite the attrs of the private-key row whose `CKA_LABEL` is `label` in the test's store,
+/// as another process (the module) will read them.
+fn edit_private_row(label: &str, edit: impl FnOnce(&str) -> String) {
+    let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
+    let db = rusqlite::Connection::open(std::path::Path::new(&store).join("tpm2_pkcs11.sqlite3")).unwrap();
+    let hex = label.bytes().fold(String::new(), |hex, b| hex + &format!("{b:02x}"));
+    let rows: Vec<(i64, String)> = db
+        .prepare("SELECT id, CAST(attrs AS TEXT) FROM tobjects")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let (id, attrs) = rows
+        .into_iter()
+        .find(|(_, a)| a.contains("\"2399141891\"") && a.contains(&format!("? !!int \"3\"\n  : !!str \"{hex}\"")))
+        .unwrap_or_else(|| panic!("no private-key row labelled {label}"));
+    db.execute("UPDATE tobjects SET attrs = ?1 WHERE id = ?2", rusqlite::params![edit(&attrs), id]).unwrap();
+}
+
+/// The native attestation holds the module's view to what the TPM certifies: a store row
+/// claiming `CKA_EXTRACTABLE` where the TPM certified a key that never leaves it, or carrying
+/// another key's TPM blobs under its own public key, is a conflict (13); a token whose primary
+/// is transient (`tpm2_ptool init --transient-parent`) has no persistent parent to load under.
+#[test]
+fn tpm2_attestation_refuses_a_store_that_disagrees() {
+    let Some(e) = env("attest-store") else { return };
+    for label in ["store-a", "store-b"] {
+        e.ptool(&["addkey", "--algorithm=ecc256", &format!("--key-label={label}")]);
+    }
+    // The proof of possession would see the swap first: this is about the attestation alone.
+    e.config(
+        "[objects.a]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.a]\nobject = \"a\"\nattributes = { CKA_SIGN = true }\n\
+         tokens.tpm = { locator = { CKA_LABEL = \"store-a\" }, attestation = true, binding = \"token-asserted\" }\n",
+    );
+    let r = ["realise", "a", "--token", "tpm", "--no-update-lock"];
+    let o = e.km(&r);
+    assert_eq!(code(&o), 10, "{}", stderr(&o));
+    let refused = |why: &str| {
+        let o = e.km(&r);
+        assert_eq!(code(&o), 13, "{}", stderr(&o));
+        assert!(stderr(&o).contains(why), "expected {why:?} in {}", stderr(&o));
+    };
+
+    // CKA_EXTRACTABLE (0x162) true in the store, a fixedTPM key in the TPM.
+    let mut original = String::new();
+    edit_private_row("store-a", |attrs| {
+        original = attrs.to_owned();
+        attrs.replace("? !!int \"354\"\n  : !!bool \"false\"", "? !!int \"354\"\n  : !!bool \"true\"")
+    });
+    refused("the store does not match what the TPM holds");
+    edit_private_row("store-a", |_| original.clone());
+    assert_eq!(code(&e.km(&r)), 10);
+
+    // store-b's blobs and auth (CKA_TPM2_OBJAUTH_ENC, _PUB_BLOB, _PRIV_BLOB) under store-a's
+    // attributes: the module shows store-a's point, the TPM loads and certifies store-b.
+    let tpm_attrs = [0x8F00_0001_u64, 0x8F00_0002, 0x8F00_0003];
+    let mut b_values = Vec::new();
+    edit_private_row("store-b", |attrs| {
+        b_values = tpm_attrs.iter().map(|t| row_value(attrs, *t)).collect();
+        attrs.to_owned()
+    });
+    edit_private_row("store-a", |attrs| {
+        tpm_attrs.iter().zip(&b_values).fold(attrs.to_owned(), |a, (t, b)| a.replace(&row_value(&a, *t), b))
+    });
+    refused("the TPM attests the public key");
+
+    // A second primary, transient, with a token of its own.
+    let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
+    let path = format!("--path={store}");
+    for args in [
+        vec!["init", "--transient-parent=tpm2-tools-default", &path],
+        vec!["addtoken", "--pid=2", "--label=kmtrans", "--sopin=5678", "--userpin=1234", &path],
+        vec!["addkey", "--algorithm=ecc256", "--label=kmtrans", "--userpin=1234", "--key-label=trans", &path],
+    ] {
+        let out = Command::new("tpm2_ptool").args(&args).output().unwrap();
+        assert!(out.status.success(), "tpm2_ptool {args:?}: {}", stderr(&out));
+    }
+    e.write_config(&format!(
+        "[tokens.trans]\nmodule = \"{}\"\ntokenLabel = \"kmtrans\"\npinFile = \"{}\"\n\n\
+         [objects.t]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.t]\nobject = \"t\"\nattributes = {{ CKA_SIGN = true }}\n\
+         tokens.trans = {{ locator = {{ CKA_LABEL = \"trans\" }}, attestation = true }}\n",
+        e.module,
+        e.dir.join("pin").display()
+    ));
+    let o = e.km(&["realise", "t", "--token", "trans", "--no-update-lock"]);
+    assert!(stderr(&o).contains("the token's primary is transient"), "{}", stderr(&o));
+    assert_eq!(code(&o), 16, "{}", stderr(&o));
+}

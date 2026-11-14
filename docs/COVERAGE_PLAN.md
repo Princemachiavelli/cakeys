@@ -1,7 +1,8 @@
 # Coverage plan
 
 Where the tests do not reach, and the order in which to get them there. Written 2026-11-14,
-at 89.9% of lines (1,177 of 11,638 uncovered; 83.5% of functions). The mutation report
+at 89.9% of lines (1,177 of 11,638 uncovered; 83.5% of functions). After tiers 2 and 3, the
+same day: 91.9% (949 of 11,640 uncovered; 84.6% of functions). The mutation report
 (`nix build .#mutants`) comes after this: it asks whether the tests *check* what they run, and
 is only worth reading once they run it.
 
@@ -34,89 +35,118 @@ is only worth reading once they run it.
 | Tier | Runs where | Reaches | Expected total |
 |---|---|---|---|
 | 1 | plain `cargo test` | pure code: loaders, planners, emitters, parsers | 89.9% (done) |
-| 2 | the reference tokens (SoftHSM, kryoptic, p11-kit, swtpm) | refusals and paths a well-behaved module can be led into | about 92% |
-| 3 | SoftHSM named `provider = "ykcs11"` | the YubiKey provider's lookups and its refusals | about 93% |
+| 2 | the reference tokens (SoftHSM, kryoptic, p11-kit, swtpm) | refusals and paths a well-behaved module can be led into | 91.9%, with tier 3 (done) |
+| 3 | SoftHSM named `provider = "ykcs11"` | the YubiKey provider's lookups and its refusals | (in tier 2's figure; done) |
 | 4 | a module that misbehaves on request ([PLAN.md](PLAN.md) A3) | what only a faulty or lying module triggers | about 96% |
 | 5 | a real YubiKey reached from the Nix sandbox | PIV generation as SO, a real attestation, the probe's scratch slot | the rest that is reachable |
 
-The totals after tier 1 are estimates from the line counts below, not measurements.
+The totals after tier 3 are estimates, not measurements. Several tier 2 items moved to tier 4
+(each section says which and why).
 
 ## Tier 2: the reference tokens
 
-In this order: the first two are security claims with no negative test.
+Done 2026-11-14. Each bullet below says what reached it, or why it moved to tier 4.
 
-### Proof of possession that fails (`pkcs11/src/token/possession.rs`, 81 lines)
+### Proof of possession that fails (`pkcs11/src/token/possession.rs`)
 
-`pop-sign` has a swapped-key test; the other bindings have only the passing case.
+- **A private key that is not the public key's.** `pop-ecdh` on both paths: sealed
+  (`derive_and_decrypt_only_keys_prove_possession`) and extractable, with `CKM_SHA256_HMAC`
+  hidden (`proofs_fall_back_to_what_the_token_has`). `pop-decrypt` and `pop-unwrap` stay with
+  tier 4: an RSA private key carries its own modulus, so a swapped key is another identity (10)
+  before any proof runs.
+- **A token without the proof's mechanism**: `proofs_the_token_cannot_give_are_refused`. Without
+  the curve's hashed ECDSA, `pop-sign` falls back to raw `CKM_ECDSA` and still passes.
+- **A key the token will not use for the proof**: keys planted with `CKA_ALLOWED_MECHANISMS`
+  leaving the proof's mechanism out, for `pop-ecdh`, `pop-decrypt` and `pop-unwrap` (15, the
+  usage bit named) (`proofs_the_key_will_not_give_are_refused`). A spec declaring a usage bit
+  over a key without it is a policy conflict before any proof, so it cannot reach this arm.
+- **`CKA_ALWAYS_AUTHENTICATE`**: `pop-ecdh` (16), raw `CKM_ECDSA` and undeclared `CKM_EDDSA`
+  (15; a declared one is refused at planning, 17), and no PIN configured (16). The last runs on
+  kryoptic only: SoftHSM refuses `CKA_ALWAYS_AUTHENTICATE` on a key that is not `CKA_PRIVATE`,
+  and only such a key is visible without login.
+- **Tier 4**: a context-specific login that fails, a multi-part signature refused with another
+  code, an HMAC over the derived or unwrapped secret that fails, a derived secret with no
+  value, and an unwrap the module allows only read-write (no reference unwraps that way).
 
-- **A private key that is not the public key's.** `pop-ecdh` has the test (the sealed path). For
-  `pop-decrypt` and `pop-unwrap` no reference can be led there: an RSA private key carries its
-  own modulus, so a swapped key is another identity (10) before any proof runs. A proof that
-  runs and fails needs a module that shows one key's public material and uses another's
-  private half: tier 4.
-- **A token without the proof's mechanism** (`lacks_for_proof`): the harness can already hide
-  a mechanism from a reference (`hide_mechanism`); hide `CKM_ECDH1_DERIVE`, then
-  `CKM_RSA_PKCS_OAEP`, and expect 15 with the opt-out named.
-- **A key the token will not use for the proof** (`proof_failed`, the unsupported arm): a spec
-  declaring `CKA_DERIVE = true` over a key created without it.
-- **`CKA_ALWAYS_AUTHENTICATE` with a binding that cannot log in per use**: `pop-ecdh` on such a
-  key is 16; raw `CKM_ECDSA` and `CKM_EDDSA` under `pop-sign-pin` are 15; no PIN configured
-  is 16.
-- **`pop-ecdh` on a module that derives only into an extractable secret**: the extractable
-  path's own failure cases, on a reference with the `derive.sealed = false` row set through
-  `--profiles`.
+### Moving keys (`camigrate`)
 
-### Moving keys (`camigrate`: `sealed.rs` 85, `lib.rs` 83, `tokens.rs` 45, `host.rs` 34, `public.rs` 25)
+- **The host path's guards** (`host_moves_refuse_what_they_cannot_check`, into SoftHSM behind
+  p11-kit): an occupied target locator (13); a public half already there but not what the
+  target's `publicAttributes` say, so the private key just created is removed again (13); a
+  target without a user PIN (16). A key whose identity is not the locked one (10) cannot be
+  reached: the source is verified against the lock just before. The tpm2-pkcs11 target's own
+  guards (`import_ptool`) need a public object planted on tpm2-pkcs11, which it does not
+  create: tier 4.
+- **`enforced`**: the warning when the source's SO trusts another key too, from `transport
+  --trusted` and from `export`. The missing trusted copy (14) cannot be reached: the planner
+  checks the same copy just before and blocks the move (15). It stays, as the security
+  check's own guard.
+- **A bundle against the wrong lock**: another type (14), another transport key (10), and a
+  lock that pins nothing, for a wrapped key (its transport key has no realisation, 14) and a
+  certificate (no IDs to check against, 14). "Another object's entry" was unreachable: the
+  import picks the target by the entry's own object. Removed.
+- **The sealed path with OAEP SHA-256**: between kryoptic and a second kryoptic token the test
+  initialises in a slot of its own
+  (`sealed_moves_wrap_with_oaep_sha256_between_kryoptic_tokens`). It needed the fix below.
+- **Planning from the lock** with no observation and with two that differ: the plan fails as
+  the open did (16).
+- **Public objects**: tier 4. A certificate value that is no certificate, a data object with no
+  value and two objects under one locator are each refused by `ops::verify` before `public.rs`
+  reads the object; only a module that changes between the two calls reaches its own arms.
 
-- **The host path's guards**: an occupied target locator (13), a target session without login
-  (16), a key whose identity is not the locked one (10), and the rollback after a failed
-  record. The host path is only planned where the sealed one is not, so these run against
-  p11-kit or tpm2-pkcs11 as the target.
-- **`enforced` without its preconditions**: no trusted copy of the transport key (14), and the
-  warning when the source trusts other keys too.
-- **A bundle against the wrong lock**: another object's entry (17), a type that is not the
-  lock's (14), a transport key that is not the one realised (10). Some exist as unit tests of
-  the parser; none reaches `check_against_lock`'s own arms.
-- **The sealed path with OAEP SHA-256.** SoftHSM implements SHA-1 only, and two kryoptic
-  references cannot be opened in one process. With a token set per test this is now possible:
-  a second kryoptic token in the same test's database. Needs the harness to initialise two
-  slots.
-- **Planning from the lock** when a token does not open, with one observation, several, and
-  none (`tokens.rs`).
-- **Public objects**: a certificate whose value is no certificate, a data object with no
-  value, two objects under one locator (`public.rs`).
+### The verbs and the token layer
 
-### The verbs and the token layer (`ops.rs` 33, `token/mod.rs` 54, `policy.rs` 29, `identity.rs` 23)
+- **Type of the live object**: an RSA key of another size and an AES key of another length (13)
+  (`the_live_object_must_be_what_the_spec_says`). A certificate of another type needs a module
+  that stores one: SoftHSM and kryoptic create X.509 certificates only. Tier 4.
+- **Public key objects**: none under the locator (11, SoftHSM, whose EC private keys carry no
+  public key; kryoptic's carry their own), several (12), and a public key cakeys cannot read
+  beside an RSA key (13: P-224 on SoftHSM, X25519 on kryoptic).
+- **Two tokens with one label** (12, SoftHSM, which keeps a free slot; kryoptic has the slots
+  its configuration lists) and **a PIN from an unset environment variable** (16)
+  (`tokens_that_cannot_be_opened_as_named_are_refused`). **A write-protected token**: no
+  reference can be made write-protected. Tier 4.
+- **`create` skips** a certificate and a `publicOnly` pair, each with its reason.
 
-- **Type and policy of the live object**: an RSA key of another size than the spec's, a secret
-  key of another length, a certificate of another type, each a conflict (13).
-- **Public key objects**: none under the locator (11), several (12), one that exposes no key
-  material (13).
-- **A write-protected token** asked to write (15), **two tokens with one label** (12), **a PIN
-  from an environment variable that is not set** (16).
-- **`create` on what it does not create**: a certificate, a `publicOnly` pair, named
-  explicitly.
+### TPM (`tpm2-pkcs11/src/attest/`)
 
-### TPM (`tpm2-pkcs11/src/attest/`: `esys.rs` 92, `mod.rs` 53, `store.rs` 28)
+`tpm2_attestation_refuses_a_store_that_disagrees`, by editing the test's store:
 
-Each test now has its own swtpm, so state can be arranged freely:
+- `CKA_EXTRACTABLE` true in the store row of a key the TPM certified as fixed (13);
+- another key's TPM blobs and auth under a row's attributes: the TPM certifies another public
+  key than the module shows (13);
+- a token on a transient primary (`tpm2_ptool init --transient-parent`): no persistent parent
+  to load under (16).
 
-- no TCTI configured and none in the environment (16);
-- a key at the AK handle that is not cakeys' template (13);
-- a store row whose blobs are not the object the module shows (13);
-- a transient-parent store, which `tpm-certify` does not support (15);
-- the module's `CKA_LOCAL`/`CKA_EXTRACTABLE` contradicting what the TPM certified (13), by
-  editing the store row.
+A key at the AK handle that is not cakeys' template was already covered
+(`tpm2_keys_attest_their_tpm_residence`). **No TCTI** cannot be reached here: the module reads
+`TPM2_PKCS11_TCTI` too, so it cannot reach the TPM without what cakeys would find. It needs the
+module behind a p11-kit server with an environment of its own.
+
+### Found on the way
+
+- **`camigrate migrate` between two tokens of one module failed** (16, after a dry run said
+  ready): it opens source and target together, and the second open initialised the module
+  again (`CKR_CRYPTOKI_ALREADY_INITIALIZED`). Tokens of one module open at once now share its
+  library, finalized with the last of them (`token/mod.rs`, `library`). This is the common case
+  of two partitions behind one HSM module.
+- **A dry run promised moves into a token without a user PIN**, which the move then refused
+  (16). `migrate` and `import` now refuse such a target before planning, dry run included
+  (`needs_login`), and the two in-path checks that guarded the same thing are gone.
+- **Open, from reading the code (not run)**: the planner may promise a proof of possession it
+  cannot give. `unprovable` checks only that the target has the proof's mechanism, so a target
+  spec declaring `CKA_ALWAYS_AUTHENTICATE` on an EC key would be planned ready on SoftHSM,
+  whose `CKM_ECDSA_SHA256` signs in one part only, while the per-use login needs it in parts:
+  the move would fail after the import (15). No profile row records "signs in parts" yet.
 
 ## Tier 3: SoftHSM posing as a YubiKey
 
-Nothing in CI loads the YubiKey provider (`ykcs11/src/lib.rs`, 101 lines, 48%). An explicit
-`provider = "ykcs11"` on a SoftHSM token does, and the committed fixture certificates
-(`crates/ykcs11/tests/fixtures/`) can be planted under the labels and `CKA_ID`s ykcs11 uses.
-
-Reaches: the attestation certificate lookup by `CKA_ID` and label, the device certificate
-lookup, each "none" and "several" refusal, and the refusal of a chain that does not end at an
-embedded Yubico root (the fixtures are signed by a test root, so this is the case they give).
+Done 2026-11-14 (`piv_attestations_are_found_by_slot_and_chain_to_yubico`, on SoftHSM and
+kryoptic alike). The fixtures planted under ykcs11's `CKA_ID`s and labels reach the slot and
+device certificate lookups, each "none" (15) and "several" (12), and the refusal of a chain
+that does not end at a pinned Yubico root (13). Beside them, the provider reports
+`CKA_DERIVE` true for an EC key whose token says false, and a key to create is refused
+without an SO credential (15).
 
 Does not reach: a successful attestation (needs a certificate Yubico signed), generation and
 import in an SO session (SoftHSM's SO creates no private objects), and the probe's scratch
@@ -150,20 +180,26 @@ requires that feature and the opt-in suites wired to it.
 
 ## Code to remove rather than cover
 
-Found while reading the report; each is a branch no input reaches:
+Found while reading the report, and looked at again before deleting (2026-11-14): a branch
+unreachable today may be the guard that keeps a later change honest.
 
-- `caprobe/src/supports.rs:117`, "name what to ask": clap already requires a name, a class or
-  `--oaep`.
-- `core/src/plan.rs:43`, "unknown token": a spec's token entries are checked against the
-  tokens at load, and a token the spec lacks is refused one line later.
-- `core/src/plaintext.rs:58`: an Edwards curve under `CKK_EC` cannot come out of
-  `Curve::from_cfg`.
-- `camigrate/src/lib.rs`: the three `unreachable!` arms document invariants and stay; the
-  "later phase" refusal in `migrate` is reachable only for methods the planner never returns
-  ready today.
-
-Each needs a second look before deleting: a branch that is unreachable today may be the guard
-that keeps a later change honest.
+- `caprobe/src/supports.rs`, "name what to ask": removed. `Query` asks one of a name, a class or
+  the OAEP hashes (`Ask`), so a query that asks nothing cannot be built; clap's requirement is
+  an `unreachable!` where the arguments become a query.
+- `core/src/plan.rs:43`, "unknown token": **kept, and tested**. Loading keys.toml does not
+  check a spec's token names against `[tokens]`, so a spec on an undefined token loads and is
+  refused here (17) when used.
+- `core/src/plaintext.rs:58`: removed. The match is on the (key type, curve) pair, so an
+  Edwards curve under `CKK_EC` falls to the refusal of a type with no parser.
+- `pkcs11/src/token/identity.rs`: the caller no longer filters out `token-asserted` before
+  `prove_binding`, whose own arm for it was dead.
+- `camigrate/src/sealed.rs`, "the bundle's key is object …": removed (see tier 2).
+- `camigrate/src/host.rs` and `public.rs`, "a session without login": removed; `needs_login`
+  refuses such a target before planning.
+- Kept: `camigrate/src/lib.rs`'s `unreachable!` arms and its "later phase" refusal (reachable
+  only for methods the planner never returns ready today), and `possession.rs`'s refusal of a
+  key type with no proof (a private key is EC, Edwards or RSA by the time it is planned). Each
+  is the guard of an invariant a later change could break.
 
 ## Not counted
 

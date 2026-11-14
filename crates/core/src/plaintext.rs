@@ -40,24 +40,25 @@ pub fn private_from_pkcs8(der: &[u8], key_type: KeyType, curve: Option<&str>) ->
     use ed25519_dalek::pkcs8::DecodePrivateKey as _;
     let bad = |what: &str| KmError::Conflict(format!("the source's wrapped key is not a PKCS#8 {what} key"));
     let scalar = |bytes: &[u8]| Zeroizing::new(bytes.to_vec());
+    let ec = |value| Ok(PrivateParts::Ec(value));
     match (key_type, curve.and_then(|c| Curve::from_cfg(key_type, c))) {
-        (KeyType::Ec, Some(c)) => {
-            let value = match c {
-                Curve::P256 => scalar(&p256::SecretKey::from_pkcs8_der(der).map_err(|_| bad("P-256"))?.to_bytes()),
-                Curve::P384 => scalar(&p384::SecretKey::from_pkcs8_der(der).map_err(|_| bad("P-384"))?.to_bytes()),
-                Curve::P521 => scalar(&p521::SecretKey::from_pkcs8_der(der).map_err(|_| bad("P-521"))?.to_bytes()),
-                Curve::Secp256k1 => {
-                    scalar(&k256::SecretKey::from_pkcs8_der(der).map_err(|_| bad("secp256k1"))?.to_bytes())
-                }
-                Curve::BrainpoolP256r1 => {
-                    scalar(&bp256::r1::SecretKey::from_pkcs8_der(der).map_err(|_| bad("brainpoolP256r1"))?.to_bytes())
-                }
-                Curve::BrainpoolP384r1 => {
-                    scalar(&bp384::r1::SecretKey::from_pkcs8_der(der).map_err(|_| bad("brainpoolP384r1"))?.to_bytes())
-                }
-                Curve::Ed25519 | Curve::Ed448 => return Err(bad("EC")),
-            };
-            Ok(PrivateParts::Ec(value))
+        (KeyType::Ec, Some(Curve::P256)) => {
+            ec(scalar(&p256::SecretKey::from_pkcs8_der(der).map_err(|_| bad("P-256"))?.to_bytes()))
+        }
+        (KeyType::Ec, Some(Curve::P384)) => {
+            ec(scalar(&p384::SecretKey::from_pkcs8_der(der).map_err(|_| bad("P-384"))?.to_bytes()))
+        }
+        (KeyType::Ec, Some(Curve::P521)) => {
+            ec(scalar(&p521::SecretKey::from_pkcs8_der(der).map_err(|_| bad("P-521"))?.to_bytes()))
+        }
+        (KeyType::Ec, Some(Curve::Secp256k1)) => {
+            ec(scalar(&k256::SecretKey::from_pkcs8_der(der).map_err(|_| bad("secp256k1"))?.to_bytes()))
+        }
+        (KeyType::Ec, Some(Curve::BrainpoolP256r1)) => {
+            ec(scalar(&bp256::r1::SecretKey::from_pkcs8_der(der).map_err(|_| bad("brainpoolP256r1"))?.to_bytes()))
+        }
+        (KeyType::Ec, Some(Curve::BrainpoolP384r1)) => {
+            ec(scalar(&bp384::r1::SecretKey::from_pkcs8_der(der).map_err(|_| bad("brainpoolP384r1"))?.to_bytes()))
         }
         (KeyType::EcEdwards, Some(Curve::Ed25519)) => {
             let key = ed25519_dalek::SigningKey::from_pkcs8_der(der).map_err(|_| bad("Ed25519"))?;

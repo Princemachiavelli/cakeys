@@ -319,19 +319,18 @@ fn rsa_aes_wrap(
 }
 
 /// Import `b`'s key `e` under `dst` on `to`, unwrapping with the transport key `tr` realised
-/// there, and record it. Before the target is touched: the bundle's object, type, IDs and commitment label
-/// must be the lock's (the lock is the reviewed truth, the bundle only a carrier), and its
+/// there, and record it. Before the target is touched: the bundle's type, IDs and commitment
+/// label must be the lock's (the lock is the reviewed truth, the bundle only a carrier), and its
 /// transport key the one `tr` is; the locator must be empty. Whatever fails after something was
 /// created removes everything under the locator again.
 ///
 /// # Errors
 ///
-/// `Validation` (17) for a bundle of another object; `PreconditionFailed` (14) when the lock
-/// pins no IDs for it, or another type; `HashMismatch` (10) for bundle IDs, label or transport
-/// key that are not the lock's, and — after the import — material whose identity is not the
-/// locked one; `Conflict` (13) for an occupied locator or blobs that do not unwrap (tampered,
-/// or wrapped to another key); `Unavailable` (16) for a session without login; whatever
-/// `ops::realise_import` refuses.
+/// `PreconditionFailed` (14) when the lock pins no IDs for its object, or another type;
+/// `HashMismatch` (10) for bundle IDs, label or transport key that are not the lock's, and —
+/// after the import — material whose identity is not the locked one; `Conflict` (13) for an
+/// occupied locator or blobs that do not unwrap (tampered, or wrapped to another key);
+/// whatever `ops::realise_import` refuses.
 pub fn import(
     b: &Bundle,
     e: &Entry,
@@ -411,12 +410,10 @@ fn no_transport(dst: &Target) -> KmError {
     ))
 }
 
-/// The bundle's key `e` against the lock: the same object, type, IDs and commitment label,
-/// and — for a wrapped key — wrapped to the transport key `tr` realises.
+/// The bundle's key `e` against the lock: the same type, IDs and commitment label, and — for a
+/// wrapped key — wrapped to the transport key `tr` realises. `dst` realises `e`'s object (the
+/// import picks it by that name).
 fn check_against_lock(b: &Bundle, e: &Entry, dst: &Target, tr: Option<&Target>, lock: &Lock) -> Result<()> {
-    if e.object != dst.object_name {
-        return Err(KmError::Validation(format!("{dst}: the bundle's key is object '{}'", e.object)));
-    }
     let locked = lock.objects.get(dst.object_name).filter(|o| !o.ids.is_empty()).ok_or_else(|| {
         KmError::PreconditionFailed(format!(
             "{dst}: the lock pins no IDs for object '{}', so nothing could check the imported material; \

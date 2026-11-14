@@ -78,6 +78,10 @@ fn names_that_select_nothing_are_refused() {
     let e = Target::new(&cfg, "s", "elsewhere").err().unwrap();
     assert!(matches!(&e, KmError::NotFound(m) if m.contains("has no token 'elsewhere'")), "{e}");
     assert!(Target::new(&cfg, "nope", "t").is_err());
+    // A spec realised on a token `[tokens]` does not define loads, and is refused when used.
+    let undefined = load(&keys(EC, SIGN, "").replace("[tokens.t]", "[tokens.u]")).unwrap();
+    let e = Target::new(&undefined, "s", "t").err().unwrap();
+    assert!(matches!(&e, KmError::Validation(m) if m.contains("unknown token 't'")), "{e}");
     let said = load(&keys(EC, SIGN, "").replace("object = \"o\"", "object = \"gone\"")).unwrap_err().to_string();
     assert!(said.contains("gone"), "{said}");
     // An object's one (spec, token) pair, or why there is not exactly one.

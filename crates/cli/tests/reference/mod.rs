@@ -4,9 +4,11 @@
 
 #![expect(clippy::type_complexity, reason = "table-driven cases")]
 
+use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use cryptoki::session::Session;
+use cryptoki::types::AuthPin;
 use hmac::{Hmac, KeyInit, Mac};
 use std::process::Output;
 
@@ -1971,6 +1973,350 @@ fn proofs_the_token_cannot_give_are_refused() {
     assert!(matches!(code(&o), 14 | 16), "exit {}: {said}", code(&o));
 }
 
+impl Env {
+    /// This test's copy of the module configuration with `mechanism` hidden, for [`Workdir::km_env`].
+    fn hiding(&self, mechanism: &str) -> (&'static str, std::path::PathBuf) {
+        let conf = std::fs::read_to_string(std::env::var(REF.conf_var).unwrap()).unwrap();
+        let hidden = self.dir.join(format!("no-{mechanism}.conf"));
+        std::fs::write(&hidden, (REF.hide_mechanism)(&conf, mechanism)).unwrap();
+        (REF.conf_var, hidden)
+    }
+}
+
+/// A proof falls back where the token lacks its first choice, and still catches a swapped key
+/// there: without the curve's hashed ECDSA, `pop-sign` signs a host digest with raw `CKM_ECDSA`;
+/// without HMAC, `pop-ecdh` derives into an extractable secret the host compares.
+#[test]
+fn proofs_fall_back_to_what_the_token_has() {
+    let Some(e) = env("pop-fallback") else { return };
+    let ec = |name: &str, usage: &str, binding: &str| {
+        format!(
+            "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.{name}]\nobject = \"{name}\"\nattributes = {{ {usage} = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }}\n\
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-fallback-{name}\" }}, autoCreate = true, binding = \"{binding}\" }}\n\n"
+        )
+    };
+    e.config(&(ec("s", "CKA_SIGN", "pop-sign") + &ec("d", "CKA_DERIVE", "pop-ecdh")));
+    for (spec, mechanism) in [("s", "CKM_ECDSA_SHA256"), ("d", "CKM_SHA256_HMAC")] {
+        let (var, conf) = e.hiding(mechanism);
+        let realise = ["realise", spec, "--token", "ref", "--update-lock"];
+        let o = e.km_env(&realise, &[(var, conf.as_path())]);
+        assert_eq!(code(&o), 0, "{mechanism} hidden: {}", stderr(&o));
+        assert_eq!(code(&e.km_env(&["verify", spec, "--token", "ref"], &[(var, conf.as_path())])), 0);
+    }
+    // Another private key under the derive-only locator: the extractable path's comparison fails.
+    let s = e.session();
+    let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let (_, other) = s
+        .generate_key_pair(
+            &Mechanism::EccKeyPairGen,
+            &[Attribute::Token(true), Attribute::EcParams(ec_params)],
+            &[
+                Attribute::Token(true),
+                Attribute::Derive(true),
+                Attribute::Sensitive(true),
+                Attribute::Extractable(false),
+            ],
+        )
+        .unwrap();
+    let label = b"pop-fallback-d".to_vec();
+    let original =
+        s.find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(label.clone())]).unwrap()[0];
+    s.destroy_object(original).unwrap();
+    s.update_attributes(other, &[Attribute::Label(label)]).unwrap();
+    let (var, conf) = e.hiding("CKM_SHA256_HMAC");
+    assert_swapped_key_conflict(&e.km_env(&["verify", "d", "--token", "ref"], &[(var, conf.as_path())]));
+}
+
+/// What the per-use login cannot serve, and keys the token will not use for their proof: a
+/// `CKA_ALWAYS_AUTHENTICATE` key that signs in one part only (`CKM_EDDSA`, raw `CKM_ECDSA`) is
+/// unsupported (15), and one on a token with no PIN configured unavailable (16); a key whose
+/// `CKA_ALLOWED_MECHANISMS` leave out the proof's mechanism is unsupported (15), the usage bit
+/// named.
+#[test]
+fn proofs_the_key_will_not_give_are_refused() {
+    let Some(e) = env("pop-key-refuses") else { return };
+    let spec = |name: &str, key: &str, token: &str, usage: &str, binding: &str| {
+        format!(
+            "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\n{key}\n\n[specs.{name}]\nobject = \"{name}\"\n\
+             attributes = {{ {usage} = true }}\n\
+             tokens.{token} = {{ locator = {{ CKA_LABEL = \"pop-key-{name}\" }}, autoCreate = true, binding = \"{binding}\" }}\n\n"
+        )
+    };
+    let ec = "keyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+    let rsa = "keyType = \"CKK_RSA\"\nmodulusBits = 2048";
+    e.config(&spec("raw", ec, "ref", "CKA_SIGN = true, CKA_ALWAYS_AUTHENTICATE", "pop-sign"));
+    let (var, conf) = e.hiding("CKM_ECDSA_SHA256");
+    let o = e.km_env(&["realise", "raw", "--token", "ref", "--no-update-lock"], &[(var, conf.as_path())]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("CKM_ECDSA") && stderr(&o).contains("one part only"), "{}", stderr(&o));
+
+    // Keys planted as a real deployment might hold them.
+    let s = e.session();
+    let label = |name: &str| Attribute::Label(format!("pop-key-{name}").into_bytes());
+    let plant_ec = |name: &str, mechanism: &Mechanism, params: &[u8], private: &[Attribute]| {
+        let public = [Attribute::Token(true), label(name), Attribute::EcParams(params.to_vec())];
+        let private = [&[Attribute::Token(true), label(name)], private].concat();
+        s.generate_key_pair(mechanism, &public, &private)
+    };
+    let p256 = [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    // CKA_ALWAYS_AUTHENTICATE undeclared (declared, an Edwards key is refused before the token
+    // opens), so only what the token reports decides.
+    let ed = [Attribute::Sign(true), Attribute::AlwaysAuthenticate(true)];
+    plant_ec("ed", &Mechanism::EccEdwardsKeyPairGen, ED25519, &ed).unwrap();
+    // Visible without login (CKA_PRIVATE = false), so `ref-anon` finds it, and wanting the PIN per
+    // use: kryoptic makes it, SoftHSM refuses the combination (CKR_TEMPLATE_INCONSISTENT).
+    let anon = [Attribute::Private(false), Attribute::Sign(true), Attribute::AlwaysAuthenticate(true)];
+    let anon = plant_ec("anon", &Mechanism::EccKeyPairGen, &p256, &anon).is_ok();
+    let derive = [Attribute::Derive(true), Attribute::AllowedMechanisms(vec![MechanismType::ECDSA])];
+    plant_ec("derive", &Mechanism::EccKeyPairGen, &p256, &derive).unwrap();
+    let plant_rsa = |name: &str, usage: Attribute| {
+        let public = [
+            Attribute::Token(true),
+            label(name),
+            Attribute::ModulusBits(2048.into()),
+            Attribute::PublicExponent(vec![1, 0, 1]),
+        ];
+        let private =
+            [Attribute::Token(true), label(name), usage, Attribute::AllowedMechanisms(vec![MechanismType::RSA_PKCS])];
+        s.generate_key_pair(&Mechanism::RsaPkcsKeyPairGen, &public, &private).unwrap();
+    };
+    plant_rsa("decrypt", Attribute::Decrypt(true));
+    plant_rsa("unwrap", Attribute::Unwrap(true));
+    drop(s);
+    e.config(&format!(
+        "{}{}{}{}{}",
+        spec("ed", "keyType = \"CKK_EC_EDWARDS\"\ncurve = \"edwards25519\"", "ref", "CKA_SIGN", "pop-sign"),
+        spec("anon", ec, "ref-anon", "CKA_SIGN", "pop-sign"),
+        spec("derive", ec, "ref", "CKA_DERIVE", "pop-ecdh"),
+        spec("decrypt", rsa, "ref", "CKA_DECRYPT", "pop-decrypt"),
+        spec("unwrap", rsa, "ref", "CKA_UNWRAP", "pop-unwrap"),
+    ));
+    let o = e.km(&["realise", "ed", "--token", "ref", "--no-update-lock"]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("CKM_EDDSA") && stderr(&o).contains("one part only"), "{}", stderr(&o));
+    assert_eq!(anon, REF.provider == "kryoptic");
+    if anon {
+        let o = e.km(&["realise", "anon", "--token", "ref-anon", "--no-update-lock"]);
+        assert_eq!(code(&o), 16, "{}", stderr(&o));
+        assert!(stderr(&o).contains("needs the user PIN per use"), "{}", stderr(&o));
+    }
+    for (name, attribute) in [("derive", "CKA_DERIVE"), ("decrypt", "CKA_DECRYPT"), ("unwrap", "CKA_UNWRAP")] {
+        let o = e.km(&["realise", name, "--token", "ref", "--no-update-lock"]);
+        assert_eq!(code(&o), 15, "{name}: {}", stderr(&o));
+        assert!(stderr(&o).contains(&format!("proving possession needs {attribute}")), "{}", stderr(&o));
+    }
+}
+
+/// The live object must be the declared type, and its public half must be one public key it
+/// shows: another RSA size, another secret length or another certificate type is a conflict
+/// (13); an EC key with no public key anywhere is not found (11) and one beside two public key
+/// objects ambiguous (12); a public key object cakeys cannot read beside an RSA key is a
+/// conflict (13), since a consumer selecting the public half by the locator could get it.
+#[test]
+fn the_live_object_must_be_what_the_spec_says() {
+    let Some(e) = env("live-type") else { return };
+    let s = e.session();
+    let label = |name: &str| Attribute::Label(format!("live-{name}").into_bytes());
+    let rsa_pair = |name: &str| {
+        let public = [
+            Attribute::Token(true),
+            label(name),
+            Attribute::ModulusBits(2048.into()),
+            Attribute::PublicExponent(vec![1, 0, 1]),
+        ];
+        s.generate_key_pair(
+            &Mechanism::RsaPkcsKeyPairGen,
+            &public,
+            &[Attribute::Token(true), label(name), Attribute::Sign(true)],
+        )
+        .unwrap()
+    };
+    let p256 = [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let pair = |mechanism: &Mechanism, name: &str, params: &[u8], usage: Attribute| {
+        let public = [Attribute::Token(true), label(name), Attribute::EcParams(params.to_vec())];
+        s.generate_key_pair(mechanism, &public, &[Attribute::Token(true), label(name), usage])
+    };
+    let ec_pair = |name: &str, params: &[u8]| pair(&Mechanism::EccKeyPairGen, name, params, Attribute::Sign(true));
+    rsa_pair("rsa");
+    let aes = [Attribute::Token(true), label("aes"), Attribute::ValueLen(32.into()), Attribute::Encrypt(true)];
+    s.generate_key(&Mechanism::AesKeyGen, &aes).unwrap();
+    let (public, _) = ec_pair("ec-alone", &p256).unwrap();
+    s.destroy_object(public).unwrap();
+    ec_pair("ec-two", &p256).unwrap();
+    let (other, _) = ec_pair("ec-other", &p256).unwrap();
+    s.update_attributes(other, &[label("ec-two")]).unwrap();
+    rsa_pair("rsa-odd");
+    // A public key cakeys does not read, under the RSA key's locator: P-224 where the module
+    // makes it (SoftHSM), else an X25519 key (kryoptic).
+    let p224 = [0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x21];
+    let x25519 = [0x06, 0x03, 0x2b, 0x65, 0x6e];
+    let (odd, _) = ec_pair("odd", &p224)
+        .or_else(|_| pair(&Mechanism::EccMontgomeryKeyPairGen, "odd", &x25519, Attribute::Derive(true)))
+        .unwrap();
+    s.update_attributes(odd, &[label("rsa-odd")]).unwrap();
+    drop(s);
+
+    let spec = |name: &str, object: &str, usage: &str, label: &str| {
+        format!(
+            "[objects.{name}]\n{object}\n\n[specs.{name}]\nobject = \"{name}\"\nattributes = {{ {usage} = true }}\n\
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"live-{label}\" }} }}\n\n"
+        )
+    };
+    let rsa = |bits: u32| format!("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = {bits}");
+    let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+    e.config(
+        &[
+            spec("big", &rsa(3072), "CKA_SIGN", "rsa"),
+            spec("short", "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 16", "CKA_ENCRYPT", "aes"),
+            spec("alone", ec, "CKA_SIGN", "ec-alone"),
+            spec("two", ec, "CKA_SIGN", "ec-two"),
+            spec("odd", &rsa(2048), "CKA_SIGN", "rsa-odd"),
+        ]
+        .concat(),
+    );
+    let refused = |spec: &str, exit: i32, why: &str| {
+        let o = e.km(&["realise", spec, "--token", "ref", "--no-update-lock"]);
+        assert_eq!(code(&o), exit, "{spec}: {}", stderr(&o));
+        assert!(stderr(&o).contains(why), "{spec}: expected {why:?} in {}", stderr(&o));
+    };
+    refused("big", 13, "RSA modulus is Some(2048) bits, spec says 3072");
+    refused("short", 13, "CKA_VALUE_LEN mismatch");
+    refused("two", 12, "several public key objects share the locator");
+    refused("odd", 13, "exposes no key material");
+    // kryoptic's EC private key carries its own CKA_PUBLIC_KEY_INFO; SoftHSM's carries no public key.
+    if REF.provider == "softhsm" {
+        refused("alone", 11, "no public key object under the locator");
+    } else {
+        assert_eq!(e.code(&["realise", "alone", "--token", "ref", "--no-update-lock"]), 10);
+    }
+}
+
+/// The `YubiKey` provider's `piv-attestation` lookups, on this token named `provider = "ykcs11"`
+/// with ykcs11's objects planted from the committed fixtures (crates/ykcs11/tests/fixtures/):
+/// slot 9a's public key (`CKA_ID` 01), its attestation certificate under the same `CKA_ID`
+/// and the slot-suffixed label, and the f9 device certificate under the bare label. The chain
+/// ends at a test root, never a pinned Yubico one: refused (13). Without the slot or the device
+/// certificate there is no attestation (15); with two of either, it is ambiguous (12).
+#[test]
+fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
+    let Some(e) = env("piv-attest") else { return };
+    let fixture = |name: &str| {
+        let pem = std::fs::read_to_string(format!("{}/../ykcs11/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR")));
+        x509_cert::der::pem::decode_vec(pem.unwrap().as_bytes()).unwrap().1
+    };
+    let spki = fixture("slotpub.pem");
+    let info = <x509_cert::spki::SubjectPublicKeyInfoOwned as x509_cert::der::Decode>::from_der(&spki).unwrap();
+    let point = info.subject_public_key.raw_bytes().to_vec();
+    let s = e.session();
+    s.create_object(&[
+        Attribute::Class(ObjectClass::PUBLIC_KEY),
+        Attribute::KeyType(cryptoki::object::KeyType::EC),
+        Attribute::EcParams(vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]),
+        Attribute::EcPoint(tlv(0x04, &point)),
+        Attribute::Token(true),
+        Attribute::Verify(true),
+        Attribute::Id(vec![0x01]),
+        Attribute::Label(b"Public key for PIV Authentication".to_vec()),
+    ])
+    .unwrap();
+    let cert = |der: &[u8], label: &str, id: u8| {
+        let mut t = cert_object(der, label.as_bytes(), Some(id));
+        t.retain(|a| !matches!(a, Attribute::Token(_)));
+        t.push(Attribute::Token(true));
+        s.create_object(&t).unwrap()
+    };
+    let (slot, device) = (fixture("slot.pem"), fixture("f9.pem"));
+    let slot_label = "X.509 Certificate for PIV Attestation 9a";
+    let device_label = "X.509 Certificate for PIV Attestation";
+    let slot_cert = cert(&slot, slot_label, 0x01);
+    let device_cert = cert(&device, device_label, 0x19);
+    e.write_config(&format!(
+        "[tokens.yk]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nprovider = \"ykcs11\"\n\n\
+         [objects.piv]\nclass = \"CKO_PUBLIC_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.piv]\nobject = \"piv\"\ntokens.yk = {{ locator = {{ CKA_ID = \"01\" }}, attestation = true }}\n",
+        e.module,
+        e.dir.join("pin").display()
+    ));
+    let refused = |exit: i32, why: &str| {
+        let o = e.km(&["realise", "piv", "--token", "yk", "--no-update-lock"]);
+        assert_eq!(code(&o), exit, "{}", stderr(&o));
+        assert!(stderr(&o).contains(why), "expected {why:?} in {}", stderr(&o));
+    };
+    refused(13, "is signed by no pinned root and no pooled PIV intermediate");
+    let second = cert(&slot, slot_label, 0x01);
+    refused(12, "2 attestation certificates share the key's CKA_ID");
+    s.destroy_object(second).unwrap();
+    s.destroy_object(slot_cert).unwrap();
+    refused(15, "no attestation certificate for this key");
+    cert(&slot, slot_label, 0x01);
+    let second = cert(&device, device_label, 0x19);
+    refused(12, "2 objects carry the f9 device certificate label");
+    s.destroy_object(second).unwrap();
+    s.destroy_object(device_cert).unwrap();
+    refused(15, "the device attestation certificate (slot f9) is not exposed");
+
+    // ykcs11 reports CKA_DERIVE false on every private key though it derives with any EC key:
+    // the provider records what the key does. And it creates only in an SO session.
+    let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let id = || Attribute::Id(vec![0x02]);
+    s.generate_key_pair(
+        &Mechanism::EccKeyPairGen,
+        &[Attribute::Token(true), id(), Attribute::EcParams(ec_params)],
+        &[Attribute::Token(true), id(), Attribute::Sign(true), Attribute::Derive(false)],
+    )
+    .unwrap();
+    let key = |name: &str, id: &str, extra: &str| {
+        format!(
+            "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.{name}]\nobject = \"{name}\"\nattributes = {{ CKA_SIGN = true }}\n\
+             tokens.yk = {{ locator = {{ CKA_ID = \"{id}\" }}{extra} }}\n\n"
+        )
+    };
+    let config = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
+    e.write_config(&format!("{config}\n{}{}", key("sig", "02", ""), key("new", "03", ", autoCreate = true")));
+    let o = e.km(&["resolve", "sig", "--token", "yk"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let resolved: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(resolved["policy"]["CKA_DERIVE"].as_bool(), Some(true), "{resolved}");
+    let o = e.km(&["realise", "new", "--token", "yk", "--no-update-lock"]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("needs a Security Officer session"), "{}", stderr(&o));
+}
+
+/// What opening a token refuses before any object is touched: a PIN from an environment
+/// variable that is not set (16), and a label that two tokens carry (12).
+#[test]
+fn tokens_that_cannot_be_opened_as_named_are_refused() {
+    let Some(e) = env("token-open") else { return };
+    let body = EC.replace("ec-lifecycle", "token-open");
+    e.write_config(&format!(
+        "{}[tokens.env-pin]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinEnv = \"CAKEYS_TEST_UNSET_PIN\"\n\n{}",
+        reference_tokens(&e.module, &e.dir),
+        e.module,
+        body.replace("tokens.ref = ", "tokens.env-pin = { locator = { CKA_LABEL = \"token-open\" } }\ntokens.ref = "),
+    ));
+    let o = e.km(&["realise", "signing-soft", "--token", "env-pin", "--no-update-lock"]);
+    assert_eq!(code(&o), 16, "{}", stderr(&o));
+    assert!(stderr(&o).contains("env var CAKEYS_TEST_UNSET_PIN not set"), "{}", stderr(&o));
+
+    // A second token labelled like the first, in a slot the module keeps free (SoftHSM does;
+    // kryoptic has the slots its configuration lists).
+    let ctx = Pkcs11::new(&e.module).unwrap();
+    ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();
+    let free = ctx.get_all_slots().unwrap().into_iter().find(|slot| {
+        ctx.get_slot_info(*slot).unwrap().token_present() && !ctx.get_token_info(*slot).unwrap().token_initialized()
+    });
+    assert_eq!(free.is_some(), REF.provider == "softhsm");
+    if let Some(slot) = free {
+        ctx.init_token(slot, &AuthPin::new("5678".into()), "kmtest").unwrap();
+        ctx.finalize().unwrap();
+        let o = e.km(&["realise", "signing-soft", "--token", "ref", "--no-update-lock"]);
+        assert_eq!(code(&o), 12, "{}", stderr(&o));
+        assert!(stderr(&o).contains("several tokens labelled 'kmtest'"), "{}", stderr(&o));
+    }
+}
+
 /// M3: `--update-lock` holds an advisory lock on `<lock>.lck` across its read-modify-write. While
 /// the sidecar lock is held by someone else, a second updater waits and a reader proceeds.
 #[test]
@@ -2453,14 +2799,21 @@ fn create_makes_keys_without_autocreate() {
          [specs.ec]\nobject = \"ec\"\nattributes = { CKA_SIGN = true, CKA_DESTROYABLE = true }\n\
          tokens.ref = { locator = { CKA_LABEL = \"create-ec\" } }\n\n\
          [specs.aes]\nobject = \"aes\"\nattributes = { CKA_EXTRACTABLE = true }\n\
-         tokens.ref = { locator = { CKA_LABEL = \"create-aes\" } }\n",
+         tokens.ref = { locator = { CKA_LABEL = \"create-aes\" } }\n\n\
+         [objects.cert]\nclass = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"\n\n\
+         [specs.cert]\nobject = \"cert\"\ntokens.ref = { locator = { CKA_LABEL = \"create-cert\" } }\n\n\
+         [specs.ec-public]\nobject = \"ec\"\n\
+         tokens.ref = { locator = { CKA_LABEL = \"create-ec-public\" }, publicOnly = true }\n",
     );
     // Without autoCreate, the first-use flow finds nothing and makes nothing.
     assert_eq!(e.code(&["realise", "ec", "--token", "ref"]), 11);
 
-    // Every unpinned pair on the token, created and recorded.
+    // Every unpinned pair on the token, created and recorded; what is adopted, not made, skipped.
     let o = e.km(&["create", "--token", "ref"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let said = stderr(&o);
+    assert!(said.contains("CKO_CERTIFICATE objects are adopted, not created"), "{said}");
+    assert!(said.contains("publicOnly adopts the public half only"), "{said}");
     let made: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert_eq!(made.as_array().map(Vec::len), Some(2), "{made}");
     let lock = e.lock();
@@ -2484,10 +2837,9 @@ fn create_makes_keys_without_autocreate() {
     assert!(s.labelled("create-ec").is_empty(), "nothing regenerated");
 }
 
-/// `create` over tokens of one module (`ref` and `ref-anon` share it) opens one at a time, so the
-/// second token opens at all; a pair that fails — opening its token included — leaves what was
-/// created before it recorded; and a name that selects nothing is refused (17, 11), never an
-/// empty success.
+/// `create` over tokens of one module (`ref` and `ref-anon` share it) opens each in turn; a pair
+/// that fails — opening its token included — leaves what was created before it recorded; and a
+/// name that selects nothing is refused (17, 11), never an empty success.
 #[test]
 fn create_records_what_it_made_before_a_failure() {
     let Some(e) = env("create_failure") else { return };

@@ -657,6 +657,16 @@ fn bundles_are_checked_against_the_lock() {
     let sealed_to = b["transport"]["rfc7093m4"].as_str().unwrap();
     refused(text.replace(sealed_to, ids), 10, "another transport key");
     refused(text.replace("curve = \"secp256r1\"", "curve = \"secp384r1\""), 14, "another type");
+    // Against a lock that pins nothing: a wrapped key's transport key has no realisation there,
+    // and a certificate's import nothing to be checked against (14 both).
+    let bare = e.dir.join("bare.lock");
+    std::fs::write(&bare, "version = 1\n").unwrap();
+    for (path, why) in [(&ek1, "has no realisation on 'kryoptic'"), (&export(&["crt"]), "the lock pins no IDs")] {
+        let args = ["--lock", bare.to_str().unwrap(), "import", "--token", "kryoptic", "--in", path.to_str().unwrap()];
+        let o = e.km(kry, &args);
+        assert_eq!(code(&o), 14, "{}", stderr(&o));
+        assert!(stderr(&o).contains(why), "{}", stderr(&o));
+    }
     // A flipped byte in the wrapped key: RFC 5649's integrity check refuses it.
     refused(text.replace(key_blob, &base64_flip(key_blob)), 13, "a tampered blob");
     // The other key's blobs (its KEK and its key), wrapped to the same transport key: unwrapped,
@@ -1042,10 +1052,101 @@ fn exports_to_a_token_need_only_the_lock() {
     let flipped = base64_flip(tk["publicKey"].as_str().unwrap());
     std::fs::write(&lock_path, text.replace(tk["publicKey"].as_str().unwrap(), &flipped)).unwrap();
     assert_eq!(code(&plan(&e)), 17);
+    // The unreachable target's capabilities come only from an observation all its realisations
+    // agree on: with none recorded, or two that differ, the plan fails as the open did.
+    let mut lock: toml::Table = toml::from_str(&text).unwrap();
+    let realisations = lock["realisations"].as_table().unwrap().clone();
+    let observed = realisations["tk-kryoptic"]["kryoptic"]["observation"].as_str().unwrap().to_owned();
+    let mut bare = realisations.clone();
+    bare["tk-kryoptic"]["kryoptic"].as_table_mut().unwrap().remove("observation");
+    lock.insert("realisations".into(), bare.into());
+    lock["observations"].as_table_mut().unwrap().remove(&observed);
+    std::fs::write(&lock_path, toml::to_string(&lock).unwrap()).unwrap();
+    let o = plan(&e);
+    assert_eq!(code(&o), 16, "{}", stderr(&o));
+    assert!(!stderr(&o).contains("come from the lock"), "{}", stderr(&o));
+    let mut lock: toml::Table = toml::from_str(&text).unwrap();
+    let other = cakeys_core::id::sri(b"another observation");
+    let copy = lock["observations"][&observed].clone();
+    lock["observations"].as_table_mut().unwrap().insert(other.clone(), copy);
+    let mut second = realisations["tk-kryoptic"].clone();
+    second["kryoptic"].as_table_mut().unwrap().insert("observation".into(), other.into());
+    lock["realisations"].as_table_mut().unwrap().insert("tk-again".into(), second);
+    std::fs::write(&lock_path, toml::to_string(&lock).unwrap()).unwrap();
+    let o = plan(&e);
+    assert_eq!(code(&o), 16, "{}", stderr(&o));
+    assert!(stderr(&o).contains("2 different observations"), "{}", stderr(&o));
     std::fs::write(&lock_path, text).unwrap();
     // A transportWith naming a key that is no transport key is invalid.
     e.config_with(&body, &|r| if r.name == "kryoptic" { "transportWith = \"mv\"\n".into() } else { String::new() });
     assert_eq!(code(&e.km(soft, &["export", "mv", "--token", "softhsm", "--target", "kryoptic", "--dry-run"])), 17);
+}
+
+/// The sealed path at OAEP SHA-256, which `SoftHSM` cannot do: between two kryoptic tokens, the
+/// second one initialised in this test in a slot of its own. Both are reached through one
+/// kryoptic configuration naming both slots, which every run here carries.
+#[test]
+fn sealed_moves_wrap_with_oaep_sha256_between_kryoptic_tokens() {
+    let Some(mut e) = env("oaep-sha256") else { return };
+    let Some(kry) = e.refs.iter().find(|r| r.name == "kryoptic") else {
+        eprintln!("skipping oaep-sha256: needs the kryoptic reference");
+        return;
+    };
+    let module = kry.module.clone();
+    // Slot 2 before slot 1: the suites append to the last table, which stays the first token's.
+    let conf = e.dir.join("kryoptic-two.conf");
+    let first = std::fs::read_to_string(std::env::var("KRYOPTIC_CONF").unwrap()).unwrap();
+    let db = e.dir.join("kryoptic-two.sql");
+    std::fs::write(
+        &conf,
+        format!("[[slots]]\nslot = 2\ndbtype = \"sqlite\"\ndbargs = \"{}\"\n\n{first}", db.display()),
+    )
+    .unwrap();
+    let conf: &'static str = Box::leak(conf.to_str().unwrap().to_owned().into_boxed_str());
+    let tool = |args: &[&str]| {
+        let o = std::process::Command::new("pkcs11-tool")
+            .env("KRYOPTIC_CONF", conf)
+            .args(["--module", &module])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "pkcs11-tool {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr));
+    };
+    tool(&["--init-token", "--slot", "2", "--so-pin", "5678", "--label", "kmtest2"]);
+    tool(&[
+        "--token-label",
+        "kmtest2",
+        "--login",
+        "--login-type",
+        "so",
+        "--so-pin",
+        "5678",
+        "--init-pin",
+        "--pin",
+        "1234",
+    ]);
+    let both: &'static [(&str, &str)] = Box::leak(Box::new([("KRYOPTIC_CONF", conf)]));
+    e.refs.retain(|r| r.name == "kryoptic");
+    e.refs[0].env = both;
+    e.refs.push(Ref { name: "kryoptic2", token_label: "kmtest2", ..e.refs[0].clone() });
+    let (kry, two) = (&e.refs[0], &e.refs[1]);
+    let attributes = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n";
+    let body = transport_key(two)
+        + "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\ncreateOn = \"kryoptic\"\n\n"
+        + &Env::spec("k-one", "k", attributes, &[kry], "xo-k", ", autoCreate = true")
+        + &Env::spec("k-two", "k", attributes, &[two], "xo-k", "");
+    names_transport(&e, &body, |r| r.name == "kryoptic2");
+    for (spec, r) in [("tk-kryoptic2", two), ("k-one", kry)] {
+        let o = e.cakeys(r, &["realise", spec, "--token", r.name]);
+        assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
+    }
+    let args = ["migrate", "k", "--from", "kryoptic", "--to", "kryoptic2"];
+    let o = e.km(kry, &[&args[..], &["--dry-run", "--json"]].concat());
+    let plan: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(plan["plans"][0]["method"].as_str(), Some("rsa-oaep-sha256+aes-kwp"), "{plan}");
+    let o = e.km(kry, &args);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&e.cakeys(two, &["verify", "k-two", "--token", "kryoptic2"])), 0);
 }
 
 /// `text`, base64, with one byte of what it encodes flipped.
@@ -1102,9 +1203,13 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
     let trust = ["transport", "tk-kryoptic", "--token", "kryoptic", "--trusted", "softhsm"];
     let o = e.km(soft, &trust);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
+    // Another key the SO trusts: `enforced` is then only as narrow as that set, which both the
+    // trust and the export say.
+    plant_trusted_key(soft);
     let o = e.km(soft, &trust);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(stderr(&o).contains("already trusts"), "{}", stderr(&o));
+    assert!(stderr(&o).contains("1 other object(s) on 'softhsm' are CKA_TRUSTED"), "{}", stderr(&o));
     for o in ["ek", "sk"] {
         let p = plan(o, soft, kry);
         assert_eq!(
@@ -1120,6 +1225,7 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
         &["export", "ek", "sk", "--token", "softhsm", "--target", "kryoptic", "--out", out.to_str().unwrap()],
     );
     assert_eq!(code(&exported), 0, "{}", stderr(&exported));
+    assert!(stderr(&exported).contains("1 other object(s) on 'softhsm' are CKA_TRUSTED"), "{}", stderr(&exported));
     let bundle: toml::Value = toml::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
     assert!(bundle.get("kek").is_none(), "{bundle}");
     for k in bundle["keys"].as_array().unwrap() {
@@ -1134,6 +1240,38 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
     let p = plan("kk", kry, soft);
     let reasons = p["plans"][0]["reasons"].to_string();
     assert!(p["plans"][0]["ready"] == false && reasons.contains("trusted-wrap = false"), "{p}");
+}
+
+/// An RSA public key the SO of `soft`'s token (SO PIN 5678) marks `CKA_TRUSTED`, beside the
+/// transport key's trusted copy.
+fn plant_trusted_key(soft: &Ref) {
+    use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
+    let ctx = Pkcs11::new(&soft.module).unwrap();
+    ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();
+    let slot = ctx
+        .get_slots_with_token()
+        .unwrap()
+        .into_iter()
+        .find(|s| ctx.get_token_info(*s).unwrap().label() == soft.token_label)
+        .unwrap();
+    let session = ctx.open_rw_session(slot).unwrap();
+    session.login(cryptoki::session::UserType::So, Some(&cryptoki::types::AuthPin::new("5678".into()))).unwrap();
+    let mut modulus = vec![0xc5; 256];
+    modulus[255] = 0x01;
+    session
+        .create_object(&[
+            Attribute::Class(ObjectClass::PUBLIC_KEY),
+            Attribute::KeyType(KeyType::RSA),
+            Attribute::Modulus(modulus),
+            Attribute::PublicExponent(vec![1, 0, 1]),
+            Attribute::Token(true),
+            Attribute::Wrap(true),
+            Attribute::Trusted(true),
+            Attribute::Label(b"xe-other-trusted".to_vec()),
+        ])
+        .unwrap();
+    drop(session);
+    ctx.finalize().unwrap();
 }
 
 /// The dry-run property for the `host` rows (docs/CAMIGRATE.md D2, phase 4): with
@@ -1212,6 +1350,93 @@ fn host_moves_do_what_the_plan_says() {
     if e.refs.iter().any(|r| r.name == "tpm2") {
         assert!(rows.iter().any(|r| r.contains("tpm2-ptool")), "no key moved into tpm2-pkcs11 through tpm2_ptool");
     }
+}
+
+/// The host path's guards (docs/CAMIGRATE.md D6), into `SoftHSM` behind p11-kit, where the plan
+/// sends an EC key through the host: another key under the target locator is never imported
+/// over (13); a public half of the key already there is reused, and when it is not what the
+/// target spec's `publicAttributes` say, the private key just created is removed again (13);
+/// a target session without login cannot tell the locator is free (16).
+#[test]
+fn host_moves_refuse_what_they_cannot_check() {
+    let Some(e) = env("host-guards") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
+    let (Some(soft), Some(fwd)) = (named("softhsm"), named("p11kit")) else {
+        eprintln!("skipping host-guards: needs the softhsm and p11kit references");
+        return;
+    };
+    let attributes = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n";
+    let body = "[objects.hg]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\ncreateOn = \"softhsm\"\n\n"
+        .to_owned()
+        + &Env::spec("hg-src", "hg", attributes, &[soft], "hg-src", ", autoCreate = true")
+        + &Env::spec("hg-dst", "hg", &format!("{attributes}publicAttributes = {{ CKA_VERIFY = true }}\n"), &[fwd], "hg-dst", "")
+        + &format!(
+            "[tokens.p11kit-anon]\nmodule = \"{}\"\ntokenLabel = \"kmp11\"\nprovider = \"softhsm\"\n\n",
+            fwd.module
+        )
+        + "[specs.hg-anon]\nobject = \"hg\"\nattributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n\
+           tokens.p11kit-anon = { locator = { CKA_LABEL = \"hg-anon\" } }\n\n";
+    e.config_with(&body, &|r| if r.name == "p11kit" { "provider = \"softhsm\"\n".into() } else { String::new() });
+    let o = e.cakeys(soft, &["realise", "hg-src", "--token", "softhsm"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let migrate = |spec: &str, to: &str| {
+        e.km(soft, &["migrate", "hg", "--from", "softhsm", "--to", to, "--spec", spec, "--allow-host-plaintext"])
+    };
+    // The target token itself, reached directly (the forwarder serves this SoftHSM token).
+    let direct = std::env::var("CAKEYS_TEST_MODULE").unwrap();
+    let target = || open_session(&direct, "kmp11", "1234");
+    let p256 = P256_PARAMS.to_vec();
+
+    // Another key under the target locator.
+    let t = target();
+    t.generate_key_pair(
+        &cryptoki::mechanism::Mechanism::EccKeyPairGen,
+        &[Attribute::Token(true), Attribute::Label(b"hg-dst".to_vec()), Attribute::EcParams(p256.clone())],
+        &[Attribute::Token(true), Attribute::Label(b"hg-dst".to_vec()), Attribute::Sign(true)],
+    )
+    .unwrap();
+    drop(t);
+    let o = migrate("hg-dst", "p11kit");
+    assert_eq!(code(&o), 13, "{}", stderr(&o));
+    assert!(stderr(&o).contains("would collide with"), "{}", stderr(&o));
+
+    // The key's own public half, but without CKA_VERIFY: reused, then refused, the import undone.
+    let source = open_session(&soft.module, soft.token_label, "1234");
+    let public = source
+        .find_objects(&[Attribute::Class(ObjectClass::PUBLIC_KEY), Attribute::Label(b"hg-src".to_vec())])
+        .unwrap()[0];
+    let [Attribute::EcPoint(point)] =
+        &source.get_attributes(public, &[cryptoki::object::AttributeType::EcPoint]).unwrap()[..]
+    else {
+        panic!("no CKA_EC_POINT")
+    };
+    drop(source);
+    let t = target();
+    t.clear(&["hg-dst"]);
+    t.create_object(&[
+        Attribute::Class(ObjectClass::PUBLIC_KEY),
+        Attribute::KeyType(KeyType::EC),
+        Attribute::EcParams(p256),
+        Attribute::EcPoint(point.clone()),
+        Attribute::Token(true),
+        Attribute::Verify(false),
+        Attribute::Label(b"hg-dst".to_vec()),
+    ])
+    .unwrap();
+    drop(t);
+    let o = migrate("hg-dst", "p11kit");
+    assert_eq!(code(&o), 13, "{}", stderr(&o));
+    assert!(stderr(&o).contains("removed 1 object(s) just imported"), "{}", stderr(&o));
+    let left =
+        target().find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"hg-dst".to_vec())]);
+    assert_eq!(left.unwrap().len(), 0, "the imported private key was left on the target");
+    let lock = std::fs::read_to_string(e.dir.join("keys.lock")).unwrap();
+    assert!(!lock.contains("[realisations.hg-dst"), "{lock}");
+
+    // No login on the target: whether the locator is free cannot be known.
+    let o = migrate("hg-anon", "p11kit-anon");
+    assert_eq!(code(&o), 16, "{}", stderr(&o));
+    assert!(stderr(&o).contains("without login cannot tell a target locator is free"), "{}", stderr(&o));
 }
 
 /// The fixture P-256 key whose certificate is `FIXTURE_CERT`, planted on `soft` under `xf-k`: the

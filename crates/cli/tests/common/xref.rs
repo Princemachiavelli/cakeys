@@ -18,6 +18,7 @@ pub enum Plant {
     Shared,
 }
 
+#[derive(Clone)]
 pub struct Ref {
     /// The token's name in keys.toml.
     pub name: &'static str,

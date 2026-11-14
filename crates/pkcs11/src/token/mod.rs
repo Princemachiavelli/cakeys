@@ -122,18 +122,39 @@ pub struct Token {
     pin: Option<Zeroizing<String>>,
     /// Last: fields drop in declaration order, so the session is closed before the module is
     /// finalized.
-    library: Finalize,
+    library: Arc<Library>,
 }
 
-/// Calls `C_Finalize` when dropped (cryptoki 0.12 never does): a module library may stay loaded
-/// after its last handle is gone (`SoftHSM` does), and another of its tokens opened later in the
-/// process would then fail `C_Initialize` with `CKR_CRYPTOKI_ALREADY_INITIALIZED`.
-struct Finalize(Pkcs11);
+/// An initialized module library, shared by every `Token` of the module open at once, and
+/// finalized when the last of them is dropped (cryptoki 0.12 never finalizes): a module library
+/// may stay loaded after its last handle is gone (`SoftHSM` does), and another of its tokens
+/// opened later in the process would then fail `C_Initialize` with
+/// `CKR_CRYPTOKI_ALREADY_INITIALIZED`.
+struct Library(Pkcs11);
 
-impl Drop for Finalize {
+impl Drop for Library {
     fn drop(&mut self) {
         let _ = self.0.clone().finalize();
     }
+}
+
+/// The libraries this process initialized, by module path: a token of a module another open
+/// token already initialized (the two sides of a move between tokens of one module) shares its
+/// library rather than initializing it a second time.
+static LIBRARIES: std::sync::Mutex<BTreeMap<String, std::sync::Weak<Library>>> = std::sync::Mutex::new(BTreeMap::new());
+
+/// The initialized library of `module`: the one an open token holds, else newly loaded and
+/// initialized.
+fn library(module: &str) -> Result<Arc<Library>> {
+    let mut open = LIBRARIES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(library) = open.get(module).and_then(std::sync::Weak::upgrade) {
+        return Ok(library);
+    }
+    let ctx = Pkcs11::new(module).map_err(ck(&format!("loading {module}")))?;
+    ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).map_err(ck("C_Initialize"))?;
+    let library = Arc::new(Library(ctx));
+    open.insert(module.to_owned(), Arc::downgrade(&library));
+    Ok(library)
 }
 
 fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
@@ -153,9 +174,8 @@ impl Token {
     /// Open the token named `name`: load the module, find the slot whose token label matches,
     /// read its capabilities, and log in as the user when a PIN is configured.
     ///
-    /// Keep at most one `Token` of a module open at a time: tokens of one module share its
-    /// library, which this initializes (and dropping the `Token`, or a failed open, finalizes),
-    /// so a second open meanwhile fails with `CKR_CRYPTOKI_ALREADY_INITIALIZED`.
+    /// Tokens of one module open at once share its library, which the first open initializes
+    /// and dropping the last of them (or a failed open, when it was the only one) finalizes.
     ///
     /// # Errors
     ///
@@ -175,10 +195,9 @@ impl Token {
             None => cfg.module_path(name, &|var| std::env::var(var).ok())?,
         }
         .ok_or_else(|| KmError::Validation(format!("token '{name}' has no module (set module, or pass --module)")))?;
-        let ctx = Pkcs11::new(&module).map_err(ck(&format!("loading {module}")))?;
-        ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).map_err(ck("C_Initialize"))?;
-        // From here every return finalizes, a failed open too.
-        let module_guard = Finalize(ctx);
+        // From here every return releases the library (finalized with its last token), a failed
+        // open too.
+        let module_guard = library(&module)?;
         let ctx = &module_guard.0;
         let module = module_info(ctx, module)?;
         let provider = registry.select(cfg.provider.as_deref(), &module)?;

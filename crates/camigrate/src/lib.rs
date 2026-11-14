@@ -216,6 +216,9 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
         ))
         .into());
     }
+    if let Cmd::Migrate { to: target, .. } | Cmd::Import { token: target, .. } = &cli.cmd {
+        needs_login(&cfg, target)?;
+    }
     let _update_guard = if writes { Some(lock_for_update(&lock_path)?) } else { None };
     let lock = load_lock(&lock_path)?;
     let mut run = Run { cfg, modules, registry, lock, lock_path };
@@ -1079,6 +1082,19 @@ fn realised_target<'a>(
             ))
         })?;
     Target::new(cfg, spec, token)
+}
+
+/// A move into `token` must see everything under the target locator, which only a logged-in
+/// session does (docs/CAMIGRATE.md D6): a token keys.toml gives no user PIN is refused before
+/// any plan, by the dry run alike.
+fn needs_login(cfg: &Config, token: &str) -> cakeys_core::Result<()> {
+    match cfg.tokens.get(token) {
+        Some(t) if t.pin_file.is_none() && t.pin_env.is_none() => Err(KmError::Unavailable(format!(
+            "token '{token}' has no user PIN, and a session without login cannot tell a target locator is free; \
+             configure pinFile or pinEnv"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// Inside a Nix build sandbox (`NIX_BUILD_TOP` set, `IN_NIX_SHELL` not), where an export, an

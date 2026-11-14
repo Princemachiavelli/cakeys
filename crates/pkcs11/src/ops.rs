@@ -548,8 +548,7 @@ pub struct Created {
 /// included, ends the run there, reported in [`Created::failed`] beside what was created
 /// before.
 ///
-/// At most one token is open at a time: tokens of one module share its library, which a second
-/// open would initialize again (`CKR_CRYPTOKI_ALREADY_INITIALIZED`).
+/// At most one token is open at a time: each is closed before the next opens.
 ///
 /// # Errors
 ///

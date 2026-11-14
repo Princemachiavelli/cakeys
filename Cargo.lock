@@ -221,6 +221,7 @@ dependencies = [
  "cryptoki",
  "hmac",
  "rsa",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha1",

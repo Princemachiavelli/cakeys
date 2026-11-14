@@ -79,7 +79,7 @@ pub fn material(src: &Target, from: &Token, lock: &Lock, notes: &mut Notes) -> R
 ///
 /// `Conflict` (13) when an object of its class sits under the target locator without a
 /// realisation of `dst` (a public key object holding the same key is that object: recorded, not
-/// created again); `Unavailable` (16) for a target session without login; `Unsupported` (15)
+/// created again); `Unsupported` (15)
 /// when the target refuses `C_CreateObject`; and, after the creation, whatever
 /// `ops::realise_import` refuses — a hash mismatch (10) included — with what was created removed
 /// again.
@@ -134,20 +134,13 @@ pub(crate) fn roll_back(dst: &Target, to: &Token, made: &[ObjectHandle], err: Km
 
 /// If-None-Match before [`create`] (docs/CAMIGRATE.md D6), per class (`Token::occupied`): the key and
 /// certificate a public object usually sits beside are no collision, and a public key object a
-/// key's import already created there is this object (returned: recorded, not created). Only a
-/// logged-in session sees everything under the locator.
+/// key's import already created there is this object (returned: recorded, not created). The
+/// session is logged in, so it sees everything under the locator (`needs_login`).
 ///
 /// # Errors
 ///
-/// `Unavailable` (16) without login; `Conflict` (13) for an object of its class there.
+/// `Conflict` (13) for an object of its class there.
 pub fn preflight(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Option<ObjectHandle>> {
-    if !to.logged_in {
-        return Err(KmError::Unavailable(format!(
-            "{dst}: a session without login cannot tell the locator is free; configure pinFile or pinEnv \
-             for token '{}'",
-            dst.token_name
-        )));
-    }
     let spki = (dst.object.class == Class::PublicKey).then_some(bytes);
     let occupied = to.occupied(dst.object, &dst.on_token.locator, spki)?;
     if occupied.colliding > 0 {

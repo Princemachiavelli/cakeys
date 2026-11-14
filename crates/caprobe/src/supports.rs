@@ -5,21 +5,25 @@ use cakeys_core::config::Config;
 use cakeys_core::{KmError, Result};
 use cakeys_profile::{Effective, Profile, Set, Verdict};
 
-/// What to ask the profiles.
-#[derive(Default)]
-pub struct Query<'a> {
+/// The question a [`Query`] asks.
+pub enum Ask<'a> {
     /// A mechanism (`CKM_*`), key type (`CKK_*`), parameter set (`CKP_*`) or curve.
-    pub name: Option<&'a str>,
+    Name(&'a str),
+    /// The members of a baseline class.
+    Class(&'a str),
+    /// The RSA-OAEP hashes usable for wrapping.
+    Oaep,
+}
+
+/// What to ask the profiles.
+pub struct Query<'a> {
+    pub ask: Ask<'a>,
     /// The module profile, by name or family.
     pub profile: Option<&'a str>,
     /// Else the token in keys.toml whose `provider` names the profile family.
     pub token: Option<&'a str>,
     /// Delta layers on top of the binding layer, which is always in the stack.
     pub layers: &'a [String],
-    /// List the members of a baseline class instead of asking for `name`.
-    pub class: Option<&'a str>,
-    /// List the RSA-OAEP hashes usable for wrapping instead of asking for `name`.
-    pub oaep: bool,
     /// An RSA modulus size to ask about (with a `CKK_RSA` name).
     pub bits: Option<u32>,
 }
@@ -61,8 +65,8 @@ impl Support {
 ///
 /// # Errors
 ///
-/// `Validation` (17) for an unknown profile, layer, class or token, a token that names no
-/// provider, or a query that asks nothing.
+/// `Validation` (17) for an unknown profile, layer, class or token, or a token that names no
+/// provider.
 pub fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
     let find = |name: &str| set.find(name).map_err(KmError::Validation);
     // A family with pairs on several kinds of hardware (tpm2-pkcs11/1.10+swtpm, +amd-ftpm):
@@ -103,19 +107,16 @@ pub fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
     let stack: Vec<&Profile> = resolved.iter().collect();
     let baseline = set.baseline().map_err(KmError::Validation)?;
     let eff = Effective::new(baseline, module, &stack);
-    let verdicts = match (q.class, q.name) {
-        (Some(class), _) => eff.class(class).ok_or_else(|| {
+    let verdicts = match q.ask {
+        Ask::Class(class) => eff.class(class).ok_or_else(|| {
             KmError::Validation(format!(
                 "no class '{class}' in baseline {} (classes: {})",
                 baseline.baseline,
                 baseline.class.keys().cloned().collect::<Vec<_>>().join(", ")
             ))
         })?,
-        (None, _) if q.oaep => eff.oaep(),
-        (None, Some(name)) => vec![(name.to_owned(), eff.query(name, q.bits))],
-        (None, None) => {
-            return Err(KmError::Validation("supports: name what to ask, a class, or the OAEP hashes".into()));
-        }
+        Ask::Oaep => eff.oaep(),
+        Ask::Name(name) => vec![(name.to_owned(), eff.query(name, q.bits))],
     };
     Ok(Support {
         module: module.map_or_else(|| "(none)".to_owned(), |m| m.profile.clone()),

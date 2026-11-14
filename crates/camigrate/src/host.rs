@@ -25,7 +25,7 @@ use cryptoki::object::{Attribute, ObjectHandle};
 ///
 /// Whatever `ops::verify` refuses on the source; `NotFound` for a key not under its locator;
 /// `Unsupported` (15) when the source will not hand it over or the target will not create it;
-/// `Unavailable` (16) for a target session without login; `Conflict` (13) for an object of its
+/// `Conflict` (13) for an object of its
 /// class already under the target locator; and, after the creation, whatever
 /// `ops::realise_import` refuses, with what was created removed again.
 pub fn import(
@@ -97,21 +97,14 @@ pub(crate) fn create_and_record(
     }
 }
 
-/// If-None-Match before a key is created under `dst` (docs/CAMIGRATE.md D6): only a logged-in
-/// session sees everything under the locator, and nothing a key of its class would collide
-/// with may sit there (`Token::occupied`). What is there, with the public half to reuse.
+/// If-None-Match before a key is created under `dst` (docs/CAMIGRATE.md D6): nothing a key of
+/// its class would collide with may sit there (`Token::occupied`; the session is logged in,
+/// `needs_login` refused the run otherwise). What is there, with the public half to reuse.
 ///
 /// # Errors
 ///
-/// `Unavailable` (16) without login; `Conflict` (13) for a colliding object.
+/// `Conflict` (13) for a colliding object.
 pub(crate) fn free_locator(dst: &Target, to: &Token, spki: Option<&[u8]>) -> Result<cakeys_pkcs11::token::Occupied> {
-    if !to.logged_in {
-        return Err(KmError::Unavailable(format!(
-            "{dst}: a session without login cannot tell the locator is free; configure pinFile or pinEnv for \
-             token '{}'",
-            dst.token_name
-        )));
-    }
     let occupied = to.occupied(dst.object, &dst.on_token.locator, spki)?;
     if occupied.colliding > 0 {
         return Err(KmError::Conflict(format!(

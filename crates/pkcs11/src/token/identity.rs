@@ -47,7 +47,7 @@ impl Token {
             }
             Mode::Direct => {
                 let spki = self.spki(h, loc)?;
-                if let Some(b) = binding.filter(|b| b != &Binding::TokenAsserted) {
+                if let Some(b) = binding {
                     self.prove_binding(h, object, &spki, b)?;
                 }
                 ids.insert(Scheme::Rfc7093m4.name().into(), id::sri(&spki));

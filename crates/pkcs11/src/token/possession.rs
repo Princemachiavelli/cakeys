@@ -39,7 +39,7 @@ impl Token {
     /// binding](Self::recorded_binding): the private key `h` proves, by whichever capability it
     /// has, that it holds the private half of `spki`, the public key its identity hashes. A proof
     /// that does not verify is a `Conflict`; a token that cannot prove is `Unsupported` or
-    /// `Unavailable`, never a pass.
+    /// `Unavailable`, never a pass. `token-asserted` proves nothing.
     pub(super) fn prove_binding(
         &self,
         h: ObjectHandle,

@@ -181,13 +181,17 @@ fn profile_set(dir: Option<&Path>) -> anyhow::Result<cakeys_profile::Set> {
 /// runs with an empty `cfg` when there is no keys.toml and no `--token` to look up.
 fn run_supports(cfg: &Config, a: &SupportsArgs, notes: &mut Notes) -> anyhow::Result<()> {
     let set = profile_set(a.profiles_dir.as_deref())?;
+    let ask = match (a.class.as_deref(), a.oaep, a.name.as_deref()) {
+        (Some(class), _, _) => supports::Ask::Class(class),
+        (None, true, _) => supports::Ask::Oaep,
+        (None, false, Some(name)) => supports::Ask::Name(name),
+        (None, false, None) => unreachable!("clap requires a name, --class or --oaep"),
+    };
     let q = supports::Query {
-        name: a.name.as_deref(),
+        ask,
         profile: a.profile.as_deref(),
         token: a.token.as_deref(),
         layers: &a.layers,
-        class: a.class.as_deref(),
-        oaep: a.oaep,
         bits: a.bits,
     };
     let s = supports::supports(cfg, &set, &q)?;
