@@ -42,20 +42,25 @@ in
   # patch adds it for export and import (docs/CAMIGRATE.md). The third adds CKM_RSA_AES_KEY_WRAP (RSA-OAEP
   # of a fresh AES key, then RFC 5649 under it), the one wrap of a CKA_WRAP_WITH_TRUSTED key whose
   # only trusted key is the transport key (docs/CAMIGRATE.md D2, `enforced`). Both constants and the
-  # parameter struct are already in cryptoki-sys.
+  # parameter struct are already in cryptoki-sys. The fourth adds a single-part C_Sign in an
+  # operation C_SignInit started (Session::sign_initialized), for the context-specific login a
+  # CKA_ALWAYS_AUTHENTICATE key needs between the two (docs/DESIGN.md §3.6).
   cryptoki = {
     version = "0.12.1";
     patches = [
       ./patches/cryptoki-hmac-key-types.patch
       ./patches/cryptoki-aes-key-wrap-kwp.patch
       ./patches/cryptoki-rsa-aes-key-wrap.patch
+      ./patches/cryptoki-sign-after-init.patch
     ];
   };
 
-  # The mechanisms only the patched cryptoki above can name (CKM_AES_KEY_WRAP_KWP,
-  # CKM_RSA_AES_KEY_WRAP): camigrate uses them only with this feature.
+  # What only the patched cryptoki above has: the mechanisms it names (CKM_AES_KEY_WRAP_KWP,
+  # CKM_RSA_AES_KEY_WRAP), which camigrate uses only with `kwp`, and the single-part sign after
+  # C_SignInit, which a per-use PIN proof uses only with `sign-after-init`.
   features = [
     "camigrate/kwp"
+    "cakeys-pkcs11/sign-after-init"
   ]
   ++ lib.optionals (!tpm2) [
     "cakeys/ykcs11"

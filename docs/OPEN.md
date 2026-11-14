@@ -25,7 +25,8 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   SPKI, a `parameterSet` in keys.toml (out of the spec digest when unset), OpenSSL 3.5 oracles,
   and first a test of whether p11-kit forwards PKCS#11 3.2. No token here has PQ hardware.
 - **`pop-ecdh` and `pop-decrypt` for `CKA_ALWAYS_AUTHENTICATE` keys**: only the sign path logs
-  in per use today, so derive- or decrypt-only always-authenticate keys are refused (16).
+  in per use, so derive- or decrypt-only always-authenticate keys are refused (17 declared, 16
+  reported).
 - **`binding = "attested"`** as an opt-in replacement for `pop-*` on PIV keys (a proof without
   touch).
 - **PIV touch policy**: invisible in PKCS#11; readable only from the attestation's
@@ -113,8 +114,8 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   `checks.softhsm-unwrap-value-len` tests it on a patched SoftHSM. A fixed release gets its own
   profile without `secret-unwraps = false`.
 - **rust-cryptoki**: the HMAC key-type fix, `CKM_AES_KEY_WRAP_KWP` and `CKM_RSA_AES_KEY_WRAP`
-  (`upstream/rust-cryptoki/`); later, array attributes and single-part sign after a
-  context-specific login.
+  and the single-part sign after `C_SignInit` (`upstream/rust-cryptoki/`); later, array
+  attributes.
 - **tpm2-pkcs11**: the P-521 `CKA_EC_POINT` fix (`upstream/tpm2-pkcs11/`).
 
 ## Engineering

@@ -20,3 +20,9 @@ aes-kw.workspace = true
 libc.workspace = true
 sha2.workspace = true
 getrandom.workspace = true
+
+[features]
+# The single-part C_Sign after C_SignInit (Session::sign_initialized) a CKA_ALWAYS_AUTHENTICATE
+# key's per-use login needs. Needs the patched cryptoki of the Nix build (nix/patches): without
+# it, such a key cannot prove possession, and the proof and camigrate's plan refuse it alike.
+sign-after-init = []

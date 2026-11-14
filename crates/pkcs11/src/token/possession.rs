@@ -47,12 +47,8 @@ impl Token {
         spki: &[u8],
         binding: Binding,
     ) -> Result<()> {
+        self.check_proof(object, binding)?;
         let msg = pop::challenge(spki)?;
-        for group in proof_mechanisms(object, binding)? {
-            if !group.iter().any(|m| self.has(*m)) {
-                return Err(self.lacks_for_proof(group[group.len() - 1]));
-            }
-        }
         match binding {
             Binding::PopSign => self.prove_sign(h, object, spki, &msg, false),
             Binding::PopSignPin => self.prove_sign(h, object, spki, &msg, true),
@@ -100,19 +96,14 @@ impl Token {
         pop::verify(spki, msg, &sig)
     }
 
-    /// Sign under a `CKA_ALWAYS_AUTHENTICATE` key's per-use policy: the context-specific login
-    /// must come after `C_SignInit` and before the signature (PKCS#11 3.2 §5.1). Exactly once, never
-    /// retried: the PIN is the one that opened the session, so it cannot be wrong and a successful
-    /// login spends no retry; a failure (another actor locked the PIN meanwhile) is `Unavailable`.
-    ///
-    /// cryptoki 0.12's single-part `Session::sign` issues `C_SignInit` and `C_Sign` in one call,
-    /// leaving no point for the login, so this uses the multi-part `C_SignUpdate`/`C_SignFinal`
-    /// and refuses the single-part-only mechanisms (`CKM_EDDSA`, raw `CKM_ECDSA`) — and whatever
-    /// a module will not sign in parts (`SoftHSM`: every `CKM_ECDSA_SHA*`) — as `Unsupported`.
-    // TODO(cryptoki): patch cryptoki with a public single-part `C_Sign` after `sign_init` (like
-    // the patches in nix/patches/, PR draft in upstream/rust-cryptoki/) and upstream it, then
-    // sign single-part here: every key type then proves possession under its per-use PIN
-    // (Ed25519, raw ECDSA, and ECDSA on modules without multi-part ECDSA, like SoftHSM).
+    /// Sign under a `CKA_ALWAYS_AUTHENTICATE` key's per-use policy: `C_SignInit`, then the
+    /// context-specific login, then a single-part `C_Sign` (PKCS#11 3.2 §5.1), which every
+    /// signing mechanism offers. The login happens exactly once, never retried: the PIN is the one
+    /// that opened the session, so it cannot be wrong and a successful login spends no retry; a
+    /// failure (another actor locked the PIN meanwhile) is `Unavailable`. The sign after
+    /// `C_SignInit` is the patched cryptoki's (`sign-after-init`); without it, [`proof_refusal`]
+    /// refuses the proof before it gets here.
+    #[cfg(feature = "sign-after-init")]
     fn sign_with_pin(
         &self,
         mech: &Mechanism,
@@ -120,15 +111,6 @@ impl Token {
         data: &[u8],
         refused: impl Fn(CkError) -> KmError,
     ) -> Result<Vec<u8>> {
-        if matches!(mech, Mechanism::Ecdsa | Mechanism::Eddsa(_)) {
-            return Err(self.unsupported(format!(
-                "token '{}' would prove possession of a CKA_ALWAYS_AUTHENTICATE key with {}, which signs \
-                 in one part only and leaves cakeys no point for the per-use login; opt in with \
-                 binding = \"token-asserted\"",
-                self.name,
-                mech.mechanism_type()
-            )));
-        }
         let pin = self.pin.as_deref().ok_or_else(|| {
             KmError::Unavailable(format!(
                 "token '{}': the private key is CKA_ALWAYS_AUTHENTICATE and needs the user PIN per use; \
@@ -146,19 +128,21 @@ impl Token {
                 self.name
             )));
         }
-        self.session.sign_update(data).map_err(|e| match e {
-            // The operation was started and authorized: the module only refuses it in parts.
-            CkError::Pkcs11(RvError::OperationNotInitialized | RvError::FunctionNotSupported, _) => {
-                self.unsupported(format!(
-                    "token '{}' does not sign with {} in parts ({e}), the only way cakeys can log in per \
-                     use for a CKA_ALWAYS_AUTHENTICATE key; opt in with binding = \"token-asserted\"",
-                    self.name,
-                    mech.mechanism_type()
-                ))
-            }
-            e => refused(e),
-        })?;
-        self.session.sign_final().map_err(refused)
+        self.session.sign_initialized(data).map_err(refused)
+    }
+
+    /// Without the patched cryptoki there is no sign after the login: [`proof_refusal`] refuses
+    /// a `pop-sign-pin` proof before it signs.
+    #[cfg(not(feature = "sign-after-init"))]
+    #[expect(clippy::unused_self, reason = "the signature of the patched build's per-use sign")]
+    fn sign_with_pin(
+        &self,
+        _: &Mechanism,
+        _: ObjectHandle,
+        _: &[u8],
+        _: impl Fn(CkError) -> KmError,
+    ) -> Result<Vec<u8>> {
+        Err(KmError::Unsupported(NO_SIGN_AFTER_INIT.into()))
     }
 
     /// `pop-ecdh`: the host holds an ephemeral key and the MAC of the challenge under the shared
@@ -303,7 +287,6 @@ impl Token {
     /// agree only if the token's private key is the one `spki` names; no plaintext leaves the
     /// token, so a transport key proves possession without `CKA_DECRYPT`.
     fn prove_unwrap(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
-        self.check_unwraps()?;
         let ch = pop::unwrap_challenge(spki, msg)?;
         let mech = Mechanism::RsaPkcsOaep(PkcsOaepParams::new(
             MechanismType::SHA1,
@@ -345,32 +328,30 @@ impl Token {
         Ok(())
     }
 
-    /// `pop-unwrap` needs a module that unwraps at all: one whose profile says it never does
-    /// (`[migration] unwraps = false`: tpm2-pkcs11, ykcs11) is refused before anything is
-    /// generated or unwrapped.
+    /// What this token offers a proof of possession ([`proof_refusal`]): its usable mechanisms,
+    /// and whether it unwraps at all (its profile's `[migration] unwraps`).
+    pub fn proof_side(&self) -> ProofSide<'_> {
+        let profile = self.profiles.module.as_ref();
+        ProofSide {
+            token: &self.name,
+            profile: profile.map(|p| p.profile.as_str()),
+            has: Box::new(|m| self.has(m)),
+            unwraps: profile.and_then(|p| p.migration.as_ref()).and_then(|m| m.unwraps) != Some(false),
+        }
+    }
+
+    /// Whether this token can give a proof of possession by `binding` of a private key of
+    /// `object` ([`proof_refusal`]), checked before anything is generated or proven.
     ///
     /// # Errors
     ///
-    /// `Unsupported` (15) on such a module.
-    pub fn check_unwraps(&self) -> Result<()> {
-        let profile = self.profiles.module.as_ref();
-        if profile.and_then(|p| p.migration.as_ref()).and_then(|m| m.unwraps) == Some(false) {
-            return Err(self.unsupported(format!(
-                "token '{}' never unwraps (C_UnwrapKey; profile {}), so binding = \"pop-unwrap\" cannot prove \
-                 possession there: use pop-decrypt or pop-sign, or opt in with binding = \"token-asserted\"",
-                self.name,
-                profile.map_or("?", |p| p.profile.as_str())
-            )));
+    /// `Unsupported` (15), with the provider's hint, when it cannot; `Unsupported` for a key type
+    /// no proof is defined for.
+    pub fn check_proof(&self, object: &ObjectCfg, binding: Binding) -> Result<()> {
+        match proof_refusal(object, binding, &self.proof_side())? {
+            Some(why) => Err(self.unsupported(why)),
+            None => Ok(()),
         }
-        Ok(())
-    }
-
-    /// The token lacks the mechanism `m` a proof needs: `Unsupported`, with the opt-out.
-    fn lacks_for_proof(&self, m: MechanismType) -> KmError {
-        self.unsupported(format!(
-            "token '{}' lacks {m} to prove possession of the private key; opt in with binding = \"token-asserted\"",
-            self.name
-        ))
     }
 
     /// How a proof's `call` failing maps: a key the token will not `op` with is `Unsupported` (the
@@ -393,6 +374,52 @@ impl Token {
     }
 }
 
+/// What a token offers a proof of possession, as a live token ([`Token::proof_side`]) or as
+/// camigrate's plan knows a target from its profile: the one input [`proof_refusal`] takes.
+pub struct ProofSide<'a> {
+    pub token: &'a str,
+    /// The module profile, named in a refusal.
+    pub profile: Option<&'a str>,
+    /// Whether the token offers a mechanism.
+    pub has: Box<dyn Fn(MechanismType) -> bool + 'a>,
+    /// Whether the module unwraps at all.
+    pub unwraps: bool,
+}
+
+/// The refusal of a per-use PIN proof in a build without the patched cryptoki.
+const NO_SIGN_AFTER_INIT: &str = "this build's cryptoki has no sign after C_SignInit, where the per-use login of a \
+     CKA_ALWAYS_AUTHENTICATE key goes (nix/patches/cryptoki-sign-after-init.patch, the Nix build's), so the key \
+     cannot prove possession; build with it, or opt in with binding = \"token-asserted\"";
+
+/// Why a proof of possession by `binding` of a private key of `object` cannot run on `side`:
+/// `None` when it can. The one check the proof itself ([`Token::prove_binding`]), `cakeys`
+/// before it creates a key, and camigrate's plan for a move's target all make, so none promises
+/// a proof another then refuses.
+///
+/// # Errors
+///
+/// `Unsupported` for a key type or curve no proof is defined for.
+pub fn proof_refusal(object: &ObjectCfg, binding: Binding, side: &ProofSide<'_>) -> Result<Option<String>> {
+    if binding == Binding::PopSignPin && !cfg!(feature = "sign-after-init") {
+        return Ok(Some(NO_SIGN_AFTER_INIT.into()));
+    }
+    if binding == Binding::PopUnwrap && !side.unwraps {
+        return Ok(Some(format!(
+            "token '{}' never unwraps (C_UnwrapKey{}), so binding = \"pop-unwrap\" cannot prove \
+             possession there: use pop-decrypt or pop-sign, or opt in with binding = \"token-asserted\"",
+            side.token,
+            side.profile.map_or(String::new(), |p| format!("; profile {p}"))
+        )));
+    }
+    Ok(proof_mechanisms(object, binding)?.into_iter().find(|g| !g.iter().any(|m| (side.has)(*m))).map(|group| {
+        format!(
+            "token '{}' lacks {} to prove possession of the private key; opt in with binding = \"token-asserted\"",
+            side.token,
+            group.iter().map(ToString::to_string).collect::<Vec<_>>().join(" or ")
+        )
+    }))
+}
+
 /// The hash ECDSA signs a proof with on `object`'s curve.
 fn ecdsa_hash(object: &ObjectCfg) -> Result<pop::EcdsaHash> {
     pop::EcdsaHash::for_curve(curve_of(object)?)
@@ -408,7 +435,7 @@ fn ecdsa_hash(object: &ObjectCfg) -> Result<pop::EcdsaHash> {
 /// # Errors
 ///
 /// `Unsupported` for a key type or curve no proof is defined for.
-pub fn proof_mechanisms(object: &ObjectCfg, binding: Binding) -> Result<Vec<Vec<MechanismType>>> {
+fn proof_mechanisms(object: &ObjectCfg, binding: Binding) -> Result<Vec<Vec<MechanismType>>> {
     Ok(match binding {
         Binding::TokenAsserted => vec![],
         Binding::PopSign | Binding::PopSignPin => match key_type_of(object)? {

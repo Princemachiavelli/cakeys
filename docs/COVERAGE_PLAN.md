@@ -133,12 +133,23 @@ module behind a p11-kit server with an environment of its own.
 - **A dry run promised moves into a token without a user PIN**, which the move then refused
   (16). `migrate` and `import` now refuse such a target before planning, dry run included
   (`needs_login`), and the two in-path checks that guarded the same thing are gone.
-- **Open**: the planner promises a proof of possession it cannot give [run]. `unprovable`
-  checks only that the target has the proof's mechanism. A target spec declaring
-  `CKA_ALWAYS_AUTHENTICATE` on an EC key moving kryoptic → SoftHSM is planned ready (the dry
-  run exits 0), but the per-use login needs `CKM_ECDSA_SHA256` in parts, which SoftHSM signs
-  in one part only: the real move unwraps the key, fails the proof (15) and removes it again.
-  No profile row records "signs in parts" yet.
+- **The planner promised a proof of possession the target then refused** [run]: a target spec
+  declaring `CKA_ALWAYS_AUTHENTICATE` on an EC key, moving kryoptic → SoftHSM, was planned
+  ready, and the move failed its proof (15) after the import, because the per-use login signed
+  in parts and SoftHSM signs ECDSA in one part only. Two fixes:
+  - the cause of the divergence: the planner (`unprovable`), `cakeys` before it creates a key,
+    and the proof itself each had their own partial idea of what a proof needs (mechanisms; the
+    profile's `unwraps`; nothing about the per-use login). They now ask one check,
+    `token::proof_refusal`, of the binding the spec implies (`plan::expected_binding`).
+    `cakeys` also refused a missing proof mechanism only after generating the key;
+  - the instance: cryptoki gets a single-part `C_Sign` after `C_SignInit`
+    (`nix/patches/cryptoki-sign-after-init.patch`), so the per-use login works for every
+    signing mechanism, Ed25519 and raw ECDSA included (`per_use_pin_targets_move_as_planned`).
+    Without the patch the proof and the plan refuse it alike.
+
+  What still only the move can show: the material (10, 13, which the dry-run twin allows),
+  and an attribute the module sets on its own, such as a PIV slot whose PIN policy makes an
+  imported key `CKA_ALWAYS_AUTHENTICATE` undeclared (with the patch, that key proves anyway).
 
 ## Tier 3: SoftHSM posing as a YubiKey
 

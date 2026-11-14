@@ -92,6 +92,18 @@ pub fn binding(t: &Target) -> Option<Binding> {
     Some(t.on_token.binding.unwrap_or(Binding::PopSign))
 }
 
+/// The binding a realisation of `t` will record, as far as the spec tells: [`binding`], with
+/// `pop-sign` as `pop-sign-pin` on a key the spec declares `CKA_ALWAYS_AUTHENTICATE`. What a
+/// check before anything is created or moved asks a proof of; a token reporting the attribute
+/// undeclared is seen only by the realisation itself.
+#[must_use]
+pub fn expected_binding(t: &Target) -> Option<Binding> {
+    match binding(t) {
+        Some(Binding::PopSign) if t.spec.flag("CKA_ALWAYS_AUTHENTICATE") == Some(true) => Some(Binding::PopSignPin),
+        b => b,
+    }
+}
+
 /// What a realisation's check establishes against a module or token that may lie (the replay
 /// analysis in docs/archive/REVIEW-2026-11-13.md). Derived from the class, the recorded binding and the
 /// attestation kind, never stored: the lock already holds all three.
@@ -156,17 +168,15 @@ fn check_binding(t: &Target) -> Result<()> {
                     .into(),
             )
         }
-        // The per-use login needs a multi-part signature (cryptoki has no other point for it),
-        // and CKM_EDDSA is single-part only.
-        (Some(Binding::PopSign), _)
-            if t.object.key_type == Some(Kt::EcEdwards) && t.spec.flag("CKA_ALWAYS_AUTHENTICATE") == Some(true) =>
+        // Only the sign proof has a point for the per-use login (docs/DESIGN.md §3.6).
+        (Some(b @ (Binding::PopEcdh | Binding::PopDecrypt | Binding::PopUnwrap)), _)
+            if t.spec.flag("CKA_ALWAYS_AUTHENTICATE") == Some(true) =>
         {
-            invalid(
-                "a CKA_ALWAYS_AUTHENTICATE Edwards key cannot prove possession yet: its per-use login needs \
-                 a multi-part signature, and CKM_EDDSA is single-part only; opt in with binding = \
+            invalid(format!(
+                "a CKA_ALWAYS_AUTHENTICATE key needs its PIN per use, and binding = \"{b}\" has no point for \
+                 that login: only \"pop-sign\" proves possession with it; or opt in with binding = \
                  \"token-asserted\""
-                    .into(),
-            )
+            ))
         }
         (Some(Binding::PopSign), _) if t.spec.flag("CKA_SIGN") != Some(true) => invalid(
             "proving possession of the private key needs CKA_SIGN = true in the spec attributes; \

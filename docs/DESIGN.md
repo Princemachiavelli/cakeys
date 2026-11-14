@@ -200,12 +200,14 @@ key to its identity:
 
      On a key the token reports `CKA_ALWAYS_AUTHENTICATE` (declared or not), the same proof runs
      under the key's per-use policy and is recorded as **`pop-sign-pin`**:
-     `C_SignInit → C_Login(CKU_CONTEXT_SPECIFIC) → C_SignUpdate → C_SignFinal`, once, with the
-     PIN that opened the session, never retried. It is multi-part because
-     cryptoki 0.12 has no other point for the login, so the single-part-only mechanisms
-     (`CKM_EDDSA`, raw `CKM_ECDSA`) and a module that refuses to sign in parts (SoftHSM's
-     `CKM_ECDSA_SHA*`) are refused (15); a declared always-authenticate Edwards key is invalid
-     (17). A cryptoki patch for a single-part sign after `C_SignInit` would lift both.
+     `C_SignInit → C_Login(CKU_CONTEXT_SPECIFIC) → C_Sign`, once, with the PIN that opened the
+     session, never retried. The single-part `C_Sign` after `C_SignInit` is a cryptoki patch
+     (`nix/patches/cryptoki-sign-after-init.patch`, the `sign-after-init` feature); every
+     signing mechanism offers it. A build without the patch has no point for the login, so the
+     proof is refused (15), and so is a move planned onto such a key (camigrate asks the same
+     check, `proof_refusal`). The other proofs have no per-use login: a spec declaring
+     `CKA_ALWAYS_AUTHENTICATE` with them is invalid (17), and a key the token reports so
+     undeclared is unavailable (16).
    - `pop-ecdh` (EC keys that only derive): the host generates an ephemeral key on the same curve
      and MACs the challenge with HMAC-SHA256 under the ECDH shared secret; the token derives the
      same secret with `CKM_ECDH1_DERIVE` into a non-extractable session key and MACs the same
@@ -400,8 +402,8 @@ What may be created and adopted:
   take policy attributes: declare what the object shows (`CKA_TRUSTED = true` must match an object
   the token's security officer already trusted; users cannot set it).
 - **`CKA_ALWAYS_AUTHENTICATE = true` proves possession with a PIN per use** (`pop-sign-pin`, §3.6):
-  a successful context-specific login with the session's PIN spends no retry. An Edwards key that
-  declares it is invalid (exit 17) until cryptoki can sign single-part after the login —
+  a successful context-specific login with the session's PIN spends no retry, and every key type
+  signs single-part after it (the patched cryptoki) —
   `always_authenticate_keys_prove_possession_with_a_per_use_pin`.
 - **`CKA_TRUSTED = true` refuses `autoCreate`** (exit 17): generation cannot set it.
 - **Not expressible:** `CKA_WRAP_TEMPLATE`, `CKA_UNWRAP_TEMPLATE`, `CKA_DERIVE_TEMPLATE` and

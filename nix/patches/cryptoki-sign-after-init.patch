@@ -1,0 +1,48 @@
+--- a/src/session/signing_macing.rs
++++ b/src/session/signing_macing.rs
+@@ -72,6 +72,45 @@
+         Ok(())
+     }
+ 
++    /// Sign data in single-part, in a signing operation already started with
++    /// [`Session::sign_init`]: for what has to happen between the two, such as the
++    /// context-specific login (`C_Login` with `CKU_CONTEXT_SPECIFIC`) a key with
++    /// `CKA_ALWAYS_AUTHENTICATE` needs after `C_SignInit` (PKCS#11 3.2 §5.1). Unlike the
++    /// multi-part [`Session::sign_update`]/[`Session::sign_final`], every signing mechanism signs
++    /// in a single part.
++    pub fn sign_initialized(&self, data: &[u8]) -> Result<Vec<u8>> {
++        let mut signature_len = 0;
++
++        // Get the output buffer length
++        unsafe {
++            Rv::from(get_pkcs11!(self.client(), C_Sign)(
++                self.handle(),
++                data.as_ptr() as *mut u8,
++                data.len().try_into()?,
++                std::ptr::null_mut(),
++                &mut signature_len,
++            ))
++            .into_result(Function::Sign)?;
++        }
++
++        let mut signature = vec![0; signature_len.try_into()?];
++
++        unsafe {
++            Rv::from(get_pkcs11!(self.client(), C_Sign)(
++                self.handle(),
++                data.as_ptr() as *mut u8,
++                data.len().try_into()?,
++                signature.as_mut_ptr(),
++                &mut signature_len,
++            ))
++            .into_result(Function::Sign)?;
++        }
++
++        signature.truncate(signature_len.try_into()?);
++
++        Ok(signature)
++    }
++
+     /// Continues an ongoing multi-part signing operation,
+     /// taking in the next part of the data to sign
+     pub fn sign_update(&self, data: &[u8]) -> Result<()> {

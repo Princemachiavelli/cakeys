@@ -6,11 +6,12 @@
 #   scripts/local-tests.sh [cargo-nextest run arguments...]
 #   scripts/local-tests.sh -E 'test(host_moves)'
 #
-# The patches (nix/patches/cryptoki-*.patch, as nix/package-common.nix lists them) are applied
-# to the registry's cryptoki under target/local-tests/, never vendored in the tree. The run
-# happens in a copy of the working tree, target/local-tests/tree, whose .cargo/config.toml
-# patches cryptoki to that copy, so the repository's Cargo.lock is never touched. It refuses to
-# run unless the build resolves cryptoki to the patched copy, and the reference suites run with
+# The patches (nix/patches/cryptoki-*.patch) and the features that use them, both as
+# nix/package-common.nix lists them: the patches are applied to the registry's cryptoki under
+# target/local-tests/, never vendored in the tree, and the features enabled. The run happens in
+# a copy of the working tree, target/local-tests/tree, whose .cargo/config.toml patches
+# cryptoki to that copy, so the repository's Cargo.lock is never touched. It refuses to run
+# unless the build resolves cryptoki to the patched copy, and the reference suites run with
 # their *_REQUIRE variables set, so a test needing the patch fails instead of skipping.
 set -euo pipefail
 
@@ -47,6 +48,13 @@ version=$(sed -n 's/^ *version = "\(.*\)";$/\1/p' <<<"$block")
 mapfile -t patches < <(sed -n 's|^ *\./\(patches/.*\.patch\)$|nix/\1|p' <<<"$block")
 [ -n "$version" ] && [ "${#patches[@]}" -gt 0 ] || {
   echo "local-tests: no cryptoki version or patches in nix/package-common.nix" >&2
+  exit 1
+}
+# The features the Nix build enables with the patches (package-common.nix `features`, before
+# its `++` additions for a build without tpm2): what only the patched cryptoki compiles.
+features=$(sed -n '/^  features = \[$/,/^  \]$/s/^ *"\(.*\)"$/\1/p' nix/package-common.nix | paste -sd, -)
+[ -n "$features" ] || {
+  echo "local-tests: no features in nix/package-common.nix" >&2
   exit 1
 }
 locked=$(cargo metadata --format-version 1 --locked |
@@ -104,4 +112,4 @@ export CAKEYS_P11KIT_ENV_SH=$tree/nix/p11kit-test-env.sh CAKEYS_TPM_ENV_SH=$tree
 export CAKEYS_P11KIT_CLIENT=$p11kit/lib/pkcs11/p11-kit-client.so CAKEYS_P11KIT_REQUIRE=1
 export CAKEYS_TPM_MODULE=$tpm2/lib/libtpm2_pkcs11.so CAKEYS_TPM_REQUIRE=1
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="bash $tree/nix/test-tokens.sh"
-cargo nextest run --workspace --features camigrate/kwp --no-fail-fast "$@"
+cargo nextest run --workspace --features "$features" --no-fail-fast "$@"

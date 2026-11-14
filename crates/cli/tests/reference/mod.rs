@@ -1014,8 +1014,8 @@ fn an_undeclared_mechanism_list_is_observed_policy() {
 }
 
 /// P2-10: declared attribute names must fit the class (PKCS#11 3.2 §4), the extra booleans are
-/// settable, and the refusals apply: `binding = "pop-sign-pin"` is recorded, never configured, an
-/// always-authenticate Edwards key cannot prove possession, and `CKA_TRUSTED = true` cannot be
+/// settable, and the refusals apply: `binding = "pop-sign-pin"` is recorded, never configured, a
+/// `CKA_ALWAYS_AUTHENTICATE` key proves possession only by signing, and `CKA_TRUSTED = true` cannot be
 /// generated.
 #[test]
 fn attributes_are_validated_per_class() {
@@ -1062,13 +1062,22 @@ fn attributes_are_validated_per_class() {
          tokens.ref = { locator = { CKA_LABEL = \"x\" }, binding = \"pop-sign-pin\" }\n",
     );
     assert_eq!(e.code(&["validate"]), 17);
-    // CKM_EDDSA signs in one part only, leaving no point for the per-use login.
+    // Every signing key may declare it, Edwards keys too; a proof without a point for the
+    // per-use login may not.
     e.config(
         "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC_EDWARDS\"\ncurve = \"edwards25519\"\n\n\
          [specs.s]\nobject = \"o\"\nattributes = { CKA_SIGN = true, CKA_ALWAYS_AUTHENTICATE = true }\n\
          tokens.ref = { locator = { CKA_LABEL = \"x\" } }\n",
     );
-    assert_eq!(e.code(&["validate"]), 17);
+    assert_eq!(e.code(&["validate"]), 0);
+    e.config(
+        "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.s]\nobject = \"o\"\nattributes = { CKA_DERIVE = true, CKA_ALWAYS_AUTHENTICATE = true }\n\
+         tokens.ref = { locator = { CKA_LABEL = \"x\" }, binding = \"pop-ecdh\" }\n",
+    );
+    let o = e.km(&["validate"]);
+    assert_eq!(code(&o), 17);
+    assert!(stderr(&o).contains("only \"pop-sign\" proves possession with it"), "{}", stderr(&o));
 
     // CKA_TRUSTED is set by the token's security officer, never by generation.
     e.config(
@@ -1105,13 +1114,13 @@ fn attributes_are_validated_per_class() {
 }
 
 /// docs/DESIGN.md §3.6: a `CKA_ALWAYS_AUTHENTICATE` key proves possession under its
-/// per-use policy (`C_SignInit → C_Login(CKU_CONTEXT_SPECIFIC) → C_Sign`, multi-part), and the
+/// per-use policy (`C_SignInit → C_Login(CKU_CONTEXT_SPECIFIC) → C_Sign`), and the
 /// lock records `pop-sign-pin` from the attribute the token reports, declared or not.
 #[test]
 fn always_authenticate_keys_prove_possession_with_a_per_use_pin() {
     let Some(e) = env("always-auth-pop") else { return };
     let s = e.session();
-    s.clear(&["always-auth-rsa", "always-auth-ec"]);
+    s.clear(&["always-auth-rsa", "always-auth-ec", "always-auth-raw", "always-auth-ed"]);
     let spec = |key: &str, label: &str, attributes: &str| {
         format!(
             "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\n{key}\n\n[specs.s]\nobject = \"o\"\n\
@@ -1144,13 +1153,23 @@ fn always_authenticate_keys_prove_possession_with_a_per_use_pin() {
     let resolved: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert_eq!(resolved["binding"].as_str(), Some("pop-sign-pin"), "{resolved}");
 
-    // ECDSA proves the same way where the module signs it in parts; elsewhere the refusal is
-    // unsupported (15), never a pass (the single-part path needs a cryptoki patch).
-    std::fs::remove_file(e.dir.join("keys.lock")).unwrap();
-    e.config(&spec("keyType = \"CKK_EC\"\ncurve = \"secp256r1\"", "always-auth-ec", declared));
-    let o = e.km(&["realise", "s", "--token", "ref", "--no-update-lock"]);
-    let want = if REF.ecdsa_in_parts { 10 } else { 15 };
-    assert_eq!(code(&o), want, "{}", stderr(&o));
+    // The signature after the login is single-part, which every signing mechanism offers:
+    // hashed ECDSA (SoftHSM signs it in one part only), raw ECDSA over the host's digest where
+    // the token lacks the hashed one, and EdDSA.
+    let ec = "keyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+    let ed = "keyType = \"CKK_EC_EDWARDS\"\ncurve = \"edwards25519\"";
+    for (key, label, hidden) in
+        [(ec, "always-auth-ec", None), (ec, "always-auth-raw", Some("CKM_ECDSA_SHA256")), (ed, "always-auth-ed", None)]
+    {
+        std::fs::remove_file(e.dir.join("keys.lock")).unwrap();
+        e.config(&spec(key, label, declared));
+        let hidden = hidden.map(|m| e.hiding(m));
+        let envs: Vec<(&str, &std::path::Path)> = hidden.iter().map(|(var, conf)| (*var, conf.as_path())).collect();
+        let o = e.km_env(&["realise", "s", "--token", "ref", "--update-lock"], &envs);
+        assert_eq!(code(&o), 0, "{label}: {}", stderr(&o));
+        assert_eq!(e.lock()["realisations"]["s"]["ref"]["binding"].as_str(), Some("pop-sign-pin"), "{label}");
+        assert_eq!(code(&e.km_env(&["verify", "s", "--token", "ref"], &envs)), 0, "{label}");
+    }
 }
 
 /// A known AES-256 value, planted several times with different usage bits: the host knows the
@@ -1959,18 +1978,29 @@ fn proofs_the_token_cannot_give_are_refused() {
         let said = stderr(&o);
         assert!(said.contains(mechanism) && said.contains("token-asserted"), "{said}");
     }
-    // A key that wants its PIN per use, under a proof that has no point to give it.
+    // A key that wants its PIN per use, under a proof that has no point to give it. Declared, the
+    // spec is invalid (attributes_are_validated_per_class); here the token reports it undeclared.
     // (An object of its own: the lock pins `k`'s material.)
+    let s = e.session();
+    let label = || Attribute::Label(b"pop-refused-always".to_vec());
+    let p256 = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    s.generate_key_pair(
+        &Mechanism::EccKeyPairGen,
+        &[Attribute::Token(true), label(), Attribute::EcParams(p256)],
+        &[Attribute::Token(true), label(), Attribute::Derive(true), Attribute::AlwaysAuthenticate(true)],
+    )
+    .unwrap();
+    drop(s);
     let always = ec
-        .replace("CKA_DERIVE = true", "CKA_DERIVE = true, CKA_ALWAYS_AUTHENTICATE = true")
-        .replace("pop-refused-ec", "pop-refused-always")
+        .replace("pop-refused-ec\" }, autoCreate = true", "pop-refused-always\" }")
         .replace("[objects.k]", "[objects.a]")
-        .replace("[specs.k]\nobject = \"k\"", "[specs.a]\nobject = \"a\"");
+        .replace("[specs.k]\nobject = \"k\"", "[specs.a]\nobject = \"a\"")
+        .replace(", CKA_SENSITIVE = true, CKA_EXTRACTABLE = false", "");
     e.config(&format!("{ec}{rsa}{always}"));
     let o = e.km(&["realise", "a", "--token", "ref", "--no-update-lock"]);
     let said = stderr(&o);
     assert!(said.contains("CKA_ALWAYS_AUTHENTICATE") && said.contains("pop-sign"), "{said}");
-    assert!(matches!(code(&o), 14 | 16), "exit {}: {said}", code(&o));
+    assert_eq!(code(&o), 16, "{said}");
 }
 
 impl Env {
@@ -2028,11 +2058,9 @@ fn proofs_fall_back_to_what_the_token_has() {
     assert_swapped_key_conflict(&e.km_env(&["verify", "d", "--token", "ref"], &[(var, conf.as_path())]));
 }
 
-/// What the per-use login cannot serve, and keys the token will not use for their proof: a
-/// `CKA_ALWAYS_AUTHENTICATE` key that signs in one part only (`CKM_EDDSA`, raw `CKM_ECDSA`) is
-/// unsupported (15), and one on a token with no PIN configured unavailable (16); a key whose
-/// `CKA_ALLOWED_MECHANISMS` leave out the proof's mechanism is unsupported (15), the usage bit
-/// named.
+/// What a key cannot give its proof with: a `CKA_ALWAYS_AUTHENTICATE` key on a token with no PIN
+/// configured is unavailable (16); a key whose `CKA_ALLOWED_MECHANISMS` leave out the proof's
+/// mechanism is unsupported (15), the usage bit named.
 #[test]
 fn proofs_the_key_will_not_give_are_refused() {
     let Some(e) = env("pop-key-refuses") else { return };
@@ -2045,12 +2073,6 @@ fn proofs_the_key_will_not_give_are_refused() {
     };
     let ec = "keyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
     let rsa = "keyType = \"CKK_RSA\"\nmodulusBits = 2048";
-    e.config(&spec("raw", ec, "ref", "CKA_SIGN = true, CKA_ALWAYS_AUTHENTICATE", "pop-sign"));
-    let (var, conf) = e.hiding("CKM_ECDSA_SHA256");
-    let o = e.km_env(&["realise", "raw", "--token", "ref", "--no-update-lock"], &[(var, conf.as_path())]);
-    assert_eq!(code(&o), 15, "{}", stderr(&o));
-    assert!(stderr(&o).contains("CKM_ECDSA") && stderr(&o).contains("one part only"), "{}", stderr(&o));
-
     // Keys planted as a real deployment might hold them.
     let s = e.session();
     let label = |name: &str| Attribute::Label(format!("pop-key-{name}").into_bytes());
@@ -2060,10 +2082,6 @@ fn proofs_the_key_will_not_give_are_refused() {
         s.generate_key_pair(mechanism, &public, &private)
     };
     let p256 = [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
-    // CKA_ALWAYS_AUTHENTICATE undeclared (declared, an Edwards key is refused before the token
-    // opens), so only what the token reports decides.
-    let ed = [Attribute::Sign(true), Attribute::AlwaysAuthenticate(true)];
-    plant_ec("ed", &Mechanism::EccEdwardsKeyPairGen, ED25519, &ed).unwrap();
     // Visible without login (CKA_PRIVATE = false), so `ref-anon` finds it, and wanting the PIN per
     // use: kryoptic makes it, SoftHSM refuses the combination (CKR_TEMPLATE_INCONSISTENT).
     let anon = [Attribute::Private(false), Attribute::Sign(true), Attribute::AlwaysAuthenticate(true)];
@@ -2085,16 +2103,12 @@ fn proofs_the_key_will_not_give_are_refused() {
     plant_rsa("unwrap", Attribute::Unwrap(true));
     drop(s);
     e.config(&format!(
-        "{}{}{}{}{}",
-        spec("ed", "keyType = \"CKK_EC_EDWARDS\"\ncurve = \"edwards25519\"", "ref", "CKA_SIGN", "pop-sign"),
+        "{}{}{}{}",
         spec("anon", ec, "ref-anon", "CKA_SIGN", "pop-sign"),
         spec("derive", ec, "ref", "CKA_DERIVE", "pop-ecdh"),
         spec("decrypt", rsa, "ref", "CKA_DECRYPT", "pop-decrypt"),
         spec("unwrap", rsa, "ref", "CKA_UNWRAP", "pop-unwrap"),
     ));
-    let o = e.km(&["realise", "ed", "--token", "ref", "--no-update-lock"]);
-    assert_eq!(code(&o), 15, "{}", stderr(&o));
-    assert!(stderr(&o).contains("CKM_EDDSA") && stderr(&o).contains("one part only"), "{}", stderr(&o));
     assert_eq!(anon, REF.provider == "kryoptic");
     if anon {
         let o = e.km(&["realise", "anon", "--token", "ref-anon", "--no-update-lock"]);

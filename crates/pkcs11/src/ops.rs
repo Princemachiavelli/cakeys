@@ -158,11 +158,12 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
         e => e,
     })?;
     check_attestation(t, tok.provider.as_ref()).map_err(|m| tok.unsupported(m))?;
-    if cakeys_core::plan::binding(t) == Some(cakeys_core::config::Binding::PopUnwrap) {
-        tok.check_unwraps()?;
+    if let Some(g) = needs.groups.iter().find(|g| !g.iter().any(|m| tok.has(*m))) {
+        return Err(tok.unsupported(lacking(&tok.name, g, mode, t)));
     }
-    match needs.groups.iter().find(|g| !g.iter().any(|m| tok.has(*m))) {
-        Some(g) => Err(tok.unsupported(lacking(&tok.name, g, mode, t))),
+    // The proof the realisation will make, as the spec says it (camigrate's plan asks the same).
+    match cakeys_core::plan::expected_binding(t) {
+        Some(b) => tok.check_proof(t.object, b),
         None => Ok(()),
     }
 }

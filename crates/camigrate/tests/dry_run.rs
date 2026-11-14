@@ -1149,6 +1149,50 @@ fn sealed_moves_wrap_with_oaep_sha256_between_kryoptic_tokens() {
     assert_eq!(code(&e.cakeys(two, &["verify", "k-two", "--token", "kryoptic2"])), 0);
 }
 
+/// A key whose target spec declares `CKA_ALWAYS_AUTHENTICATE` moves as its plan says: kryoptic
+/// to `SoftHSM`, whose ECDSA signs in one part only, proves possession with the per-use PIN
+/// (`pop-sign-pin`) after the single-part sign the patched cryptoki adds. Before it, the plan
+/// said ready and the move then failed its proof (15). The plan and the proof ask one check
+/// (`cakeys_pkcs11::token::proof_refusal`).
+#[test]
+fn per_use_pin_targets_move_as_planned() {
+    let Some(e) = env("per-use-pin") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
+    let (Some(soft), Some(kry)) = (named("softhsm"), named("kryoptic")) else {
+        eprintln!("skipping per-use-pin: needs the softhsm and kryoptic references");
+        return;
+    };
+    let body = transport_key(soft)
+        + "[objects.a]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\ncreateOn = \"kryoptic\"\n\n"
+        + &Env::spec(
+            "a-src",
+            "a",
+            "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n",
+            &[kry],
+            "xp-a",
+            ", autoCreate = true",
+        )
+        + &Env::spec(
+            "a-dst",
+            "a",
+            "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true, CKA_ALWAYS_AUTHENTICATE = true }\n",
+            &[soft],
+            "xp-a",
+            "",
+        );
+    names_transport(&e, &body, |r| r.name == "softhsm");
+    for (spec, r) in [("tk-softhsm", soft), ("a-src", kry)] {
+        let o = e.cakeys(r, &["realise", spec, "--token", r.name]);
+        assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
+    }
+    // The dry-run twin holds the move to the plan's verdict.
+    let o = e.km(kry, &["migrate", "a", "--from", "kryoptic", "--to", "softhsm"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
+    assert_eq!(lock["realisations"]["a-dst"]["softhsm"]["binding"].as_str(), Some("pop-sign-pin"), "{lock}");
+    assert_eq!(code(&e.cakeys(soft, &["verify", "a-dst", "--token", "softhsm"])), 0);
+}
+
 /// `text`, base64, with one byte of what it encodes flipped.
 fn base64_flip(text: &str) -> String {
     use base64::Engine as _;

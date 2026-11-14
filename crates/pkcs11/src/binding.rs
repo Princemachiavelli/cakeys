@@ -60,4 +60,15 @@ mod tests {
             assert_eq!(layer.subtract.key_types.len(), 3);
         }
     }
+
+    /// A patched binding (the Nix build's) is built with the `sign-after-init` feature that
+    /// uses it: the patch without the feature would refuse every per-use PIN proof the binding
+    /// can give, and the feature without the patch would not compile.
+    #[test]
+    fn the_sign_after_init_feature_comes_with_the_patched_binding() {
+        assert!(
+            !patched() || cfg!(feature = "sign-after-init"),
+            "the patched cryptoki is linked without cakeys-pkcs11's `sign-after-init` feature (nix/package-common.nix features)"
+        );
+    }
 }

@@ -655,7 +655,8 @@ impl Run<'_> {
             // The target's realise must prove possession of a private key the way its spec says.
             if let (true, Some(to)) = (p.ready, target_token)
                 && let Ok(dst) = target_target(cfg, &p.object, to, None)
-                && let Some(why) = unprovable(&dst, &moves.target_mechanisms)
+                && let Some(target) = &moves.target
+                && let Some(why) = unprovable(&dst, target)
             {
                 p.ready = false;
                 p.reasons.push(why);
@@ -767,22 +768,23 @@ fn target_target<'a>(
     }
 }
 
-/// Why the target could not prove possession of a private key moved to `dst` the way its spec's
-/// binding says (`cakeys_pkcs11` would refuse after the key was created): `None` when it can,
-/// or the object is no private key. The mechanisms are the proof's own list
-/// (`cakeys_pkcs11::token::proof_mechanisms`), any of a group.
-fn unprovable(dst: &Target, mechanisms: &std::collections::BTreeSet<String>) -> Option<String> {
-    let binding = cakeys_core::plan::binding(dst)?;
-    let groups = match cakeys_pkcs11::token::proof_mechanisms(dst.object, binding) {
-        Ok(groups) => groups,
-        Err(e) => return Some(format!("{dst} could not prove possession of the key once there: {e}")),
+/// Why the target could not prove possession of a private key moved to `dst` the way its spec
+/// says (`cakeys_pkcs11` would refuse after the key was created): `None` when it can, or the
+/// object is no private key. The proof's own check (`cakeys_pkcs11::token::proof_refusal`), on
+/// what the plan knows of the target.
+fn unprovable(dst: &Target, target: &cakeys_core::migrate::Side) -> Option<String> {
+    let binding = cakeys_core::plan::expected_binding(dst)?;
+    let side = cakeys_pkcs11::token::ProofSide {
+        token: &target.token,
+        profile: None,
+        has: Box::new(|m| target.mechanisms.contains(&m.to_string())),
+        unwraps: target.unwraps,
     };
-    let named = groups.iter().map(|g| g.iter().map(ToString::to_string).collect::<Vec<_>>());
-    let lacks = named.into_iter().find(|g| !g.iter().any(|m| mechanisms.contains(m)))?;
-    Some(format!(
-        "{dst} could not prove possession of the key once there: it lacks {} (or name another binding)",
-        lacks.join(" or ")
-    ))
+    match cakeys_pkcs11::token::proof_refusal(dst.object, binding, &side) {
+        Ok(None) => None,
+        Ok(Some(why)) => Some(format!("{dst} could not prove possession of the key once there: {why}")),
+        Err(e) => Some(format!("{dst} could not prove possession of the key once there: {e}")),
+    }
 }
 
 /// The spec that keeps `object` on `from` (`noExport`), if one does.
