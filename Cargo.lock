@@ -296,11 +296,13 @@ name = "cakeys-tpm2-pkcs11"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "base64",
  "cakeys-core",
  "cakeys-pkcs11",
  "cryptoki",
  "getrandom",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_norway",
  "sha2",

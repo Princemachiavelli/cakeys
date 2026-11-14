@@ -17,12 +17,13 @@
 //! (see [`attest`]).
 
 pub mod attest;
+mod ptool;
 
 use cakeys_core::Result;
 use cakeys_core::config::Options;
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass;
-use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, Provider};
+use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, ImportCtx, Provider};
 use cakeys_pkcs11::token::ModuleInfo;
 use std::borrow::Cow;
 
@@ -62,6 +63,10 @@ impl Provider for Tpm2Pkcs11 {
 
     fn attest(&self, ctx: &AttestCtx<'_>) -> Result<Attested> {
         attest::attest(ctx)
+    }
+
+    fn import_plaintext(&self, ctx: &ImportCtx<'_>) -> Result<()> {
+        ptool::import(ctx)
     }
 }
 

@@ -125,6 +125,19 @@ pub trait Provider: Send + Sync {
         Err(KmError::Unsupported(format!("{} exposes no attestation", self.name())))
     }
 
+    /// Import plaintext key material the module's own way, outside PKCS#11 (MIGRATE.md
+    /// `tpm2-ptool`: tpm2-pkcs11 creates keys from values only through `tpm2_ptool import`):
+    /// `ctx.key` is a private key's PKCS#8 `PrivateKeyInfo` or a secret key's value. The caller
+    /// opens the token again afterwards to see the key. The default refuses.
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` (this default, or a key type the tool cannot take); whatever the tool
+    /// reports.
+    fn import_plaintext(&self, _ctx: &ImportCtx<'_>) -> Result<()> {
+        Err(KmError::Unsupported(format!("{} imports no plaintext outside PKCS#11", self.name())))
+    }
+
     /// What this module can do to move keys (MIGRATE.md): which side of an export or import it
     /// can be, through which mechanisms, and any methods of its own (`Side::vendor`, D10). The
     /// default is a spec-compliant PKCS#11 module: it wraps and unwraps with what it lists and
@@ -151,6 +164,17 @@ pub struct AttestationCap {
 ///
 /// `provision` is true only under `realise`: a provider that keeps device state to attest with
 /// (the TPM Attestation Key) may create it then, never on a read (`resolve`, `verify`).
+/// What [`Provider::import_plaintext`] gets: the token as keys.toml describes it, the key's type
+/// and locator, and the plaintext. Never `Debug`: it would print the key and the PIN.
+pub struct ImportCtx<'a> {
+    pub cfg: &'a TokenCfg,
+    pub token_name: &'a str,
+    pub pin: Option<&'a str>,
+    pub object: &'a ObjectCfg,
+    pub locator: &'a Locator,
+    pub key: &'a [u8],
+}
+
 pub struct AttestCtx<'a> {
     pub session: &'a Session,
     pub cfg: &'a TokenCfg,

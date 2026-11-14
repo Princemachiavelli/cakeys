@@ -262,6 +262,39 @@ which the source's SO trusted, so not even the source's user PIN can wrap it any
   steps (`admin_credential_is_read_only_by_security_officer_steps`). The TPM and the YubiKey are
   untouched: neither exports.
 
+### Phase 4 results (2026-11-14, WORKPLAN stage 4)
+
+A key whose target cannot unwrap it moves through the host, only with `--allow-host-plaintext`
+and only within `migrate` (never into a bundle or onto disk).
+
+- **Out of the source** (`Token::extract`): the host draws a fresh AES-256 key, creates it on the
+  source as a session key, and the source wraps the key under it (RFC 5649); the host unwraps
+  it in memory (`aes-kw`). A private key arrives as PKCS#8, a secret key as its value: SoftHSM
+  and kryoptic both hand private keys over as PKCS#8 [run].
+- **Into a PKCS#11 target** (`host-pkcs8`, `host-raw`): `cakeys_core::plaintext` parses the PKCS#8
+  into the parts `C_CreateObject` takes (EC scalar, Ed25519 seed, the eight RSA parts), with the
+  typed RustCrypto keys, which zeroize on drop; the public half comes from the source's SPKI, as
+  in the sealed import. Every buffer is `Zeroizing`, and the plaintext copies inside creation
+  templates are zeroized after the call. The import is recorded through `realise_import` with the
+  `host` exposure; a mismatch removes exactly what was made.
+- **Into tpm2-pkcs11** (`tpm2-ptool`): the tpm2-pkcs11 provider's new `import_plaintext` hook
+  runs `tpm2_ptool import` (a runtime dependency of this path) with the key in an in-memory file
+  (`memfd`), named by cakeys' own `/proc/<pid>/fd/N`: `tpm2_ptool` hands the path to a
+  `tpm2_import` child that inherits no descriptor [run]. tpm2-pkcs11 loads its objects when the
+  module is initialised, so `migrate` closes the target and opens it again before recording the
+  import. Two costs the plan states as notes: the key enters `tpm2_ptool`'s Python process,
+  which cakeys cannot zeroize, and `tpm2_ptool` takes the user PIN only on its command line
+  (`--userpin`; no environment or file option [src]), where other local users can read it while
+  it runs.
+- **The planner** also blocks a move whose target could not prove possession of the key the way
+  its spec's binding says (Ed25519 into p11-kit, which drops `CKM_EDDSA`), instead of creating
+  the key there and removing it again — a gap the local p11-kit run found.
+- **Tests**: `host_moves_do_what_the_plan_says`, the dry-run property for every row the plan sends
+  through the host, against SoftHSM, kryoptic, p11-kit and swtpm: P-256 and RSA by `host-pkcs8`
+  into p11-kit and by `tpm2-ptool` into tpm2-pkcs11, AES and HMAC by `host-raw` into SoftHSM and
+  p11-kit, each recorded with the `host` exposure and verified; `cakeys_core::plaintext` unit
+  tests. The TPM and the YubiKey are untouched (swtpm only).
+
 ### Frozen names and formats
 
 Exposure levels (D2): `public`, `enforced`, `sealed`, `host`, `file`; a plan that cannot move an
@@ -505,7 +538,7 @@ disk. `--dry-run` without objects plans every object the source token holds a re
 | 2 | **Done 2026-11-14.** `public`: certificates, public keys, data objects | ≈200 + 200, 1–2 days |
 | 3 | **Done 2026-11-14.** `sealed` between PKCS#11 modules: the `transport` verb, the composed RSA-OAEP + AES-KWP method, the direct OAEP method, bundles, import with identity check and cleanup, `migrate` | ≈800 + 700, 6–8 days |
 | 3b | **Done 2026-11-14.** `enforced`: the admin credential on PKCS#11 modules, `transport --trusted`, `CKA_WRAP_WITH_TRUSTED` keys | ≈300 + 250, 3–4 days |
-| 4 | `host` paths: `--allow-host-plaintext`, zeroized buffers, and tpm2-pkcs11 import through `tpm2_ptool` (a runtime dependency for that provider) | ≈350 + 300, 3–4 days |
+| 4 | **Done 2026-11-14.** `host` paths: `--allow-host-plaintext`, zeroized buffers, and tpm2-pkcs11 import through `tpm2_ptool` (a runtime dependency for that provider) | ≈350 + 300, 3–4 days |
 | 4b | `file`: `pkcs8-pbes2` and `pkcs12` export and import, `--passphrase-file` | ≈300 + 250, 3–4 days |
 | 5 | YubiKey import through ykcs11 as SO, identities checked on the host first; the hardware test overwrites scratch slot 0x95 (ask before running) | ≈250 + 200, 2–3 days |
 | 6 | Native `tpm-duplicate`: a host-built duplication blob, `TPM2_Import` through tss-esapi | ≈600 + 400, 6–10 days |

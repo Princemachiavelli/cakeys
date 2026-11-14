@@ -89,6 +89,67 @@ pub fn import(
     }
 }
 
+/// Move `src`'s key on `from` into the tpm2-pkcs11 token `target` holds by `tpm2_ptool import`
+/// (`tpm2-ptool`), and record it. tpm2-pkcs11 loads its objects when the module is initialised,
+/// so `reopen` closes the target and opens it again before the import is recorded; `target`
+/// holds the new one afterwards.
+///
+/// # Errors
+///
+/// As [`import`]; and whatever the tool reports (`Token::import_plaintext`).
+pub fn import_ptool(
+    src: &Target,
+    from: &Token,
+    dst: &Target,
+    target: &mut Option<Token>,
+    reopen: &dyn Fn(&mut Option<Token>, &mut Notes) -> Result<()>,
+    lock: &mut Lock,
+    notes: &mut Notes,
+) -> Result<Moved> {
+    let gone = || KmError::Unavailable(format!("{dst}: the target token is not open"));
+    let to = target.as_ref().ok_or_else(gone)?;
+    if lock.realisation(dst.spec_name, dst.token_name).is_some() {
+        ops::verify(dst, to, lock, notes)?;
+        return Ok(Moved::AlreadyThere);
+    }
+    ops::verify(src, from, lock, notes)?;
+    let loc = &src.on_token.locator;
+    let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string()))?;
+    let spki = (src.object.class == Class::PrivateKey).then(|| from.spki(h, loc)).transpose()?;
+    let occupied = to.occupied(dst.object, &dst.on_token.locator, spki.as_deref())?;
+    if occupied.colliding > 0 || occupied.public_half.is_some() {
+        return Err(KmError::Conflict(format!(
+            "objects already sit under the locator of {dst}, and the lock records no realisation there; \
+             refusing to import over them"
+        )));
+    }
+    let kwp = rfc5649(from)
+        .ok_or_else(|| from.unsupported(format!("'{}' offers no RFC 5649 key wrap to hand the key over", from.name)))?;
+    let plain = from.extract(h, &kwp)?;
+    to.import_plaintext(dst.object, &dst.on_token.locator, &plain)?;
+    drop(plain);
+    reopen(target, notes)?;
+    let to = target.as_ref().ok_or_else(gone)?;
+    let origin = Origin {
+        from: src.token_name.to_owned(),
+        method: Method::Tpm2Ptool.name(),
+        exposure: Exposure::Host,
+        declared: false,
+    };
+    match ops::realise_import(dst, to, lock, origin, notes) {
+        Ok(_) => Ok(Moved::Imported),
+        Err(err) => {
+            // The locator held nothing of the key's classes before: this removes only the import.
+            match to.destroy(dst.object, &dst.on_token.locator) {
+                Ok(0) => {}
+                Ok(n) => notes.say(format!("removed {n} object(s) just imported for {dst}: {err}")),
+                Err(d) => notes.say(format!("what was just imported for {dst} is still on the token ({d})")),
+            }
+            Err(err)
+        }
+    }
+}
+
 /// Create the key under `dst` from `plain`: a private key's public half first (unless one is
 /// there already), then the key with the target spec's attributes.
 fn create(dst: &Target, to: &Token, plain: &[u8], spki: Option<&[u8]>, made: &mut Vec<ObjectHandle>) -> Result<()> {

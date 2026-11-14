@@ -64,6 +64,11 @@ impl Tpm2Options {
         Ok(o)
     }
 
+    /// The configured TCTI, as written (for `tpm2_ptool`, which reads the same string).
+    pub(crate) fn tcti(&self) -> Option<&str> {
+        self.tcti.as_deref()
+    }
+
     /// The AK handle: explicit config (hex, `0x`-prefixed, a persistent handle in the owner range
     /// 0x81000000..=0x817FFFFF), else cakeys' default.
     fn ak_handle(&self, token: &str) -> Result<u32> {
@@ -87,6 +92,15 @@ impl Tpm2Options {
 /// `~/.tpm2_pkcs11` and the working directory that holds a store file. Anything else could read
 /// another store than the module the PKCS#11 object came from.
 fn store_dir(cfg: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<PathBuf> {
+    store_dir_of(cfg.token_name, opts)
+}
+
+/// [`store_dir`] for `token_name` (the plaintext import's too).
+///
+/// # Errors
+///
+/// `Unavailable` when no store is found.
+pub(crate) fn store_dir_of(token_name: &str, opts: &Tpm2Options) -> Result<PathBuf> {
     if let Some(dir) = &opts.tpm2_store {
         return Ok(PathBuf::from(expand_home(dir)));
     }
@@ -106,8 +120,8 @@ fn store_dir(cfg: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<PathBuf> {
     ];
     candidates.into_iter().flatten().find(|d| Path::new(d).join(store::DB_NAME).is_file()).ok_or_else(|| {
         KmError::Unavailable(format!(
-            "no tpm2-pkcs11 store for token '{}': set tokens.{}.options.tpm2Store or TPM2_PKCS11_STORE",
-            cfg.token_name, cfg.token_name
+            "no tpm2-pkcs11 store for token '{token_name}': set tokens.{token_name}.options.tpm2Store or \
+             TPM2_PKCS11_STORE"
         ))
     })
 }

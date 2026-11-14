@@ -95,6 +95,24 @@ impl Token {
         self.create_secret_template(&Secret(base))
     }
 
+    /// Import a key from the host's plaintext the provider's own way (`Provider::import_plaintext`:
+    /// `tpm2_ptool import` for tpm2-pkcs11), under `object`'s type and `loc`. The key is in the
+    /// module's store afterwards, but this open token does not see it: open the token again.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the provider refuses.
+    pub fn import_plaintext(&self, object: &ObjectCfg, loc: &Locator, key: &[u8]) -> Result<()> {
+        self.provider.import_plaintext(&crate::provider::ImportCtx {
+            cfg: &self.cfg,
+            token_name: &self.name,
+            pin: self.pin.as_ref().map(|p| p.as_str()),
+            object,
+            locator: loc,
+            key,
+        })
+    }
+
     fn create_secret_template(&self, template: &Secret) -> Result<ObjectHandle> {
         let create = || {
             self.session

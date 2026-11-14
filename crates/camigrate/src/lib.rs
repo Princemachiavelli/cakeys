@@ -438,7 +438,12 @@ impl Run<'_> {
         let built = |m: &Method| {
             matches!(
                 m,
-                Method::Public | Method::RsaOaepAesKwp(_) | Method::RsaOaep(_) | Method::HostPkcs8 | Method::HostRaw
+                Method::Public
+                    | Method::RsaOaepAesKwp(_)
+                    | Method::RsaOaep(_)
+                    | Method::HostPkcs8
+                    | Method::HostRaw
+                    | Method::Tpm2Ptool
             )
         };
         if let Some(p) = moves.plans.iter().find(|p| !p.method.as_ref().is_some_and(built)) {
@@ -452,25 +457,40 @@ impl Run<'_> {
         }
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
         let source = open_token(cfg, modules, registry, from, Access::Read, notes)?;
-        let target = open_token(cfg, modules, registry, to, Access::Write, notes)?;
+        let mut target = Some(open_token(cfg, modules, registry, to, Access::Write, notes)?);
+        // tpm2-pkcs11 sees what `tpm2_ptool` imported only once opened again: the old one first.
+        let reopen = |t: &mut Option<cakeys_pkcs11::Token>, notes: &mut Notes| -> cakeys_core::Result<()> {
+            *t = None;
+            *t = Some(open_token(cfg, modules, registry, to, Access::Write, notes)?);
+            Ok(())
+        };
         let (mut changed, mut failed) = (false, None);
         for p in &moves.plans {
             let pair = source_target(cfg, &self.lock, &p.object, from)
                 .and_then(|src| Ok((src, target_target(cfg, &p.object, to, spec)?)));
             let lock = &mut self.lock;
-            let outcome = pair.and_then(|(src, dst)| match &p.method {
-                Some(method @ (Method::RsaOaepAesKwp(_) | Method::RsaOaep(_))) => {
-                    let tr = transport_target(cfg, lock, to, transport_choice(cfg, to, how))?;
-                    let key = tokens::transport(&tr, &target, lock, notes)?.key()?;
-                    let exposure = p.exposure.unwrap_or(Exposure::Sealed);
-                    let item = sealed::Item { src, method: method.clone(), exposure };
-                    let bundle = sealed::export(&[item], &source, lock, &key, notes)?;
-                    sealed::import(&bundle, &bundle.keys[0], &dst, &target, &tr, lock, notes)
+            let target = &mut target;
+            let outcome = pair.and_then(|(src, dst)| {
+                if p.method == Some(Method::Tpm2Ptool) {
+                    return host::import_ptool(&src, &source, &dst, target, &reopen, lock, notes);
                 }
-                Some(method @ (Method::HostPkcs8 | Method::HostRaw)) => {
-                    host::import(&src, &source, &dst, &target, lock, method, notes)
+                let target = target
+                    .as_ref()
+                    .ok_or_else(|| KmError::Unavailable(format!("the target token '{to}' is not open")))?;
+                match &p.method {
+                    Some(method @ (Method::RsaOaepAesKwp(_) | Method::RsaOaep(_))) => {
+                        let tr = transport_target(cfg, lock, to, transport_choice(cfg, to, how))?;
+                        let key = tokens::transport(&tr, target, lock, notes)?.key()?;
+                        let exposure = p.exposure.unwrap_or(Exposure::Sealed);
+                        let item = sealed::Item { src, method: method.clone(), exposure };
+                        let bundle = sealed::export(&[item], &source, lock, &key, notes)?;
+                        sealed::import(&bundle, &bundle.keys[0], &dst, target, &tr, lock, notes)
+                    }
+                    Some(method @ (Method::HostPkcs8 | Method::HostRaw)) => {
+                        host::import(&src, &source, &dst, target, lock, method, notes)
+                    }
+                    _ => public::import(&src, &source, &dst, target, lock, notes),
                 }
-                _ => public::import(&src, &source, &dst, &target, lock, notes),
             });
             match outcome {
                 Ok(public::Moved::Imported) => {

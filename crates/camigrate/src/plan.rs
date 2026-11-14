@@ -327,7 +327,17 @@ fn target_notes(dst: &Side, plan: &Plan) -> Vec<String> {
         Some(Method::PivImport) => {
             vec!["an imported PIV key is never attested; `attestation = true` is refused there".into()]
         }
-        Some(Method::Tpm2Ptool | Method::TpmDuplicate) => {
+        Some(Method::Tpm2Ptool) => vec![
+            format!("{} can attest the key's residence, not its generation (CKA_LOCAL = false)", dst.token),
+            "the key enters tpm2_ptool's own process, which cakeys cannot zeroize, through an in-memory file, never \
+             a file on disk"
+                .into(),
+            format!(
+                "tpm2_ptool takes {}'s user PIN only on its command line, where other local users can read it while it runs",
+                dst.token
+            ),
+        ],
+        Some(Method::TpmDuplicate) => {
             vec![format!("{} can attest the key's residence, not its generation (CKA_LOCAL = false)", dst.token)]
         }
         Some(Method::Public | Method::Vendor { .. }) | None => vec![],
