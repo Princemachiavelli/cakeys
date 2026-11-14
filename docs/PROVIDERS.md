@@ -269,8 +269,8 @@ planner and the mechanism list see:
   from the module profile wherever one resolves — `SoftHsm::migration`, `Ykcs11::migration`
   and `Tpm2Pkcs11::migration` are deleted. The layer subtractions apply to the plan too: an
   unpatched binding drops the KWP method and the SHA-2 HMAC accept rows.
-- **`caps` prints the stack** it decided by; `unwrap_refusals` exposes the template rules for
-  MIGRATE phase 3 to consume.
+- **`caps` prints the stack** it decided by; `unwrap_refusals` (now camigrate's, crates/camigrate/src/tokens.rs)
+  holds the template rules for MIGRATE phase 3 to consume.
 
 Not done here, flagged:
 
