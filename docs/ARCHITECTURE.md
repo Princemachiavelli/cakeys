@@ -56,8 +56,18 @@ scripts/        xversion.sh: cross-version lock compatibility check
 docs/           design and reference documentation (section 9)
 reports/, research_notes/   the lock-format design review and its research
 docs/working/   working notes: CHECKPOINT, WORK, ISSUES, RESPONSE (section 9)
-*.md (root)     README, PLAN, NEXT, MIGRATE (section 9)
+*.md (root)     README, PLAN, NEXT, MIGRATE (section 9); WORKPLAN, the order of the current work
 flake.nix, checks.nix, treefmt.nix, deny.toml
+```
+
+**Planned** ([`WORKPLAN.md`](../WORKPLAN.md), decisions D1–D3 and D6; [`SCOPE.md`](SCOPE.md),
+"Three tools"): two more binary crates in the same workspace and flake.
+
+```text
+crates/
+  caprobe/      caprobe          planned (stage 2): probe, supports, caps; profile emitter, diff, baseline generator
+  camigrate/    camigrate        planned (stage 3): export, import, migrate, transport; the migrate planner
+  cli/          cakeys           afterwards: the pin-and-verify verbs only, with no migration code
 ```
 
 Size, Rust code lines (tokei, inline tests included):
@@ -118,6 +128,43 @@ flowchart TD
 `cakeys-core` and `cakeys-profile` never touch a token, so the lock rules and the profile
 algebra are unit- and property-tested without an HSM.
 
+**Planned crate map** ([`WORKPLAN.md`](../WORKPLAN.md) stages 2 and 3). The graph above is
+today's; after the split it is:
+
+```mermaid
+flowchart TD
+    CLI["cakeys (crates/cli)<br/>pin and verify"]
+    PROBE["caprobe (crates/caprobe)<br/>probe · supports · caps · emitter · diff · baseline"]
+    MIG["camigrate (crates/camigrate)<br/>export · import · migrate · transport · planner"]
+    P11["cakeys-pkcs11<br/>token/ · ops · provider · gate · resolution"]
+    PROVS["cakeys-ykcs11, cakeys-tpm2-pkcs11<br/>import and export hooks stay on Provider"]
+    CORE["cakeys-core<br/>lock schema incl. method names and exposure levels"]
+    PROF["cakeys-profile<br/>read and resolve; emitter and diff only for caprobe"]
+
+    CLI --> P11
+    PROBE --> P11
+    MIG --> P11
+    CLI -. optional .-> PROVS
+    PROBE -. optional .-> PROVS
+    MIG -. optional .-> PROVS
+    PROVS --> P11
+    PROBE --> PROF
+    CLI --> CORE
+    MIG --> CORE
+    P11 --> CORE
+    P11 --> PROF
+```
+
+| Planned change | Stage |
+|---|---|
+| `pkcs11::probe`, `pkcs11::supports`, the `caps` verb and their argument parsing move to `caprobe` | 2 |
+| `cakeys-profile`'s emitter, `diff` and baseline generator go behind a feature only `caprobe` enables, or move into it | 2 |
+| What the probe uses from the token layer becomes public `cakeys-pkcs11` API | 2 |
+| The provider registry moves out of the `cakeys` CLI crate to where all three binaries share it | 2 |
+| `OaepHash` moves out of `core::migrate` to a neutral module, so `caprobe` needs no migration code | 2 |
+| `core::migrate`'s planner, `pkcs11::migrate` and the `export`, `migrate` and `transport` verbs move to `camigrate` | 3 |
+| `cakeys` depends on neither new crate; `camigrate` records an import through `ops`, the code `cakeys realise` uses | 3 |
+
 ## 5. Data model
 
 Three levels ([`DESIGN.md`](DESIGN.md) §2, drawn in [`diagrams.md`](diagrams.md) §1):
@@ -163,18 +210,22 @@ flowchart LR
     G --> D
 ```
 
-| Verb | Token | Lock | Summary |
-|---|---|---|---|
-| `validate` | none | read | Static checks, then each spec's needs against its token's capability profiles |
-| `resolve` | read | read | Find, check, compute IDs, print JSON |
-| `verify` | read | read | `resolve` + compare; prints the URI |
-| `check` | read, or write with `autoCreate` | read | Pre-use check by object name: `realise` without the write |
-| `realise` | write | write (default) | Adopt, or create with `autoCreate`; compare; record |
-| `create` | write | write (default) | Generate every unpinned key, `autoCreate` or not |
-| `delete` | write | write (default) | Delete if the identity matches; drop the realisation |
-| `gc` | none | write with `--apply` | Drop lock entries the config no longer names |
-| `caps`, `supports`, `probe` | read (`probe --write`: scratch token only) | read | Mechanisms; profile queries; profile generation and drift |
-| `export`, `migrate`, `transport` | read | read | Plans only (`--dry-run`); nothing moves yet |
+The binary column is the planned owner ([`SCOPE.md`](SCOPE.md), "Three tools"). Until stages
+2 and 3 of [`WORKPLAN.md`](../WORKPLAN.md) land, every verb runs as `cakeys <verb>`.
+
+| Verb | Binary | Token | Lock | Summary |
+|---|---|---|---|---|
+| `validate` | `cakeys` | none | read | Static checks, then each spec's needs against its token's capability profiles |
+| `resolve` | `cakeys` | read | read | Find, check, compute IDs, print JSON |
+| `verify` | `cakeys` | read | read | `resolve` + compare; prints the URI |
+| `check` | `cakeys` | read, or write with `autoCreate` | read | Pre-use check by object name: `realise` without the write |
+| `realise` | `cakeys` | write | write (default) | Adopt, or create with `autoCreate`; compare; record |
+| `create` | `cakeys` | write | write (default) | Generate every unpinned key, `autoCreate` or not |
+| `delete` | `cakeys` | write | write (default) | Delete if the identity matches; drop the realisation |
+| `gc` | `cakeys` | none | write with `--apply` | Drop lock entries the config no longer names |
+| `caps`, `supports`, `probe` | `caprobe` (planned, stage 2) | read (`probe --write`: scratch token only) | read | Mechanisms; profile queries; profile generation and drift |
+| `export`, `migrate`, `transport` | `camigrate` (planned, stage 3) | read | read | Plans only (`--dry-run`); nothing moves yet |
+| `import` | `camigrate` (planned, stage 4) | write | write | Not built yet (MIGRATE.md phase 3) |
 
 Exit codes are the error model: 10 hash mismatch, 11 not found, 12 ambiguous, 13 conflict,
 14 precondition failed, 15 unsupported, 16 unavailable, 17 invalid input, 1 I/O, 2 usage.
@@ -260,11 +311,12 @@ against independent oracles (openssl, hand-written DER, RustCrypto MACs).
 | Identity, lock rules, verbs, proof of possession | Built and tested on four module families |
 | Nix library, NixOS module, sandbox hook | Built, VM-tested |
 | `piv-attestation` | Built; verified by hand on one YubiKey 5C NFC FIPS |
-| `tpm-certify` | Built; tested on swtpm; Attestation Key is trust-on-first-use (no EK chain). Experimental, pending review: it reads tpm2-pkcs11's private store and has no version guard yet (review A8) |
-| Capability profiles | Phases 0–4 built; phase 5 (FIPS mode) planned |
-| Migration | In scope (cakeys will move keys). Planner and `--dry-run` only; phases 2–5 planned; code placement revisited before it is complete (review A5) |
+| Three binaries (`cakeys`, `caprobe`, `camigrate`) | Decided ([`WORKPLAN.md`](../WORKPLAN.md) D1–D6), planned: `caprobe` in stage 2, `camigrate` in stage 3. Today `cakeys` carries every verb |
+| `tpm-certify` | Built; tested on swtpm; Attestation Key is trust-on-first-use (no EK chain). Experimental, pending review: it reads tpm2-pkcs11's private store and has no version guard yet (review A8). Stays in `cakeys-tpm2-pkcs11` (WORKPLAN D4); the guard and a real-TPM test are planned for WORKPLAN stage 5 |
+| Capability profiles | Phases 0–4 built; phase 5 (FIPS mode) planned. Measuring moves to `caprobe` (planned, stage 2); `cakeys` keeps reading and resolving them |
+| Migration | In scope, in `camigrate` (review A5, decided). Planner and `--dry-run` only; the move to `camigrate` is planned for stage 3 and phases 2–5 for stage 4 |
 | `check` creating on first use (`autoCreate`) | Built; open decision whether to keep it (review A7) |
 | Identity modes `commit-at-creation`, `host-at-import`, `token-specific`; `identity.allow` | Pending implementation: in the config schema, refused (15) by every verb (review A6) |
 | `systemFeature` | Declared in both keys.toml and the NixOS module, kept equal by hand; one owner pending (review A6) |
-| Lock format | `version = 1`, draft, changes in place |
+| Lock format | `version = 1`, draft, changes in place. The observation table (review A3), the resolved profile name and `provenance.origin` are planned to land together (WORKPLAN stage 1) |
 | Platforms | x86_64-linux only |

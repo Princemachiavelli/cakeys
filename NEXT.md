@@ -1,5 +1,8 @@
 # Next: round out the feature set (2026-11-13)
 
+**Ordering:** [`WORKPLAN.md`](WORKPLAN.md) now sets the order of this work and replaces the
+order below; this file remains the task list it draws on.
+
 Decided with the user after PROVIDERS phase 3 (45db101): finish the work in progress, then
 refine and add test coverage. "Feature-complete" is everything through MIGRATE phase 5; native
 TPM duplication (MIGRATE 6), vendor methods (MIGRATE 7) and the items PLAN.md parks (native TPM
@@ -14,8 +17,6 @@ backend, post-quantum, lock merge, keystores, the attestation remainders) stay p
       token's effective profile, no token attached) and the wider Nix check.
 - [x] **M1/M2** (0ea445e): read-only sessions for read-only verbs; read the PIV PIN counters
       (`CKF_USER_PIN_FINAL_TRY` …) before login.
-- [ ] **D5**: at token open, a read-only check of the live token against its resolved
-      profile (`diff::read_only`), as a note — possible since phase 3.
 - [x] **Probe leftovers**: a killed run's `cakeys-probe-NN` objects are found before probing
       (refused or cleaned), never reported as a delete failure.
 - [ ] **Minor (review 2026-11-13): the profile set is parsed per token open.**

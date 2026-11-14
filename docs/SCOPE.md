@@ -9,6 +9,23 @@ The core crates are `cakeys-core` (no token access), `cakeys-pkcs11` (the generi
 layer) and the `cakeys` CLI. Provider crates (`cakeys-ykcs11`, `cakeys-tpm2-pkcs11`, and any
 vendor's) plug in through the `Provider` trait.
 
+## Three tools
+
+Decided 2026-11-13 ([`WORKPLAN.md`](../WORKPLAN.md) D1–D6): one workspace, one flake, three
+binaries, each with its own job. **Planned:** today `cakeys` still carries every verb;
+`caprobe` is split out in WORKPLAN stage 2 and `camigrate` in stage 3.
+
+| Tool | Job | Verbs and parts | What it may do |
+|---|---|---|---|
+| `cakeys` | Pins and verifies | `validate`, `resolve`, `verify`, `realise`, `create`, `delete`, `gc`, `check`; the Nix library, the NixOS module, the sandbox hook | Read tokens; generate and delete the objects keys.toml declares; write `keys.lock`. It never handles key material: a `cakeys` build carries no migration code (review A5). |
+| `caprobe` | Measures modules | `probe`, `supports`, `caps`; the profile emitter and diff, the baseline generator, `scripts/regen-profiles.sh`, the hardware harnesses | The only tool that creates and destroys scratch objects (`probe --write`, on a scratch token or slot). It never writes `keys.lock`. |
+| `camigrate` | Moves keys | `export`, `import`, `migrate`, `transport` | The only tool that handles key material: wrapping, unwrapping, and the `host` and `file` paths. It records an import through the same library function as `cakeys realise`, so one code path writes `keys.lock`, and `cakeys` loads what it wrote. |
+
+TPM attestation (`tpm-certify`) stays in `cakeys-tpm2-pkcs11`, behind the `tpm2` feature, and
+so with `cakeys`. The lock schema stays in `cakeys-core`, including the method names and
+exposure levels that `provenance.origin` records. The provider crates keep their import and
+export hooks on the `Provider` trait and never depend on `camigrate`.
+
 ## In scope (core)
 
 - **The lock file for keys.** Content-addressed identities, realisations, the compare and
@@ -21,9 +38,11 @@ vendor's) plug in through the `Provider` trait.
   (`lib.mkKeys`), and the NixOS module (the sandbox hook, check units).
 - **Verify before use.** The pseudo-fixed-output `check`, proof of possession, type and policy
   checks.
-- **Keystore import and export** ([`MIGRATE.md`](../MIGRATE.md)). The planner and `--dry-run`,
-  standard PKCS#11 wrapping and unwrapping, transport keys, bundles, and the standard file
-  formats (PKCS#8, PKCS#12), with every path's exposure named.
+- **Keystore import and export** ([`MIGRATE.md`](../MIGRATE.md)), in `camigrate` only (planned, stage 3). The
+  planner and `--dry-run`, standard PKCS#11 wrapping and unwrapping, transport keys, bundles,
+  and the standard file formats (PKCS#8, PKCS#12), with every path's exposure named.
+- **Measuring modules** ([`PROVIDERS.md`](PROVIDERS.md)), in `caprobe` only (planned, stage 2). Capability
+  profiles are generated and re-checked there; `cakeys` only reads and resolves them.
 - **Testing against reference tokens.** SoftHSM, kryoptic, tpm2-pkcs11 and p11-kit: the shared
   suite, cross-reference tests, property tests, fuzzing, and design models
   ([`VERIFICATION.md`](VERIFICATION.md)).
