@@ -20,6 +20,7 @@
   rustc,
   stdenv,
   openssl,
+  coreutils,
 }:
 let
   targets = [
@@ -94,6 +95,8 @@ in
       cargo-fuzz
       stdenv.cc
       openssl
+      # The seed step's `cp --update=none` is GNU; darwin's own cp has no --update.
+      coreutils
     ];
     text = ''
       if [ $# -lt 1 ]; then

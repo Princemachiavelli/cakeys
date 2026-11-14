@@ -14,13 +14,15 @@
   dbus,
   p11-kit,
   pkg-config,
+  # The tpm2 feature (cakeys-tpm2-pkcs11) is Linux only: tss-esapi-sys ships no prebuilt bindings
+  # for aarch64-darwin, and tpm2-pkcs11 and its tools are not packaged there, so there is no
+  # module for it to attest. Darwin builds the CLI with ykcs11 alone; `withTpm2 = false` builds
+  # and tests that configuration on Linux too.
+  withTpm2 ? stdenv.hostPlatform.isLinux,
 }:
 
 let
-  # The tpm2 feature (cakeys-tpm2-pkcs11) is Linux only: tss-esapi-sys ships no prebuilt bindings
-  # for aarch64-darwin, and tpm2-pkcs11 and its tools are not packaged there, so there is no
-  # module for it to attest. Darwin builds the CLI with ykcs11 alone.
-  tpm2 = stdenv.hostPlatform.isLinux;
+  tpm2 = withTpm2;
   # What `cargo test` and clippy (checks.clippy) cover: the workspace, less the TPM crate and
   # with the CLI's features narrowed where tpm2 is off. A crate excluded but still a default
   # feature would be built anyway.
