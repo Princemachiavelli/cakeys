@@ -32,7 +32,7 @@
       runHook postBuild
     '';
     installPhase = ''
-      mkdir -p $out
+      mkdir -p $out $caprobe
     '';
     doCheck = false;
   });
@@ -40,7 +40,8 @@
   deny = deny.check;
   # nix/demo.sh straight through: every step's expected exit code still holds.
   demo = demo.check;
-  # The CLI without its `tpm2` and `ykcs11` features: builds without tpm2-tss and sqlite.
+  # cakeys and caprobe without their `tpm2` and `ykcs11` features: build without tpm2-tss and
+  # sqlite.
   minimal = cakeys.overrideAttrs {
     pname = "cakeys-minimal";
     cargoBuildNoDefaultFeatures = true;
@@ -48,12 +49,12 @@
     doCheck = false;
   };
   vm = mkTest "vm";
-  # The capability-profile query (docs/PROVIDERS.md): static answers from the profiles embedded
-  # in the binary, no token needed. yes -> 0, no -> 15, unknown -> 16.
+  # The capability-profile query (docs/PROVIDERS.md, `caprobe supports`): static answers from the
+  # profiles embedded in the binary, no token needed. yes -> 0, no -> 15, unknown -> 16.
   profiles = pkgs.runCommand "cakeys-profiles" { } ''
     set -u
     # No keys.toml: `supports --profile` reads only the profiles.
-    q() { "${cakeys}/bin/cakeys" supports "$@"; }
+    q() { "${cakeys.caprobe}/bin/caprobe" supports "$@"; }
     expect() {
       want=$1
       shift

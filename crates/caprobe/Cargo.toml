@@ -1,0 +1,57 @@
+[package]
+name = "caprobe"
+description = "Measure PKCS#11 modules: capability profiles by probing a token, and queries over them (cakeys)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "caprobe"
+
+[[bin]]
+name = "caprobe"
+path = "src/main.rs"
+
+[features]
+default = ["tpm2", "ykcs11"]
+tpm2 = ["cakeys-cli-common/tpm2"]
+ykcs11 = ["cakeys-cli-common/ykcs11"]
+
+[dependencies]
+cakeys-cli-common = { workspace = true, default-features = false }
+cakeys-core.workspace = true
+cakeys-pkcs11.workspace = true
+cakeys-profile.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+cryptoki.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+getrandom.workspace = true
+
+# The integration tests include crates/cli/tests/common (one harness for both tools), and with
+# it its dependencies.
+[dev-dependencies]
+aes.workspace = true
+aes-kw.workspace = true
+base64.workspace = true
+cmac.workspace = true
+cryptoki.workspace = true
+sha2.workspace = true
+toml.workspace = true
+
+[[test]]
+name = "tpm2"
+required-features = ["tpm2"]
+
+[[test]]
+name = "ftpm"
+required-features = ["tpm2"]
+
+[[test]]
+name = "yubikey"
+required-features = ["ykcs11"]

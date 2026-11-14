@@ -12,13 +12,13 @@ vendor's) plug in through the `Provider` trait.
 ## Three tools
 
 Decided 2026-11-13 ([`WORKPLAN.md`](../WORKPLAN.md) D1–D6): one workspace, one flake, three
-binaries, each with its own job. **Planned:** today `cakeys` still carries every verb;
-`caprobe` is split out in WORKPLAN stage 2 and `camigrate` in stage 3.
+binaries, each with its own job. `caprobe` is built (WORKPLAN stage 2). **Planned:** `camigrate`
+(stage 3); until it lands, `cakeys` still carries the migration verbs.
 
 | Tool | Job | Verbs and parts | What it may do |
 |---|---|---|---|
 | `cakeys` | Pins and verifies | `validate`, `resolve`, `verify`, `realise`, `create`, `delete`, `gc`, `check`; the Nix library, the NixOS module, the sandbox hook | Read tokens; generate and delete the objects keys.toml declares; write `keys.lock`. It never handles key material: a `cakeys` build carries no migration code (review A5). |
-| `caprobe` | Measures modules | `probe`, `supports`, `caps`; the profile emitter and diff, the baseline generator, `scripts/regen-profiles.sh`, the hardware harnesses | The only tool that creates and destroys scratch objects (`probe --write`, on a scratch token or slot). It never writes `keys.lock`. |
+| `caprobe` | Measures modules | `probe`, `supports`, `caps`; the profile emitter and diff, the baseline generator, `scripts/regen-profiles.sh`, the hardware harnesses | The only tool that creates and destroys scratch objects (`probe --write`, on a scratch token or slot). It never reads or writes `keys.lock`. |
 | `camigrate` | Moves keys | `export`, `import`, `migrate`, `transport` | The only tool that handles key material: wrapping, unwrapping, and the `host` and `file` paths. It records an import through the same library function as `cakeys realise`, so one code path writes `keys.lock`, and `cakeys` loads what it wrote. |
 
 TPM attestation (`tpm-certify`) stays in `cakeys-tpm2-pkcs11`, behind the `tpm2` feature, and
@@ -41,7 +41,7 @@ export hooks on the `Provider` trait and never depend on `camigrate`.
 - **Keystore import and export** ([`MIGRATE.md`](../MIGRATE.md)), in `camigrate` only (planned, stage 3). The
   planner and `--dry-run`, standard PKCS#11 wrapping and unwrapping, transport keys, bundles,
   and the standard file formats (PKCS#8, PKCS#12), with every path's exposure named.
-- **Measuring modules** ([`PROVIDERS.md`](PROVIDERS.md)), in `caprobe` only (planned, stage 2). Capability
+- **Measuring modules** ([`PROVIDERS.md`](PROVIDERS.md)), in `caprobe` only. Capability
   profiles are generated and re-checked there; `cakeys` only reads and resolves them.
 - **Testing against reference tokens.** SoftHSM, kryoptic, tpm2-pkcs11 and p11-kit: the shared
   suite, cross-reference tests, property tests, fuzzing, and design models

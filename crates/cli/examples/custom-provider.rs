@@ -1,5 +1,5 @@
 //! A downstream `cakeys` with an extra provider for an in-house PKCS#11 module.
-//! `cargo run --example custom-provider -- --config keys.toml caps --token acme`
+//! `cargo run --example custom-provider -- --config keys.toml verify <spec> --token acme`
 
 use cakeys_pkcs11::provider::Provider;
 use cakeys_pkcs11::token::ModuleInfo;

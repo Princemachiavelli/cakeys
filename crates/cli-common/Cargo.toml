@@ -1,0 +1,26 @@
+[package]
+name = "cakeys-cli-common"
+description = "cakeys: what the cakeys, caprobe and camigrate command lines share (the provider registry, opening tokens, exit codes)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["tpm2", "ykcs11"]
+# tpm2-pkcs11 provider with the native TPM2_Certify attestation (links tpm2-tss and sqlite).
+tpm2 = ["dep:cakeys-tpm2-pkcs11"]
+# ykcs11 provider (YubiKey PIV) with the piv-attestation commitment.
+ykcs11 = ["dep:cakeys-ykcs11"]
+
+[dependencies]
+cakeys-core.workspace = true
+cakeys-pkcs11.workspace = true
+cakeys-ykcs11 = { workspace = true, optional = true }
+cakeys-tpm2-pkcs11 = { workspace = true, optional = true }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true

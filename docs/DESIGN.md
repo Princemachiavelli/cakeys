@@ -547,6 +547,10 @@ model = "..." ; serial = "..." ; firmware = "M.m"
 
 ## 5. Verbs (HTTP-like) and exit codes
 
+The verbs are `cakeys`'s, except the three that measure modules: `caprobe caps`, `supports` and
+`probe` ([`SCOPE.md`](SCOPE.md), "Three tools"). Both binaries take `--config` and `--module` and
+share the exit codes; `caprobe` never reads the lock.
+
 | Verb | Semantics |
 |---|---|
 | `validate` | Static check of modes, opt-ins, types and provider names; touches no token. Then the capability-profile gate (docs/PROVIDERS.md phase 4): each spec's needs — its commitments' mechanisms, generating its type, curve and size when `autoCreate`, an attestation — against its token's profiles, resolved from the lock's recorded module and token or keys.toml's `provider`; a profile's *no* is refused (15) naming the profile, *unknown* is a note. |
@@ -557,10 +561,10 @@ model = "..." ; serial = "..." ; firmware = "M.m"
 | `delete <spec> --token [--if-match ID] [--no-update-lock]` | DELETE with If-Match. Absent is success, even without a lock — but a session without login cannot see a private object, so it never reports one absent (16); a present object with no expected ID is never deleted (`ec_lifecycle`), and only what was identified is removed: a private key's public half only when it holds the same key, never another key's public object under the locator (`delete_removes_only_what_it_identified`); a key on a module whose delete leaves it in place (ykcs11) is refused (15), never claimed. Unless `--no-update-lock`, it removes the realisation but keeps `objects.<name>.ids`, since the material may live on other tokens. |
 | `check <obj>[.id.<scheme>] [--token] [--spec]` | The pseudo-FOD pre-use check: realise without writing the lock, print the URI. Schemes the spec or token can never compute are refused before anything is created (`scheme_the_token_lacks_is_refused_before_create`). |
 | `gc [--apply]` | Print lock entries `keys.toml` no longer names, as table names; `--apply` removes exactly what it printed, holding the update lock (M3). Live objects keep their `ids` (`gc_prints_then_removes_stale_entries`). |
-| `caps --token` | Provider and usable mechanisms, as JSON. |
+| `caprobe caps --token` | Provider, resolved capability profiles and usable mechanisms, as JSON. |
 | `export`, `migrate` `--dry-run`; `transport` | Plan moving objects to a target (MIGRATE.md): per object the method, the exposure on the way, or why it cannot move. Only planning is implemented; `transport` writes a target's transport file. |
-| `supports [--profile \| --token] NAME` | Ask the capability profiles (docs/PROVIDERS.md) what a module supports: pure data, no token touched; 0 yes, 15 no, 16 unknown. With `--profile` it needs no keys.toml. |
-| `probe --token [--write] [--diff P] [--out F]` | Generate a token's capability profile by probing it; `--write` only on a token marked `scratch` (17 otherwise); `--diff` drift is 15. |
+| `caprobe supports [--profile \| --token] NAME` | Ask the capability profiles (docs/PROVIDERS.md) what a module supports: pure data, no token touched; 0 yes, 15 no, 16 unknown. With `--profile` it needs no keys.toml. |
+| `caprobe probe --token [--write] [--diff P] [--out F]` | Generate a token's capability profile by probing it; `--write` only on a token marked `scratch` (17 otherwise); `--diff` drift is 15. |
 
 Exit codes:
 
@@ -585,10 +589,12 @@ Exit codes:
 | Crate | Role |
 |---|---|
 | `cakeys-core` | No `cryptoki`, no token access: config (`config`, typed classes, key types and schemes in `types`/`id`), the boolean-attribute table (`attrs`), CA-IDs (`id`), proof-of-possession host math and signature verification (`pop`, `sig`), what a spec asks for (`plan`: `Target`, `plan_mode`), and the lock rules (`reconcile`: `compare`, `record`, `Notes`), unit-tested without an HSM |
-| `cakeys-profile` | Capability profiles as data (docs/PROVIDERS.md): the baseline generated from the vendored PKCS#11 headers, the embedded module and layer profiles (`profiles/`), the effective view of a stack (`Effective`, `Verdict`) and the profile diff. No token access |
-| `cakeys-pkcs11` | the `cryptoki` token layer (`token/`: session and SO step, policy, generation, identity, proof of possession, URIs), the verbs (`ops`, with `create` over its selected pairs; `supports`; `probe`; `migrate`, the move planning), profile resolution and the static gate (`resolution`, `binding`, `gate`), `Provider` and `Registry`, and the built-in providers without code of their own (`providers`: softhsm, kryoptic, p11-kit) |
+| `cakeys-profile` | Capability profiles as data (docs/PROVIDERS.md), read and resolved: the baseline, the embedded module and layer profiles (`profiles/`), and the effective view of a stack (`Effective`, `Verdict`). No token access, and nothing that writes a profile |
+| `cakeys-pkcs11` | the `cryptoki` token layer (`token/`: session and SO step, policy, generation, identity, proof of possession, URIs), the verbs (`ops`, with `create` over its selected pairs; `migrate`, the move planning), profile resolution and the static gate (`resolution`, `binding`, `gate`), `Provider` and `Registry`, and the built-in providers without code of their own (`providers`: softhsm, kryoptic, p11-kit) |
 | `cakeys-{ykcs11,tpm2-pkcs11}` | providers with native paths and dependencies of their own (Yubico roots; tss-esapi, sqlite) |
-| `cakeys` (crates/cli) | Arguments, files and printing only — the verbs' logic is in `cakeys-pkcs11`, so another front end need not reimplement it (`validate`'s loop over the gate is the one exception left). CLI as a library: `main(registry)`, `default_registry()`; `examples/custom-provider.rs`. Cargo features `ykcs11` and `tpm2` (both default) link those providers; `checks.minimal` builds without them, and so without tpm2-tss and sqlite |
+| `cakeys-cli-common` | What the command lines share: `default_registry()` (cargo features `ykcs11` and `tpm2`, both default, link those providers), opening a token keys.toml names, printing notes, the exit-code mapping |
+| `cakeys` (crates/cli) | Arguments, files and printing only — the verbs' logic is in `cakeys-pkcs11`, so another front end need not reimplement it (`validate`'s loop over the gate is the one exception left). CLI as a library: `main(registry)`, `default_registry()`; `examples/custom-provider.rs`. Its features `ykcs11` and `tpm2` forward to `cakeys-cli-common`; `checks.minimal` builds both binaries without them, and so without tpm2-tss and sqlite |
+| `caprobe` (crates/caprobe) | The module measurer: `caps`, `supports` and `probe`, the profile emitter and diff, and (test-only) the baseline generator from the vendored PKCS#11 headers. Its own library and binary (`main(registry)`), in its own Nix output, so `cakeys` links no probe code |
 
 ### 6.2 Providers
 

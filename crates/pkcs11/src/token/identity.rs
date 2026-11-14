@@ -168,7 +168,12 @@ impl Token {
 
     /// SPKI from the key material attributes of `h`; `None` when it carries none (e.g. an EC
     /// private key without `CKA_EC_POINT`).
-    pub(crate) fn material_spki(&self, h: ObjectHandle) -> Result<Option<Vec<u8>>> {
+    ///
+    /// # Errors
+    ///
+    /// `Unavailable` when the module refuses `C_GetAttributeValue`; `Unsupported` for a curve
+    /// cakeys does not know; whatever re-encoding the point or the RSA key refuses.
+    pub fn material_spki(&self, h: ObjectHandle) -> Result<Option<Vec<u8>>> {
         match self.attr(h, AttributeType::KeyType)? {
             Some(Attribute::KeyType(KeyType::EC | KeyType::EC_EDWARDS)) => {
                 let a = self

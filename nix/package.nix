@@ -33,6 +33,17 @@ rustPlatform.buildRustPackage {
 
   cargoLock.lockFile = ../Cargo.lock;
 
+  # The tools of one workspace (docs/SCOPE.md, "Three tools"), from one build whose check phase
+  # tests them together, each in its own output: `out` holds cakeys, `caprobe` the module
+  # measurer, so cakeys' closure carries no probe code.
+  outputs = [
+    "out"
+    "caprobe"
+  ];
+  postInstall = ''
+    moveToOutput bin/caprobe "$caprobe"
+  '';
+
   # tss-esapi (the native TPM2_Certify attestation path of cakeys-tpm2-pkcs11) links
   # tpm2-tss's ESAPI and TCTI loader at build time; the runtime closure picks the libraries
   # up through the link. rusqlite's `bundled` feature serves plain cargo builds, but nixpkgs'

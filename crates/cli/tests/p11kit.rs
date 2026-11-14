@@ -37,19 +37,9 @@ fn env(name: &str) -> Option<Env> {
 }
 
 impl Env {
-    /// Tokens: `fwd` (through p11-kit), `fwd-anon` (no PIN), `fwd-softhsm` (provider named),
-    /// `fwd-other` (a token the server does not export) and `direct` (`SoftHSM` itself).
+    /// keys.toml: the suite's tokens ([`p11kit_tokens`]) and `body`.
     fn config(&self, body: &str) {
-        let pin = format!("pinFile = \"{}\"", self.dir.join("pin").display());
-        let token = |name: &str, module: &str, label: &str, extra: &str| {
-            format!("[tokens.{name}]\nmodule = \"{module}\"\ntokenLabel = \"{label}\"\n{extra}\n\n")
-        };
-        let head = token("fwd", &self.client, "kmp11", &pin)
-            + &token("fwd-anon", &self.client, "kmp11", "")
-            + &token("fwd-softhsm", &self.client, "kmp11", &format!("{pin}\nprovider = \"softhsm\""))
-            + &token("fwd-other", &self.client, "kmtest", &pin)
-            + &token("direct", &self.direct, "kmp11", &pin);
-        self.write_config(&(head + body));
+        self.write_config(&(p11kit_tokens(&self.client, &self.direct, &self.dir) + body));
     }
 
     #[expect(clippy::unused_self, reason = "the fixture helpers sit in an impl so the call sites read uniformly")]
@@ -61,35 +51,6 @@ impl Env {
     fn session(&self, module: &str) -> TestSession {
         open_session(module, "kmp11", "1234")
     }
-}
-
-fn caps(e: &Env, token: &str) -> serde_json::Value {
-    serde_json::from_str(&stdout(&e.km(&["caps", "--token", token]))).unwrap()
-}
-
-const FORWARDING_DROPS: [&str; 4] =
-    ["CKM_AES_KEY_WRAP", "CKM_AES_KEY_WRAP_PAD", "CKM_EC_EDWARDS_KEY_PAIR_GEN", "CKM_EDDSA"];
-
-#[test]
-fn p11kit_forwards_a_filtered_view() {
-    let Some(e) = env("view") else { return };
-    e.config("");
-    let fwd = caps(&e, "fwd");
-    assert_eq!(fwd["provider"], "p11-kit", "detected from the proxy's C_GetInfo");
-    let has = |c: &serde_json::Value, m: &str| c["mechanisms"].as_array().unwrap().iter().any(|x| x == m);
-    let direct = caps(&e, "direct");
-    assert_eq!(direct["provider"], "softhsm");
-    for m in ["CKM_EC_KEY_PAIR_GEN", "CKM_RSA_PKCS_KEY_PAIR_GEN", "CKM_AES_CMAC", "CKM_AES_ECB", "CKM_SHA256_HMAC"] {
-        assert!(has(&fwd, m) && has(&direct, m), "{m} is forwarded");
-    }
-    // The RPC drops what it cannot marshal (if a p11-kit update forwards one, revisit the docs).
-    for m in FORWARDING_DROPS {
-        assert!(has(&direct, m) && !has(&fwd, m), "{m}: SoftHSM has it, p11-kit hides it");
-    }
-    // Naming the provider behind the proxy applies its behaviour.
-    assert_eq!(caps(&e, "fwd-softhsm")["provider"], "softhsm");
-    // The server exports only the token in its URI; the same SoftHSM's other token is invisible.
-    assert_eq!(e.code(&["caps", "--token", "fwd-other"]), 16);
 }
 
 /// A test-only AES-256 value planted on the token, known to the host.
@@ -253,33 +214,4 @@ fn p11kit_login_is_per_client() {
     assert_eq!(e.code(&["realise", "k", "--token", "fwd-anon", "--no-update-lock"]), 11);
     assert_eq!(e.code(&["realise", "k-pub", "--token", "fwd-anon", "--update-lock"]), 0);
     drop(held);
-}
-
-/// The p11-kit layer profile against the forwarder itself (docs/PROVIDERS.md phase 3): probed
-/// through p11-kit, `SoftHSM` advertises exactly what its committed profile advertises minus
-/// what profiles/layers/p11-kit.toml subtracts — the client filters `C_GetMechanismList` — and
-/// the probe sees p11-kit's identity, not the module's.
-#[test]
-fn the_forwarder_subtracts_exactly_its_layer() {
-    let Some(e) = env("probe_forwarded") else { return };
-    if !cryptoki_hmac_types_fixed(std::env::var("CAKEYS_P11KIT_REQUIRE").is_ok()) {
-        return;
-    }
-    e.config("");
-    let read = |path: &str| -> toml::Value {
-        toml::from_str(&std::fs::read_to_string(committed_profile(path)).unwrap()).unwrap()
-    };
-    let names = |v: &toml::Value| -> std::collections::BTreeSet<String> {
-        v.as_array().unwrap().iter().map(|m| m.as_str().unwrap().to_owned()).collect()
-    };
-    let module = names(&read("modules/softhsm/2.7.toml")["advertise"]);
-    let layer = names(&read("layers/p11-kit.toml")["subtract"]["mechanisms"]);
-    assert!(layer.is_subset(&module), "the layer subtracts what SoftHSM never advertises");
-    let out = e.km(&["probe", "--token", "fwd"]);
-    assert_eq!(code(&out), 0);
-    let probed: toml::Value = toml::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
-    let forwarded = names(&probed["advertise"]);
-    let expected: std::collections::BTreeSet<String> = module.difference(&layer).cloned().collect();
-    assert_eq!(forwarded, expected, "p11-kit forwards a different list than its layer profile says");
-    assert_eq!(probed["match"]["manufacturer"].as_str(), Some("PKCS#11 Kit"));
 }

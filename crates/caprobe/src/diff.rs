@@ -2,7 +2,7 @@
 //! a claimed profile says, over the rows a probe can observe. Empty is conformance — the
 //! shipped profile is what the module does; non-empty is drift, each line naming the row.
 
-use crate::profile::{GenerateRow, Profile};
+use cakeys_profile::{GenerateRow, Profile};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Compare the probe-observable rows of `generated` against `claimed`: one line per

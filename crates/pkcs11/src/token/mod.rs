@@ -247,9 +247,10 @@ impl Token {
         })
     }
 
-    /// The session itself, for the probe's raw `C_*` calls (crate-internal: the normal verbs
-    /// go through the methods above).
-    pub(crate) fn raw(&self) -> &Session {
+    /// The session itself, for raw `C_*` calls: caprobe's probes, which exercise what the
+    /// module does beyond what the verbs ask of it (the verbs go through the methods above).
+    #[must_use]
+    pub fn raw(&self) -> &Session {
         &self.session
     }
 
@@ -258,7 +259,11 @@ impl Token {
     /// rows and so derives only in a read-write session [run]. Login state belongs to the
     /// token, shared by every session of the process, and object handles are valid in all of
     /// them (PKCS#11 base §5.6), so it needs no login and finds the same key.
-    pub(crate) fn extra_session(&self, access: Access) -> Result<Session> {
+    ///
+    /// # Errors
+    ///
+    /// `Unavailable` when the module refuses another session (`C_OpenSession`).
+    pub fn extra_session(&self, access: Access) -> Result<Session> {
         let ctx = &self.library.0;
         match access {
             Access::Read => ctx.open_ro_session(self.slot).map_err(ck("C_OpenSession (read-only)")),
@@ -389,7 +394,13 @@ impl Token {
     /// create and destroy objects only as SO, then return to the user session. Login state is
     /// per token, so the user is logged out first. The admin credential is read here, never at
     /// open, and zeroized when the step ends.
-    pub(crate) fn as_so<T>(&self, what: &str, step: impl FnOnce() -> Result<T>) -> Result<T> {
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` without an admin credential configured; `Unavailable` when the SO login,
+    /// the logout or the return to the user session fails, or the PIN counters refuse a login;
+    /// else whatever `step` returns.
+    pub fn as_so<T>(&self, what: &str, step: impl FnOnce() -> Result<T>) -> Result<T> {
         let so = read_mgm(&self.cfg)?.ok_or_else(|| {
             self.unsupported(format!(
                 "{what} on '{}' needs a Security Officer session: set tokens.{}.mgmKeyFile or mgmKeyEnv",
@@ -552,7 +563,10 @@ fn read_pin(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
     read_secret("PIN", cfg.pin_env.as_deref(), cfg.pin_file.as_deref())
 }
 
-pub(crate) fn has_admin(cfg: &TokenCfg) -> bool {
+/// Whether keys.toml gives the token an admin (Security Officer) credential, which [`Token::as_so`]
+/// reads.
+#[must_use]
+pub fn has_admin(cfg: &TokenCfg) -> bool {
     cfg.mgm_key_file.is_some() || cfg.mgm_key_env.is_some()
 }
 

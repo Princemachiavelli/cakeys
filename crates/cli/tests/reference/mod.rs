@@ -37,17 +37,7 @@ fn env(name: &str) -> Option<Env> {
 impl Env {
     /// Write keys.toml: the token header plus the given objects/specs.
     fn config(&self, body: &str) {
-        // `ref` is scratch: the reference suite's token is created for the run and thrown
-        // away, which is exactly what the probe's write probes demand (PROVIDERS.md phase 3).
-        // `ref-anon` is the same token without a PIN: it sees only public objects, like
-        // a PIV token used without login.
-        let head = format!(
-            "[tokens.ref]\nmodule = \"{m}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nscratch = true\n\n\
-             [tokens.ref-anon]\nmodule = \"{m}\"\ntokenLabel = \"kmtest\"\n\n",
-            self.dir.join("pin").display(),
-            m = self.module,
-        );
-        self.write_config(&(head + body));
+        self.write_config(&(reference_tokens(&self.module, &self.dir) + body));
     }
 
     /// Replace the lock with a hand-written one, keeping the realisations already recorded and the
@@ -1463,11 +1453,6 @@ attributes = { CKA_SIGN = true, CKA_WRAP = true, CKA_SENSITIVE = true, CKA_EXTRA
 tokens.ref = { locator = { CKA_LABEL = "no-cmac" }, autoCreate = true }
 "#,
     );
-    let caps = stdout(&e.km_env(&["caps", "--token", "ref"], &env));
-    assert!(
-        caps.contains("CKM_AES_KEY_WRAP\"") && !caps.contains("CKM_AES_CMAC\""),
-        "config did not hide CMAC: {caps}"
-    );
     // The spec allows cmac, but this token cannot compute it: refused, nothing created.
     assert_eq!(code(&e.km_env(&["check", "k.id.cmac"], &env)), 15);
     assert_eq!(e.session().labelled("no-cmac"), []);
@@ -1477,26 +1462,37 @@ tokens.ref = { locator = { CKA_LABEL = "no-cmac" }, autoCreate = true }
     assert_eq!(code(&o), 0);
     let ids: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert_eq!(ids["ids"].as_object().unwrap().keys().collect::<Vec<_>>(), ["kw"]);
+    // The hiding config is what this run saw (the lock's observation records the mechanisms).
+    let seen = e.observation("k", "ref")["mechanisms"].to_string();
+    assert!(
+        seen.contains("CKM_AES_KEY_WRAP\"") && !seen.contains("CKM_AES_CMAC\""),
+        "config did not hide CMAC: {seen}"
+    );
     // With CMAC back, the same key also yields cmac, linked through the locked kw.
     assert_eq!(e.code(&["realise", "k", "--token", "ref", "--update-lock"]), 0);
     assert!(e.lock()["objects"]["k"]["ids"].get("cmac").is_some());
 }
 
+/// The provider is detected from `C_GetInfo`, or named in keys.toml; the lock's observation
+/// records which handled the realisation.
 #[test]
 fn provider_is_detected_or_named() {
     let Some(e) = env("provider") else { return };
-    e.config(EC);
-    let caps = |o: &Output| serde_json::from_str::<serde_json::Value>(&stdout(o)).unwrap()["provider"].clone();
-    assert_eq!(caps(&e.km(&["caps", "--token", "ref"])), REF.provider, "auto-detected from C_GetInfo");
+    e.config(EC.replace("ec-lifecycle", "provider").as_str());
+    let realise = ["realise", "signing-soft", "--token", "ref", "--update-lock"];
+    let provider = || e.observation("signing-soft", "ref")["provider"].as_str().unwrap().to_owned();
+    assert_eq!(e.code(&realise), 0);
+    assert_eq!(provider(), REF.provider, "auto-detected from C_GetInfo");
     let path = e.dir.join("keys.toml");
     let text = std::fs::read_to_string(&path).unwrap();
     let named =
         |p: &str| text.replacen("tokenLabel = \"kmtest\"", &format!("tokenLabel = \"kmtest\"\nprovider = \"{p}\""), 1);
     std::fs::write(&path, named("generic")).unwrap();
-    assert_eq!(caps(&e.km(&["caps", "--token", "ref"])), "generic", "explicit choice wins");
+    assert_eq!(e.code(&realise), 0);
+    assert_eq!(provider(), "generic", "explicit choice wins");
     std::fs::write(&path, named("nope")).unwrap();
     assert_eq!(e.code(&["validate"]), 17);
-    assert_eq!(e.code(&["caps", "--token", "ref"]), 17);
+    assert_eq!(e.code(&realise), 17);
 }
 
 /// Plant a secret key with a known value (the host oracle knows it).
@@ -2383,24 +2379,6 @@ fn s8_a_retargeted_spec_is_a_spec_change() {
     // The same object under another locator: also a change to review.
     e.config(&body.replace("CKA_LABEL = \"s8-a\"", "CKA_LABEL = \"s8-b\""));
     assert_eq!(e.code(&["verify", "sa", "--token", "ref"]), 14);
-}
-
-/// The committed module profile is probe output (docs/PROVIDERS.md phase 3): a fresh probe of
-/// the reference token conforms to it, regenerating it changes no byte, and the write probes
-/// are refused on a token keys.toml does not mark scratch.
-#[test]
-fn the_committed_profile_is_what_the_probe_observes() {
-    let Some(e) = env("profile_conformance") else { return };
-    // Through an unpatched cryptoki the advertisement is short; the probe refuses to judge.
-    if !cryptoki_hmac_types_fixed(std::env::var(REF.require_var).is_ok()) {
-        return;
-    }
-    e.config("");
-    let (name, path) = REF.profile;
-    assert_profile_conforms(|args| e.km(args), "ref", name, path, &e.dir.join("profile.toml"));
-    let anon = e.km(&["probe", "--token", "ref-anon", "--write"]);
-    assert_eq!(code(&anon), 17);
-    assert!(stderr(&anon).contains("not marked scratch"));
 }
 
 /// `cakeys create` makes keys whether or not the spec sets autoCreate, which only opts the

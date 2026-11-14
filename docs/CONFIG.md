@@ -49,7 +49,7 @@ tokenLabel = "main"
 # The user PIN, read from a file (or `pinEnv = "VAR"`: the PIN itself from the environment).
 # Without a PIN cakeys opens a public session and sees only public objects.
 pinFile = "/var/lib/softhsm/pin"
-# Marks the token expendable for `cakeys probe --write` (docs/PROVIDERS.md): its write probes
+# Marks the token expendable for `caprobe probe --write` (docs/PROVIDERS.md): its write probes
 # generate, wrap, unwrap and destroy objects, so they run only on a token marked scratch and
 # are refused (17) on any other. No other verb reads it. Never on a token holding real keys:
 # scratch = true

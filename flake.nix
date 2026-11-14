@@ -28,7 +28,12 @@
       treefmt = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
       # cakeys and the tools around it (pkgs.nix).
       local = import ./pkgs.nix { inherit pkgs advisory-db; };
-      inherit (local) cakeys pcsc-probe mezura;
+      inherit (local)
+        cakeys
+        caprobe
+        pcsc-probe
+        mezura
+        ;
       mkTest =
         kind:
         import ./nix/test.nix {
@@ -48,7 +53,7 @@
 
       packages.${system} = {
         default = cakeys;
-        inherit cakeys pcsc-probe;
+        inherit cakeys caprobe pcsc-probe;
         # systemd-nspawn variant of the integration test. Needs the `uid-range` system feature
         # (nix.conf: `system-features = ... uid-range` and `auto-allocate-uids = true`).
         test-nspawn = mkTest "container";
@@ -66,6 +71,7 @@
       apps.${system} = import ./apps.nix {
         inherit pkgs;
         inherit (local)
+          caprobe
           demo
           deny
           fuzz

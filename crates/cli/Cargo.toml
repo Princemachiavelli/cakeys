@@ -19,16 +19,14 @@ path = "src/main.rs"
 [features]
 default = ["tpm2", "ykcs11"]
 # tpm2-pkcs11 provider with the native TPM2_Certify attestation (links tpm2-tss and sqlite).
-tpm2 = ["dep:cakeys-tpm2-pkcs11"]
+tpm2 = ["cakeys-cli-common/tpm2"]
 # ykcs11 provider (YubiKey PIV) with the piv-attestation commitment.
-ykcs11 = ["dep:cakeys-ykcs11"]
+ykcs11 = ["cakeys-cli-common/ykcs11"]
 
 [dependencies]
+cakeys-cli-common = { workspace = true, default-features = false }
 cakeys-core.workspace = true
 cakeys-pkcs11.workspace = true
-cakeys-profile.workspace = true
-cakeys-ykcs11 = { workspace = true, optional = true }
-cakeys-tpm2-pkcs11 = { workspace = true, optional = true }
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true

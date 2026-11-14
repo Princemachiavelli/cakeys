@@ -73,9 +73,10 @@ directory) they refuse up front unless `--no-update-lock` is passed.
 Verbs:
 
 - `validate`, `resolve`, `verify`, `realise [--no-update-lock]`, `create [<spec>] [--token]`,
-  `delete [--if-match] [--no-update-lock]`, `check <object>[.id.<scheme>]`, `gc [--apply]` and
-  `caps`; `supports` and `probe` for the capability profiles; `export`, `migrate` (`--dry-run`
-  plans only) and `transport`.
+  `delete [--if-match] [--no-update-lock]`, `check <object>[.id.<scheme>]` and `gc [--apply]`;
+  `export`, `migrate` (`--dry-run` plans only) and `transport`.
+- A second binary, `caprobe` (`nix run .#caprobe`), measures modules: `caps`, `supports` and
+  `probe` for the capability profiles (docs/PROVIDERS.md). It never reads `keys.lock`.
 - The first group behaves like HTTP verbs: safe to repeat, never create over an occupied locator, never delete
   an unexpected object. `realise` and `check` create only where `autoCreate` opts first use in;
   `create` makes every key the lock does not pin yet, explicitly. `gc` prints lock entries the

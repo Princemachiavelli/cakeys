@@ -25,19 +25,16 @@
 //! bounded in time: a touch or a PIN prompt would hang the run and fail the test instead of
 //! waiting for a user.
 
-use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
+mod common;
+
 use std::fmt::Write as _;
 use std::path::PathBuf;
-use std::process::{Command, Output};
-use std::time::{Duration, Instant};
+use std::process::Output;
+use std::time::Duration;
 
-const BIN: &str = env!("CARGO_BIN_EXE_cakeys");
 /// `YubiKey` operations are interactive hardware calls in the worst case; none of the tested ones
 /// needs presence, and the bound turns a policy change (touch) into a test failure.
 const RUN_LIMIT: Duration = Duration::from_secs(60);
-/// The write probe generates every curve and RSA size it tries in one run (74 s measured on a
-/// `YubiKey` 5.7.4, RSA-4096 included).
-const PROBE_LIMIT: Duration = Duration::from_secs(300);
 
 struct Env {
     dir: PathBuf,
@@ -127,14 +124,7 @@ impl Env {
     /// The token with both credentials and the probe's scratch slot (`extra` added to it), and
     /// one spec per case: its key generated on first use into the case's slot, attested.
     fn config(&self, cases: &[&Case], extra: &str) {
-        let mut text = format!(
-            "[tokens.yubikey]\nmodule = \"{m}\"\ntokenLabel = \"{label}\"\npinFile = \"{pin}\"\n\
-             mgmKeyFile = \"{mgm}\"\n{extra}\n",
-            m = self.module,
-            label = yubikey_label(&self.module),
-            pin = self.pin,
-            mgm = self.mgm,
-        );
+        let mut text = common::yubikey_token(&self.module, &self.pin, &self.mgm, extra);
         for c in cases {
             let _ = write!(
                 text,
@@ -157,51 +147,7 @@ impl Env {
     }
 
     fn km(&self, args: &[&str]) -> Output {
-        self.km_within(args, RUN_LIMIT)
-    }
-
-    /// Run the CLI bounded in time: a touch or PIN prompt fails the test instead of hanging it.
-    fn km_within(&self, args: &[&str], limit: Duration) -> Output {
-        let mut child = Command::new(BIN)
-            .env_remove("NIX_BUILD_TOP")
-            .arg("--config")
-            .arg(self.dir.join("keys.toml"))
-            .args(args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let started = Instant::now();
-        loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                // The child is done; the pipes still hold (and now end) its output.
-                let mut stdout = Vec::new();
-                let mut stderr = Vec::new();
-                if let Some(mut p) = child.stdout.take() {
-                    std::io::Read::read_to_end(&mut p, &mut stdout).unwrap();
-                }
-                if let Some(mut p) = child.stderr.take() {
-                    std::io::Read::read_to_end(&mut p, &mut stderr).unwrap();
-                }
-                eprintln!(
-                    "$ cakeys {}\n  exit={:?}\n  stdout={}\n  stderr={}",
-                    args.join(" "),
-                    status.code(),
-                    String::from_utf8_lossy(&stdout).trim(),
-                    String::from_utf8_lossy(&stderr).trim()
-                );
-                return Output { status, stdout, stderr };
-            }
-            if started.elapsed() > limit {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!(
-                    "cakeys {} did not finish within {limit:?}: user presence (touch or PIN) needed?",
-                    args.join(" ")
-                );
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        common::run_within(&self.dir.join("keys.toml"), args, RUN_LIMIT)
     }
 
     /// First use, record, verify, refused delete and idempotent re-realise of `c`: the key is
@@ -256,32 +202,8 @@ impl Env {
     }
 }
 
-/// The label of the first `YubiKey` the module sees, so the config names the right token.
-fn yubikey_label(module: &str) -> String {
-    let ctx = Pkcs11::new(module).unwrap();
-    ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();
-    let slot = ctx
-        .get_slots_with_token()
-        .unwrap()
-        .into_iter()
-        .find(|s| ctx.get_token_info(*s).unwrap().model().starts_with("YubiKey"))
-        .unwrap();
-    ctx.get_token_info(slot).unwrap().label().to_string()
-}
-
 fn code(o: &Output) -> i32 {
     o.status.code().unwrap()
-}
-
-/// Whether this build's cryptoki has the Nix patches the probe needs to write or judge a
-/// profile (an unpatched one drops mechanisms it cannot name); a cargo build here has them only
-/// in the Nix build. By hand: `nix build .#cakeys`, then `result/bin/cakeys probe ...`.
-fn patched(what: &str) -> bool {
-    let patched = std::os::raw::c_ulong::from(cryptoki::object::KeyType::SHA384_HMAC) == 0x2c;
-    if !patched {
-        eprintln!("skipping {what}: this build's cryptoki is unpatched");
-    }
-    patched
 }
 
 /// Read-write on real hardware: generate into the P-256 slot under the SO (management-key)
@@ -308,67 +230,4 @@ fn rw_key_types_generate_attest_and_prove_each_way_without_touch() {
     // The ECDH key's recorded policy is the repaired one: what the key does.
     let lock = e.lock();
     assert_eq!(lock["realisations"]["p384-ecdh-yubikey"]["yubikey"]["policy"]["CKA_DERIVE"].as_bool(), Some(true));
-}
-
-/// The committed ykcs11/2.7 profile is probe output (docs/PROVIDERS.md phase 3): a fresh write
-/// probe in the scratch slot conforms, and regenerating the file changes no byte — its
-/// [migration] claims and [manual] findings preserved. A slot holding anything but ykcs11's own
-/// placeholder is refused before anything is written (the guard's unit test covers the
-/// certificate rules: crates/ykcs11/src/lib.rs). Another firmware, or a device not in
-/// FIPS-approved mode, drifts by design (exit 15, the rows named): probe it and record a new
-/// pair.
-#[test]
-fn the_write_probe_conforms_and_regenerates_the_committed_profile() {
-    let Some(e) = env("yubikey_write_probe") else { return };
-    if !patched("the ykcs11/2.7 write probe") {
-        return;
-    }
-    e.config(&[], "scratchId = \"17\"");
-    let probe = e.km_within(&["probe", "--token", "yubikey", "--write", "--diff", "ykcs11/2.7"], PROBE_LIMIT);
-    assert_eq!(code(&probe), 0, "{}", String::from_utf8_lossy(&probe.stderr));
-    let committed = concat!(env!("CARGO_MANIFEST_DIR"), "/../../profiles/modules/ykcs11/2.7.toml");
-    let copy = e.dir.join("profile.toml");
-    std::fs::copy(committed, &copy).unwrap();
-    let out = copy.to_str().unwrap();
-    let args = ["probe", "--token", "yubikey", "--write", "--diff", "ykcs11/2.7", "--out", out];
-    assert_eq!(code(&e.km_within(&args, PROBE_LIMIT)), 0);
-    assert!(
-        std::fs::read(&copy).unwrap() == std::fs::read(committed).unwrap(),
-        "profiles/modules/ykcs11/2.7.toml is not what the probe generates: regenerate it with `cakeys \
-         probe --token <yk> --write --diff ykcs11/2.7 --out profiles/modules/ykcs11/2.7.toml`, and \
-         put hand findings in [manual]"
-    );
-}
-
-/// The read-only probe of the device here (docs/PROVIDERS.md D10): ykcs11/2.7's match keys,
-/// advertisement and reported RSA range are what this `YubiKey` shows, and the write probes are
-/// refused without a scratch slot — `scratch = true` cannot mark a device that holds real keys
-/// beside it. Needs only `CAKEYS_TEST_YUBIKEY_MODULE`: no PIN, nothing written; the diff only
-/// with the patched cryptoki (the Nix build's).
-#[test]
-fn the_read_only_probe_conforms() {
-    let Ok(module) = std::env::var("CAKEYS_TEST_YUBIKEY_MODULE") else {
-        eprintln!("skipping the_read_only_probe_conforms: CAKEYS_TEST_YUBIKEY_MODULE not set");
-        return;
-    };
-    let dir = workdir("yubikey-probe");
-    std::fs::write(
-        dir.join("keys.toml"),
-        format!(
-            "[tokens.yubikey]\nmodule = \"{module}\"\ntokenLabel = \"{}\"\nscratch = true\n",
-            yubikey_label(&module)
-        ),
-    )
-    .unwrap();
-    // No credentials: the read-only probe needs none, and the write probes must not get far.
-    let e = Env { dir, module, pin: String::new(), mgm: String::new() };
-    let write = e.km(&["probe", "--token", "yubikey", "--write"]);
-    assert_eq!(code(&write), 17);
-    assert!(String::from_utf8_lossy(&write.stderr).contains("Security Officer"));
-    assert!(String::from_utf8_lossy(&write.stderr).contains("scratchId"));
-    if !patched("the ykcs11/2.7 read-only diff") {
-        return;
-    }
-    let out = e.km(&["probe", "--token", "yubikey", "--diff", "ykcs11/2.7"]);
-    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
 }

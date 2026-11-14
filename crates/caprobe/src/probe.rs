@@ -10,14 +10,13 @@
 //! a `cannot` row or a `subtract` row carrying the `C_*` failure in its note, and what the
 //! probe cannot reach is named in [`Probed::undetermined`], never guessed.
 
-use crate::token::Token;
 use cakeys_core::config::TokenCfg;
 use cakeys_core::id::Curve;
-use cakeys_core::migrate::OaepHash;
-use cakeys_core::pop::{self, RsaPadding};
+use cakeys_core::pop::{self, OaepHash, RsaPadding};
 use cakeys_core::sig::{self, EcdsaHash, Encoding};
 use cakeys_core::types::KeyType as Kt;
 use cakeys_core::{KmError, Result};
+use cakeys_pkcs11::token::{self, Token};
 use cakeys_profile::baseline::CURVES;
 use cakeys_profile::{GenerateRow, MatchInfo, Mode, Profile};
 use cryptoki::error::{Error as CkError, RvError};
@@ -176,7 +175,7 @@ fn target(tok: &Token, cfg: &TokenCfg) -> Result<Target> {
                 tok.name, tok.name
             )));
         };
-        if !crate::token::has_admin(cfg) {
+        if !token::has_admin(cfg) {
             return Err(KmError::Validation(format!(
                 "token '{}': the write probes generate as Security Officer: set tokens.{}.mgmKeyFile \
                  or mgmKeyEnv",
@@ -723,8 +722,7 @@ fn derive(made: &mut Made, profile: &mut Profile, private: ObjectHandle, spki: &
     // possession (`verify`, `check`).
     if outcome.is_ok() {
         let template = if profile.derive.sealed == Some(true) { &sealed } else { &open };
-        match made.tok.extra_session(crate::token::Access::Read).map(|ro| (ro.derive_key(&mech, private, template), ro))
-        {
+        match made.tok.extra_session(token::Access::Read).map(|ro| (ro.derive_key(&mech, private, template), ro)) {
             Ok((Ok(h), ro)) => {
                 let _ = ro.destroy_object(h);
                 profile.derive.read_only.get_or_insert(true);
@@ -976,11 +974,11 @@ pub struct Request<'a> {
 ///
 /// `Validation` (17) when the result would be kept but this build's cryptoki is unpatched;
 /// [`probe`]'s own refusals.
-pub fn generate(tok: &Token, cfg: &TokenCfg, req: &Request, notes: &mut crate::ops::Notes) -> Result<Profile> {
+pub fn generate(tok: &Token, cfg: &TokenCfg, req: &Request, notes: &mut cakeys_pkcs11::ops::Notes) -> Result<Profile> {
     // cryptoki drops from C_GetMechanismList every mechanism it cannot name, so through
     // an unpatched binding the advertisement is short (kryoptic's CKM_AES_KEY_WRAP_KWP
     // [run]): such a build may print a probe, never write or judge a committed one.
-    if !crate::binding::patched() {
+    if !cakeys_pkcs11::binding::patched() {
         if req.kept {
             return Err(KmError::Validation(
                 "this build's cryptoki lacks the Nix patches and drops the mechanisms it \
@@ -1008,7 +1006,7 @@ pub fn generate(tok: &Token, cfg: &TokenCfg, req: &Request, notes: &mut crate::o
 /// reported key sizes, so only those can conform or drift.
 #[must_use]
 pub fn drift(generated: &Profile, claimed: &Profile, write: bool) -> Vec<String> {
-    if write { cakeys_profile::diff(generated, claimed) } else { cakeys_profile::diff::read_only(generated, claimed) }
+    if write { crate::diff::diff(generated, claimed) } else { crate::diff::read_only(generated, claimed) }
 }
 
 /// Keep, in a generated `profile` about to replace the file with content `existing` (named

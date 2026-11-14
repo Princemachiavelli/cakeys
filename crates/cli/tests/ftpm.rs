@@ -45,30 +45,10 @@ fn env(name: &str) -> Option<Env> {
 }
 
 impl Env {
-    /// keys.toml with `ftpm` (logged in, scratch: the harness's store is made for the run).
+    /// keys.toml: the suite's token ([`ftpm_tokens`]) and `body`.
     fn config(&self, body: &str) {
-        let pin = self.dir.join("pin");
-        self.write_config(&format!(
-            "[tokens.ftpm]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nscratch = true\n\n{body}",
-            self.module,
-            pin.display()
-        ));
+        self.write_config(&(ftpm_tokens(&self.module, &self.dir) + body));
     }
-}
-
-/// Sorted first, so it probes the harness's fresh store: tpm2-pkcs11 leaves objects behind it
-/// cannot destroy, and they change what a later probe can do. The committed pair profile is
-/// what the probe observes on this TPM, and regenerating it changes no byte ([migration] and
-/// [manual] kept). Needs the patched cryptoki (the Nix build's); a cargo build skips the diff.
-#[test]
-fn a_fresh_probe_is_the_committed_profile() {
-    let Some(e) = env("probe") else { return };
-    if !cryptoki_hmac_types_fixed(false) {
-        return;
-    }
-    e.config("");
-    let path = format!("modules/{}.toml", e.profile);
-    assert_profile_conforms(|args| e.km(args), "ftpm", &e.profile, &path, &e.dir.join("profile.toml"));
 }
 
 /// Each proof of possession on the real TPM, unattended: signing (P-256), deriving (P-384,
@@ -92,12 +72,12 @@ fn keys_generate_and_prove_possession_each_way() {
         );
     }
     e.config(&body);
-    let caps: serde_json::Value = serde_json::from_str(&stdout(&e.km(&["caps", "--token", "ftpm"]))).unwrap();
-    assert!(caps.to_string().contains(&e.profile), "the token resolves its own pair profile: {caps}");
     for (n, _, _, binding) in cases {
         let o = e.km(&["realise", n, "--token", "ftpm", "--update-lock"]);
         assert_eq!(code(&o), 0, "{n}: {}", stderr(&o));
         assert_eq!(e.lock()["realisations"][n]["ftpm"]["binding"].as_str(), Some(binding), "{n}");
+        let profile = e.observation(n, "ftpm")["profile"].clone();
+        assert_eq!(profile.as_str(), Some(e.profile.as_str()), "the token resolves its own pair profile");
         let o = e.km(&["verify", n, "--token", "ftpm"]);
         assert_eq!(code(&o), 0, "{n}: {}", stderr(&o));
     }

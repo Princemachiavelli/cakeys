@@ -1,7 +1,16 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/profile", "crates/pkcs11", "crates/ykcs11", "crates/tpm2-pkcs11", "crates/cli"]
-default-members = ["crates/cli"]
+members = [
+  "crates/core",
+  "crates/profile",
+  "crates/pkcs11",
+  "crates/ykcs11",
+  "crates/tpm2-pkcs11",
+  "crates/cli-common",
+  "crates/cli",
+  "crates/caprobe",
+]
+default-members = ["crates/cli", "crates/caprobe"]
 exclude = ["fuzz"]
 
 [workspace.package]
@@ -16,6 +25,7 @@ cakeys-pkcs11 = { path = "crates/pkcs11" }
 cakeys-profile = { path = "crates/profile" }
 cakeys-ykcs11 = { path = "crates/ykcs11" }
 cakeys-tpm2-pkcs11 = { path = "crates/tpm2-pkcs11" }
+cakeys-cli-common = { path = "crates/cli-common" }
 anyhow = "1"
 base16ct = { version = "1", features = ["alloc"] }
 base64 = "0.23"

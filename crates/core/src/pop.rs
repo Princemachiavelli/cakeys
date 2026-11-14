@@ -125,7 +125,14 @@ pub fn ecdh_challenge(spki: &[u8], msg: &[u8]) -> Result<EcdhChallenge> {
 /// `Unsupported` if `spki` is not an RSA key; `Unavailable` if the OS random number generator
 /// or the encryption fails (for instance, `msg` is too long for the modulus).
 pub fn oaep_challenge(spki: &[u8], msg: &[u8]) -> Result<Vec<u8>> {
-    rsa_encrypt(spki, RsaPadding::Oaep(crate::migrate::OaepHash::Sha1), msg)
+    rsa_encrypt(spki, RsaPadding::Oaep(OaepHash::Sha1), msg)
+}
+
+/// The RSA-OAEP hash, with MGF1 of the same hash: a transport wrap's and an OAEP proof's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OaepHash {
+    Sha1,
+    Sha256,
 }
 
 /// The RSA encryption paddings the probe tries a module's `C_Decrypt` with.
@@ -134,7 +141,7 @@ pub enum RsaPadding {
     /// PKCS#1 v1.5 (`CKM_RSA_PKCS`).
     Pkcs1v15,
     /// OAEP with MGF1 of the same hash and an empty label (`CKM_RSA_PKCS_OAEP`).
-    Oaep(crate::migrate::OaepHash),
+    Oaep(OaepHash),
 }
 
 /// `msg` encrypted to the RSA public key in `spki` with `padding`.
@@ -144,7 +151,6 @@ pub enum RsaPadding {
 /// `Unsupported` if `spki` is not an RSA key; `Unavailable` if the OS random number generator
 /// or the encryption fails (for instance, `msg` is too long for the modulus).
 pub fn rsa_encrypt(spki: &[u8], padding: RsaPadding, msg: &[u8]) -> Result<Vec<u8>> {
-    use crate::migrate::OaepHash;
     let key = rsa::PublicKey::from_public_key_der(spki)
         .map_err(|e| KmError::Unsupported(format!("RSA encryption to this SPKI: {e}")))?;
     let rng = &mut getrandom::SysRng;

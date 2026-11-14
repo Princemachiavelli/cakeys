@@ -15,13 +15,11 @@
 //! build embeds, plus any a caller adds from a directory (D11).
 
 pub mod baseline;
-pub mod diff;
 pub mod effective;
 pub mod embedded;
 pub mod profile;
 
 pub use baseline::Baseline;
-pub use diff::diff;
 pub use effective::{Effective, Verdict};
 pub use profile::{AcceptRow, GenerateRow, Manual, MatchInfo, Migration, Mode, PlaintextKind, Profile};
 
@@ -223,18 +221,17 @@ mod tests {
         assert!(matches!(pair.curve("secp256k1"), Verdict::No { .. }));
     }
 
-    /// A probed-empty row (`oaep = []`) survives the emitter and answers no; an absent one is
-    /// unprobed and answers unknown.
+    /// A probed-empty row (`oaep = []`) answers no; an absent one is unprobed and answers
+    /// unknown. (That the emitter keeps the difference is caprobe's test.)
     #[test]
     fn probed_empty_is_not_unprobed() {
         let set = Set::embedded().unwrap();
         let b = set.baseline().unwrap();
         let none = Profile::from_toml("profile = \"m/1\"\nmode = \"observed\"\n[wrap]\noaep = []\n").unwrap();
-        let back = Profile::from_toml(&none.to_toml()).unwrap();
-        assert_eq!(back.wrap.oaep, Some(Vec::new()));
-        assert!(matches!(Effective::new(b, Some(&back), &[]).oaep()[0].1, Verdict::No { .. }));
+        assert_eq!(none.wrap.oaep, Some(Vec::new()));
+        assert!(matches!(Effective::new(b, Some(&none), &[]).oaep()[0].1, Verdict::No { .. }));
         let unprobed = Profile::from_toml("profile = \"m/1\"\nmode = \"observed\"\n").unwrap();
-        assert_eq!(Profile::from_toml(&unprobed.to_toml()).unwrap().wrap.oaep, None);
+        assert_eq!(unprobed.wrap.oaep, None);
         assert!(matches!(Effective::new(b, Some(&unprobed), &[]).oaep()[0].1, Verdict::Unknown { .. }));
     }
 }

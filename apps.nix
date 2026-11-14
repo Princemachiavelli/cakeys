@@ -2,6 +2,7 @@
 # the sandbox.
 {
   pkgs,
+  caprobe,
   demo,
   deny,
   fuzz,
@@ -15,6 +16,12 @@ let
   };
 in
 {
+  # nix run .#caprobe -- --config keys.toml probe --token <t> --diff <profile>
+  caprobe = {
+    type = "app";
+    program = "${caprobe}/bin/caprobe";
+    meta.description = "Measure PKCS#11 modules: probe a token into a capability profile, query the profiles, list what a token offers";
+  };
   # nix run .#demo (-- --keep to leave the tokens and keys.toml for poking around)
   demo = {
     type = "app";

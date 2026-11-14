@@ -204,11 +204,9 @@ dependencies = [
  "aes-kw",
  "anyhow",
  "base64",
+ "cakeys-cli-common",
  "cakeys-core",
  "cakeys-pkcs11",
- "cakeys-profile",
- "cakeys-tpm2-pkcs11",
- "cakeys-ykcs11",
  "clap",
  "cmac",
  "cryptoki",
@@ -220,6 +218,19 @@ dependencies = [
  "sha2",
  "toml",
  "x509-cert",
+]
+
+[[package]]
+name = "cakeys-cli-common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cakeys-core",
+ "cakeys-pkcs11",
+ "cakeys-tpm2-pkcs11",
+ "cakeys-ykcs11",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -304,6 +315,27 @@ dependencies = [
  "cryptoki",
  "sha2",
  "x509-cert",
+]
+
+[[package]]
+name = "caprobe"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "aes-kw",
+ "anyhow",
+ "base64",
+ "cakeys-cli-common",
+ "cakeys-core",
+ "cakeys-pkcs11",
+ "cakeys-profile",
+ "clap",
+ "cmac",
+ "cryptoki",
+ "getrandom",
+ "serde_json",
+ "sha2",
+ "toml",
 ]
 
 [[package]]

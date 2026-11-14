@@ -5,16 +5,16 @@
 # committed file — [migration] and [manual] kept. Afterwards `git diff profiles/` is the drift;
 # the build's conformance tests then pass.
 #
-#   scripts/regen-profiles.sh <cakeys> <dir>
+#   scripts/regen-profiles.sh <caprobe> <dir>
 #
-# <cakeys> must carry the patched cryptoki (the probe refuses to write through an unpatched
+# <caprobe> must carry the patched cryptoki (the probe refuses to write through an unpatched
 # one): the Nix-built package — while the committed profiles drift its check phase fails, so
 # build it without the check phase:
 #   nix build --impure -o /tmp/cakeys --expr \
-#     "(builtins.getFlake \"git+file://$PWD\").packages.x86_64-linux.cakeys.overrideAttrs { doCheck = false; }"
+#     "((builtins.getFlake \"git+file://$PWD\").packages.x86_64-linux.cakeys.overrideAttrs { doCheck = false; }).caprobe"
 # The tools come from the flake's own nixpkgs, so the probed versions are the build's:
 #   nix shell --inputs-from . nixpkgs#{softhsm,opensc,swtpm,dbus,tpm2-abrmd,tpm2-tools,tpm2-pkcs11} -c \
-#     env KRYOPTIC_MODULE=... TPM2_PKCS11_MODULE=... scripts/regen-profiles.sh /tmp/cakeys/bin/cakeys <dir>
+#     env KRYOPTIC_MODULE=... TPM2_PKCS11_MODULE=... scripts/regen-profiles.sh /tmp/cakeys-caprobe/bin/caprobe <dir>
 set -euo pipefail
 
 bin=$(realpath "$1") dir=$(realpath -m "$2")

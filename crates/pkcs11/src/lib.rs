@@ -7,11 +7,9 @@ pub mod binding;
 pub mod gate;
 pub mod migrate;
 pub mod ops;
-pub mod probe;
 pub mod provider;
 pub mod providers;
 pub mod resolution;
-pub mod supports;
 pub mod token;
 
 pub use provider::{Generic, Provider, Registry};

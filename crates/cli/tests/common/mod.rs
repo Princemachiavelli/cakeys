@@ -1,4 +1,6 @@
-//! Helpers shared by the integration tests: CLI output parsing and an independent DER oracle.
+//! Helpers shared by the integration tests of `cakeys` and `caprobe` (each includes this file):
+//! running the package's own binary, the token headers of each suite's keys.toml, CLI output
+//! parsing and an independent DER oracle.
 #![allow(dead_code, reason = "each test binary uses a subset")]
 
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
@@ -7,6 +9,141 @@ use cryptoki::session::{Session, UserType};
 use cryptoki::types::AuthPin;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::{Duration, Instant};
+
+/// The binary under test, and its name for the logs: the including package's own (Cargo sets
+/// `CARGO_BIN_EXE_<name>` only for the package's binaries).
+pub const BIN: &str = match (option_env!("CARGO_BIN_EXE_cakeys"), option_env!("CARGO_BIN_EXE_caprobe")) {
+    (Some(b), _) | (None, Some(b)) => b,
+    (None, None) => panic!("included by a package with neither a cakeys nor a caprobe binary"),
+};
+pub const TOOL: &str = if option_env!("CARGO_BIN_EXE_cakeys").is_some() { "cakeys" } else { "caprobe" };
+
+/// The value of the suite variable `var` (a module path), else `None` with a skip message —
+/// unless `require` is set, which makes a missing one a failure.
+pub fn suite_var(var: &str, require: &str, test: &str) -> Option<String> {
+    let Ok(v) = std::env::var(var) else {
+        assert!(std::env::var(require).is_err(), "{var} is required");
+        eprintln!("skipping {test}: {var} not set");
+        return None;
+    };
+    Some(v)
+}
+
+/// The reference suite's tokens: `ref` (scratch: the token is created for the run and thrown
+/// away, which is exactly what the probe's write probes demand, PROVIDERS.md phase 3) and
+/// `ref-anon`, the same token without a PIN: it sees only public objects, like a PIV token used
+/// without login.
+pub fn reference_tokens(module: &str, dir: &Path) -> String {
+    format!(
+        "[tokens.ref]\nmodule = \"{module}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nscratch = true\n\n\
+         [tokens.ref-anon]\nmodule = \"{module}\"\ntokenLabel = \"kmtest\"\n\n",
+        dir.join("pin").display(),
+    )
+}
+
+/// tpm2-pkcs11 on swtpm: `tpm` (logged in, scratch: the swtpm token is created for the run),
+/// `tpm-anon` (no PIN) and `tpm-generic` (logged in, but without the tpm2-pkcs11 provider's
+/// fix-ups). The native attestation path finds the TPM the way the module does —
+/// `$TPM2_PKCS11_TCTI`, which the harness exports in the TCTI library-path form — and the store
+/// through `$TPM2_PKCS11_STORE`.
+pub fn tpm2_tokens(module: &str, dir: &Path) -> String {
+    let pin = dir.join("pin");
+    let token =
+        |name: &str, extra: &str| format!("[tokens.{name}]\nmodule = \"{module}\"\ntokenLabel = \"kmtest\"\n{extra}\n");
+    token("tpm", &format!("pinFile = \"{}\"\nscratch = true", pin.display()))
+        + &token("tpm-anon", "")
+        + &token("tpm-generic", &format!("pinFile = \"{}\"\nprovider = \"generic\"", pin.display()))
+}
+
+/// The host's real TPM: `ftpm` (logged in, scratch: the harness's store is made for the run).
+pub fn ftpm_tokens(module: &str, dir: &Path) -> String {
+    format!(
+        "[tokens.ftpm]\nmodule = \"{module}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nscratch = true\n\n",
+        dir.join("pin").display()
+    )
+}
+
+/// p11-kit forwarding: `fwd` (through p11-kit), `fwd-anon` (no PIN), `fwd-softhsm` (provider
+/// named), `fwd-other` (a token the server does not export) and `direct` (`SoftHSM` itself).
+pub fn p11kit_tokens(client: &str, direct: &str, dir: &Path) -> String {
+    let pin = format!("pinFile = \"{}\"", dir.join("pin").display());
+    let token = |name: &str, module: &str, label: &str, extra: &str| {
+        format!("[tokens.{name}]\nmodule = \"{module}\"\ntokenLabel = \"{label}\"\n{extra}\n\n")
+    };
+    token("fwd", client, "kmp11", &pin)
+        + &token("fwd-anon", client, "kmp11", "")
+        + &token("fwd-softhsm", client, "kmp11", &format!("{pin}\nprovider = \"softhsm\""))
+        + &token("fwd-other", client, "kmtest", &pin)
+        + &token("direct", direct, "kmp11", &pin)
+}
+
+/// A real `YubiKey`: the token with both credentials (file paths), `extra` added to it.
+pub fn yubikey_token(module: &str, pin: &str, mgm: &str, extra: &str) -> String {
+    format!(
+        "[tokens.yubikey]\nmodule = \"{module}\"\ntokenLabel = \"{}\"\npinFile = \"{pin}\"\nmgmKeyFile = \"{mgm}\"\n{extra}\n",
+        yubikey_label(module)
+    )
+}
+
+/// The label of the first `YubiKey` the module sees, so the config names the right token.
+pub fn yubikey_label(module: &str) -> String {
+    let ctx = Pkcs11::new(module).unwrap();
+    ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();
+    let slot = ctx
+        .get_slots_with_token()
+        .unwrap()
+        .into_iter()
+        .find(|s| ctx.get_token_info(*s).unwrap().model().starts_with("YubiKey"))
+        .unwrap();
+    ctx.get_token_info(slot).unwrap().label().to_string()
+}
+
+/// Run the binary on `config` bounded in time: on hardware, a touch or PIN prompt fails the
+/// test instead of hanging it.
+///
+/// # Panics
+///
+/// When the run takes longer than `limit`.
+pub fn run_within(config: &Path, args: &[&str], limit: Duration) -> Output {
+    let mut child = Command::new(BIN)
+        .env_remove("NIX_BUILD_TOP")
+        .arg("--config")
+        .arg(config)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            // The child is done; the pipes still hold (and now end) its output.
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            if let Some(mut p) = child.stdout.take() {
+                std::io::Read::read_to_end(&mut p, &mut stdout).unwrap();
+            }
+            if let Some(mut p) = child.stderr.take() {
+                std::io::Read::read_to_end(&mut p, &mut stderr).unwrap();
+            }
+            eprintln!(
+                "$ {TOOL} {}\n  exit={:?}\n  stdout={}\n  stderr={}",
+                args.join(" "),
+                status.code(),
+                String::from_utf8_lossy(&stdout).trim(),
+                String::from_utf8_lossy(&stderr).trim()
+            );
+            return Output { status, stdout, stderr };
+        }
+        if started.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{TOOL} {} did not finish within {limit:?}: user presence (touch or PIN) needed?", args.join(" "));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
 
 /// Whether the linked cryptoki has the HMAC key type fix (nix/patches/); the Nix build does.
 /// Without it, tests needing SHA-224/384/512 HMAC keys skip, unless `require` (then they fail).
@@ -102,7 +239,7 @@ pub fn assert_profile_conforms(
     assert_eq!(code(&km(&["probe", "--token", token, "--write", "--diff", name, "--out", out])), 0);
     assert!(
         std::fs::read(scratch).unwrap() == committed,
-        "{path} is not what the probe generates: regenerate it with `cakeys probe --token <t> --write \
+        "{path} is not what the probe generates: regenerate it with `caprobe probe --token <t> --write \
          --diff {name} --out profiles/{path}`, never by hand"
     );
     // A read-only probe conforms on what it observes; it may never overwrite the file.
@@ -159,7 +296,7 @@ impl Workdir {
     /// `cakeys --config keys.toml <args>` with `envs` set, logged for the test's output. The
     /// suites themselves run in a Nix build: only a test that sets `NIX_BUILD_TOP` means it.
     pub fn km_env(&self, args: &[&str], envs: &[(&str, &Path)]) -> Output {
-        let out = Command::new(env!("CARGO_BIN_EXE_cakeys"))
+        let out = Command::new(BIN)
             .env_remove("NIX_BUILD_TOP")
             .env_remove("IN_NIX_SHELL")
             .envs(envs.iter().copied())
@@ -169,7 +306,7 @@ impl Workdir {
             .output()
             .unwrap();
         eprintln!(
-            "$ cakeys {}\n  exit={:?}\n  stdout={}\n  stderr={}",
+            "$ {TOOL} {}\n  exit={:?}\n  stdout={}\n  stderr={}",
             args.join(" "),
             out.status.code(),
             String::from_utf8_lossy(&out.stdout).trim(),

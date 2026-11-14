@@ -5,6 +5,7 @@
 //! decision (MIGRATE.md D9).
 
 use crate::config::{AttrValue, Immutables, ObjectCfg};
+use crate::pop::OaepHash;
 use crate::types::{KeyType, ObjectClass};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,13 +43,6 @@ impl std::fmt::Display for Exposure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
     }
-}
-
-/// The RSA-OAEP hash (with MGF1 of the same hash) a transport wrap uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum OaepHash {
-    Sha1,
-    Sha256,
 }
 
 /// A passphrase-protected file format for targets cakeys cannot reach (`file` exposure).

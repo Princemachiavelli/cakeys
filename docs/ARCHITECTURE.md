@@ -42,10 +42,12 @@ What the tool defends against is not written down anywhere as a threat model; se
 crates/
   core/         cakeys-core      no token access: config, lock, identity, lock rules, migrate planner
   profile/      cakeys-profile   capability profiles as data (no token access)
-  pkcs11/       cakeys-pkcs11    cryptoki token layer, verbs, Provider trait, probe, static gate
+  pkcs11/       cakeys-pkcs11    cryptoki token layer, verbs, Provider trait, static gate
   ykcs11/       cakeys-ykcs11    YubiKey PIV provider + piv-attestation (pinned Yubico roots)
   tpm2-pkcs11/  cakeys-tpm2-pkcs11  tpm2-pkcs11 provider + native TPM2_Certify attestation
-  cli/          cakeys           clap CLI as a library (main(registry)); all integration tests
+  cli-common/   cakeys-cli-common  what the binaries share: provider registry, opening tokens, exit codes
+  cli/          cakeys           clap CLI as a library (main(registry)); the integration-test harness (tests/common)
+  caprobe/      caprobe          the module measurer: probe, supports, caps; profile emitter and diff
 profiles/       capability profile data: PKCS#11 3.2 baseline (+ vendored OASIS headers),
                 module profiles (softhsm, kryoptic, ykcs11, tpm2-pkcs11), layers (cryptoki, p11-kit), hardware (swtpm)
 nix/            package, lib.mkKeys, NixOS module, sandbox hook, VM/module/TPM tests, demo, fuzz, deny
@@ -61,11 +63,10 @@ flake.nix, checks.nix, treefmt.nix, deny.toml
 ```
 
 **Planned** ([`WORKPLAN.md`](../WORKPLAN.md), decisions D1–D3 and D6; [`SCOPE.md`](SCOPE.md),
-"Three tools"): two more binary crates in the same workspace and flake.
+"Three tools"): the third binary crate, in the same workspace and flake.
 
 ```text
 crates/
-  caprobe/      caprobe          planned (stage 2): probe, supports, caps; profile emitter, diff, baseline generator
   camigrate/    camigrate        planned (stage 3): export, import, migrate, transport; the migrate planner
   cli/          cakeys           afterwards: the pin-and-verify verbs only, with no migration code
 ```
@@ -120,16 +121,17 @@ flowchart TD
 | `core::pop`, `core::sig` | Proof-of-possession challenge and host-side verification |
 | `pkcs11::token` | One open token: session, login, SO step, find, policy, generate, identity, possession, URI |
 | `pkcs11::ops` | The verbs: `resolve`, `verify`, `realise`, `create` (one pair) and `create_selected` (the verb's loop over pairs), `delete`, `check` |
-| `pkcs11::supports`, `probe::generate`, `migrate::plan_moves` | The logic of the `supports`, `probe` and `export`/`migrate` verbs; the CLI only parses, reads and writes files, and prints (review A11) |
+| `migrate::plan_moves` | The logic of the `export`/`migrate` verbs; the CLI only parses, reads and writes files, and prints (review A11) |
 | `pkcs11::provider` | `Provider` trait, `Registry`, `Generic`; built-ins in `providers` (softhsm, kryoptic, p11-kit) |
-| `pkcs11::resolution`, `gate`, `binding`, `probe` | Capability profiles: which apply to a token, the static `validate` gate, the cryptoki layer, the profile generator |
-| `profile` | Profile data model, the embedded set, the effective-support algebra, diff |
+| `pkcs11::resolution`, `gate`, `binding` | Capability profiles: which apply to a token, the static `validate` gate, the cryptoki layer |
+| `profile` | Profile data model, the embedded set, the effective-support algebra |
+| `caprobe` | `probe::generate` and `supports::supports`, the logic of the `probe` and `supports` verbs; the profile emitter (`emit`), the diff, and the test-only baseline generator |
 
 `cakeys-core` and `cakeys-profile` never touch a token, so the lock rules and the profile
 algebra are unit- and property-tested without an HSM.
 
-**Planned crate map** ([`WORKPLAN.md`](../WORKPLAN.md) stages 2 and 3). The graph above is
-today's; after the split it is:
+**Crate map with `caprobe` (built, WORKPLAN stage 2) and `camigrate` (planned, stage 3).** The
+graph above is the one before the split; after it:
 
 ```mermaid
 flowchart TD
@@ -139,7 +141,7 @@ flowchart TD
     P11["cakeys-pkcs11<br/>token/ · ops · provider · gate · resolution"]
     PROVS["cakeys-ykcs11, cakeys-tpm2-pkcs11<br/>import and export hooks stay on Provider"]
     CORE["cakeys-core<br/>lock schema incl. method names and exposure levels"]
-    PROF["cakeys-profile<br/>read and resolve; emitter and diff only for caprobe"]
+    PROF["cakeys-profile<br/>read and resolve; caprobe holds the emitter and diff"]
 
     CLI --> P11
     PROBE --> P11
@@ -155,15 +157,15 @@ flowchart TD
     P11 --> PROF
 ```
 
-| Planned change | Stage |
+| Change | Stage |
 |---|---|
-| `pkcs11::probe`, `pkcs11::supports`, the `caps` verb and their argument parsing move to `caprobe` | 2 |
-| `cakeys-profile`'s emitter, `diff` and baseline generator go behind a feature only `caprobe` enables, or move into it | 2 |
-| What the probe uses from the token layer becomes public `cakeys-pkcs11` API | 2 |
-| The provider registry moves out of the `cakeys` CLI crate to where all three binaries share it | 2 |
-| `OaepHash` moves out of `core::migrate` to a neutral module, so `caprobe` needs no migration code | 2 |
-| `core::migrate`'s planner, `pkcs11::migrate` and the `export`, `migrate` and `transport` verbs move to `camigrate` | 3 |
-| `cakeys` depends on neither new crate; `camigrate` records an import through `ops`, the code `cakeys realise` uses | 3 |
+| `pkcs11::probe`, `pkcs11::supports`, the `caps` verb and their argument parsing move to `caprobe` | 2 (done) |
+| `cakeys-profile`'s emitter, `diff` and baseline generator move into `caprobe` | 2 (done) |
+| What the probe uses from the token layer becomes public `cakeys-pkcs11` API | 2 (done) |
+| The provider registry moves out of the `cakeys` CLI crate to where all three binaries share it | 2 (done) |
+| `OaepHash` moves out of `core::migrate` to a neutral module, so `caprobe` needs no migration code | 2 (done) |
+| `core::migrate`'s planner, `pkcs11::migrate` and the `export`, `migrate` and `transport` verbs move to `camigrate` | 3 (planned) |
+| `cakeys` depends on neither new crate; `camigrate` records an import through `ops`, the code `cakeys realise` uses | 3 (planned) |
 
 ## 5. Data model
 
@@ -210,8 +212,8 @@ flowchart LR
     G --> D
 ```
 
-The binary column is the planned owner ([`SCOPE.md`](SCOPE.md), "Three tools"). Until stages
-2 and 3 of [`WORKPLAN.md`](../WORKPLAN.md) land, every verb runs as `cakeys <verb>`.
+The binary column is each verb's owner ([`SCOPE.md`](SCOPE.md), "Three tools"). `camigrate` is
+planned ([`WORKPLAN.md`](../WORKPLAN.md) stage 3); until it lands, its verbs run as `cakeys <verb>`.
 
 | Verb | Binary | Token | Lock | Summary |
 |---|---|---|---|---|
@@ -223,7 +225,7 @@ The binary column is the planned owner ([`SCOPE.md`](SCOPE.md), "Three tools"). 
 | `create` | `cakeys` | write | write (default) | Generate every unpinned key, `autoCreate` or not |
 | `delete` | `cakeys` | write | write (default) | Delete if the identity matches; drop the realisation |
 | `gc` | `cakeys` | none | write with `--apply` | Drop lock entries the config no longer names |
-| `caps`, `supports`, `probe` | `caprobe` (planned, stage 2) | read (`probe --write`: scratch token only) | read | Mechanisms; profile queries; profile generation and drift |
+| `caps`, `supports`, `probe` | `caprobe` | read (`probe --write`: scratch token only) | none | Mechanisms; profile queries; profile generation and drift |
 | `export`, `migrate`, `transport` | `camigrate` (planned, stage 3) | read | read | Plans only (`--dry-run`); nothing moves yet |
 | `import` | `camigrate` (planned, stage 4) | write | write | Not built yet (MIGRATE.md phase 3) |
 
@@ -311,9 +313,9 @@ against independent oracles (openssl, hand-written DER, RustCrypto MACs).
 | Identity, lock rules, verbs, proof of possession | Built and tested on four module families |
 | Nix library, NixOS module, sandbox hook | Built, VM-tested |
 | `piv-attestation` | Built; verified by hand on one YubiKey 5C NFC FIPS |
-| Three binaries (`cakeys`, `caprobe`, `camigrate`) | Decided ([`WORKPLAN.md`](../WORKPLAN.md) D1–D6), planned: `caprobe` in stage 2, `camigrate` in stage 3. Today `cakeys` carries every verb |
+| Three binaries (`cakeys`, `caprobe`, `camigrate`) | Decided ([`WORKPLAN.md`](../WORKPLAN.md) D1–D6). `caprobe` built (stage 2); `camigrate` planned (stage 3), until then `cakeys` carries the migration verbs |
 | `tpm-certify` | Built; tested on swtpm; Attestation Key is trust-on-first-use (no EK chain). Experimental, pending review: it reads tpm2-pkcs11's private store and has no version guard yet (review A8). Stays in `cakeys-tpm2-pkcs11` (WORKPLAN D4); the guard and a real-TPM test are planned for WORKPLAN stage 5 |
-| Capability profiles | Phases 0–4 built; phase 5 (FIPS mode) planned. Measuring moves to `caprobe` (planned, stage 2); `cakeys` keeps reading and resolving them |
+| Capability profiles | Phases 0–4 built; phase 5 (FIPS mode) planned. Measuring is `caprobe`'s (WORKPLAN stage 2); `cakeys` reads and resolves them |
 | Migration | In scope, in `camigrate` (review A5, decided). Planner and `--dry-run` only; the move to `camigrate` is planned for stage 3 and phases 2–5 for stage 4 |
 | `check` creating on first use (`autoCreate`) | Built; open decision whether to keep it (review A7) |
 | Identity modes `commit-at-creation`, `host-at-import`, `token-specific`; `identity.allow` | Pending implementation: in the config schema, refused (15) by every verb (review A6) |

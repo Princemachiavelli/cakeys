@@ -93,7 +93,7 @@ pub fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
     // The cryptoki binding layer is always in the stack (docs/PROVIDERS.md phase 2): what it
     // subtracts is decided by the build this binary runs against, so an explicit `--layer
     // cryptoki/0.12` adds nothing it has not already decided.
-    let mut resolved: Vec<Profile> = vec![crate::binding::layer().map_err(KmError::Validation)?];
+    let mut resolved: Vec<Profile> = vec![cakeys_pkcs11::binding::layer().map_err(KmError::Validation)?];
     for l in q.layers {
         let p = find(l)?;
         if p.profile != "cryptoki/0.12" {

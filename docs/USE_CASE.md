@@ -27,7 +27,7 @@ General:
    deploying shows the module change and whether every key still resolves and proves possession.
 6. **Does this token still behave the way our tooling was tested against?** A vendor update, a
    new firmware or another model can change what a token lists, generates or wraps.
-   `cakeys probe --token <t> --diff <profile>` compares the token with its committed capability
+   `caprobe probe --token <t> --diff <profile>` compares the token with its committed capability
    profile (docs/PROVIDERS.md); read-only, it is safe on a production token, and on a scratch
    token `--write` also tests generation, wrapping and unwrapping. Every drifted row is named
    (15). The profiles cakeys ships are checked this way against their reference tokens on every
