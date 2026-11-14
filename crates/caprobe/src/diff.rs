@@ -198,6 +198,43 @@ mod tests {
         assert_eq!(lines.len(), 5);
     }
 
+    /// Rows only one side has, in each table the diff compares: a generate row, a probed OAEP
+    /// list against one never probed, a size bound, and the restrictions.
+    #[test]
+    fn rows_only_one_side_has_are_named() {
+        let head = "advertise = [\"CKM_A\"]\n[match]\nmanufacturer = \"M\"\nmodule-version = \"1\"\n";
+        let generated = profile(
+            "m/probe",
+            &format!(
+                "{head}[wrap]\noaep = [\"SHA-1\", \"SHA-256\"]\n[unwrap]\nrefuse = [\"CKA_VALUE_LEN\"]\n\
+                 [generate.\"CKK_RSA\"]\nmin-bits = 1024\n[generate.\"CKK_EC\"]\ncan = [\"secp256r1\"]\n\
+                 [[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_RSA\"\nmax-bits = 2048\n\
+                 [[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_AES\"\nmax-bits = 256\n"
+            ),
+        );
+        let claimed = profile(
+            "m/1",
+            &format!(
+                "{head}[unwrap]\nrefuse = []\n[generate.\"CKK_RSA\"]\nmax-bits = 4096\n\
+                 [[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_RSA\"\nmax-bits = 3072\n\
+                 [[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_DES3\"\nmin-bits = 112\n"
+            ),
+        );
+        let lines = diff(&generated, &claimed);
+        for want in [
+            "generate.CKK_EC: only observed",
+            "generate.CKK_RSA.min-bits: only observed: 1024",
+            "generate.CKK_RSA.max-bits: only claimed: 4096",
+            "wrap.oaep: only observed (claimed: never probed)",
+            "unwrap.refuse: only observed: CKA_VALUE_LEN",
+            "restrict.generate.CKK_RSA.max-bits: observed 2048, claimed 3072",
+            "restrict.generate.CKK_AES: only observed",
+            "restrict.generate.CKK_DES3: only claimed",
+        ] {
+            assert!(lines.iter().any(|l| l == want), "missing {want:?} in {lines:#?}");
+        }
+    }
+
     #[test]
     fn a_read_only_probe_conforms_on_the_rows_it_observes() {
         // A read-only probe has no generate, wrap or unwrap rows: only match and advertise count.

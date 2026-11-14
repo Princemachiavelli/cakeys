@@ -293,6 +293,24 @@ mod tests {
         assert!(Profile::from_toml("profile = \"t\"\nmode = \"observed\"\n[manual.x]\nfinding = \"y\"\n").is_err());
     }
 
+    /// A layer and a hand-kept module profile round-trip with every row they can carry: a
+    /// layer's subtractions and note, the flags, each plaintext-import kind, and restrictions.
+    #[test]
+    fn layers_flags_and_restrictions_round_trip() {
+        let layer = "profile = \"l/1\"\nmode = \"delta\"\nrequires-provider = true\n\n\
+                     [subtract]\nmechanisms = [\"CKM_EDDSA\"]\nkey-types = [\"CKK_SHA512_HMAC\"]\nnote = \"dropped by the layer\"\n";
+        let layer = Profile::from_toml(layer).unwrap();
+        assert_eq!(Profile::from_toml(&super::profile(&layer)).unwrap(), layer);
+        for kind in ["create-object", "tpm2-ptool", "piv-import"] {
+            let text = format!(
+                "profile = \"m/1\"\nmode = \"observed\"\npartial = true\n\n[migration]\nplaintext-import = \"{kind}\"\n\n\
+                 [[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_RSA\"\nmin-bits = 2048\nmax-bits = 4096\nnote = \"by firmware\"\n"
+            );
+            let module = Profile::from_toml(&text).unwrap();
+            assert_eq!(Profile::from_toml(&super::profile(&module)).unwrap(), module, "{kind}");
+        }
+    }
+
     #[test]
     fn arrays_are_laid_out_as_the_formatter_would() {
         // taplo at 120 columns (treefmt.nix): a generated profile must survive `nix fmt`

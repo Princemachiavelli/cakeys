@@ -408,4 +408,36 @@ mod tests {
         assert_eq!(pq[1].0, "CKP_ML_DSA_65");
         assert!(matches!(pq[1].1, Verdict::Yes { .. }));
     }
+
+    /// What the stack cannot answer is unknown, never a guess: no module profile, a name the
+    /// baseline lacks, an RSA size outside what was probed; a layer's own `cannot` row is a no,
+    /// and a size between two that generated is a yes.
+    #[test]
+    fn unknowns_layer_refusals_and_sizes_between_probes() {
+        let b = baseline();
+        let unknown =
+            |v: Verdict, why: &str| assert!(matches!(&v, Verdict::Unknown { why: w } if w.contains(why)), "{v:?}");
+        let bare = eff(&b, None, &[]);
+        assert_eq!(bare.baseline().baseline, "test");
+        unknown(bare.mechanism("CKM_AES_KEY_WRAP"), "no module profile selected");
+        unknown(bare.generate("CKK_EC", Some("secp256r1"), None), "no module profile selected");
+        unknown(bare.curve("secp256r1"), "no module profile selected");
+        unknown(bare.curve("secp112r1"), "not a curve");
+        unknown(bare.generate("CKK_NOPE", None, None), "not a key type");
+        assert!(matches!(bare.oaep().as_slice(), [(_, Verdict::Unknown { .. })]));
+        let hardware = profile(
+            "profile = \"hw\"\nmode = \"delta\"\n[generate.\"CKK_EC\"]\ncannot = [\"secp256k1\"]\n[notes]\nsecp256k1 = \"no such curve in the chip\"\n",
+        );
+        let module = profile(
+            "profile = \"m/1\"\nmode = \"observed\"\nadvertise = [\"CKM_AES_KEY_WRAP\"]\n\
+             [generate.\"CKK_EC\"]\ncan = [\"secp256r1\", \"secp256k1\"]\n[generate.\"CKK_RSA\"]\ncan-bits = [2048, 4096]\n",
+        );
+        let layers = [&hardware];
+        let stack = eff(&b, Some(&module), &layers);
+        let v = stack.generate("CKK_EC", Some("secp256k1"), None);
+        assert!(matches!(&v, Verdict::No { by, note: Some(n) } if by == "hw" && n.contains("chip")), "{v:?}");
+        assert!(matches!(stack.generate("CKK_EC", Some("secp256r1"), None), Verdict::Yes { .. }));
+        assert!(matches!(stack.generate("CKK_RSA", None, Some(3072)), Verdict::Yes { .. }));
+        unknown(stack.generate("CKK_RSA", None, Some(8192)), "probed 2048, 4096 bits only");
+    }
 }

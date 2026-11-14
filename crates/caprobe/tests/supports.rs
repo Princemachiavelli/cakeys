@@ -43,3 +43,30 @@ fn supports_reads_profiles_from_a_directory() {
     let with = ["--profile", "softhsm/2.7", "--layer", "mine", "--profiles", dir.to_str().unwrap(), "CKM_SHA512_HMAC"];
     assert_eq!(supports(&with), 15);
 }
+
+/// `--token` asks about the profile keys.toml's token names by its `provider`; what cannot be
+/// asked is refused (17), and every verb but `supports --profile` needs keys.toml.
+#[test]
+fn supports_asks_by_token_and_refuses_what_it_cannot_ask() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("supports-token");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("keys.toml");
+    let tokens = "[tokens.soft]\ntokenLabel = \"t\"\nprovider = \"softhsm\"\n\n[tokens.bare]\ntokenLabel = \"b\"\n";
+    std::fs::write(&config, tokens).unwrap();
+    let ask = |args: &[&str]| {
+        let out = Command::new(BIN).arg("--config").arg(&config).arg("supports").args(args).output().unwrap();
+        (code(&out), String::from_utf8_lossy(&out.stderr).into_owned())
+    };
+    assert_eq!(ask(&["--token", "soft", "secp256r1"]).0, 0);
+    let refused = |args: &[&str], why: &str| {
+        let (exit, said) = ask(args);
+        assert!(exit == 17 && said.contains(why), "{args:?}: exit {exit}: {said}");
+    };
+    refused(&["--token", "nope", "secp256r1"], "unknown token 'nope'");
+    refused(&["--token", "bare", "secp256r1"], "names no provider");
+    refused(&["--token", "soft", "--class", "nope"], "no class 'nope'");
+    // `caps` reads a token: without keys.toml it is a usage error.
+    let out = Command::new(BIN).env_remove("CAKEYS_CONFIG").args(["caps", "--token", "soft"]).output().unwrap();
+    assert_eq!(code(&out), 2, "{}", String::from_utf8_lossy(&out.stderr));
+}

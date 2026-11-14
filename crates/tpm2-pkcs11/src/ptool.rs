@@ -118,3 +118,48 @@ fn unsupported(ctx: &ImportCtx<'_>) -> KmError {
         ctx.object.class, ctx.token_name
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cakeys_core::config::{Locator, ObjectCfg, parse_config_with};
+
+    /// What the import refuses before `tpm2_ptool` runs: no PIN, a key the tool cannot import,
+    /// a locator it has nothing to import under; and each HMAC key type's algorithm name. A
+    /// run that fails says so without the PIN.
+    #[test]
+    fn imports_are_refused_before_the_tool_runs() {
+        let text = "[tokens.t]\ntokenLabel = \"t\"\n[tokens.t.options]\ntpm2Store = \"/nonexistent/store\"\n";
+        let cfg = parse_config_with(text, std::path::Path::new("keys.toml"), &|_| None).unwrap();
+        let labelled = Locator { label: Some("k".into()), id: Some("0a".into()) };
+        let nowhere = Locator { label: None, id: None };
+        let ec = ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::Ec));
+        let run = |pin: Option<&str>, object: &ObjectCfg, locator: &Locator| {
+            import(&ImportCtx { cfg: &cfg.tokens["t"], token_name: "t", pin, object, locator, key: b"not a key" })
+        };
+        let e = run(None, &ec, &labelled).unwrap_err();
+        assert!(matches!(&e, KmError::Unavailable(m) if m.contains("needs the user PIN")), "{e}");
+        for object in [
+            ObjectCfg::new(ObjectClass::SecretKey, Some(KeyType::Aes)),
+            ObjectCfg::new(ObjectClass::Certificate, None),
+            ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::EcEdwards)),
+        ] {
+            let e = run(Some("987654"), &object, &labelled).unwrap_err();
+            assert!(matches!(&e, KmError::Unsupported(m) if m.contains("imports EC and RSA private keys")), "{e}");
+        }
+        let e = run(Some("987654"), &ec, &nowhere).unwrap_err();
+        assert!(matches!(&e, KmError::Validation(m) if m.contains("names neither")), "{e}");
+        // The tool itself, on a store that is not there (or no tool at all): a failure that
+        // never repeats the PIN.
+        let hmac_key = ObjectCfg::new(ObjectClass::SecretKey, Some(KeyType::Sha256Hmac));
+        let e = run(Some("987654"), &hmac_key, &labelled).unwrap_err();
+        assert!(
+            matches!(e, KmError::Unavailable(_) | KmError::Unsupported(_)) && !e.to_string().contains("987654"),
+            "{e}"
+        );
+        let names = [KeyType::GenericSecret, KeyType::Sha1Hmac, KeyType::Sha384Hmac, KeyType::Sha512Hmac].map(hmac);
+        assert_eq!(names, [Some("hmac"), Some("hmac:sha1"), Some("hmac:sha384"), Some("hmac:sha512")]);
+        assert_eq!(hmac(KeyType::Sha224Hmac), None);
+        assert!(pem(&[0u8; 100]).starts_with(b"-----BEGIN PRIVATE KEY-----\n"));
+    }
+}

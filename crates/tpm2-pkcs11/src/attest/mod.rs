@@ -315,6 +315,32 @@ fn module_reports(ctx: &AttestCtx<'_>) -> Result<(bool, bool)> {
 #[cfg(test)]
 mod tests {
 
+    /// The fuzz entry points take the fixtures the unit tests parse, and refuse bytes that are
+    /// no TPM structure with an error.
+    #[test]
+    fn the_fuzz_entry_points_read_or_refuse() {
+        // One text is tried as both row kinds: an object row is no parent row, and the reverse.
+        assert!(fuzzing::store_row(include_str!("../../tests/fixtures/tobject-private.yaml")).is_err());
+        assert!(fuzzing::store_row("not: [yaml").is_err());
+        assert!(fuzzing::tpms_attest(b"neither an attestation nor a public area").is_err());
+    }
+
+    /// A configured store directory is taken as written, `~/` expanded; a TCTI and an AK handle
+    /// out of the owner's persistent range are options checked at load.
+    #[test]
+    fn options_name_the_store_and_are_checked() {
+        let options = |text: &str| -> Options { toml::from_str(text).unwrap() };
+        let opts =
+            Tpm2Options::of("t", &options("tpm2Store = \"/var/lib/store\"\ntcti = \"device:/dev/tpmrm0\"")).unwrap();
+        assert_eq!(store_dir_of("t", &opts).unwrap(), std::path::Path::new("/var/lib/store"));
+        assert_eq!(opts.tcti(), Some("device:/dev/tpmrm0"));
+        let home = Tpm2Options::of("t", &options("tpm2Store = \"~/store\"")).unwrap();
+        let dir = store_dir_of("t", &home).unwrap();
+        assert!(dir.ends_with("store") && !dir.starts_with("~"), "{}", dir.display());
+        assert!(Tpm2Options::of("t", &options("akHandle = \"0x40000001\"")).is_err());
+        assert!(Tpm2Options::of("t", &options("noSuchOption = 1")).is_err());
+    }
+
     /// The store reader reads only the versions it was tested with (15 otherwise, naming it).
     #[test]
     fn only_tested_module_versions_are_read() {
