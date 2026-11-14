@@ -434,6 +434,7 @@ class = "..." ; keyType = "..." ; certificateType = "..." ; curve = "..." ; valu
 [objects.<object>.ids]
 rfc7093m4 = "sha256-..."            # scheme -> SRI
 # pairs = ["<object>"]              # (in [objects.<object>]) objects sharing its rfc7093m4: key <-> certificate
+# publicKey = "<base64 SPKI>"       # (in [objects.<object>]) a transportWith key's, hashing to its rfc7093m4 (MIGRATE.md D3)
 
 # Compared: verification fails (14) when keys.toml or the token disagrees. All required.
 [realisations.<spec>.<token>]

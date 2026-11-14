@@ -218,6 +218,7 @@ fn resolve_with(t: &Target, tok: &Token, lock: &Lock, provision: bool) -> Result
         immutables: tok.immutables(h),
         commitment_label,
         attestation,
+        public_key: if t.transport { Some(tok.spki(h, &t.on_token.locator)?) } else { None },
     }))
 }
 

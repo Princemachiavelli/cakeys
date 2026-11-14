@@ -76,6 +76,11 @@ pub struct TokenCfg {
     /// one that takes none refuses any (17).
     #[serde(default)]
     pub options: Options,
+    /// The spec of this token's transport key (MIGRATE.md D3): an RSA private key realised here
+    /// that may unwrap and never leaves the token. Sealed moves to this token wrap to it, never
+    /// to one picked by what it can do (camigrate `--transport-key` overrides it per run); its
+    /// realisation records the public key in the lock, so any host can export to it.
+    pub transport_with: Option<String>,
 }
 
 /// A token's provider-specific settings (`[tokens.<t>.options]`), parsed by the provider.
@@ -410,6 +415,11 @@ pub struct LockObject {
     /// and a public key object. Recorded by cakeys, symmetric, and checked on load.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub pairs: BTreeSet<String>,
+    /// A transport key's public key (MIGRATE.md D3), base64 of the canonical SPKI whose hash is
+    /// `ids.rfc7093m4`: recorded when a token's `transportWith` spec is realised, so a source
+    /// exports to it from the lock alone. Checked against that ID on load.
+    #[serde(default, rename = "publicKey", skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
 }
 
 impl LockObject {
@@ -474,6 +484,22 @@ impl Lock {
                 .filter(|l| l.is_empty() || !l.bytes().all(|b| b.is_ascii_graphic() || b == b' '))
             {
                 return Err(format!("object '{name}': commitmentLabel {l:?} must be non-empty printable ASCII"));
+            }
+            if let Some(k) = &o.public_key {
+                use base64::Engine as _;
+                let der = base64::engine::general_purpose::STANDARD
+                    .decode(k)
+                    .map_err(|e| format!("object '{name}': publicKey is not base64: {e}"))?;
+                match o.ids.get(Scheme::Rfc7093m4.name()) {
+                    Some(id) if *id == crate::id::sri(&der) => {}
+                    Some(id) => {
+                        return Err(format!(
+                            "object '{name}': publicKey hashes to {}, not the {id} its rfc7093m4 pins",
+                            crate::id::sri(&der)
+                        ));
+                    }
+                    None => return Err(format!("object '{name}': publicKey without an rfc7093m4 ID to check it by")),
+                }
             }
         }
         Ok(())
@@ -1013,7 +1039,34 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
         }
     }
     check_creation(&cfg).map_err(|e| invalid(&e))?;
+    check_transport_keys(&cfg).map_err(|e| invalid(&e))?;
     Ok(cfg)
+}
+
+/// Each `transportWith` names a spec realised on its own token whose object is an RSA private
+/// key declared to unwrap and never leave the token (MIGRATE.md D3).
+fn check_transport_keys(cfg: &Config) -> std::result::Result<(), String> {
+    for (token, t) in &cfg.tokens {
+        let Some(spec) = &t.transport_with else { continue };
+        let what = format!("token '{token}': transportWith = \"{spec}\"");
+        let Some(s) = cfg.specs.get(spec) else { return Err(format!("{what} names no spec")) };
+        if !s.tokens.contains_key(token) {
+            return Err(format!("{what}, but that spec does not realise it on '{token}'"));
+        }
+        let rsa = cfg
+            .objects
+            .get(&s.object)
+            .is_some_and(|o| o.class == ObjectClass::PrivateKey && o.key_type == Some(KeyType::Rsa));
+        if !rsa {
+            return Err(format!("{what}: a transport key is an RSA private key, and '{}' is not", s.object));
+        }
+        if s.flag("CKA_UNWRAP") != Some(true) || s.flag("CKA_EXTRACTABLE") != Some(false) {
+            return Err(format!(
+                "{what}: a transport key declares CKA_UNWRAP = true and CKA_EXTRACTABLE = false in its attributes"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Take each object's `createOn` out of the parsed keys.toml, so the rest of the object table is

@@ -302,8 +302,8 @@ EOF
 echo "No autoCreate here: that only lets first use create. Keys are created explicitly, every"
 echo "pair the lock does not pin yet (signing and shared are pinned, so they are left alone):"
 jqf='.[] | {object, token, rfc7093m4: .ids.rfc7093m4}' expect 0 cakeys create --token soft
-echo "movable is born on soft (createOn), so kryo can only receive it. A sealed move needs a"
-echo "transport key on the target: an RSA key there that may unwrap and never leaves it."
+echo "movable is born on soft (createOn), so kryo can only receive it. A sealed move needs the"
+echo "target to name a transport key: an RSA key there that only unwraps and never leaves it."
 expect 15 camigrate export movable --token soft --target kryo --dry-run
 append <<'EOF'
 
@@ -314,10 +314,16 @@ modulusBits = 3072
 
 [specs.transport]
 object = "transport"
-attributes = { CKA_UNWRAP = true, CKA_DECRYPT = true, CKA_EXTRACTABLE = false }
-tokens.kryo = { locator = { CKA_LABEL = "transport" }, binding = "pop-decrypt" }
+attributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }
+tokens.kryo = { locator = { CKA_LABEL = "transport" }, binding = "pop-unwrap" }
 EOF
+sed -i '/^\[tokens.kryo\]$/a transportWith = "transport"' keys.toml
+echo "kryo names it in its own table (transportWith):"
+show sed -n '/^\[tokens.kryo\]/,/^$/p' keys.toml
+echo "It proves possession by unwrapping (pop-unwrap), so it needs no CKA_DECRYPT, and the lock"
+echo "records its public key: any host exports to kryo from the lock alone."
 jqf='.[] | {object, token}' expect 0 cakeys create --token kryo
+show sed -n '/^\[objects.transport\]/,/^\[/{s/^\(publicKey = .\{50\}\).*/\1.../p}' keys.lock
 echo "Now the plan is ready; a non-extractable key never leaves its token, whatever the target can do."
 expect 0 camigrate export movable --token soft --target kryo --dry-run
 expect 15 camigrate export fixed --token soft --target kryo --dry-run

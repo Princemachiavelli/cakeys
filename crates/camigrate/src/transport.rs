@@ -91,6 +91,19 @@ impl Transport {
             .map_err(|e| KmError::Validation(format!("transport key: {e}")))?;
         cakeys_core::id::spki_canonical(&der)
     }
+
+    /// The key to seal to, as an export takes it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::spki`].
+    pub fn key(&self) -> Result<crate::sealed::TransportKey> {
+        Ok(crate::sealed::TransportKey {
+            object: self.object.clone(),
+            rfc7093m4: self.rfc7093m4.clone(),
+            spki: self.spki()?,
+        })
+    }
 }
 
 #[cfg(test)]

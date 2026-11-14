@@ -40,7 +40,7 @@ fn export_plans_follow_each_sides_capabilities() {
         + &Env::spec("fixed", "fixed", &attrs(false), &[soft], "xref-fx", ", autoCreate = true")
         + &Env::spec("movable-k", "movable-k", &attrs(true), &[kry], "xref-mvk", ", autoCreate = true")
         + &e.refs.iter().filter(|r| r.name.starts_with("kryoptic")).map(transport_key).collect::<String>();
-    e.config(&body);
+    names_transport(&e, &body, |r| r.name.starts_with("kryoptic"));
     for (spec, r) in [("movable", soft), ("fixed", soft), ("movable-k", kry)] {
         assert_eq!(code(&e.cakeys(r, &["realise", spec, "--token", r.name])), 0, "{spec}");
     }
@@ -59,7 +59,7 @@ fn export_plans_follow_each_sides_capabilities() {
 
     let (c, v) = plan(soft, &["movable", "--target", "kryoptic"]);
     assert_eq!((c, first(&v)), (15, (some("rsa-oaep-sha1+aes-kwp"), some("sealed"), Some(false))), "{v}");
-    assert!(v["plans"][0]["reasons"][0].as_str().unwrap().contains("no transport key is realised"), "{v}");
+    assert!(v["plans"][0]["reasons"][0].as_str().unwrap().contains("is not realised on 'kryoptic'"), "{v}");
     for r in e.refs.iter().filter(|r| r.name.starts_with("kryoptic")) {
         let o = e.cakeys(r, &["realise", &format!("tk-{}", r.name), "--token", r.name]);
         assert_eq!(code(&o), 0, "{}", stderr(&o));
@@ -347,18 +347,25 @@ fn public_moves_do_what_the_plan_says() {
     assert!(rows.iter().any(|r| r.contains("ready")), "no public move was planned ready");
 }
 
-/// The transport key of reference `r` (MIGRATE.md D3), as keys.toml text: an RSA key that may
-/// unwrap and never leaves the token, proven by decrypting (`pop-decrypt` needs `CKA_DECRYPT`).
+/// The transport key of reference `r` (MIGRATE.md D3), as keys.toml text: an RSA key that only
+/// unwraps and never leaves the token, proven by unwrapping (`pop-unwrap`). Its token names it
+/// with [`names_transport`].
 fn transport_key(r: &Ref) -> String {
     format!("[objects.tk-{0}]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 3072\n\n", r.name)
         + &Env::spec(
             &format!("tk-{}", r.name),
             &format!("tk-{}", r.name),
-            "attributes = { CKA_UNWRAP = true, CKA_DECRYPT = true, CKA_EXTRACTABLE = false }\n",
+            "attributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }\n",
             &[r],
             &format!("tk-{}", r.name),
-            ", autoCreate = true, binding = \"pop-decrypt\"",
+            ", autoCreate = true, binding = \"pop-unwrap\"",
         )
+}
+
+/// keys.toml with `body`, each reference `holds` picks naming its [`transport_key`]
+/// (`transportWith`).
+fn names_transport(e: &Env, body: &str, holds: impl Fn(&Ref) -> bool) {
+    e.config_with(body, &|r| if holds(r) { format!("transportWith = \"tk-{}\"\n", r.name) } else { String::new() });
 }
 
 /// One key class of the sealed matrix: its keys.toml type and the attributes its specs declare
@@ -433,7 +440,7 @@ fn sealed_moves_do_what_the_plan_says() {
     for (k, s, d) in &pairs {
         body += &Env::spec(&target_spec(k, s, d), &object(k, s), k.attributes, &[d], &target_label(k, s, d), "");
     }
-    e.config(&body);
+    names_transport(&e, &body, unwraps);
     // p11-kit hides the module behind it, so its capabilities are a spec-compliant module's until
     // keys.toml names that module's provider (DESIGN §6.2): this one forwards `SoftHSM`, whose
     // unwrapped secret keys lose their length (`secret-unwraps = false`).
@@ -540,7 +547,8 @@ fn bundles_are_checked_against_the_lock() {
     };
     let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
     let aes = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32";
-    e.config(&(transport_key(kry) + &key("ek1", ec) + &key("ek2", ec) + &key("sk1", aes) + &key("sk2", aes)));
+    let body = transport_key(kry) + &key("ek1", ec) + &key("ek2", ec) + &key("sk1", aes) + &key("sk2", aes);
+    names_transport(&e, &body, |r| r.name == "kryoptic");
     assert_eq!(code(&e.cakeys(kry, &["realise", "tk-kryoptic", "--token", "kryoptic"])), 0);
     for spec in ["ek1-soft", "ek2-soft", "sk1-soft", "sk2-soft"] {
         assert_eq!(code(&e.cakeys(soft, &["realise", spec, "--token", "softhsm"])), 0, "{spec}");
@@ -618,6 +626,85 @@ fn bundles_are_checked_against_the_lock() {
     let o = e.km(soft, &["export", "ek2", "--token", "softhsm", "--transport", rogue.to_str().unwrap(), "--dry-run"]);
     assert_eq!(code(&o), 15, "{}", stdout(&o));
     assert!(stdout(&o).contains("is not the"), "{}", stdout(&o));
+}
+
+/// A token names its transport key (`transportWith`, MIGRATE.md D3), and realising it records
+/// its public key in the lock, held to the locked identity: a source then plans and exports to
+/// that token from the lock alone, the target unreachable. Without the recorded key, a plan
+/// from the lock is blocked; a `transportWith` that is no unwrap-only RSA key is invalid.
+#[test]
+fn exports_to_a_token_need_only_the_lock() {
+    let Some(e) = env("lock-transport") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
+    let (Some(soft), Some(kry)) = (named("softhsm"), named("kryoptic")) else {
+        eprintln!("skipping lock-transport: needs the softhsm and kryoptic references");
+        return;
+    };
+    let body = transport_key(kry)
+        + "[objects.mv]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n"
+        + &Env::spec(
+            "mv",
+            "mv",
+            "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n",
+            &[soft],
+            "xl-mv",
+            ", autoCreate = true",
+        );
+    // Named, not picked: without transportWith, the plan says how to name one.
+    e.config(&body);
+    assert_eq!(code(&e.cakeys(kry, &["realise", "tk-kryoptic", "--token", "kryoptic"])), 0);
+    assert_eq!(code(&e.cakeys(soft, &["realise", "mv", "--token", "softhsm"])), 0);
+    let o = e.km(soft, &["export", "mv", "--token", "softhsm", "--target", "kryoptic", "--dry-run"]);
+    assert_eq!(code(&o), 15, "{}", stdout(&o));
+    assert!(stdout(&o).contains("transportWith"), "{}", stdout(&o));
+    // Realised before transportWith named it: no public key yet, so with kryoptic unreachable the
+    // plan is blocked; realising it again records the key.
+    names_transport(&e, &body, |r| r.name == "kryoptic");
+    let away = format!("kryoptic={}", e.dir.join("absent.so").display());
+    let plan = |e: &Env| {
+        e.km(soft, &["--module", &away, "export", "mv", "--token", "softhsm", "--target", "kryoptic", "--dry-run"])
+    };
+    let o = plan(&e);
+    assert_eq!(code(&o), 15, "{}", stdout(&o));
+    assert!(stdout(&o).contains("records no public key"), "{}", stdout(&o));
+    assert_eq!(code(&e.cakeys(kry, &["realise", "tk-kryoptic", "--token", "kryoptic"])), 0);
+    let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
+    let tk = &lock["objects"]["tk-kryoptic"];
+    let spki = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.decode(tk["publicKey"].as_str().unwrap()).unwrap()
+    };
+    assert_eq!(tk["ids"]["rfc7093m4"].as_str(), Some(cakeys_core::id::sri(&spki).as_str()));
+    assert_eq!(code(&plan(&e)), 0);
+    let out = e.dir.join("mv.bundle.toml");
+    let o = e.km(
+        soft,
+        &[
+            "--module",
+            &away,
+            "export",
+            "mv",
+            "--token",
+            "softhsm",
+            "--target",
+            "kryoptic",
+            "--out",
+            out.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let bundle: toml::Value = toml::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(bundle["transport"]["rfc7093m4"].as_str(), tk["ids"]["rfc7093m4"].as_str());
+    // A recorded public key that is not the locked identity's: the lock does not load (17).
+    let lock_path = e.dir.join("keys.lock");
+    let text = std::fs::read_to_string(&lock_path).unwrap();
+    let flipped = base64_flip(tk["publicKey"].as_str().unwrap());
+    std::fs::write(&lock_path, text.replace(tk["publicKey"].as_str().unwrap(), &flipped)).unwrap();
+    assert_eq!(code(&plan(&e)), 17);
+    std::fs::write(&lock_path, text).unwrap();
+    // A transportWith naming a key that is no transport key is invalid.
+    e.config_with(&body, &|r| if r.name == "kryoptic" { "transportWith = \"mv\"\n".into() } else { String::new() });
+    assert_eq!(code(&e.km(soft, &["export", "mv", "--token", "softhsm", "--target", "kryoptic", "--dry-run"])), 17);
 }
 
 /// `text`, base64, with one byte of what it encodes flipped.

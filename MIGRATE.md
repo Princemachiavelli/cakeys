@@ -302,15 +302,32 @@ How each module scopes `CKA_TRUSTED` to the key that wraps (the transport public
 OAEP, the per-export KEK for the composed method) is [todo] per module.
 
 **D3. The transport key is an ordinary locked object.** The target holds an RSA key pair
-(`CKA_UNWRAP = true`, `CKA_DECRYPT = false`, non-extractable) declared in keys.toml like any
-other key and realised there; its `rfc7093m4` is in the reviewed lock. The source wraps only to a
+(`CKA_UNWRAP = true`, non-extractable) declared in keys.toml like any other key, named by the
+target token's `transportWith` (never picked by what a key can do; `--transport-key` overrides it
+per run) and realised there; its `rfc7093m4` is in the reviewed lock. The source wraps only to a
 public key whose hash matches the locked identity, so the lock is the authenticated channel,
 with no new trust mechanism. On a TPM target the transport key can also carry a `tpm-certify`
 attestation (TPM residence of the unwrapping key).
 
-`camigrate transport <spec> --token <target> --out <file>` writes what an offline export needs: the
-public key, its identity, the target's provider and mechanisms. When both tokens are reachable
-from one host, export reads that directly.
+- **It proves possession by unwrapping** (`binding = "pop-unwrap"`): a host secret unwrapped
+  into a non-extractable session key that MACs the challenge, so it needs no `CKA_DECRYPT`. One
+  that also decrypts is warned about, never refused: whoever holds the target's PIN could
+  `C_Decrypt` a bundle's key-encryption key out of the token. (That PIN holder can extract an
+  extractable moved key anyway; sealed protects the material on the way, not from the target.)
+- **The lock records its public key** (`objects.<name>.publicKey`, base64 SPKI) when it is
+  realised as a `transportWith` key, held to its `rfc7093m4` on load. A source then plans and
+  exports to that token from the lock alone: create the keys on every host, record each lock
+  update, and any host can plan and test a move. A target the lock records no public key for
+  is planned from the lock only as blocked.
+- **[todo] `CKA_UNWRAP_TEMPLATE`.** A template forcing `CKA_SENSITIVE`/non-extractable on what
+  the transport key unwraps would stop even the PIN holder from reading the key-encryption key.
+  cryptoki 0.12 can neither read nor set array attributes, so cakeys cannot warn about or create
+  one yet; and it would break the direct-OAEP path, where the moved key itself (extractable) is
+  unwrapped by the transport key.
+
+`camigrate transport <spec> --token <target> --out <file>` writes what an offline export needs
+for a target outside this lock: the public key, its identity, the target's provider and
+mechanisms. A target in the lock needs no file.
 
 **D4. Methods have frozen names, like schemes.** The method is chosen from the source's export
 capabilities intersected with the target's import capabilities. The target comes from

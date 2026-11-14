@@ -53,6 +53,12 @@ pinFile = "/var/lib/softhsm/pin"
 # generate, wrap, unwrap and destroy objects, so they run only on a token marked scratch and
 # are refused (17) on any other. No other verb reads it. Never on a token holding real keys:
 # scratch = true
+# The spec of this token's transport key (MIGRATE.md D3): sealed moves to this token wrap to it,
+# never to a key picked by what it can do (`camigrate --transport-key` overrides it per run). It
+# must realise an RSA private key here declaring CKA_UNWRAP = true and CKA_EXTRACTABLE = false
+# (else 17); realising it records its public key in the lock, so any host exports to this token
+# from the lock alone. `binding = "pop-unwrap"` proves it without CKA_DECRYPT.
+# transportWith = "transport-softhsm"
 
 [tokens.tpm]
 module = "/run/current-system/sw/lib/libtpm2_pkcs11.so"

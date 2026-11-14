@@ -308,6 +308,7 @@ mod tests {
             scratch: false,
             scratch_id: None,
             options: toml::Table::new(),
+            transport_with: None,
         }
     }
 

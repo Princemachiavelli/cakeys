@@ -19,6 +19,8 @@ pub struct Target<'a> {
     pub on_token: &'a SpecTokenCfg,
     /// The token the object is born on (`createOn`), when keys.toml names one.
     pub create_on: Option<&'a str>,
+    /// This spec is its token's transport key (`transportWith`): the lock records its public key.
+    pub transport: bool,
 }
 
 impl<'a> Target<'a> {
@@ -41,7 +43,8 @@ impl<'a> Target<'a> {
             return Err(KmError::Validation(format!("unknown token '{token_name}'")));
         }
         let create_on = cfg.create_on.get(object_name).map(String::as_str);
-        Ok(Target { spec_name, spec, object_name, object, token_name, on_token, create_on })
+        let transport = cfg.tokens.get(token_name).and_then(|t| t.transport_with.as_deref()) == Some(spec_name);
+        Ok(Target { spec_name, spec, object_name, object, token_name, on_token, create_on, transport })
     }
 
     /// Identity schemes this spec can compute (from the spec alone), in order of preference:

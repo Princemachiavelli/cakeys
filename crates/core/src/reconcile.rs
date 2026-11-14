@@ -44,6 +44,9 @@ pub struct Resolved {
     /// in `ids`, which holds only the portable schemes shared across tokens.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attestation: Option<AttestationRecord>,
+    /// A transport key's canonical SPKI (`Target::transport`), for the lock's `publicKey`.
+    #[serde(skip)]
+    pub public_key: Option<Vec<u8>>,
 }
 
 /// What a run has to say besides its verdict, in order. The caller prints them on success and
@@ -394,6 +397,44 @@ fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut 
     Ok(())
 }
 
+/// Record what the object's lock entry lacks: its type, commitment label, the IDs `r` computed
+/// (never a deprecated one), and a transport key's public key. Whether it changed.
+fn record_object(t: &Target, r: &Resolved, entry: &mut crate::config::LockObject, notes: &mut Notes) -> bool {
+    let mut changed = false;
+    if entry.object_type.is_none() {
+        entry.object_type = Some(t.object.clone());
+        changed = true;
+    }
+    if let Some(label) = &r.commitment_label
+        && entry.commitment_label.as_ref().is_none_or(|l| l != label)
+    {
+        entry.commitment_label = Some(label.clone());
+        changed = true;
+    }
+    for (scheme, got) in &r.ids {
+        if Scheme::from_name(scheme).is_some_and(Scheme::is_deprecated) && !entry.ids.contains_key(scheme) {
+            notes.note(format_args!(
+                    "{t} also computes a {scheme} identity; not recorded: that computation is deprecated (docs/DESIGN.md §3.1)"
+                ));
+            continue;
+        }
+        if !entry.ids.contains_key(scheme) {
+            entry.ids.insert(scheme.clone(), got.clone());
+            changed = true;
+        }
+    }
+    // A transport key's public key, for exports from the lock alone. The SPKI hashes to the
+    // rfc7093m4 just compared, which the load check holds a recorded one to: only a gap to fill.
+    if let Some(spki) = &r.public_key
+        && entry.public_key.is_none()
+    {
+        use base64::Engine as _;
+        entry.public_key = Some(base64::engine::general_purpose::STANDARD.encode(spki));
+        changed = true;
+    }
+    changed
+}
+
 /// Record `r` in the lock: the object's type, commitment label and IDs it lacks, this
 /// realisation, and the pairs. Never overwrites an ID. Whether the lock changed.
 ///
@@ -421,29 +462,7 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
             )));
         }
     }
-    let entry = lock.objects.entry(t.object_name.into()).or_default();
-    if entry.object_type.is_none() {
-        entry.object_type = Some(t.object.clone());
-        changed = true;
-    }
-    if let Some(label) = &r.commitment_label
-        && entry.commitment_label.as_ref().is_none_or(|l| l != label)
-    {
-        entry.commitment_label = Some(label.clone());
-        changed = true;
-    }
-    for (scheme, got) in &r.ids {
-        if Scheme::from_name(scheme).is_some_and(Scheme::is_deprecated) && !entry.ids.contains_key(scheme) {
-            notes.note(format_args!(
-                    "{t} also computes a {scheme} identity; not recorded: that computation is deprecated (docs/DESIGN.md §3.1)"
-                ));
-            continue;
-        }
-        if !entry.ids.contains_key(scheme) {
-            entry.ids.insert(scheme.clone(), got.clone());
-            changed = true;
-        }
-    }
+    changed |= record_object(t, r, lock.objects.entry(t.object_name.into()).or_default(), notes);
     let real = LockRealisation {
         object: t.object_name.to_owned(),
         locator: t.on_token.locator.clone(),
@@ -620,6 +639,7 @@ mod tests {
             immutables: Immutables { local: Some(true), ..Default::default() },
             commitment_label: None,
             attestation: None,
+            public_key: None,
         }
     }
 

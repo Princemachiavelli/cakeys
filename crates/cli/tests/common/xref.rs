@@ -72,12 +72,18 @@ pub fn env(name: &str) -> Option<Env> {
 impl Env {
     /// keys.toml: one token per reference, then `body`.
     pub fn config(&self, body: &str) {
+        self.config_with(body, &|_| String::new());
+    }
+
+    /// [`Self::config`], with `extra` lines in each reference's token table (a table TOML cannot
+    /// reopen once written).
+    pub fn config_with(&self, body: &str, extra: &dyn Fn(&Ref) -> String) {
         let pin = self.dir.join("pin");
         let mut text = String::new();
         for r in &self.refs {
             let (name, module, label) = (r.name, &r.module, r.token_label);
             writeln!(text, "[tokens.{name}]\nmodule = \"{module}\"\ntokenLabel = \"{label}\"").unwrap();
-            writeln!(text, "pinFile = \"{}\"\n", pin.display()).unwrap();
+            writeln!(text, "{}pinFile = \"{}\"\n", extra(r), pin.display()).unwrap();
         }
         std::fs::write(self.dir.join("keys.toml"), text + body).unwrap();
     }

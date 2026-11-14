@@ -125,7 +125,8 @@ struct MoveArgs {
     /// Print the plan and move nothing.
     #[arg(long)]
     dry_run: bool,
-    /// The target's transport key, by its spec, when several are realised there (MIGRATE.md D3).
+    /// The target's transport key, by its spec (MIGRATE.md D3); default: the target token's
+    /// `transportWith`.
     #[arg(long)]
     transport_key: Option<String>,
     /// Print the plan as JSON.
@@ -278,23 +279,25 @@ impl Run<'_> {
         let source = open_token(cfg, modules, registry, from, Access::Read, notes)?;
         let transport = match dest {
             Dest::Token(to) => {
-                let target = open_token(cfg, modules, registry, to, Access::Read, notes)?;
-                let tr = transport_target(cfg, &self.lock, to, how.transport_key.as_deref())?;
-                tokens::transport(&tr, &target, &self.lock, notes)?
+                let tr = transport_target(cfg, &self.lock, to, transport_choice(cfg, to, how))?;
+                if let Some(key) = tokens::locked_transport(&tr, &self.lock, notes)? {
+                    key
+                } else {
+                    let target = open_token(cfg, modules, registry, to, Access::Read, notes)?;
+                    notes.note(format_args!(
+                        "{tr}: the lock records no public key for it yet; realise it again to export without '{to}'"
+                    ));
+                    tokens::transport(&tr, &target, &self.lock, notes)?.key()?
+                }
             }
             Dest::Transport(path) => {
                 let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-                Transport::parse(&text, path)?
+                Transport::parse(&text, path)?.key()?
             }
             Dest::File(_) => unreachable!("a file plan is never sealed"),
         };
-        let key = sealed::TransportKey {
-            object: transport.object.clone(),
-            rfc7093m4: transport.rfc7093m4.clone(),
-            spki: transport.spki()?,
-        };
         let exposure = p.exposure.unwrap_or(Exposure::Sealed);
-        let text = sealed::export(&src, &source, &self.lock, &key, method, exposure, notes)?.to_toml();
+        let text = sealed::export(&src, &source, &self.lock, &transport, method, exposure, notes)?.to_toml();
         match out {
             Some(path) => {
                 std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;
@@ -379,13 +382,8 @@ impl Run<'_> {
             let lock = &mut self.lock;
             let outcome = pair.and_then(|(src, dst)| match &p.method {
                 Some(method @ (Method::RsaOaepAesKwp(_) | Method::RsaOaep(_))) => {
-                    let tr = transport_target(cfg, lock, to, how.transport_key.as_deref())?;
-                    let t = tokens::transport(&tr, &target, lock, notes)?;
-                    let key = sealed::TransportKey {
-                        object: t.object.clone(),
-                        rfc7093m4: t.rfc7093m4.clone(),
-                        spki: t.spki()?,
-                    };
+                    let tr = transport_target(cfg, lock, to, transport_choice(cfg, to, how))?;
+                    let key = tokens::transport(&tr, &target, lock, notes)?.key()?;
                     let exposure = p.exposure.unwrap_or(Exposure::Sealed);
                     let bundle = sealed::export(&src, &source, lock, &key, method, exposure, notes)?;
                     sealed::import(&bundle, &dst, &target, &tr, lock, notes)
@@ -440,13 +438,11 @@ impl Run<'_> {
             (Dest::Transport(_), Some((t, shown))) => tokens::Dest::Transport(t, shown),
             (Dest::Transport(_), None) => unreachable!("parsed above"),
         };
-        let req = tokens::Request {
-            object,
-            from,
-            dest,
-            host_plaintext: how.allow_host_plaintext,
-            transport_key: how.transport_key.as_deref(),
+        let transport_key = match dest {
+            tokens::Dest::Token(name) => transport_choice(cfg, name, how),
+            _ => how.transport_key.as_deref(),
         };
+        let req = tokens::Request { object, from, dest, host_plaintext: how.allow_host_plaintext, transport_key };
         let moves = tokens::plan_moves(&self.lock, registry, &req, &open, notes)?;
         let (to_name, source_from, target_from, plans) =
             (&moves.to, moves.source_from, moves.target_from, &moves.plans);
@@ -523,6 +519,11 @@ fn target_target<'a>(
 }
 
 /// The target `token`'s transport key, as a target: the spec `tokens::transport_spec` finds.
+/// The transport key to seal to on `to`: `--transport-key`, else the token's `transportWith`.
+fn transport_choice<'a>(cfg: &'a Config, to: &str, how: &'a MoveArgs) -> Option<&'a str> {
+    how.transport_key.as_deref().or_else(|| cfg.tokens.get(to).and_then(|t| t.transport_with.as_deref()))
+}
+
 fn transport_target<'a>(
     cfg: &'a Config,
     lock: &Lock,

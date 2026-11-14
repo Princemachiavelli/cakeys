@@ -122,6 +122,7 @@ fn resolved(t: &Target, v: &Variant) -> Resolved {
         immutables: Immutables { local, never_extractable, always_sensitive, key_gen_mechanism: None },
         commitment_label: None,
         attestation: None,
+        public_key: None,
     }
 }
 
@@ -142,6 +143,7 @@ fn aes(t: &Target, material: u8, schemes: &[&str]) -> Resolved {
         immutables: Immutables::default(),
         commitment_label: Some(id::DEFAULT_COMMITMENT_LABEL.into()),
         attestation: None,
+        public_key: None,
     }
 }
 

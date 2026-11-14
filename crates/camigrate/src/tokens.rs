@@ -196,6 +196,7 @@ fn lockless_token_cfg() -> TokenCfg {
         scratch: false,
         scratch_id: None,
         options: toml::Table::new(),
+        transport_with: None,
     }
 }
 
@@ -256,9 +257,7 @@ pub fn transport(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
             "{t}: a transport key must never leave the token (CKA_EXTRACTABLE = false)"
         )));
     }
-    if flag("CKA_DECRYPT") {
-        notes.note(format_args!("{t} also decrypts; a transport key that only unwraps is recommended"));
-    }
+    warn_decrypting(t, lock, notes);
     let h = tok
         .find_key(t.object, &t.on_token.locator, false)?
         .ok_or_else(|| KmError::NotFound(format!("{t}: the transport key")))?;
@@ -364,7 +363,20 @@ pub fn plan_moves(
     // this lock when it comes as a file (D3: the lock is the authenticated channel).
     let sealed = |p: &Plan| matches!(p.method, Some(Method::RsaOaepAesKwp(_) | Method::RsaOaep(_)));
     let missing = match &req.dest {
-        Dest::Token(name) => transport_spec(lock, name, req.transport_key).err(),
+        Dest::Token(name) => match transport_spec(lock, name, req.transport_key) {
+            Err(why) => Some(why),
+            // Not open here: the export seals to the public key the lock recorded, or cannot.
+            Ok(spec) if target_from == "lock" => {
+                let object = lock.realisation(spec, name).map(|r| r.object.as_str());
+                object.and_then(|o| lock.objects.get(o)).and_then(|o| o.public_key.as_ref()).is_none().then(|| {
+                    format!(
+                        "'{name}' is not open, and the lock records no public key for its transport key '{spec}': \
+                         realise it there again with transportWith naming it"
+                    )
+                })
+            }
+            Ok(_) => None,
+        },
         Dest::Transport(t, shown) => pinned(lock, t).err().map(|e| format!("{shown}: {e}")),
         Dest::File(_) => None,
     };
@@ -413,44 +425,70 @@ fn side_or_lock(
     }
 }
 
-/// The spec of the transport key realised on `token` (MIGRATE.md D3): an RSA private key whose
-/// recorded policy unwraps and never leaves the token. `chosen` names one by spec; without it,
-/// there must be exactly one.
+/// The spec of the transport key realised on `token` (MIGRATE.md D3): the one `chosen` names —
+/// `--transport-key`, else the token's `transportWith` — never one picked by what it can do. The
+/// lock must record it there as an RSA private key that may unwrap and never leaves the token.
 ///
 /// # Errors
 ///
-/// Why there is no such key, or which to choose between.
+/// Why there is no such key.
 pub fn transport_spec<'a>(lock: &'a Lock, token: &str, chosen: Option<&str>) -> std::result::Result<&'a str, String> {
-    let is_true = |p: &std::collections::BTreeMap<String, AttrValue>, n: &str| p.get(n) == Some(&AttrValue::Bool(true));
-    let candidates: Vec<&str> = lock
-        .realisations
-        .iter()
-        .filter_map(|(spec, by_token)| by_token.get(token).map(|r| (spec, r)))
-        .filter(|(spec, r)| {
-            let rsa = lock
-                .objects
-                .get(&r.object)
-                .and_then(|o| o.object_type.as_ref())
-                .is_some_and(|t| t.class == ObjectClass::PrivateKey && t.key_type == Some(KeyType::Rsa));
-            rsa && is_true(&r.policy, "CKA_UNWRAP")
-                && !is_true(&r.policy, "CKA_EXTRACTABLE")
-                && chosen.is_none_or(|c| c == spec.as_str())
-        })
-        .map(|(spec, _)| spec.as_str())
-        .collect();
-    match candidates.as_slice() {
-        [one] => Ok(one),
-        [] => Err(match chosen {
-            Some(c) => format!("'{c}' is no transport key realised on '{token}'"),
-            None => format!(
-                "no transport key is realised on '{token}' (MIGRATE.md D3): declare an RSA key there that may \
-                 unwrap and never leaves the token, and realise it"
-            ),
-        }),
-        several => Err(format!(
-            "several transport keys are realised on '{token}' ({}): pass --transport-key",
-            several.join(", ")
-        )),
+    let Some(chosen) = chosen else {
+        return Err(format!(
+            "no transport key is named for '{token}' (MIGRATE.md D3): set transportWith in [tokens.{token}] to the \
+             spec of an RSA key there that may unwrap and never leaves the token, realise it, or pass --transport-key"
+        ));
+    };
+    let Some((spec, r)) =
+        lock.realisations.get_key_value(chosen).and_then(|(spec, by_token)| Some((spec, by_token.get(token)?)))
+    else {
+        return Err(format!(
+            "transport key '{chosen}' is not realised on '{token}' in the lock: realise it there first"
+        ));
+    };
+    let is_true = |n: &str| r.policy.get(n) == Some(&AttrValue::Bool(true));
+    let rsa = lock
+        .objects
+        .get(&r.object)
+        .and_then(|o| o.object_type.as_ref())
+        .is_some_and(|t| t.class == ObjectClass::PrivateKey && t.key_type == Some(KeyType::Rsa));
+    if !rsa || !is_true("CKA_UNWRAP") || is_true("CKA_EXTRACTABLE") {
+        return Err(format!(
+            "'{chosen}' on '{token}' is no transport key: an RSA private key that may unwrap (CKA_UNWRAP) and never \
+             leaves the token (CKA_EXTRACTABLE = false), as the lock records it"
+        ));
+    }
+    Ok(spec.as_str())
+}
+
+/// The public key to seal to for the transport key `t`, from the lock alone (`publicKey`, held
+/// to the locked identity on load): no target needs to be open. `None` when the lock has none
+/// yet (realised before `transportWith` named it). A transport key that may also decrypt is
+/// warned about: whoever holds the target's PIN could decrypt what is sealed to it.
+///
+/// # Errors
+///
+/// `Validation` when the recorded key is no SPKI.
+pub fn locked_transport(t: &Target, lock: &Lock, notes: &mut Notes) -> Result<Option<crate::sealed::TransportKey>> {
+    use base64::Engine as _;
+    warn_decrypting(t, lock, notes);
+    let Some(o) = lock.objects.get(t.object_name) else { return Ok(None) };
+    let (Some(k), Some(id)) = (&o.public_key, o.ids.get("rfc7093m4")) else { return Ok(None) };
+    let spki = base64::engine::general_purpose::STANDARD
+        .decode(k)
+        .map_err(|e| KmError::Validation(format!("{t}: the lock's publicKey: {e}")))?;
+    Ok(Some(crate::sealed::TransportKey { object: t.object_name.to_owned(), rfc7093m4: id.clone(), spki }))
+}
+
+/// A transport key whose recorded policy also decrypts: the target's PIN holder could
+/// `C_Decrypt` a bundle's wrapped key-encryption key out of the token.
+fn warn_decrypting(t: &Target, lock: &Lock, notes: &mut Notes) {
+    let policy = lock.realisation(t.spec_name, t.token_name).map(|r| &r.policy);
+    if policy.and_then(|p| p.get("CKA_DECRYPT")) == Some(&AttrValue::Bool(true)) {
+        notes.warn(format_args!(
+            "{t} also decrypts (CKA_DECRYPT): whoever holds the target's PIN can decrypt what is sealed to it \
+             out of the token; a transport key that only unwraps proves possession with binding = \"pop-unwrap\""
+        ));
     }
 }
 
