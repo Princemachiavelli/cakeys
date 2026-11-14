@@ -113,11 +113,11 @@ or replaces entries, so vendors and users can keep their own.
 - **D4.** Claims and observations are kept apart: a token's `CKO_PROFILE` (`CKP_*`) claims are
   to be recorded and verified, never trusted. Not built yet.
 - **D5.** Probes write profiles; the committed TOML is what everything queries. Write probes are
-  the offline compiler, scratch-guarded. A read-only check at every token open is possible but
-  not built.
+  the offline compiler, scratch-guarded. `cakeys` runs no live-token profile check (decided
+  2026-11-13): the operator runs `caprobe probe --diff`.
 - **D6.** Behaviour hooks and vendor tools stay code. A profile with no hooks needs no crate.
 - **D7.** Say *capability profile*, to keep clear of the spec's `CKP_*` conformance profiles.
-- **D8.** The lock records the resolved profile name in the observation (`observed.profile`), so
+- **D8.** The lock records the resolved profile name in the observation (`observations.<key>.profile`), so
   drift warnings and `caps` name it.
 - **D9.** A profile matches on four keys: manufacturer, module version (`C_GetInfo`; omitted when
   the module hides it as 0.0), token model and firmware (`C_GetTokenInfo`). Resolution prefers

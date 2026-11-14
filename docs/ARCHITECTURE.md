@@ -60,7 +60,8 @@ flowchart TD
     PROVS --- TSS["tss-esapi, rusqlite (bundled), aes-gcm"]
 ```
 
-`cakeys` depends on neither `caprobe` nor `camigrate`, so its build carries no probe or
+TPM attestation (`tpm-certify`) stays in `cakeys-tpm2-pkcs11`, behind the `tpm2` feature, and so
+with `cakeys`. `cakeys` depends on neither `caprobe` nor `camigrate`, so its build carries no probe or
 migration code; `camigrate` records an import through `ops`, the code path `cakeys realise`
 uses. `checks.minimal` builds all three without the provider features, and so without tpm2-tss
 and sqlite.

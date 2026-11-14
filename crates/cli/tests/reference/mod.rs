@@ -232,7 +232,7 @@ tokens.ref = { locator = { CKA_LABEL = "shared-b" } }
 #[test]
 fn a_secret_key_without_a_reverifiable_identity_is_refused() {
     let Some(e) = env("no_identity") else { return };
-    let spec = |extra: &str| {
+    let spec = |sign: bool, extra: &str| {
         format!(
             r#"
 [objects.locked]
@@ -242,20 +242,25 @@ valueLen = 32
 
 [specs.locked-down]
 object = "locked"
-attributes = {{ CKA_SIGN = false, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false, CKA_DERIVE = true }}
+attributes = {{ CKA_SIGN = {sign}, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false, CKA_DERIVE = true }}
 tokens.ref = {{ locator = {{ CKA_LABEL = "locked" }}, autoCreate = true{extra} }}
 "#
         )
     };
-    e.config(&spec(""));
+    e.config(&spec(false, ""));
     let v = e.km(&["validate"]);
     assert_eq!(code(&v), 17);
     assert!(stderr(&v).contains("declare a usage bit"), "{}", stderr(&v));
     assert_eq!(e.code(&["realise", "locked-down", "--token", "ref", "--no-update-lock"]), 17);
     assert_eq!(e.session().labelled("locked"), []);
-    // The per-token opt-in to weaker modes is gone from the schema (docs/DESIGN.md §3.4).
-    e.config(&spec(r#", identity.allow = ["host-at-import"]"#));
-    assert_eq!(e.code(&["validate"]), 17);
+    // The per-token opt-in to weaker modes is gone from the schema (docs/DESIGN.md §3.4): on a
+    // spec that is otherwise valid, the old key is refused as unknown.
+    e.config(&spec(true, ""));
+    assert_eq!(e.code(&["validate"]), 0);
+    e.config(&spec(true, r#", identity.allow = ["host-at-import"]"#));
+    let v = e.km(&["validate"]);
+    assert_eq!(code(&v), 17);
+    assert!(stderr(&v).contains("identity"), "{}", stderr(&v));
 }
 
 #[test]

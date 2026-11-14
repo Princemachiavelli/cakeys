@@ -24,6 +24,8 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **Post-quantum key types** (ML-DSA, ML-KEM, SLH-DSA through kryoptic): `rfc7093m4` over the
   SPKI, a `parameterSet` in keys.toml (out of the spec digest when unset), OpenSSL 3.5 oracles,
   and first a test of whether p11-kit forwards PKCS#11 3.2. No token here has PQ hardware.
+- **`pop-ecdh` and `pop-decrypt` for `CKA_ALWAYS_AUTHENTICATE` keys**: only the sign path logs
+  in per use today, so derive- or decrypt-only always-authenticate keys are refused (16).
 - **`binding = "attested"`** as an opt-in replacement for `pop-*` on PIV keys (a proof without
   touch).
 - **PIV touch policy**: invisible in PKCS#11; readable only from the attestation's
@@ -51,6 +53,9 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   format (SSH signatures, minisign, DSSE) rather than design one.
 - **A merge rule for lock fragments** (review S16): updates are serialized and `gc` collects
   stale entries, but two hand-edited fragments still need a manual merge.
+- **A published JSON Schema** for keys.toml and keys.lock (`schemars`), for other-language
+  readers and editor validation (taplo); cross-field invariants stay in code.
+- **Remote keystores beyond p11-kit forwarding** (KMIP, cloud KMS), as a backend crate if ever.
 - **Dropping `--no-update-lock`**: deferred; it changes how `autoCreate` behaves.
 - **Keystores with an `idPrefix`**: an opt-in grouping whose prefix marks managed objects on the
   token (labels only on PIV?), probably outside the spec digest.
@@ -79,7 +84,6 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   ykcs11/2.7 was probed in approved mode, so it may refuse on a non-FIPS device what that device
   can do.
 - **D4, `CKO_PROFILE` claims**: read and record them, never trust them.
-- **D5, a read-only check at token open** against the resolved profile.
 - **More probes**: PQ parameter sets, AES-KW/KWP round trips, the HMAC key types,
   `C_GetMechanismInfo` beyond RSA, attribute defaults, existing-object encodings, ECDH with
   Montgomery keys, SHA-224 RSA-PSS (no binding variant), delete in a scratch slot.
