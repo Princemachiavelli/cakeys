@@ -652,6 +652,11 @@ fn bundles_are_checked_against_the_lock() {
     let public = b["keys"][0]["publicKey"].as_str().unwrap();
     let relabelled = text.replace(ids, other_ids).replace(public, other["keys"][0]["publicKey"].as_str().unwrap());
     refused(relabelled, 10, "another key's IDs and public key");
+    // A bundle sealed to another transport key than the one realised here (10), and one whose
+    // key is another type than the lock's (14): each before the target is touched.
+    let sealed_to = b["transport"]["rfc7093m4"].as_str().unwrap();
+    refused(text.replace(sealed_to, ids), 10, "another transport key");
+    refused(text.replace("curve = \"secp256r1\"", "curve = \"secp384r1\""), 14, "another type");
     // A flipped byte in the wrapped key: RFC 5649's integrity check refuses it.
     refused(text.replace(key_blob, &base64_flip(key_blob)), 13, "a tampered blob");
     // The other key's blobs (its KEK and its key), wrapped to the same transport key: unwrapped,

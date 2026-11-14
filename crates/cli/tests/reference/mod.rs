@@ -1931,6 +1931,46 @@ fn derive_and_decrypt_only_keys_prove_possession() {
     assert_eq!(e.code(&["realise", "k", "--token", "ref", "--no-update-lock"]), 13);
 }
 
+/// A proof the token cannot give is refused, never skipped: without the proof's mechanism the
+/// token is unsupported (15) with the opt-out named, and a `CKA_ALWAYS_AUTHENTICATE` key under a
+/// binding that has no per-use login is unavailable (16).
+#[test]
+fn proofs_the_token_cannot_give_are_refused() {
+    let Some(e) = env("pop-refused") else { return };
+    let ec = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+              [specs.k]\nobject = \"k\"\nattributes = { CKA_DERIVE = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n\
+              tokens.ref = { locator = { CKA_LABEL = \"pop-refused-ec\" }, autoCreate = true, binding = \"pop-ecdh\" }\n\n";
+    let rsa = "[objects.r]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
+               [specs.r]\nobject = \"r\"\nattributes = { CKA_DECRYPT = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n\
+               tokens.ref = { locator = { CKA_LABEL = \"pop-refused-rsa\" }, autoCreate = true, binding = \"pop-decrypt\" }\n\n";
+    e.config(&format!("{ec}{rsa}"));
+    for spec in ["k", "r"] {
+        assert_eq!(e.code(&["realise", spec, "--token", "ref", "--update-lock"]), 0, "{spec}");
+    }
+    // The same token through a module configuration that hides the proof's mechanism.
+    let conf = std::fs::read_to_string(std::env::var(REF.conf_var).unwrap()).unwrap();
+    for (spec, mechanism) in [("k", "CKM_ECDH1_DERIVE"), ("r", "CKM_RSA_PKCS_OAEP")] {
+        let hidden = e.dir.join(format!("no-{mechanism}.conf"));
+        std::fs::write(&hidden, (REF.hide_mechanism)(&conf, mechanism)).unwrap();
+        let o = e.km_env(&["verify", spec, "--token", "ref"], &[(REF.conf_var, hidden.as_path())]);
+        assert_eq!(code(&o), 15, "{mechanism}: {}", stderr(&o));
+        let said = stderr(&o);
+        assert!(said.contains(mechanism) && said.contains("token-asserted"), "{said}");
+    }
+    // A key that wants its PIN per use, under a proof that has no point to give it.
+    // (An object of its own: the lock pins `k`'s material.)
+    let always = ec
+        .replace("CKA_DERIVE = true", "CKA_DERIVE = true, CKA_ALWAYS_AUTHENTICATE = true")
+        .replace("pop-refused-ec", "pop-refused-always")
+        .replace("[objects.k]", "[objects.a]")
+        .replace("[specs.k]\nobject = \"k\"", "[specs.a]\nobject = \"a\"");
+    e.config(&format!("{ec}{rsa}{always}"));
+    let o = e.km(&["realise", "a", "--token", "ref", "--no-update-lock"]);
+    let said = stderr(&o);
+    assert!(said.contains("CKA_ALWAYS_AUTHENTICATE") && said.contains("pop-sign"), "{said}");
+    assert!(matches!(code(&o), 14 | 16), "exit {}: {said}", code(&o));
+}
+
 /// M3: `--update-lock` holds an advisory lock on `<lock>.lck` across its read-modify-write. While
 /// the sidecar lock is held by someone else, a second updater waits and a reader proceeds.
 #[test]
