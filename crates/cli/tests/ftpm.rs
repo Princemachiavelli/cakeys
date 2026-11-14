@@ -106,7 +106,7 @@ fn unwrap_only_keys_cannot_prove_possession() {
     assert!(stderr(&o).contains("never unwraps") && !stderr(&o).contains("created"), "{}", stderr(&o));
 }
 
-/// `tpm-certify` on the real TPM (WORKPLAN stage 5), opt-in twice over: the harness store must
+/// `tpm-certify` on the real TPM (2026-11-14), opt-in twice over: the harness store must
 /// use the platform's storage root key as its parent (`ftpm-test-env.sh up <dir> persistent`,
 /// only read), and `CAKEYS_FTPM_ATTEST=1` must be set, since the first run makes the one
 /// persistent object this suite may make: cakeys' Attestation Key at 0x81000016 (owner
