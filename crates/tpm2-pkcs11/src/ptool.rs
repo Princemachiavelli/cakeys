@@ -1,4 +1,4 @@
-//! The plaintext import of tpm2-pkcs11 (MIGRATE.md `tpm2-ptool`, phase 4): the module creates
+//! The plaintext import of tpm2-pkcs11 (docs/CAMIGRATE.md `tpm2-ptool`, phase 4): the module creates
 //! keys from values only through `tpm2_ptool import`, a runtime dependency of this path.
 //!
 //! What it costs, said in every plan that uses it: the key reaches `tpm2_ptool`'s own Python

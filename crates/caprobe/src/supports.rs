@@ -1,4 +1,4 @@
-//! The `supports` query (docs/PROVIDERS.md): what the capability profiles say a module
+//! The `supports` query (docs/CAPROBE.md): what the capability profiles say a module
 //! supports. Pure data — no token is touched.
 
 use cakeys_core::config::Config;
@@ -49,7 +49,7 @@ impl Support {
         }
         if self.verdicts.iter().any(|(_, v)| matches!(v, Verdict::Unknown { .. })) {
             return Err(KmError::Unavailable(
-                "the profiles do not decide this: run the probe (PROVIDERS.md phase 3) or a fuller profile".into(),
+                "the profiles do not decide this: run the probe (docs/CAPROBE.md) or a fuller profile".into(),
             ));
         }
         Ok(())
@@ -90,7 +90,7 @@ pub fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
         }
         (None, None) => None,
     };
-    // The cryptoki binding layer is always in the stack (docs/PROVIDERS.md phase 2): what it
+    // The cryptoki binding layer is always in the stack (docs/CAPROBE.md): what it
     // subtracts is decided by the build this binary runs against, so an explicit `--layer
     // cryptoki/0.12` adds nothing it has not already decided.
     let mut resolved: Vec<Profile> = vec![cakeys_pkcs11::binding::layer().map_err(KmError::Validation)?];

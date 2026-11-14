@@ -1,4 +1,4 @@
-# Pure-eval view of keys.toml + keys.lock (docs/DESIGN.md §7.1).
+# Pure-eval view of keys.toml + keys.lock (docs/CAKEYS.md, "Nix integration").
 # Builtins only, so it works without nixpkgs (e.g. inside a test VM).
 let
   optionalString = c: s: if c then s else "";
@@ -136,7 +136,7 @@ in
           uri = real.observed.uri or null;
           inherit (real) mode specDigest;
           # What the check establishes against a token that may lie (cakeys_core::plan::assurance,
-          # docs/REVIEW-2026-11-13.md "Replay"): "proof" (a fresh challenge the host verified),
+          # docs/archive/REVIEW-2026-11-13.md "Replay"): "proof" (a fresh challenge the host verified),
           # "fingerprint" (a secret key's commitment, replayable by whatever saw it once) or
           # "public" (a hash of public bytes).
           assurance =

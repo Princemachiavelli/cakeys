@@ -125,7 +125,7 @@ pub trait Provider: Send + Sync {
         Err(KmError::Unsupported(format!("{} exposes no attestation", self.name())))
     }
 
-    /// Import plaintext key material the module's own way, outside PKCS#11 (MIGRATE.md
+    /// Import plaintext key material the module's own way, outside PKCS#11 (docs/CAMIGRATE.md
     /// `tpm2-ptool`: tpm2-pkcs11 creates keys from values only through `tpm2_ptool import`):
     /// `ctx.key` is a private key's PKCS#8 `PrivateKeyInfo` or a secret key's value. The caller
     /// opens the token again afterwards to see the key. The default refuses.
@@ -138,7 +138,7 @@ pub trait Provider: Send + Sync {
         Err(KmError::Unsupported(format!("{} imports no plaintext outside PKCS#11", self.name())))
     }
 
-    /// What this module can do to move keys (MIGRATE.md): which side of an export or import it
+    /// What this module can do to move keys (docs/CAMIGRATE.md): which side of an export or import it
     /// can be, through which mechanisms, and any methods of its own (`Side::vendor`, D10). The
     /// default is a spec-compliant PKCS#11 module: it wraps and unwraps with what it lists and
     /// imports with `C_CreateObject`.

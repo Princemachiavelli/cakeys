@@ -26,7 +26,7 @@ rustPlatform.buildRustPackage (
       [ "$applied" = 1 ] || { echo "cryptoki-${common.cryptoki.version} not found exactly once in $cargoDepsCopy" >&2; exit 1; }
     '';
 
-    # One thread: the token suites open a session per test on one module (NEXT.md §1, minor).
+    # One thread: the token suites open a session per test on one module (docs/OPEN.md, "Engineering").
     dontUseCargoParallelTests = true;
     # Unit tests live in every crate, not just the tools (the default members).
     cargoTestFlags = [ "--workspace" ];

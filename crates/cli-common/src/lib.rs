@@ -1,4 +1,4 @@
-//! What the `cakeys`, `caprobe` and `camigrate` command lines share (docs/SCOPE.md, "Three
+//! What the `cakeys`, `caprobe` and `camigrate` command lines share (README.md, "Three
 //! tools"): the providers this build links, opening a token keys.toml names, printing a run's
 //! notes, and the documented exit codes. Each binary is a library over this, so a downstream
 //! binary can link extra provider crates: `cakeys::main(&cakeys::default_registry().with(P))`.

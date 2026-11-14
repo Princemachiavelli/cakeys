@@ -1,5 +1,5 @@
 # Host support for cakeys: token access from the Nix build sandbox, uid-range builds,
-# and pre-use identity checks for services (docs/DESIGN.md §7.3).
+# and pre-use identity checks for services (docs/CAKEYS.md, "NixOS module").
 #
 # Token paths are not global `extra-sandbox-paths`: a pre-build-hook (nix/sandbox-hook.sh) grants
 # them only to builds whose `requiredSystemFeatures` name the token's system feature.
@@ -26,7 +26,8 @@ let
 
   # Host GIDs builds run with: the nixbld group, or with auto-allocate-uids one GID per 65536-ID
   # slot (Nix's Linux sandbox always uses a user namespace there and sets gid = the slot's first
-  # uid; supplementary groups are dropped). docs/DESIGN.md §7.3; the reasoning: PLAN.md, "Build identities".
+  # uid; supplementary groups are dropped). docs/CAKEYS.md, "NixOS module"; the reasoning:
+  # docs/archive/PRIOR-ART.md, "Build identities".
   slotSize = 65536;
   buildGids =
     if autoUids then

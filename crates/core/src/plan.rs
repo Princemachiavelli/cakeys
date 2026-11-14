@@ -80,7 +80,7 @@ impl std::fmt::Display for Target<'_> {
 /// How `t`'s private key is bound to its identity: proven by signing, deriving or decrypting
 /// (`pop-*`) unless the spec opts out (or adopts it publicOnly). `None` for every other class.
 /// This is the planned method; the proof records `pop-sign-pin` for `pop-sign` when the token
-/// reports the key `CKA_ALWAYS_AUTHENTICATE` (`docs/CKA_ALWAYS_AUTHENTICATE.md`).
+/// reports the key `CKA_ALWAYS_AUTHENTICATE` (docs/DESIGN.md §3.6).
 #[must_use]
 pub fn binding(t: &Target) -> Option<Binding> {
     if t.object.class != Class::PrivateKey {
@@ -93,7 +93,7 @@ pub fn binding(t: &Target) -> Option<Binding> {
 }
 
 /// What a realisation's check establishes against a module or token that may lie (the replay
-/// analysis in docs/REVIEW-2026-11-13.md). Derived from the class, the recorded binding and the
+/// analysis in docs/archive/REVIEW-2026-11-13.md). Derived from the class, the recorded binding and the
 /// attestation kind, never stored: the lock already holds all three.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -338,7 +338,7 @@ pub const AES_COMMITS: [Commit; 4] = [Commit::Cmac, Commit::KcvEcb, Commit::KcvE
 mod tests {
     use super::*;
 
-    /// The replay table (docs/REVIEW-2026-11-13.md): only a fresh, host-verified answer is a
+    /// The replay table (docs/archive/REVIEW-2026-11-13.md): only a fresh, host-verified answer is a
     /// proof; a secret key's commitment is a fingerprint; public bytes are public.
     #[test]
     fn assurance_follows_the_replay_table() {

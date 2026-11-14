@@ -90,7 +90,7 @@ fn keys_generate_and_prove_possession_each_way() {
     assert_eq!(e.code(&["realise", "big", "--token", "ftpm", "--no-update-lock"]), 15);
 }
 
-/// `pop-unwrap` (a transport key's proof, MIGRATE.md D3) on the real TPM: tpm2-pkcs11 never
+/// `pop-unwrap` (a transport key's proof, docs/CAMIGRATE.md D3) on the real TPM: tpm2-pkcs11 never
 /// unwraps (`C_UnwrapKey` is `CKR_FUNCTION_NOT_SUPPORTED` [run], its profile's `unwraps =
 /// false`), so an unwrap-only key is refused as unsupported (15) before anything is generated.
 #[test]

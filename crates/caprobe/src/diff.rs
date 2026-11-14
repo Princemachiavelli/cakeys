@@ -1,4 +1,4 @@
-//! The probe diff (docs/PROVIDERS.md phase 3): what a generated profile observed against what
+//! The probe diff (docs/CAPROBE.md): what a generated profile observed against what
 //! a claimed profile says, over the rows a probe can observe. Empty is conformance — the
 //! shipped profile is what the module does; non-empty is drift, each line naming the row.
 
@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// module that hides it names differently), `partial` (whether the probe has filled the rows
 /// is not a claim), the notes and `[manual]` findings (human evidence), and the rows no probe
 /// observes yet — the
-/// migration rows and the layer subtractions (data until MIGRATE phase 3
+/// migration rows and the layer subtractions (data until docs/CAMIGRATE.md phase 3
 /// exercises them).
 #[must_use]
 pub fn diff(generated: &Profile, claimed: &Profile) -> Vec<String> {

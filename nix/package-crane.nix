@@ -56,10 +56,10 @@ craneLib.buildPackage (
   // base
   // {
     inherit cargoArtifacts;
-    # One thread: the token suites open a session per test on one module (NEXT.md §1, minor).
+    # One thread: the token suites open a session per test on one module (docs/OPEN.md, "Engineering").
     cargoTestExtraArgs = "-- --test-threads=1";
     passthru = {
-      # Clippy with -D warnings (NEXT.md §2) over every target: the workspace lints (Cargo.toml
+      # Clippy with -D warnings over every target: the workspace lints (Cargo.toml
       # [workspace.lints]: unsafe_code deny, clippy::pedantic with one blanket allow) travel with
       # every build, editor and this check.
       clippy = craneLib.cargoClippy (

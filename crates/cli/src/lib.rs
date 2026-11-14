@@ -1,4 +1,4 @@
-//! The `cakeys` command line (docs/SCOPE.md, "Three tools"): it pins and verifies. As a
+//! The `cakeys` command line (README.md, "Three tools"): it pins and verifies. As a
 //! library so a downstream binary can link extra provider crates:
 //! `cakeys::main(&cakeys::default_registry().with(MyProvider))`.
 
@@ -240,7 +240,7 @@ impl Run<'_> {
     }
 
     /// `validate`: each token's options (with a named provider), then the static gate
-    /// (docs/PROVIDERS.md phase 4) — each target's needs against its token's capability
+    /// (docs/CAPROBE.md) — each target's needs against its token's capability
     /// profiles, resolved from keys.toml and the lock. No token is opened.
     fn validate(&self, notes: &mut Notes) -> anyhow::Result<()> {
         for (name, t) in &self.cfg.tokens {

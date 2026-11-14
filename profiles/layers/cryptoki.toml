@@ -1,5 +1,5 @@
 # The cryptoki binding this cakeys runs against — the one layer between cakeys and every
-# module, applied automatically (PROVIDERS.md D3). Its rows are what cryptoki 0.12.1 breaks;
+# module, applied automatically (docs/CAPROBE.md D3). Its rows are what cryptoki 0.12.1 breaks;
 # a binding with the fix (the Nix patches, or the upstream PRs released) subtracts nothing:
 # cakeys detects that at run time (crates/pkcs11/src/binding.rs), so the layer records the
 # fix as soon as the implementation carries it.

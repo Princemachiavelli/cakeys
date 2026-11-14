@@ -1,4 +1,4 @@
-//! A capability profile (docs/PROVIDERS.md D2, D3): how one vendor SO version (`observed`
+//! A capability profile (docs/CAPROBE.md D2, D3): how one vendor SO version (`observed`
 //! mode) or one layer between cakeys and the token (`delta` mode) deviates from what it
 //! advertises. The rows committed today carry this repo's [run] evidence; the probe (phase 3)
 //! regenerates them and fills the `advertise` lists.
@@ -95,7 +95,7 @@ pub struct Manual {
     pub evidence: String,
 }
 
-/// The per-module unwrap-template rules, as data (MIGRATE.md D6's provider hook): attributes
+/// The per-module unwrap-template rules, as data (docs/CAMIGRATE.md D6's provider hook): attributes
 /// the module refuses in a template (`SoftHSM: CKA_VALUE_LEN`). Absent: never probed; `[]`:
 /// probed, and the module refuses none.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
@@ -172,7 +172,7 @@ pub struct AcceptRow {
     pub max_bits: Option<u32>,
 }
 
-/// How a module moves keys (MIGRATE.md D2/D10), as data. Absent fields mean a spec-compliant
+/// How a module moves keys (docs/CAMIGRATE.md D2/D10), as data. Absent fields mean a spec-compliant
 /// PKCS#11 module: it wraps and unwraps with what it lists and imports public objects and
 /// plaintext keys with `C_CreateObject`. The OAEP hashes come from `wrap.oaep`, the one row
 /// the `--oaep` query shares.
@@ -188,7 +188,7 @@ pub struct Migration {
     /// type check reads: `SoftHSM` leaves it 0 and refuses it in the template (default: yes).
     #[serde(default, rename = "secret-unwraps")]
     pub secret_unwraps: Option<bool>,
-    /// Whether a `CKA_WRAP_WITH_TRUSTED` key can leave toward a transport key (MIGRATE.md D2,
+    /// Whether a `CKA_WRAP_WITH_TRUSTED` key can leave toward a transport key (docs/CAMIGRATE.md D2,
     /// `enforced`): the SO can mark an RSA public key `CKA_TRUSTED` at creation, and the module
     /// wraps under it (kryoptic cannot; default: yes).
     #[serde(default, rename = "trusted-wrap")]
@@ -242,7 +242,7 @@ pub struct Profile {
     pub decrypt: Decrypt,
     #[serde(default)]
     pub derive: Derive,
-    /// How the module moves keys (MIGRATE.md), when it deviates from a spec-compliant module.
+    /// How the module moves keys (docs/CAMIGRATE.md), when it deviates from a spec-compliant module.
     #[serde(default)]
     pub migration: Option<Migration>,
     #[serde(default)]

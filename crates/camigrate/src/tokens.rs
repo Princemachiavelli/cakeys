@@ -1,6 +1,6 @@
-//! Export and import against tokens and the lock (MIGRATE.md): each side's capabilities, the
+//! Export and import against tokens and the lock (docs/CAMIGRATE.md): each side's capabilities, the
 //! objects a source holds, and the transport key. The decisions are [`crate::plan`]'s; each
-//! side's capabilities come from the token's resolved capability profiles (docs/PROVIDERS.md
+//! side's capabilities come from the token's resolved capability profiles (docs/CAPROBE.md
 //! phase 2) when one is committed for its provider, else from the provider's own `migration`
 //! hook.
 
@@ -78,8 +78,8 @@ pub fn side_from_transport(t: &Transport, registry: &Registry) -> Option<Result<
     }
 }
 
-/// The per-module unwrap-template rules, as data (MIGRATE.md D6): what the wrapping code of
-/// MIGRATE phase 3 must drop from a target's unwrap template (`SoftHSM`: `CKA_VALUE_LEN`).
+/// The per-module unwrap-template rules, as data (docs/CAMIGRATE.md D6): what the wrapping code of
+/// docs/CAMIGRATE.md phase 3 must drop from a target's unwrap template (`SoftHSM`: `CKA_VALUE_LEN`).
 #[must_use]
 pub fn unwrap_refusals(tok: &Token) -> Vec<&str> {
     let mut out: Vec<&str> =
@@ -236,7 +236,7 @@ pub fn materials<'a>(lock: &'a Lock, token: &str, objects: &[&str]) -> Result<Ve
     Ok(out)
 }
 
-/// The transport key's public half (`camigrate transport`, MIGRATE.md D3). The spec must name an
+/// The transport key's public half (`camigrate transport`, docs/CAMIGRATE.md D3). The spec must name an
 /// RSA private key that may unwrap and never leaves the token, and its realisation must verify
 /// against the lock: the locked identity is what makes the public key trustworthy to a source.
 ///
@@ -247,7 +247,7 @@ pub fn materials<'a>(lock: &'a Lock, token: &str, objects: &[&str]) -> Result<Ve
 pub fn transport(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Transport> {
     if t.object.class != ObjectClass::PrivateKey || t.object.key_type != Some(KeyType::Rsa) {
         return Err(KmError::Validation(format!(
-            "{t}: a transport key is an RSA private key (MIGRATE.md D3), not a {}",
+            "{t}: a transport key is an RSA private key (docs/CAMIGRATE.md D3), not a {}",
             t.object.class
         )));
     }
@@ -287,16 +287,16 @@ pub struct Request<'a> {
     /// The source token.
     pub from: &'a str,
     pub dest: Dest<'a>,
-    /// Allow the `host` and `file` paths: plaintext in this process's memory (MIGRATE.md D2).
+    /// Allow the `host` and `file` paths: plaintext in this process's memory (docs/CAMIGRATE.md D2).
     pub host_plaintext: bool,
-    /// The target's transport key, by its spec, when several are realised there (MIGRATE.md D3).
+    /// The target's transport key, by its spec, when several are realised there (docs/CAMIGRATE.md D3).
     pub transport_key: Option<&'a str>,
-    /// The source holds a copy of that transport key its SO marked `CKA_TRUSTED` (MIGRATE.md D2,
+    /// The source holds a copy of that transport key its SO marked `CKA_TRUSTED` (docs/CAMIGRATE.md D2,
     /// `enforced`).
     pub trusted_transport: bool,
 }
 
-/// The plans of one invocation (MIGRATE.md D9).
+/// The plans of one invocation (docs/CAMIGRATE.md D9).
 pub struct Moves {
     /// The destination's name: the target token, or the file format.
     pub to: String,
@@ -434,7 +434,7 @@ fn side_or_lock(
     }
 }
 
-/// The spec of the transport key realised on `token` (MIGRATE.md D3): the one `chosen` names —
+/// The spec of the transport key realised on `token` (docs/CAMIGRATE.md D3): the one `chosen` names —
 /// `--transport-key`, else the token's `transportWith` — never one picked by what it can do. The
 /// lock must record it there as an RSA private key that may unwrap and never leaves the token.
 ///
@@ -444,7 +444,7 @@ fn side_or_lock(
 pub fn transport_spec<'a>(lock: &'a Lock, token: &str, chosen: Option<&str>) -> std::result::Result<&'a str, String> {
     let Some(chosen) = chosen else {
         return Err(format!(
-            "no transport key is named for '{token}' (MIGRATE.md D3): set transportWith in [tokens.{token}] to the \
+            "no transport key is named for '{token}' (docs/CAMIGRATE.md D3): set transportWith in [tokens.{token}] to the \
              spec of an RSA key there that may unwrap and never leaves the token, realise it, or pass --transport-key"
         ));
     };

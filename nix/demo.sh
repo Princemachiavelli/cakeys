@@ -273,7 +273,7 @@ wait_key
 # ── Act 5 ───────────────────────────────────────────────────────────────────────────────────
 
 act "5. Moving keys, planned from each side's capabilities" \
-  "camigrate plans an export per object from what both modules can do (MIGRATE.md), then" \
+  "camigrate plans an export per object from what both modules can do (docs/CAMIGRATE.md), then" \
   "moves the key sealed: through the host only wrapped, and recorded with where it came from."
 append <<'EOF'
 

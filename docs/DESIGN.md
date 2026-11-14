@@ -1,10 +1,11 @@
-# cakeys design (state at 2026-11-13)
+# cakeys design: identity and the lock
 
-This is the authoritative description of what is built. `PLAN.md` is the roadmap and history;
-where the two disagree, this document wins. Review findings and open issues are tracked in
-`docs/REVIEW-2026-11-11.md` (code) and `docs/REVIEW-2026-11-13.md` (architecture); the map of
-the repository is `docs/ARCHITECTURE.md`. Visual overviews of the model, the verbs and the Nix loop are in
-`docs/diagrams.md`.
+How cakeys identifies objects and what its lock promises. The tools have their own documents:
+[CAKEYS.md](CAKEYS.md) (the verbs, exit codes and Nix integration),
+[CAPROBE.md](CAPROBE.md) (capability profiles) and [CAMIGRATE.md](CAMIGRATE.md) (moving keys).
+The annotated file references are [CONFIG.md](CONFIG.md) and [LOCK.md](LOCK.md); the crate map is
+[ARCHITECTURE.md](ARCHITECTURE.md), and the pictures are in [diagrams.md](diagrams.md). Section
+numbers are stable, since code cites them; moved sections leave a pointer.
 
 ## 1. Purpose
 
@@ -139,7 +140,19 @@ Strongest first. The mode is recorded per realisation; a downgrade fails (exit 1
 | `direct` | public keys, certificates, data objects (hash of public material) |
 | `commitment` | secret keys whose declared usage bits allow a commitment scheme |
 | `wrap-rebind` | extractable secret keys without such bits. The key is wrapped under a session KEK, unwrapped as a session copy that allows every scheme of its type, committed, then both are destroyed. Computes every scheme (AES: all four). |
-| `commit-at-creation`, `host-at-import`, `token-specific` | **not implemented**. Need an explicit per-token `identity.allow` opt-in and are refused before anything is created — `weak_modes_need_per_token_opt_in`. |
+
+A secret key that fits none of these — non-extractable, with no usage bit a commitment scheme can
+use (derive-only, unwrap-only, `CKA_ALLOWED_MECHANISMS` limited to random-IV modes) — is refused
+at validation (17), naming the spec change that would identify it —
+`a_secret_key_without_a_reverifiable_identity_is_refused`.
+
+**Weaker modes may have to come back** (review A6 removed them unbuilt). Such keys are common in
+real deployments, especially existing and legacy keys that cakeys did not create and cannot
+re-declare, so tests built from clean keys must not decide what cakeys can adopt. Each candidate
+gives up re-verification: `commit-at-creation` (compute once, then drop the usage bit),
+`host-at-import` (hash the plaintext before an import), `token-specific` (an identity one token
+alone can compute, such as a TPM Name). If they return, they get their own names, rank below
+`wrap-rebind`, and a reported assurance that says the token is not re-checked ([OPEN.md](OPEN.md)).
 
 ### 3.5 Linking and upgrades
 
@@ -188,8 +201,7 @@ key to its identity:
      On a key the token reports `CKA_ALWAYS_AUTHENTICATE` (declared or not), the same proof runs
      under the key's per-use policy and is recorded as **`pop-sign-pin`**:
      `C_SignInit → C_Login(CKU_CONTEXT_SPECIFIC) → C_SignUpdate → C_SignFinal`, once, with the
-     PIN that opened the session, never retried
-     ([`CKA_ALWAYS_AUTHENTICATE.md`](CKA_ALWAYS_AUTHENTICATE.md)). It is multi-part because
+     PIN that opened the session, never retried. It is multi-part because
      cryptoki 0.12 has no other point for the login, so the single-part-only mechanisms
      (`CKM_EDDSA`, raw `CKM_ECDSA`) and a module that refuses to sign in parts (SoftHSM's
      `CKM_ECDSA_SHA*`) are refused (15); a declared always-authenticate Edwards key is invalid
@@ -220,7 +232,7 @@ key to its identity:
      with RSA-OAEP (SHA-1, MGF1-SHA1 — the PKCS#11 baseline; SoftHSM implements no other OAEP);
      the token decrypts with `CKM_RSA_PKCS_OAEP`. The plaintext matches only for the matching
      private key.
-   - `pop-unwrap` (RSA keys that only unwrap: transport keys, MIGRATE.md D3): the host wraps a
+   - `pop-unwrap` (RSA keys that only unwrap: transport keys, CAMIGRATE.md D3): the host wraps a
      fresh 32-byte secret to the public key with the same OAEP; the token unwraps it with
      `CKM_RSA_PKCS_OAEP` into a sensitive, non-extractable session `CKK_GENERIC_SECRET` and
      HMAC-SHA256s the challenge with it, which the host checks against its own MAC. No plaintext
@@ -246,6 +258,11 @@ Outcomes:
   or ECDH yet), and tpm2-pkcs11 1.10.1 P-521 keys: its `C_SignInit` parses its own malformed
   `CKA_EC_POINT` and fails (`upstream/tpm2-pkcs11` fixes both).
 - **`publicOnly` implies `token-asserted`.**
+- **PIN retries.** A run spends at most one failed PIN attempt, and never the last: the login at
+  token open refuses (16) once the token reports `CKF_USER_PIN_LOCKED` or
+  `CKF_USER_PIN_FINAL_TRY`, and the context-specific login reuses the PIN that already logged in,
+  so it cannot be wrong (a successful login resets PIV's counter). `CKF_USER_PIN_COUNT_LOW` is a
+  warning. A slot's PIV *touch* policy is invisible in PKCS#11 and not handled (OPEN.md).
 - **`pop-sign-pin` is recorded, never configured:** `binding = "pop-sign-pin"` in keys.toml is
   invalid (17); `pop-sign` (the default) becomes it on an always-authenticate key.
 
@@ -339,39 +356,6 @@ content-addressed identity — one per token type that can produce it:
 
 Annotated, with the reasons behind each table: [`CONFIG.md`](CONFIG.md).
 
-```toml
-[tokens.<name>]
-module = "/path/libfoo.so"     # or --module <name>=<path>; $NAME or ${NAME} reads the path from the environment (17 if unset)
-provider = "tpm2-pkcs11"       # optional; auto-detected (§6.2)
-tokenLabel = "..."
-pinFile = "/path" | pinEnv = "VAR"     # optional; pinEnv wins if both are set; pinFile may be $NAME: the path, from the environment
-mgmKeyFile = "/path" | mgmKeyEnv = "VAR"  # optional; admin (SO) credential, read only by steps that need the SO: create/delete on modules that do those only as SO (ykcs11: the PIV management key in hex, or the PIN when the management key is PIN-protected), and `camigrate transport --trusted` (the SO PIN); mgmKeyEnv wins; mgmKeyFile may be $NAME; needs pinFile/pinEnv (17)
-systemFeature = "token-<name>"         # read by the Nix library only
-
-[tokens.<name>.options]        # the provider's own settings, checked when the token opens (17 for an unknown name, or any option on a provider that takes none)
-tcti = "device:/dev/tpmrm0"    # tpm2-pkcs11: TPM2_Certify TCTI (default: the module's $TPM2_PKCS11_TCTI, then $TPM2TOOLS_TCTI, $TCTI)
-tpm2Store = "~/.tpm2_pkcs11"   # tpm2-pkcs11: the module's sqlite store (default: where tpm2-pkcs11 looks)
-akHandle = "0x81000016"        # tpm2-pkcs11: cakeys' Attestation Key handle (§3.7)
-
-[objects.<name>]
-class = "CKO_PRIVATE_KEY" | "CKO_PUBLIC_KEY" | "CKO_SECRET_KEY" | "CKO_CERTIFICATE" | "CKO_DATA"
-keyType = "CKK_EC" | ...        # keys; certificates and data objects take none
-certificateType = "CKC_X_509"   # certificates only (exit 17 otherwise)
-curve = "..." ; modulusBits = N ; valueLen = BYTES   # curve names are canonicalized on load (P-256 -> secp256r1); valueLen at most 2^32 - 1 (17)
-createOn = "<token>"            # where the object is born when its specs name several tokens; not part of its type (below)
-
-[specs.<name>]
-object = "<object>"
-attributes = { CKA_SIGN = true, ... }   # settable booleans the class may carry (PKCS#11 3.2 §4), or CKA_ALLOWED_MECHANISMS = ["CKM_..."] on key objects; a wrong name or class is exit 17
-publicAttributes = { CKA_VERIFY = true, ... }   # private keys only: policy of the public key object; checked on it, in the digest only when present
-noExport = true                                 # camigrate never exports or migrates the object from these tokens (MIGRATE.md); not in the digest
-tokens.<token> = { locator = { CKA_LABEL = "...", CKA_ID = "hex" }, autoCreate = bool, publicOnly = bool, binding = "pop-ecdh" | "pop-decrypt" | "pop-unwrap" | "token-asserted", attestation = bool, identity.allow = [...] }
-```
-
-`tokens.<t>.attestation = true` (in a spec's token entry) opts into the attestation commitment
-(§3.7). The tpm2-pkcs11 settings of the native certify path (`tcti`, `tpm2Store`, `akHandle`)
-live in the token's `[tokens.<name>.options]` (§3.7; `Tpm2Options`).
-
 What may be created and adopted:
 
 - **References are checked at load** (exit 17): a spec's `object` must name an `[objects.<name>]`
@@ -383,7 +367,7 @@ What may be created and adopted:
 - **The admin credential (`mgmKeyFile`/`mgmKeyEnv`) is read only by a step that needs the SO.** A
   provider declares that its module creates and destroys objects only in an SO session
   (ykcs11 does); elsewhere the user creates and deletes, and the credential (the SO PIN) is read
-  only by `camigrate transport --trusted` (MIGRATE.md D2) —
+  only by `camigrate transport --trusted` (CAMIGRATE.md D2) —
   `admin_credential_is_read_only_by_security_officer_steps`.
   Login state is per token, so the step logs the user out, logs in as SO, generates (or
   destroys), logs out and logs the user back in; the SO credential is read just before and
@@ -426,54 +410,6 @@ What may be created and adopted:
 ### 4.2 `keys.lock` (input, updated in place)
 
 Annotated, with the reasons behind each table: [`LOCK.md`](LOCK.md).
-
-```toml
-version = 1                          # required; any other version is refused (v1 is a draft, §10)
-[objects.<object>]
-commitmentLabel = "key-management/v1" # required when ids holds a commitment scheme
-[objects.<object>.type]              # required with ids: the type the IDs were computed for
-class = "..." ; keyType = "..." ; certificateType = "..." ; curve = "..." ; valueLen = N ; modulusBits = N
-[objects.<object>.ids]
-rfc7093m4 = "sha256-..."            # scheme -> SRI
-# pairs = ["<object>"]              # (in [objects.<object>]) objects sharing its rfc7093m4: key <-> certificate
-# publicKey = "<base64 SPKI>"       # (in [objects.<object>]) a transportWith key's, hashing to its rfc7093m4 (MIGRATE.md D3)
-
-# Compared: verification fails (14) when keys.toml or the token disagrees. All required.
-[realisations.<spec>.<token>]
-object = "<object>"                 # the object this spec realised
-locator = { CKA_LABEL = "...", CKA_ID = "hex" }  # where it was found
-specDigest = "sha256-..."
-mode = "direct"                      # a weaker mode is refused
-schemes = ["rfc7093m4"]              # schemes this realisation computed and matched; fewer later is refused
-publicOnly = true                    # only when set
-binding = "pop-sign"                 # private keys: pop-sign | pop-sign-pin | pop-ecdh | pop-decrypt | pop-unwrap | token-asserted (§3.6)
-attestation = { kind = "tpm-certify", root = "sha256-...", id = "sha256-..." }   # §3.7: only when the spec opted in; the per-device attestation ID and its anchor; a change fails (14 anchor, 10 ID), also when the lock is written
-[realisations.<spec>.<token>.policy] # every attribute of the class the token shows: booleans, plus CKA_ALLOWED_MECHANISMS on key objects
-CKA_SIGN = true ; CKA_DECRYPT = true ; CKA_EXTRACTABLE = false ; ...
-[realisations.<spec>.<token>.immutables] # keys: fixed at creation
-CKA_LOCAL = true ; CKA_NEVER_EXTRACTABLE = true ; CKA_ALWAYS_SENSITIVE = true ; CKA_KEY_GEN_MECHANISM = "CKM_..."
-
-# Observed: facts about the object and the token; never change a verdict (optional).
-observation = "sha256-..."           # (in [realisations.<spec>.<token>]) the observations entry it was recorded with
-[realisations.<spec>.<token>.observed]
-uri = "pkcs11:token=...;serial=...;object=...;id=%..;type=private|public|cert|secret-key|data"
-session = "user"                     # user (logged in) or public: what the duplicate-ID check could see
-
-# Provenance: the object's history; never a verdict (optional). Kept when the same object is re-recorded.
-[realisations.<spec>.<token>.provenance.origin]  # an imported key (MIGRATE.md D7)
-from = "<token>" ; method = "<method name>" ; exposure = "<level>" ; declared = true  # declared: vendor methods only
-
-# Each distinct observation once (review A3), keyed by the SRI SHA-256 of its JCS form; differences warn or note.
-[observations."sha256-..."]
-provider = "softhsm"
-cakeysVersion = "0.1.0"
-profile = "softhsm/2.7"              # the resolved module capability profile (PROVIDERS.md D8), when one is committed
-mechanisms = ["CKM_..."]             # usable mechanisms; feeds functions.<token> in Nix
-[observations."sha256-...".module]   # C_GetInfo, and the file the loader mapped
-path = "/nix/store/…/libsofthsm2.so" ; hash = "sha256-…" ; description = "..." ; manufacturer = "..." ; version = "M.m" ; cryptoki = "M.m"
-[observations."sha256-...".token]    # C_GetTokenInfo
-model = "..." ; serial = "..." ; firmware = "M.m"
-```
 
 - **Every realisation field has one class:** compared, observed or provenance. Removing
   `observed`, `observation`, `provenance` and the `observations` table changes no verdict, and a
@@ -560,166 +496,19 @@ model = "..." ; serial = "..." ; firmware = "M.m"
 - **Locked schemes that are not checked** are reported: unknown to this cakeys → warning, naming
   the scheme; known but not computable for this spec on this token → note.
 
-## 5. Verbs (HTTP-like) and exit codes
+## 5. Verbs and exit codes
 
-The verbs are `cakeys`'s, except the three that measure modules — `caprobe caps`, `supports` and
-`probe` — and the three that move keys — `camigrate export`, `migrate` and `transport`
-([`SCOPE.md`](SCOPE.md), "Three tools"). The binaries take `--config` and `--module` and share
-the exit codes; `caprobe` never reads the lock, and `camigrate migrate` writes it through `cakeys realise`'s code path.
-
-| Verb | Semantics |
-|---|---|
-| `validate` | Static check of modes, opt-ins, types and provider names; touches no token. Then the capability-profile gate (docs/PROVIDERS.md phase 4): each spec's needs — its commitments' mechanisms, generating its type, curve and size when `autoCreate`, an attestation — against its token's profiles, resolved from the lock's recorded module and token or keys.toml's `provider`; a profile's *no* is refused (15) naming the profile, *unknown* is a note. |
-| `resolve <spec> --token` | GET: find (exactly one), check type and policy, compute IDs, print JSON. Never writes. For a private key, every public key object under the locator must hold its own public key — a consumer may select the public half by the locator alone — else a conflict (13, `a_foreign_public_key_conflicts_and_is_never_deleted`); `verify`, `realise` and `check` resolve the same way. |
-| `verify <spec> --token` | GET with If-Match against the lock; prints the URI. |
-| `realise <spec> --token [--no-update-lock]` | PUT, recording what the lock lacks (§3.5), and prints the resolved JSON. If absent and `autoCreate`: refused (14) when the lock already pins the object's material — generated material could never match (D1, `autocreate_never_fights_a_locked_identity`). **If-None-Match** — never create when anything sits under the locator (`never_create_over_an_occupied_locator`), nor from a session without login, which cannot see private objects there (16). Then create, compute and compare. If the identity of a just-created object cannot be established, it is destroyed (`tpm2_identity_failure_after_create_leaves_nothing`); on a module that cannot delete keys (ykcs11) the key stays and the message says so. Re-running never duplicates (`ec_lifecycle`). |
-| `create [<spec>] [--token T] [--no-update-lock]` | PUT, asked for explicitly: every selected (spec, token) pair whose object the lock does not pin yet is created and recorded as `realise` would with `autoCreate`, which only opts the first-use flows (`realise`, `check`) into creating; pinned, adopted-only (certificates, public keys, data) and `publicOnly` pairs are skipped with a note. Naming both the spec and `--token` creates that pair or says why not (a pinned object its token lost: 14). A name that selects nothing is refused (an unknown spec 11, an unknown token 17, a spec without that token 11), never an empty success. One token is open at a time, so tokens of one module follow each other. Prints the realised objects as a JSON array; what was created before a failure — opening the next token included — is still recorded (`create_makes_keys_without_autocreate`, `create_records_what_it_made_before_a_failure`). |
-| `delete <spec> --token [--if-match ID] [--no-update-lock]` | DELETE with If-Match. Absent is success, even without a lock — but a session without login cannot see a private object, so it never reports one absent (16); a present object with no expected ID is never deleted (`ec_lifecycle`), and only what was identified is removed: a private key's public half only when it holds the same key, never another key's public object under the locator (`delete_removes_only_what_it_identified`); a key on a module whose delete leaves it in place (ykcs11) is refused (15), never claimed. Unless `--no-update-lock`, it removes the realisation but keeps `objects.<name>.ids`, since the material may live on other tokens. |
-| `check <obj>[.id.<scheme>] [--token] [--spec]` | The pseudo-FOD pre-use check: realise without writing the lock, print the URI. Schemes the spec or token can never compute are refused before anything is created (`scheme_the_token_lacks_is_refused_before_create`). |
-| `gc [--apply]` | Print lock entries `keys.toml` no longer names, as table names; `--apply` removes exactly what it printed, holding the update lock (M3). Live objects keep their `ids` (`gc_prints_then_removes_stale_entries`). |
-| `caprobe caps --token` | Provider, resolved capability profiles and usable mechanisms, as JSON. |
-| `camigrate export`, `migrate`, `import`; `camigrate transport` | Plan moving objects to a target (MIGRATE.md): per object the method, the exposure on the way, or why it cannot move (`--dry-run`). `migrate` moves public objects (phase 2) and keys sealed to the target's transport key (phase 3) between reachable tokens; `export` writes one bundle of every key it names (all or nothing) and `import` reads it, each key checked against the lock first and imported on its own. What is created is recorded through `realise`'s code path with `provenance.origin` and removed again on a mismatch. `transport` writes a target's transport file. |
-| `caprobe supports [--profile \| --token] NAME` | Ask the capability profiles (docs/PROVIDERS.md) what a module supports: pure data, no token touched; 0 yes, 15 no, 16 unknown. With `--profile` it needs no keys.toml. |
-| `caprobe probe --token [--write] [--diff P] [--out F]` | Generate a token's capability profile by probing it; `--write` only on a token marked `scratch` (17 otherwise); `--diff` drift is 15. |
-
-Exit codes:
-
-| Code | Meaning |
-|---|---|
-| 0 | ok |
-| 10 | hash mismatch; prints `got: sha256-…`, which is also first use |
-| 11 | not found |
-| 12 | ambiguous |
-| 13 | conflict |
-| 14 | precondition failed |
-| 15 | unsupported |
-| 16 | unavailable |
-| 17 | invalid config, lock, spec or token options |
-| 1 | I/O or other |
-| 2 | command-line usage (clap) |
+Moved to [CAKEYS.md](CAKEYS.md#verbs).
 
 ## 6. Architecture
 
-### 6.1 Crates
-
-| Crate | Role |
-|---|---|
-| `cakeys-core` | No `cryptoki`, no token access: config (`config`, typed classes, key types and schemes in `types`/`id`), the boolean-attribute table (`attrs`), CA-IDs (`id`), proof-of-possession host math and signature verification (`pop`, `sig`), what a spec asks for (`plan`: `Target`, `plan_mode`), the lock rules (`reconcile`: `compare`, `record`, `Notes`), and what the lock and providers name about moving keys (`migrate`: the frozen method names and exposure levels, the capability model `Provider::migration` returns), unit-tested without an HSM |
-| `cakeys-profile` | Capability profiles as data (docs/PROVIDERS.md), read and resolved: the baseline, the embedded module and layer profiles (`profiles/`), and the effective view of a stack (`Effective`, `Verdict`). No token access, and nothing that writes a profile |
-| `cakeys-pkcs11` | the `cryptoki` token layer (`token/`: session and SO step, policy, generation, identity, proof of possession, URIs), the verbs (`ops`, with `create` over its selected pairs), profile resolution and the static gate (`resolution`, `binding`, `gate`), `Provider` and `Registry`, and the built-in providers without code of their own (`providers`: softhsm, kryoptic, p11-kit) |
-| `cakeys-{ykcs11,tpm2-pkcs11}` | providers with native paths and dependencies of their own (Yubico roots; tss-esapi, sqlite) |
-| `cakeys-cli-common` | What the command lines share: `default_registry()` (cargo features `ykcs11` and `tpm2`, both default, link those providers), opening a token keys.toml names, printing notes, the exit-code mapping |
-| `cakeys` (crates/cli) | Arguments, files and printing only — the verbs' logic is in `cakeys-pkcs11`, so another front end need not reimplement it (`validate`'s loop over the gate is the one exception left). CLI as a library: `main(registry)`, `default_registry()`; `examples/custom-provider.rs`. Its features `ykcs11` and `tpm2` forward to `cakeys-cli-common`; `checks.minimal` builds both binaries without them, and so without tpm2-tss and sqlite |
-| `caprobe` (crates/caprobe) | The module measurer: `caps`, `supports` and `probe`, the profile emitter and diff, and (test-only) the baseline generator from the vendored PKCS#11 headers. Its own library and binary (`main(registry)`), in its own Nix output, so `cakeys` links no probe code |
-| `camigrate` (crates/camigrate) | The key mover: `export`, `migrate` and `transport`, the planner (`plan`), the transport file, and each side's capabilities from the token, the lock or a transport file (`tokens`). Its own library and binary (`main(registry)`), in its own Nix output; `cakeys` depends on none of it |
-
-### 6.2 Providers
-
-- **Hooks:** `name`, `matches(&ModuleInfo)`, and optionally `mechanisms` (filter) and
-  `migration` (both overridden by no in-tree provider today: the capability profiles answer
-  them; kept for real-world HSM providers, review A4), `ec_point` (repair), `hint` (error advice), `check_options` (the token's `[tokens.<t>.options]`; the
-  default refuses any), `manages_as_so`/`check_create`/`keeps_destroyed_keys` (key
-  management on modules that create only as SO or cannot delete keys: ykcs11) and
-  `attestation`/`attest` (§3.7).
-- **Selection:** an explicit `provider` wins; an unknown name is exit 17. Otherwise the first
-  registered provider that matches, else `generic` — `provider_is_detected_or_named`, registry unit
-  test.
-- **The fix-up rule:** a hook must return exactly what a spec-compliant module would, so
-  identities are portable. That is also why the provider never takes part in an identity: the
-  lock records it only as an observation (`observations.<key>.provider`, §4.2), where a change warns.
-
-| Provider | Quirks handled or recorded |
-|---|---|
-| softhsm | none (reference); attests nothing |
-| kryoptic | none to fix (PKCS#11 3.2 reference): Edwards `CKA_EC_POINT` raw (DER with `KRYOPTIC_EC_POINT_ENCODING=DER`; same identity); private keys carry their own `CKA_PUBLIC_KEY_INFO`, so a swapped key is refused (13) by the cross-check before the proof of possession; library version 0.0 in `C_GetInfo`; no secp256k1 or brainpool generation (15); attests nothing |
-| ykcs11 | `CKA_PUBLIC_KEY_INFO` length 0 then `CKR_ARGUMENTS_BAD` (tolerated generically); fixed PIV slot IDs and labels: `autoCreate` needs a locator of `CKA_ID` alone naming a key slot (`01`–`04`: 9a/9c/9d/9e, `05`–`18`: 82–95; 17 otherwise) and `mgmKeyFile`/`mgmKeyEnv` (the management key in hex, or the PIN on a PIN-protected-management-key device), since ykcs11 generates only as SO; **keys cannot be deleted** — `C_DestroyObject` clears only the slot's certificate and the key stays, so `delete` (and the cleanup after a failed `realise`) refuses (15), naming `ykman piv keys delete <slot>`; the `piv-attestation` commitment: per-slot attestation certificates found by their label/`CKA_ID`, chain-verified to the embedded Yubico roots (`roots/`, §3.7) |
-| tpm2-pkcs11 | drops `AES_KEY_GEN`/`GENERIC_SECRET_KEY_GEN` (`C_GenerateKey` unsupported); repairs the malformed P-521 `CKA_EC_POINT` (`04 85 …`; upstream draft in `upstream/tpm2-pkcs11/`) — `tpm2_*` tests; the `tpm-certify` commitment: a native `TPM2_Certify` through tss-esapi and the module's sqlite store (§3.7) |
-| p11-kit | detects the proxy; the RPC drops AES key wrap and EdDSA/Edwards mechanisms; the module behind it is hidden (set `provider` explicitly) — `p11kit_*` tests; attests nothing itself (what the proxied module exposes decides, but the provider name does not reach it: opt in only against the real module) |
-
-### 6.3 cryptoki patch
-
-cryptoki ≤ 0.12.1 gives `KeyType::SHA224/384/512_HMAC` the value of `CKK_SHA256_HMAC`. The Nix
-build patches it with `nix/patches/cryptoki-hmac-key-types.patch`, applied in `postPatch` to
-`$cargoDepsCopy`. Without the patch, those types are refused (`hmac_key_type`), and tests skip
-unless required. Upstream draft: `upstream/rust-cryptoki/`.
-
-### 6.4 Dependencies
-
-Policy: always the latest release. Audit on every dependency change by comparing
-`[workspace.dependencies]` with crates.io, and the flake inputs (nixpkgs, treefmt-nix).
-
-- **2026-11-11:** every crate is on its latest release (cryptoki 0.12.1, RustCrypto 0.14/pkcs8 0.11
-  generation, toml 1.x, base64 0.23, clap 4, serde 1, thiserror 2, anyhow 1). nixpkgs is from
-  2026-11-06.
-- **Pinned on purpose:** none. The cryptoki HMAC key-type patch is a local fix on top of the latest
-  release.
-- **Toolchain:** edition 2024, `rust-version = 1.89` (the workspace's MSRV; Nix builds with the
-  nixpkgs rustc).
+Moved to [ARCHITECTURE.md](ARCHITECTURE.md): crates, providers, the cryptoki patches and
+dependencies.
 
 ## 7. Nix integration
 
-### 7.1 Library (`lib.mkKeys`, builtins only)
-
-One calling convention: **every object is a function**. The call resolves the object's one
-(spec, token) pair — the arguments are optional when there is exactly one — and returns plain
-data, so consumers destructure once and reuse:
-
-```nix
-signing = keys.signing { token = "softhsm"; };      # { } when the object has one pair
-shared  = keys.shared { token = "softhsm"; spec = "shared-sign"; };  # several specs on one token
-```
-
-- The result carries `type`, `id.<scheme>` (`pubkeyhash` is an input alias), the resolved
-  `spec`/`token`, and the pair's realisation: `uri`, `mode`, `specDigest`, `module`, `tokenInfo`,
-  `functions` (mechanism → `true`), `requiredSystemFeatures` and `check`.
-- **`check`** is the shell command for the pre-use check (prints the URI); `scheme = "certhash"`
-  requires that identity, and the resolved pair is passed explicitly. Interpolating config, lock
-  and module makes them build inputs. Like `id`, `type` and `requiredSystemFeatures`, it is usable
-  before anything is recorded in the lock — the first-use pseudo-FOD flow; only the realisation's
-  own fields throw on a missing record.
-- A call that does not name exactly one pair throws, listing the choices — so does a missing
-  realisation, naming the `realise` command to run.
-- Tested by `checks.lib` (synthetic fixture) and `checks.vm` (consumer built in the guest sandbox).
-
-### 7.2 Pseudo-FOD check
-
-A consumer derivation requires the token's feature and runs `check` before using the URI.
-
-1. **First use** creates the key (with `autoCreate`) and fails with `got:` — `check` never
-   writes, and in the sandbox it could not.
-2. Record the ID out of band (`realise`, outside the sandbox; it writes the lock by default).
-3. Every later build verifies first.
-
-**Caveat:** a cached consumer is not rebuilt, so the token is not re-contacted; `nix build --check`
-forces it. The VM test covers all of this.
-
-### 7.3 NixOS module (`nixosModules.default`, `services.cakeys`)
-
-- **`tokens.<n>.{systemFeature, sandboxPaths, pcscd}`.** The features are added to
-  `system-features`. Paths are **not** global `extra-sandbox-paths`: a pre-build-hook
-  (`nix/sandbox-hook.sh`, bash + jq over `nix derivation show`) grants them only to builds whose
-  `requiredSystemFeatures` name the token's feature.
-  - It reads plain, structured-attrs (JSON v4) and `env.__json` derivations.
-  - It emits only existing paths from the module's map.
-  - It always exits 0 and grants nothing on error.
-  - Test: `checks.module`, *the hook grants token paths only to builds requiring the token's feature*.
-- **`sandbox.pcscd.enable`:** pcscd, plus a polkit rule for nixbld or the auto-allocated UID range,
-  plus `PrivateUsers=false` with auto UIDs.
-- **`sandbox.tpm2.enable`:** a udev ACL on `/dev/tpmrm*` for every build GID: the nixbld GID, or,
-  with `auto-allocate-uids`, each 65 536-ID slot's first UID, which is also its GID. Test:
-  `checks.tpm`, with auto UIDs, uid-range, nixbld, and a stripped-ACL control.
-- **`sandbox.uidRange.enable`:** `auto-allocate-uids` and the `uid-range` feature.
-- **`checks.<n>`:** a oneshot `cakeys-check-<n>` unit running `check`, required by the
-  units that use the key — `checks.module`.
-
-### 7.4 What real builds may reach
-
-- **Allowed:** a **p11-kit forwarding socket** (`p11-kit server` outside the sandbox) or a **real
-  TPM** (`/dev/tpmrm0`).
-- **Never** a token database: SoftHSM files allow offline PIN guessing and key extraction.
-- **SoftHSM paths in tests are for testing only.**
-- **PINs:** p11-kit login is per client (`p11kit_login_is_per_client`). A build that uses private
-  objects needs the PIN, through a granted file; `publicOnly` needs none.
+Moved to [CAKEYS.md](CAKEYS.md#nix-integration): the library, the pseudo-FOD check, the NixOS
+module and what real builds may reach.
 
 ## 8. Security model
 
@@ -736,7 +525,7 @@ forces it. The VM test covers all of this.
   the material the object's portable scheme names, and the attestation is pinned per
   realisation beside a portable scheme — so the same material on another token verifies there
   through the portable scheme, attested by that token or not.
-- **Weak identity modes need an explicit per-token opt-in.** Downgrades fail.
+- **Identity modes never weaken.** A downgrade fails (§3.4).
 - **Material is linked only through a shared scheme.**
 - **The lock never holds token outputs, only their hashes.** Private data objects are not hashed.
 - **Lock updates are serialized** by the advisory `<lock>.lck` sidecar; readers get consistent
@@ -748,18 +537,16 @@ forces it. The VM test covers all of this.
 
 ### 8.2 Not enforced / known gaps
 
-See `docs/REVIEW-2026-11-11.md` and, for the threat model these follow from,
-`docs/REVIEW-2026-11-13.md`.
+The reviews these come from are archived: `docs/archive/REVIEW-2026-11-11.md` (code) and
+`docs/archive/REVIEW-2026-11-13.md` (the threat model).
 
 - **The check is not the use.** A consumer opens the key by its URI after `check` returns; a
   key swapped in between is not seen until the next check. This is the contract of a file or
-  an HTTP resource — checked, then used — and is accepted as such (docs/CONTRACT.md, "The gap
-  between check and use").
+  an HTTP resource — checked, then used — and is accepted as such ([CAKEYS.md](CAKEYS.md#the-contract-with-programs-that-use-keys)).
 - **A build served from the Nix cache contacts no token** (§7.2); `nix build --check` forces
   the check.
 - **The lock is the trust root, and is not signed.** Whoever can change `keys.lock` (or
-  `keys.toml`) can re-pin an object. Until the lock is signed (docs/SCOPE.md, "Signing the lock
-  file"), both files must live in version control whose history is signed and reviewed.
+  `keys.toml`) can re-pin an object. Until the lock is signed (OPEN.md), both files must live in version control whose history is signed and reviewed.
 - **A commitment ID lets anyone holding the lock test guesses of a low-entropy secret.** The
   ID is SHA-256 of a MAC, under the key, of a public label (§3.3): for a random key it reveals
   nothing usable, but for a passphrase or other guessable value held as `CKK_GENERIC_SECRET`
@@ -773,9 +560,6 @@ See `docs/REVIEW-2026-11-11.md` and, for the threat model these follow from,
   use**: the Attestation Key is trusted on first use and pinned in the lock, so a later
   attestation shows the object still sits in the TPM that held the AK then — not that this TPM
   is genuine hardware from a known vendor.
-- **The schema accepts options that are not implemented** (review A6): `identity.allow` and
-  the modes `commit-at-creation`, `host-at-import` and `token-specific` parse and validate,
-  then every verb refuses them (15).
 - **`token-asserted` bindings are unproven.** With the opt-in or `publicOnly`, a private key is
   tied to its identity only by the token's word (H1 is fixed for every `pop-*` proof —
   `h1_a_private_key_beside_an_unbound_public_object_is_a_conflict`,
@@ -794,7 +578,7 @@ See `docs/REVIEW-2026-11-11.md` and, for the threat model these follow from,
   opt-out 14, an imported key under a locked attestation 14 and unlocked 15; `autoCreate` with
   `mgmKeyFile` generates; and `C_DestroyObject` was confirmed to leave the key in the slot. The
   shipped example keys are imported, so Yubico attests none of them. The opt-in
-  `tests/yubikey.rs` (§9) repeats the read-write path on scratch slot `0x95` — last run
+  `tests/yubikey.rs` repeats the read-write path on scratch slot `0x95` — last run
   2026-11-12 on an emptied slot, so generation ran — but nothing runs it automatically.
 - **Features are self-declared.** Any user allowed to build can require a token's feature; the
   real gate is `allowed-users`.
@@ -805,25 +589,7 @@ See `docs/REVIEW-2026-11-11.md` and, for the threat model these follow from,
 
 ## 9. Testing
 
-| Suite | Where | What |
-|---|---|---|
-| unit | `cargo test --workspace` | digests (pinned), curves and OIDs, SPKI round-trips, registry, P-521 fix-up, hex parsing, proof-of-possession host math (both ECDH MAC sides), the signature verifiers, the deprecation register and scheme names, AES strength order, the observed policy vectors, the attestation scheme definitions and lock invariants, the lock rules (first use, what a write may override, attestation changes, provenance warnings), the PIV chain verifier (fixture chain + Yubico's own roots and intermediates) |
-| `crates/core/tests/properties.rs` | `cargo test --workspace` | proptest: recording then comparing passes and a second write changes nothing; after a recorded realisation, another material is 10 and a weaker binding or replaced object 14 in both modes, drift fails only a compare, and a successful write never overwrites a locked ID; material links only through a shared scheme (disjoint 14, other material 10, else gaps filled); the attestation and commitment-label encodings are injective; `sri`/`is_sri` agree; key and certificate parsers and the loaders never panic. Mutation-checked: disabling the binding-downgrade or the shared-scheme rule fails it |
-| `checks.fuzz`, `apps.fuzz` | package build / host | cargo-fuzz targets (`fuzz/`: `public_key`, `certificate`, `lock`, `config`) on the stable rustc (`RUSTC_BOOTSTRAP=1`, no sanitizer, debug assertions): the check runs 100 000 inputs per target from a fixed seed and the fixtures; `nix run .#fuzz -- <target> [libFuzzer flags]` runs one as long as wanted |
-| `tests/softhsm.rs`, `tests/kryoptic.rs` | package build | one shared suite (`tests/reference/`) against each software reference: lifecycle, every type and scheme against independent oracles (hand-written DER encoder, openssl-hashed fixtures, RustCrypto `hmac`/`cmac`/`aes`/`aes-kw`); the same verdicts on both, with each token's facts in its `Reference` descriptor (`tests/common/`) |
-| `tests/tpm2.rs` | package build, `nix/tpm2-test-env.sh` | swtpm + tpm2-abrmd + tpm2-pkcs11; the native `tpm-certify` attestation (AK provisioning and validation, reads that never provision, a lost attestation as a downgrade, cross-checks), one material attested on two tokens with an attestation each, and the travel of attested material to SoftHSM through the shared portable scheme |
-| `tests/p11kit.rs` | package build, `nix/p11kit-test-env.sh` | SoftHSM behind `p11-kit server`, compared with direct access |
-| `tests/references.rs` | package build | cross-reference: the same material (the P-256 and RSA fixtures, P-384/P-521/Ed25519/Ed448 exported from one reference, AES, generic secret and HMAC values, a certificate, a data object) planted on SoftHSM, kryoptic (raw and DER Edwards points), SoftHSM behind p11-kit and — what `tpm2_ptool` imports — tpm2-pkcs11, realised into one lock: one identity per scheme everywhere; and the same verdict for the same scenario (absent 11, two objects 12, another type 13, a swapped private key 13) |
-| `tests/yubikey.rs` | opt-in, never in the Nix build (`CAKEYS_TEST_YUBIKEY_MODULE`, `_PIN`, `_MGM` — file paths; the secrets are only ever read from them) | a real YubiKey, read-write: generate into the scratch PIV slot `0x95` in an SO step, then (back as the user) attest it and prove possession by signing, record, verify; `delete` refused (15) with the realisation kept; re-realise idempotent — each CLI run bounded, so a touch or PIN prompt fails instead of waiting (`rw_lifecycle_generates_attests_proves_and_refuses_delete_without_touch`) |
-| `checks.vm` / `test-nspawn` | QEMU / systemd-nspawn | the CLI flow; in the VM also the pseudo-FOD consumer built in the guest sandbox |
-| `checks.module`, `checks.tpm`, `checks.lib` | QEMU / eval | module, hook, pcscd, TPM ACL, Nix library |
-| `checks.minimal` | package build | the CLI without its `tpm2`/`ykcs11` features builds without tpm2-tss and sqlite |
-| `checks.formatting` | treefmt | `nix fmt` would change nothing: the formatters and linters in `treefmt.nix` (rustfmt with `rustfmt.toml`, nixfmt, taplo, shfmt, rumdl, keep-sorted, statix, deadnix, shellcheck, typos) |
-| `scripts/xversion.sh` | by hand, per refactor | a lock recorded by one build verifies, compares and re-records byte-identically with another (every class) |
-
-Hardware: the YubiKey example lock is verified read-only (no PIN), and `tests/yubikey.rs` exercises
-a real YubiKey read-write when opted in (§9 table above). `packages.test-nspawn` needs the
-`uid-range` feature, so it is outside `checks`.
+Moved to [DEVELOPMENT.md](DEVELOPMENT.md#testing).
 
 ## 10. Frozen identifiers, and what makes a lock portable
 
@@ -865,14 +631,8 @@ label and the hash itself. Everything else is fixed by definition:
 - exit codes;
 - the URI shape.
 
-**Renamed on 2026-11-11 (`key-mgmnt` → `cakeys`).** The rename changed only names:
+The project was renamed from `key-mgmnt` on 2026-11-11 (crates, binary, NixOS options, units,
+`CAKEYS_*` variables); no identity changed.
 
-- crates `key-mgmnt-*` → `cakeys-*`;
-- the binary `key-mgmnt` → `cakeys`;
-- `services.key-management` → `services.cakeys`;
-- units `key-management-check-*` → `cakeys-check-*`;
-- the hook `key-mgmnt-sandbox-hook` → `cakeys-sandbox-hook`;
-- env vars `KM_*` → `CAKEYS_*` (`CAKEYS_CONFIG`, `CAKEYS_LOCK`, test variables);
-- `mkKeys { keyMgmnt }` → `mkKeys { cakeys }`.
-
-Existing locks and IDs stay valid. `PLAN.md` keeps the old name in its history.
+The migration method names, exposure levels and file formats are frozen the same way
+([CAMIGRATE.md](CAMIGRATE.md#frozen-names-and-formats)), pinned by `method_names_are_pinned_and_round_trip`.

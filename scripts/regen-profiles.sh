@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate the committed module profiles the reference suites check (docs/PROVIDERS.md phase
+# Regenerate the committed module profiles the reference suites check (docs/CAPROBE.md phase
 # 3): softhsm/2.7, kryoptic/1.5 and tpm2-pkcs11/1.10+swtpm, each probed with --write on a fresh
 # token set up the way the Nix check phase sets it up (nix/package.nix), and written over its
 # committed file — [migration] and [manual] kept. Afterwards `git diff profiles/` is the drift;

@@ -1,4 +1,4 @@
-//! Moving a key through the host (MIGRATE.md D2, `host`; phase 4), only behind
+//! Moving a key through the host (docs/CAMIGRATE.md D2, `host`; phase 4), only behind
 //! `--allow-host-plaintext` and only within `migrate`: never into a bundle or onto disk. The
 //! source hands the key over wrapped under a session key the host drew (`Token::extract`), the
 //! host unwraps it in memory, and the target creates it from the plaintext (`C_CreateObject`:

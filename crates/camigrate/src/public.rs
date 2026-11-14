@@ -1,4 +1,4 @@
-//! Moving a public object (MIGRATE.md phase 2, the `public` method): a certificate, a public key
+//! Moving a public object (docs/CAMIGRATE.md phase 2, the `public` method): a certificate, a public key
 //! or a data object needs no wrapping. The source object is verified against the lock, its
 //! material taken from what that check established — a public key from its canonical SPKI, a
 //! certificate's attributes from its DER — and created on the target under the target spec's
@@ -117,7 +117,7 @@ pub fn create(dst: &Target, to: &Token, bytes: &[u8], from: &str, lock: &mut Loc
     }
 }
 
-/// If-None-Match before [`create`] (MIGRATE.md D6), per class (`Token::occupied`): the key and
+/// If-None-Match before [`create`] (docs/CAMIGRATE.md D6), per class (`Token::occupied`): the key and
 /// certificate a public object usually sits beside are no collision, and a public key object a
 /// key's import already created there is this object (returned: recorded, not created). Only a
 /// logged-in session sees everything under the locator.

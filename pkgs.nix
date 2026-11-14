@@ -10,12 +10,12 @@ rec {
   # The same build with crane (nix/package-crane.nix): its dependencies built once per
   # Cargo.lock, so the checks (and their clippy and minimal builds) rebuild only cakeys' crates.
   cakeys-crane = pkgs.callPackage ./nix/package-crane.nix { inherit craneLib; };
-  # The module measurer and the key mover (docs/SCOPE.md, "Three tools"): outputs of the same
+  # The module measurer and the key mover (README.md, "Three tools"): outputs of the same
   # build.
   inherit (cakeys) caprobe camigrate;
   pcsc-probe = pkgs.callPackage ./nix/pcsc-probe.nix { };
   mezura = pkgs.callPackage ./nix/mezura.nix { };
-  # cargo-deny (NEXT.md §1): the sandboxed checks.deny (advisories against the pinned
+  # cargo-deny: the sandboxed checks.deny (advisories against the pinned
   # RustSec database, licenses, bans, sources) and the online apps.deny-online (yanked —
   # registry metadata the sandbox has no network for). Configuration: deny.toml.
   deny = pkgs.callPackage ./nix/deny.nix {

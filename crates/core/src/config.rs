@@ -37,7 +37,7 @@ pub struct TokenCfg {
     pub module: Option<String>,
     /// Provider crate handling this module's quirks; auto-detected from `C_GetInfo` if unset.
     pub provider: Option<String>,
-    /// Delta capability layers to compose over the module profile (docs/PROVIDERS.md), by name
+    /// Delta capability layers to compose over the module profile (docs/CAPROBE.md), by name
     /// or family: the hardware under the module (`swtpm`), or anything else between cakeys
     /// and it. The cryptoki binding layer is always applied; p11-kit is detected from the
     /// module itself. Unknown names refuse (17).
@@ -58,7 +58,7 @@ pub struct TokenCfg {
     /// `<featurePrefix><name>` (`lib.mkKeys`'s `featurePrefix`, default `token-`). The NixOS
     /// module advertises `<featurePrefix><n>` for each of its tokens, so this names one of those.
     pub system_feature: Option<String>,
-    /// Marks the token as expendable for the probe (docs/PROVIDERS.md phase 3): its write
+    /// Marks the token as expendable for the probe (docs/CAPROBE.md): its write
     /// probes generate, wrap, unwrap and destroy objects, so `probe --write` runs them only
     /// here and is refused (17) on any other token. Never read by any other verb.
     #[serde(default)]
@@ -75,7 +75,7 @@ pub struct TokenCfg {
     /// one that takes none refuses any (17).
     #[serde(default)]
     pub options: Options,
-    /// The spec of this token's transport key (MIGRATE.md D3): an RSA private key realised here
+    /// The spec of this token's transport key (docs/CAMIGRATE.md D3): an RSA private key realised here
     /// that may unwrap and never leaves the token. Sealed moves to this token wrap to it, never
     /// to one picked by what it can do (camigrate `--transport-key` overrides it per run); its
     /// realisation records the public key in the lock, so any host can export to it.
@@ -211,7 +211,7 @@ pub struct SpecCfg {
     /// when generating, checked on the public object. In the spec digest only when present.
     #[serde(default, rename = "publicAttributes")]
     pub public_attributes: BTreeMap<String, AttrValue>,
-    /// The object never leaves the tokens this spec realises it on (MIGRATE.md): `camigrate`
+    /// The object never leaves the tokens this spec realises it on (docs/CAMIGRATE.md): `camigrate`
     /// refuses to export or migrate it from them (15), and an export without names leaves it
     /// out without the warning a key that cannot move gets. Not in the spec digest.
     #[serde(default, rename = "noExport")]
@@ -332,7 +332,7 @@ pub enum Binding {
     /// RSA keys).
     PopDecrypt,
     /// The token unwrapped a host secret (RSA-OAEP) into a non-extractable session key and both
-    /// sides `MACed` the challenge with it (unwrap-only RSA keys: transport keys, MIGRATE.md D3).
+    /// sides `MACed` the challenge with it (unwrap-only RSA keys: transport keys, docs/CAMIGRATE.md D3).
     PopUnwrap,
     /// Only the token says the objects belong together (opt-in, or `publicOnly`).
     TokenAsserted,
@@ -399,7 +399,7 @@ pub struct LockObject {
     /// and a public key object. Recorded by cakeys, symmetric, and checked on load.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub pairs: BTreeSet<String>,
-    /// A transport key's public key (MIGRATE.md D3), base64 of the canonical SPKI whose hash is
+    /// A transport key's public key (docs/CAMIGRATE.md D3), base64 of the canonical SPKI whose hash is
     /// `ids.rfc7093m4`: recorded when a token's `transportWith` spec is realised, so a source
     /// exports to it from the lock alone. Checked against that ID on load.
     #[serde(default, rename = "publicKey", skip_serializing_if = "Option::is_none")]
@@ -833,12 +833,12 @@ pub enum Session {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Provenance {
-    /// Where the material came from, when it was imported (MIGRATE.md D7).
+    /// Where the material came from, when it was imported (docs/CAMIGRATE.md D7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Origin>,
 }
 
-/// How an imported object reached this token (MIGRATE.md D7, "Frozen names and formats").
+/// How an imported object reached this token (docs/CAMIGRATE.md D7, "Frozen names and formats").
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Origin {
@@ -869,7 +869,7 @@ pub struct Observation {
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cakeys_version: Option<String>,
-    /// The module capability profile the token resolved to (docs/PROVIDERS.md D8), when one is
+    /// The module capability profile the token resolved to (docs/CAPROBE.md D8), when one is
     /// committed for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
@@ -1028,7 +1028,7 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
 }
 
 /// Each `transportWith` names a spec realised on its own token whose object is an RSA private
-/// key declared to unwrap and never leave the token (MIGRATE.md D3).
+/// key declared to unwrap and never leave the token (docs/CAMIGRATE.md D3).
 fn check_transport_keys(cfg: &Config) -> std::result::Result<(), String> {
     for (token, t) in &cfg.tokens {
         let Some(spec) = &t.transport_with else { continue };

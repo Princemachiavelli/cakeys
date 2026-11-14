@@ -1,4 +1,4 @@
-//! The spec baseline (docs/PROVIDERS.md): the universe and taxonomy of one PKCS#11 revision,
+//! The spec baseline (docs/CAPROBE.md): the universe and taxonomy of one PKCS#11 revision,
 //! generated from the OASIS header files vendored under profiles/baselines/headers/.
 //!
 //! A baseline never claims what any vendor supports. It names the spec's members — mechanisms,

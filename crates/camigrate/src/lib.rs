@@ -1,5 +1,5 @@
-//! The `camigrate` command line (docs/SCOPE.md, "Three tools"): it moves keys between tokens
-//! (MIGRATE.md). It is the only tool that handles key material; so far it plans (`--dry-run`)
+//! The `camigrate` command line (README.md, "Three tools"): it moves keys between tokens
+//! (docs/CAMIGRATE.md). It is the only tool that handles key material; so far it plans (`--dry-run`)
 //! and writes transport files, and moves nothing. A library, so a downstream binary can link
 //! extra provider crates: `camigrate::main(&camigrate::default_registry().with(MyProvider))`.
 
@@ -30,7 +30,7 @@ use transport::Transport;
 
 pub use cakeys_cli_common::default_registry;
 
-/// Move keys between PKCS#11 tokens, checked against keys.lock (MIGRATE.md).
+/// Move keys between PKCS#11 tokens, checked against keys.lock (docs/CAMIGRATE.md).
 ///
 /// Exit codes: 0 ok, 11 not found, 14 precondition failed, 15 unsupported (an object cannot
 /// move as invoked), 16 unavailable, 17 invalid spec, 1 other.
@@ -52,7 +52,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Export objects realised on a token, shaped for a target (MIGRATE.md): with --dry-run, per
+    /// Export objects realised on a token, shaped for a target (docs/CAMIGRATE.md): with --dry-run, per
     /// object the method, how exposed the material is on the way, and why not when it cannot
     /// move; else the keys, sealed to the target's transport key, and the public objects as one
     /// bundle for `import`.
@@ -108,11 +108,11 @@ enum Cmd {
         /// --allow-host-plaintext: the key is in this process's memory on the way in.
         #[arg(long, value_name = "FILE", requires = "allow_host_plaintext")]
         passphrase_file: Option<PathBuf>,
-        /// Allow a key file's plaintext in this process's memory (MIGRATE.md D2).
+        /// Allow a key file's plaintext in this process's memory (docs/CAMIGRATE.md D2).
         #[arg(long)]
         allow_host_plaintext: bool,
     },
-    /// Move objects from one token to another, both reachable from this host (MIGRATE.md):
+    /// Move objects from one token to another, both reachable from this host (docs/CAMIGRATE.md):
     /// each is created on --to and recorded in the lock with where it came from. Public objects
     /// move as they are; keys sealed to --to's transport key, through the host only wrapped.
     Migrate {
@@ -128,7 +128,7 @@ enum Cmd {
         #[command(flatten)]
         how: MoveArgs,
     },
-    /// Write the transport file for a transport key (MIGRATE.md D3): an RSA private key that may
+    /// Write the transport file for a transport key (docs/CAMIGRATE.md D3): an RSA private key that may
     /// unwrap, realised and locked on the target. Exports to this token wrap to it. With
     /// --trusted, instead make the source's SO trust it (D2, `enforced`).
     Transport {
@@ -152,14 +152,14 @@ struct MoveArgs {
     /// Print the plan and move nothing.
     #[arg(long)]
     dry_run: bool,
-    /// The target's transport key, by its spec (MIGRATE.md D3); default: the target token's
+    /// The target's transport key, by its spec (docs/CAMIGRATE.md D3); default: the target token's
     /// `transportWith`.
     #[arg(long)]
     transport_key: Option<String>,
     /// Print the plan as JSON.
     #[arg(long)]
     json: bool,
-    /// Allow the `host` and `file` paths: plaintext in this process's memory (MIGRATE.md D2).
+    /// Allow the `host` and `file` paths: plaintext in this process's memory (docs/CAMIGRATE.md D2).
     #[arg(long)]
     allow_host_plaintext: bool,
 }
@@ -177,7 +177,7 @@ pub fn main(registry: &Registry) -> ExitCode {
 }
 
 /// Parse the arguments, then load keys.toml and the lock — refusing up front a run that writes a
-/// lock it cannot (MIGRATE.md D8: never inside a Nix build) — and run the verb.
+/// lock it cannot (docs/CAMIGRATE.md D8: never inside a Nix build) — and run the verb.
 fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     let cli = Cli::parse();
     let modules = module_overrides(&cli.modules)?;
@@ -194,7 +194,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     if (exports || trusts) && in_nix_build() {
         let verb = if exports { "export" } else { "transport --trusted" };
         return Err(KmError::PreconditionFailed(format!(
-            "{verb} is an admin operation (MIGRATE.md D8), refused inside a Nix build"
+            "{verb} is an admin operation (docs/CAMIGRATE.md D8), refused inside a Nix build"
         ))
         .into());
     }
@@ -276,7 +276,7 @@ enum Dest<'a> {
 }
 
 impl Run<'_> {
-    /// `--dry-run`: plan each object's move from `from` to `dest` and print it (MIGRATE.md D9);
+    /// `--dry-run`: plan each object's move from `from` to `dest` and print it (docs/CAMIGRATE.md D9);
     /// 15 when any object cannot move as invoked.
     fn plan_moves(
         &self,
@@ -476,7 +476,7 @@ impl Run<'_> {
         if let Some(p) = moves.plans.iter().find(|p| !p.method.as_ref().is_some_and(built)) {
             let method = p.method.as_ref().map_or_else(|| "-".to_owned(), Method::name);
             return Err(KmError::Unsupported(format!(
-                "{}: moving by {method} is a later MIGRATE.md phase; public objects, sealed keys and the host path into PKCS#11 tokens \
+                "{}: moving by {method} is a later docs/CAMIGRATE.md phase; public objects, sealed keys and the host path into PKCS#11 tokens \
                  move (pass --dry-run for the plan)",
                 p.object
             ))
@@ -608,7 +608,7 @@ impl Run<'_> {
                 p.ready = false;
                 p.reasons.push(why);
             }
-            // An imported PIV key is never attested (MIGRATE.md D8): a spec asking for it never holds.
+            // An imported PIV key is never attested (docs/CAMIGRATE.md D8): a spec asking for it never holds.
             if let (true, Some(Method::PivImport), Some(to)) = (p.ready, &p.method, target_token)
                 && target_target(cfg, &p.object, to, None).is_ok_and(|dst| dst.on_token.attestation)
             {
@@ -728,7 +728,7 @@ fn no_export<'a>(cfg: &'a Config, object: &str, from: &str) -> Option<&'a str> {
 
 impl Run<'_> {
     /// `export --to-file`: one private key, through the host (`Token::extract`), into a
-    /// passphrase-protected file (MIGRATE.md D2 `file`): encrypted PKCS#8, or PKCS#12 with the
+    /// passphrase-protected file (docs/CAMIGRATE.md D2 `file`): encrypted PKCS#8, or PKCS#12 with the
     /// certificate the lock pairs with it on the source. Written whole or not at all, mode 0600.
     #[expect(clippy::too_many_arguments, reason = "the export command's parts, as the CLI hands them over")]
     fn export_file(
@@ -984,7 +984,7 @@ fn realised_target<'a>(cfg: &'a Config, lock: &Lock, object: &str, token: &'a st
 }
 
 /// Inside a Nix build sandbox (`NIX_BUILD_TOP` set, `IN_NIX_SHELL` not), where an export, an
-/// admin operation (MIGRATE.md D8), is refused like a lock write.
+/// admin operation (docs/CAMIGRATE.md D8), is refused like a lock write.
 fn in_nix_build() -> bool {
     std::env::var_os("NIX_BUILD_TOP").is_some() && std::env::var_os("IN_NIX_SHELL").is_none()
 }

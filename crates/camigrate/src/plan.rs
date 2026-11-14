@@ -1,8 +1,8 @@
-//! Export and import planning (MIGRATE.md): which method can move an object from one token to
+//! Export and import planning (docs/CAMIGRATE.md): which method can move an object from one token to
 //! another, at which exposure, and why not when it cannot. Pure: the facts come from the lock
 //! (the object's type, the source realisation's policy) and from each side's capabilities (a
 //! [`Side`], built by the token's provider), so `--dry-run` and the real run share this one
-//! decision (MIGRATE.md D9). The names it decides between — methods and exposure levels — are
+//! decision (docs/CAMIGRATE.md D9). The names it decides between — methods and exposure levels — are
 //! the lock's, in `cakeys_core::migrate`.
 
 use cakeys_core::config::{AttrValue, Immutables, ObjectCfg};
@@ -123,7 +123,7 @@ pub fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     if m.flag("CKA_EXTRACTABLE") != Some(true) || m.immutables.never_extractable == Some(true) {
         return Plan::impossible(
             m,
-            vec!["not extractable: exportability is fixed when a key is created (CKA_EXTRACTABLE = false; MIGRATE.md D1)".into()],
+            vec!["not extractable: exportability is fixed when a key is created (CKA_EXTRACTABLE = false; docs/CAMIGRATE.md D1)".into()],
         );
     }
     let trusted_only = m.flag("CKA_WRAP_WITH_TRUSTED") == Some(true);
@@ -177,7 +177,7 @@ pub fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     let mut plan = Plan::ready(m, method, exposure, notes);
     if matches!(exposure, Exposure::Host | Exposure::File) && !allow.host_plaintext {
         plan.ready = false;
-        plan.reasons.push(format!("the {exposure} path needs --allow-host-plaintext (MIGRATE.md D2)"));
+        plan.reasons.push(format!("the {exposure} path needs --allow-host-plaintext (docs/CAMIGRATE.md D2)"));
     }
     if let To::Token(dst) = to {
         plan.notes.extend(target_notes(dst, &plan));
@@ -481,7 +481,7 @@ mod tests {
         assert!(p.reasons[0].contains("never lets a key leave"), "{p:?}");
     }
 
-    /// `enforced` (MIGRATE.md D2): a source that can trust a transport key and holds a trusted
+    /// `enforced` (docs/CAMIGRATE.md D2): a source that can trust a transport key and holds a trusted
     /// copy of it, `CKM_RSA_AES_KEY_WRAP` for a key OAEP cannot carry alone (only the patched
     /// cryptoki names it: the `kwp` feature), and never a host path or a file.
     #[test]

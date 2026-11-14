@@ -1,4 +1,4 @@
-//! The spec baseline's generator (docs/PROVIDERS.md D1): profiles/baselines/pkcs11-3.2.toml is
+//! The spec baseline's generator (docs/CAPROBE.md D1): profiles/baselines/pkcs11-3.2.toml is
 //! generated from the vendored OASIS headers, never edited. Test-only: the first test
 //! regenerates and compares on every run (`CAKEYS_UPDATE_BASELINE=1 cargo test -p caprobe`
 //! rewrites the committed file after a header bump); the second pins the frozen spellings and

@@ -10,7 +10,7 @@
 //!
 //! What the module *can do* — the advertised-but-broken key generation, never wrapping or
 //! unwrapping, the `tpm2_ptool` import and its accept rows — is data:
-//! profiles/modules/tpm2-pkcs11/1.10+swtpm.toml (docs/PROVIDERS.md). What stays here is behaviour:
+//! profiles/modules/tpm2-pkcs11/1.10+swtpm.toml (docs/CAPROBE.md). What stays here is behaviour:
 //! the point repair, and the one module with usable attestation reachable outside PKCS#11,
 //! the `tpm-certify` commitment (docs/DESIGN.md §3.7) — the module itself exposes no
 //! attestation, so `attest` reaches the TPM through tss-esapi and the module's sqlite store

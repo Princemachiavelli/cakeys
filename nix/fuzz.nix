@@ -1,4 +1,4 @@
-# cargo-fuzz targets (fuzz/, docs/VERIFICATION.md step 2), in two settings:
+# cargo-fuzz targets (fuzz/, docs/DEVELOPMENT.md, "Verification beyond tests"), in two settings:
 #
 # - `smoke`: `nix flake check`'s checks.fuzz — every target built with libFuzzer and run for a
 #   fixed number of inputs from a fixed seed, starting from the test fixtures. Deterministic, so

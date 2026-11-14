@@ -1,4 +1,4 @@
-//! The cryptoki binding layer (docs/PROVIDERS.md D3): the one layer between cakeys and every
+//! The cryptoki binding layer (docs/CAPROBE.md D3): the one layer between cakeys and every
 //! module, named `cryptoki/0.12` and applied automatically. What it subtracts is decided at
 //! run time — a binding with the key-type fix (the Nix patches, or the upstream PRs merged
 //! and released) subtracts nothing, so the layer records the fix as soon as the implementation

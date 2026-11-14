@@ -1,4 +1,4 @@
-//! Profile resolution (docs/PROVIDERS.md D9, phase 2): which module profile and which delta
+//! Profile resolution (docs/CAPROBE.md D9, phase 2): which module profile and which delta
 //! layers compose a token's effective capability. The binding layer is always there; a
 //! forwarder is recognised from the module itself; the config names the rest; the module
 //! profile follows the provider family, chosen by the most match keys — the version
@@ -91,7 +91,7 @@ pub fn resolve(
     token: Option<&TokenInfo>,
     provider: &str,
 ) -> Result<Resolved, String> {
-    // TODO(NEXT.md §1, minor): parsed again on every token open; parse once per process.
+    // TODO(docs/OPEN.md, "Engineering"): parsed again on every token open; parse once per process.
     let set = Set::embedded()?;
     let mut out = Resolved::default();
 

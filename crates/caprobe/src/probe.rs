@@ -1,5 +1,5 @@
-//! The profile compiler (docs/PROVIDERS.md phase 3; the analysis in
-//! `docs/PROVIDER_PROFILE.md`):
+//! The profile compiler (docs/CAPROBE.md; the analysis in
+//! `docs/CAPROBE.md`):
 //! read-only probes record what a module shows through PKCS#11, and write probes — only on a
 //! token keys.toml marks `scratch`, or in the one slot it names `scratchId` — establish what it
 //! actually does. The output is a profile in the committed format, diffable against what a
@@ -1012,7 +1012,7 @@ pub fn drift(generated: &Profile, claimed: &Profile, write: bool) -> Vec<String>
 
 /// Keep, in a generated `profile` about to replace the file with content `existing` (named
 /// `shown` in messages), the two sections the probe does not generate: the file's [migration]
-/// claims (MIGRATE.md evidence, never probe-observable) and its [manual] findings (made by
+/// claims (docs/CAMIGRATE.md evidence, never probe-observable) and its [manual] findings (made by
 /// hand, each with its evidence).
 ///
 /// # Errors

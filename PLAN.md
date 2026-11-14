@@ -1,10 +1,10 @@
 # Key management plan
 
-> **Current design and state: [`docs/DESIGN.md`](docs/DESIGN.md)** (authoritative). Review findings: [`docs/REVIEW-2026-11-11.md`](docs/REVIEW-2026-11-11.md). Visual overviews: [`docs/diagrams.md`](docs/diagrams.md). This file is the roadmap and the history of decisions; where it disagrees with DESIGN.md, DESIGN.md wins. The project was renamed from `key-mgmnt` to **`cakeys`** on 2026-11-11; the history below uses the old name.
+> **Current design and state: [`docs/DESIGN.md`](docs/DESIGN.md)** (authoritative). Review findings: `docs/REVIEW-2026-11-11.md`. Visual overviews: [`docs/diagrams.md`](docs/diagrams.md). This file is the roadmap and the history of decisions; where it disagrees with DESIGN.md, DESIGN.md wins. The project was renamed from `key-mgmnt` to **`cakeys`** on 2026-11-11; the history below uses the old name.
 
 ## TODO (deferred, from the 2026-11-11 reviews)
 
-- ~~**Refactor (2026-11-12 code review):**~~ **done 2026-11-12**, see [`docs/REFACTOR-2026-11-12.md`](docs/REFACTOR-2026-11-12.md) (R0–R11, "Outcome").
+- ~~**Refactor (2026-11-12 code review):**~~ **done 2026-11-12**, see `docs/REFACTOR-2026-11-12.md` (R0–R11, "Outcome").
 - **Verification (2026-11-12):** [`docs/VERIFICATION.md`](docs/VERIFICATION.md) — reference tokens and cross-reference tests first (both done 2026-11-12, `tests/references.rs`), then proptest/cargo-fuzz (done 2026-11-12), Quint/Alloy design models, Tamarin, Kani; Verus/Aeneas only for a carved-out kernel.
 - **Export and import (2026-11-12, planned):** [`MIGRATE.md`](MIGRATE.md) — native `export`/`import`/`migrate` per backend, token-to-token wrapping where possible, `--dry-run`, target-aware formats; phases 0–7.
 

@@ -1,4 +1,4 @@
-# The static gate's fixture (docs/PROVIDERS.md phase 4, tests/validate.rs, checks.profiles):
+# The static gate's fixture (docs/CAPROBE.md, tests/validate.rs, checks.profiles):
 # validate checks each spec against its token's capability profiles with no token attached,
 # so the module paths are never opened.
 [tokens.kry]

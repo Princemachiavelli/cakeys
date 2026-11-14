@@ -1,4 +1,4 @@
-//! Moving a key sealed (MIGRATE.md D2–D7, phase 3): the material leaves the source only wrapped
+//! Moving a key sealed (docs/CAMIGRATE.md D2–D7, phase 3): the material leaves the source only wrapped
 //! to a transport key that lives on the target — an RSA key the lock pins (D3) — and is unwrapped
 //! there. The host never sees it. [`export`] wraps one object into a [`Bundle`]; [`import`]
 //! checks the bundle against the lock before it touches the target, creates the key (and a
@@ -417,7 +417,7 @@ fn check_against_lock(b: &Bundle, e: &Entry, dst: &Target, tr: &Target, lock: &L
 
 /// Create the key under `dst` from the bundle's key `e`: a private key's public half first (from
 /// its public key, as `generate` makes it), then the key unwrapped with the target spec's
-/// attributes as its template, less what this module refuses in one (MIGRATE.md D6).
+/// attributes as its template, less what this module refuses in one (docs/CAMIGRATE.md D6).
 fn create(
     b: &Bundle,
     e: &Entry,
@@ -525,7 +525,7 @@ fn oaep_params(hash: OaepHash) -> PkcsOaepParams<'static> {
     PkcsOaepParams::new(h, mgf, PkcsOaepSource::empty())
 }
 
-/// The RFC 5649 key wrap a token offers, under the name it uses (MIGRATE.md spike: one format,
+/// The RFC 5649 key wrap a token offers, under the name it uses (docs/CAMIGRATE.md spike: one format,
 /// two mechanism IDs): `CKM_AES_KEY_WRAP_PAD`, or `CKM_AES_KEY_WRAP_KWP` where this build can name
 /// it (the `kwp` feature, with the Nix build's patched cryptoki).
 pub(crate) fn rfc5649(tok: &Token) -> Option<Mechanism<'static>> {

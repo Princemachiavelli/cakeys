@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Cross-version check (docs/REFACTOR-2026-11-12.md, R0): a lock recorded by one cakeys build must
+# Cross-version check (docs/archive/REFACTOR-2026-11-12.md, R0): a lock recorded by one cakeys build must
 # verify, compare and re-record byte-identically with another. The integration tests write their
 # locks with the code under test, so they cannot see format drift; this can.
 #
 #   scripts/xversion.sh record <old-cakeys> <dir>   # fresh SoftHSM token, objects of every class, lock
 #   scripts/xversion.sh check  <new-cakeys> <dir>   # verify, compare-only realise, re-record, diff
 #
-# The lock layout changed once, in place (WORKPLAN.md stage 1: the [observations] table): a lock
+# The lock layout changed once, in place (2026-11-13: the [observations] table): a lock
 # recorded by an older build has `provenance.module` per realisation and does not load here. So
 # <old-cakeys> must be built at or after that change; `check` refuses an older base lock by name.
 #

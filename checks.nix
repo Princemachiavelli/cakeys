@@ -29,7 +29,7 @@
   # cakeys, caprobe and camigrate without their `tpm2` and `ykcs11` features (nix/package-crane.nix).
   inherit (cakeys) minimal;
   vm = mkTest "vm";
-  # The capability-profile query (docs/PROVIDERS.md, `caprobe supports`): static answers from the
+  # The capability-profile query (docs/CAPROBE.md, `caprobe supports`): static answers from the
   # profiles embedded in the binary, no token needed. yes -> 0, no -> 15, unknown -> 16.
   profiles = pkgs.runCommand "cakeys-profiles" { } ''
     set -u

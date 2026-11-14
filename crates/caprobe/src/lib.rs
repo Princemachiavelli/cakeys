@@ -1,4 +1,4 @@
-//! The `caprobe` command line (docs/SCOPE.md, "Three tools"): it measures PKCS#11 modules. It
+//! The `caprobe` command line (README.md, "Three tools"): it measures PKCS#11 modules. It
 //! probes a token into a capability profile and compares it with a committed one, answers what
 //! the profiles say a module supports, and prints what a token offers. It is the only tool that
 //! creates and destroys scratch objects (`probe --write`), and it never reads keys.lock. A
@@ -51,12 +51,12 @@ enum Cmd {
         #[arg(long)]
         token: String,
     },
-    /// Ask the capability profiles what a vendor SO version supports (docs/PROVIDERS.md):
+    /// Ask the capability profiles what a vendor SO version supports (docs/CAPROBE.md):
     /// pure data, no token touched. NAME is a mechanism (`CKM_*`), key type (`CKK_*`),
     /// parameter set (`CKP_*`) or curve; `--bits` asks for an RSA size; `--class` lists a
     /// baseline class; `--oaep` lists the wrap hashes. Exit 0 yes, 15 no, 16 unknown.
     Supports(SupportsArgs),
-    /// Generate the token's capability profile by probing it (docs/PROVIDERS.md phase 3):
+    /// Generate the token's capability profile by probing it (docs/CAPROBE.md):
     /// read-only probes always; with --write, the probes that generate, wrap, unwrap and
     /// delete — only on a token keys.toml marks scratch, refused (17) on any other. With
     /// --diff, the result is compared against a committed profile: any difference is
@@ -126,7 +126,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     let cli = Cli::parse();
     let cfg = match (&cli.config, &cli.cmd) {
         (Some(path), _) => load_config(path)?,
-        // Pure data over the profiles (docs/PROVIDERS.md): nothing in keys.toml to read.
+        // Pure data over the profiles (docs/CAPROBE.md): nothing in keys.toml to read.
         (None, Cmd::Supports(a)) if a.token.is_none() => Config::default(),
         (None, _) => {
             use clap::CommandFactory as _;
@@ -170,7 +170,7 @@ fn profile_set(dir: Option<&Path>) -> anyhow::Result<cakeys_profile::Set> {
     }
 }
 
-/// The `supports` verb: answers from the capability profiles alone (docs/PROVIDERS.md), so it
+/// The `supports` verb: answers from the capability profiles alone (docs/CAPROBE.md), so it
 /// runs with an empty `cfg` when there is no keys.toml and no `--token` to look up.
 fn run_supports(cfg: &Config, a: &SupportsArgs, notes: &mut Notes) -> anyhow::Result<()> {
     let set = profile_set(a.profiles_dir.as_deref())?;
@@ -184,7 +184,7 @@ fn run_supports(cfg: &Config, a: &SupportsArgs, notes: &mut Notes) -> anyhow::Re
         bits: a.bits,
     };
     let s = supports::supports(cfg, &set, &q)?;
-    notes.note(format_args!("profiles: module {}, layers [{}] (docs/PROVIDERS.md)", s.module, s.layers.join(", ")));
+    notes.note(format_args!("profiles: module {}, layers [{}] (docs/CAPROBE.md)", s.module, s.layers.join(", ")));
     for (n, v) in &s.verdicts {
         println!("{n}: {v}");
     }
@@ -233,7 +233,7 @@ fn run_probe(
 }
 
 /// Write a generated profile to `path`, keeping the one section the probe does not generate:
-/// the file's [migration] claims (MIGRATE.md evidence, never probe-observable). Refused onto
+/// the file's [migration] claims (docs/CAMIGRATE.md evidence, never probe-observable). Refused onto
 /// an existing file that does not parse (regenerating it would silently drop those claims),
 /// and onto any existing file from a read-only probe (it would drop every write-probe row).
 fn write_profile(

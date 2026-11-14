@@ -426,7 +426,7 @@ fn tpm2_keys_attest_their_tpm_residence() {
         assert!(e.lock()["objects"]["hmac"]["ids"].get("commitment").is_some());
         assert!(e.locked_attestation("hmac", "tpm")["id"].as_str().is_some());
         // A TPM-held secret key, certified: a fresh proof, not the replayable fingerprint a
-        // commitment alone is (NEXT.md §2c).
+        // commitment alone is.
         let got: serde_json::Value =
             serde_json::from_str(&stdout(&e.km(&["resolve", "hmac", "--token", "tpm"]))).unwrap();
         assert_eq!(got["assurance"].as_str(), Some("proof"), "{got}");
@@ -547,7 +547,7 @@ fn tpm2_attested_material_travels_to_a_second_hsm() {
     assert!(stderr(&o).contains("attests nothing"), "{}", stderr(&o));
 }
 
-/// `pop-unwrap` (a transport key's proof, MIGRATE.md D3): tpm2-pkcs11 never unwraps (its
+/// `pop-unwrap` (a transport key's proof, docs/CAMIGRATE.md D3): tpm2-pkcs11 never unwraps (its
 /// profile's `unwraps = false`; `C_UnwrapKey` is `CKR_FUNCTION_NOT_SUPPORTED` on the real TPM,
 /// tests/ftpm.rs), so an unwrap-only key is refused as unsupported (15) before it is generated.
 #[test]

@@ -1,4 +1,4 @@
-# cargo-deny (NEXT.md §1), in two settings:
+# cargo-deny, in two settings:
 #
 # - `check`: `nix flake check`'s checks.deny — advisories against the pinned RustSec
 #   database, licenses, duplicate crates and sources, all offline in the sandbox: the crate

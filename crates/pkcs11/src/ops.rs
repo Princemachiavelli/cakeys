@@ -1,4 +1,4 @@
-//! Idempotent verbs with HTTP-like semantics (docs/DESIGN.md §5).
+//! Idempotent verbs with HTTP-like semantics (docs/CAKEYS.md).
 
 use crate::token::{self as hal, Token};
 use cakeys_core::config::{AttestationRecord, Config, Lock, Mode, Observation, Observed, Origin, Session};
@@ -72,7 +72,7 @@ pub fn schemes_on(t: &Target, tok: &Token) -> Result<Vec<Scheme>> {
 
 /// What a target needs of its token, whatever the token: the one source of truth for the live
 /// check before anything is created ([`check_capabilities`]) and the static gate against the
-/// capability profiles ([`static_gate`], docs/PROVIDERS.md phase 4).
+/// capability profiles ([`static_gate`], docs/CAPROBE.md).
 pub struct Needs {
     /// Mechanism groups in check order: the token must implement at least one of each.
     pub groups: Vec<Vec<MechanismType>>,
@@ -340,7 +340,7 @@ pub fn realise(
     realise_as(t, tok, lock, write, t.on_token.auto_create, None, notes)
 }
 
-/// Record an object camigrate just imported (MIGRATE.md D6, D7): [`realise`] without creating,
+/// Record an object camigrate just imported (docs/CAMIGRATE.md D6, D7): [`realise`] without creating,
 /// through the same lock rules, with the realisation's `provenance.origin` saying where the
 /// material came from. The lock must already pin the object's IDs (they came from the source),
 /// so a different material is a mismatch (10), never a new identity.

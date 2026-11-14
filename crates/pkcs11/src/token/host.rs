@@ -1,4 +1,4 @@
-//! The `host` path on a token (MIGRATE.md D2, phase 4): a key handed to this process in
+//! The `host` path on a token (docs/CAMIGRATE.md D2, phase 4): a key handed to this process in
 //! plaintext, and a key created from the host's plaintext. Only `camigrate` calls these, behind
 //! `--allow-host-plaintext`. Every plaintext buffer is zeroized when dropped, the copies inside
 //! creation templates included; none is formatted, logged or put in an error.

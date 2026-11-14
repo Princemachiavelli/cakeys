@@ -1,4 +1,4 @@
-//! MIGRATE.md phase 5 on a real `YubiKey`, opt-in: a P-256 key made extractable on `SoftHSM` moves
+//! docs/CAMIGRATE.md phase 5 on a real `YubiKey`, opt-in: a P-256 key made extractable on `SoftHSM` moves
 //! through the host into retired PIV slot 95 (`CKA_ID` 18) as Security Officer (`piv-import`),
 //! and `cakeys verify` proves possession there.
 //!

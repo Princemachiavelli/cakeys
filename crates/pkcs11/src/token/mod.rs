@@ -33,7 +33,7 @@ pub use policy::bool_attr;
 pub use uri::locator_attrs;
 use uri::pct_all;
 
-/// The session a verb opens (M1, docs/REVIEW-2026-11-11.md): read-only for the verbs that only
+/// The session a verb opens (M1, docs/archive/REVIEW-2026-11-11.md): read-only for the verbs that only
 /// read — a write-protected token (`CKF_WRITE_PROTECTED`) refuses read-write sessions, and the
 /// session objects reading needs (a key-wrap copy, an ECDH secret) are allowed in read-only
 /// ones — read-write only to create or destroy.
@@ -101,7 +101,7 @@ pub struct Token {
     /// the module advertises `CKM_RSA_PKCS_KEY_PAIR_GEN`: the probe's reported bounds.
     pub rsa_bits: Option<(u64, u64)>,
     pub provider: Arc<dyn Provider>,
-    /// The resolved capability profiles (docs/PROVIDERS.md): the module profile and the
+    /// The resolved capability profiles (docs/CAPROBE.md): the module profile and the
     /// delta layers between cakeys and it, with the notes resolution noticed on the way.
     pub profiles: crate::resolution::Resolved,
     session: Session,
@@ -183,7 +183,7 @@ impl Token {
         let provider = registry.select(cfg.provider.as_deref(), &module)?;
         provider.check_options(name, &cfg.options)?;
         let FoundSlot { slot, token, pins, write_protected } = find_slot(ctx, &cfg.token_label, &module.path)?;
-        // The capability profiles (docs/PROVIDERS.md phase 2): the module profile follows the
+        // The capability profiles (docs/CAPROBE.md): the module profile follows the
         // provider (D9), the binding layer is always in the stack, a forwarder the module
         // names and the config's extras with it. What the stack subtracts filters the
         // advertisement; a token with no resolved profile keeps the provider's own filter.
@@ -345,7 +345,7 @@ impl Token {
         self.session.find_objects(&locator_attrs(loc)?).map_err(ck("C_FindObjects"))
     }
 
-    /// The objects the SO marked `CKA_TRUSTED` on this token (MIGRATE.md D2, `enforced`): the
+    /// The objects the SO marked `CKA_TRUSTED` on this token (docs/CAMIGRATE.md D2, `enforced`): the
     /// public key object holding `spki` (the transport key's trusted copy), and how many others
     /// there are — an `enforced` move is only as narrow as the token's whole trusted set.
     ///

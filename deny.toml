@@ -1,4 +1,4 @@
-# cargo-deny (NEXT.md §1): dependency advisories against the pinned RustSec database, plus
+# cargo-deny: dependency advisories against the pinned RustSec database, plus
 # licenses, duplicate crates and sources. `checks.deny` in the flake runs it offline in the
 # Nix sandbox — the advisory database is the advisory-db flake input, never a build-time
 # fetch — so every check here is reproducible with the flake.lock.

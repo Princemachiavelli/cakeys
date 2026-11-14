@@ -1,4 +1,4 @@
-//! The static gate (docs/PROVIDERS.md phase 4): what each spec needs of its token, checked
+//! The static gate (docs/CAPROBE.md): what each spec needs of its token, checked
 //! against the token's capability profiles with no token attached — `validate`'s second half.
 //! The needs are [`ops::needs`], the same the live check refuses by before anything is created;
 //! here a profile's *no* refuses (15, naming the profile that decided it) and its *unknown* is a

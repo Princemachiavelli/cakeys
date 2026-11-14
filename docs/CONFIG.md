@@ -49,11 +49,11 @@ tokenLabel = "main"
 # The user PIN, read from a file (or `pinEnv = "VAR"`: the PIN itself from the environment).
 # Without a PIN cakeys opens a public session and sees only public objects.
 pinFile = "/var/lib/softhsm/pin"
-# Marks the token expendable for `caprobe probe --write` (docs/PROVIDERS.md): its write probes
+# Marks the token expendable for `caprobe probe --write` (docs/CAPROBE.md): its write probes
 # generate, wrap, unwrap and destroy objects, so they run only on a token marked scratch and
 # are refused (17) on any other. No other verb reads it. Never on a token holding real keys:
 # scratch = true
-# The spec of this token's transport key (MIGRATE.md D3): sealed moves to this token wrap to it,
+# The spec of this token's transport key (docs/CAMIGRATE.md D3): sealed moves to this token wrap to it,
 # never to a key picked by what it can do (`camigrate --transport-key` overrides it per run). It
 # must realise an RSA private key here declaring CKA_UNWRAP = true and CKA_EXTRACTABLE = false
 # (else 17); realising it records its public key in the lock, so any host exports to this token
@@ -66,17 +66,19 @@ tokenLabel = "host"
 # `$NAME` or `${NAME}` takes the path from the environment, so one keys.toml can serve machines
 # with different paths. An unset variable is refused when the file loads (17), not at login.
 pinFile = "$TPM_PIN_FILE"
-# Optional: the provider (the module's quirks profile, DESIGN §6.2) is normally detected from
+# Optional: the provider (the module's quirks profile, ARCHITECTURE.md "Providers") is normally detected from
 # C_GetInfo; naming it is needed behind p11-kit, which hides the module behind it.
 provider = "tpm2-pkcs11"
-# Delta capability layers between cakeys and the token (docs/PROVIDERS.md), by name or family:
+# Delta capability layers between cakeys and the token (docs/CAPROBE.md), by name or family:
 # hand-maintained facts factored out of an observed profile (swtpm's RSA cap), or anything else
 # the stack applies. The module profile itself — what this module does on this kind of
 # hardware — is chosen from C_GetInfo and C_GetTokenInfo, not named here. The cryptoki binding
 # layer is always applied (and heals itself when its fix is in); p11-kit is detected from the
 # module. Unknown names refuse (17). This token is a real TPM, so not swtpm's:
 # profiles = ["swtpm"]
-# The Nix library's feature name for builds that need this token (default "token-<name>").
+# The Nix system feature builds that need this token require. Default: lib.mkKeys's
+# `featurePrefix` (default "token-") and the token's name, which is what the NixOS module
+# advertises for its token of that name; set it when the host names the token differently.
 systemFeature = "token-tpm"
 
 # The provider's own settings. Each provider checks its own; one that takes none refuses any
@@ -92,7 +94,7 @@ pinFile = "/run/secrets/piv-pin"
 # The admin (SO) credential, read only by a step that needs the SO: create or delete on a module
 # that does those only as SO (ykcs11: the PIV management key in hex, or the PIN when the
 # management key is PIN-protected), and `camigrate transport --trusted` on any module (its SO
-# PIN; MIGRATE.md D2). The hex management key logs in without a PIN verification, so it spends
+# PIN; docs/CAMIGRATE.md D2). The hex management key logs in without a PIN verification, so it spends
 # no PIN retry; the PIN does.
 mgmKeyFile = "/run/secrets/piv-mgm"
 # A device like this holds real keys beside expendable ones, so `scratch` cannot mark it. For a
@@ -210,9 +212,9 @@ tokens.softhsm = { locator = { CKA_LABEL = "release-note" } }
 - **One birthplace per object:** an object whose specs name several tokens is generated on its
   `createOn` token only; `autoCreate` elsewhere, or on several tokens without `createOn`, is
   invalid (17). The other tokens get the same material by import (`camigrate`).
-- **Weak identity modes need `identity.allow`** on the spec's token entry (for example
-  `identity = { allow = ["commit-at-creation"] }`); none is implemented yet, and they are refused
-  before anything is created.
+- **A secret key needs an identity the token can recompute:** a declared usage bit a commitment
+  can use (`CKA_SIGN`, `CKA_ENCRYPT`, `CKA_DECRYPT`, `CKA_WRAP`), or `CKA_EXTRACTABLE = true`.
+  Otherwise the spec is invalid (17); DESIGN §3.4 says why, and what may change.
 
 For the lock that `realise` writes from this, see [`LOCK.md`](LOCK.md). A real, small pair of
 files is [`examples/yubikey-secureboot.toml`](../examples/yubikey-secureboot.toml) and its lock.

@@ -54,7 +54,7 @@ pub fn suite_var(var: &str, require: &str, test: &str) -> Option<String> {
 }
 
 /// The reference suite's tokens: `ref` (scratch: the token is created for the run and thrown
-/// away, which is exactly what the probe's write probes demand, PROVIDERS.md phase 3) and
+/// away, which is exactly what the probe's write probes demand, docs/CAPROBE.md) and
 /// `ref-anon`, the same token without a PIN: it sees only public objects, like a PIV token used
 /// without login.
 pub fn reference_tokens(module: &str, dir: &Path) -> String {
@@ -237,13 +237,13 @@ pub fn code(o: &Output) -> i32 {
     o.status.code().unwrap()
 }
 
-/// A committed capability profile's file (profiles/, docs/PROVIDERS.md): what the conformance
+/// A committed capability profile's file (profiles/, docs/CAPROBE.md): what the conformance
 /// tests regenerate and compare byte for byte.
 pub fn committed_profile(path: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles").join(path)
 }
 
-/// The conformance check every reference token runs (docs/PROVIDERS.md phase 3): the committed
+/// The conformance check every reference token runs (docs/CAPROBE.md): the committed
 /// module profile `name` (at `path` under profiles/) is exactly what a fresh probe of token
 /// `token` observes, and regenerating it — the maintenance flow — changes no byte. `km` runs
 /// the CLI against the test's keys.toml; `scratch` is a file the regeneration may write.
@@ -531,7 +531,7 @@ impl Drop for TestSession {
     }
 }
 
-// TODO(NEXT.md §1, minor): sessions opened on several test threads finalize the module under
+// TODO(docs/OPEN.md, "Engineering"): sessions opened on several test threads finalize the module under
 // each other (SIGSEGV); the Nix build runs the suites on one thread.
 pub fn open_session(module: &str, label: &str, pin: &str) -> TestSession {
     let ctx = Pkcs11::new(module).unwrap();

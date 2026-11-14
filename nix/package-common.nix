@@ -22,9 +22,9 @@
   # types can be neither created nor told apart. Minimal local fix until upstream has one
   # (upstream/rust-cryptoki/). Without it, cakeys refuses those key types. It also has no
   # CKM_AES_KEY_WRAP_KWP (RFC 5649 under its PKCS#11 3.0 ID, which kryoptic offers): the second
-  # patch adds it for export and import (MIGRATE.md). The third adds CKM_RSA_AES_KEY_WRAP (RSA-OAEP
+  # patch adds it for export and import (docs/CAMIGRATE.md). The third adds CKM_RSA_AES_KEY_WRAP (RSA-OAEP
   # of a fresh AES key, then RFC 5649 under it), the one wrap of a CKA_WRAP_WITH_TRUSTED key whose
-  # only trusted key is the transport key (MIGRATE.md D2, `enforced`). Both constants and the
+  # only trusted key is the transport key (docs/CAMIGRATE.md D2, `enforced`). Both constants and the
   # parameter struct are already in cryptoki-sys.
   cryptoki = {
     version = "0.12.1";
@@ -50,13 +50,13 @@
         ../Cargo.toml
         ../Cargo.lock
         ../crates
-        # The capability profiles (docs/PROVIDERS.md): embedded in the binary, and the vendored
+        # The capability profiles (docs/CAPROBE.md): embedded in the binary, and the vendored
         # OASIS headers the pinned baseline-regeneration test reads.
         ../profiles
       ];
     };
 
-    # The tools of one workspace (docs/SCOPE.md, "Three tools"), from one build whose check phase
+    # The tools of one workspace (README.md, "Three tools"), from one build whose check phase
     # tests them together, each in its own output: `out` holds cakeys, `caprobe` the module
     # measurer and `camigrate` the key mover, so cakeys' closure carries neither.
     outputs = [

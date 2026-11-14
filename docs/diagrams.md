@@ -15,7 +15,7 @@ flowchart LR
         direction TB
         T["[tokens.&lt;name&gt;]<br/>module · provider · tokenLabel · pinFile/pinEnv · mgmKeyFile/mgmKeyEnv ·<br/>systemFeature · options (the provider's own)"]
         O["[objects.&lt;name&gt;]<br/>class · keyType · certificateType ·<br/>curve / modulusBits / valueLen"]
-        S["[specs.&lt;name&gt;]<br/>object → one object only<br/>attributes · publicAttributes<br/>tokens.&lt;t&gt;: locator · autoCreate ·<br/>publicOnly · binding · attestation · identity.allow"]
+        S["[specs.&lt;name&gt;]<br/>object → one object only<br/>attributes · publicAttributes<br/>tokens.&lt;t&gt;: locator · autoCreate ·<br/>publicOnly · binding · attestation"]
         S -- references --> O
     end
 
@@ -97,7 +97,7 @@ flowchart TD
 
 All `pop-*` share the top binding rank: each proves possession of the same key. A key carrying
 `CKA_ALWAYS_AUTHENTICATE` signs after a context-specific login with the session's PIN and records
-`pop-sign-pin` ([`CKA_ALWAYS_AUTHENTICATE.md`](CKA_ALWAYS_AUTHENTICATE.md)).
+`pop-sign-pin` ([DESIGN.md](DESIGN.md) §3.6).
 
 ## 4. Identity: one object, several schemes
 

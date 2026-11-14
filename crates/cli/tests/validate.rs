@@ -1,4 +1,4 @@
-//! The static gate (docs/PROVIDERS.md phase 4): `validate` checks each spec's needs against its
+//! The static gate (docs/CAPROBE.md): `validate` checks each spec's needs against its
 //! token's capability profiles, resolved from keys.toml and the lock — no token, no module,
 //! no environment needed, so these run everywhere.
 
@@ -14,7 +14,7 @@ fn validate(config: &str) -> Output {
     Command::new(BIN).arg("--config").arg(format!("{FIXTURES}/{config}")).arg("validate").output().unwrap()
 }
 
-/// PROVIDERS.md's two static-gate cases: kryoptic asked to generate secp256k1, and a `kw`
+/// docs/CAPROBE.md's two static-gate cases: kryoptic asked to generate secp256k1, and a `kw`
 /// commitment through p11-kit, each refused (15) naming the profile that decided it; a token
 /// nothing is known about is skipped with a note.
 #[test]

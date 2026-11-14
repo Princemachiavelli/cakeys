@@ -94,7 +94,7 @@ Once the P0 and P1 changes below are in, the lock can state its guarantee in one
 
 ## Eighteen gaps, seven of them false passes
 
-The register uses the severity scale of [REVIEW-2026-11-11.md](../docs/REVIEW-2026-11-11.md) (**H**: identity can be wrong; **M**: wrong or unsafe behaviour in realistic use; **L**: robustness and clarity), with new IDs starting at S2 so they slot into the existing tracker. Cakeys-side facts were checked against the code at `8889898`; module behaviour comes from the cited upstream sources.
+The register uses the severity scale of REVIEW-2026-11-11.md (**H**: identity can be wrong; **M**: wrong or unsafe behaviour in realistic use; **L**: robustness and clarity), with new IDs starting at S2 so they slot into the existing tracker. Cakeys-side facts were checked against the code at `8889898`; module behaviour comes from the cited upstream sources.
 
 | ID | Sev | Kind | Finding | Evidence |
 |---|---|---|---|---|

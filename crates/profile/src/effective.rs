@@ -1,4 +1,4 @@
-//! The effective capability of a stack (docs/PROVIDERS.md D3): one module profile, the delta
+//! The effective capability of a stack (docs/CAPROBE.md D3): one module profile, the delta
 //! layers between cakeys and it, and the baseline that names and groups everything. Every
 //! verdict cites the profile that decided, so a "no" names the layer that subtracted and an
 //! "unknown" says why it cannot say (D5's conservative answers).
@@ -95,7 +95,7 @@ impl<'a> Effective<'a> {
             return Verdict::Unknown {
                 why: format!(
                     "module profile {} records no advertisement for it (partial: the probe, \
-                     PROVIDERS.md phase 3, records the list)",
+                     docs/CAPROBE.md, records the list)",
                     m.profile
                 ),
             };
@@ -243,7 +243,7 @@ impl<'a> Effective<'a> {
     }
 
     /// The RSA-OAEP hashes usable for wrapping, with their verdicts; layers subtract none
-    /// today (whether p11-kit forwards OAEP wrapping is [todo], MIGRATE.md).
+    /// today (whether p11-kit forwards OAEP wrapping is [todo], docs/CAMIGRATE.md).
     #[must_use]
     pub fn oaep(&self) -> Vec<(String, Verdict)> {
         match self.module {

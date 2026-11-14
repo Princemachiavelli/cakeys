@@ -1097,7 +1097,7 @@ fn attributes_are_validated_per_class() {
     assert_eq!(e.code(&["verify", "s", "--token", "ref"]), 0);
 }
 
-/// `docs/CKA_ALWAYS_AUTHENTICATE.md`: a `CKA_ALWAYS_AUTHENTICATE` key proves possession under its
+/// docs/DESIGN.md §3.6: a `CKA_ALWAYS_AUTHENTICATE` key proves possession under its
 /// per-use policy (`C_SignInit → C_Login(CKU_CONTEXT_SPECIFIC) → C_Sign`, multi-part), and the
 /// lock records `pop-sign-pin` from the attribute the token reports, declared or not.
 #[test]
@@ -1782,7 +1782,7 @@ fn assert_swapped_key_conflict(o: &Output) {
     assert!(err.contains("proof of possession failed") || err.contains("disagrees with the key material"), "{err}");
 }
 
-/// H1 (docs/REVIEW-2026-11-11.md): `SoftHSM` EC private keys expose no public key, so their
+/// H1 (docs/archive/REVIEW-2026-11-11.md): `SoftHSM` EC private keys expose no public key, so their
 /// identity is read from the public key object under the same locator. Replace the private key,
 /// keep the public object: a conflict (`assert_swapped_key_conflict`).
 #[test]
@@ -1836,7 +1836,7 @@ fn binding_downgrade_is_refused() {
 /// P0-1: keys that cannot sign still prove possession. `pop-ecdh` derives the shared secret into
 /// a non-extractable session key and MACs the challenge on both sides; `pop-decrypt` has the token
 /// RSA-OAEP-decrypt the challenge; `pop-unwrap` has it unwrap a host secret into a non-extractable
-/// session key and MAC with it (a transport key, MIGRATE.md D3). A different private key under the
+/// session key and MAC with it (a transport key, docs/CAMIGRATE.md D3). A different private key under the
 /// locator fails the proof.
 #[test]
 fn derive_and_decrypt_only_keys_prove_possession() {
@@ -1988,7 +1988,7 @@ fn pin_file_path_can_come_from_the_environment() {
 }
 
 /// The admin credential (`mgmKeyFile`/`mgmKeyEnv`) is read only by a step that needs the
-/// Security Officer: ykcs11's create and delete, and `camigrate transport --trusted` (MIGRATE.md
+/// Security Officer: ykcs11's create and delete, and `camigrate transport --trusted` (docs/CAMIGRATE.md
 /// D2). `SoftHSM` creates keys as the user, so a realise never reads it: a credential file that
 /// does not exist is no error. Without a user PIN to return to, it is invalid at load.
 #[test]

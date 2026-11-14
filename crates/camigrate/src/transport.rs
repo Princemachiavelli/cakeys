@@ -1,10 +1,10 @@
-//! The transport file (MIGRATE.md D3): a target's transport key, as a source needs it to wrap to
+//! The transport file (docs/CAMIGRATE.md D3): a target's transport key, as a source needs it to wrap to
 //! that target without reaching it.
 
 use cakeys_core::{KmError, Result};
 use serde::{Deserialize, Serialize};
 
-/// The transport file (`camigrate transport`, MIGRATE.md D3): what a source needs to wrap to a
+/// The transport file (`camigrate transport`, docs/CAMIGRATE.md D3): what a source needs to wrap to a
 /// target's transport key without reaching the target: the public key, its locked identity,
 /// and the target's provider and mechanisms for planning.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

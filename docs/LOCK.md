@@ -37,7 +37,7 @@ version = 1
 # (for a certificate, its subject key). It must be listed on both sides; a partner absent from
 # this file may live in another lock fragment, so locks still split and join (§4.2).
 pairs = ["ecpub"]
-# A transport key (a token's `transportWith`, MIGRATE.md D3) also records its public key, base64
+# A transport key (a token's `transportWith`, docs/CAMIGRATE.md D3) also records its public key, base64
 # of the canonical SPKI, so a source exports to its token from the lock alone. It is checked on
 # load against `ids.rfc7093m4` (a mismatch is 17): the identity vouches for it.
 # publicKey = "MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA..."
@@ -116,7 +116,7 @@ schemes = ["rfc7093m4"]
 # derived from the binding, the class and the attestation kind: the `assurance` that `realise`
 # and the Nix view report. A pop-* binding (or a tpm-certify attestation) is a "proof" no replay
 # passes; a secret key's commitment is a "fingerprint" that anything which saw it can replay;
-# public bytes are "public" (docs/REVIEW-2026-11-13.md, "Replay").
+# public bytes are "public" (docs/archive/REVIEW-2026-11-13.md, "Replay").
 binding = "pop-sign"
 # The observation this realisation was recorded with: a key of the `observations` table
 # (below). Never a verdict.
@@ -158,13 +158,13 @@ uri = "pkcs11:token=xv;serial=b19136a55523f406;object=ec;id=%0E;type=private"
 session = "user"
 ```
 
-An object moved in by `camigrate` (public objects since MIGRATE phase 2) also records where it came from. It is
+An object moved in by `camigrate` (public objects since docs/CAMIGRATE.md phase 2) also records where it came from. It is
 the object's history, so re-recording the same object keeps it:
 
 ```toml
 [realisations.ec.soft.provenance.origin]
 from = "softhsm"                    # the source token
-method = "rsa-oaep-sha1+aes-kwp"    # a method name (MIGRATE.md, "Frozen names and formats")
+method = "rsa-oaep-sha1+aes-kwp"    # a method name (docs/CAMIGRATE.md, "Frozen names and formats")
 exposure = "sealed"                 # the exposure level the path had
 declared = true                     # only for a vendor method: the level is its own declaration
 ```
@@ -184,7 +184,7 @@ drops the entries no realisation names any more, and so does `gc`.
 # warns; a different cakeys version is a note.
 provider = "softhsm"
 cakeysVersion = "0.1.0"
-# The module capability profile the token resolved to (PROVIDERS.md D8); absent when none is
+# The module capability profile the token resolved to (docs/CAPROBE.md D8); absent when none is
 # committed for it. Another profile is a note.
 profile = "softhsm/2.7"
 # Mechanisms the token offered (the Nix library's `functions`); one that vanishes warns.

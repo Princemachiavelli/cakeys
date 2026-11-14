@@ -3,7 +3,7 @@
 //! decrypting (RSA-OAEP) a fresh, domain-separated challenge — and the host checks the result
 //! against the same canonical SPKI that `rfc7093m4` hashes. This binds a private-key object to
 //! its identity even when the public key comes from a separate public-key object (H1 in
-//! docs/REVIEW-2026-11-11.md).
+//! docs/archive/REVIEW-2026-11-11.md).
 //!
 //! Verification uses the `RustCrypto` crates; no proof value is ever stored.
 

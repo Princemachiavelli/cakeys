@@ -1,4 +1,4 @@
-//! Capability profiles (docs/PROVIDERS.md): what a vendor PKCS#11 module can actually do, as
+//! Capability profiles (docs/CAPROBE.md): what a vendor PKCS#11 module can actually do, as
 //! data. One profile per vendor SO version, one per layer between cakeys and the token, and a
 //! spec baseline generated from the OASIS headers — queried statically, no token touched, so
 //! a config and a vendor SO version answer "is 512 HMAC supported?" before a key exists

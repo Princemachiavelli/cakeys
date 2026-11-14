@@ -30,7 +30,7 @@ fn patched(what: &str) -> bool {
     patched
 }
 
-/// The committed ykcs11/2.7 profile is probe output (docs/PROVIDERS.md phase 3): a fresh write
+/// The committed ykcs11/2.7 profile is probe output (docs/CAPROBE.md): a fresh write
 /// probe in the scratch slot conforms, and regenerating the file changes no byte — its
 /// [migration] claims and [manual] findings preserved. A slot holding anything but ykcs11's own
 /// placeholder is refused before anything is written (the guard's unit test covers the
@@ -69,7 +69,7 @@ fn the_write_probe_conforms_and_regenerates_the_committed_profile() {
     );
 }
 
-/// The read-only probe of the device here (docs/PROVIDERS.md D10): ykcs11/2.7's match keys,
+/// The read-only probe of the device here (docs/CAPROBE.md D10): ykcs11/2.7's match keys,
 /// advertisement and reported RSA range are what this `YubiKey` shows, and the write probes are
 /// refused without a scratch slot — `scratch = true` cannot mark a device that holds real keys
 /// beside it. Needs only `CAKEYS_TEST_YUBIKEY_MODULE`: no PIN, nothing written; the diff only

@@ -1,4 +1,4 @@
-//! Passphrase-protected key files (MIGRATE.md D2 `file`, D4; phase 4b): for a target cakeys
+//! Passphrase-protected key files (docs/CAMIGRATE.md D2 `file`, D4; phase 4b): for a target cakeys
 //! cannot reach, one private key leaves as a PKCS#8 `EncryptedPrivateKeyInfo` (`pkcs8-pbes2`,
 //! PEM) or as PKCS#12 with its certificate (`pkcs12`, what Java, Windows and cloud key vaults
 //! import). Plaintext-equivalent at rest, guarded only by the passphrase: only behind

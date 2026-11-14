@@ -6,7 +6,7 @@ use cakeys_core::config::ModuleInfo;
 
 /// `SoftHSMv2`: the reference module. No quirks; registered so `provider = "softhsm"` can be
 /// required explicitly and so it is reported by name. Its one deviation — `CKM_RSA_PKCS_OAEP`
-/// implemented with SHA-1 only (SHA-256 is `CKR_ARGUMENTS_BAD`, MIGRATE.md spike) — is data:
+/// implemented with SHA-1 only (SHA-256 is `CKR_ARGUMENTS_BAD`, docs/CAMIGRATE.md spike) — is data:
 /// profiles/modules/softhsm/2.7.toml's `wrap.oaep`.
 pub struct SoftHsm;
 

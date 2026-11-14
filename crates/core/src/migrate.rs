@@ -1,7 +1,7 @@
-//! The vocabulary of moving keys (MIGRATE.md): the method names and exposure levels a lock's
+//! The vocabulary of moving keys (docs/CAMIGRATE.md): the method names and exposure levels a lock's
 //! `provenance.origin` records (frozen, pinned below), and the capabilities a provider declares
 //! for its token ([`Side`], the `Provider::migration` hook, D10). The planner that decides
-//! between them is camigrate's (docs/SCOPE.md, "Three tools"), so a `cakeys` build carries
+//! between them is camigrate's (README.md, "Three tools"), so a `cakeys` build carries
 //! none of it.
 
 use crate::config::ObjectCfg;
@@ -10,7 +10,7 @@ use crate::types::{KeyType, ObjectClass};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-/// How much of the material is exposed on the way (MIGRATE.md D2), strongest first.
+/// How much of the material is exposed on the way (docs/CAMIGRATE.md D2), strongest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Exposure {
@@ -45,7 +45,7 @@ impl std::fmt::Display for Exposure {
     }
 }
 
-/// How an object moves. The names are frozen like scheme names (MIGRATE.md, "Frozen names and
+/// How an object moves. The names are frozen like scheme names (docs/CAMIGRATE.md, "Frozen names and
 /// formats"): a bundle or a lock's `provenance.origin` written with one must keep meaning it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Method {
@@ -65,7 +65,7 @@ pub enum Method {
     TpmDuplicate,
     Pkcs8Pbes2,
     Pkcs12,
-    /// A provider's own method (MIGRATE.md D10).
+    /// A provider's own method (docs/CAMIGRATE.md D10).
     Vendor {
         provider: String,
         name: String,
@@ -175,7 +175,7 @@ pub enum PlaintextImport {
     PivImport(Vec<Accept>),
 }
 
-/// A provider's own method (MIGRATE.md D10): its name, the exposure it declares, what it moves,
+/// A provider's own method (docs/CAMIGRATE.md D10): its name, the exposure it declares, what it moves,
 /// and the target providers it works with (empty: any).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VendorMethod {
@@ -210,7 +210,7 @@ pub struct Side {
     pub public_import: Vec<Accept>,
     /// How plaintext private and secret keys get in, if at all.
     pub plaintext_import: Option<PlaintextImport>,
-    /// Provider methods this side offers as a source (MIGRATE.md D10).
+    /// Provider methods this side offers as a source (docs/CAMIGRATE.md D10).
     pub vendor: Vec<VendorMethod>,
 }
 
@@ -243,7 +243,7 @@ impl Side {
         self.mechanisms.contains(mechanism)
     }
 
-    /// RFC 5649, under either PKCS#11 name (the same format, MIGRATE.md spike).
+    /// RFC 5649, under either PKCS#11 name (the same format, docs/CAMIGRATE.md spike).
     #[must_use]
     pub fn kwp(&self) -> bool {
         self.has("CKM_AES_KEY_WRAP_KWP") || self.has("CKM_AES_KEY_WRAP_PAD")

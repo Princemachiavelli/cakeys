@@ -26,7 +26,7 @@ fn caps_names_the_provider_and_what_the_module_offers() {
     assert!(mechs.contains("CKM_EC_KEY_PAIR_GEN") && !mechs.contains("CKM_AES_KEY_GEN"), "{mechs}");
 }
 
-/// The committed pair profile tpm2-pkcs11/1.10+swtpm is probe output (docs/PROVIDERS.md
+/// The committed pair profile tpm2-pkcs11/1.10+swtpm is probe output (docs/CAPROBE.md
 /// phase 3): what this module does on this TPM, measured together. A fresh probe conforms and
 /// regenerating it changes no byte.
 #[test]

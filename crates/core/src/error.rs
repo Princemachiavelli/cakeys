@@ -1,4 +1,4 @@
-//! Error classes with HTTP-like semantics and stable exit codes (docs/DESIGN.md §5).
+//! Error classes with HTTP-like semantics and stable exit codes (docs/CAKEYS.md).
 
 #[derive(Debug, thiserror::Error)]
 pub enum KmError {

@@ -1,4 +1,4 @@
-//! The files this build ships (docs/PROVIDERS.md D11): committed under profiles/, embedded so
+//! The files this build ships (docs/CAPROBE.md D11): committed under profiles/, embedded so
 //! the binary answers without the checkout, and listed explicitly — a new profile is an entry
 //! here plus the file, and nothing else.
 

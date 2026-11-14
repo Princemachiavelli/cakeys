@@ -88,7 +88,7 @@ pub struct Facts {
     pub observed: Observed,
     /// What the run saw of the module and token, recorded as an `observations` entry.
     pub observation: Observation,
-    /// Where an imported object came from (MIGRATE.md D7), for the realisation camigrate records
+    /// Where an imported object came from (docs/CAMIGRATE.md D7), for the realisation camigrate records
     /// right after the import; `None` for every other run, which keeps what the lock recorded.
     pub origin: Option<Origin>,
 }
@@ -121,7 +121,7 @@ pub fn reconcile(
     notes: &mut Notes,
 ) -> Result<bool> {
     // An import is checked against the IDs its source recorded: without them it would be a first
-    // use, recording whatever the target holds (MIGRATE.md D6).
+    // use, recording whatever the target holds (docs/CAMIGRATE.md D6).
     if facts.origin.is_some() && lock.objects.get(t.object_name).is_none_or(|o| o.ids.is_empty()) {
         return Err(KmError::PreconditionFailed(format!(
             "{t}: an import needs the IDs the lock pins for object '{}', and it pins none; realise it on \
@@ -793,7 +793,7 @@ mod tests {
         );
     }
 
-    /// An import records where the material came from (MIGRATE.md D7); a later plain realise of
+    /// An import records where the material came from (docs/CAMIGRATE.md D7); a later plain realise of
     /// the same object keeps it, and the lock still loads.
     #[test]
     fn an_import_records_its_origin_and_a_realise_keeps_it() {

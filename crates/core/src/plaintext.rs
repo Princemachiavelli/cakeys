@@ -1,4 +1,4 @@
-//! Plaintext key material on the `host` path (MIGRATE.md D2, phase 4): a private key as the
+//! Plaintext key material on the `host` path (docs/CAMIGRATE.md D2, phase 4): a private key as the
 //! source's `C_WrapKey` hands it over (PKCS#8 `PrivateKeyInfo`), parsed into the parts a
 //! target's `C_CreateObject` takes. Every secret part is zeroized when dropped; nothing here
 //! formats, logs or returns a secret in an error.

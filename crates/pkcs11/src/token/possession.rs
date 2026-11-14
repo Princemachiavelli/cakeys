@@ -11,7 +11,7 @@ impl Token {
     /// The binding the private key `h` is proven and recorded with, from the `planned` one
     /// (`cakeys_core::plan::binding`): `pop-sign` becomes `pop-sign-pin` when the token reports
     /// the key `CKA_ALWAYS_AUTHENTICATE` — the observed attribute, declared or not
-    /// (`docs/CKA_ALWAYS_AUTHENTICATE.md`).
+    /// (docs/DESIGN.md §3.6).
     ///
     /// # Errors
     ///

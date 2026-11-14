@@ -1,4 +1,4 @@
-//! The move matrix across the reference tokens (MIGRATE.md D9): the plan follows each side's
+//! The move matrix across the reference tokens (docs/CAMIGRATE.md D9): the plan follows each side's
 //! capabilities, a transport file carries the locked identity, and a real `migrate` does exactly
 //! what its `--dry-run` says. Realisations are recorded and checked with `cakeys` (built beside
 //! camigrate, `common::sibling`), plans made and objects moved with camigrate. A reference takes
@@ -15,11 +15,11 @@ use rsa::pkcs8::DecodePublicKey as _;
 use rsa::traits::PublicKeyParts as _;
 use x509_cert::der::{Decode as _, Encode as _};
 
-/// `export --dry-run` (MIGRATE.md phase 1): the plan follows each side's capabilities. Between
+/// `export --dry-run` (docs/CAMIGRATE.md phase 1): the plan follows each side's capabilities. Between
 /// the software references, the composed sealed method with the strongest OAEP hash both
 /// implement; to tpm2-pkcs11 and through p11-kit (whose RPC drops AES key wrap) only through the
 /// host, behind the flag; to a file behind the flag; a key made non-extractable never. A sealed
-/// plan needs a transport key realised on the target (MIGRATE.md D3), and without --dry-run the
+/// plan needs a transport key realised on the target (docs/CAMIGRATE.md D3), and without --dry-run the
 /// export writes the bundle.
 #[test]
 fn export_plans_follow_each_sides_capabilities() {
@@ -99,7 +99,7 @@ fn export_plans_follow_each_sides_capabilities() {
     assert_eq!(bundle["transport"]["object"].as_str(), Some("tk-kryoptic"));
 }
 
-/// `camigrate transport` (MIGRATE.md D3) writes the transport key's public half with its locked
+/// `camigrate transport` (docs/CAMIGRATE.md D3) writes the transport key's public half with its locked
 /// identity; an export planned from that file alone wraps to it, and an edited file is refused.
 #[test]
 fn transport_files_carry_the_locked_identity() {
@@ -167,7 +167,7 @@ const P384_PARAMS: &[u8] = &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22];
 const ED25519_PARAMS: &[u8] = &[0x06, 0x03, 0x2b, 0x65, 0x70];
 
 /// One public class of the matrix: its object (and keys.toml type), the attributes its specs
-/// declare (the target's creation template: MIGRATE.md D6), the planting template of its
+/// declare (the target's creation template: docs/CAMIGRATE.md D6), the planting template of its
 /// material, and whether tpm2-pkcs11 creates it from a value (its profile's public accept rows).
 struct Public {
     name: &'static str,
@@ -253,7 +253,7 @@ const PUBLIC: [Public; 5] = [
     },
 ];
 
-/// The dry-run property for the `public` rows (MIGRATE.md D9, phase 2): for every public class,
+/// The dry-run property for the `public` rows (docs/CAMIGRATE.md D9, phase 2): for every public class,
 /// source and target reference, `migrate --dry-run`'s verdict is the outcome. A ready plan moves
 /// the object, records it with its `origin`, and `cakeys verify` then accepts it on the target —
 /// the lock camigrate wrote loads, and the identity survived the move. A blocked plan is 15, the
@@ -425,7 +425,7 @@ fn objects_sharing_a_locator_move_in_any_order() {
     assert_eq!(on_target("sl-a"), 3, "the refused certificate left an object");
 }
 
-/// The transport key of reference `r` (MIGRATE.md D3), as keys.toml text: an RSA key that only
+/// The transport key of reference `r` (docs/CAMIGRATE.md D3), as keys.toml text: an RSA key that only
 /// unwraps and never leaves the token, proven by unwrapping (`pop-unwrap`). Its token names it
 /// with [`names_transport`].
 fn transport_key(r: &Ref) -> String {
@@ -447,7 +447,7 @@ fn names_transport(e: &Env, body: &str, holds: impl Fn(&Ref) -> bool) {
 }
 
 /// One key class of the sealed matrix: its keys.toml type and the attributes its specs declare
-/// (extractable, or it could never move: MIGRATE.md D1).
+/// (extractable, or it could never move: docs/CAMIGRATE.md D1).
 struct Key {
     name: &'static str,
     ty: &'static str,
@@ -482,7 +482,7 @@ const KEYS: [Key; 5] = [
     },
 ];
 
-/// The dry-run property for the sealed rows (MIGRATE.md D9, phase 3): for every key class,
+/// The dry-run property for the sealed rows (docs/CAMIGRATE.md D9, phase 3): for every key class,
 /// source and target reference, `migrate --dry-run`'s verdict is the outcome. Each key is
 /// generated on its source (`createOn`), each target holds a transport key. A ready move exits
 /// 0, records its `origin`, and `cakeys verify` then accepts the key on the target — proving
@@ -520,7 +520,7 @@ fn sealed_moves_do_what_the_plan_says() {
     }
     names_transport(&e, &body, unwraps);
     // p11-kit hides the module behind it, so its capabilities are a spec-compliant module's until
-    // keys.toml names that module's provider (DESIGN §6.2): this one forwards `SoftHSM`, whose
+    // keys.toml names that module's provider (docs/ARCHITECTURE.md, "Providers"): this one forwards `SoftHSM`, whose
     // unwrapped secret keys lose their length (`secret-unwraps = false`).
     let config = e.dir.join("keys.toml");
     let text = std::fs::read_to_string(&config).unwrap();
@@ -590,7 +590,7 @@ fn sealed_moves_do_what_the_plan_says() {
     assert!(rows.iter().any(|r| r.contains("plan ready")), "no sealed move was planned ready");
 }
 
-/// A bundle crosses untrusted channels (MIGRATE.md D5, D6): `export --out` writes it and
+/// A bundle crosses untrusted channels (docs/CAMIGRATE.md D5, D6): `export --out` writes it and
 /// `import --in` reads it, checked against the lock before the target is touched — another key's
 /// IDs are 17 or 10 — and after: tampered bytes do not unwrap (13), and the blobs of another
 /// key unwrap into material that is not the locked one (a private key fails its proof of possession,
@@ -751,7 +751,7 @@ fn export_bundle(e: &Env, soft: &Ref, objects: &[&str]) -> std::path::PathBuf {
     path
 }
 
-/// One bundle per export (MIGRATE.md D5): every key, one shared KEK. Each key imports on its
+/// One bundle per export (docs/CAMIGRATE.md D5): every key, one shared KEK. Each key imports on its
 /// own: one that fails leaves nothing while the others are imported and recorded, and the run
 /// exits with the failure. Named objects export all or nothing: one that cannot move writes no
 /// bundle; without names, what cannot move is warned about and left out.
@@ -832,7 +832,7 @@ fn bundles_carry_every_key_of_an_export() {
     assert!(!out.exists(), "a failed export wrote a bundle");
 }
 
-/// A token names its transport key (`transportWith`, MIGRATE.md D3), and realising it records
+/// A token names its transport key (`transportWith`, docs/CAMIGRATE.md D3), and realising it records
 /// its public key in the lock, held to the locked identity: a source then plans and exports to
 /// that token from the lock alone, the target unreachable. Without the recorded key, a plan
 /// from the lock is blocked; a `transportWith` that is no unwrap-only RSA key is invalid.
@@ -920,7 +920,7 @@ fn base64_flip(text: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-/// `enforced` (MIGRATE.md D2, phase 3b): a `CKA_WRAP_WITH_TRUSTED` key on `SoftHSM` moves only after
+/// `enforced` (docs/CAMIGRATE.md D2, phase 3b): a `CKA_WRAP_WITH_TRUSTED` key on `SoftHSM` moves only after
 /// its SO trusted the target's transport key (`transport --trusted`, with `mgmKeyFile`), and
 /// then by `CKM_RSA_AES_KEY_WRAP` under that trusted copy alone: each bundle entry carries its
 /// own key-encryption key. kryoptic imports and verifies them. A wrap-with-trusted key on
@@ -999,7 +999,7 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
     assert!(p["plans"][0]["ready"] == false && reasons.contains("trusted-wrap = false"), "{p}");
 }
 
-/// The dry-run property for the `host` rows (MIGRATE.md D2, phase 4): with
+/// The dry-run property for the `host` rows (docs/CAMIGRATE.md D2, phase 4): with
 /// `--allow-host-plaintext`, every move the plan sends through the host (`host-pkcs8`,
 /// `host-raw`: a target that cannot unwrap the key, like `SoftHSM` for secret keys or p11-kit
 /// without AES key wrap; `tpm2-ptool` into tpm2-pkcs11) moves, records its `origin` with the
@@ -1124,7 +1124,7 @@ fn plant_fixture_key(soft: &Ref, kry: &Ref) {
 const FIXTURE_CERT: &[u8] = include_bytes!("../../cli/tests/fixtures/tpm-import-p256-cert.der");
 const P256_PARAMS: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
 
-/// Key files (MIGRATE.md D2 `file`, phase 4b): one private key leaves `SoftHSM` through the host
+/// Key files (docs/CAMIGRATE.md D2 `file`, phase 4b): one private key leaves `SoftHSM` through the host
 /// as encrypted PKCS#8 or as PKCS#12 with the certificate the lock pairs with it, mode 0600,
 /// unreadable without the passphrase. kryoptic imports the PKCS#12 (key and certificate) after a
 /// wrong passphrase was refused (10) leaving nothing, records it as from a `file`, and verifies

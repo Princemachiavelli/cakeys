@@ -1,4 +1,4 @@
-//! The export bundle (MIGRATE.md D5, "Frozen names and formats"): the objects one export moves
+//! The export bundle (docs/CAMIGRATE.md D5, "Frozen names and formats"): the objects one export moves
 //! from a source to a target — keys wrapped to the target's transport key, public objects as
 //! their bytes — with what the import checks
 //! before it touches the target — per key its type, IDs and commitment label as the source's
@@ -268,7 +268,7 @@ mod tests {
         }
     }
 
-    /// The frozen field names (MIGRATE.md, "Frozen names and formats"): a bundle written once
+    /// The frozen field names (docs/CAMIGRATE.md, "Frozen names and formats"): a bundle written once
     /// must keep meaning the same.
     #[test]
     fn the_format_is_pinned_and_round_trips() {

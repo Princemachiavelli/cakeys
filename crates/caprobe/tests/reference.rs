@@ -9,7 +9,7 @@ mod common;
 
 use common::*;
 
-/// The committed module profile is probe output (docs/PROVIDERS.md phase 3): a fresh probe of
+/// The committed module profile is probe output (docs/CAPROBE.md): a fresh probe of
 /// the reference token conforms to it, regenerating it changes no byte, and the write probes
 /// are refused on a token keys.toml does not mark scratch.
 fn committed_profile_is_what_the_probe_observes(r: &Reference, test: &str) {
@@ -75,7 +75,7 @@ fn p11kit_forwards_a_filtered_view() {
     assert_eq!(w.code(&["caps", "--token", "fwd-other"]), 16);
 }
 
-/// The p11-kit layer profile against the forwarder itself (docs/PROVIDERS.md phase 3): probed
+/// The p11-kit layer profile against the forwarder itself (docs/CAPROBE.md): probed
 /// through p11-kit, `SoftHSM` advertises exactly what its committed profile advertises minus
 /// what profiles/layers/p11-kit.toml subtracts — the client filters `C_GetMechanismList` — and
 /// the probe sees p11-kit's identity, not the module's.

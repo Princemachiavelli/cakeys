@@ -1,4 +1,4 @@
-//! Property tests of the core crate (docs/VERIFICATION.md, step 2): the lock rules over generated
+//! Property tests of the core crate (docs/DEVELOPMENT.md, "Verification beyond tests"): the lock rules over generated
 //! realisations, the injectivity of the identity encodings, and parsers that never panic on
 //! malformed input. The same parsers are fuzz targets under `fuzz/`.
 
