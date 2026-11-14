@@ -34,10 +34,13 @@ let
     else
       [ config.users.groups.nixbld.gid ];
 
+  # A token's system feature: the prefix and its name, as lib.mkKeys names it by default.
+  featureOf = n: "${cfg.featurePrefix}${n}";
+
   # feature -> sandbox paths, merged over tokens that share a feature.
   hookMap = lib.zipAttrsWith (_: lib.concatLists) (
-    lib.mapAttrsToList (_: t: {
-      ${t.systemFeature} = t.sandboxPaths ++ lib.optional t.pcscd "/run/pcscd";
+    lib.mapAttrsToList (n: t: {
+      ${featureOf n} = t.sandboxPaths ++ lib.optional t.pcscd "/run/pcscd";
     }) cfg.tokens
   );
   hook = pkgs.writeShellApplication {
@@ -50,37 +53,28 @@ let
     text = builtins.readFile ./sandbox-hook.sh;
   };
 
-  tokenModule =
-    { name, ... }:
-    {
-      options = {
-        # TODO: keys.toml's `tokens.<t>.systemFeature` duplicates this (crates/core/src/config.rs);
-        # decide which one owns it with the further Nix integration and usage tests.
-        systemFeature = mkOption {
-          type = types.str;
-          default = "token-${name}";
-          description = "System feature advertised for this token; consumers put it in `requiredSystemFeatures`.";
-        };
-        sandboxPaths = mkOption {
-          type = types.listOf (types.strMatching "/[^\n=]*(=/[^\n=]*)?");
-          default = [ ];
-          example = [
-            "/var/lib/softhsm"
-            "/etc/km/yubikey.pin"
-          ];
-          description = ''
-            Paths builds requiring `systemFeature` get in their sandbox (token storage, sockets,
-            PIN files), as `/path` or `/target=/source`. Granted per build by the pre-build-hook,
-            and only if they exist.
-          '';
-        };
-        pcscd = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Also grant pcscd's socket (`/run/pcscd`); needs `sandbox.pcscd.enable`.";
-        };
+  tokenModule = _: {
+    options = {
+      sandboxPaths = mkOption {
+        type = types.listOf (types.strMatching "/[^\n=]*(=/[^\n=]*)?");
+        default = [ ];
+        example = [
+          "/var/lib/softhsm"
+          "/etc/km/yubikey.pin"
+        ];
+        description = ''
+          Paths builds requiring this token's feature get in their sandbox (token storage, sockets,
+          PIN files), as `/path` or `/target=/source`. Granted per build by the pre-build-hook,
+          and only if they exist.
+        '';
+      };
+      pcscd = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Also grant pcscd's socket (`/run/pcscd`); needs `sandbox.pcscd.enable`.";
       };
     };
+  };
 
   checkModule =
     { name, ... }:
@@ -141,6 +135,16 @@ in
       description = "The cakeys package.";
     };
 
+    featurePrefix = mkOption {
+      type = types.str;
+      default = "token-";
+      description = ''
+        Prefix of the system feature each token advertises: `<featurePrefix><name>`. The same
+        default as `lib.mkKeys`'s `featurePrefix`; a keys.toml `tokens.<t>.systemFeature` names
+        one of these features directly.
+      '';
+    };
+
     sandbox.pcscd.enable = mkEnableOption ''
       smart cards in the Nix build sandbox through pcscd: enables pcscd and lets build users
       past its polkit check (nixbld users, or the auto-allocated UID range when
@@ -163,7 +167,7 @@ in
       type = types.attrsOf (types.submodule tokenModule);
       default = { };
       description = ''
-        Tokens builds on this host may use. Each advertises its `systemFeature`, and builds that
+        Tokens builds on this host may use. Each advertises `<featurePrefix><name>`, and builds that
         require that feature get its `sandboxPaths` from a pre-build-hook. Features are
         self-declared by derivations: this keeps tokens out of unrelated builds, it does not
         authenticate who asks (that is `nix.settings.allowed-users`).
@@ -240,7 +244,7 @@ in
         assertion = t.pcscd -> cfg.sandbox.pcscd.enable;
         message = "services.cakeys.tokens.${n}.pcscd needs services.cakeys.sandbox.pcscd.enable";
       }) cfg.tokens;
-      nix.settings.system-features = lib.mapAttrsToList (_: t: t.systemFeature) cfg.tokens;
+      nix.settings.system-features = map featureOf (lib.attrNames cfg.tokens);
       # A plain definition: a second pre-build-hook elsewhere is a conflict, not a silent override.
       nix.settings.pre-build-hook = lib.getExe hook;
     })

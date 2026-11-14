@@ -269,8 +269,7 @@ impl Run<'_> {
             for token in spec.tokens.keys() {
                 let t = Target::new(&self.cfg, spec_name, token)?;
                 let mode = ops::plan_mode(&t)?;
-                let note = if mode.needs_opt_in() { " (opted in)" } else { "" };
-                println!("{spec_name} on {token}: mode {mode}{note}");
+                println!("{spec_name} on {token}: mode {mode}");
                 if let Some(stack) = stacks.get(token.as_str()) {
                     let v = cakeys_pkcs11::gate::check(&t, mode, stack, self.registry)?;
                     for n in &v.notes {

@@ -85,14 +85,9 @@ pub struct Needs {
 ///
 /// # Errors
 ///
-/// `Unsupported` for what no token can do: an opted-in identity mode this build does not
-/// implement, or generating a hash-bound HMAC key type (PKCS#11 has no mechanism for it).
+/// `Unsupported` for what no token can do: generating a hash-bound HMAC key type (PKCS#11 has
+/// no mechanism for it).
 pub fn needs(t: &Target, mode: Mode) -> Result<Needs> {
-    if mode.needs_opt_in() {
-        return Err(KmError::Unsupported(format!(
-            "identity mode '{mode}' (opted in for {t}) is not implemented in this POC"
-        )));
-    }
     if t.on_token.auto_create
         && let Some(kt) = t.object.key_type.filter(|k| k.is_hash_bound_hmac())
     {

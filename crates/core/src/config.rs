@@ -54,10 +54,9 @@ pub struct TokenCfg {
     /// `mgmKeyFile` may be `$NAME`, like `pinFile`. Refused on a provider that does not need it.
     pub mgm_key_file: Option<PathBuf>,
     pub mgm_key_env: Option<String>,
-    /// Nix `requiredSystemFeatures` entry; defaults to `token-<name>`. Read by the Nix library.
-    // TODO: decide whether this belongs in keys.toml (unused by Rust; nix/lib.nix reads it) or
-    // only in the NixOS module (`services.cakeys.tokens.<n>.systemFeature`, which today must be
-    // kept equal by hand). Decide with the further Nix integration and usage tests.
+    /// Nix `requiredSystemFeatures` entry, read only by the Nix library: defaults to
+    /// `<featurePrefix><name>` (`lib.mkKeys`'s `featurePrefix`, default `token-`). The NixOS
+    /// module advertises `<featurePrefix><n>` for each of its tokens, so this names one of those.
     pub system_feature: Option<String>,
     /// Marks the token as expendable for the probe (docs/PROVIDERS.md phase 3): its write
     /// probes generate, wrap, unwrap and destroy objects, so `probe --write` runs them only
@@ -267,8 +266,6 @@ pub struct SpecTokenCfg {
     /// half are not, so this is an explicit per-token opt-in recorded in the lock.
     #[serde(default)]
     pub public_only: bool,
-    #[serde(default)]
-    pub identity: IdentityCfg,
     /// `"token-asserted"`: do not prove possession of the private key, for keys that cannot sign
     /// anything the host can verify. Recorded in the lock; `publicOnly` implies it.
     #[serde(default)]
@@ -309,14 +306,6 @@ impl std::fmt::Display for Locator {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct IdentityCfg {
-    /// Weak identity modes explicitly allowed on this token.
-    #[serde(default)]
-    pub allow: Vec<Mode>,
-}
-
 /// Identity modes, strongest first (docs/DESIGN.md §3.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -324,16 +313,6 @@ pub enum Mode {
     Direct,
     Commitment,
     WrapRebind,
-    CommitAtCreation,
-    HostAtImport,
-    TokenSpecific,
-}
-
-impl Mode {
-    #[must_use]
-    pub fn needs_opt_in(self) -> bool {
-        self > Mode::WrapRebind
-    }
 }
 
 /// How a private-key object is bound to the public key its identity hashes (docs/DESIGN.md §3.6).

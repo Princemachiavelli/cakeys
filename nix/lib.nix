@@ -5,7 +5,7 @@ let
 in
 {
   /**
-    mkKeys { config, lock ?, cakeys ?, modules ? { } } -> { <object> = f }
+    mkKeys { config, lock ?, cakeys ?, modules ? { }, featurePrefix ? "token-" } -> { <object> = f }
 
     One calling convention: every object is a function, and the call resolves the (spec, token)
     pair the arguments name — optional when the object has exactly one.
@@ -31,7 +31,8 @@ in
                      "public" (public bytes); derived from the lock, as `cakeys` derives it
       requiredSystemFeatures
                      the token's system feature (keys.toml `tokens.<t>.systemFeature`, default
-                     `token-<t>`), as the list a derivation's `requiredSystemFeatures` takes
+                     `<featurePrefix><t>`, as the NixOS module advertises it), as the list a
+                     derivation's `requiredSystemFeatures` takes
       check          shell command for the pseudo-FOD pre-use check, printing the URI; the
                      resolved pair is passed explicitly, and `scheme` requires that identity.
                      Interpolates config, lock and module paths, so they become inputs of the
@@ -48,6 +49,7 @@ in
       lock ? null,
       cakeys ? null,
       modules ? { },
+      featurePrefix ? "token-",
     }:
     let
       cfg = builtins.fromTOML (builtins.readFile config);
@@ -58,7 +60,7 @@ in
       realisations = lk.realisations or { };
       observations = lk.observations or { };
 
-      featuresOf = t: [ (tokens.${t}.systemFeature or "token-${t}") ];
+      featuresOf = t: [ (tokens.${t}.systemFeature or "${featurePrefix}${t}") ];
 
       objectView =
         obj: type:

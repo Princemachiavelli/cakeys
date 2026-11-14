@@ -230,9 +230,9 @@ tokens.ref = { locator = { CKA_LABEL = "shared-b" } }
 }
 
 #[test]
-fn weak_modes_need_per_token_opt_in() {
-    let Some(e) = env("opt_in") else { return };
-    let spec = |allow: &str| {
+fn a_secret_key_without_a_reverifiable_identity_is_refused() {
+    let Some(e) = env("no_identity") else { return };
+    let spec = |extra: &str| {
         format!(
             r#"
 [objects.locked]
@@ -243,20 +243,19 @@ valueLen = 32
 [specs.locked-down]
 object = "locked"
 attributes = {{ CKA_SIGN = false, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false, CKA_DERIVE = true }}
-tokens.ref = {{ locator = {{ CKA_LABEL = "locked" }}, autoCreate = true, identity.allow = [{allow}] }}
+tokens.ref = {{ locator = {{ CKA_LABEL = "locked" }}, autoCreate = true{extra} }}
 "#
         )
     };
     e.config(&spec(""));
-    assert_eq!(e.code(&["validate"]), 17);
-    assert_eq!(e.code(&["realise", "locked-down", "--token", "ref", "--no-update-lock"]), 17);
-    e.config(&spec("\"host-at-import\""));
     let v = e.km(&["validate"]);
-    assert_eq!(code(&v), 0);
-    assert!(stdout(&v).contains("host-at-import (opted in)"));
-    // Opted in but not implemented: refused before anything is created.
-    assert_eq!(e.code(&["realise", "locked-down", "--token", "ref", "--no-update-lock"]), 15);
+    assert_eq!(code(&v), 17);
+    assert!(stderr(&v).contains("declare a usage bit"), "{}", stderr(&v));
+    assert_eq!(e.code(&["realise", "locked-down", "--token", "ref", "--no-update-lock"]), 17);
     assert_eq!(e.session().labelled("locked"), []);
+    // The per-token opt-in to weaker modes is gone from the schema (docs/DESIGN.md §3.4).
+    e.config(&spec(r#", identity.allow = ["host-at-import"]"#));
+    assert_eq!(e.code(&["validate"]), 17);
 }
 
 #[test]

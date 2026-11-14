@@ -62,7 +62,6 @@ impl Token {
                     ids.insert(c.scheme().name().into(), id::sri(&out));
                 }
             }
-            m => return Err(KmError::Unsupported(format!("identity mode '{m}' is not implemented in this POC"))),
         }
         Ok(ids)
     }

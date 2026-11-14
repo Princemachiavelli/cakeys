@@ -302,14 +302,12 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
     } else if attr("CKA_EXTRACTABLE") == Some(true) {
         Mode::WrapRebind
     } else {
-        let allowed = &t.on_token.identity.allow;
-        return match allowed.iter().min() {
-            Some(m) => Ok(*m),
-            None => Err(KmError::Validation(format!(
-                "{t} has no re-verifiable identity (non-extractable; no CKA_SIGN, nor CKA_ENCRYPT/CKA_DECRYPT/CKA_WRAP on AES); \
-                 opt in per token with identity.allow = [\"commit-at-creation\" | \"host-at-import\" | \"token-specific\"]"
-            ))),
-        };
+        // The weaker modes this leaves out (computed once and never re-checked) are parked:
+        // docs/DESIGN.md §3.4.
+        return Err(KmError::Validation(format!(
+            "{t} has no re-verifiable identity (non-extractable; no CKA_SIGN, nor CKA_ENCRYPT/CKA_DECRYPT/CKA_WRAP on AES): \
+             declare a usage bit that allows a commitment, or CKA_EXTRACTABLE = true"
+        )));
     };
     Ok(mode)
 }
