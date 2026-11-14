@@ -115,6 +115,13 @@ struct ProbeArgs {
     profiles_dir: Option<PathBuf>,
 }
 
+/// The command line's definition: its verbs and flags, for the test that every one of them is
+/// used by an integration test (`tests/common/surface.rs`).
+#[must_use]
+pub fn command() -> clap::Command {
+    <Cli as clap::CommandFactory>::command()
+}
+
 /// Run the command line with the given providers; maps errors to the documented exit codes.
 #[must_use]
 pub fn main(registry: &Registry) -> ExitCode {

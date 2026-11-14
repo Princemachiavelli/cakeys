@@ -101,4 +101,10 @@ fn the_forwarder_subtracts_exactly_its_layer() {
     let expected: std::collections::BTreeSet<String> = module.difference(&layer).cloned().collect();
     assert_eq!(forwarded, expected, "p11-kit forwards a different list than its layer profile says");
     assert_eq!(probed["match"]["manufacturer"].as_str(), Some("PKCS#11 Kit"));
+    // `--name` names the generated profile; the default is `<provider>/<version>`, the version
+    // p11-kit reports of itself (1.1), not its release.
+    let out = w.km(&["probe", "--token", "fwd", "--name", "mine/1.0"]);
+    assert_eq!(code(&out), 0);
+    let renamed: toml::Value = toml::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    assert_eq!((renamed["profile"].as_str(), probed["profile"].as_str()), (Some("mine/1.0"), Some("p11-kit/1.1")));
 }

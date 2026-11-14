@@ -124,8 +124,8 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   would fix it, and would let `cargo-nextest` take about 40 s off the check phase, once each
   suite has its own token.
 - **Profiles are parsed on every token open**: parse once per process (`OnceLock`).
-- **Coverage and mutation testing** (`cargo-llvm-cov`, `cargo-mutants`) in Nix, so new tests go
-  where the gaps are.
+- **Mutation testing** (`cargo-mutants`) in Nix, and reading `packages.coverage`'s report
+  (DEVELOPMENT.md) for the dispatch arms no test reaches, so new tests go where the gaps are.
 - **Fuzz the remaining parsers**: the PIV chain, the P-521 fix-up, profile emit and parse.
 - **Design models** (DEVELOPMENT.md): Quint or TLA+ for the lock rules, Alloy for the lock's
   structure and S16, Tamarin for proof of possession and attestation, Kani for small pure

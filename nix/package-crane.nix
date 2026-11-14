@@ -6,6 +6,7 @@
   lib,
   callPackage,
   craneLib,
+  rustc,
   # See nix/package-common.nix.
   withTpm2 ? null,
 }:
@@ -77,6 +78,32 @@ craneLib.buildPackage (
         }
       );
       minimal = craneLib.buildPackage (minimal // { cargoArtifacts = craneLib.buildDepsOnly minimal; });
+      # Line and region coverage of the whole test run, the token suites included: the tests
+      # spawn instrumented binaries, so what a CLI test reaches inside cakeys, caprobe and
+      # camigrate counts. Not a check (it rebuilds everything instrumented and passes whatever
+      # the numbers are): `nix build .#coverage`, then read result/summary.txt and, for where
+      # the next test should go, result/missing.txt (docs/DEVELOPMENT.md).
+      coverage = craneLib.cargoLlvmCov (
+        base
+        // {
+          # Nothing to reuse: the instrumented build shares no object with the plain one.
+          cargoArtifacts = null;
+          # The llvm-tools of this rustc's own LLVM: nixpkgs' rustc ships no llvm-tools-preview.
+          LLVM_COV = "${rustc.llvmPackages.llvm}/bin/llvm-cov";
+          LLVM_PROFDATA = "${rustc.llvmPackages.llvm}/bin/llvm-profdata";
+          nativeBuildInputs = base.nativeBuildInputs ++ common.args.nativeCheckInputs;
+          # The token test environment, around the build phase: cargo-llvm-cov tests there.
+          preBuild = common.args.preCheck;
+          cargoLlvmCovExtraArgs = "--no-report -- --test-threads=1";
+          postBuild = ''
+            mkdir -p $out
+            cargo llvm-cov report --release --lcov --output-path $out/lcov.info
+            cargo llvm-cov report --release --summary-only > $out/summary.txt
+            cargo llvm-cov report --release --show-missing-lines > $out/missing.txt
+          ''
+          + common.args.postCheck;
+        }
+      );
     };
   }
 )

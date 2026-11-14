@@ -89,6 +89,8 @@
             camigrate
             softhsm-unwrap-value-len
             ;
+          # What the tests reach (nix/package-crane.nix): a report, not a check.
+          inherit (local.cakeys-crane) coverage;
           # Every check but the fuzz smoke run, whose build cannot reuse crane's dependencies: the
           # gate while working (`nix build .#checks-crane-only`); `nix flake check` adds the fuzz run.
           checks-crane-only = pkgs.linkFarm "checks-crane-only" (

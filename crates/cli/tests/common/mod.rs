@@ -3,6 +3,7 @@
 //! the cross-reference harness ([`xref`]), CLI output parsing and an independent DER oracle.
 #![allow(dead_code, reason = "each test binary uses a subset")]
 
+pub mod surface;
 pub mod xref;
 
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
