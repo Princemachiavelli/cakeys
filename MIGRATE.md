@@ -240,31 +240,31 @@ trusted = false                 # marked CKA_TRUSTED on the source (phase 3b)
 mechanisms = ["CKM_AES_KEY_WRAP_KWP", "CKM_RSA_PKCS_OAEP"]   # the target's, for offline planning
 ```
 
-The export bundle (`camigrate export`, D5), one per object:
+The export bundle (`camigrate export`, D5), one per export (a source and a target):
 
 ```toml
 format = "cakeys-export"
 version = 1
-object = "signing"
-method = "rsa-oaep-sha1+aes-kwp"
-exposure = "sealed"
-commitmentLabel = "key-management/v1"   # secret keys, as in the lock
-publicKey = "<base64 SPKI DER>"         # private keys: the public half the target creates; its hash is ids.rfc7093m4 (added in phase 3)
-[type]                                  # as in the lock
-class = "CKO_PRIVATE_KEY"
-keyType = "CKK_EC"
-curve = "secp256r1"
-[ids]                                   # as in the source's lock; import must reproduce them
-rfc7093m4 = "sha256-..."
+kek = "..."                             # the AES KEK under RSA-OAEP, shared by the composed keys; absent if none
 [source]                                # provenance, as in the source realisation
 token = "softhsm"
 provider = "softhsm"
 [transport]                             # the key the material is wrapped to
 object = "import-kek"
 rfc7093m4 = "sha256-..."
-[wrapped]                               # base64; `value` instead for `public`
-kek = "..."                             # the AES KEK under RSA-OAEP
-key = "..."                             # the key under the KEK (RFC 5649)
+[[keys]]                                # one per key, each object once
+object = "signing"
+method = "rsa-oaep-sha1+aes-kwp"
+exposure = "sealed"
+commitmentLabel = "key-management/v1"   # secret keys, as in the lock
+publicKey = "<base64 SPKI DER>"         # private keys: the public half the target creates; its hash is ids.rfc7093m4
+wrapped = "..."                         # base64: the key under the KEK (RFC 5649), or under RSA-OAEP directly
+[keys.type]                             # as in the lock
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+[keys.ids]                              # as in the source's lock; import must reproduce them
+rfc7093m4 = "sha256-..."
 ```
 
 The lock's target realisation (D7):
