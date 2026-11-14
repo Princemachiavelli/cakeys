@@ -439,22 +439,7 @@ fn create(
     };
     let loc = locator_attrs(&dst.on_token.locator)?;
     if let Some(spki) = e.public_spki().map_err(KmError::Validation)?.filter(|_| ready.public_half.is_none()) {
-        let mut t = vec![Attribute::Token(true), Attribute::Class(ObjectClass::PUBLIC_KEY)];
-        t.extend(loc.iter().cloned());
-        t.extend(public_key(dst, &spki)?);
-        t.extend(to.policy_template(&dst.spec.public_attributes)?);
-        let declared = |n| dst.spec.attributes.contains_key(n) || dst.spec.public_attributes.contains_key(n);
-        if !declared("CKA_VERIFY") {
-            t.push(Attribute::Verify(true));
-        }
-        if !declared("CKA_PRIVATE") {
-            t.push(Attribute::Private(false));
-        }
-        made.push(
-            session
-                .create_object(&t)
-                .map_err(|e| to.unsupported(format!("{dst}: the public half: C_CreateObject: {e}")))?,
-        );
+        made.push(create_public_half(dst, to, &spki)?);
     }
     let refusals = unwrap_refusals(to);
     let declared = dst.spec.attributes.iter().filter(|(n, _)| !refusals.contains(&n.as_str()));
@@ -503,6 +488,30 @@ fn create(
     }
 }
 
+/// A private key's public half under `dst`'s locator, from its canonical SPKI, as `generate`
+/// makes it: the spec's public attributes, `CKA_VERIFY` and public unless declared otherwise.
+///
+/// # Errors
+///
+/// `Unsupported` when the module will not create it.
+pub(crate) fn create_public_half(dst: &Target, to: &Token, spki: &[u8]) -> Result<ObjectHandle> {
+    let mut t = vec![Attribute::Token(true), Attribute::Class(ObjectClass::PUBLIC_KEY)];
+    t.extend(locator_attrs(&dst.on_token.locator)?);
+    t.extend(public_key(dst, spki)?);
+    t.extend(to.policy_template(&dst.spec.public_attributes)?);
+    let declared = |n| dst.spec.attributes.contains_key(n) || dst.spec.public_attributes.contains_key(n);
+    if !declared("CKA_VERIFY") {
+        t.push(Attribute::Verify(true));
+    }
+    if !declared("CKA_PRIVATE") {
+        t.push(Attribute::Private(false));
+    }
+    let create = || {
+        to.raw().create_object(&t).map_err(|e| to.unsupported(format!("{dst}: the public half: C_CreateObject: {e}")))
+    };
+    if to.provider.manages_as_so() { to.as_so("creating the public half", create) } else { create() }
+}
+
 /// RSA-OAEP with MGF1 of the same hash and an empty label: what the planner names.
 fn oaep(hash: OaepHash) -> Mechanism<'static> {
     Mechanism::RsaPkcsOaep(oaep_params(hash))
@@ -519,7 +528,7 @@ fn oaep_params(hash: OaepHash) -> PkcsOaepParams<'static> {
 /// The RFC 5649 key wrap a token offers, under the name it uses (MIGRATE.md spike: one format,
 /// two mechanism IDs): `CKM_AES_KEY_WRAP_PAD`, or `CKM_AES_KEY_WRAP_KWP` where this build can name
 /// it (the `kwp` feature, with the Nix build's patched cryptoki).
-fn rfc5649(tok: &Token) -> Option<Mechanism<'static>> {
+pub(crate) fn rfc5649(tok: &Token) -> Option<Mechanism<'static>> {
     if tok.has(MechanismType::AES_KEY_WRAP_PAD) {
         return Some(Mechanism::AesKeyWrapPad);
     }

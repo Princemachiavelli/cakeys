@@ -998,3 +998,78 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
     let reasons = p["plans"][0]["reasons"].to_string();
     assert!(p["plans"][0]["ready"] == false && reasons.contains("trusted-wrap = false"), "{p}");
 }
+
+/// The dry-run property for the `host` rows (MIGRATE.md D2, phase 4): with
+/// `--allow-host-plaintext`, every move the plan sends through the host (`host-pkcs8`,
+/// `host-raw`: a target that cannot unwrap the key, like `SoftHSM` for secret keys or p11-kit
+/// without AES key wrap) moves, records its `origin` with the `host` exposure, and `cakeys
+/// verify` accepts the key on the target.
+#[test]
+#[expect(clippy::format_push_string, reason = "the fixture TOML bodies are appended as += format!(...)")]
+fn host_moves_do_what_the_plan_says() {
+    let Some(e) = env("host-moves") else { return };
+    let generates =
+        |r: &Ref, k: &Key| matches!(r.plant, Plant::Create) && !(k.name == "k-ed25519" && r.name == "p11kit");
+    let same_token = |a: &Ref, b: &Ref| a.module == b.module && a.token_label == b.token_label;
+    let creates = |d: &Ref| d.plant != Plant::Ptool;
+    let pairs: Vec<(&Key, &Ref, &Ref)> = KEYS
+        .iter()
+        .flat_map(|k| e.refs.iter().map(move |s| (k, s)))
+        .filter(|(k, s)| generates(s, k))
+        .flat_map(|(k, s)| e.refs.iter().filter(move |d| !same_token(s, d) && creates(d)).map(move |d| (k, s, d)))
+        .collect();
+    let object = |k: &Key, s: &Ref| format!("h{}-{}", k.name, s.name);
+    let target_label = |k: &Key, s: &Ref, d: &Ref| format!("hm-{}-{}-{}", k.name, s.name, d.name);
+    let target_spec = |k: &Key, s: &Ref, d: &Ref| format!("h{}-{}-{}", k.name, s.name, d.name);
+    let mut body = String::new();
+    for k in &KEYS {
+        for s in e.refs.iter().filter(|s| generates(s, k)) {
+            let o = object(k, s);
+            body += &format!("[objects.{o}]\n{}\ncreateOn = \"{}\"\n\n", k.ty, s.name);
+            body += &Env::spec(&format!("{o}-src"), &o, k.attributes, &[s], &format!("hm-{o}"), ", autoCreate = true");
+        }
+    }
+    for (k, s, d) in &pairs {
+        body += &Env::spec(&target_spec(k, s, d), &object(k, s), k.attributes, &[d], &target_label(k, s, d), "");
+    }
+    e.config(&body);
+    let config = e.dir.join("keys.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, text.replace("[tokens.p11kit]\n", "[tokens.p11kit]\nprovider = \"softhsm\"\n")).unwrap();
+    for k in &KEYS {
+        for s in e.refs.iter().filter(|s| generates(s, k)) {
+            let spec = format!("{}-src", object(k, s));
+            let o = e.cakeys(s, &["realise", &spec, "--token", s.name]);
+            assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
+        }
+    }
+    let lock_path = e.dir.join("keys.lock");
+    let mut rows = Vec::new();
+    for (k, s, d) in &pairs {
+        let (spec, o) = (target_spec(k, s, d), object(k, s));
+        let args = ["migrate", o.as_str(), "--from", s.name, "--to", d.name, "--spec", &spec, "--allow-host-plaintext"];
+        let out = e.km(s, &[&args[..], &["--dry-run", "--json"]].concat());
+        let plan: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let method = plan["plans"][0]["method"].as_str().unwrap_or("-").to_owned();
+        if !method.starts_with("host-") || plan["plans"][0]["ready"].as_bool() != Some(true) {
+            continue;
+        }
+        let out = e.km(s, &args);
+        let row = format!("{spec}: {method}, move exit {}", code(&out));
+        assert_eq!(code(&out), 0, "{row}: {}", stderr(&out));
+        let lock: toml::Value = toml::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
+        let origin = &lock["realisations"][spec.as_str()][d.name]["provenance"]["origin"];
+        assert_eq!(
+            (origin["method"].as_str(), origin["exposure"].as_str()),
+            (Some(method.as_str()), Some("host")),
+            "{row}"
+        );
+        let v = e.cakeys(d, &["verify", &spec, "--token", d.name]);
+        assert_eq!(code(&v), 0, "{row}: cakeys verify: {}", stderr(&v));
+        rows.push(row);
+    }
+    eprintln!("host moves:\n  {}", rows.join("\n  "));
+    if e.refs.iter().any(|r| r.name == "softhsm") && e.refs.iter().any(|r| r.name == "kryoptic") {
+        assert!(rows.iter().any(|r| r.contains("host-raw")), "no secret key moved through the host into SoftHSM");
+    }
+}

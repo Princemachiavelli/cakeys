@@ -22,6 +22,7 @@ use std::sync::Arc;
 use zeroize::Zeroizing;
 
 mod generate;
+mod host;
 mod identity;
 mod policy;
 mod possession;

@@ -4,6 +4,7 @@
 //! extra provider crates: `camigrate::main(&camigrate::default_registry().with(MyProvider))`.
 
 pub mod bundle;
+mod host;
 mod plan;
 mod public;
 mod sealed;
@@ -434,12 +435,17 @@ impl Run<'_> {
     ) -> anyhow::Result<()> {
         let moves = self.plan(object.as_slice(), from, &Dest::Token(to), how, true, notes)?;
         moves.ready()?;
-        let built = |m: &Method| matches!(m, Method::Public | Method::RsaOaepAesKwp(_) | Method::RsaOaep(_));
+        let built = |m: &Method| {
+            matches!(
+                m,
+                Method::Public | Method::RsaOaepAesKwp(_) | Method::RsaOaep(_) | Method::HostPkcs8 | Method::HostRaw
+            )
+        };
         if let Some(p) = moves.plans.iter().find(|p| !p.method.as_ref().is_some_and(built)) {
             let method = p.method.as_ref().map_or_else(|| "-".to_owned(), Method::name);
             return Err(KmError::Unsupported(format!(
-                "{}: moving by {method} is a later MIGRATE.md phase; public objects and sealed keys move \
-                 (pass --dry-run for the plan)",
+                "{}: moving by {method} is a later MIGRATE.md phase; public objects, sealed keys and the host path into PKCS#11 tokens \
+                 move (pass --dry-run for the plan)",
                 p.object
             ))
             .into());
@@ -460,6 +466,9 @@ impl Run<'_> {
                     let item = sealed::Item { src, method: method.clone(), exposure };
                     let bundle = sealed::export(&[item], &source, lock, &key, notes)?;
                     sealed::import(&bundle, &bundle.keys[0], &dst, &target, &tr, lock, notes)
+                }
+                Some(method @ (Method::HostPkcs8 | Method::HostRaw)) => {
+                    host::import(&src, &source, &dst, &target, lock, method, notes)
                 }
                 _ => public::import(&src, &source, &dst, &target, lock, notes),
             });
@@ -511,6 +520,10 @@ impl Run<'_> {
             (Dest::Transport(_), Some((t, shown))) => tokens::Dest::Transport(t, shown),
             (Dest::Transport(_), None) => unreachable!("parsed above"),
         };
+        let target_token = match dest {
+            tokens::Dest::Token(name) => Some(name),
+            _ => None,
+        };
         let transport_key = match dest {
             tokens::Dest::Token(name) => transport_choice(cfg, name, how),
             _ => how.transport_key.as_deref(),
@@ -539,6 +552,14 @@ impl Run<'_> {
             if let Some(spec) = no_export(cfg, &p.object, from) {
                 p.ready = false;
                 p.reasons.insert(0, format!("noExport in spec '{spec}': it never leaves '{from}'"));
+            }
+            // The target's realise must prove possession of a private key the way its spec says.
+            if let (true, Some(to)) = (p.ready, target_token)
+                && let Ok(dst) = target_target(cfg, &p.object, to, None)
+                && let Some(why) = unprovable(&dst, &moves.target_mechanisms)
+            {
+                p.ready = false;
+                p.reasons.push(why);
             }
         }
         let (to_name, source_from, target_from, plans) =
@@ -616,6 +637,30 @@ fn target_target<'a>(
 }
 
 /// The target `token`'s transport key, as a target: the spec `tokens::transport_spec` finds.
+/// Why the target could not prove possession of a private key moved to `dst` the way its spec's
+/// binding says (`cakeys_pkcs11` would refuse after the key was created): `None` when it can,
+/// or the object is no private key. The mechanisms each proof uses, any of a group.
+fn unprovable(dst: &Target, mechanisms: &std::collections::BTreeSet<String>) -> Option<String> {
+    use cakeys_core::config::Binding;
+    use cakeys_core::types::KeyType as Kt;
+    let groups: &[&[&str]] = match (cakeys_core::plan::binding(dst)?, dst.object.key_type?) {
+        (Binding::PopSign | Binding::PopSignPin, Kt::Ec) => {
+            &[&["CKM_ECDSA", "CKM_ECDSA_SHA256", "CKM_ECDSA_SHA384", "CKM_ECDSA_SHA512"]]
+        }
+        (Binding::PopSign | Binding::PopSignPin, Kt::EcEdwards) => &[&["CKM_EDDSA"]],
+        (Binding::PopSign | Binding::PopSignPin, Kt::Rsa) => &[&["CKM_SHA256_RSA_PKCS"]],
+        (Binding::PopEcdh, _) => &[&["CKM_ECDH1_DERIVE"]],
+        (Binding::PopDecrypt, _) => &[&["CKM_RSA_PKCS_OAEP"]],
+        (Binding::PopUnwrap, _) => &[&["CKM_RSA_PKCS_OAEP"], &["CKM_SHA256_HMAC"]],
+        _ => return None,
+    };
+    let lacks = groups.iter().find(|g| !g.iter().any(|m| mechanisms.contains(*m)))?;
+    Some(format!(
+        "{dst} could not prove possession of the key once there: it lacks {} (or name another binding)",
+        lacks.join(" or ")
+    ))
+}
+
 /// The spec that keeps `object` on `from` (`noExport`), if one does.
 fn no_export<'a>(cfg: &'a Config, object: &str, from: &str) -> Option<&'a str> {
     cfg.specs

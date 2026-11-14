@@ -7,6 +7,7 @@ pub mod error;
 pub mod hex;
 pub mod id;
 pub mod migrate;
+pub mod plaintext;
 pub mod plan;
 pub mod pop;
 pub mod reconcile;

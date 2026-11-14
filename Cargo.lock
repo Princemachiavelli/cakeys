@@ -264,12 +264,15 @@ dependencies = [
  "thiserror",
  "toml",
  "x509-cert",
+ "zeroize",
 ]
 
 [[package]]
 name = "cakeys-pkcs11"
 version = "0.1.0"
 dependencies = [
+ "aes",
+ "aes-kw",
  "cakeys-core",
  "cakeys-profile",
  "cryptoki",

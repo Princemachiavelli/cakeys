@@ -305,6 +305,8 @@ pub struct Moves {
     pub source_from: &'static str,
     pub target_from: &'static str,
     pub plans: Vec<Plan>,
+    /// The target's usable mechanisms (none for a file), to check what its realise will need.
+    pub target_mechanisms: BTreeSet<String>,
 }
 
 impl Moves {
@@ -392,7 +394,8 @@ pub fn plan_moves(
             p.reasons.push(why.clone());
         }
     }
-    Ok(Moves { to: to_name, source_from, target_from, plans })
+    let target_mechanisms = target.as_ref().map(|s| s.mechanisms.clone()).unwrap_or_default();
+    Ok(Moves { to: to_name, source_from, target_from, plans, target_mechanisms })
 }
 
 /// A token's capabilities: from the open token, else from what the lock recorded there. A
