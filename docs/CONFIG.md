@@ -147,6 +147,10 @@ object = "signing"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
 # Private keys only: the policy of the matching public key object.
 publicAttributes = { CKA_VERIFY = true }
+# The object never leaves the tokens this spec realises it on: camigrate refuses to export or
+# migrate it from them (15), and `export` without names leaves it out quietly (an extractable
+# key otherwise moves; a non-extractable one is left out with a warning). Not in the spec digest.
+# noExport = true
 # Where it lives on `softhsm`: a locator (must match exactly one object, or 12), and
 # `autoCreate` to let first use (`realise`, `check`) generate it when the locator is empty (never
 # over an occupied one). `cakeys create` generates it explicitly either way.

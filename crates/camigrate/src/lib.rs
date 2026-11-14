@@ -277,7 +277,10 @@ impl Run<'_> {
         let mut items = Vec::new();
         for p in &moves.plans {
             if !p.ready {
-                notes.warn(format_args!("{}: left out of the bundle: {}", p.object, p.reasons.join("; ")));
+                // Meant never to leave (noExport): left out quietly.
+                if no_export(cfg, &p.object, from).is_none() {
+                    notes.warn(format_args!("{}: left out of the bundle: {}", p.object, p.reasons.join("; ")));
+                }
                 continue;
             }
             match &p.method {
@@ -503,7 +506,13 @@ impl Run<'_> {
             _ => how.transport_key.as_deref(),
         };
         let req = tokens::Request { objects, from, dest, host_plaintext: how.allow_host_plaintext, transport_key };
-        let moves = tokens::plan_moves(&self.lock, registry, &req, &open, notes)?;
+        let mut moves = tokens::plan_moves(&self.lock, registry, &req, &open, notes)?;
+        for p in &mut moves.plans {
+            if let Some(spec) = no_export(cfg, &p.object, from) {
+                p.ready = false;
+                p.reasons.insert(0, format!("noExport in spec '{spec}': it never leaves '{from}'"));
+            }
+        }
         let (to_name, source_from, target_from, plans) =
             (&moves.to, moves.source_from, moves.target_from, &moves.plans);
         if !show {
@@ -579,6 +588,14 @@ fn target_target<'a>(
 }
 
 /// The target `token`'s transport key, as a target: the spec `tokens::transport_spec` finds.
+/// The spec that keeps `object` on `from` (`noExport`), if one does.
+fn no_export<'a>(cfg: &'a Config, object: &str, from: &str) -> Option<&'a str> {
+    cfg.specs
+        .iter()
+        .find(|(_, s)| s.no_export && s.object == object && s.tokens.contains_key(from))
+        .map(|(name, _)| name.as_str())
+}
+
 /// The transport key to seal to on `to`: `--transport-key`, else the token's `transportWith`.
 fn transport_choice<'a>(cfg: &'a Config, to: &str, how: &'a MoveArgs) -> Option<&'a str> {
     how.transport_key.as_deref().or_else(|| cfg.tokens.get(to).and_then(|t| t.transport_with.as_deref()))

@@ -364,6 +364,7 @@ createOn = "<token>"            # where the object is born when its specs name s
 object = "<object>"
 attributes = { CKA_SIGN = true, ... }   # settable booleans the class may carry (PKCS#11 3.2 §4), or CKA_ALLOWED_MECHANISMS = ["CKM_..."] on key objects; a wrong name or class is exit 17
 publicAttributes = { CKA_VERIFY = true, ... }   # private keys only: policy of the public key object; checked on it, in the digest only when present
+noExport = true                                 # camigrate never exports or migrates the object from these tokens (MIGRATE.md); not in the digest
 tokens.<token> = { locator = { CKA_LABEL = "...", CKA_ID = "hex" }, autoCreate = bool, publicOnly = bool, binding = "pop-ecdh" | "pop-decrypt" | "pop-unwrap" | "token-asserted", attestation = bool, identity.allow = [...] }
 ```
 

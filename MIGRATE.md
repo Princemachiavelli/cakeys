@@ -182,7 +182,8 @@ Keys move sealed between PKCS#11 modules: `camigrate migrate` (both tokens reach
   composed method's KEK shared by them. Named objects are all or nothing: one that cannot move
   fails the export before anything is wrapped. Without names it exports every key on the token
   that can move, and warns about each that cannot (a non-extractable key) and leaves it out;
-  public objects are left out with a note. `--out` is written through a temporary file, whole
+  a spec's `noExport = true` keeps its object on its tokens (named or migrated: 15) and silences
+  that warning; public objects are left out with a note. `--out` is written through a temporary file, whole
   or not at all. It is refused inside a Nix build (D8).
 - **Import** takes each key of the bundle on its own, under the spec that realises its object on
   the target (`--spec`, repeatable, only when an object has several): a key that fails is

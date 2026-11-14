@@ -665,8 +665,9 @@ fn bundles_are_checked_against_the_lock() {
 }
 
 /// The keys the bundle tests move: P-256 `ek1`, `ek2` and AES `sk1`, `sk2`, each born on `SoftHSM`
-/// (`createOn`) with a spec on kryoptic, whose transport key is realised; and `nx`, a P-256 key
-/// made non-extractable there, which never moves.
+/// (`createOn`) with a spec on kryoptic, whose transport key is realised; `nx`, a P-256 key made
+/// non-extractable there, which cannot move; and `nox`, an extractable one its spec keeps there
+/// (`noExport`).
 fn bundle_keys(e: &Env, soft: &Ref, kry: &Ref) {
     let key = |o: &str, ty: &str| {
         format!("[objects.{o}]\n{ty}\ncreateOn = \"softhsm\"\n\n")
@@ -698,10 +699,20 @@ fn bundle_keys(e: &Env, soft: &Ref, kry: &Ref) {
             "xb-nx",
             ", autoCreate = true",
         );
-    let body = transport_key(kry) + &key("ek1", ec) + &key("ek2", ec) + &key("sk1", aes) + &key("sk2", aes) + &fixed;
+    let kept = "[objects.nox]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n".to_owned()
+        + &Env::spec(
+            "nox-soft",
+            "nox",
+            "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\nnoExport = true\n",
+            &[soft],
+            "xb-nox",
+            ", autoCreate = true",
+        );
+    let body =
+        transport_key(kry) + &key("ek1", ec) + &key("ek2", ec) + &key("sk1", aes) + &key("sk2", aes) + &fixed + &kept;
     names_transport(e, &body, |r| r.name == "kryoptic");
     assert_eq!(code(&e.cakeys(kry, &["realise", "tk-kryoptic", "--token", "kryoptic"])), 0);
-    for spec in ["ek1-soft", "ek2-soft", "sk1-soft", "sk2-soft", "nx-soft"] {
+    for spec in ["ek1-soft", "ek2-soft", "sk1-soft", "sk2-soft", "nx-soft", "nox-soft"] {
         assert_eq!(code(&e.cakeys(soft, &["realise", spec, "--token", "softhsm"])), 0, "{spec}");
     }
 }
@@ -764,6 +775,7 @@ fn bundles_carry_every_key_of_an_export() {
     let r = e.km(soft, &["export", "--token", "softhsm", "--target", "kryoptic", "--out", out.to_str().unwrap()]);
     assert_eq!(code(&r), 0, "{}", stderr(&r));
     assert!(stderr(&r).contains("nx: left out of the bundle: not extractable"), "{}", stderr(&r));
+    assert!(!stderr(&r).contains("nox"), "noExport is left out quietly: {}", stderr(&r));
     let objects: Vec<String> =
         read(&out)["keys"].as_array().unwrap().iter().map(|k| k["object"].as_str().unwrap().to_owned()).collect();
     assert_eq!(objects, ["ek1", "ek2", "sk1", "sk2"]);
@@ -775,6 +787,10 @@ fn bundles_carry_every_key_of_an_export() {
     );
     assert_eq!(code(&r), 15, "{}", stderr(&r));
     assert!(!out.exists(), "a failed export wrote a bundle");
+    // noExport, named: refused, with the spec that keeps it.
+    let r = e.km(soft, &["export", "nox", "--token", "softhsm", "--target", "kryoptic", "--dry-run"]);
+    assert_eq!(code(&r), 15, "{}", stdout(&r));
+    assert!(stdout(&r).contains("noExport in spec 'nox-soft'"), "{}", stdout(&r));
     let r = e.km(
         soft,
         &["export", "ek2", "nosuch", "--token", "softhsm", "--target", "kryoptic", "--out", out.to_str().unwrap()],

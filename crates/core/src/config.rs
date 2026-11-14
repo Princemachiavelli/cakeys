@@ -212,6 +212,11 @@ pub struct SpecCfg {
     /// when generating, checked on the public object. In the spec digest only when present.
     #[serde(default, rename = "publicAttributes")]
     pub public_attributes: BTreeMap<String, AttrValue>,
+    /// The object never leaves the tokens this spec realises it on (MIGRATE.md): `camigrate`
+    /// refuses to export or migrate it from them (15), and an export without names leaves it
+    /// out without the warning a key that cannot move gets. Not in the spec digest.
+    #[serde(default, rename = "noExport")]
+    pub no_export: bool,
     pub tokens: BTreeMap<String, SpecTokenCfg>,
 }
 

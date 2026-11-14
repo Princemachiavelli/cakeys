@@ -525,6 +525,7 @@ mod tests {
             object: "o".into(),
             attributes: pairs.iter().map(|(k, v)| (k.to_string(), AttrValue::Bool(*v))).collect::<BTreeMap<_, _>>(),
             public_attributes: BTreeMap::new(),
+            no_export: false,
             tokens: BTreeMap::new(),
         };
         let a = spec_digest(&obj, &mk(&[("CKA_SIGN", true), ("CKA_SENSITIVE", true)]));
@@ -543,6 +544,7 @@ mod tests {
             .into_iter()
             .collect(),
             public_attributes: BTreeMap::new(),
+            no_export: false,
             tokens: BTreeMap::new(),
         };
         assert_eq!(
@@ -612,6 +614,7 @@ mod tests {
                     object: "x".into(),
                     attributes: attrs.iter().map(|(k, v)| (k.to_string(), AttrValue::Bool(*v))).collect(),
                     public_attributes: BTreeMap::new(),
+                    no_export: false,
                     tokens: BTreeMap::new(),
                 };
                 spec_digest(&o, &s)
@@ -623,6 +626,7 @@ mod tests {
             object: "x".into(),
             attributes: BTreeMap::new(),
             public_attributes: BTreeMap::new(),
+            no_export: false,
             tokens: BTreeMap::new(),
         };
         assert_eq!(spec_digest(&cert, &none), "sha256-1RYKnSVKlK3XckaD3EScGIoGyQgH4NyCvkrCm7Y6+Cs=");
