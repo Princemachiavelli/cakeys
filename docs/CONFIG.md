@@ -89,10 +89,11 @@ akHandle = "0x81000016"
 [tokens.yubikey]
 tokenLabel = "YubiKey PIV #39189318"
 pinFile = "/run/secrets/piv-pin"
-# The admin (SO) credential, for modules that create keys only as SO (ykcs11: the PIV
-# management key in hex, or the PIN when the management key is PIN-protected). Read only to
-# create or delete, and only where the provider needs it; refused elsewhere (17). The hex
-# management key logs in without a PIN verification, so it spends no PIN retry; the PIN does.
+# The admin (SO) credential, read only by a step that needs the SO: create or delete on a module
+# that does those only as SO (ykcs11: the PIV management key in hex, or the PIN when the
+# management key is PIN-protected), and `camigrate transport --trusted` on any module (its SO
+# PIN; MIGRATE.md D2). The hex management key logs in without a PIN verification, so it spends
+# no PIN retry; the PIN does.
 mgmKeyFile = "/run/secrets/piv-mgm"
 # A device like this holds real keys beside expendable ones, so `scratch` cannot mark it. For a
 # module that creates only as SO into slots named by CKA_ID (ykcs11), `scratchId` names the one

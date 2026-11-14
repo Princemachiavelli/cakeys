@@ -188,6 +188,7 @@ pub struct VendorMethod {
 
 /// One token's capabilities for moving keys, as its provider describes them.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(clippy::struct_excessive_bools, reason = "independent capability claims of a module profile")]
 pub struct Side {
     pub token: String,
     pub provider: String,
@@ -200,6 +201,9 @@ pub struct Side {
     /// Whether a secret key it unwraps reports its length (`CKA_VALUE_LEN`), which the import's
     /// type check reads: `SoftHSM` leaves it 0.
     pub secret_unwraps: bool,
+    /// Whether a `CKA_WRAP_WITH_TRUSTED` key can leave toward a transport key the SO marked
+    /// `CKA_TRUSTED` (`enforced`).
+    pub trusted_wrap: bool,
     /// The OAEP hashes the module implements for wrapping, not only lists.
     pub oaep: Vec<OaepHash>,
     /// Public objects it accepts from their value or DER.
@@ -222,6 +226,7 @@ impl Side {
             exports: true,
             unwraps: true,
             secret_unwraps: true,
+            trusted_wrap: true,
             oaep: vec![OaepHash::Sha1, OaepHash::Sha256],
             public_import: [ObjectClass::Certificate, ObjectClass::PublicKey, ObjectClass::Data]
                 .into_iter()

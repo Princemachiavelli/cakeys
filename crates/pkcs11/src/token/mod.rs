@@ -181,13 +181,6 @@ impl Token {
         let module = module_info(ctx, module)?;
         let provider = registry.select(cfg.provider.as_deref(), &module)?;
         provider.check_options(name, &cfg.options)?;
-        if has_admin(cfg) && !provider.manages_as_so() {
-            return Err(KmError::Validation(format!(
-                "token '{name}': mgmKeyFile/mgmKeyEnv is only for modules that create keys as \
-                 Security Officer (ykcs11); provider {} creates them as the user",
-                provider.name()
-            )));
-        }
         let FoundSlot { slot, token, pins, write_protected } = find_slot(ctx, &cfg.token_label, &module.path)?;
         // The capability profiles (docs/PROVIDERS.md phase 2): the module profile follows the
         // provider (D9), the binding layer is always in the stack, a forwarder the module
@@ -350,6 +343,56 @@ impl Token {
         self.session.find_objects(&locator_attrs(loc)?).map_err(ck("C_FindObjects"))
     }
 
+    /// The objects the SO marked `CKA_TRUSTED` on this token (MIGRATE.md D2, `enforced`): the
+    /// public key object holding `spki` (the transport key's trusted copy), and how many others
+    /// there are — an `enforced` move is only as narrow as the token's whole trusted set.
+    ///
+    /// # Errors
+    ///
+    /// `Unavailable` when `C_FindObjects` fails.
+    pub fn trusted(&self, spki: &[u8]) -> Result<(Option<ObjectHandle>, usize)> {
+        let found = self.session.find_objects(&[Attribute::Trusted(true)]).map_err(ck("C_FindObjects"))?;
+        let mut copy = None;
+        let mut others = 0;
+        for h in found {
+            if copy.is_none() && self.held_spki(h).as_deref() == Some(spki) {
+                copy = Some(h);
+            } else {
+                others += 1;
+            }
+        }
+        Ok((copy, others))
+    }
+
+    /// Create the trusted copy of a transport key on this token (`camigrate transport
+    /// --trusted`): an RSA public token object of `modulus` and `exponent`, labelled `label`,
+    /// that may wrap, marked `CKA_TRUSTED` — which only the SO can set, and only at creation.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`Self::as_so`] refuses; `Unsupported` when the module will not create it
+    /// trusted.
+    pub fn create_trusted_copy(&self, modulus: Vec<u8>, exponent: Vec<u8>, label: &str) -> Result<ObjectHandle> {
+        let template = [
+            Attribute::Class(ObjectClass::PUBLIC_KEY),
+            Attribute::KeyType(KeyType::RSA),
+            Attribute::Token(true),
+            Attribute::Private(false),
+            Attribute::Modulus(modulus),
+            Attribute::PublicExponent(exponent),
+            Attribute::Wrap(true),
+            Attribute::Encrypt(false),
+            Attribute::Verify(false),
+            Attribute::Trusted(true),
+            Attribute::Label(label.as_bytes().to_vec()),
+        ];
+        self.as_so("marking the transport key trusted", || {
+            self.session.create_object(&template).map_err(|e| {
+                self.unsupported(format!("token '{}' will not create a CKA_TRUSTED RSA public key: {e}", self.name))
+            })
+        })
+    }
+
     /// If-None-Match before importing `object` under `loc`, per class: PKCS#11's convention puts a
     /// key, its public key and its certificate under one `CKA_ID` (and often one `CKA_LABEL`), so
     /// only what the creation would collide with counts — an object of its class, and for a
@@ -460,8 +503,8 @@ impl Token {
             }
             Err(e) => Err(KmError::Unavailable(format!(
                 "C_Login (SO) with mgmKeyFile/mgmKeyEnv: {e}; it must hold the module's admin \
-                 credential (ykcs11: the PIV management key in hex, or the PIN on a device whose \
-                 management key is PIN-protected)"
+                 credential (the SO PIN; ykcs11: the PIV management key in hex, or the PIN on a \
+                 device whose management key is PIN-protected)"
             ))),
         };
         drop(so);

@@ -18,7 +18,6 @@ pub struct Transport {
     pub rfc7093m4: String,
     /// Base64 of the canonical SPKI DER.
     pub spki: String,
-    pub trusted: bool,
     pub mechanisms: Vec<String>,
 }
 
@@ -42,7 +41,6 @@ impl Transport {
             object: object.into(),
             rfc7093m4: cakeys_core::id::sri(&spki),
             spki: base64::engine::general_purpose::STANDARD.encode(&spki),
-            trusted: false,
             mechanisms: mechanisms.to_vec(),
         })
     }

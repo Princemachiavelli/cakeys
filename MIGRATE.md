@@ -219,6 +219,49 @@ Keys move sealed between PKCS#11 modules: `camigrate migrate` (both tokens reach
   15 with nothing changed. The bundle round trip, the refusals above, `import --dry-run`, and a
   transport file the lock does not pin. The bundle parser has unit, property and fuzz tests.
 
+### Phase 3b results (2026-11-14, WORKPLAN stage 4)
+
+A `CKA_WRAP_WITH_TRUSTED` key moves `enforced`: wrapped only under the target's transport key,
+which the source's SO trusted, so not even the source's user PIN can wrap it anywhere else.
+
+- **What one-off test programs found** (a PyKCS11 script and a Rust program on the patched
+  cryptoki, run against scratch SoftHSM and kryoptic tokens and not kept; their results are
+  the profiles' `[manual."trusted-wrap"]`): both refuse a
+  wrap-with-trusted key under an untrusted key. `CKA_TRUSTED` is settable only at creation and only
+  by the SO. SoftHSM lets the SO create a trusted RSA public key and offers
+  `CKM_RSA_AES_KEY_WRAP` (`0x1054`: RSA-OAEP of a fresh AES key, then RFC 5649 under it), whose
+  output is the composed method's, so kryoptic unwraps it in two steps to the same key [run].
+  kryoptic cannot make an RSA public key trusted, so a trusted key-encryption key there could
+  never leave toward a transport key: a new `[migration]` claim, `trusted-wrap = false`, makes
+  `enforced` impossible with kryoptic as the source.
+- **One trusted object per transport key.** `camigrate transport <spec> --token <target>
+  --trusted <source>` has the source's SO (`mgmKeyFile`/`mgmKeyEnv`, now allowed on any module
+  and read only by such steps) create a `CKA_TRUSTED` copy of the transport key from the public
+  key the lock records, never from a file. It is idempotent, refused inside a Nix build (D8), and
+  warns about any other trusted object on the source: `enforced` is only as narrow as the
+  token's trusted set. Each export then needs no SO: `CKM_RSA_AES_KEY_WRAP` under the trusted
+  copy, so the source never trusts a key-encryption key.
+- **cryptoki** names `CKM_RSA_AES_KEY_WRAP` only in its message table: a third patch
+  (nix/patches/cryptoki-rsa-aes-key-wrap.patch) adds the mechanism and its parameters, used with
+  the `kwp` feature like the second. A plain cargo build plans a wrap-with-trusted key only by
+  direct OAEP (small secret keys).
+- **The planner** checks the source: its profile's `trusted-wrap`, a trusted copy of the
+  transport key the lock pins (looked up on the open source, matched by its public key), and
+  `CKM_RSA_AES_KEY_WRAP` for a key OAEP cannot carry alone. Otherwise the plan is blocked with
+  the step that is missing.
+- **The bundle** gains a per-entry `kek`: `CKM_RSA_AES_KEY_WRAP` makes a fresh AES key per wrap,
+  so an enforced key carries its own key-encryption key (the first modulus-length bytes of the
+  mechanism's output) and the bundle's shared `kek` serves only the sealed keys. The method
+  name stays `rsa-oaep-sha1+aes-kwp`: the target unwraps it the same way.
+- **The transport file** loses `trusted`: whether a source trusts a key is a fact about the
+  source, looked up there, never claimed by a file the target writes.
+- **Tests**: `enforced_moves_wrap_only_under_the_trusted_transport_key` (SoftHSM to kryoptic:
+  blocked until trusted, trusted twice idempotently, exported with per-entry KEKs, imported and
+  verified; a kryoptic source impossible), planner unit tests with and without the `kwp`
+  feature, bundle parser rows for the per-entry `kek`, and the admin credential read only by SO
+  steps (`admin_credential_is_read_only_by_security_officer_steps`). The TPM and the YubiKey are
+  untouched: neither exports.
+
 ### Frozen names and formats
 
 Exposure levels (D2): `public`, `enforced`, `sealed`, `host`, `file`; a plan that cannot move an
@@ -240,7 +283,6 @@ provider = "kryoptic"
 object = "import-kek"           # the transport key's object, realised and locked on the target
 rfc7093m4 = "sha256-..."        # its locked identity: SHA-256 of the canonical SPKI below
 spki = "<base64 DER>"           # the public key the source wraps to
-trusted = false                 # marked CKA_TRUSTED on the source (phase 3b)
 mechanisms = ["CKM_AES_KEY_WRAP_KWP", "CKM_RSA_PKCS_OAEP"]   # the target's, for offline planning
 ```
 
@@ -262,6 +304,7 @@ method = "rsa-oaep-sha1+aes-kwp"
 exposure = "sealed"
 commitmentLabel = "key-management/v1"   # secret keys, as in the lock
 publicKey = "<base64 SPKI DER>"         # private keys: the public half the target creates; its hash is ids.rfc7093m4
+# kek = "..."                           # an `enforced` key's own KEK under RSA-OAEP (CKM_RSA_AES_KEY_WRAP's first part)
 wrapped = "..."                         # base64: the key under the KEK (RFC 5649), or under RSA-OAEP directly
 [keys.type]                             # as in the lock
 class = "CKO_PRIVATE_KEY"
@@ -321,8 +364,9 @@ what an attacker with the PIN could do. `CKA_WRAP_WITH_TRUSTED` is the one restr
 enforces (decided 2026-11-12: supported, phase 3b). It needs the SO on the source: the admin
 credential (`mgmKeyFile`, today refused outside ykcs11) becomes allowed on PKCS#11 modules for
 this step, which marks the transport key trusted on the source (`camigrate transport --trusted`).
-How each module scopes `CKA_TRUSTED` to the key that wraps (the transport public key for direct
-OAEP, the per-export KEK for the composed method) is [todo] per module.
+The transport key is the only key the source trusts: `CKM_RSA_AES_KEY_WRAP` does the composed
+method's two wraps under it (phase 3b results; a module without it, or one that cannot trust an
+RSA key, cannot move such a key composed).
 
 **D3. The transport key is an ordinary locked object.** The target holds an RSA key pair
 (`CKA_UNWRAP = true`, non-extractable) declared in keys.toml like any other key, named by the
@@ -441,6 +485,7 @@ for a key that was never moved.
 
 ```console
 $ camigrate transport import-kek --token kryoptic --out kryoptic.transport.toml
+$ camigrate transport import-kek --token kryoptic --trusted softhsm   # softhsm's SO trusts it (enforced)
 $ camigrate export [signing backup-kek ...] --token softhsm --target kryoptic \
     [--transport kryoptic.transport.toml] [--transport-key <spec>] --out softhsm-kryoptic.export.toml \
     [--dry-run] [--allow-host-plaintext]
@@ -459,7 +504,7 @@ disk. `--dry-run` without objects plans every object the source token holds a re
 | 1 | **Done 2026-11-12.** Planner and `--dry-run` (core: capabilities, method choice, reasons); the provider hook for import/export capabilities and vendor methods (D10); the transport file; no material moves. Useful alone: it answers "what could move, and how?" | ≈700 + 500 lines, 4–5 days |
 | 2 | **Done 2026-11-14.** `public`: certificates, public keys, data objects | ≈200 + 200, 1–2 days |
 | 3 | **Done 2026-11-14.** `sealed` between PKCS#11 modules: the `transport` verb, the composed RSA-OAEP + AES-KWP method, the direct OAEP method, bundles, import with identity check and cleanup, `migrate` | ≈800 + 700, 6–8 days |
-| 3b | `enforced`: the admin credential on PKCS#11 modules, `transport --trusted`, `CKA_WRAP_WITH_TRUSTED` keys | ≈300 + 250, 3–4 days |
+| 3b | **Done 2026-11-14.** `enforced`: the admin credential on PKCS#11 modules, `transport --trusted`, `CKA_WRAP_WITH_TRUSTED` keys | ≈300 + 250, 3–4 days |
 | 4 | `host` paths: `--allow-host-plaintext`, zeroized buffers, and tpm2-pkcs11 import through `tpm2_ptool` (a runtime dependency for that provider) | ≈350 + 300, 3–4 days |
 | 4b | `file`: `pkcs8-pbes2` and `pkcs12` export and import, `--passphrase-file` | ≈300 + 250, 3–4 days |
 | 5 | YubiKey import through ykcs11 as SO, identities checked on the host first; the hardware test overwrites scratch slot 0x95 (ask before running) | ≈250 + 200, 2–3 days |

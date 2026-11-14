@@ -188,6 +188,11 @@ pub struct Migration {
     /// type check reads: `SoftHSM` leaves it 0 and refuses it in the template (default: yes).
     #[serde(default, rename = "secret-unwraps")]
     pub secret_unwraps: Option<bool>,
+    /// Whether a `CKA_WRAP_WITH_TRUSTED` key can leave toward a transport key (MIGRATE.md D2,
+    /// `enforced`): the SO can mark an RSA public key `CKA_TRUSTED` at creation, and the module
+    /// wraps under it (kryoptic cannot; default: yes).
+    #[serde(default, rename = "trusted-wrap")]
+    pub trusted_wrap: Option<bool>,
     /// How plaintext private and secret keys get in, if at all.
     #[serde(default, rename = "plaintext-import")]
     pub plaintext_import: Option<PlaintextKind>,

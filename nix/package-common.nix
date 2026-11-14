@@ -22,17 +22,21 @@
   # types can be neither created nor told apart. Minimal local fix until upstream has one
   # (upstream/rust-cryptoki/). Without it, cakeys refuses those key types. It also has no
   # CKM_AES_KEY_WRAP_KWP (RFC 5649 under its PKCS#11 3.0 ID, which kryoptic offers): the second
-  # patch adds it for export and import (MIGRATE.md). The constant is already in cryptoki-sys.
+  # patch adds it for export and import (MIGRATE.md). The third adds CKM_RSA_AES_KEY_WRAP (RSA-OAEP
+  # of a fresh AES key, then RFC 5649 under it), the one wrap of a CKA_WRAP_WITH_TRUSTED key whose
+  # only trusted key is the transport key (MIGRATE.md D2, `enforced`). Both constants and the
+  # parameter struct are already in cryptoki-sys.
   cryptoki = {
     version = "0.12.1";
     patches = [
       ./patches/cryptoki-hmac-key-types.patch
       ./patches/cryptoki-aes-key-wrap-kwp.patch
+      ./patches/cryptoki-rsa-aes-key-wrap.patch
     ];
   };
 
-  # RFC 5649 key wrap under CKM_AES_KEY_WRAP_KWP (kryoptic's name for it): only the patched
-  # cryptoki above can name the mechanism, so camigrate uses it only with this feature.
+  # The mechanisms only the patched cryptoki above can name (CKM_AES_KEY_WRAP_KWP,
+  # CKM_RSA_AES_KEY_WRAP): camigrate uses them only with this feature.
   features = [ "camigrate/kwp" ];
 
   # The derivation attributes both builders take as they are.

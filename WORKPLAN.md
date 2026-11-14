@@ -250,7 +250,7 @@ matrix: the plan's verdict equals the outcome.
       persistent handles and lockout counter unchanged). YubiKey, read-only: ykcs11 flags no
       mechanism for unwrap, and every PIV key reports `CKA_UNWRAP = false`; no slot was
       written.
-- [ ] **Phase 3b** `enforced`: the admin credential, `transport --trusted`,
+- [x] **Phase 3b** `enforced`: the admin credential, `transport --trusted`,
       `CKA_WRAP_WITH_TRUSTED`.
 - [ ] **Phase 4** `host`: `--allow-host-plaintext`, zeroized buffers, `tpm2_ptool` import.
 - [ ] **Phase 4b** `file`: `pkcs8-pbes2` and `pkcs12`, `--passphrase-file`.

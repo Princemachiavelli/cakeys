@@ -1,0 +1,74 @@
+--- a/src/mechanism/mod.rs
++++ b/src/mechanism/mod.rs
+@@ -114,6 +114,11 @@
+     pub const RSA_PKCS_OAEP: MechanismType = MechanismType {
+         val: CKM_RSA_PKCS_OAEP,
+     };
++    /// RSA-OAEP of a fresh AES key, then AES key wrap with padding (RFC 5649) under it
++    /// (PKCS#11 2.40 `CKM_RSA_AES_KEY_WRAP`): one wrap whose only wrapping key is the RSA key.
++    pub const RSA_AES_KEY_WRAP: MechanismType = MechanismType {
++        val: CKM_RSA_AES_KEY_WRAP,
++    };
+     /// Multi-purpose mechanism based on the RSA public-key cryptosystem.  This is so-called "raw"
+     /// RSA, as assumed in X.509.
+     pub const RSA_X_509: MechanismType = MechanismType { val: CKM_RSA_X_509 };
+@@ -956,6 +961,7 @@
+             CKM_SHA384_RSA_PKCS_PSS => Ok(MechanismType::SHA384_RSA_PKCS_PSS),
+             CKM_SHA512_RSA_PKCS_PSS => Ok(MechanismType::SHA512_RSA_PKCS_PSS),
+             CKM_RSA_PKCS_OAEP => Ok(MechanismType::RSA_PKCS_OAEP),
++            CKM_RSA_AES_KEY_WRAP => Ok(MechanismType::RSA_AES_KEY_WRAP),
+             CKM_RSA_X_509 => Ok(MechanismType::RSA_X_509),
+             CKM_DES3_KEY_GEN => Ok(MechanismType::DES3_KEY_GEN),
+             CKM_DES3_ECB => Ok(MechanismType::DES3_ECB),
+@@ -1094,6 +1100,8 @@
+     /// Multi-purpose mechanism based on the RSA public-key cryptosystem and the OAEP block format
+     /// defined in PKCS #1
+     RsaPkcsOaep(PkcsOaepParams<'a>),
++    /// RSA-OAEP of a fresh AES key, then RFC 5649 under it (`CKM_RSA_AES_KEY_WRAP`)
++    RsaAesKeyWrap(rsa::RsaAesKeyWrapParams<'a>),
+     /// Multi-purpose mechanism based on the RSA public-key cryptosystem.  This is so-called "raw"
+     /// RSA, as assumed in X.509.
+     RsaX509,
+@@ -1354,6 +1362,7 @@
+             Mechanism::RsaPkcs => MechanismType::RSA_PKCS,
+             Mechanism::RsaPkcsPss(_) => MechanismType::RSA_PKCS_PSS,
+             Mechanism::RsaPkcsOaep(_) => MechanismType::RSA_PKCS_OAEP,
++            Mechanism::RsaAesKeyWrap(_) => MechanismType::RSA_AES_KEY_WRAP,
+             Mechanism::RsaX509 => MechanismType::RSA_X_509,
+ 
+             Mechanism::DesKeyGen => MechanismType::DES_KEY_GEN,
+@@ -1482,6 +1491,7 @@
+             | Mechanism::Sha384RsaPkcsPss(params)
+             | Mechanism::Sha512RsaPkcsPss(params) => make_mechanism(mechanism, params),
+             Mechanism::RsaPkcsOaep(params) => make_mechanism(mechanism, params),
++            Mechanism::RsaAesKeyWrap(params) => make_mechanism(mechanism, params),
+             Mechanism::Ecdh1Derive(params) => make_mechanism(mechanism, params),
+             Mechanism::Eddsa(params) => match params.inner() {
+                 None => CK_MECHANISM {
+--- a/src/mechanism/rsa.rs
++++ b/src/mechanism/rsa.rs
+@@ -178,6 +178,24 @@
+     }
+ }
+ 
++/// Parameters of the RsaAesKeyWrap mechanism (`CK_RSA_AES_KEY_WRAP_PARAMS`): the length of the
++/// fresh AES key, and the OAEP parameters it is wrapped with.
++#[derive(Copy, Debug, Clone)]
++#[repr(C)]
++#[cfg_attr(windows, repr(packed))]
++pub struct RsaAesKeyWrapParams<'a> {
++    aes_key_bits: Ulong,
++    oaep_params: *const PkcsOaepParams<'a>,
++    _marker: PhantomData<&'a PkcsOaepParams<'a>>,
++}
++
++impl<'a> RsaAesKeyWrapParams<'a> {
++    /// Construct a new `RsaAesKeyWrapParams`: an AES key of `aes_key_bits`, wrapped with `oaep`.
++    pub fn new(aes_key_bits: Ulong, oaep: &'a PkcsOaepParams<'a>) -> Self {
++        RsaAesKeyWrapParams { aes_key_bits, oaep_params: oaep, _marker: PhantomData }
++    }
++}
++
+ impl<'a> From<PkcsOaepParams<'a>> for Mechanism<'a> {
+     fn from(pkcs_oaep_params: PkcsOaepParams<'a>) -> Self {
+         Mechanism::RsaPkcsOaep(pkcs_oaep_params)

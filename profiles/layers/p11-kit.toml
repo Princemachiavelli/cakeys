@@ -21,6 +21,7 @@ mechanisms = [
   "CKM_CONCATENATE_BASE_AND_DATA",
   "CKM_CONCATENATE_BASE_AND_KEY",
   "CKM_CONCATENATE_DATA_AND_BASE",
+  "CKM_RSA_AES_KEY_WRAP",
 ]
 note = "the RPC does not marshal these mechanisms [run]"
 

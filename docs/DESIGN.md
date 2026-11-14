@@ -345,7 +345,7 @@ module = "/path/libfoo.so"     # or --module <name>=<path>; $NAME or ${NAME} rea
 provider = "tpm2-pkcs11"       # optional; auto-detected (§6.2)
 tokenLabel = "..."
 pinFile = "/path" | pinEnv = "VAR"     # optional; pinEnv wins if both are set; pinFile may be $NAME: the path, from the environment
-mgmKeyFile = "/path" | mgmKeyEnv = "VAR"  # optional; admin (SO) credential for modules that create keys only as SO (ykcs11: the PIV management key in hex, or the PIN when the management key is PIN-protected); mgmKeyEnv wins; mgmKeyFile may be $NAME; needs pinFile/pinEnv (17)
+mgmKeyFile = "/path" | mgmKeyEnv = "VAR"  # optional; admin (SO) credential, read only by steps that need the SO: create/delete on modules that do those only as SO (ykcs11: the PIV management key in hex, or the PIN when the management key is PIN-protected), and `camigrate transport --trusted` (the SO PIN); mgmKeyEnv wins; mgmKeyFile may be $NAME; needs pinFile/pinEnv (17)
 systemFeature = "token-<name>"         # read by the Nix library only
 
 [tokens.<name>.options]        # the provider's own settings, checked when the token opens (17 for an unknown name, or any option on a provider that takes none)
@@ -380,10 +380,11 @@ What may be created and adopted:
   machine-specific paths. `pinEnv = "VAR"` remains the way to pass the *PIN itself* through the
   environment — `env_references_and_object_refs_are_checked_at_load`,
   `pin_file_path_can_come_from_the_environment`.
-- **The admin credential (`mgmKeyFile`/`mgmKeyEnv`) is read only to create or delete, and only where the module requires it.** A
+- **The admin credential (`mgmKeyFile`/`mgmKeyEnv`) is read only by a step that needs the SO.** A
   provider declares that its module creates and destroys objects only in an SO session
-  (ykcs11 does); on any other provider the field is refused (17) when the token opens, since an
-  SO there cannot do what the user does — `admin_credential_is_refused_where_the_user_creates_keys`.
+  (ykcs11 does); elsewhere the user creates and deletes, and the credential (the SO PIN) is read
+  only by `camigrate transport --trusted` (MIGRATE.md D2) —
+  `admin_credential_is_read_only_by_security_officer_steps`.
   Login state is per token, so the step logs the user out, logs in as SO, generates (or
   destroys), logs out and logs the user back in; the SO credential is read just before and
   zeroized after. `resolve`, `verify` and `check` never read it.

@@ -340,7 +340,9 @@ What the probe found against the repo's earlier evidence:
   `CKR_FUNCTION_NOT_SUPPORTED` (the old `CKM_GENERIC_SECRET_KEY_GEN` claim is gone: it is not
   advertised); no edwards generation.
 - p11-kit's client filters `C_GetMechanismList`: it hides eight of SoftHSM's mechanisms, three
-  of them (`CKM_CONCATENATE_*`) missing from the layer until now. Its `C_GetInfo` reports
+  of them (`CKM_CONCATENATE_*`) missing from the layer until now. A ninth,
+  `CKM_RSA_AES_KEY_WRAP`, became visible once the patched cryptoki named it (MIGRATE.md phase
+  3b): p11-kit drops it too [run]. Its `C_GetInfo` reports
   version 1.1, not the 0.26 the layer's match records (detection uses the manufacturer).
 - ykcs11 (yubico-piv-tool 2.7.3) reports version 2.73 and manufacturer
   `Yubico (www.yubico.com)`: the hand profile's "2.7"/"Yubico" never matched, so every ykcs11

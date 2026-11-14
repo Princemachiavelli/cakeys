@@ -126,8 +126,15 @@ min-bits = 1024
 max-bits = 16384
 can-bits = [1024, 2048, 3072, 4096]
 
+[migration]
+trusted-wrap = false
+
 [notes]
 "brainpoolP256r1" = "generation refused: CKR_GENERAL_ERROR"
 "brainpoolP384r1" = "generation refused: CKR_GENERAL_ERROR"
 "cryptoki" = "the module reports Cryptoki 3.2"
 "secp256k1" = "generation refused: CKR_GENERAL_ERROR"
+
+[manual."trusted-wrap"]
+finding = "A CKA_WRAP_WITH_TRUSTED key is refused under any untrusted wrapping key (CKR_WRAPPING_KEY_HANDLE_INVALID), and the SO can create a CKA_TRUSTED AES key, but no RSA public key can carry CKA_TRUSTED (CKR_ATTRIBUTE_TYPE_INVALID when the SO creates one; CKR_ACTION_PROHIBITED when set later), and there is no CKM_RSA_AES_KEY_WRAP. A trusted key-encryption key could never leave toward a transport key, so such a key cannot move from kryoptic at all: `enforced` is impossible with it as the source."
+evidence = "[run] one-off test programs on a scratch kryoptic 1.5.4 token, 2026-11-14 (MIGRATE.md phase 3b; not kept in the repository): a PyKCS11 script that tried each step — the SO setting CKA_TRUSTED on an existing key and creating trusted RSA and AES keys, and wrapping a CKA_WRAP_WITH_TRUSTED key under trusted and untrusted keys — and recorded each return code"

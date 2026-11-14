@@ -1988,12 +1988,12 @@ fn pin_file_path_can_come_from_the_environment() {
     assert!(e.lock()["realisations"]["signing-soft"]["ref"].is_table());
 }
 
-/// The admin credential (`mgmKeyFile`/`mgmKeyEnv`) is for modules that create keys as Security
-/// Officer (ykcs11). `SoftHSM` creates them as the user, so it is refused (17) when the token
-/// opens, before anything is created or the credential is read; without a user PIN to return to
-/// it is invalid at load.
+/// The admin credential (`mgmKeyFile`/`mgmKeyEnv`) is read only by a step that needs the
+/// Security Officer: ykcs11's create and delete, and `camigrate transport --trusted` (MIGRATE.md
+/// D2). `SoftHSM` creates keys as the user, so a realise never reads it: a credential file that
+/// does not exist is no error. Without a user PIN to return to, it is invalid at load.
 #[test]
-fn admin_credential_is_refused_where_the_user_creates_keys() {
+fn admin_credential_is_read_only_by_security_officer_steps() {
     let Some(e) = env("mgm-key") else { return };
     let pin = e.dir.join("pin");
     let toml = |extra: &str| {
@@ -2008,8 +2008,7 @@ fn admin_credential_is_refused_where_the_user_creates_keys() {
         std::fs::write(e.dir.join("keys.toml"), toml(&format!("pinFile = \"{}\"\n{admin}", pin.display()))).unwrap();
         for verb in ["realise", "resolve"] {
             let o = e.km(&[verb, "signing-soft", "--token", "ref"]);
-            assert_eq!(code(&o), 17, "{admin} {verb}: {}", stderr(&o));
-            assert!(stderr(&o).contains("only for modules that create keys as Security Officer"));
+            assert_eq!(code(&o), 0, "{admin} {verb}: {}", stderr(&o));
         }
     }
     // No user PIN: invalid at load.

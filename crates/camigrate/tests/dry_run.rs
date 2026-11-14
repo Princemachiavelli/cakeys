@@ -919,3 +919,82 @@ fn base64_flip(text: &str) -> String {
     bytes[mid] ^= 0x01;
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
+
+/// `enforced` (MIGRATE.md D2, phase 3b): a `CKA_WRAP_WITH_TRUSTED` key on `SoftHSM` moves only after
+/// its SO trusted the target's transport key (`transport --trusted`, with `mgmKeyFile`), and
+/// then by `CKM_RSA_AES_KEY_WRAP` under that trusted copy alone: each bundle entry carries its
+/// own key-encryption key. kryoptic imports and verifies them. A wrap-with-trusted key on
+/// kryoptic never moves: it cannot trust an RSA key (its profile's `trusted-wrap = false`).
+#[test]
+fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
+    let Some(e) = env("enforced") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
+    let (Some(soft), Some(kry)) = (named("softhsm"), named("kryoptic")) else {
+        eprintln!("skipping enforced: needs the softhsm and kryoptic references");
+        return;
+    };
+    std::fs::write(e.dir.join("so-pin"), "5678\n").unwrap();
+    let trusted = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true, CKA_WRAP_WITH_TRUSTED = true }\n";
+    let key = |o: &str, ty: &str, born: &Ref, other: &Ref| {
+        format!("[objects.{o}]\n{ty}\ncreateOn = \"{}\"\n\n", born.name)
+            + &Env::spec(&format!("{o}-src"), o, trusted, &[born], &format!("xe-{o}"), ", autoCreate = true")
+            + &Env::spec(&format!("{o}-dst"), o, trusted, &[other], &format!("xe-{o}"), "")
+    };
+    let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+    let aes = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32";
+    let body = transport_key(kry) + &key("ek", ec, soft, kry) + &key("sk", aes, soft, kry) + &key("kk", ec, kry, soft);
+    let so_pin = e.dir.join("so-pin");
+    e.config_with(&body, &|r| match r.name {
+        "kryoptic" => "transportWith = \"tk-kryoptic\"\n".into(),
+        "softhsm" => format!("mgmKeyFile = \"{}\"\n", so_pin.display()),
+        _ => String::new(),
+    });
+    for (spec, r) in [("tk-kryoptic", kry), ("ek-src", soft), ("sk-src", soft), ("kk-src", kry)] {
+        let o = e.cakeys(r, &["realise", spec, "--token", r.name]);
+        assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
+    }
+    let plan = |o: &str, from: &Ref, to: &Ref| -> serde_json::Value {
+        let out = e.km(from, &["migrate", o, "--from", from.name, "--to", to.name, "--dry-run", "--json"]);
+        serde_json::from_str(&stdout(&out)).unwrap()
+    };
+    // Untrusted: blocked, naming the SO's step.
+    let p = plan("ek", soft, kry);
+    assert_eq!(p["plans"][0]["ready"].as_bool(), Some(false), "{p}");
+    assert!(p["plans"][0]["reasons"][0].as_str().unwrap().contains("--trusted softhsm"), "{p}");
+    // The SO trusts the transport key, from the public key the lock records; again, nothing to do.
+    let trust = ["transport", "tk-kryoptic", "--token", "kryoptic", "--trusted", "softhsm"];
+    let o = e.km(soft, &trust);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let o = e.km(soft, &trust);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(stderr(&o).contains("already trusts"), "{}", stderr(&o));
+    for o in ["ek", "sk"] {
+        let p = plan(o, soft, kry);
+        assert_eq!(
+            (p["plans"][0]["ready"].as_bool(), p["plans"][0]["exposure"].as_str()),
+            (Some(true), Some("enforced")),
+            "{p}"
+        );
+    }
+    // One bundle: each enforced key with its own key-encryption key, none shared.
+    let out = e.dir.join("enforced.bundle.toml");
+    let exported = e.km(
+        soft,
+        &["export", "ek", "sk", "--token", "softhsm", "--target", "kryoptic", "--out", out.to_str().unwrap()],
+    );
+    assert_eq!(code(&exported), 0, "{}", stderr(&exported));
+    let bundle: toml::Value = toml::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert!(bundle.get("kek").is_none(), "{bundle}");
+    for k in bundle["keys"].as_array().unwrap() {
+        assert_eq!((k["exposure"].as_str(), k.get("kek").is_some()), (Some("enforced"), true), "{k}");
+    }
+    let o = e.km(kry, &["import", "--token", "kryoptic", "--in", out.to_str().unwrap()]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    for spec in ["ek-dst", "sk-dst"] {
+        assert_eq!(code(&e.cakeys(kry, &["verify", spec, "--token", "kryoptic"])), 0, "{spec}");
+    }
+    // kryoptic cannot trust an RSA key: a wrap-with-trusted key there never leaves.
+    let p = plan("kk", kry, soft);
+    let reasons = p["plans"][0]["reasons"].to_string();
+    assert!(p["plans"][0]["ready"] == false && reasons.contains("trusted-wrap = false"), "{p}");
+}

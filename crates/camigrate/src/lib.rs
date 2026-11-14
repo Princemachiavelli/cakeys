@@ -115,14 +115,20 @@ enum Cmd {
         how: MoveArgs,
     },
     /// Write the transport file for a transport key (MIGRATE.md D3): an RSA private key that may
-    /// unwrap, realised and locked on the target. Exports to this token wrap to it.
+    /// unwrap, realised and locked on the target. Exports to this token wrap to it. With
+    /// --trusted, instead make the source's SO trust it (D2, `enforced`).
     Transport {
         spec: String,
         #[arg(long)]
         token: String,
         /// Where to write it; default: stdout.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "trusted")]
         out: Option<PathBuf>,
+        /// The source token whose SO marks a copy of the transport key `CKA_TRUSTED` (with its
+        /// `mgmKeyFile`/`mgmKeyEnv`), from the public key the lock records: a key there with
+        /// `CKA_WRAP_WITH_TRUSTED` then wraps under it and nothing else.
+        #[arg(long, value_name = "SOURCE")]
+        trusted: Option<String>,
     },
 }
 
@@ -168,10 +174,12 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     let writes = matches!(&cli.cmd, Cmd::Migrate { how, .. } if !how.dry_run)
         || matches!(&cli.cmd, Cmd::Import { dry_run: false, .. });
     let exports = matches!(&cli.cmd, Cmd::Export { how, .. } if !how.dry_run);
-    if exports && in_nix_build() {
-        return Err(KmError::PreconditionFailed(
-            "export is an admin operation (MIGRATE.md D8), refused inside a Nix build".into(),
-        )
+    let trusts = matches!(&cli.cmd, Cmd::Transport { trusted: Some(_), .. });
+    if (exports || trusts) && in_nix_build() {
+        let verb = if exports { "export" } else { "transport --trusted" };
+        return Err(KmError::PreconditionFailed(format!(
+            "{verb} is an admin operation (MIGRATE.md D8), refused inside a Nix build"
+        ))
         .into());
     }
     if writes && let Some(why) = lock_unwritable(&lock_path) {
@@ -206,7 +214,8 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
         Cmd::Migrate { object, from, to, spec, how } => {
             run.migrate(object.as_deref(), from, to, spec.as_deref(), how, notes)
         }
-        Cmd::Transport { spec, token, out } => {
+        Cmd::Transport { spec, token, trusted: Some(source), .. } => run.trust(spec, token, source, notes),
+        Cmd::Transport { spec, token, out, trusted: None } => {
             let t = Target::new(&run.cfg, spec, token)?;
             let tok = open_token(&run.cfg, &run.modules, registry, token, Access::Read, notes)?;
             let text = tokens::transport(&t, &tok, &run.lock, notes)?.to_toml();
@@ -506,7 +515,25 @@ impl Run<'_> {
             tokens::Dest::Token(name) => transport_choice(cfg, name, how),
             _ => how.transport_key.as_deref(),
         };
-        let req = tokens::Request { objects, from, dest, host_plaintext: how.allow_host_plaintext, transport_key };
+        let spki = match &dest {
+            tokens::Dest::Token(name) => tokens::transport_spec(&self.lock, name, transport_key)
+                .ok()
+                .and_then(|spec| self.locked_spki(spec, name)),
+            tokens::Dest::Transport(t, _) => t.spki().ok(),
+            tokens::Dest::File(_) => None,
+        };
+        // Whether the source's SO made a trusted copy of that key (`transport --trusted`).
+        let trusted_transport = spki.is_some_and(|spki| {
+            open(from, notes).and_then(|tok| tok.trusted(&spki)).is_ok_and(|(copy, _)| copy.is_some())
+        });
+        let req = tokens::Request {
+            objects,
+            from,
+            dest,
+            host_plaintext: how.allow_host_plaintext,
+            transport_key,
+            trusted_transport,
+        };
         let mut moves = tokens::plan_moves(&self.lock, registry, &req, &open, notes)?;
         for p in &mut moves.plans {
             if let Some(spec) = no_export(cfg, &p.object, from) {
@@ -595,6 +622,46 @@ fn no_export<'a>(cfg: &'a Config, object: &str, from: &str) -> Option<&'a str> {
         .iter()
         .find(|(_, s)| s.no_export && s.object == object && s.tokens.contains_key(from))
         .map(|(name, _)| name.as_str())
+}
+
+impl Run<'_> {
+    /// `transport --trusted`: the source's SO makes a `CKA_TRUSTED` copy of the transport key
+    /// realised as `spec` on `token`, from the public key the lock records (so the lock vouches
+    /// for it, never a file). Nothing to do when the source already trusts it; any other trusted
+    /// object there is warned about, since `enforced` is only as narrow as the trusted set.
+    fn trust(&self, spec: &str, token: &str, source: &str, notes: &mut Notes) -> anyhow::Result<()> {
+        let spec = tokens::transport_spec(&self.lock, token, Some(spec)).map_err(KmError::PreconditionFailed)?;
+        let spki = self.locked_spki(spec, token).ok_or_else(|| {
+            KmError::PreconditionFailed(format!(
+                "the lock records no public key for transport key '{spec}' on '{token}': realise it there with \
+                 transportWith naming it"
+            ))
+        })?;
+        let tok = open_token(&self.cfg, &self.modules, self.registry, source, Access::Write, notes)?;
+        let (copy, others) = tok.trusted(&spki)?;
+        if copy.is_some() {
+            notes.note(format_args!("'{source}' already trusts transport key '{spec}' of '{token}'"));
+        } else {
+            let (n, e) = sealed::rsa_parts(&spki)?;
+            tok.create_trusted_copy(n, e, &format!("cakeys-transport-{token}-{spec}"))?;
+            notes.say(format!("'{source}' trusts transport key '{spec}' of '{token}' (CKA_TRUSTED, by its SO)"));
+        }
+        if others > 0 {
+            notes.warn(format_args!(
+                "{others} other object(s) on '{source}' are CKA_TRUSTED: a CKA_WRAP_WITH_TRUSTED key there wraps \
+                 under any of them, so `enforced` is only as narrow as that set"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The public key the lock records for the transport key realised as `spec` on `token`.
+    fn locked_spki(&self, spec: &str, token: &str) -> Option<Vec<u8>> {
+        use base64::Engine as _;
+        let object = &self.lock.realisation(spec, token)?.object;
+        let key = self.lock.objects.get(object)?.public_key.as_ref()?;
+        base64::engine::general_purpose::STANDARD.decode(key).ok()
+    }
 }
 
 /// The transport key to seal to on `to`: `--transport-key`, else the token's `transportWith`.

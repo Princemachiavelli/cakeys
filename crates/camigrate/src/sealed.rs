@@ -81,11 +81,33 @@ pub fn export(
         };
         found.push((item, locked, object_type, held));
     }
+    // An enforced key wraps only under the transport key's trusted copy (`transport --trusted`),
+    // the composed method by CKM_RSA_AES_KEY_WRAP: the source trusts no key-encryption key.
+    let trusted = if items.iter().any(|i| i.exposure == Exposure::Enforced) {
+        let (copy, others) = from.trusted(&transport.spki)?;
+        if others > 0 {
+            notes.warn(format_args!(
+                "{others} other object(s) on '{}' are CKA_TRUSTED: a CKA_WRAP_WITH_TRUSTED key there wraps under any \
+                 of them, so `enforced` is only as narrow as that set",
+                from.name
+            ));
+        }
+        Some(copy.ok_or_else(|| {
+            KmError::PreconditionFailed(format!(
+                "'{}' holds no trusted copy of transport key '{}': `camigrate transport <spec> --token <target> \
+                 --trusted {}`",
+                from.name, transport.object, from.name
+            ))
+        })?)
+    } else {
+        None
+    };
+    let modulus = rsa_parts(&transport.spki)?.0.len();
     let session = from.raw();
     let refused = |what: &str, e: cryptoki::error::Error| from.unsupported(format!("{what} on '{}': {e}", from.name));
     let tpub = session.create_object(&rsa_public(transport)?).map_err(|e| refused("loading the transport key", e))?;
     let kek_hash = items.iter().find_map(|i| match i.method {
-        Method::RsaOaepAesKwp(h) => Some(h),
+        Method::RsaOaepAesKwp(h) if i.exposure != Exposure::Enforced => Some(h),
         _ => None,
     });
     let wrapped = kek_hash.map(|h| kek(from, tpub, h, &refused)).transpose().and_then(|kek| {
@@ -93,12 +115,17 @@ pub fn export(
             .iter()
             .map(|(item, locked, object_type, held)| {
                 let refused = |what: &str, e| refused(&format!("{}: {what}", item.src), e);
-                let (public_key, wrapped, value) = match held {
+                let (public_key, wrapped, value, own_kek) = match held {
                     Held::Key(h, public_key) => {
-                        let blob = wrap(from, tpub, kek.as_ref().map(|k| k.0), *h, &item.method, &refused)?;
-                        (public_key.as_deref().map(encode), Some(encode(&blob)), None)
+                        let wrapping = Wrapping {
+                            tpub: if item.exposure == Exposure::Enforced { trusted.unwrap_or(tpub) } else { tpub },
+                            kek: kek.as_ref().map(|k| k.0),
+                            modulus,
+                        };
+                        let (own_kek, blob) = wrap(from, &wrapping, *h, &item.method, item.exposure, &refused)?;
+                        (public_key.as_deref().map(encode), Some(encode(&blob)), None, own_kek.as_deref().map(encode))
                     }
-                    Held::Public(bytes) => (None, None, Some(encode(bytes))),
+                    Held::Public(bytes) => (None, None, Some(encode(bytes)), None),
                 };
                 Ok(Entry {
                     object: item.src.object_name.into(),
@@ -106,6 +133,7 @@ pub fn export(
                     exposure: item.exposure,
                     commitment_label: locked.commitment_label.clone(),
                     public_key,
+                    kek: own_kek,
                     wrapped,
                     value,
                     object_type: object_type.clone(),
@@ -163,29 +191,76 @@ fn kek(
     }
 }
 
-/// One key's blob: under the shared KEK (RFC 5649) for the composed method, under the transport
-/// key itself for the direct one.
-fn wrap(
-    from: &Token,
+/// The keys one export wraps under: the transport key on the source (its trusted copy for an
+/// enforced key), the shared KEK of the sealed composed keys, and the transport modulus length.
+struct Wrapping {
     tpub: ObjectHandle,
     kek: Option<ObjectHandle>,
+    modulus: usize,
+}
+
+/// One key's blob, and its own wrapped KEK when it has one: an enforced composed key by
+/// `CKM_RSA_AES_KEY_WRAP` under the trusted transport key (OAEP of a fresh AES key, then RFC 5649
+/// under it; split at the modulus length), a sealed one under the shared KEK (RFC 5649), and the
+/// direct method under the transport key itself.
+fn wrap(
+    from: &Token,
+    w: &Wrapping,
     h: ObjectHandle,
     method: &Method,
+    exposure: Exposure,
     refused: &dyn Fn(&str, cryptoki::error::Error) -> KmError,
-) -> Result<Vec<u8>> {
+) -> Result<(Option<Vec<u8>>, Vec<u8>)> {
     let session = from.raw();
-    match (method, kek) {
+    match (method, w.kek) {
+        (Method::RsaOaepAesKwp(hash), _) if exposure == Exposure::Enforced => {
+            let blob = rsa_aes_wrap(from, w.tpub, h, *hash)
+                .map_err(|e| refused("wrapping the key (CKM_RSA_AES_KEY_WRAP)", e))?;
+            if blob.len() <= w.modulus {
+                return Err(KmError::Unsupported(format!(
+                    "'{}': CKM_RSA_AES_KEY_WRAP returned {} bytes",
+                    from.name,
+                    blob.len()
+                )));
+            }
+            let (kek, key) = blob.split_at(w.modulus);
+            Ok((Some(kek.to_vec()), key.to_vec()))
+        }
         (Method::RsaOaepAesKwp(_), Some(kek)) => {
             let kwp = rfc5649(from).ok_or_else(|| {
                 from.unsupported(format!("'{}' offers no RFC 5649 key wrap this build can name", from.name))
             })?;
-            session.wrap_key(&kwp, kek, h).map_err(|e| refused("wrapping the key", e))
+            Ok((None, session.wrap_key(&kwp, kek, h).map_err(|e| refused("wrapping the key", e))?))
         }
         (Method::RsaOaep(hash), _) => {
-            session.wrap_key(&oaep(*hash), tpub, h).map_err(|e| refused("wrapping the key", e))
+            Ok((None, session.wrap_key(&oaep(*hash), w.tpub, h).map_err(|e| refused("wrapping the key", e))?))
         }
         (other, _) => Err(KmError::Unsupported(format!("{other} is not a sealed method"))),
     }
+}
+
+/// `CKM_RSA_AES_KEY_WRAP` of `h` under the RSA public key `rsa`, with a fresh AES-256 key: a
+/// mechanism only the patched cryptoki names (the `kwp` feature).
+#[cfg(feature = "kwp")]
+fn rsa_aes_wrap(
+    from: &Token,
+    rsa: ObjectHandle,
+    h: ObjectHandle,
+    hash: OaepHash,
+) -> std::result::Result<Vec<u8>, cryptoki::error::Error> {
+    use cryptoki::mechanism::rsa::RsaAesKeyWrapParams;
+    let params = oaep_params(hash);
+    from.raw().wrap_key(&Mechanism::RsaAesKeyWrap(RsaAesKeyWrapParams::new(256.into(), &params)), rsa, h)
+}
+
+#[cfg(not(feature = "kwp"))]
+fn rsa_aes_wrap(
+    _: &Token,
+    _: ObjectHandle,
+    _: ObjectHandle,
+    _: OaepHash,
+) -> std::result::Result<Vec<u8>, cryptoki::error::Error> {
+    Err(cryptoki::error::Error::NotSupported)
 }
 
 /// Import `b`'s key `e` under `dst` on `to`, unwrapping with the transport key `tr` realised
@@ -396,7 +471,11 @@ fn create(
             let kwp = rfc5649(to).ok_or_else(|| {
                 to.unsupported(format!("'{}' offers no RFC 5649 key wrap this build can name", to.name))
             })?;
-            let kek_blob = b.wrapped_kek().map_err(KmError::Validation)?.unwrap_or_default();
+            // An enforced key carries its own (CKM_RSA_AES_KEY_WRAP's); the others share the bundle's.
+            let kek_blob = match e.wrapped_kek().map_err(KmError::Validation)? {
+                Some(own) => own,
+                None => b.wrapped_kek().map_err(KmError::Validation)?.unwrap_or_default(),
+            };
             let kek_template = [
                 Attribute::Class(ObjectClass::SECRET_KEY),
                 Attribute::KeyType(KeyType::AES),
@@ -426,11 +505,15 @@ fn create(
 
 /// RSA-OAEP with MGF1 of the same hash and an empty label: what the planner names.
 fn oaep(hash: OaepHash) -> Mechanism<'static> {
+    Mechanism::RsaPkcsOaep(oaep_params(hash))
+}
+
+fn oaep_params(hash: OaepHash) -> PkcsOaepParams<'static> {
     let (h, mgf) = match hash {
         OaepHash::Sha1 => (MechanismType::SHA1, PkcsMgfType::MGF1_SHA1),
         OaepHash::Sha256 => (MechanismType::SHA256, PkcsMgfType::MGF1_SHA256),
     };
-    Mechanism::RsaPkcsOaep(PkcsOaepParams::new(h, mgf, PkcsOaepSource::empty()))
+    PkcsOaepParams::new(h, mgf, PkcsOaepSource::empty())
 }
 
 /// The RFC 5649 key wrap a token offers, under the name it uses (MIGRATE.md spike: one format,
@@ -447,16 +530,26 @@ fn rfc5649(tok: &Token) -> Option<Mechanism<'static>> {
     None
 }
 
+/// An RSA public key's modulus and public exponent, from its SPKI.
+///
+/// # Errors
+///
+/// `Validation` for an SPKI that is no RSA key.
+pub fn rsa_parts(spki: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+    let key = rsa::PublicKey::from_public_key_der(spki)
+        .map_err(|e| KmError::Validation(format!("the transport key is no RSA public key: {e}")))?;
+    Ok((key.n().to_be_bytes_trimmed_vartime().to_vec(), key.e().to_be_bytes_trimmed_vartime().to_vec()))
+}
+
 /// The transport public key as a session object the source can wrap to.
 fn rsa_public(transport: &TransportKey) -> Result<Vec<Attribute>> {
-    let key = rsa::PublicKey::from_public_key_der(&transport.spki)
-        .map_err(|e| KmError::Validation(format!("transport key '{}': {e}", transport.object)))?;
+    let (n, e) = rsa_parts(&transport.spki)?;
     Ok(vec![
         Attribute::Class(ObjectClass::PUBLIC_KEY),
         Attribute::KeyType(KeyType::RSA),
         Attribute::Token(false),
-        Attribute::Modulus(key.n().to_be_bytes_trimmed_vartime().to_vec()),
-        Attribute::PublicExponent(key.e().to_be_bytes_trimmed_vartime().to_vec()),
+        Attribute::Modulus(n),
+        Attribute::PublicExponent(e),
         Attribute::Wrap(true),
         Attribute::Encrypt(true),
     ])

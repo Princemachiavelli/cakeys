@@ -55,7 +55,11 @@ pub struct Entry {
     /// identity otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
-    /// A key (base64): under the bundle's KEK (RFC 5649), or under RSA-OAEP directly.
+    /// An `enforced` key's own key-encryption key under RSA-OAEP (base64): the first part of
+    /// `CKM_RSA_AES_KEY_WRAP`'s output, used instead of the bundle's shared one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kek: Option<String>,
+    /// A key (base64): under its KEK (RFC 5649), or under RSA-OAEP directly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrapped: Option<String>,
     /// A public object (base64, method `public`): a certificate's DER, a public key's canonical
@@ -112,11 +116,15 @@ impl Bundle {
             }
             e.object_type.canonicalize();
             let method = e.method().map_err(invalid)?;
+            if e.kek.is_some() && !matches!(method, Method::RsaOaepAesKwp(_)) {
+                return Err(invalid(format!("method {} takes no kek of its own", e.method)));
+            }
+            e.wrapped_kek().map_err(invalid)?;
             match method {
-                Method::RsaOaepAesKwp(h) => {
+                Method::RsaOaepAesKwp(h) if e.kek.is_none() => {
                     kek_hashes.insert(h);
                 }
-                Method::RsaOaep(_) | Method::Public => {}
+                Method::RsaOaepAesKwp(_) | Method::RsaOaep(_) | Method::Public => {}
                 _ => return Err(invalid(format!("method {} does not travel in a bundle", e.method))),
             }
             match (method == Method::Public, &e.wrapped, &e.value) {
@@ -140,7 +148,7 @@ impl Bundle {
             }
         }
         match (kek_hashes.len(), &b.kek) {
-            (0, Some(_)) => return Err(invalid("a kek, but no key of a composed method uses it".into())),
+            (0, Some(_)) => return Err(invalid("a kek, but no key of a composed method shares it".into())),
             (0, None) | (1, Some(_)) => {}
             (1, None) => return Err(invalid("keys of a composed method, but no kek".into())),
             _ => return Err(invalid("composed methods of several OAEP hashes share one kek".into())),
@@ -185,6 +193,15 @@ impl Entry {
     /// A message for malformed base64, or a public object's entry.
     pub fn wrapped_key(&self) -> std::result::Result<Vec<u8>, String> {
         decode("wrapped", self.wrapped.as_deref().ok_or("no wrapped key")?)
+    }
+
+    /// An `enforced` key's own wrapped KEK.
+    ///
+    /// # Errors
+    ///
+    /// A message for malformed base64.
+    pub fn wrapped_kek(&self) -> std::result::Result<Option<Vec<u8>>, String> {
+        self.kek.as_deref().map(|k| decode("kek", k)).transpose()
     }
 
     /// A public object's bytes.
@@ -232,6 +249,7 @@ mod tests {
             exposure: Exposure::Sealed,
             commitment_label: Some("key-management/v1".into()),
             public_key: None,
+            kek: None,
             wrapped: Some(encode(b"key")),
             value: None,
             object_type: ty,
@@ -291,7 +309,15 @@ mod tests {
         refused(Bundle { keys: vec![], ..sample() }, "carries no keys");
         refused(Bundle { keys: vec![aes("k", "rsa-oaep-sha1+aes-kwp"); 2], ..sample() }, "listed twice");
         refused(Bundle { kek: None, ..sample() }, "but no kek");
-        refused(Bundle { keys: direct(), ..sample() }, "no key of a composed method uses it");
+        refused(Bundle { keys: direct(), ..sample() }, "no key of a composed method shares it");
+        // An enforced key carries its own KEK: no shared one needed, and only a composed key has one.
+        let own =
+            Entry { kek: Some(encode(b"own")), exposure: Exposure::Enforced, ..aes("e", "rsa-oaep-sha1+aes-kwp") };
+        Bundle::parse(&Bundle { kek: None, keys: vec![own.clone()], ..sample() }.to_toml(), path).unwrap();
+        refused(
+            Bundle { kek: None, keys: vec![Entry { method: "rsa-oaep-sha1".into(), ..own }], ..sample() },
+            "takes no kek of its own",
+        );
         Bundle::parse(&Bundle { kek: None, keys: direct(), ..sample() }.to_toml(), path).unwrap();
         let two = vec![aes("a", "rsa-oaep-sha1+aes-kwp"), aes("b", "rsa-oaep-sha256+aes-kwp")];
         refused(Bundle { keys: two, ..sample() }, "several OAEP hashes");

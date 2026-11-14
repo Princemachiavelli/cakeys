@@ -112,6 +112,9 @@ fn side_of(module: &Profile, stack: &Resolved, token: &str, provider: &str, mech
     if let Some(secret) = m.and_then(|m| m.secret_unwraps) {
         side.secret_unwraps = secret;
     }
+    if let Some(trusted) = m.and_then(|m| m.trusted_wrap) {
+        side.trusted_wrap = trusted;
+    }
     // Never probed keeps the spec-compliant default; probed and empty means no OAEP method.
     if let Some(oaep) = &module.wrap.oaep {
         side.oaep = oaep.iter().map(|h| oaep_hash(h).map_err(|e| who(&e))).collect::<Result<_>>()?;
@@ -288,6 +291,9 @@ pub struct Request<'a> {
     pub host_plaintext: bool,
     /// The target's transport key, by its spec, when several are realised there (MIGRATE.md D3).
     pub transport_key: Option<&'a str>,
+    /// The source holds a copy of that transport key its SO marked `CKA_TRUSTED` (MIGRATE.md D2,
+    /// `enforced`).
+    pub trusted_transport: bool,
 }
 
 /// The plans of one invocation (MIGRATE.md D9).
@@ -337,15 +343,13 @@ pub fn plan_moves(
     let materials = materials(lock, req.from, req.objects)?;
     let mut side = |name: &str| side_or_lock(name, lock, registry, open, notes);
     let (source, source_from) = side(req.from)?;
-    let mut allow = Allow { host_plaintext: req.host_plaintext, ..Allow::default() };
+    let allow = Allow { host_plaintext: req.host_plaintext, trusted_transport: req.trusted_transport };
     let (target, target_from, to_name) = match &req.dest {
         Dest::Token(name) => {
             let (side, from) = side(name)?;
             (Some(side), from, (*name).to_owned())
         }
         Dest::Transport(t, shown) => {
-            // Phase 3b sets this only after the source's SO marked the key trusted there.
-            allow.trusted_transport = t.trusted;
             let side = side_from_transport(t, registry)
                 .ok_or_else(|| {
                     KmError::Unsupported(format!("{shown}: provider '{}' is not in this build", t.provider))

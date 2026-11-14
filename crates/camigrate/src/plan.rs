@@ -220,11 +220,20 @@ fn sealed(
         return;
     }
     let exposure = if trusted_only {
+        if !from.trusted_wrap {
+            blocked.push(format!(
+                "CKA_WRAP_WITH_TRUSTED: {} ({}) cannot wrap under a transport key it trusts (its profile's \
+                 trusted-wrap = false), so the key never leaves it",
+                from.token, from.provider
+            ));
+            return;
+        }
         if !allow.trusted_transport {
-            blocked.push(
-                "CKA_WRAP_WITH_TRUSTED: the transport key must be marked trusted on the source (`transport --trusted`, phase 3b)"
-                    .into(),
-            );
+            blocked.push(format!(
+                "CKA_WRAP_WITH_TRUSTED: {} holds no trusted copy of the transport key; its SO makes one with \
+                 `camigrate transport <spec> --token <target> --trusted {}`",
+                from.token, from.token
+            ));
             return;
         }
         Exposure::Enforced
@@ -238,17 +247,34 @@ fn sealed(
         blocked.push(format!("no RSA-OAEP hash both {} and {} implement", from.token, dst.token));
         return;
     };
-    if from.kwp() && dst.kwp() && from.has("CKM_AES_KEY_GEN") {
+    // Enforced, the transport key is the only trusted key: CKM_RSA_AES_KEY_WRAP does both wraps
+    // under it (its output is the composed method's, so the target unwraps it the same way).
+    let composed = if trusted_only {
+        cfg!(feature = "kwp") && from.has("CKM_RSA_AES_KEY_WRAP") && dst.kwp()
+    } else {
+        from.kwp() && dst.kwp() && from.has("CKM_AES_KEY_GEN")
+    };
+    if composed {
         candidates.push((Method::RsaOaepAesKwp(hash), exposure, vec![]));
     } else if m.ty.class == ObjectClass::SecretKey && m.ty.value_len.is_some_and(|n| n <= OAEP_DIRECT_MAX) {
         candidates.push((Method::RsaOaep(hash), exposure, vec![]));
     } else {
-        blocked.push(format!(
-            "{} and {} share no RFC 5649 key wrap (CKM_AES_KEY_WRAP_KWP or _PAD) to carry a {}",
-            from.token,
-            dst.token,
-            describe(m.ty)
-        ));
+        blocked.push(if trusted_only {
+            format!(
+                "CKA_WRAP_WITH_TRUSTED: {} offers no CKM_RSA_AES_KEY_WRAP (or {} no RFC 5649 key wrap) to carry a {} \
+                 under the trusted transport key alone",
+                from.token,
+                dst.token,
+                describe(m.ty)
+            )
+        } else {
+            format!(
+                "{} and {} share no RFC 5649 key wrap (CKM_AES_KEY_WRAP_KWP or _PAD) to carry a {}",
+                from.token,
+                dst.token,
+                describe(m.ty)
+            )
+        });
     }
 }
 
@@ -330,13 +356,19 @@ mod tests {
     }
 
     fn softhsm() -> Side {
-        let mech = ["CKM_RSA_PKCS_OAEP", "CKM_AES_KEY_WRAP", "CKM_AES_KEY_WRAP_PAD", "CKM_AES_KEY_GEN"];
+        let mech = [
+            "CKM_RSA_PKCS_OAEP",
+            "CKM_AES_KEY_WRAP",
+            "CKM_AES_KEY_WRAP_PAD",
+            "CKM_AES_KEY_GEN",
+            "CKM_RSA_AES_KEY_WRAP",
+        ];
         Side { oaep: vec![OaepHash::Sha1], ..Side::pkcs11("softhsm", "softhsm", mech.map(String::from)) }
     }
 
     fn kryoptic() -> Side {
         let mech = ["CKM_RSA_PKCS_OAEP", "CKM_AES_KEY_WRAP", "CKM_AES_KEY_WRAP_KWP", "CKM_AES_KEY_GEN"];
-        Side::pkcs11("kryoptic", "kryoptic", mech.map(String::from))
+        Side { trusted_wrap: false, ..Side::pkcs11("kryoptic", "kryoptic", mech.map(String::from)) }
     }
 
     fn plan_of(ty: &ObjectCfg, flags: &[(&str, bool)], from: &Side, to: &To, allow: Allow) -> Plan {
@@ -439,17 +471,35 @@ mod tests {
         assert!(p.reasons[0].contains("never lets a key leave"), "{p:?}");
     }
 
+    /// `enforced` (MIGRATE.md D2): a source that can trust a transport key and holds a trusted
+    /// copy of it, `CKM_RSA_AES_KEY_WRAP` for a key OAEP cannot carry alone (only the patched
+    /// cryptoki names it: the `kwp` feature), and never a host path or a file.
     #[test]
     fn wrap_with_trusted_needs_a_trusted_transport_and_never_goes_through_the_host() {
         let flags = [("CKA_EXTRACTABLE", true), ("CKA_WRAP_WITH_TRUSTED", true)];
         let allowed = Allow { host_plaintext: true, ..Allow::default() };
         let p = plan_of(&p256(), &flags, &softhsm(), &To::Token(&kryoptic()), allowed);
         assert!(!p.ready && p.method.is_none(), "{p:?}");
-        assert!(p.reasons.iter().any(|r| r.contains("transport --trusted")), "{p:?}");
+        assert!(p.reasons.iter().any(|r| r.contains("--trusted softhsm")), "{p:?}");
         let trusted = Allow { trusted_transport: true, ..allowed };
         let p = plan_of(&p256(), &flags, &softhsm(), &To::Token(&kryoptic()), trusted);
-        assert_eq!((p.exposure, p.ready), (Some(Exposure::Enforced), true));
+        assert_eq!(p.ready, cfg!(feature = "kwp"), "{p:?}");
+        if p.ready {
+            assert_eq!(p.exposure, Some(Exposure::Enforced));
+        } else {
+            assert!(p.reasons[0].contains("CKM_RSA_AES_KEY_WRAP"), "{p:?}");
+        }
+        let mut aes = obj(ObjectClass::SecretKey, Some(KeyType::Aes));
+        aes.value_len = Some(32);
+        let p = plan_of(&aes, &flags, &softhsm(), &To::Token(&kryoptic()), trusted);
+        // An AES key fits under OAEP alone: CKM_RSA_AES_KEY_WRAP where this build names it, else direct.
+        let method =
+            if cfg!(feature = "kwp") { Method::RsaOaepAesKwp(OaepHash::Sha1) } else { Method::RsaOaep(OaepHash::Sha1) };
+        assert_eq!((p.method, p.exposure, p.ready), (Some(method), Some(Exposure::Enforced), true));
         assert!(!plan_of(&p256(), &flags, &softhsm(), &To::File(FileFormat::Pkcs8), trusted).ready);
+        // A source that cannot trust an RSA key (kryoptic): never, whatever is trusted.
+        let p = plan_of(&p256(), &flags, &kryoptic(), &To::Token(&softhsm()), trusted);
+        assert!(!p.ready && p.reasons.iter().any(|r| r.contains("trusted-wrap = false")), "{p:?}");
     }
 
     #[test]
