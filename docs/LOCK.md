@@ -15,11 +15,13 @@ cakeys rewrites the lock as a whole, so comments in a real `keys.lock` would be 
 |---|---|---|
 | `[objects.<object>]` | What is this material? Its type and its identities. | the object name from keys.toml |
 | `[realisations.<spec>.<token>]` | Where and how did this spec find it on this token? | (spec, token) |
+| `[observations."<key>"]` | What did a realisation see of its module and token? | the SHA-256 of the entry itself |
 
 They are separate because material and placement are independent. The same material can live on
 several tokens (one object, several realisations), and a realisation can be removed (`delete`
 drops it) while the material's identity stays known for the other tokens. Each object is
-self-contained, so lock files can be split and joined per object.
+self-contained, so lock files can be split and joined per object. The observations are a third,
+supporting table: each distinct observation once, named by the realisations recorded with it.
 
 ## Objects
 
@@ -83,14 +85,12 @@ they mean different things to a verdict:
 | Class | Fields | On a difference |
 |---|---|---|
 | **Compared** | `object`, `locator`, `specDigest`, `mode`, `schemes`, `binding`, `attestation`, `policy`, `immutables` | the run fails (14, or 10 for an identity), until reviewed and re-recorded |
-| **Observed** | `observed.*` | facts about the token; a warning at most |
-| **Provenance** | `provenance.*` | what produced the record; a warning or a note |
+| **Observed** | `observed.*`, and the `observation` entry it names | facts about the object and the token; a warning or a note |
+| **Provenance** | `provenance.origin` | the object's history (an import); never a verdict |
 
-Removing `observed` and `provenance` entirely changes no verdict (tested). `provenance` is also
-the one table that takes keys this cakeys does not know (a newer version's): they load with a
-warning and are kept when the lock is rewritten; an unknown key anywhere else is refused (17).
-The compared fields
-are required.
+Removing `observed`, `observation`, `provenance` and the whole `observations` table changes no
+verdict (tested); a realisation naming an entry the lock lacks is an invalid lock (17). The
+compared fields are required.
 
 ```toml
 [realisations.ec.soft]
@@ -114,6 +114,9 @@ schemes = ["rfc7093m4"]
 # passes; a secret key's commitment is a "fingerprint" that anything which saw it can replay;
 # public bytes are "public" (docs/REVIEW-2026-11-13.md, "Replay").
 binding = "pop-sign"
+# The observation this realisation was recorded with: a key of the `observations` table
+# (below). Never a verdict.
+observation = "sha256-…"
 
 # Where it was found. Recorded so a moved locator is reported as a moved locator (14), not as an
 # unexplained hash mismatch.
@@ -142,23 +145,46 @@ CKA_NEVER_EXTRACTABLE = true
 CKA_ALWAYS_SENSITIVE = true
 CKA_KEY_GEN_MECHANISM = "CKM_EC_KEY_PAIR_GEN"
 
-# Observed: facts about the token at the time, which never decide a verdict.
+# Observed: facts about the object at the time, which never decide a verdict.
 [realisations.ec.soft.observed]
 # The RFC 7512 URI consumers use: a pure locator (the token serial, never a module path).
 uri = "pkcs11:token=xv;serial=b19136a55523f406;object=ec;id=%0E;type=private"
 # What the duplicate-CKA_ID check could see: "user" (logged in) or "public". Going from user to
 # public warns: a public session cannot see a second private key under the same CKA_ID.
 session = "user"
-# Mechanisms the token offered (the Nix library's `functions`); one that vanishes warns.
-mechanisms = ["CKM_ECDSA", "CKM_ECDSA_SHA256"]   # ... trimmed
+```
 
-# Provenance: what produced this record. Split three ways because each answers a different
-# question and differs for a different reason.
-[realisations.ec.soft.provenance]
-# Which software interpreted the token: the cakeys provider (quirks profile) and version. A
-# different provider warns; a different cakeys version is a note.
+A key moved in by `camigrate` (planned, WORKPLAN stage 4) also records where it came from. It is
+the object's history, so re-recording the same object keeps it:
+
+```toml
+[realisations.ec.soft.provenance.origin]
+from = "softhsm"                    # the source token
+method = "rsa-oaep-sha1+aes-kwp"    # a method name (MIGRATE.md, "Frozen names and formats")
+exposure = "sealed"                 # the exposure level the path had
+declared = true                     # only for a vendor method: the level is its own declaration
+```
+
+## Observations
+
+What a realisation saw of its module and token is stored once per distinct value, keyed by the
+SRI SHA-256 of the entry's canonical JSON (RFC 8785, as the spec digest). Realisations recorded
+with the same module build, token, provider, cakeys version and mechanism list name the same
+entry; one recorded through another module names another. A module update therefore shows in the
+diff as one new entry and one changed `observation` line per realisation re-recorded. A write
+drops the entries no realisation names any more, and so does `gc`.
+
+```toml
+[observations."sha256-…"]
+# Which software interpreted the token: the cakeys provider and version. A different provider
+# warns; a different cakeys version is a note.
 provider = "softhsm"
 cakeysVersion = "0.1.0"
+# The module capability profile the token resolved to (PROVIDERS.md D8); absent when none is
+# committed for it. Another profile is a note.
+profile = "softhsm/2.7"
+# Mechanisms the token offered (the Nix library's `functions`); one that vanishes warns.
+mechanisms = ["CKM_ECDSA", "CKM_ECDSA_SHA256"]   # ... trimmed
 
 # Which PKCS#11 library answered: C_GetInfo, and the file the dynamic loader mapped (symlinks
 # resolved, whatever named it: keys.toml's module, its $NAME, --module or a bare name found by
@@ -166,7 +192,7 @@ cakeysVersion = "0.1.0"
 # version, cryptoki) warns, and so does another hash at the same path (replaced in place, which
 # a path outside the Nix store cannot show); the same build from another path — a Nix rebuild —
 # is only a note.
-[realisations.ec.soft.provenance.module]
+[observations."sha256-…".module]
 path = "/nix/store/xb35g93pcvyyjrpjq1l6brdx6x8v3z6w-softhsm-2.7.0/lib/softhsm/libsofthsm2.so"
 hash = "sha256-Pwmq/S/L0HNdKn4lLgttPZw1nUufTAT2+wgyB3cYOZk="
 description = "Implementation of PKCS11"
@@ -175,11 +201,19 @@ version = "2.7"      # raw CK_VERSION major.minor (ykcs11 2.7.3 shows as "2.73")
 cryptoki = "3.2"
 
 # Which device (C_GetTokenInfo). A different token warns.
-[realisations.ec.soft.provenance.token]
+[observations."sha256-…".token]
 model = "SoftHSM v2"
 serial = "b19136a55523f406"
 firmware = "2.7"
 ```
+
+An entry is the one lock table that takes keys this cakeys does not know (a newer version's):
+they load with a warning and are kept when the lock is rewritten. An unknown key anywhere else is
+refused (17). The key is not recomputed on load, so such an entry keeps its key.
+
+Which entry is a token's *current* one is answered only when every realisation on the token
+names the same entry. Otherwise `validate`'s profile gate and `export --dry-run` for a token that
+does not open say so and name `realise`, which re-records each realisation with what it sees now.
 
 Two more realisation shapes worth seeing:
 
@@ -228,7 +262,8 @@ Lock invariants are checked on load (17): every ID and digest is a 32-byte SRI; 
 `object` exists and its `schemes` are among the object's IDs; no two objects of one class share
 an ID under one scheme (one object per material); `pairs` are mutual where both sides are present;
 only private-key realisations have a `binding`; an attestation never stands without a portable
-scheme.
+scheme; a realisation's `observation` is a key of the `observations` table; an `origin` names a
+known method.
 
 A real lock to read alongside: [`examples/yubikey-secureboot.lock`](../examples/yubikey-secureboot.lock)
 (RSA keys and their certificates, adopted read-only with `publicOnly`).

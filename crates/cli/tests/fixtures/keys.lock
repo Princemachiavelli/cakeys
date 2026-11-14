@@ -36,11 +36,11 @@ specDigest = "sha256-2l4R3cS4v8E8lJ0y5DxB2cbWm2y5H6V3H9oT2VcSx1Q="
 mode = "wrap-rebind"
 schemes = ["commitment"]
 policy = { CKA_EXTRACTABLE = true, CKA_SENSITIVE = true, CKA_SIGN = false, CKA_TOKEN = true }
+observation = "sha256-KWIJPp8cOmDYfmu3UYVHD2GdwcVcdtT6sAszrkJsfBs="
 
 [realisations.shared-nosign.softhsm.observed]
 uri = "pkcs11:token=kmtest;object=shared-b;type=secret-key"
 session = "user"
-mechanisms = ["CKM_AES_KEY_WRAP", "CKM_SHA256_HMAC"]
 
 [realisations.shared-sign.softhsm]
 object = "shared"
@@ -49,11 +49,11 @@ specDigest = "sha256-yVLLNPOa4rNsRbODzKVTkUj2NDJYBrUBlEonNBIh/tQ="
 mode = "commitment"
 schemes = ["commitment"]
 policy = { CKA_EXTRACTABLE = false, CKA_SENSITIVE = true, CKA_SIGN = true, CKA_TOKEN = true }
+observation = "sha256-bpXa5s7IB4QOPYgPrMbBFBDoJdpIuTRFaIaZz8G8Q8w="
 
 [realisations.shared-sign.softhsm.observed]
 uri = "pkcs11:token=kmtest;object=shared-a;type=secret-key"
 session = "user"
-mechanisms = ["CKM_SHA256_HMAC"]
 
 [realisations.signing-soft.softhsm]
 object = "signing"
@@ -64,24 +64,32 @@ schemes = ["rfc7093m4"]
 binding = "pop-sign"
 policy = { CKA_EXTRACTABLE = false, CKA_SENSITIVE = true, CKA_SIGN = true, CKA_TOKEN = true }
 immutables = { CKA_LOCAL = true, CKA_NEVER_EXTRACTABLE = true, CKA_ALWAYS_SENSITIVE = true, CKA_KEY_GEN_MECHANISM = "CKM_EC_KEY_PAIR_GEN" }
+observation = "sha256-TaxP2NfMnygFYdBP/AThaBXXdHWgr6CJgGe1kWavk3w="
 
 [realisations.signing-soft.softhsm.observed]
 uri = "pkcs11:token=kmtest;object=signing;type=private"
 session = "user"
-mechanisms = ["CKM_ECDSA", "CKM_EC_KEY_PAIR_GEN"]
 
-[realisations.signing-soft.softhsm.provenance]
+
+[observations."sha256-KWIJPp8cOmDYfmu3UYVHD2GdwcVcdtT6sAszrkJsfBs="]
+mechanisms = ["CKM_AES_KEY_WRAP", "CKM_SHA256_HMAC"]
+
+[observations."sha256-TaxP2NfMnygFYdBP/AThaBXXdHWgr6CJgGe1kWavk3w="]
 provider = "softhsm"
 cakeysVersion = "0.1.0"
+mechanisms = ["CKM_ECDSA", "CKM_EC_KEY_PAIR_GEN"]
 
-[realisations.signing-soft.softhsm.provenance.module]
+[observations."sha256-TaxP2NfMnygFYdBP/AThaBXXdHWgr6CJgGe1kWavk3w=".module]
 path = "/nix/store/00000000000000000000000000000000-softhsm-2.7.0/lib/softhsm/libsofthsm2.so"
 description = "Implementation of PKCS11"
 manufacturer = "SoftHSM"
 version = "2.7"
 cryptoki = "3.2"
 
-[realisations.signing-soft.softhsm.provenance.token]
+[observations."sha256-TaxP2NfMnygFYdBP/AThaBXXdHWgr6CJgGe1kWavk3w=".token]
 model = "SoftHSM v2"
 serial = "624f14da21ad132f"
 firmware = "2.7"
+
+[observations."sha256-bpXa5s7IB4QOPYgPrMbBFBDoJdpIuTRFaIaZz8G8Q8w="]
+mechanisms = ["CKM_SHA256_HMAC"]

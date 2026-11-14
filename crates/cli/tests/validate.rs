@@ -30,12 +30,28 @@ fn a_profile_no_refuses_and_names_its_profile() {
 }
 
 /// The lock's recorded module and token are the profile source when keys.toml names no
-/// provider: the fixture's `SoftHSM` realisations resolve softhsm/2.7, whose rows allow every
-/// spec (generation it does not record is a note, never a refusal).
+/// provider: the token's observation resolves softhsm/2.7, whose rows allow every spec
+/// (generation it does not record is a note, never a refusal). The fixture's three `SoftHSM`
+/// realisations name three observations, so which is current is not known: a note naming
+/// `realise`, and the token is skipped. With one observation it resolves.
 #[test]
 fn the_lock_resolves_a_token_keys_toml_does_not_name() {
     let out = validate("keys.toml");
     let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(code(&out), 0, "{err}");
+    assert!(err.contains("token 'softhsm' were recorded with 3 different observations"), "{err}");
+    assert!(err.contains("`realise` them") && !err.contains("softhsm/2.7"), "{err}");
+
+    let w = Workdir::new("validate-one-observation");
+    w.write_config(&std::fs::read_to_string(format!("{FIXTURES}/keys.toml")).unwrap());
+    let mut lock: toml::Value =
+        toml::from_str(&std::fs::read_to_string(format!("{FIXTURES}/keys.lock")).unwrap()).unwrap();
+    for spec in ["shared-sign", "shared-nosign"] {
+        lock["realisations"][spec]["softhsm"].as_table_mut().unwrap().remove("observation");
+    }
+    std::fs::write(w.dir.join("keys.lock"), toml::to_string(&lock).unwrap()).unwrap();
+    let out = w.km(&["validate"]);
+    let err = stderr(&out);
     assert_eq!(code(&out), 0, "{err}");
     assert!(err.contains("generation not decided: unknown — module profile softhsm/2.7"), "{err}");
 }

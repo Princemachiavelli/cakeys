@@ -21,8 +21,11 @@ in
       id.<scheme>    portable material CA-IDs from the lock (id.rfc7093m4; `pubkeyhash` is an
                      input alias)
       spec / token   the resolved pair
-      uri / mode / specDigest / module / tokenInfo / functions
-                     from the pair's realisation (observed and provenance)
+      uri / mode / specDigest
+                     from the pair's realisation
+      module / tokenInfo / functions
+                     from the observation the realisation names (null, null and { } when it
+                     names none, or the entry predates them)
       assurance      what its check establishes against a token that may lie: "proof" (a
                      fresh challenge), "fingerprint" (a secret key's commitment: replayable),
                      "public" (public bytes); derived from the lock, as `cakeys` derives it
@@ -53,6 +56,7 @@ in
       specs = cfg.specs or { };
       tokens = cfg.tokens or { };
       realisations = lk.realisations or { };
+      observations = lk.observations or { };
 
       featuresOf = t: [ (tokens.${t}.systemFeature or "token-${t}") ];
 
@@ -113,6 +117,9 @@ in
             realisations.${pick.spec}.${pick.token}
               or (fail "spec '${pick.spec}' has no realisation on token '${pick.token}' in the lock; run `cakeys realise ${pick.spec} --token ${pick.token}`");
           ids = lk.objects.${obj}.ids or { };
+          # What the realisation saw of the module and token: an entry of the lock's observation
+          # table, shared by the realisations recorded with the same one.
+          seen = if real ? observation then observations.${real.observation} else { };
         in
         # seq pick: the call itself resolves the (spec, token) pair — missing or ambiguous throws
         # here, whether or not any attribute of the result is demanded. The realisation stays
@@ -145,14 +152,14 @@ in
               "fingerprint"
             else
               "public";
-          # Provenance: { path, description, manufacturer, version, cryptoki } / { model, serial, firmware }.
-          module = real.provenance.module or null;
-          tokenInfo = real.provenance.token or null;
+          # { path, description, manufacturer, version, cryptoki } / { model, serial, firmware }.
+          module = seen.module or null;
+          tokenInfo = seen.token or null;
           functions = builtins.listToAttrs (
             map (m: {
               name = m;
               value = true;
-            }) (real.observed.mechanisms or [ ])
+            }) (seen.mechanisms or [ ])
           );
           requiredSystemFeatures = featuresOf pick.token;
           check =

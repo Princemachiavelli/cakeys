@@ -3,7 +3,7 @@
 //! malformed input. The same parsers are fuzz targets under `fuzz/`.
 
 use cakeys_core::config::{
-    AttrValue, Binding, Config, Immutables, LOCK_VERSION, Lock, Mode, ModuleInfo, ObjectCfg, Observed, Provenance,
+    AttrValue, Binding, Config, Immutables, LOCK_VERSION, Lock, Mode, ModuleInfo, ObjectCfg, Observation, Observed,
     Session, TokenInfo, parse_config_with, parse_lock,
 };
 use cakeys_core::id::{self, Commit, Curve, HmacHash};
@@ -51,20 +51,20 @@ fn config() -> Config {
 
 fn facts() -> Facts {
     Facts {
-        observed: Observed { uri: "pkcs11:token=t".into(), session: Session::User, mechanisms: vec![] },
-        provenance: Provenance {
-            provider: "generic".into(),
-            cakeys_version: "0.1.0".into(),
-            module: ModuleInfo {
+        observed: Observed { uri: "pkcs11:token=t".into(), session: Session::User },
+        observation: Observation {
+            provider: Some("generic".into()),
+            cakeys_version: Some("0.1.0".into()),
+            module: Some(ModuleInfo {
                 path: "/m.so".into(),
                 hash: None,
                 description: "m".into(),
                 manufacturer: "x".into(),
                 version: "1.0".into(),
                 cryptoki: "3.0".into(),
-            },
-            token: TokenInfo { model: "m".into(), serial: "1".into(), firmware: "1.0".into() },
-            extra: std::collections::BTreeMap::new(),
+            }),
+            token: Some(TokenInfo { model: "m".into(), serial: "1".into(), firmware: "1.0".into() }),
+            ..Observation::default()
         },
     }
 }

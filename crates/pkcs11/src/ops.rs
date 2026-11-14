@@ -1,7 +1,7 @@
 //! Idempotent verbs with HTTP-like semantics (docs/DESIGN.md §5).
 
 use crate::token::{self as hal, Token};
-use cakeys_core::config::{AttestationRecord, Config, Lock, Mode, Observed, Provenance, Session};
+use cakeys_core::config::{AttestationRecord, Config, Lock, Mode, Observation, Observed, Session};
 use cakeys_core::id::{self, Commit, HmacHash, Scheme};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
@@ -289,20 +289,18 @@ fn attest(
     Ok(AttestationRecord { kind: kind.to_owned(), root: a.root, id: a.id })
 }
 
-/// What this run sees of `tok` (session, mechanisms, module, token), for the lock to record or
-/// compare.
+/// What this run sees of `tok` (session, mechanisms, profile, module, token), for the lock to
+/// record or compare.
 fn facts(tok: &Token, r: &Resolved) -> Facts {
     Facts {
-        observed: Observed {
-            uri: r.uri.clone(),
-            session: if tok.logged_in { Session::User } else { Session::Public },
+        observed: Observed { uri: r.uri.clone(), session: if tok.logged_in { Session::User } else { Session::Public } },
+        observation: Observation {
+            provider: Some(tok.provider.name().to_owned()),
+            cakeys_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            profile: tok.profiles.module_name().map(str::to_owned),
             mechanisms: tok.mechanism_names().to_vec(),
-        },
-        provenance: Provenance {
-            provider: tok.provider.name().to_owned(),
-            cakeys_version: env!("CARGO_PKG_VERSION").to_owned(),
-            module: tok.module.clone(),
-            token: tok.token.clone(),
+            module: Some(tok.module.clone()),
+            token: Some(tok.token.clone()),
             extra: std::collections::BTreeMap::new(),
         },
     }
@@ -613,6 +611,7 @@ pub fn delete(
         if m.is_empty() {
             lock.realisations.remove(t.spec_name);
         }
+        changed |= lock.drop_unreferenced_observations();
     }
     Ok(changed)
 }

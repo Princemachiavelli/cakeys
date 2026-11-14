@@ -378,6 +378,10 @@ pub struct Lock {
     /// spec name -> token name -> realisation
     #[serde(default)]
     pub realisations: BTreeMap<String, BTreeMap<String, LockRealisation>>,
+    /// What realisations saw of their token, each distinct observation once (review A3), keyed
+    /// by [`Observation::digest`]. A realisation names the entry it was recorded with.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub observations: BTreeMap<String, Observation>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -424,6 +428,7 @@ impl Lock {
         let invalid = |msg: String| KmError::Validation(format!("{}: {msg}", path.display()));
         self.check_objects().map_err(invalid)?;
         self.check_realisations().map_err(invalid)?;
+        self.check_observations().map_err(invalid)?;
         self.check_one_object_per_material().map_err(invalid)?;
         self.check_pairs().map_err(invalid)?;
         Ok(self)
@@ -489,10 +494,10 @@ impl Lock {
                         if private { "required" } else { "allowed" }
                     ));
                 }
-                if let Some(h) =
-                    r.provenance.as_ref().and_then(|p| p.module.hash.as_ref()).filter(|h| !crate::id::is_sri(h))
+                if let Some(o) = r.provenance.as_ref().and_then(|p| p.origin.as_ref())
+                    && crate::migrate::Method::from_name(&o.method).is_none()
                 {
-                    return Err(format!("{what}: provenance module hash \"{h}\" is not a sha256 SRI digest"));
+                    return Err(format!("{what}: provenance origin method '{}' is unknown", o.method));
                 }
                 // Attestation evidence (§3.7): a known kind, SRI digests, and never alone — the
                 // realisation must also have matched a portable scheme, the only thing that links
@@ -520,6 +525,73 @@ impl Lock {
             }
         }
         Ok(())
+    }
+
+    /// Each observation is keyed by an SRI digest, and each realisation names one the lock has.
+    /// The key is not recomputed here: an entry may hold keys of a newer cakeys (`extra`).
+    fn check_observations(&self) -> std::result::Result<(), String> {
+        if let Some(k) = self.observations.keys().find(|k| !crate::id::is_sri(k)) {
+            return Err(format!("observation key \"{k}\" is not a sha256 SRI digest"));
+        }
+        if let Some(h) =
+            self.observations.values().find_map(|o| o.module.as_ref()?.hash.as_ref()).filter(|h| !crate::id::is_sri(h))
+        {
+            return Err(format!("observation module hash \"{h}\" is not a sha256 SRI digest"));
+        }
+        for (spec, by_token) in &self.realisations {
+            for (token, r) in by_token {
+                if let Some(k) = r.observation.as_ref().filter(|k| !self.observations.contains_key(*k)) {
+                    return Err(format!(
+                        "realisation of '{spec}' on '{token}': observation \"{k}\" is not in the lock"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The observation the realisations on `token` name (review A3): the token's as far as the
+    /// lock knows, when they all agree.
+    #[must_use]
+    pub fn token_observation(&self, token: &str) -> TokenObservation<'_> {
+        let mut named: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for (spec, by_token) in &self.realisations {
+            if let Some(k) = by_token.get(token).and_then(|r| r.observation.as_deref()) {
+                named.entry(k).or_default().push(spec);
+            }
+        }
+        match named.len() {
+            0 => TokenObservation::None,
+            1 => named
+                .keys()
+                .next()
+                .and_then(|k| self.observations.get(*k))
+                .map_or(TokenObservation::None, TokenObservation::One),
+            _ => TokenObservation::Several(
+                named.into_values().map(|specs| specs.into_iter().map(str::to_owned).collect()).collect(),
+            ),
+        }
+    }
+
+    /// Observation keys no realisation names, or none of those `keep` accepts.
+    fn unreferenced_observations(&self, keep: &dyn Fn(&str, &str) -> bool) -> Vec<String> {
+        let named: BTreeSet<&str> = self
+            .realisations
+            .iter()
+            .flat_map(|(spec, by_token)| {
+                by_token.iter().filter(|(t, _)| keep(spec, t)).filter_map(|(_, r)| r.observation.as_deref())
+            })
+            .collect();
+        self.observations.keys().filter(|k| !named.contains(k.as_str())).cloned().collect()
+    }
+
+    /// Drop the observations no realisation names; whether any was dropped.
+    pub fn drop_unreferenced_observations(&mut self) -> bool {
+        let gone = self.unreferenced_observations(&|_, _| true);
+        for k in &gone {
+            self.observations.remove(k);
+        }
+        !gone.is_empty()
     }
 
     /// One object per material: two objects of one class with the same ID are the same thing
@@ -605,10 +677,12 @@ impl Lock {
 
 /// One realisation of a spec on a token. Fields fall in three classes (docs/DESIGN.md §4.2):
 /// - **compared** (top level): verification fails when they differ from keys.toml or the token;
-/// - **`observed`**: recorded facts about the token that never change a verdict;
-/// - **`provenance`**: what produced the record; differences only warn.
+/// - **`observed`** and **`observation`**: recorded facts about the object and the token (the
+///   latter an entry of the lock's `observations`) that never change a verdict;
+/// - **`provenance`**: the object's history (`origin`); never a verdict either.
 ///
-/// Stripping `observed` and `provenance` from a lock never changes a verdict.
+/// Stripping `observed`, `observation`, `provenance` and the `observations` table from a lock
+/// never changes a verdict.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct LockRealisation {
@@ -638,6 +712,9 @@ pub struct LockRealisation {
     /// Attributes fixed when the object was made; one that weakens means it was replaced.
     #[serde(default, skip_serializing_if = "Immutables::is_empty")]
     pub immutables: Immutables,
+    /// The key of the `observations` entry this realisation was recorded with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed: Option<Observed>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -714,7 +791,7 @@ impl std::fmt::Display for Immutables {
     }
 }
 
-/// Facts about the token at realisation time. Never compared.
+/// Facts about the object and the run at realisation time. Never compared.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Observed {
@@ -722,10 +799,6 @@ pub struct Observed {
     pub uri: String,
     /// Logged in (private objects and duplicate private-key IDs were visible) or not.
     pub session: Session,
-    /// Usable mechanisms (feeds `functions.<token>` in the Nix library). One that has since gone
-    /// from the token is a warning.
-    #[serde(default)]
-    pub mechanisms: Vec<String>,
 }
 
 /// The session a realisation was observed in.
@@ -738,24 +811,103 @@ pub enum Session {
     Public,
 }
 
-/// What produced the record. Differences warn (module build, token, provider) or note (module
-/// file, cakeys version); `realise` re-binds them. The one lock table that takes keys this cakeys
-/// does not know: they never change a verdict, so a lock a newer cakeys wrote still loads, and
-/// they are kept (`extra`) when the lock is rewritten — only re-recording the realisation,
-/// which replaces its provenance, drops them.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// One object's history on this token. Never a verdict; re-recording the same object keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Provenance {
+    /// Where the material came from, when it was imported (MIGRATE.md D7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
+}
+
+/// How an imported object reached this token (MIGRATE.md D7, "Frozen names and formats").
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Origin {
+    /// The source token.
+    pub from: String,
+    /// A method name of `migrate::Method`.
+    pub method: String,
+    pub exposure: crate::migrate::Exposure,
+    /// A vendor method: `exposure` is the level it declared, not one cakeys established.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub declared: bool,
+}
+
+/// What a realisation saw of its token and what handled it (review A3), stored once per
+/// distinct value in the lock's `observations`. Differences warn (module build, token,
+/// provider, a mechanism gone) or note (module file, cakeys version, profile); `realise`
+/// re-binds them. The provider, module and token are absent only in entries recorded before
+/// cakeys wrote them.
+///
+/// The one lock table that takes keys this cakeys does not know: they never change a verdict,
+/// so a lock a newer cakeys wrote still loads, and they are kept (`extra`) when the lock is
+/// rewritten — only re-recording the realisation, which names a fresh entry, drops them.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Observation {
     /// Provider that handled the module (fix-ups must not change identity).
-    pub provider: String,
-    pub cakeys_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cakeys_version: Option<String>,
+    /// The module capability profile the token resolved to (docs/PROVIDERS.md D8), when one is
+    /// committed for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// Usable mechanisms (feeds `functions.<token>` in the Nix library). One that has since gone
+    /// from the token is a warning.
+    #[serde(default)]
+    pub mechanisms: Vec<String>,
     /// PKCS#11 module (`C_GetInfo`, plus the loaded file).
-    pub module: ModuleInfo,
-    /// Token that holds the object (`C_GetTokenInfo`).
-    pub token: TokenInfo,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<ModuleInfo>,
+    /// Token that holds the objects (`C_GetTokenInfo`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<TokenInfo>,
     /// Keys of a newer cakeys, as read.
     #[serde(flatten)]
     pub extra: BTreeMap<String, toml::Value>,
+}
+
+impl Observation {
+    /// The entry's key: the SRI SHA-256 of its RFC 8785 (JCS) form, as `id::spec_digest`.
+    ///
+    /// # Panics
+    ///
+    /// If the entry does not canonicalize, which only `extra` could cause (a float that is not
+    /// finite); cakeys computes keys only for the entries it builds, which have none.
+    #[must_use]
+    pub fn digest(&self) -> String {
+        let doc = serde_json::to_value(self).expect("an observation is plain data");
+        crate::id::sri(serde_jcs::to_string(&doc).expect("an observation of strings canonicalizes").as_bytes())
+    }
+}
+
+/// What the lock knows of one token's module and hardware: [`Lock::token_observation`].
+#[derive(Debug)]
+pub enum TokenObservation<'a> {
+    /// No realisation on the token names an observation.
+    None,
+    /// Every realisation on the token that names one names this.
+    One(&'a Observation),
+    /// Its realisations were recorded with different observations, so which is current is not
+    /// known: the specs, grouped by the entry they name.
+    Several(Vec<Vec<String>>),
+}
+
+impl TokenObservation<'_> {
+    /// The message for [`TokenObservation::Several`]: what differs and how to refresh it.
+    #[must_use]
+    pub fn several(token: &str, groups: &[Vec<String>]) -> String {
+        let groups: Vec<String> = groups.iter().map(|g| g.join(", ")).collect();
+        format!(
+            "the realisations on token '{token}' were recorded with {} different observations of \
+             its module and token ({}); `realise` them to record the current one",
+            groups.len(),
+            groups.join("; ")
+        )
+    }
 }
 
 /// Read and check keys.toml; `$NAME` path references read the process environment.
@@ -976,8 +1128,9 @@ pub fn lock_unwritable(lock_path: &Path) -> Option<String> {
 /// Lock entries `cfg` no longer names (finding D3): every `[realisations.<spec>.<token>]` whose
 /// spec or token is gone from keys.toml, and every `[objects.<name>]` absent from it — printed by
 /// `gc` as table names, removed with `--apply`. Live objects keep their `ids` however few specs
-/// use them; only entries whose whole subject is gone are collected. With `remove`, exactly the
-/// returned entries are dropped.
+/// use them; only entries whose whole subject is gone are collected, and every
+/// `[observations."<key>"]` no remaining realisation names. With `remove`, exactly the returned
+/// entries are dropped.
 pub fn gc(cfg: &Config, lock: &mut Lock, remove: bool) -> Vec<String> {
     let named = |spec: &str, token: &str| cfg.specs.get(spec).is_some_and(|s| s.tokens.contains_key(token));
     let mut stale: Vec<String> = lock
@@ -988,12 +1141,15 @@ pub fn gc(cfg: &Config, lock: &mut Lock, remove: bool) -> Vec<String> {
         })
         .collect();
     stale.extend(lock.objects.keys().filter(|o| !cfg.objects.contains_key(*o)).map(|o| format!("objects.{o}")));
+    let observations = lock.unreferenced_observations(&named);
+    stale.extend(observations.iter().map(|k| format!("observations.\"{k}\"")));
     if remove {
         for (spec, tokens) in &mut lock.realisations {
             tokens.retain(|t, _| named(spec, t));
         }
         lock.realisations.retain(|_, tokens| !tokens.is_empty());
         lock.objects.retain(|o, _| cfg.objects.contains_key(o));
+        lock.observations.retain(|k, _| !observations.contains(k));
     }
     stale
 }
@@ -1071,10 +1227,10 @@ mod tests {
         assert_eq!(lock.realisations["signing-soft"]["softhsm"].binding, Some(Binding::PopSign));
     }
 
-    /// Provenance keys of a newer cakeys load and survive a rewrite (the TUF re-serialization
-    /// rule); anywhere else an unknown key is still a refused lock.
+    /// Observation keys of a newer cakeys load and survive a rewrite (the TUF re-serialization
+    /// rule); anywhere else an unknown key is still a refused lock, `provenance` included.
     #[test]
-    fn unknown_provenance_keys_are_kept_on_rewrite() {
+    fn unknown_observation_keys_are_kept_on_rewrite() {
         let fixture = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/keys.lock"));
         let text = std::fs::read_to_string(fixture).unwrap();
         let known = "provider = \"softhsm\"\ncakeysVersion = \"0.1.0\"\n";
@@ -1084,23 +1240,66 @@ mod tests {
         std::fs::write(&path, text.replacen(known, &format!("{known}builder = \"ci-7\"\nrun = {{ id = 3 }}\n"), 1))
             .unwrap();
         let lock = load_lock(&path).unwrap();
-        let extra = |l: &Lock| l.realisations["signing-soft"]["softhsm"].provenance.as_ref().unwrap().extra.clone();
+        let extra = |l: &Lock| {
+            let key = l.realisations["signing-soft"]["softhsm"].observation.clone().unwrap();
+            l.observations[&key].extra.clone()
+        };
         assert_eq!(extra(&lock).keys().collect::<Vec<_>>(), ["builder", "run"]);
         save_lock(&path, &lock).unwrap();
         assert_eq!(extra(&load_lock(&path).unwrap()), extra(&lock));
         // The rename left nothing behind but the lock.
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-        // A compared table takes no unknown key.
-        std::fs::write(
-            &path,
-            text.replacen(
-                "[realisations.signing-soft.softhsm]\n",
-                "[realisations.signing-soft.softhsm]\nbuilder = \"ci-7\"\n",
-                1,
-            ),
+        // A compared table takes no unknown key, and neither does the object's history.
+        for (table, key) in [
+            ("[realisations.signing-soft.softhsm]\n", "builder = \"ci-7\"\n"),
+            ("[realisations.signing-soft.softhsm]\n", "provenance = { builder = \"ci-7\" }\n"),
+        ] {
+            std::fs::write(&path, text.replacen(table, &format!("{table}{key}"), 1)).unwrap();
+            assert!(matches!(load_lock(&path), Err(KmError::Validation(_))), "{key}");
+        }
+    }
+
+    /// A realisation names an observation the lock has (17 otherwise); an origin names a known
+    /// method; `gc` reports and drops exactly the observations no remaining realisation names.
+    #[test]
+    fn observations_are_referenced_and_collected() {
+        let path = Path::new("test.lock");
+        let sri = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+        let set = |lock: &mut Lock, f: &dyn Fn(&mut LockRealisation)| {
+            f(lock.realisations.get_mut("s").unwrap().get_mut("t").unwrap());
+        };
+        let mut lock = attestable_lock();
+        set(&mut lock, &|r| r.observation = Some(sri.into()));
+        let err = lock.clone().validate(path).unwrap_err();
+        assert!(err.to_string().contains("is not in the lock"), "{err}");
+        lock.observations.insert(sri.into(), Observation::default());
+        lock.observations.insert("sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564=".into(), Observation::default());
+        lock.clone().validate(path).unwrap();
+        assert!(matches!(lock.token_observation("t"), TokenObservation::One(_)));
+        assert!(matches!(lock.token_observation("other"), TokenObservation::None));
+
+        let mut bad = lock.clone();
+        let origin = Origin {
+            from: "a".into(),
+            method: "carrier-pigeon".into(),
+            exposure: crate::migrate::Exposure::Public,
+            declared: false,
+        };
+        set(&mut bad, &|r| r.provenance = Some(Provenance { origin: Some(origin.clone()) }));
+        assert!(bad.validate(path).unwrap_err().to_string().contains("origin method"));
+
+        let cfg: Config = toml::from_str(
+            "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.s]\nobject = \"k\"\ntokens.t = { locator = { CKA_LABEL = \"k\" } }\n",
         )
         .unwrap();
-        assert!(matches!(load_lock(&path), Err(KmError::Validation(_))));
+        let unnamed = "observations.\"sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564=\"";
+        assert_eq!(gc(&cfg, &mut lock.clone(), false), [unnamed]);
+        // With the spec gone, the realisation goes, and so does the observation only it named.
+        let cfg = Config { specs: BTreeMap::new(), ..cfg };
+        let stale = gc(&cfg, &mut lock, true);
+        assert_eq!(stale.len(), 3, "{stale:?}");
+        assert!(lock.realisations.is_empty() && lock.observations.is_empty());
     }
 
     /// `$NAME`/`${NAME}` in `pinFile` and `module` read the path from the environment; an unset or
@@ -1223,6 +1422,7 @@ mod tests {
                     attestation: None,
                     policy: BTreeMap::new(),
                     immutables: Immutables::default(),
+                    observation: None,
                     observed: None,
                     provenance: None,
                 },

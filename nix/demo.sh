@@ -174,12 +174,13 @@ expect 10 cakeys realise signing --token soft --no-update-lock
 echo "Record it, like updating flake.lock. The private key also proves possession: it signs a"
 echo "fresh challenge the host verifies against the public key the identity hashes (pop-sign)."
 limit=13 expect 0 cakeys realise signing --token soft
-echo "keys.lock: the identity per object; per token, how it was realised (and the policy,"
-echo "mechanisms and provenance it observed, cut here):"
+echo "keys.lock: the identity per object; per token, how it was realised (and the policy it"
+echo "observed, cut here). What it saw of the module and token is one [observations] entry,"
+echo "shared by every realisation recorded with the same:"
 show sed -n '1,/^\[realisations.signing.soft.policy\]/p' keys.lock
-echo "Provenance, never a verdict: the module file actually loaded (the variable resolved) and"
+echo "Observations, never a verdict: the module file actually loaded (the variable resolved) and"
 echo "its hash. Another path is a note; the same path with other content (replaced in place) warns."
-show sed -n '/^\[realisations.signing.soft.provenance.module\]/,/^cryptoki/p' keys.lock
+show sed -n '/^\[observations\..*\.module\]/,/^cryptoki/p' keys.lock
 echo "From now on every use is checked against the lock: identity, policy and binding."
 expect 0 cakeys verify signing --token soft
 wait_key
@@ -259,8 +260,9 @@ echo "The host computes the identity from the key file alone: ${bold}$oracle${re
 limit=13 expect 0 cakeys realise shared --token soft
 limit=13 expect 0 cakeys realise shared --token kryo
 locked=$(sed -n '/^\[objects.shared.ids\]/,/^\[/s/^rfc7093m4 = "\(.*\)"/\1/p' keys.lock)
-echo "keys.lock holds one identity for the object and one realisation per token:"
-show awk '/^\[objects.shared.ids\]/ || /^\[realisations.shared.[a-z]+.provenance\]$/ { n = 2 } n-- > 0' keys.lock
+echo "keys.lock holds one identity for the object and one realisation per token, each naming"
+echo "what it saw of its module:"
+show awk '/^\[objects.shared.ids\]/ { n = 2 } /^\[realisations.shared.[a-z]+\]$/ { print; r = 1 } r && /^observation = / { print; r = 0 } n-- > 0' keys.lock
 [ "$locked" = "$oracle" ] || {
   echo "${red}locked $locked, host computed $oracle${reset}"
   exit 1

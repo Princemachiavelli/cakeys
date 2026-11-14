@@ -11,7 +11,7 @@
 use crate::ops::{self, Target};
 use crate::provider::Registry;
 use crate::resolution::{self, Resolved};
-use cakeys_core::config::{Lock, Mode, TokenCfg};
+use cakeys_core::config::{Lock, Mode, TokenCfg, TokenObservation};
 use cakeys_core::{KmError, Result};
 use cakeys_profile::{Effective, Set, Verdict};
 
@@ -36,16 +36,25 @@ pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Res
     for p in &cfg.profiles {
         set.find(p).map_err(|e| KmError::Validation(format!("token '{name}': {e}")))?;
     }
-    let recorded =
-        lock.realisations.values().filter_map(|by_token| by_token.get(name)).find_map(|r| r.provenance.as_ref());
-    let Some(provider) = cfg.provider.clone().or_else(|| recorded.map(|p| p.provider.clone())) else {
+    let observed = match lock.token_observation(name) {
+        TokenObservation::One(o) => Some(o),
+        TokenObservation::None => None,
+        TokenObservation::Several(groups) => {
+            return Ok(Err(format!(
+                "{}, so its profile is known only when it opens",
+                TokenObservation::several(name, &groups)
+            )));
+        }
+    };
+    let recorded = observed.and_then(|o| Some((o.module.as_ref()?, o.token.as_ref()?)));
+    let Some(provider) = cfg.provider.clone().or_else(|| observed.and_then(|o| o.provider.clone())) else {
         return Ok(Err(format!(
             "token '{name}': no provider named and nothing recorded in the lock, so its profile is known \
              only when it opens"
         )));
     };
     let (module, token, source) = match recorded {
-        Some(p) => (p.module.clone(), Some(p.token.clone()), "the lock's recorded module and token"),
+        Some((m, t)) => (m.clone(), Some(t.clone()), "the lock's recorded module and token"),
         None => (crate::migrate::moduleless_info(), None, "keys.toml's provider"),
     };
     // What resolution cannot decide without the token (several profiles of a family, none

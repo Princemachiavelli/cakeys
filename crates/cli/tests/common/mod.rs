@@ -187,6 +187,13 @@ impl Workdir {
         toml::from_str(&std::fs::read_to_string(self.dir.join("keys.lock")).unwrap()).unwrap()
     }
 
+    /// The `observations` entry the realisation of `spec` on `token` names.
+    pub fn observation(&self, spec: &str, token: &str) -> toml::Value {
+        let lock = self.lock();
+        let key = lock["realisations"][spec][token]["observation"].as_str().unwrap().to_owned();
+        lock["observations"][key.as_str()].clone()
+    }
+
     pub fn locked_id(&self, object: &str, scheme: &str) -> String {
         self.lock()["objects"][object]["ids"][scheme].as_str().unwrap().to_owned()
     }

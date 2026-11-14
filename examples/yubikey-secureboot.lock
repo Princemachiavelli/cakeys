@@ -74,6 +74,7 @@ schemes = [
     "certhash",
     "rfc7093m4",
 ]
+observation = "sha256-qZIAHjkFzAn8e7Cg4KVg4X0hSoFf97JHOpyG+Qd+9is="
 
 [realisations.whonix-db-cert-piv.yubikey.locator]
 CKA_LABEL = "X.509 Certificate for Retired Key 3"
@@ -89,51 +90,6 @@ CKA_TRUSTED = false
 [realisations.whonix-db-cert-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;serial=39189318;object=X.509%20Certificate%20for%20Retired%20Key%203;type=cert"
 session = "public"
-mechanisms = [
-    "CKM_ECDH1_DERIVE",
-    "CKM_ECDSA",
-    "CKM_ECDSA_SHA1",
-    "CKM_ECDSA_SHA256",
-    "CKM_ECDSA_SHA384",
-    "CKM_ECDSA_SHA512",
-    "CKM_EC_EDWARDS_KEY_PAIR_GEN",
-    "CKM_EC_KEY_PAIR_GEN",
-    "CKM_EC_MONTGOMERY_KEY_PAIR_GEN",
-    "CKM_EDDSA",
-    "CKM_RSA_PKCS",
-    "CKM_RSA_PKCS_KEY_PAIR_GEN",
-    "CKM_RSA_PKCS_OAEP",
-    "CKM_RSA_PKCS_PSS",
-    "CKM_RSA_X_509",
-    "CKM_SHA1_RSA_PKCS",
-    "CKM_SHA1_RSA_PKCS_PSS",
-    "CKM_SHA256",
-    "CKM_SHA256_RSA_PKCS",
-    "CKM_SHA256_RSA_PKCS_PSS",
-    "CKM_SHA384",
-    "CKM_SHA384_RSA_PKCS",
-    "CKM_SHA384_RSA_PKCS_PSS",
-    "CKM_SHA512",
-    "CKM_SHA512_RSA_PKCS",
-    "CKM_SHA512_RSA_PKCS_PSS",
-    "CKM_SHA_1",
-]
-
-[realisations.whonix-db-cert-piv.yubikey.provenance]
-provider = "ykcs11"
-cakeysVersion = "0.1.0"
-
-[realisations.whonix-db-cert-piv.yubikey.provenance.module]
-path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
-description = "PKCS#11 PIV Library (SP-800-73)"
-manufacturer = "Yubico (www.yubico.com)"
-version = "2.73"
-cryptoki = "3.0"
-
-[realisations.whonix-db-cert-piv.yubikey.provenance.token]
-model = "YubiKey YK5"
-serial = "39189318"
-firmware = "5.74"
 
 [realisations.whonix-db-piv.yubikey]
 object = "whonix-db"
@@ -142,6 +98,7 @@ mode = "direct"
 schemes = ["rfc7093m4"]
 publicOnly = true
 binding = "token-asserted"
+observation = "sha256-qZIAHjkFzAn8e7Cg4KVg4X0hSoFf97JHOpyG+Qd+9is="
 
 [realisations.whonix-db-piv.yubikey.locator]
 CKA_ID = "07"
@@ -167,51 +124,6 @@ CKA_ALWAYS_SENSITIVE = false
 [realisations.whonix-db-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;serial=39189318;id=%07;type=private"
 session = "public"
-mechanisms = [
-    "CKM_ECDH1_DERIVE",
-    "CKM_ECDSA",
-    "CKM_ECDSA_SHA1",
-    "CKM_ECDSA_SHA256",
-    "CKM_ECDSA_SHA384",
-    "CKM_ECDSA_SHA512",
-    "CKM_EC_EDWARDS_KEY_PAIR_GEN",
-    "CKM_EC_KEY_PAIR_GEN",
-    "CKM_EC_MONTGOMERY_KEY_PAIR_GEN",
-    "CKM_EDDSA",
-    "CKM_RSA_PKCS",
-    "CKM_RSA_PKCS_KEY_PAIR_GEN",
-    "CKM_RSA_PKCS_OAEP",
-    "CKM_RSA_PKCS_PSS",
-    "CKM_RSA_X_509",
-    "CKM_SHA1_RSA_PKCS",
-    "CKM_SHA1_RSA_PKCS_PSS",
-    "CKM_SHA256",
-    "CKM_SHA256_RSA_PKCS",
-    "CKM_SHA256_RSA_PKCS_PSS",
-    "CKM_SHA384",
-    "CKM_SHA384_RSA_PKCS",
-    "CKM_SHA384_RSA_PKCS_PSS",
-    "CKM_SHA512",
-    "CKM_SHA512_RSA_PKCS",
-    "CKM_SHA512_RSA_PKCS_PSS",
-    "CKM_SHA_1",
-]
-
-[realisations.whonix-db-piv.yubikey.provenance]
-provider = "ykcs11"
-cakeysVersion = "0.1.0"
-
-[realisations.whonix-db-piv.yubikey.provenance.module]
-path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
-description = "PKCS#11 PIV Library (SP-800-73)"
-manufacturer = "Yubico (www.yubico.com)"
-version = "2.73"
-cryptoki = "3.0"
-
-[realisations.whonix-db-piv.yubikey.provenance.token]
-model = "YubiKey YK5"
-serial = "39189318"
-firmware = "5.74"
 
 [realisations.whonix-kek-cert-piv.yubikey]
 object = "whonix-kek-cert"
@@ -221,6 +133,7 @@ schemes = [
     "certhash",
     "rfc7093m4",
 ]
+observation = "sha256-qZIAHjkFzAn8e7Cg4KVg4X0hSoFf97JHOpyG+Qd+9is="
 
 [realisations.whonix-kek-cert-piv.yubikey.locator]
 CKA_LABEL = "X.509 Certificate for Retired Key 2"
@@ -236,51 +149,6 @@ CKA_TRUSTED = false
 [realisations.whonix-kek-cert-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;serial=39189318;object=X.509%20Certificate%20for%20Retired%20Key%202;type=cert"
 session = "public"
-mechanisms = [
-    "CKM_ECDH1_DERIVE",
-    "CKM_ECDSA",
-    "CKM_ECDSA_SHA1",
-    "CKM_ECDSA_SHA256",
-    "CKM_ECDSA_SHA384",
-    "CKM_ECDSA_SHA512",
-    "CKM_EC_EDWARDS_KEY_PAIR_GEN",
-    "CKM_EC_KEY_PAIR_GEN",
-    "CKM_EC_MONTGOMERY_KEY_PAIR_GEN",
-    "CKM_EDDSA",
-    "CKM_RSA_PKCS",
-    "CKM_RSA_PKCS_KEY_PAIR_GEN",
-    "CKM_RSA_PKCS_OAEP",
-    "CKM_RSA_PKCS_PSS",
-    "CKM_RSA_X_509",
-    "CKM_SHA1_RSA_PKCS",
-    "CKM_SHA1_RSA_PKCS_PSS",
-    "CKM_SHA256",
-    "CKM_SHA256_RSA_PKCS",
-    "CKM_SHA256_RSA_PKCS_PSS",
-    "CKM_SHA384",
-    "CKM_SHA384_RSA_PKCS",
-    "CKM_SHA384_RSA_PKCS_PSS",
-    "CKM_SHA512",
-    "CKM_SHA512_RSA_PKCS",
-    "CKM_SHA512_RSA_PKCS_PSS",
-    "CKM_SHA_1",
-]
-
-[realisations.whonix-kek-cert-piv.yubikey.provenance]
-provider = "ykcs11"
-cakeysVersion = "0.1.0"
-
-[realisations.whonix-kek-cert-piv.yubikey.provenance.module]
-path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
-description = "PKCS#11 PIV Library (SP-800-73)"
-manufacturer = "Yubico (www.yubico.com)"
-version = "2.73"
-cryptoki = "3.0"
-
-[realisations.whonix-kek-cert-piv.yubikey.provenance.token]
-model = "YubiKey YK5"
-serial = "39189318"
-firmware = "5.74"
 
 [realisations.whonix-kek-piv.yubikey]
 object = "whonix-kek"
@@ -289,6 +157,7 @@ mode = "direct"
 schemes = ["rfc7093m4"]
 publicOnly = true
 binding = "token-asserted"
+observation = "sha256-qZIAHjkFzAn8e7Cg4KVg4X0hSoFf97JHOpyG+Qd+9is="
 
 [realisations.whonix-kek-piv.yubikey.locator]
 CKA_ID = "06"
@@ -314,51 +183,6 @@ CKA_ALWAYS_SENSITIVE = false
 [realisations.whonix-kek-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;serial=39189318;id=%06;type=private"
 session = "public"
-mechanisms = [
-    "CKM_ECDH1_DERIVE",
-    "CKM_ECDSA",
-    "CKM_ECDSA_SHA1",
-    "CKM_ECDSA_SHA256",
-    "CKM_ECDSA_SHA384",
-    "CKM_ECDSA_SHA512",
-    "CKM_EC_EDWARDS_KEY_PAIR_GEN",
-    "CKM_EC_KEY_PAIR_GEN",
-    "CKM_EC_MONTGOMERY_KEY_PAIR_GEN",
-    "CKM_EDDSA",
-    "CKM_RSA_PKCS",
-    "CKM_RSA_PKCS_KEY_PAIR_GEN",
-    "CKM_RSA_PKCS_OAEP",
-    "CKM_RSA_PKCS_PSS",
-    "CKM_RSA_X_509",
-    "CKM_SHA1_RSA_PKCS",
-    "CKM_SHA1_RSA_PKCS_PSS",
-    "CKM_SHA256",
-    "CKM_SHA256_RSA_PKCS",
-    "CKM_SHA256_RSA_PKCS_PSS",
-    "CKM_SHA384",
-    "CKM_SHA384_RSA_PKCS",
-    "CKM_SHA384_RSA_PKCS_PSS",
-    "CKM_SHA512",
-    "CKM_SHA512_RSA_PKCS",
-    "CKM_SHA512_RSA_PKCS_PSS",
-    "CKM_SHA_1",
-]
-
-[realisations.whonix-kek-piv.yubikey.provenance]
-provider = "ykcs11"
-cakeysVersion = "0.1.0"
-
-[realisations.whonix-kek-piv.yubikey.provenance.module]
-path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
-description = "PKCS#11 PIV Library (SP-800-73)"
-manufacturer = "Yubico (www.yubico.com)"
-version = "2.73"
-cryptoki = "3.0"
-
-[realisations.whonix-kek-piv.yubikey.provenance.token]
-model = "YubiKey YK5"
-serial = "39189318"
-firmware = "5.74"
 
 [realisations.whonix-pk-cert-piv.yubikey]
 object = "whonix-pk-cert"
@@ -368,6 +192,7 @@ schemes = [
     "certhash",
     "rfc7093m4",
 ]
+observation = "sha256-qZIAHjkFzAn8e7Cg4KVg4X0hSoFf97JHOpyG+Qd+9is="
 
 [realisations.whonix-pk-cert-piv.yubikey.locator]
 CKA_LABEL = "X.509 Certificate for Retired Key 1"
@@ -383,51 +208,6 @@ CKA_TRUSTED = false
 [realisations.whonix-pk-cert-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;serial=39189318;object=X.509%20Certificate%20for%20Retired%20Key%201;type=cert"
 session = "public"
-mechanisms = [
-    "CKM_ECDH1_DERIVE",
-    "CKM_ECDSA",
-    "CKM_ECDSA_SHA1",
-    "CKM_ECDSA_SHA256",
-    "CKM_ECDSA_SHA384",
-    "CKM_ECDSA_SHA512",
-    "CKM_EC_EDWARDS_KEY_PAIR_GEN",
-    "CKM_EC_KEY_PAIR_GEN",
-    "CKM_EC_MONTGOMERY_KEY_PAIR_GEN",
-    "CKM_EDDSA",
-    "CKM_RSA_PKCS",
-    "CKM_RSA_PKCS_KEY_PAIR_GEN",
-    "CKM_RSA_PKCS_OAEP",
-    "CKM_RSA_PKCS_PSS",
-    "CKM_RSA_X_509",
-    "CKM_SHA1_RSA_PKCS",
-    "CKM_SHA1_RSA_PKCS_PSS",
-    "CKM_SHA256",
-    "CKM_SHA256_RSA_PKCS",
-    "CKM_SHA256_RSA_PKCS_PSS",
-    "CKM_SHA384",
-    "CKM_SHA384_RSA_PKCS",
-    "CKM_SHA384_RSA_PKCS_PSS",
-    "CKM_SHA512",
-    "CKM_SHA512_RSA_PKCS",
-    "CKM_SHA512_RSA_PKCS_PSS",
-    "CKM_SHA_1",
-]
-
-[realisations.whonix-pk-cert-piv.yubikey.provenance]
-provider = "ykcs11"
-cakeysVersion = "0.1.0"
-
-[realisations.whonix-pk-cert-piv.yubikey.provenance.module]
-path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
-description = "PKCS#11 PIV Library (SP-800-73)"
-manufacturer = "Yubico (www.yubico.com)"
-version = "2.73"
-cryptoki = "3.0"
-
-[realisations.whonix-pk-cert-piv.yubikey.provenance.token]
-model = "YubiKey YK5"
-serial = "39189318"
-firmware = "5.74"
 
 [realisations.whonix-pk-piv.yubikey]
 object = "whonix-pk"
@@ -436,6 +216,7 @@ mode = "direct"
 schemes = ["rfc7093m4"]
 publicOnly = true
 binding = "token-asserted"
+observation = "sha256-qZIAHjkFzAn8e7Cg4KVg4X0hSoFf97JHOpyG+Qd+9is="
 
 [realisations.whonix-pk-piv.yubikey.locator]
 CKA_ID = "05"
@@ -461,6 +242,10 @@ CKA_ALWAYS_SENSITIVE = false
 [realisations.whonix-pk-piv.yubikey.observed]
 uri = "pkcs11:token=YubiKey%20PIV%20%2339189318;serial=39189318;id=%05;type=private"
 session = "public"
+
+[observations."sha256-qZIAHjkFzAn8e7Cg4KVg4X0hSoFf97JHOpyG+Qd+9is="]
+provider = "ykcs11"
+cakeysVersion = "0.1.0"
 mechanisms = [
     "CKM_ECDH1_DERIVE",
     "CKM_ECDSA",
@@ -491,18 +276,14 @@ mechanisms = [
     "CKM_SHA_1",
 ]
 
-[realisations.whonix-pk-piv.yubikey.provenance]
-provider = "ykcs11"
-cakeysVersion = "0.1.0"
-
-[realisations.whonix-pk-piv.yubikey.provenance.module]
+[observations."sha256-qZIAHjkFzAn8e7Cg4KVg4X0hSoFf97JHOpyG+Qd+9is=".module]
 path = "/nix/store/famzvhbdr3hj1biyj0jjx0b7kh8chp5l-yubico-piv-tool-2.7.3/lib/libykcs11.so"
 description = "PKCS#11 PIV Library (SP-800-73)"
 manufacturer = "Yubico (www.yubico.com)"
 version = "2.73"
 cryptoki = "3.0"
 
-[realisations.whonix-pk-piv.yubikey.provenance.token]
+[observations."sha256-qZIAHjkFzAn8e7Cg4KVg4X0hSoFf97JHOpyG+Qd+9is=".token]
 model = "YubiKey YK5"
 serial = "39189318"
 firmware = "5.74"

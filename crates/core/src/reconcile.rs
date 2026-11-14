@@ -4,7 +4,8 @@
 //! schemes) goes into [`Notes`], which the caller prints whether or not the run succeeded.
 
 use crate::config::{
-    AttestationRecord, AttrValue, Binding, Immutables, Lock, LockRealisation, Mode, Observed, Provenance, Session,
+    AttestationRecord, AttrValue, Binding, Immutables, Lock, LockRealisation, Mode, ModuleInfo, Observation, Observed,
+    Session,
 };
 use crate::id::{self, Scheme};
 use crate::plan::Target;
@@ -78,11 +79,12 @@ pub enum LockWrite {
     Record,
 }
 
-/// What this run observed of the token and what produced it: recorded on `realise`, compared
+/// What this run observed of the object and of the token: recorded on `realise`, compared
 /// (warnings only) with what the lock recorded.
 pub struct Facts {
     pub observed: Observed,
-    pub provenance: Provenance,
+    /// What the run saw of the module and token, recorded as an `observations` entry.
+    pub observation: Observation,
 }
 
 /// The label to compute `t`'s commitments with: the one the lock records for the object, else the
@@ -156,7 +158,7 @@ pub fn compare(
         if !update {
             object_unchanged(t, r, prev, notes)?;
         }
-        warn_provenance(t, prev, facts, notes);
+        warn_observed(t, prev, lock, facts, notes);
     }
     let unlisted = lock.unlisted_pairs(t.object_name);
     if !update && !unlisted.is_empty() {
@@ -440,8 +442,13 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
         attestation: r.attestation.clone(),
         policy: r.policy.clone(),
         immutables: r.immutables.clone(),
+        observation: Some(facts.observation.digest()),
         observed: Some(facts.observed.clone()),
-        provenance: Some(facts.provenance.clone()),
+        // The object's history (an import's `origin`) stays with the object it describes.
+        provenance: lock
+            .realisation(t.spec_name, t.token_name)
+            .filter(|prev| prev.object == t.object_name)
+            .and_then(|prev| prev.provenance.clone()),
     };
     if let Some(prev) = lock.realisation(t.spec_name, t.token_name) {
         for d in spec_diff(t, r, prev) {
@@ -454,11 +461,20 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
             notes.note(format_args!("re-recorded {t}: {n} {now}, which the lock did not record"));
         }
     }
+    // Keys are not recomputed on load, so an entry edited by hand may sit under this key: what
+    // the run saw replaces it.
+    if let Some(key) = &real.observation
+        && lock.observations.get(key) != Some(&facts.observation)
+    {
+        lock.observations.insert(key.clone(), facts.observation.clone());
+        changed = true;
+    }
     let slot = lock.realisations.entry(t.spec_name.into()).or_default();
     if slot.get(t.token_name) != Some(&real) {
         slot.insert(t.token_name.into(), real);
         changed = true;
     }
+    changed |= lock.drop_unreferenced_observations();
     // Partners in this file are recomputed; listed ones from other fragments are kept.
     let pairs = lock.computed_pairs();
     let present: Vec<String> = lock.objects.keys().cloned().collect();
@@ -473,41 +489,70 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
     Ok(changed)
 }
 
-/// `observed` and `provenance` never change a verdict: identity is enforced by the CA-IDs, so a
-/// different module build or token only warns. `realise` re-binds them.
-#[expect(clippy::many_single_char_names, reason = "the prev/now module and token pairs stay short")]
-fn warn_provenance(t: &Target, prev: &LockRealisation, now: &Facts, notes: &mut Notes) {
+/// `observed` and the observation never change a verdict: identity is enforced by the CA-IDs, so
+/// a different module build or token only warns. `realise` re-binds them.
+fn warn_observed(t: &Target, prev: &LockRealisation, lock: &Lock, now: &Facts, notes: &mut Notes) {
     if prev.observed.as_ref().is_some_and(|o| o.session == Session::User) && now.observed.session != Session::User {
         notes.warn(format_args!(
             "{t} was realised in a user session; this public session cannot see other private keys under its CKA_ID"
         ));
     }
-    if let Some(o) = &prev.observed {
-        let gone: Vec<&str> =
-            o.mechanisms.iter().filter(|m| !now.observed.mechanisms.contains(m)).map(String::as_str).collect();
-        if !gone.is_empty() {
-            notes.warn(format_args!(
-                "{t} was realised where the token offered {}, which it no longer does (functions.<token> in Nix)",
-                gone.join(", ")
-            ));
-        }
+    let Some(p) = prev.observation.as_ref().and_then(|k| lock.observations.get(k)) else { return };
+    let n = &now.observation;
+    let gone: Vec<&str> = p.mechanisms.iter().filter(|m| !n.mechanisms.contains(m)).map(String::as_str).collect();
+    if !gone.is_empty() {
+        notes.warn(format_args!(
+            "{t} was realised where the token offered {}, which it no longer does (functions.<token> in Nix)",
+            gone.join(", ")
+        ));
     }
-    let Some(p) = &prev.provenance else { return };
-    let n = &now.provenance;
     if !p.extra.is_empty() {
         let keys: Vec<&str> = p.extra.keys().map(String::as_str).collect();
         notes.warn(format_args!(
-            "{t}: the lock records provenance this cakeys does not know ({}); kept, not checked",
+            "{t}: the lock records observations this cakeys does not know ({}); kept, not checked",
             keys.join(", ")
         ));
     }
-    if p.provider != n.provider {
-        notes.warn(format_args!("{t} was realised with provider {}, now {}", p.provider, n.provider));
+    let none = || "(none)".to_owned();
+    if let Some(was) = &p.provider
+        && Some(was) != n.provider.as_ref()
+    {
+        notes.warn(format_args!(
+            "{t} was realised with provider {was}, now {}",
+            n.provider.clone().unwrap_or_else(none)
+        ));
     }
-    if p.cakeys_version != n.cakeys_version {
-        notes.note(format_args!("{t} was realised by cakeys {}, now {}", p.cakeys_version, n.cakeys_version));
+    if let Some(was) = &p.cakeys_version
+        && Some(was) != n.cakeys_version.as_ref()
+    {
+        notes.note(format_args!(
+            "{t} was realised by cakeys {was}, now {}",
+            n.cakeys_version.clone().unwrap_or_else(none)
+        ));
     }
-    let (m, nm) = (&p.module, &n.module);
+    if p.provider.is_some() && p.profile != n.profile {
+        notes.note(format_args!(
+            "{t} was realised under capability profile {}, now {}",
+            p.profile.clone().unwrap_or_else(none),
+            n.profile.clone().unwrap_or_else(none)
+        ));
+    }
+    if let (Some(m), Some(nm)) = (&p.module, &n.module) {
+        warn_module(t, m, nm, notes);
+    }
+    if let (Some(k), Some(nk)) = (&p.token, &n.token)
+        && k != nk
+    {
+        notes.warn(format_args!(
+            "{t} was realised on token {} #{} (firmware {}), now {} #{} (firmware {})",
+            k.model, k.serial, k.firmware, nk.model, nk.serial, nk.firmware
+        ));
+    }
+}
+
+/// A different module build warns, another file of the same build is a note, and the same file
+/// with other content (replaced in place) warns.
+fn warn_module(t: &Target, m: &ModuleInfo, nm: &ModuleInfo, notes: &mut Notes) {
     if !m.same_build_identity(nm) {
         notes.warn(format_args!(
             "{t} was realised with module {} {} ({}), now {} {} ({})",
@@ -522,19 +567,12 @@ fn warn_provenance(t: &Target, prev: &LockRealisation, now: &Facts, notes: &mut 
         // cannot show.
         notes.warn(format_args!("{t} was realised with module file {} of hash {was}, now {now}", m.path));
     }
-    let (k, nk) = (&p.token, &n.token);
-    if k != nk {
-        notes.warn(format_args!(
-            "{t} was realised on token {} #{} (firmware {}), now {} #{} (firmware {})",
-            k.model, k.serial, k.firmware, nk.model, nk.serial, nk.firmware
-        ));
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, ModuleInfo, TokenInfo};
+    use crate::config::{Config, Origin, Provenance, TokenInfo};
 
     const SRI_A: &str = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
     const SRI_B: &str = "sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564=";
@@ -570,23 +608,21 @@ mod tests {
 
     fn facts(module_version: &str) -> Facts {
         Facts {
-            observed: Observed {
-                uri: "pkcs11:token=t".into(),
-                session: Session::User,
+            observed: Observed { uri: "pkcs11:token=t".into(), session: Session::User },
+            observation: Observation {
+                provider: Some("generic".into()),
+                cakeys_version: Some("0.1.0".into()),
+                profile: None,
                 mechanisms: vec!["CKM_ECDSA".into()],
-            },
-            provenance: Provenance {
-                provider: "generic".into(),
-                cakeys_version: "0.1.0".into(),
-                module: ModuleInfo {
+                module: Some(ModuleInfo {
                     path: "/m.so".into(),
                     hash: None,
                     description: "m".into(),
                     manufacturer: "x".into(),
                     version: module_version.into(),
                     cryptoki: "3.0".into(),
-                },
-                token: TokenInfo { model: "m".into(), serial: "1".into(), firmware: "1.0".into() },
+                }),
+                token: Some(TokenInfo { model: "m".into(), serial: "1".into(), firmware: "1.0".into() }),
                 extra: BTreeMap::new(),
             },
         }
@@ -719,6 +755,43 @@ mod tests {
         );
     }
 
+    /// One entry per distinct observation (review A3): a re-record under another module build
+    /// names a new entry and drops the one nothing names any more, and the object's history
+    /// (`provenance.origin`) stays with the realisation.
+    #[test]
+    fn observations_are_pruned_and_origin_kept() {
+        let cfg = config();
+        let t = Target::new(&cfg, "s", "t").unwrap();
+        let mut lock = empty_lock();
+        let key = |lock: &Lock| lock.realisation("s", "t").unwrap().observation.clone().unwrap();
+        reconcile(&t, &resolved(&t), &mut lock, &facts("1"), LockWrite::Record, &mut Notes::default()).unwrap();
+        let first = key(&lock);
+        assert_eq!(first, facts("1").observation.digest());
+        assert_eq!(lock.observations.keys().collect::<Vec<_>>(), [&first]);
+        let origin = Provenance {
+            origin: Some(Origin {
+                from: "a".into(),
+                method: "public".into(),
+                exposure: crate::migrate::Exposure::Public,
+                declared: false,
+            }),
+        };
+        lock.realisations.get_mut("s").unwrap().get_mut("t").unwrap().provenance = Some(origin.clone());
+        assert!(
+            reconcile(&t, &resolved(&t), &mut lock, &facts("2"), LockWrite::Record, &mut Notes::default()).unwrap()
+        );
+        let second = key(&lock);
+        assert_ne!(first, second);
+        assert_eq!(lock.observations.keys().collect::<Vec<_>>(), [&second]);
+        assert_eq!(lock.realisation("s", "t").unwrap().provenance, Some(origin));
+        // An entry edited under its key is replaced by what the run saw.
+        lock.observations.get_mut(&second).unwrap().mechanisms.clear();
+        assert!(
+            reconcile(&t, &resolved(&t), &mut lock, &facts("2"), LockWrite::Record, &mut Notes::default()).unwrap()
+        );
+        assert_eq!(lock.observations[&second], facts("2").observation);
+    }
+
     /// The module file's hash: other content at the same path warns (replaced in place, which a
     /// path outside the Nix store cannot show); another path is a note, as a Nix rebuild.
     #[test]
@@ -727,8 +800,9 @@ mod tests {
         let t = Target::new(&cfg, "s", "t").unwrap();
         let with = |path: &str, hash: &str| {
             let mut f = facts("1");
-            f.provenance.module.path = path.into();
-            f.provenance.module.hash = Some(hash.into());
+            let m = f.observation.module.as_mut().unwrap();
+            m.path = path.into();
+            m.hash = Some(hash.into());
             f
         };
         let mut lock = empty_lock();

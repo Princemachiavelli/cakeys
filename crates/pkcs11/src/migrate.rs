@@ -7,7 +7,7 @@
 use crate::ops::{self, Notes, Target};
 use crate::resolution::{self, Resolved};
 use crate::{Registry, Token};
-use cakeys_core::config::{AttrValue, Lock, ModuleInfo, TokenCfg};
+use cakeys_core::config::{AttrValue, Lock, ModuleInfo, Observation, TokenCfg, TokenObservation};
 use cakeys_core::migrate::{Accept, Material, OaepHash, PlaintextImport, Side, Transport};
 use cakeys_core::types::{KeyType, ObjectClass};
 use cakeys_core::{KmError, Result};
@@ -32,27 +32,22 @@ pub fn side(tok: &Token) -> Result<Side> {
     }
 }
 
-/// A token's capabilities from the lock alone, for a token this host cannot open: the provider
-/// its realisations recorded, the union of their observed mechanisms, and the profiles that
-/// resolve from what the lock recorded. `None` when the lock records nothing on the token, or
-/// a provider this build does not link.
+/// A token's capabilities from the lock alone, for a token this host cannot open: the token's
+/// observation (review A3) — its provider, mechanisms, and the profiles that resolve from the
+/// module and token it recorded. `None` when the observation records no provider, or one this
+/// build does not link.
 #[must_use]
-pub fn side_from_lock(token: &str, lock: &Lock, registry: &Registry) -> Option<Result<Side>> {
-    let recorded: Vec<_> = lock.realisations.values().filter_map(|by_token| by_token.get(token)).collect();
-    let provider = recorded.iter().find_map(|r| r.provenance.as_ref().map(|p| p.provider.clone()))?;
-    let mechanisms: BTreeSet<String> =
-        recorded.iter().filter_map(|r| r.observed.as_ref()).flat_map(|o| o.mechanisms.iter().cloned()).collect();
-    let mechanisms: Vec<String> = mechanisms.into_iter().collect();
+pub fn side_from_lock(token: &str, observed: &Observation, registry: &Registry) -> Option<Result<Side>> {
+    let provider = observed.provider.clone()?;
     // The lock records the module and the token it ran against: resolve what the profiles say
     // about exactly that (the forwarder, the binding layer), like an open would.
-    let (module, token_info) =
-        recorded.iter().find_map(|r| r.provenance.as_ref().map(|p| (p.module.clone(), p.token.clone())))?;
+    let (module, token_info) = (observed.module.as_ref()?, observed.token.as_ref()?);
     let cfg = TokenCfg { provider: Some(provider.clone()), ..lockless_token_cfg() };
-    let resolved = resolution::resolve(&cfg, &module, Some(&token_info), &provider).ok()?;
+    let resolved = resolution::resolve(&cfg, module, Some(token_info), &provider).ok()?;
     if resolved.module.is_none() {
-        return Some(Ok(registry.named(&provider)?.migration(token, &mechanisms)));
+        return Some(Ok(registry.named(&provider)?.migration(token, &observed.mechanisms)));
     }
-    Some(side_of(resolved.module.as_ref()?, &resolved, token, &provider, &mechanisms))
+    Some(side_of(resolved.module.as_ref()?, &resolved, token, &provider, &observed.mechanisms))
 }
 
 /// A target's capabilities from its transport file: its provider's profile over the mechanisms
@@ -367,14 +362,26 @@ fn side_or_lock(
     open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
     notes: &mut Notes,
 ) -> Result<(Side, &'static str)> {
-    match open(name, notes) {
-        Ok(tok) => Ok((side(&tok)?, "token")),
-        Err(e) => match side_from_lock(name, lock, registry) {
-            Some(side) => {
-                notes.note(format_args!("capabilities of '{name}' come from the lock: the token did not open ({e})"));
-                Ok((side?, "lock"))
-            }
-            None => Err(e),
-        },
+    let e = match open(name, notes) {
+        Ok(tok) => return Ok((side(&tok)?, "token")),
+        Err(e) => e,
+    };
+    let observed = match lock.token_observation(name) {
+        TokenObservation::One(o) => o,
+        TokenObservation::None => return Err(e),
+        TokenObservation::Several(groups) => {
+            notes.note(format_args!(
+                "capabilities of '{name}' cannot come from the lock: {}",
+                TokenObservation::several(name, &groups)
+            ));
+            return Err(e);
+        }
+    };
+    match side_from_lock(name, observed, registry) {
+        Some(side) => {
+            notes.note(format_args!("capabilities of '{name}' come from the lock: the token did not open ({e})"));
+            Ok((side?, "lock"))
+        }
+        None => Err(e),
     }
 }

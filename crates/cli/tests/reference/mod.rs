@@ -50,11 +50,17 @@ impl Env {
         self.write_config(&(head + body));
     }
 
-    /// Replace the lock with a hand-written one, keeping the realisations already recorded (the
-    /// part under test is `objects`).
+    /// Replace the lock with a hand-written one, keeping the realisations already recorded and the
+    /// observations they name (the part under test is `objects`).
     fn write_lock_keeping_realisations(&self, text: &str) {
         let mut lock: toml::Table = toml::from_str(text).unwrap();
-        lock.insert("realisations".into(), self.lock()["realisations"].clone());
+        let now = self.lock();
+        // The realisations name entries of the observation table: they go together.
+        for table in ["realisations", "observations"] {
+            if let Some(t) = now.get(table) {
+                lock.insert(table.into(), t.clone());
+            }
+        }
         std::fs::write(self.dir.join("keys.lock"), toml::to_string(&lock).unwrap()).unwrap();
     }
 
@@ -618,19 +624,20 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     assert_eq!(e.code(&r), 0);
 
     let real = &e.lock()["realisations"]["signing-soft"]["ref"];
+    let seen = e.observation("signing-soft", "ref");
     // The file actually loaded, symlinks resolved: provenance only.
     let loaded = std::fs::canonicalize(&e.module).unwrap();
     let loaded = loaded.to_str().unwrap();
-    assert_eq!(real["provenance"]["module"]["path"].as_str(), Some(loaded));
-    assert_eq!(real["provenance"]["module"]["manufacturer"].as_str(), Some(REF.manufacturer));
-    assert_ne!(real["provenance"]["module"]["version"].as_str().unwrap(), "");
-    assert_eq!(real["provenance"]["token"]["model"].as_str(), Some(REF.model));
+    assert_eq!(seen["module"]["path"].as_str(), Some(loaded));
+    assert_eq!(seen["module"]["manufacturer"].as_str(), Some(REF.manufacturer));
+    assert_ne!(seen["module"]["version"].as_str().unwrap(), "");
+    assert_eq!(seen["token"]["model"].as_str(), Some(REF.model));
     assert!(!real["observed"]["uri"].as_str().unwrap().contains("module-path"), "URI is a pure locator");
     assert!(!stderr(&e.km(&verify)).contains("warning"));
 
     let path = e.dir.join("keys.lock");
     let original = std::fs::read_to_string(&path).unwrap();
-    let version = real["provenance"]["module"]["version"].as_str().unwrap().to_owned();
+    let version = seen["module"]["version"].as_str().unwrap().to_owned();
 
     // A different module version: still verifies (identity is the CA-ID), with a warning. Not
     // 0.0: kryoptic reports that as its library version.
@@ -647,7 +654,7 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
 
     // The file's hash is recorded too; other content at the same path (replaced in place, as
     // outside the Nix store) is a warning.
-    let hash = real["provenance"]["module"]["hash"].as_str().unwrap().to_owned();
+    let hash = seen["module"]["hash"].as_str().unwrap().to_owned();
     assert_eq!(hash, sri(&std::fs::read(loaded).unwrap()));
     std::fs::write(&path, original.replace(&hash, "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=")).unwrap();
     let o = e.km(&verify);
@@ -666,7 +673,7 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     // symlink given with --module, or a bare file name found by the library search.
     let module_path = |o: &Output| {
         assert_eq!(code(o), 0, "{}", stderr(o));
-        e.lock()["realisations"]["signing-soft"]["ref"]["provenance"]["module"]["path"].as_str().unwrap().to_owned()
+        e.observation("signing-soft", "ref")["module"]["path"].as_str().unwrap().to_owned()
     };
     let link = e.dir.join("module.so");
     std::os::unix::fs::symlink(&e.module, &link).unwrap();
@@ -687,23 +694,37 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     assert!(!stderr(&e.km(&verify)).contains("warning"));
 }
 
-/// The field classes are real: removing `observed` and `provenance` changes no verdict, while the
-/// compared fields and the version are required.
+/// The field classes are real: removing `observed`, `provenance` and the observation table
+/// changes no verdict, while the compared fields and the version are required — and a
+/// realisation must not name an observation the lock lacks.
 #[test]
 fn observed_and_provenance_never_change_a_verdict() {
     let Some(e) = env("classes") else { return };
     e.config(EC.replace("ec-lifecycle", "classes").as_str());
     let verify = ["verify", "signing-soft", "--token", "ref"];
     assert_eq!(e.code(&["realise", "signing-soft", "--token", "ref", "--update-lock"]), 0);
-    let full = e.lock();
+    let mut full = e.lock();
+    full["realisations"]["signing-soft"]["ref"].as_table_mut().unwrap().insert(
+        "provenance".into(),
+        toml::from_str("origin = { from = \"elsewhere\", method = \"public\", exposure = \"public\" }").unwrap(),
+    );
     let strip = |mut lock: toml::Value| {
         let real = lock["realisations"]["signing-soft"]["ref"].as_table_mut().unwrap();
-        assert!(real.remove("observed").is_some() && real.remove("provenance").is_some());
+        for field in ["observed", "observation", "provenance"] {
+            assert!(real.remove(field).is_some(), "{field}");
+        }
+        assert!(lock.as_table_mut().unwrap().remove("observations").is_some());
         lock
     };
     let write = |lock: &toml::Value| std::fs::write(e.dir.join("keys.lock"), toml::to_string(lock).unwrap()).unwrap();
+    write(&full);
+    assert_eq!(e.code(&verify), 0);
     write(&strip(full.clone()));
     assert_eq!(e.code(&verify), 0);
+    let mut dangling = full.clone();
+    dangling.as_table_mut().unwrap().remove("observations");
+    write(&dangling);
+    assert_eq!(e.code(&verify), 17);
     // A wrong ID is still a mismatch, a missing record still a precondition failure.
     let mut wrong = strip(full.clone());
     wrong["objects"]["signing"]["ids"]["rfc7093m4"] = sri(b"other").into();
@@ -2083,6 +2104,7 @@ fn gc_prints_then_removes_stale_entries() {
     e.config(EC.replace("ec-lifecycle", "gc-key").as_str());
     assert_eq!(e.code(&["realise", "signing-soft", "--token", "ref", "--update-lock"]), 0);
     let id = e.locked_id("signing", "rfc7093m4");
+    let key = || e.lock()["realisations"]["signing-soft"]["ref"]["observation"].as_str().unwrap().to_owned();
 
     // Nothing stale: prints nothing, and --apply writes nothing.
     for args in [&["gc"][..], &["gc", "--apply"][..]] {
@@ -2093,18 +2115,21 @@ fn gc_prints_then_removes_stale_entries() {
     assert!(e.lock()["realisations"]["signing-soft"]["ref"].is_table());
     assert_eq!(e.locked_id("signing", "rfc7093m4"), id);
 
-    // The spec is gone: its realisation is stale, printed as the table name; --apply removes it
-    // but keeps the object's ids (the material may live on elsewhere).
+    // The spec is gone: its realisation is stale, printed as the table name, and so is the
+    // observation only it named; --apply removes both but keeps the object's ids (the material may
+    // live on elsewhere).
     e.config(object);
+    let stale = format!("realisations.signing-soft.ref\nobservations.\"{}\"", key());
     let o = e.km(&["gc"]);
     assert_eq!(code(&o), 0);
-    assert_eq!(stdout(&o), "realisations.signing-soft.ref");
+    assert_eq!(stdout(&o), stale);
     assert!(e.lock()["realisations"]["signing-soft"]["ref"].is_table(), "not removed before --apply");
     let o = e.km(&["gc", "--apply"]);
     assert_eq!(code(&o), 0);
-    assert_eq!(stdout(&o), "realisations.signing-soft.ref");
+    assert_eq!(stdout(&o), stale);
     assert!(e.lock().get("realisations").and_then(|r| r.get("signing-soft")).is_none());
     assert_eq!(e.locked_id("signing", "rfc7093m4"), id);
+    assert!(e.lock().get("observations").is_none());
 
     // Re-recorded, then the spec loses the token: the same realisation is stale again.
     let spec_body = "[specs.signing-soft]\nobject = \"signing\"\nattributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
@@ -2114,7 +2139,8 @@ fn gc_prints_then_removes_stale_entries() {
     e.config(&format!("{object}\n{spec_full}"));
     assert_eq!(e.code(&["realise", "signing-soft", "--token", "ref", "--update-lock"]), 0);
     e.config(&format!("{object}\n{spec_no_token}"));
-    assert_eq!(stdout(&e.km(&["gc"])), "realisations.signing-soft.ref");
+    let stale = format!("realisations.signing-soft.ref\nobservations.\"{}\"", key());
+    assert_eq!(stdout(&e.km(&["gc"])), stale);
     assert_eq!(e.code(&["gc", "--apply"]), 0);
     assert!(e.lock().get("realisations").and_then(|r| r.get("signing-soft")).is_none());
 
@@ -2195,9 +2221,9 @@ fn the_lock_pins_type_spec_provenance_and_schemes() {
     let locked = std::fs::read_to_string(&path).unwrap();
     let lock: toml::Value = toml::from_str(&locked).unwrap();
     assert_eq!(lock["objects"]["signing"]["type"]["curve"].as_str(), Some("secp256r1"));
-    let real = &lock["realisations"]["signing-soft"]["ref"];
-    assert_eq!(real["provenance"]["provider"].as_str(), Some(REF.provider));
-    assert!(real["provenance"]["cakeysVersion"].as_str().is_some_and(|v| !v.is_empty()));
+    let seen = e.observation("signing-soft", "ref");
+    assert_eq!(seen["provider"].as_str(), Some(REF.provider));
+    assert!(seen["cakeysVersion"].as_str().is_some_and(|v| !v.is_empty()));
 
     // 1. A curve alias is the same object type: keys.toml and the lock canonicalize it, so
     //    nothing changed and nothing needs re-recording.
@@ -2223,7 +2249,7 @@ fn the_lock_pins_type_spec_provenance_and_schemes() {
     let o = e.km(&verify);
     assert_eq!(code(&o), 0);
     assert!(stderr(&o).contains("warning:") && stderr(&o).contains("provider other"), "{}", stderr(&o));
-    let version = real["provenance"]["cakeysVersion"].as_str().unwrap();
+    let version = seen["cakeysVersion"].as_str().unwrap();
     std::fs::write(&path, locked.replace(&format!("cakeysVersion = \"{version}\""), "cakeysVersion = \"0.0.0\""))
         .unwrap();
     let o = e.km(&verify);

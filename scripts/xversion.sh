@@ -6,6 +6,10 @@
 #   scripts/xversion.sh record <old-cakeys> <dir>   # fresh SoftHSM token, objects of every class, lock
 #   scripts/xversion.sh check  <new-cakeys> <dir>   # verify, compare-only realise, re-record, diff
 #
+# The lock layout changed once, in place (WORKPLAN.md stage 1: the [observations] table): a lock
+# recorded by an older build has `provenance.module` per realisation and does not load here. So
+# <old-cakeys> must be built at or after that change; `check` refuses an older base lock by name.
+#
 # Needs softhsm2-util and pkcs11-tool on PATH (the dev shell has both).
 set -euo pipefail
 
@@ -109,6 +113,12 @@ EOF
 }
 
 check() {
+  # The pre-observation-table layout (per-realisation provenance.module): not readable by a build
+  # that has the table, so the comparison would only report that.
+  if [[ $(<"$dir/base.lock") == *".provenance.module]"* ]]; then
+    echo "$dir/base.lock has the lock layout before the observation table; record it with a newer build" >&2
+    exit 1
+  fi
   cp "$dir/base.lock" "$dir/keys.lock"
   for s in "${specs[@]}"; do
     km verify "$s" --token soft >/dev/null

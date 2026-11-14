@@ -438,26 +438,40 @@ CKA_SIGN = true ; CKA_DECRYPT = true ; CKA_EXTRACTABLE = false ; ...
 [realisations.<spec>.<token>.immutables] # keys: fixed at creation
 CKA_LOCAL = true ; CKA_NEVER_EXTRACTABLE = true ; CKA_ALWAYS_SENSITIVE = true ; CKA_KEY_GEN_MECHANISM = "CKM_..."
 
-# Observed: facts about the token; never change a verdict (optional).
+# Observed: facts about the object and the token; never change a verdict (optional).
+observation = "sha256-..."           # (in [realisations.<spec>.<token>]) the observations entry it was recorded with
 [realisations.<spec>.<token>.observed]
 uri = "pkcs11:token=...;serial=...;object=...;id=%..;type=private|public|cert|secret-key|data"
 session = "user"                     # user (logged in) or public: what the duplicate-ID check could see
-mechanisms = ["CKM_..."]             # usable mechanisms; feeds functions.<token> in Nix
 
-# Provenance: what produced the record; differences warn or note (optional).
-[realisations.<spec>.<token>.provenance]
+# Provenance: the object's history; never a verdict (optional). Kept when the same object is re-recorded.
+[realisations.<spec>.<token>.provenance.origin]  # an imported key (MIGRATE.md D7)
+from = "<token>" ; method = "<method name>" ; exposure = "<level>" ; declared = true  # declared: vendor methods only
+
+# Each distinct observation once (review A3), keyed by the SRI SHA-256 of its JCS form; differences warn or note.
+[observations."sha256-..."]
 provider = "softhsm"
 cakeysVersion = "0.1.0"
-[realisations.<spec>.<token>.provenance.module] # C_GetInfo, and the file the loader mapped
+profile = "softhsm/2.7"              # the resolved module capability profile (PROVIDERS.md D8), when one is committed
+mechanisms = ["CKM_..."]             # usable mechanisms; feeds functions.<token> in Nix
+[observations."sha256-...".module]   # C_GetInfo, and the file the loader mapped
 path = "/nix/store/…/libsofthsm2.so" ; hash = "sha256-…" ; description = "..." ; manufacturer = "..." ; version = "M.m" ; cryptoki = "M.m"
-[realisations.<spec>.<token>.provenance.token]  # C_GetTokenInfo
+[observations."sha256-...".token]    # C_GetTokenInfo
 model = "..." ; serial = "..." ; firmware = "M.m"
 ```
 
-- **Every realisation field has one class:** compared, observed or provenance. Removing `observed`
-  and `provenance` changes no verdict, and a lock without `version` or a compared field is
-  invalid (exit 17) — `observed_and_provenance_never_change_a_verdict`. An observed mechanism the
-  token no longer offers is a warning.
+- **Every realisation field has one class:** compared, observed or provenance. Removing
+  `observed`, `observation`, `provenance` and the `observations` table changes no verdict, and a
+  lock without `version` or a compared field is invalid (exit 17) —
+  `observed_and_provenance_never_change_a_verdict`. An observed mechanism the token no longer
+  offers is a warning.
+- **The observation table only deduplicates.** A realisation still says exactly what it was
+  recorded with; two recorded through different module builds name two entries. An entry's
+  key is not recomputed on load, and an entry is the one lock table that keeps keys this cakeys
+  does not know. A realisation naming a missing entry is invalid (17); a write and `gc` drop the
+  entries nothing names. A token's observation (`Lock::token_observation`, for the static gate
+  and `export` from the lock) is known only when all its realisations name one entry; otherwise
+  the caller says so and names `realise`.
 - **The policy vector is closed-world.** The spec declares the attributes it requires; the lock
   records every attribute the object shows for its class, declared or not — the booleans
   (SoftHSM EC private keys, for example, default to `CKA_DECRYPT`, `CKA_UNWRAP` and
@@ -502,7 +516,7 @@ model = "..." ; serial = "..." ; firmware = "M.m"
   private keys, so `observed.session` records which view the check had; going from `user` to
   `public` warns — `a_second_private_key_under_the_same_id_is_ambiguous`.
 - **Versions** are raw `CK_VERSION` major.minor (ykcs11 2.7.3 → `2.73`).
-- **Provenance:** a different module build identity or token is a *warning*, and so is a
+- **Observations:** a different module build identity or token is a *warning*, and so is a
   different module file `hash` at the same `path` (the file replaced in place, which a path
   outside the Nix store cannot show); only a different module file `path` is a *note*. None
   fails — `module_and_token_provenance_warn_but_do_not_fail`. The `path` is the file the dynamic
@@ -589,7 +603,7 @@ Exit codes:
   test.
 - **The fix-up rule:** a hook must return exactly what a spec-compliant module would, so
   identities are portable. That is also why the provider never takes part in an identity: the
-  lock records it only as provenance (`provenance.provider`, §4.2), where a change warns.
+  lock records it only as an observation (`observations.<key>.provider`, §4.2), where a change warns.
 
 | Provider | Quirks handled or recorded |
 |---|---|
@@ -818,7 +832,8 @@ label and the hash itself. Everything else is fixed by definition:
   `pop-*` methods share the top rank). The challenge layout
   (`cakeys/pop/v1`) is pinned by `message_layout_is_pinned`, though nothing stored depends on it;
 - lock field names (`objects`, `ids`, `realisations`, `object`, `locator`, `specDigest`,
-  `schemes`, `pairs`, `publicOnly`, `binding`, `policy`, `immutables`, `observed`, `provenance`,
+  `schemes`, `pairs`, `publicOnly`, `binding`, `policy`, `immutables`, `observation`, `observed`,
+  `provenance`, `origin`, `observations`, `provider`, `cakeysVersion`, `profile`,
   `module`, `token`, `mechanisms`, `uri`);
 - `keys.toml` keys;
 - exit codes;
