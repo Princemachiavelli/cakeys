@@ -2,7 +2,6 @@
 # the sandbox.
 {
   pkgs,
-  self,
   demo,
   deny,
   fuzz,
@@ -10,6 +9,10 @@
 }:
 let
   inherit (pkgs.stdenv.hostPlatform) system;
+  probe = builtins.path {
+    path = ./nix/pcsc-sandbox-probe.nix;
+    name = "pcsc-sandbox-probe.nix";
+  };
 in
 {
   # nix run .#demo (-- --keep to leave the tokens and keys.toml for poking around)
@@ -38,7 +41,9 @@ in
     meta.description = "Print raw PC/SC context and reader-list return codes";
   };
   # Same probe from inside the Nix build sandbox (needs /run/pcscd in sandbox-paths): builds
-  # the flake's legacyPackages.pcscSandboxProbe with a fresh nonce.
+  # nix/pcsc-sandbox-probe.nix with a fresh nonce. builtins.path copies that one file, not the
+  # source tree, and builtins.storePath gives each store path the context that puts it in the
+  # sandbox.
   pcsc-sandbox-probe = {
     type = "app";
     meta.description = "Run pcsc-probe inside the Nix build sandbox (uncached)";
@@ -47,7 +52,13 @@ in
         name = "pcsc-sandbox-probe";
         text = ''
           out=$(nix build --impure --no-link --print-out-paths --expr \
-            "(builtins.getFlake \"path:${self}\").legacyPackages.${system}.pcscSandboxProbe { nonce = \"$(date +%s%N)\"; }")
+            "import ${probe} {
+              system = \"${system}\";
+              bash = builtins.storePath \"${pkgs.bash}\";
+              coreutils = builtins.storePath \"${pkgs.coreutils}\";
+              pcsc-probe = builtins.storePath \"${pcsc-probe}\";
+              nonce = \"$(date +%s%N)\";
+            }")
           cat "$out"
         '';
       }

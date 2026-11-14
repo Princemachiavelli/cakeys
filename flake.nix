@@ -58,13 +58,13 @@
       # nix build --impure --expr '(builtins.getFlake "path:.").legacyPackages.x86_64-linux.pcscSandboxProbe { nonce = "1"; }'
       legacyPackages.${system}.pcscSandboxProbe =
         { nonce }:
-        pkgs.runCommand "pcsc-sandbox-probe-${nonce}" { } ''
-          rc=0
-          { id; ${pkgs.lib.getExe pcsc-probe} || rc=$?; echo "exit=$rc"; } > $out 2>&1
-        '';
+        import ./nix/pcsc-sandbox-probe.nix {
+          inherit system pcsc-probe nonce;
+          inherit (pkgs) bash coreutils;
+        };
 
       apps.${system} = import ./apps.nix {
-        inherit pkgs self;
+        inherit pkgs;
         inherit (local)
           demo
           deny
