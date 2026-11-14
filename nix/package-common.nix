@@ -28,6 +28,11 @@ let
   tpm2 = withTpm2;
   # kryoptic's module is a .dylib on darwin; SoftHSM's and p11-kit's client stay .so.
   inherit (stdenv.hostPlatform.extensions) sharedLibrary;
+  # A cross build runs no check phase (it cannot execute its tests), but the strings below would
+  # still make every token package a dependency, built for the host platform — and kryoptic
+  # does not cross-compile. So the test environment exists only where the tests can run. The
+  # modules it names are host packages on purpose: the test binaries load them.
+  canCheck = stdenv.buildPlatform.canExecute stdenv.hostPlatform;
 in
 {
   # cryptoki 0.12.1 (and main) gives KeyType::SHA224/384/512_HMAC the value of CKK_SHA256_HMAC, so those key
@@ -126,45 +131,49 @@ in
       tpm2-abrmd
       dbus
     ];
-    preCheck = ''
-      export SOFTHSM2_CONF=$TMPDIR/softhsm2.conf
-      mkdir -p $TMPDIR/softhsm-tokens
-      printf 'directories.tokendir = %s\nobjectstore.backend = file\nlog.level = ERROR\n' \
-        $TMPDIR/softhsm-tokens > $SOFTHSM2_CONF
-      softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678
-      export CAKEYS_TEST_MODULE=${softhsm}/lib/softhsm/libsofthsm2.so
-      export CAKEYS_TEST_REQUIRE=1
+    preCheck = lib.optionalString canCheck (
+      ''
+        export SOFTHSM2_CONF=$TMPDIR/softhsm2.conf
+        mkdir -p $TMPDIR/softhsm-tokens
+        printf 'directories.tokendir = %s\nobjectstore.backend = file\nlog.level = ERROR\n' \
+          $TMPDIR/softhsm-tokens > $SOFTHSM2_CONF
+        softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678
+        export CAKEYS_TEST_MODULE=${softhsm}/lib/softhsm/libsofthsm2.so
+        export CAKEYS_TEST_REQUIRE=1
 
-      # kryoptic (PKCS#11 3.2): the shared reference suite runs against it too. The slot table
-      # ends the file: the suite appends a mechanism deny list to it (tests/common/mod.rs).
-      export KRYOPTIC_CONF=$TMPDIR/kryoptic.conf
-      printf '[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' $TMPDIR/kryoptic.sql > $KRYOPTIC_CONF
-      export CAKEYS_KRYOPTIC_MODULE=${kryoptic}/lib/libkryoptic_pkcs11${sharedLibrary}
-      pkcs11-tool --module $CAKEYS_KRYOPTIC_MODULE --init-token --slot 1 --so-pin 5678 --label kmtest > /dev/null
-      pkcs11-tool --module $CAKEYS_KRYOPTIC_MODULE --token-label kmtest --login --login-type so \
-        --so-pin 5678 --init-pin --pin 1234 > /dev/null
-      export CAKEYS_KRYOPTIC_REQUIRE=1
+        # kryoptic (PKCS#11 3.2): the shared reference suite runs against it too. The slot table
+        # ends the file: the suite appends a mechanism deny list to it (tests/common/mod.rs).
+        export KRYOPTIC_CONF=$TMPDIR/kryoptic.conf
+        printf '[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' $TMPDIR/kryoptic.sql > $KRYOPTIC_CONF
+        export CAKEYS_KRYOPTIC_MODULE=${kryoptic}/lib/libkryoptic_pkcs11${sharedLibrary}
+        pkcs11-tool --module $CAKEYS_KRYOPTIC_MODULE --init-token --slot 1 --so-pin 5678 --label kmtest > /dev/null
+        pkcs11-tool --module $CAKEYS_KRYOPTIC_MODULE --token-label kmtest --login --login-type so \
+          --so-pin 5678 --init-pin --pin 1234 > /dev/null
+        export CAKEYS_KRYOPTIC_REQUIRE=1
 
-      # p11-kit forwarding: a second SoftHSM token behind `p11-kit server` (short socket path).
-      SOFTHSM_MODULE=$CAKEYS_TEST_MODULE bash ${./p11kit-test-env.sh} up $TMPDIR/p11
-      . $TMPDIR/p11/env
-      export CAKEYS_P11KIT_CLIENT=${lib.getLib p11-kit}/lib/pkcs11/p11-kit-client.so
-      export CAKEYS_P11KIT_REQUIRE=1
+        # p11-kit forwarding: a second SoftHSM token behind `p11-kit server` (short socket path).
+        SOFTHSM_MODULE=$CAKEYS_TEST_MODULE bash ${./p11kit-test-env.sh} up $TMPDIR/p11
+        . $TMPDIR/p11/env
+        export CAKEYS_P11KIT_CLIENT=${lib.getLib p11-kit}/lib/pkcs11/p11-kit-client.so
+        export CAKEYS_P11KIT_REQUIRE=1
 
-      export HOME=$TMPDIR
-    ''
-    + lib.optionalString tpm2 ''
-      bash ${./tpm2-test-env.sh} up $TMPDIR/tpm || { tail -n 20 $TMPDIR/tpm/*.log; exit 1; }
-      . $TMPDIR/tpm/env
-      export CAKEYS_TPM_MODULE=${lib.getLib tpm2-pkcs11}/lib/libtpm2_pkcs11.so
-      export CAKEYS_TPM_REQUIRE=1
-    '';
-    postCheck = ''
-      bash ${./p11kit-test-env.sh} down $TMPDIR/p11
-    ''
-    + lib.optionalString tpm2 ''
-      bash ${./tpm2-test-env.sh} down $TMPDIR/tpm
-    '';
+        export HOME=$TMPDIR
+      ''
+      + lib.optionalString tpm2 ''
+        bash ${./tpm2-test-env.sh} up $TMPDIR/tpm || { tail -n 20 $TMPDIR/tpm/*.log; exit 1; }
+        . $TMPDIR/tpm/env
+        export CAKEYS_TPM_MODULE=${lib.getLib tpm2-pkcs11}/lib/libtpm2_pkcs11.so
+        export CAKEYS_TPM_REQUIRE=1
+      ''
+    );
+    postCheck = lib.optionalString canCheck (
+      ''
+        bash ${./p11kit-test-env.sh} down $TMPDIR/p11
+      ''
+      + lib.optionalString tpm2 ''
+        bash ${./tpm2-test-env.sh} down $TMPDIR/tpm
+      ''
+    );
 
     meta = {
       description = "Content-addressed identity for PKCS#11 objects";
