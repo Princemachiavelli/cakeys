@@ -4,6 +4,16 @@
 # tpm2-pkcs11's handle_modulus asks the TPM (tpm_find_max_rsa_keysize, src/lib/tpm.c) [src],
 # and swtpm answers 3072 [run]. Its curve refusals (secp256k1, brainpool) are the module's own
 # NID table (nid_to_tpm2alg) [src], so they stay in the pair profile and are not here.
+#
+# Measured on swtpm 0.11.0 (nixpkgs swtpm 0.10.1-unstable-2026-05-21, libtpms
+# 0.10.2-unstable-2026-05-06), TPM2_PT_FIRMWARE_VERSION_1 0x20240125, on a TPM state created
+# with libtpms's default-v1 profile: what swtpm creates without --profile, and what
+# nix/tpm2-test-env.sh pins. The RSA ceiling is the state's TPM profile, not the swtpm version:
+# the same binary lists rsa-keysize-4096 in --print-capabilities, and a state created with
+# default-v2 or custom generates 4096-bit keys [run]. Nothing PKCS#11 shows tells the profiles
+# apart (the firmware version and model are the same under each), so no [match] can select on
+# it: this layer is the default state. A non-default state needs its own layer, named in
+# tokens.<t>.profiles.
 profile = "swtpm"
 mode = "delta"
 
@@ -11,4 +21,4 @@ mode = "delta"
 operation = "generate"
 key-type = "CKK_RSA"
 max-bits = 3072
-note = "swtpm refuses 4096-bit RSA [run]"
+note = "a TPM state with libtpms's default-v1 profile (swtpm's default) refuses 4096-bit RSA; default-v2 and custom accept it [run]"

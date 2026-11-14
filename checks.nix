@@ -36,7 +36,7 @@
     '';
     doCheck = false;
   });
-  # cargo-deny offline (see the `deny` binding in flake.nix): reproducible with the flake.lock.
+  # cargo-deny offline (see `deny` in pkgs.nix): reproducible with the flake.lock.
   deny = deny.check;
   # nix/demo.sh straight through: every step's expected exit code still holds.
   demo = demo.check;
