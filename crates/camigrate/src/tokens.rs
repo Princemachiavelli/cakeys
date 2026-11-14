@@ -207,12 +207,12 @@ fn lockless_token_cfg() -> TokenCfg {
 ///
 /// `PreconditionFailed` when `object` has no realisation on `token`, or the lock records no
 /// type for it: the plan is made from what the lock pins, so realise it first.
-pub fn materials<'a>(lock: &'a Lock, token: &str, object: Option<&str>) -> Result<Vec<Material<'a>>> {
+pub fn materials<'a>(lock: &'a Lock, token: &str, objects: &[&str]) -> Result<Vec<Material<'a>>> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
     for by_token in lock.realisations.values() {
         let Some(r) = by_token.get(token) else { continue };
-        if object.is_some_and(|o| o != r.object) || !seen.insert(r.object.as_str()) {
+        if !(objects.is_empty() || objects.contains(&r.object.as_str())) || !seen.insert(r.object.as_str()) {
             continue;
         }
         let ty = lock.objects.get(&r.object).and_then(|o| o.object_type.as_ref()).ok_or_else(|| {
@@ -220,13 +220,15 @@ pub fn materials<'a>(lock: &'a Lock, token: &str, object: Option<&str>) -> Resul
         })?;
         out.push(Material { object: &r.object, ty, policy: &r.policy, immutables: &r.immutables });
     }
+    if let Some(o) = objects.iter().find(|o| !seen.contains(**o)) {
+        return Err(KmError::PreconditionFailed(format!(
+            "object '{o}' has no realisation on token '{token}' in the lock; realise it there first"
+        )));
+    }
     if out.is_empty() {
-        return Err(KmError::PreconditionFailed(match object {
-            Some(o) => {
-                format!("object '{o}' has no realisation on token '{token}' in the lock; realise it there first")
-            }
-            None => format!("the lock records no realisation on token '{token}': nothing to plan"),
-        }));
+        return Err(KmError::PreconditionFailed(format!(
+            "the lock records no realisation on token '{token}': nothing to plan"
+        )));
     }
     Ok(out)
 }
@@ -277,8 +279,8 @@ pub enum Dest<'a> {
 
 /// What to plan moving.
 pub struct Request<'a> {
-    /// Only this object; default: every object realised on `from`.
-    pub object: Option<&'a str>,
+    /// Only these objects; default (empty): every object realised on `from`.
+    pub objects: &'a [&'a str],
     /// The source token.
     pub from: &'a str,
     pub dest: Dest<'a>,
@@ -332,7 +334,7 @@ pub fn plan_moves(
     open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
     notes: &mut Notes,
 ) -> Result<Moves> {
-    let materials = materials(lock, req.from, req.object)?;
+    let materials = materials(lock, req.from, req.objects)?;
     let mut side = |name: &str| side_or_lock(name, lock, registry, open, notes);
     let (source, source_from) = side(req.from)?;
     let mut allow = Allow { host_plaintext: req.host_plaintext, ..Allow::default() };

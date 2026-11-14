@@ -1,28 +1,45 @@
-//! The export bundle (MIGRATE.md D5, "Frozen names and formats"): one object's material, wrapped
-//! to a target's transport key, with what the import checks before it touches the target — the
-//! object's type, IDs and commitment label as the source's lock pins them, the public key of a
-//! private key, the source, and the transport key's identity. Never plaintext: the wrapped blobs
-//! are authenticated by RFC 5649 and the identity recomputed on the target, so a bundle may
-//! cross untrusted channels.
+//! The export bundle (MIGRATE.md D5, "Frozen names and formats"): the keys one export moves from
+//! a source to a target, wrapped to the target's transport key, with what the import checks
+//! before it touches the target — per key its type, IDs and commitment label as the source's
+//! lock pins them and the public key of a private key; for all, the source and the transport
+//! key's identity. One file per (source, target) export; the composed method's key-encryption
+//! key is shared by its keys. Never plaintext: the wrapped blobs are authenticated by RFC 5649
+//! (or OAEP) and each identity recomputed on the target, so a bundle may cross untrusted
+//! channels. Inside a wrapped private key is the PKCS#8 `C_WrapKey` emits; PKCS#12 or a CMS key
+//! package would need the plaintext key on the host to build.
 
 use base64::Engine as _;
 use cakeys_core::config::ObjectCfg;
 use cakeys_core::migrate::{Exposure, Method};
 use cakeys_core::{KmError, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The `format` of a bundle.
 pub const BUNDLE_FORMAT: &str = "cakeys-export";
 /// The `version` this camigrate writes and reads.
 pub const BUNDLE_VERSION: u32 = 1;
 
-/// One exported object.
+/// One export: the keys, and what they share.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Bundle {
     pub format: String,
     pub version: u32,
+    /// The AES key-encryption key under RSA-OAEP to the transport key (base64), shared by every
+    /// key of a composed method; absent when none is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kek: Option<String>,
+    pub source: Source,
+    pub transport: TransportRef,
+    /// One entry per key, each object once.
+    pub keys: Vec<Entry>,
+}
+
+/// One exported key.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Entry {
     /// The object's name, as in the source's keys.toml and lock.
     pub object: String,
     /// The method's frozen name (`rsa-oaep-sha1+aes-kwp`, ...).
@@ -37,14 +54,13 @@ pub struct Bundle {
     /// identity otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
+    /// The key (base64): under the bundle's KEK (RFC 5649), or under RSA-OAEP directly.
+    pub wrapped: String,
     /// The object's type, as in the lock.
     #[serde(rename = "type")]
     pub object_type: ObjectCfg,
     /// The object's IDs, as in the source's lock: the import must reproduce them.
     pub ids: BTreeMap<String, String>,
-    pub source: Source,
-    pub transport: TransportRef,
-    pub wrapped: Wrapped,
 }
 
 /// Where the material came from: provenance, as the source realisation records it.
@@ -63,21 +79,11 @@ pub struct TransportRef {
     pub rfc7093m4: String,
 }
 
-/// The wrapped blobs, base64.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Wrapped {
-    /// The AES KEK under RSA-OAEP to the transport key (the composed methods only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kek: Option<String>,
-    /// The key: under the KEK (RFC 5649), or under RSA-OAEP directly.
-    pub key: String,
-}
-
 impl Bundle {
-    /// Read a bundle, checking its form: the format and version, a sealed method this camigrate
-    /// knows with the blobs it needs, base64 blobs, SRI IDs, and a public key whose hash is the
-    /// `rfc7093m4` it claims. That the IDs are the lock's is the import's check.
+    /// Read a bundle, checking its form: the format and version, at least one key and each object
+    /// once, sealed methods this camigrate knows with the KEK exactly when a composed one needs it
+    /// (one OAEP hash for it), base64 blobs, SRI IDs, and public keys whose hash is the
+    /// `rfc7093m4` they claim. That the IDs are the lock's is the import's check.
     ///
     /// # Errors
     ///
@@ -88,27 +94,44 @@ impl Bundle {
         if b.format != BUNDLE_FORMAT || b.version != BUNDLE_VERSION {
             return Err(invalid(format!("not a {BUNDLE_FORMAT} version {BUNDLE_VERSION} file")));
         }
-        b.object_type.canonicalize();
-        let method = b.method().map_err(invalid)?;
-        let composed = matches!(method, Method::RsaOaepAesKwp(_));
-        if !composed && !matches!(method, Method::RsaOaep(_)) {
-            return Err(invalid(format!("method {} carries no wrapped material", b.method)));
+        if b.keys.is_empty() {
+            return Err(invalid("carries no keys".into()));
         }
-        if composed != b.wrapped.kek.is_some() {
-            let kek = if composed { "needs a" } else { "takes no" };
-            return Err(invalid(format!("method {} {kek} wrapped KEK", b.method)));
-        }
-        b.wrapped_key().map_err(invalid)?;
-        b.wrapped_kek().map_err(invalid)?;
-        let digests = b.ids.values().chain([&b.transport.rfc7093m4]);
-        if let Some(v) = digests.into_iter().find(|v| !cakeys_core::id::is_sri(v)) {
-            return Err(invalid(format!("\"{v}\" is not a sha256 SRI digest")));
-        }
-        if let Some(spki) = b.public_spki().map_err(invalid)? {
-            let id = cakeys_core::id::sri(&spki);
-            if b.ids.get("rfc7093m4") != Some(&id) {
-                return Err(invalid(format!("publicKey is not the key rfc7093m4 names (its identity is {id})")));
+        let mut seen = BTreeSet::new();
+        let mut kek_hashes = BTreeSet::new();
+        for e in &mut b.keys {
+            let invalid = |msg: String| invalid(format!("key '{}': {msg}", e.object));
+            if !seen.insert(e.object.clone()) {
+                return Err(invalid("listed twice".into()));
             }
+            e.object_type.canonicalize();
+            match e.method().map_err(invalid)? {
+                Method::RsaOaepAesKwp(h) => {
+                    kek_hashes.insert(h);
+                }
+                Method::RsaOaep(_) => {}
+                _ => return Err(invalid(format!("method {} carries no wrapped material", e.method))),
+            }
+            e.wrapped_key().map_err(invalid)?;
+            if let Some(v) = e.ids.values().find(|v| !cakeys_core::id::is_sri(v)) {
+                return Err(invalid(format!("\"{v}\" is not a sha256 SRI digest")));
+            }
+            if let Some(spki) = e.public_spki().map_err(invalid)? {
+                let id = cakeys_core::id::sri(&spki);
+                if e.ids.get("rfc7093m4") != Some(&id) {
+                    return Err(invalid(format!("publicKey is not the key rfc7093m4 names (its identity is {id})")));
+                }
+            }
+        }
+        match (kek_hashes.len(), &b.kek) {
+            (0, Some(_)) => return Err(invalid("a kek, but no key of a composed method uses it".into())),
+            (0, None) | (1, Some(_)) => {}
+            (1, None) => return Err(invalid("keys of a composed method, but no kek".into())),
+            _ => return Err(invalid("composed methods of several OAEP hashes share one kek".into())),
+        }
+        b.wrapped_kek().map_err(invalid)?;
+        if !cakeys_core::id::is_sri(&b.transport.rfc7093m4) {
+            return Err(invalid(format!("\"{}\" is not a sha256 SRI digest", b.transport.rfc7093m4)));
         }
         Ok(b)
     }
@@ -119,7 +142,18 @@ impl Bundle {
         toml::to_string(self).unwrap_or_default()
     }
 
-    /// The method the bundle names.
+    /// The wrapped KEK's bytes.
+    ///
+    /// # Errors
+    ///
+    /// A message for malformed base64.
+    pub fn wrapped_kek(&self) -> std::result::Result<Option<Vec<u8>>, String> {
+        self.kek.as_deref().map(|k| decode("kek", k)).transpose()
+    }
+}
+
+impl Entry {
+    /// The method the entry names.
     ///
     /// # Errors
     ///
@@ -134,16 +168,7 @@ impl Bundle {
     ///
     /// A message for malformed base64.
     pub fn wrapped_key(&self) -> std::result::Result<Vec<u8>, String> {
-        decode("wrapped.key", &self.wrapped.key)
-    }
-
-    /// The wrapped KEK's bytes, for a composed method.
-    ///
-    /// # Errors
-    ///
-    /// A message for malformed base64.
-    pub fn wrapped_kek(&self) -> std::result::Result<Option<Vec<u8>>, String> {
-        self.wrapped.kek.as_deref().map(|k| decode("wrapped.kek", k)).transpose()
+        decode("wrapped", &self.wrapped)
     }
 
     /// The private key's canonical SPKI DER.
@@ -173,22 +198,29 @@ mod tests {
     use super::*;
     use cakeys_core::types::{KeyType, ObjectClass};
 
-    pub(crate) fn sample() -> Bundle {
+    fn aes(object: &str, method: &str) -> Entry {
         let mut ty = ObjectCfg::new(ObjectClass::SecretKey, Some(KeyType::Aes));
         ty.value_len = Some(32);
-        Bundle {
-            format: BUNDLE_FORMAT.into(),
-            version: BUNDLE_VERSION,
-            object: "backup-kek".into(),
-            method: "rsa-oaep-sha1+aes-kwp".into(),
+        Entry {
+            object: object.into(),
+            method: method.into(),
             exposure: Exposure::Sealed,
             commitment_label: Some("key-management/v1".into()),
             public_key: None,
+            wrapped: encode(b"key"),
             object_type: ty,
-            ids: [("cmac".to_owned(), cakeys_core::id::sri(b"k"))].into(),
+            ids: [("cmac".to_owned(), cakeys_core::id::sri(object.as_bytes()))].into(),
+        }
+    }
+
+    pub(crate) fn sample() -> Bundle {
+        Bundle {
+            format: BUNDLE_FORMAT.into(),
+            version: BUNDLE_VERSION,
+            kek: Some(encode(b"kek")),
             source: Source { token: "softhsm".into(), provider: "softhsm".into() },
             transport: TransportRef { object: "import-kek".into(), rfc7093m4: cakeys_core::id::sri(b"t") },
-            wrapped: Wrapped { kek: Some(encode(b"kek")), key: encode(b"key") },
+            keys: vec![aes("backup-kek", "rsa-oaep-sha1+aes-kwp"), aes("db-kek", "rsa-oaep-sha1+aes-kwp")],
         }
     }
 
@@ -202,23 +234,12 @@ mod tests {
         assert_eq!(Bundle::parse(&text, path).unwrap(), b);
         let table: toml::Table = toml::from_str(&text).unwrap();
         let keys: Vec<&str> = table.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["format", "kek", "keys", "source", "transport", "version"]);
+        let entry = table["keys"].as_array().unwrap()[0].as_table().unwrap();
         assert_eq!(
-            keys,
-            [
-                "commitmentLabel",
-                "exposure",
-                "format",
-                "ids",
-                "method",
-                "object",
-                "source",
-                "transport",
-                "type",
-                "version",
-                "wrapped"
-            ]
+            entry.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["commitmentLabel", "exposure", "ids", "method", "object", "type", "wrapped"]
         );
-        assert_eq!(table["wrapped"].as_table().unwrap().keys().collect::<Vec<_>>(), ["kek", "key"]);
     }
 
     /// The fuzz target's seed (fuzz/, nix/fuzz.nix) is a well-formed bundle.
@@ -228,9 +249,9 @@ mod tests {
         Bundle::parse(text, std::path::Path::new("sample.bundle.toml")).unwrap();
     }
 
-    /// What the form check refuses (17): another format, a method without its KEK or with one it
-    /// does not take, a method that wraps nothing, bad base64, a public key `rfc7093m4` does not
-    /// name.
+    /// What the form check refuses (17): another format, no keys or one twice, a composed method
+    /// without the KEK or a KEK nothing uses, composed methods of two hashes under one KEK, a
+    /// method that wraps nothing, bad base64, a public key `rfc7093m4` does not name.
     #[test]
     fn malformed_bundles_are_refused() {
         let path = std::path::Path::new("b.toml");
@@ -238,15 +259,22 @@ mod tests {
             let e = Bundle::parse(&b.to_toml(), path).unwrap_err();
             assert!(e.exit_code() == 17 && e.to_string().contains(what), "{what}: {e}");
         };
+        let direct = || vec![aes("backup-kek", "rsa-oaep-sha1")];
         refused(Bundle { format: "cakeys-transport".into(), ..sample() }, "not a cakeys-export");
-        refused(Bundle { wrapped: Wrapped { kek: None, key: encode(b"k") }, ..sample() }, "needs a wrapped KEK");
-        refused(Bundle { method: "rsa-oaep-sha1".into(), ..sample() }, "takes no wrapped KEK");
-        refused(Bundle { method: "public".into(), ..sample() }, "carries no wrapped material");
-        refused(Bundle { method: "rsa-aes".into(), ..sample() }, "unknown method");
-        refused(Bundle { wrapped: Wrapped { kek: Some("!".into()), key: encode(b"k") }, ..sample() }, "wrapped.kek");
+        refused(Bundle { keys: vec![], ..sample() }, "carries no keys");
+        refused(Bundle { keys: vec![aes("k", "rsa-oaep-sha1+aes-kwp"); 2], ..sample() }, "listed twice");
+        refused(Bundle { kek: None, ..sample() }, "but no kek");
+        refused(Bundle { keys: direct(), ..sample() }, "no key of a composed method uses it");
+        Bundle::parse(&Bundle { kek: None, keys: direct(), ..sample() }.to_toml(), path).unwrap();
+        let two = vec![aes("a", "rsa-oaep-sha1+aes-kwp"), aes("b", "rsa-oaep-sha256+aes-kwp")];
+        refused(Bundle { keys: two, ..sample() }, "several OAEP hashes");
+        refused(Bundle { keys: vec![aes("k", "public")], ..sample() }, "carries no wrapped material");
+        refused(Bundle { keys: vec![aes("k", "rsa-aes")], ..sample() }, "unknown method");
+        refused(Bundle { kek: Some("!".into()), ..sample() }, "kek");
         let n = [0xc5u8; 256];
         let spki = cakeys_core::id::rsa_spki(&n, &[1, 0, 1]).unwrap();
-        refused(Bundle { public_key: Some(encode(&spki)), ..sample() }, "is not the key rfc7093m4 names");
+        let spoofed = Entry { public_key: Some(encode(&spki)), ..aes("k", "rsa-oaep-sha1+aes-kwp") };
+        refused(Bundle { keys: vec![spoofed], ..sample() }, "is not the key rfc7093m4 names");
     }
 
     proptest::proptest! {
@@ -258,15 +286,19 @@ mod tests {
             }
         }
 
-        /// A bundle with any object name, label and blobs round-trips.
+        /// A bundle with any object names, label and blobs round-trips.
         #[test]
-        fn bundles_round_trip(object in "[a-z][a-z0-9-]{0,20}", label in "[ -~]{1,40}", kek: Vec<u8>, key: Vec<u8>) {
-            let b = Bundle {
-                object,
-                commitment_label: Some(label),
-                wrapped: Wrapped { kek: Some(encode(&kek)), key: encode(&key) },
-                ..sample()
-            };
+        fn bundles_round_trip(
+            objects in proptest::collection::btree_set("[a-z][a-z0-9-]{0,20}", 1..4),
+            label in "[ -~]{1,40}",
+            kek: Vec<u8>,
+            key: Vec<u8>,
+        ) {
+            let keys = objects
+                .iter()
+                .map(|o| Entry { commitment_label: Some(label.clone()), wrapped: encode(&key), ..aes(o, "rsa-oaep-sha1+aes-kwp") })
+                .collect();
+            let b = Bundle { kek: Some(encode(&kek)), keys, ..sample() };
             let back = Bundle::parse(&b.to_toml(), std::path::Path::new("b.toml")).unwrap();
             proptest::prop_assert_eq!(back, b);
         }

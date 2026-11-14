@@ -166,18 +166,27 @@ Keys move sealed between PKCS#11 modules: `camigrate migrate` (both tokens reach
   token, or on several without `createOn`, is invalid (17); `create` on another token is refused
   and its skip note names the import.
 - **The transport key** (D3) is a key of the target's own keys.toml entry and lock: an RSA key
-  that unwraps and never leaves the token, found by the planner (`--transport-key <spec>` when
-  there are several). A sealed plan without one is blocked, with the reason. A transport file is
-  used only when the source's lock pins its key (D3: the lock is the channel); one that is merely
-  self-consistent is refused.
+  that unwraps and never leaves the token, named by the target token's `transportWith`
+  (`--transport-key <spec>` overrides it per run; nothing is picked by what a key can do). Its
+  realisation records its public key in the lock, so a source exports to the token from the
+  lock alone. It proves possession with `pop-unwrap`; one that also decrypts is warned about. A
+  sealed plan without one is blocked, with the reason. A transport file is used only when the
+  source's lock pins its key (D3: the lock is the channel); one that is merely self-consistent
+  is refused.
 - **Export** (crates/camigrate/src/sealed.rs) verifies the source against the lock, loads the
   transport public key as a session object, and wraps by the plan's method: the composed one
   wraps a fresh session AES-256 KEK with RSA-OAEP and the key under it with RFC 5649 (the
   `_PAD` or `_KWP` mechanism the source names; `_KWP` needs the Nix build's patched cryptoki,
   the `kwp` feature), the direct one wraps a small secret key with RSA-OAEP. Session objects are
-  destroyed whatever happens. A real `export` writes one object's bundle; it is refused inside a
-  Nix build (D8).
-- **Import** checks the bundle against the lock before it touches the target: the same object,
+  destroyed whatever happens. A real `export` writes one bundle of every key it names (default:
+  every key on the token, public objects left out with a note), the composed method's KEK
+  shared by them. It is all or nothing: an object that cannot move fails it before anything is
+  wrapped, and `--out` is written through a temporary file, whole or not at all. It is refused
+  inside a Nix build (D8).
+- **Import** takes each key of the bundle on its own, under the spec that realises its object on
+  the target (`--spec`, repeatable, only when an object has several): a key that fails is
+  reported and leaves nothing, the others still import and are recorded, and the run exits
+  with the first failure. Each key is checked against the lock before it touches the target: the same object,
   type, IDs and commitment label, and the transport key the lock pins and the target holds (its
   realisation verified); the locator empty. It then creates a private key's public half from the
   bundle's `publicKey` (new in the bundle format, "Frozen names and formats"), unwraps the key
@@ -351,11 +360,15 @@ The OAEP hash is the strongest both sides support: SHA-256 between kryoptic toke
 SoftHSM. Import also reads `pkcs8-pbes2` and `pkcs12` files (`host` exposure on the way in).
 The method names are frozen once released, recorded in DESIGN §10.
 
-**D5. The bundle is a new versioned file.** Export writes one TOML file per object, never
-plaintext: the version, the object's type, IDs and commitment label (from the source lock), the
-source's provenance, the method, the transport key's identity, and the wrapped blobs (base64).
-RFC 5649 authenticates the key bytes, and import recomputes the identity on the target, so a
-tampered or swapped blob fails either way. The bundle may cross untrusted channels.
+**D5. The bundle is a new versioned file.** Export writes one TOML file per export (a source and
+a target), never plaintext: the version, the source's provenance, the transport key's identity,
+the composed method's key-encryption key wrapped to it (one for all keys), and per key
+(`[[keys]]`) its type, IDs and commitment label (from the source lock), a private key's public
+key, the method and the wrapped key (base64). RFC 5649 authenticates the key bytes, and import
+recomputes each identity on the target, so a tampered or swapped blob fails either way. The
+bundle may cross untrusted channels. Inside a wrapped private key is the PKCS#8 `C_WrapKey`
+emits; PKCS#12 or a CMS key package would need the plaintext key on the host to build, which
+is what sealed avoids. Version 1 is a draft and changed in place, like the lock.
 
 **D6. Import is a realise that creates from a bundle.**
 
@@ -406,9 +419,10 @@ for a key that was never moved.
 
 ```console
 $ camigrate transport import-kek --token kryoptic --out kryoptic.transport.toml
-$ camigrate export signing --token softhsm --target kryoptic [--transport kryoptic.transport.toml] \
-    --out signing.export.toml [--dry-run] [--allow-host-plaintext]
-$ camigrate import signing-kry --token kryoptic --in signing.export.toml [--dry-run]
+$ camigrate export [signing backup-kek ...] --token softhsm --target kryoptic \
+    [--transport kryoptic.transport.toml] [--transport-key <spec>] --out softhsm-kryoptic.export.toml \
+    [--dry-run] [--allow-host-plaintext]
+$ camigrate import --token kryoptic --in softhsm-kryoptic.export.toml [--spec signing-kry ...] [--dry-run]
 $ camigrate migrate signing --from softhsm --to kryoptic [--spec signing-kry] [--transport-key <spec>] [--dry-run]
 ```
 
@@ -451,9 +465,9 @@ disk. `--dry-run` without objects plans every object the source token holds a re
 ## Open questions
 
 Decided 2026-11-12: `CKA_WRAP_WITH_TRUSTED` is supported (D2, phase 3b), and export offers
-passphrase-protected PKCS#8 and PKCS#12 files (D4, phase 4b).
+passphrase-protected PKCS#8 and PKCS#12 files (D4, phase 4b). Decided 2026-11-14: one bundle
+per export (a source and a target), all or nothing on export; on import each key on its own,
+the failures reported at the end (D5).
 
-1. Batch behaviour: one bundle per object, or one per run? (Per object keeps the identity check
-   per object, and partial failures simple.)
-2. Does a migrated key keep its object name on the target? (Yes, if it is the same material:
+1. Does a migrated key keep its object name on the target? (Yes, if it is the same material:
    that is the lock's model. A different object name would be different material.)

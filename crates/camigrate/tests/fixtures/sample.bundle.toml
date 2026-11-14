@@ -1,17 +1,6 @@
 format = "cakeys-export"
 version = 1
-object = "backup-kek"
-method = "rsa-oaep-sha1+aes-kwp"
-exposure = "sealed"
-commitmentLabel = "key-management/v1"
-
-[type]
-class = "CKO_SECRET_KEY"
-keyType = "CKK_AES"
-valueLen = 32
-
-[ids]
-cmac = "sha256-Mn6O3oOAdVmMg6vSHOW6v5AaW33BqeX/oNkvRLXu+v8="
+kek = "a2Vr"
 
 [source]
 token = "softhsm"
@@ -21,6 +10,17 @@ provider = "softhsm"
 object = "import-kek"
 rfc7093m4 = "sha256-5kNMMEpdTsLvO62SkvcUv0AcbE3lUm4m6XoTaOJpZk4="
 
-[wrapped]
-kek = "a2Vr"
-key = "a2V5"
+[[keys]]
+object = "backup-kek"
+method = "rsa-oaep-sha1+aes-kwp"
+exposure = "sealed"
+commitmentLabel = "key-management/v1"
+wrapped = "a2V5"
+
+[keys.type]
+class = "CKO_SECRET_KEY"
+keyType = "CKK_AES"
+valueLen = 32
+
+[keys.ids]
+cmac = "sha256-Mn6O3oOAdVmMg6vSHOW6v5AaW33BqeX/oNkvRLXu+v8="

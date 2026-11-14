@@ -50,12 +50,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Export an object realised on a token, shaped for a target (MIGRATE.md): with --dry-run,
-    /// per object the method, how exposed the material is on the way, and why not when it cannot
-    /// move; else one key, sealed to the target's transport key, as a bundle for `import`.
+    /// Export objects realised on a token, shaped for a target (MIGRATE.md): with --dry-run, per
+    /// object the method, how exposed the material is on the way, and why not when it cannot
+    /// move; else the keys, sealed to the target's transport key, as one bundle for `import` —
+    /// all or nothing: an object that cannot move fails the export and no bundle is written.
     Export {
-        /// The object to export; default: every object realised on --token.
-        object: Option<String>,
+        /// The objects to export; default: every object realised on --token (public objects
+        /// left out with a note: `migrate` moves them).
+        objects: Vec<String>,
         /// The source token.
         #[arg(long)]
         token: String,
@@ -76,14 +78,17 @@ enum Cmd {
         #[command(flatten)]
         how: MoveArgs,
     },
-    /// Import a bundle (`export`'s) under a spec on a token: checked against the lock before the
-    /// token is touched, unwrapped with the transport key realised there, then recorded with
-    /// where it came from. An identity that is not the locked one is 10, and nothing is left.
+    /// Import a bundle (`export`'s) on a token, each key under the spec that realises its object
+    /// there: checked against the lock before the token is touched, unwrapped with the transport
+    /// key realised there, then recorded with where it came from. Each key on its own: one that
+    /// fails (an identity that is not the locked one is 10) leaves nothing, the others still
+    /// import, and the run exits with the first failure.
     Import {
-        /// The spec to realise the object under.
-        spec: String,
         #[arg(long)]
         token: String,
+        /// The spec to realise an object under, when it has several on --token (repeatable).
+        #[arg(long)]
+        spec: Vec<String>,
         /// The bundle.
         #[arg(long = "in", value_name = "BUNDLE")]
         input: PathBuf,
@@ -178,7 +183,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     let lock = load_lock(&lock_path)?;
     let mut run = Run { cfg, modules, registry, lock, lock_path };
     match &cli.cmd {
-        Cmd::Export { object, token, target, transport, to_file, out, how } => {
+        Cmd::Export { objects, token, target, transport, to_file, out, how } => {
             let dest = match (target, transport, to_file) {
                 (_, _, Some(FileArg::Pkcs8)) => Dest::File(FileFormat::Pkcs8),
                 (_, _, Some(FileArg::Pkcs12)) => Dest::File(FileFormat::Pkcs12),
@@ -186,14 +191,15 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
                 (Some(t), None, None) => Dest::Token(t),
                 (None, None, None) => unreachable!("clap requires one of --target, --transport, --to-file"),
             };
+            let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
             if how.dry_run {
-                return run.plan_moves(object.as_deref(), token, &dest, how, notes);
+                return run.plan_moves(&objects, token, &dest, how, notes);
             }
-            run.export(object.as_deref(), token, &dest, out.as_deref(), how, notes)
+            run.export(&objects, token, &dest, out.as_deref(), how, notes)
         }
-        Cmd::Import { spec, token, input, dry_run } => run.import(spec, token, input, *dry_run, notes),
+        Cmd::Import { token, spec, input, dry_run } => run.import(token, spec, input, *dry_run, notes),
         Cmd::Migrate { object, from, to, how, .. } if how.dry_run => {
-            run.plan_moves(object.as_deref(), from, &Dest::Token(to), how, notes)
+            run.plan_moves(object.as_deref().as_slice(), from, &Dest::Token(to), how, notes)
         }
         Cmd::Migrate { object, from, to, spec, how } => {
             run.migrate(object.as_deref(), from, to, spec.as_deref(), how, notes)
@@ -236,46 +242,59 @@ impl Run<'_> {
     /// 15 when any object cannot move as invoked.
     fn plan_moves(
         &self,
-        object: Option<&str>,
+        objects: &[&str],
         from: &str,
         dest: &Dest,
         how: &MoveArgs,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
-        Ok(self.plan(object, from, dest, how, true, notes)?.ready()?)
+        Ok(self.plan(objects, from, dest, how, true, notes)?.ready()?)
     }
 
-    /// `export` for real: plan and print as `--dry-run` does, then wrap the one object to the
-    /// target's transport key — the token's realised one, or a transport file the lock pins —
-    /// and write the bundle. Nothing on either token changes.
+    /// `export` for real: plan as `--dry-run` does, then wrap every key to the target's
+    /// transport key — the one the lock records for the token, else the open token's, or a
+    /// transport file the lock pins — and write them as one bundle. All or nothing: an object
+    /// that cannot move fails the export before anything is wrapped, and the bundle is written
+    /// whole or not at all. Nothing on either token changes.
     fn export(
         &self,
-        object: Option<&str>,
+        objects: &[&str],
         from: &str,
         dest: &Dest,
         out: Option<&Path>,
         how: &MoveArgs,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
-        let moves = self.plan(object, from, dest, how, false, notes)?;
+        let moves = self.plan(objects, from, dest, how, false, notes)?;
         moves.ready()?;
-        let [p] = moves.plans.as_slice() else {
-            return Err(KmError::Validation(format!(
-                "a bundle carries one object, and {} are realised on '{from}': name the one to export",
-                moves.plans.len()
-            ))
-            .into());
-        };
-        let Some(method @ (Method::RsaOaepAesKwp(_) | Method::RsaOaep(_))) = &p.method else {
-            let method = p.method.as_ref().map_or_else(|| "-".to_owned(), Method::name);
-            return Err(KmError::Unsupported(format!(
-                "{}: a bundle carries sealed material, not {method} (`migrate` moves public objects)",
-                p.object
-            ))
-            .into());
-        };
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
-        let src = source_target(cfg, &self.lock, &p.object, from)?;
+        let mut items = Vec::new();
+        for p in &moves.plans {
+            match &p.method {
+                Some(method @ (Method::RsaOaepAesKwp(_) | Method::RsaOaep(_))) => items.push(sealed::Item {
+                    src: source_target(cfg, &self.lock, &p.object, from)?,
+                    method: method.clone(),
+                    exposure: p.exposure.unwrap_or(Exposure::Sealed),
+                }),
+                Some(Method::Public) if objects.is_empty() => {
+                    notes.note(format_args!(
+                        "{}: a public object, left out of the bundle (`migrate` moves it)",
+                        p.object
+                    ));
+                }
+                method => {
+                    let method = method.as_ref().map_or_else(|| "-".to_owned(), Method::name);
+                    return Err(KmError::Unsupported(format!(
+                        "{}: a bundle carries sealed keys, not {method} (`migrate` moves public objects)",
+                        p.object
+                    ))
+                    .into());
+                }
+            }
+        }
+        if items.is_empty() {
+            return Err(KmError::Unsupported(format!("no key on '{from}' to seal into a bundle")).into());
+        }
         let source = open_token(cfg, modules, registry, from, Access::Read, notes)?;
         let transport = match dest {
             Dest::Token(to) => {
@@ -296,24 +315,31 @@ impl Run<'_> {
             }
             Dest::File(_) => unreachable!("a file plan is never sealed"),
         };
-        let exposure = p.exposure.unwrap_or(Exposure::Sealed);
-        let text = sealed::export(&src, &source, &self.lock, &transport, method, exposure, notes)?.to_toml();
+        let bundle = sealed::export(&items, &source, &self.lock, &transport, notes)?;
+        let text = bundle.to_toml();
+        let what = bundle.keys.iter().map(|k| format!("{} by {}", k.object, k.method)).collect::<Vec<_>>().join(", ");
         match out {
             Some(path) => {
-                std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;
-                notes.say(format!("wrote {} ({} by {}, {exposure})", path.display(), p.object, method.name()));
+                // Whole or not at all: a temporary file beside it, renamed into place.
+                let name = path.file_name().map_or_else(|| "bundle".into(), |n| n.to_string_lossy().into_owned());
+                let tmp = path.with_file_name(format!(".{name}.tmp"));
+                std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
+                std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))?;
+                notes.say(format!("wrote {} ({what})", path.display()));
             }
             None => print!("{text}"),
         }
         Ok(())
     }
 
-    /// `import`: read the bundle, check it against the lock and the token, then (without
-    /// --dry-run) import it under `spec` on `token` and record it.
+    /// `import`: read the bundle, then each key on its own: check it against the lock and the
+    /// token, and (without --dry-run) import it under the spec that realises its object on
+    /// `token` and record it. A key that fails leaves nothing and is reported; the others still
+    /// import, the lock records them, and the run exits with the first failure.
     fn import(
         &mut self,
-        spec: &str,
         token: &str,
+        specs: &[String],
         input: &Path,
         dry_run: bool,
         notes: &mut Notes,
@@ -321,29 +347,52 @@ impl Run<'_> {
         let text = std::fs::read_to_string(input).with_context(|| format!("reading {}", input.display()))?;
         let bundle = Bundle::parse(&text, input)?;
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
-        let dst = Target::new(cfg, spec, token)?;
         let tr = realised_target(cfg, &self.lock, &bundle.transport.object, token)?;
         let access = if dry_run { Access::Read } else { Access::Write };
         let target = open_token(cfg, modules, registry, token, access, notes)?;
-        if dry_run {
-            sealed::preflight(&bundle, &dst, &target, &tr, &self.lock, notes)?;
-            println!(
-                "{}: {} by {} ({}) from {}: ready",
-                dst, bundle.object, bundle.method, bundle.exposure, bundle.source.token
-            );
-            return Ok(());
-        }
-        match sealed::import(&bundle, &dst, &target, &tr, &mut self.lock, notes)? {
-            public::Moved::Imported => {
-                save_lock(&self.lock_path, &self.lock)?;
-                notes.say(format!("imported {} from {} into {dst}", bundle.object, bundle.source.token));
-                notes.say(format!("updated {}", self.lock_path.display()));
+        let (mut changed, mut failed) = (false, None);
+        for e in &bundle.keys {
+            let spec =
+                specs.iter().map(String::as_str).find(|s| cfg.specs.get(*s).is_some_and(|c| c.object == e.object));
+            let dst = match target_target(cfg, &e.object, token, spec) {
+                Ok(dst) => dst,
+                Err(err) => {
+                    notes.say(format!("{}: not imported: {err}", e.object));
+                    failed.get_or_insert(err);
+                    continue;
+                }
+            };
+            let lock = &mut self.lock;
+            let outcome = if dry_run {
+                sealed::preflight(&bundle, e, &dst, &target, &tr, lock, notes).map(|_| None)
+            } else {
+                sealed::import(&bundle, e, &dst, &target, &tr, lock, notes).map(Some)
+            };
+            match outcome {
+                Ok(None) => {
+                    println!(
+                        "{dst}: {} by {} ({}) from {}: ready",
+                        e.object, e.method, e.exposure, bundle.source.token
+                    );
+                }
+                Ok(Some(public::Moved::Imported)) => {
+                    changed = true;
+                    notes.say(format!("imported {} from {} into {dst}", e.object, bundle.source.token));
+                }
+                Ok(Some(public::Moved::AlreadyThere)) => {
+                    notes.note(format_args!("{dst} is already realised and verifies; nothing to import"));
+                }
+                Err(err) => {
+                    notes.say(format!("{dst}: not imported: {err}"));
+                    failed.get_or_insert(err);
+                }
             }
-            public::Moved::AlreadyThere => {
-                notes.note(format_args!("{dst} is already realised and verifies; nothing to import"));
-            }
         }
-        Ok(())
+        if changed {
+            save_lock(&self.lock_path, &self.lock)?;
+            notes.say(format!("updated {}", self.lock_path.display()));
+        }
+        failed.map_or(Ok(()), |e| Err(e.into()))
     }
 
     /// `migrate` for real: plan and print as `--dry-run` does, refuse (15) before anything moves
@@ -360,7 +409,7 @@ impl Run<'_> {
         how: &MoveArgs,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
-        let moves = self.plan(object, from, &Dest::Token(to), how, true, notes)?;
+        let moves = self.plan(object.as_slice(), from, &Dest::Token(to), how, true, notes)?;
         moves.ready()?;
         let built = |m: &Method| matches!(m, Method::Public | Method::RsaOaepAesKwp(_) | Method::RsaOaep(_));
         if let Some(p) = moves.plans.iter().find(|p| !p.method.as_ref().is_some_and(built)) {
@@ -385,8 +434,9 @@ impl Run<'_> {
                     let tr = transport_target(cfg, lock, to, transport_choice(cfg, to, how))?;
                     let key = tokens::transport(&tr, &target, lock, notes)?.key()?;
                     let exposure = p.exposure.unwrap_or(Exposure::Sealed);
-                    let bundle = sealed::export(&src, &source, lock, &key, method, exposure, notes)?;
-                    sealed::import(&bundle, &dst, &target, &tr, lock, notes)
+                    let item = sealed::Item { src, method: method.clone(), exposure };
+                    let bundle = sealed::export(&[item], &source, lock, &key, notes)?;
+                    sealed::import(&bundle, &bundle.keys[0], &dst, &target, &tr, lock, notes)
                 }
                 _ => public::import(&src, &source, &dst, &target, lock, notes),
             });
@@ -416,7 +466,7 @@ impl Run<'_> {
     /// export that writes the bundle to stdout shows none: stdout is the bundle).
     fn plan(
         &self,
-        object: Option<&str>,
+        objects: &[&str],
         from: &str,
         dest: &Dest,
         how: &MoveArgs,
@@ -442,7 +492,7 @@ impl Run<'_> {
             tokens::Dest::Token(name) => transport_choice(cfg, name, how),
             _ => how.transport_key.as_deref(),
         };
-        let req = tokens::Request { object, from, dest, host_plaintext: how.allow_host_plaintext, transport_key };
+        let req = tokens::Request { objects, from, dest, host_plaintext: how.allow_host_plaintext, transport_key };
         let moves = tokens::plan_moves(&self.lock, registry, &req, &open, notes)?;
         let (to_name, source_from, target_from, plans) =
             (&moves.to, moves.source_from, moves.target_from, &moves.plans);

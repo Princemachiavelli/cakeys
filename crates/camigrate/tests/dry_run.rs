@@ -95,7 +95,7 @@ fn export_plans_follow_each_sides_capabilities() {
     let o = e.km(soft, &["export", "movable", "--token", "softhsm", "--target", "kryoptic"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let bundle: toml::Table = toml::from_str(&stdout(&o)).unwrap();
-    assert_eq!(bundle["method"].as_str(), Some("rsa-oaep-sha1+aes-kwp"));
+    assert_eq!(bundle["keys"][0]["method"].as_str(), Some("rsa-oaep-sha1+aes-kwp"));
     assert_eq!(bundle["transport"]["object"].as_str(), Some("tk-kryoptic"));
 }
 
@@ -526,6 +526,69 @@ fn bundles_are_checked_against_the_lock() {
         eprintln!("skipping bundles: needs the softhsm and kryoptic references");
         return;
     };
+    bundle_keys(&e, soft, kry);
+    let export = |objects: &[&str]| export_bundle(&e, soft, objects);
+    let (ek1, ek2) = (export(&["ek1"]), export(&["ek2"]));
+    let text = std::fs::read_to_string(&ek1).unwrap();
+    let lock_path = e.dir.join("keys.lock");
+    let import = |path: &std::path::Path| e.km(kry, &["import", "--token", "kryoptic", "--in", path.to_str().unwrap()]);
+    let empty = |label: &str| open_session(&kry.module, kry.token_label, "1234").labelled(label).is_empty();
+    let refused = |text: String, want: i32, what: &str| {
+        let path = e.dir.join("altered.bundle.toml");
+        std::fs::write(&path, text).unwrap();
+        let before = std::fs::read(&lock_path).unwrap();
+        let o = import(&path);
+        assert_eq!(code(&o), want, "{what}: {}", stderr(&o));
+        assert!(empty("xb-ek1"), "{what}: left objects on the target");
+        assert_eq!(std::fs::read(&lock_path).unwrap(), before, "{what}: changed the lock");
+    };
+    let b: toml::Value = toml::from_str(&text).unwrap();
+    let key_blob = b["keys"][0]["wrapped"].as_str().unwrap();
+    // Another key's IDs alone: the form check refuses them, the public key no longer theirs (17).
+    let ids = b["keys"][0]["ids"]["rfc7093m4"].as_str().unwrap();
+    let other: toml::Value = toml::from_str(&std::fs::read_to_string(&ek2).unwrap()).unwrap();
+    let other_ids = other["keys"][0]["ids"]["rfc7093m4"].as_str().unwrap();
+    refused(text.replace(ids, other_ids), 17, "the IDs of another key");
+    // With its public key too: consistent, but not what the lock pins for 'ek1' (10), before the
+    // target is touched.
+    let public = b["keys"][0]["publicKey"].as_str().unwrap();
+    let relabelled = text.replace(ids, other_ids).replace(public, other["keys"][0]["publicKey"].as_str().unwrap());
+    refused(relabelled, 10, "another key's IDs and public key");
+    // A flipped byte in the wrapped key: RFC 5649's integrity check refuses it.
+    refused(text.replace(key_blob, &base64_flip(key_blob)), 13, "a tampered blob");
+    // The other key's blobs (its KEK and its key), wrapped to the same transport key: unwrapped,
+    // then refused by identity and removed again.
+    let swap = |into: &toml::Value, from: &toml::Value| {
+        let mut swapped = into.clone();
+        swapped["kek"] = from["kek"].clone();
+        swapped["keys"][0]["wrapped"] = from["keys"][0]["wrapped"].clone();
+        toml::to_string(&swapped).unwrap()
+    };
+    // A private key's identity is its public key, which the bundle carries: the other key's
+    // private half fails the proof of possession (13).
+    refused(swap(&b, &other), 13, "another private key's blobs");
+    // A secret key's identity is its commitment, computed from the unwrapped key: 10.
+    let (sk1, sk2) = (export(&["sk1"]), export(&["sk2"]));
+    let read = |p: &std::path::Path| -> toml::Value { toml::from_str(&std::fs::read_to_string(p).unwrap()).unwrap() };
+    let path = e.dir.join("swapped-secret.bundle.toml");
+    std::fs::write(&path, swap(&read(&sk1), &read(&sk2))).unwrap();
+    let o = import(&path);
+    assert_eq!(code(&o), 10, "another secret key's blobs: {}", stderr(&o));
+    assert!(empty("xb-sk1"), "left behind");
+    // A transport file for a key the lock does not pin: the plan refuses to wrap to it.
+    let rogue = e.dir.join("rogue.transport.toml");
+    let file = e.km(kry, &["transport", "tk-kryoptic", "--token", "kryoptic", "--out", rogue.to_str().unwrap()]);
+    assert_eq!(code(&file), 0, "{}", stderr(&file));
+    let t = std::fs::read_to_string(&rogue).unwrap().replace("object = \"tk-kryoptic\"", "object = \"ek2\"");
+    std::fs::write(&rogue, t).unwrap();
+    let o = e.km(soft, &["export", "ek2", "--token", "softhsm", "--transport", rogue.to_str().unwrap(), "--dry-run"]);
+    assert_eq!(code(&o), 15, "{}", stdout(&o));
+    assert!(stdout(&o).contains("is not the"), "{}", stdout(&o));
+}
+
+/// The keys the bundle tests move: P-256 `ek1`, `ek2` and AES `sk1`, `sk2`, each born on `SoftHSM`
+/// (`createOn`) with a spec on kryoptic, whose transport key is realised.
+fn bundle_keys(e: &Env, soft: &Ref, kry: &Ref) {
     let key = |o: &str, ty: &str| {
         format!("[objects.{o}]\n{ty}\ncreateOn = \"softhsm\"\n\n")
             + &Env::spec(
@@ -548,84 +611,74 @@ fn bundles_are_checked_against_the_lock() {
     let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
     let aes = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32";
     let body = transport_key(kry) + &key("ek1", ec) + &key("ek2", ec) + &key("sk1", aes) + &key("sk2", aes);
-    names_transport(&e, &body, |r| r.name == "kryoptic");
+    names_transport(e, &body, |r| r.name == "kryoptic");
     assert_eq!(code(&e.cakeys(kry, &["realise", "tk-kryoptic", "--token", "kryoptic"])), 0);
     for spec in ["ek1-soft", "ek2-soft", "sk1-soft", "sk2-soft"] {
         assert_eq!(code(&e.cakeys(soft, &["realise", spec, "--token", "softhsm"])), 0, "{spec}");
     }
-    let export = |o: &str| {
-        let path = e.dir.join(format!("{o}.bundle.toml"));
-        let out = path.to_str().unwrap().to_owned();
-        let r = e.km(soft, &["export", o, "--token", "softhsm", "--target", "kryoptic", "--out", &out]);
-        assert_eq!(code(&r), 0, "export {o}: {}", stderr(&r));
-        path
+}
+
+/// `export` of `objects` from `SoftHSM` to kryoptic, into a bundle file: its path.
+fn export_bundle(e: &Env, soft: &Ref, objects: &[&str]) -> std::path::PathBuf {
+    let path = e.dir.join(format!("{}.bundle.toml", objects.join("+")));
+    let out = path.to_str().unwrap().to_owned();
+    let args = [&["export"], objects, &["--token", "softhsm", "--target", "kryoptic", "--out", &out]].concat();
+    let r = e.km(soft, &args);
+    assert_eq!(code(&r), 0, "export {objects:?}: {}", stderr(&r));
+    path
+}
+
+/// One bundle per export (MIGRATE.md D5): every key, one shared KEK. Each key imports on its
+/// own: one that fails leaves nothing while the others are imported and recorded, and the run
+/// exits with the failure. An export is all or nothing: an object that cannot move writes no
+/// bundle.
+#[test]
+fn bundles_carry_every_key_of_an_export() {
+    let Some(e) = env("multi-bundles") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
+    let (Some(soft), Some(kry)) = (named("softhsm"), named("kryoptic")) else {
+        eprintln!("skipping multi-bundles: needs the softhsm and kryoptic references");
+        return;
     };
-    let (ek1, ek2) = (export("ek1"), export("ek2"));
-    let text = std::fs::read_to_string(&ek1).unwrap();
+    bundle_keys(&e, soft, kry);
+    let export = |objects: &[&str]| export_bundle(&e, soft, objects);
     let lock_path = e.dir.join("keys.lock");
-    let import = |path: &std::path::Path| {
-        e.km(kry, &["import", "ek1-kry", "--token", "kryoptic", "--in", path.to_str().unwrap()])
-    };
-    let empty = || open_session(&kry.module, kry.token_label, "1234").labelled("xb-ek1").is_empty();
-    let refused = |text: String, want: i32, what: &str| {
-        let path = e.dir.join("altered.bundle.toml");
-        std::fs::write(&path, text).unwrap();
-        let before = std::fs::read(&lock_path).unwrap();
-        let o = import(&path);
-        assert_eq!(code(&o), want, "{what}: {}", stderr(&o));
-        assert!(empty(), "{what}: left objects on the target");
-        assert_eq!(std::fs::read(&lock_path).unwrap(), before, "{what}: changed the lock");
-    };
-    let b: toml::Value = toml::from_str(&text).unwrap();
-    let key_blob = b["wrapped"]["key"].as_str().unwrap();
-    // Another key's IDs alone: the form check refuses them, the public key no longer theirs (17).
-    let ids = b["ids"]["rfc7093m4"].as_str().unwrap();
-    let other: toml::Value = toml::from_str(&std::fs::read_to_string(&ek2).unwrap()).unwrap();
-    let other_ids = other["ids"]["rfc7093m4"].as_str().unwrap();
-    refused(text.replace(ids, other_ids), 17, "the IDs of another key");
-    // With its public key too: consistent, but not what the lock pins for 'ek1' (10), before the
-    // target is touched.
-    let public = b["publicKey"].as_str().unwrap();
-    let relabelled = text.replace(ids, other_ids).replace(public, other["publicKey"].as_str().unwrap());
-    refused(relabelled, 10, "another key's IDs and public key");
-    // A flipped byte in the wrapped key: RFC 5649's integrity check refuses it.
-    refused(text.replace(key_blob, &base64_flip(key_blob)), 13, "a tampered blob");
-    // The other key's blobs, wrapped to the same transport key: unwrapped, then refused by
-    // identity and removed again.
-    let other_wrapped = other["wrapped"].clone();
-    let mut swapped = b.clone();
-    swapped["wrapped"] = other_wrapped;
-    // A private key's identity is its public key, which the bundle carries: the other key's
-    // private half fails the proof of possession (13).
-    refused(toml::to_string(&swapped).unwrap(), 13, "another private key's blobs");
-    // A secret key's identity is its commitment, computed from the unwrapped key: 10.
-    let (sk1, sk2) = (export("sk1"), export("sk2"));
-    let mut swapped: toml::Value = toml::from_str(&std::fs::read_to_string(&sk1).unwrap()).unwrap();
-    let sk2: toml::Value = toml::from_str(&std::fs::read_to_string(&sk2).unwrap()).unwrap();
-    swapped["wrapped"] = sk2["wrapped"].clone();
-    let path = e.dir.join("swapped-secret.bundle.toml");
-    std::fs::write(&path, toml::to_string(&swapped).unwrap()).unwrap();
-    let o = e.km(kry, &["import", "sk1-kry", "--token", "kryoptic", "--in", path.to_str().unwrap()]);
-    assert_eq!(code(&o), 10, "another secret key's blobs: {}", stderr(&o));
-    assert!(open_session(&kry.module, kry.token_label, "1234").labelled("xb-sk1").is_empty(), "left behind");
-    // The bundle itself: a dry run checks it, the import records it, and cakeys verifies it.
-    assert_eq!(
-        code(&e.km(kry, &["import", "ek1-kry", "--token", "kryoptic", "--in", ek1.to_str().unwrap(), "--dry-run"])),
-        0
-    );
-    assert!(empty(), "the dry run imported");
-    let o = import(&ek1);
+    let import = |path: &std::path::Path| e.km(kry, &["import", "--token", "kryoptic", "--in", path.to_str().unwrap()]);
+    let empty = |label: &str| open_session(&kry.module, kry.token_label, "1234").labelled(label).is_empty();
+    let read = |p: &std::path::Path| -> toml::Value { toml::from_str(&std::fs::read_to_string(p).unwrap()).unwrap() };
+    // One bundle per export: two keys, one shared KEK. A dry run checks both and imports nothing.
+    let both = export(&["ek1", "sk1"]);
+    let b = read(&both);
+    assert_eq!(b["keys"].as_array().map(Vec::len), Some(2), "{b}");
+    assert!(b.get("kek").is_some(), "{b}");
+    let o = e.km(kry, &["import", "--token", "kryoptic", "--in", both.to_str().unwrap(), "--dry-run"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(empty("xb-ek1") && empty("xb-sk1"), "the dry run imported");
+    // Each key on its own: with sk1's label altered (10), ek1 still imports and is recorded,
+    // sk1 leaves nothing, and the run exits with sk1's failure.
+    let mut altered = b.clone();
+    altered["keys"][1]["commitmentLabel"] = toml::Value::String("another label".into());
+    let path = e.dir.join("partial.bundle.toml");
+    std::fs::write(&path, toml::to_string(&altered).unwrap()).unwrap();
+    let o = import(&path);
+    assert_eq!(code(&o), 10, "{}", stderr(&o));
+    assert!(empty("xb-sk1"), "the failed key left objects");
+    let lock: toml::Value = toml::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
+    assert!(lock["realisations"]["ek1-kry"].get("kryoptic").is_some(), "the good key was not recorded");
+    assert!(lock["realisations"].get("sk1-kry").is_none(), "the failed key was recorded");
     assert_eq!(code(&e.cakeys(kry, &["verify", "ek1-kry", "--token", "kryoptic"])), 0);
-    // A transport file for a key the lock does not pin: the plan refuses to wrap to it.
-    let rogue = e.dir.join("rogue.transport.toml");
-    let file = e.km(kry, &["transport", "tk-kryoptic", "--token", "kryoptic", "--out", rogue.to_str().unwrap()]);
-    assert_eq!(code(&file), 0, "{}", stderr(&file));
-    let t = std::fs::read_to_string(&rogue).unwrap().replace("object = \"tk-kryoptic\"", "object = \"ek2\"");
-    std::fs::write(&rogue, t).unwrap();
-    let o = e.km(soft, &["export", "ek2", "--token", "softhsm", "--transport", rogue.to_str().unwrap(), "--dry-run"]);
-    assert_eq!(code(&o), 15, "{}", stdout(&o));
-    assert!(stdout(&o).contains("is not the"), "{}", stdout(&o));
+    // The whole bundle again: ek1 is already there and verifies, sk1 imports.
+    let o = import(&both);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&e.cakeys(kry, &["verify", "sk1-kry", "--token", "kryoptic"])), 0);
+    // All or nothing on export: an object that cannot move fails it, and no bundle is written.
+    let out = e.dir.join("never.bundle.toml");
+    let r = e.km(
+        soft,
+        &["export", "ek2", "nosuch", "--token", "softhsm", "--target", "kryoptic", "--out", out.to_str().unwrap()],
+    );
+    assert_eq!(code(&r), 14, "{}", stderr(&r));
+    assert!(!out.exists(), "a failed export wrote a bundle");
 }
 
 /// A token names its transport key (`transportWith`, MIGRATE.md D3), and realising it records
