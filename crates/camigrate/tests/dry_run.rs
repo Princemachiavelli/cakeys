@@ -1076,3 +1076,146 @@ fn host_moves_do_what_the_plan_says() {
         assert!(rows.iter().any(|r| r.contains("tpm2-ptool")), "no key moved into tpm2-pkcs11 through tpm2_ptool");
     }
 }
+
+/// The fixture P-256 key whose certificate is `FIXTURE_CERT`, planted on `soft` under `xf-k`: the
+/// private key (extractable), its public key and the certificate. `kry`'s `xf-k` is emptied.
+fn plant_fixture_key(soft: &Ref, kry: &Ref) {
+    open_session(&kry.module, kry.token_label, "1234").clear(&["xf-k"]);
+    let src = open_session(&soft.module, soft.token_label, "1234");
+    src.clear(&["xf-k"]);
+    let pem =
+        std::fs::read_to_string(format!("{}/../cli/tests/fixtures/tpm-import-p256.pem", env!("CARGO_MANIFEST_DIR")))
+            .unwrap();
+    let der = x509_cert::der::pem::decode_vec(pem.as_bytes()).unwrap().1;
+    let cakeys_core::plaintext::PrivateParts::Ec(scalar) =
+        cakeys_core::plaintext::private_from_pkcs8(&der, cakeys_core::types::KeyType::Ec, Some("secp256r1")).unwrap()
+    else {
+        panic!("not an EC key")
+    };
+    let label = || Attribute::Label(b"xf-k".to_vec());
+    src.create_object(&[
+        Attribute::Class(ObjectClass::PRIVATE_KEY),
+        Attribute::KeyType(KeyType::EC),
+        Attribute::EcParams(P256_PARAMS.to_vec()),
+        Attribute::Value(scalar.to_vec()),
+        Attribute::Token(true),
+        Attribute::Sign(true),
+        Attribute::Sensitive(true),
+        Attribute::Extractable(true),
+        label(),
+    ])
+    .unwrap();
+    let mut public = point_key(FIXTURE_CERT, KeyType::EC, P256_PARAMS);
+    public.extend([Attribute::Token(true), Attribute::Verify(true), label()]);
+    src.create_object(&public).unwrap();
+    let cert = x509_cert::Certificate::from_der(FIXTURE_CERT).unwrap();
+    src.create_object(&[
+        Attribute::Class(ObjectClass::CERTIFICATE),
+        Attribute::CertificateType(CertificateType::X_509),
+        Attribute::Subject(cert.tbs_certificate().subject().to_der().unwrap()),
+        Attribute::Value(FIXTURE_CERT.to_vec()),
+        Attribute::Token(true),
+        label(),
+    ])
+    .unwrap();
+    drop(src);
+}
+
+const FIXTURE_CERT: &[u8] = include_bytes!("../../cli/tests/fixtures/tpm-import-p256-cert.der");
+const P256_PARAMS: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+
+/// Key files (MIGRATE.md D2 `file`, phase 4b): one private key leaves `SoftHSM` through the host
+/// as encrypted PKCS#8 or as PKCS#12 with the certificate the lock pairs with it, mode 0600,
+/// unreadable without the passphrase. kryoptic imports the PKCS#12 (key and certificate) after a
+/// wrong passphrase was refused (10) leaving nothing, records it as from a `file`, and verifies
+/// both; the PKCS#8 of the same key is then already there.
+#[test]
+fn key_files_carry_one_key_and_its_certificate() {
+    let Some(e) = env("key-files") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
+    let (Some(soft), Some(kry)) = (named("softhsm"), named("kryoptic")) else {
+        eprintln!("skipping key-files: needs the softhsm and kryoptic references");
+        return;
+    };
+    plant_fixture_key(soft, kry);
+    let key_attrs = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n";
+    let body = "[objects.fk]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+                [objects.fc]\nclass = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"\n\n"
+        .to_owned()
+        + &Env::spec("fk-soft", "fk", key_attrs, &[soft], "xf-k", "")
+        + &Env::spec("fc-soft", "fc", "", &[soft], "xf-k", "")
+        + &Env::spec("fk-kry", "fk", key_attrs, &[kry], "xf-k", "")
+        + &Env::spec("fc-kry", "fc", "", &[kry], "xf-k", "");
+    e.config(&body);
+    for spec in ["fk-soft", "fc-soft"] {
+        let o = e.cakeys(soft, &["realise", spec, "--token", "softhsm"]);
+        assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
+    }
+    let pass = e.dir.join("pass");
+    std::fs::write(&pass, "correct horse\n").unwrap();
+    let wrong = e.dir.join("wrong");
+    std::fs::write(&wrong, "battery staple\n").unwrap();
+    let export = |format: &str| {
+        let out = e.dir.join(format!("fk.{format}"));
+        let o = e.km(
+            soft,
+            &[
+                "export",
+                "fk",
+                "--token",
+                "softhsm",
+                "--to-file",
+                format,
+                "--out",
+                out.to_str().unwrap(),
+                "--passphrase-file",
+                pass.to_str().unwrap(),
+                "--allow-host-plaintext",
+            ],
+        );
+        assert_eq!(code(&o), 0, "{format}: {}", stderr(&o));
+        assert_eq!(
+            std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&out).unwrap().permissions()) & 0o777,
+            0o600,
+            "{format}"
+        );
+        out
+    };
+    let (p8, p12) = (export("pkcs8"), export("pkcs12"));
+    assert!(std::fs::read_to_string(&p8).unwrap().starts_with("-----BEGIN ENCRYPTED PRIVATE KEY-----"));
+    let import = |file: &std::path::Path, pass: &std::path::Path| {
+        e.km(
+            kry,
+            &[
+                "import",
+                "--token",
+                "kryoptic",
+                "--in",
+                file.to_str().unwrap(),
+                "--passphrase-file",
+                pass.to_str().unwrap(),
+                "--allow-host-plaintext",
+            ],
+        )
+    };
+    let o = import(&p12, &wrong);
+    assert_eq!(code(&o), 10, "{}", stderr(&o));
+    assert!(
+        open_session(&kry.module, kry.token_label, "1234").labelled("xf-k").is_empty(),
+        "a refused file left objects"
+    );
+    let o = import(&p12, &pass);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
+    let origin = &lock["realisations"]["fk-kry"]["kryoptic"]["provenance"]["origin"];
+    assert_eq!(
+        (origin["from"].as_str(), origin["method"].as_str(), origin["exposure"].as_str()),
+        (Some("file"), Some("pkcs12"), Some("file"))
+    );
+    for spec in ["fk-kry", "fc-kry"] {
+        assert_eq!(code(&e.cakeys(kry, &["verify", spec, "--token", "kryoptic"])), 0, "{spec}");
+    }
+    let o = import(&p8, &pass);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(stderr(&o).contains("already realised"), "{}", stderr(&o));
+}

@@ -45,6 +45,34 @@ pub fn import(
     let loc = &src.on_token.locator;
     let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string()))?;
     let spki = (src.object.class == Class::PrivateKey).then(|| from.spki(h, loc)).transpose()?;
+    let kwp = rfc5649(from)
+        .ok_or_else(|| from.unsupported(format!("'{}' offers no RFC 5649 key wrap to hand the key over", from.name)))?;
+    let plain = from.extract(h, &kwp)?;
+    let origin =
+        Origin { from: src.token_name.to_owned(), method: method.name(), exposure: Exposure::Host, declared: false };
+    create_and_record(dst, to, lock, &plain, spki.as_deref(), origin, notes)
+}
+
+/// Create the key `plain` (a private key's PKCS#8, of the public key `spki`, or a secret key's
+/// value) under `dst` on `to` with `C_CreateObject`, and record it with `origin`: what
+/// [`import`] does once the key is in memory, and what a key file's import does (`file`).
+///
+/// # Errors
+///
+/// As [`import`], from the target's side.
+pub(crate) fn create_and_record(
+    dst: &Target,
+    to: &Token,
+    lock: &mut Lock,
+    plain: &[u8],
+    spki: Option<&[u8]>,
+    origin: Origin,
+    notes: &mut Notes,
+) -> Result<Moved> {
+    if lock.realisation(dst.spec_name, dst.token_name).is_some() {
+        ops::verify(dst, to, lock, notes)?;
+        return Ok(Moved::AlreadyThere);
+    }
     if !to.logged_in {
         return Err(KmError::Unavailable(format!(
             "{dst}: a session without login cannot tell the locator is free; configure pinFile or pinEnv for \
@@ -52,7 +80,7 @@ pub fn import(
             dst.token_name
         )));
     }
-    let occupied = to.occupied(dst.object, &dst.on_token.locator, spki.as_deref())?;
+    let occupied = to.occupied(dst.object, &dst.on_token.locator, spki)?;
     if occupied.colliding > 0 {
         return Err(KmError::Conflict(format!(
             "{} object(s) a {} would collide with already sit under the locator of {dst}, and the lock records \
@@ -60,21 +88,9 @@ pub fn import(
             occupied.colliding, dst.object.class
         )));
     }
-    let kwp = rfc5649(from)
-        .ok_or_else(|| from.unsupported(format!("'{}' offers no RFC 5649 key wrap to hand the key over", from.name)))?;
-    let plain = from.extract(h, &kwp)?;
     let mut made = Vec::new();
-    let created = create(dst, to, &plain, spki.as_deref().filter(|_| occupied.public_half.is_none()), &mut made)
-        .and_then(|()| {
-            let origin = Origin {
-                from: src.token_name.to_owned(),
-                method: method.name(),
-                exposure: Exposure::Host,
-                declared: false,
-            };
-            ops::realise_import(dst, to, lock, origin, notes)
-        });
-    drop(plain);
+    let created = create(dst, to, plain, spki.filter(|_| occupied.public_half.is_none()), &mut made)
+        .and_then(|()| ops::realise_import(dst, to, lock, origin, notes));
     match created {
         Ok(_) => Ok(Moved::Imported),
         Err(err) => {

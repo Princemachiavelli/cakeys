@@ -253,7 +253,7 @@ matrix: the plan's verdict equals the outcome.
 - [x] **Phase 3b** `enforced`: the admin credential, `transport --trusted`,
       `CKA_WRAP_WITH_TRUSTED`.
 - [x] **Phase 4** `host`: `--allow-host-plaintext`, zeroized buffers, `tpm2_ptool` import.
-- [ ] **Phase 4b** `file`: `pkcs8-pbes2` and `pkcs12`, `--passphrase-file`.
+- [x] **Phase 4b** `file`: `pkcs8-pbes2` and `pkcs12`, `--passphrase-file`.
 - [ ] **Phase 5** YubiKey import through ykcs11 as Security Officer. Ask before running the
       hardware test (it overwrites slot 95).
 - [x] A fuzz target and a property test for the bundle parser (`fuzz/`, `nix/fuzz.nix`).

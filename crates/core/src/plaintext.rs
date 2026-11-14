@@ -71,6 +71,40 @@ pub fn private_from_pkcs8(der: &[u8], key_type: KeyType, curve: Option<&str>) ->
     }
 }
 
+/// The canonical SPKI of the public half of a PKCS#8 private key of any type cakeys parses (a
+/// key file names no object: its identity, `rfc7093m4` of this, finds it in the lock).
+///
+/// # Errors
+///
+/// `Unsupported` for a key no parser here takes.
+pub fn spki_of_pkcs8(der: &[u8]) -> Result<Vec<u8>> {
+    use ed25519_dalek::pkcs8::{DecodePrivateKey as _, EncodePublicKey as _};
+    macro_rules! ec {
+        ($key:ty) => {
+            if let Ok(k) = <$key>::from_pkcs8_der(der) {
+                return k.public_key().to_public_key_der().map(|d| d.as_bytes().to_vec()).map_err(spki_err);
+            }
+        };
+    }
+    ec!(p256::SecretKey);
+    ec!(p384::SecretKey);
+    ec!(p521::SecretKey);
+    ec!(k256::SecretKey);
+    ec!(bp256::r1::SecretKey);
+    ec!(bp384::r1::SecretKey);
+    if let Ok(k) = ed25519_dalek::SigningKey::from_pkcs8_der(der) {
+        return k.verifying_key().to_public_key_der().map(|d| d.as_bytes().to_vec()).map_err(spki_err);
+    }
+    if let Ok(k) = rsa::PrivateKey::from_pkcs8_der(der) {
+        return k.to_public_key().to_public_key_der().map(|d| d.as_bytes().to_vec()).map_err(spki_err);
+    }
+    Err(KmError::Unsupported("the key file holds no EC, Ed25519 or RSA private key cakeys reads".into()))
+}
+
+fn spki_err(e: impl std::fmt::Display) -> KmError {
+    KmError::Unavailable(format!("encoding the public key: {e}"))
+}
+
 fn rsa_parts(der: &[u8]) -> Result<RsaParts> {
     use rsa::pkcs8::DecodePrivateKey as _;
     use rsa::traits::{PrivateKeyParts as _, PublicKeyParts as _};
@@ -99,6 +133,7 @@ mod tests {
     #[test]
     fn pkcs8_keys_parse_into_their_parts() {
         use ed25519_dalek::pkcs8::EncodePrivateKey as _;
+        use rsa::pkcs8::EncodePublicKey as _;
         use rsa::traits::PublicKeyParts as _;
         let ec = p256::SecretKey::from_slice(&[7u8; 32]).unwrap();
         let der = ec.to_pkcs8_der().unwrap();
@@ -120,6 +155,10 @@ mod tests {
             panic!("not RSA")
         };
         assert_eq!(parts.modulus, rsa.n().to_be_bytes_trimmed_vartime().to_vec());
+        // A key file's public half, whatever its type: the SPKI the key's own encoder writes.
+        assert_eq!(spki_of_pkcs8(der.as_bytes()).unwrap(), rsa.to_public_key().to_public_key_der().unwrap().as_bytes());
+        let ec_der = ec.to_pkcs8_der().unwrap();
+        assert_eq!(spki_of_pkcs8(ec_der.as_bytes()).unwrap(), ec.public_key().to_public_key_der().unwrap().as_bytes());
         // The wrong type, or bytes that are no key: refused, and never echoed.
         assert!(matches!(
             private_from_pkcs8(der.as_bytes(), KeyType::Ec, Some("secp256r1")),

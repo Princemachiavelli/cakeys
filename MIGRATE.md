@@ -295,6 +295,32 @@ and only within `migrate` (never into a bundle or onto disk).
   p11-kit, each recorded with the `host` exposure and verified; `cakeys_core::plaintext` unit
   tests. The TPM and the YubiKey are untouched (swtpm only).
 
+### Phase 4b results (2026-11-14, WORKPLAN stage 4)
+
+One private key leaves for a target cakeys cannot reach as a passphrase-protected file, and such
+a file imports into a token: `file` exposure, only with `--allow-host-plaintext`.
+
+- **Export** (`export <object> --token <t> --to-file pkcs8|pkcs12 --out <file> --passphrase-file
+  <file>`): the key comes through the host as in phase 4 and is written as a PEM `ENCRYPTED
+  PRIVATE KEY` (`pkcs8-pbes2`: PBES2, PBKDF2-HMAC-SHA256 with 600 000 iterations, AES-256-CBC),
+  or as PKCS#12 (`pkcs12`): the same encrypted key in a shrouded key bag beside the certificate
+  the lock pairs with the object on the source (refused without one), both tagged with one
+  `localKeyId`, under an HMAC-SHA256 MAC (PKCS#12 KDF, 10 000 iterations). One key per file;
+  written through a temporary file, mode 0600.
+- **Import** (`import --token <t> --in <file> --passphrase-file <file> --allow-host-plaintext`,
+  `--spec` only when ambiguous): the file names no object, so the key's identity (`rfc7093m4` of
+  its public key) finds the locked private key; it is created as the host path creates it, and
+  a PKCS#12's certificate too where the lock pairs one with the key on that token. A wrong
+  passphrase is 10 (the MAC or the padding check) and leaves nothing. The origin records
+  `from = "file"` and the `file` exposure — the material sat in a file, whatever the last step.
+- **New dependencies**, all MIT OR Apache-2.0 and on the same RustCrypto line as `der` 0.8 (no
+  second copy of anything): `pkcs5` (PBES2: `pbkdf2`, `scrypt`, `cbc`), and `pkcs12` 0.2 with
+  `cms` 0.3, which are release candidates.
+- **Tests**: `key_files_carry_one_key_and_its_certificate` (SoftHSM to kryoptic: both formats,
+  0600, a wrong passphrase refused leaving nothing, the PKCS#12 imported with its certificate and
+  verified, the PKCS#8 then already there), and round-trip and wrong-passphrase unit tests. A new
+  fixture: a self-signed certificate for the `tpm-import-p256` key.
+
 ### Frozen names and formats
 
 Exposure levels (D2): `public`, `enforced`, `sealed`, `host`, `file`; a plan that cannot move an
@@ -523,6 +549,9 @@ $ camigrate export [signing backup-kek ...] --token softhsm --target kryoptic \
     [--transport kryoptic.transport.toml] [--transport-key <spec>] --out softhsm-kryoptic.export.toml \
     [--dry-run] [--allow-host-plaintext]
 $ camigrate import --token kryoptic --in softhsm-kryoptic.export.toml [--spec signing-kry ...] [--dry-run]
+$ camigrate export signing --token softhsm --to-file pkcs12 --out signing.p12 --passphrase-file pass \
+    --allow-host-plaintext
+$ camigrate import --token kryoptic --in signing.p12 --passphrase-file pass --allow-host-plaintext
 $ camigrate migrate signing --from softhsm --to kryoptic [--spec signing-kry] [--transport-key <spec>] [--dry-run]
 ```
 
@@ -539,7 +568,7 @@ disk. `--dry-run` without objects plans every object the source token holds a re
 | 3 | **Done 2026-11-14.** `sealed` between PKCS#11 modules: the `transport` verb, the composed RSA-OAEP + AES-KWP method, the direct OAEP method, bundles, import with identity check and cleanup, `migrate` | ≈800 + 700, 6–8 days |
 | 3b | **Done 2026-11-14.** `enforced`: the admin credential on PKCS#11 modules, `transport --trusted`, `CKA_WRAP_WITH_TRUSTED` keys | ≈300 + 250, 3–4 days |
 | 4 | **Done 2026-11-14.** `host` paths: `--allow-host-plaintext`, zeroized buffers, and tpm2-pkcs11 import through `tpm2_ptool` (a runtime dependency for that provider) | ≈350 + 300, 3–4 days |
-| 4b | `file`: `pkcs8-pbes2` and `pkcs12` export and import, `--passphrase-file` | ≈300 + 250, 3–4 days |
+| 4b | **Done 2026-11-14.** `file`: `pkcs8-pbes2` and `pkcs12` export and import, `--passphrase-file` | ≈300 + 250, 3–4 days |
 | 5 | YubiKey import through ykcs11 as SO, identities checked on the host first; the hardware test overwrites scratch slot 0x95 (ask before running) | ≈250 + 200, 2–3 days |
 | 6 | Native `tpm-duplicate`: a host-built duplication blob, `TPM2_Import` through tss-esapi | ≈600 + 400, 6–10 days |
 | 7 | Vendor methods (D10) for Luna, CloudHSM, nShield and others, in their provider crates, over their mechanisms and tools | with hardware |

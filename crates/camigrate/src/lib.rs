@@ -4,6 +4,7 @@
 //! extra provider crates: `camigrate::main(&camigrate::default_registry().with(MyProvider))`.
 
 pub mod bundle;
+mod file;
 mod host;
 mod plan;
 mod public;
@@ -75,9 +76,13 @@ enum Cmd {
         /// Export to a passphrase-protected file instead of a token.
         #[arg(long, value_enum, conflicts_with_all = ["target", "transport"])]
         to_file: Option<FileArg>,
-        /// Where to write the bundle; default: stdout.
+        /// Where to write the bundle (default: stdout), or the key file (required to write one).
         #[arg(long)]
         out: Option<PathBuf>,
+        /// The passphrase a key file is encrypted under, read from this file (one line);
+        /// required to write one.
+        #[arg(long, value_name = "FILE")]
+        passphrase_file: Option<PathBuf>,
         #[command(flatten)]
         how: MoveArgs,
     },
@@ -98,6 +103,14 @@ enum Cmd {
         /// Check the bundle against the lock and the token, and import nothing.
         #[arg(long)]
         dry_run: bool,
+        /// Read --in as a passphrase-protected key file (`export --to-file`'s: encrypted PKCS#8
+        /// or PKCS#12) under the passphrase in this file, not as a bundle. Needs
+        /// --allow-host-plaintext: the key is in this process's memory on the way in.
+        #[arg(long, value_name = "FILE", requires = "allow_host_plaintext")]
+        passphrase_file: Option<PathBuf>,
+        /// Allow a key file's plaintext in this process's memory (MIGRATE.md D2).
+        #[arg(long)]
+        allow_host_plaintext: bool,
     },
     /// Move objects from one token to another, both reachable from this host (MIGRATE.md):
     /// each is created on --to and recorded in the lock with where it came from. Public objects
@@ -173,8 +186,10 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     // A real `migrate` or `import` writes the lock; it holds the advisory sidecar lock across load
     // and save, as cakeys' writing verbs do. A real `export` is an admin operation too (D8).
     let writes = matches!(&cli.cmd, Cmd::Migrate { how, .. } if !how.dry_run)
-        || matches!(&cli.cmd, Cmd::Import { dry_run: false, .. });
-    let exports = matches!(&cli.cmd, Cmd::Export { how, .. } if !how.dry_run);
+        || matches!(&cli.cmd, Cmd::Import { dry_run: false, .. })
+        || matches!(&cli.cmd, Cmd::Import { passphrase_file: Some(_), .. });
+    let exports = matches!(&cli.cmd, Cmd::Export { how, .. } if !how.dry_run)
+        || matches!(&cli.cmd, Cmd::Import { passphrase_file: Some(_), .. });
     let trusts = matches!(&cli.cmd, Cmd::Transport { trusted: Some(_), .. });
     if (exports || trusts) && in_nix_build() {
         let verb = if exports { "export" } else { "transport --trusted" };
@@ -194,7 +209,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     let lock = load_lock(&lock_path)?;
     let mut run = Run { cfg, modules, registry, lock, lock_path };
     match &cli.cmd {
-        Cmd::Export { objects, token, target, transport, to_file, out, how } => {
+        Cmd::Export { objects, token, target, transport, to_file, out, passphrase_file, how } => {
             let dest = match (target, transport, to_file) {
                 (_, _, Some(FileArg::Pkcs8)) => Dest::File(FileFormat::Pkcs8),
                 (_, _, Some(FileArg::Pkcs12)) => Dest::File(FileFormat::Pkcs12),
@@ -206,9 +221,20 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
             if how.dry_run {
                 return run.plan_moves(&objects, token, &dest, how, notes);
             }
+            if let Dest::File(_) = &dest {
+                let (Some(out), Some(pass)) = (out, passphrase_file) else {
+                    return Err(
+                        KmError::Validation("writing a key file needs --out and --passphrase-file".into()).into()
+                    );
+                };
+                return run.export_file(&objects, token, &dest, out, pass, how, notes);
+            }
             run.export(&objects, token, &dest, out.as_deref(), how, notes)
         }
-        Cmd::Import { token, spec, input, dry_run } => run.import(token, spec, input, *dry_run, notes),
+        Cmd::Import { token, spec, input, passphrase_file: Some(pass), .. } => {
+            run.import_file(token, spec, input, pass, notes)
+        }
+        Cmd::Import { token, spec, input, dry_run, .. } => run.import(token, spec, input, *dry_run, notes),
         Cmd::Migrate { object, from, to, how, .. } if how.dry_run => {
             run.plan_moves(object.as_deref().as_slice(), from, &Dest::Token(to), how, notes)
         }
@@ -690,6 +716,159 @@ fn no_export<'a>(cfg: &'a Config, object: &str, from: &str) -> Option<&'a str> {
 }
 
 impl Run<'_> {
+    /// `export --to-file`: one private key, through the host (`Token::extract`), into a
+    /// passphrase-protected file (MIGRATE.md D2 `file`): encrypted PKCS#8, or PKCS#12 with the
+    /// certificate the lock pairs with it on the source. Written whole or not at all, mode 0600.
+    #[expect(clippy::too_many_arguments, reason = "the export command's parts, as the CLI hands them over")]
+    fn export_file(
+        &self,
+        objects: &[&str],
+        from: &str,
+        dest: &Dest,
+        out: &Path,
+        pass: &Path,
+        how: &MoveArgs,
+        notes: &mut Notes,
+    ) -> anyhow::Result<()> {
+        let moves = self.plan(objects, from, dest, how, false, notes)?;
+        moves.ready()?;
+        let [p] = moves.plans.as_slice() else {
+            return Err(KmError::Validation(format!(
+                "a key file holds one key, and {} are planned: name the one to export",
+                moves.plans.len()
+            ))
+            .into());
+        };
+        let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
+        let pass = read_passphrase(pass)?;
+        let src = source_target(cfg, &self.lock, &p.object, from)?;
+        let source = open_token(cfg, modules, registry, from, Access::Read, notes)?;
+        cakeys_pkcs11::ops::verify(&src, &source, &self.lock, notes)?;
+        let h = source
+            .find_key(src.object, &src.on_token.locator, false)?
+            .ok_or_else(|| KmError::NotFound(src.to_string()))?;
+        let kwp = sealed::rfc5649(&source)
+            .ok_or_else(|| source.unsupported(format!("'{from}' offers no RFC 5649 key wrap to hand the key over")))?;
+        let pkcs8 = source.extract(h, &kwp)?;
+        let bytes = match p.method {
+            Some(Method::Pkcs12) => {
+                let cert = self.paired_certificate(&p.object, from, &source, notes)?;
+                let id =
+                    self.lock.objects.get(&p.object).and_then(|o| o.ids.get("rfc7093m4")).cloned().unwrap_or_default();
+                file::write_pkcs12(&pkcs8, &cert, &pass, id.as_bytes())?
+            }
+            _ => file::write_pkcs8(&pkcs8, &pass)?.into_bytes(),
+        };
+        drop(pkcs8);
+        write_private(out, &bytes)?;
+        let method = p.method.as_ref().map_or_else(String::new, Method::name);
+        notes.say(format!("wrote {} ({} by {method}, file)", out.display(), p.object));
+        Ok(())
+    }
+
+    /// The certificate the lock pairs with `object` (`pairs`), as realised on `from`.
+    fn paired_certificate(
+        &self,
+        object: &str,
+        from: &str,
+        tok: &cakeys_pkcs11::Token,
+        notes: &mut Notes,
+    ) -> anyhow::Result<Vec<u8>> {
+        let pairs = self.lock.objects.get(object).map(|o| o.pairs.clone()).unwrap_or_default();
+        for pair in pairs {
+            let is_cert = self.lock.objects.get(&pair).and_then(|o| o.object_type.as_ref()).map(|t| t.class)
+                == Some(cakeys_core::types::ObjectClass::Certificate);
+            if is_cert && let Ok(t) = source_target(&self.cfg, &self.lock, &pair, from) {
+                return Ok(public::material(&t, tok, &self.lock, notes)?);
+            }
+        }
+        Err(KmError::PreconditionFailed(format!(
+            "pkcs12 carries the key with its certificate, and the lock pairs no certificate with '{object}' on \
+             '{from}': realise it there, or export --to-file pkcs8"
+        ))
+        .into())
+    }
+
+    /// `import --in <key file> --passphrase-file`: decrypt the file, find the locked object by
+    /// its key's identity (`rfc7093m4` of its public key), and create it under the spec that
+    /// realises that object on `token` (`--spec` when several), with the certificate a PKCS#12
+    /// carries when the lock pairs one with the object there too. Recorded with where it came
+    /// from: a `file`.
+    fn import_file(
+        &mut self,
+        token: &str,
+        specs: &[String],
+        input: &Path,
+        pass: &Path,
+        notes: &mut Notes,
+    ) -> anyhow::Result<()> {
+        let pass = read_passphrase(pass)?;
+        let bytes = std::fs::read(input).with_context(|| format!("reading {}", input.display()))?;
+        let read = file::read(&bytes, &pass)?;
+        drop(pass);
+        let spki = cakeys_core::id::spki_canonical(&cakeys_core::plaintext::spki_of_pkcs8(&read.pkcs8)?)?;
+        let id = cakeys_core::id::sri(&spki);
+        let object = self
+            .lock
+            .objects
+            .iter()
+            .find(|(_, o)| {
+                o.ids.get("rfc7093m4") == Some(&id)
+                    && o.object_type.as_ref().is_some_and(|t| t.class == cakeys_core::types::ObjectClass::PrivateKey)
+            })
+            .map(|(name, _)| name.clone())
+            .ok_or_else(|| {
+                KmError::PreconditionFailed(format!(
+                    "{}: the lock pins no private key with this key's identity ({id})",
+                    input.display()
+                ))
+            })?;
+        let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
+        let spec_for =
+            |o: &str| specs.iter().map(String::as_str).find(|s| cfg.specs.get(*s).is_some_and(|c| c.object == o));
+        let dst = target_target(cfg, &object, token, spec_for(&object))?;
+        let target = open_token(cfg, modules, registry, token, Access::Write, notes)?;
+        let origin = cakeys_core::config::Origin {
+            from: "file".into(),
+            method: read.method.name(),
+            exposure: Exposure::File,
+            declared: false,
+        };
+        let moved =
+            host::create_and_record(&dst, &target, &mut self.lock, &read.pkcs8, Some(&spki), origin.clone(), notes)?;
+        let mut changed = matches!(moved, public::Moved::Imported);
+        match moved {
+            public::Moved::Imported => notes.say(format!("imported {object} from {} into {dst}", input.display())),
+            public::Moved::AlreadyThere => {
+                notes.note(format_args!("{dst} is already realised and verifies; nothing to import"));
+            }
+        }
+        // The certificate a PKCS#12 carries, where the lock pairs one with the key on this token.
+        if let Some(cert) = &read.certificate {
+            let pairs = self.lock.objects.get(&object).map(|o| o.pairs.clone()).unwrap_or_default();
+            let cert_target = pairs.iter().find_map(|o| target_target(cfg, o, token, spec_for(o)).ok());
+            match cert_target {
+                Some(t) => {
+                    if matches!(
+                        public::create(&t, &target, cert, "file", &mut self.lock, notes)?,
+                        public::Moved::Imported
+                    ) {
+                        changed = true;
+                        notes.say(format!("imported its certificate into {t}"));
+                    }
+                }
+                None => notes.note(format_args!(
+                    "the file's certificate is not imported: the lock pairs no certificate with '{object}' on '{token}'"
+                )),
+            }
+        }
+        if changed {
+            save_lock(&self.lock_path, &self.lock)?;
+            notes.say(format!("updated {}", self.lock_path.display()));
+        }
+        Ok(())
+    }
+
     /// `transport --trusted`: the source's SO makes a `CKA_TRUSTED` copy of the transport key
     /// realised as `spec` on `token`, from the public key the lock records (so the lock vouches
     /// for it, never a file). Nothing to do when the source already trusts it; any other trusted
@@ -727,6 +906,36 @@ impl Run<'_> {
         let key = self.lock.objects.get(object)?.public_key.as_ref()?;
         base64::engine::general_purpose::STANDARD.decode(key).ok()
     }
+}
+
+/// The passphrase in `path` (its first line), zeroized when dropped. Never empty.
+fn read_passphrase(path: &Path) -> anyhow::Result<zeroize::Zeroizing<String>> {
+    let text =
+        zeroize::Zeroizing::new(std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?);
+    let line = zeroize::Zeroizing::new(text.lines().next().unwrap_or_default().to_owned());
+    if line.is_empty() {
+        return Err(KmError::Validation(format!("{}: the passphrase is empty", path.display())).into());
+    }
+    Ok(line)
+}
+
+/// Write `bytes` to `path` whole or not at all: a temporary file beside it, created 0600 (it
+/// holds a key, if encrypted), renamed into place.
+fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let name = path.file_name().map_or_else(|| "key".into(), |n| n.to_string_lossy().into_owned());
+    let tmp = path.with_file_name(format!(".{name}.tmp"));
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .with_context(|| format!("creating {}", tmp.display()))?;
+    f.write_all(bytes).with_context(|| format!("writing {}", tmp.display()))?;
+    drop(f);
+    std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
 }
 
 /// The transport key to seal to on `to`: `--transport-key`, else the token's `transportWith`.
