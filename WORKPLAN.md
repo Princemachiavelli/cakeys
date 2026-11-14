@@ -273,16 +273,16 @@ Parked: native `tpm-duplicate` (phase 6) and vendor methods (phase 7). Do not st
 
 Code: `crates/tpm2-pkcs11/src/attest/`. The crate is not restructured.
 
-- [ ] **Version guard** (review A8): refuse (15) on a tpm2-pkcs11 version the store reader was
+- [x] **Version guard** (review A8): refuse (15) on a tpm2-pkcs11 version the store reader was
       not tested with, naming the version. Tested versions: 1.10.x. Unit tests exist on rows
       the module wrote (`crates/tpm2-pkcs11/tests/fixtures`).
-- [ ] **Fuzz targets** for the store row parser and `TPMS_ATTEST` verification.
-- [ ] **A real-TPM harness.** `nix/ftpm-test-env.sh` builds a store with a transient primary,
+- [x] **Fuzz targets** for the store row parser and `TPMS_ATTEST` verification.
+- [x] **A real-TPM harness.** `nix/ftpm-test-env.sh` builds a store with a transient primary,
       which `tpm-certify` refuses by design. Add a mode whose store uses the existing storage
       root key as its parent: `tpm2_ptool init --primary-handle=0x81000001`. That handle is a
       standard RSA storage key (restricted, decrypt, `noda`, empty auth). Used as a parent it
       is only read, and nothing new is made persistent for the primary.
-- [ ] **Stop and report before the first run on the real TPM.** State the exact commands, and
+- [x] **Stop and report before the first run on the real TPM.** State the exact commands, and
       what the run will leave on the TPM. Then, on the user's go-ahead:
   - Record persistent handles and the lockout counter.
   - Run the attestation test. It creates one persistent Attestation Key at `0x81000016` in
@@ -292,9 +292,10 @@ Code: `crates/tpm2-pkcs11/src/attest/`. The crate is not restructured.
     new handle is `0x81000016`, the lockout counter is 0, and no transient objects remain.
   - The key stays: the scheme is trust-on-first-use, so the lock pins it. Tell the user how to
     remove it (`tpm2_evictcontrol -C o -c 0x81000016`).
-- [ ] Add the opt-in test to `crates/cli/tests/ftpm.rs` and record the result in
+  - Run 2026-11-14 on the user's go-ahead: all four checks held (docs/PROVIDERS.md).
+- [x] Add the opt-in test to `crates/cli/tests/ftpm.rs` and record the result in
       `docs/PROVIDERS.md` and `docs/ARCHITECTURE.md` §11.
-- [ ] **Secret keys** (NEXT.md §2c, first item): check that a TPM-held secret key certifies and
+- [x] **Secret keys** (NEXT.md §2c, first item): check that a TPM-held secret key certifies and
       resolves with `assurance = "proof"`; add the test on swtpm and, if the step above ran, on
       the real TPM.
 

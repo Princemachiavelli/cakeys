@@ -105,3 +105,54 @@ fn unwrap_only_keys_cannot_prove_possession() {
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("never unwraps") && !stderr(&o).contains("created"), "{}", stderr(&o));
 }
+
+/// `tpm-certify` on the real TPM (WORKPLAN stage 5), opt-in twice over: the harness store must
+/// use the platform's storage root key as its parent (`ftpm-test-env.sh up <dir> persistent`,
+/// only read), and `CAKEYS_FTPM_ATTEST=1` must be set, since the first run makes the one
+/// persistent object this suite may make: cakeys' Attestation Key at 0x81000016 (owner
+/// hierarchy, empty auth; trust on first use, so it stays: `tpm2_evictcontrol -C o -c
+/// 0x81000016` removes it). A generated P-256 key and an imported HMAC key are certified,
+/// pinned and verified; both resolve as a fresh proof.
+#[test]
+fn keys_attest_their_residence_on_the_real_tpm() {
+    let Some(e) = env("attest") else { return };
+    if std::env::var("CAKEYS_FTPM_ATTEST").as_deref() != Ok("1") {
+        eprintln!("skipping attest: CAKEYS_FTPM_ATTEST=1 not set (it creates the AK at 0x81000016)");
+        return;
+    }
+    let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
+    let hmac = e.dir.join("hmac.bin");
+    std::fs::write(&hmac, [0x5au8; 32]).unwrap();
+    let out = std::process::Command::new("tpm2_ptool")
+        .args([
+            "import",
+            "--algorithm=hmac:sha256",
+            &format!("--privkey={}", hmac.display()),
+            "--key-label=ftpm-attest-hmac",
+        ])
+        .args(["--label=kmtest", "--userpin=1234", &format!("--path={store}")])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "tpm2_ptool import: {}", stderr(&out));
+    e.config(
+        "[objects.p256]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.p256]\nobject = \"p256\"\nattributes = { CKA_SIGN = true }\n\
+         tokens.ftpm = { locator = { CKA_LABEL = \"ftpm-attest-p256\" }, autoCreate = true, attestation = true }\n\n\
+         [objects.hmac]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_SHA256_HMAC\"\nvalueLen = 32\n\n\
+         [specs.hmac]\nobject = \"hmac\"\nattributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n\
+         tokens.ftpm = { locator = { CKA_LABEL = \"ftpm-attest-hmac\" }, attestation = true }\n",
+    );
+    for spec in ["p256", "hmac"] {
+        let o = e.km(&["realise", spec, "--token", "ftpm", "--update-lock"]);
+        assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
+        let att = &e.lock()["realisations"][spec]["ftpm"]["attestation"];
+        assert_eq!(att["kind"].as_str(), Some("tpm-certify"), "{spec}");
+        assert_eq!(e.code(&["verify", spec, "--token", "ftpm"]), 0, "{spec}");
+        let got: serde_json::Value =
+            serde_json::from_str(&stdout(&e.km(&["resolve", spec, "--token", "ftpm"]))).unwrap();
+        assert_eq!(got["assurance"].as_str(), Some("proof"), "{spec}: {got}");
+    }
+    // One AK for both: the same anchor pinned beside each attestation.
+    let root = |spec: &str| e.lock()["realisations"][spec]["ftpm"]["attestation"]["root"].clone();
+    assert_eq!(root("p256"), root("hmac"));
+}

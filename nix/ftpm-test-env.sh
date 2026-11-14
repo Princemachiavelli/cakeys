@@ -2,7 +2,11 @@
 # The host's real TPM for the opt-in tests (crates/cli/tests/ftpm.rs): a private tpm2-abrmd over
 # the kernel resource manager, and a fresh tpm2-pkcs11 store with token `kmtest` (user PIN 1234).
 #
-#   ftpm-test-env.sh up <dir>     start a private D-Bus + tpm2-abrmd; new store; write <dir>/env
+#   ftpm-test-env.sh up <dir> [persistent]
+#                                 start a private D-Bus + tpm2-abrmd; new store; write <dir>/env.
+#                                 With `persistent`, the store's parent is the platform's storage
+#                                 root key 0x81000001 (only read, never changed), which the
+#                                 tpm-certify attestation needs; else a transient primary.
 #   ftpm-test-env.sh down <dir>   stop them (by PID file); the store stays until <dir> is removed
 #
 # Safe on a TPM the platform depends on (measured boot, disk unlock):
@@ -46,7 +50,11 @@ E
     sleep 0.1
   done
   timeout 5 tpm2_getcap properties-fixed >/dev/null
-  tpm2_ptool init --transient-parent tpm2-tools-ecc-default --path "$D/store" >/dev/null
+  if [ "${3:-}" = persistent ]; then
+    tpm2_ptool init --primary-handle=0x81000001 --path "$D/store" >/dev/null
+  else
+    tpm2_ptool init --transient-parent tpm2-tools-ecc-default --path "$D/store" >/dev/null
+  fi
   tpm2_ptool addtoken --pid=1 --label=kmtest --sopin=5678 --userpin=1234 --path "$D/store" >/dev/null
   ;;
 down)

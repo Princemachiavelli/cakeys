@@ -5,6 +5,42 @@
 pub mod esys;
 pub mod store;
 
+/// Entry points for the fuzz targets (`fuzz/fuzz_targets/tpm_store_row.rs`, `tpms_attest.rs`):
+/// what the attestation path parses from the store and the TPM, on arbitrary input. Each is
+/// read or refused with an error, never a panic.
+pub mod fuzzing {
+    use cakeys_core::Result;
+
+    /// A `tobjects.attrs` row and a `pobjects.config` row, both from `text`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the parsers refuse.
+    pub fn store_row(text: &str) -> Result<()> {
+        let object = super::store::parse_tobject(text);
+        let parent = super::store::parse_parent(text, "");
+        object.and(parent).map(drop)
+    }
+
+    /// `bytes` as a marshalled `TPMS_ATTEST` (its certify statement's Names) and as a
+    /// `TPM2B_PUBLIC` blob (its Name, and its key material).
+    ///
+    /// # Errors
+    ///
+    /// Whatever the unmarshalling and the material extraction refuse.
+    pub fn tpms_attest(bytes: &[u8]) -> Result<()> {
+        use tss_esapi::structures::{Attest, AttestInfo};
+        use tss_esapi::traits::UnMarshall as _;
+        if let Ok(attest) = Attest::unmarshall(bytes)
+            && let AttestInfo::Certify { info } = attest.attested()
+        {
+            let _ = (info.name().value().len(), info.qualified_name().value().len());
+        }
+        super::esys::recompute_name(bytes)?;
+        super::esys::material_of(&super::esys::unmarshal_public(bytes)?).map(drop)
+    }
+}
+
 use cakeys_core::config::{Options, parse_options};
 use cakeys_core::id::Scheme;
 use cakeys_core::{KmError, Result};
@@ -182,6 +218,7 @@ fn tcti(cfg: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<tss_esapi::Tcti> {
 /// be read; `Conflict` when the module's story and the TPM's signature disagree; plus
 /// whatever `certify_key` rejects (PIN, auth, names, material cross-check).
 pub fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
+    check_version(ctx.module_version)?;
     // The store row is found the way the module finds the object: by the locator's CKA_ID
     // (and label), within the key's class.
     let Some(Attribute::Id(cka_id)) = ctx
@@ -233,6 +270,27 @@ pub fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
     })
 }
 
+/// The tpm2-pkcs11 versions the store reader was tested with (review A8): the sqlite schema and
+/// the YAML of its rows are the module's own, unversioned, so another release is refused rather
+/// than read as if it were one of these.
+pub const TESTED_VERSIONS: &[&str] = &["1.10"];
+
+/// Refuse (15) a module version the store reader was not tested with, naming it.
+///
+/// # Errors
+///
+/// `Unsupported` for any version but [`TESTED_VERSIONS`] (major.minor, as `C_GetInfo` reports).
+pub fn check_version(version: &str) -> Result<()> {
+    let minor = version.split('.').take(2).collect::<Vec<_>>().join(".");
+    if TESTED_VERSIONS.contains(&minor.as_str()) {
+        return Ok(());
+    }
+    Err(KmError::Unsupported(format!(
+        "tpm-certify reads tpm2-pkcs11's store, tested with {}.x only; this module reports {version}",
+        TESTED_VERSIONS.join(".x, ")
+    )))
+}
+
 /// `CKA_LOCAL` and `CKA_EXTRACTABLE` of the live object, as the module reports them.
 fn module_reports(ctx: &AttestCtx<'_>) -> Result<(bool, bool)> {
     let attrs = ctx
@@ -256,6 +314,18 @@ fn module_reports(ctx: &AttestCtx<'_>) -> Result<(bool, bool)> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The store reader reads only the versions it was tested with (15 otherwise, naming it).
+    #[test]
+    fn only_tested_module_versions_are_read() {
+        assert!(check_version("1.10").is_ok());
+        assert!(check_version("1.10.1").is_ok());
+        for v in ["1.9", "1.11", "2.0", ""] {
+            let e = check_version(v).unwrap_err();
+            assert!(matches!(&e, KmError::Unsupported(m) if m.contains(v)), "{v}: {e}");
+        }
+    }
+
     use super::*;
 
     #[test]

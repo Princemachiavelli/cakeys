@@ -311,6 +311,7 @@ impl Token {
         let ctx = AttestCtx {
             session: &self.session,
             cfg: &self.cfg,
+            module_version: &self.module.version,
             token_name: &self.name,
             key,
             object,

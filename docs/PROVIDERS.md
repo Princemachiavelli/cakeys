@@ -444,6 +444,13 @@ What the probes found, and what changed because of it:
   - Resolution now ranks pairs by a hardware layer the config names, then by the token's model
     and firmware. Without a token (`validate` by provider), tied pairs give their module rows
     only, with a note.
+  - `tpm-certify` runs on it (WORKPLAN stage 5, 2026-11-14) with a store whose parent is the
+    platform's storage root key 0x81000001 (`ftpm-test-env.sh up <dir> persistent`; only read):
+    a generated P-256 and an imported HMAC key were certified and resolve as a fresh `proof`.
+    The one write is cakeys' Attestation Key at 0x81000016 (owner hierarchy, empty auth; owner
+    auth unset), which stays (`tpm2_evictcontrol -C o -c 0x81000016` removes it). Before and
+    after: the names of 0x81000001, 0x81000002 and 0x81010001 identical, no transient object
+    left, the lockout counter 0.
 
 Still open:
 

@@ -20,6 +20,9 @@
   rustc,
   stdenv,
   openssl,
+  pkg-config,
+  tpm2-tss,
+  sqlite,
 }:
 let
   targets = [
@@ -28,6 +31,8 @@ let
     "lock"
     "config"
     "bundle"
+    "tpm_store_row"
+    "tpms_attest"
   ];
 
   # Seed corpora from the test fixtures: certificates, their and the import keys' SPKIs, a
@@ -39,6 +44,7 @@ let
     cp --update=none "$F/keys.lock" fuzz/corpus/lock/
     cp --update=none "$F/keys.toml" fuzz/corpus/config/
     cp --update=none crates/camigrate/tests/fixtures/sample.bundle.toml fuzz/corpus/bundle/
+    cp --update=none crates/tpm2-pkcs11/tests/fixtures/*.yaml fuzz/corpus/tpm_store_row/
     for p in "$F"/*.pem; do
       openssl pkey -in "$p" -pubout -outform DER -out "fuzz/corpus/public_key/$(basename "$p" .pem).spki"
     done
@@ -65,9 +71,16 @@ in
     };
     cargoRoot = "fuzz";
     cargoLock.lockFile = ../fuzz/Cargo.lock;
+    # The tpm2-pkcs11 crate (the tpm_store_row and tpms_attest targets) links tpm2-tss's ESAPI
+    # and sqlite.
     nativeBuildInputs = [
       cargo-fuzz
       openssl
+      pkg-config
+    ];
+    buildInputs = [
+      tpm2-tss
+      sqlite
     ];
     RUSTC_BOOTSTRAP = 1;
     buildPhase = ''
@@ -96,6 +109,12 @@ in
       cargo-fuzz
       stdenv.cc
       openssl
+      pkg-config
+    ];
+    # The tpm2-pkcs11 targets link tpm2-tss and sqlite, found through pkg-config.
+    runtimeEnv.PKG_CONFIG_PATH = lib.makeSearchPath "lib/pkgconfig" [
+      tpm2-tss.dev
+      sqlite.dev
     ];
     text = ''
       if [ $# -lt 1 ]; then

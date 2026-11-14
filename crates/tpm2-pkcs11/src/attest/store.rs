@@ -191,7 +191,7 @@ pub fn store_class(class: ObjectClass) -> Result<i64> {
 /// `pobjects.config` is YAML `{esys-tr: <hex>, transient: false}`; the serialized `ESYS_TR` is
 /// `TPM2_HANDLE (BE) ‖ TPM2B_NAME ‖ rsrcType (BE, 1 = key) ‖ TPM2B_PUBLIC`. Only the persistent
 /// parent form is supported — transient primaries would need re-derivation from the template.
-fn parse_parent(config: &str, objauth: &str) -> Result<Parent> {
+pub(crate) fn parse_parent(config: &str, objauth: &str) -> Result<Parent> {
     let bad = |what: &str| KmError::Unavailable(format!("tpm2-pkcs11 store: primary object: {what}"));
     let config: BTreeMap<String, Value> = serde_norway::from_str(config).map_err(|e| bad(&e.to_string()))?;
     let Some(esys_tr) = config.get("esys-tr") else {
@@ -253,7 +253,7 @@ impl<'de> serde::Deserialize<'de> for Attrs {
 /// `None` for a row without TPM key material (no `CKA_TPM2_PUB_BLOB`): an ECDH-derived secret,
 /// which tpm2-pkcs11 1.10 keeps as a store row even from a `CKA_TOKEN = false` template [run] —
 /// never certifiable, and no reason to refuse the rest of the store.
-fn parse_tobject(attrs: &str) -> Result<Option<TObject>> {
+pub(crate) fn parse_tobject(attrs: &str) -> Result<Option<TObject>> {
     let bad = |what: &str| KmError::Unavailable(format!("tpm2-pkcs11 store: object attrs: {what}"));
     let Attrs(attrs) = serde_norway::from_str(attrs).map_err(|e| bad(&e.to_string()))?;
     let attr = |attr: u64| attrs.get(&attr);

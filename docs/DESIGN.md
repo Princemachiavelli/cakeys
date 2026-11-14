@@ -768,8 +768,11 @@ See `docs/REVIEW-2026-11-11.md` and, for the threat model these follow from,
   random. Do not commit a lock that pins a guessable secret (review A9).
 - **`tpm-certify` is experimental and pending review** (review A8): it reads tpm2-pkcs11's
   private store (sqlite schema, YAML attributes, the sealed wrapping key), which the module
-  does not offer as a stable interface, and it does not yet refuse a module version it was not
-  tested with.
+  does not offer as a stable interface; a module version it was not tested with (anything but
+  1.10.x) is refused (15). Without the EK certificate chain it proves **the same TPM as at first
+  use**: the Attestation Key is trusted on first use and pinned in the lock, so a later
+  attestation shows the object still sits in the TPM that held the AK then — not that this TPM
+  is genuine hardware from a known vendor.
 - **The schema accepts options that are not implemented** (review A6): `identity.allow` and
   the modes `commit-at-creation`, `host-at-import` and `token-specific` parse and validate,
   then every verb refuses them (15).

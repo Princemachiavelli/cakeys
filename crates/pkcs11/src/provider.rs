@@ -178,6 +178,8 @@ pub struct ImportCtx<'a> {
 pub struct AttestCtx<'a> {
     pub session: &'a Session,
     pub cfg: &'a TokenCfg,
+    /// The module's version as `C_GetInfo` reports it ("1.10").
+    pub module_version: &'a str,
     pub token_name: &'a str,
     pub key: ObjectHandle,
     pub object: &'a ObjectCfg,

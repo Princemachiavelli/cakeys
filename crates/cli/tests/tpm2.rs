@@ -425,6 +425,11 @@ fn tpm2_keys_attest_their_tpm_residence() {
         assert_eq!(e.code(&["realise", "hmac", "--token", "tpm", "--update-lock"]), 0);
         assert!(e.lock()["objects"]["hmac"]["ids"].get("commitment").is_some());
         assert!(e.locked_attestation("hmac", "tpm")["id"].as_str().is_some());
+        // A TPM-held secret key, certified: a fresh proof, not the replayable fingerprint a
+        // commitment alone is (NEXT.md §2c).
+        let got: serde_json::Value =
+            serde_json::from_str(&stdout(&e.km(&["resolve", "hmac", "--token", "tpm"]))).unwrap();
+        assert_eq!(got["assurance"].as_str(), Some("proof"), "{got}");
     }
 }
 
