@@ -52,12 +52,13 @@ struct Cli {
 enum Cmd {
     /// Export objects realised on a token, shaped for a target (MIGRATE.md): with --dry-run, per
     /// object the method, how exposed the material is on the way, and why not when it cannot
-    /// move; else the keys, sealed to the target's transport key, as one bundle for `import`.
+    /// move; else the keys, sealed to the target's transport key, and the public objects as one
+    /// bundle for `import`.
     /// Named objects are all or nothing: one that cannot move fails the export and no bundle is
     /// written.
     Export {
-        /// The objects to export; default: every key realised on --token that can move (the
-        /// others warned about; public objects left out with a note: `migrate` moves them).
+        /// The objects to export; default: every object realised on --token that can move (the
+        /// others warned about, except a spec's `noExport`).
         objects: Vec<String>,
         /// The source token.
         #[arg(long)]
@@ -284,21 +285,17 @@ impl Run<'_> {
                 continue;
             }
             match &p.method {
-                Some(method @ (Method::RsaOaepAesKwp(_) | Method::RsaOaep(_))) => items.push(sealed::Item {
-                    src: source_target(cfg, &self.lock, &p.object, from)?,
-                    method: method.clone(),
-                    exposure: p.exposure.unwrap_or(Exposure::Sealed),
-                }),
-                Some(Method::Public) if objects.is_empty() => {
-                    notes.note(format_args!(
-                        "{}: a public object, left out of the bundle (`migrate` moves it)",
-                        p.object
-                    ));
+                Some(method @ (Method::RsaOaepAesKwp(_) | Method::RsaOaep(_) | Method::Public)) => {
+                    items.push(sealed::Item {
+                        src: source_target(cfg, &self.lock, &p.object, from)?,
+                        method: method.clone(),
+                        exposure: p.exposure.unwrap_or(Exposure::Sealed),
+                    });
                 }
                 method => {
                     let method = method.as_ref().map_or_else(|| "-".to_owned(), Method::name);
                     return Err(KmError::Unsupported(format!(
-                        "{}: a bundle carries sealed keys, not {method} (`migrate` moves public objects)",
+                        "{}: a bundle carries sealed keys and public objects, not {method}",
                         p.object
                     ))
                     .into());
@@ -306,7 +303,7 @@ impl Run<'_> {
             }
         }
         if items.is_empty() {
-            return Err(KmError::Unsupported(format!("no key on '{from}' to seal into a bundle")).into());
+            return Err(KmError::Unsupported(format!("nothing on '{from}' can go into a bundle")).into());
         }
         let source = open_token(cfg, modules, registry, from, Access::Read, notes)?;
         let transport = match dest {
@@ -364,7 +361,11 @@ impl Run<'_> {
         let access = if dry_run { Access::Read } else { Access::Write };
         let target = open_token(cfg, modules, registry, token, access, notes)?;
         let (mut changed, mut failed) = (false, None);
-        for e in &bundle.keys {
+        // Keys first: a public key object then finds the public half its key's import made.
+        let public = Method::Public.name();
+        let entries =
+            bundle.keys.iter().filter(|e| e.method != public).chain(bundle.keys.iter().filter(|e| e.method == public));
+        for e in entries {
             let spec =
                 specs.iter().map(String::as_str).find(|s| cfg.specs.get(*s).is_some_and(|c| c.object == e.object));
             let dst = match target_target(cfg, &e.object, token, spec) {

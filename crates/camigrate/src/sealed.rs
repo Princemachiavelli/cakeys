@@ -59,17 +59,27 @@ pub fn export(
     let mut found = Vec::new();
     for item in items {
         let src = &item.src;
-        ops::verify(src, from, lock, notes)?;
+        // A public object travels as it is: its bytes, read and verified on the source.
+        let public = if item.method == Method::Public {
+            Some(crate::public::material(src, from, lock, notes)?)
+        } else {
+            ops::verify(src, from, lock, notes)?;
+            None
+        };
         let locked = lock.objects.get(src.object_name).filter(|o| !o.ids.is_empty()).ok_or_else(|| {
             KmError::PreconditionFailed(format!("{src}: the lock pins no IDs for object '{}'", src.object_name))
         })?;
         let object_type = locked.object_type.clone().ok_or_else(|| {
             KmError::PreconditionFailed(format!("{src}: the lock records no type for object '{}'", src.object_name))
         })?;
-        let loc = &src.on_token.locator;
-        let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string()))?;
-        let public_key = (src.object.class == Class::PrivateKey).then(|| from.spki(h, loc)).transpose()?;
-        found.push((item, locked, object_type, h, public_key));
+        let held = if let Some(bytes) = public {
+            Held::Public(bytes)
+        } else {
+            let loc = &src.on_token.locator;
+            let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string()))?;
+            Held::Key(h, (src.object.class == Class::PrivateKey).then(|| from.spki(h, loc)).transpose()?)
+        };
+        found.push((item, locked, object_type, held));
     }
     let session = from.raw();
     let refused = |what: &str, e: cryptoki::error::Error| from.unsupported(format!("{what} on '{}': {e}", from.name));
@@ -81,15 +91,23 @@ pub fn export(
     let wrapped = kek_hash.map(|h| kek(from, tpub, h, &refused)).transpose().and_then(|kek| {
         let keys = found
             .iter()
-            .map(|(item, locked, object_type, h, public_key)| {
+            .map(|(item, locked, object_type, held)| {
                 let refused = |what: &str, e| refused(&format!("{}: {what}", item.src), e);
+                let (public_key, wrapped, value) = match held {
+                    Held::Key(h, public_key) => {
+                        let blob = wrap(from, tpub, kek.as_ref().map(|k| k.0), *h, &item.method, &refused)?;
+                        (public_key.as_deref().map(encode), Some(encode(&blob)), None)
+                    }
+                    Held::Public(bytes) => (None, None, Some(encode(bytes))),
+                };
                 Ok(Entry {
                     object: item.src.object_name.into(),
                     method: item.method.name(),
                     exposure: item.exposure,
                     commitment_label: locked.commitment_label.clone(),
-                    public_key: public_key.as_deref().map(encode),
-                    wrapped: encode(&wrap(from, tpub, kek.as_ref().map(|k| k.0), *h, &item.method, &refused)?),
+                    public_key,
+                    wrapped,
+                    value,
                     object_type: object_type.clone(),
                     ids: locked.ids.clone(),
                 })
@@ -110,6 +128,13 @@ pub fn export(
         transport: TransportRef { object: transport.object.clone(), rfc7093m4: transport.rfc7093m4.clone() },
         keys,
     })
+}
+
+/// What an export found of one object on the source: a key (its handle, and a private key's
+/// canonical SPKI), or a public object's bytes.
+enum Held {
+    Key(ObjectHandle, Option<Vec<u8>>),
+    Public(Vec<u8>),
 }
 
 /// A fresh session AES-256 KEK on the source, and its blob wrapped to the transport key.
@@ -190,6 +215,11 @@ pub fn import(
         ops::verify(dst, to, lock, notes)?;
         return Ok(Moved::AlreadyThere);
     }
+    if e.method == Method::Public.name() {
+        check_against_lock(b, e, dst, tr, lock)?;
+        let bytes = e.public_value().map_err(KmError::Validation)?;
+        return crate::public::create(dst, to, &bytes, &b.source.token, lock, notes);
+    }
     let ready = preflight(b, e, dst, to, tr, lock, notes)?;
     let method = e.method().map_err(KmError::Validation)?;
     let mut made = Vec::new();
@@ -229,6 +259,10 @@ pub fn preflight(
     notes: &mut Notes,
 ) -> Result<Preflight> {
     check_against_lock(b, e, dst, tr, lock)?;
+    if e.method == Method::Public.name() {
+        crate::public::preflight(dst, to, &e.public_value().map_err(KmError::Validation)?)?;
+        return Ok(Preflight { unwrapping: None, public_half: None });
+    }
     ops::verify(tr, to, lock, notes)?;
     let unwrapping = to
         .find_key(tr.object, &tr.on_token.locator, false)?
@@ -251,13 +285,13 @@ pub fn preflight(
             occupied.colliding, dst.object.class
         )));
     }
-    Ok(Preflight { unwrapping, public_half: occupied.public_half })
+    Ok(Preflight { unwrapping: Some(unwrapping), public_half: occupied.public_half })
 }
 
-/// What [`preflight`] established: the transport key to unwrap with, and a public key object
-/// already holding the key's public key, reused rather than created.
+/// What [`preflight`] established: the transport key to unwrap with (none for a public object),
+/// and a public key object already holding the key's public key, reused rather than created.
 pub struct Preflight {
-    pub unwrapping: ObjectHandle,
+    pub unwrapping: Option<ObjectHandle>,
     pub public_half: Option<ObjectHandle>,
 }
 
@@ -318,7 +352,9 @@ fn create(
     method: &Method,
     made: &mut Vec<ObjectHandle>,
 ) -> Result<()> {
-    let unwrapping = ready.unwrapping;
+    let unwrapping = ready
+        .unwrapping
+        .ok_or_else(|| KmError::Validation(format!("{dst}: a public object is created, not unwrapped")))?;
     let session = to.raw();
     let refused = |what: &str, e: cryptoki::error::Error| {
         KmError::Conflict(format!(

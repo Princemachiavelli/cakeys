@@ -26,16 +26,12 @@ pub enum Moved {
     AlreadyThere,
 }
 
-/// Move the public object `src` (realised on `from`) to `dst` on `to`, and record it in `lock`.
+/// Move the public object `src` (realised on `from`) to `dst` on `to`, and record it in `lock`:
+/// [`material`] from the source, then [`create`] on the target.
 ///
 /// # Errors
 ///
-/// Whatever `ops::verify` refuses on the source; `Conflict` (13) when an object of its class
-/// sits under the target locator without a realisation of `dst` (a public key object holding
-/// the same key is that object: recorded, not created again); `Unavailable` (16) for a target session
-/// without login; `Unsupported` (15) when the target refuses `C_CreateObject`; and, after the
-/// creation, whatever `ops::realise_import` refuses — a hash mismatch (10) included — with what
-/// was created removed again.
+/// As [`material`] and [`create`].
 pub fn import(
     src: &Target,
     from: &Token,
@@ -48,47 +44,65 @@ pub fn import(
         ops::verify(dst, to, lock, notes)?;
         return Ok(Moved::AlreadyThere);
     }
+    let bytes = material(src, from, lock, notes)?;
+    create(dst, to, &bytes, src.token_name, lock, notes)
+}
+
+/// The public object `src` realised on `from`, verified against the lock, as the bytes a target
+/// creates it from (a bundle's `value`): a certificate's DER, a public key's canonical SPKI, a
+/// data object's value.
+///
+/// # Errors
+///
+/// Whatever `ops::verify` refuses; `NotFound`/`Ambiguous` for the locator; `Conflict` for a
+/// certificate whose value is no X.509 certificate.
+pub fn material(src: &Target, from: &Token, lock: &Lock, notes: &mut Notes) -> Result<Vec<u8>> {
     ops::verify(src, from, lock, notes)?;
-    let template = template(src, from, dst, to)?;
-    // If-None-Match (MIGRATE.md D6): never into an occupied locator, and only where the session
-    // can see everything under it.
-    if !to.logged_in {
-        return Err(KmError::Unavailable(format!(
-            "{dst}: a session without login cannot tell the locator is free; configure pinFile or pinEnv \
-             for token '{}'",
-            dst.token_name
-        )));
+    let h = one(from, src)?;
+    match src.object.class {
+        Class::Certificate => {
+            let der = value(from, h)?;
+            x509_cert::Certificate::from_der(&der)
+                .map_err(|e| KmError::Conflict(format!("{src}: CKA_VALUE is not an X.509 certificate: {e}")))?;
+            Ok(der)
+        }
+        Class::Data => value(from, h),
+        Class::PublicKey => from.spki(h, &src.on_token.locator),
+        class => Err(KmError::Validation(format!("{src}: a {class} is not a public object"))),
     }
-    // Per class (`Token::occupied`): the key and certificate a public object usually sits beside
-    // are no collision, and a public key a key's import already created there is this object.
-    let spki = match src.object.class {
-        Class::PublicKey => Some(from.spki(one(from, src)?, &src.on_token.locator)?),
-        _ => None,
-    };
-    let occupied = to.occupied(dst.object, &dst.on_token.locator, spki.as_deref())?;
-    if occupied.colliding > 0 {
-        return Err(KmError::Conflict(format!(
-            "{} object(s) of its class already sit under the locator of {dst}, and the lock records no \
-             realisation there; refusing to import over them",
-            occupied.colliding
-        )));
+}
+
+/// Create the public object `dst` on `to` from `bytes` ([`material`]'s), moved from the token
+/// named `from`, and record it in `lock` with that origin. A realisation the lock already has is
+/// verified, not created again.
+///
+/// # Errors
+///
+/// `Conflict` (13) when an object of its class sits under the target locator without a
+/// realisation of `dst` (a public key object holding the same key is that object: recorded, not
+/// created again); `Unavailable` (16) for a target session without login; `Unsupported` (15)
+/// when the target refuses `C_CreateObject`; and, after the creation, whatever
+/// `ops::realise_import` refuses — a hash mismatch (10) included — with what was created removed
+/// again.
+pub fn create(dst: &Target, to: &Token, bytes: &[u8], from: &str, lock: &mut Lock, notes: &mut Notes) -> Result<Moved> {
+    if lock.realisation(dst.spec_name, dst.token_name).is_some() {
+        ops::verify(dst, to, lock, notes)?;
+        return Ok(Moved::AlreadyThere);
     }
+    let template = template(dst, to, bytes)?;
+    let public_half = preflight(dst, to, bytes)?;
     let create = || {
         to.raw()
             .create_object(&template)
             .map_err(|e| to.unsupported(format!("{dst}: importing into '{}': C_CreateObject: {e}", to.name)))
     };
-    let created = match occupied.public_half {
+    let created = match public_half {
         Some(_) => None,
         None if to.provider.manages_as_so() => Some(to.as_so("importing an object", create)?),
         None => Some(create()?),
     };
-    let origin = Origin {
-        from: src.token_name.to_owned(),
-        method: Method::Public.name(),
-        exposure: Exposure::Public,
-        declared: false,
-    };
+    let origin =
+        Origin { from: from.to_owned(), method: Method::Public.name(), exposure: Exposure::Public, declared: false };
     match ops::realise_import(dst, to, lock, origin, notes) {
         Ok(_) => Ok(Moved::Imported),
         Err(e) => {
@@ -103,36 +117,62 @@ pub fn import(
     }
 }
 
-/// The creation template: the class and type, the material, `CKA_TOKEN`, the target locator and
-/// the target spec's declared attributes.
-fn template(src: &Target, from: &Token, dst: &Target, to: &Token) -> Result<Vec<Attribute>> {
-    let h = one(from, src)?;
+/// If-None-Match before [`create`] (MIGRATE.md D6), per class (`Token::occupied`): the key and
+/// certificate a public object usually sits beside are no collision, and a public key object a
+/// key's import already created there is this object (returned: recorded, not created). Only a
+/// logged-in session sees everything under the locator.
+///
+/// # Errors
+///
+/// `Unavailable` (16) without login; `Conflict` (13) for an object of its class there.
+pub fn preflight(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Option<ObjectHandle>> {
+    if !to.logged_in {
+        return Err(KmError::Unavailable(format!(
+            "{dst}: a session without login cannot tell the locator is free; configure pinFile or pinEnv \
+             for token '{}'",
+            dst.token_name
+        )));
+    }
+    let spki = (dst.object.class == Class::PublicKey).then_some(bytes);
+    let occupied = to.occupied(dst.object, &dst.on_token.locator, spki)?;
+    if occupied.colliding > 0 {
+        return Err(KmError::Conflict(format!(
+            "{} object(s) of its class already sit under the locator of {dst}, and the lock records no \
+             realisation there; refusing to import over them",
+            occupied.colliding
+        )));
+    }
+    Ok(occupied.public_half)
+}
+
+/// The creation template from the object's bytes: the class and type, the material, `CKA_TOKEN`,
+/// the target locator and the target spec's declared attributes.
+fn template(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Vec<Attribute>> {
     let mut t = vec![Attribute::Token(true)];
     t.extend(locator_attrs(&dst.on_token.locator)?);
     t.extend(to.policy_template(&dst.spec.attributes)?);
-    match src.object.class {
+    match dst.object.class {
         Class::Certificate => {
-            let der = value(from, h)?;
-            let cert = x509_cert::Certificate::from_der(&der)
-                .map_err(|e| KmError::Conflict(format!("{src}: CKA_VALUE is not an X.509 certificate: {e}")))?;
+            let cert = x509_cert::Certificate::from_der(bytes)
+                .map_err(|e| KmError::Conflict(format!("{dst}: the value is not an X.509 certificate: {e}")))?;
             let tbs = cert.tbs_certificate();
-            let enc = |r: x509_cert::der::Result<Vec<u8>>| r.map_err(|e| KmError::Conflict(format!("{src}: {e}")));
+            let enc = |r: x509_cert::der::Result<Vec<u8>>| r.map_err(|e| KmError::Conflict(format!("{dst}: {e}")));
             t.extend([
                 Attribute::Class(ObjectClass::CERTIFICATE),
                 Attribute::CertificateType(CertificateType::X_509),
                 Attribute::Subject(enc(tbs.subject().to_der())?),
                 Attribute::Issuer(enc(tbs.issuer().to_der())?),
                 Attribute::SerialNumber(enc(tbs.serial_number().to_der())?),
-                Attribute::Value(der),
+                Attribute::Value(bytes.to_vec()),
             ]);
         }
-        Class::Data => t.extend([Attribute::Class(ObjectClass::DATA), Attribute::Value(value(from, h)?)]),
+        Class::Data => t.extend([Attribute::Class(ObjectClass::DATA), Attribute::Value(bytes.to_vec())]),
         Class::PublicKey => {
             t.push(Attribute::Class(ObjectClass::PUBLIC_KEY));
-            t.extend(public_key(src, &from.spki(h, &src.on_token.locator)?)?);
+            t.extend(public_key(dst, bytes)?);
         }
         class => {
-            return Err(KmError::Validation(format!("{src}: a {class} is not a public object")));
+            return Err(KmError::Validation(format!("{dst}: a {class} is not a public object")));
         }
     }
     Ok(t)

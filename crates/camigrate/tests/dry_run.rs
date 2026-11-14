@@ -669,6 +669,24 @@ fn bundles_are_checked_against_the_lock() {
 /// non-extractable there, which cannot move; and `nox`, an extractable one its spec keeps there
 /// (`noExport`).
 fn bundle_keys(e: &Env, soft: &Ref, kry: &Ref) {
+    // A certificate, planted on SoftHSM: a public object that travels in a bundle as it is.
+    open_session(&kry.module, kry.token_label, "1234").clear(&["xb-crt"]);
+    let src = open_session(&soft.module, soft.token_label, "1234");
+    src.clear(&["xb-crt"]);
+    let x509 = x509_cert::Certificate::from_der(CERT_RSA).unwrap();
+    src.create_object(&[
+        Attribute::Class(ObjectClass::CERTIFICATE),
+        Attribute::CertificateType(CertificateType::X_509),
+        Attribute::Subject(x509.tbs_certificate().subject().to_der().unwrap()),
+        Attribute::Value(CERT_RSA.to_vec()),
+        Attribute::Token(true),
+        Attribute::Label(b"xb-crt".to_vec()),
+    ])
+    .unwrap();
+    drop(src);
+    let crt = "[objects.crt]\nclass = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"\n\n".to_owned()
+        + &Env::spec("crt-soft", "crt", "", &[soft], "xb-crt", "")
+        + &Env::spec("crt-kry", "crt", "", &[kry], "xb-crt", "");
     let key = |o: &str, ty: &str| {
         format!("[objects.{o}]\n{ty}\ncreateOn = \"softhsm\"\n\n")
             + &Env::spec(
@@ -708,11 +726,17 @@ fn bundle_keys(e: &Env, soft: &Ref, kry: &Ref) {
             "xb-nox",
             ", autoCreate = true",
         );
-    let body =
-        transport_key(kry) + &key("ek1", ec) + &key("ek2", ec) + &key("sk1", aes) + &key("sk2", aes) + &fixed + &kept;
+    let body = transport_key(kry)
+        + &key("ek1", ec)
+        + &key("ek2", ec)
+        + &key("sk1", aes)
+        + &key("sk2", aes)
+        + &fixed
+        + &kept
+        + &crt;
     names_transport(e, &body, |r| r.name == "kryoptic");
     assert_eq!(code(&e.cakeys(kry, &["realise", "tk-kryoptic", "--token", "kryoptic"])), 0);
-    for spec in ["ek1-soft", "ek2-soft", "sk1-soft", "sk2-soft", "nx-soft", "nox-soft"] {
+    for spec in ["ek1-soft", "ek2-soft", "sk1-soft", "sk2-soft", "nx-soft", "nox-soft", "crt-soft"] {
         assert_eq!(code(&e.cakeys(soft, &["realise", spec, "--token", "softhsm"])), 0, "{spec}");
     }
 }
@@ -778,7 +802,16 @@ fn bundles_carry_every_key_of_an_export() {
     assert!(!stderr(&r).contains("nox"), "noExport is left out quietly: {}", stderr(&r));
     let objects: Vec<String> =
         read(&out)["keys"].as_array().unwrap().iter().map(|k| k["object"].as_str().unwrap().to_owned()).collect();
-    assert_eq!(objects, ["ek1", "ek2", "sk1", "sk2"]);
+    assert_eq!(objects, ["crt", "ek1", "ek2", "sk1", "sk2"]);
+    // The certificate travels as its value; the import takes the keys first, then it.
+    let all = read(&out);
+    let crt = all["keys"].as_array().unwrap().iter().find(|k| k["object"].as_str() == Some("crt")).unwrap();
+    assert_eq!((crt["method"].as_str(), crt.get("wrapped")), (Some("public"), None), "{crt}");
+    let o = import(&out);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    for spec in ["crt-kry", "ek2-kry", "sk2-kry"] {
+        assert_eq!(code(&e.cakeys(kry, &["verify", spec, "--token", "kryoptic"])), 0, "{spec}");
+    }
     // Named, all or nothing: an object that cannot move fails the export, and no bundle is written.
     let out = e.dir.join("never.bundle.toml");
     let r = e.km(

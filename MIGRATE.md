@@ -178,14 +178,16 @@ Keys move sealed between PKCS#11 modules: `camigrate migrate` (both tokens reach
   wraps a fresh session AES-256 KEK with RSA-OAEP and the key under it with RFC 5649 (the
   `_PAD` or `_KWP` mechanism the source names; `_KWP` needs the Nix build's patched cryptoki,
   the `kwp` feature), the direct one wraps a small secret key with RSA-OAEP. Session objects are
-  destroyed whatever happens. A real `export` writes one bundle of every key it names, the
-  composed method's KEK shared by them. Named objects are all or nothing: one that cannot move
-  fails the export before anything is wrapped. Without names it exports every key on the token
-  that can move, and warns about each that cannot (a non-extractable key) and leaves it out;
-  a spec's `noExport = true` keeps its object on its tokens (named or migrated: 15) and silences
-  that warning; public objects are left out with a note. `--out` is written through a temporary file, whole
+  destroyed whatever happens. A real `export` writes one bundle of every object it names, the
+  composed method's KEK shared by its keys, public objects (certificates, public keys, data
+  objects) as their bytes. Named objects are all or nothing: one that cannot move fails the
+  export before anything is wrapped. Without names it exports every object on the token that
+  can move, and warns about each that cannot (a non-extractable key) and leaves it out; a
+  spec's `noExport = true` keeps its object on its tokens (named or migrated: 15) and silences
+  that warning. `--out` is written through a temporary file, whole
   or not at all. It is refused inside a Nix build (D8).
-- **Import** takes each key of the bundle on its own, under the spec that realises its object on
+- **Import** takes each entry of the bundle on its own, keys before public objects (a public key
+  object then finds the public half its key's import made), under the spec that realises its object on
   the target (`--spec`, repeatable, only when an object has several): a key that fails is
   reported and leaves nothing, the others still import and are recorded, and the run exits
   with the first failure. Each key is checked against the lock before it touches the target: the same object,
@@ -266,6 +268,16 @@ class = "CKO_PRIVATE_KEY"
 keyType = "CKK_EC"
 curve = "secp256r1"
 [keys.ids]                              # as in the source's lock; import must reproduce them
+rfc7093m4 = "sha256-..."
+[[keys]]                                # a public object travels as it is
+object = "signing-cert"
+method = "public"
+exposure = "public"
+value = "..."                           # base64: a certificate's DER, a public key's SPKI, a data object's value
+[keys.type]
+class = "CKO_CERTIFICATE"
+certificateType = "CKC_X_509"
+[keys.ids]
 rfc7093m4 = "sha256-..."
 ```
 
@@ -364,9 +376,9 @@ The method names are frozen once released, recorded in DESIGN §10.
 
 **D5. The bundle is a new versioned file.** Export writes one TOML file per export (a source and
 a target), never plaintext: the version, the source's provenance, the transport key's identity,
-the composed method's key-encryption key wrapped to it (one for all keys), and per key
+the composed method's key-encryption key wrapped to it (one for all keys), and per object
 (`[[keys]]`) its type, IDs and commitment label (from the source lock), a private key's public
-key, the method and the wrapped key (base64). RFC 5649 authenticates the key bytes, and import
+key, the method and the wrapped key (base64) — or, for a public object, its bytes (`value`). RFC 5649 authenticates the key bytes, and import
 recomputes each identity on the target, so a tampered or swapped blob fails either way. The
 bundle may cross untrusted channels. Inside a wrapped private key is the PKCS#8 `C_WrapKey`
 emits; PKCS#12 or a CMS key package would need the plaintext key on the host to build, which

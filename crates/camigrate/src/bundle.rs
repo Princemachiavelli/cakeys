@@ -1,5 +1,6 @@
-//! The export bundle (MIGRATE.md D5, "Frozen names and formats"): the keys one export moves from
-//! a source to a target, wrapped to the target's transport key, with what the import checks
+//! The export bundle (MIGRATE.md D5, "Frozen names and formats"): the objects one export moves
+//! from a source to a target — keys wrapped to the target's transport key, public objects as
+//! their bytes — with what the import checks
 //! before it touches the target — per key its type, IDs and commitment label as the source's
 //! lock pins them and the public key of a private key; for all, the source and the transport
 //! key's identity. One file per (source, target) export; the composed method's key-encryption
@@ -32,11 +33,11 @@ pub struct Bundle {
     pub kek: Option<String>,
     pub source: Source,
     pub transport: TransportRef,
-    /// One entry per key, each object once.
+    /// One entry per object, each object once.
     pub keys: Vec<Entry>,
 }
 
-/// One exported key.
+/// One exported object: a key, wrapped, or a public object, as it is.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Entry {
@@ -54,8 +55,13 @@ pub struct Entry {
     /// identity otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
-    /// The key (base64): under the bundle's KEK (RFC 5649), or under RSA-OAEP directly.
-    pub wrapped: String,
+    /// A key (base64): under the bundle's KEK (RFC 5649), or under RSA-OAEP directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrapped: Option<String>,
+    /// A public object (base64, method `public`): a certificate's DER, a public key's canonical
+    /// SPKI, a data object's value. The import recomputes its identity from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
     /// The object's type, as in the lock.
     #[serde(rename = "type")]
     pub object_type: ObjectCfg,
@@ -105,14 +111,24 @@ impl Bundle {
                 return Err(invalid("listed twice".into()));
             }
             e.object_type.canonicalize();
-            match e.method().map_err(invalid)? {
+            let method = e.method().map_err(invalid)?;
+            match method {
                 Method::RsaOaepAesKwp(h) => {
                     kek_hashes.insert(h);
                 }
-                Method::RsaOaep(_) => {}
-                _ => return Err(invalid(format!("method {} carries no wrapped material", e.method))),
+                Method::RsaOaep(_) | Method::Public => {}
+                _ => return Err(invalid(format!("method {} does not travel in a bundle", e.method))),
             }
-            e.wrapped_key().map_err(invalid)?;
+            match (method == Method::Public, &e.wrapped, &e.value) {
+                (false, Some(_), None) => {
+                    e.wrapped_key().map_err(invalid)?;
+                }
+                (true, None, Some(_)) => {
+                    e.public_value().map_err(invalid)?;
+                }
+                (false, ..) => return Err(invalid(format!("method {} needs a wrapped key and no value", e.method))),
+                (true, ..) => return Err(invalid("a public object needs a value and no wrapped key".into())),
+            }
             if let Some(v) = e.ids.values().find(|v| !cakeys_core::id::is_sri(v)) {
                 return Err(invalid(format!("\"{v}\" is not a sha256 SRI digest")));
             }
@@ -166,9 +182,18 @@ impl Entry {
     ///
     /// # Errors
     ///
-    /// A message for malformed base64.
+    /// A message for malformed base64, or a public object's entry.
     pub fn wrapped_key(&self) -> std::result::Result<Vec<u8>, String> {
-        decode("wrapped", &self.wrapped)
+        decode("wrapped", self.wrapped.as_deref().ok_or("no wrapped key")?)
+    }
+
+    /// A public object's bytes.
+    ///
+    /// # Errors
+    ///
+    /// A message for malformed base64, or a key's entry.
+    pub fn public_value(&self) -> std::result::Result<Vec<u8>, String> {
+        decode("value", self.value.as_deref().ok_or("no value")?)
     }
 
     /// The private key's canonical SPKI DER.
@@ -207,7 +232,8 @@ mod tests {
             exposure: Exposure::Sealed,
             commitment_label: Some("key-management/v1".into()),
             public_key: None,
-            wrapped: encode(b"key"),
+            wrapped: Some(encode(b"key")),
+            value: None,
             object_type: ty,
             ids: [("cmac".to_owned(), cakeys_core::id::sri(object.as_bytes()))].into(),
         }
@@ -251,7 +277,8 @@ mod tests {
 
     /// What the form check refuses (17): another format, no keys or one twice, a composed method
     /// without the KEK or a KEK nothing uses, composed methods of two hashes under one KEK, a
-    /// method that wraps nothing, bad base64, a public key `rfc7093m4` does not name.
+    /// method that cannot travel in a bundle, a key without its wrapped bytes or a public object
+    /// without its value, bad base64, a public key `rfc7093m4` does not name.
     #[test]
     fn malformed_bundles_are_refused() {
         let path = std::path::Path::new("b.toml");
@@ -268,7 +295,28 @@ mod tests {
         Bundle::parse(&Bundle { kek: None, keys: direct(), ..sample() }.to_toml(), path).unwrap();
         let two = vec![aes("a", "rsa-oaep-sha1+aes-kwp"), aes("b", "rsa-oaep-sha256+aes-kwp")];
         refused(Bundle { keys: two, ..sample() }, "several OAEP hashes");
-        refused(Bundle { keys: vec![aes("k", "public")], ..sample() }, "carries no wrapped material");
+        refused(Bundle { keys: vec![aes("k", "host-pkcs8")], ..sample() }, "does not travel in a bundle");
+        let cert = Entry {
+            method: "public".into(),
+            exposure: Exposure::Public,
+            wrapped: None,
+            value: Some(encode(b"der")),
+            ..aes("c", "public")
+        };
+        Bundle::parse(
+            &Bundle { keys: vec![aes("k", "rsa-oaep-sha1+aes-kwp"), cert.clone()], ..sample() }.to_toml(),
+            path,
+        )
+        .unwrap();
+        refused(Bundle { keys: vec![Entry { value: None, ..cert.clone() }], kek: None, ..sample() }, "needs a value");
+        refused(
+            Bundle { keys: vec![Entry { wrapped: Some(encode(b"k")), ..cert }], kek: None, ..sample() },
+            "needs a value",
+        );
+        refused(
+            Bundle { keys: vec![Entry { wrapped: None, ..aes("k", "rsa-oaep-sha1+aes-kwp") }], ..sample() },
+            "needs a wrapped key",
+        );
         refused(Bundle { keys: vec![aes("k", "rsa-aes")], ..sample() }, "unknown method");
         refused(Bundle { kek: Some("!".into()), ..sample() }, "kek");
         let n = [0xc5u8; 256];
@@ -296,7 +344,7 @@ mod tests {
         ) {
             let keys = objects
                 .iter()
-                .map(|o| Entry { commitment_label: Some(label.clone()), wrapped: encode(&key), ..aes(o, "rsa-oaep-sha1+aes-kwp") })
+                .map(|o| Entry { commitment_label: Some(label.clone()), wrapped: Some(encode(&key)), ..aes(o, "rsa-oaep-sha1+aes-kwp") })
                 .collect();
             let b = Bundle { kek: Some(encode(&kek)), keys, ..sample() };
             let back = Bundle::parse(&b.to_toml(), std::path::Path::new("b.toml")).unwrap();
