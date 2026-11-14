@@ -520,6 +520,87 @@ mod tests {
         assert!(plan_of(&p256(), &ext, &softhsm(), &To::File(FileFormat::Pkcs8), allowed).ready);
     }
 
+    /// Each fact the planner names decides on its own (the mutation report's gaps): a secret
+    /// key needs a target that reports its length; the composed method needs RFC 5649 on both
+    /// sides and a KEK the source can make; without it only a small secret goes directly; the
+    /// host path creates a private key from PKCS#8 and a secret from its value, and a tool
+    /// import takes only what it lists; a file carries private keys only. Refusals name the
+    /// object's type.
+    #[test]
+    fn each_fact_the_planner_names_decides() {
+        let ext = [("CKA_EXTRACTABLE", true)];
+        let side = |name: &str, mech: &[&str]| Side::pkcs11(name, name, mech.iter().map(|m| (*m).to_owned()));
+        let full = ["CKM_RSA_PKCS_OAEP", "CKM_AES_KEY_WRAP_KWP", "CKM_AES_KEY_GEN"];
+        let both = side("a", &full);
+        let mut aes = obj(ObjectClass::SecretKey, Some(KeyType::Aes));
+        aes.value_len = Some(32);
+        let mut big = obj(ObjectClass::SecretKey, Some(KeyType::GenericSecret));
+        big.value_len = Some(256);
+        let sealed_to =
+            |ty: &ObjectCfg, from: &Side, to: &Side| plan_of(ty, &ext, from, &To::Token(to), Allow::default());
+        let composed = Some(Method::RsaOaepAesKwp(OaepHash::Sha256));
+        assert_eq!(sealed_to(&p256(), &both, &both).method, composed);
+        // A target that reports no length for an unwrapped secret takes private keys only.
+        let lengthless = Side { secret_unwraps: false, plaintext_import: None, ..both.clone() };
+        assert_eq!(sealed_to(&p256(), &both, &lengthless).method, composed);
+        let p = sealed_to(&aes, &both, &lengthless);
+        assert!(!p.ready && p.reasons.iter().any(|r| r.contains("without its length")), "{p:?}");
+        // The composed method: RFC 5649 on the source, on the target, and a KEK to generate.
+        let no_import = |s: Side| Side { plaintext_import: None, ..s };
+        for (from, to) in [
+            (side("src", &["CKM_RSA_PKCS_OAEP", "CKM_AES_KEY_GEN"]), both.clone()),
+            (both.clone(), side("dst", &["CKM_RSA_PKCS_OAEP", "CKM_AES_KEY_GEN"])),
+            (side("src", &["CKM_RSA_PKCS_OAEP", "CKM_AES_KEY_WRAP_KWP"]), both.clone()),
+        ] {
+            let to = no_import(to);
+            let p = sealed_to(&p256(), &from, &to);
+            assert!(!p.ready && p.reasons.iter().any(|r| r.contains("share no RFC 5649")), "{p:?}");
+            assert!(p.reasons.iter().any(|r| r.contains("CKO_PRIVATE_KEY CKK_EC secp256r1")), "{p:?}");
+            // Directly under OAEP: a small secret, never a large one.
+            assert_eq!(sealed_to(&aes, &from, &to).method, Some(Method::RsaOaep(OaepHash::Sha256)));
+            let p = sealed_to(&big, &from, &to);
+            assert!(!p.ready && p.reasons.iter().any(|r| r.contains("CKO_SECRET_KEY CKK_GENERIC_SECRET")), "{p:?}");
+        }
+        // The host path, into a target that unwraps nothing.
+        let allowed = Allow { host_plaintext: true, ..Allow::default() };
+        let host_to = |ty: &ObjectCfg, to: &Side| plan_of(ty, &ext, &both, &To::Token(to), allowed);
+        let creates = Side { unwraps: false, ..both.clone() };
+        assert_eq!(host_to(&p256(), &creates).method, Some(Method::HostPkcs8));
+        assert_eq!(host_to(&aes, &creates).method, Some(Method::HostRaw));
+        let tool = |accepts: Vec<Accept>| Side {
+            unwraps: false,
+            plaintext_import: Some(PlaintextImport::Tpm2Ptool(accepts)),
+            ..both.clone()
+        };
+        let takes_ec = tool(vec![Accept::key(ObjectClass::PrivateKey, &[KeyType::Ec])]);
+        assert_eq!(host_to(&p256(), &takes_ec).method, Some(Method::Tpm2Ptool));
+        let p = host_to(&aes, &takes_ec);
+        assert!(!p.ready && p.reasons.iter().any(|r| r.contains("cannot import a CKO_SECRET_KEY CKK_AES")), "{p:?}");
+        // A file carries private keys, in either format.
+        for format in [FileFormat::Pkcs8, FileFormat::Pkcs12] {
+            let p = plan_of(&aes, &ext, &both, &To::File(format), allowed);
+            assert!(!p.ready && p.reasons.iter().any(|r| r.contains("carry private keys")), "{p:?}");
+        }
+    }
+
+    /// `enforced` needs `CKM_RSA_AES_KEY_WRAP` on the source and RFC 5649 on the target, each on
+    /// its own: without either a private key cannot leave under the trusted transport key.
+    #[test]
+    fn the_enforced_composed_method_needs_both_sides() {
+        let flags = [("CKA_EXTRACTABLE", true), ("CKA_WRAP_WITH_TRUSTED", true)];
+        let side = |mech: &[&str]| Side::pkcs11("t", "t", mech.iter().map(|m| (*m).to_owned()));
+        let trusted = Allow { trusted_transport: true, ..Allow::default() };
+        let source = ["CKM_RSA_PKCS_OAEP", "CKM_RSA_AES_KEY_WRAP"];
+        let target = ["CKM_RSA_PKCS_OAEP", "CKM_AES_KEY_WRAP_KWP"];
+        for (from, to) in [(side(&source), side(&["CKM_RSA_PKCS_OAEP"])), (side(&["CKM_RSA_PKCS_OAEP"]), side(&target))]
+        {
+            let p = plan_of(&p256(), &flags, &from, &To::Token(&to), trusted);
+            assert!(!p.ready && p.reasons.iter().any(|r| r.contains("CKM_RSA_AES_KEY_WRAP")), "{p:?}");
+        }
+        let p = plan_of(&p256(), &flags, &side(&source), &To::Token(&side(&target)), trusted);
+        assert_eq!(p.ready, cfg!(feature = "kwp"), "{p:?}");
+    }
+
     /// A provider method competes at its declared level, is noted as declared, and is used
     /// only toward the targets it names.
     #[test]

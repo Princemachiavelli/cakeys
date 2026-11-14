@@ -93,6 +93,33 @@ impl Env {
         self.run(std::path::Path::new(BIN), r, args)
     }
 
+    /// [`Self::km`] with `NIX_BUILD_TOP` set, as inside a Nix build sandbox: no dry-run twin,
+    /// since the point is what the run itself refuses there.
+    pub fn km_in_nix_build(&self, r: &Ref, args: &[&str]) -> Output {
+        let out = Command::new(BIN)
+            .env("NIX_BUILD_TOP", "/build")
+            .env_remove("IN_NIX_SHELL")
+            .envs(r.env.iter().copied())
+            .arg("--config")
+            .arg(self.dir.join("keys.toml"))
+            .args(args)
+            .output()
+            .unwrap();
+        eprintln!(
+            "$ (in a Nix build) {}\n  exit={:?}\n  stderr={}",
+            args.join(" "),
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        out
+    }
+
+    /// [`Self::km`] without the dry-run twin, for a run whose input is wrong before any plan
+    /// (a missing flag, an empty passphrase file): a plan has nothing to say about those.
+    pub fn km_alone(&self, r: &Ref, args: &[&str]) -> Output {
+        self.run_once(std::path::Path::new(BIN), r, args)
+    }
+
     /// `cakeys` itself, from a package whose own binary is another (`camigrate`'s tests record
     /// the realisations they plan from with it): [`sibling`].
     pub fn cakeys(&self, r: &Ref, args: &[&str]) -> Output {

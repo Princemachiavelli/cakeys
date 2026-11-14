@@ -567,6 +567,25 @@ impl Run<'_> {
         failed.map_or(Ok(()), |e| Err(e.into()))
     }
 
+    /// A key file holds one key, and a PKCS#12 the certificate the lock pairs with it on the
+    /// source: said in the plan, since the export would refuse both.
+    fn limit_file_plans(&self, plans: &mut [plan::Plan], format: FileFormat, from: &str) {
+        let several = plans.len();
+        for p in plans.iter_mut().filter(|p| p.ready) {
+            if several > 1 {
+                p.ready = false;
+                p.reasons.push(format!("a key file holds one key, and {several} are planned: name the one to export"));
+            } else if format == FileFormat::Pkcs12 && self.paired_certificate_target(&p.object, from).is_none() {
+                p.ready = false;
+                p.reasons.push(format!(
+                    "pkcs12 carries the key with its certificate, and the lock pairs no certificate with '{}' on \
+                     '{from}': realise it there, or export --to-file pkcs8",
+                    p.object
+                ));
+            }
+        }
+    }
+
     /// Plan each object's move and, with `show`, print the plans, as a table or as JSON (an
     /// export that writes the bundle to stdout shows none: stdout is the bundle).
     fn plan(
@@ -595,6 +614,10 @@ impl Run<'_> {
         };
         let target_token = match dest {
             tokens::Dest::Token(name) => Some(name),
+            _ => None,
+        };
+        let file_format = match dest {
+            tokens::Dest::File(format) => Some(format),
             _ => None,
         };
         let transport_key = match dest {
@@ -645,37 +668,41 @@ impl Run<'_> {
                 ));
             }
         }
-        let (to_name, source_from, target_from, plans) =
-            (&moves.to, moves.source_from, moves.target_from, &moves.plans);
-        if !show {
-            return Ok(moves);
+        if let Some(format) = file_format {
+            self.limit_file_plans(&mut moves.plans, format, from);
         }
-        if how.json {
-            print(&serde_json::json!({
-                "from": from,
-                "to": to_name,
-                "capabilities": { "from": source_from, "to": target_from },
-                "plans": plans,
-            }))?;
-        } else {
-            println!(
-                "{from} -> {to_name} (capabilities: {from} from the {source_from}, {to_name} from the {target_from})"
-            );
-            for p in plans {
-                let method = p.method.as_ref().map_or_else(|| "-".to_owned(), Method::name);
-                let exposure = p.exposure.map_or("-", Exposure::name);
-                let status = if p.ready { "ready" } else { "blocked" };
-                println!("  {:<24} {method:<26} {exposure:<9} {status}", p.object);
-                for r in &p.reasons {
-                    println!("      - {r}");
-                }
-                for n in &p.notes {
-                    println!("      note: {n}");
-                }
-            }
+        if show {
+            show_plans(from, &moves, how.json)?;
         }
         Ok(moves)
     }
+}
+
+/// Print the plans of one invocation, as a table or as JSON.
+fn show_plans(from: &str, moves: &tokens::Moves, json: bool) -> anyhow::Result<()> {
+    let (to_name, source_from, target_from, plans) = (&moves.to, moves.source_from, moves.target_from, &moves.plans);
+    if json {
+        return print(&serde_json::json!({
+            "from": from,
+            "to": to_name,
+            "capabilities": { "from": source_from, "to": target_from },
+            "plans": plans,
+        }));
+    }
+    println!("{from} -> {to_name} (capabilities: {from} from the {source_from}, {to_name} from the {target_from})");
+    for p in plans {
+        let method = p.method.as_ref().map_or_else(|| "-".to_owned(), Method::name);
+        let exposure = p.exposure.map_or("-", Exposure::name);
+        let status = if p.ready { "ready" } else { "blocked" };
+        println!("  {:<24} {method:<26} {exposure:<9} {status}", p.object);
+        for r in &p.reasons {
+            println!("      - {r}");
+        }
+        for n in &p.notes {
+            println!("      note: {n}");
+        }
+    }
+    Ok(())
 }
 
 /// The source of `object` on `from`: the spec of a realisation the lock records there.
@@ -815,6 +842,16 @@ impl Run<'_> {
     }
 
     /// The certificate the lock pairs with `object` (`pairs`), as realised on `from`.
+    fn paired_certificate_target(&self, object: &str, from: &'_ str) -> Option<String> {
+        let pairs = self.lock.objects.get(object).map(|o| o.pairs.clone()).unwrap_or_default();
+        pairs.into_iter().find(|pair| {
+            let is_cert = self.lock.objects.get(pair).and_then(|o| o.object_type.as_ref()).map(|t| t.class)
+                == Some(cakeys_core::types::ObjectClass::Certificate);
+            is_cert && source_target(&self.cfg, &self.lock, pair, from).is_ok()
+        })
+    }
+
+    /// That certificate's DER, read and verified on the open source `tok`.
     fn paired_certificate(
         &self,
         object: &str,
@@ -822,19 +859,11 @@ impl Run<'_> {
         tok: &cakeys_pkcs11::Token,
         notes: &mut Notes,
     ) -> anyhow::Result<Vec<u8>> {
-        let pairs = self.lock.objects.get(object).map(|o| o.pairs.clone()).unwrap_or_default();
-        for pair in pairs {
-            let is_cert = self.lock.objects.get(&pair).and_then(|o| o.object_type.as_ref()).map(|t| t.class)
-                == Some(cakeys_core::types::ObjectClass::Certificate);
-            if is_cert && let Ok(t) = source_target(&self.cfg, &self.lock, &pair, from) {
-                return Ok(public::material(&t, tok, &self.lock, notes)?);
-            }
-        }
-        Err(KmError::PreconditionFailed(format!(
-            "pkcs12 carries the key with its certificate, and the lock pairs no certificate with '{object}' on \
-             '{from}': realise it there, or export --to-file pkcs8"
-        ))
-        .into())
+        let pair = self.paired_certificate_target(object, from).ok_or_else(|| {
+            KmError::PreconditionFailed(format!("the lock pairs no certificate with '{object}' on '{from}'"))
+        })?;
+        let t = source_target(&self.cfg, &self.lock, &pair, from)?;
+        Ok(public::material(&t, tok, &self.lock, notes)?)
     }
 
     /// `import --in <key file> --passphrase-file`: decrypt the file, find the locked object by

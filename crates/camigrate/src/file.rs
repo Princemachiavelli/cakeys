@@ -236,4 +236,20 @@ mod tests {
         assert!(matches!(read(&p12, "other"), Err(KmError::Validation(_))));
         assert!(matches!(read(b"not a key file", "x"), Err(KmError::Validation(_))));
     }
+
+    /// Each file is encrypted under its own salt and IV, and a PKCS#12 changed after it was
+    /// written fails its MAC, under the right passphrase too.
+    #[test]
+    fn key_files_are_salted_and_authenticated() {
+        let key = p256_pkcs8();
+        assert_ne!(write_pkcs8(&key, "pass phrase").unwrap(), write_pkcs8(&key, "pass phrase").unwrap());
+        let cert = include_bytes!("../../cli/tests/fixtures/adopt-cert.der");
+        let p12 = write_pkcs12(&key, cert, "pass phrase", b"id").unwrap();
+        // A byte of the certificate, inside the authenticated content.
+        let at = p12.windows(cert.len()).position(|w| w == cert).unwrap() + cert.len() / 2;
+        let mut tampered = p12.clone();
+        tampered[at] ^= 1;
+        assert!(read(&p12, "pass phrase").is_ok());
+        assert!(matches!(read(&tampered, "pass phrase"), Err(KmError::Validation(_))));
+    }
 }

@@ -7,6 +7,7 @@
   callPackage,
   craneLib,
   rustc,
+  cargo-mutants,
   # See nix/package-common.nix.
   withTpm2 ? null,
 }:
@@ -58,6 +59,67 @@ let
     cargoExtraArgs = "--locked --no-default-features --features camigrate/kwp";
     doCheck = false;
   };
+
+  # cargo-mutants: each mutant is one small change to the code (a function body replaced, an
+  # operator flipped), and one the tests still pass with is a place they do not check. Not a
+  # check: it takes as long as its scope is wide and always succeeds once the unmutated tests
+  # pass. The report is the output, one directory per package: missed.txt (what no test
+  # caught), caught.txt, timeout.txt, unviable.txt and outcomes.json.
+  #
+  # `scopes` is a list of { package, files, workspace ? false }. A package's mutants meet that
+  # package's own tests: seconds each, so the unit tier runs in minutes. With `workspace` they
+  # meet every crate's tests (a minute each: the whole workspace is rebuilt per mutant). With
+  # `tokens`, the token test environment is up, so the integration suites can catch mutants
+  # too: one job, since the suites share their tokens, and minutes per mutant.
+  mutants =
+    {
+      scopes,
+      tokens ? false,
+      jobs ? 6,
+    }:
+    let
+      run =
+        {
+          package,
+          files,
+          workspace ? false,
+        }:
+        ''
+          code=0
+          cargo mutants --package ${package} ${lib.optionalString workspace "--test-workspace=true"} \
+            --no-shuffle --colors never --jobs ${toString (if tokens then 1 else jobs)} \
+            ${lib.concatMapStringsSep " " (f: "--file ${lib.escapeShellArg f}") files} \
+            ${
+              # The workspace's features name packages: only a run that tests them all takes them.
+              lib.optionalString (workspace || package == "camigrate") (
+                lib.optionalString common.noDefaultFeatures "--no-default-features "
+                + "--features ${lib.concatStringsSep "," common.features}"
+              )
+            } \
+            --cargo-arg=--locked --output "$TMPDIR/report-${package}" \
+            ${lib.optionalString tokens "-- -- --test-threads=1"} || code=$?
+          # 0: every mutant caught; 2: some missed; 3: some timed out. Those are the report.
+          # Anything else (the unmutated tests failing, a bad invocation) fails the build.
+          case $code in 0 | 2 | 3) ;; *) exit $code ;; esac
+          mkdir -p $out/${package}
+          cp -r "$TMPDIR"/report-${package}/mutants.out/* $out/${package}/
+        '';
+    in
+    craneLib.mkCargoDerivation (
+      base
+      // {
+        pnameSuffix = "-mutants";
+        # Each job builds its own copy of the tree: nothing to reuse.
+        cargoArtifacts = null;
+        doInstallCargoArtifacts = false;
+        nativeBuildInputs =
+          base.nativeBuildInputs ++ [ cargo-mutants ] ++ lib.optionals tokens common.args.nativeCheckInputs;
+        preBuild = lib.optionalString tokens common.args.preCheck;
+        postBuild = lib.optionalString tokens common.args.postCheck;
+        buildPhaseCargoCommand = lib.concatMapStrings run scopes;
+        installPhaseCommand = "";
+      }
+    );
 in
 craneLib.buildPackage (
   common.args
@@ -78,11 +140,46 @@ craneLib.buildPackage (
         }
       );
       minimal = craneLib.buildPackage (minimal // { cargoArtifacts = craneLib.buildDepsOnly minimal; });
+      # Mutation testing (docs/DEVELOPMENT.md). `mutants` is the code whose own unit and property
+      # tests are its tests, no token needed: `nix build .#mutants`. `mutantsFor` takes one
+      # package's files with the token suites running, for the code only they reach:
+      #   nix build --impure --expr \
+      #     '(builtins.getFlake "git+file://$PWD").packages.x86_64-linux.cakeys-crane.mutantsFor "camigrate" [ "crates/camigrate/src/host.rs" ]'
+      mutants = mutants {
+        scopes = [
+          {
+            package = "cakeys-core";
+            files = [ "crates/core/src/**/*.rs" ];
+          }
+          {
+            package = "cakeys-profile";
+            files = [ "crates/profile/src/**/*.rs" ];
+          }
+          {
+            package = "camigrate";
+            files = map (f: "crates/camigrate/src/${f}.rs") [
+              "plan"
+              "bundle"
+              "file"
+              "transport"
+            ];
+          }
+        ];
+      };
+      mutantsFor =
+        package: files:
+        mutants {
+          scopes = [ { inherit package files; } ];
+          tokens = true;
+        };
       # Line and region coverage of the whole test run, the token suites included: the tests
       # spawn instrumented binaries, so what a CLI test reaches inside cakeys, caprobe and
       # camigrate counts. Not a check (it rebuilds everything instrumented and passes whatever
-      # the numbers are): `nix build .#coverage`, then read result/summary.txt and, for where
-      # the next test should go, result/missing.txt (docs/DEVELOPMENT.md).
+      # the numbers are): `nix build .#coverage`, then read result/summary.txt (per file),
+      # result/missing.txt (the uncovered line numbers of each file) and result/html/index.html
+      # (each source file with its uncovered lines and regions marked) and
+      # result/uncovered-functions.txt (the functions no test entered); result/lcov.info is the
+      # same data for an editor or `genhtml` (docs/DEVELOPMENT.md).
       coverage = craneLib.cargoLlvmCov (
         base
         // {
@@ -100,6 +197,15 @@ craneLib.buildPackage (
             cargo llvm-cov report --release --lcov --output-path $out/lcov.info
             cargo llvm-cov report --release --summary-only > $out/summary.txt
             cargo llvm-cov report --release --show-missing-lines > $out/missing.txt
+            cargo llvm-cov report --release --html --output-dir $out
+            # The functions no test entered, by file. lcov counts each compiled copy of a function
+            # on its own (the library's, each test binary's), so a function is uncovered only when
+            # every copy of its demangled name has a zero count. (`::<_>` is a generic function's
+            # uninstantiated record, not a function.)
+            awk '/^SF:/ { f = substr($0, 4) } /^FNDA:/ { i = index($0, ","); print f "\t" substr($0, 6, i - 6) "\t" substr($0, i + 1) }' $out/lcov.info \
+              | sed "s|^$PWD/||" | ${rustc.llvmPackages.llvm}/bin/llvm-cxxfilt \
+              | awk -F '\t' '{ n[$1 "\t" $3] += $2 } END { for (k in n) if (n[k] == 0) print k }' \
+              | grep -v '::<_\(, _\)*>$' | sort > $out/uncovered-functions.txt
           ''
           + common.args.postCheck;
         }

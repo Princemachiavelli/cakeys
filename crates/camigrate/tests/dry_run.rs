@@ -87,8 +87,13 @@ fn export_plans_follow_each_sides_capabilities() {
         let (c, v) = plan(soft, &["movable", "--target", "p11kit"]);
         assert_eq!((c, first(&v)), (15, (some("host-pkcs8"), some("host"), Some(false))), "{v}");
     }
+    let (c, v) = plan(soft, &["movable", "--to-file", "pkcs8", "--allow-host-plaintext"]);
+    assert_eq!((c, first(&v)), (0, (some("pkcs8-pbes2"), some("file"), Some(true))), "{v}");
+    // PKCS#12 carries the key with its certificate, and the lock pairs none with this key: said
+    // in the plan, as the export itself would refuse it.
     let (c, v) = plan(soft, &["movable", "--to-file", "pkcs12", "--allow-host-plaintext"]);
-    assert_eq!((c, first(&v)), (0, (some("pkcs12"), some("file"), Some(true))), "{v}");
+    assert_eq!((c, first(&v)), (15, (some("pkcs12"), some("file"), Some(false))), "{v}");
+    assert!(v["plans"][0]["reasons"][0].as_str().unwrap().contains("pairs no certificate"), "{v}");
     // Every object on the source: one plan each. Without names the export takes what can move,
     // so its plan is 0 with the blocked one shown, as the export itself is.
     let (c, v) = plan(soft, &["--target", "kryoptic"]);
@@ -861,6 +866,102 @@ fn bundles_carry_every_key_of_an_export() {
     );
     assert_eq!(code(&r), 14, "{}", stderr(&r));
     assert!(!out.exists(), "a failed export wrote a bundle");
+}
+
+/// What camigrate refuses around its plans, and the offline path the other tests only plan
+/// (the coverage report's gaps): admin operations inside a Nix build (D8); a key file export
+/// without its flags, with an empty passphrase, of several keys or of a key the lock pairs no
+/// certificate with; a key file whose key the lock does not pin; and an export sealed to a
+/// transport file, written, imported and verified.
+#[test]
+fn refusals_around_the_plans_and_the_offline_export() {
+    let Some(e) = env("refusals") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
+    let (Some(soft), Some(kry)) = (named("softhsm"), named("kryoptic")) else {
+        eprintln!("skipping refusals: needs the softhsm and kryoptic references");
+        return;
+    };
+    bundle_keys(&e, soft, kry);
+    // The tokens are shared with the tests before this one, which import these keys too.
+    open_session(&kry.module, kry.token_label, "1234").clear(&["xb-ek1", "xb-ek2", "xb-sk1", "xb-sk2"]);
+    let path = |name: &str| e.dir.join(name).to_str().unwrap().to_owned();
+    let refused = |o: &std::process::Output, want: i32, what: &str| {
+        assert_eq!(code(o), want, "{what}: {}", stderr(o));
+        assert!(stderr(o).contains(what) || stdout(o).contains(what), "{what}: {} {}", stdout(o), stderr(o));
+    };
+    let (pass, empty) = (path("pass"), path("empty"));
+    std::fs::write(&pass, "correct horse\n").unwrap();
+    std::fs::write(&empty, "\n").unwrap();
+    let to_file = |format: &'static str, out: &str| -> Vec<String> {
+        ["--token", "softhsm", "--to-file", format, "--out", out, "--passphrase-file", &pass, "--allow-host-plaintext"]
+            .map(String::from)
+            .to_vec()
+    };
+    let args = |head: &[&str], tail: &[String]| -> Vec<String> {
+        head.iter().map(|a| (*a).to_owned()).chain(tail.iter().cloned()).collect()
+    };
+    let run = |r: &Ref, a: &[String]| e.km(r, &a.iter().map(String::as_str).collect::<Vec<_>>());
+
+    // D8: an export, a key file's import and `transport --trusted` are admin operations, and a
+    // move writes the lock: each is refused inside a Nix build, before any token is opened.
+    let bundle = path("nix.bundle.toml");
+    let admin: [(&[&str], &str); 4] = [
+        (
+            &["export", "ek1", "--token", "softhsm", "--target", "kryoptic", "--out", &bundle],
+            "export is an admin operation",
+        ),
+        (
+            &["import", "--token", "kryoptic", "--in", &bundle, "--passphrase-file", &pass, "--allow-host-plaintext"],
+            "import of a key file is an admin operation",
+        ),
+        (
+            &["transport", "tk-kryoptic", "--token", "kryoptic", "--trusted", "softhsm"],
+            "transport --trusted is an admin",
+        ),
+        (&["migrate", "crt", "--from", "softhsm", "--to", "kryoptic"], "cannot write the lock"),
+    ];
+    for (a, what) in admin {
+        refused(&e.km_in_nix_build(soft, a), 14, what);
+    }
+    assert!(!std::path::Path::new(&bundle).exists(), "a refused export wrote a bundle");
+
+    // A key file: its flags and its passphrase are input, wrong before any plan.
+    let o = e.km_alone(soft, &["export", "ek1", "--token", "softhsm", "--to-file", "pkcs8", "--allow-host-plaintext"]);
+    refused(&o, 17, "needs --out and --passphrase-file");
+    let out = path("ek1.pem");
+    let flags = ["--to-file", "pkcs8", "--out", &out, "--passphrase-file", &empty, "--allow-host-plaintext"];
+    refused(
+        &e.km_alone(soft, &[&["export", "ek1", "--token", "softhsm"][..], &flags].concat()),
+        17,
+        "passphrase is empty",
+    );
+    // What a file can hold is in the plan: one key, and for PKCS#12 its paired certificate.
+    refused(&run(soft, &args(&["export", "ek1", "ek2"], &to_file("pkcs8", &out))), 15, "a key file holds one key");
+    refused(&run(soft, &args(&["export", "ek1"], &to_file("pkcs12", &out))), 15, "pairs no certificate");
+    assert!(!std::path::Path::new(&out).exists(), "a refused export wrote a key file");
+    // A key file names no object: a lock that does not pin its key has nowhere to put it.
+    assert_eq!(code(&run(soft, &args(&["export", "ek1"], &to_file("pkcs8", &out)))), 0);
+    let unpinned = path("unpinned.lock");
+    let import = ["import", "--token", "kryoptic", "--in", &out, "--passphrase-file", &pass, "--allow-host-plaintext"];
+    refused(
+        &e.km(kry, &[&["--lock", &unpinned][..], &import].concat()),
+        14,
+        "pins no private key with this key's identity",
+    );
+
+    // Offline: the transport file on stdout is the one `--out` writes; an export sealed to it
+    // needs no target, and the target imports and verifies the bundle.
+    let transport = path("tk.transport.toml");
+    let o = e.km(kry, &["transport", "tk-kryoptic", "--token", "kryoptic"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&e.km(kry, &["transport", "tk-kryoptic", "--token", "kryoptic", "--out", &transport])), 0);
+    assert_eq!(stdout(&o).trim_end(), std::fs::read_to_string(&transport).unwrap().trim_end());
+    let sealed = path("sk2.bundle.toml");
+    let o = e.km(soft, &["export", "sk2", "--token", "softhsm", "--transport", &transport, "--out", &sealed]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let o = e.km(kry, &["import", "--token", "kryoptic", "--in", &sealed]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&e.cakeys(kry, &["verify", "sk2-kry", "--token", "kryoptic"])), 0);
 }
 
 /// A token names its transport key (`transportWith`, docs/CAMIGRATE.md D3), and realising it records

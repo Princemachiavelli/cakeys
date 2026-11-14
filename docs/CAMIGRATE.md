@@ -36,6 +36,9 @@ $ camigrate migrate [<object> ...] --from <a> --to <b> [--spec <s> ...] [--trans
   target. One that selects nothing (an unknown spec, or one of an object that is not moving
   there) is refused (17).
 - A bundle of public objects alone needs no transport key and names none.
+- A key file holds one key, and a PKCS#12 the certificate the lock pairs with it on the source:
+  a plan of several keys for a file, or of a PKCS#12 with no paired certificate, is blocked.
+- A refused move says why for each blocked object, as its `--dry-run` would.
 - A transport key has at least 2048 bits (keys.toml, a transport file and a key found on a
   token are each held to it).
 - Every writing verb is refused inside a Nix build (D8). The lock is written under `cakeys`'

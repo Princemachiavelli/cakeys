@@ -5,3 +5,4 @@ result*
 /fuzz/corpus
 /fuzz/artifacts
 /fuzz/coverage
+coverage

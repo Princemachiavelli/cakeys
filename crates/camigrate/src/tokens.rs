@@ -316,14 +316,18 @@ impl Moves {
     ///
     /// `Unsupported` (15) when any plan is blocked.
     pub fn ready(&self) -> Result<()> {
-        let blocked = self.plans.iter().filter(|p| !p.ready).count();
-        if blocked > 0 {
-            return Err(KmError::Unsupported(format!(
-                "{blocked} of {} objects cannot move as invoked",
-                self.plans.len()
-            )));
+        let blocked: Vec<String> =
+            self.plans.iter().filter(|p| !p.ready).map(|p| format!("{}: {}", p.object, p.reasons.join("; "))).collect();
+        if blocked.is_empty() {
+            return Ok(());
         }
-        Ok(())
+        // With why: the run itself prints no plan, only `--dry-run` does.
+        Err(KmError::Unsupported(format!(
+            "{} of {} objects cannot move as invoked ({})",
+            blocked.len(),
+            self.plans.len(),
+            blocked.join(" | ")
+        )))
     }
 }
 

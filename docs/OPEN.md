@@ -124,8 +124,13 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   would fix it, and would let `cargo-nextest` take about 40 s off the check phase, once each
   suite has its own token.
 - **Profiles are parsed on every token open**: parse once per process (`OnceLock`).
-- **Mutation testing** (`cargo-mutants`) in Nix, and reading `packages.coverage`'s report
-  (DEVELOPMENT.md) for the dispatch arms no test reaches, so new tests go where the gaps are.
+- **Closing what the reports show** (`packages.coverage`, `packages.mutants`, DEVELOPMENT.md):
+  no unit test in `core` pins the lock's load-time invariants or the transport-key rules (the
+  token suites reach them, a plain `cargo test` does not); the sealed path with OAEP SHA-256
+  and the host path's occupied-locator and rollback branches run in no test; the YubiKey
+  provider and the probe's scratch-slot guard only in the opt-in hardware tests.
+- **A token set per test**, so the suites can run in parallel (`cargo-nextest`) and stop
+  depending on what the test before left on the shared tokens.
 - **Fuzz the remaining parsers**: the PIV chain, the P-521 fix-up, profile emit and parse.
 - **Design models** (DEVELOPMENT.md): Quint or TLA+ for the lock rules, Alloy for the lock's
   structure and S16, Tamarin for proof of possession and attestation, Kani for small pure

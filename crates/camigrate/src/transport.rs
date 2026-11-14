@@ -117,12 +117,16 @@ mod tests {
         let n = [0xc5u8; 256];
         let spki = cakeys_core::id::rsa_spki(&n, &[1, 0, 1]).unwrap();
         let t = Transport::new("kryoptic", "kryoptic", "import-kek", &spki, &["CKM_RSA_PKCS_OAEP".into()]).unwrap();
-        let text = toml::to_string(&t).unwrap();
+        let text = t.to_toml().unwrap();
         let path = std::path::Path::new("t.toml");
         assert_eq!(Transport::parse(&text, path).unwrap(), t);
         let other = text.replace(&t.rfc7093m4, &cakeys_core::id::sri(b"another key"));
         assert!(Transport::parse(&other, path).unwrap_err().to_string().contains("is not the identity"));
         let old = text.replace("version = 1", "version = 2");
         assert_eq!(Transport::parse(&old, path).unwrap_err().exit_code(), 17);
+        // A transport key is at least 2048 bits: a smaller one makes no transport file.
+        let small = cakeys_core::id::rsa_spki(&[0xc5u8; 128], &[1, 0, 1]).unwrap();
+        let e = Transport::new("kryoptic", "kryoptic", "import-kek", &small, &[]).unwrap_err();
+        assert!(e.to_string().contains("at least 2048 bits; this one has 1024"), "{e}");
     }
 }

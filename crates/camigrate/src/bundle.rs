@@ -392,6 +392,27 @@ mod tests {
         refused(Bundle { keys: vec![spoofed], ..sample() }, "is not the key rfc7093m4 names");
     }
 
+    /// The accessors hand back the bytes the bundle carries, and a transport key's identity
+    /// must be an SRI digest.
+    #[test]
+    fn entries_hand_back_their_bytes() {
+        let key = Entry { kek: Some(encode(b"own kek")), ..aes("k", "rsa-oaep-sha1+aes-kwp") };
+        assert_eq!(key.wrapped_key().unwrap(), b"key");
+        assert_eq!(key.wrapped_kek().unwrap().as_deref(), Some(&b"own kek"[..]));
+        assert_eq!(aes("k", "rsa-oaep-sha1").wrapped_kek().unwrap(), None);
+        assert!(key.public_value().is_err());
+        let cert = Entry { wrapped: None, value: Some(encode(b"der")), ..aes("c", "public") };
+        assert_eq!(cert.public_value().unwrap(), b"der");
+        assert!(cert.wrapped_key().is_err());
+        assert_eq!(sample().wrapped_kek().unwrap().as_deref(), Some(&b"kek"[..]));
+        let unpinned = TransportRef { object: "import-kek".into(), rfc7093m4: "sha256-short".into() };
+        let e = Bundle::parse(
+            &Bundle { transport: Some(unpinned), ..sample() }.to_toml().unwrap(),
+            std::path::Path::new("b"),
+        );
+        assert!(e.unwrap_err().to_string().contains("is not a sha256 SRI digest"));
+    }
+
     proptest::proptest! {
         /// Any text is read or refused as invalid (17), never a panic.
         #[test]
