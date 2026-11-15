@@ -15,6 +15,8 @@ rec {
   inherit (cakeys) caprobe camigrate;
   pcsc-probe = pkgs.callPackage ./nix/pcsc-probe.nix { };
   mezura = pkgs.callPackage ./nix/mezura.nix { };
+  # OpenTofu and the AWS CLI for scripts/cloud/aws.sh (docs/CLOUD_HSM.md).
+  cloud-tools = pkgs.callPackage ./nix/cloud-tools.nix { };
   # cargo-deny: the sandboxed checks.deny (advisories against the pinned
   # RustSec database, licenses, bans, sources) and the online apps.deny-online (yanked —
   # registry metadata the sandbox has no network for). Configuration: deny.toml.

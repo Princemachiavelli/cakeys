@@ -1,0 +1,2 @@
+# Written by `tofu init`; the provider is pinned by nixpkgs (nix/cloud-tools.nix), not by this.
+.terraform.lock.hcl

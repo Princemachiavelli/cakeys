@@ -88,6 +88,7 @@
             caprobe
             camigrate
             softhsm-unwrap-value-len
+            cloud-tools
             ;
           # What the tests reach, and what they would not notice changing (nix/package-crane.nix):
           # reports, not checks.
