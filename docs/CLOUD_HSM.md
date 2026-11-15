@@ -189,7 +189,7 @@ One full cycle ran against a FIPS cluster [run]:
 
 - Cluster create took 1 min, HSM create 5m42s, initialize a few minutes, and activation
   seconds. HSM delete took 1m01s, runner delete 30s. The HSM was up about 40 min (≈ $1.20).
-- `probe` wrote `profiles/modules/cloudhsm-pkcs11/5.18+hsm2m-fips.toml`; its findings are in
+- `probe` wrote `profiles/modules/aws-cloudhsm/5.18+hsm2m-fips.toml`; its findings are in
   CAPROBE.md.
 - The cluster is parked ACTIVE with its backups, so spike 4 (zero-HSM restore) runs on the
   next `create`.
@@ -275,7 +275,7 @@ non-FIPS only; `CKM_RSA_PKCS` for encrypt/wrap is deprecated in FIPS mode [doc].
 - Vendor mechanism IDs are outside the OASIS baseline. The probe must record them by number and
   name them in the profile's `[manual]` section.
 
-**Profile name.** `cloudhsm-pkcs11/<sdk-version>+hsm2m-fips`; the SDK version is what the module
+**Profile name.** `aws-cloudhsm/<sdk-version>+hsm2m-fips`; the SDK version is what the module
 reports [todo: check what `C_GetInfo` says, since D9 matches on it].
 
 **Cost.** $1.60/h per hsm2m HSM [api]. A two-hour session is about $3.20, plus the runner.
@@ -323,7 +323,7 @@ the source.
 ## Profile integration
 
 - Names follow the repo's `module/version+hardware` rule (D10): `libkmsp11/1.9+hsm`,
-  `cloudhsm-pkcs11/<ver>+hsm2m-fips`, `azure-cloud-hsm/2.0.2.5`. A cloud service is a "hardware"
+  `aws-cloudhsm/<ver>+hsm2m-fips`, `azure-cloud-hsm/2.0.2.5`. A cloud service is a "hardware"
   the repo cannot see beneath, so profiles are pairs and `profiles/hardware/` stays empty for it.
 - FIPS mode and protection level are D12 axes: `[match.fields]` where PKCS#11 3.2 reports them
   (`CKO_VALIDATION`, `CKF_ERROR_STATE`, `C_GetSessionValidationFlags`), by name where it does not.

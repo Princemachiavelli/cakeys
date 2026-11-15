@@ -21,7 +21,7 @@
 #           directory; they reach the runner on SSH's stdin.
 # probe     copies the Nix-built caprobe and the PKCS#11 library to the runner and runs a write
 #           probe as the crypto user, into profiles/modules/<name>.toml (default
-#           cloudhsm-pkcs11/<major.minor>+hsm2m-fips or -non-fips). An existing profile is diffed
+#           aws-cloudhsm/<major.minor>+hsm2m-fips or -non-fips). An existing profile is diffed
 #           (exit 15 on drift, the file rewritten anyway). CAPROBE names a caprobe binary to use
 #           instead of building one.
 # destroy   deletes everything: HSM, runner, cluster, the cluster's backups (AWS keeps them in
@@ -298,7 +298,7 @@ probe() {
   tf_init
   local p11 opensc bin label name out rc=0
   p11=$(pkg cloudhsm-pkcs11)
-  name=${1:-cloudhsm-pkcs11/$(sed -E 's/.*-([0-9]+\.[0-9]+)\.[0-9]+$/\1/' <<<"$p11")+hsm2m-$stack}
+  name=${1:-aws-cloudhsm/$(sed -E 's/.*-([0-9]+\.[0-9]+)\.[0-9]+$/\1/' <<<"$p11")+hsm2m-$stack}
   out=$repo/profiles/modules/$name.toml
   opensc=$(nix build --no-link --print-out-paths --inputs-from "$repo" nixpkgs#opensc)
   # Only the Nix-built caprobe may write a profile (docs/CAPROBE.md); its check phase is skipped

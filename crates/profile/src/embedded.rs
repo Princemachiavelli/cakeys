@@ -12,13 +12,13 @@ pub const PROFILE_FILES: &[(&str, &str)] = &[
     ("profiles/layers/cryptoki.toml", include_str!("../../../profiles/layers/cryptoki.toml")),
     ("profiles/layers/p11-kit.toml", include_str!("../../../profiles/layers/p11-kit.toml")),
     (
-        "profiles/modules/cloudhsm-pkcs11/5.18+hsm2m-fips.toml",
-        include_str!("../../../profiles/modules/cloudhsm-pkcs11/5.18+hsm2m-fips.toml"),
+        "profiles/modules/aws-cloudhsm/5.18+hsm2m-fips.toml",
+        include_str!("../../../profiles/modules/aws-cloudhsm/5.18+hsm2m-fips.toml"),
     ),
     // After its FIPS twin: PKCS#11 reports no mode, so the two tie, and a tie takes the first.
     (
-        "profiles/modules/cloudhsm-pkcs11/5.18+hsm2m-non-fips.toml",
-        include_str!("../../../profiles/modules/cloudhsm-pkcs11/5.18+hsm2m-non-fips.toml"),
+        "profiles/modules/aws-cloudhsm/5.18+hsm2m-non-fips.toml",
+        include_str!("../../../profiles/modules/aws-cloudhsm/5.18+hsm2m-non-fips.toml"),
     ),
     // The FIPS build first, as for CloudHSM: the two builds report the same C_GetInfo and tie.
     ("profiles/modules/kmsp11/1.9+hsm-fips.toml", include_str!("../../../profiles/modules/kmsp11/1.9+hsm-fips.toml")),

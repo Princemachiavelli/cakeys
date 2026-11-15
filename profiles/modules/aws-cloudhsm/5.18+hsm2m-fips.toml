@@ -4,7 +4,7 @@
 # probe measured: this module on this token's hardware, together. Only [migration]
 # and [manual] are not probe output: this repo's claims and hand findings,
 # preserved across regenerations.
-profile = "cloudhsm-pkcs11/5.18+hsm2m-non-fips"
+profile = "aws-cloudhsm/5.18+hsm2m-fips"
 mode = "observed"
 advertise = [
   "CKM_AES_CBC",
@@ -64,7 +64,7 @@ oaep = ["SHA-1", "SHA-256"]
 oaep = ["SHA-1", "SHA-256"]
 
 [subtract]
-mechanisms = ["CKM_ECDH1_DERIVE"]
+mechanisms = ["CKM_ECDH1_DERIVE", "CKM_ECDSA_SHA1"]
 
 [generate."CKK_EC"]
 can = ["secp256r1", "secp384r1", "secp521r1", "secp256k1"]
@@ -85,6 +85,8 @@ cannot-bits = [1024]
 [notes]
 "CKK_RSA at 1024" = "modulusBits = 1024: CKR_ATTRIBUTE_VALUE_INVALID"
 "CKM_ECDH1_DERIVE" = "secp256r1: a sealed (non-extractable) derived secret is refused: CKR_ATTRIBUTE_VALUE_INVALID; extractable: CKR_ATTRIBUTE_VALUE_INVALID"
+"CKM_ECDSA_SHA1" = "secp256r1: CKR_FUNCTION_FAILED"
+"CKM_RSA_PKCS" = "RSA-2048 decrypt: CKR_ENCRYPTED_DATA_INVALID"
 "brainpoolP256r1" = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID"
 "brainpoolP384r1" = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID"
 "cryptoki" = "the module reports Cryptoki 2.40"

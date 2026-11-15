@@ -423,8 +423,11 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
             t
         )));
     }
-    tok.create(t.object, t.spec, &t.on_token.locator)?;
+    let made_otherwise = tok.create(t.object, t.spec, &t.on_token.locator)?;
     notes.say(format!("created {t}"));
+    if let Some(note) = made_otherwise {
+        notes.say(note);
+    }
     let e = match resolve_with(t, tok, lock, true) {
         Ok(Some(r)) => return Ok(r),
         Ok(None) => KmError::NotFound(format!("{t} vanished after creation")),

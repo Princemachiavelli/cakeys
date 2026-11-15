@@ -15,8 +15,9 @@ impl Token {
     ///
     /// `Validation` for a class cakeys adopts rather than creates, or a key type missing its
     /// size (`modulusBits`, `valueLen`); a generation the module refuses is `Unsupported`,
-    /// naming the token and the `C_*` failure.
-    pub fn create(&self, object: &ObjectCfg, spec: &SpecCfg, loc: &Locator) -> Result<()> {
+    /// naming the token and the `C_*` failure. `Some(note)` says how the key was made other than
+    /// asked (a public key the module made private).
+    pub fn create(&self, object: &ObjectCfg, spec: &SpecCfg, loc: &Locator) -> Result<Option<String>> {
         self.provider.check_create(object, loc)?;
         if self.provider.manages_as_so() {
             self.as_so("generating a key", || self.generate(object, spec, loc))
@@ -25,11 +26,32 @@ impl Token {
         }
     }
 
-    fn generate(&self, object: &ObjectCfg, spec: &SpecCfg, loc: &Locator) -> Result<()> {
+    fn generate(&self, object: &ObjectCfg, spec: &SpecCfg, loc: &Locator) -> Result<Option<String>> {
         let mut common = vec![Attribute::Token(true)];
         common.extend(locator_attrs(loc)?);
         let policy = self.policy_template(&spec.attributes)?;
         let refused = |e: CkError| self.unsupported(format!("generating key on '{}': {e}", self.name));
+        let private_declared =
+            spec.attributes.contains_key("CKA_PRIVATE") || spec.public_attributes.contains_key("CKA_PRIVATE");
+        // A key pair, once more without the public half's default `CKA_PRIVATE = false` when the
+        // module refuses it ([`retry_without_public_private`]).
+        let pair = |mech: &Mechanism, public: &[Attribute], private: &[Attribute]| match self
+            .session
+            .generate_key_pair(mech, public, private)
+        {
+            Ok(_) => Ok(None),
+            Err(e) if retry_without_public_private(&e, private_declared) => {
+                let without: Vec<_> = public.iter().filter(|a| **a != Attribute::Private(false)).cloned().collect();
+                self.session.generate_key_pair(mech, &without, private).map_err(|_| e).map(|_| {
+                    Some(format!(
+                        "{}: the module refuses a public key with CKA_PRIVATE = false; generated \
+                         without it, so its public key is private (reading it needs a login)",
+                        self.name
+                    ))
+                })
+            }
+            Err(e) => Err(e),
+        };
         // Defaults for the public half of a pair, left out when the declared attributes set the
         // same type (the template may not carry a type twice).
         let public_half = |public: &mut Vec<Attribute>| -> Result<()> {
@@ -52,10 +74,7 @@ impl Token {
                 public_half(&mut public)?;
                 let mut private = common;
                 private.extend(policy);
-                self.session
-                    .generate_key_pair(&Mechanism::RsaPkcsKeyPairGen, &public, &private)
-                    .map(drop)
-                    .map_err(refused)
+                pair(&Mechanism::RsaPkcsKeyPairGen, &public, &private).map_err(refused)
             }
             KeyType::EC | KeyType::EC_EDWARDS => {
                 let curve = curve_of(object)?;
@@ -71,14 +90,11 @@ impl Token {
                 // The OID first; a module that takes the curve only by name (ykcs11's
                 // edwards25519, a profile's `by-name` row [src]) gets PKCS#11 3.0's
                 // PrintableString form. The identity is the same: the SPKI, not the params.
-                let by_oid = self.session.generate_key_pair(&mech, &public_with(curve.params())?, &private);
+                let by_oid = pair(&mech, &public_with(curve.params())?, &private);
                 match (by_oid, curve.params_by_name()) {
-                    (Err(e), Some(name)) => {
-                        self.session.generate_key_pair(&mech, &public_with(name)?, &private).map_err(|_| e)
-                    }
+                    (Err(e), Some(name)) => pair(&mech, &public_with(name)?, &private).map_err(|_| e),
                     (other, _) => other,
                 }
-                .map(drop)
                 .map_err(refused)
             }
             kt => {
@@ -92,7 +108,7 @@ impl Token {
                     Attribute::ValueLen(len.into()),
                 ]);
                 t.extend(policy);
-                self.session.generate_key(&mech, &t).map(drop).map_err(refused)
+                self.session.generate_key(&mech, &t).map(|_| None).map_err(refused)
             }
         }
     }
@@ -159,5 +175,28 @@ impl Token {
             Ok(handles.len())
         };
         if self.provider.manages_as_so() { self.as_so("deleting", run) } else { run() }
+    }
+}
+
+/// Whether a refused key pair is generated once more without the public half's
+/// `CKA_PRIVATE = false`: only cakeys' own default (the spec did not declare `CKA_PRIVATE`), and
+/// only when the module called a value invalid. AWS `CloudHSM` makes every public key private
+/// [run] (docs/CAPROBE.md); a spec that asks for `CKA_PRIVATE = false` keeps the refusal.
+fn retry_without_public_private(refusal: &CkError, declared: bool) -> bool {
+    !declared && matches!(refusal, CkError::Pkcs11(RvError::AttributeValueInvalid, _))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cryptoki::context::Function;
+
+    #[test]
+    fn only_the_default_is_dropped_and_only_for_an_invalid_value() {
+        let invalid = CkError::Pkcs11(RvError::AttributeValueInvalid, Function::GenerateKeyPair);
+        let other = CkError::Pkcs11(RvError::TemplateInconsistent, Function::GenerateKeyPair);
+        assert!(retry_without_public_private(&invalid, false));
+        assert!(!retry_without_public_private(&invalid, true), "a declared CKA_PRIVATE is the spec's");
+        assert!(!retry_without_public_private(&other, false));
     }
 }
