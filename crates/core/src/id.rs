@@ -344,6 +344,24 @@ impl Commit {
         }
     }
 
+    /// The `CKM_` name of the mechanism the commitment runs: what a declared
+    /// `CKA_ALLOWED_MECHANISMS` must hold for it. cakeys-pkcs11's `commit_mechanism` is the same
+    /// mechanism, pinned against this.
+    #[must_use]
+    pub fn mechanism(self) -> &'static str {
+        match self {
+            Commit::Hmac(HmacHash::Sha1) => "CKM_SHA_1_HMAC",
+            Commit::Hmac(HmacHash::Sha224) => "CKM_SHA224_HMAC",
+            Commit::Hmac(HmacHash::Sha256) => "CKM_SHA256_HMAC",
+            Commit::Hmac(HmacHash::Sha384) => "CKM_SHA384_HMAC",
+            Commit::Hmac(HmacHash::Sha512) => "CKM_SHA512_HMAC",
+            Commit::Cmac => "CKM_AES_CMAC",
+            Commit::KcvEcb(BlockCipher::Aes) | Commit::KcvEcbDecrypt(BlockCipher::Aes) => "CKM_AES_ECB",
+            Commit::KcvEcb(BlockCipher::Des3) | Commit::KcvEcbDecrypt(BlockCipher::Des3) => "CKM_DES3_ECB",
+            Commit::Kw => "CKM_AES_KEY_WRAP",
+        }
+    }
+
     /// Domain-separation label `<commitment label>/<scheme>/<keyType>/<bits>`. The intrinsic type
     /// is mixed in so the same bytes held as two key types never share an ID.
     pub fn label(self, commitment_label: &str, object: &ObjectCfg) -> Vec<u8> {

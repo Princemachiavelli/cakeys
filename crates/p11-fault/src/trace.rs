@@ -271,8 +271,12 @@ impl Trace {
                 fields.insert(name.into(), values.as_slice().into());
             }
         }
+        // One write per line: the processes sharing the file (O_APPEND) then interleave whole
+        // lines, where `writeln!` (a write per formatted piece) interleaved their tokens.
+        let mut text = line.to_string();
+        text.push('\n');
         if let Ok(mut file) = self.file.lock() {
-            let _ = writeln!(file, "{line}");
+            let _ = file.write_all(text.as_bytes());
         }
     }
 }

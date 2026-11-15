@@ -69,6 +69,19 @@ impl Token {
         msg: &[u8],
         per_use_pin: bool,
     ) -> Result<()> {
+        // The key's own CKA_ALLOWED_MECHANISMS narrows the choice where it can be read (absent or
+        // unreadable, it does not). A proof records only its binding, never the mechanism that
+        // signed, so choosing per run changes nothing the lock pins.
+        let allowed = self.allowed_mechanisms(h).ok().flatten();
+        let permits = |m: MechanismType| allowed.as_ref().is_none_or(|a| a.contains(&m));
+        let usable = |m: MechanismType| self.has(m) && permits(m);
+        let none_allowed = |ms: &[MechanismType]| {
+            KmError::Unsupported(format!(
+                "token '{}': the key's CKA_ALLOWED_MECHANISMS allows none of {} for a proof of possession",
+                self.name,
+                ms.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+            ))
+        };
         let (mech, data) = match key_type_of(object)? {
             KeyType::EC => {
                 let hash = ecdsa_hash(object)?;
@@ -77,16 +90,33 @@ impl Token {
                     pop::EcdsaHash::Sha384 => Mechanism::EcdsaSha384,
                     pop::EcdsaHash::Sha512 => Mechanism::EcdsaSha512,
                 };
-                if self.has(hashed.mechanism_type()) {
+                let raw = MechanismType::ECDSA;
+                if usable(hashed.mechanism_type()) {
                     (hashed, msg.to_vec())
-                } else {
+                } else if permits(raw) {
                     (Mechanism::Ecdsa, hash.digest(msg))
+                } else {
+                    return Err(none_allowed(&[hashed.mechanism_type(), raw]));
                 }
             }
             KeyType::EC_EDWARDS => {
+                if !permits(MechanismType::EDDSA) {
+                    return Err(none_allowed(&[MechanismType::EDDSA]));
+                }
                 (self.runnable(Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Pure))), msg.to_vec())
             }
-            KeyType::RSA => (Mechanism::Sha256RsaPkcs, msg.to_vec()),
+            // PKCS #1 v1.5 over SHA-256, hashed by the token, or by the host into the DigestInfo
+            // raw CKM_RSA_PKCS signs: the same signature either way.
+            KeyType::RSA => {
+                let (hashed, raw) = (MechanismType::SHA256_RSA_PKCS, MechanismType::RSA_PKCS);
+                if usable(hashed) || (permits(hashed) && !usable(raw)) {
+                    (Mechanism::Sha256RsaPkcs, msg.to_vec())
+                } else if permits(raw) {
+                    (Mechanism::RsaPkcs, [SHA256_DIGEST_INFO.as_slice(), &pop::EcdsaHash::Sha256.digest(msg)].concat())
+                } else {
+                    return Err(none_allowed(&[hashed, raw]));
+                }
+            }
             kt => return Err(KmError::Unsupported(format!("proof of possession for {kt}"))),
         };
         let refused = self.proof_failed("C_Sign", "sign", "CKA_SIGN");
@@ -443,6 +473,12 @@ pub fn proof_refusal(object: &ObjectCfg, binding: Binding, side: &ProofSide<'_>)
     }))
 }
 
+/// The DER `DigestInfo` prefix of a SHA-256 digest (RFC 8017 §9.2, note 1): what
+/// `CKM_SHA256_RSA_PKCS` puts before the hash it computes, so raw `CKM_RSA_PKCS` over this and the
+/// host's hash signs the same PKCS #1 v1.5 signature.
+const SHA256_DIGEST_INFO: [u8; 19] =
+    [0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20];
+
 /// The hash ECDSA signs a proof with on `object`'s curve.
 fn ecdsa_hash(object: &ObjectCfg) -> Result<pop::EcdsaHash> {
     pop::EcdsaHash::for_curve(curve_of(object)?)
@@ -453,7 +489,8 @@ fn ecdsa_hash(object: &ObjectCfg) -> Result<pop::EcdsaHash> {
 /// the token must offer at least one of each group. The one list both the proof itself
 /// ([`Token::prove_binding`]) and camigrate's planner check, so a plan never promises a proof the
 /// target then refuses. An ECDSA proof prefers the curve's hashed mechanism and falls back to
-/// raw `CKM_ECDSA` over a host-side digest.
+/// raw `CKM_ECDSA` over a host-side digest; an RSA proof prefers `CKM_SHA256_RSA_PKCS` and falls
+/// back to raw `CKM_RSA_PKCS` over the host's `DigestInfo`.
 ///
 /// # Errors
 ///
@@ -471,7 +508,7 @@ fn proof_mechanisms(object: &ObjectCfg, binding: Binding) -> Result<Vec<Vec<Mech
                 vec![vec![hashed, MechanismType::ECDSA]]
             }
             KeyType::EC_EDWARDS => vec![vec![MechanismType::EDDSA]],
-            KeyType::RSA => vec![vec![MechanismType::SHA256_RSA_PKCS]],
+            KeyType::RSA => vec![vec![MechanismType::SHA256_RSA_PKCS, MechanismType::RSA_PKCS]],
             kt => return Err(KmError::Unsupported(format!("proof of possession for {kt}"))),
         },
         Binding::PopEcdh => vec![vec![MechanismType::ECDH1_DERIVE]],

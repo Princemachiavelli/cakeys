@@ -200,6 +200,8 @@ pub struct Reference {
     /// Whether it implements Triple DES (`CKM_DES3_ECB`, `CKM_DES3_KEY_GEN`); without it a
     /// `CKK_DES3` spec is refused as unsupported (15).
     pub des3: bool,
+    /// Whether it generates the hash-bound HMAC key types (PKCS#11 3.0's `CKM_SHA*_KEY_GEN`).
+    pub hmac_key_gen: bool,
     /// Its committed capability profile: name, and path under profiles/.
     pub profile: (&'static str, &'static str),
     /// The module's configuration (`conf_var`'s file) with one mechanism hidden.
@@ -218,6 +220,7 @@ pub const SOFTHSM: Reference = Reference {
     model: "SoftHSM v2",
     missing_curves: &[],
     des3: true,
+    hmac_key_gen: false,
     profile: ("softhsm/2.7", "modules/softhsm/2.7.toml"),
     hide_mechanism: |conf, m| format!("{conf}\nslots.mechanisms = -{m}\n"),
     through_fault_shim: false,
@@ -236,6 +239,7 @@ pub const KRYOPTIC: Reference = Reference {
     model: "v1",
     missing_curves: &["secp256k1", "brainpoolP256r1", "brainpoolP384r1"],
     des3: false,
+    hmac_key_gen: true,
     profile: ("kryoptic/1.5", "modules/kryoptic/1.5.toml"),
     hide_mechanism: |conf, m| format!("{conf}\nmechanisms = [\"DENY\", \"{m}\"]\n"),
     through_fault_shim: false,

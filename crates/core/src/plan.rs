@@ -319,6 +319,16 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
     } else if attr("CKA_EXTRACTABLE") == Some(true) {
         Mode::WrapRebind
     } else {
+        // Usage bits that enable commitments the declared allowed mechanisms all forbid.
+        let enabled = enabled_commits(t);
+        if !enabled.is_empty() {
+            let mechs: Vec<&str> = enabled.iter().map(|c| c.mechanism()).collect();
+            return Err(KmError::Validation(format!(
+                "{t} has no re-verifiable identity: its CKA_ALLOWED_MECHANISMS allows none of the commitments \
+                 its usage bits enable ({}); allow one of them, or declare CKA_EXTRACTABLE = true",
+                mechs.join(", ")
+            )));
+        }
         // The weaker modes this leaves out (computed once and never re-checked) are parked:
         // docs/DESIGN.md §3.4.
         let bits: Vec<&str> = match block_commits(kt) {
@@ -334,9 +344,19 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
     Ok(mode)
 }
 
-/// Commitments the spec's declared usage bits allow, strongest-linking first. Only declared
-/// attributes count: a token default never silently changes which identity is computed.
+/// Commitments the spec's declared usage bits allow, strongest-linking first, and of those the
+/// ones its declared `CKA_ALLOWED_MECHANISMS` (if any) lets the key run. Only declared attributes
+/// count: a token default never silently changes which identity is computed, and the schemes
+/// planned before any object exists are the ones every later run computes and the lock pins.
+#[must_use]
 pub fn declared_commits(t: &Target) -> Vec<Commit> {
+    let permitted =
+        |c: &Commit| t.spec.allowed_mechanisms().is_none_or(|allowed| allowed.iter().any(|m| m == c.mechanism()));
+    enabled_commits(t).into_iter().filter(permitted).collect()
+}
+
+/// Commitments the spec's declared usage bits enable, before its allowed mechanisms narrow them.
+fn enabled_commits(t: &Target) -> Vec<Commit> {
     let on = |n: &str| t.spec.flag(n) == Some(true);
     match t.object.key_type.and_then(block_commits) {
         Some(all) => all.iter().copied().filter(|c| on(c.usage())).collect(),
@@ -425,5 +445,33 @@ mod tests {
         .unwrap();
         let e = Target::new(&cfg, "s", "t").err().unwrap();
         assert!(matches!(&e, KmError::Validation(m) if m.contains("unknown object 'gone'")), "{e}");
+    }
+
+    /// A declared `CKA_ALLOWED_MECHANISMS` narrows the commitments the usage bits enable to the
+    /// ones the key may run; when it forbids them all, an extractable key is wrapped and rebound,
+    /// any other refused (17) naming the allowed list — never a commitment the token then refuses.
+    #[test]
+    fn allowed_mechanisms_narrow_the_commitments() {
+        let plan = |attrs: &str| {
+            let cfg: Config = toml::from_str(&format!(
+                "[tokens.t]\ntokenLabel = \"t\"\n\n[objects.k]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\n\
+                 valueLen = 32\n\n[specs.s]\nobject = \"k\"\nattributes = {{ {attrs} }}\n\
+                 tokens.t = {{ locator = {{ CKA_LABEL = \"x\" }} }}\n"
+            ))
+            .unwrap();
+            let t = Target::new(&cfg, "s", "t").unwrap();
+            (declared_commits(&t), plan_mode(&t))
+        };
+        let both = "CKA_SIGN = true, CKA_ENCRYPT = true, CKA_EXTRACTABLE = false";
+        assert_eq!(plan(both).0, [Commit::Cmac, Commit::KcvEcb(BlockCipher::Aes)]);
+        let (commits, mode) = plan(&format!("{both}, CKA_ALLOWED_MECHANISMS = [\"CKM_AES_CMAC\"]"));
+        assert_eq!((commits, mode.unwrap()), (vec![Commit::Cmac], Mode::Commitment));
+        let (commits, mode) = plan(&format!("{both}, CKA_ALLOWED_MECHANISMS = [\"CKM_AES_ECB\"]"));
+        assert_eq!((commits, mode.unwrap()), (vec![Commit::KcvEcb(BlockCipher::Aes)], Mode::Commitment));
+        let gcm = "CKA_ALLOWED_MECHANISMS = [\"CKM_AES_GCM\"]";
+        let e = plan(&format!("{both}, {gcm}")).1.unwrap_err();
+        assert!(matches!(&e, KmError::Validation(m) if m.contains("allows none of the commitments")), "{e}");
+        let extractable = "CKA_SIGN = true, CKA_EXTRACTABLE = true";
+        assert_eq!(plan(&format!("{extractable}, {gcm}")).1.unwrap(), Mode::WrapRebind);
     }
 }

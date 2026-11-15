@@ -3,9 +3,10 @@
 Status: **filed** as [#376](https://github.com/parallaxsecond/rust-cryptoki/pull/376)
 (2026-11-14, open).
 
-- The review asks for a test that uses the mechanism: a wrap and unwrap like
-  `wrap_and_unwrap_key_rsa_aes` in #377 (PR-RSA-AES-KEY-WRAP.md), skipped where the token does not
-  list it (SoftHSM names RFC 5649 `CKM_AES_KEY_WRAP_PAD`; kryoptic offers `_KWP`).
+- The review asked for a test that uses the mechanism; it is in the PR's one commit (squashed,
+  `2cde156`): a wrap and unwrap like `wrap_and_unwrap_key_rsa_aes` in #377
+  (PR-RSA-AES-KEY-WRAP.md), skipped where the token does not list it (SoftHSM names RFC 5649
+  `CKM_AES_KEY_WRAP_PAD`; kryoptic offers `_KWP`).
 - When a release with it is out, drop `nix/patches/cryptoki-aes-key-wrap-kwp.patch` and its line
   in `nix/package-common.nix`.
 

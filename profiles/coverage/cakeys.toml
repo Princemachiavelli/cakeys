@@ -7,8 +7,8 @@ baseline = "pkcs11-3.2"
 [summary]
 gap = 79
 out-of-scope = 831
-profile = 11
-used = 176
+profile = 10
+used = 177
 
 [functions]
 C_AsyncComplete = "out-of-scope"
@@ -465,7 +465,7 @@ CKM_SHA384 = "used"
 CKM_SHA384_HMAC = "used"
 CKM_SHA384_HMAC_GENERAL = "out-of-scope"
 CKM_SHA384_KEY_DERIVATION = "out-of-scope"
-CKM_SHA384_KEY_GEN = "profile"
+CKM_SHA384_KEY_GEN = "used"
 CKM_SHA384_RSA_PKCS = "used"
 CKM_SHA384_RSA_PKCS_PSS = "used"
 CKM_SHA3_224 = "out-of-scope"

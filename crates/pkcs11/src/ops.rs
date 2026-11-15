@@ -104,20 +104,8 @@ pub fn own_generation(t: &Target, provider: &dyn Provider) -> Result<bool> {
 ///
 /// # Errors
 ///
-/// `Unsupported` for what no token can do: generating a hash-bound HMAC key type (PKCS#11 has
-/// no mechanism for it), unless the module generates it its own way (libkmsp11 does).
+/// `Unsupported` for a key type cakeys does not manage.
 pub fn needs(t: &Target, mode: Mode, own_generation: bool) -> Result<Needs> {
-    if t.on_token.auto_create
-        && !own_generation
-        && let Some(kt) = t.object.key_type.filter(|k| k.is_hash_bound_hmac())
-    {
-        // CKM_GENERIC_SECRET_KEY_GEN makes CKK_GENERIC_SECRET keys; there is no mechanism for
-        // the hash-bound HMAC types (SoftHSM: CKR_TEMPLATE_INCONSISTENT).
-        return Err(KmError::Unsupported(format!(
-            "{t}: PKCS#11 has no key generation for {kt}; generate a CKK_GENERIC_SECRET with CKA_SIGN, \
-             or create the key elsewhere and adopt it"
-        )));
-    }
     let mut groups = Vec::new();
     // The commitments first: a token implementing none of them is the more telling refusal.
     let commits = wanted_commits(t, mode);
@@ -125,13 +113,17 @@ pub fn needs(t: &Target, mode: Mode, own_generation: bool) -> Result<Needs> {
         groups.push(commits.iter().map(|c| hal::commit_mechanism(*c)).collect());
     }
     if t.on_token.auto_create {
-        groups.push(vec![match hal::key_type_of(t.object)? {
-            KeyType::EC => MechanismType::ECC_KEY_PAIR_GEN,
-            KeyType::EC_EDWARDS => MechanismType::ECC_EDWARDS_KEY_PAIR_GEN,
-            KeyType::RSA => MechanismType::RSA_PKCS_KEY_PAIR_GEN,
-            KeyType::AES => MechanismType::AES_KEY_GEN,
-            KeyType::DES3 => MechanismType::DES3_KEY_GEN,
-            _ => MechanismType::GENERIC_SECRET_KEY_GEN,
+        // A hash-bound HMAC type generates with its own CKM_SHA*_KEY_GEN, unless the module
+        // generates it its own way (libkmsp11).
+        let hmac = t.object.key_type.and_then(hal::hmac_key_gen).filter(|_| !own_generation);
+        groups.push(vec![match (hmac, hal::key_type_of(t.object)?) {
+            (Some(m), _) => m.mechanism_type(),
+            (None, KeyType::EC) => MechanismType::ECC_KEY_PAIR_GEN,
+            (None, KeyType::EC_EDWARDS) => MechanismType::ECC_EDWARDS_KEY_PAIR_GEN,
+            (None, KeyType::RSA) => MechanismType::RSA_PKCS_KEY_PAIR_GEN,
+            (None, KeyType::AES) => MechanismType::AES_KEY_GEN,
+            (None, KeyType::DES3) => MechanismType::DES3_KEY_GEN,
+            (None, _) => MechanismType::GENERIC_SECRET_KEY_GEN,
         }]);
     }
     if mode == Mode::WrapRebind {

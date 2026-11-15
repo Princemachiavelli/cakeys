@@ -12,7 +12,20 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   on every reference token, and record which identity mode, schemes, binding and assurance each
   gets, or why none. Goal: keys.toml can declare any sane object, even when its assurance is
   low, and the matrix says what that assurance is. Clean fixtures cakeys made itself are not
-  evidence of what deployments need.
+  evidence of what deployments need. **Built for SoftHSM and kryoptic** (2026-11-15,
+  PLAN.md A4): `profiles/coverage/objects/<token>.toml`, 1032 objects each, adopted as a
+  legacy key arrives (crates/cli/tests/reference/matrix.rs). Still open: tpm2-pkcs11, imported
+  private keys, certificates and data objects. Its first three findings are fixed: proofs choose
+  within the key's `CKA_ALLOWED_MECHANISMS` (raw `CKM_ECDSA`, raw `CKM_RSA_PKCS` over a
+  `DigestInfo`), a declared list narrows the commitments computed (DESIGN §3.4, §3.6), an
+  unnamed mechanism in the list reads (patch `cryptoki-allowed-mechanisms-unnamed`), and an
+  HMAC-typed key generates with `CKM_SHA*_KEY_GEN` (kryoptic; SoftHSM 2.7 refuses at
+  validation). The rest follow.
+- **Upstream cryptoki: keep an unnamed `CKA_ALLOWED_MECHANISMS` entry.** 0.12.1's
+  `MechanismType::try_from` refuses any value it has no name for — vendor mechanisms (CloudHSM's
+  EdDSA is `0x80001057`, CLOUD_HSM.md) and some 385 standard ones (`CKM_DES3_CBC_PAD`), so the
+  whole read fails. Upstream main accepts vendor values but not unnamed standard ones. Our patch
+  keeps the raw value; a PR candidate, not filed.
 - **Weaker identity modes for keys cakeys did not create** (DESIGN §3.4). Non-extractable keys
   with no usage bit a commitment can use (derive-only, unwrap-only, random-IV-only allowed
   mechanisms) are common, especially existing and legacy keys, and are refused today (17).

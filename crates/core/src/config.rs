@@ -256,6 +256,15 @@ impl SpecCfg {
             _ => None,
         }
     }
+
+    /// The declared `CKA_ALLOWED_MECHANISMS`, if any: the mechanisms the key may run.
+    #[must_use]
+    pub fn allowed_mechanisms(&self) -> Option<&[String]> {
+        match self.attributes.get(crate::attrs::ALLOWED_MECHANISMS) {
+            Some(AttrValue::Mechanisms(m)) => Some(m),
+            _ => None,
+        }
+    }
 }
 
 /// A policy attribute value: a boolean, or a set of `CKM_*` names (`CKA_ALLOWED_MECHANISMS`),

@@ -52,7 +52,9 @@ in
   # only trusted key is the transport key (docs/CAMIGRATE.md D2, `enforced`). Both constants and the
   # parameter struct are already in cryptoki-sys. The fourth adds a single-part C_Sign in an
   # operation C_SignInit started (Session::sign_initialized), for the context-specific login a
-  # CKA_ALWAYS_AUTHENTICATE key needs between the two (docs/DESIGN.md §3.6).
+  # CKA_ALWAYS_AUTHENTICATE key needs between the two (docs/DESIGN.md §3.6). The fifth keeps a
+  # CKA_ALLOWED_MECHANISMS entry cryptoki has no name for (385 of the 3.2 mechanisms, and every
+  # vendor one) as its value, where 0.12.1 refused the whole attribute (docs/OPEN.md).
   cryptoki = {
     version = "0.12.1";
     patches = [
@@ -60,6 +62,7 @@ in
       ./patches/cryptoki-aes-key-wrap-kwp.patch
       ./patches/cryptoki-rsa-aes-key-wrap.patch
       ./patches/cryptoki-sign-after-init.patch
+      ./patches/cryptoki-allowed-mechanisms-unnamed.patch
     ];
   };
 

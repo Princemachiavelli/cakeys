@@ -102,16 +102,37 @@ impl Token {
         }
         if attrs::has_allowed_mechanisms(class) {
             // An empty list is not reported: it is indistinguishable from absent and means none.
-            if let Ok(Some(Attribute::AllowedMechanisms(m))) = self.attr(h, AttributeType::AllowedMechanisms)
-                && !m.is_empty()
-            {
+            if let Ok(Some(m)) = self.allowed_mechanisms(h) {
                 policy.insert(
                     "CKA_ALLOWED_MECHANISMS".to_owned(),
-                    AttrValue::mechanisms(m.iter().map(std::string::ToString::to_string)),
+                    AttrValue::mechanisms(m.iter().copied().map(mechanism_name)),
                 );
             }
         }
         Ok(policy)
+    }
+
+    /// `h`'s `CKA_ALLOWED_MECHANISMS`, `None` where the object has none or an empty one: modules
+    /// report an unrestricted key both ways (`SoftHSM` empty), and neither restricts it.
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` where the list names a mechanism this build's cryptoki cannot read back
+    /// (one without the `cryptoki-allowed-mechanisms-unnamed` patch, docs/OPEN.md), else the
+    /// module's error.
+    pub(crate) fn allowed_mechanisms(&self, h: ObjectHandle) -> Result<Option<Vec<MechanismType>>> {
+        match self.session.get_attributes(h, &[AttributeType::AllowedMechanisms]) {
+            Ok(attrs) => Ok(attrs.into_iter().find_map(|a| match a {
+                Attribute::AllowedMechanisms(m) if !m.is_empty() => Some(m),
+                _ => None,
+            })),
+            Err(CkError::NotSupported) => Err(KmError::Unsupported(format!(
+                "CKA_ALLOWED_MECHANISMS on token '{}' names a mechanism this build's cryptoki cannot read \
+                 (a build without the cryptoki-allowed-mechanisms-unnamed patch, docs/OPEN.md)",
+                self.name
+            ))),
+            Err(e) => Err(ck("C_GetAttributeValue")(e)),
+        }
     }
 
     /// `CKA_LOCAL`, `CKA_NEVER_EXTRACTABLE`, `CKA_ALWAYS_SENSITIVE` and `CKA_KEY_GEN_MECHANISM` of a
@@ -154,12 +175,7 @@ impl Token {
     /// A policy attribute as the spec writes it.
     fn attr_value(&self, h: ObjectHandle, name: &str) -> Result<Option<AttrValue>> {
         if name == "CKA_ALLOWED_MECHANISMS" {
-            return Ok(match self.attr(h, AttributeType::AllowedMechanisms)? {
-                Some(Attribute::AllowedMechanisms(m)) => {
-                    Some(AttrValue::mechanisms(m.iter().map(std::string::ToString::to_string)))
-                }
-                _ => None,
-            });
+            return Ok(self.allowed_mechanisms(h)?.map(|m| AttrValue::mechanisms(m.into_iter().map(mechanism_name))));
         }
         let t = bool_attr(name, false).ok_or_else(|| unsupported_attr(name))?.attribute_type();
         Ok(self.flag(h, t)?.map(AttrValue::Bool))
@@ -226,7 +242,7 @@ impl Token {
                 AttrValue::Mechanisms(names) => names
                     .iter()
                     .map(|n| {
-                        self.mechanisms.iter().copied().find(|m| m.to_string() == *n).ok_or_else(|| {
+                        self.mechanisms.iter().copied().find(|m| mechanism_name(*m) == *n).ok_or_else(|| {
                             self.unsupported(format!("{name}: token '{}' does not offer {n}", self.name))
                         })
                     })
@@ -235,6 +251,21 @@ impl Token {
             })
             .collect()
     }
+}
+
+/// A mechanism's `CKM_` name: cryptoki's where it has one, else the spec baseline's for its
+/// value (cryptoki names about 350 of the 3.2 mechanisms), else cryptoki's `unknown …` (a
+/// vendor's). The one spelling keys.toml, the lock and the token's lists are compared in.
+pub(crate) fn mechanism_name(m: MechanismType) -> String {
+    let name = m.to_string();
+    if name.starts_with("CKM_") {
+        return name;
+    }
+    let value = *m;
+    cakeys_profile::Set::active()
+        .ok()
+        .and_then(|set| set.baseline().ok()?.mechanisms.iter().find(|(_, id)| **id == value).map(|(n, _)| n.clone()))
+        .unwrap_or(name)
 }
 
 /// Every boolean attribute cakeys reads or sets, by its PKCS#11 name: which class carries which

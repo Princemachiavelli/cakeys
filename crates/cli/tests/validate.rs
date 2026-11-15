@@ -96,7 +96,7 @@ fn the_gate_refuses_what_it_can_decide_and_says_what_it_cannot() {
     let err = stderr(&out);
     assert_eq!(code(&out), 15, "{err}");
     for line in [
-        "PKCS#11 has no key generation for CKK_SHA384_HMAC",
+        "needs (CKM_SHA384_KEY_GEN: no — softhsm/2.7: not advertised)",
         "opts into attestation, but provider 'softhsm' attests nothing on this module",
         "opts into attestation, but provider 'ykcs11' attests only [\"CKO_PRIVATE_KEY\", \"CKO_PUBLIC_KEY\"]",
         "validate: 'gen' (spec 'p-gen') on token 'gen': the profiles do not decide",

@@ -358,5 +358,21 @@ mod tests {
         assert_eq!(commit_mechanism(Commit::KcvEcb(BlockCipher::Des3)), MechanismType::DES3_ECB);
         assert_eq!(commit_mechanism(Commit::KcvEcbDecrypt(BlockCipher::Des3)), MechanismType::DES3_ECB);
         assert_eq!(commit_mechanism(Commit::Kw), MechanismType::AES_KEY_WRAP);
+        // The name core filters a declared CKA_ALLOWED_MECHANISMS by is this mechanism's.
+        let all = [
+            Commit::Cmac,
+            Commit::KcvEcb(BlockCipher::Aes),
+            Commit::KcvEcbDecrypt(BlockCipher::Aes),
+            Commit::KcvEcb(BlockCipher::Des3),
+            Commit::KcvEcbDecrypt(BlockCipher::Des3),
+            Commit::Kw,
+        ]
+        .into_iter()
+        .chain(
+            [HmacHash::Sha1, HmacHash::Sha224, HmacHash::Sha256, HmacHash::Sha384, HmacHash::Sha512].map(Commit::Hmac),
+        );
+        for c in all {
+            assert_eq!(commit_mechanism(c).to_string(), c.mechanism(), "{}", c.scheme());
+        }
     }
 }
