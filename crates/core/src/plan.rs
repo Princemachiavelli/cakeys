@@ -4,7 +4,7 @@
 
 use crate::attrs;
 use crate::config::{AttrValue, Binding, Config, Mode, ObjectCfg, SpecCfg, SpecTokenCfg};
-use crate::id::{Commit, HmacHash, Scheme};
+use crate::id::{BlockCipher, Commit, HmacHash, Scheme};
 use crate::types::{KeyType as Kt, ObjectClass as Class};
 use crate::{KmError, Result};
 use std::collections::BTreeMap;
@@ -62,12 +62,12 @@ impl<'a> Target<'a> {
             (Class::PrivateKey | Class::PublicKey, _) => vec![Scheme::Rfc7093m4],
             (Class::Certificate, _) => vec![Scheme::Certhash, Scheme::Rfc7093m4],
             (Class::Data, _) => vec![Scheme::Valuehash],
-            (_, Some(Kt::Aes)) => match declared_commits(self) {
+            (_, kt) => match (kt.and_then(block_commits), declared_commits(self)) {
                 // No usable usage bit: wrap-rebind (if extractable) computes all of them.
-                d if d.is_empty() => AES_COMMITS.iter().map(|c| c.scheme()).collect(),
-                d => d.iter().map(|c| c.scheme()).collect(),
+                (Some(all), d) if d.is_empty() => all.iter().map(|c| c.scheme()).collect(),
+                (Some(_), d) => d.iter().map(|c| c.scheme()).collect(),
+                (None, _) => vec![Scheme::Commitment],
             },
-            _ => vec![Scheme::Commitment],
         }
     }
 
@@ -320,9 +320,14 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
     } else {
         // The weaker modes this leaves out (computed once and never re-checked) are parked:
         // docs/DESIGN.md §3.4.
+        let bits: Vec<&str> = match block_commits(kt) {
+            Some(all) => all.iter().map(|c| c.usage()).collect(),
+            None => vec!["CKA_SIGN"],
+        };
         return Err(KmError::Validation(format!(
-            "{t} has no re-verifiable identity (non-extractable; no CKA_SIGN, nor CKA_ENCRYPT/CKA_DECRYPT/CKA_WRAP on AES): \
-             declare a usage bit that allows a commitment, or CKA_EXTRACTABLE = true"
+            "{t} has no re-verifiable identity (non-extractable, and no usage bit that commits a {kt} key: {}): \
+             declare a usage bit that allows a commitment, or CKA_EXTRACTABLE = true",
+            bits.join(", ")
         )));
     };
     Ok(mode)
@@ -332,23 +337,35 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
 /// attributes count: a token default never silently changes which identity is computed.
 pub fn declared_commits(t: &Target) -> Vec<Commit> {
     let on = |n: &str| t.spec.flag(n) == Some(true);
-    match t.object.key_type {
-        Some(Kt::Aes) => ["CKA_SIGN", "CKA_ENCRYPT", "CKA_DECRYPT", "CKA_WRAP"]
-            .into_iter()
-            .zip(AES_COMMITS)
-            .filter(|(a, _)| on(a))
-            .map(|(_, c)| c)
-            .collect(),
-        kt => match kt.and_then(HmacHash::for_key_type) {
+    match t.object.key_type.and_then(block_commits) {
+        Some(all) => all.iter().copied().filter(|c| on(c.usage())).collect(),
+        None => match t.object.key_type.and_then(HmacHash::for_key_type) {
             Some(hash) if on("CKA_SIGN") => vec![Commit::Hmac(hash)],
             _ => vec![],
         },
     }
 }
 
-/// AES commitments in order of preference (the first computed is the primary scheme), each
-/// enabled by the usage bit at the same position in `declared_commits`.
-pub const AES_COMMITS: [Commit; 4] = [Commit::Cmac, Commit::KcvEcb, Commit::KcvEcbDecrypt, Commit::Kw];
+/// The commitments of a block-cipher key type in order of preference (the first computed is
+/// the primary scheme), each enabled by its usage bit ([`Commit::usage`]); a wrap-rebind copy
+/// computes them all. `None` for the HMAC-committed types.
+#[must_use]
+pub fn block_commits(key_type: Kt) -> Option<&'static [Commit]> {
+    match key_type {
+        Kt::Aes => Some(&AES_COMMITS),
+        Kt::Des3 => Some(&DES3_COMMITS),
+        _ => None,
+    }
+}
+
+/// AES commitments in order of preference: `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`.
+pub const AES_COMMITS: [Commit; 4] =
+    [Commit::Cmac, Commit::KcvEcb(BlockCipher::Aes), Commit::KcvEcbDecrypt(BlockCipher::Aes), Commit::Kw];
+
+/// DES3 commitments in order of preference: the two check values. `CKM_DES3_CMAC` is not among
+/// them: cryptoki 0.12 cannot name it (docs/OPEN.md), so a DES3 key that may only sign or wrap
+/// has no re-verifiable identity unless it is extractable.
+pub const DES3_COMMITS: [Commit; 2] = [Commit::KcvEcb(BlockCipher::Des3), Commit::KcvEcbDecrypt(BlockCipher::Des3)];
 
 #[cfg(test)]
 mod tests {
@@ -387,7 +404,14 @@ mod tests {
     /// the first enabled scheme is the primary identity.
     #[test]
     fn aes_commit_strength_order_is_pinned() {
-        assert_eq!(AES_COMMITS, [Commit::Cmac, Commit::KcvEcb, Commit::KcvEcbDecrypt, Commit::Kw]);
+        assert_eq!(
+            AES_COMMITS,
+            [Commit::Cmac, Commit::KcvEcb(BlockCipher::Aes), Commit::KcvEcbDecrypt(BlockCipher::Aes), Commit::Kw]
+        );
+        assert_eq!(AES_COMMITS.map(Commit::usage), ["CKA_SIGN", "CKA_ENCRYPT", "CKA_DECRYPT", "CKA_WRAP"]);
+        // DES3: the check values only, encryption first.
+        assert_eq!(DES3_COMMITS, [Commit::KcvEcb(BlockCipher::Des3), Commit::KcvEcbDecrypt(BlockCipher::Des3)]);
+        assert_eq!(block_commits(Kt::GenericSecret), None);
     }
 
     /// A `Config` not made by loading keys.toml (which refuses it) may name an object it does

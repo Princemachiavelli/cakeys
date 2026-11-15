@@ -21,6 +21,18 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   says which cases need them.
 - **X25519 / Montgomery keys**: no key type in `id.rs` (SPKI, host X25519); ykcs11 cannot
   generate them anyway.
+- **More Triple DES** (2026-11-15). `CKK_DES3` keys are identified by the two check values
+  (`kcv-ecb`, `kcv-ecb-dec`, `CKM_DES3_ECB`); what payment and banking HSMs also hold is
+  refused:
+  - *Sign-only DES3 keys* (MAC keys: ISO 9797-1 retail MAC, CMAC), non-extractable: 17, no
+    commitment. SoftHSM 2.7 offers `CKM_DES3_CMAC` (`pkcs11-tool -M` [run]), but cryptoki
+    0.12 has no constant or `Mechanism` for it, so it is also missing from SoftHSM's profile.
+    A cryptoki patch beside the KWP one (and its upstream PR), a `cmac` over DES3, and the
+    profile regenerated. kryoptic 1.5 and tpm2-pkcs11 have no DES at all (15).
+  - *Two-key Triple DES* (`CKK_DES2`, 16 bytes: the "double-length" keys of payment
+    schemes, which many HSMs store this way): unknown key type (17). Same mechanisms
+    (`CKM_DES3_ECB`), its own key type in the label; `des::TdesEde2` as the oracle.
+  - *Single DES* (`CKK_DES`): not planned.
 - **brainpoolP512r1** (2026-11-15): refused (15, `CURVES_WITHOUT_CRATE`). It would serve keys
   under BSI TR-03111 (German government and eID PKI) and HSMs that offer the curve beside
   P256r1/P384r1. RustCrypto has no `bp512` release: "Add Brainpool P-512"
@@ -174,7 +186,7 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   `default` before `pkcs11` and cannot stream-sign through the provider.
 - **rust-cryptoki**: the HMAC key-type fix, `CKM_AES_KEY_WRAP_KWP` and `CKM_RSA_AES_KEY_WRAP`
   and the single-part sign after `C_SignInit` (`upstream/rust-cryptoki/`); later, array
-  attributes.
+  attributes and `CKM_DES3_CMAC` (a DES3 `cmac`, above).
 - **tpm2-pkcs11**: the P-521 `CKA_EC_POINT` fix (`upstream/tpm2-pkcs11/`).
 
 ## Engineering

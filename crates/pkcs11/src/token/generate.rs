@@ -124,6 +124,13 @@ impl Token {
                 }
                 .map_err(refused)
             }
+            KeyType::DES3 => {
+                // The key type fixes the length: a template with CKA_VALUE_LEN is inconsistent.
+                let mut t = common;
+                t.extend([Attribute::Class(ObjectClass::SECRET_KEY), Attribute::KeyType(KeyType::DES3)]);
+                t.extend(policy);
+                self.session.generate_key(&Mechanism::Des3KeyGen, &t).map(|_| None).map_err(refused)
+            }
             kt => {
                 let len =
                     object.value_len.ok_or_else(|| KmError::Validation("secret keys need valueLen (bytes)".into()))?;

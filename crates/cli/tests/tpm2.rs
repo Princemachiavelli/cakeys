@@ -124,8 +124,23 @@ valueLen = 32
 object = "aes"
 attributes = { CKA_SIGN = true }
 tokens.tpm = { locator = { CKA_LABEL = "refusal-aes" } }
+
+[objects.des3]
+class = "CKO_SECRET_KEY"
+keyType = "CKK_DES3"
+
+[specs.des3]
+object = "des3"
+attributes = { CKA_ENCRYPT = true }
+tokens.tpm = { locator = { CKA_LABEL = "refusal-des3" }, autoCreate = true }
 "#,
     );
+    // No Triple DES in a TPM (TPM2 symmetric keys are AES): neither the check value nor the
+    // generation, refused from what the module lists before anything is created.
+    let o = e.km(&["realise", "des3", "--token", "tpm", "--no-update-lock"]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("CKM_DES3_ECB"), "{}", stderr(&o));
+    assert_eq!(labelled(&e.session(), "refusal-des3"), 0);
     // Secret-key generation is refused up front, with the provider's advice, and creates nothing.
     for (spec, label) in [("aes-gen", "refusal-aes-gen"), ("hmac-gen", "refusal-hmac-gen")] {
         let o = e.km(&["realise", spec, "--token", "tpm", "--no-update-lock"]);

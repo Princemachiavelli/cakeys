@@ -1763,6 +1763,114 @@ fn aes_128_192_and_decrypt_only_match_host_oracles() {
     assert_eq!(e.code(&["check", "adec"]), 0);
 }
 
+/// 24 bytes with DES's odd parity in each byte's low bit, as a token stores a Triple DES key.
+fn des3_key(text: &[u8; 24]) -> [u8; 24] {
+    text.map(|b| (b & 0xfe) | u8::from((b & 0xfe).count_ones() % 2 == 0))
+}
+
+/// Triple DES keys (`CKK_DES3`), as payment HSMs hold them: identified by the DES3 check values
+/// (`kcv-ecb`, `kcv-ecb-dec`), each matching the host's `des` oracle; a generated key without
+/// `valueLen` (the key type fixes 24 bytes, and the token keeps no `CKA_VALUE_LEN`); and a module
+/// without Triple DES (kryoptic) refusing before anything is created (15).
+#[test]
+fn des3_check_values_match_host_oracles() {
+    let Some(e) = env("des3") else { return };
+    let key = des3_key(b"des3 check value vector!");
+    let spec = |name: &str, object: &str, attrs: &str, label: &str, create: bool| {
+        let create = if create { ", autoCreate = true" } else { "" };
+        format!(
+            "[specs.{name}]\nobject = \"{object}\"\nattributes = {{ {attrs} }}\n\
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"{label}\" }}{create} }}\n\n"
+        )
+    };
+    let fixed = "CKA_SENSITIVE = true, CKA_EXTRACTABLE = false";
+    let mut body = String::from(
+        "[objects.des3]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES3\"\nvalueLen = 24\n\n\
+         [objects.des3-gen]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES3\"\n\n",
+    );
+    body += &spec("des3-gen", "des3-gen", &format!("CKA_ENCRYPT = true, {fixed}"), "des3-gen", true);
+    // A DES3 key that may only sign: no DES3 commitment uses CKA_SIGN (CMAC is not named, OPEN.md).
+    body += &spec("des3-mac", "des3", &format!("CKA_SIGN = true, {fixed}"), "des3-mac", false);
+    e.config(&body);
+    let o = e.km(&["validate"]);
+    assert_eq!(code(&o), 17);
+    assert!(
+        stderr(&o).contains("no usage bit that commits a CKK_DES3 key: CKA_ENCRYPT, CKA_DECRYPT"),
+        "{}",
+        stderr(&o)
+    );
+    body = body.replace(&spec("des3-mac", "des3", &format!("CKA_SIGN = true, {fixed}"), "des3-mac", false), "");
+
+    if !REF.des3 {
+        // No Triple DES on the module: refused from what the token lists, nothing created.
+        e.config(&body);
+        let o = e.km(&["realise", "des3-gen", "--token", "ref", "--no-update-lock"]);
+        assert_eq!(code(&o), 15, "{}", stderr(&o));
+        assert!(stderr(&o).contains("CKM_DES3_ECB"), "{}", stderr(&o));
+        assert_eq!(e.session().labelled("des3-gen"), []);
+        return;
+    }
+
+    // One value planted three times with different usage bits, and an AES key in its place once.
+    let s = e.session();
+    let des3 = cryptoki::object::KeyType::DES3;
+    let enc_dec = [Attribute::Encrypt(true), Attribute::Decrypt(true), Attribute::Sign(false)];
+    plant_secret(&s, "des3-both", des3, &key, &enc_dec);
+    plant_secret(&s, "des3-dec", des3, &key, &[Attribute::Encrypt(false), Attribute::Decrypt(true)]);
+    s.create_object(&[
+        Attribute::Class(ObjectClass::SECRET_KEY),
+        Attribute::KeyType(des3),
+        Attribute::Token(true),
+        Attribute::Label(b"des3-x".to_vec()),
+        Attribute::Value(key.to_vec()),
+        Attribute::Encrypt(false),
+        Attribute::Decrypt(false),
+        Attribute::Sensitive(true),
+        Attribute::Extractable(true),
+    ])
+    .unwrap();
+    plant_secret(&s, "aes-in-place", cryptoki::object::KeyType::AES, &AES_VALUE, &[Attribute::Encrypt(true)]);
+    body += &spec("des3-both", "des3", &format!("CKA_ENCRYPT = true, CKA_DECRYPT = true, {fixed}"), "des3-both", false);
+    body += &spec("des3-dec", "des3", &format!("CKA_ENCRYPT = false, CKA_DECRYPT = true, {fixed}"), "des3-dec", false);
+    // No usage bit a commitment uses, but extractable: a session copy computes both check values.
+    body +=
+        &spec("des3-x", "des3", "CKA_ENCRYPT = false, CKA_DECRYPT = false, CKA_EXTRACTABLE = true", "des3-x", false);
+    body += &spec("des3-aes", "des3", "CKA_ENCRYPT = true", "aes-in-place", false);
+    e.config(&body);
+    for (name, mode, schemes) in [
+        ("des3-both", "commitment", &["kcv-ecb", "kcv-ecb-dec"][..]),
+        ("des3-dec", "commitment", &["kcv-ecb-dec"][..]),
+        ("des3-x", "wrap-rebind", &["kcv-ecb", "kcv-ecb-dec"][..]),
+    ] {
+        let o = e.km(&["realise", name, "--token", "ref", "--update-lock"]);
+        assert_eq!(code(&o), 0, "{name}: {}", stderr(&o));
+        let r: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+        assert_eq!(r["ids"].as_object().unwrap().keys().collect::<Vec<_>>(), schemes, "{name}");
+        assert_eq!(r["mode"].as_str(), Some(mode), "{name}");
+        assert_eq!(r["assurance"].as_str(), Some("fingerprint"), "{name}");
+    }
+    for scheme in ["kcv-ecb", "kcv-ecb-dec"] {
+        assert_eq!(e.locked_id("des3", scheme), des3_commitment(&key, scheme), "{scheme}");
+    }
+    assert_eq!(e.lock()["objects"]["des3"]["type"]["valueLen"].as_integer(), Some(24));
+    assert_eq!(e.code(&["check", "des3.id.kcv-ecb-dec", "--spec", "des3-dec"]), 0);
+    // Another key type under the locator is another object (13), whatever its length.
+    assert_eq!(e.code(&["realise", "des3-aes", "--token", "ref", "--update-lock"]), 13);
+
+    // Generated with CKM_DES3_KEY_GEN: no valueLen in keys.toml or the template, a stable
+    // identity across runs, and deletable by it.
+    let r = ["realise", "des3-gen", "--token", "ref", "--no-update-lock"];
+    let first = e.km(&r);
+    assert_eq!(code(&first), 10, "{}", stderr(&first));
+    assert_eq!(got_hash(&e.km(&r)), got_hash(&first));
+    assert_eq!(e.code(&recording(&r)), 0);
+    assert_eq!(e.locked_id("des3-gen", "kcv-ecb"), got_hash(&first));
+    assert_eq!(e.lock()["objects"]["des3-gen"]["type"]["valueLen"].as_integer(), Some(24));
+    assert_eq!(e.code(&["check", "des3-gen"]), 0);
+    assert_eq!(e.code(&["delete", "des3-gen", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["verify", "des3-gen", "--token", "ref"]), 11);
+}
+
 #[test]
 fn a_new_scheme_missing_from_the_lock_is_a_note_unless_requested() {
     let Some(e) = env("upgrade") else { return };

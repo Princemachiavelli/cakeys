@@ -43,8 +43,8 @@ object.
 | `valuehash` | public data objects | SHA-256 of `CKA_VALUE` (equals Nix's flat fixed-output hash) | `CKA_PRIVATE=false` | `data_objects_are_identified_by_their_public_value` |
 | `commitment` | generic secrets, `CKK_SHA*_HMAC` | HMAC over the label (§3.3), using the key type's hash | `CKA_SIGN` | `secret_commitments_match_host_hmac`, `hmac_key_types_commit_with_their_own_hash`, `tpm2_imported_keys_…` |
 | `cmac` | AES | AES-CMAC over the label | `CKA_SIGN` | `aes_commitments_match_host_oracles` |
-| `kcv-ecb` | AES | AES-ECB encryption of one block (first 16 bytes of SHA-256(label)) | `CKA_ENCRYPT` | same, `tpm2_aes_key_is_identified_by_its_kcv` |
-| `kcv-ecb-dec` | AES | AES-ECB *decryption* of such a block | `CKA_DECRYPT` | `aes_128_192_and_decrypt_only_match_host_oracles` |
+| `kcv-ecb` | AES, DES3 | ECB encryption (`CKM_AES_ECB`, `CKM_DES3_ECB`) of one block: the first 16 (AES) or 8 (DES3) bytes of SHA-256(label) | `CKA_ENCRYPT` | same, `tpm2_aes_key_is_identified_by_its_kcv`, `des3_check_values_match_host_oracles` |
+| `kcv-ecb-dec` | AES, DES3 | ECB *decryption* of such a block | `CKA_DECRYPT` | `aes_128_192_and_decrypt_only_match_host_oracles`, `des3_check_values_match_host_oracles` |
 | `kw` | AES | RFC 3394 key wrap of a fixed key (SHA-256(label)) | `CKA_WRAP` | `aes_commitments_match_host_oracles` |
 | `piv-attestation` | private/public keys (YubiKey PIV) | Canonical digest of what the slot's attestation certificate asserts (§3.7), verified to the pinned Yubico root; per realisation | opt-in `attestation = true` (no login needed to read the certificates) | `fixture_chain_verifies_and_pins`, `the_yubico_roots_are_pinned`, `issuers_must_be_cas_within_their_path_length` |
 | `tpm-certify` | private and secret keys on tpm2-pkcs11 tokens | Canonical digest of the Name and qualified Name a native `TPM2_Certify` attests (§3.7), host-verified against a provisioned AK; per realisation | opt-in `attestation = true`, the module's TCTI + store, the PIN | `tpm2_keys_attest_their_tpm_residence`, `tpm2_each_token_pins_its_own_attestation`, `tpm2_attested_material_travels_to_a_second_hsm` |
@@ -55,6 +55,11 @@ object.
 - **Which commitment schemes are computed** follows the spec's *declared* usage bits, never token
   defaults. The preference order (the first computed is the primary scheme) is
   `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`.
+- **A DES3 check value is not the payment industry's KCV** (DES3-ECB of a zero block, printed as
+  three bytes). That block carries no label and no key type, HSMs hand it out freely, and the
+  lock's hash of a whole block could not be compared with three printed bytes anyway; so
+  `kcv-ecb` keeps one construction for both ciphers, the key type in the label telling them
+  apart.
 - **Only mechanisms the token offers are used.** If none fits, the result is *unsupported* (exit 15).
 - **Attestation schemes are computed only by explicit opt-in** (`attestation = true` on the spec's
   token entry, §3.7): they promise TPM- or vendor-signed provenance from then on, and a run that
@@ -71,6 +76,7 @@ when the spec's declared usage bits allow nothing stronger:
 | data objects | `valuehash` | SHA-256 of the content, equal to Nix's flat fixed-output hash |
 | generic secret / `CKK_SHA*_HMAC` | `commitment` | HMAC over the domain-separated label (§3.3), with the key type's hash |
 | AES | `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw` | CMAC is a PRF over the whole label; each KCV exposes one fixed-block ECB relation; `kw` needs the fixed-key wrap |
+| DES3 (`CKK_DES3`, 24 bytes) | `kcv-ecb`, `kcv-ecb-dec` | the AES order; no `cmac` yet (`CKM_DES3_CMAC` needs a cryptoki patch, [OPEN.md](OPEN.md)), and AES key wrap does not apply |
 
 Deprecation:
 
@@ -131,7 +137,10 @@ The token computes on `<commitment label>/<scheme>/<keyType>/<bits>`, built in
   encrypts to compute a secret key's ID; labels, `CKA_ID`s, attributes and URIs stay the user's.
   A distinctive string keeps the operation from coinciding with another protocol's use of the key.
 - **The key type is part of the label,** so the same bytes held as two types never share an ID.
-- **`bits`** is `8 × valueLen`. It is 0 when `valueLen` is unset (finding L11).
+- **`bits`** is `8 × valueLen`. It is 0 when `valueLen` is unset (finding L11). A key type that
+  fixes its length fills it in when keys.toml leaves it out (`CKK_DES3`: 24 bytes, so 192; any
+  other `valueLen` is 17), and that length is checked as the key type: the token keeps no
+  `CKA_VALUE_LEN` for it.
 
 ### 3.4 Identity modes
 
@@ -141,7 +150,7 @@ Strongest first. The mode is recorded per realisation; a downgrade fails (exit 1
 |---|---|
 | `direct` | public keys, certificates, data objects (hash of public material) |
 | `commitment` | secret keys whose declared usage bits allow a commitment scheme |
-| `wrap-rebind` | extractable secret keys without such bits. The key is wrapped under a session KEK, unwrapped as a session copy that allows every scheme of its type, committed, then both are destroyed. Computes every scheme (AES: all four). |
+| `wrap-rebind` | extractable secret keys without such bits. The key is wrapped under a session KEK, unwrapped as a session copy that allows every scheme of its type, committed, then both are destroyed. Computes every scheme (AES: all four; DES3: both check values). |
 
 A secret key that fits none of these — non-extractable, with no usage bit a commitment scheme can
 use (derive-only, unwrap-only, `CKA_ALLOWED_MECHANISMS` limited to random-IV modes) — is refused
@@ -606,7 +615,10 @@ label and the hash itself. Everything else is fixed by definition:
   `commitment`, `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`) always denotes exactly the computation in
   §3. A changed computation is a *new* scheme name, never an edit. The known-answer test
   `scheme_definitions_are_pinned` pins each one: the bytes every commitment scheme feeds the
-  token, and the `rfc7093m4` of fixed keys on every curve and RSA (canonical encoding included).
+  token (for each key type it takes: `kcv-ecb` and `kcv-ecb-dec` on AES and DES3), and the
+  `rfc7093m4` of fixed keys on every curve and RSA (canonical encoding included). A new key type
+  under an existing scheme is an addition to its definition, never a change for the types it
+  already took.
 - **The lock records everything else an ID depends on:** the object `type` (key type and length
   feed the commitment label), the commitment label, the spec digest, and as provenance the
   module, token, provider and cakeys version. A changed `keys.toml` is reported as such, never as

@@ -61,7 +61,8 @@ impl Token {
                 }
             }
         }
-        if let Some(len) = object.value_len {
+        // A DES3 key's length is its key type's (no CKA_VALUE_LEN): checked as CKA_KEY_TYPE above.
+        if let Some(len) = object.value_len.filter(|_| object.key_type.and_then(Kt::fixed_value_len).is_none()) {
             match self.attr(h, AttributeType::ValueLen)? {
                 Some(Attribute::ValueLen(v)) if *v == len => {}
                 other => return Err(KmError::Conflict(format!("CKA_VALUE_LEN mismatch: {other:?}"))),

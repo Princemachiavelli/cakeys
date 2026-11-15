@@ -140,6 +140,13 @@ keyType = "CKK_AES"
 # Bytes. Part of the type, and of the commitment label a secret key's identity is computed on.
 valueLen = 32
 
+[objects.pin-key]
+class = "CKO_SECRET_KEY"
+# Triple DES, as payment HSMs hold it. The key type fixes the length (24 bytes), so valueLen is
+# left out (or written 24; anything else is 17). Its identity is a check value: CKA_ENCRYPT gives
+# `kcv-ecb`, CKA_DECRYPT `kcv-ecb-dec`; a DES3 key that may only sign or wrap has none yet.
+keyType = "CKK_DES3"
+
 [objects.firmware-cert]
 class = "CKO_CERTIFICATE"
 # Certificates take a certificate type instead of a key type.
@@ -223,8 +230,9 @@ tokens.softhsm = { locator = { CKA_LABEL = "release-note" } }
   `createOn` token only; `autoCreate` elsewhere, or on several tokens without `createOn`, is
   invalid (17). The other tokens get the same material by import (`camigrate`).
 - **A secret key needs an identity the token can recompute:** a declared usage bit a commitment
-  can use (`CKA_SIGN`, `CKA_ENCRYPT`, `CKA_DECRYPT`, `CKA_WRAP`), or `CKA_EXTRACTABLE = true`.
-  Otherwise the spec is invalid (17); DESIGN §3.4 says why, and what may change.
+  can use (`CKA_SIGN`, `CKA_ENCRYPT`, `CKA_DECRYPT`, `CKA_WRAP` on AES; `CKA_ENCRYPT`,
+  `CKA_DECRYPT` on DES3; `CKA_SIGN` on generic secrets and HMAC keys), or `CKA_EXTRACTABLE =
+  true`. Otherwise the spec is invalid (17); DESIGN §3.4 says why, and what may change.
 
 For the lock that `realise` writes from this, see [`LOCK.md`](LOCK.md). A real, small pair of
 files is [`examples/yubikey-secureboot.toml`](../examples/yubikey-secureboot.toml) and its lock.

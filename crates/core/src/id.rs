@@ -71,9 +71,10 @@ pub enum Scheme {
     Commitment,
     /// AES-CMAC over the commitment label (`Commit::Cmac`).
     Cmac,
-    /// AES-ECB encryption of one block derived from the label: a key check value (`Commit::KcvEcb`).
+    /// ECB encryption (AES, DES3) of one block derived from the label: a key check value
+    /// (`Commit::KcvEcb`).
     KcvEcb,
-    /// AES-ECB decryption of that block, for decrypt-only keys (`Commit::KcvEcbDecrypt`).
+    /// ECB decryption of that block, for decrypt-only keys (`Commit::KcvEcbDecrypt`).
     KcvEcbDec,
     /// RFC 3394 key wrap of a fixed key derived from the label (`Commit::Kw`).
     Kw,
@@ -263,6 +264,37 @@ impl HmacHash {
     }
 }
 
+/// The block cipher of a key check value (`Commit::KcvEcb`, `Commit::KcvEcbDecrypt`), which the
+/// key type implies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockCipher {
+    /// AES (`CKK_AES`, `CKM_AES_ECB`): 16-byte blocks.
+    Aes,
+    /// Three-key Triple DES (`CKK_DES3`, `CKM_DES3_ECB`): 8-byte blocks.
+    Des3,
+}
+
+impl BlockCipher {
+    /// The block cipher of a secret key type, if it is one.
+    #[must_use]
+    pub fn for_key_type(key_type: KeyType) -> Option<BlockCipher> {
+        match key_type {
+            KeyType::Aes => Some(BlockCipher::Aes),
+            KeyType::Des3 => Some(BlockCipher::Des3),
+            _ => None,
+        }
+    }
+
+    /// The block length in bytes: what a key check value encrypts.
+    #[must_use]
+    pub fn block_len(self) -> usize {
+        match self {
+            BlockCipher::Aes => 16,
+            BlockCipher::Des3 => 8,
+        }
+    }
+}
+
 /// Secret-key commitments: a deterministic on-token operation over a public, domain-separated
 /// input. Each needs a different key usage bit and gives a different value, so each is its own
 /// scheme. The lock stores only SHA-256 of the output (`sri`), never a MAC or ciphertext that
@@ -274,11 +306,15 @@ pub enum Commit {
     Hmac(HmacHash),
     /// `CKM_AES_CMAC` over the label (`CKA_SIGN`).
     Cmac,
-    /// `CKM_AES_ECB` encryption of one block, the first 16 bytes of SHA-256(label): a key check
-    /// value (`CKA_ENCRYPT`). Single-block ECB only: a fixed nonce with CTR/GCM would leak.
-    KcvEcb,
-    /// `CKM_AES_ECB` decryption of one such block (`CKA_DECRYPT`): for decrypt-only keys.
-    KcvEcbDecrypt,
+    /// ECB encryption (`CKM_AES_ECB`, `CKM_DES3_ECB`) of one block, the first block-length bytes
+    /// of SHA-256(label): a key check value (`CKA_ENCRYPT`). Single-block ECB only: a fixed nonce
+    /// with CTR/GCM would leak. One scheme for both ciphers, as for the HMAC hashes: the key
+    /// type is in the label. Not the payment industry's KCV (the key's encryption of a zero
+    /// block): that block carries no label and no key type, HSMs hand it out freely, and the
+    /// lock's hash of a whole block could not be compared with its printed three bytes anyway.
+    KcvEcb(BlockCipher),
+    /// ECB decryption of one such block (`CKA_DECRYPT`): for decrypt-only keys.
+    KcvEcbDecrypt(BlockCipher),
     /// `CKM_AES_KEY_WRAP` (RFC 3394, deterministic) of a fixed key, SHA-256(label) (`CKA_WRAP`).
     Kw,
 }
@@ -290,9 +326,20 @@ impl Commit {
         match self {
             Commit::Hmac(_) => Scheme::Commitment,
             Commit::Cmac => Scheme::Cmac,
-            Commit::KcvEcb => Scheme::KcvEcb,
-            Commit::KcvEcbDecrypt => Scheme::KcvEcbDec,
+            Commit::KcvEcb(_) => Scheme::KcvEcb,
+            Commit::KcvEcbDecrypt(_) => Scheme::KcvEcbDec,
             Commit::Kw => Scheme::Kw,
+        }
+    }
+
+    /// The usage bit a spec declares to have this commitment computed (docs/DESIGN.md §3.1).
+    #[must_use]
+    pub fn usage(self) -> &'static str {
+        match self {
+            Commit::Hmac(_) | Commit::Cmac => "CKA_SIGN",
+            Commit::KcvEcb(_) => "CKA_ENCRYPT",
+            Commit::KcvEcbDecrypt(_) => "CKA_DECRYPT",
+            Commit::Kw => "CKA_WRAP",
         }
     }
 
@@ -308,14 +355,14 @@ impl Commit {
         .into_bytes()
     }
 
-    /// The fixed input the token operates on: the label, or its SHA-256 (truncated to one AES
-    /// block for the KCV).
+    /// The fixed input the token operates on: the label, or its SHA-256 (truncated to one block
+    /// of the cipher for the KCV).
     #[must_use]
     pub fn input(self, commitment_label: &str, object: &ObjectCfg) -> Vec<u8> {
         let label = self.label(commitment_label, object);
         match self {
             Commit::Hmac(_) | Commit::Cmac => label,
-            Commit::KcvEcb | Commit::KcvEcbDecrypt => Sha256::digest(&label)[..16].to_vec(),
+            Commit::KcvEcb(c) | Commit::KcvEcbDecrypt(c) => Sha256::digest(&label)[..c.block_len()].to_vec(),
             Commit::Kw => Sha256::digest(&label).to_vec(),
         }
     }
@@ -609,8 +656,28 @@ mod tests {
             Commit::Hmac(HmacHash::Sha256).label(DEFAULT_COMMITMENT_LABEL, &obj),
             b"key-management/v1/commitment/CKK_GENERIC_SECRET/256"
         );
-        assert_eq!(Commit::KcvEcb.input(DEFAULT_COMMITMENT_LABEL, &obj).len(), 16);
+        assert_eq!(Commit::KcvEcb(BlockCipher::Aes).input(DEFAULT_COMMITMENT_LABEL, &obj).len(), 16);
+        assert_eq!(Commit::KcvEcb(BlockCipher::Des3).input(DEFAULT_COMMITMENT_LABEL, &obj).len(), 8);
         assert_eq!(Commit::Kw.input(DEFAULT_COMMITMENT_LABEL, &obj).len(), 32);
+    }
+
+    /// Each commitment's usage bit (DESIGN §3.1), and the cipher each block key type implies.
+    #[test]
+    fn commit_usage_bits_and_block_ciphers() {
+        use BlockCipher::{Aes, Des3};
+        let usage: Vec<_> = [
+            Commit::Hmac(HmacHash::Sha256),
+            Commit::Cmac,
+            Commit::KcvEcb(Des3),
+            Commit::KcvEcbDecrypt(Aes),
+            Commit::Kw,
+        ]
+        .map(Commit::usage)
+        .into();
+        assert_eq!(usage, ["CKA_SIGN", "CKA_SIGN", "CKA_ENCRYPT", "CKA_DECRYPT", "CKA_WRAP"]);
+        let ciphers: Vec<_> =
+            KeyType::ALL.iter().filter_map(|k| Some((*k, BlockCipher::for_key_type(*k)?.block_len()))).collect();
+        assert_eq!(ciphers, [(KeyType::Aes, 16), (KeyType::Des3, 8)]);
     }
 
     #[test]
@@ -705,9 +772,22 @@ mod tests {
                 "sha256-HUtAzPAIg8HRIIURRy0TrTY8eNLoxo48/G3LuEDdMbw=",
             ),
             ("CKK_AES", 32, Commit::Cmac, "sha256-u42TmSUu/rRjWDQH7LYM7fJHAKe/B81julPRAManfus="),
-            ("CKK_AES", 32, Commit::KcvEcb, "sha256-L1W0lzlDj7Pcu44tnVa/ekyQRHsIybF5gUIsG/oi270="),
-            ("CKK_AES", 16, Commit::KcvEcbDecrypt, "sha256-Ht1do336beKCgXkt86UdPfbUUdqLPc7Md3/3IybSftI="),
+            ("CKK_AES", 32, Commit::KcvEcb(BlockCipher::Aes), "sha256-L1W0lzlDj7Pcu44tnVa/ekyQRHsIybF5gUIsG/oi270="),
+            (
+                "CKK_AES",
+                16,
+                Commit::KcvEcbDecrypt(BlockCipher::Aes),
+                "sha256-Ht1do336beKCgXkt86UdPfbUUdqLPc7Md3/3IybSftI=",
+            ),
             ("CKK_AES", 32, Commit::Kw, "sha256-woiHkSVHlbF2VQCQbiHKffrxo2ShyBOMzsdtKDPtH7c="),
+            // DES3: the same construction, one 8-byte block, the length the key type fixes.
+            ("CKK_DES3", 24, Commit::KcvEcb(BlockCipher::Des3), "sha256-NRjuYQG3VCPqI2KhH8s3pChrlFGSWwvCQNd4BedHPeo="),
+            (
+                "CKK_DES3",
+                24,
+                Commit::KcvEcbDecrypt(BlockCipher::Des3),
+                "sha256-KBjM0G2T/K2ydJyVcszuEEdo6aKfui1mkr+32V5AcfQ=",
+            ),
         ] {
             assert_eq!(sri(&c.input(DEFAULT_COMMITMENT_LABEL, &obj(kt, len))), want, "{kt} {}", c.scheme());
         }
