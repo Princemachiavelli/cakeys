@@ -20,7 +20,13 @@ Being general costs three choices, none of which changes the implementation:
 
 - **Configured from the environment**, which every client passes to the modules it loads:
   `P11_FAULT_MODULE` (the real module), `P11_FAULT_PLAN` (the plan file; unset, the shim is a
-  pure forwarder), `P11_FAULT_TRACE` (a call log). No `CAKEYS_` names, no keys.toml.
+  pure forwarder), `P11_FAULT_TRACE` (a call log). No `CAKEYS_` names, no keys.toml. A copy
+  of the library named `libp11_fault-<tag>.so` reads `P11_FAULT_MODULE_<TAG>`,
+  `P11_FAULT_PLAN_<TAG>` and `P11_FAULT_TRACE_<TAG>` (upper-cased, `-` as `_`) and never the
+  untagged names, so one process can hold several shims: one in front of each of several
+  modules (camigrate between two tokens), or one in front of another (a tracing shim around a
+  faulting one). A shim whose module is its own file fails with that reason instead of waiting
+  on its own initialisation.
 - **Plans name PKCS#11 things only**: function names, `CKR_*`, `CKA_*`, `CKF_*`, objects by
   `CKA_LABEL`. Any other value as a number (`rv = 0x30`).
 - **Packaged on its own** (`packages.p11-fault`), outside the cakeys packages, so it is usable

@@ -408,6 +408,7 @@ dependencies = [
  "des",
  "getrandom",
  "p11-fault",
+ "serde",
  "serde_json",
  "sha2",
  "toml",
@@ -1121,6 +1122,7 @@ name = "p11-fault"
 version = "0.1.0"
 dependencies = [
  "cryptoki-sys",
+ "libc",
  "libloading",
  "serde",
  "serde_json",

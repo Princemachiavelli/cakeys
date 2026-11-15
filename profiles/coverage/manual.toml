@@ -1,0 +1,1103 @@
+# Hand-kept statuses for the coverage file (crates/caprobe/src/coverage.rs): rows no traced
+# call reaches, by table and name pattern (`*` for any run of characters). The first rule that
+# matches decides; a rule that matches nothing, or names a used row exactly, fails the test.
+#
+#   status: refused (cakeys meets it and refuses: the exit code in the reason), out-of-scope
+#   (a written reason), gap (should be handled and is not: the OPEN.md item).
+
+# ---- functions -------------------------------------------------------------------------------
+
+[[rule]]
+table = "functions"
+match = "C_GetInterface*"
+status = "gap"
+reason = "cryptoki asks every module for C_GetInterface first and uses its 3.x table; the traced run cannot see it, p11-fault exporting the 2.40 entry point only (FAULT_SHIM.md, the 3.x interface)"
+
+[[rule]]
+table = "functions"
+match = "C_*capsulateKey"
+status = "gap"
+reason = "ML-KEM keys (OPEN.md, \"Post-quantum key types\")"
+
+[[rule]]
+table = "functions"
+match = "C_Init*"
+status = "out-of-scope"
+reason = "token administration (C_InitToken, C_InitPIN): the operator's tools initialise tokens; cakeys only logs in"
+
+[[rule]]
+table = "functions"
+match = "C_SetPIN"
+status = "out-of-scope"
+reason = "token administration: cakeys never changes a PIN"
+
+[[rule]]
+table = "functions"
+match = "C_LoginUser"
+status = "out-of-scope"
+reason = "PKCS#11 3.0 named-user login; cakeys logs in as CKU_USER, CKU_SO or CKU_CONTEXT_SPECIFIC"
+
+[[rule]]
+table = "functions"
+match = "C_Verify*"
+status = "out-of-scope"
+reason = "signatures are verified on the host, never by the token whose key is being proven (DESIGN.md)"
+
+[[rule]]
+table = "functions"
+match = "C_Digest*"
+status = "out-of-scope"
+reason = "hashes are computed on the host; C_DigestKey's unkeyed hash of a secret key is not one of cakeys' commitments (CMAC, ECB check values, key wrap, HMAC)"
+
+[[rule]]
+table = "functions"
+match = "C_*Message*"
+status = "out-of-scope"
+reason = "PKCS#11 3.0 message-based operations: cakeys' proofs and commitments are single-part"
+
+[[rule]]
+table = "functions"
+match = "C_*Update"
+status = "out-of-scope"
+reason = "multi-part and dual-function operations: cakeys' proofs and commitments are single-part (C_SignFinal only after C_SignInit, for a per-use PIN)"
+
+[[rule]]
+table = "functions"
+match = "C_*Final"
+status = "out-of-scope"
+reason = "multi-part operations: cakeys' proofs and commitments are single-part"
+
+[[rule]]
+table = "functions"
+match = "C_*Recover*"
+status = "out-of-scope"
+reason = "signatures with message recovery: cakeys' proofs sign a fresh challenge"
+
+[[rule]]
+table = "functions"
+match = "C_Async*"
+status = "out-of-scope"
+reason = "PKCS#11 3.2 asynchronous operations: cakeys waits for each call"
+
+[[rule]]
+table = "functions"
+match = "C_*KeyAuthenticated"
+status = "out-of-scope"
+reason = "PKCS#11 3.2 authenticated key wrap: camigrate's transports are RFC 5649 and RSA-OAEP (CAMIGRATE.md)"
+
+[[rule]]
+table = "functions"
+match = "C_*Random"
+status = "out-of-scope"
+reason = "challenges come from the host's RNG, never from the token they test"
+
+[[rule]]
+table = "functions"
+match = "C_*OperationState"
+status = "out-of-scope"
+reason = "no operation outlives the call that started it"
+
+[[rule]]
+table = "functions"
+match = "C_*Function*"
+status = "out-of-scope"
+reason = "the 2.x parallel-function stubs (C_GetFunctionStatus, C_CancelFunction); C_GetFunctionList is how every module is loaded and counts as used"
+
+[[rule]]
+table = "functions"
+match = "C_SessionCancel"
+status = "out-of-scope"
+reason = "PKCS#11 3.0: no operation is left to cancel"
+
+[[rule]]
+table = "functions"
+match = "C_GetSessionValidationFlags"
+status = "out-of-scope"
+reason = "PKCS#11 3.2 validation flags: provenance comes from the module and token info (LOCK.md)"
+
+[[rule]]
+table = "functions"
+match = "C_WaitForSlotEvent"
+status = "out-of-scope"
+reason = "cakeys checks a token when asked, never waits for one"
+
+[[rule]]
+table = "functions"
+match = "C_CloseAllSessions"
+status = "out-of-scope"
+reason = "cakeys closes the sessions it opened, one by one"
+
+[[rule]]
+table = "functions"
+match = "C_GetSlotInfo"
+status = "out-of-scope"
+reason = "tokens are chosen by their token info (label, serial); the slot's own description is not used"
+
+[[rule]]
+table = "functions"
+match = "C_*Object*"
+status = "out-of-scope"
+reason = "C_CopyObject, C_SetAttributeValue, C_GetObjectSize: cakeys identifies, creates and deletes objects, never copies or changes one"
+
+[[rule]]
+table = "functions"
+match = "C_SetAttributeValue"
+status = "out-of-scope"
+reason = "cakeys never changes an object's attributes"
+
+# ---- mechanisms ------------------------------------------------------------------------------
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_*ML_DSA*"
+status = "gap"
+reason = "OPEN.md, \"Post-quantum key types\""
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_*SLH_DSA*"
+status = "gap"
+reason = "OPEN.md, \"Post-quantum key types\""
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_*ML_KEM*"
+status = "gap"
+reason = "OPEN.md, \"Post-quantum key types\""
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_HSS*"
+status = "out-of-scope"
+reason = "stateful hash-based signatures (HSS/LMS): a key that counts its uses cannot sign a challenge per check"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_XMSS*"
+status = "out-of-scope"
+reason = "stateful hash-based signatures (XMSS): a key that counts its uses cannot sign a challenge per check"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_XEDDSA"
+status = "gap"
+reason = "signing with a Montgomery key: OPEN.md, \"X25519 / Montgomery keys\""
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_X*_*"
+status = "out-of-scope"
+reason = "the Signal protocol's X3DH and Double Ratchet (PKCS#11 3.0): session protocols, no object to identify"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_DES3_CMAC*"
+status = "gap"
+reason = "a CMAC check value for Triple DES keys, needing a cryptoki patch (OPEN.md)"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_DES2_KEY_GEN"
+status = "gap"
+reason = "two-key Triple DES (CKK_DES2), common in payment HSMs (OPEN.md)"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_SP800_108_*"
+status = "gap"
+reason = "a derive-based commitment for derive-only secret keys (PLAN.md A5; OPEN.md, \"Weaker identity modes\")"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_*SSL3*"
+status = "out-of-scope"
+reason = "protocol key schedules (SSL 3.0): cakeys negotiates no session"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_*TLS*"
+status = "out-of-scope"
+reason = "protocol key schedules (TLS, WTLS): cakeys negotiates no session"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_IKE*"
+status = "out-of-scope"
+reason = "protocol key schedules (IKE): cakeys negotiates no session"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_KIP_*"
+status = "out-of-scope"
+reason = "the Key Insertion Protocol: cakeys negotiates no session"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_*PBE*"
+status = "out-of-scope"
+reason = "password-based encryption on the token: camigrate's key files do PBES2 on the host"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_PBA_*"
+status = "out-of-scope"
+reason = "password-based authentication on the token: camigrate's key files do PBES2 on the host"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_PKCS5_PBKD2"
+status = "out-of-scope"
+reason = "password-based key derivation on the token: camigrate's key files do PBES2 on the host"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_SECURID*"
+status = "out-of-scope"
+reason = "one-time-password keys (CKO_OTP_KEY) are not objects cakeys identifies"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_HOTP*"
+status = "out-of-scope"
+reason = "one-time-password keys (CKO_OTP_KEY) are not objects cakeys identifies"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_ACTI*"
+status = "out-of-scope"
+reason = "one-time-password keys (CKO_OTP_KEY) are not objects cakeys identifies"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_DSA*"
+status = "out-of-scope"
+reason = "DSA keys: no key type in cakeys (types.rs); FIPS 186-5 retired DSA signatures"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_DH_*"
+status = "out-of-scope"
+reason = "finite-field Diffie-Hellman keys: no key type in cakeys (types.rs)"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_X9_42_*"
+status = "out-of-scope"
+reason = "X9.42 Diffie-Hellman keys: no key type in cakeys (types.rs)"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_KEA_*"
+status = "out-of-scope"
+reason = "Fortezza KEA keys: no key type in cakeys"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_*MQV*"
+status = "out-of-scope"
+reason = "MQV key agreement: an EC key's proof derives with CKM_ECDH1_DERIVE"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_ECDH1_COFACTOR_DERIVE"
+status = "out-of-scope"
+reason = "an EC key's proof derives with CKM_ECDH1_DERIVE; the curves cakeys identifies have cofactor 1"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_ECDH*_AES_KEY_WRAP"
+status = "out-of-scope"
+reason = "ECDH-based key wrap: camigrate's transports are RFC 5649 and RSA-OAEP (CAMIGRATE.md)"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_EC_KEY_PAIR_GEN_W_EXTRA_BITS"
+status = "out-of-scope"
+reason = "EC generation with extra random bits (3.0): cakeys generates with CKM_EC_KEY_PAIR_GEN"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_ECDSA_SHA*"
+status = "out-of-scope"
+reason = "ECDSA proofs sign a host-computed digest (CKM_ECDSA) or with SHA-1/SHA-2 (CKM_ECDSA_SHA{1,256,384,512}); SHA-224 and SHA-3 are not offered"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_RSA_*TPM_1_1"
+status = "out-of-scope"
+reason = "TPM 1.1 RSA encodings: cakeys proves with PKCS #1"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_*RSA_PKCS*"
+status = "out-of-scope"
+reason = "RSA proofs sign with CKM_RSA_PKCS or PSS, raw or over SHA-1/SHA-2 (SHA-256 up); other hashes are not offered"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_RSA_X9_31*"
+status = "out-of-scope"
+reason = "ANSI X9.31 RSA (generation and signatures): cakeys generates and proves with PKCS #1"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_SHA1_RSA_X9_31"
+status = "out-of-scope"
+reason = "ANSI X9.31 RSA signatures: cakeys proves with PKCS #1"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_RSA_9796"
+status = "out-of-scope"
+reason = "ISO/IEC 9796 RSA signatures: cakeys proves with PKCS #1"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_KEY_WRAP_SET_OAEP"
+status = "out-of-scope"
+reason = "SET's key wrap: camigrate's transports are RFC 5649 and RSA-OAEP (CAMIGRATE.md)"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_AES_*"
+status = "out-of-scope"
+reason = "an AES key's commitments are CMAC, ECB check values and key wrap; other modes and MACs are not used"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_DES3_*"
+status = "out-of-scope"
+reason = "a Triple DES key's commitments are its ECB check values; other modes and MACs are not used"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_*_KEY_DERIVATION"
+status = "out-of-scope"
+reason = "hash-based key derivation: no commitment or proof derives so"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_*_HMAC_GENERAL"
+status = "out-of-scope"
+reason = "truncated HMAC: an HMAC key's commitment is the full HMAC (CKM_SHA*_HMAC)"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_SHA3_*"
+status = "out-of-scope"
+reason = "SHA-3 HMAC keys and digests: no SHA-3 HMAC key type in cakeys; digests are computed on the host"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_SHA512_*"
+status = "out-of-scope"
+reason = "SHA-512/t HMAC keys and digests: no such HMAC key type in cakeys; digests are computed on the host"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_SHAKE_*"
+status = "out-of-scope"
+reason = "SHAKE key derivation: no commitment or proof derives so"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_SHA224"
+status = "out-of-scope"
+reason = "digests are computed on the host"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_BLAKE2B_*"
+status = "out-of-scope"
+reason = "BLAKE2b HMAC keys and digests: no BLAKE2b HMAC key type in cakeys; digests are computed on the host"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_MD*"
+status = "out-of-scope"
+reason = "MD2 and MD5: broken digests, no MD5 HMAC key type in cakeys"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_RIPEMD*"
+status = "out-of-scope"
+reason = "RIPEMD digests and HMAC keys: no such HMAC key type in cakeys"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_FASTHASH"
+status = "out-of-scope"
+reason = "digests are computed on the host"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_GOST*"
+status = "out-of-scope"
+reason = "GOST keys: no key type in cakeys (types.rs)"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_*CHACHA20*"
+status = "out-of-scope"
+reason = "ChaCha20 keys: no key type in cakeys (types.rs)"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_*POLY1305*"
+status = "out-of-scope"
+reason = "Poly1305 keys: no key type in cakeys (types.rs)"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_SALSA20*"
+status = "out-of-scope"
+reason = "Salsa20 keys: no key type in cakeys (types.rs)"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_CAMELLIA_*"
+status = "out-of-scope"
+reason = "Camellia keys: no key type in cakeys (types.rs)"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_ARIA_*"
+status = "out-of-scope"
+reason = "ARIA keys: no key type in cakeys (types.rs)"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_SEED_*"
+status = "out-of-scope"
+reason = "SEED keys: no key type in cakeys (types.rs)"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_DES_*"
+status = "out-of-scope"
+reason = "single DES keys: no key type in cakeys (types.rs)"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_CDMF_*"
+status = "out-of-scope"
+reason = "CDMF keys: no key type in cakeys"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_CAST*"
+status = "out-of-scope"
+reason = "CAST keys: no key type in cakeys"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_IDEA_*"
+status = "out-of-scope"
+reason = "IDEA keys: no key type in cakeys"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_RC*"
+status = "out-of-scope"
+reason = "RC2, RC4 and RC5 keys: no key type in cakeys"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_BLOWFISH_*"
+status = "out-of-scope"
+reason = "Blowfish keys: no key type in cakeys"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_TWOFISH_*"
+status = "out-of-scope"
+reason = "Twofish keys: no key type in cakeys"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_SKIPJACK_*"
+status = "out-of-scope"
+reason = "Fortezza SKIPJACK keys: no key type in cakeys"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_BATON_*"
+status = "out-of-scope"
+reason = "Fortezza BATON keys: no key type in cakeys"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_JUNIPER_*"
+status = "out-of-scope"
+reason = "Fortezza JUNIPER keys: no key type in cakeys"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_FORTEZZA_TIMESTAMP"
+status = "out-of-scope"
+reason = "Fortezza timestamps: no Fortezza key type in cakeys"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_KEY_WRAP_LYNKS"
+status = "out-of-scope"
+reason = "LYNKS key wrap: camigrate's transports are RFC 5649 and RSA-OAEP (CAMIGRATE.md)"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_CMS_SIG"
+status = "out-of-scope"
+reason = "CMS signatures: cakeys proves possession by signing a raw challenge"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_NULL"
+status = "out-of-scope"
+reason = "the null mechanism: nothing to call it for"
+
+[[rule]]
+table = "mechanisms"
+match = "CKM_PUB_KEY_FROM_PRIV_KEY"
+status = "out-of-scope"
+reason = "PKCS#11 3.2 public key derivation: cakeys reads a private key's public half from its attributes (CKA_EC_POINT, CKA_MODULUS, CKA_PUBLIC_KEY_INFO)"
+
+# ---- attributes ------------------------------------------------------------------------------
+
+[[rule]]
+table = "attributes"
+match = "CKA_PARAMETER_SET"
+status = "gap"
+reason = "the parameter set of an ML-DSA, ML-KEM or SLH-DSA key: OPEN.md, \"Post-quantum key types\""
+
+[[rule]]
+table = "attributes"
+match = "CKA_*CAPSULATE*"
+status = "gap"
+reason = "ML-KEM keys' usage and templates: OPEN.md, \"Post-quantum key types\""
+
+[[rule]]
+table = "attributes"
+match = "CKA_*_TEMPLATE"
+status = "out-of-scope"
+reason = "a key's wrap, unwrap and derive templates: the policy the lock pins is the boolean usage and sensitivity attributes (LOCK.md)"
+
+[[rule]]
+table = "attributes"
+match = "CKA_UNIQUE_ID"
+status = "out-of-scope"
+reason = "a token-assigned ID: identity is the material's hash, which holds across tokens; objects are located by CKA_LABEL and CKA_ID"
+
+[[rule]]
+table = "attributes"
+match = "CKA_CHECK_VALUE"
+status = "out-of-scope"
+reason = "the token's own check value: cakeys computes its commitments with the key and checks them on the host, rather than reading a stored claim"
+
+[[rule]]
+table = "attributes"
+match = "CKA_PUBLIC_CRC64_VALUE"
+status = "out-of-scope"
+reason = "a checksum the token stores, not a commitment cakeys can check"
+
+[[rule]]
+table = "attributes"
+match = "CKA_*_DATE"
+status = "out-of-scope"
+reason = "a key's start and end dates: informational in PKCS#11, enforced by no module, not part of identity or policy"
+
+[[rule]]
+table = "attributes"
+match = "CKA_OTP_*"
+status = "out-of-scope"
+reason = "one-time-password keys (CKO_OTP_KEY) are not objects cakeys identifies"
+
+[[rule]]
+table = "attributes"
+match = "CKA_X2RATCHET_*"
+status = "out-of-scope"
+reason = "the Signal protocol's Double Ratchet state (PKCS#11 3.0): no object to identify"
+
+[[rule]]
+table = "attributes"
+match = "CKA_HSS_*"
+status = "out-of-scope"
+reason = "stateful hash-based signature keys: a key that counts its uses cannot sign a challenge per check"
+
+[[rule]]
+table = "attributes"
+match = "CKA_GOST*"
+status = "out-of-scope"
+reason = "GOST keys: no key type in cakeys (types.rs)"
+
+[[rule]]
+table = "attributes"
+match = "CKA_*PRIME"
+status = "out-of-scope"
+reason = "DSA and Diffie-Hellman keys and domain parameters: no such key type in cakeys (types.rs)"
+
+[[rule]]
+table = "attributes"
+match = "CKA_*PRIME_BITS"
+status = "out-of-scope"
+reason = "DSA and Diffie-Hellman domain parameters: no such key type in cakeys (types.rs)"
+
+[[rule]]
+table = "attributes"
+match = "CKA_BASE"
+status = "out-of-scope"
+reason = "DSA and Diffie-Hellman domain parameters: no such key type in cakeys (types.rs)"
+
+[[rule]]
+table = "attributes"
+match = "CKA_VALUE_BITS"
+status = "out-of-scope"
+reason = "a Diffie-Hellman private value's length: no such key type in cakeys (types.rs)"
+
+[[rule]]
+table = "attributes"
+match = "CKA_SEED"
+status = "out-of-scope"
+reason = "the seed of DSA domain parameters: no such key type in cakeys (types.rs)"
+
+[[rule]]
+table = "attributes"
+match = "CKA_TRUST_*"
+status = "out-of-scope"
+reason = "trust objects (CKO_TRUST, 3.2): a certificate is pinned by its hash; cakeys reads no trust settings"
+
+[[rule]]
+table = "attributes"
+match = "CKA_*VALIDATION*"
+status = "out-of-scope"
+reason = "validation objects and flags (CKO_VALIDATION, 3.2): provenance comes from the module and token info (LOCK.md)"
+
+[[rule]]
+table = "attributes"
+match = "CKA_PROFILE_ID"
+status = "out-of-scope"
+reason = "profile objects (CKO_PROFILE): caprobe measures what a module does, not what it claims (CAPROBE.md)"
+
+[[rule]]
+table = "attributes"
+match = "CKA_MECHANISM_TYPE"
+status = "out-of-scope"
+reason = "mechanism objects (CKO_MECHANISM): caprobe measures mechanisms by using them (CAPROBE.md)"
+
+[[rule]]
+table = "attributes"
+match = "CKA_HW_FEATURE_TYPE"
+status = "out-of-scope"
+reason = "hardware feature objects (CKO_HW_FEATURE): no object to identify"
+
+[[rule]]
+table = "attributes"
+match = "CKA_*RESET*"
+status = "out-of-scope"
+reason = "monotonic counters (CKO_HW_FEATURE): no object to identify"
+
+[[rule]]
+table = "attributes"
+match = "CKA_PIXEL_*"
+status = "out-of-scope"
+reason = "user-interface hardware features (CKO_HW_FEATURE): no object to identify"
+
+[[rule]]
+table = "attributes"
+match = "CKA_CHAR_*"
+status = "out-of-scope"
+reason = "user-interface hardware features (CKO_HW_FEATURE): no object to identify"
+
+[[rule]]
+table = "attributes"
+match = "CKA_RESOLUTION"
+status = "out-of-scope"
+reason = "user-interface hardware features (CKO_HW_FEATURE): no object to identify"
+
+[[rule]]
+table = "attributes"
+match = "CKA_COLOR"
+status = "out-of-scope"
+reason = "user-interface hardware features (CKO_HW_FEATURE): no object to identify"
+
+[[rule]]
+table = "attributes"
+match = "CKA_BITS_PER_PIXEL"
+status = "out-of-scope"
+reason = "user-interface hardware features (CKO_HW_FEATURE): no object to identify"
+
+[[rule]]
+table = "attributes"
+match = "CKA_ENCODING_METHODS"
+status = "out-of-scope"
+reason = "user-interface hardware features (CKO_HW_FEATURE): no object to identify"
+
+[[rule]]
+table = "attributes"
+match = "CKA_MIME_TYPES"
+status = "out-of-scope"
+reason = "user-interface hardware features (CKO_HW_FEATURE): no object to identify"
+
+[[rule]]
+table = "attributes"
+match = "CKA_*CMS_ATTRIBUTES"
+status = "out-of-scope"
+reason = "CMS signature attributes: cakeys proves possession by signing a raw challenge"
+
+[[rule]]
+table = "attributes"
+match = "CKA_AC_ISSUER"
+status = "out-of-scope"
+reason = "attribute certificates (CKC_X_509_ATTR_CERT): cakeys pins X.509 public-key certificates"
+
+[[rule]]
+table = "attributes"
+match = "CKA_ATTR_TYPES"
+status = "out-of-scope"
+reason = "attribute certificates (CKC_X_509_ATTR_CERT): cakeys pins X.509 public-key certificates"
+
+[[rule]]
+table = "attributes"
+match = "CKA_OWNER"
+status = "out-of-scope"
+reason = "attribute certificates (CKC_X_509_ATTR_CERT): cakeys pins X.509 public-key certificates"
+
+[[rule]]
+table = "attributes"
+match = "CKA_HASH_OF_*"
+status = "out-of-scope"
+reason = "a certificate's identity is the hash cakeys computes of its CKA_VALUE (certhash), not one the token stores"
+
+[[rule]]
+table = "attributes"
+match = "CKA_NAME_HASH_ALGORITHM"
+status = "out-of-scope"
+reason = "the hash of the token's stored certificate hashes: cakeys computes its own"
+
+[[rule]]
+table = "attributes"
+match = "CKA_CERTIFICATE_CATEGORY"
+status = "out-of-scope"
+reason = "a certificate's category (token user, authority, other entity): not part of its identity"
+
+[[rule]]
+table = "attributes"
+match = "CKA_JAVA_MIDP_SECURITY_DOMAIN"
+status = "out-of-scope"
+reason = "a Java MIDP certificate setting: not part of a certificate's identity"
+
+[[rule]]
+table = "attributes"
+match = "CKA_URL"
+status = "out-of-scope"
+reason = "where a certificate may be fetched: cakeys reads the certificate's value"
+
+[[rule]]
+table = "attributes"
+match = "CKA_APPLICATION"
+status = "out-of-scope"
+reason = "a data object's application: data objects are located by CKA_LABEL and identified by their value's hash"
+
+[[rule]]
+table = "attributes"
+match = "CKA_OBJECT_ID"
+status = "out-of-scope"
+reason = "a data object's type OID: data objects are located by CKA_LABEL and identified by their value's hash"
+
+[[rule]]
+table = "attributes"
+match = "CKA_SECONDARY_AUTH"
+status = "out-of-scope"
+reason = "deprecated since 2.20"
+
+[[rule]]
+table = "attributes"
+match = "CKA_AUTH_PIN_FLAGS"
+status = "out-of-scope"
+reason = "deprecated since 2.20"
+
+# ---- return values ---------------------------------------------------------------------------
+# A return value no test meets: those cakeys matches by name are gaps in the tests; any other
+# fails the call, which cakeys reports with the function and the value's name (exit 16,
+# unavailable, unless its verb maps it otherwise).
+
+[[rule]]
+table = "return-values"
+match = "CKR_TEMPLATE_IN*"
+status = "gap"
+reason = "matched by name (crates/pkcs11/src/token/possession.rs, generate.rs; caprobe's probe), met by no test"
+
+[[rule]]
+table = "return-values"
+match = "CKR_USER_ALREADY_LOGGED_IN"
+status = "gap"
+reason = "matched by name (crates/pkcs11/src/token/mod.rs), met by no test"
+
+[[rule]]
+table = "return-values"
+match = "CKR_WRAPPED_KEY_*"
+status = "gap"
+reason = "matched by name (crates/pkcs11/src/token/possession.rs), met by no test"
+
+[[rule]]
+table = "return-values"
+match = "CKR_OBJECT_HANDLE_INVALID"
+status = "gap"
+reason = "matched by name (crates/pkcs11/src/token/generate.rs), met by no test"
+
+[[rule]]
+table = "return-values"
+match = "CKR_KEY_TYPE_INCONSISTENT"
+status = "gap"
+reason = "matched by name (crates/pkcs11/src/token/possession.rs), met by no test"
+
+[[rule]]
+table = "return-values"
+match = "CKR_KEY_FUNCTION_NOT_PERMITTED"
+status = "gap"
+reason = "matched by name (crates/pkcs11/src/token/possession.rs), met by no test"
+
+[[rule]]
+table = "return-values"
+match = "CKR_ENCRYPTED_DATA_LEN_RANGE"
+status = "gap"
+reason = "matched by name (crates/pkcs11/src/token/possession.rs), met by no test"
+
+[[rule]]
+table = "return-values"
+match = "CKR_*"
+status = "out-of-scope"
+reason = "met by no test and matched by no name: the call fails, and cakeys reports the function and the value's name (16, unavailable, unless the verb maps it)"
+
+# ---- key types -------------------------------------------------------------------------------
+
+[[rule]]
+table = "key-types"
+match = "CKK_ML_*"
+status = "gap"
+reason = "OPEN.md, \"Post-quantum key types\""
+
+[[rule]]
+table = "key-types"
+match = "CKK_SLH_DSA"
+status = "gap"
+reason = "OPEN.md, \"Post-quantum key types\""
+
+[[rule]]
+table = "key-types"
+match = "CKK_DES2"
+status = "gap"
+reason = "two-key Triple DES, common in payment HSMs (OPEN.md)"
+
+[[rule]]
+table = "key-types"
+match = "CKK_HKDF"
+status = "gap"
+reason = "derive-only secret keys: OPEN.md, \"Weaker identity modes\"; PLAN.md A5"
+
+[[rule]]
+table = "key-types"
+match = "CKK_HSS"
+status = "out-of-scope"
+reason = "stateful hash-based signature keys: a key that counts its uses cannot sign a challenge per check"
+
+[[rule]]
+table = "key-types"
+match = "CKK_XMSS*"
+status = "out-of-scope"
+reason = "stateful hash-based signature keys: a key that counts its uses cannot sign a challenge per check"
+
+[[rule]]
+table = "key-types"
+match = "CKK_X2RATCHET"
+status = "out-of-scope"
+reason = "the Signal protocol's Double Ratchet state: no key material to identify"
+
+[[rule]]
+table = "key-types"
+match = "CKK_*_HMAC"
+status = "out-of-scope"
+reason = "HMAC keys of other hashes: cakeys commits to SHA-1 and SHA-2 HMAC keys (types.rs)"
+
+[[rule]]
+table = "key-types"
+match = "CKK_AES_XTS"
+status = "out-of-scope"
+reason = "AES-XTS double-length keys (3.0): disk encryption keys with no commitment cakeys uses"
+
+[[rule]]
+table = "key-types"
+match = "CKK_*"
+status = "out-of-scope"
+reason = "no key type in cakeys (types.rs): a legacy, national or protocol-bound algorithm"
+
+# ---- objects, certificates ---------------------------------------------------------------------
+
+[[rule]]
+table = "objects"
+match = "CKO_OTP_KEY"
+status = "out-of-scope"
+reason = "one-time-password keys: not objects cakeys identifies"
+
+[[rule]]
+table = "objects"
+match = "CKO_TRUST"
+status = "out-of-scope"
+reason = "trust objects (3.2): a certificate is pinned by its hash; cakeys reads no trust settings"
+
+[[rule]]
+table = "objects"
+match = "CKO_VALIDATION"
+status = "out-of-scope"
+reason = "validation objects (3.2): provenance comes from the module and token info (LOCK.md)"
+
+[[rule]]
+table = "objects"
+match = "CKO_PROFILE"
+status = "out-of-scope"
+reason = "profile objects: caprobe measures what a module does, not what it claims (CAPROBE.md)"
+
+[[rule]]
+table = "objects"
+match = "CKO_MECHANISM"
+status = "out-of-scope"
+reason = "mechanism objects: caprobe measures mechanisms by using them (CAPROBE.md)"
+
+[[rule]]
+table = "objects"
+match = "CKO_*"
+status = "out-of-scope"
+reason = "hardware features and domain parameters: no material to identify"
+
+[[rule]]
+table = "certificate-types"
+match = "CKC_*"
+status = "out-of-scope"
+reason = "attribute and WTLS certificates: cakeys pins X.509 public-key certificates"
+
+[[rule]]
+table = "trust-values"
+match = "CKT_*"
+status = "out-of-scope"
+reason = "trust objects (3.2): cakeys reads no trust settings"
+
+[[rule]]
+table = "validation-types"
+match = "CKV_*"
+status = "out-of-scope"
+reason = "validation objects (3.2): provenance comes from the module and token info (LOCK.md)"
+
+[[rule]]
+table = "hardware-features"
+match = "CKH_*"
+status = "out-of-scope"
+reason = "hardware feature objects: no material to identify"
+
+# ---- parameters and enumerations ---------------------------------------------------------------
+
+[[rule]]
+table = "parameter-sets"
+match = "CKP_ML_*"
+status = "gap"
+reason = "OPEN.md, \"Post-quantum key types\""
+
+[[rule]]
+table = "parameter-sets"
+match = "CKP_SLH_*"
+status = "gap"
+reason = "OPEN.md, \"Post-quantum key types\""
+
+[[rule]]
+table = "parameter-sets"
+match = "CKP_PKCS5_PBKD2_*"
+status = "out-of-scope"
+reason = "password-based key derivation on the token: camigrate's key files do PBES2 on the host"
+
+[[rule]]
+table = "conformance-profiles"
+match = "CKP_*"
+status = "out-of-scope"
+reason = "a module's claimed conformance profiles: caprobe measures what it does (CAPROBE.md)"
+
+[[rule]]
+table = "kdfs"
+match = "CKD_*"
+status = "out-of-scope"
+reason = "an EC key's proof derives the raw shared secret (CKD_NULL) and hashes it on the host"
+
+[[rule]]
+table = "generators"
+match = "CKG_MGF1_*"
+status = "out-of-scope"
+reason = "OAEP and PSS use MGF1 with the SHA-1 or SHA-2 hash of the mechanism; other hashes are not offered"
+
+[[rule]]
+table = "generators"
+match = "CKG_*"
+status = "out-of-scope"
+reason = "IV generators of message-based AEAD (3.0): cakeys' commitments use no IV"
+
+[[rule]]
+table = "sources"
+match = "CKZ_SALT_SPECIFIED"
+status = "out-of-scope"
+reason = "the PBKDF2 salt source: password-based derivation on the token is not used"
+
+[[rule]]
+table = "sources"
+match = "CKZ_*"
+status = "out-of-scope"
+reason = "an OAEP encoding parameter source: cakeys' OAEP uses an empty label"
+
+[[rule]]
+table = "session-states"
+match = "CKS_*"
+status = "out-of-scope"
+reason = "cakeys logs in and out explicitly and reads no session state"
+
+[[rule]]
+table = "notifications"
+match = "CKN_*"
+status = "out-of-scope"
+reason = "notification callbacks: cakeys opens sessions without one"
+
+# ---- flags -----------------------------------------------------------------------------------
+# A flag is used when a tool passed it or read it back set (C_Initialize, C_OpenSession, slot,
+# token and mechanism info). The rest:
+
+[[rule]]
+table = "flags"
+match = "CKF_WRITE_PROTECTED"
+status = "gap"
+reason = "acted on (crates/pkcs11/src/token/mod.rs), set on no token of the tests"
+
+[[rule]]
+table = "flags"
+match = "CKF_SO_PIN_*"
+status = "gap"
+reason = "acted on (crates/pkcs11/src/token/mod.rs, the SO PIN's counters), set on no token of the tests"
+
+[[rule]]
+table = "flags"
+match = "CKF_PROTECTED_AUTHENTICATION_PATH"
+status = "out-of-scope"
+reason = "a PIN pad: cakeys always logs in with the PIN it is given (pinFile)"
+
+[[rule]]
+table = "flags"
+match = "CKF_USER_PIN_TO_BE_CHANGED"
+status = "out-of-scope"
+reason = "PIN changes are the operator's (C_SetPIN is not used)"
+
+[[rule]]
+table = "flags"
+match = "CKF_*"
+status = "out-of-scope"
+reason = "passed by no tool and read back set by none: the slot flags (C_GetSlotInfo is not used), the mechanism-info flags (a module is asked only for RSA generation's key sizes; caprobe measures mechanisms by using them), and the flags of interfaces, OTP, HKDF, message-based and asynchronous operations"
+
+# ---- functions, added after the fault suites left the trace ------------------------------------
+
+[[rule]]
+table = "functions"
+match = "C_GetSessionInfo"
+status = "out-of-scope"
+reason = "cakeys logs in and out explicitly and reads no session state"

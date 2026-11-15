@@ -5,4 +5,5 @@ result*
 /fuzz/corpus
 /fuzz/artifacts
 /fuzz/coverage
-coverage
+# The coverage report's result link (nix build .#coverage -o coverage), not profiles/coverage/.
+/coverage

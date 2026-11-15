@@ -38,6 +38,40 @@ export KRYOPTIC_CONF=$D/kryoptic.conf
 # The test binary's name without cargo's hash: which suite this is.
 suite=$(basename "$1")
 suite=${suite%-*}
+
+# Coverage (docs/PLAN.md A1): with $CAKEYS_TRACE_DIR, every module this test can load goes
+# through a copy of p11-fault with a tag of its own (libp11_fault-<tag>.so reads only
+# P11_FAULT_*_<TAG>), a pure forwarder that logs each call to <dir>/<suite>/<test>.jsonl. The
+# copies are made once per run, and are copies: the loader takes two links to one file for one
+# library, whose settings both would share. The tests that put their own p11-fault in front of a
+# module run untraced: that shim's hooks call the module too, inside the tool's process, and the
+# trace would count those calls as the tool's.
+test=unnamed prev=
+for a in "$@"; do
+  [ "$prev" != --exact ] || test=$a
+  prev=$a
+done
+case $suite/$test in
+fault/* | tpm2/tpm2_attestation_says_what_it_lacks) untraced=1 ;;
+*) untraced= ;;
+esac
+if [ -n "${CAKEYS_TRACE_DIR:-}" ] && [ -z "$untraced" ]; then
+  trace=$CAKEYS_TRACE_DIR/$suite/${test//::/.}.jsonl
+  shim=$(dirname "$1")/libp11_fault.so
+  [ -e "$shim" ] || {
+    echo "test-tokens.sh: CAKEYS_TRACE_DIR, but no $shim" >&2
+    exit 1
+  }
+  mkdir -p "$CAKEYS_TRACE_DIR/$suite" "$CAKEYS_TRACE_DIR/shims"
+  for pair in softhsm:CAKEYS_TEST_MODULE kryoptic:CAKEYS_KRYOPTIC_MODULE tpm:CAKEYS_TPM_MODULE \
+    p11kit:CAKEYS_P11KIT_CLIENT; do
+    tag=${pair%%:*} var=${pair#*:}
+    [ -n "${!var:-}" ] || continue
+    copy=$CAKEYS_TRACE_DIR/shims/libp11_fault-$tag.so
+    [ -e "$copy" ] || { cp "$shim" "$copy.$$" && mv -f "$copy.$$" "$copy"; }
+    export "P11_FAULT_MODULE_${tag^^}=${!var}" "P11_FAULT_TRACE_${tag^^}=$trace" "$var=$copy"
+  done
+fi
 # tests/fault.rs runs the reference suite again, through p11-fault in front of this test's own
 # SoftHSM token.
 if [ "$suite" = fault ]; then
@@ -54,8 +88,9 @@ case $suite in
 tpm2 | references | dry_run)
   if [ -n "${CAKEYS_TPM_MODULE:-}" ]; then
     # A port pair of its own: nextest numbers the tests running at once; else by process ID.
+    # CAKEYS_TPM_PORT_BASE moves the range, for two runs on one machine (scripts/local-tests.sh).
     slot=${NEXTEST_TEST_GLOBAL_SLOT:-$(($$ % 4000))}
-    bash "$CAKEYS_TPM_ENV_SH" up "$D/tpm" $((24000 + 2 * slot)) || {
+    bash "$CAKEYS_TPM_ENV_SH" up "$D/tpm" $((${CAKEYS_TPM_PORT_BASE:-24000} + 2 * slot)) || {
       tail -n 20 "$D"/tpm/*.log >&2
       exit 1
     }

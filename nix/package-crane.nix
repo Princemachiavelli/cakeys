@@ -58,6 +58,12 @@ let
   };
   cargoArtifacts = craneLib.buildDepsOnly base;
 
+  # The check phase's test command, narrowed by a nextest filter (the coverage pass, postCheck).
+  cargoTestCommandFor =
+    filter:
+    "cargo nextest run \${CARGO_PROFILE:+--cargo-profile $CARGO_PROFILE} ${base.cargoExtraArgs}"
+    + " --no-fail-fast --show-progress none -E ${lib.escapeShellArg filter}";
+
   # Without the `tpm2` and `ykcs11` features: the tools build without tpm2-tss and sqlite (their
   # own dependency set).
   minimal = base // {
@@ -168,6 +174,20 @@ craneLib.buildPackage (
     cargoTestCommand = "cargo nextest run \${CARGO_PROFILE:+--cargo-profile $CARGO_PROFILE}";
     # No progress bar: the build log is not a terminal, whatever nextest sees.
     cargoTestExtraArgs = "--no-fail-fast --show-progress none";
+    # Coverage as data (docs/PLAN.md A1, docs/CAPROBE.md "Coverage"): the suites once more, now
+    # with every module behind a tracing p11-fault (nix/test-tokens.sh), the built tests reused;
+    # then profiles/coverage/cakeys.toml is regenerated from that trace and must be what is
+    # committed. A second pass, not a traced first one: the first keeps every test talking to
+    # its module directly (p11-fault exports the 2.40 interface only).
+    postCheck = ''
+      # Not traced: the coverage test, and what nix/test-tokens.sh leaves untraced.
+      export CAKEYS_TRACE_DIR=$TMPDIR/coverage-trace
+      ${cargoTestCommandFor "not (binary(fault) | test(tpm2_attestation_says_what_it_lacks) | test(committed_coverage_is_generated_from_the_trace))"}
+      unset CAKEYS_TRACE_DIR
+      CAKEYS_COVERAGE_TRACE=$TMPDIR/coverage-trace \
+        ${cargoTestCommandFor "test(committed_coverage_is_generated_from_the_trace)"}
+    ''
+    + common.args.postCheck;
     passthru = {
       # Clippy with -D warnings over every target: the workspace lints (Cargo.toml
       # [workspace.lints]: unsafe_code deny, clippy::pedantic with one blanket allow) travel with

@@ -1,6 +1,6 @@
 # Plan: PKCS#11 spec coverage review and boot-chain integration tests
 
-Two pieces of work, planned 2026-11-14. Nothing here is built yet.
+Two pieces of work, planned 2026-11-14. Built: A1 (2026-11-15) and A3 (p11-fault).
 
 - **Part A** reviews how much of PKCS#11 3.2 cakeys implements, handles or deliberately
   refuses, and turns the answer into data and tests.
@@ -114,6 +114,13 @@ with pkcs11-check, but is an early beta.
 
 Exit: every one of the baseline's rows has a status, and `docs/CAPROBE.md` gains a short
 section on the file.
+
+**Built** (2026-11-15). Step 2 traces with p11-fault rather than pkcs11-spy: tagged copies in
+front of every module (`nix/test-tokens.sh`), a trace line per call with its mechanism
+(parameters included), template, flags and calling program. The pass runs second, in the crane
+check phase; the first stays direct. Statuses: 176 used, 79 gap, 831 out-of-scope, 11 profile.
+The 3.x entry point (`C_GetInterface`) is the one thing the trace cannot see. See CAPROBE.md,
+"Coverage", and `scripts/coverage-file.sh`.
 
 ### A2. Semantic review
 

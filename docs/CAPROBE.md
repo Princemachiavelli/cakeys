@@ -53,9 +53,12 @@ module profile whose `[match] manufacturer` it reports names its provider by fam
 **The baseline** (`profiles/baselines/pkcs11-3.2.toml`) is generated from the OASIS 3.2 headers,
 vendored unmodified at `profiles/baselines/headers/pkcs11-3.2/`, and pinned by a test
 (`CAKEYS_UPDATE_BASELINE=1` rewrites it). It is the vocabulary of one spec revision: every
-mechanism, key type, attribute, curve, function and parameter set, name → ID, grouped into
-classes (`pq`, `hmac`, `key-wrap`, `oaep`). It validates names and powers by-class queries; it
-never claims what a vendor supports.
+mechanism, key type, attribute (the array attributes included), object class, curve, function
+and parameter set, and the other constant families (return values, flags, user types, session
+states, certificate and hardware-feature types, MGFs and IV generators, KDFs, sources,
+notifications, trust and validation types), name → ID, grouped into classes (`pq`, `hmac`,
+`key-wrap`, `oaep`). It validates names and powers by-class queries; it never claims what a
+vendor supports.
 
 **A module profile** (`mode = "observed"`, `profiles/modules/<family>/<version>[+<hardware>].toml`)
 records what a probe measured, as deltas against the module's own advertisement:
@@ -110,6 +113,34 @@ module profile decides. The binary embeds the profiles this repo ships.
   vendor, and its provider, without a rebuild. They only add, and may not replace an embedded
   profile, a layer or the baseline: those are re-probed on every build. The run says which
   profiles came from there.
+
+## Coverage
+
+`profiles/coverage/cakeys.toml` gives every row of the baseline one status (PLAN.md A1). It is
+generated, never edited, and pinned like the baseline:
+
+| Status | Meaning |
+|---|---|
+| `used` | a call of cakeys, caprobe or camigrate reached it in the traced test run |
+| `refused`, `out-of-scope`, `gap` | `profiles/coverage/manual.toml`: a hand-kept rule, with its reason (a gap names its OPEN.md item) |
+| `profile` | none of those, but a capability profile records it |
+
+- **The trace** is the test suites run with every module behind a tracing p11-fault
+  (`nix/test-tokens.sh` with `CAKEYS_TRACE_DIR`): each call's function, return value,
+  mechanism (with its OAEP or PSS hash and MGF, OAEP source or ECDH KDF), template attribute
+  types, object classes, key and certificate types, user type, and the flags it passed or read
+  back. Only the tools' own calls count: not a test harness, pkcs11-tool, `p11-kit remote` or
+  OpenSSL. The tests that run their own p11-fault are not traced (their hooks' calls would count
+  as the tool's).
+- **The check**: the crane build runs the suites a second time traced, and the coverage test
+  (`crates/caprobe/src/coverage.rs`) regenerates the file from that trace; a row without a
+  status, a manual rule that matches nothing or names a used row, or a file that differs fails
+  it. Without a trace, the test still checks every other status against the committed file.
+- **Regenerate** with `scripts/coverage-file.sh`, which also writes `coverage-report.txt`
+  beside the trace: the tests behind each used row.
+- **What it cannot see**: `C_GetInterface` (p11-fault exports the 2.40 entry point only, so the
+  traced run uses the 2.40 table); calls only a hardware suite makes (the YubiKey and the real
+  TPM are never traced).
 
 ## Decisions
 

@@ -7,6 +7,8 @@
 
 #[cfg(test)]
 mod baseline;
+#[cfg(test)]
+mod coverage;
 mod diff;
 mod emit;
 mod probe;
