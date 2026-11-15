@@ -600,6 +600,11 @@ fn sealed_moves_do_what_the_plan_says() {
             assert_eq!(origin["method"].as_str(), Some(method.as_str()), "{row}");
             let v = e.cakeys(d, &["verify", &spec, "--token", d.name]);
             assert_eq!(code(&v), 0, "{row}: cakeys verify: {}", stderr(&v));
+            // An unwrapped private key's public half is made as a generated one: it verifies and
+            // is public, whatever the token's own default for an object.
+            if k.ty.contains("CKO_PRIVATE_KEY") && matches!(d.name, "softhsm" | "kryoptic") {
+                assert_eq!(public_half(d, &target_label(k, s, d)), (true, false), "{row}");
+            }
         } else {
             assert_eq!(code(&out), 15, "{row}: {}", stderr(&out));
             assert_eq!(std::fs::read(&lock_path).unwrap(), before, "{row}: a refused move changed the lock");
@@ -659,6 +664,7 @@ fn bundles_are_checked_against_the_lock() {
     let sealed_to = b["transport"]["rfc7093m4"].as_str().unwrap();
     refused(text.replace(sealed_to, ids), 10, "another transport key");
     refused(text.replace("curve = \"secp256r1\"", "curve = \"secp384r1\""), 14, "another type");
+    another_type_in_one_place(&e, kry, &text);
     // Against a lock that pins nothing: a wrapped key's transport key has no realisation there,
     // and a certificate's import nothing to be checked against (14 both).
     let bare = e.dir.join("bare.lock");
@@ -699,6 +705,36 @@ fn bundles_are_checked_against_the_lock() {
     let o = e.km(soft, &["export", "ek2", "--token", "softhsm", "--transport", rogue.to_str().unwrap(), "--dry-run"]);
     assert_eq!(code(&o), 15, "{}", stdout(&o));
     assert!(stdout(&o).contains("is not the"), "{}", stdout(&o));
+}
+
+/// The bundle's key type is held to the lock and to keys.toml, each on its own: a bundle of
+/// `ek1` as a P-384 key is refused (14) when the lock agrees with it and keys.toml does not, and
+/// when keys.toml agrees and the lock does not.
+fn another_type_in_one_place(e: &Env, kry: &Ref, bundle: &str) {
+    let (was, now) = ("curve = \"secp256r1\"", "curve = \"secp384r1\"");
+    let path = e.dir.join("p384.bundle.toml");
+    std::fs::write(&path, bundle.replace(was, now)).unwrap();
+    let import = |lock: &std::path::Path| {
+        let args = ["--lock", lock.to_str().unwrap(), "import", "--token", "kryoptic", "--in", path.to_str().unwrap()];
+        let o = e.km(kry, &args);
+        assert_eq!(code(&o), 14, "{}", stderr(&o));
+        assert!(stderr(&o).contains("the bundle carries a"), "{}", stderr(&o));
+        let left = open_session(&kry.module, kry.token_label, "1234").labelled("xb-ek1");
+        assert_eq!(left.len(), 0, "a refused import left objects");
+    };
+    // The lock says P-384 too; keys.toml still says P-256.
+    let mut lock: toml::Table = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
+    lock["objects"]["ek1"]["type"]["curve"] = toml::Value::String("secp384r1".into());
+    let retyped = e.dir.join("p384.lock");
+    std::fs::write(&retyped, toml::to_string(&lock).unwrap()).unwrap();
+    import(&retyped);
+    // keys.toml says P-384 too; the lock still says P-256.
+    let config = e.dir.join("keys.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    let at = text.find("[objects.ek1]").unwrap();
+    std::fs::write(&config, format!("{}{}", &text[..at], text[at..].replacen(was, now, 1))).unwrap();
+    import(&e.dir.join("keys.lock"));
+    std::fs::write(&config, text).unwrap();
 }
 
 /// The keys the bundle tests move: P-256 `ek1`, `ek2` and AES `sk1`, `sk2`, each born on `SoftHSM`
@@ -843,6 +879,8 @@ fn bundles_carry_every_key_of_an_export() {
     assert!(lock["realisations"]["ek1-kry"].get("kryoptic").is_some(), "the good key was not recorded");
     assert!(lock["realisations"].get("sk1-kry").is_none(), "the failed key was recorded");
     assert_eq!(code(&e.cakeys(kry, &["verify", "ek1-kry", "--token", "kryoptic"])), 0);
+    // Its public half is made as a generated one: it verifies and is public, undeclared.
+    assert_eq!(public_half(kry, "xb-ek1"), (true, false));
     // The whole bundle again: ek1 is already there and verifies, sk1 imports.
     let o = import(&both);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
@@ -1356,14 +1394,18 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
     };
     std::fs::write(e.dir.join("so-pin"), "5678\n").unwrap();
     let trusted = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true, CKA_WRAP_WITH_TRUSTED = true }\n";
-    let key = |o: &str, ty: &str, born: &Ref, other: &Ref| {
+    let key = |o: &str, ty: &str, born: &Ref, other: &Ref, public: &str| {
         format!("[objects.{o}]\n{ty}\ncreateOn = \"{}\"\n\n", born.name)
             + &Env::spec(&format!("{o}-src"), o, trusted, &[born], &format!("xe-{o}"), ", autoCreate = true")
-            + &Env::spec(&format!("{o}-dst"), o, trusted, &[other], &format!("xe-{o}"), "")
+            + &Env::spec(&format!("{o}-dst"), o, &format!("{trusted}{public}"), &[other], &format!("xe-{o}"), "")
     };
     let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
     let aes = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32";
-    let body = transport_key(kry) + &key("ek", ec, soft, kry) + &key("sk", aes, soft, kry) + &key("kk", ec, kry, soft);
+    // On kryoptic, `ek`'s public half is declared not to verify: the import makes it so.
+    let body = transport_key(kry)
+        + &key("ek", ec, soft, kry, "publicAttributes = { CKA_VERIFY = false }\n")
+        + &key("sk", aes, soft, kry, "")
+        + &key("kk", ec, kry, soft, "");
     let so_pin = e.dir.join("so-pin");
     e.config_with(&body, &|r| match r.name {
         "kryoptic" => "transportWith = \"tk-kryoptic\"\n".into(),
@@ -1386,6 +1428,12 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
     let trust = ["transport", "tk-kryoptic", "--token", "kryoptic", "--trusted", "softhsm"];
     let o = e.km(soft, &trust);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
+    // The trusted copy is the only trusted object there: the export has nothing to warn of.
+    let narrow = e.dir.join("narrow.bundle.toml");
+    let o =
+        e.km(soft, &["export", "ek", "--token", "softhsm", "--target", "kryoptic", "--out", narrow.to_str().unwrap()]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(!stderr(&o).contains("are CKA_TRUSTED"), "{}", stderr(&o));
     // Another key the SO trusts: `enforced` is then only as narrow as that set, which both the
     // trust and the export say.
     plant_trusted_key(soft);
@@ -1419,6 +1467,7 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
     for spec in ["ek-dst", "sk-dst"] {
         assert_eq!(code(&e.cakeys(kry, &["verify", spec, "--token", "kryoptic"])), 0, "{spec}");
     }
+    assert_eq!(public_half(kry, "xe-ek"), (false, false), "the public half as the target spec declares it");
     // kryoptic cannot trust an RSA key: a wrap-with-trusted key there never leaves.
     let p = plan("kk", kry, soft);
     let reasons = p["plans"][0]["reasons"].to_string();
@@ -1485,6 +1534,21 @@ fn rsa_aes_key_wrap_stands_in_for_rfc_5649() {
     let o = e.km(kry, &["import", "--token", "kryoptic", "--in", out.to_str().unwrap()]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(code(&e.cakeys(kry, &["verify", "out-dst", "--token", "kryoptic"])), 0);
+}
+
+/// `CKA_VERIFY` and `CKA_PRIVATE` of the one public key object labelled `label` on `r`'s token.
+fn public_half(r: &Ref, label: &str) -> (bool, bool) {
+    use cryptoki::object::AttributeType;
+    let session = open_session(&r.module, r.token_label, "1234");
+    let found = session
+        .find_objects(&[Attribute::Label(label.as_bytes().to_vec()), Attribute::Class(ObjectClass::PUBLIC_KEY)])
+        .unwrap();
+    let [public] = found.as_slice() else { panic!("{} public key objects labelled {label}", found.len()) };
+    let attrs = session.get_attributes(*public, &[AttributeType::Verify, AttributeType::Private]).unwrap();
+    match attrs.as_slice() {
+        [Attribute::Verify(verify), Attribute::Private(private)] => (*verify, *private),
+        other => panic!("{label}: {other:?}"),
+    }
 }
 
 /// An RSA public key the SO of `soft`'s token (SO PIN 5678) marks `CKA_TRUSTED`, beside the

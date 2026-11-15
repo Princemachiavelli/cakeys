@@ -79,7 +79,8 @@ if [ ! -f "$patched/.patched" ]; then
 fi
 
 tree=$work/tree
-rsync -a --delete --exclude /target --exclude /.git --exclude '/result*' --exclude /.cargo "$repo/" "$tree/"
+# Not the tree: build output, git's own, and other sessions' worktrees (.claude), which change underfoot.
+rsync -a --delete --exclude /target --exclude /.git --exclude '/result*' --exclude /.cargo --exclude /.claude "$repo/" "$tree/"
 mkdir -p "$tree/.cargo"
 printf '[patch.crates-io]\ncryptoki = { path = "%s" }\n' "$patched" >"$tree/.cargo/config.toml"
 cd "$tree"
