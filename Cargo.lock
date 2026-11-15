@@ -219,6 +219,7 @@ dependencies = [
  "clap",
  "cmac",
  "cryptoki",
+ "des",
  "hmac",
  "p11-fault",
  "rsa",
@@ -373,6 +374,7 @@ dependencies = [
  "cmac",
  "cryptoki",
  "der",
+ "des",
  "getrandom",
  "hmac",
  "p11-fault",
@@ -403,6 +405,7 @@ dependencies = [
  "clap",
  "cmac",
  "cryptoki",
+ "des",
  "getrandom",
  "p11-fault",
  "serde_json",
@@ -697,6 +700,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "des"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "916a94e407b54f9034d71dd748234cd1e516ced6284009906ae246f177eafe5a"
+dependencies = [
+ "cipher",
 ]
 
 [[package]]

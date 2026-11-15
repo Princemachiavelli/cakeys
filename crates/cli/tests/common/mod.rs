@@ -197,6 +197,9 @@ pub struct Reference {
     pub model: &'static str,
     /// Curves (`keys.toml` names) it cannot generate: refused as unsupported (15).
     pub missing_curves: &'static [&'static str],
+    /// Whether it implements Triple DES (`CKM_DES3_ECB`, `CKM_DES3_KEY_GEN`); without it a
+    /// `CKK_DES3` spec is refused as unsupported (15).
+    pub des3: bool,
     /// Its committed capability profile: name, and path under profiles/.
     pub profile: (&'static str, &'static str),
     /// The module's configuration (`conf_var`'s file) with one mechanism hidden.
@@ -214,14 +217,16 @@ pub const SOFTHSM: Reference = Reference {
     manufacturer: "SoftHSM",
     model: "SoftHSM v2",
     missing_curves: &[],
+    des3: true,
     profile: ("softhsm/2.7", "modules/softhsm/2.7.toml"),
     hide_mechanism: |conf, m| format!("{conf}\nslots.mechanisms = -{m}\n"),
     through_fault_shim: false,
 };
 
-/// kryoptic 1.5.4 (its `OpenSSL` backend) generates none of secp256k1 or the brainpool curves. The
-/// harness (nix/package.nix) ends `KRYOPTIC_CONF` with the token's `[[slots]]` table, so an
-/// appended key belongs to it.
+/// kryoptic 1.5.4 (its `OpenSSL` backend) generates none of secp256k1 or the brainpool curves, and
+/// has no DES mechanism at all (`pkcs11-tool -M` \[run\], 2026-11-15). The harness
+/// (nix/package.nix) ends `KRYOPTIC_CONF` with the token's `[[slots]]` table, so an appended key
+/// belongs to it.
 pub const KRYOPTIC: Reference = Reference {
     module_var: "CAKEYS_KRYOPTIC_MODULE",
     require_var: "CAKEYS_KRYOPTIC_REQUIRE",
@@ -230,6 +235,7 @@ pub const KRYOPTIC: Reference = Reference {
     manufacturer: "Kryoptic",
     model: "v1",
     missing_curves: &["secp256k1", "brainpoolP256r1", "brainpoolP384r1"],
+    des3: false,
     profile: ("kryoptic/1.5", "modules/kryoptic/1.5.toml"),
     hide_mechanism: |conf, m| format!("{conf}\nmechanisms = [\"DENY\", \"{m}\"]\n"),
     through_fault_shim: false,
@@ -526,6 +532,23 @@ pub fn aes_commitment(key: &[u8], scheme: &str) -> String {
         n => panic!("AES key of {n} bytes"),
     };
     sri(&out)
+}
+
+/// The host oracle of a DES3 check value (`kcv-ecb`, `kcv-ecb-dec`): `RustCrypto`'s `des`
+/// (three-key EDE) over the first 8 bytes of SHA-256 of the commitment label.
+pub fn des3_commitment(key: &[u8; 24], scheme: &str) -> String {
+    use des::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
+    let label = format!("key-management/v1/{scheme}/CKK_DES3/192");
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(label.as_bytes());
+    let mut block = des::cipher::Block::<des::TdesEde3>::default();
+    block.copy_from_slice(&digest[..8]);
+    let cipher = des::TdesEde3::new_from_slice(key).unwrap();
+    match scheme {
+        "kcv-ecb" => cipher.encrypt_block(&mut block),
+        "kcv-ecb-dec" => cipher.decrypt_block(&mut block),
+        s => panic!("{s}"),
+    }
+    sri(&block)
 }
 
 /// A logged-in session on `label` that finalizes the module when dropped. cryptoki >= 0.11 no

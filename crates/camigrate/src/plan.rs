@@ -103,6 +103,18 @@ impl Plan {
 #[must_use]
 pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     let ty = m.ty;
+    // A private data object's value is a secret, and the public method would write it into a
+    // bundle and recreate it under whatever CKA_PRIVATE the target defaults to (docs/OPEN.md).
+    if ty.class == ObjectClass::Data && m.flag("CKA_PRIVATE") == Some(true) {
+        return Plan::impossible(
+            m,
+            vec![
+                "a private data object (CKA_PRIVATE = true): its value is a secret, and camigrate moves \
+                  data objects only as public ones"
+                    .into(),
+            ],
+        );
+    }
     if is_public(ty) {
         return match to {
             To::Token(dst) if dst.public_import.iter().any(|a| a.covers(ty)) => {
@@ -444,6 +456,15 @@ mod tests {
         let piv = Side { public_import: vec![Accept::class(ObjectClass::Certificate)], ..kryoptic() };
         let data = obj(ObjectClass::Data, None);
         assert!(!plan_of(&data, &[], &softhsm(), &To::Token(&piv), Allow::default()).ready);
+        let p = plan_of(&data, &[("CKA_PRIVATE", false)], &softhsm(), &To::Token(&kryoptic()), Allow::default());
+        assert_eq!((p.method, p.ready), (Some(Method::Public), true));
+        // A private data object's value is a secret: no method, whatever is allowed.
+        let everything = Allow { host_plaintext: true, trusted_transport: true };
+        for to in [To::Token(&kryoptic()), To::File(FileFormat::Pkcs8)] {
+            let p = plan_of(&data, &[("CKA_PRIVATE", true)], &softhsm(), &to, everything);
+            assert!(!p.ready && p.method.is_none(), "{p:?}");
+            assert!(p.reasons[0].contains("private data object"), "{p:?}");
+        }
     }
 
     /// Through p11-kit (no AES key wrap): a small secret key goes directly under OAEP; a private

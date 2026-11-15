@@ -23,13 +23,19 @@ impl Token {
             };
         }
         if class == ObjectClass::DATA {
-            // Its identity is a hash of the value: for a private value (a password, a PIN) that
-            // hash in the lock would be an offline guessing oracle.
-            return match self.attr(h, AttributeType::Private)? {
-                Some(Attribute::Private(false)) => self.check_policy(h, spec),
-                other => Err(KmError::Unsupported(format!(
+            // Its identity is a hash of the value: for a guessable private value (a password, a
+            // PIN) that hash in the lock is an offline guessing oracle. So a private data object
+            // is identified only when its spec declares CKA_PRIVATE = true: the spec's author
+            // says, in review, that nobody can guess the value.
+            return match (self.attr(h, AttributeType::Private)?, spec.flag("CKA_PRIVATE")) {
+                (Some(Attribute::Private(false)), _) | (Some(Attribute::Private(true)), Some(true)) => {
+                    self.check_policy(h, spec)
+                }
+                (other, _) => Err(KmError::Unsupported(format!(
                     "data object is CKA_PRIVATE ({other:?}): its value hash would let anyone with \
-                     the lock guess the value offline; only public data objects are supported"
+                     the lock guess the value offline; declare CKA_PRIVATE = true in the spec to \
+                     identify it anyway, for a value nobody can guess (a random secret, never a \
+                     password or PIN)"
                 ))),
             };
         }
@@ -61,7 +67,8 @@ impl Token {
                 }
             }
         }
-        if let Some(len) = object.value_len {
+        // A DES3 key's length is its key type's (no CKA_VALUE_LEN): checked as CKA_KEY_TYPE above.
+        if let Some(len) = object.value_len.filter(|_| object.key_type.and_then(Kt::fixed_value_len).is_none()) {
             match self.attr(h, AttributeType::ValueLen)? {
                 Some(Attribute::ValueLen(v)) if *v == len => {}
                 other => return Err(KmError::Conflict(format!("CKA_VALUE_LEN mismatch: {other:?}"))),

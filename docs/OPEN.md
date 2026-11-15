@@ -21,6 +21,35 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   says which cases need them.
 - **X25519 / Montgomery keys**: no key type in `id.rs` (SPKI, host X25519); ykcs11 cannot
   generate them anyway.
+- **More Triple DES** (2026-11-15). `CKK_DES3` keys are identified by the two check values
+  (`kcv-ecb`, `kcv-ecb-dec`, `CKM_DES3_ECB`); what payment and banking HSMs also hold is
+  refused:
+  - *Sign-only DES3 keys* (MAC keys: ISO 9797-1 retail MAC, CMAC), non-extractable: 17, no
+    commitment. SoftHSM 2.7 offers `CKM_DES3_CMAC` (`pkcs11-tool -M` [run]), but cryptoki
+    0.12 has no constant or `Mechanism` for it, so it is also missing from SoftHSM's profile.
+    A cryptoki patch beside the KWP one (and its upstream PR), a `cmac` over DES3, and the
+    profile regenerated. kryoptic 1.5 and tpm2-pkcs11 have no DES at all (15).
+  - *Two-key Triple DES* (`CKK_DES2`, 16 bytes: the "double-length" keys of payment
+    schemes, which many HSMs store this way): unknown key type (17). Same mechanisms
+    (`CKM_DES3_ECB`), its own key type in the label; `des::TdesEde2` as the oracle.
+  - *Single DES* (`CKK_DES`): not planned.
+- **Moving private data objects** (2026-11-15). `cakeys` identifies a private data object
+  (`valuehash`) when its spec declares `CKA_PRIVATE = true`; camigrate moves none (15,
+  `private_data_objects_never_move`): the `public` method would put the value in a bundle and
+  recreate it under the target's default `CKA_PRIVATE`. It would serve application secrets
+  and tpm2-pkcs11's data objects, which are all private. PKCS#11 wraps keys, not data objects,
+  so the candidate is the `host` path behind `--allow-host-plaintext`, with `CKA_PRIVATE = true`
+  in the target's template and the value zeroized after; never a bundle.
+- **brainpoolP512r1** (2026-11-15): refused (15, `CURVES_WITHOUT_CRATE`). It would serve keys
+  under BSI TR-03111 (German government and eID PKI) and HSMs that offer the curve beside
+  P256r1/P384r1. RustCrypto has no `bp512` release: "Add Brainpool P-512"
+  (RustCrypto/elliptic-curves#1914) is open, unmerged since 2026-08-18, and an earlier draft
+  (#1186) was closed. The one crate on crates.io, `bp512-nestler` 0.2.1, is
+  PolyForm-Noncommercial-1.0.0 (outside `deny.toml`'s allowlist, and not usable in a
+  BSD-3-Clause workspace) and builds on a fork of `primeorder` (`nestler-primeorder`, an rc).
+  Take it up when a RustCrypto `bp512` on the elliptic-curve 0.14 line is released: the SPKI
+  re-encoding, ECDSA with SHA-512 and ECDH like the other Brainpool curves. Not hand-rolled:
+  curve arithmetic is not this repository's to write.
 - **Post-quantum key types** (ML-DSA, ML-KEM, SLH-DSA through kryoptic): `rfc7093m4` over the
   SPKI, a `parameterSet` in keys.toml (out of the spec digest when unset), OpenSSL 3.5 oracles,
   and first a test of whether p11-kit forwards PKCS#11 3.2. No token here has PQ hardware.
@@ -164,7 +193,7 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   `default` before `pkcs11` and cannot stream-sign through the provider.
 - **rust-cryptoki**: the HMAC key-type fix, `CKM_AES_KEY_WRAP_KWP` and `CKM_RSA_AES_KEY_WRAP`
   and the single-part sign after `C_SignInit` (`upstream/rust-cryptoki/`); later, array
-  attributes.
+  attributes and `CKM_DES3_CMAC` (a DES3 `cmac`, above).
 - **tpm2-pkcs11**: the P-521 `CKA_EC_POINT` fix (`upstream/tpm2-pkcs11/`).
 
 ## Engineering

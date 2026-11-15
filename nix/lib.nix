@@ -29,7 +29,8 @@ in
                      names none, or the entry predates them)
       assurance      what its check establishes against a token that may lie: "proof" (a
                      fresh challenge), "fingerprint" (a secret key's commitment: replayable),
-                     "public" (public bytes); derived from the lock, as `cakeys` derives it
+                     "public" (public bytes, or a private data object's value); derived from
+                     the lock, as `cakeys` derives it
       requiredSystemFeatures
                      the token's system feature (keys.toml `tokens.<t>.systemFeature`, default
                      `<featurePrefix><t>`, as the NixOS module advertises it), as the list a

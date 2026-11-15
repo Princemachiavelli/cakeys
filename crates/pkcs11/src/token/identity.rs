@@ -225,8 +225,8 @@ impl Token {
                 s.sign(&m, h, &input).map_err(fail)
             }
             Commit::Cmac => s.sign(&Mechanism::AesCMac, h, &input).map_err(fail),
-            Commit::KcvEcb => s.encrypt(&Mechanism::AesEcb, h, &input).map_err(fail),
-            Commit::KcvEcbDecrypt => s.decrypt(&Mechanism::AesEcb, h, &input).map_err(fail),
+            Commit::KcvEcb(cipher) => s.encrypt(&ecb(cipher), h, &input).map_err(fail),
+            Commit::KcvEcbDecrypt(cipher) => s.decrypt(&ecb(cipher), h, &input).map_err(fail),
             Commit::Kw => {
                 // The fixed key is public, so it is created extractable; the key under test only
                 // has to allow CKA_WRAP.
@@ -290,8 +290,8 @@ impl Token {
             for c in commits {
                 template.push(match c {
                     Commit::Hmac(_) | Commit::Cmac => Attribute::Sign(true),
-                    Commit::KcvEcb => Attribute::Encrypt(true),
-                    Commit::KcvEcbDecrypt => Attribute::Decrypt(true),
+                    Commit::KcvEcb(_) => Attribute::Encrypt(true),
+                    Commit::KcvEcbDecrypt(_) => Attribute::Decrypt(true),
                     Commit::Kw => Attribute::Wrap(true),
                 });
             }
@@ -319,8 +319,16 @@ pub fn commit_mechanism(c: Commit) -> MechanismType {
         Commit::Hmac(HmacHash::Sha384) => MechanismType::SHA384_HMAC,
         Commit::Hmac(HmacHash::Sha512) => MechanismType::SHA512_HMAC,
         Commit::Cmac => MechanismType::AES_CMAC,
-        Commit::KcvEcb | Commit::KcvEcbDecrypt => MechanismType::AES_ECB,
+        Commit::KcvEcb(cipher) | Commit::KcvEcbDecrypt(cipher) => ecb(cipher).mechanism_type(),
         Commit::Kw => MechanismType::AES_KEY_WRAP,
+    }
+}
+
+/// The ECB mechanism of a key check value's cipher.
+fn ecb(cipher: BlockCipher) -> Mechanism<'static> {
+    match cipher {
+        BlockCipher::Aes => Mechanism::AesEcb,
+        BlockCipher::Des3 => Mechanism::Des3Ecb,
     }
 }
 
@@ -345,8 +353,10 @@ mod tests {
         }
         assert_eq!(HmacHash::for_key_type(Kt::Aes), None);
         assert_eq!(commit_mechanism(Commit::Cmac), MechanismType::AES_CMAC);
-        assert_eq!(commit_mechanism(Commit::KcvEcb), MechanismType::AES_ECB);
-        assert_eq!(commit_mechanism(Commit::KcvEcbDecrypt), MechanismType::AES_ECB);
+        assert_eq!(commit_mechanism(Commit::KcvEcb(BlockCipher::Aes)), MechanismType::AES_ECB);
+        assert_eq!(commit_mechanism(Commit::KcvEcbDecrypt(BlockCipher::Aes)), MechanismType::AES_ECB);
+        assert_eq!(commit_mechanism(Commit::KcvEcb(BlockCipher::Des3)), MechanismType::DES3_ECB);
+        assert_eq!(commit_mechanism(Commit::KcvEcbDecrypt(BlockCipher::Des3)), MechanismType::DES3_ECB);
         assert_eq!(commit_mechanism(Commit::Kw), MechanismType::AES_KEY_WRAP);
     }
 }
