@@ -97,6 +97,14 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **caprobe profiles as pkcs11-check's run scoping**: its roadmap asks for a way to say which
   curves, key sizes and mechanisms a module implements, so the vector suites skip what it
   never offered. A caprobe profile is that statement. A conversation with upstream, not code.
+- **AWS CloudHSM refuses non-private public keys** (cloudhsm-pkcs11/5.18 [run]): `cakeys`
+  `generate` puts `CKA_PRIVATE = false` on a public half unless the spec declares it
+  (`crates/pkcs11/src/token/generate.rs`), so on CloudHSM every generation fails until a spec
+  sets `publicAttributes = { CKA_PRIVATE = true }`. The probe records it as the
+  `public-private` note. A profile row that `generate` reads would be the fix.
+- **CloudHSM ECDH**: `C_DeriveKey` refused both the sealed and the extractable derived-secret
+  templates (the client log names `CKA_SENSITIVE` and `CKA_EXTRACTABLE`). Find the template
+  it takes before `pop-ecdh` can run there: a spike on the next `aws.sh create`.
 - **Forwarders are invisible**: pkcs11-proxy and pkcs11-proxy-ng report the backend's
   `C_GetInfo`, so their layer must be named in keys.toml (`profiles = [...]`). Worth stating in
   CAKEYS.md once A6 settles whether pkcs11-proxy-ng needs a layer at all.

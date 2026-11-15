@@ -40,8 +40,14 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          # The AWS CloudHSM client (nix/cloudhsm.nix) is unfree: it alone is allowed, on an
+          # instance of nixpkgs evaluated only when one of its packages is.
+          pkgsCloudhsm = import nixpkgs {
+            inherit system;
+            config.allowUnfreePredicate = p: lib.hasPrefix "cloudhsm-" (lib.getName p);
+          };
           local = import ./pkgs.nix {
-            inherit pkgs advisory-db;
+            inherit pkgs pkgsCloudhsm advisory-db;
             craneLib = crane.mkLib pkgs;
           };
         in
@@ -89,6 +95,7 @@
             camigrate
             p11-fault
             softhsm-unwrap-value-len
+            cloud-tools
             ;
           # What the tests reach, and what they would not notice changing (nix/package-crane.nix):
           # reports, not checks.
@@ -98,6 +105,15 @@
           checks-crane-only = pkgs.linkFarm "checks-crane-only" (
             builtins.removeAttrs self.checks.${system} [ "fuzz" ]
           );
+        }
+        // lib.optionalAttrs (system == "x86_64-linux") {
+          inherit (local) kmsp11;
+          inherit (local.cloudhsm)
+            cloudhsm-pkcs11
+            cloudhsm-cli
+            cloudhsm-dyn
+            cloudhsm-openssl-provider
+            ;
         }
         // lib.optionalAttrs isLinux {
           inherit (local) pcsc-probe;

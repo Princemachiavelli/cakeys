@@ -158,8 +158,12 @@ pub fn probe(tok: &Token, cfg: &TokenCfg, write: bool) -> Result<Probed> {
         n: 0,
         ops: Ops::default(),
         undetermined,
+        public_private: None,
     };
     write_probes(&mut made, &mut profile)?;
+    if let Some(note) = made.public_private.take() {
+        profile.notes.insert("public-private".into(), note);
+    }
     Ok(Probed { profile, undetermined: made.undetermined })
 }
 
@@ -294,6 +298,8 @@ struct Made<'a> {
     n: usize,
     ops: Ops,
     undetermined: Vec<String>,
+    /// The note when the module refused a public key with `CKA_PRIVATE = false`.
+    public_private: Option<String>,
 }
 
 /// A generated pair, `(public, private)`, or the module's refusal.
@@ -324,7 +330,29 @@ impl Made<'_> {
             let tag = |t: &[Attribute]| {
                 [&[Attribute::Token(true), Attribute::Label(label.as_bytes().to_vec())][..], t].concat()
             };
-            let made = session.generate_key_pair(mech, &tag(public), &tag(private));
+            let mut made = session.generate_key_pair(mech, &tag(public), &tag(private));
+            // A module may refuse a public key that is not CKA_PRIVATE (AWS CloudHSM [run]): once
+            // more without the attribute, so the module's default decides, noted. The first
+            // refusal stands when that fails too.
+            if matches!(made, Err(CkError::Pkcs11(RvError::AttributeValueInvalid, _)))
+                && public.contains(&Attribute::Private(false))
+            {
+                let without: Vec<_> = public.iter().filter(|a| **a != Attribute::Private(false)).cloned().collect();
+                if let Ok((public, private)) = session.generate_key_pair(mech, &tag(&without), &tag(private)) {
+                    made = Ok((public, private));
+                    if self.public_private.is_none() {
+                        let read = match session.get_attributes(public, &[AttributeType::Private]).as_deref() {
+                            Ok([Attribute::Private(b)]) => format!("reads CKA_PRIVATE = {b}"),
+                            Ok(_) => "reads no CKA_PRIVATE".into(),
+                            Err(e) => format!("CKA_PRIVATE unreadable: {}", ckr(e)),
+                        };
+                        self.public_private = Some(format!(
+                            "a public key with CKA_PRIVATE = false: CKR_ATTRIBUTE_VALUE_INVALID; generated \
+                             without it, the public key {read}"
+                        ));
+                    }
+                }
+            }
             if let Ok((public, private)) = made {
                 self.handles.extend([private, public]);
                 self.labels.push(label);
