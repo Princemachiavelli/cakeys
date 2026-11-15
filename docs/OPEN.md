@@ -117,6 +117,12 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 
 ## Upstream
 
+- **SoftHSM, to reproduce**: the probe's process died in SoftHSM's `C_Sign` after the shim
+  (FAULT_SHIM.md) gave every `C_SignInit` a P-256 private key, whatever the mechanism: one of
+  those inits accepted a key of another type than its mechanism's, and the signature crashed.
+  Seen once (2026-11-14) through `use_label` without `call`; which mechanism is not isolated
+  yet. A direct reproduction (`C_SignInit` with `CKM_EDDSA` or an RSA mechanism and an EC key)
+  would make it an upstream report.
 - **SoftHSM**: `C_UnwrapKey` stores an unwrapped secret key's `CKA_VALUE` but never its
   `CKA_VALUE_LEN` (reads 0), and refuses `CKA_VALUE_LEN` in the template
   (`CKR_ATTRIBUTE_READ_ONLY`; SoftHSMv2 #628). A fix is drafted in `upstream/softhsm/` (not

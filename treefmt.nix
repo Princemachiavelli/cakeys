@@ -23,6 +23,7 @@ let
     default.extend-words = {
       # keep-sorted start
       COSE = "COSE"; # CBOR Object Signing and Encryption
+      EDE = "EDE"; # encrypt-decrypt-encrypt (triple DES, in PKCS#11 mechanism names)
       FO = "FO"; # fixed-output (derivation)
       GOST = "GOST"; # the Russian cipher and signature standards
       PARMS = "PARMS"; # TPM2 structure names (TPMS_*_PARMS)

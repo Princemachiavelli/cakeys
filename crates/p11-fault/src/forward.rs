@@ -5,7 +5,8 @@
 //!
 //! `=> hook` hands the call to `hooks::hook`, which forwards it itself and may change what the
 //! caller sees; `=> substitute_key` forwards with the third argument, a key, replaced by the
-//! one a rule names.
+//! one a rule names; `=> corrupt_output` forwards, then changes the last byte returned where a
+//! rule says so.
 
 use crate::{Fatal, guard, hooks, shim};
 use cryptoki_sys::{
@@ -32,6 +33,18 @@ macro_rules! forward {
         let real = forward!(@real $shim, $name);
         // SAFETY: the caller's arguments, with the key a rule names in place of the caller's.
         Ok((unsafe { real($session, $mechanism, key $(, $rest)*) }, fired))
+    }};
+    (@body $shim:ident, $call:ident, $name:ident, ($session:ident, $input:ident, $n:ident, $out:ident, $len:ident), corrupt_output) => {{
+        let real = forward!(@real $shim, $name);
+        // SAFETY: the caller's arguments, forwarded unchanged; then the buffer it gave.
+        let rv = unsafe { real($session, $input, $n, $out, $len) };
+        Ok((rv, unsafe { hooks::corrupt_output($shim, $call, rv, $out, $len) }))
+    }};
+    (@body $shim:ident, $call:ident, $name:ident, ($session:ident, $out:ident, $len:ident), corrupt_output) => {{
+        let real = forward!(@real $shim, $name);
+        // SAFETY: the caller's arguments, forwarded unchanged; then the buffer it gave.
+        let rv = unsafe { real($session, $out, $len) };
+        Ok((rv, unsafe { hooks::corrupt_output($shim, $call, rv, $out, $len) }))
     }};
     (@body $shim:ident, $call:ident, $name:ident, ($($arg:ident),*), $hook:ident) => {
         // SAFETY: the caller's arguments; the hook forwards them under the caller's contract.
@@ -87,7 +100,7 @@ forward! {
     C_GetSlotList(arg1: CK_BBOOL, arg2: *mut CK_SLOT_ID, arg3: *mut CK_ULONG);
     C_GetSlotInfo(arg1: CK_SLOT_ID, arg2: *mut CK_SLOT_INFO) => slot_info;
     C_GetTokenInfo(arg1: CK_SLOT_ID, arg2: *mut CK_TOKEN_INFO) => token_info;
-    C_GetMechanismList(arg1: CK_SLOT_ID, arg2: *mut CK_MECHANISM_TYPE, arg3: *mut CK_ULONG);
+    C_GetMechanismList(arg1: CK_SLOT_ID, arg2: *mut CK_MECHANISM_TYPE, arg3: *mut CK_ULONG) => mechanism_list;
     C_GetMechanismInfo(arg1: CK_SLOT_ID, arg2: CK_MECHANISM_TYPE, arg3: *mut CK_MECHANISM_INFO);
     C_InitToken(arg1: CK_SLOT_ID, arg2: *mut CK_UTF8CHAR, arg3: CK_ULONG, arg4: *mut CK_UTF8CHAR);
     C_InitPIN(arg1: CK_SESSION_HANDLE, arg2: *mut CK_UTF8CHAR, arg3: CK_ULONG);
@@ -110,11 +123,11 @@ forward! {
     C_FindObjects(arg1: CK_SESSION_HANDLE, arg2: *mut CK_OBJECT_HANDLE, arg3: CK_ULONG, arg4: *mut CK_ULONG) => find_objects;
     C_FindObjectsFinal(arg1: CK_SESSION_HANDLE);
     C_EncryptInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key;
-    C_Encrypt(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
+    C_Encrypt(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG) => corrupt_output;
     C_EncryptUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
     C_EncryptFinal(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: *mut CK_ULONG);
     C_DecryptInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key;
-    C_Decrypt(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
+    C_Decrypt(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG) => corrupt_output;
     C_DecryptUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
     C_DecryptFinal(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: *mut CK_ULONG);
     C_DigestInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM);
@@ -123,9 +136,9 @@ forward! {
     C_DigestKey(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE);
     C_DigestFinal(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: *mut CK_ULONG);
     C_SignInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key;
-    C_Sign(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
+    C_Sign(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG) => corrupt_output;
     C_SignUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG);
-    C_SignFinal(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: *mut CK_ULONG);
+    C_SignFinal(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: *mut CK_ULONG) => corrupt_output;
     C_SignRecoverInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE);
     C_SignRecover(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
     C_VerifyInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key;

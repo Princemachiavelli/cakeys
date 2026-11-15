@@ -8,8 +8,8 @@
 use crate::plan::{Action, AttributeChange, Call};
 use crate::{Fatal, Shim};
 use cryptoki_sys::{
-    CK_ATTRIBUTE, CK_ATTRIBUTE_TYPE, CK_OBJECT_CLASS, CK_OBJECT_HANDLE, CK_RV, CK_SESSION_HANDLE, CK_SESSION_INFO,
-    CK_SLOT_ID, CK_SLOT_INFO, CK_TOKEN_INFO, CK_ULONG, CKA_CLASS, CKA_LABEL, CKF_SERIAL_SESSION,
+    CK_ATTRIBUTE, CK_ATTRIBUTE_TYPE, CK_MECHANISM_TYPE, CK_OBJECT_CLASS, CK_OBJECT_HANDLE, CK_RV, CK_SESSION_HANDLE,
+    CK_SESSION_INFO, CK_SLOT_ID, CK_SLOT_INFO, CK_TOKEN_INFO, CK_ULONG, CKA_CLASS, CKA_LABEL, CKF_SERIAL_SESSION,
     CKR_ATTRIBUTE_TYPE_INVALID, CKR_BUFFER_TOO_SMALL, CKR_OK,
 };
 use std::os::raw::c_void;
@@ -60,9 +60,9 @@ fn flags(shim: &Shim, call: &Call, flags: &mut CK_ULONG) -> Option<usize> {
     fired
 }
 
-/// `C_FindObjects`: where the real search found something and there is room, the objects of an
-/// `add_label` rule are found too. (Not where it found nothing: a client reads until a call
-/// returns no object, and would never stop.)
+/// `C_FindObjects`: the objects of a `hide_label` rule are not found; and where the real search
+/// found something and there is room, those of an `add_label` rule are found too. (Not where it
+/// found nothing: a client reads until a call returns no object, and would never stop.)
 pub unsafe fn find_objects(
     shim: &Shim,
     call: &Call,
@@ -76,26 +76,96 @@ pub unsafe fn find_objects(
     if rv != CKR_OK || out.is_null() || count.is_null() {
         return Ok((rv, None));
     }
+    let room = usize::try_from(max).unwrap_or(0);
+    // SAFETY: `count` is not null and the real module wrote it; `out` holds `max` handles, of
+    // which the first `*count` are set.
+    let mut found = unsafe { std::slice::from_raw_parts(out, usize::try_from(*count).unwrap_or(0)).to_vec() };
     let mut fired = None;
     for (i, rule) in shim.plan.matching(call) {
-        let Action::AddLabel(label) = &rule.action else { continue };
-        // SAFETY: `count` is not null and the real module wrote it; `out` holds `max` handles,
-        // of which the first `*count` are set.
-        unsafe {
-            if *count == 0 {
-                continue;
-            }
-            let found = std::slice::from_raw_parts(out, usize::try_from(*count).unwrap_or(0)).to_vec();
-            for h in named(shim, session, label, None)? {
-                if *count < max && !found.contains(&h) {
-                    *out.add(usize::try_from(*count).unwrap_or(0)) = h;
-                    *count += 1;
+        match &rule.action {
+            Action::HideLabel(label) => {
+                // SAFETY: real-module calls on the caller's session.
+                let hidden = unsafe { named(shim, session, label, None)? };
+                let before = found.len();
+                found.retain(|h| !hidden.contains(h));
+                if found.len() != before {
                     fired.get_or_insert(i);
                 }
             }
+            Action::AddLabel(label) if !found.is_empty() => {
+                // SAFETY: real-module calls on the caller's session.
+                for h in unsafe { named(shim, session, label, None)? } {
+                    if found.len() < room && !found.contains(&h) {
+                        found.push(h);
+                        fired.get_or_insert(i);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if fired.is_some() {
+        // SAFETY: `found` holds at most `max` handles, which `out` has room for.
+        unsafe {
+            std::ptr::copy_nonoverlapping(found.as_ptr(), out, found.len());
+            *count = found.len() as CK_ULONG;
         }
     }
     Ok((rv, fired))
+}
+
+/// `C_GetMechanismList`: the mechanisms of a `hide_mechanisms` rule are not listed.
+pub unsafe fn mechanism_list(
+    shim: &Shim,
+    call: &Call,
+    slot: CK_SLOT_ID,
+    list: *mut CK_MECHANISM_TYPE,
+    count: *mut CK_ULONG,
+) -> Outcome {
+    // SAFETY: the caller's arguments, forwarded unchanged.
+    let rv = unsafe { real!(shim, C_GetMechanismList)(slot, list, count) };
+    if rv != CKR_OK || list.is_null() || count.is_null() {
+        // The length alone: the real module's, which a shorter list may fall short of.
+        return Ok((rv, None));
+    }
+    // SAFETY: `count` is not null and the real module wrote it and that many mechanisms.
+    let mut listed = unsafe { std::slice::from_raw_parts(list, usize::try_from(*count).unwrap_or(0)).to_vec() };
+    let mut fired = None;
+    for (i, rule) in shim.plan.matching(call) {
+        if let Action::HideMechanisms(hidden) = &rule.action {
+            let before = listed.len();
+            listed.retain(|m| !hidden.contains(m));
+            if listed.len() != before {
+                fired.get_or_insert(i);
+            }
+        }
+    }
+    if fired.is_some() {
+        // SAFETY: no more mechanisms than the real module wrote there.
+        unsafe {
+            std::ptr::copy_nonoverlapping(listed.as_ptr(), list, listed.len());
+            *count = listed.len() as CK_ULONG;
+        }
+    }
+    Ok((rv, fired))
+}
+
+/// After a function returned bytes into the caller's buffer: under a `corrupt` rule, the last
+/// of them is another. The length query (no buffer) is left alone.
+pub unsafe fn corrupt_output(shim: &Shim, call: &Call, rv: CK_RV, out: *mut u8, len: *mut CK_ULONG) -> Option<usize> {
+    if rv != CKR_OK || out.is_null() || len.is_null() {
+        return None;
+    }
+    let (i, _) = shim.plan.matching(call).find(|(_, rule)| rule.action == Action::Corrupt)?;
+    // SAFETY: the real module wrote `*len` bytes at `out`, the caller's buffer.
+    unsafe {
+        let n = usize::try_from(*len).unwrap_or(0);
+        if n == 0 {
+            return None;
+        }
+        *out.add(n - 1) ^= 0x01;
+    }
+    Some(i)
 }
 
 /// The key a key-taking function uses: the caller's, or the object a `use_label` rule names

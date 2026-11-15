@@ -3,7 +3,7 @@
 
 use crate::forward::Fn;
 use crate::names;
-use cryptoki_sys::{CK_ATTRIBUTE_TYPE, CK_FLAGS, CK_RV};
+use cryptoki_sys::{CK_ATTRIBUTE_TYPE, CK_FLAGS, CK_MECHANISM_TYPE, CK_RV};
 use serde::Deserialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -38,6 +38,12 @@ pub enum Action {
     /// A function taking a key: the object with this label (and the key's class) is used
     /// instead of the one the caller names.
     UseLabel(Vec<u8>),
+    /// `C_FindObjects`: the objects with this label are not found.
+    HideLabel(Vec<u8>),
+    /// A function returning bytes: the last byte it returns is another.
+    Corrupt,
+    /// `C_GetMechanismList`: these mechanisms are not listed.
+    HideMechanisms(Vec<CK_MECHANISM_TYPE>),
 }
 
 /// What an attribute rule reports for its attribute.
@@ -104,6 +110,11 @@ struct RuleText {
     truncate: Option<usize>,
     add_label: Option<String>,
     use_label: Option<String>,
+    hide_label: Option<String>,
+    #[serde(default)]
+    corrupt: bool,
+    #[serde(default)]
+    hide_mechanisms: Vec<Value>,
 }
 
 /// A value written by name (`"CKR_DEVICE_ERROR"`) or as a number (`0x30`).
@@ -211,6 +222,9 @@ pub const KEY_FUNCTIONS: [Fn; 7] = [
     Fn::C_DeriveKey,
 ];
 
+/// The functions that return bytes through a buffer and its length: what `corrupt` changes.
+pub const OUTPUT_FUNCTIONS: [Fn; 4] = [Fn::C_Sign, Fn::C_SignFinal, Fn::C_Encrypt, Fn::C_Decrypt];
+
 fn rule(r: RuleText) -> Result<Rule, String> {
     let function = Fn::ALL.iter().copied().find(|f| f.name() == r.function).ok_or_else(|| {
         if r.function == "C_GetFunctionList" {
@@ -279,10 +293,25 @@ fn rule(r: RuleText) -> Result<Rule, String> {
         only(&KEY_FUNCTIONS, "use_label")?;
         actions.push(Action::UseLabel(label.into_bytes()));
     }
+    if let Some(label) = r.hide_label {
+        only(&[Fn::C_FindObjects], "hide_label")?;
+        actions.push(Action::HideLabel(label.into_bytes()));
+    }
+    if r.corrupt {
+        only(&OUTPUT_FUNCTIONS, "corrupt")?;
+        actions.push(Action::Corrupt);
+    }
+    if !r.hide_mechanisms.is_empty() {
+        only(&[Fn::C_GetMechanismList], "hide_mechanisms")?;
+        let hidden = r.hide_mechanisms.into_iter().map(|m| m.resolve("mechanism", names::mechanism));
+        actions.push(Action::HideMechanisms(hidden.collect::<Result<_, _>>()?));
+    }
     let action = match actions.len() {
         1 => actions.remove(0),
         0 => {
-            return Err("nothing to do: give rv, set_flags, clear_flags, attribute, add_label or use_label".into());
+            return Err("nothing to do: give rv, set_flags, clear_flags, attribute, add_label, hide_label, \
+                        use_label, corrupt or hide_mechanisms"
+                .into());
         }
         _ => return Err("one thing per rule".into()),
     };
@@ -387,6 +416,16 @@ mod tests {
             ("[[rule]]\nfn = \"C_FindObjectsInit\"\nadd_label = \"x\"\n", "add_label is for C_FindObjects"),
             ("[[rule]]\nfn = \"C_FindObjects\"\nadd_label = \"x\"\nrv = 0\n", "one thing per rule"),
             ("[[rule]]\nfn = \"C_FindObjects\"\nadd_label = \"x\"\nof_label = \"y\"\n", "of_label goes with"),
+            ("[[rule]]\nfn = \"C_FindObjectsInit\"\nhide_label = \"x\"\n", "hide_label is for C_FindObjects"),
+            (
+                "[[rule]]\nfn = \"C_Verify\"\ncorrupt = true\n",
+                "corrupt is for C_Sign, C_SignFinal, C_Encrypt, C_Decrypt",
+            ),
+            ("[[rule]]\nfn = \"C_GetMechanismList\"\nhide_mechanisms = [\"CKM_NOPE\"]\n", "unknown mechanism CKM_NOPE"),
+            (
+                "[[rule]]\nfn = \"C_GetMechanismInfo\"\nhide_mechanisms = [\"CKM_ECDSA\"]\n",
+                "hide_mechanisms is for C_GetMechanismList",
+            ),
         ] {
             let Err(e) = Plan::parse(text) else { panic!("accepted: {text}") };
             assert!(e.contains(why), "expected {why:?} in {e:?}");

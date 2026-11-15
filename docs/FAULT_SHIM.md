@@ -159,6 +159,21 @@ add_label = "decoy"
 fn = "C_DecryptInit"
 of_label = "shown"
 use_label = "used"
+
+# Found objects hidden; a byte of what a call returns changed (C_Sign, C_SignFinal, C_Encrypt,
+# C_Decrypt); mechanisms no longer listed.
+[[rule]]
+fn = "C_FindObjects"
+hide_label = "gone"
+
+[[rule]]
+fn = "C_Sign"
+call = 2
+corrupt = true
+
+[[rule]]
+fn = "C_GetMechanismList"
+hide_mechanisms = ["CKM_ECDH1_DERIVE"]
 ```
 
 **Failing half of an operation.** `C_Sign` and its like end the operation `C_SignInit` began,
@@ -232,9 +247,26 @@ A second test, `a_creation_that_cannot_be_identified_is_undone_or_reported`, tak
 "refused operations leave nothing behind": a key created whose proof then fails is removed
 again, and where `C_DestroyObject` fails too, cakeys says the key is still on the token.
 
-Still to add: an object vanishing between creation and resolution (it needs a rule that hides
-an object from a search), a derived secret with no value, and a certificate with no readable
-value.
+Later rows use three more rule kinds: a signature or a plaintext with one byte changed (13;
+for `pop-decrypt` this is the wrong plaintext OAEP never yields by itself), the proof's
+mechanism no longer listed (15), and the key hidden from every search once created (11,
+"vanished after creation").
+
+**camigrate** (`crates/camigrate/tests/fault.rs`): SoftHSM behind the shim as the source or
+the target of a move, kryoptic the other side. The source's key-encryption key, its copy of the
+transport key and each wrap failing (15); the target's unwrap of the KEK or the key (13), the
+proof after the import (16), the host path's creation and commitment (15), a certificate the
+target then reports as another type (13). Each leaves the target without the object and the
+lock as it was; where the target will not delete either, what was imported is said to be still
+there.
+
+**caprobe** (`crates/caprobe/tests/fault.rs`): the write probes against the shim. Usage
+attributes refused at generation, or a public key without its point, are said undetermined;
+another key signing or deriving, a sealed derived secret refused, no derivation at all, a key
+deriving while reporting `CKA_DERIVE` false and a wrap that does not unwrap become the row
+and the note of what was seen, and drift from the committed profile (15).
+
+Still to add: a derived secret with no value, and a certificate with no readable value.
 
 ## Nix
 

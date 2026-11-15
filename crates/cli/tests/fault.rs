@@ -208,6 +208,16 @@ fn a_lying_module_is_refused() {
         // The MAC with the derived or unwrapped secret fails.
         ("fn = \"C_Sign\"\nrv = \"CKR_DEVICE_ERROR\"".into(), verify("d"), 16, "C_Sign (ECDH proof of possession)"),
         ("fn = \"C_Sign\"\nrv = \"CKR_DEVICE_ERROR\"".into(), verify("u"), 16, "C_Sign (unwrap proof of possession)"),
+        // What it returns is not what the key made: a signature or a plaintext with one byte changed.
+        ("fn = \"C_Sign\"\ncall = 2\ncorrupt = true".into(), verify("k"), 13, "did not sign for the public key"),
+        ("fn = \"C_Decrypt\"\ncall = 2\ncorrupt = true".into(), verify("r"), 13, "did not decrypt for the public key"),
+        // It no longer lists the proof's mechanism.
+        (
+            "fn = \"C_GetMechanismList\"\nhide_mechanisms = [\"CKM_ECDH1_DERIVE\"]".into(),
+            verify("d"),
+            15,
+            "lacks CKM_ECDH1_DERIVE",
+        ),
         // A call that fails where a correct module's never does.
         ("fn = \"C_Sign\"\nrv = \"CKR_DEVICE_ERROR\"".into(), verify("k"), 16, "C_Sign (proof of possession)"),
         (
@@ -262,4 +272,10 @@ fn a_creation_that_cannot_be_identified_is_undone_or_reported() {
         run("kept", &format!("{sign_fails}\n[[rule]]\nfn = \"C_DestroyObject\"\nrv = \"CKR_DEVICE_ERROR\"\n"));
     assert!(said.contains("is still on the token"), "{said}");
     assert!(left() == 2 && fired_rules >= 2, "{} left, {fired_rules} fired", left());
+    // The key gone from every search once made: not found (11), never a second key made.
+    let hidden = w.dir.join("hidden.toml");
+    std::fs::write(&hidden, "[[rule]]\nfn = \"C_FindObjects\"\nhide_label = \"new\"\n").unwrap();
+    let o = w.km_env(&["realise", "new", "--token", "ref", "--no-update-lock"], &[("P11_FAULT_PLAN", &hidden)]);
+    assert_eq!(code(&o), 11, "{}", stderr(&o));
+    assert!(stderr(&o).contains("vanished after creation"), "{}", stderr(&o));
 }
