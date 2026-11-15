@@ -115,6 +115,9 @@ cp -r "$T/softhsm-tokens" "$T/kryoptic.sql" "$CAKEYS_TOKEN_TEMPLATE/"
 export CAKEYS_P11KIT_ENV_SH=$tree/nix/p11kit-test-env.sh CAKEYS_TPM_ENV_SH=$tree/nix/tpm2-test-env.sh
 export CAKEYS_P11KIT_CLIENT=$p11kit/lib/pkcs11/p11-kit-client.so CAKEYS_P11KIT_REQUIRE=1
 export CAKEYS_TPM_MODULE=$tpm2/lib/libtpm2_pkcs11.so CAKEYS_TPM_REQUIRE=1
+# A swtpm port range of this run's own, above the check phase's 24000: two local runs at once
+# (two worktrees) would otherwise take the same ports (nix/test-tokens.sh).
+export CAKEYS_TPM_PORT_BASE=${CAKEYS_TPM_PORT_BASE:-$((32000 + RANDOM % 200 * 128))}
 export CAKEYS_PKCS11_PROVIDER_DIR=$provider/lib/ossl-modules
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="bash $tree/nix/test-tokens.sh"
 # A script named here takes the place of the test run, in this environment (scripts/coverage-full.sh).

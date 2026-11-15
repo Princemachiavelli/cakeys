@@ -54,8 +54,9 @@ case $suite in
 tpm2 | references | dry_run)
   if [ -n "${CAKEYS_TPM_MODULE:-}" ]; then
     # A port pair of its own: nextest numbers the tests running at once; else by process ID.
+    # CAKEYS_TPM_PORT_BASE moves the range, for two runs on one machine (scripts/local-tests.sh).
     slot=${NEXTEST_TEST_GLOBAL_SLOT:-$(($$ % 4000))}
-    bash "$CAKEYS_TPM_ENV_SH" up "$D/tpm" $((24000 + 2 * slot)) || {
+    bash "$CAKEYS_TPM_ENV_SH" up "$D/tpm" $((${CAKEYS_TPM_PORT_BASE:-24000} + 2 * slot)) || {
       tail -n 20 "$D"/tpm/*.log >&2
       exit 1
     }
