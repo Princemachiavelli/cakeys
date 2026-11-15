@@ -97,16 +97,17 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **caprobe profiles as pkcs11-check's run scoping**: its roadmap asks for a way to say which
   curves, key sizes and mechanisms a module implements, so the vector suites skip what it
   never offered. A caprobe profile is that statement. A conversation with upstream, not code.
-- **AWS CloudHSM refuses non-private public keys** (aws-cloudhsm/5.18 [run]): `cakeys`
-  `generate` puts `CKA_PRIVATE = false` on a public half unless the spec declares it
-  (`crates/pkcs11/src/token/generate.rs`), so on CloudHSM every generation fails until a spec
-  sets `publicAttributes = { CKA_PRIVATE = true }`. The probe records it as the
-  `public-private` note. A profile row that `generate` reads would be the fix.
-- **cakeys on Cloud KMS, live** (kmsp11/1.9): `Provider::generation` maps a key spec to a Cloud
-  KMS algorithm, and refuses before creating anything it could not show as declared or prove
-  (unit-tested in `crates/kmsp11`). It has not run against Cloud KMS yet. That run should use
-  labels OpenTofu pre-creates with 24 hours and `experimental_create_multiple_versions`, so
-  delete and recreate work and a version is gone after a day.
+- **Ed25519 into AWS CloudHSM**: the module holds Ed25519 as `CKK_EC` and refuses a
+  `CKK_EC_EDWARDS` public half (`C_CreateObject`, `CKR_ATTRIBUTE_VALUE_INVALID` [run]), so the
+  non-FIPS profile's `migration.refuses` blocks the move in; it moves out. A provider hook that
+  writes the module's key type into import templates (the reverse of `key_type`), with the
+  point in whatever `CKA_EC_POINT` form it takes, would let it in; untried.
+- **Vendor mechanisms are invisible to the probe**: cryptoki 0.12 drops IDs it cannot name from
+  `C_GetMechanismList`, so CloudHSM's vendor list (EdDSA `0x80001057`, ML-DSA, AES-GCM, its
+  RFC 3394/5649 wraps) is in no profile; a provider reaches one only as a stand-in for a
+  standard mechanism.
+- **CloudHSM's `--aes-key-wrap-mapping`** (`configure-pkcs11`) maps `CKM_AES_KEY_WRAP` to a vendor
+  padding [doc]; untried, so the profiles describe the default client configuration only.
 - **The OAEP proofs use SHA-1 only**: `pop-decrypt` and `pop-unwrap` decrypt and unwrap with
   RSA-OAEP over SHA-1 (`possession.rs`). Cloud KMS refuses it, offering SHA-256 or SHA-512 only,
   so decrypt-only Cloud KMS keys need `token-asserted`. A SHA-256 proof, chosen from the key's
@@ -118,9 +119,6 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   `rsa_ops` also tries it for decryption on that key. The SHA-512 keys get the probe's SHA-256
   inputs. Both end as notes, not rows (each mechanism works on some key), but the notes are
   noise. A per-binding operation list (sign, decrypt) and digest would remove them.
-- **CloudHSM ECDH**: `C_DeriveKey` refused both the sealed and the extractable derived-secret
-  templates (the client log names `CKA_SENSITIVE` and `CKA_EXTRACTABLE`). Find the template
-  it takes before `pop-ecdh` can run there: a spike on the next `aws.sh create`.
 - **Forwarders are invisible**: pkcs11-proxy and pkcs11-proxy-ng report the backend's
   `C_GetInfo`, so their layer must be named in keys.toml (`profiles = [...]`). Worth stating in
   CAKEYS.md once A6 settles whether pkcs11-proxy-ng needs a layer at all.

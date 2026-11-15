@@ -155,8 +155,14 @@ fn aws_cluster(mode: &str) {
             }
             let mut moves = vec![("movable", "softhsm", "cloudhsm"), ("outbound", "cloudhsm", "softhsm")];
             if mode == "NON_FIPS" {
-                // Ed25519 moves out; in, the profile's migration.refuses blocks it (plan.rs tests).
+                // Ed25519 moves out; in, the profile's migration.refuses blocks it in the plan.
                 moves.push(("ed25519", "cloudhsm", "softhsm"));
+                let o = cakeys(&["create", "ed-in", "--token", "softhsm"]);
+                assert_eq!(code(&o), Some(0), "{mode}: create ed-in on softhsm: {}", text(&o));
+                created.borrow_mut().push(("ed-in", "softhsm"));
+                let o = camigrate(&["migrate", "ed-in", "--from", "softhsm", "--to", "cloudhsm", "--dry-run"]);
+                assert_eq!(code(&o), Some(UNSUPPORTED), "{mode}: ed-in into cloudhsm: {}", text(&o));
+                assert!(text(&o).contains("migration.refuses"), "{}", text(&o));
             }
             for (key, from, to) in moves {
                 let o = camigrate(&["migrate", key, "--from", from, "--to", to]);

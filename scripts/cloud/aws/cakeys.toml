@@ -66,6 +66,13 @@ class = "CKO_PRIVATE_KEY"
 keyType = "CKK_EC_EDWARDS"
 curve = "edwards25519"
 
+# Ed25519 born on SoftHSM: its move into CloudHSM is planned blocked (migration.refuses).
+[objects.ed-in]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC_EDWARDS"
+curve = "edwards25519"
+createOn = "softhsm"
+
 # SoftHSM's transport key, for moves out of CloudHSM.
 [objects.softhsm-transport]
 class = "CKO_PRIVATE_KEY"
@@ -137,6 +144,12 @@ object = "ed25519"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
 tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-ed25519" } }
 tokens.softhsm = { locator = { CKA_LABEL = "cakeys-ed25519" } }
+
+[specs.ed-in]
+object = "ed-in"
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
+tokens.softhsm = { locator = { CKA_LABEL = "cakeys-ed-in" } }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-ed-in" } }
 
 [specs.softhsm-transport]
 object = "softhsm-transport"
