@@ -1,0 +1,32 @@
+--- a/src/mechanism/mod.rs
++++ b/src/mechanism/mod.rs
+@@ -513,6 +513,11 @@
+         }
+     }
+ 
++    /// A mechanism type by its value, named or not: for values a token reports.
++    pub(crate) fn from_raw(val: CK_MECHANISM_TYPE) -> MechanismType {
++        MechanismType { val }
++    }
++
+     pub(crate) fn stringify(mech: CK_MECHANISM_TYPE) -> String {
+         match mech {
+             CKM_RSA_PKCS_KEY_PAIR_GEN => String::from(stringify!(CKM_RSA_PKCS_KEY_PAIR_GEN)),
+--- a/src/object.rs
++++ b/src/object.rs
+@@ -1262,10 +1262,14 @@
+                 if val.len() % size_of::<CK_MECHANISM_TYPE>() != 0 {
+                     return Err(Error::InvalidValue);
+                 }
++                // The token's list is data it holds: a mechanism this crate has no name for
++                // (one of the many it does not map, or a vendor's) is kept as its value, not a
++                // reason to refuse the whole attribute.
+                 let types = val
+                     .chunks_exact(size_of::<CK_MECHANISM_TYPE>())
+                     .map(|bytes| -> Result<MechanismType> {
+-                        CK_MECHANISM_TYPE::from_ne_bytes(bytes.try_into()?).try_into()
++                        let raw = CK_MECHANISM_TYPE::from_ne_bytes(bytes.try_into()?);
++                        Ok(MechanismType::try_from(raw).unwrap_or(MechanismType::from_raw(raw)))
+                     })
+                     .collect::<Result<Vec<_>>>()?;
+                 Ok(Attribute::AllowedMechanisms(types))

@@ -823,6 +823,22 @@ pub fn key_type_of(object: &ObjectCfg) -> Result<KeyType> {
     })
 }
 
+/// The generation of a hash-bound HMAC key type: PKCS#11 3.0's `CKM_SHA*_KEY_GEN` for the type
+/// (`CKM_GENERIC_SECRET_KEY_GEN` makes `CKK_GENERIC_SECRET` keys only; `SoftHSM` and kryoptic
+/// refuse it for an HMAC type). `None` for any other key type. By core's key type: cryptoki's
+/// constants for these types collide without the Nix build's patch.
+#[must_use]
+pub fn hmac_key_gen(kt: Kt) -> Option<Mechanism<'static>> {
+    Some(match kt {
+        Kt::Sha1Hmac => Mechanism::Sha1KeyGen,
+        Kt::Sha224Hmac => Mechanism::Sha224KeyGen,
+        Kt::Sha256Hmac => Mechanism::Sha256KeyGen,
+        Kt::Sha384Hmac => Mechanism::Sha384KeyGen,
+        Kt::Sha512Hmac => Mechanism::Sha512KeyGen,
+        _ => return None,
+    })
+}
+
 /// cryptoki 0.12.1 (and main) gives `SHA224/384/512_HMAC` the value of `CKK_SHA256_HMAC` (0x2b), so such
 /// keys could be neither created nor told apart. The Nix build patches it
 /// (nix/patches/cryptoki-hmac-key-types.patch); refuse rather than misidentify without the patch.

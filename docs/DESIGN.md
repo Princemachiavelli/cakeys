@@ -149,12 +149,13 @@ Strongest first. The mode is recorded per realisation; a downgrade fails (exit 1
 | Mode | Used for |
 |---|---|
 | `direct` | public keys, certificates, data objects (hash of public material) |
-| `commitment` | secret keys whose declared usage bits allow a commitment scheme |
+| `commitment` | secret keys whose declared usage bits allow a commitment scheme their declared `CKA_ALLOWED_MECHANISMS` (if any) also allows; only those are computed |
 | `wrap-rebind` | extractable secret keys without such bits. The key is wrapped under a session KEK, unwrapped as a session copy that allows every scheme of its type, committed, then both are destroyed. Computes every scheme (AES: all four; DES3: both check values). |
 
 A secret key that fits none of these — non-extractable, with no usage bit a commitment scheme can
-use (derive-only, unwrap-only, `CKA_ALLOWED_MECHANISMS` limited to random-IV modes) — is refused
-at validation (17), naming the spec change that would identify it —
+use (derive-only, unwrap-only), or with a declared `CKA_ALLOWED_MECHANISMS` that allows none of
+the commitments its bits enable (random-IV modes only) — is refused at validation (17), naming
+the spec change that would identify it —
 `a_secret_key_without_a_reverifiable_identity_is_refused`.
 
 **Weaker modes may have to come back** (review A6 removed them unbuilt). Such keys are common in
@@ -207,7 +208,12 @@ key to its identity:
        brainpoolP384r1: SHA-384; P-521: SHA-512): `CKM_ECDSA_SHA*` if offered, else `CKM_ECDSA`
        over the host's digest;
      - Ed25519: `CKM_EDDSA` (pure);
-     - RSA: `CKM_SHA256_RSA_PKCS`.
+     - RSA: `CKM_SHA256_RSA_PKCS`, else raw `CKM_RSA_PKCS` over the host's SHA-256 `DigestInfo` (the
+       same signature).
+
+     The token must offer the mechanism and the key's own `CKA_ALLOWED_MECHANISMS`, where it
+     can be read, must allow it: a key pinned to `CKM_ECDSA` or `CKM_RSA_PKCS` proves through the
+     fallback (the object matrix, OPEN.md). A proof records only its binding, never the mechanism.
 
      On a key the token reports `CKA_ALWAYS_AUTHENTICATE` (declared or not), the same proof runs
      under the key's per-use policy and is recorded as **`pop-sign-pin`**:

@@ -66,7 +66,7 @@ impl Kind {
             Kind::Des3 => &["CKM_DES3_ECB", "CKM_DES3_CBC_PAD"],
             Kind::Generic | Kind::HmacSha256 => &["CKM_SHA256_HMAC", "CKM_SHA_1_HMAC"],
             Kind::Ec => &["CKM_ECDSA", "CKM_ECDH1_DERIVE"],
-            Kind::Rsa => &["CKM_SHA256_RSA_PKCS", "CKM_RSA_PKCS_OAEP"],
+            Kind::Rsa => &["CKM_SHA256_RSA_PKCS", "CKM_RSA_PKCS", "CKM_RSA_PKCS_OAEP"],
             Kind::Ed25519 => &["CKM_EDDSA"],
         }
     }
@@ -224,6 +224,7 @@ fn mechanism(name: &str) -> MechanismType {
         "CKM_ECDSA" => MechanismType::ECDSA,
         "CKM_ECDH1_DERIVE" => MechanismType::ECDH1_DERIVE,
         "CKM_SHA256_RSA_PKCS" => MechanismType::SHA256_RSA_PKCS,
+        "CKM_RSA_PKCS" => MechanismType::RSA_PKCS,
         "CKM_RSA_PKCS_OAEP" => MechanismType::RSA_PKCS_OAEP,
         "CKM_EDDSA" => MechanismType::EDDSA,
         other => panic!("no mechanism {other} in the grid"),

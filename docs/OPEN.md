@@ -13,28 +13,19 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   gets, or why none. Goal: keys.toml can declare any sane object, even when its assurance is
   low, and the matrix says what that assurance is. Clean fixtures cakeys made itself are not
   evidence of what deployments need. **Built for SoftHSM and kryoptic** (2026-11-15,
-  PLAN.md A4): `profiles/coverage/objects/<token>.toml`, 1016 objects each, adopted as a
+  PLAN.md A4): `profiles/coverage/objects/<token>.toml`, 1032 objects each, adopted as a
   legacy key arrives (crates/cli/tests/reference/matrix.rs). Still open: tpm2-pkcs11, imported
-  private keys, certificates and data objects. Its findings follow.
-- **Proofs and commitments ignore `CKA_ALLOWED_MECHANISMS`** (object matrix). cakeys asks for
-  the mechanism it prefers, and when the key may not use it the run fails (15), though another
-  the key allows would do: an EC key allowed only `CKM_ECDSA` (the host-digest fallback exists
-  but is not tried), an AES key with `CKA_SIGN` and `CKA_ENCRYPT` allowed only `CKM_AES_CMAC` or
-  only `CKM_AES_ECB` (every enabled commitment is computed, and the disallowed one fails the
-  whole run). Keys pinned to one mechanism by policy are common: HSM key policies, PCI
-  payment keys, CloudHSM and Luna templates. Choose within the allowed list; compute the
-  commitments it allows (at least one) and record those. The refusal also says "proving
-  possession needs CKA_SIGN" of a key that has it.
-- **An allowed-mechanisms list cryptoki cannot name fails the read** (16, object matrix).
-  cryptoki 0.12 maps few `CKM_` values back (no `CKM_DES3_CBC_PAD`, no vendor mechanism), so
-  reading `CKA_ALLOWED_MECHANISMS` of a key whose list holds one fails with "Feature not
-  supported". A key whose policy names a vendor mechanism (CloudHSM's EdDSA is
-  `0x80001057`, CLOUD_HSM.md) is unreadable. Read the attribute raw, keep unknown values as
-  numbers; an upstream cryptoki change to keep an unknown mechanism type rather than refuse it.
-- **HMAC-typed keys cannot be generated** (object matrix). `autoCreate` of a `CKK_SHA*_HMAC` key
-  generates with `CKM_GENERIC_SECRET_KEY_GEN`, which both reference tokens refuse for an HMAC
-  key type (`CKR_TEMPLATE_INCONSISTENT`); kryoptic offers PKCS#11 3.0's `CKM_SHA*_KEY_GEN`,
-  SoftHSM 2.7 none. Generate with the type's own mechanism where the profile has it.
+  private keys, certificates and data objects. Its first three findings are fixed: proofs choose
+  within the key's `CKA_ALLOWED_MECHANISMS` (raw `CKM_ECDSA`, raw `CKM_RSA_PKCS` over a
+  `DigestInfo`), a declared list narrows the commitments computed (DESIGN §3.4, §3.6), an
+  unnamed mechanism in the list reads (patch `cryptoki-allowed-mechanisms-unnamed`), and an
+  HMAC-typed key generates with `CKM_SHA*_KEY_GEN` (kryoptic; SoftHSM 2.7 refuses at
+  validation). The rest follow.
+- **Upstream cryptoki: keep an unnamed `CKA_ALLOWED_MECHANISMS` entry.** 0.12.1's
+  `MechanismType::try_from` refuses any value it has no name for — vendor mechanisms (CloudHSM's
+  EdDSA is `0x80001057`, CLOUD_HSM.md) and some 385 standard ones (`CKM_DES3_CBC_PAD`), so the
+  whole read fails. Upstream main accepts vendor values but not unnamed standard ones. Our patch
+  keeps the raw value; a PR candidate, not filed.
 - **Weaker identity modes for keys cakeys did not create** (DESIGN §3.4). Non-extractable keys
   with no usage bit a commitment can use (derive-only, unwrap-only, random-IV-only allowed
   mechanisms) are common, especially existing and legacy keys, and are refused today (17).

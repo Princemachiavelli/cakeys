@@ -134,7 +134,11 @@ impl Token {
             kt => {
                 let len =
                     object.value_len.ok_or_else(|| KmError::Validation("secret keys need valueLen (bytes)".into()))?;
-                let mech = if kt == KeyType::AES { Mechanism::AesKeyGen } else { Mechanism::GenericSecretKeyGen };
+                let mech = match object.key_type.and_then(hmac_key_gen) {
+                    Some(m) => m,
+                    None if kt == KeyType::AES => Mechanism::AesKeyGen,
+                    None => Mechanism::GenericSecretKeyGen,
+                };
                 let mut t = common;
                 t.extend([
                     Attribute::Class(ObjectClass::SECRET_KEY),

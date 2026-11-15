@@ -1711,11 +1711,19 @@ fn hmac_key_types_commit_with_their_own_hash() {
         };
         assert_eq!(e.locked_id(name, "commitment"), want, "{name}");
     }
-    // There is no key generation for hash-bound HMAC types: refused up front, nothing created.
-    let o = e.km(&["realise", "gen384", "--token", "ref", "--no-update-lock"]);
-    assert_eq!(code(&o), 15);
-    assert!(stderr(&o).contains("no key generation for CKK_SHA384_HMAC"));
-    assert_eq!(s.labelled("hmac-gen384"), []);
+    // A hash-bound HMAC type generates with its own CKM_SHA384_KEY_GEN (PKCS#11 3.0): on a token
+    // without it, refused up front with nothing created.
+    if REF.hmac_key_gen {
+        let o = e.km(&["realise", "gen384", "--token", "ref", "--update-lock"]);
+        assert_eq!(code(&o), 0, "{}", stderr(&o));
+        assert_eq!(s.labelled("hmac-gen384").len(), 1);
+        assert_eq!(e.lock()["realisations"]["gen384"]["ref"]["mode"].as_str(), Some("commitment"));
+    } else {
+        let o = e.km(&["realise", "gen384", "--token", "ref", "--no-update-lock"]);
+        assert_eq!(code(&o), 15, "{}", stderr(&o));
+        assert!(stderr(&o).contains("CKM_SHA384_KEY_GEN"), "{}", stderr(&o));
+        assert_eq!(s.labelled("hmac-gen384"), []);
+    }
 }
 
 #[test]
