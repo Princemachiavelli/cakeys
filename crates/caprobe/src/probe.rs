@@ -15,7 +15,7 @@ use cakeys_core::pop::{self, OaepHash, RsaPadding};
 use cakeys_core::sig::{self, EcdsaHash, Encoding};
 use cakeys_core::types::KeyType as Kt;
 use cakeys_core::{KmError, Result};
-use cakeys_pkcs11::token::{self, Token};
+use cakeys_pkcs11::token::{self, Token, derive_any, is_policy_default, show, template_refusal};
 use cakeys_pkcs11::{BoundKey, keygen_mechanism};
 use cakeys_profile::baseline::CURVES;
 use cakeys_profile::{GenerateRow, MatchInfo, Mode, Profile};
@@ -40,78 +40,6 @@ fn clean(s: &str) -> String {
 /// The `CKR_*` name of a failure, for notes: cryptoki's `Display` is the spec's prose, which
 /// changes with the binding and would make a regeneration differ with no behaviour change.
 /// The name comes from `RvError`'s variant (`GeneralError` -> `CKR_GENERAL_ERROR`).
-/// A refusal of the template, not of the operation: what dropping one of the probe's own
-/// policy defaults may cure ([`is_policy_default`]).
-fn template_refusal(e: &CkError) -> bool {
-    matches!(
-        e,
-        CkError::Pkcs11(
-            RvError::AttributeValueInvalid
-                | RvError::AttributeTypeInvalid
-                | RvError::TemplateInconsistent
-                | RvError::TemplateIncomplete,
-            _
-        )
-    )
-}
-
-/// The attributes a probe template carries as policy defaults, which the module may refuse
-/// and still make the object: never what defines the object (class, key type, curve, size) or
-/// what the operation probes then use (`CKA_SIGN`, `CKA_DERIVE`, ...), whose loss would turn
-/// into false `subtract` rows.
-fn is_policy_default(a: &Attribute) -> bool {
-    matches!(a, Attribute::Private(_) | Attribute::Sensitive(_) | Attribute::Extractable(_))
-}
-
-/// `C_DeriveKey` with `template` as asked; on a template refusal only, once more with
-/// `CKA_VALUE_LEN` of the secret's `len` (AWS `CloudHSM` wants a length), and without one policy
-/// default at a time (it refuses `CKA_EXTRACTABLE = false` on a derived secret [run]). The
-/// derived handle, the template that took, and what was changed from the one asked; the first
-/// refusal when nothing takes.
-fn derive_any(
-    s: &Session,
-    mech: &Mechanism,
-    private: ObjectHandle,
-    template: &[Attribute],
-    len: usize,
-) -> std::result::Result<(ObjectHandle, Vec<Attribute>, Option<String>), CkError> {
-    let first = match s.derive_key(mech, private, template) {
-        Ok(h) => return Ok((h, template.to_vec(), None)),
-        Err(e) if template_refusal(&e) => e,
-        Err(e) => return Err(e),
-    };
-    let with_len = [template, &[Attribute::ValueLen((len as u64).into())]].concat();
-    let mut tries = vec![(with_len.clone(), format!("CKA_VALUE_LEN = {len} added"))];
-    for base in [template, &with_len[..]] {
-        for default in template.iter().filter(|a| is_policy_default(a)) {
-            let without: Vec<_> = base.iter().filter(|a| *a != default).cloned().collect();
-            let added =
-                if base.len() > template.len() { format!("CKA_VALUE_LEN = {len} added, ") } else { String::new() };
-            tries.push((without, format!("{added}{} dropped", show(default))));
-        }
-    }
-    for (t, what) in tries {
-        if let Ok(h) = s.derive_key(mech, private, &t) {
-            return Ok((
-                h,
-                t,
-                Some(format!("the template as asked is refused ({}); derived with {what}", ckr(&first))),
-            ));
-        }
-    }
-    Err(first)
-}
-
-/// `CKA_PRIVATE = false`, for notes.
-fn show(a: &Attribute) -> String {
-    match a {
-        Attribute::Private(b) | Attribute::Sensitive(b) | Attribute::Extractable(b) => {
-            format!("{} = {b}", a.attribute_type())
-        }
-        other => other.attribute_type().to_string(),
-    }
-}
-
 fn ckr(e: &CkError) -> String {
     match e {
         CkError::Pkcs11(RvError::VendorDefined(rv) | RvError::UnknownErrorCode(rv), _) => {
@@ -969,21 +897,30 @@ fn derive(made: &mut Made, profile: &mut Profile, private: ObjectHandle, spki: &
     let len = ch.secret.len();
     let sealed_path = match derive_any(s, &mech, private, &sealed, len) {
         Ok((h, used, changed)) => {
-            // Sealed is what the derived secret reports, not what the template asked for.
+            // The sealed path is the one that MACs on the token (what `derive.sealed` tells
+            // pop-ecdh); what the secret reports, when not what was asked, is a note (AWS
+            // CloudHSM: sensitive, but extractable [run]).
             let reads =
                 s.get_attributes(h, &[AttributeType::Sensitive, AttributeType::Extractable]).unwrap_or_default();
-            let observed_sealed =
-                reads.contains(&Attribute::Sensitive(true)) && reads.contains(&Attribute::Extractable(false));
+            if !(reads.contains(&Attribute::Sensitive(true)) && reads.contains(&Attribute::Extractable(false))) {
+                profile.notes.insert(
+                    "derive.secret".into(),
+                    format!(
+                        "{on}: the derived secret reports {}",
+                        reads.iter().map(show).collect::<Vec<_>>().join(", ")
+                    ),
+                );
+            }
             let mac = made.advertises(MechanismType::SHA256_HMAC).then(|| s.sign(&Mechanism::Sha256Hmac, h, MSG));
             destroy(h, "sealed", profile);
-            if let Some(changed) = changed {
-                profile.notes.insert("derive.template".into(), format!("{on}: {changed}"));
+            if let Some((changed, first)) = changed {
+                profile.notes.insert(
+                    "derive.template".into(),
+                    format!("{on}: the template as asked is refused ({}); derived with {changed}", ckr(&first)),
+                );
             }
             sealed = used;
             match mac {
-                None | Some(Ok(_)) if !observed_sealed => {
-                    Err(format!("the derived secret reports {}", reads.iter().map(show).collect::<Vec<_>>().join(", ")))
-                }
                 None => Ok(Ok(())),
                 Some(Ok(tag)) if pop::ct_eq(&ch.mac, &tag) => Ok(Ok(())),
                 Some(Ok(_)) => Ok(Err("the derived secret is not the shared secret".to_owned())),
@@ -1001,8 +938,11 @@ fn derive(made: &mut Made, profile: &mut Profile, private: ObjectHandle, spki: &
         }
         Err(why) => match derive_any(s, &mech, private, &open, len) {
             Ok((h, used, changed)) => {
-                if let Some(changed) = changed {
-                    profile.notes.insert("derive.template".into(), format!("{on}: {changed}"));
+                if let Some((changed, first)) = changed {
+                    profile.notes.insert(
+                        "derive.template".into(),
+                        format!("{on}: the template as asked is refused ({}); derived with {changed}", ckr(&first)),
+                    );
                 }
                 open = used;
                 let value = s.get_attributes(h, &[AttributeType::Value]).ok().and_then(|v| v.into_iter().next());

@@ -61,7 +61,7 @@ firmware = "10.23"
 oaep = ["SHA-1", "SHA-256"]
 
 [decrypt]
-oaep = ["SHA-1", "SHA-256"]
+oaep = ["SHA-1", "SHA-256", "SHA-512"]
 
 [subtract]
 mechanisms = ["CKM_ECDH1_DERIVE"]
@@ -84,13 +84,14 @@ cannot-bits = [1024]
 
 [notes]
 "CKK_RSA at 1024" = "modulusBits = 1024: CKR_ATTRIBUTE_VALUE_INVALID"
-"CKM_ECDH1_DERIVE" = "secp256r1: a sealed (non-extractable) derived secret is refused: CKR_ATTRIBUTE_VALUE_INVALID; extractable: CKR_ATTRIBUTE_VALUE_INVALID"
+"CKM_ECDH1_DERIVE" = "secp256r1: the derived secret reports CKA_SENSITIVE = true, CKA_EXTRACTABLE = true; the extractable derived secret's CKA_VALUE is unreadable"
 "brainpoolP256r1" = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID"
 "brainpoolP384r1" = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID"
 "cryptoki" = "the module reports Cryptoki 2.40"
-"curve25519" = "generation refused: CKR_MECHANISM_INVALID"
-"curve448" = "generation refused: CKR_MECHANISM_INVALID"
-"edwards25519" = "generation refused: CKR_MECHANISM_INVALID"
-"edwards448" = "generation refused: CKR_MECHANISM_INVALID"
-"public-private" = "a public key with CKA_PRIVATE = false: CKR_ATTRIBUTE_VALUE_INVALID; generated without it, the public key reads CKA_PRIVATE = true"
+"curve25519" = "not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN"
+"curve448" = "not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN"
+"derive.template" = "secp256r1: the template as asked is refused (CKR_ATTRIBUTE_VALUE_INVALID); derived with CKA_VALUE_LEN = 32 added, CKA_SENSITIVE = false dropped"
+"edwards25519" = "not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN"
+"edwards448" = "not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN"
+"template.public.CKA_PRIVATE" = "CKA_PRIVATE = false on a public object: CKR_ATTRIBUTE_VALUE_INVALID; made without it, the object reads CKA_PRIVATE = true"
 "unwrap-template" = "CKA_VALUE_LEN: CKR_ATTRIBUTE_TYPE_INVALID"

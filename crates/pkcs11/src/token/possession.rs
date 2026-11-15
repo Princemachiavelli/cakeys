@@ -168,6 +168,7 @@ impl Token {
                 Attribute::Extractable(false),
                 Attribute::Sign(true),
             ],
+            ch.secret.len(),
         )?;
         let session = rw.as_ref().unwrap_or(&self.session);
         // A session object: dropped with the session even if destroying it fails here.
@@ -204,6 +205,7 @@ impl Token {
                 Attribute::Sensitive(false),
                 Attribute::Extractable(true),
             ],
+            ch.secret.len(),
         )?;
         let session = rw.as_ref().unwrap_or(&self.session);
         let value = session.get_attributes(derived, &[AttributeType::Value]);
@@ -242,14 +244,17 @@ impl Token {
         h: ObjectHandle,
         peer: &[u8],
         template: &[Attribute],
+        len: usize,
     ) -> Result<(ObjectHandle, Option<Session>)> {
         let mech = Mechanism::Ecdh1Derive(Ecdh1DeriveParams::new(EcKdf::null(), peer));
         let failed = self.proof_failed("C_DeriveKey", "derive", "CKA_DERIVE");
-        match self.session.derive_key(&mech, h, template) {
-            Ok(derived) => Ok((derived, None)),
+        // A module refusing the template's own policy defaults derives without them
+        // (`derive_any`): the proof needs only the shared secret.
+        match derive_any(&self.session, &mech, h, template, len) {
+            Ok((derived, ..)) => Ok((derived, None)),
             Err(CkError::Pkcs11(RvError::SessionReadOnly, _)) => {
                 let rw = self.extra_session(Access::Write)?;
-                let derived = rw.derive_key(&mech, h, template).map_err(failed)?;
+                let (derived, ..) = derive_any(&rw, &mech, h, template, len).map_err(failed)?;
                 Ok((derived, Some(rw)))
             }
             Err(e) => Err(failed(e)),
@@ -457,4 +462,83 @@ fn proof_mechanisms(object: &ObjectCfg, binding: Binding) -> Result<Vec<Vec<Mech
         Binding::PopDecrypt => vec![vec![MechanismType::RSA_PKCS_OAEP]],
         Binding::PopUnwrap => vec![vec![MechanismType::RSA_PKCS_OAEP], vec![MechanismType::SHA256_HMAC]],
     })
+}
+
+/// A refusal of the template, not of the operation: what dropping one of a template's own
+/// policy defaults may cure ([`is_policy_default`]).
+#[must_use]
+pub fn template_refusal(e: &CkError) -> bool {
+    matches!(
+        e,
+        CkError::Pkcs11(
+            RvError::AttributeValueInvalid
+                | RvError::AttributeTypeInvalid
+                | RvError::TemplateInconsistent
+                | RvError::TemplateIncomplete,
+            _
+        )
+    )
+}
+
+/// The attributes a template carries as policy defaults, which a module may refuse and still
+/// make the object: never what defines the object (class, key type, curve, size) or what it is
+/// then used for (`CKA_SIGN`, `CKA_DERIVE`, ...).
+#[must_use]
+pub fn is_policy_default(a: &Attribute) -> bool {
+    matches!(a, Attribute::Private(_) | Attribute::Sensitive(_) | Attribute::Extractable(_))
+}
+
+/// `CKA_PRIVATE = false`, for notes.
+#[must_use]
+pub fn show(a: &Attribute) -> String {
+    match a {
+        Attribute::Private(b) | Attribute::Sensitive(b) | Attribute::Extractable(b) => {
+            format!("{} = {b}", a.attribute_type())
+        }
+        other => other.attribute_type().to_string(),
+    }
+}
+
+/// What [`derive_any`] derived: the handle, the template that took, and, when that is not the
+/// one asked, what was changed and the refusal of the one asked.
+pub type Derived = (ObjectHandle, Vec<Attribute>, Option<(String, CkError)>);
+
+/// `C_DeriveKey` with `template` as asked; on a template refusal only, once more with
+/// `CKA_VALUE_LEN` of the secret's `len` and without one policy default at a time (AWS
+/// `CloudHSM` refuses `CKA_EXTRACTABLE = false` on a derived secret [run]). The derived handle,
+/// the template that took, and, when that is not the one asked, what was changed and the refusal
+/// of the one asked; that first refusal is the error when nothing takes. `caprobe` records the
+/// change; a proof of possession only needs a secret.
+///
+/// # Errors
+///
+/// The module's refusal of the template as asked.
+pub fn derive_any(
+    s: &Session,
+    mech: &Mechanism,
+    key: ObjectHandle,
+    template: &[Attribute],
+    len: usize,
+) -> std::result::Result<Derived, CkError> {
+    let first = match s.derive_key(mech, key, template) {
+        Ok(h) => return Ok((h, template.to_vec(), None)),
+        Err(e) if template_refusal(&e) => e,
+        Err(e) => return Err(e),
+    };
+    let with_len = [template, &[Attribute::ValueLen((len as u64).into())]].concat();
+    let mut tries = vec![(with_len.clone(), format!("CKA_VALUE_LEN = {len} added"))];
+    for base in [template, &with_len[..]] {
+        for default in template.iter().filter(|a| is_policy_default(a)) {
+            let without: Vec<_> = base.iter().filter(|a| *a != default).cloned().collect();
+            let added =
+                if base.len() > template.len() { format!("CKA_VALUE_LEN = {len} added, ") } else { String::new() };
+            tries.push((without, format!("{added}{} dropped", show(default))));
+        }
+    }
+    for (t, what) in tries {
+        if let Ok(h) = s.derive_key(mech, key, &t) {
+            return Ok((h, t, Some((what, first))));
+        }
+    }
+    Err(first)
 }

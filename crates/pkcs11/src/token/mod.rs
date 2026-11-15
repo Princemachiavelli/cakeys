@@ -30,7 +30,7 @@ mod uri;
 
 pub use identity::commit_mechanism;
 pub use policy::bool_attr;
-pub use possession::{ProofSide, proof_refusal};
+pub use possession::{Derived, ProofSide, derive_any, is_policy_default, proof_refusal, show, template_refusal};
 pub use uri::locator_attrs;
 use uri::pct_all;
 
