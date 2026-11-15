@@ -544,3 +544,14 @@ fn a_certificate_names_its_key_and_an_ed25519_proof_its_signer() {
         assert!(matches!(&e, KmError::Conflict(m) if m.contains("did not sign for the public key")), "{e}");
     }
 }
+
+/// A secret's length is bounded so its commitment label cannot overflow: the largest length
+/// that fits loads, one more is refused.
+#[test]
+fn the_value_length_bound_is_inclusive() {
+    let secret = |len: u64| format!("class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = {len}");
+    let most = u64::from(u32::MAX);
+    assert_eq!(load(&keys(&secret(most), SIGN, "")).unwrap().objects["o"].value_len, Some(most));
+    let said = load(&keys(&secret(most + 1), SIGN, "")).unwrap_err().to_string();
+    assert!(said.contains("is out of range"), "{said}");
+}

@@ -289,6 +289,7 @@ mod tests {
             [mechanisms]
             CKM_AES_KEY_WRAP = 0x2109
             CKM_SHA512_HMAC = 0x271
+            CKM_ECDSA = 0x1041
             [key-types]
             CKK_AES = 0x1f
             CKK_EC = 0x3
@@ -439,5 +440,80 @@ mod tests {
         assert!(matches!(stack.generate("CKK_EC", Some("secp256r1"), None), Verdict::Yes { .. }));
         assert!(matches!(stack.generate("CKK_RSA", None, Some(3072)), Verdict::Yes { .. }));
         unknown(stack.generate("CKK_RSA", None, Some(8192)), "probed 2048, 4096 bits only");
+    }
+
+    /// A mechanism is usable when the module advertises it or the profile adds it, and no
+    /// other; a verdict prints its answer, who decided, and the note.
+    #[test]
+    fn advertised_or_added_mechanisms_are_yes_and_verdicts_print() {
+        let b = baseline();
+        let module = profile(
+            "profile = \"m/1\"\nmode = \"observed\"\nadvertise = [\"CKM_AES_KEY_WRAP\"]\nadd = [\"CKM_SHA512_HMAC\"]\n\
+             [notes]\nCKM_SHA512_HMAC = \"works unlisted\"\n",
+        );
+        let stack = eff(&b, Some(&module), &[]);
+        assert_eq!(stack.mechanism("CKM_AES_KEY_WRAP").to_string(), "yes (m/1)");
+        assert_eq!(stack.mechanism("CKM_SHA512_HMAC").to_string(), "yes (m/1): works unlisted");
+        assert_eq!(stack.mechanism("CKM_ECDSA").to_string(), "no — m/1: not advertised");
+        assert_eq!(stack.mechanism("CKM_NOPE").to_string(), "unknown — not a mechanism of baseline test");
+        assert_eq!(Verdict::No { by: "layer".into(), note: None }.to_string(), "no — layer");
+    }
+
+    /// A layer subtracts the key types it names and no other, and a size bound, a layer's or
+    /// the module's own, is inclusive at both ends.
+    #[test]
+    fn key_types_and_size_bounds_decide_exactly() {
+        let b = baseline();
+        let layer = profile(
+            "profile = \"layer\"\nmode = \"delta\"\n[subtract]\nkey-types = [\"CKK_AES\"]\nnote = \"no AES here\"\n\
+             [[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_RSA\"\nmin-bits = 2048\nmax-bits = 4096\n\
+             note = \"2048 to 4096\"\n",
+        );
+        let open = profile(
+            "profile = \"m/1\"\nmode = \"observed\"\n[generate.\"CKK_RSA\"]\n[generate.\"CKK_EC\"]\n[generate.\"CKK_AES\"]\n",
+        );
+        let layers = [&layer];
+        let stack = eff(&b, Some(&open), &layers);
+        let said = |v: Verdict| v.to_string();
+        assert_eq!(said(stack.generate("CKK_AES", None, None)), "no — layer: no AES here");
+        assert_eq!(said(stack.generate("CKK_EC", None, None)), "yes (m/1)");
+        for (bits, want) in [
+            (1024, "no — layer: 2048 to 4096"),
+            (2048, "yes (m/1)"),
+            (4096, "yes (m/1)"),
+            (8192, "no — layer: 2048 to 4096"),
+        ] {
+            assert_eq!(said(stack.generate("CKK_RSA", None, Some(bits))), want, "{bits} bits behind the layer");
+        }
+        // A restriction on another operation or key type bounds nothing here.
+        assert_eq!(said(stack.generate("CKK_EC", None, Some(8192))), "yes (m/1)");
+
+        let bounded = profile(
+            "profile = \"m/2\"\nmode = \"observed\"\n[generate.\"CKK_RSA\"]\nmin-bits = 2048\nmax-bits = 4096\n\
+             [notes]\nCKK_RSA = \"2048 to 4096 only\"\n",
+        );
+        let stack = eff(&b, Some(&bounded), &[]);
+        for (bits, want) in [
+            (1024, "no — m/2: 2048 to 4096 only"),
+            (2048, "yes (m/2): 2048 to 4096 only"),
+            (4096, "yes (m/2): 2048 to 4096 only"),
+            (8192, "no — m/2: 2048 to 4096 only"),
+        ] {
+            assert_eq!(said(stack.generate("CKK_RSA", None, Some(bits))), want, "{bits} bits in the module's range");
+        }
+    }
+
+    /// A parameter set belongs to the PQ key type its name says, and to none otherwise.
+    #[test]
+    fn parameter_sets_name_their_key_type() {
+        for (name, want) in [
+            ("CKP_ML_DSA_65", Some("CKK_ML_DSA")),
+            ("CKP_ML_KEM_768", Some("CKK_ML_KEM")),
+            ("CKP_SLH_DSA_SHA2_128S", Some("CKK_SLH_DSA")),
+            ("CKP_PKCS5_PBKD2_HMAC_SHA1", None),
+            ("ML_DSA_65", None),
+        ] {
+            assert_eq!(parameter_set_key_type(name), want, "{name}");
+        }
     }
 }
