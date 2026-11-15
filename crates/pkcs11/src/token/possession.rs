@@ -512,7 +512,8 @@ pub type Derived = (ObjectHandle, Vec<Attribute>, Option<(String, CkError)>);
 ///
 /// # Errors
 ///
-/// The module's refusal of the template as asked.
+/// The module's refusal of the template as asked; or, when a changed template passes and the
+/// module refuses it for another reason (a read-only session), that refusal.
 pub fn derive_any(
     s: &Session,
     mech: &Mechanism,
@@ -536,8 +537,13 @@ pub fn derive_any(
         }
     }
     for (t, what) in tries {
-        if let Ok(h) = s.derive_key(mech, key, &t) {
-            return Ok((h, t, Some((what, first))));
+        match s.derive_key(mech, key, &t) {
+            Ok(h) => return Ok((h, t, Some((what, first)))),
+            // Past the template, refused for something else: the caller's to answer (AWS
+            // CloudHSM checks the template before the session, then refuses a read-only one
+            // [run]; `derive_for_proof` derives again read-write).
+            Err(e) if !template_refusal(&e) => return Err(e),
+            Err(_) => {}
         }
     }
     Err(first)

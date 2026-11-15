@@ -303,11 +303,18 @@ $cli/bin/cloudhsm-cli user list
 EOF
 }
 
+# The module profile of this cluster's mode for the client package $1: aws-cloudhsm/<major.minor>
+# +hsm2m-fips or -non-fips. The two tie on every match key (PKCS#11 reports no mode, D12), so
+# `cakeys` and `camigrate` name it as the cloudhsm token's provider.
+profile_name() {
+  echo "aws-cloudhsm/$(sed -E 's/.*-([0-9]+\.[0-9]+)\.[0-9]+$/\1/' <<<"$1")+hsm2m-$stack"
+}
+
 probe() {
   tf_init
   local p11 opensc bin label name out rc=0
   p11=$(pkg cloudhsm-pkcs11)
-  name=${1:-aws-cloudhsm/$(sed -E 's/.*-([0-9]+\.[0-9]+)\.[0-9]+$/\1/' <<<"$p11")+hsm2m-$stack}
+  name=${1:-$(profile_name "$p11")}
   out=$repo/profiles/modules/$name.toml
   opensc=$(nix build --no-link --print-out-paths --inputs-from "$repo" nixpkgs#opensc)
   # Only the Nix-built caprobe may write a profile (docs/CAPROBE.md); its check phase is skipped
@@ -368,7 +375,8 @@ tool() {
   wait_runner
   copy "$p11" "$softhsm" "$(dirname "$(dirname "$bin")")"
   runner install -D -m 600 /dev/stdin /run/cakeys/pin <<<"caprobe:$(secret cu)"
-  runner install -D -m 644 /dev/stdin /root/cakeys/keys.toml <"$tf/cakeys.toml"
+  sed "s|^\[tokens.cloudhsm\]\$|&\nprovider = \"$(profile_name "$p11")\"|" "$tf/cakeys.toml" |
+    runner install -D -m 644 /dev/stdin /root/cakeys/keys.toml
   runner bash -s <<EOF
 set -euo pipefail
 mkdir -p /root/softhsm/tokens

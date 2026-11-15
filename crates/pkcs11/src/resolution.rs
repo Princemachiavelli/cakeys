@@ -136,9 +136,14 @@ pub fn resolve(
     //    under it (D9/D10), so it is chosen by the most match keys: the expressed version
     //    first (C_GetInfo; a module hiding it as 0.0 records none), then the token's model and
     //    firmware. Anything short of all of them is flagged in the notes.
-    let family = cfg.provider.as_deref().unwrap_or(provider);
-    let candidates: Vec<&Profile> =
-        set.all().iter().filter(|p| p.mode == Mode::Observed && p.family() == family).collect();
+    //    A provider naming one profile of its family takes that one alone.
+    let named = cfg.provider.as_deref().unwrap_or(provider);
+    let (family, pinned) = named.split_once('/').map_or((named, None), |(f, _)| (f, Some(named)));
+    let candidates: Vec<&Profile> = set
+        .all()
+        .iter()
+        .filter(|p| p.mode == Mode::Observed && p.family() == family && pinned.is_none_or(|n| p.profile == n))
+        .collect();
     let fit = |p: &Profile| Fit::of(p, module, token);
     let Some((chosen, tied)) = choose(&candidates, &out.layers, module, token, family)? else { return Ok(out) };
     let mut p = chosen.clone();
@@ -380,6 +385,19 @@ mod tests {
         assert_eq!(r.layer_names(), ["cryptoki/0.12", "p11-kit/0.26"]);
         assert!(r.subtracted_mechanisms().contains("CKM_AES_KEY_WRAP"));
         assert_eq!(r.hidden, None);
+    }
+
+    /// Profiles that tie on every match key (a FIPS and a non-FIPS `CloudHSM` cluster: PKCS#11
+    /// reports no mode, D12) resolve to the first embedded, the stricter; a provider naming the
+    /// other profile takes it.
+    #[test]
+    fn a_provider_naming_a_profile_takes_that_one() {
+        let hsm = module("CloudHSM", "5.18");
+        let tied = resolve(&cfg(None, &[]), &hsm, None, "aws-cloudhsm").unwrap();
+        assert_eq!(tied.module_name(), Some("aws-cloudhsm/5.18+hsm2m-fips"));
+        let named = Some("aws-cloudhsm/5.18+hsm2m-non-fips");
+        let r = resolve(&cfg(named, &[]), &hsm, None, "aws-cloudhsm").unwrap();
+        assert_eq!(r.module_name(), Some("aws-cloudhsm/5.18+hsm2m-non-fips"));
     }
 
     #[test]

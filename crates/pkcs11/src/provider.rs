@@ -361,6 +361,13 @@ impl Registry {
         if let Some(p) = self.providers.iter().find(|p| p.name() == name) {
             return Some(Arc::clone(p));
         }
+        // A module profile's own name (`aws-cloudhsm/5.18+hsm2m-non-fips`): its family's
+        // provider, and the resolution takes that profile alone (profiles that tie on every
+        // match key, as a FIPS and a non-FIPS cluster do).
+        if let Some((family, _)) = name.split_once('/') {
+            let known = set.all().iter().any(|p| p.mode == cakeys_profile::Mode::Observed && p.profile == name);
+            return if known { self.named_in(set, family) } else { None };
+        }
         let family = set.module_family_names().into_iter().find(|f| *f == name)?;
         Some(Arc::new(Data(family)))
     }
@@ -463,6 +470,10 @@ mod tests {
         assert_eq!(r.select_in(set, None, &module("PKCS#11 Kit")).unwrap().name(), "generic");
         assert_eq!(r.select_in(set, Some("softhsm"), &module("PKCS#11 Kit")).unwrap().name(), "softhsm");
         assert_eq!(r.select_in(set, Some("aws-cloudhsm"), &module("Other")).unwrap().name(), "aws-cloudhsm");
+        // A module profile's own name selects its family; a name no profile has, nothing.
+        let pair = Some("aws-cloudhsm/5.18+hsm2m-non-fips");
+        assert_eq!(r.select_in(set, pair, &module("CloudHSM")).unwrap().name(), "aws-cloudhsm");
+        assert!(r.select_in(set, Some("aws-cloudhsm/9.9"), &module("CloudHSM")).is_err());
         let e = r.select_in(set, Some("nope"), &module("x")).err().unwrap();
         assert!(e.to_string().contains("profile families: aws-cloudhsm"), "{e}");
         // Code before data: a provider claiming SoftHSM's manufacturer wins.

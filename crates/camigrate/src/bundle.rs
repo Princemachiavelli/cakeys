@@ -58,8 +58,9 @@ pub struct Entry {
     /// identity otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
-    /// An `enforced` key's own key-encryption key under RSA-OAEP (base64): the first part of
-    /// `CKM_RSA_AES_KEY_WRAP`'s output, used instead of the bundle's shared one.
+    /// A key's own key-encryption key under RSA-OAEP (base64): the first part of
+    /// `CKM_RSA_AES_KEY_WRAP`'s output, used instead of the bundle's shared one. Every `enforced`
+    /// composed key has one, and a `sealed` one from a source with no RFC 5649 of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kek: Option<String>,
     /// A key (base64): under its KEK (RFC 5649), or under RSA-OAEP directly.
@@ -133,14 +134,14 @@ impl Bundle {
             }
             // What the entry says of its exposure must be what its method can be: an import
             // records it. `sealed` against `enforced` is the source's word (only the source
-            // knows what its token would have refused), except that a key with its own KEK came
-            // out by CKM_RSA_AES_KEY_WRAP, the enforced composed method.
+            // knows what its token would have refused), except that an enforced composed key
+            // came out by CKM_RSA_AES_KEY_WRAP, so with its own KEK. A sealed one may too: a
+            // source with no RFC 5649 of its own (AWS CloudHSM) wraps each key that way.
             let exposure_fits = match (&method, e.exposure) {
-                (Method::Public, Exposure::Public) | (Method::RsaOaep(_), Exposure::Sealed | Exposure::Enforced) => {
-                    true
-                }
+                (Method::Public, Exposure::Public)
+                | (Method::RsaOaep(_), Exposure::Sealed | Exposure::Enforced)
+                | (Method::RsaOaepAesKwp(_), Exposure::Sealed) => true,
                 (Method::RsaOaepAesKwp(_), Exposure::Enforced) => e.kek.is_some(),
-                (Method::RsaOaepAesKwp(_), Exposure::Sealed) => e.kek.is_none(),
                 _ => false,
             };
             if !exposure_fits {
@@ -386,6 +387,9 @@ mod tests {
         refused(claims(aes("k", "rsa-oaep-sha1+aes-kwp"), Exposure::Public), "does not move a key public");
         refused(Bundle { kek: None, ..claims(cert.clone(), Exposure::Sealed) }, "does not move a key sealed");
         refused(Bundle { kek: Some("!".into()), ..sample() }, "kek");
+        // A sealed composed key with its own KEK (a source without RFC 5649) parses.
+        let own = Entry { kek: Some(encode(b"own kek")), ..aes("k", "rsa-oaep-sha1+aes-kwp") };
+        Bundle::parse(&Bundle { keys: vec![own], kek: None, ..sample() }.to_toml().unwrap(), path).unwrap();
         let n = [0xc5u8; 256];
         let spki = cakeys_core::id::rsa_spki(&n, &[1, 0, 1]).unwrap();
         let spoofed = Entry { public_key: Some(encode(&spki)), ..aes("k", "rsa-oaep-sha1+aes-kwp") };

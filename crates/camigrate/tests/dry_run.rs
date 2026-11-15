@@ -1296,6 +1296,68 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
     assert!(p["plans"][0]["ready"] == false && reasons.contains("trusted-wrap = false"), "{p}");
 }
 
+/// A side with no RFC 5649 of its own (AWS `CloudHSM`, whose profile subtracts the AES key wraps
+/// it lists but refuses [run]) moves the composed method by `CKM_RSA_AES_KEY_WRAP`, in and out.
+/// Offline, `SoftHSM` under a copy of its committed profile, added through `profileDirs` and named
+/// by `provider`, that subtracts its
+/// AES key wraps: into it, `migrate` unwraps both blobs in one call; out of it, each sealed key of
+/// a bundle carries its own key-encryption key, which `import` takes. kryoptic and `SoftHSM`
+/// verify what arrived.
+#[test]
+fn rsa_aes_key_wrap_stands_in_for_rfc_5649() {
+    let Some(e) = env("rsa-aes") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
+    let (Some(soft), Some(kry)) = (named("softhsm"), named("kryoptic")) else {
+        eprintln!("skipping rsa-aes: needs the softhsm and kryoptic references");
+        return;
+    };
+    let profiles = e.dir.join("profiles");
+    std::fs::create_dir_all(&profiles).unwrap();
+    let committed = std::fs::read_to_string(committed_profile("modules/softhsm/2.7.toml")).unwrap();
+    let subtract = "[subtract]\nmechanisms = [\"CKM_AES_KEY_WRAP\", \"CKM_AES_KEY_WRAP_PAD\"]\n\n[match]\n";
+    assert!(!committed.contains("[subtract]"), "the fixture adds softhsm/2.7's only subtraction");
+    let renamed = committed.replacen("profile = \"softhsm/2.7\"", "profile = \"softhsm/2.7+no-aes-key-wrap\"", 1);
+    std::fs::write(profiles.join("softhsm.toml"), renamed.replacen("[match]\n", subtract, 1)).unwrap();
+    let extractable = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n";
+    let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+    let key = |o: &str, born: &Ref, other: &Ref| {
+        format!("[objects.{o}]\n{ec}\ncreateOn = \"{}\"\n\n", born.name)
+            + &Env::spec(&format!("{o}-src"), o, extractable, &[born], &format!("ra-{o}"), ", autoCreate = true")
+            + &Env::spec(&format!("{o}-dst"), o, extractable, &[other], &format!("ra-{o}"), "")
+    };
+    let body = transport_key(kry) + &transport_key(soft) + &key("in", kry, soft) + &key("out", soft, kry);
+    e.config_with(&body, &|r| match r.name {
+        "softhsm" => "transportWith = \"tk-softhsm\"\nprovider = \"softhsm/2.7+no-aes-key-wrap\"\n".into(),
+        "kryoptic" => "transportWith = \"tk-kryoptic\"\n".into(),
+        _ => String::new(),
+    });
+    // profileDirs is a top-level key: ahead of every table.
+    let config = e.dir.join("keys.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, format!("profileDirs = [\"{}\"]\n\n{text}", profiles.display())).unwrap();
+    for (spec, r) in [("tk-kryoptic", kry), ("tk-softhsm", soft), ("in-src", kry), ("out-src", soft)] {
+        let o = e.cakeys(r, &["realise", spec, "--token", r.name]);
+        assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
+    }
+    // Into the side without RFC 5649: the composed method, unwrapped by CKM_RSA_AES_KEY_WRAP.
+    let o = e.km(kry, &["migrate", "in", "--from", "kryoptic", "--to", "softhsm", "--spec", "in-dst"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(stderr(&o).contains("rsa-oaep-sha1+aes-kwp"), "{}", stderr(&o));
+    assert_eq!(code(&e.cakeys(soft, &["verify", "in-dst", "--token", "softhsm"])), 0);
+    // Out of it, through a file: the sealed key with its own KEK, no shared one.
+    let out = e.dir.join("rsa-aes.bundle.toml");
+    let exported =
+        e.km(soft, &["export", "out", "--token", "softhsm", "--target", "kryoptic", "--out", out.to_str().unwrap()]);
+    assert_eq!(code(&exported), 0, "{}", stderr(&exported));
+    let bundle: toml::Value = toml::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert!(bundle.get("kek").is_none(), "{bundle}");
+    let k = &bundle["keys"][0];
+    assert_eq!((k["exposure"].as_str(), k.get("kek").is_some()), (Some("sealed"), true), "{k}");
+    let o = e.km(kry, &["import", "--token", "kryoptic", "--in", out.to_str().unwrap()]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&e.cakeys(kry, &["verify", "out-dst", "--token", "kryoptic"])), 0);
+}
+
 /// An RSA public key the SO of `soft`'s token (SO PIN 5678) marks `CKA_TRUSTED`, beside the
 /// transport key's trusted copy.
 fn plant_trusted_key(soft: &Ref) {

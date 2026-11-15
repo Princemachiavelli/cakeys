@@ -198,7 +198,7 @@ exposure = "sealed"                     # what its method can be: sealed or enfo
                                         # kek means enforced), public for a public object; anything else is 17
 commitmentLabel = "key-management/v1"   # secret keys, as in the lock
 publicKey = "<base64 SPKI DER>"         # private keys: the public half the target creates; its hash is ids.rfc7093m4
-# kek = "..."                           # an `enforced` key's own KEK (CKM_RSA_AES_KEY_WRAP's first part)
+# kek = "..."                           # a key's own KEK (CKM_RSA_AES_KEY_WRAP's first part): enforced, or from a source with no RFC 5649
 wrapped = "..."                         # base64: the key under the KEK (RFC 5649), or under RSA-OAEP directly
 [keys.type]                             # as in the lock
 class = "CKO_PRIVATE_KEY"
@@ -242,7 +242,7 @@ declared = true                         # only for a vendor method: its level as
 | SoftHSM 2.7 | `C_WrapKey`: AES-KW, AES-KW-PAD (RFC 5649), RSA-OAEP SHA-1 only [run]; `CKM_RSA_AES_KEY_WRAP`, and the SO can create a trusted RSA public key [run] | `C_UnwrapKey` [run], but an unwrapped secret key's `CKA_VALUE_LEN` reads 0 and is refused in the template [src], so sealed secret keys into SoftHSM are blocked (`secret-unwraps = false`); `C_CreateObject` [run] |
 | kryoptic 1.5.4 | `C_WrapKey`: AES-KW, AES-KWP, AES-GCM, RSA-OAEP SHA-1 and SHA-256 [run]; cannot make an RSA public key trusted, so never an `enforced` source (`trusted-wrap = false`) [run] | `C_UnwrapKey` (sets no usage unless the template asks) [run]; `C_CreateObject` [run] |
 | p11-kit | what the module behind offers, minus what the RPC drops: AES-KW, AES-KW-PAD, `CKM_RSA_AES_KEY_WRAP`, `CKM_EDDSA` [run] | the same limits; the module behind is unknown until keys.toml names its `provider` (the plan warns) |
-| AWS CloudHSM 5.18 (hsm2m, FIPS and non-FIPS) | lists `CKM_AES_KEY_WRAP` and `_PAD` with `CKF_WRAP \| CKF_UNWRAP` but refuses both (`CKR_MECHANISM_INVALID`; the first needs the client's `--aes-key-wrap-mapping`) and names no `_KWP` [run]: the probe subtracts them, and the composed method takes `CKM_RSA_AES_KEY_WRAP` (OAEP SHA-1 or SHA-256, RFC 5649 inside) [run]. Its vendor `0x8000216F` ("zero pad") is RFC 5649 too, `0x8000210A` RFC 3394 over PKCS#5 padding [run], unused | `C_UnwrapKey` by `CKM_RSA_AES_KEY_WRAP` [run]; public halves only private (`CKA_PRIVATE = false` refused) [run] |
+| AWS CloudHSM 5.18 (hsm2m, FIPS and non-FIPS) | lists `CKM_AES_KEY_WRAP` and `_PAD` with `CKF_WRAP \| CKF_UNWRAP` but refuses both (`CKR_MECHANISM_INVALID`) and names no `_KWP` [run] (the client log asks a mapping for the first, `configure-pkcs11 --aes-key-wrap-mapping` [doc], untried): the probe subtracts them, and the composed method takes `CKM_RSA_AES_KEY_WRAP` (OAEP SHA-1 or SHA-256, RFC 5649 inside) [run]. Its vendor `0x8000216F` ("zero pad") is RFC 5649 too, `0x8000210A` RFC 3394 over PKCS#5 padding [run], unused | `C_UnwrapKey` by `CKM_RSA_AES_KEY_WRAP` [run]; public halves only private (`CKA_PRIVATE = false` refused) [run] |
 | tpm2-pkcs11 1.10 | never: no `C_WrapKey`/`C_UnwrapKey` [src] | `tpm2_ptool import` of EC (not P-521), RSA and HMAC keys [run]; data objects only private [src] |
 | YubiKey PIV (ykcs11 2.7) | never [src] | `C_CreateObject` as SO of RSA 1024–4096, EC P-256/384, Ed25519 and certificates [src, run]; no public key objects; imported keys are never attested |
 | Vendor HSMs | vendor mechanisms and tools [todo] | likewise [todo] |
