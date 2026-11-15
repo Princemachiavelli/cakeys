@@ -20,6 +20,9 @@ pub const PROFILE_FILES: &[(&str, &str)] = &[
         "profiles/modules/cloudhsm-pkcs11/5.18+hsm2m-non-fips.toml",
         include_str!("../../../profiles/modules/cloudhsm-pkcs11/5.18+hsm2m-non-fips.toml"),
     ),
+    // The FIPS build first, as for CloudHSM: the two builds report the same C_GetInfo and tie.
+    ("profiles/modules/kmsp11/1.9+hsm-fips.toml", include_str!("../../../profiles/modules/kmsp11/1.9+hsm-fips.toml")),
+    ("profiles/modules/kmsp11/1.9+hsm.toml", include_str!("../../../profiles/modules/kmsp11/1.9+hsm.toml")),
     ("profiles/modules/kryoptic/1.5.toml", include_str!("../../../profiles/modules/kryoptic/1.5.toml")),
     ("profiles/modules/softhsm/2.7.toml", include_str!("../../../profiles/modules/softhsm/2.7.toml")),
     (

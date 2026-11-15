@@ -102,6 +102,14 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   (`crates/pkcs11/src/token/generate.rs`), so on CloudHSM every generation fails until a spec
   sets `publicAttributes = { CKA_PRIVATE = true }`. The probe records it as the
   `public-private` note. A profile row that `generate` reads would be the fix.
+- **cakeys on Cloud KMS** (kmsp11/1.9 [run]): `generate` builds its own templates, which
+  libkmsp11 refuses: it takes `CKA_LABEL` and `CKA_KMS_ALGORITHM` only. `Provider::bound_keys`
+  already maps algorithms to templates for the probe. Choosing one from an object spec (key
+  type, curve or size, the policy's usage) is the missing piece.
+- **Probing bound keys more narrowly**: a binding lists `CKM_RSA_PKCS` for signing, and
+  `rsa_ops` also tries it for decryption on that key. The SHA-512 keys get the probe's SHA-256
+  inputs. Both end as notes, not rows (each mechanism works on some key), but the notes are
+  noise. A per-binding operation list (sign, decrypt) and digest would remove them.
 - **CloudHSM ECDH**: `C_DeriveKey` refused both the sealed and the extractable derived-secret
   templates (the client log names `CKA_SENSITIVE` and `CKA_EXTRACTABLE`). Find the template
   it takes before `pop-ecdh` can run there: a spike on the next `aws.sh create`.

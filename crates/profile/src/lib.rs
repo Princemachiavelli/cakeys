@@ -162,6 +162,8 @@ mod tests {
                 "p11-kit/0.26",
                 "cloudhsm-pkcs11/5.18+hsm2m-fips",
                 "cloudhsm-pkcs11/5.18+hsm2m-non-fips",
+                "kmsp11/1.9+hsm-fips",
+                "kmsp11/1.9+hsm",
                 "kryoptic/1.5",
                 "softhsm/2.7",
                 "tpm2-pkcs11/1.10+amd-ftpm",

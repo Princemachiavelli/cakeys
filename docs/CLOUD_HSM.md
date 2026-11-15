@@ -79,6 +79,29 @@ only.
 
 ### 1. Google Cloud KMS, protection level HSM
 
+**Built and run (2026-11-15): phase 1.** `scripts/cloud/gcp.sh create | probe [--write] |
+status | destroy`, with OpenTofu on `scripts/cloud/gcp/main.tf`. `libkmsp11` runs here; no VM.
+What the run settled [run]:
+
+- **Packages.** `.#kmsp11` and `.#kmsp11-fips` are release 1.9. The signature is checked at
+  build time against the key in the user guide. Both link glibc 2.17 only.
+- **Credentials.** User Application Default Credentials work: gcloud's per-account copy, or
+  `gcloud auth application-default login`. Pass `user_project_override` in the config.
+  OpenTofu's Google provider cannot enable APIs in a fresh project, because that needs Cloud
+  Resource Manager, so `create` enables Cloud KMS with gcloud. Billing must be linked even for
+  the free ring.
+- **Keys bound to algorithms.** Every key is fixed to one algorithm at creation. The generate
+  template may hold only `CKA_LABEL` and `CKA_KMS_ALGORITHM`, and no public template is
+  allowed. That quirk lives in the provider crate `crates/kmsp11`, behind
+  `Provider::bound_keys`.
+- **The 24-hour destroy window.** The destroy-scheduled duration is fixed at key creation, and
+  `libkmsp11` cannot set it. So OpenTofu pre-creates one key per algorithm with 24 hours and no
+  version, and the probe adds versions to them (`experimental_create_multiple_versions`, which
+  refuses an algorithm that differs from the key's). `probe --write` checks every key first.
+- **One run.** It wrote `kmsp11/1.9+hsm` and `kmsp11/1.9+hsm-fips`, identical. Both builds
+  report the same `C_GetInfo`: Google, 1.9, Cloud KMS Token, firmware 0.0. That cost 38 versions
+  scheduled for destruction, gone after a day.
+
 **Module.** Prebuilt linux-amd64 tarball from GitHub releases, signature checked with
 `openssl dgst -sha384 -verify` [doc]; glibc 2.29 or later [doc]. Nix: `fetchurl` plus
 `autoPatchelfHook`, pinned by hash, added to `pkgs.nix` as an unfree-marked derivation
