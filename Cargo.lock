@@ -351,6 +351,7 @@ dependencies = [
  "der",
  "getrandom",
  "hmac",
+ "p11-fault",
  "pkcs12",
  "pkcs8",
  "proptest",
