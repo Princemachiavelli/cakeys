@@ -1,11 +1,10 @@
 # Draft PR for parallaxsecond/rust-cryptoki
 
-Status: **draft, not filed.** Before opening it:
+Status: **filed** as [#373](https://github.com/parallaxsecond/rust-cryptoki/pull/373)
+(2026-11-12, open).
 
-- Add your DCO sign-off; rust-cryptoki commits carry `Signed-off-by`. Run `git am` on the patch, then
-  `git commit --amend -s`.
-- When a release with the fix is out, drop `nix/patches/cryptoki-hmac-key-types.patch` and the
-  `postPatch` that applies it in `nix/package.nix`.
+- When a release with the fix is out, drop `nix/patches/cryptoki-hmac-key-types.patch` and its
+  line in `nix/package-common.nix`.
 
 Checked on 2026-11-11 against main `2e4ff5d` and release 0.12.1 (the bug is in both; cakeys uses
 0.12.1). There is no existing issue or PR for `SHA384_HMAC`.

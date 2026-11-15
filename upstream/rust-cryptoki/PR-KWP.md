@@ -1,14 +1,13 @@
 # Draft PR for parallaxsecond/rust-cryptoki: `CKM_AES_KEY_WRAP_KWP`
 
-Status: **draft, not filed.** Before opening it:
+Status: **filed** as [#376](https://github.com/parallaxsecond/rust-cryptoki/pull/376)
+(2026-11-14, open).
 
-- Apply `0002-Add-CKM_AES_KEY_WRAP_KWP.patch` to a checkout of main with `git apply`, commit with
-  your DCO sign-off (`git commit -s`), and check it still applies there (it was made against
-  release 0.12.1, which cakeys uses).
-- Add a test like the HMAC one: `MechanismType::try_from(CKM_AES_KEY_WRAP_KWP)` round-trips to
-  `MechanismType::AES_KEY_WRAP_KWP`, and `Mechanism::AesKeyWrapKwp.mechanism_type()` is it.
+- The review asks for a test that uses the mechanism: a wrap and unwrap like
+  `wrap_and_unwrap_key_rsa_aes` in #377 (PR-RSA-AES-KEY-WRAP.md), skipped where the token does not
+  list it (SoftHSM names RFC 5649 `CKM_AES_KEY_WRAP_PAD`; kryoptic offers `_KWP`).
 - When a release with it is out, drop `nix/patches/cryptoki-aes-key-wrap-kwp.patch` and its line
-  in `nix/package.nix`'s `postPatch`.
+  in `nix/package-common.nix`.
 
 Local equivalent: `nix/patches/cryptoki-aes-key-wrap-kwp.patch`.
 

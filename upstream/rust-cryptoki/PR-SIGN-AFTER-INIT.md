@@ -1,18 +1,13 @@
 # Draft PR for parallaxsecond/rust-cryptoki: single-part sign after `sign_init`
 
-Status: **draft, not filed.** Before opening it:
+Status: **not needed, not filed.** Upstream main already has the same call as
+`Session::sign_single` (d1b283ec, "Expose single-part crypto operations", 2026-02-12), not yet in a
+release (0.12.1 lacks it).
 
-- Apply `nix/patches/cryptoki-sign-after-init.patch` (made against release 0.12.1, which cakeys
-  uses) to a checkout of main, commit with your DCO sign-off (`git commit -s`), and check that
-  main has no equivalent by now.
-- Add a test against SoftHSM like the existing signing ones: a key with
-  `CKA_ALWAYS_AUTHENTICATE = true`, `sign_init`, `login(UserType::ContextSpecific, …)`, then
-  `sign_initialized`, and verify the signature; and the same key failing `Session::sign` without
-  the login.
-- Consider the same for `C_Decrypt` after `C_DecryptInit` (`decrypt_initialized`): decryption
-  keys can be `CKA_ALWAYS_AUTHENTICATE` too.
-- When a release with it is out, drop the patch, its line in `nix/package-common.nix` and the
-  `sign-after-init` feature of `cakeys-pkcs11`.
+- When a release has it, call `sign_single` instead of `sign_initialized`, and drop the patch,
+  its line in `nix/package-common.nix` and the `sign-after-init` feature of `cakeys-pkcs11`.
+
+The draft below is kept for the record.
 
 Local equivalent: `nix/patches/cryptoki-sign-after-init.patch`.
 
