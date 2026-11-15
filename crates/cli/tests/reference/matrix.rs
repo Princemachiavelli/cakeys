@@ -8,9 +8,13 @@
 //! `CAKEYS_UPDATE_OBJECTS=$PWD/profiles/coverage/objects` rewrites it there
 //! (`scripts/local-tests.sh -E 'test(object_matrix)'`).
 //! What each refused row printed is in the test's directory, `report.txt`.
+//!
+//! Four families, in this order: generated keys and imported secret keys ([`Row`]); imported
+//! private keys, by where their public half is ([`Import`]); certificates ([`Cert`]); data
+//! objects ([`Data`]).
 
 use super::*;
-use cryptoki::object::KeyType;
+use cryptoki::object::{CertificateType, KeyType};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -136,29 +140,195 @@ impl Row {
 
     /// The spec's declared attributes: exactly what the object carries.
     fn attributes(&self) -> String {
-        let mut attrs: Vec<String> =
-            self.kind.usage().iter().map(|u| format!("{u} = {}", self.usage.contains(u))).collect();
-        attrs.push(format!("CKA_EXTRACTABLE = {}", self.extractable));
-        attrs.push(format!("CKA_SENSITIVE = {}", self.sensitive));
-        if self.always_authenticate {
-            attrs.push("CKA_ALWAYS_AUTHENTICATE = true".into());
-        }
-        if let Some(m) = self.allowed {
-            attrs.push(format!("CKA_ALLOWED_MECHANISMS = [\"{m}\"]"));
-        }
-        attrs.join(", ")
+        declared(self.kind, &self.usage, self.extractable, self.sensitive, self.always_authenticate, self.allowed)
     }
 
-    /// A private key's binding, as its spec's author would choose it from what the key may do:
-    /// signing first (the default), then deriving (EC) or decrypting (RSA), else the token's
-    /// word (DESIGN.md §3.6). Secret keys have none.
     fn binding(&self) -> &'static str {
-        let may = |bit| self.usage.contains(&bit);
-        match self.kind {
-            _ if self.kind.secret() || may("CKA_SIGN") => "",
-            Kind::Ec if may("CKA_DERIVE") => ", binding = \"pop-ecdh\"",
-            Kind::Rsa if may("CKA_DECRYPT") => ", binding = \"pop-decrypt\"",
-            _ => ", binding = \"token-asserted\"",
+        binding(self.kind, &self.usage)
+    }
+}
+
+/// A key spec's declared attributes: the kind's usage bits as `usage` sets them, the protection,
+/// the per-use PIN and the allowed mechanism.
+fn declared(
+    kind: Kind,
+    usage: &[&str],
+    extractable: bool,
+    sensitive: bool,
+    always_authenticate: bool,
+    allowed: Option<&str>,
+) -> String {
+    let mut attrs: Vec<String> = kind.usage().iter().map(|u| format!("{u} = {}", usage.contains(u))).collect();
+    attrs.push(format!("CKA_EXTRACTABLE = {extractable}"));
+    attrs.push(format!("CKA_SENSITIVE = {sensitive}"));
+    if always_authenticate {
+        attrs.push("CKA_ALWAYS_AUTHENTICATE = true".into());
+    }
+    if let Some(m) = allowed {
+        attrs.push(format!("CKA_ALLOWED_MECHANISMS = [\"{m}\"]"));
+    }
+    attrs.join(", ")
+}
+
+/// A private key's binding, as its spec's author would choose it from what the key may do:
+/// signing first (the default), then deriving (EC) or decrypting (RSA), else the token's word
+/// (DESIGN.md §3.6). Secret keys have none.
+fn binding(kind: Kind, usage: &[&str]) -> &'static str {
+    let may = |bit| usage.contains(&bit);
+    match kind {
+        _ if kind.secret() || may("CKA_SIGN") => "",
+        Kind::Ec if may("CKA_DERIVE") => ", binding = \"pop-ecdh\"",
+        Kind::Rsa if may("CKA_DECRYPT") => ", binding = \"pop-decrypt\"",
+        _ => ", binding = \"token-asserted\"",
+    }
+}
+
+/// Every subset of `bits`, in a fixed order.
+fn subsets(bits: &[&'static str]) -> Vec<Vec<&'static str>> {
+    (0..1u32 << bits.len())
+        .map(|mask| bits.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0).map(|(_, b)| *b).collect())
+        .collect()
+}
+
+/// Where an imported private key's public half is, if anywhere. Imports carry the private
+/// material only (`pkcs11-tool --write-object --type privkey`, a PKCS#12 import, a migration
+/// tool); the public half is whatever else the importer wrote under the same label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PublicHalf {
+    /// A public key object.
+    Object,
+    /// `CKA_PUBLIC_KEY_INFO` on the private key object itself.
+    Info,
+    /// Only a certificate (a PIV-style slot, a PKCS#12 import).
+    Certificate,
+    /// Nothing.
+    Nothing,
+}
+
+impl PublicHalf {
+    fn name(self) -> &'static str {
+        match self {
+            PublicHalf::Object => "object",
+            PublicHalf::Info => "info",
+            PublicHalf::Certificate => "certificate",
+            PublicHalf::Nothing => "none",
+        }
+    }
+}
+
+/// An imported private key: `C_CreateObject` of fixed fixture material (`CKA_LOCAL` false).
+#[derive(Clone, Debug)]
+struct Import {
+    kind: Kind,
+    public: PublicHalf,
+    usage: Vec<&'static str>,
+    extractable: bool,
+    sensitive: bool,
+    allowed: Option<&'static str>,
+}
+
+impl Import {
+    fn key(&self) -> String {
+        let usage = if self.usage.is_empty() {
+            "none".to_owned()
+        } else {
+            self.usage.iter().map(|u| u.trim_start_matches("CKA_")).collect::<Vec<_>>().join("+")
+        };
+        let mut key = format!(
+            "{} imported public={} usage={usage} {}extractable {}sensitive",
+            self.kind.name(),
+            self.public.name(),
+            if self.extractable { "" } else { "non-" },
+            if self.sensitive { "" } else { "non-" },
+        );
+        if let Some(m) = self.allowed {
+            let _ = write!(key, " allowed={m}");
+        }
+        key
+    }
+}
+
+/// The certificates the grid holds: a fixture's DER, or a value no parser accepts.
+const CERTS: &[(&str, &[u8])] = &[
+    ("rsa-2048", ADOPT_CERT),
+    ("ec-p256", include_bytes!("../fixtures/tpm-import-p256-cert.der")),
+    ("ec-p384", include_bytes!("../fixtures/adopt-cert-p384.der")),
+    ("ed25519", include_bytes!("../fixtures/adopt-cert-ed25519.der")),
+    // Truncated: a damaged or non-DER value.
+    ("malformed", ADOPT_CERT.split_at(100).0),
+];
+
+/// A certificate object, public or private, its `CKA_PRIVATE` declared in the spec or not.
+#[derive(Clone, Debug)]
+struct Cert {
+    which: usize,
+    private: bool,
+    declared: bool,
+}
+
+/// A data object of `len` bytes, public or private, its `CKA_PRIVATE` declared or not.
+#[derive(Clone, Debug)]
+struct Data {
+    len: usize,
+    private: bool,
+    declared: bool,
+}
+
+/// The `CKA_PRIVATE` part of a certificate's or data object's row key.
+fn privacy(private: bool, declared: bool) -> String {
+    format!("{}{}", if private { "private" } else { "public" }, if declared { "" } else { " undeclared" })
+}
+
+/// One object of the grid, of any family.
+#[derive(Clone, Debug)]
+enum Item {
+    Key(Row),
+    Import(Import),
+    Cert(Cert),
+    Data(Data),
+}
+
+impl Item {
+    /// The row's key in the table.
+    fn key(&self) -> String {
+        match self {
+            Item::Key(r) => r.key(),
+            Item::Import(r) => r.key(),
+            Item::Cert(c) => format!("certificate {} {}", CERTS[c.which].0, privacy(c.private, c.declared)),
+            Item::Data(d) => format!("data {}B {}", d.len, privacy(d.private, d.declared)),
+        }
+    }
+
+    /// The keys.toml object.
+    fn object(&self) -> String {
+        match self {
+            Item::Key(Row { kind, .. }) | Item::Import(Import { kind, .. }) => kind.object().to_owned(),
+            Item::Cert(_) => "class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"".to_owned(),
+            Item::Data(_) => "class = \"CKO_DATA\"".to_owned(),
+        }
+    }
+
+    /// The spec's declared attributes.
+    fn attributes(&self) -> String {
+        match self {
+            Item::Key(r) => r.attributes(),
+            Item::Import(r) => declared(r.kind, &r.usage, r.extractable, r.sensitive, false, r.allowed),
+            Item::Cert(Cert { private, declared, .. }) | Item::Data(Data { private, declared, .. }) => {
+                if *declared {
+                    format!("CKA_PRIVATE = {private}")
+                } else {
+                    String::new()
+                }
+            }
+        }
+    }
+
+    /// The rest of the spec's token entry: a private key's binding.
+    fn binding(&self) -> &'static str {
+        match self {
+            Item::Key(r) => r.binding(),
+            Item::Import(r) => binding(r.kind, &r.usage),
+            Item::Cert(_) | Item::Data(_) => "",
         }
     }
 }
@@ -167,13 +337,52 @@ impl Row {
 /// (the keys DESIGN.md §3.4 refuses); every extractable × sensitive; generated and imported.
 /// Private keys: every subset of their operations, with and without a per-use PIN; generated.
 /// Each also unrestricted and under each allowed-mechanism variant.
-fn grid() -> Vec<Row> {
+///
+/// Then imported private keys: each place the public half can be, every subset of operations,
+/// sensitive or not (a legacy import often is not), unrestricted or under each allowed variant.
+/// Then certificates and data objects: public or private, the privacy declared or not.
+fn grid() -> Vec<Item> {
+    let mut items: Vec<Item> = keys().into_iter().map(Item::Key).collect();
+    for kind in [Kind::Ec, Kind::Rsa, Kind::Ed25519] {
+        for public in [PublicHalf::Object, PublicHalf::Info, PublicHalf::Certificate, PublicHalf::Nothing] {
+            for usage in subsets(kind.usage()) {
+                for (extractable, sensitive) in [(false, true), (true, false)] {
+                    for allowed in std::iter::once(None).chain(kind.allowed().iter().copied().map(Some)) {
+                        items.push(Item::Import(Import {
+                            kind,
+                            public,
+                            usage: usage.clone(),
+                            extractable,
+                            sensitive,
+                            allowed,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    for which in 0..CERTS.len() {
+        for private in [false, true] {
+            for declared in [true, false] {
+                items.push(Item::Cert(Cert { which, private, declared }));
+            }
+        }
+    }
+    for len in [0, 32, 4096] {
+        for private in [false, true] {
+            for declared in [true, false] {
+                items.push(Item::Data(Data { len, private, declared }));
+            }
+        }
+    }
+    items
+}
+
+/// The first family: generated keys, and imported secret keys.
+fn keys() -> Vec<Row> {
     let mut rows = Vec::new();
     for kind in [Kind::Aes, Kind::Des3, Kind::Generic, Kind::HmacSha256, Kind::Ec, Kind::Rsa, Kind::Ed25519] {
-        let bits = kind.usage();
-        let mut usages: Vec<Vec<&'static str>> = (0..1u32 << bits.len())
-            .map(|mask| bits.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0).map(|(_, b)| *b).collect())
-            .collect();
+        let mut usages = subsets(kind.usage());
         if kind.secret() {
             usages.push(vec!["CKA_UNWRAP"]);
             usages.push(vec!["CKA_DERIVE"]);
@@ -244,18 +453,153 @@ fn usage_attribute(name: &str, on: bool) -> Attribute {
     }
 }
 
+/// Every usage bit `kind` has, and the two a secret key's grid adds, set as `set` says.
+fn usage_attributes(kind: Kind, set: &[&str]) -> Vec<Attribute> {
+    let mut names: Vec<&str> = kind.usage().to_vec();
+    if kind.secret() {
+        names.extend(["CKA_UNWRAP", "CKA_DERIVE"]);
+    }
+    names.dedup();
+    names.into_iter().map(|n| usage_attribute(n, set.contains(&n))).collect()
+}
+
+/// A failed call's return value's name.
+fn failed(e: cryptoki::error::Error) -> String {
+    match e {
+        cryptoki::error::Error::Pkcs11(rv, _) => format!("{rv:?}"),
+        other => other.to_string(),
+    }
+}
+
+/// Create `item`'s object on the token, labelled `label`, or say why the token would not.
+fn create_item(s: &Session, item: &Item, label: &str) -> Result<(), String> {
+    match item {
+        Item::Key(r) => create(s, r, label),
+        Item::Import(r) => create_import(s, r, label),
+        Item::Cert(c) => {
+            let der = CERTS[c.which].1;
+            // The subject from the intact certificate: the token requires one, and a parser need not
+            // be the token's to accept the value.
+            let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(ADOPT_CERT).unwrap();
+            let subject = x509_cert::der::Encode::to_der(cert.tbs_certificate().subject()).unwrap();
+            s.create_object(&[
+                Attribute::Class(ObjectClass::CERTIFICATE),
+                Attribute::CertificateType(CertificateType::X_509),
+                Attribute::Token(true),
+                Attribute::Private(c.private),
+                Attribute::Label(label.as_bytes().to_vec()),
+                Attribute::Subject(subject),
+                Attribute::Value(der.to_vec()),
+            ])
+            .map(|_| ())
+            .map_err(failed)
+        }
+        Item::Data(d) => {
+            let value: Vec<u8> = (0..d.len).map(|i| u8::try_from((i * 31 + 7) % 251).unwrap()).collect();
+            s.create_object(&[
+                Attribute::Class(ObjectClass::DATA),
+                Attribute::Token(true),
+                Attribute::Private(d.private),
+                Attribute::Label(label.as_bytes().to_vec()),
+                Attribute::Application(b"cakeys object matrix".to_vec()),
+                Attribute::Value(value),
+            ])
+            .map(|_| ())
+            .map_err(failed)
+        }
+    }
+}
+
+/// The fixtures the imported private keys are made of.
+const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+
+/// Create an imported private key and its public half, if the row has one.
+fn create_import(s: &Session, row: &Import, label: &str) -> Result<(), String> {
+    use cryptoki::object::ObjectClass as C;
+    let (key_type, mut private, public, cert): (KeyType, Vec<Attribute>, Vec<Attribute>, Vec<u8>) = match row.kind {
+        Kind::Ec => {
+            let (params, scalar, point) = ec_fixture(&pem_der(&format!("{FIXTURES}/tpm-import-p256.pem")));
+            (
+                KeyType::EC,
+                vec![Attribute::EcParams(params.clone()), Attribute::Value(scalar)],
+                vec![Attribute::EcParams(params), Attribute::EcPoint(tlv(0x04, &point))],
+                include_bytes!("../fixtures/tpm-import-p256-cert.der").to_vec(),
+            )
+        }
+        Kind::Ed25519 => {
+            let seed = ed25519_fixture(&pem_der(&format!("{FIXTURES}/matrix-ed25519.pem")));
+            let cert = include_bytes!("../fixtures/matrix-ed25519-cert.der").to_vec();
+            let parsed = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(&cert).unwrap();
+            let point = parsed.tbs_certificate().subject_public_key_info().subject_public_key.raw_bytes().to_vec();
+            (
+                KeyType::EC_EDWARDS,
+                vec![Attribute::EcParams(ED25519_PARAMS.to_vec()), Attribute::Value(seed)],
+                vec![Attribute::EcParams(ED25519_PARAMS.to_vec()), Attribute::EcPoint(tlv(0x04, &point))],
+                cert,
+            )
+        }
+        Kind::Rsa => {
+            let k = rsa_fixture(&pem_der(&format!("{FIXTURES}/tpm-import-rsa2048.pem")));
+            (
+                KeyType::RSA,
+                vec![
+                    Attribute::Modulus(k[0].clone()),
+                    Attribute::PublicExponent(k[1].clone()),
+                    Attribute::PrivateExponent(k[2].clone()),
+                    Attribute::Prime1(k[3].clone()),
+                    Attribute::Prime2(k[4].clone()),
+                    Attribute::Exponent1(k[5].clone()),
+                    Attribute::Exponent2(k[6].clone()),
+                    Attribute::Coefficient(k[7].clone()),
+                ],
+                vec![Attribute::Modulus(k[0].clone()), Attribute::PublicExponent(k[1].clone())],
+                include_bytes!("../fixtures/tpm-import-rsa2048-cert.der").to_vec(),
+            )
+        }
+        _ => unreachable!("only private keys are imported in this family"),
+    };
+    private.extend([
+        Attribute::Class(C::PRIVATE_KEY),
+        Attribute::KeyType(key_type),
+        Attribute::Token(true),
+        Attribute::Private(true),
+        Attribute::Label(label.as_bytes().to_vec()),
+        Attribute::Extractable(row.extractable),
+        Attribute::Sensitive(row.sensitive),
+    ]);
+    private.extend(usage_attributes(row.kind, &row.usage));
+    if let Some(m) = row.allowed {
+        private.push(Attribute::AllowedMechanisms(vec![mechanism(m)]));
+    }
+    if row.public == PublicHalf::Info {
+        let parsed = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(&cert).unwrap();
+        let spki = x509_cert::der::Encode::to_der(parsed.tbs_certificate().subject_public_key_info()).unwrap();
+        private.push(Attribute::PublicKeyInfo(spki));
+    }
+    s.create_object(&private).map_err(failed)?;
+    match row.public {
+        PublicHalf::Object => {
+            let mut template = vec![
+                Attribute::Class(C::PUBLIC_KEY),
+                Attribute::KeyType(key_type),
+                Attribute::Token(true),
+                Attribute::Label(label.as_bytes().to_vec()),
+                Attribute::Verify(row.usage.contains(&"CKA_SIGN")),
+            ];
+            template.extend(public);
+            s.create_object(&template).map(|_| ()).map_err(|e| format!("public key object: {}", failed(e)))
+        }
+        PublicHalf::Certificate => s
+            .create_object(&cert_object(&cert, label.as_bytes(), None))
+            .map(|_| ())
+            .map_err(|e| format!("certificate: {}", failed(e))),
+        PublicHalf::Info | PublicHalf::Nothing => Ok(()),
+    }
+}
+
 /// Create `row`'s object on the token, labelled `label`, or say why the token would not
 /// (the return value's name).
 fn create(s: &Session, row: &Row, label: &str) -> Result<(), String> {
-    let usage = |set: &[&str]| -> Vec<Attribute> {
-        // Every usage bit the kind has, and the two a secret key's grid adds, set as the row says.
-        let mut names: Vec<&str> = row.kind.usage().to_vec();
-        if row.kind.secret() {
-            names.extend(["CKA_UNWRAP", "CKA_DERIVE"]);
-        }
-        names.dedup();
-        names.into_iter().map(|n| usage_attribute(n, set.contains(&n))).collect()
-    };
     let mut private = vec![
         Attribute::Token(true),
         Attribute::Private(true),
@@ -263,17 +607,13 @@ fn create(s: &Session, row: &Row, label: &str) -> Result<(), String> {
         Attribute::Extractable(row.extractable),
         Attribute::Sensitive(row.sensitive),
     ];
-    private.extend(usage(&row.usage));
+    private.extend(usage_attributes(row.kind, &row.usage));
     if row.always_authenticate {
         private.push(Attribute::AlwaysAuthenticate(true));
     }
     if let Some(m) = row.allowed {
         private.push(Attribute::AllowedMechanisms(vec![mechanism(m)]));
     }
-    let failed = |e: cryptoki::error::Error| match e {
-        cryptoki::error::Error::Pkcs11(rv, _) => format!("{rv:?}"),
-        other => other.to_string(),
-    };
     let (key_type, len, keygen) = match row.kind {
         Kind::Aes => (KeyType::AES, 32, Mechanism::AesKeyGen),
         Kind::Des3 => (KeyType::DES3, 24, Mechanism::Des3KeyGen),
@@ -325,8 +665,10 @@ fn create(s: &Session, row: &Row, label: &str) -> Result<(), String> {
 const P256_PARAMS: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
 const ED25519_PARAMS: &[u8] = &[0x06, 0x03, 0x2b, 0x65, 0x70];
 
-/// What realising a row gave: what the lock recorded, or the exit code.
-fn outcome(w: &Workdir, spec: &str) -> Result<String, (i32, String)> {
+/// What realising a row gave: what the lock recorded, or the exit code. With `immutables`, also
+/// the provenance the lock pins (the immutables that are true): what tells an imported private
+/// key from a generated one, whose identity is the same.
+fn outcome(w: &Workdir, spec: &str, immutables: bool) -> Result<String, (i32, String)> {
     let o = w.km(&["realise", spec, "--token", "ref", "--update-lock"]);
     if code(&o) != 0 {
         return Err((code(&o), stderr(&o)));
@@ -337,6 +679,16 @@ fn outcome(w: &Workdir, spec: &str) -> Result<String, (i32, String)> {
     let _ = write!(got, " {}", schemes.join(","));
     if let Some(b) = r.get("binding").and_then(toml::Value::as_str) {
         let _ = write!(got, " {b}");
+    }
+    if immutables {
+        let pinned = r.get("immutables").and_then(toml::Value::as_table);
+        let set: Vec<String> = pinned
+            .into_iter()
+            .flatten()
+            .filter(|(_, v)| v.as_bool() == Some(true))
+            .map(|(k, _)| k.trim_start_matches("CKA_").to_lowercase().replace('_', "-"))
+            .collect();
+        let _ = write!(got, " immutables={}", if set.is_empty() { "none".to_owned() } else { set.join(",") });
     }
     Ok(got)
 }
@@ -352,7 +704,7 @@ fn object_matrix_is_the_committed_one() {
     // Create every object first, in one session.
     let created: Vec<Result<(), String>> = {
         let s = e.session();
-        rows.iter().enumerate().map(|(i, row)| create(&s, row, &format!("m{i}"))).collect()
+        rows.iter().enumerate().map(|(i, row)| create_item(&s, row, &format!("m{i}"))).collect()
     };
     let results: Mutex<Vec<Option<String>>> = Mutex::new(vec![None; rows.len()]);
     let report: Mutex<Vec<(usize, String)>> = Mutex::new(Vec::new());
@@ -372,11 +724,11 @@ fn object_matrix_is_the_committed_one() {
                             "{}\n[objects.o]\n{}\n\n[specs.m]\nobject = \"o\"\nattributes = {{ {} }}\n\
                                  tokens.ref = {{ locator = {{ CKA_LABEL = \"m{i}\" }}{} }}\n",
                             reference_tokens(&e.module, &w.dir),
-                            row.kind.object(),
+                            row.object(),
                             row.attributes(),
                             row.binding(),
                         ));
-                        match outcome(&w, "m") {
+                        match outcome(&w, "m", matches!(row, Item::Import(_))) {
                             Ok(got) => got,
                             Err((code, said)) => {
                                 report.lock().unwrap().push((i, said));

@@ -13,14 +13,26 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   gets, or why none. Goal: keys.toml can declare any sane object, even when its assurance is
   low, and the matrix says what that assurance is. Clean fixtures cakeys made itself are not
   evidence of what deployments need. **Built for SoftHSM and kryoptic** (2026-11-15,
-  PLAN.md A4): `profiles/coverage/objects/<token>.toml`, 1032 objects each, adopted as a
-  legacy key arrives (crates/cli/tests/reference/matrix.rs). Still open: tpm2-pkcs11, imported
-  private keys, certificates and data objects. Its first three findings are fixed: proofs choose
-  within the key's `CKA_ALLOWED_MECHANISMS` (raw `CKM_ECDSA`, raw `CKM_RSA_PKCS` over a
-  `DigestInfo`), a declared list narrows the commitments computed (DESIGN §3.4, §3.6), an
-  unnamed mechanism in the list reads (patch `cryptoki-allowed-mechanisms-unnamed`), and an
-  HMAC-typed key generates with `CKM_SHA*_KEY_GEN` (kryoptic; SoftHSM 2.7 refuses at
-  validation). The rest follow.
+  PLAN.md A4): `profiles/coverage/objects/<token>.toml`, 1544 objects each, adopted as a
+  legacy key arrives (crates/cli/tests/reference/matrix.rs): generated keys and imported secret
+  keys; imported private keys by where their public half is; certificates; data objects. Still
+  open: tpm2-pkcs11. Its findings so far are fixed:
+  - proofs choose within the key's `CKA_ALLOWED_MECHANISMS` (raw `CKM_ECDSA`, raw `CKM_RSA_PKCS`
+    over a `DigestInfo`, PKCS #1 v1.5 decryption), and every binding names what the list lacks
+    (15) rather than failing inside the token; a declared list narrows the commitments computed
+    (DESIGN §3.4, §3.6);
+  - an unnamed mechanism in the list reads (patch `cryptoki-allowed-mechanisms-unnamed`);
+  - an HMAC-typed key generates with `CKM_SHA*_KEY_GEN` (kryoptic; SoftHSM 2.7 refuses at
+    validation);
+  - an imported EC or Edwards private key whose importer wrote only the certificate beside it
+    takes its public half from the certificate (DESIGN §3.2), and any stand-in must be a key of
+    the private key's own type and curve (13 otherwise).
+- **An imported EC private key with nothing beside it has no identity** (11, object matrix:
+  `public=none`). `pkcs11-tool --write-object --type privkey` of an EC key writes just that, and
+  PKCS#11 private EC keys carry no `CKA_EC_POINT` (kryoptic computes the Edwards one; SoftHSM
+  does not). Today the fix is to write the public key object or certificate beside it. For a
+  non-sensitive key the point could be computed from `CKA_VALUE` on the host, which reads the
+  private key out; not done.
 - **Upstream cryptoki: keep an unnamed `CKA_ALLOWED_MECHANISMS` entry.** 0.12.1's
   `MechanismType::try_from` refuses any value it has no name for — vendor mechanisms (CloudHSM's
   EdDSA is `0x80001057`, CLOUD_HSM.md) and some 385 standard ones (`CKM_DES3_CBC_PAD`), so the

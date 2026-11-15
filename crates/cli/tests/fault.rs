@@ -106,7 +106,9 @@ fn tagged_copies_stack_and_a_shim_cannot_load_itself() {
 
 /// cakeys against a module that fails a call it should not: the failing call is named, the exit
 /// is unavailable (16), and nothing is recorded. A login refused after the module accepted it
-/// is the same.
+/// is the same. A proof's mechanism the module refuses for the key (`CKR_MECHANISM_INVALID`,
+/// as a key policy the module does not report would) is unsupported instead (15), the opt-out
+/// named.
 #[test]
 fn a_failing_module_call_is_unavailable() {
     let plan = "[[rule]]\nfn = \"C_FindObjects\"\nrv = \"CKR_DEVICE_ERROR\"\n\n\
@@ -127,6 +129,12 @@ fn a_failing_module_call_is_unavailable() {
     assert_eq!(code(&o), 16, "{}", stderr(&o));
     assert!(stderr(&o).contains("C_FindObjects"), "{}", stderr(&o));
     assert_eq!(fired(&trace).last().unwrap()["rv"].as_str(), Some("CKR_DEVICE_ERROR"));
+    let refused = w.dir.join("refused.toml");
+    std::fs::write(&refused, "[[rule]]\nfn = \"C_SignInit\"\nrv = \"CKR_MECHANISM_INVALID\"\n").unwrap();
+    let o = w.km_env(&["verify", "k", "--token", "ref"], &[("P11_FAULT_PLAN", &refused), ("P11_FAULT_TRACE", &trace)]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("refused to sign") && stderr(&o).contains("token-asserted"), "{}", stderr(&o));
+    assert_eq!(fired(&trace).last().unwrap()["rv"].as_str(), Some("CKR_MECHANISM_INVALID"));
 }
 
 /// A token on the shim holding `k` (P-256, signs), `d` (P-256, derives), `r` (RSA, decrypts) and

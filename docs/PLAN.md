@@ -193,13 +193,17 @@ table. Per the standing rule, a refusal found here is recorded with the real-wor
 would serve, not removed because no fixture needs it.
 
 **Built for SoftHSM and kryoptic** (2026-11-15), as a fixed grid rather than proptest (a pinned
-table has to be deterministic): 1032 objects per token, created straight through cryptoki —
+table has to be deterministic): 1544 objects per token, created straight through cryptoki —
 generated, and secret keys also imported (`CKA_LOCAL` false) — then declared as they are and
-realised in parallel (`crates/cli/tests/reference/matrix.rs`, about 20 s a token). The rows
+realised in parallel (`crates/cli/tests/reference/matrix.rs`, about 45 s a token). The rows
 pin the mode, schemes and binding, the exit code, or the token's refusal to hold the object
-(`profiles/coverage/objects/<token>.toml`). Its three refusal findings (allowed mechanisms
-ignored, unnamed allowed mechanisms unreadable, HMAC-typed generation) are fixed; OPEN.md,
-"Identity coverage". Not yet: tpm2-pkcs11, imported private keys, certificates and data objects.
+(`profiles/coverage/objects/<token>.toml`). Families after the first (2026-11-15): imported
+private keys (fixture material, by where the public half is: a public key object,
+`CKA_PUBLIC_KEY_INFO`, a certificate, nothing), whose rows also show the immutables the lock
+pins, since that is where an import differs from a generated key of the same identity;
+certificates (RSA, P-256, P-384, Ed25519, a damaged value); data objects (empty to 4 KiB);
+both public and private, the privacy declared or not. Its findings are fixed but one (an EC key
+with no public half anywhere); OPEN.md, "Identity coverage". Not yet: tpm2-pkcs11.
 
 ### A5. Key derivation
 
