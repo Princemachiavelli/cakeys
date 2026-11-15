@@ -7,3 +7,7 @@ result*
 /fuzz/coverage
 # The coverage report's result link (nix build .#coverage -o coverage), not profiles/coverage/.
 /coverage
+# OpenTofu state belongs in ${XDG_STATE_HOME}/cakeys/cloud (scripts/cloud/*.sh); it names the
+# cloud project and account, so a stray copy must never be committed.
+*.tfstate
+*.tfstate.*

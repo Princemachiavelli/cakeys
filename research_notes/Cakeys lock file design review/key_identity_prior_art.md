@@ -1,6 +1,6 @@
 # Prior art for content-addressed and declarative key/credential management, compared with cakeys (state: 2026-11-11)
 
-Scope note. The cakeys baseline used for every comparison below is `docs/DESIGN.md` (2026-11-11) and `README.md` in `/home/jhoffer/srcs/key-management`. Its key facts:
+Scope note. The cakeys baseline used for every comparison below is `docs/DESIGN.md` (2026-11-11) and `README.md` in this repository. Its key facts:
 
 - **Identity schemes:** `pubkeyhash` is SHA-256 of canonical DER SPKI, re-encoded through RustCrypto. `certhash` and `valuehash` are SHA-256 of the DER or value. For secret keys, the token computes `commitment` / `cmac` / `kcv-ecb` / `kcv-ecb-dec` / `kw` over the label `<commitmentLabel>/<scheme>/<keyType>/<bits>`, and only SHA-256 of the token's output is stored.
 - **The lock:** records type, commitment label, spec digest and per-realisation provenance. Scheme definitions are frozen.
