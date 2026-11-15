@@ -137,7 +137,8 @@ patched. Open before publishing:
 
 ## Badges
 
-The README carries the CI, license and MSRV badges. At the first release add crates.io
+The README carries the CI, license, MSRV, coverage and mutation badges (the last two read from
+the `badges` branch, which `.github/workflows/reports.yml` writes on each push to `main`). At the first release add crates.io
 (`img.shields.io/crates/v/<name>`), docs.rs (`docs.rs/<name>/badge.svg`) and dependency health
 in its per-crate form (`deps.rs/crate/<name>/<version>/status.svg`). Not the repository form:
 deps.rs does not resolve `dep.workspace = true` and reports "dependencies: none" for this repo.
