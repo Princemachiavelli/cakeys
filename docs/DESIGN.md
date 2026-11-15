@@ -111,7 +111,9 @@ Supported curves:
 - `CKK_EC`: secp256r1 (alias prime256v1, P-256), secp384r1, secp521r1, secp256k1, brainpoolP256r1,
   brainpoolP384r1.
 - `CKK_EC_EDWARDS`: edwards25519, edwards448.
-- brainpoolP512r1 is refused, because no RustCrypto crate supports it — `brainpool_p512_is_refused_clearly`.
+- brainpoolP512r1 is refused (15), because no crate under a license the workspace accepts
+  implements it: RustCrypto has none released ([OPEN.md](OPEN.md)) —
+  `brainpool_p512_is_refused_clearly`.
 
 ### 3.3 Commitment label
 
