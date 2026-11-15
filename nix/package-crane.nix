@@ -180,8 +180,9 @@ craneLib.buildPackage (
     # committed. A second pass, not a traced first one: the first keeps every test talking to
     # its module directly (p11-fault exports the 2.40 interface only).
     postCheck = ''
+      # Not traced: the coverage test, and what nix/test-tokens.sh leaves untraced.
       export CAKEYS_TRACE_DIR=$TMPDIR/coverage-trace
-      ${cargoTestCommandFor "not test(committed_coverage_is_generated_from_the_trace)"}
+      ${cargoTestCommandFor "not (binary(fault) | test(tpm2_attestation_says_what_it_lacks) | test(committed_coverage_is_generated_from_the_trace))"}
       unset CAKEYS_TRACE_DIR
       CAKEYS_COVERAGE_TRACE=$TMPDIR/coverage-trace \
         ${cargoTestCommandFor "test(committed_coverage_is_generated_from_the_trace)"}

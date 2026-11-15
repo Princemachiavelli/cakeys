@@ -14,8 +14,10 @@ cd "$repo"
 trace=$(realpath -m "${1:-target/coverage-trace}")
 rm -rf "$trace"
 mkdir -p "$trace"
-# The coverage test itself checks the file it is about to rewrite: not part of the traced run.
-CAKEYS_TRACE_DIR=$trace scripts/local-tests.sh -E 'not test(committed_coverage_is_generated_from_the_trace)'
+# Not traced: the coverage test (it checks the file it is about to rewrite), and the tests
+# nix/test-tokens.sh leaves untraced (those that run their own p11-fault).
+CAKEYS_TRACE_DIR=$trace scripts/local-tests.sh -E \
+  'not (binary(fault) | test(tpm2_attestation_says_what_it_lacks) | test(committed_coverage_is_generated_from_the_trace))'
 CAKEYS_COVERAGE_TRACE=$trace CAKEYS_UPDATE_COVERAGE=1 \
   cargo test -q -p caprobe --lib committed_coverage_is_generated_from_the_trace
 git -C "$repo" diff --stat -- profiles/coverage/cakeys.toml
