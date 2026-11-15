@@ -123,6 +123,18 @@ pub fn probe(tok: &Token, cfg: &TokenCfg, write: bool) -> Result<Probed> {
         manual: BTreeMap::new(),
     };
     profile.notes.insert("cryptoki".into(), format!("the module reports Cryptoki {}", tok.module.cryptoki));
+    // A mechanism listed more than once (libkmsp11 1.9: CKM_RSA_PKCS_KEY_PAIR_GEN 24 times
+    // [run]) is advertised once; the repetition is a note.
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for m in &tok.advertised {
+        *counts.entry(m.as_str()).or_default() += 1;
+    }
+    let repeated: Vec<String> = counts.iter().filter(|(_, n)| **n > 1).map(|(m, n)| format!("{m} {n} times")).collect();
+    if !repeated.is_empty() {
+        profile.notes.insert("mechanism-list".into(), format!("C_GetMechanismList repeats {}", repeated.join(", ")));
+        let mut seen = BTreeSet::new();
+        profile.advertise.retain(|m| seen.insert(m.clone()));
+    }
     // The RSA key sizes the module reports: read-only, a claim the write probes then test.
     if let Some((min, max)) = tok.rsa_bits {
         let row = profile.generate.entry("CKK_RSA".into()).or_default();

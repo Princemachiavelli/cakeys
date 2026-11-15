@@ -128,7 +128,9 @@ user_project_override: "$project"
 experimental_create_multiple_versions: true
 log_directory: "$state"
 EOF
-      [[ $variant == kmsp11-fips ]] && echo "require_fips_mode: true" >>"$cfg"
+      if [[ $variant == kmsp11-fips ]]; then
+        echo "require_fips_mode: true" >>"$cfg"
+      fi
     )
     cat >"$state/keys.toml" <<EOF
 [tokens.gcp]
