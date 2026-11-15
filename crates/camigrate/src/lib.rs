@@ -670,6 +670,18 @@ impl Run<'_> {
                 ));
             }
         }
+        // A sealed move wraps under the transport key's spec in keys.toml: one the lock still
+        // names and keys.toml no longer has is said here, where the move itself would stop.
+        if let Some(to) = target_token
+            && let Ok(spec) = tokens::transport_spec(&self.lock, to, transport_key)
+            && !cfg.specs.contains_key(spec)
+        {
+            let sealed = |p: &plan::Plan| matches!(p.method, Some(Method::RsaOaepAesKwp(_) | Method::RsaOaep(_)));
+            for p in moves.plans.iter_mut().filter(|p| p.ready && sealed(p)) {
+                p.ready = false;
+                p.reasons.push(format!("the transport key's spec '{spec}' is gone from keys.toml"));
+            }
+        }
         match file_format {
             Some(format) => self.limit_file_plans(&mut moves.plans, format, from),
             None if bundle => limit_bundle_plans(&mut moves.plans),
