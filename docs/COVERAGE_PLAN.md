@@ -278,7 +278,8 @@ written against those lists (bindings and modes per declared usage, accept rows,
 invariants, the reconcile rules, the proofs, the profile algebra's bounds) leave, rerun with
 `cargo mutants` locally: `core`'s `plan.rs`, `migrate.rs`, `reconcile.rs`, `id.rs`, `pop.rs`,
 `sig.rs`, `types.rs` and `attrs.rs` 2 missed, `config.rs` 4 (all four in `lock_unwritable`'s
-read of the environment, which the token tier catches); `profile` 2.
+read of the environment, which the token tier catches); `profile` 2; the key file none
+(36 caught, no timeout).
 
 The token tier (`cakeys-crane.mutantsOf { package; files; re ? null; }`: every crate's tests,
 the reference tokens up) over `camigrate/src/sealed.rs` missed 5 of 68 viable, over
