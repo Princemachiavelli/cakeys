@@ -1,12 +1,13 @@
 # What scripts/cloud/aws.sh drives the AWS CloudHSM runner with (docs/CLOUD_HSM.md): OpenTofu
 # with the AWS provider from this nixpkgs, so `tofu init` fetches nothing from a registry, and
-# the AWS CLI for the steps OpenTofu does not model.
+# the AWS CLI and OpenSSL for the steps OpenTofu does not model.
 {
   symlinkJoin,
   opentofu,
   awscli2,
   jq,
   curl,
+  openssl,
 }:
 symlinkJoin {
   name = "cloud-tools";
@@ -15,5 +16,6 @@ symlinkJoin {
     awscli2
     jq
     curl
+    openssl
   ];
 }

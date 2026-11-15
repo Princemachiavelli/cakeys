@@ -1,5 +1,6 @@
 # The AWS CloudHSM Client SDK 5 (docs/CLOUD_HSM.md, "AWS CloudHSM"): the PKCS#11 library, the
-# OpenSSL dynamic engine and the OpenSSL 3 provider, from AWS's own packages. Of the distros AWS
+# OpenSSL dynamic engine, the OpenSSL 3 provider and CloudHSM CLI (cluster activation and
+# users), from AWS's own packages. Of the distros AWS
 # builds for, Ubuntu 26.04 is the closest to NixOS: the newest glibc (the binaries need 2.39)
 # and the only one with all three packages. Each binary links only libc, libm, libgcc_s and the
 # loader; OpenSSL is linked in statically, so the engine and the provider load into any
@@ -74,6 +75,11 @@ in
     pname = "cloudhsm-pkcs11";
     hash = "sha256-G8RcodYvITOI98TobpBEgD6bBj1Mjq8gBXVXTeN0WzM=";
     description = "AWS CloudHSM PKCS#11 library (lib/libcloudhsm_pkcs11.so)";
+  };
+  cloudhsm-cli = mk {
+    pname = "cloudhsm-cli";
+    hash = "sha256-08kZ45RkVofnGZMZiKnarSgu8lPn+Q4a7liG7wT/HVI=";
+    description = "AWS CloudHSM CLI (bin/cloudhsm-cli): cluster activation and HSM users";
   };
   cloudhsm-dyn = mk {
     pname = "cloudhsm-dyn";

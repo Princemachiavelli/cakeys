@@ -106,7 +106,12 @@
           );
         }
         // lib.optionalAttrs (system == "x86_64-linux") {
-          inherit (local.cloudhsm) cloudhsm-pkcs11 cloudhsm-dyn cloudhsm-openssl-provider;
+          inherit (local.cloudhsm)
+            cloudhsm-pkcs11
+            cloudhsm-cli
+            cloudhsm-dyn
+            cloudhsm-openssl-provider
+            ;
         }
         // lib.optionalAttrs isLinux {
           inherit (local) pcsc-probe;
