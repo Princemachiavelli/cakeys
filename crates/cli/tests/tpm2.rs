@@ -353,6 +353,39 @@ fn tpm2_aes_key_is_identified_by_its_kcv() {
     assert_eq!(e.locked_id("aes", "kcv-ecb"), sri(&kcv));
 }
 
+/// tpm2-pkcs11 holds a data object only private (it seals `CKA_VALUE`; `CKA_PRIVATE = false` is
+/// `CKR_ATTRIBUTE_VALUE_INVALID` \[src\]), so a spec declaring `CKA_PRIVATE = true` is how any data
+/// object on it is identified: `valuehash`, read under the login, the value's own SHA-256.
+#[test]
+fn tpm2_private_data_object_is_identified_by_its_value() {
+    let Some(e) = env("private-data") else { return };
+    let value = b"9d02c7e5a1f4b8367e0c2a95d1b4f863 a sealed application secret".to_vec();
+    e.session()
+        .create_object(&[
+            Attribute::Class(ObjectClass::DATA),
+            Attribute::Token(true),
+            Attribute::Private(true),
+            Attribute::Label(b"tpm-data".to_vec()),
+            Attribute::Value(value.clone()),
+        ])
+        .unwrap();
+    e.config(
+        "[objects.blob]\nclass = \"CKO_DATA\"\n\n\
+         [specs.blob]\nobject = \"blob\"\nattributes = { CKA_PRIVATE = true }\n\
+         tokens.tpm = { locator = { CKA_LABEL = \"tpm-data\" } }\n\n\
+         [specs.blob-undeclared]\nobject = \"blob\"\n\
+         tokens.tpm = { locator = { CKA_LABEL = \"tpm-data\" } }\n",
+    );
+    // Undeclared, its hash would be an offline guessing oracle nobody agreed to: refused.
+    let o = e.km(&["realise", "blob-undeclared", "--token", "tpm", "--update-lock"]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("declare CKA_PRIVATE = true"), "{}", stderr(&o));
+    let o = e.km(&["realise", "blob", "--token", "tpm", "--update-lock"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(e.locked_id("blob", "valuehash"), sri(&value));
+    assert_eq!(e.code(&["check", "blob", "--spec", "blob"]), 0);
+}
+
 /// The `tpm-certify` commitment (§3.7 of docs/DESIGN.md): a native `TPM2_Certify` over the
 /// object's Name, host-verified against a provisioned AK, and cross-checked against the
 /// material `rfc7093m4` names.

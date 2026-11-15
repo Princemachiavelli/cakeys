@@ -154,7 +154,9 @@ certificateType = "CKC_X_509"
 
 [objects.release-note]
 # A public data object: identified by the SHA-256 of its value (the same hash as a Nix flat
-# fixed-output derivation of the content).
+# fixed-output derivation of the content). A private one (CKA_PRIVATE = true) is identified the
+# same way, read under the login, only when its spec declares CKA_PRIVATE = true: anyone with the
+# lock can test guesses against the hash offline, so declare it only for a random value.
 class = "CKO_DATA"
 
 # ── Specs: one use of an object, and where it lives on each token ──────────────────────
@@ -222,6 +224,9 @@ tokens.softhsm = { locator = { CKA_LABEL = "release-note" } }
   realisation is the pair (spec, token): the lock records one per pair.
 - **References are checked at load (17):** a spec's `object` must exist, even if nothing uses the
   spec; a `$NAME` path reference must name a set variable.
+- **A private data object needs `CKA_PRIVATE = true` declared** in its spec, or it is refused
+  (15): its `valuehash` would let anyone with the lock test guesses of the value offline
+  (DESIGN §8.2). camigrate moves no private data object (15).
 - **`autoCreate` is for private and secret keys**, and only opts the first-use flows in; `cakeys
   create` makes them explicitly without it. Certificates, public keys and data objects are
   adopted. When the lock already pins the object's material, creating is refused (14): newly

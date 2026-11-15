@@ -124,7 +124,8 @@ pub enum Assurance {
     /// host holds no key to check a fresh challenge with.
     Fingerprint,
     /// A hash of public bytes (public keys, certificates, data objects, and private keys adopted
-    /// `token-asserted` or `publicOnly`): whoever has the bytes passes.
+    /// `token-asserted` or `publicOnly`): whoever has the bytes passes. So does a private data
+    /// object's value: a module that saw it once can answer with it.
     Public,
 }
 

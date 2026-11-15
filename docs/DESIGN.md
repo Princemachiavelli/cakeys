@@ -40,7 +40,7 @@ object.
 |---|---|---|---|---|
 | `rfc7093m4` (input alias `pubkeyhash`) | private/public keys, certificates | RFC 7093 §2 method 4: the hash (here SHA-256, named by the SRI prefix) of the DER SubjectPublicKeyInfo, applied to the *canonical* SPKI (re-encoded, EC points uncompressed; §3.2) | readable public key | `curves_and_rsa_sizes_…`, `adopt_*`, `standalone_public_key_objects`, VM oracle (pkcs11-tool + openssl) |
 | `certhash` | X.509 certificates | SHA-256 of the certificate DER | readable `CKA_VALUE` | `adopt_certificate_…`, `adopt_ec_and_edwards_certificates` |
-| `valuehash` | public data objects | SHA-256 of `CKA_VALUE` (equals Nix's flat fixed-output hash) | `CKA_PRIVATE=false` | `data_objects_are_identified_by_their_public_value` |
+| `valuehash` | data objects | SHA-256 of `CKA_VALUE` (equals Nix's flat fixed-output hash) | `CKA_PRIVATE=false`, or a spec declaring `CKA_PRIVATE = true` (read under the login; §8.2) | `data_objects_are_identified_by_their_public_value`, `private_data_objects_are_identified_when_declared`, `tpm2_private_data_object_is_identified_by_its_value` |
 | `commitment` | generic secrets, `CKK_SHA*_HMAC` | HMAC over the label (§3.3), using the key type's hash | `CKA_SIGN` | `secret_commitments_match_host_hmac`, `hmac_key_types_commit_with_their_own_hash`, `tpm2_imported_keys_…` |
 | `cmac` | AES | AES-CMAC over the label | `CKA_SIGN` | `aes_commitments_match_host_oracles` |
 | `kcv-ecb` | AES, DES3 | ECB encryption (`CKM_AES_ECB`, `CKM_DES3_ECB`) of one block: the first 16 (AES) or 8 (DES3) bytes of SHA-256(label) | `CKA_ENCRYPT` | same, `tpm2_aes_key_is_identified_by_its_kcv`, `des3_check_values_match_host_oracles` |
@@ -563,9 +563,12 @@ The reviews these come from are archived: `docs/archive/REVIEW-2026-11-11.md` (c
 - **A commitment ID lets anyone holding the lock test guesses of a low-entropy secret.** The
   ID is SHA-256 of a MAC, under the key, of a public label (§3.3): for a random key it reveals
   nothing usable, but for a passphrase or other guessable value held as `CKK_GENERIC_SECRET`
-  (or an HMAC key type) each guess can be checked offline against the lock. Private data
-  objects are not hashed for this reason; secret keys are, on the assumption that they are
-  random. Do not commit a lock that pins a guessable secret (review A9).
+  (or an HMAC key type) each guess can be checked offline against the lock. A private data
+  object's `valuehash` is a plain SHA-256 of its value, so it is computed only when the spec
+  declares `CKA_PRIVATE = true`: the author's statement, reviewed with keys.toml, that the
+  value is random (a token or an application secret, never a password or PIN); undeclared it is
+  refused (15). Secret keys are hashed on the same assumption without one. Do not commit a lock
+  that pins a guessable secret (review A9).
 - **`tpm-certify` is experimental and pending review** (review A8): it reads tpm2-pkcs11's
   private store (sqlite schema, YAML attributes, the sealed wrapping key), which the module
   does not offer as a stable interface; a module version it was not tested with (anything but

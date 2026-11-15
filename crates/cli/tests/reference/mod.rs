@@ -2002,6 +2002,52 @@ fn data_objects_are_identified_by_their_public_value() {
     assert_eq!(e.code(&["validate"]), 17);
 }
 
+/// A private data object (`CKA_PRIVATE = true`: an API token, a wrapped blob, an application
+/// secret), identified like a public one by `valuehash` once its spec declares `CKA_PRIVATE =
+/// true`: the author's statement that the value is not guessable (DESIGN §3.1). Read under the
+/// user login; without one the token shows no such object (11). The undeclared case stays
+/// refused (`data_objects_are_identified_by_their_public_value`).
+#[test]
+fn private_data_objects_are_identified_when_declared() {
+    let Some(e) = env("private_data") else { return };
+    let value = b"0f4c1e9a7b3d52c86e1f0a9b4d7c3e25 an unguessable application secret".to_vec();
+    let s = e.session();
+    for (label, private) in [("data-secret", true), ("data-open", false)] {
+        s.create_object(&[
+            Attribute::Class(ObjectClass::DATA),
+            Attribute::Token(true),
+            Attribute::Private(private),
+            Attribute::Label(label.as_bytes().to_vec()),
+            Attribute::Application(b"key-management test".to_vec()),
+            Attribute::Value(value.clone()),
+        ])
+        .unwrap();
+    }
+    e.config(
+        "[objects.secret]\nclass = \"CKO_DATA\"\n\n\
+         [specs.secret]\nobject = \"secret\"\nattributes = { CKA_PRIVATE = true }\n\
+         tokens.ref = { locator = { CKA_LABEL = \"data-secret\" } }\n\
+         tokens.ref-anon = { locator = { CKA_LABEL = \"data-secret\" } }\n\n\
+         [objects.open]\nclass = \"CKO_DATA\"\n\n\
+         [specs.open-as-private]\nobject = \"open\"\nattributes = { CKA_PRIVATE = true }\n\
+         tokens.ref = { locator = { CKA_LABEL = \"data-open\" } }\n",
+    );
+    let o = e.km(&["realise", "secret", "--token", "ref", "--update-lock"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let r: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(r["assurance"].as_str(), Some("public"), "whoever holds the value passes");
+    assert_eq!(e.locked_id("secret", "valuehash"), sri(&value));
+    assert_eq!(e.lock()["realisations"]["secret"]["ref"]["policy"]["CKA_PRIVATE"].as_bool(), Some(true));
+    assert!(stdout(&e.km(&["verify", "secret", "--token", "ref"])).ends_with("object=data-secret;type=data"));
+    assert_eq!(e.code(&["check", "secret.id.valuehash", "--token", "ref"]), 0);
+    // Without a login the token shows no private object: absent.
+    assert_eq!(e.code(&["verify", "secret", "--token", "ref-anon"]), 11);
+    // Declaring it private does not make a public object one: the declared policy is checked (13).
+    let o = e.km(&["realise", "open-as-private", "--token", "ref", "--no-update-lock"]);
+    assert_eq!(code(&o), 13);
+    assert!(stderr(&o).contains("CKA_PRIVATE is false"), "{}", stderr(&o));
+}
+
 #[test]
 fn brainpool_p512_is_refused_clearly() {
     let Some(e) = env("bp512") else { return };

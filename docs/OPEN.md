@@ -33,6 +33,13 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
     schemes, which many HSMs store this way): unknown key type (17). Same mechanisms
     (`CKM_DES3_ECB`), its own key type in the label; `des::TdesEde2` as the oracle.
   - *Single DES* (`CKK_DES`): not planned.
+- **Moving private data objects** (2026-11-15). `cakeys` identifies a private data object
+  (`valuehash`) when its spec declares `CKA_PRIVATE = true`; camigrate moves none (15,
+  `private_data_objects_never_move`): the `public` method would put the value in a bundle and
+  recreate it under the target's default `CKA_PRIVATE`. It would serve application secrets
+  and tpm2-pkcs11's data objects, which are all private. PKCS#11 wraps keys, not data objects,
+  so the candidate is the `host` path behind `--allow-host-plaintext`, with `CKA_PRIVATE = true`
+  in the target's template and the value zeroized after; never a bundle.
 - **brainpoolP512r1** (2026-11-15): refused (15, `CURVES_WITHOUT_CRATE`). It would serve keys
   under BSI TR-03111 (German government and eID PKI) and HSMs that offer the curve beside
   P256r1/P384r1. RustCrypto has no `bp512` release: "Add Brainpool P-512"

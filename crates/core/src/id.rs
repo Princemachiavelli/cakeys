@@ -65,7 +65,8 @@ pub enum Scheme {
     Rfc7093m4,
     /// SHA-256 of a certificate's DER.
     Certhash,
-    /// SHA-256 of a public data object's `CKA_VALUE`.
+    /// SHA-256 of a data object's `CKA_VALUE` (of a private one only when its spec declares
+    /// `CKA_PRIVATE = true`: docs/DESIGN.md §8.2).
     Valuehash,
     /// HMAC over the commitment label (`Commit::Hmac`).
     Commitment,
