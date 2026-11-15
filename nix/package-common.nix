@@ -38,7 +38,8 @@ let
   canCheck = stdenv.buildPlatform.canExecute stdenv.hostPlatform;
   # The SoftHSM the tests drive: nixpkgs' with upstream/softhsm/'s patches
   # (nix/softhsm-unwrap-value-len.nix), as scripts/local-tests.sh uses. Without them OpenSSL
-  # through pkcs11-provider, which reads what `check --format pem` writes, deadlocks in C_Login.
+  # through pkcs11-provider, which reads `check --format pkcs11-provider-pem`'s key file,
+  # deadlocks in C_Login.
   softhsmForTests = callPackage ./softhsm-unwrap-value-len.nix { inherit softhsm; };
 in
 {
@@ -186,7 +187,7 @@ in
         export CAKEYS_P11KIT_CLIENT=${lib.getLib p11-kit}/lib/pkcs11/p11-kit-client.so
         export CAKEYS_P11KIT_REQUIRE=1
 
-        # OpenSSL through pkcs11-provider reads what `check --format pem` writes.
+        # OpenSSL through pkcs11-provider reads what `check --format pkcs11-provider-pem` writes.
         export CAKEYS_PKCS11_PROVIDER_DIR=${pkcs11-provider}/lib/ossl-modules
 
         export HOME=$TMPDIR

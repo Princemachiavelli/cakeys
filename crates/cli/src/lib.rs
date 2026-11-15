@@ -102,8 +102,9 @@ enum Cmd {
         token: Option<String>,
         #[arg(long)]
         spec: Option<String>,
-        /// `uri`, or `pem`: pkcs11-provider's key file wrapping the URI, for programs that take a
-        /// private key only as a PEM file.
+        /// `uri`, or `pkcs11-provider-pem`: pkcs11-provider's key file (what its `uri2pem.py`
+        /// writes) wrapping the URI, for programs that take a private key only as a PEM file
+        /// and load it through OpenSSL with pkcs11-provider.
         #[arg(long, value_enum, default_value_t = Format::Uri)]
         format: Format,
         /// Add `module-path=` with the module file the check loaded (read by p11-kit and libp11;
@@ -122,7 +123,7 @@ enum Cmd {
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum Format {
     Uri,
-    Pem,
+    Pkcs11ProviderPem,
 }
 
 /// How `check` puts the user PIN in the URI.
@@ -274,9 +275,10 @@ impl Run<'_> {
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
         // Refused before any token is opened: what the output cannot carry.
         let object = reference.split_once(".id.").map_or(reference, |(o, _)| o);
-        if format == Format::Pem && cfg.objects.get(object).is_some_and(|o| o.class != ObjectClass::PrivateKey) {
+        let key_file = format == Format::Pkcs11ProviderPem;
+        if key_file && cfg.objects.get(object).is_some_and(|o| o.class != ObjectClass::PrivateKey) {
             return Err(KmError::Unsupported(format!(
-                "--format pem for '{object}': pkcs11-provider's key files name private keys only"
+                "--format pkcs11-provider-pem for '{object}': pkcs11-provider's key files name private keys only"
             ))
             .into());
         }
@@ -287,18 +289,25 @@ impl Run<'_> {
                 Some(pin_ref(&t, token_cfg(cfg, &t)?, how == UriPin::Value)?)
             }
         };
-        let mut loaded = None;
-        let open = |name: &str, access| {
-            let tok = open_quiet(cfg, modules, registry, name, access)?;
-            loaded = Some(tok.module.path.clone());
-            Ok(tok)
-        };
-        let r = ops::check(cfg, reference, spec, token, open, &mut self.lock, notes)?;
-        let uri = with_query(&r.uri, loaded.as_deref().filter(|_| uri_module), pin.as_ref());
-        match format {
-            Format::Uri => println!("{uri}"),
-            Format::Pem => print!("{}", provider_pem(&uri)?),
+        let open = |name: &str, access| open_quiet(cfg, modules, registry, name, access);
+        let (r, tok) = ops::check_open(cfg, reference, spec, token, open, &mut self.lock, notes)?;
+        let uri = with_query(&r.uri, uri_module.then_some(tok.module.path.as_str()), pin.as_ref());
+        if !key_file {
+            println!("{uri}");
+            return Ok(());
         }
+        // pkcs11-provider finds a private key's public half by CKA_ID alone: without one, a
+        // module whose private key carries no public point (SoftHSM) gives OpenSSL no public key.
+        let t = Target::new(cfg, &r.spec, &r.token)?;
+        if tok.key_id(t.object, &t.on_token.locator, t.on_token.public_only)?.is_none() {
+            notes.warn(format!(
+                "'{object}' on '{}' has no CKA_ID: pkcs11-provider finds a private key's public half by \
+                 CKA_ID, so unless the module puts the public key on the private object, OpenSSL cannot \
+                 get the public key from this key file (to match a certificate, or `openssl pkey -pubout`)",
+                r.token
+            ));
+        }
+        print!("{}", provider_pem(&uri)?);
         Ok(())
     }
 

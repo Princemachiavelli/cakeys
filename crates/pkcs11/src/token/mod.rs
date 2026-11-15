@@ -553,6 +553,20 @@ impl Token {
         Ok(())
     }
 
+    /// The `CKA_ID` of the key `loc` finds, if it has a non-empty one (`None` too when nothing
+    /// is found: call it on an object a check has just verified).
+    ///
+    /// # Errors
+    ///
+    /// As [`Token::find_key`], or when the module cannot read the attribute.
+    pub fn key_id(&self, object: &ObjectCfg, loc: &Locator, public_only: bool) -> Result<Option<Vec<u8>>> {
+        let Some(h) = self.find_key(object, loc, public_only)? else { return Ok(None) };
+        Ok(match self.attr(h, AttributeType::Id)? {
+            Some(Attribute::Id(id)) if !id.is_empty() => Some(id),
+            _ => None,
+        })
+    }
+
     fn attr(&self, h: ObjectHandle, t: AttributeType) -> Result<Option<Attribute>> {
         Ok(self.session.get_attributes(h, &[t]).map_err(ck("C_GetAttributeValue"))?.into_iter().next())
     }

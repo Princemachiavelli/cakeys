@@ -14,7 +14,7 @@ in
       keys.signing { token = "softhsm"; }      # several pairs: name the token
       keys.shared { token = "softhsm"; spec = "shared-sign"; }   # several specs on one token
       keys.signing-cert { scheme = "certhash"; }                # any call can also pin a scheme
-      keys.signing { format = "pem"; uriPin = "source"; }       # and say what `check` prints
+      keys.signing { format = "pkcs11-provider-pem"; uriPin = "source"; }       # and say what `check` prints
 
     The result is plain data:
 
@@ -38,7 +38,7 @@ in
                      resolved pair is passed explicitly, and `scheme` requires that identity.
                      Interpolates config, lock and module paths, so they become inputs of the
                      consuming derivation (recording a hash rebuilds it). The call's `format`
-                     ("uri", or "pem": pkcs11-provider's key file), `uriModule` (add
+                     ("uri", or "pkcs11-provider-pem": pkcs11-provider's key file), `uriModule` (add
                      `module-path=`) and `uriPin` (null, "source" for `pin-source=`, "value"
                      for `pin-value=`) say what it prints (`cakeys check --format`,
                      `--uri-module`, `--uri-pin`). A "value" PIN is in whatever the output
@@ -179,9 +179,9 @@ in
             assert
               builtins.elem format [
                 "uri"
-                "pem"
+                "pkcs11-provider-pem"
               ]
-              || fail "format must be \"uri\" or \"pem\", not ${builtins.toJSON format}";
+              || fail "format must be \"uri\" or \"pkcs11-provider-pem\", not ${builtins.toJSON format}";
             assert
               builtins.elem uriPin [
                 null

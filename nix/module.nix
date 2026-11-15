@@ -129,12 +129,13 @@ let
         format = mkOption {
           type = types.enum [
             "uri"
-            "pem"
+            "pkcs11-provider-pem"
           ];
           default = "uri";
           description = ''
-            What the check prints: the URI, or `pem`, pkcs11-provider's key file wrapping it, for
-            programs that take a private key only as a PEM file (`cakeys check --format`).
+            What the check prints: the URI, or `pkcs11-provider-pem`, pkcs11-provider's key file
+            wrapping it, for programs that take a private key only as a PEM file and load it
+            through OpenSSL with pkcs11-provider (`cakeys check --format`).
           '';
         };
         uriModule = mkOption {

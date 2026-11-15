@@ -717,6 +717,24 @@ pub fn check(
     lock: &mut Lock,
     notes: &mut Notes,
 ) -> Result<Resolved> {
+    check_open(cfg, reference, spec, token, open, lock, notes).map(|(r, _)| r)
+}
+
+/// [`check`], also handing back the token it opened, for a caller that reads more of the
+/// object it verified (the CLI's key-file output asks for its `CKA_ID`).
+///
+/// # Errors
+///
+/// As [`check`].
+pub fn check_open(
+    cfg: &Config,
+    reference: &str,
+    spec: Option<&str>,
+    token: Option<&str>,
+    open: impl FnOnce(&str, hal::Access) -> Result<Token>,
+    lock: &mut Lock,
+    notes: &mut Notes,
+) -> Result<(Resolved, Token)> {
     let (object, requested) = match reference.split_once(".id.") {
         Some((o, s)) => (o, Some(s)),
         None => (reference, None),
@@ -779,5 +797,5 @@ pub fn check(
             });
         }
     }
-    Ok(r)
+    Ok((r, tok))
 }

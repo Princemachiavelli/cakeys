@@ -63,11 +63,12 @@ impl Env {
     }
 }
 
-/// `check --format pem` is the key file pkcs11-provider reads (docs/CAKEYS.md, "The contract
-/// with programs"): OpenSSL loads it through the provider, its public key hashes to the locked
-/// `rfc7093m4`, and it signs through the URI's `pin-source` (the PIN file ends in a newline) and
-/// through its `pin-value`, each signature verifying under that public key with OpenSSL alone.
-/// What the output cannot carry is refused before any token is opened.
+/// `check --format pkcs11-provider-pem` is the key file pkcs11-provider reads (docs/CAKEYS.md,
+/// "The contract with programs"): OpenSSL loads it through the provider, its public key hashes to
+/// the locked `rfc7093m4`, and it signs through the URI's `pin-source` (the PIN file ends in a
+/// newline) and through its `pin-value`, each signature verifying under that public key with
+/// OpenSSL alone. A key without `CKA_ID` gets its key file with a warning; what the output cannot
+/// carry is refused before any token is opened.
 #[test]
 fn check_pem_is_a_key_file_for_pkcs11_provider() {
     let name = "check_pem_is_a_key_file_for_pkcs11_provider";
@@ -97,9 +98,10 @@ fn check_pem_is_a_key_file_for_pkcs11_provider() {
     let (public, data) = (e.dir.join("public.der"), data.to_str().unwrap());
 
     for (i, extra) in [&["--uri-pin", "source"][..], &["--uri-pin", "value", "--uri-module"]].into_iter().enumerate() {
-        let out = e.km(&[&["check", "signing.id.rfc7093m4", "--format", "pem"][..], extra].concat());
+        let out = e.km(&[&["check", "signing.id.rfc7093m4", "--format", "pkcs11-provider-pem"][..], extra].concat());
         assert_eq!(code(&out), 0);
         assert!(stdout(&out).starts_with("-----BEGIN PKCS#11 PROVIDER URI-----"), "{}", stdout(&out));
+        assert!(!stderr(&out).contains("CKA_ID"), "{}", stderr(&out));
         let (pem, sig) = (e.dir.join(format!("key-{i}.pem")), e.dir.join(format!("sig-{i}")));
         std::fs::write(&pem, &out.stdout).unwrap();
         let (pem, sig) = (pem.to_str().unwrap(), sig.to_str().unwrap());
@@ -117,16 +119,34 @@ fn check_pem_is_a_key_file_for_pkcs11_provider() {
     assert!(source.ends_with(&format!("?pin-source=file:{}", e.dir.join("pin").display())), "{source}");
     assert!(!stdout(&e.km(&["check", "signing"])).contains('?'));
 
+    // A key without CKA_ID (common among existing keys) still gets its key file, but is warned:
+    // OpenSSL may get no public key from it.
+    assert_eq!(e.code(&["realise", "signing-noid-soft", "--token", "ref"]), 0);
+    let noid = e.km(&["check", "signing-noid", "--format", "pkcs11-provider-pem"]);
+    assert_eq!(code(&noid), 0, "{}", stderr(&noid));
+    assert!(stdout(&noid).starts_with("-----BEGIN PKCS#11 PROVIDER URI-----"), "{}", stdout(&noid));
+    assert!(stderr(&noid).contains("'signing-noid' on 'ref' has no CKA_ID"), "{}", stderr(&noid));
+
     // A key file names a private key; a PIN needs a token that has one. Refused unopened, so
     // the anonymous public key below is never realised.
-    assert_eq!(e.code(&["check", "signing-pub", "--format", "pem"]), 15);
+    assert_eq!(e.code(&["check", "signing-pub", "--format", "pkcs11-provider-pem"]), 15);
     assert_eq!(e.code(&["check", "signing-pub", "--uri-pin", "source"]), 17);
     assert_eq!(e.code(&["check", "signing-pub", "--uri-pin", "value"]), 17);
 }
 
-/// [`check_pem_is_a_key_file_for_pkcs11_provider`]'s refusals: a public key, on the token
-/// without a PIN.
+/// [`check_pem_is_a_key_file_for_pkcs11_provider`]'s other objects: a key located by label
+/// alone, so without `CKA_ID`; and for the refusals, a public key on the token without a PIN.
 const PEM_REFUSALS: &str = r#"
+[objects.signing-noid]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+
+[specs.signing-noid-soft]
+object = "signing-noid"
+attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
+tokens.ref = { locator = { CKA_LABEL = "check-pem-noid" }, autoCreate = true }
+
 [objects.signing-pub]
 class = "CKO_PUBLIC_KEY"
 keyType = "CKK_EC"

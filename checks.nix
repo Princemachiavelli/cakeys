@@ -157,9 +157,10 @@
       (keys.signing-cert { scheme = "certhash"; }).check;
     # What `check` prints: the bare URI unless the call asks for more.
     assert !(pkgs.lib.hasInfix "--format" signing.check || pkgs.lib.hasInfix "--uri-" signing.check);
-    assert pkgs.lib.hasSuffix "--spec signing-soft --format pem --uri-module --uri-pin source"
+    assert pkgs.lib.hasSuffix
+      "--spec signing-soft --format pkcs11-provider-pem --uri-module --uri-pin source"
       (keys.signing {
-        format = "pem";
+        format = "pkcs11-provider-pem";
         uriModule = true;
         uriPin = "source";
       }).check;

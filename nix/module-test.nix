@@ -92,7 +92,7 @@ pkgs.testers.runNixOSTest {
         environment.SOFTHSM2_CONF = "${stateDir}/softhsm2.conf";
         requiredBy = [ "signer.service" ];
         # The key as a file: pkcs11-provider's key file, the PIN by reference.
-        format = "pem";
+        format = "pkcs11-provider-pem";
         uriPin = "source";
         outputFile = "/run/cakeys/signing.pem";
         outputGroup = "signer";
