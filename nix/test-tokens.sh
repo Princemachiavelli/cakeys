@@ -38,6 +38,34 @@ export KRYOPTIC_CONF=$D/kryoptic.conf
 # The test binary's name without cargo's hash: which suite this is.
 suite=$(basename "$1")
 suite=${suite%-*}
+
+# Coverage (docs/PLAN.md A1): with $CAKEYS_TRACE_DIR, every module this test can load goes
+# through a copy of p11-fault with a tag of its own (libp11_fault-<tag>.so reads only
+# P11_FAULT_*_<TAG>), a pure forwarder that logs each call to <dir>/<suite>/<test>.jsonl. The
+# fault suites' own shim then stacks on it. The copies are made once per run, and are copies:
+# the loader takes two links to one file for one library, whose settings both would share.
+if [ -n "${CAKEYS_TRACE_DIR:-}" ]; then
+  test=unnamed prev=
+  for a in "$@"; do
+    [ "$prev" != --exact ] || test=$a
+    prev=$a
+  done
+  trace=$CAKEYS_TRACE_DIR/$suite/${test//::/.}.jsonl
+  shim=$(dirname "$1")/libp11_fault.so
+  [ -e "$shim" ] || {
+    echo "test-tokens.sh: CAKEYS_TRACE_DIR, but no $shim" >&2
+    exit 1
+  }
+  mkdir -p "$CAKEYS_TRACE_DIR/$suite" "$CAKEYS_TRACE_DIR/shims"
+  for pair in softhsm:CAKEYS_TEST_MODULE kryoptic:CAKEYS_KRYOPTIC_MODULE tpm:CAKEYS_TPM_MODULE \
+    p11kit:CAKEYS_P11KIT_CLIENT; do
+    tag=${pair%%:*} var=${pair#*:}
+    [ -n "${!var:-}" ] || continue
+    copy=$CAKEYS_TRACE_DIR/shims/libp11_fault-$tag.so
+    [ -e "$copy" ] || { cp "$shim" "$copy.$$" && mv -f "$copy.$$" "$copy"; }
+    export "P11_FAULT_MODULE_${tag^^}=${!var}" "P11_FAULT_TRACE_${tag^^}=$trace" "$var=$copy"
+  done
+fi
 # tests/fault.rs runs the reference suite again, through p11-fault in front of this test's own
 # SoftHSM token.
 if [ "$suite" = fault ]; then

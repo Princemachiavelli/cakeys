@@ -74,9 +74,11 @@ fn shim() -> Result<&'static Shim, Fatal> {
 /// This library's own file, as the dynamic loader opened it.
 fn own_path() -> Option<PathBuf> {
     let mut info = std::mem::MaybeUninit::<libc::Dl_info>::zeroed();
+    // Not `C_GetFunctionList`: an exported name can resolve to another library's (libp11-kit,
+    // loaded by `p11-kit server`, exports one too), and `dladdr` would then name that library.
     // SAFETY: `dladdr` reads the loader's tables for an address inside this library and fills
     // `info`; zeroed memory is a valid `Dl_info` to pass.
-    let found = unsafe { libc::dladdr(C_GetFunctionList as *const libc::c_void, info.as_mut_ptr()) };
+    let found = unsafe { libc::dladdr(get_function_list as *const libc::c_void, info.as_mut_ptr()) };
     // SAFETY: on success `dladdr` filled `info`; `dli_fname` is a C string the loader owns for
     // as long as the library stays loaded.
     let name = unsafe {
@@ -97,10 +99,19 @@ fn tag(file: &Path) -> Option<String> {
     Some(tag.to_uppercase().replace('-', "_"))
 }
 
+/// This copy's tag ([`tag`]), read once, from the file a symlink that loaded it points to.
+fn own_tag() -> Option<&'static str> {
+    static TAG: OnceLock<Option<String>> = OnceLock::new();
+    TAG.get_or_init(|| {
+        let path = own_path()?;
+        tag(&path.canonicalize().unwrap_or(path))
+    })
+    .as_deref()
+}
+
 /// `base` for this copy of the library: `base` itself untagged, `base_<TAG>` tagged ([`tag`]).
 fn variable(base: &str) -> String {
-    static TAG: OnceLock<Option<String>> = OnceLock::new();
-    match TAG.get_or_init(|| tag(&own_path()?)) {
+    match own_tag() {
         Some(tag) => format!("{base}_{tag}"),
         None => base.to_owned(),
     }
@@ -131,7 +142,8 @@ impl Shim {
             (_, None) => plan::Plan::default(),
         };
         let (trace_var, trace) = setting("P11_FAULT_TRACE");
-        let trace = trace.map(|p| trace::Trace::open(&trace_var, Path::new(&p))).transpose()?;
+        let trace =
+            trace.map(|p| trace::Trace::open(&trace_var, Path::new(&p), own_tag().map(str::to_owned))).transpose()?;
         let module = |e: &dyn std::fmt::Display| Fatal(format!("{module_var} {}: {e}", path.display()));
         // SAFETY: loading a PKCS#11 module runs its initialisers, as a client loading it directly
         // would; that is what the client asked for by loading the shim.
@@ -154,11 +166,13 @@ impl Shim {
     }
 
     /// One call of `function`: counted, answered by the plan or forwarded by `forward` (which
-    /// calls the real module and says which rule, if any, changed what it answered), and traced.
+    /// calls the real module and says which rule, if any, changed what it answered), and traced
+    /// with what `observe` reads from its arguments once it has returned.
     fn call(
         &self,
         function: Fn,
         forward: impl FnOnce(&plan::Call) -> Result<(CK_RV, Option<usize>), Fatal>,
+        observe: impl FnOnce(&mut trace::Detail),
     ) -> Result<CK_RV, Fatal> {
         let call = self.plan.count(function);
         let (rv, rule) = if let Some((rv, rule)) = self.plan.before(&call) {
@@ -168,7 +182,9 @@ impl Shim {
             self.plan.after(&call).map_or((real, fired), |(rv, rule)| (rv, Some(rule)))
         };
         if let Some(trace) = &self.trace {
-            trace.line(&call, rv, rule);
+            let mut detail = trace::Detail::default();
+            observe(&mut detail);
+            trace.line(&call, rv, rule, &detail);
         }
         Ok(rv)
     }
@@ -191,6 +207,18 @@ fn guard(f: impl FnOnce() -> Result<CK_RV, Fatal>) -> CK_RV {
 /// `out` is null or points to writable memory for one pointer, as PKCS#11 requires of callers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn C_GetFunctionList(out: *mut *mut CK_FUNCTION_LIST) -> CK_RV {
+    // SAFETY: the caller's pointer, under the same contract.
+    unsafe { get_function_list(out) }
+}
+
+/// [`C_GetFunctionList`] under a name this library does not export, so that the shim's own table
+/// and [`own_path`] refer to this library's entry point and never to another library's of the
+/// same exported name.
+///
+/// # Safety
+///
+/// As [`C_GetFunctionList`].
+pub(crate) unsafe extern "C" fn get_function_list(out: *mut *mut CK_FUNCTION_LIST) -> CK_RV {
     guard(|| {
         if out.is_null() {
             return Ok(CKR_ARGUMENTS_BAD);
