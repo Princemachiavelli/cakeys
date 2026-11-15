@@ -214,16 +214,17 @@ What remains, by kind (about 740 lines):
 
 ## Tier 4: a module that misbehaves on request
 
-[PLAN.md](PLAN.md) A3. What is left after tier 3 is mostly `map_err` arms on a call that a
-correct module never fails: `C_FindObjects` failing, an attribute read failing after the
-object was found, a login failing after the session opened, a derived secret with no value, a
-key that vanishes between creation and resolution, a certificate with no readable value. The
-shim returns a chosen `CKR_*` on the n-th call of a function and can drop or alter an
-attribute; each arm becomes one line of test table.
+[PLAN.md](PLAN.md) A3: a forwarding shim in front of SoftHSM or kryoptic, driven by a fault plan
+(decided 2026-11-14; about 1–1.5k lines, not a module of its own). What is left after tier 3
+is mostly `map_err` arms on a call that a correct module never fails: `C_FindObjects` failing,
+an attribute read failing after the object was found, a login failing after the session
+opened, a derived secret with no value, a key that vanishes between creation and resolution,
+a certificate with no readable value. The shim returns a chosen `CKR_*` on the n-th call of a
+function and can drop or alter an attribute; each arm becomes one line of test table.
 
-It also covers what tier 2 cannot construct: a module reporting `CKF_USER_PIN_FINAL_TRY` or
-`CKF_USER_PIN_LOCKED` (`token/mod.rs:70`), which no reference can be put into without spending
-real PIN tries.
+A module reporting `CKF_USER_PIN_FINAL_TRY` or `CKF_USER_PIN_LOCKED` was listed here; kryoptic
+counts down, so the burn-down covers both on a reference token
+(`pin_counters_stop_cakeys_before_it_spends_a_try`).
 
 ## Tier 5: a real YubiKey from the sandbox
 

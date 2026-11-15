@@ -25,9 +25,10 @@ rules"). "fTPM" below always means the OP-TEE firmware-TPM TA inside the QEMU gu
 | S | Five spikes that settle the [todo] items the later stages rest on | 5 × S | — |
 | A1 | Coverage as data: baseline gains return values and flags; a traced coverage file | M | — |
 | A2 | Section-by-section semantic review; findings filed in OPEN.md | M | A1 |
-| A3 | A lying PKCS#11 module for deterministic bad-module tests | L | A1 |
+| A3 | A forwarding shim that misbehaves on request: deterministic bad-module tests | S–M | — |
 | A4 | The object matrix (OPEN.md, "Identity coverage") | L | A1 |
 | A5 | KDF probes in caprobe; a derive-based commitment for derive-only secret keys | M | A1 |
+| A6 | Cross-tests: pkcs11-proxy-ng (and pkcs11-proxy) as forwarder layers; one pkcs11-check run | M | — |
 | B1 | x86 Secure Boot: PK/KEK/db in a token, UKI signed in a sandboxed Nix build | M | S1 |
 | B2 | swtpm manufactured by the HSM: EK certificate, AK chained to it, quote of B1 | M–L | S2, B1 |
 | B3 | OP-TEE PKCS#11 TA as a reference token, aarch64 QEMU | M | S3 |
@@ -58,6 +59,33 @@ numerator below is a grep of `crates/*/src`, so it is a lower bound to be replac
 Low percentages are expected: cakeys pins and verifies keys, it is not a general PKCS#11
 consumer. The review's job is to make every unused row a decision (out of scope, with a reason)
 or a finding, instead of an accident.
+
+### A0b. Related projects (reviewed 2026-11-14)
+
+Checkouts in `~/srcs`. None does what cakeys does; what each is to us:
+
+| Project | What it is | To us |
+|---|---|---|
+| [pkcs11-check](https://github.com/mingulov/pkcs11-check) | Python/pytest conformance and robustness suite over a ctypes binding: >100k checks (spec, strict `CK_RV`, Wycheproof, ACVP, fuzz), crash isolation, findings as evidence | A second opinion on the reference modules (one run, findings triaged, never a check), and references for A1 (its per-call `CK_RV` trace, `docs/rv-trace-design.md`) and A2 (the OASIS 3.2 profile tables, `compliance_profiles.py`). Not caprobe: it reports, caprobe decides. Its roadmap asks for what a caprobe profile is (which curves, sizes and mechanisms a module implements, to scope a run) |
+| [pkcs11-proxy-ng](https://github.com/mingulov/pkcs11-proxy-ng) | Rust PKCS#11 remote proxy: a `cdylib` shim exporting the C ABI, gRPC/mTLS, a daemon over `cryptoki-sys`. v0.3.1 beta, six months old, one maintainer; "not production-ready" by its own matrix; one trusted client per daemon | A forwarder to cross-test (A6). Its shim shows how to export the PKCS#11 C ABI from Rust (A3). Its fault injection is an in-process mock of its own backend, not a module cakeys could load |
+| [pkcs11-proxy](https://github.com/iksaif/pkcs11-proxy) | C, gnome-keyring's `gck-rpc` (p11-kit's RPC ancestor) over plain TCP; a mechanism whitelist without hashed ECDSA, EdDSA, ECDH, `AES_CMAC`, any AES key wrap | Optional A6 case: a very restrictive forwarder |
+| [pkcs11-components](https://github.com/mingulov/pkcs11-components) | `pkcs11-module` (raw `C_GetFunctionList`/`C_GetInterfaceList` acquisition), `pkcs11-abi` (function-table layouts, 3.x prefix selection), `pkcs11-types` | Only if A3's shim ever needs 3.x interfaces; cryptoki covers cakeys itself |
+| [haskoki](https://github.com/mingulov/haskoki) | Haskell software token over OpenSSL 4: a demonstrator (keys unencrypted at rest), two months old, 316 mechanisms tested in its own model, PQC | Implements everything cakeys uses plus PQC. Parked (OPEN.md): another OpenSSL-backed software token adds little beside kryoptic until cakeys has PQ key types, and it is Docker-packaged, not in nixpkgs |
+| [p11scope](https://github.com/mingulov/p11scope) | eBPF uprobe observer of the PKCS#11 calls running programs make | Not for the checks. A sandbox with `auto-allocate-uids` (as `test-nspawn`) runs as uid 0 in a user namespace, and capabilities there do not count for `bpf()`: tried 2026-11-14 on this host (kernel 7.2.9, `unprivileged_bpf_disabled = 2`), namespaced root gets no BPF program type at all, not even `socket_filter`. Only a BPF token (kernel 6.9+: a bpffs mounted with delegation by a privileged parent) would let it in, which the Nix daemon does not set up and p11scope would have to support. For A1, `pkcs11-spy` or A3's recorder |
+| [pk11-uri-parser](https://crates.io/crates/pk11-uri-parser) | RFC 7512 URI parser crate | A2: parse every URI `uri.rs` emits in a test (the `/` escaping question) |
+
+**Is testing p11-kit enough for forwarders?** For cakeys' design, yes; for behaviour, no.
+p11-kit names itself in `C_GetInfo`, so cakeys applies its layer. pkcs11-proxy and
+pkcs11-proxy-ng pass the backend's `C_GetInfo` through and are invisible: a token behind them
+gets the backend's profile. Both purge what they cannot forward from `C_GetMechanismList`, so
+mechanism-level decisions hold; what they change beyond the list (parameter marshalling,
+pkcs11-proxy's OAEP parameters copied raw with their pointer, its 2026 `CK_ULONG` width fix) is
+not seen. A6 covers that.
+
+**Production use.** For forwarding today, p11-kit: mature, the distribution default, local or
+over SSH through `p11-kit server`, at the price of the mechanisms its RPC drops.
+pkcs11-proxy-ng forwards more (mechanism parameters, mTLS, audit) and backs its parity claim
+with pkcs11-check, but is an early beta.
 
 ### A1. Coverage as data
 
@@ -119,20 +147,49 @@ Exit: the review document exists, each finding has an owner artefact, and OPEN.m
 ### A3. A lying module
 
 DEVELOPMENT.md records that most bugs came from module behaviour and the design, not the pure
-logic. Reference tokens only show the misbehaviour they happen to have. A test-only `cdylib`
-crate (`crates/p11-shim`) that forwards to a real module and misbehaves on request makes that
-class testable on purpose:
+logic. Reference tokens only show the misbehaviour they happen to have. A module that
+misbehaves on request makes that class testable on purpose; it is also tier 4 of
+[COVERAGE_PLAN.md](COVERAGE_PLAN.md), where most of the remaining uncovered lines are.
 
-- **Faults**: return a chosen `CKR_*` on the n-th call of a function; drop the token mid-run.
-- **Lies**: another key's `CKA_PUBLIC_KEY_INFO` or `CKA_EC_POINT`; flipped policy attributes;
-  swap the object between find and use; a second object under the locator on the second find.
-- **Malformed data**: `CK_UNAVAILABLE_INFORMATION` lengths, truncated or oversized values,
-  unpadded labels, unsorted mechanism lists.
-- **Recording**: the trace A1 needs, if `pkcs11-spy` falls short.
+**How it is built (decided 2026-11-14): a forwarding shim, not a module.** Nothing is
+implemented twice: a real module (SoftHSM, kryoptic) keeps doing the cryptography, and the
+shim only sits in front of it. A test-only `cdylib` crate, `crates/p11-shim`, about 1–1.5k
+lines, no new dependencies (`cryptoki-sys` and `libloading` are already in the tree through
+cryptoki):
+
+- It exports `C_GetFunctionList` alone. It loads the real module named by
+  `CAKEYS_SHIM_MODULE`, takes its `CK_FUNCTION_LIST`, and hands out its own, whose every entry
+  is a forwarder generated by a macro from the 2.40 signatures: consult the plan, call the real
+  function, consult the plan on the outputs, return. No `C_GetInterfaceList`, so cryptoki uses
+  the 2.40 table; that covers every function cakeys calls. Should a 3.x function be needed,
+  `pkcs11-abi`/`pkcs11-module` (A0b) give the 3.x table layouts.
+- **The plan** is a TOML file named by `CAKEYS_SHIM_PLAN`, read once per process (each cakeys
+  run is one), with calls counted per function. Rules:
+  - a return value: `{ fn = "C_FindObjects", call = 2, rv = "CKR_DEVICE_ERROR" }`, before or
+    after forwarding;
+  - an attribute: drop it, replace its value, or report another object's
+    (`{ fn = "C_GetAttributeValue", attribute = "CKA_EC_POINT", from_label = "other" }`);
+  - token and slot flags: `{ fn = "C_GetTokenInfo", set = ["CKF_USER_PIN_FINAL_TRY"] }`,
+    `CKF_WRITE_PROTECTED`;
+  - handles: a second object under the locator on the n-th find, another key substituted
+    between find and use (`{ fn = "C_DecryptInit", key_from_label = "other" }`: shows one key
+    and uses another, the proof that runs and fails, which no reference can be led into);
+  - malformed data: `CK_UNAVAILABLE_INFORMATION` lengths, truncated values, unpadded labels.
+- **The recorder**: with `CAKEYS_SHIM_TRACE`, one line per call (function, mechanism,
+  attribute types, `CK_RV`) — A1's trace if `pkcs11-spy` falls short.
+- **Its own check**: through the shim with an empty plan, the reference suite passes exactly as
+  direct (as `tests/p11kit.rs` compares the two), so the shim is known transparent before it is
+  trusted to lie.
 
 Each claim in DESIGN §8.1 gets a shim test stating what a malicious module can and cannot make
-cakeys accept, and §8.2 is updated with whatever falls out. The shim is never shipped and is
-built only for tests (`checks.minimal` must not see it).
+cakeys accept, §8.2 is updated with whatever falls out, and each tier-4 line of COVERAGE_PLAN.md
+becomes one row of a test table. The shim is never shipped: `publish = false`, built only in
+the check phase, invisible to `checks.minimal` and the packages.
+
+Not chosen: patching SoftHSM (one module, C, a rebuild per fault), forking `pkcs11-spy` (C,
+built to log), p11-kit's filter (mechanisms and slots only), pkcs11-proxy-ng's test hooks (an
+in-process mock of its own backend), haskoki's fault APIs (internal to its Haskell tests), and
+writing a module: the point is to reuse a correct one.
 
 ### A4. The object matrix
 
@@ -181,6 +238,33 @@ tokens can compute it. The camigrate planner reads the same rows for derive-base
   session and comparing commitments. That is an instance of OPEN.md's "Asserting how keys
   relate" and is parked there; nothing in this plan needs it, because B4's HUK leaves the token
   by design.
+
+### A6. Cross-tests against other forwarders and a second opinion
+
+**pkcs11-proxy-ng as a forwarder layer.** Packaged in the flake (a Rust workspace with a
+protobuf build step; not in nixpkgs), its daemon started per test on a Unix socket by
+`nix/test-tokens.sh`, as `p11-kit server` is. Then, as for p11-kit:
+
+- a direct-vs-forwarded test like `tests/p11kit.rs`: the same realisations, the same IDs, the
+  same refusals;
+- the conformance check through it (`assert_profile_conforms`): its parity claim says the
+  backend's profile holds unchanged. Any drift becomes a layer profile
+  (`profiles/layers/pkcs11-proxy-ng.toml`), named in keys.toml (`profiles =
+  ["pkcs11-proxy-ng"]`), since it cannot be detected from `C_GetInfo` (A0b);
+- a note in CAKEYS.md on running a token behind it.
+
+**pkcs11-proxy, optional.** Small (CMake, C); worth it only as the restrictive case: its layer
+profile subtracts what its whitelist drops, and cakeys must then refuse (15) everything that
+needs those mechanisms, before anything is created. Its plain TCP transport is test-only.
+
+**pkcs11-check, once.** Run against the reference modules as packaged here (patched SoftHSM
+2.7, kryoptic 1.5.4, tpm2-pkcs11 1.10 on swtpm). Each finding that bears on what cakeys relies
+on (wrap and unwrap, derive, the per-use login, `CKA_TRUSTED`, attribute policy) becomes a
+profile note, a test or an OPEN.md item. A report, not a check: its counts move with its own
+releases.
+
+Exit: pkcs11-proxy-ng passes the conformance and direct-vs-forwarded tests, with or without a
+layer of its own; the pkcs11-check findings are triaged.
 
 ## Part B: boot-chain integration tests
 
@@ -415,7 +499,8 @@ Mostly tests and Nix. The code changes the plan can already name:
 
 - `profile::baseline`: return values and flags (A1).
 - A coverage file, its generator and its check (A1).
-- `crates/p11-shim`, test-only (A3).
+- `crates/p11-shim`, test-only: a forwarding shim with a fault plan (A3).
+- A pkcs11-proxy-ng package and, if it drifts, its layer profile (A6).
 - Fixes from A2, for example URI escaping if the RFC reading holds.
 - Two profiles: `optee-pkcs11/4.7`, `tpm2-pkcs11/1.10+optee-ftpm` (B3, B5).
 - An EK-anchored attestation, and the optional anchor slot in the v1 attestation record (B2).
@@ -446,6 +531,10 @@ Decided 2026-11-14:
 - **cakeys for the aarch64 guests is cross-compiled** from x86_64 (the build works as of
   2026-11-14); S3 runs the result in a guest.
 - **No KDF operations in keys.toml**; caprobe probes KDFs (A5).
+- **The lying module is a forwarding shim** in front of a real module, driven by a fault plan,
+  not a module of its own (A3); it needs neither A1 nor any other stage first.
+- **Forwarders other than p11-kit are cross-tested as layers** (A6), pkcs11-proxy-ng first;
+  pkcs11-check is run once as a second opinion, never as a check.
 
 Open:
 

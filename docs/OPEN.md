@@ -90,6 +90,16 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   Montgomery keys, SHA-224 RSA-PSS (no binding variant), delete in a scratch slot.
 - **`Provider::mechanisms` and `Provider::migration`** are overridden by no in-tree provider
   (review A4): revisit with the first real HSM provider.
+- **haskoki as a reference token** (PLAN.md A0b), parked: it implements everything cakeys uses,
+  but beside kryoptic it is one more OpenSSL-backed software token, and it is packaged for
+  Docker, not nixpkgs (Haskell, pinned OpenSSL 4). Take it up with PQ key types, where a second
+  implementation beside kryoptic counts.
+- **caprobe profiles as pkcs11-check's run scoping**: its roadmap asks for a way to say which
+  curves, key sizes and mechanisms a module implements, so the vector suites skip what it
+  never offered. A caprobe profile is that statement. A conversation with upstream, not code.
+- **Forwarders are invisible**: pkcs11-proxy and pkcs11-proxy-ng report the backend's
+  `C_GetInfo`, so their layer must be named in keys.toml (`profiles = [...]`). Worth stating in
+  CAKEYS.md once A6 settles whether pkcs11-proxy-ng needs a layer at all.
 
 ## TPM and attestation
 
