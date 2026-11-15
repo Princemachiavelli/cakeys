@@ -6,6 +6,7 @@
 #![expect(unsafe_code, reason = "a PKCS#11 module: the C ABI is the whole crate")]
 
 mod forward;
+mod hooks;
 pub mod names;
 pub mod plan;
 mod trace;
@@ -33,8 +34,8 @@ impl Fatal {
 struct Shim {
     /// Never unloaded: `real` points into it for the life of the process.
     _library: libloading::Library,
-    real: &'static CK_FUNCTION_LIST,
-    plan: plan::Plan,
+    pub(crate) real: &'static CK_FUNCTION_LIST,
+    pub(crate) plan: plan::Plan,
     trace: Option<trace::Trace>,
     table: CK_FUNCTION_LIST,
 }
@@ -83,15 +84,18 @@ impl Shim {
     }
 
     /// One call of `function`: counted, answered by the plan or forwarded by `forward` (which
-    /// calls the real module's function, `None` if its slot is empty), and traced.
-    fn call(&self, function: Fn, forward: impl FnOnce(&CK_FUNCTION_LIST) -> Option<CK_RV>) -> Result<CK_RV, Fatal> {
+    /// calls the real module and says which rule, if any, changed what it answered), and traced.
+    fn call(
+        &self,
+        function: Fn,
+        forward: impl FnOnce(&plan::Call) -> Result<(CK_RV, Option<usize>), Fatal>,
+    ) -> Result<CK_RV, Fatal> {
         let call = self.plan.count(function);
         let (rv, rule) = if let Some((rv, rule)) = self.plan.before(&call) {
             (rv, Some(rule))
         } else {
-            // Our table fills only the slots the real one fills, so the slot is there.
-            let real = forward(self.real).ok_or_else(|| Fatal(format!("{} has no function", function.name())))?;
-            self.plan.after(&call).map_or((real, None), |(rv, rule)| (rv, Some(rule)))
+            let (real, fired) = forward(&call)?;
+            self.plan.after(&call).map_or((real, fired), |(rv, rule)| (rv, Some(rule)))
         };
         if let Some(trace) = &self.trace {
             trace.line(&call, rv, rule);

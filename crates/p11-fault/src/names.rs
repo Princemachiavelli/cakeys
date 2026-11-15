@@ -1,7 +1,7 @@
 //! PKCS#11 names a plan and the trace use, with the values `cryptoki-sys` gives them: a plan
 //! says `CKR_DEVICE_ERROR`, never `0x30`, unless the value has no name here.
 
-use cryptoki_sys::CK_RV;
+use cryptoki_sys::{CK_ATTRIBUTE_TYPE, CK_FLAGS, CK_RV};
 
 macro_rules! rv_names {
     ($($name:ident),* $(,)?) => {
@@ -118,6 +118,221 @@ rv_names!(
     CKR_VENDOR_DEFINED,
 );
 
+macro_rules! attribute_names {
+    ($($name:ident),* $(,)?) => {
+        /// Every `CKA_*` that `cryptoki-sys` defines, by name.
+        pub const ATTRIBUTE: &[(&str, CK_ATTRIBUTE_TYPE)] = &[$((stringify!($name), cryptoki_sys::$name)),*];
+    };
+}
+
+attribute_names!(
+    CKA_CLASS,
+    CKA_TOKEN,
+    CKA_PRIVATE,
+    CKA_LABEL,
+    CKA_UNIQUE_ID,
+    CKA_APPLICATION,
+    CKA_VALUE,
+    CKA_OBJECT_ID,
+    CKA_CERTIFICATE_TYPE,
+    CKA_ISSUER,
+    CKA_SERIAL_NUMBER,
+    CKA_AC_ISSUER,
+    CKA_OWNER,
+    CKA_ATTR_TYPES,
+    CKA_TRUSTED,
+    CKA_CERTIFICATE_CATEGORY,
+    CKA_JAVA_MIDP_SECURITY_DOMAIN,
+    CKA_URL,
+    CKA_HASH_OF_SUBJECT_PUBLIC_KEY,
+    CKA_HASH_OF_ISSUER_PUBLIC_KEY,
+    CKA_NAME_HASH_ALGORITHM,
+    CKA_CHECK_VALUE,
+    CKA_KEY_TYPE,
+    CKA_SUBJECT,
+    CKA_ID,
+    CKA_SENSITIVE,
+    CKA_ENCRYPT,
+    CKA_DECRYPT,
+    CKA_WRAP,
+    CKA_UNWRAP,
+    CKA_SIGN,
+    CKA_SIGN_RECOVER,
+    CKA_VERIFY,
+    CKA_VERIFY_RECOVER,
+    CKA_DERIVE,
+    CKA_START_DATE,
+    CKA_END_DATE,
+    CKA_MODULUS,
+    CKA_MODULUS_BITS,
+    CKA_PUBLIC_EXPONENT,
+    CKA_PRIVATE_EXPONENT,
+    CKA_PRIME_1,
+    CKA_PRIME_2,
+    CKA_EXPONENT_1,
+    CKA_EXPONENT_2,
+    CKA_COEFFICIENT,
+    CKA_PUBLIC_KEY_INFO,
+    CKA_PRIME,
+    CKA_SUBPRIME,
+    CKA_BASE,
+    CKA_PRIME_BITS,
+    CKA_SUBPRIME_BITS,
+    CKA_SUB_PRIME_BITS,
+    CKA_VALUE_BITS,
+    CKA_VALUE_LEN,
+    CKA_EXTRACTABLE,
+    CKA_LOCAL,
+    CKA_NEVER_EXTRACTABLE,
+    CKA_ALWAYS_SENSITIVE,
+    CKA_KEY_GEN_MECHANISM,
+    CKA_MODIFIABLE,
+    CKA_COPYABLE,
+    CKA_DESTROYABLE,
+    CKA_EC_PARAMS,
+    CKA_EC_POINT,
+    CKA_ALWAYS_AUTHENTICATE,
+    CKA_WRAP_WITH_TRUSTED,
+    CKA_OTP_FORMAT,
+    CKA_OTP_LENGTH,
+    CKA_OTP_TIME_INTERVAL,
+    CKA_OTP_USER_FRIENDLY_MODE,
+    CKA_OTP_CHALLENGE_REQUIREMENT,
+    CKA_OTP_TIME_REQUIREMENT,
+    CKA_OTP_COUNTER_REQUIREMENT,
+    CKA_OTP_PIN_REQUIREMENT,
+    CKA_OTP_COUNTER,
+    CKA_OTP_TIME,
+    CKA_OTP_USER_IDENTIFIER,
+    CKA_OTP_SERVICE_IDENTIFIER,
+    CKA_OTP_SERVICE_LOGO,
+    CKA_OTP_SERVICE_LOGO_TYPE,
+    CKA_GOSTR3410_PARAMS,
+    CKA_GOSTR3411_PARAMS,
+    CKA_GOST28147_PARAMS,
+    CKA_HW_FEATURE_TYPE,
+    CKA_RESET_ON_INIT,
+    CKA_HAS_RESET,
+    CKA_PIXEL_X,
+    CKA_PIXEL_Y,
+    CKA_RESOLUTION,
+    CKA_CHAR_ROWS,
+    CKA_CHAR_COLUMNS,
+    CKA_COLOR,
+    CKA_BITS_PER_PIXEL,
+    CKA_CHAR_SETS,
+    CKA_ENCODING_METHODS,
+    CKA_MIME_TYPES,
+    CKA_MECHANISM_TYPE,
+    CKA_REQUIRED_CMS_ATTRIBUTES,
+    CKA_DEFAULT_CMS_ATTRIBUTES,
+    CKA_SUPPORTED_CMS_ATTRIBUTES,
+    CKA_PROFILE_ID,
+    CKA_X2RATCHET_BAG,
+    CKA_X2RATCHET_BAGSIZE,
+    CKA_X2RATCHET_BOBS1STMSG,
+    CKA_X2RATCHET_CKR,
+    CKA_X2RATCHET_CKS,
+    CKA_X2RATCHET_DHP,
+    CKA_X2RATCHET_DHR,
+    CKA_X2RATCHET_DHS,
+    CKA_X2RATCHET_HKR,
+    CKA_X2RATCHET_HKS,
+    CKA_X2RATCHET_ISALICE,
+    CKA_X2RATCHET_NHKR,
+    CKA_X2RATCHET_NHKS,
+    CKA_X2RATCHET_NR,
+    CKA_X2RATCHET_NS,
+    CKA_X2RATCHET_PNS,
+    CKA_X2RATCHET_RK,
+    CKA_HSS_LEVELS,
+    CKA_HSS_LMS_TYPE,
+    CKA_HSS_LMOTS_TYPE,
+    CKA_HSS_LMS_TYPES,
+    CKA_HSS_LMOTS_TYPES,
+    CKA_HSS_KEYS_REMAINING,
+    CKA_PARAMETER_SET,
+    CKA_OBJECT_VALIDATION_FLAGS,
+    CKA_VALIDATION_TYPE,
+    CKA_VALIDATION_VERSION,
+    CKA_VALIDATION_LEVEL,
+    CKA_VALIDATION_MODULE_ID,
+    CKA_VALIDATION_FLAG,
+    CKA_VALIDATION_AUTHORITY_TYPE,
+    CKA_VALIDATION_COUNTRY,
+    CKA_VALIDATION_CERTIFICATE_IDENTIFIER,
+    CKA_VALIDATION_CERTIFICATE_URI,
+    CKA_VALIDATION_VENDOR_URI,
+    CKA_VALIDATION_PROFILE,
+    CKA_ENCAPSULATE_TEMPLATE,
+    CKA_DECAPSULATE_TEMPLATE,
+    CKA_TRUST_SERVER_AUTH,
+    CKA_TRUST_CLIENT_AUTH,
+    CKA_TRUST_CODE_SIGNING,
+    CKA_TRUST_EMAIL_PROTECTION,
+    CKA_TRUST_IPSEC_IKE,
+    CKA_TRUST_TIME_STAMPING,
+    CKA_TRUST_OCSP_SIGNING,
+    CKA_ENCAPSULATE,
+    CKA_DECAPSULATE,
+    CKA_HASH_OF_CERTIFICATE,
+    CKA_PUBLIC_CRC64_VALUE,
+    CKA_SEED,
+    CKA_VENDOR_DEFINED,
+    CKA_WRAP_TEMPLATE,
+    CKA_UNWRAP_TEMPLATE,
+    CKA_DERIVE_TEMPLATE,
+    CKA_ALLOWED_MECHANISMS,
+    CKA_ECDSA_PARAMS,
+    CKA_SECONDARY_AUTH,
+    CKA_AUTH_PIN_FLAGS,
+);
+
+macro_rules! flag_names {
+    ($($name:ident),* $(,)?) => {
+        /// The slot flags (`C_GetSlotInfo`) and token flags (`C_GetTokenInfo`), by name. Other
+        /// `CKF_*` reuse these bit values for other structures and are not flags of these two.
+        pub const FLAG: &[(&str, CK_FLAGS)] = &[$((stringify!($name), cryptoki_sys::$name)),*];
+    };
+}
+
+flag_names!(
+    CKF_TOKEN_PRESENT,
+    CKF_REMOVABLE_DEVICE,
+    CKF_HW_SLOT,
+    CKF_RNG,
+    CKF_WRITE_PROTECTED,
+    CKF_LOGIN_REQUIRED,
+    CKF_USER_PIN_INITIALIZED,
+    CKF_RESTORE_KEY_NOT_NEEDED,
+    CKF_CLOCK_ON_TOKEN,
+    CKF_PROTECTED_AUTHENTICATION_PATH,
+    CKF_DUAL_CRYPTO_OPERATIONS,
+    CKF_TOKEN_INITIALIZED,
+    CKF_SECONDARY_AUTHENTICATION,
+    CKF_USER_PIN_COUNT_LOW,
+    CKF_USER_PIN_FINAL_TRY,
+    CKF_USER_PIN_LOCKED,
+    CKF_USER_PIN_TO_BE_CHANGED,
+    CKF_SO_PIN_COUNT_LOW,
+    CKF_SO_PIN_FINAL_TRY,
+    CKF_SO_PIN_LOCKED,
+    CKF_SO_PIN_TO_BE_CHANGED,
+    CKF_ERROR_STATE,
+);
+
+/// The value of the attribute type `name` (`CKA_...`).
+#[must_use]
+pub fn attribute(name: &str) -> Option<CK_ATTRIBUTE_TYPE> {
+    ATTRIBUTE.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
+}
+
+/// The value of the slot or token flag `name` (`CKF_...`).
+#[must_use]
+pub fn flag(name: &str) -> Option<CK_FLAGS> {
+    FLAG.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
+}
+
 /// The value of the return code `name` (`CKR_...`).
 #[must_use]
 pub fn rv(name: &str) -> Option<CK_RV> {
@@ -140,5 +355,8 @@ mod tests {
         assert_eq!(rv_name(0x30), Some("CKR_DEVICE_ERROR"));
         assert_eq!(rv("CKR_NO_SUCH_THING"), None);
         assert_eq!(rv_name(0x7fff_fff0), None);
+        assert_eq!(attribute("CKA_EC_POINT"), Some(0x181));
+        assert_eq!(flag("CKF_WRITE_PROTECTED"), Some(2));
+        assert_eq!(flag("CKF_RW_SESSION"), None);
     }
 }

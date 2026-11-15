@@ -355,7 +355,9 @@ impl Token {
     }
 
     /// How a proof's `call` failing maps: a key the token will not `op` with is `Unsupported` (the
-    /// spec needs `attr`, or the opt-out); any other failure is `Unavailable`.
+    /// spec needs `attr`, or the opt-out); a challenge the token finds invalid was made for another
+    /// key than the one it holds, a `Conflict` (the host encrypted or wrapped it to the public key
+    /// the identity names); any other failure is `Unavailable`.
     fn proof_failed(&self, call: &'static str, op: &'static str, attr: &'static str) -> impl Fn(CkError) -> KmError {
         move |e| match e {
             CkError::Pkcs11(
@@ -367,6 +369,17 @@ impl Token {
             ) => self.unsupported(format!(
                 "token '{}' refused to {op} with the private key ({e}); proving possession needs {attr}, or opt \
                  in with binding = \"token-asserted\"",
+                self.name
+            )),
+            CkError::Pkcs11(
+                RvError::EncryptedDataInvalid
+                | RvError::EncryptedDataLenRange
+                | RvError::WrappedKeyInvalid
+                | RvError::WrappedKeyLenRange,
+                _,
+            ) => KmError::Conflict(format!(
+                "proof of possession failed: the private key on token '{}' did not {op} what was made for its \
+                 public key ({call}: {e})",
                 self.name
             )),
             e => KmError::Unavailable(format!("{call} (proof of possession) on token '{}': {e}", self.name)),

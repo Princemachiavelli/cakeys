@@ -200,7 +200,9 @@ What remains, by kind (about 740 lines):
 - **Tier 4, a misbehaving module**: most of it. `map_err` arms of calls a correct module never
   fails (a context-specific login after a good one, `C_Sign` with a derived or unwrapped secret,
   an attribute read after a find), and the proofs that run and fail for RSA keys
-  (`pop-decrypt`, `pop-unwrap`), which need a module showing one key and using another.
+  (`pop-decrypt`, `pop-unwrap`), which need a module showing one key and using another. The
+  shim (FAULT_SHIM.md) now covers the swapped-key proofs, lied attributes and flags; the
+  `map_err` arms remain as rows to add.
 - **Tier 5, a real YubiKey**: a successful PIV attestation, SO-session generation and import.
 - **Guards of invariants a caller holds**, kept on purpose: the empty deprecation register's
   warnings (`reconcile.rs`, until a scheme is deprecated); camigrate's `unreachable!` arms and

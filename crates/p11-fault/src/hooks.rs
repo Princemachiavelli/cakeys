@@ -1,0 +1,363 @@
+//! What the plan's rules do beyond a return value: the few functions whose arguments or
+//! outputs a rule changes. Each forwards to the real module itself and returns what the caller
+//! sees, with the rule (from 1) that changed it, if one did.
+//!
+//! Objects are named by `CKA_LABEL` and resolved through a session of the shim's own on the
+//! caller's slot, so a search the caller has open is never disturbed.
+
+use crate::plan::{Action, AttributeChange, Call};
+use crate::{Fatal, Shim};
+use cryptoki_sys::{
+    CK_ATTRIBUTE, CK_ATTRIBUTE_TYPE, CK_OBJECT_CLASS, CK_OBJECT_HANDLE, CK_RV, CK_SESSION_HANDLE, CK_SESSION_INFO,
+    CK_SLOT_ID, CK_SLOT_INFO, CK_TOKEN_INFO, CK_ULONG, CKA_CLASS, CKA_LABEL, CKF_SERIAL_SESSION,
+    CKR_ATTRIBUTE_TYPE_INVALID, CKR_BUFFER_TOO_SMALL, CKR_OK,
+};
+use std::os::raw::c_void;
+
+/// What a hooked call returns: the caller's value, and the rule that changed something.
+pub type Outcome = Result<(CK_RV, Option<usize>), Fatal>;
+
+/// `CK_UNAVAILABLE_INFORMATION`: the length of an attribute that cannot be given.
+const UNAVAILABLE: CK_ULONG = CK_ULONG::MAX;
+
+/// The real module's function `$name`, or why the call cannot be forwarded.
+macro_rules! real {
+    ($shim:expr, $name:ident) => {
+        $shim.real.$name.ok_or_else(|| Fatal(format!("{} has no function", stringify!($name))))?
+    };
+}
+
+/// `C_GetTokenInfo`: the real answer with a rule's flags set and cleared.
+pub unsafe fn token_info(shim: &Shim, call: &Call, slot: CK_SLOT_ID, info: *mut CK_TOKEN_INFO) -> Outcome {
+    // SAFETY: the caller's arguments, forwarded unchanged.
+    let rv = unsafe { real!(shim, C_GetTokenInfo)(slot, info) };
+    if rv != CKR_OK || info.is_null() {
+        return Ok((rv, None));
+    }
+    // SAFETY: not null, and the real module just filled it.
+    Ok((rv, flags(shim, call, unsafe { &mut (*info).flags })))
+}
+
+/// `C_GetSlotInfo`: the real answer with a rule's flags set and cleared.
+pub unsafe fn slot_info(shim: &Shim, call: &Call, slot: CK_SLOT_ID, info: *mut CK_SLOT_INFO) -> Outcome {
+    // SAFETY: the caller's arguments, forwarded unchanged.
+    let rv = unsafe { real!(shim, C_GetSlotInfo)(slot, info) };
+    if rv != CKR_OK || info.is_null() {
+        return Ok((rv, None));
+    }
+    // SAFETY: not null, and the real module just filled it.
+    Ok((rv, flags(shim, call, unsafe { &mut (*info).flags })))
+}
+
+fn flags(shim: &Shim, call: &Call, flags: &mut CK_ULONG) -> Option<usize> {
+    let mut fired = None;
+    for (i, rule) in shim.plan.matching(call) {
+        if let Action::Flags { set, clear } = rule.action {
+            *flags = (*flags | set) & !clear;
+            fired.get_or_insert(i);
+        }
+    }
+    fired
+}
+
+/// `C_FindObjects`: where the real search found something and there is room, the objects of an
+/// `add_label` rule are found too. (Not where it found nothing: a client reads until a call
+/// returns no object, and would never stop.)
+pub unsafe fn find_objects(
+    shim: &Shim,
+    call: &Call,
+    session: CK_SESSION_HANDLE,
+    out: *mut CK_OBJECT_HANDLE,
+    max: CK_ULONG,
+    count: *mut CK_ULONG,
+) -> Outcome {
+    // SAFETY: the caller's arguments, forwarded unchanged.
+    let rv = unsafe { real!(shim, C_FindObjects)(session, out, max, count) };
+    if rv != CKR_OK || out.is_null() || count.is_null() {
+        return Ok((rv, None));
+    }
+    let mut fired = None;
+    for (i, rule) in shim.plan.matching(call) {
+        let Action::AddLabel(label) = &rule.action else { continue };
+        // SAFETY: `count` is not null and the real module wrote it; `out` holds `max` handles,
+        // of which the first `*count` are set.
+        unsafe {
+            if *count == 0 {
+                continue;
+            }
+            let found = std::slice::from_raw_parts(out, usize::try_from(*count).unwrap_or(0)).to_vec();
+            for h in named(shim, session, label, None)? {
+                if *count < max && !found.contains(&h) {
+                    *out.add(usize::try_from(*count).unwrap_or(0)) = h;
+                    *count += 1;
+                    fired.get_or_insert(i);
+                }
+            }
+        }
+    }
+    Ok((rv, fired))
+}
+
+/// The key a key-taking function uses: the caller's, or the object a `use_label` rule names
+/// (of the caller's key's class).
+pub unsafe fn substitute_key(
+    shim: &Shim,
+    call: &Call,
+    session: CK_SESSION_HANDLE,
+    key: CK_OBJECT_HANDLE,
+) -> Result<(CK_OBJECT_HANDLE, Option<usize>), Fatal> {
+    for (i, rule) in shim.plan.matching(call) {
+        let Action::UseLabel(label) = &rule.action else { continue };
+        // SAFETY: real-module calls on the caller's session and handles.
+        unsafe {
+            if !is_of(shim, session, key, rule.of_label.as_deref())? {
+                continue;
+            }
+            let class = class_of(shim, session, key);
+            return Ok((named(shim, session, label, class)?.first().copied().unwrap_or(key), Some(i)));
+        }
+    }
+    Ok((key, None))
+}
+
+/// `C_GetAttributeValue`: the attributes a rule names are answered by the shim, the others by
+/// the real module, in the caller's template.
+pub unsafe fn attribute_value(
+    shim: &Shim,
+    call: &Call,
+    session: CK_SESSION_HANDLE,
+    object: CK_OBJECT_HANDLE,
+    template: *mut CK_ATTRIBUTE,
+    count: CK_ULONG,
+) -> Outcome {
+    let get = real!(shim, C_GetAttributeValue);
+    let mut rules = Vec::new();
+    for (i, rule) in shim.plan.matching(call) {
+        if let Action::Attribute { attribute, change } = &rule.action
+            // SAFETY: real-module calls on the caller's session and handle.
+            && unsafe { is_of(shim, session, object, rule.of_label.as_deref())? }
+        {
+            rules.push((i, *attribute, change));
+        }
+    }
+    let n = usize::try_from(count).unwrap_or(0);
+    if rules.is_empty() || template.is_null() || n == 0 {
+        // SAFETY: the caller's arguments, forwarded unchanged.
+        return Ok((unsafe { get(session, object, template, count) }, None));
+    }
+    // SAFETY: the caller's template of `count` entries, as PKCS#11 requires of it.
+    let entries = unsafe { std::slice::from_raw_parts_mut(template, n) };
+    let rule_for = |ty: CK_ATTRIBUTE_TYPE| rules.iter().find(|(_, attribute, _)| *attribute == ty);
+    // The real module answers the entries no rule names, through a template of only those.
+    let (mut rest, mut at) = (Vec::new(), Vec::new());
+    for (i, e) in entries.iter().enumerate() {
+        if rule_for(e.type_).is_none() {
+            rest.push(*e);
+            at.push(i);
+        }
+    }
+    if rest.len() == n {
+        // SAFETY: the caller's arguments, forwarded unchanged.
+        return Ok((unsafe { get(session, object, template, count) }, None));
+    }
+    let mut rv = if rest.is_empty() {
+        CKR_OK
+    } else {
+        // SAFETY: a template of the caller's own entries (their buffers and lengths).
+        unsafe { get(session, object, rest.as_mut_ptr(), rest.len() as CK_ULONG) }
+    };
+    for (e, i) in rest.iter().zip(at) {
+        entries[i].ulValueLen = e.ulValueLen;
+    }
+    let mut fired = None;
+    for e in entries.iter_mut() {
+        let Some((i, _, change)) = rule_for(e.type_) else { continue };
+        fired.get_or_insert(*i);
+        // SAFETY: real-module calls on the caller's session and handles.
+        let value = unsafe {
+            match change {
+                AttributeChange::Drop => Err(CKR_ATTRIBUTE_TYPE_INVALID),
+                AttributeChange::Unavailable => Err(CKR_OK),
+                AttributeChange::Value(v) => Ok(v.clone()),
+                AttributeChange::FromLabel(label) => {
+                    let class = class_of(shim, session, object);
+                    let mut others = named(shim, session, label, class)?;
+                    if others.is_empty() {
+                        others = named(shim, session, label, None)?;
+                    }
+                    let other = others.first().ok_or_else(|| {
+                        Fatal(format!("from_label: no object labelled {}", String::from_utf8_lossy(label)))
+                    })?;
+                    value_of(shim, session, *other, e.type_)
+                }
+                AttributeChange::Truncate(keep) => value_of(shim, session, object, e.type_).map(|mut v| {
+                    v.truncate(*keep);
+                    v
+                }),
+            }
+        };
+        let status = match value {
+            // SAFETY: the caller's entry: its buffer holds the `ulValueLen` bytes it came with.
+            Ok(v) => unsafe { serve(e, &v) },
+            Err(status) => {
+                e.ulValueLen = UNAVAILABLE;
+                status
+            }
+        };
+        if rv == CKR_OK {
+            rv = status;
+        }
+    }
+    Ok((rv, fired))
+}
+
+/// Answer the caller's entry with `value`: its length, and its bytes where the caller gave a
+/// buffer that holds them (`CKR_BUFFER_TOO_SMALL` and an unavailable length where it does not).
+///
+/// # Safety
+///
+/// `entry.pValue` is null or points to `entry.ulValueLen` writable bytes.
+unsafe fn serve(entry: &mut CK_ATTRIBUTE, value: &[u8]) -> CK_RV {
+    let len = value.len() as CK_ULONG;
+    if entry.pValue.is_null() {
+        entry.ulValueLen = len;
+        return CKR_OK;
+    }
+    if entry.ulValueLen < len {
+        entry.ulValueLen = UNAVAILABLE;
+        return CKR_BUFFER_TOO_SMALL;
+    }
+    // SAFETY: the buffer holds at least `len` bytes (checked above), and `value` is ours.
+    unsafe { std::ptr::copy_nonoverlapping(value.as_ptr(), entry.pValue.cast::<u8>(), value.len()) };
+    entry.ulValueLen = len;
+    CKR_OK
+}
+
+/// The real value of `attribute` on `object`, or the real module's refusal.
+unsafe fn value_of(
+    shim: &Shim,
+    session: CK_SESSION_HANDLE,
+    object: CK_OBJECT_HANDLE,
+    attribute: CK_ATTRIBUTE_TYPE,
+) -> Result<Vec<u8>, CK_RV> {
+    let Some(get) = shim.real.C_GetAttributeValue else { return Err(CKR_ATTRIBUTE_TYPE_INVALID) };
+    let mut entry = CK_ATTRIBUTE { type_: attribute, pValue: std::ptr::null_mut(), ulValueLen: 0 };
+    // SAFETY: a one-entry template of ours: first for the length, then with a buffer of it.
+    unsafe {
+        let rv = get(session, object, &raw mut entry, 1);
+        if rv != CKR_OK || entry.ulValueLen == UNAVAILABLE {
+            return Err(if rv == CKR_OK { CKR_ATTRIBUTE_TYPE_INVALID } else { rv });
+        }
+        let mut value = vec![0u8; usize::try_from(entry.ulValueLen).unwrap_or(0)];
+        entry.pValue = value.as_mut_ptr().cast::<c_void>();
+        let rv = get(session, object, &raw mut entry, 1);
+        if rv != CKR_OK {
+            return Err(rv);
+        }
+        value.truncate(usize::try_from(entry.ulValueLen).unwrap_or(0));
+        Ok(value)
+    }
+}
+
+/// `CKA_CLASS` of `object`, if the real module gives it.
+unsafe fn class_of(shim: &Shim, session: CK_SESSION_HANDLE, object: CK_OBJECT_HANDLE) -> Option<CK_OBJECT_CLASS> {
+    // SAFETY: as `value_of`.
+    let value = unsafe { value_of(shim, session, object, CKA_CLASS) }.ok()?;
+    Some(CK_OBJECT_CLASS::from_ne_bytes(value.try_into().ok()?))
+}
+
+/// Whether a rule for objects labelled `label` applies to `object`: every object without one.
+unsafe fn is_of(
+    shim: &Shim,
+    session: CK_SESSION_HANDLE,
+    object: CK_OBJECT_HANDLE,
+    label: Option<&[u8]>,
+) -> Result<bool, Fatal> {
+    match label {
+        None => Ok(true),
+        // SAFETY: as `named`.
+        Some(label) => Ok(unsafe { named(shim, session, label, None)? }.contains(&object)),
+    }
+}
+
+/// The objects labelled `label` (of `class`, when given) on the token `session` is open on,
+/// found through a session of the shim's own. None when the caller's session is no session.
+unsafe fn named(
+    shim: &Shim,
+    session: CK_SESSION_HANDLE,
+    label: &[u8],
+    class: Option<CK_OBJECT_CLASS>,
+) -> Result<Vec<CK_OBJECT_HANDLE>, Fatal> {
+    let failed = |what: &str, rv: CK_RV| Fatal(format!("resolving a label: {what} returned {rv:#x}"));
+    let mut class = class;
+    let mut template = vec![CK_ATTRIBUTE {
+        type_: CKA_LABEL,
+        pValue: label.as_ptr().cast_mut().cast(),
+        ulValueLen: label.len() as CK_ULONG,
+    }];
+    if let Some(class) = &mut class {
+        template.push(CK_ATTRIBUTE {
+            type_: CKA_CLASS,
+            pValue: std::ptr::from_mut(class).cast(),
+            ulValueLen: size_of::<CK_OBJECT_CLASS>() as CK_ULONG,
+        });
+    }
+    // SAFETY: real-module calls with arguments of ours, on a session opened and closed here.
+    unsafe {
+        let mut info = std::mem::zeroed::<CK_SESSION_INFO>();
+        if real!(shim, C_GetSessionInfo)(session, &raw mut info) != CKR_OK {
+            return Ok(Vec::new());
+        }
+        let mut own = 0;
+        let rv = real!(shim, C_OpenSession)(info.slotID, CKF_SERIAL_SESSION, std::ptr::null_mut(), None, &raw mut own);
+        if rv != CKR_OK {
+            return Err(failed("C_OpenSession", rv));
+        }
+        let mut found = Vec::new();
+        let mut rv = real!(shim, C_FindObjectsInit)(own, template.as_mut_ptr(), template.len() as CK_ULONG);
+        if rv == CKR_OK {
+            loop {
+                let mut batch = [0 as CK_OBJECT_HANDLE; 16];
+                let mut n = 0;
+                rv = real!(shim, C_FindObjects)(own, batch.as_mut_ptr(), batch.len() as CK_ULONG, &raw mut n);
+                if rv != CKR_OK || n == 0 {
+                    break;
+                }
+                found.extend_from_slice(&batch[..usize::try_from(n).unwrap_or(0)]);
+            }
+            real!(shim, C_FindObjectsFinal)(own);
+        }
+        real!(shim, C_CloseSession)(own);
+        if rv == CKR_OK { Ok(found) } else { Err(failed("C_FindObjects", rv)) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A ruled attribute is served as PKCS#11 serves any: the length alone without a buffer, the
+    /// bytes into one that holds them, and a too-small buffer refused.
+    #[test]
+    fn a_value_is_served_into_the_callers_entry() {
+        let entry = |buffer: Option<&mut [u8]>| CK_ATTRIBUTE {
+            type_: CKA_LABEL,
+            ulValueLen: buffer.as_ref().map_or(0, |b| b.len() as CK_ULONG),
+            pValue: buffer.map_or(std::ptr::null_mut(), |b| b.as_mut_ptr().cast()),
+        };
+        let mut length_only = entry(None);
+        // SAFETY: a null buffer.
+        assert_eq!(unsafe { serve(&mut length_only, b"abc") }, CKR_OK);
+        assert_eq!(length_only.ulValueLen, 3);
+        let mut buffer = [0u8; 4];
+        let mut fits = entry(Some(&mut buffer));
+        // SAFETY: a buffer of the four bytes the entry says.
+        assert_eq!(unsafe { serve(&mut fits, b"abc") }, CKR_OK);
+        assert_eq!((fits.ulValueLen, &buffer[..3]), (3, &b"abc"[..]));
+        let mut small = [0u8; 2];
+        let mut short = entry(Some(&mut small));
+        // SAFETY: a buffer of the two bytes the entry says.
+        assert_eq!(unsafe { serve(&mut short, b"abc") }, CKR_BUFFER_TOO_SMALL);
+        assert_eq!((short.ulValueLen, small), (UNAVAILABLE, [0, 0]));
+    }
+}
