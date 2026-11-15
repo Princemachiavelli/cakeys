@@ -15,8 +15,8 @@ use cakeys_core::pop::{self, OaepHash, RsaPadding};
 use cakeys_core::sig::{self, EcdsaHash, Encoding};
 use cakeys_core::types::KeyType as Kt;
 use cakeys_core::{KmError, Result};
-use cakeys_pkcs11::BoundKey;
 use cakeys_pkcs11::token::{self, Token};
+use cakeys_pkcs11::{BoundKey, keygen_mechanism};
 use cakeys_profile::baseline::CURVES;
 use cakeys_profile::{GenerateRow, MatchInfo, Mode, Profile};
 use cryptoki::error::{Error as CkError, RvError};
@@ -521,15 +521,14 @@ fn probe_bound(made: &mut Made, profile: &mut Profile) {
     let mut rsa = profile.generate.remove("CKK_RSA").unwrap_or_default();
     let mut oaep: Option<Vec<String>> = None;
     for key in std::mem::take(&mut made.bound_keys) {
-        let generated = match key.keygen {
-            MechanismType::ECC_KEY_PAIR_GEN => {
-                session.generate_key_pair(&Mechanism::EccKeyPairGen, &[], &key.template).map(|(p, s)| (Some(p), s))
-            }
-            MechanismType::RSA_PKCS_KEY_PAIR_GEN => {
-                session.generate_key_pair(&Mechanism::RsaPkcsKeyPairGen, &[], &key.template).map(|(p, s)| (Some(p), s))
-            }
-            MechanismType::AES_KEY_GEN => session.generate_key(&Mechanism::AesKeyGen, &key.template).map(|s| (None, s)),
-            _ => session.generate_key(&Mechanism::GenericSecretKeyGen, &key.template).map(|s| (None, s)),
+        let Some((mech, pair)) = keygen_mechanism(key.keygen) else {
+            profile.notes.insert(key.name.clone(), format!("no generation probe: {} takes parameters", key.keygen));
+            continue;
+        };
+        let generated = if pair {
+            session.generate_key_pair(&mech, &[], &key.template).map(|(p, s)| (Some(p), s))
+        } else {
+            session.generate_key(&mech, &key.template).map(|s| (None, s))
         };
         let bits = key.on.parse::<u32>().ok();
         let (public, private) = match generated {

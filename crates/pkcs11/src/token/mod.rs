@@ -1,7 +1,7 @@
 //! PKCS#11 token layer over `cryptoki`. Transparent: PKCS#11 names in, PKCS#11 calls out.
 //! Module-specific behaviour goes through the selected [`Provider`].
 
-use crate::provider::{AttestCtx, AttestationCap, Attested, Provider, Registry};
+use crate::provider::{AttestCtx, AttestationCap, Attested, Generation, Provider, Registry, keygen_mechanism};
 use cakeys_core::attrs;
 use cakeys_core::config::{AttrValue, Binding, Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
 pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};

@@ -102,10 +102,18 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   (`crates/pkcs11/src/token/generate.rs`), so on CloudHSM every generation fails until a spec
   sets `publicAttributes = { CKA_PRIVATE = true }`. The probe records it as the
   `public-private` note. A profile row that `generate` reads would be the fix.
-- **cakeys on Cloud KMS** (kmsp11/1.9 [run]): `generate` builds its own templates, which
-  libkmsp11 refuses: it takes `CKA_LABEL` and `CKA_KMS_ALGORITHM` only. `Provider::bound_keys`
-  already maps algorithms to templates for the probe. Choosing one from an object spec (key
-  type, curve or size, the policy's usage) is the missing piece.
+- **cakeys on Cloud KMS, live** (kmsp11/1.9): `Provider::generation` maps a key spec to a Cloud
+  KMS algorithm, and refuses before creating anything it could not show as declared or prove
+  (unit-tested in `crates/kmsp11`). It has not run against Cloud KMS yet. That run should use
+  labels OpenTofu pre-creates with 24 hours and `experimental_create_multiple_versions`, so
+  delete and recreate work and a version is gone after a day.
+- **The OAEP proofs use SHA-1 only**: `pop-decrypt` and `pop-unwrap` decrypt and unwrap with
+  RSA-OAEP over SHA-1 (`possession.rs`). Cloud KMS refuses it, offering SHA-256 or SHA-512 only,
+  so decrypt-only Cloud KMS keys need `token-asserted`. A SHA-256 proof, chosen from the key's
+  `CKA_ALLOWED_MECHANISMS` or the profile's `decrypt.oaep`, would prove them.
+- **Cloud KMS AES keys**: GCM (Google's vendor mechanism), CBC and CTR only. cakeys commits an AES
+  key by CMAC, an ECB check value or key wrap, so it refuses them. A commitment by AES-CBC
+  encryption of the label would cover them.
 - **Probing bound keys more narrowly**: a binding lists `CKM_RSA_PKCS` for signing, and
   `rsa_ops` also tries it for decryption on that key. The SHA-512 keys get the probe's SHA-256
   inputs. Both end as notes, not rows (each mechanism works on some key), but the notes are

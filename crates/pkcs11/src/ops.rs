@@ -423,7 +423,7 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
             t
         )));
     }
-    let made_otherwise = tok.create(t.object, t.spec, &t.on_token.locator)?;
+    let made_otherwise = tok.create(t.object, t.spec, &t.on_token.locator, cakeys_core::plan::expected_binding(t))?;
     notes.say(format!("created {t}"));
     if let Some(note) = made_otherwise {
         notes.say(note);

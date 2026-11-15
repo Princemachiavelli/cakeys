@@ -16,14 +16,37 @@ impl Token {
     /// `Validation` for a class cakeys adopts rather than creates, or a key type missing its
     /// size (`modulusBits`, `valueLen`); a generation the module refuses is `Unsupported`,
     /// naming the token and the `C_*` failure. `Some(note)` says how the key was made other than
-    /// asked (a public key the module made private).
-    pub fn create(&self, object: &ObjectCfg, spec: &SpecCfg, loc: &Locator) -> Result<Option<String>> {
+    /// asked (a public key the module made private). `binding` is how a private key will be
+    /// proven: a module that generates from its own template ([`Provider::generation`]) refuses
+    /// here a key it could not prove.
+    ///
+    /// [`Provider::generation`]: crate::Provider::generation
+    pub fn create(
+        &self,
+        object: &ObjectCfg,
+        spec: &SpecCfg,
+        loc: &Locator,
+        binding: Option<Binding>,
+    ) -> Result<Option<String>> {
         self.provider.check_create(object, loc)?;
-        if self.provider.manages_as_so() {
-            self.as_so("generating a key", || self.generate(object, spec, loc))
+        let own = self.provider.generation(object, spec, loc, binding)?;
+        let run = || match &own {
+            Some(g) => self.generate_own(g),
+            None => self.generate(object, spec, loc),
+        };
+        if self.provider.manages_as_so() { self.as_so("generating a key", run) } else { run() }
+    }
+
+    /// The module's own generation: its template alone, no public template.
+    fn generate_own(&self, g: &Generation) -> Result<Option<String>> {
+        let (mech, pair) = keygen_mechanism(g.keygen)
+            .ok_or_else(|| self.unsupported(format!("generating key on '{}' with {}", self.name, g.keygen)))?;
+        let made = if pair {
+            self.session.generate_key_pair(&mech, &[], &g.template).map(drop)
         } else {
-            self.generate(object, spec, loc)
-        }
+            self.session.generate_key(&mech, &g.template).map(drop)
+        };
+        made.map(|()| None).map_err(|e| self.unsupported(format!("generating key on '{}': {e}", self.name)))
     }
 
     fn generate(&self, object: &ObjectCfg, spec: &SpecCfg, loc: &Locator) -> Result<Option<String>> {

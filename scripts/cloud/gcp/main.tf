@@ -35,9 +35,10 @@ provider "google" {
 }
 
 locals {
+  # The probe's rows only: the table also holds every algorithm cakeys may ask for.
   keys = {
     for k in jsondecode(file("${path.module}/../../../crates/kmsp11/src/keys.json")) :
-    "caprobe-${replace(lower(k.algorithm), "_", "-")}" => k
+    "caprobe-${replace(lower(k.algorithm), "_", "-")}" => k if k.probe
   }
 }
 

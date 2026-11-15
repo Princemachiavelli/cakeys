@@ -127,7 +127,9 @@ behaviour or reach outside PKCS#11:
   management on modules that create only as SO or cannot delete keys: ykcs11) and
   `attestation`/`attest` (DESIGN §3.7), `policy_flag` (a misreported attribute: ykcs11's
   `CKA_DERIVE`), `scratch_occupant` (the probe's scratch slot), `import_plaintext` (tpm2-pkcs11's
-  `tpm2_ptool` import), `bound_keys` (keys bound to one purpose at creation: kmsp11).
+  `tpm2_ptool` import), `bound_keys` and `generation` (keys bound to one purpose at creation, the
+  module's own template chosen from the spec and refused before creating what could not be proven:
+  kmsp11).
 - **Data providers:** a module with none of these needs no code. The family of the module
   profile whose `[match] manufacturer` it reports is its provider (`provider::Data`). softhsm,
   kryoptic and aws-cloudhsm are data providers, and keys.toml's `profileDirs` can add more
@@ -145,7 +147,7 @@ behaviour or reach outside PKCS#11:
 |---|---|
 | softhsm (data) | none (reference); attests nothing |
 | aws-cloudhsm (data) | none to fix: its profiles record the rest. A public key with `CKA_PRIVATE = false` is refused, so `generate` drops that default when it is refused (CAPROBE.md) |
-| kmsp11 | keys bound to one Cloud KMS algorithm (`bound_keys`): the probe generates one per algorithm; `cakeys` generation there is not built yet (OPEN.md) |
+| kmsp11 | keys bound to one Cloud KMS algorithm: `generation` chooses it from the spec (kind and size, `CKA_SIGN` or `CKA_DECRYPT`, `CKA_ALLOWED_MECHANISMS`) under a `CKA_LABEL`-only locator, and refuses what cakeys could not prove (`pop-decrypt`, PSS with `pop-sign`, AES, `CKK_GENERIC_SECRET`); `bound_keys` gives the probe one key per algorithm |
 | kryoptic (data) | none to fix (PKCS#11 3.2 reference): Edwards `CKA_EC_POINT` raw (DER with `KRYOPTIC_EC_POINT_ENCODING=DER`; same identity); private keys carry their own `CKA_PUBLIC_KEY_INFO`, so a swapped key is refused (13) by the cross-check before the proof of possession; library version 0.0 in `C_GetInfo`; no secp256k1 or brainpool generation (15); attests nothing |
 | ykcs11 | `CKA_PUBLIC_KEY_INFO` length 0 then `CKR_ARGUMENTS_BAD` (tolerated generically); fixed PIV slot IDs and labels: `autoCreate` needs a locator of `CKA_ID` alone naming a key slot (`01`–`04`: 9a/9c/9d/9e, `05`–`18`: 82–95; 17 otherwise) and `mgmKeyFile`/`mgmKeyEnv` (the management key in hex, or the PIN on a PIN-protected-management-key device), since ykcs11 generates only as SO; **keys cannot be deleted** — `C_DestroyObject` clears only the slot's certificate and the key stays, so `delete` (and the cleanup after a failed `realise`) refuses (15), naming `ykman piv keys delete <slot>`; the `piv-attestation` commitment: per-slot attestation certificates found by their label/`CKA_ID`, chain-verified to the embedded Yubico roots (`roots/`, DESIGN §3.7) |
 | tpm2-pkcs11 | drops `AES_KEY_GEN`/`GENERIC_SECRET_KEY_GEN` (`C_GenerateKey` unsupported); repairs the malformed P-521 `CKA_EC_POINT` (`04 85 …`; upstream draft in `upstream/tpm2-pkcs11/`) — `tpm2_*` tests; the `tpm-certify` commitment: a native `TPM2_Certify` through tss-esapi and the module's sqlite store (DESIGN §3.7) |

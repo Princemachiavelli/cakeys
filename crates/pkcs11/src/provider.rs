@@ -2,13 +2,13 @@
 //! overrides only what its module gets wrong. Every fix-up must return exactly what a
 //! spec-compliant module would, so identities stay portable across modules and versions.
 
-use cakeys_core::config::{Locator, ModuleInfo, ObjectCfg, Options, TokenCfg};
+use cakeys_core::config::{Binding, Locator, ModuleInfo, ObjectCfg, Options, SpecCfg, TokenCfg};
 use cakeys_core::id::Scheme;
 use cakeys_core::migrate::Side;
 use cakeys_core::types::ObjectClass;
 use cakeys_core::{KmError, Result};
 use cakeys_profile::Set;
-use cryptoki::mechanism::MechanismType;
+use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectHandle};
 use cryptoki::session::Session;
 use std::borrow::Cow;
@@ -30,6 +30,27 @@ pub struct BoundKey {
     pub template: Vec<Attribute>,
     /// The mechanisms a key with this binding serves; nothing else is tried on it.
     pub mechanisms: Vec<MechanismType>,
+}
+
+/// A key the module generates from its own template ([`Provider::generation`]): `keygen`
+/// (parameterless) with `template` alone, the private or secret half's; a pair passes no public
+/// template.
+pub struct Generation {
+    pub keygen: MechanismType,
+    pub template: Vec<Attribute>,
+}
+
+/// The parameterless generation mechanism `keygen` names, and whether it makes a key pair:
+/// what a module-chosen generation ([`Generation`], [`BoundKey`]) runs. `None` for any other.
+#[must_use]
+pub fn keygen_mechanism(keygen: MechanismType) -> Option<(Mechanism<'static>, bool)> {
+    Some(match keygen {
+        MechanismType::ECC_KEY_PAIR_GEN => (Mechanism::EccKeyPairGen, true),
+        MechanismType::RSA_PKCS_KEY_PAIR_GEN => (Mechanism::RsaPkcsKeyPairGen, true),
+        MechanismType::AES_KEY_GEN => (Mechanism::AesKeyGen, false),
+        MechanismType::GENERIC_SECRET_KEY_GEN => (Mechanism::GenericSecretKeyGen, false),
+        _ => return None,
+    })
 }
 
 pub trait Provider: Send + Sync {
@@ -110,6 +131,26 @@ pub trait Provider: Send + Sync {
     /// purpose, the default.
     fn bound_keys(&self) -> Vec<BoundKey> {
         Vec::new()
+    }
+
+    /// The module's own generation of `object` as `spec` declares it under `loc`, to be proven
+    /// by `binding` (private keys): `None` for cakeys' own templates, the default. A module that
+    /// takes only its own template (Google Cloud KMS) chooses it here, and refuses here, before
+    /// anything is created, what would become a key cakeys could not then identify or prove: a
+    /// key it destroys again is not always gone (Cloud KMS keeps the label for good).
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` (15) for an object the module cannot make as declared; `Validation` (17)
+    /// for a locator it cannot place a key under.
+    fn generation(
+        &self,
+        _object: &ObjectCfg,
+        _spec: &SpecCfg,
+        _loc: &Locator,
+        _binding: Option<Binding>,
+    ) -> Result<Option<Generation>> {
+        Ok(None)
     }
 
     /// `Some(advice)` when the module's `C_DestroyObject` reports success but leaves the key on
