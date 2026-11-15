@@ -1,5 +1,6 @@
 //! Idempotent verbs with HTTP-like semantics (docs/CAKEYS.md).
 
+use crate::provider::Provider;
 use crate::token::{self as hal, Token};
 use cakeys_core::config::{AttestationRecord, Config, Lock, Mode, Observation, Observed, Origin, Session};
 use cakeys_core::id::{self, Commit, HmacHash, Scheme};
@@ -81,14 +82,31 @@ pub struct Needs {
     pub generates: bool,
 }
 
-/// [`Needs`] of `t` in `mode`.
+/// Whether `t`'s object, when its spec creates it, is generated from the module's own template
+/// ([`Provider::generation`]): `false` when it is not created here. The provider's refusal of a
+/// key it could not make as declared is the error, before anything is created.
+///
+/// # Errors
+///
+/// The provider's refusal.
+pub fn own_generation(t: &Target, provider: &dyn Provider) -> Result<bool> {
+    if !t.on_token.auto_create {
+        return Ok(false);
+    }
+    let binding = cakeys_core::plan::expected_binding(t);
+    Ok(provider.generation(t.object, t.spec, &t.on_token.locator, binding)?.is_some())
+}
+
+/// [`Needs`] of `t` in `mode`; `own_generation` when the module generates the object from its
+/// own template ([`own_generation`]), which may make what a standard template cannot.
 ///
 /// # Errors
 ///
 /// `Unsupported` for what no token can do: generating a hash-bound HMAC key type (PKCS#11 has
-/// no mechanism for it).
-pub fn needs(t: &Target, mode: Mode) -> Result<Needs> {
+/// no mechanism for it), unless the module generates it its own way (libkmsp11 does).
+pub fn needs(t: &Target, mode: Mode, own_generation: bool) -> Result<Needs> {
     if t.on_token.auto_create
+        && !own_generation
         && let Some(kt) = t.object.key_type.filter(|k| k.is_hash_bound_hmac())
     {
         // CKM_GENERIC_SECRET_KEY_GEN makes CKK_GENERIC_SECRET keys; there is no mechanism for
@@ -153,7 +171,11 @@ pub(crate) fn check_attestation(
 
 /// Token capabilities the mode needs, checked before anything is created.
 fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
-    let needs = needs(t, mode).map_err(|e| match e {
+    let own = own_generation(t, tok.provider.as_ref()).map_err(|e| match e {
+        KmError::Unsupported(m) => tok.unsupported(m),
+        e => e,
+    })?;
+    let needs = needs(t, mode, own).map_err(|e| match e {
         KmError::Unsupported(m) => tok.unsupported(m),
         e => e,
     })?;

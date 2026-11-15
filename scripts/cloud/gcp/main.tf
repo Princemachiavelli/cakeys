@@ -35,10 +35,23 @@ provider "google" {
 }
 
 locals {
+  table = jsondecode(file("${path.module}/../../../crates/kmsp11/src/keys.json"))
   # The probe's rows only: the table also holds every algorithm cakeys may ask for.
   keys = {
-    for k in jsondecode(file("${path.module}/../../../crates/kmsp11/src/keys.json")) :
+    for k in local.table :
     "caprobe-${replace(lower(k.algorithm), "_", "-")}" => k if k.probe
+  }
+  # The keys scripts/cloud/gcp/cakeys.toml realises, pre-created the same way so cakeys only adds
+  # versions. Each algorithm must be the one the kmsp11 provider chooses for its spec, or
+  # libkmsp11 refuses the version (CKR_ARGUMENTS_BAD): a free check of the mapping.
+  cakeys_keys = {
+    for label, algorithm in {
+      "cakeys-ec-p256"          = "EC_SIGN_P256_SHA256"
+      "cakeys-ec-p384"          = "EC_SIGN_P384_SHA384"
+      "cakeys-rsa-sign-2048"    = "RSA_SIGN_PKCS1_2048_SHA256"
+      "cakeys-rsa-decrypt-3072" = "RSA_DECRYPT_OAEP_3072_SHA256"
+      "cakeys-hmac-sha256"      = "HMAC_SHA256"
+    } : label => one([for k in local.table : k if k.algorithm == algorithm])
   }
 }
 
@@ -53,7 +66,7 @@ resource "google_kms_key_ring" "caprobe" {
 }
 
 resource "google_kms_crypto_key" "probe" {
-  for_each                      = local.keys
+  for_each                      = merge(local.keys, local.cakeys_keys)
   name                          = each.key
   key_ring                      = google_kms_key_ring.caprobe.id
   purpose                       = each.value.purpose
@@ -74,5 +87,5 @@ output "key_ring" {
 }
 
 output "keys" {
-  value = sort(keys(local.keys))
+  value = sort(keys(merge(local.keys, local.cakeys_keys)))
 }

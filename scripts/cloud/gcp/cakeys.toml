@@ -1,0 +1,82 @@
+# cakeys against Google Cloud KMS (docs/CLOUD_HSM.md), run by `scripts/cloud/gcp.sh cakeys`: the
+# module comes from --module gcp=<libkmsp11>, the PIN libkmsp11 ignores from the state directory.
+# Every label is a key main.tf pre-creates with a 24-hour destroy duration and no version, and the
+# algorithm the kmsp11 provider chooses for each spec must be that key's, or libkmsp11 refuses.
+
+[tokens.gcp]
+tokenLabel = "caprobe"
+pinFile = "$CAKEYS_GCP_PIN"
+
+[objects.ec-p256]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+
+[objects.ec-p384]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp384r1"
+
+[objects.rsa-sign]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 2048
+
+[objects.rsa-decrypt]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 3072
+
+[objects.hmac]
+class = "CKO_SECRET_KEY"
+keyType = "CKK_SHA256_HMAC"
+valueLen = 32
+
+# Refused before anything is created: no Cloud KMS AES key can be committed to.
+[objects.aes]
+class = "CKO_SECRET_KEY"
+keyType = "CKK_AES"
+valueLen = 32
+
+# EC_SIGN_P256_SHA256, proven by signing (pop-sign, the default).
+[specs.ec-p256]
+object = "ec-p256"
+attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
+publicAttributes = { CKA_VERIFY = true }
+tokens.gcp = { locator = { CKA_LABEL = "cakeys-ec-p256" } }
+
+# EC_SIGN_P384_SHA384.
+[specs.ec-p384]
+object = "ec-p384"
+attributes = { CKA_SIGN = true }
+tokens.gcp = { locator = { CKA_LABEL = "cakeys-ec-p384" } }
+
+# RSA_SIGN_PKCS1_2048_SHA256, the default for signing, which pop-sign's CKM_SHA256_RSA_PKCS fits.
+[specs.rsa-sign]
+object = "rsa-sign"
+attributes = { CKA_SIGN = true, CKA_DECRYPT = false }
+tokens.gcp = { locator = { CKA_LABEL = "cakeys-rsa-sign-2048" } }
+
+# RSA_DECRYPT_OAEP_3072_SHA256: decrypt-only, which pop-decrypt (OAEP over SHA-1) cannot prove.
+[specs.rsa-decrypt]
+object = "rsa-decrypt"
+attributes = { CKA_DECRYPT = true }
+tokens.gcp = { locator = { CKA_LABEL = "cakeys-rsa-decrypt-3072" }, binding = "token-asserted" }
+
+# HMAC_SHA256: committed to by HMAC over the commitment label.
+[specs.hmac]
+object = "hmac"
+attributes = { CKA_SIGN = true }
+tokens.gcp = { locator = { CKA_LABEL = "cakeys-hmac-sha256" } }
+
+# Refused before creating: pop-decrypt proves with OAEP over SHA-1, which Cloud KMS refuses.
+[specs.rsa-pop-decrypt]
+object = "rsa-decrypt"
+attributes = { CKA_DECRYPT = true }
+tokens.gcp = { locator = { CKA_LABEL = "cakeys-never-created-1" }, binding = "pop-decrypt" }
+
+# Refused before creating: AES.
+[specs.aes]
+object = "aes"
+attributes = { CKA_ENCRYPT = true }
+tokens.gcp = { locator = { CKA_LABEL = "cakeys-never-created-2" } }

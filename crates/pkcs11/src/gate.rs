@@ -91,7 +91,16 @@ pub struct Verdicts {
 /// [`Set::embedded`]'s parse error (a commit-time bug).
 pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry) -> Result<Verdicts> {
     let mut out = Verdicts::default();
-    let needs = match ops::needs(t, mode) {
+    // A module that generates from its own template refuses here what it cannot make (kmsp11).
+    let own = match registry.named(&stack.provider).map(|p| ops::own_generation(t, p.as_ref())) {
+        Some(Err(e)) => {
+            out.refusals.push(e.to_string());
+            return Ok(out);
+        }
+        Some(Ok(own)) => own,
+        None => false,
+    };
+    let needs = match ops::needs(t, mode, own) {
         Ok(n) => n,
         Err(e) => {
             out.refusals.push(e.to_string());

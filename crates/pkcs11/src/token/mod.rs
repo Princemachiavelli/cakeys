@@ -130,11 +130,17 @@ pub struct Token {
 /// may stay loaded after its last handle is gone (`SoftHSM` does), and another of its tokens
 /// opened later in the process would then fail `C_Initialize` with
 /// `CKR_CRYPTOKI_ALREADY_INITIALIZED`.
+///
+/// Finalized, the module stays mapped until the process exits: a module's own threads may still
+/// be winding down when `C_Finalize` returns, and unloading under them crashes the process after
+/// its work is done (libkmsp11's gRPC threads [run], about one run in twenty, exit 139 in place of
+/// the run's own code). Opening the module again maps the same library and initializes it anew.
 struct Library(Pkcs11);
 
 impl Drop for Library {
     fn drop(&mut self) {
         let _ = self.0.clone().finalize();
+        std::mem::forget(self.0.clone());
     }
 }
 

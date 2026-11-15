@@ -4,6 +4,7 @@
 #
 #   scripts/cloud/gcp.sh create
 #   scripts/cloud/gcp.sh probe [--write]
+#   scripts/cloud/gcp.sh cakeys <cakeys arguments>
 #   scripts/cloud/gcp.sh status
 #   scripts/cloud/gcp.sh destroy
 #
@@ -18,7 +19,10 @@
 #           rewritten anyway). --write first checks that every key in the table exists here
 #           with the 24-hour duration: libkmsp11 would create a missing one with the 30-day
 #           default. CAPROBE names a caprobe binary to use instead of building one.
-# status    lists the versions under the probe keys that are not destroyed or scheduled for
+# cakeys    runs cakeys with scripts/cloud/gcp/cakeys.toml (its keys pre-created by create, 24 hours,
+#           no version) and a lock in the state directory: `cakeys create`, `verify ec-p256
+#           --token gcp`, `delete ...`. CAKEYS names a cakeys binary to use instead of building one.
+# status    lists the versions under the ring's keys that are not destroyed or scheduled for
 #           destruction (those bill), and exits 1 while any exist.
 # destroy   schedules every such version for destruction: what an interrupted probe left. The
 #           ring and the keys stay; they are free, and Cloud KMS keeps them until every version
@@ -66,14 +70,17 @@ tf_init() {
   tofu init -input=false -backend-config="path=$state/terraform.tfstate" >/dev/null
 }
 
+# The probe's labels: the table's probe rows (it holds every algorithm cakeys may ask for).
 labels() {
-  jq -r '.[].algorithm | ascii_downcase | gsub("_"; "-") | "caprobe-" + .' "$repo/crates/kmsp11/src/keys.json"
+  jq -r '.[] | select(.probe) | .algorithm | ascii_downcase | gsub("_"; "-") | "caprobe-" + .' \
+    "$repo/crates/kmsp11/src/keys.json"
 }
 
-# The versions under the probe keys that bill: neither destroyed nor scheduled for destruction.
+# The versions under any key of the ring that bill: neither destroyed nor scheduled for
+# destruction (the probe's keys and cakeys.toml's).
 live_versions() {
   local key
-  for key in $(labels); do
+  for key in $(gcloud kms keys list --keyring caprobe --location "$location" --format 'value(name.basename())'); do
     gcloud kms keys versions list --key "$key" --keyring caprobe --location "$location" \
       --filter 'state!=DESTROYED AND state!=DESTROY_SCHEDULED' --format 'value(name,state)' 2>/dev/null || true
   done
@@ -99,6 +106,40 @@ preflight() {
   fi
 }
 
+# libkmsp11's config for one build ($1: kmsp11 or kmsp11-fips), written to the state directory;
+# prints its path. Versions go into pre-created keys (experimental_create_multiple_versions).
+kms_config() {
+  local cfg=$state/$1.yaml
+  # libkmsp11 refuses a config file anyone but its owner can write.
+  (
+    umask 077
+    cat >"$cfg" <<EOF
+tokens:
+  - key_ring: "$ring"
+    label: "caprobe"
+user_project_override: "$project"
+experimental_create_multiple_versions: true
+log_directory: "$state"
+EOF
+    if [[ $1 == kmsp11-fips ]]; then
+      echo "require_fips_mode: true" >>"$cfg"
+    fi
+  )
+  echo "$cfg"
+}
+
+# cakeys against the ring with scripts/cloud/gcp/cakeys.toml and a lock in the state directory:
+# every argument goes to cakeys. CAKEYS names a cakeys binary to use instead of building one.
+cakeys() {
+  local bin lib
+  bin=${CAKEYS:-$(nix build --no-link --print-out-paths --impure --expr \
+    "((builtins.getFlake \"git+file://$repo\").packages.x86_64-linux.cakeys.overrideAttrs { doCheck = false; })")/bin/cakeys}
+  lib=$(nix build --no-link --print-out-paths "$repo#kmsp11")
+  echo unused >"$state/pin"
+  KMS_PKCS11_CONFIG=$(kms_config kmsp11) CAKEYS_GCP_PIN=$state/pin "$bin" \
+    --config "$tf/../gcp/cakeys.toml" --lock "$state/cakeys.lock" --module "gcp=$lib/lib/libkmsp11.so" "$@"
+}
+
 probe() {
   local write=0
   while (($#)); do
@@ -116,22 +157,7 @@ probe() {
   for variant in kmsp11 kmsp11-fips; do
     lib=$(nix build --no-link --print-out-paths "$repo#$variant")
     name=kmsp11/$(sed -E 's/.*-([0-9]+\.[0-9]+)$/\1/' <<<"$lib")+hsm${variant#kmsp11}
-    cfg=$state/$variant.yaml
-    # libkmsp11 refuses a config file anyone but its owner can write.
-    (
-      umask 077
-      cat >"$cfg" <<EOF
-tokens:
-  - key_ring: "$ring"
-    label: "caprobe"
-user_project_override: "$project"
-experimental_create_multiple_versions: true
-log_directory: "$state"
-EOF
-      if [[ $variant == kmsp11-fips ]]; then
-        echo "require_fips_mode: true" >>"$cfg"
-      fi
-    )
+    cfg=$(kms_config "$variant")
     cat >"$state/keys.toml" <<EOF
 [tokens.gcp]
 module = "$lib/lib/libkmsp11.so"
@@ -188,6 +214,7 @@ shift
 case $cmd in
 create) create "$@" ;;
 probe) probe "$@" ;;
+cakeys) cakeys "$@" ;;
 status) status "$@" ;;
 destroy) destroy "$@" ;;
 *) usage ;;
