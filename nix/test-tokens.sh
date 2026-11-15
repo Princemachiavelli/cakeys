@@ -42,14 +42,20 @@ suite=${suite%-*}
 # Coverage (docs/PLAN.md A1): with $CAKEYS_TRACE_DIR, every module this test can load goes
 # through a copy of p11-fault with a tag of its own (libp11_fault-<tag>.so reads only
 # P11_FAULT_*_<TAG>), a pure forwarder that logs each call to <dir>/<suite>/<test>.jsonl. The
-# fault suites' own shim then stacks on it. The copies are made once per run, and are copies:
-# the loader takes two links to one file for one library, whose settings both would share.
-if [ -n "${CAKEYS_TRACE_DIR:-}" ]; then
-  test=unnamed prev=
-  for a in "$@"; do
-    [ "$prev" != --exact ] || test=$a
-    prev=$a
-  done
+# copies are made once per run, and are copies: the loader takes two links to one file for one
+# library, whose settings both would share. The tests that put their own p11-fault in front of a
+# module run untraced: that shim's hooks call the module too, inside the tool's process, and the
+# trace would count those calls as the tool's.
+test=unnamed prev=
+for a in "$@"; do
+  [ "$prev" != --exact ] || test=$a
+  prev=$a
+done
+case $suite/$test in
+fault/* | tpm2/tpm2_attestation_says_what_it_lacks) untraced=1 ;;
+*) untraced= ;;
+esac
+if [ -n "${CAKEYS_TRACE_DIR:-}" ] && [ -z "$untraced" ]; then
   trace=$CAKEYS_TRACE_DIR/$suite/${test//::/.}.jsonl
   shim=$(dirname "$1")/libp11_fault.so
   [ -e "$shim" ] || {
