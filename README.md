@@ -1,5 +1,10 @@
 # cakeys
 
+[![checks](https://github.com/Princemachiavelli/cakeys/actions/workflows/checks.yml/badge.svg)](https://github.com/Princemachiavelli/cakeys/actions/workflows/checks.yml)
+[![flake-check](https://github.com/Princemachiavelli/cakeys/actions/workflows/flake-check.yml/badge.svg)](https://github.com/Princemachiavelli/cakeys/actions/workflows/flake-check.yml)
+[![License](https://img.shields.io/github/license/Princemachiavelli/cakeys)](LICENSE)
+[![MSRV](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FPrincemachiavelli%2Fcakeys%2Fmain%2FCargo.toml&query=%24.workspace.package%5B%22rust-version%22%5D&label=MSRV&prefix=rustc%20)](Cargo.toml)
+
 Content-addressed identity for PKCS#11 objects, as a Nix flake.
 
 Declare keys, certificates and data objects in `keys.toml`. cakeys finds them on a token by a

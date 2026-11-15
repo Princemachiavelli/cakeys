@@ -22,19 +22,22 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
 license = "BSD-3-Clause"
+repository = "https://github.com/Princemachiavelli/cakeys"
 # Nothing here goes to crates.io: the tools ship through the flake (README.md, "Nix").
 publish = false
 
 [workspace.dependencies]
-cakeys-core = { path = "crates/core" }
-cakeys-pkcs11 = { path = "crates/pkcs11" }
-cakeys-profile = { path = "crates/profile" }
-cakeys-ykcs11 = { path = "crates/ykcs11" }
-cakeys-tpm2-pkcs11 = { path = "crates/tpm2-pkcs11" }
-cakeys-kmsp11 = { path = "crates/kmsp11" }
-cakeys-aws-cloudhsm = { path = "crates/aws-cloudhsm" }
+# The `version` on each path is what crates.io would need of it; it moves with
+# workspace.package.version.
+cakeys-core = { path = "crates/core", version = "0.1.0" }
+cakeys-pkcs11 = { path = "crates/pkcs11", version = "0.1.0" }
+cakeys-profile = { path = "crates/profile", version = "0.1.0" }
+cakeys-ykcs11 = { path = "crates/ykcs11", version = "0.1.0" }
+cakeys-tpm2-pkcs11 = { path = "crates/tpm2-pkcs11", version = "0.1.0" }
+cakeys-kmsp11 = { path = "crates/kmsp11", version = "0.1.0" }
+cakeys-aws-cloudhsm = { path = "crates/aws-cloudhsm", version = "0.1.0" }
 # Without its providers: each tool turns them on through its own `tpm2` and `ykcs11` features.
-cakeys-cli-common = { path = "crates/cli-common", default-features = false }
+cakeys-cli-common = { path = "crates/cli-common", version = "0.1.0", default-features = false }
 anyhow = "1"
 base16ct = { version = "1", features = ["alloc"] }
 base64 = "0.23"

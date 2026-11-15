@@ -113,6 +113,16 @@
           checks-crane-only = pkgs.linkFarm "checks-crane-only" (
             builtins.removeAttrs self.checks.${system} [ "fuzz" ]
           );
+          # Every check that needs no VM and no fuzz run: the light CI workflow
+          # (.github/workflows/checks.yml); .github/workflows/flake-check.yml runs them all.
+          checks-no-vm = pkgs.linkFarm "checks-no-vm" (
+            builtins.removeAttrs self.checks.${system} [
+              "fuzz"
+              "vm"
+              "module"
+              "tpm"
+            ]
+          );
         }
         // lib.optionalAttrs (system == "x86_64-linux") {
           inherit (local) kmsp11 kmsp11-fips;

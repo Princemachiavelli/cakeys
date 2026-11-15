@@ -16,6 +16,10 @@ The OS is NixOS: there is no system `cargo`, `python3` or `perl`.
 - **After a significant change:** `nix build .#checks-crane-only`, every check except the fuzz
   smoke run, on the crane build (its dependencies cached per `Cargo.lock`).
 - **At the end of a piece of work:** `nix flake check`, all checks passing.
+- **CI** (GitHub Actions, on pushes to `main` and pull requests): `.github/workflows/checks.yml`
+  builds `.#checks-no-vm` (every check but the VM tests and the fuzz run);
+  `.github/workflows/flake-check.yml` runs `nix flake check` on a runner with KVM. Both run
+  Determinate Nix (determinate-nix-action, pinned) with the Magic Nix Cache.
 - The token suites (SoftHSM, kryoptic, p11-kit, swtpm) run only in the Nix build's check phase;
   under plain `cargo test` they skip. A change to token behaviour is not tested until a Nix check
   has run.
