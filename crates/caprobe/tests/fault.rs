@@ -39,15 +39,36 @@ fn probed(w: &Workdir, name: &str, plan: &str, more: &[&str]) -> (i32, String, S
     (code(&o), stdout(&o), stderr(&o), text.lines().filter(|l| !l.contains("\"rule\":null")).count())
 }
 
+/// One fault case: its name, the plan, what the profile then holds, and what the probe says it
+/// could not determine.
+type Case<'a> = (&'a str, String, &'a [&'a str], &'a str);
+
+fn rule(text: &str) -> String {
+    format!("[[rule]]\n{text}\n")
+}
+
+/// Probe under each case's plan: the probe succeeds, its rule fired, and the profile and the
+/// notes hold what the case says.
+fn probe_cases(w: &Workdir, cases: &[Case]) {
+    for (name, plan, rows, undetermined) in cases {
+        let (exit, profile, said, fired) = probed(w, name, plan, &[]);
+        assert_eq!(exit, 0, "{name}: {said}");
+        assert!(fired > 0, "{name}: the rule never fired");
+        for row in *rows {
+            assert!(profile.contains(row), "{name}: expected {row:?} in\n{profile}");
+        }
+        assert!(said.contains(undetermined), "{name}: expected {undetermined:?} in {said}");
+    }
+}
+
 /// What the write probes record when the module refuses or lies: a row of the profile and a
 /// note saying what was seen, or a note of what could not be probed. Never the row a
 /// well-behaved module would have earned.
 #[test]
 fn the_probe_records_what_a_misbehaving_module_does() {
     let Some(w) = scratch("fault-probe") else { return };
-    let rule = |text: &str| format!("[[rule]]\n{text}\n");
     // (the lie, what the profile then holds, what the probe says it could not determine)
-    let cases: &[(&str, String, &[&str], &str)] = &[
+    let cases: &[Case] = &[
         (
             // Every try with the usage attributes: the template as asked, then once without each
             // of the probe's own policy defaults (public CKA_PRIVATE, private CKA_SENSITIVE),
@@ -106,20 +127,59 @@ fn the_probe_records_what_a_misbehaving_module_does() {
             "",
         ),
     ];
-    for (name, plan, rows, undetermined) in cases {
-        let (exit, profile, said, fired) = probed(&w, name, plan, &[]);
-        assert_eq!(exit, 0, "{name}: {said}");
-        assert!(fired > 0, "{name}: the rule never fired");
-        for row in *rows {
-            assert!(profile.contains(row), "{name}: expected {row:?} in\n{profile}");
-        }
-        assert!(said.contains(undetermined), "{name}: expected {undetermined:?} in {said}");
-    }
+    probe_cases(&w, cases);
     // Against the committed profile, such a module drifts (15): the conformance check would
     // not let its profile stand for SoftHSM's.
     let (exit, _, said, _) = probed(&w, "drift", &cases[4].1, &["--diff", SOFTHSM.profile.0]);
     assert_eq!(exit, 15, "{said}");
     assert!(said.contains("derive.sealed"), "{said}");
+}
+
+/// `derive_any`'s tries, in order, each taken when those before it are refused for their
+/// template, and the one that took is the profile's note: `CKA_VALUE_LEN` added; then each
+/// policy default dropped from the template as asked; then from the one with `CKA_VALUE_LEN`. A
+/// refusal that is not about the template ends the tries, first or later.
+#[test]
+fn the_probe_notes_which_derive_template_took() {
+    let Some(w) = scratch("fault-probe-derive") else { return };
+    let cases: &[Case] = &[
+        (
+            "the sealed template takes with its length",
+            rule("fn = \"C_DeriveKey\"\ncall = 1\nrv = \"CKR_TEMPLATE_INCONSISTENT\""),
+            &["the template as asked is refused (CKR_TEMPLATE_INCONSISTENT); derived with CKA_VALUE_LEN = 32 added\""],
+            "",
+        ),
+        (
+            "the sealed template takes without CKA_SENSITIVE",
+            (1..=2)
+                .map(|n| rule(&format!("fn = \"C_DeriveKey\"\ncall = {n}\nrv = \"CKR_TEMPLATE_INCONSISTENT\"")))
+                .collect(),
+            &["(CKR_TEMPLATE_INCONSISTENT); derived with CKA_SENSITIVE = true dropped\""],
+            "",
+        ),
+        (
+            "the sealed template takes with its length and without CKA_SENSITIVE",
+            (1..=4)
+                .map(|n| rule(&format!("fn = \"C_DeriveKey\"\ncall = {n}\nrv = \"CKR_TEMPLATE_INCONSISTENT\"")))
+                .collect(),
+            &["(CKR_TEMPLATE_INCONSISTENT); derived with CKA_VALUE_LEN = 32 added, CKA_SENSITIVE = true dropped\""],
+            "",
+        ),
+        (
+            "the sealed derivation fails",
+            rule("fn = \"C_DeriveKey\"\ncall = 1\nrv = \"CKR_DEVICE_ERROR\""),
+            &["a sealed (non-extractable) derived secret is refused: CKR_DEVICE_ERROR"],
+            "",
+        ),
+        (
+            "the sealed derivation fails after a template refusal",
+            rule("fn = \"C_DeriveKey\"\ncall = 1\nrv = \"CKR_TEMPLATE_INCONSISTENT\"")
+                + &rule("fn = \"C_DeriveKey\"\ncall = 2\nrv = \"CKR_DEVICE_ERROR\""),
+            &["a sealed (non-extractable) derived secret is refused: CKR_DEVICE_ERROR"],
+            "",
+        ),
+    ];
+    probe_cases(&w, cases);
 }
 
 /// Objects an interrupted probe left under its own labels are removed by the next one, which
