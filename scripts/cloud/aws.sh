@@ -60,28 +60,13 @@ init() {
 
 out() { tofu output -raw "$1" 2>/dev/null || true; }
 
-# The values that change per run, one argument per line: never remembered.
-run_vars() {
-  local key=${SSH_PUBLIC_KEY_FILE:-$HOME/.ssh/id_ed25519.pub} ip
-  [[ -r $key ]] || {
-    echo "no SSH public key at $key (set SSH_PUBLIC_KEY_FILE)" >&2
-    exit 1
-  }
-  ip=$(curl -sf https://checkip.amazonaws.com)
-  printf '%s\n' \
-    -var "ssh_public_key=$(<"$key")" \
-    -var "ssh_cidr=$ip/32" \
-    -var "expires=$(date -u -d '+4 hours' +%Y-%m-%dT%H:%M:%SZ)"
-}
-
-# Plan with the given var file and extra arguments, refuse a plan that deletes the cluster, apply.
+# Plan with the given var file and extra arguments, refuse a plan that deletes the cluster,
+# remember the var file, apply. Remembered before the apply: an apply that fails halfway still
+# leaves destroy the values it planned with.
 apply_guarded() {
-  local varfile=$1 plan=$state/plan rvs
+  local varfile=$1 plan=$state/plan
   shift
-  local -a rv
-  rvs=$(run_vars)
-  mapfile -t rv <<<"$rvs"
-  tofu plan -input=false -out="$plan" -var-file="$varfile" "${rv[@]}" "$@"
+  tofu plan -input=false -out="$plan" -var-file="$varfile" "$@"
   if ! tofu show -json "$plan" | jq -e '
       [.resource_changes[]? | select(.address == "aws_cloudhsm_v2_cluster.this")
         | select(.change.actions | index("delete"))] | length == 0' >/dev/null; then
@@ -92,6 +77,7 @@ apply_guarded() {
     rm -f "$plan"
     exit 1
   fi
+  [[ $varfile == "$vars" ]] || mv "$varfile" "$vars"
   tofu apply -input=false "$plan"
   rm -f "$plan"
 }
@@ -102,7 +88,7 @@ cluster_state() {
 }
 
 create() {
-  local next=$state/next.tfvars.json
+  local next=$state/next.tfvars.json key=${SSH_PUBLIC_KEY_FILE:-$HOME/.ssh/id_ed25519.pub} ip
   local -a set=()
   while (($#)); do
     case $1 in
@@ -115,13 +101,19 @@ create() {
     [[ -n ${2-} ]] || usage
     shift 2
   done
-  # $ARGS.named holds jq's --arg pairs: merged over what an earlier create used, and remembered
-  # only once applied, so a refused plan leaves destroy --park the old values.
-  jq "${set[@]}" '. + $ARGS.named' "$vars" >"$next"
+  [[ -r $key ]] || {
+    echo "no SSH public key at $key (set SSH_PUBLIC_KEY_FILE)" >&2
+    exit 1
+  }
+  ip=$(curl -sf https://checkip.amazonaws.com)
+  # $ARGS.named holds jq's --arg pairs: merged over what an earlier create used. The key, the
+  # address and the expiry are re-read at every create; destroy only replays them.
+  jq "${set[@]}" --arg ssh_public_key "$(<"$key")" --arg ssh_cidr "$ip/32" \
+    --arg expires "$(date -u -d '+4 hours' +%Y-%m-%dT%H:%M:%SZ)" \
+    '. + $ARGS.named' "$vars" >"$next"
   init
   apply_guarded "$next" -var park=false
-  mv "$next" "$vars"
-  local cid ip
+  local cid
   cid=$(out cluster_id) ip=$(out runner_ip)
   cat <<EOF
 
@@ -165,14 +157,10 @@ destroy() {
     fi
     echo "$cid" >"$cidf"
   fi
-  local rvs vpc sg b
-  local -a rv
-  rvs=$(run_vars)
-  mapfile -t rv <<<"$rvs"
+  local vpc sg b
   # The cluster and what depends on it (HSM, runner) first, so the security group create-cluster
   # made can go before the VPC does.
-  tofu destroy -input=false -auto-approve -var-file="$vars" "${rv[@]}" \
-    -target=aws_cloudhsm_v2_cluster.this
+  tofu destroy -input=false -auto-approve -var-file="$vars" -target=aws_cloudhsm_v2_cluster.this
   vpc=$(out vpc_id)
   if [[ -n $vpc ]]; then
     for sg in $(aws ec2 describe-security-groups \
@@ -188,7 +176,7 @@ destroy() {
       echo "backup $b: pending deletion for 7 days (aws cloudhsmv2 restore-backup --backup-id $b)"
     done
   fi
-  tofu destroy -input=false -auto-approve -var-file="$vars" "${rv[@]}"
+  tofu destroy -input=false -auto-approve -var-file="$vars"
   rm -f "$cidf"
   echo '{}' >"$vars"
 }
