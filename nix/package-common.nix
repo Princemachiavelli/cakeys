@@ -5,6 +5,7 @@
 {
   lib,
   stdenv,
+  callPackage,
   softhsm,
   kryoptic,
   opensc,
@@ -35,6 +36,10 @@ let
   # does not cross-compile. So the test environment exists only where the tests can run. The
   # modules it names are host packages on purpose: the test binaries load them.
   canCheck = stdenv.buildPlatform.canExecute stdenv.hostPlatform;
+  # The SoftHSM the tests drive: nixpkgs' with upstream/softhsm/'s patches
+  # (nix/softhsm-unwrap-value-len.nix), as scripts/local-tests.sh uses. Without them OpenSSL
+  # through pkcs11-provider, which reads what `check --format pem` writes, deadlocks in C_Login.
+  softhsmForTests = callPackage ./softhsm-unwrap-value-len.nix { inherit softhsm; };
 in
 {
   # cryptoki 0.12.1 (and main) gives KeyType::SHA224/384/512_HMAC the value of CKK_SHA256_HMAC, so those key
@@ -134,7 +139,7 @@ in
     # and, with tpm2, tpm2-pkcs11 on a software TPM (behind tpm2-abrmd on a private D-Bus) inside
     # the build sandbox.
     nativeCheckInputs = [
-      softhsm
+      softhsmForTests
       p11-kit
       opensc
       openssl
@@ -153,7 +158,7 @@ in
         printf 'directories.tokendir = %s\nobjectstore.backend = file\nlog.level = ERROR\n' \
           $TMPDIR/softhsm-tokens > $SOFTHSM2_CONF
         softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678
-        export CAKEYS_TEST_MODULE=${softhsm}/lib/softhsm/libsofthsm2.so
+        export CAKEYS_TEST_MODULE=${softhsmForTests}/lib/softhsm/libsofthsm2.so
         export CAKEYS_TEST_REQUIRE=1
 
         # kryoptic (PKCS#11 3.2): the shared reference suite runs against it too. The slot table

@@ -44,6 +44,22 @@
       ''
         bash ${./upstream/softhsm}/repro.sh ${softhsm-unwrap-value-len-tested}/lib/softhsm/libsofthsm2.so | tee $out
       '';
+  # The same SoftHSM under OpenSSL through pkcs11-provider, activated before `default`: no
+  # deadlock in C_Login (SoftHSMv2 #834), a streaming ECDSA signature that verifies (#857), and
+  # no crash at exit (#780). Stock SoftHSM 2.7.0 hangs on the first step.
+  softhsm-pkcs11-provider =
+    pkgs.runCommand "softhsm-pkcs11-provider"
+      {
+        nativeBuildInputs = [
+          softhsm-unwrap-value-len-tested
+          pkgs.opensc
+          (pkgs.lib.getBin pkgs.openssl)
+        ];
+      }
+      ''
+        bash ${./upstream/softhsm}/repro-834.sh ${softhsm-unwrap-value-len-tested}/lib/softhsm/libsofthsm2.so \
+          ${pkgs.pkcs11-provider}/lib/ossl-modules | tee $out
+      '';
   # The capability-profile query (docs/CAPROBE.md, `caprobe supports`): static answers from the
   # profiles embedded in the binary, no token needed. yes -> 0, no -> 15, unknown -> 16.
   profiles = pkgs.runCommand "cakeys-profiles" { } ''

@@ -151,6 +151,17 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   filed: PR #650 covers the same change, so comment there or file with a link), and
   `checks.softhsm-unwrap-value-len` tests it on a patched SoftHSM. A fixed release gets its own
   profile without `secret-unwraps = false`.
+- **SoftHSM under pkcs11-provider** (what reads `check --format pem`): SoftHSM 2.7.0 does its
+  own crypto in the application's default OpenSSL library context, so with pkcs11-provider
+  activated before `default` its `C_Login` calls back into itself and deadlocks on the token
+  mutex (SoftHSMv2 #834, open; pkcs11-provider #723 calls it SoftHSM's). A fix is drafted in
+  `upstream/softhsm/` (0004, `PR-834.md`; not filed: ask on #834 whether the maintainers want the
+  minimal change or every default-context call converted). 2.7.0 also refuses multi-part
+  `CKM_ECDSA_SHA*` (`C_SignUpdate`, so `openssl dgst -sign` fails) and crashes at exit under
+  OpenSSL's cleanup (#780); main fixed both after 2.7.0 (#857, #897), backported as 0002 and
+  0003. The check phase and `scripts/local-tests.sh` test on SoftHSM with all four patches;
+  `checks.softhsm-pkcs11-provider` runs the reproduction. A deployment on stock 2.7.0 must list
+  `default` before `pkcs11` and cannot stream-sign through the provider.
 - **rust-cryptoki**: the HMAC key-type fix, `CKM_AES_KEY_WRAP_KWP` and `CKM_RSA_AES_KEY_WRAP`
   and the single-part sign after `C_SignInit` (`upstream/rust-cryptoki/`); later, array
   attributes.
