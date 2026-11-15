@@ -161,6 +161,13 @@ of_label = "shown"
 use_label = "used"
 ```
 
+**Failing half of an operation.** `C_Sign` and its like end the operation `C_SignInit` began,
+also when they fail. A rule that answers instead of the module (`when = "before"`), or on the
+call that only asks the output length, leaves the real operation open, and the module then
+refuses what the client does next. To model a module that fails the operation, fail the call
+that does the work, after it: `call = 2`, `when = "after"` for a client that asks the length
+first.
+
 **Labels to handles.** `of_label`, `from_label`, `add_label` and `use_label` are resolved
 through a session of the shim's own (`C_OpenSession` on the caller's slot, read from
 `C_GetSessionInfo`), so resolving never interrupts a find the caller has open. Object handles
@@ -210,6 +217,9 @@ lock is unchanged at the end. As run on SoftHSM [run]:
 | another key used by `C_DecryptInit` | 13 (was 16: see below) |
 | another key used by `C_UnwrapKey` | 16: SoftHSM answers `CKR_GENERAL_ERROR` |
 | `C_Sign` or `C_GetAttributeValue` failing | 16, the call named |
+| another key's `CKA_PUBLIC_KEY_INFO` on the private key | 13, it disagrees with the material |
+| the per-use login of a `CKA_ALWAYS_AUTHENTICATE` key refused | 16, not retried |
+| the MAC with the derived or unwrapped secret failing | 16, the call named |
 
 **Found with it.** A swapped RSA key under `pop-decrypt` was reported as unavailable (16): the
 token answers `CKR_ENCRYPTED_DATA_INVALID`, since OAEP under the wrong key fails outright and
@@ -218,9 +228,13 @@ identity names, so that answer means another key: `CKR_ENCRYPTED_DATA_INVALID`/`
 and `CKR_WRAPPED_KEY_INVALID`/`_LEN_RANGE` are now a conflict (13). A module that answers a
 general error instead (SoftHSM's `C_UnwrapKey`) stays unavailable: nothing in it says which.
 
-Still to add as rows: a context-specific login refused, `C_Sign` with a derived or unwrapped
-secret failing, an object vanishing between creation and resolution, `CKA_PUBLIC_KEY_INFO` of
-another key, and DESIGN §8.1's remaining claims.
+A second test, `a_creation_that_cannot_be_identified_is_undone_or_reported`, takes §8.1's
+"refused operations leave nothing behind": a key created whose proof then fails is removed
+again, and where `C_DestroyObject` fails too, cakeys says the key is still on the token.
+
+Still to add: an object vanishing between creation and resolution (it needs a rule that hides
+an object from a search), a derived secret with no value, and a certificate with no readable
+value.
 
 ## Nix
 

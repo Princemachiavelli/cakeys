@@ -114,11 +114,12 @@ fn lying(name: &str) -> Option<Workdir> {
             key("d", ec, "CKA_DERIVE", "pop-ecdh"),
             key("r", rsa, "CKA_DECRYPT", "pop-decrypt"),
             key("u", rsa, "CKA_UNWRAP", "pop-unwrap"),
+            key("a", rsa, "CKA_ALWAYS_AUTHENTICATE = true, CKA_SIGN", "pop-sign"),
             key("new", ec, "CKA_SIGN", "pop-sign"),
         ]
         .concat(),
     );
-    for spec in ["k", "d", "r", "u"] {
+    for spec in ["k", "d", "r", "u", "a"] {
         let o = w.km(&["realise", spec, "--token", "ref", "--update-lock"]);
         assert_eq!(code(&o), 0, "{spec}, no plan: {}", stderr(&o));
     }
@@ -137,8 +138,12 @@ fn lying(name: &str) -> Option<Workdir> {
             Attribute::ModulusBits(2048.into()),
             Attribute::PublicExponent(vec![1, 0, 1]),
         ];
-        s.generate_key_pair(&Mechanism::RsaPkcsKeyPairGen, &public, &[Attribute::Token(true), label(name), usage])
+        let (_, private) = s
+            .generate_key_pair(&Mechanism::RsaPkcsKeyPairGen, &public, &[Attribute::Token(true), label(name), usage])
             .unwrap();
+        // The public key the module asserts for it (SoftHSM sets none, and takes any).
+        let asserted = Attribute::PublicKeyInfo(oracle_spki(&s, &format!("{name}-other")));
+        s.update_attributes(private, &[asserted]).unwrap();
     }
     Some(w)
 }
@@ -189,6 +194,20 @@ fn a_lying_module_is_refused() {
         (other("C_DeriveKey", "d"), verify("d"), 13, "did not derive for the public key"),
         (other("C_DecryptInit", "r"), verify("r"), 13, "did not decrypt what was made for its public key"),
         (other("C_UnwrapKey", "u"), verify("u"), 16, "C_UnwrapKey (proof of possession)"),
+        // It asserts another key's CKA_PUBLIC_KEY_INFO on the private key: the material decides.
+        (
+            "fn = \"C_GetAttributeValue\"\nof_label = \"r\"\nattribute = \"CKA_PUBLIC_KEY_INFO\"\nfrom_label = \"r-other\""
+                .into(),
+            verify("r"),
+            13,
+            "disagrees with the key material",
+        ),
+        // The per-use login of a CKA_ALWAYS_AUTHENTICATE key refused (the second C_Login of the
+        // run): unavailable, and not tried again.
+        ("fn = \"C_Login\"\ncall = 2\nrv = \"CKR_PIN_INCORRECT\"".into(), verify("a"), 16, "not retried"),
+        // The MAC with the derived or unwrapped secret fails.
+        ("fn = \"C_Sign\"\nrv = \"CKR_DEVICE_ERROR\"".into(), verify("d"), 16, "C_Sign (ECDH proof of possession)"),
+        ("fn = \"C_Sign\"\nrv = \"CKR_DEVICE_ERROR\"".into(), verify("u"), 16, "C_Sign (unwrap proof of possession)"),
         // A call that fails where a correct module's never does.
         ("fn = \"C_Sign\"\nrv = \"CKR_DEVICE_ERROR\"".into(), verify("k"), 16, "C_Sign (proof of possession)"),
         (
@@ -209,7 +228,38 @@ fn a_lying_module_is_refused() {
     }
     assert_eq!(std::fs::read(w.dir.join("keys.lock")).unwrap(), lock, "a refused run changed the lock");
     // With no plan, the same token still verifies: every refusal above was the lie's.
-    for spec in ["k", "d", "r", "u"] {
+    for spec in ["k", "d", "r", "u", "a"] {
         assert_eq!(w.code(&["verify", spec, "--token", "ref"]), 0, "{spec}");
     }
+}
+
+/// Refused operations leave nothing behind (docs/DESIGN.md §8.1): a key created and then not
+/// identified (its proof of possession fails) is removed again; where the module will not
+/// remove it either, cakeys says it is still there.
+#[test]
+fn a_creation_that_cannot_be_identified_is_undone_or_reported() {
+    let Some(w) = lying("fault-undo") else { return };
+    let real = std::env::var(REF.module_var).unwrap();
+    let left = || open_session(&real, "kmtest", "1234").labelled("new").len();
+    let run = |name: &str, plan: &str| {
+        let (path, trace) = (w.dir.join(format!("{name}.toml")), w.dir.join(format!("{name}.jsonl")));
+        std::fs::write(&path, plan).unwrap();
+        let o = w.km_env(
+            &["realise", "new", "--token", "ref", "--no-update-lock"],
+            &[("P11_FAULT_PLAN", &path), ("P11_FAULT_TRACE", &trace)],
+        );
+        assert_eq!(code(&o), 16, "{}", stderr(&o));
+        (stderr(&o), fired(&trace).len())
+    };
+    // The second C_Sign (the first asks the length), after the real call: a C_Sign that fails ends
+    // the signing operation, as PKCS#11 has it. Answered instead of the module, or on the length
+    // query, the real operation would stay open and refuse the cleanup's search.
+    let sign_fails = "[[rule]]\nfn = \"C_Sign\"\ncall = 2\nwhen = \"after\"\nrv = \"CKR_DEVICE_ERROR\"\n";
+    let (said, fired_rules) = run("undone", sign_fails);
+    assert!(said.contains("removed 2 object(s) just created"), "{said}");
+    assert_eq!((left(), fired_rules), (0, 1));
+    let (said, fired_rules) =
+        run("kept", &format!("{sign_fails}\n[[rule]]\nfn = \"C_DestroyObject\"\nrv = \"CKR_DEVICE_ERROR\"\n"));
+    assert!(said.contains("is still on the token"), "{said}");
+    assert!(left() == 2 && fired_rules >= 2, "{} left, {fired_rules} fired", left());
 }
