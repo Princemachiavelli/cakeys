@@ -170,6 +170,9 @@ pub enum RsaPadding {
     Pkcs1v15,
     /// OAEP with MGF1 of the same hash and an empty label (`CKM_RSA_PKCS_OAEP`).
     Oaep(OaepHash),
+    /// OAEP over SHA-512, which no transport or proof uses: the probe asks it of modules that
+    /// bind a key to it (Cloud KMS's 4096-bit SHA-512 OAEP keys).
+    OaepSha512,
 }
 
 /// `msg` encrypted to the RSA public key in `spki` with `padding`.
@@ -186,6 +189,7 @@ pub fn rsa_encrypt(spki: &[u8], padding: RsaPadding, msg: &[u8]) -> Result<Vec<u
         RsaPadding::Pkcs1v15 => key.encrypt(rng, rsa::Pkcs1v15Encrypt, msg),
         RsaPadding::Oaep(OaepHash::Sha1) => key.encrypt(rng, rsa::Oaep::<sha1::Sha1>::new(), msg),
         RsaPadding::Oaep(OaepHash::Sha256) => key.encrypt(rng, rsa::Oaep::<Sha256>::new(), msg),
+        RsaPadding::OaepSha512 => key.encrypt(rng, rsa::Oaep::<sha2::Sha512>::new(), msg),
     }
     .map_err(|e| KmError::Unavailable(format!("RSA encryption: {e}")))
 }

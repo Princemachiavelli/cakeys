@@ -16,7 +16,8 @@
 # init      signs the cluster's CSR with a root CA of our own, made on first use and kept with
 #           its (unencrypted) key in the state directory, and initializes the cluster.
 # activate  sets the runner's CloudHSM CLI and PKCS#11 library up under /opt/cloudhsm (one HSM:
-#           key availability check off), activates the cluster, and creates the crypto user
+#           key availability check off; raw ECDH, CKD_NULL, on: the client refuses it otherwise),
+#           activates the cluster, and creates the crypto user
 #           caprobe logs in as. The passwords are made on first use and kept in the state
 #           directory; they reach the runner on SSH's stdin.
 # probe     copies the Nix-built caprobe and the PKCS#11 library to the runner and runs a write
@@ -273,7 +274,7 @@ set -euo pipefail
 mkdir -p /opt/cloudhsm/run
 install -m 644 $cli/etc/cloudhsm-cli.cfg $p11/etc/cloudhsm-pkcs11.cfg /opt/cloudhsm/etc/
 $cli/bin/configure-cli -a $hsm --disable-key-availability-check
-$p11/bin/configure-pkcs11 -a $hsm --disable-key-availability-check
+$p11/bin/configure-pkcs11 -a $hsm --disable-key-availability-check --enable-ecdh-without-kdf
 EOF
   # The passwords travel inside the script on stdin, never in ssh's own command line; on the
   # runner they are cloudhsm-cli arguments for as long as it runs.

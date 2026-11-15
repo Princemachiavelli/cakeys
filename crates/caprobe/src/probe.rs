@@ -40,6 +40,78 @@ fn clean(s: &str) -> String {
 /// The `CKR_*` name of a failure, for notes: cryptoki's `Display` is the spec's prose, which
 /// changes with the binding and would make a regeneration differ with no behaviour change.
 /// The name comes from `RvError`'s variant (`GeneralError` -> `CKR_GENERAL_ERROR`).
+/// A refusal of the template, not of the operation: what dropping one of the probe's own
+/// policy defaults may cure ([`is_policy_default`]).
+fn template_refusal(e: &CkError) -> bool {
+    matches!(
+        e,
+        CkError::Pkcs11(
+            RvError::AttributeValueInvalid
+                | RvError::AttributeTypeInvalid
+                | RvError::TemplateInconsistent
+                | RvError::TemplateIncomplete,
+            _
+        )
+    )
+}
+
+/// The attributes a probe template carries as policy defaults, which the module may refuse
+/// and still make the object: never what defines the object (class, key type, curve, size) or
+/// what the operation probes then use (`CKA_SIGN`, `CKA_DERIVE`, ...), whose loss would turn
+/// into false `subtract` rows.
+fn is_policy_default(a: &Attribute) -> bool {
+    matches!(a, Attribute::Private(_) | Attribute::Sensitive(_) | Attribute::Extractable(_))
+}
+
+/// `C_DeriveKey` with `template` as asked; on a template refusal only, once more with
+/// `CKA_VALUE_LEN` of the secret's `len` (AWS `CloudHSM` wants a length), and without one policy
+/// default at a time (it refuses `CKA_EXTRACTABLE = false` on a derived secret [run]). The
+/// derived handle, the template that took, and what was changed from the one asked; the first
+/// refusal when nothing takes.
+fn derive_any(
+    s: &Session,
+    mech: &Mechanism,
+    private: ObjectHandle,
+    template: &[Attribute],
+    len: usize,
+) -> std::result::Result<(ObjectHandle, Vec<Attribute>, Option<String>), CkError> {
+    let first = match s.derive_key(mech, private, template) {
+        Ok(h) => return Ok((h, template.to_vec(), None)),
+        Err(e) if template_refusal(&e) => e,
+        Err(e) => return Err(e),
+    };
+    let with_len = [template, &[Attribute::ValueLen((len as u64).into())]].concat();
+    let mut tries = vec![(with_len.clone(), format!("CKA_VALUE_LEN = {len} added"))];
+    for base in [template, &with_len[..]] {
+        for default in template.iter().filter(|a| is_policy_default(a)) {
+            let without: Vec<_> = base.iter().filter(|a| *a != default).cloned().collect();
+            let added =
+                if base.len() > template.len() { format!("CKA_VALUE_LEN = {len} added, ") } else { String::new() };
+            tries.push((without, format!("{added}{} dropped", show(default))));
+        }
+    }
+    for (t, what) in tries {
+        if let Ok(h) = s.derive_key(mech, private, &t) {
+            return Ok((
+                h,
+                t,
+                Some(format!("the template as asked is refused ({}); derived with {what}", ckr(&first))),
+            ));
+        }
+    }
+    Err(first)
+}
+
+/// `CKA_PRIVATE = false`, for notes.
+fn show(a: &Attribute) -> String {
+    match a {
+        Attribute::Private(b) | Attribute::Sensitive(b) | Attribute::Extractable(b) => {
+            format!("{} = {b}", a.attribute_type())
+        }
+        other => other.attribute_type().to_string(),
+    }
+}
+
 fn ckr(e: &CkError) -> String {
     match e {
         CkError::Pkcs11(RvError::VendorDefined(rv) | RvError::UnknownErrorCode(rv), _) => {
@@ -171,14 +243,12 @@ pub fn probe(tok: &Token, cfg: &TokenCfg, write: bool) -> Result<Probed> {
         n: 0,
         ops: Ops::default(),
         undetermined,
-        public_private: None,
+        template_notes: BTreeMap::new(),
         bound_keys: tok.provider.bound_keys(),
         bound: None,
     };
     write_probes(&mut made, &mut profile)?;
-    if let Some(note) = made.public_private.take() {
-        profile.notes.insert("public-private".into(), note);
-    }
+    profile.notes.append(&mut made.template_notes);
     Ok(Probed { profile, undetermined: made.undetermined })
 }
 
@@ -313,8 +383,9 @@ struct Made<'a> {
     n: usize,
     ops: Ops,
     undetermined: Vec<String>,
-    /// The note when the module refused a public key with `CKA_PRIVATE = false`.
-    public_private: Option<String>,
+    /// The policy defaults the module refused while it made the object without them
+    /// (`template.<half>.<attribute>`): template errors, not what the module cannot do.
+    template_notes: BTreeMap<String, String>,
     /// The keys the module binds to one purpose each ([`Provider::bound_keys`]); empty for a
     /// module whose keys are general purpose.
     ///
@@ -355,25 +426,24 @@ impl Made<'_> {
                 [&[Attribute::Token(true), Attribute::Label(label.as_bytes().to_vec())][..], t].concat()
             };
             let mut made = session.generate_key_pair(mech, &tag(public), &tag(private));
-            // A module may refuse a public key that is not CKA_PRIVATE (AWS CloudHSM [run]): once
-            // more without the attribute, so the module's default decides, noted. The first
-            // refusal stands when that fails too.
-            if matches!(made, Err(CkError::Pkcs11(RvError::AttributeValueInvalid, _)))
-                && public.contains(&Attribute::Private(false))
+            // A template refusal may be of one of the probe's own policy defaults, not of the key
+            // (AWS CloudHSM refuses a public key that is not CKA_PRIVATE [run]): once more without
+            // each, so the module's default decides, noted. The first refusal stands when none
+            // of those helps.
+            if let Err(e) = &made
+                && template_refusal(e)
             {
-                let without: Vec<_> = public.iter().filter(|a| **a != Attribute::Private(false)).cloned().collect();
-                if let Ok((public, private)) = session.generate_key_pair(mech, &tag(&without), &tag(private)) {
-                    made = Ok((public, private));
-                    if self.public_private.is_none() {
-                        let read = match session.get_attributes(public, &[AttributeType::Private]).as_deref() {
-                            Ok([Attribute::Private(b)]) => format!("reads CKA_PRIVATE = {b}"),
-                            Ok(_) => "reads no CKA_PRIVATE".into(),
-                            Err(e) => format!("CKA_PRIVATE unreadable: {}", ckr(e)),
-                        };
-                        self.public_private = Some(format!(
-                            "a public key with CKA_PRIVATE = false: CKR_ATTRIBUTE_VALUE_INVALID; generated \
-                             without it, the public key {read}"
-                        ));
+                let halves = [("public", public), ("private", private)];
+                'drop: for (i, (half, template)) in halves.iter().enumerate() {
+                    for default in template.iter().filter(|a| is_policy_default(a)) {
+                        let without: Vec<_> = template.iter().filter(|a| *a != default).cloned().collect();
+                        let (pub_t, prv_t) = if i == 0 { (&without[..], private) } else { (public, &without[..]) };
+                        if let Ok((public, private)) = session.generate_key_pair(mech, &tag(pub_t), &tag(prv_t)) {
+                            let on = if i == 0 { public } else { private };
+                            self.note_dropped(half, default, e, on);
+                            made = Ok((public, private));
+                            break 'drop;
+                        }
                     }
                 }
             }
@@ -385,6 +455,25 @@ impl Made<'_> {
         };
         let tag = |t: &[Attribute]| [&[Attribute::Token(true), id.clone()][..], t].concat();
         self.tok.as_so("the write probe", || Ok(session.generate_key_pair(mech, &tag(public), &tag(private))))
+    }
+
+    /// Note, once per attribute and half, a policy default the module refused while it made the
+    /// object without it: the refusal, and what the object it made reports instead.
+    fn note_dropped(&mut self, half: &str, default: &Attribute, refusal: &CkError, made: ObjectHandle) {
+        let ty = default.attribute_type();
+        let key = format!("template.{half}.{ty}");
+        if self.template_notes.contains_key(&key) {
+            return;
+        }
+        let read = match self.session.get_attributes(made, &[ty]).as_deref() {
+            Ok([a]) => format!("reads {}", show(a)),
+            Ok(_) => format!("reads no {ty}"),
+            Err(e) => format!("{ty} unreadable: {}", ckr(e)),
+        };
+        self.template_notes.insert(
+            key,
+            format!("{} on a {half} object: {}; made without it, the object {read}", show(default), ckr(refusal)),
+        );
     }
 
     /// Generate with the usage template — what the operation probes need — else the bare one a
@@ -648,6 +737,17 @@ fn probe_curves(made: &mut Made, profile: &mut Profile) -> Result<()> {
     ];
     for (kt, mech, curves) in families {
         let mut row = GenerateRow::default();
+        // A generation mechanism the module does not list is its answer, not a refusal to
+        // explain (AWS CloudHSM lists no Edwards one, and makes Ed25519 its own way [run]).
+        let keygen = mech.mechanism_type();
+        if !made.tok.advertised.contains(&keygen.to_string()) {
+            for (curve, ..) in curves {
+                row.cannot.push(curve.to_owned());
+                profile.notes.insert(curve.to_owned(), format!("not advertised: {keygen}"));
+            }
+            profile.generate.insert(kt.to_owned(), row);
+            continue;
+        }
         let mut probed_ops = false;
         for (curve, oid, name) in curves {
             // The usage each kind's operation probes need: signing, deriving, or both.
@@ -863,14 +963,27 @@ fn derive(made: &mut Made, profile: &mut Profile, private: ObjectHandle, spki: &
     // The sealed path decides when it MACs right (or the module has no HMAC to MAC with: then
     // `pop-ecdh` takes the extractable path anyway) or MACs wrong; it falls back to the
     // extractable path, with why, when the module refuses it or cannot MAC with it.
-    let sealed =
+    let mut sealed =
         [&base[..], &[Attribute::Sensitive(true), Attribute::Extractable(false), Attribute::Sign(true)]].concat();
-    let open = [&base[..], &[Attribute::Sensitive(false), Attribute::Extractable(true)]].concat();
-    let sealed_path = match s.derive_key(&mech, private, &sealed) {
-        Ok(h) => {
+    let mut open = [&base[..], &[Attribute::Sensitive(false), Attribute::Extractable(true)]].concat();
+    let len = ch.secret.len();
+    let sealed_path = match derive_any(s, &mech, private, &sealed, len) {
+        Ok((h, used, changed)) => {
+            // Sealed is what the derived secret reports, not what the template asked for.
+            let reads =
+                s.get_attributes(h, &[AttributeType::Sensitive, AttributeType::Extractable]).unwrap_or_default();
+            let observed_sealed =
+                reads.contains(&Attribute::Sensitive(true)) && reads.contains(&Attribute::Extractable(false));
             let mac = made.advertises(MechanismType::SHA256_HMAC).then(|| s.sign(&Mechanism::Sha256Hmac, h, MSG));
             destroy(h, "sealed", profile);
+            if let Some(changed) = changed {
+                profile.notes.insert("derive.template".into(), format!("{on}: {changed}"));
+            }
+            sealed = used;
             match mac {
+                None | Some(Ok(_)) if !observed_sealed => {
+                    Err(format!("the derived secret reports {}", reads.iter().map(show).collect::<Vec<_>>().join(", ")))
+                }
                 None => Ok(Ok(())),
                 Some(Ok(tag)) if pop::ct_eq(&ch.mac, &tag) => Ok(Ok(())),
                 Some(Ok(_)) => Ok(Err("the derived secret is not the shared secret".to_owned())),
@@ -886,8 +999,12 @@ fn derive(made: &mut Made, profile: &mut Profile, private: ObjectHandle, spki: &
             }
             outcome
         }
-        Err(why) => match s.derive_key(&mech, private, &open) {
-            Ok(h) => {
+        Err(why) => match derive_any(s, &mech, private, &open, len) {
+            Ok((h, used, changed)) => {
+                if let Some(changed) = changed {
+                    profile.notes.insert("derive.template".into(), format!("{on}: {changed}"));
+                }
+                open = used;
                 let value = s.get_attributes(h, &[AttributeType::Value]).ok().and_then(|v| v.into_iter().next());
                 destroy(h, "extractable", profile);
                 match value {
@@ -903,26 +1020,37 @@ fn derive(made: &mut Made, profile: &mut Profile, private: ObjectHandle, spki: &
             Err(e) => Err(format!("{why}; extractable: {}", ckr(&e))),
         },
     };
-    // Whether it derives the same way in a read-only session, where the read-only verbs prove
-    // possession (`verify`, `check`).
     if outcome.is_ok() {
         let template = if profile.derive.sealed == Some(true) { &sealed } else { &open };
-        match made.tok.extra_session(token::Access::Read).map(|ro| (ro.derive_key(&mech, private, template), ro)) {
-            Ok((Ok(h), ro)) => {
-                let _ = ro.destroy_object(h);
-                profile.derive.read_only.get_or_insert(true);
-            }
-            Ok((Err(e), _)) => {
-                profile.derive.read_only = Some(false);
-                profile.notes.insert("derive.read-only".into(), format!("{on}: in a read-only session: {}", ckr(&e)));
-            }
-            Err(e) => made.undetermined.push(format!("no read-only ECDH probe on {on}: {e}")),
-        }
+        derived_once(made, profile, &mech, private, template, on);
     }
-    // What the key that just derived says of itself: a spec asking CKA_DERIVE = true is
-    // checked against this, not against what the key does.
-    if outcome.is_ok()
-        && let Ok(attrs) = s.get_attributes(private, &[AttributeType::Derive])
+    made.ops.record(MechanismType::ECDH1_DERIVE, on, outcome);
+}
+
+/// After a derivation took with `template`: whether it derives the same way in a read-only
+/// session, where the read-only verbs prove possession (`verify`, `check`), and what the key
+/// that derived says of itself (a spec asking `CKA_DERIVE = true` is checked against this, not
+/// against what the key does).
+fn derived_once(
+    made: &mut Made,
+    profile: &mut Profile,
+    mech: &Mechanism,
+    private: ObjectHandle,
+    template: &[Attribute],
+    on: &str,
+) {
+    match made.tok.extra_session(token::Access::Read).map(|ro| (ro.derive_key(mech, private, template), ro)) {
+        Ok((Ok(h), ro)) => {
+            let _ = ro.destroy_object(h);
+            profile.derive.read_only.get_or_insert(true);
+        }
+        Ok((Err(e), _)) => {
+            profile.derive.read_only = Some(false);
+            profile.notes.insert("derive.read-only".into(), format!("{on}: in a read-only session: {}", ckr(&e)));
+        }
+        Err(e) => made.undetermined.push(format!("no read-only ECDH probe on {on}: {e}")),
+    }
+    if let Ok(attrs) = made.session.get_attributes(private, &[AttributeType::Derive])
         && let Some(Attribute::Derive(reported)) = attrs.into_iter().next()
     {
         profile.derive.key_attribute.get_or_insert(reported);
@@ -933,7 +1061,6 @@ fn derive(made: &mut Made, profile: &mut Profile, private: ObjectHandle, spki: &
             );
         }
     }
-    made.ops.record(MechanismType::ECDH1_DERIVE, on, outcome);
 }
 
 /// PKCS#1 v1.5's `DigestInfo` prefix for SHA-256 (RFC 8017 §9.2): what raw `CKM_RSA_PKCS`
@@ -993,12 +1120,13 @@ fn rsa_ops(made: &mut Made, profile: &mut Profile, private: ObjectHandle, spki: 
     }
     if made.advertises(MechanismType::RSA_PKCS_OAEP) {
         let mut works = Vec::new();
-        for (hash, mgf, name, h) in [
-            (MechanismType::SHA1, PkcsMgfType::MGF1_SHA1, "SHA-1", OaepHash::Sha1),
-            (MechanismType::SHA256, PkcsMgfType::MGF1_SHA256, "SHA-256", OaepHash::Sha256),
+        for (hash, mgf, name, padding) in [
+            (MechanismType::SHA1, PkcsMgfType::MGF1_SHA1, "SHA-1", RsaPadding::Oaep(OaepHash::Sha1)),
+            (MechanismType::SHA256, PkcsMgfType::MGF1_SHA256, "SHA-256", RsaPadding::Oaep(OaepHash::Sha256)),
+            (MechanismType::SHA512, PkcsMgfType::MGF1_SHA512, "SHA-512", RsaPadding::OaepSha512),
         ] {
             let mech = Mechanism::RsaPkcsOaep(PkcsOaepParams::new(hash, mgf, PkcsOaepSource::empty()));
-            let outcome = decrypts(made, &mech, RsaPadding::Oaep(h));
+            let outcome = decrypts(made, &mech, padding);
             if outcome.is_ok() {
                 works.push(name.to_owned());
             }
@@ -1221,6 +1349,22 @@ pub fn keep_claims(profile: &mut Profile, existing: &str, shown: &str, write: bo
 mod tests {
     use super::*;
     use cryptoki::context::Function;
+
+    /// Only the probe's policy defaults are dropped, and only for a template refusal: a type or
+    /// usage attribute stays, and a mechanism refusal is the module's answer.
+    #[test]
+    fn only_policy_defaults_are_dropped_and_only_for_template_refusals() {
+        let refusal = |rv| CkError::Pkcs11(rv, Function::GenerateKeyPair);
+        assert!(template_refusal(&refusal(RvError::AttributeValueInvalid)));
+        assert!(template_refusal(&refusal(RvError::TemplateInconsistent)));
+        assert!(!template_refusal(&refusal(RvError::MechanismInvalid)));
+        assert!(!template_refusal(&refusal(RvError::FunctionFailed)));
+        assert!(is_policy_default(&Attribute::Private(false)));
+        assert!(is_policy_default(&Attribute::Extractable(false)));
+        assert!(!is_policy_default(&Attribute::Sign(true)));
+        assert!(!is_policy_default(&Attribute::KeyType(KeyType::EC)));
+        assert_eq!(show(&Attribute::Private(false)), "CKA_PRIVATE = false");
+    }
 
     #[test]
     fn notes_name_the_return_value_not_the_prose() {

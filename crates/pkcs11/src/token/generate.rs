@@ -192,8 +192,15 @@ impl Token {
             return Err(KmError::Unsupported(format!("deleting {} on '{}': {advice}", object.class, self.name)));
         }
         let run = || {
-            for h in handles {
-                self.session.destroy_object(*h).map_err(ck("C_DestroyObject"))?;
+            for (i, h) in handles.iter().enumerate() {
+                match self.session.destroy_object(*h) {
+                    Ok(()) => {}
+                    // Gone with an object destroyed before it: libkmsp11 removes a key's public
+                    // half with its private one (one Cloud KMS version) [run]. Deleting what is
+                    // already gone is success.
+                    Err(CkError::Pkcs11(RvError::ObjectHandleInvalid, _)) if i > 0 => {}
+                    Err(e) => return Err(ck("C_DestroyObject")(e)),
+                }
             }
             Ok(handles.len())
         };

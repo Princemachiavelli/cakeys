@@ -45,6 +45,19 @@ attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
 publicAttributes = { CKA_VERIFY = true }
 tokens.gcp = { locator = { CKA_LABEL = "cakeys-ec-p256" } }
 
+# The same label once more, for new material: a deleted key's label takes a new version (the key
+# was pre-created; a key libkmsp11 made itself would refuse it). A new object name, since the
+# lock keeps the first one's identity.
+[objects.ec-p256-again]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+
+[specs.ec-p256-again]
+object = "ec-p256-again"
+attributes = { CKA_SIGN = true }
+tokens.gcp = { locator = { CKA_LABEL = "cakeys-ec-p256" } }
+
 # EC_SIGN_P384_SHA384.
 [specs.ec-p384]
 object = "ec-p384"
