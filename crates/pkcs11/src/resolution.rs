@@ -91,8 +91,7 @@ pub fn resolve(
     token: Option<&TokenInfo>,
     provider: &str,
 ) -> Result<Resolved, String> {
-    // TODO(docs/OPEN.md, "Engineering"): parsed again on every token open; parse once per process.
-    let set = Set::embedded()?;
+    let set = Set::active()?;
     let mut out = Resolved::default();
 
     // 1. The binding layer, always: the one between cakeys and every module.

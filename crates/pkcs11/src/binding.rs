@@ -41,7 +41,7 @@ pub fn layer() -> Result<Profile, String> {
     if patched() {
         return Profile::from_toml(PATCHED);
     }
-    cakeys_profile::Set::embedded()?.find("cryptoki/0.12").cloned()
+    cakeys_profile::Set::active()?.find("cryptoki/0.12").cloned()
 }
 
 #[cfg(test)]

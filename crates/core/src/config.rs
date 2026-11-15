@@ -18,6 +18,12 @@ pub struct Config {
     pub objects: BTreeMap<String, ObjectCfg>,
     #[serde(default)]
     pub specs: BTreeMap<String, SpecCfg>,
+    /// Directories of module profiles to load beside the ones this build embeds
+    /// (docs/CAPROBE.md): a new vendor's profile, and with it its provider by family name,
+    /// without a rebuild. They only add: one may not replace an embedded profile, a layer or the
+    /// baseline. `$NAME` references read the environment, as for `pinFile`.
+    #[serde(default, rename = "profileDirs")]
+    pub profile_dirs: Vec<PathBuf>,
     /// Where each object is born (`[objects.<name>].createOn`, a token name): `create` and
     /// `autoCreate` generate it only there, and its other tokens get the same material by import
     /// (camigrate). Kept apart from [`ObjectCfg`], the material's type, which the lock records.
@@ -962,6 +968,9 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
     let create_on = take_create_on(&mut table).map_err(|e| invalid(&e))?;
     let mut cfg: Config = table.try_into().map_err(|e| invalid(&e))?;
     cfg.create_on = create_on;
+    for dir in &mut cfg.profile_dirs {
+        *dir = PathBuf::from(env_ref(&dir.to_string_lossy(), "profileDirs", env)?);
+    }
     for (name, o) in &mut cfg.objects {
         o.canonicalize();
         // The commitment label carries 8 × valueLen bits (docs/DESIGN.md §3.3): bound it so that

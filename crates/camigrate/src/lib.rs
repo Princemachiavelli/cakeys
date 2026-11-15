@@ -189,6 +189,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     let cli = Cli::parse();
     let modules = module_overrides(&cli.modules)?;
     let cfg = load_config(&cli.config)?;
+    cakeys_cli_common::activate_profiles(&cfg, notes)?;
     let lock_path = cli.lock.clone().unwrap_or_else(|| cli.config.with_extension("lock"));
     // A real `migrate` or `import` writes the lock; it holds the advisory sidecar lock across load
     // and save, as cakeys' writing verbs do. A real `export` is an admin operation too (D8).

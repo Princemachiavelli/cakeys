@@ -13,6 +13,7 @@ crates/
   pkcs11/       cakeys-pkcs11    cryptoki token layer, verbs, Provider trait, static gate
   ykcs11/       cakeys-ykcs11    YubiKey PIV provider + piv-attestation (pinned Yubico roots)
   tpm2-pkcs11/  cakeys-tpm2-pkcs11  tpm2-pkcs11 provider + native TPM2_Certify attestation, tpm2_ptool import
+  kmsp11/       cakeys-kmsp11    Google Cloud KMS provider: keys bound to one algorithm each
   cli-common/   cakeys-cli-common  what the binaries share: provider registry, opening tokens, exit codes
   cli/          cakeys           pin and verify; the integration-test harness (tests/common)
   caprobe/      caprobe          the module measurer: probe, supports, caps; profile emitter and diff
@@ -76,7 +77,7 @@ and sqlite.
 | `core::migrate`, `core::plaintext` | The frozen method and exposure names and the capability model; PKCS#8 into the parts `C_CreateObject` takes |
 | `pkcs11::token` | One open token: session, login, SO step, find, policy, generate, identity, possession, host import and extraction, URI |
 | `pkcs11::ops` | The verbs: `resolve`, `verify`, `realise`, `create`, `delete`, `check`, and `realise_import` for camigrate |
-| `pkcs11::provider` | `Provider` trait, `Registry`, `Generic`; built-ins in `providers` (softhsm, kryoptic, p11-kit) |
+| `pkcs11::provider` | `Provider` trait, `Registry`, `Generic`, `Data` (providers named by their profiles); the built-in `providers` (p11-kit) |
 | `pkcs11::resolution`, `gate`, `binding` | Which profiles apply to a token, the static `validate` gate, the cryptoki layer |
 | `profile` | Profile data model, the embedded set, the effective-support algebra |
 | `caprobe` | `probe::generate`, `supports`, the profile emitter, the diff, and the test-only baseline generator |
@@ -126,18 +127,26 @@ behaviour or reach outside PKCS#11:
   management on modules that create only as SO or cannot delete keys: ykcs11) and
   `attestation`/`attest` (DESIGN §3.7), `policy_flag` (a misreported attribute: ykcs11's
   `CKA_DERIVE`), `scratch_occupant` (the probe's scratch slot), `import_plaintext` (tpm2-pkcs11's
-  `tpm2_ptool` import).
-- **Selection:** an explicit `provider` wins; an unknown name is exit 17. Otherwise the first
-  registered provider that matches, else `generic` — `provider_is_detected_or_named`, registry unit
-  test.
+  `tpm2_ptool` import), `bound_keys` (keys bound to one purpose at creation: kmsp11).
+- **Data providers:** a module with none of these needs no code. The family of the module
+  profile whose `[match] manufacturer` it reports is its provider (`provider::Data`). softhsm,
+  kryoptic and aws-cloudhsm are data providers, and keys.toml's `profileDirs` can add more
+  without a rebuild (CAPROBE.md).
+- **Selection:** an explicit `provider` wins, either a code provider or a profile family; an
+  unknown name is exit 17. Otherwise the first registered code provider that matches, then the
+  profile family claiming the module's manufacturer, else `generic`. Two families claiming one
+  manufacturer are refused (17) until `provider` names one. Registry unit tests:
+  `selection_explicit_then_detected_then_generic`, `profiles_name_the_modules_code_does_not_claim`.
 - **The fix-up rule:** a hook must return exactly what a spec-compliant module would, so
   identities are portable. That is also why the provider never takes part in an identity: the
   lock records it only as an observation (`observations.<key>.provider`, DESIGN §4.2), where a change warns.
 
 | Provider | Quirks handled or recorded |
 |---|---|
-| softhsm | none (reference); attests nothing |
-| kryoptic | none to fix (PKCS#11 3.2 reference): Edwards `CKA_EC_POINT` raw (DER with `KRYOPTIC_EC_POINT_ENCODING=DER`; same identity); private keys carry their own `CKA_PUBLIC_KEY_INFO`, so a swapped key is refused (13) by the cross-check before the proof of possession; library version 0.0 in `C_GetInfo`; no secp256k1 or brainpool generation (15); attests nothing |
+| softhsm (data) | none (reference); attests nothing |
+| aws-cloudhsm (data) | none to fix: its profiles record the rest. A public key with `CKA_PRIVATE = false` is refused, so `generate` drops that default when it is refused (CAPROBE.md) |
+| kmsp11 | keys bound to one Cloud KMS algorithm (`bound_keys`): the probe generates one per algorithm; `cakeys` generation there is not built yet (OPEN.md) |
+| kryoptic (data) | none to fix (PKCS#11 3.2 reference): Edwards `CKA_EC_POINT` raw (DER with `KRYOPTIC_EC_POINT_ENCODING=DER`; same identity); private keys carry their own `CKA_PUBLIC_KEY_INFO`, so a swapped key is refused (13) by the cross-check before the proof of possession; library version 0.0 in `C_GetInfo`; no secp256k1 or brainpool generation (15); attests nothing |
 | ykcs11 | `CKA_PUBLIC_KEY_INFO` length 0 then `CKR_ARGUMENTS_BAD` (tolerated generically); fixed PIV slot IDs and labels: `autoCreate` needs a locator of `CKA_ID` alone naming a key slot (`01`–`04`: 9a/9c/9d/9e, `05`–`18`: 82–95; 17 otherwise) and `mgmKeyFile`/`mgmKeyEnv` (the management key in hex, or the PIN on a PIN-protected-management-key device), since ykcs11 generates only as SO; **keys cannot be deleted** — `C_DestroyObject` clears only the slot's certificate and the key stays, so `delete` (and the cleanup after a failed `realise`) refuses (15), naming `ykman piv keys delete <slot>`; the `piv-attestation` commitment: per-slot attestation certificates found by their label/`CKA_ID`, chain-verified to the embedded Yubico roots (`roots/`, DESIGN §3.7) |
 | tpm2-pkcs11 | drops `AES_KEY_GEN`/`GENERIC_SECRET_KEY_GEN` (`C_GenerateKey` unsupported); repairs the malformed P-521 `CKA_EC_POINT` (`04 85 …`; upstream draft in `upstream/tpm2-pkcs11/`) — `tpm2_*` tests; the `tpm-certify` commitment: a native `TPM2_Certify` through tss-esapi and the module's sqlite store (DESIGN §3.7) |
 | p11-kit | detects the proxy; the RPC drops AES key wrap and EdDSA/Edwards mechanisms; the module behind it is hidden (set `provider` explicitly) — `p11kit_*` tests; attests nothing itself (what the proxied module exposes decides, but the provider name does not reach it: opt in only against the real module) |

@@ -14,15 +14,40 @@ use std::process::ExitCode;
 
 /// The providers this build links, in detection order. Built through the same public API a
 /// third party uses; `tpm2` and `ykcs11` are cargo features (both on by default). kmsp11 links
-/// nothing native, so it is always in.
+/// nothing native, so it is always in. Modules with no code (softhsm, kryoptic, aws-cloudhsm)
+/// are named and detected by their profiles.
 #[must_use]
 pub fn default_registry() -> Registry {
-    let registry = Registry::new().with(providers::SoftHsm).with(providers::Kryoptic).with(cakeys_kmsp11::Kmsp11);
+    let registry = Registry::new().with(cakeys_kmsp11::Kmsp11);
     #[cfg(feature = "ykcs11")]
     let registry = registry.with(cakeys_ykcs11::Ykcs11);
     #[cfg(feature = "tpm2")]
     let registry = registry.with(cakeys_tpm2_pkcs11::Tpm2Pkcs11);
     registry.with(providers::P11Kit)
+}
+
+/// Load keys.toml's `profileDirs` into the profile set every token open resolves against
+/// (`cakeys_profile::Set::activate`), right after the config is read and before any token is
+/// opened, and say which profiles they added: a profile from outside the build is named as such.
+///
+/// # Errors
+///
+/// `Validation` (17) for a directory that cannot be read or a file it may not add.
+pub fn activate_profiles(cfg: &Config, notes: &mut Notes) -> Result<(), KmError> {
+    if cfg.profile_dirs.is_empty() {
+        return Ok(());
+    }
+    let built: Vec<String> =
+        cakeys_profile::Set::embedded().map_err(KmError::Validation)?.all().iter().map(|p| p.profile.clone()).collect();
+    let set = cakeys_profile::Set::activate(&cfg.profile_dirs).map_err(KmError::Validation)?;
+    let added: Vec<&str> =
+        set.all().iter().map(|p| p.profile.as_str()).filter(|p| !built.iter().any(|b| b == p)).collect();
+    notes.say(format!(
+        "profiles added from profileDirs ({}): {}",
+        cfg.profile_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", "),
+        if added.is_empty() { "none".to_owned() } else { added.join(", ") }
+    ));
+    Ok(())
 }
 
 /// Run a command line's `dispatch`, print what the run noticed (before the error line, if any:

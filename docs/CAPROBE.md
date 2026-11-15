@@ -41,8 +41,12 @@ ykcs11/2.7. Only the Nix-built binary carries the patched cryptoki the probe nee
 | Behaviour outside PKCS#11, or that must be rewritten | tpm2's P-521 point repair; PIV attestation and its pinned roots; `TPM2_Certify`; `tpm2_ptool` | provider code |
 
 The `Provider` hooks that rewrite behaviour or reach outside the module (`ec_point`, `attest`,
-`check_create`, `check_options`, `policy_flag`, `import_plaintext`) stay code. A vendor whose
-module needs no fix-ups needs no Rust: `provider = "<profile>"`.
+`check_create`, `check_options`, `policy_flag`, `import_plaintext`, `bound_keys`) stay code. A
+vendor whose module needs no fix-ups needs no Rust. When no code provider claims a module, the
+module profile whose `[match] manufacturer` it reports names its provider by family
+(`provider::Data`). `softhsm`, `kryoptic` and `aws-cloudhsm` are such data providers, and
+`provider = "<family>"` selects one by name. Two families claiming one manufacturer are refused
+(17) until `provider` names one.
 
 ## The format: deltas over a spec baseline
 
@@ -99,8 +103,13 @@ what they subtract:
   factorings of an observed module-on-hardware pair, never probe output.
 
 `supports(x)` is the intersection over the stack: any layer's subtraction kills it; otherwise the
-module profile decides. The binary embeds the profiles this repo ships; `--profiles <dir>` adds
-or replaces entries, so vendors and users can keep their own.
+module profile decides. The binary embeds the profiles this repo ships.
+
+- **`caprobe --profiles <dir>`** adds or replaces entries; regeneration needs to replace.
+- **keys.toml's `profileDirs`** add module profiles at run time for all three tools: a new
+  vendor, and its provider, without a rebuild. They only add, and may not replace an embedded
+  profile, a layer or the baseline: those are re-probed on every build. The run says which
+  profiles came from there.
 
 ## Decisions
 

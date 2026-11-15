@@ -151,7 +151,6 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   `cargo-nextest` with a token set per test (DEVELOPMENT.md), as the coverage report does; the
   regular build and the mutation report run on one thread against shared tokens. One session per module in
   `tests/common` would fix the plain run.
-- **Profiles are parsed on every token open**: parse once per process (`OnceLock`).
 - **Closing what the reports show** (`packages.coverage`, `packages.mutants`, DEVELOPMENT.md):
   no unit test in `core` pins the lock's load-time invariants or the transport-key rules (the
   token suites reach them, a plain `cargo test` does not); the sealed path with OAEP SHA-256

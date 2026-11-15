@@ -7,6 +7,7 @@ use cakeys_core::id::Scheme;
 use cakeys_core::migrate::Side;
 use cakeys_core::types::ObjectClass;
 use cakeys_core::{KmError, Result};
+use cakeys_profile::Set;
 use cryptoki::mechanism::MechanismType;
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectHandle};
 use cryptoki::session::Session;
@@ -255,8 +256,26 @@ impl Provider for Generic {
     }
 }
 
+/// A module that needs no code of its own (docs/CAPROBE.md: no Rust for a module without
+/// fix-ups): recognised by the `[match] manufacturer` of its module profiles, named by their
+/// family, every hook the default. `softhsm`, `kryoptic` and `aws-cloudhsm` are these.
+pub struct Data(&'static str);
+
+impl Provider for Data {
+    fn name(&self) -> &'static str {
+        self.0
+    }
+
+    /// Never asked: the registry detects data providers from the profiles, not one by one.
+    fn matches(&self, _: &ModuleInfo) -> bool {
+        false
+    }
+}
+
 /// Registered providers. The CLI builds one from the provider crates it links; a downstream
-/// binary adds its own with [`Registry::with`] (see the `custom-provider` example).
+/// binary adds its own with [`Registry::with`] (see the `custom-provider` example). A module
+/// profile's family is a provider too ([`Data`]), with no code: the registry falls back to the
+/// profiles when no code provider is named or claims a module.
 #[derive(Clone, Default)]
 pub struct Registry {
     providers: Vec<Arc<dyn Provider>>,
@@ -287,34 +306,59 @@ impl Registry {
         self.named(name).is_some()
     }
 
-    /// The provider registered as `name` (or [`Generic`]), without loading any module.
+    /// The provider registered as `name` (or [`Generic`]), else the module profile family of
+    /// that name ([`Data`]), without loading any module.
     #[must_use]
     pub fn named(&self, name: &str) -> Option<Arc<dyn Provider>> {
+        Set::active().ok().and_then(|set| self.named_in(set, name))
+    }
+
+    fn named_in(&self, set: &'static Set, name: &str) -> Option<Arc<dyn Provider>> {
         if name == Generic.name() {
             return Some(Arc::new(Generic));
         }
-        self.providers.iter().find(|p| p.name() == name).cloned()
+        if let Some(p) = self.providers.iter().find(|p| p.name() == name) {
+            return Some(Arc::clone(p));
+        }
+        let family = set.module_family_names().into_iter().find(|f| *f == name)?;
+        Some(Arc::new(Data(family)))
     }
 
-    /// The explicitly configured provider, else the first registered one that recognises the
-    /// module, else [`Generic`].
+    /// The explicitly configured provider; else the first registered one that recognises the
+    /// module; else the module profile family whose `[match] manufacturer` it reports
+    /// ([`Data`]); else [`Generic`].
     ///
     /// # Errors
     ///
-    /// `Validation` when `explicit` names a provider this registry does not have.
+    /// `Validation` when `explicit` names neither a provider nor a profile family, or when the
+    /// module's manufacturer is claimed by the profiles of several families and none is named.
     pub fn select(&self, explicit: Option<&str>, module: &ModuleInfo) -> Result<Arc<dyn Provider>> {
+        self.select_in(Set::active().map_err(KmError::Validation)?, explicit, module)
+    }
+
+    fn select_in(&self, set: &'static Set, explicit: Option<&str>, module: &ModuleInfo) -> Result<Arc<dyn Provider>> {
         if let Some(name) = explicit {
-            if name == Generic.name() {
-                return Ok(Arc::new(Generic));
-            }
-            return self.providers.iter().find(|p| p.name() == name).cloned().ok_or_else(|| {
+            return self.named_in(set, name).ok_or_else(|| {
                 KmError::Validation(format!(
-                    "unknown provider '{name}' (registered: generic, {})",
-                    self.names().join(", ")
+                    "unknown provider '{name}' (registered: generic, {}; profile families: {})",
+                    self.names().join(", "),
+                    set.module_family_names().join(", ")
                 ))
             });
         }
-        Ok(self.providers.iter().find(|p| p.matches(module)).cloned().unwrap_or_else(|| Arc::new(Generic)))
+        if let Some(p) = self.providers.iter().find(|p| p.matches(module)) {
+            return Ok(Arc::clone(p));
+        }
+        let manufacturer = module.manufacturer.trim_end_matches([' ', '\0']);
+        match set.module_families(manufacturer)[..] {
+            [] => Ok(Arc::new(Generic)),
+            [family] => Ok(Arc::new(Data(family))),
+            ref families => Err(KmError::Validation(format!(
+                "the module's manufacturer '{manufacturer}' is claimed by the profiles of several families \
+                 ({}): name one in `provider`",
+                families.join(", ")
+            ))),
+        }
     }
 }
 
@@ -329,6 +373,17 @@ mod tests {
         }
         fn matches(&self, m: &ModuleInfo) -> bool {
             m.manufacturer == "Acme"
+        }
+    }
+
+    /// A code provider for a manufacturer the profiles also name (`SoftHSM`'s).
+    struct Mine;
+    impl Provider for Mine {
+        fn name(&self) -> &'static str {
+            "mine"
+        }
+        fn matches(&self, m: &ModuleInfo) -> bool {
+            m.manufacturer == "SoftHSM"
         }
     }
 
@@ -352,5 +407,36 @@ mod tests {
         assert_eq!(r.select(Some("acme"), &module("Other")).unwrap().name(), "acme");
         assert!(matches!(r.select(Some("nope"), &module("Acme")), Err(KmError::Validation(_))));
         assert!(r.knows("acme") && r.knows("generic") && !r.knows("nope"));
+    }
+
+    /// A module no code claims is named by its profiles' family; code providers come first, a
+    /// family is selectable by name, and two families claiming one manufacturer are refused.
+    #[test]
+    fn profiles_name_the_modules_code_does_not_claim() {
+        let set: &'static Set = Box::leak(Box::new(Set::embedded().unwrap()));
+        let r = Registry::new().with(Acme);
+        assert_eq!(r.select_in(set, None, &module("SoftHSM")).unwrap().name(), "softhsm");
+        assert_eq!(r.select_in(set, None, &module("Kryoptic")).unwrap().name(), "kryoptic");
+        assert_eq!(r.select_in(set, None, &module("CloudHSM")).unwrap().name(), "aws-cloudhsm");
+        // A layer's manufacturer (p11-kit's) names no module.
+        assert_eq!(r.select_in(set, None, &module("PKCS#11 Kit")).unwrap().name(), "generic");
+        assert_eq!(r.select_in(set, Some("softhsm"), &module("PKCS#11 Kit")).unwrap().name(), "softhsm");
+        assert_eq!(r.select_in(set, Some("aws-cloudhsm"), &module("Other")).unwrap().name(), "aws-cloudhsm");
+        let e = r.select_in(set, Some("nope"), &module("x")).err().unwrap();
+        assert!(e.to_string().contains("profile families: aws-cloudhsm"), "{e}");
+        // Code before data: a provider claiming SoftHSM's manufacturer wins.
+        assert_eq!(Registry::new().with(Mine).select_in(set, None, &module("SoftHSM")).unwrap().name(), "mine");
+        let dir = std::env::temp_dir().join(format!("cakeys-provider-twins-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("t.toml"),
+            "profile = \"twin/1\"\nmode = \"observed\"\n[match]\nmanufacturer = \"SoftHSM\"\n",
+        )
+        .unwrap();
+        let twins: &'static Set = Box::leak(Box::new(Set::embedded().unwrap().adding_dir(&dir).unwrap()));
+        std::fs::remove_dir_all(&dir).unwrap();
+        let e = r.select_in(twins, None, &module("SoftHSM")).err().unwrap();
+        assert!(e.to_string().contains("several families (softhsm, twin)"), "{e}");
+        assert_eq!(r.select_in(twins, Some("twin"), &module("SoftHSM")).unwrap().name(), "twin");
     }
 }

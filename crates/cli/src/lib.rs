@@ -143,6 +143,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     let config = &cli.config;
     let modules = module_overrides(&cli.modules)?;
     let cfg = load_config(config)?;
+    cakeys_cli_common::activate_profiles(&cfg, notes)?;
     let lock_path = cli.lock.clone().unwrap_or_else(|| config.with_extension("lock"));
     // A run that may write the lock holds its advisory sidecar lock across load and save (M3),
     // so concurrent updaters queue instead of losing each other's writes. Held to the end of run.

@@ -24,6 +24,10 @@ pub use effective::{Effective, Verdict};
 pub use profile::{AcceptRow, GenerateRow, Manual, MatchInfo, Migration, Mode, PlaintextKind, Profile};
 
 use std::path::Path;
+use std::sync::OnceLock;
+
+/// The process's profile set ([`Set::active`]).
+static ACTIVE: OnceLock<Set> = OnceLock::new();
 
 /// The loaded profiles: the embedded set, plus any a caller added. Profiles replace by name
 /// (an added "softhsm/2.7" replaces the embedded one), and [`Set::find`] selects by exact name
@@ -60,24 +64,82 @@ impl Set {
     /// # Errors
     ///
     /// The IO error reading the directory, or each file's parse error prefixed with its path.
-    pub fn with_dir(mut self, dir: &Path) -> Result<Set, String> {
+    pub fn with_dir(self, dir: &Path) -> Result<Set, String> {
+        self.load_dir(dir, true)
+    }
+
+    /// Load every module profile under `dir` (recursively) as [`Set::with_dir`] does, but only
+    /// to add: what keys.toml's `profileDirs` name at run time. A file there may bring a new
+    /// module profile, and with it a new family, never a baseline, a layer or hardware profile,
+    /// or a name already loaded: the embedded profiles are re-probed on every build, and a
+    /// file outside the build must not silently stand in for one.
+    ///
+    /// # Errors
+    ///
+    /// As [`Set::with_dir`], and for each file that would replace or is not a module profile.
+    pub fn adding_dir(self, dir: &Path) -> Result<Set, String> {
+        self.load_dir(dir, false)
+    }
+
+    fn load_dir(mut self, dir: &Path, replace: bool) -> Result<Set, String> {
         let mut paths = Vec::new();
         collect(dir, &mut paths).map_err(|e| format!("{}: {e}", dir.display()))?;
         paths.sort();
         for path in paths {
-            let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let value: toml::Value = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+            let at = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+            let text = std::fs::read_to_string(&path).map_err(|e| at(&e))?;
+            let value: toml::Value = toml::from_str(&text).map_err(|e| at(&e))?;
             if value.get("baseline").is_some() {
-                let b = Baseline::from_toml(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+                if !replace {
+                    return Err(at(&"a baseline: only the build's own may be loaded"));
+                }
+                let b = Baseline::from_toml(&text).map_err(|e| at(&e))?;
                 self.baselines.push((path.display().to_string(), b));
             } else if value.get("profile").is_some() {
-                let p = Profile::from_toml(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+                let p = Profile::from_toml(&text).map_err(|e| at(&e))?;
+                if !replace {
+                    if p.mode != Mode::Observed {
+                        return Err(at(&format!("'{}' is not a module profile (mode = \"observed\")", p.profile)));
+                    }
+                    if self.profiles.iter().any(|q| q.profile == p.profile) {
+                        return Err(at(&format!("'{}' is already loaded: a profile directory only adds", p.profile)));
+                    }
+                }
                 self.add(p);
             } else {
-                return Err(format!("{}: neither a baseline nor a profile", path.display()));
+                return Err(at(&"neither a baseline nor a profile"));
             }
         }
         Ok(self)
+    }
+
+    /// The set every token open resolves against, built once per process: the embedded profiles
+    /// plus what [`Set::activate`] added. Without an activation, the embedded set.
+    ///
+    /// # Errors
+    ///
+    /// [`Set::embedded`]'s parse error.
+    pub fn active() -> Result<&'static Set, String> {
+        if let Some(set) = ACTIVE.get() {
+            return Ok(set);
+        }
+        let set = Set::embedded()?;
+        Ok(ACTIVE.get_or_init(|| set))
+    }
+
+    /// Build the active set: the embedded profiles plus every module profile under `dirs`
+    /// ([`Set::adding_dir`]). Once per process, before the first token is opened.
+    ///
+    /// # Errors
+    ///
+    /// What loading refuses, or the set already being in use.
+    pub fn activate(dirs: &[std::path::PathBuf]) -> Result<&'static Set, String> {
+        let mut set = Set::embedded()?;
+        for dir in dirs {
+            set = set.adding_dir(dir)?;
+        }
+        ACTIVE.set(set).map_err(|_| "the profile set is already in use: activate it once, first".to_owned())?;
+        Set::active()
     }
 
     fn add(&mut self, p: Profile) {
@@ -102,6 +164,33 @@ impl Set {
     #[must_use]
     pub fn all(&self) -> &[Profile] {
         &self.profiles
+    }
+
+    /// The families of the module profiles (`mode = "observed"`) whose `[match] manufacturer` is
+    /// `manufacturer`: how a module that no provider code claims is recognised, and named, from
+    /// data alone (docs/CAPROBE.md: a module with no fix-ups needs no Rust). Layers never count.
+    #[must_use]
+    pub fn module_families(&self, manufacturer: &str) -> Vec<&str> {
+        let mut out: Vec<&str> = self
+            .profiles
+            .iter()
+            .filter(|p| p.mode == Mode::Observed && p.r#match.manufacturer.as_deref() == Some(manufacturer))
+            .map(Profile::family)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Every module profile family loaded, sorted: what a keys.toml `provider` may name besides
+    /// the providers with code.
+    #[must_use]
+    pub fn module_family_names(&self) -> Vec<&str> {
+        let mut out: Vec<&str> =
+            self.profiles.iter().filter(|p| p.mode == Mode::Observed).map(Profile::family).collect();
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// The profile named `name`, by its exact name ("softhsm/2.7") or, when only one version of
@@ -260,5 +349,42 @@ mod tests {
         let e = Set::embedded().unwrap().with_dir(&dir).err().unwrap();
         assert!(e.contains("odd.toml: neither a baseline nor a profile"), "{e}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// keys.toml's `profileDirs` only add module profiles: a new family loads, and replacing an
+    /// embedded profile, a layer or a baseline is refused.
+    #[test]
+    fn a_runtime_directory_only_adds_module_profiles() {
+        let dir = std::env::temp_dir().join(format!("cakeys-profile-add-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let try_with = |name: &str, text: &str| {
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(name), text).unwrap();
+            Set::embedded().unwrap().adding_dir(&dir)
+        };
+        let set =
+            try_with("acme.toml", "profile = \"acme/1\"\nmode = \"observed\"\n[match]\nmanufacturer = \"Acme HSM\"\n")
+                .unwrap();
+        assert_eq!(set.module_families("Acme HSM"), ["acme"]);
+        assert!(set.module_family_names().contains(&"acme"));
+        let e = try_with("s.toml", "profile = \"softhsm/2.7\"\nmode = \"observed\"\n").err().unwrap();
+        assert!(e.contains("already loaded"), "{e}");
+        let e = try_with("l.toml", "profile = \"proxy/1\"\nmode = \"delta\"\n").err().unwrap();
+        assert!(e.contains("not a module profile"), "{e}");
+        let e = try_with("b.toml", embedded::BASELINE_FILES[0].1).err().unwrap();
+        assert!(e.contains("a baseline"), "{e}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Data detection: the families whose module profiles name a manufacturer; layers (p11-kit)
+    /// never count.
+    #[test]
+    fn module_families_come_from_observed_profiles() {
+        let set = Set::embedded().unwrap();
+        assert_eq!(set.module_families("SoftHSM"), ["softhsm"]);
+        assert_eq!(set.module_families("CloudHSM"), ["aws-cloudhsm"]);
+        assert_eq!(set.module_families("PKCS#11 Kit"), Vec::<&str>::new());
+        assert_eq!(set.module_families("Nobody"), Vec::<&str>::new());
     }
 }

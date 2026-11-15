@@ -145,6 +145,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
                 .exit()
         }
     };
+    cakeys_cli_common::activate_profiles(&cfg, notes)?;
     let modules = module_overrides(&cli.modules)?;
     match &cli.cmd {
         Cmd::Caps { token } => {

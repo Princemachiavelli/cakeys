@@ -238,6 +238,7 @@ dependencies = [
  "cakeys-core",
  "cakeys-kmsp11",
  "cakeys-pkcs11",
+ "cakeys-profile",
  "cakeys-tpm2-pkcs11",
  "cakeys-ykcs11",
  "serde",

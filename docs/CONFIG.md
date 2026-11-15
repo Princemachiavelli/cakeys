@@ -35,6 +35,12 @@ the line below it or to its left. Not every key is shown for every table, only o
 plus the less obvious ones.
 
 ```toml
+# Optional, top level: directories of module profiles (docs/CAPROBE.md) to load beside the
+# ones cakeys embeds, so a new vendor needs a profile file, not a rebuild. They only add; one
+# that would replace an embedded profile, a layer or the baseline is refused (17). `$NAME` as for
+# pinFile. Empty here: the embedded profiles cover every token below.
+profileDirs = []
+
 # ── Tokens ──────────────────────────────────────────────────────────────────────────────
 
 [tokens.softhsm]
@@ -67,7 +73,9 @@ tokenLabel = "host"
 # with different paths. An unset variable is refused when the file loads (17), not at login.
 pinFile = "$TPM_PIN_FILE"
 # Optional: the provider (the module's quirks profile, ARCHITECTURE.md "Providers") is normally detected from
-# C_GetInfo; naming it is needed behind p11-kit, which hides the module behind it.
+# C_GetInfo; naming it is needed behind p11-kit, which hides the module behind it. A provider with
+# code (ykcs11, tpm2-pkcs11, kmsp11) or a module profile family (softhsm, kryoptic, aws-cloudhsm,
+# or one a profileDirs entry brings): docs/CAPROBE.md.
 provider = "tpm2-pkcs11"
 # Delta capability layers between cakeys and the token (docs/CAPROBE.md), by name or family:
 # hand-maintained facts factored out of an observed profile (swtpm's RSA cap), or anything else
