@@ -9,10 +9,11 @@ macro_rules! pkcs11_names {
         $(#[$doc])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
         pub enum $ty {
-            $(#[serde(rename = $name)] $variant,)*
+            $(#[doc = concat!("`", $name, "`.")] #[serde(rename = $name)] $variant,)*
         }
 
         impl $ty {
+            /// Every value, in declaration order.
             pub const ALL: &[$ty] = &[$($ty::$variant),*];
 
             /// The PKCS#11 name, as keys.toml and the lock write it.

@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 /// A passphrase-protected file format for targets cakeys cannot reach (`file` exposure).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileFormat {
+pub(crate) enum FileFormat {
     /// PKCS#8 `EncryptedPrivateKeyInfo` (PBES2).
     Pkcs8,
     /// PKCS#12, the key with its certificate.
@@ -23,7 +23,7 @@ pub enum FileFormat {
 
 /// Where the material goes.
 #[derive(Debug, Clone)]
-pub enum To<'a> {
+pub(crate) enum To<'a> {
     Token(&'a Side),
     File(FileFormat),
 }
@@ -31,7 +31,7 @@ pub enum To<'a> {
 /// What the planner knows about the object: its type (from the lock) and the source
 /// realisation's recorded policy and immutables.
 #[derive(Debug, Clone, Copy)]
-pub struct Material<'a> {
+pub(crate) struct Material<'a> {
     pub object: &'a str,
     pub ty: &'a ObjectCfg,
     pub policy: &'a BTreeMap<String, AttrValue>,
@@ -49,7 +49,7 @@ impl Material<'_> {
 
 /// What the caller allows.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct Allow {
+pub(crate) struct Allow {
     /// `--allow-host-plaintext`: the `host` and `file` paths.
     pub host_plaintext: bool,
     /// The transport key is marked `CKA_TRUSTED` on the source (phase 3b).
@@ -58,7 +58,7 @@ pub struct Allow {
 
 /// The decision for one object.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Plan {
+pub(crate) struct Plan {
     pub object: String,
     /// The method that would be used, also when a flag is missing; `None` when nothing fits.
     #[serde(serialize_with = "method_name")]
@@ -101,7 +101,7 @@ impl Plan {
 /// declares a stronger level, then the built-ins. A method that needs a flag the caller did not
 /// give is still named, with `ready = false` and the flag in `reasons`.
 #[must_use]
-pub fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
+pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     let ty = m.ty;
     if is_public(ty) {
         return match to {

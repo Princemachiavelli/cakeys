@@ -26,7 +26,7 @@ use rsa::pkcs8::DecodePublicKey as _;
 use rsa::traits::PublicKeyParts as _;
 
 /// The transport key a source wraps to: its object, its locked identity, and its public key.
-pub struct TransportKey {
+pub(crate) struct TransportKey {
     pub object: String,
     pub rfc7093m4: String,
     /// The canonical SPKI DER.
@@ -34,7 +34,7 @@ pub struct TransportKey {
 }
 
 /// One key an export wraps: its source realisation, and the planned method and exposure.
-pub struct Item<'a> {
+pub(crate) struct Item<'a> {
     pub src: Target<'a>,
     pub method: Method,
     pub exposure: Exposure,
@@ -51,7 +51,7 @@ pub struct Item<'a> {
 /// Whatever `ops::verify` refuses; `NotFound` for a key not under its locator; `Unsupported`
 /// (15) for a method this build or the source cannot perform, or a `C_WrapKey` the source
 /// refuses; `PreconditionFailed` for a key to wrap and no transport key.
-pub fn export(
+pub(crate) fn export(
     items: &[Item],
     from: &Token,
     lock: &Lock,
@@ -363,7 +363,7 @@ fn rsa_aes_unwrap(
 /// after the import — material whose identity is not the locked one; `Conflict` (13) for an
 /// occupied locator or blobs that do not unwrap (tampered, or wrapped to another key);
 /// whatever `ops::realise_import` refuses.
-pub fn import(
+pub(crate) fn import(
     b: &Bundle,
     e: &Entry,
     dst: &Target,
@@ -401,7 +401,7 @@ pub fn import(
 /// # Errors
 ///
 /// As [`import`], for everything before the creation.
-pub fn preflight(
+pub(crate) fn preflight(
     b: &Bundle,
     e: &Entry,
     dst: &Target,
@@ -429,7 +429,7 @@ pub fn preflight(
 
 /// What [`preflight`] established: the transport key to unwrap with (none for a public object),
 /// and a public key object already holding the key's public key, reused rather than created.
-pub struct Preflight {
+pub(crate) struct Preflight {
     pub unwrapping: Option<ObjectHandle>,
     pub public_half: Option<ObjectHandle>,
 }
@@ -640,14 +640,14 @@ pub(crate) fn rfc5649(tok: &Token) -> Option<Mechanism<'static>> {
 
 /// The smallest RSA transport key, in bits: what it protects is no better guarded than it, and
 /// the planner's direct-OAEP limit (`plan::OAEP_DIRECT_MAX`) assumes at least this.
-pub const TRANSPORT_MIN_BITS: usize = 2048;
+pub(crate) const TRANSPORT_MIN_BITS: usize = 2048;
 
 /// Refuse a transport key smaller than [`TRANSPORT_MIN_BITS`].
 ///
 /// # Errors
 ///
 /// `Validation` for an SPKI that is no RSA key, or one too small.
-pub fn check_transport_size(spki: &[u8]) -> Result<()> {
+pub(crate) fn check_transport_size(spki: &[u8]) -> Result<()> {
     let bits = rsa_parts(spki)?.0.len() * 8;
     if bits < TRANSPORT_MIN_BITS {
         return Err(KmError::Validation(format!(
@@ -662,7 +662,7 @@ pub fn check_transport_size(spki: &[u8]) -> Result<()> {
 /// # Errors
 ///
 /// `Validation` for an SPKI that is no RSA key.
-pub fn rsa_parts(spki: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+pub(crate) fn rsa_parts(spki: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     let key = rsa::PublicKey::from_public_key_der(spki)
         .map_err(|e| KmError::Validation(format!("the transport key is no RSA public key: {e}")))?;
     Ok((key.n().to_be_bytes_trimmed_vartime().to_vec(), key.e().to_be_bytes_trimmed_vartime().to_vec()))

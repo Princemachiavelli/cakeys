@@ -17,6 +17,7 @@ use cakeys_profile::{Effective, Set, Verdict};
 
 /// A token's profile stack as known without opening it.
 pub struct Stack {
+    /// The module and token profiles the stack resolved to.
     pub resolved: Resolved,
     /// The provider: named in keys.toml, else recorded in the lock.
     pub provider: String,
@@ -78,7 +79,9 @@ pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Res
 /// What the gate found for one target: refusals (each a line) and notes.
 #[derive(Default)]
 pub struct Verdicts {
+    /// Why the target cannot be realised on this token, one line each (15).
     pub refusals: Vec<String>,
+    /// What the gate could not decide (a profile's *unknown*), one line each.
     pub notes: Vec<String>,
 }
 

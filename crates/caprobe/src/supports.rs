@@ -6,7 +6,7 @@ use cakeys_core::{KmError, Result};
 use cakeys_profile::{Effective, Profile, Set, Verdict};
 
 /// The question a [`Query`] asks.
-pub enum Ask<'a> {
+pub(crate) enum Ask<'a> {
     /// A mechanism (`CKM_*`), key type (`CKK_*`), parameter set (`CKP_*`) or curve.
     Name(&'a str),
     /// The members of a baseline class.
@@ -16,7 +16,7 @@ pub enum Ask<'a> {
 }
 
 /// What to ask the profiles.
-pub struct Query<'a> {
+pub(crate) struct Query<'a> {
     pub ask: Ask<'a>,
     /// The module profile, by name or family.
     pub profile: Option<&'a str>,
@@ -29,7 +29,7 @@ pub struct Query<'a> {
 }
 
 /// What a [`Query`] resolved and answered.
-pub struct Support {
+pub(crate) struct Support {
     /// The resolved module profile's name ("(none)" without one).
     pub module: String,
     /// The stack's layer names, the binding layer first.
@@ -45,7 +45,7 @@ impl Support {
     ///
     /// `Unsupported` (15) when any verdict is no; `Unavailable` (16) when the profiles do not
     /// decide one.
-    pub fn outcome(&self) -> Result<()> {
+    pub(crate) fn outcome(&self) -> Result<()> {
         let no: Vec<&str> =
             self.verdicts.iter().filter(|(_, v)| matches!(v, Verdict::No { .. })).map(|(n, _)| n.as_str()).collect();
         if !no.is_empty() {
@@ -67,7 +67,7 @@ impl Support {
 ///
 /// `Validation` (17) for an unknown profile, layer, class or token, or a token that names no
 /// provider.
-pub fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
+pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
     let find = |name: &str| set.find(name).map_err(KmError::Validation);
     // A family with pairs on several kinds of hardware (tpm2-pkcs11/1.10+swtpm, +amd-ftpm):
     // the hardware layer asked for names the pair, as in token resolution.

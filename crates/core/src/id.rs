@@ -61,21 +61,31 @@ pub const DEFAULT_COMMITMENT_LABEL: &str = "key-management/v1";
 /// is reported as unchecked) instead of failing the whole lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Scheme {
+    /// RFC 7093 §2 method 4: SHA-256 of the canonical `SubjectPublicKeyInfo`.
     Rfc7093m4,
+    /// SHA-256 of a certificate's DER.
     Certhash,
+    /// SHA-256 of a public data object's `CKA_VALUE`.
     Valuehash,
     /// HMAC over the commitment label (`Commit::Hmac`).
     Commitment,
+    /// AES-CMAC over the commitment label (`Commit::Cmac`).
     Cmac,
+    /// AES-ECB encryption of one block derived from the label: a key check value (`Commit::KcvEcb`).
     KcvEcb,
+    /// AES-ECB decryption of that block, for decrypt-only keys (`Commit::KcvEcbDecrypt`).
     KcvEcbDec,
+    /// RFC 3394 key wrap of a fixed key derived from the label (`Commit::Kw`).
     Kw,
+    /// A `YubiKey` PIV attestation, verified to the pinned Yubico root (per realisation).
     PivAttestation,
+    /// A native `TPM2_Certify`, verified against a provisioned Attestation Key (per realisation).
     TpmCertify,
 }
 
 impl Scheme {
-    pub const ALL: [Scheme; 10] = [
+    /// Every scheme, in declaration order.
+    pub(crate) const ALL: [Scheme; 10] = [
         Scheme::Rfc7093m4,
         Scheme::Certhash,
         Scheme::Valuehash,
@@ -162,8 +172,9 @@ impl Scheme {
         Scheme::ALL.into_iter().find(|s| s.attestation_kind() == Some(kind))
     }
 
+    /// Listed in [`Scheme::DEPRECATED`]: verifies with a warning, never newly recorded.
     #[must_use]
-    pub fn is_deprecated(self) -> bool {
+    pub(crate) fn is_deprecated(self) -> bool {
         Scheme::DEPRECATED.contains(&self)
     }
 }
@@ -225,10 +236,15 @@ pub fn tpm_certify_id(name: &[u8], qualified_name: &[u8]) -> String {
 /// that hash; generic secrets use SHA-256.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HmacHash {
+    /// SHA-1 (`CKK_SHA_1_HMAC`).
     Sha1,
+    /// SHA-224 (`CKK_SHA224_HMAC`).
     Sha224,
+    /// SHA-256: `CKK_SHA256_HMAC` and generic secrets.
     Sha256,
+    /// SHA-384 (`CKK_SHA384_HMAC`).
     Sha384,
+    /// SHA-512 (`CKK_SHA512_HMAC`).
     Sha512,
 }
 
@@ -268,6 +284,7 @@ pub enum Commit {
 }
 
 impl Commit {
+    /// The scheme this commitment's ID is recorded under.
     #[must_use]
     pub fn scheme(self) -> Scheme {
         match self {
@@ -307,13 +324,21 @@ impl Commit {
 /// Named curves for `CKK_EC` and `CKK_EC_EDWARDS`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Curve {
+    /// NIST P-256 (`secp256r1`).
     P256,
+    /// NIST P-384 (`secp384r1`).
     P384,
+    /// NIST P-521 (`secp521r1`).
     P521,
+    /// `secp256k1`.
     Secp256k1,
+    /// `brainpoolP256r1`.
     BrainpoolP256r1,
+    /// `brainpoolP384r1`.
     BrainpoolP384r1,
+    /// Ed25519 (`edwards25519`, `CKK_EC_EDWARDS`).
     Ed25519,
+    /// Ed448 (`edwards448`, `CKK_EC_EDWARDS`).
     Ed448,
 }
 
@@ -363,6 +388,7 @@ impl Curve {
         }
     }
 
+    /// An Edwards curve (`CKK_EC_EDWARDS`) rather than a Weierstrass one (`CKK_EC`).
     #[must_use]
     pub fn edwards(self) -> bool {
         matches!(self, Curve::Ed25519 | Curve::Ed448)

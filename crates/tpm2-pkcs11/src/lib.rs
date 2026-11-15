@@ -27,6 +27,7 @@ use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, ImportCtx, Pr
 use cakeys_pkcs11::token::ModuleInfo;
 use std::borrow::Cow;
 
+/// The tpm2-pkcs11 provider (see the crate's documentation).
 pub struct Tpm2Pkcs11;
 
 impl Provider for Tpm2Pkcs11 {

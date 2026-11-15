@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// and the target's provider and mechanisms for planning.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Transport {
+pub(crate) struct Transport {
     pub format: String,
     pub version: u32,
     pub token: String,
@@ -21,8 +21,8 @@ pub struct Transport {
     pub mechanisms: Vec<String>,
 }
 
-pub const TRANSPORT_FORMAT: &str = "cakeys-transport";
-pub const TRANSPORT_VERSION: u32 = 1;
+pub(crate) const TRANSPORT_FORMAT: &str = "cakeys-transport";
+pub(crate) const TRANSPORT_VERSION: u32 = 1;
 
 impl Transport {
     /// The transport file for `object`'s public key on `token`.
@@ -30,7 +30,13 @@ impl Transport {
     /// # Errors
     ///
     /// `Validation` when `spki` is not a public key cakeys can canonicalize.
-    pub fn new(token: &str, provider: &str, object: &str, spki: &[u8], mechanisms: &[String]) -> Result<Transport> {
+    pub(crate) fn new(
+        token: &str,
+        provider: &str,
+        object: &str,
+        spki: &[u8],
+        mechanisms: &[String],
+    ) -> Result<Transport> {
         use base64::Engine;
         let spki = cakeys_core::id::spki_canonical(spki)?;
         crate::sealed::check_transport_size(&spki)?;
@@ -53,7 +59,7 @@ impl Transport {
     ///
     /// `Validation` for another format or version, malformed base64, or an identity that is not
     /// the public key's.
-    pub fn parse(text: &str, path: &std::path::Path) -> Result<Transport> {
+    pub(crate) fn parse(text: &str, path: &std::path::Path) -> Result<Transport> {
         let t: Transport = toml::from_str(text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
         if t.format != TRANSPORT_FORMAT || t.version != TRANSPORT_VERSION {
             return Err(KmError::Validation(format!(
@@ -77,7 +83,7 @@ impl Transport {
     /// # Errors
     ///
     /// `Unavailable` when it does not serialize: never an empty file in its place.
-    pub fn to_toml(&self) -> Result<String> {
+    pub(crate) fn to_toml(&self) -> Result<String> {
         toml::to_string(self).map_err(|e| KmError::Unavailable(format!("serializing the transport file: {e}")))
     }
 
@@ -86,7 +92,7 @@ impl Transport {
     /// # Errors
     ///
     /// `Validation` for malformed base64 or a public key cakeys cannot canonicalize.
-    pub fn spki(&self) -> Result<Vec<u8>> {
+    pub(crate) fn spki(&self) -> Result<Vec<u8>> {
         use base64::Engine;
         let der = base64::engine::general_purpose::STANDARD
             .decode(&self.spki)
@@ -99,7 +105,7 @@ impl Transport {
     /// # Errors
     ///
     /// As [`Self::spki`].
-    pub fn key(&self) -> Result<crate::sealed::TransportKey> {
+    pub(crate) fn key(&self) -> Result<crate::sealed::TransportKey> {
         let spki = self.spki()?;
         crate::sealed::check_transport_size(&spki)?;
         Ok(crate::sealed::TransportKey { object: self.object.clone(), rfc7093m4: self.rfc7093m4.clone(), spki })

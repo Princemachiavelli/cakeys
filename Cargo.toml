@@ -91,6 +91,11 @@ tempfile = "3"
 # The one exemption is `#[expect]`ed and carries `// SAFETY:` comments: the loader lookup of the
 # module file the lock records (crates/pkcs11/src/token/mod.rs).
 unsafe_code = "deny"
+# Private is the default: an item is `pub` only when another crate uses it (a sibling, a crate's
+# tests/ or examples/, or a provider outside the workspace through crates/pkcs11/src/provider.rs),
+# and then it says what it is.
+missing_docs = "warn"
+unreachable_pub = "warn"
 
 [workspace.lints.clippy]
 # Pedantic in full: no blanket allows. Where a lint does not fit, the exemption is a per-site

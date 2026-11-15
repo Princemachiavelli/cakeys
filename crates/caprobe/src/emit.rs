@@ -163,7 +163,7 @@ fn filters_toml(p: &Profile, s: &mut String) {
 /// generate are preserved by it across regenerations: `[migration]`, this repo's claims
 /// (docs/CAMIGRATE.md evidence), and `[manual]`, what people found by hand.
 #[must_use]
-pub fn profile(p: &Profile) -> String {
+pub(crate) fn profile(p: &Profile) -> String {
     use std::fmt::Write as _;
     let mut s = String::new();
     let _ = writeln!(

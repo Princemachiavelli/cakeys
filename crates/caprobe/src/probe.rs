@@ -60,7 +60,7 @@ fn ckr(e: &CkError) -> String {
 }
 
 /// What a probe found: the generated profile, and what it could not decide.
-pub struct Probed {
+pub(crate) struct Probed {
     /// The observed capability profile of the module on this token's hardware, in the
     /// committed format. The probe measures the two together: telling the module's refusal from
     /// the hardware's is not observable through PKCS#11, so factoring one out is a hand step.
@@ -93,7 +93,7 @@ enum Target {
 /// its provider creates only as Security Officer and no `scratchId` (with an admin credential)
 /// names a slot holding nothing but the provider's own placeholder; the scratch guard is the
 /// one thing the probe refuses rather than records. `Unavailable` when an SO login fails.
-pub fn probe(tok: &Token, cfg: &TokenCfg, write: bool) -> Result<Probed> {
+pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: bool) -> Result<Probed> {
     let mut profile = Profile {
         profile: format!("{}/{}", tok.provider.name(), tok.module.version),
         mode: Mode::Observed,
@@ -1375,7 +1375,7 @@ fn rsa_aes_key_wrap<'a>(_: &'a PkcsOaepParams<'a>) -> Option<Mechanism<'a>> {
 }
 
 /// What the `probe` verb asks beyond the probing itself.
-pub struct Request<'a> {
+pub(crate) struct Request<'a> {
     /// Also run the write probes ([`probe`]).
     pub write: bool,
     /// Name the generated profile; default: `claimed`'s name, else `<provider>/<version>`.
@@ -1397,7 +1397,12 @@ pub struct Request<'a> {
 ///
 /// `Validation` (17) when the result would be kept but this build's cryptoki is unpatched;
 /// [`probe`]'s own refusals.
-pub fn generate(tok: &Token, cfg: &TokenCfg, req: &Request, notes: &mut cakeys_pkcs11::ops::Notes) -> Result<Profile> {
+pub(crate) fn generate(
+    tok: &Token,
+    cfg: &TokenCfg,
+    req: &Request,
+    notes: &mut cakeys_pkcs11::ops::Notes,
+) -> Result<Profile> {
     // cryptoki drops from C_GetMechanismList every mechanism it cannot name, so through
     // an unpatched binding the advertisement is short (kryoptic's CKM_AES_KEY_WRAP_KWP
     // [run]): such a build may print a probe, never write or judge a committed one.
@@ -1428,7 +1433,7 @@ pub fn generate(tok: &Token, cfg: &TokenCfg, req: &Request, notes: &mut cakeys_p
 /// conforms. A read-only probe observes only the match keys, the advertisement and the
 /// reported key sizes, so only those can conform or drift.
 #[must_use]
-pub fn drift(generated: &Profile, claimed: &Profile, write: bool) -> Vec<String> {
+pub(crate) fn drift(generated: &Profile, claimed: &Profile, write: bool) -> Vec<String> {
     if write { crate::diff::diff(generated, claimed) } else { crate::diff::read_only(generated, claimed) }
 }
 
@@ -1442,7 +1447,7 @@ pub fn drift(generated: &Profile, claimed: &Profile, write: bool) -> Vec<String>
 /// `Validation` (17) for a file that does not parse (regenerating it would silently drop
 /// those sections), and for any existing file from a read-only probe (it would drop every
 /// write-probe row).
-pub fn keep_claims(profile: &mut Profile, existing: &str, shown: &str, write: bool) -> Result<()> {
+pub(crate) fn keep_claims(profile: &mut Profile, existing: &str, shown: &str, write: bool) -> Result<()> {
     if !write {
         return Err(KmError::Validation(format!(
             "{shown}: a read-only probe would overwrite its generate, wrap and unwrap rows; pass --write"

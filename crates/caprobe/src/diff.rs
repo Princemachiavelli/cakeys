@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// migration rows and the layer subtractions (data until docs/CAMIGRATE.md phase 3
 /// exercises them).
 #[must_use]
-pub fn diff(generated: &Profile, claimed: &Profile) -> Vec<String> {
+pub(crate) fn diff(generated: &Profile, claimed: &Profile) -> Vec<String> {
     let mut out = read_only(generated, claimed);
     sets("subtract.mechanisms", &generated.subtract.mechanisms, &claimed.subtract.mechanisms, &mut out);
     sets("add", &generated.add, &claimed.add, &mut out);
@@ -70,7 +70,7 @@ fn rows<'a>(
 /// production token, SO-only hardware) can still conform. A `partial` claimed profile records
 /// no advertisement, so it is not compared.
 #[must_use]
-pub fn read_only(generated: &Profile, claimed: &Profile) -> Vec<String> {
+pub(crate) fn read_only(generated: &Profile, claimed: &Profile) -> Vec<String> {
     let mut out = Vec::new();
     let (g, c) = (&generated.r#match, &claimed.r#match);
     optional("match.manufacturer", g.manufacturer.as_ref(), c.manufacturer.as_ref(), &mut out);

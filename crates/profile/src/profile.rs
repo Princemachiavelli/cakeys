@@ -25,10 +25,14 @@ pub enum Mode {
 /// matching the most keys and flags anything short of all of them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct MatchInfo {
+    /// The module's manufacturer, as `C_GetInfo` reports it.
     pub manufacturer: Option<String>,
+    /// The module's version, as `C_GetInfo` expresses it (`module-version`).
     #[serde(rename = "module-version")]
     pub module_version: Option<String>,
+    /// The token's model, as `C_GetTokenInfo` reports it.
     pub model: Option<String>,
+    /// The token's firmware version, as `C_GetTokenInfo` reports it.
     pub firmware: Option<String>,
 }
 
@@ -36,8 +40,10 @@ pub struct MatchInfo {
 /// layer does not carry.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct Subtract {
+    /// Mechanisms, by `CKM_*` name.
     #[serde(default)]
     pub mechanisms: Vec<String>,
+    /// Key types, by `CKK_*` name (`key-types`).
     #[serde(default, rename = "key-types")]
     pub key_types: Vec<String>,
     /// One note for the whole subtraction (each entry may still get its own under `notes`).
@@ -50,6 +56,7 @@ pub struct Subtract {
 /// spec-compliant module is assumed; `[]`: probed, and no hash round-trips.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct Wrap {
+    /// The OAEP hashes that round-trip a wrap; `None`: never probed.
     #[serde(default)]
     pub oaep: Option<Vec<String>>,
 }
@@ -59,6 +66,7 @@ pub struct Wrap {
 /// to the key, which `pop-decrypt` needs. Absent: never probed; `[]`: probed, none decrypts.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct Decrypt {
+    /// The OAEP hashes that decrypt what the host encrypted; `None`: never probed.
     #[serde(default)]
     pub oaep: Option<Vec<String>>,
 }
@@ -73,10 +81,13 @@ pub struct Decrypt {
 /// probed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct Derive {
+    /// Whether it derives into a sealed secret (`sealed`).
     #[serde(default)]
     pub sealed: Option<bool>,
+    /// The `CKA_DERIVE` a base key reports although it derived (`key-attribute`).
     #[serde(default, rename = "key-attribute")]
     pub key_attribute: Option<bool>,
+    /// Whether it derives in a read-only session (`read-only`).
     #[serde(default, rename = "read-only")]
     pub read_only: Option<bool>,
 }
@@ -100,6 +111,7 @@ pub struct Manual {
 /// probed, and the module refuses none.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct Unwrap {
+    /// The attributes the module refuses in an unwrap template; `None`: never probed.
     #[serde(default)]
     pub refuse: Option<Vec<String>>,
 }
@@ -111,16 +123,22 @@ pub struct Unwrap {
 /// generated or saw refused. What none of them decides answers unknown (D5), never a guess.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct GenerateRow {
+    /// What it generates: curves, or parameter sets.
     #[serde(default)]
     pub can: Vec<String>,
+    /// What it does not generate, although it may list them.
     #[serde(default)]
     pub cannot: Vec<String>,
+    /// The smallest RSA modulus it reports, in bits (`min-bits`).
     #[serde(default, rename = "min-bits")]
     pub min_bits: Option<u32>,
+    /// The largest RSA modulus it reports, in bits (`max-bits`).
     #[serde(default, rename = "max-bits")]
     pub max_bits: Option<u32>,
+    /// RSA modulus sizes a probe generated (`can-bits`).
     #[serde(default, rename = "can-bits")]
     pub can_bits: Vec<u32>,
+    /// RSA modulus sizes a probe saw refused (`cannot-bits`).
     #[serde(default, rename = "cannot-bits")]
     pub cannot_bits: Vec<u32>,
     /// Curves in `can` that generate only when `CKA_EC_PARAMS` names them (PKCS#11 3.0's
@@ -135,12 +153,16 @@ pub struct GenerateRow {
 pub struct Restrict {
     /// What the restriction applies to; only "generate" exists today.
     pub operation: String,
+    /// The key type it restricts (`key-type`).
     #[serde(rename = "key-type")]
     pub key_type: String,
+    /// The smallest size allowed, in bits (`min-bits`).
     #[serde(default, rename = "min-bits")]
     pub min_bits: Option<u32>,
+    /// The largest size allowed, in bits (`max-bits`).
     #[serde(default, rename = "max-bits")]
     pub max_bits: Option<u32>,
+    /// Why, shown in verdicts.
     #[serde(default)]
     pub note: Option<String>,
 }
@@ -161,13 +183,18 @@ pub enum PlaintextKind {
 /// curves, or an inclusive RSA modulus range (empty: any).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct AcceptRow {
+    /// The object class, by `CKO_*` name.
     pub class: String,
+    /// The key types, by `CKK_*` name (`key-types`; empty: any).
     #[serde(default, rename = "key-types")]
     pub key_types: Vec<String>,
+    /// The curves, by name (empty: any).
     #[serde(default)]
     pub curves: Vec<String>,
+    /// The smallest RSA modulus, in bits (`min-bits`).
     #[serde(default, rename = "min-bits")]
     pub min_bits: Option<u32>,
+    /// The largest RSA modulus, in bits (`max-bits`).
     #[serde(default, rename = "max-bits")]
     pub max_bits: Option<u32>,
 }
@@ -215,6 +242,7 @@ pub struct Migration {
 pub struct Profile {
     /// The profile's name, "family/version" (e.g. "softhsm/2.7"): what `--profile` selects.
     pub profile: String,
+    /// A module's observed set, or a layer's subtraction.
     pub mode: Mode,
     /// The advertisement list has not been recorded yet (the probe, phase 3): mechanism
     /// membership questions answer unknown rather than guessing.
@@ -225,30 +253,37 @@ pub struct Profile {
     /// says what the passthrough does carry.
     #[serde(default, rename = "requires-provider")]
     pub requires_provider: bool,
+    /// How the profile is matched to a token (`[match]`).
     #[serde(default)]
     pub r#match: MatchInfo,
     /// What `C_GetMechanismList` returns; the drift baseline once the probe records it.
     #[serde(default)]
     pub advertise: Vec<String>,
+    /// What it subtracts (`[subtract]`).
     #[serde(default)]
     pub subtract: Subtract,
     /// Mechanisms usable although the module does not list them.
     #[serde(default)]
     pub add: Vec<String>,
+    /// The OAEP hashes it wraps with (`[wrap]`).
     #[serde(default)]
     pub wrap: Wrap,
     /// What the module generates, per key type.
     #[serde(default)]
     pub generate: BTreeMap<String, GenerateRow>,
+    /// The attributes it refuses in an unwrap template (`[unwrap]`).
     #[serde(default)]
     pub unwrap: Unwrap,
+    /// The OAEP hashes its private keys decrypt with (`[decrypt]`).
     #[serde(default)]
     pub decrypt: Decrypt,
+    /// How it derives with ECDH (`[derive]`).
     #[serde(default)]
     pub derive: Derive,
     /// How the module moves keys (docs/CAMIGRATE.md), when it deviates from a spec-compliant module.
     #[serde(default)]
     pub migration: Option<Migration>,
+    /// A layer's numeric restrictions (`[[restrict]]`).
     #[serde(default)]
     pub restrict: Vec<Restrict>,
     /// Freeform evidence, keyed by the name each note explains (shown in verdicts).

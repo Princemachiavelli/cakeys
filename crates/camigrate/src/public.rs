@@ -19,7 +19,7 @@ use rsa::traits::PublicKeyParts as _;
 use x509_cert::der::{Decode as _, Encode as _};
 
 /// What moving one object did.
-pub enum Moved {
+pub(crate) enum Moved {
     /// Created on the target and recorded with its `origin`.
     Imported,
     /// The target already holds it, recorded and verified: a re-run moves nothing.
@@ -32,7 +32,7 @@ pub enum Moved {
 /// # Errors
 ///
 /// As [`material`] and [`create`].
-pub fn import(
+pub(crate) fn import(
     src: &Target,
     from: &Token,
     dst: &Target,
@@ -55,7 +55,7 @@ pub fn import(
 ///
 /// Whatever `ops::verify` refuses; `NotFound`/`Ambiguous` for the locator; `Conflict` for a
 /// certificate whose value is no X.509 certificate.
-pub fn material(src: &Target, from: &Token, lock: &Lock, notes: &mut Notes) -> Result<Vec<u8>> {
+pub(crate) fn material(src: &Target, from: &Token, lock: &Lock, notes: &mut Notes) -> Result<Vec<u8>> {
     ops::verify(src, from, lock, notes)?;
     let h = one(from, src)?;
     match src.object.class {
@@ -83,7 +83,14 @@ pub fn material(src: &Target, from: &Token, lock: &Lock, notes: &mut Notes) -> R
 /// when the target refuses `C_CreateObject`; and, after the creation, whatever
 /// `ops::realise_import` refuses — a hash mismatch (10) included — with what was created removed
 /// again.
-pub fn create(dst: &Target, to: &Token, bytes: &[u8], from: &str, lock: &mut Lock, notes: &mut Notes) -> Result<Moved> {
+pub(crate) fn create(
+    dst: &Target,
+    to: &Token,
+    bytes: &[u8],
+    from: &str,
+    lock: &mut Lock,
+    notes: &mut Notes,
+) -> Result<Moved> {
     if already_there(dst, to, lock, notes)? {
         return Ok(Moved::AlreadyThere);
     }
@@ -140,7 +147,7 @@ pub(crate) fn roll_back(dst: &Target, to: &Token, made: &[ObjectHandle], err: Km
 /// # Errors
 ///
 /// `Conflict` (13) for an object of its class there.
-pub fn preflight(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Option<ObjectHandle>> {
+pub(crate) fn preflight(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Option<ObjectHandle>> {
     let spki = (dst.object.class == Class::PublicKey).then_some(bytes);
     let occupied = to.occupied(dst.object, &dst.on_token.locator, spki)?;
     if occupied.colliding > 0 {

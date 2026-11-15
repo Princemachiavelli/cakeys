@@ -16,12 +16,17 @@ pub type Verdict = Option<Result<(), String>>;
 /// Hash for ECDSA on each Weierstrass curve: the one matching its strength (FIPS 186-5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EcdsaHash {
+    /// SHA-256: P-256, secp256k1, brainpoolP256r1.
     Sha256,
+    /// SHA-384: P-384, brainpoolP384r1.
     Sha384,
+    /// SHA-512: P-521.
     Sha512,
 }
 
 impl EcdsaHash {
+    /// The hash for ECDSA on `curve`; `None` for an Edwards curve, which hashes inside the
+    /// signature.
     #[must_use]
     pub fn for_curve(curve: Curve) -> Option<EcdsaHash> {
         match curve {
@@ -32,6 +37,7 @@ impl EcdsaHash {
         }
     }
 
+    /// `msg` hashed with this hash.
     #[must_use]
     pub fn digest(self, msg: &[u8]) -> Vec<u8> {
         match self {
@@ -45,7 +51,9 @@ impl EcdsaHash {
 /// How an ECDSA signature is encoded: raw `r ‖ s` (PKCS#11, TPM) or DER (X.509).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Encoding {
+    /// `r ‖ s`, each the curve's length: PKCS#11, TPM.
     Raw,
+    /// An ASN.1 `Ecdsa-Sig-Value`: X.509.
     Der,
 }
 

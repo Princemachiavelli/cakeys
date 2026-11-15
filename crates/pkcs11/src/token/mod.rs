@@ -41,7 +41,9 @@ use uri::pct_all;
 /// ones — read-write only to create or destroy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
+    /// A read-only session: the verbs that only read.
     Read,
+    /// A read-write session, to create or destroy objects.
     Write,
     /// Reads, and makes session objects (a key-wrap copy, a KEK): read-write where the token
     /// allows it, since AWS `CloudHSM` refuses even a session object in a read-only session
@@ -89,10 +91,16 @@ impl Pin {
     }
 }
 
+/// An open token: its module and the session cakeys works in, with the provider that handles
+/// the module and the mechanisms it may rely on.
 pub struct Token {
+    /// The token's name in keys.toml.
     pub name: String,
-    pub label: String,
+    /// The label the token reports (`CK_TOKEN_INFO.label`).
+    pub(crate) label: String,
+    /// What the module reports of itself, and the file loaded.
     pub module: ModuleInfo,
+    /// What the token reports of itself.
     pub token: TokenInfo,
     /// Usable mechanisms: advertised ones, minus what the resolved capability profiles
     /// subtract (the module's advertised-but-broken rows and every layer's), else minus
@@ -106,6 +114,7 @@ pub struct Token {
     /// The RSA key-pair generation's key-size range as `C_GetMechanismInfo` reports it, when
     /// the module advertises `CKM_RSA_PKCS_KEY_PAIR_GEN`: the probe's reported bounds.
     pub rsa_bits: Option<(u64, u64)>,
+    /// The provider handling the module.
     pub provider: Arc<dyn Provider>,
     /// The resolved capability profiles (docs/CAPROBE.md): the module profile and the
     /// delta layers between cakeys and it, with the notes resolution noticed on the way.
@@ -319,6 +328,7 @@ impl Token {
         }
     }
 
+    /// Whether the token may be relied on for mechanism `m` (provider-filtered).
     pub fn has(&self, m: MechanismType) -> bool {
         self.mechanisms.contains(&m)
     }
@@ -349,6 +359,7 @@ impl Token {
         Ok(Some(self.provider.key_type(kt, params.as_deref())))
     }
 
+    /// The usable mechanisms, by `CKM_*` name.
     pub fn mechanism_names(&self) -> &[String] {
         &self.mechanism_names
     }

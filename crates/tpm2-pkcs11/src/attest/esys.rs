@@ -44,7 +44,8 @@ pub struct Certified {
     pub ak_spki: Vec<u8>,
     /// The signed `objectAttributes`, as the module derives `CKA_LOCAL` and `CKA_EXTRACTABLE`.
     pub local: bool,
-    pub extractable: bool,
+    /// The signed `objectAttributes`' `CKA_EXTRACTABLE`.
+    pub(crate) extractable: bool,
 }
 
 /// Open a context to the same TPM the module talks to.
@@ -381,8 +382,10 @@ pub fn verify_signature(signature: &Signature, ak_spki: &[u8], bytes: &[u8]) -> 
 /// cross-check against what the module reports): ECC points from `unique`, RSA modulus and
 /// exponent (0 meaning 65537, TPM 2.0 §12.2.3.4).
 pub struct Material {
-    pub spki: Option<Vec<u8>>,
-    pub attributes: ObjectAttributes,
+    /// The canonical SPKI; `None` for a secret key.
+    pub(crate) spki: Option<Vec<u8>>,
+    /// The `objectAttributes` of the public area.
+    pub(crate) attributes: ObjectAttributes,
 }
 
 /// The canonical SPKI and signed attributes of a public area: what the module's objects can be

@@ -33,6 +33,7 @@ const ED25519_SPKI_PREFIX: [u8; 12] = [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b,
 /// The standard mechanisms [`AwsCloudHsm`] stands in for.
 const STAND_INS: [MechanismType; 2] = [MechanismType::ECC_EDWARDS_KEY_PAIR_GEN, MechanismType::EDDSA];
 
+/// The AWS `CloudHSM` provider (see the crate's documentation).
 pub struct AwsCloudHsm;
 
 impl Provider for AwsCloudHsm {

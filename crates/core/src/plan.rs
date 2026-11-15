@@ -11,11 +11,17 @@ use std::collections::BTreeMap;
 
 /// One (spec, token) pair with everything it refers to.
 pub struct Target<'a> {
+    /// The spec's name.
     pub spec_name: &'a str,
+    /// The spec.
     pub spec: &'a SpecCfg,
+    /// The name of the object it realises.
     pub object_name: &'a str,
+    /// That object's type.
     pub object: &'a ObjectCfg,
+    /// The token's name.
     pub token_name: &'a str,
+    /// The spec's settings for this token.
     pub on_token: &'a SpecTokenCfg,
     /// The token the object is born on (`createOn`), when keys.toml names one.
     pub create_on: Option<&'a str>,

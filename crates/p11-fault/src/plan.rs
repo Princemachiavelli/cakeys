@@ -16,23 +16,40 @@ pub struct Plan {
 /// One rule: which calls it matches, and what it does to them.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Rule {
-    pub function: Fn,
+    /// The function whose calls it matches.
+    pub(crate) function: Fn,
     /// Only the n-th call of the process (from 1); every call when `None`.
     pub call: Option<u64>,
     /// Only calls on an object with this `CKA_LABEL` (attribute and key rules).
     pub of_label: Option<Vec<u8>>,
-    pub action: Action,
+    /// What it does to them.
+    pub(crate) action: Action,
 }
 
 /// What a rule does to the calls it matches.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
     /// The call returns this value: instead of reaching the real module, or after it.
-    Rv { rv: CK_RV, when: When },
+    Rv {
+        /// The value returned (`CKR_*`).
+        rv: CK_RV,
+        /// Instead of the real call, or after it.
+        when: When,
+    },
     /// `C_GetTokenInfo`, `C_GetSlotInfo`: flags set and cleared in what the real module reports.
-    Flags { set: CK_FLAGS, clear: CK_FLAGS },
+    Flags {
+        /// Flags set.
+        set: CK_FLAGS,
+        /// Flags cleared.
+        clear: CK_FLAGS,
+    },
     /// `C_GetAttributeValue`: one attribute is not what the real module holds.
-    Attribute { attribute: CK_ATTRIBUTE_TYPE, change: AttributeChange },
+    Attribute {
+        /// The attribute (`CKA_*`).
+        attribute: CK_ATTRIBUTE_TYPE,
+        /// What is reported for it.
+        change: AttributeChange,
+    },
     /// `C_FindObjects`: the objects with this label are found too, where anything is found.
     AddLabel(Vec<u8>),
     /// A function taking a key: the object with this label (and the key's class) is used
@@ -75,8 +92,10 @@ pub enum When {
 /// One call: the function, and which of its calls in this process it is.
 #[derive(Debug, Clone, Copy)]
 pub struct Call {
-    pub function: Fn,
-    pub n: u64,
+    /// The function called.
+    pub(crate) function: Fn,
+    /// Which of its calls in this process it is (from 1).
+    pub(crate) n: u64,
 }
 
 #[derive(Deserialize)]

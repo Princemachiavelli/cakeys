@@ -30,8 +30,10 @@ pub const CURVES: [&str; 10] = [
 /// One member group of a baseline class.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct ClassMembers {
+    /// The member mechanisms, by `CKM_*` name.
     #[serde(default)]
     pub mechanisms: Vec<String>,
+    /// The member parameter sets (PQ key types).
     #[serde(default, rename = "parameter-sets")]
     pub parameter_sets: Vec<String>,
 }

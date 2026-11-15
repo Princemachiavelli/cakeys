@@ -26,7 +26,7 @@ use std::str::FromStr;
 ///
 /// The mapping error when a committed profile's migration rows name something the baseline
 /// does not know: a commit-time bug in the profile, named with its profile.
-pub fn side(tok: &Token) -> Result<Side> {
+pub(crate) fn side(tok: &Token) -> Result<Side> {
     match &tok.profiles.module {
         Some(p) => side_of(p, &tok.profiles, &tok.name, tok.provider.name(), tok.mechanism_names()),
         None => Ok(tok.provider.migration(&tok.name, tok.mechanism_names())),
@@ -38,7 +38,7 @@ pub fn side(tok: &Token) -> Result<Side> {
 /// module and token it recorded. `None` when the observation records no provider, or one this
 /// build does not link.
 #[must_use]
-pub fn side_from_lock(
+pub(crate) fn side_from_lock(
     token: &str,
     observed: &Observation,
     registry: &Registry,
@@ -70,7 +70,7 @@ fn warn_hidden(token: &str, resolved: &Resolved, notes: &mut Notes) {
 /// A target's capabilities from its transport file: its provider's profile over the mechanisms
 /// the file lists (`None`: a provider this build does not link).
 #[must_use]
-pub fn side_from_transport(t: &Transport, registry: &Registry) -> Option<Result<Side>> {
+pub(crate) fn side_from_transport(t: &Transport, registry: &Registry) -> Option<Result<Side>> {
     let resolved = resolution::resolve(&lockless_token_cfg(), &moduleless_info(), None, &t.provider).ok()?;
     match resolved.module {
         Some(ref p) => Some(side_of(p, &resolved, &t.token, &t.provider, &t.mechanisms)),
@@ -81,7 +81,7 @@ pub fn side_from_transport(t: &Transport, registry: &Registry) -> Option<Result<
 /// The per-module unwrap-template rules, as data (docs/CAMIGRATE.md D6): what `sealed::import`
 /// drops from a target's unwrap template (`SoftHSM`: `CKA_VALUE_LEN`).
 #[must_use]
-pub fn unwrap_refusals(tok: &Token) -> Vec<&str> {
+pub(crate) fn unwrap_refusals(tok: &Token) -> Vec<&str> {
     let mut out: Vec<&str> =
         tok.profiles.module.iter().flat_map(|p| p.unwrap.refuse.iter().flatten().map(String::as_str)).collect();
     out.sort_unstable();
@@ -214,7 +214,7 @@ fn lockless_token_cfg() -> TokenCfg {
 ///
 /// `PreconditionFailed` when `object` has no realisation on `token`, or the lock records no
 /// type for it: the plan is made from what the lock pins, so realise it first.
-pub fn materials<'a>(lock: &'a Lock, token: &str, objects: &[&str]) -> Result<Vec<Material<'a>>> {
+pub(crate) fn materials<'a>(lock: &'a Lock, token: &str, objects: &[&str]) -> Result<Vec<Material<'a>>> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
     for by_token in lock.realisations.values() {
@@ -248,7 +248,7 @@ pub fn materials<'a>(lock: &'a Lock, token: &str, objects: &[&str]) -> Result<Ve
 ///
 /// `Validation` for anything but an RSA private key; `PreconditionFailed` when the realisation
 /// does not allow `CKA_UNWRAP` or is extractable; whatever `verify` refuses.
-pub fn transport(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Transport> {
+pub(crate) fn transport(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Transport> {
     if t.object.class != ObjectClass::PrivateKey || t.object.key_type != Some(KeyType::Rsa) {
         return Err(KmError::Validation(format!(
             "{t}: a transport key is an RSA private key (docs/CAMIGRATE.md D3), not a {}",
@@ -275,7 +275,7 @@ pub fn transport(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
 }
 
 /// Where `export` or `migrate` sends the material.
-pub enum Dest<'a> {
+pub(crate) enum Dest<'a> {
     /// A token in keys.toml.
     Token(&'a str),
     /// A target this host cannot reach, by its transport file: the parsed file, and how to
@@ -285,7 +285,7 @@ pub enum Dest<'a> {
 }
 
 /// What to plan moving.
-pub struct Request<'a> {
+pub(crate) struct Request<'a> {
     /// Only these objects; default (empty): every object realised on `from`.
     pub objects: &'a [&'a str],
     /// The source token.
@@ -301,7 +301,7 @@ pub struct Request<'a> {
 }
 
 /// The plans of one invocation (docs/CAMIGRATE.md D9).
-pub struct Moves {
+pub(crate) struct Moves {
     /// The destination's name: the target token, or the file format.
     pub to: String,
     /// Where each side's capabilities came from: the open `token`, the `lock`, the `transport
@@ -319,7 +319,7 @@ impl Moves {
     /// # Errors
     ///
     /// `Unsupported` (15) when any plan is blocked.
-    pub fn ready(&self) -> Result<()> {
+    pub(crate) fn ready(&self) -> Result<()> {
         let blocked: Vec<String> =
             self.plans.iter().filter(|p| !p.ready).map(|p| format!("{}: {}", p.object, p.reasons.join("; "))).collect();
         if blocked.is_empty() {
@@ -343,7 +343,7 @@ impl Moves {
 /// [`materials`]' refusals; a side that neither opens nor is recorded in the lock (the open's
 /// error); `Unsupported` for a transport file of a provider this build does not link, and
 /// `Validation` when its profile does not map.
-pub fn plan_moves(
+pub(crate) fn plan_moves(
     lock: &Lock,
     registry: &Registry,
     req: &Request,
@@ -448,7 +448,11 @@ fn side_or_lock(
 /// # Errors
 ///
 /// Why there is no such key.
-pub fn transport_spec<'a>(lock: &'a Lock, token: &str, chosen: Option<&str>) -> std::result::Result<&'a str, String> {
+pub(crate) fn transport_spec<'a>(
+    lock: &'a Lock,
+    token: &str,
+    chosen: Option<&str>,
+) -> std::result::Result<&'a str, String> {
     let Some(chosen) = chosen else {
         return Err(format!(
             "no transport key is named for '{token}' (docs/CAMIGRATE.md D3): set transportWith in [tokens.{token}] to the \
@@ -485,7 +489,11 @@ pub fn transport_spec<'a>(lock: &'a Lock, token: &str, chosen: Option<&str>) -> 
 /// # Errors
 ///
 /// `Validation` when the recorded key is no SPKI.
-pub fn locked_transport(t: &Target, lock: &Lock, notes: &mut Notes) -> Result<Option<crate::sealed::TransportKey>> {
+pub(crate) fn locked_transport(
+    t: &Target,
+    lock: &Lock,
+    notes: &mut Notes,
+) -> Result<Option<crate::sealed::TransportKey>> {
     use base64::Engine as _;
     warn_decrypting(t, lock, notes);
     let Some(o) = lock.objects.get(t.object_name) else { return Ok(None) };
@@ -514,7 +522,7 @@ fn warn_decrypting(t: &Target, lock: &Lock, notes: &mut Notes) {
 /// # Errors
 ///
 /// Why it is not.
-pub fn pinned(lock: &Lock, t: &Transport) -> std::result::Result<(), String> {
+pub(crate) fn pinned(lock: &Lock, t: &Transport) -> std::result::Result<(), String> {
     match lock.objects.get(&t.object).and_then(|o| o.ids.get("rfc7093m4")) {
         Some(id) if *id == t.rfc7093m4 => Ok(()),
         Some(id) => Err(format!("its key {} is not the {id} the lock pins for '{}'", t.rfc7093m4, t.object)),

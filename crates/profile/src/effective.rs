@@ -11,9 +11,25 @@ use crate::profile::Profile;
 /// refusal from a question the profiles do not cover.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
-    Yes { by: String, note: Option<String> },
-    No { by: String, note: Option<String> },
-    Unknown { why: String },
+    /// It can.
+    Yes {
+        /// The profile that said so.
+        by: String,
+        /// Its note on the row, when it has one.
+        note: Option<String>,
+    },
+    /// It cannot (15).
+    No {
+        /// The profile that said so: the layer that subtracted, or the module's.
+        by: String,
+        /// Why, when the profile says.
+        note: Option<String>,
+    },
+    /// The profiles cannot say (16).
+    Unknown {
+        /// Why not.
+        why: String,
+    },
 }
 
 impl Verdict {

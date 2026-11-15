@@ -55,7 +55,7 @@ macro_rules! forward {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         #[expect(non_camel_case_types, reason = "the PKCS#11 function names")]
         pub enum Fn {
-            $($name),*
+            $(#[doc = concat!("`", stringify!($name), "`.")] $name),*
         }
 
         impl Fn {

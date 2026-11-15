@@ -15,7 +15,7 @@ use cryptoki_sys::{
 use std::os::raw::c_void;
 
 /// What a hooked call returns: the caller's value, and the rule that changed something.
-pub type Outcome = Result<(CK_RV, Option<usize>), Fatal>;
+pub(crate) type Outcome = Result<(CK_RV, Option<usize>), Fatal>;
 
 /// `CK_UNAVAILABLE_INFORMATION`: the length of an attribute that cannot be given.
 const UNAVAILABLE: CK_ULONG = CK_ULONG::MAX;
@@ -28,7 +28,7 @@ macro_rules! real {
 }
 
 /// `C_GetTokenInfo`: the real answer with a rule's flags set and cleared.
-pub unsafe fn token_info(shim: &Shim, call: &Call, slot: CK_SLOT_ID, info: *mut CK_TOKEN_INFO) -> Outcome {
+pub(crate) unsafe fn token_info(shim: &Shim, call: &Call, slot: CK_SLOT_ID, info: *mut CK_TOKEN_INFO) -> Outcome {
     // SAFETY: the caller's arguments, forwarded unchanged.
     let rv = unsafe { real!(shim, C_GetTokenInfo)(slot, info) };
     if rv != CKR_OK || info.is_null() {
@@ -39,7 +39,7 @@ pub unsafe fn token_info(shim: &Shim, call: &Call, slot: CK_SLOT_ID, info: *mut 
 }
 
 /// `C_GetSlotInfo`: the real answer with a rule's flags set and cleared.
-pub unsafe fn slot_info(shim: &Shim, call: &Call, slot: CK_SLOT_ID, info: *mut CK_SLOT_INFO) -> Outcome {
+pub(crate) unsafe fn slot_info(shim: &Shim, call: &Call, slot: CK_SLOT_ID, info: *mut CK_SLOT_INFO) -> Outcome {
     // SAFETY: the caller's arguments, forwarded unchanged.
     let rv = unsafe { real!(shim, C_GetSlotInfo)(slot, info) };
     if rv != CKR_OK || info.is_null() {
@@ -63,7 +63,7 @@ fn flags(shim: &Shim, call: &Call, flags: &mut CK_ULONG) -> Option<usize> {
 /// `C_FindObjects`: the objects of a `hide_label` rule are not found; and where the real search
 /// found something and there is room, those of an `add_label` rule are found too. (Not where it
 /// found nothing: a client reads until a call returns no object, and would never stop.)
-pub unsafe fn find_objects(
+pub(crate) unsafe fn find_objects(
     shim: &Shim,
     call: &Call,
     session: CK_SESSION_HANDLE,
@@ -115,7 +115,7 @@ pub unsafe fn find_objects(
 }
 
 /// `C_GetMechanismList`: the mechanisms of a `hide_mechanisms` rule are not listed.
-pub unsafe fn mechanism_list(
+pub(crate) unsafe fn mechanism_list(
     shim: &Shim,
     call: &Call,
     slot: CK_SLOT_ID,
@@ -152,7 +152,13 @@ pub unsafe fn mechanism_list(
 
 /// After a function returned bytes into the caller's buffer: under a `corrupt` rule, the last
 /// of them is another. The length query (no buffer) is left alone.
-pub unsafe fn corrupt_output(shim: &Shim, call: &Call, rv: CK_RV, out: *mut u8, len: *mut CK_ULONG) -> Option<usize> {
+pub(crate) unsafe fn corrupt_output(
+    shim: &Shim,
+    call: &Call,
+    rv: CK_RV,
+    out: *mut u8,
+    len: *mut CK_ULONG,
+) -> Option<usize> {
     if rv != CKR_OK || out.is_null() || len.is_null() {
         return None;
     }
@@ -170,7 +176,7 @@ pub unsafe fn corrupt_output(shim: &Shim, call: &Call, rv: CK_RV, out: *mut u8, 
 
 /// The key a key-taking function uses: the caller's, or the object a `use_label` rule names
 /// (of the caller's key's class).
-pub unsafe fn substitute_key(
+pub(crate) unsafe fn substitute_key(
     shim: &Shim,
     call: &Call,
     session: CK_SESSION_HANDLE,
@@ -192,7 +198,7 @@ pub unsafe fn substitute_key(
 
 /// `C_GetAttributeValue`: the attributes a rule names are answered by the shim, the others by
 /// the real module, in the caller's template.
-pub unsafe fn attribute_value(
+pub(crate) unsafe fn attribute_value(
     shim: &Shim,
     call: &Call,
     session: CK_SESSION_HANDLE,

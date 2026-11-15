@@ -19,7 +19,7 @@ use x509_cert::spki::AlgorithmIdentifierOwned;
 use zeroize::Zeroizing;
 
 /// PBKDF2-HMAC-SHA256 iterations for the key (OWASP's 2023 recommendation).
-pub const PBKDF2_ITERATIONS: u32 = 600_000;
+pub(crate) const PBKDF2_ITERATIONS: u32 = 600_000;
 /// PKCS#12 KDF iterations for the MAC key (integrity only; the key is under PBES2 above).
 const MAC_ITERATIONS: i32 = 10_000;
 /// The most KDF iterations a key file read here may ask for: a file is input, and its count is
@@ -31,7 +31,7 @@ const ID_LOCAL_KEY_ID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.
 
 /// What a key file held: the private key (PKCS#8), the certificate a PKCS#12 carried, and the
 /// method that names the format.
-pub struct Read {
+pub(crate) struct Read {
     pub pkcs8: Zeroizing<Vec<u8>>,
     pub certificate: Option<Vec<u8>>,
     pub method: cakeys_core::migrate::Method,
@@ -63,7 +63,7 @@ fn encrypt(pkcs8: &[u8], pass: &str) -> Result<Vec<u8>> {
 /// # Errors
 ///
 /// `Unavailable` when the random number generator or the encryption fails.
-pub fn write_pkcs8(pkcs8: &[u8], pass: &str) -> Result<String> {
+pub(crate) fn write_pkcs8(pkcs8: &[u8], pass: &str) -> Result<String> {
     let der = encrypt(pkcs8, pass)?;
     der::pem::encode_string("ENCRYPTED PRIVATE KEY", der::pem::LineEnding::LF, &der)
         .map_err(|e| KmError::Unavailable(format!("PEM encoding: {e}")))
@@ -75,7 +75,7 @@ pub fn write_pkcs8(pkcs8: &[u8], pass: &str) -> Result<String> {
 /// # Errors
 ///
 /// `Unavailable` when the random number generator, the encryption or the encoding fails.
-pub fn write_pkcs12(pkcs8: &[u8], certificate: &[u8], pass: &str, local_key_id: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn write_pkcs12(pkcs8: &[u8], certificate: &[u8], pass: &str, local_key_id: &[u8]) -> Result<Vec<u8>> {
     let enc = |e: der::Error| KmError::Unavailable(format!("PKCS#12 encoding: {e}"));
     let attrs = || -> Result<x509_cert::attr::Attributes> {
         let id = Any::encode_from(&OctetString::new(local_key_id).map_err(enc)?).map_err(enc)?;
@@ -143,7 +143,7 @@ fn mac(pass: &str, salt: &[u8], iterations: i32, data: &[u8]) -> Result<Vec<u8>>
 /// digest than SHA-256, without exactly one key, with an encrypted (rather than plain) bag
 /// container, with an iteration count out of range, or for a wrong passphrase (the MAC, or the
 /// padding check): bad input, never the "other material than the lock pins" that 10 means.
-pub fn read(bytes: &[u8], pass: &str) -> Result<Read> {
+pub(crate) fn read(bytes: &[u8], pass: &str) -> Result<Read> {
     use cakeys_core::migrate::Method;
     let wrong = || bad("it does not open under this passphrase (a wrong passphrase, or a damaged file)");
     if bytes.starts_with(b"-----BEGIN ENCRYPTED PRIVATE KEY-----") {

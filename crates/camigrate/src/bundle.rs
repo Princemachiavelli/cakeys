@@ -25,13 +25,16 @@ pub const BUNDLE_VERSION: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Bundle {
-    pub format: String,
-    pub version: u32,
+    /// [`BUNDLE_FORMAT`], checked on read.
+    pub(crate) format: String,
+    /// [`BUNDLE_VERSION`], checked on read.
+    pub(crate) version: u32,
     /// The AES key-encryption key under RSA-OAEP to the transport key (base64), shared by every
     /// key of a composed method; absent when none is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kek: Option<String>,
-    pub source: Source,
+    /// The source token and its provider.
+    pub(crate) source: Source,
     /// The transport key the wrapped keys are sealed to; absent exactly when the bundle carries
     /// public objects only, which need none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -48,7 +51,8 @@ pub struct Entry {
     pub object: String,
     /// The method's frozen name (`rsa-oaep-sha1+aes-kwp`, ...).
     pub method: String,
-    pub exposure: Exposure,
+    /// The exposure the method gave the key.
+    pub(crate) exposure: Exposure,
     /// Secret keys: the label their commitments were computed with, as in the lock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commitment_label: Option<String>,
@@ -81,16 +85,20 @@ pub struct Entry {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
-    pub token: String,
-    pub provider: String,
+    /// The source token's name in keys.toml.
+    pub(crate) token: String,
+    /// The provider that handled it.
+    pub(crate) provider: String,
 }
 
 /// The transport key the material is wrapped to: its object and locked identity.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransportRef {
-    pub object: String,
-    pub rfc7093m4: String,
+    /// The transport key's object name.
+    pub(crate) object: String,
+    /// Its locked identity: the SPKI's `rfc7093m4`.
+    pub(crate) rfc7093m4: String,
 }
 
 impl Bundle {

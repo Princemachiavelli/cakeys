@@ -28,7 +28,7 @@ use cryptoki::object::{Attribute, ObjectHandle};
 /// `Conflict` (13) for an object of its
 /// class already under the target locator; and, after the creation, whatever
 /// `ops::realise_import` refuses, with what was created removed again.
-pub fn import(
+pub(crate) fn import(
     src: &Target,
     from: &Token,
     dst: &Target,
@@ -124,7 +124,7 @@ pub(crate) fn free_locator(dst: &Target, to: &Token, spki: Option<&[u8]>) -> Res
 /// # Errors
 ///
 /// As [`import`]; and whatever the tool reports (`Token::import_plaintext`).
-pub fn import_ptool(
+pub(crate) fn import_ptool(
     src: &Target,
     from: &Token,
     dst: &Target,

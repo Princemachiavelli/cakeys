@@ -18,7 +18,7 @@ use x509_cert::der::{Decode, Encode, Header, Reader, SliceReader};
 
 /// The label prefix ykcs11 gives every slot's attestation certificate (suffix: the slot, e.g.
 /// "9a"); the slot f9 device certificate itself has the bare label without a suffix.
-pub const ATTESTATION_LABEL: &str = "X.509 Certificate for PIV Attestation";
+pub(crate) const ATTESTATION_LABEL: &str = "X.509 Certificate for PIV Attestation";
 
 /// Yubico's PIV attestation extension OIDs (the Yubico Attestation OID arc 1.3.6.1.4.1.41482.3).
 const FIRMWARE: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.41482.3.3");
@@ -37,13 +37,13 @@ const RSA_SHA384: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.11354
 const RSA_SHA512: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.13");
 
 /// A parsed certificate with its DER bytes.
-pub struct Cert {
+pub(crate) struct Cert {
     der: Vec<u8>,
     parsed: Certificate,
 }
 
 impl Cert {
-    pub fn from_der(der: Vec<u8>) -> Result<Cert> {
+    pub(crate) fn from_der(der: Vec<u8>) -> Result<Cert> {
         let parsed = Certificate::from_der(&der).map_err(|e| KmError::Conflict(format!("parsing certificate: {e}")))?;
         Ok(Cert { der, parsed })
     }
@@ -101,7 +101,7 @@ impl Cert {
 }
 
 /// Parse every PEM `CERTIFICATE` block of `pem` (the embedded anchor and pool files).
-pub fn pem_certs(pem: &str) -> Result<Vec<Cert>> {
+pub(crate) fn pem_certs(pem: &str) -> Result<Vec<Cert>> {
     let bad = |e| KmError::Validation(format!("pem certificates: {e}"));
     Certificate::load_pem_chain(pem.as_bytes())
         .map_err(bad)?
@@ -112,7 +112,7 @@ pub fn pem_certs(pem: &str) -> Result<Vec<Cert>> {
 
 /// The computed `piv-attestation` commitment: the canonical ID, and the anchor it verified to.
 #[derive(Debug)]
-pub struct PivAttested {
+pub(crate) struct PivAttested {
     pub id: String,
     pub root: String,
 }
@@ -125,7 +125,7 @@ pub struct PivAttested {
 /// *verifiable as key identity* on a token where no attestation exists. A copy of the key on
 /// another token cannot attest (Yubico attests only keys generated on the device); the shared
 /// `rfc7093m4`, which the attestation's subject is checked against, still links the material.
-pub fn verify_piv_attestation(
+pub(crate) fn verify_piv_attestation(
     slot: &[u8],
     device: &[u8],
     anchors: &[Cert],
@@ -167,7 +167,7 @@ pub fn verify_piv_attestation(
 /// the generic "Attestation Intermediate" CAs above them. Yubico's published pool also holds
 /// the FIDO, `OpenPGP`, SD and `YubiHSM` attestation CAs under the same "Yubico Attestation Root
 /// 1"; a device certificate issued by one of those is not PIV evidence, so they are left out.
-pub fn piv_pool(pool: Vec<Cert>) -> Vec<Cert> {
+pub(crate) fn piv_pool(pool: Vec<Cert>) -> Vec<Cert> {
     pool.into_iter()
         .filter(|c| {
             let subject = c.parsed.tbs_certificate().subject().to_string();

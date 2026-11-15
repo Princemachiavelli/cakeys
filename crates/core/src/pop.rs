@@ -159,7 +159,9 @@ pub fn unwrap_challenge(spki: &[u8], msg: &[u8]) -> Result<UnwrapChallenge> {
 /// The RSA-OAEP hash, with MGF1 of the same hash: a transport wrap's and an OAEP proof's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OaepHash {
+    /// SHA-1, with MGF1-SHA-1.
     Sha1,
+    /// SHA-256, with MGF1-SHA-256.
     Sha256,
 }
 

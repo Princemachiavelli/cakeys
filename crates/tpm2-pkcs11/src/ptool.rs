@@ -23,7 +23,7 @@ use zeroize::Zeroizing;
 /// `Validation` for a locator with neither `CKA_LABEL` nor `CKA_ID`; `Unsupported` for a key
 /// type the tool cannot import, or no `tpm2_ptool` on `PATH`; `Unavailable` without a user PIN,
 /// or when the tool fails (its message, the PIN removed).
-pub fn import(ctx: &ImportCtx<'_>) -> Result<()> {
+pub(crate) fn import(ctx: &ImportCtx<'_>) -> Result<()> {
     let opts = Tpm2Options::of(ctx.token_name, &ctx.cfg.options)?;
     let store = store_dir_of(ctx.token_name, &opts)?;
     let pin = ctx.pin.ok_or_else(|| {

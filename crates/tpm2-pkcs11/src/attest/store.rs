@@ -43,22 +43,34 @@ pub struct Store {
     pub tobjects: Vec<TObject>,
 }
 
+/// The token's primary parent (`pobjects`).
 pub struct Parent {
-    pub handle: u32,
-    pub auth: Vec<u8>,
+    /// Its persistent TPM handle.
+    pub(crate) handle: u32,
+    /// Its auth value (`pobjects.objauth`).
+    pub(crate) auth: Vec<u8>,
 }
 
+/// The token's user seal object (`sealobjects`).
 pub struct Seal {
-    pub pub_blob: Vec<u8>,
-    pub priv_blob: Vec<u8>,
-    pub auth_salt: String,
+    /// Its public area (`userpub`).
+    pub(crate) pub_blob: Vec<u8>,
+    /// Its private area (`userpriv`).
+    pub(crate) priv_blob: Vec<u8>,
+    /// The salt the user PIN is combined with into its auth value (`userauthsalt`).
+    pub(crate) auth_salt: String,
 }
 
+/// One key object of the token (`tobjects`).
 pub struct TObject {
-    pub class: i64,
-    pub cka_label: Option<Vec<u8>>,
-    pub cka_id: Option<Vec<u8>>,
-    pub pub_blob: Vec<u8>,
+    /// `CKA_CLASS`, as the module stores it.
+    pub(crate) class: i64,
+    /// `CKA_LABEL`, when it has one.
+    pub(crate) cka_label: Option<Vec<u8>>,
+    /// `CKA_ID`, when it has one.
+    pub(crate) cka_id: Option<Vec<u8>>,
+    /// The TPM public area (`CKA_TPM2_PUB_BLOB`).
+    pub(crate) pub_blob: Vec<u8>,
     /// Only private-key rows carry one; the public half of a generated pair is stored without
     /// it (`TPM2_Certify` needs the private area loaded, so those rows cannot attest).
     pub priv_blob: Option<Vec<u8>>,

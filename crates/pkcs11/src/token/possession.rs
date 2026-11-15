@@ -397,6 +397,7 @@ impl Token {
 /// What a token offers a proof of possession, as a live token ([`Token::proof_side`]) or as
 /// camigrate's plan knows a target from its profile: the one input [`proof_refusal`] takes.
 pub struct ProofSide<'a> {
+    /// The token's name in keys.toml.
     pub token: &'a str,
     /// The module profile, named in a refusal.
     pub profile: Option<&'a str>,

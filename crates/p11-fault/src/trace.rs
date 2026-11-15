@@ -9,14 +9,14 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub struct Trace {
+pub(crate) struct Trace {
     file: Mutex<std::fs::File>,
     seq: AtomicU64,
 }
 
 impl Trace {
     /// Open `path` for appending.
-    pub fn open(path: &Path) -> Result<Trace, Fatal> {
+    pub(crate) fn open(path: &Path) -> Result<Trace, Fatal> {
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -27,7 +27,7 @@ impl Trace {
 
     /// Log `call`, the value its caller saw, and the plan's rule (from 1) that decided it, if any.
     /// A write that fails is dropped: the trace never changes what the caller sees.
-    pub fn line(&self, call: &Call, rv: CK_RV, rule: Option<usize>) {
+    pub(crate) fn line(&self, call: &Call, rv: CK_RV, rule: Option<usize>) {
         let line = serde_json::json!({
             "pid": std::process::id(),
             "seq": self.seq.fetch_add(1, Ordering::Relaxed),

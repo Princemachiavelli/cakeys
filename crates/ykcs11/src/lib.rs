@@ -19,6 +19,7 @@ use cakeys_pkcs11::token::ModuleInfo;
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass};
 use std::sync::LazyLock;
 
+/// The ykcs11 provider (see the crate's documentation).
 pub struct Ykcs11;
 
 /// Anchors: Yubico's pinned PIV roots. The intermediate pool (the untrusted store) is only

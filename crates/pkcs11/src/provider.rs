@@ -36,7 +36,9 @@ pub struct BoundKey {
 /// (parameterless) with `template` alone, the private or secret half's; a pair passes no public
 /// template.
 pub struct Generation {
+    /// The parameterless generation mechanism.
     pub keygen: MechanismType,
+    /// The whole template: the private or secret half's.
     pub template: Vec<Attribute>,
 }
 
@@ -53,6 +55,15 @@ pub fn keygen_mechanism(keygen: MechanismType) -> Option<(Mechanism<'static>, bo
     })
 }
 
+/// What one family of PKCS#11 modules needs beyond the standard: how to recognise it, the
+/// quirks to repair, what it cannot do, and its own paths (attestation, plaintext import, how
+/// keys move). Every hook defaults to plain PKCS#11, so a provider overrides only what its
+/// module does differently.
+///
+/// The in-tree providers are crates of this workspace (`cakeys-ykcs11`, `cakeys-tpm2-pkcs11`,
+/// `cakeys-kmsp11`, `cakeys-aws-cloudhsm`); a crate outside it adds its own to a [`Registry`]
+/// (the `custom-provider` example). A module with no fix-ups needs none: its capability
+/// profile names it ([`Data`]).
 pub trait Provider: Send + Sync {
     /// Name for `provider = "<name>"` in keys.toml and in messages.
     fn name(&self) -> &'static str;
@@ -248,6 +259,23 @@ pub struct AttestationCap {
     pub classes: &'static [ObjectClass],
 }
 
+/// What [`Provider::import_plaintext`] gets: the token as keys.toml describes it, the key's type
+/// and locator, and the plaintext. Never `Debug`: it would print the key and the PIN.
+pub struct ImportCtx<'a> {
+    /// The token, as keys.toml describes it.
+    pub cfg: &'a TokenCfg,
+    /// The token's name in keys.toml.
+    pub token_name: &'a str,
+    /// The user PIN, when the token has one.
+    pub pin: Option<&'a str>,
+    /// The key's type.
+    pub object: &'a ObjectCfg,
+    /// Where the key goes on the token.
+    pub locator: &'a Locator,
+    /// The plaintext key, as the source handed it over (PKCS#8 for a private key).
+    pub key: &'a [u8],
+}
+
 /// Everything an attestation may need beyond the PKCS#11 module: the session (to find the
 /// certificate objects a module exposes), the config (the native TPM path's TCTI and store) and
 /// the PIN (the TPM path unseals the token's wrapping key with it), plus the material SPKI the
@@ -255,27 +283,27 @@ pub struct AttestationCap {
 ///
 /// `provision` is true only under `realise`: a provider that keeps device state to attest with
 /// (the TPM Attestation Key) may create it then, never on a read (`resolve`, `verify`).
-/// What [`Provider::import_plaintext`] gets: the token as keys.toml describes it, the key's type
-/// and locator, and the plaintext. Never `Debug`: it would print the key and the PIN.
-pub struct ImportCtx<'a> {
-    pub cfg: &'a TokenCfg,
-    pub token_name: &'a str,
-    pub pin: Option<&'a str>,
-    pub object: &'a ObjectCfg,
-    pub locator: &'a Locator,
-    pub key: &'a [u8],
-}
-
 pub struct AttestCtx<'a> {
+    /// An open session on the token, for the objects the module exposes (attestation
+    /// certificates).
     pub session: &'a Session,
+    /// The token, as keys.toml describes it (the native TPM path's TCTI and store).
     pub cfg: &'a TokenCfg,
     /// The module's version as `C_GetInfo` reports it ("1.10").
     pub module_version: &'a str,
+    /// The token's name in keys.toml.
     pub token_name: &'a str,
+    /// The key to attest.
     pub key: ObjectHandle,
+    /// The key's type.
     pub object: &'a ObjectCfg,
+    /// The material SPKI the attestation must name: `None` exactly for secret keys.
     pub spki: Option<&'a [u8]>,
+    /// The user PIN, when the token has one (the TPM path unseals the token's wrapping key
+    /// with it).
     pub pin: Option<&'a str>,
+    /// True only under `realise`: the provider may create the device state it attests with (the
+    /// TPM Attestation Key), never on a read.
     pub provision: bool,
 }
 
@@ -302,8 +330,11 @@ impl AttestCtx<'_> {
 /// `attestation = { kind, root, id }`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attested {
+    /// The attestation scheme.
     pub scheme: Scheme,
+    /// The per-device attestation ID.
     pub id: String,
+    /// SRI digest of the anchor the attestation was verified to.
     pub root: String,
 }
 
@@ -346,6 +377,7 @@ pub struct Registry {
 }
 
 impl Registry {
+    /// An empty registry: no provider beyond [`Generic`] and the profiles' [`Data`] ones.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -359,6 +391,7 @@ impl Registry {
         self
     }
 
+    /// The names of the code providers registered, in registration order.
     #[must_use]
     pub fn names(&self) -> Vec<&'static str> {
         self.providers.iter().map(|p| p.name()).collect()

@@ -9,13 +9,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+/// A parsed `keys.toml` (docs/CONFIG.md): the tokens, the objects, and the specs that realise
+/// objects on tokens.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// The PKCS#11 tokens, by name (`[tokens.<name>]`).
     #[serde(default)]
     pub tokens: BTreeMap<String, TokenCfg>,
+    /// The objects, by name (`[objects.<name>]`): each one's intrinsic type.
     #[serde(default)]
     pub objects: BTreeMap<String, ObjectCfg>,
+    /// The specs, by name (`[specs.<name>]`): an object's policy and the tokens it is realised on.
     #[serde(default)]
     pub specs: BTreeMap<String, SpecCfg>,
     /// Directories of module profiles to load beside the ones this build embeds
@@ -31,6 +36,8 @@ pub struct Config {
     pub create_on: BTreeMap<String, String>,
 }
 
+/// One token (`[tokens.<name>]`): the module that reaches it, its label and credentials, and what
+/// its provider needs.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TokenCfg {
@@ -49,8 +56,12 @@ pub struct TokenCfg {
     /// module itself. Unknown names refuse (17).
     #[serde(default)]
     pub profiles: Vec<String>,
+    /// The label the token reports (`CK_TOKEN_INFO.label`): which of the module's tokens this is.
     pub token_label: String,
+    /// A file holding the user PIN (`$NAME` reads the path from the environment). With neither it
+    /// nor `pinEnv`, the token is used without logging in.
     pub pin_file: Option<PathBuf>,
+    /// An environment variable holding the user PIN; it wins over `pinFile`.
     pub pin_env: Option<String>,
     /// The admin (Security Officer) credential, for modules that create and destroy objects only
     /// in an SO session — ykcs11: the PIV management key in hex, or the PIN on a device whose
@@ -59,6 +70,7 @@ pub struct TokenCfg {
     /// restored afterwards, so a user PIN is required. `mgmKeyEnv` wins if both are set;
     /// `mgmKeyFile` may be `$NAME`, like `pinFile`. Refused on a provider that does not need it.
     pub mgm_key_file: Option<PathBuf>,
+    /// An environment variable holding the admin credential; it wins over `mgmKeyFile`.
     pub mgm_key_env: Option<String>,
     /// Nix `requiredSystemFeatures` entry, read only by the Nix library: defaults to
     /// `<featurePrefix><name>` (`lib.mkKeys`'s `featurePrefix`, default `token-`). The NixOS
@@ -117,6 +129,7 @@ pub fn parse_options<T: serde::de::DeserializeOwned>(token: &str, options: &Opti
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ObjectCfg {
+    /// The object class (`CKO_*`).
     pub class: ObjectClass,
     /// For keys; absent for certificates and data objects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -205,9 +218,12 @@ impl std::fmt::Display for ObjectCfg {
     }
 }
 
+/// A spec (`[specs.<name>]`): the policy one object is realised with, and the tokens it is
+/// realised on.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SpecCfg {
+    /// The object (`[objects.<name>]`) this spec realises.
     pub object: String,
     /// Policy attributes of the object (`CKA_SIGN = true`, `CKA_ALLOWED_MECHANISMS = [...]`).
     /// Part of the spec digest.
@@ -222,6 +238,7 @@ pub struct SpecCfg {
     /// out without the warning a key that cannot move gets. Not in the spec digest.
     #[serde(default, rename = "noExport")]
     pub no_export: bool,
+    /// The tokens this spec realises the object on, by token name.
     pub tokens: BTreeMap<String, SpecTokenCfg>,
 }
 
@@ -241,11 +258,14 @@ impl SpecCfg {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum AttrValue {
+    /// A boolean attribute (`CKA_SIGN = true`).
     Bool(bool),
+    /// A mechanism set (`CKA_ALLOWED_MECHANISMS`), sorted and without duplicates.
     Mechanisms(Vec<String>),
 }
 
 impl AttrValue {
+    /// A mechanism set from `names` in any order: sorted, duplicates dropped.
     pub fn mechanisms(names: impl IntoIterator<Item = String>) -> AttrValue {
         let set: BTreeSet<String> = names.into_iter().collect();
         AttrValue::Mechanisms(set.into_iter().collect())
@@ -261,10 +281,15 @@ impl std::fmt::Display for AttrValue {
     }
 }
 
+/// One token of a spec (`[specs.<s>.tokens.<t>]`): where the object is found there and how it
+/// is held.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SpecTokenCfg {
+    /// The `CKA_LABEL` and `CKA_ID` the object is found under on this token.
     pub locator: Locator,
+    /// Opt the first-use verbs (`realise`, `check`) into creating the object when the locator finds
+    /// nothing (docs/CAKEYS.md); `create` creates it either way.
     #[serde(default)]
     pub auto_create: bool,
     /// Adopt a private key through its public key object only (no login needed, e.g. to
@@ -291,6 +316,7 @@ pub struct SpecTokenCfg {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Locator {
+    /// The object's `CKA_LABEL`.
     #[serde(rename = "CKA_LABEL", skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// Hex-encoded.
@@ -316,8 +342,13 @@ impl std::fmt::Display for Locator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Mode {
+    /// The ID hashes the object's public material: public keys, certificates, data objects.
     Direct,
+    /// The ID hashes a commitment the token computes with the secret key (a MAC, a check value, a
+    /// wrap), for secret keys whose usage bits allow one.
     Commitment,
+    /// An extractable secret key without such bits: wrapped under a session KEK, unwrapped as a
+    /// session copy that allows every scheme of its type, committed, then both destroyed.
     WrapRebind,
 }
 
@@ -372,10 +403,14 @@ impl std::fmt::Display for Mode {
     }
 }
 
+/// A parsed `keys.lock` (docs/LOCK.md): each object's IDs and each spec's realisations, as
+/// cakeys recorded them.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Lock {
+    /// The lock format version: a lock of any other than [`LOCK_VERSION`] is refused on load.
     pub version: u32,
+    /// Each object's identity, by object name.
     #[serde(default)]
     pub objects: BTreeMap<String, LockObject>,
     /// spec name -> token name -> realisation
@@ -387,6 +422,8 @@ pub struct Lock {
     pub observations: BTreeMap<String, Observation>,
 }
 
+/// One object's identity: the IDs of its material and the type they were computed for, the
+/// same on every token.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LockObject {
@@ -713,14 +750,19 @@ pub struct LockRealisation {
     /// The object this spec realised and the locator it was found under: a spec pointed at
     /// another object or locator in keys.toml is a change to review, not a hash mismatch.
     pub object: String,
-    pub locator: Locator,
-    pub spec_digest: String,
-    pub mode: Mode,
+    /// The locator the object was found under (see `object`).
+    pub(crate) locator: Locator,
+    /// SRI digest of the spec (object type and policy attributes) it was recorded under: another
+    /// digest is a spec change.
+    pub(crate) spec_digest: String,
+    /// The identity mode it was established in: a weaker one later is a downgrade (14).
+    pub(crate) mode: Mode,
     /// The identity schemes this realisation computed and matched: computing fewer later is a
     /// downgrade. Also shows which realisation established which locked ID.
     pub schemes: BTreeSet<String>,
+    /// Adopted through its public key object only (`publicOnly`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub public_only: bool,
+    pub(crate) public_only: bool,
     /// Private keys: how the private object is bound to the identity. Absent: not recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<Binding>,
@@ -739,10 +781,12 @@ pub struct LockRealisation {
     /// The key of the `observations` entry this realisation was recorded with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observation: Option<String>,
+    /// What was seen of the object when it was recorded; never compared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observed: Option<Observed>,
+    pub(crate) observed: Option<Observed>,
+    /// The object's history on this token; never compared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provenance: Option<Provenance>,
+    pub(crate) provenance: Option<Provenance>,
 }
 
 /// Offline-verifiable attestation evidence pinned per realisation (§3.7 of docs/DESIGN.md).
@@ -753,8 +797,11 @@ pub struct LockRealisation {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AttestationRecord {
+    /// The attestation kind (`yubico-piv`, `tpm-certify`).
     pub kind: String,
+    /// SRI digest of the trust anchor the attestation was verified to.
     pub root: String,
+    /// This device's attestation commitment.
     pub id: String,
 }
 
@@ -763,10 +810,13 @@ pub struct AttestationRecord {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Immutables {
+    /// `CKA_LOCAL`: the key was generated on the token.
     #[serde(rename = "CKA_LOCAL", default, skip_serializing_if = "Option::is_none")]
     pub local: Option<bool>,
+    /// `CKA_NEVER_EXTRACTABLE`: the key has never been extractable.
     #[serde(rename = "CKA_NEVER_EXTRACTABLE", default, skip_serializing_if = "Option::is_none")]
     pub never_extractable: Option<bool>,
+    /// `CKA_ALWAYS_SENSITIVE`: the key has always been sensitive.
     #[serde(rename = "CKA_ALWAYS_SENSITIVE", default, skip_serializing_if = "Option::is_none")]
     pub always_sensitive: Option<bool>,
     /// `CKM_...`, absent when the token reports none (an imported key).
@@ -775,6 +825,7 @@ pub struct Immutables {
 }
 
 impl Immutables {
+    /// Nothing recorded (a class without these attributes): left out of the lock.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         *self == Immutables::default()
@@ -852,6 +903,7 @@ pub struct Origin {
     pub from: String,
     /// A method name of `migrate::Method`.
     pub method: String,
+    /// How exposed the material was on the way.
     pub exposure: crate::migrate::Exposure,
     /// A vendor method: `exposure` is the level it declared, not one cakeys established.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -873,6 +925,7 @@ pub struct Observation {
     /// Provider that handled the module (fix-ups must not change identity).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// The cakeys version that recorded it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cakeys_version: Option<String>,
     /// The module capability profile the token resolved to (docs/CAPROBE.md D8), when one is
@@ -1328,9 +1381,13 @@ pub struct ModuleInfo {
     /// SRI SHA-256 of that file; absent when it could not be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hash: Option<String>,
+    /// `CK_INFO.libraryDescription`.
     pub description: String,
+    /// `CK_INFO.manufacturerID`.
     pub manufacturer: String,
+    /// `CK_INFO.libraryVersion`.
     pub version: String,
+    /// `CK_INFO.cryptokiVersion`: the PKCS#11 version the module implements.
     pub cryptoki: String,
 }
 
@@ -1343,11 +1400,16 @@ impl ModuleInfo {
     }
 }
 
+/// The token a realisation was made on (`C_GetTokenInfo`): provenance, like [`ModuleInfo`]; another
+/// token is a warning.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TokenInfo {
+    /// `CK_TOKEN_INFO.model`.
     pub model: String,
+    /// `CK_TOKEN_INFO.serialNumber`.
     pub serial: String,
+    /// `CK_TOKEN_INFO.firmwareVersion`.
     pub firmware: String,
 }
 

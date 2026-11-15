@@ -20,13 +20,21 @@ pub enum PrivateParts {
 
 /// An RSA private key's parts, big-endian, as `CKA_MODULUS` … `CKA_COEFFICIENT`.
 pub struct RsaParts {
+    /// `CKA_MODULUS`.
     pub modulus: Vec<u8>,
+    /// `CKA_PUBLIC_EXPONENT`.
     pub public_exponent: Vec<u8>,
+    /// `CKA_PRIVATE_EXPONENT`.
     pub private_exponent: Zeroizing<Vec<u8>>,
+    /// `CKA_PRIME_1`.
     pub prime_1: Zeroizing<Vec<u8>>,
+    /// `CKA_PRIME_2`.
     pub prime_2: Zeroizing<Vec<u8>>,
+    /// `CKA_EXPONENT_1`.
     pub exponent_1: Zeroizing<Vec<u8>>,
+    /// `CKA_EXPONENT_2`.
     pub exponent_2: Zeroizing<Vec<u8>>,
+    /// `CKA_COEFFICIENT`.
     pub coefficient: Zeroizing<Vec<u8>>,
 }
 

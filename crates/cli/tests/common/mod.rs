@@ -2,6 +2,7 @@
 //! this file): running the package's own binary, the token headers of each suite's keys.toml,
 //! the cross-reference harness ([`xref`]), CLI output parsing and an independent DER oracle.
 #![allow(dead_code, reason = "each test binary uses a subset")]
+#![expect(unreachable_pub, reason = "its crate is a test binary: pub and pub(crate) say the same")]
 
 pub mod surface;
 pub mod xref;

@@ -27,6 +27,7 @@ pub enum Exposure {
 }
 
 impl Exposure {
+    /// The name a bundle and the lock write.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -49,6 +50,7 @@ impl std::fmt::Display for Exposure {
 /// formats"): a bundle or a lock's `provenance.origin` written with one must keep meaning it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Method {
+    /// Public material only: nothing secret moves.
     Public,
     /// A fresh AES KEK under RSA-OAEP to the transport key, the key under the KEK (RFC 5649).
     RsaOaepAesKwp(OaepHash),
@@ -56,6 +58,7 @@ pub enum Method {
     RsaOaep(OaepHash),
     /// Through the host, into a PKCS#11 target with `C_CreateObject`.
     HostPkcs8,
+    /// Through the host as a raw secret value, into a PKCS#11 target with `C_CreateObject`.
     HostRaw,
     /// Through the host, then `tpm2_ptool import`.
     Tpm2Ptool,
@@ -63,11 +66,15 @@ pub enum Method {
     PivImport,
     /// A duplication blob built on the host for the target TPM's parent key.
     TpmDuplicate,
+    /// Through the host, written as a PKCS#8 `EncryptedPrivateKeyInfo` (PBES2).
     Pkcs8Pbes2,
+    /// Through the host, written as PKCS#12 beside the key's certificate.
     Pkcs12,
     /// A provider's own method (docs/CAMIGRATE.md D10).
     Vendor {
+        /// The provider that declares it.
         provider: String,
+        /// The method's name within that provider.
         name: String,
     },
 }
@@ -133,24 +140,30 @@ impl std::fmt::Display for Method {
 /// RSA sizes (empty: any).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Accept {
+    /// The object class covered.
     pub class: ObjectClass,
+    /// The key types covered (empty: any).
     pub key_types: Vec<KeyType>,
+    /// The curves covered, by canonical name (empty: any).
     pub curves: Vec<&'static str>,
     /// Inclusive RSA modulus range in bits.
     pub modulus_bits: Option<(u32, u32)>,
 }
 
 impl Accept {
+    /// Every object of `class`.
     #[must_use]
     pub fn class(class: ObjectClass) -> Accept {
         Accept { class, key_types: vec![], curves: vec![], modulus_bits: None }
     }
 
+    /// The objects of `class` with one of `key_types`.
     #[must_use]
     pub fn key(class: ObjectClass, key_types: &[KeyType]) -> Accept {
         Accept { key_types: key_types.to_vec(), ..Accept::class(class) }
     }
 
+    /// Whether an object of type `ty` is one this capability covers.
     #[must_use]
     pub fn covers(&self, ty: &ObjectCfg) -> bool {
         self.class == ty.class
@@ -179,10 +192,15 @@ pub enum PlaintextImport {
 /// and the target providers it works with (empty: any).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VendorMethod {
+    /// The provider that declares it.
     pub provider: String,
+    /// Its name within that provider (a lock writes `vendor:<provider>/<name>`).
     pub name: String,
+    /// The exposure it declares; cakeys cannot establish it.
     pub exposure: Exposure,
+    /// The objects it moves.
     pub objects: Vec<Accept>,
+    /// The target providers it works with (empty: any).
     pub targets: Vec<String>,
 }
 
@@ -190,7 +208,9 @@ pub struct VendorMethod {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[expect(clippy::struct_excessive_bools, reason = "independent capability claims of a module profile")]
 pub struct Side {
+    /// The token's name in keys.toml.
     pub token: String,
+    /// The provider that handles it.
     pub provider: String,
     /// The usable mechanisms (provider-filtered), by `CKM_*` name.
     pub mechanisms: BTreeSet<String>,

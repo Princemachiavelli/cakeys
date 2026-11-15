@@ -14,17 +14,27 @@ use crate::{KmError, Result};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+/// What a token holds for one (spec, token) pair, as a run computed it: the object found, its
+/// IDs and what was observed of it. `realise` and `check` print it as JSON.
 #[derive(Debug, Serialize)]
 pub struct Resolved {
+    /// The object's name.
     pub object: String,
+    /// The spec's name.
     pub spec: String,
+    /// The token's name.
     pub token: String,
+    /// RFC 7512 URI of the object found.
     pub uri: String,
+    /// The identity mode the IDs were computed in.
     pub mode: Mode,
+    /// Adopted through its public key object only (`publicOnly`).
     #[serde(rename = "publicOnly")]
     pub public_only: bool,
+    /// SRI digest of the spec (object type and policy attributes).
     #[serde(rename = "specDigest")]
     pub spec_digest: String,
+    /// The IDs computed, scheme name -> SRI hash.
     pub ids: BTreeMap<String, String>,
     /// Private keys: how the private object was bound to `ids` (proven when `pop-sign`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -34,6 +44,7 @@ pub struct Resolved {
     pub assurance: crate::plan::Assurance,
     /// The observed policy vector and immutables of the object found (§4.2 of docs/DESIGN.md).
     pub policy: BTreeMap<String, AttrValue>,
+    /// Attributes fixed when the object was made.
     #[serde(skip_serializing_if = "Immutables::is_empty")]
     pub immutables: Immutables,
     /// Label the commitment schemes in `ids` were computed with (none for public-material IDs).
@@ -60,14 +71,17 @@ impl Notes {
         self.0.push(line.into());
     }
 
+    /// A `note:` line: something worth knowing that changes no verdict.
     pub fn note(&mut self, msg: impl std::fmt::Display) {
         self.0.push(format!("note: {msg}"));
     }
 
+    /// A `warning:` line: drift or a change the run tolerates, but should be looked at.
     pub fn warn(&mut self, msg: impl std::fmt::Display) {
         self.0.push(format!("warning: {msg}"));
     }
 
+    /// Every line so far, in order.
     #[must_use]
     pub fn lines(&self) -> &[String] {
         &self.0
@@ -78,13 +92,16 @@ impl Notes {
 /// (`--no-update-lock`, and always for `verify` and `check`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockWrite {
+    /// Only compare with the lock.
     Compare,
+    /// Compare, then record what the lock lacks.
     Record,
 }
 
 /// What this run observed of the object and of the token: recorded on `realise`, compared
 /// (warnings only) with what the lock recorded.
 pub struct Facts {
+    /// What was seen of the object (its URI, the session).
     pub observed: Observed,
     /// What the run saw of the module and token, recorded as an `observations` entry.
     pub observation: Observation,
