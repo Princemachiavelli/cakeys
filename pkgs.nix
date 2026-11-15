@@ -18,6 +18,8 @@ rec {
   mezura = pkgs.callPackage ./nix/mezura.nix { };
   # OpenTofu and the AWS CLI for scripts/cloud/aws.sh (docs/CLOUD_HSM.md).
   cloud-tools = pkgs.callPackage ./nix/cloud-tools.nix { };
+  # Google's Cloud KMS PKCS#11 library, x86_64-linux only.
+  kmsp11 = pkgs.callPackage ./nix/kmsp11.nix { };
   # The AWS CloudHSM client, unfree, x86_64-linux only: cloudhsm-pkcs11, cloudhsm-cli,
   # cloudhsm-dyn (the OpenSSL engine) and cloudhsm-openssl-provider.
   cloudhsm = import ./nix/cloudhsm.nix {

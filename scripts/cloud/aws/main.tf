@@ -28,6 +28,12 @@ variable "park" {
   default     = false
 }
 
+variable "stack" {
+  description = "fips or non-fips: in every name, so the two clusters' resources never collide."
+  type        = string
+  default     = "fips"
+}
+
 variable "mode" {
   description = "FIPS or NON_FIPS. Fixed for the cluster's life: changing it replaces the cluster."
   type        = string
@@ -79,7 +85,7 @@ provider "aws" {
 }
 
 locals {
-  name    = "caprobe"
+  name    = "caprobe-${var.stack}"
   running = var.park ? 0 : 1
   # us-west-1 offers two zones, and their names differ per account.
   azs = slice(sort(data.aws_availability_zones.available.names), 0, 2)

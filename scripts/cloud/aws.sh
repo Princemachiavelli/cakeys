@@ -3,7 +3,7 @@
 # us-west-1, a CloudHSM cluster with one HSM, and a NixOS runner in the cluster's security group.
 # The infrastructure is scripts/cloud/aws/main.tf; this script runs OpenTofu on it.
 #
-#   scripts/cloud/aws.sh create [--mode FIPS|NON_FIPS] [--hsm-type T] [--instance-type T] [--nixos R]
+#   scripts/cloud/aws.sh create [--hsm-type T] [--instance-type T] [--nixos R]
 #   scripts/cloud/aws.sh init
 #   scripts/cloud/aws.sh activate
 #   scripts/cloud/aws.sh probe [<profile name>]
@@ -33,13 +33,16 @@
 # status    lists every CloudHSM cluster and caprobe-tagged instance in the region with what it
 #           bills, and exits 1 while anything billed by the hour exists.
 #
-# create and destroy --park refuse a plan that would delete the cluster (a changed --mode, for
-# one): that would lose its initialization. Run a full destroy first if that is meant.
+# create and destroy --park refuse a plan that would delete the cluster (a changed --hsm-type,
+# for one): that would lose its initialization. Run a full destroy first if that is meant.
+#
+# CAKEYS_AWS_MODE (FIPS, the default, or NON_FIPS) picks the cluster: one per mode, since a
+# cluster's mode is fixed for its life. Each has its own network, CA, users and state.
 #
 # Credentials: the AWS CLI's usual chain (AWS_PROFILE, `aws login`, `aws sso login`). The region
 # is always us-west-1, whatever the profile says. The OpenTofu state lives in
-# ${XDG_STATE_HOME:-~/.local/state}/cakeys/cloud/aws, outside the worktree: losing it leaves
-# billed resources nothing knows about (`status` still finds them).
+# ${XDG_STATE_HOME:-~/.local/state}/cakeys/cloud/aws/<fips|non-fips>, outside the worktree:
+# losing it leaves billed resources nothing knows about (`status` still finds them).
 #
 # SSH_PUBLIC_KEY_FILE (default ~/.ssh/id_ed25519.pub) is the key the runner's root accepts; port
 # 22 is open to this machine's current public address only, re-read at every create.
@@ -51,7 +54,16 @@ shopt -s inherit_errexit
 
 repo=$(realpath "$(dirname "$(realpath "$0")")/../..")
 tf=$repo/scripts/cloud/aws
-state=${XDG_STATE_HOME:-$HOME/.local/state}/cakeys/cloud/aws
+mode=${CAKEYS_AWS_MODE:-FIPS}
+case $mode in
+FIPS | NON_FIPS) ;;
+*)
+  echo "CAKEYS_AWS_MODE is FIPS or NON_FIPS, not '$mode'" >&2
+  exit 2
+  ;;
+esac
+stack=$(tr '[:upper:]_' '[:lower:]-' <<<"$mode")
+state=${XDG_STATE_HOME:-$HOME/.local/state}/cakeys/cloud/aws/$stack
 vars=$state/vars.tfvars.json
 export AWS_REGION=us-west-1 AWS_DEFAULT_REGION=us-west-1
 export TF_DATA_DIR=$state/.terraform TF_IN_AUTOMATION=1 TF_INPUT=0
@@ -166,10 +178,9 @@ cluster_state() {
 
 create() {
   local next=$state/next.tfvars.json key=${SSH_PUBLIC_KEY_FILE:-$HOME/.ssh/id_ed25519.pub} ip
-  local -a set=()
+  local -a set=(--arg mode "$mode" --arg stack "$stack")
   while (($#)); do
     case $1 in
-    --mode) set+=(--arg mode "${2-}") ;;
     --hsm-type) set+=(--arg hsm_type "${2-}") ;;
     --instance-type) set+=(--arg instance_type "${2-}") ;;
     --nixos) set+=(--arg nixos_release "${2-}") ;;
@@ -285,12 +296,9 @@ EOF
 
 probe() {
   tf_init
-  local mode p11 opensc bin label name out rc=0
-  mode=$(out mode)
+  local p11 opensc bin label name out rc=0
   p11=$(pkg cloudhsm-pkcs11)
-  name=${1:-cloudhsm-pkcs11/$(sed -E 's/.*-([0-9]+\.[0-9]+)\.[0-9]+$/\1/' <<<"$p11")+hsm2m-$(
-    tr '[:upper:]_' '[:lower:]-' <<<"$mode"
-  )}
+  name=${1:-cloudhsm-pkcs11/$(sed -E 's/.*-([0-9]+\.[0-9]+)\.[0-9]+$/\1/' <<<"$p11")+hsm2m-$stack}
   out=$repo/profiles/modules/$name.toml
   opensc=$(nix build --no-link --print-out-paths --inputs-from "$repo" nixpkgs#opensc)
   # Only the Nix-built caprobe may write a profile (docs/CAPROBE.md); its check phase is skipped
