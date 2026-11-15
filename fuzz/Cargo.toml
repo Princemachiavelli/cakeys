@@ -3,7 +3,7 @@ name = "cakeys-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "BSD-3-Clause"
 
 [package.metadata]
 cargo-fuzz = true

@@ -245,7 +245,7 @@ fn run_probe(
 }
 
 /// Write a generated profile to `path`, keeping the one section the probe does not generate:
-/// the file's [migration] claims (docs/CAMIGRATE.md evidence, never probe-observable). Refused onto
+/// the file's `[migration]` claims (docs/CAMIGRATE.md evidence, never probe-observable). Refused onto
 /// an existing file that does not parse (regenerating it would silently drop those claims),
 /// and onto any existing file from a read-only probe (it would drop every write-probe row).
 fn write_profile(

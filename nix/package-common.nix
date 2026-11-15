@@ -197,10 +197,7 @@ in
     meta = {
       description = "Content-addressed identity for PKCS#11 objects";
       mainProgram = "cakeys";
-      license = with lib.licenses; [
-        mit
-        asl20
-      ];
+      license = lib.licenses.bsd3;
       platforms = lib.platforms.linux ++ lib.platforms.darwin;
     };
   };

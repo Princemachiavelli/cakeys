@@ -1475,7 +1475,7 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
 }
 
 /// A side with no RFC 5649 of its own (AWS `CloudHSM`, whose profile subtracts the AES key wraps
-/// it lists but refuses [run]) moves the composed method by `CKM_RSA_AES_KEY_WRAP`, in and out.
+/// it lists but refuses \[run\]) moves the composed method by `CKM_RSA_AES_KEY_WRAP`, in and out.
 /// Offline, `SoftHSM` under a copy of its committed profile, added through `profileDirs` and named
 /// by `provider`, that subtracts its
 /// AES key wraps: into it, `migrate` unwraps both blobs in one call; out of it, each sealed key of

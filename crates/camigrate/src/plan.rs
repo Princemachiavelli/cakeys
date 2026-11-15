@@ -389,7 +389,7 @@ mod tests {
         Side { trusted_wrap: false, ..Side::pkcs11("kryoptic", "kryoptic", mech.map(String::from)) }
     }
 
-    /// AWS `CloudHSM` once its profile subtracts the AES key wraps it lists but refuses [run]:
+    /// AWS `CloudHSM` once its profile subtracts the AES key wraps it lists but refuses \[run\]:
     /// RFC 5649 only inside `CKM_RSA_AES_KEY_WRAP`.
     fn cloudhsm() -> Side {
         let mech = ["CKM_RSA_PKCS_OAEP", "CKM_AES_KEY_GEN", "CKM_RSA_AES_KEY_WRAP"];
@@ -543,7 +543,7 @@ mod tests {
         }
     }
 
-    /// A target whose profile refuses a key kind (`migration.refuses`: `CloudHSM`'s Ed25519 [run])
+    /// A target whose profile refuses a key kind (`migration.refuses`: `CloudHSM`'s Ed25519 \[run\])
     /// is blocked with that reason, whatever wrap both sides share; other keys still move.
     #[test]
     fn a_refused_key_kind_is_blocked_at_the_target() {

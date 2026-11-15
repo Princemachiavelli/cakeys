@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+publish.workspace = true
 
 [lib]
 # The cdylib is the module clients load; the rlib carries the unit tests.

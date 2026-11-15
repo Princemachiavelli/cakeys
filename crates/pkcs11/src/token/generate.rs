@@ -215,7 +215,7 @@ impl Token {
 /// Whether a refused key pair is generated once more without the public half's
 /// `CKA_PRIVATE = false`: only cakeys' own default (the spec did not declare `CKA_PRIVATE`), and
 /// only when the module called a value invalid. AWS `CloudHSM` makes every public key private
-/// [run] (docs/CAPROBE.md); a spec that asks for `CKA_PRIVATE = false` keeps the refusal.
+/// \[run\] (docs/CAPROBE.md); a spec that asks for `CKA_PRIVATE = false` keeps the refusal.
 #[must_use]
 pub fn retry_without_public_private(refusal: &CkError, declared: bool) -> bool {
     !declared && matches!(refusal, CkError::Pkcs11(RvError::AttributeValueInvalid, _))

@@ -21,6 +21,10 @@
   formatting = treefmt.config.build.check self;
   # Clippy with -D warnings over every target (nix/package-crane.nix).
   inherit (cakeys) clippy;
+  # rustdoc, private items included, with -D warnings: no broken doc link (nix/package-crane.nix).
+  inherit (cakeys) doc;
+  # `cargo check --all-targets` with the toolchain at Cargo.toml's rust-version.
+  inherit (cakeys) msrv;
   # cargo-deny offline (see `deny` in pkgs.nix): reproducible with the flake.lock.
   deny = deny.check;
   # nix/demo.sh straight through: every step's expected exit code still holds.

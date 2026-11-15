@@ -32,7 +32,7 @@ fn patched(what: &str) -> bool {
 
 /// The committed ykcs11/2.7 profile is probe output (docs/CAPROBE.md): a fresh write
 /// probe in the scratch slot conforms, and regenerating the file changes no byte — its
-/// [migration] claims and [manual] findings preserved. A slot holding anything but ykcs11's own
+/// `[migration]` claims and `[manual]` findings preserved. A slot holding anything but ykcs11's own
 /// placeholder is refused before anything is written (the guard's unit test covers the
 /// certificate rules: crates/ykcs11/src/lib.rs). Another firmware, or a device not in
 /// FIPS-approved mode, drifts by design (exit 15, the rows named): probe it and record a new

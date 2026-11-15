@@ -4,7 +4,7 @@
 //! profile follows the provider family, chosen by the most match keys — the version
 //! `C_GetInfo` expresses, then the token's model and firmware (D9/D10) —
 //! never a module digest; the one committed profile of a family matches by
-//! manufacturer alone, flagged low-evidence (kryoptic reports 0.0 [run]).
+//! manufacturer alone, flagged low-evidence (kryoptic reports 0.0 \[run\]).
 
 use crate::binding;
 use cakeys_core::config::{ModuleInfo, TokenCfg, TokenInfo};

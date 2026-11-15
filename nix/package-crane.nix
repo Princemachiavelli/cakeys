@@ -10,6 +10,8 @@
   stdenv,
   cargo-mutants,
   cargo-nextest,
+  # The toolchain at Cargo.toml's rust-version (pkgs.nix), for `msrv`.
+  msrvToolchain,
   # See nix/package-common.nix.
   withTpm2 ? null,
 }:
@@ -177,12 +179,40 @@ craneLib.buildPackage (
           cargoClippyExtraArgs = "--all-targets -- -D warnings";
         }
       );
+      # rustdoc over every crate, private items included, warnings as errors: a doc link that no
+      # longer resolves fails here. (Evidence tags in doc comments are written `\[run\]`.)
+      doc = craneLib.cargoDoc (
+        base
+        // {
+          inherit cargoArtifacts;
+          cargoDocExtraArgs = "--no-deps --document-private-items";
+          RUSTDOCFLAGS = "-D warnings";
+        }
+      );
+      # Every target checked with the toolchain at Cargo.toml's rust-version, the dependencies
+      # built with it too: the minimum the workspace states is one it builds with.
+      msrv =
+        let
+          craneMsrv = craneLib.overrideToolchain (_: msrvToolchain);
+          args = base // {
+            pnameSuffix = "-msrv";
+          };
+        in
+        craneMsrv.mkCargoDerivation (
+          args
+          // {
+            cargoArtifacts = craneMsrv.buildDepsOnly args;
+            buildPhaseCargoCommand = "cargo check --release --all-targets ${base.cargoExtraArgs}";
+            doInstallCargoArtifacts = false;
+            installPhaseCommand = "mkdir -p $out";
+          }
+        );
       minimal = craneLib.buildPackage (minimal // { cargoArtifacts = craneLib.buildDepsOnly minimal; });
       # Mutation testing (docs/DEVELOPMENT.md). `mutants` is the code whose own unit and property
-      # tests are its tests, no token needed: `nix build .#mutants`. `mutantsFor` takes one
-      # package's files with the token suites running, for the code only they reach:
+      # tests are its tests, no token needed: `nix build .#mutants`. `mutantsOf` takes one scope
+      # ({ package, files, re ? null }) with the token suites running, for the code only they reach:
       #   nix build --impure --expr \
-      #     '(builtins.getFlake "git+file://$PWD").packages.x86_64-linux.cakeys-crane.mutantsFor "camigrate" [ "crates/camigrate/src/host.rs" ]'
+      #     '(builtins.getFlake "git+file://$PWD").packages.x86_64-linux.cakeys-crane.mutantsOf { package = "camigrate"; files = [ "crates/camigrate/src/host.rs" ]; }'
       mutants = mutants {
         scopes = [
           {
@@ -204,17 +234,10 @@ craneLib.buildPackage (
           }
         ];
       };
-      # One scope ({ package, files, re ? null }) against the token suites, as `mutantsFor`.
       mutantsOf =
         scope:
         mutants {
           scopes = [ scope ];
-          tokens = true;
-        };
-      mutantsFor =
-        package: files:
-        mutants {
-          scopes = [ { inherit package files; } ];
           tokens = true;
         };
       # Line and region coverage of the whole test run, the token suites included: the tests

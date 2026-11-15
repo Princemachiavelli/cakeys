@@ -1,6 +1,6 @@
 //! A capability profile (docs/CAPROBE.md D2, D3): how one vendor SO version (`observed`
 //! mode) or one layer between cakeys and the token (`delta` mode) deviates from what it
-//! advertises. The rows committed today carry this repo's [run] evidence; the probe (phase 3)
+//! advertises. The rows committed today carry this repo's \[run\] evidence; the probe (phase 3)
 //! regenerates them and fills the `advertise` lists.
 
 use std::collections::BTreeMap;
@@ -65,11 +65,11 @@ pub struct Decrypt {
 
 /// How a module derives with `CKM_ECDH1_DERIVE` (`derive = { sealed = ... }`): whether it
 /// derives into a sealed secret (`CKA_SENSITIVE`, not `CKA_EXTRACTABLE`), which `pop-ecdh`
-/// MACs with when it can. ykcs11 derives only into an extractable secret [src]. And what
+/// MACs with when it can. ykcs11 derives only into an extractable secret \[src\]. And what
 /// `CKA_DERIVE` the base key reports although it derived (`key-attribute`): ykcs11 reports
-/// false on every key, from a fixed table [src], so a spec asking `CKA_DERIVE = true` of it can
+/// false on every key, from a fixed table \[src\], so a spec asking `CKA_DERIVE = true` of it can
 /// never be met while ECDH works. And whether it derives in a read-only session (`read-only`):
-/// tpm2-pkcs11 keeps derived secrets as store rows, so it refuses there [run]. Absent: never
+/// tpm2-pkcs11 keeps derived secrets as store rows, so it refuses there \[run\]. Absent: never
 /// probed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct Derive {
@@ -90,8 +90,8 @@ pub struct Derive {
 pub struct Manual {
     /// What was found.
     pub finding: String,
-    /// How: the command or source that shows it, with its date and an evidence tag (`[run]`,
-    /// `[src]`, `[spec]`).
+    /// How: the command or source that shows it, with its date and an evidence tag (`\[run\]`,
+    /// `\[src\]`, `[spec]`).
     pub evidence: String,
 }
 
@@ -124,7 +124,7 @@ pub struct GenerateRow {
     #[serde(default, rename = "cannot-bits")]
     pub cannot_bits: Vec<u32>,
     /// Curves in `can` that generate only when `CKA_EC_PARAMS` names them (PKCS#11 3.0's
-    /// `PrintableString` form), never by OID: ykcs11's Edwards and Montgomery curves [src].
+    /// `PrintableString` form), never by OID: ykcs11's Edwards and Montgomery curves \[src\].
     #[serde(default, rename = "by-name")]
     pub by_name: Vec<String>,
 }
@@ -203,7 +203,7 @@ pub struct Migration {
     #[serde(default, rename = "public-accepts")]
     pub public_accepts: Vec<AcceptRow>,
     /// Keys it takes in by no import at all, sealed or host, whatever its mechanisms say: AWS
-    /// `CloudHSM` holds Ed25519 as `CKK_EC` and refuses a `CKK_EC_EDWARDS` template [run].
+    /// `CloudHSM` holds Ed25519 as `CKK_EC` and refuses a `CKK_EC_EDWARDS` template \[run\].
     #[serde(default)]
     pub refuses: Vec<AcceptRow>,
 }

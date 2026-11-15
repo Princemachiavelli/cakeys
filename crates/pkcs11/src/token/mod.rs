@@ -45,7 +45,7 @@ pub enum Access {
     Write,
     /// Reads, and makes session objects (a key-wrap copy, a KEK): read-write where the token
     /// allows it, since AWS `CloudHSM` refuses even a session object in a read-only session
-    /// (`CKR_SESSION_READ_ONLY` [run]); read-only on a write-protected token.
+    /// (`CKR_SESSION_READ_ONLY` \[run\]); read-only on a write-protected token.
     Scratch,
 }
 
@@ -138,7 +138,7 @@ pub struct Token {
 ///
 /// Finalized, the module stays mapped until the process exits: a module's own threads may still
 /// be winding down when `C_Finalize` returns, and unloading under them crashes the process after
-/// its work is done (libkmsp11's gRPC threads [run], about one run in twenty, exit 139 in place of
+/// its work is done (libkmsp11's gRPC threads \[run\], about one run in twenty, exit 139 in place of
 /// the run's own code). Opening the module again maps the same library and initializes it anew.
 struct Library(Pkcs11);
 
@@ -301,7 +301,7 @@ impl Token {
 
     /// A second session on the token, for a step the module refuses in the verb's own: a
     /// read-only verb's proof by deriving on tpm2-pkcs11, which keeps derived secrets as store
-    /// rows and so derives only in a read-write session [run]. Login state belongs to the
+    /// rows and so derives only in a read-write session \[run\]. Login state belongs to the
     /// token, shared by every session of the process, and object handles are valid in all of
     /// them (PKCS#11 base §5.6), so it needs no login and finds the same key.
     ///

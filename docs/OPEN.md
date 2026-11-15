@@ -168,6 +168,12 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   token suites reach them, a plain `cargo test` does not); the sealed path with OAEP SHA-256
   and the host path's occupied-locator and rollback branches run in no test; the YubiKey
   provider and the probe's scratch-slot guard only in the opt-in hardware tests.
+- **Split the reference suite** (`crates/cli/tests/reference/mod.rs`, 3,085 lines, 62 functions
+  in one module): submodules by theme, e.g. identity and oracles (curves, AES, HMAC, schemes),
+  the lock (invariants, provenance, `gc`, the sidecar lock), conflicts and drift (H1, S3–S8,
+  downgrades), proof of possession, and certificates and adoption, with the shared helpers in
+  their own module. Each binary (`tests/softhsm.rs`, `tests/kryoptic.rs`) still includes the
+  whole suite. `cakeys-pkcs11` (4.5k lines, 16 unit tests) is tested almost only through it.
 - **Fuzz the remaining parsers**: the PIV chain, the P-521 fix-up, profile emit and parse.
 - **Design models** (DEVELOPMENT.md): Quint or TLA+ for the lock rules, Alloy for the lock's
   structure and S16, Tamarin for proof of possession and attestation, Kani for small pure

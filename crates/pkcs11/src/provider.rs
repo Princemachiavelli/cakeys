@@ -71,14 +71,14 @@ pub trait Provider: Send + Sync {
     }
 
     /// Repair a key type the module misreports, from the object's `CKA_EC_PARAMS` where it has
-    /// them: AWS `CloudHSM` reports an Ed25519 key as `CKK_EC` [run].
+    /// them: AWS `CloudHSM` reports an Ed25519 key as `CKK_EC` \[run\].
     fn key_type(&self, reported: KeyType, _ec_params: Option<&[u8]>) -> KeyType {
         reported
     }
 
     /// The mechanism this module runs for the standard `m` it does not list, parameterless:
     /// AWS `CloudHSM` generates Ed25519 with `CKM_EC_KEY_PAIR_GEN` and signs with a vendor
-    /// mechanism [run]. Used only where the module does not list `m` ([`Token::runnable`]), and
+    /// mechanism \[run\]. Used only where the module does not list `m` ([`Token::runnable`]), and
     /// relied on only where a profile's `add` row records that it works (`caprobe` measures
     /// [`Self::stand_ins`]). `None`: no stand-in.
     ///

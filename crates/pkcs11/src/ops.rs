@@ -72,8 +72,8 @@ pub fn schemes_on(t: &Target, tok: &Token) -> Result<Vec<Scheme>> {
 }
 
 /// What a target needs of its token, whatever the token: the one source of truth for the live
-/// check before anything is created ([`check_capabilities`]) and the static gate against the
-/// capability profiles ([`static_gate`], docs/CAPROBE.md).
+/// check before anything is created (`check_capabilities`) and the static gate against the
+/// capability profiles ([`crate::gate::check`], docs/CAPROBE.md).
 pub struct Needs {
     /// Mechanism groups in check order: the token must implement at least one of each.
     pub groups: Vec<Vec<MechanismType>>,

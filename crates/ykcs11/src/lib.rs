@@ -81,8 +81,8 @@ impl Provider for Ykcs11 {
     }
 
     /// ykcs11 reports `CKA_DERIVE` false on every private key, from a fixed per-slot table
-    /// (`pvtkey_objects`, ykcs11/objects.c) [src], while its `C_DeriveKey` derives with any EC
-    /// or X25519 key in any slot [src][run]. A spec-compliant module reports what the key does.
+    /// (`pvtkey_objects`, ykcs11/objects.c) \[src\], while its `C_DeriveKey` derives with any EC
+    /// or X25519 key in any slot \[src\]\[run\]. A spec-compliant module reports what the key does.
     fn policy_flag(&self, attr: AttributeType, reported: bool, private_key_type: &dyn Fn() -> Option<KeyType>) -> bool {
         reported
             || (attr == AttributeType::Derive
@@ -91,8 +91,8 @@ impl Provider for Ykcs11 {
 
     /// ykcs11's own placeholder: when it generates a key it stores a self-issued certificate
     /// with serial 0 and subject `CN=YubiKey PIV Slot <slot>` (`token_generate_key`,
-    /// ykcs11/token.c) [src]; beside it the device's on-demand attestation certificate
-    /// (`CN=YubiKey PIV Attestation <slot>`) shares the `CKA_ID` [run]. A slot is scratch only
+    /// ykcs11/token.c) \[src\]; beside it the device's on-demand attestation certificate
+    /// (`CN=YubiKey PIV Attestation <slot>`) shares the `CKA_ID` \[run\]. A slot is scratch only
     /// with the placeholder present and nothing else: a certificate anyone issued — a real one,
     /// or one `ykman` made — is not it, and a key with no certificate is never presumed scratch.
     fn scratch_occupant(&self, id: &[u8], certs: &[Vec<u8>]) -> bool {

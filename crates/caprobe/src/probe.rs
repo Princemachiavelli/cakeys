@@ -32,7 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// The text of a module-supplied string with its C padding removed: PKCS#11's fixed-width
 /// fields are C strings, and a module may NUL-pad them (tpm2-pkcs11's token model comes from
 /// the TPM's four 4-byte vendor-string properties, so swtpm reports `SW` + NULs + `TPM`
-/// [run]). The padding is layout, not content — a note records the text.
+/// \[run\]). The padding is layout, not content — a note records the text.
 fn clean(s: &str) -> String {
     s.split('\0').filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ")
 }
@@ -1249,7 +1249,7 @@ fn probe_wrapping(made: &mut Made, profile: &mut Profile, transport: (ObjectHand
 /// build names it) or under the RSA transport key (`CKM_RSA_AES_KEY_WRAP`, either OAEP hash). A
 /// mechanism the module refuses as such (`CKR_MECHANISM_INVALID`, `CKR_FUNCTION_NOT_SUPPORTED`)
 /// is a `subtract` row: AWS `CloudHSM` lists `CKM_AES_KEY_WRAP` and `_PAD` with
-/// `CKF_WRAP | CKF_UNWRAP` and refuses both [run]. Any other refusal is a note, never a
+/// `CKF_WRAP | CKF_UNWRAP` and refuses both \[run\]. Any other refusal is a note, never a
 /// subtraction: it may be the probe's template or key, not the mechanism.
 fn probe_key_wraps(made: &mut Made, profile: &mut Profile, transport: (ObjectHandle, ObjectHandle), aes: ObjectHandle) {
     let session = made.session;
@@ -1433,8 +1433,8 @@ pub fn drift(generated: &Profile, claimed: &Profile, write: bool) -> Vec<String>
 }
 
 /// Keep, in a generated `profile` about to replace the file with content `existing` (named
-/// `shown` in messages), the two sections the probe does not generate: the file's [migration]
-/// claims (docs/CAMIGRATE.md evidence, never probe-observable) and its [manual] findings (made by
+/// `shown` in messages), the two sections the probe does not generate: the file's `[migration]`
+/// claims (docs/CAMIGRATE.md evidence, never probe-observable) and its `[manual]` findings (made by
 /// hand, each with its evidence).
 ///
 /// # Errors

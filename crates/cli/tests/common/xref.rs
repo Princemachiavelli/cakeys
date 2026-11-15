@@ -216,7 +216,7 @@ impl Env {
 
 /// What a dry run must leave as it was on `r`'s token: every object as `pkcs11-tool` lists it,
 /// logged in — a process of its own, so no module is initialized twice in the test's. kryoptic's
-/// login alone takes over a second (its PIN's key derivation [run]), which made the twin cost
+/// login alone takes over a second (its PIN's key derivation \[run\]), which made the twin cost
 /// ten times the suite: its token is its one database file, compared by content instead.
 fn objects(r: &Ref) -> String {
     if r.name.starts_with("kryoptic")

@@ -15,6 +15,12 @@
     };
     # Rust builds with their dependencies built once per Cargo.lock (nix/package-crane.nix).
     crane.url = "github:ipetkov/crane";
+    # Rust releases by version: checks.msrv builds with the toolchain at Cargo.toml's
+    # rust-version, which nixpkgs (one current rustc) does not carry.
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -24,6 +30,7 @@
       treefmt-nix,
       advisory-db,
       crane,
+      rust-overlay,
     }:
     let
       inherit (nixpkgs) lib;
@@ -49,6 +56,7 @@
           local = import ./pkgs.nix {
             inherit pkgs pkgsCloudhsm advisory-db;
             craneLib = crane.mkLib pkgs;
+            rustBin = rust-overlay.lib.mkRustBin { } pkgs;
           };
         in
         {

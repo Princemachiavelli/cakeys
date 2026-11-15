@@ -77,7 +77,7 @@ pub struct EcdhChallenge {
     /// HMAC-SHA256 over `msg` keyed with the shared secret.
     pub mac: Vec<u8>,
     /// The shared secret itself, for a token that derives only into an extractable secret
-    /// (ykcs11 [src]): the token's derived value is compared with it instead of a MAC. Secret
+    /// (ykcs11 \[src\]): the token's derived value is compared with it instead of a MAC. Secret
     /// only to the two ephemeral parties, and used once.
     pub secret: Vec<u8>,
 }

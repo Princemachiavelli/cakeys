@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 /// A TOML basic-string body for `s`: quotes, backslashes and control characters escaped.
 /// Module-supplied text must land in the file as parseable TOML that reads back identically —
-/// a fixed-width field a module pads with NULs (tpm2-pkcs11's token model, [run]) would
+/// a fixed-width field a module pads with NULs (tpm2-pkcs11's token model, \[run\]) would
 /// otherwise make the committed profile unparsable.
 fn toml_str(s: &str) -> String {
     use std::fmt::Write as _;

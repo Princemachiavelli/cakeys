@@ -5,12 +5,22 @@
   pkgsCloudhsm,
   advisory-db,
   craneLib,
+  rustBin,
 }:
+let
+  # The toolchain at Cargo.toml's rust-version, for checks.msrv: rust-overlay names releases in
+  # full (1.89 is 1.89.0).
+  msrvToolchain =
+    let
+      v = (pkgs.lib.importTOML ./Cargo.toml).workspace.package.rust-version;
+    in
+    rustBin.stable.${if pkgs.lib.length (pkgs.lib.splitString "." v) == 2 then "${v}.0" else v}.minimal;
+in
 rec {
   cakeys = pkgs.callPackage ./nix/package.nix { };
   # The same build with crane (nix/package-crane.nix): its dependencies built once per
   # Cargo.lock, so the checks (and their clippy and minimal builds) rebuild only cakeys' crates.
-  cakeys-crane = pkgs.callPackage ./nix/package-crane.nix { inherit craneLib; };
+  cakeys-crane = pkgs.callPackage ./nix/package-crane.nix { inherit craneLib msrvToolchain; };
   # The module measurer, the key mover (README.md, "Three tools") and the fault-injecting PKCS#11
   # module (docs/FAULT_SHIM.md): outputs of the same build.
   inherit (cakeys) caprobe camigrate;

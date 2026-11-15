@@ -24,7 +24,7 @@ use common::*;
 
 /// On the harness's fresh store: tpm2-pkcs11 leaves objects behind it cannot destroy, and they
 /// change what a later probe can do. The committed pair profile is what the probe observes on
-/// this TPM, and regenerating it changes no byte ([migration] and [manual] kept). Needs the
+/// this TPM, and regenerating it changes no byte (`[migration]` and `[manual]` kept). Needs the
 /// patched cryptoki (the Nix build's); a cargo build skips the diff.
 #[test]
 fn a_fresh_probe_is_the_committed_profile() {

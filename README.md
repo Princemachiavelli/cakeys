@@ -166,4 +166,4 @@ the Nix build applies ([docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)). The `tpm2` a
 providers are default cargo features; third-party providers can be linked in
 (`crates/cli/examples/custom-provider.rs`).
 
-License: MIT OR Apache-2.0.
+License: BSD-3-Clause ([LICENSE](LICENSE)).

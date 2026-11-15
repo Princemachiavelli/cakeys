@@ -221,7 +221,7 @@ pub(crate) fn parse_parent(config: &str, objauth: &str) -> Result<Parent> {
 }
 
 /// A row's attribute map. The module can write an attribute twice (seen: `CKA_TOKEN`, type 1, on
-/// keys cakeys generates [run]), which a YAML mapping type refuses; here the last value stands,
+/// keys cakeys generates \[run\]), which a YAML mapping type refuses; here the last value stands,
 /// as it did for the line reader this replaced.
 struct Attrs(BTreeMap<u64, Value>);
 
@@ -251,7 +251,7 @@ impl<'de> serde::Deserialize<'de> for Attrs {
 /// explicitly tagged — `? !!int "258" : !!str "a1..."`. Values cakeys needs are integers and
 /// hex strings; the rest (booleans, the `CKA_ALLOWED_MECHANISMS` sequences) is parsed and left.
 /// `None` for a row without TPM key material (no `CKA_TPM2_PUB_BLOB`): an ECDH-derived secret,
-/// which tpm2-pkcs11 1.10 keeps as a store row even from a `CKA_TOKEN = false` template [run] —
+/// which tpm2-pkcs11 1.10 keeps as a store row even from a `CKA_TOKEN = false` template \[run\] —
 /// never certifiable, and no reason to refuse the rest of the store.
 pub(crate) fn parse_tobject(attrs: &str) -> Result<Option<TObject>> {
     let bad = |what: &str| KmError::Unavailable(format!("tpm2-pkcs11 store: object attrs: {what}"));

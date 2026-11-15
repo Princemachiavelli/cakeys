@@ -308,7 +308,7 @@ impl Run<'_> {
         .into())
     }
 
-    /// `create`: every selected pair ([`create_pairs`]), then the lock records what was created,
+    /// `create`: every selected pair ([`ops::create_pairs`]), then the lock records what was created,
     /// also when a later pair failed — never a key made and lost.
     fn create(
         &mut self,

@@ -21,7 +21,9 @@ exclude = ["fuzz"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
-license = "MIT OR Apache-2.0"
+license = "BSD-3-Clause"
+# Nothing here goes to crates.io: the tools ship through the flake (README.md, "Nix").
+publish = false
 
 [workspace.dependencies]
 cakeys-core = { path = "crates/core" }
@@ -31,7 +33,8 @@ cakeys-ykcs11 = { path = "crates/ykcs11" }
 cakeys-tpm2-pkcs11 = { path = "crates/tpm2-pkcs11" }
 cakeys-kmsp11 = { path = "crates/kmsp11" }
 cakeys-aws-cloudhsm = { path = "crates/aws-cloudhsm" }
-cakeys-cli-common = { path = "crates/cli-common" }
+# Without its providers: each tool turns them on through its own `tpm2` and `ykcs11` features.
+cakeys-cli-common = { path = "crates/cli-common", default-features = false }
 anyhow = "1"
 base16ct = { version = "1", features = ["alloc"] }
 base64 = "0.23"

@@ -2,7 +2,7 @@
 //! it does without code is data, in the `aws-cloudhsm` profiles (a public key is always private,
 //! the AES key wraps it lists but refuses, raw ECDH behind a client option). What needs code is
 //! Ed25519, which a non-FIPS cluster makes and signs with, but not through the standard
-//! mechanisms [run]:
+//! mechanisms \[run\]:
 //!
 //! - it lists no `CKM_EC_EDWARDS_KEY_PAIR_GEN`, and generates an Ed25519 key with
 //!   `CKM_EC_KEY_PAIR_GEN` given the Ed25519 OID in `CKA_EC_PARAMS`;
@@ -101,7 +101,7 @@ mod tests {
         assert!(!AwsCloudHsm.matches(&module("SoftHSM")));
     }
 
-    /// The SPKI `CloudHSM` puts in `CKA_EC_POINT` [run] gives up its point; anything else is kept.
+    /// The SPKI `CloudHSM` puts in `CKA_EC_POINT` \[run\] gives up its point; anything else is kept.
     #[test]
     fn an_ed25519_spki_point_is_unpacked() {
         let point = [0x5f_u8; 32];

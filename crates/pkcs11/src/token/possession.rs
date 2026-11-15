@@ -151,7 +151,7 @@ impl Token {
     /// secret; the token derives the same secret with `CKM_ECDH1_DERIVE` into a non-extractable
     /// session key and MACs the challenge with it. The MACs agree only if the token's private key
     /// is the one `spki` names. A token without HMAC, or whose profile says it derives only into
-    /// an extractable secret (`derive.sealed = false`: ykcs11 [src]), proves by
+    /// an extractable secret (`derive.sealed = false`: ykcs11 \[src\]), proves by
     /// [`Self::prove_ecdh_extractable`] instead.
     fn prove_ecdh(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
         let ch = pop::ecdh_challenge(spki, msg)?;
@@ -239,7 +239,7 @@ impl Token {
 
     /// `C_DeriveKey` for a proof, against the ephemeral `peer`: in the verb's session, else —
     /// refused there as read-only (tpm2-pkcs11 keeps derived secrets as store rows, so it
-    /// derives only in a read-write session, `derive.read-only = false` [run]) — in a read-write
+    /// derives only in a read-write session, `derive.read-only = false` \[run\]) — in a read-write
     /// session opened for it, returned so the secret is used and destroyed where it lives.
     fn derive_for_proof(
         &self,
@@ -413,7 +413,7 @@ const NO_SIGN_AFTER_INIT: &str = "this build's cryptoki has no sign after C_Sign
      cannot prove possession; build with it, or opt in with binding = \"token-asserted\"";
 
 /// Why a proof of possession by `binding` of a private key of `object` cannot run on `side`:
-/// `None` when it can. The one check the proof itself ([`Token::prove_binding`]), `cakeys`
+/// `None` when it can. The one check the proof itself (`Token::prove_binding`), `cakeys`
 /// before it creates a key, and camigrate's plan for a move's target all make, so none promises
 /// a proof another then refuses.
 ///
@@ -520,7 +520,7 @@ pub type Derived = (ObjectHandle, Vec<Attribute>, Option<(String, CkError)>);
 
 /// `C_DeriveKey` with `template` as asked; on a template refusal only, once more with
 /// `CKA_VALUE_LEN` of the secret's `len` and without one policy default at a time (AWS
-/// `CloudHSM` refuses `CKA_EXTRACTABLE = false` on a derived secret [run]). The derived handle,
+/// `CloudHSM` refuses `CKA_EXTRACTABLE = false` on a derived secret \[run\]). The derived handle,
 /// the template that took, and, when that is not the one asked, what was changed and the refusal
 /// of the one asked; that first refusal is the error when nothing takes. `caprobe` records the
 /// change; a proof of possession only needs a secret.
