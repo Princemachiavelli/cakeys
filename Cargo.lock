@@ -380,6 +380,7 @@ dependencies = [
  "cmac",
  "cryptoki",
  "getrandom",
+ "p11-fault",
  "serde_json",
  "sha2",
  "toml",
