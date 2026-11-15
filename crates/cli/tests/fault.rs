@@ -68,6 +68,42 @@ fn another_client_loads_the_shim_and_meets_its_plan() {
     drop(w);
 }
 
+/// A copy named `libp11_fault-<tag>.so` reads only its own variables, so shims stack: a tagged
+/// one in front of the untagged one in front of `SoftHSM` lists the token and traces through
+/// both. A shim told to forward to itself says so and fails, where it used to wait for ever.
+#[test]
+fn tagged_copies_stack_and_a_shim_cannot_load_itself() {
+    let Some((w, _, trace)) = faulted("fault-tagged", "") else { return };
+    let tagged = w.dir.join("libp11_fault-outer.so");
+    std::fs::copy(fault_shim(), &tagged).unwrap();
+    let outer = w.dir.join("outer.jsonl");
+    let list = |module: &std::path::Path, env: &[(&str, &std::ffi::OsStr)]| {
+        let mut c = Command::new("pkcs11-tool");
+        c.arg("--module").arg(module).arg("--list-slots").envs(env.iter().copied());
+        let o = c.output().expect("pkcs11-tool (opensc) on PATH");
+        (o.status.success(), String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr))
+    };
+    // The untagged P11_FAULT_MODULE (SoftHSM, from the runner) is the inner shim's; the outer
+    // one forwards to the inner by its own variable.
+    let (ok, said) = list(
+        &tagged,
+        &[
+            ("P11_FAULT_MODULE_OUTER", fault_shim().as_ref()),
+            ("P11_FAULT_TRACE_OUTER", outer.as_os_str()),
+            ("P11_FAULT_TRACE", trace.as_os_str()),
+        ],
+    );
+    assert!(ok && said.contains("kmtest"), "{said}");
+    let lines = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default().lines().count();
+    assert!(lines(&outer) > 0 && lines(&trace) > 0, "both shims trace: {} {}", lines(&outer), lines(&trace));
+    // Untagged variables do not reach a tagged copy: without its own it forwards nowhere.
+    let (ok, said) = list(&tagged, &[]);
+    assert!(!ok && said.contains("P11_FAULT_MODULE_OUTER names no module"), "{said}");
+    // A shim in front of itself fails at once with the reason.
+    let (ok, said) = list(fault_shim().as_ref(), &[("P11_FAULT_MODULE", fault_shim().as_ref())]);
+    assert!(!ok && said.contains("is this shim itself"), "{said}");
+}
+
 /// cakeys against a module that fails a call it should not: the failing call is named, the exit
 /// is unavailable (16), and nothing is recorded. A login refused after the module accepted it
 /// is the same.

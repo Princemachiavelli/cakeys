@@ -15,13 +15,13 @@ pub(crate) struct Trace {
 }
 
 impl Trace {
-    /// Open `path` for appending.
-    pub(crate) fn open(path: &Path) -> Result<Trace, Fatal> {
+    /// Open `path`, which the variable `var` named, for appending.
+    pub(crate) fn open(var: &str, path: &Path) -> Result<Trace, Fatal> {
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
-            .map_err(|e| Fatal(format!("P11_FAULT_TRACE {}: {e}", path.display())))?;
+            .map_err(|e| Fatal(format!("{var} {}: {e}", path.display())))?;
         Ok(Trace { file: Mutex::new(file), seq: AtomicU64::new(0) })
     }
 

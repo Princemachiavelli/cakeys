@@ -3,6 +3,11 @@
 //! `P11_FAULT_PLAN` says; with `P11_FAULT_TRACE`, every call is logged as a JSON line. It is
 //! configured from the environment and speaks PKCS#11 names only, so any client can load it:
 //! `cakeys`, `pkcs11-tool`, OpenSSL's provider, NSS, p11-kit.
+//!
+//! A copy of the library named `libp11_fault-<tag>.so` reads `P11_FAULT_MODULE_<TAG>`,
+//! `P11_FAULT_PLAN_<TAG>` and `P11_FAULT_TRACE_<TAG>` instead (the tag upper-cased, `-` as `_`),
+//! and never the untagged names: one process can then load several shims, each in front of
+//! another module, or one shim in front of another, without either reading the other's settings.
 #![expect(unsafe_code, reason = "a PKCS#11 module: the C ABI is the whole crate")]
 
 mod forward;
@@ -14,7 +19,10 @@ mod trace;
 pub use forward::Fn;
 
 use cryptoki_sys::{CK_FUNCTION_LIST, CK_RV, CKR_ARGUMENTS_BAD, CKR_GENERAL_ERROR, CKR_OK};
-use std::path::Path;
+use std::cell::Cell;
+use std::ffi::{CStr, OsStr, OsString};
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::{Path, PathBuf};
 use std::sync::{Once, OnceLock};
 
 /// Why the shim cannot run: said once on stderr, and every call then fails with
@@ -42,27 +50,89 @@ struct Shim {
 
 static SHIM: OnceLock<Result<Shim, Fatal>> = OnceLock::new();
 
+thread_local! {
+    /// Set while this thread loads the shim: a call back into it then is a module that leads to
+    /// this shim again, which would otherwise wait on its own initialisation for ever.
+    static LOADING: Cell<bool> = const { Cell::new(false) };
+}
+
 /// The shim, loaded on first use, or why it could not be (every later call fails the same way).
 fn shim() -> Result<&'static Shim, Fatal> {
-    SHIM.get_or_init(Shim::load).as_ref().map_err(Fatal::clone)
+    if LOADING.get() && SHIM.get().is_none() {
+        return Err(Fatal(format!("{} leads back to this shim", variable("P11_FAULT_MODULE"))));
+    }
+    SHIM.get_or_init(|| {
+        LOADING.set(true);
+        let shim = Shim::load();
+        LOADING.set(false);
+        shim
+    })
+    .as_ref()
+    .map_err(Fatal::clone)
+}
+
+/// This library's own file, as the dynamic loader opened it.
+fn own_path() -> Option<PathBuf> {
+    let mut info = std::mem::MaybeUninit::<libc::Dl_info>::zeroed();
+    // SAFETY: `dladdr` reads the loader's tables for an address inside this library and fills
+    // `info`; zeroed memory is a valid `Dl_info` to pass.
+    let found = unsafe { libc::dladdr(C_GetFunctionList as *const libc::c_void, info.as_mut_ptr()) };
+    // SAFETY: on success `dladdr` filled `info`; `dli_fname` is a C string the loader owns for
+    // as long as the library stays loaded.
+    let name = unsafe {
+        let info = info.assume_init();
+        if found == 0 || info.dli_fname.is_null() {
+            return None;
+        }
+        CStr::from_ptr(info.dli_fname)
+    };
+    Some(PathBuf::from(OsStr::from_bytes(name.to_bytes())))
+}
+
+/// The tag of a copy of the library, from its file: `TRACE` for `libp11_fault-trace.so`, none
+/// for `libp11_fault.so` (or any other name).
+fn tag(file: &Path) -> Option<String> {
+    let stem = file.file_stem()?.to_str()?;
+    let tag = stem.strip_prefix("libp11_fault-").filter(|t| !t.is_empty())?;
+    Some(tag.to_uppercase().replace('-', "_"))
+}
+
+/// `base` for this copy of the library: `base` itself untagged, `base_<TAG>` tagged ([`tag`]).
+fn variable(base: &str) -> String {
+    static TAG: OnceLock<Option<String>> = OnceLock::new();
+    match TAG.get_or_init(|| tag(&own_path()?)) {
+        Some(tag) => format!("{base}_{tag}"),
+        None => base.to_owned(),
+    }
+}
+
+/// The value of [`variable`]`(base)`, with its name for messages.
+fn setting(base: &str) -> (String, Option<OsString>) {
+    let name = variable(base);
+    let value = std::env::var_os(&name);
+    (name, value)
 }
 
 impl Shim {
     fn load() -> Result<Shim, Fatal> {
-        let path = std::env::var_os("P11_FAULT_MODULE")
-            .ok_or_else(|| Fatal("P11_FAULT_MODULE names no module to forward to".into()))?;
+        let (module_var, path) = setting("P11_FAULT_MODULE");
+        let path = path.ok_or_else(|| Fatal(format!("{module_var} names no module to forward to")))?;
         let path = Path::new(&path);
-        let plan = match std::env::var_os("P11_FAULT_PLAN") {
-            Some(p) => {
+        let same = |a: &Path, b: &Path| a.canonicalize().is_ok_and(|a| b.canonicalize().is_ok_and(|b| a == b));
+        if own_path().is_some_and(|own| same(path, &own)) {
+            return Err(Fatal(format!("{module_var} {} is this shim itself", path.display())));
+        }
+        let plan = match setting("P11_FAULT_PLAN") {
+            (var, Some(p)) => {
                 let p = Path::new(&p);
-                let text =
-                    std::fs::read_to_string(p).map_err(|e| Fatal(format!("P11_FAULT_PLAN {}: {e}", p.display())))?;
-                plan::Plan::parse(&text).map_err(|e| Fatal(format!("P11_FAULT_PLAN {}: {e}", p.display())))?
+                let text = std::fs::read_to_string(p).map_err(|e| Fatal(format!("{var} {}: {e}", p.display())))?;
+                plan::Plan::parse(&text).map_err(|e| Fatal(format!("{var} {}: {e}", p.display())))?
             }
-            None => plan::Plan::default(),
+            (_, None) => plan::Plan::default(),
         };
-        let trace = std::env::var_os("P11_FAULT_TRACE").map(|p| trace::Trace::open(Path::new(&p))).transpose()?;
-        let module = |e: &dyn std::fmt::Display| Fatal(format!("P11_FAULT_MODULE {}: {e}", path.display()));
+        let (trace_var, trace) = setting("P11_FAULT_TRACE");
+        let trace = trace.map(|p| trace::Trace::open(&trace_var, Path::new(&p))).transpose()?;
+        let module = |e: &dyn std::fmt::Display| Fatal(format!("{module_var} {}: {e}", path.display()));
         // SAFETY: loading a PKCS#11 module runs its initialisers, as a client loading it directly
         // would; that is what the client asked for by loading the shim.
         let library = unsafe { libloading::Library::new(path) }.map_err(|e| module(&e))?;
@@ -131,4 +201,19 @@ pub unsafe extern "C" fn C_GetFunctionList(out: *mut *mut CK_FUNCTION_LIST) -> C
         unsafe { *out = (&raw const shim.table).cast_mut() };
         Ok(CKR_OK)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tag;
+    use std::path::Path;
+
+    #[test]
+    fn a_copy_is_tagged_by_its_file_name() {
+        assert_eq!(tag(Path::new("/nix/store/x/lib/libp11_fault.so")), None);
+        assert_eq!(tag(Path::new("/tmp/t/libp11_fault-trace.so")).as_deref(), Some("TRACE"));
+        assert_eq!(tag(Path::new("libp11_fault-p11-kit.so")).as_deref(), Some("P11_KIT"));
+        assert_eq!(tag(Path::new("libp11_fault-.so")), None);
+        assert_eq!(tag(Path::new("libsofthsm2.so")), None);
+    }
 }

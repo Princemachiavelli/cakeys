@@ -1109,6 +1109,7 @@ name = "p11-fault"
 version = "0.1.0"
 dependencies = [
  "cryptoki-sys",
+ "libc",
  "libloading",
  "serde",
  "serde_json",
