@@ -5,7 +5,7 @@
 //! IDs.
 
 use cakeys_profile::Baseline;
-use cakeys_profile::baseline::{CURVES, ClassMembers};
+use cakeys_profile::baseline::{CURVES, ClassMembers, TABLES};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
@@ -24,8 +24,49 @@ const CONFORMANCE: [&str; 7] = [
     "CKP_HKDF_TLS_TOKEN",
 ];
 
+/// The constant families by prefix, each with its table ([`TABLES`]). `CKP_` is split between
+/// `parameter-sets` and `conformance-profiles` ([`CONFORMANCE`]), so it is not listed.
+const FAMILIES: [(&str, &str); 16] = [
+    ("CKM_", "mechanisms"),
+    ("CKK_", "key-types"),
+    ("CKA_", "attributes"),
+    ("CKO_", "objects"),
+    ("CKR_", "return-values"),
+    ("CKF_", "flags"),
+    ("CKU_", "user-types"),
+    ("CKS_", "session-states"),
+    ("CKC_", "certificate-types"),
+    ("CKH_", "hardware-features"),
+    ("CKG_", "generators"),
+    ("CKD_", "kdfs"),
+    ("CKZ_", "sources"),
+    ("CKN_", "notifications"),
+    ("CKT_", "trust-values"),
+    ("CKV_", "validation-types"),
+];
+
+/// A constant's value: a hex (`0x00000211UL`) or decimal (`2UL`) literal, or an or-expression
+/// in parentheses over literals and names defined earlier (`(CKF_ARRAY_ATTRIBUTE|0x00000211UL)`,
+/// the array attributes). A bare name is an alias and has no value of its own here.
+fn value(text: &str, defined: &BTreeMap<String, u64>) -> Option<u64> {
+    let literal = |t: &str| {
+        let t = t.strip_suffix("UL").unwrap_or(t);
+        match t.strip_prefix("0x") {
+            Some(hex) => u64::from_str_radix(hex, 16).ok(),
+            None => t.parse().ok(),
+        }
+    };
+    match text.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
+        Some(expr) => expr
+            .split('|')
+            .map(str::trim)
+            .try_fold(0, |acc, t| Some(acc | literal(t).or_else(|| defined.get(t).copied())?)),
+        None => literal(text),
+    }
+}
+
 /// Generate the baseline from the OASIS header files: `types` is pkcs11t.h, `functions`
-/// pkcs11f.h. Only `#define <PREFIX>_... 0x...` constants are taken: aliases
+/// pkcs11f.h. Constants of every family in [`FAMILIES`] are taken, by [`value`]; aliases
 /// (`#define CKM_SHA3_256_KEY_DERIVE CKM_SHA3_256_KEY_DERIVATION`) and the
 /// `*_VENDOR_DEFINED` range constants are skipped, so every name maps to its own ID.
 #[must_use]
@@ -39,31 +80,38 @@ fn from_headers(name: &str, types: &str, functions: &str) -> Baseline {
         functions: BTreeSet::new(),
         parameter_sets: BTreeMap::new(),
         conformance_profiles: BTreeMap::new(),
+        return_values: BTreeMap::new(),
+        flags: BTreeMap::new(),
+        user_types: BTreeMap::new(),
+        session_states: BTreeMap::new(),
+        certificate_types: BTreeMap::new(),
+        hardware_features: BTreeMap::new(),
+        generators: BTreeMap::new(),
+        kdfs: BTreeMap::new(),
+        sources: BTreeMap::new(),
+        notifications: BTreeMap::new(),
+        trust_values: BTreeMap::new(),
+        validation_types: BTreeMap::new(),
         curves: CURVES.iter().map(|s| (*s).to_owned()).collect(),
         class: BTreeMap::new(),
     };
+    // Every constant read so far, for the or-expressions that name one.
+    let mut defined = BTreeMap::new();
     for line in types.lines() {
         let Some(rest) = line.trim_start().strip_prefix("#define ") else { continue };
         let mut fields = rest.split_whitespace();
-        let (Some(name), Some(value)) = (fields.next(), fields.next()) else { continue };
+        let (Some(name), Some(text)) = (fields.next(), fields.next()) else { continue };
+        let Some(id) = value(text, &defined) else { continue };
+        defined.insert(name.to_owned(), id);
         if name.ends_with("VENDOR_DEFINED") {
             continue;
         }
-        let Some(hex) = value.strip_prefix("0x").map(|v| v.strip_suffix("UL").unwrap_or(v)) else {
-            continue;
+        let table = if name.starts_with("CKP_") {
+            Some(if CONFORMANCE.contains(&name) { "conformance-profiles" } else { "parameter-sets" })
+        } else {
+            FAMILIES.iter().find(|(prefix, _)| name.starts_with(prefix)).map(|(_, table)| *table)
         };
-        let Ok(id) = u64::from_str_radix(hex, 16) else { continue };
-        let map = match name {
-            n if n.starts_with("CKM_") => Some(&mut b.mechanisms),
-            n if n.starts_with("CKK_") => Some(&mut b.key_types),
-            n if n.starts_with("CKA_") => Some(&mut b.attributes),
-            n if n.starts_with("CKO_") => Some(&mut b.objects),
-            n if n.starts_with("CKP_") => {
-                Some(if CONFORMANCE.contains(&name) { &mut b.conformance_profiles } else { &mut b.parameter_sets })
-            }
-            _ => None,
-        };
-        if let Some(map) = map {
+        if let Some(map) = table.and_then(|t| b.table_mut(t)) {
             map.insert(name.to_owned(), id);
         }
     }
@@ -135,29 +183,11 @@ fn to_toml(b: &Baseline) -> String {
     // Top-level keys precede every table (TOML has no table close).
     let _ = writeln!(s, "functions = [{}]", quoted(&b.functions));
     let _ = writeln!(s, "curves = [{}]", quoted(&b.curves));
-    head(&mut s, "mechanisms");
-    for (n, id) in &b.mechanisms {
-        let _ = writeln!(s, "{n} = {id:#010x}");
-    }
-    head(&mut s, "key-types");
-    for (n, id) in &b.key_types {
-        let _ = writeln!(s, "{n} = {id:#010x}");
-    }
-    head(&mut s, "attributes");
-    for (n, id) in &b.attributes {
-        let _ = writeln!(s, "{n} = {id:#010x}");
-    }
-    head(&mut s, "objects");
-    for (n, id) in &b.objects {
-        let _ = writeln!(s, "{n} = {id:#010x}");
-    }
-    head(&mut s, "parameter-sets");
-    for (n, id) in &b.parameter_sets {
-        let _ = writeln!(s, "{n} = {id:#010x}");
-    }
-    head(&mut s, "conformance-profiles");
-    for (n, id) in &b.conformance_profiles {
-        let _ = writeln!(s, "{n} = {id:#010x}");
+    for table in TABLES {
+        head(&mut s, table);
+        for (n, id) in b.table(table).into_iter().flatten() {
+            let _ = writeln!(s, "{n} = {id:#010x}");
+        }
     }
     for (class, members) in &b.class {
         let _ = writeln!(s);
@@ -234,6 +264,24 @@ fn names_and_ids_are_pinned() {
     assert_eq!(b.attributes["CKA_VALUE_LEN"], 0x161);
     assert!(b.functions.contains("C_EncapsulateKey"));
     assert!(!b.mechanisms.contains_key("CKM_VENDOR_DEFINED"));
+    // The array attributes, defined as or-expressions over CKF_ARRAY_ATTRIBUTE.
+    assert_eq!(b.attributes["CKA_ALLOWED_MECHANISMS"], 0x4000_0600);
+    assert_eq!(b.attributes["CKA_WRAP_TEMPLATE"], 0x4000_0211);
+    // The other constant families, decimal-valued ones included; aliases stay out.
+    assert_eq!(b.return_values["CKR_OK"], 0);
+    assert_eq!(b.return_values["CKR_KEY_NOT_WRAPPABLE"], 0x69);
+    assert_eq!(b.flags["CKF_ARRAY_ATTRIBUTE"], 0x4000_0000);
+    assert_eq!(b.flags["CKF_TOKEN_INITIALIZED"], 0x400);
+    assert_eq!(b.user_types["CKU_CONTEXT_SPECIFIC"], 2);
+    assert_eq!(b.session_states["CKS_RW_USER_FUNCTIONS"], 3);
+    assert_eq!(b.certificate_types["CKC_X_509"], 0);
+    assert_eq!(b.generators["CKG_MGF1_SHA256"], 2);
+    assert_eq!(b.kdfs["CKD_SHA256_KDF"], 6);
+    assert_eq!(b.sources["CKZ_DATA_SPECIFIED"], 1);
+    assert_eq!(b.trust_values["CKT_TRUST_ANCHOR"], 2);
+    assert!(!b.return_values.contains_key("CKR_VENDOR_DEFINED"));
+    // Every table the generator writes is one the loader names.
+    assert!(TABLES.iter().all(|t| b.table(t).is_some_and(|m| !m.is_empty())), "an empty or unknown table");
     // The classes the queries group by, and the curve vocabulary of keys.toml.
     assert!(b.class["pq"].mechanisms.iter().any(|m| m == "CKM_ML_DSA"));
     assert!(b.class["hmac"].mechanisms.iter().any(|m| m == "CKM_SHA512_HMAC"));

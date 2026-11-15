@@ -53,9 +53,12 @@ module profile whose `[match] manufacturer` it reports names its provider by fam
 **The baseline** (`profiles/baselines/pkcs11-3.2.toml`) is generated from the OASIS 3.2 headers,
 vendored unmodified at `profiles/baselines/headers/pkcs11-3.2/`, and pinned by a test
 (`CAKEYS_UPDATE_BASELINE=1` rewrites it). It is the vocabulary of one spec revision: every
-mechanism, key type, attribute, curve, function and parameter set, name → ID, grouped into
-classes (`pq`, `hmac`, `key-wrap`, `oaep`). It validates names and powers by-class queries; it
-never claims what a vendor supports.
+mechanism, key type, attribute (the array attributes included), object class, curve, function
+and parameter set, and the other constant families (return values, flags, user types, session
+states, certificate and hardware-feature types, MGFs and IV generators, KDFs, sources,
+notifications, trust and validation types), name → ID, grouped into classes (`pq`, `hmac`,
+`key-wrap`, `oaep`). It validates names and powers by-class queries; it never claims what a
+vendor supports.
 
 **A module profile** (`mode = "observed"`, `profiles/modules/<family>/<version>[+<hardware>].toml`)
 records what a probe measured, as deltas against the module's own advertisement:

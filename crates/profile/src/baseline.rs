@@ -2,7 +2,8 @@
 //! generated from the OASIS header files vendored under profiles/baselines/headers/.
 //!
 //! A baseline never claims what any vendor supports. It names the spec's members — mechanisms,
-//! key types, attributes, objects, functions, parameter sets — with their numeric IDs, groups
+//! key types, attributes, objects, functions, parameter sets, and the other constant families:
+//! return values, flags, user and certificate types, … — with their numeric IDs, groups
 //! them into classes for by-class queries ("which PQ mechanisms?"), and validates the names a
 //! profile or a query uses. The committed TOML is generated, never edited: caprobe generates it
 //! (crates/caprobe/src/emit.rs), and its pinned test regenerates it from the headers and
@@ -60,13 +61,110 @@ pub struct Baseline {
     /// Conformance profiles (`CKP_*`, the Profiles standard) and their IDs.
     #[serde(rename = "conformance-profiles")]
     pub conformance_profiles: BTreeMap<String, u64>,
+    // The constant families below default to empty, so a hand-written test baseline names only
+    // what it uses; caprobe's pinned test requires each of them in the committed file.
+    /// Return values (`CKR_*`).
+    #[serde(default, rename = "return-values")]
+    pub return_values: BTreeMap<String, u64>,
+    /// Flags (`CKF_*`): token, slot, session, mechanism and other flag words share the prefix.
+    #[serde(default)]
+    pub flags: BTreeMap<String, u64>,
+    /// User types (`CKU_*`).
+    #[serde(default, rename = "user-types")]
+    pub user_types: BTreeMap<String, u64>,
+    /// Session states (`CKS_*`).
+    #[serde(default, rename = "session-states")]
+    pub session_states: BTreeMap<String, u64>,
+    /// Certificate types (`CKC_*`).
+    #[serde(default, rename = "certificate-types")]
+    pub certificate_types: BTreeMap<String, u64>,
+    /// Hardware feature types (`CKH_*`).
+    #[serde(default, rename = "hardware-features")]
+    pub hardware_features: BTreeMap<String, u64>,
+    /// Mask generation functions and IV generators (`CKG_*`, one prefix for both).
+    #[serde(default)]
+    pub generators: BTreeMap<String, u64>,
+    /// Key derivation functions (`CKD_*`).
+    #[serde(default)]
+    pub kdfs: BTreeMap<String, u64>,
+    /// Parameter sources (`CKZ_*`: the OAEP encoding parameter, the PBKDF2 salt).
+    #[serde(default)]
+    pub sources: BTreeMap<String, u64>,
+    /// Notifications (`CKN_*`).
+    #[serde(default)]
+    pub notifications: BTreeMap<String, u64>,
+    /// Trust values (`CKT_*`, for the 3.2 `CKA_TRUST_*` attributes).
+    #[serde(default, rename = "trust-values")]
+    pub trust_values: BTreeMap<String, u64>,
+    /// Validation and validation-authority types (`CKV_*`).
+    #[serde(default, rename = "validation-types")]
+    pub validation_types: BTreeMap<String, u64>,
     /// The curves cakeys names ([`CURVES`]).
     pub curves: BTreeSet<String>,
     /// Curated member groups for by-class queries: pq, hmac, key-wrap, oaep.
     pub class: BTreeMap<String, ClassMembers>,
 }
 
+/// The baseline's name-to-ID tables, by their TOML names, in the order the generator writes them.
+pub const TABLES: [&str; 18] = [
+    "mechanisms",
+    "key-types",
+    "attributes",
+    "objects",
+    "parameter-sets",
+    "conformance-profiles",
+    "return-values",
+    "flags",
+    "user-types",
+    "session-states",
+    "certificate-types",
+    "hardware-features",
+    "generators",
+    "kdfs",
+    "sources",
+    "notifications",
+    "trust-values",
+    "validation-types",
+];
+
+macro_rules! tables {
+    ($self:ident, $name:ident, $($ref:tt)+) => {
+        match $name {
+            "mechanisms" => Some($($ref)+ $self.mechanisms),
+            "key-types" => Some($($ref)+ $self.key_types),
+            "attributes" => Some($($ref)+ $self.attributes),
+            "objects" => Some($($ref)+ $self.objects),
+            "parameter-sets" => Some($($ref)+ $self.parameter_sets),
+            "conformance-profiles" => Some($($ref)+ $self.conformance_profiles),
+            "return-values" => Some($($ref)+ $self.return_values),
+            "flags" => Some($($ref)+ $self.flags),
+            "user-types" => Some($($ref)+ $self.user_types),
+            "session-states" => Some($($ref)+ $self.session_states),
+            "certificate-types" => Some($($ref)+ $self.certificate_types),
+            "hardware-features" => Some($($ref)+ $self.hardware_features),
+            "generators" => Some($($ref)+ $self.generators),
+            "kdfs" => Some($($ref)+ $self.kdfs),
+            "sources" => Some($($ref)+ $self.sources),
+            "notifications" => Some($($ref)+ $self.notifications),
+            "trust-values" => Some($($ref)+ $self.trust_values),
+            "validation-types" => Some($($ref)+ $self.validation_types),
+            _ => None,
+        }
+    };
+}
+
 impl Baseline {
+    /// The name-to-ID table called `name` in the TOML (one of [`TABLES`]).
+    #[must_use]
+    pub fn table(&self, name: &str) -> Option<&BTreeMap<String, u64>> {
+        tables!(self, name, &)
+    }
+
+    /// [`Baseline::table`], to fill.
+    pub fn table_mut(&mut self, name: &str) -> Option<&mut BTreeMap<String, u64>> {
+        tables!(self, name, &mut)
+    }
+
     /// Parse a committed baseline file.
     ///
     /// # Errors
