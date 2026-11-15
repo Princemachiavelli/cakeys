@@ -152,13 +152,26 @@ per run. Until then, run by hand and read the bill.
 
 ### 2. AWS CloudHSM
 
-**Built (2026-11-14): the test bed, not the probe.** `scripts/cloud/aws.sh create | destroy
-[--park] | status` runs OpenTofu on `scripts/cloud/aws/main.tf` (tools: `.#cloud-tools`). It
-departs from the plan below in three places: the region is us-west-1 (hsm2m.medium $1.81/h
-[api]); the runner is the official NixOS AMI, root over SSH from the operator's address, not
-Ubuntu with cloud-init; and OpenTofu manages the HSM and runner too, with `park` deleting only
-those two. `create` stops at an uninitialized cluster; initialization and activation are still to do.
-Neither script has run against AWS yet [todo].
+**Built and run (2026-11-14/15): phase 2.** `scripts/cloud/aws.sh create | init | activate |
+probe | destroy [--park] | status` runs OpenTofu on `scripts/cloud/aws/main.tf` (tools:
+`.#cloud-tools`) and the vendor CLIs. It departs from the plan below in four places:
+
+- The region is us-west-1 (hsm2m.medium $1.81/h [api]).
+- The runner is the official NixOS AMI, root over SSH from the operator's address, not Ubuntu
+  with cloud-init. The client comes from Nix (`.#cloudhsm-*`), copied with `nix copy`.
+- OpenTofu manages the HSM and runner too, with `park` deleting only those two.
+- `init` signs the CSR with a root CA kept in the state directory, not offline.
+
+One full cycle ran against a FIPS cluster [run]:
+
+- Cluster create took 1 min, HSM create 5m42s, initialize a few minutes, and activation
+  seconds. HSM delete took 1m01s, runner delete 30s. The HSM was up about 40 min (≈ $1.20).
+- `probe` wrote `profiles/modules/cloudhsm-pkcs11/5.18+hsm2m-fips.toml`; its findings are in
+  CAPROBE.md.
+- The cluster is parked ACTIVE with its backups, so spike 4 (zero-HSM restore) runs on the
+  next `create`.
+- SSH must offer only the operator's key: an agent with many keys hits sshd's `MaxAuthTries`.
+- `nix copy` needs `--no-check-sigs`, since locally built paths are unsigned.
 
 **Built (2026-11-14): the client.** `nix/cloudhsm.nix` packages SDK 5.18.1 as
 `.#cloudhsm-pkcs11`, `.#cloudhsm-dyn` (OpenSSL engine) and `.#cloudhsm-openssl-provider`,

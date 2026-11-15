@@ -310,10 +310,14 @@ tokenLabel = "$label"
 pinFile = "/run/caprobe/pin"
 scratch = true
 EOF
+  # The checkout's profiles, as scripts/regen-profiles.sh passes them: --diff finds the committed
+  # one even before the binary embeds it.
+  runner rm -rf /run/caprobe/profiles
+  tar -C "$repo" -c profiles | runner tar -C /run/caprobe -x
   local -a diff=()
   [[ -f $out ]] && diff=(--diff "$name")
-  runner "$(realpath "$bin")" --config /run/caprobe/keys.toml probe --token cloudhsm --write \
-    --name "$name" "${diff[@]}" --out /run/caprobe/profile.toml || rc=$?
+  runner "$(realpath "$bin")" --config /run/caprobe/keys.toml probe --profiles /run/caprobe/profiles \
+    --token cloudhsm --write --name "$name" "${diff[@]}" --out /run/caprobe/profile.toml || rc=$?
   runner rm -f /run/caprobe/pin
   # 15 is drift against the committed profile: written anyway, for review.
   [[ $rc == 0 || $rc == 15 ]] || exit "$rc"

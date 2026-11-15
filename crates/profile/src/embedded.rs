@@ -11,6 +11,10 @@ pub const PROFILE_FILES: &[(&str, &str)] = &[
     ("profiles/hardware/swtpm.toml", include_str!("../../../profiles/hardware/swtpm.toml")),
     ("profiles/layers/cryptoki.toml", include_str!("../../../profiles/layers/cryptoki.toml")),
     ("profiles/layers/p11-kit.toml", include_str!("../../../profiles/layers/p11-kit.toml")),
+    (
+        "profiles/modules/cloudhsm-pkcs11/5.18+hsm2m-fips.toml",
+        include_str!("../../../profiles/modules/cloudhsm-pkcs11/5.18+hsm2m-fips.toml"),
+    ),
     ("profiles/modules/kryoptic/1.5.toml", include_str!("../../../profiles/modules/kryoptic/1.5.toml")),
     ("profiles/modules/softhsm/2.7.toml", include_str!("../../../profiles/modules/softhsm/2.7.toml")),
     (
