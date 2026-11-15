@@ -1,0 +1,6 @@
+# cargo-nextest, wherever the suites run (the check phase, scripts/local-tests.sh, coverage): a
+# test still running after ten 60 s periods is killed with its process group and fails. A test
+# waiting on something that never answers (a deadlocked module, or OpenSSL through
+# pkcs11-provider over SoftHSM 2.7.0, docs/OPEN.md) otherwise holds the whole run open.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 10 }

@@ -10,7 +10,7 @@ use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use cryptoki::session::Session;
 use cryptoki::types::AuthPin;
 use hmac::{Hmac, KeyInit, Mac};
-use std::process::Output;
+use std::process::{Command, Output};
 
 use crate::REF;
 use crate::common::*;
@@ -63,6 +63,100 @@ impl Env {
     }
 }
 
+/// `check --format pkcs11-provider-pem` is the key file pkcs11-provider reads (docs/CAKEYS.md,
+/// "The contract with programs"): OpenSSL loads it through the provider, its public key hashes to
+/// the locked `rfc7093m4`, and it signs through the URI's `pin-source` (the PIN file ends in a
+/// newline) and through its `pin-value`, each signature verifying under that public key with
+/// OpenSSL alone. A key without `CKA_ID` gets its key file with a warning; what the output cannot
+/// carry is refused before any token is opened.
+#[test]
+fn check_pem_is_a_key_file_for_pkcs11_provider() {
+    let name = "check_pem_is_a_key_file_for_pkcs11_provider";
+    let Some(e) = env(name) else { return };
+    // pkcs11-provider's directory (`ossl-modules`): OpenSSL loads `-provider pkcs11` from it.
+    let Some(provider_dir) = suite_var("CAKEYS_PKCS11_PROVIDER_DIR", REF.require_var, name) else { return };
+    // A CKA_ID on both halves: pkcs11-provider finds a private key's public half by CKA_ID alone,
+    // and SoftHSM's private EC key carries no public point (no CKA_EC_POINT, an empty
+    // CKA_PUBLIC_KEY_INFO).
+    e.config(
+        &(EC.replace(r#"CKA_LABEL = "ec-lifecycle""#, r#"CKA_LABEL = "check-pem", CKA_ID = "c0""#) + PEM_REFUSALS),
+    );
+    assert_eq!(e.code(&["realise", "signing-soft", "--token", "ref"]), 0);
+    let locked = e.locked_id("signing", "rfc7093m4");
+
+    let openssl = |args: &[&str]| {
+        let out = Command::new("openssl").env("PKCS11_PROVIDER_MODULE", &e.module).args(args).output().unwrap();
+        eprintln!("$ openssl {}\n  exit={:?}\n  stderr={}", args.join(" "), out.status.code(), stderr(&out).trim());
+        assert!(out.status.success(), "openssl {}", args.join(" "));
+    };
+    // `default` first, as pkcs11-provider's own test configuration lists them: listed after it,
+    // the PKCS#11 provider serves the module's own OpenSSL calls too (SoftHSM 2.7.0 then
+    // deadlocks, SoftHSMv2 #834).
+    let via_provider = ["-provider-path", provider_dir.as_str(), "-provider", "default", "-provider", "pkcs11"];
+    let data = e.dir.join("data");
+    std::fs::write(&data, b"signed through a cakeys key file").unwrap();
+    let (public, data) = (e.dir.join("public.der"), data.to_str().unwrap());
+
+    for (i, extra) in [&["--uri-pin", "source"][..], &["--uri-pin", "value", "--uri-module"]].into_iter().enumerate() {
+        let out = e.km(&[&["check", "signing.id.rfc7093m4", "--format", "pkcs11-provider-pem"][..], extra].concat());
+        assert_eq!(code(&out), 0);
+        assert!(stdout(&out).starts_with("-----BEGIN PKCS#11 PROVIDER URI-----"), "{}", stdout(&out));
+        assert!(!stderr(&out).contains("CKA_ID"), "{}", stderr(&out));
+        let (pem, sig) = (e.dir.join(format!("key-{i}.pem")), e.dir.join(format!("sig-{i}")));
+        std::fs::write(&pem, &out.stdout).unwrap();
+        let (pem, sig) = (pem.to_str().unwrap(), sig.to_str().unwrap());
+
+        let public = public.to_str().unwrap();
+        openssl(&[&["pkey"][..], &via_provider, &["-in", pem, "-pubout", "-outform", "DER", "-out", public]].concat());
+        assert_eq!(sri(&std::fs::read(public).unwrap()), locked, "the key file names another key");
+        openssl(&[&["dgst", "-sha256"][..], &via_provider, &["-sign", pem, "-out", sig, data]].concat());
+        openssl(&["dgst", "-sha256", "-verify", public, "-keyform", "DER", "-signature", sig, data]);
+    }
+    // The URI says what was asked for, and the plain check is still the bare locator.
+    let value = stdout(&e.km(&["check", "signing", "--uri-pin", "value", "--uri-module"]));
+    assert!(value.ends_with(&format!("?module-path={}&pin-value=1234", e.module)), "{value}");
+    let source = stdout(&e.km(&["check", "signing", "--uri-pin", "source", "--format", "uri"]));
+    assert!(source.ends_with(&format!("?pin-source=file:{}", e.dir.join("pin").display())), "{source}");
+    assert!(!stdout(&e.km(&["check", "signing"])).contains('?'));
+
+    // A key without CKA_ID (common among existing keys) still gets its key file, but is warned:
+    // OpenSSL may get no public key from it.
+    assert_eq!(e.code(&["realise", "signing-noid-soft", "--token", "ref"]), 0);
+    let noid = e.km(&["check", "signing-noid", "--format", "pkcs11-provider-pem"]);
+    assert_eq!(code(&noid), 0, "{}", stderr(&noid));
+    assert!(stdout(&noid).starts_with("-----BEGIN PKCS#11 PROVIDER URI-----"), "{}", stdout(&noid));
+    assert!(stderr(&noid).contains("'signing-noid' on 'ref' has no CKA_ID"), "{}", stderr(&noid));
+
+    // A key file names a private key; a PIN needs a token that has one. Refused unopened, so
+    // the anonymous public key below is never realised.
+    assert_eq!(e.code(&["check", "signing-pub", "--format", "pkcs11-provider-pem"]), 15);
+    assert_eq!(e.code(&["check", "signing-pub", "--uri-pin", "source"]), 17);
+    assert_eq!(e.code(&["check", "signing-pub", "--uri-pin", "value"]), 17);
+}
+
+/// [`check_pem_is_a_key_file_for_pkcs11_provider`]'s other objects: a key located by label
+/// alone, so without `CKA_ID`; and for the refusals, a public key on the token without a PIN.
+const PEM_REFUSALS: &str = r#"
+[objects.signing-noid]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+
+[specs.signing-noid-soft]
+object = "signing-noid"
+attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
+tokens.ref = { locator = { CKA_LABEL = "check-pem-noid" }, autoCreate = true }
+
+[objects.signing-pub]
+class = "CKO_PUBLIC_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+
+[specs.signing-pub-anon]
+object = "signing-pub"
+tokens.ref-anon = { locator = { CKA_LABEL = "check-pem" } }
+"#;
+
 const EC: &str = r#"
 [objects.signing]
 class = "CKO_PRIVATE_KEY"
@@ -109,6 +203,9 @@ fn ec_lifecycle() {
     assert_eq!(stdout(&e.km(&["check", "signing.id.pubkeyhash"])), stdout(&check));
     assert_eq!(stdout(&check), stdout(&verify));
     assert_eq!(e.code(&["check", "signing.id.commitment"]), 15);
+
+    // The module and PIN only on request: the default output stays the locator.
+    assert!(!stdout(&check).contains('?'), "{}", stdout(&check));
 
     // DELETE + If-Match.
     let del = ["delete", "signing-soft", "--token", "ref", "--update-lock"];

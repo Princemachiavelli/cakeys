@@ -1,0 +1,608 @@
+Backport of SoftHSMv2 PR #897 (main 9ad87341c94f, "Never destroy module-wide singletons via
+static teardown", merged 2026-10-03, after 2.7.0), unchanged: it applies to 2.7.0 with offsets.
+Fixes #780: a process that loaded pkcs11-provider over SoftHSM crashes at exit, OpenSSL's atexit
+cleanup calling C_CloseSession after SoftHSM's statics are gone. Drop with a release carrying it.
+
+From 9ad87341c94ffdf1364ecf27b715475e0d80b0dd Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rikard=20S=C3=B6derstr=C3=B6m?=
+ <Rikard.Soderstrom@permobil.com>
+Date: Sat, 3 Oct 2026 16:11:04 +0200
+Subject: [PATCH] Never destroy module-wide singletons via static teardown
+ (#897)
+
+SoftHSM::instance, MutexFactory::instance, SecureMemoryRegistry::instance,
+and OSSLCryptoFactory::instance/BotanCryptoFactory::instance were each a
+class-level static std::unique_ptr<T> (or std::auto_ptr<T> pre-C++11).
+Their destructors ran as part of the C++ runtime's ordinary static-object
+teardown at process exit - an indeterminate time relative to unrelated
+code's own cleanup.
+
+Concretely: a PKCS#11 caller (e.g. an OpenSSL provider) that still holds
+open sessions at process exit calls C_CloseSession() on each before
+calling C_Finalize(), per the PKCS#11 spec. But SoftHSM::instance's own
+destructor could fire first, via ordinary static teardown, independently
+of and unordered with respect to that caller's explicit cleanup sequence.
+Whichever teardown path lost the race operated on an already-destroyed
+(or transparently reconstructed-blank, since SoftHSM::i() rebuilds a
+fresh instance on next access) singleton, and its stale session-close
+calls then dereferenced a NULL member on it - a real, reproducible
+SIGSEGV when a pkcs11-provider-based caller runs openssl req against a
+PKCS#11 key and exits normally.
+
+This is the same category of bug already fixed once for
+OSSLCryptoFactory's own OpenSSL ENGINE cleanup (issue #548, commit
+c2cc065), just never applied to these singletons' own top-level
+lifecycle - and the gap resurfaces one level down too: OSSLCryptoFactory
+can be lazily constructed for the first time from deep inside
+SoftHSM::C_Finalize()'s own teardown chain, touching ENGINE_by_id() after
+OpenSSL's own OPENSSL_cleanup() has already run.
+
+Each singleton's std::unique_ptr<T>/std::auto_ptr<T> is now heap-allocated
+once and deliberately never freed, so nothing destroys the T it owns
+except that class's own explicit reset()/C_Finalize() path - never
+ordinary static teardown. The smart pointer itself is retained as the
+owning type (matching the "Static and Global Variables" guidance in the
+Google C++ Style Guide, and the same "leaky singleton" idiom used by
+e.g. Drake's never_destroyed<T>), so reset()'s exception-safety and
+ownership semantics for the owned object are unchanged.
+---
+ src/bin/util/softhsm2-util.cpp              | 16 ++++-----
+ src/lib/SoftHSM.cpp                         | 36 ++++++++++-----------
+ src/lib/SoftHSM.h                           | 25 ++++++++++++--
+ src/lib/common/MutexFactory.cpp             |  6 ++--
+ src/lib/common/MutexFactory.h               | 10 ++++--
+ src/lib/crypto/BotanCryptoFactory.cpp       |  8 ++---
+ src/lib/crypto/BotanCryptoFactory.h         | 10 ++++--
+ src/lib/crypto/OSSLCryptoFactory.cpp        |  8 ++---
+ src/lib/crypto/OSSLCryptoFactory.h          | 10 ++++--
+ src/lib/crypto/test/cryptotest.cpp          | 16 ++++-----
+ src/lib/data_mgr/SecureMemoryRegistry.cpp   | 10 +++---
+ src/lib/data_mgr/SecureMemoryRegistry.h     |  7 ++--
+ src/lib/data_mgr/test/datamgrtest.cpp       | 16 ++++-----
+ src/lib/handle_mgr/test/handlemgrtest.cpp   |  4 +--
+ src/lib/object_store/test/objstoretest.cpp  | 16 ++++-----
+ src/lib/session_mgr/test/sessionmgrtest.cpp | 16 ++++-----
+ src/lib/slot_mgr/test/slotmgrtest.cpp       | 16 ++++-----
+ 17 files changed, 132 insertions(+), 98 deletions(-)
+
+diff --git a/src/bin/util/softhsm2-util.cpp b/src/bin/util/softhsm2-util.cpp
+index c3975819f..24469f9ba 100644
+--- a/src/bin/util/softhsm2-util.cpp
++++ b/src/bin/util/softhsm2-util.cpp
+@@ -74,22 +74,22 @@
+ 
+ #ifdef HAVE_CXX11
+ 
+-std::unique_ptr<MutexFactory> MutexFactory::instance(nullptr);
+-std::unique_ptr<SecureMemoryRegistry> SecureMemoryRegistry::instance(nullptr);
++std::unique_ptr<MutexFactory>* MutexFactory::instance = new std::unique_ptr<MutexFactory>();
++std::unique_ptr<SecureMemoryRegistry>* SecureMemoryRegistry::instance = new std::unique_ptr<SecureMemoryRegistry>();
+ #if defined(WITH_OPENSSL)
+-std::unique_ptr<OSSLCryptoFactory> OSSLCryptoFactory::instance(nullptr);
++std::unique_ptr<OSSLCryptoFactory>* OSSLCryptoFactory::instance = new std::unique_ptr<OSSLCryptoFactory>();
+ #else
+-std::unique_ptr<BotanCryptoFactory> BotanCryptoFactory::instance(nullptr);
++std::unique_ptr<BotanCryptoFactory>* BotanCryptoFactory::instance = new std::unique_ptr<BotanCryptoFactory>();
+ #endif
+ 
+ #else
+ 
+-std::auto_ptr<MutexFactory> MutexFactory::instance(NULL);
+-std::auto_ptr<SecureMemoryRegistry> SecureMemoryRegistry::instance(NULL);
++std::auto_ptr<MutexFactory>* MutexFactory::instance = new std::auto_ptr<MutexFactory>();
++std::auto_ptr<SecureMemoryRegistry>* SecureMemoryRegistry::instance = new std::auto_ptr<SecureMemoryRegistry>();
+ #if defined(WITH_OPENSSL)
+-std::auto_ptr<OSSLCryptoFactory> OSSLCryptoFactory::instance(NULL);
++std::auto_ptr<OSSLCryptoFactory>* OSSLCryptoFactory::instance = new std::auto_ptr<OSSLCryptoFactory>();
+ #else
+-std::auto_ptr<BotanCryptoFactory> BotanCryptoFactory::instance(NULL);
++std::auto_ptr<BotanCryptoFactory>* BotanCryptoFactory::instance = new std::auto_ptr<BotanCryptoFactory>();
+ #endif
+ 
+ #endif
+diff --git a/src/lib/SoftHSM.cpp b/src/lib/SoftHSM.cpp
+index 1f4fdf15a..1a69b68cd 100644
+--- a/src/lib/SoftHSM.cpp
++++ b/src/lib/SoftHSM.cpp
+@@ -105,25 +105,25 @@
+ 
+ #ifdef HAVE_CXX11
+ 
+-std::unique_ptr<MutexFactory> MutexFactory::instance(nullptr);
+-std::unique_ptr<SecureMemoryRegistry> SecureMemoryRegistry::instance(nullptr);
++std::unique_ptr<MutexFactory>* MutexFactory::instance = new std::unique_ptr<MutexFactory>();
++std::unique_ptr<SecureMemoryRegistry>* SecureMemoryRegistry::instance = new std::unique_ptr<SecureMemoryRegistry>();
+ #if defined(WITH_OPENSSL)
+-std::unique_ptr<OSSLCryptoFactory> OSSLCryptoFactory::instance(nullptr);
++std::unique_ptr<OSSLCryptoFactory>* OSSLCryptoFactory::instance = new std::unique_ptr<OSSLCryptoFactory>();
+ #else
+-std::unique_ptr<BotanCryptoFactory> BotanCryptoFactory::instance(nullptr);
++std::unique_ptr<BotanCryptoFactory>* BotanCryptoFactory::instance = new std::unique_ptr<BotanCryptoFactory>();
+ #endif
+-std::unique_ptr<SoftHSM> SoftHSM::instance(nullptr);
++std::unique_ptr<SoftHSM>* SoftHSM::instance = new std::unique_ptr<SoftHSM>();
+ 
+ #else
+ 
+-std::auto_ptr<MutexFactory> MutexFactory::instance(NULL);
+-std::auto_ptr<SecureMemoryRegistry> SecureMemoryRegistry::instance(NULL);
++std::auto_ptr<MutexFactory>* MutexFactory::instance = new std::auto_ptr<MutexFactory>();
++std::auto_ptr<SecureMemoryRegistry>* SecureMemoryRegistry::instance = new std::auto_ptr<SecureMemoryRegistry>();
+ #if defined(WITH_OPENSSL)
+-std::auto_ptr<OSSLCryptoFactory> OSSLCryptoFactory::instance(NULL);
++std::auto_ptr<OSSLCryptoFactory>* OSSLCryptoFactory::instance = new std::auto_ptr<OSSLCryptoFactory>();
+ #else
+-std::auto_ptr<BotanCryptoFactory> BotanCryptoFactory::instance(NULL);
++std::auto_ptr<BotanCryptoFactory>* BotanCryptoFactory::instance = new std::auto_ptr<BotanCryptoFactory>();
+ #endif
+-std::auto_ptr<SoftHSM> SoftHSM::instance(NULL);
++std::auto_ptr<SoftHSM>* SoftHSM::instance = new std::auto_ptr<SoftHSM>();
+ 
+ #endif
+ 
+@@ -415,11 +415,11 @@ static void resetMutexFactoryCallbacks()
+ // Return the one-and-only instance
+ SoftHSM* SoftHSM::i()
+ {
+-	if (!instance.get())
++	if (!instance->get())
+ 	{
+-		instance.reset(new SoftHSM());
++		instance->reset(new SoftHSM());
+ 	}
+-	else if(instance->detectFork())
++	else if((*instance)->detectFork())
+ 	{
+ 		if (Configuration::i()->getBool("library.reset_on_fork", false))
+ 		{
+@@ -428,18 +428,18 @@ SoftHSM* SoftHSM::i()
+ 			 * the old instance is first destroyed as some
+ 			 * static structures are erased in the destructor.
+ 			 */
+-			instance.reset(NULL);
+-			instance.reset(new SoftHSM());
++			instance->reset(NULL);
++			instance->reset(new SoftHSM());
+ 		}
+ 	}
+ 
+-	return instance.get();
++	return instance->get();
+ }
+ 
+ void SoftHSM::reset()
+ {
+-	if (instance.get())
+-		instance.reset();
++	if (instance->get())
++		instance->reset();
+ }
+ 
+ // Constructor
+diff --git a/src/lib/SoftHSM.h b/src/lib/SoftHSM.h
+index 724812c91..f7970b789 100644
+--- a/src/lib/SoftHSM.h
++++ b/src/lib/SoftHSM.h
+@@ -201,11 +201,30 @@ class SoftHSM
+ 	// Constructor
+ 	SoftHSM();
+ 
+-	// The one-and-only instance
++	// The one-and-only instance.
++	//
++	// Smart pointers must not be used directly as class-level
++	// static storage: their destructor runs as part of the C++
++	// runtime's ordinary static-object teardown at process exit, an
++	// indeterminate time relative to unrelated code's own cleanup
++	// (see the "Static and Global Variables" section of the Google
++	// C++ Style Guide, which explicitly recommends "a pointer that
++	// is never freed" for exactly this situation). Concretely here:
++	// a PKCS#11 caller (e.g. a provider) may still be closing its
++	// own open sessions via C_CloseSession() when this destructor
++	// fires, and would then be operating on an already-destroyed
++	// singleton.
++	//
++	// The smart pointer itself is therefore heap-allocated once and
++	// deliberately never freed - the same "leaky singleton" idiom
++	// used by e.g. Drake's never_destroyed<T> - while still using it
++	// (not a raw pointer) to own and manage the SoftHSM object's own
++	// lifetime, which is destroyed exactly once, only via the
++	// explicit C_Finalize()/reset() path below.
+ #ifdef HAVE_CXX11
+-	static std::unique_ptr<SoftHSM> instance;
++	static std::unique_ptr<SoftHSM>* instance;
+ #else
+-	static std::auto_ptr<SoftHSM> instance;
++	static std::auto_ptr<SoftHSM>* instance;
+ #endif
+ 
+ 	// Is the SoftHSM PKCS #11 library initialised?
+diff --git a/src/lib/common/MutexFactory.cpp b/src/lib/common/MutexFactory.cpp
+index 1cfc0dab2..61eeebf1f 100644
+--- a/src/lib/common/MutexFactory.cpp
++++ b/src/lib/common/MutexFactory.cpp
+@@ -111,12 +111,12 @@ MutexFactory::~MutexFactory()
+ // Return the one-and-only instance
+ MutexFactory* MutexFactory::i()
+ {
+-	if (!instance.get())
++	if (!instance->get())
+ 	{
+-		instance.reset(new MutexFactory());
++		instance->reset(new MutexFactory());
+ 	}
+ 
+-	return instance.get();
++	return instance->get();
+ }
+ 
+ // Get a mutex instance
+diff --git a/src/lib/common/MutexFactory.h b/src/lib/common/MutexFactory.h
+index 167dc3dbe..3e4ff6894 100644
+--- a/src/lib/common/MutexFactory.h
++++ b/src/lib/common/MutexFactory.h
+@@ -112,11 +112,15 @@ class MutexFactory
+ 	CK_RV LockMutex(CK_VOID_PTR mutex);
+ 	CK_RV UnlockMutex(CK_VOID_PTR mutex);
+ 
+-	// The one-and-only instance
++	// The one-and-only instance.
++	//
++	// A pointer to a heap-allocated, deliberately never-freed smart
++	// pointer, not a smart pointer directly: see the rationale
++	// beside SoftHSM::instance in SoftHSM.h.
+ #ifdef HAVE_CXX11
+-	static std::unique_ptr<MutexFactory> instance;
++	static std::unique_ptr<MutexFactory>* instance;
+ #else
+-	static std::auto_ptr<MutexFactory> instance;
++	static std::auto_ptr<MutexFactory>* instance;
+ #endif
+ 
+ 	// The function pointers
+diff --git a/src/lib/crypto/BotanCryptoFactory.cpp b/src/lib/crypto/BotanCryptoFactory.cpp
+index fbe1dfce3..1c1780266 100644
+--- a/src/lib/crypto/BotanCryptoFactory.cpp
++++ b/src/lib/crypto/BotanCryptoFactory.cpp
+@@ -95,18 +95,18 @@ BotanCryptoFactory::~BotanCryptoFactory()
+ // Return the one-and-only instance
+ BotanCryptoFactory* BotanCryptoFactory::i()
+ {
+-	if (!instance.get())
++	if (!instance->get())
+ 	{
+-		instance.reset(new BotanCryptoFactory());
++		instance->reset(new BotanCryptoFactory());
+ 	}
+ 
+-	return instance.get();
++	return instance->get();
+ }
+ 
+ // This will destroy the one-and-only instance.
+ void BotanCryptoFactory::reset()
+ {
+-	instance.reset();
++	instance->reset();
+ }
+ 
+ // Create a concrete instance of a symmetric algorithm
+diff --git a/src/lib/crypto/BotanCryptoFactory.h b/src/lib/crypto/BotanCryptoFactory.h
+index 788ae373d..bc05188f7 100644
+--- a/src/lib/crypto/BotanCryptoFactory.h
++++ b/src/lib/crypto/BotanCryptoFactory.h
+@@ -81,11 +81,15 @@ class BotanCryptoFactory : public CryptoFactory
+ 	// Constructor
+ 	BotanCryptoFactory();
+ 
+-	// The one-and-only instance
++	// The one-and-only instance.
++	//
++	// A pointer to a heap-allocated, deliberately never-freed smart
++	// pointer, not a smart pointer directly: see the rationale
++	// beside SoftHSM::instance in SoftHSM.h.
+ #ifdef HAVE_CXX11
+-	static std::unique_ptr<BotanCryptoFactory> instance;
++	static std::unique_ptr<BotanCryptoFactory>* instance;
+ #else
+-	static std::auto_ptr<BotanCryptoFactory> instance;
++	static std::auto_ptr<BotanCryptoFactory>* instance;
+ #endif
+ 
+ 	// Thread specific RNG
+diff --git a/src/lib/crypto/OSSLCryptoFactory.cpp b/src/lib/crypto/OSSLCryptoFactory.cpp
+index b70eec4e7..5fa540428 100644
+--- a/src/lib/crypto/OSSLCryptoFactory.cpp
++++ b/src/lib/crypto/OSSLCryptoFactory.cpp
+@@ -300,18 +300,18 @@ OSSLCryptoFactory::~OSSLCryptoFactory()
+ // Return the one-and-only instance
+ OSSLCryptoFactory* OSSLCryptoFactory::i()
+ {
+-	if (!instance.get())
++	if (!instance->get())
+ 	{
+-		instance.reset(new OSSLCryptoFactory());
++		instance->reset(new OSSLCryptoFactory());
+ 	}
+ 
+-	return instance.get();
++	return instance->get();
+ }
+ 
+ // This will destroy the one-and-only instance.
+ void OSSLCryptoFactory::reset()
+ {
+-	instance.reset();
++	instance->reset();
+ }
+ 
+ #ifdef WITH_FIPS
+diff --git a/src/lib/crypto/OSSLCryptoFactory.h b/src/lib/crypto/OSSLCryptoFactory.h
+index bdfc031bd..cf46fe079 100644
+--- a/src/lib/crypto/OSSLCryptoFactory.h
++++ b/src/lib/crypto/OSSLCryptoFactory.h
+@@ -89,11 +89,15 @@ class OSSLCryptoFactory : public CryptoFactory
+ 	// Constructor
+ 	OSSLCryptoFactory();
+ 
+-	// The one-and-only instance
++	// The one-and-only instance.
++	//
++	// A pointer to a heap-allocated, deliberately never-freed smart
++	// pointer, not a smart pointer directly: see the rationale
++	// beside SoftHSM::instance in SoftHSM.h.
+ #ifdef HAVE_CXX11
+-	static std::unique_ptr<OSSLCryptoFactory> instance;
++	static std::unique_ptr<OSSLCryptoFactory>* instance;
+ #else
+-	static std::auto_ptr<OSSLCryptoFactory> instance;
++	static std::auto_ptr<OSSLCryptoFactory>* instance;
+ #endif
+ 
+ #if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
+diff --git a/src/lib/crypto/test/cryptotest.cpp b/src/lib/crypto/test/cryptotest.cpp
+index 2f8839aba..4ec1b8363 100644
+--- a/src/lib/crypto/test/cryptotest.cpp
++++ b/src/lib/crypto/test/cryptotest.cpp
+@@ -56,22 +56,22 @@
+ // Initialise the one-and-only instance
+ #ifdef HAVE_CXX11
+ 
+-std::unique_ptr<MutexFactory> MutexFactory::instance(nullptr);
+-std::unique_ptr<SecureMemoryRegistry> SecureMemoryRegistry::instance(nullptr);
++std::unique_ptr<MutexFactory>* MutexFactory::instance = new std::unique_ptr<MutexFactory>();
++std::unique_ptr<SecureMemoryRegistry>* SecureMemoryRegistry::instance = new std::unique_ptr<SecureMemoryRegistry>();
+ #if defined(WITH_OPENSSL)
+-std::unique_ptr<OSSLCryptoFactory> OSSLCryptoFactory::instance(nullptr);
++std::unique_ptr<OSSLCryptoFactory>* OSSLCryptoFactory::instance = new std::unique_ptr<OSSLCryptoFactory>();
+ #else
+-std::unique_ptr<BotanCryptoFactory> BotanCryptoFactory::instance(nullptr);
++std::unique_ptr<BotanCryptoFactory>* BotanCryptoFactory::instance = new std::unique_ptr<BotanCryptoFactory>();
+ #endif
+ 
+ #else
+ 
+-std::auto_ptr<MutexFactory> MutexFactory::instance(NULL);
+-std::auto_ptr<SecureMemoryRegistry> SecureMemoryRegistry::instance(NULL);
++std::auto_ptr<MutexFactory>* MutexFactory::instance = new std::auto_ptr<MutexFactory>();
++std::auto_ptr<SecureMemoryRegistry>* SecureMemoryRegistry::instance = new std::auto_ptr<SecureMemoryRegistry>();
+ #if defined(WITH_OPENSSL)
+-std::auto_ptr<OSSLCryptoFactory> OSSLCryptoFactory::instance(NULL);
++std::auto_ptr<OSSLCryptoFactory>* OSSLCryptoFactory::instance = new std::auto_ptr<OSSLCryptoFactory>();
+ #else
+-std::auto_ptr<BotanCryptoFactory> BotanCryptoFactory::instance(NULL);
++std::auto_ptr<BotanCryptoFactory>* BotanCryptoFactory::instance = new std::auto_ptr<BotanCryptoFactory>();
+ #endif
+ 
+ #endif
+diff --git a/src/lib/data_mgr/SecureMemoryRegistry.cpp b/src/lib/data_mgr/SecureMemoryRegistry.cpp
+index 57de15668..f658b1d02 100644
+--- a/src/lib/data_mgr/SecureMemoryRegistry.cpp
++++ b/src/lib/data_mgr/SecureMemoryRegistry.cpp
+@@ -56,11 +56,11 @@ SecureMemoryRegistry::~SecureMemoryRegistry()
+ // Return the one-and-only instance
+ SecureMemoryRegistry* SecureMemoryRegistry::i()
+ {
+-	if (instance.get() == NULL)
++	if (instance->get() == NULL)
+ 	{
+-		instance.reset(new SecureMemoryRegistry());
++		instance->reset(new SecureMemoryRegistry());
+ 
+-		if (instance.get() == NULL)
++		if (instance->get() == NULL)
+ 		{
+ 			// This is very bad!
+ 			ERROR_MSG("failed to instantiate SecureMemoryRegistry");
+@@ -68,13 +68,13 @@ SecureMemoryRegistry* SecureMemoryRegistry::i()
+ 		}
+ 	}
+ 
+-	return instance.get();
++	return instance->get();
+ }
+ 
+ // This will destroy the one-and-only instance.
+ void SecureMemoryRegistry::reset()
+ {
+-	instance.reset();
++	instance->reset();
+ }
+ 
+ // Register a block of memory
+diff --git a/src/lib/data_mgr/SecureMemoryRegistry.h b/src/lib/data_mgr/SecureMemoryRegistry.h
+index 6c733693e..767504741 100644
+--- a/src/lib/data_mgr/SecureMemoryRegistry.h
++++ b/src/lib/data_mgr/SecureMemoryRegistry.h
+@@ -58,10 +58,13 @@ class SecureMemoryRegistry
+ 	void wipe();
+ 
+ private:
++	// A pointer to a heap-allocated, deliberately never-freed smart
++	// pointer, not a smart pointer directly: see the rationale
++	// beside SoftHSM::instance in SoftHSM.h.
+ #ifdef HAVE_CXX11
+-	static std::unique_ptr<SecureMemoryRegistry> instance;
++	static std::unique_ptr<SecureMemoryRegistry>* instance;
+ #else
+-	static std::auto_ptr<SecureMemoryRegistry> instance;
++	static std::auto_ptr<SecureMemoryRegistry>* instance;
+ #endif
+ 
+ 	std::map<void*, size_t> registry;
+diff --git a/src/lib/data_mgr/test/datamgrtest.cpp b/src/lib/data_mgr/test/datamgrtest.cpp
+index bf1b836e0..399fe7442 100644
+--- a/src/lib/data_mgr/test/datamgrtest.cpp
++++ b/src/lib/data_mgr/test/datamgrtest.cpp
+@@ -53,22 +53,22 @@
+ // Initialise the one-and-only instance
+ #ifdef HAVE_CXX11
+ 
+-std::unique_ptr<MutexFactory> MutexFactory::instance(nullptr);
+-std::unique_ptr<SecureMemoryRegistry> SecureMemoryRegistry::instance(nullptr);
++std::unique_ptr<MutexFactory>* MutexFactory::instance = new std::unique_ptr<MutexFactory>();
++std::unique_ptr<SecureMemoryRegistry>* SecureMemoryRegistry::instance = new std::unique_ptr<SecureMemoryRegistry>();
+ #if defined(WITH_OPENSSL)
+-std::unique_ptr<OSSLCryptoFactory> OSSLCryptoFactory::instance(nullptr);
++std::unique_ptr<OSSLCryptoFactory>* OSSLCryptoFactory::instance = new std::unique_ptr<OSSLCryptoFactory>();
+ #else
+-std::unique_ptr<BotanCryptoFactory> BotanCryptoFactory::instance(nullptr);
++std::unique_ptr<BotanCryptoFactory>* BotanCryptoFactory::instance = new std::unique_ptr<BotanCryptoFactory>();
+ #endif
+ 
+ #else
+ 
+-std::auto_ptr<MutexFactory> MutexFactory::instance(NULL);
+-std::auto_ptr<SecureMemoryRegistry> SecureMemoryRegistry::instance(NULL);
++std::auto_ptr<MutexFactory>* MutexFactory::instance = new std::auto_ptr<MutexFactory>();
++std::auto_ptr<SecureMemoryRegistry>* SecureMemoryRegistry::instance = new std::auto_ptr<SecureMemoryRegistry>();
+ #if defined(WITH_OPENSSL)
+-std::auto_ptr<OSSLCryptoFactory> OSSLCryptoFactory::instance(NULL);
++std::auto_ptr<OSSLCryptoFactory>* OSSLCryptoFactory::instance = new std::auto_ptr<OSSLCryptoFactory>();
+ #else
+-std::auto_ptr<BotanCryptoFactory> BotanCryptoFactory::instance(NULL);
++std::auto_ptr<BotanCryptoFactory>* BotanCryptoFactory::instance = new std::auto_ptr<BotanCryptoFactory>();
+ #endif
+ 
+ #endif
+diff --git a/src/lib/handle_mgr/test/handlemgrtest.cpp b/src/lib/handle_mgr/test/handlemgrtest.cpp
+index e8f300a34..2a73304a3 100644
+--- a/src/lib/handle_mgr/test/handlemgrtest.cpp
++++ b/src/lib/handle_mgr/test/handlemgrtest.cpp
+@@ -49,9 +49,9 @@
+ #include "MutexFactory.h"
+ 
+ #ifdef HAVE_CXX11
+-std::unique_ptr<MutexFactory> MutexFactory::instance(nullptr);
++std::unique_ptr<MutexFactory>* MutexFactory::instance = new std::unique_ptr<MutexFactory>();
+ #else
+-std::auto_ptr<MutexFactory> MutexFactory::instance(NULL);
++std::auto_ptr<MutexFactory>* MutexFactory::instance = new std::auto_ptr<MutexFactory>();
+ #endif
+ 
+ class MyProgressListener : public CppUnit::TextTestProgressListener
+diff --git a/src/lib/object_store/test/objstoretest.cpp b/src/lib/object_store/test/objstoretest.cpp
+index 0fa4b4b0b..060adc20c 100644
+--- a/src/lib/object_store/test/objstoretest.cpp
++++ b/src/lib/object_store/test/objstoretest.cpp
+@@ -53,22 +53,22 @@
+ // Initialise the one-and-only instance
+ #ifdef HAVE_CXX11
+ 
+-std::unique_ptr<MutexFactory> MutexFactory::instance(nullptr);
+-std::unique_ptr<SecureMemoryRegistry> SecureMemoryRegistry::instance(nullptr);
++std::unique_ptr<MutexFactory>* MutexFactory::instance = new std::unique_ptr<MutexFactory>();
++std::unique_ptr<SecureMemoryRegistry>* SecureMemoryRegistry::instance = new std::unique_ptr<SecureMemoryRegistry>();
+ #if defined(WITH_OPENSSL)
+-std::unique_ptr<OSSLCryptoFactory> OSSLCryptoFactory::instance(nullptr);
++std::unique_ptr<OSSLCryptoFactory>* OSSLCryptoFactory::instance = new std::unique_ptr<OSSLCryptoFactory>();
+ #else
+-std::unique_ptr<BotanCryptoFactory> BotanCryptoFactory::instance(nullptr);
++std::unique_ptr<BotanCryptoFactory>* BotanCryptoFactory::instance = new std::unique_ptr<BotanCryptoFactory>();
+ #endif
+ 
+ #else
+ 
+-std::auto_ptr<MutexFactory> MutexFactory::instance(NULL);
+-std::auto_ptr<SecureMemoryRegistry> SecureMemoryRegistry::instance(NULL);
++std::auto_ptr<MutexFactory>* MutexFactory::instance = new std::auto_ptr<MutexFactory>();
++std::auto_ptr<SecureMemoryRegistry>* SecureMemoryRegistry::instance = new std::auto_ptr<SecureMemoryRegistry>();
+ #if defined(WITH_OPENSSL)
+-std::auto_ptr<OSSLCryptoFactory> OSSLCryptoFactory::instance(NULL);
++std::auto_ptr<OSSLCryptoFactory>* OSSLCryptoFactory::instance = new std::auto_ptr<OSSLCryptoFactory>();
+ #else
+-std::auto_ptr<BotanCryptoFactory> BotanCryptoFactory::instance(NULL);
++std::auto_ptr<BotanCryptoFactory>* BotanCryptoFactory::instance = new std::auto_ptr<BotanCryptoFactory>();
+ #endif
+ 
+ #endif
+diff --git a/src/lib/session_mgr/test/sessionmgrtest.cpp b/src/lib/session_mgr/test/sessionmgrtest.cpp
+index 0ea55fca7..45aace8ee 100644
+--- a/src/lib/session_mgr/test/sessionmgrtest.cpp
++++ b/src/lib/session_mgr/test/sessionmgrtest.cpp
+@@ -59,22 +59,22 @@
+ // Initialise the one-and-only instance
+ #ifdef HAVE_CXX11
+ 
+-std::unique_ptr<MutexFactory> MutexFactory::instance(nullptr);
+-std::unique_ptr<SecureMemoryRegistry> SecureMemoryRegistry::instance(nullptr);
++std::unique_ptr<MutexFactory>* MutexFactory::instance = new std::unique_ptr<MutexFactory>();
++std::unique_ptr<SecureMemoryRegistry>* SecureMemoryRegistry::instance = new std::unique_ptr<SecureMemoryRegistry>();
+ #if defined(WITH_OPENSSL)
+-std::unique_ptr<OSSLCryptoFactory> OSSLCryptoFactory::instance(nullptr);
++std::unique_ptr<OSSLCryptoFactory>* OSSLCryptoFactory::instance = new std::unique_ptr<OSSLCryptoFactory>();
+ #else
+-std::unique_ptr<BotanCryptoFactory> BotanCryptoFactory::instance(nullptr);
++std::unique_ptr<BotanCryptoFactory>* BotanCryptoFactory::instance = new std::unique_ptr<BotanCryptoFactory>();
+ #endif
+ 
+ #else
+ 
+-std::auto_ptr<MutexFactory> MutexFactory::instance(NULL);
+-std::auto_ptr<SecureMemoryRegistry> SecureMemoryRegistry::instance(NULL);
++std::auto_ptr<MutexFactory>* MutexFactory::instance = new std::auto_ptr<MutexFactory>();
++std::auto_ptr<SecureMemoryRegistry>* SecureMemoryRegistry::instance = new std::auto_ptr<SecureMemoryRegistry>();
+ #if defined(WITH_OPENSSL)
+-std::auto_ptr<OSSLCryptoFactory> OSSLCryptoFactory::instance(NULL);
++std::auto_ptr<OSSLCryptoFactory>* OSSLCryptoFactory::instance = new std::auto_ptr<OSSLCryptoFactory>();
+ #else
+-std::auto_ptr<BotanCryptoFactory> BotanCryptoFactory::instance(NULL);
++std::auto_ptr<BotanCryptoFactory>* BotanCryptoFactory::instance = new std::auto_ptr<BotanCryptoFactory>();
+ #endif
+ 
+ #endif
+diff --git a/src/lib/slot_mgr/test/slotmgrtest.cpp b/src/lib/slot_mgr/test/slotmgrtest.cpp
+index a70527fe1..10477cff8 100644
+--- a/src/lib/slot_mgr/test/slotmgrtest.cpp
++++ b/src/lib/slot_mgr/test/slotmgrtest.cpp
+@@ -53,22 +53,22 @@
+ // Initialise the one-and-only instance
+ #ifdef HAVE_CXX11
+ 
+-std::unique_ptr<MutexFactory> MutexFactory::instance(nullptr);
+-std::unique_ptr<SecureMemoryRegistry> SecureMemoryRegistry::instance(nullptr);
++std::unique_ptr<MutexFactory>* MutexFactory::instance = new std::unique_ptr<MutexFactory>();
++std::unique_ptr<SecureMemoryRegistry>* SecureMemoryRegistry::instance = new std::unique_ptr<SecureMemoryRegistry>();
+ #if defined(WITH_OPENSSL)
+-std::unique_ptr<OSSLCryptoFactory> OSSLCryptoFactory::instance(nullptr);
++std::unique_ptr<OSSLCryptoFactory>* OSSLCryptoFactory::instance = new std::unique_ptr<OSSLCryptoFactory>();
+ #else
+-std::unique_ptr<BotanCryptoFactory> BotanCryptoFactory::instance(nullptr);
++std::unique_ptr<BotanCryptoFactory>* BotanCryptoFactory::instance = new std::unique_ptr<BotanCryptoFactory>();
+ #endif
+ 
+ #else
+ 
+-std::auto_ptr<MutexFactory> MutexFactory::instance(NULL);
+-std::auto_ptr<SecureMemoryRegistry> SecureMemoryRegistry::instance(NULL);
++std::auto_ptr<MutexFactory>* MutexFactory::instance = new std::auto_ptr<MutexFactory>();
++std::auto_ptr<SecureMemoryRegistry>* SecureMemoryRegistry::instance = new std::auto_ptr<SecureMemoryRegistry>();
+ #if defined(WITH_OPENSSL)
+-std::auto_ptr<OSSLCryptoFactory> OSSLCryptoFactory::instance(NULL);
++std::auto_ptr<OSSLCryptoFactory>* OSSLCryptoFactory::instance = new std::auto_ptr<OSSLCryptoFactory>();
+ #else
+-std::auto_ptr<BotanCryptoFactory> BotanCryptoFactory::instance(NULL);
++std::auto_ptr<BotanCryptoFactory>* BotanCryptoFactory::instance = new std::auto_ptr<BotanCryptoFactory>();
+ #endif
+ 
+ #endif

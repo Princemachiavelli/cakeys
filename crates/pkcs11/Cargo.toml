@@ -16,6 +16,7 @@ cakeys-profile.workspace = true
 cryptoki.workspace = true
 toml.workspace = true
 zeroize.workspace = true
+der.workspace = true
 aes.workspace = true
 aes-kw.workspace = true
 libc.workspace = true

@@ -44,6 +44,22 @@
       ''
         bash ${./upstream/softhsm}/repro.sh ${softhsm-unwrap-value-len-tested}/lib/softhsm/libsofthsm2.so | tee $out
       '';
+  # The same SoftHSM under OpenSSL through pkcs11-provider, activated before `default`: no
+  # deadlock in C_Login (SoftHSMv2 #834), a streaming ECDSA signature that verifies (#857), and
+  # no crash at exit (#780). Stock SoftHSM 2.7.0 hangs on the first step.
+  softhsm-pkcs11-provider =
+    pkgs.runCommand "softhsm-pkcs11-provider"
+      {
+        nativeBuildInputs = [
+          softhsm-unwrap-value-len-tested
+          pkgs.opensc
+          (pkgs.lib.getBin pkgs.openssl)
+        ];
+      }
+      ''
+        bash ${./upstream/softhsm}/repro-834.sh ${softhsm-unwrap-value-len-tested}/lib/softhsm/libsofthsm2.so \
+          ${pkgs.pkcs11-provider}/lib/ossl-modules | tee $out
+      '';
   # The capability-profile query (docs/CAPROBE.md, `caprobe supports`): static answers from the
   # profiles embedded in the binary, no token needed. yes -> 0, no -> 15, unknown -> 16.
   profiles = pkgs.runCommand "cakeys-profiles" { } ''
@@ -139,6 +155,17 @@
     assert pkgs.lib.hasInfix "check signing-cert --token softhsm" signing-cert.check;
     assert pkgs.lib.hasInfix "check signing-cert.id.certhash"
       (keys.signing-cert { scheme = "certhash"; }).check;
+    # What `check` prints: the bare URI unless the call asks for more.
+    assert !(pkgs.lib.hasInfix "--format" signing.check || pkgs.lib.hasInfix "--uri-" signing.check);
+    assert pkgs.lib.hasSuffix
+      "--spec signing-soft --format pkcs11-provider-pem --uri-module --uri-pin source"
+      (keys.signing {
+        format = "pkcs11-provider-pem";
+        uriModule = true;
+        uriPin = "source";
+      }).check;
+    assert fails (keys.signing { format = "der"; }).check;
+    assert fails (keys.signing { uriPin = "file"; }).check;
     pkgs.runCommand "cakeys-lib-check" { } ''
       echo ${pkgs.lib.escapeShellArg (keys.signing { }).check} > $out
     '';
@@ -151,6 +178,7 @@
   vm = mkTest "vm";
   module = import ./nix/module-test.nix {
     inherit pkgs cakeys pcsc-probe;
+    softhsm = softhsm-unwrap-value-len-tested;
     module = self.nixosModules.default;
   };
   tpm = import ./nix/tpm-test.nix {

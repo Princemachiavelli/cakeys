@@ -5,6 +5,7 @@
 {
   lib,
   stdenv,
+  callPackage,
   softhsm,
   kryoptic,
   opensc,
@@ -16,6 +17,8 @@
   sqlite,
   dbus,
   p11-kit,
+  openssl,
+  pkcs11-provider,
   pkg-config,
   # The tpm2 feature (cakeys-tpm2-pkcs11) is Linux only: tss-esapi-sys ships no prebuilt bindings
   # for aarch64-darwin, and tpm2-pkcs11 and its tools are not packaged there, so there is no
@@ -33,6 +36,11 @@ let
   # does not cross-compile. So the test environment exists only where the tests can run. The
   # modules it names are host packages on purpose: the test binaries load them.
   canCheck = stdenv.buildPlatform.canExecute stdenv.hostPlatform;
+  # The SoftHSM the tests drive: nixpkgs' with upstream/softhsm/'s patches
+  # (nix/softhsm-unwrap-value-len.nix), as scripts/local-tests.sh uses. Without them OpenSSL
+  # through pkcs11-provider, which reads `check --format pkcs11-provider-pem`'s key file,
+  # deadlocks in C_Login.
+  softhsmForTests = callPackage ./softhsm-unwrap-value-len.nix { inherit softhsm; };
 in
 {
   # cryptoki 0.12.1 (and main) gives KeyType::SHA224/384/512_HMAC the value of CKK_SHA256_HMAC, so those key
@@ -95,6 +103,8 @@ in
         # The capability profiles (docs/CAPROBE.md): embedded in the binary, and the vendored
         # OASIS headers the pinned baseline-regeneration test reads.
         ../profiles
+        # cargo-nextest's configuration: the slow-test timeout.
+        ../.config/nextest.toml
       ];
     };
 
@@ -132,9 +142,10 @@ in
     # and, with tpm2, tpm2-pkcs11 on a software TPM (behind tpm2-abrmd on a private D-Bus) inside
     # the build sandbox.
     nativeCheckInputs = [
-      softhsm
+      softhsmForTests
       p11-kit
       opensc
+      openssl
     ]
     ++ lib.optionals tpm2 [
       swtpm
@@ -150,7 +161,7 @@ in
         printf 'directories.tokendir = %s\nobjectstore.backend = file\nlog.level = ERROR\n' \
           $TMPDIR/softhsm-tokens > $SOFTHSM2_CONF
         softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678
-        export CAKEYS_TEST_MODULE=${softhsm}/lib/softhsm/libsofthsm2.so
+        export CAKEYS_TEST_MODULE=${softhsmForTests}/lib/softhsm/libsofthsm2.so
         export CAKEYS_TEST_REQUIRE=1
 
         # kryoptic (PKCS#11 3.2): the shared reference suite runs against it too. The slot table
@@ -175,6 +186,9 @@ in
         . $TMPDIR/p11/env
         export CAKEYS_P11KIT_CLIENT=${lib.getLib p11-kit}/lib/pkcs11/p11-kit-client.so
         export CAKEYS_P11KIT_REQUIRE=1
+
+        # OpenSSL through pkcs11-provider reads what `check --format pkcs11-provider-pem` writes.
+        export CAKEYS_PKCS11_PROVIDER_DIR=${pkcs11-provider}/lib/ossl-modules
 
         export HOME=$TMPDIR
       ''

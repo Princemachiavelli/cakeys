@@ -2,11 +2,12 @@
 //! library so a downstream binary can link extra provider crates:
 //! `cakeys::main(&cakeys::default_registry().with(MyProvider))`.
 
-use cakeys_cli_common::{module_overrides, open_quiet, open_token, print};
+use cakeys_cli_common::{module_overrides, open_quiet, open_token, print, token_cfg};
 use cakeys_core::KmError;
 use cakeys_core::config::{Config, Lock, gc, load_config, load_lock, lock_for_update, lock_unwritable, save_lock};
+use cakeys_core::types::ObjectClass;
 use cakeys_pkcs11::ops::{self, LockWrite, Notes, Target};
-use cakeys_pkcs11::token::Access;
+use cakeys_pkcs11::token::{Access, pin_ref, provider_pem, with_query};
 use cakeys_pkcs11::{Registry, Token};
 use clap::{Parser, Subcommand};
 use std::collections::BTreeMap;
@@ -101,7 +102,35 @@ enum Cmd {
         token: Option<String>,
         #[arg(long)]
         spec: Option<String>,
+        /// `uri`, or `pkcs11-provider-pem`: pkcs11-provider's key file (what its `uri2pem.py`
+        /// writes) wrapping the URI, for programs that take a private key only as a PEM file
+        /// and load it through OpenSSL with pkcs11-provider.
+        #[arg(long, value_enum, default_value_t = Format::Uri)]
+        format: Format,
+        /// Add `module-path=` with the module file the check loaded (read by p11-kit and libp11;
+        /// pkcs11-provider takes its module from its own configuration).
+        #[arg(long)]
+        uri_module: bool,
+        /// Add the user PIN: `source` refers to keys.toml's pinEnv (`pin-source=env:`, a
+        /// pkcs11-provider extension) or pinFile (`pin-source=file:`); `value` writes the PIN
+        /// itself (`pin-value=`) into the output, wherever that goes.
+        #[arg(long, value_enum)]
+        uri_pin: Option<UriPin>,
     },
+}
+
+/// What `check` prints.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum Format {
+    Uri,
+    Pkcs11ProviderPem,
+}
+
+/// How `check` puts the user PIN in the URI.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum UriPin {
+    Source,
+    Value,
 }
 
 /// Whether `realise`/`delete` write the lock: by default they do, like `nix build` with
@@ -224,14 +253,62 @@ impl Run<'_> {
                 }
                 Ok(())
             }
-            Cmd::Check { reference, token, spec } => {
-                let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
-                let open = |name: &str, access| open_quiet(cfg, modules, registry, name, access);
-                let r = ops::check(cfg, reference, spec.as_deref(), token.as_deref(), open, &mut self.lock, notes)?;
-                println!("{}", r.uri);
-                Ok(())
+            Cmd::Check { reference, token, spec, format, uri_module, uri_pin } => {
+                self.check(reference, token.as_deref(), spec.as_deref(), *format, *uri_module, *uri_pin, notes)
             }
         }
+    }
+
+    /// `check`: the verified URI as the consumer asked for it. The lock's URI stays the bare
+    /// locator; the module and PIN are only ever added here, on request.
+    #[expect(clippy::too_many_arguments, reason = "the verb's own flags, passed through once")]
+    fn check(
+        &mut self,
+        reference: &str,
+        token: Option<&str>,
+        spec: Option<&str>,
+        format: Format,
+        uri_module: bool,
+        uri_pin: Option<UriPin>,
+        notes: &mut Notes,
+    ) -> anyhow::Result<()> {
+        let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
+        // Refused before any token is opened: what the output cannot carry.
+        let object = reference.split_once(".id.").map_or(reference, |(o, _)| o);
+        let key_file = format == Format::Pkcs11ProviderPem;
+        if key_file && cfg.objects.get(object).is_some_and(|o| o.class != ObjectClass::PrivateKey) {
+            return Err(KmError::Unsupported(format!(
+                "--format pkcs11-provider-pem for '{object}': pkcs11-provider's key files name private keys only"
+            ))
+            .into());
+        }
+        let pin = match uri_pin {
+            None => None,
+            Some(how) => {
+                let (_, t) = cfg.pick_spec(object, spec, token)?;
+                Some(pin_ref(&t, token_cfg(cfg, &t)?, how == UriPin::Value)?)
+            }
+        };
+        let open = |name: &str, access| open_quiet(cfg, modules, registry, name, access);
+        let (r, tok) = ops::check_open(cfg, reference, spec, token, open, &mut self.lock, notes)?;
+        let uri = with_query(&r.uri, uri_module.then_some(tok.module.path.as_str()), pin.as_ref());
+        if !key_file {
+            println!("{uri}");
+            return Ok(());
+        }
+        // pkcs11-provider finds a private key's public half by CKA_ID alone: without one, a
+        // module whose private key carries no public point (SoftHSM) gives OpenSSL no public key.
+        let t = Target::new(cfg, &r.spec, &r.token)?;
+        if tok.key_id(t.object, &t.on_token.locator, t.on_token.public_only)?.is_none() {
+            notes.warn(format!(
+                "'{object}' on '{}' has no CKA_ID: pkcs11-provider finds a private key's public half by \
+                 CKA_ID, so unless the module puts the public key on the private object, OpenSSL cannot \
+                 get the public key from this key file (to match a certificate, or `openssl pkey -pubout`)",
+                r.token
+            ));
+        }
+        print!("{}", provider_pem(&uri)?);
+        Ok(())
     }
 
     fn open(&self, name: &str, access: Access, notes: &mut Notes) -> Result<Token, KmError> {

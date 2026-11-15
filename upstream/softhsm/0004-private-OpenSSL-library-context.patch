@@ -1,0 +1,144 @@
+Do SoftHSM's own crypto in a private OpenSSL library context (SoftHSMv2 #834). Not upstream:
+PR-834.md is the draft. Made against 2.7.0; applies to main 7380895 with offsets and fuzz.
+
+diff -ru a/src/lib/crypto/OSSLEVPHashAlgorithm.cpp b/src/lib/crypto/OSSLEVPHashAlgorithm.cpp
+--- a/src/lib/crypto/OSSLEVPHashAlgorithm.cpp
++++ b/src/lib/crypto/OSSLEVPHashAlgorithm.cpp
+@@ -33,6 +33,7 @@
+ #include "config.h"
+ #include "OSSLEVPHashAlgorithm.h"
+ #include "OSSLComp.h"
++#include "OSSLUtil.h"
+ 
+ // Destructor
+ OSSLEVPHashAlgorithm::~OSSLEVPHashAlgorithm()
+@@ -58,7 +59,7 @@
+ 	}
+ 
+ 	// Initialize EVP digesting
+-	if (!EVP_DigestInit_ex(curCTX, getEVPHash(), NULL))
++	if (!EVP_DigestInit_ex(curCTX, OSSL::fetched(getEVPHash()), NULL))
+ 	{
+ 		ERROR_MSG("EVP_DigestInit failed");
+ 
+diff -ru a/src/lib/crypto/OSSLEVPSymmetricAlgorithm.cpp b/src/lib/crypto/OSSLEVPSymmetricAlgorithm.cpp
+--- a/src/lib/crypto/OSSLEVPSymmetricAlgorithm.cpp
++++ b/src/lib/crypto/OSSLEVPSymmetricAlgorithm.cpp
+@@ -140,7 +140,7 @@
+ 	counterBitsInit(iv, counterBits);
+ 
+ 	// Determine the cipher class
+-	const EVP_CIPHER* cipher = getCipher();
++	const EVP_CIPHER* cipher = OSSL::fetched(getCipher());
+ 
+ 	if (cipher == NULL)
+ 	{
+@@ -333,7 +333,7 @@
+ 	counterBitsInit(iv, counterBits);
+ 
+ 	// Determine the cipher class
+-	const EVP_CIPHER* cipher = getCipher();
++	const EVP_CIPHER* cipher = OSSL::fetched(getCipher());
+ 
+ 	if (cipher == NULL)
+ 	{
+diff -ru a/src/lib/crypto/OSSLUtil.cpp b/src/lib/crypto/OSSLUtil.cpp
+--- a/src/lib/crypto/OSSLUtil.cpp
++++ b/src/lib/crypto/OSSLUtil.cpp
+@@ -209,3 +209,71 @@
+ 	return NID_undef;
+ }
+ #endif
++
++#if OPENSSL_VERSION_NUMBER >= 0x30000000L
++#include <openssl/provider.h>
++#include <map>
++#include <mutex>
++#include <string>
++
++// SoftHSM's library context: the default provider only, no configuration file
++static OSSL_LIB_CTX* softhsmLibCtx()
++{
++	static OSSL_LIB_CTX* ctx = []() -> OSSL_LIB_CTX*
++	{
++		OSSL_LIB_CTX* c = OSSL_LIB_CTX_new();
++		if (c != NULL && OSSL_PROVIDER_load(c, "default") == NULL)
++		{
++			ERROR_MSG("Could not load the default provider into SoftHSM's library context");
++			OSSL_LIB_CTX_free(c);
++			c = NULL;
++		}
++		return c;
++	}();
++	return ctx;
++}
++
++// Fetched implementations live as long as the module: callers hold plain pointers
++template <typename T>
++static const T* fetchOnce(const T* given, const char* name, T* (*fetch)(OSSL_LIB_CTX*, const char*, const char*))
++{
++	static std::mutex lock;
++	static std::map<std::string, T*> cache;
++
++	OSSL_LIB_CTX* ctx = softhsmLibCtx();
++	if (given == NULL || name == NULL || ctx == NULL) return given;
++
++	std::lock_guard<std::mutex> guard(lock);
++	auto it = cache.find(name);
++	if (it != cache.end()) return it->second;
++
++	T* impl = fetch(ctx, name, NULL);
++	if (impl == NULL)
++	{
++		ERROR_MSG("Could not fetch %s from SoftHSM's library context", name);
++		return given;
++	}
++	cache[name] = impl;
++	return impl;
++}
++
++const EVP_MD* OSSL::fetched(const EVP_MD* md)
++{
++	return fetchOnce<EVP_MD>(md, md == NULL ? NULL : EVP_MD_get0_name(md), EVP_MD_fetch);
++}
++
++const EVP_CIPHER* OSSL::fetched(const EVP_CIPHER* cipher)
++{
++	return fetchOnce<EVP_CIPHER>(cipher, cipher == NULL ? NULL : EVP_CIPHER_get0_name(cipher), EVP_CIPHER_fetch);
++}
++#else
++const EVP_MD* OSSL::fetched(const EVP_MD* md)
++{
++	return md;
++}
++
++const EVP_CIPHER* OSSL::fetched(const EVP_CIPHER* cipher)
++{
++	return cipher;
++}
++#endif
+diff -ru a/src/lib/crypto/OSSLUtil.h b/src/lib/crypto/OSSLUtil.h
+--- a/src/lib/crypto/OSSLUtil.h
++++ b/src/lib/crypto/OSSLUtil.h
+@@ -36,6 +36,7 @@
+ #include "config.h"
+ #include "ByteString.h"
+ #include <openssl/bn.h>
++#include <openssl/evp.h>
+ #ifdef WITH_ECC
+ #include <openssl/ec.h>
+ #endif
+@@ -72,6 +73,13 @@
+ 	// Convert a ByteString to an OpenSSL NID
+ 	int byteString2oid(const ByteString& byteString);
+ #endif
++
++	// The implementation of a digest or cipher in SoftHSM's own library context, never in
++	// the application's default one: a provider loaded there (such as pkcs11-provider using
++	// this very module) would otherwise be called back into while SoftHSM holds its locks.
++	// Falls back to the given one before OpenSSL 3, or if the context cannot be created.
++	const EVP_MD* fetched(const EVP_MD* md);
++	const EVP_CIPHER* fetched(const EVP_CIPHER* cipher);
+ }
+ 
+ #endif // !_SOFTHSM_V2_OSSLUTIL_H

@@ -64,8 +64,22 @@ URI, never key material, and signs or decrypts through its own PKCS#11 library a
 |---|---|---|---|
 | "The key `signing`, verified" | `cakeys check signing` | the URI on stdout, exit 0 | writes the lock |
 | "…by this scheme" | `cakeys check signing.id.rfc7093m4` | as above, only if that scheme is pinned | passes on another scheme |
+| "…as a key file" | `cakeys check signing --format pkcs11-provider-pem` | pkcs11-provider's key file (`PKCS#11 PROVIDER URI`, as its `uri2pem.py` writes) wrapping the URI; a warning when the key has no `CKA_ID` | wraps anything but a private key (15) |
+| "…with the module and PIN" | `--uri-module`, `--uri-pin source` or `value` | the URI with `?module-path=` (the module file the check loaded) and the PIN as `pin-source=file:`/`env:` (`pinFile`/`pinEnv`) or `pin-value=` | adds either unasked; puts a PIN for a token without one (17) |
 | "What is on the token?" | `cakeys resolve <spec> --token <t>` | JSON: `uri`, `ids`, `mode`, `binding`, `policy`, `immutables`, `specDigest`, … | compares with the lock |
 | "Make it, then pin it" | `cakeys create` / `realise` | JSON, and the lock recorded | regenerates a pinned key |
+
+A program names a cakeys object, never a URI: a bare URI only locates, so by itself it is
+underdescribed. What `check` hands back is shaped for the program, while the lock's URI stays
+the bare locator; the module and the PIN are added only on request, at the check.
+pkcs11-provider reads `pin-source` (`file:`, and its own `env:`) and `pin-value`, but not
+`module-path`: it takes the module from its configuration or `PKCS11_PROVIDER_MODULE`. p11-kit
+and libp11 read `module-path`. A `pin-value` is in whatever the output reaches.
+pkcs11-provider finds a private key's public half by `CKA_ID` alone: on a module whose private
+key carries no public point (SoftHSM: no `CKA_EC_POINT`, an empty `CKA_PUBLIC_KEY_INFO`), a key
+file for a key without `CKA_ID` signs but cannot give OpenSSL the public key (to match a
+certificate, say), so `check` warns when the key it verified has none. Activate
+OpenSSL's `default` provider before `pkcs11`: SoftHSM 2.7.0 deadlocks otherwise (OPEN.md).
 
 Today the CLI is the binding. **The check is not the use** (accepted 2026-11-13): a program that
 runs `check` and then opens the URI uses the key a moment after it was verified, as with a file
@@ -91,7 +105,10 @@ shared  = keys.shared { token = "softhsm"; spec = "shared-sign"; };  # several s
   `functions` (mechanism → `true`), `requiredSystemFeatures` (`<featurePrefix><token>` unless keys.toml
   names one) and `check`.
 - **`check`** is the shell command for the pre-use check (prints the URI); `scheme = "certhash"`
-  requires that identity, and the resolved pair is passed explicitly. Interpolating config, lock
+  requires that identity, and the resolved pair is passed explicitly. The call's `format`
+  (`"pkcs11-provider-pem"`), `uriModule` and `uriPin` (`"source"`, `"value"`) are `check`'s
+  flags, as in `keys.signing { format = "pkcs11-provider-pem"; uriPin = "source"; }`; a
+  `"value"` PIN is in the build log or store path the output reaches. Interpolating config, lock
   and module makes them build inputs. Like `id`, `type` and `requiredSystemFeatures`, it is usable
   before anything is recorded in the lock — the first-use pseudo-FOD flow; only the realisation's
   own fields throw on a missing record.
@@ -130,7 +147,11 @@ forces it. The VM test covers all of this.
   `checks.tpm`, with auto UIDs, uid-range, nixbld, and a stripped-ACL control.
 - **`sandbox.uidRange.enable`:** `auto-allocate-uids` and the `uid-range` feature.
 - **`checks.<n>`:** a oneshot `cakeys-check-<n>` unit running `check`, required by the
-  units that use the key — `checks.module`.
+  units that use the key — `checks.module`. `format`, `uriModule` and `uriPin` are `check`'s
+  flags. `outputFile` (with `outputGroup`) writes what it prints to a file instead of the
+  journal: removed before each check, written (0600, or 0640 for the group) only when it
+  passes; `uriPin = "value"` requires it. In `checks.module` the check writes a key file and the
+  service it gates signs with it through OpenSSL and pkcs11-provider.
 
 ### What real builds may reach
 

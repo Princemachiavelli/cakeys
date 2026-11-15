@@ -23,7 +23,8 @@ mkdir -p "$work"
 
 # The modules and tools the check phase uses: the flake's own packages and nixpkgs.
 mapfile -t paths < <(nix build --no-link --print-out-paths --inputs-from . .#softhsm-unwrap-value-len \
-  nixpkgs#kryoptic nixpkgs#p11-kit.out nixpkgs#tpm2-pkcs11.out nixpkgs#cargo-nextest nixpkgs#rsync nixpkgs#gnupatch nixpkgs#jq)
+  nixpkgs#kryoptic nixpkgs#p11-kit.out nixpkgs#tpm2-pkcs11.out nixpkgs#cargo-nextest nixpkgs#rsync nixpkgs#gnupatch nixpkgs#jq \
+  nixpkgs#openssl.bin nixpkgs#pkcs11-provider)
 path_of() {
   local p
   for p in "${paths[@]}"; do
@@ -40,7 +41,9 @@ nextest=$(path_of cargo-nextest)
 rsync=$(path_of rsync)
 gnupatch=$(path_of patch)
 jq=$(path_of jq)
-export PATH=$softhsm/bin:$nextest/bin:$rsync/bin:$gnupatch/bin:$jq/bin:$PATH
+openssl=$(path_of openssl)
+provider=$(path_of pkcs11-provider)
+export PATH=$softhsm/bin:$nextest/bin:$rsync/bin:$gnupatch/bin:$jq/bin:$openssl/bin:$PATH
 
 # The cryptoki the Nix build patches: its version and patch list, read from package-common.nix.
 block=$(sed -n '/^  cryptoki = {$/,/^  };$/p' nix/package-common.nix)
@@ -112,6 +115,7 @@ cp -r "$T/softhsm-tokens" "$T/kryoptic.sql" "$CAKEYS_TOKEN_TEMPLATE/"
 export CAKEYS_P11KIT_ENV_SH=$tree/nix/p11kit-test-env.sh CAKEYS_TPM_ENV_SH=$tree/nix/tpm2-test-env.sh
 export CAKEYS_P11KIT_CLIENT=$p11kit/lib/pkcs11/p11-kit-client.so CAKEYS_P11KIT_REQUIRE=1
 export CAKEYS_TPM_MODULE=$tpm2/lib/libtpm2_pkcs11.so CAKEYS_TPM_REQUIRE=1
+export CAKEYS_PKCS11_PROVIDER_DIR=$provider/lib/ossl-modules
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="bash $tree/nix/test-tokens.sh"
 # A script named here takes the place of the test run, in this environment (scripts/coverage-full.sh).
 if [ -n "${CAKEYS_LOCAL_TESTS_THEN:-}" ]; then
