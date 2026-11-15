@@ -87,6 +87,7 @@
             cakeys-crane
             caprobe
             camigrate
+            p11-fault
             softhsm-unwrap-value-len
             ;
           # What the tests reach, and what they would not notice changing (nix/package-crane.nix):

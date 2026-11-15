@@ -1,7 +1,9 @@
 # p11-fault: a PKCS#11 module that forwards, and misbehaves on request
 
 Design for [PLAN.md](PLAN.md) A3 and tier 4 of [COVERAGE_PLAN.md](COVERAGE_PLAN.md), written
-2026-11-14. Nothing is built yet.
+2026-11-14. Step 1 of the order below is built (`crates/p11-fault`, `packages.p11-fault`): the
+forwarders, `rv` rules, the trace, the parity run and the `pkcs11-tool` check. The hooks are
+step 2.
 
 `libp11_fault.so` is a PKCS#11 module that loads a real one (SoftHSM, kryoptic, a vendor
 module) and forwards every call to it, changing exactly what a fault plan says: a return
@@ -209,10 +211,13 @@ And DESIGN §8.1: each claim of what a lying module cannot make cakeys accept ge
 
 ## Nix
 
-- A workspace member, so `cargo test --workspace` builds `libp11_fault.so` next to the test
-  binaries, and the tests find it there (as `common::sibling` finds the other binaries).
-- `packages.p11-fault`: the library alone, for use outside cakeys.
-- Not installed by `packages.cakeys`, `caprobe` or `camigrate`.
+- A default member of the workspace, so the build makes `libp11_fault.so` beside the binaries
+  and the tests find it there (`common::fault_shim`). `cargo test` alone does not build a
+  `cdylib`: `scripts/local-tests.sh` builds it first.
+- One more output of the same build, `p11fault` (as `caprobe` and `camigrate` are), holding
+  `lib/libp11_fault.so`: `packages.p11-fault`. The `cakeys` output's closure does not carry it.
+- The per-test runner (`nix/test-tokens.sh`) points `P11_FAULT_MODULE` at the test's own SoftHSM
+  token for `tests/fault.rs`.
 
 ## The 3.x interface, later
 

@@ -19,12 +19,12 @@ The OS is NixOS: there is no system `cargo`, `python3` or `perl`.
 - The token suites (SoftHSM, kryoptic, p11-kit, swtpm) run only in the Nix build's check phase;
   under plain `cargo test` they skip. A change to token behaviour is not tested until a Nix check
   has run.
-- The checks run the tests under `cargo-nextest`, one process per test, each through
-  `nix/test-tokens.sh`: a SoftHSM token and a kryoptic database of its own (copies of
-  templates), and for the suites that use them its own `p11-kit server` and swtpm. So the
-  tests run in parallel (268 tests in about 40 s; the camigrate suite alone took 130 s on one
-  thread) and none depends on what another left on a token. `nix build .#cakeys-crane` is
-  that run alone.
+- Both builds (the checks' crane build and `packages.cakeys`) run the tests under
+  `cargo-nextest`, one process per test, each through `nix/test-tokens.sh`: a SoftHSM token and
+  a kryoptic database of its own (copies of templates), and for the suites that use them its own
+  `p11-kit server` and swtpm. So the tests run in parallel (268 tests in about 40 s; the
+  camigrate suite alone took 130 s on one thread) and none depends on what another left on a
+  token. `nix build .#cakeys-crane` is that run alone.
 - `scripts/local-tests.sh [nextest arguments]` is the same run outside Nix, seconds per test:
   the quickest way to test a change to token behaviour. It builds against the patched cryptoki
   (the patches `nix/package-common.nix` lists, applied under `target/local-tests/`, in a copy of
@@ -87,6 +87,7 @@ on. These rules have no exceptions; if a task cannot be done within them, stop a
 | `tests/softhsm.rs`, `tests/kryoptic.rs` | package build | one shared suite (`tests/reference/`) against each software reference: lifecycle, every type and scheme against independent oracles (hand-written DER encoder, openssl-hashed fixtures, RustCrypto `hmac`/`cmac`/`aes`/`aes-kw`); the same verdicts on both, with each token's facts in its `Reference` descriptor (`tests/common/`) |
 | `tests/tpm2.rs` | package build, `nix/tpm2-test-env.sh` | swtpm + tpm2-abrmd + tpm2-pkcs11; the native `tpm-certify` attestation (AK provisioning and validation, reads that never provision, a lost attestation as a downgrade, cross-checks), one material attested on two tokens with an attestation each, and the travel of attested material to SoftHSM through the shared portable scheme |
 | `tests/p11kit.rs` | package build, `nix/p11kit-test-env.sh` | SoftHSM behind `p11-kit server`, compared with direct access |
+| `tests/fault.rs` | package build | `crates/p11-fault` (docs/FAULT_SHIM.md): the reference suite again, through the shim in front of SoftHSM with no plan (it must pass as directly); `pkcs11-tool` through the shim; cakeys meeting a module whose calls fail (16, the call named), each rule shown fired in the trace |
 | `tests/references.rs` | package build | cross-reference: the same material (the P-256 and RSA fixtures, P-384/P-521/Ed25519/Ed448 exported from one reference, AES, generic secret and HMAC values, a certificate, a data object) planted on SoftHSM, kryoptic (raw and DER Edwards points), SoftHSM behind p11-kit and — what `tpm2_ptool` imports — tpm2-pkcs11, realised into one lock: one identity per scheme everywhere; and the same verdict for the same scenario (absent 11, two objects 12, another type 13, a swapped private key 13) |
 | `crates/camigrate/tests/dry_run.rs` | package build | the dry-run property: for every source and target reference and the types each takes, the plan's verdict is the outcome, a ready move is recorded with its `origin` and verified by `cakeys`; the bundle, key files, `enforced` and host paths, and each refusal's exit code |
 | the dry-run twin | package build, inside `tests/common/xref.rs` | every `camigrate` `export`, `import` or `migrate` a test runs is preceded by the same command with `--dry-run`, which must leave the lock, the output file and each token it names as they were, and whose verdict the real run must keep (a dry run that passed may still end in 10 or 13, which only the real material can show). It costs the camigrate suite about 80 s |

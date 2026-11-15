@@ -200,6 +200,9 @@ pub struct Reference {
     pub profile: (&'static str, &'static str),
     /// The module's configuration (`conf_var`'s file) with one mechanism hidden.
     pub hide_mechanism: fn(conf: &str, mechanism: &str) -> String,
+    /// Whether the suite loads the module through `p11-fault` (`P11_FAULT_MODULE` names it), with no
+    /// fault plan: the forwarder must be transparent.
+    pub through_fault_shim: bool,
 }
 
 pub const SOFTHSM: Reference = Reference {
@@ -212,6 +215,7 @@ pub const SOFTHSM: Reference = Reference {
     missing_curves: &[],
     profile: ("softhsm/2.7", "modules/softhsm/2.7.toml"),
     hide_mechanism: |conf, m| format!("{conf}\nslots.mechanisms = -{m}\n"),
+    through_fault_shim: false,
 };
 
 /// kryoptic 1.5.4 (its `OpenSSL` backend) generates none of secp256k1 or the brainpool curves. The
@@ -227,7 +231,30 @@ pub const KRYOPTIC: Reference = Reference {
     missing_curves: &["secp256k1", "brainpoolP256r1", "brainpoolP384r1"],
     profile: ("kryoptic/1.5", "modules/kryoptic/1.5.toml"),
     hide_mechanism: |conf, m| format!("{conf}\nmechanisms = [\"DENY\", \"{m}\"]\n"),
+    through_fault_shim: false,
 };
+
+/// `SoftHSM` behind `p11-fault` (`docs/FAULT_SHIM.md`) with no fault plan: the whole suite runs a
+/// third time through the shim, and must pass as it does directly. The per-test runner
+/// (nix/test-tokens.sh) points `P11_FAULT_MODULE` at the test's own `SoftHSM` token; the token's
+/// module is the shim.
+pub const FAULT: Reference = Reference {
+    module_var: "P11_FAULT_MODULE",
+    require_var: "CAKEYS_FAULT_REQUIRE",
+    through_fault_shim: true,
+    ..SOFTHSM
+};
+
+/// `libp11_fault.so`, built beside the test binaries (a default member of the workspace).
+///
+/// # Panics
+///
+/// When it is not built: `cargo build --workspace` first.
+pub fn fault_shim() -> String {
+    let path = Path::new(BIN).with_file_name("libp11_fault.so");
+    assert!(path.exists(), "{} is not built: run `cargo build --workspace` first", path.display());
+    path.to_str().unwrap().to_owned()
+}
 
 pub fn code(o: &Output) -> i32 {
     o.status.code().unwrap()
@@ -536,7 +563,7 @@ impl Drop for TestSession {
 }
 
 // TODO(docs/OPEN.md, "Engineering"): sessions opened on several test threads finalize the module under
-// each other (SIGSEGV); the Nix build runs the suites on one thread.
+// each other (SIGSEGV); the Nix builds run each test in a process of its own (nix/test-tokens.sh).
 pub fn open_session(module: &str, label: &str, pin: &str) -> TestSession {
     let ctx = Pkcs11::new(module).unwrap();
     ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();

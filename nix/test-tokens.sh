@@ -38,6 +38,11 @@ export KRYOPTIC_CONF=$D/kryoptic.conf
 # The test binary's name without cargo's hash: which suite this is.
 suite=$(basename "$1")
 suite=${suite%-*}
+# tests/fault.rs runs the reference suite again, through p11-fault in front of this test's own
+# SoftHSM token.
+if [ "$suite" = fault ]; then
+  export P11_FAULT_MODULE=$CAKEYS_TEST_MODULE CAKEYS_FAULT_REQUIRE=1
+fi
 case $suite in
 p11kit | reference | references | dry_run)
   SOFTHSM_MODULE=$CAKEYS_TEST_MODULE bash "$CAKEYS_P11KIT_ENV_SH" up "$D/p11"

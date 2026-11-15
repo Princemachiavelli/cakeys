@@ -133,8 +133,8 @@ craneLib.buildPackage (
     inherit cargoArtifacts;
     # cargo-nextest: one process per test, each through nix/test-tokens.sh (cargo's target
     # runner), which gives it a token set of its own: the suites run in parallel, and no test
-    # sees what another left on a token. The coverage report runs them the same way; the regular
-    # build (nix/package.nix) and the mutation report on one thread against the shared tokens.
+    # sees what another left on a token. The regular build (nix/package.nix) and the coverage
+    # report run them the same way; the mutation report on one thread against shared tokens.
     nativeBuildInputs = base.nativeBuildInputs ++ [ cargo-nextest ];
     ${runner} = "bash ${./test-tokens.sh}";
     cargoTestCommand = "cargo nextest run \${CARGO_PROFILE:+--cargo-profile $CARGO_PROFILE}";

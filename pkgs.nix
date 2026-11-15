@@ -10,9 +10,10 @@ rec {
   # The same build with crane (nix/package-crane.nix): its dependencies built once per
   # Cargo.lock, so the checks (and their clippy and minimal builds) rebuild only cakeys' crates.
   cakeys-crane = pkgs.callPackage ./nix/package-crane.nix { inherit craneLib; };
-  # The module measurer and the key mover (README.md, "Three tools"): outputs of the same
-  # build.
+  # The module measurer, the key mover (README.md, "Three tools") and the fault-injecting PKCS#11
+  # module (docs/FAULT_SHIM.md): outputs of the same build.
   inherit (cakeys) caprobe camigrate;
+  p11-fault = cakeys.p11fault;
   pcsc-probe = pkgs.callPackage ./nix/pcsc-probe.nix { };
   mezura = pkgs.callPackage ./nix/mezura.nix { };
   # cargo-deny: the sandboxed checks.deny (advisories against the pinned

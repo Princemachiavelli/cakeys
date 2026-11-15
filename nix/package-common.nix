@@ -99,15 +99,21 @@ in
 
     # The tools of one workspace (README.md, "Three tools"), from one build whose check phase
     # tests them together, each in its own output: `out` holds cakeys, `caprobe` the module
-    # measurer and `camigrate` the key mover, so cakeys' closure carries neither.
+    # measurer and `camigrate` the key mover, so cakeys' closure carries neither. `p11fault` holds
+    # lib/libp11_fault.so, the PKCS#11 module that forwards to a real one and misbehaves on request
+    # (docs/FAULT_SHIM.md): the test suites load it, and so can any other PKCS#11 client.
     outputs = [
       "out"
       "caprobe"
       "camigrate"
+      "p11fault"
     ];
     postInstall = ''
       moveToOutput bin/caprobe "$caprobe"
       moveToOutput bin/camigrate "$camigrate"
+      moveToOutput lib/libp11_fault.so "$p11fault"
+      # The rlib half of the crate (its unit tests) is no output.
+      rm -rf "$out/lib"
     '';
 
     # tss-esapi (the native TPM2_Certify attestation path of cakeys-tpm2-pkcs11) links

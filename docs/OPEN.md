@@ -132,8 +132,8 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 
 - **The token suites under a plain parallel `cargo test`** still crash (one test finalizes the
   module under the others in one process): the crane check phase runs them under
-  `cargo-nextest` with a token set per test (DEVELOPMENT.md), as the coverage report does; the
-  regular build and the mutation report run on one thread against shared tokens. One session per module in
+  `cargo-nextest` with a token set per test (DEVELOPMENT.md), as the regular build and the
+  coverage report do; the mutation report runs on one thread against shared tokens. One session per module in
   `tests/common` would fix the plain run.
 - **Profiles are parsed on every token open**: parse once per process (`OnceLock`).
 - **Closing what the reports show** (`packages.coverage`, `packages.mutants`, DEVELOPMENT.md):
