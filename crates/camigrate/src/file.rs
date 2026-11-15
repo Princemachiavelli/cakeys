@@ -195,13 +195,18 @@ fn octets(info: &ContentInfo) -> Result<Vec<u8>> {
     Ok(info.content.decode_as::<OctetString>().map_err(bad)?.as_bytes().to_vec())
 }
 
+/// Whether a key file's KDF iteration count is more than this process will run.
+fn too_many(iterations: u32) -> bool {
+    iterations > MAX_ITERATIONS
+}
+
 /// The PKCS#8 in an `EncryptedPrivateKeyInfo` under `pass`; `None` when it does not decrypt
 /// (a wrong passphrase fails the padding check), or is no such structure.
 fn decrypt(der: &[u8], pass: &str) -> Option<Zeroizing<Vec<u8>>> {
     let info = EncryptedPrivateKeyInfoRef::try_from(der).ok()?;
     // The file names its own PBKDF2 iteration count: bounded, like the PKCS#12 MAC's.
     let iterations = info.encryption_algorithm.pbes2().and_then(|p| p.kdf.pbkdf2()).map(|k| k.iteration_count);
-    if iterations.is_some_and(|n| n > MAX_ITERATIONS) {
+    if iterations.is_some_and(too_many) {
         return None;
     }
     let doc = info.decrypt(pass).ok()?;
@@ -316,7 +321,7 @@ mod tests {
             let got = refusal(&file);
             assert!(got.contains(want), "{want}: {got}");
         }
-        assert!(read(&pfx(safe(vec![key_bag]), sha256), "pass").is_ok());
+        assert!(read(&pfx(safe(vec![key_bag.clone()]), sha256), "pass").is_ok());
         assert!(refusal(b"-----BEGIN ENCRYPTED PRIVATE KEY-----\nnot base64\n").starts_with("the key file: "));
 
         // A key file naming more KDF iterations than this process will run is not opened: the
@@ -327,5 +332,17 @@ mod tests {
             encrypted_data: OctetString::new(vec![0; 32]).unwrap(),
         };
         assert!(decrypt(&slow.to_der().unwrap(), "pass").is_none());
+        assert!(too_many(MAX_ITERATIONS + 1) && !too_many(MAX_ITERATIONS) && !too_many(PBKDF2_ITERATIONS));
+
+        // The first certificate is the key's; a second one (a chain) does not replace it.
+        let cert_bag = |der: &[u8]| SafeBag {
+            bag_id: pkcs12::PKCS_12_CERT_BAG_OID,
+            bag_value: CertBag { cert_id: pkcs12::PKCS_12_X509_CERT_OID, cert_value: OctetString::new(der).unwrap() }
+                .to_der()
+                .unwrap(),
+            bag_attributes: None,
+        };
+        let chain = pfx(safe(vec![cert_bag(b"leaf"), cert_bag(b"issuer"), key_bag]), sha256);
+        assert_eq!(read(&chain, "pass").unwrap().certificate.as_deref(), Some(&b"leaf"[..]));
     }
 }

@@ -287,4 +287,67 @@ mod tests {
                 .to_vec();
         assert_eq!(levels, ["public", "enforced", "sealed", "host", "file"]);
     }
+
+    /// A vendor method needs both its parts, and methods and exposures print as their names.
+    #[test]
+    fn names_print_and_half_named_vendor_methods_are_unknown() {
+        assert_eq!(Method::from_name("vendor:/clone"), None);
+        assert_eq!(Method::from_name("vendor:luna/"), None);
+        assert_eq!(Method::RsaOaep(OaepHash::Sha256).to_string(), "rsa-oaep-sha256");
+        assert_eq!(Method::Vendor { provider: "luna".into(), name: "clone".into() }.to_string(), "vendor:luna/clone");
+        assert_eq!(Exposure::Sealed.to_string(), "sealed");
+    }
+
+    fn object(text: &str) -> ObjectCfg {
+        toml::from_str(text).unwrap()
+    }
+
+    /// What a target accepts is every constraint it names at once: the class, then the key
+    /// type, the curve and the modulus range where the row gives one; a row that gives none
+    /// takes any.
+    #[test]
+    fn an_accept_row_covers_what_meets_every_constraint_it_names() {
+        let p256 = object("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"");
+        let p384 = object("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp384r1\"");
+        let rsa =
+            |bits: u32| object(&format!("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = {bits}"));
+        let public = object("class = \"CKO_PUBLIC_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"");
+        let cert = object("class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"");
+        let private = ObjectClass::PrivateKey;
+
+        let any = Accept::class(private);
+        assert!(any.covers(&p256) && any.covers(&rsa(2048)));
+        assert!(!any.covers(&public) && !any.covers(&cert));
+
+        let ec = Accept::key(private, &[KeyType::Ec]);
+        assert_eq!(ec.key_types, [KeyType::Ec]);
+        assert!(ec.covers(&p256) && ec.covers(&p384));
+        assert!(!ec.covers(&rsa(2048)) && !ec.covers(&public));
+        // A row of key types never takes an object that has none.
+        assert!(!Accept::key(ObjectClass::Certificate, &[KeyType::Ec]).covers(&cert));
+
+        let p256_only = Accept { curves: vec!["secp256r1"], ..Accept::key(private, &[KeyType::Ec]) };
+        assert!(p256_only.covers(&p256));
+        assert!(!p256_only.covers(&p384) && !p256_only.covers(&rsa(2048)));
+        // A curve named without a key type still excludes what has no curve, or another class.
+        let curve_only = Accept { curves: vec!["secp256r1"], ..Accept::class(private) };
+        assert!(curve_only.covers(&p256) && !curve_only.covers(&rsa(2048)) && !curve_only.covers(&public));
+
+        let sized = Accept { modulus_bits: Some((2048, 3072)), ..Accept::key(private, &[KeyType::Rsa]) };
+        assert!(sized.covers(&rsa(2048)) && sized.covers(&rsa(3072)));
+        assert!(!sized.covers(&rsa(1024)) && !sized.covers(&rsa(4096)));
+        // A size range never takes an object that has no size.
+        assert!(!Accept { modulus_bits: Some((0, u32::MAX)), ..Accept::class(private) }.covers(&p256));
+    }
+
+    /// A side offers the mechanisms it lists; RFC 5649 goes by either of its PKCS#11 names.
+    #[test]
+    fn a_side_offers_what_it_lists() {
+        let side = |mechanisms: &[&str]| Side::pkcs11("t", "p", mechanisms.iter().map(|m| (*m).to_owned()));
+        let none = side(&["CKM_RSA_PKCS_OAEP"]);
+        assert!(none.has("CKM_RSA_PKCS_OAEP") && !none.has("CKM_AES_KEY_WRAP_KWP") && !none.kwp());
+        assert!(side(&["CKM_AES_KEY_WRAP_KWP"]).kwp());
+        assert!(side(&["CKM_AES_KEY_WRAP_PAD"]).kwp());
+        assert!(!side(&[]).has(""));
+    }
 }

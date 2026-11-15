@@ -3,10 +3,10 @@
 //! none needs a token.
 
 use cakeys_core::KmError;
-use cakeys_core::config::{Config, parse_config_with, parse_lock};
+use cakeys_core::config::{Binding, Config, Mode, parse_config_with, parse_lock};
 use cakeys_core::id::Scheme;
 use cakeys_core::plaintext::{PrivateParts, private_from_pkcs8, spki_of_pkcs8};
-use cakeys_core::plan::{Assurance, Target, plan_mode};
+use cakeys_core::plan::{Assurance, Target, binding, expected_binding, plan_mode};
 use cakeys_core::types::KeyType;
 use ed25519_dalek::pkcs8::{EncodePrivateKey as _, EncodePublicKey as _};
 use std::path::Path;
@@ -57,7 +57,8 @@ fn specs_that_cannot_hold_are_refused_with_why() {
             "",
             "only CKA_ALLOWED_MECHANISMS takes a mechanism list",
         ),
-        (EC, "attributes = { CKA_SIGN = true, CKA_BOGUS = true }", "", "CKA_BOGUS"),
+        (EC, "attributes = { CKA_SIGN = true, CKA_BOGUS = true }", "", "unsupported policy attribute CKA_BOGUS"),
+        ("class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"", SIGN, "", "CKO_SECRET_KEY/CKK_EC"),
         (AES, "attributes = { CKA_SIGN = true }\npublicAttributes = { CKA_VERIFY = true }", "", "private keys only"),
         ("class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_WTLS\"", "", "", "CKC_X_509"),
         (&format!("{EC}\ncertificateType = \"CKC_X_509\""), SIGN, "", "certificates only"),
@@ -133,6 +134,21 @@ fn schemes_and_assurance_names_follow_the_class() {
     assert_eq!(schemes(CERT, ""), [Scheme::Certhash, Scheme::Rfc7093m4]);
     let secret = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = 32";
     assert_eq!(schemes(secret, SIGN), [Scheme::Commitment]);
+    // A key pair by its public key, a data object by its value; an AES key by the commitments
+    // its declared usage allows, strongest first, and by all of them when it declares none
+    // (wrapping it out computes each).
+    assert_eq!(schemes(EC, SIGN), [Scheme::Rfc7093m4]);
+    assert_eq!(
+        schemes("class = \"CKO_PUBLIC_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"", ""),
+        [Scheme::Rfc7093m4]
+    );
+    assert_eq!(schemes("class = \"CKO_DATA\"", ""), [Scheme::Valuehash]);
+    assert_eq!(schemes(AES, "attributes = { CKA_WRAP = true, CKA_SIGN = true }"), [Scheme::Cmac, Scheme::Kw]);
+    assert_eq!(schemes(AES, "attributes = { CKA_DECRYPT = true }"), [Scheme::KcvEcbDec]);
+    assert_eq!(
+        schemes(AES, "attributes = { CKA_EXTRACTABLE = true }"),
+        [Scheme::Cmac, Scheme::KcvEcb, Scheme::KcvEcbDec, Scheme::Kw]
+    );
     let names = [Assurance::Proof, Assurance::Fingerprint, Assurance::Public].map(Assurance::name);
     assert_eq!(names, ["proof", "fingerprint", "public"]);
     // An object's type reads back as keys.toml writes it.
@@ -210,4 +226,261 @@ fn proofs_need_a_verifier_for_the_key() {
     assert!(matches!(&e, KmError::Unsupported(m) if m.contains("no Ed448 signature verifier")), "{e}");
     let e = cakeys_core::pop::verify(b"junk", b"m", b"s").unwrap_err();
     assert!(matches!(&e, KmError::Unsupported(m) if m.contains("not an ECDSA, Ed25519 or RSA key")), "{e}");
+}
+
+const RSA: &str = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048";
+const ED448: &str = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC_EDWARDS\"\ncurve = \"edwards448\"";
+
+fn planned(object: &str, spec: &str, on_token: &str) -> (Mode, Option<Binding>, Option<Binding>) {
+    let text = keys(object, spec, on_token);
+    let cfg = load(&text).unwrap_or_else(|e| panic!("{e}:\n{text}"));
+    let t = Target::new(&cfg, "s", "t").unwrap();
+    let mode = plan_mode(&t).unwrap_or_else(|e| panic!("{e}:\n{text}"));
+    (mode, binding(&t), expected_binding(&t))
+}
+
+/// A private key proves possession the way its type and declared usage allow (docs/DESIGN.md
+/// §3.6): each binding is accepted on the key it fits, with the usage bit it needs, and refused
+/// anywhere else with the reason for that binding.
+#[test]
+fn a_binding_fits_its_key_and_usage_or_is_refused() {
+    use Binding::{PopDecrypt, PopEcdh, PopSign, PopSignPin, PopUnwrap, TokenAsserted};
+    let flag = |name: &str| format!("attributes = {{ {name} = true }}");
+    let per_use = |name: &str| format!("attributes = {{ {name} = true, CKA_ALWAYS_AUTHENTICATE = true }}");
+    let with = |b: &str| format!(", binding = \"{b}\"");
+    let accepted: &[(&str, String, String, Binding, Binding)] = &[
+        (EC, flag("CKA_SIGN"), String::new(), PopSign, PopSign),
+        (EC, flag("CKA_SIGN"), with("pop-sign"), PopSign, PopSign),
+        // The per-use PIN is the token's to demand: planned as pop-sign, expected as pop-sign-pin.
+        (EC, per_use("CKA_SIGN"), String::new(), PopSign, PopSignPin),
+        (EC, flag("CKA_DERIVE"), with("pop-ecdh"), PopEcdh, PopEcdh),
+        (RSA, flag("CKA_DECRYPT"), with("pop-decrypt"), PopDecrypt, PopDecrypt),
+        (RSA, flag("CKA_UNWRAP"), with("pop-unwrap"), PopUnwrap, PopUnwrap),
+        (RSA, flag("CKA_SIGN"), String::new(), PopSign, PopSign),
+        // No usage to prove with, and said so; a per-use PIN changes nothing about that.
+        (EC, flag("CKA_DERIVE"), with("token-asserted"), TokenAsserted, TokenAsserted),
+        (EC, per_use("CKA_DERIVE"), with("token-asserted"), TokenAsserted, TokenAsserted),
+        (ED448, flag("CKA_SIGN"), with("token-asserted"), TokenAsserted, TokenAsserted),
+        (EC, String::new(), ", publicOnly = true".into(), TokenAsserted, TokenAsserted),
+    ];
+    for (object, spec, on_token, plan, expect) in accepted {
+        let got = planned(object, spec, on_token);
+        assert_eq!(got, (Mode::Direct, Some(*plan), Some(*expect)), "{object}\n{spec}\n{on_token}");
+    }
+    let refused: &[(&str, String, String, &str)] = &[
+        (EC, flag("CKA_SIGN"), with("pop-sign-pin"), "is recorded, not configured"),
+        (ED448, flag("CKA_SIGN"), String::new(), "no Ed448 verifier"),
+        (EC, flag("CKA_DERIVE"), String::new(), "needs CKA_SIGN = true"),
+        (EC, "attributes = { CKA_SIGN = false }".into(), with("pop-sign"), "needs CKA_SIGN = true"),
+        (EC, per_use("CKA_DERIVE"), with("pop-ecdh"), "binding = \"pop-ecdh\" has no point for that login"),
+        (RSA, per_use("CKA_DECRYPT"), with("pop-decrypt"), "binding = \"pop-decrypt\" has no point for that login"),
+        (RSA, per_use("CKA_UNWRAP"), with("pop-unwrap"), "binding = \"pop-unwrap\" has no point for that login"),
+        (RSA, flag("CKA_DERIVE"), with("pop-ecdh"), "it applies to EC private keys only"),
+        (EC, flag("CKA_SIGN"), with("pop-ecdh"), "needs CKA_DERIVE = true"),
+        (EC, "attributes = { CKA_DERIVE = false }".into(), with("pop-ecdh"), "needs CKA_DERIVE = true"),
+        (EC, flag("CKA_DECRYPT"), with("pop-decrypt"), "by decrypting: it applies to RSA private keys only"),
+        (RSA, flag("CKA_SIGN"), with("pop-decrypt"), "needs CKA_DECRYPT = true"),
+        (RSA, "attributes = { CKA_DECRYPT = false }".into(), with("pop-decrypt"), "needs CKA_DECRYPT = true"),
+        (EC, flag("CKA_UNWRAP"), with("pop-unwrap"), "by unwrapping: it applies to RSA private keys only"),
+        (RSA, flag("CKA_SIGN"), with("pop-unwrap"), "needs CKA_UNWRAP = true"),
+        (RSA, "attributes = { CKA_UNWRAP = false }".into(), with("pop-unwrap"), "needs CKA_UNWRAP = true"),
+    ];
+    for (object, spec, on_token, why) in refused {
+        let said = refusal(&keys(object, spec, on_token));
+        assert!(said.contains(why), "expected {why:?} in {said:?}");
+    }
+    // Other classes have no binding to plan or expect.
+    assert_eq!(planned(AES, SIGN, ""), (Mode::Commitment, None, None));
+    assert_eq!(planned(CERT, "", ""), (Mode::Direct, None, None));
+}
+
+/// The identity mode follows what the spec declares (docs/DESIGN.md §3.4): asymmetric keys and
+/// public objects are hashed directly, a secret key by a commitment its usage allows, else by
+/// wrapping when it is extractable, else not at all; and what a class cannot be asked is refused.
+#[test]
+fn the_identity_mode_follows_the_declared_usage() {
+    const HMAC: &str = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = 32";
+    const PUBLIC: &str = "class = \"CKO_PUBLIC_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+    let mode = |object: &str, spec: &str, on_token: &str| planned(object, spec, on_token).0;
+    for usage in ["CKA_SIGN", "CKA_ENCRYPT", "CKA_DECRYPT", "CKA_WRAP"] {
+        assert_eq!(mode(AES, &format!("attributes = {{ {usage} = true }}"), ""), Mode::Commitment, "{usage}");
+    }
+    assert_eq!(mode(AES, "attributes = { CKA_EXTRACTABLE = true }", ""), Mode::WrapRebind);
+    assert_eq!(mode(AES, "attributes = { CKA_SIGN = false, CKA_EXTRACTABLE = true }", ""), Mode::WrapRebind);
+    assert_eq!(mode(HMAC, SIGN, ""), Mode::Commitment);
+    // An HMAC key commits by signing alone: encrypting names no commitment for it.
+    assert_eq!(mode(HMAC, "attributes = { CKA_ENCRYPT = true, CKA_EXTRACTABLE = true }", ""), Mode::WrapRebind);
+    assert_eq!(mode(PUBLIC, "", ""), Mode::Direct);
+    assert_eq!(mode("class = \"CKO_DATA\"", "", ""), Mode::Direct);
+    assert_eq!(mode(CERT, "", ""), Mode::Direct);
+    assert_eq!(mode(EC, SIGN, ", autoCreate = true, attestation = true"), Mode::Direct);
+    assert_eq!(mode(AES, SIGN, ", autoCreate = true, attestation = true"), Mode::Commitment);
+    // Adopted, a trusted key is only read; generated, the token would have to set it.
+    assert_eq!(mode(AES, "attributes = { CKA_WRAP = true, CKA_TRUSTED = true }", ""), Mode::Commitment);
+    assert_eq!(
+        mode(AES, "attributes = { CKA_WRAP = true, CKA_TRUSTED = false }", ", autoCreate = true"),
+        Mode::Commitment
+    );
+    assert_eq!(
+        mode(EC, "attributes = { CKA_SIGN = true }\npublicAttributes = { CKA_VERIFY = true }", ""),
+        Mode::Direct
+    );
+    let cases: &[(&str, &str, &str, &str)] = &[
+        (AES, "", "", "has no re-verifiable identity"),
+        (AES, "attributes = { CKA_SIGN = false }", "", "has no re-verifiable identity"),
+        (HMAC, "attributes = { CKA_ENCRYPT = true }", "", "has no re-verifiable identity"),
+        ("class = \"CKO_CERTIFICATE\"", "", "", "certificates need certificateType"),
+        (CERT, "", ", autoCreate = true", "certificates are adopted, not created"),
+        (PUBLIC, "", ", autoCreate = true", "public keys and data objects are adopted, not created"),
+        ("class = \"CKO_DATA\"", "", ", autoCreate = true", "public keys and data objects are adopted"),
+        (AES, SIGN, ", publicOnly = true", "publicOnly applies to private keys only"),
+        (EC, "", ", publicOnly = true, autoCreate = true", "publicOnly cannot autoCreate"),
+        (EC, SIGN, ", publicOnly = true", "publicOnly cannot verify private-key policy attributes"),
+        (CERT, "", ", attestation = true", "attestation = true applies to key objects only"),
+        (
+            AES,
+            "attributes = { CKA_WRAP = true, CKA_TRUSTED = true }",
+            ", autoCreate = true",
+            "CKA_TRUSTED = true cannot be generated",
+        ),
+        (EC, "attributes = { CKA_SIGN = true, CKA_WRAP = true }", "", "CKA_WRAP does not apply to"),
+        (
+            EC,
+            "attributes = { CKA_SIGN = true }\npublicAttributes = { CKA_SIGN = true }",
+            "",
+            "CKA_SIGN does not apply to",
+        ),
+        (
+            CERT,
+            "attributes = { CKA_ALLOWED_MECHANISMS = [\"CKM_ECDSA\"] }",
+            "",
+            "CKA_ALLOWED_MECHANISMS does not apply to",
+        ),
+    ];
+    for (object, spec, on_token, why) in cases {
+        let said = refusal(&keys(object, spec, on_token));
+        assert!(said.contains(why), "expected {why:?} in {said:?}");
+    }
+}
+
+/// A lock's `[objects.<name>]` table: its type (by class and key type), IDs, and extra lines.
+fn lock_object(name: &str, ty: &str, ids: &[(&str, &str)], extra: &str) -> String {
+    let ids = ids.iter().map(|(s, v)| format!("{s} = \"{v}\"\n")).collect::<Vec<_>>().concat();
+    format!("[objects.{name}]\n{extra}{ty}[objects.{name}.ids]\n{ids}\n")
+}
+
+const KEY_TYPE: &str = "type = { class = \"CKO_PRIVATE_KEY\", keyType = \"CKK_EC\", curve = \"secp256r1\" }\n";
+const PUBLIC_TYPE: &str = "type = { class = \"CKO_PUBLIC_KEY\", keyType = \"CKK_EC\", curve = \"secp256r1\" }\n";
+const CERT_TYPE: &str = "type = { class = \"CKO_CERTIFICATE\", certificateType = \"CKC_X_509\" }\n";
+const AES_TYPE: &str = "type = { class = \"CKO_SECRET_KEY\", keyType = \"CKK_AES\", valueLen = 32 }\n";
+
+/// The lock's objects are held to their invariants on load (docs/DESIGN.md §4): one object per
+/// material within a class, pairs that share a public key and list each other, IDs with a type
+/// and a label where they need one. A lock that keeps them loads, and its pairs are computed
+/// from the shared public key.
+#[test]
+fn lock_objects_keep_their_invariants() {
+    use base64::Engine as _;
+    let (a, b, c) = (cakeys_core::id::sri(b"a"), cakeys_core::id::sri(b"b"), cakeys_core::id::sri(b"c"));
+    let lock = |objects: &[String]| format!("version = 1\n{}", objects.concat());
+    let loaded = |objects: &[String]| {
+        let text = lock(objects);
+        parse_lock(&text, Path::new("keys.lock")).unwrap_or_else(|e| panic!("{e}:\n{text}"))
+    };
+    let refused = |objects: &[String], why: &str| {
+        let e = parse_lock(&lock(objects), Path::new("keys.lock")).unwrap_err();
+        assert!(e.exit_code() == 17 && e.to_string().contains(why), "expected {why:?} in {e}");
+    };
+    let key = |name: &str, id: &str, extra: &str| lock_object(name, KEY_TYPE, &[("rfc7093m4", id)], extra);
+    let cert = |name: &str, hash: &str, id: &str, extra: &str| {
+        lock_object(name, CERT_TYPE, &[("certhash", hash), ("rfc7093m4", id)], extra)
+    };
+
+    // One material, one object per class: a key, its public key object and two certificates
+    // of it share the public key; an object that records nothing yet is still an object.
+    let family = [
+        key("k", &a, "pairs = [\"c1\", \"elsewhere\"]\n"),
+        lock_object("p", PUBLIC_TYPE, &[("rfc7093m4", &a)], ""),
+        cert("c1", &b, &a, "pairs = [\"k\"]\n"),
+        cert("c2", &c, &a, ""),
+        "[objects.empty]\n".to_owned(),
+        lock_object("s", AES_TYPE, &[("cmac", &b)], "commitmentLabel = \"a label\"\n"),
+    ];
+    let l = loaded(&family);
+    let names = |set: &[&str]| set.iter().map(|s| (*s).to_owned()).collect::<std::collections::BTreeSet<_>>();
+    let pairs = l.computed_pairs();
+    assert_eq!(pairs.keys().map(String::as_str).collect::<Vec<_>>(), ["c1", "c2", "k", "p"]);
+    assert_eq!(pairs["k"], names(&["c1", "c2", "p"]));
+    assert_eq!(pairs["c2"], names(&["c1", "k", "p"]));
+    // What shares the key and is not listed yet; an object with no public key shares none.
+    assert_eq!(l.unlisted_pairs("k"), names(&["c2", "p"]));
+    assert_eq!(l.unlisted_pairs("c1"), names(&["c2", "p"]));
+    assert_eq!(l.unlisted_pairs("p"), names(&["c1", "c2", "k"]));
+    assert!(l.unlisted_pairs("s").is_empty() && l.unlisted_pairs("absent").is_empty());
+
+    refused(&[key("k", &a, ""), key("k2", &a, "")], "'k' and 'k2' are the same CKO_PRIVATE_KEY material");
+    refused(&[cert("c1", &b, &a, ""), cert("c2", &b, &c, "")], "'c1' and 'c2' are the same CKO_CERTIFICATE material");
+    refused(&[key("k", &a, "pairs = [\"k\"]\n")], "lists itself as a pair");
+    refused(&[key("k", &a, "pairs = [\"c\"]\n"), cert("c", &b, &a, "")], "do not list each other");
+    refused(&[key("k", &a, "pairs = [\"c\"]\n"), cert("c", &b, &c, "pairs = [\"k\"]\n")], "do not share an rfc7093m4");
+    refused(
+        &[key("k", &a, "pairs = [\"c\"]\n"), lock_object("c", CERT_TYPE, &[("certhash", &b)], "pairs = [\"k\"]\n")],
+        "do not share an rfc7093m4",
+    );
+    refused(&[lock_object("k", "", &[("rfc7093m4", &a)], "")], "has IDs but no type");
+    refused(&[lock_object("s", AES_TYPE, &[("cmac", &b)], "")], "has commitment IDs but no commitmentLabel");
+    for label in ["", "tab\\there"] {
+        let extra = format!("commitmentLabel = \"{label}\"\n");
+        refused(&[lock_object("s", AES_TYPE, &[("cmac", &b)], &extra)], "must be non-empty printable ASCII");
+    }
+
+    // A recorded public key is the one its identity hashes.
+    let spki = base64::engine::general_purpose::STANDARD.encode(b"a");
+    let l = loaded(&[key("k", &a, &format!("publicKey = \"{spki}\"\n"))]);
+    assert_eq!(l.objects["k"].public_key.as_deref(), Some(spki.as_str()));
+    refused(&[key("k", &b, &format!("publicKey = \"{spki}\"\n"))], "publicKey hashes to");
+}
+
+/// What is shown and picked is what is there: a curve alias loads as its canonical name, a
+/// spec is picked among the object's own and narrowed by name, and the lock's small views
+/// (a mode, the immutables, differing observations) print what they hold.
+#[test]
+fn views_and_picks_say_what_is_there() {
+    use cakeys_core::config::{Immutables, TokenObservation};
+    let alias = load(&keys(EC, SIGN, "").replace("secp256r1", "P-256")).unwrap();
+    assert_eq!(alias.objects["o"].curve.as_deref(), Some("secp256r1"));
+
+    let more = keys(EC, SIGN, "")
+        + "\n[specs.s2]\nobject = \"o\"\ntokens.t = { locator = { CKA_LABEL = \"o2\" } }\n\
+           \n[objects.other]\nclass = \"CKO_DATA\"\n\n[specs.s3]\nobject = \"other\"\ntokens.t = { locator = { CKA_LABEL = \"d\" } }\n";
+    let cfg = load(&more).unwrap();
+    let pair = |spec: &str| (spec.to_owned(), "t".to_owned());
+    assert_eq!(cfg.pick_spec("other", None, None).unwrap(), pair("s3"));
+    assert_eq!(cfg.pick_spec("o", Some("s2"), None).unwrap(), pair("s2"));
+    assert_eq!(cfg.pick_spec("o", Some("s"), Some("t")).unwrap(), pair("s"));
+    assert!(matches!(cfg.pick_spec("o", Some("s3"), None), Err(KmError::NotFound(_))));
+
+    assert_eq!(
+        [Mode::Direct, Mode::Commitment, Mode::WrapRebind].map(|m| m.to_string()),
+        ["direct", "commitment", "wrap-rebind"]
+    );
+    let none = Immutables::default();
+    assert!(none.is_empty());
+    assert_eq!(none.to_string(), "{  }");
+    let made = Immutables {
+        local: Some(true),
+        never_extractable: Some(false),
+        key_gen_mechanism: Some("CKM_EC_KEY_PAIR_GEN".into()),
+        ..Immutables::default()
+    };
+    assert!(!made.is_empty());
+    assert_eq!(
+        made.to_string(),
+        "{ CKA_LOCAL = true, CKA_NEVER_EXTRACTABLE = false, CKA_KEY_GEN_MECHANISM = \"CKM_EC_KEY_PAIR_GEN\" }"
+    );
+    let said = TokenObservation::several("t", &[vec!["a".into(), "b".into()], vec!["c".into()]]);
+    assert!(
+        said.contains("token 't'") && said.contains("2 different observations") && said.contains("(a, b; c)"),
+        "{said}"
+    );
 }
