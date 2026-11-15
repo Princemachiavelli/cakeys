@@ -109,14 +109,14 @@ macro_rules! forward {
 }
 
 forward! {
-    C_Initialize(arg1: *mut c_void);
+    C_Initialize(arg1: *mut c_void) [initialize(arg1)];
     C_Finalize(arg1: *mut c_void);
     C_GetInfo(arg1: *mut CK_INFO);
     C_GetSlotList(arg1: CK_BBOOL, arg2: *mut CK_SLOT_ID, arg3: *mut CK_ULONG);
-    C_GetSlotInfo(arg1: CK_SLOT_ID, arg2: *mut CK_SLOT_INFO) => slot_info;
-    C_GetTokenInfo(arg1: CK_SLOT_ID, arg2: *mut CK_TOKEN_INFO) => token_info;
+    C_GetSlotInfo(arg1: CK_SLOT_ID, arg2: *mut CK_SLOT_INFO) => slot_info [slot_info(arg2)];
+    C_GetTokenInfo(arg1: CK_SLOT_ID, arg2: *mut CK_TOKEN_INFO) => token_info [token_info(arg2)];
     C_GetMechanismList(arg1: CK_SLOT_ID, arg2: *mut CK_MECHANISM_TYPE, arg3: *mut CK_ULONG) => mechanism_list;
-    C_GetMechanismInfo(arg1: CK_SLOT_ID, arg2: CK_MECHANISM_TYPE, arg3: *mut CK_MECHANISM_INFO) [mechanism_type(arg2)];
+    C_GetMechanismInfo(arg1: CK_SLOT_ID, arg2: CK_MECHANISM_TYPE, arg3: *mut CK_MECHANISM_INFO) [mechanism_type(arg2), mechanism_info(arg3)];
     C_InitToken(arg1: CK_SLOT_ID, arg2: *mut CK_UTF8CHAR, arg3: CK_ULONG, arg4: *mut CK_UTF8CHAR);
     C_InitPIN(arg1: CK_SESSION_HANDLE, arg2: *mut CK_UTF8CHAR, arg3: CK_ULONG);
     C_SetPIN(arg1: CK_SESSION_HANDLE, arg2: *mut CK_UTF8CHAR, arg3: CK_ULONG, arg4: *mut CK_UTF8CHAR, arg5: CK_ULONG);

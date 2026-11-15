@@ -183,6 +183,7 @@ impl Shim {
         };
         if let Some(trace) = &self.trace {
             let mut detail = trace::Detail::default();
+            detail.ok = rv == CKR_OK;
             observe(&mut detail);
             trace.line(&call, rv, rule, &detail);
         }

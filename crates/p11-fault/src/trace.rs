@@ -10,10 +10,12 @@
 use crate::Fatal;
 use crate::plan::Call;
 use cryptoki_sys::{
-    CK_ATTRIBUTE, CK_ATTRIBUTE_TYPE, CK_FLAGS, CK_MECHANISM, CK_MECHANISM_TYPE, CK_RV, CK_ULONG, CK_USER_TYPE,
-    CKA_CERTIFICATE_TYPE, CKA_CLASS, CKA_KEY_TYPE,
+    CK_ATTRIBUTE, CK_ATTRIBUTE_TYPE, CK_C_INITIALIZE_ARGS, CK_FLAGS, CK_MECHANISM, CK_MECHANISM_INFO,
+    CK_MECHANISM_TYPE, CK_RV, CK_SLOT_INFO, CK_TOKEN_INFO, CK_ULONG, CK_USER_TYPE, CKA_CERTIFICATE_TYPE, CKA_CLASS,
+    CKA_KEY_TYPE,
 };
 use std::io::Write;
+use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,9 +33,16 @@ pub(crate) struct Trace {
 /// unchanged then, and an output one filled in).
 #[derive(Debug, Default)]
 pub(crate) struct Detail {
+    /// The call returned `CKR_OK`: only then are its outputs read.
+    pub(crate) ok: bool,
     mechanism: Option<CK_MECHANISM_TYPE>,
     user: Option<CK_USER_TYPE>,
     flags: Option<CK_FLAGS>,
+    /// `C_Initialize`'s flags, and the flags a slot, token or mechanism info came back with.
+    init_flags: Option<CK_FLAGS>,
+    slot_flags: Option<CK_FLAGS>,
+    token_flags: Option<CK_FLAGS>,
+    mechanism_flags: Option<CK_FLAGS>,
     attributes: Vec<CK_ATTRIBUTE_TYPE>,
     classes: Vec<CK_ULONG>,
     key_types: Vec<CK_ULONG>,
@@ -66,6 +75,54 @@ impl Detail {
     /// A `CK_FLAGS` argument.
     pub(crate) fn flags(&mut self, flags: CK_FLAGS) {
         self.flags = Some(flags);
+    }
+
+    /// `C_Initialize`'s argument: the flags of its `CK_C_INITIALIZE_ARGS`, if any.
+    ///
+    /// # Safety
+    ///
+    /// `args` is null or points to a `CK_C_INITIALIZE_ARGS`, as `C_Initialize` requires.
+    pub(crate) unsafe fn initialize(&mut self, args: *const c_void) {
+        if !args.is_null() {
+            // SAFETY: not null, and `C_Initialize`'s contract makes it a `CK_C_INITIALIZE_ARGS`.
+            self.init_flags = Some(unsafe { (*args.cast::<CK_C_INITIALIZE_ARGS>()).flags });
+        }
+    }
+
+    /// The flags of the `CK_SLOT_INFO` a successful `C_GetSlotInfo` filled.
+    ///
+    /// # Safety
+    ///
+    /// `info` is null or points to a `CK_SLOT_INFO`.
+    pub(crate) unsafe fn slot_info(&mut self, info: *const CK_SLOT_INFO) {
+        if self.ok && !info.is_null() {
+            // SAFETY: not null, and the call filled it.
+            self.slot_flags = Some(unsafe { (*info).flags });
+        }
+    }
+
+    /// The flags of the `CK_TOKEN_INFO` a successful `C_GetTokenInfo` filled.
+    ///
+    /// # Safety
+    ///
+    /// `info` is null or points to a `CK_TOKEN_INFO`.
+    pub(crate) unsafe fn token_info(&mut self, info: *const CK_TOKEN_INFO) {
+        if self.ok && !info.is_null() {
+            // SAFETY: not null, and the call filled it.
+            self.token_flags = Some(unsafe { (*info).flags });
+        }
+    }
+
+    /// The flags of the `CK_MECHANISM_INFO` a successful `C_GetMechanismInfo` filled.
+    ///
+    /// # Safety
+    ///
+    /// `info` is null or points to a `CK_MECHANISM_INFO`.
+    pub(crate) unsafe fn mechanism_info(&mut self, info: *const CK_MECHANISM_INFO) {
+        if self.ok && !info.is_null() {
+            // SAFETY: not null, and the call filled it.
+            self.mechanism_flags = Some(unsafe { (*info).flags });
+        }
     }
 
     /// A template of `count` entries: every attribute type, and the values of the class, key
@@ -128,7 +185,15 @@ impl Trace {
         if let Some(shim) = &self.shim {
             fields.insert("shim".into(), shim.as_str().into());
         }
-        let numbers = [("mechanism", detail.mechanism), ("user", detail.user), ("flags", detail.flags)];
+        let numbers = [
+            ("mechanism", detail.mechanism),
+            ("user", detail.user),
+            ("flags", detail.flags),
+            ("init_flags", detail.init_flags),
+            ("slot_flags", detail.slot_flags),
+            ("token_flags", detail.token_flags),
+            ("mechanism_flags", detail.mechanism_flags),
+        ];
         for (name, value) in numbers {
             if let Some(value) = value {
                 fields.insert(name.into(), value.into());
