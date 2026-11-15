@@ -14,6 +14,7 @@ in
       keys.signing { token = "softhsm"; }      # several pairs: name the token
       keys.shared { token = "softhsm"; spec = "shared-sign"; }   # several specs on one token
       keys.signing-cert { scheme = "certhash"; }                # any call can also pin a scheme
+      keys.signing { format = "pem"; uriPin = "source"; }       # and say what `check` prints
 
     The result is plain data:
 
@@ -36,7 +37,12 @@ in
       check          shell command for the pseudo-FOD pre-use check, printing the URI; the
                      resolved pair is passed explicitly, and `scheme` requires that identity.
                      Interpolates config, lock and module paths, so they become inputs of the
-                     consuming derivation (recording a hash rebuilds it).
+                     consuming derivation (recording a hash rebuilds it). The call's `format`
+                     ("uri", or "pem": pkcs11-provider's key file), `uriModule` (add
+                     `module-path=`) and `uriPin` (null, "source" for `pin-source=`, "value"
+                     for `pin-value=`) say what it prints (`cakeys check --format`,
+                     `--uri-module`, `--uri-pin`). A "value" PIN is in whatever the output
+                     reaches: the build log, a store path.
 
     A call that does not name exactly one pair throws, listing the choices.
 
@@ -112,6 +118,10 @@ in
           spec ? null,
           # null: whatever the spec computes; else require that identity (e.g. "certhash").
           scheme ? null,
+          # What `check` prints: the URI or a key file, with the module and PIN on request.
+          format ? "uri",
+          uriModule ? false,
+          uriPin ? null,
         }:
         let
           pick = chosen args;
@@ -166,6 +176,19 @@ in
           requiredSystemFeatures = featuresOf pick.token;
           check =
             assert cakeys != null || throw "cakeys: mkKeys needs cakeys for check";
+            assert
+              builtins.elem format [
+                "uri"
+                "pem"
+              ]
+              || fail "format must be \"uri\" or \"pem\", not ${builtins.toJSON format}";
+            assert
+              builtins.elem uriPin [
+                null
+                "source"
+                "value"
+              ]
+              || fail "uriPin must be null, \"source\" or \"value\", not ${builtins.toJSON uriPin}";
             builtins.concatStringsSep " " (
               [
                 "${cakeys}/bin/cakeys"
@@ -178,6 +201,9 @@ in
                 "--token ${pick.token}"
                 "--spec ${pick.spec}"
               ]
+              ++ (if format != "uri" then [ "--format ${format}" ] else [ ])
+              ++ (if uriModule then [ "--uri-module" ] else [ ])
+              ++ (if uriPin != null then [ "--uri-pin ${uriPin}" ] else [ ])
             );
         };
     in

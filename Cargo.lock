@@ -310,6 +310,7 @@ dependencies = [
  "cakeys-core",
  "cakeys-profile",
  "cryptoki",
+ "der",
  "getrandom",
  "libc",
  "sha2",

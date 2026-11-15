@@ -126,8 +126,76 @@ let
           example = [ "signer.service" ];
           description = "Units that must not start unless the identity check passes.";
         };
+        format = mkOption {
+          type = types.enum [
+            "uri"
+            "pem"
+          ];
+          default = "uri";
+          description = ''
+            What the check prints: the URI, or `pem`, pkcs11-provider's key file wrapping it, for
+            programs that take a private key only as a PEM file (`cakeys check --format`).
+          '';
+        };
+        uriModule = mkOption {
+          type = types.bool;
+          default = false;
+          description = "Add `module-path=` with the module the check loaded (`--uri-module`).";
+        };
+        uriPin = mkOption {
+          type = types.nullOr (
+            types.enum [
+              "source"
+              "value"
+            ]
+          );
+          default = null;
+          description = ''
+            Add the user PIN (`--uri-pin`): `source` refers to keys.toml's pinFile or pinEnv,
+            `value` writes the PIN itself, so it needs `outputFile` (never the journal).
+          '';
+        };
+        outputFile = mkOption {
+          type = types.nullOr (types.strMatching "/[^\n]*");
+          default = null;
+          example = "/run/cakeys/signing.pem";
+          description = ''
+            Write what the check prints here (mode 0600, or 0640 with `outputGroup`) instead of
+            the journal. Removed before each check, and written only when it passes, so no
+            file outlives a failed check.
+          '';
+        };
+        outputGroup = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          example = "nginx";
+          description = "Group that may read `outputFile`: the service using the key.";
+        };
       };
     };
+
+  # Runs a check and writes what it prints to $1 (group $2, or none): removed first, written
+  # under umask 077 beside it and renamed into place only when the check passed.
+  writeOutput = pkgs.writeShellApplication {
+    name = "cakeys-check-output";
+    runtimeInputs = [ pkgs.coreutils ];
+    text = ''
+      out=$1 group=$2
+      shift 2
+      rm -f -- "$out"
+      mkdir -p -- "$(dirname -- "$out")"
+      umask 077
+      tmp=$(mktemp -- "$out.XXXXXX")
+      trap 'rm -f -- "$tmp"' EXIT
+      "$@" >"$tmp"
+      if [ -n "$group" ]; then
+        chgrp -- "$group" "$tmp"
+        chmod 0640 -- "$tmp"
+      fi
+      mv -- "$tmp" "$out"
+      trap - EXIT
+    '';
+  };
 in
 {
   options.services.cakeys = {
@@ -251,6 +319,10 @@ in
     })
 
     {
+      assertions = lib.mapAttrsToList (n: c: {
+        assertion = c.uriPin == "value" -> c.outputFile != null;
+        message = "services.cakeys.checks.${n}.uriPin = \"value\" needs outputFile: the PIN would go to the journal";
+      }) cfg.checks;
       systemd.services = lib.mapAttrs' (
         name: c:
         lib.nameValuePair "cakeys-check-${name}" {
@@ -262,9 +334,15 @@ in
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
-            # Global options, then `check <object>[.id.<scheme>]` and its options; nulls drop out.
+            # Global options, then `check <object>[.id.<scheme>]` and its options; nulls and
+            # false drop out. With an output file, through writeOutput.
             ExecStart = utils.escapeSystemdExecArgs (
-              [ (lib.getExe cfg.package) ]
+              lib.optionals (c.outputFile != null) [
+                (lib.getExe writeOutput)
+                c.outputFile
+                (if c.outputGroup == null then "" else c.outputGroup)
+              ]
+              ++ [ (lib.getExe cfg.package) ]
               ++ lib.cli.toCommandLineGNU { } {
                 config = "${c.config}";
                 lock = "${c.lock}";
@@ -274,7 +352,12 @@ in
                 "check"
                 (c.object + lib.optionalString (c.scheme != null) ".id.${c.scheme}")
               ]
-              ++ lib.cli.toCommandLineGNU { } { inherit (c) token spec; }
+              ++ lib.cli.toCommandLineGNU { } {
+                inherit (c) token spec;
+                format = if c.format == "uri" then null else c.format;
+                uri-module = c.uriModule;
+                uri-pin = c.uriPin;
+              }
             );
           };
         }

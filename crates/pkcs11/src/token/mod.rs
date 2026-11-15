@@ -32,8 +32,8 @@ pub use generate::retry_without_public_private;
 pub use identity::commit_mechanism;
 pub use policy::bool_attr;
 pub use possession::{Derived, ProofSide, derive_any, is_policy_default, proof_refusal, show, template_refusal};
-pub use uri::locator_attrs;
 use uri::pct_all;
+pub use uri::{PinRef, locator_attrs, pin_ref, provider_pem, with_query};
 
 /// The session a verb opens (M1, docs/archive/REVIEW-2026-11-11.md): read-only for the verbs that only
 /// read — a write-protected token (`CKF_WRITE_PROTECTED`) refuses read-write sessions, and the

@@ -268,8 +268,10 @@ layer of its own; the pkcs11-check findings are triaged.
   `test-nspawn`. `nix flake check` and `checks-crane-only` keep their cost; `checks-boot` runs
   when boot-chain code changes and at the end of a stage, and DEVELOPMENT.md's cadence section
   says so.
-- **PINs and modules**: the URI carries neither. Each consumer gets the module through
-  `lib.mkKeys`' `module` and the PIN through a granted file, never a URI `pin-value`.
+- **PINs and modules**: the URI carries neither by default. Each consumer gets the module
+  through `lib.mkKeys`' `module` and the PIN through a granted file; a consumer that takes them
+  only in the URI gets `check --uri-module --uri-pin source`, and `--format pem` wraps the URI
+  for pkcs11-provider (CAKEYS.md, "The contract with programs").
 
 ### S. Spikes first
 

@@ -1,5 +1,6 @@
 # VM test of the NixOS module (nix/module.nix): sandboxed pcscd access with auto-allocated
-# build UIDs, uid-range builds, token system features, and the pre-use check unit.
+# build UIDs, uid-range builds, token system features, and the pre-use check unit writing the key
+# file a real signer (OpenSSL through pkcs11-provider) uses.
 {
   pkgs,
   module,
@@ -87,18 +88,46 @@ pkgs.testers.runNixOSTest {
         token = "softhsm";
         environment.SOFTHSM2_CONF = "${stateDir}/softhsm2.conf";
         requiredBy = [ "signer.service" ];
+        # The key as a file: pkcs11-provider's key file, the PIN by reference.
+        format = "pem";
+        uriPin = "source";
+        outputFile = "/run/cakeys/signing.pem";
+        outputGroup = "signer";
       };
     };
+    users.groups.signer = { };
     security.polkit.enable = true;
-    # Stand-in for a service that signs with the key.
-    systemd.services.signer.serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      ExecStart = "${pkgs.coreutils}/bin/true";
+    # A service that signs with the key, knowing only the file the check wrote.
+    systemd.services.signer = {
+      environment = {
+        SOFTHSM2_CONF = "${stateDir}/softhsm2.conf";
+        PKCS11_PROVIDER_MODULE = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = lib.concatStringsSep " " [
+          (lib.getExe pkgs.openssl)
+          "dgst"
+          "-sha256"
+          "-provider-path"
+          "${pkgs.pkcs11-provider}/lib/ossl-modules"
+          "-provider"
+          "pkcs11"
+          "-provider"
+          "default"
+          "-sign"
+          "/run/cakeys/signing.pem"
+          "-out"
+          "/run/signer.sig"
+          "/etc/km/keys.toml"
+        ];
+      };
     };
     environment.systemPackages = [
       cakeys
       pkgs.softhsm
+      pkgs.openssl
     ];
     environment.etc."km/keys.toml".source = keysToml;
     environment.etc."km/builds.nix".source = guestBuilds;
@@ -170,8 +199,18 @@ pkgs.testers.runNixOSTest {
         # No locked identity yet: the check fails (first use creates the key), so does signer.
         machine.fail("systemctl start signer.service")
         machine.succeed(f"{km} realise signing-soft --token softhsm --update-lock")
+        machine.fail("test -e /run/cakeys/signing.pem")
+        machine.succeed(f"{km} realise signing-soft --token softhsm --update-lock")
         machine.succeed("systemctl start signer.service")
         machine.succeed("systemctl is-active cakeys-check-signing.service")
+        # The signer signed through the key file, with the locked key.
+        assert machine.succeed("stat -c '%a %G' /run/cakeys/signing.pem").split() == ["640", "signer"]
+        assert machine.succeed("head -n1 /run/cakeys/signing.pem").strip() == "-----BEGIN PKCS#11 PROVIDER URI-----"
+        machine.succeed(
+            "openssl pkey -provider-path ${pkgs.pkcs11-provider}/lib/ossl-modules -provider pkcs11"
+            " -provider default -in /run/cakeys/signing.pem -pubout -out /run/signing.pub",
+            "openssl dgst -sha256 -verify /run/signing.pub -signature /run/signer.sig /etc/km/keys.toml",
+        )
         # Key gone: a fresh check (autoCreate makes a new key) no longer matches the lock.
         machine.succeed(f"{km} delete signing-soft --token softhsm --no-update-lock")
         machine.succeed("systemctl stop signer.service cakeys-check-signing.service")
@@ -179,5 +218,7 @@ pkgs.testers.runNixOSTest {
         assert "hash mismatch" in machine.succeed(
             "journalctl -u cakeys-check-signing.service --no-pager"
         )
+        # No key file outlives the failed check.
+        machine.fail("test -e /run/cakeys/signing.pem")
   '';
 }

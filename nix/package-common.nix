@@ -16,6 +16,8 @@
   sqlite,
   dbus,
   p11-kit,
+  openssl,
+  pkcs11-provider,
   pkg-config,
   # The tpm2 feature (cakeys-tpm2-pkcs11) is Linux only: tss-esapi-sys ships no prebuilt bindings
   # for aarch64-darwin, and tpm2-pkcs11 and its tools are not packaged there, so there is no
@@ -135,6 +137,7 @@ in
       softhsm
       p11-kit
       opensc
+      openssl
     ]
     ++ lib.optionals tpm2 [
       swtpm
@@ -175,6 +178,9 @@ in
         . $TMPDIR/p11/env
         export CAKEYS_P11KIT_CLIENT=${lib.getLib p11-kit}/lib/pkcs11/p11-kit-client.so
         export CAKEYS_P11KIT_REQUIRE=1
+
+        # OpenSSL through pkcs11-provider reads what `check --format pem` writes.
+        export CAKEYS_PKCS11_PROVIDER_DIR=${pkcs11-provider}/lib/ossl-modules
 
         export HOME=$TMPDIR
       ''
