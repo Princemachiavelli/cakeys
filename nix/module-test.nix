@@ -211,8 +211,10 @@ pkgs.testers.runNixOSTest {
         # The signer signed through the key file, with the locked key.
         assert machine.succeed("stat -c '%a %G' /run/cakeys/signing.pem").split() == ["640", "signer"]
         assert machine.succeed("head -n1 /run/cakeys/signing.pem").strip() == "-----BEGIN PKCS#11 PROVIDER URI-----"
+        # The module, as the signer's environment names it: the key file does not.
         machine.succeed(
-            "openssl pkey -provider-path ${pkgs.pkcs11-provider}/lib/ossl-modules -provider default"
+            "PKCS11_PROVIDER_MODULE=${softhsm}/lib/softhsm/libsofthsm2.so"
+            " openssl pkey -provider-path ${pkgs.pkcs11-provider}/lib/ossl-modules -provider default"
             " -provider pkcs11 -in /run/cakeys/signing.pem -pubout -out /run/signing.pub",
             "openssl dgst -sha256 -verify /run/signing.pub -signature /run/signer.sig /etc/km/keys.toml",
         )
