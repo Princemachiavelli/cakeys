@@ -6,7 +6,8 @@ same day: 91.9% (949 of 11,640 uncovered; 84.6% of functions); after the burn-do
 93.7% (738 of 11,763; 86.1% of functions); with the fault shim and its first tables
 (FAULT_SHIM.md), 94.0% (744 of 12,382, the shim's own 614 lines included; 86.2% of functions);
 with the shim in front of camigrate and caprobe, 94.4% (701 of 12,469; 86.7% of functions);
-with direct tests of camigrate's refusals, 94.7% (663 of 12,606; 87.3% of functions).
+with direct tests of camigrate's refusals, 94.7% (663 of 12,606; 87.3% of functions); with
+the TPM attestation's refusals on swtpm, 94.9% (640 of 12,669; 87.6% of functions).
 The mutation report
 (`nix build .#mutants`) comes after this: it asks whether the tests *check* what they run, and
 is only worth reading once they run it.
