@@ -1,0 +1,74 @@
+# cakeys against AWS CloudHSM (docs/CLOUD_HSM.md), run on the runner by `scripts/cloud/aws.sh
+# cakeys`: the module comes from --module cloudhsm=<libcloudhsm_pkcs11.so>, the crypto user's PIN
+# (user:password) from a tmpfs file. Each object exercises one path the profiles describe.
+
+[tokens.cloudhsm]
+tokenLabel = "hsm1"
+pinFile = "$CAKEYS_AWS_PIN"
+
+[objects.ec-p256]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+
+[objects.ec-p384-derive]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp384r1"
+
+[objects.rsa-sign]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 2048
+
+[objects.rsa-decrypt]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 3072
+
+[objects.aes]
+class = "CKO_SECRET_KEY"
+keyType = "CKK_AES"
+valueLen = 32
+
+[objects.hmac]
+class = "CKO_SECRET_KEY"
+keyType = "CKK_GENERIC_SECRET"
+valueLen = 32
+
+# pop-sign over ECDSA; the public half is generated without CKA_PRIVATE = false (refused).
+[specs.ec-p256]
+object = "ec-p256"
+attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-ec-p256" } }
+
+# pop-ecdh: raw ECDH (the client's ecdh_without_kdf, set by activate), derived without the
+# template's CKA_EXTRACTABLE = false.
+[specs.ec-p384-derive]
+object = "ec-p384-derive"
+attributes = { CKA_DERIVE = true, CKA_SIGN = false }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-ec-p384-derive" }, binding = "pop-ecdh" }
+
+# pop-sign over CKM_SHA256_RSA_PKCS.
+[specs.rsa-sign]
+object = "rsa-sign"
+attributes = { CKA_SIGN = true }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-rsa-sign" } }
+
+# pop-decrypt over RSA-OAEP with SHA-1.
+[specs.rsa-decrypt]
+object = "rsa-decrypt"
+attributes = { CKA_DECRYPT = true, CKA_SIGN = false }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-rsa-decrypt" }, binding = "pop-decrypt" }
+
+# AES committed to by CMAC.
+[specs.aes]
+object = "aes"
+attributes = { CKA_SIGN = true }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-aes" } }
+
+# A generic secret committed to by HMAC-SHA256.
+[specs.hmac]
+object = "hmac"
+attributes = { CKA_SIGN = true }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-hmac" } }

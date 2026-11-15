@@ -7,6 +7,7 @@
 #   scripts/cloud/aws.sh init
 #   scripts/cloud/aws.sh activate
 #   scripts/cloud/aws.sh probe [<profile name>]
+#   scripts/cloud/aws.sh cakeys <cakeys arguments>
 #   scripts/cloud/aws.sh destroy [--park] [--yes]
 #   scripts/cloud/aws.sh status
 #
@@ -25,6 +26,9 @@
 #           aws-cloudhsm/<major.minor>+hsm2m-fips or -non-fips). An existing profile is diffed
 #           (exit 15 on drift, the file rewritten anyway). CAPROBE names a caprobe binary to use
 #           instead of building one.
+# cakeys    runs cakeys on the runner with scripts/cloud/aws/cakeys.toml, the crypto user's PIN in
+#           tmpfs and a lock kept on the runner: `cakeys create`, `verify ec-p256 --token
+#           cloudhsm`, `delete ...`. CAKEYS names a cakeys binary to use instead of building one.
 # destroy   deletes everything: HSM, runner, cluster, the cluster's backups (AWS keeps them in
 #           PENDING_DELETION for 7 days; `aws cloudhsmv2 restore-backup` brings one back), and
 #           the network. An initialized cluster also needs --yes.
@@ -336,6 +340,24 @@ EOF
   return "$rc"
 }
 
+# cakeys on the runner with scripts/cloud/aws/cakeys.toml, the crypto user's PIN in tmpfs and a
+# lock that stays on the runner: every argument goes to cakeys.
+cakeys() {
+  tf_init
+  local p11 bin args
+  p11=$(pkg cloudhsm-pkcs11)
+  bin=${CAKEYS:-$(nix build --no-link --print-out-paths --impure --expr \
+    "((builtins.getFlake \"git+file://$repo\").packages.x86_64-linux.cakeys.overrideAttrs { doCheck = false; })")/bin/cakeys}
+  bin=$(realpath "$bin")
+  wait_runner
+  copy "$p11" "$(dirname "$(dirname "$bin")")"
+  runner install -D -m 600 /dev/stdin /run/cakeys/pin <<<"caprobe:$(secret cu)"
+  runner install -D -m 644 /dev/stdin /root/cakeys/keys.toml <"$tf/cakeys.toml"
+  printf -v args '%q ' "$@"
+  runner "CAKEYS_AWS_PIN=/run/cakeys/pin $bin --config /root/cakeys/keys.toml --lock /root/cakeys/keys.lock" \
+    "--module cloudhsm=$p11/lib/libcloudhsm_pkcs11.so $args"
+}
+
 destroy() {
   local park=0 yes=0
   while (($#)); do
@@ -421,6 +443,7 @@ create) create "$@" ;;
 init) init "$@" ;;
 activate) activate "$@" ;;
 probe) probe "$@" ;;
+cakeys) cakeys "$@" ;;
 destroy) destroy "$@" ;;
 status) status "$@" ;;
 *) usage ;;

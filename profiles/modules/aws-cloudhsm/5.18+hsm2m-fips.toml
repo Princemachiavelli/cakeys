@@ -63,8 +63,13 @@ oaep = ["SHA-1", "SHA-256"]
 [decrypt]
 oaep = ["SHA-1", "SHA-256", "SHA-512"]
 
+[derive]
+sealed = true
+key-attribute = true
+read-only = false
+
 [subtract]
-mechanisms = ["CKM_ECDH1_DERIVE", "CKM_ECDSA_SHA1"]
+mechanisms = ["CKM_ECDSA_SHA1"]
 
 [generate."CKK_EC"]
 can = ["secp256r1", "secp384r1", "secp521r1", "secp256k1"]
@@ -84,7 +89,6 @@ cannot-bits = [1024]
 
 [notes]
 "CKK_RSA at 1024" = "modulusBits = 1024: CKR_ATTRIBUTE_VALUE_INVALID"
-"CKM_ECDH1_DERIVE" = "secp256r1: the derived secret reports CKA_SENSITIVE = true, CKA_EXTRACTABLE = true; the extractable derived secret's CKA_VALUE is unreadable"
 "CKM_ECDSA_SHA1" = "secp256r1: CKR_FUNCTION_FAILED"
 "CKM_RSA_PKCS" = "RSA-2048 decrypt: CKR_ENCRYPTED_DATA_INVALID"
 "brainpoolP256r1" = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID"
@@ -92,7 +96,9 @@ cannot-bits = [1024]
 "cryptoki" = "the module reports Cryptoki 2.40"
 "curve25519" = "not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN"
 "curve448" = "not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN"
-"derive.template" = "secp256r1: the template as asked is refused (CKR_ATTRIBUTE_VALUE_INVALID); derived with CKA_VALUE_LEN = 32 added, CKA_SENSITIVE = false dropped"
+"derive.read-only" = "secp256r1: in a read-only session: CKR_SESSION_READ_ONLY"
+"derive.secret" = "secp256r1: the derived secret reports CKA_SENSITIVE = true, CKA_EXTRACTABLE = true"
+"derive.template" = "secp256r1: the template as asked is refused (CKR_ATTRIBUTE_VALUE_INVALID); derived with CKA_VALUE_LEN = 32 added, CKA_EXTRACTABLE = false dropped"
 "edwards25519" = "not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN"
 "edwards448" = "not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN"
 "template.public.CKA_PRIVATE" = "CKA_PRIVATE = false on a public object: CKR_ATTRIBUTE_VALUE_INVALID; made without it, the object reads CKA_PRIVATE = true"
