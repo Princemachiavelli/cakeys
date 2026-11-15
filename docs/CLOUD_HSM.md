@@ -1,6 +1,6 @@
 # Cloud HSM provider profiles (plan, 2026-11-13)
 
-Goal: produce and re-verify capability profiles ([`PROVIDERS.md`](PROVIDERS.md)) for the managed
+Goal: produce and re-verify capability profiles ([`CAPROBE.md`](CAPROBE.md)) for the managed
 HSMs of the three big clouds that expose PKCS#11, by probing real instances provisioned on
 demand and torn down afterwards. This file is research and plan; nothing here is built yet.
 
@@ -8,7 +8,7 @@ Naming: this tree is the `a11e92d` state of `main`, where the probe is still `ca
 WORKPLAN D2 moves it to `caprobe`, "the only tool that creates and destroys scratch objects".
 This plan is written against `caprobe`; read `cakeys probe` until stage 2 lands.
 
-Evidence tags, extending PROVIDERS.md's: **[doc]** a vendor page read on 2026-11-13, not yet
+Evidence tags, extending CAPROBE.md's: **[doc]** a vendor page read on 2026-11-13, not yet
 reproduced here; **[api]** a vendor's public price API queried on 2026-11-13; **[inf]** my
 inference from the above; **[todo]** unknown, and a named spike settles it. **[run]** is
 reserved for what a probe or spike in this repo has shown. Nothing below is **[run]** yet. A
@@ -107,6 +107,7 @@ deleted is **disputed in the docs I read** ("you can delete key rings … in som
 versus the 2023 FAQ) [todo]. Plan on permanent empty rings.
 
 **Lifecycle.**
+
 - Create: `C_GenerateKey` / `C_GenerateKeyPair` create a CryptoKey with one version [doc].
 - Destroy: `C_DestroyObject` schedules destruction (default 30 days) [doc]. The write probe's
   "delete really deletes" check therefore cannot be an absence check; the profile records
@@ -125,6 +126,7 @@ should be counted before the run (§Safety).
 
 **What the profile will say, expected.** Expect these gaps; the probe must record each as
 `CKR_FUNCTION_NOT_SUPPORTED` or `CKR_MECHANISM_INVALID` cleanly, not as errors [doc]:
+
 - No `C_WrapKey`, `C_UnwrapKey`, `C_DeriveKey`, `C_CreateObject`, `C_SetAttributeValue`,
   digest functions, `C_InitToken`, `C_InitPIN`, `C_SetPIN`. So `camigrate` cannot import into or
   wrap out of it: no migration role.
@@ -170,6 +172,7 @@ with the IP from `describe-clusters` (the runner script reads it each run: wheth
 re-created HSM keeps its IP is not stated [todo]).
 
 **Lifecycle, "parked" design.** Done once, by hand, with a script:
+
 1. `create-cluster --hsm-type hsm2m.medium --mode FIPS|NON_FIPS --backup-retention-policy …`
 2. Sign the cluster CSR with a self-made CA kept offline, `initialize-cluster` [doc].
 3. `create-hsm`, activate and create the CU (cloudhsm-cli), then **delete the HSM**: this
@@ -181,6 +184,7 @@ and this action will restore the backup you previously created with the delete H
 HSM-hour charge [doc, third-party]. **[todo, spike]:** the page also says a first `create-hsm`
 needs an *uninitialized* cluster, and does not say a zero-HSM, once-initialized cluster qualifies
 or keeps its activation. Two fallbacks, in order of preference:
+
 1. `create-cluster --source-backup-id` [doc: "will contain the same users, key material,
    certificates, configuration, and policies"], then `create-hsm`. Documented, explicit, a
    cluster per run.
@@ -197,6 +201,7 @@ non-FIPS only; `CKM_RSA_PKCS` for encrypt/wrap is deprecated in FIPS mode [doc].
 **FIPS**, the mode a real deployment will use. A **NON_FIPS** cluster is a second pass.
 
 **What the profile will say, expected [doc].**
+
 - Key types: AES 128/192/256, 3DES, EC secp224r1/256r1/256k1/384r1/521r1, Ed25519
   (non-FIPS), ML-DSA 44/65/87 through vendor mechanism `CKM_CLOUDHSM_ML_DSA_KEY_PAIR_GEN`,
   RSA 2048–4096.
@@ -329,6 +334,7 @@ be written against `cakeys probe` and renamed later.
 ### Spikes, in one list
 
 Each turns a **[todo]** into **[run]**. Their order is by cost.
+
 1. libkmsp11 auth route: ADC vs key file (GCP, free).
 2. Write quota behaviour under the probe's real load (GCP, cents).
 3. Destroy-scheduled minimum, whether libkmsp11 can set it on a key it creates, key-ring
