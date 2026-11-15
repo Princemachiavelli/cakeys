@@ -3,7 +3,9 @@
 Where the tests do not reach, and the order in which to get them there. Written 2026-11-14,
 at 89.9% of lines (1,177 of 11,638 uncovered; 83.5% of functions). After tiers 2 and 3, the
 same day: 91.9% (949 of 11,640 uncovered; 84.6% of functions); after the burn-down below,
-93.7% (738 of 11,763; 86.1% of functions). The mutation report
+93.7% (738 of 11,763; 86.1% of functions); with the fault shim and its first tables
+(FAULT_SHIM.md), 94.0% (744 of 12,382, the shim's own 614 lines included; 86.2% of functions).
+The mutation report
 (`nix build .#mutants`) comes after this: it asks whether the tests *check* what they run, and
 is only worth reading once they run it.
 

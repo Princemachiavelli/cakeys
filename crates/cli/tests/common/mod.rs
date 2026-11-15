@@ -245,14 +245,17 @@ pub const FAULT: Reference = Reference {
     ..SOFTHSM
 };
 
-/// `libp11_fault.so`, built beside the test binaries (a default member of the workspace).
+/// `libp11_fault.so`: beside the binaries after a build of the workspace, else among the
+/// dependencies of the tests (`deps/`), where the `cakeys` tests' dev-dependency on `p11-fault`
+/// has every test build put it.
 ///
 /// # Panics
 ///
-/// When it is not built: `cargo build --workspace` first.
+/// When it is in neither place.
 pub fn fault_shim() -> String {
-    let path = Path::new(BIN).with_file_name("libp11_fault.so");
-    assert!(path.exists(), "{} is not built: run `cargo build --workspace` first", path.display());
+    let beside = Path::new(BIN).with_file_name("libp11_fault.so");
+    let path = if beside.exists() { beside } else { Path::new(BIN).with_file_name("deps").join("libp11_fault.so") };
+    assert!(path.exists(), "libp11_fault.so is built neither beside {BIN} nor in deps/");
     path.to_str().unwrap().to_owned()
 }
 

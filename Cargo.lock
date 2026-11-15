@@ -220,6 +220,7 @@ dependencies = [
  "cmac",
  "cryptoki",
  "hmac",
+ "p11-fault",
  "rsa",
  "rusqlite",
  "serde",
