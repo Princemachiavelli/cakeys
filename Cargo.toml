@@ -107,3 +107,15 @@ unreachable_pub = "warn"
 # #[allow(..., reason)] only where #[expect] cannot be fulfilled (on a `use` item) or would not
 # be in every test binary.
 pedantic = { level = "warn", priority = -1 }
+
+# Debug builds (scripts/local-tests.sh). Every cakeys run hashes the module it loads
+# (provenance), and in a traced run (nix/test-tokens.sh) that module is p11-fault: unoptimised
+# SHA-256 over an 11 MB debug p11-fault tripled the run. Release builds (the check phase) are
+# unaffected.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.p11-fault]
+opt-level = 2
+debug = false
+strip = "symbols"
