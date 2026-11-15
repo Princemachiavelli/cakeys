@@ -15,6 +15,11 @@ pub const PROFILE_FILES: &[(&str, &str)] = &[
         "profiles/modules/cloudhsm-pkcs11/5.18+hsm2m-fips.toml",
         include_str!("../../../profiles/modules/cloudhsm-pkcs11/5.18+hsm2m-fips.toml"),
     ),
+    // After its FIPS twin: PKCS#11 reports no mode, so the two tie, and a tie takes the first.
+    (
+        "profiles/modules/cloudhsm-pkcs11/5.18+hsm2m-non-fips.toml",
+        include_str!("../../../profiles/modules/cloudhsm-pkcs11/5.18+hsm2m-non-fips.toml"),
+    ),
     ("profiles/modules/kryoptic/1.5.toml", include_str!("../../../profiles/modules/kryoptic/1.5.toml")),
     ("profiles/modules/softhsm/2.7.toml", include_str!("../../../profiles/modules/softhsm/2.7.toml")),
     (

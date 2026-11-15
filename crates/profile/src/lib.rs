@@ -161,6 +161,7 @@ mod tests {
                 "cryptoki/0.12",
                 "p11-kit/0.26",
                 "cloudhsm-pkcs11/5.18+hsm2m-fips",
+                "cloudhsm-pkcs11/5.18+hsm2m-non-fips",
                 "kryoptic/1.5",
                 "softhsm/2.7",
                 "tpm2-pkcs11/1.10+amd-ftpm",
