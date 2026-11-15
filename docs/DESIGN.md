@@ -568,8 +568,8 @@ The reviews these come from are archived: `docs/archive/REVIEW-2026-11-11.md` (c
   `derive_and_decrypt_only_keys_prove_possession`).
 - **Policy and uniqueness are what the module reports.** The `pop-*` proofs bind the material,
   not `CKA_EXTRACTABLE` or `CKA_SENSITIVE`, and "never more than one object" holds only if the
-  module's search returns every match: native-pkcs11 reports constant policy for any keychain
-  key and stops at the first match (PLAN.md A0b). A provider can repair a known misreport, as
+  module's search returns every match, once: native-pkcs11 reports constant policy for any
+  keychain key, and its searches both hide duplicates and show one key twice (PLAN.md A0b). A provider can repair a known misreport, as
   `policy_flag` does for ykcs11's `CKA_DERIVE`, but not a module that does not know.
 - **`piv-attestation` proves no liveness** (no verifier nonce in Yubico's certificate, §3.7):
   a malicious module could replay an old one. `tpm-certify` is nonce-bound, so it proves the

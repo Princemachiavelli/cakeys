@@ -271,7 +271,9 @@ rule kinds that native-pkcs11 shows real modules need (PLAN.md A0b): an attribut
 with `CKR_ATTRIBUTE_TYPE_INVALID` but its entry left untouched (`untouched = true`, beside
 `drop`, which sets the length unavailable as the spec asks; OPEN.md, "rust-cryptoki"), and a
 search that returns only its first match (`first_only = true` on `C_FindObjects`), against
-which the locator's 12 cannot fire.
+which the locator's 12 cannot fire. Its other search fault, one key under two handles, the shim
+cannot make (`add_label` skips a handle already found), but a decoy under `add_label` gives
+cakeys the same two handles to refuse.
 
 ## Nix
 
