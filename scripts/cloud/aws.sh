@@ -8,6 +8,7 @@
 #   scripts/cloud/aws.sh activate
 #   scripts/cloud/aws.sh probe [<profile name>]
 #   scripts/cloud/aws.sh cakeys <cakeys arguments>
+#   scripts/cloud/aws.sh camigrate <camigrate arguments>
 #   scripts/cloud/aws.sh destroy [--park] [--yes]
 #   scripts/cloud/aws.sh status
 #
@@ -27,8 +28,11 @@
 #           (exit 15 on drift, the file rewritten anyway). CAPROBE names a caprobe binary to use
 #           instead of building one.
 # cakeys    runs cakeys on the runner with scripts/cloud/aws/cakeys.toml, the crypto user's PIN in
-#           tmpfs and a lock kept on the runner: `cakeys create`, `verify ec-p256 --token
-#           cloudhsm`, `delete ...`. CAKEYS names a cakeys binary to use instead of building one.
+#           tmpfs and a lock kept on the runner, against CloudHSM and a SoftHSM token beside it:
+#           `cakeys create`, `verify ec-p256 --token cloudhsm`, `delete ...`. CAKEYS names a
+#           cakeys binary to use instead of building one.
+# camigrate the same for camigrate (CAMIGRATE): `camigrate migrate movable --from softhsm --to
+#           cloudhsm`.
 # destroy   deletes everything: HSM, runner, cluster, the cluster's backups (AWS keeps them in
 #           PENDING_DELETION for 7 days; `aws cloudhsmv2 restore-backup` brings one back), and
 #           the network. An initialized cluster also needs --yes.
@@ -342,20 +346,42 @@ EOF
 
 # cakeys on the runner with scripts/cloud/aws/cakeys.toml, the crypto user's PIN in tmpfs and a
 # lock that stays on the runner: every argument goes to cakeys.
-cakeys() {
+cakeys() { tool cakeys "${CAKEYS-}" "$@"; }
+camigrate() { tool camigrate "${CAMIGRATE-}" "$@"; }
+
+# cakeys or camigrate ($1; $2 a binary to use instead of building it) on the runner, against
+# CloudHSM and a SoftHSM token beside it (made on first use, PIN 1234), with
+# scripts/cloud/aws/cakeys.toml, the crypto user's PIN in tmpfs and a lock kept on the runner.
+tool() {
+  local name=$1 bin=$2 p11 softhsm args
+  shift 2
   tf_init
-  local p11 bin args
   p11=$(pkg cloudhsm-pkcs11)
-  bin=${CAKEYS:-$(nix build --no-link --print-out-paths --impure --expr \
-    "((builtins.getFlake \"git+file://$repo\").packages.x86_64-linux.cakeys.overrideAttrs { doCheck = false; })")/bin/cakeys}
+  softhsm=$(nix build --no-link --print-out-paths --inputs-from "$repo" nixpkgs#softhsm)
+  if [[ -z $bin ]]; then
+    local out=out
+    [[ $name == cakeys ]] || out=$name
+    bin=$(nix build --no-link --print-out-paths --impure --expr \
+      "((builtins.getFlake \"git+file://$repo\").packages.x86_64-linux.cakeys.overrideAttrs { doCheck = false; }).$out")/bin/$name
+  fi
   bin=$(realpath "$bin")
   wait_runner
-  copy "$p11" "$(dirname "$(dirname "$bin")")"
+  copy "$p11" "$softhsm" "$(dirname "$(dirname "$bin")")"
   runner install -D -m 600 /dev/stdin /run/cakeys/pin <<<"caprobe:$(secret cu)"
   runner install -D -m 644 /dev/stdin /root/cakeys/keys.toml <"$tf/cakeys.toml"
+  runner bash -s <<EOF
+set -euo pipefail
+mkdir -p /root/softhsm/tokens
+echo 1234 >/root/softhsm/pin
+printf 'directories.tokendir = /root/softhsm/tokens\nobjectstore.backend = file\nlog.level = ERROR\n' >/root/softhsm/softhsm2.conf
+export SOFTHSM2_CONF=/root/softhsm/softhsm2.conf
+$softhsm/bin/softhsm2-util --show-slots | grep -q 'Label:.*kmtest' ||
+  $softhsm/bin/softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678 >/dev/null
+EOF
   printf -v args '%q ' "$@"
-  runner "CAKEYS_AWS_PIN=/run/cakeys/pin $bin --config /root/cakeys/keys.toml --lock /root/cakeys/keys.lock" \
-    "--module cloudhsm=$p11/lib/libcloudhsm_pkcs11.so $args"
+  runner "CAKEYS_AWS_PIN=/run/cakeys/pin SOFTHSM2_CONF=/root/softhsm/softhsm2.conf $bin" \
+    "--config /root/cakeys/keys.toml --lock /root/cakeys/keys.lock" \
+    "--module cloudhsm=$p11/lib/libcloudhsm_pkcs11.so --module softhsm=$softhsm/lib/softhsm/libsofthsm2.so $args"
 }
 
 destroy() {
@@ -444,6 +470,7 @@ init) init "$@" ;;
 activate) activate "$@" ;;
 probe) probe "$@" ;;
 cakeys) cakeys "$@" ;;
+camigrate) camigrate "$@" ;;
 destroy) destroy "$@" ;;
 status) status "$@" ;;
 *) usage ;;

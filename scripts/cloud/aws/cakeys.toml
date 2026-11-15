@@ -5,6 +5,13 @@
 [tokens.cloudhsm]
 tokenLabel = "hsm1"
 pinFile = "$CAKEYS_AWS_PIN"
+# Sealed moves into CloudHSM wrap to this key (docs/CAMIGRATE.md D3).
+transportWith = "transport"
+
+# A SoftHSM token on the runner, the other side of camigrate's moves.
+[tokens.softhsm]
+tokenLabel = "kmtest"
+pinFile = "/root/softhsm/pin"
 
 [objects.ec-p256]
 class = "CKO_PRIVATE_KEY"
@@ -35,6 +42,19 @@ valueLen = 32
 class = "CKO_SECRET_KEY"
 keyType = "CKK_GENERIC_SECRET"
 valueLen = 32
+
+# CloudHSM's transport key: RSA, unwrap-only, never extractable.
+[objects.transport]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 3072
+
+# Born on SoftHSM, extractable, moved into CloudHSM by camigrate.
+[objects.movable]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+createOn = "softhsm"
 
 # pop-sign over ECDSA; the public half is generated without CKA_PRIVATE = false (refused).
 [specs.ec-p256]
@@ -72,3 +92,17 @@ tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-aes" } }
 object = "hmac"
 attributes = { CKA_SIGN = true }
 tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-hmac" } }
+
+# pop-unwrap: RSA-OAEP (SHA-1) unwrap of a host secret, then HMAC with it.
+[specs.transport]
+object = "transport"
+attributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false, CKA_SIGN = false, CKA_DECRYPT = false }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-transport" }, binding = "pop-unwrap" }
+
+# The same EC key on both tokens: created on SoftHSM, then `camigrate migrate movable --from
+# softhsm --to cloudhsm`; the identity must be the same on both.
+[specs.movable]
+object = "movable"
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
+tokens.softhsm = { locator = { CKA_LABEL = "cakeys-movable" } }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-movable" } }

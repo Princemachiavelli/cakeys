@@ -28,6 +28,7 @@ mod policy;
 mod possession;
 mod uri;
 
+pub use generate::retry_without_public_private;
 pub use identity::commit_mechanism;
 pub use policy::bool_attr;
 pub use possession::{Derived, ProofSide, derive_any, is_policy_default, proof_refusal, show, template_refusal};
