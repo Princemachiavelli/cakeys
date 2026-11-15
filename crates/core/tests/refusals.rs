@@ -484,3 +484,63 @@ fn views_and_picks_say_what_is_there() {
         "{said}"
     );
 }
+
+/// The small tables the rest is built on: the hash an HMAC key type commits with and an EC
+/// curve signs with, which curves are Edwards and how they may be named to a token, and which
+/// classes carry a mechanism list.
+#[test]
+fn types_name_their_hash_and_curve() {
+    use cakeys_core::id::{Curve, HmacHash};
+    use cakeys_core::pop::EcdsaHash;
+    use cakeys_core::types::ObjectClass;
+    let hmac = [
+        (KeyType::GenericSecret, Some(HmacHash::Sha256), false),
+        (KeyType::Sha1Hmac, Some(HmacHash::Sha1), true),
+        (KeyType::Sha224Hmac, Some(HmacHash::Sha224), true),
+        (KeyType::Sha256Hmac, Some(HmacHash::Sha256), true),
+        (KeyType::Sha384Hmac, Some(HmacHash::Sha384), true),
+        (KeyType::Sha512Hmac, Some(HmacHash::Sha512), true),
+        (KeyType::Aes, None, false),
+        (KeyType::Ec, None, false),
+    ];
+    for (kt, hash, bound) in hmac {
+        assert_eq!((HmacHash::for_key_type(kt), kt.is_hash_bound_hmac()), (hash, bound), "{kt:?}");
+    }
+    let curves = [
+        (Curve::P256, Some(EcdsaHash::Sha256), false, None),
+        (Curve::P384, Some(EcdsaHash::Sha384), false, None),
+        (Curve::P521, Some(EcdsaHash::Sha512), false, None),
+        (Curve::Ed25519, None, true, Some(&b"\x13\x0cedwards25519"[..])),
+        (Curve::Ed448, None, true, Some(&b"\x13\x0aedwards448"[..])),
+    ];
+    for (curve, hash, edwards, by_name) in curves {
+        let got = (EcdsaHash::for_curve(curve), curve.edwards(), curve.params_by_name());
+        assert_eq!(got, (hash, edwards, by_name), "{curve:?}");
+    }
+    assert!(cakeys_core::attrs::has_allowed_mechanisms(ObjectClass::PrivateKey));
+    assert!(cakeys_core::attrs::has_allowed_mechanisms(ObjectClass::SecretKey));
+    assert!(!cakeys_core::attrs::has_allowed_mechanisms(ObjectClass::Certificate));
+}
+
+/// A certificate is linked to its key by its subject public key, and an Ed25519 proof of
+/// possession verifies only for the key and the message it was made for.
+#[test]
+fn a_certificate_names_its_key_and_an_ed25519_proof_its_signer() {
+    use ed25519_dalek::Signer as _;
+    // The fixture certificate of the fixture key, whose identity the token suites pin.
+    let cert = include_bytes!("../../cli/tests/fixtures/tpm-import-p256-cert.der");
+    let spki = cakeys_core::id::cert_spki(cert).unwrap();
+    assert_eq!(cakeys_core::id::sri(&spki), "sha256-0ymh9vfz8P3lnbdlAXskvxwoDAfUJNEIbsv0KEupcSg=");
+    assert!(matches!(cakeys_core::id::cert_spki(b"no certificate"), Err(KmError::Conflict(_))));
+
+    let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+    let other = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
+    let spki = key.verifying_key().to_public_key_der().unwrap();
+    let signature = key.sign(b"message").to_bytes();
+    cakeys_core::pop::verify(spki.as_bytes(), b"message", &signature).unwrap();
+    assert_eq!(cakeys_core::sig::ed25519(spki.as_bytes(), b"message", &signature), Some(Ok(())));
+    for (msg, sig) in [(&b"another"[..], signature), (b"message", other.sign(b"message").to_bytes())] {
+        let e = cakeys_core::pop::verify(spki.as_bytes(), msg, &sig).unwrap_err();
+        assert!(matches!(&e, KmError::Conflict(m) if m.contains("did not sign for the public key")), "{e}");
+    }
+}
