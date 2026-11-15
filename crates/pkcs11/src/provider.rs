@@ -8,10 +8,28 @@ use cakeys_core::migrate::Side;
 use cakeys_core::types::ObjectClass;
 use cakeys_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
-use cryptoki::object::{AttributeType, KeyType, ObjectHandle};
+use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectHandle};
 use cryptoki::session::Session;
 use std::borrow::Cow;
 use std::sync::Arc;
+
+/// A key bound to one purpose at creation ([`Provider::bound_keys`]).
+pub struct BoundKey {
+    /// The module's name for the binding (a Cloud KMS algorithm), for notes.
+    pub name: String,
+    /// `CKA_LABEL`, part of `template`.
+    pub label: String,
+    /// The PKCS#11 key type it makes: `CKK_EC`, `CKK_RSA`, `CKK_AES`, ...
+    pub kind: String,
+    /// Its curve name, or its size in bits.
+    pub on: String,
+    /// The generation mechanism (parameterless).
+    pub keygen: MechanismType,
+    /// The whole template: the private or secret half's; no public template is passed.
+    pub template: Vec<Attribute>,
+    /// The mechanisms a key with this binding serves; nothing else is tried on it.
+    pub mechanisms: Vec<MechanismType>,
+}
 
 pub trait Provider: Send + Sync {
     /// Name for `provider = "<name>"` in keys.toml and in messages.
@@ -83,6 +101,14 @@ pub trait Provider: Send + Sync {
     /// `Unsupported` when the locator cannot name where the module will actually put the key.
     fn check_create(&self, _object: &ObjectCfg, _loc: &Locator) -> Result<()> {
         Ok(())
+    }
+
+    /// The keys a module binds to one purpose when it creates them (Google Cloud KMS: one
+    /// algorithm per key), each with the exact template it is generated from: the write probe
+    /// generates these instead of its own templates. Empty for a module whose keys are general
+    /// purpose, the default.
+    fn bound_keys(&self) -> Vec<BoundKey> {
+        Vec::new()
     }
 
     /// `Some(advice)` when the module's `C_DestroyObject` reports success but leaves the key on

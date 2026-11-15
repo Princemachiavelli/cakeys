@@ -106,7 +106,7 @@
           );
         }
         // lib.optionalAttrs (system == "x86_64-linux") {
-          inherit (local) kmsp11;
+          inherit (local) kmsp11 kmsp11-fips;
           inherit (local.cloudhsm)
             cloudhsm-pkcs11
             cloudhsm-cli

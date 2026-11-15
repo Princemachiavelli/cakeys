@@ -11,6 +11,6 @@ pub mod providers;
 pub mod resolution;
 pub mod token;
 
-pub use provider::{Generic, Provider, Registry};
+pub use provider::{BoundKey, Generic, Provider, Registry};
 pub use resolution::Resolved;
 pub use token::Token;

@@ -15,6 +15,7 @@ use cakeys_core::pop::{self, OaepHash, RsaPadding};
 use cakeys_core::sig::{self, EcdsaHash, Encoding};
 use cakeys_core::types::KeyType as Kt;
 use cakeys_core::{KmError, Result};
+use cakeys_pkcs11::BoundKey;
 use cakeys_pkcs11::token::{self, Token};
 use cakeys_profile::baseline::CURVES;
 use cakeys_profile::{GenerateRow, MatchInfo, Mode, Profile};
@@ -159,6 +160,8 @@ pub fn probe(tok: &Token, cfg: &TokenCfg, write: bool) -> Result<Probed> {
         ops: Ops::default(),
         undetermined,
         public_private: None,
+        bound_keys: tok.provider.bound_keys(),
+        bound: None,
     };
     write_probes(&mut made, &mut profile)?;
     if let Some(note) = made.public_private.take() {
@@ -300,6 +303,14 @@ struct Made<'a> {
     undetermined: Vec<String>,
     /// The note when the module refused a public key with `CKA_PRIVATE = false`.
     public_private: Option<String>,
+    /// The keys the module binds to one purpose each ([`Provider::bound_keys`]); empty for a
+    /// module whose keys are general purpose.
+    ///
+    /// [`Provider::bound_keys`]: cakeys_pkcs11::Provider::bound_keys
+    bound_keys: Vec<BoundKey>,
+    /// The mechanisms the key under the operation probes serves, when the module binds keys to
+    /// them (Cloud KMS): nothing else is tried on it.
+    bound: Option<Vec<String>>,
 }
 
 /// A generated pair, `(public, private)`, or the module's refusal.
@@ -312,7 +323,8 @@ impl Made<'_> {
     }
 
     fn advertises(&self, m: MechanismType) -> bool {
-        self.tok.advertised.contains(&m.to_string())
+        let m = m.to_string();
+        self.tok.advertised.contains(&m) && self.bound.as_ref().is_none_or(|b| b.contains(&m))
     }
 
     /// Generate a key pair where the target says: the templates completed with a fresh probe
@@ -398,8 +410,8 @@ impl Made<'_> {
     }
 
     /// Destroy what an earlier, interrupted run left (`cakeys-probe-NN`, its own labels on a
-    /// scratch token), so this run's leftover check reports only this run. Returns the labels
-    /// cleaned.
+    /// scratch token, and a purpose-bound module's keys under the bound labels), so this run's
+    /// leftover check reports only this run. Returns the labels cleaned.
     fn clear_stale(&self) -> Vec<String> {
         let mut cleaned = Vec::new();
         let Ok(all) = self.session.find_objects(&[]) else { return cleaned };
@@ -411,7 +423,8 @@ impl Made<'_> {
                 },
                 Err(_) => continue,
             };
-            if label.starts_with("cakeys-probe-") && self.session.destroy_object(h).is_ok() {
+            let ours = label.starts_with("cakeys-probe-") || self.bound_keys.iter().any(|k| k.label == label);
+            if ours && self.session.destroy_object(h).is_ok() {
                 cleaned.push(label);
             }
         }
@@ -435,17 +448,30 @@ fn write_probes(made: &mut Made, profile: &mut Profile) -> Result<()> {
             made.undetermined.push(format!("destroyed objects an interrupted probe left: {}", stale.join(", ")));
         }
     }
-    probe_curves(made, profile)?;
-    let transport = probe_rsa(made, profile)?;
+    let bound = !made.bound_keys.is_empty();
+    let transport = if bound {
+        probe_bound(made, profile);
+        made.undetermined.push(
+            "no secret-key or wrap probes beyond generation: the module's keys serve only their \
+             binding's mechanisms"
+                .into(),
+        );
+        None
+    } else {
+        probe_curves(made, profile)?;
+        probe_rsa(made, profile)?
+    };
     if labels {
-        let aes = probe_secrets(made, profile);
-        match (transport, aes) {
-            (Some(transport), Some(aes)) => probe_wrapping(made, profile, transport, aes),
-            _ => made.undetermined.push(
-                "no wrap probes: the probes could not make both an RSA transport key and an AES key \
-                 on this token"
-                    .into(),
-            ),
+        if !bound {
+            let aes = probe_secrets(made, profile);
+            match (transport, aes) {
+                (Some(transport), Some(aes)) => probe_wrapping(made, profile, transport, aes),
+                _ => made.undetermined.push(
+                    "no wrap probes: the probes could not make both an RSA transport key and an AES \
+                     key on this token"
+                        .into(),
+                ),
+            }
         }
         made.destroy_all();
         let leftovers = made.leftovers();
@@ -463,6 +489,124 @@ fn write_probes(made: &mut Made, profile: &mut Profile) -> Result<()> {
     }
     std::mem::take(&mut made.ops).finish(profile);
     Ok(())
+}
+
+/// A module that binds every key to one purpose at creation ([`BoundKey`], Google Cloud KMS):
+/// one key per binding, generated from the provider's exact template (no public template), and
+/// probed with only the mechanisms its binding serves. The curves and sizes no binding covers
+/// are tried without one ([`probe_unbound`]), so their `cannot` rows are observations too.
+fn probe_bound(made: &mut Made, profile: &mut Profile) {
+    let session = made.session;
+    profile.notes.insert(
+        "purpose-bound".into(),
+        format!(
+            "each key is bound to one purpose at creation ({} keys): one key per binding, each \
+             probed with its own mechanisms",
+            made.tok.provider.name()
+        ),
+    );
+    let mut ec = GenerateRow::default();
+    let mut rsa = profile.generate.remove("CKK_RSA").unwrap_or_default();
+    let mut oaep: Option<Vec<String>> = None;
+    for key in std::mem::take(&mut made.bound_keys) {
+        let generated = match key.keygen {
+            MechanismType::ECC_KEY_PAIR_GEN => {
+                session.generate_key_pair(&Mechanism::EccKeyPairGen, &[], &key.template).map(|(p, s)| (Some(p), s))
+            }
+            MechanismType::RSA_PKCS_KEY_PAIR_GEN => {
+                session.generate_key_pair(&Mechanism::RsaPkcsKeyPairGen, &[], &key.template).map(|(p, s)| (Some(p), s))
+            }
+            MechanismType::AES_KEY_GEN => session.generate_key(&Mechanism::AesKeyGen, &key.template).map(|s| (None, s)),
+            _ => session.generate_key(&Mechanism::GenericSecretKeyGen, &key.template).map(|s| (None, s)),
+        };
+        let bits = key.on.parse::<u32>().ok();
+        let (public, private) = match generated {
+            Ok(keys) => keys,
+            Err(e) => {
+                profile.notes.insert(key.name.clone(), format!("generation refused: {}", ckr(&e)));
+                match (key.kind.as_str(), bits) {
+                    ("CKK_EC", _) if !ec.cannot.contains(&key.on) => ec.cannot.push(key.on.clone()),
+                    ("CKK_RSA", Some(b)) if !rsa.cannot_bits.contains(&b) => rsa.cannot_bits.push(b),
+                    _ => {}
+                }
+                continue;
+            }
+        };
+        made.handles.extend(public);
+        made.handles.push(private);
+        made.labels.push(key.label.clone());
+        match (key.kind.as_str(), bits) {
+            ("CKK_EC", _) if !ec.can.contains(&key.on) => ec.can.push(key.on.clone()),
+            ("CKK_RSA", Some(b)) if !rsa.can_bits.contains(&b) => rsa.can_bits.push(b),
+            _ => {}
+        }
+        let Some(public) = public else { continue };
+        made.bound = Some(key.mechanisms.iter().map(ToString::to_string).collect());
+        // ECDSA's host check needs the curve; an RSA key is named by its binding, so the notes
+        // of one size's several keys stay apart.
+        let on = if key.kind == "CKK_EC" { key.on.clone() } else { key.name.clone() };
+        operate(made, profile, &key.kind, &on, public, private);
+        made.bound = None;
+        // Each OAEP key decrypts with its own hash: the row is what any of them did.
+        if let Some(works) = profile.decrypt.oaep.take() {
+            let row = oaep.get_or_insert_with(Vec::new);
+            for h in works {
+                if !row.contains(&h) {
+                    row.push(h);
+                }
+            }
+        }
+    }
+    profile.decrypt.oaep = oaep;
+    // A size that generated under one binding and not another can: the refusal stays a note.
+    rsa.cannot_bits.retain(|b| !rsa.can_bits.contains(b));
+    ec.cannot.retain(|c| !ec.can.contains(c));
+    probe_unbound(made, profile, &mut ec, &mut rsa);
+    rsa.can_bits.sort_unstable();
+    rsa.cannot_bits.sort_unstable();
+    profile.generate.insert("CKK_EC".into(), ec);
+    profile.generate.insert("CKK_RSA".into(), rsa);
+}
+
+/// What no binding covers, tried with the label alone: libkmsp11 answers before any Cloud KMS
+/// call (`CKR_TEMPLATE_INCOMPLETE`), so nothing is created; anything that does generate is
+/// destroyed with the rest.
+fn probe_unbound(made: &mut Made, profile: &mut Profile, ec: &mut GenerateRow, rsa: &mut GenerateRow) {
+    let session = made.session;
+    let bare = [Attribute::Label(b"cakeys-probe-unbound".to_vec())];
+    let unbound = |made: &mut Made, mech: &Mechanism| match session.generate_key_pair(mech, &[], &bare) {
+        Ok((public, private)) => {
+            made.handles.extend([private, public]);
+            "generated without a binding".to_owned()
+        }
+        Err(e) => ckr(&e),
+    };
+    let ec_refusal = unbound(made, &Mechanism::EccKeyPairGen);
+    for name in CURVES.iter().filter(|n| Curve::from_cfg(Kt::Ec, n).is_some()) {
+        let name = (*name).to_owned();
+        if !ec.can.contains(&name) && !ec.cannot.contains(&name) {
+            profile.notes.insert(name.clone(), format!("no binding for it; without one: {ec_refusal}"));
+            ec.cannot.push(name);
+        }
+    }
+    let edwards: Vec<String> =
+        CURVES.iter().filter(|n| Curve::from_cfg(Kt::EcEdwards, n).is_some()).map(|n| (*n).to_owned()).collect();
+    let montgomery: Vec<String> = MONTGOMERY.iter().map(|m| m.0.to_owned()).collect();
+    for (kt, mech, names) in [
+        ("CKK_EC_EDWARDS", Mechanism::EccEdwardsKeyPairGen, edwards),
+        ("CKK_EC_MONTGOMERY", Mechanism::EccMontgomeryKeyPairGen, montgomery),
+    ] {
+        let refusal = unbound(made, &mech);
+        for name in &names {
+            profile.notes.insert(name.clone(), format!("no binding for it; without one: {refusal}"));
+        }
+        profile.generate.insert(kt.into(), GenerateRow { cannot: names, ..GenerateRow::default() });
+    }
+    let rsa_refusal = unbound(made, &Mechanism::RsaPkcsKeyPairGen);
+    if !rsa.can_bits.contains(&1024) && !rsa.cannot_bits.contains(&1024) {
+        rsa.cannot_bits.push(1024);
+        profile.notes.insert("CKK_RSA at 1024".into(), format!("no binding for it; without one: {rsa_refusal}"));
+    }
 }
 
 /// One curve to generate: its name, `CKA_EC_PARAMS` as the OID, and as the `PrintableString`

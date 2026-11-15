@@ -6,6 +6,7 @@ members = [
   "crates/pkcs11",
   "crates/ykcs11",
   "crates/tpm2-pkcs11",
+  "crates/kmsp11",
   "crates/cli-common",
   "crates/cli",
   "crates/caprobe",
@@ -26,6 +27,7 @@ cakeys-pkcs11 = { path = "crates/pkcs11" }
 cakeys-profile = { path = "crates/profile" }
 cakeys-ykcs11 = { path = "crates/ykcs11" }
 cakeys-tpm2-pkcs11 = { path = "crates/tpm2-pkcs11" }
+cakeys-kmsp11 = { path = "crates/kmsp11" }
 cakeys-cli-common = { path = "crates/cli-common" }
 anyhow = "1"
 base16ct = { version = "1", features = ["alloc"] }

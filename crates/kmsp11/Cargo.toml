@@ -1,0 +1,16 @@
+[package]
+name = "cakeys-kmsp11"
+description = "cakeys: libkmsp11 provider (Google Cloud KMS), keys bound to one algorithm each"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cakeys-core.workspace = true
+cakeys-pkcs11.workspace = true
+cryptoki.workspace = true
+serde_json.workspace = true

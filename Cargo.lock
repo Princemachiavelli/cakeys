@@ -236,6 +236,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cakeys-core",
+ "cakeys-kmsp11",
  "cakeys-pkcs11",
  "cakeys-tpm2-pkcs11",
  "cakeys-ykcs11",
@@ -275,6 +276,16 @@ dependencies = [
  "toml",
  "x509-cert",
  "zeroize",
+]
+
+[[package]]
+name = "cakeys-kmsp11"
+version = "0.1.0"
+dependencies = [
+ "cakeys-core",
+ "cakeys-pkcs11",
+ "cryptoki",
+ "serde_json",
 ]
 
 [[package]]

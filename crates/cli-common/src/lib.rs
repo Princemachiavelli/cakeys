@@ -13,10 +13,11 @@ use std::collections::BTreeMap;
 use std::process::ExitCode;
 
 /// The providers this build links, in detection order. Built through the same public API a
-/// third party uses; `tpm2` and `ykcs11` are cargo features (both on by default).
+/// third party uses; `tpm2` and `ykcs11` are cargo features (both on by default). kmsp11 links
+/// nothing native, so it is always in.
 #[must_use]
 pub fn default_registry() -> Registry {
-    let registry = Registry::new().with(providers::SoftHsm).with(providers::Kryoptic);
+    let registry = Registry::new().with(providers::SoftHsm).with(providers::Kryoptic).with(cakeys_kmsp11::Kmsp11);
     #[cfg(feature = "ykcs11")]
     let registry = registry.with(cakeys_ykcs11::Ykcs11);
     #[cfg(feature = "tpm2")]
