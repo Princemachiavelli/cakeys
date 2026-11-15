@@ -49,8 +49,13 @@ fn the_probe_records_what_a_misbehaving_module_does() {
     // (the lie, what the profile then holds, what the probe says it could not determine)
     let cases: &[(&str, String, &[&str], &str)] = &[
         (
+            // Every try with the usage attributes: the template as asked, then once without each
+            // of the probe's own policy defaults (public CKA_PRIVATE, private CKA_SENSITIVE),
+            // which a template refusal may be about; the fourth, without usage, is let through.
             "usage refused at generation",
-            rule("fn = \"C_GenerateKeyPair\"\ncall = 1\nrv = \"CKR_TEMPLATE_INCONSISTENT\""),
+            (1..=3)
+                .map(|n| rule(&format!("fn = \"C_GenerateKeyPair\"\ncall = {n}\nrv = \"CKR_TEMPLATE_INCONSISTENT\"")))
+                .collect(),
             &[],
             "no operation probes on CKK_EC keys: the module refused the usage attributes",
         ),
@@ -73,8 +78,12 @@ fn the_probe_records_what_a_misbehaving_module_does() {
             "",
         ),
         (
+            // Every try of the sealed template `derive_any` makes: as asked, with CKA_VALUE_LEN,
+            // and each without one of its two policy defaults (CKA_SENSITIVE, CKA_EXTRACTABLE).
             "a sealed derived secret refused",
-            rule("fn = \"C_DeriveKey\"\ncall = 1\nrv = \"CKR_ATTRIBUTE_VALUE_INVALID\""),
+            (1..=6)
+                .map(|n| rule(&format!("fn = \"C_DeriveKey\"\ncall = {n}\nrv = \"CKR_ATTRIBUTE_VALUE_INVALID\"")))
+                .collect(),
             &["sealed = false", "a sealed (non-extractable) derived secret is refused: CKR_ATTRIBUTE_VALUE_INVALID"],
             "",
         ),
