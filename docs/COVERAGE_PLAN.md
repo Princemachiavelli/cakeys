@@ -269,6 +269,36 @@ unreachable today may be the guard that keeps a later change honest.
   key type with no proof (a private key is EC, Edwards or RSA by the time it is planned). Each
   is the guard of an invariant a later change could break.
 
+## Mutation report (2026-11-15)
+
+`nix build .#mutants` (the unit tier: each package's mutants against its own tests) first
+found, in `core`, 162 mutants missed of 605 (398 caught, 45 unviable); in `profile`, 22 of 85;
+in camigrate's planner, bundle, key file and transport file, 2 and a timeout of 165. Tests
+written against those lists (bindings and modes per declared usage, accept rows, the lock's
+invariants, the reconcile rules, the proofs, the profile algebra's bounds) leave, rerun with
+`cargo mutants` locally: `core`'s `plan.rs`, `migrate.rs`, `reconcile.rs`, `id.rs`, `pop.rs`,
+`sig.rs`, `types.rs` and `attrs.rs` 2 missed, `config.rs` 4 (all four in `lock_unwritable`'s
+read of the environment, which the token tier catches); `profile` 2; the key file none
+(36 caught, no timeout).
+
+The token tier (`cakeys-crane.mutantsOf { package; files; re ? null; }`: every crate's tests,
+the reference tokens up) over `camigrate/src/sealed.rs` missed 5 of 68 viable, over
+`pkcs11/src/token/possession.rs` 10 of 53, over `config.rs`' lock I/O none of 17. Tests now
+catch all but the ones below, each mutant applied by hand and the test seen to fail on it.
+
+What no test can catch, and why:
+
+- `id.rs`, `Scheme::is_deprecated` and `reconcile.rs`' check of it: `Scheme::DEPRECATED` is
+  empty, so either answer is the same today. The first deprecated scheme makes them testable.
+- `profile/src/effective.rs:171`, `<` for `<=` in "a size between two that generated": the
+  equal sizes are answered a few lines earlier, from `can-bits`.
+- `sealed.rs`, `create_public_half`'s `CKA_PRIVATE = false` default: `SoftHSM` and kryoptic
+  already make a public key non-private, so leaving it out changes nothing on them.
+- `possession.rs`' `sign_with_pin` and the branch of `proof_refusal` under
+  `cfg(not(feature = "sign-after-init"))`: the Nix build always has the patched cryptoki, so
+  the code is compiled out. cargo-mutants reports compiled-out mutants as missed, not
+  unviable: these 4 appear in every run.
+
 ## Not counted
 
 - Test code inside `#[cfg(test)]` modules shows in the report (the `panic!` arms of

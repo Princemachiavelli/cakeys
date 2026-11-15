@@ -324,15 +324,16 @@ mod tests {
         assert!(read(&pfx(safe(vec![key_bag.clone()]), sha256), "pass").is_ok());
         assert!(refusal(b"-----BEGIN ENCRYPTED PRIVATE KEY-----\nnot base64\n").starts_with("the key file: "));
 
-        // A key file naming more KDF iterations than this process will run is not opened: the
-        // it is turned away on the count alone (running them would take this test minutes).
+        // A key file naming more KDF iterations than this process will run is not opened: it is
+        // turned away on the count alone (running them would take this test minutes). The bound
+        // first, so a wrong one fails here rather than running the count.
+        assert!(too_many(MAX_ITERATIONS + 1) && !too_many(MAX_ITERATIONS) && !too_many(PBKDF2_ITERATIONS));
         let params = pbes2::Parameters::generate_pbkdf2_sha256_aes256cbc(MAX_ITERATIONS + 1, &[0; 16], [0; 16]);
         let slow = pkcs8::EncryptedPrivateKeyInfoOwned {
             encryption_algorithm: params.unwrap().into(),
             encrypted_data: OctetString::new(vec![0; 32]).unwrap(),
         };
         assert!(decrypt(&slow.to_der().unwrap(), "pass").is_none());
-        assert!(too_many(MAX_ITERATIONS + 1) && !too_many(MAX_ITERATIONS) && !too_many(PBKDF2_ITERATIONS));
 
         // The first certificate is the key's; a second one (a chain) does not replace it.
         let cert_bag = |der: &[u8]| SafeBag {

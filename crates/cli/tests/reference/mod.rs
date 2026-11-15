@@ -2404,11 +2404,21 @@ fn update_lock_waits_for_the_sidecar_lock() {
             .spawn()
             .unwrap()
     };
-    // A reader never takes it: verify finishes while it is held.
+    // A reader never takes it: verify finishes while it is held. However slow the build (a debug
+    // build behind the fault shim takes over a second): one that waited would never finish.
     let mut reader = spawn(&["verify", "signing-soft", "--token", "ref"]);
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    assert!(reader.try_wait().unwrap().is_some(), "verify waited for the sidecar lock");
-    assert!(reader.wait().unwrap().success());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = reader.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = reader.kill();
+            panic!("verify waited for the sidecar lock");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert!(status.success());
     // An updater waits: it cannot finish while the lock is held.
     let mut updater = spawn(&r);
     std::thread::sleep(std::time::Duration::from_millis(500));
