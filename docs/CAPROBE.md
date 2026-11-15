@@ -114,6 +114,34 @@ module profile decides. The binary embeds the profiles this repo ships.
   profile, a layer or the baseline: those are re-probed on every build. The run says which
   profiles came from there.
 
+## Coverage
+
+`profiles/coverage/cakeys.toml` gives every row of the baseline one status (PLAN.md A1). It is
+generated, never edited, and pinned like the baseline:
+
+| Status | Meaning |
+|---|---|
+| `used` | a call of cakeys, caprobe or camigrate reached it in the traced test run |
+| `refused`, `out-of-scope`, `gap` | `profiles/coverage/manual.toml`: a hand-kept rule, with its reason (a gap names its OPEN.md item) |
+| `profile` | none of those, but a capability profile records it |
+
+- **The trace** is the test suites run with every module behind a tracing p11-fault
+  (`nix/test-tokens.sh` with `CAKEYS_TRACE_DIR`): each call's function, return value,
+  mechanism (with its OAEP or PSS hash and MGF, OAEP source or ECDH KDF), template attribute
+  types, object classes, key and certificate types, user type, and the flags it passed or read
+  back. Only the tools' own calls count: not a test harness, pkcs11-tool, `p11-kit remote` or
+  OpenSSL. The tests that run their own p11-fault are not traced (their hooks' calls would count
+  as the tool's).
+- **The check**: the crane build runs the suites a second time traced, and the coverage test
+  (`crates/caprobe/src/coverage.rs`) regenerates the file from that trace; a row without a
+  status, a manual rule that matches nothing or names a used row, or a file that differs fails
+  it. Without a trace, the test still checks every other status against the committed file.
+- **Regenerate** with `scripts/coverage-file.sh`, which also writes `coverage-report.txt`
+  beside the trace: the tests behind each used row.
+- **What it cannot see**: `C_GetInterface` (p11-fault exports the 2.40 entry point only, so the
+  traced run uses the 2.40 table); calls only a hardware suite makes (the YubiKey and the real
+  TPM are never traced).
+
 ## Decisions
 
 - **D1.** Baselines are generated from the PKCS #11 OASIS headers, one file per spec revision,

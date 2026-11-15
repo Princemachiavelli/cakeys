@@ -30,9 +30,73 @@ const TOOLS: [&str; 3] = ["cakeys", "caprobe", "camigrate"];
 /// The statuses a manual rule may give.
 const MANUAL: [&str; 3] = ["refused", "out-of-scope", "gap"];
 
-/// The session flags `C_OpenSession` takes, by value: the trace has the flag word, and `CKF_`
-/// values repeat across flag families, so the names are this function's.
-const SESSION_FLAGS: [&str; 2] = ["CKF_RW_SESSION", "CKF_SERIAL_SESSION"];
+/// The flag families, by the trace field that carries a flag word of each: `CKF_` values repeat
+/// across families, so a set bit is named within its own (pkcs11t.h's sections).
+const FLAG_FAMILIES: [(&str, &[&str]); 5] = [
+    ("flags", &["CKF_RW_SESSION", "CKF_SERIAL_SESSION", "CKF_ASYNC_SESSION"]),
+    ("init_flags", &["CKF_LIBRARY_CANT_CREATE_OS_THREADS", "CKF_OS_LOCKING_OK"]),
+    ("slot_flags", &["CKF_TOKEN_PRESENT", "CKF_REMOVABLE_DEVICE", "CKF_HW_SLOT"]),
+    (
+        "token_flags",
+        &[
+            "CKF_RNG",
+            "CKF_WRITE_PROTECTED",
+            "CKF_LOGIN_REQUIRED",
+            "CKF_USER_PIN_INITIALIZED",
+            "CKF_RESTORE_KEY_NOT_NEEDED",
+            "CKF_CLOCK_ON_TOKEN",
+            "CKF_PROTECTED_AUTHENTICATION_PATH",
+            "CKF_DUAL_CRYPTO_OPERATIONS",
+            "CKF_TOKEN_INITIALIZED",
+            "CKF_SECONDARY_AUTHENTICATION",
+            "CKF_USER_PIN_COUNT_LOW",
+            "CKF_USER_PIN_FINAL_TRY",
+            "CKF_USER_PIN_LOCKED",
+            "CKF_USER_PIN_TO_BE_CHANGED",
+            "CKF_SO_PIN_COUNT_LOW",
+            "CKF_SO_PIN_FINAL_TRY",
+            "CKF_SO_PIN_LOCKED",
+            "CKF_SO_PIN_TO_BE_CHANGED",
+            "CKF_ERROR_STATE",
+            "CKF_SEED_RANDOM_REQUIRED",
+            "CKF_ASYNC_SESSION_SUPPORTED",
+        ],
+    ),
+    (
+        "mechanism_flags",
+        &[
+            "CKF_HW",
+            "CKF_MESSAGE_ENCRYPT",
+            "CKF_MESSAGE_DECRYPT",
+            "CKF_MESSAGE_SIGN",
+            "CKF_MESSAGE_VERIFY",
+            "CKF_MULTI_MESSAGE",
+            "CKF_FIND_OBJECTS",
+            "CKF_ENCRYPT",
+            "CKF_DECRYPT",
+            "CKF_DIGEST",
+            "CKF_SIGN",
+            "CKF_SIGN_RECOVER",
+            "CKF_VERIFY",
+            "CKF_VERIFY_RECOVER",
+            "CKF_GENERATE",
+            "CKF_GENERATE_KEY_PAIR",
+            "CKF_WRAP",
+            "CKF_UNWRAP",
+            "CKF_DERIVE",
+            "CKF_EC_F_P",
+            "CKF_EC_F_2M",
+            "CKF_EC_ECPARAMETERS",
+            "CKF_EC_OID",
+            "CKF_EC_UNCOMPRESS",
+            "CKF_EC_COMPRESS",
+            "CKF_EC_CURVENAME",
+            "CKF_ENCAPSULATE",
+            "CKF_DECAPSULATE",
+            "CKF_EXTENSION",
+        ],
+    ),
+];
 
 /// A row of the baseline: its table (`functions`, or one of [`TABLES`]) and name.
 type Row = (String, String);
@@ -60,6 +124,7 @@ struct Rule {
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manual {
+    #[serde(default)]
     rule: Vec<Rule>,
 }
 
@@ -99,11 +164,20 @@ fn by_value(b: &Baseline, table: &str) -> BTreeMap<u64, Vec<String>> {
 /// Read every `*.jsonl` under `dir` (the trace of nix/test-tokens.sh: `<suite>/<test>.jsonl`).
 fn observe(b: &Baseline, dir: &Path) -> Observed {
     let mut seen = Observed::default();
-    let names: BTreeMap<&str, BTreeMap<u64, Vec<String>>> =
-        ["mechanisms", "attributes", "objects", "key-types", "certificate-types", "user-types"]
-            .into_iter()
-            .map(|t| (t, by_value(b, t)))
-            .collect();
+    let names: BTreeMap<&str, BTreeMap<u64, Vec<String>>> = [
+        "mechanisms",
+        "attributes",
+        "objects",
+        "key-types",
+        "certificate-types",
+        "user-types",
+        "generators",
+        "sources",
+        "kdfs",
+    ]
+    .into_iter()
+    .map(|t| (t, by_value(b, t)))
+    .collect();
     let mut files = Vec::new();
     let mut dirs = vec![dir.to_path_buf()];
     while let Some(d) = dirs.pop() {
@@ -119,8 +193,8 @@ fn observe(b: &Baseline, dir: &Path) -> Observed {
     files.sort();
     for file in files {
         let test = file.strip_prefix(dir).unwrap().with_extension("").display().to_string();
-        let text = std::fs::read_to_string(&file).unwrap();
-        for line in text.lines() {
+        let calls = std::fs::read_to_string(&file).unwrap();
+        for line in calls.lines() {
             let call: serde_json::Value =
                 serde_json::from_str(line).unwrap_or_else(|e| panic!("{}: {e}: {line}", file.display()));
             if !call["exe"].as_str().is_some_and(|exe| TOOLS.contains(&exe)) {
@@ -130,28 +204,43 @@ fn observe(b: &Baseline, dir: &Path) -> Observed {
                 seen.rows.entry((table.to_owned(), name.to_owned())).or_default().insert(test.clone());
             };
             add("functions", call["fn"].as_str().unwrap());
+            // How the program loaded the module: the shim answers it itself, untraced.
+            add("functions", "C_GetFunctionList");
             add("return-values", call["rv"].as_str().unwrap());
-            let mut numbers = |table: &str, field: &str| {
+            // The names of `table` with `field`'s values, among those starting with `prefix`
+            // (a table whose values repeat across uses: CKG_ holds the MGFs and the IV
+            // generators, CKZ_ the OAEP and the PBKDF2 sources).
+            let mut numbers = |table: &str, field: &str, prefix: &str| {
                 let values = match &call[field] {
                     serde_json::Value::Array(a) => a.iter().filter_map(serde_json::Value::as_u64).collect(),
                     v => v.as_u64().into_iter().collect::<Vec<_>>(),
                 };
                 for v in values {
-                    match names[table].get(&v) {
-                        Some(ns) => ns.iter().for_each(|n| add(table, n)),
-                        None => _ = seen.unnamed.entry(table.to_owned()).or_default().insert(v),
+                    let matching: Vec<&String> =
+                        names[table].get(&v).into_iter().flatten().filter(|n| n.starts_with(prefix)).collect();
+                    if matching.is_empty() {
+                        seen.unnamed.entry(table.to_owned()).or_default().insert(v);
+                    }
+                    for n in matching {
+                        add(table, n);
                     }
                 }
             };
-            numbers("mechanisms", "mechanism");
-            numbers("attributes", "attributes");
-            numbers("objects", "class");
-            numbers("key-types", "key_type");
-            numbers("certificate-types", "certificate_type");
-            numbers("user-types", "user");
-            if let Some(flags) = call["flags"].as_u64().filter(|_| call["fn"] == "C_OpenSession") {
-                for name in SESSION_FLAGS {
-                    if b.flags.get(name).is_some_and(|bit| flags & bit != 0) {
+            numbers("mechanisms", "mechanism", "CKM_");
+            numbers("attributes", "attributes", "CKA_");
+            numbers("objects", "class", "CKO_");
+            numbers("key-types", "key_type", "CKK_");
+            numbers("certificate-types", "certificate_type", "CKC_");
+            numbers("user-types", "user", "CKU_");
+            // From mechanism parameters: the hash inside OAEP or PSS is a mechanism too.
+            numbers("mechanisms", "hash", "CKM_");
+            numbers("generators", "mgf", "CKG_MGF1_");
+            numbers("sources", "source", "CKZ_DATA_SPECIFIED");
+            numbers("kdfs", "kdf", "CKD_");
+            for (field, family) in FLAG_FAMILIES {
+                let Some(word) = call[field].as_u64() else { continue };
+                for name in family {
+                    if b.flags.get(*name).is_some_and(|bit| word & bit != 0) {
                         add("flags", name);
                     }
                 }
@@ -198,7 +287,8 @@ fn generate(
     let rows = rows(b);
     for r in &manual.rule {
         if !MANUAL.contains(&r.status.as_str()) {
-            problems.push(format!("manual rule {} {}: status {:?} is not one of {MANUAL:?}", r.table, r.pattern, r.status));
+            problems
+                .push(format!("manual rule {} {}: status {:?} is not one of {MANUAL:?}", r.table, r.pattern, r.status));
         }
         if r.reason.trim().is_empty() {
             problems.push(format!("manual rule {} {}: no reason", r.table, r.pattern));
@@ -322,6 +412,19 @@ fn committed_coverage_is_generated_from_the_trace() {
         "profiles/coverage/cakeys.toml is not what the {} and manual.toml give; regenerate (docs/CAPROBE.md, \"Coverage\")",
         if trace.is_some() { "trace" } else { "committed used rows" },
     );
+}
+
+/// Every flag the families name is a baseline flag, and none is named in two families.
+#[test]
+fn flag_families_name_baseline_flags_once() {
+    let b = Baseline::from_toml(&read(&repo().join("profiles/baselines/pkcs11-3.2.toml"))).unwrap();
+    let mut named = BTreeSet::new();
+    for (_, family) in FLAG_FAMILIES {
+        for name in family {
+            assert!(b.flags.contains_key(*name), "{name} is not a baseline flag");
+            assert!(named.insert(*name), "{name} is in two families");
+        }
+    }
 }
 
 #[test]

@@ -408,6 +408,7 @@ dependencies = [
  "des",
  "getrandom",
  "p11-fault",
+ "serde",
  "serde_json",
  "sha2",
  "toml",
