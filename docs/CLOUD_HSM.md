@@ -274,7 +274,7 @@ the source.
 
 ### Conformance and the Nix build
 
-PROVIDERS.md says the conformance test re-probes on every build. A cloud profile cannot: the
+CAPROBE.md says the conformance test re-probes on every build. A cloud profile cannot: the
 sandbox has no network, and a probe costs money. The repo already has the escape: the hardware
 tests are opt-in, skipped when their module variable is unset, "never in the Nix build"
 (`crates/cli/tests/ftpm.rs`, `yubikey.rs`). Cloud follows it:
@@ -325,7 +325,7 @@ Two layers, because their lifetimes differ.
 | 1 | **GCP.** `libkmsp11` derivation. `caprobe probe` read-only against a scratch ring, then `--write`. Throttle and back-off. `libkmsp11/1.9+hsm.toml`, the gated test, the regen script | probe is byte-stable twice in a row; destroy semantics and billing while scheduled recorded | $0.5–2 per run, unless scheduled versions bill for 30 days (spike 3) |
 | 2 | **AWS.** Runner and base layer. `cloudhsm-pkcs11` derivation. Bootstrap once. Spike: zero-HSM restore, then (optional, 1 h) tunnel to `127.0.0.1`. `up`/`probe`/`down`. FIPS profile | parked cycle works twice; `status` is empty after `down`; profile committed | ~$10 |
 | 3 | **Azure.** Gate: user sets a ceiling. Reuse the runner module. Spikes: create time, restore-replaces-activation, driver need. Profile | as Phase 2 | ~$15 per attempt |
-| 4 | **Close-out.** Move the conclusions into PROVIDERS.md; record the cloud tokens in CONFIG.md; add what each cloud needs to WORKPLAN's hardware rules (the cloud credentials, the ceiling) | docs consistent | $0 |
+| 4 | **Close-out.** Move the conclusions into CAPROBE.md; record the cloud tokens in CONFIG.md; add what each cloud needs to DEVELOPMENT.md's hardware rules (the cloud credentials, the ceiling) | docs consistent | $0 |
 
 Dependencies: phases 1–3 need the Nix-built `caprobe`, so they come after WORKPLAN stage 2 (the
 split from `cakeys`) and should be built on that branch. In this tree's current state they would
