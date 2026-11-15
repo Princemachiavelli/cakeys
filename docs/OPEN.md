@@ -84,7 +84,17 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   provider hook (ykcs11 FIPS mode, a TPM's `TPM_PT_MODES`), `tokens.<t>.require` (14).
   ykcs11/2.7 was probed in approved mode, so it may refuse on a non-FIPS device what that device
   can do.
-- **D4, `CKO_PROFILE` claims**: read and record them, never trust them.
+- **D4, `CKO_PROFILE` claims**: read and record them, never trust them. Case in point:
+  native-pkcs11 serves a `CKP_BASELINE_PROVIDER` profile object while it accepts any PIN and
+  reports constant key policy (PLAN.md A0b).
+- **native-pkcs11 as a Darwin reference token** (PLAN.md A0b), parked: the only module here over
+  a platform keystore (macOS Keychain, Secure Enclave keys), and keys cakeys did not create,
+  which the object matrix wants. Against it: read-only (caprobe's write probes and `autoCreate`
+  have nothing to do), policy reported as constants (DESIGN §8.2), an EC private key with no
+  `CKA_EC_POINT` or `CKA_PUBLIC_KEY_INFO`, so its identity needs a stored public key item under
+  the same locator, which Secure Enclave keys usually lack [todo]; macOS only, not in nixpkgs,
+  and the keychain is out of reach of the Nix sandbox [todo]. `pop-sign` should pass through the
+  raw `CKM_ECDSA` fallback [src]. Take it up if cakeys is to pin keychain keys.
 - **More probes**: PQ parameter sets, AES-KW/KWP round trips, the HMAC key types,
   `C_GetMechanismInfo` beyond RSA, attribute defaults, existing-object encodings, ECDH with
   Montgomery keys, SHA-224 RSA-PSS (no binding variant), delete in a scratch slot.
@@ -165,6 +175,15 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **rust-cryptoki**: the HMAC key-type fix, `CKM_AES_KEY_WRAP_KWP` and `CKM_RSA_AES_KEY_WRAP`
   and the single-part sign after `C_SignInit` (`upstream/rust-cryptoki/`); later, array
   attributes.
+- **rust-cryptoki, untouched attributes read as zero** [src]: 0.12's `get_attributes` hands a
+  fixed-size attribute a zeroed buffer of its size, and a module that answers
+  `CKR_ATTRIBUTE_TYPE_INVALID` without setting that entry's length to
+  `CK_UNAVAILABLE_INFORMATION` (native-pkcs11 for every type it does not know, and for the
+  entries after it) leaves the zeros, which are returned as a value. Through cakeys that records
+  `CKA_MODIFIABLE`, `CKA_COPYABLE`, `CKA_DESTROYABLE` and `CKA_WRAP_WITH_TRUSTED` false in the
+  observed policy and `CKA_KEY_GEN_MECHANISM` as `CKM_RSA_PKCS_KEY_PAIR_GEN` (0) in the
+  immutables, on an EC key too. A length-only first pass for every attribute makes the untouched entry a zero-length value that fails to convert instead
+  of a false one. Reproduce under the shim first (FAULT_SHIM.md, "untouched"), then report.
 - **tpm2-pkcs11**: the P-521 `CKA_EC_POINT` fix (`upstream/tpm2-pkcs11/`).
 
 ## Engineering

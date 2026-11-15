@@ -266,7 +266,12 @@ another key signing or deriving, a sealed derived secret refused, no derivation 
 deriving while reporting `CKA_DERIVE` false and a wrap that does not unwrap become the row
 and the note of what was seen, and drift from the committed profile (15).
 
-Still to add: a derived secret with no value, and a certificate with no readable value.
+Still to add: a derived secret with no value, and a certificate with no readable value. Two
+rule kinds that native-pkcs11 shows real modules need (PLAN.md A0b): an attribute answered
+with `CKR_ATTRIBUTE_TYPE_INVALID` but its entry left untouched (`untouched = true`, beside
+`drop`, which sets the length unavailable as the spec asks; OPEN.md, "rust-cryptoki"), and a
+search that returns only its first match (`first_only = true` on `C_FindObjects`), against
+which the locator's 12 cannot fire.
 
 ## Nix
 
