@@ -586,6 +586,11 @@ The reviews these come from are archived: `docs/archive/REVIEW-2026-11-11.md` (c
   tied to its identity only by the token's word (H1 is fixed for every `pop-*` proof —
   `h1_a_private_key_beside_an_unbound_public_object_is_a_conflict`,
   `derive_and_decrypt_only_keys_prove_possession`).
+- **Policy and uniqueness are what the module reports.** The `pop-*` proofs bind the material,
+  not `CKA_EXTRACTABLE` or `CKA_SENSITIVE`, and "never more than one object" holds only if the
+  module's search returns every match, once: native-pkcs11 reports constant policy for any
+  keychain key, and its searches both hide duplicates and show one key twice (PLAN.md A0b). A provider can repair a known misreport, as
+  `policy_flag` does for ykcs11's `CKA_DERIVE`, but not a module that does not know.
 - **`piv-attestation` proves no liveness** (no verifier nonce in Yubico's certificate, §3.7):
   a malicious module could replay an old one. `tpm-certify` is nonce-bound, so it proves the
   object was loaded in that TPM at verify time.
