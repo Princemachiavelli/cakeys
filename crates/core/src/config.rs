@@ -1182,7 +1182,7 @@ pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
     let text = toml::to_string_pretty(lock).map_err(|e| KmError::Io(format!("encoding {}: {e}", path.display())))?;
-    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let dir = lock_dir(path);
     // A uniquely named file beside the lock (the same filesystem, for the rename), removed if
     // this run fails before the rename; created like any new file (0666 under the umask).
     let mut tmp = tempfile::Builder::new()
@@ -1196,6 +1196,11 @@ pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
     tmp.persist(path).map_err(|e| KmError::Io(format!("renaming over {}: {}", path.display(), e.error)))?;
     // The rename itself is durable once the directory is synced.
     std::fs::File::open(dir).and_then(|d| d.sync_all()).map_err(KmError::io(format!("syncing {}", dir.display())))
+}
+
+/// The directory a lock file lives in: its parent, or the working directory for a bare name.
+fn lock_dir(path: &Path) -> &Path {
+    path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."))
 }
 
 /// The advisory lock held around the lock file's read-modify-write (finding M3). A run that may
@@ -1236,14 +1241,20 @@ pub fn lock_for_update(lock_path: &Path) -> Result<UpdateGuard> {
 ///   `.lck` sidecar) must be writable by this user (`access(2)`, so a read-only mount counts).
 #[must_use]
 pub fn lock_unwritable(lock_path: &Path) -> Option<String> {
+    let sandboxed = std::env::var_os("NIX_BUILD_TOP").is_some() && std::env::var_os("IN_NIX_SHELL").is_none();
+    unwritable(lock_path, sandboxed)
+}
+
+/// [`lock_unwritable`], with whether this run is inside a Nix build sandbox given.
+fn unwritable(lock_path: &Path, sandboxed: bool) -> Option<String> {
     let writable = |p: &Path| rustix::fs::access(p, rustix::fs::Access::WRITE_OK).is_ok();
-    if std::env::var_os("NIX_BUILD_TOP").is_some() && std::env::var_os("IN_NIX_SHELL").is_none() {
+    if sandboxed {
         return Some("this run is inside a Nix build sandbox, where a lock write would be lost".into());
     }
     if lock_path.exists() && !writable(lock_path) {
         return Some(format!("{} is not writable", lock_path.display()));
     }
-    let dir = lock_path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let dir = lock_dir(lock_path);
     if !writable(dir) {
         return Some(format!("the lock's directory {} is not writable", dir.display()));
     }
@@ -1634,5 +1645,58 @@ mod tests {
         r.attestation.as_mut().unwrap().id = "nope".into();
         set(&mut bad, r);
         assert!(bad.validate(path).unwrap_err().to_string().contains("attestation id"));
+    }
+
+    /// A missing lock is an empty one of the current version; what is saved is what loads back,
+    /// with no temporary file left beside it; a bare file name lives in the working directory.
+    #[test]
+    fn a_lock_saves_and_loads_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.lock");
+        let empty = load_lock(&path).unwrap();
+        assert_eq!((empty.version, empty.objects.len()), (LOCK_VERSION, 0));
+        let mut lock =
+            load_lock(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/keys.lock"))).unwrap();
+        lock.objects.retain(|name, _| lock.realisations.values().any(|r| r.values().any(|r| r.object == *name)));
+        save_lock(&path, &lock).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text, toml::to_string_pretty(&load_lock(&path).unwrap()).unwrap());
+        assert_eq!(load_lock(&path).unwrap().realisations.len(), lock.realisations.len());
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["keys.lock"]);
+        assert_eq!(lock_dir(Path::new("keys.lock")), Path::new("."));
+        assert_eq!(lock_dir(&path), dir.path());
+    }
+
+    /// Why a lock cannot be written: inside a Nix build sandbox, a lock file or a directory this
+    /// user cannot write; nothing when both can be (a lock not there yet included).
+    #[test]
+    fn an_unwritable_lock_says_why() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.lock");
+        assert_eq!(unwritable(&path, false), None);
+        let sandboxed = unwritable(&path, true).unwrap();
+        assert!(sandboxed.contains("inside a Nix build sandbox"), "{sandboxed}");
+        std::fs::write(&path, "version = 1\n").unwrap();
+        assert_eq!(unwritable(&path, false), None);
+        let mode = |p: &Path, m: u32| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
+        mode(&path, 0o444);
+        // access(2) grants root every write: the permission cases mean nothing as root.
+        if rustix::fs::access(&path, rustix::fs::Access::WRITE_OK).is_ok() {
+            return;
+        }
+        assert_eq!(unwritable(&path, false), Some(format!("{} is not writable", path.display())));
+        mode(&path, 0o644);
+        mode(dir.path(), 0o555);
+        let said = unwritable(&path, false);
+        mode(dir.path(), 0o755);
+        assert_eq!(said, Some(format!("the lock's directory {} is not writable", dir.path().display())));
+        // A lock not there yet in a directory that cannot take it.
+        std::fs::remove_file(&path).unwrap();
+        mode(dir.path(), 0o555);
+        let said = unwritable(&path, false);
+        mode(dir.path(), 0o755);
+        assert!(said.is_some_and(|s| s.contains("directory")));
     }
 }
