@@ -33,6 +33,8 @@ fn env(name: &str) -> Option<Env> {
         eprintln!("skipping {name}: {} not set", REF.module_var);
         return None;
     };
+    // Through p11-fault, the variable names the module behind it, and the token loads the shim.
+    let module = if REF.through_fault_shim { fault_shim() } else { module };
     Some(Env { w: Workdir::new(name), module })
 }
 
@@ -3023,6 +3025,19 @@ tokens.ref = { locator = { CKA_LABEL = "del-other" }, autoCreate = true }
     assert_eq!(of_class(ObjectClass::PUBLIC_KEY, "del-rsa").len(), 1);
 }
 
+/// Resets the user PIN as the SO when dropped (`C_InitPIN` clears the counters and unlocks it):
+/// the regular build runs every test on one token, so a test that spends PIN tries puts them
+/// back, whatever happens in it.
+struct ResetPin<'a>(&'a Pkcs11, cryptoki::slot::Slot);
+
+impl Drop for ResetPin<'_> {
+    fn drop(&mut self) {
+        let s = self.0.open_rw_session(self.1).unwrap();
+        s.login(cryptoki::session::UserType::So, Some(&AuthPin::new("5678".into()))).unwrap();
+        s.init_pin(&AuthPin::new("1234".into())).unwrap();
+    }
+}
+
 /// The PIN counters a module reports (M2), after wrong PINs another program sent: a login that
 /// failed since the last success is a warning; with one try left, cakeys refuses to spend it on
 /// a PIN file that may be wrong (16), and a locked PIN is unavailable (16). `SoftHSM` reports only
@@ -3039,6 +3054,7 @@ fn pin_counters_stop_cakeys_before_it_spends_a_try() {
         .into_iter()
         .find(|s| ctx.get_token_info(*s).unwrap().label() == "kmtest")
         .unwrap();
+    let _reset = ResetPin(&ctx, slot);
     let fail_until = |done: &dyn Fn(&cryptoki::slot::TokenInfo) -> bool| {
         for _ in 0..12 {
             if done(&ctx.get_token_info(slot).unwrap()) {

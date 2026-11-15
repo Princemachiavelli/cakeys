@@ -93,6 +93,7 @@
             cakeys-crane
             caprobe
             camigrate
+            p11-fault
             softhsm-unwrap-value-len
             cloud-tools
             ;

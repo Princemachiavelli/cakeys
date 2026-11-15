@@ -521,3 +521,54 @@ pub fn pinned(lock: &Lock, t: &Transport) -> std::result::Result<(), String> {
         None => Err(format!("the lock pins no key for its object '{}', so nothing vouches for it", t.object)),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile(migration: &str) -> Profile {
+        Profile::from_toml(&format!("profile = \"m/1\"\nmode = \"observed\"\n{migration}")).unwrap()
+    }
+
+    /// A module profile's migration rows become the planner's side: how plaintext gets in, the
+    /// sizes a row leaves open on one end, and a row whose key types a layer subtracts dropped.
+    #[test]
+    fn migration_rows_become_the_planners_side() {
+        let stack = Resolved::default();
+        let side = |p: &Profile, stack: &Resolved| side_of(p, stack, "t", "m", &[]);
+        let piv = cakeys_profile::Set::embedded().unwrap().find("ykcs11/2.7").unwrap().clone();
+        assert!(
+            matches!(side(&piv, &stack).unwrap().plaintext_import, Some(PlaintextImport::PivImport(a)) if a.len() == 3)
+        );
+        let p = profile(
+            "[migration]\nplaintext-import = \"create-object\"\n\
+             [[migration.public-accepts]]\nclass = \"CKO_PUBLIC_KEY\"\nkey-types = [\"CKK_RSA\"]\nmax-bits = 4096\n\
+             [[migration.public-accepts]]\nclass = \"CKO_PUBLIC_KEY\"\nkey-types = [\"CKK_RSA\"]\nmin-bits = 2048\n\
+             [[migration.public-accepts]]\nclass = \"CKO_SECRET_KEY\"\nkey-types = [\"CKK_SHA384_HMAC\"]\n",
+        );
+        let got = side(&p, &stack).unwrap();
+        assert_eq!(got.plaintext_import, Some(PlaintextImport::CreateObject));
+        let bits: Vec<_> = got.public_import.iter().map(|a| a.modulus_bits).collect();
+        assert_eq!(bits, [Some((0, 4096)), Some((2048, u32::MAX)), None]);
+        // The unpatched binding layer cannot name the SHA-384 HMAC key type: that row goes.
+        let layer = cakeys_profile::Set::embedded().unwrap().find("cryptoki/0.12").unwrap().clone();
+        let unpatched = Resolved { layers: vec![layer], ..Resolved::default() };
+        assert_eq!(side(&p, &unpatched).unwrap().public_import.len(), 2);
+    }
+
+    /// A row the baseline does not know is refused (17) with the profile named.
+    #[test]
+    fn rows_the_baseline_does_not_know_are_refused() {
+        for (row, why) in [
+            ("[wrap]\noaep = [\"SHA-3\"]\n", "unknown OAEP hash: SHA-3"),
+            (
+                "[[migration.public-accepts]]\nclass = \"CKO_PUBLIC_KEY\"\ncurves = [\"curve9\"]\n",
+                "unknown curve: curve9",
+            ),
+            ("[[migration.public-accepts]]\nclass = \"CKO_NOPE\"\n", "CKO_NOPE"),
+        ] {
+            let e = side_of(&profile(row), &Resolved::default(), "t", "m", &[]).unwrap_err();
+            assert!(matches!(&e, KmError::Validation(m) if m.contains("module profile m/1") && m.contains(why)), "{e}");
+        }
+    }
+}

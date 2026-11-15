@@ -281,4 +281,24 @@ mod tests {
         let spki = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]).verifying_key().to_public_key_der().unwrap();
         assert!(matches!(ecdh_challenge(spki.as_bytes(), b"m"), Err(KmError::Unsupported(_))));
     }
+
+    /// The RSA proofs, the token side played on the host: a PKCS#1 v1.5 SHA-256 signature
+    /// verifies for its key and message only, and an OAEP challenge decrypts back to the
+    /// message under the private key, fresh each time.
+    #[test]
+    fn rsa_proofs_hold_for_the_key_alone() {
+        use rsa::pkcs8::EncodePublicKey;
+        use rsa::signature::{SignatureEncoding as _, Signer as _};
+        let private = rsa::PrivateKey::new(&mut getrandom::SysRng, 2048).unwrap();
+        let spki = private.to_public_key().to_public_key_der().unwrap();
+        let signer = rsa::pkcs1v15::SigningKey::<Sha256>::new(private.clone());
+        let signature = signer.sign(b"message").to_vec();
+        verify(spki.as_bytes(), b"message", &signature).unwrap();
+        assert!(matches!(verify(spki.as_bytes(), b"another", &signature), Err(KmError::Conflict(_))));
+
+        let challenge = oaep_challenge(spki.as_bytes(), b"message").unwrap();
+        assert_eq!(private.decrypt(rsa::Oaep::<sha1::Sha1>::new(), &challenge).unwrap(), b"message");
+        assert_ne!(oaep_challenge(spki.as_bytes(), b"message").unwrap(), challenge);
+        assert!(matches!(oaep_challenge(b"no key", b"message"), Err(KmError::Unsupported(_))));
+    }
 }

@@ -263,7 +263,7 @@ mod tests {
         // find: exact name, unique family, a family of none, an unknown name.
         assert_eq!(set.find("softhsm/2.7").unwrap().profile, "softhsm/2.7");
         assert_eq!(set.find("softhsm").unwrap().profile, "softhsm/2.7");
-        assert!(set.find("yubikey").is_err());
+        assert!(set.find("yubikey").unwrap_err().starts_with("no profile 'yubikey' (loaded: "));
         assert!(set.find("").is_err());
 
         let b = set.baseline().unwrap();

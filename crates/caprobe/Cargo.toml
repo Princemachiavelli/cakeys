@@ -39,6 +39,8 @@ getrandom.workspace = true
 # The integration tests include crates/cli/tests/common (one harness for both tools), and with
 # it its dependencies.
 [dev-dependencies]
+# tests/fault.rs loads its cdylib: as a dependency, every build of the tests makes it.
+p11-fault = { path = "../p11-fault" }
 aes.workspace = true
 aes-kw.workspace = true
 base64.workspace = true

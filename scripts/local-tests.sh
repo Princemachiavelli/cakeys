@@ -112,4 +112,8 @@ export CAKEYS_P11KIT_ENV_SH=$tree/nix/p11kit-test-env.sh CAKEYS_TPM_ENV_SH=$tree
 export CAKEYS_P11KIT_CLIENT=$p11kit/lib/pkcs11/p11-kit-client.so CAKEYS_P11KIT_REQUIRE=1
 export CAKEYS_TPM_MODULE=$tpm2/lib/libtpm2_pkcs11.so CAKEYS_TPM_REQUIRE=1
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="bash $tree/nix/test-tokens.sh"
+# A script named here takes the place of the test run, in this environment (scripts/coverage-full.sh).
+if [ -n "${CAKEYS_LOCAL_TESTS_THEN:-}" ]; then
+  exec bash "$CAKEYS_LOCAL_TESTS_THEN" "$features" "$@"
+fi
 cargo nextest run --workspace --features "$features" --no-fail-fast "$@"

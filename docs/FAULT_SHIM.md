@@ -1,7 +1,9 @@
 # p11-fault: a PKCS#11 module that forwards, and misbehaves on request
 
 Design for [PLAN.md](PLAN.md) A3 and tier 4 of [COVERAGE_PLAN.md](COVERAGE_PLAN.md), written
-2026-11-14. Nothing is built yet.
+2026-11-14. Steps 1 and 2 of the order below are built (`crates/p11-fault`,
+`packages.p11-fault`): the forwarders, every rule kind, the trace, the parity run, the
+`pkcs11-tool` check and the first table of lies.
 
 `libp11_fault.so` is a PKCS#11 module that loads a real one (SoftHSM, kryoptic, a vendor
 module) and forwards every call to it, changing exactly what a fault plan says: a return
@@ -145,7 +147,9 @@ of_label = "victim"
 attribute = "CKA_EC_POINT"
 from_label = "other" # or: drop = true | value = "0441…" | length = "unavailable" | truncate = 3
 
-# Handles: a second object under the locator, or another key used than the one shown.
+# Handles: a second object under the locator (added where the real search finds something:
+# a client reads until a call returns nothing), or another key used than the one shown (of
+# the same class).
 [[rule]]
 fn = "C_FindObjects"
 call = 2
@@ -155,7 +159,29 @@ add_label = "decoy"
 fn = "C_DecryptInit"
 of_label = "shown"
 use_label = "used"
+
+# Found objects hidden; a byte of what a call returns changed (C_Sign, C_SignFinal, C_Encrypt,
+# C_Decrypt); mechanisms no longer listed.
+[[rule]]
+fn = "C_FindObjects"
+hide_label = "gone"
+
+[[rule]]
+fn = "C_Sign"
+call = 2
+corrupt = true
+
+[[rule]]
+fn = "C_GetMechanismList"
+hide_mechanisms = ["CKM_ECDH1_DERIVE"]
 ```
+
+**Failing half of an operation.** `C_Sign` and its like end the operation `C_SignInit` began,
+also when they fail. A rule that answers instead of the module (`when = "before"`), or on the
+call that only asks the output length, leaves the real operation open, and the module then
+refuses what the client does next. To model a module that fails the operation, fail the call
+that does the work, after it: `call = 2`, `when = "after"` for a client that asks the length
+first.
 
 **Labels to handles.** `of_label`, `from_label`, `add_label` and `use_label` are resolved
 through a session of the shim's own (`C_OpenSession` on the caller's slot, read from
@@ -177,7 +203,7 @@ attribute types and return values cakeys really meets, per reference token.
 ## Testing the shim itself
 
 1. **Unit tests** (the rlib): plans parse, refuse unknown names and fields, and match the n-th
-   call; each hook on hand-built `CK_ATTRIBUTE` arrays and handle buffers.
+   call; an attribute served into a caller's entry.
 2. **Parity**: the reference suite runs a third time, through the shim with no plan, in front of
    SoftHSM (a `tests/fault.rs` like `tests/softhsm.rs`, its `Reference` naming
    `libp11_fault.so`). It must pass exactly as directly. That proves the forwarder transparent
@@ -188,31 +214,69 @@ attribute types and return values cakeys really meets, per reference token.
 
 ## What cakeys tests with it
 
-The tier-4 lines of COVERAGE_PLAN.md become rows of one table: a plan, a verb, the exit code
-and the message. The harness gets a helper that writes the plan into the test's directory and
-runs `cakeys` with `P11_FAULT_MODULE`, `P11_FAULT_PLAN` and a token whose `module` is the shim.
+One table in `tests/fault.rs` (`a_lying_module_is_refused`): a rule, a verb, the exit code and
+the message, on a token holding a signing, a deriving, a decrypting and an unwrapping key, each
+beside another key of its kind. Every row asserts in the trace that its rule fired, and the
+lock is unchanged at the end. As run on SoftHSM [run]:
 
-| Plan | Run | Expect |
-|---|---|---|
-| `C_FindObjects`, call 1, `CKR_DEVICE_ERROR` | `verify` | 16, the call named |
-| `C_GetAttributeValue` on the key, `CKA_EC_POINT` dropped | `realise` | 13, no key material |
-| `C_DecryptInit` of the RSA key uses another RSA key | `verify` (`pop-decrypt`) | 13, proof failed |
-| the same for `C_UnwrapKey` | `verify` (`pop-unwrap`) | 13 |
-| `C_FindObjects`, call 2, `add_label` | `realise` after create | 12, or "vanished" |
-| `C_GetTokenInfo`, `CKF_WRITE_PROTECTED` | `create` | 15 |
-| `C_Login` after, `CKR_PIN_INCORRECT` (context-specific) | `verify` of a per-use-PIN key | 16, not retried |
-| `C_Sign` with the derived secret, `CKR_DEVICE_ERROR` | `verify` (`pop-ecdh`) | 16 |
-| `CKA_PUBLIC_KEY_INFO` from another key | `realise` | 13, disagrees with the material |
+| The lie | `verify` gives |
+|---|---|
+| `CKF_WRITE_PROTECTED` (on a `realise` that would create) | 15 |
+| `CKF_USER_PIN_LOCKED`, `CKF_USER_PIN_FINAL_TRY` | 16, before any login |
+| the public key's `CKA_EC_POINT` dropped, or its length unavailable | 11, no key material |
+| the point cut short | 13, no P-256 point |
+| the point of another key | 13, the proof of possession fails |
+| `CKA_SIGN` reported false | 13 |
+| a second object found under the locator | 12 |
+| another key used by `C_SignInit`, `C_DeriveKey` | 13, the proof fails |
+| another key used by `C_DecryptInit` | 13 (was 16: see below) |
+| another key used by `C_UnwrapKey` | 16: SoftHSM answers `CKR_GENERAL_ERROR` |
+| `C_Sign` or `C_GetAttributeValue` failing | 16, the call named |
+| another key's `CKA_PUBLIC_KEY_INFO` on the private key | 13, it disagrees with the material |
+| the per-use login of a `CKA_ALWAYS_AUTHENTICATE` key refused | 16, not retried |
+| the MAC with the derived or unwrapped secret failing | 16, the call named |
 
-And DESIGN §8.1: each claim of what a lying module cannot make cakeys accept gets a row, and
-§8.2 is corrected by whatever a row shows.
+**Found with it.** A swapped RSA key under `pop-decrypt` was reported as unavailable (16): the
+token answers `CKR_ENCRYPTED_DATA_INVALID`, since OAEP under the wrong key fails outright and
+never yields a wrong plaintext to compare. The challenge was encrypted to the public key the
+identity names, so that answer means another key: `CKR_ENCRYPTED_DATA_INVALID`/`_LEN_RANGE`
+and `CKR_WRAPPED_KEY_INVALID`/`_LEN_RANGE` are now a conflict (13). A module that answers a
+general error instead (SoftHSM's `C_UnwrapKey`) stays unavailable: nothing in it says which.
+
+A second test, `a_creation_that_cannot_be_identified_is_undone_or_reported`, takes §8.1's
+"refused operations leave nothing behind": a key created whose proof then fails is removed
+again, and where `C_DestroyObject` fails too, cakeys says the key is still on the token.
+
+Later rows use three more rule kinds: a signature or a plaintext with one byte changed (13;
+for `pop-decrypt` this is the wrong plaintext OAEP never yields by itself), the proof's
+mechanism no longer listed (15), and the key hidden from every search once created (11,
+"vanished after creation").
+
+**camigrate** (`crates/camigrate/tests/fault.rs`): SoftHSM behind the shim as the source or
+the target of a move, kryoptic the other side. The source's key-encryption key, its copy of the
+transport key and each wrap failing (15); the target's unwrap of the KEK or the key (13), the
+proof after the import (16), the host path's creation and commitment (15), a certificate the
+target then reports as another type (13). Each leaves the target without the object and the
+lock as it was; where the target will not delete either, what was imported is said to be still
+there.
+
+**caprobe** (`crates/caprobe/tests/fault.rs`): the write probes against the shim. Usage
+attributes refused at generation, or a public key without its point, are said undetermined;
+another key signing or deriving, a sealed derived secret refused, no derivation at all, a key
+deriving while reporting `CKA_DERIVE` false and a wrap that does not unwrap become the row
+and the note of what was seen, and drift from the committed profile (15).
+
+Still to add: a derived secret with no value, and a certificate with no readable value.
 
 ## Nix
 
-- A workspace member, so `cargo test --workspace` builds `libp11_fault.so` next to the test
-  binaries, and the tests find it there (as `common::sibling` finds the other binaries).
-- `packages.p11-fault`: the library alone, for use outside cakeys.
-- Not installed by `packages.cakeys`, `caprobe` or `camigrate`.
+- A default member of the workspace, so the build makes `libp11_fault.so` beside the binaries
+  and the tests find it there (`common::fault_shim`). `cargo test` alone does not build a
+  `cdylib`: `scripts/local-tests.sh` builds it first.
+- One more output of the same build, `p11fault` (as `caprobe` and `camigrate` are), holding
+  `lib/libp11_fault.so`: `packages.p11-fault`. The `cakeys` output's closure does not carry it.
+- The per-test runner (`nix/test-tokens.sh`) points `P11_FAULT_MODULE` at the test's own SoftHSM
+  token for `tests/fault.rs`.
 
 ## The 3.x interface, later
 
@@ -225,10 +289,9 @@ needed too.
 
 ## Order
 
-1. The forwarder, `rv` rules, the trace, the parity test and the `pkcs11-tool` check: about a
-   day.
-2. The hooks (attributes, flags, handles, malformed lengths) and the cakeys table above: one
-   to two days.
+1. Done: the forwarder, `rv` rules, the trace, the parity test and the `pkcs11-tool` check.
+2. Done: the hooks (attributes, flags, handles, malformed lengths) and the first cakeys table.
+   The rows listed above remain.
 3. The 3.x interface, when a client needs it.
 
 ## Risks

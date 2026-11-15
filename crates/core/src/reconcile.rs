@@ -931,4 +931,160 @@ mod tests {
             assert!(matches!(&e, KmError::PreconditionFailed(m) if m.contains("changed since it was locked")), "{e}");
         }
     }
+
+    /// A second look at the same or a stronger realisation passes, writing or not: the same
+    /// attestation, a stronger mode. A weaker mode is a downgrade (14). What the lock lacks is
+    /// said when only comparing; a write records it without the note.
+    #[test]
+    fn the_same_or_more_passes_and_less_is_a_downgrade() {
+        let cfg = config();
+        let t = Target::new(&cfg, "s", "t").unwrap();
+        let record = |r: &Resolved| {
+            let mut lock = empty_lock();
+            reconcile(&t, r, &mut lock, &facts("1"), LockWrite::Record, &mut Notes::default()).unwrap();
+            lock
+        };
+        let said = |r: &Resolved, lock: &Lock, write| {
+            let mut notes = Notes::default();
+            compare(&t, r, lock, &facts("1"), write, &mut notes).map(|()| notes.lines().join("\n"))
+        };
+        let attested = Resolved {
+            attestation: Some(AttestationRecord { kind: "yubico-piv".into(), root: SRI_A.into(), id: SRI_B.into() }),
+            ..resolved(&t)
+        };
+        let lock = record(&attested);
+        for write in [LockWrite::Compare, LockWrite::Record] {
+            assert_eq!(said(&attested, &lock, write).unwrap(), "", "{write:?}");
+        }
+        let plain = record(&resolved(&t));
+        let lacks = "attestation the lock does not record";
+        assert!(said(&attested, &plain, LockWrite::Compare).unwrap().contains(lacks));
+        assert!(!said(&attested, &plain, LockWrite::Record).unwrap().contains(lacks));
+
+        let in_mode = |mode| Resolved { mode, ..resolved(&t) };
+        let committed = record(&in_mode(Mode::Commitment));
+        said(&in_mode(Mode::Direct), &committed, LockWrite::Record).unwrap();
+        let e = said(&in_mode(Mode::WrapRebind), &committed, LockWrite::Record).unwrap_err();
+        assert!(matches!(&e, KmError::PreconditionFailed(m) if m.contains("locked mode 'commitment'")), "{e}");
+    }
+
+    /// The lock's object entry: the commitment label it records is the one used from then on
+    /// (the default until then) and is written once; a line said is a line in the notes.
+    #[test]
+    fn the_recorded_label_is_the_label_used() {
+        let cfg = config();
+        let t = Target::new(&cfg, "s", "t").unwrap();
+        let mut lock = empty_lock();
+        assert_eq!(commitment_label(&t, &lock), id::DEFAULT_COMMITMENT_LABEL);
+        let labelled = |label: &str| Resolved { commitment_label: Some(label.into()), ..resolved(&t) };
+        let write = |r: &Resolved, lock: &mut Lock| {
+            reconcile(&t, r, lock, &facts("1"), LockWrite::Record, &mut Notes::default()).unwrap()
+        };
+        assert!(write(&labelled("first"), &mut lock));
+        assert_eq!(commitment_label(&t, &lock), "first");
+        assert!(!write(&labelled("first"), &mut lock), "the same label is not written again");
+        assert!(write(&labelled("second"), &mut lock));
+        assert_eq!(commitment_label(&t, &lock), "second");
+        let mut notes = Notes::default();
+        notes.say("created k");
+        assert_eq!(notes.lines(), ["created k"]);
+    }
+
+    /// keys.toml with a second private key and two certificates beside `k`, each with a spec
+    /// of its own name on `t`.
+    fn family() -> Config {
+        let mut text = "[tokens.t]\ntokenLabel = \"t\"\n\n".to_owned();
+        for (name, ty) in [
+            ("k", "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\""),
+            ("k2", "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\""),
+            ("c", "class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\""),
+            ("c2", "class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\""),
+        ] {
+            use std::fmt::Write as _;
+            write!(
+                text,
+                "[objects.{name}]\n{ty}\n\n[specs.{name}]\nobject = \"{name}\"\n\
+                 tokens.t = {{ locator = {{ CKA_LABEL = \"{name}\" }} }}\n\n"
+            )
+            .unwrap();
+        }
+        toml::from_str(&text).unwrap()
+    }
+
+    /// One object per material within a class, held when recording: the same key under a second
+    /// name is refused (14), as is the same certificate; a key and its certificates share the
+    /// public key, are recorded in either order, and are listed as each other's pairs. Pairs
+    /// from another lock fragment are kept; one in this file that shares no key is dropped.
+    #[test]
+    fn material_is_recorded_once_and_paired_by_its_public_key() {
+        let cfg = family();
+        let sri_c = id::sri(b"c");
+        let write = |lock: &mut Lock, name: &str, ids: &[(&str, &str)]| {
+            let t = Target::new(&cfg, name, "t").unwrap();
+            let key = t.object.class == Class::PrivateKey;
+            let r = Resolved {
+                object: name.into(),
+                spec: name.into(),
+                ids: ids.iter().map(|(s, v)| ((*s).to_owned(), (*v).to_owned())).collect(),
+                binding: key.then_some(Binding::PopSign),
+                policy: BTreeMap::new(),
+                immutables: Immutables::default(),
+                ..resolved(&t)
+            };
+            reconcile(&t, &r, lock, &facts("1"), LockWrite::Record, &mut Notes::default())
+        };
+        let same = |e: KmError, other: &str, scheme: &str| {
+            let want = format!("is the same material as object '{other}' ({scheme})");
+            assert!(matches!(&e, KmError::PreconditionFailed(m) if m.contains(&want)), "{e}");
+        };
+        let (key, cert) = ([("rfc7093m4", SRI_A)], [("certhash", SRI_B), ("rfc7093m4", SRI_A)]);
+
+        let mut lock = empty_lock();
+        write(&mut lock, "k", &key).unwrap();
+        same(write(&mut lock, "k2", &key).unwrap_err(), "k", "rfc7093m4");
+        write(&mut lock, "c", &cert).unwrap();
+        same(write(&mut lock, "c2", &cert).unwrap_err(), "c", "certhash");
+        // Another certificate of the same key, and another key.
+        write(&mut lock, "c2", &[("certhash", &sri_c), ("rfc7093m4", SRI_A)]).unwrap();
+        write(&mut lock, "k2", &[("rfc7093m4", SRI_B)]).unwrap();
+        let pairs = |lock: &Lock, name: &str| lock.objects[name].pairs.iter().cloned().collect::<Vec<_>>();
+        assert_eq!(pairs(&lock, "k"), ["c", "c2"]);
+        assert_eq!(pairs(&lock, "c2"), ["c", "k"]);
+        assert_eq!(pairs(&lock, "k2"), [] as [String; 0]);
+
+        // The certificate first, then its key.
+        let mut other_order = empty_lock();
+        write(&mut other_order, "c", &cert).unwrap();
+        write(&mut other_order, "k", &key).unwrap();
+        assert_eq!(pairs(&other_order, "c"), ["k"]);
+
+        lock.objects.get_mut("k").unwrap().pairs.extend(["elsewhere".to_owned(), "k2".to_owned()]);
+        assert!(write(&mut lock, "k", &key).unwrap());
+        assert_eq!(pairs(&lock, "k"), ["c", "c2", "elsewhere"]);
+    }
+
+    /// Objects of this file that share the key and are not listed as pairs are named when
+    /// comparing; a write lists them instead.
+    #[test]
+    fn unlisted_pairs_are_named_when_comparing() {
+        let cfg = family();
+        let t = Target::new(&cfg, "k", "t").unwrap();
+        let r = Resolved { spec: "k".into(), ..resolved(&t) };
+        let mut lock = empty_lock();
+        reconcile(&t, &r, &mut lock, &facts("1"), LockWrite::Record, &mut Notes::default()).unwrap();
+        let cert = crate::config::LockObject {
+            object_type: Some(cfg.objects["c"].clone()),
+            ids: [("certhash".to_owned(), SRI_B.to_owned()), ("rfc7093m4".to_owned(), SRI_A.to_owned())].into(),
+            ..Default::default()
+        };
+        lock.objects.insert("c".into(), cert);
+        let said = |write| {
+            let mut notes = Notes::default();
+            compare(&t, &r, &lock, &facts("1"), write, &mut notes).unwrap();
+            notes.lines().join("\n")
+        };
+        let unlisted = "share the public key of 'k' but are not listed as its pairs";
+        assert!(said(LockWrite::Compare).contains(unlisted), "{}", said(LockWrite::Compare));
+        assert!(!said(LockWrite::Record).contains(unlisted));
+    }
 }

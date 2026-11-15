@@ -332,4 +332,76 @@ mod tests {
         assert!(edited(tr_type, "00000002").contains("not a key resource"));
         assert!(edited(0, "80000001").contains("not a persistent object"));
     }
+
+    fn private_row(label: &[u8]) -> TObject {
+        let mut row = parse_tobject(include_str!("../../tests/fixtures/tobject-private.yaml")).unwrap().unwrap();
+        row.cka_label = Some(label.to_vec());
+        row
+    }
+
+    /// The row to certify is the one row of the key's class under its `CKA_ID` that carries a
+    /// private blob: none is 11, several are 12 until the object's label tells them apart; a
+    /// class the store keeps no key rows for is 15.
+    #[test]
+    fn the_row_to_certify_is_found_or_named() {
+        let store = Store {
+            parent: Parent { handle: 0x8100_0001, auth: Vec::new() },
+            seal: Seal { pub_blob: Vec::new(), priv_blob: Vec::new(), auth_salt: String::new() },
+            tobjects: vec![private_row(b"k1"), private_row(b"k2")],
+        };
+        let found = |id: &[u8], label: Option<&[u8]>, class| store.find(id, label, class).map(|t| t.cka_label.clone());
+        assert_eq!(found(b"0a", Some(b"k2"), CLASS_PRIVATE_KEY).unwrap().as_deref(), Some(&b"k2"[..]));
+        let several = found(b"0a", None, CLASS_PRIVATE_KEY).unwrap_err();
+        assert!(matches!(&several, KmError::Ambiguous(m) if m.contains("2 store rows match")), "{several}");
+        for (id, label, class) in [
+            (&b"0b"[..], None, CLASS_PRIVATE_KEY),
+            (b"0a", Some(&b"k3"[..]), CLASS_PRIVATE_KEY),
+            (b"0a", Some(b"k1"), CLASS_SECRET_KEY),
+        ] {
+            let none = found(id, label, class).unwrap_err();
+            assert!(matches!(&none, KmError::NotFound(m) if m.contains("no certifiable store object")), "{none}");
+        }
+        assert_eq!(store_class(ObjectClass::PrivateKey).unwrap(), CLASS_PRIVATE_KEY);
+        assert_eq!(store_class(ObjectClass::SecretKey).unwrap(), CLASS_SECRET_KEY);
+        assert!(matches!(store_class(ObjectClass::Certificate), Err(KmError::Unsupported(_))));
+    }
+
+    /// A store file is read as the module wrote it: a token's rows, an unset `objauth` as the
+    /// empty auth value. A token the store does not hold is 11; a file that is no tpm2-pkcs11
+    /// store is unavailable (16), never taken for an empty one.
+    #[test]
+    fn a_store_file_is_read_or_refused() {
+        let dir = std::env::temp_dir().join(format!("cakeys-tpm2-store-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Connection::open(dir.join(DB_NAME)).unwrap();
+        let other = Store::open(&dir, "kmtest").err().unwrap();
+        assert!(matches!(&other, KmError::Unavailable(m) if m.contains("reading pobjects")), "{other}");
+        db.execute_batch(
+            "CREATE TABLE pobjects (id INTEGER PRIMARY KEY, config TEXT, objauth TEXT);
+             CREATE TABLE tokens (id INTEGER PRIMARY KEY, pid INTEGER, label TEXT);
+             CREATE TABLE sealobjects (tokid INTEGER, userpub BLOB, userpriv BLOB, userauthsalt TEXT);
+             CREATE TABLE tobjects (tokid INTEGER, attrs TEXT);
+             INSERT INTO tokens VALUES (7, 1, 'kmtest');
+             INSERT INTO sealobjects VALUES (7, x'0001', x'0002', '5a');",
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO pobjects VALUES (1, ?1, NULL)",
+            [include_str!("../../tests/fixtures/pobject-config.yaml")],
+        )
+        .unwrap();
+        for attrs in ["tobject-private.yaml", "tobject-public.yaml"] {
+            let attrs = std::fs::read(format!("{}/tests/fixtures/{attrs}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+            db.execute("INSERT INTO tobjects VALUES (7, ?1)", [attrs]).unwrap();
+        }
+        drop(db);
+        let store = Store::open(&dir, "kmtest").unwrap();
+        assert_eq!((store.parent.handle, store.parent.auth.len()), (0x8100_0001, 0));
+        assert_eq!((store.seal.pub_blob.as_slice(), store.seal.auth_salt.as_str()), (&[0, 1][..], "5a"));
+        assert_eq!(store.tobjects.len(), 2);
+        assert!(store.find(b"0a", Some(b"k1"), CLASS_PRIVATE_KEY).is_ok());
+        assert!(matches!(Store::open(&dir, "another"), Err(KmError::NotFound(_))));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

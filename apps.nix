@@ -42,6 +42,32 @@ in
     program = pkgs.lib.getExe deny.online;
     meta.description = "cargo-deny with current yanked flags: fetch the live index, then the pinned-database check with --deny yanked";
   };
+  # Coverage of the whole test run with the hardware suites the sandbox cannot reach, into one
+  # report (scripts/coverage-full.sh says which variables turn each suite on):
+  # nix run .#coverage-full
+  coverage-full = {
+    type = "app";
+    meta.description = "Line coverage of every suite on the host: the software tokens, and the opt-in YubiKey and real-TPM suites";
+    program = pkgs.lib.getExe (
+      pkgs.writeShellApplication {
+        name = "cakeys-coverage-full";
+        runtimeInputs = [
+          pkgs.cargo-llvm-cov
+          pkgs.yubikey-manager
+        ];
+        runtimeEnv = {
+          # The llvm-tools of this rustc's own LLVM, as packages.coverage uses them.
+          LLVM_COV = "${pkgs.rustc.llvmPackages.llvm}/bin/llvm-cov";
+          LLVM_PROFDATA = "${pkgs.rustc.llvmPackages.llvm}/bin/llvm-profdata";
+          CAKEYS_YKCS11_MODULE = "${pkgs.yubico-piv-tool}/lib/libykcs11.so";
+        };
+        text = ''
+          [ -f scripts/coverage-full.sh ] || { echo "run from the repository root" >&2; exit 2; }
+          exec bash scripts/coverage-full.sh "$@"
+        '';
+      }
+    );
+  };
   # Fuzz one target for as long as you like: nix run .#fuzz -- lock -max_total_time=600
   fuzz = {
     type = "app";

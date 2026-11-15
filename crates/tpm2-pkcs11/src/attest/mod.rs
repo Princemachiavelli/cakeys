@@ -323,6 +323,10 @@ mod tests {
         assert!(fuzzing::store_row(include_str!("../../tests/fixtures/tobject-private.yaml")).is_err());
         assert!(fuzzing::store_row("not: [yaml").is_err());
         assert!(fuzzing::tpms_attest(b"neither an attestation nor a public area").is_err());
+        // A public area as the store keeps it is read to its material.
+        let row = include_str!("../../tests/fixtures/tobject-private.yaml");
+        let public = super::store::parse_tobject(row).unwrap().unwrap().pub_blob;
+        assert!(fuzzing::tpms_attest(&public).is_ok());
     }
 
     /// A configured store directory is taken as written, `~/` expanded; a TCTI and an AK handle

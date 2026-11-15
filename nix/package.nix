@@ -4,6 +4,7 @@
   lib,
   callPackage,
   rustPlatform,
+  stdenv,
   # See nix/package-common.nix.
   withTpm2 ? null,
 }:
@@ -30,8 +31,13 @@ rustPlatform.buildRustPackage (
       [ "$applied" = 1 ] || { echo "cryptoki-${common.cryptoki.version} not found exactly once in $cargoDepsCopy" >&2; exit 1; }
     '';
 
-    # One thread: the token suites open a session per test on one module (docs/OPEN.md, "Engineering").
-    dontUseCargoParallelTests = true;
+    # The tests as the crane check runs them (nix/package-crane.nix): cargo-nextest, one process
+    # per test, each through nix/test-tokens.sh (cargo's target runner) with a token set of its
+    # own. So they run in parallel, and no test meets what another left on a token: several
+    # change the token itself (a second token under its label, a locked PIN, tpm2-pkcs11 store
+    # rows).
+    useNextest = true;
+    ${"CARGO_TARGET_${stdenv.hostPlatform.rust.cargoEnvVarTarget}_RUNNER"} = "bash ${./test-tokens.sh}";
     # Unit tests live in every crate, not just the tools (the default members).
     cargoTestFlags = common.cargoScope;
     buildNoDefaultFeatures = common.noDefaultFeatures;

@@ -1,0 +1,22 @@
+[package]
+name = "p11-fault"
+description = "A PKCS#11 module that forwards to a real one and misbehaves on request (docs/FAULT_SHIM.md)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+# The cdylib is the module clients load; the rlib carries the unit tests.
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+cryptoki-sys.workspace = true
+libloading.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true

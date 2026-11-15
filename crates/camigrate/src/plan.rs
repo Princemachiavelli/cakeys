@@ -569,6 +569,14 @@ mod tests {
         assert_eq!((p.method, p.exposure, p.ready), (Some(Method::Pkcs12), Some(Exposure::File), false));
         let allowed = Allow { host_plaintext: true, ..Allow::default() };
         assert!(plan_of(&p256(), &ext, &softhsm(), &To::File(FileFormat::Pkcs8), allowed).ready);
+        // A public object needs no file, and a source with no RFC 5649 key wrap cannot hand a key
+        // to the host at all.
+        let cert = obj(ObjectClass::Certificate, None);
+        let p = plan_of(&cert, &[], &softhsm(), &To::File(FileFormat::Pkcs8), allowed);
+        assert!(!p.ready && p.reasons[0].contains("a public object needs no export"), "{p:?}");
+        let bare = Side::pkcs11("bare", "generic", ["CKM_RSA_PKCS_OAEP".to_owned()]);
+        let p = plan_of(&p256(), &ext, &bare, &To::File(FileFormat::Pkcs8), allowed);
+        assert!(!p.ready && p.reasons.iter().any(|r| r.contains("offers no RFC 5649 key wrap")), "{p:?}");
     }
 
     /// Each fact the planner names decides on its own (the mutation report's gaps): a secret

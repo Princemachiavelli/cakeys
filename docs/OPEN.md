@@ -139,6 +139,12 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 
 ## Upstream
 
+- **SoftHSM, to reproduce**: the probe's process died in SoftHSM's `C_Sign` after the shim
+  (FAULT_SHIM.md) gave every `C_SignInit` a P-256 private key, whatever the mechanism: one of
+  those inits accepted a key of another type than its mechanism's, and the signature crashed.
+  Seen once (2026-11-14) through `use_label` without `call`; which mechanism is not isolated
+  yet. A direct reproduction (`C_SignInit` with `CKM_EDDSA` or an RSA mechanism and an EC key)
+  would make it an upstream report.
 - **SoftHSM**: `C_UnwrapKey` stores an unwrapped secret key's `CKA_VALUE` but never its
   `CKA_VALUE_LEN` (reads 0), and refuses `CKA_VALUE_LEN` in the template
   (`CKR_ATTRIBUTE_READ_ONLY`; SoftHSMv2 #628). A fix is drafted in `upstream/softhsm/` (not
@@ -154,8 +160,8 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 
 - **The token suites under a plain parallel `cargo test`** still crash (one test finalizes the
   module under the others in one process): the crane check phase runs them under
-  `cargo-nextest` with a token set per test (DEVELOPMENT.md), as the coverage report does; the
-  regular build and the mutation report run on one thread against shared tokens. One session per module in
+  `cargo-nextest` with a token set per test (DEVELOPMENT.md), as the regular build and the
+  coverage report do; the mutation report runs on one thread against shared tokens. One session per module in
   `tests/common` would fix the plain run.
 - **Closing what the reports show** (`packages.coverage`, `packages.mutants`, DEVELOPMENT.md):
   no unit test in `core` pins the lock's load-time invariants or the transport-key rules (the

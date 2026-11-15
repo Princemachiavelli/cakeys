@@ -3,7 +3,12 @@
 Where the tests do not reach, and the order in which to get them there. Written 2026-11-14,
 at 89.9% of lines (1,177 of 11,638 uncovered; 83.5% of functions). After tiers 2 and 3, the
 same day: 91.9% (949 of 11,640 uncovered; 84.6% of functions); after the burn-down below,
-93.7% (738 of 11,763; 86.1% of functions). The mutation report
+93.7% (738 of 11,763; 86.1% of functions); with the fault shim and its first tables
+(FAULT_SHIM.md), 94.0% (744 of 12,382, the shim's own 614 lines included; 86.2% of functions);
+with the shim in front of camigrate and caprobe, 94.4% (701 of 12,469; 86.7% of functions);
+with direct tests of camigrate's refusals, 94.7% (663 of 12,606; 87.3% of functions); with
+the TPM attestation's refusals on swtpm, 94.9% (640 of 12,669; 87.6% of functions).
+The mutation report
 (`nix build .#mutants`) comes after this: it asks whether the tests *check* what they run, and
 is only worth reading once they run it.
 
@@ -200,7 +205,9 @@ What remains, by kind (about 740 lines):
 - **Tier 4, a misbehaving module**: most of it. `map_err` arms of calls a correct module never
   fails (a context-specific login after a good one, `C_Sign` with a derived or unwrapped secret,
   an attribute read after a find), and the proofs that run and fail for RSA keys
-  (`pop-decrypt`, `pop-unwrap`), which need a module showing one key and using another.
+  (`pop-decrypt`, `pop-unwrap`), which need a module showing one key and using another. The
+  shim (FAULT_SHIM.md) now covers the swapped-key proofs, lied attributes and flags; the
+  `map_err` arms remain as rows to add.
 - **Tier 5, a real YubiKey**: a successful PIV attestation, SO-session generation and import.
 - **Guards of invariants a caller holds**, kept on purpose: the empty deprecation register's
   warnings (`reconcile.rs`, until a scheme is deprecated); camigrate's `unreachable!` arms and

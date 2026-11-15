@@ -195,13 +195,18 @@ fn octets(info: &ContentInfo) -> Result<Vec<u8>> {
     Ok(info.content.decode_as::<OctetString>().map_err(bad)?.as_bytes().to_vec())
 }
 
+/// Whether a key file's KDF iteration count is more than this process will run.
+fn too_many(iterations: u32) -> bool {
+    iterations > MAX_ITERATIONS
+}
+
 /// The PKCS#8 in an `EncryptedPrivateKeyInfo` under `pass`; `None` when it does not decrypt
 /// (a wrong passphrase fails the padding check), or is no such structure.
 fn decrypt(der: &[u8], pass: &str) -> Option<Zeroizing<Vec<u8>>> {
     let info = EncryptedPrivateKeyInfoRef::try_from(der).ok()?;
     // The file names its own PBKDF2 iteration count: bounded, like the PKCS#12 MAC's.
     let iterations = info.encryption_algorithm.pbes2().and_then(|p| p.kdf.pbkdf2()).map(|k| k.iteration_count);
-    if iterations.is_some_and(|n| n > MAX_ITERATIONS) {
+    if iterations.is_some_and(too_many) {
         return None;
     }
     let doc = info.decrypt(pass).ok()?;
@@ -251,5 +256,93 @@ mod tests {
         tampered[at] ^= 1;
         assert!(read(&p12, "pass phrase").is_ok());
         assert!(matches!(read(&tampered, "pass phrase"), Err(KmError::Validation(_))));
+    }
+
+    fn data(bytes: Vec<u8>) -> ContentInfo {
+        ContentInfo { content_type: ID_DATA, content: Any::encode_from(&OctetString::new(bytes).unwrap()).unwrap() }
+    }
+
+    /// A PKCS#12 of `auth_safe`, under a MAC by the digest and iterations of `mac_by` (computed
+    /// when the reader would get as far as checking it).
+    fn pfx(auth_safe: ContentInfo, mac_by: Option<(ObjectIdentifier, i32)>) -> Vec<u8> {
+        let mac_data = mac_by.map(|(oid, iterations)| {
+            let digest = match octets(&auth_safe) {
+                Ok(content) if (1..=MAC_ITERATIONS).contains(&iterations) => {
+                    mac("pass", b"salt", iterations, &content).unwrap()
+                }
+                _ => vec![0; 32],
+            };
+            MacData {
+                mac: DigestInfo {
+                    algorithm: AlgorithmIdentifierOwned { oid, parameters: Some(Any::null()) },
+                    digest: OctetString::new(digest).unwrap(),
+                },
+                mac_salt: OctetString::new(b"salt".to_vec()).unwrap(),
+                iterations,
+            }
+        });
+        Pfx { version: pkcs12::pfx::Version::V3, auth_safe, mac_data }.to_der().unwrap()
+    }
+
+    fn refusal(bytes: &[u8]) -> String {
+        match read(bytes, "pass") {
+            Err(KmError::Validation(m)) => m,
+            Err(e) => panic!("not a validation error: {e}"),
+            Ok(_) => panic!("the file was read"),
+        }
+    }
+
+    /// A file is input: what this tool would not have written is refused (17) by name, before
+    /// any key in it is used.
+    #[test]
+    fn key_files_of_another_shape_are_refused() {
+        let key_bag = SafeBag {
+            bag_id: pkcs12::PKCS_12_PKCS8_KEY_BAG_OID,
+            bag_value: encrypt(&p256_pkcs8(), "pass").unwrap(),
+            bag_attributes: None,
+        };
+        let safe = |bags: Vec<SafeBag>| data(vec![data(bags.to_der().unwrap())].to_der().unwrap());
+        let sha256 = Some((ID_SHA256, MAC_ITERATIONS));
+        let sha1 = ObjectIdentifier::new_unwrap("1.3.14.3.2.26");
+        let cases = [
+            (pfx(safe(vec![]), None), "a PKCS#12 without a MAC"),
+            (pfx(safe(vec![]), Some((sha1, MAC_ITERATIONS))), "not SHA-256"),
+            (pfx(safe(vec![]), Some((ID_SHA256, 0))), "a PKCS#12 MAC of 0 iterations"),
+            (pfx(safe(vec![]), Some((ID_SHA256, i32::MAX))), "iterations"),
+            (pfx(safe(vec![]), sha256), "a PKCS#12 without a shrouded key bag"),
+            (pfx(safe(vec![key_bag.clone(), key_bag.clone()]), sha256), "a PKCS#12 with more than one key"),
+            (pfx(ContentInfo { content_type: ID_SHA256, ..safe(vec![]) }, sha256), "not data"),
+            (
+                pfx(data(vec![ContentInfo { content_type: ID_SHA256, ..data(vec![]) }].to_der().unwrap()), sha256),
+                "not data",
+            ),
+        ];
+        for (file, want) in cases {
+            let got = refusal(&file);
+            assert!(got.contains(want), "{want}: {got}");
+        }
+        assert!(read(&pfx(safe(vec![key_bag.clone()]), sha256), "pass").is_ok());
+        assert!(refusal(b"-----BEGIN ENCRYPTED PRIVATE KEY-----\nnot base64\n").starts_with("the key file: "));
+
+        // A key file naming more KDF iterations than this process will run is not opened: the
+        // it is turned away on the count alone (running them would take this test minutes).
+        let params = pbes2::Parameters::generate_pbkdf2_sha256_aes256cbc(MAX_ITERATIONS + 1, &[0; 16], [0; 16]);
+        let slow = pkcs8::EncryptedPrivateKeyInfoOwned {
+            encryption_algorithm: params.unwrap().into(),
+            encrypted_data: OctetString::new(vec![0; 32]).unwrap(),
+        };
+        assert!(decrypt(&slow.to_der().unwrap(), "pass").is_none());
+        assert!(too_many(MAX_ITERATIONS + 1) && !too_many(MAX_ITERATIONS) && !too_many(PBKDF2_ITERATIONS));
+
+        // The first certificate is the key's; a second one (a chain) does not replace it.
+        let cert_bag = |der: &[u8]| SafeBag {
+            bag_id: pkcs12::PKCS_12_CERT_BAG_OID,
+            bag_value: CertBag { cert_id: pkcs12::PKCS_12_X509_CERT_OID, cert_value: OctetString::new(der).unwrap() }
+                .to_der()
+                .unwrap(),
+            bag_attributes: None,
+        };
+        let chain = pfx(safe(vec![cert_bag(b"leaf"), cert_bag(b"issuer"), key_bag]), sha256);
+        assert_eq!(read(&chain, "pass").unwrap().certificate.as_deref(), Some(&b"leaf"[..]));
     }
 }
