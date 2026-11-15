@@ -2,7 +2,8 @@
 
 Where the tests do not reach, and the order in which to get them there. Written 2026-11-14,
 at 89.9% of lines (1,177 of 11,638 uncovered; 83.5% of functions). After tiers 2 and 3, the
-same day: 91.9% (949 of 11,640 uncovered; 84.6% of functions). The mutation report
+same day: 91.9% (949 of 11,640 uncovered; 84.6% of functions); after the burn-down below,
+93.7% (738 of 11,763; 86.1% of functions). The mutation report
 (`nix build .#mutants`) comes after this: it asks whether the tests *check* what they run, and
 is only worth reading once they run it.
 
@@ -163,6 +164,53 @@ without an SO credential (15).
 Does not reach: a successful attestation (needs a certificate Yubico signed), generation and
 import in an SO session (SoftHSM's SO creates no private objects), and the probe's scratch
 slot. Those are tier 5.
+
+## Burn-down (2026-11-14)
+
+After tiers 2 and 3, the gaps the reference tokens and plain unit tests could still reach,
+from 91.8% to 93.7% of lines:
+
+- **Pure code, unit tests**: what a lock compare reports around a realisation; a `Config`
+  naming an undefined object; SPKI canonicalisation per curve; a `--profiles` directory; the
+  probe diff's one-sided rows; the TPM attestation's Name per `nameAlg`, wrapped object auth
+  and AK signature checks; a malformed primary `ESYS_TR`.
+- **Token-free CLI**: `caprobe supports` without a module profile; `validate`'s gate refusals
+  and notes.
+- **Reference tokens**: a commitment `verify` cannot compute; `publicAttributes` over a doubled
+  or swapped public half; the probe's scratch guard and slot probes (SoftHSM and kryoptic named
+  `ykcs11`); PIN counters (kryoptic counts down: count-low, final try, locked) and a refused SO
+  credential; `probe --diff` drift; camigrate's `--spec` and empty-lock refusals.
+- **swtpm**: P-384, P-521 and RSA attestations; a store found through the module's search
+  path, a TCTI from the options, a store of another token, a secret key's blobs under an EC
+  key's row.
+
+Found on the way, and fixed:
+
+- **An export's plan said ready for a move through the host**, which the export then refused
+  (15): a bundle carries sealed keys and public objects only. The destination now says the verb
+  (`Dest::Bundle` for `export --target`), and the plan blocks other methods with that reason.
+- **A hint named an impossible fix**: for a module version no profile records, resolution
+  advised naming the profile in `provider`, which no token open accepts (docs/CONFIG.md: the
+  module profile is chosen, not named). The branch for an exact profile name was unreachable
+  and is removed; the hint says to probe the module, or realise once.
+- **Unreachable, removed**: `generate.rs`'s refusal of a class `plan.rs` refuses first.
+
+What remains, by kind (about 740 lines):
+
+- **Tier 4, a misbehaving module**: most of it. `map_err` arms of calls a correct module never
+  fails (a context-specific login after a good one, `C_Sign` with a derived or unwrapped secret,
+  an attribute read after a find), and the proofs that run and fail for RSA keys
+  (`pop-decrypt`, `pop-unwrap`), which need a module showing one key and using another.
+- **Tier 5, a real YubiKey**: a successful PIV attestation, SO-session generation and import.
+- **Guards of invariants a caller holds**, kept on purpose: the empty deprecation register's
+  warnings (`reconcile.rs`, until a scheme is deprecated); camigrate's `unreachable!` arms and
+  the refusals behind plan checks (`export_file`'s one-key check, `sealed.rs`'s missing trusted
+  copy); `public.rs`'s reads behind `ops::verify`; a store row ambiguity the token layer refuses
+  first.
+- **Environment the suites do not set up**: no TCTI at all (the module reads the same variable;
+  needs it behind a p11-kit server with an environment of its own), `tpm2_ptool` missing from
+  `PATH`, a write-protected token.
+- **Test code** in `#[cfg(test)]` modules (the `panic!` arms of `let … else`).
 
 ## Tier 4: a module that misbehaves on request
 

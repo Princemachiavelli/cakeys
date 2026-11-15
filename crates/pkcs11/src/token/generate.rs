@@ -30,10 +30,6 @@ impl Token {
         common.extend(locator_attrs(loc)?);
         let policy = self.policy_template(&spec.attributes)?;
         let refused = |e: CkError| self.unsupported(format!("generating key on '{}': {e}", self.name));
-        let class = class_of(object);
-        if class != ObjectClass::PRIVATE_KEY && class != ObjectClass::SECRET_KEY {
-            return Err(KmError::Validation(format!("{} objects are adopted, not created", object.class)));
-        }
         // Defaults for the public half of a pair, left out when the declared attributes set the
         // same type (the template may not carry a type twice).
         let public_half = |public: &mut Vec<Attribute>| -> Result<()> {

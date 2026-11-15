@@ -206,7 +206,7 @@ mod tests {
         let generated = profile(
             "m/probe",
             &format!(
-                "{head}[wrap]\noaep = [\"SHA-1\", \"SHA-256\"]\n[unwrap]\nrefuse = [\"CKA_VALUE_LEN\"]\n\
+                "{head}[wrap]\noaep = [\"SHA-1\", \"SHA-256\"]\n[unwrap]\nrefuse = [\"CKA_VALUE_LEN\"]\n[derive]\nsealed = false\n\
                  [generate.\"CKK_RSA\"]\nmin-bits = 1024\n[generate.\"CKK_EC\"]\ncan = [\"secp256r1\"]\n\
                  [[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_RSA\"\nmax-bits = 2048\n\
                  [[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_AES\"\nmax-bits = 256\n"
@@ -215,7 +215,7 @@ mod tests {
         let claimed = profile(
             "m/1",
             &format!(
-                "{head}[unwrap]\nrefuse = []\n[generate.\"CKK_RSA\"]\nmax-bits = 4096\n\
+                "{head}[unwrap]\nrefuse = []\n[derive]\nread-only = true\n[generate.\"CKK_RSA\"]\nmax-bits = 4096\n\
                  [[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_RSA\"\nmax-bits = 3072\n\
                  [[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_DES3\"\nmin-bits = 112\n"
             ),
@@ -230,6 +230,8 @@ mod tests {
             "restrict.generate.CKK_RSA.max-bits: observed 2048, claimed 3072",
             "restrict.generate.CKK_AES: only observed",
             "restrict.generate.CKK_DES3: only claimed",
+            "derive.sealed: only observed: false",
+            "derive.read-only: only claimed: true",
         ] {
             assert!(lines.iter().any(|l| l == want), "missing {want:?} in {lines:#?}");
         }

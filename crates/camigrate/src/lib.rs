@@ -228,7 +228,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
                 (_, _, Some(FileArg::Pkcs8)) => Dest::File(FileFormat::Pkcs8),
                 (_, _, Some(FileArg::Pkcs12)) => Dest::File(FileFormat::Pkcs12),
                 (_, Some(path), None) => Dest::Transport(path),
-                (Some(t), None, None) => Dest::Token(t),
+                (Some(t), None, None) => Dest::Bundle(t),
                 (None, None, None) => unreachable!("clap requires one of --target, --transport, --to-file"),
             };
             let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
@@ -284,7 +284,10 @@ struct Run<'a> {
 
 /// Where `export` or `migrate` sends the material.
 enum Dest<'a> {
+    /// A token, by `migrate`.
     Token(&'a str),
+    /// A bundle sealed to a token's transport key, by `export --target`.
+    Bundle(&'a str),
     Transport(&'a Path),
     File(FileFormat),
 }
@@ -341,23 +344,15 @@ impl Run<'_> {
                 }
                 continue;
             }
-            match &p.method {
-                Some(method @ (Method::RsaOaepAesKwp(_) | Method::RsaOaep(_) | Method::Public)) => {
-                    items.push(sealed::Item {
-                        src: source_target(cfg, &self.lock, &p.object, from)?,
-                        method: method.clone(),
-                        exposure: p.exposure.unwrap_or(Exposure::Sealed),
-                    });
-                }
-                method => {
-                    let method = method.as_ref().map_or_else(|| "-".to_owned(), Method::name);
-                    return Err(KmError::Unsupported(format!(
-                        "{}: a bundle carries sealed keys and public objects, not {method}",
-                        p.object
-                    ))
-                    .into());
-                }
-            }
+            // Ready means a method a bundle carries (`limit_bundle_plans`).
+            let Some(method) = p.method.clone().filter(in_bundle) else {
+                unreachable!("{}: the plan blocks what a bundle cannot carry", p.object)
+            };
+            items.push(sealed::Item {
+                src: source_target(cfg, &self.lock, &p.object, from)?,
+                method,
+                exposure: p.exposure.unwrap_or(Exposure::Sealed),
+            });
         }
         if items.is_empty() {
             return Err(KmError::Unsupported(format!("nothing on '{from}' can go into a bundle")).into());
@@ -366,7 +361,7 @@ impl Run<'_> {
         let wraps = items.iter().any(|i| i.method != Method::Public);
         let transport = match dest {
             _ if !wraps => None,
-            Dest::Token(to) => {
+            Dest::Bundle(to) => {
                 let tr = transport_target(cfg, &self.lock, to, transport_choice(cfg, to, how))?;
                 Some(if let Some(key) = tokens::locked_transport(&tr, &self.lock, notes)? {
                     key
@@ -382,7 +377,9 @@ impl Run<'_> {
                 let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
                 Some(Transport::parse(&text, path)?.key()?)
             }
-            Dest::File(_) => unreachable!("a file plan is never sealed"),
+            Dest::Token(_) | Dest::File(_) => {
+                unreachable!("an export makes a bundle or a key file, and a file plan is never sealed")
+            }
         };
         let bundle = sealed::export(&items, &source, &self.lock, transport.as_ref(), notes)?;
         let text = bundle.to_toml()?;
@@ -602,6 +599,7 @@ impl Run<'_> {
     ) -> anyhow::Result<tokens::Moves> {
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
         let open = |name: &str, notes: &mut Notes| open_token(cfg, modules, registry, name, Access::Read, notes);
+        let bundle = matches!(dest, Dest::Bundle(_) | Dest::Transport(_));
         let transport = match dest {
             Dest::Transport(path) => {
                 let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
@@ -610,7 +608,7 @@ impl Run<'_> {
             _ => None,
         };
         let dest = match (dest, &transport) {
-            (Dest::Token(name), _) => tokens::Dest::Token(name),
+            (Dest::Token(name) | Dest::Bundle(name), _) => tokens::Dest::Token(name),
             (Dest::File(f), _) => tokens::Dest::File(*f),
             (Dest::Transport(_), Some((t, shown))) => tokens::Dest::Transport(t, shown),
             (Dest::Transport(_), None) => unreachable!("parsed above"),
@@ -672,13 +670,35 @@ impl Run<'_> {
                 ));
             }
         }
-        if let Some(format) = file_format {
-            self.limit_file_plans(&mut moves.plans, format, from);
+        match file_format {
+            Some(format) => self.limit_file_plans(&mut moves.plans, format, from),
+            None if bundle => limit_bundle_plans(&mut moves.plans),
+            None => {}
         }
         if show {
             show_plans(from, &moves, how.json)?;
         }
         Ok(moves)
+    }
+}
+
+/// Whether a bundle carries what `method` moves: sealed keys and public objects.
+fn in_bundle(method: &Method) -> bool {
+    matches!(method, Method::RsaOaepAesKwp(_) | Method::RsaOaep(_) | Method::Public)
+}
+
+/// A bundle carries sealed keys and public objects only: a move the plan sends another way
+/// (through the host, a provider's own method) is `migrate`'s, said in the plan, since the
+/// export would refuse it.
+fn limit_bundle_plans(plans: &mut [plan::Plan]) {
+    for p in plans.iter_mut().filter(|p| p.ready) {
+        if let Some(method) = p.method.as_ref().filter(|m| !in_bundle(m)) {
+            p.ready = false;
+            p.reasons.push(format!(
+                "a bundle carries sealed keys and public objects, not {}: move it with `camigrate migrate`",
+                method.name()
+            ));
+        }
     }
 }
 

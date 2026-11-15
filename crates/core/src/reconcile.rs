@@ -892,4 +892,43 @@ mod tests {
         let moved = notes(&with("/rebuilt/m.so", SRI_B));
         assert!(!moved.is_empty() && moved.iter().all(|l| l.starts_with("note: ")), "{moved:?}");
     }
+
+    /// What a compare says without failing: an attestation the lock does not record yet (a
+    /// note: `realise` adds it), a public session where the realisation was made in a user one,
+    /// mechanisms the token no longer offers, and observation keys of a newer cakeys (warnings).
+    /// A type that changed since it was locked fails, writing or not.
+    #[test]
+    fn a_compare_reports_what_changed_around_the_realisation() {
+        let cfg = config();
+        let t = Target::new(&cfg, "s", "t").unwrap();
+        let mut lock = empty_lock();
+        let mut was = facts("1");
+        was.observation.extra.insert("future".into(), toml::Value::Boolean(true));
+        reconcile(&t, &resolved(&t), &mut lock, &was, LockWrite::Record, &mut Notes::default()).unwrap();
+        let mut now = facts("1");
+        now.observed.session = Session::Public;
+        now.observation.mechanisms.clear();
+        let attested = Resolved {
+            attestation: Some(AttestationRecord { kind: "tpm-certify".into(), root: SRI_A.into(), id: SRI_B.into() }),
+            ..resolved(&t)
+        };
+        let mut notes = Notes::default();
+        compare(&t, &attested, &lock, &now, LockWrite::Compare, &mut notes).unwrap();
+        let said = notes.lines().join("\n");
+        for line in [
+            "note: 'k' (spec 's') on token 't' also has a tpm-certify attestation the lock does not record",
+            "realised in a user session; this public session cannot see",
+            "the token offered CKM_ECDSA, which it no longer does",
+            "observations this cakeys does not know (future)",
+        ] {
+            assert!(said.contains(line), "expected {line:?} in\n{said}");
+        }
+
+        let mut retyped = lock.clone();
+        retyped.objects.get_mut("k").unwrap().object_type.as_mut().unwrap().curve = Some("secp384r1".into());
+        for write in [LockWrite::Compare, LockWrite::Record] {
+            let e = compare(&t, &resolved(&t), &retyped, &facts("1"), write, &mut Notes::default()).unwrap_err();
+            assert!(matches!(&e, KmError::PreconditionFailed(m) if m.contains("changed since it was locked")), "{e}");
+        }
+    }
 }

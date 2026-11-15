@@ -381,6 +381,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "toml",
+ "x509-cert",
 ]
 
 [[package]]

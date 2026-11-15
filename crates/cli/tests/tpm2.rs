@@ -641,6 +641,25 @@ fn tpm2_attestation_refuses_a_store_that_disagrees() {
     });
     refused("the TPM attests the public key");
 
+    // An HMAC key's blobs under the EC key's attributes: the TPM certifies a symmetric object.
+    let hmac_file = e.dir.join("hmac.bin");
+    std::fs::write(&hmac_file, HMAC_VALUE).unwrap();
+    e.ptool(&[
+        "import",
+        "--algorithm=hmac:sha256",
+        &format!("--privkey={}", hmac_file.display()),
+        "--key-label=store-mac",
+    ]);
+    let mut mac_values = Vec::new();
+    edit_private_row("store-mac", |attrs| {
+        mac_values = tpm_attrs.iter().map(|t| row_value(attrs, *t)).collect();
+        attrs.to_owned()
+    });
+    edit_private_row("store-a", |attrs| {
+        tpm_attrs.iter().zip(&mac_values).fold(attrs.to_owned(), |a, (t, b)| a.replace(&row_value(&a, *t), b))
+    });
+    refused("the store object is a symmetric object, but the PKCS#11 object is an asymmetric key");
+
     // A second primary, transient, with a token of its own.
     let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
     let path = format!("--path={store}");
@@ -663,4 +682,89 @@ fn tpm2_attestation_refuses_a_store_that_disagrees() {
     let o = e.km(&["realise", "t", "--token", "trans", "--no-update-lock"]);
     assert!(stderr(&o).contains("the token's primary is transient"), "{}", stderr(&o));
     assert_eq!(code(&o), 16, "{}", stderr(&o));
+}
+
+/// Every key type tpm2-pkcs11 generates is attested with its own public area: P-384, P-521 and
+/// RSA as P-256 is (`tpm2_keys_attest_their_tpm_residence`), the attested key compared with
+/// the object's material.
+#[test]
+fn tpm2_attests_each_key_type() {
+    let Some(e) = env("attest-types") else { return };
+    let key = |name: &str, ty: &str, binding: &str| {
+        format!(
+            "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\n{ty}\n\n[specs.{name}]\nobject = \"{name}\"\n\
+             attributes = {{ CKA_SIGN = true }}\n\
+             tokens.tpm = {{ locator = {{ CKA_LABEL = \"types-{name}\" }}, autoCreate = true, attestation = true{binding} }}\n\n"
+        )
+    };
+    e.config(
+        &[
+            key("p384", "keyType = \"CKK_EC\"\ncurve = \"secp384r1\"", ""),
+            // tpm2-pkcs11 cannot sign with a P-521 key (upstream/tpm2-pkcs11/PR.md): no signing proof.
+            key("p521", "keyType = \"CKK_EC\"\ncurve = \"secp521r1\"", ", binding = \"token-asserted\""),
+            key("rsa", "keyType = \"CKK_RSA\"\nmodulusBits = 2048", ""),
+        ]
+        .concat(),
+    );
+    for spec in ["p384", "p521", "rsa"] {
+        let o = e.km(&["realise", spec, "--token", "tpm", "--update-lock"]);
+        assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
+        assert_eq!(e.locked_attestation(spec, "tpm")["kind"].as_str(), Some("tpm-certify"), "{spec}");
+        assert_eq!(e.code(&["verify", spec, "--token", "tpm"]), 0, "{spec}");
+    }
+}
+
+/// Where the attestation finds the store and the TPM: a TCTI named in the token's options, and
+/// — with `TPM2_PKCS11_STORE` unset — the module's own search path (`~/.tpm2_pkcs11`). A store
+/// named in the options that holds another token is not found (11).
+#[test]
+fn tpm2_attestation_finds_its_store_and_tpm_as_configured() {
+    let Some(e) = env("attest-find") else { return };
+    e.ptool(&["addkey", "--algorithm=ecc256", "--key-label=find-a"]);
+    let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
+    let tcti = std::env::var("TPM2_PKCS11_TCTI").unwrap();
+    let config = |options: &str| {
+        e.write_config(&format!(
+            "[tokens.tpm]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n{options}\n\n\
+             [objects.a]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.a]\nobject = \"a\"\nattributes = {{ CKA_SIGN = true }}\n\
+             tokens.tpm = {{ locator = {{ CKA_LABEL = \"find-a\" }}, attestation = true }}\n",
+            e.module,
+            e.dir.join("pin").display()
+        ));
+    };
+    let r = ["realise", "a", "--token", "tpm", "--no-update-lock"];
+    config(&format!("options = {{ tcti = \"{tcti}\" }}"));
+    assert_eq!(e.code(&r), 10, "the TCTI from the options");
+
+    // No TPM2_PKCS11_STORE: the store under $HOME, where the module looks too.
+    config("");
+    let home = e.dir.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::os::unix::fs::symlink(&store, home.join(".tpm2_pkcs11")).unwrap();
+    let o = Command::new(BIN)
+        .env_remove("TPM2_PKCS11_STORE")
+        .env_remove("NIX_BUILD_TOP")
+        .env("HOME", &home)
+        .arg("--config")
+        .arg(e.dir.join("keys.toml"))
+        .args(r)
+        .output()
+        .unwrap();
+    assert_eq!(code(&o), 10, "the store under $HOME: {}", stderr(&o));
+
+    // A store of another token, named in the options.
+    let other = e.dir.join("other-store");
+    let path = format!("--path={}", other.display());
+    std::fs::create_dir_all(&other).unwrap();
+    for args in
+        [vec!["init", &path], vec!["addtoken", "--pid=1", "--label=other", "--sopin=5678", "--userpin=1234", &path]]
+    {
+        let out = Command::new("tpm2_ptool").args(&args).output().unwrap();
+        assert!(out.status.success(), "tpm2_ptool {args:?}: {}", stderr(&out));
+    }
+    config(&format!("options = {{ tpm2Store = \"{}\" }}", other.display()));
+    let o = e.km(&r);
+    assert_eq!(code(&o), 11, "{}", stderr(&o));
+    assert!(stderr(&o).contains("token 'kmtest' in the tpm2-pkcs11 store"), "{}", stderr(&o));
 }

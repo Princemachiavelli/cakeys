@@ -387,6 +387,7 @@ pub struct ProofSide<'a> {
 }
 
 /// The refusal of a per-use PIN proof in a build without the patched cryptoki.
+#[cfg(not(feature = "sign-after-init"))]
 const NO_SIGN_AFTER_INIT: &str = "this build's cryptoki has no sign after C_SignInit, where the per-use login of a \
      CKA_ALWAYS_AUTHENTICATE key goes (nix/patches/cryptoki-sign-after-init.patch, the Nix build's), so the key \
      cannot prove possession; build with it, or opt in with binding = \"token-asserted\"";
@@ -400,7 +401,8 @@ const NO_SIGN_AFTER_INIT: &str = "this build's cryptoki has no sign after C_Sign
 ///
 /// `Unsupported` for a key type or curve no proof is defined for.
 pub fn proof_refusal(object: &ObjectCfg, binding: Binding, side: &ProofSide<'_>) -> Result<Option<String>> {
-    if binding == Binding::PopSignPin && !cfg!(feature = "sign-after-init") {
+    #[cfg(not(feature = "sign-after-init"))]
+    if binding == Binding::PopSignPin {
         return Ok(Some(NO_SIGN_AFTER_INIT.into()));
     }
     if binding == Binding::PopUnwrap && !side.unwraps {

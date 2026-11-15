@@ -30,6 +30,10 @@ fn supports_answers_from_the_embedded_profiles() {
     // The same fact, factored out by hand into the swtpm layer.
     assert_eq!(supports(&["--profile", "tpm2-pkcs11", "--layer", "swtpm", "--bits", "4096", "CKK_RSA"]), 15);
     assert_eq!(supports(&["--class", "pq", "--profile", "softhsm/2.7"]), 15);
+    // A PBKDF2 parameter set names no key type to generate: the profiles cannot decide it.
+    assert_eq!(supports(&["--profile", "softhsm/2.7", "CKP_PKCS5_PBKD2_HMAC_SHA1"]), 16);
+    // No module profile at all: only the binding layer and the baseline answer.
+    assert_eq!(supports(&["CKM_SHA512_HMAC"]), 16);
 }
 
 /// `--profiles <dir>` adds profiles to the embedded set: a layer of one's own subtracts.

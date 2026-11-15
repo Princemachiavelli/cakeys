@@ -77,7 +77,7 @@ pub fn moduleless_info() -> ModuleInfo {
 }
 
 /// Resolve a token's profiles: `provider` is the selected provider's name (or the explicitly
-/// configured one, which may name the profile exactly, e.g. `provider = "softhsm/2.7"`);
+/// configured one: a family, never a profile, docs/CONFIG.md);
 /// `token` is what `C_GetTokenInfo` gave, when there is a token (its firmware matches a module
 /// that hides its version).
 ///
@@ -132,22 +132,14 @@ pub fn resolve(
         out.hidden = Some(format!("{}: {why}", l.profile));
     }
 
-    // 4. The module profile: the configured provider (family, or exact profile name), else
+    // 4. The module profile: of the configured provider's family, else
     //    the selected provider's family. A profile is observed on a module and the hardware
     //    under it (D9/D10), so it is chosen by the most match keys: the expressed version
     //    first (C_GetInfo; a module hiding it as 0.0 records none), then the token's model and
     //    firmware. Anything short of all of them is flagged in the notes.
     let family = cfg.provider.as_deref().unwrap_or(provider);
-    let candidates: Vec<&Profile> = set
-        .all()
-        .iter()
-        .filter(|p| p.mode == Mode::Observed && (p.profile == family || p.family() == family))
-        .collect();
-    if let Some(p) = candidates.iter().find(|p| p.profile == family) {
-        // Named exactly in keys.toml: the user's choice, taken as is.
-        out.module = Some((*p).clone());
-        return Ok(out);
-    }
+    let candidates: Vec<&Profile> =
+        set.all().iter().filter(|p| p.mode == Mode::Observed && p.family() == family).collect();
     let fit = |p: &Profile| Fit::of(p, module, token);
     let Some((chosen, tied)) = choose(&candidates, &out.layers, module, token, family)? else { return Ok(out) };
     let mut p = chosen.clone();
@@ -233,10 +225,11 @@ fn choose<'a>(
             let rank = |p: &Profile| (named_hardware(p), fit(p).hardware_keys());
             let best = eligible.iter().map(|p| rank(p)).max().ok_or_else(|| {
                 format!(
-                    "several module profiles for '{family}' and none records version '{}': name one \
-                     exactly in tokens.<token>.provider ({})",
-                    module.version,
-                    candidates.iter().map(|p| p.profile.as_str()).collect::<Vec<_>>().join(", ")
+                    "several module profiles for '{family}' ({}) and none records module version '{}': \
+                     profile this module with `caprobe probe` (docs/CAPROBE.md), or, before any \
+                     realisation recorded the module in the lock, realise one",
+                    candidates.iter().map(|p| p.profile.as_str()).collect::<Vec<_>>().join(", "),
+                    module.version
                 )
             })?;
             let tied: Vec<&Profile> = eligible.into_iter().filter(|p| rank(p) == best).collect();

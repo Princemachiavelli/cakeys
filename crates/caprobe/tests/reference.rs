@@ -22,6 +22,11 @@ fn committed_profile_is_what_the_probe_observes(r: &Reference, test: &str) {
     w.write_config(&reference_tokens(&module, &w.dir));
     let (name, path) = r.profile;
     assert_profile_conforms(|args| w.km(args), "ref", name, path, &w.dir.join("profile.toml"));
+    // Against the other reference's profile, the drift is printed row by row and refused (15).
+    let other = if r.provider == "softhsm" { KRYOPTIC.profile.0 } else { SOFTHSM.profile.0 };
+    let drift = w.km(&["probe", "--token", "ref", "--diff", other]);
+    assert_eq!(code(&drift), 15, "{}", stderr(&drift));
+    assert!(stderr(&drift).contains(&format!("rows differ from profile {other}")), "{}", stderr(&drift));
     let anon = w.km(&["probe", "--token", "ref-anon", "--write"]);
     assert_eq!(code(&anon), 17);
     assert!(stderr(&anon).contains("not marked scratch"));
@@ -107,4 +112,85 @@ fn the_forwarder_subtracts_exactly_its_layer() {
     assert_eq!(code(&out), 0);
     let renamed: toml::Value = toml::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
     assert_eq!((renamed["profile"].as_str(), probed["profile"].as_str()), (Some("mine/1.0"), Some("p11-kit/1.1")));
+}
+
+/// The write probes' scratch guard (docs/CAPROBE.md), on the reference token named
+/// `provider = "ykcs11"`: a provider that creates only as Security Officer probes one slot,
+/// named by `scratchId`, with the admin credential; without either it is refused (17), as is a
+/// `scratchId` on a provider that creates as the user, and a token with no PIN. A slot holding
+/// anything but ykcs11's own placeholder is never overwritten (17); an empty one, or one with the
+/// placeholder, is probed.
+fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
+    let Some(module) = suite_var(r.module_var, r.require_var, test) else { return };
+    let w = Workdir::new(test);
+    std::fs::write(w.dir.join("so-pin"), "5678\n").unwrap();
+    let (pin, so) = (w.dir.join("pin"), w.dir.join("so-pin"));
+    let token = |name: &str, extra: &str| {
+        format!("[tokens.{name}]\nmodule = \"{module}\"\ntokenLabel = \"kmtest\"\n{extra}\n\n")
+    };
+    let yk = |id: &str| {
+        format!(
+            "provider = \"ykcs11\"\npinFile = \"{}\"\nmgmKeyFile = \"{}\"\nscratchId = \"{id}\"",
+            pin.display(),
+            so.display()
+        )
+    };
+    w.write_config(
+        &[
+            token("no-slot", &format!("provider = \"ykcs11\"\npinFile = \"{}\"", pin.display())),
+            token("no-admin", &format!("provider = \"ykcs11\"\npinFile = \"{}\"\nscratchId = \"05\"", pin.display())),
+            token("user-slot", &format!("pinFile = \"{}\"\nscratchId = \"05\"", pin.display())),
+            token("no-pin", "scratch = true"),
+            token("empty", &yk("05")),
+            token("taken", &yk("06")),
+            token("placeholder", &yk("18")),
+        ]
+        .concat(),
+    );
+    let refused = |name: &str, why: &str| {
+        let o = w.km(&["probe", "--token", name, "--write"]);
+        assert_eq!(code(&o), 17, "{name}: {}", stderr(&o));
+        assert!(stderr(&o).contains(why), "{name}: expected {why:?} in {}", stderr(&o));
+    };
+    refused("no-slot", "name the one slot the write probes may overwrite");
+    refused("no-admin", "set tokens.no-admin.mgmKeyFile");
+    refused("user-slot", "scratchId names a slot for providers that create only as Security Officer");
+    refused("no-pin", "has no PIN configured");
+
+    // A real certificate in slot 06, ykcs11's own placeholder in slot 95 (CKA_ID 18).
+    let s = open_session(&module, "kmtest", "1234");
+    let fixture = |name: &str| {
+        let pem = std::fs::read_to_string(format!("{}/../ykcs11/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR")));
+        x509_cert::der::pem::decode_vec(pem.unwrap().as_bytes()).unwrap().1
+    };
+    for (der, id) in [(fixture("slot.pem"), 0x06), (fixture("placeholder95.pem"), 0x18)] {
+        let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(&der).unwrap();
+        let subject = x509_cert::der::Encode::to_der(cert.tbs_certificate().subject()).unwrap();
+        s.create_object(&[
+            cryptoki::object::Attribute::Class(cryptoki::object::ObjectClass::CERTIFICATE),
+            cryptoki::object::Attribute::CertificateType(cryptoki::object::CertificateType::X_509),
+            cryptoki::object::Attribute::Token(true),
+            cryptoki::object::Attribute::Id(vec![id]),
+            cryptoki::object::Attribute::Subject(subject),
+            cryptoki::object::Attribute::Value(der),
+        ])
+        .unwrap();
+    }
+    drop(s);
+    refused("taken", "scratchId 06 holds objects that are not ykcs11's own placeholder");
+    for name in ["empty", "placeholder"] {
+        let o = w.km(&["probe", "--token", name, "--write"]);
+        assert_eq!(code(&o), 0, "{name}: {}", stderr(&o));
+        assert!(stderr(&o).contains("in a scratch slot: no secret-key, wrap or delete probes"), "{}", stderr(&o));
+    }
+}
+
+#[test]
+fn softhsm_the_scratch_guard_names_one_slot() {
+    the_scratch_guard_names_one_slot(&SOFTHSM, "softhsm-scratch-slot");
+}
+
+#[test]
+fn kryoptic_the_scratch_guard_names_one_slot() {
+    the_scratch_guard_names_one_slot(&KRYOPTIC, "kryoptic-scratch-slot");
 }

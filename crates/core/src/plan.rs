@@ -373,7 +373,7 @@ mod tests {
             assert_eq!(assurance(class, binding, kind), want, "{class:?} {binding:?} {kind:?}");
         }
         assert_eq!(serde_json::to_string(&Fingerprint).unwrap(), "\"fingerprint\"");
-        assert_eq!(Proof.name(), "proof");
+        assert_eq!([Proof, Fingerprint, Public].map(Assurance::name), ["proof", "fingerprint", "public"]);
     }
 
     /// The AES commitment strength order (docs/DESIGN.md §3.1, finding S15): CMAC, then the
@@ -382,5 +382,17 @@ mod tests {
     #[test]
     fn aes_commit_strength_order_is_pinned() {
         assert_eq!(AES_COMMITS, [Commit::Cmac, Commit::KcvEcb, Commit::KcvEcbDecrypt, Commit::Kw]);
+    }
+
+    /// A `Config` not made by loading keys.toml (which refuses it) may name an object it does
+    /// not define: planning a target refuses it (17).
+    #[test]
+    fn a_spec_of_an_undefined_object_is_refused() {
+        let cfg: Config = toml::from_str(
+            "[tokens.t]\ntokenLabel = \"t\"\n\n[specs.s]\nobject = \"gone\"\ntokens.t = { locator = { CKA_LABEL = \"x\" } }\n",
+        )
+        .unwrap();
+        let e = Target::new(&cfg, "s", "t").err().unwrap();
+        assert!(matches!(&e, KmError::Validation(m) if m.contains("unknown object 'gone'")), "{e}");
     }
 }

@@ -1496,6 +1496,15 @@ tokens.ref = { locator = { CKA_LABEL = "no-cmac" }, autoCreate = true }
     // With CMAC back, the same key also yields cmac, linked through the locked kw.
     assert_eq!(e.code(&["realise", "k", "--token", "ref", "--update-lock"]), 0);
     assert!(e.lock()["objects"]["k"]["ids"].get("cmac").is_some());
+    // A spec that allows cmac alone, verified where the token hides it: nothing to compute (15).
+    let text = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
+    e.write_config(&format!(
+        "{text}\n[specs.k-sign]\nobject = \"k\"\nattributes = {{ CKA_SIGN = true }}\n\
+         tokens.ref = {{ locator = {{ CKA_LABEL = \"no-cmac\" }} }}\n"
+    ));
+    let o = e.km_env(&["verify", "k-sign", "--token", "ref"], &env);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("implements none of CKM_AES_CMAC"), "{}", stderr(&o));
 }
 
 /// The provider is detected from `C_GetInfo`, or named in keys.toml; the lock's observation
@@ -2120,6 +2129,11 @@ fn proofs_the_key_will_not_give_are_refused() {
         assert_eq!(code(&o), 15, "{name}: {}", stderr(&o));
         assert!(stderr(&o).contains(&format!("proving possession needs {attribute}")), "{}", stderr(&o));
     }
+    // The same on the extractable derive path (no HMAC for the sealed one).
+    let (var, conf) = e.hiding("CKM_SHA256_HMAC");
+    let o = e.km_env(&["realise", "derive", "--token", "ref", "--no-update-lock"], &[(var, conf.as_path())]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("proving possession needs CKA_DERIVE"), "{}", stderr(&o));
 }
 
 /// The live object must be the declared type, and its public half must be one public key it
@@ -2138,6 +2152,7 @@ fn the_live_object_must_be_what_the_spec_says() {
             label(name),
             Attribute::ModulusBits(2048.into()),
             Attribute::PublicExponent(vec![1, 0, 1]),
+            Attribute::Verify(true),
         ];
         s.generate_key_pair(
             &Mechanism::RsaPkcsKeyPairGen,
@@ -2169,6 +2184,15 @@ fn the_live_object_must_be_what_the_spec_says() {
         .or_else(|_| pair(&Mechanism::EccMontgomeryKeyPairGen, "odd", &x25519, Attribute::Derive(true)))
         .unwrap();
     s.update_attributes(odd, &[label("rsa-odd")]).unwrap();
+    // An RSA pair beside a second public key of another pair, and one whose public half is
+    // another pair's: what a spec declaring publicAttributes checks first.
+    rsa_pair("pub-two");
+    let (extra, _) = rsa_pair("pub-extra");
+    s.update_attributes(extra, &[label("pub-two")]).unwrap();
+    let (own, _) = rsa_pair("pub-swap");
+    s.destroy_object(own).unwrap();
+    let (foreign, _) = rsa_pair("pub-foreign");
+    s.update_attributes(foreign, &[label("pub-swap")]).unwrap();
     drop(s);
 
     let spec = |name: &str, object: &str, usage: &str, label: &str| {
@@ -2186,6 +2210,13 @@ fn the_live_object_must_be_what_the_spec_says() {
             spec("alone", ec, "CKA_SIGN", "ec-alone"),
             spec("two", ec, "CKA_SIGN", "ec-two"),
             spec("odd", &rsa(2048), "CKA_SIGN", "rsa-odd"),
+            spec("pub-two", &rsa(2048), "CKA_SIGN", "pub-two")
+                .replace("tokens.ref", "publicAttributes = { CKA_VERIFY = true }\ntokens.ref"),
+            spec("pub-swap", &rsa(2048), "CKA_SIGN", "pub-swap")
+                .replace("tokens.ref", "publicAttributes = { CKA_VERIFY = true }\ntokens.ref"),
+            spec("pub-only", &rsa(2048), "CKA_SIGN", "rsa")
+                .replace("attributes = { CKA_SIGN = true }", "publicAttributes = { CKA_VERIFY = true }")
+                .replace(" }\n\n", ", publicOnly = true }\n\n"),
         ]
         .concat(),
     );
@@ -2198,6 +2229,10 @@ fn the_live_object_must_be_what_the_spec_says() {
     refused("short", 13, "CKA_VALUE_LEN mismatch");
     refused("two", 12, "several public key objects share the locator");
     refused("odd", 13, "exposes no key material");
+    refused("pub-two", 12, "several public key objects share the locator");
+    refused("pub-swap", 13, "the public key object under the locator holds another key");
+    // Adopted publicOnly, the public key object itself carries the publicAttributes.
+    assert_eq!(e.code(&["realise", "pub-only", "--token", "ref", "--no-update-lock"]), 10);
     // kryoptic's EC private key carries its own CKA_PUBLIC_KEY_INFO; SoftHSM's carries no public key.
     if REF.provider == "softhsm" {
         refused("alone", 11, "no public key object under the locator");
@@ -2296,6 +2331,20 @@ fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
     let o = e.km(&["realise", "new", "--token", "yk", "--no-update-lock"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("needs a Security Officer session"), "{}", stderr(&o));
+    // ykcs11 clears only a slot's certificate on delete and keeps the key: a delete is refused (15)
+    // with the tool that does remove it, never reported as done.
+    assert_eq!(e.code(&["realise", "sig", "--token", "yk", "--update-lock"]), 0);
+    let o = e.km(&["delete", "sig", "--token", "yk", "--update-lock"]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("ykman piv keys delete"), "{}", stderr(&o));
+    // An admin credential the module refuses: the SO step is unavailable (16), never retried.
+    std::fs::write(e.dir.join("bad-so"), "0000\n").unwrap();
+    let text = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
+    let bad_so = format!("provider = \"ykcs11\"\nmgmKeyFile = \"{}\"\n", e.dir.join("bad-so").display());
+    e.write_config(&text.replacen("provider = \"ykcs11\"\n", &bad_so, 1));
+    let o = e.km(&["realise", "new", "--token", "yk", "--no-update-lock"]);
+    assert_eq!(code(&o), 16, "{}", stderr(&o));
+    assert!(stderr(&o).contains("C_Login (SO) with mgmKeyFile/mgmKeyEnv"), "{}", stderr(&o));
 }
 
 /// What opening a token refuses before any object is touched: a PIN from an environment
@@ -2848,6 +2897,10 @@ fn create_makes_keys_without_autocreate() {
     // ...and refused, never regenerated, when the lock pins material the token lost.
     s.clear(&["create-ec"]);
     assert_eq!(e.code(&["create", "ec", "--token", "ref"]), 14);
+    // Named, a class cakeys adopts rather than generates is still not created (17).
+    let o = e.km(&["create", "cert", "--token", "ref"]);
+    assert_eq!(code(&o), 17, "{}", stderr(&o));
+    assert!(stderr(&o).contains("certificates are adopted, not created"), "{}", stderr(&o));
     assert!(s.labelled("create-ec").is_empty(), "nothing regenerated");
 }
 
@@ -2968,4 +3021,49 @@ tokens.ref = { locator = { CKA_LABEL = "del-other" }, autoCreate = true }
     // Absent now: success, and the lone public key is still not identified, so it stays.
     assert_eq!(code(&del("ref")), 0);
     assert_eq!(of_class(ObjectClass::PUBLIC_KEY, "del-rsa").len(), 1);
+}
+
+/// The PIN counters a module reports (M2), after wrong PINs another program sent: a login that
+/// failed since the last success is a warning; with one try left, cakeys refuses to spend it on
+/// a PIN file that may be wrong (16), and a locked PIN is unavailable (16). `SoftHSM` reports only
+/// the first; kryoptic all three (count-low after 6 failures, final try after 9, locked at 10).
+#[test]
+fn pin_counters_stop_cakeys_before_it_spends_a_try() {
+    let Some(e) = env("pin-counters") else { return };
+    e.config(&EC.replace("ec-lifecycle", "pin-counters"));
+    let ctx = Pkcs11::new(&e.module).unwrap();
+    ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();
+    let slot = ctx
+        .get_slots_with_token()
+        .unwrap()
+        .into_iter()
+        .find(|s| ctx.get_token_info(*s).unwrap().label() == "kmtest")
+        .unwrap();
+    let fail_until = |done: &dyn Fn(&cryptoki::slot::TokenInfo) -> bool| {
+        for _ in 0..12 {
+            if done(&ctx.get_token_info(slot).unwrap()) {
+                return true;
+            }
+            let s = ctx.open_ro_session(slot).unwrap();
+            assert!(s.login(cryptoki::session::UserType::User, Some(&AuthPin::new("0000".into()))).is_err());
+        }
+        done(&ctx.get_token_info(slot).unwrap())
+    };
+    let r = ["realise", "signing-soft", "--token", "ref", "--no-update-lock"];
+    assert!(fail_until(&|t| t.user_pin_count_low()));
+    let o = e.km(&r);
+    assert_eq!(code(&o), 10, "{}", stderr(&o));
+    assert!(stderr(&o).contains("a user PIN login failed since the last success"), "{}", stderr(&o));
+    if REF.provider != "kryoptic" {
+        return;
+    }
+    assert!(fail_until(&|t| t.user_pin_final_try()));
+    let o = e.km(&r);
+    assert_eq!(code(&o), 16, "{}", stderr(&o));
+    assert!(stderr(&o).contains("one user PIN try is left"), "{}", stderr(&o));
+    assert!(ctx.get_token_info(slot).unwrap().user_pin_final_try(), "cakeys spent the last try");
+    assert!(fail_until(&|t| t.user_pin_locked()));
+    let o = e.km(&r);
+    assert_eq!(code(&o), 16, "{}", stderr(&o));
+    assert!(stderr(&o).contains("the user PIN is locked"), "{}", stderr(&o));
 }

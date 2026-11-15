@@ -181,6 +181,7 @@ fn every_curve_parses_from_pkcs8() {
             assert_eq!(v.as_slice(), &$bytes[..], $curve);
             let spki = key.public_key().to_public_key_der().unwrap();
             assert_eq!(spki_of_pkcs8(der.as_bytes()).unwrap(), spki.as_bytes(), $curve);
+            assert_eq!(cakeys_core::id::spki_canonical(spki.as_bytes()).unwrap(), spki.as_bytes(), $curve);
         }};
     }
     ec!(p384::SecretKey, "secp384r1", [7u8; 48]);
@@ -196,6 +197,8 @@ fn every_curve_parses_from_pkcs8() {
     let e = private_from_pkcs8(der.as_bytes(), KeyType::Aes, Some("secp256r1")).err().unwrap();
     assert!(matches!(&e, KmError::Unsupported(m) if m.contains("on secp256r1")), "{e}");
     assert!(matches!(spki_of_pkcs8(b"no key at all"), Err(KmError::Unsupported(_))));
+    // An Edwards curve has no ECDSA hash: its proof is EdDSA.
+    assert!(cakeys_core::pop::EcdsaHash::for_curve(cakeys_core::id::Curve::Ed25519).is_none());
 }
 
 /// A proof of possession needs a verifier for the key's type: Ed448 has none, and bytes that

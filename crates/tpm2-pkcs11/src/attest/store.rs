@@ -320,5 +320,16 @@ mod tests {
         assert_eq!(parent.handle, 0x8100_0001);
         let err = parse_parent("---\n!!map {\n  ? !!str \"transient\"\n  : !!bool \"true\",\n}\n", "").err().unwrap();
         assert!(err.to_string().contains("primary is transient"), "{err}");
+        // The serialized ESYS_TR: a handle, a sized Name, then the resource type (1, a key).
+        let config = include_str!("../../tests/fixtures/pobject-config.yaml");
+        let tr_type = 2 * (4 + 2 + 0x22);
+        let start = config.find("81000001").unwrap();
+        let edited = |at: usize, hex: &str| {
+            let mut c = config.to_owned();
+            c.replace_range(start + at..start + at + hex.len(), hex);
+            parse_parent(&c, "").err().unwrap().to_string()
+        };
+        assert!(edited(tr_type, "00000002").contains("not a key resource"));
+        assert!(edited(0, "80000001").contains("not a persistent object"));
     }
 }

@@ -234,4 +234,27 @@ mod tests {
         assert_eq!(unprobed.wrap.oaep, None);
         assert!(matches!(Effective::new(b, Some(&unprobed), &[]).oaep()[0].1, Verdict::Unknown { .. }));
     }
+
+    /// A `--profiles` directory, read recursively: a baseline is added, a profile of a loaded
+    /// name replaces it, a new one is added, and a file that is neither is refused by name.
+    #[test]
+    fn a_directory_adds_and_replaces() {
+        let dir = std::env::temp_dir().join(format!("cakeys-profile-dir-{}", std::process::id()));
+        let nested = dir.join("modules");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(dir.join("baseline.toml"), embedded::BASELINE_FILES[0].1).unwrap();
+        std::fs::write(dir.join("softhsm.toml"), "profile = \"softhsm/2.7\"\nmode = \"observed\"\npartial = true\n")
+            .unwrap();
+        std::fs::write(nested.join("m.toml"), "profile = \"m/1\"\nmode = \"observed\"\n").unwrap();
+        std::fs::write(nested.join("notes.txt"), "not toml at all").unwrap();
+        let set = Set::embedded().unwrap().with_dir(&dir).unwrap();
+        assert_eq!(set.baselines.len(), 2);
+        assert!(set.find("softhsm/2.7").unwrap().partial);
+        assert_eq!(set.all().iter().filter(|p| p.profile == "softhsm/2.7").count(), 1);
+        assert!(set.find("m").is_ok());
+        std::fs::write(nested.join("odd.toml"), "name = \"x\"\n").unwrap();
+        let e = Set::embedded().unwrap().with_dir(&dir).err().unwrap();
+        assert!(e.contains("odd.toml: neither a baseline nor a profile"), "{e}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

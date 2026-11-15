@@ -557,3 +557,80 @@ fn certify_loaded(
         extractable: !(attributes.fixed_tpm() || attributes.fixed_parent()),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tss_esapi::structures::{EccParameter, EccSignature, PublicKeyRsa, RsaSignature};
+
+    /// A P-256 key's `TPM2B_PUBLIC` from the store fixture (tests/fixtures/tobject-private.yaml).
+    const PUB_BLOB: &str = "00560023000b000600720000001000100003001000204fabc9186000e8016add3f0bd535700c7b7cab33c93f6c65271254321d58e4c200207a0468724ee74b1cf1496b782172a37bd56f583e4866963a76640c74a7891e90";
+
+    fn pub_blob() -> Vec<u8> {
+        crate::attest::store_hex(PUB_BLOB).unwrap()
+    }
+
+    /// The Name is the `nameAlg` and its digest of the public area, for each hash tpm2-pkcs11
+    /// may use; any other algorithm and a truncated blob are refused.
+    #[test]
+    fn names_are_recomputed_by_their_name_alg() {
+        let with_alg = |alg: u16| {
+            let mut blob = pub_blob();
+            blob[4..6].copy_from_slice(&alg.to_be_bytes());
+            recompute_name(&blob)
+        };
+        for (alg, len) in [(0x000B, 32), (0x000C, 48), (0x0010, 64)] {
+            let name = with_alg(alg).unwrap();
+            assert_eq!((&name[..2], name.len()), (&alg.to_be_bytes()[..], 2 + len), "{alg:#06x}");
+        }
+        assert!(matches!(with_alg(0x0004), Err(KmError::Unsupported(m)) if m.contains("0x0004")));
+        assert!(matches!(recompute_name(&pub_blob()[..40]), Err(KmError::Conflict(_))));
+    }
+
+    /// The wrapped object auth is `<iv>:<tag>:<ct>` under the token's wrapping key: it round-trips,
+    /// and another shape or another key is refused (13).
+    #[test]
+    fn object_auth_unwraps_only_in_its_own_shape_and_key() {
+        let key = [7u8; 32];
+        let iv = [1u8; 12];
+        let cipher = aes_gcm::Aes256Gcm::new_from_slice(&key).unwrap();
+        let sealed = cipher.encrypt((&iv).into(), b"secret".as_ref()).unwrap();
+        let (ct, tag) = sealed.split_at(sealed.len() - 16);
+        let hex = |b: &[u8]| b.iter().fold(String::new(), |s, x| s + &format!("{x:02x}"));
+        let wrapped = format!("{}:{}:{}", hex(&iv), hex(tag), hex(ct));
+        assert_eq!(unwrap_objauth(&key, &wrapped).unwrap().as_slice(), b"secret");
+        for bad in ["00", &format!("{wrapped}:00"), &format!("00:{}:{}", hex(tag), hex(ct))] {
+            assert!(matches!(unwrap_objauth(&key, bad), Err(KmError::Conflict(m)) if m.contains("<iv>:<tag>:<ct>")));
+        }
+        assert!(
+            matches!(unwrap_objauth(&[8u8; 32], &wrapped), Err(KmError::Conflict(m)) if m.contains("does not decrypt"))
+        );
+    }
+
+    /// The AK's signature is checked on the host: an ECDSA one that does not verify, one too long
+    /// for P-256, an AK that is no EC key, and a signature of another scheme are each refused.
+    #[test]
+    fn attestation_signatures_are_verified_on_the_host() {
+        let ak = material_of(&unmarshal_public(&pub_blob()).unwrap()).unwrap().spki.unwrap();
+        let ecdsa = |r: Vec<u8>, s: Vec<u8>| {
+            Signature::EcDsa(
+                EccSignature::create(
+                    HashingAlgorithm::Sha256,
+                    EccParameter::try_from(r).unwrap(),
+                    EccParameter::try_from(s).unwrap(),
+                )
+                .unwrap(),
+            )
+        };
+        let forged = verify_signature(&ecdsa(vec![1; 32], vec![1; 32]), &ak, b"attest");
+        assert!(matches!(forged, Err(KmError::Conflict(m)) if m.contains("does not verify")));
+        let long = verify_signature(&ecdsa(vec![1; 33], vec![1; 32]), &ak, b"attest");
+        assert!(matches!(long, Err(KmError::Conflict(m)) if m.contains("33-byte component")));
+        let rsa_ak = id::rsa_spki(&[0xc5; 256], &[1, 0, 1]).unwrap();
+        let not_ec = verify_signature(&ecdsa(vec![1; 32], vec![1; 32]), &rsa_ak, b"attest");
+        assert!(matches!(not_ec, Err(KmError::Conflict(m)) if m.contains("not an ECDSA key")));
+        let rsa_sig = RsaSignature::create(HashingAlgorithm::Sha256, PublicKeyRsa::try_from(vec![1; 256]).unwrap());
+        let other = verify_signature(&Signature::RsaSsa(rsa_sig.unwrap()), &ak, b"attest");
+        assert!(matches!(other, Err(KmError::Unsupported(m)) if m.contains("not ECDSA-SHA256")));
+    }
+}

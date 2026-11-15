@@ -79,8 +79,10 @@ fn export_plans_follow_each_sides_capabilities() {
         let (c, v) = plan(soft, &["movable", "--target", "tpm2"]);
         assert_eq!((c, first(&v)), (15, (some("tpm2-ptool"), some("host"), Some(false))), "{v}");
         assert!(v["plans"][0]["reasons"][0].as_str().unwrap().contains("--allow-host-plaintext"), "{v}");
+        // Allowed, the host path is still no export's: a bundle carries sealed keys only.
         let (c, v) = plan(soft, &["movable", "--target", "tpm2", "--allow-host-plaintext"]);
-        assert_eq!((c, first(&v).2), (0, Some(true)), "{v}");
+        assert_eq!((c, first(&v).2), (15, Some(false)), "{v}");
+        assert!(v["plans"][0]["reasons"][0].as_str().unwrap().contains("move it with `camigrate migrate`"), "{v}");
         assert!(v["plans"][0]["notes"][0].as_str().unwrap().contains("residence"), "{v}");
     }
     if named("p11kit").is_some() {
@@ -974,9 +976,17 @@ fn refusals_around_the_plans_and_the_offline_export() {
     let sealed = path("sk2.bundle.toml");
     let o = e.km(soft, &["export", "sk2", "--token", "softhsm", "--transport", &transport, "--out", &sealed]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
+    // A --spec that does not realise the bundle's object there is refused before the import.
+    let o = e.km(kry, &["import", "--token", "kryoptic", "--in", &sealed, "--spec", "ek1-kry"]);
+    refused(&o, 17, "--spec 'ek1-kry' selects nothing");
     let o = e.km(kry, &["import", "--token", "kryoptic", "--in", &sealed]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(code(&e.cakeys(kry, &["verify", "sk2-kry", "--token", "kryoptic"])), 0);
+    // A token the lock records nothing on has nothing to plan.
+    if named("p11kit").is_some() {
+        let o = e.km(soft, &["export", "--token", "p11kit", "--target", "kryoptic", "--dry-run"]);
+        refused(&o, 14, "the lock records no realisation on token 'p11kit'");
+    }
 }
 
 /// A token names its transport key (`transportWith`, docs/CAMIGRATE.md D3), and realising it records
@@ -1426,6 +1436,15 @@ fn host_moves_refuse_what_they_cannot_check() {
     let migrate = |spec: &str, to: &str| {
         e.km(soft, &["migrate", "hg", "--from", "softhsm", "--to", to, "--spec", spec, "--allow-host-plaintext"])
     };
+    // A bundle carries sealed keys and public objects: the host path is migrate's, and the plan
+    // of an export says so (it once said ready, and the export then refused).
+    let export = ["export", "hg", "--token", "softhsm", "--target", "p11kit", "--allow-host-plaintext"];
+    let plan = e.km(soft, &[&export[..], &["--dry-run"]].concat());
+    assert_eq!(code(&plan), 15, "{}", stdout(&plan));
+    assert!(stdout(&plan).contains("not host-pkcs8: move it with `camigrate migrate`"), "{}", stdout(&plan));
+    let out = e.dir.join("hg.bundle.toml");
+    assert_eq!(code(&e.km(soft, &[&export[..], &["--out", out.to_str().unwrap()]].concat())), 15);
+    assert!(!out.exists());
     // The target token itself, reached directly (the forwarder serves this SoftHSM token).
     let direct = std::env::var("CAKEYS_TEST_MODULE").unwrap();
     let target = || open_session(&direct, "kmp11", "1234");
