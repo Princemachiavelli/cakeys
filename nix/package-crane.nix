@@ -74,8 +74,9 @@ let
   # `scopes` is a list of { package, files, workspace ? false }. A package's mutants meet that
   # package's own tests: seconds each, so the unit tier runs in minutes. With `workspace` they
   # meet every crate's tests (a minute each: the whole workspace is rebuilt per mutant). With
-  # `tokens`, the token test environment is up, so the integration suites can catch mutants
-  # too: one job, since the suites share their tokens, and minutes per mutant.
+  # `tokens`, every crate's tests run under cargo-nextest with a token set per test (as the check
+  # phase runs them), so the integration suites can catch mutants too: one mutant at a time, its
+  # tests in parallel, stopping at the first that fails; minutes for a mutant no test catches.
   mutants =
     {
       scopes,
@@ -91,18 +92,25 @@ let
         }:
         ''
           code=0
-          cargo mutants --package ${package} ${lib.optionalString workspace "--test-workspace=true"} \
+          cargo mutants --package ${package} ${
+            lib.optionalString (workspace || tokens) "--test-workspace=true"
+          } \
             --no-shuffle --colors never --jobs ${toString (if tokens then 1 else jobs)} \
             ${lib.concatMapStringsSep " " (f: "--file ${lib.escapeShellArg f}") files} \
             ${
               # The workspace's features name packages: only a run that tests them all takes them.
-              lib.optionalString (workspace || package == "camigrate") (
+              lib.optionalString (workspace || tokens || package == "camigrate") (
                 lib.optionalString common.noDefaultFeatures "--no-default-features "
                 + "--features ${lib.concatStringsSep "," common.features}"
               )
             } \
             --cargo-arg=--locked --output "$TMPDIR/report-${package}" \
-            ${lib.optionalString tokens "-- -- --test-threads=1"} || code=$?
+            ${
+              # The baseline tests only the mutated package whatever --test-workspace says, and its
+              # tests run the tools' binaries: nextest is told to build (and test) the three tools too.
+              lib.optionalString tokens
+                "--test-tool nextest -- --package cakeys --package caprobe --package camigrate"
+            } || code=$?
           # 0: every mutant caught; 2: some missed; 3: some timed out. Those are the report.
           # Anything else (the unmutated tests failing, a bad invocation) fails the build.
           case $code in 0 | 2 | 3) ;; *) exit $code ;; esac
@@ -118,7 +126,15 @@ let
         cargoArtifacts = null;
         doInstallCargoArtifacts = false;
         nativeBuildInputs =
-          base.nativeBuildInputs ++ [ cargo-mutants ] ++ lib.optionals tokens common.args.nativeCheckInputs;
+          base.nativeBuildInputs
+          ++ [ cargo-mutants ]
+          ++ lib.optionals tokens (common.args.nativeCheckInputs ++ [ cargo-nextest ]);
+      }
+      // lib.optionalAttrs tokens {
+        # A token set per test, as the check phase and the coverage report run them.
+        ${runner} = "bash ${./test-tokens.sh}";
+      }
+      // {
         preBuild = lib.optionalString tokens common.args.preCheck;
         postBuild = lib.optionalString tokens common.args.postCheck;
         buildPhaseCargoCommand = lib.concatMapStrings run scopes;
@@ -134,7 +150,7 @@ craneLib.buildPackage (
     # cargo-nextest: one process per test, each through nix/test-tokens.sh (cargo's target
     # runner), which gives it a token set of its own: the suites run in parallel, and no test
     # sees what another left on a token. The regular build (nix/package.nix) and the coverage
-    # report run them the same way; the mutation report on one thread against shared tokens.
+    # report run them the same way, as does the mutation report with the token suites.
     nativeBuildInputs = base.nativeBuildInputs ++ [ cargo-nextest ];
     ${runner} = "bash ${./test-tokens.sh}";
     cargoTestCommand = "cargo nextest run \${CARGO_PROFILE:+--cargo-profile $CARGO_PROFILE}";
