@@ -768,3 +768,87 @@ fn tpm2_attestation_finds_its_store_and_tpm_as_configured() {
     assert_eq!(code(&o), 11, "{}", stderr(&o));
     assert!(stderr(&o).contains("token 'kmtest' in the tpm2-pkcs11 store"), "{}", stderr(&o));
 }
+
+/// Whether this suite's TPM is the software one `nix/tpm2-test-env.sh` started (its private bus
+/// is named for it). The same suite shape can be pointed at a real TPM (`nix/ftpm-test-env.sh`):
+/// a test that changes TPM state beyond the token's own objects runs only here
+/// (docs/DEVELOPMENT.md, "Hardware rules").
+fn on_swtpm() -> bool {
+    std::env::var("DBUS_SESSION_BUS_ADDRESS").is_ok_and(|a| a.contains("unix:abstract=cakeys-tpm-"))
+}
+
+/// `tpm2_<tool> <args>` against the suite's software TPM.
+fn tpm2_tool(tool: &str, args: &[&str]) {
+    assert!(on_swtpm(), "tpm2_{tool} changes the TPM: only against the suite's swtpm");
+    let out = Command::new(format!("tpm2_{tool}")).args(args).output().unwrap();
+    assert!(out.status.success(), "tpm2_{tool} {args:?}: {}", stderr(&out));
+}
+
+/// What the attestation needs and does not find is said, and nothing is attested: a store
+/// directory that does not exist (`~` left as written with no `$HOME`), a module (the fault shim
+/// in front of tpm2-pkcs11) that withholds the `CKA_ID` the store row is found by, a key at the AK handle
+/// that is no cakeys Attestation Key (13: it could sign forged attestations), and an owner
+/// hierarchy with an auth value, in which no Attestation Key can be made.
+#[test]
+fn tpm2_attestation_says_what_it_lacks() {
+    let Some(e) = env("attest-lacks") else { return };
+    e.ptool(&["addkey", "--algorithm=ecc256", "--key-label=lacks-a"]);
+    let config = |token: &str| {
+        e.write_config(&format!(
+            "[tokens.tpm]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\n{token}\n\n\
+             [objects.a]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.a]\nobject = \"a\"\nattributes = {{ CKA_SIGN = true }}\n\
+             tokens.tpm = {{ locator = {{ CKA_LABEL = \"lacks-a\" }}, attestation = true, binding = \"token-asserted\" }}\n",
+            e.module,
+        ));
+    };
+    let pin = format!("pinFile = \"{}\"", e.dir.join("pin").display());
+    let r = ["realise", "a", "--token", "tpm", "--no-update-lock"];
+    let refused = |o: &std::process::Output, want: i32, why: &str| {
+        assert_eq!(code(o), want, "{why}: {}", stderr(o));
+        assert!(stderr(o).contains(why), "expected {why:?} in {}", stderr(o));
+    };
+
+    config(&format!("{pin}\noptions = {{ tpm2Store = \"~/no-store\" }}"));
+    let o = Command::new(BIN)
+        .env_remove("HOME")
+        .env_remove("NIX_BUILD_TOP")
+        .arg("--config")
+        .arg(e.dir.join("keys.toml"))
+        .args(r)
+        .output()
+        .unwrap();
+    refused(&o, 16, "opening tpm2-pkcs11 store ~/no-store");
+
+    config(&pin);
+    // Behind a module that withholds the object's CKA_ID there is no store row to find it by
+    // (15); one that withholds its label is found by the CKA_ID alone.
+    e.write_config(&std::fs::read_to_string(e.dir.join("keys.toml")).unwrap().replace(&e.module, &fault_shim()));
+    let plan = e.dir.join("plan.toml");
+    let withheld = |attribute: &str| {
+        let rule =
+            format!("fn = \"C_GetAttributeValue\"\nof_label = \"lacks-a\"\nattribute = \"{attribute}\"\ndrop = true");
+        std::fs::write(&plan, format!("[[rule]]\n{rule}\n")).unwrap();
+        e.km_env(&r, &[("P11_FAULT_MODULE", std::path::Path::new(&e.module)), ("P11_FAULT_PLAN", &plan)])
+    };
+    refused(&withheld("CKA_ID"), 15, "the key object exposes no CKA_ID to find its store row by");
+    let o = withheld("CKA_LABEL");
+    assert_eq!(code(&o), 10, "{}", stderr(&o));
+
+    if !on_swtpm() {
+        eprintln!("skipping the Attestation Key cases: they change the TPM, and this is not the suite's swtpm");
+        return;
+    }
+    // An RSA storage key where the Attestation Key is looked for.
+    let primary = e.dir.join("primary.ctx");
+    let primary = primary.to_str().unwrap();
+    tpm2_tool("createprimary", &["-C", "o", "-G", "rsa2048", "-c", primary]);
+    tpm2_tool("evictcontrol", &["-C", "o", "-c", primary, "0x81000017"]);
+    config(&format!("{pin}\noptions = {{ akHandle = \"0x81000017\" }}"));
+    refused(&e.km(&r), 13, "the object at akHandle 0x81000017 is not a cakeys Attestation Key");
+
+    // A free handle, and an owner hierarchy cakeys has no auth value for.
+    tpm2_tool("changeauth", &["-c", "owner", "an owner password"]);
+    config(&format!("{pin}\noptions = {{ akHandle = \"0x81000018\" }}"));
+    refused(&e.km(&r), 16, "creating the Attestation Key in the owner hierarchy (is owner auth empty?)");
+}
