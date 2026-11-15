@@ -10,9 +10,12 @@
 use crate::Fatal;
 use crate::plan::Call;
 use cryptoki_sys::{
-    CK_ATTRIBUTE, CK_ATTRIBUTE_TYPE, CK_C_INITIALIZE_ARGS, CK_FLAGS, CK_MECHANISM, CK_MECHANISM_INFO,
-    CK_MECHANISM_TYPE, CK_RV, CK_SLOT_INFO, CK_TOKEN_INFO, CK_ULONG, CK_USER_TYPE, CKA_CERTIFICATE_TYPE, CKA_CLASS,
-    CKA_KEY_TYPE,
+    CK_ATTRIBUTE, CK_ATTRIBUTE_TYPE, CK_C_INITIALIZE_ARGS, CK_ECDH1_DERIVE_PARAMS, CK_FLAGS, CK_MECHANISM,
+    CK_MECHANISM_INFO, CK_MECHANISM_TYPE, CK_RSA_AES_KEY_WRAP_PARAMS, CK_RSA_PKCS_OAEP_PARAMS, CK_RSA_PKCS_PSS_PARAMS,
+    CK_RV, CK_SLOT_INFO, CK_TOKEN_INFO, CK_ULONG, CK_USER_TYPE, CKA_CERTIFICATE_TYPE, CKA_CLASS, CKA_KEY_TYPE,
+    CKM_ECDH1_COFACTOR_DERIVE, CKM_ECDH1_DERIVE, CKM_RSA_AES_KEY_WRAP, CKM_RSA_PKCS_OAEP, CKM_RSA_PKCS_PSS,
+    CKM_SHA1_RSA_PKCS_PSS, CKM_SHA224_RSA_PKCS_PSS, CKM_SHA256_RSA_PKCS_PSS, CKM_SHA384_RSA_PKCS_PSS,
+    CKM_SHA512_RSA_PKCS_PSS,
 };
 use std::io::Write;
 use std::os::raw::c_void;
@@ -36,6 +39,12 @@ pub(crate) struct Detail {
     /// The call returned `CKR_OK`: only then are its outputs read.
     pub(crate) ok: bool,
     mechanism: Option<CK_MECHANISM_TYPE>,
+    /// From the mechanism's parameters: the OAEP or PSS hash, the MGF, the OAEP source, the
+    /// ECDH KDF.
+    hash: Option<CK_MECHANISM_TYPE>,
+    mgf: Option<CK_ULONG>,
+    source: Option<CK_ULONG>,
+    kdf: Option<CK_ULONG>,
     user: Option<CK_USER_TYPE>,
     flags: Option<CK_FLAGS>,
     /// `C_Initialize`'s flags, and the flags a slot, token or mechanism info came back with.
@@ -50,15 +59,63 @@ pub(crate) struct Detail {
 }
 
 impl Detail {
-    /// The mechanism of a `CK_MECHANISM` argument.
+    /// The mechanism of a `CK_MECHANISM` argument, and the enumerated choices in the parameters
+    /// of the ones cakeys uses with parameters: an OAEP or PSS hash and MGF, an OAEP source, an
+    /// ECDH KDF (each read only where the parameter is as long as its structure).
     ///
     /// # Safety
     ///
-    /// `mechanism` is null or points to a `CK_MECHANISM`, as the call's contract requires.
+    /// `mechanism` is null or points to a `CK_MECHANISM` whose `pParameter` is null or points to
+    /// `ulParameterLen` readable bytes, as the call's contract requires.
     pub(crate) unsafe fn mechanism(&mut self, mechanism: *const CK_MECHANISM) {
-        if !mechanism.is_null() {
-            // SAFETY: not null, and the caller's contract makes it a readable `CK_MECHANISM`.
-            self.mechanism = Some(unsafe { (*mechanism).mechanism });
+        if mechanism.is_null() {
+            return;
+        }
+        // SAFETY: not null, and the caller's contract makes it a readable `CK_MECHANISM`.
+        let m = unsafe { &*mechanism };
+        self.mechanism = Some(m.mechanism);
+        let p = m.pParameter.cast_const();
+        let fits = |size: usize| !p.is_null() && usize::try_from(m.ulParameterLen) == Ok(size);
+        match m.mechanism {
+            CKM_RSA_PKCS_OAEP if fits(size_of::<CK_RSA_PKCS_OAEP_PARAMS>()) => {
+                // SAFETY: the parameter holds a whole `CK_RSA_PKCS_OAEP_PARAMS`.
+                unsafe { self.oaep(p.cast()) };
+            }
+            CKM_RSA_AES_KEY_WRAP if fits(size_of::<CK_RSA_AES_KEY_WRAP_PARAMS>()) => {
+                // SAFETY: the parameter holds a whole `CK_RSA_AES_KEY_WRAP_PARAMS`, whose OAEP
+                // parameters are null or a `CK_RSA_PKCS_OAEP_PARAMS` by the same contract.
+                unsafe { self.oaep(p.cast::<CK_RSA_AES_KEY_WRAP_PARAMS>().read_unaligned().pOAEPParams) };
+            }
+            CKM_RSA_PKCS_PSS
+            | CKM_SHA1_RSA_PKCS_PSS
+            | CKM_SHA224_RSA_PKCS_PSS
+            | CKM_SHA256_RSA_PKCS_PSS
+            | CKM_SHA384_RSA_PKCS_PSS
+            | CKM_SHA512_RSA_PKCS_PSS
+                if fits(size_of::<CK_RSA_PKCS_PSS_PARAMS>()) =>
+            {
+                // SAFETY: the parameter holds a whole `CK_RSA_PKCS_PSS_PARAMS`.
+                let pss = unsafe { p.cast::<CK_RSA_PKCS_PSS_PARAMS>().read_unaligned() };
+                (self.hash, self.mgf) = (Some(pss.hashAlg), Some(pss.mgf));
+            }
+            CKM_ECDH1_DERIVE | CKM_ECDH1_COFACTOR_DERIVE if fits(size_of::<CK_ECDH1_DERIVE_PARAMS>()) => {
+                // SAFETY: the parameter holds a whole `CK_ECDH1_DERIVE_PARAMS`.
+                self.kdf = Some(unsafe { p.cast::<CK_ECDH1_DERIVE_PARAMS>().read_unaligned() }.kdf);
+            }
+            _ => {}
+        }
+    }
+
+    /// The hash, MGF and source of OAEP parameters.
+    ///
+    /// # Safety
+    ///
+    /// `params` is null or points to a `CK_RSA_PKCS_OAEP_PARAMS`.
+    unsafe fn oaep(&mut self, params: *const CK_RSA_PKCS_OAEP_PARAMS) {
+        if !params.is_null() {
+            // SAFETY: not null, and the contract makes it a `CK_RSA_PKCS_OAEP_PARAMS`.
+            let oaep = unsafe { params.read_unaligned() };
+            (self.hash, self.mgf, self.source) = (Some(oaep.hashAlg), Some(oaep.mgf), Some(oaep.source));
         }
     }
 
@@ -187,6 +244,10 @@ impl Trace {
         }
         let numbers = [
             ("mechanism", detail.mechanism),
+            ("hash", detail.hash),
+            ("mgf", detail.mgf),
+            ("source", detail.source),
+            ("kdf", detail.kdf),
             ("user", detail.user),
             ("flags", detail.flags),
             ("init_flags", detail.init_flags),
