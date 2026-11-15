@@ -71,7 +71,8 @@ let
   # pass. The report is the output, one directory per package: missed.txt (what no test
   # caught), caught.txt, timeout.txt, unviable.txt and outcomes.json.
   #
-  # `scopes` is a list of { package, files, workspace ? false }. A package's mutants meet that
+  # `scopes` is a list of { package, files, workspace ? false, re ? null }, `re` keeping only the
+  # mutants whose name matches (`--re`, e.g. one function). A package's mutants meet that
   # package's own tests: seconds each, so the unit tier runs in minutes. With `workspace` they
   # meet every crate's tests (a minute each: the whole workspace is rebuilt per mutant). With
   # `tokens`, every crate's tests run under cargo-nextest with a token set per test (as the check
@@ -89,6 +90,7 @@ let
           package,
           files,
           workspace ? false,
+          re ? null,
         }:
         ''
           code=0
@@ -97,6 +99,7 @@ let
           } \
             --no-shuffle --colors never --jobs ${toString (if tokens then 1 else jobs)} \
             ${lib.concatMapStringsSep " " (f: "--file ${lib.escapeShellArg f}") files} \
+            ${lib.optionalString (re != null) "--re ${lib.escapeShellArg re}"} \
             ${
               # The workspace's features name packages: only a run that tests them all takes them.
               lib.optionalString (workspace || tokens || package == "camigrate") (
@@ -106,10 +109,17 @@ let
             } \
             --cargo-arg=--locked --output "$TMPDIR/report-${package}" \
             ${
-              # The baseline tests only the mutated package whatever --test-workspace says, and its
-              # tests run the tools' binaries: nextest is told to build (and test) the three tools too.
-              lib.optionalString tokens
-                "--test-tool nextest -- --package cakeys --package caprobe --package camigrate"
+              # cargo-mutants builds and tests only the mutated package whatever --test-workspace
+              # says, and the tests run the tools' binaries: every cargo call selects the three
+              # tools too, which also makes their features valid for a library's mutants.
+              lib.optionalString tokens (
+                "--test-tool nextest "
+                + lib.concatMapStringsSep " " (p: "--cargo-arg=--package=${p}") [
+                  "cakeys"
+                  "caprobe"
+                  "camigrate"
+                ]
+              )
             } || code=$?
           # 0: every mutant caught; 2: some missed; 3: some timed out. Those are the report.
           # Anything else (the unmutated tests failing, a bad invocation) fails the build.
@@ -194,6 +204,13 @@ craneLib.buildPackage (
           }
         ];
       };
+      # One scope ({ package, files, re ? null }) against the token suites, as `mutantsFor`.
+      mutantsOf =
+        scope:
+        mutants {
+          scopes = [ scope ];
+          tokens = true;
+        };
       mutantsFor =
         package: files:
         mutants {
