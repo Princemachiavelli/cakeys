@@ -1,0 +1,241 @@
+# p11-fault: a PKCS#11 module that forwards, and misbehaves on request
+
+Design for [PLAN.md](PLAN.md) A3 and tier 4 of [COVERAGE_PLAN.md](COVERAGE_PLAN.md), written
+2026-11-14. Nothing is built yet.
+
+`libp11_fault.so` is a PKCS#11 module that loads a real one (SoftHSM, kryoptic, a vendor
+module) and forwards every call to it, changing exactly what a fault plan says: a return
+value on the n-th call of a function, an attribute dropped or taken from another object, a
+token flag set, a handle swapped between find and use. Everything else is the real module's
+own behaviour, so nothing in it implements cryptography, objects or sessions.
+
+## Any client, for free
+
+A PKCS#11 module is already the one interface every client loads, so a forwarding module
+works under any of them unchanged: `cakeys`, `pkcs11-tool`, OpenSSL's `pkcs11-provider`, NSS
+`modutil`, `p11-kit` (as a module in its configuration, or in front of `p11-kit-client.so`).
+Being general costs three choices, none of which changes the implementation:
+
+- **Configured from the environment**, which every client passes to the modules it loads:
+  `P11_FAULT_MODULE` (the real module), `P11_FAULT_PLAN` (the plan file; unset, the shim is a
+  pure forwarder), `P11_FAULT_TRACE` (a call log). No `CAKEYS_` names, no keys.toml.
+- **Plans name PKCS#11 things only**: function names, `CKR_*`, `CKA_*`, `CKF_*`, objects by
+  `CKA_LABEL`. Any other value as a number (`rv = 0x30`).
+- **Packaged on its own** (`packages.p11-fault`), outside the cakeys packages, so it is usable
+  without cakeys.
+
+The one general concern that does touch the code is the 3.x interface (below): v1 exports
+only the 2.40 entry point, and a client that needs a 3.x-only function (`C_LoginUser`,
+message-based encryption, KEM) gets `CKR_FUNCTION_NOT_SUPPORTED` from it. cakeys calls none.
+
+## Shape
+
+```text
+crates/p11-fault/
+  Cargo.toml       cdylib + rlib (the rlib for unit tests), publish = false
+  src/lib.rs       C_GetFunctionList, loading, the guard around every entry
+  src/forward.rs   the 68 forwarders, generated from one signature list
+  src/plan.rs      the plan: parsing, matching, call counting
+  src/hooks.rs     what rules do to the outputs of the few functions that need it
+  src/names.rs     CKR_/CKA_/CKF_ names <-> values (the set the plans use; numbers otherwise)
+  src/trace.rs     one JSON line per call
+```
+
+Dependencies: `cryptoki-sys` (the C types), `libloading`, `serde` and `toml`, all already in
+the tree. About 1–1.5k lines.
+
+### Loading
+
+The first `C_GetFunctionList` loads the real module (`dlopen`, kept for the life of the
+process), asks it for its `CK_FUNCTION_LIST`, reads the plan, and builds the shim's own table:
+the real table's `version`, and the shim's forwarder in every slot the real module fills (a
+slot the real module leaves `NULL` stays `NULL`). Both live in `OnceLock`s. A plan that does not
+parse fails that first call with `CKR_GENERAL_ERROR` and a message on stderr: a typo in a fault
+plan must never turn into a test of nothing.
+
+```rust
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn C_GetFunctionList(out: *mut *mut CK_FUNCTION_LIST) -> CK_RV {
+    guard(|| {
+        // Loaded once: the real module, the plan and our table, or why not (kept, so every
+        // later call fails the same way).
+        let shim = SHIM.get_or_init(Shim::load).as_ref().map_err(Fatal::clone)?;
+        unsafe { *out = (&raw const shim.table).cast_mut() };
+        Ok(CKR_OK)
+    })
+}
+
+/// Every entry: a panic never crosses the C boundary.
+fn guard(f: impl FnOnce() -> Result<CK_RV, Fatal>) -> CK_RV {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(Ok(rv)) => rv,
+        Ok(Err(fatal)) => fatal.report(), // stderr once; CKR_GENERAL_ERROR
+        Err(_) => CKR_GENERAL_ERROR,
+    }
+}
+```
+
+### The forwarders
+
+One macro invocation lists the 68 2.40 functions with their parameters; each expands to an
+`extern "C"` function that counts the call, asks the plan, forwards, and lets the function's
+hook (if any) change the outputs:
+
+```rust
+forward! {
+    C_Initialize(init_args: *mut c_void);
+    C_GetTokenInfo(slot: CK_SLOT_ID, info: *mut CK_TOKEN_INFO) => hooks::token_info;
+    C_FindObjects(s: CK_SESSION_HANDLE, out: *mut CK_OBJECT_HANDLE, max: CK_ULONG, n: *mut CK_ULONG)
+        => hooks::find_objects;
+    C_GetAttributeValue(s: CK_SESSION_HANDLE, h: CK_OBJECT_HANDLE, t: *mut CK_ATTRIBUTE, n: CK_ULONG)
+        => hooks::attribute_value;
+    C_SignInit(s: CK_SESSION_HANDLE, m: *mut CK_MECHANISM, key: CK_OBJECT_HANDLE) key => key;
+    // ... the other 63, most with no hook
+}
+
+// What each line expands to (C_FindObjects shown):
+unsafe extern "C" fn C_FindObjects(s: CK_SESSION_HANDLE, out: *mut CK_OBJECT_HANDLE,
+                                   max: CK_ULONG, n: *mut CK_ULONG) -> CK_RV {
+    guard(|| {
+        let call = Call::count(Fn::C_FindObjects); // per-process counter: the n-th call
+        let plan = plan();
+        if let Some(rv) = plan.before(&call) {     // `rv` rules with when = "before"
+            return Ok(rv);
+        }
+        let rv = unsafe { real().C_FindObjects.unwrap()(s, out, max, n) };
+        let rv = hooks::find_objects(plan, &call, rv, s, out, max, n);
+        trace::call(&call, rv);
+        Ok(plan.after(&call, rv))                  // `rv` rules with when = "after"
+    })
+}
+```
+
+The `key => key` form marks the functions that take a key (`C_SignInit`, `C_DecryptInit`,
+`C_DeriveKey`, `C_UnwrapKey`, `C_WrapKey`, ...): a `use_label` rule substitutes the handle
+before forwarding.
+
+### The plan
+
+TOML, read once per process. cakeys runs one process per verb, so one plan is one run's
+behaviour. Rules apply in file order. A rule matches a function, optionally only its n-th call
+(`call`), or one object (`of_label`). It then does one thing:
+
+```toml
+# A return value, without forwarding (default), or after forwarding (the real effect happened).
+[[rule]]
+fn = "C_FindObjects"
+call = 2
+rv = "CKR_DEVICE_ERROR"
+
+[[rule]]
+fn = "C_Login"
+when = "after"
+rv = "CKR_PIN_INCORRECT"
+
+# Token and slot flags: the PIN counters, write protection, a removed token.
+[[rule]]
+fn = "C_GetTokenInfo"
+set_flags = ["CKF_USER_PIN_FINAL_TRY"]
+
+# An attribute: dropped (CKR_ATTRIBUTE_TYPE_INVALID for it), replaced, read from another
+# object, or malformed.
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "victim"
+attribute = "CKA_EC_POINT"
+from_label = "other" # or: drop = true | value = "0441…" | length = "unavailable" | truncate = 3
+
+# Handles: a second object under the locator, or another key used than the one shown.
+[[rule]]
+fn = "C_FindObjects"
+call = 2
+add_label = "decoy"
+
+[[rule]]
+fn = "C_DecryptInit"
+of_label = "shown"
+use_label = "used"
+```
+
+**Labels to handles.** `of_label`, `from_label`, `add_label` and `use_label` are resolved
+through a session of the shim's own (`C_OpenSession` on the caller's slot, read from
+`C_GetSessionInfo`), so resolving never interrupts a find the caller has open. Object handles
+are valid across an application's sessions, which is what makes this work.
+
+### The trace
+
+With `P11_FAULT_TRACE`, one JSON line per call, appended (`O_APPEND`, so the per-process
+writers of a test run interleave whole lines):
+
+```json
+{"pid":4711,"seq":17,"fn":"C_SignInit","n":2,"mechanism":"CKM_ECDSA_SHA256","rv":"CKR_OK","rule":null}
+```
+
+This is PLAN.md A1's trace if `pkcs11-spy` proves too lossy: which functions, mechanisms,
+attribute types and return values cakeys really meets, per reference token.
+
+## Testing the shim itself
+
+1. **Unit tests** (the rlib): plans parse, refuse unknown names and fields, and match the n-th
+   call; each hook on hand-built `CK_ATTRIBUTE` arrays and handle buffers.
+2. **Parity**: the reference suite runs a third time, through the shim with no plan, in front of
+   SoftHSM (a `tests/fault.rs` like `tests/softhsm.rs`, its `Reference` naming
+   `libp11_fault.so`). It must pass exactly as directly. That proves the forwarder transparent
+   before any test trusts it to lie.
+3. **Another client**: in the Nix check, `pkcs11-tool --module libp11_fault.so` lists the
+   slots, then, under a plan failing `C_GetSlotList`, fails with that return value. This is
+   the "any client" claim tested.
+
+## What cakeys tests with it
+
+The tier-4 lines of COVERAGE_PLAN.md become rows of one table: a plan, a verb, the exit code
+and the message. The harness gets a helper that writes the plan into the test's directory and
+runs `cakeys` with `P11_FAULT_MODULE`, `P11_FAULT_PLAN` and a token whose `module` is the shim.
+
+| Plan | Run | Expect |
+|---|---|---|
+| `C_FindObjects`, call 1, `CKR_DEVICE_ERROR` | `verify` | 16, the call named |
+| `C_GetAttributeValue` on the key, `CKA_EC_POINT` dropped | `realise` | 13, no key material |
+| `C_DecryptInit` of the RSA key uses another RSA key | `verify` (`pop-decrypt`) | 13, proof failed |
+| the same for `C_UnwrapKey` | `verify` (`pop-unwrap`) | 13 |
+| `C_FindObjects`, call 2, `add_label` | `realise` after create | 12, or "vanished" |
+| `C_GetTokenInfo`, `CKF_WRITE_PROTECTED` | `create` | 15 |
+| `C_Login` after, `CKR_PIN_INCORRECT` (context-specific) | `verify` of a per-use-PIN key | 16, not retried |
+| `C_Sign` with the derived secret, `CKR_DEVICE_ERROR` | `verify` (`pop-ecdh`) | 16 |
+| `CKA_PUBLIC_KEY_INFO` from another key | `realise` | 13, disagrees with the material |
+
+And DESIGN §8.1: each claim of what a lying module cannot make cakeys accept gets a row, and
+§8.2 is corrected by whatever a row shows.
+
+## Nix
+
+- A workspace member, so `cargo test --workspace` builds `libp11_fault.so` next to the test
+  binaries, and the tests find it there (as `common::sibling` finds the other binaries).
+- `packages.p11-fault`: the library alone, for use outside cakeys.
+- Not installed by `packages.cakeys`, `caprobe` or `camigrate`.
+
+## The 3.x interface, later
+
+A client that finds `C_GetInterface` uses it; one that does not falls back to
+`C_GetFunctionList` (cryptoki, OpenSC and p11-kit all do). v1 therefore exports only the 2.40
+entry point. When a 3.x function is needed, the same macro lists the 24 functions of
+`CK_FUNCTION_LIST_3_0`, and the shim exports `C_GetInterfaceList` and `C_GetInterface`
+returning its 3.0 table. `pkcs11-abi` (PLAN.md A0b) has the table layouts, should 3.2's be
+needed too.
+
+## Order
+
+1. The forwarder, `rv` rules, the trace, the parity test and the `pkcs11-tool` check: about a
+   day.
+2. The hooks (attributes, flags, handles, malformed lengths) and the cakeys table above: one
+   to two days.
+3. The 3.x interface, when a client needs it.
+
+## Risks
+
+- **ABI.** Linux LP64 only, as cryptoki-sys's bindings are; Windows packing is out of scope.
+- **Modules that keep per-process state** (tpm2-pkcs11 reads its store at `C_Initialize`) see
+  the same calls through the shim as without it; the parity test runs on SoftHSM, and a
+  kryoptic and a tpm2-pkcs11 leg can follow if a row needs them.
+- **A plan that matches nothing** makes a test pass for the wrong reason. Each test asserts in
+  the trace that its rule fired (`"rule"` is set on the line it changed).
