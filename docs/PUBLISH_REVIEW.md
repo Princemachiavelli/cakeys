@@ -6,7 +6,7 @@ the blockers below are fixed. The tools ship through the flake meanwhile (README
 ## Names
 
 Every name was free on crates.io on 2026-11-15 (checked against the API, with `serde` as the
-control), as were the look-alikes `cakey`, `ca-keys`, `p11fault` and `pkcs11-fault`:
+control), as were the similar names `cakey`, `ca-keys`, `p11fault` and `pkcs11-fault`:
 
 | Crate | Source lines | Role |
 |---|---|---|
@@ -36,17 +36,22 @@ placeholder risks deletion.
 
 ## Blockers
 
-`cargo package --workspace` on a copy with `publish = true` stops at `cakeys-profile`, so the
-crates that depend on it were not verified past that point.
+`cargo package --workspace` on a copy with `publish = true` stops at `cakeys-profile`. With the
+profiles copied under `crates/profile/` and its `include_str!` paths pointed there, all twelve
+crates package and verify (default features, against the unpatched cryptoki of the registry).
+Run it with the plain `cargo`, not the dev shell's `auditable-cargo` wrapper, which asks
+crates.io for the workspace's own unpublished crates and fails at the first binary.
 
 1. **`cakeys-profile` embeds 13 files from `profiles/`**, outside its crate directory
    (`crates/profile/src/embedded.rs`). The package does not contain them and does not build.
-   Every tool depends on it. Fix: move the profiles under `crates/profile/`.
-2. **The patched cryptoki.** crates.io cannot carry `[patch]` (it applies only to the workspace
-   being built, never to a dependency), so `kwp` and `sign-after-init` fail to compile from a
-   registry, and the HMAC key-type fix is lost. See "Patches" below.
-3. **No crate ships `LICENSE`.** BSD-3-Clause requires the notice to travel with redistributed
+   Every tool depends on it. Fix: move the profiles under `crates/profile/`. This is the only
+   thing that stops `cargo package`.
+2. **No crate ships `LICENSE`.** BSD-3-Clause requires the notice to travel with redistributed
    source, and a crate tarball is that. Fix: a copy (or symlink, which cargo follows) per crate.
+
+The patched cryptoki does not block packaging: no default feature needs it. A registry build
+does less (see "Patches"): `kwp` and `sign-after-init` do not compile if enabled, and without
+the HMAC key-type fix SHA-224/384/512 HMAC keys are refused.
 
 ## Smaller gaps
 
