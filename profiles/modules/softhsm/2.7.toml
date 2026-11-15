@@ -96,10 +96,10 @@ secret-unwraps = false
 
 [notes]
 "CKA_VALUE_LEN" = "CKR_ATTRIBUTE_READ_ONLY in an unwrap template"
-"CKM_RSA_PKCS_OAEP" = "RSA-2048 decrypt SHA-256: CKR_ARGUMENTS_BAD"
+"CKM_RSA_PKCS_OAEP" = "RSA-2048 decrypt SHA-256: CKR_ARGUMENTS_BAD; RSA-2048 decrypt SHA-512: CKR_ARGUMENTS_BAD"
 "cryptoki" = "the module reports Cryptoki 3.2"
-"curve25519" = "generation refused: CKR_MECHANISM_INVALID"
-"curve448" = "generation refused: CKR_MECHANISM_INVALID"
+"curve25519" = "not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN"
+"curve448" = "not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN"
 "oaep" = "SHA-256: wrapping fails: CKR_ARGUMENTS_BAD"
 
 [manual."secret-unwraps"]

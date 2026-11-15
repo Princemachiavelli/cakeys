@@ -494,7 +494,10 @@ fn write_probes(made: &mut Made, profile: &mut Profile) -> Result<()> {
         if !bound {
             let aes = probe_secrets(made, profile);
             match (transport, aes) {
-                (Some(transport), Some(aes)) => probe_wrapping(made, profile, transport, aes),
+                (Some(transport), Some(aes)) => {
+                    probe_wrapping(made, profile, transport, aes);
+                    probe_key_wraps(made, profile, transport, aes);
+                }
                 _ => made.undetermined.push(
                     "no wrap probes: the probes could not make both an RSA transport key and an AES \
                      key on this token"
@@ -1202,6 +1205,136 @@ fn probe_wrapping(made: &mut Made, profile: &mut Profile, transport: (ObjectHand
             profile.notes.insert("unwrap-template".into(), format!("CKA_VALUE_LEN: {}", ckr(&e)));
         }
     }
+}
+
+/// The key wraps the module advertises, each round-tripped: the AES key wrapped and unwrapped
+/// back, under a fresh AES key-encryption key (`CKM_AES_KEY_WRAP`, `_PAD`, and `_KWP` where this
+/// build names it) or under the RSA transport key (`CKM_RSA_AES_KEY_WRAP`, either OAEP hash). A
+/// mechanism the module refuses as such (`CKR_MECHANISM_INVALID`, `CKR_FUNCTION_NOT_SUPPORTED`)
+/// is a `subtract` row: AWS `CloudHSM` lists `CKM_AES_KEY_WRAP` and `_PAD` with
+/// `CKF_WRAP | CKF_UNWRAP` and refuses both [run]. Any other refusal is a note, never a
+/// subtraction: it may be the probe's template or key, not the mechanism.
+fn probe_key_wraps(made: &mut Made, profile: &mut Profile, transport: (ObjectHandle, ObjectHandle), aes: ObjectHandle) {
+    let session = made.session;
+    let label = made.label();
+    let kek = session.generate_key(
+        &Mechanism::AesKeyGen,
+        &[
+            Attribute::Token(true),
+            Attribute::Label(label.as_bytes().to_vec()),
+            Attribute::Class(ObjectClass::SECRET_KEY),
+            Attribute::KeyType(KeyType::AES),
+            Attribute::ValueLen(32.into()),
+            Attribute::Wrap(true),
+            Attribute::Unwrap(true),
+        ],
+    );
+    let kek = match kek {
+        Ok(h) => {
+            made.handles.push(h);
+            made.labels.push(label);
+            Some(h)
+        }
+        Err(e) => {
+            made.undetermined.push(format!("no AES key wrap probes: a wrapping AES key: {}", ckr(&e)));
+            None
+        }
+    };
+    // Each wrap's variants (CKM_RSA_AES_KEY_WRAP's by OAEP hash), its wrapping and unwrapping key.
+    let mut wraps: Vec<(&str, Vec<KeyWrap>, ObjectHandle, ObjectHandle)> = Vec::new();
+    if let Some(kek) = kek {
+        wraps.push(("CKM_AES_KEY_WRAP", vec![KeyWrap::Aes(Mechanism::AesKeyWrap)], kek, kek));
+        wraps.push(("CKM_AES_KEY_WRAP_PAD", vec![KeyWrap::Aes(Mechanism::AesKeyWrapPad)], kek, kek));
+        #[cfg(feature = "kwp")]
+        wraps.push(("CKM_AES_KEY_WRAP_KWP", vec![KeyWrap::Aes(Mechanism::AesKeyWrapKwp)], kek, kek));
+    }
+    if cfg!(feature = "kwp") {
+        let hashes = [
+            KeyWrap::RsaAes(MechanismType::SHA1, PkcsMgfType::MGF1_SHA1),
+            KeyWrap::RsaAes(MechanismType::SHA256, PkcsMgfType::MGF1_SHA256),
+        ];
+        wraps.push(("CKM_RSA_AES_KEY_WRAP", hashes.into(), transport.0, transport.1));
+    }
+    for (name, variants, wraps_with, unwraps_with) in wraps {
+        if !made.tok.advertised.iter().any(|a| a == name) {
+            continue;
+        }
+        let mut refusals = Vec::new();
+        let mut round_trip = false;
+        for variant in variants {
+            let oaep;
+            let mech = match variant {
+                KeyWrap::Aes(m) => m,
+                KeyWrap::RsaAes(hash, mgf) => {
+                    oaep = PkcsOaepParams::new(hash, mgf, PkcsOaepSource::empty());
+                    match rsa_aes_key_wrap(&oaep) {
+                        Some(m) => m,
+                        None => continue,
+                    }
+                }
+            };
+            let mech = &mech;
+            let wrapped = match session.wrap_key(mech, wraps_with, aes) {
+                Ok(w) => w,
+                Err(e) => {
+                    refusals.push(("C_WrapKey", e));
+                    continue;
+                }
+            };
+            let label = made.label();
+            let template = [
+                Attribute::Token(true),
+                Attribute::Label(label.as_bytes().to_vec()),
+                Attribute::Class(ObjectClass::SECRET_KEY),
+                Attribute::KeyType(KeyType::AES),
+            ];
+            match session.unwrap_key(mech, unwraps_with, &wrapped, &template) {
+                Ok(h) => {
+                    made.handles.push(h);
+                    made.labels.push(label);
+                    round_trip = true;
+                }
+                Err(e) => refusals.push(("C_UnwrapKey", e)),
+            }
+        }
+        if round_trip {
+            continue;
+        }
+        let refused_as_such = refusals
+            .iter()
+            .any(|(_, e)| matches!(e, CkError::Pkcs11(RvError::MechanismInvalid | RvError::FunctionNotSupported, _)));
+        let what: Vec<String> = refusals.iter().map(|(f, e)| format!("{f}: {}", ckr(e))).collect();
+        if refused_as_such {
+            profile.subtract.mechanisms.push(name.to_owned());
+            profile.notes.insert(name.to_owned(), format!("advertised but refused: {}", what.join("; ")));
+        } else {
+            profile
+                .notes
+                .insert(name.to_owned(), format!("no round trip, not a mechanism refusal: {}", what.join("; ")));
+        }
+    }
+    profile.subtract.mechanisms.sort();
+    profile.subtract.mechanisms.dedup();
+}
+
+/// One key wrap [`probe_key_wraps`] tries: an AES key wrap, or `CKM_RSA_AES_KEY_WRAP` with
+/// RSA-OAEP of this hash (MGF1 of the same).
+enum KeyWrap {
+    Aes(Mechanism<'static>),
+    RsaAes(MechanismType, PkcsMgfType),
+}
+
+/// `CKM_RSA_AES_KEY_WRAP` with an AES-256 key and `oaep`: only the patched cryptoki names it
+/// (the `kwp` feature).
+#[cfg(feature = "kwp")]
+#[allow(clippy::unnecessary_wraps, reason = "the unpatched build's twin has nothing to return")]
+fn rsa_aes_key_wrap<'a>(oaep: &'a PkcsOaepParams<'a>) -> Option<Mechanism<'a>> {
+    Some(Mechanism::RsaAesKeyWrap(cryptoki::mechanism::rsa::RsaAesKeyWrapParams::new(256.into(), oaep)))
+}
+
+#[cfg(not(feature = "kwp"))]
+fn rsa_aes_key_wrap<'a>(_: &'a PkcsOaepParams<'a>) -> Option<Mechanism<'a>> {
+    None
 }
 
 /// What the `probe` verb asks beyond the probing itself.

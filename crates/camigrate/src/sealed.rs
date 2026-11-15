@@ -104,10 +104,15 @@ pub fn export(
     let session = from.raw();
     let refused = |what: &str, e: cryptoki::error::Error| from.unsupported(format!("{what} on '{}': {e}", from.name));
     let tpub = session.create_object(&rsa_public(transport)?).map_err(|e| refused("loading the transport key", e))?;
-    let kek_hash = items.iter().find_map(|i| match i.method {
-        Method::RsaOaepAesKwp(h) if i.exposure != Exposure::Enforced => Some(h),
-        _ => None,
-    });
+    // A source with no RFC 5649 of its own (AWS CloudHSM lists one it refuses [run]), or no AES
+    // key generation for the KEK, wraps each key by CKM_RSA_AES_KEY_WRAP instead: no shared KEK.
+    let kek_hash = items
+        .iter()
+        .find_map(|i| match i.method {
+            Method::RsaOaepAesKwp(h) if i.exposure != Exposure::Enforced => Some(h),
+            _ => None,
+        })
+        .filter(|_| rfc5649(from).is_some() && from.has(MechanismType::AES_KEY_GEN));
     let wrapped = kek_hash.map(|h| kek(from, tpub, h, &refused)).transpose().and_then(|kek| {
         let keys = found
             .iter()
@@ -256,8 +261,9 @@ struct Wrapping {
 
 /// One key's blob, and its own wrapped KEK when it has one: an enforced composed key by
 /// `CKM_RSA_AES_KEY_WRAP` under the trusted transport key (OAEP of a fresh AES key, then RFC 5649
-/// under it; split at the modulus length), a sealed one under the shared KEK (RFC 5649), and the
-/// direct method under the transport key itself.
+/// under it; split at the modulus length), a sealed one under the shared KEK (RFC 5649) — or as
+/// the enforced one under the transport key when there is none — and the direct method under the
+/// transport key itself.
 fn wrap(
     from: &Token,
     w: &Wrapping,
@@ -268,7 +274,7 @@ fn wrap(
 ) -> Result<(Option<Vec<u8>>, Vec<u8>)> {
     let session = from.raw();
     match (method, w.kek) {
-        (Method::RsaOaepAesKwp(hash), _) if exposure == Exposure::Enforced => {
+        (Method::RsaOaepAesKwp(hash), kek) if exposure == Exposure::Enforced || kek.is_none() => {
             let blob = rsa_aes_wrap(from, w.tpub, h, *hash)
                 .map_err(|e| refused("wrapping the key (CKM_RSA_AES_KEY_WRAP)", e))?;
             if blob.len() <= w.modulus {
@@ -315,6 +321,32 @@ fn rsa_aes_wrap(
     _: ObjectHandle,
     _: OaepHash,
 ) -> std::result::Result<Vec<u8>, cryptoki::error::Error> {
+    Err(cryptoki::error::Error::NotSupported)
+}
+
+/// `CKM_RSA_AES_KEY_WRAP`'s unwrap of `blob` (OAEP of the AES-256 KEK, then RFC 5649 under it)
+/// with the RSA private key `rsa`.
+#[cfg(feature = "kwp")]
+fn rsa_aes_unwrap(
+    to: &Token,
+    rsa: ObjectHandle,
+    blob: &[u8],
+    hash: OaepHash,
+    template: &[Attribute],
+) -> std::result::Result<ObjectHandle, cryptoki::error::Error> {
+    use cryptoki::mechanism::rsa::RsaAesKeyWrapParams;
+    let params = oaep_params(hash);
+    to.raw().unwrap_key(&Mechanism::RsaAesKeyWrap(RsaAesKeyWrapParams::new(256.into(), &params)), rsa, blob, template)
+}
+
+#[cfg(not(feature = "kwp"))]
+fn rsa_aes_unwrap(
+    _: &Token,
+    _: ObjectHandle,
+    _: &[u8],
+    _: OaepHash,
+    _: &[Attribute],
+) -> std::result::Result<ObjectHandle, cryptoki::error::Error> {
     Err(cryptoki::error::Error::NotSupported)
 }
 
@@ -496,13 +528,26 @@ fn create(
     let key = e.wrapped_key().map_err(KmError::Validation)?;
     match method {
         Method::RsaOaepAesKwp(hash) => {
-            let kwp = rfc5649(to).ok_or_else(|| {
-                to.unsupported(format!("'{}' offers no RFC 5649 key wrap this build can name", to.name))
-            })?;
             // An enforced key carries its own (CKM_RSA_AES_KEY_WRAP's); the others share the bundle's.
             let kek_blob = match e.wrapped_kek().map_err(KmError::Validation)? {
                 Some(own) => own,
                 None => b.wrapped_kek().map_err(KmError::Validation)?.unwrap_or_default(),
+            };
+            // A target with no RFC 5649 of its own (AWS CloudHSM lists one it refuses [run])
+            // unwraps both in one CKM_RSA_AES_KEY_WRAP: its input is the same two blobs, joined.
+            let Some(kwp) = rfc5649(to) else {
+                if !to.mechanism_names().iter().any(|m| m == "CKM_RSA_AES_KEY_WRAP") {
+                    return Err(to.unsupported(format!(
+                        "'{}' offers no RFC 5649 key wrap, nor CKM_RSA_AES_KEY_WRAP, this build can name",
+                        to.name
+                    )));
+                }
+                let joined = [kek_blob, key].concat();
+                made.push(
+                    rsa_aes_unwrap(to, unwrapping, &joined, *hash, &template)
+                        .map_err(|e| refused("unwrapping the key (CKM_RSA_AES_KEY_WRAP)", e))?,
+                );
+                return Ok(());
             };
             let kek_template = [
                 Attribute::Class(ObjectClass::SECRET_KEY),

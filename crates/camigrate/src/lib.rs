@@ -358,7 +358,7 @@ impl Run<'_> {
         if items.is_empty() {
             return Err(KmError::Unsupported(format!("nothing on '{from}' can go into a bundle")).into());
         }
-        let source = open_token(cfg, modules, registry, from, Access::Read, notes)?;
+        let source = open_token(cfg, modules, registry, from, Access::Scratch, notes)?;
         let wraps = items.iter().any(|i| i.method != Method::Public);
         let transport = match dest {
             _ if !wraps => None,
@@ -510,7 +510,7 @@ impl Run<'_> {
             .into());
         }
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
-        let source = open_token(cfg, modules, registry, from, Access::Read, notes)?;
+        let source = open_token(cfg, modules, registry, from, Access::Scratch, notes)?;
         let mut target = Some(open_token(cfg, modules, registry, to, Access::Write, notes)?);
         // tpm2-pkcs11 sees what `tpm2_ptool` imported only once opened again: the old one first.
         let reopen = |t: &mut Option<cakeys_pkcs11::Token>, notes: &mut Notes| -> cakeys_core::Result<()> {
@@ -843,7 +843,7 @@ impl Run<'_> {
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
         let pass = read_passphrase(pass)?;
         let src = source_target(cfg, &self.lock, &p.object, from)?;
-        let source = open_token(cfg, modules, registry, from, Access::Read, notes)?;
+        let source = open_token(cfg, modules, registry, from, Access::Scratch, notes)?;
         cakeys_pkcs11::ops::verify(&src, &source, &self.lock, notes)?;
         let h = source
             .find_key(src.object, &src.on_token.locator, false)?

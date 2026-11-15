@@ -68,6 +68,9 @@ sealed = true
 key-attribute = true
 read-only = false
 
+[subtract]
+mechanisms = ["CKM_AES_KEY_WRAP", "CKM_AES_KEY_WRAP_PAD"]
+
 [generate."CKK_EC"]
 can = ["secp256r1", "secp384r1", "secp521r1", "secp256k1"]
 cannot = ["brainpoolP256r1", "brainpoolP384r1"]
@@ -86,6 +89,8 @@ cannot-bits = [1024]
 
 [notes]
 "CKK_RSA at 1024" = "modulusBits = 1024: CKR_ATTRIBUTE_VALUE_INVALID"
+"CKM_AES_KEY_WRAP" = "advertised but refused: C_WrapKey: CKR_MECHANISM_INVALID"
+"CKM_AES_KEY_WRAP_PAD" = "advertised but refused: C_WrapKey: CKR_MECHANISM_INVALID"
 "brainpoolP256r1" = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID"
 "brainpoolP384r1" = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID"
 "cryptoki" = "the module reports Cryptoki 2.40"

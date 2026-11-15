@@ -56,10 +56,11 @@ in
   };
 
   # What only the patched cryptoki above has: the mechanisms it names (CKM_AES_KEY_WRAP_KWP,
-  # CKM_RSA_AES_KEY_WRAP), which camigrate uses only with `kwp`, and the single-part sign after
-  # C_SignInit, which a per-use PIN proof uses only with `sign-after-init`.
+  # CKM_RSA_AES_KEY_WRAP), which camigrate uses and caprobe probes only with `kwp`, and the
+  # single-part sign after C_SignInit, which a per-use PIN proof uses only with `sign-after-init`.
   features = [
     "camigrate/kwp"
+    "caprobe/kwp"
     "cakeys-pkcs11/sign-after-init"
   ]
   ++ lib.optionals (!tpm2) [

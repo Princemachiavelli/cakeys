@@ -104,7 +104,7 @@ oaep = ["SHA-1", "SHA-256"]
 refuse = []
 
 [decrypt]
-oaep = ["SHA-1", "SHA-256"]
+oaep = ["SHA-1", "SHA-256", "SHA-512"]
 
 [derive]
 sealed = true

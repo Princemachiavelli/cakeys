@@ -12,6 +12,8 @@ transportWith = "transport"
 [tokens.softhsm]
 tokenLabel = "kmtest"
 pinFile = "/root/softhsm/pin"
+# Sealed moves out of CloudHSM wrap to this key.
+transportWith = "softhsm-transport"
 
 [objects.ec-p256]
 class = "CKO_PRIVATE_KEY"
@@ -55,6 +57,20 @@ class = "CKO_PRIVATE_KEY"
 keyType = "CKK_EC"
 curve = "secp256r1"
 createOn = "softhsm"
+
+# SoftHSM's transport key, for moves out of CloudHSM.
+[objects.softhsm-transport]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 3072
+
+# Born on CloudHSM, extractable, moved out to SoftHSM: CloudHSM wraps it by
+# CKM_RSA_AES_KEY_WRAP (its profile subtracts the AES key wraps it lists but refuses).
+[objects.outbound]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+createOn = "cloudhsm"
 
 # pop-sign over ECDSA; the public half is generated without CKA_PRIVATE = false (refused).
 [specs.ec-p256]
@@ -106,3 +122,16 @@ object = "movable"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
 tokens.softhsm = { locator = { CKA_LABEL = "cakeys-movable" } }
 tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-movable" } }
+
+[specs.softhsm-transport]
+object = "softhsm-transport"
+attributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false, CKA_SIGN = false, CKA_DECRYPT = false }
+tokens.softhsm = { locator = { CKA_LABEL = "cakeys-transport" }, binding = "pop-unwrap" }
+
+# The reverse: created on CloudHSM, then `camigrate migrate outbound --from cloudhsm --to
+# softhsm`; again one identity on both.
+[specs.outbound]
+object = "outbound"
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-outbound" } }
+tokens.softhsm = { locator = { CKA_LABEL = "cakeys-outbound" } }

@@ -32,7 +32,7 @@
 #           `cakeys create`, `verify ec-p256 --token cloudhsm`, `delete ...`. CAKEYS names a
 #           cakeys binary to use instead of building one.
 # camigrate the same for camigrate (CAMIGRATE): `camigrate migrate movable --from softhsm --to
-#           cloudhsm`.
+#           cloudhsm`, and back: `migrate outbound --from cloudhsm --to softhsm`.
 # destroy   deletes everything: HSM, runner, cluster, the cluster's backups (AWS keeps them in
 #           PENDING_DELETION for 7 days; `aws cloudhsmv2 restore-backup` brings one back), and
 #           the network. An initialized cluster also needs --yes.

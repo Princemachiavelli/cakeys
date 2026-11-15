@@ -43,6 +43,10 @@ use uri::pct_all;
 pub enum Access {
     Read,
     Write,
+    /// Reads, and makes session objects (a key-wrap copy, a KEK): read-write where the token
+    /// allows it, since AWS `CloudHSM` refuses even a session object in a read-only session
+    /// (`CKR_SESSION_READ_ONLY` [run]); read-only on a write-protected token.
+    Scratch,
 }
 
 /// The PIN counters `C_GetTokenInfo` reports (M2): a login on the final try or a locked PIN is
@@ -298,7 +302,10 @@ impl Token {
         let ctx = &self.library.0;
         match access {
             Access::Read => ctx.open_ro_session(self.slot).map_err(ck("C_OpenSession (read-only)")),
-            Access::Write => ctx.open_rw_session(self.slot).map_err(ck("C_OpenSession")),
+            Access::Scratch if ctx.get_token_info(self.slot).is_ok_and(|i| i.write_protected()) => {
+                ctx.open_ro_session(self.slot).map_err(ck("C_OpenSession (read-only)"))
+            }
+            Access::Write | Access::Scratch => ctx.open_rw_session(self.slot).map_err(ck("C_OpenSession")),
         }
     }
 
@@ -658,7 +665,8 @@ fn session(
                  deleted from"
             )));
         }
-        Access::Write => ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?,
+        Access::Scratch if write_protected => ctx.open_ro_session(slot).map_err(ck("C_OpenSession (read-only)"))?,
+        Access::Write | Access::Scratch => ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?,
     };
     let pin = read_pin(cfg)?;
     if let Some(pin) = pin.as_deref() {

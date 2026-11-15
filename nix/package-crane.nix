@@ -61,7 +61,7 @@ let
   minimal = base // {
     pname = "cakeys-minimal";
     buildInputs = [ ];
-    cargoExtraArgs = "--locked --no-default-features --features camigrate/kwp,cakeys-pkcs11/sign-after-init";
+    cargoExtraArgs = "--locked --no-default-features --features camigrate/kwp,caprobe/kwp,cakeys-pkcs11/sign-after-init";
     doCheck = false;
   };
 

@@ -24,7 +24,7 @@ reserved for what a probe or spike in this repo has shown. Nothing below is **[r
 | Needs a VM in the cloud | **no** | **yes** [inf] | **yes** [inf] |
 | Parkable at $0 | yes: nothing runs | yes, if the HSM is deleted and restored from backup (mechanism below) [doc, todo] | **no**: bills until deleted; state parks as a backup blob |
 | Billing while up | key versions: ~$1–2.5/month each [doc, third-party] | **$1.60/h per HSM**, us-east-1 hsm2m [api] | **$4.80/h per cluster of three HSMs**, eastus/westus2/centralus [api] |
-| Fits camigrate as a target | **no** (no wrap/unwrap/create) [doc] | yes, with vendor wrap mechanisms [doc] | probably (AES-KW, RSA wrap) [doc] |
+| Fits camigrate as a target | **no** (no wrap/unwrap/create) [doc] | yes, both ways, by `CKM_RSA_AES_KEY_WRAP` (it lists `CKM_AES_KEY_WRAP` and `_PAD` but refuses them) [run] | probably (AES-KW, RSA wrap) [doc] |
 | Build order | 1st | 2nd | 3rd, gated on a budget decision |
 
 **Name mapping.** "Azure Vault" is read as Azure Cloud HSM. Key Vault proper has no PKCS#11.

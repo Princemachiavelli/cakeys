@@ -20,6 +20,9 @@ path = "src/main.rs"
 default = ["tpm2", "ykcs11"]
 tpm2 = ["cakeys-cli-common/tpm2"]
 ykcs11 = ["cakeys-cli-common/ykcs11"]
+# Probe the key wraps only the patched cryptoki of the Nix build names (nix/patches):
+# CKM_AES_KEY_WRAP_KWP and CKM_RSA_AES_KEY_WRAP. Without it they go unprobed (camigrate's `kwp`).
+kwp = []
 
 [dependencies]
 cakeys-cli-common = { workspace = true, default-features = false }

@@ -248,11 +248,14 @@ fn sealed(
         return;
     };
     // Enforced, the transport key is the only trusted key: CKM_RSA_AES_KEY_WRAP does both wraps
-    // under it (its output is the composed method's, so the target unwraps it the same way).
+    // under it (its output is the composed method's, so the target unwraps it the same way). A
+    // side without RFC 5649 of its own takes the same mechanism instead (`sealed`).
+    let rsa_aes = |s: &Side| cfg!(feature = "kwp") && s.has("CKM_RSA_AES_KEY_WRAP");
+    let unwraps_composed = dst.kwp() || rsa_aes(dst);
     let composed = if trusted_only {
-        cfg!(feature = "kwp") && from.has("CKM_RSA_AES_KEY_WRAP") && dst.kwp()
+        rsa_aes(from) && unwraps_composed
     } else {
-        from.kwp() && dst.kwp() && from.has("CKM_AES_KEY_GEN")
+        ((from.kwp() && from.has("CKM_AES_KEY_GEN")) || rsa_aes(from)) && unwraps_composed
     };
     if composed {
         candidates.push((Method::RsaOaepAesKwp(hash), exposure, vec![]));
@@ -269,7 +272,7 @@ fn sealed(
             )
         } else {
             format!(
-                "{} and {} share no RFC 5649 key wrap (CKM_AES_KEY_WRAP_KWP or _PAD) to carry a {}",
+                "{} and {} share no RFC 5649 key wrap (CKM_AES_KEY_WRAP_KWP or _PAD, or CKM_RSA_AES_KEY_WRAP) to carry a {}",
                 from.token,
                 dst.token,
                 describe(m.ty)
@@ -378,6 +381,13 @@ mod tests {
     fn kryoptic() -> Side {
         let mech = ["CKM_RSA_PKCS_OAEP", "CKM_AES_KEY_WRAP", "CKM_AES_KEY_WRAP_KWP", "CKM_AES_KEY_GEN"];
         Side { trusted_wrap: false, ..Side::pkcs11("kryoptic", "kryoptic", mech.map(String::from)) }
+    }
+
+    /// AWS `CloudHSM` once its profile subtracts the AES key wraps it lists but refuses [run]:
+    /// RFC 5649 only inside `CKM_RSA_AES_KEY_WRAP`.
+    fn cloudhsm() -> Side {
+        let mech = ["CKM_RSA_PKCS_OAEP", "CKM_AES_KEY_GEN", "CKM_RSA_AES_KEY_WRAP"];
+        Side::pkcs11("cloudhsm", "aws-cloudhsm", mech.map(String::from))
     }
 
     fn plan_of(ty: &ObjectCfg, flags: &[(&str, bool)], from: &Side, to: &To, allow: Allow) -> Plan {
@@ -509,6 +519,22 @@ mod tests {
         // A source that cannot trust an RSA key (kryoptic): never, whatever is trusted.
         let p = plan_of(&p256(), &flags, &kryoptic(), &To::Token(&softhsm()), trusted);
         assert!(!p.ready && p.reasons.iter().any(|r| r.contains("trusted-wrap = false")), "{p:?}");
+    }
+
+    /// A side whose RFC 5649 is only `CKM_RSA_AES_KEY_WRAP` (`CloudHSM`) takes the composed method
+    /// through it, in and out: where this build names the mechanism (the `kwp` feature).
+    #[test]
+    fn rsa_aes_key_wrap_stands_in_for_rfc_5649() {
+        let ext = [("CKA_EXTRACTABLE", true)];
+        for (from, to) in [(softhsm(), cloudhsm()), (cloudhsm(), softhsm()), (cloudhsm(), kryoptic())] {
+            let p = plan_of(&p256(), &ext, &from, &To::Token(&to), Allow::default());
+            assert_eq!(p.ready, cfg!(feature = "kwp"), "{} -> {}: {p:?}", from.token, to.token);
+            if p.ready {
+                assert!(matches!(p.method, Some(Method::RsaOaepAesKwp(_))), "{p:?}");
+            } else {
+                assert!(p.reasons.iter().any(|r| r.contains("CKM_RSA_AES_KEY_WRAP")), "{p:?}");
+            }
+        }
     }
 
     #[test]
