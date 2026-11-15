@@ -15,6 +15,8 @@ use std::process::{Command, Output};
 use crate::REF;
 use crate::common::*;
 
+mod matrix;
+
 struct Env {
     w: Workdir,
     module: String,

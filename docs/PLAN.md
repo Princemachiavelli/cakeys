@@ -192,6 +192,14 @@ result (mode, schemes, binding, assurance, or the refusal and its code) is commi
 table. Per the standing rule, a refusal found here is recorded with the real-world keys it
 would serve, not removed because no fixture needs it.
 
+**Built for SoftHSM and kryoptic** (2026-11-15), as a fixed grid rather than proptest (a pinned
+table has to be deterministic): 1016 objects per token, created straight through cryptoki —
+generated, and secret keys also imported (`CKA_LOCAL` false) — then declared as they are and
+realised in parallel (`crates/cli/tests/reference/matrix.rs`, about 20 s a token). The rows
+pin the mode, schemes and binding, the exit code, or the token's refusal to hold the object
+(`profiles/coverage/objects/<token>.toml`). Its three refusal findings are in OPEN.md,
+"Identity coverage". Not yet: tpm2-pkcs11, imported private keys, certificates and data objects.
+
 ### A5. Key derivation
 
 **Probe it in caprobe: yes.** Derivation is a capability like wrapping, and the probe covers
