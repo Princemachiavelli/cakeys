@@ -123,6 +123,10 @@ fn side_of(module: &Profile, stack: &Resolved, token: &str, provider: &str, mech
         side.public_import =
             rows.iter().filter_map(|r| accept_of(r, stack).map_err(|e| who(&e)).transpose()).collect::<Result<_>>()?;
     }
+    if let Some(rows) = m.map(|m| &m.refuses) {
+        side.refuses =
+            rows.iter().filter_map(|r| accept_of(r, stack).map_err(|e| who(&e)).transpose()).collect::<Result<_>>()?;
+    }
     if let Some(kind) = m.and_then(|m| m.plaintext_import) {
         let rows: &[cakeys_profile::AcceptRow] = m.map(|m| m.plaintext_accepts.as_slice()).unwrap_or_default();
         let accepts: Vec<Accept> =

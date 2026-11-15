@@ -101,7 +101,11 @@ impl Token {
             }
             KeyType::EC | KeyType::EC_EDWARDS => {
                 let curve = curve_of(object)?;
-                let mech = if curve.edwards() { Mechanism::EccEdwardsKeyPairGen } else { Mechanism::EccKeyPairGen };
+                let mech = self.runnable(if curve.edwards() {
+                    Mechanism::EccEdwardsKeyPairGen
+                } else {
+                    Mechanism::EccKeyPairGen
+                });
                 let public_with = |params: &[u8]| -> Result<Vec<Attribute>> {
                     let mut public = common.clone();
                     public.push(Attribute::EcParams(params.to_vec()));

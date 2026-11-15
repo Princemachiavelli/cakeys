@@ -30,7 +30,8 @@
 # cakeys    runs cakeys on the runner with scripts/cloud/aws/cakeys.toml, the crypto user's PIN in
 #           tmpfs and a lock kept on the runner, against CloudHSM and a SoftHSM token beside it:
 #           `cakeys create`, `verify ec-p256 --token cloudhsm`, `delete ...`. CAKEYS names a
-#           cakeys binary to use instead of building one.
+#           cakeys binary to use instead of building one; CAKEYS_AWS_CONFIG another keys.toml,
+#           CAKEYS_AWS_LOCK another lock path on the runner (crates/cli/tests/cloud.rs: one per run).
 # camigrate the same for camigrate (CAMIGRATE): `camigrate migrate movable --from softhsm --to
 #           cloudhsm`, and back: `migrate outbound --from cloudhsm --to softhsm`.
 # destroy   deletes everything: HSM, runner, cluster, the cluster's backups (AWS keeps them in
@@ -340,6 +341,12 @@ EOF
   tar -C "$repo" -c profiles | runner tar -C /run/caprobe -x
   local -a diff=()
   [[ -f $out ]] && diff=(--diff "$name")
+  # caprobe keeps the [migration] and [manual] sections of the file it overwrites: the
+  # committed one, in place for it.
+  runner rm -f /run/caprobe/profile.toml
+  if [[ -f $out ]]; then
+    runner install -D -m 644 /dev/stdin /run/caprobe/profile.toml <"$out"
+  fi
   runner "$(realpath "$bin")" --config /run/caprobe/keys.toml probe --profiles /run/caprobe/profiles \
     --token cloudhsm --write --name "$name" "${diff[@]}" --out /run/caprobe/profile.toml || rc=$?
   runner rm -f /run/caprobe/pin
@@ -375,7 +382,7 @@ tool() {
   wait_runner
   copy "$p11" "$softhsm" "$(dirname "$(dirname "$bin")")"
   runner install -D -m 600 /dev/stdin /run/cakeys/pin <<<"caprobe:$(secret cu)"
-  sed "s|^\[tokens.cloudhsm\]\$|&\nprovider = \"$(profile_name "$p11")\"|" "$tf/cakeys.toml" |
+  sed "s|^\[tokens.cloudhsm\]\$|&\nprovider = \"$(profile_name "$p11")\"|" "${CAKEYS_AWS_CONFIG:-$tf/cakeys.toml}" |
     runner install -D -m 644 /dev/stdin /root/cakeys/keys.toml
   runner bash -s <<EOF
 set -euo pipefail
@@ -388,7 +395,7 @@ $softhsm/bin/softhsm2-util --show-slots | grep -q 'Label:.*kmtest' ||
 EOF
   printf -v args '%q ' "$@"
   runner "CAKEYS_AWS_PIN=/run/cakeys/pin SOFTHSM2_CONF=/root/softhsm/softhsm2.conf $bin" \
-    "--config /root/cakeys/keys.toml --lock /root/cakeys/keys.lock" \
+    "--config /root/cakeys/keys.toml --lock ${CAKEYS_AWS_LOCK:-/root/cakeys/keys.lock}" \
     "--module cloudhsm=$p11/lib/libcloudhsm_pkcs11.so --module softhsm=$softhsm/lib/softhsm/libsofthsm2.so $args"
 }
 

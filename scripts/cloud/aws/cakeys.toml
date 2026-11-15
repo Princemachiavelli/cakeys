@@ -58,6 +58,14 @@ keyType = "CKK_EC"
 curve = "secp256r1"
 createOn = "softhsm"
 
+# Ed25519: a non-FIPS cluster makes it with CKM_EC_KEY_PAIR_GEN and signs with its vendor EdDSA
+# (the aws-cloudhsm provider's stand-ins, the profile's `add` row); a FIPS one refuses it, and
+# cakeys refuses it there before creating anything.
+[objects.ed25519]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC_EDWARDS"
+curve = "edwards25519"
+
 # SoftHSM's transport key, for moves out of CloudHSM.
 [objects.softhsm-transport]
 class = "CKO_PRIVATE_KEY"
@@ -122,6 +130,13 @@ object = "movable"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
 tokens.softhsm = { locator = { CKA_LABEL = "cakeys-movable" } }
 tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-movable" } }
+
+# pop-sign over pure EdDSA; it moves out to SoftHSM, never in (the profile's migration.refuses).
+[specs.ed25519]
+object = "ed25519"
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-ed25519" } }
+tokens.softhsm = { locator = { CKA_LABEL = "cakeys-ed25519" } }
 
 [specs.softhsm-transport]
 object = "softhsm-transport"

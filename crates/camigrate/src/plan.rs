@@ -141,6 +141,12 @@ pub fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     }
     let mut blocked: Vec<String> = Vec::new();
     match to {
+        To::Token(dst) if dst.refuses.iter().any(|a| a.covers(ty)) => blocked.push(format!(
+            "{} ({}) takes in no {} by any import (its profile's migration.refuses)",
+            dst.token,
+            dst.provider,
+            describe(ty)
+        )),
         To::Token(dst) => {
             sealed(m, from, dst, trusted_only, allow, &mut candidates, &mut blocked);
             if trusted_only {
@@ -535,6 +541,25 @@ mod tests {
                 assert!(p.reasons.iter().any(|r| r.contains("CKM_RSA_AES_KEY_WRAP")), "{p:?}");
             }
         }
+    }
+
+    /// A target whose profile refuses a key kind (`migration.refuses`: `CloudHSM`'s Ed25519 [run])
+    /// is blocked with that reason, whatever wrap both sides share; other keys still move.
+    #[test]
+    fn a_refused_key_kind_is_blocked_at_the_target() {
+        let ext = [("CKA_EXTRACTABLE", true)];
+        let mut ed = obj(ObjectClass::PrivateKey, Some(KeyType::EcEdwards));
+        ed.curve = Some("edwards25519".into());
+        let refusing = Side {
+            refuses: vec![Accept { key_types: vec![KeyType::EcEdwards], ..Accept::class(ObjectClass::PrivateKey) }],
+            ..softhsm()
+        };
+        let p =
+            plan_of(&ed, &ext, &kryoptic(), &To::Token(&refusing), Allow { host_plaintext: true, ..Allow::default() });
+        assert!(!p.ready && p.reasons.iter().any(|r| r.contains("migration.refuses")), "{p:?}");
+        assert!(plan_of(&p256(), &ext, &kryoptic(), &To::Token(&refusing), Allow::default()).ready);
+        // As a source it still exports.
+        assert!(plan_of(&ed, &ext, &refusing, &To::Token(&kryoptic()), Allow::default()).ready);
     }
 
     #[test]

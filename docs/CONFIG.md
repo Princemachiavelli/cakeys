@@ -74,7 +74,7 @@ tokenLabel = "host"
 pinFile = "$TPM_PIN_FILE"
 # Optional: the provider (the module's quirks profile, ARCHITECTURE.md "Providers") is normally detected from
 # C_GetInfo; naming it is needed behind p11-kit, which hides the module behind it. A provider with
-# code (ykcs11, tpm2-pkcs11, kmsp11) or a module profile family (softhsm, kryoptic, aws-cloudhsm,
+# code (ykcs11, tpm2-pkcs11, kmsp11, aws-cloudhsm) or a module profile family (softhsm, kryoptic,
 # or one a profileDirs entry brings): docs/CAPROBE.md. A module profile's full name picks that
 # profile among ones that tie on C_GetInfo/C_GetTokenInfo: an AWS CloudHSM non-FIPS cluster is
 # `provider = "aws-cloudhsm/5.18+hsm2m-non-fips"` (a FIPS one resolves to its profile unnamed).

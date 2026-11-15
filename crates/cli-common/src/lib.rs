@@ -13,12 +13,12 @@ use std::collections::BTreeMap;
 use std::process::ExitCode;
 
 /// The providers this build links, in detection order. Built through the same public API a
-/// third party uses; `tpm2` and `ykcs11` are cargo features (both on by default). kmsp11 links
-/// nothing native, so it is always in. Modules with no code (softhsm, kryoptic, aws-cloudhsm)
-/// are named and detected by their profiles.
+/// third party uses; `tpm2` and `ykcs11` are cargo features (both on by default). kmsp11 and
+/// aws-cloudhsm link nothing native, so they are always in. Modules with no code (softhsm,
+/// kryoptic) are named and detected by their profiles.
 #[must_use]
 pub fn default_registry() -> Registry {
-    let registry = Registry::new().with(cakeys_kmsp11::Kmsp11);
+    let registry = Registry::new().with(cakeys_kmsp11::Kmsp11).with(cakeys_aws_cloudhsm::AwsCloudHsm);
     #[cfg(feature = "ykcs11")]
     let registry = registry.with(cakeys_ykcs11::Ykcs11);
     #[cfg(feature = "tpm2")]

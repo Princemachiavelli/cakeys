@@ -1,0 +1,16 @@
+[package]
+name = "cakeys-aws-cloudhsm"
+description = "cakeys: AWS CloudHSM provider (Client SDK 5), Ed25519 through its own mechanisms"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cakeys-core.workspace = true
+cakeys-pkcs11.workspace = true
+cryptoki.workspace = true
+cryptoki-sys.workspace = true

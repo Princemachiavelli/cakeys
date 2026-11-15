@@ -33,7 +33,7 @@ impl Token {
                 ))),
             };
         }
-        let Some(Attribute::KeyType(kt)) = self.attr(h, AttributeType::KeyType)? else {
+        let Some(kt) = self.key_type(h)? else {
             return Err(KmError::Conflict("object has no CKA_KEY_TYPE".into()));
         };
         if kt != key_type_of(object)? {
@@ -163,10 +163,7 @@ impl Token {
     fn flag(&self, h: ObjectHandle, t: AttributeType) -> Result<Option<bool>> {
         let Some(reported) = self.attr(h, t)?.as_ref().and_then(attr_bool) else { return Ok(None) };
         let private_key_type = || match self.attr(h, AttributeType::Class) {
-            Ok(Some(Attribute::Class(ObjectClass::PRIVATE_KEY))) => match self.attr(h, AttributeType::KeyType) {
-                Ok(Some(Attribute::KeyType(kt))) => Some(kt),
-                _ => None,
-            },
+            Ok(Some(Attribute::Class(ObjectClass::PRIVATE_KEY))) => self.key_type(h).ok().flatten(),
             _ => None,
         };
         Ok(Some(self.provider.policy_flag(t, reported, &private_key_type)))

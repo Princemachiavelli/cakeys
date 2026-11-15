@@ -212,6 +212,8 @@ pub struct Side {
     pub plaintext_import: Option<PlaintextImport>,
     /// Provider methods this side offers as a source (docs/CAMIGRATE.md D10).
     pub vendor: Vec<VendorMethod>,
+    /// Keys it takes in by no import at all, as a target (a profile's `migration.refuses`).
+    pub refuses: Vec<Accept>,
 }
 
 impl Side {
@@ -234,6 +236,7 @@ impl Side {
                 .collect(),
             plaintext_import: Some(PlaintextImport::CreateObject),
             vendor: vec![],
+            refuses: vec![],
         }
     }
 

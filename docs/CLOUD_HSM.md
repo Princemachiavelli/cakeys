@@ -257,7 +257,9 @@ property of how we probe, not of the module.
 
 **Mode is a profile axis.** FIPS and NON_FIPS are separate clusters and a backup restores only
 into its own mode [doc]. D12 applies: they are separate observed profiles. Ed25519 exists on
-non-FIPS only; `CKM_RSA_PKCS` for encrypt/wrap is deprecated in FIPS mode [doc]. Start with
+non-FIPS only [doc, run]: cakeys makes and proves it there through the aws-cloudhsm provider (a
+vendor EdDSA, docs/CAPROBE.md), and a FIPS cluster refuses it; `CKM_RSA_PKCS` for encrypt/wrap is
+deprecated in FIPS mode [doc]. Start with
 **FIPS**, the mode a real deployment will use. A **NON_FIPS** cluster is a second pass.
 
 **What the profile will say, expected [doc].**
@@ -339,14 +341,20 @@ sandbox has no network, and a probe costs money. The repo already has the escape
 tests are opt-in, skipped when their module variable is unset, "never in the Nix build"
 (`crates/cli/tests/ftpm.rs`, `yubikey.rs`). Cloud follows it:
 
-- `crates/cli/tests/cloud.rs`, gated on `CAKEYS_CLOUD_<PROVIDER>_MODULE`, probes and diffs
-  against the committed profile, exactly as `yubikey.rs` does at the end of its suite.
+- `crates/cli/tests/cloud.rs`, gated on `CAKEYS_TEST_AWS` (`FIPS`, `NON_FIPS` or both) and
+  `CAKEYS_TEST_GCP`, never in the Nix build: cakeys and camigrate through `aws.sh` and `gcp.sh`
+  against infrastructure already up, every key kind created, proven and deleted, Ed25519 on a
+  non-FIPS cluster and refused on a FIPS one, keys moved both ways between SoftHSM and
+  CloudHSM. Each run has its own labels and lock (`CAKEYS_AWS_CONFIG`, `CAKEYS_AWS_LOCK`,
+  `CAKEYS_GCP_LOCK`) and cleans up after itself; `CAKEYS`/`CAMIGRATE` name Nix-built tools,
+  since the runner takes store paths. About four minutes for both clusters and Cloud KMS
+  [run 2026-11-14].
 - A pure check in the build: the profile parses, and its match keys resolve, as for any
   profile.
-- `scripts/regen-cloud-profiles.sh`, separate from `regen-profiles.sh` so a regeneration of
-  softhsm/kryoptic/tpm2 never bills a cloud. It drives the runner, writes
-  `profiles/modules/<module>/<ver>+<hw>.toml` over its committed file, and keeps `[migration]`
-  and `[manual]`, as the existing script does.
+- Regeneration is `aws.sh probe` (per `CAKEYS_AWS_MODE`) and `gcp.sh probe --write`, separate
+  from `regen-profiles.sh` so a regeneration of softhsm/kryoptic/tpm2 never bills a cloud. Each
+  writes `profiles/modules/<module>/<ver>+<hw>.toml` over its committed file and keeps
+  `[migration]` and `[manual]`, as the existing script does.
 
 ## Orchestration
 

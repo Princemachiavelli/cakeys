@@ -50,6 +50,13 @@ impl Resolved {
             .collect()
     }
 
+    /// Every mechanism the stack adds although the module does not list it (a provider's
+    /// stand-in the probe found working, `Provider::stand_in`).
+    #[must_use]
+    pub fn added_mechanisms(&self) -> BTreeSet<&str> {
+        self.module.iter().chain(self.layers.iter()).flat_map(|p| p.add.iter().map(String::as_str)).collect()
+    }
+
     /// Every key type the stack subtracts (an unpatched binding's broken ones).
     #[must_use]
     pub fn subtracted_key_types(&self) -> BTreeSet<&str> {

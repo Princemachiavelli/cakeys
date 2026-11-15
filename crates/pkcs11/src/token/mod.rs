@@ -230,10 +230,20 @@ impl Token {
             .map(|i| (i.min_key_size() as u64, i.max_key_size() as u64));
         let stack_decides = profiles.module.is_some() || profiles.layers.len() > 1;
         let mechanisms = if stack_decides {
-            advertised
+            let mut usable: Vec<MechanismType> = advertised
                 .into_iter()
                 .filter(|m| !profiles.subtracted_mechanisms().contains(m.to_string().as_str()))
-                .collect()
+                .collect();
+            // And what the stack adds although the module does not list it: a provider's
+            // stand-in the probe found working (`Provider::stand_in`), never in `advertised`.
+            let baseline = cakeys_profile::Set::active().and_then(|s| s.baseline()).map_err(KmError::Validation)?;
+            for name in profiles.added_mechanisms() {
+                let id = baseline.mechanisms.get(name).and_then(|id| MechanismType::try_from(*id).ok());
+                if let Some(m) = id.filter(|m| !usable.contains(m)) {
+                    usable.push(m);
+                }
+            }
+            usable
         } else {
             provider.mechanisms(advertised)
         };
@@ -311,6 +321,32 @@ impl Token {
 
     pub fn has(&self, m: MechanismType) -> bool {
         self.mechanisms.contains(&m)
+    }
+
+    /// The mechanism to run for `m`: `m` itself where the module lists it, else the provider's
+    /// stand-in for it (`Provider::stand_in`: AWS `CloudHSM`'s Ed25519), else `m`.
+    #[must_use]
+    pub fn runnable<'a>(&self, m: Mechanism<'a>) -> Mechanism<'a> {
+        let listed = self.advertised.iter().any(|a| *a == m.mechanism_type().to_string());
+        if listed { m } else { self.provider.stand_in(&m).unwrap_or(m) }
+    }
+
+    /// The key type of `h` as a spec-compliant module would report it: `CKA_KEY_TYPE`, repaired
+    /// by the provider from `CKA_EC_PARAMS` (`Provider::key_type`). `None`: the object has none.
+    ///
+    /// # Errors
+    ///
+    /// `Unavailable` when the module refuses `C_GetAttributeValue`.
+    pub fn key_type(&self, h: ObjectHandle) -> Result<Option<KeyType>> {
+        let Some(Attribute::KeyType(kt)) = self.attr(h, AttributeType::KeyType)? else { return Ok(None) };
+        let params = match kt {
+            KeyType::EC => match self.attr(h, AttributeType::EcParams)? {
+                Some(Attribute::EcParams(p)) => Some(p),
+                _ => None,
+            },
+            _ => None,
+        };
+        Ok(Some(self.provider.key_type(kt, params.as_deref())))
     }
 
     pub fn mechanism_names(&self) -> &[String] {

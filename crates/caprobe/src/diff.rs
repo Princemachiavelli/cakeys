@@ -18,6 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub fn diff(generated: &Profile, claimed: &Profile) -> Vec<String> {
     let mut out = read_only(generated, claimed);
     sets("subtract.mechanisms", &generated.subtract.mechanisms, &claimed.subtract.mechanisms, &mut out);
+    sets("add", &generated.add, &claimed.add, &mut out);
     probed("wrap.oaep", generated.wrap.oaep.as_deref(), claimed.wrap.oaep.as_deref(), &mut out);
     probed("unwrap.refuse", generated.unwrap.refuse.as_deref(), claimed.unwrap.refuse.as_deref(), &mut out);
     probed("decrypt.oaep", generated.decrypt.oaep.as_deref(), claimed.decrypt.oaep.as_deref(), &mut out);

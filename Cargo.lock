@@ -231,10 +231,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cakeys-aws-cloudhsm"
+version = "0.1.0"
+dependencies = [
+ "cakeys-core",
+ "cakeys-pkcs11",
+ "cryptoki",
+ "cryptoki-sys",
+]
+
+[[package]]
 name = "cakeys-cli-common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cakeys-aws-cloudhsm",
  "cakeys-core",
  "cakeys-kmsp11",
  "cakeys-pkcs11",

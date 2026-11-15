@@ -193,6 +193,9 @@ pub fn profile(p: &Profile) -> String {
     if !p.advertise.is_empty() {
         let _ = writeln!(s, "{}", toml_array("advertise", &p.advertise));
     }
+    if !p.add.is_empty() {
+        let _ = writeln!(s, "{}", toml_array("add", &p.add));
+    }
     match_toml(&p.r#match, &mut s);
     filters_toml(p, &mut s);
     generate_toml(&p.generate, &mut s);
@@ -226,6 +229,9 @@ pub fn profile(p: &Profile) -> String {
         }
         for row in &m.plaintext_accepts {
             accept_toml(&mut s, "plaintext-accepts", row, true);
+        }
+        for row in &m.refuses {
+            accept_toml(&mut s, "refuses", row, true);
         }
     }
     for r in &p.restrict {
@@ -301,6 +307,13 @@ mod tests {
                      [subtract]\nmechanisms = [\"CKM_EDDSA\"]\nkey-types = [\"CKK_SHA512_HMAC\"]\nnote = \"dropped by the layer\"\n";
         let layer = Profile::from_toml(layer).unwrap();
         assert_eq!(Profile::from_toml(&super::profile(&layer)).unwrap(), layer);
+        // A provider's stand-ins the probe found working: `add`, beside the advertisement.
+        let added = Profile::from_toml(
+            "profile = \"m/1\"\nmode = \"observed\"\nadvertise = [\"CKM_EC_KEY_PAIR_GEN\"]\n\
+             add = [\"CKM_EC_EDWARDS_KEY_PAIR_GEN\", \"CKM_EDDSA\"]\n",
+        )
+        .unwrap();
+        assert_eq!(Profile::from_toml(&super::profile(&added)).unwrap(), added);
         for kind in ["create-object", "tpm2-ptool", "piv-import"] {
             let text = format!(
                 "profile = \"m/1\"\nmode = \"observed\"\npartial = true\n\n[migration]\nplaintext-import = \"{kind}\"\n\n\

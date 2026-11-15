@@ -7,6 +7,7 @@ members = [
   "crates/ykcs11",
   "crates/tpm2-pkcs11",
   "crates/kmsp11",
+  "crates/aws-cloudhsm",
   "crates/cli-common",
   "crates/cli",
   "crates/caprobe",
@@ -28,12 +29,14 @@ cakeys-profile = { path = "crates/profile" }
 cakeys-ykcs11 = { path = "crates/ykcs11" }
 cakeys-tpm2-pkcs11 = { path = "crates/tpm2-pkcs11" }
 cakeys-kmsp11 = { path = "crates/kmsp11" }
+cakeys-aws-cloudhsm = { path = "crates/aws-cloudhsm" }
 cakeys-cli-common = { path = "crates/cli-common" }
 anyhow = "1"
 base16ct = { version = "1", features = ["alloc"] }
 base64 = "0.23"
 clap = { version = "4", features = ["derive", "env"] }
 cryptoki = "0.12"
+cryptoki-sys = "0.5"
 rsa = { version = "0.10", default-features = false, features = ["std", "encoding", "pkcs1v15"] }
 x509-cert = { version = "0.3", default-features = false, features = ["std", "pem"] }
 p256 = { version = "0.14", default-features = false, features = ["std", "pkcs8", "ecdsa"] }

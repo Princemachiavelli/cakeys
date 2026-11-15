@@ -520,6 +520,8 @@ fn write_probes(made: &mut Made, profile: &mut Profile) -> Result<()> {
         );
     }
     std::mem::take(&mut made.ops).finish(profile);
+    profile.add.sort();
+    profile.add.dedup();
     Ok(())
 }
 
@@ -669,9 +671,13 @@ fn probe_curves(made: &mut Made, profile: &mut Profile) -> Result<()> {
     for (kt, mech, curves) in families {
         let mut row = GenerateRow::default();
         // A generation mechanism the module does not list is its answer, not a refusal to
-        // explain (AWS CloudHSM lists no Edwards one, and makes Ed25519 its own way [run]).
+        // explain — unless the provider stands in for it (AWS CloudHSM lists no Edwards one,
+        // and makes Ed25519 with CKM_EC_KEY_PAIR_GEN [run]): then the stand-in is probed, and
+        // recorded in `add` if a curve generates through it.
         let keygen = mech.mechanism_type();
-        if !made.tok.advertised.contains(&keygen.to_string()) {
+        let listed = made.tok.advertised.contains(&keygen.to_string());
+        let stood_in = !listed && made.tok.provider.stand_ins().contains(&keygen);
+        if !listed && !stood_in {
             for (curve, ..) in curves {
                 row.cannot.push(curve.to_owned());
                 profile.notes.insert(curve.to_owned(), format!("not advertised: {keygen}"));
@@ -679,6 +685,7 @@ fn probe_curves(made: &mut Made, profile: &mut Profile) -> Result<()> {
             profile.generate.insert(kt.to_owned(), row);
             continue;
         }
+        let mech = made.tok.runnable(mech);
         let mut probed_ops = false;
         for (curve, oid, name) in curves {
             // The usage each kind's operation probes need: signing, deriving, or both.
@@ -724,6 +731,17 @@ fn probe_curves(made: &mut Made, profile: &mut Profile) -> Result<()> {
                     profile.notes.insert(curve.to_owned(), format!("generation refused: {}", ckr(&e)));
                 }
                 None => {}
+            }
+        }
+        if stood_in {
+            let how = format!("not listed; generates through the provider's stand-in, {}", mech.mechanism_type());
+            if row.can.is_empty() {
+                profile
+                    .notes
+                    .insert(keygen.to_string(), "not listed; the provider's stand-in generates nothing".into());
+            } else {
+                profile.add.push(keygen.to_string());
+                profile.notes.insert(keygen.to_string(), how);
             }
         }
         profile.generate.insert(kt.to_owned(), row);
@@ -813,10 +831,29 @@ fn operate(made: &mut Made, profile: &mut Profile, kt: &str, on: &str, public: O
             }
         }
         "CKK_EC_EDWARDS" => {
+            let pure = Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Pure));
             if made.advertises(MechanismType::EDDSA) {
-                let mech = Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Pure));
-                let outcome = sign(made.session, &mech, private, MSG, |s| sig::ed25519(&spki, MSG, s));
+                let outcome = sign(made.session, &pure, private, MSG, |s| sig::ed25519(&spki, MSG, s));
                 made.ops.record(MechanismType::EDDSA, on, outcome);
+            } else if made.tok.provider.stand_ins().contains(&MechanismType::EDDSA) {
+                // Not listed, but the provider signs pure EdDSA its own way (AWS CloudHSM's
+                // vendor mechanism [run]): `add` when the host verifies what it signs.
+                let mech = made.tok.runnable(pure);
+                let vendor = *mech.mechanism_type();
+                let name = MechanismType::EDDSA.to_string();
+                match sign(made.session, &mech, private, MSG, |s| sig::ed25519(&spki, MSG, s)) {
+                    Ok(()) => {
+                        profile.add.push(name.clone());
+                        profile
+                            .notes
+                            .insert(name, format!("not listed; signs through the provider's stand-in, {vendor:#x}"));
+                    }
+                    Err(e) => {
+                        profile
+                            .notes
+                            .insert(name, format!("not listed; the provider's stand-in ({vendor:#x}) on {on}: {e}"));
+                    }
+                }
             }
         }
         "CKK_RSA" => rsa_ops(made, profile, private, &spki, on),

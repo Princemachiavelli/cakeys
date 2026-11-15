@@ -83,7 +83,9 @@ impl Token {
                     (Mechanism::Ecdsa, hash.digest(msg))
                 }
             }
-            KeyType::EC_EDWARDS => (Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Pure)), msg.to_vec()),
+            KeyType::EC_EDWARDS => {
+                (self.runnable(Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Pure))), msg.to_vec())
+            }
             KeyType::RSA => (Mechanism::Sha256RsaPkcs, msg.to_vec()),
             kt => return Err(KmError::Unsupported(format!("proof of possession for {kt}"))),
         };

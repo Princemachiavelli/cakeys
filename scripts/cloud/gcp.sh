@@ -129,7 +129,8 @@ EOF
 }
 
 # cakeys against the ring with scripts/cloud/gcp/cakeys.toml and a lock in the state directory:
-# every argument goes to cakeys. CAKEYS names a cakeys binary to use instead of building one.
+# every argument goes to cakeys. CAKEYS names a cakeys binary to use instead of building one,
+# CAKEYS_GCP_LOCK another lock (crates/cli/tests/cloud.rs: one per run).
 cakeys() {
   local bin lib
   bin=${CAKEYS:-$(nix build --no-link --print-out-paths --impure --expr \
@@ -137,7 +138,7 @@ cakeys() {
   lib=$(nix build --no-link --print-out-paths "$repo#kmsp11")
   echo unused >"$state/pin"
   KMS_PKCS11_CONFIG=$(kms_config kmsp11) CAKEYS_GCP_PIN=$state/pin "$bin" \
-    --config "$tf/../gcp/cakeys.toml" --lock "$state/cakeys.lock" --module "gcp=$lib/lib/libkmsp11.so" "$@"
+    --config "$tf/../gcp/cakeys.toml" --lock "${CAKEYS_GCP_LOCK:-$state/cakeys.lock}" --module "gcp=$lib/lib/libkmsp11.so" "$@"
 }
 
 probe() {

@@ -202,6 +202,10 @@ pub struct Migration {
     /// Public objects `C_CreateObject` takes; the spec-compliant classes when empty.
     #[serde(default, rename = "public-accepts")]
     pub public_accepts: Vec<AcceptRow>,
+    /// Keys it takes in by no import at all, sealed or host, whatever its mechanisms say: AWS
+    /// `CloudHSM` holds Ed25519 as `CKK_EC` and refuses a `CKK_EC_EDWARDS` template [run].
+    #[serde(default)]
+    pub refuses: Vec<AcceptRow>,
 }
 
 /// One capability profile: `profile` names it ("family/version"), `mode` picks its semantics,
