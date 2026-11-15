@@ -157,8 +157,24 @@ per run. Until then, run by hand and read the bill.
 departs from the plan below in three places: the region is us-west-1 (hsm2m.medium $1.81/h
 [api]); the runner is the official NixOS AMI, root over SSH from the operator's address, not
 Ubuntu with cloud-init; and OpenTofu manages the HSM and runner too, with `park` deleting only
-those two. `create` stops at an uninitialized cluster; initialization, activation and the
-`cloudhsm-pkcs11` derivation are still to do. Neither script has run against AWS yet [todo].
+those two. `create` stops at an uninitialized cluster; initialization and activation are still to do.
+Neither script has run against AWS yet [todo].
+
+**Built (2026-11-14): the client.** `nix/cloudhsm.nix` packages SDK 5.18.1 as
+`.#cloudhsm-pkcs11`, `.#cloudhsm-dyn` (OpenSSL engine) and `.#cloudhsm-openssl-provider`,
+x86_64-linux, unfree. They come from the Ubuntu 26.04 debs. Those are the only packages
+with all three components, and the newest base: the binaries need GLIBC_2.39, while RHEL 10
+and AL2023 are older. Each binary links only libc, libm and libgcc_s, with OpenSSL built in.
+Seen locally, without an HSM [run]:
+
+- The PKCS#11 library, the engine and the provider all load: the library through
+  pkcs11-tool, the other two into nixpkgs' OpenSSL 3. Each reads the config file named by
+  `CLOUDHSM_CONFIG_FILENAME` (a full path). Each then fails only for want of an HSM.
+- `C_Initialize` itself returns `CKR_GENERAL_ERROR` when no HSM answers, so the library
+  cannot load without network reach to the cluster.
+- `configure-pkcs11` ignores the variable and edits only
+  `/opt/cloudhsm/etc/cloudhsm-pkcs11.cfg`. On the runner, either create that directory or
+  write the JSON and set the variable.
 
 **Module.** `cloudhsm-pkcs11` from the vendor's rpm/deb [doc] (Ubuntu 22.04/24.04/26.04, RHEL
 8–10, Amazon Linux 2/2023, x86_64 and ARM64 [doc]); files under `/opt/cloudhsm`; PKCS#11 2.40

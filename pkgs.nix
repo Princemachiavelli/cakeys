@@ -2,6 +2,7 @@
 # apps, checks and devShell outputs all draw from this one set.
 {
   pkgs,
+  pkgsCloudhsm,
   advisory-db,
   craneLib,
 }:
@@ -17,6 +18,17 @@ rec {
   mezura = pkgs.callPackage ./nix/mezura.nix { };
   # OpenTofu and the AWS CLI for scripts/cloud/aws.sh (docs/CLOUD_HSM.md).
   cloud-tools = pkgs.callPackage ./nix/cloud-tools.nix { };
+  # The AWS CloudHSM client, unfree, x86_64-linux only: cloudhsm-pkcs11, cloudhsm-dyn (the OpenSSL
+  # engine) and cloudhsm-openssl-provider.
+  cloudhsm = import ./nix/cloudhsm.nix {
+    inherit (pkgsCloudhsm)
+      lib
+      stdenv
+      fetchurl
+      dpkg
+      autoPatchelfHook
+      ;
+  };
   # cargo-deny: the sandboxed checks.deny (advisories against the pinned
   # RustSec database, licenses, bans, sources) and the online apps.deny-online (yanked —
   # registry metadata the sandbox has no network for). Configuration: deny.toml.
