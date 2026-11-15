@@ -1524,6 +1524,11 @@ fn host_moves_do_what_the_plan_says() {
         );
         let v = e.cakeys(d, &["verify", &spec, "--token", d.name]);
         assert_eq!(code(&v), 0, "{row}: cakeys verify: {}", stderr(&v));
+        // A re-run finds the key there, verifies it and changes nothing.
+        let again = std::fs::read(&lock_path).unwrap();
+        let out = e.km(s, &args);
+        assert_eq!(code(&out), 0, "{row}: the re-run: {}", stderr(&out));
+        assert_eq!(std::fs::read(&lock_path).unwrap(), again, "{row}: the re-run changed the lock");
         rows.push(row);
     }
     eprintln!("host moves:\n  {}", rows.join("\n  "));
