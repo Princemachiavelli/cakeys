@@ -64,6 +64,7 @@ pkcs11_names! {
         Sha256Hmac = "CKK_SHA256_HMAC",
         Sha384Hmac = "CKK_SHA384_HMAC",
         Sha512Hmac = "CKK_SHA512_HMAC",
+        Des3 = "CKK_DES3",
     }
 }
 
@@ -96,6 +97,17 @@ impl KeyType {
             KeyType::Sha1Hmac | KeyType::Sha224Hmac | KeyType::Sha256Hmac | KeyType::Sha384Hmac | KeyType::Sha512Hmac
         )
     }
+
+    /// The length in bytes a key type fixes: a `CKK_DES3` key is three-key Triple DES, 24 bytes
+    /// (parity bits included), and PKCS#11 gives it no `CKA_VALUE_LEN` (`SoftHSM` keeps none).
+    /// keys.toml's `valueLen` is then that length or absent.
+    #[must_use]
+    pub fn fixed_value_len(self) -> Option<u64> {
+        match self {
+            KeyType::Des3 => Some(24),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -113,6 +125,14 @@ mod tests {
             assert_eq!(serde_json::to_value(k).unwrap(), k.name());
             assert_eq!(k.name().parse::<KeyType>(), Ok(*k));
         }
-        assert!("CKK_DES3".parse::<KeyType>().is_err());
+        // Two-key Triple DES and single DES are not managed (docs/OPEN.md).
+        assert!("CKK_DES2".parse::<KeyType>().is_err());
+        assert!("CKK_DES".parse::<KeyType>().is_err());
+    }
+
+    #[test]
+    fn only_des3_fixes_its_length() {
+        let fixed: Vec<_> = KeyType::ALL.iter().filter_map(|k| Some((*k, k.fixed_value_len()?))).collect();
+        assert_eq!(fixed, [(KeyType::Des3, 24)]);
     }
 }

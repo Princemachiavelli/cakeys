@@ -213,6 +213,7 @@ fn algorithm_for(object: &ObjectCfg, spec: &SpecCfg, binding: Option<Binding>) -
         Kt::Sha1Hmac | Kt::Sha224Hmac | Kt::Sha256Hmac | Kt::Sha384Hmac | Kt::Sha512Hmac => {
             (object.value_len.unwrap_or_default() * 8).to_string()
         }
+        Kt::Des3 => return unsupported("Cloud KMS has no Triple DES keys".into()),
         Kt::EcEdwards | Kt::GenericSecret => {
             return unsupported(format!(
                 "Cloud KMS has no {} keys (HMAC keys are typed: CKK_SHA256_HMAC and the like)",

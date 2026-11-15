@@ -96,8 +96,8 @@ directory) they refuse up front unless `--no-update-lock` is passed.
 |---|---|---|
 | private/public keys | EC P-256/384/521, secp256k1, brainpoolP256r1/P384r1; Ed25519/Ed448; RSA 1024–8192 | `rfc7093m4` (SHA-256 of canonical SPKI) |
 | certificates | X.509 | `certhash` plus the subject key's `rfc7093m4` |
-| secret keys | AES-128/192/256; generic secrets; `CKK_SHA{1,224,256,384,512}_HMAC` | on-token commitments: `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`, `commitment` (HMAC) |
-| data objects | public `CKO_DATA` | `valuehash` (SHA-256 of the value) |
+| secret keys | AES-128/192/256; Triple DES (`CKK_DES3`); generic secrets; `CKK_SHA{1,224,256,384,512}_HMAC` | on-token commitments: `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`, `commitment` (HMAC); DES3 by `kcv-ecb`, `kcv-ecb-dec` |
+| data objects | `CKO_DATA`: public, or private when the spec declares `CKA_PRIVATE = true` | `valuehash` (SHA-256 of the value) |
 
 Opt-in attestation (`attestation = true` on a spec's token entry) adds signed provenance:
 `piv-attestation` (YubiKey PIV, verified to the pinned Yubico root) and `tpm-certify`
@@ -132,7 +132,8 @@ pkgs.runCommand "signed-artifact" {
 `module`, `tokenInfo`, `functions`, `assurance`, `requiredSystemFeatures` and `check` (use
 `scheme = "certhash"` to require one identity). `assurance` says what the check establishes
 against a token that may lie: `proof` (a fresh challenge), `fingerprint` (a secret key's
-commitment: replayable by whatever saw it once) or `public` (public bytes), (DESIGN §3.6, §3.7).
+commitment: replayable by whatever saw it once) or `public` (public bytes, or a private data
+object's value: whoever holds the bytes passes), (DESIGN §3.6, §3.7).
 
 A cached consumer is not rebuilt, so the token is not re-contacted; `nix build --check` forces it.
 

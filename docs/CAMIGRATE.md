@@ -62,7 +62,7 @@ start, on its one creation token (`createOn`); `--dry-run` says this first, per 
 
 | Exposure | What it means |
 |---|---|
-| `public` | Certificates, public keys, public data objects. Nothing secret moves. |
+| `public` | Certificates, public keys, public data objects. Nothing secret moves: a private data object (`CKA_PRIVATE = true`) has no method (15, [OPEN.md](OPEN.md)). |
 | `enforced` | `sealed`, and the source token allows no other wrapping: the key carries `CKA_WRAP_WITH_TRUSTED`, and the only wrapping key the source trusts is the target's transport key (D3). |
 | `sealed` | The material leaves the source only wrapped under a key that lives on the target, and is unwrapped there. The host never sees it. The default. |
 | `host` | Plaintext in camigrate's memory, never on disk or the wire, zeroized after. Wherever the target imports only plaintext (a YubiKey, `tpm2_ptool`). Only with `--allow-host-plaintext`, and only within `migrate`. |

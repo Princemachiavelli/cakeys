@@ -6,7 +6,7 @@ use cakeys_core::config::{
     AttrValue, Binding, Config, Immutables, LOCK_VERSION, Lock, Mode, ModuleInfo, ObjectCfg, Observation, Observed,
     Session, TokenInfo, parse_config_with, parse_lock,
 };
-use cakeys_core::id::{self, Commit, Curve, HmacHash};
+use cakeys_core::id::{self, BlockCipher, Commit, Curve, HmacHash};
 use cakeys_core::plan::Target;
 use cakeys_core::reconcile::{Facts, LockWrite, Notes, Resolved, compare, reconcile};
 use cakeys_core::types::{KeyType, ObjectClass};
@@ -266,22 +266,29 @@ proptest! {
     }
 
     /// The commitment label `<label>/<scheme>/<keyType>/<bits>` determines its parts: two
-    /// different (label, scheme, length) never share a label, whatever `/` the label holds, for
-    /// every length that loads.
+    /// different (label, scheme, key type, length) never share a label, whatever `/` the label
+    /// holds, for every length that loads.
     #[test]
     fn commitment_labels_are_injective(
         l1 in "[a-z/]{0,12}", l2 in "[a-z/]{0,12}",
         v1 in 0..=u64::from(u32::MAX), v2 in 0..=u64::from(u32::MAX),
         c1 in 0usize..5, c2 in 0usize..5,
+        k1 in 0usize..2, k2 in 0usize..2,
     ) {
-        let commits = [Commit::Hmac(HmacHash::Sha256), Commit::Cmac, Commit::KcvEcb, Commit::KcvEcbDecrypt, Commit::Kw];
-        let object = |v: u64| {
-            let mut o = ObjectCfg::new(ObjectClass::SecretKey, Some(KeyType::Aes));
+        let commits = [
+            Commit::Hmac(HmacHash::Sha256),
+            Commit::Cmac,
+            Commit::KcvEcb(BlockCipher::Aes),
+            Commit::KcvEcbDecrypt(BlockCipher::Aes),
+            Commit::Kw,
+        ];
+        let object = |k: usize, v: u64| {
+            let mut o = ObjectCfg::new(ObjectClass::SecretKey, Some([KeyType::Aes, KeyType::Des3][k]));
             o.value_len = Some(v);
             o
         };
-        prop_assume!((&l1, v1, c1) != (&l2, v2, c2));
-        prop_assert_ne!(commits[c1].label(&l1, &object(v1)), commits[c2].label(&l2, &object(v2)));
+        prop_assume!((&l1, v1, c1, k1) != (&l2, v2, c2, k2));
+        prop_assert_ne!(commits[c1].label(&l1, &object(k1, v1)), commits[c2].label(&l2, &object(k2, v2)));
     }
 
     /// `is_sri` accepts exactly what `sri` writes: 32 bytes, padded standard base64.

@@ -447,6 +447,53 @@ fn objects_sharing_a_locator_move_in_any_order() {
     assert_eq!(on_target("sl-a"), 3, "the refused certificate left an object");
 }
 
+/// A private data object (`CKA_PRIVATE = true`, which `cakeys` identifies once its spec declares
+/// it) holds a secret value: the public method would write it into a bundle and recreate it
+/// under the target's default `CKA_PRIVATE`, so no move plans for it (15), whatever is allowed;
+/// an export without names leaves it out with a warning. Nothing reaches the target.
+#[test]
+fn private_data_objects_never_move() {
+    let Some(e) = env("private-data") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
+    let (Some(soft), Some(kry)) = (named("softhsm"), named("kryoptic")) else {
+        eprintln!("skipping private-data: needs the softhsm and kryoptic references");
+        return;
+    };
+    let on_target = || open_session(&kry.module, kry.token_label, "1234").labelled("pd-secret").len();
+    open_session(&kry.module, kry.token_label, "1234").clear(&["pd-secret"]);
+    let src = open_session(&soft.module, soft.token_label, "1234");
+    src.clear(&["pd-secret"]);
+    src.create_object(&[
+        Attribute::Class(ObjectClass::DATA),
+        Attribute::Token(true),
+        Attribute::Private(true),
+        Attribute::Label(b"pd-secret".to_vec()),
+        Attribute::Value(b"7c1f9e04b2a85d36 an application secret".to_vec()),
+    ])
+    .unwrap();
+    drop(src);
+    let private = "attributes = { CKA_PRIVATE = true }\n";
+    e.config(
+        &("[objects.pd]\nclass = \"CKO_DATA\"\n\n".to_owned()
+            + &Env::spec("pd-soft", "pd", private, &[soft], "pd-secret", "")
+            + &Env::spec("pd-kry", "pd", private, &[kry], "pd-secret", "")),
+    );
+    let o = e.cakeys(soft, &["realise", "pd-soft", "--token", "softhsm"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let mv = ["migrate", "pd", "--from", "softhsm", "--to", "kryoptic", "--spec", "pd-kry"];
+    let o = e.km(soft, &[&mv[..], &["--dry-run", "--json"]].concat());
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert!(v["plans"][0]["reasons"][0].as_str().unwrap().contains("private data object"), "{v}");
+    let o = e.km(soft, &[&mv[..], &["--allow-host-plaintext"]].concat());
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert_eq!(on_target(), 0);
+    // Without names an export takes what can move: here nothing, the private object said.
+    let o = e.km(soft, &["export", "--token", "softhsm", "--target", "kryoptic"]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("pd: left out of the bundle"), "{}", stderr(&o));
+}
+
 /// The transport key of reference `r` (docs/CAMIGRATE.md D3), as keys.toml text: an RSA key that only
 /// unwraps and never leaves the token, proven by unwrapping (`pop-unwrap`). Its token names it
 /// with [`names_transport`].

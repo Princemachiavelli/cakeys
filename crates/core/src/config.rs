@@ -156,12 +156,17 @@ impl ObjectCfg {
         ObjectCfg { class, key_type, certificate_type: None, curve: None, value_len: None, modulus_bits: None }
     }
 
-    /// Replace a curve alias by its canonical name (unknown names are left for validation).
+    /// Replace a curve alias by its canonical name (unknown names are left for validation), and
+    /// fill in the length a key type fixes (`CKK_DES3`: 24) when `valueLen` is absent, so writing
+    /// it or not is the same type, spec digest and commitment label.
     pub fn canonicalize(&mut self) {
         if let Some(kt) = self.key_type
             && let Some(c) = self.curve.as_deref().and_then(|c| crate::id::Curve::from_cfg(kt, c))
         {
             self.curve = Some(c.name().to_owned());
+        }
+        if self.value_len.is_none() && self.class == ObjectClass::SecretKey {
+            self.value_len = self.key_type.and_then(KeyType::fixed_value_len);
         }
     }
 
@@ -1035,6 +1040,17 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
                 o.value_len.unwrap_or_default()
             )));
         }
+        if o.class == ObjectClass::SecretKey
+            && let Some(kt) = o.key_type
+            && let Some(fixed) = kt.fixed_value_len()
+            && o.value_len != Some(fixed)
+        {
+            return Err(KmError::Validation(format!(
+                "{}: object '{name}': a {kt} key is {fixed} bytes; leave valueLen out or write {fixed}, not {}",
+                path.display(),
+                o.value_len.unwrap_or_default()
+            )));
+        }
     }
     for (name, t) in &mut cfg.tokens {
         // The module resolves when the token is opened ([`TokenCfg::module_path`]): `--module`
@@ -1595,12 +1611,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("keys.toml");
-        for object in ["class = \"CKO_OTP_KEY\"", "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES3\""] {
+        for object in ["class = \"CKO_OTP_KEY\"", "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES2\""] {
             std::fs::write(&p, format!("[objects.o]\n{object}\n")).unwrap();
             let err = load_config(&p).unwrap_err();
             assert!(matches!(err, KmError::Validation(_)), "{err}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A DES3 key is 24 bytes: `valueLen` left out loads as 24 (the same type, spec digest and
+    /// commitment label as writing it), and any other length is invalid at load (17).
+    #[test]
+    fn des3_value_len_is_the_key_types() {
+        let des3 = |len: &str| {
+            let text = format!("[objects.o]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES3\"\n{len}\n");
+            parse_config_with(&text, Path::new("keys.toml"), &|_| None)
+        };
+        assert_eq!(des3("").unwrap().objects["o"].value_len, Some(24));
+        assert_eq!(des3("").unwrap().objects["o"], des3("valueLen = 24").unwrap().objects["o"]);
+        for wrong in ["valueLen = 16", "valueLen = 0", "valueLen = 32"] {
+            let err = des3(wrong).unwrap_err();
+            assert!(matches!(&err, KmError::Validation(m) if m.contains("a CKK_DES3 key is 24 bytes")), "{err}");
+        }
+        // Only a secret key takes the fixed length (another class is refused by its type later).
+        let text = "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_DES3\"\n";
+        let cfg = parse_config_with(text, Path::new("keys.toml"), &|_| None).unwrap();
+        assert_eq!(cfg.objects["o"].value_len, None);
+        assert!(matches!(cfg.objects["o"].checked_key_type(), Err(KmError::Unsupported(_))));
     }
 
     /// Downgrade detection compares ranks: an inverted order would silently disable it. The

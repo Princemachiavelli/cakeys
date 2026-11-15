@@ -5,7 +5,7 @@ use crate::provider::{AttestCtx, AttestationCap, Attested, Generation, Provider,
 use cakeys_core::attrs;
 use cakeys_core::config::{AttrValue, Binding, Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
 pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};
-use cakeys_core::id::{self, Commit, Curve, HmacHash, Scheme};
+use cakeys_core::id::{self, BlockCipher, Commit, Curve, HmacHash, Scheme};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
@@ -814,6 +814,7 @@ pub fn key_type_of(object: &ObjectCfg) -> Result<KeyType> {
         Kt::Rsa => KeyType::RSA,
         Kt::GenericSecret => KeyType::GENERIC_SECRET,
         Kt::Aes => KeyType::AES,
+        Kt::Des3 => KeyType::DES3,
         Kt::Sha1Hmac => KeyType::SHA_1_HMAC,
         Kt::Sha224Hmac => hmac_key_type(KeyType::SHA224_HMAC, 0x2e)?,
         Kt::Sha256Hmac => KeyType::SHA256_HMAC,

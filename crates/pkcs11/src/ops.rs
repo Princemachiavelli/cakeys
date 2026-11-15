@@ -4,13 +4,13 @@ use crate::provider::Provider;
 use crate::token::{self as hal, Token};
 use cakeys_core::config::{AttestationRecord, Config, Lock, Mode, Observation, Observed, Origin, Session};
 use cakeys_core::id::{self, Commit, HmacHash, Scheme};
-use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
+use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
 use cryptoki::object::{KeyType, ObjectHandle};
 
-use cakeys_core::plan::{AES_COMMITS, declared_commits};
 pub use cakeys_core::plan::{Target, binding, plan_mode};
+use cakeys_core::plan::{block_commits, declared_commits};
 use cakeys_core::reconcile::{self, commitment_label};
 pub use cakeys_core::reconcile::{Facts, LockWrite, Notes, Resolved};
 
@@ -25,8 +25,10 @@ fn attestation_scheme(t: &Target, tok: &Token) -> Option<Scheme> {
 fn wanted_commits(t: &Target, mode: Mode) -> Vec<Commit> {
     match (mode, t.object.key_type) {
         (Mode::Commitment, _) => declared_commits(t),
-        (Mode::WrapRebind, Some(Kt::Aes)) => AES_COMMITS.to_vec(),
-        (Mode::WrapRebind, kt) => kt.and_then(HmacHash::for_key_type).map(Commit::Hmac).into_iter().collect(),
+        (Mode::WrapRebind, kt) => match kt.and_then(block_commits) {
+            Some(all) => all.to_vec(),
+            None => kt.and_then(HmacHash::for_key_type).map(Commit::Hmac).into_iter().collect(),
+        },
         _ => vec![],
     }
 }
@@ -128,6 +130,7 @@ pub fn needs(t: &Target, mode: Mode, own_generation: bool) -> Result<Needs> {
             KeyType::EC_EDWARDS => MechanismType::ECC_EDWARDS_KEY_PAIR_GEN,
             KeyType::RSA => MechanismType::RSA_PKCS_KEY_PAIR_GEN,
             KeyType::AES => MechanismType::AES_KEY_GEN,
+            KeyType::DES3 => MechanismType::DES3_KEY_GEN,
             _ => MechanismType::GENERIC_SECRET_KEY_GEN,
         }]);
     }
