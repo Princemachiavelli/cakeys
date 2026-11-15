@@ -74,7 +74,12 @@ fn check_pem_is_a_key_file_for_pkcs11_provider() {
     let Some(e) = env(name) else { return };
     // pkcs11-provider's directory (`ossl-modules`): OpenSSL loads `-provider pkcs11` from it.
     let Some(provider_dir) = suite_var("CAKEYS_PKCS11_PROVIDER_DIR", REF.require_var, name) else { return };
-    e.config(&(EC.replace("ec-lifecycle", "check-pem") + PEM_REFUSALS));
+    // A CKA_ID on both halves: pkcs11-provider finds a private key's public half by CKA_ID alone,
+    // and SoftHSM's private EC key carries no public point (no CKA_EC_POINT, an empty
+    // CKA_PUBLIC_KEY_INFO).
+    e.config(
+        &(EC.replace(r#"CKA_LABEL = "ec-lifecycle""#, r#"CKA_LABEL = "check-pem", CKA_ID = "c0""#) + PEM_REFUSALS),
+    );
     assert_eq!(e.code(&["realise", "signing-soft", "--token", "ref"]), 0);
     let locked = e.locked_id("signing", "rfc7093m4");
 
@@ -83,7 +88,10 @@ fn check_pem_is_a_key_file_for_pkcs11_provider() {
         eprintln!("$ openssl {}\n  exit={:?}\n  stderr={}", args.join(" "), out.status.code(), stderr(&out).trim());
         assert!(out.status.success(), "openssl {}", args.join(" "));
     };
-    let via_provider = ["-provider-path", provider_dir.as_str(), "-provider", "pkcs11", "-provider", "default"];
+    // `default` first, as pkcs11-provider's own test configuration lists them: listed after it,
+    // the PKCS#11 provider serves the module's own OpenSSL calls too (SoftHSM 2.7.0 then
+    // deadlocks, SoftHSMv2 #834).
+    let via_provider = ["-provider-path", provider_dir.as_str(), "-provider", "default", "-provider", "pkcs11"];
     let data = e.dir.join("data");
     std::fs::write(&data, b"signed through a cakeys key file").unwrap();
     let (public, data) = (e.dir.join("public.der"), data.to_str().unwrap());

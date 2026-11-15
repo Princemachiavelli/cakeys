@@ -6,6 +6,9 @@
   module,
   cakeys,
   pcsc-probe,
+  # SoftHSM with upstream/softhsm/'s patches (nix/softhsm-unwrap-value-len.nix): over stock 2.7.0,
+  # OpenSSL through pkcs11-provider cannot stream-sign and crashes at exit.
+  softhsm,
 }:
 let
   inherit (pkgs) lib;
@@ -14,7 +17,7 @@ let
 
   keysToml = pkgs.writeText "keys.toml" ''
     [tokens.softhsm]
-    module = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so"
+    module = "${softhsm}/lib/softhsm/libsofthsm2.so"
     tokenLabel = "kmtest"
     pinFile = "${stateDir}/pin"
 
@@ -26,7 +29,7 @@ let
     [specs.signing-soft]
     object = "signing"
     attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
-    tokens.softhsm = { locator = { CKA_LABEL = "signing" }, autoCreate = true }
+    tokens.softhsm = { locator = { CKA_LABEL = "signing", CKA_ID = "01" }, autoCreate = true }
   '';
 
   # What a build's sandbox sees: pcscd reachability and the SoftHSM state directory.
@@ -101,7 +104,7 @@ pkgs.testers.runNixOSTest {
     systemd.services.signer = {
       environment = {
         SOFTHSM2_CONF = "${stateDir}/softhsm2.conf";
-        PKCS11_PROVIDER_MODULE = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
+        PKCS11_PROVIDER_MODULE = "${softhsm}/lib/softhsm/libsofthsm2.so";
       };
       serviceConfig = {
         Type = "oneshot";
@@ -112,10 +115,12 @@ pkgs.testers.runNixOSTest {
           "-sha256"
           "-provider-path"
           "${pkgs.pkcs11-provider}/lib/ossl-modules"
-          "-provider"
-          "pkcs11"
+          # `default` first, as pkcs11-provider's own test configuration lists them (docs/OPEN.md,
+          # SoftHSM under pkcs11-provider).
           "-provider"
           "default"
+          "-provider"
+          "pkcs11"
           "-sign"
           "/run/cakeys/signing.pem"
           "-out"
@@ -126,7 +131,7 @@ pkgs.testers.runNixOSTest {
     };
     environment.systemPackages = [
       cakeys
-      pkgs.softhsm
+      softhsm
       pkgs.openssl
     ];
     environment.etc."km/keys.toml".source = keysToml;
@@ -207,8 +212,8 @@ pkgs.testers.runNixOSTest {
         assert machine.succeed("stat -c '%a %G' /run/cakeys/signing.pem").split() == ["640", "signer"]
         assert machine.succeed("head -n1 /run/cakeys/signing.pem").strip() == "-----BEGIN PKCS#11 PROVIDER URI-----"
         machine.succeed(
-            "openssl pkey -provider-path ${pkgs.pkcs11-provider}/lib/ossl-modules -provider pkcs11"
-            " -provider default -in /run/cakeys/signing.pem -pubout -out /run/signing.pub",
+            "openssl pkey -provider-path ${pkgs.pkcs11-provider}/lib/ossl-modules -provider default"
+            " -provider pkcs11 -in /run/cakeys/signing.pem -pubout -out /run/signing.pub",
             "openssl dgst -sha256 -verify /run/signing.pub -signature /run/signer.sig /etc/km/keys.toml",
         )
         # Key gone: a fresh check (autoCreate makes a new key) no longer matches the lock.

@@ -18,8 +18,12 @@ let
   };
 
   typosConfig = toml "typos.toml" {
-    # Git commit hashes (`a110ba8a`): hex, not words.
-    default.extend-ignore-re = [ "\\b[0-9a-f]{7,40}\\b" ];
+    # Git commit hashes (`a110ba8a`): hex, not words. Base64 runs (a PEM body in a test): not
+    # words either, and a "fix" inside one changes the bytes it decodes to.
+    default.extend-ignore-re = [
+      "\\b[0-9a-f]{7,40}\\b"
+      "[A-Za-z0-9+/]{40,}={0,2}"
+    ];
     default.extend-words = {
       # keep-sorted start
       COSE = "COSE"; # CBOR Object Signing and Encryption

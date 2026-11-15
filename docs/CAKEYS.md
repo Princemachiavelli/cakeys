@@ -75,6 +75,10 @@ the bare locator; the module and the PIN are added only on request, at the check
 pkcs11-provider reads `pin-source` (`file:`, and its own `env:`) and `pin-value`, but not
 `module-path`: it takes the module from its configuration or `PKCS11_PROVIDER_MODULE`. p11-kit
 and libp11 read `module-path`. A `pin-value` is in whatever the output reaches.
+pkcs11-provider finds a private key's public half by `CKA_ID` alone: on a module whose private
+key carries no public point (SoftHSM: no `CKA_EC_POINT`, an empty `CKA_PUBLIC_KEY_INFO`), a key
+file for a locator without `CKA_ID` signs but cannot give OpenSSL the public key. Activate
+OpenSSL's `default` provider before `pkcs11`: SoftHSM 2.7.0 deadlocks otherwise (OPEN.md).
 
 Today the CLI is the binding. **The check is not the use** (accepted 2026-11-13): a program that
 runs `check` and then opens the URI uses the key a moment after it was verified, as with a file

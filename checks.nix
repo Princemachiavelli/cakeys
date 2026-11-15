@@ -177,6 +177,7 @@
   vm = mkTest "vm";
   module = import ./nix/module-test.nix {
     inherit pkgs cakeys pcsc-probe;
+    softhsm = softhsm-unwrap-value-len-tested;
     module = self.nixosModules.default;
   };
   tpm = import ./nix/tpm-test.nix {
