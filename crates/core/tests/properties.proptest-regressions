@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 8019839540f5a7915703548e403773bba529f2f0ff2bb4317f8f6720f82d9b77 # shrinks to first = Variant { material: false, binding: PopSign, immutables: [None, None, None], policy: [false, false], spec_changed: false }, second = Variant { material: false, binding: TokenAsserted, immutables: [None, None, None], policy: [false, false], spec_changed: false }
+cc c56b0beee8ac3fbaa8d01c30cc31d670fae3ee65c11557cce82fb0f848593bb7 # shrinks to edits = [(Index(4894684901148515425), '#')]

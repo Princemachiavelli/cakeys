@@ -3,7 +3,7 @@
 //! none needs a token.
 
 use cakeys_core::KmError;
-use cakeys_core::config::{Binding, Config, Mode, parse_config_with, parse_lock};
+use cakeys_core::config::{Binding, Config, Mode, ObjectKind, parse_config_with, parse_lock};
 use cakeys_core::id::Scheme;
 use cakeys_core::plaintext::{PrivateParts, private_from_pkcs8, spki_of_pkcs8};
 use cakeys_core::plan::{Assurance, Target, binding, expected_binding, plan_mode};
@@ -73,6 +73,30 @@ fn specs_that_cannot_hold_are_refused_with_why() {
         let said = refusal(&keys(object, spec, on_token));
         assert!(said.contains(why), "expected {why:?} in {said:?}");
     }
+}
+
+/// Every object's type is parsed at load (`ObjectCfg::kind`), whether a spec uses it or not:
+/// a field that names nothing on its class or key type is invalid (17), a pairing cakeys does
+/// not manage unsupported (15).
+#[test]
+fn every_object_is_typed_at_load() {
+    let unused = |object: &str| format!("{}\n[objects.unused]\n{object}\n", keys(EC, SIGN, ""));
+    for (object, code, why) in [
+        ("class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nmodulusBits = 2048", 17, "modulusBits applies to CKK_RSA"),
+        ("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\ncurve = \"secp256r1\"", 17, "curve applies to"),
+        ("class = \"CKO_PUBLIC_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"P-256\"\nvalueLen = 32", 17, "valueLen applies"),
+        ("class = \"CKO_DATA\"\nkeyType = \"CKK_AES\"", 17, "keyType applies to keys only"),
+        ("class = \"CKO_CERTIFICATE\"", 17, "certificates need certificateType"),
+        ("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_AES\"", 15, "CKO_PRIVATE_KEY/CKK_AES"),
+        ("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"brainpoolP512r1\"", 15, "no RustCrypto crate"),
+    ] {
+        let e = load(&unused(object)).unwrap_err();
+        assert_eq!(e.exit_code(), code, "{e}");
+        assert!(e.to_string().contains("object 'unused'") && e.to_string().contains(why), "{why}: {e}");
+    }
+    let des3 = load(&unused("class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES3\"")).unwrap();
+    let kind = des3.objects["unused"].kind().unwrap();
+    assert_eq!(kind, ObjectKind::Secret { key_type: KeyType::Des3, value_len: Some(24) });
 }
 
 #[test]

@@ -242,11 +242,122 @@ impl ObjectCfg {
     /// `Unsupported` for a class/key-type pairing cakeys does not manage, and whatever `curve`
     /// rejects for EC and Edwards keys (`Validation` when the object names no curve).
     pub fn checked_key_type(&self) -> Result<KeyType> {
-        match (self.class, self.key_type) {
-            (c, Some(k @ (KeyType::Ec | KeyType::EcEdwards))) if c.is_asymmetric() => self.curve().map(|_| k),
-            (c, Some(KeyType::Rsa)) if c.is_asymmetric() => Ok(KeyType::Rsa),
-            (ObjectClass::SecretKey, Some(k)) if !k.is_asymmetric() => Ok(k),
-            (c, k) => Err(KmError::Unsupported(format!("{c}/{}", k.map_or("", KeyType::name)))),
+        self.kind()?
+            .key_type()
+            .ok_or_else(|| KmError::Unsupported(format!("{}/{}", self.class, self.key_type.map_or("", KeyType::name))))
+    }
+
+    /// What the object is: its class and type fields parsed into one of the combinations
+    /// cakeys manages ([`ObjectKind`]). Every object is parsed when keys.toml loads, used by a
+    /// spec or not.
+    ///
+    /// # Errors
+    ///
+    /// `Validation` for a field that names nothing on this class or key type, or a certificate
+    /// without `certificateType = "CKC_X_509"`; `Unsupported` for a class/key-type pairing
+    /// cakeys does not manage, or a curve [`Self::curve`] refuses.
+    pub fn kind(&self) -> Result<ObjectKind> {
+        let invalid = |why: &str| Err(KmError::Validation(why.to_owned()));
+        let class = self.class;
+        let ecc = matches!(self.key_type, Some(KeyType::Ec | KeyType::EcEdwards));
+        if self.certificate_type.is_some() && class != ObjectClass::Certificate {
+            return invalid("certificateType applies to certificates only");
+        }
+        if self.key_type.is_some() && !class.is_key() {
+            return invalid(if class == ObjectClass::Certificate {
+                "certificates take no keyType"
+            } else {
+                "keyType applies to keys only"
+            });
+        }
+        // A key's class and type pair first: a field that fits neither is the lesser news.
+        if class.is_key() && self.key_type.is_none_or(|k| k.is_asymmetric() != class.is_asymmetric()) {
+            return Err(KmError::Unsupported(format!("{class}/{}", self.key_type.map_or("", KeyType::name))));
+        }
+        if self.curve.is_some() && !(ecc && class.is_asymmetric()) {
+            return invalid("curve applies to CKK_EC and CKK_EC_EDWARDS keys only");
+        }
+        if self.modulus_bits.is_some() && !(self.key_type == Some(KeyType::Rsa) && class.is_asymmetric()) {
+            return invalid("modulusBits applies to CKK_RSA keys only");
+        }
+        if self.value_len.is_some() && class != ObjectClass::SecretKey {
+            return invalid("valueLen applies to secret keys only");
+        }
+        Ok(match (class, self.key_type) {
+            (ObjectClass::Certificate, _) => match self.certificate_type.as_deref() {
+                Some("CKC_X_509") => ObjectKind::Certificate,
+                Some(_) => return invalid("certificateType must be CKC_X_509"),
+                None => return invalid("certificates need certificateType = \"CKC_X_509\""),
+            },
+            (ObjectClass::Data, _) => ObjectKind::Data,
+            (c, Some(KeyType::Rsa)) if c.is_asymmetric() => {
+                ObjectKind::Asymmetric { class: c, key: AsymmetricKey::Rsa { modulus_bits: self.modulus_bits } }
+            }
+            (c, Some(KeyType::Ec)) if c.is_asymmetric() => {
+                ObjectKind::Asymmetric { class: c, key: AsymmetricKey::Ec(self.curve()?) }
+            }
+            (c, Some(KeyType::EcEdwards)) if c.is_asymmetric() => {
+                ObjectKind::Asymmetric { class: c, key: AsymmetricKey::Edwards(self.curve()?) }
+            }
+            (ObjectClass::SecretKey, Some(k)) if !k.is_asymmetric() => {
+                ObjectKind::Secret { key_type: k, value_len: self.value_len }
+            }
+            (c, k) => return Err(KmError::Unsupported(format!("{c}/{}", k.map_or("", KeyType::name)))),
+        })
+    }
+}
+
+/// What an object is (`[objects.<name>]`, parsed by [`ObjectCfg::kind`]): each combination of
+/// class, key type and type parameters cakeys manages is one variant, so a new parameter set
+/// adds a variant rather than another optional field and its cross-field rules. keys.toml's
+/// form and the spec digest stay [`ObjectCfg`]'s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectKind {
+    /// A private or a public key of an asymmetric type.
+    Asymmetric {
+        /// `CKO_PRIVATE_KEY` or `CKO_PUBLIC_KEY`.
+        class: ObjectClass,
+        /// The key's type and its parameters.
+        key: AsymmetricKey,
+    },
+    /// A secret key: its type, and its length in bytes where keys.toml states it (a type with a
+    /// fixed length has it filled in at load).
+    Secret {
+        /// `CKK_AES`, an HMAC type, `CKK_GENERIC_SECRET`, `CKK_DES3`.
+        key_type: KeyType,
+        /// `valueLen`.
+        value_len: Option<u64>,
+    },
+    /// An X.509 certificate.
+    Certificate,
+    /// A data object.
+    Data,
+}
+
+/// An asymmetric key's type and parameters ([`ObjectKind::Asymmetric`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsymmetricKey {
+    /// `CKK_RSA`, with `modulusBits` where keys.toml states it (`create` needs it).
+    Rsa {
+        /// `modulusBits`.
+        modulus_bits: Option<u64>,
+    },
+    /// `CKK_EC` on a supported Weierstrass curve.
+    Ec(crate::id::Curve),
+    /// `CKK_EC_EDWARDS` on a supported Edwards curve.
+    Edwards(crate::id::Curve),
+}
+
+impl ObjectKind {
+    /// The key type, for keys.
+    #[must_use]
+    pub fn key_type(self) -> Option<KeyType> {
+        match self {
+            ObjectKind::Asymmetric { key: AsymmetricKey::Rsa { .. }, .. } => Some(KeyType::Rsa),
+            ObjectKind::Asymmetric { key: AsymmetricKey::Ec(_), .. } => Some(KeyType::Ec),
+            ObjectKind::Asymmetric { key: AsymmetricKey::Edwards(_), .. } => Some(KeyType::EcEdwards),
+            ObjectKind::Secret { key_type, .. } => Some(key_type),
+            ObjectKind::Certificate | ObjectKind::Data => None,
         }
     }
 }
@@ -1129,6 +1240,12 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
     }
     for (name, o) in &mut cfg.objects {
         o.canonicalize();
+        // Every object's type, used by a spec or not (review V5); a plan reads it again.
+        o.kind().map_err(|e| match e {
+            KmError::Validation(m) => KmError::Validation(format!("{}: object '{name}': {m}", path.display())),
+            KmError::Unsupported(m) => KmError::Unsupported(format!("{}: object '{name}': {m}", path.display())),
+            other => other,
+        })?;
         // The commitment label carries 8 × valueLen bits (docs/DESIGN.md §3.3): bound it so that
         // never overflows (tests/properties.rs: `commitment_labels_are_injective`).
         if o.value_len.is_some_and(|n| n > u64::from(u32::MAX)) {
@@ -1847,11 +1964,10 @@ mod tests {
             let err = des3(wrong).unwrap_err();
             assert!(matches!(&err, KmError::Validation(m) if m.contains("a CKK_DES3 key is 24 bytes")), "{err}");
         }
-        // Only a secret key takes the fixed length (another class is refused by its type later).
+        // Only a secret key takes the fixed length; another class is refused by its type at load.
         let text = "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_DES3\"\n";
-        let cfg = parse_config_with(text, Path::new("keys.toml"), &|_| None).unwrap();
-        assert_eq!(cfg.objects["o"].value_len, None);
-        assert!(matches!(cfg.objects["o"].checked_key_type(), Err(KmError::Unsupported(_))));
+        let err = parse_config_with(text, Path::new("keys.toml"), &|_| None).unwrap_err();
+        assert!(matches!(&err, KmError::Unsupported(m) if m.contains("CKO_PRIVATE_KEY/CKK_DES3")), "{err}");
     }
 
     /// Downgrade detection compares ranks: an inverted order would silently disable it. The

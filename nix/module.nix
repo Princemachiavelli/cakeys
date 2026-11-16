@@ -236,7 +236,9 @@ in
         Tokens builds on this host may use. Each advertises `<featurePrefix><name>`, and builds that
         require that feature get its `sandboxPaths` from a pre-build-hook. Features are
         self-declared by derivations: this keeps tokens out of unrelated builds, it does not
-        authenticate who asks (that is `nix.settings.allowed-users`).
+        authenticate who asks (that is `nix.settings.allowed-users`). These names and keys.toml's
+        `tokens.<t>` meet only through that feature string: nothing checks that `<n>` here is the
+        token `<t>` there, so keep the names, or `featurePrefix` and `nix.systemFeature`, in step.
       '';
     };
 

@@ -319,7 +319,7 @@ proptest! {
     }
 
     /// The loaders never panic on a damaged keys.toml or keys.lock: it loads, or it is refused as
-    /// invalid (17).
+    /// invalid (17), or keys.toml as naming an object type cakeys does not manage (15).
     #[test]
     fn loaders_refuse_damaged_files_without_panicking(edits in proptest::collection::vec((any::<Index>(), any::<char>()), 1..4)) {
         let damage = |text: &str| {
@@ -333,7 +333,7 @@ proptest! {
         let lock = parse_lock(&damage(FIXTURE_LOCK), Path::new("keys.lock"));
         prop_assert!(matches!(exit(&lock), 0 | 17), "{:?}", lock.err());
         let cfg = parse_config_with(&damage(FIXTURE_CONFIG), Path::new("keys.toml"), &|_| Some("/x".into()));
-        prop_assert!(matches!(exit(&cfg), 0 | 17), "{:?}", cfg.err());
+        prop_assert!(matches!(exit(&cfg), 0 | 15 | 17), "{:?}", cfg.err());
     }
 }
 

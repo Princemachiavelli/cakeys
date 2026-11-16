@@ -3,7 +3,7 @@
 //! pass before any token is opened (exit 17).
 
 use crate::attrs;
-use crate::config::{AttrValue, Binding, Config, Mode, ObjectCfg, SpecCfg, SpecTokenCfg};
+use crate::config::{AttrValue, Binding, Config, Mode, ObjectCfg, ObjectKind, SpecCfg, SpecTokenCfg};
 use crate::id::{BlockCipher, Commit, HmacHash, Scheme};
 use crate::types::{KeyType as Kt, ObjectClass as Class};
 use crate::{KmError, Result};
@@ -66,10 +66,6 @@ impl<'a> Target<'a> {
                 (None, _) => vec![Scheme::Commitment],
             },
         }
-    }
-
-    fn is_certificate(&self) -> bool {
-        self.object.class == Class::Certificate
     }
 }
 
@@ -258,17 +254,11 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
     if !t.spec.public_attributes.is_empty() && t.object.class != Class::PrivateKey {
         return invalid("publicAttributes apply to private keys only");
     }
-    // The certificate type lives in `certificateType`; `keyType` names nothing on a certificate.
-    match t.object.certificate_type.as_deref() {
-        Some("CKC_X_509") if t.is_certificate() => {}
-        Some(_) if t.is_certificate() => return invalid("certificateType must be CKC_X_509"),
-        Some(_) => return invalid("certificateType applies to certificates only"),
-        None if t.is_certificate() => return invalid("certificates need certificateType = \"CKC_X_509\""),
-        None => {}
-    }
-    if t.is_certificate() && t.object.key_type.is_some() {
-        return invalid("certificates take no keyType");
-    }
+    // The object's type, parsed at load (`ObjectCfg::kind`).
+    let kind = t.object.kind().map_err(|e| match e {
+        KmError::Validation(m) => KmError::Validation(format!("{t}: {m}")),
+        other => other,
+    })?;
     if t.on_token.public_only {
         if t.object.class != Class::PrivateKey {
             return invalid("publicOnly applies to private keys only");
@@ -284,20 +274,12 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
             "attestation = true applies to key objects only (PIV attests asymmetric keys, TPM2_Certify any TPM-resident object)",
         );
     }
-    if matches!(t.object.class, Class::PublicKey | Class::Data) {
-        if t.object.class == Class::PublicKey {
-            t.object.checked_key_type()?;
-        }
-        return Ok(Mode::Direct);
-    }
-    if t.is_certificate() {
-        return Ok(Mode::Direct);
-    }
-    let kt = t.object.checked_key_type()?;
+    let kt = match kind {
+        ObjectKind::Asymmetric { .. } | ObjectKind::Certificate | ObjectKind::Data => return Ok(Mode::Direct),
+        ObjectKind::Secret { key_type, .. } => key_type,
+    };
     let attr = |n: &str| t.spec.flag(n);
-    let mode = if kt.is_asymmetric() {
-        Mode::Direct
-    } else if !declared_commits(t).is_empty() {
+    let mode = if !declared_commits(t).is_empty() {
         Mode::Commitment
     } else if attr("CKA_EXTRACTABLE") == Some(true) {
         Mode::WrapRebind
