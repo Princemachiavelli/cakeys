@@ -61,17 +61,17 @@ firmware = "10.23"
 mechanisms = ["CKM_AES_KEY_WRAP", "CKM_AES_KEY_WRAP_PAD", "CKM_ECDSA_SHA1"]
 
 [capabilities]
-"generate.CKK_EC.brainpoolP256r1" = { answer = "no" }
-"generate.CKK_EC.brainpoolP384r1" = { answer = "no" }
+"generate.CKK_EC.brainpoolP256r1" = { answer = "no", evidence = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID" }
+"generate.CKK_EC.brainpoolP384r1" = { answer = "no", evidence = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID" }
 "generate.CKK_EC.secp256k1" = { answer = "yes" }
 "generate.CKK_EC.secp256r1" = { answer = "yes" }
 "generate.CKK_EC.secp384r1" = { answer = "yes" }
 "generate.CKK_EC.secp521r1" = { answer = "yes" }
-"generate.CKK_EC_EDWARDS.edwards25519" = { answer = "no" }
-"generate.CKK_EC_EDWARDS.edwards448" = { answer = "no" }
+"generate.CKK_EC_EDWARDS.edwards25519" = { answer = "no", evidence = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID" }
+"generate.CKK_EC_EDWARDS.edwards448" = { answer = "no", evidence = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID" }
 "generate.CKK_EC_MONTGOMERY.curve25519" = { answer = "no" }
 "generate.CKK_EC_MONTGOMERY.curve448" = { answer = "no" }
-"generate.CKK_RSA.1024" = { answer = "no" }
+"generate.CKK_RSA.1024" = { answer = "no", evidence = "modulusBits = 1024: CKR_ATTRIBUTE_VALUE_INVALID" }
 "generate.CKK_RSA.2048" = { answer = "yes" }
 "generate.CKK_RSA.3072" = { answer = "yes" }
 "generate.CKK_RSA.4096" = { answer = "yes" }
@@ -81,28 +81,27 @@ mechanisms = ["CKM_AES_KEY_WRAP", "CKM_AES_KEY_WRAP_PAD", "CKM_ECDSA_SHA1"]
 "decrypt.rsa-oaep.SHA-256" = { answer = "yes" }
 "decrypt.rsa-oaep.SHA-512" = { answer = "yes" }
 "derive.ecdh.sealed" = { answer = "yes" }
-"derive.ecdh.read-only" = { answer = "no" }
+"derive.ecdh.read-only" = { answer = "no", evidence = "secp256r1: in a read-only session: CKR_SESSION_READ_ONLY" }
+"prove.pop-decrypt.CKK_RSA.2048" = { answer = "yes" }
+"prove.pop-ecdh.CKK_EC.secp256r1" = { answer = "yes" }
+"prove.pop-sign.CKK_EC.secp256r1" = { answer = "yes" }
+"prove.pop-sign.CKK_RSA.2048" = { answer = "yes" }
+"prove.pop-unwrap.CKK_RSA.2048" = { answer = "yes" }
 
 [reported."CKK_RSA"]
 min-bits = 2048
 max-bits = 4096
 
 [notes]
-"CKK_RSA at 1024" = "modulusBits = 1024: CKR_ATTRIBUTE_VALUE_INVALID"
 "CKM_AES_KEY_WRAP" = "advertised but refused: C_WrapKey: CKR_MECHANISM_INVALID"
 "CKM_AES_KEY_WRAP_PAD" = "advertised but refused: C_WrapKey: CKR_MECHANISM_INVALID"
 "CKM_ECDSA_SHA1" = "secp256r1: CKR_FUNCTION_FAILED"
 "CKM_EC_EDWARDS_KEY_PAIR_GEN" = "not listed; the provider's stand-in generates nothing"
 "CKM_RSA_PKCS" = "RSA-2048 decrypt: CKR_ENCRYPTED_DATA_INVALID"
-"brainpoolP256r1" = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID"
-"brainpoolP384r1" = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID"
 "cryptoki" = "the module reports Cryptoki 2.40"
 "curve25519" = "not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN"
 "curve448" = "not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN"
-"derive.read-only" = "secp256r1: in a read-only session: CKR_SESSION_READ_ONLY"
 "derive.secret" = "secp256r1: the derived secret reports CKA_SENSITIVE = true, CKA_EXTRACTABLE = true"
 "derive.template" = "secp256r1: the template as asked is refused (CKR_ATTRIBUTE_VALUE_INVALID); derived with CKA_VALUE_LEN = 32 added, CKA_EXTRACTABLE = false dropped"
-"edwards25519" = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID"
-"edwards448" = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID"
-"template.public.CKA_PRIVATE" = "CKA_PRIVATE = false on a public object: CKR_ATTRIBUTE_VALUE_INVALID; made without it, the object reads CKA_PRIVATE = true"
+"template.public.CKA_PRIVATE" = "the module refuses a public key with CKA_PRIVATE = false"
 "unwrap-template" = "CKA_VALUE_LEN: CKR_ATTRIBUTE_TYPE_INVALID"

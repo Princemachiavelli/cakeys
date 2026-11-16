@@ -65,10 +65,11 @@ pub fn keygen_mechanism(keygen: MechanismType) -> Option<(Mechanism<'static>, bo
 ///   [`Self::import_plaintext`] and [`Self::attest`].
 ///
 /// Beside them: how to recognise the module, its settings and advice, and the facts a caller
-/// must know before it acts ([`Self::manages_as_so`], [`Self::generation`]). The hooks only the
-/// probe reads ([`Self::stand_ins`], [`Self::bound_keys`], [`Self::scratch_occupant`]) go once
-/// the probe runs these operations. A provider that seems to need a new hook overrides an
-/// operation in its own crate instead.
+/// must know before it acts ([`Self::manages_as_so`], [`Self::generation`]). Three hooks only
+/// the probe reads: [`Self::bound_keys`] lists what it generates on a module whose keys are
+/// bound to one purpose, [`Self::scratch_occupant`] guards its scratch slot, and
+/// [`Self::stand_ins`] repeats what [`Self::stand_in`] covers (docs/OPEN.md: to be derived). A
+/// provider that seems to need a new hook overrides an operation in its own crate instead.
 ///
 /// The in-tree providers are crates of this workspace (`cakeys-ykcs11`, `cakeys-tpm2-pkcs11`,
 /// `cakeys-kmsp11`, `cakeys-aws-cloudhsm`); a crate outside it adds its own to a [`Registry`]
@@ -217,7 +218,7 @@ pub trait Provider: Send + Sync {
         Err(KmError::Unsupported(format!("{} exposes no attestation", self.name())))
     }
 
-    // ── Read only by the probe, until it runs the operations above ──────────────────────
+    // ── Read only by the probe ───────────────────────────────────────────────────────────
 
     /// The standard mechanisms [`Self::stand_in`] covers: what `caprobe` probes although the
     /// module does not list them.
