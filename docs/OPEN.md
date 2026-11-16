@@ -154,6 +154,20 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   the same locator, which Secure Enclave keys usually lack [todo]; macOS only, not in nixpkgs,
   and the keychain is out of reach of the Nix sandbox [todo]. `pop-sign` should pass through the
   raw `CKM_ECDSA` fallback [src]. Take it up if cakeys is to pin keychain keys.
+- **The probe tests everything it can, whatever the module claims** (2026-11-15). What a
+  module reports is a claim to record, never a bound on what is tried: the only limit is what
+  cryptoki can express. First, RSA generation at every size from 512 to 16384 bits, not the
+  four it tries today (1024, 2048, 3072, 4096 in `probe_rsa`), whatever `[reported."CKK_RSA"]`
+  says: ykcs11 reports 1024–4096 and refuses 1024, SoftHSM and kryoptic report up to 16384
+  and nothing above 4096 is tested, so the gate answers unknown there. The sizes worth a row
+  are the multiples of 1024, plus 512 and 1536 (a decision: odd sizes too?); 8192 and 16384
+  take seconds on a software token, so the generation stays one per size and is timed. The
+  same rule for the rest: a curve family whose generation mechanism the module does not list
+  is recorded "not advertised" untried (`probe_curves`; the fTPM's Edwards and Montgomery
+  rows), and the operation probes run only advertised mechanisms (`made.advertises`): try
+  them, and record the module's answer; and the `prove.*` rows at every size and curve that
+  generates, not RSA-2048 and the first curve alone. Cryptoki is the limit: it drops what it
+  cannot name from `C_GetMechanismList`, and what it has no type for cannot be asked.
 - **More probes**: PQ parameter sets, AES-KW/KWP round trips, the HMAC key types,
   `C_GetMechanismInfo` beyond RSA, attribute defaults, existing-object encodings, ECDH with
   Montgomery keys, SHA-224 RSA-PSS (no binding variant), delete in a scratch slot.
@@ -175,23 +189,6 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   standard mechanism.
 - **CloudHSM's `--aes-key-wrap-mapping`** (`configure-pkcs11`) maps `CKM_AES_KEY_WRAP` to a vendor
   padding [doc]; untried, so the profiles describe the default client configuration only.
-- **Next: proofs in the mechanism a key is bound to** (2026-11-15, the cloud probe's `prove.*`
-  rows). The proofs choose within the key's `CKA_ALLOWED_MECHANISMS`, but from a fixed set
-  (`possession.rs`): `pop-sign` signs RSA with `CKM_SHA256_RSA_PKCS`, or raw `CKM_RSA_PKCS` over
-  a SHA-256 `DigestInfo` (`prove_sign`); `pop-decrypt` uses RSA-OAEP with SHA-1 and MGF1-SHA1,
-  or v1.5 decryption (`prove_decrypt`); `pop-unwrap` OAEP with SHA-1 (`prove_unwrap`). A key bound
-  to a mechanism outside that set cannot prove, and the kmsp11 profiles now record it:
-  `pop-sign` no on every PSS key (`keys.json` allows only `CKM_RSA_PKCS_PSS` and
-  `CKM_SHA256_RSA_PKCS_PSS`) and on `RSA_SIGN_PKCS1_4096_SHA512` (it allows raw `CKM_RSA_PKCS`,
-  but Cloud KMS takes only a SHA-512 `DigestInfo`: `CKR_DATA_INVALID`); `pop-decrypt` no on
-  every OAEP key (`CKR_MECHANISM_PARAM_INVALID`: SHA-256 or SHA-512 only), so those keys need
-  `token-asserted` today. The fix is in core, not a provider hook, although kmsp11's table knows
-  each key's mechanism: RSA-PSS signing verified on the host, v1.5 over SHA-384 and SHA-512 (and
-  their `DigestInfo` for the raw path), OAEP over SHA-256 and SHA-512, each chosen from the key's
-  allowed list, else from the profile's `decrypt.rsa-oaep.*` rows, SHA-1 last; the table of what
-  each binding may use (`proof_mechanisms`, which camigrate's planner checks too) grows with it. Then fault
-  tests for each choice, and `gcp.sh probe --write` regenerates the kmsp11 profiles. Any module
-  whose keys allow one mechanism gains.
 - **Cloud KMS AES keys**: GCM (Google's vendor mechanism), CBC and CTR only. cakeys commits an AES
   key by CMAC, an ECB check value or key wrap, so it refuses them. A commitment by AES-CBC
   encryption of the label would cover them.
@@ -278,15 +275,6 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   downgrades), proof of possession, and certificates and adoption, with the shared helpers in
   their own module. Each binary (`tests/softhsm.rs`, `tests/kryoptic.rs`) still includes the
   whole suite. `cakeys-pkcs11` (4.5k lines, 16 unit tests) is tested almost only through it.
-- **A provider's stand-ins are listed twice** (2026-11-15): `aws-cloudhsm`'s `stand_in()`
-  matches the two mechanisms it covers, and `Provider::stand_ins()` lists them again for the
-  probe (`probe.rs`, and `Token::unprofiled`, which counts them usable); nothing checks that the
-  two agree. The verbs ask only `stand_in()` (`Token::runnable`), so the list can be derived:
-  `stand_in` tried on each standard mechanism, `stand_ins` gone from the trait. Of the probe-only
-  hooks that is the one that can go: `bound_keys` lists what the probe generates on a module
-  whose keys are bound to one purpose (kmsp11's own table, the one `generation` reads), and
-  `scratch_occupant` guards the probe's scratch slot, which no verb does. `aws-cloudhsm`'s tests
-  also reach the shared `ec_point` and `key_type` only through `(&AwsCloudHsm as &dyn Provider)`.
 - **Fuzz the remaining parsers**: the PIV chain, the P-521 fix-up, profile emit and parse.
 - **Design models** (DEVELOPMENT.md): Quint or TLA+ for the lock rules, Alloy for the lock's
   structure and S16, Tamarin for proof of possession and attestation, Kani for small pure

@@ -11,7 +11,7 @@
 //!   (`0x80001057`), no parameters; the signature verifies as RFC 8032 Ed25519 on the host.
 //!
 //! The stand-ins are relied on only where the profile's `add` row says they work: `caprobe`
-//! measures them ([`Provider::stand_ins`]), and a FIPS cluster, which refuses the generation
+//! measures what [`Provider::stand_in`] covers, and a FIPS cluster, which refuses the generation
 //! ("Ed25519 key generation not available"), records none.
 
 use cakeys_core::config::ModuleInfo;
@@ -29,9 +29,6 @@ const ED25519_OID: [u8; 5] = [0x06, 0x03, 0x2b, 0x65, 0x70];
 
 /// What precedes the 32-byte point in an Ed25519 `SubjectPublicKeyInfo` (RFC 8410).
 const ED25519_SPKI_PREFIX: [u8; 12] = [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];
-
-/// The standard mechanisms [`AwsCloudHsm`] stands in for.
-const STAND_INS: [MechanismType; 2] = [MechanismType::ECC_EDWARDS_KEY_PAIR_GEN, MechanismType::EDDSA];
 
 /// The AWS `CloudHSM` provider (see the crate's documentation).
 pub struct AwsCloudHsm;
@@ -81,16 +78,15 @@ impl Provider for AwsCloudHsm {
             _ => None,
         }
     }
-
-    fn stand_ins(&self) -> &'static [MechanismType] {
-        &STAND_INS
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use cryptoki::mechanism::eddsa::{EddsaParams, EddsaSignatureScheme};
+
+    /// The provider as cakeys holds it, with the repaired reads of `dyn Provider`.
+    const P: &dyn Provider = &AwsCloudHsm;
 
     fn module(manufacturer: &str) -> ModuleInfo {
         ModuleInfo {
@@ -115,22 +111,18 @@ mod tests {
     fn an_ed25519_spki_point_is_unpacked() {
         let point = [0x5f_u8; 32];
         let spki = [&ED25519_SPKI_PREFIX[..], &point].concat();
-        assert_eq!((&AwsCloudHsm as &dyn Provider).ec_point(&spki).as_ref(), &point);
+        assert_eq!(P.ec_point(&spki).as_ref(), &point);
         let sec1 = [0x04_u8; 65];
-        assert_eq!((&AwsCloudHsm as &dyn Provider).ec_point(&sec1).as_ref(), &sec1);
-        assert_eq!(
-            (&AwsCloudHsm as &dyn Provider).ec_point(&spki[..43]).as_ref(),
-            &spki[..43],
-            "a short one is not unpacked"
-        );
+        assert_eq!(P.ec_point(&sec1).as_ref(), &sec1);
+        assert_eq!(P.ec_point(&spki[..43]).as_ref(), &spki[..43], "a short one is not unpacked");
     }
 
     #[test]
     fn an_ec_key_on_the_ed25519_oid_is_edwards() {
-        assert_eq!((&AwsCloudHsm as &dyn Provider).key_type(KeyType::EC, Some(&ED25519_OID)), KeyType::EC_EDWARDS);
+        assert_eq!(P.key_type(KeyType::EC, Some(&ED25519_OID)), KeyType::EC_EDWARDS);
         let p256 = [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
-        assert_eq!((&AwsCloudHsm as &dyn Provider).key_type(KeyType::EC, Some(&p256)), KeyType::EC);
-        assert_eq!((&AwsCloudHsm as &dyn Provider).key_type(KeyType::RSA, None), KeyType::RSA);
+        assert_eq!(P.key_type(KeyType::EC, Some(&p256)), KeyType::EC);
+        assert_eq!(P.key_type(KeyType::RSA, None), KeyType::RSA);
     }
 
     #[test]
@@ -142,5 +134,7 @@ mod tests {
         let ctx = Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Ed25519ctx(b"c")));
         assert!(AwsCloudHsm.stand_in(&ctx).is_none(), "a scheme with parameters has no stand-in");
         assert!(AwsCloudHsm.stand_in(&Mechanism::EccKeyPairGen).is_none());
+        // What the probe measures, derived from the above.
+        assert_eq!(P.stand_ins(), [MechanismType::ECC_EDWARDS_KEY_PAIR_GEN, MechanismType::EDDSA]);
     }
 }

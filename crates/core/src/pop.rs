@@ -38,6 +38,16 @@ pub fn challenge(spki: &[u8]) -> Result<Vec<u8>> {
     Ok(message(spki, &nonce))
 }
 
+/// The RSA signature a `pop-sign` proof asks of the token: its padding and hash. PSS uses MGF1
+/// of the same hash and a salt as long as its output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RsaSignature {
+    /// PKCS#1 v1.5.
+    Pkcs1v15(EcdsaHash),
+    /// PSS.
+    Pss(EcdsaHash),
+}
+
 /// Verify `sig` over `msg` with the key in `spki`, as the token produced it (`crate::sig`):
 /// - ECDSA: raw `r ‖ s` (PKCS#11) over the curve's hash of `msg` (`EcdsaHash::for_curve`);
 /// - Ed25519: pure `EdDSA` over `msg`;
@@ -45,13 +55,29 @@ pub fn challenge(spki: &[u8]) -> Result<Vec<u8>> {
 ///
 /// # Errors
 ///
+/// As [`verify_with`].
+pub fn verify(spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
+    verify_with(spki, msg, sig, RsaSignature::Pkcs1v15(EcdsaHash::Sha256))
+}
+
+/// [`verify`], with an RSA key's signature made as `rsa` says.
+///
+/// # Errors
+///
 /// `Conflict` when the signature does not verify: the private key is not the one the identity
 /// names. `Unsupported` for an Ed448 key (no verifier yet: opt in with
 /// `binding = "token-asserted"`) or a key that is none of the three above.
-pub fn verify(spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
+pub fn verify_with(spki: &[u8], msg: &[u8], sig: &[u8], rsa: RsaSignature) -> Result<()> {
     let verdict = sig::ecdsa(spki, msg, sig, sig::Encoding::Raw, None)
         .or_else(|| sig::ed25519(spki, msg, sig))
-        .or_else(|| sig::rsa_pkcs1v15::<Sha256>(spki, msg, sig));
+        .or_else(|| match rsa {
+            RsaSignature::Pkcs1v15(EcdsaHash::Sha256) => sig::rsa_pkcs1v15::<Sha256>(spki, msg, sig),
+            RsaSignature::Pkcs1v15(EcdsaHash::Sha384) => sig::rsa_pkcs1v15::<sha2::Sha384>(spki, msg, sig),
+            RsaSignature::Pkcs1v15(EcdsaHash::Sha512) => sig::rsa_pkcs1v15::<sha2::Sha512>(spki, msg, sig),
+            RsaSignature::Pss(EcdsaHash::Sha256) => sig::rsa_pss::<Sha256>(spki, msg, sig),
+            RsaSignature::Pss(EcdsaHash::Sha384) => sig::rsa_pss::<sha2::Sha384>(spki, msg, sig),
+            RsaSignature::Pss(EcdsaHash::Sha512) => sig::rsa_pss::<sha2::Sha512>(spki, msg, sig),
+        });
     match verdict {
         Some(v) => v.map_err(|e| {
             KmError::Conflict(format!(
@@ -148,12 +174,19 @@ pub struct UnwrapChallenge {
 /// `Unsupported` if `spki` is not an RSA key; `Unavailable` if the OS random number generator
 /// or the encryption fails.
 pub fn unwrap_challenge(spki: &[u8], msg: &[u8]) -> Result<UnwrapChallenge> {
+    unwrap_challenge_with(spki, msg, RsaPadding::Oaep(OaepHash::Sha1))
+}
+
+/// [`unwrap_challenge`], the secret wrapped with `padding`: the OAEP hash a token's key is bound
+/// to (Cloud KMS: SHA-256 or SHA-512 only \[run\]).
+///
+/// # Errors
+///
+/// As [`unwrap_challenge`].
+pub fn unwrap_challenge_with(spki: &[u8], msg: &[u8], padding: RsaPadding) -> Result<UnwrapChallenge> {
     let mut secret = [0u8; 32];
     getrandom::fill(&mut secret).map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}")))?;
-    Ok(UnwrapChallenge {
-        wrapped: rsa_encrypt(spki, RsaPadding::Oaep(OaepHash::Sha1), &secret)?,
-        mac: mac_sha256(&secret, msg),
-    })
+    Ok(UnwrapChallenge { wrapped: rsa_encrypt(spki, padding, &secret)?, mac: mac_sha256(&secret, msg) })
 }
 
 /// The RSA-OAEP hash, with MGF1 of the same hash: a transport wrap's and an OAEP proof's.
@@ -165,15 +198,15 @@ pub enum OaepHash {
     Sha256,
 }
 
-/// The RSA encryption paddings the probe tries a module's `C_Decrypt` with.
+/// The RSA encryption paddings a decryption or unwrap proof, and the probe, encrypt with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RsaPadding {
     /// PKCS#1 v1.5 (`CKM_RSA_PKCS`).
     Pkcs1v15,
     /// OAEP with MGF1 of the same hash and an empty label (`CKM_RSA_PKCS_OAEP`).
     Oaep(OaepHash),
-    /// OAEP over SHA-512, which no transport or proof uses: the probe asks it of modules that
-    /// bind a key to it (Cloud KMS's 4096-bit SHA-512 OAEP keys).
+    /// OAEP over SHA-512, which no transport uses: a proof and the probe ask it of a key bound
+    /// to it (Cloud KMS's 4096-bit SHA-512 OAEP keys).
     OaepSha512,
 }
 
@@ -302,5 +335,30 @@ mod tests {
         assert_eq!(private.decrypt(rsa::Oaep::<sha1::Sha1>::new(), &challenge).unwrap(), b"message");
         assert_ne!(oaep_challenge(spki.as_bytes(), b"message").unwrap(), challenge);
         assert!(matches!(oaep_challenge(b"no key", b"message"), Err(KmError::Unsupported(_))));
+    }
+
+    /// A key bound to another RSA signature proves in it: PSS over SHA-256 (salt as long as the
+    /// hash) and PKCS#1 v1.5 over SHA-512 verify as asked, and not as another scheme or hash.
+    #[test]
+    fn rsa_signatures_verify_as_the_key_is_bound() {
+        use rsa::pkcs8::EncodePublicKey;
+        use rsa::signature::{RandomizedSigner as _, SignatureEncoding as _, Signer as _};
+        let private = rsa::PrivateKey::new(&mut getrandom::SysRng, 2048).unwrap();
+        let spki = private.to_public_key().to_public_key_der().unwrap();
+        let spki = spki.as_bytes();
+        let pss = rsa::pss::SigningKey::<Sha256>::new(private.clone())
+            .try_sign_with_rng(&mut getrandom::SysRng, b"message")
+            .unwrap()
+            .to_vec();
+        verify_with(spki, b"message", &pss, RsaSignature::Pss(EcdsaHash::Sha256)).unwrap();
+        for other in [RsaSignature::Pss(EcdsaHash::Sha512), RsaSignature::Pkcs1v15(EcdsaHash::Sha256)] {
+            assert!(matches!(verify_with(spki, b"message", &pss, other), Err(KmError::Conflict(_))), "{other:?}");
+        }
+        let v15 = rsa::pkcs1v15::SigningKey::<sha2::Sha512>::new(private.clone()).sign(b"message").to_vec();
+        verify_with(spki, b"message", &v15, RsaSignature::Pkcs1v15(EcdsaHash::Sha512)).unwrap();
+        assert!(matches!(verify(spki, b"message", &v15), Err(KmError::Conflict(_))), "verify is v1.5 over SHA-256");
+        // The unwrap challenge in the OAEP hash a key is bound to.
+        let ch = unwrap_challenge_with(spki, b"m", RsaPadding::OaepSha512).unwrap();
+        assert_eq!(private.decrypt(rsa::Oaep::<sha2::Sha512>::new(), &ch.wrapped).unwrap().len(), 32);
     }
 }

@@ -141,8 +141,10 @@ behaviour or reach outside PKCS#11:
   `manages_as_so` (create and destroy only in an SO session, ykcs11; `Token::managing` runs a
   step that way, camigrate's imports too) and `generation` (create's static half, read by the
   capability gate before any token opens: a module's own template chosen from the spec, refused
-  before creating what could not be proven, kmsp11). The probe alone reads `stand_ins`,
-  `bound_keys` and `scratch_occupant`; they go once it runs the operations (review §4 (c)).
+  before creating what could not be proven, kmsp11). The probe alone reads `bound_keys` (what it
+  generates on a module whose keys are bound to one purpose) and `scratch_occupant` (its
+  scratch slot's guard): no operation of the verbs does either. What `stand_in` covers is
+  derived from it (`stand_ins`), not declared beside it.
 - **Data providers:** a module with none of these needs no code. The family of the module
   profile whose `[match] manufacturer` it reports is its provider (`provider::Data`). softhsm
   and kryoptic are data providers, and keys.toml's `profileDirs` can add more without a rebuild

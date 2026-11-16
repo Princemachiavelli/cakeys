@@ -215,9 +215,9 @@ generated, never edited, and pinned like the baseline:
   delete-really-deletes. On the first key of each kind, every advertised signing, ECDH and
   decryption mechanism, checked on the host where cakeys can
   verify. A mechanism that fails on every key is a `subtract` row, a partial failure a note.
-  A standard mechanism the module does not list but the provider runs its own way
-  (`Provider::stand_ins`: AWS CloudHSM's Ed25519 generation and EdDSA) is probed through the
-  stand-in, and an `add` row when it works (the host verifies the signature); the token then
+  A standard mechanism the module does not list but the provider runs its own way (what
+  `Provider::stand_in` answers: AWS CloudHSM's Ed25519 generation and EdDSA) is probed through
+  the stand-in, and an `add` row when it works (the host verifies the signature); the token then
   counts it as offered, and nothing else does.
   Every run destroys what it made. Notes carry `CKR_*` names, stable across binding releases.
 - **SO-only modules** (ykcs11): `tokens.<t>.probe.scratchId` names the one slot write probes may

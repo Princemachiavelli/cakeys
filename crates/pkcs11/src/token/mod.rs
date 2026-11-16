@@ -328,8 +328,8 @@ impl Token {
         // verbs have it through the profile's `add` the probe records, so the probe's proofs
         // try it too (AWS CloudHSM's Ed25519 [run]).
         for m in self.provider.stand_ins() {
-            if !self.mechanisms.contains(m) {
-                self.mechanisms.push(*m);
+            if !self.mechanisms.contains(&m) {
+                self.mechanisms.push(m);
             }
         }
         self.mechanism_names = self.mechanisms.iter().map(std::string::ToString::to_string).collect();

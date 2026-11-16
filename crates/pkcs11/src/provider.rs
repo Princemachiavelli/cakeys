@@ -8,6 +8,7 @@ use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass;
 use cakeys_core::{KmError, Result};
 use cakeys_profile::Set;
+use cryptoki::mechanism::eddsa::{EddsaParams, EddsaSignatureScheme};
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectHandle};
 use cryptoki::session::Session;
@@ -65,11 +66,10 @@ pub fn keygen_mechanism(keygen: MechanismType) -> Option<(Mechanism<'static>, bo
 ///   [`Self::import_plaintext`] and [`Self::attest`].
 ///
 /// Beside them: how to recognise the module, its settings and advice, and the facts a caller
-/// must know before it acts ([`Self::manages_as_so`], [`Self::generation`]). Three hooks only
-/// the probe reads: [`Self::bound_keys`] lists what it generates on a module whose keys are
-/// bound to one purpose, [`Self::scratch_occupant`] guards its scratch slot, and
-/// [`Self::stand_ins`] repeats what [`Self::stand_in`] covers (docs/OPEN.md: to be derived). A
-/// provider that seems to need a new hook overrides an operation in its own crate instead.
+/// must know before it acts ([`Self::manages_as_so`], [`Self::generation`]). Two hooks only the
+/// probe reads: [`Self::bound_keys`] lists what it generates on a module whose keys are bound to
+/// one purpose, and [`Self::scratch_occupant`] guards its scratch slot. A provider that seems to
+/// need a new hook overrides an operation in its own crate instead.
 ///
 /// The in-tree providers are crates of this workspace (`cakeys-ykcs11`, `cakeys-tpm2-pkcs11`,
 /// `cakeys-kmsp11`, `cakeys-aws-cloudhsm`); a crate outside it adds its own to a [`Registry`]
@@ -128,7 +128,7 @@ pub trait Provider: Send + Sync {
     /// AWS `CloudHSM` generates Ed25519 with `CKM_EC_KEY_PAIR_GEN` and signs with a vendor
     /// mechanism \[run\]. Used only where the module does not list `m` ([`Token::runnable`]), and
     /// relied on only where a profile's `add` row records that it works (`caprobe` measures
-    /// [`Self::stand_ins`]). `None`: no stand-in.
+    /// what it covers, `stand_ins`). `None`: no stand-in.
     fn stand_in(&self, _m: &Mechanism) -> Option<Mechanism<'static>> {
         None
     }
@@ -220,12 +220,6 @@ pub trait Provider: Send + Sync {
 
     // ── Read only by the probe ───────────────────────────────────────────────────────────
 
-    /// The standard mechanisms [`Self::stand_in`] covers: what `caprobe` probes although the
-    /// module does not list them.
-    fn stand_ins(&self) -> &'static [MechanismType] {
-        &[]
-    }
-
     /// The keys a module binds to one purpose when it creates them (Google Cloud KMS: one
     /// algorithm per key), each with the exact template it is generated from: the write probe
     /// generates these instead of its own templates. Empty for a module whose keys are general
@@ -302,6 +296,20 @@ impl dyn Provider {
             Report::PolicyFlag { reported: repaired, .. } => repaired,
             _ => reported,
         }
+    }
+
+    /// The standard mechanisms [`Provider::stand_in`] covers: of those cakeys runs through
+    /// [`Token::runnable`], in the form it asks for them, each the provider answers. What
+    /// `caprobe` probes although the module does not list it.
+    #[must_use]
+    pub fn stand_ins(&self) -> Vec<MechanismType> {
+        let asked = [
+            Mechanism::EccKeyPairGen,
+            Mechanism::EccEdwardsKeyPairGen,
+            Mechanism::EccMontgomeryKeyPairGen,
+            Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Pure)),
+        ];
+        asked.iter().filter(|m| self.stand_in(m).is_some()).map(Mechanism::mechanism_type).collect()
     }
 }
 

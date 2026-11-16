@@ -86,13 +86,13 @@ flowchart TD
     PO -- no --> B{"tokens.&lt;t&gt;.binding"}
     B -- "unset → pop-sign" --> S{"CKA_SIGN = true declared?"}
     S -- no --> X(["exit 17: declare the capability,<br/>choose a matching pop-*, or opt out"])
-    S -- yes --> PS(["token signs the fresh challenge:<br/>ECDSA-SHA* / CKM_EDDSA / CKM_SHA256_RSA_PKCS;<br/>host verifies against the SPKI"])
+    S -- yes --> PS(["token signs the fresh challenge:<br/>ECDSA-SHA* / CKM_EDDSA / RSA v1.5 or PSS<br/>as the key is bound; host verifies against the SPKI"])
     B -- pop-ecdh --> D{"CKK_EC (not Edwards)<br/>and CKA_DERIVE = true?"}
     D -- no --> X
     D -- yes --> PE(["host: ephemeral key, MAC of the challenge<br/>under the ECDH secret<br/>token: CKM_ECDH1_DERIVE into a non-extractable<br/>session key, CKM_SHA256_HMAC; MACs compared"])
     B -- pop-decrypt --> E{"CKK_RSA<br/>and CKA_DECRYPT = true?"}
     E -- no --> X
-    E -- yes --> PD(["host: RSA-OAEP (SHA-1) challenge<br/>token: CKM_RSA_PKCS_OAEP;<br/>plaintext compared constant-time"])
+    E -- yes --> PD(["host: RSA-OAEP challenge (SHA-1, else<br/>SHA-256, SHA-512 if refused at init)<br/>token: CKM_RSA_PKCS_OAEP;<br/>plaintext compared constant-time"])
     B -- token-asserted --> TA2(["no proof: the token's word only.<br/>A later drop from any pop-* to this is refused (14)"])
 ```
 

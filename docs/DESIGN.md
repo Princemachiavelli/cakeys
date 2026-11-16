@@ -226,7 +226,11 @@ key to its identity:
        over the host's digest;
      - Ed25519: `CKM_EDDSA` (pure);
      - RSA: `CKM_SHA256_RSA_PKCS`, else raw `CKM_RSA_PKCS` over the host's SHA-256 `DigestInfo` (the
-       same signature).
+       same signature). A key whose `CKA_ALLOWED_MECHANISMS` names another signature proves in
+       it (Cloud KMS binds each key to one [run]): v1.5 over SHA-384 or SHA-512, raw over the
+       `DigestInfo` of the hash its list names beside it, or PSS (MGF1 of the same hash, a salt
+       as long as it), hashed by the token or over the host's digest; the host verifies the
+       signature as the key is bound.
 
      The token must offer the mechanism and the key's own `CKA_ALLOWED_MECHANISMS`, where it
      can be read, must allow it: a key pinned to `CKM_ECDSA` or `CKM_RSA_PKCS` proves through the
@@ -271,7 +275,11 @@ key to its identity:
        `lock` re-records it.
    - `pop-decrypt` (RSA keys that only decrypt): the host encrypts the challenge to the public key
      with RSA-OAEP (SHA-1, MGF1-SHA1 — the PKCS#11 baseline; SoftHSM implements no other OAEP);
-     the token decrypts with `CKM_RSA_PKCS_OAEP`. Where the token or the key's
+     the token decrypts with `CKM_RSA_PKCS_OAEP`. A token that refuses the hash's parameters
+     before decrypting is asked SHA-256, then SHA-512, each with a fresh challenge (Cloud KMS
+     binds each key to one, which `CKA_ALLOWED_MECHANISMS` cannot say [run]); a decryption that
+     began and failed is never retried, since a module may leave it active (tpm2-pkcs11 [run]).
+     `pop-unwrap` tries the hashes alike. Where the token or the key's
      `CKA_ALLOWED_MECHANISMS` offers only `CKM_RSA_PKCS`, the host encrypts with PKCS #1 v1.5
      instead. The plaintext matches only for the matching private key.
    - `pop-unwrap` (RSA keys that only unwrap: transport keys, CAMIGRATE.md D3): the host wraps a

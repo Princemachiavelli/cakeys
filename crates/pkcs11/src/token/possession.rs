@@ -7,6 +7,8 @@
 use super::*;
 use cakeys_core::pop;
 use cakeys_profile::{Capability, Move};
+use cryptoki::context::Function;
+use cryptoki::mechanism::rsa::PkcsPssParams;
 
 impl Token {
     /// The binding the private key `h` is proven and recorded with, from the `planned` one
@@ -62,6 +64,7 @@ impl Token {
 
     /// `pop-sign`: the token signs the challenge; the host verifies the signature. With
     /// `per_use_pin` (`pop-sign-pin`), the signature is authorized by a context-specific login.
+    /// An RSA key signs as [`rsa_signature`] chooses for it.
     fn prove_sign(
         &self,
         h: ObjectHandle,
@@ -73,6 +76,7 @@ impl Token {
         let permits = self.proof_permits(h);
         let usable = |m: MechanismType| self.has(m) && permits(m);
         let none_allowed = |ms: &[MechanismType]| self.none_allowed(ms);
+        let mut rsa = pop::RsaSignature::Pkcs1v15(pop::EcdsaHash::Sha256);
         let (mech, data) = match key_type_of(object)? {
             KeyType::EC => {
                 let hash = ecdsa_hash(object)?;
@@ -96,17 +100,13 @@ impl Token {
                 }
                 (self.runnable(Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Pure))), msg.to_vec())
             }
-            // PKCS #1 v1.5 over SHA-256, hashed by the token, or by the host into the DigestInfo
-            // raw CKM_RSA_PKCS signs: the same signature either way.
             KeyType::RSA => {
-                let (hashed, raw) = (MechanismType::SHA256_RSA_PKCS, MechanismType::RSA_PKCS);
-                if usable(hashed) || (permits(hashed) && !usable(raw)) {
-                    (Mechanism::Sha256RsaPkcs, msg.to_vec())
-                } else if permits(raw) {
-                    (Mechanism::RsaPkcs, [SHA256_DIGEST_INFO.as_slice(), &pop::EcdsaHash::Sha256.digest(msg)].concat())
-                } else {
-                    return Err(none_allowed(&[hashed, raw]));
-                }
+                let allowed = self.allowed_mechanisms(h).ok().flatten();
+                let Some((m, scheme)) = rsa_signature(allowed.as_deref(), |m| self.has(m)) else {
+                    return Err(none_allowed(&RSA_SIGN.map(|(m, _)| m)));
+                };
+                rsa = scheme;
+                rsa_sign(m, scheme, msg)
             }
             kt => return Err(KmError::Unsupported(format!("proof of possession for {kt}"))),
         };
@@ -116,7 +116,7 @@ impl Token {
         } else {
             self.session.sign(&mech, h, &data).map_err(refused)?
         };
-        pop::verify(spki, msg, &sig)
+        pop::verify_with(spki, msg, &sig, rsa)
     }
 
     /// Sign under a `CKA_ALWAYS_AUTHENTICATE` key's per-use policy: `C_SignInit`, then the
@@ -317,24 +317,31 @@ impl Token {
     /// `pop-decrypt`: the host encrypts the challenge to the public key with RSA-OAEP, or with
     /// PKCS #1 v1.5 where the token or the key's allowed mechanisms offer only `CKM_RSA_PKCS`; the
     /// token decrypts it with the private key. The plaintext matches only if the token's private
-    /// key is the one `spki` names.
+    /// key is the one `spki` names. OAEP takes the first of [`OAEP`]'s hashes the token does not
+    /// refuse before decrypting.
     fn prove_decrypt(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
         let permits = self.proof_permits(h);
         let usable = |m: MechanismType| self.has(m) && permits(m);
         let (oaep, v15) = (MechanismType::RSA_PKCS_OAEP, MechanismType::RSA_PKCS);
-        let (mech, cipher) = if usable(oaep) || (permits(oaep) && !usable(v15)) {
-            let params = PkcsOaepParams::new(MechanismType::SHA1, PkcsMgfType::MGF1_SHA1, PkcsOaepSource::empty());
-            (Mechanism::RsaPkcsOaep(params), pop::oaep_challenge(spki, msg)?)
+        let failed = self.proof_failed("C_Decrypt", "decrypt", "CKA_DECRYPT");
+        let plain = if usable(oaep) || (permits(oaep) && !usable(v15)) {
+            let mut tries = OAEP.iter().peekable();
+            loop {
+                let Some(&(padding, hash, mgf)) = tries.next() else { unreachable!("OAEP lists hashes") };
+                let cipher = pop::rsa_encrypt(spki, padding, msg)?;
+                let mech = Mechanism::RsaPkcsOaep(PkcsOaepParams::new(hash, mgf, PkcsOaepSource::empty()));
+                match self.session.decrypt(&mech, h, &cipher) {
+                    Ok(plain) => break plain,
+                    Err(e) if tries.peek().is_some() && oaep_hash_refused(&e, Function::DecryptInit) => {}
+                    Err(e) => return Err(failed(e)),
+                }
+            }
         } else if permits(v15) {
-            (Mechanism::RsaPkcs, pop::rsa_encrypt(spki, pop::RsaPadding::Pkcs1v15, msg)?)
+            let cipher = pop::rsa_encrypt(spki, pop::RsaPadding::Pkcs1v15, msg)?;
+            self.session.decrypt(&Mechanism::RsaPkcs, h, &cipher).map_err(failed)?
         } else {
             return Err(self.none_allowed(&[oaep, v15]));
         };
-        let plain = self.session.decrypt(&mech, h, &cipher).map_err(self.proof_failed(
-            "C_Decrypt",
-            "decrypt",
-            "CKA_DECRYPT",
-        ))?;
         if !pop::ct_eq(msg, &plain) {
             return Err(KmError::Conflict(format!(
                 "proof of possession failed: the private key did not decrypt for the public key {}",
@@ -347,17 +354,12 @@ impl Token {
     /// `pop-unwrap`: the host wraps a fresh secret to the public key with RSA-OAEP; the token
     /// unwraps it into a non-extractable session key and MACs the challenge with it. The MACs
     /// agree only if the token's private key is the one `spki` names; no plaintext leaves the
-    /// token, so a transport key proves possession without `CKA_DECRYPT`.
+    /// token, so a transport key proves possession without `CKA_DECRYPT`. OAEP takes the first of
+    /// [`OAEP`]'s hashes the token does not refuse.
     fn prove_unwrap(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
         if !self.proof_permits(h)(MechanismType::RSA_PKCS_OAEP) {
             return Err(self.none_allowed(&[MechanismType::RSA_PKCS_OAEP]));
         }
-        let ch = pop::unwrap_challenge(spki, msg)?;
-        let mech = Mechanism::RsaPkcsOaep(PkcsOaepParams::new(
-            MechanismType::SHA1,
-            PkcsMgfType::MGF1_SHA1,
-            PkcsOaepSource::empty(),
-        ));
         let template = [
             Attribute::Token(false),
             Attribute::Class(ObjectClass::SECRET_KEY),
@@ -368,14 +370,23 @@ impl Token {
         ];
         let failed = self.proof_failed("C_UnwrapKey", "unwrap", "CKA_UNWRAP");
         // Like a derive: a module that keeps session keys as store rows unwraps only read-write.
-        let (key, rw) = match self.session.unwrap_key(&mech, h, &ch.wrapped, &template) {
-            Ok(k) => (k, None),
-            Err(CkError::Pkcs11(RvError::SessionReadOnly, _)) => {
-                let rw = self.extra_session(Access::Write)?;
-                let k = rw.unwrap_key(&mech, h, &ch.wrapped, &template).map_err(failed)?;
-                (k, Some(rw))
+        // C_UnwrapKey is one call: a hash it refuses began nothing the next try meets.
+        let mut rw: Option<Session> = None;
+        let mut tries = OAEP.iter().peekable();
+        let (key, ch) = loop {
+            let Some(&(padding, hash, mgf)) = tries.next() else { unreachable!("OAEP lists hashes") };
+            let ch = pop::unwrap_challenge_with(spki, msg, padding)?;
+            let mech = Mechanism::RsaPkcsOaep(PkcsOaepParams::new(hash, mgf, PkcsOaepSource::empty()));
+            let session = rw.as_ref().unwrap_or(&self.session);
+            match session.unwrap_key(&mech, h, &ch.wrapped, &template) {
+                Ok(k) => break (k, ch),
+                Err(CkError::Pkcs11(RvError::SessionReadOnly, _)) if rw.is_none() => {
+                    rw = Some(self.extra_session(Access::Write)?);
+                    tries = OAEP.iter().peekable();
+                }
+                Err(e) if tries.peek().is_some() && oaep_hash_refused(&e, Function::UnwrapKey) => {}
+                Err(e) => return Err(failed(e)),
             }
-            Err(e) => return Err(failed(e)),
         };
         let session = rw.as_ref().unwrap_or(&self.session);
         // A session object: dropped with the session even if destroying it fails here.
@@ -524,11 +535,127 @@ pub fn proof_refusal(object: &ObjectCfg, binding: Binding, side: &ProofSide<'_>)
     }))
 }
 
-/// The DER `DigestInfo` prefix of a SHA-256 digest (RFC 8017 §9.2, note 1): what
-/// `CKM_SHA256_RSA_PKCS` puts before the hash it computes, so raw `CKM_RSA_PKCS` over this and the
+/// The RSA signatures a `pop-sign` proof can ask for, in order of preference: PKCS #1 v1.5 over
+/// SHA-256, hashed by the token or by the host into the `DigestInfo` raw `CKM_RSA_PKCS` signs (the
+/// same signature either way); the other v1.5 hashes; then PSS, hashed by the token or over the
+/// host's digest. A raw mechanism's hash here is its default ([`rsa_signature`]).
+const RSA_SIGN: [(MechanismType, pop::RsaSignature); 8] = {
+    use pop::EcdsaHash::{Sha256, Sha384, Sha512};
+    use pop::RsaSignature::{Pkcs1v15, Pss};
+    [
+        (MechanismType::SHA256_RSA_PKCS, Pkcs1v15(Sha256)),
+        (MechanismType::RSA_PKCS, Pkcs1v15(Sha256)),
+        (MechanismType::SHA384_RSA_PKCS, Pkcs1v15(Sha384)),
+        (MechanismType::SHA512_RSA_PKCS, Pkcs1v15(Sha512)),
+        (MechanismType::SHA256_RSA_PKCS_PSS, Pss(Sha256)),
+        (MechanismType::SHA384_RSA_PKCS_PSS, Pss(Sha384)),
+        (MechanismType::SHA512_RSA_PKCS_PSS, Pss(Sha512)),
+        (MechanismType::RSA_PKCS_PSS, Pss(Sha256)),
+    ]
+};
+
+/// The RSA signature a `pop-sign` proof asks for, under the key's `allowed` mechanisms (`None`:
+/// any) on a token offering what `has` says: the first of [`RSA_SIGN`] both allow, else the first
+/// the key allows (tried, though the token does not list it), else none. A raw mechanism signs
+/// over the hash of a hashed mechanism of its padding the key allows, if any, else SHA-256: a key
+/// bound to SHA-512 checks the `DigestInfo` it signs (Cloud KMS, `CKR_DATA_INVALID` \[run\]).
+/// With no allowed list this is what the proof always did: v1.5 over SHA-256, hashed or raw.
+fn rsa_signature(
+    allowed: Option<&[MechanismType]>,
+    has: impl Fn(MechanismType) -> bool,
+) -> Option<(MechanismType, pop::RsaSignature)> {
+    let permits = |m: MechanismType| allowed.is_none_or(|a| a.contains(&m));
+    let &(m, scheme) =
+        RSA_SIGN.iter().find(|(m, _)| has(*m) && permits(*m)).or_else(|| RSA_SIGN.iter().find(|(m, _)| permits(*m)))?;
+    let raw = |m: MechanismType| m == MechanismType::RSA_PKCS || m == MechanismType::RSA_PKCS_PSS;
+    let scheme = match allowed {
+        Some(a) if raw(m) => RSA_SIGN
+            .iter()
+            .find(|(h, s)| !raw(*h) && a.contains(h) && std::mem::discriminant(s) == std::mem::discriminant(&scheme))
+            .map_or(scheme, |&(_, s)| s),
+        _ => scheme,
+    };
+    Some((m, scheme))
+}
+
+/// The mechanism and the data a `pop-sign` proof signs `msg` with by `m`, as `scheme`: the
+/// message itself for a hashed mechanism, the host's digest (in its `DigestInfo` for v1.5) for a
+/// raw one. PSS asks a salt as long as the hash, which the host's verifier expects.
+fn rsa_sign(m: MechanismType, scheme: pop::RsaSignature, msg: &[u8]) -> (Mechanism<'static>, Vec<u8>) {
+    use pop::EcdsaHash::{Sha256, Sha384, Sha512};
+    match scheme {
+        pop::RsaSignature::Pkcs1v15(h) if m == MechanismType::RSA_PKCS => {
+            (Mechanism::RsaPkcs, [digest_info(h), h.digest(msg).as_slice()].concat())
+        }
+        pop::RsaSignature::Pkcs1v15(h) => (
+            match h {
+                Sha256 => Mechanism::Sha256RsaPkcs,
+                Sha384 => Mechanism::Sha384RsaPkcs,
+                Sha512 => Mechanism::Sha512RsaPkcs,
+            },
+            msg.to_vec(),
+        ),
+        pop::RsaSignature::Pss(h) => {
+            let (hash_alg, mgf, len) = match h {
+                Sha256 => (MechanismType::SHA256, PkcsMgfType::MGF1_SHA256, 32_u64),
+                Sha384 => (MechanismType::SHA384, PkcsMgfType::MGF1_SHA384, 48),
+                Sha512 => (MechanismType::SHA512, PkcsMgfType::MGF1_SHA512, 64),
+            };
+            let params = PkcsPssParams { hash_alg, mgf, s_len: len.into() };
+            match (m == MechanismType::RSA_PKCS_PSS, h) {
+                (true, _) => (Mechanism::RsaPkcsPss(params), h.digest(msg)),
+                (false, Sha256) => (Mechanism::Sha256RsaPkcsPss(params), msg.to_vec()),
+                (false, Sha384) => (Mechanism::Sha384RsaPkcsPss(params), msg.to_vec()),
+                (false, Sha512) => (Mechanism::Sha512RsaPkcsPss(params), msg.to_vec()),
+            }
+        }
+    }
+}
+
+/// The DER `DigestInfo` prefix of a digest by `h` (RFC 8017 §9.2, note 1): what
+/// `CKM_SHA*_RSA_PKCS` puts before the hash it computes, so raw `CKM_RSA_PKCS` over it and the
 /// host's hash signs the same PKCS #1 v1.5 signature.
-const SHA256_DIGEST_INFO: [u8; 19] =
-    [0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20];
+fn digest_info(h: pop::EcdsaHash) -> &'static [u8] {
+    const SHA256: [u8; 19] = [
+        0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04,
+        0x20,
+    ];
+    const SHA384: [u8; 19] = [
+        0x30, 0x41, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02, 0x05, 0x00, 0x04,
+        0x30,
+    ];
+    const SHA512: [u8; 19] = [
+        0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03, 0x05, 0x00, 0x04,
+        0x40,
+    ];
+    match h {
+        pop::EcdsaHash::Sha256 => &SHA256,
+        pop::EcdsaHash::Sha384 => &SHA384,
+        pop::EcdsaHash::Sha512 => &SHA512,
+    }
+}
+
+/// The OAEP hashes a decryption or unwrap proof tries, in order: SHA-1, the PKCS#11 baseline
+/// (all `SoftHSM` implements), then SHA-256 and SHA-512 for a key bound to one (Cloud KMS
+/// \[run\]): the host's padding and the token's parameters. `CKA_ALLOWED_MECHANISMS` cannot say
+/// which: it names `CKM_RSA_PKCS_OAEP`, never its hash.
+const OAEP: [(pop::RsaPadding, MechanismType, PkcsMgfType); 3] = [
+    (pop::RsaPadding::Oaep(pop::OaepHash::Sha1), MechanismType::SHA1, PkcsMgfType::MGF1_SHA1),
+    (pop::RsaPadding::Oaep(pop::OaepHash::Sha256), MechanismType::SHA256, PkcsMgfType::MGF1_SHA256),
+    (pop::RsaPadding::OaepSha512, MechanismType::SHA512, PkcsMgfType::MGF1_SHA512),
+];
+
+/// Whether `e` refuses an OAEP hash before the operation began (`init`: the call that starts it),
+/// so the next of [`OAEP`] may be tried. Never a failure after it began: a module may leave that
+/// operation active (tpm2-pkcs11 \[run\]), and the session would refuse the next.
+fn oaep_hash_refused(e: &CkError, init: Function) -> bool {
+    match e {
+        CkError::Pkcs11(RvError::MechanismParamInvalid | RvError::ArgumentsBad, f) => {
+            std::mem::discriminant(f) == std::mem::discriminant(&init)
+        }
+        _ => false,
+    }
+}
 
 /// The hash ECDSA signs a proof with on `object`'s curve.
 fn ecdsa_hash(object: &ObjectCfg) -> Result<pop::EcdsaHash> {
@@ -540,9 +667,8 @@ fn ecdsa_hash(object: &ObjectCfg) -> Result<pop::EcdsaHash> {
 /// the token must offer at least one of each group. The one list both the proof itself
 /// ([`Token::prove_binding`]) and camigrate's planner check, so a plan never promises a proof the
 /// target then refuses. An ECDSA proof prefers the curve's hashed mechanism and falls back to
-/// raw `CKM_ECDSA` over a host-side digest; an RSA proof prefers `CKM_SHA256_RSA_PKCS` and falls
-/// back to raw `CKM_RSA_PKCS` over the host's `DigestInfo`; a decryption proof prefers OAEP and
-/// falls back to PKCS #1 v1.5.
+/// raw `CKM_ECDSA` over a host-side digest; an RSA proof signs by any of [`RSA_SIGN`], as
+/// [`rsa_signature`] chooses; a decryption proof prefers OAEP and falls back to PKCS #1 v1.5.
 ///
 /// # Errors
 ///
@@ -560,7 +686,7 @@ fn proof_mechanisms(object: &ObjectCfg, binding: Binding) -> Result<Vec<Vec<Mech
                 vec![vec![hashed, MechanismType::ECDSA]]
             }
             KeyType::EC_EDWARDS => vec![vec![MechanismType::EDDSA]],
-            KeyType::RSA => vec![vec![MechanismType::SHA256_RSA_PKCS, MechanismType::RSA_PKCS]],
+            KeyType::RSA => vec![RSA_SIGN.map(|(m, _)| m).to_vec()],
             kt => return Err(KmError::Unsupported(format!("proof of possession for {kt}"))),
         },
         Binding::PopEcdh => vec![vec![MechanismType::ECDH1_DERIVE]],
@@ -652,4 +778,50 @@ pub fn derive_any(
         }
     }
     Err(first)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pop::EcdsaHash::{Sha256, Sha512};
+    use pop::RsaSignature::{Pkcs1v15, Pss};
+
+    /// The RSA signature a proof asks for: with no allowed list what it always did (v1.5 over
+    /// SHA-256, hashed where the token offers it, else raw); within a key's list, the first of
+    /// `RSA_SIGN` it names, a raw one over the hash of the hashed one beside it (Cloud KMS's
+    /// SHA-512 and PSS keys \[run\]); none when the list names no RSA signature.
+    #[test]
+    fn an_rsa_proof_signs_as_the_key_is_bound() {
+        let all = |_| true;
+        let (sha256, raw, sha512) =
+            (MechanismType::SHA256_RSA_PKCS, MechanismType::RSA_PKCS, MechanismType::SHA512_RSA_PKCS);
+        let (pss256, raw_pss) = (MechanismType::SHA256_RSA_PKCS_PSS, MechanismType::RSA_PKCS_PSS);
+        assert_eq!(rsa_signature(None, all), Some((sha256, Pkcs1v15(Sha256))));
+        assert_eq!(rsa_signature(None, |m| m == raw), Some((raw, Pkcs1v15(Sha256))));
+        assert_eq!(rsa_signature(None, |_| false), Some((sha256, Pkcs1v15(Sha256))), "tried though unlisted");
+        assert_eq!(rsa_signature(Some(&[raw, sha512]), all), Some((raw, Pkcs1v15(Sha512))));
+        assert_eq!(rsa_signature(Some(&[raw, sha512]), |m| m == sha512), Some((sha512, Pkcs1v15(Sha512))));
+        assert_eq!(rsa_signature(Some(&[raw_pss, pss256]), all), Some((pss256, Pss(Sha256))));
+        assert_eq!(rsa_signature(Some(&[raw_pss, pss256]), |m| m == raw_pss), Some((raw_pss, Pss(Sha256))));
+        assert_eq!(rsa_signature(Some(&[raw_pss]), all), Some((raw_pss, Pss(Sha256))));
+        assert_eq!(rsa_signature(Some(&[MechanismType::ECDSA]), all), None);
+        // The data each signs: the message for a hashed mechanism, the digest (in its
+        // DigestInfo for v1.5) for a raw one.
+        let (_, data) = rsa_sign(raw, Pkcs1v15(Sha512), b"m");
+        assert_eq!(data, [digest_info(Sha512), Sha512.digest(b"m").as_slice()].concat());
+        assert_eq!(rsa_sign(raw_pss, Pss(Sha256), b"m").1, Sha256.digest(b"m"));
+        assert_eq!(rsa_sign(pss256, Pss(Sha256), b"m").1, b"m");
+    }
+
+    /// The next OAEP hash is tried only on a refusal of its parameters before the operation
+    /// began: never after `C_Decrypt` itself failed, nor for any other refusal.
+    #[test]
+    fn only_a_refused_oaep_hash_is_tried_again() {
+        let e = |rv, f| CkError::Pkcs11(rv, f);
+        assert!(oaep_hash_refused(&e(RvError::MechanismParamInvalid, Function::DecryptInit), Function::DecryptInit));
+        assert!(oaep_hash_refused(&e(RvError::ArgumentsBad, Function::DecryptInit), Function::DecryptInit));
+        assert!(!oaep_hash_refused(&e(RvError::MechanismParamInvalid, Function::Decrypt), Function::DecryptInit));
+        assert!(!oaep_hash_refused(&e(RvError::GeneralError, Function::DecryptInit), Function::DecryptInit));
+        assert!(oaep_hash_refused(&e(RvError::MechanismParamInvalid, Function::UnwrapKey), Function::UnwrapKey));
+    }
 }

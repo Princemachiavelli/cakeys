@@ -329,6 +329,37 @@ fn an_ecdh_proof_falls_back_to_the_extractable_secret() {
     assert_eq!(exit, 13, "{said}");
 }
 
+/// An OAEP proof tries the next hash (SHA-1, SHA-256, SHA-512) only where the token refuses one's
+/// parameters before the operation began (Cloud KMS binds each key to one \[run\]): a refused
+/// `C_DecryptInit` moves on, here to the hashes `SoftHSM` refuses itself, while a `C_Decrypt` that
+/// failed is never tried again (tpm2-pkcs11 leaves such an operation active \[run\]). The unwrap
+/// proof alike, on its one call.
+#[test]
+fn an_oaep_proof_tries_the_next_hash_only_when_refused_before_it_began() {
+    let Some(w) = lying("fault-oaep-hash") else { return };
+    let run = |name: &str, spec: &str, plan: &str| {
+        let (path, trace) = (w.dir.join(format!("{name}.toml")), w.dir.join(format!("{name}.jsonl")));
+        std::fs::write(&path, plan).unwrap();
+        let o = w.km_env(&["check", spec, "--token", "ref"], &[("P11_FAULT_PLAN", &path), ("P11_FAULT_TRACE", &trace)]);
+        let calls = |f: &str| {
+            let text = std::fs::read_to_string(&trace).unwrap_or_default();
+            text.lines().filter(|l| l.contains(&format!("\"fn\":\"{f}\""))).count()
+        };
+        (code(&o), stderr(&o), calls("C_DecryptInit"), calls("C_UnwrapKey"))
+    };
+    let refused = "rv = \"CKR_MECHANISM_PARAM_INVALID\"";
+    let (exit, said, inits, _) = run("init", "r", &format!("[[rule]]\nfn = \"C_DecryptInit\"\ncall = 1\n{refused}\n"));
+    assert_eq!((exit, inits), (16, 3), "{said}");
+    let (exit, said, inits, _) = run("mid", "r", "[[rule]]\nfn = \"C_Decrypt\"\nrv = \"CKR_DEVICE_ERROR\"\n");
+    assert_eq!((exit, inits), (16, 1), "{said}");
+    let (exit, said, _, unwraps) =
+        run("unwrap", "u", &format!("[[rule]]\nfn = \"C_UnwrapKey\"\ncall = 1\n{refused}\n"));
+    assert_eq!((exit, unwraps), (16, 3), "{said}");
+    // With no plan, SHA-1 proves on the first try, as before.
+    let (exit, said, inits, _) = run("none", "r", "");
+    assert_eq!((exit, inits), (0, 1), "{said}");
+}
+
 /// Refused operations leave nothing behind (docs/DESIGN.md §8.1): a key created and then not
 /// identified (its proof of possession fails) is removed again; where the module will not
 /// remove it either, cakeys says it is still there.

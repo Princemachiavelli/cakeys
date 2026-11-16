@@ -2447,6 +2447,48 @@ fn proofs_the_key_will_not_give_are_refused() {
     assert!(stderr(&o).contains("allows none of CKM_ECDH1_DERIVE"), "{}", stderr(&o));
 }
 
+/// A key bound to one RSA signature proves possession in it (Cloud KMS binds each key so
+/// \[run\]): PSS, hashed by the token or over the host's digest, and PKCS #1 v1.5 over SHA-512,
+/// hashed or raw over its `DigestInfo`. The host verifies each as the key is bound.
+#[test]
+fn a_key_bound_to_one_signature_proves_in_it() {
+    use std::fmt::Write as _;
+    let Some(e) = env("pop-key-bound") else { return };
+    let s = e.session();
+    let bound = [
+        ("pss", vec![MechanismType::SHA256_RSA_PKCS_PSS]),
+        ("pss-raw", vec![MechanismType::RSA_PKCS_PSS]),
+        ("sha512", vec![MechanismType::SHA512_RSA_PKCS]),
+        ("sha512-raw", vec![MechanismType::RSA_PKCS, MechanismType::SHA512_RSA_PKCS]),
+    ];
+    let mut config = String::new();
+    for (name, allowed) in &bound {
+        let label = Attribute::Label(format!("pop-bound-{name}").into_bytes());
+        let public = [
+            Attribute::Token(true),
+            label.clone(),
+            Attribute::ModulusBits(2048.into()),
+            Attribute::PublicExponent(vec![1, 0, 1]),
+        ];
+        let private =
+            [Attribute::Token(true), label, Attribute::Sign(true), Attribute::AllowedMechanisms(allowed.clone())];
+        s.generate_key_pair(&Mechanism::RsaPkcsKeyPairGen, &public, &private).unwrap();
+        let _ = write!(
+            config,
+            "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
+             [specs.{name}]\nobject = \"{name}\"\nattributes = {{ CKA_SIGN = true }}\n\
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-bound-{name}\" }}, origin = \"adopt\", binding = \"pop-sign\" }}\n\n"
+        );
+    }
+    drop(s);
+    e.config(&config);
+    for (name, _) in &bound {
+        let o = e.km(&["lock", name, "--token", "ref", "--update-lock"]);
+        assert_eq!(code(&o), 0, "{name}: {}", stderr(&o));
+        assert_eq!(e.code(&["check", name, "--token", "ref"]), 0, "{name}");
+    }
+}
+
 /// The live object must be the declared type, and its public half must be one public key it
 /// shows: another RSA size, another secret length or another certificate type is a conflict
 /// (13); an EC key with no public key anywhere is not found (11) and one beside two public key

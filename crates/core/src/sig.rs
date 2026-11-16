@@ -114,6 +114,21 @@ where
     )
 }
 
+/// RSA-PSS over `msg` with the digest `D`, MGF1 of `D`, and a salt as long as `D`'s output (what
+/// a proof asks the token for).
+#[must_use]
+pub fn rsa_pss<D>(spki: &[u8], msg: &[u8], sig: &[u8]) -> Verdict
+where
+    D: Digest + sha2::digest::FixedOutputReset,
+{
+    let k = rsa::PublicKey::from_public_key_der(spki).ok()?;
+    Some(
+        rsa::pss::Signature::try_from(sig)
+            .map_err(|e| e.to_string())
+            .and_then(|s| rsa::pss::VerifyingKey::<D>::new(k).verify(msg, &s).map_err(|e| e.to_string())),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
