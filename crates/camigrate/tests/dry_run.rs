@@ -523,7 +523,9 @@ fn transport_key(r: &Ref) -> String {
 /// keys.toml with `body`, each reference `holds` picks naming its [`transport_key`]
 /// (`transportWith`).
 fn names_transport(e: &Env, body: &str, holds: impl Fn(&Ref) -> bool) {
-    e.config_with(body, &|r| if holds(r) { format!("transportWith = \"tk-{}\"\n", r.name) } else { String::new() });
+    e.config_with(body, &|r| {
+        if holds(r) { format!("migrate = {{ transportWith = \"tk-{}\" }}\n", r.name) } else { String::new() }
+    });
 }
 
 /// One key class of the sealed matrix: its keys.toml type and the attributes its specs declare
@@ -852,7 +854,7 @@ fn bundle_keys(e: &Env, soft: &Ref, kry: &Ref) {
         + &Env::spec(
             "nox-soft",
             "nox",
-            "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\nnoExport = true\n",
+            "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\nmigrate = { noExport = true }\n",
             &[soft],
             "xb-nox",
             CREATE,
@@ -1334,7 +1336,9 @@ fn exports_to_a_token_need_only_the_lock() {
     assert!(stderr(&o).contains("2 different observations"), "{}", stderr(&o));
     std::fs::write(&lock_path, text).unwrap();
     // A transportWith naming a key that is no transport key is invalid.
-    e.config_with(&body, &|r| if r.name == "kryoptic" { "transportWith = \"mv\"\n".into() } else { String::new() });
+    e.config_with(&body, &|r| {
+        if r.name == "kryoptic" { "migrate = { transportWith = \"mv\" }\n".into() } else { String::new() }
+    });
     assert_eq!(code(&e.km(soft, &["export", "mv", "--token", "softhsm", "--target", "kryoptic", "--dry-run"])), 17);
 }
 
@@ -1459,7 +1463,7 @@ fn base64_flip(text: &str) -> String {
 }
 
 /// `enforced` (docs/CAMIGRATE.md D2, phase 3b): a `CKA_WRAP_WITH_TRUSTED` key on `SoftHSM` moves only after
-/// its SO trusted the target's transport key (`transport --trusted`, with `mgmKeyFile`), and
+/// its SO trusted the target's transport key (`transport --trusted`, with `soCredentialFile`), and
 /// then by `CKM_RSA_AES_KEY_WRAP` under that trusted copy alone: each bundle entry carries its
 /// own key-encryption key. kryoptic imports and verifies them. A wrap-with-trusted key on
 /// kryoptic never moves: it cannot trust an RSA key (its profile's `trusted-wrap = false`).
@@ -1487,8 +1491,8 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
         + &key("kk", ec, kry, soft, "");
     let so_pin = e.dir.join("so-pin");
     e.config_with(&body, &|r| match r.name {
-        "kryoptic" => "transportWith = \"tk-kryoptic\"\n".into(),
-        "softhsm" => format!("mgmKeyFile = \"{}\"\n", so_pin.display()),
+        "kryoptic" => "migrate = { transportWith = \"tk-kryoptic\" }\n".into(),
+        "softhsm" => format!("soCredentialFile = \"{}\"\n", so_pin.display()),
         _ => String::new(),
     });
     for (spec, r) in [("tk-kryoptic", kry), ("ek-src", soft), ("sk-src", soft), ("kk-src", kry)] {
@@ -1585,10 +1589,10 @@ fn rsa_aes_key_wrap_stands_in_for_rfc_5649() {
     let body = transport_key(kry) + &transport_key(soft) + &key("in", kry, soft) + &key("out", soft, kry);
     e.config_with(&body, &|r| match r.name {
         "softhsm" => {
-            "transportWith = \"tk-softhsm\"\nprovider = \"softhsm\"\nmoduleProfile = \"softhsm/2.7+no-aes-key-wrap\"\n"
+            "migrate = { transportWith = \"tk-softhsm\" }\nprovider = \"softhsm\"\nmoduleProfile = \"softhsm/2.7+no-aes-key-wrap\"\n"
                 .into()
         }
-        "kryoptic" => "transportWith = \"tk-kryoptic\"\n".into(),
+        "kryoptic" => "migrate = { transportWith = \"tk-kryoptic\" }\n".into(),
         _ => String::new(),
     });
     // profileDirs is a top-level key: ahead of every table.

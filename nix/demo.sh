@@ -317,8 +317,8 @@ object = "transport"
 attributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }
 tokens.kryo = { locator = { CKA_LABEL = "transport" }, origin = "create", binding = "pop-unwrap" }
 EOF
-sed -i '/^\[tokens.kryo\]$/a transportWith = "transport"' keys.toml
-echo "kryo names it in its own table (transportWith):"
+sed -i '/^\[tokens.kryo\]$/a migrate = { transportWith = "transport" }' keys.toml
+echo "kryo names it in its own table (migrate.transportWith):"
 show sed -n '/^\[tokens.kryo\]/,/^$/p' keys.toml
 echo "It proves possession by unwrapping (pop-unwrap), so it needs no CKA_DECRYPT, and the lock"
 echo "records its public key: any host exports to kryo from the lock alone."

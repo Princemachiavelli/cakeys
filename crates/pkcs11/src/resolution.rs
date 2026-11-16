@@ -357,13 +357,12 @@ mod tests {
             module_profile: None,
             pin_file: None,
             pin_env: None,
-            mgm_key_file: None,
-            mgm_key_env: None,
-            system_feature: None,
-            scratch: false,
-            scratch_id: None,
+            so_credential_file: None,
+            so_credential_env: None,
             options: toml::Table::new(),
-            transport_with: None,
+            probe: cakeys_core::config::ProbeCfg::default(),
+            migrate: cakeys_core::config::TokenMigrateCfg::default(),
+            nix: cakeys_core::config::NixCfg::default(),
         }
     }
 

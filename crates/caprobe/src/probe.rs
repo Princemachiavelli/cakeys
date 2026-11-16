@@ -183,39 +183,39 @@ pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: bool) -> Result<Probed> 
 /// The scratch guard: where the write probes may write on this token, or why nowhere.
 fn target(tok: &Token, cfg: &TokenCfg) -> Result<Target> {
     if tok.provider.manages_as_so() {
-        let Some(id) = &cfg.scratch_id else {
+        let Some(id) = &cfg.probe.scratch_id else {
             return Err(KmError::Validation(format!(
                 "token '{}': its provider creates keys only in a Security Officer session, into \
                  device slots that may hold real keys: name the one slot the write probes may \
-                 overwrite with tokens.{}.scratchId (a hex CKA_ID); `scratch` cannot mark the \
+                 overwrite with tokens.{}.probe.scratchId (a hex CKA_ID); `scratch` cannot mark the \
                  whole device",
                 tok.name, tok.name
             )));
         };
         if !token::has_admin(cfg) {
             return Err(KmError::Validation(format!(
-                "token '{}': the write probes generate as Security Officer: set tokens.{}.mgmKeyFile \
-                 or mgmKeyEnv",
+                "token '{}': the write probes generate as Security Officer: set tokens.{}.soCredentialFile \
+                 or soCredentialEnv",
                 tok.name, tok.name
             )));
         }
         // The config loader has already validated it.
-        let id =
-            cakeys_core::hex::decode(id).ok_or_else(|| KmError::Validation(format!("scratchId {id:?} is not hex")))?;
+        let id = cakeys_core::hex::decode(id)
+            .ok_or_else(|| KmError::Validation(format!("probe.scratchId {id:?} is not hex")))?;
         return Ok(Target::Slot(id));
     }
-    if cfg.scratch_id.is_some() {
+    if cfg.probe.scratch_id.is_some() {
         return Err(KmError::Validation(format!(
-            "token '{}': scratchId names a slot for providers that create only as Security Officer \
-             into device slots; provider {} creates as the user: mark the token scratch = true",
+            "token '{}': probe.scratchId names a slot for providers that create only as Security Officer \
+             into device slots; provider {} creates as the user: mark the token probe.scratch = true",
             tok.name,
             tok.provider.name()
         )));
     }
-    if !cfg.scratch {
+    if !cfg.probe.scratch {
         return Err(KmError::Validation(format!(
             "token '{}' is not marked scratch in keys.toml: the write probes would create and \
-             destroy objects on it (tokens.{}.scratch = true)",
+             destroy objects on it (tokens.{}.probe.scratch = true)",
             tok.name, tok.name
         )));
     }
@@ -249,7 +249,7 @@ fn check_slot(tok: &Token, id: &[u8]) -> Result<()> {
         s
     });
     Err(KmError::Validation(format!(
-        "token '{}': scratchId {shown} holds objects that are not {}'s own placeholder from an earlier \
+        "token '{}': probe.scratchId {shown} holds objects that are not {}'s own placeholder from an earlier \
          generation, so it may hold a real key: refusing to overwrite it; empty the slot or name \
          another",
         tok.name,

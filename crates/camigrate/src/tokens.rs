@@ -6,7 +6,9 @@
 
 use crate::plan::{Allow, FileFormat, Material, Plan, To, plan};
 use crate::transport::Transport;
-use cakeys_core::config::{AttrValue, Lock, Observation, TokenCfg, TokenObservation};
+use cakeys_core::config::{
+    AttrValue, Lock, NixCfg, Observation, ProbeCfg, TokenCfg, TokenMigrateCfg, TokenObservation,
+};
 use cakeys_core::migrate::{Accept, Method, PlaintextImport, Side};
 use cakeys_core::pop::OaepHash;
 use cakeys_core::types::{KeyType, ObjectClass};
@@ -199,13 +201,12 @@ fn lockless_token_cfg() -> TokenCfg {
         module_profile: None,
         pin_file: None,
         pin_env: None,
-        mgm_key_file: None,
-        mgm_key_env: None,
-        system_feature: None,
-        scratch: false,
-        scratch_id: None,
+        so_credential_file: None,
+        so_credential_env: None,
         options: toml::Table::new(),
-        transport_with: None,
+        probe: ProbeCfg::default(),
+        migrate: TokenMigrateCfg::default(),
+        nix: NixCfg::default(),
     }
 }
 
@@ -389,7 +390,7 @@ pub(crate) fn plan_moves(
                 object.and_then(|o| lock.objects.get(o)).and_then(|o| o.public_key.as_ref()).is_none().then(|| {
                     format!(
                         "'{name}' is not open, and the lock records no public key for its transport key '{spec}': \
-                         realise it there again with transportWith naming it"
+                         realise it there again with migrate.transportWith naming it"
                     )
                 })
             }
@@ -457,7 +458,7 @@ pub(crate) fn transport_spec<'a>(
 ) -> std::result::Result<&'a str, String> {
     let Some(chosen) = chosen else {
         return Err(format!(
-            "no transport key is named for '{token}' (docs/CAMIGRATE.md D3): set transportWith in [tokens.{token}] to the \
+            "no transport key is named for '{token}' (docs/CAMIGRATE.md D3): set transportWith in [tokens.{token}.migrate] to the \
              spec of an RSA key there that may unwrap and never leaves the token, realise it, or pass --transport-key"
         ));
     };

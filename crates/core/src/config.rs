@@ -68,22 +68,38 @@ pub struct TokenCfg {
     pub pin_file: Option<PathBuf>,
     /// An environment variable holding the user PIN; it wins over `pinFile`.
     pub pin_env: Option<String>,
-    /// The admin (Security Officer) credential, for modules that create and destroy objects only
-    /// in an SO session — ykcs11: the PIV management key in hex, or the PIN on a device whose
-    /// management key is PIN-protected. `pinFile`/`pinEnv` remain the *user* credential. Read
-    /// just before such a step, never by `resolve`, `verify` or `check`; the user session is
-    /// restored afterwards, so a user PIN is required. `mgmKeyEnv` wins if both are set;
-    /// `mgmKeyFile` may be `$NAME`, like `pinFile`. Refused on a provider that does not need it.
-    pub mgm_key_file: Option<PathBuf>,
-    /// An environment variable holding the admin credential; it wins over `mgmKeyFile`.
-    pub mgm_key_env: Option<String>,
-    /// Nix `requiredSystemFeatures` entry, read only by the Nix library: defaults to
-    /// `<featurePrefix><name>` (`lib.mkKeys`'s `featurePrefix`, default `token-`). The NixOS
-    /// module advertises `<featurePrefix><n>` for each of its tokens, so this names one of those.
-    pub system_feature: Option<String>,
-    /// Marks the token as expendable for the probe (docs/CAPROBE.md): its write
-    /// probes generate, wrap, unwrap and destroy objects, so `probe --write` runs them only
-    /// here and is refused (17) on any other token. Never read by any other verb.
+    /// The Security Officer credential, for modules that create and destroy objects only in an
+    /// SO session — ykcs11: the PIV management key in hex, or the PIN on a device whose
+    /// management key is PIN-protected; elsewhere the SO PIN (camigrate's `transport --trusted`).
+    /// `pinFile`/`pinEnv` remain the *user* credential. Read just before such a step, never by
+    /// `resolve`, `verify` or `check`; the user session is restored afterwards, so a user PIN is
+    /// required. `soCredentialEnv` wins if both are set; `soCredentialFile` may be `$NAME`, like
+    /// `pinFile`. Refused on a provider that does not need it.
+    pub so_credential_file: Option<PathBuf>,
+    /// An environment variable holding the SO credential; it wins over `soCredentialFile`.
+    pub so_credential_env: Option<String>,
+    /// Settings only the token's provider understands, as `[tokens.<t>.options]` (tpm2-pkcs11:
+    /// `tcti`, `tpm2Store`, `akHandle`). The provider checks them when the token is opened, and
+    /// one that takes none refuses any (17).
+    #[serde(default)]
+    pub options: Options,
+    /// What only caprobe reads (`[tokens.<t>.probe]`).
+    #[serde(default)]
+    pub probe: ProbeCfg,
+    /// What only camigrate reads (`[tokens.<t>.migrate]`).
+    #[serde(default)]
+    pub migrate: TokenMigrateCfg,
+    /// What only the Nix library reads (`[tokens.<t>.nix]`).
+    #[serde(default)]
+    pub nix: NixCfg,
+}
+
+/// A token's settings for caprobe (`[tokens.<t>.probe]`, docs/CAPROBE.md).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProbeCfg {
+    /// Marks the token as expendable: its write probes generate, wrap, unwrap and destroy
+    /// objects, so `probe --write` runs them only here and is refused (17) on any other token.
     #[serde(default)]
     pub scratch: bool,
     /// The one `CKA_ID` (hex) the write probes may generate into, on a token whose module
@@ -91,18 +107,29 @@ pub struct TokenCfg {
     /// a token holds real keys beside the scratch slot, so `scratch` cannot mark all of it. Each
     /// probe generation replaces the slot's key, and what the last one generated stays (PIV
     /// cannot erase a key). The probe still refuses a slot holding anything but its provider's
-    /// own placeholder (`Provider::scratch_occupant`). Never read by any other verb.
+    /// own placeholder (`Provider::scratch_occupant`).
     pub scratch_id: Option<String>,
-    /// Settings only the token's provider understands, as `[tokens.<t>.options]` (tpm2-pkcs11:
-    /// `tcti`, `tpm2Store`, `akHandle`). The provider checks them when the token is opened, and
-    /// one that takes none refuses any (17).
-    #[serde(default)]
-    pub options: Options,
-    /// The spec of this token's transport key (docs/CAMIGRATE.md D3): an RSA private key realised here
-    /// that may unwrap and never leaves the token. Sealed moves to this token wrap to it, never
-    /// to one picked by what it can do (camigrate `--transport-key` overrides it per run); its
+}
+
+/// A token's settings for camigrate (`[tokens.<t>.migrate]`, docs/CAMIGRATE.md).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TokenMigrateCfg {
+    /// The spec of this token's transport key (D3): an RSA private key realised here that may
+    /// unwrap and never leaves the token. Sealed moves to this token wrap to it, never to one
+    /// picked by what it can do (camigrate `--transport-key` overrides it per run); its
     /// realisation records the public key in the lock, so any host can export to it.
     pub transport_with: Option<String>,
+}
+
+/// A token's settings for the Nix library (`[tokens.<t>.nix]`, docs/CAKEYS.md).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct NixCfg {
+    /// The `requiredSystemFeatures` entry: defaults to `<featurePrefix><name>` (`lib.mkKeys`'s
+    /// `featurePrefix`, default `token-`). The NixOS module advertises `<featurePrefix><n>` for
+    /// each of its tokens, so this names one of those.
+    pub system_feature: Option<String>,
 }
 
 /// A token's provider-specific settings (`[tokens.<t>.options]`), parsed by the provider.
@@ -237,6 +264,17 @@ impl std::fmt::Display for ObjectCfg {
     }
 }
 
+/// A spec's settings for camigrate (`[specs.<s>.migrate]`, docs/CAMIGRATE.md).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SpecMigrateCfg {
+    /// The object never leaves the tokens this spec realises it on: `camigrate` refuses to
+    /// export or migrate it from them (15), and an export without names leaves it out without
+    /// the warning a key that cannot move gets.
+    #[serde(default)]
+    pub no_export: bool,
+}
+
 /// A spec (`[specs.<name>]`): the policy one object is realised with, and the tokens it is
 /// realised on.
 #[derive(Debug, Deserialize)]
@@ -252,11 +290,9 @@ pub struct SpecCfg {
     /// when generating, checked on the public object. In the spec digest only when present.
     #[serde(default, rename = "publicAttributes")]
     pub public_attributes: BTreeMap<String, AttrValue>,
-    /// The object never leaves the tokens this spec realises it on (docs/CAMIGRATE.md): `camigrate`
-    /// refuses to export or migrate it from them (15), and an export without names leaves it
-    /// out without the warning a key that cannot move gets. Not in the spec digest.
-    #[serde(default, rename = "noExport")]
-    pub no_export: bool,
+    /// What only camigrate reads (`[specs.<s>.migrate]`). Not in the spec digest.
+    #[serde(default)]
+    pub migrate: SpecMigrateCfg,
     /// The tokens this spec realises the object on, by token name.
     pub tokens: BTreeMap<String, SpecTokenCfg>,
 }
@@ -1124,9 +1160,9 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
             let expanded = env_ref(&p.to_string_lossy(), &format!("token '{name}': pinFile"), env)?;
             t.pin_file = Some(PathBuf::from(expanded));
         }
-        if let Some(m) = t.mgm_key_file.clone() {
-            let expanded = env_ref(&m.to_string_lossy(), &format!("token '{name}': mgmKeyFile"), env)?;
-            t.mgm_key_file = Some(PathBuf::from(expanded));
+        if let Some(m) = t.so_credential_file.clone() {
+            let expanded = env_ref(&m.to_string_lossy(), &format!("token '{name}': soCredentialFile"), env)?;
+            t.so_credential_file = Some(PathBuf::from(expanded));
         }
         // `provider` names a family; one profile of it is `moduleProfile`.
         if let Some(p) = t.provider.as_deref().filter(|p| p.contains('/')) {
@@ -1144,19 +1180,22 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
                 path.display()
             )));
         }
-        if let Some(id) = &t.scratch_id
+        if let Some(id) = &t.probe.scratch_id
             && crate::hex::decode(id).is_none_or(|b| b.is_empty())
         {
             return Err(KmError::Validation(format!(
-                "{}: token '{name}': scratchId {id:?} is not a hex CKA_ID",
+                "{}: token '{name}': probe.scratchId {id:?} is not a hex CKA_ID",
                 path.display()
             )));
         }
         // An SO step logs the user out; without a user PIN to return to, the new private key
         // could not be found again, let alone proven.
-        if (t.mgm_key_file.is_some() || t.mgm_key_env.is_some()) && t.pin_file.is_none() && t.pin_env.is_none() {
+        if (t.so_credential_file.is_some() || t.so_credential_env.is_some())
+            && t.pin_file.is_none()
+            && t.pin_env.is_none()
+        {
             return Err(KmError::Validation(format!(
-                "{}: token '{name}': mgmKeyFile/mgmKeyEnv needs a user PIN (pinFile or pinEnv) to return to the user session",
+                "{}: token '{name}': soCredentialFile/soCredentialEnv needs a user PIN (pinFile or pinEnv) to return to the user session",
                 path.display()
             )));
         }
@@ -1212,8 +1251,8 @@ fn check_names(cfg: &Config) -> std::result::Result<(), String> {
 /// key declared to unwrap and never leave the token (docs/CAMIGRATE.md D3).
 fn check_transport_keys(cfg: &Config) -> std::result::Result<(), String> {
     for (token, t) in &cfg.tokens {
-        let Some(spec) = &t.transport_with else { continue };
-        let what = format!("token '{token}': transportWith = \"{spec}\"");
+        let Some(spec) = &t.migrate.transport_with else { continue };
+        let what = format!("token '{token}': migrate.transportWith = \"{spec}\"");
         let Some(s) = cfg.specs.get(spec) else { return Err(format!("{what} names no spec")) };
         if !s.tokens.contains_key(token) {
             return Err(format!("{what}, but that spec does not realise it on '{token}'"));
@@ -1289,7 +1328,7 @@ fn check_origins(cfg: &Config) -> std::result::Result<(), String> {
 /// A whole-value environment reference in a path field: `$NAME` or `${NAME}` becomes the value of
 /// the environment variable `NAME`, so one shared `keys.toml` can carry a machine-specific pin
 /// file or module path. A value with no leading `$` is a literal path. A malformed reference fails
-/// at load (exit 17), and so does an unset one in `pinFile`/`mgmKeyFile`; `module` resolves when
+/// at load (exit 17), and so does an unset one in `pinFile`/`soCredentialFile`; `module` resolves when
 /// its token is opened ([`TokenCfg::module_path`]), so `--module` can stand in for it.
 fn env_ref(value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<String> {
     let name = match value.strip_prefix('$') {
@@ -1725,10 +1764,10 @@ mod tests {
         let err = unset.tokens["t"].module_path("t", &|_| None).unwrap_err();
         assert!(err.to_string().contains("KM_UNIT_TEST_UNSET"), "{err}");
         assert!(load(&format!("{head}module = \"$HOME/x.so\"\n")).is_err());
-        // mgmKeyFile expands the same way; an admin credential only comes with a user PIN.
-        let cfg = load(&format!("{head}pinFile = \"/p\"\nmgmKeyFile = \"$KM_UNIT_TEST_MGM\"\n")).unwrap();
-        assert_eq!(cfg.tokens["t"].mgm_key_file, Some(PathBuf::from("/env/mgm")));
-        for admin in ["mgmKeyFile = \"/so\"", "mgmKeyEnv = \"SO\""] {
+        // soCredentialFile expands the same way; an admin credential only comes with a user PIN.
+        let cfg = load(&format!("{head}pinFile = \"/p\"\nsoCredentialFile = \"$KM_UNIT_TEST_MGM\"\n")).unwrap();
+        assert_eq!(cfg.tokens["t"].so_credential_file, Some(PathBuf::from("/env/mgm")));
+        for admin in ["soCredentialFile = \"/so\"", "soCredentialEnv = \"SO\""] {
             let err = load(&format!("{head}{admin}\n")).unwrap_err();
             assert!(err.to_string().contains("needs a user PIN"), "{err}");
         }

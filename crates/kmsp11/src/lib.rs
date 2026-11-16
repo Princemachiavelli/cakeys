@@ -393,7 +393,7 @@ mod tests {
             object: "k".into(),
             attributes: map(attrs),
             public_attributes: map(public),
-            no_export: false,
+            migrate: cakeys_core::config::SpecMigrateCfg::default(),
             tokens: BTreeMap::new(),
         }
     }

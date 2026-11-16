@@ -130,7 +130,7 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
     };
     let yk = |id: &str| {
         format!(
-            "provider = \"ykcs11\"\npinFile = \"{}\"\nmgmKeyFile = \"{}\"\nscratchId = \"{id}\"",
+            "provider = \"ykcs11\"\npinFile = \"{}\"\nsoCredentialFile = \"{}\"\nprobe = {{ scratchId = \"{id}\" }}",
             pin.display(),
             so.display()
         )
@@ -138,9 +138,12 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
     w.write_config(
         &[
             token("no-slot", &format!("provider = \"ykcs11\"\npinFile = \"{}\"", pin.display())),
-            token("no-admin", &format!("provider = \"ykcs11\"\npinFile = \"{}\"\nscratchId = \"05\"", pin.display())),
-            token("user-slot", &format!("pinFile = \"{}\"\nscratchId = \"05\"", pin.display())),
-            token("no-pin", "scratch = true"),
+            token(
+                "no-admin",
+                &format!("provider = \"ykcs11\"\npinFile = \"{}\"\nprobe = {{ scratchId = \"05\" }}", pin.display()),
+            ),
+            token("user-slot", &format!("pinFile = \"{}\"\nprobe = {{ scratchId = \"05\" }}", pin.display())),
+            token("no-pin", "probe = { scratch = true }"),
             token("empty", &yk("05")),
             token("taken", &yk("06")),
             token("placeholder", &yk("18")),
@@ -153,7 +156,7 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
         assert!(stderr(&o).contains(why), "{name}: expected {why:?} in {}", stderr(&o));
     };
     refused("no-slot", "name the one slot the write probes may overwrite");
-    refused("no-admin", "set tokens.no-admin.mgmKeyFile");
+    refused("no-admin", "set tokens.no-admin.soCredentialFile");
     refused("user-slot", "scratchId names a slot for providers that create only as Security Officer");
     refused("no-pin", "has no PIN configured");
 

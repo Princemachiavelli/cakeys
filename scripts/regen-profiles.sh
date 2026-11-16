@@ -44,7 +44,7 @@ trap 'bash "$repo/nix/tpm2-test-env.sh" down "$dir/tpm"' EXIT
 . "$dir/tpm/env"
 
 token() {
-  printf '[tokens.%s]\nmodule = "%s"\ntokenLabel = "kmtest"\npinFile = "%s"\nscratch = true\n\n' \
+  printf '[tokens.%s]\nmodule = "%s"\ntokenLabel = "kmtest"\npinFile = "%s"\nprobe = { scratch = true }\n\n' \
     "$1" "$2" "$dir/pin"
 }
 {

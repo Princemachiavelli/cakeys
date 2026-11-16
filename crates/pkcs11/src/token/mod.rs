@@ -132,7 +132,7 @@ pub struct Token {
     /// The user credential, already read for login, kept for what needs it again: the
     /// context-specific login of a `CKA_ALWAYS_AUTHENTICATE` proof, the TPM attestation path
     /// (it unseals the token's wrapping key with it) and logging the user back in after an SO
-    /// step (`mgmKeyFile`/`mgmKeyEnv`). Zeroized on drop.
+    /// step (`soCredentialFile`/`soCredentialEnv`). Zeroized on drop.
     pin: Option<Zeroizing<String>>,
     /// Last: fields drop in declaration order, so the session is closed before the module is
     /// finalized.
@@ -572,7 +572,7 @@ impl Token {
         Ok(self.session.get_attributes(h, &[t]).map_err(ck("C_GetAttributeValue"))?.into_iter().next())
     }
 
-    /// Run `step` in a Security Officer session (`mgmKeyFile`/`mgmKeyEnv`), for modules that
+    /// Run `step` in a Security Officer session (`soCredentialFile`/`soCredentialEnv`), for modules that
     /// create and destroy objects only as SO, then return to the user session. Login state is
     /// per token, so the user is logged out first. The admin credential is read here, never at
     /// open, and zeroized when the step ends.
@@ -585,7 +585,7 @@ impl Token {
     pub fn as_so<T>(&self, what: &str, step: impl FnOnce() -> Result<T>) -> Result<T> {
         let so = read_mgm(&self.cfg)?.ok_or_else(|| {
             self.unsupported(format!(
-                "{what} on '{}' needs a Security Officer session: set tokens.{}.mgmKeyFile or mgmKeyEnv",
+                "{what} on '{}' needs a Security Officer session: set tokens.{}.soCredentialFile or soCredentialEnv",
                 self.name, self.name
             ))
         })?;
@@ -600,7 +600,7 @@ impl Token {
                 out.and_then(|v| logout.map(|()| v))
             }
             Err(e) => Err(KmError::Unavailable(format!(
-                "C_Login (SO) with mgmKeyFile/mgmKeyEnv: {e}; it must hold the module's admin \
+                "C_Login (SO) with soCredentialFile/soCredentialEnv: {e}; it must hold the module's admin \
                  credential (the SO PIN; ykcs11: the PIV management key in hex, or the PIN on a \
                  device whose management key is PIN-protected)"
             ))),
@@ -759,14 +759,14 @@ fn read_pin(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
 /// reads.
 #[must_use]
 pub fn has_admin(cfg: &TokenCfg) -> bool {
-    cfg.mgm_key_file.is_some() || cfg.mgm_key_env.is_some()
+    cfg.so_credential_file.is_some() || cfg.so_credential_env.is_some()
 }
 
-/// The admin credential (`mgmKeyEnv`, else `mgmKeyFile`), read only for an SO step. The format
+/// The admin credential (`soCredentialEnv`, else `soCredentialFile`), read only for an SO step. The format
 /// is the module's: ykcs11 takes the PIV management key in hex, or the PIN on devices whose
 /// management key is PIN-protected.
 fn read_mgm(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
-    read_secret("management-key", cfg.mgm_key_env.as_deref(), cfg.mgm_key_file.as_deref())
+    read_secret("management-key", cfg.so_credential_env.as_deref(), cfg.so_credential_file.as_deref())
 }
 
 /// A credential from the environment variable `var`, else the file `path` (its trailing newline

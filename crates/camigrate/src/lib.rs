@@ -141,7 +141,7 @@ enum Cmd {
         #[arg(long, conflicts_with = "trusted")]
         out: Option<PathBuf>,
         /// The source token whose SO marks a copy of the transport key `CKA_TRUSTED` (with its
-        /// `mgmKeyFile`/`mgmKeyEnv`), from the public key the lock records: a key there with
+        /// `soCredentialFile`/`soCredentialEnv`), from the public key the lock records: a key there with
         /// `CKA_WRAP_WITH_TRUSTED` then wraps under it and nothing else.
         #[arg(long, value_name = "SOURCE")]
         trusted: Option<String>,
@@ -654,7 +654,7 @@ impl Run<'_> {
         for p in &mut moves.plans {
             if let Some(spec) = no_export(cfg, &p.object, from) {
                 p.ready = false;
-                p.reasons.insert(0, format!("noExport in spec '{spec}': it never leaves '{from}'"));
+                p.reasons.insert(0, format!("migrate.noExport in spec '{spec}': it never leaves '{from}'"));
             }
             // A move lands only on a pair that says `origin = "import"`: an object realised on
             // the target by no such pair cannot move there, whatever else would carry it.
@@ -879,7 +879,7 @@ fn unprovable(dst: &Target, target: &cakeys_core::migrate::Side) -> Option<Strin
 fn no_export<'a>(cfg: &'a Config, object: &str, from: &str) -> Option<&'a str> {
     cfg.specs
         .iter()
-        .find(|(_, s)| s.no_export && s.object == object && s.tokens.contains_key(from))
+        .find(|(_, s)| s.migrate.no_export && s.object == object && s.tokens.contains_key(from))
         .map(|(name, _)| name.as_str())
 }
 
@@ -1071,7 +1071,7 @@ impl Run<'_> {
         let spki = self.locked_spki(spec, token).ok_or_else(|| {
             KmError::PreconditionFailed(format!(
                 "the lock records no public key for transport key '{spec}' on '{token}': realise it there with \
-                 transportWith naming it"
+                 migrate.transportWith naming it"
             ))
         })?;
         let tok = open_token(&self.cfg, &self.modules, self.registry, source, Access::Write, notes)?;
@@ -1135,7 +1135,7 @@ fn write_whole(path: &Path, bytes: &[u8], mode: u32) -> anyhow::Result<()> {
 
 /// The transport key to seal to on `to`: `--transport-key`, else the token's `transportWith`.
 fn transport_choice<'a>(cfg: &'a Config, to: &str, how: &'a MoveArgs) -> Option<&'a str> {
-    how.transport_key.as_deref().or_else(|| cfg.tokens.get(to).and_then(|t| t.transport_with.as_deref()))
+    how.transport_key.as_deref().or_else(|| cfg.tokens.get(to).and_then(|t| t.migrate.transport_with.as_deref()))
 }
 
 /// The target `token`'s transport key, as a target: the spec `tokens::transport_spec` finds.

@@ -143,7 +143,7 @@ pub trait Provider: Send + Sync {
     }
 
     /// Whether the module creates and destroys token objects only in a Security Officer session
-    /// (ykcs11: the PIV management key). Then `tokens.<t>.mgmKeyFile`/`mgmKeyEnv` is used for exactly those
+    /// (ykcs11: the PIV management key). Then `tokens.<t>.soCredentialFile`/`soCredentialEnv` is used for exactly those
     /// steps; elsewhere it is refused, since an SO there cannot do what the user does.
     fn manages_as_so(&self) -> bool {
         false

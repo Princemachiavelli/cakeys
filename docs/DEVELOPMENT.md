@@ -74,10 +74,10 @@ on. These rules have no exceptions; if a task cannot be done within them, stop a
   delete there, and do not run a proof of possession on them. `examples/yubikey-secureboot.*`
   describes those keys: do not `realise` it against the device.
 - Test keys go in retired slots 90–95 only (`CKA_ID` 13–18). The scratch slot for write probes
-  is `scratchId = "17"`; camigrate's import test uses slot 95 (ask before running it).
+  is `probe.scratchId = "17"`; camigrate's import test uses slot 95 (ask before running it).
 - The credentials are files in `/data/srcs/waste/yubikey_data`: `PIN.txt` is the PIN and
   `piv_mnmgt_key.current.txt` the management key. Pass them as file paths (`pinFile`,
-  `mgmKeyFile`). Never print them, copy them into the repository, or put them in a commit, a
+  `soCredentialFile`). Never print them, copy them into the repository, or put them in a commit, a
   log or a report.
 - The PIN has 3 tries. Never guess; if a login fails once, stop.
 

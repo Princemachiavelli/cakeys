@@ -62,16 +62,18 @@ tokenLabel = "main"
 # The user PIN, read from a file (or `pinEnv = "VAR"`: the PIN itself from the environment).
 # Without a PIN cakeys opens a public session and sees only public objects.
 pinFile = "/var/lib/softhsm/pin"
-# Marks the token expendable for `caprobe probe --write` (docs/CAPROBE.md): its write probes
-# generate, wrap, unwrap and destroy objects, so they run only on a token marked scratch and
-# are refused (17) on any other. No other verb reads it. Never on a token holding real keys:
-# scratch = true
-# The spec of this token's transport key (docs/CAMIGRATE.md D3): sealed moves to this token wrap to it,
+# What only one tool reads sits in that tool's table, here inline: `probe` (caprobe), `migrate`
+# (camigrate) and `nix` (the Nix library); cakeys reads none of them.
+# probe.scratch marks the token expendable for `caprobe probe --write` (docs/CAPROBE.md): its
+# write probes generate, wrap, unwrap and destroy objects, so they run only on a token marked
+# scratch and are refused (17) on any other. Never on a token holding real keys:
+# probe = { scratch = true }
+# migrate.transportWith is the spec of this token's transport key (docs/CAMIGRATE.md D3): sealed moves to this token wrap to it,
 # never to a key picked by what it can do (`camigrate --transport-key` overrides it per run). It
 # must realise an RSA private key here declaring CKA_UNWRAP = true and CKA_EXTRACTABLE = false
 # (else 17); realising it records its public key in the lock, so any host exports to this token
 # from the lock alone. `binding = "pop-unwrap"` proves it without CKA_DECRYPT.
-# transportWith = "transport-softhsm"
+# migrate = { transportWith = "transport-softhsm" }
 
 [tokens.tpm]
 module = "/run/current-system/sw/lib/libtpm2_pkcs11.so"
@@ -96,10 +98,10 @@ provider = "tpm2-pkcs11"
 # layer is always applied (and heals itself when its fix is in); p11-kit is detected from the
 # module. Unknown names refuse (17). This token is a real TPM, so not swtpm's:
 # profiles = ["swtpm"]
-# The Nix system feature builds that need this token require. Default: lib.mkKeys's
-# `featurePrefix` (default "token-") and the token's name, which is what the NixOS module
-# advertises for its token of that name; set it when the host names the token differently.
-systemFeature = "token-tpm"
+# nix.systemFeature: the Nix system feature builds that need this token require. Default:
+# lib.mkKeys's `featurePrefix` (default "token-") and the token's name, which is what the NixOS
+# module advertises for its token of that name; set it when the host names the token differently.
+nix = { systemFeature = "token-tpm" }
 
 # The provider's own settings. Each provider checks its own; one that takes none refuses any
 # (17). tpm2-pkcs11's (`tcti`, `tpm2Store`, `akHandle`) serve its native TPM2_Certify
@@ -111,19 +113,20 @@ akHandle = "0x81000016"
 [tokens.yubikey]
 tokenLabel = "YubiKey PIV #39189318"
 pinFile = "/run/secrets/piv-pin"
-# The admin (SO) credential, read only by a step that needs the SO: create or delete on a module
+# The Security Officer credential, from a file (or `soCredentialEnv = "VAR"`), read only by a
+# step that needs the SO: create or delete on a module
 # that does those only as SO (ykcs11: the PIV management key in hex, or the PIN when the
 # management key is PIN-protected), and `camigrate transport --trusted` on any module (its SO
 # PIN; docs/CAMIGRATE.md D2). The hex management key logs in without a PIN verification, so it spends
 # no PIN retry; the PIN does.
-mgmKeyFile = "/run/secrets/piv-mgm"
-# A device like this holds real keys beside expendable ones, so `scratch` cannot mark it. For a
-# module that creates only as SO into slots named by CKA_ID (ykcs11), `scratchId` names the one
+soCredentialFile = "/run/secrets/piv-mgm"
+# A device like this holds real keys beside expendable ones, so probe.scratch cannot mark it. For
+# a module that creates only as SO into slots named by CKA_ID (ykcs11), probe.scratchId names the one
 # slot `probe --write` may overwrite (hex CKA_ID: 17 is retired slot 94). Each probe generation
 # replaces the slot's key and the last one stays (PIV cannot erase a key). The probe refuses a
 # slot holding anything but ykcs11's own placeholder from an earlier generation (17), so a typo
 # never reaches a real key. No other verb reads it.
-# scratchId = "17"
+# probe = { scratchId = "17" }
 
 # ── Objects: the material ───────────────────────────────────────────────────────────────
 
@@ -174,10 +177,10 @@ object = "signing"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
 # Private keys only: the policy of the matching public key object.
 publicAttributes = { CKA_VERIFY = true }
-# The object never leaves the tokens this spec realises it on: camigrate refuses to export or
+# migrate.noExport: the object never leaves the tokens this spec realises it on: camigrate refuses to export or
 # migrate it from them (15), and `export` without names leaves it out quietly (an extractable
 # key otherwise moves; a non-extractable one is left out with a warning). Not in the spec digest.
-# noExport = true
+# migrate = { noExport = true }
 # Where it lives on `softhsm`: a locator (must match exactly one object, or 12), and how it comes
 # to be there, `origin` (required for private and secret keys):
 #   "create"  `cakeys create` generates it here, when the locator is empty (never over an

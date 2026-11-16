@@ -184,7 +184,7 @@ generated, never edited, and pinned like the baseline:
 
 - **Read-only probes**, safe on any token: `C_GetInfo`, `C_GetTokenInfo` (never the serial, so a
   profile regenerates identically), `C_GetMechanismList`, and `C_GetMechanismInfo` for RSA sizes.
-- **Write probes**, only with `--write` on a token keys.toml marks `scratch = true`, logged in
+- **Write probes**, only with `--write` on a token keys.toml marks `probe.scratch = true`, logged in
   (refused with 17 otherwise): key pairs per baseline curve and per RSA size 1024–4096; the
   advertised secret-key generation; RSA-OAEP SHA-1 and SHA-256, counted only when the key unwraps
   back; each advertised key wrap (`CKM_AES_KEY_WRAP`, `_PAD`, `_KWP`, and `CKM_RSA_AES_KEY_WRAP`
@@ -199,7 +199,7 @@ generated, never edited, and pinned like the baseline:
   stand-in, and an `add` row when it works (the host verifies the signature); the token then
   counts it as offered, and nothing else does.
   Every run destroys what it made. Notes carry `CKR_*` names, stable across binding releases.
-- **SO-only modules** (ykcs11): `tokens.<t>.scratchId` names the one slot write probes may
+- **SO-only modules** (ykcs11): `tokens.<t>.probe.scratchId` names the one slot write probes may
   generate into. The slot must be empty or hold the provider's own placeholder; anything else is
   refused (17) before a write. No delete or wrap probes there: PIV cannot erase a key.
 - **RSA sizes**: an observed size decides; outside the reported range is no; between two that

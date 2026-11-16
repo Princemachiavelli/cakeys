@@ -138,7 +138,7 @@ forces it. The VM test covers all of this.
 
 - **`tokens.<n>.{sandboxPaths, pcscd}`.** Each token advertises the system feature
   `<featurePrefix><n>` (`services.cakeys.featurePrefix`, default `token-`, the same default as
-  `lib.mkKeys`'s `featurePrefix`); keys.toml's `tokens.<t>.systemFeature` names one of these when a
+  `lib.mkKeys`'s `featurePrefix`); keys.toml's `tokens.<t>.nix.systemFeature` names one of these when a
   config's token name differs from the host's. Paths are **not** global `extra-sandbox-paths`: a pre-build-hook
   (`nix/sandbox-hook.sh`, bash + jq over `nix derivation show`) grants them only to builds whose
   `requiredSystemFeatures` name the token's feature.

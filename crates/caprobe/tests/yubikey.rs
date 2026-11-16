@@ -51,7 +51,7 @@ fn the_write_probe_conforms_and_regenerates_the_committed_profile() {
         return;
     }
     let w = Workdir::new("yubikey_write_probe");
-    w.write_config(&yubikey_token(&module, &pin, &mgm, "scratchId = \"17\""));
+    w.write_config(&yubikey_token(&module, &pin, &mgm, "probe = { scratchId = \"17\" }"));
     let config = w.dir.join("keys.toml");
     let probe = run_within(&config, &["probe", "--token", "yubikey", "--write", "--diff", "ykcs11/2.7"], PROBE_LIMIT);
     assert_eq!(code(&probe), 0, "{}", String::from_utf8_lossy(&probe.stderr));
@@ -71,7 +71,7 @@ fn the_write_probe_conforms_and_regenerates_the_committed_profile() {
 
 /// The read-only probe of the device here (docs/CAPROBE.md D10): ykcs11/2.7's match keys,
 /// advertisement and reported RSA range are what this `YubiKey` shows, and the write probes are
-/// refused without a scratch slot — `scratch = true` cannot mark a device that holds real keys
+/// refused without a scratch slot — `probe = { scratch = true }` cannot mark a device that holds real keys
 /// beside it. Needs only `CAKEYS_TEST_YUBIKEY_MODULE`: no PIN, nothing written; the diff only
 /// with the patched cryptoki (the Nix build's).
 #[test]
@@ -83,7 +83,7 @@ fn the_read_only_probe_conforms() {
     let w = Workdir::new("yubikey-probe");
     // No credentials: the read-only probe needs none, and the write probes must not get far.
     w.write_config(&format!(
-        "[tokens.yubikey]\nmodule = \"{module}\"\ntokenLabel = \"{}\"\nscratch = true\n",
+        "[tokens.yubikey]\nmodule = \"{module}\"\ntokenLabel = \"{}\"\nprobe = {{ scratch = true }}\n",
         yubikey_label(&module)
     ));
     let km = |args: &[&str]| run_within(&w.dir.join("keys.toml"), args, RUN_LIMIT);

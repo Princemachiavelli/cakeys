@@ -111,7 +111,7 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **Phase 6, `tpm-duplicate`**: a duplication blob built on the host to the target parent's
   public key, `TPM2_Import` through tss-esapi.
 - **Phase 7, vendor methods** (D10) for Luna, CloudHSM, nShield, with hardware.
-- **`CKA_UNWRAP_TEMPLATE` on transport keys**: warn when a `transportWith` key has none (a
+- **`CKA_UNWRAP_TEMPLATE` on transport keys**: warn when a `migrate.transportWith` key has none (a
   template forcing `CKA_SENSITIVE`/non-extractable keeps even the target's PIN holder from
   reading the KEK). Needs a cryptoki patch first (0.12 cannot read or set array attributes), and
   a strict template breaks the direct-OAEP path.

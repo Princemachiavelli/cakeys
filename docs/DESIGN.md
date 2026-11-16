@@ -394,7 +394,7 @@ What may be created and adopted:
   machine-specific paths. `pinEnv = "VAR"` remains the way to pass the *PIN itself* through the
   environment — `env_references_and_object_refs_are_checked_at_load`,
   `pin_file_path_can_come_from_the_environment`.
-- **The admin credential (`mgmKeyFile`/`mgmKeyEnv`) is read only by a step that needs the SO.** A
+- **The admin credential (`soCredentialFile`/`soCredentialEnv`) is read only by a step that needs the SO.** A
   provider declares that its module creates and destroys objects only in an SO session
   (ykcs11 does); elsewhere the user creates and deletes, and the credential (the SO PIN) is read
   only by `camigrate transport --trusted` (CAMIGRATE.md D2) —
@@ -622,7 +622,7 @@ The reviews these come from are archived: `docs/archive/REVIEW-2026-11-11.md` (c
   → `Yubico Attestation Root 1`) verify, also with openssl; `realise`, `verify`
   and `check` pass on keys generated on device, a tampered ID is 10, a tampered root or an
   opt-out 14, an imported key under a locked attestation 14 and unlocked 15; creating with
-  `mgmKeyFile` generates; and `C_DestroyObject` was confirmed to leave the key in the slot. The
+  `soCredentialFile` generates; and `C_DestroyObject` was confirmed to leave the key in the slot. The
   shipped example keys are imported, so Yubico attests none of them. The opt-in
   `tests/yubikey.rs` repeats the read-write path on scratch slot `0x95` — last run
   2026-11-12 on an emptied slot, so generation ran — but nothing runs it automatically.

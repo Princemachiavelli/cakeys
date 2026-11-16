@@ -165,7 +165,7 @@ module = "$lib/lib/libkmsp11.so"
 tokenLabel = "caprobe"
 # libkmsp11 ignores the PIN; caprobe wants a login all the same.
 pinFile = "$state/pin"
-scratch = true
+probe = { scratch = true }
 EOF
     local -a args=(--config "$state/keys.toml" probe --profiles "$repo/profiles" --token gcp --name "$name")
     if ((write)); then

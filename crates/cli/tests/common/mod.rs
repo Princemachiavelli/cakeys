@@ -61,7 +61,7 @@ pub fn suite_var(var: &str, require: &str, test: &str) -> Option<String> {
 /// without login.
 pub fn reference_tokens(module: &str, dir: &Path) -> String {
     format!(
-        "[tokens.ref]\nmodule = \"{module}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nscratch = true\n\n\
+        "[tokens.ref]\nmodule = \"{module}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nprobe = {{ scratch = true }}\n\n\
          [tokens.ref-anon]\nmodule = \"{module}\"\ntokenLabel = \"kmtest\"\n\n",
         dir.join("pin").display(),
     )
@@ -76,7 +76,7 @@ pub fn tpm2_tokens(module: &str, dir: &Path) -> String {
     let pin = dir.join("pin");
     let token =
         |name: &str, extra: &str| format!("[tokens.{name}]\nmodule = \"{module}\"\ntokenLabel = \"kmtest\"\n{extra}\n");
-    token("tpm", &format!("pinFile = \"{}\"\nscratch = true", pin.display()))
+    token("tpm", &format!("pinFile = \"{}\"\nprobe = {{ scratch = true }}", pin.display()))
         + &token("tpm-anon", "")
         + &token("tpm-generic", &format!("pinFile = \"{}\"\nprovider = \"generic\"", pin.display()))
 }
@@ -84,7 +84,7 @@ pub fn tpm2_tokens(module: &str, dir: &Path) -> String {
 /// The host's real TPM: `ftpm` (logged in, scratch: the harness's store is made for the run).
 pub fn ftpm_tokens(module: &str, dir: &Path) -> String {
     format!(
-        "[tokens.ftpm]\nmodule = \"{module}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nscratch = true\n\n",
+        "[tokens.ftpm]\nmodule = \"{module}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nprobe = {{ scratch = true }}\n\n",
         dir.join("pin").display()
     )
 }
@@ -106,7 +106,7 @@ pub fn p11kit_tokens(client: &str, direct: &str, dir: &Path) -> String {
 /// A real `YubiKey`: the token with both credentials (file paths), `extra` added to it.
 pub fn yubikey_token(module: &str, pin: &str, mgm: &str, extra: &str) -> String {
     format!(
-        "[tokens.yubikey]\nmodule = \"{module}\"\ntokenLabel = \"{}\"\npinFile = \"{pin}\"\nmgmKeyFile = \"{mgm}\"\n{extra}\n",
+        "[tokens.yubikey]\nmodule = \"{module}\"\ntokenLabel = \"{}\"\npinFile = \"{pin}\"\nsoCredentialFile = \"{mgm}\"\n{extra}\n",
         yubikey_label(module)
     )
 }

@@ -333,7 +333,7 @@ probe() {
 module = "$p11/lib/libcloudhsm_pkcs11.so"
 tokenLabel = "$label"
 pinFile = "/run/caprobe/pin"
-scratch = true
+probe = { scratch = true }
 EOF
   # The checkout's profiles, as scripts/regen-profiles.sh passes them: --diff finds the committed
   # one even before the binary embeds it.

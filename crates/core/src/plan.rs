@@ -46,7 +46,7 @@ impl<'a> Target<'a> {
         if !cfg.tokens.contains_key(token_name) {
             return Err(KmError::Validation(format!("unknown token '{token_name}'")));
         }
-        let transport = cfg.tokens.get(token_name).and_then(|t| t.transport_with.as_deref()) == Some(spec_name);
+        let transport = cfg.tokens.get(token_name).and_then(|t| t.migrate.transport_with.as_deref()) == Some(spec_name);
         Ok(Target { spec_name, spec, object_name, object, token_name, on_token, transport })
     }
 

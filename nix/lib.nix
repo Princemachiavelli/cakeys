@@ -32,7 +32,7 @@ in
                      input alias)
       spec / token   the resolved pair
       requiredSystemFeatures
-                     the token's system feature (keys.toml `tokens.<t>.systemFeature`, default
+                     the token's system feature (keys.toml `tokens.<t>.nix.systemFeature`, default
                      `<featurePrefix><t>`, as the NixOS module advertises it), as the list a
                      derivation's `requiredSystemFeatures` takes
       check          shell command for the pseudo-FOD pre-use check, printing the verified URI:
@@ -78,7 +78,7 @@ in
       specs = cfg.specs or { };
       tokens = cfg.tokens or { };
 
-      featuresOf = t: [ (tokens.${t}.systemFeature or "${featurePrefix}${t}") ];
+      featuresOf = t: [ (tokens.${t}.nix.systemFeature or "${featurePrefix}${t}") ];
 
       objectView =
         obj: type:

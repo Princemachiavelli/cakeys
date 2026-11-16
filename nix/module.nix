@@ -206,7 +206,7 @@ in
       default = "token-";
       description = ''
         Prefix of the system feature each token advertises: `<featurePrefix><name>`. The same
-        default as `lib.mkKeys`'s `featurePrefix`; a keys.toml `tokens.<t>.systemFeature` names
+        default as `lib.mkKeys`'s `featurePrefix`; a keys.toml `tokens.<t>.nix.systemFeature` names
         one of these features directly.
       '';
     };

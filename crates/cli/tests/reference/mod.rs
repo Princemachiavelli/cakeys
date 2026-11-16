@@ -2617,11 +2617,11 @@ fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
     // An admin credential the module refuses: the SO step is unavailable (16), never retried.
     std::fs::write(e.dir.join("bad-so"), "0000\n").unwrap();
     let text = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
-    let bad_so = format!("provider = \"ykcs11\"\nmgmKeyFile = \"{}\"\n", e.dir.join("bad-so").display());
+    let bad_so = format!("provider = \"ykcs11\"\nsoCredentialFile = \"{}\"\n", e.dir.join("bad-so").display());
     e.write_config(&text.replacen("provider = \"ykcs11\"\n", &bad_so, 1));
     let o = e.km(&["create", "new", "--token", "yk", "--no-update-lock"]);
     assert_eq!(code(&o), 16, "{}", stderr(&o));
-    assert!(stderr(&o).contains("C_Login (SO) with mgmKeyFile/mgmKeyEnv"), "{}", stderr(&o));
+    assert!(stderr(&o).contains("C_Login (SO) with soCredentialFile/soCredentialEnv"), "{}", stderr(&o));
 }
 
 /// What opening a token refuses before any object is touched: a PIN from an environment
@@ -2748,7 +2748,7 @@ fn pin_file_path_can_come_from_the_environment() {
     assert!(e.lock()["realisations"]["signing-soft"]["ref"].is_table());
 }
 
-/// The admin credential (`mgmKeyFile`/`mgmKeyEnv`) is read only by a step that needs the
+/// The admin credential (`soCredentialFile`/`soCredentialEnv`) is read only by a step that needs the
 /// Security Officer: ykcs11's create and delete, and `camigrate transport --trusted` (docs/CAMIGRATE.md
 /// D2). `SoftHSM` creates keys as the user, so a create never reads it: a credential file that
 /// does not exist is no error. Without a user PIN to return to, it is invalid at load.
@@ -2764,7 +2764,9 @@ fn admin_credential_is_read_only_by_security_officer_steps() {
         )
     };
     let missing = e.dir.join("never-read");
-    for admin in [format!("mgmKeyFile = \"{}\"", missing.display()), "mgmKeyEnv = \"KM_E2E_NEVER_SET\"".to_owned()] {
+    for admin in
+        [format!("soCredentialFile = \"{}\"", missing.display()), "soCredentialEnv = \"KM_E2E_NEVER_SET\"".to_owned()]
+    {
         std::fs::write(e.dir.join("keys.toml"), toml(&format!("pinFile = \"{}\"\n{admin}", pin.display()))).unwrap();
         for verb in ["create", "resolve"] {
             let o = e.km(&[verb, "signing-soft", "--token", "ref"]);
@@ -2772,7 +2774,7 @@ fn admin_credential_is_read_only_by_security_officer_steps() {
         }
     }
     // No user PIN: invalid at load.
-    std::fs::write(e.dir.join("keys.toml"), toml(&format!("mgmKeyFile = \"{}\"", missing.display()))).unwrap();
+    std::fs::write(e.dir.join("keys.toml"), toml(&format!("soCredentialFile = \"{}\"", missing.display()))).unwrap();
     let o = e.km(&["validate"]);
     assert_eq!(code(&o), 17);
     assert!(stderr(&o).contains("needs a user PIN"));

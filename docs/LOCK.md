@@ -37,7 +37,7 @@ version = 1
 # (for a certificate, its subject key). It must be listed on both sides; a partner absent from
 # this file may live in another lock fragment, so locks still split and join (§4.2).
 pairs = ["ecpub"]
-# A transport key (a token's `transportWith`, docs/CAMIGRATE.md D3) also records its public key, base64
+# A transport key (a token's `migrate.transportWith`, docs/CAMIGRATE.md D3) also records its public key, base64
 # of the canonical SPKI, so a source exports to its token from the lock alone. It is checked on
 # load against `ids.rfc7093m4` (a mismatch is 17): the identity vouches for it.
 # publicKey = "MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA..."

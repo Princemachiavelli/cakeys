@@ -113,13 +113,13 @@ fn token_and_creation_rules_are_checked_at_load() {
         "is not of provider 'softhsm''s family",
     );
     load(&with_token("moduleProfile = \"aws-cloudhsm/5.18+hsm2m-non-fips\"")).unwrap();
-    refused(with_token("scratchId = \"zz\""), "is not a hex CKA_ID");
-    refused(with_token("scratchId = \"\""), "is not a hex CKA_ID");
+    refused(with_token("probe = { scratchId = \"zz\" }"), "is not a hex CKA_ID");
+    refused(with_token("probe = { scratchId = \"\" }"), "is not a hex CKA_ID");
     // A transport key: an RSA private key of at least 2048 bits that unwraps and never leaves.
     let rsa = |bits: u32| format!("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = {bits}");
     let unwraps = "attributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }";
     let transport = |object: &str, spec: &str| {
-        keys(object, spec, "").replace("tokenLabel = \"t\"", "tokenLabel = \"t\"\ntransportWith = \"s\"")
+        keys(object, spec, "").replace("tokenLabel = \"t\"", "tokenLabel = \"t\"\nmigrate = { transportWith = \"s\" }")
     };
     load(&transport(&rsa(2048), unwraps)).unwrap();
     refused(transport(EC, SIGN), "a transport key is an RSA private key");
@@ -129,7 +129,8 @@ fn token_and_creation_rules_are_checked_at_load() {
         "CKA_UNWRAP = true and CKA_EXTRACTABLE = false",
     );
     refused(
-        transport(&rsa(2048), unwraps).replace("transportWith = \"s\"", "transportWith = \"nope\""),
+        transport(&rsa(2048), unwraps)
+            .replace("migrate = { transportWith = \"s\" }", "migrate = { transportWith = \"nope\" }"),
         "names no spec",
     );
     // A key states how it comes to be on its token, and is created once at most.

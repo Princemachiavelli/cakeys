@@ -124,7 +124,7 @@ module [doc: "Any supplied PIN is ignored"], so the token entry carries a dummy 
 **Reach.** No VM. Run `caprobe` here.
 
 **Isolation = key ring.** "Token = key ring" [doc]: a per-run key ring `caprobe-<runid>` is the
-`scratch = true` token, so the scratch guard (refused with 17 otherwise) maps onto a boundary
+`probe.scratch = true` token, so the scratch guard (refused with 17 otherwise) maps onto a boundary
 the cloud itself enforces. Rings cost nothing and are unlimited [doc]; whether they can be
 deleted is **disputed in the docs I read** ("you can delete key rings … in some circumstances"
 versus the 2023 FAQ) [todo]. Plan on permanent empty rings.
@@ -329,7 +329,7 @@ the source.
   the repo cannot see beneath, so profiles are pairs and `profiles/hardware/` stays empty for it.
 - FIPS mode and protection level are D12 axes: `[match.fields]` where PKCS#11 3.2 reports them
   (`CKO_VALIDATION`, `CKF_ERROR_STATE`, `C_GetSessionValidationFlags`), by name where it does not.
-- A cloud token's `keys.toml` entry sets `scratch = true`, `pinFile` pointing at a runtime file,
+- A cloud token's `keys.toml` entry sets `probe.scratch = true`, `pinFile` pointing at a runtime file,
   and a `module` path from the Nix store. Credentials are file paths read at run time, never
   committed (the same rule as the YubiKey's, WORKPLAN "Hardware rules").
 - The committed profile TOML is embedded like the others (`crates/profile/src/embedded.rs`).

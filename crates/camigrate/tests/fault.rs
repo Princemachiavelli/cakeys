@@ -67,7 +67,7 @@ fn tokens(name: &str) -> Option<(Env, String)> {
             Attribute::Label(b"f-crt".to_vec()),
         ])
         .unwrap();
-    e.config_with(&body, &|r| format!("transportWith = \"tk-{}\"\n", r.name));
+    e.config_with(&body, &|r| format!("migrate = {{ transportWith = \"tk-{}\" }}\n", r.name));
     // The keys are made where they are born; the planted certificate is adopted.
     for (verb, spec, r) in [
         ("create", "tk-softhsm", soft),

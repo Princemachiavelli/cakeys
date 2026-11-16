@@ -6,14 +6,14 @@
 tokenLabel = "hsm1"
 pinFile = "$CAKEYS_AWS_PIN"
 # Sealed moves into CloudHSM wrap to this key (docs/CAMIGRATE.md D3).
-transportWith = "transport"
+migrate = { transportWith = "transport" }
 
 # A SoftHSM token on the runner, the other side of camigrate's moves.
 [tokens.softhsm]
 tokenLabel = "kmtest"
 pinFile = "/root/softhsm/pin"
 # Sealed moves out of CloudHSM wrap to this key.
-transportWith = "softhsm-transport"
+migrate = { transportWith = "softhsm-transport" }
 
 [objects.ec-p256]
 class = "CKO_PRIVATE_KEY"
