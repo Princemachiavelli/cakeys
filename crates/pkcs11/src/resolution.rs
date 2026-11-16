@@ -90,8 +90,9 @@ pub fn moduleless_info() -> ModuleInfo {
 ///
 /// # Errors
 ///
-/// [`Set::embedded`]'s parse error, or the message of a config-named layer or ambiguous
-/// module family: the token open maps both to 17.
+/// [`Set::embedded`]'s parse error, or the message of a config-named layer no profile set has:
+/// the token open maps both to 17. A module version no profile records is never an error: the
+/// nearest profile stands in, with a note.
 pub fn resolve(
     cfg: &TokenCfg,
     module: &ModuleInfo,
@@ -152,8 +153,22 @@ pub fn resolve(
         .filter(|p| p.mode == Mode::Observed && p.family() == family && pinned.is_none_or(|n| p.profile == n))
         .collect();
     let fit = |p: &Profile| Fit::of(p, module, token);
-    let Some((chosen, tied)) = choose(&candidates, &out.layers, module, token, family)? else { return Ok(out) };
+    let Some((chosen, tied, unversioned)) = choose(&candidates, &out.layers, module, token) else { return Ok(out) };
     let mut p = chosen.clone();
+    if unversioned {
+        // A module version no profile of the family records (an update, typically): the
+        // nearest profile's module rows stand, its hardware rows answer unknown. Never an
+        // error: a missing profile must not stop the token from opening (P1).
+        out.notes.push(format!(
+            "no module profile for '{family}' ({}) records module version '{}': using the nearest, {}, \
+             without its generate, wrap, unwrap and decrypt rows (unknown); profile this module with \
+             `caprobe probe` (docs/CAPROBE.md)",
+            candidates.iter().map(|p| p.profile.as_str()).collect::<Vec<_>>().join(", "),
+            module.version,
+            p.profile
+        ));
+        clear_hardware_rows(&mut p);
+    }
     if tied.len() > 1 && token.is_none() {
         // Pairs of one module on several kinds of hardware, and no token to tell which: what
         // the module lists is taken from one of them; what generates, wraps, unwraps and
@@ -170,6 +185,7 @@ pub fn resolve(
     let f = fit(&p);
     let seen = |x: Option<&String>| x.map_or_else(|| "unrecorded".to_owned(), |x| format!("'{x}'"));
     match (&p.r#match.module_version, f.firmware) {
+        (Some(_), _) if unversioned => {}
         (Some(v), _) if f.version == Some(false) => out.notes.push(format!(
             "module profile {} matched by manufacturer alone: the module reports version '{}' \
              where the profile records '{v}'",
@@ -210,41 +226,61 @@ pub fn resolve(
     Ok(out)
 }
 
-/// The module profile among a family's `candidates`, with the ones that fit it equally well.
-/// Ranked by: a configured hardware layer naming the pair (`profiles = ["swtpm"]` ->
-/// `tpm2-pkcs11/1.10+swtpm`), then the token's model and firmware; a profile recording another
-/// module version is out. `None` for a family with no profile.
-///
-/// # Errors
-///
-/// Several candidates and none records the module's version.
+/// The module profile among a family's `candidates`, with the ones that fit it equally well,
+/// and whether none of several records the module's version. Ranked by: a configured hardware
+/// layer naming the pair (`profiles = ["swtpm"]` -> `tpm2-pkcs11/1.10+swtpm`), then the token's
+/// model and firmware; a profile recording another module version is out while one records
+/// this version. When none does, every candidate is in, and among equal hardware the nearest
+/// recorded version wins ([`Nearness`]). `None` for a family with no profile.
 fn choose<'a>(
     candidates: &[&'a Profile],
     layers: &[Profile],
     module: &ModuleInfo,
     token: Option<&TokenInfo>,
-    family: &str,
-) -> Result<Option<(&'a Profile, Vec<&'a Profile>)>, String> {
+) -> Option<(&'a Profile, Vec<&'a Profile>, bool)> {
     let fit = |p: &Profile| Fit::of(p, module, token);
     let named_hardware = |p: &Profile| layers.iter().any(|l| p.profile.ends_with(&format!("+{}", l.profile)));
     match candidates {
-        [] => Ok(None),
-        [p] => Ok(Some((*p, vec![*p]))),
+        [] => None,
+        [p] => Some((*p, vec![*p], false)),
         _ => {
             let eligible: Vec<&Profile> =
                 candidates.iter().filter(|p| fit(p).version != Some(false)).copied().collect();
-            let rank = |p: &Profile| (named_hardware(p), fit(p).hardware_keys());
-            let best = eligible.iter().map(|p| rank(p)).max().ok_or_else(|| {
-                format!(
-                    "several module profiles for '{family}' ({}) and none records module version '{}': \
-                     profile this module with `caprobe probe` (docs/CAPROBE.md), or, before any \
-                     realisation recorded the module in the lock, realise one",
-                    candidates.iter().map(|p| p.profile.as_str()).collect::<Vec<_>>().join(", "),
-                    module.version
-                )
-            })?;
+            let unversioned = eligible.is_empty();
+            let eligible = if unversioned { candidates.to_vec() } else { eligible };
+            let rank = |p: &Profile| {
+                let near = if unversioned {
+                    Nearness::of(p.r#match.module_version.as_deref(), &module.version)
+                } else {
+                    Nearness::Unknown
+                };
+                (named_hardware(p), fit(p).hardware_keys(), near)
+            };
+            let best = eligible.iter().map(|p| rank(p)).max()?;
             let tied: Vec<&Profile> = eligible.into_iter().filter(|p| rank(p) == best).collect();
-            Ok(Some((tied[0], tied)))
+            Some((tied[0], tied, unversioned))
+        }
+    }
+}
+
+/// How near a profile's recorded module version is to the module's, compared numerically per
+/// dot-separated component (`1.10` is above `1.9`): the highest recorded version at or below
+/// the module's is nearest, else the lowest above it. A version that is not numbers (none
+/// recorded, or the empty one of a module nobody has seen) says nothing.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Nearness {
+    Unknown,
+    Above(std::cmp::Reverse<Vec<u64>>),
+    AtOrBelow(Vec<u64>),
+}
+
+impl Nearness {
+    fn of(recorded: Option<&str>, version: &str) -> Nearness {
+        let parse = |v: &str| v.split('.').map(|c| c.parse::<u64>().ok()).collect::<Option<Vec<u64>>>();
+        match (recorded.and_then(parse), parse(version)) {
+            (Some(r), Some(v)) if r <= v => Nearness::AtOrBelow(r),
+            (Some(r), Some(_)) => Nearness::Above(std::cmp::Reverse(r)),
+            _ => Nearness::Unknown,
         }
     }
 }
@@ -382,6 +418,40 @@ mod tests {
         let (m, notes) = resolved(&cfg(None, &[]), None);
         assert!(m.generate.is_empty() && m.decrypt.oaep.is_none());
         assert!(notes.iter().any(|n| n.contains("fit equally")), "{notes:?}");
+    }
+
+    /// A module version no profile of a family with several records (a client library update)
+    /// opens with the nearest profile, its hardware rows unknown and a note: never an error.
+    /// Pairs that tie on every key resolve to the first embedded, as with a recorded version.
+    #[test]
+    fn an_unrecorded_version_resolves_to_the_nearest_profile() {
+        let amd = TokenInfo { model: "AMD".into(), serial: "s".into(), firmware: "3.87".into() };
+        for (manufacturer, version, provider, token, expected) in [
+            ("CloudHSM", "5.19", "aws-cloudhsm", None, "aws-cloudhsm/5.18+hsm2m-fips"),
+            ("tpm2-software.github.io", "1.11", "tpm2-pkcs11", Some(&amd), "tpm2-pkcs11/1.10+amd-ftpm"),
+            ("Google", "1.10", "kmsp11", None, "kmsp11/1.9+hsm-fips"),
+        ] {
+            let r = resolve(&cfg(None, &[]), &module(manufacturer, version), token, provider).unwrap();
+            let m = r.module.as_ref().unwrap();
+            assert_eq!(m.profile, expected, "{provider} {version}");
+            assert!(m.generate.is_empty() && m.wrap.oaep.is_none() && m.decrypt.oaep.is_none(), "{provider}");
+            assert!(!m.advertise.is_empty(), "{provider}: the module rows stand");
+            let note = format!("records module version '{version}': using the nearest, {expected}");
+            assert!(r.notes.iter().any(|n| n.contains(&note) && n.contains("caprobe probe")), "{:?}", r.notes);
+            assert!(!r.notes.iter().any(|n| n.contains("matched by manufacturer alone")), "{:?}", r.notes);
+        }
+    }
+
+    #[test]
+    fn the_nearest_version_is_the_highest_at_or_below_else_the_lowest_above() {
+        let near = |r: &str, v: &str| Nearness::of(Some(r), v);
+        assert!(near("1.9", "1.10") > near("1.8", "1.10"));
+        assert!(near("1.10", "1.10") > near("1.9", "1.10"));
+        assert!(near("1.9", "1.10") > near("1.11", "1.10"));
+        assert!(near("1.11", "1.10") > near("2.0", "1.10"));
+        assert_eq!(near("1.9", ""), Nearness::Unknown);
+        assert_eq!(Nearness::of(None, "1.10"), Nearness::Unknown);
+        assert_eq!(near("1.9-rc1", "1.10"), Nearness::Unknown);
     }
 
     #[test]

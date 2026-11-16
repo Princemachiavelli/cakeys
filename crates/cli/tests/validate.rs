@@ -59,8 +59,9 @@ fn the_lock_resolves_a_token_keys_toml_does_not_name() {
 /// What the gate refuses or leaves open, from keys.toml alone: a hash-bound HMAC key to
 /// generate (PKCS#11 has no mechanism for it) and an attestation the provider cannot make are
 /// refused (15); a provider with no module profile (`generic`) leaves the generation undecided,
-/// a note; a family whose profiles need the module's version to choose (`tpm2-pkcs11`) is
-/// skipped with why; a layer the stack already holds (the binding layer) is not added twice.
+/// a note; so does a family whose profiles need the module's version to choose (`tpm2-pkcs11`,
+/// whose module nobody has seen yet): one stands in without its hardware rows, never an
+/// error; a layer the stack already holds (the binding layer) is not added twice.
 /// A build whose cryptoki maps the SHA-2 HMAC key types wrongly refuses the HMAC key by its
 /// type before any profile is asked.
 #[test]
@@ -107,8 +108,7 @@ fn the_gate_refuses_what_it_can_decide_and_says_what_it_cannot() {
         "opts into attestation, but provider 'softhsm' attests nothing on this module",
         "opts into attestation, but provider 'ykcs11' attests only [\"CKO_PRIVATE_KEY\", \"CKO_PUBLIC_KEY\"]",
         "validate: 'gen' (spec 'p-gen') on token 'gen': the profiles do not decide",
-        "validate: token 'tpm': several module profiles for 'tpm2-pkcs11'",
-        "profile this module with `caprobe probe`",
+        "validate: 'tpm' (spec 'p-tpm') on token 'tpm': generation not decided",
     ] {
         assert!(err.contains(line), "expected {line:?} in\n{err}");
     }

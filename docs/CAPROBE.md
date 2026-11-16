@@ -168,6 +168,9 @@ generated, never edited, and pinned like the baseline:
   (`tpm2-pkcs11/1.10+swtpm`; software tokens keep plain names). A token whose hardware has no
   pair yet resolves the nearest one for what the module advertises only: generation and wrapping
   answer unknown. Pairs rank by a hardware layer the config names, then model and firmware.
+  A module version no pair of its family records (a client library update) is no error either:
+  the nearest recorded version stands in the same way, module rows only, with a note naming
+  `caprobe probe`. No profile is ever required to open a token.
 - **D11.** TOML, like keys.toml and the lock, so Nix reads profiles directly. p11-kit's `.module`
   files cannot carry mechanism lists or evidence.
 - **D12.** A token's *mode* (FIPS-approved or not) is a match axis like its firmware, entered as

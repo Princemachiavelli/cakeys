@@ -58,8 +58,8 @@ pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Res
         Some((m, t)) => (m.clone(), Some(t.clone()), "the lock's recorded module and token"),
         None => (crate::resolution::moduleless_info(), None, "keys.toml's provider"),
     };
-    // What resolution cannot decide without the token (several profiles of a family, none
-    // matching) is not a config error here: the open decides it.
+    // What resolution refuses (a profile set that does not parse) is not a config error here:
+    // the open decides it.
     Ok(match resolution::resolve(cfg, &module, token.as_ref(), &provider) {
         Ok(mut resolved) => {
             if recorded.is_none() {
