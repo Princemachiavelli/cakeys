@@ -1035,6 +1035,7 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
     let create_on = take_create_on(&mut table).map_err(|e| invalid(&e))?;
     let mut cfg: Config = table.try_into().map_err(|e| invalid(&e))?;
     cfg.create_on = create_on;
+    check_names(&cfg).map_err(|e| invalid(&e))?;
     for dir in &mut cfg.profile_dirs {
         *dir = PathBuf::from(env_ref(&dir.to_string_lossy(), "profileDirs", env)?);
     }
@@ -1112,6 +1113,31 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
     check_creation(&cfg).map_err(|e| invalid(&e))?;
     check_transport_keys(&cfg).map_err(|e| invalid(&e))?;
     Ok(cfg)
+}
+
+/// Object, spec and token names are `[A-Za-z0-9][A-Za-z0-9_-]*`: `check` splits a reference on
+/// `.id.`, the lock and `gc` join names with dots, and the Nix library puts them in a shell
+/// command. Invalid at load (17), before any other rule names them.
+fn check_names(cfg: &Config) -> std::result::Result<(), String> {
+    let valid = |n: &str| {
+        n.starts_with(|c: char| c.is_ascii_alphanumeric())
+            && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    };
+    let names = cfg
+        .objects
+        .keys()
+        .map(|n| ("object", n))
+        .chain(cfg.specs.keys().map(|n| ("spec", n)))
+        .chain(cfg.tokens.keys().map(|n| ("token", n)))
+        .chain(cfg.specs.values().flat_map(|s| s.tokens.keys().map(|n| ("token", n))));
+    for (what, name) in names {
+        if !valid(name) {
+            return Err(format!(
+                "{what} name {name:?}: names are letters, digits, '-' and '_', starting with a letter or digit"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Each `transportWith` names a spec realised on its own token whose object is an RSA private
@@ -1523,6 +1549,32 @@ mod tests {
         let stale = gc(&cfg, &mut lock, true);
         assert_eq!(stale.len(), 3, "{stale:?}");
         assert!(lock.realisations.is_empty() && lock.observations.is_empty());
+    }
+
+    /// Object, spec and token names have one grammar, checked at load (17): a reference splits
+    /// on `.id.`, and shell commands are built from them.
+    #[test]
+    fn names_are_letters_digits_dashes_and_underscores() {
+        let load = |object: &str, spec: &str, token: &str| {
+            let text = format!(
+                "[tokens.\"{token}\"]\ntokenLabel = \"t\"\n\n\
+                 [objects.\"{object}\"]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+                 [specs.\"{spec}\"]\nobject = \"{object}\"\ntokens.\"{token}\" = {{ locator = {{ CKA_LABEL = \"k\" }} }}\n"
+            );
+            parse_config_with(&text, Path::new("keys.toml"), &|_| None)
+        };
+        load("k", "k-soft_2", "0soft").unwrap();
+        for (object, spec, token, what) in [
+            ("a b; echo pwned #", "s", "t", "object name \"a b; echo pwned #\""),
+            ("k.id.x", "s", "t", "object name \"k.id.x\""),
+            ("k", "-s", "t", "spec name \"-s\""),
+            ("k", "s", "my token", "token name \"my token\""),
+            ("k", "s", "", "token name \"\""),
+            ("k", "s", "tök", "token name \"tök\""),
+        ] {
+            let e = load(object, spec, token).unwrap_err();
+            assert!(matches!(e, KmError::Validation(_)) && e.to_string().contains(what), "{e}");
+        }
     }
 
     /// `createOn` names where an object is born, apart from its type; only that token may

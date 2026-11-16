@@ -124,6 +124,24 @@
         spec = "shared-nosign";
       };
       signing-cert = keys.signing-cert { token = "softhsm"; };
+      # The library reads keys.toml with fromTOML, not through cakeys' loader (which refuses
+      # these names, 17): `check` still quotes every word it builds.
+      odd =
+        (self.lib.mkKeys {
+          config = builtins.toFile "odd-names.toml" ''
+            [tokens."my token"]
+            tokenLabel = "t"
+            [objects."a b; echo pwned #"]
+            class = "CKO_PRIVATE_KEY"
+            keyType = "CKK_EC"
+            curve = "secp256r1"
+            [specs."it's"]
+            object = "a b; echo pwned #"
+            tokens."my token" = { locator = { CKA_LABEL = "k" } }
+          '';
+          inherit cakeys;
+        })."a b; echo pwned #"
+          { };
     in
     assert signing.id.rfc7093m4 == "sha256-d3++Ph3T9bppuPnNz6blK4vDij+Swy9RMmKdfQnLmPk=";
     assert signing.id.pubkeyhash == signing.id.rfc7093m4; # input alias
@@ -164,6 +182,8 @@
         uriModule = true;
         uriPin = "source";
       }).check;
+    assert pkgs.lib.hasSuffix "check 'a b; echo pwned #' --token 'my token' --spec 'it'\\''s'"
+      odd.check;
     assert fails (keys.signing { format = "der"; }).check;
     assert fails (keys.signing { uriPin = "file"; }).check;
     pkgs.runCommand "cakeys-lib-check" { } ''

@@ -2,6 +2,15 @@
 # Builtins only, so it works without nixpkgs (e.g. inside a test VM).
 let
   optionalString = c: s: if c then s else "";
+  # One shell word: as is when no shell treats a character of it specially, else single-quoted
+  # (nixpkgs' lib.escapeShellArg). keys.toml's names reach `check` unvalidated: this file reads
+  # it with fromTOML, never through cakeys' own loader.
+  escapeShellArg =
+    s:
+    if builtins.match "[[:alnum:],._+:@%/-]+" s != null then
+      s
+    else
+      "'${builtins.replaceStrings [ "'" ] [ "'\\''" ] s}'";
 in
 {
   /**
@@ -191,20 +200,57 @@ in
               ]
               || fail "uriPin must be null, \"source\" or \"value\", not ${builtins.toJSON uriPin}";
             builtins.concatStringsSep " " (
-              [
-                "${cakeys}/bin/cakeys"
-                "--config ${config}"
-              ]
-              ++ (if hasLock then [ "--lock ${lock}" ] else [ ])
-              ++ builtins.attrValues (builtins.mapAttrs (t: p: "--module ${t}=${p}") modules)
-              ++ [
-                "check ${obj}${optionalString (scheme != null) ".id.${scheme}"}"
-                "--token ${pick.token}"
-                "--spec ${pick.spec}"
-              ]
-              ++ (if format != "uri" then [ "--format ${format}" ] else [ ])
-              ++ (if uriModule then [ "--uri-module" ] else [ ])
-              ++ (if uriPin != null then [ "--uri-pin ${uriPin}" ] else [ ])
+              map escapeShellArg (
+                [
+                  "${cakeys}/bin/cakeys"
+                  "--config"
+                  "${config}"
+                ]
+                ++ (
+                  if hasLock then
+                    [
+                      "--lock"
+                      "${lock}"
+                    ]
+                  else
+                    [ ]
+                )
+                ++ builtins.concatLists (
+                  builtins.attrValues (
+                    builtins.mapAttrs (t: p: [
+                      "--module"
+                      "${t}=${p}"
+                    ]) modules
+                  )
+                )
+                ++ [
+                  "check"
+                  "${obj}${optionalString (scheme != null) ".id.${scheme}"}"
+                  "--token"
+                  pick.token
+                  "--spec"
+                  pick.spec
+                ]
+                ++ (
+                  if format != "uri" then
+                    [
+                      "--format"
+                      format
+                    ]
+                  else
+                    [ ]
+                )
+                ++ (if uriModule then [ "--uri-module" ] else [ ])
+                ++ (
+                  if uriPin != null then
+                    [
+                      "--uri-pin"
+                      uriPin
+                    ]
+                  else
+                    [ ]
+                )
+              )
             );
         };
     in

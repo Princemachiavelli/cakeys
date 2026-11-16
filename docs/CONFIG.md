@@ -13,6 +13,10 @@ this page explains the same thing by example.
 | `[objects.<name>]` | *What* is the material: its class and intrinsic type | an EC P-256 private key |
 | `[specs.<name>]` | *How* is the material used: the policy one use requires, and where to find it on each token | "this key, sign-only, non-extractable, under label `signing` on token `softhsm`" |
 
+A name is letters, digits, `-` and `_`, starting with a letter or digit; anything else is
+refused when the file loads (17). `check` splits `<object>.id.<scheme>` on its dots, the lock
+nests tables by name, and the Nix library puts names in a shell command.
+
 They are separate because they change independently, and each change means something different:
 
 - **The object is the material.** Its type (class, key type, curve, size) is intrinsic: a P-256
