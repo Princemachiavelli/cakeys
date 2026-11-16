@@ -113,6 +113,8 @@ pub struct Token {
     /// What `C_GetMechanismList` returned, sorted: the drift baseline the probe records as
     /// a profile's `advertise` list (D2).
     pub advertised: Vec<String>,
+    /// The same list, as the module returned it: what [`Token::unprofiled`] filters anew.
+    listed: Vec<MechanismType>,
     /// The RSA key-pair generation's key-size range as `C_GetMechanismInfo` reports it, when
     /// the module advertises `CKM_RSA_PKCS_KEY_PAIR_GEN`: the probe's reported bounds.
     pub rsa_bits: Option<(u64, u64)>,
@@ -179,6 +181,30 @@ fn library(module: &str) -> Result<Arc<Library>> {
     Ok(library)
 }
 
+/// The mechanisms a token may rely on: what the module lists, less what the resolved stack
+/// subtracts (the module profile's advertised-but-broken rows and every layer's), plus what it
+/// adds although the module does not list it (a provider's stand-in the probe found working,
+/// `Provider::stand_in`). With no module profile and only the binding layer, the list itself.
+fn usable_mechanisms(
+    advertised: &[MechanismType],
+    profiles: &crate::resolution::Resolved,
+) -> Result<Vec<MechanismType>> {
+    if profiles.module.is_none() && profiles.layers.len() <= 1 {
+        return Ok(advertised.to_vec());
+    }
+    let subtracted = profiles.subtracted_mechanisms();
+    let mut usable: Vec<MechanismType> =
+        advertised.iter().copied().filter(|m| !subtracted.contains(m.to_string().as_str())).collect();
+    let baseline = cakeys_profile::Set::active().and_then(|s| s.baseline()).map_err(KmError::Validation)?;
+    for name in profiles.added_mechanisms() {
+        let id = baseline.mechanisms.get(name).and_then(|id| MechanismType::try_from(*id).ok());
+        if let Some(m) = id.filter(|m| !usable.contains(m)) {
+            usable.push(m);
+        }
+    }
+    Ok(usable)
+}
+
 fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
     move |e| KmError::Unavailable(format!("{context}: {e}"))
 }
@@ -240,25 +266,7 @@ impl Token {
             .then(|| ctx.get_mechanism_info(slot, MechanismType::RSA_PKCS_KEY_PAIR_GEN).ok())
             .flatten()
             .map(|i| (i.min_key_size() as u64, i.max_key_size() as u64));
-        let stack_decides = profiles.module.is_some() || profiles.layers.len() > 1;
-        let mechanisms = if stack_decides {
-            let mut usable: Vec<MechanismType> = advertised
-                .into_iter()
-                .filter(|m| !profiles.subtracted_mechanisms().contains(m.to_string().as_str()))
-                .collect();
-            // And what the stack adds although the module does not list it: a provider's
-            // stand-in the probe found working (`Provider::stand_in`), never in `advertised`.
-            let baseline = cakeys_profile::Set::active().and_then(|s| s.baseline()).map_err(KmError::Validation)?;
-            for name in profiles.added_mechanisms() {
-                let id = baseline.mechanisms.get(name).and_then(|id| MechanismType::try_from(*id).ok());
-                if let Some(m) = id.filter(|m| !usable.contains(m)) {
-                    usable.push(m);
-                }
-            }
-            usable
-        } else {
-            advertised
-        };
+        let mechanisms = usable_mechanisms(&advertised, &profiles)?;
         let mut mechanism_names: Vec<String> = mechanisms.iter().map(std::string::ToString::to_string).collect();
         mechanism_names.sort();
         let (session, pin) = session(ctx, slot, name, cfg, access, write_protected, pins)?;
@@ -269,6 +277,7 @@ impl Token {
             token,
             mechanisms,
             mechanism_names,
+            listed: advertised,
             advertised: advertised_names,
             rsa_bits,
             profiles,
@@ -281,6 +290,22 @@ impl Token {
             provider,
             library: module_guard,
         })
+    }
+
+    /// The token as a probe measures it: no module profile decides anything here — not its
+    /// rows, nor what it subtracts from or adds to the mechanism list — so every operation asks
+    /// the module itself, and an answer the profile would have given is tried instead. The
+    /// layers between cakeys and the module stay: they are not the module.
+    ///
+    /// # Errors
+    ///
+    /// `Validation` when the active profile set has no baseline.
+    pub fn unprofiled(mut self) -> Result<Token> {
+        self.profiles.module = None;
+        self.mechanisms = usable_mechanisms(&self.listed, &self.profiles)?;
+        self.mechanism_names = self.mechanisms.iter().map(std::string::ToString::to_string).collect();
+        self.mechanism_names.sort();
+        Ok(self)
     }
 
     /// An `Unsupported` error carrying the provider's advice, if it has any.

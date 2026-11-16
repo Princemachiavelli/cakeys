@@ -172,8 +172,9 @@ impl Token {
     /// secret; the token derives the same secret with `CKM_ECDH1_DERIVE` into a non-extractable
     /// session key and MACs the challenge with it. The MACs agree only if the token's private key
     /// is the one `spki` names. A token without HMAC, or whose profile says it derives only into
-    /// an extractable secret (`derive.sealed = false`: ykcs11 \[src\]), proves by
-    /// [`Self::prove_ecdh_extractable`] instead.
+    /// an extractable secret (`derive.ecdh.sealed` no: ykcs11 \[src\]), proves by
+    /// [`Self::prove_ecdh_extractable`] instead, and so does one that refuses the sealed form
+    /// when its profile does not say.
     fn prove_ecdh(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
         if !self.proof_permits(h)(MechanismType::ECDH1_DERIVE) {
             return Err(self.none_allowed(&[MechanismType::ECDH1_DERIVE]));
@@ -183,7 +184,7 @@ impl Token {
         if !sealed || !self.has(MechanismType::SHA256_HMAC) {
             return self.prove_ecdh_extractable(h, spki, &ch);
         }
-        let (derived, rw) = self.derive_for_proof(
+        let sealed = self.derive_for_proof(
             h,
             &ch.peer,
             &[
@@ -195,7 +196,21 @@ impl Token {
                 Attribute::Sign(true),
             ],
             ch.secret.len(),
-        )?;
+        );
+        // Unknown means try (review 2026-11-15 §4): where the module refuses to derive into a
+        // sealed secret, the extractable one. Only that refusal: what fails after the derivation
+        // is the proof's answer.
+        let (derived, rw) = match sealed {
+            Ok(derived) => derived,
+            Err(KmError::Conflict(e)) => return Err(KmError::Conflict(e)),
+            Err(sealed) => {
+                return self.prove_ecdh_extractable(h, spki, &ch).map_err(|e| match e {
+                    KmError::Unavailable(m) => KmError::Unavailable(format!("{m} (sealed: {sealed})")),
+                    KmError::Unsupported(m) => KmError::Unsupported(format!("{m} (sealed: {sealed})")),
+                    other => other,
+                });
+            }
+        };
         let session = rw.as_ref().unwrap_or(&self.session);
         // A session object: dropped with the session even if destroying it fails here.
         let tag = session

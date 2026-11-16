@@ -254,7 +254,10 @@ key to its identity:
        into an extractable session secret, and the host reads its `CKA_VALUE` and compares it
        in constant time with the shared secret it computed. The secret belongs to a single-use
        ephemeral key the host generated, so reading it reveals nothing the host did not already
-       hold. The binding is still `pop-ecdh`.
+       hold. The binding is still `pop-ecdh`. Where the profile does not say, the sealed form
+       is tried first and the extractable one when the module refuses to derive into a sealed
+       secret; a derivation that ran and failed is never retried
+       (`an_ecdh_proof_falls_back_to_the_extractable_secret`).
      - **Read-write session (an exception to M1).** tpm2-pkcs11 keeps derived secrets as
        store rows, so it refuses `C_DeriveKey` in a read-only session (`derive.ecdh.read-only`
        no). A read-only verb's (`verify`, `check`) proof then derives in a read-write

@@ -12,6 +12,7 @@ mod reference;
 use common::*;
 use cryptoki::mechanism::Mechanism;
 use cryptoki::object::Attribute;
+use std::fmt::Write as _;
 use std::process::Command;
 
 const REF: &common::Reference = &common::FAULT;
@@ -292,6 +293,36 @@ fn a_lying_module_is_refused() {
     for spec in ["k", "d", "r", "u", "a"] {
         assert_eq!(w.code(&["verify", "--spec", spec, "--token", "ref"]), 0, "{spec}");
     }
+}
+
+/// Unknown means try (review 2026-11-15 §4): an ECDH proof whose sealed derivation the module
+/// refuses, every template of it (`derive_any`: as asked, with its length, without each policy
+/// default), proves with the extractable secret instead; where that is refused too, both
+/// refusals are named. A derivation that ran for another key is a conflict, never retried.
+#[test]
+fn an_ecdh_proof_falls_back_to_the_extractable_secret() {
+    let Some(w) = lying("fault-ecdh-fallback") else { return };
+    let run = |name: &str, plan: &str| {
+        let (path, trace) = (w.dir.join(format!("{name}.toml")), w.dir.join(format!("{name}.jsonl")));
+        std::fs::write(&path, plan).unwrap();
+        let o = w.km_env(
+            &["verify", "--spec", "d", "--token", "ref"],
+            &[("P11_FAULT_PLAN", &path), ("P11_FAULT_TRACE", &trace)],
+        );
+        (code(&o), stderr(&o), fired(&trace).len())
+    };
+    let refused = "rv = \"CKR_ATTRIBUTE_VALUE_INVALID\"";
+    let sealed = (1..=6).fold(String::new(), |mut s, n| {
+        let _ = write!(s, "[[rule]]\nfn = \"C_DeriveKey\"\ncall = {n}\n{refused}\n\n");
+        s
+    });
+    let (exit, said, fired) = run("sealed", &sealed);
+    assert_eq!((exit, fired), (0, 6), "{said}");
+    let (exit, said, _) = run("both", &format!("[[rule]]\nfn = \"C_DeriveKey\"\n{refused}\n"));
+    assert_eq!(exit, 16, "{said}");
+    assert!(said.contains("C_DeriveKey (proof of possession)") && said.contains("(sealed: "), "{said}");
+    let (exit, said, _) = run("other", "[[rule]]\nfn = \"C_DeriveKey\"\nof_label = \"d\"\nuse_label = \"d-other\"\n");
+    assert_eq!(exit, 13, "{said}");
 }
 
 /// Refused operations leave nothing behind (docs/DESIGN.md §8.1): a key created and then not
