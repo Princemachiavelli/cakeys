@@ -324,6 +324,14 @@ impl Token {
     pub fn unprofiled(mut self) -> Result<Token> {
         self.profiles.module = None;
         self.mechanisms = usable_mechanisms(&self.listed, &self.profiles)?;
+        // What the provider runs its own way although the module does not list it: the
+        // verbs have it through the profile's `add` the probe records, so the probe's proofs
+        // try it too (AWS CloudHSM's Ed25519 [run]).
+        for m in self.provider.stand_ins() {
+            if !self.mechanisms.contains(m) {
+                self.mechanisms.push(*m);
+            }
+        }
         self.mechanism_names = self.mechanisms.iter().map(std::string::ToString::to_string).collect();
         self.mechanism_names.sort();
         Ok(self)

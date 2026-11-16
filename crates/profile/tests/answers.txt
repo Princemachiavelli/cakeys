@@ -1133,8 +1133,8 @@
   CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve25519: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve448: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
-  CKK_EC_EDWARDS edwards25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
-  CKK_EC_EDWARDS edwards448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_EDWARDS edwards25519: no — tpm2-pkcs11/1.10+amd-ftpm: not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN
+  CKK_EC_EDWARDS edwards448: no — tpm2-pkcs11/1.10+amd-ftpm: not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN
   CKK_EC_EDWARDS secp256k1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
@@ -1150,8 +1150,8 @@
   CKK_EC_MONTGOMERY: yes (tpm2-pkcs11/1.10+amd-ftpm)
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY curve25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
-  CKK_EC_MONTGOMERY curve448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY curve25519: no — tpm2-pkcs11/1.10+amd-ftpm: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  CKK_EC_MONTGOMERY curve448: no — tpm2-pkcs11/1.10+amd-ftpm: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
   CKK_EC_MONTGOMERY edwards25519: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY edwards448: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp256k1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
@@ -1228,10 +1228,10 @@
   CKK_XMSSMT: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_XMSSMT generation
   curve brainpoolP256r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
   curve brainpoolP384r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
-  curve curve25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
-  curve curve448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
-  curve edwards25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
-  curve edwards448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  curve curve25519: no — tpm2-pkcs11/1.10+amd-ftpm: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  curve curve448: no — tpm2-pkcs11/1.10+amd-ftpm: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  curve edwards25519: no — tpm2-pkcs11/1.10+amd-ftpm: not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN
+  curve edwards448: no — tpm2-pkcs11/1.10+amd-ftpm: not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN
   curve secp256k1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
   curve secp256r1: yes (tpm2-pkcs11/1.10+amd-ftpm)
   curve secp384r1: yes (tpm2-pkcs11/1.10+amd-ftpm)
@@ -1403,7 +1403,7 @@
   oaep OAEP: unknown — module profile tpm2-pkcs11/1.10+swtpm records no OAEP probe
 # ykcs11/2.7
   wrap.oaep None
-  decrypt.oaep Some("[\"SHA-1\", \"SHA-256\"]")
+  decrypt.oaep Some("[\"SHA-1\", \"SHA-256\", \"SHA-512\"]")
   unwrap.refuse None
   derive.sealed Some(false)
   derive.read-only Some(true)

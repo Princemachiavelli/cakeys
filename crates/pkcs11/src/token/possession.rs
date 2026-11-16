@@ -449,9 +449,10 @@ impl Token {
                 | RvError::FunctionNotSupported,
                 _,
             ) => self.unsupported(format!(
-                "token '{}' refused to {op} with the private key ({e}); proving possession needs {attr}, or opt \
+                "token '{}' refused to {op} with the private key ({}: {e}); proving possession needs {attr}, or opt \
                  in with binding = \"token-asserted\"",
-                self.name
+                self.name,
+                rv_name(&e)
             )),
             CkError::Pkcs11(
                 RvError::EncryptedDataInvalid
@@ -461,10 +462,15 @@ impl Token {
                 _,
             ) => KmError::Conflict(format!(
                 "proof of possession failed: the private key on token '{}' did not {op} what was made for its \
-                 public key ({call}: {e})",
-                self.name
+                 public key ({call}: {}: {e})",
+                self.name,
+                rv_name(&e)
             )),
-            e => KmError::Unavailable(format!("{call} (proof of possession) on token '{}': {e}", self.name)),
+            e => KmError::Unavailable(format!(
+                "{call} (proof of possession) on token '{}': {}: {e}",
+                self.name,
+                rv_name(&e)
+            )),
         }
     }
 }

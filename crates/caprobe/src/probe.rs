@@ -1070,6 +1070,10 @@ fn operate(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, public: Obj
             return;
         }
     };
+    // First, as the verbs prove right after generating: a module that leaves an operation
+    // active after a failed one (tpm2-pkcs11, on a hash the TPM lacks [run]) would otherwise
+    // refuse the proof's own C_*Init with CKR_OPERATION_ACTIVE.
+    prove(made, profile, kt, on, private, &spki);
     match kt {
         "CKK_EC" => {
             let curve = Curve::from_cfg(Kt::Ec, on);
@@ -1107,8 +1111,6 @@ fn operate(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, public: Obj
         "CKK_RSA" => rsa_ops(made, profile, private, &spki, on),
         _ => made.undetermined.push(format!("no operation probes on {on}: ECDH with {kt} keys is not probed yet")),
     }
-    // Last: what the mechanism probes counted on is untouched by them.
-    prove(made, profile, kt, on, private, &spki);
 }
 
 /// The proofs of possession the verbs give with a private key of `kt` on `on`
@@ -1123,9 +1125,18 @@ fn prove(made: &Made, profile: &mut Draft, kt: &str, on: &str, private: ObjectHa
     };
     let mut object = ObjectCfg::new(cakeys_core::types::ObjectClass::PrivateKey, Some(key_type));
     let size = on.strip_prefix("RSA-").and_then(|b| b.parse::<u32>().ok());
-    match size {
-        Some(bits) => object.modulus_bits = Some(bits.into()),
-        None => object.curve = Some(on.to_owned()),
+    // A purpose-bound RSA key is named by its binding (several share a size, each proving
+    // differently): the row keeps that name, the proof takes the size the key reports.
+    match (key_type, size) {
+        (_, Some(bits)) => object.modulus_bits = Some(bits.into()),
+        (Kt::Rsa, None) => {
+            if let Ok([Attribute::Modulus(n)]) =
+                made.session.get_attributes(private, &[AttributeType::Modulus]).as_deref()
+            {
+                object.modulus_bits = u32::try_from(n.len() * 8).ok().map(Into::into);
+            }
+        }
+        (_, None) => object.curve = Some(on.to_owned()),
     }
     let on = size.map_or_else(|| On::Item(on.to_owned()), On::Bits);
     for binding in bindings {
@@ -1145,7 +1156,29 @@ fn evidence(tok: &Token, e: &KmError) -> String {
         .replace(&format!("token '{}': ", tok.name), "")
         .replace(&format!("token '{}'", tok.name), "the token")
         .replace(&format!("'{}'", tok.name), "the token");
-    said.split(": PKCS11 error:").next().unwrap_or_default().to_owned()
+    // Cryptoki's prose runs from its marker to the end of the parenthesis it sits in, if any
+    // (its own parentheses aside).
+    let Some((before, prose)) = said.split_once(": PKCS11 error:") else {
+        return said;
+    };
+    let open = before.matches('(').count() > before.matches(')').count();
+    let mut depth = 0usize;
+    let close = prose.char_indices().find_map(|(i, c)| match c {
+        '(' => {
+            depth += 1;
+            None
+        }
+        ')' if depth == 0 => Some(i),
+        ')' => {
+            depth -= 1;
+            None
+        }
+        _ => None,
+    });
+    match close.filter(|_| open) {
+        Some(i) => format!("{before}{}", &prose[i..]),
+        None => before.to_owned(),
+    }
 }
 
 /// Sign `data` with `mech`; `check` verifies the signature on the host where it can (`None`:
@@ -1229,16 +1262,19 @@ fn derive(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[u
             // CloudHSM: sensitive, but extractable [run]).
             let reads =
                 s.get_attributes(h, &[AttributeType::Sensitive, AttributeType::Extractable]).unwrap_or_default();
-            if !(reads.contains(&Attribute::Sensitive(true)) && reads.contains(&Attribute::Extractable(false))) {
-                profile.notes.insert(
-                    "derive.secret".into(),
-                    format!(
-                        "{on}: the derived secret reports {}",
-                        reads.iter().map(show).collect::<Vec<_>>().join(", ")
-                    ),
-                );
+            let reported = reads.iter().map(show).collect::<Vec<_>>().join(", ");
+            let is_sealed =
+                reads.contains(&Attribute::Sensitive(true)) && reads.contains(&Attribute::Extractable(false));
+            if !is_sealed {
+                profile.notes.insert("derive.secret".into(), format!("{on}: the derived secret reports {reported}"));
             }
             let mac = made.advertises(MechanismType::SHA256_HMAC).then(|| s.sign(&Mechanism::Sha256Hmac, h, MSG));
+            // With no HMAC to MAC with, the secret itself says whether it is sealed: a template
+            // that took only without its sealing attributes made an extractable one (ykcs11).
+            let mac = match mac {
+                None if !is_sealed => Some(Err(None)),
+                other => other.map(|m| m.map_err(Some)),
+            };
             destroy(h, "sealed", profile);
             if let Some((changed, first)) = changed {
                 profile.notes.insert(
@@ -1251,7 +1287,8 @@ fn derive(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[u
                 None => Ok(Ok(())),
                 Some(Ok(tag)) if pop::ct_eq(&ch.mac, &tag) => Ok(Ok(())),
                 Some(Ok(_)) => Ok(Err("the derived secret is not the shared secret".to_owned())),
-                Some(Err(e)) => Err(format!("derives into a sealed secret, but HMAC with it fails: {}", ckr(&e))),
+                Some(Err(Some(e))) => Err(format!("derives into a sealed secret, but HMAC with it fails: {}", ckr(&e))),
+                Some(Err(None)) => Err(format!("derives only into a secret that is not sealed: it reports {reported}")),
             }
         }
         Err(e) => Err(format!("a sealed (non-extractable) derived secret is refused: {}", ckr(&e))),

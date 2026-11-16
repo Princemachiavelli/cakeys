@@ -13,9 +13,10 @@
 #   CAKEYS_TEST_YUBIKEY_PIN, CAKEYS_TEST_YUBIKEY_MGM   files holding the PIV PIN and the admin
 #       credential (never read here: the paths go to the tests): the YubiKey suites, which write
 #       only to retired slots 90-95. CAKEYS_YUBIKEY_WIPE_95=1 empties slot 95 with
-#       `ykman piv keys delete 95` (ykman asks for the credential itself) before camigrate's
-#       import, which needs it empty, and again before cakeys' suite, which attests a key
-#       generated there and fails on an imported one. Without it the import is left out.
+#       `ykman piv keys delete 95` and `ykman piv certificates delete 95` (ykman asks for the
+#       credential itself) before camigrate's import, which needs it empty, and again before
+#       cakeys' suite, which attests a key generated there and fails on an imported one.
+#       Without it the import is left out.
 #   CAKEYS_FTPM_PROFILE   the committed pair profile of this host's TPM (e.g.
 #       tpm2-pkcs11/1.10+amd-ftpm): the real-TPM suites, through nix/ftpm-test-env.sh.
 #       CAKEYS_FTPM_ATTEST=1 adds the attestation test (the store under the platform's storage
@@ -74,16 +75,29 @@ if [ -n "$yk_pin" ] && [ -n "$yk_mgm" ]; then
     exit 1
   }
   export CAKEYS_TEST_YUBIKEY_MODULE=$yk_module CAKEYS_TEST_YUBIKEY_PIN=$yk_pin CAKEYS_TEST_YUBIKEY_MGM=$yk_mgm
+  # The key and its certificate, whichever is there (ykman refuses to delete what is not):
+  # ykcs11 shows a certificate left alone as a certificate and a public key under the slot's
+  # CKA_ID, which cakeys then refuses to create beside.
+  wipe_95() {
+    local info
+    info=$(ykman piv info | sed -n '/^Slot 95 /,/^$/p') || return 1
+    if [[ $info == *"Private key type:"* && $info != *"Private key type: EMPTY"* ]]; then
+      ykman piv keys delete 95 || return 1
+    fi
+    if [[ $info == *"Subject DN:"* ]]; then
+      ykman piv certificates delete 95 || return 1
+    fi
+  }
   # camigrate's import needs slot 95 empty, and cakeys' suite then generates into it.
   if [ "${CAKEYS_YUBIKEY_WIPE_95:-}" = 1 ]; then
-    ykman piv keys delete 95
+    wipe_95
     hardware "YubiKey: camigrate's import into slot 95" -E 'package(camigrate) & binary(yubikey)'
   else
     echo "coverage-full: camigrate's YubiKey import is left out: it needs slot 95 empty (CAKEYS_YUBIKEY_WIPE_95=1)" >&2
   fi
   # cakeys' suite generates into slot 95 and attests what it finds there: an imported key (the
   # one the import above left, or an earlier run's) has no attestation, so the slot is emptied.
-  [ "${CAKEYS_YUBIKEY_WIPE_95:-}" != 1 ] || ykman piv keys delete 95
+  [ "${CAKEYS_YUBIKEY_WIPE_95:-}" != 1 ] || wipe_95
   # A login that failed is not tried again: the PIN has three tries.
   if [ ${#failed[@]} -eq 0 ] || [ "${failed[-1]#YubiKey}" = "${failed[-1]}" ]; then
     hardware "YubiKey: cakeys and caprobe" -E 'binary(yubikey) & not package(camigrate)'

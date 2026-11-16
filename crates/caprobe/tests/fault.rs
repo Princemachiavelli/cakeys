@@ -43,6 +43,12 @@ fn probed(w: &Workdir, name: &str, plan: &str, more: &[&str]) -> (i32, String, S
 /// could not determine.
 type Case<'a> = (&'a str, String, &'a [&'a str], &'a str);
 
+/// The calls the first key's proofs of possession make before the probes of its mechanisms (it
+/// proves first, as the verbs do right after generating): pop-sign's `C_SignInit`, pop-ecdh's
+/// sealed `C_DeriveKey` and the `C_SignInit` of its HMAC.
+const SIGN_INITS: u64 = 2;
+const DERIVES: u64 = 1;
+
 fn rule(text: &str) -> String {
     format!("[[rule]]\n{text}\n")
 }
@@ -88,13 +94,13 @@ fn the_probe_records_what_a_misbehaving_module_does() {
         ),
         (
             "another key signs",
-            rule("fn = \"C_SignInit\"\ncall = 1\nuse_label = \"decoy\""),
+            rule(&format!("fn = \"C_SignInit\"\ncall = {}\nuse_label = \"decoy\"", SIGN_INITS + 1)),
             &["secp256r1: the signature does not verify"],
             "",
         ),
         (
             "another key derives",
-            rule("fn = \"C_DeriveKey\"\ncall = 1\nuse_label = \"decoy\""),
+            rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nuse_label = \"decoy\"", DERIVES + 1)),
             &["the derived secret is not the shared secret"],
             "",
         ),
@@ -102,7 +108,7 @@ fn the_probe_records_what_a_misbehaving_module_does() {
             // Every try of the sealed template `derive_any` makes: as asked, with CKA_VALUE_LEN,
             // and each without one of its two policy defaults (CKA_SENSITIVE, CKA_EXTRACTABLE).
             "a sealed derived secret refused",
-            (1..=6)
+            (DERIVES + 1..=DERIVES + 6)
                 .map(|n| rule(&format!("fn = \"C_DeriveKey\"\ncall = {n}\nrv = \"CKR_ATTRIBUTE_VALUE_INVALID\"")))
                 .collect(),
             &[
@@ -151,13 +157,13 @@ fn the_probe_notes_which_derive_template_took() {
     let cases: &[Case] = &[
         (
             "the sealed template takes with its length",
-            rule("fn = \"C_DeriveKey\"\ncall = 1\nrv = \"CKR_TEMPLATE_INCONSISTENT\""),
+            rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nrv = \"CKR_TEMPLATE_INCONSISTENT\"", DERIVES + 1)),
             &["the template as asked is refused (CKR_TEMPLATE_INCONSISTENT); derived with CKA_VALUE_LEN = 32 added\""],
             "",
         ),
         (
             "the sealed template takes without CKA_SENSITIVE",
-            (1..=2)
+            (DERIVES + 1..=DERIVES + 2)
                 .map(|n| rule(&format!("fn = \"C_DeriveKey\"\ncall = {n}\nrv = \"CKR_TEMPLATE_INCONSISTENT\"")))
                 .collect(),
             &["(CKR_TEMPLATE_INCONSISTENT); derived with CKA_SENSITIVE = true dropped\""],
@@ -165,7 +171,7 @@ fn the_probe_notes_which_derive_template_took() {
         ),
         (
             "the sealed template takes with its length and without CKA_SENSITIVE",
-            (1..=4)
+            (DERIVES + 1..=DERIVES + 4)
                 .map(|n| rule(&format!("fn = \"C_DeriveKey\"\ncall = {n}\nrv = \"CKR_TEMPLATE_INCONSISTENT\"")))
                 .collect(),
             &["(CKR_TEMPLATE_INCONSISTENT); derived with CKA_VALUE_LEN = 32 added, CKA_SENSITIVE = true dropped\""],
@@ -173,14 +179,14 @@ fn the_probe_notes_which_derive_template_took() {
         ),
         (
             "the sealed derivation fails",
-            rule("fn = \"C_DeriveKey\"\ncall = 1\nrv = \"CKR_DEVICE_ERROR\""),
+            rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nrv = \"CKR_DEVICE_ERROR\"", DERIVES + 1)),
             &["a sealed (non-extractable) derived secret is refused: CKR_DEVICE_ERROR"],
             "",
         ),
         (
             "the sealed derivation fails after a template refusal",
-            rule("fn = \"C_DeriveKey\"\ncall = 1\nrv = \"CKR_TEMPLATE_INCONSISTENT\"")
-                + &rule("fn = \"C_DeriveKey\"\ncall = 2\nrv = \"CKR_DEVICE_ERROR\""),
+            rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nrv = \"CKR_TEMPLATE_INCONSISTENT\"", DERIVES + 1))
+                + &rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nrv = \"CKR_DEVICE_ERROR\"", DERIVES + 2)),
             &["a sealed (non-extractable) derived secret is refused: CKR_DEVICE_ERROR"],
             "",
         ),
