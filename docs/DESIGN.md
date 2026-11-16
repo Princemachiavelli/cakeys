@@ -171,8 +171,9 @@ alone can compute, such as a TPM Name). If they return, they get their own names
 - **Identities are only linked through a shared scheme.** If an object already has locked IDs and
   none of the computed schemes is among them, `realise` fails (exit 14) instead of attaching new
   IDs — `disjoint_schemes_never_link_material`.
-- **`realise` and `delete` write the lock by default, and a write only fills gaps.** Like
-  `nix build` with `flake.lock`: what the lock lacks is recorded (first use included), but a
+- **`realise`, `create` and `delete` write the lock by default, and a write only fills gaps.**
+  `realise` is the lock verb: it never creates, and `create` is the one verb that writes keys
+  (2026-11-15). Like `nix build` with `flake.lock`: what the lock lacks is recorded (first use included), but a
   locked ID, anchor, binding, type or immutable is never overwritten — those changes fail even
   when the lock is written. `--no-update-lock` compares only (`--update-lock` names the
   default). First use is trust on first use, so the review is the `keys.lock` diff.
@@ -350,9 +351,10 @@ content-addressed identity — one per token type that can produce it:
   needs a new object name.
 - **The TPM Attestation Key** is a restricted signing key (P-256, ECDSA-SHA256, empty auth,
   owner hierarchy) that cakeys provisions at a persistent handle and never uses for anything
-  but certify: a restricted key signs only TPM-generated structures. Only `realise` provisions
-  it; `resolve`, `verify` and `check` never change the TPM, and fail (16, or 14 once locked)
-  when it is missing. A key already at the handle is used only if its public area is exactly
+  but certify: a restricted key signs only TPM-generated structures. Only `realise` (and
+  `create`, through it) provisions it; `resolve`, `verify` and `check` never change the TPM, and
+  fail (16, or 14 once locked) when it is missing — `tpm2_keys_attest_their_tpm_residence`
+  compares the persistent handles around a `check`. A key already at the handle is used only if its public area is exactly
   cakeys' template (restricted sign-only P-256, fixedTPM, empty policy) — anything else is a
   conflict (13), since an unrestricted key there could sign a forged attestation. The handle
   defaults to `0x81000016` (cakeys-tpm2-pkcs11 `DEFAULT_AK_HANDLE`), configurable per token
@@ -391,22 +393,23 @@ What may be created and adopted:
   Login state is per token, so the step logs the user out, logs in as SO, generates (or
   destroys), logs out and logs the user back in; the SO credential is read just before and
   zeroized after. `resolve`, `verify` and `check` never read it.
-- **`autoCreate`** is allowed for private and secret keys only. Certificates, public keys and data
-  objects are adopted — `adoption_rules_are_validated`, `standalone_public_key_objects`,
-  `data_objects_…`. When the lock already pins the object's material (ids recorded, from this or
-  another token), `autoCreate` is refused (14) before anything is created: generated material
-  could never match (D1) — `autocreate_never_fights_a_locked_identity`. Put the same material
-  under the locator instead, or give the token's key its own object name.
-- **`createOn`** names the token an object is born on: `create` and `autoCreate` generate it only
-  there, `create` on another token is refused (17) and its skip note names the import
-  (`camigrate migrate`). `autoCreate` on another token, or on several without `createOn`, is
-  invalid at load (17) — `create_on_names_where_an_object_is_born`,
-  `create_happens_on_the_create_on_token_only`. It is kept apart from the object's type: the lock
-  and the spec digest never see it.
+- **Only `cakeys create` makes keys,** and only private and secret ones; `realise` and `check`
+  find what is there (2026-11-15: `check` is a read, keys.toml does not say which keys are
+  created). Certificates, public keys and data objects are adopted —
+  `adoption_rules_are_validated`, `standalone_public_key_objects`, `data_objects_…`. When the lock
+  already pins the object's material (ids recorded, from this or another token), `create` is
+  refused (14) before anything is created: generated material could never match (D1) —
+  `create_never_fights_a_locked_identity`. Put the same material under the locator instead, or
+  give the token's key its own object name.
+- **`createOn`** names the token an object is born on: `create` generates it only there,
+  `create` on another token is refused (17) and its skip note names the import (`camigrate
+  migrate`). It must name a token the object has a spec on (17 at load) —
+  `create_on_names_where_an_object_is_born`, `create_happens_on_the_create_on_token_only`. It is
+  kept apart from the object's type: the lock and the spec digest never see it.
 - **`CKK_SHA*_HMAC` keys** cannot be generated (PKCS#11 has no mechanism for them) —
   `hmac_key_types_commit_with_their_own_hash`.
 - **`publicOnly`** verifies a private key through its public-key object, without login (it spares
-  PIV PIN retries). It forbids `autoCreate` and policy attributes, and `delete` refuses it —
+  PIV PIN retries). It forbids policy attributes, `create` never makes it, and `delete` refuses it —
   `adopt_certificate_and_public_only_key`.
 - **`binding = "token-asserted"`** skips the proof of possession for a private key (§3.6).
 - **Declared attribute names must fit the class** (PKCS#11 3.2 §4): every class may carry the
@@ -422,7 +425,8 @@ What may be created and adopted:
   a successful context-specific login with the session's PIN spends no retry, and every key type
   signs single-part after it (the patched cryptoki) —
   `always_authenticate_keys_prove_possession_with_a_per_use_pin`.
-- **`CKA_TRUSTED = true` refuses `autoCreate`** (exit 17): generation cannot set it.
+- **`CKA_TRUSTED = true` refuses `create`** (exit 17): generation cannot set it; such a key is
+  adopted.
 - **Not expressible:** `CKA_WRAP_TEMPLATE`, `CKA_UNWRAP_TEMPLATE`, `CKA_DERIVE_TEMPLATE` and
   `CKA_CERTIFICATE_CATEGORY` — cryptoki 0.12 maps none of them.
 
@@ -602,7 +606,7 @@ The reviews these come from are archived: `docs/archive/REVIEW-2026-11-11.md` (c
   the chains (slot → f9 → `Yubico PIV Attestation B 1` → `Yubico Attestation Intermediate B 1`
   → `Yubico Attestation Root 1`) verify, also with openssl; `realise`, `verify`
   and `check` pass on keys generated on device, a tampered ID is 10, a tampered root or an
-  opt-out 14, an imported key under a locked attestation 14 and unlocked 15; `autoCreate` with
+  opt-out 14, an imported key under a locked attestation 14 and unlocked 15; creating with
   `mgmKeyFile` generates; and `C_DestroyObject` was confirmed to leave the key in the slot. The
   shipped example keys are imported, so Yubico attests none of them. The opt-in
   `tests/yubikey.rs` repeats the read-write path on scratch slot `0x95` — last run

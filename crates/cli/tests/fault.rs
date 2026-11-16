@@ -29,7 +29,7 @@ fn faulted(name: &str, plan: &str) -> Option<(Workdir, std::path::PathBuf, std::
 
 const EC_SPEC: &str = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
                        [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\n\
-                       tokens.ref = { locator = { CKA_LABEL = \"NAME\" }, autoCreate = true }\n";
+                       tokens.ref = { locator = { CKA_LABEL = \"NAME\" } }\n";
 
 /// The lines of the trace whose rule fired: a plan that matched nothing would pass a test for
 /// the wrong reason.
@@ -112,7 +112,7 @@ fn a_failing_module_call_is_unavailable() {
     let plan = "[[rule]]\nfn = \"C_FindObjects\"\nrv = \"CKR_DEVICE_ERROR\"\n\n\
                 [[rule]]\nfn = \"C_Login\"\nwhen = \"after\"\nrv = \"CKR_PIN_INCORRECT\"\n";
     let Some((w, plan_path, trace)) = faulted("fault-module-fails", plan) else { return };
-    assert_eq!(w.code(&["realise", "k", "--token", "ref", "--update-lock"]), 0, "no plan: transparent");
+    assert_eq!(w.code(&["create", "k", "--token", "ref", "--update-lock"]), 0, "no plan: transparent");
     let o =
         w.km_env(&["verify", "k", "--token", "ref"], &[("P11_FAULT_PLAN", &plan_path), ("P11_FAULT_TRACE", &trace)]);
     assert_eq!(code(&o), 16, "{}", stderr(&o));
@@ -139,7 +139,7 @@ fn lying(name: &str) -> Option<Workdir> {
         format!(
             "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\n{ty}\n\n[specs.{name}]\nobject = \"{name}\"\n\
              attributes = {{ {usage} = true }}\n\
-             tokens.ref = {{ locator = {{ CKA_LABEL = \"{name}\" }}, autoCreate = true, binding = \"{binding}\" }}\n\n"
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"{name}\" }}, binding = \"{binding}\" }}\n\n"
         )
     };
     let (ec, rsa) = ("keyType = \"CKK_EC\"\ncurve = \"secp256r1\"", "keyType = \"CKK_RSA\"\nmodulusBits = 2048");
@@ -156,7 +156,7 @@ fn lying(name: &str) -> Option<Workdir> {
         .concat(),
     );
     for spec in ["k", "d", "r", "u", "a"] {
-        let o = w.km(&["realise", spec, "--token", "ref", "--update-lock"]);
+        let o = w.km(&["create", spec, "--token", "ref", "--update-lock"]);
         assert_eq!(code(&o), 0, "{spec}, no plan: {}", stderr(&o));
     }
     // The other keys, made on the real module itself.
@@ -199,7 +199,7 @@ fn a_lying_module_is_refused() {
         // What the token says of itself.
         (
             "fn = \"C_GetTokenInfo\"\nset_flags = [\"CKF_WRITE_PROTECTED\"]".into(),
-            vec!["realise", "new", "--token", "ref", "--no-update-lock"],
+            vec!["create", "new", "--token", "ref", "--no-update-lock"],
             15,
             "is write-protected",
         ),
@@ -291,7 +291,7 @@ fn a_creation_that_cannot_be_identified_is_undone_or_reported() {
         let (path, trace) = (w.dir.join(format!("{name}.toml")), w.dir.join(format!("{name}.jsonl")));
         std::fs::write(&path, plan).unwrap();
         let o = w.km_env(
-            &["realise", "new", "--token", "ref", "--no-update-lock"],
+            &["create", "new", "--token", "ref", "--no-update-lock"],
             &[("P11_FAULT_PLAN", &path), ("P11_FAULT_TRACE", &trace)],
         );
         assert_eq!(code(&o), 16, "{}", stderr(&o));
@@ -311,7 +311,7 @@ fn a_creation_that_cannot_be_identified_is_undone_or_reported() {
     // The key gone from every search once made: not found (11), never a second key made.
     let hidden = w.dir.join("hidden.toml");
     std::fs::write(&hidden, "[[rule]]\nfn = \"C_FindObjects\"\nhide_label = \"new\"\n").unwrap();
-    let o = w.km_env(&["realise", "new", "--token", "ref", "--no-update-lock"], &[("P11_FAULT_PLAN", &hidden)]);
+    let o = w.km_env(&["create", "new", "--token", "ref", "--no-update-lock"], &[("P11_FAULT_PLAN", &hidden)]);
     assert_eq!(code(&o), 11, "{}", stderr(&o));
     assert!(stderr(&o).contains("vanished after creation"), "{}", stderr(&o));
 }

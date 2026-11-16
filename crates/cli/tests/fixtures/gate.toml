@@ -34,12 +34,12 @@ valueLen = 32
 [specs.k1-kry]
 object = "k1"
 attributes = { CKA_SIGN = true }
-tokens.kry = { locator = { CKA_LABEL = "k1" }, autoCreate = true }
+tokens.kry = { locator = { CKA_LABEL = "k1" } }
 
 [specs.p256-kry]
 object = "p256"
 attributes = { CKA_SIGN = true }
-tokens.kry = { locator = { CKA_LABEL = "p256" }, autoCreate = true }
+tokens.kry = { locator = { CKA_LABEL = "p256" } }
 tokens.unknown = { locator = { CKA_LABEL = "p256" } }
 
 [specs.aes-kw]

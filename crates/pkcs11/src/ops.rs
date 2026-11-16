@@ -79,58 +79,59 @@ pub fn schemes_on(t: &Target, tok: &Token) -> Result<Vec<Scheme>> {
 pub struct Needs {
     /// Mechanism groups in check order: the token must implement at least one of each.
     pub groups: Vec<Vec<MechanismType>>,
-    /// The spec generates the object (`autoCreate`): its key type, curve and size must be
-    /// generatable.
-    pub generates: bool,
+    /// What `create` needs besides: the mechanism that generates the object. Its key type,
+    /// curve and size must be generatable too. `None` when not creating.
+    pub generation: Option<MechanismType>,
 }
 
-/// Whether `t`'s object, when its spec creates it, is generated from the module's own template
-/// ([`Provider::generation`]): `false` when it is not created here. The provider's refusal of a
-/// key it could not make as declared is the error, before anything is created.
+/// Whether `t`'s object, created, is generated from the module's own template
+/// ([`Provider::generation`]). The provider's refusal of a key it could not make as declared is
+/// the error, before anything is created.
 ///
 /// # Errors
 ///
 /// The provider's refusal.
 pub fn own_generation(t: &Target, provider: &dyn Provider) -> Result<bool> {
-    if !t.on_token.auto_create {
-        return Ok(false);
-    }
     let binding = cakeys_core::plan::expected_binding(t);
     Ok(provider.generation(t.object, t.spec, &t.on_token.locator, binding)?.is_some())
 }
 
-/// [`Needs`] of `t` in `mode`; `own_generation` when the module generates the object from its
-/// own template ([`own_generation`]), which may make what a standard template cannot.
+/// [`Needs`] of `t` in `mode`. `creating`, when `create` makes the object: `Some` of
+/// [`own_generation`] (the module generates it from its own template, which may make what a
+/// standard template cannot). Every other verb finds an object that is there.
 ///
 /// # Errors
 ///
 /// `Unsupported` for a key type cakeys does not manage.
-pub fn needs(t: &Target, mode: Mode, own_generation: bool) -> Result<Needs> {
+pub fn needs(t: &Target, mode: Mode, creating: Option<bool>) -> Result<Needs> {
     let mut groups = Vec::new();
     // The commitments first: a token implementing none of them is the more telling refusal.
     let commits = wanted_commits(t, mode);
     if !commits.is_empty() {
         groups.push(commits.iter().map(|c| hal::commit_mechanism(*c)).collect());
     }
-    if t.on_token.auto_create {
-        // A hash-bound HMAC type generates with its own CKM_SHA*_KEY_GEN, unless the module
-        // generates it its own way (libkmsp11).
-        let hmac = t.object.key_type.and_then(hal::hmac_key_gen).filter(|_| !own_generation);
-        groups.push(vec![match (hmac, hal::key_type_of(t.object)?) {
-            (Some(m), _) => m.mechanism_type(),
-            (None, KeyType::EC) => MechanismType::ECC_KEY_PAIR_GEN,
-            (None, KeyType::EC_EDWARDS) => MechanismType::ECC_EDWARDS_KEY_PAIR_GEN,
-            (None, KeyType::RSA) => MechanismType::RSA_PKCS_KEY_PAIR_GEN,
-            (None, KeyType::AES) => MechanismType::AES_KEY_GEN,
-            (None, KeyType::DES3) => MechanismType::DES3_KEY_GEN,
-            (None, _) => MechanismType::GENERIC_SECRET_KEY_GEN,
-        }]);
-    }
     if mode == Mode::WrapRebind {
         groups.push(vec![MechanismType::AES_KEY_GEN]);
         groups.push(vec![MechanismType::AES_KEY_WRAP_PAD, MechanismType::AES_KEY_WRAP]);
     }
-    Ok(Needs { groups, generates: t.on_token.auto_create })
+    let generation = match creating {
+        None => None,
+        Some(own_generation) => {
+            // A hash-bound HMAC type generates with its own CKM_SHA*_KEY_GEN, unless the module
+            // generates it its own way (libkmsp11).
+            let hmac = t.object.key_type.and_then(hal::hmac_key_gen).filter(|_| !own_generation);
+            Some(match (hmac, hal::key_type_of(t.object)?) {
+                (Some(m), _) => m.mechanism_type(),
+                (None, KeyType::EC) => MechanismType::ECC_KEY_PAIR_GEN,
+                (None, KeyType::EC_EDWARDS) => MechanismType::ECC_EDWARDS_KEY_PAIR_GEN,
+                (None, KeyType::RSA) => MechanismType::RSA_PKCS_KEY_PAIR_GEN,
+                (None, KeyType::AES) => MechanismType::AES_KEY_GEN,
+                (None, KeyType::DES3) => MechanismType::DES3_KEY_GEN,
+                (None, _) => MechanismType::GENERIC_SECRET_KEY_GEN,
+            })
+        }
+    };
+    Ok(Needs { groups, generation })
 }
 
 /// The refusal for a mechanism group the token lacks.
@@ -164,18 +165,18 @@ pub(crate) fn check_attestation(
     }
 }
 
-/// Token capabilities the mode needs, checked before anything is created.
-fn check_capabilities(t: &Target, tok: &Token, mode: Mode) -> Result<()> {
-    let own = own_generation(t, tok.provider.as_ref()).map_err(|e| match e {
+/// Token capabilities the mode needs, and when `creating` the generation, checked before
+/// anything is created.
+fn check_capabilities(t: &Target, tok: &Token, mode: Mode, creating: bool) -> Result<()> {
+    let to_token = |e| match e {
         KmError::Unsupported(m) => tok.unsupported(m),
         e => e,
-    })?;
-    let needs = needs(t, mode, own).map_err(|e| match e {
-        KmError::Unsupported(m) => tok.unsupported(m),
-        e => e,
-    })?;
+    };
+    let own = if creating { Some(own_generation(t, tok.provider.as_ref()).map_err(to_token)?) } else { None };
+    let needs = needs(t, mode, own).map_err(to_token)?;
     check_attestation(t, tok.provider.as_ref()).map_err(|m| tok.unsupported(m))?;
-    if let Some(g) = needs.groups.iter().find(|g| !g.iter().any(|m| tok.has(*m))) {
+    let generation = needs.generation.map(|m| vec![m]);
+    if let Some(g) = needs.groups.iter().chain(&generation).find(|g| !g.iter().any(|m| tok.has(*m))) {
         return Err(tok.unsupported(lacking(&tok.name, g, mode, t)));
     }
     // The proof the realisation will make, as the spec says it (camigrate's plan asks the same).
@@ -324,30 +325,29 @@ fn facts(tok: &Token, r: &Resolved) -> Facts {
     }
 }
 
-/// GET + If-Match against the lock.
+/// GET + If-Match against the lock. Never writes, neither the lock nor the token.
 ///
 /// # Errors
 ///
-/// `NotFound` when resolve found nothing; whatever `compare` rejects — `HashMismatch` (10)
-/// when the token's IDs differ from the lock, `PreconditionFailed` (14) for a realisation
-/// that moved.
+/// `NotFound` when resolve found nothing (`cakeys create` makes it); whatever `compare`
+/// rejects — `HashMismatch` (10) when the token's IDs differ from the lock,
+/// `PreconditionFailed` (14) for a realisation that moved.
 pub fn verify(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Resolved> {
-    let r = resolve(t, tok, lock)?.ok_or_else(|| KmError::NotFound(t.to_string()))?;
+    let r = resolve(t, tok, lock)?
+        .ok_or_else(|| KmError::NotFound(format!("{t}: not under its locator; `cakeys create` makes it")))?;
     reconcile::compare(t, &r, lock, &facts(tok, &r), LockWrite::Compare, notes)?;
     Ok(r)
 }
 
-/// PUT: create under the declared locator if absent (and `autoCreate`), then compare with the lock.
-/// Re-running never creates a second object: the locator finds the first one.
+/// The lock verb: find the object, compare it with the lock and record what the lock lacks or
+/// what changed around it (docs/CAKEYS.md). Never creates the object (`create` does); it does
+/// provision a TPM Attestation Key the realisation needs.
 ///
 /// # Errors
 ///
-/// Whatever `resolve` returns for the object once found; for the creation: `NotFound` when
-/// absent and `autoCreate` is off, `PreconditionFailed` (D1) when the lock already pins the
-/// object's material, `Unavailable` when a session without login cannot see the locator,
-/// `Conflict` when the locator is occupied by another class; also
-/// `plan_mode`/`check_capabilities` rejections (`Validation`, `Unsupported`) before anything
-/// is created, and `compare`'s on the realised object.
+/// `NotFound` when the locator finds nothing; whatever `resolve` returns for the object once
+/// found; `plan_mode`/`check_capabilities` rejections (`Validation`, `Unsupported`) before the
+/// object is looked for, and `compare`'s on the realised object.
 pub fn realise(
     t: &Target,
     tok: &Token,
@@ -355,7 +355,7 @@ pub fn realise(
     write: LockWrite,
     notes: &mut Notes,
 ) -> Result<(Resolved, bool)> {
-    realise_as(t, tok, lock, write, t.on_token.auto_create, None, notes)
+    realise_as(t, tok, lock, write, false, None, notes)
 }
 
 /// Record an object camigrate just imported (docs/CAMIGRATE.md D6, D7): [`realise`] without creating,
@@ -390,12 +390,11 @@ fn realise_as(
     notes: &mut Notes,
 ) -> Result<(Resolved, bool)> {
     let mode = plan_mode(t)?;
-    check_capabilities(t, tok, mode)?;
+    check_capabilities(t, tok, mode, create)?;
     let r = match resolve_with(t, tok, lock, true)? {
         Some(r) => r,
         None if create => create_absent(t, tok, lock, notes)?,
-        None if t.on_token.auto_create => return Err(KmError::NotFound(format!("{t}: not under its locator"))),
-        None => return Err(KmError::NotFound(format!("{t} (autoCreate is off; `cakeys create` makes it)"))),
+        None => return Err(KmError::NotFound(format!("{t}: not under its locator; `cakeys create` makes it"))),
     };
     let facts = Facts { origin, ..facts(tok, &r) };
     let changed = reconcile::reconcile(t, &r, lock, &facts, write, notes)?;
@@ -412,8 +411,7 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
     // resolve would have found it.)
     if let Some(ids) = lock.objects.get(t.object_name).map(|o| &o.ids).filter(|ids| !ids.is_empty()) {
         return Err(KmError::PreconditionFailed(format!(
-            "{}: the lock already pins object '{}' ({}); creating it (autoCreate or `cakeys create`) \
-             would generate different material that can never match; put the same material under \
+            "{}: the lock already pins object '{}' ({}); creating it would generate different material that can never match; put the same material under \
              the locator, or give this token's key its own object name",
             t,
             t.object_name,
@@ -465,16 +463,19 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
     Err(e)
 }
 
-/// PUT, asked for explicitly: [`realise`] as if the pair's entry set `autoCreate`, which only
-/// opts the first-use flows (`realise`, `check`) into creating. Every guard of a creation
-/// applies: the class must be one cakeys generates, the lock must not pin the object's material
-/// already (D1), and nothing may sit under the locator; an object already there is found and
-/// compared, never replaced.
+/// PUT If-None-Match: create the object under the declared locator if absent, then
+/// [`realise`] it. The one verb that creates. Every guard of a creation applies: the class
+/// must be one cakeys generates, the lock must not pin the object's material already (D1), and
+/// nothing may sit under the locator; an object already there is found and compared, never
+/// replaced.
 ///
 /// # Errors
 ///
-/// As [`realise`], with creation always allowed; `Validation` (17) on a token other than the
-/// object's `createOn`, before the token is touched.
+/// As [`realise`], and for the creation: `PreconditionFailed` (D1) when the lock already pins
+/// the object's material, `Unavailable` when a session without login cannot see the locator,
+/// `Conflict` when the locator is occupied by another class; `Validation` (17) for an object
+/// cakeys does not create (`plan::not_creatable`) or on a token other than the object's
+/// `createOn`, before the token is touched.
 pub fn create(
     t: &Target,
     tok: &Token,
@@ -482,11 +483,11 @@ pub fn create(
     write: LockWrite,
     notes: &mut Notes,
 ) -> Result<(Resolved, bool)> {
-    if let Some(why) = born_elsewhere(t) {
+    plan_mode(t)?;
+    if let Some(why) = cakeys_core::plan::not_creatable(t).map(str::to_owned).or_else(|| born_elsewhere(t)) {
         return Err(KmError::Validation(format!("{t}: {why}")));
     }
-    let on_token = cakeys_core::config::SpecTokenCfg { auto_create: true, ..t.on_token.clone() };
-    realise(&Target { on_token: &on_token, ..*t }, tok, lock, write, notes)
+    realise_as(t, tok, lock, write, true, None, notes)
 }
 
 /// Why `t`'s token may not create its object: keys.toml names another as its `createOn`.
@@ -505,14 +506,11 @@ fn born_elsewhere(t: &Target) -> Option<String> {
 /// whose material the lock already pins (another token then needs that same material, which
 /// only importing or migrating can put there).
 fn not_created(t: &Target, lock: &Lock) -> Option<String> {
-    if !matches!(t.object.class, Class::PrivateKey | Class::SecretKey) {
-        return Some(format!("{} objects are adopted, not created", t.object.class));
+    if let Some(why) = cakeys_core::plan::not_creatable(t) {
+        return Some(why.to_owned());
     }
     if let Some(why) = born_elsewhere(t) {
         return Some(why);
-    }
-    if t.on_token.public_only {
-        return Some("publicOnly adopts the public half only".into());
     }
     lock.objects.get(t.object_name).filter(|o| !o.ids.is_empty()).map(|_| {
         format!(
@@ -521,6 +519,13 @@ fn not_created(t: &Target, lock: &Lock) -> Option<String> {
             t.object_name
         )
     })
+}
+
+/// Whether `create`, naming no pair, would make `t`'s object: [`not_created`] has no reason
+/// against it. What the static gate checks generation for.
+#[must_use]
+pub fn creates(t: &Target, lock: &Lock) -> bool {
+    not_created(t, lock).is_none()
 }
 
 /// The (spec, token) pairs `create` selects, in config order.
@@ -692,16 +697,18 @@ pub fn delete(
 }
 
 /// The pseudo-FOD pre-use check of `reference` (`<object>` or `<object>.id.<scheme>`): pick the
-/// (spec, token) pair, realise without writing (respecting autoCreate) and compare with the lock.
+/// (spec, token) pair and [`verify`] it, in a read-only session. Never writes: neither the lock,
+/// nor the token, nor a TPM's persistent handles; an object that is not there is `NotFound`
+/// (`cakeys create` makes it), one that is there but not locked fails with its `got:` (10).
 /// A requested scheme must be one the spec computes on this token — refused (15) before the
-/// token is opened, or before anything is created — and must itself be locked, not merely
+/// token is opened, or before the object is looked for — and must itself be locked, not merely
 /// computed beside another scheme that matched (10 with its `got:`). `open` opens the token.
 ///
 /// # Errors
 ///
 /// `Unsupported` (15) for a scheme the spec does not compute on this token; `HashMismatch`
 /// (10) when a requested scheme is computed but not locked (its `got:` shows the computed
-/// ID); plus `pick_spec`/`Target::new`/`realise` failures — the reference and the pair must
+/// ID); plus `pick_spec`/`Target::new`/`verify` failures — the reference and the pair must
 /// exist, and the realisation must compare clean.
 pub fn check(
     cfg: &Config,
@@ -709,7 +716,7 @@ pub fn check(
     spec: Option<&str>,
     token: Option<&str>,
     open: impl FnOnce(&str, hal::Access) -> Result<Token>,
-    lock: &mut Lock,
+    lock: &Lock,
     notes: &mut Notes,
 ) -> Result<Resolved> {
     check_open(cfg, reference, spec, token, open, lock, notes).map(|(r, _)| r)
@@ -727,7 +734,7 @@ pub fn check_open(
     spec: Option<&str>,
     token: Option<&str>,
     open: impl FnOnce(&str, hal::Access) -> Result<Token>,
-    lock: &mut Lock,
+    lock: &Lock,
     notes: &mut Notes,
 ) -> Result<(Resolved, Token)> {
     let (object, requested) = match reference.split_once(".id.") {
@@ -753,13 +760,11 @@ pub fn check_open(
             }
         },
     };
-    // Read-only unless the spec may create the object (M1).
-    let access = if t.on_token.auto_create { hal::Access::Write } else { hal::Access::Read };
-    let tok = open(&token_name, access)?;
+    let tok = open(&token_name, hal::Access::Read)?;
     if let Some(w) = tok.pin_warning() {
         notes.warn(w);
     }
-    // The token may lack a mechanism the spec allows: refuse before realise can create.
+    // The token may lack a mechanism the spec allows: refuse before the object is looked for.
     if let Some(s) = scheme {
         let on_token = schemes_on(&t, &tok)?;
         if !on_token.contains(&s) {
@@ -769,7 +774,7 @@ pub fn check_open(
             )));
         }
     }
-    let (r, _) = realise(&t, &tok, lock, LockWrite::Compare, notes)?;
+    let r = verify(&t, &tok, lock, notes)?;
     // An attestation is locked on this realisation (§3.7), not on the object.
     if let Some(s) = scheme {
         let (locked, got) = if s.is_attestation() {

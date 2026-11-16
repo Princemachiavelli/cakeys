@@ -1,5 +1,5 @@
 # Adopt the Whonix Secure Boot keys (PK/KEK/db) that already live in PIV retired slots 1-3
-# of a YubiKey. Read-only: no PIN (spares PIV PIN retries), no autoCreate.
+# of a YubiKey. Read-only: no PIN (spares PIV PIN retries); never `cakeys create`.
 #
 #   cakeys --config examples/yubikey-secureboot.toml \
 #     --module yubikey=$(nix build --no-link --print-out-paths nixpkgs#yubico-piv-tool.out)/lib/libykcs11.so \

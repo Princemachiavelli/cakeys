@@ -16,18 +16,20 @@ the result.
 
 ## Verbs
 
-HTTP-like: `resolve`, `verify` and `check` are GETs and never write; `realise` and `create` are
-PUTs with If-None-Match; `delete` is a DELETE with If-Match.
+HTTP-like, over two stores, the token and the lock. `resolve`, `verify` and `check` are GETs and
+never write either. `create` is the one verb that writes keys to a token, a PUT with
+If-None-Match; `delete` is a DELETE with If-Match. `realise` writes only the lock: it records
+what is there now, as a lock file does.
 
 | Verb | Semantics |
 |---|---|
-| `validate` | Static check of modes, opt-ins, types and provider names; touches no token. Then the capability-profile gate ([CAPROBE.md](CAPROBE.md)): each spec's needs — its commitments' mechanisms, generating its type, curve and size when `autoCreate`, an attestation — against its token's profiles, resolved from the lock's recorded module and token or keys.toml's `provider`; a profile's *no* is refused (15) naming the profile, *unknown* is a note. |
+| `validate` | Static check of modes, opt-ins, types and provider names; touches no token. Then the capability-profile gate ([CAPROBE.md](CAPROBE.md)): each spec's needs — its commitments' mechanisms, an attestation — against its token's profiles, resolved from the lock's recorded module and token or keys.toml's `provider`; a profile's *no* is refused (15) naming the profile, *unknown* is a note. What only `create` needs (generating the type, curve and size) is asked of the pairs `create` would make, and is a note either way: keys.toml does not say whether a key is created or adopted. |
 | `resolve <spec> --token` | GET: find (exactly one), check type and policy, compute IDs, print JSON. Never writes. For a private key, every public key object under the locator must hold its own public key — a consumer may select the public half by the locator alone — else a conflict (13, `a_foreign_public_key_conflicts_and_is_never_deleted`); `verify`, `realise` and `check` resolve the same way. |
 | `verify <spec> --token` | GET with If-Match against the lock; prints the URI. |
-| `realise <spec> --token [--no-update-lock]` | PUT, recording what the lock lacks (DESIGN §3.5), and prints the resolved JSON. If absent and `autoCreate`: refused (14) when the lock already pins the object's material — generated material could never match (`autocreate_never_fights_a_locked_identity`). **If-None-Match** — never create when anything sits under the locator (`never_create_over_an_occupied_locator`), nor from a session without login, which cannot see private objects there (16). Then create, compute and compare. If the identity of a just-created object cannot be established, it is destroyed (`tpm2_identity_failure_after_create_leaves_nothing`); on a module that cannot delete keys (ykcs11) the key stays and the message says so. Re-running never duplicates (`ec_lifecycle`). |
-| `create [<spec>] [--token T] [--no-update-lock]` | PUT, asked for explicitly: every selected (spec, token) pair whose object the lock does not pin yet is created and recorded as `realise` would with `autoCreate`, which only opts the first-use flows (`realise`, `check`) into creating; pinned, adopted-only (certificates, public keys, data) and `publicOnly` pairs are skipped with a note. Naming both the spec and `--token` creates that pair or says why not (a pinned object its token lost: 14). A name that selects nothing is refused (an unknown spec 11, an unknown token 17, a spec without that token 11), never an empty success. One token is open at a time, so tokens of one module follow each other. Prints the realised objects as a JSON array; what was created before a failure — opening the next token included — is still recorded (`create_makes_keys_without_autocreate`, `create_records_what_it_made_before_a_failure`). |
+| `realise <spec> --token [--no-update-lock]` | The lock verb: find the object, compare it with the lock and record what the lock lacks or what changed around it (DESIGN §3.5), and print the resolved JSON. It never creates the object: absent is not found (11), naming `cakeys create`. It does provision a TPM Attestation Key a realisation needs (DESIGN §3.7). |
+| `create [<spec>] [--token T] [--no-update-lock]` | PUT with **If-None-Match**, the one verb that makes keys: every selected (spec, token) pair whose object the lock does not pin yet is created if absent, then realised. Refused (14) when the lock already pins the object's material — generated material could never match (`create_never_fights_a_locked_identity`); never over anything under the locator (`never_create_over_an_occupied_locator`), nor from a session without login, which cannot see private objects there (16). If the identity of a just-created object cannot be established, it is destroyed (`tpm2_identity_failure_after_create_leaves_nothing`); on a module that cannot delete keys (ykcs11) the key stays and the message says so. Re-running never duplicates (`ec_lifecycle`). Pinned, adopted-only (certificates, public keys, data, `CKA_TRUSTED` keys) and `publicOnly` pairs are skipped with a note. Naming both the spec and `--token` creates that pair or says why not (an adopted-only pair: 17; a pinned object its token lost: 14). A name that selects nothing is refused (an unknown spec 11, an unknown token 17, a spec without that token 11), never an empty success. One token is open at a time, so tokens of one module follow each other. Prints the realised objects as a JSON array; what was created before a failure — opening the next token included — is still recorded (`create_makes_keys_and_nothing_else_does`, `create_records_what_it_made_before_a_failure`). |
 | `delete <spec> --token [--if-match ID] [--no-update-lock]` | DELETE with If-Match. Absent is success, even without a lock — but a session without login cannot see a private object, so it never reports one absent (16); a present object with no expected ID is never deleted (`ec_lifecycle`), and only what was identified is removed: a private key's public half only when it holds the same key, never another key's public object under the locator (`delete_removes_only_what_it_identified`); a key on a module whose delete leaves it in place (ykcs11) is refused (15), never claimed. Unless `--no-update-lock`, it removes the realisation but keeps `objects.<name>.ids`, since the material may live on other tokens. |
-| `check <obj>[.id.<scheme>] [--token] [--spec]` | The pseudo-FOD pre-use check: realise without writing the lock, print the URI. Schemes the spec or token can never compute are refused before anything is created (`scheme_the_token_lacks_is_refused_before_create`). |
+| `check <obj>[.id.<scheme>] [--token] [--spec]` | The pseudo-FOD pre-use check: `verify` the pair the object names, in a read-only session, and print the URI. It never writes: not the lock, not the token, not a TPM's persistent handles. An object that is not there is not found (11, naming `cakeys create`); one that is there but not pinned fails with its `got:` (10). Schemes the spec or token can never compute are refused before the object is looked for (`scheme_the_token_lacks_is_refused_before_create`). |
 | `gc [--apply]` | Print lock entries `keys.toml` no longer names, as table names; `--apply` removes exactly what it printed, holding the update lock . Live objects keep their `ids` (`gc_prints_then_removes_stale_entries`). |
 
 ## Exit codes
@@ -39,7 +41,7 @@ mapped onto an error programs already handle. The codes are frozen (DESIGN §10)
 |---|---|---|---|---|
 | 0 | ok | 200 | — | |
 | 10 | hash mismatch: the token holds other material than the lock pins; prints `got: sha256-…` | an SRI mismatch | never blindly | a swapped or regenerated key; with nothing pinned yet, first use |
-| 11 | not found under the locator | `ENOENT`, 404 | after provisioning | key deleted, wrong token, `autoCreate` off |
+| 11 | not found under the locator | `ENOENT`, 404 | after provisioning | key deleted, wrong token, not created yet (`cakeys create`) |
 | 12 | ambiguous: several objects match | 300 | no | duplicate labels or `CKA_ID`s |
 | 13 | conflict: the object is not what the spec says | 409 | no | wrong type or policy, a failed proof of possession, a foreign public key under the locator |
 | 14 | precondition failed: the realisation moved | 412 | after review | the spec or policy changed since recorded, a downgrade, a replaced object |
@@ -120,9 +122,10 @@ shared  = keys.shared { token = "softhsm"; spec = "shared-sign"; };  # several s
 
 A consumer derivation requires the token's feature and runs `check` before using the URI.
 
-1. **First use** creates the key (with `autoCreate`) and fails with `got:` — `check` never
-   writes, and in the sandbox it could not.
-2. Record the ID out of band (`realise`, outside the sandbox; it writes the lock by default).
+1. **Create** the key out of band (`cakeys create`). `check` never creates one: in the sandbox
+   it fails as not found (11), naming `cakeys create`.
+2. **First use** fails with `got:` — `check` never writes, and in the sandbox it could not.
+   Record the ID out of band (`realise`, or `create` itself, which writes the lock by default).
 3. Every later build verifies first.
 
 **Caveat:** a cached consumer is not rebuilt, so the token is not re-contacted; `nix build --check`

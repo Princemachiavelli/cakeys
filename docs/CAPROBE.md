@@ -233,5 +233,7 @@ generated, never edited, and pinned like the baseline:
   scratch guard refuses; through p11-kit SoftHSM advertises its profile minus the layer. The
   YubiKey and fTPM checks are opt-in.
 - **Drift**: one edited row makes the diff non-empty and names the row.
-- **The static gate** (`cakeys validate`): kryoptic generating secp256k1, or a `kw` commitment
-  through p11-kit, is refused naming the deciding profile, with no token present.
+- **The static gate** (`cakeys validate`): a `kw` commitment through p11-kit is refused naming
+  the deciding profile, with no token present. What only `cakeys create` needs (kryoptic
+  generating secp256k1) is a note naming the profile, asked only of a pair `create` would make:
+  keys.toml does not say whether a key is created or adopted, and `create` refuses live.

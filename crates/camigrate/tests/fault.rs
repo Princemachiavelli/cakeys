@@ -37,12 +37,12 @@ fn tokens(name: &str) -> Option<(Env, String)> {
                 "attributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }\n",
                 &[r],
                 &format!("tk-{}", r.name),
-                ", autoCreate = true, binding = \"pop-unwrap\"",
+                ", binding = \"pop-unwrap\"",
             )
     };
     let key = |o: &str, ty: &str, born: &Ref, other: &Ref| {
         format!("[objects.{o}]\n{ty}\ncreateOn = \"{}\"\n\n", born.name)
-            + &Env::spec(&format!("{o}-src"), o, moves, &[born], &format!("f-{o}"), ", autoCreate = true")
+            + &Env::spec(&format!("{o}-src"), o, moves, &[born], &format!("f-{o}"), "")
             + &Env::spec(&format!("{o}-dst"), o, moves, &[other], &format!("f-{o}"), "")
     };
     let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
@@ -68,15 +68,16 @@ fn tokens(name: &str) -> Option<(Env, String)> {
         ])
         .unwrap();
     e.config_with(&body, &|r| format!("transportWith = \"tk-{}\"\n", r.name));
-    for (spec, r) in [
-        ("tk-softhsm", soft),
-        ("tk-kryoptic", kry),
-        ("ek-src", soft),
-        ("kk-src", kry),
-        ("ks-src", kry),
-        ("crt-src", kry),
+    // The keys are made where they are born; the planted certificate is adopted.
+    for (verb, spec, r) in [
+        ("create", "tk-softhsm", soft),
+        ("create", "tk-kryoptic", kry),
+        ("create", "ek-src", soft),
+        ("create", "kk-src", kry),
+        ("create", "ks-src", kry),
+        ("realise", "crt-src", kry),
     ] {
-        let o = e.cakeys(r, &["realise", spec, "--token", r.name]);
+        let o = e.cakeys(r, &[verb, spec, "--token", r.name]);
         assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
     }
     Some((e, real))

@@ -98,7 +98,7 @@ fn p11kit_and_direct_paths_agree() {
         body += &format!(
             "[objects.{k}]\nclass = \"CKO_PRIVATE_KEY\"\n{ty}\n\n\
              [specs.{k}]\nobject = \"{k}\"\nattributes = {{ CKA_SIGN = true }}\n\
-             tokens.fwd = {{ locator = {{ CKA_LABEL = \"{k}\" }}, autoCreate = true }}\n\
+             tokens.fwd = {{ locator = {{ CKA_LABEL = \"{k}\" }} }}\n\
              tokens.direct = {{ locator = {{ CKA_LABEL = \"{k}\" }} }}\n\n\
              [specs.{k}-pub]\nobject = \"{k}\"\n\
              tokens.fwd-anon = {{ locator = {{ CKA_LABEL = \"{k}\" }}, publicOnly = true }}\n\n"
@@ -130,7 +130,7 @@ tokens.fwd = { locator = { CKA_LABEL = "fwd-hmac" } }
 
     // Generated through the forwarded token, then the same object opened directly: one identity.
     for (k, _) in kinds {
-        assert_eq!(e.code(&["realise", k, "--token", "fwd", "--update-lock"]), 0, "{k}");
+        assert_eq!(e.code(&["create", k, "--token", "fwd", "--update-lock"]), 0, "{k}");
         assert_eq!(e.code(&["realise", k, "--token", "direct", "--update-lock"]), 0, "{k}: direct agrees");
         let pubs = format!("{k}-pub");
         assert_eq!(e.code(&["realise", &pubs, "--token", "fwd-anon", "--update-lock"]), 0, "{k}");
@@ -166,7 +166,7 @@ curve = "edwards25519"
 [specs.ed]
 object = "ed"
 attributes = { CKA_SIGN = true }
-tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-ed" }, autoCreate = true }
+tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-ed" } }
 
 [objects.aes-x]
 class = "CKO_SECRET_KEY"
@@ -176,7 +176,7 @@ valueLen = 32
 [specs.aes-x]
 object = "aes-x"
 attributes = { CKA_SIGN = false, CKA_ENCRYPT = false, CKA_WRAP = false, CKA_EXTRACTABLE = true }
-tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-aes-x" }, autoCreate = true }
+tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-aes-x" } }
 
 [objects.aes-kek]
 class = "CKO_SECRET_KEY"
@@ -186,11 +186,11 @@ valueLen = 32
 [specs.aes-kek]
 object = "aes-kek"
 attributes = { CKA_WRAP = true, CKA_EXTRACTABLE = false }
-tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-kek" }, autoCreate = true }
+tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-kek" } }
 "#,
     );
     for (spec, label) in [("ed", "fwd-refused-ed"), ("aes-x", "fwd-refused-aes-x"), ("aes-kek", "fwd-refused-kek")] {
-        let o = e.km(&["realise", spec, "--token", "fwd", "--no-update-lock"]);
+        let o = e.km(&["create", spec, "--token", "fwd", "--no-update-lock"]);
         assert_eq!(code(&o), 15, "{spec}");
         assert!(stderr(&o).contains("forwarded by p11-kit"), "{spec}: hint");
         let left = e.session(&e.direct).find_objects(&[Attribute::Label(label.as_bytes().to_vec())]).unwrap();
@@ -203,11 +203,11 @@ fn p11kit_login_is_per_client() {
     let Some(e) = env("login") else { return };
     e.config(
         "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
-         [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\ntokens.fwd = { locator = { CKA_LABEL = \"fwd-login\" }, autoCreate = true }\n\
+         [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\ntokens.fwd = { locator = { CKA_LABEL = \"fwd-login\" } }\n\
          tokens.fwd-anon = { locator = { CKA_LABEL = \"fwd-login\" } }\n\n\
          [specs.k-pub]\nobject = \"k\"\ntokens.fwd-anon = { locator = { CKA_LABEL = \"fwd-login\" }, publicOnly = true }\n",
     );
-    assert_eq!(e.code(&["realise", "k", "--token", "fwd", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "k", "--token", "fwd", "--update-lock"]), 0);
     // Another client of the same server holds a logged-in session meanwhile...
     let held = e.session(&e.client);
     // ...yet a client without the PIN still cannot see the private key; the public half works.

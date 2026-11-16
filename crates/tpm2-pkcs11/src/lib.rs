@@ -45,7 +45,7 @@ impl Provider for Tpm2Pkcs11 {
 
     fn hint(&self) -> Option<&'static str> {
         Some(
-            "secret keys cannot be generated through tpm2-pkcs11; create them with `tpm2_ptool addkey` or `tpm2_ptool import` and adopt them (no autoCreate)",
+            "secret keys cannot be generated through tpm2-pkcs11; create them with `tpm2_ptool addkey` or `tpm2_ptool import` and adopt them (`realise`, never `cakeys create`)",
         )
     }
 

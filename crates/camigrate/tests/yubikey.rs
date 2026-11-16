@@ -49,7 +49,7 @@ fn a_key_moves_into_a_piv_slot_through_the_host() {
         "[tokens.softhsm]\nmodule = \"{soft}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n\n{}\n\
          [objects.pv]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\ncreateOn = \"softhsm\"\n\n\
          [specs.pv-soft]\nobject = \"pv\"\nattributes = {{ CKA_SIGN = true, CKA_EXTRACTABLE = true }}\n\
-         tokens.softhsm = {{ locator = {{ CKA_LABEL = \"piv-import\" }}, autoCreate = true }}\n\n\
+         tokens.softhsm = {{ locator = {{ CKA_LABEL = \"piv-import\" }} }}\n\n\
          [specs.pv-yk]\nobject = \"pv\"\nattributes = {{ CKA_SIGN = true }}\n\
          tokens.yubikey = {{ locator = {{ CKA_ID = \"18\" }} }}\n",
         dir.join("pin").display(),
@@ -57,7 +57,7 @@ fn a_key_moves_into_a_piv_slot_through_the_host() {
     );
     std::fs::write(dir.join("keys.toml"), config).unwrap();
     let (cakeys, camigrate) = (sibling("cakeys"), PathBuf::from(BIN));
-    let o = run(&cakeys, &dir, &["realise", "pv-soft", "--token", "softhsm"]);
+    let o = run(&cakeys, &dir, &["create", "pv-soft", "--token", "softhsm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let mv = ["migrate", "pv", "--from", "softhsm", "--to", "yubikey", "--allow-host-plaintext"];
     let o = run(&camigrate, &dir, &[&mv[..], &["--dry-run", "--json"]].concat());
@@ -76,7 +76,7 @@ fn a_key_moves_into_a_piv_slot_through_the_host() {
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     // Again, into the now occupied slot under another lock: refused before anything is written.
     std::fs::remove_file(dir.join("keys.lock")).unwrap();
-    let o = run(&cakeys, &dir, &["realise", "pv-soft", "--token", "softhsm"]);
+    let o = run(&cakeys, &dir, &["create", "pv-soft", "--token", "softhsm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let o = run(&camigrate, &dir, &mv);
     assert_eq!(code(&o), 13, "{}", stderr(&o));

@@ -127,10 +127,9 @@ class = "CKO_PRIVATE_KEY"
 keyType = "CKK_EC"
 # Canonicalized on load: "P-256" and "prime256v1" are the same type as "secp256r1".
 curve = "secp256r1"
-# Where the key is born, when its specs name several tokens: `create` and `autoCreate` generate
-# it only on this token, and the others get the same material by import (`camigrate migrate`).
-# Only this token may set `autoCreate` (17 otherwise); without `createOn`, at most one token
-# may. Not part of the type: the lock and the spec digest never see it.
+# Where the key is born, when its specs name several tokens: `cakeys create` generates it only on
+# this token, and the others get the same material by import (`camigrate migrate`). Not part of
+# the type: the lock and the spec digest never see it.
 createOn = "softhsm"
 
 [objects.agreement]
@@ -177,10 +176,10 @@ publicAttributes = { CKA_VERIFY = true }
 # migrate it from them (15), and `export` without names leaves it out quietly (an extractable
 # key otherwise moves; a non-extractable one is left out with a warning). Not in the spec digest.
 # noExport = true
-# Where it lives on `softhsm`: a locator (must match exactly one object, or 12), and
-# `autoCreate` to let first use (`realise`, `check`) generate it when the locator is empty (never
-# over an occupied one). `cakeys create` generates it explicitly either way.
-tokens.softhsm = { locator = { CKA_LABEL = "signing", CKA_ID = "0e" }, autoCreate = true }
+# Where it lives on `softhsm`: a locator (must match exactly one object, or 12). Whether it is
+# made there or adopted is not said here: `cakeys create` generates it when the locator is empty
+# (never over an occupied one), and every other verb only finds it.
+tokens.softhsm = { locator = { CKA_LABEL = "signing", CKA_ID = "0e" } }
 
 [specs.backup-kek-wrap]
 object = "backup-kek"
@@ -188,7 +187,7 @@ object = "backup-kek"
 # CKA_ENCRYPT `kcv-ecb`, CKA_DECRYPT `kcv-ecb-dec`, CKA_WRAP `kw` (DESIGN §3.1). Token defaults
 # never do. CKA_ALLOWED_MECHANISMS is the one list-valued attribute (key objects only).
 attributes = { CKA_SIGN = true, CKA_WRAP = true, CKA_EXTRACTABLE = false, CKA_ALLOWED_MECHANISMS = ["CKM_AES_CMAC", "CKM_AES_KEY_WRAP"] }
-tokens.softhsm = { locator = { CKA_LABEL = "backup-kek" }, autoCreate = true }
+tokens.softhsm = { locator = { CKA_LABEL = "backup-kek" } }
 
 [specs.signing-tpm]
 object = "signing"
@@ -231,13 +230,13 @@ tokens.softhsm = { locator = { CKA_LABEL = "release-note" } }
 - **A private data object needs `CKA_PRIVATE = true` declared** in its spec, or it is refused
   (15): its `valuehash` would let anyone with the lock test guesses of the value offline
   (DESIGN §8.2). camigrate moves no private data object (15).
-- **`autoCreate` is for private and secret keys**, and only opts the first-use flows in; `cakeys
-  create` makes them explicitly without it. Certificates, public keys and data objects are
-  adopted. When the lock already pins the object's material, creating is refused (14): newly
-  generated material could never match.
+- **Only `cakeys create` makes keys,** private and secret ones; `realise` and `check` find what
+  is there. Certificates, public keys, data objects, `publicOnly` adoptions and `CKA_TRUSTED`
+  keys are adopted, never created. When the lock already pins the object's material, creating
+  is refused (14): newly generated material could never match.
 - **One birthplace per object:** an object whose specs name several tokens is generated on its
-  `createOn` token only; `autoCreate` elsewhere, or on several tokens without `createOn`, is
-  invalid (17). The other tokens get the same material by import (`camigrate`).
+  `createOn` token only (`create` naming another is 17). The other tokens get the same material
+  by import (`camigrate`).
 - **A secret key needs an identity the token can recompute:** a declared usage bit a commitment
   can use (`CKA_SIGN`, `CKA_ENCRYPT`, `CKA_DECRYPT`, `CKA_WRAP` on AES; `CKA_ENCRYPT`,
   `CKA_DECRYPT` on DES3; `CKA_SIGN` on generic secrets and HMAC keys), or `CKA_EXTRACTABLE =

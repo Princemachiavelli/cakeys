@@ -83,7 +83,7 @@ fn check_pem_is_a_key_file_for_pkcs11_provider() {
     e.config(
         &(EC.replace(r#"CKA_LABEL = "ec-lifecycle""#, r#"CKA_LABEL = "check-pem", CKA_ID = "c0""#) + PEM_REFUSALS),
     );
-    assert_eq!(e.code(&["realise", "signing-soft", "--token", "ref"]), 0);
+    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref"]), 0);
     let locked = e.locked_id("signing", "rfc7093m4");
 
     let openssl = |args: &[&str]| {
@@ -123,7 +123,7 @@ fn check_pem_is_a_key_file_for_pkcs11_provider() {
 
     // A key without CKA_ID (common among existing keys) still gets its key file, but is warned:
     // OpenSSL may get no public key from it.
-    assert_eq!(e.code(&["realise", "signing-noid-soft", "--token", "ref"]), 0);
+    assert_eq!(e.code(&["create", "signing-noid-soft", "--token", "ref"]), 0);
     let noid = e.km(&["check", "signing-noid", "--format", "pkcs11-provider-pem"]);
     assert_eq!(code(&noid), 0, "{}", stderr(&noid));
     assert!(stdout(&noid).starts_with("-----BEGIN PKCS#11 PROVIDER URI-----"), "{}", stdout(&noid));
@@ -147,7 +147,7 @@ curve = "secp256r1"
 [specs.signing-noid-soft]
 object = "signing-noid"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
-tokens.ref = { locator = { CKA_LABEL = "check-pem-noid" }, autoCreate = true }
+tokens.ref = { locator = { CKA_LABEL = "check-pem-noid" } }
 
 [objects.signing-pub]
 class = "CKO_PUBLIC_KEY"
@@ -168,7 +168,7 @@ curve = "secp256r1"
 [specs.signing-soft]
 object = "signing"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
-tokens.ref = { locator = { CKA_LABEL = "ec-lifecycle" }, autoCreate = true }
+tokens.ref = { locator = { CKA_LABEL = "ec-lifecycle" } }
 "#;
 
 #[test]
@@ -176,9 +176,16 @@ fn ec_lifecycle() {
     let Some(e) = env("ec_lifecycle") else { return };
     e.config(EC);
     let r = ["realise", "signing-soft", "--token", "ref", "--no-update-lock"];
+    let c = ["create", "signing-soft", "--token", "ref", "--no-update-lock"];
 
+    // Only `create` creates: realise and check find nothing, and name it.
+    let absent = e.km(&r);
+    assert_eq!(code(&absent), 11);
+    assert!(stderr(&absent).contains("`cakeys create` makes it"), "{}", stderr(&absent));
+    assert_eq!(e.code(&["check", "signing"]), 11);
+    assert!(e.session().labelled("ec-lifecycle").is_empty(), "realise and check never create");
     // First use: creates, then fails like a FOD with a fake hash.
-    let first = e.km(&r);
+    let first = e.km(&c);
     assert_eq!(code(&first), 10);
     let got = got_hash(&first);
     // Re-running finds the same object: same hash, no duplicate (else exit 12, ambiguous).
@@ -223,7 +230,7 @@ fn ec_lifecycle() {
     std::fs::remove_file(e.dir.join("keys.lock")).unwrap();
     assert_eq!(e.code(&["delete", "signing-soft", "--token", "ref", "--no-update-lock"]), 0);
     // ...but a present object with no expected identity is never deleted blindly.
-    assert_eq!(e.code(&r), 10);
+    assert_eq!(e.code(&c), 10);
     assert_eq!(e.code(&["delete", "signing-soft", "--token", "ref", "--no-update-lock"]), 14);
     assert_eq!(e.code(&["verify", "signing-soft", "--token", "ref"]), 10);
     assert_eq!(e.code(&recording(&r)), 0);
@@ -238,11 +245,12 @@ fn ec_lifecycle() {
     )
     .unwrap();
 
-    // A re-created key is new material: the lock pins the old identity, so autoCreate is
+    // A re-created key is new material: the lock pins the old identity, so `create` is
     // refused up front (D1) and regeneration can never satisfy it.
-    let o = e.km(&r);
+    let o = e.km(&c);
     assert_eq!(code(&o), 14);
-    assert!(stderr(&o).contains("autoCreate"), "{}", stderr(&o));
+    assert!(stderr(&o).contains("creating it would generate different material"), "{}", stderr(&o));
+    assert_eq!(e.code(&r), 11);
     assert_eq!(e.code(&del), 0, "nothing was created, so absent is success again");
 }
 
@@ -260,7 +268,7 @@ valueLen = 32
 [specs.mac-sign]
 object = "mac"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = false, CKA_EXTRACTABLE = true }
-tokens.ref = { locator = { CKA_LABEL = "oracle-commitment" }, autoCreate = true }
+tokens.ref = { locator = { CKA_LABEL = "oracle-commitment" } }
 
 [objects.mac2]
 class = "CKO_SECRET_KEY"
@@ -270,14 +278,14 @@ valueLen = 32
 [specs.mac2-nosign]
 object = "mac2"
 attributes = { CKA_SIGN = false, CKA_SENSITIVE = false, CKA_EXTRACTABLE = true }
-tokens.ref = { locator = { CKA_LABEL = "oracle-wrap-rebind" }, autoCreate = true }
+tokens.ref = { locator = { CKA_LABEL = "oracle-wrap-rebind" } }
 "#,
     );
     for (spec, object, label, key_type, mode) in [
         ("mac-sign", "mac", "oracle-commitment", "CKK_GENERIC_SECRET", "commitment"),
         ("mac2-nosign", "mac2", "oracle-wrap-rebind", "CKK_GENERIC_SECRET", "wrap-rebind"),
     ] {
-        assert_eq!(e.code(&["realise", spec, "--token", "ref", "--update-lock"]), 0);
+        assert_eq!(e.code(&["create", spec, "--token", "ref", "--update-lock"]), 0);
         assert_eq!(e.lock()["realisations"][spec]["ref"]["mode"].as_str(), Some(mode));
         let s = e.session();
         let h = s.labelled(label)[0];
@@ -306,7 +314,7 @@ valueLen = 32
 [specs.shared-sign]
 object = "shared"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = true }
-tokens.ref = { locator = { CKA_LABEL = "shared-a" }, autoCreate = true }
+tokens.ref = { locator = { CKA_LABEL = "shared-a" } }
 
 [specs.shared-nosign]
 object = "shared"
@@ -314,8 +322,8 @@ attributes = { CKA_SIGN = false, CKA_SENSITIVE = true, CKA_EXTRACTABLE = true }
 tokens.ref = { locator = { CKA_LABEL = "shared-b" } }
 "#,
     );
-    assert_eq!(e.code(&["realise", "shared-sign", "--token", "ref", "--update-lock"]), 0);
-    // No autoCreate on the second spec: absent is NotFound, not a silent create.
+    assert_eq!(e.code(&["create", "shared-sign", "--token", "ref", "--update-lock"]), 0);
+    // Absent is NotFound, never a silent create.
     assert_eq!(e.code(&["realise", "shared-nosign", "--token", "ref", "--no-update-lock"]), 11);
     let s = e.session();
     let a = s.labelled("shared-a")[0];
@@ -346,7 +354,7 @@ valueLen = 32
 [specs.locked-down]
 object = "locked"
 attributes = {{ CKA_SIGN = {sign}, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false, CKA_DERIVE = true }}
-tokens.ref = {{ locator = {{ CKA_LABEL = "locked" }}, autoCreate = true{extra} }}
+tokens.ref = {{ locator = {{ CKA_LABEL = "locked" }}{extra} }}
 "#
         )
     };
@@ -379,12 +387,12 @@ curve = "secp256r1"
 [specs.k-sign]
 object = "k"
 attributes = { CKA_SIGN = true }
-tokens.ref = { locator = { CKA_LABEL = "conflict" }, autoCreate = true }
+tokens.ref = { locator = { CKA_LABEL = "conflict" } }
 
 [specs.k-nosign]
 object = "k"
 attributes = { CKA_SIGN = false }
-tokens.ref = { locator = { CKA_LABEL = "conflict" }, autoCreate = true, binding = "token-asserted" }
+tokens.ref = { locator = { CKA_LABEL = "conflict" }, binding = "token-asserted" }
 
 [specs.k-dup]
 object = "k"
@@ -402,7 +410,7 @@ attributes = { CKA_SIGN = true }
 tokens.ref = { locator = { CKA_LABEL = "typed" } }
 "#,
     );
-    assert_eq!(e.code(&["realise", "k-sign", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "k-sign", "--token", "ref", "--update-lock"]), 0);
     // Same locator, different policy: the live object doesn't satisfy the spec.
     assert_eq!(e.code(&["realise", "k-nosign", "--token", "ref", "--no-update-lock"]), 13);
 
@@ -447,10 +455,10 @@ valueLen = 32
 [specs.d-wrap]
 object = "d"
 attributes = { CKA_EXTRACTABLE = true }
-tokens.ref = { locator = { CKA_LABEL = "downgrade" }, autoCreate = true }
+tokens.ref = { locator = { CKA_LABEL = "downgrade" } }
 "#,
     );
-    assert_eq!(e.code(&["realise", "d-wrap", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "d-wrap", "--token", "ref", "--update-lock"]), 0);
     // Pretend the lock was recorded with a stronger mode than is now achievable.
     let path = e.dir.join("keys.lock");
     let text = std::fs::read_to_string(&path).unwrap().replace("\"wrap-rebind\"", "\"commitment\"");
@@ -606,14 +614,14 @@ modulusBits = 2048
 [specs.r-gen]
 object = "r"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
-tokens.ref = { locator = { CKA_LABEL = "rsa-paths" }, autoCreate = true }
+tokens.ref = { locator = { CKA_LABEL = "rsa-paths" } }
 
 [specs.r-pub]
 object = "r"
 tokens.ref-anon = { locator = { CKA_LABEL = "rsa-paths" }, publicOnly = true }
 "#,
     );
-    assert_eq!(e.code(&["realise", "r-gen", "--token", "ref", "--no-update-lock"]), 10);
+    assert_eq!(e.code(&["create", "r-gen", "--token", "ref", "--no-update-lock"]), 10);
     assert_eq!(e.code(&["realise", "r-gen", "--token", "ref", "--update-lock"]), 0);
     // Same material through the public key object, without login: same locked identity.
     assert_eq!(e.code(&["realise", "r-pub", "--token", "ref-anon", "--update-lock"]), 0);
@@ -635,52 +643,53 @@ curve = "secp256r1"
 [specs.k]
 object = "k"
 attributes = { CKA_SIGN = true }
-tokens.ref = { locator = { CKA_LABEL = "occupied" }, autoCreate = true }
+tokens.ref = { locator = { CKA_LABEL = "occupied" } }
 "#,
     );
     // Like a PIV slot holding a certificate: generating there would replace its key.
-    assert_eq!(e.code(&["realise", "k", "--token", "ref", "--no-update-lock"]), 13);
+    assert_eq!(e.code(&["create", "k", "--token", "ref", "--no-update-lock"]), 13);
     let keys =
         s.find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"occupied".to_vec())]).unwrap();
     assert_eq!(keys, []);
 }
 
-/// D1: when the lock already pins an object's material, autoCreate is refused before anything is
+/// D1: when the lock already pins an object's material, `create` is refused before anything is
 /// created — generated material could never match. The same material adopted (or already under the
-/// locator) still realises; autoCreate is harmless then.
+/// locator) still realises, and `create` then finds it and creates nothing.
 #[test]
-fn autocreate_never_fights_a_locked_identity() {
+fn create_never_fights_a_locked_identity() {
     let Some(e) = env("d1") else { return };
     let second = "[specs.second-slot]\nobject = \"signing\"\nattributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
     e.config(EC.replace("ec-lifecycle", "d1-first").as_str());
-    assert_eq!(e.code(&["realise", "signing-soft", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref", "--update-lock"]), 0);
     let id = e.locked_id("signing", "rfc7093m4");
 
-    // A second spec over the same object, an empty locator, autoCreate: refused up front (14),
+    // A second spec over the same object, an empty locator: `create` is refused up front (14),
     // naming the pinned scheme — also with --update-lock — and nothing is created.
     e.config(&format!(
-        "{}{second}tokens.ref = {{ locator = {{ CKA_LABEL = \"d1-second\" }}, autoCreate = true }}\n",
+        "{}{second}tokens.ref = {{ locator = {{ CKA_LABEL = \"d1-second\" }} }}\n",
         EC.replace("ec-lifecycle", "d1-first")
     ));
     for args in [
-        &["realise", "second-slot", "--token", "ref", "--no-update-lock"][..],
-        &["realise", "second-slot", "--token", "ref", "--update-lock"][..],
+        &["create", "second-slot", "--token", "ref", "--no-update-lock"][..],
+        &["create", "second-slot", "--token", "ref", "--update-lock"][..],
     ] {
         let o = e.km(args);
         assert_eq!(code(&o), 14, "{args:?}");
         let err = stderr(&o);
-        assert!(err.contains("autoCreate") && err.contains("rfc7093m4"), "{err}");
+        assert!(err.contains("creating it would generate") && err.contains("rfc7093m4"), "{err}");
     }
     let s = e.session(); // opened after the runs, so it sees anything they could have created
     assert!(s.labelled("d1-second").is_empty(), "nothing was created");
 
     // The same material under the locator still realises (like `two_specs_same_material`): the
-    // second spec adopts it — autoCreate present is fine when resolve finds the object — and
-    // records a second realisation of the one object.
+    // second spec adopts it — `create` too, finding the object — and records a second
+    // realisation of the one object.
     e.config(&format!(
-        "{}{second}tokens.ref = {{ locator = {{ CKA_LABEL = \"d1-first\" }}, autoCreate = true }}\n",
+        "{}{second}tokens.ref = {{ locator = {{ CKA_LABEL = \"d1-first\" }} }}\n",
         EC.replace("ec-lifecycle", "d1-first")
     ));
+    assert_eq!(e.code(&["create", "second-slot", "--token", "ref", "--no-update-lock"]), 14, "not recorded yet");
     assert_eq!(e.code(&["realise", "second-slot", "--token", "ref", "--update-lock"]), 0);
     let lock = e.lock();
     assert!(lock["realisations"]["second-slot"]["ref"].is_table());
@@ -688,27 +697,28 @@ fn autocreate_never_fights_a_locked_identity() {
     assert_eq!(e.locked_id("signing", "rfc7093m4"), id, "the object keeps its one identity");
 }
 
+/// What cannot be adopted is invalid (17) at `validate`; what can be adopted but never created
+/// (a publicOnly key, a certificate) is valid there, and `create` naming it refuses it (17).
 #[test]
 fn adoption_rules_are_validated() {
     let Some(e) = env("adoption_rules") else { return };
-    for (body, why) in [
-        (
-            "keyType = \"CKK_RSA\"\nmodulusBits = 2048\nclass = \"CKO_PRIVATE_KEY\"",
-            "{ CKA_LABEL = \"x\" }, publicOnly = true, autoCreate = true",
-        ),
-        (
-            "keyType = \"CKK_RSA\"\nmodulusBits = 2048\nclass = \"CKO_PRIVATE_KEY\"",
-            "{ CKA_LABEL = \"x\" }, publicOnly = true }\nattributes = { CKA_SIGN = true",
-        ),
-        ("certificateType = \"CKC_X_509\"\nclass = \"CKO_CERTIFICATE\"", "{ CKA_LABEL = \"x\" }, autoCreate = true"),
+    let rsa = "keyType = \"CKK_RSA\"\nmodulusBits = 2048\nclass = \"CKO_PRIVATE_KEY\"";
+    let cert = "certificateType = \"CKC_X_509\"\nclass = \"CKO_CERTIFICATE\"";
+    for (body, why, valid) in [
+        (rsa, "{ CKA_LABEL = \"x\" }, publicOnly = true", true),
+        (rsa, "{ CKA_LABEL = \"x\" }, publicOnly = true }\nattributes = { CKA_SIGN = true", false),
+        (cert, "{ CKA_LABEL = \"x\" }", true),
         (
             "keyType = \"CKK_AES\"\nvalueLen = 32\nclass = \"CKO_SECRET_KEY\"",
             "{ CKA_LABEL = \"x\" }, publicOnly = true",
+            false,
         ),
     ] {
         e.config(&format!("[objects.o]\n{body}\n\n[specs.s]\nobject = \"o\"\ntokens.ref = {{ locator = {why} }}\n"));
-        assert_eq!(e.code(&["validate"]), 17, "{body} / {why}");
+        assert_eq!(e.code(&["validate"]), if valid { 0 } else { 17 }, "{body} / {why}");
+        assert_eq!(e.code(&["create", "s", "--token", "ref", "--no-update-lock"]), 17, "{body} / {why}");
     }
+    assert!(e.session().labelled("x").is_empty(), "nothing was created");
 }
 
 #[test]
@@ -717,7 +727,7 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     e.config(EC.replace("ec-lifecycle", "provenance").as_str());
     let r = ["realise", "signing-soft", "--token", "ref", "--update-lock"];
     let verify = ["verify", "signing-soft", "--token", "ref"];
-    assert_eq!(e.code(&["realise", "signing-soft", "--token", "ref", "--no-update-lock"]), 10);
+    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref", "--no-update-lock"]), 10);
     assert_eq!(e.code(&r), 0);
 
     let real = &e.lock()["realisations"]["signing-soft"]["ref"];
@@ -799,7 +809,7 @@ fn observed_and_provenance_never_change_a_verdict() {
     let Some(e) = env("classes") else { return };
     e.config(EC.replace("ec-lifecycle", "classes").as_str());
     let verify = ["verify", "signing-soft", "--token", "ref"];
-    assert_eq!(e.code(&["realise", "signing-soft", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref", "--update-lock"]), 0);
     let mut full = e.lock();
     full["realisations"]["signing-soft"]["ref"].as_table_mut().unwrap().insert(
         "provenance".into(),
@@ -891,7 +901,7 @@ fn lock_invariants_are_checked() {
            tokens.ref = { locator = { CKA_LABEL = \"invariants\" } }\n";
     e.config(&body);
     let verify = ["verify", "signing-soft", "--token", "ref"];
-    assert_eq!(e.code(&["realise", "signing-soft", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref", "--update-lock"]), 0);
     let good = e.lock();
     assert_eq!(good["realisations"]["signing-soft"]["ref"]["schemes"].as_array().unwrap().len(), 1);
     // The same key under a second object name is refused when recording.
@@ -955,11 +965,11 @@ fn policy_drift_and_replaced_objects_are_refused() {
     e.config(
         "[objects.k]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
          [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true, CKA_SENSITIVE = false, CKA_EXTRACTABLE = true }\n\
-         tokens.ref = { locator = { CKA_LABEL = \"policy\" }, autoCreate = true }\n",
+         tokens.ref = { locator = { CKA_LABEL = \"policy\" } }\n",
     );
     let r = ["realise", "k", "--token", "ref", "--update-lock"];
     let verify = ["verify", "k", "--token", "ref"];
-    assert_eq!(e.code(&r), 0);
+    assert_eq!(e.code(&["create", "k", "--token", "ref", "--update-lock"]), 0);
     let real = &e.lock()["realisations"]["k"]["ref"];
     assert_eq!(real["policy"]["CKA_SIGN"].as_bool(), Some(true));
     assert!(real["policy"].get("CKA_ENCRYPT").is_some(), "undeclared attributes are recorded too");
@@ -1023,18 +1033,18 @@ fn allowed_mechanisms_and_public_attributes() {
              [specs.k]\nobject = \"k\"\n\
              attributes = {{ CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false, CKA_ALLOWED_MECHANISMS = [{mechs}] }}\n\
              publicAttributes = {{ {public} }}\n\
-             tokens.ref = {{ locator = {{ CKA_LABEL = \"attrs\" }}, autoCreate = true }}\n"
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"attrs\" }} }}\n"
         )
     };
     // A mechanism the token does not offer: refused before anything is created.
     e.config(&spec("\"CKM_BOGUS\"", "CKA_VERIFY = false"));
-    assert_eq!(e.code(&["realise", "k", "--token", "ref", "--no-update-lock"]), 15);
+    assert_eq!(e.code(&["create", "k", "--token", "ref", "--no-update-lock"]), 15);
     assert!(s.labelled("attrs").is_empty(), "nothing was created");
 
     // Created with the restriction; the public half honors publicAttributes (the default
     // CKA_VERIFY = true is left out where they override it).
     e.config(&spec("\"CKM_ECDSA\", \"CKM_ECDSA_SHA256\"", "CKA_VERIFY = false"));
-    assert_eq!(e.code(&["realise", "k", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "k", "--token", "ref", "--update-lock"]), 0);
     let digest = e.lock()["realisations"]["k"]["ref"]["specDigest"].as_str().unwrap().to_owned();
     let policy = &e.lock()["realisations"]["k"]["ref"]["policy"]["CKA_ALLOWED_MECHANISMS"];
     assert_eq!(policy.as_array().map(std::vec::Vec::len), Some(2), "{policy}");
@@ -1183,10 +1193,13 @@ fn attributes_are_validated_per_class() {
     // CKA_TRUSTED is set by the token's security officer, never by generation.
     e.config(
         "[objects.o]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
-         [specs.s]\nobject = \"o\"\nattributes = { CKA_TRUSTED = true }\n\
-         tokens.ref = { locator = { CKA_LABEL = \"trusted\" }, autoCreate = true }\n",
+         [specs.s]\nobject = \"o\"\nattributes = { CKA_WRAP = true, CKA_TRUSTED = true }\n\
+         tokens.ref = { locator = { CKA_LABEL = \"trusted\" } }\n",
     );
-    assert_eq!(e.code(&["validate"]), 17);
+    assert_eq!(e.code(&["validate"]), 0, "adopted, a trusted key is only read");
+    let o = e.km(&["create", "s", "--token", "ref", "--no-update-lock"]);
+    assert_eq!(code(&o), 17);
+    assert!(stderr(&o).contains("CKA_TRUSTED = true cannot be generated"), "{}", stderr(&o));
 
     // The extra booleans are settable: the key is created with them, the policy records them, and
     // binding = "token-asserted" replaces the impossible proof of possession.
@@ -1197,9 +1210,9 @@ fn attributes_are_validated_per_class() {
         "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [specs.s]\nobject = \"o\"\n\
          attributes = { CKA_SIGN = true, CKA_ALWAYS_AUTHENTICATE = true, CKA_DESTROYABLE = true }\n\
-         tokens.ref = { locator = { CKA_LABEL = \"always-auth\" }, autoCreate = true, binding = \"token-asserted\" }\n",
+         tokens.ref = { locator = { CKA_LABEL = \"always-auth\" }, binding = \"token-asserted\" }\n",
     );
-    assert_eq!(e.code(&["realise", "s", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "s", "--token", "ref", "--update-lock"]), 0);
     let policy = &e.lock()["realisations"]["s"]["ref"]["policy"];
     assert_eq!(policy["CKA_ALWAYS_AUTHENTICATE"].as_bool(), Some(true), "{policy}");
     let private = s
@@ -1226,13 +1239,13 @@ fn always_authenticate_keys_prove_possession_with_a_per_use_pin() {
         format!(
             "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\n{key}\n\n[specs.s]\nobject = \"o\"\n\
              attributes = {{ {attributes} }}\n\
-             tokens.ref = {{ locator = {{ CKA_LABEL = \"{label}\" }}, autoCreate = true }}\n"
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"{label}\" }} }}\n"
         )
     };
     let rsa = "keyType = \"CKK_RSA\"\nmodulusBits = 2048";
     let declared = "CKA_SIGN = true, CKA_ALWAYS_AUTHENTICATE = true, CKA_DESTROYABLE = true";
     e.config(&spec(rsa, "always-auth-rsa", declared));
-    let o = e.km(&["realise", "s", "--token", "ref", "--update-lock"]);
+    let o = e.km(&["create", "s", "--token", "ref", "--update-lock"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let r = &e.lock()["realisations"]["s"]["ref"];
     assert_eq!(r["binding"].as_str(), Some("pop-sign-pin"), "{r}");
@@ -1266,7 +1279,7 @@ fn always_authenticate_keys_prove_possession_with_a_per_use_pin() {
         e.config(&spec(key, label, declared));
         let hidden = hidden.map(|m| e.hiding(m));
         let envs: Vec<(&str, &std::path::Path)> = hidden.iter().map(|(var, conf)| (*var, conf.as_path())).collect();
-        let o = e.km_env(&["realise", "s", "--token", "ref", "--update-lock"], &envs);
+        let o = e.km_env(&["create", "s", "--token", "ref", "--update-lock"], &envs);
         assert_eq!(code(&o), 0, "{label}: {}", stderr(&o));
         assert_eq!(e.lock()["realisations"]["s"]["ref"]["binding"].as_str(), Some("pop-sign-pin"), "{label}");
         assert_eq!(code(&e.km_env(&["verify", "s", "--token", "ref"], &envs)), 0, "{label}");
@@ -1301,7 +1314,7 @@ fn aes_commitments_match_host_oracles() {
          [objects.kek-gen]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
          [specs.kek-gen]\nobject = \"kek-gen\"\n\
          attributes = { CKA_WRAP = true, CKA_UNWRAP = true, CKA_SIGN = false, CKA_ENCRYPT = false, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n\
-         tokens.ref = { locator = { CKA_LABEL = \"kek-gen\" }, autoCreate = true }\n",
+         tokens.ref = { locator = { CKA_LABEL = \"kek-gen\" } }\n",
     );
     for (spec, label, sign, enc, wrap, x, _, _) in cases {
         s.create_object(&[
@@ -1361,7 +1374,7 @@ fn aes_commitments_match_host_oracles() {
 
     // A generated, non-extractable KEK: stable identity across runs, deletable by it.
     let r = ["realise", "kek-gen", "--token", "ref", "--no-update-lock"];
-    let first = e.km(&r);
+    let first = e.km(&["create", "kek-gen", "--token", "ref", "--no-update-lock"]);
     assert_eq!(code(&first), 10);
     assert_eq!(got_hash(&e.km(&r)), got_hash(&first));
     assert_eq!(e.code(&recording(&r)), 0);
@@ -1438,7 +1451,7 @@ fn curves_and_rsa_sizes_match_an_independent_der_oracle() {
             "[objects.{k}]\nclass = \"CKO_PRIVATE_KEY\"\n{ty}\n\n\
              [specs.{k}-gen]\nobject = \"{k}\"\n\
              attributes = {{ CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }}\n\
-             tokens.ref = {{ locator = {{ CKA_LABEL = \"{k}\" }}, autoCreate = true{binding} }}\n\n\
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"{k}\" }}{binding} }}\n\n\
              [specs.{k}-pub]\nobject = \"{k}\"\n\
              tokens.ref-anon = {{ locator = {{ CKA_LABEL = \"{k}\" }}, publicOnly = true }}\n\n"
         );
@@ -1450,12 +1463,12 @@ fn curves_and_rsa_sizes_match_an_independent_der_oracle() {
         let spec = format!("{k}-gen");
         // A curve the reference lacks is refused as unsupported, and nothing is left behind.
         if REF.missing_curves.iter().any(|c| ty.ends_with(&format!("curve = \"{c}\""))) {
-            let o = e.km(&["realise", &spec, "--token", "ref", "--update-lock"]);
+            let o = e.km(&["create", &spec, "--token", "ref", "--update-lock"]);
             assert_eq!(code(&o), 15, "{k}: {}", stderr(&o));
             assert_eq!(s.labelled(k), [], "{k}");
             continue;
         }
-        assert_eq!(e.code(&["realise", &spec, "--token", "ref", "--no-update-lock"]), 10, "{k}");
+        assert_eq!(e.code(&["create", &spec, "--token", "ref", "--no-update-lock"]), 10, "{k}");
         let o = e.km(&["realise", &spec, "--token", "ref", "--update-lock"]);
         assert_eq!(code(&o), 0, "{k}");
         assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki(&s, k)), "{k}");
@@ -1576,13 +1589,16 @@ valueLen = 32
 [specs.k]
 object = "k"
 attributes = { CKA_SIGN = true, CKA_WRAP = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
-tokens.ref = { locator = { CKA_LABEL = "no-cmac" }, autoCreate = true }
+tokens.ref = { locator = { CKA_LABEL = "no-cmac" } }
 "#,
     );
     // The spec allows cmac, but this token cannot compute it: refused, nothing created.
     assert_eq!(code(&e.km_env(&["check", "k.id.cmac"], &env)), 15);
     assert_eq!(e.session().labelled("no-cmac"), []);
-    // kw is still available: first use creates the key (TOFU: no locked hash yet).
+    // kw is still available: check finds nothing (it never creates), `create` makes the key,
+    // and its first use fails with its got: (TOFU: no locked hash yet).
+    assert_eq!(code(&e.km_env(&["check", "k.id.kw"], &env)), 11);
+    assert_eq!(code(&e.km_env(&["create", "k", "--token", "ref", "--no-update-lock"], &env)), 10);
     assert_eq!(code(&e.km_env(&["check", "k.id.kw"], &env)), 10);
     let o = e.km_env(&["realise", "k", "--token", "ref", "--update-lock"], &env);
     assert_eq!(code(&o), 0);
@@ -1616,7 +1632,7 @@ fn provider_is_detected_or_named() {
     e.config(EC.replace("ec-lifecycle", "provider").as_str());
     let realise = ["realise", "signing-soft", "--token", "ref", "--update-lock"];
     let provider = || e.observation("signing-soft", "ref")["provider"].as_str().unwrap().to_owned();
-    assert_eq!(e.code(&realise), 0);
+    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref"]), 0);
     assert_eq!(provider(), REF.provider, "auto-detected from C_GetInfo");
     let path = e.dir.join("keys.toml");
     let text = std::fs::read_to_string(&path).unwrap();
@@ -1675,7 +1691,7 @@ fn hmac_key_types_commit_with_their_own_hash() {
     }
     body += "[objects.gen384]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_SHA384_HMAC\"\nvalueLen = 48\n\n\
              [specs.gen384]\nobject = \"gen384\"\nattributes = { CKA_SIGN = true, CKA_EXTRACTABLE = false }\n\
-             tokens.ref = { locator = { CKA_LABEL = \"hmac-gen384\" }, autoCreate = true }\n";
+             tokens.ref = { locator = { CKA_LABEL = \"hmac-gen384\" } }\n";
     e.config(&body);
     for (name, _, len) in types {
         assert_eq!(e.code(&["realise", name, "--token", "ref", "--update-lock"]), 0, "{name}");
@@ -1714,12 +1730,12 @@ fn hmac_key_types_commit_with_their_own_hash() {
     // A hash-bound HMAC type generates with its own CKM_SHA384_KEY_GEN (PKCS#11 3.0): on a token
     // without it, refused up front with nothing created.
     if REF.hmac_key_gen {
-        let o = e.km(&["realise", "gen384", "--token", "ref", "--update-lock"]);
+        let o = e.km(&["create", "gen384", "--token", "ref", "--update-lock"]);
         assert_eq!(code(&o), 0, "{}", stderr(&o));
         assert_eq!(s.labelled("hmac-gen384").len(), 1);
         assert_eq!(e.lock()["realisations"]["gen384"]["ref"]["mode"].as_str(), Some("commitment"));
     } else {
-        let o = e.km(&["realise", "gen384", "--token", "ref", "--no-update-lock"]);
+        let o = e.km(&["create", "gen384", "--token", "ref", "--no-update-lock"]);
         assert_eq!(code(&o), 15, "{}", stderr(&o));
         assert!(stderr(&o).contains("CKM_SHA384_KEY_GEN"), "{}", stderr(&o));
         assert_eq!(s.labelled("hmac-gen384"), []);
@@ -1786,11 +1802,10 @@ fn des3_key(text: &[u8; 24]) -> [u8; 24] {
 fn des3_check_values_match_host_oracles() {
     let Some(e) = env("des3") else { return };
     let key = des3_key(b"des3 check value vector!");
-    let spec = |name: &str, object: &str, attrs: &str, label: &str, create: bool| {
-        let create = if create { ", autoCreate = true" } else { "" };
+    let spec = |name: &str, object: &str, attrs: &str, label: &str| {
         format!(
             "[specs.{name}]\nobject = \"{object}\"\nattributes = {{ {attrs} }}\n\
-             tokens.ref = {{ locator = {{ CKA_LABEL = \"{label}\" }}{create} }}\n\n"
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"{label}\" }} }}\n\n"
         )
     };
     let fixed = "CKA_SENSITIVE = true, CKA_EXTRACTABLE = false";
@@ -1798,9 +1813,9 @@ fn des3_check_values_match_host_oracles() {
         "[objects.des3]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES3\"\nvalueLen = 24\n\n\
          [objects.des3-gen]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES3\"\n\n",
     );
-    body += &spec("des3-gen", "des3-gen", &format!("CKA_ENCRYPT = true, {fixed}"), "des3-gen", true);
+    body += &spec("des3-gen", "des3-gen", &format!("CKA_ENCRYPT = true, {fixed}"), "des3-gen");
     // A DES3 key that may only sign: no DES3 commitment uses CKA_SIGN (CMAC is not named, OPEN.md).
-    body += &spec("des3-mac", "des3", &format!("CKA_SIGN = true, {fixed}"), "des3-mac", false);
+    body += &spec("des3-mac", "des3", &format!("CKA_SIGN = true, {fixed}"), "des3-mac");
     e.config(&body);
     let o = e.km(&["validate"]);
     assert_eq!(code(&o), 17);
@@ -1809,12 +1824,12 @@ fn des3_check_values_match_host_oracles() {
         "{}",
         stderr(&o)
     );
-    body = body.replace(&spec("des3-mac", "des3", &format!("CKA_SIGN = true, {fixed}"), "des3-mac", false), "");
+    body = body.replace(&spec("des3-mac", "des3", &format!("CKA_SIGN = true, {fixed}"), "des3-mac"), "");
 
     if !REF.des3 {
         // No Triple DES on the module: refused from what the token lists, nothing created.
         e.config(&body);
-        let o = e.km(&["realise", "des3-gen", "--token", "ref", "--no-update-lock"]);
+        let o = e.km(&["create", "des3-gen", "--token", "ref", "--no-update-lock"]);
         assert_eq!(code(&o), 15, "{}", stderr(&o));
         assert!(stderr(&o).contains("CKM_DES3_ECB"), "{}", stderr(&o));
         assert_eq!(e.session().labelled("des3-gen"), []);
@@ -1840,12 +1855,11 @@ fn des3_check_values_match_host_oracles() {
     ])
     .unwrap();
     plant_secret(&s, "aes-in-place", cryptoki::object::KeyType::AES, &AES_VALUE, &[Attribute::Encrypt(true)]);
-    body += &spec("des3-both", "des3", &format!("CKA_ENCRYPT = true, CKA_DECRYPT = true, {fixed}"), "des3-both", false);
-    body += &spec("des3-dec", "des3", &format!("CKA_ENCRYPT = false, CKA_DECRYPT = true, {fixed}"), "des3-dec", false);
+    body += &spec("des3-both", "des3", &format!("CKA_ENCRYPT = true, CKA_DECRYPT = true, {fixed}"), "des3-both");
+    body += &spec("des3-dec", "des3", &format!("CKA_ENCRYPT = false, CKA_DECRYPT = true, {fixed}"), "des3-dec");
     // No usage bit a commitment uses, but extractable: a session copy computes both check values.
-    body +=
-        &spec("des3-x", "des3", "CKA_ENCRYPT = false, CKA_DECRYPT = false, CKA_EXTRACTABLE = true", "des3-x", false);
-    body += &spec("des3-aes", "des3", "CKA_ENCRYPT = true", "aes-in-place", false);
+    body += &spec("des3-x", "des3", "CKA_ENCRYPT = false, CKA_DECRYPT = false, CKA_EXTRACTABLE = true", "des3-x");
+    body += &spec("des3-aes", "des3", "CKA_ENCRYPT = true", "aes-in-place");
     e.config(&body);
     for (name, mode, schemes) in [
         ("des3-both", "commitment", &["kcv-ecb", "kcv-ecb-dec"][..]),
@@ -1870,7 +1884,7 @@ fn des3_check_values_match_host_oracles() {
     // Generated with CKM_DES3_KEY_GEN: no valueLen in keys.toml or the template, a stable
     // identity across runs, and deletable by it.
     let r = ["realise", "des3-gen", "--token", "ref", "--no-update-lock"];
-    let first = e.km(&r);
+    let first = e.km(&["create", "des3-gen", "--token", "ref", "--no-update-lock"]);
     assert_eq!(code(&first), 10, "{}", stderr(&first));
     assert_eq!(got_hash(&e.km(&r)), got_hash(&first));
     assert_eq!(e.code(&recording(&r)), 0);
@@ -1957,13 +1971,9 @@ fn standalone_public_key_objects() {
     assert_eq!(e.code(&["delete", "anchor", "--token", "ref", "--update-lock"]), 0);
     assert_eq!(e.code(&["verify", "anchor", "--token", "ref-anon"]), 11);
     // Public keys are adopted, not created.
-    let text = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
-    std::fs::write(
-        e.dir.join("keys.toml"),
-        text.replace("\"standalone-pub\" } }\ntokens.ref =", "\"standalone-pub\" }, autoCreate = true }\ntokens.ref ="),
-    )
-    .unwrap();
-    assert_eq!(e.code(&["validate"]), 17);
+    let o = e.km(&["create", "anchor", "--token", "ref", "--no-update-lock"]);
+    assert_eq!(code(&o), 17);
+    assert!(stderr(&o).contains("public keys and data objects are adopted, not created"), "{}", stderr(&o));
 }
 
 #[test]
@@ -2003,13 +2013,7 @@ fn data_objects_are_identified_by_their_public_value() {
     let lock = std::fs::read_to_string(e.dir.join("keys.lock")).unwrap();
     assert!(!lock.contains("secret-blob"), "{lock}");
     // Data objects are adopted, not created.
-    let text = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
-    std::fs::write(
-        e.dir.join("keys.toml"),
-        text.replace("\"data-public\" } }", "\"data-public\" }, autoCreate = true }"),
-    )
-    .unwrap();
-    assert_eq!(e.code(&["validate"]), 17);
+    assert_eq!(e.code(&["create", "blob", "--token", "ref-anon", "--no-update-lock"]), 17);
 }
 
 /// A private data object (`CKA_PRIVATE = true`: an API token, a wrapped blob, an application
@@ -2063,7 +2067,7 @@ fn brainpool_p512_is_refused_clearly() {
     let Some(e) = env("bp512") else { return };
     e.config(
         "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"brainpoolP512r1\"\n\n\
-         [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\ntokens.ref = { locator = { CKA_LABEL = \"bp512\" }, autoCreate = true }\n",
+         [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\ntokens.ref = { locator = { CKA_LABEL = \"bp512\" } }\n",
     );
     let o = e.km(&["validate"]);
     assert_eq!(code(&o), 15);
@@ -2087,7 +2091,7 @@ fn assert_swapped_key_conflict(o: &Output) {
 fn h1_a_private_key_beside_an_unbound_public_object_is_a_conflict() {
     let Some(e) = env("gap_h1") else { return };
     e.config(EC.replace("ec-lifecycle", "gap-a").as_str());
-    assert_eq!(e.code(&["realise", "signing-soft", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref", "--update-lock"]), 0);
     assert_eq!(e.lock()["realisations"]["signing-soft"]["ref"]["binding"].as_str(), Some("pop-sign"));
     let s = e.session();
     let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
@@ -2120,8 +2124,8 @@ fn binding_downgrade_is_refused() {
     let Some(e) = env("binding") else { return };
     let body = EC.replace("ec-lifecycle", "binding");
     e.config(&body);
-    assert_eq!(e.code(&["realise", "signing-soft", "--token", "ref", "--update-lock"]), 0);
-    let opted_out = body.replace("autoCreate = true", "autoCreate = true, binding = \"token-asserted\"");
+    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref", "--update-lock"]), 0);
+    let opted_out = body.replace("\"binding\" } }", "\"binding\" }, binding = \"token-asserted\" }");
     assert_ne!(opted_out, body);
     e.config(&opted_out);
     assert_eq!(e.code(&["verify", "signing-soft", "--token", "ref"]), 14);
@@ -2168,28 +2172,24 @@ fn derive_and_decrypt_only_keys_prove_possession() {
     assert_eq!(e.code(&["validate"]), 17);
 
     // Derive-only EC key, proven by deriving: created, recorded as pop-ecdh, verifies.
-    e.config(&format!(
-        "{ec}tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-ecdh\" }}, autoCreate = true, binding = \"pop-ecdh\" }}\n"
-    ));
-    assert_eq!(e.code(&["realise", "k", "--token", "ref", "--update-lock"]), 0);
+    e.config(&format!("{ec}tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-ecdh\" }}, binding = \"pop-ecdh\" }}\n"));
+    assert_eq!(e.code(&["create", "k", "--token", "ref", "--update-lock"]), 0);
     let real = &e.lock()["realisations"]["k"]["ref"];
     assert_eq!(real["binding"].as_str(), Some("pop-ecdh"));
     assert_eq!(e.code(&["verify", "k", "--token", "ref"]), 0);
     assert!(e.lock()["objects"]["k"]["ids"].get("rfc7093m4").is_some(), "the object id was recorded");
 
     // Decrypt-only RSA key, proven by decrypting (OAEP-SHA256).
-    e.config(&format!(
-        "{rsa}tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-oaep\" }}, autoCreate = true, binding = \"pop-decrypt\" }}\n"
-    ));
-    assert_eq!(e.code(&["realise", "r", "--token", "ref", "--update-lock"]), 0);
+    e.config(&format!("{rsa}tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-oaep\" }}, binding = \"pop-decrypt\" }}\n"));
+    assert_eq!(e.code(&["create", "r", "--token", "ref", "--update-lock"]), 0);
     assert_eq!(e.lock()["realisations"]["r"]["ref"]["binding"].as_str(), Some("pop-decrypt"));
     assert_eq!(e.code(&["verify", "r", "--token", "ref"]), 0);
 
     // Unwrap-only RSA key, proven by unwrapping: no CKA_DECRYPT, nothing leaves the token.
     e.config(&format!(
-        "{unwrap}tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-unwrap\" }}, autoCreate = true, binding = \"pop-unwrap\" }}\n"
+        "{unwrap}tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-unwrap\" }}, binding = \"pop-unwrap\" }}\n"
     ));
-    let o = e.km(&["realise", "u", "--token", "ref", "--update-lock"]);
+    let o = e.km(&["create", "u", "--token", "ref", "--update-lock"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(e.lock()["realisations"]["u"]["ref"]["binding"].as_str(), Some("pop-unwrap"));
     assert_eq!(e.code(&["verify", "u", "--token", "ref"]), 0);
@@ -2232,13 +2232,13 @@ fn proofs_the_token_cannot_give_are_refused() {
     let Some(e) = env("pop-refused") else { return };
     let ec = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
               [specs.k]\nobject = \"k\"\nattributes = { CKA_DERIVE = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n\
-              tokens.ref = { locator = { CKA_LABEL = \"pop-refused-ec\" }, autoCreate = true, binding = \"pop-ecdh\" }\n\n";
+              tokens.ref = { locator = { CKA_LABEL = \"pop-refused-ec\" }, binding = \"pop-ecdh\" }\n\n";
     let rsa = "[objects.r]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
                [specs.r]\nobject = \"r\"\nattributes = { CKA_DECRYPT = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n\
-               tokens.ref = { locator = { CKA_LABEL = \"pop-refused-rsa\" }, autoCreate = true, binding = \"pop-decrypt\" }\n\n";
+               tokens.ref = { locator = { CKA_LABEL = \"pop-refused-rsa\" }, binding = \"pop-decrypt\" }\n\n";
     e.config(&format!("{ec}{rsa}"));
     for spec in ["k", "r"] {
-        assert_eq!(e.code(&["realise", spec, "--token", "ref", "--update-lock"]), 0, "{spec}");
+        assert_eq!(e.code(&["create", spec, "--token", "ref", "--update-lock"]), 0, "{spec}");
     }
     // The same token through a module configuration that hides the proof's mechanism.
     let conf = std::fs::read_to_string(std::env::var(REF.conf_var).unwrap()).unwrap();
@@ -2264,7 +2264,7 @@ fn proofs_the_token_cannot_give_are_refused() {
     .unwrap();
     drop(s);
     let always = ec
-        .replace("pop-refused-ec\" }, autoCreate = true", "pop-refused-always\" }")
+        .replace("pop-refused-ec\" }", "pop-refused-always\" }")
         .replace("[objects.k]", "[objects.a]")
         .replace("[specs.k]\nobject = \"k\"", "[specs.a]\nobject = \"a\"")
         .replace(", CKA_SENSITIVE = true, CKA_EXTRACTABLE = false", "");
@@ -2295,14 +2295,14 @@ fn proofs_fall_back_to_what_the_token_has() {
         format!(
             "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
              [specs.{name}]\nobject = \"{name}\"\nattributes = {{ {usage} = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }}\n\
-             tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-fallback-{name}\" }}, autoCreate = true, binding = \"{binding}\" }}\n\n"
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-fallback-{name}\" }}, binding = \"{binding}\" }}\n\n"
         )
     };
     e.config(&(ec("s", "CKA_SIGN", "pop-sign") + &ec("d", "CKA_DERIVE", "pop-ecdh")));
     for (spec, mechanism) in [("s", "CKM_ECDSA_SHA256"), ("d", "CKM_SHA256_HMAC")] {
         let (var, conf) = e.hiding(mechanism);
-        let realise = ["realise", spec, "--token", "ref", "--update-lock"];
-        let o = e.km_env(&realise, &[(var, conf.as_path())]);
+        let create = ["create", spec, "--token", "ref", "--update-lock"];
+        let o = e.km_env(&create, &[(var, conf.as_path())]);
         assert_eq!(code(&o), 0, "{mechanism} hidden: {}", stderr(&o));
         assert_eq!(code(&e.km_env(&["verify", spec, "--token", "ref"], &[(var, conf.as_path())])), 0);
     }
@@ -2340,7 +2340,7 @@ fn proofs_the_key_will_not_give_are_refused() {
         format!(
             "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\n{key}\n\n[specs.{name}]\nobject = \"{name}\"\n\
              attributes = {{ {usage} = true }}\n\
-             tokens.{token} = {{ locator = {{ CKA_LABEL = \"pop-key-{name}\" }}, autoCreate = true, binding = \"{binding}\" }}\n\n"
+             tokens.{token} = {{ locator = {{ CKA_LABEL = \"pop-key-{name}\" }}, binding = \"{binding}\" }}\n\n"
         )
     };
     let ec = "keyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
@@ -2586,12 +2586,12 @@ fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
         )
     };
     let config = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
-    e.write_config(&format!("{config}\n{}{}", key("sig", "02", ""), key("new", "03", ", autoCreate = true")));
+    e.write_config(&format!("{config}\n{}{}", key("sig", "02", ""), key("new", "03", "")));
     let o = e.km(&["resolve", "sig", "--token", "yk"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let resolved: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert_eq!(resolved["policy"]["CKA_DERIVE"].as_bool(), Some(true), "{resolved}");
-    let o = e.km(&["realise", "new", "--token", "yk", "--no-update-lock"]);
+    let o = e.km(&["create", "new", "--token", "yk", "--no-update-lock"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("needs a Security Officer session"), "{}", stderr(&o));
     // ykcs11 clears only a slot's certificate on delete and keeps the key: a delete is refused (15)
@@ -2605,7 +2605,7 @@ fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
     let text = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
     let bad_so = format!("provider = \"ykcs11\"\nmgmKeyFile = \"{}\"\n", e.dir.join("bad-so").display());
     e.write_config(&text.replacen("provider = \"ykcs11\"\n", &bad_so, 1));
-    let o = e.km(&["realise", "new", "--token", "yk", "--no-update-lock"]);
+    let o = e.km(&["create", "new", "--token", "yk", "--no-update-lock"]);
     assert_eq!(code(&o), 16, "{}", stderr(&o));
     assert!(stderr(&o).contains("C_Login (SO) with mgmKeyFile/mgmKeyEnv"), "{}", stderr(&o));
 }
@@ -2650,7 +2650,7 @@ fn update_lock_waits_for_the_sidecar_lock() {
     let Some(e) = env("m3-flock") else { return };
     e.config(EC.replace("ec-lifecycle", "m3-flock").as_str());
     let r = ["realise", "signing-soft", "--token", "ref", "--update-lock"];
-    assert_eq!(e.code(&r), 0);
+    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref"]), 0);
 
     // Hold the sidecar the same way cakeys does: an exclusive std file lock.
     let held =
@@ -2707,16 +2707,16 @@ fn pin_file_path_can_come_from_the_environment() {
     let o = e.km(&["validate"]);
     assert_eq!(code(&o), 17);
     assert!(stderr(&o).contains("KM_E2E_PIN"), "{}", stderr(&o));
-    // Set: the pin file loads, the login works, the private key realises.
+    // Set: the pin file loads, the login works, the private key is made and realised.
     let pin = e.dir.join("pin");
-    let o = e.km_env(&["realise", "signing-soft", "--token", "ref", "--update-lock"], &[("KM_E2E_PIN", &pin)]);
+    let o = e.km_env(&["create", "signing-soft", "--token", "ref", "--update-lock"], &[("KM_E2E_PIN", &pin)]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(e.lock()["realisations"]["signing-soft"]["ref"].is_table());
 }
 
 /// The admin credential (`mgmKeyFile`/`mgmKeyEnv`) is read only by a step that needs the
 /// Security Officer: ykcs11's create and delete, and `camigrate transport --trusted` (docs/CAMIGRATE.md
-/// D2). `SoftHSM` creates keys as the user, so a realise never reads it: a credential file that
+/// D2). `SoftHSM` creates keys as the user, so a create never reads it: a credential file that
 /// does not exist is no error. Without a user PIN to return to, it is invalid at load.
 #[test]
 fn admin_credential_is_read_only_by_security_officer_steps() {
@@ -2732,7 +2732,7 @@ fn admin_credential_is_read_only_by_security_officer_steps() {
     let missing = e.dir.join("never-read");
     for admin in [format!("mgmKeyFile = \"{}\"", missing.display()), "mgmKeyEnv = \"KM_E2E_NEVER_SET\"".to_owned()] {
         std::fs::write(e.dir.join("keys.toml"), toml(&format!("pinFile = \"{}\"\n{admin}", pin.display()))).unwrap();
-        for verb in ["realise", "resolve"] {
+        for verb in ["create", "resolve"] {
             let o = e.km(&[verb, "signing-soft", "--token", "ref"]);
             assert_eq!(code(&o), 0, "{admin} {verb}: {}", stderr(&o));
         }
@@ -2794,6 +2794,7 @@ fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
     };
 
     // Compare only: first use is 10 and the lock is not created.
+    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref", "--no-update-lock"]), 10);
     assert_eq!(e.code(&compare), 10);
     assert!(!lock.exists());
     // Both spellings at once are a usage error.
@@ -2838,7 +2839,7 @@ fn gc_prints_then_removes_stale_entries() {
     let Some(e) = env("gc") else { return };
     let object = "[objects.signing]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n";
     e.config(EC.replace("ec-lifecycle", "gc-key").as_str());
-    assert_eq!(e.code(&["realise", "signing-soft", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref", "--update-lock"]), 0);
     let id = e.locked_id("signing", "rfc7093m4");
     let key = || e.lock()["realisations"]["signing-soft"]["ref"]["observation"].as_str().unwrap().to_owned();
 
@@ -2870,8 +2871,7 @@ fn gc_prints_then_removes_stale_entries() {
     // Re-recorded, then the spec loses the token: the same realisation is stale again.
     let spec_body = "[specs.signing-soft]\nobject = \"signing\"\nattributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
     let spec_no_token = format!("{spec_body}tokens = {{}}\n");
-    let spec_full =
-        format!("{spec_body}tokens.ref = {{ locator = {{ CKA_LABEL = \"gc-key\" }}, autoCreate = true }}\n");
+    let spec_full = format!("{spec_body}tokens.ref = {{ locator = {{ CKA_LABEL = \"gc-key\" }} }}\n");
     e.config(&format!("{object}\n{spec_full}"));
     assert_eq!(e.code(&["realise", "signing-soft", "--token", "ref", "--update-lock"]), 0);
     e.config(&format!("{object}\n{spec_no_token}"));
@@ -2953,7 +2953,7 @@ fn the_lock_pins_type_spec_provenance_and_schemes() {
     let config = std::fs::read_to_string(&toml).unwrap();
     let r = ["realise", "signing-soft", "--token", "ref", "--update-lock"];
     let verify = ["verify", "signing-soft", "--token", "ref"];
-    assert_eq!(e.code(&r), 0);
+    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref"]), 0);
     let locked = std::fs::read_to_string(&path).unwrap();
     let lock: toml::Value = toml::from_str(&locked).unwrap();
     assert_eq!(lock["objects"]["signing"]["type"]["curve"].as_str(), Some("secp256r1"));
@@ -3037,9 +3037,9 @@ fn h1b_a_forged_public_key_info_is_a_conflict() {
     e.config(
         "[objects.r]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
          [specs.r]\nobject = \"r\"\nattributes = { CKA_SIGN = true }\n\
-         tokens.ref = { locator = { CKA_LABEL = \"h1b\" }, autoCreate = true }\n",
+         tokens.ref = { locator = { CKA_LABEL = \"h1b\" } }\n",
     );
-    assert_eq!(e.code(&["realise", "r", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "r", "--token", "ref", "--update-lock"]), 0);
     let s = e.session();
     let spki_a = oracle_spki(&s, "h1b");
     let (_, other) = s
@@ -3076,7 +3076,7 @@ fn s3_an_unrecorded_token_is_a_precondition_failure() {
         pin.display(),
         EC.replace("ec-lifecycle", "s3")
     ));
-    assert_eq!(e.code(&["realise", "signing-soft", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref", "--update-lock"]), 0);
     let verify = ["verify", "signing-soft", "--token", "ref-b"];
     assert_eq!(e.code(&verify), 14);
     assert_eq!(e.code(&["realise", "signing-soft", "--token", "ref-b", "--update-lock"]), 0);
@@ -3088,10 +3088,10 @@ fn s3_an_unrecorded_token_is_a_precondition_failure() {
 fn s4_a_public_only_flip_is_a_spec_change() {
     let Some(e) = env("gap_s4") else { return };
     let body = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
-                [specs.k]\nobject = \"k\"\ntokens.ref = { locator = { CKA_LABEL = \"s4\" }, autoCreate = true, binding = \"token-asserted\" }\n";
+                [specs.k]\nobject = \"k\"\ntokens.ref = { locator = { CKA_LABEL = \"s4\" }, binding = \"token-asserted\" }\n";
     e.config(body);
-    assert_eq!(e.code(&["realise", "k", "--token", "ref", "--update-lock"]), 0);
-    e.config(&body.replace("autoCreate = true", "publicOnly = true"));
+    assert_eq!(e.code(&["create", "k", "--token", "ref", "--update-lock"]), 0);
+    e.config(&body.replace("binding = ", "publicOnly = true, binding = "));
     let verify = e.km(&["verify", "k", "--token", "ref"]);
     assert_eq!(code(&verify), 14);
     assert!(stderr(&verify).contains("publicOnly false -> true"));
@@ -3104,11 +3104,10 @@ fn s8_a_retargeted_spec_is_a_spec_change() {
     let Some(e) = env("gap_s8") else { return };
     let body = "[objects.a]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
                 [objects.b]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
-                [specs.sa]\nobject = \"a\"\nattributes = { CKA_SIGN = true }\ntokens.ref = { locator = { CKA_LABEL = \"s8-a\" }, autoCreate = true }\n\n\
-                [specs.sb]\nobject = \"b\"\nattributes = { CKA_SIGN = true }\ntokens.ref = { locator = { CKA_LABEL = \"s8-b\" }, autoCreate = true }\n";
+                [specs.sa]\nobject = \"a\"\nattributes = { CKA_SIGN = true }\ntokens.ref = { locator = { CKA_LABEL = \"s8-a\" } }\n\n\
+                [specs.sb]\nobject = \"b\"\nattributes = { CKA_SIGN = true }\ntokens.ref = { locator = { CKA_LABEL = \"s8-b\" } }\n";
     e.config(body);
-    assert_eq!(e.code(&["realise", "sa", "--token", "ref", "--update-lock"]), 0);
-    assert_eq!(e.code(&["realise", "sb", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "--token", "ref"]), 0);
     let lock = e.lock();
     assert_eq!(lock["realisations"]["sa"]["ref"]["object"].as_str(), Some("a"));
     assert_eq!(lock["realisations"]["sa"]["ref"]["locator"]["CKA_LABEL"].as_str(), Some("s8-a"));
@@ -3121,11 +3120,10 @@ fn s8_a_retargeted_spec_is_a_spec_change() {
     assert_eq!(e.code(&["verify", "sa", "--token", "ref"]), 14);
 }
 
-/// `cakeys create` makes keys whether or not the spec sets autoCreate, which only opts the
-/// first-use flows in: every unpinned pair, once, with every guard of a creation — a pinned
-/// object absent from its token is refused (14), never regenerated.
+/// `cakeys create` is the one verb that makes keys: every unpinned pair, once, with every guard
+/// of a creation — a pinned object absent from its token is refused (14), never regenerated.
 #[test]
-fn create_makes_keys_without_autocreate() {
+fn create_makes_keys_and_nothing_else_does() {
     let Some(e) = env("create") else { return };
     let s = e.session();
     s.clear(&["create-ec", "create-aes"]);
@@ -3141,14 +3139,15 @@ fn create_makes_keys_without_autocreate() {
          [specs.ec-public]\nobject = \"ec\"\n\
          tokens.ref = { locator = { CKA_LABEL = \"create-ec-public\" }, publicOnly = true }\n",
     );
-    // Without autoCreate, the first-use flow finds nothing and makes nothing.
+    // The first-use flow finds nothing and makes nothing.
     assert_eq!(e.code(&["realise", "ec", "--token", "ref"]), 11);
+    assert_eq!(e.code(&["check", "ec", "--spec", "ec"]), 11);
 
     // Every unpinned pair on the token, created and recorded; what is adopted, not made, skipped.
     let o = e.km(&["create", "--token", "ref"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let said = stderr(&o);
-    assert!(said.contains("CKO_CERTIFICATE objects are adopted, not created"), "{said}");
+    assert!(said.contains("certificates are adopted, not created"), "{said}");
     assert!(said.contains("publicOnly adopts the public half only"), "{said}");
     let made: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert_eq!(made.as_array().map(Vec::len), Some(2), "{made}");
@@ -3245,17 +3244,17 @@ modulusBits = 2048
 [specs.k]
 object = "k"
 attributes = { CKA_SIGN = true }
-tokens.ref = { locator = { CKA_LABEL = "del-rsa" }, autoCreate = true }
+tokens.ref = { locator = { CKA_LABEL = "del-rsa" } }
 tokens.ref-anon = { locator = { CKA_LABEL = "del-rsa" } }
 
 [specs.other]
 object = "other"
 attributes = { CKA_SIGN = true }
-tokens.ref = { locator = { CKA_LABEL = "del-other" }, autoCreate = true }
+tokens.ref = { locator = { CKA_LABEL = "del-other" } }
 "#,
     );
     for spec in ["k", "other"] {
-        assert_eq!(e.code(&["realise", spec, "--token", "ref"]), 0);
+        assert_eq!(e.code(&["create", spec, "--token", "ref"]), 0);
     }
     let of_class = |class, label: &str| {
         s.find_objects(&[Attribute::Class(class), Attribute::Label(label.as_bytes().to_vec())]).unwrap()
@@ -3336,7 +3335,7 @@ fn pin_counters_stop_cakeys_before_it_spends_a_try() {
         }
         done(&ctx.get_token_info(slot).unwrap())
     };
-    let r = ["realise", "signing-soft", "--token", "ref", "--no-update-lock"];
+    let r = ["create", "signing-soft", "--token", "ref", "--no-update-lock"];
     assert!(fail_until(&|t| t.user_pin_count_low()));
     let o = e.km(&r);
     assert_eq!(code(&o), 10, "{}", stderr(&o));

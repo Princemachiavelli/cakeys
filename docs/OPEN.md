@@ -77,7 +77,6 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 
 ## To decide
 
-- **`autoCreate` on `check`** (review A7, archive): whether first use may create.
 - **The contract with programs** (CAKEYS.md): the CLI alone as the binding, or a C-ABI library
   when a consumer asks; a versioned JSON form of `check` (the URI, the IDs, the time verified);
   how notes and warnings reach a binding; whether closing the check-then-use gap is worth tying
@@ -99,7 +98,8 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **A published JSON Schema** for keys.toml and keys.lock (`schemars`), for other-language
   readers and editor validation (taplo); cross-field invariants stay in code.
 - **Remote keystores beyond p11-kit forwarding** (KMIP, cloud KMS), as a backend crate if ever.
-- **Dropping `--no-update-lock`**: deferred; it changes how `autoCreate` behaves.
+- **Dropping `--no-update-lock`**: deferred; `create --no-update-lock` is how a first use is
+  seen before it is recorded.
 - **Keystores with an `idPrefix`**: an opt-in grouping whose prefix marks managed objects on the
   token (labels only on PIV?), probably outside the spec digest.
 - **One token through two modules** (TODO.md): objects created through a vendor's SO module
@@ -131,7 +131,7 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   reports constant key policy (PLAN.md A0b).
 - **native-pkcs11 as a Darwin reference token** (PLAN.md A0b), parked: the only module here over
   a platform keystore (macOS Keychain, Secure Enclave keys), and keys cakeys did not create,
-  which the object matrix still lacks (its keys are made on software tokens). Against it: read-only (caprobe's write probes and `autoCreate`
+  which the object matrix still lacks (its keys are made on software tokens). Against it: read-only (caprobe's write probes and `create`
   have nothing to do), policy reported as constants (DESIGN §8.2), an EC private key with no
   `CKA_EC_POINT` or `CKA_PUBLIC_KEY_INFO`, so its identity needs a stored public key item under
   the same locator, which Secure Enclave keys usually lack [todo]; macOS only, not in nixpkgs,

@@ -313,14 +313,11 @@ fn the_identity_mode_follows_the_declared_usage() {
     assert_eq!(mode(PUBLIC, "", ""), Mode::Direct);
     assert_eq!(mode("class = \"CKO_DATA\"", "", ""), Mode::Direct);
     assert_eq!(mode(CERT, "", ""), Mode::Direct);
-    assert_eq!(mode(EC, SIGN, ", autoCreate = true, attestation = true"), Mode::Direct);
-    assert_eq!(mode(AES, SIGN, ", autoCreate = true, attestation = true"), Mode::Commitment);
+    assert_eq!(mode(EC, SIGN, ", attestation = true"), Mode::Direct);
+    assert_eq!(mode(AES, SIGN, ", attestation = true"), Mode::Commitment);
     // Adopted, a trusted key is only read; generated, the token would have to set it.
     assert_eq!(mode(AES, "attributes = { CKA_WRAP = true, CKA_TRUSTED = true }", ""), Mode::Commitment);
-    assert_eq!(
-        mode(AES, "attributes = { CKA_WRAP = true, CKA_TRUSTED = false }", ", autoCreate = true"),
-        Mode::Commitment
-    );
+    assert_eq!(mode(AES, "attributes = { CKA_WRAP = true, CKA_TRUSTED = false }", ""), Mode::Commitment);
     assert_eq!(
         mode(EC, "attributes = { CKA_SIGN = true }\npublicAttributes = { CKA_VERIFY = true }", ""),
         Mode::Direct
@@ -330,19 +327,9 @@ fn the_identity_mode_follows_the_declared_usage() {
         (AES, "attributes = { CKA_SIGN = false }", "", "has no re-verifiable identity"),
         (HMAC, "attributes = { CKA_ENCRYPT = true }", "", "has no re-verifiable identity"),
         ("class = \"CKO_CERTIFICATE\"", "", "", "certificates need certificateType"),
-        (CERT, "", ", autoCreate = true", "certificates are adopted, not created"),
-        (PUBLIC, "", ", autoCreate = true", "public keys and data objects are adopted, not created"),
-        ("class = \"CKO_DATA\"", "", ", autoCreate = true", "public keys and data objects are adopted"),
         (AES, SIGN, ", publicOnly = true", "publicOnly applies to private keys only"),
-        (EC, "", ", publicOnly = true, autoCreate = true", "publicOnly cannot autoCreate"),
         (EC, SIGN, ", publicOnly = true", "publicOnly cannot verify private-key policy attributes"),
         (CERT, "", ", attestation = true", "attestation = true applies to key objects only"),
-        (
-            AES,
-            "attributes = { CKA_WRAP = true, CKA_TRUSTED = true }",
-            ", autoCreate = true",
-            "CKA_TRUSTED = true cannot be generated",
-        ),
         (EC, "attributes = { CKA_SIGN = true, CKA_WRAP = true }", "", "CKA_WRAP does not apply to"),
         (
             EC,
@@ -360,6 +347,34 @@ fn the_identity_mode_follows_the_declared_usage() {
     for (object, spec, on_token, why) in cases {
         let said = refusal(&keys(object, spec, on_token));
         assert!(said.contains(why), "expected {why:?} in {said:?}");
+    }
+}
+
+/// What `cakeys create` never makes, whatever the token: the classes cakeys adopts, a
+/// `publicOnly` adoption, and a key the token's security officer must mark `CKA_TRUSTED`. Each
+/// is a valid spec to adopt.
+#[test]
+fn what_create_never_makes_is_said_from_the_spec() {
+    const PUBLIC: &str = "class = \"CKO_PUBLIC_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+    let not_creatable = |object: &str, spec: &str, on_token: &str| {
+        let text = keys(object, spec, on_token);
+        let cfg = load(&text).unwrap_or_else(|e| panic!("{e}:\n{text}"));
+        let t = Target::new(&cfg, "s", "t").unwrap();
+        plan_mode(&t).unwrap_or_else(|e| panic!("{e}:\n{text}"));
+        cakeys_core::plan::not_creatable(&t)
+    };
+    let trusted = "attributes = { CKA_WRAP = true, CKA_TRUSTED = true }";
+    for (object, spec, on_token, why) in [
+        (CERT, "", "", "certificates are adopted, not created"),
+        (PUBLIC, "", "", "public keys and data objects are adopted, not created"),
+        ("class = \"CKO_DATA\"", "", "", "public keys and data objects are adopted, not created"),
+        (EC, "", ", publicOnly = true", "publicOnly adopts the public half only; it is never created"),
+        (AES, trusted, "", "CKA_TRUSTED = true cannot be generated; adopt the object instead"),
+    ] {
+        assert_eq!(not_creatable(object, spec, on_token), Some(why), "{object}\n{spec}\n{on_token}");
+    }
+    for (object, spec) in [(EC, SIGN), (AES, SIGN), (AES, "attributes = { CKA_WRAP = true, CKA_TRUSTED = false }")] {
+        assert_eq!(not_creatable(object, spec, ""), None, "{object}\n{spec}");
     }
 }
 

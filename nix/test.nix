@@ -28,7 +28,7 @@ let
     [specs.signing-soft]
     object = "signing"
     attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
-    tokens.softhsm = { locator = { CKA_LABEL = "signing" }, autoCreate = true }
+    tokens.softhsm = { locator = { CKA_LABEL = "signing" } }
 
     [objects.kek]
     class = "CKO_SECRET_KEY"
@@ -39,7 +39,7 @@ let
     object = "kek"
     # No usage bit allows a commitment, but it is extractable: wrap-rebind.
     attributes = { CKA_SIGN = false, CKA_ENCRYPT = false, CKA_WRAP = false, CKA_SENSITIVE = true, CKA_EXTRACTABLE = true }
-    tokens.softhsm = { locator = { CKA_LABEL = "kek" }, autoCreate = true }
+    tokens.softhsm = { locator = { CKA_LABEL = "kek" } }
   '';
 
   # A consumer derivation that uses the key: evaluated and built *inside* the guest.
@@ -135,9 +135,12 @@ let
       ${
         if isVM then
           ''
-            with subtest("pseudo-FOD: first use inside the Nix sandbox creates the key, fails with got:"):
-                first = got(build(ok=False))
-                # Retrying never creates a second key (else: exit 12, ambiguous).
+            with subtest("pseudo-FOD: the check inside the Nix sandbox never creates; first use fails with got:"):
+                out = build(ok=False)
+                assert "`cakeys create` makes it" in out, out
+                # The key is created out of band; the sandbox's check then fails like a FOD with
+                # a fake hash, and never creates a second key (else: exit 12, ambiguous).
+                first = got(expect(f"{km} create signing-soft --token softhsm --no-update-lock", 10))
                 assert got(build(ok=False)) == first
                 expect(f"{km} resolve signing-soft --token softhsm", 0)
 
@@ -151,8 +154,9 @@ let
           ''
         else
           ''
-            with subtest("first use creates the key and fails with got:"):
-                first = got(expect(f"{km} realise signing-soft --token softhsm --no-update-lock", 10))
+            with subtest("only create creates; first use fails with got:"):
+                expect(f"{km} realise signing-soft --token softhsm --no-update-lock", 11)
+                first = got(expect(f"{km} create signing-soft --token softhsm --no-update-lock", 10))
                 assert got(expect(f"{km} realise signing-soft --token softhsm --no-update-lock", 10)) == first
                 expect(f"{km} realise signing-soft --token softhsm --update-lock", 0)
           ''
@@ -174,7 +178,7 @@ let
           assert expect(f"{km} check signing.id.rfc7093m4", 0).startswith("pkcs11:")
 
       with subtest("wrap-rebind identity for an extractable AES key"):
-          got(expect(f"{km} realise kek-wrap --token softhsm --no-update-lock", 10))
+          got(expect(f"{km} create kek-wrap --token softhsm --no-update-lock", 10))
           expect(f"{km} realise kek-wrap --token softhsm --update-lock", 0)
           lock = machine.succeed("cat /root/keys.lock")
           assert 'mode = "wrap-rebind"' in lock, lock
@@ -195,11 +199,10 @@ let
         with subtest("caveat: a cached consumer does not re-contact the token; --check does"):
             # The key was deleted above, yet the consumer still "builds": it is cached.
             build("--arg lock /root/keys.lock.built")
-            # Forcing a rebuild re-runs the pre-use check: the lock pins the deleted key's
-            # material, so autoCreate is refused (14) instead of regenerating different
-            # material that could never match.
+            # Forcing a rebuild re-runs the pre-use check, which finds the key gone (11) and
+            # never regenerates it: new material could never match what the lock pins.
             out = build("--arg lock /root/keys.lock.built --check", ok=False)
-            assert "the lock already pins object" in out, out
+            assert "`cakeys create` makes it" in out, out
       ''}
     '';
   };

@@ -145,7 +145,7 @@ curve = "secp256r1"
 [specs.signing]
 object = "signing"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
-tokens.soft = { locator = { CKA_LABEL = "signing" }, autoCreate = true }
+tokens.soft = { locator = { CKA_LABEL = "signing" } }
 EOF
 
 act "cakeys demo" \
@@ -161,11 +161,11 @@ wait_key
 # ── Act 1 ───────────────────────────────────────────────────────────────────────────────────
 
 act "1. A key is a pinned input" \
-  "First use creates the key and fails like a fixed-output derivation with a fake hash:" \
-  "cakeys prints the identity it got and records nothing yet."
-expect 10 cakeys realise signing --token soft --no-update-lock
+  "Keys are made by one verb, create. Its first use fails like a fixed-output derivation with" \
+  "a fake hash: cakeys prints the identity it got and records nothing yet."
+expect 10 cakeys create signing --token soft --no-update-lock
 first=$(got)
-echo "Again: the same key is found under its locator, never a second one created."
+echo "Again, by the lock verb: the same key is found under its locator, never a second one."
 expect 10 cakeys realise signing --token soft --no-update-lock
 [ "$(got)" = "$first" ] || {
   echo "${red}a second run got another identity${reset}"
@@ -221,8 +221,8 @@ act "3. A lost key is never silently replaced" \
 p11 "$SOFTHSM_MODULE" --delete-object --type privkey --label signing
 p11 "$SOFTHSM_MODULE" --delete-object --type pubkey --label signing
 expect 11 cakeys verify signing --token soft
-echo "autoCreate would make a key, but the lock pins material a new key can never match:"
-expect 14 cakeys realise signing --token soft
+echo "create would make a key, but the lock pins material a new key can never match:"
+expect 14 cakeys create signing --token soft
 echo "Plant a different key under the same label: its identity does not match the lock."
 p11 "$SOFTHSM_MODULE" --keypairgen --key-type EC:prime256v1 --label signing --id 01 --usage-sign
 expect 10 cakeys verify signing --token soft
@@ -299,8 +299,8 @@ object = "fixed"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = false }
 tokens.soft = { locator = { CKA_LABEL = "fixed" } }
 EOF
-echo "No autoCreate here: that only lets first use create. Keys are created explicitly, every"
-echo "pair the lock does not pin yet (signing and shared are pinned, so they are left alone):"
+echo "Without a spec, create makes every pair the lock does not pin yet (signing and shared are"
+echo "pinned, so they are left alone):"
 jqf='.[] | {object, token, rfc7093m4: .ids.rfc7093m4}' expect 0 cakeys create --token soft
 echo "movable is born on soft (createOn), so kryo can only receive it. A sealed move needs the"
 echo "target to name a transport key: an RSA key there that only unwraps and never leaves it."

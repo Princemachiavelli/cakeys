@@ -131,8 +131,8 @@ every failure, and exits with the first.
 - If-None-Match per class: never over an object of its class under the locator. A key, its
   public key and its certificate share one `CKA_ID` by PKCS#11 convention, so they move into one
   locator in any order; a public key object already holding the key's public key is reused,
-  never duplicated. `autoCreate` still refuses over anything under the locator.
-- It is the sanctioned exception to "`autoCreate` is refused when the lock already pins the
+  never duplicated. `cakeys create` still refuses over anything under the locator.
+- It is the sanctioned exception to "`create` is refused when the lock already pins the
   material": generated material could not match, imported material must.
 - After creating, it realises and compares with the bundle's and the lock's IDs; a mismatch
   removes exactly what it created. On every `host` path the identity is checked on the host

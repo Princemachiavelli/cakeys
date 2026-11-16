@@ -15,7 +15,7 @@ flowchart LR
         direction TB
         T["[tokens.&lt;name&gt;]<br/>module · provider · tokenLabel · pinFile/pinEnv · mgmKeyFile/mgmKeyEnv ·<br/>systemFeature · options (the provider's own)"]
         O["[objects.&lt;name&gt;]<br/>class · keyType · certificateType ·<br/>curve / modulusBits / valueLen"]
-        S["[specs.&lt;name&gt;]<br/>object → one object only<br/>attributes · publicAttributes<br/>tokens.&lt;t&gt;: locator · autoCreate ·<br/>publicOnly · binding · attestation"]
+        S["[specs.&lt;name&gt;]<br/>object → one object only<br/>attributes · publicAttributes<br/>tokens.&lt;t&gt;: locator ·<br/>publicOnly · binding · attestation"]
         S -- references --> O
     end
 
@@ -37,23 +37,24 @@ flowchart LR
 - Objects are self-contained, so lock files split and join per object; `pairs` records the
   key ↔ certificate relations across the split.
 
-## 2. A verb's life: `realise` (PUT)
+## 2. A verb's life: `create` (PUT) and `realise`
 
-Every use recomputes the identity from the token and compares it with the lock. `realise`
-records first use in the lock by default; with `--no-update-lock` (and in `check`) first use
-fails like a fixed-output derivation, printing the hash to record.
+Every use recomputes the identity from the token and compares it with the lock. Only `create`
+makes the object when the locator is empty; `realise` finds it or exits 11. Both record first
+use in the lock by default; with `--no-update-lock` (and in `check`) first use fails like a
+fixed-output derivation, printing the hash to record.
 
 ```mermaid
 flowchart TD
-    START(["cakeys realise &lt;spec&gt; --token &lt;t&gt;"]) --> GUARD
+    START(["cakeys create | realise &lt;spec&gt; --token &lt;t&gt;"]) --> GUARD
     GUARD["a writing run (the default) takes the exclusive lock<br/>on &lt;lock&gt;.lck for the whole run"]
     GUARD -- "Nix build sandbox, or the lock<br/>is not writable" --> X14w(["exit 14 before any token is touched:<br/>pass --no-update-lock"])
     GUARD --> VAL["validate: mode, binding, attribute shapes,<br/>certificateType, per-class names"]
     VAL -- "invalid spec" --> X17(["exit 17"])
     VAL --> FIND["find by locator<br/>(CKA_LABEL / CKA_ID)"]
     FIND -- "several objects match" --> X12(["exit 12 ambiguous"])
-    FIND -- "absent, autoCreate off" --> X11(["exit 11 not found"])
-    FIND -- "absent, autoCreate on" --> PIN{"lock already pins this<br/>object's material? (D1)"}
+    FIND -- "absent: realise" --> X11(["exit 11 not found"])
+    FIND -- "absent: create" --> PIN{"lock already pins this<br/>object's material? (D1)"}
     PIN -- "yes: generation could<br/>never match" --> X14b(["exit 14: same material under<br/>the locator, or a new object name"])
     PIN -- no --> CREATE["create into the empty locator only<br/>(If-None-Match)"]
     FIND -- "found (or just created)" --> RESOLVE
@@ -67,8 +68,8 @@ flowchart TD
     RECONCILE -- "matches, or first use (default)" --> OK(["exit 0 — resolved JSON printed;<br/>what the lock lacked is recorded<br/>unless --no-update-lock"])
 ```
 
-`verify` is the same walk without the create, and prints the URI; `check` is `realise` that never
-writes the lock, and prints the URI;
+`verify` is the same walk without the create and the write, and prints the URI; `check` is
+`verify` named by object, in a read-only session, and prints the URI;
 `delete` proves possession once more so If-Match cannot pass on a bystander object; `gc` prints
 lock entries the config no longer names and removes them with `--apply`.
 
@@ -141,7 +142,7 @@ flowchart LR
     DRV -->|"requiredSystemFeatures =<br/>[ token-&lt;name&gt; ]"| HOOK["Nix pre-build hook<br/>(nix/sandbox-hook.sh)"]
     HOOK -->|"grants the token's device/socket<br/>only to builds asking for its feature"| SB["build sandbox"]
     SB --> CHK["cakeys check &lt;obj&gt;.id.&lt;scheme&gt;"]
-    CHK -->|"first use: autoCreate, then fail<br/>with got: sha256-…"| OOB["record out of band:<br/>cakeys realise"]
+    CHK -->|"first use (the key made out of band<br/>by cakeys create): fail with got: sha256-…"| OOB["record out of band:<br/>cakeys realise"]
     OOB -.-> KL
     CHK -->|"every later build: the CA-ID<br/>is recomputed and compared"| URI["pkcs11: URI on stdout"]
 ```

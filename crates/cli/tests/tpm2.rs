@@ -93,7 +93,7 @@ valueLen = 32
 [specs.aes-gen]
 object = "aes-gen"
 attributes = { CKA_ENCRYPT = true }
-tokens.tpm = { locator = { CKA_LABEL = "refusal-aes-gen" }, autoCreate = true }
+tokens.tpm = { locator = { CKA_LABEL = "refusal-aes-gen" } }
 
 [objects.hmac-gen]
 class = "CKO_SECRET_KEY"
@@ -103,7 +103,7 @@ valueLen = 32
 [specs.hmac-gen]
 object = "hmac-gen"
 attributes = { CKA_SIGN = true }
-tokens.tpm = { locator = { CKA_LABEL = "refusal-hmac-gen" }, autoCreate = true }
+tokens.tpm = { locator = { CKA_LABEL = "refusal-hmac-gen" } }
 
 [objects.ed]
 class = "CKO_PRIVATE_KEY"
@@ -113,7 +113,7 @@ curve = "edwards25519"
 [specs.ed]
 object = "ed"
 attributes = { CKA_SIGN = true }
-tokens.tpm = { locator = { CKA_LABEL = "refusal-ed" }, autoCreate = true }
+tokens.tpm = { locator = { CKA_LABEL = "refusal-ed" } }
 
 [objects.aes]
 class = "CKO_SECRET_KEY"
@@ -132,23 +132,23 @@ keyType = "CKK_DES3"
 [specs.des3]
 object = "des3"
 attributes = { CKA_ENCRYPT = true }
-tokens.tpm = { locator = { CKA_LABEL = "refusal-des3" }, autoCreate = true }
+tokens.tpm = { locator = { CKA_LABEL = "refusal-des3" } }
 "#,
     );
     // No Triple DES in a TPM (TPM2 symmetric keys are AES): neither the check value nor the
     // generation, refused from what the module lists before anything is created.
-    let o = e.km(&["realise", "des3", "--token", "tpm", "--no-update-lock"]);
+    let o = e.km(&["create", "des3", "--token", "tpm", "--no-update-lock"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("CKM_DES3_ECB"), "{}", stderr(&o));
     assert_eq!(labelled(&e.session(), "refusal-des3"), 0);
     // Secret-key generation is refused up front, with the provider's advice, and creates nothing.
     for (spec, label) in [("aes-gen", "refusal-aes-gen"), ("hmac-gen", "refusal-hmac-gen")] {
-        let o = e.km(&["realise", spec, "--token", "tpm", "--no-update-lock"]);
+        let o = e.km(&["create", spec, "--token", "tpm", "--no-update-lock"]);
         assert_eq!(code(&o), 15, "{spec}");
         assert!(stderr(&o).contains("tpm2_ptool addkey"), "{spec}");
         assert_eq!(labelled(&e.session(), label), 0, "{spec}");
     }
-    assert_eq!(e.code(&["realise", "ed", "--token", "tpm", "--no-update-lock"]), 15);
+    assert_eq!(e.code(&["create", "ed", "--token", "tpm", "--no-update-lock"]), 15);
     // No CKM_AES_CMAC: a sign-only AES spec has no commitment here.
     assert_eq!(e.code(&["realise", "aes-mac", "--token", "tpm", "--no-update-lock"]), 15);
 }
@@ -172,7 +172,7 @@ fn tpm2_generated_keys_match_der_oracle() {
         body += &format!(
             "[objects.{k}]\nclass = \"CKO_PRIVATE_KEY\"\n{ty}\n\n\
              [specs.{k}-gen]\nobject = \"{k}\"\nattributes = {{ CKA_SIGN = true }}\n\
-             tokens.tpm = {{ locator = {{ CKA_LABEL = \"{k}\" }}, autoCreate = true{binding} }}\n\n\
+             tokens.tpm = {{ locator = {{ CKA_LABEL = \"{k}\" }}{binding} }}\n\n\
              [specs.{k}-pub]\nobject = \"{k}\"\n\
              tokens.tpm-anon = {{ locator = {{ CKA_LABEL = \"{k}\" }}, publicOnly = true }}\n\n"
         );
@@ -180,7 +180,7 @@ fn tpm2_generated_keys_match_der_oracle() {
     e.config(&body);
     for (k, _) in kinds {
         let spec = format!("{k}-gen");
-        let first = e.km(&["realise", &spec, "--token", "tpm", "--no-update-lock"]);
+        let first = e.km(&["create", &spec, "--token", "tpm", "--no-update-lock"]);
         assert_eq!(code(&first), 10, "{k}");
         assert_eq!(
             got_hash(&e.km(&["realise", &spec, "--token", "tpm", "--no-update-lock"])),
@@ -203,9 +203,9 @@ fn tpm2_identity_failure_after_create_leaves_nothing() {
     // Without the provider, tpm2-pkcs11's P-521 point is rejected after the key was generated.
     e.config(
         "[objects.p]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp521r1\"\n\n\
-         [specs.p]\nobject = \"p\"\nattributes = { CKA_SIGN = true }\ntokens.tpm-generic = { locator = { CKA_LABEL = \"orphan-p521\" }, autoCreate = true }\n",
+         [specs.p]\nobject = \"p\"\nattributes = { CKA_SIGN = true }\ntokens.tpm-generic = { locator = { CKA_LABEL = \"orphan-p521\" } }\n",
     );
-    let o = e.km(&["realise", "p", "--token", "tpm-generic", "--no-update-lock"]);
+    let o = e.km(&["create", "p", "--token", "tpm-generic", "--no-update-lock"]);
     assert_eq!(code(&o), 13);
     assert!(stderr(&o).contains("removed 2 object(s) just created"));
     assert_eq!(labelled(&e.session(), "orphan-p521"), 0);
@@ -221,9 +221,9 @@ fn tpm2_proves_possession_by_deriving() {
     e.config(
         "[objects.p]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [specs.p]\nobject = \"p\"\nattributes = { CKA_DERIVE = true }\n\
-         tokens.tpm = { locator = { CKA_LABEL = \"ecdh-p256\" }, autoCreate = true, binding = \"pop-ecdh\" }\n",
+         tokens.tpm = { locator = { CKA_LABEL = \"ecdh-p256\" }, binding = \"pop-ecdh\" }\n",
     );
-    let o = e.km(&["realise", "p", "--token", "tpm", "--update-lock"]);
+    let o = e.km(&["create", "p", "--token", "tpm", "--update-lock"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(e.lock()["realisations"]["p"]["tpm"]["binding"].as_str(), Some("pop-ecdh"));
     let o = e.km(&["verify", "p", "--token", "tpm"]);
@@ -396,10 +396,10 @@ fn tpm2_keys_attest_their_tpm_residence() {
     e.config(
         "[objects.p256]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [specs.p256]\nobject = \"p256\"\nattributes = { CKA_SIGN = true }\n\
-         tokens.tpm = { locator = { CKA_LABEL = \"attest-p256\" }, autoCreate = true, attestation = true }\n",
+         tokens.tpm = { locator = { CKA_LABEL = \"attest-p256\" }, attestation = true }\n",
     );
     let r = ["realise", "p256", "--token", "tpm", "--no-update-lock"];
-    let first = e.km(&r);
+    let first = e.km(&["create", "p256", "--token", "tpm", "--no-update-lock"]);
     assert_eq!(code(&first), 10, "first use: got the ID, the lock is written by review");
     let got: serde_json::Value = serde_json::from_str(&stdout(&e.km(&["resolve", "p256", "--token", "tpm"]))).unwrap();
     let ids = got["ids"].as_object().unwrap();
@@ -438,6 +438,18 @@ fn tpm2_keys_attest_their_tpm_residence() {
         let o = e.km(&["verify", "p256", "--token", "tpm"]);
         assert_eq!(code(&o), 14, "{}", stderr(&o));
         assert!(stderr(&o).contains("no Attestation Key at 0x81000017"));
+    }
+    // `check` is a read like verify (DESIGN §3.7): it fails the same way and leaves the TPM's
+    // persistent handles as they were, the missing AK included.
+    if on_swtpm() {
+        let before = persistent_handles();
+        for _ in 0..2 {
+            let o = e.km(&["check", "p256.id.tpm-certify", "--token", "tpm"]);
+            assert_eq!(code(&o), 14, "{}", stderr(&o));
+            assert!(stderr(&o).contains("no Attestation Key at 0x81000017"));
+        }
+        assert_eq!(persistent_handles(), before);
+        assert!(!before.contains("0x81000017"), "{before}");
     }
     // A key at the AK handle that is not a restricted signing key is never trusted as the AK:
     // an unrestricted one could sign a forged attestation.
@@ -604,7 +616,7 @@ fn unwrap_only_keys_are_refused_before_generation() {
     e.config(
         "[objects.u]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
          [specs.u]\nobject = \"u\"\nattributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }\n\
-         tokens.tpm = { locator = { CKA_LABEL = \"refusal-unwrap\" }, autoCreate = true, binding = \"pop-unwrap\" }\n",
+         tokens.tpm = { locator = { CKA_LABEL = \"refusal-unwrap\" }, binding = \"pop-unwrap\" }\n",
     );
     let o = e.km(&["realise", "u", "--token", "tpm", "--no-update-lock"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
@@ -742,7 +754,7 @@ fn tpm2_attests_each_key_type() {
         format!(
             "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\n{ty}\n\n[specs.{name}]\nobject = \"{name}\"\n\
              attributes = {{ CKA_SIGN = true }}\n\
-             tokens.tpm = {{ locator = {{ CKA_LABEL = \"types-{name}\" }}, autoCreate = true, attestation = true{binding} }}\n\n"
+             tokens.tpm = {{ locator = {{ CKA_LABEL = \"types-{name}\" }}, attestation = true{binding} }}\n\n"
         )
     };
     e.config(
@@ -755,7 +767,7 @@ fn tpm2_attests_each_key_type() {
         .concat(),
     );
     for spec in ["p384", "p521", "rsa"] {
-        let o = e.km(&["realise", spec, "--token", "tpm", "--update-lock"]);
+        let o = e.km(&["create", spec, "--token", "tpm", "--update-lock"]);
         assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
         assert_eq!(e.locked_attestation(spec, "tpm")["kind"].as_str(), Some("tpm-certify"), "{spec}");
         assert_eq!(e.code(&["verify", spec, "--token", "tpm"]), 0, "{spec}");
@@ -823,6 +835,13 @@ fn tpm2_attestation_finds_its_store_and_tpm_as_configured() {
 /// (docs/DEVELOPMENT.md, "Hardware rules").
 fn on_swtpm() -> bool {
     std::env::var("DBUS_SESSION_BUS_ADDRESS").is_ok_and(|a| a.contains("unix:abstract=cakeys-tpm-"))
+}
+
+/// What `tpm2_getcap handles-persistent` lists: the TPM's persistent handles.
+fn persistent_handles() -> String {
+    let out = Command::new("tpm2_getcap").arg("handles-persistent").output().unwrap();
+    assert!(out.status.success(), "tpm2_getcap handles-persistent: {}", stderr(&out));
+    stdout(&out)
 }
 
 /// `tpm2_<tool> <args>` against the suite's software TPM.

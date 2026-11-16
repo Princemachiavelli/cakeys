@@ -130,7 +130,7 @@ impl Env {
                 text,
                 "\n[objects.{n}]\nclass = \"CKO_PRIVATE_KEY\"\n{object}\n\n\
                  [specs.{n}-yubikey]\nobject = \"{n}\"\nattributes = {{ {attributes} }}\n\
-                 tokens.yubikey = {{ locator = {{ CKA_ID = \"{id}\" }}, autoCreate = true, attestation = true, \
+                 tokens.yubikey = {{ locator = {{ CKA_ID = \"{id}\" }}, attestation = true, \
                  binding = \"{binding}\" }}\n",
                 n = c.name,
                 object = c.object,
@@ -155,7 +155,7 @@ impl Env {
     /// by `c.binding` — no touch, no prompt — and it keeps its identity throughout.
     fn lifecycle(&self, c: &Case) {
         let spec = format!("{}-yubikey", c.name);
-        let r = ["realise", &spec, "--token", "yubikey", "--no-update-lock"];
+        let r = ["create", &spec, "--token", "yubikey", "--no-update-lock"];
         let record = ["realise", &spec, "--token", "yubikey", "--update-lock"];
 
         // First use: generated (SO login) or adopted, and identified; nothing is locked yet.

@@ -74,30 +74,30 @@ class = "CKO_DATA"
 object = "ec"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
 publicAttributes = { CKA_VERIFY = true }
-tokens.soft = { locator = { CKA_LABEL = "ec", CKA_ID = "0e" }, autoCreate = true }
+tokens.soft = { locator = { CKA_LABEL = "ec", CKA_ID = "0e" } }
 [specs.ecpub]
 object = "ecpub"
 tokens.soft = { locator = { CKA_LABEL = "ec" } }
 [specs.rsa]
 object = "rsa"
 attributes = { CKA_DECRYPT = true }
-tokens.soft = { locator = { CKA_LABEL = "rsa" }, autoCreate = true, binding = "pop-decrypt" }
+tokens.soft = { locator = { CKA_LABEL = "rsa" }, binding = "pop-decrypt" }
 [specs.ed]
 object = "ed"
 attributes = { CKA_SIGN = true }
-tokens.soft = { locator = { CKA_LABEL = "ed" }, autoCreate = true }
+tokens.soft = { locator = { CKA_LABEL = "ed" } }
 [specs.aes]
 object = "aes"
 attributes = { CKA_SIGN = true, CKA_ENCRYPT = true, CKA_EXTRACTABLE = false, CKA_ALLOWED_MECHANISMS = ["CKM_AES_ECB", "CKM_AES_CMAC"] }
-tokens.soft = { locator = { CKA_LABEL = "aes" }, autoCreate = true }
+tokens.soft = { locator = { CKA_LABEL = "aes" } }
 [specs.hmac]
 object = "hmac"
 attributes = { CKA_SIGN = true }
-tokens.soft = { locator = { CKA_LABEL = "hmac" }, autoCreate = true }
+tokens.soft = { locator = { CKA_LABEL = "hmac" } }
 [specs.wrapped]
 object = "wrapped"
 attributes = { CKA_EXTRACTABLE = true }
-tokens.soft = { locator = { CKA_LABEL = "wrapped" }, autoCreate = true }
+tokens.soft = { locator = { CKA_LABEL = "wrapped" } }
 [specs.cert]
 object = "cert"
 tokens.soft = { locator = { CKA_LABEL = "cert" } }
@@ -105,6 +105,8 @@ tokens.soft = { locator = { CKA_LABEL = "cert" } }
 object = "data"
 tokens.soft = { locator = { CKA_LABEL = "data" } }
 EOF
+  # `create` makes the keys (no autoCreate: a build that has dropped it refuses the key).
+  km create --token soft >/dev/null
   for s in "${specs[@]}"; do
     km realise "$s" --token soft >"$dir/resolve.$s.json"
   done

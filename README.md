@@ -71,11 +71,11 @@ curve = "secp256r1"
 [specs.signing-soft]
 object = "signing"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
-tokens.softhsm = { locator = { CKA_LABEL = "signing" }, autoCreate = true }
+tokens.softhsm = { locator = { CKA_LABEL = "signing" } }
 ```
 
 ```console
-$ cakeys -c keys.toml realise signing-soft --token softhsm --no-update-lock
+$ cakeys -c keys.toml create signing-soft --token softhsm --no-update-lock
 created 'signing' (spec 'signing-soft') on token 'softhsm'
 error: hash mismatch in identity of 'signing' (spec 'signing-soft') on token 'softhsm':
   specified: <none>
@@ -85,8 +85,8 @@ $ cakeys -c keys.toml check signing     # later: verify, then print the URI (nev
 pkcs11:token=main;serial=...;object=signing;type=private
 ```
 
-`realise` and `delete` write the lock by default, filling gaps only — a locked ID is never
-overwritten. A realisation that changed (its locator, spec or policy attributes) is re-recorded,
+Only `create` makes keys; `realise` and `check` find what is there. `create`, `realise` and
+`delete` write the lock by default, filling gaps only — a locked ID is never overwritten. A realisation that changed (its locator, spec or policy attributes) is re-recorded,
 and each accepted change is printed (`re-recorded …`). Where the lock cannot be written (a Nix build sandbox, a read-only lock or
 directory) they refuse up front unless `--no-update-lock` is passed.
 

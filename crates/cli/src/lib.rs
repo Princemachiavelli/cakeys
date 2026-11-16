@@ -53,9 +53,9 @@ enum Cmd {
         #[arg(long)]
         token: String,
     },
-    /// Create under the declared locator if absent and autoCreate is set, then compare with the
-    /// lock, recording what it lacks (missing hashes and realisation details; never overwriting
-    /// a hash) unless --no-update-lock.
+    /// Find the object and compare it with the lock, recording what it lacks (missing hashes,
+    /// realisation details) and what changed around it unless --no-update-lock; never
+    /// overwriting a hash. Never creates the object: `create` does.
     Realise {
         spec: String,
         #[arg(long)]
@@ -63,9 +63,8 @@ enum Cmd {
         #[command(flatten)]
         write: LockWriteArgs,
     },
-    /// Create keys explicitly, autoCreate or not (it only opts the first-use flows in): every
-    /// (spec, token) pair selected whose object the lock does not pin yet, then record them like
-    /// realise; pinned, adopted-only and publicOnly pairs are skipped with a note. Naming both
+    /// Create keys, the one verb that does: every (spec, token) pair selected whose object the
+    /// lock does not pin yet, then record them like realise; pinned, adopted-only and publicOnly pairs are skipped with a note. Naming both
     /// SPEC and --token creates that pair or says why not. Prints the realised objects as JSON.
     Create {
         /// Only this spec; default: every spec.
@@ -94,8 +93,8 @@ enum Cmd {
         #[arg(long)]
         apply: bool,
     },
-    /// Pseudo-FOD pre-use check: `<object>.id.<scheme>`. Realises (respecting autoCreate),
-    /// verifies against the lock, and prints the URI on stdout. Never writes the lock.
+    /// Pseudo-FOD pre-use check: `<object>.id.<scheme>`. Verifies against the lock in a
+    /// read-only session and prints the URI on stdout. Never writes, the lock or the token.
     Check {
         reference: String,
         #[arg(long)]
@@ -290,7 +289,7 @@ impl Run<'_> {
             }
         };
         let open = |name: &str, access| open_quiet(cfg, modules, registry, name, access);
-        let (r, tok) = ops::check_open(cfg, reference, spec, token, open, &mut self.lock, notes)?;
+        let (r, tok) = ops::check_open(cfg, reference, spec, token, open, &self.lock, notes)?;
         let uri = with_query(&r.uri, uri_module.then_some(tok.module.path.as_str()), pin.as_ref());
         if !key_file {
             println!("{uri}");
@@ -356,7 +355,8 @@ impl Run<'_> {
                 let mode = ops::plan_mode(&t)?;
                 println!("{spec_name} on {token}: mode {mode}");
                 if let Some(stack) = stacks.get(token.as_str()) {
-                    let v = cakeys_pkcs11::gate::check(&t, mode, stack, self.registry)?;
+                    let creates = ops::creates(&t, &self.lock);
+                    let v = cakeys_pkcs11::gate::check(&t, mode, stack, self.registry, creates)?;
                     for n in &v.notes {
                         notes.note(format_args!("validate: {n}"));
                     }

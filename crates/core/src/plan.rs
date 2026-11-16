@@ -245,6 +245,23 @@ fn check_declared(t: &Target, class: Class, declared: &BTreeMap<String, AttrValu
     Ok(())
 }
 
+/// Why `cakeys create` cannot make `t`'s object, from the spec alone: a class cakeys adopts
+/// rather than generates, a `publicOnly` adoption, or a `CKA_TRUSTED` key. `None` when it can.
+#[must_use]
+pub fn not_creatable(t: &Target) -> Option<&'static str> {
+    match t.object.class {
+        Class::PublicKey | Class::Data => Some("public keys and data objects are adopted, not created"),
+        Class::Certificate => Some("certificates are adopted, not created"),
+        _ if t.on_token.public_only => Some("publicOnly adopts the public half only; it is never created"),
+        // CKA_TRUSTED is set by the token's security officer (or recorded on an adopted
+        // object), never by generation.
+        _ if t.spec.flag("CKA_TRUSTED") == Some(true) => {
+            Some("CKA_TRUSTED = true cannot be generated; adopt the object instead")
+        }
+        _ => None,
+    }
+}
+
 /// Best identity mode achievable from the spec alone; weak modes need a per-token opt-in.
 ///
 /// # Errors
@@ -276,9 +293,6 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
         if t.object.class != Class::PrivateKey {
             return invalid("publicOnly applies to private keys only");
         }
-        if t.on_token.auto_create {
-            return invalid("publicOnly cannot autoCreate (the private half is not visible)");
-        }
         if !t.spec.attributes.is_empty() {
             return invalid("publicOnly cannot verify private-key policy attributes; leave attributes empty");
         }
@@ -291,24 +305,13 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
         );
     }
     if matches!(t.object.class, Class::PublicKey | Class::Data) {
-        if t.on_token.auto_create {
-            return invalid("public keys and data objects are adopted, not created");
-        }
         if t.object.class == Class::PublicKey {
             t.object.checked_key_type()?;
         }
         return Ok(Mode::Direct);
     }
     if t.is_certificate() {
-        if t.on_token.auto_create {
-            return invalid("certificates are adopted, not created");
-        }
         return Ok(Mode::Direct);
-    }
-    // CKA_TRUSTED is set by the token's security officer (or recorded on an adopted object), never
-    // by generation.
-    if t.on_token.auto_create && t.spec.flag("CKA_TRUSTED") == Some(true) {
-        return invalid("CKA_TRUSTED = true cannot be generated; adopt the object instead of autoCreate");
     }
     let kt = t.object.checked_key_type()?;
     let attr = |n: &str| t.spec.flag(n);

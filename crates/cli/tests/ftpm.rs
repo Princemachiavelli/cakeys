@@ -68,12 +68,12 @@ fn keys_generate_and_prove_possession_each_way() {
             body,
             "[objects.{n}]\nclass = \"CKO_PRIVATE_KEY\"\n{object}\n\n[specs.{n}]\nobject = \"{n}\"\n\
              attributes = {{ {attributes} }}\ntokens.ftpm = {{ locator = {{ CKA_LABEL = \"ftpm-{n}\" }}, \
-             autoCreate = true, binding = \"{binding}\" }}\n\n"
+             binding = \"{binding}\" }}\n\n"
         );
     }
     e.config(&body);
     for (n, _, _, binding) in cases {
-        let o = e.km(&["realise", n, "--token", "ftpm", "--update-lock"]);
+        let o = e.km(&["create", n, "--token", "ftpm", "--update-lock"]);
         assert_eq!(code(&o), 0, "{n}: {}", stderr(&o));
         assert_eq!(e.lock()["realisations"][n]["ftpm"]["binding"].as_str(), Some(binding), "{n}");
         let profile = e.observation(n, "ftpm")["profile"].clone();
@@ -85,9 +85,9 @@ fn keys_generate_and_prove_possession_each_way() {
     e.config(
         "[objects.big]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 3072\n\n\
          [specs.big]\nobject = \"big\"\nattributes = { CKA_SIGN = true }\n\
-         tokens.ftpm = { locator = { CKA_LABEL = \"ftpm-big\" }, autoCreate = true }\n",
+         tokens.ftpm = { locator = { CKA_LABEL = \"ftpm-big\" } }\n",
     );
-    assert_eq!(e.code(&["realise", "big", "--token", "ftpm", "--no-update-lock"]), 15);
+    assert_eq!(e.code(&["create", "big", "--token", "ftpm", "--no-update-lock"]), 15);
 }
 
 /// `pop-unwrap` (a transport key's proof, docs/CAMIGRATE.md D3) on the real TPM: tpm2-pkcs11 never
@@ -99,9 +99,9 @@ fn unwrap_only_keys_cannot_prove_possession() {
     e.config(
         "[objects.u]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
          [specs.u]\nobject = \"u\"\nattributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }\n\
-         tokens.ftpm = { locator = { CKA_LABEL = \"ftpm-unwrap\" }, autoCreate = true, binding = \"pop-unwrap\" }\n",
+         tokens.ftpm = { locator = { CKA_LABEL = \"ftpm-unwrap\" }, binding = \"pop-unwrap\" }\n",
     );
-    let o = e.km(&["realise", "u", "--token", "ftpm", "--update-lock"]);
+    let o = e.km(&["create", "u", "--token", "ftpm", "--update-lock"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("never unwraps") && !stderr(&o).contains("created"), "{}", stderr(&o));
 }
@@ -137,13 +137,14 @@ fn keys_attest_their_residence_on_the_real_tpm() {
     e.config(
         "[objects.p256]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [specs.p256]\nobject = \"p256\"\nattributes = { CKA_SIGN = true }\n\
-         tokens.ftpm = { locator = { CKA_LABEL = \"ftpm-attest-p256\" }, autoCreate = true, attestation = true }\n\n\
+         tokens.ftpm = { locator = { CKA_LABEL = \"ftpm-attest-p256\" }, attestation = true }\n\n\
          [objects.hmac]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_SHA256_HMAC\"\nvalueLen = 32\n\n\
          [specs.hmac]\nobject = \"hmac\"\nattributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n\
          tokens.ftpm = { locator = { CKA_LABEL = \"ftpm-attest-hmac\" }, attestation = true }\n",
     );
-    for spec in ["p256", "hmac"] {
-        let o = e.km(&["realise", spec, "--token", "ftpm", "--update-lock"]);
+    // The P-256 key is generated; the HMAC key was imported above and is adopted.
+    for (verb, spec) in [("create", "p256"), ("realise", "hmac")] {
+        let o = e.km(&[verb, spec, "--token", "ftpm", "--update-lock"]);
         assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
         let att = &e.lock()["realisations"][spec]["ftpm"]["attestation"];
         assert_eq!(att["kind"].as_str(), Some("tpm-certify"), "{spec}");

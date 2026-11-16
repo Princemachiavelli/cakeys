@@ -2,7 +2,8 @@
 //! against the token's capability profiles with no token attached — `validate`'s second half.
 //! The needs are [`ops::needs`], the same the live check refuses by before anything is created;
 //! here a profile's *no* refuses (15, naming the profile that decided it) and its *unknown* is a
-//! note, never a failure.
+//! note, never a failure. What only `create` needs (the generation) is a note either way: an
+//! adopted key needs none.
 //!
 //! A token's profiles resolve statically from what is known without opening it: the module and
 //! token its realisations recorded in the lock (D9/D10's match keys), and the `provider` and
@@ -85,23 +86,25 @@ pub struct Verdicts {
     pub notes: Vec<String>,
 }
 
-/// Check `t` in `mode` against `stack`: every mechanism group [`ops::needs`] lists, the
-/// generation of the object's type, curve and size when the spec creates it, and an attestation
-/// the provider must produce.
+/// Check `t` in `mode` against `stack`: every mechanism group [`ops::needs`] lists, and an
+/// attestation the provider must produce. When `creates` (`create` would make the object,
+/// [`ops::creates`]), also its generation — type, curve and size — but as notes: keys.toml
+/// does not say whether a key is created or adopted, and an adopted one needs no generation.
+/// `create` itself refuses live, before anything is made.
 ///
 /// # Errors
 ///
 /// [`Set::embedded`]'s parse error (a commit-time bug).
-pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry) -> Result<Verdicts> {
+pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates: bool) -> Result<Verdicts> {
     let mut out = Verdicts::default();
-    // A module that generates from its own template refuses here what it cannot make (kmsp11).
-    let own = match registry.named(&stack.provider).map(|p| ops::own_generation(t, p.as_ref())) {
+    // A module that generates from its own template refuses what it cannot make (kmsp11).
+    let own = match registry.named(&stack.provider).filter(|_| creates).map(|p| ops::own_generation(t, p.as_ref())) {
         Some(Err(e)) => {
-            out.refusals.push(e.to_string());
-            return Ok(out);
+            out.notes.push(format!("{t}: `cakeys create` cannot make it: {e}"));
+            None
         }
-        Some(Ok(own)) => own,
-        None => false,
+        Some(Ok(own)) => Some(own),
+        None => creates.then_some(false),
     };
     let needs = match ops::needs(t, mode, own) {
         Ok(n) => n,
@@ -120,7 +123,8 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry) -> Resu
     let layers: Vec<&cakeys_profile::Profile> = stack.resolved.layers.iter().collect();
     let eff = Effective::new(baseline, stack.resolved.module.as_ref(), &layers);
     let token = t.token_name;
-    for group in &needs.groups {
+    let generation = needs.generation.map(|m| vec![m]);
+    for (group, creating) in needs.groups.iter().map(|g| (g, false)).chain(generation.iter().map(|g| (g, true))) {
         let verdicts: Vec<(String, Verdict)> =
             group.iter().map(|m| (m.to_string(), eff.mechanism(&m.to_string()))).collect();
         if verdicts.iter().any(|(_, v)| matches!(v, Verdict::Yes { .. })) {
@@ -128,20 +132,24 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry) -> Resu
         }
         let lines: Vec<String> = verdicts.iter().map(|(m, v)| format!("{m}: {v}")).collect();
         if verdicts.iter().all(|(_, v)| matches!(v, Verdict::No { .. })) {
-            out.refusals
-                .push(format!("{t}: token '{token}' cannot do what mode '{mode}' needs ({})", lines.join("; ")));
+            let why = format!("token '{token}' cannot do what mode '{mode}' needs ({})", lines.join("; "));
+            if creating {
+                out.notes.push(format!("{t}: `cakeys create` cannot make it: {why}"));
+            } else {
+                out.refusals.push(format!("{t}: {why}"));
+            }
         } else {
             out.notes.push(format!("{t}: the profiles do not decide ({})", lines.join("; ")));
         }
     }
-    if needs.generates
+    if needs.generation.is_some()
         && let Some(kt) = t.object.key_type
     {
         let bits = t.object.modulus_bits.and_then(|b| u32::try_from(b).ok());
         match eff.generate(kt.name(), t.object.curve.as_deref(), bits) {
             Verdict::Yes { .. } => {}
             v @ Verdict::No { .. } => {
-                out.refusals.push(format!("{t}: token '{token}' cannot generate it: {v}"));
+                out.notes.push(format!("{t}: `cakeys create` cannot make it: token '{token}' cannot generate it: {v}"));
             }
             v @ Verdict::Unknown { .. } => out.notes.push(format!("{t}: generation not decided: {v}")),
         }

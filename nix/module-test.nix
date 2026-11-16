@@ -29,7 +29,7 @@ let
     [specs.signing-soft]
     object = "signing"
     attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
-    tokens.softhsm = { locator = { CKA_LABEL = "signing", CKA_ID = "01" }, autoCreate = true }
+    tokens.softhsm = { locator = { CKA_LABEL = "signing", CKA_ID = "01" } }
   '';
 
   # What a build's sandbox sees: pcscd reachability and the SoftHSM state directory.
@@ -201,9 +201,12 @@ pkgs.testers.runNixOSTest {
             "echo 1234 > ${stateDir}/pin",
             "softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678",
         )
-        # No locked identity yet: the check fails (first use creates the key), so does signer.
+        # No key yet: the check fails (it never creates one), so does signer.
         machine.fail("systemctl start signer.service")
-        machine.succeed(f"{km} realise signing-soft --token softhsm --update-lock")
+        assert "`cakeys create` makes it" in machine.succeed(
+            "journalctl -u cakeys-check-signing.service --no-pager"
+        )
+        machine.succeed(f"{km} create signing-soft --token softhsm --update-lock")
         machine.fail("test -e /run/cakeys/signing.pem")
         machine.succeed(f"{km} realise signing-soft --token softhsm --update-lock")
         machine.succeed("systemctl start signer.service")
@@ -218,13 +221,11 @@ pkgs.testers.runNixOSTest {
             " -provider pkcs11 -in /run/cakeys/signing.pem -pubout -out /run/signing.pub",
             "openssl dgst -sha256 -verify /run/signing.pub -signature /run/signer.sig /etc/km/keys.toml",
         )
-        # Key gone: a fresh check (autoCreate makes a new key) no longer matches the lock.
+        # Key gone: a fresh check fails, and makes no new key.
         machine.succeed(f"{km} delete signing-soft --token softhsm --no-update-lock")
         machine.succeed("systemctl stop signer.service cakeys-check-signing.service")
         machine.fail("systemctl start signer.service")
-        assert "hash mismatch" in machine.succeed(
-            "journalctl -u cakeys-check-signing.service --no-pager"
-        )
+        machine.fail(f"{km} resolve signing-soft --token softhsm")
         # No key file outlives the failed check.
         machine.fail("test -e /run/cakeys/signing.pem")
   '';

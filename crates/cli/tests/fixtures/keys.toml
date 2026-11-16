@@ -16,7 +16,7 @@ createOn = "softhsm"
 [specs.signing-soft]
 object = "signing"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
-tokens.softhsm = { locator = { CKA_LABEL = "signing" }, autoCreate = true }
+tokens.softhsm = { locator = { CKA_LABEL = "signing" } }
 
 [objects.signing-cert]
 class = "CKO_CERTIFICATE"
@@ -34,7 +34,7 @@ valueLen = 32
 [specs.shared-sign]
 object = "shared"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
-tokens.softhsm = { locator = { CKA_LABEL = "shared-a" }, autoCreate = true }
+tokens.softhsm = { locator = { CKA_LABEL = "shared-a" } }
 
 [specs.shared-nosign]
 object = "shared"
