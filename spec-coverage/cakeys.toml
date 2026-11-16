@@ -6,9 +6,9 @@ baseline = "pkcs11-3.2"
 
 [summary]
 gap = 78
-out-of-scope = 831
+out-of-scope = 827
 profile = 10
-used = 178
+used = 182
 
 [functions]
 C_AsyncComplete = "out-of-scope"
@@ -280,7 +280,7 @@ CKM_ECDH_X_AES_KEY_WRAP = "out-of-scope"
 CKM_ECDSA = "used"
 CKM_ECDSA_KEY_PAIR_GEN = "used"
 CKM_ECDSA_SHA1 = "used"
-CKM_ECDSA_SHA224 = "out-of-scope"
+CKM_ECDSA_SHA224 = "used"
 CKM_ECDSA_SHA256 = "used"
 CKM_ECDSA_SHA384 = "used"
 CKM_ECDSA_SHA3_224 = "out-of-scope"
@@ -452,7 +452,7 @@ CKM_SHA224_HMAC = "used"
 CKM_SHA224_HMAC_GENERAL = "out-of-scope"
 CKM_SHA224_KEY_DERIVATION = "out-of-scope"
 CKM_SHA224_KEY_GEN = "profile"
-CKM_SHA224_RSA_PKCS = "out-of-scope"
+CKM_SHA224_RSA_PKCS = "used"
 CKM_SHA224_RSA_PKCS_PSS = "out-of-scope"
 CKM_SHA256 = "used"
 CKM_SHA256_HMAC = "used"
@@ -901,7 +901,7 @@ CKR_FUNCTION_NOT_PARALLEL = "out-of-scope"
 CKR_FUNCTION_NOT_SUPPORTED = "used"
 CKR_FUNCTION_REJECTED = "out-of-scope"
 CKR_GENERAL_ERROR = "used"
-CKR_HOST_MEMORY = "out-of-scope"
+CKR_HOST_MEMORY = "used"
 CKR_INFORMATION_SENSITIVE = "out-of-scope"
 CKR_KEY_CHANGED = "out-of-scope"
 CKR_KEY_EXHAUSTED = "out-of-scope"
@@ -916,7 +916,7 @@ CKR_KEY_TYPE_INCONSISTENT = "used"
 CKR_KEY_UNEXTRACTABLE = "out-of-scope"
 CKR_LIBRARY_LOAD_FAILED = "out-of-scope"
 CKR_MECHANISM_INVALID = "used"
-CKR_MECHANISM_PARAM_INVALID = "out-of-scope"
+CKR_MECHANISM_PARAM_INVALID = "used"
 CKR_MUTEX_BAD = "out-of-scope"
 CKR_MUTEX_NOT_LOCKED = "out-of-scope"
 CKR_NEED_TO_CREATE_THREADS = "out-of-scope"
