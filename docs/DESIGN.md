@@ -254,7 +254,7 @@ key to its identity:
        stays unavailable (16) on such a token.
      - **Misreported attribute.** ykcs11 reports `CKA_DERIVE = false` on every key from a
        fixed table while its keys derive. The provider repairs the reported value
-       (`Provider::policy_flag`), so `CKA_DERIVE = true` checks and is recorded. A lock
+       (`Provider::repair`), so `CKA_DERIVE = true` checks and is recorded. A lock
        recorded before that repair fails `verify` once (14, "CKA_DERIVE false -> true"), and
        `realise` re-records it.
    - `pop-decrypt` (RSA keys that only decrypt): the host encrypts the challenge to the public key
@@ -609,7 +609,7 @@ The reviews these come from are archived: `docs/archive/REVIEW-2026-11-11.md` (c
   not `CKA_EXTRACTABLE` or `CKA_SENSITIVE`, and "never more than one object" holds only if the
   module's search returns every match, once: native-pkcs11 reports constant policy for any
   keychain key, and its searches both hide duplicates and show one key twice (PLAN.md A0b). A provider can repair a known misreport, as
-  `policy_flag` does for ykcs11's `CKA_DERIVE`, but not a module that does not know.
+  `repair` does for ykcs11's `CKA_DERIVE`, but not a module that does not know.
 - **`piv-attestation` proves no liveness** (no verifier nonce in Yubico's certificate, §3.7):
   a malicious module could replay an old one. `tpm-certify` is nonce-bound, so it proves the
   object was loaded in that TPM at verify time.

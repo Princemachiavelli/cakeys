@@ -127,7 +127,7 @@ impl Token {
                 .create_object(&template.0)
                 .map_err(|e| self.unsupported(format!("creating the key on '{}': C_CreateObject: {e}", self.name)))
         };
-        if self.provider.manages_as_so() { self.as_so("importing a key", create) } else { create() }
+        self.managing("importing a key", create)
     }
 }
 

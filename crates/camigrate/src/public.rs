@@ -103,8 +103,7 @@ pub(crate) fn create(
     };
     let created = match public_half {
         Some(_) => None,
-        None if to.provider.manages_as_so() => Some(to.as_so("importing an object", create)?),
-        None => Some(create()?),
+        None => Some(to.managing("importing an object", create)?),
     };
     let origin =
         Origin { from: from.to_owned(), method: Method::Public.name(), exposure: Exposure::Public, declared: false };

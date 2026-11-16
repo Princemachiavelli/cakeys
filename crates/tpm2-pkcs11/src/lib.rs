@@ -23,7 +23,7 @@ use cakeys_core::Result;
 use cakeys_core::config::Options;
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass;
-use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, ImportCtx, Provider};
+use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, ImportCtx, Provider, Report};
 use cakeys_pkcs11::token::ModuleInfo;
 use std::borrow::Cow;
 
@@ -39,8 +39,12 @@ impl Provider for Tpm2Pkcs11 {
         m.manufacturer == "tpm2-software.github.io"
     }
 
-    fn ec_point<'a>(&self, raw: &'a [u8]) -> Cow<'a, [u8]> {
-        fix_ec_point(raw)
+    fn repair<'a>(&self, report: Report<'a>) -> Report<'a> {
+        match report {
+            Report::EcPoint(Cow::Borrowed(raw)) => Report::EcPoint(fix_ec_point(raw)),
+            Report::EcPoint(Cow::Owned(raw)) => Report::EcPoint(Cow::Owned(fix_ec_point(&raw).into_owned())),
+            other => other,
+        }
     }
 
     fn hint(&self) -> Option<&'static str> {

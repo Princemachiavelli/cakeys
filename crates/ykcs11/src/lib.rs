@@ -10,11 +10,12 @@
 mod attest;
 
 use crate::attest::{ATTESTATION_LABEL, pem_certs, piv_pool, verify_piv_attestation};
-use cakeys_core::config::{Locator, ObjectCfg};
+use cakeys_core::config::Locator;
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
-use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, Provider};
+use cakeys_pkcs11::Token;
+use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, Create, Destroy, Provider, Report};
 use cakeys_pkcs11::token::ModuleInfo;
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass};
 use std::sync::LazyLock;
@@ -36,23 +37,14 @@ static INTERMEDIATES: LazyLock<Vec<attest::Cert>> = LazyLock::new(|| {
     piv_pool(pem_certs(include_str!("../roots/yubico-intermediate.pem")).expect("embedded Yubico intermediates parse"))
 });
 
-impl Provider for Ykcs11 {
-    fn name(&self) -> &'static str {
-        "ykcs11"
-    }
-
-    fn matches(&self, m: &ModuleInfo) -> bool {
-        m.manufacturer.starts_with("Yubico")
-    }
-
-    /// ykcs11 generates (and deletes) only after `C_Login(CKU_SO)` with the PIV management key.
-    fn manages_as_so(&self) -> bool {
-        true
-    }
-
+impl Ykcs11 {
     /// ykcs11 generates into the slot the template's `CKA_ID` names and gives each slot fixed
     /// labels, so a key to create is located by `CKA_ID` alone.
-    fn check_create(&self, _object: &ObjectCfg, loc: &Locator) -> Result<()> {
+    ///
+    /// # Errors
+    ///
+    /// `Validation` for a locator with a label, or whose `CKA_ID` names no PIV slot.
+    pub fn check_create(&self, loc: &Locator) -> Result<()> {
         if loc.label.is_some() {
             return Err(KmError::Validation(
                 "ykcs11 ignores CKA_LABEL when generating and fixes each slot's labels; locate a key \
@@ -73,21 +65,60 @@ impl Provider for Ykcs11 {
     /// ykcs11's `C_DestroyObject` writes an empty certificate to the slot and hides the slot's
     /// objects for the rest of the session; the key stays and is listed again by the next one
     /// (verified on a `YubiKey` 5, firmware 5.7.4, ykcs11 2.7.3).
-    fn keeps_destroyed_keys(&self, loc: &Locator) -> Option<String> {
+    #[must_use]
+    pub fn keeps_destroyed_keys(&self, loc: &Locator) -> Option<String> {
         let slot = loc.id.as_deref().and_then(piv_slot).map_or("<slot>".to_owned(), |s| format!("{s:02x}"));
         Some(format!(
             "ykcs11 clears only the slot's certificate and leaves the key in the slot; delete it with \
              `ykman piv keys delete {slot}`"
         ))
     }
+}
+
+impl Provider for Ykcs11 {
+    fn name(&self) -> &'static str {
+        "ykcs11"
+    }
+
+    fn matches(&self, m: &ModuleInfo) -> bool {
+        m.manufacturer.starts_with("Yubico")
+    }
+
+    /// ykcs11 generates (and deletes) only after `C_Login(CKU_SO)` with the PIV management key.
+    fn manages_as_so(&self) -> bool {
+        true
+    }
+
+    /// A key goes where its locator says ([`Ykcs11::check_create`]), as SO.
+    fn create(&self, tok: &Token, req: &Create<'_>) -> Result<Option<String>> {
+        self.check_create(req.locator)?;
+        tok.create_declared(req)
+    }
+
+    /// A key is never claimed deleted ([`Ykcs11::keeps_destroyed_keys`]); anything else is, as SO.
+    fn destroy(&self, tok: &Token, req: &Destroy<'_>) -> Result<usize> {
+        if req.object.class.is_key()
+            && let Some(advice) = self.keeps_destroyed_keys(req.locator)
+        {
+            return Err(KmError::Unsupported(format!("deleting {} on '{}': {advice}", req.object.class, tok.name)));
+        }
+        tok.destroy_plain(req)
+    }
 
     /// ykcs11 reports `CKA_DERIVE` false on every private key, from a fixed per-slot table
     /// (`pvtkey_objects`, ykcs11/objects.c) \[src\], while its `C_DeriveKey` derives with any EC
     /// or X25519 key in any slot \[src\]\[run\]. A spec-compliant module reports what the key does.
-    fn policy_flag(&self, attr: AttributeType, reported: bool, private_key_type: &dyn Fn() -> Option<KeyType>) -> bool {
-        reported
-            || (attr == AttributeType::Derive
-                && matches!(private_key_type(), Some(KeyType::EC | KeyType::EC_MONTGOMERY)))
+    fn repair<'a>(&self, report: Report<'a>) -> Report<'a> {
+        match report {
+            Report::PolicyFlag { attr, reported, private_key_type } => Report::PolicyFlag {
+                attr,
+                reported: reported
+                    || (attr == AttributeType::Derive
+                        && matches!(private_key_type(), Some(KeyType::EC | KeyType::EC_MONTGOMERY))),
+                private_key_type,
+            },
+            other => other,
+        }
     }
 
     /// ykcs11's own placeholder: when it generates a key it stores a self-issued certificate
@@ -254,10 +285,9 @@ mod tests {
         }
         let loc =
             |label: Option<&str>, id: Option<&str>| Locator { label: label.map(Into::into), id: id.map(Into::into) };
-        let obj = ObjectCfg::new(Class::PrivateKey, Some(cakeys_core::types::KeyType::Ec));
-        assert!(Ykcs11.check_create(&obj, &loc(None, Some("01"))).is_ok());
-        assert!(matches!(Ykcs11.check_create(&obj, &loc(Some("x"), Some("01"))), Err(KmError::Validation(_))));
-        assert!(matches!(Ykcs11.check_create(&obj, &loc(None, Some("19"))), Err(KmError::Validation(_))));
+        assert!(Ykcs11.check_create(&loc(None, Some("01"))).is_ok());
+        assert!(matches!(Ykcs11.check_create(&loc(Some("x"), Some("01"))), Err(KmError::Validation(_))));
+        assert!(matches!(Ykcs11.check_create(&loc(None, Some("19"))), Err(KmError::Validation(_))));
         assert!(Ykcs11.keeps_destroyed_keys(&loc(None, Some("18"))).unwrap().contains("ykman piv keys delete 95"));
     }
 

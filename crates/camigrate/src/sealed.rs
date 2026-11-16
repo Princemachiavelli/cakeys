@@ -608,7 +608,7 @@ pub(crate) fn create_public_half(dst: &Target, to: &Token, spki: &[u8]) -> Resul
         }
         .map_err(|e| to.unsupported(format!("{dst}: the public half: C_CreateObject: {e}")))
     };
-    if to.provider.manages_as_so() { to.as_so("creating the public half", create) } else { create() }
+    to.managing("creating the public half", create)
 }
 
 /// RSA-OAEP with MGF1 of the same hash and an empty label: what the planner names.

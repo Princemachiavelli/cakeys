@@ -28,13 +28,36 @@ impl Token {
         loc: &Locator,
         binding: Option<Binding>,
     ) -> Result<Option<String>> {
-        self.provider.check_create(object, loc)?;
-        let own = self.provider.generation(object, spec, loc, binding)?;
-        let run = || match &own {
+        self.provider.create(self, &Create { object, spec, locator: loc, binding })
+    }
+
+    /// [`Provider::create`]'s default, for an override to wrap: the module's own template where
+    /// [`Provider::generation`] chooses one, else cakeys' templates, in an SO session where the
+    /// module needs one ([`Self::managing`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::create`].
+    ///
+    /// [`Provider::create`]: crate::Provider::create
+    pub fn create_declared(&self, req: &Create<'_>) -> Result<Option<String>> {
+        let own = self.provider.generation(req.object, req.spec, req.locator, req.binding)?;
+        self.managing("generating a key", || match &own {
             Some(g) => self.generate_own(g),
-            None => self.generate(object, spec, loc),
-        };
-        if self.provider.manages_as_so() { self.as_so("generating a key", run) } else { run() }
+            None => self.generate(req.object, req.spec, req.locator),
+        })
+    }
+
+    /// Run `step`, which creates or destroys token objects, in a Security Officer session where
+    /// the module does that only as SO ([`Provider::manages_as_so`]), else as it is.
+    ///
+    /// # Errors
+    ///
+    /// `step`'s, and [`Self::as_so`]'s where it runs as SO.
+    ///
+    /// [`Provider::manages_as_so`]: crate::Provider::manages_as_so
+    pub fn managing<T>(&self, what: &str, step: impl FnOnce() -> Result<T>) -> Result<T> {
+        if self.provider.manages_as_so() { self.as_so(what, step) } else { step() }
     }
 
     /// The module's own generation: its template alone, no public template.
@@ -197,16 +220,23 @@ impl Token {
     ///
     /// As [`Self::destroy`].
     pub fn destroy_handles(&self, object: &ObjectCfg, loc: &Locator, handles: &[ObjectHandle]) -> Result<usize> {
-        let class = class_of(object);
         if handles.is_empty() {
             return Ok(0);
         }
-        if matches!(class, ObjectClass::PRIVATE_KEY | ObjectClass::PUBLIC_KEY | ObjectClass::SECRET_KEY)
-            && let Some(advice) = self.provider.keeps_destroyed_keys(loc)
-        {
-            return Err(KmError::Unsupported(format!("deleting {} on '{}': {advice}", object.class, self.name)));
-        }
-        let run = || {
+        self.provider.destroy(self, &Destroy { object, locator: loc, handles })
+    }
+
+    /// [`Provider::destroy`]'s default, for an override to wrap: `C_DestroyObject` on each of
+    /// `req.handles`, in an SO session where the module needs one ([`Self::managing`]).
+    ///
+    /// # Errors
+    ///
+    /// A failure to destroy is `Unavailable`, naming the token.
+    ///
+    /// [`Provider::destroy`]: crate::Provider::destroy
+    pub fn destroy_plain(&self, req: &Destroy<'_>) -> Result<usize> {
+        let handles = req.handles;
+        self.managing("deleting", || {
             for (i, h) in handles.iter().enumerate() {
                 match self.session.destroy_object(*h) {
                     Ok(()) => {}
@@ -218,8 +248,7 @@ impl Token {
                 }
             }
             Ok(handles.len())
-        };
-        if self.provider.manages_as_so() { self.as_so("deleting", run) } else { run() }
+        })
     }
 }
 

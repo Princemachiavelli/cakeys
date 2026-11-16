@@ -256,7 +256,7 @@ All phases ran on 2026-11-12 (0, 1) and 2026-11-14 (2–5); the test names are i
 | Phase | Built | Found or decided |
 |---|---|---|
 | 0 | The spike (pkcs11-tool, SoftHSM ↔ kryoptic) and the cryptoki KWP patch (`nix/patches/cryptoki-aes-key-wrap-kwp.patch`, upstream draft `upstream/rust-cryptoki/PR-KWP.md`) | SoftHSM's AES-KW-PAD and kryoptic's AES-KWP are one format (RFC 5649) under two IDs; EC and RSA keys wrapped either way still sign for their fixtures; the composed method works both ways [run] |
-| 1 | The planner and `--dry-run`; `Provider::migration`, the capability hook vendor crates use (D10); the transport file | — |
+| 1 | The planner and `--dry-run`; the capability hook vendor crates used (D10; since folded into the profiles, `Side::pkcs11`); the transport file | — |
 | 2 | `public` moves (`public.rs`), recorded through `ops::realise_import` | tpm2-pkcs11 creates data objects only private, so its profiles no longer accept public `CKO_DATA` |
 | 3 | `sealed` (`sealed.rs`): bundles, `export --out`, `import`, `migrate`; one creation pair per object (`origin = "create"`), targets `origin = "import"`; `migrate.transportWith` and `pop-unwrap` | SoftHSM's unwrapped `CKA_VALUE_LEN` (`secret-unwraps = false`); p11-kit needs its `provider` named (the layer's `requires-provider`) |
 | 3b | `enforced`: `transport --trusted`, `CKM_RSA_AES_KEY_WRAP` (third cryptoki patch, `nix/patches/cryptoki-rsa-aes-key-wrap.patch`), the bundle's per-entry `kek` | both modules refuse a wrap-with-trusted key under an untrusted key; `CKA_TRUSTED` is set only at creation and only by the SO; kryoptic cannot trust an RSA public key [run: one-off PyKCS11 and Rust test programs, not kept, recorded in the profiles' `[manual."trusted-wrap"]`] |

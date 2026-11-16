@@ -1,10 +1,10 @@
-//! Module-specific behaviour. The generic PKCS#11 code calls these hooks; a provider crate
+//! Module-specific behaviour: repairs and operations ([`Provider`]); a provider crate
 //! overrides only what its module gets wrong. Every fix-up must return exactly what a
 //! spec-compliant module would, so identities stay portable across modules and versions.
 
+use crate::Token;
 use cakeys_core::config::{Binding, Locator, ModuleInfo, ObjectCfg, Options, SpecCfg, TokenCfg};
 use cakeys_core::id::Scheme;
-use cakeys_core::migrate::Side;
 use cakeys_core::types::ObjectClass;
 use cakeys_core::{KmError, Result};
 use cakeys_profile::Set;
@@ -55,10 +55,20 @@ pub fn keygen_mechanism(keygen: MechanismType) -> Option<(Mechanism<'static>, bo
     })
 }
 
-/// What one family of PKCS#11 modules needs beyond the standard: how to recognise it, the
-/// quirks to repair, what it cannot do, and its own paths (attestation, plaintext import, how
-/// keys move). Every hook defaults to plain PKCS#11, so a provider overrides only what its
-/// module does differently.
+/// What one family of PKCS#11 modules needs beyond the standard, at two kinds of seam and
+/// nothing else (docs/archive/REVIEW-2026-11-15.md §4):
+///
+/// - *repairs*, where a module's answer is made what a spec-compliant module's would be: one
+///   for an attribute read ([`Self::repair`]), one for a mechanism ([`Self::stand_in`]);
+/// - *operations*, which a provider may replace whole, the default being plain PKCS#11 through
+///   a public [`Token`] method an override can wrap: [`Self::create`], [`Self::destroy`],
+///   [`Self::import_plaintext`] and [`Self::attest`].
+///
+/// Beside them: how to recognise the module, its settings and advice, and the facts a caller
+/// must know before it acts ([`Self::manages_as_so`], [`Self::generation`]). The hooks only the
+/// probe reads ([`Self::stand_ins`], [`Self::bound_keys`], [`Self::scratch_occupant`]) go once
+/// the probe runs these operations. A provider that seems to need a new hook overrides an
+/// operation in its own crate instead.
 ///
 /// The in-tree providers are crates of this workspace (`cakeys-ykcs11`, `cakeys-tpm2-pkcs11`,
 /// `cakeys-kmsp11`, `cakeys-aws-cloudhsm`); a crate outside it adds its own to a [`Registry`]
@@ -70,54 +80,6 @@ pub trait Provider: Send + Sync {
 
     /// Whether this provider recognises the loaded module (from `C_GetInfo`), for auto-detection.
     fn matches(&self, module: &ModuleInfo) -> bool;
-
-    /// The mechanisms to rely on. Override to drop ones the module advertises but cannot use.
-    fn mechanisms(&self, advertised: Vec<MechanismType>) -> Vec<MechanismType> {
-        advertised
-    }
-
-    /// Repair a module's `CKA_EC_POINT` encoding.
-    fn ec_point<'a>(&self, raw: &'a [u8]) -> Cow<'a, [u8]> {
-        Cow::Borrowed(raw)
-    }
-
-    /// Repair a key type the module misreports, from the object's `CKA_EC_PARAMS` where it has
-    /// them: AWS `CloudHSM` reports an Ed25519 key as `CKK_EC` \[run\].
-    fn key_type(&self, reported: KeyType, _ec_params: Option<&[u8]>) -> KeyType {
-        reported
-    }
-
-    /// The mechanism this module runs for the standard `m` it does not list, parameterless:
-    /// AWS `CloudHSM` generates Ed25519 with `CKM_EC_KEY_PAIR_GEN` and signs with a vendor
-    /// mechanism \[run\]. Used only where the module does not list `m` ([`Token::runnable`]), and
-    /// relied on only where a profile's `add` row records that it works (`caprobe` measures
-    /// [`Self::stand_ins`]). `None`: no stand-in.
-    ///
-    /// [`Token::runnable`]: crate::Token::runnable
-    fn stand_in(&self, _m: &Mechanism) -> Option<Mechanism<'static>> {
-        None
-    }
-
-    /// The standard mechanisms [`Self::stand_in`] covers: what `caprobe` probes although the
-    /// module does not list them.
-    fn stand_ins(&self) -> &'static [MechanismType] {
-        &[]
-    }
-
-    /// Repair a boolean policy attribute (`CKA_SIGN`, `CKA_DERIVE`, ...) the module misreports:
-    /// `reported` is what it returned for `attr`, `private_key_type` reads the object's key type
-    /// when it is a private key. The policy check and the lock's recorded policy both see the
-    /// result, so it must be what a spec-compliant module would report (ykcs11's fixed table
-    /// says `CKA_DERIVE` false on keys its `C_DeriveKey` derives with). The profile keeps the
-    /// raw observation (`derive.key-attribute`).
-    fn policy_flag(
-        &self,
-        _attr: AttributeType,
-        reported: bool,
-        _private_key_type: &dyn Fn() -> Option<KeyType>,
-    ) -> bool {
-        reported
-    }
 
     /// Advice appended when the module cannot do something the spec asks for.
     fn hint(&self) -> Option<&'static str> {
@@ -143,35 +105,41 @@ pub trait Provider: Send + Sync {
     }
 
     /// Whether the module creates and destroys token objects only in a Security Officer session
-    /// (ykcs11: the PIV management key). Then `tokens.<t>.soCredentialFile`/`soCredentialEnv` is used for exactly those
-    /// steps; elsewhere it is refused, since an SO there cannot do what the user does.
+    /// (ykcs11: the PIV management key). Then `tokens.<t>.soCredentialFile`/`soCredentialEnv`
+    /// is used for exactly those steps ([`Token::managing`]); elsewhere it is refused, since an
+    /// SO there cannot do what the user does. A fact, not an operation: camigrate's imports and
+    /// the probe's scratch guard read it too.
     fn manages_as_so(&self) -> bool {
         false
     }
 
-    /// Refuse a generation the module would carry out somewhere other than under `loc`, before
-    /// anything is created (ykcs11 places the key by `CKA_ID` and ignores `CKA_LABEL`).
-    ///
-    /// # Errors
-    ///
-    /// `Unsupported` when the locator cannot name where the module will actually put the key.
-    fn check_create(&self, _object: &ObjectCfg, _loc: &Locator) -> Result<()> {
-        Ok(())
+    // ── Repairs ──────────────────────────────────────────────────────────────────────────
+
+    /// Repair what the module reported for one attribute read ([`Report`]) to what a
+    /// spec-compliant module would report, returning the same variant. The policy check, the
+    /// identities and the lock all see the result, so identities stay portable across modules
+    /// and versions; the profile keeps the raw observation. The default changes nothing.
+    fn repair<'a>(&self, report: Report<'a>) -> Report<'a> {
+        report
     }
 
-    /// The keys a module binds to one purpose when it creates them (Google Cloud KMS: one
-    /// algorithm per key), each with the exact template it is generated from: the write probe
-    /// generates these instead of its own templates. Empty for a module whose keys are general
-    /// purpose, the default.
-    fn bound_keys(&self) -> Vec<BoundKey> {
-        Vec::new()
+    /// The mechanism this module runs for the standard `m` it does not list, parameterless:
+    /// AWS `CloudHSM` generates Ed25519 with `CKM_EC_KEY_PAIR_GEN` and signs with a vendor
+    /// mechanism \[run\]. Used only where the module does not list `m` ([`Token::runnable`]), and
+    /// relied on only where a profile's `add` row records that it works (`caprobe` measures
+    /// [`Self::stand_ins`]). `None`: no stand-in.
+    fn stand_in(&self, _m: &Mechanism) -> Option<Mechanism<'static>> {
+        None
     }
+
+    // ── Operations ───────────────────────────────────────────────────────────────────────
 
     /// The module's own generation of `object` as `spec` declares it under `loc`, to be proven
-    /// by `binding` (private keys): `None` for cakeys' own templates, the default. A module that
-    /// takes only its own template (Google Cloud KMS) chooses it here, and refuses here, before
-    /// anything is created, what would become a key cakeys could not then identify or prove: a
-    /// key it destroys again is not always gone (Cloud KMS keeps the label for good).
+    /// by `binding` (private keys): `None` for cakeys' own templates, the default. The static
+    /// half of [`Self::create`], read before any token is opened (the capability gate). A module
+    /// that takes only its own template (Google Cloud KMS) chooses it here, and refuses here,
+    /// before anything is created, what would become a key cakeys could not then identify or
+    /// prove: a key it destroys again is not always gone (Cloud KMS keeps the label for good).
     ///
     /// # Errors
     ///
@@ -187,19 +155,41 @@ pub trait Provider: Send + Sync {
         Ok(None)
     }
 
-    /// `Some(advice)` when the module's `C_DestroyObject` reports success but leaves the key on
-    /// the device (ykcs11 only clears the slot's certificate): deleting is then refused (15)
-    /// instead of claimed, and the advice names how to remove the key.
-    fn keeps_destroyed_keys(&self, _loc: &Locator) -> Option<String> {
-        None
+    /// Create `req`'s object on `tok`. The default is [`Token::create_declared`]: the module's
+    /// own template where [`Self::generation`] chooses one, else cakeys' templates, in an SO
+    /// session where [`Self::manages_as_so`]. An override refuses what the module would place
+    /// elsewhere than asked (ykcs11 places by `CKA_ID`), before anything is created.
+    ///
+    /// # Errors
+    ///
+    /// As [`Token::create_declared`], plus the override's refusals.
+    fn create(&self, tok: &Token, req: &Create<'_>) -> Result<Option<String>> {
+        tok.create_declared(req)
     }
 
-    /// Whether the certificates `certs` (DER) found under the probe's scratch `CKA_ID` (`id`)
-    /// show a slot holding only what this module itself wrote when it generated the slot's key —
-    /// the only occupant the write probe may replace (`tokens.<t>.scratchId`). Anything else may
-    /// be a real key, so the probe refuses it. The default recognises none.
-    fn scratch_occupant(&self, _id: &[u8], _certs: &[Vec<u8>]) -> bool {
-        false
+    /// Destroy `req`'s handles, identified by the caller, on `tok`. The default is
+    /// [`Token::destroy_plain`]: `C_DestroyObject` each, in an SO session where
+    /// [`Self::manages_as_so`]. An override refuses (15) where the module's
+    /// `C_DestroyObject` reports success but leaves the key (ykcs11), naming how to remove it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Token::destroy_plain`], plus the override's refusals.
+    fn destroy(&self, tok: &Token, req: &Destroy<'_>) -> Result<usize> {
+        tok.destroy_plain(req)
+    }
+
+    /// Import plaintext key material the module's own way, outside PKCS#11 (docs/CAMIGRATE.md
+    /// `tpm2-ptool`: tpm2-pkcs11 creates keys from values only through `tpm2_ptool import`):
+    /// `ctx.key` is a private key's PKCS#8 `PrivateKeyInfo` or a secret key's value. The caller
+    /// opens the token again afterwards to see the key. The default refuses.
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` (this default, or a key type the tool cannot take); whatever the tool
+    /// reports.
+    fn import_plaintext(&self, _ctx: &ImportCtx<'_>) -> Result<()> {
+        Err(KmError::Unsupported(format!("{} imports no plaintext outside PKCS#11", self.name())))
     }
 
     /// The attestation commitment this provider can compute (§3.7 of docs/DESIGN.md), if any:
@@ -227,26 +217,114 @@ pub trait Provider: Send + Sync {
         Err(KmError::Unsupported(format!("{} exposes no attestation", self.name())))
     }
 
-    /// Import plaintext key material the module's own way, outside PKCS#11 (docs/CAMIGRATE.md
-    /// `tpm2-ptool`: tpm2-pkcs11 creates keys from values only through `tpm2_ptool import`):
-    /// `ctx.key` is a private key's PKCS#8 `PrivateKeyInfo` or a secret key's value. The caller
-    /// opens the token again afterwards to see the key. The default refuses.
-    ///
-    /// # Errors
-    ///
-    /// `Unsupported` (this default, or a key type the tool cannot take); whatever the tool
-    /// reports.
-    fn import_plaintext(&self, _ctx: &ImportCtx<'_>) -> Result<()> {
-        Err(KmError::Unsupported(format!("{} imports no plaintext outside PKCS#11", self.name())))
+    // ── Read only by the probe, until it runs the operations above ──────────────────────
+
+    /// The standard mechanisms [`Self::stand_in`] covers: what `caprobe` probes although the
+    /// module does not list them.
+    fn stand_ins(&self) -> &'static [MechanismType] {
+        &[]
     }
 
-    /// What this module can do to move keys (docs/CAMIGRATE.md): which side of an export or import it
-    /// can be, through which mechanisms, and any methods of its own (`Side::vendor`, D10). The
-    /// default is a spec-compliant PKCS#11 module: it wraps and unwraps with what it lists and
-    /// imports with `C_CreateObject`.
-    fn migration(&self, token: &str, mechanisms: &[String]) -> Side {
-        Side::pkcs11(token, self.name(), mechanisms.iter().cloned())
+    /// The keys a module binds to one purpose when it creates them (Google Cloud KMS: one
+    /// algorithm per key), each with the exact template it is generated from: the write probe
+    /// generates these instead of its own templates. Empty for a module whose keys are general
+    /// purpose, the default.
+    fn bound_keys(&self) -> Vec<BoundKey> {
+        Vec::new()
     }
+
+    /// Whether the certificates `certs` (DER) found under the probe's scratch `CKA_ID` (`id`)
+    /// show a slot holding only what this module itself wrote when it generated the slot's key —
+    /// the only occupant the write probe may replace (`tokens.<t>.probe.scratchId`). Anything
+    /// else may be a real key, so the probe refuses it. The default recognises none.
+    fn scratch_occupant(&self, _id: &[u8], _certs: &[Vec<u8>]) -> bool {
+        false
+    }
+}
+
+/// One attribute read as the module reported it, for [`Provider::repair`]: the repair returns
+/// the same variant with what a spec-compliant module would have reported.
+pub enum Report<'a> {
+    /// `CKA_EC_POINT`, which tpm2-pkcs11 and AWS `CloudHSM` encode their own way.
+    EcPoint(Cow<'a, [u8]>),
+    /// `CKA_KEY_TYPE`, with the object's `CKA_EC_PARAMS` where it has them: AWS `CloudHSM`
+    /// reports an Ed25519 key as `CKK_EC` \[run\].
+    KeyType {
+        /// What the module reported.
+        reported: KeyType,
+        /// The object's `CKA_EC_PARAMS`, where it has them.
+        ec_params: Option<&'a [u8]>,
+    },
+    /// A boolean policy attribute (`CKA_SIGN`, `CKA_DERIVE`, ...): ykcs11's fixed table says
+    /// `CKA_DERIVE` false on keys its `C_DeriveKey` derives with. The profile keeps the raw
+    /// observation (`derive.key-attribute`).
+    PolicyFlag {
+        /// The attribute read.
+        attr: AttributeType,
+        /// What the module reported.
+        reported: bool,
+        /// Reads the object's key type when it is a private key.
+        private_key_type: &'a dyn Fn() -> Option<KeyType>,
+    },
+}
+
+/// The repaired reads ([`Provider::repair`]): a repair that answers with another variant than
+/// it was asked changes nothing.
+impl dyn Provider {
+    /// `CKA_EC_POINT` as `raw` reads, repaired.
+    #[must_use]
+    pub fn ec_point<'a>(&self, raw: &'a [u8]) -> Cow<'a, [u8]> {
+        match self.repair(Report::EcPoint(Cow::Borrowed(raw))) {
+            Report::EcPoint(point) => point,
+            _ => Cow::Borrowed(raw),
+        }
+    }
+
+    /// `CKA_KEY_TYPE` as `reported`, repaired from the object's `ec_params`.
+    #[must_use]
+    pub fn key_type(&self, reported: KeyType, ec_params: Option<&[u8]>) -> KeyType {
+        match self.repair(Report::KeyType { reported, ec_params }) {
+            Report::KeyType { reported: repaired, .. } => repaired,
+            _ => reported,
+        }
+    }
+
+    /// The policy flag `attr` as `reported`, repaired.
+    #[must_use]
+    pub fn policy_flag(
+        &self,
+        attr: AttributeType,
+        reported: bool,
+        private_key_type: &dyn Fn() -> Option<KeyType>,
+    ) -> bool {
+        match self.repair(Report::PolicyFlag { attr, reported, private_key_type }) {
+            Report::PolicyFlag { reported: repaired, .. } => repaired,
+            _ => reported,
+        }
+    }
+}
+
+/// What [`Provider::create`] makes: `object` as `spec` declares it, under `locator`, to be
+/// proven by `binding` (private keys).
+pub struct Create<'a> {
+    /// The object's type.
+    pub object: &'a ObjectCfg,
+    /// The spec it is created by.
+    pub spec: &'a SpecCfg,
+    /// Where it goes on the token.
+    pub locator: &'a Locator,
+    /// How a private key will be proven, which a module-chosen template must allow.
+    pub binding: Option<Binding>,
+}
+
+/// What [`Provider::destroy`] removes: exactly `handles`, as `object` under `locator`.
+pub struct Destroy<'a> {
+    /// The objects' type.
+    pub object: &'a ObjectCfg,
+    /// Where they are on the token.
+    pub locator: &'a Locator,
+    /// The objects the caller identified; never empty.
+    pub handles: &'a [ObjectHandle],
 }
 
 /// What a provider can attest (§3.7 of docs/DESIGN.md), from [`Provider::attestation`].

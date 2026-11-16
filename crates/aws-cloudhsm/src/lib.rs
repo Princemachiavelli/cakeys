@@ -15,7 +15,7 @@
 //! ("Ed25519 key generation not available"), records none.
 
 use cakeys_core::config::ModuleInfo;
-use cakeys_pkcs11::Provider;
+use cakeys_pkcs11::{Provider, Report};
 use cryptoki::mechanism::vendor_defined::VendorDefinedMechanism;
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::KeyType;
@@ -36,6 +36,14 @@ const STAND_INS: [MechanismType; 2] = [MechanismType::ECC_EDWARDS_KEY_PAIR_GEN, 
 /// The AWS `CloudHSM` provider (see the crate's documentation).
 pub struct AwsCloudHsm;
 
+/// The point of an Ed25519 key whose `CKA_EC_POINT` is its whole SPKI; anything else as it is.
+fn ed25519_point(raw: &[u8]) -> &[u8] {
+    match raw.strip_prefix(&ED25519_SPKI_PREFIX[..]) {
+        Some(point) if point.len() == 32 => point,
+        _ => raw,
+    }
+}
+
 impl Provider for AwsCloudHsm {
     fn name(&self) -> &'static str {
         "aws-cloudhsm"
@@ -46,17 +54,17 @@ impl Provider for AwsCloudHsm {
     }
 
     /// An Ed25519 key's `CKA_EC_POINT` is its whole SPKI: the point is what follows the prefix.
-    fn ec_point<'a>(&self, raw: &'a [u8]) -> Cow<'a, [u8]> {
-        match raw.strip_prefix(&ED25519_SPKI_PREFIX[..]) {
-            Some(point) if point.len() == 32 => Cow::Borrowed(point),
-            _ => Cow::Borrowed(raw),
-        }
-    }
-
-    fn key_type(&self, reported: KeyType, ec_params: Option<&[u8]>) -> KeyType {
-        match (reported, ec_params) {
-            (KeyType::EC, Some(p)) if p == ED25519_OID => KeyType::EC_EDWARDS,
-            (kt, _) => kt,
+    /// Its `CKA_KEY_TYPE` reads `CKK_EC`: the Ed25519 OID in `CKA_EC_PARAMS` says Edwards.
+    fn repair<'a>(&self, report: Report<'a>) -> Report<'a> {
+        match report {
+            Report::EcPoint(raw) => Report::EcPoint(match raw {
+                Cow::Borrowed(raw) => Cow::Borrowed(ed25519_point(raw)),
+                Cow::Owned(raw) => Cow::Owned(ed25519_point(&raw).to_vec()),
+            }),
+            Report::KeyType { reported: KeyType::EC, ec_params: Some(p) } if p == ED25519_OID => {
+                Report::KeyType { reported: KeyType::EC_EDWARDS, ec_params: Some(p) }
+            }
+            other => other,
         }
     }
 
@@ -107,18 +115,22 @@ mod tests {
     fn an_ed25519_spki_point_is_unpacked() {
         let point = [0x5f_u8; 32];
         let spki = [&ED25519_SPKI_PREFIX[..], &point].concat();
-        assert_eq!(AwsCloudHsm.ec_point(&spki).as_ref(), &point);
+        assert_eq!((&AwsCloudHsm as &dyn Provider).ec_point(&spki).as_ref(), &point);
         let sec1 = [0x04_u8; 65];
-        assert_eq!(AwsCloudHsm.ec_point(&sec1).as_ref(), &sec1);
-        assert_eq!(AwsCloudHsm.ec_point(&spki[..43]).as_ref(), &spki[..43], "a short one is not unpacked");
+        assert_eq!((&AwsCloudHsm as &dyn Provider).ec_point(&sec1).as_ref(), &sec1);
+        assert_eq!(
+            (&AwsCloudHsm as &dyn Provider).ec_point(&spki[..43]).as_ref(),
+            &spki[..43],
+            "a short one is not unpacked"
+        );
     }
 
     #[test]
     fn an_ec_key_on_the_ed25519_oid_is_edwards() {
-        assert_eq!(AwsCloudHsm.key_type(KeyType::EC, Some(&ED25519_OID)), KeyType::EC_EDWARDS);
+        assert_eq!((&AwsCloudHsm as &dyn Provider).key_type(KeyType::EC, Some(&ED25519_OID)), KeyType::EC_EDWARDS);
         let p256 = [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
-        assert_eq!(AwsCloudHsm.key_type(KeyType::EC, Some(&p256)), KeyType::EC);
-        assert_eq!(AwsCloudHsm.key_type(KeyType::RSA, None), KeyType::RSA);
+        assert_eq!((&AwsCloudHsm as &dyn Provider).key_type(KeyType::EC, Some(&p256)), KeyType::EC);
+        assert_eq!((&AwsCloudHsm as &dyn Provider).key_type(KeyType::RSA, None), KeyType::RSA);
     }
 
     #[test]

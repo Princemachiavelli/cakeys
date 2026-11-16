@@ -31,7 +31,7 @@ use std::str::FromStr;
 pub(crate) fn side(tok: &Token) -> Result<Side> {
     match &tok.profiles.module {
         Some(p) => side_of(p, &tok.profiles, &tok.name, tok.provider.name(), tok.mechanism_names()),
-        None => Ok(tok.provider.migration(&tok.name, tok.mechanism_names())),
+        None => Ok(Side::pkcs11(&tok.name, tok.provider.name(), tok.mechanism_names().iter().cloned())),
     }
 }
 
@@ -54,7 +54,8 @@ pub(crate) fn side_from_lock(
     let resolved = resolution::resolve(&cfg, module, Some(token_info), &provider).ok()?;
     warn_hidden(token, &resolved, notes);
     if resolved.module.is_none() {
-        return Some(Ok(registry.named(&provider)?.migration(token, &observed.mechanisms)));
+        let name = registry.named(&provider)?.name();
+        return Some(Ok(Side::pkcs11(token, name, observed.mechanisms.iter().cloned())));
     }
     Some(side_of(resolved.module.as_ref()?, &resolved, token, &provider, &observed.mechanisms))
 }
@@ -76,7 +77,7 @@ pub(crate) fn side_from_transport(t: &Transport, registry: &Registry) -> Option<
     let resolved = resolution::resolve(&lockless_token_cfg(), &moduleless_info(), None, &t.provider).ok()?;
     match resolved.module {
         Some(ref p) => Some(side_of(p, &resolved, &t.token, &t.provider, &t.mechanisms)),
-        None => Some(Ok(registry.named(&t.provider)?.migration(&t.token, &t.mechanisms))),
+        None => registry.named(&t.provider).map(|p| Ok(Side::pkcs11(&t.token, p.name(), t.mechanisms.iter().cloned()))),
     }
 }
 

@@ -140,8 +140,14 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **More probes**: PQ parameter sets, AES-KW/KWP round trips, the HMAC key types,
   `C_GetMechanismInfo` beyond RSA, attribute defaults, existing-object encodings, ECDH with
   Montgomery keys, SHA-224 RSA-PSS (no binding variant), delete in a scratch slot.
-- **`Provider::mechanisms` and `Provider::migration`** are overridden by no in-tree provider
-  (review A4): revisit with the first real HSM provider.
+- **Quirks still in the generic operations** (review 2026-11-15 §4): `Token::destroy_plain`
+  takes `CKR_OBJECT_HANDLE_INVALID` after the first handle as gone (kmsp11 removes a public half
+  with its private one), and `generate`/camigrate retry a key pair without the public
+  `CKA_PRIVATE = false` (AWS `CloudHSM`). Both apply to every module today; moving each into its
+  provider's `destroy`/`create` override changes behaviour elsewhere, so it waits for the
+  suites that would show it. The review's (c) the probe running the operations (then
+  `stand_ins`, `bound_keys` and `scratch_occupant` go), (d) one capability row type and (e)
+  answers recorded per deployment are open too.
 - **haskoki as a reference token** (PLAN.md A0b), parked: it implements everything cakeys uses,
   but beside kryoptic it is one more OpenSSL-backed software token, and it is packaged for
   Docker, not nixpkgs (Haskell, pinned OpenSSL 4). Take it up with PQ key types, where a second

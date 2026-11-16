@@ -1,7 +1,9 @@
 //! PKCS#11 token layer over `cryptoki`. Transparent: PKCS#11 names in, PKCS#11 calls out.
 //! Module-specific behaviour goes through the selected [`Provider`].
 
-use crate::provider::{AttestCtx, AttestationCap, Attested, Generation, Provider, Registry, keygen_mechanism};
+use crate::provider::{
+    AttestCtx, AttestationCap, Attested, Create, Destroy, Generation, Provider, Registry, keygen_mechanism,
+};
 use cakeys_core::attrs;
 use cakeys_core::config::{AttrValue, Binding, Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
 pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};
@@ -255,7 +257,7 @@ impl Token {
             }
             usable
         } else {
-            provider.mechanisms(advertised)
+            advertised
         };
         let mut mechanism_names: Vec<String> = mechanisms.iter().map(std::string::ToString::to_string).collect();
         mechanism_names.sort();
