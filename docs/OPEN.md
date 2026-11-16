@@ -206,8 +206,8 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   would make it an upstream report.
 - **SoftHSM**: `C_UnwrapKey` stores an unwrapped secret key's `CKA_VALUE` but never its
   `CKA_VALUE_LEN` (reads 0), and refuses `CKA_VALUE_LEN` in the template
-  (`CKR_ATTRIBUTE_READ_ONLY`; SoftHSMv2 #628). A fix is drafted in `upstream/softhsm/` (not
-  filed: PR #650 covers the same change, so comment there or file with a link), and
+  (`CKR_ATTRIBUTE_READ_ONLY`; SoftHSMv2 #628). Filed as SoftHSMv2 #925 with tests
+  (`upstream/softhsm/PR.md`; the older #650 has the same core change), and
   `checks.softhsm-unwrap-value-len` tests it on a patched SoftHSM. A fixed release gets its own
   profile without `secret-unwraps = false`.
 - **SoftHSM under pkcs11-provider** (what reads `check --format pkcs11-provider-pem`): SoftHSM
@@ -224,7 +224,10 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **rust-cryptoki**: the HMAC key-type fix, `CKM_AES_KEY_WRAP_KWP` and `CKM_RSA_AES_KEY_WRAP`
   and the single-part sign after `C_SignInit` (`upstream/rust-cryptoki/`); later, array
   attributes and `CKM_DES3_CMAC` (a DES3 `cmac`, above).
-- **tpm2-pkcs11**: the P-521 `CKA_EC_POINT` fix (`upstream/tpm2-pkcs11/`).
+- **tpm2-pkcs11**: the P-521 `CKA_EC_POINT` fix (`upstream/tpm2-pkcs11/`). Not filed yet: a
+  secret key made by `C_CreateObject` is stored without `CKA_VALUE_LEN`, which PKCS#11
+  requires of AES and generic secret keys (the object matrix; the same class as SoftHSM's
+  unwrap above), so cakeys cannot check its length (15).
 
 ## Engineering
 

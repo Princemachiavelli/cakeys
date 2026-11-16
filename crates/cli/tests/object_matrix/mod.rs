@@ -689,14 +689,19 @@ fn outcome(w: &Workdir, spec: &str, token: &str, immutables: bool) -> Result<Str
         let _ = write!(got, " {b}");
     }
     if immutables {
-        let pinned = r.get("immutables").and_then(toml::Value::as_table);
-        let set: Vec<String> = pinned
-            .into_iter()
-            .flatten()
-            .filter(|(_, v)| v.as_bool() == Some(true))
-            .map(|(k, _)| k.trim_start_matches("CKA_").to_lowercase().replace('_', "-"))
-            .collect();
-        let _ = write!(got, " immutables={}", if set.is_empty() { "none".to_owned() } else { set.join(",") });
+        // `none`: pinned, all false; `?`: the lock pins none at all.
+        let shown = r.get("immutables").and_then(toml::Value::as_table).map_or_else(
+            || "?".to_owned(),
+            |pinned| {
+                let set: Vec<String> = pinned
+                    .iter()
+                    .filter(|(_, v)| v.as_bool() == Some(true))
+                    .map(|(k, _)| k.trim_start_matches("CKA_").to_lowercase().replace('_', "-"))
+                    .collect();
+                if set.is_empty() { "none".to_owned() } else { set.join(",") }
+            },
+        );
+        let _ = write!(got, " immutables={shown}");
     }
     Ok(got)
 }
