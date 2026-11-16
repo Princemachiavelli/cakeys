@@ -106,6 +106,9 @@ in
         # The capability profiles (docs/CAPROBE.md): embedded in the binary, and the vendored
         # OASIS headers the pinned baseline-regeneration test reads.
         ../profiles
+        # The coverage file and the object tables the tests pin (docs/CAPROBE.md, "Coverage"):
+        # not profiles, so out of the tree `--profiles` loads.
+        ../spec-coverage
         # cargo-nextest's configuration: the slow-test timeout.
         ../.config/nextest.toml
       ];

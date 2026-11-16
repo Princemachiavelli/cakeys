@@ -97,7 +97,7 @@ with pkcs11-check, but is an early beta.
    (in nixpkgs' `opensc`) in the check phase, and reduce the log to the set of
    (function, mechanism, attribute, return value) tuples seen per reference token. If the spy's
    log proves too lossy, the A3 shim records the same thing. [todo: spy output parses reliably]
-3. **Commit the result** as `profiles/coverage/cakeys.toml`, generated and pinned byte for byte
+3. **Commit the result** as `spec-coverage/cakeys.toml`, generated and pinned byte for byte
    like the module profiles. Each baseline row gets one status:
 
    | Status | Meaning |
@@ -198,7 +198,7 @@ table has to be deterministic): 1544 objects per token, created straight through
 generated, and secret keys also imported (`CKA_LOCAL` false) — then declared as they are and
 realised in parallel (`crates/cli/tests/object_matrix/`, about a minute and a half a token). The rows
 pin the mode, schemes and binding, the exit code, or the token's refusal to hold the object
-(`profiles/coverage/objects/<token>.toml`). Families after the first (2026-11-15): imported
+(`spec-coverage/objects/<token>.toml`). Families after the first (2026-11-15): imported
 private keys (fixture material, by where the public half is: a public key object,
 `CKA_PUBLIC_KEY_INFO`, a certificate, nothing), whose rows also show the immutables the lock
 pins, since that is where an import differs from a generated key of the same identity;

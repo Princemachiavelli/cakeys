@@ -190,7 +190,7 @@ craneLib.buildPackage (
     cargoTestExtraArgs = "--no-fail-fast --show-progress none";
     # Coverage as data (docs/PLAN.md A1, docs/CAPROBE.md "Coverage"): the suites once more, now
     # with every module behind a tracing p11-fault (nix/test-tokens.sh), the built tests reused;
-    # then profiles/coverage/cakeys.toml is regenerated from that trace and must be what is
+    # then spec-coverage/cakeys.toml is regenerated from that trace and must be what is
     # committed. A second pass, not a traced first one: the first keeps every test talking to
     # its module directly (p11-fault exports the 2.40 interface only).
     postCheck = ''

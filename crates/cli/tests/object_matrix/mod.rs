@@ -4,8 +4,8 @@
 //! arrive; each is declared exactly as it is (its usage bits, sensitivity, extractability,
 //! per-use PIN and allowed mechanisms) and realised. The outcome per object — the mode, schemes
 //! and binding recorded, or the exit code, or the token refusing to hold such an object — is
-//! profiles/coverage/objects/<token>.toml, generated and pinned:
-//! `CAKEYS_UPDATE_OBJECTS=$PWD/profiles/coverage/objects` rewrites it there
+//! spec-coverage/objects/<token>.toml, generated and pinned:
+//! `CAKEYS_UPDATE_OBJECTS=$PWD/spec-coverage/objects` rewrites it there
 //! (`scripts/local-tests.sh -E 'test(object_matrix)'`).
 //! What each refused row printed is in the test's directory, `report.txt`.
 //!
@@ -708,7 +708,7 @@ fn outcome(w: &Workdir, spec: &str, token: &str, immutables: bool) -> Result<Str
 
 /// A token the matrix runs on.
 pub struct Target<'a> {
-    /// The table's name: profiles/coverage/objects/<name>.toml.
+    /// The table's name: spec-coverage/objects/<name>.toml.
     pub name: &'a str,
     /// The keys.toml token the specs realise on, and the tokens header that defines it for a
     /// realisation's directory.
@@ -818,12 +818,12 @@ pub fn check(t: &Target<'_>) {
         std::fs::write(Path::new(&dir).join(&file), &text).unwrap();
         return;
     }
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles/coverage/objects").join(&file);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec-coverage/objects").join(&file);
     let committed = std::fs::read_to_string(&path).unwrap_or_default();
     assert!(
         committed == text,
         "{} is not what the grid gives on this token (report: {}); regenerate with \
-         CAKEYS_UPDATE_OBJECTS=$PWD/profiles/coverage/objects",
+         CAKEYS_UPDATE_OBJECTS=$PWD/spec-coverage/objects",
         path.display(),
         t.dir.join("report.txt").display()
     );

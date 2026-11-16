@@ -13,7 +13,7 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   gets, or why none. Goal: keys.toml can declare any sane object, even when its assurance is
   low, and the matrix says what that assurance is. Clean fixtures cakeys made itself are not
   evidence of what deployments need. **Built for SoftHSM and kryoptic** (2026-11-15,
-  PLAN.md A4): `profiles/coverage/objects/<token>.toml`, 1544 objects each, adopted as a
+  PLAN.md A4): `spec-coverage/objects/<token>.toml`, 1544 objects each, adopted as a
   legacy key arrives (crates/cli/tests/object_matrix/): generated keys and imported secret
   keys; imported private keys by where their public half is; certificates; data objects. Also
   on tpm2-pkcs11 over swtpm (`tpm2-pkcs11+swtpm.toml`), where most of the grid is the module's
