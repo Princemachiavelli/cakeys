@@ -1,0 +1,1567 @@
+# swtpm
+  wrap.oaep None
+  decrypt.oaep None
+  unwrap.refuse None
+  derive.sealed None
+  derive.read-only None
+  migration exports None unwraps None secret-unwraps None trusted-wrap None plaintext None
+  migration accepts [] [] []
+
+  CKK_RSA 4096: no — swtpm: a TPM state with libtpms's default-v1 profile (swtpm's default) refuses 4096-bit RSA; default-v2 and custom accept it [run]
+  CKK_RSA 8192: no — swtpm: a TPM state with libtpms's default-v1 profile (swtpm's default) refuses 4096-bit RSA; default-v2 and custom accept it [run]
+  CKK_RSA 15360: no — swtpm: a TPM state with libtpms's default-v1 profile (swtpm's default) refuses 4096-bit RSA; default-v2 and custom accept it [run]
+  CKK_RSA 16384: no — swtpm: a TPM state with libtpms's default-v1 profile (swtpm's default) refuses 4096-bit RSA; default-v2 and custom accept it [run]
+# cryptoki/0.12
+  wrap.oaep None
+  decrypt.oaep None
+  unwrap.refuse None
+  derive.sealed None
+  derive.read-only None
+  migration exports None unwraps None secret-unwraps None trusted-wrap None plaintext None
+  migration accepts [] [] []
+
+  CKK_SHA224_HMAC: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC brainpoolP256r1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC brainpoolP384r1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC curve25519: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC curve448: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC edwards25519: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC edwards448: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC secp256k1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC secp256r1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC secp384r1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC secp521r1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC 512: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC 1024: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC 2048: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC 3072: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC 4096: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC 8192: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC 15360: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA224_HMAC 16384: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC brainpoolP256r1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC brainpoolP384r1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC curve25519: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC curve448: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC edwards25519: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC edwards448: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC secp256k1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC secp256r1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC secp384r1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC secp521r1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC 512: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC 1024: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC 2048: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC 3072: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC 4096: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC 8192: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC 15360: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA384_HMAC 16384: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC brainpoolP256r1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC brainpoolP384r1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC curve25519: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC curve448: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC edwards25519: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC edwards448: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC secp256k1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC secp256r1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC secp384r1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC secp521r1: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC 512: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC 1024: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC 2048: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC 3072: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC 4096: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC 8192: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC 15360: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+  CKK_SHA512_HMAC 16384: no — cryptoki/0.12: cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart
+# p11-kit/0.26
+  wrap.oaep None
+  decrypt.oaep None
+  unwrap.refuse None
+  derive.sealed None
+  derive.read-only None
+  migration exports None unwraps None secret-unwraps None trusted-wrap None plaintext None
+  migration accepts [] [] []
+
+# aws-cloudhsm/5.18+hsm2m-fips
+  wrap.oaep Some("[\"SHA-1\", \"SHA-256\"]")
+  decrypt.oaep Some("[\"SHA-1\", \"SHA-256\", \"SHA-512\"]")
+  unwrap.refuse None
+  derive.sealed Some(true)
+  derive.read-only Some(false)
+  migration exports None unwraps None secret-unwraps None trusted-wrap None plaintext None
+  migration accepts [] [] []
+  generate CKK_EC: can ["secp256k1", "secp256r1", "secp384r1", "secp521r1"] cannot ["brainpoolP256r1", "brainpoolP384r1"] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_EDWARDS: can [] cannot ["edwards25519", "edwards448"] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(2048)..Some(4096) can [2048, 3072, 4096] cannot [1024] by-name []
+
+  CKK_ACTI: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_ACTI generation
+  CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_AES generation
+  CKK_AES_XTS: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_AES_XTS generation
+  CKK_ARIA: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_ARIA generation
+  CKK_BATON: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_BATON generation
+  CKK_BLAKE2B_160_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_BLAKE2B_160_HMAC generation
+  CKK_BLAKE2B_256_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_BLAKE2B_256_HMAC generation
+  CKK_BLAKE2B_384_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_BLAKE2B_384_HMAC generation
+  CKK_BLAKE2B_512_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_BLAKE2B_512_HMAC generation
+  CKK_BLOWFISH: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_BLOWFISH generation
+  CKK_CAMELLIA: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_CAMELLIA generation
+  CKK_CAST: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_CAST generation
+  CKK_CAST128: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_CAST128 generation
+  CKK_CAST3: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_CAST3 generation
+  CKK_CAST5: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_CAST5 generation
+  CKK_CDMF: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_CDMF generation
+  CKK_CHACHA20: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_CHACHA20 generation
+  CKK_DES: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_DES generation
+  CKK_DES2: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_DES2 generation
+  CKK_DES3: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_DES3 generation
+  CKK_DH: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_DH generation
+  CKK_DSA: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_DSA generation
+  CKK_EC: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC brainpoolP256r1: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC brainpoolP384r1: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC curve25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC curve448: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC edwards25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC edwards448: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC secp256k1: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC secp256r1: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC secp384r1: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC secp521r1: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC 512: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC 1024: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC 2048: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC 3072: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC 4096: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC 8192: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC 15360: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC 16384: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_ECDSA: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_ECDSA generation
+  CKK_EC_EDWARDS: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_EDWARDS brainpoolP256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve448: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS edwards25519: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC_EDWARDS edwards448: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC_EDWARDS secp256k1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp521r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS 512: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_EDWARDS 1024: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_EDWARDS 2048: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_EDWARDS 3072: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_EDWARDS 4096: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_EDWARDS 8192: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_EDWARDS 15360: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_EDWARDS 16384: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_MONTGOMERY: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY curve25519: no — aws-cloudhsm/5.18+hsm2m-fips: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  CKK_EC_MONTGOMERY curve448: no — aws-cloudhsm/5.18+hsm2m-fips: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  CKK_EC_MONTGOMERY edwards25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY edwards448: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256k1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp521r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY 512: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_MONTGOMERY 1024: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_MONTGOMERY 2048: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_MONTGOMERY 3072: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_MONTGOMERY 4096: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_MONTGOMERY 8192: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_MONTGOMERY 15360: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_MONTGOMERY 16384: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_GENERIC_SECRET: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_GENERIC_SECRET generation
+  CKK_GOST28147: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_GOST28147 generation
+  CKK_GOSTR3410: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_GOSTR3410 generation
+  CKK_GOSTR3411: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_GOSTR3411 generation
+  CKK_HKDF: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_HKDF generation
+  CKK_HOTP: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_HOTP generation
+  CKK_HSS: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_HSS generation
+  CKK_IDEA: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_IDEA generation
+  CKK_JUNIPER: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_JUNIPER generation
+  CKK_KEA: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_KEA generation
+  CKK_MD5_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_MD5_HMAC generation
+  CKK_ML_DSA: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_ML_DSA generation
+  CKK_ML_KEM: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_ML_KEM generation
+  CKK_POLY1305: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_POLY1305 generation
+  CKK_RC2: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_RC2 generation
+  CKK_RC4: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_RC4 generation
+  CKK_RC5: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_RC5 generation
+  CKK_RIPEMD128_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_RIPEMD128_HMAC generation
+  CKK_RIPEMD160_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_RIPEMD160_HMAC generation
+  CKK_RSA: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_RSA brainpoolP256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_RSA brainpoolP384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_RSA curve25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_RSA curve448: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_RSA edwards25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_RSA edwards448: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_RSA secp256k1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_RSA secp256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_RSA secp384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_RSA secp521r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
+  CKK_RSA 512: no — aws-cloudhsm/5.18+hsm2m-fips
+  CKK_RSA 1024: no — aws-cloudhsm/5.18+hsm2m-fips: modulusBits = 1024: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_RSA 2048: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_RSA 3072: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_RSA 4096: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_RSA 8192: no — aws-cloudhsm/5.18+hsm2m-fips
+  CKK_RSA 15360: no — aws-cloudhsm/5.18+hsm2m-fips
+  CKK_RSA 16384: no — aws-cloudhsm/5.18+hsm2m-fips
+  CKK_SALSA20: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SALSA20 generation
+  CKK_SECURID: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SECURID generation
+  CKK_SEED: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SEED generation
+  CKK_SHA224_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SHA224_HMAC generation
+  CKK_SHA256_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SHA256_HMAC generation
+  CKK_SHA384_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SHA384_HMAC generation
+  CKK_SHA3_224_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SHA3_224_HMAC generation
+  CKK_SHA3_256_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SHA3_256_HMAC generation
+  CKK_SHA3_384_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SHA3_384_HMAC generation
+  CKK_SHA3_512_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SHA3_512_HMAC generation
+  CKK_SHA512_224_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SHA512_224_HMAC generation
+  CKK_SHA512_256_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SHA512_256_HMAC generation
+  CKK_SHA512_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SHA512_HMAC generation
+  CKK_SHA512_T_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SHA512_T_HMAC generation
+  CKK_SHA_1_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SHA_1_HMAC generation
+  CKK_SKIPJACK: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SKIPJACK generation
+  CKK_SLH_DSA: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SLH_DSA generation
+  CKK_TWOFISH: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_TWOFISH generation
+  CKK_X2RATCHET: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_X2RATCHET generation
+  CKK_X9_42_DH: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_X9_42_DH generation
+  CKK_XMSS: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_XMSS generation
+  CKK_XMSSMT: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_XMSSMT generation
+  curve brainpoolP256r1: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  curve brainpoolP384r1: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  curve curve25519: no — aws-cloudhsm/5.18+hsm2m-fips: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  curve curve448: no — aws-cloudhsm/5.18+hsm2m-fips: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  curve edwards25519: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  curve edwards448: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  curve secp256k1: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  curve secp256r1: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  curve secp384r1: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  curve secp521r1: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  oaep SHA-1: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  oaep SHA-256: yes (aws-cloudhsm/5.18+hsm2m-fips)
+# aws-cloudhsm/5.18+hsm2m-non-fips
+  wrap.oaep Some("[\"SHA-1\", \"SHA-256\"]")
+  decrypt.oaep Some("[\"SHA-1\", \"SHA-256\", \"SHA-512\"]")
+  unwrap.refuse None
+  derive.sealed Some(true)
+  derive.read-only Some(false)
+  migration exports None unwraps None secret-unwraps None trusted-wrap None plaintext None
+  migration accepts [] [] [AcceptRow { class: "CKO_PRIVATE_KEY", key_types: ["CKK_EC_EDWARDS"], curves: [], min_bits: None, max_bits: None }]
+  generate CKK_EC: can ["secp256k1", "secp256r1", "secp384r1", "secp521r1"] cannot ["brainpoolP256r1", "brainpoolP384r1"] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_EDWARDS: can ["edwards25519"] cannot ["edwards448"] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(2048)..Some(4096) can [2048, 3072, 4096] cannot [1024] by-name []
+
+  CKK_ACTI: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_ACTI generation
+  CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_AES generation
+  CKK_AES_XTS: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_AES_XTS generation
+  CKK_ARIA: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_ARIA generation
+  CKK_BATON: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_BATON generation
+  CKK_BLAKE2B_160_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_BLAKE2B_160_HMAC generation
+  CKK_BLAKE2B_256_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_BLAKE2B_256_HMAC generation
+  CKK_BLAKE2B_384_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_BLAKE2B_384_HMAC generation
+  CKK_BLAKE2B_512_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_BLAKE2B_512_HMAC generation
+  CKK_BLOWFISH: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_BLOWFISH generation
+  CKK_CAMELLIA: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_CAMELLIA generation
+  CKK_CAST: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_CAST generation
+  CKK_CAST128: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_CAST128 generation
+  CKK_CAST3: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_CAST3 generation
+  CKK_CAST5: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_CAST5 generation
+  CKK_CDMF: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_CDMF generation
+  CKK_CHACHA20: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_CHACHA20 generation
+  CKK_DES: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_DES generation
+  CKK_DES2: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_DES2 generation
+  CKK_DES3: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_DES3 generation
+  CKK_DH: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_DH generation
+  CKK_DSA: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_DSA generation
+  CKK_EC: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC brainpoolP256r1: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC brainpoolP384r1: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC curve25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC curve448: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC edwards25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC edwards448: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC secp256k1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC secp256r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC secp384r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC secp521r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC 512: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC 1024: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC 2048: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC 3072: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC 4096: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC 8192: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC 15360: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC 16384: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_ECDSA: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_ECDSA generation
+  CKK_EC_EDWARDS: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_EDWARDS brainpoolP256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve448: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS edwards25519: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_EDWARDS edwards448: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC_EDWARDS secp256k1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp521r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS 512: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_EDWARDS 1024: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_EDWARDS 2048: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_EDWARDS 3072: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_EDWARDS 4096: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_EDWARDS 8192: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_EDWARDS 15360: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_EDWARDS 16384: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_MONTGOMERY: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY curve25519: no — aws-cloudhsm/5.18+hsm2m-non-fips: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  CKK_EC_MONTGOMERY curve448: no — aws-cloudhsm/5.18+hsm2m-non-fips: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  CKK_EC_MONTGOMERY edwards25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY edwards448: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256k1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp521r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY 512: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_MONTGOMERY 1024: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_MONTGOMERY 2048: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_MONTGOMERY 3072: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_MONTGOMERY 4096: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_MONTGOMERY 8192: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_MONTGOMERY 15360: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_MONTGOMERY 16384: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_GENERIC_SECRET: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_GENERIC_SECRET generation
+  CKK_GOST28147: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_GOST28147 generation
+  CKK_GOSTR3410: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_GOSTR3410 generation
+  CKK_GOSTR3411: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_GOSTR3411 generation
+  CKK_HKDF: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_HKDF generation
+  CKK_HOTP: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_HOTP generation
+  CKK_HSS: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_HSS generation
+  CKK_IDEA: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_IDEA generation
+  CKK_JUNIPER: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_JUNIPER generation
+  CKK_KEA: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_KEA generation
+  CKK_MD5_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_MD5_HMAC generation
+  CKK_ML_DSA: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_ML_DSA generation
+  CKK_ML_KEM: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_ML_KEM generation
+  CKK_POLY1305: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_POLY1305 generation
+  CKK_RC2: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_RC2 generation
+  CKK_RC4: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_RC4 generation
+  CKK_RC5: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_RC5 generation
+  CKK_RIPEMD128_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_RIPEMD128_HMAC generation
+  CKK_RIPEMD160_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_RIPEMD160_HMAC generation
+  CKK_RSA: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_RSA brainpoolP256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_RSA brainpoolP384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_RSA curve25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_RSA curve448: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_RSA edwards25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_RSA edwards448: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_RSA secp256k1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_RSA secp256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_RSA secp384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_RSA secp521r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
+  CKK_RSA 512: no — aws-cloudhsm/5.18+hsm2m-non-fips
+  CKK_RSA 1024: no — aws-cloudhsm/5.18+hsm2m-non-fips: modulusBits = 1024: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_RSA 2048: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_RSA 3072: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_RSA 4096: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_RSA 8192: no — aws-cloudhsm/5.18+hsm2m-non-fips
+  CKK_RSA 15360: no — aws-cloudhsm/5.18+hsm2m-non-fips
+  CKK_RSA 16384: no — aws-cloudhsm/5.18+hsm2m-non-fips
+  CKK_SALSA20: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SALSA20 generation
+  CKK_SECURID: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SECURID generation
+  CKK_SEED: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SEED generation
+  CKK_SHA224_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SHA224_HMAC generation
+  CKK_SHA256_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SHA256_HMAC generation
+  CKK_SHA384_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SHA384_HMAC generation
+  CKK_SHA3_224_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SHA3_224_HMAC generation
+  CKK_SHA3_256_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SHA3_256_HMAC generation
+  CKK_SHA3_384_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SHA3_384_HMAC generation
+  CKK_SHA3_512_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SHA3_512_HMAC generation
+  CKK_SHA512_224_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SHA512_224_HMAC generation
+  CKK_SHA512_256_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SHA512_256_HMAC generation
+  CKK_SHA512_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SHA512_HMAC generation
+  CKK_SHA512_T_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SHA512_T_HMAC generation
+  CKK_SHA_1_HMAC: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SHA_1_HMAC generation
+  CKK_SKIPJACK: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SKIPJACK generation
+  CKK_SLH_DSA: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SLH_DSA generation
+  CKK_TWOFISH: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_TWOFISH generation
+  CKK_X2RATCHET: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_X2RATCHET generation
+  CKK_X9_42_DH: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_X9_42_DH generation
+  CKK_XMSS: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_XMSS generation
+  CKK_XMSSMT: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_XMSSMT generation
+  curve brainpoolP256r1: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  curve brainpoolP384r1: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  curve curve25519: no — aws-cloudhsm/5.18+hsm2m-non-fips: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  curve curve448: no — aws-cloudhsm/5.18+hsm2m-non-fips: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  curve edwards25519: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  curve edwards448: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  curve secp256k1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  curve secp256r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  curve secp384r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  curve secp521r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  oaep SHA-1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  oaep SHA-256: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+# kmsp11/1.9+hsm-fips
+  wrap.oaep None
+  decrypt.oaep Some("[\"SHA-256\", \"SHA-512\"]")
+  unwrap.refuse None
+  derive.sealed None
+  derive.read-only None
+  migration exports None unwraps None secret-unwraps None trusted-wrap None plaintext None
+  migration accepts [] [] []
+  generate CKK_EC: can ["secp256r1", "secp384r1"] cannot ["brainpoolP256r1", "brainpoolP384r1", "secp256k1", "secp521r1"] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_EDWARDS: can [] cannot ["edwards25519", "edwards448"] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(2048)..Some(4096) can [2048, 3072, 4096] cannot [1024] by-name []
+
+  CKK_ACTI: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_ACTI generation
+  CKK_AES: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_AES generation
+  CKK_AES_XTS: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_AES_XTS generation
+  CKK_ARIA: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_ARIA generation
+  CKK_BATON: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_BATON generation
+  CKK_BLAKE2B_160_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_BLAKE2B_160_HMAC generation
+  CKK_BLAKE2B_256_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_BLAKE2B_256_HMAC generation
+  CKK_BLAKE2B_384_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_BLAKE2B_384_HMAC generation
+  CKK_BLAKE2B_512_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_BLAKE2B_512_HMAC generation
+  CKK_BLOWFISH: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_BLOWFISH generation
+  CKK_CAMELLIA: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_CAMELLIA generation
+  CKK_CAST: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_CAST generation
+  CKK_CAST128: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_CAST128 generation
+  CKK_CAST3: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_CAST3 generation
+  CKK_CAST5: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_CAST5 generation
+  CKK_CDMF: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_CDMF generation
+  CKK_CHACHA20: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_CHACHA20 generation
+  CKK_DES: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_DES generation
+  CKK_DES2: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_DES2 generation
+  CKK_DES3: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_DES3 generation
+  CKK_DH: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_DH generation
+  CKK_DSA: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_DSA generation
+  CKK_EC: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC brainpoolP256r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_EC brainpoolP384r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_EC curve25519: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC curve448: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC edwards25519: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC edwards448: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC secp256k1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_EC secp256r1: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC secp384r1: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC secp521r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_EC 512: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC 1024: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC 2048: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC 3072: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC 4096: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC 8192: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC 15360: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC 16384: yes (kmsp11/1.9+hsm-fips)
+  CKK_ECDSA: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_ECDSA generation
+  CKK_EC_EDWARDS: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_EDWARDS brainpoolP256r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve25519: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve448: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS edwards25519: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
+  CKK_EC_EDWARDS edwards448: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
+  CKK_EC_EDWARDS secp256k1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp256r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp384r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp521r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS 512: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_EDWARDS 1024: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_EDWARDS 2048: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_EDWARDS 3072: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_EDWARDS 4096: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_EDWARDS 8192: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_EDWARDS 15360: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_EDWARDS 16384: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_MONTGOMERY: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY curve25519: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY curve448: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY edwards25519: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY edwards448: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256k1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp384r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp521r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY 512: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_MONTGOMERY 1024: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_MONTGOMERY 2048: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_MONTGOMERY 3072: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_MONTGOMERY 4096: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_MONTGOMERY 8192: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_MONTGOMERY 15360: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_MONTGOMERY 16384: yes (kmsp11/1.9+hsm-fips)
+  CKK_GENERIC_SECRET: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_GENERIC_SECRET generation
+  CKK_GOST28147: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_GOST28147 generation
+  CKK_GOSTR3410: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_GOSTR3410 generation
+  CKK_GOSTR3411: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_GOSTR3411 generation
+  CKK_HKDF: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_HKDF generation
+  CKK_HOTP: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_HOTP generation
+  CKK_HSS: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_HSS generation
+  CKK_IDEA: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_IDEA generation
+  CKK_JUNIPER: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_JUNIPER generation
+  CKK_KEA: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_KEA generation
+  CKK_MD5_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_MD5_HMAC generation
+  CKK_ML_DSA: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_ML_DSA generation
+  CKK_ML_KEM: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_ML_KEM generation
+  CKK_POLY1305: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_POLY1305 generation
+  CKK_RC2: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_RC2 generation
+  CKK_RC4: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_RC4 generation
+  CKK_RC5: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_RC5 generation
+  CKK_RIPEMD128_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_RIPEMD128_HMAC generation
+  CKK_RIPEMD160_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_RIPEMD160_HMAC generation
+  CKK_RSA: yes (kmsp11/1.9+hsm-fips)
+  CKK_RSA brainpoolP256r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_RSA brainpoolP384r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_RSA curve25519: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_RSA curve448: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_RSA edwards25519: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_RSA edwards448: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_RSA secp256k1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_RSA secp256r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_RSA secp384r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_RSA secp521r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
+  CKK_RSA 512: no — kmsp11/1.9+hsm-fips
+  CKK_RSA 1024: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_RSA 2048: yes (kmsp11/1.9+hsm-fips)
+  CKK_RSA 3072: yes (kmsp11/1.9+hsm-fips)
+  CKK_RSA 4096: yes (kmsp11/1.9+hsm-fips)
+  CKK_RSA 8192: no — kmsp11/1.9+hsm-fips
+  CKK_RSA 15360: no — kmsp11/1.9+hsm-fips
+  CKK_RSA 16384: no — kmsp11/1.9+hsm-fips
+  CKK_SALSA20: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SALSA20 generation
+  CKK_SECURID: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SECURID generation
+  CKK_SEED: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SEED generation
+  CKK_SHA224_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SHA224_HMAC generation
+  CKK_SHA256_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SHA256_HMAC generation
+  CKK_SHA384_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SHA384_HMAC generation
+  CKK_SHA3_224_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SHA3_224_HMAC generation
+  CKK_SHA3_256_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SHA3_256_HMAC generation
+  CKK_SHA3_384_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SHA3_384_HMAC generation
+  CKK_SHA3_512_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SHA3_512_HMAC generation
+  CKK_SHA512_224_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SHA512_224_HMAC generation
+  CKK_SHA512_256_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SHA512_256_HMAC generation
+  CKK_SHA512_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SHA512_HMAC generation
+  CKK_SHA512_T_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SHA512_T_HMAC generation
+  CKK_SHA_1_HMAC: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SHA_1_HMAC generation
+  CKK_SKIPJACK: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SKIPJACK generation
+  CKK_SLH_DSA: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SLH_DSA generation
+  CKK_TWOFISH: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_TWOFISH generation
+  CKK_X2RATCHET: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_X2RATCHET generation
+  CKK_X9_42_DH: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_X9_42_DH generation
+  CKK_XMSS: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_XMSS generation
+  CKK_XMSSMT: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_XMSSMT generation
+  curve brainpoolP256r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  curve brainpoolP384r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  curve curve25519: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
+  curve curve448: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
+  curve edwards25519: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
+  curve edwards448: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
+  curve secp256k1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  curve secp256r1: yes (kmsp11/1.9+hsm-fips)
+  curve secp384r1: yes (kmsp11/1.9+hsm-fips)
+  curve secp521r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  oaep OAEP: unknown — module profile kmsp11/1.9+hsm-fips records no OAEP probe
+# kmsp11/1.9+hsm
+  wrap.oaep None
+  decrypt.oaep Some("[\"SHA-256\", \"SHA-512\"]")
+  unwrap.refuse None
+  derive.sealed None
+  derive.read-only None
+  migration exports None unwraps None secret-unwraps None trusted-wrap None plaintext None
+  migration accepts [] [] []
+  generate CKK_EC: can ["secp256r1", "secp384r1"] cannot ["brainpoolP256r1", "brainpoolP384r1", "secp256k1", "secp521r1"] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_EDWARDS: can [] cannot ["edwards25519", "edwards448"] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(2048)..Some(4096) can [2048, 3072, 4096] cannot [1024] by-name []
+
+  CKK_ACTI: unknown — module profile kmsp11/1.9+hsm records no CKK_ACTI generation
+  CKK_AES: unknown — module profile kmsp11/1.9+hsm records no CKK_AES generation
+  CKK_AES_XTS: unknown — module profile kmsp11/1.9+hsm records no CKK_AES_XTS generation
+  CKK_ARIA: unknown — module profile kmsp11/1.9+hsm records no CKK_ARIA generation
+  CKK_BATON: unknown — module profile kmsp11/1.9+hsm records no CKK_BATON generation
+  CKK_BLAKE2B_160_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_BLAKE2B_160_HMAC generation
+  CKK_BLAKE2B_256_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_BLAKE2B_256_HMAC generation
+  CKK_BLAKE2B_384_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_BLAKE2B_384_HMAC generation
+  CKK_BLAKE2B_512_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_BLAKE2B_512_HMAC generation
+  CKK_BLOWFISH: unknown — module profile kmsp11/1.9+hsm records no CKK_BLOWFISH generation
+  CKK_CAMELLIA: unknown — module profile kmsp11/1.9+hsm records no CKK_CAMELLIA generation
+  CKK_CAST: unknown — module profile kmsp11/1.9+hsm records no CKK_CAST generation
+  CKK_CAST128: unknown — module profile kmsp11/1.9+hsm records no CKK_CAST128 generation
+  CKK_CAST3: unknown — module profile kmsp11/1.9+hsm records no CKK_CAST3 generation
+  CKK_CAST5: unknown — module profile kmsp11/1.9+hsm records no CKK_CAST5 generation
+  CKK_CDMF: unknown — module profile kmsp11/1.9+hsm records no CKK_CDMF generation
+  CKK_CHACHA20: unknown — module profile kmsp11/1.9+hsm records no CKK_CHACHA20 generation
+  CKK_DES: unknown — module profile kmsp11/1.9+hsm records no CKK_DES generation
+  CKK_DES2: unknown — module profile kmsp11/1.9+hsm records no CKK_DES2 generation
+  CKK_DES3: unknown — module profile kmsp11/1.9+hsm records no CKK_DES3 generation
+  CKK_DH: unknown — module profile kmsp11/1.9+hsm records no CKK_DH generation
+  CKK_DSA: unknown — module profile kmsp11/1.9+hsm records no CKK_DSA generation
+  CKK_EC: yes (kmsp11/1.9+hsm)
+  CKK_EC brainpoolP256r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_EC brainpoolP384r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_EC curve25519: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC curve448: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC edwards25519: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC edwards448: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC secp256k1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_EC secp256r1: yes (kmsp11/1.9+hsm)
+  CKK_EC secp384r1: yes (kmsp11/1.9+hsm)
+  CKK_EC secp521r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_EC 512: yes (kmsp11/1.9+hsm)
+  CKK_EC 1024: yes (kmsp11/1.9+hsm)
+  CKK_EC 2048: yes (kmsp11/1.9+hsm)
+  CKK_EC 3072: yes (kmsp11/1.9+hsm)
+  CKK_EC 4096: yes (kmsp11/1.9+hsm)
+  CKK_EC 8192: yes (kmsp11/1.9+hsm)
+  CKK_EC 15360: yes (kmsp11/1.9+hsm)
+  CKK_EC 16384: yes (kmsp11/1.9+hsm)
+  CKK_ECDSA: unknown — module profile kmsp11/1.9+hsm records no CKK_ECDSA generation
+  CKK_EC_EDWARDS: yes (kmsp11/1.9+hsm)
+  CKK_EC_EDWARDS brainpoolP256r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve25519: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve448: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS edwards25519: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
+  CKK_EC_EDWARDS edwards448: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
+  CKK_EC_EDWARDS secp256k1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp256r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp384r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp521r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS 512: yes (kmsp11/1.9+hsm)
+  CKK_EC_EDWARDS 1024: yes (kmsp11/1.9+hsm)
+  CKK_EC_EDWARDS 2048: yes (kmsp11/1.9+hsm)
+  CKK_EC_EDWARDS 3072: yes (kmsp11/1.9+hsm)
+  CKK_EC_EDWARDS 4096: yes (kmsp11/1.9+hsm)
+  CKK_EC_EDWARDS 8192: yes (kmsp11/1.9+hsm)
+  CKK_EC_EDWARDS 15360: yes (kmsp11/1.9+hsm)
+  CKK_EC_EDWARDS 16384: yes (kmsp11/1.9+hsm)
+  CKK_EC_MONTGOMERY: yes (kmsp11/1.9+hsm)
+  CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY curve25519: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY curve448: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY edwards25519: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY edwards448: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256k1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp384r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp521r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY 512: yes (kmsp11/1.9+hsm)
+  CKK_EC_MONTGOMERY 1024: yes (kmsp11/1.9+hsm)
+  CKK_EC_MONTGOMERY 2048: yes (kmsp11/1.9+hsm)
+  CKK_EC_MONTGOMERY 3072: yes (kmsp11/1.9+hsm)
+  CKK_EC_MONTGOMERY 4096: yes (kmsp11/1.9+hsm)
+  CKK_EC_MONTGOMERY 8192: yes (kmsp11/1.9+hsm)
+  CKK_EC_MONTGOMERY 15360: yes (kmsp11/1.9+hsm)
+  CKK_EC_MONTGOMERY 16384: yes (kmsp11/1.9+hsm)
+  CKK_GENERIC_SECRET: unknown — module profile kmsp11/1.9+hsm records no CKK_GENERIC_SECRET generation
+  CKK_GOST28147: unknown — module profile kmsp11/1.9+hsm records no CKK_GOST28147 generation
+  CKK_GOSTR3410: unknown — module profile kmsp11/1.9+hsm records no CKK_GOSTR3410 generation
+  CKK_GOSTR3411: unknown — module profile kmsp11/1.9+hsm records no CKK_GOSTR3411 generation
+  CKK_HKDF: unknown — module profile kmsp11/1.9+hsm records no CKK_HKDF generation
+  CKK_HOTP: unknown — module profile kmsp11/1.9+hsm records no CKK_HOTP generation
+  CKK_HSS: unknown — module profile kmsp11/1.9+hsm records no CKK_HSS generation
+  CKK_IDEA: unknown — module profile kmsp11/1.9+hsm records no CKK_IDEA generation
+  CKK_JUNIPER: unknown — module profile kmsp11/1.9+hsm records no CKK_JUNIPER generation
+  CKK_KEA: unknown — module profile kmsp11/1.9+hsm records no CKK_KEA generation
+  CKK_MD5_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_MD5_HMAC generation
+  CKK_ML_DSA: unknown — module profile kmsp11/1.9+hsm records no CKK_ML_DSA generation
+  CKK_ML_KEM: unknown — module profile kmsp11/1.9+hsm records no CKK_ML_KEM generation
+  CKK_POLY1305: unknown — module profile kmsp11/1.9+hsm records no CKK_POLY1305 generation
+  CKK_RC2: unknown — module profile kmsp11/1.9+hsm records no CKK_RC2 generation
+  CKK_RC4: unknown — module profile kmsp11/1.9+hsm records no CKK_RC4 generation
+  CKK_RC5: unknown — module profile kmsp11/1.9+hsm records no CKK_RC5 generation
+  CKK_RIPEMD128_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_RIPEMD128_HMAC generation
+  CKK_RIPEMD160_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_RIPEMD160_HMAC generation
+  CKK_RSA: yes (kmsp11/1.9+hsm)
+  CKK_RSA brainpoolP256r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_RSA brainpoolP384r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_RSA curve25519: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_RSA curve448: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_RSA edwards25519: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_RSA edwards448: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_RSA secp256k1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_RSA secp256r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_RSA secp384r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_RSA secp521r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
+  CKK_RSA 512: no — kmsp11/1.9+hsm
+  CKK_RSA 1024: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_RSA 2048: yes (kmsp11/1.9+hsm)
+  CKK_RSA 3072: yes (kmsp11/1.9+hsm)
+  CKK_RSA 4096: yes (kmsp11/1.9+hsm)
+  CKK_RSA 8192: no — kmsp11/1.9+hsm
+  CKK_RSA 15360: no — kmsp11/1.9+hsm
+  CKK_RSA 16384: no — kmsp11/1.9+hsm
+  CKK_SALSA20: unknown — module profile kmsp11/1.9+hsm records no CKK_SALSA20 generation
+  CKK_SECURID: unknown — module profile kmsp11/1.9+hsm records no CKK_SECURID generation
+  CKK_SEED: unknown — module profile kmsp11/1.9+hsm records no CKK_SEED generation
+  CKK_SHA224_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_SHA224_HMAC generation
+  CKK_SHA256_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_SHA256_HMAC generation
+  CKK_SHA384_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_SHA384_HMAC generation
+  CKK_SHA3_224_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_SHA3_224_HMAC generation
+  CKK_SHA3_256_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_SHA3_256_HMAC generation
+  CKK_SHA3_384_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_SHA3_384_HMAC generation
+  CKK_SHA3_512_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_SHA3_512_HMAC generation
+  CKK_SHA512_224_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_SHA512_224_HMAC generation
+  CKK_SHA512_256_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_SHA512_256_HMAC generation
+  CKK_SHA512_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_SHA512_HMAC generation
+  CKK_SHA512_T_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_SHA512_T_HMAC generation
+  CKK_SHA_1_HMAC: unknown — module profile kmsp11/1.9+hsm records no CKK_SHA_1_HMAC generation
+  CKK_SKIPJACK: unknown — module profile kmsp11/1.9+hsm records no CKK_SKIPJACK generation
+  CKK_SLH_DSA: unknown — module profile kmsp11/1.9+hsm records no CKK_SLH_DSA generation
+  CKK_TWOFISH: unknown — module profile kmsp11/1.9+hsm records no CKK_TWOFISH generation
+  CKK_X2RATCHET: unknown — module profile kmsp11/1.9+hsm records no CKK_X2RATCHET generation
+  CKK_X9_42_DH: unknown — module profile kmsp11/1.9+hsm records no CKK_X9_42_DH generation
+  CKK_XMSS: unknown — module profile kmsp11/1.9+hsm records no CKK_XMSS generation
+  CKK_XMSSMT: unknown — module profile kmsp11/1.9+hsm records no CKK_XMSSMT generation
+  curve brainpoolP256r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  curve brainpoolP384r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  curve curve25519: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
+  curve curve448: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
+  curve edwards25519: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
+  curve edwards448: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
+  curve secp256k1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  curve secp256r1: yes (kmsp11/1.9+hsm)
+  curve secp384r1: yes (kmsp11/1.9+hsm)
+  curve secp521r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  oaep OAEP: unknown — module profile kmsp11/1.9+hsm records no OAEP probe
+# kryoptic/1.5
+  wrap.oaep Some("[\"SHA-1\", \"SHA-256\"]")
+  decrypt.oaep Some("[\"SHA-1\", \"SHA-256\", \"SHA-512\"]")
+  unwrap.refuse Some("[]")
+  derive.sealed Some(true)
+  derive.read-only Some(true)
+  migration exports None unwraps None secret-unwraps None trusted-wrap Some(false) plaintext None
+  migration accepts [] [] []
+  generate CKK_EC: can ["secp256r1", "secp384r1", "secp521r1"] cannot ["brainpoolP256r1", "brainpoolP384r1", "secp256k1"] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_EDWARDS: can ["edwards25519", "edwards448"] cannot [] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_MONTGOMERY: can ["curve25519", "curve448"] cannot [] bits None..None can [] cannot [] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(1024)..Some(16384) can [1024, 2048, 3072, 4096] cannot [] by-name []
+
+  CKK_ACTI: unknown — module profile kryoptic/1.5 records no CKK_ACTI generation
+  CKK_AES: unknown — module profile kryoptic/1.5 records no CKK_AES generation
+  CKK_AES_XTS: unknown — module profile kryoptic/1.5 records no CKK_AES_XTS generation
+  CKK_ARIA: unknown — module profile kryoptic/1.5 records no CKK_ARIA generation
+  CKK_BATON: unknown — module profile kryoptic/1.5 records no CKK_BATON generation
+  CKK_BLAKE2B_160_HMAC: unknown — module profile kryoptic/1.5 records no CKK_BLAKE2B_160_HMAC generation
+  CKK_BLAKE2B_256_HMAC: unknown — module profile kryoptic/1.5 records no CKK_BLAKE2B_256_HMAC generation
+  CKK_BLAKE2B_384_HMAC: unknown — module profile kryoptic/1.5 records no CKK_BLAKE2B_384_HMAC generation
+  CKK_BLAKE2B_512_HMAC: unknown — module profile kryoptic/1.5 records no CKK_BLAKE2B_512_HMAC generation
+  CKK_BLOWFISH: unknown — module profile kryoptic/1.5 records no CKK_BLOWFISH generation
+  CKK_CAMELLIA: unknown — module profile kryoptic/1.5 records no CKK_CAMELLIA generation
+  CKK_CAST: unknown — module profile kryoptic/1.5 records no CKK_CAST generation
+  CKK_CAST128: unknown — module profile kryoptic/1.5 records no CKK_CAST128 generation
+  CKK_CAST3: unknown — module profile kryoptic/1.5 records no CKK_CAST3 generation
+  CKK_CAST5: unknown — module profile kryoptic/1.5 records no CKK_CAST5 generation
+  CKK_CDMF: unknown — module profile kryoptic/1.5 records no CKK_CDMF generation
+  CKK_CHACHA20: unknown — module profile kryoptic/1.5 records no CKK_CHACHA20 generation
+  CKK_DES: unknown — module profile kryoptic/1.5 records no CKK_DES generation
+  CKK_DES2: unknown — module profile kryoptic/1.5 records no CKK_DES2 generation
+  CKK_DES3: unknown — module profile kryoptic/1.5 records no CKK_DES3 generation
+  CKK_DH: unknown — module profile kryoptic/1.5 records no CKK_DH generation
+  CKK_DSA: unknown — module profile kryoptic/1.5 records no CKK_DSA generation
+  CKK_EC: yes (kryoptic/1.5)
+  CKK_EC brainpoolP256r1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
+  CKK_EC brainpoolP384r1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
+  CKK_EC curve25519: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC curve448: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC edwards25519: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC edwards448: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC secp256k1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
+  CKK_EC secp256r1: yes (kryoptic/1.5)
+  CKK_EC secp384r1: yes (kryoptic/1.5)
+  CKK_EC secp521r1: yes (kryoptic/1.5)
+  CKK_EC 512: yes (kryoptic/1.5)
+  CKK_EC 1024: yes (kryoptic/1.5)
+  CKK_EC 2048: yes (kryoptic/1.5)
+  CKK_EC 3072: yes (kryoptic/1.5)
+  CKK_EC 4096: yes (kryoptic/1.5)
+  CKK_EC 8192: yes (kryoptic/1.5)
+  CKK_EC 15360: yes (kryoptic/1.5)
+  CKK_EC 16384: yes (kryoptic/1.5)
+  CKK_ECDSA: unknown — module profile kryoptic/1.5 records no CKK_ECDSA generation
+  CKK_EC_EDWARDS: yes (kryoptic/1.5)
+  CKK_EC_EDWARDS brainpoolP256r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve25519: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve448: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS edwards25519: yes (kryoptic/1.5)
+  CKK_EC_EDWARDS edwards448: yes (kryoptic/1.5)
+  CKK_EC_EDWARDS secp256k1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp256r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp384r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp521r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS 512: yes (kryoptic/1.5)
+  CKK_EC_EDWARDS 1024: yes (kryoptic/1.5)
+  CKK_EC_EDWARDS 2048: yes (kryoptic/1.5)
+  CKK_EC_EDWARDS 3072: yes (kryoptic/1.5)
+  CKK_EC_EDWARDS 4096: yes (kryoptic/1.5)
+  CKK_EC_EDWARDS 8192: yes (kryoptic/1.5)
+  CKK_EC_EDWARDS 15360: yes (kryoptic/1.5)
+  CKK_EC_EDWARDS 16384: yes (kryoptic/1.5)
+  CKK_EC_MONTGOMERY: yes (kryoptic/1.5)
+  CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY curve25519: yes (kryoptic/1.5)
+  CKK_EC_MONTGOMERY curve448: yes (kryoptic/1.5)
+  CKK_EC_MONTGOMERY edwards25519: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY edwards448: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256k1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp384r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp521r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY 512: yes (kryoptic/1.5)
+  CKK_EC_MONTGOMERY 1024: yes (kryoptic/1.5)
+  CKK_EC_MONTGOMERY 2048: yes (kryoptic/1.5)
+  CKK_EC_MONTGOMERY 3072: yes (kryoptic/1.5)
+  CKK_EC_MONTGOMERY 4096: yes (kryoptic/1.5)
+  CKK_EC_MONTGOMERY 8192: yes (kryoptic/1.5)
+  CKK_EC_MONTGOMERY 15360: yes (kryoptic/1.5)
+  CKK_EC_MONTGOMERY 16384: yes (kryoptic/1.5)
+  CKK_GENERIC_SECRET: unknown — module profile kryoptic/1.5 records no CKK_GENERIC_SECRET generation
+  CKK_GOST28147: unknown — module profile kryoptic/1.5 records no CKK_GOST28147 generation
+  CKK_GOSTR3410: unknown — module profile kryoptic/1.5 records no CKK_GOSTR3410 generation
+  CKK_GOSTR3411: unknown — module profile kryoptic/1.5 records no CKK_GOSTR3411 generation
+  CKK_HKDF: unknown — module profile kryoptic/1.5 records no CKK_HKDF generation
+  CKK_HOTP: unknown — module profile kryoptic/1.5 records no CKK_HOTP generation
+  CKK_HSS: unknown — module profile kryoptic/1.5 records no CKK_HSS generation
+  CKK_IDEA: unknown — module profile kryoptic/1.5 records no CKK_IDEA generation
+  CKK_JUNIPER: unknown — module profile kryoptic/1.5 records no CKK_JUNIPER generation
+  CKK_KEA: unknown — module profile kryoptic/1.5 records no CKK_KEA generation
+  CKK_MD5_HMAC: unknown — module profile kryoptic/1.5 records no CKK_MD5_HMAC generation
+  CKK_ML_DSA: unknown — module profile kryoptic/1.5 records no CKK_ML_DSA generation
+  CKK_ML_KEM: unknown — module profile kryoptic/1.5 records no CKK_ML_KEM generation
+  CKK_POLY1305: unknown — module profile kryoptic/1.5 records no CKK_POLY1305 generation
+  CKK_RC2: unknown — module profile kryoptic/1.5 records no CKK_RC2 generation
+  CKK_RC4: unknown — module profile kryoptic/1.5 records no CKK_RC4 generation
+  CKK_RC5: unknown — module profile kryoptic/1.5 records no CKK_RC5 generation
+  CKK_RIPEMD128_HMAC: unknown — module profile kryoptic/1.5 records no CKK_RIPEMD128_HMAC generation
+  CKK_RIPEMD160_HMAC: unknown — module profile kryoptic/1.5 records no CKK_RIPEMD160_HMAC generation
+  CKK_RSA: yes (kryoptic/1.5)
+  CKK_RSA brainpoolP256r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_RSA brainpoolP384r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_RSA curve25519: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_RSA curve448: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_RSA edwards25519: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_RSA edwards448: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_RSA secp256k1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_RSA secp256r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_RSA secp384r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_RSA secp521r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
+  CKK_RSA 512: no — kryoptic/1.5
+  CKK_RSA 1024: yes (kryoptic/1.5)
+  CKK_RSA 2048: yes (kryoptic/1.5)
+  CKK_RSA 3072: yes (kryoptic/1.5)
+  CKK_RSA 4096: yes (kryoptic/1.5)
+  CKK_RSA 8192: unknown — module profile kryoptic/1.5 probed 1024, 2048, 3072, 4096 bits only
+  CKK_RSA 15360: unknown — module profile kryoptic/1.5 probed 1024, 2048, 3072, 4096 bits only
+  CKK_RSA 16384: unknown — module profile kryoptic/1.5 probed 1024, 2048, 3072, 4096 bits only
+  CKK_SALSA20: unknown — module profile kryoptic/1.5 records no CKK_SALSA20 generation
+  CKK_SECURID: unknown — module profile kryoptic/1.5 records no CKK_SECURID generation
+  CKK_SEED: unknown — module profile kryoptic/1.5 records no CKK_SEED generation
+  CKK_SHA224_HMAC: unknown — module profile kryoptic/1.5 records no CKK_SHA224_HMAC generation
+  CKK_SHA256_HMAC: unknown — module profile kryoptic/1.5 records no CKK_SHA256_HMAC generation
+  CKK_SHA384_HMAC: unknown — module profile kryoptic/1.5 records no CKK_SHA384_HMAC generation
+  CKK_SHA3_224_HMAC: unknown — module profile kryoptic/1.5 records no CKK_SHA3_224_HMAC generation
+  CKK_SHA3_256_HMAC: unknown — module profile kryoptic/1.5 records no CKK_SHA3_256_HMAC generation
+  CKK_SHA3_384_HMAC: unknown — module profile kryoptic/1.5 records no CKK_SHA3_384_HMAC generation
+  CKK_SHA3_512_HMAC: unknown — module profile kryoptic/1.5 records no CKK_SHA3_512_HMAC generation
+  CKK_SHA512_224_HMAC: unknown — module profile kryoptic/1.5 records no CKK_SHA512_224_HMAC generation
+  CKK_SHA512_256_HMAC: unknown — module profile kryoptic/1.5 records no CKK_SHA512_256_HMAC generation
+  CKK_SHA512_HMAC: unknown — module profile kryoptic/1.5 records no CKK_SHA512_HMAC generation
+  CKK_SHA512_T_HMAC: unknown — module profile kryoptic/1.5 records no CKK_SHA512_T_HMAC generation
+  CKK_SHA_1_HMAC: unknown — module profile kryoptic/1.5 records no CKK_SHA_1_HMAC generation
+  CKK_SKIPJACK: unknown — module profile kryoptic/1.5 records no CKK_SKIPJACK generation
+  CKK_SLH_DSA: unknown — module profile kryoptic/1.5 records no CKK_SLH_DSA generation
+  CKK_TWOFISH: unknown — module profile kryoptic/1.5 records no CKK_TWOFISH generation
+  CKK_X2RATCHET: unknown — module profile kryoptic/1.5 records no CKK_X2RATCHET generation
+  CKK_X9_42_DH: unknown — module profile kryoptic/1.5 records no CKK_X9_42_DH generation
+  CKK_XMSS: unknown — module profile kryoptic/1.5 records no CKK_XMSS generation
+  CKK_XMSSMT: unknown — module profile kryoptic/1.5 records no CKK_XMSSMT generation
+  curve brainpoolP256r1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
+  curve brainpoolP384r1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
+  curve curve25519: yes (kryoptic/1.5)
+  curve curve448: yes (kryoptic/1.5)
+  curve edwards25519: yes (kryoptic/1.5)
+  curve edwards448: yes (kryoptic/1.5)
+  curve secp256k1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
+  curve secp256r1: yes (kryoptic/1.5)
+  curve secp384r1: yes (kryoptic/1.5)
+  curve secp521r1: yes (kryoptic/1.5)
+  oaep SHA-1: yes (kryoptic/1.5)
+  oaep SHA-256: yes (kryoptic/1.5)
+# softhsm/2.7
+  wrap.oaep Some("[\"SHA-1\"]")
+  decrypt.oaep Some("[\"SHA-1\"]")
+  unwrap.refuse Some("[\"CKA_VALUE_LEN\"]")
+  derive.sealed Some(true)
+  derive.read-only Some(true)
+  migration exports None unwraps None secret-unwraps Some(false) trusted-wrap None plaintext None
+  migration accepts [] [] []
+  generate CKK_EC: can ["brainpoolP256r1", "brainpoolP384r1", "secp256k1", "secp256r1", "secp384r1", "secp521r1"] cannot [] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_EDWARDS: can ["edwards25519", "edwards448"] cannot [] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(512)..Some(16384) can [1024, 2048, 3072, 4096] cannot [] by-name []
+
+  CKK_ACTI: unknown — module profile softhsm/2.7 records no CKK_ACTI generation
+  CKK_AES: unknown — module profile softhsm/2.7 records no CKK_AES generation
+  CKK_AES_XTS: unknown — module profile softhsm/2.7 records no CKK_AES_XTS generation
+  CKK_ARIA: unknown — module profile softhsm/2.7 records no CKK_ARIA generation
+  CKK_BATON: unknown — module profile softhsm/2.7 records no CKK_BATON generation
+  CKK_BLAKE2B_160_HMAC: unknown — module profile softhsm/2.7 records no CKK_BLAKE2B_160_HMAC generation
+  CKK_BLAKE2B_256_HMAC: unknown — module profile softhsm/2.7 records no CKK_BLAKE2B_256_HMAC generation
+  CKK_BLAKE2B_384_HMAC: unknown — module profile softhsm/2.7 records no CKK_BLAKE2B_384_HMAC generation
+  CKK_BLAKE2B_512_HMAC: unknown — module profile softhsm/2.7 records no CKK_BLAKE2B_512_HMAC generation
+  CKK_BLOWFISH: unknown — module profile softhsm/2.7 records no CKK_BLOWFISH generation
+  CKK_CAMELLIA: unknown — module profile softhsm/2.7 records no CKK_CAMELLIA generation
+  CKK_CAST: unknown — module profile softhsm/2.7 records no CKK_CAST generation
+  CKK_CAST128: unknown — module profile softhsm/2.7 records no CKK_CAST128 generation
+  CKK_CAST3: unknown — module profile softhsm/2.7 records no CKK_CAST3 generation
+  CKK_CAST5: unknown — module profile softhsm/2.7 records no CKK_CAST5 generation
+  CKK_CDMF: unknown — module profile softhsm/2.7 records no CKK_CDMF generation
+  CKK_CHACHA20: unknown — module profile softhsm/2.7 records no CKK_CHACHA20 generation
+  CKK_DES: unknown — module profile softhsm/2.7 records no CKK_DES generation
+  CKK_DES2: unknown — module profile softhsm/2.7 records no CKK_DES2 generation
+  CKK_DES3: unknown — module profile softhsm/2.7 records no CKK_DES3 generation
+  CKK_DH: unknown — module profile softhsm/2.7 records no CKK_DH generation
+  CKK_DSA: unknown — module profile softhsm/2.7 records no CKK_DSA generation
+  CKK_EC: yes (softhsm/2.7)
+  CKK_EC brainpoolP256r1: yes (softhsm/2.7)
+  CKK_EC brainpoolP384r1: yes (softhsm/2.7)
+  CKK_EC curve25519: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC curve448: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC edwards25519: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC edwards448: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC secp256k1: yes (softhsm/2.7)
+  CKK_EC secp256r1: yes (softhsm/2.7)
+  CKK_EC secp384r1: yes (softhsm/2.7)
+  CKK_EC secp521r1: yes (softhsm/2.7)
+  CKK_EC 512: yes (softhsm/2.7)
+  CKK_EC 1024: yes (softhsm/2.7)
+  CKK_EC 2048: yes (softhsm/2.7)
+  CKK_EC 3072: yes (softhsm/2.7)
+  CKK_EC 4096: yes (softhsm/2.7)
+  CKK_EC 8192: yes (softhsm/2.7)
+  CKK_EC 15360: yes (softhsm/2.7)
+  CKK_EC 16384: yes (softhsm/2.7)
+  CKK_ECDSA: unknown — module profile softhsm/2.7 records no CKK_ECDSA generation
+  CKK_EC_EDWARDS: yes (softhsm/2.7)
+  CKK_EC_EDWARDS brainpoolP256r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve25519: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve448: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS edwards25519: yes (softhsm/2.7)
+  CKK_EC_EDWARDS edwards448: yes (softhsm/2.7)
+  CKK_EC_EDWARDS secp256k1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp256r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp384r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp521r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS 512: yes (softhsm/2.7)
+  CKK_EC_EDWARDS 1024: yes (softhsm/2.7)
+  CKK_EC_EDWARDS 2048: yes (softhsm/2.7)
+  CKK_EC_EDWARDS 3072: yes (softhsm/2.7)
+  CKK_EC_EDWARDS 4096: yes (softhsm/2.7)
+  CKK_EC_EDWARDS 8192: yes (softhsm/2.7)
+  CKK_EC_EDWARDS 15360: yes (softhsm/2.7)
+  CKK_EC_EDWARDS 16384: yes (softhsm/2.7)
+  CKK_EC_MONTGOMERY: yes (softhsm/2.7)
+  CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY curve25519: no — softhsm/2.7: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  CKK_EC_MONTGOMERY curve448: no — softhsm/2.7: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  CKK_EC_MONTGOMERY edwards25519: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY edwards448: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256k1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp384r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp521r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY 512: yes (softhsm/2.7)
+  CKK_EC_MONTGOMERY 1024: yes (softhsm/2.7)
+  CKK_EC_MONTGOMERY 2048: yes (softhsm/2.7)
+  CKK_EC_MONTGOMERY 3072: yes (softhsm/2.7)
+  CKK_EC_MONTGOMERY 4096: yes (softhsm/2.7)
+  CKK_EC_MONTGOMERY 8192: yes (softhsm/2.7)
+  CKK_EC_MONTGOMERY 15360: yes (softhsm/2.7)
+  CKK_EC_MONTGOMERY 16384: yes (softhsm/2.7)
+  CKK_GENERIC_SECRET: unknown — module profile softhsm/2.7 records no CKK_GENERIC_SECRET generation
+  CKK_GOST28147: unknown — module profile softhsm/2.7 records no CKK_GOST28147 generation
+  CKK_GOSTR3410: unknown — module profile softhsm/2.7 records no CKK_GOSTR3410 generation
+  CKK_GOSTR3411: unknown — module profile softhsm/2.7 records no CKK_GOSTR3411 generation
+  CKK_HKDF: unknown — module profile softhsm/2.7 records no CKK_HKDF generation
+  CKK_HOTP: unknown — module profile softhsm/2.7 records no CKK_HOTP generation
+  CKK_HSS: unknown — module profile softhsm/2.7 records no CKK_HSS generation
+  CKK_IDEA: unknown — module profile softhsm/2.7 records no CKK_IDEA generation
+  CKK_JUNIPER: unknown — module profile softhsm/2.7 records no CKK_JUNIPER generation
+  CKK_KEA: unknown — module profile softhsm/2.7 records no CKK_KEA generation
+  CKK_MD5_HMAC: unknown — module profile softhsm/2.7 records no CKK_MD5_HMAC generation
+  CKK_ML_DSA: unknown — module profile softhsm/2.7 records no CKK_ML_DSA generation
+  CKK_ML_KEM: unknown — module profile softhsm/2.7 records no CKK_ML_KEM generation
+  CKK_POLY1305: unknown — module profile softhsm/2.7 records no CKK_POLY1305 generation
+  CKK_RC2: unknown — module profile softhsm/2.7 records no CKK_RC2 generation
+  CKK_RC4: unknown — module profile softhsm/2.7 records no CKK_RC4 generation
+  CKK_RC5: unknown — module profile softhsm/2.7 records no CKK_RC5 generation
+  CKK_RIPEMD128_HMAC: unknown — module profile softhsm/2.7 records no CKK_RIPEMD128_HMAC generation
+  CKK_RIPEMD160_HMAC: unknown — module profile softhsm/2.7 records no CKK_RIPEMD160_HMAC generation
+  CKK_RSA: yes (softhsm/2.7)
+  CKK_RSA brainpoolP256r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA brainpoolP384r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA curve25519: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA curve448: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA edwards25519: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA edwards448: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA secp256k1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA secp256r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA secp384r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA secp521r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA 512: unknown — module profile softhsm/2.7 probed 1024, 2048, 3072, 4096 bits only
+  CKK_RSA 1024: yes (softhsm/2.7)
+  CKK_RSA 2048: yes (softhsm/2.7)
+  CKK_RSA 3072: yes (softhsm/2.7)
+  CKK_RSA 4096: yes (softhsm/2.7)
+  CKK_RSA 8192: unknown — module profile softhsm/2.7 probed 1024, 2048, 3072, 4096 bits only
+  CKK_RSA 15360: unknown — module profile softhsm/2.7 probed 1024, 2048, 3072, 4096 bits only
+  CKK_RSA 16384: unknown — module profile softhsm/2.7 probed 1024, 2048, 3072, 4096 bits only
+  CKK_SALSA20: unknown — module profile softhsm/2.7 records no CKK_SALSA20 generation
+  CKK_SECURID: unknown — module profile softhsm/2.7 records no CKK_SECURID generation
+  CKK_SEED: unknown — module profile softhsm/2.7 records no CKK_SEED generation
+  CKK_SHA224_HMAC: unknown — module profile softhsm/2.7 records no CKK_SHA224_HMAC generation
+  CKK_SHA256_HMAC: unknown — module profile softhsm/2.7 records no CKK_SHA256_HMAC generation
+  CKK_SHA384_HMAC: unknown — module profile softhsm/2.7 records no CKK_SHA384_HMAC generation
+  CKK_SHA3_224_HMAC: unknown — module profile softhsm/2.7 records no CKK_SHA3_224_HMAC generation
+  CKK_SHA3_256_HMAC: unknown — module profile softhsm/2.7 records no CKK_SHA3_256_HMAC generation
+  CKK_SHA3_384_HMAC: unknown — module profile softhsm/2.7 records no CKK_SHA3_384_HMAC generation
+  CKK_SHA3_512_HMAC: unknown — module profile softhsm/2.7 records no CKK_SHA3_512_HMAC generation
+  CKK_SHA512_224_HMAC: unknown — module profile softhsm/2.7 records no CKK_SHA512_224_HMAC generation
+  CKK_SHA512_256_HMAC: unknown — module profile softhsm/2.7 records no CKK_SHA512_256_HMAC generation
+  CKK_SHA512_HMAC: unknown — module profile softhsm/2.7 records no CKK_SHA512_HMAC generation
+  CKK_SHA512_T_HMAC: unknown — module profile softhsm/2.7 records no CKK_SHA512_T_HMAC generation
+  CKK_SHA_1_HMAC: unknown — module profile softhsm/2.7 records no CKK_SHA_1_HMAC generation
+  CKK_SKIPJACK: unknown — module profile softhsm/2.7 records no CKK_SKIPJACK generation
+  CKK_SLH_DSA: unknown — module profile softhsm/2.7 records no CKK_SLH_DSA generation
+  CKK_TWOFISH: unknown — module profile softhsm/2.7 records no CKK_TWOFISH generation
+  CKK_X2RATCHET: unknown — module profile softhsm/2.7 records no CKK_X2RATCHET generation
+  CKK_X9_42_DH: unknown — module profile softhsm/2.7 records no CKK_X9_42_DH generation
+  CKK_XMSS: unknown — module profile softhsm/2.7 records no CKK_XMSS generation
+  CKK_XMSSMT: unknown — module profile softhsm/2.7 records no CKK_XMSSMT generation
+  curve brainpoolP256r1: yes (softhsm/2.7)
+  curve brainpoolP384r1: yes (softhsm/2.7)
+  curve curve25519: no — softhsm/2.7: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  curve curve448: no — softhsm/2.7: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  curve edwards25519: yes (softhsm/2.7)
+  curve edwards448: yes (softhsm/2.7)
+  curve secp256k1: yes (softhsm/2.7)
+  curve secp256r1: yes (softhsm/2.7)
+  curve secp384r1: yes (softhsm/2.7)
+  curve secp521r1: yes (softhsm/2.7)
+  oaep SHA-1: yes (softhsm/2.7): SHA-256: wrapping fails: CKR_ARGUMENTS_BAD
+# tpm2-pkcs11/1.10+amd-ftpm
+  wrap.oaep None
+  decrypt.oaep Some("[\"SHA-1\", \"SHA-256\"]")
+  unwrap.refuse None
+  derive.sealed Some(false)
+  derive.read-only Some(false)
+  migration exports Some(false) unwraps Some(false) secret-unwraps None trusted-wrap None plaintext Some(Tpm2Ptool)
+  migration accepts [AcceptRow { class: "CKO_CERTIFICATE", key_types: [], curves: [], min_bits: None, max_bits: None }, AcceptRow { class: "CKO_PUBLIC_KEY", key_types: ["CKK_RSA"], curves: [], min_bits: None, max_bits: None }] [AcceptRow { class: "CKO_PRIVATE_KEY", key_types: ["CKK_EC"], curves: ["secp256r1", "secp384r1"], min_bits: None, max_bits: None }, AcceptRow { class: "CKO_PRIVATE_KEY", key_types: ["CKK_RSA"], curves: [], min_bits: Some(1024), max_bits: Some(2048) }, AcceptRow { class: "CKO_SECRET_KEY", key_types: ["CKK_SHA_1_HMAC", "CKK_SHA256_HMAC"], curves: [], min_bits: None, max_bits: None }] []
+  generate CKK_EC: can ["secp256r1", "secp384r1"] cannot ["brainpoolP256r1", "brainpoolP384r1", "secp256k1", "secp521r1"] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_EDWARDS: can [] cannot ["edwards25519", "edwards448"] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(1024)..Some(2048) can [1024, 2048] cannot [3072, 4096] by-name []
+
+  CKK_ACTI: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_ACTI generation
+  CKK_AES: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_AES generation
+  CKK_AES_XTS: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_AES_XTS generation
+  CKK_ARIA: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_ARIA generation
+  CKK_BATON: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_BATON generation
+  CKK_BLAKE2B_160_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_BLAKE2B_160_HMAC generation
+  CKK_BLAKE2B_256_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_BLAKE2B_256_HMAC generation
+  CKK_BLAKE2B_384_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_BLAKE2B_384_HMAC generation
+  CKK_BLAKE2B_512_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_BLAKE2B_512_HMAC generation
+  CKK_BLOWFISH: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_BLOWFISH generation
+  CKK_CAMELLIA: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_CAMELLIA generation
+  CKK_CAST: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_CAST generation
+  CKK_CAST128: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_CAST128 generation
+  CKK_CAST3: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_CAST3 generation
+  CKK_CAST5: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_CAST5 generation
+  CKK_CDMF: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_CDMF generation
+  CKK_CHACHA20: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_CHACHA20 generation
+  CKK_DES: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_DES generation
+  CKK_DES2: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_DES2 generation
+  CKK_DES3: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_DES3 generation
+  CKK_DH: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_DH generation
+  CKK_DSA: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_DSA generation
+  CKK_EC: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC brainpoolP256r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
+  CKK_EC brainpoolP384r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
+  CKK_EC curve25519: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC curve448: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC edwards25519: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC edwards448: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC secp256k1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
+  CKK_EC secp256r1: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC secp384r1: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC secp521r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_GENERAL_ERROR
+  CKK_EC 512: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC 1024: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC 2048: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC 3072: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC 4096: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC 8192: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC 15360: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC 16384: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_ECDSA: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_ECDSA generation
+  CKK_EC_EDWARDS: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_EDWARDS brainpoolP256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve25519: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve448: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS edwards25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_EDWARDS edwards448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_EDWARDS secp256k1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp521r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS 512: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_EDWARDS 1024: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_EDWARDS 2048: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_EDWARDS 3072: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_EDWARDS 4096: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_EDWARDS 8192: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_EDWARDS 15360: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_EDWARDS 16384: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_MONTGOMERY: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY curve25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY curve448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY edwards25519: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY edwards448: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256k1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp521r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY 512: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_MONTGOMERY 1024: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_MONTGOMERY 2048: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_MONTGOMERY 3072: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_MONTGOMERY 4096: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_MONTGOMERY 8192: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_MONTGOMERY 15360: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_MONTGOMERY 16384: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_GENERIC_SECRET: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_GENERIC_SECRET generation
+  CKK_GOST28147: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_GOST28147 generation
+  CKK_GOSTR3410: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_GOSTR3410 generation
+  CKK_GOSTR3411: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_GOSTR3411 generation
+  CKK_HKDF: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_HKDF generation
+  CKK_HOTP: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_HOTP generation
+  CKK_HSS: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_HSS generation
+  CKK_IDEA: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_IDEA generation
+  CKK_JUNIPER: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_JUNIPER generation
+  CKK_KEA: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_KEA generation
+  CKK_MD5_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_MD5_HMAC generation
+  CKK_ML_DSA: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_ML_DSA generation
+  CKK_ML_KEM: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_ML_KEM generation
+  CKK_POLY1305: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_POLY1305 generation
+  CKK_RC2: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_RC2 generation
+  CKK_RC4: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_RC4 generation
+  CKK_RC5: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_RC5 generation
+  CKK_RIPEMD128_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_RIPEMD128_HMAC generation
+  CKK_RIPEMD160_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_RIPEMD160_HMAC generation
+  CKK_RSA: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_RSA brainpoolP256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_RSA brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_RSA curve25519: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_RSA curve448: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_RSA edwards25519: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_RSA edwards448: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_RSA secp256k1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_RSA secp256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_RSA secp384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_RSA secp521r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
+  CKK_RSA 512: no — tpm2-pkcs11/1.10+amd-ftpm
+  CKK_RSA 1024: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_RSA 2048: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_RSA 3072: no — tpm2-pkcs11/1.10+amd-ftpm: modulusBits = 3072: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_RSA 4096: no — tpm2-pkcs11/1.10+amd-ftpm: modulusBits = 4096: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_RSA 8192: no — tpm2-pkcs11/1.10+amd-ftpm
+  CKK_RSA 15360: no — tpm2-pkcs11/1.10+amd-ftpm
+  CKK_RSA 16384: no — tpm2-pkcs11/1.10+amd-ftpm
+  CKK_SALSA20: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SALSA20 generation
+  CKK_SECURID: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SECURID generation
+  CKK_SEED: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SEED generation
+  CKK_SHA224_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SHA224_HMAC generation
+  CKK_SHA256_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SHA256_HMAC generation
+  CKK_SHA384_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SHA384_HMAC generation
+  CKK_SHA3_224_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SHA3_224_HMAC generation
+  CKK_SHA3_256_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SHA3_256_HMAC generation
+  CKK_SHA3_384_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SHA3_384_HMAC generation
+  CKK_SHA3_512_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SHA3_512_HMAC generation
+  CKK_SHA512_224_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SHA512_224_HMAC generation
+  CKK_SHA512_256_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SHA512_256_HMAC generation
+  CKK_SHA512_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SHA512_HMAC generation
+  CKK_SHA512_T_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SHA512_T_HMAC generation
+  CKK_SHA_1_HMAC: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SHA_1_HMAC generation
+  CKK_SKIPJACK: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SKIPJACK generation
+  CKK_SLH_DSA: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_SLH_DSA generation
+  CKK_TWOFISH: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_TWOFISH generation
+  CKK_X2RATCHET: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_X2RATCHET generation
+  CKK_X9_42_DH: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_X9_42_DH generation
+  CKK_XMSS: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_XMSS generation
+  CKK_XMSSMT: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_XMSSMT generation
+  curve brainpoolP256r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
+  curve brainpoolP384r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
+  curve curve25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  curve curve448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  curve edwards25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  curve edwards448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  curve secp256k1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
+  curve secp256r1: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  curve secp384r1: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  curve secp521r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_GENERAL_ERROR
+  oaep OAEP: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no OAEP probe
+# tpm2-pkcs11/1.10+swtpm
+  wrap.oaep None
+  decrypt.oaep Some("[\"SHA-1\", \"SHA-256\", \"SHA-512\"]")
+  unwrap.refuse None
+  derive.sealed Some(false)
+  derive.read-only Some(false)
+  migration exports Some(false) unwraps Some(false) secret-unwraps None trusted-wrap None plaintext Some(Tpm2Ptool)
+  migration accepts [AcceptRow { class: "CKO_CERTIFICATE", key_types: [], curves: [], min_bits: None, max_bits: None }, AcceptRow { class: "CKO_PUBLIC_KEY", key_types: ["CKK_RSA"], curves: [], min_bits: None, max_bits: None }] [AcceptRow { class: "CKO_PRIVATE_KEY", key_types: ["CKK_EC"], curves: ["secp256r1", "secp384r1"], min_bits: None, max_bits: None }, AcceptRow { class: "CKO_PRIVATE_KEY", key_types: ["CKK_RSA"], curves: [], min_bits: Some(1024), max_bits: Some(3072) }, AcceptRow { class: "CKO_SECRET_KEY", key_types: ["CKK_SHA_1_HMAC", "CKK_SHA224_HMAC", "CKK_SHA256_HMAC", "CKK_SHA384_HMAC", "CKK_SHA512_HMAC"], curves: [], min_bits: None, max_bits: None }] []
+  generate CKK_EC: can ["secp256r1", "secp384r1", "secp521r1"] cannot ["brainpoolP256r1", "brainpoolP384r1", "secp256k1"] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_EDWARDS: can [] cannot ["edwards25519", "edwards448"] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(1024)..Some(3072) can [1024, 2048, 3072] cannot [4096] by-name []
+
+  CKK_ACTI: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_ACTI generation
+  CKK_AES: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_AES generation
+  CKK_AES_XTS: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_AES_XTS generation
+  CKK_ARIA: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_ARIA generation
+  CKK_BATON: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_BATON generation
+  CKK_BLAKE2B_160_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_BLAKE2B_160_HMAC generation
+  CKK_BLAKE2B_256_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_BLAKE2B_256_HMAC generation
+  CKK_BLAKE2B_384_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_BLAKE2B_384_HMAC generation
+  CKK_BLAKE2B_512_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_BLAKE2B_512_HMAC generation
+  CKK_BLOWFISH: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_BLOWFISH generation
+  CKK_CAMELLIA: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_CAMELLIA generation
+  CKK_CAST: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_CAST generation
+  CKK_CAST128: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_CAST128 generation
+  CKK_CAST3: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_CAST3 generation
+  CKK_CAST5: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_CAST5 generation
+  CKK_CDMF: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_CDMF generation
+  CKK_CHACHA20: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_CHACHA20 generation
+  CKK_DES: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_DES generation
+  CKK_DES2: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_DES2 generation
+  CKK_DES3: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_DES3 generation
+  CKK_DH: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_DH generation
+  CKK_DSA: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_DSA generation
+  CKK_EC: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC brainpoolP256r1: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_CURVE_NOT_SUPPORTED
+  CKK_EC brainpoolP384r1: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_CURVE_NOT_SUPPORTED
+  CKK_EC curve25519: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC curve448: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC edwards25519: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC edwards448: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC secp256k1: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_CURVE_NOT_SUPPORTED
+  CKK_EC secp256r1: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC secp384r1: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC secp521r1: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC 512: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC 1024: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC 2048: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC 3072: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC 4096: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC 8192: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC 15360: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC 16384: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_ECDSA: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_ECDSA generation
+  CKK_EC_EDWARDS: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_EDWARDS brainpoolP256r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve25519: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve448: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS edwards25519: no — tpm2-pkcs11/1.10+swtpm: not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN
+  CKK_EC_EDWARDS edwards448: no — tpm2-pkcs11/1.10+swtpm: not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN
+  CKK_EC_EDWARDS secp256k1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp256r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp384r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp521r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS 512: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_EDWARDS 1024: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_EDWARDS 2048: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_EDWARDS 3072: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_EDWARDS 4096: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_EDWARDS 8192: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_EDWARDS 15360: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_EDWARDS 16384: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_MONTGOMERY: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY curve25519: no — tpm2-pkcs11/1.10+swtpm: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  CKK_EC_MONTGOMERY curve448: no — tpm2-pkcs11/1.10+swtpm: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  CKK_EC_MONTGOMERY edwards25519: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY edwards448: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256k1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp384r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp521r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY 512: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_MONTGOMERY 1024: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_MONTGOMERY 2048: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_MONTGOMERY 3072: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_MONTGOMERY 4096: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_MONTGOMERY 8192: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_MONTGOMERY 15360: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_MONTGOMERY 16384: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_GENERIC_SECRET: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_GENERIC_SECRET generation
+  CKK_GOST28147: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_GOST28147 generation
+  CKK_GOSTR3410: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_GOSTR3410 generation
+  CKK_GOSTR3411: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_GOSTR3411 generation
+  CKK_HKDF: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_HKDF generation
+  CKK_HOTP: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_HOTP generation
+  CKK_HSS: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_HSS generation
+  CKK_IDEA: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_IDEA generation
+  CKK_JUNIPER: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_JUNIPER generation
+  CKK_KEA: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_KEA generation
+  CKK_MD5_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_MD5_HMAC generation
+  CKK_ML_DSA: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_ML_DSA generation
+  CKK_ML_KEM: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_ML_KEM generation
+  CKK_POLY1305: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_POLY1305 generation
+  CKK_RC2: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_RC2 generation
+  CKK_RC4: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_RC4 generation
+  CKK_RC5: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_RC5 generation
+  CKK_RIPEMD128_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_RIPEMD128_HMAC generation
+  CKK_RIPEMD160_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_RIPEMD160_HMAC generation
+  CKK_RSA: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_RSA brainpoolP256r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_RSA brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_RSA curve25519: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_RSA curve448: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_RSA edwards25519: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_RSA edwards448: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_RSA secp256k1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_RSA secp256r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_RSA secp384r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_RSA secp521r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
+  CKK_RSA 512: no — tpm2-pkcs11/1.10+swtpm
+  CKK_RSA 1024: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_RSA 2048: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_RSA 3072: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_RSA 4096: no — tpm2-pkcs11/1.10+swtpm: modulusBits = 4096: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_RSA 8192: no — tpm2-pkcs11/1.10+swtpm
+  CKK_RSA 15360: no — tpm2-pkcs11/1.10+swtpm
+  CKK_RSA 16384: no — tpm2-pkcs11/1.10+swtpm
+  CKK_SALSA20: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SALSA20 generation
+  CKK_SECURID: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SECURID generation
+  CKK_SEED: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SEED generation
+  CKK_SHA224_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SHA224_HMAC generation
+  CKK_SHA256_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SHA256_HMAC generation
+  CKK_SHA384_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SHA384_HMAC generation
+  CKK_SHA3_224_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SHA3_224_HMAC generation
+  CKK_SHA3_256_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SHA3_256_HMAC generation
+  CKK_SHA3_384_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SHA3_384_HMAC generation
+  CKK_SHA3_512_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SHA3_512_HMAC generation
+  CKK_SHA512_224_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SHA512_224_HMAC generation
+  CKK_SHA512_256_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SHA512_256_HMAC generation
+  CKK_SHA512_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SHA512_HMAC generation
+  CKK_SHA512_T_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SHA512_T_HMAC generation
+  CKK_SHA_1_HMAC: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SHA_1_HMAC generation
+  CKK_SKIPJACK: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SKIPJACK generation
+  CKK_SLH_DSA: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_SLH_DSA generation
+  CKK_TWOFISH: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_TWOFISH generation
+  CKK_X2RATCHET: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_X2RATCHET generation
+  CKK_X9_42_DH: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_X9_42_DH generation
+  CKK_XMSS: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_XMSS generation
+  CKK_XMSSMT: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_XMSSMT generation
+  curve brainpoolP256r1: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_CURVE_NOT_SUPPORTED
+  curve brainpoolP384r1: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_CURVE_NOT_SUPPORTED
+  curve curve25519: no — tpm2-pkcs11/1.10+swtpm: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  curve curve448: no — tpm2-pkcs11/1.10+swtpm: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  curve edwards25519: no — tpm2-pkcs11/1.10+swtpm: not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN
+  curve edwards448: no — tpm2-pkcs11/1.10+swtpm: not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN
+  curve secp256k1: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_CURVE_NOT_SUPPORTED
+  curve secp256r1: yes (tpm2-pkcs11/1.10+swtpm)
+  curve secp384r1: yes (tpm2-pkcs11/1.10+swtpm)
+  curve secp521r1: yes (tpm2-pkcs11/1.10+swtpm)
+  oaep OAEP: unknown — module profile tpm2-pkcs11/1.10+swtpm records no OAEP probe
+# ykcs11/2.7
+  wrap.oaep None
+  decrypt.oaep Some("[\"SHA-1\", \"SHA-256\"]")
+  unwrap.refuse None
+  derive.sealed Some(false)
+  derive.read-only Some(true)
+  migration exports Some(false) unwraps Some(false) secret-unwraps None trusted-wrap None plaintext Some(PivImport)
+  migration accepts [AcceptRow { class: "CKO_CERTIFICATE", key_types: [], curves: [], min_bits: None, max_bits: None }] [AcceptRow { class: "CKO_PRIVATE_KEY", key_types: ["CKK_RSA"], curves: [], min_bits: Some(1024), max_bits: Some(4096) }, AcceptRow { class: "CKO_PRIVATE_KEY", key_types: ["CKK_EC"], curves: ["secp256r1", "secp384r1"], min_bits: None, max_bits: None }, AcceptRow { class: "CKO_PRIVATE_KEY", key_types: ["CKK_EC_EDWARDS"], curves: ["edwards25519"], min_bits: None, max_bits: None }] []
+  generate CKK_EC: can ["secp256r1", "secp384r1"] cannot ["brainpoolP256r1", "brainpoolP384r1", "secp256k1", "secp521r1"] bits None..None can [] cannot [] by-name []
+  generate CKK_EC_EDWARDS: can ["edwards25519"] cannot ["edwards448"] bits None..None can [] cannot [] by-name ["edwards25519"]
+  generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(1024)..Some(4096) can [2048, 3072, 4096] cannot [1024] by-name []
+
+  CKK_ACTI: unknown — module profile ykcs11/2.7 records no CKK_ACTI generation
+  CKK_AES: unknown — module profile ykcs11/2.7 records no CKK_AES generation
+  CKK_AES_XTS: unknown — module profile ykcs11/2.7 records no CKK_AES_XTS generation
+  CKK_ARIA: unknown — module profile ykcs11/2.7 records no CKK_ARIA generation
+  CKK_BATON: unknown — module profile ykcs11/2.7 records no CKK_BATON generation
+  CKK_BLAKE2B_160_HMAC: unknown — module profile ykcs11/2.7 records no CKK_BLAKE2B_160_HMAC generation
+  CKK_BLAKE2B_256_HMAC: unknown — module profile ykcs11/2.7 records no CKK_BLAKE2B_256_HMAC generation
+  CKK_BLAKE2B_384_HMAC: unknown — module profile ykcs11/2.7 records no CKK_BLAKE2B_384_HMAC generation
+  CKK_BLAKE2B_512_HMAC: unknown — module profile ykcs11/2.7 records no CKK_BLAKE2B_512_HMAC generation
+  CKK_BLOWFISH: unknown — module profile ykcs11/2.7 records no CKK_BLOWFISH generation
+  CKK_CAMELLIA: unknown — module profile ykcs11/2.7 records no CKK_CAMELLIA generation
+  CKK_CAST: unknown — module profile ykcs11/2.7 records no CKK_CAST generation
+  CKK_CAST128: unknown — module profile ykcs11/2.7 records no CKK_CAST128 generation
+  CKK_CAST3: unknown — module profile ykcs11/2.7 records no CKK_CAST3 generation
+  CKK_CAST5: unknown — module profile ykcs11/2.7 records no CKK_CAST5 generation
+  CKK_CDMF: unknown — module profile ykcs11/2.7 records no CKK_CDMF generation
+  CKK_CHACHA20: unknown — module profile ykcs11/2.7 records no CKK_CHACHA20 generation
+  CKK_DES: unknown — module profile ykcs11/2.7 records no CKK_DES generation
+  CKK_DES2: unknown — module profile ykcs11/2.7 records no CKK_DES2 generation
+  CKK_DES3: unknown — module profile ykcs11/2.7 records no CKK_DES3 generation
+  CKK_DH: unknown — module profile ykcs11/2.7 records no CKK_DH generation
+  CKK_DSA: unknown — module profile ykcs11/2.7 records no CKK_DSA generation
+  CKK_EC: yes (ykcs11/2.7)
+  CKK_EC brainpoolP256r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC brainpoolP384r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC curve25519: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC curve448: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC edwards25519: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC edwards448: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC secp256k1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC secp256r1: yes (ykcs11/2.7)
+  CKK_EC secp384r1: yes (ykcs11/2.7)
+  CKK_EC secp521r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC 512: yes (ykcs11/2.7)
+  CKK_EC 1024: yes (ykcs11/2.7)
+  CKK_EC 2048: yes (ykcs11/2.7)
+  CKK_EC 3072: yes (ykcs11/2.7)
+  CKK_EC 4096: yes (ykcs11/2.7)
+  CKK_EC 8192: yes (ykcs11/2.7)
+  CKK_EC 15360: yes (ykcs11/2.7)
+  CKK_EC 16384: yes (ykcs11/2.7)
+  CKK_ECDSA: unknown — module profile ykcs11/2.7 records no CKK_ECDSA generation
+  CKK_EC_EDWARDS: yes (ykcs11/2.7)
+  CKK_EC_EDWARDS brainpoolP256r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve25519: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS curve448: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS edwards25519: yes (ykcs11/2.7)
+  CKK_EC_EDWARDS edwards448: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC_EDWARDS secp256k1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp256r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp384r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS secp521r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_EDWARDS 512: yes (ykcs11/2.7)
+  CKK_EC_EDWARDS 1024: yes (ykcs11/2.7)
+  CKK_EC_EDWARDS 2048: yes (ykcs11/2.7)
+  CKK_EC_EDWARDS 3072: yes (ykcs11/2.7)
+  CKK_EC_EDWARDS 4096: yes (ykcs11/2.7)
+  CKK_EC_EDWARDS 8192: yes (ykcs11/2.7)
+  CKK_EC_EDWARDS 15360: yes (ykcs11/2.7)
+  CKK_EC_EDWARDS 16384: yes (ykcs11/2.7)
+  CKK_EC_MONTGOMERY: yes (ykcs11/2.7)
+  CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY curve25519: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC_MONTGOMERY curve448: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC_MONTGOMERY edwards25519: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY edwards448: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256k1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp256r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp384r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY secp521r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_EC_MONTGOMERY 512: yes (ykcs11/2.7)
+  CKK_EC_MONTGOMERY 1024: yes (ykcs11/2.7)
+  CKK_EC_MONTGOMERY 2048: yes (ykcs11/2.7)
+  CKK_EC_MONTGOMERY 3072: yes (ykcs11/2.7)
+  CKK_EC_MONTGOMERY 4096: yes (ykcs11/2.7)
+  CKK_EC_MONTGOMERY 8192: yes (ykcs11/2.7)
+  CKK_EC_MONTGOMERY 15360: yes (ykcs11/2.7)
+  CKK_EC_MONTGOMERY 16384: yes (ykcs11/2.7)
+  CKK_GENERIC_SECRET: unknown — module profile ykcs11/2.7 records no CKK_GENERIC_SECRET generation
+  CKK_GOST28147: unknown — module profile ykcs11/2.7 records no CKK_GOST28147 generation
+  CKK_GOSTR3410: unknown — module profile ykcs11/2.7 records no CKK_GOSTR3410 generation
+  CKK_GOSTR3411: unknown — module profile ykcs11/2.7 records no CKK_GOSTR3411 generation
+  CKK_HKDF: unknown — module profile ykcs11/2.7 records no CKK_HKDF generation
+  CKK_HOTP: unknown — module profile ykcs11/2.7 records no CKK_HOTP generation
+  CKK_HSS: unknown — module profile ykcs11/2.7 records no CKK_HSS generation
+  CKK_IDEA: unknown — module profile ykcs11/2.7 records no CKK_IDEA generation
+  CKK_JUNIPER: unknown — module profile ykcs11/2.7 records no CKK_JUNIPER generation
+  CKK_KEA: unknown — module profile ykcs11/2.7 records no CKK_KEA generation
+  CKK_MD5_HMAC: unknown — module profile ykcs11/2.7 records no CKK_MD5_HMAC generation
+  CKK_ML_DSA: unknown — module profile ykcs11/2.7 records no CKK_ML_DSA generation
+  CKK_ML_KEM: unknown — module profile ykcs11/2.7 records no CKK_ML_KEM generation
+  CKK_POLY1305: unknown — module profile ykcs11/2.7 records no CKK_POLY1305 generation
+  CKK_RC2: unknown — module profile ykcs11/2.7 records no CKK_RC2 generation
+  CKK_RC4: unknown — module profile ykcs11/2.7 records no CKK_RC4 generation
+  CKK_RC5: unknown — module profile ykcs11/2.7 records no CKK_RC5 generation
+  CKK_RIPEMD128_HMAC: unknown — module profile ykcs11/2.7 records no CKK_RIPEMD128_HMAC generation
+  CKK_RIPEMD160_HMAC: unknown — module profile ykcs11/2.7 records no CKK_RIPEMD160_HMAC generation
+  CKK_RSA: yes (ykcs11/2.7)
+  CKK_RSA brainpoolP256r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA brainpoolP384r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA curve25519: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA curve448: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA edwards25519: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA edwards448: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA secp256k1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA secp256r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA secp384r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA secp521r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
+  CKK_RSA 512: no — ykcs11/2.7
+  CKK_RSA 1024: no — ykcs11/2.7: modulusBits = 1024: CKR_ARGUMENTS_BAD
+  CKK_RSA 2048: yes (ykcs11/2.7)
+  CKK_RSA 3072: yes (ykcs11/2.7)
+  CKK_RSA 4096: yes (ykcs11/2.7)
+  CKK_RSA 8192: no — ykcs11/2.7
+  CKK_RSA 15360: no — ykcs11/2.7
+  CKK_RSA 16384: no — ykcs11/2.7
+  CKK_SALSA20: unknown — module profile ykcs11/2.7 records no CKK_SALSA20 generation
+  CKK_SECURID: unknown — module profile ykcs11/2.7 records no CKK_SECURID generation
+  CKK_SEED: unknown — module profile ykcs11/2.7 records no CKK_SEED generation
+  CKK_SHA224_HMAC: unknown — module profile ykcs11/2.7 records no CKK_SHA224_HMAC generation
+  CKK_SHA256_HMAC: unknown — module profile ykcs11/2.7 records no CKK_SHA256_HMAC generation
+  CKK_SHA384_HMAC: unknown — module profile ykcs11/2.7 records no CKK_SHA384_HMAC generation
+  CKK_SHA3_224_HMAC: unknown — module profile ykcs11/2.7 records no CKK_SHA3_224_HMAC generation
+  CKK_SHA3_256_HMAC: unknown — module profile ykcs11/2.7 records no CKK_SHA3_256_HMAC generation
+  CKK_SHA3_384_HMAC: unknown — module profile ykcs11/2.7 records no CKK_SHA3_384_HMAC generation
+  CKK_SHA3_512_HMAC: unknown — module profile ykcs11/2.7 records no CKK_SHA3_512_HMAC generation
+  CKK_SHA512_224_HMAC: unknown — module profile ykcs11/2.7 records no CKK_SHA512_224_HMAC generation
+  CKK_SHA512_256_HMAC: unknown — module profile ykcs11/2.7 records no CKK_SHA512_256_HMAC generation
+  CKK_SHA512_HMAC: unknown — module profile ykcs11/2.7 records no CKK_SHA512_HMAC generation
+  CKK_SHA512_T_HMAC: unknown — module profile ykcs11/2.7 records no CKK_SHA512_T_HMAC generation
+  CKK_SHA_1_HMAC: unknown — module profile ykcs11/2.7 records no CKK_SHA_1_HMAC generation
+  CKK_SKIPJACK: unknown — module profile ykcs11/2.7 records no CKK_SKIPJACK generation
+  CKK_SLH_DSA: unknown — module profile ykcs11/2.7 records no CKK_SLH_DSA generation
+  CKK_TWOFISH: unknown — module profile ykcs11/2.7 records no CKK_TWOFISH generation
+  CKK_X2RATCHET: unknown — module profile ykcs11/2.7 records no CKK_X2RATCHET generation
+  CKK_X9_42_DH: unknown — module profile ykcs11/2.7 records no CKK_X9_42_DH generation
+  CKK_XMSS: unknown — module profile ykcs11/2.7 records no CKK_XMSS generation
+  CKK_XMSSMT: unknown — module profile ykcs11/2.7 records no CKK_XMSSMT generation
+  curve brainpoolP256r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  curve brainpoolP384r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  curve curve25519: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  curve curve448: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  curve edwards25519: yes (ykcs11/2.7)
+  curve edwards448: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  curve secp256k1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  curve secp256r1: yes (ykcs11/2.7)
+  curve secp384r1: yes (ykcs11/2.7)
+  curve secp521r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  oaep OAEP: unknown — module profile ykcs11/2.7 records no OAEP probe
