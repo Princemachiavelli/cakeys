@@ -107,10 +107,17 @@ Where the public key comes from, in order (key material first, never what the mo
    (§3.6).
 3. Otherwise, `CKA_PUBLIC_KEY_INFO`. Errors are treated as absent: ykcs11 reports length 0, then
    fails.
+4. Otherwise, the subject key of the single certificate under the same locator: an imported key
+   whose importer wrote only the certificate beside it (a PIV-style slot, a PKCS #12 import). It
+   stands in like a public key object, no more trusted. With none of these, an EC private key
+   has no public half (11).
 
 Wherever `CKA_PUBLIC_KEY_INFO` is present it must agree with the material, or the result is a
 conflict (exit 13): modules may let it be set without checking —
-`h1b_a_forged_public_key_info_is_a_conflict`.
+`h1b_a_forged_public_key_info_is_a_conflict`. A stand-in (2–4) must be a key of the private
+key's own type and curve, or the result is a conflict (13): under `token-asserted` nothing else
+would stop another key's certificate from naming it —
+`a_certificate_stands_in_for_an_imported_keys_public_half`.
 
 Supported curves:
 
@@ -223,7 +230,9 @@ key to its identity:
 
      The token must offer the mechanism and the key's own `CKA_ALLOWED_MECHANISMS`, where it
      can be read, must allow it: a key pinned to `CKM_ECDSA` or `CKM_RSA_PKCS` proves through the
-     fallback (the object matrix, OPEN.md). A proof records only its binding, never the mechanism.
+     fallback (the object matrix, OPEN.md). Every binding below chooses the same way, and one
+     whose mechanisms the list allows none of is refused (15) naming them. A proof records only
+     its binding, never the mechanism.
 
      On a key the token reports `CKA_ALWAYS_AUTHENTICATE` (declared or not), the same proof runs
      under the key's per-use policy and is recorded as **`pop-sign-pin`**:
@@ -259,8 +268,9 @@ key to its identity:
        `realise` re-records it.
    - `pop-decrypt` (RSA keys that only decrypt): the host encrypts the challenge to the public key
      with RSA-OAEP (SHA-1, MGF1-SHA1 — the PKCS#11 baseline; SoftHSM implements no other OAEP);
-     the token decrypts with `CKM_RSA_PKCS_OAEP`. The plaintext matches only for the matching
-     private key.
+     the token decrypts with `CKM_RSA_PKCS_OAEP`. Where the token or the key's
+     `CKA_ALLOWED_MECHANISMS` offers only `CKM_RSA_PKCS`, the host encrypts with PKCS #1 v1.5
+     instead. The plaintext matches only for the matching private key.
    - `pop-unwrap` (RSA keys that only unwrap: transport keys, CAMIGRATE.md D3): the host wraps a
      fresh 32-byte secret to the public key with the same OAEP; the token unwraps it with
      `CKM_RSA_PKCS_OAEP` into a sensitive, non-extractable session `CKK_GENERIC_SECRET` and

@@ -428,6 +428,90 @@ pub fn tlv(tag: u8, body: &[u8]) -> Vec<u8> {
     v
 }
 
+/// One DER element: (tag, contents, rest). Independent of the crates cakeys uses.
+pub fn der(input: &[u8]) -> (u8, &[u8], &[u8]) {
+    let (tag, first) = (input[0], input[1]);
+    let (len, off) = if first < 0x80 {
+        (usize::from(first), 2)
+    } else {
+        let n = usize::from(first & 0x7f);
+        (input[2..2 + n].iter().fold(0, |acc, b| (acc << 8) | usize::from(*b)), 2 + n)
+    };
+    (tag, &input[off..off + len], &input[off + len..])
+}
+
+/// The DER inside a PEM file.
+pub fn pem_der(path: &str) -> Vec<u8> {
+    use base64::Engine;
+    let text = std::fs::read_to_string(path).unwrap();
+    let b64: String = text.lines().filter(|l| !l.starts_with("-----")).collect();
+    base64::engine::general_purpose::STANDARD.decode(b64).unwrap()
+}
+
+/// A PKCS#8 EC key: (curve OID as DER, private scalar, uncompressed public point).
+pub fn ec_fixture(pkcs8: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let (_, info, _) = der(pkcs8);
+    let (_, _, rest) = der(info); // version
+    let (_, alg, rest) = der(rest);
+    let (_, _, curve) = der(alg); // id-ecPublicKey
+    let curve_len = curve.len() - der(curve).2.len();
+    let (_, inner, _) = der(rest); // OCTET STRING { ECPrivateKey }
+    let (_, ec, _) = der(inner);
+    let (_, _, rest) = der(ec); // version
+    let (_, scalar, mut rest) = der(rest);
+    loop {
+        let (tag, body, next) = der(rest);
+        if tag == 0xa1 {
+            let (_, bits, _) = der(body);
+            return (curve[..curve_len].to_vec(), scalar.to_vec(), bits[1..].to_vec());
+        }
+        rest = next;
+    }
+}
+
+/// A PKCS#8 Ed25519 key (RFC 8410): its 32-byte seed.
+pub fn ed25519_fixture(pkcs8: &[u8]) -> Vec<u8> {
+    let (_, info, _) = der(pkcs8);
+    let (_, _, rest) = der(info); // version
+    let (_, _, rest) = der(rest); // algorithm
+    let (_, inner, _) = der(rest); // OCTET STRING { CurvePrivateKey }
+    der(inner).1.to_vec()
+}
+
+/// A PKCS#8 RSA key: modulus, public and private exponents, primes, CRT exponents, coefficient.
+pub fn rsa_fixture(pkcs8: &[u8]) -> Vec<Vec<u8>> {
+    let (_, info, _) = der(pkcs8);
+    let (_, _, rest) = der(info); // version
+    let (_, _, rest) = der(rest); // algorithm
+    let (_, inner, _) = der(rest);
+    let (_, key, _) = der(inner);
+    let (_, _, mut rest) = der(key); // version
+    let mut ints = Vec::new();
+    while !rest.is_empty() {
+        let (_, int, next) = der(rest);
+        ints.push(int.iter().copied().skip_while(|b| *b == 0).collect());
+        rest = next;
+    }
+    ints
+}
+
+/// Token object template for a fixture certificate (`SoftHSM` requires `CKA_SUBJECT`).
+pub fn cert_object(der: &[u8], label: &[u8], id: Option<u8>) -> Vec<Attribute> {
+    let der = der.to_vec();
+    let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(&der).unwrap();
+    let subject = x509_cert::der::Encode::to_der(cert.tbs_certificate().subject()).unwrap();
+    let mut t = vec![
+        Attribute::Class(ObjectClass::CERTIFICATE),
+        Attribute::CertificateType(cryptoki::object::CertificateType::X_509),
+        Attribute::Token(true),
+        Attribute::Label(label.to_vec()),
+        Attribute::Subject(subject),
+        Attribute::Value(der),
+    ];
+    t.extend(id.map(|i| Attribute::Id(vec![i])));
+    t
+}
+
 pub fn der_uint(b: &[u8]) -> Vec<u8> {
     let b: Vec<u8> = b.iter().copied().skip_while(|x| *x == 0).collect();
     let mut body = if b[0] & 0x80 != 0 { vec![0] } else { vec![] };

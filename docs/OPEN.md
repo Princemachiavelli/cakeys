@@ -13,14 +13,31 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   gets, or why none. Goal: keys.toml can declare any sane object, even when its assurance is
   low, and the matrix says what that assurance is. Clean fixtures cakeys made itself are not
   evidence of what deployments need. **Built for SoftHSM and kryoptic** (2026-11-15,
-  PLAN.md A4): `profiles/coverage/objects/<token>.toml`, 1032 objects each, adopted as a
-  legacy key arrives (crates/cli/tests/reference/matrix.rs). Still open: tpm2-pkcs11, imported
-  private keys, certificates and data objects. Its first three findings are fixed: proofs choose
-  within the key's `CKA_ALLOWED_MECHANISMS` (raw `CKM_ECDSA`, raw `CKM_RSA_PKCS` over a
-  `DigestInfo`), a declared list narrows the commitments computed (DESIGN §3.4, §3.6), an
-  unnamed mechanism in the list reads (patch `cryptoki-allowed-mechanisms-unnamed`), and an
-  HMAC-typed key generates with `CKM_SHA*_KEY_GEN` (kryoptic; SoftHSM 2.7 refuses at
-  validation). The rest follow.
+  PLAN.md A4): `profiles/coverage/objects/<token>.toml`, 1544 objects each, adopted as a
+  legacy key arrives (crates/cli/tests/object_matrix/): generated keys and imported secret
+  keys; imported private keys by where their public half is; certificates; data objects. Also
+  on tpm2-pkcs11 over swtpm (`tpm2-pkcs11+swtpm.toml`), where most of the grid is the module's
+  refusal to hold it: it generates EC keys only with `CKA_SIGN`, RSA keys only with both
+  `CKA_SIGN` and `CKA_DECRYPT`, no secret key at all; takes no private key by `C_CreateObject`;
+  stores an imported secret key as a software blob without `CKA_VALUE_LEN` (now refused as
+  unverifiable, 15, rather than a conflict); holds data objects only private and certificates
+  only public. Its findings are fixed:
+  - proofs choose within the key's `CKA_ALLOWED_MECHANISMS` (raw `CKM_ECDSA`, raw `CKM_RSA_PKCS`
+    over a `DigestInfo`, PKCS #1 v1.5 decryption), and every binding names what the list lacks
+    (15) rather than failing inside the token; a declared list narrows the commitments computed
+    (DESIGN §3.4, §3.6);
+  - an unnamed mechanism in the list reads (patch `cryptoki-allowed-mechanisms-unnamed`);
+  - an HMAC-typed key generates with `CKM_SHA*_KEY_GEN` (kryoptic; SoftHSM 2.7 refuses at
+    validation);
+  - an imported EC or Edwards private key whose importer wrote only the certificate beside it
+    takes its public half from the certificate (DESIGN §3.2), and any stand-in must be a key of
+    the private key's own type and curve (13 otherwise).
+- **An imported EC private key with nothing beside it has no identity** (11, object matrix:
+  `public=none`). `pkcs11-tool --write-object --type privkey` of an EC key writes just that, and
+  PKCS#11 private EC keys carry no `CKA_EC_POINT` (kryoptic computes the Edwards one; SoftHSM
+  does not). Today the fix is to write the public key object or certificate beside it. For a
+  non-sensitive key the point could be computed from `CKA_VALUE` on the host, which reads the
+  private key out; not done.
 - **Upstream cryptoki: keep an unnamed `CKA_ALLOWED_MECHANISMS` entry.** 0.12.1's
   `MechanismType::try_from` refuses any value it has no name for — vendor mechanisms (CloudHSM's
   EdDSA is `0x80001057`, CLOUD_HSM.md) and some 385 standard ones (`CKM_DES3_CBC_PAD`), so the
@@ -205,8 +222,8 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   would make it an upstream report.
 - **SoftHSM**: `C_UnwrapKey` stores an unwrapped secret key's `CKA_VALUE` but never its
   `CKA_VALUE_LEN` (reads 0), and refuses `CKA_VALUE_LEN` in the template
-  (`CKR_ATTRIBUTE_READ_ONLY`; SoftHSMv2 #628). A fix is drafted in `upstream/softhsm/` (not
-  filed: PR #650 covers the same change, so comment there or file with a link), and
+  (`CKR_ATTRIBUTE_READ_ONLY`; SoftHSMv2 #628). Filed as SoftHSMv2 #925 with tests
+  (`upstream/softhsm/PR.md`; the older #650 has the same core change), and
   `checks.softhsm-unwrap-value-len` tests it on a patched SoftHSM. A fixed release gets its own
   profile without `secret-unwraps = false`.
 - **SoftHSM under pkcs11-provider** (what reads `check --format pkcs11-provider-pem`): SoftHSM
@@ -233,7 +250,10 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   immutables, on an EC key too. A length-only first pass for every attribute makes the
   untouched entry a zero-length value that fails to convert instead of a false one. Reproduce
   under the shim first (FAULT_SHIM.md, "untouched"), then report.
-- **tpm2-pkcs11**: the P-521 `CKA_EC_POINT` fix (`upstream/tpm2-pkcs11/`).
+- **tpm2-pkcs11**: the P-521 `CKA_EC_POINT` fix (`upstream/tpm2-pkcs11/`). Not filed yet: a
+  secret key made by `C_CreateObject` is stored without `CKA_VALUE_LEN`, which PKCS#11
+  requires of AES and generic secret keys (the object matrix; the same class as SoftHSM's
+  unwrap above), so cakeys cannot check its length (15).
 
 ## Engineering
 

@@ -4,6 +4,8 @@
 [![flake-check](https://github.com/Princemachiavelli/cakeys/actions/workflows/flake-check.yml/badge.svg)](https://github.com/Princemachiavelli/cakeys/actions/workflows/flake-check.yml)
 [![License](https://img.shields.io/github/license/Princemachiavelli/cakeys)](LICENSE)
 [![MSRV](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FPrincemachiavelli%2Fcakeys%2Fmain%2FCargo.toml&query=%24.workspace.package%5B%22rust-version%22%5D&label=MSRV&prefix=rustc%20)](Cargo.toml)
+[![coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FPrincemachiavelli%2Fcakeys%2Fbadges%2Fcoverage.json)](docs/COVERAGE_PLAN.md)
+[![mutants caught](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FPrincemachiavelli%2Fcakeys%2Fbadges%2Fmutants.json)](docs/COVERAGE_PLAN.md#mutation-report-2026-11-15)
 
 Content-addressed identity for PKCS#11 objects, as a Nix flake.
 

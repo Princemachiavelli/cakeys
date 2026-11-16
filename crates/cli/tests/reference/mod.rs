@@ -473,21 +473,52 @@ const ADOPT_PUBKEYHASH: &str = "sha256-8DQBv2fMc+z0Q5uxky0+5t9TS6MAHO07fNMqG9thH
 
 const ADOPT_CERT: &[u8] = include_bytes!("../fixtures/adopt-cert.der");
 
-/// Token object template for a fixture certificate (`SoftHSM` requires `CKA_SUBJECT`).
-fn cert_object(der: &[u8], label: &[u8], id: Option<u8>) -> Vec<Attribute> {
-    let der = der.to_vec();
-    let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(&der).unwrap();
-    let subject = x509_cert::der::Encode::to_der(cert.tbs_certificate().subject()).unwrap();
-    let mut t = vec![
-        Attribute::Class(ObjectClass::CERTIFICATE),
-        Attribute::CertificateType(cryptoki::object::CertificateType::X_509),
-        Attribute::Token(true),
-        Attribute::Label(label.to_vec()),
-        Attribute::Subject(subject),
-        Attribute::Value(der),
-    ];
-    t.extend(id.map(|i| Attribute::Id(vec![i])));
-    t
+/// An imported EC private key exposes no public point; when its importer wrote only the
+/// certificate beside it, that certificate stands in for the public half (docs/DESIGN.md §3.2),
+/// and only a certificate of the key's own type and curve does: under `token-asserted` no proof
+/// would catch another key's (13).
+#[test]
+fn a_certificate_stands_in_for_an_imported_keys_public_half() {
+    let Some(e) = env("cert_stand_in") else { return };
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+    let (params, scalar, _) = ec_fixture(&pem_der(&format!("{fixtures}/tpm-import-p256.pem")));
+    let own: &[u8] = include_bytes!("../fixtures/tpm-import-p256-cert.der");
+    let s = e.session();
+    for (label, cert) in [("own-cert", own), ("other-cert", ADOPT_CERT)] {
+        s.create_object(&[
+            Attribute::Class(ObjectClass::PRIVATE_KEY),
+            Attribute::KeyType(cryptoki::object::KeyType::EC),
+            Attribute::Token(true),
+            Attribute::Private(true),
+            Attribute::Label(label.as_bytes().to_vec()),
+            Attribute::Sign(true),
+            Attribute::EcParams(params.clone()),
+            Attribute::Value(scalar.clone()),
+        ])
+        .unwrap();
+        s.create_object(&cert_object(cert, label.as_bytes(), None)).unwrap();
+    }
+    let spec = |name: &str, label: &str, binding: &str| {
+        format!(
+            "[specs.{name}]\nobject = \"k\"\nattributes = {{ CKA_SIGN = true }}\n\
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"{label}\" }}, origin = \"adopt\", binding = \"{binding}\" }}\n\n"
+        )
+    };
+    e.config(&format!(
+        "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n{}{}{}",
+        spec("own", "own-cert", "pop-sign"),
+        spec("other", "other-cert", "token-asserted"),
+        spec("other-proven", "other-cert", "pop-sign"),
+    ));
+    assert_eq!(e.code(&["realise", "--spec", "own", "--token", "ref", "--update-lock"]), 0);
+    let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(own).unwrap();
+    let spki = x509_cert::der::Encode::to_der(cert.tbs_certificate().subject_public_key_info()).unwrap();
+    assert_eq!(e.locked_id("k", "rfc7093m4"), sri(&spki), "the certificate's key is the identity");
+    for other in ["other", "other-proven"] {
+        let o = e.km(&["realise", "--spec", other, "--token", "ref", "--no-update-lock"]);
+        assert_eq!(code(&o), 13, "{other}: {}", stderr(&o));
+        assert!(stderr(&o).contains("is RSA") && stderr(&o).contains("private key is secp256r1"), "{}", stderr(&o));
+    }
 }
 
 #[test]
@@ -2252,23 +2283,14 @@ fn proofs_the_token_cannot_give_are_refused() {
     let ec = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
               [specs.k]\nobject = \"k\"\nattributes = { CKA_DERIVE = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n\
               tokens.ref = { locator = { CKA_LABEL = \"pop-refused-ec\" }, origin = \"create\", binding = \"pop-ecdh\" }\n\n";
-    let rsa = "[objects.r]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
-               [specs.r]\nobject = \"r\"\nattributes = { CKA_DECRYPT = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n\
-               tokens.ref = { locator = { CKA_LABEL = \"pop-refused-rsa\" }, origin = \"create\", binding = \"pop-decrypt\" }\n\n";
-    e.config(&format!("{ec}{rsa}"));
-    for spec in ["k", "r"] {
-        assert_eq!(e.code(&["create", "--spec", spec, "--token", "ref", "--update-lock"]), 0, "{spec}");
-    }
+    e.config(ec);
+    assert_eq!(e.code(&["create", "k", "--update-lock"]), 0);
     // The same token through a module configuration that hides the proof's mechanism.
-    let conf = std::fs::read_to_string(std::env::var(REF.conf_var).unwrap()).unwrap();
-    for (spec, mechanism) in [("k", "CKM_ECDH1_DERIVE"), ("r", "CKM_RSA_PKCS_OAEP")] {
-        let hidden = e.dir.join(format!("no-{mechanism}.conf"));
-        std::fs::write(&hidden, (REF.hide_mechanism)(&conf, mechanism)).unwrap();
-        let o = e.km_env(&["verify", "--spec", spec, "--token", "ref"], &[(REF.conf_var, hidden.as_path())]);
-        assert_eq!(code(&o), 15, "{mechanism}: {}", stderr(&o));
-        let said = stderr(&o);
-        assert!(said.contains(mechanism) && said.contains("token-asserted"), "{said}");
-    }
+    let (var, hidden) = e.hiding("CKM_ECDH1_DERIVE");
+    let o = e.km_env(&["verify", "k", "--token", "ref"], &[(var, hidden.as_path())]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    let said = stderr(&o);
+    assert!(said.contains("CKM_ECDH1_DERIVE") && said.contains("token-asserted"), "{said}");
     // A key that wants its PIN per use, under a proof that has no point to give it. Declared, the
     // spec is invalid (attributes_are_validated_per_class); here the token reports it undeclared.
     // (An object of its own: the lock pins `k`'s material.)
@@ -2287,8 +2309,8 @@ fn proofs_the_token_cannot_give_are_refused() {
         .replace("[objects.k]", "[objects.a]")
         .replace("[specs.k]\nobject = \"k\"", "[specs.a]\nobject = \"a\"")
         .replace(", CKA_SENSITIVE = true, CKA_EXTRACTABLE = false", "");
-    e.config(&format!("{ec}{rsa}{always}"));
-    let o = e.km(&["realise", "--spec", "a", "--token", "ref", "--no-update-lock"]);
+    e.config(&format!("{ec}{always}"));
+    let o = e.km(&["realise", "a", "--token", "ref", "--no-update-lock"]);
     let said = stderr(&o);
     assert!(said.contains("CKA_ALWAYS_AUTHENTICATE") && said.contains("pop-sign"), "{said}");
     assert_eq!(code(&o), 16, "{said}");
@@ -2306,19 +2328,24 @@ impl Env {
 
 /// A proof falls back where the token lacks its first choice, and still catches a swapped key
 /// there: without the curve's hashed ECDSA, `pop-sign` signs a host digest with raw `CKM_ECDSA`;
-/// without HMAC, `pop-ecdh` derives into an extractable secret the host compares.
+/// without HMAC, `pop-ecdh` derives into an extractable secret the host compares; without OAEP,
+/// `pop-decrypt` decrypts a PKCS #1 v1.5 challenge.
 #[test]
 fn proofs_fall_back_to_what_the_token_has() {
     let Some(e) = env("pop-fallback") else { return };
-    let ec = |name: &str, usage: &str, binding: &str| {
+    let key = |name: &str, key: &str, usage: &str, binding: &str| {
         format!(
-            "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+            "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\n{key}\n\n\
              [specs.{name}]\nobject = \"{name}\"\nattributes = {{ {usage} = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }}\n\
              tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-fallback-{name}\" }}, origin = \"create\", binding = \"{binding}\" }}\n\n"
         )
     };
-    e.config(&(ec("s", "CKA_SIGN", "pop-sign") + &ec("d", "CKA_DERIVE", "pop-ecdh")));
-    for (spec, mechanism) in [("s", "CKM_ECDSA_SHA256"), ("d", "CKM_SHA256_HMAC")] {
+    let ec = |name: &str, usage: &str, binding: &str| {
+        key(name, "keyType = \"CKK_EC\"\ncurve = \"secp256r1\"", usage, binding)
+    };
+    let rsa = key("r", "keyType = \"CKK_RSA\"\nmodulusBits = 2048", "CKA_DECRYPT", "pop-decrypt");
+    e.config(&(ec("s", "CKA_SIGN", "pop-sign") + &ec("d", "CKA_DERIVE", "pop-ecdh") + &rsa));
+    for (spec, mechanism) in [("s", "CKM_ECDSA_SHA256"), ("d", "CKM_SHA256_HMAC"), ("r", "CKM_RSA_PKCS_OAEP")] {
         let (var, conf) = e.hiding(mechanism);
         let create = ["create", "--spec", spec, "--token", "ref", "--update-lock"];
         let o = e.km_env(&create, &[(var, conf.as_path())]);
@@ -2350,8 +2377,9 @@ fn proofs_fall_back_to_what_the_token_has() {
 }
 
 /// What a key cannot give its proof with: a `CKA_ALWAYS_AUTHENTICATE` key on a token with no PIN
-/// configured is unavailable (16); a key whose `CKA_ALLOWED_MECHANISMS` leave out the proof's
-/// mechanism is unsupported (15), the usage bit named.
+/// configured is unavailable (16); a key whose `CKA_ALLOWED_MECHANISMS` leave out every mechanism
+/// the proof could use is unsupported (15), those mechanisms named. A decrypt-only key pinned to
+/// `CKM_RSA_PKCS` proves with PKCS #1 v1.5 instead of OAEP.
 #[test]
 fn proofs_the_key_will_not_give_are_refused() {
     let Some(e) = env("pop-key-refuses") else { return };
@@ -2406,16 +2434,17 @@ fn proofs_the_key_will_not_give_are_refused() {
         assert_eq!(code(&o), 16, "{}", stderr(&o));
         assert!(stderr(&o).contains("needs the user PIN per use"), "{}", stderr(&o));
     }
-    for (name, attribute) in [("derive", "CKA_DERIVE"), ("decrypt", "CKA_DECRYPT"), ("unwrap", "CKA_UNWRAP")] {
+    for (name, mechanism) in [("derive", "CKM_ECDH1_DERIVE"), ("unwrap", "CKM_RSA_PKCS_OAEP")] {
         let o = e.km(&["realise", "--spec", name, "--token", "ref", "--no-update-lock"]);
         assert_eq!(code(&o), 15, "{name}: {}", stderr(&o));
-        assert!(stderr(&o).contains(&format!("proving possession needs {attribute}")), "{}", stderr(&o));
+        assert!(stderr(&o).contains(&format!("CKA_ALLOWED_MECHANISMS allows none of {mechanism}")), "{}", stderr(&o));
     }
+    assert_eq!(e.code(&["realise", "--spec", "decrypt", "--token", "ref", "--update-lock"]), 0);
     // The same on the extractable derive path (no HMAC for the sealed one).
     let (var, conf) = e.hiding("CKM_SHA256_HMAC");
     let o = e.km_env(&["realise", "--spec", "derive", "--token", "ref", "--no-update-lock"], &[(var, conf.as_path())]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
-    assert!(stderr(&o).contains("proving possession needs CKA_DERIVE"), "{}", stderr(&o));
+    assert!(stderr(&o).contains("allows none of CKM_ECDH1_DERIVE"), "{}", stderr(&o));
 }
 
 /// The live object must be the declared type, and its public half must be one public key it
@@ -2508,7 +2537,7 @@ fn the_live_object_must_be_what_the_spec_says() {
         assert!(stderr(&o).contains(why), "{spec}: expected {why:?} in {}", stderr(&o));
     };
     refused("big", 13, "RSA modulus is Some(2048) bits, spec says 3072");
-    refused("short", 13, "CKA_VALUE_LEN mismatch");
+    refused("short", 13, "CKA_VALUE_LEN is");
     refused("two", 12, "several public key objects share the locator");
     refused("odd", 13, "exposes no key material");
     refused("pub-two", 12, "several public key objects share the locator");
@@ -2517,7 +2546,7 @@ fn the_live_object_must_be_what_the_spec_says() {
     assert_eq!(e.code(&["realise", "--spec", "pub-only", "--token", "ref", "--no-update-lock"]), 18);
     // kryoptic's EC private key carries its own CKA_PUBLIC_KEY_INFO; SoftHSM's carries no public key.
     if REF.provider == "softhsm" {
-        refused("alone", 11, "no public key object under the locator");
+        refused("alone", 11, "no public key object, CKA_PUBLIC_KEY_INFO or certificate under the locator");
     } else {
         assert_eq!(e.code(&["realise", "--spec", "alone", "--token", "ref", "--no-update-lock"]), 18);
     }

@@ -574,6 +574,31 @@ pub fn rsa_spki(modulus: &[u8], exponent: &[u8]) -> Result<Vec<u8>> {
     encode(&key)
 }
 
+/// The curve a DER SPKI's algorithm names: `Some` for an EC (`id-ecPublicKey` with a named curve)
+/// or Edwards key of a curve cakeys knows, `None` for RSA.
+///
+/// # Errors
+///
+/// `Unsupported` for another algorithm or an unknown curve; `Conflict` if it is not an SPKI.
+pub fn spki_curve(spki: &[u8]) -> Result<Option<Curve>> {
+    const RSA: &str = "1.2.840.113549.1.1.1";
+    const EC: &str = "1.2.840.10045.2.1";
+    let info = x509_cert::spki::SubjectPublicKeyInfoRef::from_der(spki)
+        .map_err(|e| KmError::Conflict(format!("not a SubjectPublicKeyInfo: {e}")))?;
+    let alg = &info.algorithm;
+    let named = match alg.oid.to_string().as_str() {
+        RSA => return Ok(None),
+        EC => alg.parameters.as_ref().and_then(|p| p.to_der().ok()),
+        // Ed25519 and Ed448: the algorithm is the curve, and its DER OID is the curve's params.
+        _ => alg.oid.to_der().ok(),
+    };
+    named
+        .as_deref()
+        .and_then(Curve::from_params)
+        .map(Some)
+        .ok_or_else(|| KmError::Unsupported(format!("public key algorithm {}", alg.oid)))
+}
+
 /// Canonical DER SPKI of a certificate's subject key: links a certificate to its key object.
 ///
 /// # Errors
@@ -915,5 +940,21 @@ mod tests {
             tpm_certify_id(b"\x00\x0bname", b"\x00\x0bqn"),
             "sha256-gtESMfaa12qwnzF1o9xnvKzbZUFlO7WOTHi4aj52aq0="
         );
+    }
+
+    /// The curve an SPKI names, as the stand-in check compares it with the private key's own.
+    #[test]
+    fn spki_curve_names_the_key_kind() {
+        macro_rules! fixture {
+            ($f:literal) => {
+                include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/", $f))
+            };
+        }
+        let curve = |cert: &[u8]| spki_curve(&cert_spki(cert).unwrap()).unwrap();
+        assert_eq!(curve(fixture!("tpm-import-rsa2048-cert.der")), None);
+        assert_eq!(curve(fixture!("tpm-import-p256-cert.der")), Some(Curve::P256));
+        assert_eq!(curve(fixture!("adopt-cert-p384.der")), Some(Curve::P384));
+        assert_eq!(curve(fixture!("adopt-cert-ed25519.der")), Some(Curve::Ed25519));
+        assert!(matches!(spki_curve(b"\x30\x00"), Err(KmError::Conflict(_))));
     }
 }
