@@ -181,7 +181,7 @@ fn tpm2_generated_keys_match_der_oracle() {
     for (k, _) in kinds {
         let spec = format!("{k}-gen");
         let first = e.km(&["create", &spec, "--token", "tpm", "--no-update-lock"]);
-        assert_eq!(code(&first), 10, "{k}");
+        assert_eq!(code(&first), 18, "{k}");
         assert_eq!(
             got_hash(&e.km(&["realise", &spec, "--token", "tpm", "--no-update-lock"])),
             got_hash(&first),
@@ -340,7 +340,7 @@ fn tpm2_aes_key_is_identified_by_its_kcv() {
     );
     let r = ["realise", "aes", "--token", "tpm", "--no-update-lock"];
     let first = e.km(&r);
-    assert_eq!(code(&first), 10);
+    assert_eq!(code(&first), 18);
     assert_eq!(got_hash(&e.km(&r)), got_hash(&first));
     assert_eq!(e.code(&recording(&r)), 0);
     assert_eq!(e.code(&["check", "aes.id.kcv-ecb"]), 0);
@@ -400,7 +400,7 @@ fn tpm2_keys_attest_their_tpm_residence() {
     );
     let r = ["realise", "p256", "--token", "tpm", "--no-update-lock"];
     let first = e.km(&["create", "p256", "--token", "tpm", "--no-update-lock"]);
-    assert_eq!(code(&first), 10, "first use: got the ID, the lock is written by review");
+    assert_eq!(code(&first), 18, "first use: got the ID, the lock is written by review");
     let got: serde_json::Value = serde_json::from_str(&stdout(&e.km(&["resolve", "p256", "--token", "tpm"]))).unwrap();
     let ids = got["ids"].as_object().unwrap();
     assert_eq!(ids.len(), 1, "only the portable rfc7093m4 is an object ID: {ids:?}");
@@ -671,7 +671,7 @@ fn tpm2_attestation_refuses_a_store_that_disagrees() {
     );
     let r = ["realise", "a", "--token", "tpm", "--no-update-lock"];
     let o = e.km(&r);
-    assert_eq!(code(&o), 10, "{}", stderr(&o));
+    assert_eq!(code(&o), 18, "{}", stderr(&o));
     let refused = |why: &str| {
         let o = e.km(&r);
         assert_eq!(code(&o), 13, "{}", stderr(&o));
@@ -686,7 +686,7 @@ fn tpm2_attestation_refuses_a_store_that_disagrees() {
     });
     refused("the store does not match what the TPM holds");
     edit_private_row("store-a", |_| original.clone());
-    assert_eq!(code(&e.km(&r)), 10);
+    assert_eq!(code(&e.km(&r)), 18);
 
     // store-b's blobs and auth (CKA_TPM2_OBJAUTH_ENC, _PUB_BLOB, _PRIV_BLOB) under store-a's
     // attributes: the module shows store-a's point, the TPM loads and certifies store-b.
@@ -795,7 +795,7 @@ fn tpm2_attestation_finds_its_store_and_tpm_as_configured() {
     };
     let r = ["realise", "a", "--token", "tpm", "--no-update-lock"];
     config(&format!("options = {{ tcti = \"{tcti}\" }}"));
-    assert_eq!(e.code(&r), 10, "the TCTI from the options");
+    assert_eq!(e.code(&r), 18, "the TCTI from the options");
 
     // No TPM2_PKCS11_STORE: the store under $HOME, where the module looks too.
     config("");
@@ -811,7 +811,7 @@ fn tpm2_attestation_finds_its_store_and_tpm_as_configured() {
         .args(r)
         .output()
         .unwrap();
-    assert_eq!(code(&o), 10, "the store under $HOME: {}", stderr(&o));
+    assert_eq!(code(&o), 18, "the store under $HOME: {}", stderr(&o));
 
     // A store of another token, named in the options.
     let other = e.dir.join("other-store");
@@ -900,7 +900,7 @@ fn tpm2_attestation_says_what_it_lacks() {
     };
     refused(&withheld("CKA_ID"), 15, "the key object exposes no CKA_ID to find its store row by");
     let o = withheld("CKA_LABEL");
-    assert_eq!(code(&o), 10, "{}", stderr(&o));
+    assert_eq!(code(&o), 18, "{}", stderr(&o));
 
     if !on_swtpm() {
         eprintln!("skipping the Attestation Key cases: they change the TPM, and this is not the suite's swtpm");

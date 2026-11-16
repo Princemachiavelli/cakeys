@@ -62,7 +62,7 @@ flowchart TD
     RESOLVE -- "proof does not verify" --> X13a(["exit 13 conflict"])
     RESOLVE -- "token refuses / lacks the mechanism" --> X15(["exit 15 unsupported"])
     RESOLVE --> RECONCILE{"reconcile with the lock"}
-    RECONCILE -- "first use, --no-update-lock" --> X10(["exit 10, prints got: sha256-…"])
+    RECONCILE -- "first use, --no-update-lock" --> X18(["exit 18 first use, prints got: sha256-…"])
     RECONCILE -- "id differs" --> X10b(["exit 10 hash mismatch,<br/>also when the lock is written"])
     RECONCILE -- "object / locator / spec digest / binding /<br/>mode / policy / immutables changed" --> X14(["exit 14: review,<br/>then realise again"])
     RECONCILE -- "matches, or first use (default)" --> OK(["exit 0 — resolved JSON printed;<br/>what the lock lacked is recorded<br/>unless --no-update-lock"])

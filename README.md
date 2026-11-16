@@ -77,9 +77,8 @@ tokens.softhsm = { locator = { CKA_LABEL = "signing" }, origin = "create" }
 ```console
 $ cakeys -c keys.toml create signing-soft --token softhsm --no-update-lock
 created 'signing' (spec 'signing-soft') on token 'softhsm'
-error: hash mismatch in identity of 'signing' (spec 'signing-soft') on token 'softhsm':
-  specified: <none>
-     got:    sha256-…            # compare only: like a fixed-output derivation
+error: first use of 'signing' (spec 'signing-soft') on token 'softhsm': the lock pins no identity for it yet; review, then `realise` records it
+     got:    sha256-…            # exit 18, compare only: like a fixed-output derivation
 $ cakeys -c keys.toml realise signing-soft --token softhsm   # record it (the default), print the resolved JSON; review the keys.lock diff
 $ cakeys -c keys.toml check signing     # later: verify, then print the URI (never writes)
 pkcs11:token=main;serial=...;object=signing;type=private

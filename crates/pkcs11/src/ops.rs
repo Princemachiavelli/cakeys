@@ -779,13 +779,13 @@ pub fn delete(
 /// (`cakeys create` makes it), one that is there but not locked fails with its `got:` (10).
 /// A requested scheme must be one the spec computes on this token — refused (15) before the
 /// token is opened, or before the object is looked for — and must itself be locked, not merely
-/// computed beside another scheme that matched (10 with its `got:`). `open` opens the token.
+/// computed beside another scheme that matched (18, a first use of that scheme, with its
+/// `got:`). `open` opens the token.
 ///
 /// # Errors
 ///
-/// `Unsupported` (15) for a scheme the spec does not compute on this token; `HashMismatch`
-/// (10) when a requested scheme is computed but not locked (its `got:` shows the computed
-/// ID); plus `pick_spec`/`Target::new`/`verify` failures — the reference and the pair must
+/// `Unsupported` (15) for a scheme the spec does not compute on this token; `FirstUse` (18)
+/// when a requested scheme is computed but not locked (its `got:` shows the computed ID); plus `pick_spec`/`Target::new`/`verify` failures — the reference and the pair must
 /// exist, and the realisation must compare clean.
 pub fn check(
     cfg: &Config,
@@ -867,11 +867,7 @@ pub fn check_open(
             )
         };
         if !locked {
-            return Err(KmError::HashMismatch {
-                what: format!("'{object}' (scheme {s})"),
-                expected: "<none>".into(),
-                got: got.unwrap_or_default(),
-            });
+            return Err(KmError::FirstUse { what: format!("'{object}' (scheme {s})"), got: got.unwrap_or_default() });
         }
     }
     Ok((r, tok))

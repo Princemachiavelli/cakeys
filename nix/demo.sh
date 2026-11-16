@@ -30,9 +30,9 @@ trap cleanup EXIT
 cd "$work"
 
 declare -A meaning=(
-  [0]="ok" [10]="hash mismatch / first use: prints got:" [11]="not found" [12]="ambiguous"
+  [0]="ok" [10]="hash mismatch: prints got:" [11]="not found" [12]="ambiguous"
   [13]="conflict" [14]="precondition failed" [15]="unsupported" [16]="unavailable"
-  [17]="invalid config"
+  [17]="invalid config" [18]="first use: nothing pinned yet, prints got:"
 )
 
 act() {
@@ -163,10 +163,10 @@ wait_key
 act "1. A key is a pinned input" \
   "Keys are made by one verb, create. Its first use fails like a fixed-output derivation with" \
   "a fake hash: cakeys prints the identity it got and records nothing yet."
-expect 10 cakeys create signing --token soft --no-update-lock
+expect 18 cakeys create signing --token soft --no-update-lock
 first=$(got)
 echo "Again, by the lock verb: the same key is found under its locator, never a second one."
-expect 10 cakeys realise signing --token soft --no-update-lock
+expect 18 cakeys realise signing --token soft --no-update-lock
 [ "$(got)" = "$first" ] || {
   echo "${red}a second run got another identity${reset}"
   exit 1

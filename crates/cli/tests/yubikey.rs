@@ -160,7 +160,7 @@ impl Env {
 
         // First use: generated (SO login) or adopted, and identified; nothing is locked yet.
         let first = self.km(&r);
-        assert_eq!(code(&first), 10, "{}: {}", c.name, String::from_utf8_lossy(&first.stderr));
+        assert_eq!(code(&first), 18, "{}: {}", c.name, String::from_utf8_lossy(&first.stderr));
         let got = String::from_utf8_lossy(&first.stderr)
             .lines()
             .find_map(|l| l.trim_start().strip_prefix("got:"))

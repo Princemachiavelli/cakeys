@@ -140,7 +140,7 @@ let
                 assert "`cakeys create` makes it" in out, out
                 # The key is created out of band; the sandbox's check then fails like a FOD with
                 # a fake hash, and never creates a second key (else: exit 12, ambiguous).
-                first = got(expect(f"{km} create signing-soft --token softhsm --no-update-lock", 10))
+                first = got(expect(f"{km} create signing-soft --token softhsm --no-update-lock", 18))
                 assert got(build(ok=False)) == first
                 expect(f"{km} resolve signing-soft --token softhsm", 0)
 
@@ -156,8 +156,8 @@ let
           ''
             with subtest("only create creates; first use fails with got:"):
                 expect(f"{km} realise signing-soft --token softhsm --no-update-lock", 11)
-                first = got(expect(f"{km} create signing-soft --token softhsm --no-update-lock", 10))
-                assert got(expect(f"{km} realise signing-soft --token softhsm --no-update-lock", 10)) == first
+                first = got(expect(f"{km} create signing-soft --token softhsm --no-update-lock", 18))
+                assert got(expect(f"{km} realise signing-soft --token softhsm --no-update-lock", 18)) == first
                 expect(f"{km} realise signing-soft --token softhsm --update-lock", 0)
           ''
       }
@@ -178,7 +178,7 @@ let
           assert expect(f"{km} check signing.id.rfc7093m4", 0).startswith("pkcs11:")
 
       with subtest("wrap-rebind identity for an extractable AES key"):
-          got(expect(f"{km} create kek-wrap --token softhsm --no-update-lock", 10))
+          got(expect(f"{km} create kek-wrap --token softhsm --no-update-lock", 18))
           expect(f"{km} realise kek-wrap --token softhsm --update-lock", 0)
           lock = machine.succeed("cat /root/keys.lock")
           assert 'mode = "wrap-rebind"' in lock, lock

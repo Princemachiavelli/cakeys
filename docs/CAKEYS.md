@@ -40,7 +40,7 @@ mapped onto an error programs already handle. The codes are frozen (DESIGN §10)
 | Exit | Meaning | Like | Retry? | Typical cause |
 |---|---|---|---|---|
 | 0 | ok | 200 | — | |
-| 10 | hash mismatch: the token holds other material than the lock pins; prints `got: sha256-…` | an SRI mismatch | never blindly | a swapped or regenerated key; with nothing pinned yet, first use |
+| 10 | hash mismatch: the token holds other material than the lock pins; prints `got: sha256-…` | an SRI mismatch | never blindly | a swapped or regenerated key |
 | 11 | not found under the locator | `ENOENT`, 404 | after provisioning | key deleted, wrong token, not created yet (`cakeys create`) |
 | 12 | ambiguous: several objects match | 300 | no | duplicate labels or `CKA_ID`s |
 | 13 | conflict: the object is not what the spec says | 409 | no | wrong type or policy, a failed proof of possession, a foreign public key under the locator |
@@ -48,12 +48,14 @@ mapped onto an error programs already handle. The codes are frozen (DESIGN §10)
 | 15 | unsupported: the token cannot do what the spec needs | 501, `ENOTSUP` | no | a mechanism or key type the module lacks |
 | 16 | unavailable: the token cannot be used now | 503, `EIO` | sometimes | token absent, PIN locked or on its last try, module not loadable |
 | 17 | invalid config, lock, spec or token options | 400, `EINVAL` | no | a schema error, a malformed reference, an unknown token |
+| 18 | first use: the lock pins nothing to compare with yet; prints `got: sha256-…` | 428 | after `realise` records it | a key just created or adopted; a scheme the lock does not pin, asked for by name |
 | 1 | I/O or other | 500 | sometimes | the lock unreadable |
 | 2 | command-line usage | — | no | bad arguments |
 
-Two distinctions a caller should keep rather than flatten into "failed": 10 against 11 ("the
-key is there but is not the pinned one" is a security event; "the key is not there" an
-operational one), and first use (10 with nothing pinned), the state before `realise`.
+Two distinctions a caller should keep rather than flatten into "failed", each with its own
+code: 10 against 11 ("the key is there but is not the pinned one" is a security event; "the key
+is not there" an operational one), and 10 against 18 (a mismatch against a pinned ID, against
+first use with nothing pinned: the state before `realise`, reviewed through the `got:` line).
 
 ## The contract with programs that use keys
 
@@ -125,7 +127,7 @@ A consumer derivation requires the token's feature and runs `check` before using
 
 1. **Create** the key out of band (`cakeys create`). `check` never creates one: in the sandbox
    it fails as not found (11), naming `cakeys create`.
-2. **First use** fails with `got:` — `check` never writes, and in the sandbox it could not.
+2. **First use** fails with `got:` (18) — `check` never writes, and in the sandbox it could not.
    Record the ID out of band (`realise`, or `create` itself, which writes the lock by default).
 3. Every later build verifies first.
 

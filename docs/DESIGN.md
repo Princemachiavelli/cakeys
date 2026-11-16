@@ -199,7 +199,7 @@ alone can compute, such as a TPM Name). If they return, they get their own names
 - **A computed scheme missing from an otherwise matching lock is a note.** This happens, for
   example, when a newer version computes more schemes.
   - With nothing to compare, it is first use: `realise` records it; `--no-update-lock`,
-    `verify` and `check` fail with a hash mismatch (exit 10), printing `got:`.
+    `verify` and `check` fail as a first use (exit 18, apart from a mismatch's 10), printing `got:`.
   - An explicitly requested `check <obj>.id.<scheme>` needs that scheme locked.
   - Test: `a_new_scheme_missing_from_the_lock_is_a_note_unless_requested`.
 
@@ -520,7 +520,7 @@ Annotated, with the reasons behind each table: [`LOCK.md`](LOCK.md).
 - **A realisation record is required.** `verify`/`check` of a (spec, token) pair the lock does not
   record fails (exit 14) even when the material matches the locked IDs: the lock describes where
   objects live, not only what they are — `s3_an_unrecorded_token_is_a_precondition_failure`.
-  First use, with no locked IDs to compare, is still exit 10 with `got:`.
+  First use, with no locked IDs to compare, is exit 18 with `got:`.
 - **The record is compared** with keys.toml: a different `object`, `locator`, `publicOnly` or spec
   digest fails `verify`/`check` (exit 14, naming each change) until `realise`
   re-records it, like a lockfile that is out of date — `s4_a_public_only_flip_is_a_spec_change`,

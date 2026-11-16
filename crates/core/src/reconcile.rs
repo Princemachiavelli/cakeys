@@ -126,9 +126,10 @@ pub fn commitment_label(t: &Target, lock: &Lock) -> String {
 /// # Errors
 ///
 /// Whatever `compare` rejects: `HashMismatch` when the token's material hashes to another ID
-/// than the lock pins, `PreconditionFailed` for a realisation that moved (type, downgrade,
-/// replaced object, attestation anchor) or a first use under `LockWrite::Compare`; and
-/// `PreconditionFailed` for an import (`facts.origin`) of an object the lock pins no IDs for.
+/// than the lock pins, `FirstUse` when it pins none to compare with under `LockWrite::Compare`,
+/// `PreconditionFailed` for a realisation that moved (type, downgrade, replaced object,
+/// attestation anchor); and `PreconditionFailed` for an import (`facts.origin`) of an object the
+/// lock pins no IDs for.
 pub fn reconcile(
     t: &Target,
     r: &Resolved,
@@ -161,8 +162,9 @@ pub fn reconcile(
 /// # Errors
 ///
 /// `HashMismatch` (10) when the token's material hashes to another ID than the lock pins;
-/// `PreconditionFailed` (14) for a type change, a downgrade, a replaced object, an attestation
-/// anchor change, or a first use compared without the write.
+/// `FirstUse` (18) when it pins none and the write is off; `PreconditionFailed` (14) for a
+/// type change, a downgrade, a replaced object, an attestation anchor change, or matching
+/// material whose realisation the lock does not record.
 pub fn compare(
     t: &Target,
     r: &Resolved,
@@ -339,8 +341,8 @@ fn object_diff(r: &Resolved, prev: &LockRealisation) -> Vec<String> {
     diff
 }
 
-/// The IDs against the object's locked ones: a mismatch is 10, and so is a first use when only
-/// comparing; then the realisation itself must be locked (14). Notes what is not checked.
+/// The IDs against the object's locked ones: a mismatch is 10, a first use when only comparing
+/// 18; then the realisation itself must be locked (14). Notes what is not checked.
 fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut Notes) -> Result<()> {
     let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
     // A deprecated computation still verifies — its identities are pinned — but the lock should
@@ -383,7 +385,7 @@ fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut 
     // A scheme not yet in the lock (e.g. one a newer cakeys computes) is fine once another
     // scheme proved the identity; with nothing to compare it is first use and fails like a FOD.
     if let Some((_, got)) = unlocked.first().filter(|_| !matched) {
-        return Err(KmError::HashMismatch { what: t.to_string(), expected: "<none>".into(), got: (*got).clone() });
+        return Err(KmError::FirstUse { what: t.to_string(), got: (*got).clone() });
     }
     // The material matches, but the lock does not say this spec is realised on this token: the
     // lock describes where objects live, not only what they are.
@@ -687,7 +689,7 @@ mod tests {
         Lock { version: crate::config::LOCK_VERSION, ..Default::default() }
     }
 
-    /// First use fails like a FOD (10, `<none>`) when only comparing; recording fills the lock,
+    /// First use fails like a FOD (18) when only comparing; recording fills the lock,
     /// after which the same realisation compares clean and records nothing new.
     #[test]
     fn first_use_then_record_then_compare() {
@@ -697,7 +699,7 @@ mod tests {
         let mut lock = empty_lock();
         let mut notes = Notes::default();
         let err = compare(&t, &r, &lock, &facts("1"), LockWrite::Compare, &mut notes).unwrap_err();
-        assert!(matches!(err, KmError::HashMismatch { ref expected, .. } if expected == "<none>"), "{err}");
+        assert!(matches!(err, KmError::FirstUse { ref got, .. } if got == SRI_A), "{err}");
         assert!(reconcile(&t, &r, &mut lock, &facts("1"), LockWrite::Record, &mut notes).unwrap());
         assert_eq!(lock.objects["k"].ids["rfc7093m4"], SRI_A);
         assert_eq!(lock.realisation("s", "t").unwrap().observed.as_ref().unwrap().session, Session::User);

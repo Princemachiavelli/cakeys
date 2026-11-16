@@ -186,11 +186,11 @@ fn ec_lifecycle() {
     assert!(e.session().labelled("ec-lifecycle").is_empty(), "realise and check never create");
     // First use: creates, then fails like a FOD with a fake hash.
     let first = e.km(&c);
-    assert_eq!(code(&first), 10);
+    assert_eq!(code(&first), 18);
     let got = got_hash(&first);
     // Re-running finds the same object: same hash, no duplicate (else exit 12, ambiguous).
     let again = e.km(&r);
-    assert_eq!(code(&again), 10);
+    assert_eq!(code(&again), 18);
     assert_eq!(got_hash(&again), got);
     assert_eq!(e.code(&["resolve", "signing-soft", "--token", "ref"]), 0);
 
@@ -230,9 +230,9 @@ fn ec_lifecycle() {
     std::fs::remove_file(e.dir.join("keys.lock")).unwrap();
     assert_eq!(e.code(&["delete", "signing-soft", "--token", "ref", "--no-update-lock"]), 0);
     // ...but a present object with no expected identity is never deleted blindly.
-    assert_eq!(e.code(&c), 10);
+    assert_eq!(e.code(&c), 18);
     assert_eq!(e.code(&["delete", "signing-soft", "--token", "ref", "--no-update-lock"]), 14);
-    assert_eq!(e.code(&["verify", "signing-soft", "--token", "ref"]), 10);
+    assert_eq!(e.code(&["verify", "signing-soft", "--token", "ref"]), 18);
     assert_eq!(e.code(&recording(&r)), 0);
     assert_eq!(e.code(&del), 0);
     // Restore the original locked identity for the final check.
@@ -621,7 +621,7 @@ object = "r"
 tokens.ref-anon = { locator = { CKA_LABEL = "rsa-paths" }, origin = "adopt", publicOnly = true }
 "#,
     );
-    assert_eq!(e.code(&["create", "r-gen", "--token", "ref", "--no-update-lock"]), 10);
+    assert_eq!(e.code(&["create", "r-gen", "--token", "ref", "--no-update-lock"]), 18);
     assert_eq!(e.code(&["realise", "r-gen", "--token", "ref", "--update-lock"]), 0);
     // Same material through the public key object, without login: same locked identity.
     assert_eq!(e.code(&["realise", "r-pub", "--token", "ref-anon", "--update-lock"]), 0);
@@ -727,7 +727,7 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     e.config(EC.replace("ec-lifecycle", "provenance").as_str());
     let r = ["realise", "signing-soft", "--token", "ref", "--update-lock"];
     let verify = ["verify", "signing-soft", "--token", "ref"];
-    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref", "--no-update-lock"]), 10);
+    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref", "--no-update-lock"]), 18);
     assert_eq!(e.code(&r), 0);
 
     let real = &e.lock()["realisations"]["signing-soft"]["ref"];
@@ -1379,7 +1379,7 @@ fn aes_commitments_match_host_oracles() {
     // A generated, non-extractable KEK: stable identity across runs, deletable by it.
     let r = ["realise", "kek-gen", "--token", "ref", "--no-update-lock"];
     let first = e.km(&["create", "kek-gen", "--token", "ref", "--no-update-lock"]);
-    assert_eq!(code(&first), 10);
+    assert_eq!(code(&first), 18);
     assert_eq!(got_hash(&e.km(&r)), got_hash(&first));
     assert_eq!(e.code(&recording(&r)), 0);
     assert_eq!(e.locked_id("kek-gen", "kw"), got_hash(&first));
@@ -1472,7 +1472,7 @@ fn curves_and_rsa_sizes_match_an_independent_der_oracle() {
             assert_eq!(s.labelled(k), [], "{k}");
             continue;
         }
-        assert_eq!(e.code(&["create", &spec, "--token", "ref", "--no-update-lock"]), 10, "{k}");
+        assert_eq!(e.code(&["create", &spec, "--token", "ref", "--no-update-lock"]), 18, "{k}");
         let o = e.km(&["realise", &spec, "--token", "ref", "--update-lock"]);
         assert_eq!(code(&o), 0, "{k}");
         assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki(&s, k)), "{k}");
@@ -1602,8 +1602,8 @@ tokens.ref = { locator = { CKA_LABEL = "no-cmac" }, origin = "create" }
     // kw is still available: check finds nothing (it never creates), `create` makes the key,
     // and its first use fails with its got: (TOFU: no locked hash yet).
     assert_eq!(code(&e.km_env(&["check", "k.id.kw"], &env)), 11);
-    assert_eq!(code(&e.km_env(&["create", "k", "--token", "ref", "--no-update-lock"], &env)), 10);
-    assert_eq!(code(&e.km_env(&["check", "k.id.kw"], &env)), 10);
+    assert_eq!(code(&e.km_env(&["create", "k", "--token", "ref", "--no-update-lock"], &env)), 18);
+    assert_eq!(code(&e.km_env(&["check", "k.id.kw"], &env)), 18);
     let o = e.km_env(&["realise", "k", "--token", "ref", "--update-lock"], &env);
     assert_eq!(code(&o), 0);
     let ids: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
@@ -1891,7 +1891,7 @@ fn des3_check_values_match_host_oracles() {
     // identity across runs, and deletable by it.
     let r = ["realise", "des3-gen", "--token", "ref", "--no-update-lock"];
     let first = e.km(&["create", "des3-gen", "--token", "ref", "--no-update-lock"]);
-    assert_eq!(code(&first), 10, "{}", stderr(&first));
+    assert_eq!(code(&first), 18, "{}", stderr(&first));
     assert_eq!(got_hash(&e.km(&r)), got_hash(&first));
     assert_eq!(e.code(&recording(&r)), 0);
     assert_eq!(e.locked_id("des3-gen", "kcv-ecb"), got_hash(&first));
@@ -1918,7 +1918,7 @@ fn a_new_scheme_missing_from_the_lock_is_a_note_unless_requested() {
          tokens.ref = { locator = { CKA_LABEL = \"upgrade-aes\" }, origin = \"adopt\" }\n",
     );
     // First use: nothing to compare, fails like a FOD.
-    assert_eq!(e.code(&["verify", "u", "--token", "ref"]), 10);
+    assert_eq!(e.code(&["verify", "u", "--token", "ref"]), 18);
     assert_eq!(e.code(&["realise", "u", "--token", "ref", "--update-lock"]), 0);
     // A lock written by a version that only knew cmac.
     e.write_lock_keeping_realisations(&format!(
@@ -1935,7 +1935,7 @@ fn a_new_scheme_missing_from_the_lock_is_a_note_unless_requested() {
     assert_eq!(e.code(&["check", "u"]), 0);
     assert_eq!(e.code(&["check", "u.id.cmac"]), 0);
     // Asking for the scheme explicitly requires it to be locked.
-    assert_eq!(e.code(&["check", "u.id.kcv-ecb"]), 10);
+    assert_eq!(e.code(&["check", "u.id.kcv-ecb"]), 18);
     assert_eq!(e.code(&["realise", "u", "--token", "ref", "--update-lock"]), 0);
     assert_eq!(e.code(&["check", "u.id.kcv-ecb"]), 0);
     // A wrong locked value still fails, whatever else matches.
@@ -2505,12 +2505,12 @@ fn the_live_object_must_be_what_the_spec_says() {
     refused("pub-two", 12, "several public key objects share the locator");
     refused("pub-swap", 13, "the public key object under the locator holds another key");
     // Adopted publicOnly, the public key object itself carries the publicAttributes.
-    assert_eq!(e.code(&["realise", "pub-only", "--token", "ref", "--no-update-lock"]), 10);
+    assert_eq!(e.code(&["realise", "pub-only", "--token", "ref", "--no-update-lock"]), 18);
     // kryoptic's EC private key carries its own CKA_PUBLIC_KEY_INFO; SoftHSM's carries no public key.
     if REF.provider == "softhsm" {
         refused("alone", 11, "no public key object under the locator");
     } else {
-        assert_eq!(e.code(&["realise", "alone", "--token", "ref", "--no-update-lock"]), 10);
+        assert_eq!(e.code(&["realise", "alone", "--token", "ref", "--no-update-lock"]), 18);
     }
 }
 
@@ -2811,8 +2811,8 @@ fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
     };
 
     // Compare only: first use is 10 and the lock is not created.
-    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref", "--no-update-lock"]), 10);
-    assert_eq!(e.code(&compare), 10);
+    assert_eq!(e.code(&["create", "signing-soft", "--token", "ref", "--no-update-lock"]), 18);
+    assert_eq!(e.code(&compare), 18);
     assert!(!lock.exists());
     // Both spellings at once are a usage error.
     assert_eq!(e.code(&[&r[..], &["--update-lock", "--no-update-lock"]].concat()), 2);
@@ -2844,7 +2844,7 @@ fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
         let elsewhere = ro.join("keys.lock");
         let elsewhere = elsewhere.to_str().unwrap();
         refused(&e.km(&[&["--lock", elsewhere][..], &r[..]].concat()), "directory");
-        assert_eq!(e.code(&[&["--lock", elsewhere][..], &compare[..]].concat()), 10);
+        assert_eq!(e.code(&[&["--lock", elsewhere][..], &compare[..]].concat()), 18);
     }
     std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
@@ -3411,7 +3411,7 @@ fn pin_counters_stop_cakeys_before_it_spends_a_try() {
     let r = ["create", "signing-soft", "--token", "ref", "--no-update-lock"];
     assert!(fail_until(&|t| t.user_pin_count_low()));
     let o = e.km(&r);
-    assert_eq!(code(&o), 10, "{}", stderr(&o));
+    assert_eq!(code(&o), 18, "{}", stderr(&o));
     assert!(stderr(&o).contains("a user PIN login failed since the last success"), "{}", stderr(&o));
     if REF.provider != "kryoptic" {
         return;

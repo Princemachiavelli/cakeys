@@ -18,9 +18,9 @@ pub use cakeys_cli_common::default_registry;
 
 /// Content-addressed identity for PKCS#11 objects.
 ///
-/// Exit codes: 0 ok, 10 hash mismatch (first use: record the `got:` hash), 11 not found,
+/// Exit codes: 0 ok, 10 hash mismatch, 11 not found,
 /// 12 ambiguous, 13 conflict, 14 precondition failed, 15 unsupported, 16 unavailable,
-/// 17 invalid spec, 1 other.
+/// 17 invalid spec, 18 first use (nothing pinned yet: record the `got:` hash), 1 other.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -148,7 +148,7 @@ enum UriPin {
 /// directory) the run is refused up front unless `--no-update-lock` says so explicitly.
 #[derive(clap::Args)]
 struct LockWriteArgs {
-    /// Compare with the lock only; never write it (first use is then exit 10 with `got:`).
+    /// Compare with the lock only; never write it (first use is then exit 18 with `got:`).
     #[arg(long, conflicts_with = "update_lock")]
     no_update_lock: bool,
     /// Write the lock (the default; kept so existing scripts can say it).

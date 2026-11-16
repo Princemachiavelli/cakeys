@@ -27,6 +27,18 @@ pub enum KmError {
         /// The ID computed from the token.
         got: String,
     },
+    /// First use: the lock pins nothing to compare with yet, like a fixed-output derivation
+    /// with a fake hash (18; HTTP's 428 Precondition Required). Not 10: a mismatch against a
+    /// pinned ID is a security event, this the state before `realise` records the `got:` ID.
+    #[error(
+        "first use of {what}: the lock pins no identity for it yet; review, then `realise` records it\n     got:    {got}"
+    )]
+    FirstUse {
+        /// What was identified.
+        what: String,
+        /// The ID computed from the token.
+        got: String,
+    },
     /// The token cannot do what the spec needs (15).
     #[error("unsupported: {0}")]
     Unsupported(String),
@@ -54,6 +66,7 @@ impl KmError {
             KmError::Unsupported(_) => 15,
             KmError::Unavailable(_) => 16,
             KmError::Validation(_) => 17,
+            KmError::FirstUse { .. } => 18,
             KmError::Io(_) => 1,
         }
     }
