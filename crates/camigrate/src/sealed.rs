@@ -517,7 +517,7 @@ fn create(
         made.push(create_public_half(dst, to, &spki)?);
     }
     let refusals = unwrap_refusals(to);
-    let declared = dst.spec.attributes.iter().filter(|(n, _)| !refusals.contains(&n.as_str()));
+    let declared = dst.spec.attributes.iter().filter(|(n, _)| !refusals.contains(n));
     let mut template = vec![
         Attribute::Token(true),
         Attribute::Class(class_of(dst.object)),

@@ -8,7 +8,7 @@
 
 use crate::binding;
 use cakeys_core::config::{ModuleInfo, TokenCfg, TokenInfo};
-use cakeys_profile::{Mode, Profile, Set};
+use cakeys_profile::{Capability, Mode, Profile, Set};
 use std::collections::BTreeSet;
 
 /// A token's resolved profiles, what [`crate::Token`] carries and every consumer reads.
@@ -301,10 +301,16 @@ impl Nearness {
 /// Drop a pair profile's rows that depend on the hardware it was observed on: what generates,
 /// wraps, unwraps and decrypts there answers unknown on other or unknown hardware.
 fn clear_hardware_rows(p: &mut Profile) {
-    p.generate.clear();
-    p.wrap.oaep = None;
-    p.unwrap.refuse = None;
-    p.decrypt.oaep = None;
+    p.reported.clear();
+    p.capabilities.retain(|c, _| {
+        !matches!(
+            c,
+            Capability::Generate { .. }
+                | Capability::WrapOaep(_)
+                | Capability::UnwrapTemplate(_)
+                | Capability::DecryptOaep(_)
+        )
+    });
 }
 
 /// How a module profile's match keys meet a token: per key, whether it matches (`None`: the
@@ -385,16 +391,16 @@ mod tests {
         assert_eq!(r.module_name(), Some("kryoptic/1.5"));
         assert_eq!(r.notes.len(), 1);
         assert!(r.notes[0].contains("by the token's firmware '1.5'"), "{:?}", r.notes);
-        assert!(r.module.as_ref().unwrap().wrap.oaep.is_some());
+        assert!(r.module.as_ref().unwrap().wrap_oaep().is_some());
         // Another firmware: flagged, and the hardware-dependent rows answer unknown.
         let r = resolve(&cfg(None, &[]), &module("Kryoptic", "0.0"), Some(&firmware("1.6")), "kryoptic").unwrap();
         assert!(r.notes[0].contains("manufacturer alone"), "{:?}", r.notes);
         assert!(r.notes[1].contains("are not used"), "{:?}", r.notes);
-        assert!(r.module.as_ref().unwrap().generate.is_empty());
+        assert!(r.module.as_ref().unwrap().generation_key_types().is_empty());
         // No token to compare with (a transport file): flagged, rows kept.
         let r = resolve(&cfg(None, &[]), &module("Kryoptic", "0.0"), None, "kryoptic").unwrap();
         assert!(r.notes[0].contains("manufacturer alone"), "{:?}", r.notes);
-        assert!(!r.module.as_ref().unwrap().generate.is_empty());
+        assert!(!r.module.as_ref().unwrap().generation_key_types().is_empty());
     }
 
     #[test]
@@ -407,8 +413,8 @@ mod tests {
         let m = r.module.as_ref().unwrap();
         assert!(m.profile.starts_with("tpm2-pkcs11/1.10+"), "{}", m.profile);
         assert!(!m.advertise.is_empty() && !m.subtract.mechanisms.is_empty());
-        assert!(m.generate.is_empty() && m.wrap.oaep.is_none() && m.unwrap.refuse.is_none());
-        assert!(m.decrypt.oaep.is_none());
+        assert!(m.generation_key_types().is_empty() && m.wrap_oaep().is_none() && m.unwrap_refuse().is_none());
+        assert!(m.decrypt_oaep().is_none());
         assert_eq!(r.notes.len(), 1, "{:?}", r.notes);
     }
 
@@ -423,14 +429,14 @@ mod tests {
         let amd = TokenInfo { model: "AMD".into(), serial: "s".into(), firmware: "3.87".into() };
         let (m, notes) = resolved(&cfg(None, &[]), Some(&amd));
         assert_eq!(m.profile, "tpm2-pkcs11/1.10+amd-ftpm");
-        assert!(!m.generate.is_empty() && notes.is_empty(), "{notes:?}");
+        assert!(!m.generation_key_types().is_empty() && notes.is_empty(), "{notes:?}");
         let sw = TokenInfo { model: "SW   TPM".into(), serial: "s".into(), firmware: "36.37".into() };
         assert_eq!(resolved(&cfg(None, &[]), Some(&sw)).0.profile, "tpm2-pkcs11/1.10+swtpm");
         // No token (validate by provider alone): a configured hardware layer names the pair ...
         assert_eq!(resolved(&cfg(None, &["swtpm"]), None).0.profile, "tpm2-pkcs11/1.10+swtpm");
         // ... else the pairs tie: module rows only, the hardware's unknown, and said so.
         let (m, notes) = resolved(&cfg(None, &[]), None);
-        assert!(m.generate.is_empty() && m.decrypt.oaep.is_none());
+        assert!(m.generation_key_types().is_empty() && m.decrypt_oaep().is_none());
         assert!(notes.iter().any(|n| n.contains("fit equally")), "{notes:?}");
     }
 
@@ -448,7 +454,10 @@ mod tests {
             let r = resolve(&cfg(None, &[]), &module(manufacturer, version), token, provider).unwrap();
             let m = r.module.as_ref().unwrap();
             assert_eq!(m.profile, expected, "{provider} {version}");
-            assert!(m.generate.is_empty() && m.wrap.oaep.is_none() && m.decrypt.oaep.is_none(), "{provider}");
+            assert!(
+                m.generation_key_types().is_empty() && m.wrap_oaep().is_none() && m.decrypt_oaep().is_none(),
+                "{provider}"
+            );
             assert!(!m.advertise.is_empty(), "{provider}: the module rows stand");
             let note = format!("records module version '{version}': using the nearest, {expected}");
             assert!(r.notes.iter().any(|n| n.contains(&note) && n.contains("caprobe probe")), "{:?}", r.notes);

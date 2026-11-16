@@ -6,7 +6,7 @@
 //! answers` and shows in its diff.
 
 use cakeys_profile::profile::Mode;
-use cakeys_profile::{Effective, Profile, Set};
+use cakeys_profile::{Capability, Effective, Move, Profile, Set};
 use std::fmt::Write as _;
 
 /// The RSA sizes asked after: the reported ranges' edges and the sizes probes generate.
@@ -24,19 +24,24 @@ fn sorted<T: Ord + Clone + std::fmt::Debug>(v: &[T]) -> String {
 fn rows(p: &Profile) -> String {
     let mut out = String::new();
     let list = |v: &Option<Vec<String>>| v.as_ref().map(|v| sorted(v));
-    let _ = writeln!(out, "  wrap.oaep {:?}", list(&p.wrap.oaep));
-    let _ = writeln!(out, "  decrypt.oaep {:?}", list(&p.decrypt.oaep));
-    let _ = writeln!(out, "  unwrap.refuse {:?}", list(&p.unwrap.refuse));
-    let _ = writeln!(out, "  derive.sealed {:?}", p.derive.sealed);
-    let _ = writeln!(out, "  derive.read-only {:?}", p.derive.read_only);
+    let _ = writeln!(out, "  wrap.oaep {:?}", list(&p.wrap_oaep()));
+    let _ = writeln!(out, "  decrypt.oaep {:?}", list(&p.decrypt_oaep()));
+    let _ = writeln!(out, "  unwrap.refuse {:?}", list(&p.unwrap_refuse()));
+    let _ = writeln!(out, "  derive.sealed {:?}", p.answer(&Capability::DeriveSealed));
+    let _ = writeln!(out, "  derive.read-only {:?}", p.answer(&Capability::DeriveReadOnly));
     let m = p.migration.clone().unwrap_or_default();
     let _ = writeln!(
         out,
         "  migration exports {:?} unwraps {:?} secret-unwraps {:?} trusted-wrap {:?} plaintext {:?}",
-        m.exports, m.unwraps, m.secret_unwraps, m.trusted_wrap, m.plaintext_import
+        p.moves(Move::Export),
+        p.moves(Move::Unwrap),
+        p.moves(Move::SecretUnwrap),
+        p.moves(Move::TrustedWrap),
+        m.plaintext_import
     );
     let _ = writeln!(out, "  migration accepts {:?} {:?} {:?}", m.public_accepts, m.plaintext_accepts, m.refuses);
-    for (kt, g) in &p.generate {
+    for kt in p.generation_key_types() {
+        let g = p.generation(kt).unwrap();
         let _ = writeln!(
             out,
             "  generate {kt}: can {} cannot {} bits {:?}..{:?} can {} cannot {} by-name {}",

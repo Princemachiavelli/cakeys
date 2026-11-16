@@ -3,6 +3,7 @@
 //! advertises. The rows committed today carry this repo's \[run\] evidence; the probe (phase 3)
 //! regenerates them and fills the `advertise` lists.
 
+use crate::capability::{Answer, Capability, DECRYPT_OAEP, Move, On, Row, Rows, UNWRAP_TEMPLATE, WRAP_OAEP};
 use std::collections::BTreeMap;
 
 /// Whether the profile is a module's observed set or a layer's subtraction.
@@ -51,47 +52,6 @@ pub struct Subtract {
     pub note: Option<String>,
 }
 
-/// The RSA-OAEP hashes a module actually implements for wrapping (`wrap = { oaep = [...] }`):
-/// `SoftHSM` lists `CKM_RSA_PKCS_OAEP` but implements `SHA-1` only. Absent: never probed, a
-/// spec-compliant module is assumed; `[]`: probed, and no hash round-trips.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
-pub struct Wrap {
-    /// The OAEP hashes that round-trip a wrap; `None`: never probed.
-    #[serde(default)]
-    pub oaep: Option<Vec<String>>,
-}
-
-/// What decryption a module actually implements with its private keys (`decrypt = { oaep =
-/// [...] }`): the RSA-OAEP hashes (MGF1 of the same hash) that decrypt what the host encrypted
-/// to the key, which `pop-decrypt` needs. Absent: never probed; `[]`: probed, none decrypts.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
-pub struct Decrypt {
-    /// The OAEP hashes that decrypt what the host encrypted; `None`: never probed.
-    #[serde(default)]
-    pub oaep: Option<Vec<String>>,
-}
-
-/// How a module derives with `CKM_ECDH1_DERIVE` (`derive = { sealed = ... }`): whether it
-/// derives into a sealed secret (`CKA_SENSITIVE`, not `CKA_EXTRACTABLE`), which `pop-ecdh`
-/// MACs with when it can. ykcs11 derives only into an extractable secret \[src\]. And what
-/// `CKA_DERIVE` the base key reports although it derived (`key-attribute`): ykcs11 reports
-/// false on every key, from a fixed table \[src\], so a spec asking `CKA_DERIVE = true` of it can
-/// never be met while ECDH works. And whether it derives in a read-only session (`read-only`):
-/// tpm2-pkcs11 keeps derived secrets as store rows, so it refuses there \[run\]. Absent: never
-/// probed.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
-pub struct Derive {
-    /// Whether it derives into a sealed secret (`sealed`).
-    #[serde(default)]
-    pub sealed: Option<bool>,
-    /// The `CKA_DERIVE` a base key reports although it derived (`key-attribute`).
-    #[serde(default, rename = "key-attribute")]
-    pub key_attribute: Option<bool>,
-    /// Whether it derives in a read-only session (`read-only`).
-    #[serde(default, rename = "read-only")]
-    pub read_only: Option<bool>,
-}
-
 /// A finding a person made rather than the probe (`[manual.<key>]`): a fact the probe cannot
 /// observe, or one it does not reach yet. Kept apart from the probe's rows so a reader always
 /// knows which is which: the probe preserves the section across regenerations like
@@ -106,44 +66,40 @@ pub struct Manual {
     pub evidence: String,
 }
 
-/// The per-module unwrap-template rules, as data (docs/CAMIGRATE.md D6's provider hook): attributes
-/// the module refuses in a template (`SoftHSM: CKA_VALUE_LEN`). Absent: never probed; `[]`:
-/// probed, and the module refuses none.
+/// The key sizes a module reports for one key type (`[reported."CKK_RSA"]`): the inclusive range
+/// `C_GetMechanismInfo` gives, or a hand claim. What the module did with a size is a
+/// [`Capability::Generate`] row.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
-pub struct Unwrap {
-    /// The attributes the module refuses in an unwrap template; `None`: never probed.
-    #[serde(default)]
-    pub refuse: Option<Vec<String>>,
-}
-
-/// What a module generates for one key type: the generatable items (curves for `CKK_EC` and
-/// `CKK_EC_EDWARDS`, parameter sets for the PQ types) and the known-unusable ones; and for
-/// RSA the modulus sizes. `min-bits`/`max-bits` are the inclusive range the module reports
-/// (`C_GetMechanismInfo`, or a hand claim); `can-bits`/`cannot-bits` the sizes a probe
-/// generated or saw refused. What none of them decides answers unknown (D5), never a guess.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
-pub struct GenerateRow {
-    /// What it generates: curves, or parameter sets.
-    #[serde(default)]
-    pub can: Vec<String>,
-    /// What it does not generate, although it may list them.
-    #[serde(default)]
-    pub cannot: Vec<String>,
-    /// The smallest RSA modulus it reports, in bits (`min-bits`).
+#[serde(deny_unknown_fields)]
+pub struct Reported {
+    /// The smallest modulus it reports, in bits (`min-bits`).
     #[serde(default, rename = "min-bits")]
     pub min_bits: Option<u32>,
-    /// The largest RSA modulus it reports, in bits (`max-bits`).
+    /// The largest modulus it reports, in bits (`max-bits`).
     #[serde(default, rename = "max-bits")]
     pub max_bits: Option<u32>,
-    /// RSA modulus sizes a probe generated (`can-bits`).
-    #[serde(default, rename = "can-bits")]
+}
+
+/// What a module generates for one key type, as its rows say ([`Profile::generation`]): the
+/// curves (or parameter sets) that generated and that did not, the modulus sizes likewise, the
+/// curves that generate only by name, and the range the module reports. What none of them
+/// decides answers unknown (D5), never a guess.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GenerateRow {
+    /// What it generates: curves, or parameter sets.
+    pub can: Vec<String>,
+    /// What it does not generate, although it may list them.
+    pub cannot: Vec<String>,
+    /// The smallest RSA modulus it reports, in bits.
+    pub min_bits: Option<u32>,
+    /// The largest RSA modulus it reports, in bits.
+    pub max_bits: Option<u32>,
+    /// RSA modulus sizes that generated.
     pub can_bits: Vec<u32>,
-    /// RSA modulus sizes a probe saw refused (`cannot-bits`).
-    #[serde(default, rename = "cannot-bits")]
+    /// RSA modulus sizes refused.
     pub cannot_bits: Vec<u32>,
     /// Curves in `can` that generate only when `CKA_EC_PARAMS` names them (PKCS#11 3.0's
     /// `PrintableString` form), never by OID: ykcs11's Edwards and Montgomery curves \[src\].
-    #[serde(default, rename = "by-name")]
     pub by_name: Vec<String>,
 }
 
@@ -199,27 +155,13 @@ pub struct AcceptRow {
     pub max_bits: Option<u32>,
 }
 
-/// How a module moves keys (docs/CAMIGRATE.md D2/D10), as data. Absent fields mean a spec-compliant
-/// PKCS#11 module: it wraps and unwraps with what it lists and imports public objects and
-/// plaintext keys with `C_CreateObject`. The OAEP hashes come from `wrap.oaep`, the one row
-/// the `--oaep` query shares.
+/// What a module's import paths take (docs/CAMIGRATE.md D2/D10), as data: this repo's claims.
+/// Absent fields mean a spec-compliant PKCS#11 module: it imports public objects and plaintext
+/// keys with `C_CreateObject`. Whether it exports, unwraps, keeps a secret's length and wraps
+/// toward a trusted key are [`Capability::Move`] rows; the OAEP hashes `wrap.rsa-oaep.*`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Migration {
-    /// Whether the module ever wraps a key out (`C_WrapKey`): ykcs11 and tpm2-pkcs11 never.
-    #[serde(default)]
-    pub exports: Option<bool>,
-    /// Whether the module unwraps a key in (`C_UnwrapKey`).
-    #[serde(default)]
-    pub unwraps: Option<bool>,
-    /// Whether a secret key it unwraps reports its length (`CKA_VALUE_LEN`), which the import's
-    /// type check reads: `SoftHSM` leaves it 0 and refuses it in the template (default: yes).
-    #[serde(default, rename = "secret-unwraps")]
-    pub secret_unwraps: Option<bool>,
-    /// Whether a `CKA_WRAP_WITH_TRUSTED` key can leave toward a transport key (docs/CAMIGRATE.md D2,
-    /// `enforced`): the SO can mark an RSA public key `CKA_TRUSTED` at creation, and the module
-    /// wraps under it (kryoptic cannot; default: yes).
-    #[serde(default, rename = "trusted-wrap")]
-    pub trusted_wrap: Option<bool>,
     /// How plaintext private and secret keys get in, if at all.
     #[serde(default, rename = "plaintext-import")]
     pub plaintext_import: Option<PlaintextKind>,
@@ -265,22 +207,15 @@ pub struct Profile {
     /// Mechanisms usable although the module does not list them.
     #[serde(default)]
     pub add: Vec<String>,
-    /// The OAEP hashes it wraps with (`[wrap]`).
+    /// What the module answers about cakeys' operations (`[capabilities]`): one row type for
+    /// generation, wrapping, decryption, unwrap templates, ECDH and moves.
+    #[serde(default, deserialize_with = "crate::capability::deserialize")]
+    pub capabilities: Rows,
+    /// The key sizes the module reports, per key type (`[reported."CKK_RSA"]`).
     #[serde(default)]
-    pub wrap: Wrap,
-    /// What the module generates, per key type.
-    #[serde(default)]
-    pub generate: BTreeMap<String, GenerateRow>,
-    /// The attributes it refuses in an unwrap template (`[unwrap]`).
-    #[serde(default)]
-    pub unwrap: Unwrap,
-    /// The OAEP hashes its private keys decrypt with (`[decrypt]`).
-    #[serde(default)]
-    pub decrypt: Decrypt,
-    /// How it derives with ECDH (`[derive]`).
-    #[serde(default)]
-    pub derive: Derive,
-    /// How the module moves keys (docs/CAMIGRATE.md), when it deviates from a spec-compliant module.
+    pub reported: BTreeMap<String, Reported>,
+    /// What the module's import paths take (docs/CAMIGRATE.md), when it deviates from a
+    /// spec-compliant module.
     #[serde(default)]
     pub migration: Option<Migration>,
     /// A layer's numeric restrictions (`[[restrict]]`).
@@ -309,5 +244,115 @@ impl Profile {
     #[must_use]
     pub fn family(&self) -> &str {
         self.profile.split('/').next().unwrap_or(&self.profile)
+    }
+
+    /// The answer to `c`, if the profile has one.
+    #[must_use]
+    pub fn answer(&self, c: &Capability) -> Option<bool> {
+        self.capabilities.get(c).map(|r| r.answer.yes())
+    }
+
+    /// Set the answer to `c`, with its evidence and how it succeeded.
+    pub fn set(&mut self, c: Capability, answer: Answer, evidence: Option<String>, via: Option<String>) {
+        self.capabilities.insert(c, Row { answer, evidence, via });
+    }
+
+    /// Of `asked`, the ones whose row answers yes; `None` when none of them has a row (never
+    /// probed), `Some([])` when every row there says no.
+    fn yes_of(&self, asked: &[&str], cap: impl Fn(String) -> Capability) -> Option<Vec<String>> {
+        let rows: Vec<(&str, bool)> =
+            asked.iter().filter_map(|a| self.answer(&cap((*a).to_owned())).map(|y| (*a, y))).collect();
+        (!rows.is_empty()).then(|| rows.into_iter().filter(|(_, y)| *y).map(|(a, _)| a.to_owned()).collect())
+    }
+
+    /// The OAEP hashes a wrap round-trips with; `None`: never probed.
+    #[must_use]
+    pub fn wrap_oaep(&self) -> Option<Vec<String>> {
+        self.yes_of(&WRAP_OAEP, Capability::WrapOaep)
+    }
+
+    /// The OAEP hashes its private keys decrypt with (`pop-decrypt`); `None`: never probed.
+    #[must_use]
+    pub fn decrypt_oaep(&self) -> Option<Vec<String>> {
+        self.yes_of(&DECRYPT_OAEP, Capability::DecryptOaep)
+    }
+
+    /// The attributes it refuses in an unwrap template; `None`: never probed.
+    #[must_use]
+    pub fn unwrap_refuse(&self) -> Option<Vec<String>> {
+        let rows: Vec<(&str, bool)> = UNWRAP_TEMPLATE
+            .iter()
+            .filter_map(|a| self.answer(&Capability::UnwrapTemplate((*a).to_owned())).map(|y| (*a, y)))
+            .collect();
+        (!rows.is_empty()).then(|| rows.into_iter().filter(|(_, y)| !y).map(|(a, _)| a.to_owned()).collect())
+    }
+
+    /// Whether a way of moving keys works; `None`: no claim (a spec-compliant module's answer).
+    #[must_use]
+    pub fn moves(&self, m: Move) -> Option<bool> {
+        self.answer(&Capability::Move(m))
+    }
+
+    /// The key types the profile says anything about generating.
+    #[must_use]
+    pub fn generation_key_types(&self) -> std::collections::BTreeSet<&str> {
+        let rows = self.capabilities.keys().filter_map(|c| match c {
+            Capability::Generate { key_type, .. } => Some(key_type.as_str()),
+            _ => None,
+        });
+        rows.chain(self.reported.keys().map(String::as_str)).collect()
+    }
+
+    /// What it generates of `key_type`, as its rows and reported range say; `None` when it
+    /// says nothing about the key type.
+    #[must_use]
+    pub fn generation(&self, key_type: &str) -> Option<GenerateRow> {
+        let mut row = GenerateRow::default();
+        let mut any = false;
+        if let Some(r) = self.reported.get(key_type) {
+            (row.min_bits, row.max_bits, any) = (r.min_bits, r.max_bits, true);
+        }
+        for (c, r) in &self.capabilities {
+            let Capability::Generate { key_type: kt, on } = c else { continue };
+            if kt != key_type {
+                continue;
+            }
+            any = true;
+            match (on, r.answer) {
+                (On::Item(i), Answer::Yes) => {
+                    row.can.push(i.clone());
+                    if r.via.as_deref() == Some("by-name") {
+                        row.by_name.push(i.clone());
+                    }
+                }
+                (On::Item(i), Answer::No) => row.cannot.push(i.clone()),
+                (On::Bits(b), Answer::Yes) => row.can_bits.push(*b),
+                (On::Bits(b), Answer::No) => row.cannot_bits.push(*b),
+            }
+        }
+        any.then_some(row)
+    }
+
+    /// Record what the probe saw `key_type` generate: each curve or size as a row (`via =
+    /// "by-name"` for the curves only their name generates), the reported range apart. `notes`
+    /// gives a row its evidence, by the curve or by `"<key type> at <bits>"`.
+    pub fn set_generation(&mut self, key_type: &str, row: &GenerateRow) {
+        let generate = |on| Capability::Generate { key_type: key_type.to_owned(), on };
+        for i in &row.can {
+            let via = row.by_name.contains(i).then(|| "by-name".to_owned());
+            self.set(generate(On::Item(i.clone())), Answer::Yes, None, via);
+        }
+        for i in &row.cannot {
+            self.set(generate(On::Item(i.clone())), Answer::No, None, None);
+        }
+        for b in &row.can_bits {
+            self.set(generate(On::Bits(*b)), Answer::Yes, None, None);
+        }
+        for b in &row.cannot_bits {
+            self.set(generate(On::Bits(*b)), Answer::No, None, None);
+        }
+        if row.min_bits.is_some() || row.max_bits.is_some() {
+            self.reported.insert(key_type.to_owned(), Reported { min_bits: row.min_bits, max_bits: row.max_bits });
+        }
     }
 }

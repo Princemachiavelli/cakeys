@@ -2,7 +2,7 @@
 //! a claimed profile says, over the rows a probe can observe. Empty is conformance — the
 //! shipped profile is what the module does; non-empty is drift, each line naming the row.
 
-use cakeys_profile::{GenerateRow, Profile};
+use cakeys_profile::{Capability, Profile, Row};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Compare the probe-observable rows of `generated` against `claimed`: one line per
@@ -10,59 +10,35 @@ use std::collections::{BTreeMap, BTreeSet};
 ///
 /// Never compared: the profiles' names (the probe names by provider and expressed version, a
 /// module that hides it names differently), `partial` (whether the probe has filled the rows
-/// is not a claim), the notes and `[manual]` findings (human evidence), and the rows no probe
-/// observes yet — the
-/// migration rows and the layer subtractions (data until docs/CAMIGRATE.md phase 3
-/// exercises them).
+/// is not a claim), the notes, each row's evidence and the `[manual]` findings (human
+/// evidence), and what no probe observes — `[migration]`, the `move.*` capabilities (this
+/// repo's claims) and the layer subtractions.
 #[must_use]
 pub(crate) fn diff(generated: &Profile, claimed: &Profile) -> Vec<String> {
     let mut out = read_only(generated, claimed);
     sets("subtract.mechanisms", &generated.subtract.mechanisms, &claimed.subtract.mechanisms, &mut out);
     sets("add", &generated.add, &claimed.add, &mut out);
-    probed("wrap.oaep", generated.wrap.oaep.as_deref(), claimed.wrap.oaep.as_deref(), &mut out);
-    probed("unwrap.refuse", generated.unwrap.refuse.as_deref(), claimed.unwrap.refuse.as_deref(), &mut out);
-    probed("decrypt.oaep", generated.decrypt.oaep.as_deref(), claimed.decrypt.oaep.as_deref(), &mut out);
-    for (what, row) in [
-        ("derive.sealed", (|p: &Profile| p.derive.sealed) as fn(&Profile) -> Option<bool>),
-        ("derive.key-attribute", |p| p.derive.key_attribute),
-        ("derive.read-only", |p| p.derive.read_only),
-    ] {
-        let shown = |p| row(p).map(|b| b.to_string());
-        optional(what, shown(generated).as_ref(), shown(claimed).as_ref(), &mut out);
-    }
     restrictions(generated, claimed, &mut out);
-    for (kt, (g, c)) in rows(generated, claimed) {
-        match (g, c) {
-            (None, Some(_)) => out.push(format!("generate.{kt}: only claimed")),
-            (Some(_), None) => out.push(format!("generate.{kt}: only observed")),
-            (Some(g), Some(c)) => {
-                sets(&format!("generate.{kt}.can"), &g.can, &c.can, &mut out);
-                sets(&format!("generate.{kt}.cannot"), &g.cannot, &c.cannot, &mut out);
-                let bits = |v: &[u32]| v.iter().map(u32::to_string).collect::<Vec<_>>();
-                sets(&format!("generate.{kt}.can-bits"), &bits(&g.can_bits), &bits(&c.can_bits), &mut out);
-                sets(&format!("generate.{kt}.cannot-bits"), &bits(&g.cannot_bits), &bits(&c.cannot_bits), &mut out);
-                sets(&format!("generate.{kt}.by-name"), &g.by_name, &c.by_name, &mut out);
+    let probed = |p: &Profile| -> BTreeMap<Capability, Row> {
+        p.capabilities.iter().filter(|(c, _)| c.probed()).map(|(c, r)| (c.clone(), r.clone())).collect()
+    };
+    let (g, c) = (probed(generated), probed(claimed));
+    let shown = |r: &Row| match &r.via {
+        Some(via) => format!("{} ({via})", r.answer.name()),
+        None => r.answer.name().to_owned(),
+    };
+    for cap in g.keys().chain(c.keys()).collect::<BTreeSet<_>>() {
+        match (g.get(cap), c.get(cap)) {
+            (Some(g), Some(c)) if shown(g) != shown(c) => {
+                out.push(format!("{cap}: observed {}, claimed {}", shown(g), shown(c)));
             }
-            (None, None) => {}
+            (Some(g), None) => out.push(format!("{cap}: only observed: {}", shown(g))),
+            (None, Some(c)) => out.push(format!("{cap}: only claimed: {}", shown(c))),
+            _ => {}
         }
     }
     out.sort();
     out
-}
-
-/// The generate rows of both profiles, by key type.
-fn rows<'a>(
-    generated: &'a Profile,
-    claimed: &'a Profile,
-) -> BTreeMap<&'a str, (Option<&'a GenerateRow>, Option<&'a GenerateRow>)> {
-    let mut rows: BTreeMap<&str, (Option<&GenerateRow>, Option<&GenerateRow>)> = BTreeMap::new();
-    for (kt, row) in &generated.generate {
-        rows.insert(kt, (Some(row), claimed.generate.get(kt)));
-    }
-    for (kt, row) in &claimed.generate {
-        rows.entry(kt).or_insert((None, Some(row)));
-    }
-    rows
 }
 
 /// [`diff`] over the rows a read-only probe observes — the match keys, the advertisement and
@@ -80,9 +56,11 @@ pub(crate) fn read_only(generated: &Profile, claimed: &Profile) -> Vec<String> {
     if !claimed.partial {
         sets("advertise", &generated.advertise, &claimed.advertise, &mut out);
     }
-    for (kt, (g, c)) in rows(generated, claimed) {
-        numeric(&format!("generate.{kt}.min-bits"), g.and_then(|r| r.min_bits), c.and_then(|r| r.min_bits), &mut out);
-        numeric(&format!("generate.{kt}.max-bits"), g.and_then(|r| r.max_bits), c.and_then(|r| r.max_bits), &mut out);
+    let key_types: BTreeSet<&String> = generated.reported.keys().chain(claimed.reported.keys()).collect();
+    for kt in key_types {
+        let (g, c) = (generated.reported.get(kt), claimed.reported.get(kt));
+        numeric(&format!("reported.{kt}.min-bits"), g.and_then(|r| r.min_bits), c.and_then(|r| r.min_bits), &mut out);
+        numeric(&format!("reported.{kt}.max-bits"), g.and_then(|r| r.max_bits), c.and_then(|r| r.max_bits), &mut out);
     }
     out.sort();
     out
@@ -107,16 +85,6 @@ fn optional(what: &str, generated: Option<&String>, claimed: Option<&String>, ou
         (Some(g), None) => out.push(format!("{what}: only observed: {g}")),
         (None, Some(c)) => out.push(format!("{what}: only claimed: {c}")),
         _ => {}
-    }
-}
-
-/// A row the probe may not have run: absent is never probed, `[]` is probed and empty.
-fn probed(what: &str, generated: Option<&[String]>, claimed: Option<&[String]>, out: &mut Vec<String>) {
-    match (generated, claimed) {
-        (Some(g), Some(c)) => sets(what, g, c, out),
-        (Some(_), None) => out.push(format!("{what}: only observed (claimed: never probed)")),
-        (None, Some(_)) => out.push(format!("{what}: only claimed (not probed this run)")),
-        (None, None) => {}
     }
 }
 
@@ -160,79 +128,118 @@ mod tests {
         Profile::from_toml(&format!("profile = \"{name}\"\nmode = \"observed\"\n{text}")).unwrap()
     }
 
+    /// `[capabilities]` rows, one per line.
+    fn caps(rows: &[(&str, &str)]) -> String {
+        let rows: String = rows.iter().fold(String::new(), |s, (c, row)| s + &format!("\"{c}\" = {{ {row} }}\n"));
+        format!("[capabilities]\n{rows}")
+    }
+
     #[test]
     fn an_empty_diff_is_conformance() {
-        let generated = profile(
-            "softhsm/probe",
-            "advertise = [\"CKM_AES_KEY_WRAP\"]\n[match]\nmanufacturer = \"SoftHSM\"\nmodule-version = \"2.7\"\n\
-             [wrap]\noaep = [\"SHA-1\"]\n[generate.\"CKK_EC\"]\ncan = [\"secp256r1\"]\nmin-bits = 1024\n",
-        );
-        // The claimed profile may carry more than a probe observes: notes, migration rows.
+        let rows = caps(&[
+            ("wrap.rsa-oaep.SHA-1", "answer = \"yes\""),
+            ("generate.CKK_EC.secp256r1", "answer = \"yes\", evidence = \"generated\""),
+        ]);
+        let head =
+            "advertise = [\"CKM_AES_KEY_WRAP\"]\n[match]\nmanufacturer = \"SoftHSM\"\nmodule-version = \"2.7\"\n";
+        let generated = profile("softhsm/probe", &format!("{head}{rows}[reported.\"CKK_RSA\"]\nmin-bits = 1024\n"));
+        // The claimed profile may carry more than a probe observes: notes, claims, another
+        // row's evidence.
         let claimed = profile(
             "softhsm/2.7",
-            "advertise = [\"CKM_AES_KEY_WRAP\"]\n[match]\nmanufacturer = \"SoftHSM\"\nmodule-version = \"2.7\"\n\
-             [wrap]\noaep = [\"SHA-1\"]\n[generate.\"CKK_EC\"]\ncan = [\"secp256r1\"]\nmin-bits = 1024\n\
-             [migration]\nexports = false\n[notes]\nhuman = \"evidence\"\n\
-             [manual.so]\nfinding = \"by hand\"\nevidence = \"[run]\"",
+            &format!(
+                "{head}{}\"move.export\" = {{ answer = \"no\" }}\n[reported.\"CKK_RSA\"]\nmin-bits = 1024\n\
+                 [migration]\nplaintext-import = \"create-object\"\n[notes]\nhuman = \"evidence\"\n\
+                 [manual.so]\nfinding = \"by hand\"\nevidence = \"[run]\"",
+                rows.replace("evidence = \"generated\"", "evidence = \"another run\"")
+            ),
         );
         assert_eq!(diff(&generated, &claimed), Vec::<String>::new());
     }
 
     #[test]
     fn every_differing_row_is_a_named_line() {
+        let head =
+            |adv: &str| format!("advertise = [{adv}]\n[match]\nmanufacturer = \"SoftHSM\"\nmodule-version = \"2.7\"\n");
         let generated = profile(
             "softhsm/probe",
-            "advertise = [\"CKM_A\", \"CKM_G\"]\n[match]\nmanufacturer = \"SoftHSM\"\nmodule-version = \"2.7\"\n\
-             [generate.\"CKK_EC\"]\ncan = [\"secp256r1\", \"secp384r1\"]\nmax-bits = 4096\n",
+            &format!(
+                "{}{}[reported.\"CKK_RSA\"]\nmax-bits = 4096\n",
+                head("\"CKM_A\", \"CKM_G\""),
+                caps(&[
+                    ("generate.CKK_EC.secp256r1", "answer = \"yes\""),
+                    ("generate.CKK_EC.secp384r1", "answer = \"yes\""),
+                    ("generate.CKK_EC_EDWARDS.edwards25519", "answer = \"yes\", via = \"by-name\""),
+                ])
+            ),
         );
         let claimed = profile(
             "softhsm/2.7",
-            "advertise = [\"CKM_A\", \"CKM_B\"]\n[match]\nmanufacturer = \"SoftHSM\"\nmodule-version = \"2.7\"\n\
-             [generate.\"CKK_EC\"]\ncan = [\"secp256r1\"]\nmax-bits = 3072\n[generate.\"CKK_RSA\"]\ncan = []\n",
+            &format!(
+                "{}{}[reported.\"CKK_RSA\"]\nmax-bits = 3072\n",
+                head("\"CKM_A\", \"CKM_B\""),
+                caps(&[
+                    ("generate.CKK_EC.secp256r1", "answer = \"yes\""),
+                    ("generate.CKK_EC_EDWARDS.edwards25519", "answer = \"yes\""),
+                    ("generate.CKK_RSA.2048", "answer = \"no\""),
+                ])
+            ),
         );
         let lines = diff(&generated, &claimed);
-        assert!(lines.contains(&"advertise: only observed: CKM_G".to_owned()));
-        assert!(lines.contains(&"advertise: only claimed: CKM_B".to_owned()));
-        assert!(lines.contains(&"generate.CKK_EC.can: only observed: secp384r1".to_owned()));
-        assert!(lines.contains(&"generate.CKK_EC.max-bits: observed 4096, claimed 3072".to_owned()));
-        assert!(lines.contains(&"generate.CKK_RSA: only claimed".to_owned()));
-        assert_eq!(lines.len(), 5);
+        assert_eq!(
+            lines,
+            [
+                "advertise: only claimed: CKM_B",
+                "advertise: only observed: CKM_G",
+                "generate.CKK_EC.secp384r1: only observed: yes",
+                "generate.CKK_EC_EDWARDS.edwards25519: observed yes (by-name), claimed yes",
+                "generate.CKK_RSA.2048: only claimed: no",
+                "reported.CKK_RSA.max-bits: observed 4096, claimed 3072",
+            ]
+        );
     }
 
-    /// Rows only one side has, in each table the diff compares: a generate row, a probed OAEP
-    /// list against one never probed, a size bound, and the restrictions.
+    /// Rows only one side has, in each table the diff compares: capabilities, a size bound,
+    /// and the restrictions.
     #[test]
     fn rows_only_one_side_has_are_named() {
         let head = "advertise = [\"CKM_A\"]\n[match]\nmanufacturer = \"M\"\nmodule-version = \"1\"\n";
         let generated = profile(
             "m/probe",
             &format!(
-                "{head}[wrap]\noaep = [\"SHA-1\", \"SHA-256\"]\n[unwrap]\nrefuse = [\"CKA_VALUE_LEN\"]\n[derive]\nsealed = false\n\
-                 [generate.\"CKK_RSA\"]\nmin-bits = 1024\n[generate.\"CKK_EC\"]\ncan = [\"secp256r1\"]\n\
+                "{head}{}[reported.\"CKK_RSA\"]\nmin-bits = 1024\n\
                  [[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_RSA\"\nmax-bits = 2048\n\
-                 [[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_AES\"\nmax-bits = 256\n"
+                 [[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_AES\"\nmax-bits = 256\n",
+                caps(&[
+                    ("wrap.rsa-oaep.SHA-1", "answer = \"yes\""),
+                    ("unwrap.template.CKA_VALUE_LEN", "answer = \"no\""),
+                    ("derive.ecdh.sealed", "answer = \"no\""),
+                ])
             ),
         );
         let claimed = profile(
             "m/1",
             &format!(
-                "{head}[unwrap]\nrefuse = []\n[derive]\nread-only = true\n[generate.\"CKK_RSA\"]\nmax-bits = 4096\n\
+                "{head}{}[reported.\"CKK_RSA\"]\nmax-bits = 4096\n\
                  [[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_RSA\"\nmax-bits = 3072\n\
-                 [[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_DES3\"\nmin-bits = 112\n"
+                 [[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_DES3\"\nmin-bits = 112\n",
+                caps(&[
+                    ("unwrap.template.CKA_VALUE_LEN", "answer = \"yes\""),
+                    ("derive.ecdh.read-only", "answer = \"yes\"")
+                ])
             ),
         );
         let lines = diff(&generated, &claimed);
         for want in [
-            "generate.CKK_EC: only observed",
-            "generate.CKK_RSA.min-bits: only observed: 1024",
-            "generate.CKK_RSA.max-bits: only claimed: 4096",
-            "wrap.oaep: only observed (claimed: never probed)",
-            "unwrap.refuse: only observed: CKA_VALUE_LEN",
+            "reported.CKK_RSA.min-bits: only observed: 1024",
+            "reported.CKK_RSA.max-bits: only claimed: 4096",
+            "wrap.rsa-oaep.SHA-1: only observed: yes",
+            "unwrap.template.CKA_VALUE_LEN: observed no, claimed yes",
             "restrict.generate.CKK_RSA.max-bits: observed 2048, claimed 3072",
             "restrict.generate.CKK_AES: only observed",
             "restrict.generate.CKK_DES3: only claimed",
-            "derive.sealed: only observed: false",
-            "derive.read-only: only claimed: true",
+            "derive.ecdh.sealed: only observed: no",
+            "derive.ecdh.read-only: only claimed: yes",
         ] {
             assert!(lines.iter().any(|l| l == want), "missing {want:?} in {lines:#?}");
         }
@@ -240,15 +247,17 @@ mod tests {
 
     #[test]
     fn a_read_only_probe_conforms_on_the_rows_it_observes() {
-        // A read-only probe has no generate, wrap or unwrap rows: only match and advertise count.
+        // A read-only probe has no capability rows: only match and advertise count.
         let generated = profile(
             "softhsm/probe",
             "advertise = [\"CKM_A\"]\n[match]\nmanufacturer = \"SoftHSM\"\nmodule-version = \"2.7\"\n",
         );
         let claimed = profile(
             "softhsm/2.7",
-            "advertise = [\"CKM_A\"]\n[match]\nmanufacturer = \"SoftHSM\"\nmodule-version = \"2.7\"\n\
-             [wrap]\noaep = [\"SHA-1\"]\n[generate.\"CKK_EC\"]\ncan = [\"secp256r1\"]\n",
+            &format!(
+                "advertise = [\"CKM_A\"]\n[match]\nmanufacturer = \"SoftHSM\"\nmodule-version = \"2.7\"\n{}",
+                caps(&[("wrap.rsa-oaep.SHA-1", "answer = \"yes\""), ("generate.CKK_EC.secp256r1", "answer = \"yes\"")])
+            ),
         );
         assert_eq!(read_only(&generated, &claimed), Vec::<String>::new());
         assert_eq!(diff(&generated, &claimed).len(), 2);

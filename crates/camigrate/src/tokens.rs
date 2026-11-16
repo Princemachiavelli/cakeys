@@ -16,7 +16,7 @@ use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::resolution::{self, Resolved, moduleless_info};
 use cakeys_pkcs11::{Registry, Token};
-use cakeys_profile::{PlaintextKind, Profile};
+use cakeys_profile::{Move, PlaintextKind, Profile};
 use std::collections::BTreeSet;
 use std::str::FromStr;
 
@@ -84,9 +84,9 @@ pub(crate) fn side_from_transport(t: &Transport, registry: &Registry) -> Option<
 /// The per-module unwrap-template rules, as data (docs/CAMIGRATE.md D6): what `sealed::import`
 /// drops from a target's unwrap template (`SoftHSM`: `CKA_VALUE_LEN`).
 #[must_use]
-pub(crate) fn unwrap_refusals(tok: &Token) -> Vec<&str> {
-    let mut out: Vec<&str> =
-        tok.profiles.module.iter().flat_map(|p| p.unwrap.refuse.iter().flatten().map(String::as_str)).collect();
+pub(crate) fn unwrap_refusals(tok: &Token) -> Vec<String> {
+    let mut out: Vec<String> =
+        tok.profiles.module.iter().flat_map(|p| p.unwrap_refuse().into_iter().flatten()).collect();
     out.sort_unstable();
     out.dedup();
     out
@@ -106,20 +106,18 @@ fn side_of(module: &Profile, stack: &Resolved, token: &str, provider: &str, mech
     // What the stack subtracts: the advertisement's broken rows and every layer's drops.
     side.mechanisms.retain(|m| !stack.subtracted_mechanisms().contains(m.as_str()));
     let m = module.migration.as_ref();
-    if let Some(exports) = m.and_then(|m| m.exports) {
-        side.exports = exports;
-    }
-    if let Some(unwraps) = m.and_then(|m| m.unwraps) {
-        side.unwraps = unwraps;
-    }
-    if let Some(secret) = m.and_then(|m| m.secret_unwraps) {
-        side.secret_unwraps = secret;
-    }
-    if let Some(trusted) = m.and_then(|m| m.trusted_wrap) {
-        side.trusted_wrap = trusted;
+    for (way, field) in [
+        (Move::Export, &mut side.exports),
+        (Move::Unwrap, &mut side.unwraps),
+        (Move::SecretUnwrap, &mut side.secret_unwraps),
+        (Move::TrustedWrap, &mut side.trusted_wrap),
+    ] {
+        if let Some(answer) = module.moves(way) {
+            *field = answer;
+        }
     }
     // Never probed keeps the spec-compliant default; probed and empty means no OAEP method.
-    if let Some(oaep) = &module.wrap.oaep {
+    if let Some(oaep) = &module.wrap_oaep() {
         side.oaep = oaep.iter().map(|h| oaep_hash(h).map_err(|e| who(&e))).collect::<Result<_>>()?;
     }
     if let Some(rows) = m.map(|m| &m.public_accepts).filter(|r| !r.is_empty()) {
@@ -568,11 +566,14 @@ mod tests {
         assert_eq!(side(&p, &unpatched).unwrap().public_import.len(), 2);
     }
 
-    /// A row the baseline does not know is refused (17) with the profile named.
+    /// A row the baseline does not know is refused (17) with the profile named; an OAEP hash no
+    /// probe tries does not even load.
     #[test]
     fn rows_the_baseline_does_not_know_are_refused() {
+        let sha3 =
+            "profile = \"m/1\"\nmode = \"observed\"\n[capabilities]\n\"wrap.rsa-oaep.SHA-3\" = { answer = \"yes\" }\n";
+        assert!(Profile::from_toml(sha3).unwrap_err().contains("names no capability"));
         for (row, why) in [
-            ("[wrap]\noaep = [\"SHA-3\"]\n", "unknown OAEP hash: SHA-3"),
             (
                 "[[migration.public-accepts]]\nclass = \"CKO_PUBLIC_KEY\"\ncurves = [\"curve9\"]\n",
                 "unknown curve: curve9",

@@ -603,7 +603,7 @@ fn sealed_moves_do_what_the_plan_says() {
     names_transport(&e, &body, unwraps);
     // p11-kit hides the module behind it, so its capabilities are a spec-compliant module's until
     // keys.toml names that module's provider (docs/ARCHITECTURE.md, "Providers"): this one forwards `SoftHSM`, whose
-    // unwrapped secret keys lose their length (`secret-unwraps = false`).
+    // unwrapped secret keys lose their length (`move.secret-unwrap` no).
     let config = e.dir.join("keys.toml");
     let text = std::fs::read_to_string(&config).unwrap();
     let provider = |p: &str| {
@@ -1481,7 +1481,7 @@ fn base64_flip(text: &str) -> String {
 /// its SO trusted the target's transport key (`transport --trusted`, with `soCredentialFile`), and
 /// then by `CKM_RSA_AES_KEY_WRAP` under that trusted copy alone: each bundle entry carries its
 /// own key-encryption key. kryoptic imports and verifies them. A wrap-with-trusted key on
-/// kryoptic never moves: it cannot trust an RSA key (its profile's `trusted-wrap = false`).
+/// kryoptic never moves: it cannot trust an RSA key (its profile's `move.trusted-wrap` row says no).
 #[test]
 fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
     let Some(e) = env("enforced") else { return };
@@ -1569,7 +1569,7 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
     // kryoptic cannot trust an RSA key: a wrap-with-trusted key there never leaves.
     let p = plan("kk", kry, soft);
     let reasons = p["plans"][0]["reasons"].to_string();
-    assert!(p["plans"][0]["ready"] == false && reasons.contains("trusted-wrap = false"), "{p}");
+    assert!(p["plans"][0]["ready"] == false && reasons.contains("move.trusted-wrap row says no"), "{p}");
 }
 
 /// A side with no RFC 5649 of its own (AWS `CloudHSM`, whose profile subtracts the AES key wraps

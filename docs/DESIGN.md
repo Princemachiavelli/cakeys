@@ -250,14 +250,14 @@ key to its identity:
      challenge. The MACs agree only for the matching private key.
      - **Extractable variant.** Some tokens have no HMAC. Others derive only into an
        extractable secret, or cannot MAC with a sealed one; their module profile says
-       `derive.sealed = false` (ykcs11, tpm2-pkcs11 1.10 [run]). On those, the token derives
+       `derive.ecdh.sealed` no (ykcs11, tpm2-pkcs11 1.10 [run]). On those, the token derives
        into an extractable session secret, and the host reads its `CKA_VALUE` and compares it
        in constant time with the shared secret it computed. The secret belongs to a single-use
        ephemeral key the host generated, so reading it reveals nothing the host did not already
        hold. The binding is still `pop-ecdh`.
      - **Read-write session (an exception to M1).** tpm2-pkcs11 keeps derived secrets as
-       store rows, so it refuses `C_DeriveKey` in a read-only session (`derive.read-only =
-       false`). A read-only verb's (`verify`, `check`) proof then derives in a read-write
+       store rows, so it refuses `C_DeriveKey` in a read-only session (`derive.ecdh.read-only`
+       no). A read-only verb's (`verify`, `check`) proof then derives in a read-write
        session opened for it, and destroys the row again. That is the one write a read-only
        verb makes. Where the store itself is read-only (a sandbox mounting it so), `pop-ecdh`
        stays unavailable (16) on such a token.

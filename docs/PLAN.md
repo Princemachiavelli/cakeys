@@ -212,8 +212,8 @@ about 2 minutes. A4 is done; a real HSM's table would come from the cloud test b
 ### A5. Key derivation
 
 **Probe it in caprobe: yes.** Derivation is a capability like wrapping, and the probe covers
-only `CKM_ECDH1_DERIVE` with a null KDF today (`derive.sealed`, `derive.key-attribute`,
-`derive.read-only`). Of the committed profiles only kryoptic advertises HKDF and SP 800-108
+only `CKM_ECDH1_DERIVE` with a null KDF today (`derive.ecdh.sealed`, `derive.ecdh.read-only` and the
+`derive.key-attribute` note). Of the committed profiles only kryoptic advertises HKDF and SP 800-108
 [run]. Write probes to add, each a known-answer test against a host implementation on a scratch
 key:
 
@@ -222,7 +222,7 @@ key:
   (`CKM_AES_ECB_ENCRYPT_DATA`, `CKM_AES_CBC_ENCRYPT_DATA`, the `CKM_CONCATENATE_*` family);
 - `CKM_ECDH1_DERIVE` with a non-null KDF (`CKD_SHA256_KDF`) and shared data.
 
-Rows per mechanism, in the shape `[derive]` already has: works; derives into a sealed secret;
+Capability rows per mechanism, as `derive.ecdh.*` already are: works; derives into a sealed secret;
 which key types and usage bits the derived key may take; read-only session; whether
 `CKA_DERIVE_TEMPLATE` on the base key is honoured (blocked on the cryptoki array-attribute
 patch).

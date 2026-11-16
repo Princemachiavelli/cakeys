@@ -15,13 +15,15 @@
 //! build embeds, plus any a caller adds from a directory (D11).
 
 pub mod baseline;
+pub mod capability;
 pub mod effective;
 pub mod embedded;
 pub mod profile;
 
 pub use baseline::Baseline;
+pub use capability::{Answer, Capability, Move, On, Row};
 pub use effective::{Effective, Verdict};
-pub use profile::{AcceptRow, GenerateRow, Manual, MatchInfo, Migration, Mode, PlaintextKind, Profile};
+pub use profile::{AcceptRow, GenerateRow, Manual, MatchInfo, Migration, Mode, PlaintextKind, Profile, Reported};
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -275,7 +277,7 @@ mod tests {
         // The probe-verified profile carries the full `C_GetMechanismList`, so SHA-512 HMAC is
         // decided Yes where the partial hand profile once left it Unknown.
         assert!(matches!(eff.mechanism("CKM_SHA512_HMAC"), Verdict::Yes { .. }));
-        assert_eq!(set.find("softhsm/2.7").unwrap().wrap.oaep.as_deref(), Some(["SHA-1".to_owned()].as_slice()));
+        assert_eq!(set.find("softhsm/2.7").unwrap().wrap_oaep().as_deref(), Some(["SHA-1".to_owned()].as_slice()));
         // A partial module profile (no advertisement recorded) answers Unknown, never a guess.
         let partial = Profile::from_toml("profile = \"m/1\"\nmode = \"observed\"\npartial = true\n").unwrap();
         let eff = Effective::new(b, Some(&partial), &[]);
@@ -314,17 +316,20 @@ mod tests {
         assert!(matches!(pair.curve("secp256k1"), Verdict::No { .. }));
     }
 
-    /// A probed-empty row (`oaep = []`) answers no; an absent one is unprobed and answers
+    /// Probed rows that all answer no answer no; absent ones are unprobed and answer
     /// unknown. (That the emitter keeps the difference is caprobe's test.)
     #[test]
     fn probed_empty_is_not_unprobed() {
         let set = Set::embedded().unwrap();
         let b = set.baseline().unwrap();
-        let none = Profile::from_toml("profile = \"m/1\"\nmode = \"observed\"\n[wrap]\noaep = []\n").unwrap();
-        assert_eq!(none.wrap.oaep, Some(Vec::new()));
+        let none = Profile::from_toml(
+            "profile = \"m/1\"\nmode = \"observed\"\n[capabilities]\n\"wrap.rsa-oaep.SHA-1\" = { answer = \"no\" }\n",
+        )
+        .unwrap();
+        assert_eq!(none.wrap_oaep(), Some(Vec::new()));
         assert!(matches!(Effective::new(b, Some(&none), &[]).oaep()[0].1, Verdict::No { .. }));
         let unprobed = Profile::from_toml("profile = \"m/1\"\nmode = \"observed\"\n").unwrap();
-        assert_eq!(unprobed.wrap.oaep, None);
+        assert_eq!(unprobed.wrap_oaep(), None);
         assert!(matches!(Effective::new(b, Some(&unprobed), &[]).oaep()[0].1, Verdict::Unknown { .. }));
     }
 

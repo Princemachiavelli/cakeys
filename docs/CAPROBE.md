@@ -73,24 +73,34 @@ manufacturer = "SoftHSM"
 module-version = "2.7"
 model = "SoftHSM v2"
 firmware = "2.7"
-[wrap]
-oaep = ["SHA-1"]                           # parameters actually implemented
-[unwrap]
-refuse = ["CKA_VALUE_LEN"]                 # template rules
-[derive]
-sealed = true                              # also decrypt.oaep, derive.key-attribute, derive.read-only
-[generate."CKK_RSA"]
-min-bits = 512                             # also can/cannot per curve under CKK_EC, CKK_EC_EDWARDS, ...
-can-bits = [1024, 2048, 3072, 4096]
-[migration]                                # hand-written claims the probe does not observe
-secret-unwraps = false
+[capabilities]                             # one row type: what cakeys' operations do here
+"generate.CKK_EC.secp256r1" = { answer = "yes" }
+"generate.CKK_EC_EDWARDS.edwards25519" = { answer = "yes", via = "by-name" }
+"generate.CKK_RSA.2048" = { answer = "yes" }
+"wrap.rsa-oaep.SHA-256" = { answer = "no", evidence = "CKR_ARGUMENTS_BAD" }
+"decrypt.rsa-oaep.SHA-1" = { answer = "yes" }
+"unwrap.template.CKA_VALUE_LEN" = { answer = "no" }   # refused in an unwrap template
+"derive.ecdh.sealed" = { answer = "yes" }             # also derive.ecdh.read-only
+"move.secret-unwrap" = { answer = "no" }              # move.*: hand-written claims
+[reported."CKK_RSA"]                       # the sizes C_GetMechanismInfo reports
+min-bits = 512
+max-bits = 16384
+[migration]                                # hand-written: what the import paths take
+plaintext-import = "create-object"
 [notes]                                    # what the probe saw, as CKR_* names
 [manual."secret-unwraps"]                  # findings a person made: `finding` and `evidence`
 ```
 
-`[migration]` and `[manual]` are written by hand; the probe preserves them and the diff never
-compares them, so a reader always knows which rows were observed. *Absent is not empty*: an
-unprobed `wrap.oaep` is a spec-compliant default, `[]` means probed and nothing worked.
+A capability row is `"<capability>" = { answer, evidence, via }`: `answer` is `yes` or `no`,
+`evidence` what shows it, `via` how it succeeded where there is more than one way. The
+capabilities name cakeys' operations (`crates/profile/src/capability.rs`): a generation per key
+type and curve or size, a wrap and a decryption per OAEP hash, an unwrap template attribute,
+ECDH into a sealed secret and in a read-only session, and the moves. A new one is a variant
+there and the operation that tests it; the emitter, the diff and the stack algebra do not
+change. *An absent row is unknown*: never probed, never claimed — a spec-compliant default.
+
+`[migration]`, the `move.*` rows and `[manual]` are written by hand; the probe preserves them
+and the diff never compares them, so a reader always knows which rows were observed.
 
 **Layers** (`mode = "delta"`, `profiles/layers/`, `profiles/hardware/`) forward everything except
 what they subtract:
@@ -204,8 +214,8 @@ generated, never edited, and pinned like the baseline:
   refused (17) before a write. No delete or wrap probes there: PIV cannot erase a key.
 - **RSA sizes**: an observed size decides; outside the reported range is no; between two that
   generated is yes; otherwise unknown.
-- **The diff** compares the match keys, `advertise`, the generate rows, `subtract`, `wrap.oaep`,
-  `unwrap.refuse` and `restrict`; without `--write`, only what a read-only probe sees.
+- **The diff** compares the match keys, `advertise`, `reported`, `subtract`, `add`, `restrict` and every
+  probed capability row (answer and `via`); without `--write`, only what a read-only probe sees.
 - **Only the Nix-built binary may write or diff a profile**: an unpatched binding hides
   mechanisms it cannot name (kryoptic's `CKM_AES_KEY_WRAP_KWP` [run]).
 
@@ -213,8 +223,8 @@ generated, never edited, and pinned like the baseline:
 
 | Profile | Findings |
 |---|---|
-| `softhsm/2.7` | OAEP SHA-1 only, for wrapping and decryption (SHA-256 is `CKR_ARGUMENTS_BAD`); every baseline curve generates; RSA 512–16384 reported. An unwrapped secret key's `CKA_VALUE_LEN` reads 0 (`secret-unwraps = false`, an upstream issue to file). Offers `CKM_RSA_AES_KEY_WRAP`; the SO can create a trusted RSA public key |
-| `kryoptic/1.5` | Reports module version 0.0, matched by firmware (its real version). OAEP SHA-1 and SHA-256; secp256k1 and brainpool refused; advertises the 3.2 PQ mechanisms (not yet probed). Cannot make an RSA public key trusted (`trusted-wrap = false`) |
+| `softhsm/2.7` | OAEP SHA-1 only, for wrapping and decryption (SHA-256 is `CKR_ARGUMENTS_BAD`); every baseline curve generates; RSA 512–16384 reported. An unwrapped secret key's `CKA_VALUE_LEN` reads 0 (`move.secret-unwrap` no, an upstream issue to file). Offers `CKM_RSA_AES_KEY_WRAP`; the SO can create a trusted RSA public key |
+| `kryoptic/1.5` | Reports module version 0.0, matched by firmware (its real version). OAEP SHA-1 and SHA-256; secp256k1 and brainpool refused; advertises the 3.2 PQ mechanisms (not yet probed). Cannot make an RSA public key trusted (`move.trusted-wrap` no) |
 | `tpm2-pkcs11/1.10+swtpm` | Reports Cryptoki 2.40. `CKM_AES_KEY_GEN` advertised but `CKR_FUNCTION_NOT_SUPPORTED`; no Edwards; RSA 1024–3072. Derived secrets cannot sign (no `CKA_ALLOWED_MECHANISMS`), leak a reference and stay as store rows, so `pop-ecdh` takes the extractable path (`derive.sealed = false`) in a read-write session (`derive.read-only = false`). Never wraps or unwraps |
 | `tpm2-pkcs11/1.10+amd-ftpm` | P-256, P-384, RSA up to 2048; SHA-1 and SHA-256 only, so SHA-384/512 ECDSA and RSA-PSS are `subtract` rows. Needs tpm2-abrmd: the kernel resource manager's 3 slots run out on undestroyable objects (`[manual.resource-manager]`) |
 | `ykcs11/2.7` (YubiKey 5C NFC FIPS, 5.7.4) | Reports version 2.73, manufacturer `Yubico (www.yubico.com)`. P-256, P-384, Ed25519 (by name only), RSA 2048–4096; refuses RSA-1024, P-521, secp256k1, brainpool, Ed448, X25519 (its template wants a malformed `PrintableString` [src]). ECDH only into an extractable secret, no HMAC; every key reports `CKA_DERIVE = false` (repaired by its provider's `repair`). Nothing unwraps. FIPS mode is a `[manual]` finding until D12 |

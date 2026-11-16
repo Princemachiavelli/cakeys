@@ -6,6 +6,7 @@
 )]
 use super::*;
 use cakeys_core::pop;
+use cakeys_profile::{Capability, Move};
 
 impl Token {
     /// The binding the private key `h` is proven and recorded with, from the `planned` one
@@ -178,7 +179,7 @@ impl Token {
             return Err(self.none_allowed(&[MechanismType::ECDH1_DERIVE]));
         }
         let ch = pop::ecdh_challenge(spki, msg)?;
-        let sealed = self.profiles.module.as_ref().and_then(|p| p.derive.sealed) != Some(false);
+        let sealed = self.profiles.module.as_ref().and_then(|p| p.answer(&Capability::DeriveSealed)) != Some(false);
         if !sealed || !self.has(MechanismType::SHA256_HMAC) {
             return self.prove_ecdh_extractable(h, spki, &ch);
         }
@@ -390,7 +391,7 @@ impl Token {
             token: &self.name,
             profile: profile.map(|p| p.profile.as_str()),
             has: Box::new(|m| self.has(m)),
-            unwraps: profile.and_then(|p| p.migration.as_ref()).and_then(|m| m.unwraps) != Some(false),
+            unwraps: profile.and_then(|p| p.moves(Move::Unwrap)) != Some(false),
         }
     }
 

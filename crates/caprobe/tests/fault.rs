@@ -105,7 +105,10 @@ fn the_probe_records_what_a_misbehaving_module_does() {
             (1..=6)
                 .map(|n| rule(&format!("fn = \"C_DeriveKey\"\ncall = {n}\nrv = \"CKR_ATTRIBUTE_VALUE_INVALID\"")))
                 .collect(),
-            &["sealed = false", "a sealed (non-extractable) derived secret is refused: CKR_ATTRIBUTE_VALUE_INVALID"],
+            &[
+                "\"derive.ecdh.sealed\" = { answer = \"no\" }",
+                "a sealed (non-extractable) derived secret is refused: CKR_ATTRIBUTE_VALUE_INVALID",
+            ],
             "",
         ),
         (
@@ -117,13 +120,16 @@ fn the_probe_records_what_a_misbehaving_module_does() {
         (
             "derives while reporting CKA_DERIVE false",
             rule("fn = \"C_GetAttributeValue\"\nattribute = \"CKA_DERIVE\"\nvalue = \"00\""),
-            &["key-attribute = false", "derives although the key reports CKA_DERIVE = false"],
+            &["derives although the key reports CKA_DERIVE = false"],
             "",
         ),
         (
             "wraps but does not unwrap",
             rule("fn = \"C_UnwrapKey\"\nrv = \"CKR_DEVICE_ERROR\""),
-            &["[wrap]\noaep = []", "wraps but does not unwrap: CKR_DEVICE_ERROR"],
+            &[
+                "\"wrap.rsa-oaep.SHA-1\" = { answer = \"no\" }\n\"wrap.rsa-oaep.SHA-256\" = { answer = \"no\" }",
+                "wraps but does not unwrap: CKR_DEVICE_ERROR",
+            ],
             "",
         ),
     ];
@@ -132,7 +138,7 @@ fn the_probe_records_what_a_misbehaving_module_does() {
     // not let its profile stand for SoftHSM's.
     let (exit, _, said, _) = probed(&w, "drift", &cases[4].1, &["--diff", SOFTHSM.profile.0]);
     assert_eq!(exit, 15, "{said}");
-    assert!(said.contains("derive.sealed"), "{said}");
+    assert!(said.contains("derive.ecdh.sealed"), "{said}");
 }
 
 /// `derive_any`'s tries, in order, each taken when those before it are refused for their

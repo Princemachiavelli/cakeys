@@ -145,7 +145,7 @@ module behind a p11-kit server with an environment of its own.
   in parts and SoftHSM signs ECDSA in one part only. Two fixes:
   - the cause of the divergence: the planner (`unprovable`), `cakeys` before it creates a key,
     and the proof itself each had their own partial idea of what a proof needs (mechanisms; the
-    profile's `unwraps`; nothing about the per-use login). They now ask one check,
+    profile's `move.unwrap` row; nothing about the per-use login). They now ask one check,
     `token::proof_refusal`, of the binding the spec implies (`plan::expected_binding`).
     `cakeys` also refused a missing proof mechanism only after generating the key;
   - the instance: cryptoki gets a single-part `C_Sign` after `C_SignInit`
@@ -291,7 +291,7 @@ What no test can catch, and why:
 - `id.rs`, `Scheme::is_deprecated` and `reconcile.rs`' check of it: `Scheme::DEPRECATED` is
   empty, so either answer is the same today. The first deprecated scheme makes them testable.
 - `profile/src/effective.rs:171`, `<` for `<=` in "a size between two that generated": the
-  equal sizes are answered a few lines earlier, from `can-bits`.
+  equal sizes are answered a few lines earlier, from the sizes' `generate.CKK_RSA.<bits>` rows.
 - `sealed.rs`, `create_public_half`'s `CKA_PRIVATE = false` default: `SoftHSM` and kryoptic
   already make a public key non-private, so leaving it out changes nothing on them.
 - `possession.rs`' `sign_with_pin` and the branch of `proof_refusal` under

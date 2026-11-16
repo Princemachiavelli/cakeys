@@ -241,7 +241,7 @@ fn sealed(
         if !from.trusted_wrap {
             blocked.push(format!(
                 "CKA_WRAP_WITH_TRUSTED: {} ({}) cannot wrap under a transport key it trusts (its profile's \
-                 trusted-wrap = false), so the key never leaves it",
+                 move.trusted-wrap row says no), so the key never leaves it",
                 from.token, from.provider
             ));
             return;
@@ -545,7 +545,7 @@ mod tests {
         assert!(!plan_of(&p256(), &flags, &softhsm(), &To::File(FileFormat::Pkcs8), trusted).ready);
         // A source that cannot trust an RSA key (kryoptic): never, whatever is trusted.
         let p = plan_of(&p256(), &flags, &kryoptic(), &To::Token(&softhsm()), trusted);
-        assert!(!p.ready && p.reasons.iter().any(|r| r.contains("trusted-wrap = false")), "{p:?}");
+        assert!(!p.ready && p.reasons.iter().any(|r| r.contains("move.trusted-wrap row says no")), "{p:?}");
     }
 
     /// A side whose RFC 5649 is only `CKM_RSA_AES_KEY_WRAP` (`CloudHSM`) takes the composed method

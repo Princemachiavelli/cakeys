@@ -147,7 +147,7 @@ impl<'a> Effective<'a> {
             // A layer's `cannot` rows (the hardware under the module refusing a curve, D10);
             // its `can` rows mean nothing in delta mode, where the module decides the rest.
             if let Some(item) = item
-                && l.generate.get(key_type).is_some_and(|row| row.cannot.iter().any(|c| c == item))
+                && l.generation(key_type).is_some_and(|row| row.cannot.iter().any(|c| c == item))
             {
                 return Verdict::no(&l.profile, l.notes.get(item).cloned());
             }
@@ -164,7 +164,7 @@ impl<'a> Effective<'a> {
         let Some(m) = self.module else {
             return Verdict::Unknown { why: "no module profile selected".into() };
         };
-        let Some(row) = m.generate.get(key_type) else {
+        let Some(row) = m.generation(key_type) else {
             return Verdict::Unknown { why: format!("module profile {} records no {key_type} generation", m.profile) };
         };
         if let Some(bits) = bits {
@@ -217,7 +217,8 @@ impl<'a> Effective<'a> {
         let Some(m) = self.module else {
             return Verdict::Unknown { why: "no module profile selected".into() };
         };
-        let verdicts: Vec<Verdict> = m.generate.keys().map(|kt| self.generate(kt, Some(name), None)).collect();
+        let verdicts: Vec<Verdict> =
+            m.generation_key_types().into_iter().map(|kt| self.generate(kt, Some(name), None)).collect();
         verdicts
             .iter()
             .find(|v| matches!(v, Verdict::Yes { .. }))
@@ -264,7 +265,7 @@ impl<'a> Effective<'a> {
     pub fn oaep(&self) -> Vec<(String, Verdict)> {
         match self.module {
             None => vec![("OAEP".into(), Verdict::Unknown { why: "no module profile selected".into() })],
-            Some(m) => match m.wrap.oaep.as_deref() {
+            Some(m) => match m.wrap_oaep().as_deref() {
                 None => vec![(
                     "OAEP".into(),
                     Verdict::Unknown { why: format!("module profile {} records no OAEP probe", m.profile) },
@@ -375,8 +376,8 @@ mod tests {
     fn curves_decide_by_can_and_cannot_lists() {
         let b = baseline();
         let kryoptic = profile(
-            "profile = \"kryoptic/1.5\"\nmode = \"observed\"\n[generate.\"CKK_EC\"]\n\
-             can = [\"secp256r1\"]\ncannot = [\"secp256k1\"]",
+            "profile = \"kryoptic/1.5\"\nmode = \"observed\"\n[capabilities]\n\
+             \"generate.CKK_EC.secp256r1\" = { answer = \"yes\" }\n\"generate.CKK_EC.secp256k1\" = { answer = \"no\" }",
         );
         assert!(matches!(eff(&b, Some(&kryoptic), &[]).curve("secp256r1"), Verdict::Yes { .. }));
         assert!(matches!(eff(&b, Some(&kryoptic), &[]).curve("secp256k1"), Verdict::No { .. }));
@@ -389,7 +390,7 @@ mod tests {
             "profile = \"swtpm\"\nmode = \"delta\"\n[[restrict]]\noperation = \"generate\"\n\
              key-type = \"CKK_RSA\"\nmax-bits = 3072\nnote = \"refuses RSA-4096\"",
         );
-        let module = profile("profile = \"x/1\"\nmode = \"observed\"\n[generate.\"CKK_RSA\"]\nmax-bits = 4096");
+        let module = profile("profile = \"x/1\"\nmode = \"observed\"\n[reported.\"CKK_RSA\"]\nmax-bits = 4096");
         let layers = [&swtpm];
         // A restriction names a bits bound: without bits it cannot decide, beyond it it can.
         assert!(matches!(eff(&b, Some(&module), &layers).query("CKK_RSA", None), Verdict::Yes { .. }));
@@ -404,7 +405,7 @@ mod tests {
     fn parameter_sets_map_to_their_pq_key_type() {
         let b = baseline();
         let module = profile(
-            "profile = \"vendor/1\"\nmode = \"observed\"\n[generate.\"CKK_ML_DSA\"]\ncan = [\"CKP_ML_DSA_65\"]",
+            "profile = \"vendor/1\"\nmode = \"observed\"\n[capabilities]\n\"generate.CKK_ML_DSA.CKP_ML_DSA_65\" = { answer = \"yes\" }",
         );
         assert!(matches!(
             eff(&b, Some(&module), &[]).query("CKP_ML_DSA_65", None),
@@ -417,7 +418,7 @@ mod tests {
     fn class_listing_tells_mechanisms_from_parameter_sets() {
         let b = baseline();
         let module = profile(
-            "profile = \"vendor/1\"\nmode = \"observed\"\n[generate.\"CKK_ML_DSA\"]\ncan = [\"CKP_ML_DSA_65\"]",
+            "profile = \"vendor/1\"\nmode = \"observed\"\n[capabilities]\n\"generate.CKK_ML_DSA.CKP_ML_DSA_65\" = { answer = \"yes\" }",
         );
         let pq = eff(&b, Some(&module), &[]).class("pq").unwrap();
         assert_eq!(pq[0].0, "CKM_SHA512_HMAC");
@@ -443,11 +444,12 @@ mod tests {
         unknown(bare.generate("CKK_NOPE", None, None), "not a key type");
         assert!(matches!(bare.oaep().as_slice(), [(_, Verdict::Unknown { .. })]));
         let hardware = profile(
-            "profile = \"hw\"\nmode = \"delta\"\n[generate.\"CKK_EC\"]\ncannot = [\"secp256k1\"]\n[notes]\nsecp256k1 = \"no such curve in the chip\"\n",
+            "profile = \"hw\"\nmode = \"delta\"\n[capabilities]\n\"generate.CKK_EC.secp256k1\" = { answer = \"no\" }\n[notes]\nsecp256k1 = \"no such curve in the chip\"\n",
         );
         let module = profile(
             "profile = \"m/1\"\nmode = \"observed\"\nadvertise = [\"CKM_AES_KEY_WRAP\"]\n\
-             [generate.\"CKK_EC\"]\ncan = [\"secp256r1\", \"secp256k1\"]\n[generate.\"CKK_RSA\"]\ncan-bits = [2048, 4096]\n",
+             [capabilities]\n\"generate.CKK_EC.secp256r1\" = { answer = \"yes\" }\n\"generate.CKK_EC.secp256k1\" = { answer = \"yes\" }\n\
+             \"generate.CKK_RSA.2048\" = { answer = \"yes\" }\n\"generate.CKK_RSA.4096\" = { answer = \"yes\" }\n",
         );
         let layers = [&hardware];
         let stack = eff(&b, Some(&module), &layers);
@@ -486,7 +488,7 @@ mod tests {
              note = \"2048 to 4096\"\n",
         );
         let open = profile(
-            "profile = \"m/1\"\nmode = \"observed\"\n[generate.\"CKK_RSA\"]\n[generate.\"CKK_EC\"]\n[generate.\"CKK_AES\"]\n",
+            "profile = \"m/1\"\nmode = \"observed\"\n[reported.\"CKK_RSA\"]\n[reported.\"CKK_EC\"]\n[reported.\"CKK_AES\"]\n",
         );
         let layers = [&layer];
         let stack = eff(&b, Some(&open), &layers);
@@ -505,7 +507,7 @@ mod tests {
         assert_eq!(said(stack.generate("CKK_EC", None, Some(8192))), "yes (m/1)");
 
         let bounded = profile(
-            "profile = \"m/2\"\nmode = \"observed\"\n[generate.\"CKK_RSA\"]\nmin-bits = 2048\nmax-bits = 4096\n\
+            "profile = \"m/2\"\nmode = \"observed\"\n[reported.\"CKK_RSA\"]\nmin-bits = 2048\nmax-bits = 4096\n\
              [notes]\nCKK_RSA = \"2048 to 4096 only\"\n",
         );
         let stack = eff(&b, Some(&bounded), &[]);

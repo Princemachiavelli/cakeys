@@ -18,7 +18,8 @@ use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::token::{self, Token, derive_any, is_policy_default, show, template_refusal};
 use cakeys_pkcs11::{BoundKey, keygen_mechanism};
 use cakeys_profile::baseline::CURVES;
-use cakeys_profile::{GenerateRow, MatchInfo, Mode, Profile};
+use cakeys_profile::capability::{DECRYPT_OAEP, UNWRAP_TEMPLATE, WRAP_OAEP};
+use cakeys_profile::{Answer, Capability, GenerateRow, MatchInfo, Mode, Profile};
 use cryptoki::error::{Error as CkError, RvError};
 use cryptoki::mechanism::eddsa::{EddsaParams, EddsaSignatureScheme};
 use cryptoki::mechanism::elliptic_curve::{EcKdf, Ecdh1DeriveParams};
@@ -94,7 +95,7 @@ enum Target {
 /// names a slot holding nothing but the provider's own placeholder; the scratch guard is the
 /// one thing the probe refuses rather than records. `Unavailable` when an SO login fails.
 pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: bool) -> Result<Probed> {
-    let mut profile = Profile {
+    let profile = Profile {
         profile: format!("{}/{}", tok.provider.name(), tok.module.version),
         mode: Mode::Observed,
         partial: false,
@@ -112,16 +113,14 @@ pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: bool) -> Result<Probed> 
         advertise: tok.advertised.clone(),
         subtract: cakeys_profile::profile::Subtract::default(),
         add: Vec::new(),
-        wrap: cakeys_profile::profile::Wrap::default(),
-        generate: BTreeMap::new(),
-        unwrap: cakeys_profile::profile::Unwrap::default(),
-        decrypt: cakeys_profile::profile::Decrypt::default(),
-        derive: cakeys_profile::profile::Derive::default(),
+        capabilities: BTreeMap::new(),
+        reported: BTreeMap::new(),
         migration: None,
         restrict: Vec::new(),
         notes: BTreeMap::new(),
         manual: BTreeMap::new(),
     };
+    let mut profile = Draft::new(profile);
     profile.notes.insert("cryptoki".into(), format!("the module reports Cryptoki {}", tok.module.cryptoki));
     // A mechanism listed more than once (libkmsp11 1.9: CKM_RSA_PKCS_KEY_PAIR_GEN 24 times
     // [run]) is advertised once; the repetition is a note.
@@ -148,7 +147,7 @@ pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: bool) -> Result<Probed> 
              generate, operate, wrap and delete"
                 .into(),
         );
-        return Ok(Probed { profile, undetermined });
+        return Ok(Probed { profile: profile.finish(), undetermined });
     }
     let target = target(tok, cfg)?;
     if !tok.logged_in {
@@ -177,7 +176,7 @@ pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: bool) -> Result<Probed> 
     };
     write_probes(&mut made, &mut profile)?;
     profile.notes.append(&mut made.template_notes);
-    Ok(Probed { profile, undetermined: made.undetermined })
+    Ok(Probed { profile: profile.finish(), undetermined: made.undetermined })
 }
 
 /// The scratch guard: where the write probes may write on this token, or why nowhere.
@@ -257,6 +256,99 @@ fn check_slot(tok: &Token, id: &[u8]) -> Result<()> {
     )))
 }
 
+/// What the probes record as they run: the profile, and the working rows that become its
+/// capabilities when they are done ([`Draft::finish`]). Everything else of the profile is
+/// reached through it.
+pub(crate) struct Draft {
+    profile: Profile,
+    /// What each key type generated, by curve and by size, and the range the module reports.
+    generate: BTreeMap<String, GenerateRow>,
+    /// The OAEP hashes a wrap round-tripped with; `None`: not probed.
+    wrap: Oaep,
+    /// The OAEP hashes the private key decrypted with; `None`: not probed.
+    decrypt: Oaep,
+    /// The attributes an unwrap template refused; `None`: not probed.
+    unwrap: Refused,
+    /// How ECDH derived.
+    derive: Derived,
+}
+
+/// OAEP hashes that worked, of the ones tried.
+#[derive(Default)]
+struct Oaep {
+    oaep: Option<Vec<String>>,
+}
+
+/// Template attributes refused, of the ones tried.
+#[derive(Default)]
+struct Refused {
+    refuse: Option<Vec<String>>,
+}
+
+/// How ECDH derived: into a sealed secret, and in a read-only session. (A base key that
+/// derived while reporting `CKA_DERIVE = false` is a note: the provider repairs the read.)
+#[derive(Default)]
+struct Derived {
+    sealed: Option<bool>,
+    read_only: Option<bool>,
+}
+
+impl Draft {
+    fn new(profile: Profile) -> Draft {
+        Draft {
+            profile,
+            generate: BTreeMap::new(),
+            wrap: Oaep::default(),
+            decrypt: Oaep::default(),
+            unwrap: Refused::default(),
+            derive: Derived::default(),
+        }
+    }
+
+    /// The profile with what the probes recorded as its rows: each OAEP hash tried, each
+    /// template attribute tried, the ECDH answers, each curve and size generated or refused.
+    fn finish(self) -> Profile {
+        let mut p = self.profile;
+        let mut oaep = |worked: Option<Vec<String>>, tried: &[&str], cap: fn(String) -> Capability| {
+            for h in tried.iter().filter(|_| worked.is_some()) {
+                let yes = worked.iter().flatten().any(|w| w == h);
+                p.set(cap((*h).to_owned()), Answer::of(yes), None, None);
+            }
+        };
+        oaep(self.wrap.oaep, &WRAP_OAEP, Capability::WrapOaep);
+        oaep(self.decrypt.oaep, &DECRYPT_OAEP, Capability::DecryptOaep);
+        if let Some(refused) = self.unwrap.refuse {
+            for a in UNWRAP_TEMPLATE {
+                let yes = !refused.iter().any(|r| r == a);
+                p.set(Capability::UnwrapTemplate(a.to_owned()), Answer::of(yes), None, None);
+            }
+        }
+        if let Some(b) = self.derive.sealed {
+            p.set(Capability::DeriveSealed, Answer::of(b), None, None);
+        }
+        if let Some(b) = self.derive.read_only {
+            p.set(Capability::DeriveReadOnly, Answer::of(b), None, None);
+        }
+        for (kt, row) in &self.generate {
+            p.set_generation(kt, row);
+        }
+        p
+    }
+}
+
+impl std::ops::Deref for Draft {
+    type Target = Profile;
+    fn deref(&self) -> &Profile {
+        &self.profile
+    }
+}
+
+impl std::ops::DerefMut for Draft {
+    fn deref_mut(&mut self) -> &mut Profile {
+        &mut self.profile
+    }
+}
+
 /// The message every operation probe signs, and the plaintext the decryption probes recover.
 const MSG: &[u8] = b"cakeys probe: operations";
 
@@ -279,7 +371,7 @@ impl Ops {
         }
     }
 
-    fn finish(self, profile: &mut Profile) {
+    fn finish(self, profile: &mut Draft) {
         for (mech, why) in self.failed {
             if !self.worked.contains(&mech) {
                 profile.subtract.mechanisms.push(mech.clone());
@@ -468,7 +560,7 @@ impl Made<'_> {
 /// `subtract` row), the OAEP hashes it actually implements for wrapping (wrap and unwrap back),
 /// and the unwrap-template rules. On a scratch token every run cleans up after itself, and the
 /// leftover check turns "delete really deletes" into a note.
-fn write_probes(made: &mut Made, profile: &mut Profile) -> Result<()> {
+fn write_probes(made: &mut Made, profile: &mut Draft) -> Result<()> {
     let labels = matches!(made.target, Target::Labels);
     if labels {
         let stale = made.clear_stale();
@@ -529,7 +621,7 @@ fn write_probes(made: &mut Made, profile: &mut Profile) -> Result<()> {
 /// one key per binding, generated from the provider's exact template (no public template), and
 /// probed with only the mechanisms its binding serves. The curves and sizes no binding covers
 /// are tried without one ([`probe_unbound`]), so their `cannot` rows are observations too.
-fn probe_bound(made: &mut Made, profile: &mut Profile) {
+fn probe_bound(made: &mut Made, profile: &mut Draft) {
     let session = made.session;
     profile.notes.insert(
         "purpose-bound".into(),
@@ -604,7 +696,7 @@ fn probe_bound(made: &mut Made, profile: &mut Profile) {
 /// What no binding covers, tried with the label alone: libkmsp11 answers before any Cloud KMS
 /// call (`CKR_TEMPLATE_INCOMPLETE`), so nothing is created; anything that does generate is
 /// destroyed with the rest.
-fn probe_unbound(made: &mut Made, profile: &mut Profile, ec: &mut GenerateRow, rsa: &mut GenerateRow) {
+fn probe_unbound(made: &mut Made, profile: &mut Draft, ec: &mut GenerateRow, rsa: &mut GenerateRow) {
     let session = made.session;
     let bare = [Attribute::Label(b"cakeys-probe-unbound".to_vec())];
     let unbound = |made: &mut Made, mech: &Mechanism| match session.generate_key_pair(mech, &[], &bare) {
@@ -656,7 +748,7 @@ const MONTGOMERY: [CurveForm; 2] = [
 /// Key pairs per curve: `can` or `cannot`, the refusal's `CKR_*` in a note, and `by-name` for
 /// a curve that generates only when named. The first key of each kind gets the operation
 /// probes, right away — in a scratch slot the next generation replaces it.
-fn probe_curves(made: &mut Made, profile: &mut Profile) -> Result<()> {
+fn probe_curves(made: &mut Made, profile: &mut Draft) -> Result<()> {
     let forms = |kt: Kt| -> Vec<CurveForm> {
         CURVES
             .iter()
@@ -753,7 +845,7 @@ fn probe_curves(made: &mut Made, profile: &mut Profile) -> Result<()> {
 /// The 2048-bit pair gets the operation probes, and on a scratch token it is the wrap probes'
 /// transport key: wrapping is encryption, so its public half wraps and its private half
 /// unwraps. In a scratch slot the next size replaces it, so there it is no transport key.
-fn probe_rsa(made: &mut Made, profile: &mut Profile) -> Result<Option<(ObjectHandle, ObjectHandle)>> {
+fn probe_rsa(made: &mut Made, profile: &mut Draft) -> Result<Option<(ObjectHandle, ObjectHandle)>> {
     let mut row = profile.generate.remove("CKK_RSA").unwrap_or_default();
     let mut transport = None;
     for bits in [1024u32, 2048, 3072, 4096] {
@@ -805,7 +897,7 @@ fn probe_rsa(made: &mut Made, profile: &mut Profile) -> Result<Option<(ObjectHan
 /// The operation probes on one fresh key pair of kind `kt`: every advertised mechanism that
 /// applies to it, verified on the host wherever cakeys can (`sig`, `pop`) — signing, ECDH
 /// derivation and decryption.
-fn operate(made: &mut Made, profile: &mut Profile, kt: &str, on: &str, public: ObjectHandle, private: ObjectHandle) {
+fn operate(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, public: ObjectHandle, private: ObjectHandle) {
     if kt == "CKK_EC_MONTGOMERY" {
         // No Montgomery SPKI or host X25519 in cakeys yet.
         made.undetermined.push(format!("no operation probes on {on}: ECDH with {kt} keys is not probed yet"));
@@ -903,7 +995,7 @@ fn ec_ops(made: &mut Made, private: ObjectHandle, spki: &[u8], on: &str, hash: O
 /// `CKM_ECDH1_DERIVE` against a host ephemeral key, as `pop-ecdh` does it: into a sealed
 /// secret first, authenticated by an HMAC when the module has one; else into an extractable secret, read and
 /// compared. `derive.sealed` records which, a refused sealed derivation the note.
-fn derive(made: &mut Made, profile: &mut Profile, private: ObjectHandle, spki: &[u8], on: &str) {
+fn derive(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[u8], on: &str) {
     let s = made.session;
     let ch = match pop::ecdh_challenge(spki, MSG) {
         Ok(ch) => ch,
@@ -920,7 +1012,7 @@ fn derive(made: &mut Made, profile: &mut Profile, private: ObjectHandle, spki: &
     ];
     // A derived secret the module will not destroy stays behind (tpm2-pkcs11 persists it):
     // a note, since `pop-ecdh` derives one per proof.
-    let destroy = |h, path: &str, profile: &mut Profile| {
+    let destroy = |h, path: &str, profile: &mut Draft| {
         if let Err(e) = s.destroy_object(h) {
             profile.notes.insert(
                 "derive.destroy".into(),
@@ -1013,7 +1105,7 @@ fn derive(made: &mut Made, profile: &mut Profile, private: ObjectHandle, spki: &
 /// against what the key does).
 fn derived_once(
     made: &mut Made,
-    profile: &mut Profile,
+    profile: &mut Draft,
     mech: &Mechanism,
     private: ObjectHandle,
     template: &[Attribute],
@@ -1031,15 +1123,12 @@ fn derived_once(
         Err(e) => made.undetermined.push(format!("no read-only ECDH probe on {on}: {e}")),
     }
     if let Ok(attrs) = made.session.get_attributes(private, &[AttributeType::Derive])
-        && let Some(Attribute::Derive(reported)) = attrs.into_iter().next()
+        && let Some(Attribute::Derive(false)) = attrs.into_iter().next()
     {
-        profile.derive.key_attribute.get_or_insert(reported);
-        if !reported {
-            profile.notes.insert(
-                "derive.key-attribute".into(),
-                format!("{on}: derives although the key reports CKA_DERIVE = false"),
-            );
-        }
+        profile.notes.insert(
+            "derive.key-attribute".into(),
+            format!("{on}: derives although the key reports CKA_DERIVE = false"),
+        );
     }
 }
 
@@ -1050,7 +1139,7 @@ const SHA256_DIGEST_INFO: [u8; 19] =
 
 /// RSA signing (PKCS#1 v1.5 raw and hashed, PSS raw and hashed, raw X.509) and decryption
 /// (PKCS#1 v1.5, OAEP per hash: `decrypt.oaep`), on a 2048-bit key.
-fn rsa_ops(made: &mut Made, profile: &mut Profile, private: ObjectHandle, spki: &[u8], on: &str) {
+fn rsa_ops(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[u8], on: &str) {
     let pkcs1 = |s: &[u8]| sig::rsa_pkcs1v15::<Sha256>(spki, MSG, s);
     let none = |_: &[u8]| None;
     let pss = |hash, mgf, len: usize| PkcsPssParams { hash_alg: hash, mgf, s_len: (len as u64).into() };
@@ -1120,7 +1209,7 @@ fn rsa_ops(made: &mut Made, profile: &mut Profile, private: ObjectHandle, spki: 
 /// The secret-key generation the module advertises: success is implied by the advertise list,
 /// a refusal is a `subtract` row (advertised but broken). Returns the first AES key, the wrap
 /// probes' wrapped key.
-fn probe_secrets(made: &mut Made, profile: &mut Profile) -> Option<ObjectHandle> {
+fn probe_secrets(made: &mut Made, profile: &mut Draft) -> Option<ObjectHandle> {
     let session = made.session;
     let mut aes = None;
     for (mech, name, key_type) in [
@@ -1164,7 +1253,7 @@ fn probe_secrets(made: &mut Made, profile: &mut Profile) -> Option<ObjectHandle>
 /// transport key (public half) and unwrap it back with the private half, only a round trip
 /// counts — and the unwrap-template rule: a template carrying `CKA_VALUE_LEN`, refused with
 /// `CKR_ATTRIBUTE_READ_ONLY` by `SoftHSM`.
-fn probe_wrapping(made: &mut Made, profile: &mut Profile, transport: (ObjectHandle, ObjectHandle), aes: ObjectHandle) {
+fn probe_wrapping(made: &mut Made, profile: &mut Draft, transport: (ObjectHandle, ObjectHandle), aes: ObjectHandle) {
     let session = made.session;
     let (wraps, unwraps) = transport;
     // MGF1 of the same hash: the parameter set a transport wrap uses (`OaepHash`).
@@ -1251,7 +1340,7 @@ fn probe_wrapping(made: &mut Made, profile: &mut Profile, transport: (ObjectHand
 /// is a `subtract` row: AWS `CloudHSM` lists `CKM_AES_KEY_WRAP` and `_PAD` with
 /// `CKF_WRAP | CKF_UNWRAP` and refuses both \[run\]. Any other refusal is a note, never a
 /// subtraction: it may be the probe's template or key, not the mechanism.
-fn probe_key_wraps(made: &mut Made, profile: &mut Profile, transport: (ObjectHandle, ObjectHandle), aes: ObjectHandle) {
+fn probe_key_wraps(made: &mut Made, profile: &mut Draft, transport: (ObjectHandle, ObjectHandle), aes: ObjectHandle) {
     let session = made.session;
     let label = made.label();
     let kek = session.generate_key(
@@ -1438,9 +1527,9 @@ pub(crate) fn drift(generated: &Profile, claimed: &Profile, write: bool) -> Vec<
 }
 
 /// Keep, in a generated `profile` about to replace the file with content `existing` (named
-/// `shown` in messages), the two sections the probe does not generate: the file's `[migration]`
-/// claims (docs/CAMIGRATE.md evidence, never probe-observable) and its `[manual]` findings (made by
-/// hand, each with its evidence).
+/// `shown` in messages), what the probe does not generate: the file's `[migration]` and
+/// `move.*` claims (docs/CAMIGRATE.md evidence, never probe-observable) and its `[manual]`
+/// findings (made by hand, each with its evidence).
 ///
 /// # Errors
 ///
@@ -1457,6 +1546,7 @@ pub(crate) fn keep_claims(profile: &mut Profile, existing: &str, shown: &str, wr
         .map_err(|e| KmError::Validation(format!("{shown}: not a profile, refusing to overwrite: {e}")))?;
     profile.migration = old.migration;
     profile.manual = old.manual;
+    profile.capabilities.extend(old.capabilities.into_iter().filter(|(c, _)| !c.probed()));
     Ok(())
 }
 
@@ -1499,7 +1589,7 @@ mod tests {
         ops.record(MechanismType::ECDSA, "secp256r1", Ok(()));
         ops.record(MechanismType::RSA_PKCS_OAEP, "RSA-2048 decrypt SHA-1", Ok(()));
         ops.record(MechanismType::RSA_PKCS_OAEP, "RSA-2048 decrypt SHA-256", Err("CKR_ARGUMENTS_BAD".into()));
-        let mut profile = Profile::from_toml("profile = \"t\"\nmode = \"observed\"\n").unwrap();
+        let mut profile = Draft::new(Profile::from_toml("profile = \"t\"\nmode = \"observed\"\n").unwrap());
         ops.finish(&mut profile);
         assert_eq!(profile.subtract.mechanisms, ["CKM_ECDSA_SHA1"]);
         assert_eq!(profile.notes["CKM_ECDSA_SHA1"], "secp256r1: CKR_MECHANISM_INVALID");

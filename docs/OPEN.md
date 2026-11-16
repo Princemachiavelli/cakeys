@@ -178,7 +178,7 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **The OAEP proofs use SHA-1 only**: `pop-decrypt` and `pop-unwrap` decrypt and unwrap with
   RSA-OAEP over SHA-1 (`possession.rs`). Cloud KMS refuses it, offering SHA-256 or SHA-512 only,
   so decrypt-only Cloud KMS keys need `token-asserted`. A SHA-256 proof, chosen from the key's
-  `CKA_ALLOWED_MECHANISMS` or the profile's `decrypt.oaep`, would prove them.
+  `CKA_ALLOWED_MECHANISMS` or the profile's `decrypt.rsa-oaep.*` rows, would prove them.
 - **Cloud KMS AES keys**: GCM (Google's vendor mechanism), CBC and CTR only. cakeys commits an AES
   key by CMAC, an ECB check value or key wrap, so it refuses them. A commitment by AES-CBC
   encryption of the label would cover them.
@@ -217,7 +217,7 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   (`CKR_ATTRIBUTE_READ_ONLY`; SoftHSMv2 #628). Filed as SoftHSMv2 #925 with tests
   (`upstream/softhsm/PR.md`; the older #650 has the same core change), and
   `checks.softhsm-unwrap-value-len` tests it on a patched SoftHSM. A fixed release gets its own
-  profile without `secret-unwraps = false`.
+  profile without `move.secret-unwrap` no.
 - **SoftHSM under pkcs11-provider** (what reads `check --format pkcs11-provider-pem`): SoftHSM
   2.7.0 does its own crypto in the application's default OpenSSL library context, so with pkcs11-provider
   activated before `default` its `C_Login` calls back into itself and deadlocks on the token
