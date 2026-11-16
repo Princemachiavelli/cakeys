@@ -71,7 +71,18 @@ impl Token {
         if let Some(len) = object.value_len.filter(|_| object.key_type.and_then(Kt::fixed_value_len).is_none()) {
             match self.attr(h, AttributeType::ValueLen)? {
                 Some(Attribute::ValueLen(v)) if *v == len => {}
-                other => return Err(KmError::Conflict(format!("CKA_VALUE_LEN mismatch: {other:?}"))),
+                Some(Attribute::ValueLen(v)) => {
+                    return Err(KmError::Conflict(format!("CKA_VALUE_LEN is {}, spec says {len}", u64::from(v))));
+                }
+                // PKCS#11 requires it of the key; a module that stores an imported key without it
+                // (tpm2-pkcs11's C_CreateObject) leaves the type unverifiable, not different.
+                _ => {
+                    return Err(KmError::Unsupported(format!(
+                        "token '{}' reports no CKA_VALUE_LEN for the key, so its length (spec: {len}) cannot be \
+                         checked",
+                        self.name
+                    )));
+                }
             }
         }
         self.check_policy(h, spec)

@@ -70,16 +70,19 @@ impl Token {
     /// 1. the object's own material (RSA modulus/exponent, EC params and point);
     /// 2. else the single public key object under the locator (EC/Edwards private keys expose no
     ///    point; possession of the private half is proven separately);
-    /// 3. else `CKA_PUBLIC_KEY_INFO`.
+    /// 3. else `CKA_PUBLIC_KEY_INFO`;
+    /// 4. else the single certificate under the locator (an imported key whose importer wrote only
+    ///    the certificate beside it: a PIV-style slot, a PKCS #12 import). It stands in like a
+    ///    public key object, no more trusted: a binding proves the private key is its key.
     ///
     /// Whenever `CKA_PUBLIC_KEY_INFO` is present it must agree with the material: modules may let
     /// it be set without checking (`SoftHSM`, kryoptic), so it is never trusted on its own.
     ///
     /// # Errors
     ///
-    /// `NotFound` or `Ambiguous` when no single public key object stands in for missing material;
-    /// `Conflict` when `CKA_PUBLIC_KEY_INFO` disagrees with the material; whatever reading or
-    /// re-encoding the key refuses.
+    /// `NotFound` or `Ambiguous` when no single public key object or certificate stands in for
+    /// missing material; `Conflict` when `CKA_PUBLIC_KEY_INFO` disagrees with the material, or the
+    /// certificate is not one; whatever reading or re-encoding the key refuses.
     pub fn spki(&self, h: ObjectHandle, loc: &Locator) -> Result<Vec<u8>> {
         let spki = match self.material_spki(h)? {
             Some(spki) => spki,
@@ -96,13 +99,66 @@ impl Token {
                 }
                 [] => match self.public_key_info(h) {
                     Some(spki) => spki?,
-                    None => return Err(KmError::NotFound("no public key object under the locator".into())),
+                    None => self.certificate_spki(loc)?,
                 },
                 _ => return Err(KmError::Ambiguous("several public key objects share the locator".into())),
             },
         };
         self.cross_check(h, &spki)?;
+        self.check_kind(h, &spki)?;
         Ok(spki)
+    }
+
+    /// The public key [`Self::spki`] found must be of the key's own type and curve. Its own
+    /// material always is; a stand-in (a public key object, a certificate) need not be, and under
+    /// `token-asserted` nothing else would stop another key's from naming it.
+    fn check_kind(&self, h: ObjectHandle, spki: &[u8]) -> Result<()> {
+        let own = match self.attr(h, AttributeType::KeyType)? {
+            Some(Attribute::KeyType(KeyType::RSA)) => Some(None),
+            Some(Attribute::KeyType(KeyType::EC | KeyType::EC_EDWARDS)) => {
+                match self.attr(h, AttributeType::EcParams)? {
+                    Some(Attribute::EcParams(p)) => Curve::from_params(&p).map(Some),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        // Nothing of its own to compare (an unreadable type or unknown curve): reading the
+        // stand-in's key already refused what cakeys cannot use.
+        let Some(own) = own else { return Ok(()) };
+        let found = id::spki_curve(spki)?;
+        if found == own {
+            return Ok(());
+        }
+        let name = |c: Option<Curve>| c.map_or("RSA", Curve::name);
+        Err(KmError::Conflict(format!(
+            "token '{}': the public key found for the private key is {} ({}), but the private key is {}",
+            self.name,
+            name(found),
+            id::sri(spki),
+            name(own)
+        )))
+    }
+
+    /// The public key of the single certificate under the locator: the last stand-in [`Self::spki`]
+    /// takes for a private key that exposes no public key.
+    fn certificate_spki(&self, loc: &Locator) -> Result<Vec<u8>> {
+        match self.find(ObjectClass::CERTIFICATE, loc)?.as_slice() {
+            [c] => match self.attr(*c, AttributeType::Value)? {
+                Some(Attribute::Value(der)) => id::cert_spki(&der),
+                _ => Err(KmError::NotFound("the certificate under the locator has no readable CKA_VALUE".into())),
+            },
+            [] => Err(KmError::NotFound(
+                "the private key exposes no public key, and no public key object, CKA_PUBLIC_KEY_INFO or \
+                 certificate under the locator holds it; write its public key object or certificate beside it"
+                    .into(),
+            )),
+            _ => Err(KmError::Ambiguous(
+                "no public key object, and several certificates share the locator: which holds the key's public \
+                 half is unclear"
+                    .into(),
+            )),
+        }
     }
 
     /// Consumers may select a key's public half by the locator alone (`pkcs11:object=…;type=public`):

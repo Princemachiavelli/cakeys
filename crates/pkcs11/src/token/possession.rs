@@ -69,19 +69,9 @@ impl Token {
         msg: &[u8],
         per_use_pin: bool,
     ) -> Result<()> {
-        // The key's own CKA_ALLOWED_MECHANISMS narrows the choice where it can be read (absent or
-        // unreadable, it does not). A proof records only its binding, never the mechanism that
-        // signed, so choosing per run changes nothing the lock pins.
-        let allowed = self.allowed_mechanisms(h).ok().flatten();
-        let permits = |m: MechanismType| allowed.as_ref().is_none_or(|a| a.contains(&m));
+        let permits = self.proof_permits(h);
         let usable = |m: MechanismType| self.has(m) && permits(m);
-        let none_allowed = |ms: &[MechanismType]| {
-            KmError::Unsupported(format!(
-                "token '{}': the key's CKA_ALLOWED_MECHANISMS allows none of {} for a proof of possession",
-                self.name,
-                ms.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
-            ))
-        };
+        let none_allowed = |ms: &[MechanismType]| self.none_allowed(ms);
         let (mech, data) = match key_type_of(object)? {
             KeyType::EC => {
                 let hash = ecdsa_hash(object)?;
@@ -184,6 +174,9 @@ impl Token {
     /// an extractable secret (`derive.sealed = false`: ykcs11 \[src\]), proves by
     /// [`Self::prove_ecdh_extractable`] instead.
     fn prove_ecdh(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
+        if !self.proof_permits(h)(MechanismType::ECDH1_DERIVE) {
+            return Err(self.none_allowed(&[MechanismType::ECDH1_DERIVE]));
+        }
         let ch = pop::ecdh_challenge(spki, msg)?;
         let sealed = self.profiles.module.as_ref().and_then(|p| p.derive.sealed) != Some(false);
         if !sealed || !self.has(MechanismType::SHA256_HMAC) {
@@ -293,23 +286,27 @@ impl Token {
         }
     }
 
-    /// `pop-decrypt`: the host encrypts the challenge to the public key with RSA-OAEP; the token
-    /// decrypts it with the private key. The plaintext matches only if the token's private key is
-    /// the one `spki` names.
+    /// `pop-decrypt`: the host encrypts the challenge to the public key with RSA-OAEP, or with
+    /// PKCS #1 v1.5 where the token or the key's allowed mechanisms offer only `CKM_RSA_PKCS`; the
+    /// token decrypts it with the private key. The plaintext matches only if the token's private
+    /// key is the one `spki` names.
     fn prove_decrypt(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
-        let cipher = pop::oaep_challenge(spki, msg)?;
-        let plain = self
-            .session
-            .decrypt(
-                &Mechanism::RsaPkcsOaep(PkcsOaepParams::new(
-                    MechanismType::SHA1,
-                    PkcsMgfType::MGF1_SHA1,
-                    PkcsOaepSource::empty(),
-                )),
-                h,
-                &cipher,
-            )
-            .map_err(self.proof_failed("C_Decrypt", "decrypt", "CKA_DECRYPT"))?;
+        let permits = self.proof_permits(h);
+        let usable = |m: MechanismType| self.has(m) && permits(m);
+        let (oaep, v15) = (MechanismType::RSA_PKCS_OAEP, MechanismType::RSA_PKCS);
+        let (mech, cipher) = if usable(oaep) || (permits(oaep) && !usable(v15)) {
+            let params = PkcsOaepParams::new(MechanismType::SHA1, PkcsMgfType::MGF1_SHA1, PkcsOaepSource::empty());
+            (Mechanism::RsaPkcsOaep(params), pop::oaep_challenge(spki, msg)?)
+        } else if permits(v15) {
+            (Mechanism::RsaPkcs, pop::rsa_encrypt(spki, pop::RsaPadding::Pkcs1v15, msg)?)
+        } else {
+            return Err(self.none_allowed(&[oaep, v15]));
+        };
+        let plain = self.session.decrypt(&mech, h, &cipher).map_err(self.proof_failed(
+            "C_Decrypt",
+            "decrypt",
+            "CKA_DECRYPT",
+        ))?;
         if !pop::ct_eq(msg, &plain) {
             return Err(KmError::Conflict(format!(
                 "proof of possession failed: the private key did not decrypt for the public key {}",
@@ -324,6 +321,9 @@ impl Token {
     /// agree only if the token's private key is the one `spki` names; no plaintext leaves the
     /// token, so a transport key proves possession without `CKA_DECRYPT`.
     fn prove_unwrap(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
+        if !self.proof_permits(h)(MechanismType::RSA_PKCS_OAEP) {
+            return Err(self.none_allowed(&[MechanismType::RSA_PKCS_OAEP]));
+        }
         let ch = pop::unwrap_challenge(spki, msg)?;
         let mech = Mechanism::RsaPkcsOaep(PkcsOaepParams::new(
             MechanismType::SHA1,
@@ -363,6 +363,23 @@ impl Token {
             )));
         }
         Ok(())
+    }
+
+    /// Whether the private key's own `CKA_ALLOWED_MECHANISMS` lets a proof use a mechanism. It
+    /// narrows the choice where it can be read (absent or unreadable, it does not). A proof records
+    /// only its binding, never the mechanism, so choosing per run changes nothing the lock pins.
+    fn proof_permits(&self, h: ObjectHandle) -> impl Fn(MechanismType) -> bool {
+        let allowed = self.allowed_mechanisms(h).ok().flatten();
+        move |m| allowed.as_ref().is_none_or(|a| a.contains(&m))
+    }
+
+    /// A proof refused because the key's `CKA_ALLOWED_MECHANISMS` allows none of `ms`.
+    fn none_allowed(&self, ms: &[MechanismType]) -> KmError {
+        KmError::Unsupported(format!(
+            "token '{}': the key's CKA_ALLOWED_MECHANISMS allows none of {} for a proof of possession",
+            self.name,
+            ms.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+        ))
     }
 
     /// What this token offers a proof of possession ([`proof_refusal`]): its usable mechanisms,
@@ -490,7 +507,8 @@ fn ecdsa_hash(object: &ObjectCfg) -> Result<pop::EcdsaHash> {
 /// ([`Token::prove_binding`]) and camigrate's planner check, so a plan never promises a proof the
 /// target then refuses. An ECDSA proof prefers the curve's hashed mechanism and falls back to
 /// raw `CKM_ECDSA` over a host-side digest; an RSA proof prefers `CKM_SHA256_RSA_PKCS` and falls
-/// back to raw `CKM_RSA_PKCS` over the host's `DigestInfo`.
+/// back to raw `CKM_RSA_PKCS` over the host's `DigestInfo`; a decryption proof prefers OAEP and
+/// falls back to PKCS #1 v1.5.
 ///
 /// # Errors
 ///
@@ -512,7 +530,7 @@ fn proof_mechanisms(object: &ObjectCfg, binding: Binding) -> Result<Vec<Vec<Mech
             kt => return Err(KmError::Unsupported(format!("proof of possession for {kt}"))),
         },
         Binding::PopEcdh => vec![vec![MechanismType::ECDH1_DERIVE]],
-        Binding::PopDecrypt => vec![vec![MechanismType::RSA_PKCS_OAEP]],
+        Binding::PopDecrypt => vec![vec![MechanismType::RSA_PKCS_OAEP, MechanismType::RSA_PKCS]],
         Binding::PopUnwrap => vec![vec![MechanismType::RSA_PKCS_OAEP], vec![MechanismType::SHA256_HMAC]],
     })
 }
