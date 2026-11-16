@@ -130,11 +130,16 @@ enum Cmd {
         #[command(flatten)]
         how: MoveArgs,
     },
-    /// Write the transport file for a transport key (docs/CAMIGRATE.md D3): an RSA private key that may
-    /// unwrap, realised and locked on the target. Exports to this token wrap to it. With
-    /// --trusted, instead make the source's SO trust it (D2, `enforced`).
+    /// Write the transport file for a token's transport key (docs/CAMIGRATE.md D3): an RSA private
+    /// key that may unwrap, realised and locked on the target. Exports to this token wrap to it.
+    /// With --trusted, instead make the source's SO trust it (D2, `enforced`).
     Transport {
-        spec: String,
+        /// The transport key's object; default: the token's `migrate.transportWith`.
+        object: Option<String>,
+        /// The transport key's spec, where the object has several on --token.
+        #[arg(long)]
+        spec: Option<String>,
+        /// The target token the key is on.
         #[arg(long)]
         token: String,
         /// Where to write it; default: stdout.
@@ -259,9 +264,13 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
             run.plan_moves(object.as_deref().as_slice(), from, &Dest::Token(to), how, false, notes)
         }
         Cmd::Migrate { object, from, to, spec, how } => run.migrate(object.as_deref(), from, to, spec, how, notes),
-        Cmd::Transport { spec, token, trusted: Some(source), .. } => run.trust(spec, token, source, notes),
-        Cmd::Transport { spec, token, out, trusted: None } => {
-            let t = Target::new(&run.cfg, spec, token)?;
+        Cmd::Transport { object, spec, token, trusted: Some(source), .. } => {
+            let spec = transport_named(&run.cfg, object.as_deref(), spec.as_deref(), token)?;
+            run.trust(&spec, token, source, notes)
+        }
+        Cmd::Transport { object, spec, token, out, trusted: None } => {
+            let spec = transport_named(&run.cfg, object.as_deref(), spec.as_deref(), token)?;
+            let t = Target::new(&run.cfg, &spec, token)?;
             let tok = open_token(&run.cfg, &run.modules, registry, token, Access::Read, notes)?;
             let text = tokens::transport(&t, &tok, &run.lock, notes)?.to_toml()?;
             match out {
@@ -274,6 +283,27 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+/// The spec of the transport key `transport` names on `token`: the address's pair
+/// (`[<object>] [--spec]`, as cakeys' verbs take it), else the token's `migrate.transportWith`.
+///
+/// # Errors
+///
+/// `Validation` (17) for a name keys.toml lacks, an address no pair on `token` matches, or a
+/// token that names no transport key when the address is left out; `Ambiguous` (12) for an
+/// object with several specs there.
+fn transport_named(cfg: &Config, object: Option<&str>, spec: Option<&str>, token: &str) -> cakeys_core::Result<String> {
+    if object.is_some() || spec.is_some() {
+        return Ok(cfg.address(object, spec, Some(token))?.0);
+    }
+    let t = cfg.tokens.get(token).ok_or_else(|| KmError::Validation(format!("unknown token '{token}'")))?;
+    t.migrate.transport_with.clone().ok_or_else(|| {
+        KmError::Validation(format!(
+            "no transport key is named for '{token}': set transportWith in [tokens.{token}.migrate], or name its \
+             object or --spec"
+        ))
+    })
 }
 
 /// What a verb works with once the arguments are parsed: keys.toml, the lock, and how tokens

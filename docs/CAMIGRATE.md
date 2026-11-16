@@ -13,8 +13,8 @@ module's source, **[todo]** still to verify.
 ## Command line
 
 ```console
-$ camigrate transport <spec> --token <target> [--out <file>]       # the transport key's public half, for offline exports
-$ camigrate transport <spec> --token <target> --trusted <source>   # the source's SO trusts it (enforced)
+$ camigrate transport [<object>] [--spec <s>] --token <target> [--out <file>]  # the transport key's public half, for offline exports
+$ camigrate transport [<object>] [--spec <s>] --token <target> --trusted <source>  # the source's SO trusts it (enforced)
 $ camigrate export [<object> ...] --token <source> (--target <t> | --transport <file>) \
     [--transport-key <spec>] --out <bundle> [--dry-run [--json]] [--allow-host-plaintext]
 $ camigrate export <object> --token <source> --to-file pkcs8|pkcs12 --out <file> \
@@ -35,6 +35,9 @@ $ camigrate migrate [<object> ...] --from <a> --to <b> [--spec <s> ...] [--trans
 - `--spec` names the spec to realise an object under where its object has several on the
   target. One that selects nothing (an unknown spec, or one of an object that is not moving
   there) is refused (17).
+- `transport` names its key as cakeys' verbs name an object (CAKEYS.md): the object, narrowed
+  by `--spec`; left out, the token's `migrate.transportWith`. A name keys.toml lacks, or a token
+  naming no transport key, is 17.
 - A bundle of public objects alone needs no transport key and names none.
 - A key file holds one key, and a PKCS#12 the certificate the lock pairs with it on the source:
   a plan of several keys for a file, or of a PKCS#12 with no paired certificate, is blocked.

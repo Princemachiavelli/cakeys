@@ -148,7 +148,7 @@ fn transport_files_carry_the_locked_identity() {
     assert_eq!(code(&e.cakeys(kry, &["create", "--spec", "kek", "--token", "kryoptic"])), 0);
     let file = e.dir.join("kryoptic.transport.toml");
     let path = file.to_str().unwrap();
-    let o = e.km(kry, &["transport", "kek", "--token", "kryoptic", "--out", path]);
+    let o = e.km(kry, &["transport", "--spec", "kek", "--token", "kryoptic", "--out", path]);
     assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
     assert!(String::from_utf8_lossy(&o.stderr).contains("also decrypts"));
     let t: toml::Table = toml::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
@@ -158,7 +158,7 @@ fn transport_files_carry_the_locked_identity() {
     assert_eq!(t["rfc7093m4"], lock["objects"]["kek"]["ids"]["rfc7093m4"], "the locked identity");
     // Only an RSA private key can be a transport key.
     assert_eq!(code(&e.cakeys(kry, &["create", "--spec", "ec-k", "--token", "kryoptic"])), 0);
-    assert_eq!(code(&e.km(kry, &["transport", "ec-k", "--token", "kryoptic"])), 17);
+    assert_eq!(code(&e.km(kry, &["transport", "--spec", "ec-k", "--token", "kryoptic"])), 17);
     // A source plans from the file alone.
     assert_eq!(code(&e.cakeys(soft, &["create", "--spec", "movable", "--token", "softhsm"])), 0);
     let o = e.km(soft, &["export", "mv", "--token", "softhsm", "--transport", path, "--dry-run", "--json"]);
@@ -758,7 +758,8 @@ fn bundles_are_checked_against_the_lock() {
     assert!(empty("xb-sk1"), "left behind");
     // A transport file for a key the lock does not pin: the plan refuses to wrap to it.
     let rogue = e.dir.join("rogue.transport.toml");
-    let file = e.km(kry, &["transport", "tk-kryoptic", "--token", "kryoptic", "--out", rogue.to_str().unwrap()]);
+    let file =
+        e.km(kry, &["transport", "--spec", "tk-kryoptic", "--token", "kryoptic", "--out", rogue.to_str().unwrap()]);
     assert_eq!(code(&file), 0, "{}", stderr(&file));
     let t = std::fs::read_to_string(&rogue).unwrap().replace("object = \"tk-kryoptic\"", "object = \"ek2\"");
     std::fs::write(&rogue, t).unwrap();
@@ -1032,7 +1033,7 @@ fn refusals_around_the_plans_and_the_offline_export() {
             "import of a key file is an admin operation",
         ),
         (
-            &["transport", "tk-kryoptic", "--token", "kryoptic", "--trusted", "softhsm"],
+            &["transport", "--spec", "tk-kryoptic", "--token", "kryoptic", "--trusted", "softhsm"],
             "transport --trusted is an admin",
         ),
         (&["migrate", "crt", "--from", "softhsm", "--to", "kryoptic"], "cannot write the lock"),
@@ -1069,10 +1070,24 @@ fn refusals_around_the_plans_and_the_offline_export() {
     // Offline: the transport file on stdout is the one `--out` writes; an export sealed to it
     // needs no target, and the target imports and verifies the bundle.
     let transport = path("tk.transport.toml");
-    let o = e.km(kry, &["transport", "tk-kryoptic", "--token", "kryoptic"]);
+    let o = e.km(kry, &["transport", "--spec", "tk-kryoptic", "--token", "kryoptic"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    assert_eq!(code(&e.km(kry, &["transport", "tk-kryoptic", "--token", "kryoptic", "--out", &transport])), 0);
+    assert_eq!(
+        code(&e.km(kry, &["transport", "--spec", "tk-kryoptic", "--token", "kryoptic", "--out", &transport])),
+        0
+    );
     assert_eq!(stdout(&o).trim_end(), std::fs::read_to_string(&transport).unwrap().trim_end());
+    // Named as cakeys' verbs name it, by its object, or not at all: the token's transportWith.
+    for args in [&["transport", "tk-kryoptic", "--token", "kryoptic"][..], &["transport", "--token", "kryoptic"]] {
+        let same = e.km(kry, args);
+        assert_eq!((code(&same), stdout(&same)), (0, stdout(&o)), "{args:?}: {}", stderr(&same));
+    }
+    refused(&e.km(kry, &["transport", "--token", "softhsm-nope"]), 17, "unknown token 'softhsm-nope'");
+    refused(
+        &e.km(kry, &["transport", "ek1", "--spec", "tk-kryoptic", "--token", "kryoptic"]),
+        17,
+        "realises 'tk-kryoptic'",
+    );
     let sealed = path("sk2.bundle.toml");
     let o = e.km(soft, &["export", "sk2", "--token", "softhsm", "--transport", &transport, "--out", &sealed]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
@@ -1210,7 +1225,7 @@ fn transport_keys_are_held_to_what_the_lock_records() {
         assert_eq!(code(o), want, "{what}: {}", stderr(o));
         assert!(stderr(o).contains(what) || stdout(o).contains(what), "{what}: {} {}", stdout(o), stderr(o));
     };
-    let transport = |r: &Ref, spec: &str, token: &str| e.km(r, &["transport", spec, "--token", token]);
+    let transport = |r: &Ref, spec: &str, token: &str| e.km(r, &["transport", "--spec", spec, "--token", token]);
     refused(&transport(soft, "moves", "softhsm"), 17, "a transport key is an RSA private key");
     refused(&transport(kry, "signs", "kryoptic"), 14, "a transport key must allow CKA_UNWRAP");
     refused(&transport(kry, "leaves", "kryoptic"), 14, "a transport key must never leave the token");
@@ -1273,7 +1288,7 @@ fn exports_to_a_token_need_only_the_lock() {
         e.km(soft, &["export", "mv", "--token", "softhsm", "--target", "kryoptic", "--out", early.to_str().unwrap()]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(stderr(&o).contains("the lock records no public key for it yet"), "{}", stderr(&o));
-    let o = e.km(kry, &["transport", "tk-kryoptic", "--token", "kryoptic", "--trusted", "softhsm"]);
+    let o = e.km(kry, &["transport", "--spec", "tk-kryoptic", "--token", "kryoptic", "--trusted", "softhsm"]);
     assert_eq!(code(&o), 14, "{}", stderr(&o));
     assert!(stderr(&o).contains("records no public key for transport key"), "{}", stderr(&o));
     assert_eq!(code(&e.cakeys(kry, &["realise", "--spec", "tk-kryoptic", "--token", "kryoptic"])), 0);
@@ -1508,7 +1523,7 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
     assert_eq!(p["plans"][0]["ready"].as_bool(), Some(false), "{p}");
     assert!(p["plans"][0]["reasons"][0].as_str().unwrap().contains("--trusted softhsm"), "{p}");
     // The SO trusts the transport key, from the public key the lock records; again, nothing to do.
-    let trust = ["transport", "tk-kryoptic", "--token", "kryoptic", "--trusted", "softhsm"];
+    let trust = ["transport", "--spec", "tk-kryoptic", "--token", "kryoptic", "--trusted", "softhsm"];
     let o = e.km(soft, &trust);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     // The trusted copy is the only trusted object there: the export has nothing to warn of.

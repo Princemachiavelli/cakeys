@@ -132,6 +132,10 @@ behaviour or reach outside PKCS#11:
   `create` (`Token::create_declared`; ykcs11 refuses a locator that is not a PIV slot first),
   `destroy` (`Token::destroy_plain`; ykcs11 refuses a key it would not erase), `import_plaintext`
   (tpm2-pkcs11's `tpm2_ptool` import) and `attestation`/`attest` (DESIGN §3.7).
+- **Fallbacks every module gets** (not one module's quirk, so in the defaults): a public key the
+  module refuses with cakeys' own `CKA_PRIVATE = false` default is made once more without it
+  (`with_public_default_dropped`; AWS `CloudHSM`), and an object already gone when its turn
+  comes in one `destroy` is destroyed (kmsp11 removes a public half with its private one).
 - **Beside them:** `name`, `matches(&ModuleInfo)`, `hint` (error advice), `check_options` (the
   token's `[tokens.<t>.options]`; the default refuses any), and two facts read before acting:
   `manages_as_so` (create and destroy only in an SO session, ykcs11; `Token::managing` runs a

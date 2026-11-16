@@ -80,23 +80,18 @@ impl Token {
         let private_declared =
             spec.attributes.contains_key("CKA_PRIVATE") || spec.public_attributes.contains_key("CKA_PRIVATE");
         // A key pair, once more without the public half's default `CKA_PRIVATE = false` when the
-        // module refuses it ([`retry_without_public_private`]).
-        let pair = |mech: &Mechanism, public: &[Attribute], private: &[Attribute]| match self
-            .session
-            .generate_key_pair(mech, public, private)
-        {
-            Ok(_) => Ok(None),
-            Err(e) if retry_without_public_private(&e, private_declared) => {
-                let without: Vec<_> = public.iter().filter(|a| **a != Attribute::Private(false)).cloned().collect();
-                self.session.generate_key_pair(mech, &without, private).map_err(|_| e).map(|_| {
-                    Some(format!(
-                        "{}: the module refuses a public key with CKA_PRIVATE = false; generated \
-                         without it, so its public key is private (reading it needs a login)",
-                        self.name
-                    ))
+        // module refuses it ([`with_public_default_dropped`]).
+        let pair = |mech: &Mechanism, public: &[Attribute], private: &[Attribute]| {
+            with_public_default_dropped(public, private_declared, |p| self.session.generate_key_pair(mech, p, private))
+                .map(|(_, dropped)| {
+                    dropped.then(|| {
+                        format!(
+                            "{}: the module refuses a public key with CKA_PRIVATE = false; generated \
+                             without it, so its public key is private (reading it needs a login)",
+                            self.name
+                        )
+                    })
                 })
-            }
-            Err(e) => Err(e),
         };
         // Defaults for the public half of a pair, left out when the declared attributes set the
         // same type (the template may not carry a type twice).
@@ -240,9 +235,10 @@ impl Token {
             for (i, h) in handles.iter().enumerate() {
                 match self.session.destroy_object(*h) {
                     Ok(()) => {}
-                    // Gone with an object destroyed before it: libkmsp11 removes a key's public
-                    // half with its private one (one Cloud KMS version) [run]. Deleting what is
-                    // already gone is success.
+                    // Gone with an object destroyed before it in this call: deleting what is
+                    // already gone is success, on any module (libkmsp11 removes a key's public
+                    // half with its private one, one Cloud KMS version [run]). The first handle
+                    // was just identified, so its refusal is never taken for gone.
                     Err(CkError::Pkcs11(RvError::ObjectHandleInvalid, _)) if i > 0 => {}
                     Err(e) => return Err(ck("C_DestroyObject")(e)),
                 }
@@ -252,12 +248,35 @@ impl Token {
     }
 }
 
-/// Whether a refused key pair is generated once more without the public half's
-/// `CKA_PRIVATE = false`: only cakeys' own default (the spec did not declare `CKA_PRIVATE`), and
-/// only when the module called a value invalid. AWS `CloudHSM` makes every public key private
-/// \[run\] (docs/CAPROBE.md); a spec that asks for `CKA_PRIVATE = false` keeps the refusal.
-#[must_use]
-pub fn retry_without_public_private(refusal: &CkError, declared: bool) -> bool {
+/// Make a public key object, alone or as a pair's half, from the template `public`; where the
+/// module calls a value invalid and the spec did not declare `CKA_PRIVATE` (`declared`), once
+/// more without cakeys' own `CKA_PRIVATE = false` default. A fallback for every module, not one
+/// module's quirk: the strong form first, then the one the module takes (AWS `CloudHSM` makes
+/// every public key private \[run\], docs/CAPROBE.md). A spec that asks for
+/// `CKA_PRIVATE = false` keeps the refusal, and so does a second refusal: the first is the error.
+/// Returns what `make` made and whether the default was dropped.
+///
+/// # Errors
+///
+/// `make`'s first refusal.
+pub fn with_public_default_dropped<T>(
+    public: &[Attribute],
+    declared: bool,
+    make: impl Fn(&[Attribute]) -> std::result::Result<T, CkError>,
+) -> std::result::Result<(T, bool), CkError> {
+    match make(public) {
+        Ok(object) => Ok((object, false)),
+        Err(e) if retry_without_public_private(&e, declared) => {
+            let without: Vec<_> = public.iter().filter(|a| **a != Attribute::Private(false)).cloned().collect();
+            make(&without).map(|object| (object, true)).map_err(|_| e)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether a refusal is retried without the public default ([`with_public_default_dropped`]):
+/// only cakeys' own default, and only when the module called a value invalid.
+fn retry_without_public_private(refusal: &CkError, declared: bool) -> bool {
     !declared && matches!(refusal, CkError::Pkcs11(RvError::AttributeValueInvalid, _))
 }
 
@@ -273,5 +292,30 @@ mod tests {
         assert!(retry_without_public_private(&invalid, false));
         assert!(!retry_without_public_private(&invalid, true), "a declared CKA_PRIVATE is the spec's");
         assert!(!retry_without_public_private(&other, false));
+    }
+
+    /// The default is dropped once, only on the refusal it answers; a second refusal reports
+    /// the first.
+    #[test]
+    fn the_public_default_is_dropped_once_and_only_when_refused() {
+        let public = [Attribute::Verify(true), Attribute::Private(false)];
+        let invalid = || CkError::Pkcs11(RvError::AttributeValueInvalid, Function::CreateObject);
+        let refuses_default =
+            |t: &[Attribute]| if t.contains(&Attribute::Private(false)) { Err(invalid()) } else { Ok(t.len()) };
+        assert_eq!(with_public_default_dropped(&public, false, refuses_default).unwrap(), (1, true));
+        assert!(with_public_default_dropped(&public, true, refuses_default).is_err(), "declared: kept");
+        assert_eq!(with_public_default_dropped(&public, false, |t: &[Attribute]| Ok(t.len())).unwrap(), (2, false));
+        let calls = std::cell::Cell::new(0);
+        let always = |_: &[Attribute]| -> std::result::Result<usize, CkError> {
+            calls.set(calls.get() + 1);
+            Err(if calls.get() == 1 {
+                invalid()
+            } else {
+                CkError::Pkcs11(RvError::DeviceError, Function::CreateObject)
+            })
+        };
+        let e = with_public_default_dropped(&public, false, always).unwrap_err();
+        assert!(matches!(e, CkError::Pkcs11(RvError::AttributeValueInvalid, _)), "the first refusal: {e}");
+        assert_eq!(calls.get(), 2);
     }
 }

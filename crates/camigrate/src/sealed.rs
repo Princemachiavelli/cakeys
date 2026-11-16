@@ -18,7 +18,7 @@ use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::Token;
 use cakeys_pkcs11::ops::{self, Notes, Target};
-use cakeys_pkcs11::token::{class_of, key_type_of, locator_attrs, retry_without_public_private};
+use cakeys_pkcs11::token::{class_of, key_type_of, locator_attrs, with_public_default_dropped};
 use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsOaepParams, PkcsOaepSource};
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, KeyType, ObjectClass, ObjectHandle};
@@ -596,17 +596,12 @@ pub(crate) fn create_public_half(dst: &Target, to: &Token, spki: &[u8]) -> Resul
     if !declared("CKA_PRIVATE") {
         t.push(Attribute::Private(false));
     }
-    // As `generate`: a module refusing cakeys' own CKA_PRIVATE = false default (AWS CloudHSM
-    // makes every public key private [run]) gets the half without it.
+    // As `generate`: a module refusing cakeys' own CKA_PRIVATE = false default gets the half
+    // without it.
     let create = || {
-        match to.raw().create_object(&t) {
-            Err(e) if retry_without_public_private(&e, declared("CKA_PRIVATE")) => {
-                let without: Vec<_> = t.iter().filter(|a| **a != Attribute::Private(false)).cloned().collect();
-                to.raw().create_object(&without).map_err(|_| e)
-            }
-            made => made,
-        }
-        .map_err(|e| to.unsupported(format!("{dst}: the public half: C_CreateObject: {e}")))
+        with_public_default_dropped(&t, declared("CKA_PRIVATE"), |p| to.raw().create_object(p))
+            .map(|(made, _)| made)
+            .map_err(|e| to.unsupported(format!("{dst}: the public half: C_CreateObject: {e}")))
     };
     to.managing("creating the public half", create)
 }
