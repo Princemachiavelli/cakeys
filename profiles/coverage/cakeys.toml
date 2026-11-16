@@ -5,10 +5,10 @@
 baseline = "pkcs11-3.2"
 
 [summary]
-gap = 79
+gap = 78
 out-of-scope = 831
 profile = 10
-used = 177
+used = 178
 
 [functions]
 C_AsyncComplete = "out-of-scope"
@@ -912,7 +912,7 @@ CKR_KEY_NEEDED = "out-of-scope"
 CKR_KEY_NOT_NEEDED = "out-of-scope"
 CKR_KEY_NOT_WRAPPABLE = "out-of-scope"
 CKR_KEY_SIZE_RANGE = "out-of-scope"
-CKR_KEY_TYPE_INCONSISTENT = "gap"
+CKR_KEY_TYPE_INCONSISTENT = "used"
 CKR_KEY_UNEXTRACTABLE = "out-of-scope"
 CKR_LIBRARY_LOAD_FAILED = "out-of-scope"
 CKR_MECHANISM_INVALID = "used"

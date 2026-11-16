@@ -846,12 +846,6 @@ reason = "matched by name (crates/pkcs11/src/token/generate.rs), met by no test"
 
 [[rule]]
 table = "return-values"
-match = "CKR_KEY_TYPE_INCONSISTENT"
-status = "gap"
-reason = "matched by name (crates/pkcs11/src/token/possession.rs), met by no test"
-
-[[rule]]
-table = "return-values"
 match = "CKR_KEY_FUNCTION_NOT_PERMITTED"
 status = "gap"
 reason = "matched by name (crates/pkcs11/src/token/possession.rs), met by no test"
