@@ -61,6 +61,8 @@ fn the_lock_resolves_a_token_keys_toml_does_not_name() {
 /// refused (15); a provider with no module profile (`generic`) leaves the generation undecided,
 /// a note; a family whose profiles need the module's version to choose (`tpm2-pkcs11`) is
 /// skipped with why; a layer the stack already holds (the binding layer) is not added twice.
+/// A build whose cryptoki maps the SHA-2 HMAC key types wrongly refuses the HMAC key by its
+/// type before any profile is asked.
 #[test]
 fn the_gate_refuses_what_it_can_decide_and_says_what_it_cannot() {
     let w = Workdir::new("validate-gate-cases");
@@ -95,8 +97,13 @@ fn the_gate_refuses_what_it_can_decide_and_says_what_it_cannot() {
     let out = w.km(&["validate"]);
     let err = stderr(&out);
     assert_eq!(code(&out), 15, "{err}");
+    let hmac = if cakeys_pkcs11::binding::patched() {
+        "needs (CKM_SHA384_KEY_GEN: no — softhsm/2.7: not advertised)"
+    } else {
+        "CKK_SHA384_HMAC: this build's cryptoki maps it to CKK_SHA256_HMAC"
+    };
     for line in [
-        "needs (CKM_SHA384_KEY_GEN: no — softhsm/2.7: not advertised)",
+        hmac,
         "opts into attestation, but provider 'softhsm' attests nothing on this module",
         "opts into attestation, but provider 'ykcs11' attests only [\"CKO_PRIVATE_KEY\", \"CKO_PUBLIC_KEY\"]",
         "validate: 'gen' (spec 'p-gen') on token 'gen': the profiles do not decide",

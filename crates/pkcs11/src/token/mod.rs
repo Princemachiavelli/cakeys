@@ -816,10 +816,10 @@ pub fn key_type_of(object: &ObjectCfg) -> Result<KeyType> {
         Kt::Aes => KeyType::AES,
         Kt::Des3 => KeyType::DES3,
         Kt::Sha1Hmac => KeyType::SHA_1_HMAC,
-        Kt::Sha224Hmac => hmac_key_type(KeyType::SHA224_HMAC, 0x2e)?,
+        kt @ Kt::Sha224Hmac => hmac_key_type(kt, KeyType::SHA224_HMAC, 0x2e)?,
         Kt::Sha256Hmac => KeyType::SHA256_HMAC,
-        Kt::Sha384Hmac => hmac_key_type(KeyType::SHA384_HMAC, 0x2c)?,
-        Kt::Sha512Hmac => hmac_key_type(KeyType::SHA512_HMAC, 0x2d)?,
+        kt @ Kt::Sha384Hmac => hmac_key_type(kt, KeyType::SHA384_HMAC, 0x2c)?,
+        kt @ Kt::Sha512Hmac => hmac_key_type(kt, KeyType::SHA512_HMAC, 0x2d)?,
     })
 }
 
@@ -842,12 +842,13 @@ pub fn hmac_key_gen(kt: Kt) -> Option<Mechanism<'static>> {
 /// cryptoki 0.12.1 (and main) gives `SHA224/384/512_HMAC` the value of `CKK_SHA256_HMAC` (0x2b), so such
 /// keys could be neither created nor told apart. The Nix build patches it
 /// (nix/patches/cryptoki-hmac-key-types.patch); refuse rather than misidentify without the patch.
-fn hmac_key_type(kt: KeyType, raw: std::os::raw::c_ulong) -> Result<KeyType> {
+/// Named by core's key type `name`: cryptoki's own names the type it collides with.
+fn hmac_key_type(name: Kt, kt: KeyType, raw: std::os::raw::c_ulong) -> Result<KeyType> {
     if std::os::raw::c_ulong::from(kt) == raw {
         Ok(kt)
     } else {
         Err(KmError::Unsupported(format!(
-            "{kt}: this build's cryptoki maps it to CKK_SHA256_HMAC; build with \
+            "{name}: this build's cryptoki maps it to CKK_SHA256_HMAC; build with \
              nix/patches/cryptoki-hmac-key-types.patch applied"
         )))
     }

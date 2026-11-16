@@ -549,17 +549,21 @@ mod tests {
     }
 
     /// A side whose RFC 5649 is only `CKM_RSA_AES_KEY_WRAP` (`CloudHSM`) takes the composed method
-    /// through it, in and out: where this build names the mechanism (the `kwp` feature).
+    /// through it, in and out: where this build names the mechanism (the `kwp` feature). Without
+    /// it, a source with RFC 5649 of its own still reaches the host path, which needs its flag;
+    /// one without has no way out and says why.
     #[test]
     fn rsa_aes_key_wrap_stands_in_for_rfc_5649() {
         let ext = [("CKA_EXTRACTABLE", true)];
         for (from, to) in [(softhsm(), cloudhsm()), (cloudhsm(), softhsm()), (cloudhsm(), kryoptic())] {
             let p = plan_of(&p256(), &ext, &from, &To::Token(&to), Allow::default());
-            assert_eq!(p.ready, cfg!(feature = "kwp"), "{} -> {}: {p:?}", from.token, to.token);
-            if p.ready {
-                assert!(matches!(p.method, Some(Method::RsaOaepAesKwp(_))), "{p:?}");
-            } else {
-                assert!(p.reasons.iter().any(|r| r.contains("CKM_RSA_AES_KEY_WRAP")), "{p:?}");
+            let pair = format!("{} -> {}", from.token, to.token);
+            assert_eq!(p.ready, cfg!(feature = "kwp"), "{pair}: {p:?}");
+            assert_eq!(matches!(p.method, Some(Method::RsaOaepAesKwp(_))), p.ready, "{pair}: {p:?}");
+            if !p.ready && from.kwp() {
+                assert_eq!(p.method, Some(Method::HostPkcs8), "{pair}: {p:?}");
+            } else if !p.ready {
+                assert!(p.reasons.iter().any(|r| r.contains("CKM_RSA_AES_KEY_WRAP")), "{pair}: {p:?}");
             }
         }
     }
