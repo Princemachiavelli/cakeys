@@ -7,9 +7,9 @@
 //! manufacturer alone, flagged low-evidence (kryoptic reports 0.0 \[run\]).
 
 use crate::binding;
-use cakeys_core::config::{ModuleInfo, TokenCfg, TokenInfo};
-use cakeys_profile::{Capability, Mode, Profile, Set};
-use std::collections::BTreeSet;
+use cakeys_core::config::{ModuleInfo, Observation, TokenCfg, TokenInfo};
+use cakeys_profile::{Answer, Capability, Mode, Profile, Row, Set};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A token's resolved profiles, what [`crate::Token`] carries and every consumer reads.
 #[derive(Debug, Clone, Default)]
@@ -32,6 +32,51 @@ impl Resolved {
     #[must_use]
     pub fn module_name(&self) -> Option<&str> {
         self.module.as_ref().map(|p| p.profile.as_str())
+    }
+
+    /// Put what this deployment's token answered (`observed.capabilities`, the lock's record of
+    /// what its runs demonstrated and the probe measured) over the module profile: the token's
+    /// own answer decides before what a shipped profile says of its kind. With no module
+    /// profile, the answers stand alone (a partial profile: they say nothing of mechanisms). A
+    /// row this cakeys cannot read answers nothing.
+    pub fn with_answers(&mut self, token: &str, observed: &Observation) {
+        let rows: Vec<(Capability, Row)> = observed
+            .capabilities
+            .iter()
+            .filter_map(|(k, a)| {
+                let answer = match a.answer.as_str() {
+                    "yes" => Answer::Yes,
+                    "no" => Answer::No,
+                    _ => return None,
+                };
+                Some((Capability::parse(k).ok()?, Row { answer, evidence: a.evidence.clone(), via: a.via.clone() }))
+            })
+            .collect();
+        if rows.is_empty() {
+            return;
+        }
+        let module = self.module.get_or_insert_with(|| Profile {
+            profile: format!("{token} (as recorded)"),
+            mode: Mode::Observed,
+            partial: true,
+            requires_provider: false,
+            r#match: cakeys_profile::MatchInfo::default(),
+            advertise: Vec::new(),
+            subtract: cakeys_profile::profile::Subtract::default(),
+            add: Vec::new(),
+            capabilities: BTreeMap::new(),
+            reported: BTreeMap::new(),
+            migration: None,
+            restrict: Vec::new(),
+            notes: BTreeMap::new(),
+            manual: BTreeMap::new(),
+        });
+        self.notes.push(format!(
+            "{} answer(s) recorded for token '{token}' decide before profile {}",
+            rows.len(),
+            module.profile
+        ));
+        module.capabilities.extend(rows);
     }
 
     /// The layers' names, in order.

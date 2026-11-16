@@ -83,7 +83,7 @@ firmware = "2.7"
 "decrypt.rsa-oaep.SHA-1" = { answer = "yes" }
 "decrypt.rsa-oaep.SHA-256" = { answer = "no" }
 "decrypt.rsa-oaep.SHA-512" = { answer = "no" }
-"unwrap.template.CKA_VALUE_LEN" = { answer = "no" }
+"unwrap.template.CKA_VALUE_LEN" = { answer = "no", evidence = "CKR_ATTRIBUTE_READ_ONLY in an unwrap template" }
 "derive.ecdh.sealed" = { answer = "yes" }
 "derive.ecdh.read-only" = { answer = "yes" }
 "move.secret-unwrap" = { answer = "no" }
@@ -99,7 +99,6 @@ min-bits = 512
 max-bits = 16384
 
 [notes]
-"CKA_VALUE_LEN" = "CKR_ATTRIBUTE_READ_ONLY in an unwrap template"
 "CKM_RSA_PKCS_OAEP" = "RSA-2048 decrypt SHA-256: CKR_ARGUMENTS_BAD; RSA-2048 decrypt SHA-512: CKR_ARGUMENTS_BAD"
 "cryptoki" = "the module reports Cryptoki 3.2"
 "curve25519" = "not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN"

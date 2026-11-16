@@ -106,7 +106,7 @@ fn the_probe_records_what_a_misbehaving_module_does() {
                 .map(|n| rule(&format!("fn = \"C_DeriveKey\"\ncall = {n}\nrv = \"CKR_ATTRIBUTE_VALUE_INVALID\"")))
                 .collect(),
             &[
-                "\"derive.ecdh.sealed\" = { answer = \"no\" }",
+                "\"derive.ecdh.sealed\" = { answer = \"no\", evidence = \"a sealed (non-extractable) derived secret is refused",
                 "a sealed (non-extractable) derived secret is refused: CKR_ATTRIBUTE_VALUE_INVALID",
             ],
             "",

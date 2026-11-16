@@ -70,8 +70,8 @@ mechanisms = ["CKM_AES_KEY_GEN"]
 "decrypt.rsa-oaep.SHA-1" = { answer = "yes" }
 "decrypt.rsa-oaep.SHA-256" = { answer = "yes" }
 "decrypt.rsa-oaep.SHA-512" = { answer = "yes" }
-"derive.ecdh.sealed" = { answer = "no" }
-"derive.ecdh.read-only" = { answer = "no" }
+"derive.ecdh.sealed" = { answer = "no", evidence = "derives into a sealed secret, but HMAC with it fails: CKR_GENERAL_ERROR" }
+"derive.ecdh.read-only" = { answer = "no", evidence = "secp256r1: in a read-only session: CKR_SESSION_READ_ONLY" }
 "move.export" = { answer = "no" }
 "move.unwrap" = { answer = "no" }
 "prove.pop-decrypt.CKK_RSA.2048" = { answer = "yes" }
@@ -115,8 +115,6 @@ key-types = ["CKK_SHA_1_HMAC", "CKK_SHA224_HMAC", "CKK_SHA256_HMAC", "CKK_SHA384
 "curve25519" = "not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN"
 "curve448" = "not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN"
 "derive.destroy" = "secp256r1: the sealed derived secret cannot be destroyed: CKR_FUNCTION_FAILED"
-"derive.read-only" = "secp256r1: in a read-only session: CKR_SESSION_READ_ONLY"
-"derive.sealed" = "derives into a sealed secret, but HMAC with it fails: CKR_GENERAL_ERROR"
 "destroy" = "C_DestroyObject leaves objects behind: cakeys-probe-01"
 
 [manual."data-objects"]

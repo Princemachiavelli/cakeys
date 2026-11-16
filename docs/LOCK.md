@@ -209,7 +209,21 @@ cryptoki = "3.2"
 model = "SoftHSM v2"
 serial = "b19136a55523f406"
 firmware = "2.7"
+
+# What this token answered about cakeys' operations, in a capability profile's row form
+# (docs/CAPROBE.md): the proof each realisation gave, the generation each `create` made. Not
+# part of the entry's key, and merged as runs record more, so the entry stays one.
+[observations."sha256-…".capabilities]
+"prove.pop-sign.CKK_EC.secp256r1" = { answer = "yes" }
+"generate.CKK_EC.secp256r1" = { answer = "yes" }
 ```
+
+The `capabilities` are this deployment's own answers: `validate`, `create`'s gate and
+camigrate's planner read them before the module profile of the token's kind (they decide, it
+is a prior), and a recorded *no* refuses there as a profile's does. They are observations
+(DESIGN §3.5): they never change a verdict of `check`, `verify` or `realise`, and a run that
+records none leaves them as they were. Only what a run demonstrated is recorded, so today they
+only ever say *yes*.
 
 An entry is the one lock table that takes keys this cakeys does not know (a newer version's):
 they load with a warning and are kept when the lock is rewritten. An unknown key anywhere else is

@@ -51,7 +51,9 @@ pub(crate) fn side_from_lock(
     // about exactly that (the forwarder, the binding layer), like an open would.
     let (module, token_info) = (observed.module.as_ref()?, observed.token.as_ref()?);
     let cfg = TokenCfg { provider: Some(provider.clone()), ..lockless_token_cfg() };
-    let resolved = resolution::resolve(&cfg, module, Some(token_info), &provider).ok()?;
+    let mut resolved = resolution::resolve(&cfg, module, Some(token_info), &provider).ok()?;
+    // What this token answered decides before the profile of its kind.
+    resolved.with_answers(token, observed);
     warn_hidden(token, &resolved, notes);
     if resolved.module.is_none() {
         let name = registry.named(&provider)?.name();

@@ -345,6 +345,18 @@ impl Draft {
                 row.evidence = Some(why);
             }
         }
+        // What the probe noted of a row it wrote is that row's evidence.
+        for (note, c) in [
+            ("derive.sealed", Capability::DeriveSealed),
+            ("derive.read-only", Capability::DeriveReadOnly),
+            ("CKA_VALUE_LEN", Capability::UnwrapTemplate("CKA_VALUE_LEN".into())),
+        ] {
+            if let Some(row) = p.capabilities.get_mut(&c)
+                && let Some(why) = p.notes.remove(note)
+            {
+                row.evidence = Some(why);
+            }
+        }
         p
     }
 }

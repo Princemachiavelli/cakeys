@@ -2,7 +2,9 @@
 
 use crate::provider::{Provider, Registry};
 use crate::token::{self as hal, Token};
-use cakeys_core::config::{AttestationRecord, Config, KeyOrigin, Lock, Mode, Observation, Observed, Origin, Session};
+use cakeys_core::config::{
+    Answered, AttestationRecord, Config, KeyOrigin, Lock, Mode, Observation, Observed, Origin, Session,
+};
 use cakeys_core::id::{self, Commit, HmacHash, Scheme};
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
@@ -307,9 +309,36 @@ fn attest(
     Ok(AttestationRecord { kind: kind.to_owned(), root: a.root, id: a.id })
 }
 
-/// What this run sees of `tok` (session, mechanisms, profile, module, token), for the lock to
-/// record or compare.
-fn facts(tok: &Token, r: &Resolved) -> Facts {
+/// What `t`'s run on its token demonstrated, as capability rows (docs/CAPROBE.md): the proof of
+/// possession it gave, and the generation when it created the key (`created`). A run that
+/// failed records nothing, so these are only ever yes.
+fn answers(t: &Target, r: &Resolved, created: bool) -> std::collections::BTreeMap<String, Answered> {
+    let mut out = std::collections::BTreeMap::new();
+    let Some(kt) = t.object.key_type.filter(|_| t.object.class.is_asymmetric()) else { return out };
+    let on = match (&t.object.curve, t.object.modulus_bits) {
+        (Some(curve), _) => curve.clone(),
+        (None, Some(bits)) => bits.to_string(),
+        (None, None) => return out,
+    };
+    let proof = match r.binding {
+        Some(cakeys_core::config::Binding::PopSign | cakeys_core::config::Binding::PopSignPin) => Some("pop-sign"),
+        Some(cakeys_core::config::Binding::PopEcdh) => Some("pop-ecdh"),
+        Some(cakeys_core::config::Binding::PopDecrypt) => Some("pop-decrypt"),
+        Some(cakeys_core::config::Binding::PopUnwrap) => Some("pop-unwrap"),
+        Some(cakeys_core::config::Binding::TokenAsserted) | None => None,
+    };
+    if let Some(proof) = proof {
+        out.insert(format!("prove.{proof}.{}.{on}", kt.name()), Answered::yes());
+    }
+    if created {
+        out.insert(format!("generate.{}.{on}", kt.name()), Answered::yes());
+    }
+    out
+}
+
+/// What this run sees of `tok` (session, mechanisms, profile, module, token), and what `t`'s
+/// run demonstrated ([`answers`]), for the lock to record or compare.
+fn facts(t: &Target, tok: &Token, r: &Resolved, created: bool) -> Facts {
     Facts {
         observed: Observed { uri: r.uri.clone(), session: if tok.logged_in { Session::User } else { Session::Public } },
         observation: Observation {
@@ -319,6 +348,7 @@ fn facts(tok: &Token, r: &Resolved) -> Facts {
             mechanisms: tok.mechanism_names().to_vec(),
             module: Some(tok.module.clone()),
             token: Some(tok.token.clone()),
+            capabilities: answers(t, r, created),
             extra: std::collections::BTreeMap::new(),
         },
         origin: None,
@@ -335,7 +365,7 @@ fn facts(tok: &Token, r: &Resolved) -> Facts {
 pub fn verify(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Resolved> {
     let r = resolve(t, tok, lock)?
         .ok_or_else(|| KmError::NotFound(format!("{t}: not under its locator; `cakeys create` makes it")))?;
-    reconcile::compare(t, &r, lock, &facts(tok, &r), LockWrite::Compare, notes)?;
+    reconcile::compare(t, &r, lock, &facts(t, tok, &r, false), LockWrite::Compare, notes)?;
     Ok(r)
 }
 
@@ -391,12 +421,12 @@ fn realise_as(
 ) -> Result<(Resolved, bool)> {
     let mode = plan_mode(t)?;
     check_capabilities(t, tok, mode, create)?;
-    let r = match resolve_with(t, tok, lock, true)? {
-        Some(r) => r,
-        None if create => create_absent(t, tok, lock, notes)?,
+    let (r, created) = match resolve_with(t, tok, lock, true)? {
+        Some(r) => (r, false),
+        None if create => (create_absent(t, tok, lock, notes)?, true),
         None => return Err(KmError::NotFound(format!("{t}: not under its locator; `cakeys create` makes it"))),
     };
-    let facts = Facts { origin, ..facts(tok, &r) };
+    let facts = Facts { origin, ..facts(t, tok, &r, created) };
     let changed = reconcile::reconcile(t, &r, lock, &facts, write, notes)?;
     Ok((r, changed))
 }

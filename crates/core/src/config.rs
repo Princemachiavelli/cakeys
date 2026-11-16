@@ -1158,13 +1158,47 @@ pub struct Observation {
     /// Token that holds the objects (`C_GetTokenInfo`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<TokenInfo>,
+    /// What this deployment's token answered about cakeys' operations, keyed as a capability
+    /// profile's rows are (`prove.pop-sign.CKK_EC.secp256r1`, docs/CAPROBE.md): the proofs and
+    /// generations `realise` and `create` just demonstrated, and what `caprobe probe --record`
+    /// measured. Answers of this token, not of its kind, so they decide before a shipped
+    /// profile does; never a verdict of `check`. Not part of the entry's key, and merged, not
+    /// replaced, as runs record more.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub capabilities: BTreeMap<String, Answered>,
     /// Keys of a newer cakeys, as read.
     #[serde(flatten)]
     pub extra: BTreeMap<String, toml::Value>,
 }
 
+/// One answer a token gave (an [`Observation`]'s `capabilities`): `answer` is `yes` or `no`,
+/// `evidence` what showed it, `via` how it succeeded. A newer cakeys' fields are kept.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Answered {
+    /// `yes` or `no`; anything else answers nothing.
+    pub answer: String,
+    /// What showed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
+    /// How it succeeded, where there is more than one way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// Fields of a newer cakeys, as read.
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, toml::Value>,
+}
+
+impl Answered {
+    /// A plain yes.
+    #[must_use]
+    pub fn yes() -> Answered {
+        Answered { answer: "yes".into(), evidence: None, via: None, extra: BTreeMap::new() }
+    }
+}
+
 impl Observation {
-    /// The entry's key: the SRI SHA-256 of its RFC 8785 (JCS) form, as `id::spec_digest`.
+    /// The entry's key: the SRI SHA-256 of its RFC 8785 (JCS) form, as `id::spec_digest`,
+    /// without its `capabilities` — what the token answered accumulates under one entry.
     ///
     /// # Panics
     ///
@@ -1172,7 +1206,8 @@ impl Observation {
     /// finite); cakeys computes keys only for the entries it builds, which have none.
     #[must_use]
     pub fn digest(&self) -> String {
-        let doc = serde_json::to_value(self).expect("an observation is plain data");
+        let bare = Observation { capabilities: BTreeMap::new(), ..self.clone() };
+        let doc = serde_json::to_value(&bare).expect("an observation is plain data");
         crate::id::sri(serde_jcs::to_string(&doc).expect("an observation of strings canonicalizes").as_bytes())
     }
 }

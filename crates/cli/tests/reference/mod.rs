@@ -3306,6 +3306,56 @@ fn create_checks_the_profiles_before_it_makes_anything() {
     assert!(e.lock()["realisations"]["p256"]["ref"].is_table());
 }
 
+/// What a token answered is recorded with its observation (docs/LOCK.md): the proof a
+/// realisation gave and the generation `create` made. Those answers decide before the profile
+/// of the token's kind, so a recorded *no* refuses in `validate` and `create`'s gate as a
+/// profile's does, before anything is made; `check` never reads them.
+#[test]
+fn a_tokens_own_answers_decide_before_its_profile() {
+    let Some(e) = env("answers") else { return };
+    e.session().clear(&["answers-sign", "answers-derive"]);
+    let key = |name: &str, usage: &str| {
+        format!(
+            "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.{name}]\nobject = \"{name}\"\nattributes = {{ {usage} = true }}\n\
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"answers-{name}\" }}, origin = \"create\" }}\n\n"
+        )
+    };
+    e.config(
+        &(key("sign", "CKA_SIGN")
+            + &key("derive", "CKA_DERIVE")
+                .replace("origin = \"create\"", "origin = \"create\", binding = \"pop-ecdh\"")),
+    );
+    assert_eq!(e.code(&["create", "sign"]), 0);
+    let observation = |lock: &toml::Value| {
+        let k = lock["realisations"]["sign"]["ref"]["observation"].as_str().unwrap().to_owned();
+        lock["observations"][&k].clone()
+    };
+    let answers = observation(&e.lock())["capabilities"].clone();
+    assert_eq!(answers["prove.pop-sign.CKK_EC.secp256r1"]["answer"].as_str(), Some("yes"), "{answers}");
+    assert_eq!(answers["generate.CKK_EC.secp256r1"]["answer"].as_str(), Some("yes"), "{answers}");
+    let o = e.km(&["validate"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    // This token, as recorded, cannot prove a derive-only key: refused before anything is made.
+    let path = e.dir.join("keys.lock");
+    let mut lock = e.lock();
+    let k = lock["realisations"]["sign"]["ref"]["observation"].as_str().unwrap().to_owned();
+    let no = toml::toml! { answer = "no" evidence = "as recorded" };
+    lock["observations"][&k]["capabilities"]
+        .as_table_mut()
+        .unwrap()
+        .insert("prove.pop-ecdh.CKK_EC.secp256r1".into(), no.into());
+    std::fs::write(&path, toml::to_string(&lock).unwrap()).unwrap();
+    for args in [&["validate"][..], &["create", "derive", "--dry-run"]] {
+        let o = e.km(args);
+        assert_eq!(code(&o), 15, "{args:?}: {}", stderr(&o));
+        assert!(stderr(&o).contains("cannot prove possession by prove.pop-ecdh.CKK_EC.secp256r1"), "{}", stderr(&o));
+        assert!(stderr(&o).contains("as recorded"), "{}", stderr(&o));
+    }
+    assert_eq!(e.code(&["check", "sign"]), 0, "check never reads the answers");
+    assert!(e.session().labelled("answers-derive").is_empty(), "nothing was made");
+}
+
 /// `create` over tokens of one module (`ref` and `ref-anon` share it) opens each in turn; a pair
 /// that fails — opening its token included — leaves what was created before it recorded; and a
 /// name that selects nothing is refused (17, 11), never an empty success.

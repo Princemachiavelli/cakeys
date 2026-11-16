@@ -12,9 +12,9 @@
 use crate::ops::{self, Target};
 use crate::provider::Registry;
 use crate::resolution::{self, Resolved};
-use cakeys_core::config::{Lock, Mode, TokenCfg, TokenObservation};
+use cakeys_core::config::{Binding, Lock, Mode, TokenCfg, TokenObservation};
 use cakeys_core::{KmError, Result};
-use cakeys_profile::{Effective, Set, Verdict};
+use cakeys_profile::{Capability, Effective, On, Set, Verdict};
 
 /// A token's profile stack as known without opening it.
 pub struct Stack {
@@ -64,6 +64,9 @@ pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Res
     // the open decides it.
     Ok(match resolution::resolve(cfg, &module, token.as_ref(), &provider) {
         Ok(mut resolved) => {
+            if let Some(o) = observed {
+                resolved.with_answers(name, o);
+            }
             if recorded.is_none() {
                 // Resolution's version notes compare against a module nobody has seen yet.
                 resolved.notes = vec![format!(
@@ -76,6 +79,25 @@ pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Res
         }
         Err(e) => Err(format!("token '{name}': {e}")),
     })
+}
+
+/// The capability of proving `t`'s private key the way its spec binds it
+/// (`plan::expected_binding`), when that is a proof.
+fn proof(t: &Target) -> Option<Capability> {
+    let binding = match cakeys_core::plan::expected_binding(t)? {
+        Binding::PopSign | Binding::PopSignPin => "pop-sign",
+        Binding::PopEcdh => "pop-ecdh",
+        Binding::PopDecrypt => "pop-decrypt",
+        Binding::PopUnwrap => "pop-unwrap",
+        Binding::TokenAsserted => return None,
+    };
+    let kt = t.object.key_type?;
+    let on = match (&t.object.curve, t.object.modulus_bits) {
+        (Some(c), _) => On::Item(c.clone()),
+        (None, Some(bits)) => On::Bits(u32::try_from(bits).ok()?),
+        (None, None) => return None,
+    };
+    Some(Capability::Prove { binding: binding.into(), key_type: kt.name().into(), on })
 }
 
 /// What the gate found for one target: refusals (each a line) and notes.
@@ -116,6 +138,16 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates
         && let Err(m) = ops::check_attestation(t, p.as_ref())
     {
         out.refusals.push(m);
+    }
+    // The proof the spec's key will be bound by: a profile's or this token's recorded no
+    // refuses (a key made could not then be identified); unknown means try.
+    if let Some(cap) = proof(t)
+        && let Some(m) = stack.resolved.module.as_ref()
+        && m.answer(&cap) == Some(false)
+    {
+        let why = m.evidence(&cap, "").map_or_else(String::new, |e| format!(": {e}"));
+        out.refusals
+            .push(format!("{t}: token '{}' cannot prove possession by {cap} ({}{why})", t.token_name, m.profile));
     }
     let set = Set::active().map_err(KmError::Validation)?;
     let baseline = set.baseline().map_err(KmError::Validation)?;

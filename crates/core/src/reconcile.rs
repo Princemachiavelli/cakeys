@@ -517,12 +517,19 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
         }
     }
     // Keys are not recomputed on load, so an entry edited by hand may sit under this key: what
-    // the run saw replaces it.
-    if let Some(key) = &real.observation
-        && lock.observations.get(key) != Some(&facts.observation)
-    {
-        lock.observations.insert(key.clone(), facts.observation.clone());
-        changed = true;
+    // the run saw replaces it — but for the answers earlier runs and the probe recorded, which
+    // are kept beside this run's (its own win).
+    if let Some(key) = &real.observation {
+        let mut seen = facts.observation.clone();
+        if let Some(prev) = lock.observations.get(key) {
+            let mut answers = prev.capabilities.clone();
+            answers.append(&mut seen.capabilities);
+            seen.capabilities = answers;
+        }
+        if lock.observations.get(key) != Some(&seen) {
+            lock.observations.insert(key.clone(), seen);
+            changed = true;
+        }
     }
     let slot = lock.realisations.entry(t.spec_name.into()).or_default();
     if slot.get(t.token_name) != Some(&real) {
@@ -679,6 +686,7 @@ mod tests {
                     cryptoki: "3.0".into(),
                 }),
                 token: Some(TokenInfo { model: "m".into(), serial: "1".into(), firmware: "1.0".into() }),
+                capabilities: BTreeMap::new(),
                 extra: BTreeMap::new(),
             },
             origin: None,
@@ -882,6 +890,41 @@ mod tests {
             reconcile(&t, &resolved(&t), &mut lock, &facts("2"), LockWrite::Record, &mut Notes::default()).unwrap()
         );
         assert_eq!(lock.observations[&second], facts("2").observation);
+    }
+
+    /// What the token answered accumulates under one entry: the answers are no part of its key,
+    /// and a run that records some keeps those earlier runs recorded (its own win).
+    #[test]
+    fn answers_accumulate_under_one_observation() {
+        let cfg = config();
+        let t = Target::new(&cfg, "s", "t").unwrap();
+        let mut lock = empty_lock();
+        let with = |answers: &[(&str, &str)]| {
+            let mut f = facts("1");
+            for (k, a) in answers {
+                f.observation.capabilities.insert(
+                    (*k).into(),
+                    crate::config::Answered { answer: (*a).into(), ..crate::config::Answered::yes() },
+                );
+            }
+            f
+        };
+        let record = |lock: &mut Lock, f: &Facts| {
+            reconcile(&t, &resolved(&t), lock, f, LockWrite::Record, &mut Notes::default()).unwrap()
+        };
+        assert_eq!(
+            with(&[("prove.pop-sign.CKK_EC.secp256r1", "yes")]).observation.digest(),
+            facts("1").observation.digest()
+        );
+        record(&mut lock, &with(&[("prove.pop-sign.CKK_EC.secp256r1", "yes")]));
+        record(&mut lock, &with(&[("generate.CKK_EC.secp256r1", "yes")]));
+        // A run that recorded nothing new keeps what is there, and writes nothing.
+        assert!(!record(&mut lock, &facts("1")));
+        let [entry] = lock.observations.values().collect::<Vec<_>>()[..] else { panic!("one entry") };
+        let keys: Vec<&str> = entry.capabilities.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["generate.CKK_EC.secp256r1", "prove.pop-sign.CKK_EC.secp256r1"]);
+        record(&mut lock, &with(&[("generate.CKK_EC.secp256r1", "no")]));
+        assert_eq!(lock.observations.values().next().unwrap().capabilities["generate.CKK_EC.secp256r1"].answer, "no");
     }
 
     /// The module file's hash: other content at the same path warns (replaced in place, which a
