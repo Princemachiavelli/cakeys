@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 /// The verbs and long flags of `cmd` and its subcommands, as a test would write them
-/// (`realise`, `--dry-run`), less clap's own (`help`, `--help`, `--version`).
+/// (`lock`, `--dry-run`), less clap's own (`help`, `--help`, `--version`).
 fn surface(cmd: &clap::Command, out: &mut BTreeSet<String>) {
     for arg in cmd.get_arguments() {
         if let Some(long) = arg.get_long().filter(|l| !matches!(*l, "help" | "version")) {

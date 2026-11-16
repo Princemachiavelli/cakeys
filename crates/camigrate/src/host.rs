@@ -3,8 +3,8 @@
 //! source hands the key over wrapped under a session key the host drew (`Token::extract`), the
 //! host unwraps it in memory, and the target creates it from the plaintext (`C_CreateObject`:
 //! `host-pkcs8` for a private key, `host-raw` for a secret key). Every buffer is zeroized when
-//! dropped. The import is then recorded through `ops::realise_import`, the lock rules `cakeys
-//! realise` uses, so the identity is checked as for any move; a mismatch removes what was made.
+//! dropped. The import is then recorded through `ops::lock_import`, the lock rules `cakeys
+//! lock` uses, so the identity is checked as for any move; a mismatch removes what was made.
 
 use crate::public::{Moved, already_there, roll_back};
 use crate::sealed::{create_public_half, rfc5649};
@@ -27,7 +27,7 @@ use cryptoki::object::{Attribute, ObjectHandle};
 /// `Unsupported` (15) when the source will not hand it over or the target will not create it;
 /// `Conflict` (13) for an object of its
 /// class already under the target locator; and, after the creation, whatever
-/// `ops::realise_import` refuses, with what was created removed again.
+/// `ops::lock_import` refuses, with what was created removed again.
 pub(crate) fn import(
     src: &Target,
     from: &Token,
@@ -90,7 +90,7 @@ pub(crate) fn create_and_record(
     let occupied = free_locator(dst, to, spki)?;
     let mut made = Vec::new();
     let created = create(dst, to, plain, spki.filter(|_| occupied.public_half.is_none()), &mut made)
-        .and_then(|()| ops::realise_import(dst, to, lock, origin, notes));
+        .and_then(|()| ops::lock_import(dst, to, lock, origin, notes));
     match created {
         Ok(_) => Ok(Moved::Imported),
         Err(err) => Err(roll_back(dst, to, &made, err, notes)),
@@ -162,7 +162,7 @@ pub(crate) fn import_ptool(
         exposure: Exposure::Host,
         declared: false,
     };
-    match ops::realise_import(dst, to, lock, origin, notes) {
+    match ops::lock_import(dst, to, lock, origin, notes) {
         Ok(_) => Ok(Moved::Imported),
         Err(err) => {
             // The locator held nothing of the key's classes before: this removes only the import.

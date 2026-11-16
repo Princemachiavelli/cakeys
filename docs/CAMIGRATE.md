@@ -3,9 +3,9 @@
 `camigrate` moves key material from one token to another: token-to-token key wrapping where
 both modules support it, the host or a passphrase-protected file where they do not, and a
 `--dry-run` that says per object what can move and how. It is the only tool that handles key
-material; a `cakeys` build carries no migration code. `cakeys` *verifies* a copy (realise on the
+material; a `cakeys` build carries no migration code. `cakeys` *verifies* a copy (`lock` on the
 second token against the locked IDs); `camigrate` *makes* it, then records it through the same
-realise code path.
+lock code path.
 
 Evidence tags on backend claims: **[run]** verified by running it, **[src]** read in the
 module's source, **[todo]** still to verify.
@@ -130,7 +130,7 @@ without names, export takes what can move and warns about the rest (a spec's `mi
 keeps its object home and silences the warning). Import takes each entry on its own, reports
 every failure, and exits with the first.
 
-**D6. Import is a realise that creates from a bundle.**
+**D6. Import is a `lock` that creates from a bundle.**
 
 - If-None-Match per class: never over an object of its class under the locator. A key, its
   public key and its certificate share one `CKA_ID` by PKCS#11 convention, so they move into one
@@ -260,7 +260,7 @@ All phases ran on 2026-11-12 (0, 1) and 2026-11-14 (2–5); the test names are i
 |---|---|---|
 | 0 | The spike (pkcs11-tool, SoftHSM ↔ kryoptic) and the cryptoki KWP patch (`nix/patches/cryptoki-aes-key-wrap-kwp.patch`, upstream draft `upstream/rust-cryptoki/PR-KWP.md`) | SoftHSM's AES-KW-PAD and kryoptic's AES-KWP are one format (RFC 5649) under two IDs; EC and RSA keys wrapped either way still sign for their fixtures; the composed method works both ways [run] |
 | 1 | The planner and `--dry-run`; the capability hook vendor crates used (D10; since folded into the profiles, `Side::pkcs11`); the transport file | — |
-| 2 | `public` moves (`public.rs`), recorded through `ops::realise_import` | tpm2-pkcs11 creates data objects only private, so its profiles no longer accept public `CKO_DATA` |
+| 2 | `public` moves (`public.rs`), recorded through `ops::lock_import` | tpm2-pkcs11 creates data objects only private, so its profiles no longer accept public `CKO_DATA` |
 | 3 | `sealed` (`sealed.rs`): bundles, `export --out`, `import`, `migrate`; one creation pair per object (`origin = "create"`), targets `origin = "import"`; `migrate.transportWith` and `pop-unwrap` | SoftHSM's unwrapped `CKA_VALUE_LEN` (`move.secret-unwrap` no); p11-kit needs its `provider` named (the layer's `requires-provider`) |
 | 3b | `enforced`: `transport --trusted`, `CKM_RSA_AES_KEY_WRAP` (third cryptoki patch, `nix/patches/cryptoki-rsa-aes-key-wrap.patch`), the bundle's per-entry `kek` | both modules refuse a wrap-with-trusted key under an untrusted key; `CKA_TRUSTED` is set only at creation and only by the SO; kryoptic cannot trust an RSA public key [run: one-off PyKCS11 and Rust test programs, not kept, recorded in the profiles' `[manual."trusted-wrap"]`] |
 | 4 | `host` (`host.rs`): `Token::extract`, `cakeys_core::plaintext`, `tpm2-ptool` through an in-memory file (`/proc/<pid>/fd/N`, since `tpm2_import` inherits no descriptor) | the key enters `tpm2_ptool`'s Python process, and its user PIN is on that process's command line (no other option [src]): both stated as plan notes. The planner blocks moves the target could not prove (Ed25519 into p11-kit) |

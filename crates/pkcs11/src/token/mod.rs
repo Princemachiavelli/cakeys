@@ -423,7 +423,7 @@ impl Token {
     /// provider: the module-exposed attestation certificate (PIV) or the native `TPM2_Certify`
     /// path (tpm2-pkcs11), verified on the host. `spki` is the material SPKI the attestation
     /// must name (`None` for secret keys); `provision` lets the provider create the device
-    /// state it attests with (only `realise` sets it).
+    /// state it attests with (only `lock` sets it).
     ///
     /// # Errors
     ///

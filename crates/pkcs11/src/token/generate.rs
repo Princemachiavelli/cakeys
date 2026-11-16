@@ -175,7 +175,7 @@ impl Token {
     }
 
     /// Destroy every object of the key's class under its locator, and any public half there: only
-    /// for what a creation just put under a locator that was empty before (`realise` cleaning up
+    /// for what a creation just put under a locator that was empty before (`lock` cleaning up
     /// after itself). `delete` removes what it identified, through [`Self::destroy_identified`].
     ///
     /// # Errors

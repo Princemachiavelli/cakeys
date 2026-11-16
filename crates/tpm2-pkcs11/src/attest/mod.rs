@@ -79,7 +79,7 @@ pub struct Tpm2Options {
     /// working directory that holds `tpm2_pkcs11.sqlite3`.
     tpm2_store: Option<String>,
     /// Persistent handle of cakeys' Attestation Key (a restricted signing key
-    /// in the owner hierarchy, created by `realise` if absent, empty auth, and pinned in the
+    /// in the owner hierarchy, created by `lock` if absent, empty auth, and pinned in the
     /// lock by the `attestation.root` of the realisation). Defaults to the provider's
     /// `DEFAULT_AK_HANDLE`; `0x`-prefixed hex in 0x81000000..=0x817FFFFF, e.g. `"0x81000016"`.
     /// An object already there that is not such a key is refused (13).

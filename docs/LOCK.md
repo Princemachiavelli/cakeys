@@ -7,7 +7,7 @@ diff and commit it; every later use checks the token against it. The normative r
 [`CONFIG.md`](CONFIG.md).
 
 cakeys rewrites the lock as a whole, so comments in a real `keys.lock` would be lost on the next
-`realise`; the annotations below live only here.
+`lock`; the annotations below live only here.
 
 ## Two halves: what the material is, and where it lives
 
@@ -101,7 +101,7 @@ compared fields are required.
 # The object this spec realised. A spec retargeted to another object is reported as such (14).
 object = "ec"
 # SHA-256 of the spec's canonical JSON (the object type plus its declared attributes). A changed
-# spec fails `verify` (14, "changed in keys.toml") until `realise` re-records it.
+# spec fails `verify` (14, "changed in keys.toml") until `lock` re-records it.
 specDigest = "sha256-2NHAGifN/zSvJ77DXQKy3lmAaVkj5Ci1IxO7QSius0A="
 # How the identity was established, strongest first: direct (a hash of public material),
 # commitment (the token computes over a label), wrap-rebind (through a temporary copy of an
@@ -113,7 +113,7 @@ schemes = ["rfc7093m4"]
 # challenge the host verified (pop-sign; pop-sign-pin when the key is CKA_ALWAYS_AUTHENTICATE and
 # each signature took a context-specific login; or pop-ecdh, pop-decrypt). `token-asserted` means the
 # token's word only. Dropping from any pop-* to token-asserted is refused (14). Not stored, but
-# derived from the binding, the class and the attestation kind: the `assurance` that `realise`
+# derived from the binding, the class and the attestation kind: the `assurance` that `lock`
 # and the Nix view report. A pop-* binding (or a tpm-certify attestation) is a "proof" no replay
 # passes; a secret key's commitment is a "fingerprint" that anything which saw it can replay;
 # public bytes are "public" (docs/archive/REVIEW-2026-11-13.md, "Replay").
@@ -131,7 +131,7 @@ CKA_ID = "0e"
 # Policy: every boolean the class may carry that the token shows (closed-world), declared or not;
 # here SoftHSM's defaults CKA_DECRYPT, CKA_UNWRAP, CKA_SIGN_RECOVER = true are visible too. These
 # attributes *can* change on a token (C_SetAttributeValue), so a change is drift to review (14),
-# which `realise` re-records.
+# which `lock` re-records.
 [realisations.ec.soft.policy]
 CKA_SIGN = true
 CKA_SENSITIVE = true
@@ -221,7 +221,7 @@ firmware = "2.7"
 The `capabilities` are this deployment's own answers: `validate`, `create`'s gate and
 camigrate's planner read them before the module profile of the token's kind (they decide, it
 is a prior), and a recorded *no* refuses there as a profile's does. They are observations
-(DESIGN §3.5): they never change a verdict of `check`, `verify` or `realise`, and a run that
+(DESIGN §3.5): they never change a verdict of `check`, `verify` or `lock`, and a run that
 records none leaves them as they were. Only what a run demonstrated is recorded, so today they
 only ever say *yes*.
 
@@ -231,7 +231,7 @@ refused (17). The key is not recomputed on load, so such an entry keeps its key.
 
 Which entry is a token's *current* one is answered only when every realisation on the token
 names the same entry. Otherwise `validate`'s profile gate and `export --dry-run` for a token that
-does not open say so and name `realise`, which re-records each realisation with what it sees now.
+does not open say so and name `lock`, which re-records each realisation with what it sees now.
 
 Two more realisation shapes worth seeing:
 
@@ -269,7 +269,7 @@ id = "sha256-ZksMSOtJ2hgO/UZqtKLLVWmYXOko4O1YP0F3lhXVDA4="
 
 ## How a write behaves
 
-`realise` and `delete` write the lock by default (`--no-update-lock` compares only), and a write
+`lock` and `delete` write the lock by default (`--no-update-lock` compares only), and a write
 only *fills gaps*: what the lock lacks is recorded (first use included), but a locked ID, type,
 binding, attestation or immutable is never overwritten. Those changes fail even when the lock is
 written — different material needs a new object name. Policy and spec drift, which can be

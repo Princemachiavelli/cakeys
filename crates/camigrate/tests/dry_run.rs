@@ -321,7 +321,7 @@ fn public_moves_do_what_the_plan_says() {
     for c in &PUBLIC {
         for r in e.refs.iter().filter(|r| holds(r, c)) {
             let spec = format!("{}-src-{}", c.name, r.name);
-            let o = e.cakeys(r, &["realise", "--spec", &spec, "--token", r.name]);
+            let o = e.cakeys(r, &["lock", "--spec", &spec, "--token", r.name]);
             assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
         }
     }
@@ -426,11 +426,11 @@ fn objects_sharing_a_locator_move_in_any_order() {
     // The keys are made; their public halves and the planted certificates are adopted.
     for (verb, spec) in [
         ("create", "k1-soft"),
-        ("realise", "k1-pub-soft"),
-        ("realise", "crt1-soft"),
+        ("lock", "k1-pub-soft"),
+        ("lock", "crt1-soft"),
         ("create", "k2-soft"),
-        ("realise", "k2-pub-soft"),
-        ("realise", "crt2-soft"),
+        ("lock", "k2-pub-soft"),
+        ("lock", "crt2-soft"),
     ] {
         let o = e.cakeys(soft, &[verb, "--spec", spec, "--token", "softhsm"]);
         assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
@@ -489,7 +489,7 @@ fn private_data_objects_never_move() {
             + &Env::spec("pd-soft", "pd", private, &[soft], "pd-secret", "")
             + &Env::spec("pd-kry", "pd", private, &[kry], "pd-secret", IMPORT)),
     );
-    let o = e.cakeys(soft, &["realise", "--spec", "pd-soft", "--token", "softhsm"]);
+    let o = e.cakeys(soft, &["lock", "--spec", "pd-soft", "--token", "softhsm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let mv = ["migrate", "pd", "--from", "softhsm", "--to", "kryoptic", "--spec", "pd-kry"];
     let o = e.km(soft, &[&mv[..], &["--dry-run", "--json"]].concat());
@@ -874,7 +874,7 @@ fn bundle_keys(e: &Env, soft: &Ref, kry: &Ref) {
         assert_eq!(code(&e.cakeys(soft, &["create", "--spec", spec, "--token", "softhsm"])), 0, "{spec}");
     }
     // The planted certificate is adopted.
-    assert_eq!(code(&e.cakeys(soft, &["realise", "--spec", "crt-soft", "--token", "softhsm"])), 0);
+    assert_eq!(code(&e.cakeys(soft, &["lock", "--spec", "crt-soft", "--token", "softhsm"])), 0);
 }
 
 /// `--transport-key` names the transport key and `--lock` the lock file, as `transportWith` and
@@ -1291,7 +1291,7 @@ fn exports_to_a_token_need_only_the_lock() {
     let o = e.km(kry, &["transport", "--spec", "tk-kryoptic", "--token", "kryoptic", "--trusted", "softhsm"]);
     assert_eq!(code(&o), 14, "{}", stderr(&o));
     assert!(stderr(&o).contains("records no public key for transport key"), "{}", stderr(&o));
-    assert_eq!(code(&e.cakeys(kry, &["realise", "--spec", "tk-kryoptic", "--token", "kryoptic"])), 0);
+    assert_eq!(code(&e.cakeys(kry, &["lock", "--spec", "tk-kryoptic", "--token", "kryoptic"])), 0);
     let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
     let tk = &lock["objects"]["tk-kryoptic"];
     let spki = {
@@ -1963,7 +1963,7 @@ fn key_files_carry_one_key_and_its_certificate() {
         + &named("kryoptic-der").map_or_else(String::new, |der| Env::spec("fk-der", "fk", key_attrs, &[der], "xf-k2", IMPORT));
     e.config(&body);
     for spec in ["fk-soft", "fc-soft"] {
-        let o = e.cakeys(soft, &["realise", "--spec", spec, "--token", "softhsm"]);
+        let o = e.cakeys(soft, &["lock", "--spec", spec, "--token", "softhsm"]);
         assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
     }
     let pass = e.dir.join("pass");

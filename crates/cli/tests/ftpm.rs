@@ -143,7 +143,7 @@ fn keys_attest_their_residence_on_the_real_tpm() {
          tokens.ftpm = { locator = { CKA_LABEL = \"ftpm-attest-hmac\" }, origin = \"adopt\", attestation = true }\n",
     );
     // The P-256 key is generated; the HMAC key was imported above and is adopted.
-    for (verb, spec) in [("create", "p256"), ("realise", "hmac")] {
+    for (verb, spec) in [("create", "p256"), ("lock", "hmac")] {
         let o = e.km(&[verb, "--spec", spec, "--token", "ftpm", "--update-lock"]);
         assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
         let att = &e.lock()["realisations"][spec]["ftpm"]["attestation"];

@@ -166,14 +166,14 @@ act "1. A key is a pinned input" \
 expect 18 cakeys create signing --token soft --no-update-lock
 first=$(got)
 echo "Again, by the lock verb: the same key is found under its locator, never a second one."
-expect 18 cakeys realise signing --token soft --no-update-lock
+expect 18 cakeys lock signing --token soft --no-update-lock
 [ "$(got)" = "$first" ] || {
   echo "${red}a second run got another identity${reset}"
   exit 1
 }
 echo "Record it, like updating flake.lock. The private key also proves possession: it signs a"
 echo "fresh challenge the host verifies against the public key the identity hashes (pop-sign)."
-limit=13 expect 0 cakeys realise signing --token soft
+limit=13 expect 0 cakeys lock signing --token soft
 echo "keys.lock: the identity per object; per token, how it was realised (and the policy it"
 echo "observed, cut here). What it saw of the module and token is one [observations] entry,"
 echo "shared by every realisation recorded with the same:"
@@ -258,8 +258,8 @@ EOF
 printf '%s$ openssl dgst -sha256 -binary shared.pub.der | base64%s\n' "$dim" "$reset"
 oracle=sha256-$(openssl dgst -sha256 -binary shared.pub.der | base64)
 echo "The host computes the identity from the key file alone: ${bold}$oracle${reset}"
-limit=13 expect 0 cakeys realise shared --token soft
-limit=13 expect 0 cakeys realise shared --token kryo
+limit=13 expect 0 cakeys lock shared --token soft
+limit=13 expect 0 cakeys lock shared --token kryo
 locked=$(sed -n '/^\[objects.shared.ids\]/,/^\[/s/^rfc7093m4 = "\(.*\)"/\1/p' keys.lock)
 echo "keys.lock holds one identity for the object and one realisation per token, each naming"
 echo "what it saw of its module:"

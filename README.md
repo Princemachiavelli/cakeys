@@ -25,7 +25,7 @@ on a YubiKey 5C NFC FIPS and an AMD fTPM. `nix run .#demo` walks through it on t
 
 | Tool | Job | Verbs | Document |
 |---|---|---|---|
-| `cakeys` | Pins and verifies | `validate`, `resolve`, `verify`, `realise`, `create`, `delete`, `gc`, `check`; the Nix library and NixOS module | [docs/CAKEYS.md](docs/CAKEYS.md) |
+| `cakeys` | Pins and verifies | `validate`, `resolve`, `verify`, `lock`, `create`, `delete`, `gc`, `check`; the Nix library and NixOS module | [docs/CAKEYS.md](docs/CAKEYS.md) |
 | `caprobe` | Measures modules into capability profiles; the only tool that creates scratch objects | `probe`, `supports`, `caps` | [docs/CAPROBE.md](docs/CAPROBE.md) |
 | `camigrate` | Moves keys between tokens; the only tool that handles key material | `export`, `import`, `migrate`, `transport` | [docs/CAMIGRATE.md](docs/CAMIGRATE.md) |
 
@@ -34,7 +34,7 @@ A `cakeys` build carries no probe or migration code.
 
 ## What it is for
 
-- **A copy is really a copy.** Cloned HSM A onto B, or moved keys between vendors: realise each
+- **A copy is really a copy.** Cloned HSM A onto B, or moved keys between vendors: lock each
   token into one lock, and B's copy must hash to A's locked identities (10 otherwise).
 - **A key is what the software was tested with.** The spec declares type and policy (sign-only,
   non-extractable, …): another type is refused (13), policy drift reported (14), and a key
@@ -79,15 +79,15 @@ tokens.softhsm = { locator = { CKA_LABEL = "signing" }, origin = "create" }
 ```console
 $ cakeys -c keys.toml create signing --no-update-lock
 created 'signing' (spec 'signing-soft') on token 'softhsm'
-error: first use of 'signing' (spec 'signing-soft') on token 'softhsm': the lock pins no identity for it yet; review, then `realise` records it
+error: first use of 'signing' (spec 'signing-soft') on token 'softhsm': the lock pins no identity for it yet; review, then `lock` records it
      got:    sha256-…            # exit 18, compare only: like a fixed-output derivation
-$ cakeys -c keys.toml realise signing   # record it (the default), print the resolved JSON; review the keys.lock diff
+$ cakeys -c keys.toml lock signing   # record it (the default), print the resolved JSON; review the keys.lock diff
 $ cakeys -c keys.toml check signing     # later: verify, then print the URI (never writes)
 pkcs11:token=main;serial=...;object=signing;type=private
 ```
 
 Every verb names the object; `--spec` and `--token` narrow it where keys.toml realises it more than once.
-Only `create` makes keys, where keys.toml says `origin = "create"`; `realise` and `check` find what is there. `create`, `realise` and
+Only `create` makes keys, where keys.toml says `origin = "create"`; `lock` and `check` find what is there. `create`, `lock` and
 `delete` write the lock by default, filling gaps only — a locked ID is never overwritten. A realisation that changed (its locator, spec or policy attributes) is re-recorded,
 and each accepted change is printed (`re-recorded …`). Where the lock cannot be written (a Nix build sandbox, a read-only lock or
 directory) they refuse up front unless `--no-update-lock` is passed.

@@ -1128,7 +1128,7 @@ pub struct Origin {
 
 /// What a realisation saw of its token and what handled it (review A3), stored once per
 /// distinct value in the lock's `observations`. Differences warn (module build, token,
-/// provider, a mechanism gone) or note (module file, cakeys version, profile); `realise`
+/// provider, a mechanism gone) or note (module file, cakeys version, profile); `lock`
 /// re-binds them. The provider, module and token are absent only in entries recorded before
 /// cakeys wrote them.
 ///
@@ -1160,7 +1160,7 @@ pub struct Observation {
     pub token: Option<TokenInfo>,
     /// What this deployment's token answered about cakeys' operations, keyed as a capability
     /// profile's rows are (`prove.pop-sign.CKK_EC.secp256r1`, docs/CAPROBE.md): the proofs and
-    /// generations `realise` and `create` just demonstrated, and what `caprobe probe --record`
+    /// generations `lock` and `create` just demonstrated, and what `caprobe probe --record`
     /// measured. Answers of this token, not of its kind, so they decide before a shipped
     /// profile does; never a verdict of `check`. Not part of the entry's key, and merged, not
     /// replaced, as runs record more.
@@ -1231,7 +1231,7 @@ impl TokenObservation<'_> {
         let groups: Vec<String> = groups.iter().map(|g| g.join(", ")).collect();
         format!(
             "the realisations on token '{token}' were recorded with {} different observations of \
-             its module and token ({}); `realise` them to record the current one",
+             its module and token ({}); `lock` them to record the current one",
             groups.len(),
             groups.join("; ")
         )
@@ -1581,7 +1581,7 @@ pub fn lock_for_update(lock_path: &Path) -> Result<UpdateGuard> {
 }
 
 /// Why this run cannot write the lock at `lock_path`, if it cannot. A run that writes by default
-/// (`realise`, `delete`) asks before it touches a token, so an unwritable lock is a refusal up
+/// (`lock`, `delete`) asks before it touches a token, so an unwritable lock is a refusal up
 /// front — never a key created and then not recorded — unless `--no-update-lock` was passed.
 /// - Inside a Nix build sandbox (`NIX_BUILD_TOP` set, `IN_NIX_SHELL` not: `nix develop` sets
 ///   both) a write is lost: the lock is a read-only store path, or a copy thrown away with the

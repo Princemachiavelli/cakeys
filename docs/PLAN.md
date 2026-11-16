@@ -319,7 +319,7 @@ the shipped example's shape is finally exercised in CI.
 **Flow.**
 
 1. Provision the token; create the three self-signed certificates with the token keys and
-   store them as `CKO_CERTIFICATE` objects; `cakeys realise` everything.
+   store them as `CKO_CERTIFICATE` objects; `cakeys lock` everything.
 2. A consumer derivation, built in the signer's Nix sandbox as in `checks.vm`, runs
    `signing.check`, then `ukify build` with the db key's URI and certificate.
 3. Enrol: `virt-fw-vars` writes PK, KEK and db into an OVMF variables file from the
@@ -402,7 +402,7 @@ draft, whichever option wins:
 - state the generic rules once for every kind: unknown is refused, adding is allowed on write,
   dropping or changing is 14.
 
-The chain to the EK is checked when the anchor is recorded (`realise`), not on every `check`:
+The chain to the EK is checked when the anchor is recorded (`lock`), not on every `check`:
 afterwards the pinned AK carries it, as the pinned Yubico root does for PIV.
 
 ### B3. OP-TEE's PKCS#11 TA as a reference token (aarch64 QEMU)
@@ -459,7 +459,7 @@ derivation. Both can be rooted in the HSM, by different means, and are tested se
 **User-space verification**, never exposing the HUK:
 
 1. **Through PKCS#11.** The PKCS#11 TA's token lives in OP-TEE secure storage, whose keys
-   derive from the HUK. Create and `realise` a key under HUK A. Reboot with HUK A and the same
+   derive from the HUK. Create and `lock` a key under HUK A. Reboot with HUK A and the same
    storage: `cakeys verify` is 0. Reboot with HUK B and the same storage: the token is
    unreadable, and cakeys must answer 11 or 16, never 0 and never a silent re-create.
    [todo: which error the TA surfaces]

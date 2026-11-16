@@ -212,7 +212,7 @@ pkgs.testers.runNixOSTest {
         )
         machine.succeed(f"{km} create --spec signing-soft --token softhsm --update-lock")
         machine.fail("test -e /run/cakeys/signing.pem")
-        machine.succeed(f"{km} realise --spec signing-soft --token softhsm --update-lock")
+        machine.succeed(f"{km} lock --spec signing-soft --token softhsm --update-lock")
         machine.succeed("systemctl start signer.service")
         machine.succeed("systemctl is-active cakeys-check-signing.service")
         # The signer signed through the key file, with the locked key.

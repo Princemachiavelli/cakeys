@@ -402,7 +402,7 @@ impl Run<'_> {
                 } else {
                     let target = open_token(cfg, modules, registry, to, Access::Read, notes)?;
                     notes.note(format_args!(
-                        "{tr}: the lock records no public key for it yet; realise it again to export without '{to}'"
+                        "{tr}: the lock records no public key for it yet; lock it again to export without '{to}'"
                     ));
                     tokens::transport(&tr, &target, &self.lock, notes)?.key()?
                 })
@@ -615,7 +615,7 @@ impl Run<'_> {
                 p.ready = false;
                 p.reasons.push(format!(
                     "pkcs12 carries the key with its certificate, and the lock pairs no certificate with '{}' on \
-                     '{from}': realise it there, or export --to-file pkcs8",
+                     '{from}': lock it there, or export --to-file pkcs8",
                     p.object
                 ));
             }
@@ -694,7 +694,7 @@ impl Run<'_> {
                 p.ready = false;
                 p.reasons.insert(0, why);
             }
-            // The target's realise must prove possession of a private key the way its spec says.
+            // The target's `lock` must prove possession of a private key the way its spec says.
             if let (true, Some(to)) = (p.ready, target_token)
                 && let Ok(dst) = target_target(cfg, &p.object, to, None)
                 && let Some(target) = &moves.target
@@ -1100,7 +1100,7 @@ impl Run<'_> {
         let spec = tokens::transport_spec(&self.lock, token, Some(spec)).map_err(KmError::PreconditionFailed)?;
         let spki = self.locked_spki(spec, token).ok_or_else(|| {
             KmError::PreconditionFailed(format!(
-                "the lock records no public key for transport key '{spec}' on '{token}': realise it there with \
+                "the lock records no public key for transport key '{spec}' on '{token}': lock it there with \
                  migrate.transportWith naming it"
             ))
         })?;

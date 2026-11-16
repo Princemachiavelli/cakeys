@@ -37,23 +37,23 @@ flowchart LR
 - Objects are self-contained, so lock files split and join per object; `pairs` records the
   key ↔ certificate relations across the split.
 
-## 2. A verb's life: `create` (PUT) and `realise`
+## 2. A verb's life: `create` (PUT) and `lock`
 
 Every use recomputes the identity from the token and compares it with the lock. Only `create`
-makes the object when the locator is empty; `realise` finds it or exits 11. Both record first
+makes the object when the locator is empty; `lock` finds it or exits 11. Both record first
 use in the lock by default; with `--no-update-lock` (and in `check`) first use fails like a
 fixed-output derivation, printing the hash to record.
 
 ```mermaid
 flowchart TD
-    START(["cakeys create | realise &lt;spec&gt; --token &lt;t&gt;"]) --> GUARD
+    START(["cakeys create | lock &lt;spec&gt; --token &lt;t&gt;"]) --> GUARD
     GUARD["a writing run (the default) takes the exclusive lock<br/>on &lt;lock&gt;.lck for the whole run"]
     GUARD -- "Nix build sandbox, or the lock<br/>is not writable" --> X14w(["exit 14 before any token is touched:<br/>pass --no-update-lock"])
     GUARD --> VAL["validate: mode, binding, attribute shapes,<br/>certificateType, per-class names"]
     VAL -- "invalid spec" --> X17(["exit 17"])
     VAL --> FIND["find by locator<br/>(CKA_LABEL / CKA_ID)"]
     FIND -- "several objects match" --> X12(["exit 12 ambiguous"])
-    FIND -- "absent: realise" --> X11(["exit 11 not found"])
+    FIND -- "absent: lock" --> X11(["exit 11 not found"])
     FIND -- "absent: create" --> PIN{"lock already pins this<br/>object's material? (D1)"}
     PIN -- "yes: generation could<br/>never match" --> X14b(["exit 14: same material under<br/>the locator, or a new object name"])
     PIN -- no --> CREATE["create into the empty locator only<br/>(If-None-Match)"]
@@ -64,7 +64,7 @@ flowchart TD
     RESOLVE --> RECONCILE{"reconcile with the lock"}
     RECONCILE -- "first use, --no-update-lock" --> X18(["exit 18 first use, prints got: sha256-…"])
     RECONCILE -- "id differs" --> X10b(["exit 10 hash mismatch,<br/>also when the lock is written"])
-    RECONCILE -- "object / locator / spec digest / binding /<br/>mode / policy / immutables changed" --> X14(["exit 14: review,<br/>then realise again"])
+    RECONCILE -- "object / locator / spec digest / binding /<br/>mode / policy / immutables changed" --> X14(["exit 14: review,<br/>then lock again"])
     RECONCILE -- "matches, or first use (default)" --> OK(["exit 0 — resolved JSON printed;<br/>what the lock lacked is recorded<br/>unless --no-update-lock"])
 ```
 
@@ -142,7 +142,7 @@ flowchart LR
     DRV -->|"requiredSystemFeatures =<br/>[ token-&lt;name&gt; ]"| HOOK["Nix pre-build hook<br/>(nix/sandbox-hook.sh)"]
     HOOK -->|"grants the token's device/socket<br/>only to builds asking for its feature"| SB["build sandbox"]
     SB --> CHK["cakeys check &lt;obj&gt;.id.&lt;scheme&gt;"]
-    CHK -->|"first use (the key made out of band<br/>by cakeys create): fail with got: sha256-…"| OOB["record out of band:<br/>cakeys realise"]
+    CHK -->|"first use (the key made out of band<br/>by cakeys create): fail with got: sha256-…"| OOB["record out of band:<br/>cakeys lock"]
     OOB -.-> KL
     CHK -->|"every later build: the CA-ID<br/>is recomputed and compared"| URI["pkcs11: URI on stdout"]
 ```

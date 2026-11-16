@@ -359,7 +359,7 @@ pub struct ImportCtx<'a> {
 /// the PIN (the TPM path unseals the token's wrapping key with it), plus the material SPKI the
 /// attestation must name (`None` exactly for secret keys, which have none).
 ///
-/// `provision` is true only under `realise`: a provider that keeps device state to attest with
+/// `provision` is true only under `lock`: a provider that keeps device state to attest with
 /// (the TPM Attestation Key) may create it then, never on a read (`resolve`, `verify`).
 pub struct AttestCtx<'a> {
     /// An open session on the token, for the objects the module exposes (attestation
@@ -380,7 +380,7 @@ pub struct AttestCtx<'a> {
     /// The user PIN, when the token has one (the TPM path unseals the token's wrapping key
     /// with it).
     pub pin: Option<&'a str>,
-    /// True only under `realise`: the provider may create the device state it attests with (the
+    /// True only under `lock`: the provider may create the device state it attests with (the
     /// TPM Attestation Key), never on a read.
     pub provision: bool,
 }

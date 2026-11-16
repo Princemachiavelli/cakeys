@@ -311,7 +311,7 @@ pub fn assert_profile_conforms(
     assert_eq!(std::fs::read(scratch).unwrap(), committed, "a read-only probe overwrote the file");
 }
 
-/// The writing form of a compare-only `realise`/`delete` argument list: `--no-update-lock`
+/// The writing form of a compare-only `lock`/`delete` argument list: `--no-update-lock`
 /// dropped, `--update-lock` (the default, said explicitly) added.
 pub fn recording<'a>(args: &[&'a str]) -> Vec<&'a str> {
     args.iter().copied().filter(|a| *a != "--no-update-lock").chain(["--update-lock"]).collect()

@@ -38,14 +38,14 @@ fn a_profile_no_refuses_and_names_its_profile() {
 /// (generation it does not record is a note, never a refusal, and asked only of a pair whose
 /// origin is `create` and whose object the lock does not pin). The fixture's three `SoftHSM`
 /// realisations name three observations, so which is current is not known: a note naming
-/// `realise`, and the token is skipped. With one observation it resolves.
+/// `lock`, and the token is skipped. With one observation it resolves.
 #[test]
 fn the_lock_resolves_a_token_keys_toml_does_not_name() {
     let out = validate("keys.toml");
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(code(&out), 0, "{err}");
     assert!(err.contains("token 'softhsm' were recorded with 3 different observations"), "{err}");
-    assert!(err.contains("`realise` them") && !err.contains("softhsm/2.7"), "{err}");
+    assert!(err.contains("`lock` them") && !err.contains("softhsm/2.7"), "{err}");
 
     let w = Workdir::new("validate-one-observation");
     // One object the lock does not pin yet, so `create` would make it there.

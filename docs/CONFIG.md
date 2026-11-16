@@ -243,7 +243,7 @@ tokens.softhsm = { locator = { CKA_LABEL = "release-note" } }
 - **A private data object needs `CKA_PRIVATE = true` declared** in its spec, or it is refused
   (15): its `valuehash` would let anyone with the lock test guesses of the value offline
   (DESIGN §8.2). camigrate moves no private data object (15).
-- **Only `cakeys create` makes keys, and only where `origin = "create"`;** `realise` and
+- **Only `cakeys create` makes keys, and only where `origin = "create"`;** `lock` and
   `check` find what is there, and camigrate moves material only onto a pair that says
   `origin = "import"`. Certificates, public keys, data objects, `publicOnly` adoptions and
   `CKA_TRUSTED` keys are never `create` (17 at load). When the lock already pins the object's
@@ -257,14 +257,14 @@ tokens.softhsm = { locator = { CKA_LABEL = "release-note" } }
   refuses the whole run (15), and nothing is created; `--skip-unsupported` creates the rest and
   warns; `--dry-run` prints what each pair would get and why, and writes nothing.
 - **Declare what must not drift; everything else is observed.** `attributes` is the gate: a
-  declared attribute the token does not show is a conflict (13), and `realise` never re-records
+  declared attribute the token does not show is a conflict (13), and `lock` never re-records
   it. Every other attribute the token shows is recorded in the lock, and when it changes
-  `realise` re-records it with a warning, as it does a new module version or mechanism list
+  `lock` re-records it with a warning, as it does a new module version or mechanism list
   (DESIGN §3.5). An attribute that matters goes in `attributes`.
 - **A secret key needs an identity the token can recompute:** a declared usage bit a commitment
   can use (`CKA_SIGN`, `CKA_ENCRYPT`, `CKA_DECRYPT`, `CKA_WRAP` on AES; `CKA_ENCRYPT`,
   `CKA_DECRYPT` on DES3; `CKA_SIGN` on generic secrets and HMAC keys), or `CKA_EXTRACTABLE =
   true`. Otherwise the spec is invalid (17); DESIGN §3.4 says why, and what may change.
 
-For the lock that `realise` writes from this, see [`LOCK.md`](LOCK.md). A real, small pair of
+For the lock that `lock` writes from this, see [`LOCK.md`](LOCK.md). A real, small pair of
 files is [`examples/yubikey-secureboot.toml`](../examples/yubikey-secureboot.toml) and its lock.

@@ -29,9 +29,9 @@ pub enum KmError {
     },
     /// First use: the lock pins nothing to compare with yet, like a fixed-output derivation
     /// with a fake hash (18; HTTP's 428 Precondition Required). Not 10: a mismatch against a
-    /// pinned ID is a security event, this the state before `realise` records the `got:` ID.
+    /// pinned ID is a security event, this the state before `lock` records the `got:` ID.
     #[error(
-        "first use of {what}: the lock pins no identity for it yet; review, then `realise` records it\n     got:    {got}"
+        "first use of {what}: the lock pins no identity for it yet; review, then `lock` records it\n     got:    {got}"
     )]
     FirstUse {
         /// What was identified.

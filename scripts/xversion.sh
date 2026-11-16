@@ -4,11 +4,10 @@
 # locks with the code under test, so they cannot see format drift; this can.
 #
 #   scripts/xversion.sh record <old-cakeys> <dir>   # fresh SoftHSM token, objects of every class, lock
-#   scripts/xversion.sh check  <new-cakeys> <dir>   # verify, compare-only realise, re-record, diff
+#   scripts/xversion.sh check  <new-cakeys> <dir>   # check, compare-only lock, re-record, diff
 #
-# The lock layout changed once, in place (2026-11-13: the [observations] table): a lock
-# recorded by an older build has `provenance.module` per realisation and does not load here. So
-# <old-cakeys> must be built at or after that change; `check` refuses an older base lock by name.
+# Both builds must speak today's keys.toml and command line (`origin`, `lock`, the object-first
+# address): builds from 2026-11-15 on. An older one is refused by its own errors, not shimmed.
 #
 # Needs softhsm2-util and pkcs11-tool on PATH (the dev shell has both).
 set -euo pipefail
@@ -16,22 +15,10 @@ set -euo pipefail
 mode=$1 bin=$(realpath "$2") dir=$3
 module=${XV_MODULE:-$(dirname "$(dirname "$(command -v softhsm2-util)")")/lib/softhsm/libsofthsm2.so}
 fixtures=$(dirname "$(realpath "$0")")/../crates/cli/tests/fixtures
-# Each spec is named as its object: builds before 2026-11-15 read a verb's positional as the
-# spec, later ones as the object, and both name the same pair.
 specs=(ec ecpub rsa ed aes hmac wrapped cert data)
 export SOFTHSM2_CONF=$dir/softhsm2.conf
 
-config=$dir/keys.toml
-km() { "$bin" --config "$config" --lock "$dir/keys.lock" "$@"; }
-
-# keys.toml states each pair's origin, which builds before 2026-11-15 refuse as an unknown
-# field: such a build reads a copy without it. The lock is the same file either way.
-pick_config() {
-  sed -E 's/, origin = "[a-z]+"//' "$dir/keys.toml" >"$dir/keys.legacy.toml"
-  if "$bin" --config "$dir/keys.toml" validate 2>&1 | grep -q "unknown field .origin."; then
-    config=$dir/keys.legacy.toml
-  fi
-}
+km() { "$bin" --config "$dir/keys.toml" --lock "$dir/keys.lock" "$@"; }
 
 record() {
   rm -rf "$dir" && mkdir -p "$dir/tokens"
@@ -117,33 +104,24 @@ tokens.soft = { locator = { CKA_LABEL = "cert" }, origin = "adopt" }
 object = "data"
 tokens.soft = { locator = { CKA_LABEL = "data" }, origin = "adopt" }
 EOF
-  pick_config
-  # `create` makes the keys (no autoCreate: a build that has dropped it refuses the key).
   km create --token soft >/dev/null
   for s in "${specs[@]}"; do
-    km realise "$s" --token soft >"$dir/resolve.$s.json"
+    km lock --spec "$s" --token soft >"$dir/resolve.$s.json"
   done
   cp "$dir/keys.lock" "$dir/base.lock"
   echo "recorded ${#specs[@]} specs with $bin into $dir/base.lock"
 }
 
 check() {
-  # The pre-observation-table layout (per-realisation provenance.module): not readable by a build
-  # that has the table, so the comparison would only report that.
-  if [[ $(<"$dir/base.lock") == *".provenance.module]"* ]]; then
-    echo "$dir/base.lock has the lock layout before the observation table; record it with a newer build" >&2
-    exit 1
-  fi
-  pick_config
   cp "$dir/base.lock" "$dir/keys.lock"
   for s in "${specs[@]}"; do
-    km verify "$s" --token soft >/dev/null
-    km realise "$s" --token soft --no-update-lock >/dev/null
-    km resolve "$s" --token soft | diff -u "$dir/resolve.$s.json" - || {
+    km check --spec "$s" --token soft >/dev/null
+    km lock --spec "$s" --token soft --no-update-lock >/dev/null
+    km resolve --spec "$s" --token soft | diff -u "$dir/resolve.$s.json" - || {
       echo "resolve output of $s changed" >&2
       exit 1
     }
-    km realise "$s" --token soft >/dev/null 2>&1
+    km lock --spec "$s" --token soft >/dev/null 2>&1
   done
   diff -u "$dir/base.lock" "$dir/keys.lock" || {
     echo "re-recording changed the lock" >&2

@@ -202,7 +202,7 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **Vendor HSM attestation formats** (Luna PKC, Google Cloud HSM, nShield): a scheme each, not
   researched.
 - **Maybe, a challenge bank**: host-held, single-use challenges narrow replay of secret-key
-  fingerprints after `realise`; it needs mutable host state the sandboxed `check` lacks.
+  fingerprints after `lock`; it needs mutable host state the sandboxed `check` lacks.
 
 ## Upstream
 

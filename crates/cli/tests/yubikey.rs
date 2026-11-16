@@ -150,13 +150,13 @@ impl Env {
         common::run_within(&self.dir.join("keys.toml"), args, RUN_LIMIT)
     }
 
-    /// First use, record, verify, refused delete and idempotent re-realise of `c`: the key is
+    /// First use, record, verify, refused delete and idempotent re-lock of `c`: the key is
     /// generated (or adopted from an earlier run) in its slot, attested, its possession proven
     /// by `c.binding` — no touch, no prompt — and it keeps its identity throughout.
     fn lifecycle(&self, c: &Case) {
         let spec = format!("{}-yubikey", c.name);
         let r = ["create", "--spec", &spec, "--token", "yubikey", "--no-update-lock"];
-        let record = ["realise", "--spec", &spec, "--token", "yubikey", "--update-lock"];
+        let record = ["lock", "--spec", &spec, "--token", "yubikey", "--update-lock"];
 
         // First use: generated (SO login) or adopted, and identified; nothing is locked yet.
         let first = self.km(&r);

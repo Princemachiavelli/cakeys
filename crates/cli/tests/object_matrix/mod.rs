@@ -677,7 +677,7 @@ const ED25519_PARAMS: &[u8] = &[0x06, 0x03, 0x2b, 0x65, 0x70];
 /// the provenance the lock pins (the immutables that are true): what tells an imported private
 /// key from a generated one, whose identity is the same.
 fn outcome(w: &Workdir, spec: &str, token: &str, immutables: bool) -> Result<String, (i32, String)> {
-    let o = w.km(&["realise", "--spec", spec, "--token", token, "--update-lock"]);
+    let o = w.km(&["lock", "--spec", spec, "--token", token, "--update-lock"]);
     if code(&o) != 0 {
         return Err((code(&o), stderr(&o)));
     }
@@ -726,7 +726,7 @@ pub struct Target<'a> {
     pub workers: usize,
 }
 
-/// Create the grid on `t`, realise every object, and compare the table with the committed one
+/// Create the grid on `t`, lock every object, and compare the table with the committed one
 /// (or rewrite it, under `CAKEYS_UPDATE_OBJECTS`).
 ///
 /// # Panics

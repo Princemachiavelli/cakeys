@@ -105,7 +105,7 @@ there and the operation that tests it; the emitter, the diff and the stack algeb
 change. *An absent row is unknown*: never probed, never claimed — a spec-compliant default.
 
 A shipped profile describes a kind of token; the lock records what each deployment's own token
-answered (docs/LOCK.md, an observation's `capabilities`: the proofs `realise` gave, the
+answered (docs/LOCK.md, an observation's `capabilities`: the proofs `lock` gave, the
 generations `create` made), and those answers decide before the profile's in `validate`,
 `create`'s gate and camigrate's planner. A profile's *no* — or the token's — refuses; *unknown*
 means try, except for what cannot be undone.

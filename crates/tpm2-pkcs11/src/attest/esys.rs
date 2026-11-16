@@ -73,7 +73,7 @@ fn flushing<T>(ctx: &mut Context, handle: KeyHandle, f: impl FnOnce(&mut Context
 ///
 /// A key already at the handle is used only if it *is* such a key — the public area of cakeys'
 /// template, restricted signing, fixedTPM: an unrestricted key there could sign a forged
-/// `TPMS_ATTEST`, and the lock would pin it on first use. Only `provision` (set under `realise`)
+/// `TPMS_ATTEST`, and the lock would pin it on first use. Only `provision` (set under `lock`)
 /// creates one; a read never changes the TPM.
 ///
 /// # Errors
@@ -95,7 +95,7 @@ pub fn attestation_key(ctx: &mut Context, handle: u32, provision: bool) -> Resul
     }
     if !provision {
         return Err(KmError::Unavailable(format!(
-            "no Attestation Key at {handle:#010x} on this TPM; `realise` provisions it"
+            "no Attestation Key at {handle:#010x} on this TPM; `lock` provisions it"
         )));
     }
     let transient = ctx
@@ -452,7 +452,7 @@ pub fn recompute_name(pub_blob: &[u8]) -> Result<Vec<u8>> {
 /// Load, certify, verify and pin one key of the token (§3.7): the store row `tobj` whose
 /// PKCS#11 object is being attested. The material SPKI (present exactly for asymmetric keys)
 /// is cross-checked against the attestation — the attested key must be the key the object's
-/// `rfc7093m4` names. `provision` lets a missing Attestation Key be created (`realise` only).
+/// `rfc7093m4` names. `provision` lets a missing Attestation Key be created (`lock` only).
 ///
 /// # Errors
 ///

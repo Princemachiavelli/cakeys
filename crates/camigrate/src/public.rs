@@ -2,8 +2,8 @@
 //! or a data object needs no wrapping. The source object is verified against the lock, its
 //! material taken from what that check established — a public key from its canonical SPKI, a
 //! certificate's attributes from its DER — and created on the target under the target spec's
-//! locator and attributes. It is then recorded through `ops::realise_import`, the lock rules
-//! `cakeys realise` uses: a mismatch (10) removes what was just created and leaves the lock as
+//! locator and attributes. It is then recorded through `ops::lock_import`, the lock rules
+//! `cakeys lock` uses: a mismatch (10) removes what was just created and leaves the lock as
 //! it was.
 
 use cakeys_core::config::{Lock, Origin};
@@ -81,7 +81,7 @@ pub(crate) fn material(src: &Target, from: &Token, lock: &Lock, notes: &mut Note
 /// realisation of `dst` (a public key object holding the same key is that object: recorded, not
 /// created again); `Unsupported` (15)
 /// when the target refuses `C_CreateObject`; and, after the creation, whatever
-/// `ops::realise_import` refuses — a hash mismatch (10) included — with what was created removed
+/// `ops::lock_import` refuses — a hash mismatch (10) included — with what was created removed
 /// again.
 pub(crate) fn create(
     dst: &Target,
@@ -107,7 +107,7 @@ pub(crate) fn create(
     };
     let origin =
         Origin { from: from.to_owned(), method: Method::Public.name(), exposure: Exposure::Public, declared: false };
-    match ops::realise_import(dst, to, lock, origin, notes) {
+    match ops::lock_import(dst, to, lock, origin, notes) {
         Ok(_) => Ok(Moved::Imported),
         Err(e) => Err(roll_back(dst, to, created.as_slice(), e, notes)),
     }

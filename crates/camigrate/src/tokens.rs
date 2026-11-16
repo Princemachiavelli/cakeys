@@ -217,7 +217,7 @@ fn lockless_token_cfg() -> TokenCfg {
 /// # Errors
 ///
 /// `PreconditionFailed` when `object` has no realisation on `token`, or the lock records no
-/// type for it: the plan is made from what the lock pins, so realise it first.
+/// type for it: the plan is made from what the lock pins, so lock it first.
 pub(crate) fn materials<'a>(lock: &'a Lock, token: &str, objects: &[&str]) -> Result<Vec<Material<'a>>> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
@@ -233,7 +233,7 @@ pub(crate) fn materials<'a>(lock: &'a Lock, token: &str, objects: &[&str]) -> Re
     }
     if let Some(o) = objects.iter().find(|o| !seen.contains(**o)) {
         return Err(KmError::PreconditionFailed(format!(
-            "object '{o}' has no realisation on token '{token}' in the lock; realise it there first"
+            "object '{o}' has no realisation on token '{token}' in the lock; lock it there first"
         )));
     }
     if out.is_empty() {
@@ -313,7 +313,7 @@ pub(crate) struct Moves {
     pub source_from: &'static str,
     pub target_from: &'static str,
     pub plans: Vec<Plan>,
-    /// The target's capabilities (none for a file), to check what its realise will need.
+    /// The target's capabilities (none for a file), to check what its `lock` will need.
     pub target: Option<Side>,
 }
 
@@ -391,7 +391,7 @@ pub(crate) fn plan_moves(
                 object.and_then(|o| lock.objects.get(o)).and_then(|o| o.public_key.as_ref()).is_none().then(|| {
                     format!(
                         "'{name}' is not open, and the lock records no public key for its transport key '{spec}': \
-                         realise it there again with migrate.transportWith naming it"
+                         lock it there again with migrate.transportWith naming it"
                     )
                 })
             }
@@ -460,15 +460,13 @@ pub(crate) fn transport_spec<'a>(
     let Some(chosen) = chosen else {
         return Err(format!(
             "no transport key is named for '{token}' (docs/CAMIGRATE.md D3): set transportWith in [tokens.{token}.migrate] to the \
-             spec of an RSA key there that may unwrap and never leaves the token, realise it, or pass --transport-key"
+             spec of an RSA key there that may unwrap and never leaves the token, lock it, or pass --transport-key"
         ));
     };
     let Some((spec, r)) =
         lock.realisations.get_key_value(chosen).and_then(|(spec, by_token)| Some((spec, by_token.get(token)?)))
     else {
-        return Err(format!(
-            "transport key '{chosen}' is not realised on '{token}' in the lock: realise it there first"
-        ));
+        return Err(format!("transport key '{chosen}' is not realised on '{token}' in the lock: lock it there first"));
     };
     let is_true = |n: &str| r.policy.get(n) == Some(&AttrValue::Bool(true));
     let rsa = lock

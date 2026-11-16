@@ -75,7 +75,7 @@ fn tokens(name: &str) -> Option<(Env, String)> {
         ("create", "ek-src", soft),
         ("create", "kk-src", kry),
         ("create", "ks-src", kry),
-        ("realise", "crt-src", kry),
+        ("lock", "crt-src", kry),
     ] {
         let o = e.cakeys(r, &[verb, "--spec", spec, "--token", r.name]);
         assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));

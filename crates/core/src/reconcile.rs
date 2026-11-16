@@ -15,7 +15,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 /// What a token holds for one (spec, token) pair, as a run computed it: the object found, its
-/// IDs and what was observed of it. `realise` and `check` print it as JSON.
+/// IDs and what was observed of it. `lock` and `check` print it as JSON.
 #[derive(Debug, Serialize)]
 pub struct Resolved {
     /// The object's name.
@@ -88,7 +88,7 @@ impl Notes {
     }
 }
 
-/// Whether a run records what the lock lacks (`realise`, `delete` by default) or only compares
+/// Whether a run records what the lock lacks (`lock`, `delete` by default) or only compares
 /// (`--no-update-lock`, and always for `verify` and `check`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockWrite {
@@ -98,7 +98,7 @@ pub enum LockWrite {
     Record,
 }
 
-/// What this run observed of the object and of the token: recorded on `realise`, compared
+/// What this run observed of the object and of the token: recorded on `lock`, compared
 /// (warnings only) with what the lock recorded.
 pub struct Facts {
     /// What was seen of the object (its URI, the session).
@@ -142,7 +142,7 @@ pub fn reconcile(
     // use, recording whatever the target holds (docs/CAMIGRATE.md D6).
     if facts.origin.is_some() && lock.objects.get(t.object_name).is_none_or(|o| o.ids.is_empty()) {
         return Err(KmError::PreconditionFailed(format!(
-            "{t}: an import needs the IDs the lock pins for object '{}', and it pins none; realise it on \
+            "{t}: an import needs the IDs the lock pins for object '{}', and it pins none; lock it on \
              its source first",
             t.object_name
         )));
@@ -198,7 +198,7 @@ pub fn compare(
     let unlisted = lock.unlisted_pairs(t.object_name);
     if !update && !unlisted.is_empty() {
         notes.note(format_args!(
-            "{unlisted:?} share the public key of '{}' but are not listed as its pairs; `realise` records them",
+            "{unlisted:?} share the public key of '{}' but are not listed as its pairs; `lock` records them",
             t.object_name
         ));
     }
@@ -213,7 +213,7 @@ fn spec_unchanged(t: &Target, r: &Resolved, prev: &LockRealisation) -> Result<()
         return Ok(());
     }
     Err(KmError::PreconditionFailed(format!(
-        "spec '{}' changed in keys.toml since it was realised on '{}' ({}); review the change, then `realise`",
+        "spec '{}' changed in keys.toml since it was realised on '{}' ({}); review the change, then `lock`",
         t.spec_name,
         t.token_name,
         diff.join(", ")
@@ -238,7 +238,7 @@ fn spec_diff(t: &Target, r: &Resolved, prev: &LockRealisation) -> Vec<String> {
     diff
 }
 
-/// What the realisation proved when it was locked, it must still prove — also when `realise`
+/// What the realisation proved when it was locked, it must still prove — also when `lock`
 /// writes the lock: its mode, binding, attestation and schemes, and the immutables fixed when the
 /// object was made.
 fn no_downgrade(t: &Target, r: &Resolved, prev: &LockRealisation, update: bool, notes: &mut Notes) -> Result<()> {
@@ -255,7 +255,7 @@ fn no_downgrade(t: &Target, r: &Resolved, prev: &LockRealisation, update: bool, 
             "binding downgrade for {t}: locked binding '{was}', now only '{now}'"
         )));
     }
-    // The attestation is compared, even when realise writes the lock (§3.7). A different anchor means
+    // The attestation is compared, even when lock writes the lock (§3.7). A different anchor means
     // a different device (or a re-provisioned TPM) signed the provenance; a different ID
     // under the same anchor means the attested object changed (re-imported, other
     // attributes or policy). Both are changes to review, never to re-record — and a lost
@@ -283,7 +283,7 @@ fn no_downgrade(t: &Target, r: &Resolved, prev: &LockRealisation, update: bool, 
         }
         (None, Some(now)) if !update => {
             notes.note(format_args!(
-                "{} also has a {} attestation the lock does not record; `realise` adds it",
+                "{} also has a {} attestation the lock does not record; `lock` adds it",
                 t, now.kind
             ));
         }
@@ -313,14 +313,14 @@ fn object_unchanged(t: &Target, r: &Resolved, prev: &LockRealisation, notes: &mu
     let diff = object_diff(r, prev);
     if !diff.is_empty() {
         return Err(KmError::PreconditionFailed(format!(
-            "{} changed on the token since it was realised ({}); review, then `realise`",
+            "{} changed on the token since it was realised ({}); review, then `lock`",
             t,
             diff.join(", ")
         )));
     }
     let new: Vec<&String> = r.policy.keys().filter(|n| !prev.policy.contains_key(*n)).collect();
     if !new.is_empty() {
-        notes.note(format_args!("{t} also reports {new:?}, which the lock does not record; `realise` adds them"));
+        notes.note(format_args!("{t} also reports {new:?}, which the lock does not record; `lock` adds them"));
     }
     Ok(())
 }
@@ -362,7 +362,7 @@ fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut 
     {
         return Err(KmError::PreconditionFailed(format!(
             "{} computes {:?} but '{}' is locked only by {:?}: nothing shows it is the same \
-             material; realise a spec that computes both first",
+             material; lock a spec that computes both first",
             t,
             r.ids.keys().collect::<Vec<_>>(),
             t.object_name,
@@ -392,12 +392,12 @@ fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut 
     if !update && lock.realisation(t.spec_name, t.token_name).is_none() {
         return Err(KmError::PreconditionFailed(format!(
             "{} matches the locked identity, but the lock records no realisation of spec '{}' on \
-             token '{}'; review, then `realise`",
+             token '{}'; review, then `lock`",
             t, t.spec_name, t.token_name
         )));
     }
     for (scheme, _) in &unlocked {
-        notes.note(format_args!("{t} also has a {scheme} identity the lock does not record; `realise` adds it"));
+        notes.note(format_args!("{t} also has a {scheme} identity the lock does not record; `lock` adds it"));
     }
     // Locked schemes not checked now: unknown to this cakeys (e.g. from a newer one), or not
     // computable for this spec on this token.
@@ -552,7 +552,7 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
 }
 
 /// `observed` and the observation never change a verdict: identity is enforced by the CA-IDs, so
-/// a different module build or token only warns. `realise` re-binds them.
+/// a different module build or token only warns. `lock` re-binds them.
 fn warn_observed(t: &Target, prev: &LockRealisation, lock: &Lock, now: &Facts, notes: &mut Notes) {
     if prev.observed.as_ref().is_some_and(|o| o.session == Session::User) && now.observed.session != Session::User {
         notes.warn(format_args!(
@@ -820,7 +820,7 @@ mod tests {
         );
     }
 
-    /// An import records where the material came from (docs/CAMIGRATE.md D7); a later plain realise of
+    /// An import records where the material came from (docs/CAMIGRATE.md D7); a later plain `lock` of
     /// the same object keeps it, and the lock still loads.
     #[test]
     fn an_import_records_its_origin_and_a_realise_keeps_it() {
@@ -956,7 +956,7 @@ mod tests {
     }
 
     /// What a compare says without failing: an attestation the lock does not record yet (a
-    /// note: `realise` adds it), a public session where the realisation was made in a user one,
+    /// note: `lock` adds it), a public session where the realisation was made in a user one,
     /// mechanisms the token no longer offers, and observation keys of a newer cakeys (warnings).
     /// A type that changed since it was locked fails, writing or not.
     #[test]

@@ -101,7 +101,7 @@ impl Scheme {
     ];
 
     /// Schemes whose computation is deprecated (docs/DESIGN.md §3.1). Identities already locked
-    /// under one keep verifying — with a warning — but `realise` never records a new one: a
+    /// under one keep verifying — with a warning — but `lock` never records a new one: a
     /// changed or weakened computation gets a *new* scheme name (§10), so the empty list is the
     /// "nothing is deprecated" state, pinned by test.
     pub const DEPRECATED: [Scheme; 0] = [];

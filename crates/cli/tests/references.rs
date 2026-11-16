@@ -26,13 +26,13 @@ const HMAC_VALUE: &[u8; 32] = b"cakeys cross-reference hmac key!";
 const DATA_VALUE: &[u8] = b"cakeys cross-reference data object";
 
 impl Env {
-    /// Realise `spec` on every reference into one lock: the first records the identity and each
+    /// Lock `spec` on every reference into one lock: the first records the identity and each
     /// other must match it (a different one would be 10). Every scheme two references both
     /// compute reports the same ID, and each then verifies.
     fn assert_one_identity(&self, spec: &str, refs: &[&Ref]) {
         let mut seen: BTreeMap<String, (serde_json::Value, &str)> = BTreeMap::new();
         for r in refs {
-            let o = self.km(r, &["realise", "--spec", spec, "--token", r.name]);
+            let o = self.km(r, &["lock", "--spec", spec, "--token", r.name]);
             assert_eq!(code(&o), 0, "{spec} on {}: {}", r.name, String::from_utf8_lossy(&o.stderr));
             let resolved: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
             for (scheme, id) in resolved["ids"].as_object().unwrap() {
@@ -367,7 +367,7 @@ fn the_same_scenario_gets_the_same_verdict_on_every_reference() {
 
     // Record the swap key everywhere, then replace each private key with another P-256 key.
     for r in &created {
-        assert_eq!(code(&e.km(r, &["realise", "--spec", "swap", "--token", r.name])), 0, "{}", r.name);
+        assert_eq!(code(&e.km(r, &["lock", "--spec", "swap", "--token", r.name])), 0, "{}", r.name);
     }
     for r in e.refs(|r| r.plant == Plant::Create) {
         let s = open_session(&r.module, r.token_label, "1234");

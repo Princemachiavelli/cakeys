@@ -197,7 +197,7 @@ Found on the way, and fixed:
 - **A hint named an impossible fix**: for a module version no profile records, resolution
   advised naming the profile in `provider`, which no token open accepts (docs/CONFIG.md: the
   module profile is chosen, not named). The branch for an exact profile name was unreachable
-  and is removed; the hint says to probe the module, or realise once.
+  and is removed; the hint says to probe the module, or lock once.
 - **Unreachable, removed**: `generate.rs`'s refusal of a class `plan.rs` refuses first.
 
 What remains, by kind (about 740 lines):

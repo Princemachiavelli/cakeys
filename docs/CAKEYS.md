@@ -18,7 +18,7 @@ the result.
 
 HTTP-like, over two stores, the token and the lock. `resolve`, `verify` and `check` are GETs and
 never write either. `create` is the one verb that writes keys to a token, a PUT with
-If-None-Match; `delete` is a DELETE with If-Match. `realise` writes only the lock: it records
+If-None-Match; `delete` is a DELETE with If-Match. `lock` writes only the lock: it records
 what is there now, as a lock file does.
 
 Every verb but `validate` and `gc` takes one address, the object first:
@@ -31,9 +31,9 @@ leaves out selects every one, so `create` alone selects every pair.
 | Verb | Semantics |
 |---|---|
 | `validate` | Static check of modes, opt-ins, types and provider names; touches no token. Then the capability-profile gate ([CAPROBE.md](CAPROBE.md)): each spec's needs — its commitments' mechanisms, an attestation — against its token's profiles, resolved from the lock's recorded module and token or keys.toml's `provider`; a profile's *no* is refused (15) naming the profile, *unknown* is a note. Generating the type, curve and size is asked only of the pairs `create` makes (`origin = "create"`, not yet pinned). |
-| `resolve <address>` | GET: find (exactly one), check type and policy, compute IDs, print JSON. Never writes. For a private key, every public key object under the locator must hold its own public key — a consumer may select the public half by the locator alone — else a conflict (13, `a_foreign_public_key_conflicts_and_is_never_deleted`); `verify`, `realise` and `check` resolve the same way. |
+| `resolve <address>` | GET: find (exactly one), check type and policy, compute IDs, print JSON. Never writes. For a private key, every public key object under the locator must hold its own public key — a consumer may select the public half by the locator alone — else a conflict (13, `a_foreign_public_key_conflicts_and_is_never_deleted`); `verify`, `lock` and `check` resolve the same way. |
 | `verify <address>` | `check`, by another name. |
-| `realise <address> [--no-update-lock]` | The lock verb: find the object, compare it with the lock and record what the lock lacks or what changed around it (DESIGN §3.5), and print the resolved JSON. It never creates the object: absent is not found (11), naming `cakeys create`. It does provision a TPM Attestation Key a realisation needs (DESIGN §3.7). |
+| `lock <address> [--no-update-lock]` | The lock verb: find the object, compare it with the lock and record what the lock lacks or what changed around it (DESIGN §3.5), and print the resolved JSON. It never creates the object: absent is not found (11), naming `cakeys create`. It does provision a TPM Attestation Key a realisation needs (DESIGN §3.7). |
 | `create [<address>] [--dry-run] [--skip-unsupported] [--no-update-lock]` | PUT with **If-None-Match**, the one verb that makes keys: every selected (spec, token) pair with `origin = "create"` whose object the lock does not pin yet is created if absent, then realised; the other pairs are skipped with a note. Before any token is opened, each is checked against the capability profiles (the `validate` gate): a pair they say cannot be made refuses the whole run (15) and nothing is created, unless `--skip-unsupported`, which creates the rest and warns; `--dry-run` prints what each pair would get (`create`, `skip`, `refuse`) and why, as JSON, opening no token and writing nothing (`create_checks_the_profiles_before_it_makes_anything`). Refused (14) when the lock already pins the object's material — generated material could never match (`create_never_fights_a_locked_identity`); never over anything under the locator (`never_create_over_an_occupied_locator`), nor from a session without login, which cannot see private objects there (16). If the identity of a just-created object cannot be established, it is destroyed (`tpm2_identity_failure_after_create_leaves_nothing`); on a module that cannot delete keys (ykcs11) the key stays and the message says so. Re-running never duplicates (`ec_lifecycle`). An address naming one pair (an object or `--spec`, and `--token`) creates it or says why not (an `import` or `adopt` pair: 17; a pinned object its token lost: 14). A name that selects nothing is refused (17), never an empty success. One token is open at a time, so tokens of one module follow each other. Prints the realised objects as a JSON array; what was created before a failure — opening the next token included — is still recorded (`create_makes_keys_and_nothing_else_does`, `create_records_what_it_made_before_a_failure`). |
 | `delete <address> [--if-match ID] [--no-update-lock]` | DELETE with If-Match. Absent is success, even without a lock — but a session without login cannot see a private object, so it never reports one absent (16); a present object with no expected ID is never deleted (`ec_lifecycle`), and only what was identified is removed: a private key's public half only when it holds the same key, never another key's public object under the locator (`delete_removes_only_what_it_identified`); a key on a module whose delete leaves it in place (ykcs11) is refused (15), never claimed. Unless `--no-update-lock`, it removes the realisation but keeps `objects.<name>.ids`, since the material may live on other tokens. |
 | `check <address>` | The pseudo-FOD pre-use check: verify the pair the address names against the lock (If-Match), in a read-only session, and print the URI. It never writes: not the lock, not the token, not a TPM's persistent handles. An object that is not there is not found (11, naming `cakeys create`); one that is there but not pinned fails with its `got:` (10). Schemes the spec or token can never compute are refused before the object is looked for (`scheme_the_token_lacks_is_refused_before_create`). |
@@ -55,14 +55,14 @@ mapped onto an error programs already handle. The codes are frozen (DESIGN §10)
 | 15 | unsupported: the token cannot do what the spec needs | 501, `ENOTSUP` | no | a mechanism or key type the module lacks |
 | 16 | unavailable: the token cannot be used now | 503, `EIO` | sometimes | token absent, PIN locked or on its last try, module not loadable |
 | 17 | invalid config, lock, spec or token options | 400, `EINVAL` | no | a schema error, a malformed reference, an unknown token |
-| 18 | first use: the lock pins nothing to compare with yet; prints `got: sha256-…` | 428 | after `realise` records it | a key just created or adopted; a scheme the lock does not pin, asked for by name |
+| 18 | first use: the lock pins nothing to compare with yet; prints `got: sha256-…` | 428 | after `lock` records it | a key just created or adopted; a scheme the lock does not pin, asked for by name |
 | 1 | I/O or other | 500 | sometimes | the lock unreadable |
 | 2 | command-line usage | — | no | bad arguments |
 
 Two distinctions a caller should keep rather than flatten into "failed", each with its own
 code: 10 against 11 ("the key is there but is not the pinned one" is a security event; "the key
 is not there" an operational one), and 10 against 18 (a mismatch against a pinned ID, against
-first use with nothing pinned: the state before `realise`, reviewed through the `got:` line).
+first use with nothing pinned: the state before `lock`, reviewed through the `got:` line).
 
 ## The contract with programs that use keys
 
@@ -78,7 +78,7 @@ URI, never key material, and signs or decrypts through its own PKCS#11 library a
 | "…as a key file" | `cakeys check signing --format pkcs11-provider-pem` | pkcs11-provider's key file (`PKCS#11 PROVIDER URI`, as its `uri2pem.py` writes) wrapping the URI; a warning when the key has no `CKA_ID` | wraps anything but a private key (15) |
 | "…with the module and PIN" | `--uri-module`, `--uri-pin source` or `value` | the URI with `?module-path=` (the module file the check loaded) and the PIN as `pin-source=file:`/`env:` (`pinFile`/`pinEnv`) or `pin-value=` | adds either unasked; puts a PIN for a token without one (17) |
 | "What is on the token?" | `cakeys resolve <object> [--spec s] [--token t]` | JSON: `uri`, `ids`, `mode`, `binding`, `policy`, `immutables`, `specDigest`, … | compares with the lock |
-| "Make it, then pin it" | `cakeys create` / `realise` | JSON, and the lock recorded | regenerates a pinned key |
+| "Make it, then pin it" | `cakeys create` / `lock` | JSON, and the lock recorded | regenerates a pinned key |
 
 A program names a cakeys object, never a URI: a bare URI only locates, so by itself it is
 underdescribed. What `check` hands back is shaped for the program, while the lock's URI stays
@@ -135,7 +135,7 @@ A consumer derivation requires the token's feature and runs `check` before using
 1. **Create** the key out of band (`cakeys create`). `check` never creates one: in the sandbox
    it fails as not found (11), naming `cakeys create`.
 2. **First use** fails with `got:` (18) — `check` never writes, and in the sandbox it could not.
-   Record the ID out of band (`realise`, or `create` itself, which writes the lock by default).
+   Record the ID out of band (`lock`, or `create` itself, which writes the lock by default).
 3. Every later build verifies first.
 
 **Caveat:** a cached consumer is not rebuilt, so the token is not re-contacted; `nix build --check`

@@ -83,7 +83,7 @@ Deprecation:
 - **A changed or weakened computation gets a new scheme name, never an edit** (§10) — like go.sum's
   `h1`/`h2`. The old name keeps meaning what it meant.
 - **A deprecated scheme still verifies identities already locked under it** — with a warning — but
-  `realise` never records a *new* identity under it: migrate by realising a spec that
+  `lock` never records a *new* identity under it: migrate by realising a spec that
   computes the replacement. (`gc` will not drop the old entry: the identity is still true.)
 - **No scheme is deprecated today.** The register is `Scheme::DEPRECATED` in
   `crates/core/src/id.rs`, pinned empty by `the_deprecation_register_is_pinned`; the AES order
@@ -176,10 +176,10 @@ alone can compute, such as a TPM Name). If they return, they get their own names
 ### 3.5 Linking and upgrades
 
 - **Identities are only linked through a shared scheme.** If an object already has locked IDs and
-  none of the computed schemes is among them, `realise` fails (exit 14) instead of attaching new
+  none of the computed schemes is among them, `lock` fails (exit 14) instead of attaching new
   IDs — `disjoint_schemes_never_link_material`.
-- **`realise`, `create` and `delete` write the lock by default, and a write only fills gaps.**
-  `realise` is the lock verb: it never creates, and `create` is the one verb that writes keys
+- **`lock`, `create` and `delete` write the lock by default, and a write only fills gaps.**
+  `lock` is the lock verb: it never creates, and `create` is the one verb that writes keys
   (2026-11-15). Like `nix build` with `flake.lock`: what the lock lacks is recorded (first use included), but a
   locked ID, anchor, binding, type or immutable is never overwritten — those changes fail even
   when the lock is written. `--no-update-lock` compares only (`--update-lock` names the
@@ -188,7 +188,7 @@ alone can compute, such as a TPM Name). If they return, they get their own names
   …`): what keys.toml changed (locator, object, `publicOnly`, spec digest) and policy
   attributes the lock did not record are notes; a policy attribute or immutable that changed
   on the token, which nobody edited, is a warning — `a_write_says_what_it_rerecorded`.
-- **Declare what must not drift; everything else is observed** (decided 2026-11-15). `realise`
+- **Declare what must not drift; everything else is observed** (decided 2026-11-15). `lock`
   is the lock verb and records what is there now, as a lock file does, with no
   `--accept-drift`: what it re-records falls into three kinds, and none needs a gate. The
   module, its versions, the provider, the mechanisms and the token's info are re-recorded with
@@ -205,7 +205,7 @@ alone can compute, such as a TPM Name). If they return, they get their own names
   `lock_is_written_by_default_and_refused_where_it_cannot_be`.
 - **A computed scheme missing from an otherwise matching lock is a note.** This happens, for
   example, when a newer version computes more schemes.
-  - With nothing to compare, it is first use: `realise` records it; `--no-update-lock`,
+  - With nothing to compare, it is first use: `lock` records it; `--no-update-lock`,
     `verify` and `check` fail as a first use (exit 18, apart from a mismatch's 10), printing `got:`.
   - An explicitly requested `check <obj>.id.<scheme>` needs that scheme locked.
   - Test: `a_new_scheme_missing_from_the_lock_is_a_note_unless_requested`.
@@ -213,7 +213,7 @@ alone can compute, such as a TPM Name). If they return, they get their own names
 ### 3.6 Proof of possession (`binding`)
 
 A private key's identity hashes a public key, which may come from a separate object (§3.2). Each
-time it resolves a private key (`resolve`, `verify`, `realise`, `check`, `delete`), cakeys binds the
+time it resolves a private key (`resolve`, `verify`, `lock`, `check`, `delete`), cakeys binds the
 key to its identity:
 
 1. The host builds a challenge: `"cakeys/pop/v1\0" ‖ SHA-256(SPKI) ‖ 32-byte nonce` from the OS
@@ -268,7 +268,7 @@ key to its identity:
        fixed table while its keys derive. The provider repairs the reported value
        (`Provider::repair`), so `CKA_DERIVE = true` checks and is recorded. A lock
        recorded before that repair fails `verify` once (14, "CKA_DERIVE false -> true"), and
-       `realise` re-records it.
+       `lock` re-records it.
    - `pop-decrypt` (RSA keys that only decrypt): the host encrypts the challenge to the public key
      with RSA-OAEP (SHA-1, MGF1-SHA1 — the PKCS#11 baseline; SoftHSM implements no other OAEP);
      the token decrypts with `CKM_RSA_PKCS_OAEP`. Where the token or the key's
@@ -373,7 +373,7 @@ content-addressed identity — one per token type that can produce it:
   needs a new object name.
 - **The TPM Attestation Key** is a restricted signing key (P-256, ECDSA-SHA256, empty auth,
   owner hierarchy) that cakeys provisions at a persistent handle and never uses for anything
-  but certify: a restricted key signs only TPM-generated structures. Only `realise` (and
+  but certify: a restricted key signs only TPM-generated structures. Only `lock` (and
   `create`, through it) provisions it; `resolve`, `verify` and `check` never change the TPM, and
   fail (16, or 14 once locked) when it is missing — `tpm2_keys_attest_their_tpm_residence`
   compares the persistent handles around a `check`. A key already at the handle is used only if its public area is exactly
@@ -415,7 +415,7 @@ What may be created and adopted:
   Login state is per token, so the step logs the user out, logs in as SO, generates (or
   destroys), logs out and logs the user back in; the SO credential is read just before and
   zeroized after. `resolve`, `verify` and `check` never read it.
-- **Only `cakeys create` makes keys,** and only on a pair whose `origin` is `create`; `realise`
+- **Only `cakeys create` makes keys,** and only on a pair whose `origin` is `create`; `lock`
   and `check` find what is there (2026-11-15: `check` is a read). Certificates, public keys and
   data objects are adopted or imported, never created —
   `adoption_rules_are_validated`, `standalone_public_key_objects`, `data_objects_…`. When the lock
@@ -473,13 +473,13 @@ Annotated, with the reasons behind each table: [`LOCK.md`](LOCK.md).
   does not know. A realisation naming a missing entry is invalid (17); a write and `gc` drop the
   entries nothing names. A token's observation (`Lock::token_observation`, for the static gate
   and `export` from the lock) is known only when all its realisations name one entry; otherwise
-  the caller says so and names `realise`.
+  the caller says so and names `lock`.
 - **The policy vector is closed-world.** The spec declares the attributes it requires; the lock
   records every attribute the object shows for its class, declared or not — the booleans
   (SoftHSM EC private keys, for example, default to `CKA_DECRYPT`, `CKA_UNWRAP` and
   `CKA_SIGN_RECOVER`) and, on key objects, `CKA_ALLOWED_MECHANISMS` when the token reports a
   non-empty list. A recorded attribute that changes or becomes unreadable fails `verify` (exit 14)
-  until `realise`; a newly readable one is a note. With `publicOnly`, this is the
+  until `lock`; a newly readable one is a note. With `publicOnly`, this is the
   public object's vector.
 - **Immutables** (`CKA_LOCAL`, `CKA_NEVER_EXTRACTABLE`, `CKA_ALWAYS_SENSITIVE`,
   `CKA_KEY_GEN_MECHANISM`) are compared the same way. A flag that was `true` and is not any more
@@ -492,11 +492,11 @@ Annotated, with the reasons behind each table: [`LOCK.md`](LOCK.md).
   - a realisation's `object` is in the lock, and its `schemes` are among that object's IDs;
   - **one object per material:** no two objects of one class share an ID under one scheme
     (a certificate's `rfc7093m4` is exempt: it names the subject key, which renewed
-    certificates share). `realise` refuses to record a second name (exit 14);
+    certificates share). `lock` refuses to record a second name (exit 14);
   - **`pairs`** makes the key ↔ certificate relation explicit: objects that share an
     `rfc7093m4`. A listed partner present in the file must share it and list back; one that is
     absent may live in another fragment, so locks still split and join per object. Partners
-    present but unlisted are a note, and `realise` records them;
+    present but unlisted are a note, and `lock` records them;
   - a private-key realisation records its `binding`, and no other class has one.
 - **`schemes`** records which schemes a realisation computed and matched, so the lock shows which
   realisation established which ID. A realisation that later computes fewer is refused like a
@@ -535,7 +535,7 @@ Annotated, with the reasons behind each table: [`LOCK.md`](LOCK.md).
   objects live, not only what they are — `s3_an_unrecorded_token_is_a_precondition_failure`.
   First use, with no locked IDs to compare, is exit 18 with `got:`.
 - **The record is compared** with keys.toml: a different `object`, `locator`, `publicOnly` or spec
-  digest fails `verify`/`check` (exit 14, naming each change) until `realise`
+  digest fails `verify`/`check` (exit 14, naming each change) until `lock`
   re-records it, like a lockfile that is out of date — `s4_a_public_only_flip_is_a_spec_change`,
   `s8_a_retargeted_spec_is_a_spec_change`. A changed locator or object is never reported as an
   unexplained hash mismatch.
@@ -632,7 +632,7 @@ The reviews these come from are archived: `docs/archive/REVIEW-2026-11-11.md` (c
   (firmware 5.7.4, ykcs11 2.7.3): ykcs11 exposes the slot attestation certificate by label
   suffix and shared `CKA_ID`, and the f9 certificate by its bare label, with no login at all;
   the chains (slot → f9 → `Yubico PIV Attestation B 1` → `Yubico Attestation Intermediate B 1`
-  → `Yubico Attestation Root 1`) verify, also with openssl; `realise`, `verify`
+  → `Yubico Attestation Root 1`) verify, also with openssl; `lock`, `verify`
   and `check` pass on keys generated on device, a tampered ID is 10, a tampered root or an
   opt-out 14, an imported key under a locked attestation 14 and unlocked 15; creating with
   `soCredentialFile` generates; and `C_DestroyObject` was confirmed to leave the key in the slot. The

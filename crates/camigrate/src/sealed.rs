@@ -3,7 +3,7 @@
 //! there. The host never sees it. [`export`] wraps one object into a [`Bundle`]; [`import`]
 //! checks the bundle against the lock before it touches the target, creates the key (and a
 //! private key's public half) under the target spec, and records it through
-//! `ops::realise_import`, the lock rules `cakeys realise` uses. `migrate` is the two in one
+//! `ops::lock_import`, the lock rules `cakeys lock` uses. `migrate` is the two in one
 //! process, with the bundle in memory. A bundle carries every key of one export (one file per
 //! source and target); each is imported, checked and rolled back on its own.
 
@@ -362,7 +362,7 @@ fn rsa_aes_unwrap(
 /// `HashMismatch` (10) for bundle IDs, label or transport key that are not the lock's, and —
 /// after the import — material whose identity is not the locked one; `Conflict` (13) for an
 /// occupied locator or blobs that do not unwrap (tampered, or wrapped to another key);
-/// whatever `ops::realise_import` refuses.
+/// whatever `ops::lock_import` refuses.
 pub(crate) fn import(
     b: &Bundle,
     e: &Entry,
@@ -386,7 +386,7 @@ pub(crate) fn import(
     let created = create(b, e, dst, to, &ready, &method, &mut made).and_then(|()| {
         let origin =
             Origin { from: b.source.token.clone(), method: e.method.clone(), exposure: e.exposure, declared: false };
-        ops::realise_import(dst, to, lock, origin, notes)
+        ops::lock_import(dst, to, lock, origin, notes)
     });
     match created {
         Ok(_) => Ok(Moved::Imported),
@@ -449,7 +449,7 @@ fn check_against_lock(b: &Bundle, e: &Entry, dst: &Target, tr: Option<&Target>, 
     let locked = lock.objects.get(dst.object_name).filter(|o| !o.ids.is_empty()).ok_or_else(|| {
         KmError::PreconditionFailed(format!(
             "{dst}: the lock pins no IDs for object '{}', so nothing could check the imported material; \
-             realise it on its source first",
+             lock it on its source first",
             dst.object_name
         ))
     })?;

@@ -49,14 +49,14 @@ enum Cmd {
     /// Find the object and compare it with the lock, recording what it lacks (missing hashes,
     /// realisation details) and what changed around it unless --no-update-lock; never
     /// overwriting a hash. Never creates the object: `create` does.
-    Realise {
+    Lock {
         #[command(flatten)]
         at: Address,
         #[command(flatten)]
         write: LockWriteArgs,
     },
     /// Create keys, the one verb that does: every selected (spec, token) pair with origin =
-    /// "create" whose object the lock does not pin yet, then record them like realise; the other
+    /// "create" whose object the lock does not pin yet, then record them like `lock`; the other
     /// pairs are skipped with a note. Nothing named selects every pair. Before any token is
     /// opened, each is checked against the capability profiles: a pair they say cannot be made
     /// refuses the whole run (15), and nothing is created. Naming one pair (an object or --spec,
@@ -155,7 +155,7 @@ enum UriPin {
     Value,
 }
 
-/// Whether `realise`/`delete` write the lock: by default they do, like `nix build` with
+/// Whether `lock`/`delete` write the lock: by default they do, like `nix build` with
 /// `flake.lock`. Where the lock cannot be written (a Nix build sandbox, a read-only lock or
 /// directory) the run is refused up front unless `--no-update-lock` says so explicitly.
 #[derive(clap::Args)]
@@ -200,7 +200,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     // so concurrent updaters queue instead of losing each other's writes. Held to the end of run.
     let writes = match &cli.cmd {
         Cmd::Create { dry_run: true, .. } => false,
-        Cmd::Realise { write, .. } | Cmd::Create { write, .. } | Cmd::Delete { write, .. } => {
+        Cmd::Lock { write, .. } | Cmd::Create { write, .. } | Cmd::Delete { write, .. } => {
             write.mode() == LockWrite::Record
         }
         Cmd::Gc { apply } => *apply,
@@ -242,11 +242,11 @@ impl Run<'_> {
                     .ok_or_else(|| KmError::NotFound(format!("{} on {token}", t.object_name)))?;
                 print(&r)
             }
-            Cmd::Realise { at, write } => {
+            Cmd::Lock { at, write } => {
                 let (spec, token) = at.pair(&self.cfg)?;
                 let t = Target::new(&self.cfg, &spec, &token)?;
                 let tok = self.open(&token, Access::Write, notes)?;
-                let (r, changed) = ops::realise(&t, &tok, &mut self.lock, write.mode(), notes)?;
+                let (r, changed) = ops::lock(&t, &tok, &mut self.lock, write.mode(), notes)?;
                 self.save(changed, notes)?;
                 print(&r)
             }

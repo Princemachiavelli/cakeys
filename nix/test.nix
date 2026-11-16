@@ -145,7 +145,7 @@ let
                 expect(f"{km} resolve --spec signing-soft --token softhsm", 0)
 
             with subtest("record out of band, then the consumer builds"):
-                expect(f"{km} realise --spec signing-soft --token softhsm --update-lock", 0)
+                expect(f"{km} lock --spec signing-soft --token softhsm --update-lock", 0)
                 assert first in machine.succeed("cat /root/keys.lock")
                 machine.succeed("cp /root/keys.lock /root/keys.lock.built")
                 out = build("--arg lock /root/keys.lock.built")
@@ -155,10 +155,10 @@ let
         else
           ''
             with subtest("only create creates; first use fails with got:"):
-                expect(f"{km} realise --spec signing-soft --token softhsm --no-update-lock", 11)
+                expect(f"{km} lock --spec signing-soft --token softhsm --no-update-lock", 11)
                 first = got(expect(f"{km} create --spec signing-soft --token softhsm --no-update-lock", 18))
-                assert got(expect(f"{km} realise --spec signing-soft --token softhsm --no-update-lock", 18)) == first
-                expect(f"{km} realise --spec signing-soft --token softhsm --update-lock", 0)
+                assert got(expect(f"{km} lock --spec signing-soft --token softhsm --no-update-lock", 18)) == first
+                expect(f"{km} lock --spec signing-soft --token softhsm --update-lock", 0)
           ''
       }
 
@@ -179,7 +179,7 @@ let
 
       with subtest("wrap-rebind identity for an extractable AES key"):
           got(expect(f"{km} create --spec kek-wrap --token softhsm --no-update-lock", 18))
-          expect(f"{km} realise --spec kek-wrap --token softhsm --update-lock", 0)
+          expect(f"{km} lock --spec kek-wrap --token softhsm --update-lock", 0)
           lock = machine.succeed("cat /root/keys.lock")
           assert 'mode = "wrap-rebind"' in lock, lock
           # The AES session copy gets every AES commitment.

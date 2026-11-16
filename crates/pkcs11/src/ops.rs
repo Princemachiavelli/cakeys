@@ -190,7 +190,7 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode, creating: bool) -> Re
 
 /// GET: find by locator (exactly one), check type and attributes, compute IDs. Never writes,
 /// neither the lock nor the token: a TPM Attestation Key that is not provisioned yet is an
-/// error here, and only `realise` provisions it.
+/// error here, and only `lock` provisions it.
 ///
 /// # Errors
 ///
@@ -378,39 +378,33 @@ pub fn verify(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result
 /// `NotFound` when the locator finds nothing; whatever `resolve` returns for the object once
 /// found; `plan_mode`/`check_capabilities` rejections (`Validation`, `Unsupported`) before the
 /// object is looked for, and `compare`'s on the realised object.
-pub fn realise(
-    t: &Target,
-    tok: &Token,
-    lock: &mut Lock,
-    write: LockWrite,
-    notes: &mut Notes,
-) -> Result<(Resolved, bool)> {
-    realise_as(t, tok, lock, write, false, None, notes)
+pub fn lock(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes: &mut Notes) -> Result<(Resolved, bool)> {
+    lock_as(t, tok, lock, write, false, None, notes)
 }
 
-/// Record an object camigrate just imported (docs/CAMIGRATE.md D6, D7): [`realise`] without creating,
+/// Record an object camigrate just imported (docs/CAMIGRATE.md D6, D7): [`lock`] without creating,
 /// through the same lock rules, with the realisation's `provenance.origin` saying where the
 /// material came from. The lock must already pin the object's IDs (they came from the source),
 /// so a different material is a mismatch (10), never a new identity.
 ///
 /// # Errors
 ///
-/// `NotFound` when the object is not under the locator; whatever [`realise`] refuses for an
+/// `NotFound` when the object is not under the locator; whatever [`lock`] refuses for an
 /// object it found, a hash mismatch (10) included; `PreconditionFailed` when the lock pins no
 /// ID for the object (`reconcile` refuses an import that would be a first use).
-pub fn realise_import(
+pub fn lock_import(
     t: &Target,
     tok: &Token,
     lock: &mut Lock,
     origin: Origin,
     notes: &mut Notes,
 ) -> Result<(Resolved, bool)> {
-    realise_as(t, tok, lock, LockWrite::Record, false, Some(origin), notes)
+    lock_as(t, tok, lock, LockWrite::Record, false, Some(origin), notes)
 }
 
-/// [`realise`]'s one code path: `create` allows creating an absent object, `origin` records an
+/// [`lock`]'s one code path: `create` allows creating an absent object, `origin` records an
 /// import's history.
-fn realise_as(
+fn lock_as(
     t: &Target,
     tok: &Token,
     lock: &mut Lock,
@@ -479,7 +473,7 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
         Err(e) => e,
     };
     // The locator was empty before (If-None-Match), so this removes only what we just made: a
-    // refused realise leaves nothing behind, unless the module cannot delete keys (ykcs11),
+    // refused `lock` leaves nothing behind, unless the module cannot delete keys (ykcs11),
     // which is then said rather than claimed.
     match tok.destroy(t.object, &t.on_token.locator) {
         Ok(n) => {
@@ -494,14 +488,14 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
 }
 
 /// PUT If-None-Match: create the object under the declared locator if absent, then
-/// [`realise`] it. The one verb that creates, and only on a pair whose `origin` is `create`.
+/// [`lock`] it. The one verb that creates, and only on a pair whose `origin` is `create`.
 /// Every guard of a creation applies: the lock must not pin the object's material already
 /// (D1), and nothing may sit under the locator; an object already there is found and compared,
 /// never replaced.
 ///
 /// # Errors
 ///
-/// As [`realise`], and for the creation: `PreconditionFailed` (D1) when the lock already pins
+/// As [`lock`], and for the creation: `PreconditionFailed` (D1) when the lock already pins
 /// the object's material, `Unavailable` when a session without login cannot see the locator,
 /// `Conflict` when the locator is occupied by another class; `Validation` (17) on a pair whose
 /// origin is not `create`, before the token is touched.
@@ -516,7 +510,7 @@ pub fn create(
     if let Some(why) = not_origin_create(t) {
         return Err(KmError::Validation(format!("{t}: {why}")));
     }
-    realise_as(t, tok, lock, write, true, None, notes)
+    lock_as(t, tok, lock, write, true, None, notes)
 }
 
 /// Why `create` never makes `t`'s object: its pair's origin is not `create`.
