@@ -236,7 +236,9 @@ tokens.softhsm = { locator = { CKA_LABEL = "release-note" } }
   is refused (14): newly generated material could never match.
 - **One birthplace per object:** an object whose specs name several tokens is generated on its
   `createOn` token only (`create` naming another is 17). The other tokens get the same material
-  by import (`camigrate`).
+  by import (`camigrate`). Without `createOn`, `create` naming no pair refuses such an object
+  (12) rather than let the order it runs in decide; so it does an object several specs realise
+  on one token, since whichever ran first would set the key's policy: `create <spec>` picks.
 - **A secret key needs an identity the token can recompute:** a declared usage bit a commitment
   can use (`CKA_SIGN`, `CKA_ENCRYPT`, `CKA_DECRYPT`, `CKA_WRAP` on AES; `CKA_ENCRYPT`,
   `CKA_DECRYPT` on DES3; `CKA_SIGN` on generic secrets and HMAC keys), or `CKA_EXTRACTABLE =
