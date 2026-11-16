@@ -50,6 +50,7 @@ advertise = [
   "CKM_SHA_1",
   "CKM_SHA_1_HMAC",
 ]
+add = ["CKM_SHA224_RSA_PKCS"]
 
 [match]
 manufacturer = "CloudHSM"
@@ -71,10 +72,16 @@ mechanisms = ["CKM_AES_KEY_WRAP", "CKM_AES_KEY_WRAP_PAD", "CKM_ECDSA_SHA1"]
 "generate.CKK_EC_EDWARDS.edwards448" = { answer = "no", evidence = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID" }
 "generate.CKK_EC_MONTGOMERY.curve25519" = { answer = "no" }
 "generate.CKK_EC_MONTGOMERY.curve448" = { answer = "no" }
+"generate.CKK_RSA.512" = { answer = "no", evidence = "modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID" }
 "generate.CKK_RSA.1024" = { answer = "no", evidence = "modulusBits = 1024: CKR_ATTRIBUTE_VALUE_INVALID" }
+"generate.CKK_RSA.1536" = { answer = "no", evidence = "modulusBits = 1536: CKR_ATTRIBUTE_VALUE_INVALID" }
 "generate.CKK_RSA.2048" = { answer = "yes" }
 "generate.CKK_RSA.3072" = { answer = "yes" }
 "generate.CKK_RSA.4096" = { answer = "yes" }
+"generate.CKK_RSA.6144" = { answer = "no", evidence = "modulusBits = 6144: CKR_ATTRIBUTE_VALUE_INVALID" }
+"generate.CKK_RSA.8192" = { answer = "no", evidence = "modulusBits = 8192: CKR_ATTRIBUTE_VALUE_INVALID" }
+"generate.CKK_RSA.12288" = { answer = "no", evidence = "modulusBits = 12288: CKR_ATTRIBUTE_VALUE_INVALID" }
+"generate.CKK_RSA.16384" = { answer = "no", evidence = "modulusBits = 16384: CKR_ATTRIBUTE_VALUE_INVALID" }
 "wrap.rsa-oaep.SHA-1" = { answer = "yes" }
 "wrap.rsa-oaep.SHA-256" = { answer = "yes" }
 "decrypt.rsa-oaep.SHA-1" = { answer = "yes" }
@@ -83,10 +90,22 @@ mechanisms = ["CKM_AES_KEY_WRAP", "CKM_AES_KEY_WRAP_PAD", "CKM_ECDSA_SHA1"]
 "derive.ecdh.sealed" = { answer = "yes" }
 "derive.ecdh.read-only" = { answer = "no", evidence = "secp256r1: in a read-only session: CKR_SESSION_READ_ONLY" }
 "prove.pop-decrypt.CKK_RSA.2048" = { answer = "yes" }
+"prove.pop-decrypt.CKK_RSA.3072" = { answer = "yes" }
+"prove.pop-decrypt.CKK_RSA.4096" = { answer = "yes" }
+"prove.pop-ecdh.CKK_EC.secp256k1" = { answer = "yes" }
 "prove.pop-ecdh.CKK_EC.secp256r1" = { answer = "yes" }
+"prove.pop-ecdh.CKK_EC.secp384r1" = { answer = "yes" }
+"prove.pop-ecdh.CKK_EC.secp521r1" = { answer = "yes" }
+"prove.pop-sign.CKK_EC.secp256k1" = { answer = "yes" }
 "prove.pop-sign.CKK_EC.secp256r1" = { answer = "yes" }
+"prove.pop-sign.CKK_EC.secp384r1" = { answer = "yes" }
+"prove.pop-sign.CKK_EC.secp521r1" = { answer = "yes" }
 "prove.pop-sign.CKK_RSA.2048" = { answer = "yes" }
+"prove.pop-sign.CKK_RSA.3072" = { answer = "yes" }
+"prove.pop-sign.CKK_RSA.4096" = { answer = "yes" }
 "prove.pop-unwrap.CKK_RSA.2048" = { answer = "yes" }
+"prove.pop-unwrap.CKK_RSA.3072" = { answer = "yes" }
+"prove.pop-unwrap.CKK_RSA.4096" = { answer = "yes" }
 
 [reported."CKK_RSA"]
 min-bits = 2048
@@ -98,9 +117,10 @@ max-bits = 4096
 "CKM_ECDSA_SHA1" = "secp256r1: CKR_FUNCTION_FAILED"
 "CKM_EC_EDWARDS_KEY_PAIR_GEN" = "not listed; the provider's stand-in generates nothing"
 "CKM_RSA_PKCS" = "RSA-2048 decrypt: CKR_ENCRYPTED_DATA_INVALID"
+"CKM_SHA224_RSA_PKCS" = "not listed; works"
 "cryptoki" = "the module reports Cryptoki 2.40"
-"curve25519" = "not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN"
-"curve448" = "not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN"
+"curve25519" = "generation refused: CKR_MECHANISM_INVALID"
+"curve448" = "generation refused: CKR_MECHANISM_INVALID"
 "derive.secret" = "secp256r1: the derived secret reports CKA_SENSITIVE = true, CKA_EXTRACTABLE = true"
 "derive.template" = "secp256r1: the template as asked is refused (CKR_ATTRIBUTE_VALUE_INVALID); derived with CKA_VALUE_LEN = 32 added, CKA_EXTRACTABLE = false dropped"
 "template.public.CKA_PRIVATE" = "the module refuses a public key with CKA_PRIVATE = false"

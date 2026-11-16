@@ -206,15 +206,27 @@ generated, never edited, and pinned like the baseline:
 - **Read-only probes**, safe on any token: `C_GetInfo`, `C_GetTokenInfo` (never the serial, so a
   profile regenerates identically), `C_GetMechanismList`, and `C_GetMechanismInfo` for RSA sizes.
 - **Write probes**, only with `--write` on a token keys.toml marks `probe.scratch = true`, logged in
-  (refused with 17 otherwise): key pairs per baseline curve and per RSA size 1024–4096; the
+  (refused with 17 otherwise): key pairs per baseline curve, and per RSA size from 512 to 16384
+  bits (512, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 12288, 16384), whatever the module
+  reports — what it reports is a claim, `[reported."CKK_RSA"]`, and cryptoki the only limit;
+  `--rsa-max-bits` stops earlier (the test suites pass 4096: 16384 bits take a software token
+  over a minute, so the committed reference profiles stop there too, and the gate answers
+  unknown above). A curve family whose generation mechanism the module does not list is tried
+  all the same, an `add` row where it generates. Each key that generates with its usage proves
+  possession by every binding of its kind, a `prove.*` row each. The
   advertised secret-key generation; RSA-OAEP SHA-1 and SHA-256, counted only when the key unwraps
   back; each advertised key wrap (`CKM_AES_KEY_WRAP`, `_PAD`, `_KWP`, and `CKM_RSA_AES_KEY_WRAP`
   under the RSA key) round-tripped, a `subtract` row only when refused as a mechanism
   (`CKR_MECHANISM_INVALID`, `CKR_FUNCTION_NOT_SUPPORTED`) and a note otherwise — `C_GetMechanismInfo`
   flags are no evidence (AWS CloudHSM [run]); the `CKA_VALUE_LEN` unwrap rule;
-  delete-really-deletes. On the first key of each kind, every advertised signing, ECDH and
-  decryption mechanism, checked on the host where cakeys can
-  verify. A mechanism that fails on every key is a `subtract` row, a partial failure a note.
+  delete-really-deletes. On the first key of each kind, every signing, ECDH and decryption
+  mechanism the probe knows, listed or not (on a key bound to some, Cloud KMS, only those),
+  checked on the host where cakeys can verify. An advertised mechanism that fails on every key
+  is a `subtract` row, a partial failure a note; one the module does not list but runs is an
+  `add` row (SoftHSM and kryoptic sign with `CKM_ECDSA_SHA224` and `CKM_SHA224_RSA_PKCS`, which
+  neither lists [run]). A failure because an earlier operation left the session busy
+  (`CKR_OPERATION_ACTIVE`: tpm2-pkcs11 leaves a failed one active [run]) is undetermined, never
+  a row.
   A standard mechanism the module does not list but the provider runs its own way (what
   `Provider::stand_in` answers: AWS CloudHSM's Ed25519 generation and EdDSA) is probed through
   the stand-in, and an `add` row when it works (the host verifies the signature); the token then

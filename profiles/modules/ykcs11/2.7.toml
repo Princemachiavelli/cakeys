@@ -35,6 +35,7 @@ advertise = [
   "CKM_SHA512_RSA_PKCS_PSS",
   "CKM_SHA_1",
 ]
+add = ["CKM_ECDSA_SHA224"]
 
 [match]
 manufacturer = "Yubico (www.yubico.com)"
@@ -53,7 +54,9 @@ firmware = "5.74"
 "generate.CKK_EC_EDWARDS.edwards448" = { answer = "no", evidence = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID" }
 "generate.CKK_EC_MONTGOMERY.curve25519" = { answer = "no" }
 "generate.CKK_EC_MONTGOMERY.curve448" = { answer = "no" }
+"generate.CKK_RSA.512" = { answer = "no", evidence = "modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID" }
 "generate.CKK_RSA.1024" = { answer = "no", evidence = "modulusBits = 1024: CKR_ARGUMENTS_BAD" }
+"generate.CKK_RSA.1536" = { answer = "no", evidence = "modulusBits = 1536: CKR_ATTRIBUTE_VALUE_INVALID" }
 "generate.CKK_RSA.2048" = { answer = "yes" }
 "generate.CKK_RSA.3072" = { answer = "yes" }
 "generate.CKK_RSA.4096" = { answer = "yes" }
@@ -65,11 +68,19 @@ firmware = "5.74"
 "move.export" = { answer = "no" }
 "move.unwrap" = { answer = "no" }
 "prove.pop-decrypt.CKK_RSA.2048" = { answer = "yes" }
+"prove.pop-decrypt.CKK_RSA.3072" = { answer = "yes" }
+"prove.pop-decrypt.CKK_RSA.4096" = { answer = "yes" }
 "prove.pop-ecdh.CKK_EC.secp256r1" = { answer = "yes" }
+"prove.pop-ecdh.CKK_EC.secp384r1" = { answer = "yes" }
 "prove.pop-sign.CKK_EC.secp256r1" = { answer = "yes" }
+"prove.pop-sign.CKK_EC.secp384r1" = { answer = "yes" }
 "prove.pop-sign.CKK_EC_EDWARDS.edwards25519" = { answer = "yes" }
 "prove.pop-sign.CKK_RSA.2048" = { answer = "yes" }
+"prove.pop-sign.CKK_RSA.3072" = { answer = "yes" }
+"prove.pop-sign.CKK_RSA.4096" = { answer = "yes" }
 "prove.pop-unwrap.CKK_RSA.2048" = { answer = "no", evidence = "unsupported: the token lacks CKM_SHA256_HMAC to prove possession of the private key; opt in with binding = \"token-asserted\"" }
+"prove.pop-unwrap.CKK_RSA.3072" = { answer = "no", evidence = "unsupported: the token lacks CKM_SHA256_HMAC to prove possession of the private key; opt in with binding = \"token-asserted\"" }
+"prove.pop-unwrap.CKK_RSA.4096" = { answer = "no", evidence = "unsupported: the token lacks CKM_SHA256_HMAC to prove possession of the private key; opt in with binding = \"token-asserted\"" }
 
 [reported."CKK_RSA"]
 min-bits = 1024
@@ -98,6 +109,7 @@ key-types = ["CKK_EC_EDWARDS"]
 curves = ["edwards25519"]
 
 [notes]
+"CKM_ECDSA_SHA224" = "not listed; works"
 "cryptoki" = "the module reports Cryptoki 3.0"
 "curve25519" = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID"
 "curve448" = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID"

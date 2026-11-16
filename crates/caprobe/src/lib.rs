@@ -115,6 +115,11 @@ struct ProbeArgs {
     diff: Option<String>,
     #[arg(long = "profiles")]
     profiles_dir: Option<PathBuf>,
+    /// The largest RSA key the write probes generate, in bits: every size up to 16384 by
+    /// default, whatever the module reports. A smaller one probes faster (the test suites pass
+    /// 4096: 16384 bits take a software token over a minute).
+    #[arg(long, default_value_t = probe::RSA_SIZES[probe::RSA_SIZES.len() - 1])]
+    rsa_max_bits: u32,
 }
 
 /// The command line's definition: its verbs and flags, for the test that every one of them is
@@ -220,8 +225,13 @@ fn run_probe(
     let access = if a.write { Access::Write } else { Access::Read };
     // Unprofiled: what the probe measures must not be what the committed profile says.
     let tok = open_token(cfg, modules, registry, &a.token, access, notes)?.unprofiled()?;
-    let req =
-        probe::Request { write: a.write, name: a.name.as_deref(), claimed, kept: a.out.is_some() || a.diff.is_some() };
+    let req = probe::Request {
+        write: a.write,
+        name: a.name.as_deref(),
+        claimed,
+        kept: a.out.is_some() || a.diff.is_some(),
+        rsa_max_bits: a.rsa_max_bits,
+    };
     let mut profile = probe::generate(&tok, tcfg, &req, notes)?;
     match &a.out {
         Some(path) => write_profile(path, &mut profile, a.write, notes)?,

@@ -154,20 +154,16 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   the same locator, which Secure Enclave keys usually lack [todo]; macOS only, not in nixpkgs,
   and the keychain is out of reach of the Nix sandbox [todo]. `pop-sign` should pass through the
   raw `CKM_ECDSA` fallback [src]. Take it up if cakeys is to pin keychain keys.
-- **The probe tests everything it can, whatever the module claims** (2026-11-15). What a
-  module reports is a claim to record, never a bound on what is tried: the only limit is what
-  cryptoki can express. First, RSA generation at every size from 512 to 16384 bits, not the
-  four it tries today (1024, 2048, 3072, 4096 in `probe_rsa`), whatever `[reported."CKK_RSA"]`
-  says: ykcs11 reports 1024–4096 and refuses 1024, SoftHSM and kryoptic report up to 16384
-  and nothing above 4096 is tested, so the gate answers unknown there. The sizes worth a row
-  are the multiples of 1024, plus 512 and 1536 (a decision: odd sizes too?); 8192 and 16384
-  take seconds on a software token, so the generation stays one per size and is timed. The
-  same rule for the rest: a curve family whose generation mechanism the module does not list
-  is recorded "not advertised" untried (`probe_curves`; the fTPM's Edwards and Montgomery
-  rows), and the operation probes run only advertised mechanisms (`made.advertises`): try
-  them, and record the module's answer; and the `prove.*` rows at every size and curve that
-  generates, not RSA-2048 and the first curve alone. Cryptoki is the limit: it drops what it
-  cannot name from `C_GetMechanismList`, and what it has no type for cannot be asked.
+- **The probe tests everything it can, the rest of it** (2026-11-15). RSA sizes 512–16384,
+  unlisted curve families and operation mechanisms, and proofs at every size and curve are
+  done (CAPROBE.md, write probes). Still only what the module advertises: the secret-key
+  generation (`probe_secrets`) and the key wraps (`probe_key_wraps`). Cryptoki is the limit: it
+  drops what it cannot name from `C_GetMechanismList`, and what it has no type for cannot be
+  asked.
+- **tpm2-pkcs11 over swtpm: P-521 signs with `CKR_HOST_MEMORY`** (2026-11-15, the proofs at
+  every curve): `pop-sign` on secp521r1 fails at `C_SignInit`, deterministically, while
+  `pop-ecdh` on the same key proves. A module defect or a P-521 limit of swtpm's TPM; the
+  profile records the "no". To read in tpm2-pkcs11's sign path and report upstream.
 - **More probes**: PQ parameter sets, AES-KW/KWP round trips, the HMAC key types,
   `C_GetMechanismInfo` beyond RSA, attribute defaults, existing-object encodings, ECDH with
   Montgomery keys, SHA-224 RSA-PSS (no binding variant), delete in a scratch slot.

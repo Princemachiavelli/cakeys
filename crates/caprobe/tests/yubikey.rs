@@ -53,13 +53,18 @@ fn the_write_probe_conforms_and_regenerates_the_committed_profile() {
     let w = Workdir::new("yubikey_write_probe");
     w.write_config(&yubikey_token(&module, &pin, &mgm, "probe = { scratchId = \"17\" }"));
     let config = w.dir.join("keys.toml");
-    let probe = run_within(&config, &["probe", "--token", "yubikey", "--write", "--diff", "ykcs11/2.7"], PROBE_LIMIT);
+    let probe = run_within(
+        &config,
+        &["probe", "--token", "yubikey", "--write", "--rsa-max-bits", "4096", "--diff", "ykcs11/2.7"],
+        PROBE_LIMIT,
+    );
     assert_eq!(code(&probe), 0, "{}", String::from_utf8_lossy(&probe.stderr));
     let committed = committed_profile("modules/ykcs11/2.7.toml");
     let copy = w.dir.join("profile.toml");
     std::fs::copy(&committed, &copy).unwrap();
     let out = copy.to_str().unwrap();
-    let args = ["probe", "--token", "yubikey", "--write", "--diff", "ykcs11/2.7", "--out", out];
+    let args =
+        ["probe", "--token", "yubikey", "--write", "--rsa-max-bits", "4096", "--diff", "ykcs11/2.7", "--out", out];
     assert_eq!(code(&run_within(&config, &args, PROBE_LIMIT)), 0);
     assert!(
         std::fs::read(&copy).unwrap() == std::fs::read(&committed).unwrap(),
@@ -87,7 +92,7 @@ fn the_read_only_probe_conforms() {
         yubikey_label(&module)
     ));
     let km = |args: &[&str]| run_within(&w.dir.join("keys.toml"), args, RUN_LIMIT);
-    let write = km(&["probe", "--token", "yubikey", "--write"]);
+    let write = km(&["probe", "--token", "yubikey", "--write", "--rsa-max-bits", "4096"]);
     assert_eq!(code(&write), 17);
     assert!(stderr(&write).contains("Security Officer"));
     assert!(stderr(&write).contains("scratchId"));

@@ -85,13 +85,22 @@ fn with_cleanup(body: impl FnOnce(), cleanup: impl FnOnce()) {
 /// proven, Ed25519 (the aws-cloudhsm provider's stand-ins) on a non-FIPS cluster and refused
 /// before creating on a FIPS one, and keys moved each way between `SoftHSM` and `CloudHSM` (and
 /// Ed25519 out of a non-FIPS one) by
-/// camigrate (`CKM_RSA_AES_KEY_WRAP`, `CloudHSM`'s only RFC 5649).
+/// camigrate (`CKM_RSA_AES_KEY_WRAP`, `CloudHSM`'s only RFC 5649). The clusters run at once:
+/// each has its own runner, lock and `SoftHSM` token, and every one runs to its end before the
+/// first failure is reported.
 #[test]
 fn aws_cloudhsm_end_to_end() {
     let Some(modes) = asked("CAKEYS_TEST_AWS") else { return };
-    for mode in modes.split(',').map(str::trim) {
-        assert!(matches!(mode, "FIPS" | "NON_FIPS"), "CAKEYS_TEST_AWS: {mode} is neither FIPS nor NON_FIPS");
-        aws_cluster(mode);
+    let modes: Vec<&str> = modes.split(',').map(str::trim).collect();
+    for mode in &modes {
+        assert!(matches!(*mode, "FIPS" | "NON_FIPS"), "CAKEYS_TEST_AWS: {mode} is neither FIPS nor NON_FIPS");
+    }
+    let outcomes: Vec<_> = std::thread::scope(|s| {
+        let runs: Vec<_> = modes.iter().map(|mode| s.spawn(move || aws_cluster(mode))).collect();
+        runs.into_iter().map(std::thread::ScopedJoinHandle::join).collect()
+    });
+    if let Some(Err(e)) = outcomes.into_iter().find(Result::is_err) {
+        std::panic::resume_unwind(e);
     }
 }
 
@@ -107,7 +116,8 @@ fn aws_cluster(mode: &str) {
         "no ACTIVE {mode} cluster with an HSM: CAKEYS_AWS_MODE={mode} scripts/cloud/aws.sh create, then activate"
     );
 
-    let id = run_id();
+    // The mode too: the clusters run at once, each with a directory of its own here.
+    let id = format!("{}-{}", run_id(), mode.to_lowercase().replace('_', ""));
     let dir = std::env::temp_dir().join(format!("cakeys-cloud-{id}"));
     std::fs::create_dir_all(&dir).unwrap();
     let config = dir.join("keys.toml");

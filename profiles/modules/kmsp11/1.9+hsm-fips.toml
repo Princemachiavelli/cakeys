@@ -48,10 +48,16 @@ firmware = "0.0"
 "generate.CKK_EC_EDWARDS.edwards448" = { answer = "no" }
 "generate.CKK_EC_MONTGOMERY.curve25519" = { answer = "no" }
 "generate.CKK_EC_MONTGOMERY.curve448" = { answer = "no" }
-"generate.CKK_RSA.1024" = { answer = "no" }
+"generate.CKK_RSA.512" = { answer = "no", evidence = "no binding for it; without one: CKR_TEMPLATE_INCOMPLETE" }
+"generate.CKK_RSA.1024" = { answer = "no", evidence = "no binding for it; without one: CKR_TEMPLATE_INCOMPLETE" }
+"generate.CKK_RSA.1536" = { answer = "no", evidence = "no binding for it; without one: CKR_TEMPLATE_INCOMPLETE" }
 "generate.CKK_RSA.2048" = { answer = "yes" }
 "generate.CKK_RSA.3072" = { answer = "yes" }
 "generate.CKK_RSA.4096" = { answer = "yes" }
+"generate.CKK_RSA.6144" = { answer = "no", evidence = "no binding for it; without one: CKR_TEMPLATE_INCOMPLETE" }
+"generate.CKK_RSA.8192" = { answer = "no", evidence = "no binding for it; without one: CKR_TEMPLATE_INCOMPLETE" }
+"generate.CKK_RSA.12288" = { answer = "no", evidence = "no binding for it; without one: CKR_TEMPLATE_INCOMPLETE" }
+"generate.CKK_RSA.16384" = { answer = "no", evidence = "no binding for it; without one: CKR_TEMPLATE_INCOMPLETE" }
 "decrypt.rsa-oaep.SHA-1" = { answer = "no" }
 "decrypt.rsa-oaep.SHA-256" = { answer = "yes" }
 "decrypt.rsa-oaep.SHA-512" = { answer = "yes" }
@@ -110,7 +116,6 @@ min-bits = 2048
 max-bits = 4096
 
 [notes]
-"CKK_RSA at 1024" = "no binding for it; without one: CKR_TEMPLATE_INCOMPLETE"
 "CKM_RSA_PKCS" = "RSA_SIGN_PKCS1_2048_SHA256 decrypt: CKR_MECHANISM_INVALID; RSA_SIGN_PKCS1_3072_SHA256 decrypt: CKR_MECHANISM_INVALID; RSA_SIGN_PKCS1_4096_SHA256 decrypt: CKR_MECHANISM_INVALID; RSA_SIGN_PKCS1_4096_SHA512: CKR_DATA_INVALID; RSA_SIGN_PKCS1_4096_SHA512 decrypt: CKR_MECHANISM_INVALID; RSA_SIGN_RAW_PKCS1_2048 decrypt: CKR_MECHANISM_INVALID; RSA_SIGN_RAW_PKCS1_3072 decrypt: CKR_MECHANISM_INVALID; RSA_SIGN_RAW_PKCS1_4096 decrypt: CKR_MECHANISM_INVALID"
 "CKM_RSA_PKCS_OAEP" = "RSA_DECRYPT_OAEP_2048_SHA256 decrypt SHA-1: CKR_MECHANISM_PARAM_INVALID; RSA_DECRYPT_OAEP_2048_SHA256 decrypt SHA-512: CKR_MECHANISM_PARAM_INVALID; RSA_DECRYPT_OAEP_3072_SHA256 decrypt SHA-1: CKR_MECHANISM_PARAM_INVALID; RSA_DECRYPT_OAEP_3072_SHA256 decrypt SHA-512: CKR_MECHANISM_PARAM_INVALID; RSA_DECRYPT_OAEP_4096_SHA256 decrypt SHA-1: CKR_MECHANISM_PARAM_INVALID; RSA_DECRYPT_OAEP_4096_SHA256 decrypt SHA-512: CKR_MECHANISM_PARAM_INVALID; RSA_DECRYPT_OAEP_4096_SHA512 decrypt SHA-1: CKR_MECHANISM_PARAM_INVALID; RSA_DECRYPT_OAEP_4096_SHA512 decrypt SHA-256: CKR_MECHANISM_PARAM_INVALID"
 "CKM_RSA_PKCS_PSS" = "RSA_SIGN_PSS_4096_SHA512: CKR_MECHANISM_PARAM_INVALID"

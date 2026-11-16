@@ -193,7 +193,9 @@ impl<'a> Effective<'a> {
                 if lo.is_some_and(|lo| *lo < bits) && hi.is_some_and(|hi| bits < *hi) {
                     return Verdict::yes(&m.profile, None);
                 }
-                let tried: Vec<String> = tried.map(u32::to_string).collect();
+                let mut tried: Vec<u32> = tried.copied().collect();
+                tried.sort_unstable();
+                let tried: Vec<String> = tried.iter().map(u32::to_string).collect();
                 return Verdict::Unknown {
                     why: format!("module profile {} probed {} bits only", m.profile, tried.join(", ")),
                 };

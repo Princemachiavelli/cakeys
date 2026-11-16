@@ -84,9 +84,10 @@ enum Target {
 }
 
 /// Probe `tok`. Read-only probes always run; `write` demands the write probes (generating,
-/// operating, wrapping, unwrapping, deleting), which run only on a token keys.toml marks
-/// `scratch` — or, for a module that creates only as SO into device slots, in the one slot
-/// `scratchId` names — and are refused (17) anywhere else, never silently skipped.
+/// operating, wrapping, unwrapping, deleting), up to its largest RSA size, which run only on a
+/// token keys.toml marks `scratch` — or, for a module that creates only as SO into device
+/// slots, in the one slot `scratchId` names — and are refused (17) anywhere else, never
+/// silently skipped.
 ///
 /// # Errors
 ///
@@ -94,7 +95,7 @@ enum Target {
 /// its provider creates only as Security Officer and no `scratchId` (with an admin credential)
 /// names a slot holding nothing but the provider's own placeholder; the scratch guard is the
 /// one thing the probe refuses rather than records. `Unavailable` when an SO login fails.
-pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: bool) -> Result<Probed> {
+pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: Option<u32>) -> Result<Probed> {
     let profile = Profile {
         profile: format!("{}/{}", tok.provider.name(), tok.module.version),
         mode: Mode::Observed,
@@ -141,14 +142,14 @@ pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: bool) -> Result<Probed> 
         row.max_bits = u32::try_from(max).ok();
     }
     let mut undetermined = Vec::new();
-    if !write {
+    let Some(rsa_max_bits) = write else {
         undetermined.push(
             "read-only probes only: pass --write against a token marked scratch in keys.toml to \
              generate, operate, wrap and delete"
                 .into(),
         );
         return Ok(Probed { profile: profile.finish(), undetermined });
-    }
+    };
     let target = target(tok, cfg)?;
     if !tok.logged_in {
         // Without a user login every token-object generation fails with
@@ -173,6 +174,7 @@ pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: bool) -> Result<Probed> 
         template_notes: BTreeMap::new(),
         bound_keys: tok.provider.bound_keys(),
         bound: None,
+        rsa_sizes: RSA_SIZES.iter().copied().filter(|b| *b <= rsa_max_bits).collect(),
     };
     write_probes(&mut made, &mut profile)?;
     profile.notes.append(&mut made.template_notes);
@@ -377,13 +379,20 @@ impl std::ops::DerefMut for Draft {
 /// The message every operation probe signs, and the plaintext the decryption probes recover.
 const MSG: &[u8] = b"cakeys probe: operations";
 
-/// What the operation probes saw per advertised mechanism (D2: deltas only). A mechanism that
+/// What the operation probes saw per mechanism (D2: deltas only). An advertised mechanism that
 /// worked on some key is usable, the failures on other keys a note; one that failed on every
-/// key it was tried with is a `subtract` row (advertised but unusable).
+/// key it was tried with is a `subtract` row (advertised but unusable). One the module does not
+/// list but runs is an `add` row; one it neither lists nor runs is what its list said. A
+/// failure because an earlier one left its operation active (tpm2-pkcs11 \[run\]) says nothing
+/// of the mechanism: undetermined.
 #[derive(Default)]
 struct Ops {
     worked: BTreeSet<String>,
     failed: BTreeMap<String, Vec<String>>,
+    /// The mechanisms tried though the module does not list them.
+    unlisted: BTreeSet<String>,
+    /// The outcomes `CKR_OPERATION_ACTIVE` decided nothing of.
+    busy: Vec<String>,
 }
 
 impl Ops {
@@ -392,12 +401,28 @@ impl Ops {
             Ok(()) => {
                 self.worked.insert(mech.to_string());
             }
+            Err(e) if e.contains("CKR_OPERATION_ACTIVE") => {
+                self.busy.push(format!("{mech} on {on}: an earlier operation left the session busy ({e})"));
+            }
             Err(e) => self.failed.entry(mech.to_string()).or_default().push(format!("{on}: {e}")),
         }
     }
 
-    fn finish(self, profile: &mut Draft) {
+    /// The rows and notes of what was seen; returns what could not be decided.
+    fn finish(self, profile: &mut Draft) -> Vec<String> {
+        for mech in self.worked.iter().filter(|m| self.unlisted.contains(*m)) {
+            profile.add.push(mech.clone());
+            profile.notes.insert(mech.clone(), "not listed; works".into());
+        }
         for (mech, why) in self.failed {
+            if self.unlisted.contains(&mech) {
+                if self.worked.contains(&mech) {
+                    let note = profile.notes.entry(mech).or_default();
+                    note.push_str("; ");
+                    note.push_str(&why.join("; "));
+                }
+                continue;
+            }
             if !self.worked.contains(&mech) {
                 profile.subtract.mechanisms.push(mech.clone());
             }
@@ -413,6 +438,7 @@ impl Ops {
         }
         profile.subtract.mechanisms.sort();
         profile.subtract.mechanisms.dedup();
+        self.busy
     }
 }
 
@@ -439,7 +465,14 @@ struct Made<'a> {
     /// The mechanisms the key under the operation probes serves, when the module binds keys to
     /// them (Cloud KMS): nothing else is tried on it.
     bound: Option<Vec<String>>,
+    /// The RSA sizes generated: [`RSA_SIZES`] up to the request's largest.
+    rsa_sizes: Vec<u32>,
 }
+
+/// The RSA key sizes the write probes generate, in bits, whatever the module reports (a claim,
+/// `[reported."CKK_RSA"]`): the sizes in use from 512 to 16384. The gate answers yes for a size
+/// between two that generated, so these cover the range.
+pub(crate) const RSA_SIZES: [u32; 10] = [512, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 12288, 16384];
 
 /// A generated pair, `(public, private)`, or the module's refusal.
 type Pair = std::result::Result<(ObjectHandle, ObjectHandle), CkError>;
@@ -476,6 +509,21 @@ impl Made<'_> {
     fn advertises(&self, m: MechanismType) -> bool {
         let m = m.to_string();
         self.tok.advertised.contains(&m) && self.bound.as_ref().is_none_or(|b| b.contains(&m))
+    }
+
+    /// Whether the operation probes try `m` on the key at hand: any mechanism, listed or not —
+    /// what the module lists is a claim, not a bound — but on a key bound to some (Cloud KMS),
+    /// only those.
+    fn tries(&self, m: MechanismType) -> bool {
+        self.bound.as_ref().is_none_or(|b| b.contains(&m.to_string()))
+    }
+
+    /// Record what `m` did on `on`, and whether the module lists it.
+    fn record(&mut self, m: MechanismType, on: &str, outcome: std::result::Result<(), String>) {
+        if !self.tok.advertised.contains(&m.to_string()) {
+            self.ops.unlisted.insert(m.to_string());
+        }
+        self.ops.record(m, on, outcome);
     }
 
     /// Generate a key pair where the target says: the templates completed with a fresh probe
@@ -702,7 +750,8 @@ fn write_probes(made: &mut Made, profile: &mut Draft) -> Result<()> {
                 .into(),
         );
     }
-    std::mem::take(&mut made.ops).finish(profile);
+    let busy = std::mem::take(&mut made.ops).finish(profile);
+    made.undetermined.extend(busy);
     profile.add.sort();
     profile.add.dedup();
     Ok(())
@@ -819,9 +868,12 @@ fn probe_unbound(made: &mut Made, profile: &mut Draft, ec: &mut GenerateRow, rsa
         profile.generate.insert(kt.into(), GenerateRow { cannot: names, ..GenerateRow::default() });
     }
     let rsa_refusal = unbound(made, &Mechanism::RsaPkcsKeyPairGen);
-    if !rsa.can_bits.contains(&1024) && !rsa.cannot_bits.contains(&1024) {
-        rsa.cannot_bits.push(1024);
-        profile.notes.insert("CKK_RSA at 1024".into(), format!("no binding for it; without one: {rsa_refusal}"));
+    for bits in made.rsa_sizes.clone() {
+        if !rsa.can_bits.contains(&bits) && !rsa.cannot_bits.contains(&bits) {
+            rsa.cannot_bits.push(bits);
+            let why = format!("no binding for it; without one: {rsa_refusal}");
+            profile.generation_evidence("CKK_RSA", On::Bits(bits), why);
+        }
     }
 }
 
@@ -853,29 +905,17 @@ fn probe_curves(made: &mut Made, profile: &mut Draft) -> Result<()> {
     ];
     for (kt, mech, curves) in families {
         let mut row = GenerateRow::default();
-        // A generation mechanism the module does not list is its answer, not a refusal to
-        // explain — unless the provider stands in for it (AWS CloudHSM lists no Edwards one,
-        // and makes Ed25519 with CKM_EC_KEY_PAIR_GEN [run]): then the stand-in is probed, and
-        // recorded in `add` if a curve generates through it.
+        // A generation mechanism the module does not list is tried all the same: the list is a
+        // claim, and the module's answer the row. Where the provider stands in for it (AWS
+        // CloudHSM lists no Edwards one, and makes Ed25519 with CKM_EC_KEY_PAIR_GEN [run]) the
+        // stand-in is what is tried. Either way it is in `add` if a curve generates.
         let keygen = mech.mechanism_type();
         let listed = made.tok.advertised.contains(&keygen.to_string());
         let stood_in = !listed && made.tok.provider.stand_ins().contains(&keygen);
-        if !listed && !stood_in {
-            for (curve, ..) in curves {
-                row.cannot.push(curve.to_owned());
-                let why = format!("not advertised: {keygen}");
-                if kt == "CKK_EC_MONTGOMERY" {
-                    profile.notes.insert(curve.to_owned(), why);
-                } else {
-                    profile.generation_evidence(kt, On::Item(curve.to_owned()), why);
-                }
-            }
-            profile.generate.insert(kt.to_owned(), row);
-            continue;
-        }
         if kt != "CKK_EC_MONTGOMERY" {
             create_curves(made, profile, kt, &curves, &mut row)?;
             record_stand_in(profile, stood_in, keygen, made.tok.runnable(mech).mechanism_type(), &row);
+            record_unlisted(profile, !listed && !stood_in, keygen, &row);
             profile.generate.insert(kt.to_owned(), row);
             continue;
         }
@@ -928,9 +968,19 @@ fn probe_curves(made: &mut Made, profile: &mut Draft) -> Result<()> {
             }
         }
         record_stand_in(profile, stood_in, keygen, mech.mechanism_type(), &row);
+        record_unlisted(profile, !listed && !stood_in, keygen, &row);
         profile.generate.insert(kt.to_owned(), row);
     }
     Ok(())
+}
+
+/// A generation mechanism the module does not list, which no provider stands in for: in `add`
+/// when a curve generated with it all the same.
+fn record_unlisted(profile: &mut Draft, unlisted: bool, keygen: MechanismType, row: &GenerateRow) {
+    if unlisted && !row.can.is_empty() {
+        profile.add.push(keygen.to_string());
+        profile.notes.insert(keygen.to_string(), "not listed; generates".into());
+    }
 }
 
 /// Key pairs of a key type cakeys manages (`CKK_EC`, `CKK_EC_EDWARDS`) per curve, generated
@@ -963,6 +1013,8 @@ fn create_curves(
                     let said = n.split("; ").next().unwrap_or_default().replace(&format!("{}: ", made.tok.name), "");
                     made.template_notes.entry("template.public.CKA_PRIVATE".into()).or_insert(said);
                 }
+                // The first key with its usage gets the operation probes (and its proofs); each
+                // later one its proofs.
                 if !probed_ops {
                     probed_ops = true;
                     if usable {
@@ -973,6 +1025,8 @@ fn create_curves(
                              generating on {curve}"
                         ));
                     }
+                } else if usable {
+                    prove_key(made, profile, kt, curve, public, private);
                 }
             }
             (Err(e), _) => {
@@ -1001,41 +1055,35 @@ fn record_stand_in(profile: &mut Draft, stood_in: bool, keygen: MechanismType, r
     }
 }
 
-/// Key pairs per RSA size: `can-bits` and `cannot-bits` beside the range the module reports.
-/// The 2048-bit pair gets the operation probes, and on a scratch token it is the wrap probes'
-/// transport key: wrapping is encryption, so its public half wraps and its private half
-/// unwraps. In a scratch slot the next size replaces it, so there it is no transport key.
+/// Key pairs per RSA size ([`RSA_SIZES`] up to the request's largest, whatever the module
+/// reports): `can-bits` and `cannot-bits` beside the range it reports, and each size's proofs
+/// of possession. The 2048-bit pair gets the operation probes, and on a scratch token it is the
+/// wrap probes' transport key: wrapping is encryption, so its public half wraps and its private
+/// half unwraps. In a scratch slot the next size replaces it, so there it is no transport key.
 fn probe_rsa(made: &mut Made, profile: &mut Draft) -> Result<Option<(ObjectHandle, ObjectHandle)>> {
     let mut row = profile.generate.remove("CKK_RSA").unwrap_or_default();
     let mut transport = None;
-    for bits in [1024u32, 2048, 3072, 4096] {
-        // Generated as the verbs generate it. The 2048-bit pair carries every usage the
-        // operation and wrap probes need, each attribute on the half the spec defines it for,
-        // since their defaults are the module's choice. A module refusing them gets the bare spec.
+    for bits in made.rsa_sizes.clone() {
+        // Generated as the verbs generate it, with every usage the proofs, the operation and
+        // the wrap probes need, each attribute on the half the spec defines it for, since their
+        // defaults are the module's choice. A module refusing them gets the bare spec.
         let object = ObjectCfg {
             modulus_bits: Some(bits.into()),
             ..ObjectCfg::new(cakeys_core::types::ObjectClass::PrivateKey, Some(Kt::Rsa))
         };
-        let bare = spec(&[], &[]);
-        let attempt = if bits == 2048 {
-            let usage = spec(&["CKA_DECRYPT", "CKA_UNWRAP", "CKA_SIGN"], &["CKA_ENCRYPT", "CKA_WRAP", "CKA_VERIFY"]);
-            made.create_for_use(&object, &usage, &bare)?
-        } else {
-            (made.create(&object, &bare)?, false)
-        };
-        match attempt {
+        let usage = spec(&["CKA_DECRYPT", "CKA_UNWRAP", "CKA_SIGN"], &["CKA_ENCRYPT", "CKA_WRAP", "CKA_VERIFY"]);
+        let on = format!("RSA-{bits}");
+        match made.create_for_use(&object, &usage, &spec(&[], &[]))? {
             (Ok((public, private, _)), usable) => {
-                if bits == 2048 {
-                    if usable {
-                        operate(made, profile, "CKK_RSA", "RSA-2048", public, private);
-                    } else {
-                        made.undetermined.push(
-                            "no operation probes on CKK_RSA keys: the module refused the usage attributes".into(),
-                        );
-                    }
-                    if matches!(made.target, Target::Labels) {
-                        transport = Some((public, private));
-                    }
+                match (bits == 2048, usable) {
+                    (true, true) => operate(made, profile, "CKK_RSA", &on, public, private),
+                    (false, true) => prove_key(made, profile, "CKK_RSA", &on, public, private),
+                    (_, false) => made.undetermined.push(format!(
+                        "no operation probes or proofs on {on}: the module refused the usage attributes"
+                    )),
+                }
+                if bits == 2048 && matches!(made.target, Target::Labels) {
+                    transport = Some((public, private));
                 }
                 row.can_bits.push(bits);
             }
@@ -1078,16 +1126,14 @@ fn operate(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, public: Obj
         "CKK_EC" => {
             let curve = Curve::from_cfg(Kt::Ec, on);
             ec_ops(made, private, &spki, on, curve.and_then(EcdsaHash::for_curve));
-            if made.advertises(MechanismType::ECDH1_DERIVE) {
+            if made.tries(MechanismType::ECDH1_DERIVE) {
                 derive(made, profile, private, &spki, on);
             }
         }
         "CKK_EC_EDWARDS" => {
             let pure = Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Pure));
-            if made.advertises(MechanismType::EDDSA) {
-                let outcome = sign(made.session, &pure, private, MSG, |s| sig::ed25519(&spki, MSG, s));
-                made.ops.record(MechanismType::EDDSA, on, outcome);
-            } else if made.tok.provider.stand_ins().contains(&MechanismType::EDDSA) {
+            let listed = made.advertises(MechanismType::EDDSA);
+            if !listed && made.tok.provider.stand_ins().contains(&MechanismType::EDDSA) {
                 // Not listed, but the provider signs pure EdDSA its own way (AWS CloudHSM's
                 // vendor mechanism [run]): `add` when the host verifies what it signs.
                 let mech = made.tok.runnable(pure);
@@ -1106,6 +1152,9 @@ fn operate(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, public: Obj
                             .insert(name, format!("not listed; the provider's stand-in ({vendor:#x}) on {on}: {e}"));
                     }
                 }
+            } else if made.tries(MechanismType::EDDSA) {
+                let outcome = sign(made.session, &pure, private, MSG, |s| sig::ed25519(&spki, MSG, s));
+                made.record(MechanismType::EDDSA, on, outcome);
             }
         }
         "CKK_RSA" => rsa_ops(made, profile, private, &spki, on),
@@ -1113,10 +1162,21 @@ fn operate(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, public: Obj
     }
 }
 
+/// [`prove`] on a key pair the operation probes do not take: its public half's SPKI first.
+fn prove_key(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, public: ObjectHandle, private: ObjectHandle) {
+    match made.tok.material_spki(public) {
+        Ok(Some(spki)) => prove(made, profile, kt, on, private, &spki),
+        Ok(None) => made.undetermined.push(format!("no proofs on {on}: its public key carries no material")),
+        Err(e) => made.undetermined.push(format!("no proofs on {on}: {e}")),
+    }
+}
+
 /// The proofs of possession the verbs give with a private key of `kt` on `on`
 /// (`Token::prove_binding`, their own code), each a `prove.*` row with the refusal as its
-/// evidence. The probe's token has no module profile, so each proof tries what it can.
-fn prove(made: &Made, profile: &mut Draft, kt: &str, on: &str, private: ObjectHandle, spki: &[u8]) {
+/// evidence. The probe's token has no module profile, so each proof tries what it can. A proof
+/// refused because an earlier operation left the session busy says nothing of the key:
+/// undetermined, never a row (tpm2-pkcs11 leaves a failed one active \[run\]).
+fn prove(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, private: ObjectHandle, spki: &[u8]) {
     let (key_type, bindings): (Kt, &[Binding]) = match kt {
         "CKK_EC" => (Kt::Ec, &[Binding::PopSign, Binding::PopEcdh]),
         "CKK_EC_EDWARDS" => (Kt::EcEdwards, &[Binding::PopSign]),
@@ -1142,7 +1202,14 @@ fn prove(made: &Made, profile: &mut Draft, kt: &str, on: &str, private: ObjectHa
     for binding in bindings {
         let outcome = made.tok.prove_binding(private, &object, spki, *binding);
         let cap = Capability::Prove { binding: binding.to_string(), key_type: kt.to_owned(), on: on.clone() };
-        profile.set(cap, Answer::of(outcome.is_ok()), outcome.err().map(|e| evidence(made.tok, &e)), None);
+        match outcome {
+            Err(e) if e.to_string().contains("CKR_OPERATION_ACTIVE") => {
+                made.undetermined.push(format!("no {cap} row: {}", evidence(made.tok, &e)));
+            }
+            outcome => {
+                profile.set(cap, Answer::of(outcome.is_ok()), outcome.err().map(|e| evidence(made.tok, &e)), None);
+            }
+        }
     }
 }
 
@@ -1213,9 +1280,9 @@ fn ec_ops(made: &mut Made, private: ObjectHandle, spki: &[u8], on: &str, hash: O
     ];
     for (mech, data, h) in std::iter::once(raw).chain(hashed) {
         let mt = mech.mechanism_type();
-        if made.advertises(mt) {
+        if made.tries(mt) {
             let outcome = sign(made.session, &mech, private, &data, verify(h));
-            made.ops.record(mt, on, outcome);
+            made.record(mt, on, outcome);
         }
     }
 }
@@ -1328,7 +1395,7 @@ fn derive(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[u
         let template = if profile.derive.sealed == Some(true) { &sealed } else { &open };
         derived_once(made, profile, &mech, private, template, on);
     }
-    made.ops.record(MechanismType::ECDH1_DERIVE, on, outcome);
+    made.record(MechanismType::ECDH1_DERIVE, on, outcome);
 }
 
 /// After a derivation took with `template`: whether it derives the same way in a read-only
@@ -1394,18 +1461,18 @@ fn rsa_ops(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[
     ];
     for (mech, data, verified) in signs {
         let mt = mech.mechanism_type();
-        if made.advertises(mt) {
+        if made.tries(mt) {
             let outcome = if verified {
                 sign(made.session, &mech, private, &data, pkcs1)
             } else {
                 sign(made.session, &mech, private, &data, none)
             };
-            made.ops.record(mt, on, outcome);
+            made.record(mt, on, outcome);
         }
     }
-    if made.advertises(MechanismType::RSA_X_509) {
+    if made.tries(MechanismType::RSA_X_509) {
         let outcome = sign(made.session, &Mechanism::RsaX509, private, &block, none);
-        made.ops.record(MechanismType::RSA_X_509, on, outcome);
+        made.record(MechanismType::RSA_X_509, on, outcome);
     }
     // Decryption: the host encrypts a fresh secret to the key, the token must recover it.
     let decrypts = |made: &mut Made, mech: &Mechanism, padding| -> std::result::Result<(), String> {
@@ -1415,11 +1482,11 @@ fn rsa_ops(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[
         let plain = made.session.decrypt(mech, private, &cipher).map_err(|e| ckr(&e))?;
         if pop::ct_eq(&secret, &plain) { Ok(()) } else { Err("decrypts to something else".to_owned()) }
     };
-    if made.advertises(MechanismType::RSA_PKCS) {
+    if made.tries(MechanismType::RSA_PKCS) {
         let outcome = decrypts(made, &Mechanism::RsaPkcs, RsaPadding::Pkcs1v15);
-        made.ops.record(MechanismType::RSA_PKCS, &format!("{on} decrypt"), outcome);
+        made.record(MechanismType::RSA_PKCS, &format!("{on} decrypt"), outcome);
     }
-    if made.advertises(MechanismType::RSA_PKCS_OAEP) {
+    if made.tries(MechanismType::RSA_PKCS_OAEP) {
         let mut works = Vec::new();
         for (hash, mgf, name, padding) in [
             (MechanismType::SHA1, PkcsMgfType::MGF1_SHA1, "SHA-1", RsaPadding::Oaep(OaepHash::Sha1)),
@@ -1431,7 +1498,7 @@ fn rsa_ops(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[
             if outcome.is_ok() {
                 works.push(name.to_owned());
             }
-            made.ops.record(MechanismType::RSA_PKCS_OAEP, &format!("{on} decrypt {name}"), outcome);
+            made.record(MechanismType::RSA_PKCS_OAEP, &format!("{on} decrypt {name}"), outcome);
         }
         // Probed: `[]` when no hash decrypts, distinct from never probed.
         profile.decrypt.oaep = Some(works);
@@ -1705,6 +1772,8 @@ pub(crate) struct Request<'a> {
     pub claimed: Option<&'a Profile>,
     /// The result is written to a file or judged against `claimed`, not only printed.
     pub kept: bool,
+    /// The largest of [`RSA_SIZES`] the write probes generate.
+    pub rsa_max_bits: u32,
 }
 
 /// The `probe` verb: probe `tok` and name the result. What the probe could not decide is
@@ -1738,7 +1807,7 @@ pub(crate) fn generate(
         }
         notes.note("probe: this build's cryptoki is unpatched: the advertise list may be short");
     }
-    let mut probed = probe(tok, cfg, req.write)?;
+    let mut probed = probe(tok, cfg, req.write.then_some(req.rsa_max_bits))?;
     for why in &probed.undetermined {
         notes.note(format_args!("probe: {why}"));
     }

@@ -59,11 +59,13 @@ mechanisms = ["CKM_AES_KEY_GEN"]
 "generate.CKK_EC.secp256r1" = { answer = "yes" }
 "generate.CKK_EC.secp384r1" = { answer = "yes" }
 "generate.CKK_EC.secp521r1" = { answer = "yes" }
-"generate.CKK_EC_EDWARDS.edwards25519" = { answer = "no", evidence = "not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN" }
-"generate.CKK_EC_EDWARDS.edwards448" = { answer = "no", evidence = "not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN" }
+"generate.CKK_EC_EDWARDS.edwards25519" = { answer = "no", evidence = "generation refused: CKR_MECHANISM_INVALID" }
+"generate.CKK_EC_EDWARDS.edwards448" = { answer = "no", evidence = "generation refused: CKR_MECHANISM_INVALID" }
 "generate.CKK_EC_MONTGOMERY.curve25519" = { answer = "no" }
 "generate.CKK_EC_MONTGOMERY.curve448" = { answer = "no" }
+"generate.CKK_RSA.512" = { answer = "no", evidence = "modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID" }
 "generate.CKK_RSA.1024" = { answer = "yes" }
+"generate.CKK_RSA.1536" = { answer = "no", evidence = "modulusBits = 1536: CKR_GENERAL_ERROR" }
 "generate.CKK_RSA.2048" = { answer = "yes" }
 "generate.CKK_RSA.3072" = { answer = "yes" }
 "generate.CKK_RSA.4096" = { answer = "no", evidence = "modulusBits = 4096: CKR_ATTRIBUTE_VALUE_INVALID" }
@@ -74,11 +76,21 @@ mechanisms = ["CKM_AES_KEY_GEN"]
 "derive.ecdh.read-only" = { answer = "no", evidence = "secp256r1: in a read-only session: CKR_SESSION_READ_ONLY" }
 "move.export" = { answer = "no" }
 "move.unwrap" = { answer = "no" }
+"prove.pop-decrypt.CKK_RSA.1024" = { answer = "yes" }
 "prove.pop-decrypt.CKK_RSA.2048" = { answer = "yes" }
+"prove.pop-decrypt.CKK_RSA.3072" = { answer = "yes" }
 "prove.pop-ecdh.CKK_EC.secp256r1" = { answer = "yes" }
+"prove.pop-ecdh.CKK_EC.secp384r1" = { answer = "yes" }
+"prove.pop-ecdh.CKK_EC.secp521r1" = { answer = "yes" }
 "prove.pop-sign.CKK_EC.secp256r1" = { answer = "yes" }
+"prove.pop-sign.CKK_EC.secp384r1" = { answer = "yes" }
+"prove.pop-sign.CKK_EC.secp521r1" = { answer = "no", evidence = "unavailable: C_Sign (proof of possession): CKR_HOST_MEMORY: Function::SignInit" }
+"prove.pop-sign.CKK_RSA.1024" = { answer = "yes" }
 "prove.pop-sign.CKK_RSA.2048" = { answer = "yes" }
+"prove.pop-sign.CKK_RSA.3072" = { answer = "yes" }
+"prove.pop-unwrap.CKK_RSA.1024" = { answer = "no", evidence = "unsupported: the token refused to unwrap with the private key (CKR_FUNCTION_NOT_SUPPORTED: Function::UnwrapKey); proving possession needs CKA_UNWRAP, or opt in with binding = \"token-asserted\" (hint for tpm2-pkcs11: secret keys cannot be generated through tpm2-pkcs11; create them with `tpm2_ptool addkey` or `tpm2_ptool import` and adopt them (`lock`, never `cakeys create`))" }
 "prove.pop-unwrap.CKK_RSA.2048" = { answer = "no", evidence = "unsupported: the token refused to unwrap with the private key (CKR_FUNCTION_NOT_SUPPORTED: Function::UnwrapKey); proving possession needs CKA_UNWRAP, or opt in with binding = \"token-asserted\" (hint for tpm2-pkcs11: secret keys cannot be generated through tpm2-pkcs11; create them with `tpm2_ptool addkey` or `tpm2_ptool import` and adopt them (`lock`, never `cakeys create`))" }
+"prove.pop-unwrap.CKK_RSA.3072" = { answer = "no", evidence = "unsupported: the token refused to unwrap with the private key (CKR_FUNCTION_NOT_SUPPORTED: Function::UnwrapKey); proving possession needs CKA_UNWRAP, or opt in with binding = \"token-asserted\" (hint for tpm2-pkcs11: secret keys cannot be generated through tpm2-pkcs11; create them with `tpm2_ptool addkey` or `tpm2_ptool import` and adopt them (`lock`, never `cakeys create`))" }
 
 [reported."CKK_RSA"]
 min-bits = 1024
@@ -112,10 +124,10 @@ key-types = ["CKK_SHA_1_HMAC", "CKK_SHA224_HMAC", "CKK_SHA256_HMAC", "CKK_SHA384
 [notes]
 "CKM_AES_KEY_GEN" = "advertised but generation fails: CKR_FUNCTION_NOT_SUPPORTED"
 "cryptoki" = "the module reports Cryptoki 2.40"
-"curve25519" = "not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN"
-"curve448" = "not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN"
+"curve25519" = "generation refused: CKR_MECHANISM_INVALID"
+"curve448" = "generation refused: CKR_MECHANISM_INVALID"
 "derive.destroy" = "secp256r1: the sealed derived secret cannot be destroyed: CKR_FUNCTION_FAILED"
-"destroy" = "C_DestroyObject leaves objects behind: cakeys-probe-01"
+"destroy" = "C_DestroyObject leaves objects behind: cakeys-probe-01, cakeys-probe-02, cakeys-probe-03, cakeys-probe-27"
 
 [manual."data-objects"]
 finding = "tpm2-pkcs11 creates a data object only with CKA_PRIVATE = true (it seals CKA_VALUE), and camigrate moves no private data object (cakeys identifies one only when its spec declares CKA_PRIVATE = true: a value hash in the lock would let anyone guess a guessable value offline). So no public-accepts row for CKO_DATA: a data object cannot move to this module."

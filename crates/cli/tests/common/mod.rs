@@ -288,6 +288,9 @@ pub fn committed_profile(path: &str) -> std::path::PathBuf {
 /// One write probe only: it diffs and regenerates in the same run. A second would see what the
 /// first left behind on modules that cannot destroy everything they make (tpm2-pkcs11's sealed
 /// derived secrets: profiles/modules/tpm2-pkcs11/1.10+amd-ftpm.toml, `derive.destroy`).
+///
+/// RSA up to 4096 bits, as every test probe: the probe's default runs to 16384, which takes a
+/// software token over a minute per size. The profiles the tests regenerate carry those sizes.
 pub fn assert_profile_conforms(
     km: impl Fn(&[&str]) -> Output,
     token: &str,
@@ -298,7 +301,7 @@ pub fn assert_profile_conforms(
     let committed = std::fs::read(committed_profile(path)).unwrap();
     std::fs::write(scratch, &committed).unwrap();
     let out = scratch.to_str().unwrap();
-    let probe = km(&["probe", "--token", token, "--write", "--diff", name, "--out", out]);
+    let probe = km(&["probe", "--token", token, "--write", "--rsa-max-bits", "4096", "--diff", name, "--out", out]);
     assert_eq!(code(&probe), 0, "a fresh probe drifts from {name}: {}", String::from_utf8_lossy(&probe.stderr));
     assert!(
         std::fs::read(scratch).unwrap() == committed,

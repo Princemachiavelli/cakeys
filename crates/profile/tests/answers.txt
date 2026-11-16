@@ -97,7 +97,7 @@
   generate CKK_EC: can ["secp256k1", "secp256r1", "secp384r1", "secp521r1"] cannot ["brainpoolP256r1", "brainpoolP384r1"] bits None..None can [] cannot [] by-name []
   generate CKK_EC_EDWARDS: can [] cannot ["edwards25519", "edwards448"] bits None..None can [] cannot [] by-name []
   generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name []
-  generate CKK_RSA: can [] cannot [] bits Some(2048)..Some(4096) can [2048, 3072, 4096] cannot [1024] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(2048)..Some(4096) can [2048, 3072, 4096] cannot [512, 1024, 1536, 6144, 8192, 12288, 16384] by-name []
 
   CKK_ACTI: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_ACTI generation
   CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_AES generation
@@ -163,8 +163,8 @@
   CKK_EC_MONTGOMERY: yes (aws-cloudhsm/5.18+hsm2m-fips)
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY curve25519: no — aws-cloudhsm/5.18+hsm2m-fips: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
-  CKK_EC_MONTGOMERY curve448: no — aws-cloudhsm/5.18+hsm2m-fips: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  CKK_EC_MONTGOMERY curve25519: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY curve448: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_MECHANISM_INVALID
   CKK_EC_MONTGOMERY edwards25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY edwards448: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp256k1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
@@ -209,14 +209,14 @@
   CKK_RSA secp256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_RSA secp384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_RSA secp521r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
-  CKK_RSA 512: no — aws-cloudhsm/5.18+hsm2m-fips
+  CKK_RSA 512: no — aws-cloudhsm/5.18+hsm2m-fips: modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID
   CKK_RSA 1024: no — aws-cloudhsm/5.18+hsm2m-fips: modulusBits = 1024: CKR_ATTRIBUTE_VALUE_INVALID
   CKK_RSA 2048: yes (aws-cloudhsm/5.18+hsm2m-fips)
   CKK_RSA 3072: yes (aws-cloudhsm/5.18+hsm2m-fips)
   CKK_RSA 4096: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_RSA 8192: no — aws-cloudhsm/5.18+hsm2m-fips
+  CKK_RSA 8192: no — aws-cloudhsm/5.18+hsm2m-fips: modulusBits = 8192: CKR_ATTRIBUTE_VALUE_INVALID
   CKK_RSA 15360: no — aws-cloudhsm/5.18+hsm2m-fips
-  CKK_RSA 16384: no — aws-cloudhsm/5.18+hsm2m-fips
+  CKK_RSA 16384: no — aws-cloudhsm/5.18+hsm2m-fips: modulusBits = 16384: CKR_ATTRIBUTE_VALUE_INVALID
   CKK_SALSA20: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SALSA20 generation
   CKK_SECURID: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SECURID generation
   CKK_SEED: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SEED generation
@@ -241,8 +241,8 @@
   CKK_XMSSMT: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_XMSSMT generation
   curve brainpoolP256r1: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
   curve brainpoolP384r1: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  curve curve25519: no — aws-cloudhsm/5.18+hsm2m-fips: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
-  curve curve448: no — aws-cloudhsm/5.18+hsm2m-fips: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  curve curve25519: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_MECHANISM_INVALID
+  curve curve448: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_MECHANISM_INVALID
   curve edwards25519: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
   curve edwards448: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
   curve secp256k1: yes (aws-cloudhsm/5.18+hsm2m-fips)
@@ -262,7 +262,7 @@
   generate CKK_EC: can ["secp256k1", "secp256r1", "secp384r1", "secp521r1"] cannot ["brainpoolP256r1", "brainpoolP384r1"] bits None..None can [] cannot [] by-name []
   generate CKK_EC_EDWARDS: can ["edwards25519"] cannot ["edwards448"] bits None..None can [] cannot [] by-name []
   generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name []
-  generate CKK_RSA: can [] cannot [] bits Some(2048)..Some(4096) can [2048, 3072, 4096] cannot [1024] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(2048)..Some(4096) can [2048, 3072, 4096] cannot [512, 1024, 1536, 6144, 8192, 12288, 16384] by-name []
 
   CKK_ACTI: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_ACTI generation
   CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_AES generation
@@ -328,8 +328,8 @@
   CKK_EC_MONTGOMERY: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY curve25519: no — aws-cloudhsm/5.18+hsm2m-non-fips: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
-  CKK_EC_MONTGOMERY curve448: no — aws-cloudhsm/5.18+hsm2m-non-fips: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  CKK_EC_MONTGOMERY curve25519: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY curve448: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_MECHANISM_INVALID
   CKK_EC_MONTGOMERY edwards25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY edwards448: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp256k1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
@@ -374,14 +374,14 @@
   CKK_RSA secp256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_RSA secp384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_RSA secp521r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
-  CKK_RSA 512: no — aws-cloudhsm/5.18+hsm2m-non-fips
+  CKK_RSA 512: no — aws-cloudhsm/5.18+hsm2m-non-fips: modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID
   CKK_RSA 1024: no — aws-cloudhsm/5.18+hsm2m-non-fips: modulusBits = 1024: CKR_ATTRIBUTE_VALUE_INVALID
   CKK_RSA 2048: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   CKK_RSA 3072: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   CKK_RSA 4096: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_RSA 8192: no — aws-cloudhsm/5.18+hsm2m-non-fips
+  CKK_RSA 8192: no — aws-cloudhsm/5.18+hsm2m-non-fips: modulusBits = 8192: CKR_ATTRIBUTE_VALUE_INVALID
   CKK_RSA 15360: no — aws-cloudhsm/5.18+hsm2m-non-fips
-  CKK_RSA 16384: no — aws-cloudhsm/5.18+hsm2m-non-fips
+  CKK_RSA 16384: no — aws-cloudhsm/5.18+hsm2m-non-fips: modulusBits = 16384: CKR_ATTRIBUTE_VALUE_INVALID
   CKK_SALSA20: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SALSA20 generation
   CKK_SECURID: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SECURID generation
   CKK_SEED: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SEED generation
@@ -406,8 +406,8 @@
   CKK_XMSSMT: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_XMSSMT generation
   curve brainpoolP256r1: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
   curve brainpoolP384r1: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  curve curve25519: no — aws-cloudhsm/5.18+hsm2m-non-fips: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
-  curve curve448: no — aws-cloudhsm/5.18+hsm2m-non-fips: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  curve curve25519: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_MECHANISM_INVALID
+  curve curve448: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_MECHANISM_INVALID
   curve edwards25519: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   curve edwards448: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
   curve secp256k1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
@@ -427,7 +427,7 @@
   generate CKK_EC: can ["secp256r1", "secp384r1"] cannot ["brainpoolP256r1", "brainpoolP384r1", "secp256k1", "secp521r1"] bits None..None can [] cannot [] by-name []
   generate CKK_EC_EDWARDS: can [] cannot ["edwards25519", "edwards448"] bits None..None can [] cannot [] by-name []
   generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name []
-  generate CKK_RSA: can [] cannot [] bits Some(2048)..Some(4096) can [2048, 3072, 4096] cannot [1024] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(2048)..Some(4096) can [2048, 3072, 4096] cannot [512, 1024, 1536, 6144, 8192, 12288, 16384] by-name []
 
   CKK_ACTI: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_ACTI generation
   CKK_AES: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_AES generation
@@ -539,14 +539,14 @@
   CKK_RSA secp256r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_RSA secp384r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_RSA secp521r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
-  CKK_RSA 512: no — kmsp11/1.9+hsm-fips
+  CKK_RSA 512: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
   CKK_RSA 1024: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
   CKK_RSA 2048: yes (kmsp11/1.9+hsm-fips)
   CKK_RSA 3072: yes (kmsp11/1.9+hsm-fips)
   CKK_RSA 4096: yes (kmsp11/1.9+hsm-fips)
-  CKK_RSA 8192: no — kmsp11/1.9+hsm-fips
+  CKK_RSA 8192: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
   CKK_RSA 15360: no — kmsp11/1.9+hsm-fips
-  CKK_RSA 16384: no — kmsp11/1.9+hsm-fips
+  CKK_RSA 16384: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
   CKK_SALSA20: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SALSA20 generation
   CKK_SECURID: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SECURID generation
   CKK_SEED: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SEED generation
@@ -591,7 +591,7 @@
   generate CKK_EC: can ["secp256r1", "secp384r1"] cannot ["brainpoolP256r1", "brainpoolP384r1", "secp256k1", "secp521r1"] bits None..None can [] cannot [] by-name []
   generate CKK_EC_EDWARDS: can [] cannot ["edwards25519", "edwards448"] bits None..None can [] cannot [] by-name []
   generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name []
-  generate CKK_RSA: can [] cannot [] bits Some(2048)..Some(4096) can [2048, 3072, 4096] cannot [1024] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(2048)..Some(4096) can [2048, 3072, 4096] cannot [512, 1024, 1536, 6144, 8192, 12288, 16384] by-name []
 
   CKK_ACTI: unknown — module profile kmsp11/1.9+hsm records no CKK_ACTI generation
   CKK_AES: unknown — module profile kmsp11/1.9+hsm records no CKK_AES generation
@@ -703,14 +703,14 @@
   CKK_RSA secp256r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_RSA secp384r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_RSA secp521r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
-  CKK_RSA 512: no — kmsp11/1.9+hsm
+  CKK_RSA 512: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
   CKK_RSA 1024: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
   CKK_RSA 2048: yes (kmsp11/1.9+hsm)
   CKK_RSA 3072: yes (kmsp11/1.9+hsm)
   CKK_RSA 4096: yes (kmsp11/1.9+hsm)
-  CKK_RSA 8192: no — kmsp11/1.9+hsm
+  CKK_RSA 8192: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
   CKK_RSA 15360: no — kmsp11/1.9+hsm
-  CKK_RSA 16384: no — kmsp11/1.9+hsm
+  CKK_RSA 16384: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
   CKK_SALSA20: unknown — module profile kmsp11/1.9+hsm records no CKK_SALSA20 generation
   CKK_SECURID: unknown — module profile kmsp11/1.9+hsm records no CKK_SECURID generation
   CKK_SEED: unknown — module profile kmsp11/1.9+hsm records no CKK_SEED generation
@@ -755,7 +755,7 @@
   generate CKK_EC: can ["secp256r1", "secp384r1", "secp521r1"] cannot ["brainpoolP256r1", "brainpoolP384r1", "secp256k1"] bits None..None can [] cannot [] by-name []
   generate CKK_EC_EDWARDS: can ["edwards25519", "edwards448"] cannot [] bits None..None can [] cannot [] by-name []
   generate CKK_EC_MONTGOMERY: can ["curve25519", "curve448"] cannot [] bits None..None can [] cannot [] by-name []
-  generate CKK_RSA: can [] cannot [] bits Some(1024)..Some(16384) can [1024, 2048, 3072, 4096] cannot [] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(1024)..Some(16384) can [1024, 1536, 2048, 3072, 4096] cannot [512] by-name []
 
   CKK_ACTI: unknown — module profile kryoptic/1.5 records no CKK_ACTI generation
   CKK_AES: unknown — module profile kryoptic/1.5 records no CKK_AES generation
@@ -867,14 +867,14 @@
   CKK_RSA secp256r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
   CKK_RSA secp384r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
   CKK_RSA secp521r1: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
-  CKK_RSA 512: no — kryoptic/1.5
+  CKK_RSA 512: no — kryoptic/1.5: modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID
   CKK_RSA 1024: yes (kryoptic/1.5)
   CKK_RSA 2048: yes (kryoptic/1.5)
   CKK_RSA 3072: yes (kryoptic/1.5)
   CKK_RSA 4096: yes (kryoptic/1.5)
-  CKK_RSA 8192: unknown — module profile kryoptic/1.5 probed 1024, 2048, 3072, 4096 bits only
-  CKK_RSA 15360: unknown — module profile kryoptic/1.5 probed 1024, 2048, 3072, 4096 bits only
-  CKK_RSA 16384: unknown — module profile kryoptic/1.5 probed 1024, 2048, 3072, 4096 bits only
+  CKK_RSA 8192: unknown — module profile kryoptic/1.5 probed 512, 1024, 1536, 2048, 3072, 4096 bits only
+  CKK_RSA 15360: unknown — module profile kryoptic/1.5 probed 512, 1024, 1536, 2048, 3072, 4096 bits only
+  CKK_RSA 16384: unknown — module profile kryoptic/1.5 probed 512, 1024, 1536, 2048, 3072, 4096 bits only
   CKK_SALSA20: unknown — module profile kryoptic/1.5 records no CKK_SALSA20 generation
   CKK_SECURID: unknown — module profile kryoptic/1.5 records no CKK_SECURID generation
   CKK_SEED: unknown — module profile kryoptic/1.5 records no CKK_SEED generation
@@ -920,7 +920,7 @@
   generate CKK_EC: can ["brainpoolP256r1", "brainpoolP384r1", "secp256k1", "secp256r1", "secp384r1", "secp521r1"] cannot [] bits None..None can [] cannot [] by-name []
   generate CKK_EC_EDWARDS: can ["edwards25519", "edwards448"] cannot [] bits None..None can [] cannot [] by-name []
   generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name []
-  generate CKK_RSA: can [] cannot [] bits Some(512)..Some(16384) can [1024, 2048, 3072, 4096] cannot [] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(512)..Some(16384) can [512, 1024, 1536, 2048, 3072, 4096] cannot [] by-name []
 
   CKK_ACTI: unknown — module profile softhsm/2.7 records no CKK_ACTI generation
   CKK_AES: unknown — module profile softhsm/2.7 records no CKK_AES generation
@@ -986,8 +986,8 @@
   CKK_EC_MONTGOMERY: yes (softhsm/2.7)
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY curve25519: no — softhsm/2.7: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
-  CKK_EC_MONTGOMERY curve448: no — softhsm/2.7: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  CKK_EC_MONTGOMERY curve25519: no — softhsm/2.7: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY curve448: no — softhsm/2.7: generation refused: CKR_MECHANISM_INVALID
   CKK_EC_MONTGOMERY edwards25519: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY edwards448: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp256k1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
@@ -1032,14 +1032,14 @@
   CKK_RSA secp256r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
   CKK_RSA secp384r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
   CKK_RSA secp521r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
-  CKK_RSA 512: unknown — module profile softhsm/2.7 probed 1024, 2048, 3072, 4096 bits only
+  CKK_RSA 512: yes (softhsm/2.7)
   CKK_RSA 1024: yes (softhsm/2.7)
   CKK_RSA 2048: yes (softhsm/2.7)
   CKK_RSA 3072: yes (softhsm/2.7)
   CKK_RSA 4096: yes (softhsm/2.7)
-  CKK_RSA 8192: unknown — module profile softhsm/2.7 probed 1024, 2048, 3072, 4096 bits only
-  CKK_RSA 15360: unknown — module profile softhsm/2.7 probed 1024, 2048, 3072, 4096 bits only
-  CKK_RSA 16384: unknown — module profile softhsm/2.7 probed 1024, 2048, 3072, 4096 bits only
+  CKK_RSA 8192: unknown — module profile softhsm/2.7 probed 512, 1024, 1536, 2048, 3072, 4096 bits only
+  CKK_RSA 15360: unknown — module profile softhsm/2.7 probed 512, 1024, 1536, 2048, 3072, 4096 bits only
+  CKK_RSA 16384: unknown — module profile softhsm/2.7 probed 512, 1024, 1536, 2048, 3072, 4096 bits only
   CKK_SALSA20: unknown — module profile softhsm/2.7 records no CKK_SALSA20 generation
   CKK_SECURID: unknown — module profile softhsm/2.7 records no CKK_SECURID generation
   CKK_SEED: unknown — module profile softhsm/2.7 records no CKK_SEED generation
@@ -1064,8 +1064,8 @@
   CKK_XMSSMT: unknown — module profile softhsm/2.7 records no CKK_XMSSMT generation
   curve brainpoolP256r1: yes (softhsm/2.7)
   curve brainpoolP384r1: yes (softhsm/2.7)
-  curve curve25519: no — softhsm/2.7: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
-  curve curve448: no — softhsm/2.7: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  curve curve25519: no — softhsm/2.7: generation refused: CKR_MECHANISM_INVALID
+  curve curve448: no — softhsm/2.7: generation refused: CKR_MECHANISM_INVALID
   curve edwards25519: yes (softhsm/2.7)
   curve edwards448: yes (softhsm/2.7)
   curve secp256k1: yes (softhsm/2.7)
@@ -1084,7 +1084,7 @@
   generate CKK_EC: can ["secp256r1", "secp384r1"] cannot ["brainpoolP256r1", "brainpoolP384r1", "secp256k1", "secp521r1"] bits None..None can [] cannot [] by-name []
   generate CKK_EC_EDWARDS: can [] cannot ["edwards25519", "edwards448"] bits None..None can [] cannot [] by-name []
   generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name []
-  generate CKK_RSA: can [] cannot [] bits Some(1024)..Some(2048) can [1024, 2048] cannot [3072, 4096] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(1024)..Some(2048) can [1024, 2048] cannot [512, 1536, 3072, 4096] by-name []
 
   CKK_ACTI: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_ACTI generation
   CKK_AES: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_AES generation
@@ -1133,8 +1133,8 @@
   CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve25519: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve448: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
-  CKK_EC_EDWARDS edwards25519: no — tpm2-pkcs11/1.10+amd-ftpm: not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN
-  CKK_EC_EDWARDS edwards448: no — tpm2-pkcs11/1.10+amd-ftpm: not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN
+  CKK_EC_EDWARDS edwards25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_EDWARDS edwards448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
   CKK_EC_EDWARDS secp256k1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
@@ -1150,8 +1150,8 @@
   CKK_EC_MONTGOMERY: yes (tpm2-pkcs11/1.10+amd-ftpm)
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY curve25519: no — tpm2-pkcs11/1.10+amd-ftpm: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
-  CKK_EC_MONTGOMERY curve448: no — tpm2-pkcs11/1.10+amd-ftpm: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  CKK_EC_MONTGOMERY curve25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY curve448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
   CKK_EC_MONTGOMERY edwards25519: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY edwards448: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp256k1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
@@ -1196,7 +1196,7 @@
   CKK_RSA secp256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_RSA secp384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_RSA secp521r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
-  CKK_RSA 512: no — tpm2-pkcs11/1.10+amd-ftpm
+  CKK_RSA 512: no — tpm2-pkcs11/1.10+amd-ftpm: modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID
   CKK_RSA 1024: yes (tpm2-pkcs11/1.10+amd-ftpm)
   CKK_RSA 2048: yes (tpm2-pkcs11/1.10+amd-ftpm)
   CKK_RSA 3072: no — tpm2-pkcs11/1.10+amd-ftpm: modulusBits = 3072: CKR_ATTRIBUTE_VALUE_INVALID
@@ -1228,10 +1228,10 @@
   CKK_XMSSMT: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_XMSSMT generation
   curve brainpoolP256r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
   curve brainpoolP384r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
-  curve curve25519: no — tpm2-pkcs11/1.10+amd-ftpm: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
-  curve curve448: no — tpm2-pkcs11/1.10+amd-ftpm: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
-  curve edwards25519: no — tpm2-pkcs11/1.10+amd-ftpm: not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN
-  curve edwards448: no — tpm2-pkcs11/1.10+amd-ftpm: not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN
+  curve curve25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  curve curve448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  curve edwards25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  curve edwards448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
   curve secp256k1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
   curve secp256r1: yes (tpm2-pkcs11/1.10+amd-ftpm)
   curve secp384r1: yes (tpm2-pkcs11/1.10+amd-ftpm)
@@ -1248,7 +1248,7 @@
   generate CKK_EC: can ["secp256r1", "secp384r1", "secp521r1"] cannot ["brainpoolP256r1", "brainpoolP384r1", "secp256k1"] bits None..None can [] cannot [] by-name []
   generate CKK_EC_EDWARDS: can [] cannot ["edwards25519", "edwards448"] bits None..None can [] cannot [] by-name []
   generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name []
-  generate CKK_RSA: can [] cannot [] bits Some(1024)..Some(3072) can [1024, 2048, 3072] cannot [4096] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(1024)..Some(3072) can [1024, 2048, 3072] cannot [512, 1536, 4096] by-name []
 
   CKK_ACTI: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_ACTI generation
   CKK_AES: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_AES generation
@@ -1297,8 +1297,8 @@
   CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve25519: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve448: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
-  CKK_EC_EDWARDS edwards25519: no — tpm2-pkcs11/1.10+swtpm: not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN
-  CKK_EC_EDWARDS edwards448: no — tpm2-pkcs11/1.10+swtpm: not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN
+  CKK_EC_EDWARDS edwards25519: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_EDWARDS edwards448: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_MECHANISM_INVALID
   CKK_EC_EDWARDS secp256k1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp256r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp384r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
@@ -1314,8 +1314,8 @@
   CKK_EC_MONTGOMERY: yes (tpm2-pkcs11/1.10+swtpm)
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY curve25519: no — tpm2-pkcs11/1.10+swtpm: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
-  CKK_EC_MONTGOMERY curve448: no — tpm2-pkcs11/1.10+swtpm: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+  CKK_EC_MONTGOMERY curve25519: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY curve448: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_MECHANISM_INVALID
   CKK_EC_MONTGOMERY edwards25519: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY edwards448: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp256k1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
@@ -1360,7 +1360,7 @@
   CKK_RSA secp256r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_RSA secp384r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_RSA secp521r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
-  CKK_RSA 512: no — tpm2-pkcs11/1.10+swtpm
+  CKK_RSA 512: no — tpm2-pkcs11/1.10+swtpm: modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID
   CKK_RSA 1024: yes (tpm2-pkcs11/1.10+swtpm)
   CKK_RSA 2048: yes (tpm2-pkcs11/1.10+swtpm)
   CKK_RSA 3072: yes (tpm2-pkcs11/1.10+swtpm)
@@ -1392,10 +1392,10 @@
   CKK_XMSSMT: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_XMSSMT generation
   curve brainpoolP256r1: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_CURVE_NOT_SUPPORTED
   curve brainpoolP384r1: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_CURVE_NOT_SUPPORTED
-  curve curve25519: no — tpm2-pkcs11/1.10+swtpm: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
-  curve curve448: no — tpm2-pkcs11/1.10+swtpm: not advertised: CKM_EC_MONTGOMERY_KEY_PAIR_GEN
-  curve edwards25519: no — tpm2-pkcs11/1.10+swtpm: not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN
-  curve edwards448: no — tpm2-pkcs11/1.10+swtpm: not advertised: CKM_EC_EDWARDS_KEY_PAIR_GEN
+  curve curve25519: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_MECHANISM_INVALID
+  curve curve448: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_MECHANISM_INVALID
+  curve edwards25519: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_MECHANISM_INVALID
+  curve edwards448: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_MECHANISM_INVALID
   curve secp256k1: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_CURVE_NOT_SUPPORTED
   curve secp256r1: yes (tpm2-pkcs11/1.10+swtpm)
   curve secp384r1: yes (tpm2-pkcs11/1.10+swtpm)
@@ -1412,7 +1412,7 @@
   generate CKK_EC: can ["secp256r1", "secp384r1"] cannot ["brainpoolP256r1", "brainpoolP384r1", "secp256k1", "secp521r1"] bits None..None can [] cannot [] by-name []
   generate CKK_EC_EDWARDS: can ["edwards25519"] cannot ["edwards448"] bits None..None can [] cannot [] by-name ["edwards25519"]
   generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name []
-  generate CKK_RSA: can [] cannot [] bits Some(1024)..Some(4096) can [2048, 3072, 4096] cannot [1024] by-name []
+  generate CKK_RSA: can [] cannot [] bits Some(1024)..Some(4096) can [2048, 3072, 4096] cannot [512, 1024, 1536] by-name []
 
   CKK_ACTI: unknown — module profile ykcs11/2.7 records no CKK_ACTI generation
   CKK_AES: unknown — module profile ykcs11/2.7 records no CKK_AES generation
@@ -1524,7 +1524,7 @@
   CKK_RSA secp256r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_RSA secp384r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_RSA secp521r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
-  CKK_RSA 512: no — ykcs11/2.7
+  CKK_RSA 512: no — ykcs11/2.7: modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID
   CKK_RSA 1024: no — ykcs11/2.7: modulusBits = 1024: CKR_ARGUMENTS_BAD
   CKK_RSA 2048: yes (ykcs11/2.7)
   CKK_RSA 3072: yes (ykcs11/2.7)

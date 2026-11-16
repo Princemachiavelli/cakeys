@@ -27,7 +27,7 @@ fn committed_profile_is_what_the_probe_observes(r: &Reference, test: &str) {
     let drift = w.km(&["probe", "--token", "ref", "--diff", other]);
     assert_eq!(code(&drift), 15, "{}", stderr(&drift));
     assert!(stderr(&drift).contains(&format!("rows differ from profile {other}")), "{}", stderr(&drift));
-    let anon = w.km(&["probe", "--token", "ref-anon", "--write"]);
+    let anon = w.km(&["probe", "--token", "ref-anon", "--write", "--rsa-max-bits", "4096"]);
     assert_eq!(code(&anon), 17);
     assert!(stderr(&anon).contains("not marked scratch"));
 }
@@ -151,7 +151,7 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
         .concat(),
     );
     let refused = |name: &str, why: &str| {
-        let o = w.km(&["probe", "--token", name, "--write"]);
+        let o = w.km(&["probe", "--token", name, "--write", "--rsa-max-bits", "4096"]);
         assert_eq!(code(&o), 17, "{name}: {}", stderr(&o));
         assert!(stderr(&o).contains(why), "{name}: expected {why:?} in {}", stderr(&o));
     };
@@ -182,7 +182,7 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
     drop(s);
     refused("taken", "scratchId 06 holds objects that are not ykcs11's own placeholder");
     for name in ["empty", "placeholder"] {
-        let o = w.km(&["probe", "--token", name, "--write"]);
+        let o = w.km(&["probe", "--token", name, "--write", "--rsa-max-bits", "4096"]);
         assert_eq!(code(&o), 0, "{name}: {}", stderr(&o));
         assert!(stderr(&o).contains("in a scratch slot: no secret-key, wrap or delete probes"), "{}", stderr(&o));
     }
