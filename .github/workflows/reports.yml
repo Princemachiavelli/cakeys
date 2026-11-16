@@ -1,30 +1,32 @@
-# The README's coverage and mutation badges: on each push to main, `nix build .#coverage` and
-# `nix build .#mutants` (reports, never checks: docs/DEVELOPMENT.md, "Testing"), each reduced
-# by scripts/badges.sh to a shields.io endpoint file and pushed to the `badges` branch, which
-# holds nothing else. A job that fails leaves its badge as it was.
+# The README's coverage and mutation badges: `nix build .#coverage` on each push to main,
+# `nix build .#mutants` (hours on a runner) weekly, both on a manual run. Each is a report,
+# never a check (docs/DEVELOPMENT.md, "Testing"): scripts/badges.sh reduces it to a shields.io
+# endpoint file, pushed to the `badges` branch, which holds nothing else. A job that fails
+# leaves its badge as it was.
 name: reports
 
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "0 4 * * 1"
   workflow_dispatch:
 
 permissions:
   contents: read
-
-# One run at a time, the newest kept: two runs would race on the badges branch.
-concurrency:
-  group: ${{ github.workflow }}
-  cancel-in-progress: true
 
 jobs:
   report:
     strategy:
       fail-fast: false
       matrix:
-        report: [coverage, mutants]
+        report: ${{ github.event_name == 'push' && fromJSON('["coverage"]') || fromJSON('["coverage", "mutants"]') }}
+    # One run of each report at a time, the newest kept.
+    concurrency:
+      group: ${{ github.workflow }}-${{ matrix.report }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 300
     permissions:
       contents: write
     steps:

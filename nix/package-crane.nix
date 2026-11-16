@@ -109,10 +109,24 @@ let
             ${lib.concatMapStringsSep " " (f: "--file ${lib.escapeShellArg f}") files} \
             ${lib.optionalString (re != null) "--re ${lib.escapeShellArg re}"} \
             ${
-              # The workspace's features name packages: only a run that tests them all takes them.
+              # The workspace's features name packages: only a run that tests them all takes them
+              # all. camigrate alone takes its own and its dependencies', not the other tools'.
               lib.optionalString (workspace || tokens || package == "camigrate") (
                 lib.optionalString common.noDefaultFeatures "--no-default-features "
-                + "--features ${lib.concatStringsSep "," common.features}"
+                + "--features ${
+                  lib.concatStringsSep "," (
+                    if workspace || tokens then
+                      common.features
+                    else
+                      lib.filter (
+                        f:
+                        !lib.elem (lib.head (lib.splitString "/" f)) [
+                          "cakeys"
+                          "caprobe"
+                        ]
+                      ) common.features
+                  )
+                }"
               )
             } \
             --cargo-arg=--locked --output "$TMPDIR/report-${package}" \
