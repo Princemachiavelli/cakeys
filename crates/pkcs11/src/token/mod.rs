@@ -33,7 +33,10 @@ mod uri;
 pub use generate::{BY_NAME, with_public_default_dropped};
 pub use identity::commit_mechanism;
 pub use policy::bool_attr;
-pub use possession::{Derived, ProofSide, derive_any, is_policy_default, proof_refusal, show, template_refusal};
+pub use possession::{
+    Derived, OAEP, ProofSide, derive_any, digest_info, is_policy_default, oaep_of, oaep_params, proof_refusal, show,
+    template_refusal,
+};
 use uri::pct_all;
 pub use uri::{PinRef, locator_attrs, pin_ref, provider_pem, with_query};
 
@@ -170,14 +173,22 @@ static LIBRARIES: std::sync::Mutex<BTreeMap<String, std::sync::Weak<Library>>> =
 /// The initialized library of `module`: the one an open token holds, else newly loaded and
 /// initialized.
 fn library(module: &str) -> Result<Arc<Library>> {
+    // By the file a path names, as the loader maps it: two spellings of one module (relative
+    // and absolute, a symlink) are one library, which a second `C_Initialize` would refuse. A
+    // bare name is the loader's own search, and stays as written.
+    let key = module
+        .contains('/')
+        .then(|| std::fs::canonicalize(module).ok()?.into_os_string().into_string().ok())
+        .flatten()
+        .unwrap_or_else(|| module.to_owned());
     let mut open = LIBRARIES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(library) = open.get(module).and_then(std::sync::Weak::upgrade) {
+    if let Some(library) = open.get(&key).and_then(std::sync::Weak::upgrade) {
         return Ok(library);
     }
     let ctx = Pkcs11::new(module).map_err(ck(&format!("loading {module}")))?;
     ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).map_err(ck("C_Initialize"))?;
     let library = Arc::new(Library(ctx));
-    open.insert(module.to_owned(), Arc::downgrade(&library));
+    open.insert(key, Arc::downgrade(&library));
     Ok(library)
 }
 
@@ -205,6 +216,13 @@ fn usable_mechanisms(
     Ok(usable)
 }
 
+/// The `CKM_*` names of `mechanisms`, sorted: the form the lock, a profile and `caps` list them in.
+fn sorted_names(mechanisms: &[MechanismType]) -> Vec<String> {
+    let mut names: Vec<String> = mechanisms.iter().map(ToString::to_string).collect();
+    names.sort();
+    names
+}
+
 /// The `CKR_*` name of a module's failure: cryptoki's `Display` is the spec's prose, which
 /// changes with the binding, so a message (and a profile row's evidence) names the return value
 /// by its constant. From `RvError`'s variant (`GeneralError` -> `CKR_GENERAL_ERROR`).
@@ -228,6 +246,34 @@ pub fn rv_name(e: &CkError) -> String {
 
 fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
     move |e| KmError::Unavailable(format!("{context}: {e}"))
+}
+
+/// A session object cakeys made for one step (a derived secret, a key-encryption key, a
+/// wrap-rebind copy), destroyed when this is dropped, whatever the step returned. A destroy
+/// that fails is not an error: the object goes with its session.
+pub struct SessionObject<'a> {
+    session: &'a Session,
+    handle: ObjectHandle,
+}
+
+impl<'a> SessionObject<'a> {
+    /// `handle`, an object of `session`, to destroy on drop.
+    #[must_use]
+    pub fn new(session: &'a Session, handle: ObjectHandle) -> SessionObject<'a> {
+        SessionObject { session, handle }
+    }
+
+    /// The object's handle.
+    #[must_use]
+    pub fn handle(&self) -> ObjectHandle {
+        self.handle
+    }
+}
+
+impl Drop for SessionObject<'_> {
+    fn drop(&mut self) {
+        let _ = self.session.destroy_object(self.handle);
+    }
 }
 
 /// What [`Token::occupied`] found under a locator.
@@ -280,16 +326,14 @@ impl Token {
         let profiles =
             crate::resolution::resolve(cfg, &module, Some(&token), provider.name()).map_err(KmError::Validation)?;
         let advertised = ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?;
-        let mut advertised_names: Vec<String> = advertised.iter().map(std::string::ToString::to_string).collect();
-        advertised_names.sort();
+        let advertised_names = sorted_names(&advertised);
         let rsa_bits = advertised
             .contains(&MechanismType::RSA_PKCS_KEY_PAIR_GEN)
             .then(|| ctx.get_mechanism_info(slot, MechanismType::RSA_PKCS_KEY_PAIR_GEN).ok())
             .flatten()
             .map(|i| (i.min_key_size() as u64, i.max_key_size() as u64));
         let mechanisms = usable_mechanisms(&advertised, &profiles)?;
-        let mut mechanism_names: Vec<String> = mechanisms.iter().map(std::string::ToString::to_string).collect();
-        mechanism_names.sort();
+        let mechanism_names = sorted_names(&mechanisms);
         let (session, pin) = session(ctx, slot, name, cfg, access, write_protected, pins)?;
         Ok(Token {
             name: name.to_owned(),
@@ -332,8 +376,7 @@ impl Token {
                 self.mechanisms.push(m);
             }
         }
-        self.mechanism_names = self.mechanisms.iter().map(std::string::ToString::to_string).collect();
-        self.mechanism_names.sort();
+        self.mechanism_names = sorted_names(&self.mechanisms);
         Ok(self)
     }
 
@@ -394,8 +437,7 @@ impl Token {
     /// stand-in for it (`Provider::stand_in`: AWS `CloudHSM`'s Ed25519), else `m`.
     #[must_use]
     pub fn runnable<'a>(&self, m: Mechanism<'a>) -> Mechanism<'a> {
-        let listed = self.advertised.iter().any(|a| *a == m.mechanism_type().to_string());
-        if listed { m } else { self.provider.stand_in(&m).unwrap_or(m) }
+        if self.listed.contains(&m.mechanism_type()) { m } else { self.provider.stand_in(&m).unwrap_or(m) }
     }
 
     /// The key type of `h` as a spec-compliant module would report it: `CKA_KEY_TYPE`, repaired
@@ -639,7 +681,7 @@ impl Token {
     /// the logout or the return to the user session fails, or the PIN counters refuse a login;
     /// else whatever `step` returns.
     pub fn as_so<T>(&self, what: &str, step: impl FnOnce() -> Result<T>) -> Result<T> {
-        let so = read_mgm(&self.cfg)?.ok_or_else(|| {
+        let so = read_so_credential(&self.cfg)?.ok_or_else(|| {
             self.unsupported(format!(
                 "{what} on '{}' needs a Security Officer session: set tokens.{}.soCredentialFile or soCredentialEnv",
                 self.name, self.name
@@ -821,8 +863,8 @@ pub fn has_admin(cfg: &TokenCfg) -> bool {
 /// The admin credential (`soCredentialEnv`, else `soCredentialFile`), read only for an SO step. The format
 /// is the module's: ykcs11 takes the PIV management key in hex, or the PIN on devices whose
 /// management key is PIN-protected.
-fn read_mgm(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
-    read_secret("management-key", cfg.so_credential_env.as_deref(), cfg.so_credential_file.as_deref())
+fn read_so_credential(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
+    read_secret("SO credential", cfg.so_credential_env.as_deref(), cfg.so_credential_file.as_deref())
 }
 
 /// A credential from the environment variable `var`, else the file `path` (its trailing newline

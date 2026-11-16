@@ -76,7 +76,9 @@ object = "rsa-sign"
 attributes = { CKA_SIGN = true, CKA_DECRYPT = false }
 tokens.gcp = { locator = { CKA_LABEL = "cakeys-rsa-sign-2048" }, origin = "create" }
 
-# RSA_DECRYPT_OAEP_3072_SHA256: decrypt-only, which pop-decrypt (OAEP over SHA-1) cannot prove.
+# RSA_DECRYPT_OAEP_3072_SHA256: decrypt-only. Still token-asserted here: pop-decrypt now proves
+# with the key's own OAEP hash and the provider no longer refuses it, but that has not been run
+# against Cloud KMS yet (ISSUES.md B11). Switch this pair to binding = "pop-decrypt" to test it.
 [specs.rsa-decrypt]
 object = "rsa-decrypt"
 attributes = { CKA_DECRYPT = true }
@@ -88,11 +90,11 @@ object = "hmac"
 attributes = { CKA_SIGN = true }
 tokens.gcp = { locator = { CKA_LABEL = "cakeys-hmac-sha256" }, origin = "create" }
 
-# Refused before creating: pop-decrypt proves with OAEP over SHA-1, which Cloud KMS refuses.
-[specs.rsa-pop-decrypt]
+# Refused before creating: Cloud KMS keys never unwrap, so pop-unwrap cannot prove one.
+[specs.rsa-pop-unwrap]
 object = "rsa-decrypt-pop"
-attributes = { CKA_DECRYPT = true }
-tokens.gcp = { locator = { CKA_LABEL = "cakeys-never-created-1" }, origin = "create", binding = "pop-decrypt" }
+attributes = { CKA_DECRYPT = true, CKA_UNWRAP = true }
+tokens.gcp = { locator = { CKA_LABEL = "cakeys-never-created-1" }, origin = "create", binding = "pop-unwrap" }
 
 # Refused before creating: AES.
 [specs.aes]

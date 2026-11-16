@@ -9,7 +9,7 @@
 use crate::binding;
 use cakeys_core::config::{ModuleInfo, Observation, TokenCfg, TokenInfo};
 use cakeys_profile::{Answer, Capability, Mode, Profile, Row, Set};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 /// A token's resolved profiles, what [`crate::Token`] carries and every consumer reads.
 #[derive(Debug, Clone, Default)]
@@ -56,20 +56,8 @@ impl Resolved {
             return;
         }
         let module = self.module.get_or_insert_with(|| Profile {
-            profile: format!("{token} (as recorded)"),
-            mode: Mode::Observed,
             partial: true,
-            requires_provider: false,
-            r#match: cakeys_profile::MatchInfo::default(),
-            advertise: Vec::new(),
-            subtract: cakeys_profile::profile::Subtract::default(),
-            add: Vec::new(),
-            capabilities: BTreeMap::new(),
-            reported: BTreeMap::new(),
-            migration: None,
-            restrict: Vec::new(),
-            notes: BTreeMap::new(),
-            manual: BTreeMap::new(),
+            ..Profile::new(format!("{token} (as recorded)"), Mode::Observed)
         });
         self.notes.push(format!(
             "{} answer(s) recorded for token '{token}' decide before profile {}",
@@ -153,7 +141,7 @@ pub fn resolve(
     // 2. A forwarder the module itself names (p11-kit's client: C_GetInfo describes it).
     for p in set.all() {
         if p.mode == Mode::Delta
-            && p.profile != "cryptoki/0.12"
+            && p.profile != binding::NAME
             && p.r#match.manufacturer.as_deref() == Some(module.manufacturer.as_str())
             && !out.layers.iter().any(|l| l.profile == p.profile)
         {

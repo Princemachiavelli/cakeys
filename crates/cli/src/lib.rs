@@ -20,7 +20,8 @@ pub use cakeys_cli_common::default_registry;
 ///
 /// Exit codes: 0 ok, 10 hash mismatch, 11 not found,
 /// 12 ambiguous, 13 conflict, 14 precondition failed, 15 unsupported, 16 unavailable,
-/// 17 invalid spec, 18 first use (nothing pinned yet: record the `got:` hash), 1 other.
+/// 17 invalid spec, 18 first use (nothing pinned yet: record the `got:` hash), 19 already
+/// exists (`create` on a key that is there), 1 other.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -60,7 +61,9 @@ enum Cmd {
     /// pairs are skipped with a note. Nothing named selects every pair. Before any token is
     /// opened, each is checked against the capability profiles: a pair they say cannot be made
     /// refuses the whole run (15), and nothing is created. Naming one pair (an object or --spec,
-    /// and --token) creates it or says why not. Prints the realised objects as JSON.
+    /// and --token) creates it or says why not. A key already under its locator is never found
+    /// and compared: the run stops there (19), and `lock` records it. Prints the realised
+    /// objects as JSON.
     Create {
         #[command(flatten)]
         at: Address,
@@ -132,12 +135,19 @@ struct Address {
 }
 
 impl Address {
+    /// The object named, for every verb but `check`: a name, never `<object>.id.<scheme>`.
+    fn plain_object(&self) -> Result<Option<&str>, KmError> {
+        match self.object.as_deref() {
+            Some(o) if ops::split_reference(o).1.is_some() => {
+                Err(KmError::Validation(format!("'{o}': only check takes <object>.id.<scheme>")))
+            }
+            object => Ok(object),
+        }
+    }
+
     /// The one (spec, token) pair named; `.id.<scheme>` is `check`'s alone.
     fn pair(&self, cfg: &Config) -> Result<(String, String), KmError> {
-        if let Some(o) = self.object.as_deref().filter(|o| o.contains(".id.")) {
-            return Err(KmError::Validation(format!("'{o}': only check takes <object>.id.<scheme>")));
-        }
-        cfg.address(self.object.as_deref(), self.spec.as_deref(), self.token.as_deref())
+        cfg.address(self.plain_object()?, self.spec.as_deref(), self.token.as_deref())
     }
 }
 
@@ -245,7 +255,9 @@ impl Run<'_> {
             Cmd::Lock { at, write } => {
                 let (spec, token) = at.pair(&self.cfg)?;
                 let t = Target::new(&self.cfg, &spec, &token)?;
-                let tok = self.open(&token, Access::Write, notes)?;
+                // Never creates: read-write where the token allows (the session objects a
+                // wrap-rebind copy or a proof makes), read-only on a write-protected one.
+                let tok = self.open(&token, Access::Scratch, notes)?;
                 let (r, changed) = ops::lock(&t, &tok, &mut self.lock, write.mode(), notes)?;
                 self.save(changed, notes)?;
                 print(&r)
@@ -293,7 +305,7 @@ impl Run<'_> {
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
         let (reference, spec, token) = (at.object.as_deref(), at.spec.as_deref(), at.token.as_deref());
         // Refused before any token is opened: the address, and what the output cannot carry.
-        let object = reference.map(|r| r.split_once(".id.").map_or(r, |(o, _)| o));
+        let object = reference.map(|r| ops::split_reference(r).0);
         let (spec_name, token_name) = cfg.address(object, spec, token)?;
         let object = &cfg.specs[&spec_name].object;
         let key_file = format == Format::Pkcs11ProviderPem;
@@ -410,10 +422,7 @@ impl Run<'_> {
     /// also when a later pair failed — never a key made and lost.
     fn create(&mut self, at: &Address, how: CreateHow, notes: &mut Notes) -> anyhow::Result<()> {
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
-        if let Some(o) = at.object.as_deref().filter(|o| o.contains(".id.")) {
-            return Err(KmError::Validation(format!("'{o}': only check takes <object>.id.<scheme>")).into());
-        }
-        let (object, spec, token) = (at.object.as_deref(), at.spec.as_deref(), at.token.as_deref());
+        let (object, spec, token) = (at.plain_object()?, at.spec.as_deref(), at.token.as_deref());
         let planned = ops::plan_create(cfg, object, spec, token, &self.lock, registry)?;
         let refused: Vec<&ops::Planned> = planned.iter().filter(|p| p.action == ops::Action::Refuse).collect();
         for p in &planned {

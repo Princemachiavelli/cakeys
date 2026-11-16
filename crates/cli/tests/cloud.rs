@@ -198,7 +198,7 @@ fn aws_cluster(mode: &str) {
 
 /// Google Cloud KMS: the keys scripts/cloud/gcp/cakeys.toml pre-creates take a version each,
 /// proven where Cloud KMS lets them be, then destroyed; what the kmsp11 provider cannot make
-/// (an AES key, a decrypt key proven with OAEP over SHA-1) is refused before anything exists.
+/// (an AES key, a key to prove by unwrapping) is refused before anything exists.
 #[test]
 fn gcp_cloud_kms_end_to_end() {
     if asked("CAKEYS_TEST_GCP").is_none() {
@@ -216,7 +216,7 @@ fn gcp_cloud_kms_end_to_end() {
     let created = std::cell::RefCell::new(Vec::new());
     with_cleanup(
         || {
-            for spec in ["rsa-pop-decrypt", "aes"] {
+            for spec in ["rsa-pop-unwrap", "aes"] {
                 let o = cakeys(&["create", "--spec", spec, "--token", "gcp"]);
                 assert_eq!(code(&o), Some(UNSUPPORTED), "{spec}: {}", text(&o));
             }

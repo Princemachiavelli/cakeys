@@ -1,4 +1,11 @@
 //! Hex text to bytes, one rule for every caller: an even number of hex digits, either case.
+//! And back, in lower case.
+
+/// `bytes` in lower-case hex.
+#[must_use]
+pub fn encode(bytes: &[u8]) -> String {
+    base16ct::lower::encode_string(bytes)
+}
 
 /// The bytes `s` spells in hex; `None` when it is not hex of whole bytes. The empty string is
 /// the empty byte string.

@@ -227,7 +227,7 @@ fn check_declared(t: &Target, class: Class, declared: &BTreeMap<String, AttrValu
             }
             AttrValue::Mechanisms(_) => attrs::has_allowed_mechanisms(class),
             AttrValue::Bool(_) if !attrs::is_declarable_bool(name) => {
-                return Err(KmError::Validation(format!("unsupported policy attribute {name}")));
+                return Err(KmError::Validation(format!("{t}: unsupported policy attribute {name}")));
             }
             AttrValue::Bool(_) => attrs::declarable(class, name),
         };

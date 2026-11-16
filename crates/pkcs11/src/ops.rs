@@ -169,7 +169,8 @@ pub(crate) fn check_attestation(
 
 /// Token capabilities the mode needs, and when `creating` the generation, checked before
 /// anything is created.
-fn check_capabilities(t: &Target, tok: &Token, mode: Mode, creating: bool) -> Result<()> {
+fn check_capabilities(t: &Target, tok: &Token, mode: Mode, verb: Verb) -> Result<()> {
+    let creating = verb == Verb::Create;
     let to_token = |e| match e {
         KmError::Unsupported(m) => tok.unsupported(m),
         e => e,
@@ -188,6 +189,21 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode, creating: bool) -> Re
     }
 }
 
+/// Whether a run may create the device state an attestation needs (a TPM Attestation Key):
+/// only the verbs that write (`lock`, `create`), never a read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Provision {
+    Never,
+    IfMissing,
+}
+
+/// The verb a capability check is for: `create` also needs the generation.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Verb {
+    Lock,
+    Create,
+}
+
 /// GET: find by locator (exactly one), check type and attributes, compute IDs. Never writes,
 /// neither the lock nor the token: a TPM Attestation Key that is not provisioned yet is an
 /// error here, and only `lock` provisions it.
@@ -199,10 +215,10 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode, creating: bool) -> Re
 /// that holds another key; `Unsupported`/`Unavailable` when the object cannot be proven or
 /// attested as the spec requires.
 pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>> {
-    resolve_with(t, tok, lock, false)
+    resolve_with(t, tok, lock, Provision::Never)
 }
 
-fn resolve_with(t: &Target, tok: &Token, lock: &Lock, provision: bool) -> Result<Option<Resolved>> {
+fn resolve_with(t: &Target, tok: &Token, lock: &Lock, provision: Provision) -> Result<Option<Resolved>> {
     let mode = plan_mode(t)?;
     let public_only = t.on_token.public_only;
     let Some(h) = tok.find_key(t.object, &t.on_token.locator, public_only)? else {
@@ -275,7 +291,7 @@ fn attest(
     lock: &Lock,
     h: ObjectHandle,
     scheme: Scheme,
-    provision: bool,
+    provision: Provision,
 ) -> Result<AttestationRecord> {
     let asymmetric = t.object.class.is_asymmetric();
     let spki = if asymmetric { Some(tok.spki(h, &t.on_token.locator)?) } else { None };
@@ -285,7 +301,7 @@ fn attest(
             tok.provider.name()
         ))
     })?;
-    let a = match tok.attest(h, t.object, spki.as_deref(), provision) {
+    let a = match tok.attest(h, t.object, spki.as_deref(), provision == Provision::IfMissing) {
         Ok(a) => a,
         Err(e @ (KmError::Unavailable(_) | KmError::Unsupported(_) | KmError::NotFound(_))) => {
             let locked = lock.realisation(t.spec_name, t.token_name).and_then(|r| r.attestation.as_ref());
@@ -314,24 +330,15 @@ fn attest(
 /// failed records nothing, so these are only ever yes.
 fn answers(t: &Target, r: &Resolved, created: bool) -> std::collections::BTreeMap<String, Answered> {
     let mut out = std::collections::BTreeMap::new();
-    let Some(kt) = t.object.key_type.filter(|_| t.object.class.is_asymmetric()) else { return out };
-    let on = match (&t.object.curve, t.object.modulus_bits) {
-        (Some(curve), _) => curve.clone(),
-        (None, Some(bits)) => bits.to_string(),
-        (None, None) => return out,
-    };
-    let proof = match r.binding {
-        Some(cakeys_core::config::Binding::PopSign | cakeys_core::config::Binding::PopSignPin) => Some("pop-sign"),
-        Some(cakeys_core::config::Binding::PopEcdh) => Some("pop-ecdh"),
-        Some(cakeys_core::config::Binding::PopDecrypt) => Some("pop-decrypt"),
-        Some(cakeys_core::config::Binding::PopUnwrap) => Some("pop-unwrap"),
-        Some(cakeys_core::config::Binding::TokenAsserted) | None => None,
-    };
-    if let Some(proof) = proof {
-        out.insert(format!("prove.{proof}.{}.{on}", kt.name()), Answered::yes());
+    if !t.object.class.is_asymmetric() {
+        return out;
     }
-    if created {
-        out.insert(format!("generate.{}.{on}", kt.name()), Answered::yes());
+    // The rows' own keys (`cakeys_profile::Capability`), as the gate reads them back.
+    if let Some(proof) = r.binding.and_then(|b| crate::gate::proof_capability(t.object, b)) {
+        out.insert(proof.to_string(), Answered::yes());
+    }
+    if created && let Some(generated) = crate::gate::generate_capability(t.object) {
+        out.insert(generated.to_string(), Answered::yes());
     }
     out
 }
@@ -379,7 +386,7 @@ pub fn verify(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result
 /// found; `plan_mode`/`check_capabilities` rejections (`Validation`, `Unsupported`) before the
 /// object is looked for, and `compare`'s on the realised object.
 pub fn lock(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes: &mut Notes) -> Result<(Resolved, bool)> {
-    lock_as(t, tok, lock, write, false, None, notes)
+    lock_as(t, tok, lock, write, None, notes)
 }
 
 /// Record an object camigrate just imported (docs/CAMIGRATE.md D6, D7): [`lock`] without creating,
@@ -399,28 +406,23 @@ pub fn lock_import(
     origin: Origin,
     notes: &mut Notes,
 ) -> Result<(Resolved, bool)> {
-    lock_as(t, tok, lock, LockWrite::Record, false, Some(origin), notes)
+    lock_as(t, tok, lock, LockWrite::Record, Some(origin), notes)
 }
 
-/// [`lock`]'s one code path: `create` allows creating an absent object, `origin` records an
-/// import's history.
+/// [`lock`]'s one code path: `origin` records an import's history.
 fn lock_as(
     t: &Target,
     tok: &Token,
     lock: &mut Lock,
     write: LockWrite,
-    create: bool,
     origin: Option<Origin>,
     notes: &mut Notes,
 ) -> Result<(Resolved, bool)> {
     let mode = plan_mode(t)?;
-    check_capabilities(t, tok, mode, create)?;
-    let (r, created) = match resolve_with(t, tok, lock, true)? {
-        Some(r) => (r, false),
-        None if create => (create_absent(t, tok, lock, notes)?, true),
-        None => return Err(KmError::NotFound(format!("{t}: not under its locator; `cakeys create` makes it"))),
-    };
-    let facts = Facts { origin, ..facts(t, tok, &r, created) };
+    check_capabilities(t, tok, mode, Verb::Lock)?;
+    let r = resolve_with(t, tok, lock, Provision::IfMissing)?
+        .ok_or_else(|| KmError::NotFound(format!("{t}: not under its locator; `cakeys create` makes it")))?;
+    let facts = Facts { origin, ..facts(t, tok, &r, false) };
     let changed = reconcile::reconcile(t, &r, lock, &facts, write, notes)?;
     Ok((r, changed))
 }
@@ -467,7 +469,7 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
     if let Some(note) = made_otherwise {
         notes.say(note);
     }
-    let e = match resolve_with(t, tok, lock, true) {
+    let e = match resolve_with(t, tok, lock, Provision::IfMissing) {
         Ok(Some(r)) => return Ok(r),
         Ok(None) => KmError::NotFound(format!("{t} vanished after creation")),
         Err(e) => e,
@@ -487,18 +489,21 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
     Err(e)
 }
 
-/// PUT If-None-Match: create the object under the declared locator if absent, then
-/// [`lock`] it. The one verb that creates, and only on a pair whose `origin` is `create`.
-/// Every guard of a creation applies: the lock must not pin the object's material already
-/// (D1), and nothing may sit under the locator; an object already there is found and compared,
-/// never replaced.
+/// PUT If-None-Match: create the object under the declared locator, then record it as [`lock`]
+/// does. The one verb that creates, and only on a pair whose `origin` is `create`. It never
+/// finds: an object already under the locator is `Exists` (19), whatever it holds, before any
+/// capability is asked of the token — `lock` is the verb for a key that is there. Every other
+/// guard of a creation applies: the lock must not pin the object's material already (D1), and
+/// nothing of another class may sit under the locator.
 ///
 /// # Errors
 ///
-/// As [`lock`], and for the creation: `PreconditionFailed` (D1) when the lock already pins
-/// the object's material, `Unavailable` when a session without login cannot see the locator,
-/// `Conflict` when the locator is occupied by another class; `Validation` (17) on a pair whose
-/// origin is not `create`, before the token is touched.
+/// `Validation` (17) on a pair whose origin is not `create`, before the token is touched;
+/// `Exists` (19) when the object is already under its locator, `Ambiguous` when several are;
+/// `plan_mode`/`check_capabilities` rejections, the generation included; `PreconditionFailed`
+/// (D1) when the lock already pins the object's material, `Unavailable` when a session without
+/// login cannot see the locator, `Conflict` when the locator is occupied by another class; and
+/// `compare`'s on the object just made.
 pub fn create(
     t: &Target,
     tok: &Token,
@@ -506,11 +511,19 @@ pub fn create(
     write: LockWrite,
     notes: &mut Notes,
 ) -> Result<(Resolved, bool)> {
-    plan_mode(t)?;
+    let mode = plan_mode(t)?;
     if let Some(why) = not_origin_create(t) {
         return Err(KmError::Validation(format!("{t}: {why}")));
     }
-    lock_as(t, tok, lock, write, true, None, notes)
+    if tok.find_key(t.object, &t.on_token.locator, false)?.is_some() {
+        return Err(KmError::Exists(format!(
+            "{t} is already under its locator: nothing was created; `cakeys lock` records a key that is there"
+        )));
+    }
+    check_capabilities(t, tok, mode, Verb::Create)?;
+    let r = create_absent(t, tok, lock, notes)?;
+    let changed = reconcile::reconcile(t, &r, lock, &facts(t, tok, &r, true), write, notes)?;
+    Ok((r, changed))
 }
 
 /// Why `create` never makes `t`'s object: its pair's origin is not `create`.
@@ -573,7 +586,7 @@ pub fn create_pairs<'a>(
 /// What `create` does with one selected pair ([`plan_create`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// Created (or, already there, found and compared).
+    /// Created; a key already under the locator is `Exists` (19) when the run gets there.
     Create,
     /// Left alone: not created here, or already pinned.
     Skip,
@@ -743,21 +756,17 @@ pub fn delete(
     if let Some(h) = tok.find_key(t.object, loc, false)? {
         // Proven like `resolve`: If-Match must not pass on a public object beside another key.
         let got = compute_ids(t, tok, lock, h, plan_mode(t)?)?.ids;
+        // The schemes computed, in the spec's order of preference: the first is the primary one.
+        let computed: Vec<Scheme> = t.schemes().into_iter().filter(|s| got.contains_key(s.name())).collect();
+        let primary = *computed.first().ok_or_else(|| KmError::Unsupported(format!("no identity computed for {t}")))?;
         // --if-match names the primary scheme; otherwise the first scheme the lock records.
         let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
-        let primary = t.schemes().into_iter().find(|s| got.contains_key(s.name()));
         let (scheme, expected) = match if_match {
-            Some(want) => (primary, Some(want.to_owned())),
-            None => t
-                .schemes()
-                .into_iter()
-                .filter(|s| got.contains_key(s.name()))
-                .find_map(|s| locked.and_then(|ids| ids.get(s.name())).map(|w| (Some(s), Some(w.clone()))))
-                .unwrap_or((primary, None)),
+            Some(want) => (primary, want.to_owned()),
+            None => computed.iter().find_map(|s| Some((*s, locked?.get(s.name())?.clone()))).ok_or_else(|| {
+                KmError::PreconditionFailed(format!("no expected {primary} for {t}; pass --if-match"))
+            })?,
         };
-        let scheme = scheme.ok_or_else(|| KmError::Unsupported(format!("no identity computed for {t}")))?;
-        let expected = expected
-            .ok_or_else(|| KmError::PreconditionFailed(format!("no expected {scheme} for {t}; pass --if-match")))?;
         if got.get(scheme.name()) != Some(&expected) {
             return Err(KmError::PreconditionFailed(format!(
                 "{} holds {:?}, expected {expected}; not deleting",
@@ -789,6 +798,15 @@ pub fn delete(
         changed |= lock.drop_unreferenced_observations();
     }
     Ok(changed)
+}
+
+/// A `check` reference in its parts: the object, and the scheme `<object>.id.<scheme>` asks for.
+#[must_use]
+pub fn split_reference(reference: &str) -> (&str, Option<&str>) {
+    match reference.split_once(".id.") {
+        Some((object, scheme)) => (object, Some(scheme)),
+        None => (reference, None),
+    }
 }
 
 /// The pseudo-FOD pre-use check of `reference` (`<object>` or `<object>.id.<scheme>`; none with `spec`): pick the
@@ -832,11 +850,10 @@ pub fn check_open(
     lock: &Lock,
     notes: &mut Notes,
 ) -> Result<(Resolved, Token)> {
-    let (object, requested) = match reference.map(|r| r.split_once(".id.").ok_or(r)) {
-        Some(Ok((o, s))) => (Some(o), Some(s)),
-        Some(Err(o)) => (Some(o), None),
-        None => (None, None),
-    };
+    let (object, requested) = reference.map_or((None, None), |r| {
+        let (object, scheme) = split_reference(r);
+        (Some(object), scheme)
+    });
     let (spec_name, token_name) = cfg.address(object, spec, token)?;
     let t = Target::new(cfg, &spec_name, &token_name)?;
     let object = t.object_name;

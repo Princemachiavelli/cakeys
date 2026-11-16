@@ -88,7 +88,14 @@ impl Row {
 }
 
 /// The table, in its file's order: the first row of a kind, size and purpose is the default.
-fn rows() -> Vec<Row> {
+/// Parsed once; the file is this crate's own, so a row that does not read is a build-time bug
+/// (`the_table_parses_and_its_probe_rows_are_the_nineteen`).
+fn rows() -> &'static [Row] {
+    static ROWS: std::sync::LazyLock<Vec<Row>> = std::sync::LazyLock::new(parse_rows);
+    &ROWS
+}
+
+fn parse_rows() -> Vec<Row> {
     let table: serde_json::Value = serde_json::from_str(include_str!("keys.json")).expect("keys.json is valid JSON");
     let text = |v: &serde_json::Value, k: &str| v[k].as_str().expect("keys.json: a string field").to_owned();
     table
@@ -197,7 +204,7 @@ fn check_reported(row: &Row, declared: &std::collections::BTreeMap<String, AttrV
 /// never both: Cloud KMS keys serve one), then the spec's `CKA_ALLOWED_MECHANISMS`, which must
 /// equal one algorithm's set; without it, the table's first row of that purpose (PKCS#1 v1.5 with
 /// SHA-256 for RSA signing, OAEP with SHA-256 for decryption).
-fn algorithm_for(object: &ObjectCfg, spec: &SpecCfg, binding: Option<Binding>) -> Result<Row> {
+fn algorithm_for(object: &ObjectCfg, spec: &SpecCfg, binding: Option<Binding>) -> Result<&'static Row> {
     let kt = object.checked_key_type()?;
     let unsupported = |why: String| Err(KmError::Unsupported(why));
     let on = match kt {
@@ -240,12 +247,10 @@ fn algorithm_for(object: &ObjectCfg, spec: &SpecCfg, binding: Option<Binding>) -
         }
         _ => "MAC",
     };
-    let all = rows();
-    let candidates: Vec<Row> =
-        all.into_iter().filter(|r| r.kind == kt.name() && r.on == on && r.purpose == purpose).collect();
+    let of_purpose = || rows().iter().filter(|r| r.kind == kt.name() && r.purpose == purpose);
+    let candidates: Vec<&'static Row> = of_purpose().filter(|r| r.on == on).collect();
     if candidates.is_empty() {
-        let offered: Vec<String> =
-            rows().into_iter().filter(|r| r.kind == kt.name() && r.purpose == purpose).map(|r| r.on).collect();
+        let offered: Vec<&str> = of_purpose().map(|r| r.on.as_str()).collect();
         return unsupported(format!(
             "Cloud KMS has no {} {purpose} key of {on} (offers: {})",
             kt.name(),
@@ -254,7 +259,7 @@ fn algorithm_for(object: &ObjectCfg, spec: &SpecCfg, binding: Option<Binding>) -
     }
     let row = match spec.attributes.get("CKA_ALLOWED_MECHANISMS") {
         Some(AttrValue::Mechanisms(declared)) => {
-            let fits = |r: &Row| {
+            let fits = |r: &&Row| {
                 let mut m = r.mechanisms.clone();
                 m.sort();
                 m == *declared
@@ -271,36 +276,26 @@ fn algorithm_for(object: &ObjectCfg, spec: &SpecCfg, binding: Option<Binding>) -
                 ))
             })?
         }
-        _ => candidates.into_iter().next().expect("checked non-empty"),
+        _ => candidates[0],
     };
-    check_reported(&row, &spec.attributes, false)?;
-    check_reported(&row, &spec.public_attributes, true)?;
-    // The proof cakeys runs on the new key, which only that key's own mechanisms may serve.
-    let needs = match binding {
-        Some(Binding::PopSign | Binding::PopSignPin) if kt == Kt::Rsa => Some("CKM_SHA256_RSA_PKCS"),
-        Some(Binding::PopDecrypt | Binding::PopUnwrap) => {
-            return unsupported(format!(
-                "binding = \"{}\" proves possession with RSA-OAEP over SHA-1, which Cloud KMS keys refuse \
-                 (they decrypt OAEP with SHA-256 or SHA-512): opt in with binding = \"token-asserted\"",
-                binding.expect("matched")
-            ));
+    check_reported(row, &spec.attributes, false)?;
+    check_reported(row, &spec.public_attributes, true)?;
+    // The proof cakeys runs on the new key, which only that key's own mechanisms may serve. A
+    // signature and a decryption are proven within them (`pop-sign` by whichever RSA signature
+    // the key allows, `pop-decrypt` by OAEP with the key's hash: cakeys-pkcs11's possession
+    // proofs); nothing here unwraps or derives.
+    // To test on Cloud KMS: `create` of a PSS, a SHA-512 and an OAEP key with their pop-*
+    // bindings (ISSUES.md B11); the proofs are written for these keys, the refusal that stood
+    // here before them was never run against the change.
+    match binding {
+        Some(Binding::PopUnwrap) => {
+            unsupported("Cloud KMS keys do not unwrap: binding = \"pop-unwrap\" cannot prove them".into())
         }
         Some(Binding::PopEcdh) => {
-            return unsupported("Cloud KMS keys do not derive: binding = \"pop-ecdh\" cannot prove them".into());
+            unsupported("Cloud KMS keys do not derive: binding = \"pop-ecdh\" cannot prove them".into())
         }
-        _ => None,
-    };
-    if let Some(m) = needs
-        && !row.mechanisms.iter().any(|x| x == m)
-    {
-        return unsupported(format!(
-            "{} keys serve [{}], not {m}, which binding = \"pop-sign\" proves an RSA key with: choose an \
-             algorithm that includes it, or opt in with binding = \"token-asserted\"",
-            row.algorithm,
-            row.mechanisms.join(", ")
-        ));
+        _ => Ok(row),
     }
-    Ok(row)
 }
 
 /// libkmsp11, recognised by `C_GetInfo`'s manufacturer.
@@ -355,7 +350,7 @@ impl Provider for Kmsp11 {
 
     fn bound_keys(&self) -> Vec<BoundKey> {
         rows()
-            .into_iter()
+            .iter()
             .filter(|r| r.probe)
             .map(|r| {
                 let label = format!("{LABEL_PREFIX}{}", r.algorithm.to_lowercase().replace('_', "-"));
@@ -363,10 +358,10 @@ impl Provider for Kmsp11 {
                     template: r.template(&label),
                     keygen: r.keygen,
                     mechanisms: r.mechanisms.iter().map(|m| mechanism(m)).collect(),
-                    name: r.algorithm,
+                    name: r.algorithm.clone(),
                     label,
-                    kind: r.kind,
-                    on: r.on,
+                    kind: r.kind.clone(),
+                    on: r.on.clone(),
                 }
             })
             .collect()
@@ -403,7 +398,7 @@ mod tests {
     }
 
     fn pick(o: &ObjectCfg, s: &SpecCfg, b: Option<Binding>) -> std::result::Result<String, String> {
-        algorithm_for(o, s, b).map(|r| r.algorithm).map_err(|e| e.to_string())
+        algorithm_for(o, s, b).map(|r| r.algorithm.clone()).map_err(|e| e.to_string())
     }
 
     #[test]
@@ -470,8 +465,8 @@ mod tests {
         );
         let rsa = object(Kt::Rsa, None, Some(2048), None);
         assert_eq!(pick(&rsa, &pss, Some(Binding::TokenAsserted)), Ok("RSA_SIGN_PSS_2048_SHA256".into()));
-        // ... but pop-sign proves an RSA key with CKM_SHA256_RSA_PKCS, which a PSS key refuses.
-        assert!(pick(&rsa, &pss, Some(Binding::PopSign)).unwrap_err().contains("CKM_SHA256_RSA_PKCS"));
+        // pop-sign proves an RSA key by a signature the key allows: a PSS key by PSS.
+        assert_eq!(pick(&rsa, &pss, Some(Binding::PopSign)), Ok("RSA_SIGN_PSS_2048_SHA256".into()));
         let raw = spec(
             &[
                 yes("CKA_SIGN"),
@@ -505,7 +500,10 @@ mod tests {
         refused(&ec, &spec(&[yes("CKA_DECRYPT")], &[]), None, "only sign");
         refused(&object(Kt::Ec, Some("secp521r1"), None, None), &spec(&[], &[]), None, "offers: secp256r1, secp384r1");
         refused(&object(Kt::Rsa, None, Some(1024), None), &spec(&[yes("CKA_SIGN")], &[]), None, "no CKK_RSA");
-        refused(&rsa, &spec(&[yes("CKA_DECRYPT")], &[]), Some(Binding::PopDecrypt), "SHA-1");
+        // pop-decrypt is proven with the key's own OAEP hash; nothing unwraps.
+        let decrypt = spec(&[yes("CKA_DECRYPT")], &[]);
+        assert_eq!(pick(&rsa, &decrypt, Some(Binding::PopDecrypt)), Ok("RSA_DECRYPT_OAEP_2048_SHA256".into()));
+        refused(&rsa, &decrypt, Some(Binding::PopUnwrap), "do not unwrap");
         refused(&ec, &spec(&[yes("CKA_DERIVE")], &[]), None, "CKA_DERIVE = false");
         refused(&ec, &spec(&[yes("CKA_SIGN"), yes("CKA_EXTRACTABLE")], &[]), None, "CKA_EXTRACTABLE = false");
         refused(&ec, &spec(&[yes("CKA_SIGN")], &[yes("CKA_PRIVATE")]), None, "on the public key");

@@ -105,12 +105,17 @@ pub(crate) fn create(
         Some(_) => None,
         None => Some(to.managing("importing an object", create)?),
     };
-    let origin =
-        Origin { from: from.to_owned(), method: Method::Public.name(), exposure: Exposure::Public, declared: false };
+    let origin = origin(from, &Method::Public, Exposure::Public);
     match ops::lock_import(dst, to, lock, origin, notes) {
         Ok(_) => Ok(Moved::Imported),
         Err(e) => Err(roll_back(dst, to, created.as_slice(), e, notes)),
     }
+}
+
+/// Where an object moved by `method` from the token `from` came from, for the lock's
+/// `provenance.origin`: the exposure is one cakeys established, never a vendor's declared one.
+pub(crate) fn origin(from: &str, method: &Method, exposure: Exposure) -> Origin {
+    Origin { from: from.to_owned(), method: method.name(), exposure, declared: false }
 }
 
 /// Whether the lock already records `dst`'s realisation: then it is verified, and a re-run

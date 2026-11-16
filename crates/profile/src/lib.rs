@@ -5,9 +5,8 @@
 //! anywhere.
 //!
 //! The crate is deliberately independent of the rest of cakeys ([`Baseline`], [`Profile`],
-//! [`Set`] and [`Effective`] are pure data and algebra over TOML): wiring the provider code
-//! to read from profiles (the plan's phase 2) is the step that touches existing code, and it
-//! is not done yet.
+//! [`Set`] and [`Effective`] are pure data and algebra over TOML): `cakeys-pkcs11` resolves a
+//! token's stack from them when it opens one.
 //!
 //! The three artifacts: [`Baseline`] (one spec revision's members and classes),
 //! [`Profile`] (a module's observed deltas, or a layer's subtractions) and [`Effective`]
@@ -331,6 +330,22 @@ mod tests {
         let unprobed = Profile::from_toml("profile = \"m/1\"\nmode = \"observed\"\n").unwrap();
         assert_eq!(unprobed.wrap_oaep(), None);
         assert!(matches!(Effective::new(b, Some(&unprobed), &[]).oaep()[0].1, Verdict::Unknown { .. }));
+    }
+
+    /// A misspelled key in any section is refused, never ignored: a `[match]` that lost its
+    /// version would match by manufacturer alone.
+    #[test]
+    fn a_misspelled_key_is_refused_in_every_section() {
+        let head = "profile = \"m/1\"\nmode = \"observed\"\n";
+        for section in [
+            "[match]\nmodule_version = \"1.0\"\n",
+            "[subtract]\nkey_types = [\"CKK_AES\"]\n",
+            "[[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_RSA\"\nmaxbits = 3072\n",
+            "[[migration.public-accepts]]\nclass = \"CKO_PUBLIC_KEY\"\nkeytypes = [\"CKK_RSA\"]\n",
+        ] {
+            let e = Profile::from_toml(&format!("{head}{section}")).unwrap_err();
+            assert!(e.contains("unknown field"), "{section}: {e}");
+        }
     }
 
     /// A `--profiles` directory, read recursively: a baseline is added, a profile of a loaded

@@ -25,6 +25,7 @@ pub enum Mode {
 /// `module-version`; its firmware is then the version evidence. Resolution prefers the profile
 /// matching the most keys and flags anything short of all of them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MatchInfo {
     /// The module's manufacturer, as `C_GetInfo` reports it.
     pub manufacturer: Option<String>,
@@ -40,6 +41,7 @@ pub struct MatchInfo {
 /// What a profile subtracts: capabilities the module advertises but cannot use, or that a
 /// layer does not carry.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Subtract {
     /// Mechanisms, by `CKM_*` name.
     #[serde(default)]
@@ -106,6 +108,7 @@ pub struct GenerateRow {
 /// A layer's numeric restriction, intersected with every other layer's (D3): swtpm refuses
 /// 4096-bit RSA generation, whatever tpm2-pkcs11's module profile says.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Restrict {
     /// What the restriction applies to; only "generate" exists today.
     pub operation: String,
@@ -138,6 +141,7 @@ pub enum PlaintextKind {
 /// One row of what a module's import paths take: a class, and optionally only some key types,
 /// curves, or an inclusive RSA modulus range (empty: any).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AcceptRow {
     /// The object class, by `CKO_*` name.
     pub class: String,
@@ -166,7 +170,7 @@ pub struct Migration {
     #[serde(default, rename = "plaintext-import")]
     pub plaintext_import: Option<PlaintextKind>,
     /// What the plaintext import takes.
-    #[serde(default, rename = "plaintext-accepts", alias = "plaintext_accepts")]
+    #[serde(default, rename = "plaintext-accepts")]
     pub plaintext_accepts: Vec<AcceptRow>,
     /// Public objects `C_CreateObject` takes; the spec-compliant classes when empty.
     #[serde(default, rename = "public-accepts")]
@@ -230,6 +234,27 @@ pub struct Profile {
 }
 
 impl Profile {
+    /// A profile named `profile` of `mode` with no rows: what a probe starts from.
+    #[must_use]
+    pub fn new(profile: String, mode: Mode) -> Profile {
+        Profile {
+            profile,
+            mode,
+            partial: false,
+            requires_provider: false,
+            r#match: MatchInfo::default(),
+            advertise: Vec::new(),
+            subtract: Subtract::default(),
+            add: Vec::new(),
+            capabilities: BTreeMap::new(),
+            reported: BTreeMap::new(),
+            migration: None,
+            restrict: Vec::new(),
+            notes: BTreeMap::new(),
+            manual: BTreeMap::new(),
+        }
+    }
+
     /// Parse a profile file.
     ///
     /// # Errors

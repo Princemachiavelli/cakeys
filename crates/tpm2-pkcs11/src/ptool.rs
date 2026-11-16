@@ -78,7 +78,9 @@ pub(crate) fn import(ctx: &ImportCtx<'_>) -> Result<()> {
     })?;
     drop(file);
     if !out.status.success() {
-        let said = String::from_utf8_lossy(&out.stderr).replace(pin, "<pin>");
+        let said = String::from_utf8_lossy(&out.stderr);
+        // An empty pattern matches between every character.
+        let said = if pin.is_empty() { said.into_owned() } else { said.replace(pin, "<pin>") };
         return Err(KmError::Unavailable(format!("tpm2_ptool import into '{}': {}", ctx.token_name, said.trim())));
     }
     Ok(())

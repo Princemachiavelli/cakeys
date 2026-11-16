@@ -1,6 +1,6 @@
 //! The vocabulary of moving keys (docs/CAMIGRATE.md): the method names and exposure levels a lock's
-//! `provenance.origin` records (frozen, pinned below), and the capabilities a provider declares
-//! for its token ([`Side`], the `Provider::migration` hook, D10). The planner that decides
+//! `provenance.origin` records (frozen, pinned below), and a token's capabilities for moving
+//! keys ([`Side`], built from its capability profile, D10). The planner that decides
 //! between them is camigrate's (README.md, "Three tools"), so a `cakeys` build carries
 //! none of it.
 

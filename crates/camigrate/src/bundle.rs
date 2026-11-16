@@ -170,7 +170,7 @@ impl Bundle {
             }
             if let Some(spki) = e.public_spki().map_err(invalid)? {
                 let id = cakeys_core::id::sri(&spki);
-                if e.ids.get("rfc7093m4") != Some(&id) {
+                if e.ids.get(cakeys_core::id::Scheme::Rfc7093m4.name()) != Some(&id) {
                     return Err(invalid(format!("publicKey is not the key rfc7093m4 names (its identity is {id})")));
                 }
             }

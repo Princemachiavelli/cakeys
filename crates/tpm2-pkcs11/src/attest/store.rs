@@ -158,9 +158,8 @@ impl Store {
     ///
     /// `NotFound` when no row carries the `CKA_ID`; `Ambiguous` when several do (a label
     /// narrows it, but never silently picks).
-    #[expect(clippy::format_collect, reason = "the id-hex builder reads best as map-format-collect")]
     pub fn find(&self, cka_id: &[u8], label: Option<&[u8]>, class: i64) -> Result<&TObject> {
-        let id = || cka_id.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let id = || cakeys_core::hex::encode(cka_id);
         let matches: Vec<&TObject> = self
             .tobjects
             .iter()

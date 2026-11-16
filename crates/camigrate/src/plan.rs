@@ -139,7 +139,7 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
         );
     }
     let trusted_only = m.flag("CKA_WRAP_WITH_TRUSTED") == Some(true);
-    let mut candidates: Vec<(Method, Exposure, Vec<String>)> = Vec::new();
+    let mut ways = Ways::default();
     // Provider methods compete at their declared level (D10).
     if let To::Token(dst) = to {
         for v in &from.vendor {
@@ -147,49 +147,49 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
                 let method = Method::Vendor { provider: v.provider.clone(), name: v.name.clone() };
                 let note =
                     format!("{} declares the {} level; cakeys records it, it cannot check it", method, v.exposure);
-                candidates.push((method, v.exposure, vec![note]));
+                ways.offer_noted(method, v.exposure, note);
             }
         }
     }
-    let mut blocked: Vec<String> = Vec::new();
     match to {
-        To::Token(dst) if dst.refuses.iter().any(|a| a.covers(ty)) => blocked.push(format!(
+        To::Token(dst) if dst.refuses.iter().any(|a| a.covers(ty)) => ways.block(format!(
             "{} ({}) takes in no {} by any import (its profile's migration.refuses)",
             dst.token,
             dst.provider,
             describe(ty)
         )),
         To::Token(dst) => {
-            sealed(m, from, dst, trusted_only, allow, &mut candidates, &mut blocked);
+            sealed(m, from, dst, trusted_only, allow, &mut ways);
             if trusted_only {
-                blocked.push(
+                ways.block(
                     "CKA_WRAP_WITH_TRUSTED: only a key the source's SO marked trusted may wrap it, so no host path"
                         .into(),
                 );
             } else {
-                host(m, from, dst, &mut candidates, &mut blocked);
+                host(m, from, dst, &mut ways);
             }
         }
         To::File(format) => {
             if trusted_only {
-                blocked.push("CKA_WRAP_WITH_TRUSTED: it cannot be written to a file".into());
+                ways.block("CKA_WRAP_WITH_TRUSTED: it cannot be written to a file".into());
             } else if !host_extractable(from) {
-                blocked.push(format!("{} offers no RFC 5649 key wrap to bring it to the host", from.token));
+                ways.block(format!("{} offers no RFC 5649 key wrap to bring it to the host", from.token));
             } else {
                 match format {
                     FileFormat::Pkcs8 if ty.class == ObjectClass::PrivateKey => {
-                        candidates.push((Method::Pkcs8Pbes2, Exposure::File, vec![]));
+                        ways.offer(Method::Pkcs8Pbes2, Exposure::File);
                     }
                     FileFormat::Pkcs12 if ty.class == ObjectClass::PrivateKey => {
-                        candidates.push((Method::Pkcs12, Exposure::File, vec![]));
+                        ways.offer(Method::Pkcs12, Exposure::File);
                     }
-                    _ => blocked.push("PKCS#8 and PKCS#12 files carry private keys".into()),
+                    _ => ways.block("PKCS#8 and PKCS#12 files carry private keys".into()),
                 }
             }
         }
     }
-    candidates.sort_by_key(|(_, e, _)| *e);
-    let Some((method, exposure, notes)) = candidates.into_iter().next() else {
+    let Ways { mut candidates, blocked } = ways;
+    candidates.sort_by_key(|c| c.exposure);
+    let Some(Candidate { method, exposure, notes }) = candidates.into_iter().next() else {
         return Plan::impossible(m, blocked);
     };
     let mut plan = Plan::ready(m, method, exposure, notes);
@@ -201,6 +201,34 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
         plan.notes.extend(target_notes(dst, &plan));
     }
     plan
+}
+
+/// One way an object could move, and what is said of it in the plan.
+struct Candidate {
+    method: Method,
+    exposure: Exposure,
+    notes: Vec<String>,
+}
+
+/// What the planner found for one object: the ways it could move, and why others cannot.
+#[derive(Default)]
+struct Ways {
+    candidates: Vec<Candidate>,
+    blocked: Vec<String>,
+}
+
+impl Ways {
+    fn offer(&mut self, method: Method, exposure: Exposure) {
+        self.candidates.push(Candidate { method, exposure, notes: vec![] });
+    }
+
+    fn offer_noted(&mut self, method: Method, exposure: Exposure, note: String) {
+        self.candidates.push(Candidate { method, exposure, notes: vec![note] });
+    }
+
+    fn block(&mut self, why: String) {
+        self.blocked.push(why);
+    }
 }
 
 fn is_public(ty: &ObjectCfg) -> bool {
@@ -216,21 +244,13 @@ fn describe(ty: &ObjectCfg) -> String {
 }
 
 /// The `sealed` (or `enforced`) methods between two PKCS#11 modules.
-fn sealed(
-    m: &Material,
-    from: &Side,
-    dst: &Side,
-    trusted_only: bool,
-    allow: Allow,
-    candidates: &mut Vec<(Method, Exposure, Vec<String>)>,
-    blocked: &mut Vec<String>,
-) {
+fn sealed(m: &Material, from: &Side, dst: &Side, trusted_only: bool, allow: Allow, ways: &mut Ways) {
     if !dst.unwraps {
-        blocked.push(format!("{} ({}) unwraps nothing", dst.token, dst.provider));
+        ways.block(format!("{} ({}) unwraps nothing", dst.token, dst.provider));
         return;
     }
     if m.ty.class == ObjectClass::SecretKey && !dst.secret_unwraps {
-        blocked.push(format!(
+        ways.block(format!(
             "{} ({}) unwraps a secret key without its length (CKA_VALUE_LEN), so its type cannot be checked \
              there",
             dst.token, dst.provider
@@ -239,7 +259,7 @@ fn sealed(
     }
     let exposure = if trusted_only {
         if !from.trusted_wrap {
-            blocked.push(format!(
+            ways.block(format!(
                 "CKA_WRAP_WITH_TRUSTED: {} ({}) cannot wrap under a transport key it trusts (its profile's \
                  move.trusted-wrap row says no), so the key never leaves it",
                 from.token, from.provider
@@ -247,7 +267,7 @@ fn sealed(
             return;
         }
         if !allow.trusted_transport {
-            blocked.push(format!(
+            ways.block(format!(
                 "CKA_WRAP_WITH_TRUSTED: {} holds no trusted copy of the transport key; its SO makes one with \
                  `camigrate transport <spec> --token <target> --trusted {}`",
                 from.token, from.token
@@ -262,7 +282,7 @@ fn sealed(
         from.has("CKM_RSA_PKCS_OAEP") && dst.has("CKM_RSA_PKCS_OAEP") && from.oaep.contains(h) && dst.oaep.contains(h)
     });
     let Some(hash) = oaep else {
-        blocked.push(format!("no RSA-OAEP hash both {} and {} implement", from.token, dst.token));
+        ways.block(format!("no RSA-OAEP hash both {} and {} implement", from.token, dst.token));
         return;
     };
     // Enforced, the transport key is the only trusted key: CKM_RSA_AES_KEY_WRAP does both wraps
@@ -276,11 +296,11 @@ fn sealed(
         ((from.kwp() && from.has("CKM_AES_KEY_GEN")) || rsa_aes(from)) && unwraps_composed
     };
     if composed {
-        candidates.push((Method::RsaOaepAesKwp(hash), exposure, vec![]));
+        ways.offer(Method::RsaOaepAesKwp(hash), exposure);
     } else if m.ty.class == ObjectClass::SecretKey && m.ty.value_len.is_some_and(|n| n <= OAEP_DIRECT_MAX) {
-        candidates.push((Method::RsaOaep(hash), exposure, vec![]));
+        ways.offer(Method::RsaOaep(hash), exposure);
     } else {
-        blocked.push(if trusted_only {
+        ways.block(if trusted_only {
             format!(
                 "CKA_WRAP_WITH_TRUSTED: {} offers no CKM_RSA_AES_KEY_WRAP (or {} no RFC 5649 key wrap) to carry a {} \
                  under the trusted transport key alone",
@@ -312,20 +332,14 @@ fn host_extractable(from: &Side) -> bool {
 }
 
 /// The `host` methods into a token.
-fn host(
-    m: &Material,
-    from: &Side,
-    dst: &Side,
-    candidates: &mut Vec<(Method, Exposure, Vec<String>)>,
-    blocked: &mut Vec<String>,
-) {
+fn host(m: &Material, from: &Side, dst: &Side, ways: &mut Ways) {
     let ty = m.ty;
     let Some(path) = &dst.plaintext_import else {
-        blocked.push(format!("{} ({}) imports no key material", dst.token, dst.provider));
+        ways.block(format!("{} ({}) imports no key material", dst.token, dst.provider));
         return;
     };
     if !host_extractable(from) {
-        blocked.push(format!("{} offers no RFC 5649 key wrap to bring it to the host", from.token));
+        ways.block(format!("{} offers no RFC 5649 key wrap to bring it to the host", from.token));
         return;
     }
     let method = match path {
@@ -334,11 +348,11 @@ fn host(
         PlaintextImport::Tpm2Ptool(accepts) if accepts.iter().any(|a| a.covers(ty)) => Method::Tpm2Ptool,
         PlaintextImport::PivImport(accepts) if accepts.iter().any(|a| a.covers(ty)) => Method::PivImport,
         PlaintextImport::Tpm2Ptool(_) | PlaintextImport::PivImport(_) => {
-            blocked.push(format!("{} ({}) cannot import a {}", dst.token, dst.provider, describe(ty)));
+            ways.block(format!("{} ({}) cannot import a {}", dst.token, dst.provider, describe(ty)));
             return;
         }
     };
-    candidates.push((method, Exposure::Host, vec![]));
+    ways.offer(method, Exposure::Host);
 }
 
 /// What the target changes about the object, whatever moves it.

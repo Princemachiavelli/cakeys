@@ -38,6 +38,12 @@ pub struct RsaParts {
     pub coefficient: Zeroizing<Vec<u8>>,
 }
 
+/// A private scalar as its decoder hands it back, by value: that copy is wiped too.
+fn scalar<B: AsRef<[u8]> + zeroize::Zeroize>(bytes: B) -> Zeroizing<Vec<u8>> {
+    let bytes = Zeroizing::new(bytes);
+    Zeroizing::new(bytes.as_ref().to_vec())
+}
+
 /// Parse a PKCS#8 private key of `key_type` (and `curve`, for EC keys) into its parts.
 ///
 /// # Errors
@@ -47,30 +53,29 @@ pub struct RsaParts {
 pub fn private_from_pkcs8(der: &[u8], key_type: KeyType, curve: Option<&str>) -> Result<PrivateParts> {
     use ed25519_dalek::pkcs8::DecodePrivateKey as _;
     let bad = |what: &str| KmError::Conflict(format!("the source's wrapped key is not a PKCS#8 {what} key"));
-    let scalar = |bytes: &[u8]| Zeroizing::new(bytes.to_vec());
     let ec = |value| Ok(PrivateParts::Ec(value));
     match (key_type, curve.and_then(|c| Curve::from_cfg(key_type, c))) {
         (KeyType::Ec, Some(Curve::P256)) => {
-            ec(scalar(&p256::SecretKey::from_pkcs8_der(der).map_err(|_| bad("P-256"))?.to_bytes()))
+            ec(scalar(p256::SecretKey::from_pkcs8_der(der).map_err(|_| bad("P-256"))?.to_bytes()))
         }
         (KeyType::Ec, Some(Curve::P384)) => {
-            ec(scalar(&p384::SecretKey::from_pkcs8_der(der).map_err(|_| bad("P-384"))?.to_bytes()))
+            ec(scalar(p384::SecretKey::from_pkcs8_der(der).map_err(|_| bad("P-384"))?.to_bytes()))
         }
         (KeyType::Ec, Some(Curve::P521)) => {
-            ec(scalar(&p521::SecretKey::from_pkcs8_der(der).map_err(|_| bad("P-521"))?.to_bytes()))
+            ec(scalar(p521::SecretKey::from_pkcs8_der(der).map_err(|_| bad("P-521"))?.to_bytes()))
         }
         (KeyType::Ec, Some(Curve::Secp256k1)) => {
-            ec(scalar(&k256::SecretKey::from_pkcs8_der(der).map_err(|_| bad("secp256k1"))?.to_bytes()))
+            ec(scalar(k256::SecretKey::from_pkcs8_der(der).map_err(|_| bad("secp256k1"))?.to_bytes()))
         }
         (KeyType::Ec, Some(Curve::BrainpoolP256r1)) => {
-            ec(scalar(&bp256::r1::SecretKey::from_pkcs8_der(der).map_err(|_| bad("brainpoolP256r1"))?.to_bytes()))
+            ec(scalar(bp256::r1::SecretKey::from_pkcs8_der(der).map_err(|_| bad("brainpoolP256r1"))?.to_bytes()))
         }
         (KeyType::Ec, Some(Curve::BrainpoolP384r1)) => {
-            ec(scalar(&bp384::r1::SecretKey::from_pkcs8_der(der).map_err(|_| bad("brainpoolP384r1"))?.to_bytes()))
+            ec(scalar(bp384::r1::SecretKey::from_pkcs8_der(der).map_err(|_| bad("brainpoolP384r1"))?.to_bytes()))
         }
         (KeyType::EcEdwards, Some(Curve::Ed25519)) => {
             let key = ed25519_dalek::SigningKey::from_pkcs8_der(der).map_err(|_| bad("Ed25519"))?;
-            Ok(PrivateParts::Edwards(Zeroizing::new(key.to_bytes().to_vec())))
+            Ok(PrivateParts::Edwards(scalar(key.to_bytes())))
         }
         (KeyType::Rsa, _) => rsa_parts(der).map(|p| PrivateParts::Rsa(Box::new(p))),
         (kt, _) => Err(KmError::Unsupported(format!(
@@ -120,7 +125,8 @@ fn rsa_parts(der: &[u8]) -> Result<RsaParts> {
     let bad = || KmError::Conflict("the source's wrapped key is not a PKCS#8 RSA key".into());
     let mut key = rsa::PrivateKey::from_pkcs8_der(der).map_err(|_| bad())?;
     key.precompute().map_err(|_| bad())?;
-    let be = |n: &rsa::BoxedUint| Zeroizing::new(n.to_be_bytes_trimmed_vartime().to_vec());
+    // `into_vec` keeps the allocation: no second, unzeroized copy of a private part.
+    let be = |n: &rsa::BoxedUint| Zeroizing::new(n.to_be_bytes_trimmed_vartime().into_vec());
     let [p, q] = key.primes() else { return Err(bad()) };
     Ok(RsaParts {
         modulus: key.n().to_be_bytes_trimmed_vartime().to_vec(),

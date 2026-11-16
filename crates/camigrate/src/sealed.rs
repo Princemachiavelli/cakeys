@@ -18,8 +18,8 @@ use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::Token;
 use cakeys_pkcs11::ops::{self, Notes, Target};
-use cakeys_pkcs11::token::{class_of, key_type_of, locator_attrs, with_public_default_dropped};
-use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsOaepParams, PkcsOaepSource};
+use cakeys_pkcs11::token::{SessionObject, class_of, key_type_of, locator_attrs, with_public_default_dropped};
+use cryptoki::mechanism::rsa::PkcsOaepParams;
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, KeyType, ObjectClass, ObjectHandle};
 use rsa::pkcs8::DecodePublicKey as _;
@@ -60,7 +60,7 @@ pub(crate) fn export(
 ) -> Result<Bundle> {
     let found = hold(items, from, lock, notes)?;
     let source = Source { token: from.name.clone(), provider: from.provider.name().into() };
-    let wraps = found.iter().any(|(.., held)| matches!(held, Held::Key(..)));
+    let wraps = found.iter().any(|f| matches!(f.held, Held::Key(..)));
     let Some(transport) = transport.filter(|_| wraps) else {
         if wraps {
             return Err(KmError::PreconditionFailed(format!(
@@ -69,7 +69,7 @@ pub(crate) fn export(
             )));
         }
         // Public objects only: nothing to wrap, so no transport key and nothing made on the source.
-        let keys = found.iter().map(|(item, locked, object_type, held)| entry(item, locked, object_type, held, None));
+        let keys = found.iter().map(|f| entry(f, None));
         return Ok(Bundle {
             format: BUNDLE_FORMAT.into(),
             version: BUNDLE_VERSION,
@@ -103,7 +103,10 @@ pub(crate) fn export(
     let modulus = rsa_parts(&transport.spki)?.0.len();
     let session = from.raw();
     let refused = |what: &str, e: cryptoki::error::Error| from.unsupported(format!("{what} on '{}': {e}", from.name));
+    // The transport public key and the shared KEK are session objects on the source: both go
+    // when this returns, however it does.
     let tpub = session.create_object(&rsa_public(transport)?).map_err(|e| refused("loading the transport key", e))?;
+    let tpub = SessionObject::new(session, tpub);
     // A source with no RFC 5649 of its own (AWS CloudHSM lists one it refuses [run]), or no AES
     // key generation for the KEK, wraps each key by CKM_RSA_AES_KEY_WRAP instead: no shared KEK.
     let kek_hash = items
@@ -113,36 +116,28 @@ pub(crate) fn export(
             _ => None,
         })
         .filter(|_| rfc5649(from).is_some() && from.has(MechanismType::AES_KEY_GEN));
-    let wrapped = kek_hash.map(|h| kek(from, tpub, h, &refused)).transpose().and_then(|kek| {
-        let keys = found
-            .iter()
-            .map(|(item, locked, object_type, held)| {
-                let refused = |what: &str, e| refused(&format!("{}: {what}", item.src), e);
-                let wrapped = match held {
-                    Held::Key(h, _) => {
-                        let wrapping = Wrapping {
-                            tpub: if item.exposure == Exposure::Enforced { trusted.unwrap_or(tpub) } else { tpub },
-                            kek: kek.as_ref().map(|k| k.0),
-                            modulus,
-                        };
-                        Some(wrap(from, &wrapping, *h, &item.method, item.exposure, &refused)?)
-                    }
-                    Held::Public(_) => None,
+    let shared = kek_hash.map(|h| kek(from, tpub.handle(), h, &refused)).transpose()?;
+    let mut keys = Vec::new();
+    for f in &found {
+        let refused = |what: &str, e| refused(&format!("{}: {what}", f.item.src), e);
+        let wrapped = match &f.held {
+            Held::Key(h, _) => {
+                let enforced = f.item.exposure == Exposure::Enforced;
+                let wrapping = Wrapping {
+                    tpub: trusted.filter(|_| enforced).unwrap_or(tpub.handle()),
+                    kek: shared.as_ref().map(|(kek, _)| kek.handle()),
+                    modulus,
                 };
-                Ok(entry(item, locked, object_type, held, wrapped))
-            })
-            .collect::<Result<Vec<Entry>>>();
-        if let Some((k, _)) = &kek {
-            let _ = session.destroy_object(*k);
-        }
-        Ok((kek.map(|k| encode(&k.1)), keys?))
-    });
-    let _ = session.destroy_object(tpub);
-    let (kek, keys) = wrapped?;
+                Some(wrap(from, &wrapping, *h, &f.item.method, f.item.exposure, &refused)?)
+            }
+            Held::Public(_) => None,
+        };
+        keys.push(entry(f, wrapped));
+    }
     Ok(Bundle {
         format: BUNDLE_FORMAT.into(),
         version: BUNDLE_VERSION,
-        kek,
+        kek: shared.map(|(_, blob)| encode(&blob)),
         source,
         transport: Some(TransportRef { object: transport.object.clone(), rfc7093m4: transport.rfc7093m4.clone() }),
         keys,
@@ -151,19 +146,14 @@ pub(crate) fn export(
 
 /// One object's bundle entry: a public object's bytes, or a key's `wrapped` blob with its own
 /// wrapped KEK when it has one ([`wrap`]'s result).
-fn entry(
-    item: &Item,
-    locked: &cakeys_core::config::LockObject,
-    object_type: &cakeys_core::config::ObjectCfg,
-    held: &Held,
-    wrapped: Option<(Option<Vec<u8>>, Vec<u8>)>,
-) -> Entry {
+fn entry(found: &Found, wrapped: Option<Wrapped>) -> Entry {
+    let Found { item, locked, object_type, held } = found;
     let (public_key, value) = match held {
         Held::Key(_, public_key) => (public_key.as_deref().map(encode), None),
         Held::Public(bytes) => (None, Some(encode(bytes))),
     };
     let (kek, wrapped) = match wrapped {
-        Some((own_kek, blob)) => (own_kek.as_deref().map(encode), Some(encode(&blob))),
+        Some(Wrapped { own_kek, blob }) => (own_kek.as_deref().map(encode), Some(encode(&blob))),
         None => (None, None),
     };
     Entry {
@@ -180,14 +170,24 @@ fn entry(
     }
 }
 
-/// Each item as the source holds it, verified against the lock first: the object as the lock
-/// pins it, its type, and its handle or bytes.
-fn hold<'a>(
-    items: &'a [Item<'a>],
-    from: &Token,
-    lock: &'a Lock,
-    notes: &mut Notes,
-) -> Result<Vec<(&'a Item<'a>, &'a cakeys_core::config::LockObject, cakeys_core::config::ObjectCfg, Held)>> {
+/// One item as the source holds it ([`hold`]): the object as the lock pins it, its type, and
+/// its handle or bytes.
+struct Found<'a> {
+    item: &'a Item<'a>,
+    locked: &'a cakeys_core::config::LockObject,
+    object_type: cakeys_core::config::ObjectCfg,
+    held: Held,
+}
+
+/// One wrapped key ([`wrap`]): its blob, and its own wrapped KEK when it does not share the
+/// bundle's.
+struct Wrapped {
+    own_kek: Option<Vec<u8>>,
+    blob: Vec<u8>,
+}
+
+/// Each item as the source holds it, verified against the lock first.
+fn hold<'a>(items: &'a [Item<'a>], from: &Token, lock: &'a Lock, notes: &mut Notes) -> Result<Vec<Found<'a>>> {
     let mut found = Vec::new();
     for item in items {
         let src = &item.src;
@@ -211,7 +211,7 @@ fn hold<'a>(
             let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string()))?;
             Held::Key(h, (src.object.class == Class::PrivateKey).then(|| from.spki(h, loc)).transpose()?)
         };
-        found.push((item, locked, object_type, held));
+        found.push(Found { item, locked, object_type, held });
     }
     Ok(found)
 }
@@ -224,12 +224,12 @@ enum Held {
 }
 
 /// A fresh session AES-256 KEK on the source, and its blob wrapped to the transport key.
-fn kek(
-    from: &Token,
+fn kek<'a>(
+    from: &'a Token,
     tpub: ObjectHandle,
     hash: OaepHash,
     refused: &dyn Fn(&str, cryptoki::error::Error) -> KmError,
-) -> Result<(ObjectHandle, Vec<u8>)> {
+) -> Result<(SessionObject<'a>, Vec<u8>)> {
     let session = from.raw();
     let template = [
         Attribute::Class(ObjectClass::SECRET_KEY),
@@ -242,13 +242,9 @@ fn kek(
         Attribute::Extractable(true),
     ];
     let kek = session.generate_key(&Mechanism::AesKeyGen, &template).map_err(|e| refused("making the KEK", e))?;
-    match session.wrap_key(&oaep(hash), tpub, kek) {
-        Ok(blob) => Ok((kek, blob)),
-        Err(e) => {
-            let _ = session.destroy_object(kek);
-            Err(refused("wrapping the KEK", e))
-        }
-    }
+    let kek = SessionObject::new(session, kek);
+    let blob = session.wrap_key(&oaep(hash), tpub, kek.handle()).map_err(|e| refused("wrapping the KEK", e))?;
+    Ok((kek, blob))
 }
 
 /// The keys one export wraps under: the transport key on the source (its trusted copy for an
@@ -271,8 +267,9 @@ fn wrap(
     method: &Method,
     exposure: Exposure,
     refused: &dyn Fn(&str, cryptoki::error::Error) -> KmError,
-) -> Result<(Option<Vec<u8>>, Vec<u8>)> {
+) -> Result<Wrapped> {
     let session = from.raw();
+    let shared = |blob| Wrapped { own_kek: None, blob };
     match (method, w.kek) {
         (Method::RsaOaepAesKwp(hash), kek) if exposure == Exposure::Enforced || kek.is_none() => {
             let blob = rsa_aes_wrap(from, w.tpub, h, *hash)
@@ -285,16 +282,16 @@ fn wrap(
                 )));
             }
             let (kek, key) = blob.split_at(w.modulus);
-            Ok((Some(kek.to_vec()), key.to_vec()))
+            Ok(Wrapped { own_kek: Some(kek.to_vec()), blob: key.to_vec() })
         }
         (Method::RsaOaepAesKwp(_), Some(kek)) => {
             let kwp = rfc5649(from).ok_or_else(|| {
                 from.unsupported(format!("'{}' offers no RFC 5649 key wrap this build can name", from.name))
             })?;
-            Ok((None, session.wrap_key(&kwp, kek, h).map_err(|e| refused("wrapping the key", e))?))
+            session.wrap_key(&kwp, kek, h).map(shared).map_err(|e| refused("wrapping the key", e))
         }
         (Method::RsaOaep(hash), _) => {
-            Ok((None, session.wrap_key(&oaep(*hash), w.tpub, h).map_err(|e| refused("wrapping the key", e))?))
+            session.wrap_key(&oaep(*hash), w.tpub, h).map(shared).map_err(|e| refused("wrapping the key", e))
         }
         (other, _) => Err(KmError::Unsupported(format!("{other} is not a sealed method"))),
     }
@@ -479,7 +476,7 @@ fn check_against_lock(b: &Bundle, e: &Entry, dst: &Target, tr: Option<&Target>, 
         return Ok(());
     }
     let (Some(tr), Some(named)) = (tr, &b.transport) else { return Err(no_transport(dst)) };
-    let tr_id = lock.objects.get(tr.object_name).and_then(|o| o.ids.get("rfc7093m4"));
+    let tr_id = lock.objects.get(tr.object_name).and_then(|o| o.ids.get(cakeys_core::id::Scheme::Rfc7093m4.name()));
     if named.object != tr.object_name || tr_id != Some(&named.rfc7093m4) {
         return Err(mismatch(
             "transport key",
@@ -560,10 +557,12 @@ fn create(
             let kek = session
                 .unwrap_key(&oaep(*hash), unwrapping, &kek_blob, &kek_template)
                 .map_err(|e| refused("unwrapping the KEK", e))?;
-            let unwrapped =
-                session.unwrap_key(&kwp, kek, &key, &template).map_err(|e| refused("unwrapping the key", e));
-            let _ = session.destroy_object(kek);
-            made.push(unwrapped?);
+            let kek = SessionObject::new(session, kek);
+            made.push(
+                session
+                    .unwrap_key(&kwp, kek.handle(), &key, &template)
+                    .map_err(|e| refused("unwrapping the key", e))?,
+            );
             Ok(())
         }
         Method::RsaOaep(hash) => {
@@ -612,11 +611,7 @@ fn oaep(hash: OaepHash) -> Mechanism<'static> {
 }
 
 fn oaep_params(hash: OaepHash) -> PkcsOaepParams<'static> {
-    let (h, mgf) = match hash {
-        OaepHash::Sha1 => (MechanismType::SHA1, PkcsMgfType::MGF1_SHA1),
-        OaepHash::Sha256 => (MechanismType::SHA256, PkcsMgfType::MGF1_SHA256),
-    };
-    PkcsOaepParams::new(h, mgf, PkcsOaepSource::empty())
+    cakeys_pkcs11::token::oaep_of(hash).0
 }
 
 /// The RFC 5649 key wrap a token offers, under the name it uses (docs/CAMIGRATE.md spike: one format,

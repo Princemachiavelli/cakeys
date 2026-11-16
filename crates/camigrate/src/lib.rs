@@ -17,7 +17,8 @@ use bundle::Bundle;
 use cakeys_cli_common::{module_overrides, open_token, print};
 use cakeys_core::KmError;
 use cakeys_core::config::{
-    Config, KeyOrigin, Lock, SpecCfg, SpecTokenCfg, load_config, load_lock, lock_for_update, lock_unwritable, save_lock,
+    Config, KeyOrigin, Lock, SpecCfg, SpecTokenCfg, in_nix_build, load_config, load_lock, lock_for_update,
+    lock_unwritable, save_lock, write_whole,
 };
 use cakeys_core::migrate::{Exposure, Method};
 use cakeys_pkcs11::Registry;
@@ -233,19 +234,19 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     match &cli.cmd {
         Cmd::Export { objects, token, target, transport, to_file, out, passphrase_file, how } => {
             let dest = match (target, transport, to_file) {
-                (_, _, Some(FileArg::Pkcs8)) => Dest::File(FileFormat::Pkcs8),
-                (_, _, Some(FileArg::Pkcs12)) => Dest::File(FileFormat::Pkcs12),
-                (_, Some(path), None) => Dest::Transport(path),
-                (Some(t), None, None) => Dest::Bundle(t),
+                (_, _, Some(FileArg::Pkcs8)) => Destination::File(FileFormat::Pkcs8),
+                (_, _, Some(FileArg::Pkcs12)) => Destination::File(FileFormat::Pkcs12),
+                (_, Some(path), None) => Destination::Transport(path),
+                (Some(t), None, None) => Destination::Bundle(t),
                 (None, None, None) => unreachable!("clap requires one of --target, --transport, --to-file"),
             };
             let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
             if how.dry_run {
                 // Without names a bundle takes what can move, so its plan fails only when nothing can.
-                let partial = objects.is_empty() && !matches!(dest, Dest::File(_));
+                let partial = objects.is_empty() && !matches!(dest, Destination::File(_));
                 return run.plan_moves(&objects, token, &dest, how, partial, notes);
             }
-            if let Dest::File(_) = &dest {
+            if let Destination::File(_) = &dest {
                 let (Some(out), Some(pass)) = (out, passphrase_file) else {
                     return Err(
                         KmError::Validation("writing a key file needs --out and --passphrase-file".into()).into()
@@ -261,7 +262,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
         Cmd::Import { token, spec, input, dry_run, .. } => run.import(token, spec, input, *dry_run, notes),
         Cmd::Migrate { object, from, to, spec, how } if how.dry_run => {
             specs_import(&run.cfg, spec, to)?;
-            run.plan_moves(object.as_deref().as_slice(), from, &Dest::Token(to), how, false, notes)
+            run.plan_moves(object.as_deref().as_slice(), from, &Destination::Token(to), how, false, notes)
         }
         Cmd::Migrate { object, from, to, spec, how } => run.migrate(object.as_deref(), from, to, spec, how, notes),
         Cmd::Transport { object, spec, token, trusted: Some(source), .. } => {
@@ -317,7 +318,7 @@ struct Run<'a> {
 }
 
 /// Where `export` or `migrate` sends the material.
-enum Dest<'a> {
+enum Destination<'a> {
     /// A token, by `migrate`.
     Token(&'a str),
     /// A bundle sealed to a token's transport key, by `export --target`.
@@ -327,6 +328,16 @@ enum Dest<'a> {
 }
 
 impl Run<'_> {
+    /// Save the lock if the verb changed it: also when a later object failed, so what moved is
+    /// never left on a token without its realisation.
+    fn save(&self, changed: bool, notes: &mut Notes) -> anyhow::Result<()> {
+        if changed {
+            save_lock(&self.lock_path, &self.lock)?;
+            notes.say(format!("updated {}", self.lock_path.display()));
+        }
+        Ok(())
+    }
+
     /// `--dry-run`: plan each object's move from `from` to `dest` and print it (docs/CAMIGRATE.md D9);
     /// 15 when any object cannot move as invoked — or, for a `partial` move (an export without
     /// names, which leaves out what cannot move), when none can: the real run's own verdict.
@@ -334,7 +345,7 @@ impl Run<'_> {
         &self,
         objects: &[&str],
         from: &str,
-        dest: &Dest,
+        dest: &Destination,
         how: &MoveArgs,
         partial: bool,
         notes: &mut Notes,
@@ -357,7 +368,7 @@ impl Run<'_> {
         &self,
         objects: &[&str],
         from: &str,
-        dest: &Dest,
+        dest: &Destination,
         out: Option<&Path>,
         how: &MoveArgs,
         notes: &mut Notes,
@@ -395,7 +406,7 @@ impl Run<'_> {
         let wraps = items.iter().any(|i| i.method != Method::Public);
         let transport = match dest {
             _ if !wraps => None,
-            Dest::Bundle(to) => {
+            Destination::Bundle(to) => {
                 let tr = transport_target(cfg, &self.lock, to, transport_choice(cfg, to, how))?;
                 Some(if let Some(key) = tokens::locked_transport(&tr, &self.lock, notes)? {
                     key
@@ -407,11 +418,11 @@ impl Run<'_> {
                     tokens::transport(&tr, &target, &self.lock, notes)?.key()?
                 })
             }
-            Dest::Transport(path) => {
+            Destination::Transport(path) => {
                 let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
                 Some(Transport::parse(&text, path)?.key()?)
             }
-            Dest::Token(_) | Dest::File(_) => {
+            Destination::Token(_) | Destination::File(_) => {
                 unreachable!("an export makes a bundle or a key file, and a file plan is never sealed")
             }
         };
@@ -456,7 +467,7 @@ impl Run<'_> {
         let entries =
             bundle.keys.iter().filter(|e| e.method != public).chain(bundle.keys.iter().filter(|e| e.method == public));
         for e in entries {
-            let dst = match target_target(cfg, &e.object, token, spec_for(cfg, specs, &e.object)) {
+            let dst = match import_target(cfg, &e.object, token, spec_for(cfg, specs, &e.object)) {
                 Ok(dst) => dst,
                 Err(err) => {
                     notes.say(format!("{}: not imported: {err}", e.object));
@@ -497,10 +508,7 @@ impl Run<'_> {
                 }
             }
         }
-        if changed {
-            save_lock(&self.lock_path, &self.lock)?;
-            notes.say(format!("updated {}", self.lock_path.display()));
-        }
+        self.save(changed, notes)?;
         failed.map_or(Ok(()), |e| Err(e.into()))
     }
 
@@ -520,7 +528,7 @@ impl Run<'_> {
     ) -> anyhow::Result<()> {
         // Before the plan, as the dry run does: both refuse a named target that is no import pair.
         specs_import(&self.cfg, specs, to)?;
-        let moves = self.plan(object.as_slice(), from, &Dest::Token(to), how, true, notes)?;
+        let moves = self.plan(object.as_slice(), from, &Destination::Token(to), how, true, notes)?;
         moves.ready()?;
         specs_select(&self.cfg, specs, moves.plans.iter().map(|p| p.object.as_str()), to)?;
         let built = |m: &Method| {
@@ -556,7 +564,7 @@ impl Run<'_> {
         let (mut changed, mut failed) = (false, None);
         for p in &moves.plans {
             let pair = source_target(cfg, &self.lock, &p.object, from)
-                .and_then(|src| Ok((src, target_target(cfg, &p.object, to, spec_for(cfg, specs, &p.object))?)));
+                .and_then(|src| Ok((src, import_target(cfg, &p.object, to, spec_for(cfg, specs, &p.object))?)));
             let lock = &mut self.lock;
             let target = &mut target;
             let outcome = pair.and_then(|(src, dst)| {
@@ -596,10 +604,7 @@ impl Run<'_> {
                 }
             }
         }
-        if changed {
-            save_lock(&self.lock_path, &self.lock)?;
-            notes.say(format!("updated {}", self.lock_path.display()));
-        }
+        self.save(changed, notes)?;
         failed.map_or(Ok(()), |e| Err(e.into()))
     }
 
@@ -628,26 +633,26 @@ impl Run<'_> {
         &self,
         objects: &[&str],
         from: &str,
-        dest: &Dest,
+        dest: &Destination,
         how: &MoveArgs,
         show: bool,
         notes: &mut Notes,
     ) -> anyhow::Result<tokens::Moves> {
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
         let open = |name: &str, notes: &mut Notes| open_token(cfg, modules, registry, name, Access::Read, notes);
-        let bundle = matches!(dest, Dest::Bundle(_) | Dest::Transport(_));
+        let bundle = matches!(dest, Destination::Bundle(_) | Destination::Transport(_));
         let transport = match dest {
-            Dest::Transport(path) => {
+            Destination::Transport(path) => {
                 let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
                 Some((Transport::parse(&text, path)?, path.display().to_string()))
             }
             _ => None,
         };
         let dest = match (dest, &transport) {
-            (Dest::Token(name) | Dest::Bundle(name), _) => tokens::Dest::Token(name),
-            (Dest::File(f), _) => tokens::Dest::File(*f),
-            (Dest::Transport(_), Some((t, shown))) => tokens::Dest::Transport(t, shown),
-            (Dest::Transport(_), None) => unreachable!("parsed above"),
+            (Destination::Token(name) | Destination::Bundle(name), _) => tokens::Dest::Token(name),
+            (Destination::File(f), _) => tokens::Dest::File(*f),
+            (Destination::Transport(_), Some((t, shown))) => tokens::Dest::Transport(t, shown),
+            (Destination::Transport(_), None) => unreachable!("parsed above"),
         };
         let target_token = match dest {
             tokens::Dest::Token(name) => Some(name),
@@ -696,7 +701,7 @@ impl Run<'_> {
             }
             // The target's `lock` must prove possession of a private key the way its spec says.
             if let (true, Some(to)) = (p.ready, target_token)
-                && let Ok(dst) = target_target(cfg, &p.object, to, None)
+                && let Ok(dst) = import_target(cfg, &p.object, to, None)
                 && let Some(target) = &moves.target
                 && let Some(why) = unprovable(&dst, target)
             {
@@ -705,7 +710,7 @@ impl Run<'_> {
             }
             // An imported PIV key is never attested (docs/CAMIGRATE.md D8): a spec asking for it never holds.
             if let (true, Some(Method::PivImport), Some(to)) = (p.ready, &p.method, target_token)
-                && target_target(cfg, &p.object, to, None).is_ok_and(|dst| dst.on_token.attestation)
+                && import_target(cfg, &p.object, to, None).is_ok_and(|dst| dst.on_token.attestation)
             {
                 p.ready = false;
                 p.reasons.push(format!(
@@ -760,7 +765,8 @@ fn limit_bundle_plans(plans: &mut [plan::Plan]) {
 
 /// Print the plans of one invocation, as a table or as JSON.
 fn show_plans(from: &str, moves: &tokens::Moves, json: bool) -> anyhow::Result<()> {
-    let (to_name, source_from, target_from, plans) = (&moves.to, moves.source_from, moves.target_from, &moves.plans);
+    let (to_name, plans) = (&moves.to, &moves.plans);
+    let (source_from, target_from) = (moves.source_from.name(), moves.target_from.name());
     if json {
         return print(&serde_json::json!({
             "from": from,
@@ -853,7 +859,7 @@ fn specs_import(cfg: &Config, specs: &[String], token: &str) -> cakeys_core::Res
 
 /// Where `object` goes on `to`: its one spec there whose origin is `import`, or the one
 /// `--spec` names. A pair that says the key is created or adopted there is never a target.
-fn target_target<'a>(
+fn import_target<'a>(
     cfg: &'a Config,
     object: &str,
     to: &'a str,
@@ -922,7 +928,7 @@ impl Run<'_> {
         &self,
         objects: &[&str],
         from: &str,
-        dest: &Dest,
+        dest: &Destination,
         out: &Path,
         pass: &Path,
         how: &MoveArgs,
@@ -951,8 +957,13 @@ impl Run<'_> {
         let bytes = match p.method {
             Some(Method::Pkcs12) => {
                 let cert = self.paired_certificate(&p.object, from, &source, notes)?;
-                let id =
-                    self.lock.objects.get(&p.object).and_then(|o| o.ids.get("rfc7093m4")).cloned().unwrap_or_default();
+                let id = self
+                    .lock
+                    .objects
+                    .get(&p.object)
+                    .and_then(|o| o.ids.get(cakeys_core::id::Scheme::Rfc7093m4.name()))
+                    .cloned()
+                    .unwrap_or_default();
                 file::write_pkcs12(&pkcs8, &cert, &pass, id.as_bytes())?
             }
             _ => file::write_pkcs8(&pkcs8, &pass)?.into_bytes(),
@@ -1014,7 +1025,7 @@ impl Run<'_> {
             .objects
             .iter()
             .find(|(_, o)| {
-                o.ids.get("rfc7093m4") == Some(&id)
+                o.ids.get(cakeys_core::id::Scheme::Rfc7093m4.name()) == Some(&id)
                     && o.object_type.as_ref().is_some_and(|t| t.class == cakeys_core::types::ObjectClass::PrivateKey)
             })
             .map(|(name, _)| name.clone())
@@ -1028,9 +1039,9 @@ impl Run<'_> {
         let pairs = self.lock.objects.get(&object).map(|o| o.pairs.clone()).unwrap_or_default();
         specs_select(cfg, specs, std::iter::once(object.as_str()).chain(pairs.iter().map(String::as_str)), token)?;
         let spec_for = |o: &str| spec_for(cfg, specs, o);
-        let dst = target_target(cfg, &object, token, spec_for(&object))?;
+        let dst = import_target(cfg, &object, token, spec_for(&object))?;
         // The certificate a PKCS#12 carries goes where the lock pairs one with the key on this token.
-        let cert_target = pairs.iter().find_map(|o| target_target(cfg, o, token, spec_for(o)).ok());
+        let cert_target = pairs.iter().find_map(|o| import_target(cfg, o, token, spec_for(o)).ok());
         if dry_run {
             // Everything the import checks before it creates anything, and nothing more.
             let target = open_token(cfg, modules, registry, token, Access::Read, notes)?;
@@ -1069,27 +1080,28 @@ impl Run<'_> {
             }
         }
         // The certificate a PKCS#12 carries, where the lock pairs one with the key on this token.
+        // Its failure ends the run only after the lock is saved: the key is on the token by now.
+        let mut failed = None;
         if let Some(cert) = &read.certificate {
             match cert_target {
-                Some(t) => {
-                    if matches!(
-                        public::create(&t, &target, cert, "file", &mut self.lock, notes)?,
-                        public::Moved::Imported
-                    ) {
+                Some(t) => match public::create(&t, &target, cert, "file", &mut self.lock, notes) {
+                    Ok(public::Moved::Imported) => {
                         changed = true;
                         notes.say(format!("imported its certificate into {t}"));
                     }
-                }
+                    Ok(public::Moved::AlreadyThere) => {}
+                    Err(e) => {
+                        notes.say(format!("{t}: its certificate is not imported: {e}"));
+                        failed = Some(e);
+                    }
+                },
                 None => notes.note(format_args!(
                     "the file's certificate is not imported: the lock pairs no certificate with '{object}' on '{token}'"
                 )),
             }
         }
-        if changed {
-            save_lock(&self.lock_path, &self.lock)?;
-            notes.say(format!("updated {}", self.lock_path.display()));
-        }
-        Ok(())
+        self.save(changed, notes)?;
+        failed.map_or(Ok(()), |e| Err(e.into()))
     }
 
     /// `transport --trusted`: the source's SO makes a `CKA_TRUSTED` copy of the transport key
@@ -1140,27 +1152,6 @@ fn read_passphrase(path: &Path) -> anyhow::Result<zeroize::Zeroizing<String>> {
         return Err(KmError::Validation(format!("{}: the passphrase is empty", path.display())).into());
     }
     Ok(line)
-}
-
-/// Write `bytes` to `path` whole or not at all: a temporary file beside it, created with `mode`
-/// (0600 for a key file: it holds a key, if encrypted), renamed into place. A temporary file an
-/// interrupted run left behind is replaced, never followed or appended to.
-fn write_whole(path: &Path, bytes: &[u8], mode: u32) -> anyhow::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let name = path.file_name().map_or_else(|| "out".into(), |n| n.to_string_lossy().into_owned());
-    let tmp = path.with_file_name(format!(".{name}.tmp"));
-    let _ = std::fs::remove_file(&tmp);
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(mode)
-        .open(&tmp)
-        .with_context(|| format!("creating {}", tmp.display()))?;
-    f.write_all(bytes).with_context(|| format!("writing {}", tmp.display()))?;
-    drop(f);
-    std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))?;
-    Ok(())
 }
 
 /// The transport key to seal to on `to`: `--transport-key`, else the token's `transportWith`.
@@ -1215,12 +1206,6 @@ fn needs_login(cfg: &Config, token: &str) -> cakeys_core::Result<()> {
         ))),
         _ => Ok(()),
     }
-}
-
-/// Inside a Nix build sandbox (`NIX_BUILD_TOP` set, `IN_NIX_SHELL` not), where an export, an
-/// admin operation (docs/CAMIGRATE.md D8), is refused like a lock write.
-fn in_nix_build() -> bool {
-    std::env::var_os("NIX_BUILD_TOP").is_some() && std::env::var_os("IN_NIX_SHELL").is_none()
 }
 
 #[cfg(test)]

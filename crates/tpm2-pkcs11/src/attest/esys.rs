@@ -190,8 +190,7 @@ fn seal_auth(pin: &[u8], salt: &str) -> Vec<u8> {
     h.update(pin);
     h.update(salt.as_bytes());
     let digest = &h.finalize()[..16];
-    let nibble = |n: u8| if n < 10 { b'0' + n } else { b'a' + n - 10 };
-    digest.iter().flat_map(|&b| [nibble(b >> 4), nibble(b & 0xf)]).collect()
+    cakeys_core::hex::encode(digest).into_bytes()
 }
 
 /// Load the seal object and unseal the token's wrapping key with the user PIN — the same

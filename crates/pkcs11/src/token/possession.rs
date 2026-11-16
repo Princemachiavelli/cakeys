@@ -53,8 +53,7 @@ impl Token {
         self.check_proof(object, binding)?;
         let msg = pop::challenge(spki)?;
         match binding {
-            Binding::PopSign => self.prove_sign(h, object, spki, &msg, false),
-            Binding::PopSignPin => self.prove_sign(h, object, spki, &msg, true),
+            Binding::PopSign | Binding::PopSignPin => self.prove_sign(h, object, spki, &msg, binding),
             Binding::PopEcdh => self.prove_ecdh(h, spki, &msg),
             Binding::PopDecrypt => self.prove_decrypt(h, spki, &msg),
             Binding::PopUnwrap => self.prove_unwrap(h, spki, &msg),
@@ -63,16 +62,9 @@ impl Token {
     }
 
     /// `pop-sign`: the token signs the challenge; the host verifies the signature. With
-    /// `per_use_pin` (`pop-sign-pin`), the signature is authorized by a context-specific login.
+    /// `binding` `pop-sign-pin`, the signature is authorized by a context-specific login.
     /// An RSA key signs as [`rsa_signature`] chooses for it.
-    fn prove_sign(
-        &self,
-        h: ObjectHandle,
-        object: &ObjectCfg,
-        spki: &[u8],
-        msg: &[u8],
-        per_use_pin: bool,
-    ) -> Result<()> {
+    fn prove_sign(&self, h: ObjectHandle, object: &ObjectCfg, spki: &[u8], msg: &[u8], binding: Binding) -> Result<()> {
         let permits = self.proof_permits(h);
         let usable = |m: MechanismType| self.has(m) && permits(m);
         let none_allowed = |ms: &[MechanismType]| self.none_allowed(ms);
@@ -111,7 +103,7 @@ impl Token {
             kt => return Err(KmError::Unsupported(format!("proof of possession for {kt}"))),
         };
         let refused = self.proof_failed("C_Sign", "sign", "CKA_SIGN");
-        let sig = if per_use_pin {
+        let sig = if binding == Binding::PopSignPin {
             self.sign_with_pin(&mech, h, &data, refused)?
         } else {
             self.session.sign(&mech, h, &data).map_err(refused)?
@@ -180,60 +172,45 @@ impl Token {
             return Err(self.none_allowed(&[MechanismType::ECDH1_DERIVE]));
         }
         let ch = pop::ecdh_challenge(spki, msg)?;
-        let sealed = self.profiles.module.as_ref().and_then(|p| p.answer(&Capability::DeriveSealed)) != Some(false);
-        if !sealed || !self.has(MechanismType::SHA256_HMAC) {
+        let profile_says_no =
+            self.profiles.module.as_ref().and_then(|p| p.answer(&Capability::DeriveSealed)) == Some(false);
+        if profile_says_no || !self.has(MechanismType::SHA256_HMAC) {
             return self.prove_ecdh_extractable(h, spki, &ch);
         }
-        let sealed = self.derive_for_proof(
-            h,
-            &ch.peer,
-            &[
-                Attribute::Token(false),
-                Attribute::Class(ObjectClass::SECRET_KEY),
-                Attribute::KeyType(KeyType::GENERIC_SECRET),
-                Attribute::Sensitive(true),
-                Attribute::Extractable(false),
-                Attribute::Sign(true),
-            ],
-            ch.secret.len(),
-        );
+        // The extractable form after the sealed one failed for `why`, which its own failure names.
+        let extractable_after = |why: String| {
+            self.prove_ecdh_extractable(h, spki, &ch).map_err(|e| match e {
+                KmError::Unavailable(m) => KmError::Unavailable(format!("{m} (sealed: {why})")),
+                KmError::Unsupported(m) => KmError::Unsupported(format!("{m} (sealed: {why})")),
+                other => other,
+            })
+        };
         // Unknown means try (review 2026-11-15 §4): where the module refuses to derive into a
         // sealed secret, the extractable one. Only that refusal: what fails after the derivation
         // is the proof's answer.
-        let (derived, rw) = match sealed {
+        let (derived, rw) = match self.derive_for_proof(h, &ch.peer, &sealed_secret(), ch.secret.len()) {
             Ok(derived) => derived,
             Err(KmError::Conflict(e)) => return Err(KmError::Conflict(e)),
-            Err(sealed) => {
-                return self.prove_ecdh_extractable(h, spki, &ch).map_err(|e| match e {
-                    KmError::Unavailable(m) => KmError::Unavailable(format!("{m} (sealed: {sealed})")),
-                    KmError::Unsupported(m) => KmError::Unsupported(format!("{m} (sealed: {sealed})")),
-                    other => other,
-                });
-            }
+            Err(refusal) => return extractable_after(refusal.to_string()),
         };
         let session = rw.as_ref().unwrap_or(&self.session);
-        // A session object: dropped with the session even if destroying it fails here.
-        let tag = match session.sign(&Mechanism::Sha256Hmac, derived, msg) {
+        let derived = SessionObject::new(session, derived);
+        let tag = match session.sign(&Mechanism::Sha256Hmac, derived.handle(), msg) {
             Ok(tag) => tag,
+            // A sealed secret the module will not MAC with (tpm2-pkcs11 [run]): no operation
+            // began, so the extractable form is tried as for a refused derivation.
+            Err(e @ CkError::Pkcs11(_, cryptoki::context::Function::SignInit)) => {
+                drop(derived);
+                return extractable_after(format!("C_SignInit with the sealed secret: {e}"));
+            }
             Err(e) => {
-                let _ = session.destroy_object(derived);
-                // A sealed secret the module will not MAC with (tpm2-pkcs11 [run]): no operation
-                // began, so the extractable form is tried as for a refused derivation.
-                if matches!(e, CkError::Pkcs11(_, cryptoki::context::Function::SignInit)) {
-                    let sealed = format!("C_SignInit with the sealed secret: {e}");
-                    return self.prove_ecdh_extractable(h, spki, &ch).map_err(|e| match e {
-                        KmError::Unavailable(m) => KmError::Unavailable(format!("{m} (sealed: {sealed})")),
-                        KmError::Unsupported(m) => KmError::Unsupported(format!("{m} (sealed: {sealed})")),
-                        other => other,
-                    });
-                }
                 return Err(KmError::Unavailable(format!(
                     "C_Sign (ECDH proof of possession) on token '{}': {e}",
                     self.name
                 )));
             }
         };
-        let _ = session.destroy_object(derived);
+        drop(derived);
         if !pop::ct_eq(&ch.mac, &tag) {
             return Err(KmError::Conflict(format!(
                 "proof of possession failed: the private key did not derive for the public key {}",
@@ -261,9 +238,9 @@ impl Token {
             ch.secret.len(),
         )?;
         let session = rw.as_ref().unwrap_or(&self.session);
-        let value = session.get_attributes(derived, &[AttributeType::Value]);
-        // A session object: dropped with the session even if destroying it fails here.
-        let _ = session.destroy_object(derived);
+        let derived = SessionObject::new(session, derived);
+        let value = session.get_attributes(derived.handle(), &[AttributeType::Value]);
+        drop(derived);
         let value = match value.map(|v| v.into_iter().next()) {
             Ok(Some(Attribute::Value(v))) => v,
             Ok(_) => {
@@ -325,17 +302,21 @@ impl Token {
         let (oaep, v15) = (MechanismType::RSA_PKCS_OAEP, MechanismType::RSA_PKCS);
         let failed = self.proof_failed("C_Decrypt", "decrypt", "CKA_DECRYPT");
         let plain = if usable(oaep) || (permits(oaep) && !usable(v15)) {
-            let mut tries = OAEP.iter().peekable();
-            loop {
-                let Some(&(padding, hash, mgf)) = tries.next() else { unreachable!("OAEP lists hashes") };
+            // Each hash in turn; the last one's refusal is the proof's.
+            let mut plain = None;
+            for (i, padding) in OAEP.into_iter().enumerate() {
+                let Some((params, _)) = oaep_params(padding) else { continue };
                 let cipher = pop::rsa_encrypt(spki, padding, msg)?;
-                let mech = Mechanism::RsaPkcsOaep(PkcsOaepParams::new(hash, mgf, PkcsOaepSource::empty()));
-                match self.session.decrypt(&mech, h, &cipher) {
-                    Ok(plain) => break plain,
-                    Err(e) if tries.peek().is_some() && oaep_hash_refused(&e, Function::DecryptInit) => {}
+                match self.session.decrypt(&Mechanism::RsaPkcsOaep(params), h, &cipher) {
+                    Ok(p) => {
+                        plain = Some(p);
+                        break;
+                    }
+                    Err(e) if i + 1 < OAEP.len() && oaep_hash_refused(&e, Function::DecryptInit) => {}
                     Err(e) => return Err(failed(e)),
                 }
             }
+            plain.ok_or_else(|| KmError::Unavailable(format!("token '{}': no OAEP hash to decrypt with", self.name)))?
         } else if permits(v15) {
             let cipher = pop::rsa_encrypt(spki, pop::RsaPadding::Pkcs1v15, msg)?;
             self.session.decrypt(&Mechanism::RsaPkcs, h, &cipher).map_err(failed)?
@@ -360,38 +341,34 @@ impl Token {
         if !self.proof_permits(h)(MechanismType::RSA_PKCS_OAEP) {
             return Err(self.none_allowed(&[MechanismType::RSA_PKCS_OAEP]));
         }
-        let template = [
-            Attribute::Token(false),
-            Attribute::Class(ObjectClass::SECRET_KEY),
-            Attribute::KeyType(KeyType::GENERIC_SECRET),
-            Attribute::Sensitive(true),
-            Attribute::Extractable(false),
-            Attribute::Sign(true),
-        ];
+        let template = sealed_secret();
         let failed = self.proof_failed("C_UnwrapKey", "unwrap", "CKA_UNWRAP");
         // Like a derive: a module that keeps session keys as store rows unwraps only read-write.
         // C_UnwrapKey is one call: a hash it refuses began nothing the next try meets.
         let mut rw: Option<Session> = None;
-        let mut tries = OAEP.iter().peekable();
+        // Each hash in turn, from the first again once a read-write session is open; the last
+        // one's refusal is the proof's.
+        let mut next = 0;
         let (key, ch) = loop {
-            let Some(&(padding, hash, mgf)) = tries.next() else { unreachable!("OAEP lists hashes") };
+            let Some((padding, params)) = OAEP.get(next).and_then(|p| Some((*p, oaep_params(*p)?.0))) else {
+                return Err(KmError::Unavailable(format!("token '{}': no OAEP hash to unwrap with", self.name)));
+            };
             let ch = pop::unwrap_challenge_with(spki, msg, padding)?;
-            let mech = Mechanism::RsaPkcsOaep(PkcsOaepParams::new(hash, mgf, PkcsOaepSource::empty()));
             let session = rw.as_ref().unwrap_or(&self.session);
-            match session.unwrap_key(&mech, h, &ch.wrapped, &template) {
+            match session.unwrap_key(&Mechanism::RsaPkcsOaep(params), h, &ch.wrapped, &template) {
                 Ok(k) => break (k, ch),
                 Err(CkError::Pkcs11(RvError::SessionReadOnly, _)) if rw.is_none() => {
                     rw = Some(self.extra_session(Access::Write)?);
-                    tries = OAEP.iter().peekable();
+                    next = 0;
                 }
-                Err(e) if tries.peek().is_some() && oaep_hash_refused(&e, Function::UnwrapKey) => {}
+                Err(e) if next + 1 < OAEP.len() && oaep_hash_refused(&e, Function::UnwrapKey) => next += 1,
                 Err(e) => return Err(failed(e)),
             }
         };
         let session = rw.as_ref().unwrap_or(&self.session);
-        // A session object: dropped with the session even if destroying it fails here.
-        let tag = session.sign(&Mechanism::Sha256Hmac, key, msg);
-        let _ = session.destroy_object(key);
+        let key = SessionObject::new(session, key);
+        let tag = session.sign(&Mechanism::Sha256Hmac, key.handle(), msg);
+        drop(key);
         let tag = tag.map_err(|e| {
             KmError::Unavailable(format!("C_Sign (unwrap proof of possession) on token '{}': {e}", self.name))
         })?;
@@ -484,6 +461,19 @@ impl Token {
             )),
         }
     }
+}
+
+/// The session secret a proof MACs with on the token (`pop-ecdh` derives it, `pop-unwrap`
+/// unwraps it): sensitive, never extractable, and only for signing.
+fn sealed_secret() -> [Attribute; 6] {
+    [
+        Attribute::Token(false),
+        Attribute::Class(ObjectClass::SECRET_KEY),
+        Attribute::KeyType(KeyType::GENERIC_SECRET),
+        Attribute::Sensitive(true),
+        Attribute::Extractable(false),
+        Attribute::Sign(true),
+    ]
 }
 
 /// What a token offers a proof of possession, as a live token ([`Token::proof_side`]) or as
@@ -615,7 +605,8 @@ fn rsa_sign(m: MechanismType, scheme: pop::RsaSignature, msg: &[u8]) -> (Mechani
 /// The DER `DigestInfo` prefix of a digest by `h` (RFC 8017 §9.2, note 1): what
 /// `CKM_SHA*_RSA_PKCS` puts before the hash it computes, so raw `CKM_RSA_PKCS` over it and the
 /// host's hash signs the same PKCS #1 v1.5 signature.
-fn digest_info(h: pop::EcdsaHash) -> &'static [u8] {
+#[must_use]
+pub fn digest_info(h: pop::EcdsaHash) -> &'static [u8] {
     const SHA256: [u8; 19] = [
         0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04,
         0x20,
@@ -639,11 +630,36 @@ fn digest_info(h: pop::EcdsaHash) -> &'static [u8] {
 /// (all `SoftHSM` implements), then SHA-256 and SHA-512 for a key bound to one (Cloud KMS
 /// \[run\]): the host's padding and the token's parameters. `CKA_ALLOWED_MECHANISMS` cannot say
 /// which: it names `CKM_RSA_PKCS_OAEP`, never its hash.
-const OAEP: [(pop::RsaPadding, MechanismType, PkcsMgfType); 3] = [
-    (pop::RsaPadding::Oaep(pop::OaepHash::Sha1), MechanismType::SHA1, PkcsMgfType::MGF1_SHA1),
-    (pop::RsaPadding::Oaep(pop::OaepHash::Sha256), MechanismType::SHA256, PkcsMgfType::MGF1_SHA256),
-    (pop::RsaPadding::OaepSha512, MechanismType::SHA512, PkcsMgfType::MGF1_SHA512),
+pub const OAEP: [pop::RsaPadding; 3] = [
+    pop::RsaPadding::Oaep(pop::OaepHash::Sha1),
+    pop::RsaPadding::Oaep(pop::OaepHash::Sha256),
+    pop::RsaPadding::OaepSha512,
 ];
+
+/// RSA-OAEP as a token runs the host's `padding`: the hash, MGF1 of the same hash and an empty
+/// label, with the hash's name as a capability row writes it (`SHA-256`). `None` for PKCS #1
+/// v1.5, which has none. The one table the proofs, the probe and camigrate's wraps read.
+#[must_use]
+pub fn oaep_params(padding: pop::RsaPadding) -> Option<(PkcsOaepParams<'static>, &'static str)> {
+    match padding {
+        pop::RsaPadding::Pkcs1v15 => None,
+        pop::RsaPadding::Oaep(hash) => Some(oaep_of(hash)),
+        pop::RsaPadding::OaepSha512 => Some((
+            PkcsOaepParams::new(MechanismType::SHA512, PkcsMgfType::MGF1_SHA512, PkcsOaepSource::empty()),
+            "SHA-512",
+        )),
+    }
+}
+
+/// [`oaep_params`] of a transport wrap's hash (`OaepHash`), which always has them.
+#[must_use]
+pub fn oaep_of(hash: pop::OaepHash) -> (PkcsOaepParams<'static>, &'static str) {
+    let (h, mgf, name) = match hash {
+        pop::OaepHash::Sha1 => (MechanismType::SHA1, PkcsMgfType::MGF1_SHA1, "SHA-1"),
+        pop::OaepHash::Sha256 => (MechanismType::SHA256, PkcsMgfType::MGF1_SHA256, "SHA-256"),
+    };
+    (PkcsOaepParams::new(h, mgf, PkcsOaepSource::empty()), name)
+}
 
 /// Whether `e` refuses an OAEP hash before the operation began (`init`: the call that starts it),
 /// so the next of [`OAEP`] may be tried. Never a failure after it began: a module may leave that

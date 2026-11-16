@@ -56,11 +56,13 @@ impl Token {
             }
         }
         if let Some(bits) = object.modulus_bits {
+            // A big integer may come with leading zero bytes: they are not part of its size.
+            let size = |m: &[u8]| m.iter().skip_while(|b| **b == 0).count() as u64 * 8;
             match self.attr(h, AttributeType::Modulus)? {
-                Some(Attribute::Modulus(m)) if m.len() as u64 * 8 == bits => {}
+                Some(Attribute::Modulus(m)) if size(&m) == bits => {}
                 other => {
                     let have = other.and_then(|a| match a {
-                        Attribute::Modulus(m) => Some(m.len() * 8),
+                        Attribute::Modulus(m) => Some(size(&m)),
                         _ => None,
                     });
                     return Err(KmError::Conflict(format!("RSA modulus is {have:?} bits, spec says {bits}")));

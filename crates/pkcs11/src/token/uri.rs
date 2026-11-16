@@ -137,20 +137,22 @@ pub(super) fn hex_decode(s: &str) -> Result<Vec<u8>> {
     cakeys_core::hex::decode(s).ok_or_else(|| KmError::Validation(format!("CKA_ID '{s}' is not hex")))
 }
 
+/// A path attribute's value (`token=`, `serial=`, `object=`): the unreserved characters as they
+/// are, everything else escaped. `/` too: RFC 7512 §2.3 leaves it out of `pk11-pchar`.
 fn pct(bytes: &[u8]) -> String {
     bytes
         .iter()
         .map(|&b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),
             _ => format!("%{b:02X}"),
         })
         .collect()
 }
 
-/// A query attribute's value: [`pct`], also keeping `:` (RFC 7512 `pk11-qchar`), so a path or
-/// `file:` reads as written; `&`, `;` and `?` are always escaped.
+/// A query attribute's value: [`pct`], also keeping `/` and `:` (RFC 7512 `pk11-qchar`), so a
+/// path or `file:` reads as written; `&`, `;` and `?` are always escaped.
 fn qpct(bytes: &[u8]) -> String {
-    bytes.iter().map(|&b| if b == b':' { ":".to_owned() } else { pct(&[b]) }).collect()
+    bytes.iter().map(|&b| if b == b'/' || b == b':' { (b as char).to_string() } else { pct(&[b]) }).collect()
 }
 
 #[expect(clippy::format_collect, reason = "the hex builder reads best as map-format-collect")]
@@ -192,6 +194,13 @@ mod tests {
             with_query(LOCATOR, Some("/odd dir/m;1.so"), None),
             format!("{LOCATOR}?module-path=/odd%20dir/m%3B1.so")
         );
+    }
+
+    /// RFC 7512 §2.3: `/` is a `pk11-qchar`, never a `pk11-pchar`.
+    #[test]
+    fn a_slash_is_escaped_in_the_path_and_kept_in_the_query() {
+        assert_eq!(pct(b"a/b c"), "a%2Fb%20c");
+        assert_eq!(qpct(b"file:/a b"), "file:/a%20b");
     }
 
     #[test]

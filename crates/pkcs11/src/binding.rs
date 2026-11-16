@@ -8,6 +8,9 @@ use cakeys_profile::Profile;
 use cryptoki::object::KeyType;
 use std::os::raw::c_ulong;
 
+/// The binding layer's profile name: the one layer in every stack.
+pub const NAME: &str = "cryptoki/0.12";
+
 /// The layer a patched binding resolves to: it subtracts nothing, and its note says why.
 const PATCHED: &str = r#"
 profile = "cryptoki/0.12"
@@ -41,7 +44,7 @@ pub fn layer() -> Result<Profile, String> {
     if patched() {
         return Profile::from_toml(PATCHED);
     }
-    cakeys_profile::Set::active()?.find("cryptoki/0.12").cloned()
+    cakeys_profile::Set::active()?.find(NAME).cloned()
 }
 
 #[cfg(test)]

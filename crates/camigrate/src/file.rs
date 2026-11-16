@@ -20,8 +20,9 @@ use zeroize::Zeroizing;
 
 /// PBKDF2-HMAC-SHA256 iterations for the key (OWASP's 2023 recommendation).
 pub(crate) const PBKDF2_ITERATIONS: u32 = 600_000;
-/// PKCS#12 KDF iterations for the MAC key (integrity only; the key is under PBES2 above).
-const MAC_ITERATIONS: i32 = 10_000;
+/// PKCS#12 KDF iterations for the MAC key: as many as for the key. Both derive from the one
+/// passphrase, so the cheaper of the two is what a guess costs.
+const MAC_ITERATIONS: i32 = 600_000;
 /// The most KDF iterations a key file read here may ask for: a file is input, and its count is
 /// otherwise how long this process hangs.
 const MAX_ITERATIONS: u32 = 10_000_000;
@@ -200,13 +201,24 @@ fn too_many(iterations: u32) -> bool {
     iterations > MAX_ITERATIONS
 }
 
+/// Whether a key file's scrypt parameters ask for more than this process will spend: scrypt
+/// holds 128 × N × r bytes, so N × r is capped at 2²³ (1 GiB; OpenSSL's default is 2¹⁷), and p,
+/// which multiplies the time, at 16.
+fn too_much_scrypt(n: u64, r: u64, p: u64) -> bool {
+    n.saturating_mul(r) > 1 << 23 || p > 16
+}
+
 /// The PKCS#8 in an `EncryptedPrivateKeyInfo` under `pass`; `None` when it does not decrypt
 /// (a wrong passphrase fails the padding check), or is no such structure.
 fn decrypt(der: &[u8], pass: &str) -> Option<Zeroizing<Vec<u8>>> {
     let info = EncryptedPrivateKeyInfoRef::try_from(der).ok()?;
-    // The file names its own PBKDF2 iteration count: bounded, like the PKCS#12 MAC's.
-    let iterations = info.encryption_algorithm.pbes2().and_then(|p| p.kdf.pbkdf2()).map(|k| k.iteration_count);
-    if iterations.is_some_and(too_many) {
+    // The file names its own KDF cost: bounded, like the PKCS#12 MAC's.
+    let kdf = info.encryption_algorithm.pbes2().map(|p| &p.kdf);
+    if kdf.and_then(|k| k.pbkdf2()).is_some_and(|k| too_many(k.iteration_count))
+        || kdf
+            .and_then(|k| k.scrypt())
+            .is_some_and(|k| too_much_scrypt(k.cost_parameter, k.block_size.into(), k.parallelization.into()))
+    {
         return None;
     }
     let doc = info.decrypt(pass).ok()?;
@@ -328,6 +340,9 @@ mod tests {
         // turned away on the count alone (running them would take this test minutes). The bound
         // first, so a wrong one fails here rather than running the count.
         assert!(too_many(MAX_ITERATIONS + 1) && !too_many(MAX_ITERATIONS) && !too_many(PBKDF2_ITERATIONS));
+        // scrypt's memory, likewise: OpenSSL's default passes, 16 GiB or a p of thousands does not.
+        assert!(!too_much_scrypt(1 << 14, 8, 1) && !too_much_scrypt(1 << 20, 8, 1));
+        assert!(too_much_scrypt(1 << 24, 8, 1) && too_much_scrypt(1 << 14, 8, 4096) && too_much_scrypt(u64::MAX, 8, 1));
         let params = pbes2::Parameters::generate_pbkdf2_sha256_aes256cbc(MAX_ITERATIONS + 1, &[0; 16], [0; 16]);
         let slow = pkcs8::EncryptedPrivateKeyInfoOwned {
             encryption_algorithm: params.unwrap().into(),

@@ -98,6 +98,17 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   when a consumer asks; a versioned JSON form of `check` (the URI, the IDs, the time verified);
   how notes and warnings reach a binding; whether closing the check-then-use gap is worth tying
   programs to the library's session.
+- **What `create` does with a key that is already there** (2026-11-16). Today it stops with 19
+  and makes nothing, for a named pair and for a run over every pair alike. Flags to choose
+  otherwise are to design: `--only-new` (skip the pairs whose key exists and create the rest,
+  with a note each) is the first candidate; whether a skipped key is also compared with the
+  lock, and what a run over several pairs exits with when some existed, are the open parts.
+- **Certificate validity in the PIV attestation chain** (2026-11-16, ISSUES.md B8). The chain is
+  verified by signature, issuer name and `basicConstraints`, never by `notBefore`/`notAfter`.
+  Working idea: `check` enforces the validity period, with an override; `lock` and camigrate may
+  have to stay independent of the wall clock (a build host's clock is not evidence, and a lock
+  recorded today must verify tomorrow). Undecided: whether an expired intermediate under a
+  pinned root should fail a `check` of a key attested years ago.
 - **Asserting how keys relate**: "A and B are the same key" or "must differ", across locks.
   Options: declarative assertions in keys.toml checked by `validate` and `verify`, or a
   documented Nix pattern over `lib.mkKeys` results (`assert a.id.rfc7093m4 != b.id.rfc7093m4`,

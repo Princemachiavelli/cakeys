@@ -87,10 +87,11 @@ pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
         (Some(p), _) => Some(find_module(p, q.layers)?),
         (None, Some(t)) => {
             let token = cfg.tokens.get(t).ok_or_else(|| KmError::Validation(format!("unknown token '{t}'")))?;
-            let family = token.provider.as_deref().ok_or_else(|| {
+            // The one profile `moduleProfile` names, else the provider's family.
+            let named = token.module_profile.as_deref().or(token.provider.as_deref()).ok_or_else(|| {
                 KmError::Validation(format!("token '{t}' names no provider; set tokens.{t}.provider or pass --profile"))
             })?;
-            Some(find_module(family, &token.profiles)?)
+            Some(find_module(named, &token.profiles)?)
         }
         (None, None) => None,
     };
@@ -100,7 +101,7 @@ pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
     let mut resolved: Vec<Profile> = vec![cakeys_pkcs11::binding::layer().map_err(KmError::Validation)?];
     for l in q.layers {
         let p = find(l)?;
-        if p.profile != "cryptoki/0.12" {
+        if p.profile != cakeys_pkcs11::binding::NAME {
             resolved.push(p.clone());
         }
     }

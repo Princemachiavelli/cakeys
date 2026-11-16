@@ -40,24 +40,9 @@ fn clean(s: &str) -> String {
 
 /// The `CKR_*` name of a failure, for notes: cryptoki's `Display` is the spec's prose, which
 /// changes with the binding and would make a regeneration differ with no behaviour change.
-/// The name comes from `RvError`'s variant (`GeneralError` -> `CKR_GENERAL_ERROR`).
+/// The verbs' own naming (`token::rv_name`), so a note and a refusal spell it alike.
 fn ckr(e: &CkError) -> String {
-    match e {
-        CkError::Pkcs11(RvError::VendorDefined(rv) | RvError::UnknownErrorCode(rv), _) => {
-            format!("CKR {rv:#x}")
-        }
-        CkError::Pkcs11(rv, _) => {
-            let mut out = String::from("CKR");
-            for c in format!("{rv:?}").chars() {
-                if c.is_ascii_uppercase() {
-                    out.push('_');
-                }
-                out.push(c.to_ascii_uppercase());
-            }
-            out
-        }
-        other => other.to_string(),
-    }
+    token::rv_name(e)
 }
 
 /// What a probe found: the generated profile, and what it could not decide.
@@ -97,10 +82,6 @@ enum Target {
 /// one thing the probe refuses rather than records. `Unavailable` when an SO login fails.
 pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: Option<u32>) -> Result<Probed> {
     let profile = Profile {
-        profile: format!("{}/{}", tok.provider.name(), tok.module.version),
-        mode: Mode::Observed,
-        partial: false,
-        requires_provider: false,
         // Every match key there is: the module and the hardware it ran on. No serial — it
         // changes with every token re-initialisation, and a profile must regenerate identically.
         r#match: MatchInfo {
@@ -112,14 +93,7 @@ pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: Option<u32>) -> Result<P
             firmware: Some(clean(&tok.token.firmware)),
         },
         advertise: tok.advertised.clone(),
-        subtract: cakeys_profile::profile::Subtract::default(),
-        add: Vec::new(),
-        capabilities: BTreeMap::new(),
-        reported: BTreeMap::new(),
-        migration: None,
-        restrict: Vec::new(),
-        notes: BTreeMap::new(),
-        manual: BTreeMap::new(),
+        ..Profile::new(format!("{}/{}", tok.provider.name(), tok.module.version), Mode::Observed)
     };
     let mut profile = Draft::new(profile);
     profile.notes.insert("cryptoki".into(), format!("the module reports Cryptoki {}", tok.module.cryptoki));
@@ -245,10 +219,7 @@ fn check_slot(tok: &Token, id: &[u8]) -> Result<()> {
     if tok.provider.scratch_occupant(id, &certs) {
         return Ok(());
     }
-    let shown = id.iter().fold(String::new(), |mut s, b| {
-        let _ = std::fmt::Write::write_fmt(&mut s, format_args!("{b:02x}"));
-        s
-    });
+    let shown = cakeys_core::hex::encode(id);
     Err(KmError::Validation(format!(
         "token '{}': probe.scratchId {shown} holds objects that are not {}'s own placeholder from an earlier \
          generation, so it may hold a real key: refusing to overwrite it; empty the slot or name \
@@ -265,28 +236,16 @@ pub(crate) struct Draft {
     profile: Profile,
     /// What each key type generated, by curve and by size, and the range the module reports.
     generate: BTreeMap<String, GenerateRow>,
-    /// The OAEP hashes a wrap round-tripped with; `None`: not probed.
-    wrap: Oaep,
-    /// The OAEP hashes the private key decrypted with; `None`: not probed.
-    decrypt: Oaep,
-    /// The attributes an unwrap template refused; `None`: not probed.
-    unwrap: Refused,
+    /// The OAEP hashes a wrap round-tripped with, of the ones tried; `None`: not probed.
+    wrap_oaep: Option<Vec<String>>,
+    /// The OAEP hashes the private key decrypted with, of the ones tried; `None`: not probed.
+    decrypt_oaep: Option<Vec<String>>,
+    /// The attributes an unwrap template refused, of the ones tried; `None`: not probed.
+    unwrap_refused: Option<Vec<String>>,
     /// How ECDH derived.
     derive: Derived,
     /// What shows a generation row's answer: the refusal, or why nothing was tried.
     evidence: BTreeMap<Capability, String>,
-}
-
-/// OAEP hashes that worked, of the ones tried.
-#[derive(Default)]
-struct Oaep {
-    oaep: Option<Vec<String>>,
-}
-
-/// Template attributes refused, of the ones tried.
-#[derive(Default)]
-struct Refused {
-    refuse: Option<Vec<String>>,
 }
 
 /// How ECDH derived: into a sealed secret, and in a read-only session. (A base key that
@@ -302,9 +261,9 @@ impl Draft {
         Draft {
             profile,
             generate: BTreeMap::new(),
-            wrap: Oaep::default(),
-            decrypt: Oaep::default(),
-            unwrap: Refused::default(),
+            wrap_oaep: None,
+            decrypt_oaep: None,
+            unwrap_refused: None,
             derive: Derived::default(),
             evidence: BTreeMap::new(),
         }
@@ -325,9 +284,9 @@ impl Draft {
                 p.set(cap((*h).to_owned()), Answer::of(yes), None, None);
             }
         };
-        oaep(self.wrap.oaep, &WRAP_OAEP, Capability::WrapOaep);
-        oaep(self.decrypt.oaep, &DECRYPT_OAEP, Capability::DecryptOaep);
-        if let Some(refused) = self.unwrap.refuse {
+        oaep(self.wrap_oaep, &WRAP_OAEP, Capability::WrapOaep);
+        oaep(self.decrypt_oaep, &DECRYPT_OAEP, Capability::DecryptOaep);
+        if let Some(refused) = self.unwrap_refused {
             for a in UNWRAP_TEMPLATE {
                 let yes = !refused.iter().any(|r| r == a);
                 p.set(Capability::UnwrapTemplate(a.to_owned()), Answer::of(yes), None, None);
@@ -602,13 +561,7 @@ impl Made<'_> {
                 let label = self.label();
                 (Locator { label: Some(label.clone()), id: None }, Some(label))
             }
-            Target::Slot(id) => {
-                let hex = id.iter().fold(String::new(), |mut s, b| {
-                    let _ = std::fmt::Write::write_fmt(&mut s, format_args!("{b:02x}"));
-                    s
-                });
-                (Locator { label: None, id: Some(hex) }, None)
-            }
+            Target::Slot(id) => (Locator { label: None, id: Some(cakeys_core::hex::encode(id)) }, None),
         };
         let note = match self.tok.create(object, spec, &loc, None) {
             Ok(note) => note,
@@ -813,7 +766,7 @@ fn probe_bound(made: &mut Made, profile: &mut Draft) {
         operate(made, profile, &key.kind, &on, public, private);
         made.bound = None;
         // Each OAEP key decrypts with its own hash: the row is what any of them did.
-        if let Some(works) = profile.decrypt.oaep.take() {
+        if let Some(works) = profile.decrypt_oaep.take() {
             let row = oaep.get_or_insert_with(Vec::new);
             for h in works {
                 if !row.contains(&h) {
@@ -822,7 +775,7 @@ fn probe_bound(made: &mut Made, profile: &mut Draft) {
             }
         }
     }
-    profile.decrypt.oaep = oaep;
+    profile.decrypt_oaep = oaep;
     // A size that generated under one binding and not another can: the refusal stays a note.
     rsa.cannot_bits.retain(|b| !rsa.can_bits.contains(b));
     ec.cannot.retain(|c| !ec.can.contains(c));
@@ -919,22 +872,18 @@ fn probe_curves(made: &mut Made, profile: &mut Draft) -> Result<()> {
             profile.generate.insert(kt.to_owned(), row);
             continue;
         }
+        // Montgomery keys from here: no keys.toml object, so the probe's own templates.
         let mech = made.tok.runnable(mech);
         let mut probed_ops = false;
         for (curve, oid, name) in curves {
-            // The usage each kind's operation probes need: signing, deriving, or both.
-            let usage: &[Attribute] = match kt {
-                "CKK_EC" => &[Attribute::Sign(true), Attribute::Derive(true)],
-                "CKK_EC_EDWARDS" => &[Attribute::Sign(true)],
-                _ => &[Attribute::Derive(true)],
-            };
             let mut outcome = None;
             for params in std::iter::once(oid).chain(name) {
                 let public = [Attribute::EcParams(params.to_vec()), Attribute::Verify(true), Attribute::Private(false)];
                 let private = [Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Sensitive(true)];
-                let with_usage = [&private[..], usage].concat();
+                // The usage its operation probes need: deriving.
+                let with_usage = [&private[..], &[Attribute::Derive(true)]].concat();
                 // A Montgomery public key verifies nothing: no CKA_VERIFY on its usage template.
-                let use_public = if kt == "CKK_EC_MONTGOMERY" { &public[..1] } else { &public[..] };
+                let use_public = &public[..1];
                 let (made_pair, usable) = made.pair_for_use(&mech, (use_public, &with_usage), (&public, &private))?;
                 let by_name = !std::ptr::eq(params, oid);
                 outcome = Some((made_pair, usable, by_name));
@@ -1158,7 +1107,7 @@ fn operate(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, public: Obj
             }
         }
         "CKK_RSA" => rsa_ops(made, profile, private, &spki, on),
-        _ => made.undetermined.push(format!("no operation probes on {on}: ECDH with {kt} keys is not probed yet")),
+        _ => made.undetermined.push(format!("no operation probes on {on}: none are written for {kt} keys")),
     }
 }
 
@@ -1431,18 +1380,14 @@ fn derived_once(
     }
 }
 
-/// PKCS#1 v1.5's `DigestInfo` prefix for SHA-256 (RFC 8017 §9.2): what raw `CKM_RSA_PKCS`
-/// signs in front of the digest.
-const SHA256_DIGEST_INFO: [u8; 19] =
-    [0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20];
-
 /// RSA signing (PKCS#1 v1.5 raw and hashed, PSS raw and hashed, raw X.509) and decryption
 /// (PKCS#1 v1.5, OAEP per hash: `decrypt.oaep`), on a 2048-bit key.
 fn rsa_ops(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[u8], on: &str) {
     let pkcs1 = |s: &[u8]| sig::rsa_pkcs1v15::<Sha256>(spki, MSG, s);
     let none = |_: &[u8]| None;
     let pss = |hash, mgf, len: usize| PkcsPssParams { hash_alg: hash, mgf, s_len: (len as u64).into() };
-    let digest_info = [&SHA256_DIGEST_INFO[..], Sha256::digest(MSG).as_slice()].concat();
+    // What raw `CKM_RSA_PKCS` signs: the digest behind its `DigestInfo` prefix.
+    let digest_info = [token::digest_info(EcdsaHash::Sha256), Sha256::digest(MSG).as_slice()].concat();
     // Raw RSA signs one modulus-sized block; a leading zero keeps it below any modulus.
     let block = [&[0u8][..], &[0x5a; 255]].concat();
     let sha256 = Sha256::digest(MSG).to_vec();
@@ -1488,20 +1433,17 @@ fn rsa_ops(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[
     }
     if made.tries(MechanismType::RSA_PKCS_OAEP) {
         let mut works = Vec::new();
-        for (hash, mgf, name, padding) in [
-            (MechanismType::SHA1, PkcsMgfType::MGF1_SHA1, "SHA-1", RsaPadding::Oaep(OaepHash::Sha1)),
-            (MechanismType::SHA256, PkcsMgfType::MGF1_SHA256, "SHA-256", RsaPadding::Oaep(OaepHash::Sha256)),
-            (MechanismType::SHA512, PkcsMgfType::MGF1_SHA512, "SHA-512", RsaPadding::OaepSha512),
-        ] {
-            let mech = Mechanism::RsaPkcsOaep(PkcsOaepParams::new(hash, mgf, PkcsOaepSource::empty()));
-            let outcome = decrypts(made, &mech, padding);
+        // The hashes a decryption proof tries (`token::OAEP`), each on its own.
+        for padding in token::OAEP {
+            let Some((params, name)) = token::oaep_params(padding) else { continue };
+            let outcome = decrypts(made, &Mechanism::RsaPkcsOaep(params), padding);
             if outcome.is_ok() {
                 works.push(name.to_owned());
             }
             made.record(MechanismType::RSA_PKCS_OAEP, &format!("{on} decrypt {name}"), outcome);
         }
         // Probed: `[]` when no hash decrypts, distinct from never probed.
-        profile.decrypt.oaep = Some(works);
+        profile.decrypt_oaep = Some(works);
     }
 }
 
@@ -1555,15 +1497,15 @@ fn probe_secrets(made: &mut Made, profile: &mut Draft) -> Option<ObjectHandle> {
 fn probe_wrapping(made: &mut Made, profile: &mut Draft, transport: (ObjectHandle, ObjectHandle), aes: ObjectHandle) {
     let session = made.session;
     let (wraps, unwraps) = transport;
-    // MGF1 of the same hash: the parameter set a transport wrap uses (`OaepHash`).
-    let oaep_of = |hash, mgf| Mechanism::RsaPkcsOaep(PkcsOaepParams::new(hash, mgf, PkcsOaepSource::empty()));
+    // MGF1 of the same hash: the parameter sets a transport wrap uses (`OaepHash`).
+    let oaep_of = |hash| {
+        let (params, name) = token::oaep_of(hash);
+        (Mechanism::RsaPkcsOaep(params), name)
+    };
     let mut round_trips = Vec::new();
     let mut failures = Vec::new();
-    for (hash, mgf, name) in [
-        (MechanismType::SHA1, PkcsMgfType::MGF1_SHA1, "SHA-1"),
-        (MechanismType::SHA256, PkcsMgfType::MGF1_SHA256, "SHA-256"),
-    ] {
-        let mech = oaep_of(hash, mgf);
+    for hash in [OaepHash::Sha1, OaepHash::Sha256] {
+        let (mech, name) = oaep_of(hash);
         // Wrapping is encryption: the public half wraps, the private half unwraps.
         let wrapped = match session.wrap_key(&mech, wraps, aes) {
             Ok(w) => w,
@@ -1581,7 +1523,7 @@ fn probe_wrapping(made: &mut Made, profile: &mut Draft, transport: (ObjectHandle
         ];
         match session.unwrap_key(&mech, unwraps, &wrapped, &template) {
             Ok(h) => {
-                round_trips.push((name, hash, mgf));
+                round_trips.push((name, hash));
                 made.handles.push(h);
                 made.labels.push(label);
             }
@@ -1593,12 +1535,11 @@ fn probe_wrapping(made: &mut Made, profile: &mut Draft, transport: (ObjectHandle
         profile.notes.insert("oaep".into(), failures.join("; "));
     }
     // Probed: `[]` when no hash round-trips, distinct from never probed.
-    profile.wrap.oaep = Some(round_trips.iter().map(|(name, ..)| (*name).to_owned()).collect());
+    profile.wrap_oaep = Some(round_trips.iter().map(|(name, ..)| (*name).to_owned()).collect());
     // The unwrap-template rule, with the first hash that round-trips; unprobed without one.
-    let Some(&(_, hash, mgf)) = round_trips.first() else {
+    let Some((mech, _)) = round_trips.first().map(|(_, hash)| oaep_of(*hash)) else {
         return;
     };
-    let mech = oaep_of(hash, mgf);
     let Ok(wrapped) = session.wrap_key(&mech, wraps, aes) else {
         return;
     };
@@ -1617,12 +1558,12 @@ fn probe_wrapping(made: &mut Made, profile: &mut Draft, transport: (ObjectHandle
     );
     match with_len {
         Ok(h) => {
-            profile.unwrap.refuse = Some(Vec::new());
+            profile.unwrap_refused = Some(Vec::new());
             made.handles.push(h);
             made.labels.push(label);
         }
         Err(CkError::Pkcs11(RvError::AttributeReadOnly, _)) => {
-            profile.unwrap.refuse = Some(vec!["CKA_VALUE_LEN".into()]);
+            profile.unwrap_refused = Some(vec!["CKA_VALUE_LEN".into()]);
             profile.notes.insert("CKA_VALUE_LEN".into(), "CKR_ATTRIBUTE_READ_ONLY in an unwrap template".into());
         }
         // Neither accepted nor the refusal the rule names: the row stays unprobed.

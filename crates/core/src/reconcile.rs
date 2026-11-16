@@ -242,7 +242,7 @@ fn spec_diff(t: &Target, r: &Resolved, prev: &LockRealisation) -> Vec<String> {
 /// writes the lock: its mode, binding, attestation and schemes, and the immutables fixed when the
 /// object was made.
 fn no_downgrade(t: &Target, r: &Resolved, prev: &LockRealisation, update: bool, notes: &mut Notes) -> Result<()> {
-    if r.mode > prev.mode {
+    if r.mode.rank() > prev.mode.rank() {
         return Err(KmError::PreconditionFailed(format!(
             "identity downgrade for {}: locked mode '{}', now only '{}'",
             t, prev.mode, r.mode

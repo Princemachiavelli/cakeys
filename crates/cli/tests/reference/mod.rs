@@ -686,7 +686,7 @@ tokens.ref = { locator = { CKA_LABEL = "occupied" }, origin = "create" }
 
 /// D1: when the lock already pins an object's material, `create` is refused before anything is
 /// created — generated material could never match. The same material adopted (or already under the
-/// locator) still realises, and `create` then finds it and creates nothing.
+/// locator) still realises through `lock`; `create` there makes nothing and says the key exists (19).
 #[test]
 fn create_never_fights_a_locked_identity() {
     let Some(e) = env("d1") else { return };
@@ -715,16 +715,15 @@ fn create_never_fights_a_locked_identity() {
     assert!(s.labelled("d1-second").is_empty(), "nothing was created");
 
     // The same material under the locator still realises (like `two_specs_same_material`): the
-    // second spec adopts it — `create` too, finding the object — and records a second
-    // realisation of the one object.
+    // second spec's `lock` records a second realisation of the one object. `create` never
+    // finds a key: one that is there is 19, and nothing is made.
     e.config(&format!(
         "{first}{second}tokens.ref = {{ locator = {{ CKA_LABEL = \"d1-first\" }}, origin = \"create\" }}\n"
     ));
-    assert_eq!(
-        e.code(&["create", "--spec", "second-slot", "--token", "ref", "--no-update-lock"]),
-        14,
-        "not recorded yet"
-    );
+    let o = e.km(&["create", "--spec", "second-slot", "--token", "ref", "--no-update-lock"]);
+    assert_eq!(code(&o), 19, "{}", stderr(&o));
+    assert!(stderr(&o).contains("already under its locator"), "{}", stderr(&o));
+    assert_eq!(s.labelled("d1-first").len(), 2, "the pair that was there, and no other");
     assert_eq!(e.code(&["lock", "--spec", "second-slot", "--token", "ref", "--update-lock"]), 0);
     let lock = e.lock();
     assert!(lock["realisations"]["second-slot"]["ref"].is_table());
@@ -2844,13 +2843,16 @@ fn admin_credential_is_read_only_by_security_officer_steps() {
         )
     };
     let missing = e.dir.join("never-read");
-    for admin in
-        [format!("soCredentialFile = \"{}\"", missing.display()), "soCredentialEnv = \"KM_E2E_NEVER_SET\"".to_owned()]
-    {
+    // The key is made under the first credential; under the second it is there (19), which
+    // `create` finds without the credential either.
+    for (admin, created) in [
+        (format!("soCredentialFile = \"{}\"", missing.display()), 0),
+        ("soCredentialEnv = \"KM_E2E_NEVER_SET\"".to_owned(), 19),
+    ] {
         std::fs::write(e.dir.join("keys.toml"), toml(&format!("pinFile = \"{}\"\n{admin}", pin.display()))).unwrap();
-        for verb in ["create", "resolve"] {
+        for (verb, exit) in [("create", created), ("resolve", 0)] {
             let o = e.km(&[verb, "--spec", "signing-soft", "--token", "ref"]);
-            assert_eq!(code(&o), 0, "{admin} {verb}: {}", stderr(&o));
+            assert_eq!(code(&o), exit, "{admin} {verb}: {}", stderr(&o));
         }
     }
     // No user PIN: invalid at load.
@@ -3285,8 +3287,11 @@ fn create_makes_keys_and_nothing_else_does() {
     assert!(stderr(&o).contains("already pins object 'ec'"));
     assert_eq!(s.labelled("create-ec").len(), 2);
 
-    // A named pair goes through: found and compared when present...
-    assert_eq!(e.code(&["create", "--spec", "ec", "--token", "ref"]), 0);
+    // A named pair is not skipped: its key is there, so nothing is made (19)...
+    let o = e.km(&["create", "--spec", "ec", "--token", "ref"]);
+    assert_eq!(code(&o), 19, "{}", stderr(&o));
+    assert!(stderr(&o).contains("`cakeys lock` records a key that is there"), "{}", stderr(&o));
+    assert_eq!(s.labelled("create-ec").len(), 2, "no second pair");
     // ...and refused, never regenerated, when the lock pins material the token lost.
     s.clear(&["create-ec"]);
     assert_eq!(e.code(&["create", "--spec", "ec", "--token", "ref"]), 14);

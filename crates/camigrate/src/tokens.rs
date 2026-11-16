@@ -1,14 +1,12 @@
 //! Export and import against tokens and the lock (docs/CAMIGRATE.md): each side's capabilities, the
 //! objects a source holds, and the transport key. The decisions are [`crate::plan`]'s; each
 //! side's capabilities come from the token's resolved capability profiles (docs/CAPROBE.md
-//! phase 2) when one is committed for its provider, else from the provider's own `migration`
-//! hook.
+//! phase 2) when one is committed for its provider, else a spec-compliant module's
+//! (`Side::pkcs11`).
 
 use crate::plan::{Allow, FileFormat, Material, Plan, To, plan};
 use crate::transport::Transport;
-use cakeys_core::config::{
-    AttrValue, Lock, NixCfg, Observation, ProbeCfg, TokenCfg, TokenMigrateCfg, TokenObservation,
-};
+use cakeys_core::config::{AttrValue, Lock, Observation, TokenCfg, TokenObservation};
 use cakeys_core::migrate::{Accept, Method, PlaintextImport, Side};
 use cakeys_core::pop::OaepHash;
 use cakeys_core::types::{KeyType, ObjectClass};
@@ -21,8 +19,8 @@ use std::collections::BTreeSet;
 use std::str::FromStr;
 
 /// A token's capabilities, from the open token: its resolved capability profile over its
-/// usable mechanisms, the layers' subtractions included; the provider's `migration` hook
-/// when no module profile is committed for it.
+/// usable mechanisms, the layers' subtractions included; a spec-compliant module's
+/// (`Side::pkcs11`) when no module profile is committed for it.
 ///
 /// # Errors
 ///
@@ -193,22 +191,7 @@ fn oaep_hash(name: &str) -> std::result::Result<OaepHash, String> {
 
 /// A minimal token config for resolution from records: nothing extra, the provider pinned.
 fn lockless_token_cfg() -> TokenCfg {
-    TokenCfg {
-        module: None,
-        provider: None,
-        profiles: vec![],
-        token_label: String::new(),
-        token_serial: None,
-        module_profile: None,
-        pin_file: None,
-        pin_env: None,
-        so_credential_file: None,
-        so_credential_env: None,
-        options: toml::Table::new(),
-        probe: ProbeCfg::default(),
-        migrate: TokenMigrateCfg::default(),
-        nix: NixCfg::default(),
-    }
+    TokenCfg::labelled(String::new())
 }
 
 /// The objects realised on `token` (only `object`, if given), with what the planner needs from
@@ -304,14 +287,38 @@ pub(crate) struct Request<'a> {
     pub trusted_transport: bool,
 }
 
+/// Where a side's capabilities came from, as a plan says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Known {
+    /// The open token.
+    Token,
+    /// What the lock recorded of a token that did not open.
+    Lock,
+    /// A transport file.
+    TransportFile,
+    /// A key file has no side.
+    Nowhere,
+}
+
+impl Known {
+    /// The word a plan prints.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Known::Token => "token",
+            Known::Lock => "lock",
+            Known::TransportFile => "transport file",
+            Known::Nowhere => "-",
+        }
+    }
+}
+
 /// The plans of one invocation (docs/CAMIGRATE.md D9).
 pub(crate) struct Moves {
     /// The destination's name: the target token, or the file format.
     pub to: String,
-    /// Where each side's capabilities came from: the open `token`, the `lock`, the `transport
-    /// file`, or `-` for a file.
-    pub source_from: &'static str,
-    pub target_from: &'static str,
+    /// Where each side's capabilities came from.
+    pub source_from: Known,
+    pub target_from: Known,
     pub plans: Vec<Plan>,
     /// The target's capabilities (none for a file), to check what its `lock` will need.
     pub target: Option<Side>,
@@ -369,9 +376,9 @@ pub(crate) fn plan_moves(
                     KmError::Unsupported(format!("{shown}: provider '{}' is not in this build", t.provider))
                 })?
                 .map_err(|e| KmError::Validation(format!("{shown}: {e}")))?;
-            (Some(side), "transport file", t.token.clone())
+            (Some(side), Known::TransportFile, t.token.clone())
         }
-        Dest::File(f) => (None, "-", format!("{f:?} file").to_lowercase()),
+        Dest::File(f) => (None, Known::Nowhere, format!("{f:?} file").to_lowercase()),
     };
     let to = match (&target, &req.dest) {
         (Some(side), _) => To::Token(side),
@@ -386,7 +393,7 @@ pub(crate) fn plan_moves(
         Dest::Token(name) => match transport_spec(lock, name, req.transport_key) {
             Err(why) => Some(why),
             // Not open here: the export seals to the public key the lock recorded, or cannot.
-            Ok(spec) if target_from == "lock" => {
+            Ok(spec) if target_from == Known::Lock => {
                 let object = lock.realisation(spec, name).map(|r| r.object.as_str());
                 object.and_then(|o| lock.objects.get(o)).and_then(|o| o.public_key.as_ref()).is_none().then(|| {
                     format!(
@@ -417,11 +424,11 @@ fn side_or_lock(
     registry: &Registry,
     open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
     notes: &mut Notes,
-) -> Result<(Side, &'static str)> {
+) -> Result<(Side, Known)> {
     let e = match open(name, notes) {
         Ok(tok) => {
             warn_hidden(name, &tok.profiles, notes);
-            return Ok((side(&tok)?, "token"));
+            return Ok((side(&tok)?, Known::Token));
         }
         Err(e) => e,
     };
@@ -439,7 +446,7 @@ fn side_or_lock(
     match side_from_lock(name, observed, registry, notes) {
         Some(side) => {
             notes.note(format_args!("capabilities of '{name}' come from the lock: the token did not open ({e})"));
-            Ok((side?, "lock"))
+            Ok((side?, Known::Lock))
         }
         None => Err(e),
     }
@@ -499,7 +506,9 @@ pub(crate) fn locked_transport(
     use base64::Engine as _;
     warn_decrypting(t, lock, notes);
     let Some(o) = lock.objects.get(t.object_name) else { return Ok(None) };
-    let (Some(k), Some(id)) = (&o.public_key, o.ids.get("rfc7093m4")) else { return Ok(None) };
+    let (Some(k), Some(id)) = (&o.public_key, o.ids.get(cakeys_core::id::Scheme::Rfc7093m4.name())) else {
+        return Ok(None);
+    };
     let spki = base64::engine::general_purpose::STANDARD
         .decode(k)
         .map_err(|e| KmError::Validation(format!("{t}: the lock's publicKey: {e}")))?;
@@ -525,7 +534,7 @@ fn warn_decrypting(t: &Target, lock: &Lock, notes: &mut Notes) {
 ///
 /// Why it is not.
 pub(crate) fn pinned(lock: &Lock, t: &Transport) -> std::result::Result<(), String> {
-    match lock.objects.get(&t.object).and_then(|o| o.ids.get("rfc7093m4")) {
+    match lock.objects.get(&t.object).and_then(|o| o.ids.get(cakeys_core::id::Scheme::Rfc7093m4.name())) {
         Some(id) if *id == t.rfc7093m4 => Ok(()),
         Some(id) => Err(format!("its key {} is not the {id} the lock pins for '{}'", t.rfc7093m4, t.object)),
         None => Err(format!("the lock pins no key for its object '{}', so nothing vouches for it", t.object)),

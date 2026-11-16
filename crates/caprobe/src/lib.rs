@@ -267,10 +267,13 @@ fn write_profile(
     write: bool,
     notes: &mut Notes,
 ) -> anyhow::Result<()> {
-    if let Ok(text) = std::fs::read_to_string(path) {
-        probe::keep_claims(profile, &text, &path.display().to_string(), write)?;
+    // Only a file that is not there has nothing to keep: one that cannot be read may hold claims.
+    match std::fs::read_to_string(path) {
+        Ok(text) => probe::keep_claims(profile, &text, &path.display().to_string(), write)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("reading {} to keep its claims", path.display())),
     }
-    std::fs::write(path, emit::profile(profile)).with_context(|| format!("writing {}", path.display()))?;
+    cakeys_core::config::write_whole(path, emit::profile(profile).as_bytes(), 0o666)?;
     notes.say(format!("wrote {}", path.display()));
     Ok(())
 }

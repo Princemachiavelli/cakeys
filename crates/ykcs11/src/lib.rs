@@ -66,12 +66,12 @@ impl Ykcs11 {
     /// objects for the rest of the session; the key stays and is listed again by the next one
     /// (verified on a `YubiKey` 5, firmware 5.7.4, ykcs11 2.7.3).
     #[must_use]
-    pub fn keeps_destroyed_keys(&self, loc: &Locator) -> Option<String> {
+    pub fn keeps_destroyed_keys(&self, loc: &Locator) -> String {
         let slot = loc.id.as_deref().and_then(piv_slot).map_or("<slot>".to_owned(), |s| format!("{s:02x}"));
-        Some(format!(
+        format!(
             "ykcs11 clears only the slot's certificate and leaves the key in the slot; delete it with \
              `ykman piv keys delete {slot}`"
-        ))
+        )
     }
 }
 
@@ -97,9 +97,8 @@ impl Provider for Ykcs11 {
 
     /// A key is never claimed deleted ([`Ykcs11::keeps_destroyed_keys`]); anything else is, as SO.
     fn destroy(&self, tok: &Token, req: &Destroy<'_>) -> Result<usize> {
-        if req.object.class.is_key()
-            && let Some(advice) = self.keeps_destroyed_keys(req.locator)
-        {
+        if req.object.class.is_key() {
+            let advice = self.keeps_destroyed_keys(req.locator);
             return Err(KmError::Unsupported(format!("deleting {} on '{}': {advice}", req.object.class, tok.name)));
         }
         tok.destroy_plain(req)
@@ -208,17 +207,7 @@ fn find_attestation_cert(ctx: &AttestCtx<'_>, id: &[u8]) -> Result<Vec<u8>> {
         if let Some(Attribute::Label(l)) = label
             && String::from_utf8_lossy(&l).strip_prefix(&label_prefix).is_some_and(|slot| !slot.is_empty())
         {
-            match ctx.session.get_attributes(h, &[AttributeType::Value]) {
-                Ok(v) => match v.into_iter().next() {
-                    Some(Attribute::Value(der)) => certs.push(der),
-                    _ => {
-                        return Err(KmError::Unsupported(
-                            "the attestation certificate has no readable CKA_VALUE".into(),
-                        ));
-                    }
-                },
-                Err(e) => return Err(KmError::Unavailable(format!("C_GetAttributeValue (attestation): {e}"))),
-            }
+            certs.push(certificate_value(ctx, h, "attestation")?);
         }
     }
     match certs.len() {
@@ -232,6 +221,15 @@ fn find_attestation_cert(ctx: &AttestCtx<'_>, id: &[u8]) -> Result<Vec<u8>> {
     }
 }
 
+/// The DER (`CKA_VALUE`) of the certificate object `h`, named `what` in its errors.
+fn certificate_value(ctx: &AttestCtx<'_>, h: cryptoki::object::ObjectHandle, what: &str) -> Result<Vec<u8>> {
+    let read = ctx.session.get_attributes(h, &[AttributeType::Value]);
+    match read.map_err(|e| KmError::Unavailable(format!("C_GetAttributeValue ({what}): {e}")))?.into_iter().next() {
+        Some(Attribute::Value(der)) => Ok(der),
+        _ => Err(KmError::Unsupported(format!("the {what} certificate has no readable CKA_VALUE"))),
+    }
+}
+
 /// The f9 device attestation certificate (bare label, no slot suffix): the key that signed the
 /// slot certificate, itself signed by a pinned Yubico root.
 fn find_device_cert(ctx: &AttestCtx<'_>) -> Result<Vec<u8>> {
@@ -242,20 +240,8 @@ fn find_device_cert(ctx: &AttestCtx<'_>) -> Result<Vec<u8>> {
             Attribute::Label(ATTESTATION_LABEL.as_bytes().to_vec()),
         ])
         .map_err(|e| KmError::Unavailable(format!("C_FindObjects (device attestation): {e}")))?;
-    let mut certs = Vec::new();
-    for h in found {
-        match ctx.session.get_attributes(h, &[AttributeType::Value]) {
-            Ok(v) => match v.into_iter().next() {
-                Some(Attribute::Value(der)) => certs.push(der),
-                _ => {
-                    return Err(KmError::Unsupported(
-                        "the device attestation certificate has no readable CKA_VALUE".into(),
-                    ));
-                }
-            },
-            Err(e) => return Err(KmError::Unavailable(format!("C_GetAttributeValue (device attestation): {e}"))),
-        }
-    }
+    let mut certs =
+        found.into_iter().map(|h| certificate_value(ctx, h, "device attestation")).collect::<Result<Vec<_>>>()?;
     match certs.len() {
         1 => Ok(certs.remove(0)),
         0 => Err(KmError::Unsupported(format!(
@@ -288,7 +274,7 @@ mod tests {
         assert!(Ykcs11.check_create(&loc(None, Some("01"))).is_ok());
         assert!(matches!(Ykcs11.check_create(&loc(Some("x"), Some("01"))), Err(KmError::Validation(_))));
         assert!(matches!(Ykcs11.check_create(&loc(None, Some("19"))), Err(KmError::Validation(_))));
-        assert!(Ykcs11.keeps_destroyed_keys(&loc(None, Some("18"))).unwrap().contains("ykman piv keys delete 95"));
+        assert!(Ykcs11.keeps_destroyed_keys(&loc(None, Some("18"))).contains("ykman piv keys delete 95"));
     }
 
     /// The DER of a one-certificate PEM fixture.

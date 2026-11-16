@@ -40,8 +40,9 @@ impl Token {
         let session_kek =
             self.session.create_object(&template.0).map_err(|e| refused("making the host's session key", e))?;
         drop(template);
-        let blob = self.session.wrap_key(kwp, session_kek, h);
-        let _ = self.session.destroy_object(session_kek);
+        let session_kek = SessionObject::new(&self.session, session_kek);
+        let blob = self.session.wrap_key(kwp, session_kek.handle(), h);
+        drop(session_kek);
         let blob = blob.map_err(|e| refused("wrapping the key for the host", e))?;
         let mut out = Zeroizing::new(vec![0u8; blob.len()]);
         let n = aes_kw::KwpAes256::new_from_slice(kek.as_slice())

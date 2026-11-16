@@ -296,9 +296,8 @@ impl Token {
                         Attribute::Extractable(true),
                     ])
                     .map_err(fail)?;
-                let out = s.wrap_key(&Mechanism::AesKeyWrap, h, fixed).map_err(fail);
-                let _ = s.destroy_object(fixed);
-                out
+                let fixed = SessionObject::new(s, fixed);
+                s.wrap_key(&Mechanism::AesKeyWrap, h, fixed.handle()).map_err(fail)
             }
         }
     }
@@ -329,39 +328,33 @@ impl Token {
                 ],
             )
             .map_err(fail("generating session KEK"))?;
-        let result = (|| {
-            let wrap = if self.has(MechanismType::AES_KEY_WRAP_PAD) {
-                Mechanism::AesKeyWrapPad
-            } else {
-                Mechanism::AesKeyWrap
+        // Both session objects go when this returns, however it does.
+        let kek = SessionObject::new(s, kek);
+        let wrap =
+            if self.has(MechanismType::AES_KEY_WRAP_PAD) { Mechanism::AesKeyWrapPad } else { Mechanism::AesKeyWrap };
+        let blob = s.wrap_key(&wrap, kek.handle(), target).map_err(fail("C_WrapKey"))?;
+        let mut template = vec![
+            Attribute::Token(false),
+            Attribute::Class(ObjectClass::SECRET_KEY),
+            Attribute::KeyType(key_type_of(object)?),
+            Attribute::Sensitive(true),
+            Attribute::Extractable(false),
+        ];
+        for c in commits {
+            let usage = match c {
+                Commit::Hmac(_) | Commit::Cmac => Attribute::Sign(true),
+                Commit::KcvEcb(_) => Attribute::Encrypt(true),
+                Commit::KcvEcbDecrypt(_) => Attribute::Decrypt(true),
+                Commit::Kw => Attribute::Wrap(true),
             };
-            let blob = s.wrap_key(&wrap, kek, target).map_err(fail("C_WrapKey"))?;
-            let mut template = vec![
-                Attribute::Token(false),
-                Attribute::Class(ObjectClass::SECRET_KEY),
-                Attribute::KeyType(key_type_of(object)?),
-                Attribute::Sensitive(true),
-                Attribute::Extractable(false),
-            ];
-            for c in commits {
-                template.push(match c {
-                    Commit::Hmac(_) | Commit::Cmac => Attribute::Sign(true),
-                    Commit::KcvEcb(_) => Attribute::Encrypt(true),
-                    Commit::KcvEcbDecrypt(_) => Attribute::Decrypt(true),
-                    Commit::Kw => Attribute::Wrap(true),
-                });
+            // A template may not carry an attribute twice.
+            if !template.contains(&usage) {
+                template.push(usage);
             }
-            template.dedup();
-            let copy = s.unwrap_key(&wrap, kek, &blob, &template).map_err(fail("C_UnwrapKey"))?;
-            let out = commits
-                .iter()
-                .map(|c| Ok((*c, self.commit(copy, object, *c, commitment_label)?)))
-                .collect::<Result<Vec<_>>>();
-            let _ = s.destroy_object(copy);
-            out
-        })();
-        let _ = s.destroy_object(kek);
-        result
+        }
+        let copy = s.unwrap_key(&wrap, kek.handle(), &blob, &template).map_err(fail("C_UnwrapKey"))?;
+        let copy = SessionObject::new(s, copy);
+        commits.iter().map(|c| Ok((*c, self.commit(copy.handle(), object, *c, commitment_label)?))).collect()
     }
 }
 

@@ -12,7 +12,7 @@
 use crate::ops::{self, Target};
 use crate::provider::Registry;
 use crate::resolution::{self, Resolved};
-use cakeys_core::config::{Binding, Lock, Mode, TokenCfg, TokenObservation};
+use cakeys_core::config::{Binding, Lock, Mode, ObjectCfg, TokenCfg, TokenObservation};
 use cakeys_core::{KmError, Result};
 use cakeys_profile::{Capability, Effective, On, Set, Verdict};
 
@@ -84,20 +84,32 @@ pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Res
 /// The capability of proving `t`'s private key the way its spec binds it
 /// (`plan::expected_binding`), when that is a proof.
 fn proof(t: &Target) -> Option<Capability> {
-    let binding = match cakeys_core::plan::expected_binding(t)? {
-        Binding::PopSign | Binding::PopSignPin => "pop-sign",
-        Binding::PopEcdh => "pop-ecdh",
-        Binding::PopDecrypt => "pop-decrypt",
-        Binding::PopUnwrap => "pop-unwrap",
-        Binding::TokenAsserted => return None,
-    };
-    let kt = t.object.key_type?;
-    let on = match (&t.object.curve, t.object.modulus_bits) {
-        (Some(c), _) => On::Item(c.clone()),
-        (None, Some(bits)) => On::Bits(u32::try_from(bits).ok()?),
-        (None, None) => return None,
-    };
-    Some(Capability::Prove { binding: binding.into(), key_type: kt.name().into(), on })
+    proof_capability(t.object, cakeys_core::plan::expected_binding(t)?)
+}
+
+/// What a capability row of `object` is on: its curve, or its modulus size.
+fn on(object: &ObjectCfg) -> Option<On> {
+    match (&object.curve, object.modulus_bits) {
+        (Some(c), _) => Some(On::Item(c.clone())),
+        (None, Some(bits)) => Some(On::Bits(u32::try_from(bits).ok()?)),
+        (None, None) => None,
+    }
+}
+
+/// The capability a proof of possession of `object`'s private key by `binding` is
+/// (`prove.<proof>.<key type>.<curve or size>`); `None` for `token-asserted`, or a key with
+/// neither a curve nor a size.
+pub(crate) fn proof_capability(object: &ObjectCfg, binding: Binding) -> Option<Capability> {
+    Some(Capability::Prove {
+        binding: binding.proof_name()?.into(),
+        key_type: object.key_type?.name().into(),
+        on: on(object)?,
+    })
+}
+
+/// The capability generating `object` is (`generate.<key type>.<curve or size>`).
+pub(crate) fn generate_capability(object: &ObjectCfg) -> Option<Capability> {
+    Some(Capability::Generate { key_type: object.key_type?.name().into(), on: on(object)? })
 }
 
 /// What the gate found for one target: refusals (each a line) and notes.

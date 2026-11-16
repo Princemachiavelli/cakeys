@@ -39,6 +39,9 @@ pub enum KmError {
         /// The ID computed from the token.
         got: String,
     },
+    /// `create` found its object already under the locator: nothing was made (19).
+    #[error("already exists: {0}")]
+    Exists(String),
     /// The token cannot do what the spec needs (15).
     #[error("unsupported: {0}")]
     Unsupported(String),
@@ -67,6 +70,7 @@ impl KmError {
             KmError::Unavailable(_) => 16,
             KmError::Validation(_) => 17,
             KmError::FirstUse { .. } => 18,
+            KmError::Exists(_) => 19,
             KmError::Io(_) => 1,
         }
     }

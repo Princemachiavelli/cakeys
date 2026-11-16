@@ -105,7 +105,7 @@ pub struct EcdhChallenge {
     /// The shared secret itself, for a token that derives only into an extractable secret
     /// (ykcs11 \[src\]): the token's derived value is compared with it instead of a MAC. Secret
     /// only to the two ephemeral parties, and used once.
-    pub secret: Vec<u8>,
+    pub secret: zeroize::Zeroizing<Vec<u8>>,
 }
 
 /// Start a `pop-ecdh` proof of possession: generate an ephemeral key on the curve of the public
@@ -128,7 +128,7 @@ pub fn ecdh_challenge(spki: &[u8], msg: &[u8]) -> Result<EcdhChallenge> {
                 return Ok(EcdhChallenge {
                     peer: eph.public_key().to_sec1_point(false).as_bytes().to_vec(),
                     mac: mac_sha256(shared.raw_secret_bytes(), msg),
-                    secret: shared.raw_secret_bytes().to_vec(),
+                    secret: zeroize::Zeroizing::new(shared.raw_secret_bytes().to_vec()),
                 });
             }
         };

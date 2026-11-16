@@ -6,7 +6,7 @@
 //! dropped. The import is then recorded through `ops::lock_import`, the lock rules `cakeys
 //! lock` uses, so the identity is checked as for any move; a mismatch removes what was made.
 
-use crate::public::{Moved, already_there, roll_back};
+use crate::public::{Moved, already_there, origin, roll_back};
 use crate::sealed::{create_public_half, rfc5649};
 use cakeys_core::config::{Lock, Origin};
 use cakeys_core::migrate::{Exposure, Method};
@@ -40,18 +40,29 @@ pub(crate) fn import(
     if already_there(dst, to, lock, notes)? {
         return Ok(Moved::AlreadyThere);
     }
+    let (h, spki) = source_key(src, from, lock, notes)?;
+    // The target first: nothing is in plaintext yet when it refuses.
+    free_locator(dst, to, spki.as_deref())?;
+    let plain = hand_over(from, h)?;
+    let origin = origin(src.token_name, method, Exposure::Host);
+    create_and_record(dst, to, lock, &plain, spki.as_deref(), origin, notes)
+}
+
+/// The key `src` names on `from`, verified against the lock first: its handle, and a private
+/// key's canonical SPKI.
+fn source_key(src: &Target, from: &Token, lock: &Lock, notes: &mut Notes) -> Result<(ObjectHandle, Option<Vec<u8>>)> {
     ops::verify(src, from, lock, notes)?;
     let loc = &src.on_token.locator;
     let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string()))?;
     let spki = (src.object.class == Class::PrivateKey).then(|| from.spki(h, loc)).transpose()?;
-    // The target first: nothing is in plaintext yet when it refuses.
-    free_locator(dst, to, spki.as_deref())?;
+    Ok((h, spki))
+}
+
+/// The key `h` of `from` in this process's memory (`Token::extract`, by RFC 5649).
+fn hand_over(from: &Token, h: ObjectHandle) -> Result<zeroize::Zeroizing<Vec<u8>>> {
     let kwp = rfc5649(from)
         .ok_or_else(|| from.unsupported(format!("'{}' offers no RFC 5649 key wrap to hand the key over", from.name)))?;
-    let plain = from.extract(h, &kwp)?;
-    let origin =
-        Origin { from: src.token_name.to_owned(), method: method.name(), exposure: Exposure::Host, declared: false };
-    create_and_record(dst, to, lock, &plain, spki.as_deref(), origin, notes)
+    from.extract(h, &kwp)
 }
 
 /// Create the key `plain` (a private key's PKCS#8, of the public key `spki`, or a secret key's
@@ -78,7 +89,8 @@ pub(crate) fn create_and_record(
     if dst.object.class == Class::PrivateKey {
         let got =
             cakeys_core::id::sri(&cakeys_core::id::spki_canonical(&cakeys_core::plaintext::spki_of_pkcs8(plain)?)?);
-        let locked = lock.objects.get(dst.object_name).and_then(|o| o.ids.get("rfc7093m4"));
+        let locked =
+            lock.objects.get(dst.object_name).and_then(|o| o.ids.get(cakeys_core::id::Scheme::Rfc7093m4.name()));
         if locked != Some(&got) {
             return Err(KmError::HashMismatch {
                 what: format!("{dst}: the key to import"),
@@ -138,10 +150,7 @@ pub(crate) fn import_ptool(
     if already_there(dst, to, lock, notes)? {
         return Ok(Moved::AlreadyThere);
     }
-    ops::verify(src, from, lock, notes)?;
-    let loc = &src.on_token.locator;
-    let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string()))?;
-    let spki = (src.object.class == Class::PrivateKey).then(|| from.spki(h, loc)).transpose()?;
+    let (h, spki) = source_key(src, from, lock, notes)?;
     let occupied = free_locator(dst, to, spki.as_deref())?;
     if occupied.public_half.is_some() {
         return Err(KmError::Conflict(format!(
@@ -149,19 +158,12 @@ pub(crate) fn import_ptool(
              refusing to import over them"
         )));
     }
-    let kwp = rfc5649(from)
-        .ok_or_else(|| from.unsupported(format!("'{}' offers no RFC 5649 key wrap to hand the key over", from.name)))?;
-    let plain = from.extract(h, &kwp)?;
+    let plain = hand_over(from, h)?;
     to.import_plaintext(dst.object, &dst.on_token.locator, &plain)?;
     drop(plain);
     reopen(target, notes)?;
     let to = target.as_ref().ok_or_else(gone)?;
-    let origin = Origin {
-        from: src.token_name.to_owned(),
-        method: Method::Tpm2Ptool.name(),
-        exposure: Exposure::Host,
-        declared: false,
-    };
+    let origin = origin(src.token_name, &Method::Tpm2Ptool, Exposure::Host);
     match ops::lock_import(dst, to, lock, origin, notes) {
         Ok(_) => Ok(Moved::Imported),
         Err(err) => {

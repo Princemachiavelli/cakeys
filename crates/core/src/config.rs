@@ -136,6 +136,28 @@ pub struct NixCfg {
 pub type Options = toml::Table;
 
 impl TokenCfg {
+    /// A token labelled `token_label` with nothing else set: what a keys.toml entry naming only
+    /// `tokenLabel` parses to.
+    #[must_use]
+    pub fn labelled(token_label: String) -> TokenCfg {
+        TokenCfg {
+            module: None,
+            provider: None,
+            module_profile: None,
+            profiles: Vec::new(),
+            token_label,
+            token_serial: None,
+            pin_file: None,
+            pin_env: None,
+            so_credential_file: None,
+            so_credential_env: None,
+            options: Options::new(),
+            probe: ProbeCfg::default(),
+            migrate: TokenMigrateCfg::default(),
+            nix: NixCfg::default(),
+        }
+    }
+
     /// The provider keys.toml names: `provider`, else the family of `moduleProfile`
     /// (`aws-cloudhsm` for `aws-cloudhsm/5.18+hsm2m-non-fips`). `None`: detect it.
     #[must_use]
@@ -603,19 +625,63 @@ impl Binding {
             Binding::TokenAsserted => 1,
         }
     }
+
+    /// The name keys.toml and the lock write.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Binding::PopSign => "pop-sign",
+            Binding::PopSignPin => "pop-sign-pin",
+            Binding::PopEcdh => "pop-ecdh",
+            Binding::PopDecrypt => "pop-decrypt",
+            Binding::PopUnwrap => "pop-unwrap",
+            Binding::TokenAsserted => "token-asserted",
+        }
+    }
+
+    /// The proof a capability row names (`prove.<proof>.…`, docs/CAPROBE.md): the binding's,
+    /// `pop-sign` for a per-use PIN too; `None` for `token-asserted`, which proves nothing.
+    #[must_use]
+    pub fn proof_name(self) -> Option<&'static str> {
+        match self {
+            Binding::PopSignPin => Some(Binding::PopSign.name()),
+            Binding::TokenAsserted => None,
+            proven => Some(proven.name()),
+        }
+    }
 }
 
 impl std::fmt::Display for Binding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = serde_json::to_value(self).map_err(|_| std::fmt::Error)?;
-        write!(f, "{}", s.as_str().unwrap_or_default())
+        f.write_str(self.name())
+    }
+}
+
+impl Mode {
+    /// Strength, strongest 0: a realisation must never move to a higher rank.
+    #[must_use]
+    pub fn rank(self) -> u8 {
+        match self {
+            Mode::Direct => 0,
+            Mode::Commitment => 1,
+            Mode::WrapRebind => 2,
+        }
+    }
+
+    /// The name the lock writes.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Direct => "direct",
+            Mode::Commitment => "commitment",
+            Mode::WrapRebind => "wrap-rebind",
+        }
     }
 }
 
 impl std::fmt::Display for Mode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = serde_json::to_value(self).map_err(|_| std::fmt::Error)?;
-        write!(f, "{}", s.as_str().unwrap_or_default())
+        f.write_str(self.name())
     }
 }
 
@@ -902,7 +968,10 @@ impl Lock {
                     return Err(format!("object '{name}' lists itself as a pair"));
                 }
                 let Some(other) = self.objects.get(p) else { continue };
-                let shared = o.ids.get("rfc7093m4").is_some_and(|k| other.ids.get("rfc7093m4") == Some(k));
+                let shared = o
+                    .ids
+                    .get(Scheme::Rfc7093m4.name())
+                    .is_some_and(|k| other.ids.get(Scheme::Rfc7093m4.name()) == Some(k));
                 if !shared || !other.pairs.contains(name) {
                     return Err(format!(
                         "object '{name}' lists '{p}' as a pair, but they {}",
@@ -935,7 +1004,7 @@ impl Lock {
     /// For every object, the other objects with the same public key (`rfc7093m4`).
     #[must_use]
     pub fn computed_pairs(&self) -> BTreeMap<String, BTreeSet<String>> {
-        let key = |o: &LockObject| o.ids.get("rfc7093m4").cloned();
+        let key = |o: &LockObject| o.ids.get(Scheme::Rfc7093m4.name()).cloned();
         self.objects
             .iter()
             .filter_map(|(name, o)| {
@@ -1281,26 +1350,7 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
             KmError::Unsupported(m) => KmError::Unsupported(format!("{}: object '{name}': {m}", path.display())),
             other => other,
         })?;
-        // The commitment label carries 8 × valueLen bits (docs/DESIGN.md §3.3): bound it so that
-        // never overflows (tests/properties.rs: `commitment_labels_are_injective`).
-        if o.value_len.is_some_and(|n| n > u64::from(u32::MAX)) {
-            return Err(KmError::Validation(format!(
-                "{}: object '{name}': valueLen {} bytes is out of range",
-                path.display(),
-                o.value_len.unwrap_or_default()
-            )));
-        }
-        if o.class == ObjectClass::SecretKey
-            && let Some(kt) = o.key_type
-            && let Some(fixed) = kt.fixed_value_len()
-            && o.value_len != Some(fixed)
-        {
-            return Err(KmError::Validation(format!(
-                "{}: object '{name}': a {kt} key is {fixed} bytes; leave valueLen out or write {fixed}, not {}",
-                path.display(),
-                o.value_len.unwrap_or_default()
-            )));
-        }
+        check_value_len(o).map_err(|e| invalid(&format_args!("object '{name}': {e}")))?;
     }
     for (name, t) in &mut cfg.tokens {
         // The module resolves when the token is opened ([`TokenCfg::module_path`]): `--module`
@@ -1316,50 +1366,12 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
             let expanded = env_ref(&m.to_string_lossy(), &format!("token '{name}': soCredentialFile"), env)?;
             t.so_credential_file = Some(PathBuf::from(expanded));
         }
-        // `provider` names a family; one profile of it is `moduleProfile`.
-        if let Some(p) = t.provider.as_deref().filter(|p| p.contains('/')) {
-            return Err(KmError::Validation(format!(
-                "{}: token '{name}': provider = \"{p}\" names one module profile; name its family in provider \
-                 and the profile in moduleProfile = \"{p}\"",
-                path.display()
-            )));
-        }
-        if let (Some(family), Some(profile)) = (t.provider.as_deref(), t.module_profile.as_deref())
-            && profile.split_once('/').map_or(profile, |(f, _)| f) != family
-        {
-            return Err(KmError::Validation(format!(
-                "{}: token '{name}': moduleProfile '{profile}' is not of provider '{family}''s family",
-                path.display()
-            )));
-        }
-        if let Some(id) = &t.probe.scratch_id
-            && crate::hex::decode(id).is_none_or(|b| b.is_empty())
-        {
-            return Err(KmError::Validation(format!(
-                "{}: token '{name}': probe.scratchId {id:?} is not a hex CKA_ID",
-                path.display()
-            )));
-        }
-        // An SO step logs the user out; without a user PIN to return to, the new private key
-        // could not be found again, let alone proven.
-        if (t.so_credential_file.is_some() || t.so_credential_env.is_some())
-            && t.pin_file.is_none()
-            && t.pin_env.is_none()
-        {
-            return Err(KmError::Validation(format!(
-                "{}: token '{name}': soCredentialFile/soCredentialEnv needs a user PIN (pinFile or pinEnv) to return to the user session",
-                path.display()
-            )));
-        }
+        check_token(t).map_err(|e| invalid(&format_args!("token '{name}': {e}")))?;
     }
     // A spec's object reference must name something, also when no token ever uses the spec.
     for (spec, s) in &cfg.specs {
         if !cfg.objects.contains_key(&s.object) {
-            return Err(KmError::Validation(format!(
-                "{}: spec '{spec}' references unknown object '{}'",
-                path.display(),
-                s.object
-            )));
+            return Err(invalid(&format_args!("spec '{spec}' references unknown object '{}'", s.object)));
         }
     }
     for s in cfg.specs.values_mut() {
@@ -1372,6 +1384,56 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
     check_origins(&cfg).map_err(|e| invalid(&e))?;
     check_transport_keys(&cfg).map_err(|e| invalid(&e))?;
     Ok(cfg)
+}
+
+/// A secret key's `valueLen` is one its commitment label can carry, and the one its key type
+/// fixes when it fixes one.
+fn check_value_len(o: &ObjectCfg) -> std::result::Result<(), String> {
+    let Some(len) = o.value_len else { return Ok(()) };
+    // The commitment label carries 8 × valueLen bits (docs/DESIGN.md §3.3): bound it so that
+    // never overflows (tests/properties.rs: `commitment_labels_are_injective`).
+    if len > u64::from(u32::MAX) {
+        return Err(format!("valueLen {len} bytes is out of range"));
+    }
+    if o.class == ObjectClass::SecretKey
+        && let Some(kt) = o.key_type
+        && let Some(fixed) = kt.fixed_value_len()
+        && len != fixed
+    {
+        return Err(format!("a {kt} key is {fixed} bytes; leave valueLen out or write {fixed}, not {len}"));
+    }
+    Ok(())
+}
+
+/// One token's settings agree with each other: `provider` names a family and `moduleProfile` a
+/// profile of it, `probe.scratchId` is a hex `CKA_ID`, and an SO credential comes with a user PIN.
+fn check_token(t: &TokenCfg) -> std::result::Result<(), String> {
+    // `provider` names a family; one profile of it is `moduleProfile`.
+    if let Some(p) = t.provider.as_deref().filter(|p| p.contains('/')) {
+        return Err(format!(
+            "provider = \"{p}\" names one module profile; name its family in provider and the profile in \
+             moduleProfile = \"{p}\""
+        ));
+    }
+    if let (Some(family), Some(profile)) = (t.provider.as_deref(), t.module_profile.as_deref())
+        && profile.split_once('/').map_or(profile, |(f, _)| f) != family
+    {
+        return Err(format!("moduleProfile '{profile}' is not of provider '{family}''s family"));
+    }
+    if let Some(id) = &t.probe.scratch_id
+        && crate::hex::decode(id).is_none_or(|b| b.is_empty())
+    {
+        return Err(format!("probe.scratchId {id:?} is not a hex CKA_ID"));
+    }
+    // An SO step logs the user out; without a user PIN to return to, the new private key could
+    // not be found again, let alone proven.
+    if (t.so_credential_file.is_some() || t.so_credential_env.is_some()) && t.pin_file.is_none() && t.pin_env.is_none()
+    {
+        return Err("soCredentialFile/soCredentialEnv needs a user PIN (pinFile or pinEnv) to return to the user \
+                    session"
+            .into());
+    }
+    Ok(())
 }
 
 /// Object, spec and token names are `[A-Za-z0-9][A-Za-z0-9_-]*`: `check` splits a reference on
@@ -1528,18 +1590,30 @@ pub fn parse_lock(text: &str, path: &Path) -> Result<Lock> {
 ///
 /// `Io` if the lock cannot be encoded, or the temporary write, sync or rename fails.
 pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
+    let text = toml::to_string_pretty(lock).map_err(|e| KmError::Io(format!("encoding {}: {e}", path.display())))?;
+    // Created like any new file (0666 under the umask).
+    write_whole(path, text.as_bytes(), 0o666)
+}
+
+/// Write `bytes` to `path` whole or not at all, as [`save_lock`] writes the lock: a uniquely
+/// named temporary file beside it, created with `mode` under the umask (0600 for a key file),
+/// synced, renamed into place, and the directory synced. What every tool writes a file with.
+///
+/// # Errors
+///
+/// `Io` if the temporary write, sync or rename fails.
+pub fn write_whole(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
-    let text = toml::to_string_pretty(lock).map_err(|e| KmError::Io(format!("encoding {}: {e}", path.display())))?;
     let dir = lock_dir(path);
-    // A uniquely named file beside the lock (the same filesystem, for the rename), removed if
-    // this run fails before the rename; created like any new file (0666 under the umask).
+    // Beside the target (the same filesystem, for the rename), removed if this run fails before
+    // the rename.
     let mut tmp = tempfile::Builder::new()
-        .prefix(".keys.lock.")
-        .permissions(std::fs::Permissions::from_mode(0o666))
+        .prefix(".cakeys.")
+        .permissions(std::fs::Permissions::from_mode(mode))
         .tempfile_in(dir)
         .map_err(KmError::io(format!("creating a temporary file in {}", dir.display())))?;
-    tmp.write_all(text.as_bytes())
+    tmp.write_all(bytes)
         .and_then(|()| tmp.as_file().sync_all())
         .map_err(KmError::io(format!("writing {}", tmp.path().display())))?;
     tmp.persist(path).map_err(|e| KmError::Io(format!("renaming over {}: {}", path.display(), e.error)))?;
@@ -1590,8 +1664,14 @@ pub fn lock_for_update(lock_path: &Path) -> Result<UpdateGuard> {
 ///   `.lck` sidecar) must be writable by this user (`access(2)`, so a read-only mount counts).
 #[must_use]
 pub fn lock_unwritable(lock_path: &Path) -> Option<String> {
-    let sandboxed = std::env::var_os("NIX_BUILD_TOP").is_some() && std::env::var_os("IN_NIX_SHELL").is_none();
-    unwritable(lock_path, sandboxed)
+    unwritable(lock_path, in_nix_build())
+}
+
+/// Inside a Nix build sandbox: `NIX_BUILD_TOP` set and `IN_NIX_SHELL` not (`nix develop` sets
+/// both). Where a lock write is lost, and an admin operation (docs/CAMIGRATE.md D8) refused.
+#[must_use]
+pub fn in_nix_build() -> bool {
+    std::env::var_os("NIX_BUILD_TOP").is_some() && std::env::var_os("IN_NIX_SHELL").is_none()
 }
 
 /// [`lock_unwritable`], with whether this run is inside a Nix build sandbox given.

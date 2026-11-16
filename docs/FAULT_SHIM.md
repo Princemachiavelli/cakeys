@@ -227,7 +227,7 @@ lock is unchanged at the end. As run on SoftHSM [run]:
 
 | The lie | `verify` gives |
 |---|---|
-| `CKF_WRITE_PROTECTED` (on a `lock` that would create) | 15 |
+| `CKF_WRITE_PROTECTED` (on a `create`) | 15 |
 | `CKF_USER_PIN_LOCKED`, `CKF_USER_PIN_FINAL_TRY` | 16, before any login |
 | the public key's `CKA_EC_POINT` dropped, or its length unavailable | 11, no key material |
 | the point cut short | 13, no P-256 point |
