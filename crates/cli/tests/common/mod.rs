@@ -495,6 +495,23 @@ pub fn rsa_fixture(pkcs8: &[u8]) -> Vec<Vec<u8>> {
     ints
 }
 
+/// Token object template for a fixture certificate (`SoftHSM` requires `CKA_SUBJECT`).
+pub fn cert_object(der: &[u8], label: &[u8], id: Option<u8>) -> Vec<Attribute> {
+    let der = der.to_vec();
+    let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(&der).unwrap();
+    let subject = x509_cert::der::Encode::to_der(cert.tbs_certificate().subject()).unwrap();
+    let mut t = vec![
+        Attribute::Class(ObjectClass::CERTIFICATE),
+        Attribute::CertificateType(cryptoki::object::CertificateType::X_509),
+        Attribute::Token(true),
+        Attribute::Label(label.to_vec()),
+        Attribute::Subject(subject),
+        Attribute::Value(der),
+    ];
+    t.extend(id.map(|i| Attribute::Id(vec![i])));
+    t
+}
+
 pub fn der_uint(b: &[u8]) -> Vec<u8> {
     let b: Vec<u8> = b.iter().copied().skip_while(|x| *x == 0).collect();
     let mut body = if b[0] & 0x80 != 0 { vec![0] } else { vec![] };

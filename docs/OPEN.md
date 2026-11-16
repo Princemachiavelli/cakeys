@@ -14,9 +14,14 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   low, and the matrix says what that assurance is. Clean fixtures cakeys made itself are not
   evidence of what deployments need. **Built for SoftHSM and kryoptic** (2026-11-15,
   PLAN.md A4): `profiles/coverage/objects/<token>.toml`, 1544 objects each, adopted as a
-  legacy key arrives (crates/cli/tests/reference/matrix.rs): generated keys and imported secret
-  keys; imported private keys by where their public half is; certificates; data objects. Still
-  open: tpm2-pkcs11. Its findings so far are fixed:
+  legacy key arrives (crates/cli/tests/object_matrix/): generated keys and imported secret
+  keys; imported private keys by where their public half is; certificates; data objects. Also
+  on tpm2-pkcs11 over swtpm (`tpm2-pkcs11+swtpm.toml`), where most of the grid is the module's
+  refusal to hold it: it generates EC keys only with `CKA_SIGN`, RSA keys only with both
+  `CKA_SIGN` and `CKA_DECRYPT`, no secret key at all; takes no private key by `C_CreateObject`;
+  stores an imported secret key as a software blob without `CKA_VALUE_LEN` (now refused as
+  unverifiable, 15, rather than a conflict); holds data objects only private and certificates
+  only public. Its findings are fixed:
   - proofs choose within the key's `CKA_ALLOWED_MECHANISMS` (raw `CKM_ECDSA`, raw `CKM_RSA_PKCS`
     over a `DigestInfo`, PKCS #1 v1.5 decryption), and every binding names what the list lacks
     (15) rather than failing inside the token; a declared list narrows the commitments computed

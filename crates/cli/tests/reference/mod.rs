@@ -465,23 +465,6 @@ const ADOPT_PUBKEYHASH: &str = "sha256-8DQBv2fMc+z0Q5uxky0+5t9TS6MAHO07fNMqG9thH
 
 const ADOPT_CERT: &[u8] = include_bytes!("../fixtures/adopt-cert.der");
 
-/// Token object template for a fixture certificate (`SoftHSM` requires `CKA_SUBJECT`).
-fn cert_object(der: &[u8], label: &[u8], id: Option<u8>) -> Vec<Attribute> {
-    let der = der.to_vec();
-    let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(&der).unwrap();
-    let subject = x509_cert::der::Encode::to_der(cert.tbs_certificate().subject()).unwrap();
-    let mut t = vec![
-        Attribute::Class(ObjectClass::CERTIFICATE),
-        Attribute::CertificateType(cryptoki::object::CertificateType::X_509),
-        Attribute::Token(true),
-        Attribute::Label(label.to_vec()),
-        Attribute::Subject(subject),
-        Attribute::Value(der),
-    ];
-    t.extend(id.map(|i| Attribute::Id(vec![i])));
-    t
-}
-
 /// An imported EC private key exposes no public point; when its importer wrote only the
 /// certificate beside it, that certificate stands in for the public half (docs/DESIGN.md §3.2),
 /// and only a certificate of the key's own type and curve does: under `token-asserted` no proof
@@ -2535,7 +2518,7 @@ fn the_live_object_must_be_what_the_spec_says() {
         assert!(stderr(&o).contains(why), "{spec}: expected {why:?} in {}", stderr(&o));
     };
     refused("big", 13, "RSA modulus is Some(2048) bits, spec says 3072");
-    refused("short", 13, "CKA_VALUE_LEN mismatch");
+    refused("short", 13, "CKA_VALUE_LEN is");
     refused("two", 12, "several public key objects share the locator");
     refused("odd", 13, "exposes no key material");
     refused("pub-two", 12, "several public key objects share the locator");

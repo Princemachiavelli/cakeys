@@ -5,6 +5,7 @@
 //! `CAKEYS_TPM_MODULE` is unset, unless `CAKEYS_TPM_REQUIRE=1`.
 
 mod common;
+mod object_matrix;
 
 use common::*;
 use cryptoki::mechanism::Mechanism;
@@ -815,6 +816,29 @@ fn tpm2_attestation_finds_its_store_and_tpm_as_configured() {
     let o = e.km(&r);
     assert_eq!(code(&o), 11, "{}", stderr(&o));
     assert!(stderr(&o).contains("token 'kmtest' in the tpm2-pkcs11 store"), "{}", stderr(&o));
+}
+
+/// The object matrix (`tests/object_matrix/`) on tpm2-pkcs11, against the software TPM only:
+/// hundreds of objects, some of which tpm2-pkcs11 cannot destroy, have no place on a TPM the
+/// platform depends on (docs/DEVELOPMENT.md, "Hardware rules"). The store is the test's own and
+/// fresh, so the table is the same every run.
+#[test]
+fn tpm2_object_matrix_is_the_committed_one() {
+    let Some(e) = env("object-matrix") else { return };
+    if !on_swtpm() {
+        eprintln!("skipping: the object matrix runs on the suite's swtpm only");
+        return;
+    }
+    object_matrix::check(&object_matrix::Target {
+        name: "tpm2-pkcs11+swtpm",
+        token: "tpm",
+        tokens: &|dir| tpm2_tokens(&e.module, dir),
+        session: &|| e.session(),
+        batch: 8,
+        dir: &e.dir,
+        // tpm2-abrmd serialises the TPM: more gains nothing.
+        workers: 4,
+    });
 }
 
 /// Whether this suite's TPM is the software one `nix/tpm2-test-env.sh` started (its private bus

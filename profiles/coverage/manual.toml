@@ -864,12 +864,6 @@ reason = "matched by name (crates/pkcs11/src/token/possession.rs), met by no tes
 
 [[rule]]
 table = "return-values"
-match = "CKR_MECHANISM_INVALID"
-status = "gap"
-reason = "matched by name (crates/pkcs11/src/token/possession.rs), met only under p11-fault (tests/fault.rs, a_failing_module_call_is_unavailable), which the traced pass skips: the proofs now choose within the key's CKA_ALLOWED_MECHANISMS, so no reference token returns it"
-
-[[rule]]
-table = "return-values"
 match = "CKR_*"
 status = "out-of-scope"
 reason = "met by no test and matched by no name: the call fails, and cakeys reports the function and the value's name (16, unavailable, unless the verb maps it)"
