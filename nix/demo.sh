@@ -188,8 +188,9 @@ wait_key
 # ── Act 2 ───────────────────────────────────────────────────────────────────────────────────
 
 act "2. What a Nix build sees" \
-  "nix/lib.nix reads keys.toml and keys.lock in pure evaluation: the identity, the URI, the" \
-  "system feature that routes the build to a machine with the token, and the pre-use check."
+  "nix/lib.nix reads keys.toml and keys.lock in pure evaluation: the identity, the system" \
+  "feature that routes the build to a machine with the token, and the pre-use check, which" \
+  "prints the URI once it has verified the key."
 if command -v nix-instantiate >/dev/null && nix-instantiate --eval --expr 1 >/dev/null 2>&1; then
   bin=$(dirname "$(readlink -f "$(command -v cakeys)")")
   cat >keys.nix <<EOF
@@ -202,7 +203,7 @@ let keys = (import $CAKEYS_LIB).mkKeys {
   # modules.soft = "\${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
   modules.soft = "$SOFTHSM_MODULE";
 };
-in { inherit (keys.signing { }) id uri requiredSystemFeatures check; }
+in { inherit (keys.signing { }) id requiredSystemFeatures check; }
 EOF
   show cat keys.nix
   printf '%s$ nix-instantiate --eval --strict --json keys.nix | jq .%s\n' "$dim" "$reset"

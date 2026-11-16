@@ -23,38 +23,30 @@ in
       keys.signing { token = "softhsm"; }      # several pairs: name the token
       keys.shared { token = "softhsm"; spec = "shared-sign"; }   # several specs on one token
       keys.signing-cert { scheme = "certhash"; }                # any call can also pin a scheme
-      keys.signing { format = "pkcs11-provider-pem"; uriPin = "source"; }       # and say what `check` prints
+      keys.signing { checkArgs = [ "--format" "pkcs11-provider-pem" ]; }   # and pass `check` flags
 
-    The result is plain data:
+    The result is plain data, only what evaluation knows without the token:
 
       type           intrinsic type from keys.toml
-      id.<scheme>    portable material CA-IDs from the lock (id.rfc7093m4; `pubkeyhash` is an
+      id.<scheme>    portable material CA-IDs the lock pins (id.rfc7093m4; `pubkeyhash` is an
                      input alias)
       spec / token   the resolved pair
-      uri / mode / specDigest
-                     from the pair's realisation
-      module / tokenInfo / functions
-                     from the observation the realisation names (null, null and { } when it
-                     names none, or the entry predates them)
-      assurance      what its check establishes against a token that may lie: "proof" (a
-                     fresh challenge), "fingerprint" (a secret key's commitment: replayable),
-                     "public" (public bytes, or a private data object's value); derived from
-                     the lock, as `cakeys` derives it
       requiredSystemFeatures
                      the token's system feature (keys.toml `tokens.<t>.systemFeature`, default
                      `<featurePrefix><t>`, as the NixOS module advertises it), as the list a
                      derivation's `requiredSystemFeatures` takes
-      check          shell command for the pseudo-FOD pre-use check, printing the URI; the
-                     resolved pair is passed explicitly, and `scheme` requires that identity.
-                     Interpolates config, lock and module paths, so they become inputs of the
-                     consuming derivation (recording a hash rebuilds it). The call's `format`
-                     ("uri", or "pkcs11-provider-pem": pkcs11-provider's key file), `uriModule` (add
-                     `module-path=`) and `uriPin` (null, "source" for `pin-source=`, "value"
-                     for `pin-value=`) say what it prints (`cakeys check --format`,
-                     `--uri-module`, `--uri-pin`). A "value" PIN is in whatever the output
+      check          shell command for the pseudo-FOD pre-use check, printing the verified URI:
+                     the only URI a consumer should use, never one read from the lock unchecked.
+                     The resolved pair is passed explicitly, and `scheme` requires that
+                     identity. Interpolates config, lock and module paths, so they become
+                     inputs of the consuming derivation (recording a hash rebuilds it). The
+                     call's `checkArgs` are appended as given: `cakeys check`'s own flags
+                     (`--format pkcs11-provider-pem`, `--uri-module`, `--uri-pin source`, ...),
+                     which `cakeys` validates. A `--uri-pin value` PIN is in whatever the output
                      reaches: the build log, a store path.
 
-    A call that does not name exactly one pair throws, listing the choices.
+    A call that does not name exactly one pair throws, listing the choices; so does a lock
+    whose `version` this library does not read.
 
     `modules.<token>` overrides the token's PKCS#11 module path (pass a store path so the
     module is available inside the build sandbox).
@@ -70,11 +62,21 @@ in
     let
       cfg = builtins.fromTOML (builtins.readFile config);
       hasLock = lock != null && builtins.pathExists lock;
-      lk = if hasLock then builtins.fromTOML (builtins.readFile lock) else { };
+      lk =
+        if hasLock then
+          let
+            parsed = builtins.fromTOML (builtins.readFile lock);
+          in
+          if (parsed.version or null) == 1 then
+            parsed
+          else
+            throw "cakeys: ${toString lock}: lock version ${
+              builtins.toJSON (parsed.version or null)
+            }; this library reads version 1"
+        else
+          { };
       specs = cfg.specs or { };
       tokens = cfg.tokens or { };
-      realisations = lk.realisations or { };
-      observations = lk.observations or { };
 
       featuresOf = t: [ (tokens.${t}.systemFeature or "${featurePrefix}${t}") ];
 
@@ -128,77 +130,25 @@ in
           spec ? null,
           # null: whatever the spec computes; else require that identity (e.g. "certhash").
           scheme ? null,
-          # What `check` prints: the URI or a key file, with the module and PIN on request.
-          format ? "uri",
-          uriModule ? false,
-          uriPin ? null,
+          # `cakeys check`'s own flags, appended as given: what it prints, and how.
+          checkArgs ? [ ],
         }:
         let
           pick = chosen args;
-          real =
-            realisations.${pick.spec}.${pick.token}
-              or (fail "spec '${pick.spec}' has no realisation on token '${pick.token}' in the lock; run `cakeys realise ${pick.spec} --token ${pick.token}`");
           ids = lk.objects.${obj}.ids or { };
-          # What the realisation saw of the module and token: an entry of the lock's observation
-          # table, shared by the realisations recorded with the same one.
-          seen = if real ? observation then observations.${real.observation} else { };
         in
         # seq pick: the call itself resolves the (spec, token) pair — missing or ambiguous throws
-        # here, whether or not any attribute of the result is demanded. The realisation stays
-        # lazy: `check`, `id`, `type` and `requiredSystemFeatures` are usable before anything is
-        # recorded in the lock (the first-use pseudo-FOD flow), and only the realisation's own
-        # fields throw.
+        # here, whether or not any attribute of the result is demanded. Everything is usable
+        # before anything is recorded in the lock (the first-use pseudo-FOD flow): `id` is then
+        # empty.
         builtins.seq pick {
           inherit type;
           inherit (pick) spec token;
           # `pubkeyhash` is an input alias of rfc7093m4 (the lock only uses the scheme name).
           id = ids // (if ids ? rfc7093m4 then { pubkeyhash = ids.rfc7093m4; } else { });
-          uri = real.observed.uri or null;
-          inherit (real) mode specDigest;
-          # What the check establishes against a token that may lie (cakeys_core::plan::assurance,
-          # docs/archive/REVIEW-2026-11-13.md "Replay"): "proof" (a fresh challenge the host verified),
-          # "fingerprint" (a secret key's commitment, replayable by whatever saw it once) or
-          # "public" (a hash of public bytes).
-          assurance =
-            if (real.attestation.kind or null) == "tpm-certify" then
-              "proof"
-            else if
-              type.class == "CKO_PRIVATE_KEY"
-              && !builtins.elem (real.binding or null) [
-                null
-                "token-asserted"
-              ]
-            then
-              "proof"
-            else if type.class == "CKO_SECRET_KEY" then
-              "fingerprint"
-            else
-              "public";
-          # { path, description, manufacturer, version, cryptoki } / { model, serial, firmware }.
-          module = seen.module or null;
-          tokenInfo = seen.token or null;
-          functions = builtins.listToAttrs (
-            map (m: {
-              name = m;
-              value = true;
-            }) (seen.mechanisms or [ ])
-          );
           requiredSystemFeatures = featuresOf pick.token;
           check =
             assert cakeys != null || throw "cakeys: mkKeys needs cakeys for check";
-            assert
-              builtins.elem format [
-                "uri"
-                "pkcs11-provider-pem"
-              ]
-              || fail "format must be \"uri\" or \"pkcs11-provider-pem\", not ${builtins.toJSON format}";
-            assert
-              builtins.elem uriPin [
-                null
-                "source"
-                "value"
-              ]
-              || fail "uriPin must be null, \"source\" or \"value\", not ${builtins.toJSON uriPin}";
             builtins.concatStringsSep " " (
               map escapeShellArg (
                 [
@@ -231,25 +181,7 @@ in
                   "--spec"
                   pick.spec
                 ]
-                ++ (
-                  if format != "uri" then
-                    [
-                      "--format"
-                      format
-                    ]
-                  else
-                    [ ]
-                )
-                ++ (if uriModule then [ "--uri-module" ] else [ ])
-                ++ (
-                  if uriPin != null then
-                    [
-                      "--uri-pin"
-                      uriPin
-                    ]
-                  else
-                    [ ]
-                )
+                ++ checkArgs
               )
             );
         };

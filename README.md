@@ -128,12 +128,12 @@ pkgs.runCommand "signed-artifact" {
 ''
 ```
 
-`signing` is plain data from the resolved pair: `id.<scheme>`, `uri`, `mode`, `specDigest`,
-`module`, `tokenInfo`, `functions`, `assurance`, `requiredSystemFeatures` and `check` (use
-`scheme = "certhash"` to require one identity). `assurance` says what the check establishes
-against a token that may lie: `proof` (a fresh challenge), `fingerprint` (a secret key's
-commitment: replayable by whatever saw it once) or `public` (public bytes, or a private data
-object's value: whoever holds the bytes passes), (DESIGN §3.6, §3.7).
+`signing` is plain data, only what evaluation knows without the token: `type`, `id.<scheme>`,
+the resolved `spec` and `token`, `requiredSystemFeatures` and `check` (use `scheme =
+"certhash"` to require one identity, and `checkArgs` for `cakeys check`'s own flags). The URI
+a consumer uses is the one `check` prints once it has verified the key, never one read from the
+lock. `cakeys resolve` says the rest, `assurance` included: what the check establishes against a
+token that may lie (DESIGN §3.6, §3.7).
 
 A cached consumer is not rebuilt, so the token is not re-contacted; `nix build --check` forces it.
 

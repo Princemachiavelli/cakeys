@@ -38,6 +38,15 @@ let
   # A token's system feature: the prefix and its name, as lib.mkKeys names it by default.
   featureOf = n: "${cfg.featurePrefix}${n}";
 
+  # Whether a check's args ask for the PIN itself in its output: `--uri-pin value` or
+  # `--uri-pin=value`.
+  valuePin =
+    args:
+    lib.elem "--uri-pin=value" args
+    || lib.any (i: lib.elemAt args i == "--uri-pin" && lib.elemAt args (i + 1) == "value") (
+      lib.range 0 (lib.length args - 2)
+    );
+
   # feature -> sandbox paths, merged over tokens that share a feature.
   hookMap = lib.zipAttrsWith (_: lib.concatLists) (
     lib.mapAttrsToList (n: t: {
@@ -126,34 +135,21 @@ let
           example = [ "signer.service" ];
           description = "Units that must not start unless the identity check passes.";
         };
-        format = mkOption {
-          type = types.enum [
-            "uri"
+        args = mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+          example = [
+            "--format"
             "pkcs11-provider-pem"
+            "--uri-pin"
+            "source"
           ];
-          default = "uri";
           description = ''
-            What the check prints: the URI, or `pkcs11-provider-pem`, pkcs11-provider's key file
-            wrapping it, for programs that take a private key only as a PEM file and load it
-            through OpenSSL with pkcs11-provider (`cakeys check --format`).
-          '';
-        };
-        uriModule = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Add `module-path=` with the module the check loaded (`--uri-module`).";
-        };
-        uriPin = mkOption {
-          type = types.nullOr (
-            types.enum [
-              "source"
-              "value"
-            ]
-          );
-          default = null;
-          description = ''
-            Add the user PIN (`--uri-pin`): `source` refers to keys.toml's pinFile or pinEnv,
-            `value` writes the PIN itself, so it needs `outputFile` (never the journal).
+            `cakeys check`'s own flags, appended as given: what the check prints and how
+            (`--format pkcs11-provider-pem`, pkcs11-provider's key file wrapping the URI;
+            `--uri-module`; `--uri-pin source` or `value`). cakeys validates them. A
+            `--uri-pin value` writes the PIN itself, so it needs `outputFile` (never the
+            journal).
           '';
         };
         outputFile = mkOption {
@@ -321,8 +317,8 @@ in
 
     {
       assertions = lib.mapAttrsToList (n: c: {
-        assertion = c.uriPin == "value" -> c.outputFile != null;
-        message = "services.cakeys.checks.${n}.uriPin = \"value\" needs outputFile: the PIN would go to the journal";
+        assertion = valuePin c.args -> c.outputFile != null;
+        message = "services.cakeys.checks.${n}.args asks for --uri-pin value, which needs outputFile: the PIN would go to the journal";
       }) cfg.checks;
       systemd.services = lib.mapAttrs' (
         name: c:
@@ -355,10 +351,8 @@ in
               ]
               ++ lib.cli.toCommandLineGNU { } {
                 inherit (c) token spec;
-                format = if c.format == "uri" then null else c.format;
-                uri-module = c.uriModule;
-                uri-pin = c.uriPin;
               }
+              ++ c.args
             );
           };
         }

@@ -102,20 +102,21 @@ signing = keys.signing { token = "softhsm"; };      # { } when the object has on
 shared  = keys.shared { token = "softhsm"; spec = "shared-sign"; };  # several specs on one token
 ```
 
-- The result carries `type`, `id.<scheme>` (`pubkeyhash` is an input alias), the resolved
-  `spec`/`token`, and the pair's realisation: `uri`, `mode`, `specDigest`, `module`, `tokenInfo`,
-  `functions` (mechanism → `true`), `requiredSystemFeatures` (`<featurePrefix><token>` unless keys.toml
-  names one) and `check`.
+- The result carries only what evaluation knows without the token (review N1, N2): `type`,
+  `id.<scheme>` (`pubkeyhash` is an input alias), the resolved `spec`/`token`,
+  `requiredSystemFeatures` (`<featurePrefix><token>` unless keys.toml names one) and `check`. No
+  URI: the one a consumer uses is the one `check` prints once it has verified the key, never the
+  lock's, which nothing has checked at evaluation. Nothing is re-derived from the lock either
+  (assurance, mode): `cakeys resolve` says those.
 - **`check`** is the shell command for the pre-use check (prints the URI); `scheme = "certhash"`
-  requires that identity, and the resolved pair is passed explicitly. The call's `format`
-  (`"pkcs11-provider-pem"`), `uriModule` and `uriPin` (`"source"`, `"value"`) are `check`'s
-  flags, as in `keys.signing { format = "pkcs11-provider-pem"; uriPin = "source"; }`; a
-  `"value"` PIN is in the build log or store path the output reaches. Interpolating config, lock
-  and module makes them build inputs. Like `id`, `type` and `requiredSystemFeatures`, it is usable
-  before anything is recorded in the lock — the first-use pseudo-FOD flow; only the realisation's
-  own fields throw on a missing record.
-- A call that does not name exactly one pair throws, listing the choices — so does a missing
-  realisation, naming the `realise` command to run.
+  requires that identity, and the resolved pair is passed explicitly. The call's `checkArgs` are
+  `cakeys check`'s own flags, appended as given and validated by cakeys, as in `keys.signing {
+  checkArgs = [ "--format" "pkcs11-provider-pem" "--uri-pin" "source" ]; }`; a `--uri-pin value`
+  PIN is in the build log or store path the output reaches. Interpolating config, lock and module
+  makes them build inputs. Everything is usable before anything is recorded in the lock — the
+  first-use pseudo-FOD flow; `id` is then empty.
+- A call that does not name exactly one pair throws, listing the choices; so does a lock whose
+  `version` is not 1.
 - Tested by `checks.lib` (synthetic fixture) and `checks.vm` (consumer built in the guest sandbox).
 
 ### Pseudo-FOD check
@@ -150,10 +151,11 @@ forces it. The VM test covers all of this.
   `checks.tpm`, with auto UIDs, uid-range, nixbld, and a stripped-ACL control.
 - **`sandbox.uidRange.enable`:** `auto-allocate-uids` and the `uid-range` feature.
 - **`checks.<n>`:** a oneshot `cakeys-check-<n>` unit running `check`, required by the
-  units that use the key — `checks.module`. `format`, `uriModule` and `uriPin` are `check`'s
-  flags. `outputFile` (with `outputGroup`) writes what it prints to a file instead of the
-  journal: removed before each check, written (0600, or 0640 for the group) only when it
-  passes; `uriPin = "value"` requires it. In `checks.module` the check writes a key file and the
+  units that use the key — `checks.module`. `args` are `check`'s own flags, appended as given
+  (`[ "--format" "pkcs11-provider-pem" "--uri-pin" "source" ]`). `outputFile` (with
+  `outputGroup`) writes what it prints to a file instead of the journal: removed before each
+  check, written (0600, or 0640 for the group) only when it passes; `--uri-pin value` requires
+  it. In `checks.module` the check writes a key file and the
   service it gates signs with it through OpenSSL and pkcs11-provider.
 
 ### What real builds may reach

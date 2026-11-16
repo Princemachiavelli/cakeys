@@ -145,8 +145,6 @@
     in
     assert signing.id.rfc7093m4 == "sha256-d3++Ph3T9bppuPnNz6blK4vDij+Swy9RMmKdfQnLmPk=";
     assert signing.id.pubkeyhash == signing.id.rfc7093m4; # input alias
-    assert signing.uri == "pkcs11:token=kmtest;object=signing;type=private";
-    assert signing.mode == "direct";
     # The type is the material alone: `origin` sits on the pair, beside the locator.
     assert
       signing.type == {
@@ -156,36 +154,49 @@
       };
     assert signing.spec == "signing-soft" && signing.token == "softhsm";
     assert signing.requiredSystemFeatures == [ "token-softhsm" ];
-    assert signing.functions.CKM_ECDSA;
-    assert !(signing.functions ? CKM_SHA256_HMAC);
-    # One object, two specs with different policy on the same token.
-    assert shared-sign.mode == "commitment";
-    assert shared-nosign.mode == "wrap-rebind";
-    # The replay labels: a proven private key, a secret key's fingerprint.
-    assert signing.assurance == "proof";
-    assert shared-sign.assurance == "fingerprint";
+    # Only what evaluation knows without the token: no URI or observation read from the lock
+    # unchecked (`check` prints the verified URI).
+    assert
+      builtins.attrNames signing == [
+        "check"
+        "id"
+        "requiredSystemFeatures"
+        "spec"
+        "token"
+        "type"
+      ];
+    # One object, two specs with different policy on the same token: one identity.
+    assert shared-sign.id == shared-nosign.id;
     assert fails (keys.shared { token = "softhsm"; }); # ambiguous: several specs on one token
     assert fails (keys.signing { token = "elsewhere"; }); # no such pair
-    assert signing.module.version == "2.7";
-    assert signing.tokenInfo.model == "SoftHSM v2";
-    assert shared-sign.module == null; # older lock entry
+    # A lock of another version is not read.
+    assert fails
+      (
+        (self.lib.mkKeys {
+          config = ./crates/cli/tests/fixtures/keys.toml;
+          lock = builtins.toFile "keys.lock" "version = 99\n";
+        }).signing
+          { }
+      ).id;
     # No scheme: the CLI verifies every ID the spec computes; a scheme also requires it.
     assert pkgs.lib.hasInfix "check signing-cert --token softhsm" signing-cert.check;
     assert pkgs.lib.hasInfix "check signing-cert.id.certhash"
       (keys.signing-cert { scheme = "certhash"; }).check;
-    # What `check` prints: the bare URI unless the call asks for more.
+    # What `check` prints: the bare URI unless the call passes `check`'s own flags.
     assert !(pkgs.lib.hasInfix "--format" signing.check || pkgs.lib.hasInfix "--uri-" signing.check);
     assert pkgs.lib.hasSuffix
       "--spec signing-soft --format pkcs11-provider-pem --uri-module --uri-pin source"
       (keys.signing {
-        format = "pkcs11-provider-pem";
-        uriModule = true;
-        uriPin = "source";
+        checkArgs = [
+          "--format"
+          "pkcs11-provider-pem"
+          "--uri-module"
+          "--uri-pin"
+          "source"
+        ];
       }).check;
     assert pkgs.lib.hasSuffix "check 'a b; echo pwned #' --token 'my token' --spec 'it'\\''s'"
       odd.check;
-    assert fails (keys.signing { format = "der"; }).check;
-    assert fails (keys.signing { uriPin = "file"; }).check;
     pkgs.runCommand "cakeys-lib-check" { } ''
       echo ${pkgs.lib.escapeShellArg (keys.signing { }).check} > $out
     '';
