@@ -181,6 +181,15 @@ alone can compute, such as a TPM Name). If they return, they get their own names
   …`): what keys.toml changed (locator, object, `publicOnly`, spec digest) and policy
   attributes the lock did not record are notes; a policy attribute or immutable that changed
   on the token, which nobody edited, is a warning — `a_write_says_what_it_rerecorded`.
+- **Declare what must not drift; everything else is observed** (decided 2026-11-15). `realise`
+  is the lock verb and records what is there now, as a lock file does, with no
+  `--accept-drift`: what it re-records falls into three kinds, and none needs a gate. The
+  module, its versions, the provider, the mechanisms and the token's info are re-recorded with
+  a note or a warning. The author's own change to keys.toml (locator, object, `publicOnly`,
+  spec digest) is re-recorded with a note; the keys.toml diff is its review. A policy attribute
+  the spec does not declare is re-recorded with a warning; to make it a gate, declare it, and a
+  declared attribute the token does not show is a conflict (13), never re-recorded. IDs,
+  downgrades, immutables, attestations and types stay refused even when the lock is written.
 - **Where the lock cannot be written, a writing run is refused (14) before any token is
   touched** — never a key created and then not recorded — naming `--no-update-lock`: inside a
   Nix build sandbox (`NIX_BUILD_TOP` set without `IN_NIX_SHELL`, which `nix develop` also

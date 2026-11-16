@@ -247,6 +247,11 @@ tokens.softhsm = { locator = { CKA_LABEL = "release-note" } }
   the token's capability profiles before any token is opened. A pair they say cannot be made
   refuses the whole run (15), and nothing is created; `--skip-unsupported` creates the rest and
   warns; `--dry-run` prints what each pair would get and why, and writes nothing.
+- **Declare what must not drift; everything else is observed.** `attributes` is the gate: a
+  declared attribute the token does not show is a conflict (13), and `realise` never re-records
+  it. Every other attribute the token shows is recorded in the lock, and when it changes
+  `realise` re-records it with a warning, as it does a new module version or mechanism list
+  (DESIGN §3.5). An attribute that matters goes in `attributes`.
 - **A secret key needs an identity the token can recompute:** a declared usage bit a commitment
   can use (`CKA_SIGN`, `CKA_ENCRYPT`, `CKA_DECRYPT`, `CKA_WRAP` on AES; `CKA_ENCRYPT`,
   `CKA_DECRYPT` on DES3; `CKA_SIGN` on generic secrets and HMAC keys), or `CKA_EXTRACTABLE =
