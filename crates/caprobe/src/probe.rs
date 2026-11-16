@@ -9,7 +9,7 @@
 //! a `cannot` row or a `subtract` row carrying the `C_*` failure in its note, and what the
 //! probe cannot reach is named in [`Probed::undetermined`], never guessed.
 
-use cakeys_core::config::TokenCfg;
+use cakeys_core::config::{Binding, ObjectCfg, TokenCfg};
 use cakeys_core::id::Curve;
 use cakeys_core::pop::{self, OaepHash, RsaPadding};
 use cakeys_core::sig::{self, EcdsaHash, Encoding};
@@ -19,7 +19,7 @@ use cakeys_pkcs11::token::{self, Token, derive_any, is_policy_default, show, tem
 use cakeys_pkcs11::{BoundKey, keygen_mechanism};
 use cakeys_profile::baseline::CURVES;
 use cakeys_profile::capability::{DECRYPT_OAEP, UNWRAP_TEMPLATE, WRAP_OAEP};
-use cakeys_profile::{Answer, Capability, GenerateRow, MatchInfo, Mode, Profile};
+use cakeys_profile::{Answer, Capability, GenerateRow, MatchInfo, Mode, On, Profile};
 use cryptoki::error::{Error as CkError, RvError};
 use cryptoki::mechanism::eddsa::{EddsaParams, EddsaSignatureScheme};
 use cryptoki::mechanism::elliptic_curve::{EcKdf, Ecdh1DeriveParams};
@@ -951,6 +951,45 @@ fn operate(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, public: Obj
         "CKK_RSA" => rsa_ops(made, profile, private, &spki, on),
         _ => made.undetermined.push(format!("no operation probes on {on}: ECDH with {kt} keys is not probed yet")),
     }
+    // Last: what the mechanism probes counted on is untouched by them.
+    prove(made, profile, kt, on, private, &spki);
+}
+
+/// The proofs of possession the verbs give with a private key of `kt` on `on`
+/// (`Token::prove_binding`, their own code), each a `prove.*` row with the refusal as its
+/// evidence. The probe's token has no module profile, so each proof tries what it can.
+fn prove(made: &Made, profile: &mut Draft, kt: &str, on: &str, private: ObjectHandle, spki: &[u8]) {
+    let (key_type, bindings): (Kt, &[Binding]) = match kt {
+        "CKK_EC" => (Kt::Ec, &[Binding::PopSign, Binding::PopEcdh]),
+        "CKK_EC_EDWARDS" => (Kt::EcEdwards, &[Binding::PopSign]),
+        "CKK_RSA" => (Kt::Rsa, &[Binding::PopSign, Binding::PopDecrypt, Binding::PopUnwrap]),
+        _ => return,
+    };
+    let mut object = ObjectCfg::new(cakeys_core::types::ObjectClass::PrivateKey, Some(key_type));
+    let size = on.strip_prefix("RSA-").and_then(|b| b.parse::<u32>().ok());
+    match size {
+        Some(bits) => object.modulus_bits = Some(bits.into()),
+        None => object.curve = Some(on.to_owned()),
+    }
+    let on = size.map_or_else(|| On::Item(on.to_owned()), On::Bits);
+    for binding in bindings {
+        let outcome = made.tok.prove_binding(private, &object, spki, *binding);
+        let cap = Capability::Prove { binding: binding.to_string(), key_type: kt.to_owned(), on: on.clone() };
+        profile.set(cap, Answer::of(outcome.is_ok()), outcome.err().map(|e| evidence(made.tok, &e)), None);
+    }
+}
+
+/// A refusal as a row's evidence, the same under any keys.toml and any binding: the token's
+/// keys.toml name taken out, and the binding's prose for a `C_*` failure (it changes with the
+/// binding) cut at the function that failed.
+fn evidence(tok: &Token, e: &KmError) -> String {
+    let said = e
+        .to_string()
+        .replace(&format!(" on token '{}'", tok.name), "")
+        .replace(&format!("token '{}': ", tok.name), "")
+        .replace(&format!("token '{}'", tok.name), "the token")
+        .replace(&format!("'{}'", tok.name), "the token");
+    said.split(": PKCS11 error:").next().unwrap_or_default().to_owned()
 }
 
 /// Sign `data` with `mech`; `check` verifies the signature on the host where it can (`None`:

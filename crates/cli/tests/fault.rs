@@ -297,7 +297,8 @@ fn a_lying_module_is_refused() {
 
 /// Unknown means try (review 2026-11-15 §4): an ECDH proof whose sealed derivation the module
 /// refuses, every template of it (`derive_any`: as asked, with its length, without each policy
-/// default), proves with the extractable secret instead; where that is refused too, both
+/// default) or will not MAC with once derived, proves with the extractable secret instead;
+/// where that is refused too, both
 /// refusals are named. A derivation that ran for another key is a conflict, never retried.
 #[test]
 fn an_ecdh_proof_falls_back_to_the_extractable_secret() {
@@ -318,6 +319,9 @@ fn an_ecdh_proof_falls_back_to_the_extractable_secret() {
     });
     let (exit, said, fired) = run("sealed", &sealed);
     assert_eq!((exit, fired), (0, 6), "{said}");
+    // A sealed secret the module derives but will not MAC with (tpm2-pkcs11 [run]): likewise.
+    let (exit, said, fired) = run("mac", "[[rule]]\nfn = \"C_SignInit\"\nrv = \"CKR_KEY_FUNCTION_NOT_PERMITTED\"\n");
+    assert_eq!((exit, fired), (0, 1), "{said}");
     let (exit, said, _) = run("both", &format!("[[rule]]\nfn = \"C_DeriveKey\"\n{refused}\n"));
     assert_eq!(exit, 16, "{said}");
     assert!(said.contains("C_DeriveKey (proof of possession)") && said.contains("(sealed: "), "{said}");

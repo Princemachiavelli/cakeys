@@ -15,6 +15,9 @@ pub const DECRYPT_OAEP: [&str; 3] = ["SHA-1", "SHA-256", "SHA-512"];
 /// The attributes the unwrap probe puts in a template: what `unwrap.template.*` rows can say.
 pub const UNWRAP_TEMPLATE: [&str; 1] = ["CKA_VALUE_LEN"];
 
+/// The proofs of possession (docs/DESIGN.md §3.6) a token can give: what `prove.*` rows can say.
+pub const PROOFS: [&str; 4] = ["pop-sign", "pop-ecdh", "pop-decrypt", "pop-unwrap"];
+
 /// What a generation is of: a curve (or parameter set), or an RSA modulus size.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum On {
@@ -83,6 +86,17 @@ pub enum Capability {
     DeriveReadOnly,
     /// A way keys move: `move.export`, `move.unwrap`, `move.secret-unwrap`, `move.trusted-wrap`.
     Move(Move),
+    /// Proving possession of a private key of `key_type` on a curve or of a size, by
+    /// `binding`, as the verbs prove it: `prove.pop-ecdh.CKK_EC.secp256r1`,
+    /// `prove.pop-decrypt.CKK_RSA.2048`.
+    Prove {
+        /// The proof, by its `binding` name.
+        binding: String,
+        /// The key type, by `CKK_*` name.
+        key_type: String,
+        /// The curve or size.
+        on: On,
+    },
 }
 
 impl Capability {
@@ -119,6 +133,13 @@ impl Capability {
             ("derive", "ecdh.sealed") => Capability::DeriveSealed,
             ("derive", "ecdh.read-only") => Capability::DeriveReadOnly,
             ("move", m) => Capability::Move(Move::ALL.into_iter().find(|x| x.name() == m).ok_or_else(bad)?),
+            ("prove", rest) => {
+                let (binding, rest) = rest.split_once('.').filter(|(b, _)| PROOFS.contains(b)).ok_or_else(bad)?;
+                let (kt, on) =
+                    rest.split_once('.').filter(|(k, o)| k.starts_with("CKK_") && !o.is_empty()).ok_or_else(bad)?;
+                let on = on.parse().map_or_else(|_| On::Item(on.to_owned()), On::Bits);
+                Capability::Prove { binding: binding.to_owned(), key_type: kt.to_owned(), on }
+            }
             _ => return Err(bad()),
         })
     }
@@ -142,6 +163,8 @@ impl std::fmt::Display for Capability {
             Capability::DeriveSealed => f.write_str("derive.ecdh.sealed"),
             Capability::DeriveReadOnly => f.write_str("derive.ecdh.read-only"),
             Capability::Move(m) => write!(f, "move.{}", m.name()),
+            Capability::Prove { binding, key_type, on: On::Item(i) } => write!(f, "prove.{binding}.{key_type}.{i}"),
+            Capability::Prove { binding, key_type, on: On::Bits(b) } => write!(f, "prove.{binding}.{key_type}.{b}"),
         }
     }
 }
@@ -228,6 +251,12 @@ mod tests {
             Capability::Move(Move::Unwrap),
             Capability::Move(Move::SecretUnwrap),
             Capability::Move(Move::TrustedWrap),
+            Capability::Prove {
+                binding: "pop-ecdh".into(),
+                key_type: "CKK_EC".into(),
+                on: On::Item("secp256r1".into()),
+            },
+            Capability::Prove { binding: "pop-unwrap".into(), key_type: "CKK_RSA".into(), on: On::Bits(2048) },
         ];
         for c in all {
             assert_eq!(Capability::parse(&c.to_string()), Ok(c.clone()), "{c}");
@@ -240,6 +269,9 @@ mod tests {
             "unwrap.template.CKA_X",
             "derive.ecdh",
             "move.import",
+            "prove.pop-x.CKK_EC.secp256r1",
+            "prove.pop-sign.EC.secp256r1",
+            "prove.pop-sign.CKK_EC",
             "nothing",
         ] {
             assert!(Capability::parse(bad).is_err(), "{bad}");

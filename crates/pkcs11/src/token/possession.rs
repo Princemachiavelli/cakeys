@@ -40,14 +40,14 @@ impl Token {
     /// binding](Self::recorded_binding): the private key `h` proves, by whichever capability it
     /// has, that it holds the private half of `spki`, the public key its identity hashes. A proof
     /// that does not verify is a `Conflict`; a token that cannot prove is `Unsupported` or
-    /// `Unavailable`, never a pass. `token-asserted` proves nothing.
-    pub(super) fn prove_binding(
-        &self,
-        h: ObjectHandle,
-        object: &ObjectCfg,
-        spki: &[u8],
-        binding: Binding,
-    ) -> Result<()> {
+    /// `Unavailable`, never a pass. `token-asserted` proves nothing. `caprobe` measures a token's
+    /// `prove.*` capabilities with it, on keys it generated: the verbs' own proof.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::check_proof`]; `Conflict` for a proof that does not verify; `Unsupported` or
+    /// `Unavailable` for one the token cannot give.
+    pub fn prove_binding(&self, h: ObjectHandle, object: &ObjectCfg, spki: &[u8], binding: Binding) -> Result<()> {
         self.check_proof(object, binding)?;
         let msg = pop::challenge(spki)?;
         match binding {
@@ -213,14 +213,26 @@ impl Token {
         };
         let session = rw.as_ref().unwrap_or(&self.session);
         // A session object: dropped with the session even if destroying it fails here.
-        let tag = session
-            .sign(&Mechanism::Sha256Hmac, derived, msg)
-            .inspect_err(|_| {
+        let tag = match session.sign(&Mechanism::Sha256Hmac, derived, msg) {
+            Ok(tag) => tag,
+            Err(e) => {
                 let _ = session.destroy_object(derived);
-            })
-            .map_err(|e| {
-                KmError::Unavailable(format!("C_Sign (ECDH proof of possession) on token '{}': {e}", self.name))
-            })?;
+                // A sealed secret the module will not MAC with (tpm2-pkcs11 [run]): no operation
+                // began, so the extractable form is tried as for a refused derivation.
+                if matches!(e, CkError::Pkcs11(_, cryptoki::context::Function::SignInit)) {
+                    let sealed = format!("C_SignInit with the sealed secret: {e}");
+                    return self.prove_ecdh_extractable(h, spki, &ch).map_err(|e| match e {
+                        KmError::Unavailable(m) => KmError::Unavailable(format!("{m} (sealed: {sealed})")),
+                        KmError::Unsupported(m) => KmError::Unsupported(format!("{m} (sealed: {sealed})")),
+                        other => other,
+                    });
+                }
+                return Err(KmError::Unavailable(format!(
+                    "C_Sign (ECDH proof of possession) on token '{}': {e}",
+                    self.name
+                )));
+            }
+        };
         let _ = session.destroy_object(derived);
         if !pop::ct_eq(&ch.mac, &tag) {
             return Err(KmError::Conflict(format!(

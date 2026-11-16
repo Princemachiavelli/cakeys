@@ -218,7 +218,8 @@ fn run_probe(
     let set = profile_set(a.profiles_dir.as_deref())?;
     let claimed = a.diff.as_deref().map(|name| set.find(name).map_err(KmError::Validation)).transpose()?;
     let access = if a.write { Access::Write } else { Access::Read };
-    let tok = open_token(cfg, modules, registry, &a.token, access, notes)?;
+    // Unprofiled: what the probe measures must not be what the committed profile says.
+    let tok = open_token(cfg, modules, registry, &a.token, access, notes)?.unprofiled()?;
     let req =
         probe::Request { write: a.write, name: a.name.as_deref(), claimed, kept: a.out.is_some() || a.diff.is_some() };
     let mut profile = probe::generate(&tok, tcfg, &req, notes)?;

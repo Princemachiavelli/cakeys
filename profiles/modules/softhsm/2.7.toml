@@ -87,6 +87,12 @@ firmware = "2.7"
 "derive.ecdh.sealed" = { answer = "yes" }
 "derive.ecdh.read-only" = { answer = "yes" }
 "move.secret-unwrap" = { answer = "no" }
+"prove.pop-decrypt.CKK_RSA.2048" = { answer = "yes" }
+"prove.pop-ecdh.CKK_EC.secp256r1" = { answer = "yes" }
+"prove.pop-sign.CKK_EC.secp256r1" = { answer = "yes" }
+"prove.pop-sign.CKK_EC_EDWARDS.edwards25519" = { answer = "yes" }
+"prove.pop-sign.CKK_RSA.2048" = { answer = "yes" }
+"prove.pop-unwrap.CKK_RSA.2048" = { answer = "yes" }
 
 [reported."CKK_RSA"]
 min-bits = 512

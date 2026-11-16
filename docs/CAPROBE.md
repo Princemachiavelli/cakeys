@@ -95,7 +95,11 @@ A capability row is `"<capability>" = { answer, evidence, via }`: `answer` is `y
 `evidence` what shows it, `via` how it succeeded where there is more than one way. The
 capabilities name cakeys' operations (`crates/profile/src/capability.rs`): a generation per key
 type and curve or size, a wrap and a decryption per OAEP hash, an unwrap template attribute,
-ECDH into a sealed secret and in a read-only session, and the moves. A new one is a variant
+ECDH into a sealed secret and in a read-only session, the moves, and a proof of possession per
+binding and key (`prove.pop-ecdh.CKK_EC.secp256r1`). The probe measures the proofs with the
+verbs' own code (`Token::prove_binding`) on a token opened with no module profile
+(`Token::unprofiled`), so what it records is what the module does, not what the committed
+profile already says. A new one is a variant
 there and the operation that tests it; the emitter, the diff and the stack algebra do not
 change. *An absent row is unknown*: never probed, never claimed — a spec-compliant default.
 

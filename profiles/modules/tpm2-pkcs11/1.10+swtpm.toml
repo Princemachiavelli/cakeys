@@ -74,6 +74,11 @@ mechanisms = ["CKM_AES_KEY_GEN"]
 "derive.ecdh.read-only" = { answer = "no" }
 "move.export" = { answer = "no" }
 "move.unwrap" = { answer = "no" }
+"prove.pop-decrypt.CKK_RSA.2048" = { answer = "yes" }
+"prove.pop-ecdh.CKK_EC.secp256r1" = { answer = "yes" }
+"prove.pop-sign.CKK_EC.secp256r1" = { answer = "yes" }
+"prove.pop-sign.CKK_RSA.2048" = { answer = "yes" }
+"prove.pop-unwrap.CKK_RSA.2048" = { answer = "no", evidence = "unsupported: the token refused to unwrap with the private key (Function::UnwrapKey" }
 
 [reported."CKK_RSA"]
 min-bits = 1024
