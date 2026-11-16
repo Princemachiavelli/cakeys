@@ -12,11 +12,13 @@ use ed25519_dalek::pkcs8::{EncodePrivateKey as _, EncodePublicKey as _};
 use std::path::Path;
 
 /// keys.toml with one token `t`, one object `o` of `object`, and one spec `s` on `t` with
-/// `spec` lines and `on_token` entries beside the locator.
+/// `spec` lines and `on_token` entries beside the locator; `origin = "adopt"` unless they name
+/// one.
 fn keys(object: &str, spec: &str, on_token: &str) -> String {
+    let origin = if on_token.contains("origin") { "" } else { ", origin = \"adopt\"" };
     format!(
         "[tokens.t]\ntokenLabel = \"t\"\n\n[objects.o]\n{object}\n\n[specs.s]\nobject = \"o\"\n{spec}\n\
-         tokens.t = {{ locator = {{ CKA_LABEL = \"o\" }}{on_token} }}\n"
+         tokens.t = {{ locator = {{ CKA_LABEL = \"o\" }}{on_token}{origin} }}\n"
     )
 }
 
@@ -88,7 +90,8 @@ fn names_that_select_nothing_are_refused() {
     // An object's one (spec, token) pair, or why there is not exactly one.
     assert_eq!(cfg.pick_spec("o", None, None).unwrap(), ("s".to_owned(), "t".to_owned()));
     assert!(matches!(cfg.pick_spec("o", None, Some("elsewhere")), Err(KmError::NotFound(_))));
-    let two = keys(EC, SIGN, "") + "\n[specs.s2]\nobject = \"o\"\ntokens.t = { locator = { CKA_LABEL = \"o2\" } }\n";
+    let two = keys(EC, SIGN, "")
+        + "\n[specs.s2]\nobject = \"o\"\ntokens.t = { locator = { CKA_LABEL = \"o2\" }, origin = \"adopt\" }\n";
     assert!(matches!(load(&two).unwrap().pick_spec("o", None, None), Err(KmError::Ambiguous(_))));
 }
 
@@ -119,10 +122,12 @@ fn token_and_creation_rules_are_checked_at_load() {
         transport(&rsa(2048), unwraps).replace("transportWith = \"s\"", "transportWith = \"nope\""),
         "names no spec",
     );
-    // createOn names a token the object has a spec on.
-    let born = keys(EC, SIGN, "").replace("curve = \"secp256r1\"", "curve = \"secp256r1\"\ncreateOn = \"u\"")
-        + "\n[tokens.u]\ntokenLabel = \"u\"\n";
-    refused(born, "no spec realises it on 'u'");
+    // A key states how it comes to be on its token, and is created once at most.
+    refused(keys(EC, SIGN, ", origin = \"made\""), "unknown variant `made`");
+    let twice = keys(EC, SIGN, ", origin = \"create\"")
+        + "\n[tokens.u]\ntokenLabel = \"u\"\n\n[specs.s2]\nobject = \"o\"\n\
+           tokens.u = { locator = { CKA_LABEL = \"o\" }, origin = \"create\" }\n";
+    refused(twice, "has origin = \"create\" on several pairs");
 }
 
 #[test]
@@ -350,31 +355,27 @@ fn the_identity_mode_follows_the_declared_usage() {
     }
 }
 
-/// What `cakeys create` never makes, whatever the token: the classes cakeys adopts, a
-/// `publicOnly` adoption, and a key the token's security officer must mark `CKA_TRUSTED`. Each
-/// is a valid spec to adopt.
+/// What `cakeys create` never makes, whatever the token, cannot say `origin = "create"` (17 at
+/// load): the classes cakeys adopts, a `publicOnly` adoption, and a key the token's security
+/// officer must mark `CKA_TRUSTED`. Each is a valid spec to adopt.
 #[test]
-fn what_create_never_makes_is_said_from_the_spec() {
+fn what_create_never_makes_cannot_say_origin_create() {
     const PUBLIC: &str = "class = \"CKO_PUBLIC_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
-    let not_creatable = |object: &str, spec: &str, on_token: &str| {
-        let text = keys(object, spec, on_token);
-        let cfg = load(&text).unwrap_or_else(|e| panic!("{e}:\n{text}"));
-        let t = Target::new(&cfg, "s", "t").unwrap();
-        plan_mode(&t).unwrap_or_else(|e| panic!("{e}:\n{text}"));
-        cakeys_core::plan::not_creatable(&t)
-    };
+    let create = ", origin = \"create\"";
     let trusted = "attributes = { CKA_WRAP = true, CKA_TRUSTED = true }";
     for (object, spec, on_token, why) in [
-        (CERT, "", "", "certificates are adopted, not created"),
-        (PUBLIC, "", "", "public keys and data objects are adopted, not created"),
-        ("class = \"CKO_DATA\"", "", "", "public keys and data objects are adopted, not created"),
-        (EC, "", ", publicOnly = true", "publicOnly adopts the public half only; it is never created"),
-        (AES, trusted, "", "CKA_TRUSTED = true cannot be generated; adopt the object instead"),
+        (CERT, "", create, "CKO_CERTIFICATE objects are adopted or imported, never created"),
+        (PUBLIC, "", create, "CKO_PUBLIC_KEY objects are adopted or imported, never created"),
+        ("class = \"CKO_DATA\"", "", create, "CKO_DATA objects are adopted or imported, never created"),
+        (EC, "", ", publicOnly = true, origin = \"create\"", "publicOnly adopts the public half, never origin"),
+        (AES, trusted, create, "CKA_TRUSTED = true cannot be generated"),
     ] {
-        assert_eq!(not_creatable(object, spec, on_token), Some(why), "{object}\n{spec}\n{on_token}");
+        let said = load(&keys(object, spec, on_token)).unwrap_err().to_string();
+        assert!(said.contains(why), "expected {why:?} in {said:?}");
+        load(&keys(object, spec, &on_token.replace("\"create\"", "\"adopt\""))).unwrap();
     }
     for (object, spec) in [(EC, SIGN), (AES, SIGN), (AES, "attributes = { CKA_WRAP = true, CKA_TRUSTED = false }")] {
-        assert_eq!(not_creatable(object, spec, ""), None, "{object}\n{spec}");
+        load(&keys(object, spec, create)).unwrap_or_else(|e| panic!("{e}: {object}\n{spec}"));
     }
 }
 
@@ -466,8 +467,8 @@ fn views_and_picks_say_what_is_there() {
     assert_eq!(alias.objects["o"].curve.as_deref(), Some("secp256r1"));
 
     let more = keys(EC, SIGN, "")
-        + "\n[specs.s2]\nobject = \"o\"\ntokens.t = { locator = { CKA_LABEL = \"o2\" } }\n\
-           \n[objects.other]\nclass = \"CKO_DATA\"\n\n[specs.s3]\nobject = \"other\"\ntokens.t = { locator = { CKA_LABEL = \"d\" } }\n";
+        + "\n[specs.s2]\nobject = \"o\"\ntokens.t = { locator = { CKA_LABEL = \"o2\" }, origin = \"adopt\" }\n\
+           \n[objects.other]\nclass = \"CKO_DATA\"\n\n[specs.s3]\nobject = \"other\"\ntokens.t = { locator = { CKA_LABEL = \"d\" }, origin = \"adopt\" }\n";
     let cfg = load(&more).unwrap();
     let pair = |spec: &str| (spec.to_owned(), "t".to_owned());
     assert_eq!(cfg.pick_spec("other", None, None).unwrap(), pair("s3"));

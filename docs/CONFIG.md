@@ -127,10 +127,6 @@ class = "CKO_PRIVATE_KEY"
 keyType = "CKK_EC"
 # Canonicalized on load: "P-256" and "prime256v1" are the same type as "secp256r1".
 curve = "secp256r1"
-# Where the key is born, when its specs name several tokens: `cakeys create` generates it only on
-# this token, and the others get the same material by import (`camigrate migrate`). Not part of
-# the type: the lock and the spec digest never see it.
-createOn = "softhsm"
 
 [objects.agreement]
 class = "CKO_PRIVATE_KEY"
@@ -176,10 +172,15 @@ publicAttributes = { CKA_VERIFY = true }
 # migrate it from them (15), and `export` without names leaves it out quietly (an extractable
 # key otherwise moves; a non-extractable one is left out with a warning). Not in the spec digest.
 # noExport = true
-# Where it lives on `softhsm`: a locator (must match exactly one object, or 12). Whether it is
-# made there or adopted is not said here: `cakeys create` generates it when the locator is empty
-# (never over an occupied one), and every other verb only finds it.
-tokens.softhsm = { locator = { CKA_LABEL = "signing", CKA_ID = "0e" } }
+# Where it lives on `softhsm`: a locator (must match exactly one object, or 12), and how it comes
+# to be there, `origin` (required for private and secret keys):
+#   "create"  `cakeys create` generates it here, when the locator is empty (never over an
+#             occupied one). At most one pair per object: where its material is born, and with
+#             whose policy. Every other verb only finds it.
+#   "import"  camigrate brings the material here from the token that created it.
+#   "adopt"   it is already there, put there by something cakeys does not run.
+# Like the locator, it is not part of the spec digest.
+tokens.softhsm = { locator = { CKA_LABEL = "signing", CKA_ID = "0e" }, origin = "create" }
 
 [specs.backup-kek-wrap]
 object = "backup-kek"
@@ -187,15 +188,16 @@ object = "backup-kek"
 # CKA_ENCRYPT `kcv-ecb`, CKA_DECRYPT `kcv-ecb-dec`, CKA_WRAP `kw` (DESIGN §3.1). Token defaults
 # never do. CKA_ALLOWED_MECHANISMS is the one list-valued attribute (key objects only).
 attributes = { CKA_SIGN = true, CKA_WRAP = true, CKA_EXTRACTABLE = false, CKA_ALLOWED_MECHANISMS = ["CKM_AES_CMAC", "CKM_AES_KEY_WRAP"] }
-tokens.softhsm = { locator = { CKA_LABEL = "backup-kek" } }
+tokens.softhsm = { locator = { CKA_LABEL = "backup-kek" }, origin = "create" }
 
 [specs.signing-tpm]
 object = "signing"
 attributes = { CKA_SIGN = true }
-# The same object on another token: the same material must hash to the same identity there.
+# The same object on another token: the same material must hash to the same identity there, so
+# it is imported from where it was created (`camigrate migrate signing --from softhsm --to tpm`).
 # `attestation = true` also pins signed provenance from the TPM (tpm-certify, §3.7): once
 # locked, losing it is a downgrade.
-tokens.tpm = { locator = { CKA_LABEL = "signing" }, attestation = true }
+tokens.tpm = { locator = { CKA_LABEL = "signing" }, origin = "import", attestation = true }
 
 [specs.agreement-soft]
 object = "agreement"
@@ -204,16 +206,18 @@ attributes = { CKA_DERIVE = true }
 # that can only derive proves it by ECDH (`pop-ecdh`), an RSA key that can only decrypt by
 # OAEP (`pop-decrypt`), one that can only unwrap by unwrapping a host secret (`pop-unwrap`);
 # `token-asserted` opts out (recorded, and never a silent downgrade).
-tokens.softhsm = { locator = { CKA_LABEL = "derive-only" }, binding = "pop-ecdh" }
+tokens.softhsm = { locator = { CKA_LABEL = "derive-only" }, origin = "adopt", binding = "pop-ecdh" }
 
 [specs.firmware-cert-piv]
 object = "firmware-cert"
+# A certificate, public key or data object is adopted unless it says origin = "import".
 tokens.yubikey = { locator = { CKA_LABEL = "X.509 Certificate for Retired Key 1" } }
 
 [specs.signing-piv]
 object = "signing"
 # `publicOnly` identifies a private key through its public key object, without logging in
-# (spares PIV PIN retries). It implies `token-asserted` and forbids policy attributes.
+# (spares PIV PIN retries). It implies `token-asserted` and `origin = "adopt"`, and forbids policy
+# attributes.
 tokens.yubikey = { locator = { CKA_ID = "05" }, publicOnly = true }
 
 [specs.release-note]
@@ -230,15 +234,19 @@ tokens.softhsm = { locator = { CKA_LABEL = "release-note" } }
 - **A private data object needs `CKA_PRIVATE = true` declared** in its spec, or it is refused
   (15): its `valuehash` would let anyone with the lock test guesses of the value offline
   (DESIGN §8.2). camigrate moves no private data object (15).
-- **Only `cakeys create` makes keys,** private and secret ones; `realise` and `check` find what
-  is there. Certificates, public keys, data objects, `publicOnly` adoptions and `CKA_TRUSTED`
-  keys are adopted, never created. When the lock already pins the object's material, creating
-  is refused (14): newly generated material could never match.
-- **One birthplace per object:** an object whose specs name several tokens is generated on its
-  `createOn` token only (`create` naming another is 17). The other tokens get the same material
-  by import (`camigrate`). Without `createOn`, `create` naming no pair refuses such an object
-  (12) rather than let the order it runs in decide; so it does an object several specs realise
-  on one token, since whichever ran first would set the key's policy: `create <spec>` picks.
+- **Only `cakeys create` makes keys, and only where `origin = "create"`;** `realise` and
+  `check` find what is there, and camigrate moves material only onto a pair that says
+  `origin = "import"`. Certificates, public keys, data objects, `publicOnly` adoptions and
+  `CKA_TRUSTED` keys are never `create` (17 at load). When the lock already pins the object's
+  material, creating is refused (14): newly generated material could never match.
+- **One birthplace per object:** at most one pair of an object, across all its specs and
+  tokens, says `origin = "create"` (17 at load otherwise). That pair says where the material is
+  born and with whose policy, so no order of a run decides either; the other pairs import or
+  adopt it.
+- **`create` checks before it makes anything:** each pair it would create is checked against
+  the token's capability profiles before any token is opened. A pair they say cannot be made
+  refuses the whole run (15), and nothing is created; `--skip-unsupported` creates the rest and
+  warns; `--dry-run` prints what each pair would get and why, and writes nothing.
 - **A secret key needs an identity the token can recompute:** a declared usage bit a commitment
   can use (`CKA_SIGN`, `CKA_ENCRYPT`, `CKA_DECRYPT`, `CKA_WRAP` on AES; `CKA_ENCRYPT`,
   `CKA_DECRYPT` on DES3; `CKA_SIGN` on generic secrets and HMAC keys), or `CKA_EXTRACTABLE =

@@ -635,7 +635,7 @@ mod tests {
             "[tokens.t]\ntokenLabel = \"t\"\n\n\
              [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
              [specs.s]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\n\
-             tokens.t = { locator = { CKA_LABEL = \"k\" } }\n",
+             tokens.t = { locator = { CKA_LABEL = \"k\" }, origin = \"adopt\" }\n",
         )
         .unwrap()
     }
@@ -1021,7 +1021,7 @@ mod tests {
             write!(
                 text,
                 "[objects.{name}]\n{ty}\n\n[specs.{name}]\nobject = \"{name}\"\n\
-                 tokens.t = {{ locator = {{ CKA_LABEL = \"{name}\" }} }}\n\n"
+                 tokens.t = {{ locator = {{ CKA_LABEL = \"{name}\" }}, origin = \"adopt\" }}\n\n"
             )
             .unwrap();
         }

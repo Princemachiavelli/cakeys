@@ -147,7 +147,7 @@
     assert signing.id.pubkeyhash == signing.id.rfc7093m4; # input alias
     assert signing.uri == "pkcs11:token=kmtest;object=signing;type=private";
     assert signing.mode == "direct";
-    # `createOn` is where the object is born, not part of its type.
+    # The type is the material alone: `origin` sits on the pair, beside the locator.
     assert
       signing.type == {
         class = "CKO_PRIVATE_KEY";

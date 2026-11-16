@@ -11,12 +11,11 @@ systemFeature = "token-yubikey-piv"
 class = "CKO_PRIVATE_KEY"
 keyType = "CKK_EC"
 curve = "secp256r1"
-createOn = "softhsm"
 
 [specs.signing-soft]
 object = "signing"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
-tokens.softhsm = { locator = { CKA_LABEL = "signing" } }
+tokens.softhsm = { locator = { CKA_LABEL = "signing" }, origin = "create" }
 
 [objects.signing-cert]
 class = "CKO_CERTIFICATE"
@@ -24,7 +23,7 @@ certificateType = "CKC_X_509"
 
 [specs.signing-cert]
 object = "signing-cert"
-tokens.softhsm = { locator = { CKA_LABEL = "signing-cert" } }
+tokens.softhsm = { locator = { CKA_LABEL = "signing-cert" }, origin = "adopt" }
 
 [objects.shared]
 class = "CKO_SECRET_KEY"
@@ -34,9 +33,9 @@ valueLen = 32
 [specs.shared-sign]
 object = "shared"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
-tokens.softhsm = { locator = { CKA_LABEL = "shared-a" } }
+tokens.softhsm = { locator = { CKA_LABEL = "shared-a" }, origin = "create" }
 
 [specs.shared-nosign]
 object = "shared"
 attributes = { CKA_SIGN = false, CKA_EXTRACTABLE = true }
-tokens.softhsm = { locator = { CKA_LABEL = "shared-b" } }
+tokens.softhsm = { locator = { CKA_LABEL = "shared-b" }, origin = "adopt" }

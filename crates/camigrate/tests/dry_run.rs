@@ -15,6 +15,11 @@ use rsa::pkcs8::DecodePublicKey as _;
 use rsa::traits::PublicKeyParts as _;
 use x509_cert::der::{Decode as _, Encode as _};
 
+/// [`Env::spec`]'s `extra` for a pair `cakeys create` makes (a source, a transport key) and for
+/// one a move lands on; without either, a pair is adopted.
+const CREATE: &str = ", origin = \"create\"";
+const IMPORT: &str = ", origin = \"import\"";
+
 /// `export --dry-run` (docs/CAMIGRATE.md phase 1): the plan follows each side's capabilities. Between
 /// the software references, the composed sealed method with the strongest OAEP hash both
 /// implement; to tpm2-pkcs11 and through p11-kit (whose RPC drops AES key wrap) only through the
@@ -36,9 +41,9 @@ fn export_plans_follow_each_sides_capabilities() {
     let body = p256("movable")
         + &p256("fixed")
         + &p256("movable-k")
-        + &Env::spec("movable", "movable", &attrs(true), &[soft], "xref-mv", "")
-        + &Env::spec("fixed", "fixed", &attrs(false), &[soft], "xref-fx", "")
-        + &Env::spec("movable-k", "movable-k", &attrs(true), &[kry], "xref-mvk", "")
+        + &Env::spec("movable", "movable", &attrs(true), &[soft], "xref-mv", CREATE)
+        + &Env::spec("fixed", "fixed", &attrs(false), &[soft], "xref-fx", CREATE)
+        + &Env::spec("movable-k", "movable-k", &attrs(true), &[kry], "xref-mvk", CREATE)
         + &e.refs.iter().filter(|r| r.name.starts_with("kryoptic")).map(transport_key).collect::<String>();
     names_transport(&e, &body, |r| r.name.starts_with("kryoptic"));
     for (spec, r) in [("movable", soft), ("fixed", soft), ("movable-k", kry)] {
@@ -128,16 +133,16 @@ fn transport_files_carry_the_locked_identity() {
             "attributes = { CKA_UNWRAP = true, CKA_DECRYPT = true, CKA_EXTRACTABLE = false }\n",
             &[kry],
             "xref-kek",
-            ", binding = \"pop-decrypt\"",
+            ", origin = \"create\", binding = \"pop-decrypt\"",
         )
-        + &Env::spec("ec-k", "ec", "attributes = { CKA_SIGN = true }\n", &[kry], "xref-tec", "")
+        + &Env::spec("ec-k", "ec", "attributes = { CKA_SIGN = true }\n", &[kry], "xref-tec", CREATE)
         + &Env::spec(
             "movable",
             "mv",
             "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n",
             &[soft],
             "xref-tmv",
-            "",
+            CREATE,
         );
     e.config(&body);
     assert_eq!(code(&e.cakeys(kry, &["create", "kek", "--token", "kryoptic"])), 0);
@@ -310,7 +315,7 @@ fn public_moves_do_what_the_plan_says() {
         }
     }
     for (c, s, d) in &pairs {
-        body += &Env::spec(&target_spec(c, s, d), c.name, c.attributes, &[d], &target_label(c, s, d), "");
+        body += &Env::spec(&target_spec(c, s, d), c.name, c.attributes, &[d], &target_label(c, s, d), IMPORT);
     }
     e.config(&body);
     for c in &PUBLIC {
@@ -406,18 +411,16 @@ fn objects_sharing_a_locator_move_in_any_order() {
     let mut body = transport_key(kry);
     for (n, target) in [("1", "sl-a"), ("2", "sl-b")] {
         let (k, kp, c) = (format!("k{n}"), format!("k{n}-pub"), format!("crt{n}"));
-        body += &format!(
-            "[objects.{k}]\n{ec}\ncreateOn = \"softhsm\"\n\n[objects.{kp}]\n{ec_pub}\n\n[objects.{c}]\n{cert}\n\n"
-        );
-        body += &Env::spec(&format!("{k}-soft"), &k, movable, &[soft], &format!("sl-k{n}"), "");
+        body += &format!("[objects.{k}]\n{ec}\n\n[objects.{kp}]\n{ec_pub}\n\n[objects.{c}]\n{cert}\n\n");
+        body += &Env::spec(&format!("{k}-soft"), &k, movable, &[soft], &format!("sl-k{n}"), CREATE);
         body += &Env::spec(&format!("{kp}-soft"), &kp, "", &[soft], &format!("sl-k{n}"), "");
         body += &Env::spec(&format!("{c}-soft"), &c, "", &[soft], &format!("sl-crt{n}"), "");
-        body += &Env::spec(&format!("{k}-kry"), &k, movable, &[kry], target, "");
-        body += &Env::spec(&format!("{kp}-kry"), &kp, "", &[kry], target, "");
-        body += &Env::spec(&format!("{c}-kry"), &c, "", &[kry], target, "");
+        body += &Env::spec(&format!("{k}-kry"), &k, movable, &[kry], target, IMPORT);
+        body += &Env::spec(&format!("{kp}-kry"), &kp, "", &[kry], target, IMPORT);
+        body += &Env::spec(&format!("{c}-kry"), &c, "", &[kry], target, IMPORT);
     }
     // A second certificate for the first target label: a collision of its class.
-    body += &Env::spec("crt2-kry-a", "crt2", "", &[kry], "sl-a", "");
+    body += &Env::spec("crt2-kry-a", "crt2", "", &[kry], "sl-a", IMPORT);
     names_transport(&e, &body, |r| r.name == "kryoptic");
     assert_eq!(code(&e.cakeys(kry, &["create", "tk-kryoptic", "--token", "kryoptic"])), 0);
     // The keys are made; their public halves and the planted certificates are adopted.
@@ -484,7 +487,7 @@ fn private_data_objects_never_move() {
     e.config(
         &("[objects.pd]\nclass = \"CKO_DATA\"\n\n".to_owned()
             + &Env::spec("pd-soft", "pd", private, &[soft], "pd-secret", "")
-            + &Env::spec("pd-kry", "pd", private, &[kry], "pd-secret", "")),
+            + &Env::spec("pd-kry", "pd", private, &[kry], "pd-secret", IMPORT)),
     );
     let o = e.cakeys(soft, &["realise", "pd-soft", "--token", "softhsm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
@@ -513,7 +516,7 @@ fn transport_key(r: &Ref) -> String {
             "attributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }\n",
             &[r],
             &format!("tk-{}", r.name),
-            ", binding = \"pop-unwrap\"",
+            ", origin = \"create\", binding = \"pop-unwrap\"",
         )
 }
 
@@ -561,7 +564,7 @@ const KEYS: [Key; 5] = [
 
 /// The dry-run property for the sealed rows (docs/CAMIGRATE.md D9, phase 3): for every key class,
 /// source and target reference, `migrate --dry-run`'s verdict is the outcome. Each key is
-/// generated on its source (`createOn`), each target holds a transport key. A ready move exits
+/// generated on its source (`origin = "create"`, its targets `import`), each target holds a transport key. A ready move exits
 /// 0, records its `origin`, and `cakeys verify` then accepts the key on the target — proving
 /// possession, so the unwrapped key is the locked one; a blocked one is 15 with the lock
 /// unchanged and nothing on the target.
@@ -588,12 +591,12 @@ fn sealed_moves_do_what_the_plan_says() {
     for k in &KEYS {
         for s in e.refs.iter().filter(|s| generates(s, k)) {
             let o = object(k, s);
-            body += &format!("[objects.{o}]\n{}\ncreateOn = \"{}\"\n\n", k.ty, s.name);
-            body += &Env::spec(&format!("{o}-src"), &o, k.attributes, &[s], &format!("cm-{o}"), "");
+            body += &format!("[objects.{o}]\n{}\n\n", k.ty);
+            body += &Env::spec(&format!("{o}-src"), &o, k.attributes, &[s], &format!("cm-{o}"), CREATE);
         }
     }
     for (k, s, d) in &pairs {
-        body += &Env::spec(&target_spec(k, s, d), &object(k, s), k.attributes, &[d], &target_label(k, s, d), "");
+        body += &Env::spec(&target_spec(k, s, d), &object(k, s), k.attributes, &[d], &target_label(k, s, d), IMPORT);
     }
     names_transport(&e, &body, unwraps);
     // p11-kit hides the module behind it, so its capabilities are a spec-compliant module's until
@@ -793,7 +796,7 @@ fn another_type_in_one_place(e: &Env, kry: &Ref, bundle: &str) {
 }
 
 /// The keys the bundle tests move: P-256 `ek1`, `ek2` and AES `sk1`, `sk2`, each born on `SoftHSM`
-/// (`createOn`) with a spec on kryoptic, whose transport key is realised; `nx`, a P-256 key made
+/// (`origin = "create"`) with an `import` spec on kryoptic, whose transport key is realised; `nx`, a P-256 key made
 /// non-extractable there, which cannot move; and `nox`, an extractable one its spec keeps there
 /// (`noExport`).
 fn bundle_keys(e: &Env, soft: &Ref, kry: &Ref) {
@@ -814,16 +817,16 @@ fn bundle_keys(e: &Env, soft: &Ref, kry: &Ref) {
     drop(src);
     let crt = "[objects.crt]\nclass = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"\n\n".to_owned()
         + &Env::spec("crt-soft", "crt", "", &[soft], "xb-crt", "")
-        + &Env::spec("crt-kry", "crt", "", &[kry], "xb-crt", "");
+        + &Env::spec("crt-kry", "crt", "", &[kry], "xb-crt", IMPORT);
     let key = |o: &str, ty: &str| {
-        format!("[objects.{o}]\n{ty}\ncreateOn = \"softhsm\"\n\n")
+        format!("[objects.{o}]\n{ty}\n\n")
             + &Env::spec(
                 &format!("{o}-soft"),
                 o,
                 "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n",
                 &[soft],
                 &format!("xb-{o}"),
-                "",
+                CREATE,
             )
             + &Env::spec(
                 &format!("{o}-kry"),
@@ -831,7 +834,7 @@ fn bundle_keys(e: &Env, soft: &Ref, kry: &Ref) {
                 "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n",
                 &[kry],
                 &format!("xb-{o}"),
-                "",
+                IMPORT,
             )
     };
     let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
@@ -843,7 +846,7 @@ fn bundle_keys(e: &Env, soft: &Ref, kry: &Ref) {
             "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = false }\n",
             &[soft],
             "xb-nx",
-            "",
+            CREATE,
         );
     let kept = "[objects.nox]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n".to_owned()
         + &Env::spec(
@@ -852,7 +855,7 @@ fn bundle_keys(e: &Env, soft: &Ref, kry: &Ref) {
             "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\nnoExport = true\n",
             &[soft],
             "xb-nox",
-            "",
+            CREATE,
         );
     let body = transport_key(kry)
         + &key("ek1", ec)
@@ -1125,9 +1128,9 @@ fn transport_files_and_bundle_entries_are_checked(e: &Env, soft: &Ref, transport
     let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
     let attributes = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n";
     let kry = e.refs.iter().find(|r| r.name == "kryoptic").unwrap();
-    let body = format!("[objects.ek1]\n{ec}\ncreateOn = \"softhsm\"\n\n")
-        + &Env::spec("ek1-soft", "ek1", attributes, &[soft], "xb-ek1", "")
-        + &Env::spec("ek1-kry", "ek1", attributes, &[kry], "xb-ek1", "");
+    let body = format!("[objects.ek1]\n{ec}\n\n")
+        + &Env::spec("ek1-soft", "ek1", attributes, &[soft], "xb-ek1", CREATE)
+        + &Env::spec("ek1-kry", "ek1", attributes, &[kry], "xb-ek1", IMPORT);
     e.config(&body);
     let out = e.dir.join("gone.bundle.toml");
     let export = ["export", "ek1", "--token", "softhsm", "--target", "kryoptic", "--transport-key", "tk-kryoptic"];
@@ -1135,6 +1138,32 @@ fn transport_files_and_bundle_entries_are_checked(e: &Env, soft: &Ref, transport
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("the transport key's spec 'tk-kryoptic' is gone from keys.toml"), "{}", stderr(&o));
     assert!(!out.exists(), "a refused export wrote a bundle");
+}
+
+/// A move lands only on a pair that says `origin = "import"`: a target pair that says the key is
+/// adopted there is refused, by the dry run as by the run, and by name, before anything moves.
+#[test]
+fn a_move_lands_only_on_an_import_pair() {
+    let Some(e) = env("import-only") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
+    let (Some(soft), Some(kry)) = (named("softhsm"), named("kryoptic")) else {
+        eprintln!("skipping import-only: needs the softhsm and kryoptic references");
+        return;
+    };
+    let movable = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n";
+    let body = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n".to_owned()
+        + &Env::spec("k-soft", "k", movable, &[soft], "xi-k", CREATE)
+        + &Env::spec("k-kry", "k", movable, &[kry], "xi-k", "");
+    e.config(&body);
+    assert_eq!(code(&e.cakeys(soft, &["create", "k-soft", "--token", "softhsm"])), 0);
+    let mv = ["migrate", "k", "--from", "softhsm", "--to", "kryoptic", "--allow-host-plaintext"];
+    for extra in [&["--dry-run"][..], &[], &["--spec", "k-kry", "--dry-run"], &["--spec", "k-kry"]] {
+        let o = e.km(soft, &[&mv[..], extra].concat());
+        let said = format!("{}{}", stdout(&o), stderr(&o));
+        assert!(matches!(code(&o), 15 | 17), "{extra:?}: {said}");
+        assert!(said.contains("a move lands only where keys.toml says origin = \"import\""), "{extra:?}: {said}");
+    }
+    assert!(open_session(&kry.module, kry.token_label, "1234").labelled("xi-k").is_empty(), "nothing moved");
 }
 
 /// A transport key is held to what the lock records of it (docs/CAMIGRATE.md D3): `transport`
@@ -1151,7 +1180,7 @@ fn transport_keys_are_held_to_what_the_lock_records() {
     };
     let rsa = |name: &str, attributes: &str, binding: &str| {
         format!("[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n")
-            + &Env::spec(name, name, attributes, &[kry], &format!("xt-{name}"), binding)
+            + &Env::spec(name, name, attributes, &[kry], &format!("xt-{name}"), &format!("{CREATE}{binding}"))
     };
     let ec = |name: &str, extractable: bool| {
         format!("[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n")
@@ -1161,7 +1190,7 @@ fn transport_keys_are_held_to_what_the_lock_records() {
                 &format!("attributes = {{ CKA_SIGN = true, CKA_EXTRACTABLE = {extractable} }}\n"),
                 &[soft],
                 &format!("xt-{name}"),
-                "",
+                CREATE,
             )
     };
     let body = rsa("signs", "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = false }\n", "")
@@ -1210,7 +1239,14 @@ fn exports_to_a_token_need_only_the_lock() {
     };
     let body = transport_key(kry)
         + "[objects.mv]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n"
-        + &Env::spec("mv", "mv", "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n", &[soft], "xl-mv", "");
+        + &Env::spec(
+            "mv",
+            "mv",
+            "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n",
+            &[soft],
+            "xl-mv",
+            CREATE,
+        );
     // Named, not picked: without transportWith, the plan says how to name one.
     e.config(&body);
     assert_eq!(code(&e.cakeys(kry, &["create", "tk-kryoptic", "--token", "kryoptic"])), 0);
@@ -1352,9 +1388,9 @@ fn sealed_moves_wrap_with_oaep_sha256_between_kryoptic_tokens() {
     let (kry, two) = (&e.refs[0], &e.refs[1]);
     let attributes = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n";
     let body = transport_key(two)
-        + "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\ncreateOn = \"kryoptic\"\n\n"
-        + &Env::spec("k-one", "k", attributes, &[kry], "xo-k", "")
-        + &Env::spec("k-two", "k", attributes, &[two], "xo-k", "");
+        + "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n"
+        + &Env::spec("k-one", "k", attributes, &[kry], "xo-k", CREATE)
+        + &Env::spec("k-two", "k", attributes, &[two], "xo-k", IMPORT);
     names_transport(&e, &body, |r| r.name == "kryoptic2");
     for (spec, r) in [("tk-kryoptic2", two), ("k-one", kry)] {
         let o = e.cakeys(r, &["create", spec, "--token", r.name]);
@@ -1383,15 +1419,22 @@ fn per_use_pin_targets_move_as_planned() {
         return;
     };
     let body = transport_key(soft)
-        + "[objects.a]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\ncreateOn = \"kryoptic\"\n\n"
-        + &Env::spec("a-src", "a", "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n", &[kry], "xp-a", "")
+        + "[objects.a]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n"
+        + &Env::spec(
+            "a-src",
+            "a",
+            "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n",
+            &[kry],
+            "xp-a",
+            CREATE,
+        )
         + &Env::spec(
             "a-dst",
             "a",
             "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true, CKA_ALWAYS_AUTHENTICATE = true }\n",
             &[soft],
             "xp-a",
-            "",
+            IMPORT,
         );
     names_transport(&e, &body, |r| r.name == "softhsm");
     for (spec, r) in [("tk-softhsm", soft), ("a-src", kry)] {
@@ -1431,9 +1474,9 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
     std::fs::write(e.dir.join("so-pin"), "5678\n").unwrap();
     let trusted = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true, CKA_WRAP_WITH_TRUSTED = true }\n";
     let key = |o: &str, ty: &str, born: &Ref, other: &Ref, public: &str| {
-        format!("[objects.{o}]\n{ty}\ncreateOn = \"{}\"\n\n", born.name)
-            + &Env::spec(&format!("{o}-src"), o, trusted, &[born], &format!("xe-{o}"), "")
-            + &Env::spec(&format!("{o}-dst"), o, &format!("{trusted}{public}"), &[other], &format!("xe-{o}"), "")
+        format!("[objects.{o}]\n{ty}\n\n")
+            + &Env::spec(&format!("{o}-src"), o, trusted, &[born], &format!("xe-{o}"), CREATE)
+            + &Env::spec(&format!("{o}-dst"), o, &format!("{trusted}{public}"), &[other], &format!("xe-{o}"), IMPORT)
     };
     let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
     let aes = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32";
@@ -1535,9 +1578,9 @@ fn rsa_aes_key_wrap_stands_in_for_rfc_5649() {
     let extractable = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n";
     let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
     let key = |o: &str, born: &Ref, other: &Ref| {
-        format!("[objects.{o}]\n{ec}\ncreateOn = \"{}\"\n\n", born.name)
-            + &Env::spec(&format!("{o}-src"), o, extractable, &[born], &format!("ra-{o}"), "")
-            + &Env::spec(&format!("{o}-dst"), o, extractable, &[other], &format!("ra-{o}"), "")
+        format!("[objects.{o}]\n{ec}\n\n")
+            + &Env::spec(&format!("{o}-src"), o, extractable, &[born], &format!("ra-{o}"), CREATE)
+            + &Env::spec(&format!("{o}-dst"), o, extractable, &[other], &format!("ra-{o}"), IMPORT)
     };
     let body = transport_key(kry) + &transport_key(soft) + &key("in", kry, soft) + &key("out", soft, kry);
     e.config_with(&body, &|r| match r.name {
@@ -1644,12 +1687,12 @@ fn host_moves_do_what_the_plan_says() {
     for k in &KEYS {
         for s in e.refs.iter().filter(|s| generates(s, k)) {
             let o = object(k, s);
-            body += &format!("[objects.{o}]\n{}\ncreateOn = \"{}\"\n\n", k.ty, s.name);
-            body += &Env::spec(&format!("{o}-src"), &o, k.attributes, &[s], &format!("hm-{o}"), "");
+            body += &format!("[objects.{o}]\n{}\n\n", k.ty);
+            body += &Env::spec(&format!("{o}-src"), &o, k.attributes, &[s], &format!("hm-{o}"), CREATE);
         }
     }
     for (k, s, d) in &pairs {
-        body += &Env::spec(&target_spec(k, s, d), &object(k, s), k.attributes, &[d], &target_label(k, s, d), "");
+        body += &Env::spec(&target_spec(k, s, d), &object(k, s), k.attributes, &[d], &target_label(k, s, d), IMPORT);
     }
     e.config(&body);
     let config = e.dir.join("keys.toml");
@@ -1716,16 +1759,22 @@ fn host_moves_refuse_what_they_cannot_check() {
         return;
     };
     let attributes = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n";
-    let body = "[objects.hg]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\ncreateOn = \"softhsm\"\n\n"
-        .to_owned()
-        + &Env::spec("hg-src", "hg", attributes, &[soft], "hg-src", "")
-        + &Env::spec("hg-dst", "hg", &format!("{attributes}publicAttributes = {{ CKA_VERIFY = true }}\n"), &[fwd], "hg-dst", "")
+    let body = "[objects.hg]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n".to_owned()
+        + &Env::spec("hg-src", "hg", attributes, &[soft], "hg-src", CREATE)
+        + &Env::spec(
+            "hg-dst",
+            "hg",
+            &format!("{attributes}publicAttributes = {{ CKA_VERIFY = true }}\n"),
+            &[fwd],
+            "hg-dst",
+            IMPORT,
+        )
         + &format!(
             "[tokens.p11kit-anon]\nmodule = \"{}\"\ntokenLabel = \"kmp11\"\nprovider = \"softhsm\"\n\n",
             fwd.module
         )
         + "[specs.hg-anon]\nobject = \"hg\"\nattributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n\
-           tokens.p11kit-anon = { locator = { CKA_LABEL = \"hg-anon\" } }\n\n";
+           tokens.p11kit-anon = { locator = { CKA_LABEL = \"hg-anon\" }, origin = \"import\" }\n\n";
     e.config_with(&body, &|r| if r.name == "p11kit" { "provider = \"softhsm\"\n".into() } else { String::new() });
     let o = e.cakeys(soft, &["create", "hg-src", "--token", "softhsm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
@@ -1886,10 +1935,10 @@ fn key_files_carry_one_key_and_its_certificate() {
         .to_owned()
         + &Env::spec("fk-soft", "fk", key_attrs, &[soft], "xf-k", "")
         + &Env::spec("fc-soft", "fc", "", &[soft], "xf-k", "")
-        + &Env::spec("fk-kry", "fk", key_attrs, &[kry], "xf-k", "")
-        + &Env::spec("fc-kry", "fc", "", &[kry], "xf-k", "")
+        + &Env::spec("fk-kry", "fk", key_attrs, &[kry], "xf-k", IMPORT)
+        + &Env::spec("fc-kry", "fc", "", &[kry], "xf-k", IMPORT)
         // The key alone on the third token: the lock pairs no certificate with it there.
-        + &named("kryoptic-der").map_or_else(String::new, |der| Env::spec("fk-der", "fk", key_attrs, &[der], "xf-k2", ""));
+        + &named("kryoptic-der").map_or_else(String::new, |der| Env::spec("fk-der", "fk", key_attrs, &[der], "xf-k2", IMPORT));
     e.config(&body);
     for spec in ["fk-soft", "fc-soft"] {
         let o = e.cakeys(soft, &["realise", spec, "--token", "softhsm"]);

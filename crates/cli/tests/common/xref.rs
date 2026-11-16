@@ -204,11 +204,13 @@ impl Env {
         self.refs.iter().filter(|r| keep(r)).collect()
     }
 
-    /// A spec over `object` on `refs`, located by `label`; `extra` is appended to each token entry.
+    /// A spec over `object` on `refs`, located by `label`; `extra` is appended to each token entry,
+    /// with `origin = "adopt"` unless it names an origin.
     pub fn spec(name: &str, object: &str, attributes: &str, refs: &[&Ref], label: &str, extra: &str) -> String {
         let mut s = format!("[specs.{name}]\nobject = \"{object}\"\n{attributes}");
+        let origin = if extra.contains("origin") { "" } else { ", origin = \"adopt\"" };
         for r in refs {
-            writeln!(s, "tokens.{} = {{ locator = {{ CKA_LABEL = \"{label}\" }}{extra} }}", r.name).unwrap();
+            writeln!(s, "tokens.{} = {{ locator = {{ CKA_LABEL = \"{label}\" }}{extra}{origin} }}", r.name).unwrap();
         }
         s + "\n"
     }

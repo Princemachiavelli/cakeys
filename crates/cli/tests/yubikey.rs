@@ -130,7 +130,7 @@ impl Env {
                 text,
                 "\n[objects.{n}]\nclass = \"CKO_PRIVATE_KEY\"\n{object}\n\n\
                  [specs.{n}-yubikey]\nobject = \"{n}\"\nattributes = {{ {attributes} }}\n\
-                 tokens.yubikey = {{ locator = {{ CKA_ID = \"{id}\" }}, attestation = true, \
+                 tokens.yubikey = {{ locator = {{ CKA_ID = \"{id}\" }}, origin = \"create\", attestation = true, \
                  binding = \"{binding}\" }}\n",
                 n = c.name,
                 object = c.object,

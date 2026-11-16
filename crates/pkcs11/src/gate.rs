@@ -1,9 +1,9 @@
 //! The static gate (docs/CAPROBE.md): what each spec needs of its token, checked
-//! against the token's capability profiles with no token attached — `validate`'s second half.
-//! The needs are [`ops::needs`], the same the live check refuses by before anything is created;
-//! here a profile's *no* refuses (15, naming the profile that decided it) and its *unknown* is a
-//! note, never a failure. What only `create` needs (the generation) is a note either way: an
-//! adopted key needs none.
+//! against the token's capability profiles with no token attached — `validate`'s second half,
+//! and what `create` checks before it opens any token. The needs are [`ops::needs`], the same
+//! the live check refuses by before anything is created; here a profile's *no* refuses (15,
+//! naming the profile that decided it) and its *unknown* is a note, never a failure. The
+//! generation is asked only of a pair `create` makes (`origin = "create"`, not yet pinned).
 //!
 //! A token's profiles resolve statically from what is known without opening it: the module and
 //! token its realisations recorded in the lock (D9/D10's match keys), and the `provider` and
@@ -86,11 +86,9 @@ pub struct Verdicts {
     pub notes: Vec<String>,
 }
 
-/// Check `t` in `mode` against `stack`: every mechanism group [`ops::needs`] lists, and an
-/// attestation the provider must produce. When `creates` (`create` would make the object,
-/// [`ops::creates`]), also its generation — type, curve and size — but as notes: keys.toml
-/// does not say whether a key is created or adopted, and an adopted one needs no generation.
-/// `create` itself refuses live, before anything is made.
+/// Check `t` in `mode` against `stack`: every mechanism group [`ops::needs`] lists, an
+/// attestation the provider must produce, and when `creates` (`create` makes the object,
+/// [`ops::creates`]) its generation: the mechanism, and the type, curve and size.
 ///
 /// # Errors
 ///
@@ -100,8 +98,8 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates
     // A module that generates from its own template refuses what it cannot make (kmsp11).
     let own = match registry.named(&stack.provider).filter(|_| creates).map(|p| ops::own_generation(t, p.as_ref())) {
         Some(Err(e)) => {
-            out.notes.push(format!("{t}: `cakeys create` cannot make it: {e}"));
-            None
+            out.refusals.push(e.to_string());
+            return Ok(out);
         }
         Some(Ok(own)) => Some(own),
         None => creates.then_some(false),
@@ -124,7 +122,7 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates
     let eff = Effective::new(baseline, stack.resolved.module.as_ref(), &layers);
     let token = t.token_name;
     let generation = needs.generation.map(|m| vec![m]);
-    for (group, creating) in needs.groups.iter().map(|g| (g, false)).chain(generation.iter().map(|g| (g, true))) {
+    for group in needs.groups.iter().chain(&generation) {
         let verdicts: Vec<(String, Verdict)> =
             group.iter().map(|m| (m.to_string(), eff.mechanism(&m.to_string()))).collect();
         if verdicts.iter().any(|(_, v)| matches!(v, Verdict::Yes { .. })) {
@@ -132,12 +130,8 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates
         }
         let lines: Vec<String> = verdicts.iter().map(|(m, v)| format!("{m}: {v}")).collect();
         if verdicts.iter().all(|(_, v)| matches!(v, Verdict::No { .. })) {
-            let why = format!("token '{token}' cannot do what mode '{mode}' needs ({})", lines.join("; "));
-            if creating {
-                out.notes.push(format!("{t}: `cakeys create` cannot make it: {why}"));
-            } else {
-                out.refusals.push(format!("{t}: {why}"));
-            }
+            out.refusals
+                .push(format!("{t}: token '{token}' cannot do what mode '{mode}' needs ({})", lines.join("; ")));
         } else {
             out.notes.push(format!("{t}: the profiles do not decide ({})", lines.join("; ")));
         }
@@ -149,7 +143,7 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates
         match eff.generate(kt.name(), t.object.curve.as_deref(), bits) {
             Verdict::Yes { .. } => {}
             v @ Verdict::No { .. } => {
-                out.notes.push(format!("{t}: `cakeys create` cannot make it: token '{token}' cannot generate it: {v}"));
+                out.refusals.push(format!("{t}: token '{token}' cannot generate it: {v}"));
             }
             v @ Verdict::Unknown { .. } => out.notes.push(format!("{t}: generation not decided: {v}")),
         }

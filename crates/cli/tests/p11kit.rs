@@ -98,10 +98,10 @@ fn p11kit_and_direct_paths_agree() {
         body += &format!(
             "[objects.{k}]\nclass = \"CKO_PRIVATE_KEY\"\n{ty}\n\n\
              [specs.{k}]\nobject = \"{k}\"\nattributes = {{ CKA_SIGN = true }}\n\
-             tokens.fwd = {{ locator = {{ CKA_LABEL = \"{k}\" }} }}\n\
-             tokens.direct = {{ locator = {{ CKA_LABEL = \"{k}\" }} }}\n\n\
+             tokens.fwd = {{ locator = {{ CKA_LABEL = \"{k}\" }}, origin = \"create\" }}\n\
+             tokens.direct = {{ locator = {{ CKA_LABEL = \"{k}\" }}, origin = \"adopt\" }}\n\n\
              [specs.{k}-pub]\nobject = \"{k}\"\n\
-             tokens.fwd-anon = {{ locator = {{ CKA_LABEL = \"{k}\" }}, publicOnly = true }}\n\n"
+             tokens.fwd-anon = {{ locator = {{ CKA_LABEL = \"{k}\" }}, origin = \"adopt\", publicOnly = true }}\n\n"
         );
     }
     body += r#"
@@ -113,8 +113,8 @@ valueLen = 32
 [specs.aes]
 object = "aes"
 attributes = { CKA_SIGN = true, CKA_ENCRYPT = true, CKA_WRAP = true, CKA_EXTRACTABLE = false }
-tokens.fwd = { locator = { CKA_LABEL = "fwd-aes" } }
-tokens.direct = { locator = { CKA_LABEL = "fwd-aes" } }
+tokens.fwd = { locator = { CKA_LABEL = "fwd-aes" }, origin = "adopt" }
+tokens.direct = { locator = { CKA_LABEL = "fwd-aes" }, origin = "adopt" }
 
 [objects.hmac]
 class = "CKO_SECRET_KEY"
@@ -124,7 +124,7 @@ valueLen = 32
 [specs.hmac]
 object = "hmac"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = false }
-tokens.fwd = { locator = { CKA_LABEL = "fwd-hmac" } }
+tokens.fwd = { locator = { CKA_LABEL = "fwd-hmac" }, origin = "adopt" }
 "#;
     e.config(&body);
 
@@ -166,7 +166,7 @@ curve = "edwards25519"
 [specs.ed]
 object = "ed"
 attributes = { CKA_SIGN = true }
-tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-ed" } }
+tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-ed" }, origin = "create" }
 
 [objects.aes-x]
 class = "CKO_SECRET_KEY"
@@ -176,7 +176,7 @@ valueLen = 32
 [specs.aes-x]
 object = "aes-x"
 attributes = { CKA_SIGN = false, CKA_ENCRYPT = false, CKA_WRAP = false, CKA_EXTRACTABLE = true }
-tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-aes-x" } }
+tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-aes-x" }, origin = "create" }
 
 [objects.aes-kek]
 class = "CKO_SECRET_KEY"
@@ -186,7 +186,7 @@ valueLen = 32
 [specs.aes-kek]
 object = "aes-kek"
 attributes = { CKA_WRAP = true, CKA_EXTRACTABLE = false }
-tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-kek" } }
+tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-kek" }, origin = "create" }
 "#,
     );
     for (spec, label) in [("ed", "fwd-refused-ed"), ("aes-x", "fwd-refused-aes-x"), ("aes-kek", "fwd-refused-kek")] {
@@ -203,9 +203,9 @@ fn p11kit_login_is_per_client() {
     let Some(e) = env("login") else { return };
     e.config(
         "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
-         [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\ntokens.fwd = { locator = { CKA_LABEL = \"fwd-login\" } }\n\
-         tokens.fwd-anon = { locator = { CKA_LABEL = \"fwd-login\" } }\n\n\
-         [specs.k-pub]\nobject = \"k\"\ntokens.fwd-anon = { locator = { CKA_LABEL = \"fwd-login\" }, publicOnly = true }\n",
+         [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\ntokens.fwd = { locator = { CKA_LABEL = \"fwd-login\" }, origin = \"create\" }\n\
+         tokens.fwd-anon = { locator = { CKA_LABEL = \"fwd-login\" }, origin = \"adopt\" }\n\n\
+         [specs.k-pub]\nobject = \"k\"\ntokens.fwd-anon = { locator = { CKA_LABEL = \"fwd-login\" }, origin = \"adopt\", publicOnly = true }\n",
     );
     assert_eq!(e.code(&["create", "k", "--token", "fwd", "--update-lock"]), 0);
     // Another client of the same server holds a logged-in session meanwhile...

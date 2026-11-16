@@ -29,7 +29,7 @@ fn faulted(name: &str, plan: &str) -> Option<(Workdir, std::path::PathBuf, std::
 
 const EC_SPEC: &str = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
                        [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\n\
-                       tokens.ref = { locator = { CKA_LABEL = \"NAME\" } }\n";
+                       tokens.ref = { locator = { CKA_LABEL = \"NAME\" }, origin = \"create\" }\n";
 
 /// The lines of the trace whose rule fired: a plan that matched nothing would pass a test for
 /// the wrong reason.
@@ -139,7 +139,7 @@ fn lying(name: &str) -> Option<Workdir> {
         format!(
             "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\n{ty}\n\n[specs.{name}]\nobject = \"{name}\"\n\
              attributes = {{ {usage} = true }}\n\
-             tokens.ref = {{ locator = {{ CKA_LABEL = \"{name}\" }}, binding = \"{binding}\" }}\n\n"
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"{name}\" }}, origin = \"create\", binding = \"{binding}\" }}\n\n"
         )
     };
     let (ec, rsa) = ("keyType = \"CKK_EC\"\ncurve = \"secp256r1\"", "keyType = \"CKK_RSA\"\nmodulusBits = 2048");

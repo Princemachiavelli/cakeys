@@ -16,7 +16,9 @@ use anyhow::Context as _;
 use bundle::Bundle;
 use cakeys_cli_common::{module_overrides, open_token, print};
 use cakeys_core::KmError;
-use cakeys_core::config::{Config, Lock, load_config, load_lock, lock_for_update, lock_unwritable, save_lock};
+use cakeys_core::config::{
+    Config, KeyOrigin, Lock, SpecCfg, SpecTokenCfg, load_config, load_lock, lock_for_update, lock_unwritable, save_lock,
+};
 use cakeys_core::migrate::{Exposure, Method};
 use cakeys_pkcs11::Registry;
 use cakeys_pkcs11::ops::{Notes, Target};
@@ -252,7 +254,8 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
             run.import_file(token, spec, input, pass, *dry_run, notes)
         }
         Cmd::Import { token, spec, input, dry_run, .. } => run.import(token, spec, input, *dry_run, notes),
-        Cmd::Migrate { object, from, to, how, .. } if how.dry_run => {
+        Cmd::Migrate { object, from, to, spec, how } if how.dry_run => {
+            specs_import(&run.cfg, spec, to)?;
             run.plan_moves(object.as_deref().as_slice(), from, &Dest::Token(to), how, false, notes)
         }
         Cmd::Migrate { object, from, to, spec, how } => run.migrate(object.as_deref(), from, to, spec, how, notes),
@@ -485,6 +488,8 @@ impl Run<'_> {
         how: &MoveArgs,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
+        // Before the plan, as the dry run does: both refuse a named target that is no import pair.
+        specs_import(&self.cfg, specs, to)?;
         let moves = self.plan(object.as_slice(), from, &Dest::Token(to), how, true, notes)?;
         moves.ready()?;
         specs_select(&self.cfg, specs, moves.plans.iter().map(|p| p.object.as_str()), to)?;
@@ -651,6 +656,14 @@ impl Run<'_> {
                 p.ready = false;
                 p.reasons.insert(0, format!("noExport in spec '{spec}': it never leaves '{from}'"));
             }
+            // A move lands only on a pair that says `origin = "import"`: an object realised on
+            // the target by no such pair cannot move there, whatever else would carry it.
+            if let (false, Some(to)) = (bundle, target_token)
+                && let Some(why) = no_import_pair(cfg, &p.object, to)
+            {
+                p.ready = false;
+                p.reasons.insert(0, why);
+            }
             // The target's realise must prove possession of a private key the way its spec says.
             if let (true, Some(to)) = (p.ready, target_token)
                 && let Ok(dst) = target_target(cfg, &p.object, to, None)
@@ -742,6 +755,22 @@ fn show_plans(from: &str, moves: &tokens::Moves, json: bool) -> anyhow::Result<(
     Ok(())
 }
 
+/// Why `object` cannot move to `to`: specs realise it there, and none says `origin = "import"`.
+fn no_import_pair(cfg: &Config, object: &str, to: &str) -> Option<String> {
+    let origins: Vec<KeyOrigin> = cfg
+        .specs
+        .values()
+        .filter(|s| s.object == object)
+        .filter_map(|s| s.tokens.get(to).map(SpecTokenCfg::key_origin))
+        .collect();
+    (!origins.is_empty() && !origins.contains(&KeyOrigin::Import)).then(|| {
+        format!(
+            "no spec realises '{object}' on '{to}' with origin = \"import\": a move lands only where keys.toml \
+             says origin = \"import\""
+        )
+    })
+}
+
 /// The source of `object` on `from`: the spec of a realisation the lock records there.
 fn source_target<'a>(cfg: &'a Config, lock: &Lock, object: &str, from: &'a str) -> cakeys_core::Result<Target<'a>> {
     realised_target(cfg, lock, object, from, "object")
@@ -772,27 +801,53 @@ fn specs_select<'a>(
             )));
         }
     }
+    specs_import(cfg, specs, token)
+}
+
+/// Every `--spec` that realises its object on `token` says `origin = "import"` there: a move
+/// lands on no other pair (17). Checked by the dry run too, which plans without the names.
+fn specs_import(cfg: &Config, specs: &[String], token: &str) -> cakeys_core::Result<()> {
+    for name in specs {
+        if let Some(on) = cfg.specs.get(name).and_then(|s| s.tokens.get(token))
+            && on.key_origin() != KeyOrigin::Import
+        {
+            return Err(KmError::Validation(format!(
+                "--spec '{name}' realises its object on '{token}' with origin = \"{}\": a move lands only where \
+                 keys.toml says origin = \"import\"",
+                on.key_origin()
+            )));
+        }
+    }
     Ok(())
 }
 
-/// Where `object` goes on `to`: its one spec there, or the one `--spec` names.
+/// Where `object` goes on `to`: its one spec there whose origin is `import`, or the one
+/// `--spec` names. A pair that says the key is created or adopted there is never a target.
 fn target_target<'a>(
     cfg: &'a Config,
     object: &str,
     to: &'a str,
     spec: Option<&str>,
 ) -> cakeys_core::Result<Target<'a>> {
+    let on_to = |s: &'a SpecCfg| s.tokens.get(to).filter(|_| s.object == object);
+    let named = |name: &str| spec.is_none_or(|n| n == name);
     let specs: Vec<&str> = cfg
         .specs
         .iter()
-        .filter(|(name, s)| s.object == object && s.tokens.contains_key(to) && spec.is_none_or(|n| n == *name))
+        .filter(|(name, s)| named(name) && on_to(s).is_some_and(|t| t.key_origin() == KeyOrigin::Import))
         .map(|(name, _)| name.as_str())
         .collect();
+    let elsewhere =
+        cfg.specs.iter().find_map(|(name, s)| on_to(s).filter(|_| named(name)).map(|t| (name, t.key_origin())));
     match specs.as_slice() {
         [one] => Target::new(cfg, one, to),
-        [] => Err(KmError::Validation(match spec {
-            Some(n) => format!("spec '{n}' does not realise object '{object}' on token '{to}'"),
-            None => format!("keys.toml has no spec of object '{object}' on token '{to}' to import it under"),
+        [] => Err(KmError::Validation(match (spec, elsewhere) {
+            (_, Some((name, origin))) => format!(
+                "spec '{name}' realises object '{object}' on token '{to}' with origin = \"{origin}\": a move lands \
+                 only where keys.toml says origin = \"import\""
+            ),
+            (Some(n), None) => format!("spec '{n}' does not realise object '{object}' on token '{to}'"),
+            (None, None) => format!("keys.toml has no spec of object '{object}' on token '{to}' to import it under"),
         })),
         several => Err(KmError::Validation(format!(
             "object '{object}' has several specs on token '{to}' ({}); pass --spec",

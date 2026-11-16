@@ -15,7 +15,7 @@ flowchart LR
         direction TB
         T["[tokens.&lt;name&gt;]<br/>module · provider · tokenLabel · pinFile/pinEnv · mgmKeyFile/mgmKeyEnv ·<br/>systemFeature · options (the provider's own)"]
         O["[objects.&lt;name&gt;]<br/>class · keyType · certificateType ·<br/>curve / modulusBits / valueLen"]
-        S["[specs.&lt;name&gt;]<br/>object → one object only<br/>attributes · publicAttributes<br/>tokens.&lt;t&gt;: locator ·<br/>publicOnly · binding · attestation"]
+        S["[specs.&lt;name&gt;]<br/>object → one object only<br/>attributes · publicAttributes<br/>tokens.&lt;t&gt;: locator · origin ·<br/>publicOnly · binding · attestation"]
         S -- references --> O
     end
 

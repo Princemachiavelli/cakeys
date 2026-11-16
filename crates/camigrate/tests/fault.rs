@@ -37,13 +37,13 @@ fn tokens(name: &str) -> Option<(Env, String)> {
                 "attributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }\n",
                 &[r],
                 &format!("tk-{}", r.name),
-                ", binding = \"pop-unwrap\"",
+                ", origin = \"create\", binding = \"pop-unwrap\"",
             )
     };
     let key = |o: &str, ty: &str, born: &Ref, other: &Ref| {
-        format!("[objects.{o}]\n{ty}\ncreateOn = \"{}\"\n\n", born.name)
-            + &Env::spec(&format!("{o}-src"), o, moves, &[born], &format!("f-{o}"), "")
-            + &Env::spec(&format!("{o}-dst"), o, moves, &[other], &format!("f-{o}"), "")
+        format!("[objects.{o}]\n{ty}\n\n")
+            + &Env::spec(&format!("{o}-src"), o, moves, &[born], &format!("f-{o}"), ", origin = \"create\"")
+            + &Env::spec(&format!("{o}-dst"), o, moves, &[other], &format!("f-{o}"), ", origin = \"import\"")
     };
     let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
     let aes = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32";
@@ -54,7 +54,7 @@ fn tokens(name: &str) -> Option<(Env, String)> {
         + &key("ks", aes, kry, soft)
         + "[objects.crt]\nclass = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"\n\n"
         + &Env::spec("crt-src", "crt", "", &[kry], "f-crt", "")
-        + &Env::spec("crt-dst", "crt", "", &[soft], "f-crt", "");
+        + &Env::spec("crt-dst", "crt", "", &[soft], "f-crt", ", origin = \"import\"");
     // A certificate, planted on kryoptic: a public object, moved as it is.
     let cert = x509_cert::Certificate::from_der(CERT).unwrap();
     open_session(&kry.module, "kmtest", "1234")

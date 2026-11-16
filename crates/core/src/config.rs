@@ -29,11 +29,6 @@ pub struct Config {
     /// baseline. `$NAME` references read the environment, as for `pinFile`.
     #[serde(default, rename = "profileDirs")]
     pub profile_dirs: Vec<PathBuf>,
-    /// Where each object is born (`[objects.<name>].createOn`, a token name): `create`
-    /// generates it only there, and its other tokens get the same material by import
-    /// (camigrate). Kept apart from [`ObjectCfg`], the material's type, which the lock records.
-    #[serde(skip)]
-    pub create_on: BTreeMap<String, String>,
 }
 
 /// One token (`[tokens.<name>]`): the module that reaches it, its label and credentials, and what
@@ -302,6 +297,10 @@ impl std::fmt::Display for AttrValue {
 pub struct SpecTokenCfg {
     /// The `CKA_LABEL` and `CKA_ID` the object is found under on this token.
     pub locator: Locator,
+    /// How the object comes to be on this token ([`KeyOrigin`]). Required for a private or
+    /// secret key; anything else is adopted unless it says `import`. Use [`Self::key_origin`].
+    #[serde(default)]
+    pub origin: Option<KeyOrigin>,
     /// Adopt a private key through its public key object only (no login needed, e.g. to
     /// spare PIV PIN retries). Identity is fully verified; presence and policy of the private
     /// half are not, so this is an explicit per-token opt-in recorded in the lock.
@@ -320,6 +319,47 @@ pub struct SpecTokenCfg {
     /// another token, where no attestation can exist.
     #[serde(default)]
     pub attestation: bool,
+}
+
+impl SpecTokenCfg {
+    /// The object's origin on this token: as keys.toml says it, else `adopt` (what load allows
+    /// to leave it out: anything but an unadopted private or secret key).
+    #[must_use]
+    pub fn key_origin(&self) -> KeyOrigin {
+        self.origin.unwrap_or(KeyOrigin::Adopt)
+    }
+}
+
+/// How an object comes to be on a token (`tokens.<t>.origin`, docs/CONFIG.md): which verb, if
+/// any, puts it there. Not part of the spec digest: like the locator, it says where, not what.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KeyOrigin {
+    /// `cakeys create` generates it here: at most one pair per object, which is where the
+    /// material is born and whose policy it is born with.
+    Create,
+    /// camigrate brings the material here from another token; it is never generated here.
+    Import,
+    /// It is already here, put there by something cakeys does not run; nothing writes it.
+    Adopt,
+}
+
+impl KeyOrigin {
+    /// The name keys.toml writes.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            KeyOrigin::Create => "create",
+            KeyOrigin::Import => "import",
+            KeyOrigin::Adopt => "adopt",
+        }
+    }
+}
+
+impl std::fmt::Display for KeyOrigin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
 }
 
 /// Arbitrary user values naming the object on one token. Not part of the spec digest.
@@ -1027,10 +1067,7 @@ pub fn load_config_with(path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Re
 /// `Validation`, as [`load_config_with`].
 pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<Config> {
     let invalid = |e: &dyn std::fmt::Display| KmError::Validation(format!("{}: {e}", path.display()));
-    let mut table: toml::Table = toml::from_str(text).map_err(|e| invalid(&e))?;
-    let create_on = take_create_on(&mut table).map_err(|e| invalid(&e))?;
-    let mut cfg: Config = table.try_into().map_err(|e| invalid(&e))?;
-    cfg.create_on = create_on;
+    let mut cfg: Config = toml::from_str(text).map_err(|e| invalid(&e))?;
     check_names(&cfg).map_err(|e| invalid(&e))?;
     for dir in &mut cfg.profile_dirs {
         *dir = PathBuf::from(env_ref(&dir.to_string_lossy(), "profileDirs", env)?);
@@ -1106,7 +1143,7 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
             }
         }
     }
-    check_creation(&cfg).map_err(|e| invalid(&e))?;
+    check_origins(&cfg).map_err(|e| invalid(&e))?;
     check_transport_keys(&cfg).map_err(|e| invalid(&e))?;
     Ok(cfg)
 }
@@ -1167,34 +1204,49 @@ fn check_transport_keys(cfg: &Config) -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// Take each object's `createOn` out of the parsed keys.toml, so the rest of the object table is
-/// its material type ([`ObjectCfg`]) alone.
-fn take_create_on(table: &mut toml::Table) -> std::result::Result<BTreeMap<String, String>, String> {
-    let mut out = BTreeMap::new();
-    let Some(toml::Value::Table(objects)) = table.get_mut("objects") else { return Ok(out) };
-    for (name, o) in objects.iter_mut() {
-        let Some(o) = o.as_table_mut() else { continue };
-        match o.remove("createOn") {
-            Some(toml::Value::String(token)) => {
-                out.insert(name.clone(), token);
+/// Each pair's `origin` fits its object (docs/CONFIG.md): a private or secret key states it; a
+/// `publicOnly` adoption, a certificate, a public key and a data object are never created; a
+/// `CKA_TRUSTED` key cannot be generated; and an object is created by at most one pair, which
+/// says where its material is born and with whose policy, so no order of a run decides either.
+fn check_origins(cfg: &Config) -> std::result::Result<(), String> {
+    let mut created: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for (spec_name, spec) in &cfg.specs {
+        let Some(object) = cfg.objects.get(&spec.object) else { continue };
+        for (token, on) in &spec.tokens {
+            let what = format!("spec '{spec_name}' on token '{token}'");
+            let key = matches!(object.class, ObjectClass::PrivateKey | ObjectClass::SecretKey);
+            match (on.origin, key && !on.public_only) {
+                (None, true) => {
+                    return Err(format!(
+                        "{what}: a private or secret key states its origin: \"create\" (`cakeys create` makes it \
+                         here), \"import\" (camigrate brings it) or \"adopt\" (it is already there)"
+                    ));
+                }
+                (Some(o @ (KeyOrigin::Create | KeyOrigin::Import)), _) if on.public_only => {
+                    return Err(format!("{what}: publicOnly adopts the public half, never origin = \"{o}\""));
+                }
+                (Some(KeyOrigin::Create), false) => {
+                    return Err(format!("{what}: {} objects are adopted or imported, never created", object.class));
+                }
+                (Some(KeyOrigin::Create), true) if spec.flag("CKA_TRUSTED") == Some(true) => {
+                    return Err(format!(
+                        "{what}: CKA_TRUSTED = true cannot be generated (the token's security officer sets it): \
+                         origin = \"adopt\" or \"import\""
+                    ));
+                }
+                (Some(KeyOrigin::Create), true) => {
+                    created.entry(spec.object.as_str()).or_default().push(what);
+                }
+                _ => {}
             }
-            Some(v) => return Err(format!("object '{name}': createOn = {v} is not a token name")),
-            None => {}
         }
     }
-    Ok(out)
-}
-
-/// Where each object may be created (docs/CONFIG.md, `createOn`): a `createOn` names a token the
-/// object has a spec on. `create` refuses the rest (`ops::create_pairs`).
-fn check_creation(cfg: &Config) -> std::result::Result<(), String> {
-    for (object, token) in &cfg.create_on {
-        if !cfg.tokens.contains_key(token) {
-            return Err(format!("object '{object}': createOn names unknown token '{token}'"));
-        }
-        if !cfg.specs.values().any(|s| s.object == *object && s.tokens.contains_key(token)) {
-            return Err(format!("object '{object}': createOn = \"{token}\", but no spec realises it on '{token}'"));
-        }
+    if let Some((object, pairs)) = created.iter().find(|(_, pairs)| pairs.len() > 1) {
+        return Err(format!(
+            "object '{object}' has origin = \"create\" on several pairs ({}): a key is created once, on one \
+             token and with one spec's policy; the other pairs import or adopt it",
+            pairs.join(", ")
+        ));
     }
     Ok(())
 }
@@ -1526,7 +1578,8 @@ mod tests {
             let text = format!(
                 "[tokens.\"{token}\"]\ntokenLabel = \"t\"\n\n\
                  [objects.\"{object}\"]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
-                 [specs.\"{spec}\"]\nobject = \"{object}\"\ntokens.\"{token}\" = {{ locator = {{ CKA_LABEL = \"k\" }} }}\n"
+                 [specs.\"{spec}\"]\nobject = \"{object}\"\n\
+                 tokens.\"{token}\" = {{ locator = {{ CKA_LABEL = \"k\" }}, origin = \"adopt\" }}\n"
             );
             parse_config_with(&text, Path::new("keys.toml"), &|_| None)
         };
@@ -1544,32 +1597,56 @@ mod tests {
         }
     }
 
-    /// `createOn` names where an object is born, apart from its type: a token the object has a
-    /// spec on. Anything else is invalid (17), and so is the retired `autoCreate`.
+    /// Every pair says how its object comes to be there (`origin`), checked at load (17): a
+    /// private or secret key states it; what is never generated (a certificate, a public key, a
+    /// data object, a `publicOnly` adoption, a `CKA_TRUSTED` key) is not `create`; and an object
+    /// is created by one pair at most. The retired `autoCreate` and `createOn` are unknown fields.
     #[test]
-    fn create_on_names_where_an_object_is_born() {
-        let load = |object_extra: &str, on_token: &str| {
+    fn origins_say_how_an_object_comes_to_be_on_a_token() {
+        let load = |class: &str, a: &str, b: &str, second_spec: &str| {
             let text = format!(
-                "[tokens.a]\ntokenLabel = \"a\"\n[tokens.b]\ntokenLabel = \"b\"\n[tokens.c]\ntokenLabel = \"c\"\n\n\
-                 [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n{object_extra}\n\n\
+                "[tokens.a]\ntokenLabel = \"a\"\n[tokens.b]\ntokenLabel = \"b\"\n\n\
+                 [objects.k]\n{class}\n\n\
                  [specs.k]\nobject = \"k\"\n\
-                 tokens.a = {{ locator = {{ CKA_LABEL = \"k\" }}{on_token} }}\n\
-                 tokens.b = {{ locator = {{ CKA_LABEL = \"k\" }} }}\n"
+                 tokens.a = {{ locator = {{ CKA_LABEL = \"k\" }}{a} }}\n\
+                 tokens.b = {{ locator = {{ CKA_LABEL = \"k\" }}{b} }}\n{second_spec}"
             );
             parse_config_with(&text, Path::new("keys.toml"), &|_| None)
         };
-        let cfg = load("createOn = \"a\"", "").unwrap();
-        assert_eq!(cfg.create_on.get("k").map(String::as_str), Some("a"));
-        // The type is the material alone: it compares equal to one without createOn.
-        assert_eq!(cfg.objects["k"], load("", "").unwrap().objects["k"]);
+        let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+        let aes = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32";
+        let cert = "class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"";
+        let (create, import, adopt) = (", origin = \"create\"", ", origin = \"import\"", ", origin = \"adopt\"");
+        let cfg = load(ec, create, import, "").unwrap();
+        let on = |t: &str| cfg.specs["k"].tokens[t].key_origin();
+        assert_eq!((on("a"), on("b")), (KeyOrigin::Create, KeyOrigin::Import));
+        load(aes, adopt, adopt, "").unwrap();
+        // What is never created is adopted unless it says otherwise.
+        let cfg = load(cert, "", import, "").unwrap();
+        assert_eq!(cfg.specs["k"].tokens["a"].key_origin(), KeyOrigin::Adopt);
+        load(ec, ", publicOnly = true", ", publicOnly = true, origin = \"adopt\"", "").unwrap();
+
         let refused = |r: Result<Config>, what: &str| {
             let e = r.unwrap_err();
             assert!(matches!(e, KmError::Validation(_)) && e.to_string().contains(what), "{e}");
         };
-        refused(load("createOn = \"d\"", ""), "unknown token 'd'");
-        refused(load("createOn = \"c\"", ""), "no spec realises it on 'c'");
-        refused(load("createOn = 3", ""), "is not a token name");
-        refused(load("", ", autoCreate = true"), "unknown field `autoCreate`");
+        refused(load(ec, "", adopt, ""), "spec 'k' on token 'a': a private or secret key states its origin");
+        refused(load(aes, adopt, "", ""), "spec 'k' on token 'b': a private or secret key states its origin");
+        refused(load(cert, create, "", ""), "CKO_CERTIFICATE objects are adopted or imported, never created");
+        refused(load(ec, ", publicOnly = true, origin = \"import\"", adopt, ""), "never origin = \"import\"");
+        let trusted = "\n[specs.t]\nobject = \"k\"\nattributes = { CKA_WRAP = true, CKA_TRUSTED = true }\n";
+        refused(
+            load(aes, adopt, adopt, &format!("{trusted}tokens.a = {{ locator = {{ CKA_LABEL = \"t\" }}{create} }}\n")),
+            "CKA_TRUSTED = true cannot be generated",
+        );
+        // Created once: two tokens, or two specs on one token, would leave it to the run.
+        refused(load(ec, create, create, ""), "has origin = \"create\" on several pairs");
+        let second =
+            format!("\n[specs.k2]\nobject = \"k\"\ntokens.a = {{ locator = {{ CKA_LABEL = \"k\" }}{create} }}\n");
+        refused(load(ec, create, adopt, &second), "spec 'k' on token 'a', spec 'k2' on token 'a'");
+        // The retired keys.
+        refused(load(ec, ", autoCreate = true", adopt, ""), "unknown field `autoCreate`");
+        refused(load(&format!("{ec}\ncreateOn = \"a\""), create, adopt, ""), "unknown field `createOn`");
     }
 
     /// `$NAME`/`${NAME}` in `pinFile` and `module` read the path from the environment; an unset or

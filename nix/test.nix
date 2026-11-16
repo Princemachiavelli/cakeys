@@ -28,7 +28,7 @@ let
     [specs.signing-soft]
     object = "signing"
     attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
-    tokens.softhsm = { locator = { CKA_LABEL = "signing" } }
+    tokens.softhsm = { locator = { CKA_LABEL = "signing" }, origin = "create" }
 
     [objects.kek]
     class = "CKO_SECRET_KEY"
@@ -39,7 +39,7 @@ let
     object = "kek"
     # No usage bit allows a commitment, but it is extractable: wrap-rebind.
     attributes = { CKA_SIGN = false, CKA_ENCRYPT = false, CKA_WRAP = false, CKA_SENSITIVE = true, CKA_EXTRACTABLE = true }
-    tokens.softhsm = { locator = { CKA_LABEL = "kek" } }
+    tokens.softhsm = { locator = { CKA_LABEL = "kek" }, origin = "create" }
   '';
 
   # A consumer derivation that uses the key: evaluated and built *inside* the guest.

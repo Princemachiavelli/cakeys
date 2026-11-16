@@ -145,7 +145,7 @@ curve = "secp256r1"
 [specs.signing]
 object = "signing"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
-tokens.soft = { locator = { CKA_LABEL = "signing" } }
+tokens.soft = { locator = { CKA_LABEL = "signing" }, origin = "create" }
 EOF
 
 act "cakeys demo" \
@@ -251,8 +251,8 @@ curve = "secp256r1"
 [specs.shared]
 object = "shared"
 attributes = { CKA_SIGN = true }
-tokens.soft = { locator = { CKA_LABEL = "shared" } }
-tokens.kryo = { locator = { CKA_LABEL = "shared" } }
+tokens.soft = { locator = { CKA_LABEL = "shared" }, origin = "adopt" }
+tokens.kryo = { locator = { CKA_LABEL = "shared" }, origin = "adopt" }
 EOF
 printf '%s$ openssl dgst -sha256 -binary shared.pub.der | base64%s\n' "$dim" "$reset"
 oracle=sha256-$(openssl dgst -sha256 -binary shared.pub.der | base64)
@@ -281,13 +281,12 @@ append <<'EOF'
 class = "CKO_PRIVATE_KEY"
 keyType = "CKK_EC"
 curve = "secp256r1"
-createOn = "soft"
 
 [specs.movable]
 object = "movable"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
-tokens.soft = { locator = { CKA_LABEL = "movable" } }
-tokens.kryo = { locator = { CKA_LABEL = "movable" } }
+tokens.soft = { locator = { CKA_LABEL = "movable" }, origin = "create" }
+tokens.kryo = { locator = { CKA_LABEL = "movable" }, origin = "import" }
 
 [objects.fixed]
 class = "CKO_PRIVATE_KEY"
@@ -297,12 +296,12 @@ curve = "secp256r1"
 [specs.fixed]
 object = "fixed"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = false }
-tokens.soft = { locator = { CKA_LABEL = "fixed" } }
+tokens.soft = { locator = { CKA_LABEL = "fixed" }, origin = "create" }
 EOF
-echo "Without a spec, create makes every pair the lock does not pin yet (signing and shared are"
-echo "pinned, so they are left alone):"
+echo 'Without a spec, create makes every pair keys.toml says it creates (origin = "create") and the'
+echo "lock does not pin yet (signing is pinned, shared adopted, so they are left alone):"
 jqf='.[] | {object, token, rfc7093m4: .ids.rfc7093m4}' expect 0 cakeys create --token soft
-echo "movable is born on soft (createOn), so kryo can only receive it. A sealed move needs the"
+echo 'movable is born on soft (origin = "create"), so kryo can only import it. A sealed move needs the'
 echo "target to name a transport key: an RSA key there that only unwraps and never leaves it."
 expect 15 camigrate export movable --token soft --target kryo --dry-run
 append <<'EOF'
@@ -315,7 +314,7 @@ modulusBits = 3072
 [specs.transport]
 object = "transport"
 attributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }
-tokens.kryo = { locator = { CKA_LABEL = "transport" }, binding = "pop-unwrap" }
+tokens.kryo = { locator = { CKA_LABEL = "transport" }, origin = "create", binding = "pop-unwrap" }
 EOF
 sed -i '/^\[tokens.kryo\]$/a transportWith = "transport"' keys.toml
 echo "kryo names it in its own table (transportWith):"

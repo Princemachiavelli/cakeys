@@ -71,7 +71,7 @@ curve = "secp256r1"
 [specs.signing-soft]
 object = "signing"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
-tokens.softhsm = { locator = { CKA_LABEL = "signing" } }
+tokens.softhsm = { locator = { CKA_LABEL = "signing" }, origin = "create" }
 ```
 
 ```console
@@ -85,7 +85,7 @@ $ cakeys -c keys.toml check signing     # later: verify, then print the URI (nev
 pkcs11:token=main;serial=...;object=signing;type=private
 ```
 
-Only `create` makes keys; `realise` and `check` find what is there. `create`, `realise` and
+Only `create` makes keys, where keys.toml says `origin = "create"`; `realise` and `check` find what is there. `create`, `realise` and
 `delete` write the lock by default, filling gaps only — a locked ID is never overwritten. A realisation that changed (its locator, spec or policy attributes) is re-recorded,
 and each accepted change is printed (`re-recorded …`). Where the lock cannot be written (a Nix build sandbox, a read-only lock or
 directory) they refuse up front unless `--no-update-lock` is passed.

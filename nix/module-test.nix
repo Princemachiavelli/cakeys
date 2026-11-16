@@ -29,7 +29,7 @@ let
     [specs.signing-soft]
     object = "signing"
     attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
-    tokens.softhsm = { locator = { CKA_LABEL = "signing", CKA_ID = "01" } }
+    tokens.softhsm = { locator = { CKA_LABEL = "signing", CKA_ID = "01" }, origin = "create" }
   '';
 
   # What a build's sandbox sees: pcscd reachability and the SoftHSM state directory.

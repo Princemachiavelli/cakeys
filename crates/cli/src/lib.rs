@@ -63,15 +63,26 @@ enum Cmd {
         #[command(flatten)]
         write: LockWriteArgs,
     },
-    /// Create keys, the one verb that does: every (spec, token) pair selected whose object the
-    /// lock does not pin yet, then record them like realise; pinned, adopted-only and publicOnly pairs are skipped with a note. Naming both
-    /// SPEC and --token creates that pair or says why not. Prints the realised objects as JSON.
+    /// Create keys, the one verb that does: every selected (spec, token) pair with origin =
+    /// "create" whose object the lock does not pin yet, then record them like realise; the other
+    /// pairs are skipped with a note. Before any token is opened, each is checked against the
+    /// capability profiles: a pair they say cannot be made refuses the whole run (15), and
+    /// nothing is created. Naming both SPEC and --token creates that pair or says why not.
+    /// Prints the realised objects as JSON.
     Create {
         /// Only this spec; default: every spec.
         spec: Option<String>,
         /// Only this token; default: every token.
         #[arg(long)]
         token: Option<String>,
+        /// Print what would be created, skipped or refused, and why, as JSON; open no token and
+        /// write nothing. Exits 15 when a pair is refused (0 with --skip-unsupported).
+        #[arg(long)]
+        dry_run: bool,
+        /// Create the pairs the profiles allow and warn about the ones they refuse, instead of
+        /// refusing the run.
+        #[arg(long)]
+        skip_unsupported: bool,
         #[command(flatten)]
         write: LockWriteArgs,
     },
@@ -176,6 +187,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     // A run that may write the lock holds its advisory sidecar lock across load and save (M3),
     // so concurrent updaters queue instead of losing each other's writes. Held to the end of run.
     let writes = match &cli.cmd {
+        Cmd::Create { dry_run: true, .. } => false,
         Cmd::Realise { write, .. } | Cmd::Create { write, .. } | Cmd::Delete { write, .. } => {
             write.mode() == LockWrite::Record
         }
@@ -230,7 +242,10 @@ impl Run<'_> {
                 self.save(changed, notes)?;
                 print(&r)
             }
-            Cmd::Create { spec, token, write } => self.create(spec.as_deref(), token.as_deref(), write.mode(), notes),
+            Cmd::Create { spec, token, dry_run, skip_unsupported, write } => {
+                let how = CreateHow { dry_run: *dry_run, skip_unsupported: *skip_unsupported, write: write.mode() };
+                self.create(spec.as_deref(), token.as_deref(), how, notes)
+            }
             Cmd::Delete { spec, token, if_match, write } => {
                 let t = Target::new(&self.cfg, spec, token)?;
                 let tok = self.open(token, Access::Write, notes)?;
@@ -385,20 +400,75 @@ impl Run<'_> {
         .into())
     }
 
-    /// `create`: every selected pair ([`ops::create_pairs`]), then the lock records what was created,
+    /// `create`: what each selected pair gets is decided before any token is opened
+    /// ([`ops::plan_create`]); a pair the profiles refuse ends the run there unless
+    /// `--skip-unsupported`. Then the pairs to create, and the lock records what was created,
     /// also when a later pair failed — never a key made and lost.
     fn create(
         &mut self,
         spec: Option<&str>,
         token: Option<&str>,
-        write: LockWrite,
+        how: CreateHow,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
+        let planned = ops::plan_create(cfg, spec, token, &self.lock, registry)?;
+        let refused: Vec<&ops::Planned> = planned.iter().filter(|p| p.action == ops::Action::Refuse).collect();
+        for p in &planned {
+            for r in &p.reasons {
+                match p.action {
+                    ops::Action::Skip => notes.note(format_args!(
+                        "create: skipped '{}' (spec '{}') on token '{}': {r}",
+                        p.object, p.spec, p.token
+                    )),
+                    ops::Action::Create => notes.note(format_args!("create: {r}")),
+                    ops::Action::Refuse if how.skip_unsupported => {
+                        notes.warn(format!("create: skipped, unsupported: {r}"));
+                    }
+                    ops::Action::Refuse => eprintln!("{r}"),
+                }
+            }
+        }
+        if how.dry_run {
+            let rows: Vec<serde_json::Value> = planned
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "spec": p.spec, "token": p.token, "object": p.object,
+                        "action": p.action.name(), "reasons": p.reasons,
+                    })
+                })
+                .collect();
+            print(&rows)?;
+        }
+        if !refused.is_empty() && !how.skip_unsupported {
+            let one = refused.len() == 1;
+            return Err(KmError::Unsupported(format!(
+                "{} pair{} cannot be created, as the capability profiles say{}; pass --skip-unsupported to create \
+                 the others",
+                refused.len(),
+                if one { "" } else { "s" },
+                if how.dry_run { "" } else { ": nothing was created" }
+            ))
+            .into());
+        }
+        if how.dry_run {
+            return Ok(());
+        }
+        let pairs: Vec<(&str, &str)> =
+            planned.iter().filter(|p| p.action == ops::Action::Create).map(|p| (p.spec, p.token)).collect();
         let open = |name: &str, notes: &mut Notes| open_token(cfg, modules, registry, name, Access::Write, notes);
-        let done = ops::create_selected(cfg, spec, token, &open, &mut self.lock, write, notes)?;
+        let done = ops::create_selected(cfg, &pairs, &open, &mut self.lock, how.write, notes);
         self.save(done.changed, notes)?;
         print(&done.created)?;
         done.failed.map_or(Ok(()), |e| Err(e.into()))
     }
+}
+
+/// How `create` runs: its flags.
+#[derive(Clone, Copy)]
+struct CreateHow {
+    dry_run: bool,
+    skip_unsupported: bool,
+    write: LockWrite,
 }

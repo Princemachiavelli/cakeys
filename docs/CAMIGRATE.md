@@ -56,7 +56,8 @@ passphrase given: 10 is kept for material that differs from the lock).
 **D1. Exportability is decided when a key is created.** A key with `CKA_EXTRACTABLE = false`
 never moves, and `CKA_NEVER_EXTRACTABLE` is an immutable in the lock: once true, a key that
 later claims otherwise was replaced. A key meant to migrate is declared extractable from the
-start, on its one creation token (`createOn`); `--dry-run` says this first, per object.
+start, on its one creation pair (`origin = "create"`); `--dry-run` says this first, per
+object. A move lands only on a pair that says `origin = "import"` (17 otherwise).
 
 **D2. Exposure is named honestly, per object, strongest first.** The names are frozen.
 
@@ -257,7 +258,7 @@ All phases ran on 2026-11-12 (0, 1) and 2026-11-14 (2–5); the test names are i
 | 0 | The spike (pkcs11-tool, SoftHSM ↔ kryoptic) and the cryptoki KWP patch (`nix/patches/cryptoki-aes-key-wrap-kwp.patch`, upstream draft `upstream/rust-cryptoki/PR-KWP.md`) | SoftHSM's AES-KW-PAD and kryoptic's AES-KWP are one format (RFC 5649) under two IDs; EC and RSA keys wrapped either way still sign for their fixtures; the composed method works both ways [run] |
 | 1 | The planner and `--dry-run`; `Provider::migration`, the capability hook vendor crates use (D10); the transport file | — |
 | 2 | `public` moves (`public.rs`), recorded through `ops::realise_import` | tpm2-pkcs11 creates data objects only private, so its profiles no longer accept public `CKO_DATA` |
-| 3 | `sealed` (`sealed.rs`): bundles, `export --out`, `import`, `migrate`; one creation token per object (`createOn`); `transportWith` and `pop-unwrap` | SoftHSM's unwrapped `CKA_VALUE_LEN` (`secret-unwraps = false`); p11-kit needs its `provider` named (the layer's `requires-provider`) |
+| 3 | `sealed` (`sealed.rs`): bundles, `export --out`, `import`, `migrate`; one creation pair per object (`origin = "create"`), targets `origin = "import"`; `transportWith` and `pop-unwrap` | SoftHSM's unwrapped `CKA_VALUE_LEN` (`secret-unwraps = false`); p11-kit needs its `provider` named (the layer's `requires-provider`) |
 | 3b | `enforced`: `transport --trusted`, `CKM_RSA_AES_KEY_WRAP` (third cryptoki patch, `nix/patches/cryptoki-rsa-aes-key-wrap.patch`), the bundle's per-entry `kek` | both modules refuse a wrap-with-trusted key under an untrusted key; `CKA_TRUSTED` is set only at creation and only by the SO; kryoptic cannot trust an RSA public key [run: one-off PyKCS11 and Rust test programs, not kept, recorded in the profiles' `[manual."trusted-wrap"]`] |
 | 4 | `host` (`host.rs`): `Token::extract`, `cakeys_core::plaintext`, `tpm2-ptool` through an in-memory file (`/proc/<pid>/fd/N`, since `tpm2_import` inherits no descriptor) | the key enters `tpm2_ptool`'s Python process, and its user PIN is on that process's command line (no other option [src]): both stated as plan notes. The planner blocks moves the target could not prove (Ed25519 into p11-kit) |
 | 4b | `file` (`file.rs`): `pkcs8-pbes2` and `pkcs12` export and import; `pkcs5`, `pkcs12` 0.2 and `cms` 0.3 (release candidates, same RustCrypto line as `der` 0.8) | a wrong passphrase is 17 and leaves nothing |

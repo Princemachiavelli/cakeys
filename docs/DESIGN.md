@@ -393,19 +393,25 @@ What may be created and adopted:
   Login state is per token, so the step logs the user out, logs in as SO, generates (or
   destroys), logs out and logs the user back in; the SO credential is read just before and
   zeroized after. `resolve`, `verify` and `check` never read it.
-- **Only `cakeys create` makes keys,** and only private and secret ones; `realise` and `check`
-  find what is there (2026-11-15: `check` is a read, keys.toml does not say which keys are
-  created). Certificates, public keys and data objects are adopted —
+- **Only `cakeys create` makes keys,** and only on a pair whose `origin` is `create`; `realise`
+  and `check` find what is there (2026-11-15: `check` is a read). Certificates, public keys and
+  data objects are adopted or imported, never created —
   `adoption_rules_are_validated`, `standalone_public_key_objects`, `data_objects_…`. When the lock
   already pins the object's material (ids recorded, from this or another token), `create` is
   refused (14) before anything is created: generated material could never match (D1) —
   `create_never_fights_a_locked_identity`. Put the same material under the locator instead, or
   give the token's key its own object name.
-- **`createOn`** names the token an object is born on: `create` generates it only there,
-  `create` on another token is refused (17) and its skip note names the import (`camigrate
-  migrate`). It must name a token the object has a spec on (17 at load) —
-  `create_on_names_where_an_object_is_born`, `create_happens_on_the_create_on_token_only`. It is
-  kept apart from the object's type: the lock and the spec digest never see it.
+- **`origin`** says how an object comes to be on each token (2026-11-15, replacing `createOn`
+  and `autoCreate`): `create` (`cakeys create` generates it there), `import` (camigrate brings
+  the material from where it was created; a move lands on no other pair) or `adopt` (it is
+  already there). A private or secret key states it; anything else is adopted unless it says
+  `import`. At most one pair of an object says `create`, which settles where its material is
+  born and with whose policy, so no order of a run decides either (17 at load otherwise) —
+  `origins_say_how_an_object_comes_to_be_on_a_token`, `create_happens_where_origin_says_create`.
+  Like the locator, it is not part of the object's type or the spec digest.
+- **`create` checks the profiles before it makes anything:** every pair it would create goes
+  through the static gate first, and a profile's *no* refuses the run before any token is opened
+  (15), unless `--skip-unsupported` — `create_checks_the_profiles_before_it_makes_anything`.
 - **`CKK_SHA*_HMAC` keys** cannot be generated (PKCS#11 has no mechanism for them) —
   `hmac_key_types_commit_with_their_own_hash`.
 - **`publicOnly`** verifies a private key through its public-key object, without login (it spares

@@ -93,7 +93,7 @@ valueLen = 32
 [specs.aes-gen]
 object = "aes-gen"
 attributes = { CKA_ENCRYPT = true }
-tokens.tpm = { locator = { CKA_LABEL = "refusal-aes-gen" } }
+tokens.tpm = { locator = { CKA_LABEL = "refusal-aes-gen" }, origin = "create" }
 
 [objects.hmac-gen]
 class = "CKO_SECRET_KEY"
@@ -103,7 +103,7 @@ valueLen = 32
 [specs.hmac-gen]
 object = "hmac-gen"
 attributes = { CKA_SIGN = true }
-tokens.tpm = { locator = { CKA_LABEL = "refusal-hmac-gen" } }
+tokens.tpm = { locator = { CKA_LABEL = "refusal-hmac-gen" }, origin = "create" }
 
 [objects.ed]
 class = "CKO_PRIVATE_KEY"
@@ -113,7 +113,7 @@ curve = "edwards25519"
 [specs.ed]
 object = "ed"
 attributes = { CKA_SIGN = true }
-tokens.tpm = { locator = { CKA_LABEL = "refusal-ed" } }
+tokens.tpm = { locator = { CKA_LABEL = "refusal-ed" }, origin = "create" }
 
 [objects.aes]
 class = "CKO_SECRET_KEY"
@@ -123,7 +123,7 @@ valueLen = 32
 [specs.aes-mac]
 object = "aes"
 attributes = { CKA_SIGN = true }
-tokens.tpm = { locator = { CKA_LABEL = "refusal-aes" } }
+tokens.tpm = { locator = { CKA_LABEL = "refusal-aes" }, origin = "adopt" }
 
 [objects.des3]
 class = "CKO_SECRET_KEY"
@@ -132,7 +132,7 @@ keyType = "CKK_DES3"
 [specs.des3]
 object = "des3"
 attributes = { CKA_ENCRYPT = true }
-tokens.tpm = { locator = { CKA_LABEL = "refusal-des3" } }
+tokens.tpm = { locator = { CKA_LABEL = "refusal-des3" }, origin = "create" }
 "#,
     );
     // No Triple DES in a TPM (TPM2 symmetric keys are AES): neither the check value nor the
@@ -172,9 +172,9 @@ fn tpm2_generated_keys_match_der_oracle() {
         body += &format!(
             "[objects.{k}]\nclass = \"CKO_PRIVATE_KEY\"\n{ty}\n\n\
              [specs.{k}-gen]\nobject = \"{k}\"\nattributes = {{ CKA_SIGN = true }}\n\
-             tokens.tpm = {{ locator = {{ CKA_LABEL = \"{k}\" }}{binding} }}\n\n\
+             tokens.tpm = {{ locator = {{ CKA_LABEL = \"{k}\" }}, origin = \"create\"{binding} }}\n\n\
              [specs.{k}-pub]\nobject = \"{k}\"\n\
-             tokens.tpm-anon = {{ locator = {{ CKA_LABEL = \"{k}\" }}, publicOnly = true }}\n\n"
+             tokens.tpm-anon = {{ locator = {{ CKA_LABEL = \"{k}\" }}, origin = \"adopt\", publicOnly = true }}\n\n"
         );
     }
     e.config(&body);
@@ -203,7 +203,7 @@ fn tpm2_identity_failure_after_create_leaves_nothing() {
     // Without the provider, tpm2-pkcs11's P-521 point is rejected after the key was generated.
     e.config(
         "[objects.p]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp521r1\"\n\n\
-         [specs.p]\nobject = \"p\"\nattributes = { CKA_SIGN = true }\ntokens.tpm-generic = { locator = { CKA_LABEL = \"orphan-p521\" } }\n",
+         [specs.p]\nobject = \"p\"\nattributes = { CKA_SIGN = true }\ntokens.tpm-generic = { locator = { CKA_LABEL = \"orphan-p521\" }, origin = \"create\" }\n",
     );
     let o = e.km(&["create", "p", "--token", "tpm-generic", "--no-update-lock"]);
     assert_eq!(code(&o), 13);
@@ -221,7 +221,7 @@ fn tpm2_proves_possession_by_deriving() {
     e.config(
         "[objects.p]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [specs.p]\nobject = \"p\"\nattributes = { CKA_DERIVE = true }\n\
-         tokens.tpm = { locator = { CKA_LABEL = \"ecdh-p256\" }, binding = \"pop-ecdh\" }\n",
+         tokens.tpm = { locator = { CKA_LABEL = \"ecdh-p256\" }, origin = \"create\", binding = \"pop-ecdh\" }\n",
     );
     let o = e.km(&["create", "p", "--token", "tpm", "--update-lock"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
@@ -280,7 +280,7 @@ curve = "secp256r1"
 [specs.p256]
 object = "p256"
 attributes = { CKA_SIGN = true }
-tokens.tpm = { locator = { CKA_LABEL = "imp-p256" } }
+tokens.tpm = { locator = { CKA_LABEL = "imp-p256" }, origin = "adopt" }
 
 [objects.rsa]
 class = "CKO_PRIVATE_KEY"
@@ -289,7 +289,7 @@ modulusBits = 2048
 
 [specs.rsa]
 object = "rsa"
-tokens.tpm-anon = { locator = { CKA_LABEL = "imp-rsa" }, publicOnly = true }
+tokens.tpm-anon = { locator = { CKA_LABEL = "imp-rsa" }, origin = "adopt", publicOnly = true }
 
 [objects.hmac]
 class = "CKO_SECRET_KEY"
@@ -300,7 +300,7 @@ valueLen = 32
 [specs.hmac]
 object = "hmac"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
-tokens.tpm = { locator = { CKA_LABEL = "imp-hmac" } }
+tokens.tpm = { locator = { CKA_LABEL = "imp-hmac" }, origin = "adopt" }
 
 [objects.hmac384]
 class = "CKO_SECRET_KEY"
@@ -310,7 +310,7 @@ valueLen = 48
 [specs.hmac384]
 object = "hmac384"
 attributes = { CKA_SIGN = true }
-tokens.tpm = { locator = { CKA_LABEL = "imp-hmac384" } }
+tokens.tpm = { locator = { CKA_LABEL = "imp-hmac384" }, origin = "adopt" }
 "#,
     );
     for (spec, token) in [("p256", "tpm"), ("rsa", "tpm-anon"), ("hmac", "tpm"), ("hmac384", "tpm")] {
@@ -336,7 +336,7 @@ fn tpm2_aes_key_is_identified_by_its_kcv() {
     e.config(
         "[objects.aes]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
          [specs.aes]\nobject = \"aes\"\nattributes = { CKA_ENCRYPT = true, CKA_SENSITIVE = true }\n\
-         tokens.tpm = { locator = { CKA_LABEL = \"kcv-aes\" } }\n",
+         tokens.tpm = { locator = { CKA_LABEL = \"kcv-aes\" }, origin = \"adopt\" }\n",
     );
     let r = ["realise", "aes", "--token", "tpm", "--no-update-lock"];
     let first = e.km(&r);
@@ -372,9 +372,9 @@ fn tpm2_private_data_object_is_identified_by_its_value() {
     e.config(
         "[objects.blob]\nclass = \"CKO_DATA\"\n\n\
          [specs.blob]\nobject = \"blob\"\nattributes = { CKA_PRIVATE = true }\n\
-         tokens.tpm = { locator = { CKA_LABEL = \"tpm-data\" } }\n\n\
+         tokens.tpm = { locator = { CKA_LABEL = \"tpm-data\" }, origin = \"adopt\" }\n\n\
          [specs.blob-undeclared]\nobject = \"blob\"\n\
-         tokens.tpm = { locator = { CKA_LABEL = \"tpm-data\" } }\n",
+         tokens.tpm = { locator = { CKA_LABEL = \"tpm-data\" }, origin = \"adopt\" }\n",
     );
     // Undeclared, its hash would be an offline guessing oracle nobody agreed to: refused.
     let o = e.km(&["realise", "blob-undeclared", "--token", "tpm", "--update-lock"]);
@@ -396,7 +396,7 @@ fn tpm2_keys_attest_their_tpm_residence() {
     e.config(
         "[objects.p256]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [specs.p256]\nobject = \"p256\"\nattributes = { CKA_SIGN = true }\n\
-         tokens.tpm = { locator = { CKA_LABEL = \"attest-p256\" }, attestation = true }\n",
+         tokens.tpm = { locator = { CKA_LABEL = \"attest-p256\" }, origin = \"create\", attestation = true }\n",
     );
     let r = ["realise", "p256", "--token", "tpm", "--no-update-lock"];
     let first = e.km(&["create", "p256", "--token", "tpm", "--no-update-lock"]);
@@ -480,7 +480,7 @@ fn tpm2_keys_attest_their_tpm_residence() {
         e.config(
             "[objects.hmac]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_SHA256_HMAC\"\nvalueLen = 32\n\n\
              [specs.hmac]\nobject = \"hmac\"\nattributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n\
-             tokens.tpm = { locator = { CKA_LABEL = \"attest-hmac\" }, attestation = true }\n",
+             tokens.tpm = { locator = { CKA_LABEL = \"attest-hmac\" }, origin = \"adopt\", attestation = true }\n",
         );
         assert_eq!(e.code(&["realise", "hmac", "--token", "tpm", "--update-lock"]), 0);
         assert!(e.lock()["objects"]["hmac"]["ids"].get("commitment").is_some());
@@ -526,8 +526,8 @@ fn tpm2_each_token_pins_its_own_attestation() {
         "[tokens.tpm2]\nmodule = \"{}\"\ntokenLabel = \"kmtest2\"\npinFile = \"{pin}\"\n\n\
          [objects.hmac]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_SHA256_HMAC\"\nvalueLen = 32\n\n\
          [specs.hmac]\nobject = \"hmac\"\nattributes = {{ CKA_SIGN = true, CKA_EXTRACTABLE = true }}\n\
-         tokens.tpm = {{ locator = {{ CKA_LABEL = \"two-hmac\" }}, attestation = true }}\n\
-         tokens.tpm2 = {{ locator = {{ CKA_LABEL = \"two-hmac\" }}, attestation = true }}\n",
+         tokens.tpm = {{ locator = {{ CKA_LABEL = \"two-hmac\" }}, origin = \"adopt\", attestation = true }}\n\
+         tokens.tpm2 = {{ locator = {{ CKA_LABEL = \"two-hmac\" }}, origin = \"adopt\", attestation = true }}\n",
         e.module
     ));
     assert_eq!(e.code(&["realise", "hmac", "--token", "tpm", "--update-lock"]), 0);
@@ -568,11 +568,11 @@ fn tpm2_attested_material_travels_to_a_second_hsm() {
         "[tokens.soft]\nmodule = \"{soft}\"\ntokenLabel = \"kmtest\"\npinFile = \"{pin}\"\n\n\
          [objects.hmac]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_SHA256_HMAC\"\nvalueLen = 32\n\n\
          [specs.hmac-tpm]\nobject = \"hmac\"\nattributes = {{ CKA_SIGN = true, CKA_EXTRACTABLE = true }}\n\
-         tokens.tpm = {{ locator = {{ CKA_LABEL = \"travel-hmac\" }}, attestation = true }}\n\n\
+         tokens.tpm = {{ locator = {{ CKA_LABEL = \"travel-hmac\" }}, origin = \"adopt\", attestation = true }}\n\n\
          [specs.hmac-soft]\nobject = \"hmac\"\nattributes = {{ CKA_SIGN = true }}\n\
-         tokens.soft = {{ locator = {{ CKA_LABEL = \"travel-hmac\" }} }}\n\n\
+         tokens.soft = {{ locator = {{ CKA_LABEL = \"travel-hmac\" }}, origin = \"adopt\" }}\n\n\
          [specs.hmac-attest-soft]\nobject = \"hmac\"\nattributes = {{ CKA_SIGN = true }}\n\
-         tokens.soft = {{ locator = {{ CKA_LABEL = \"travel-hmac\" }}, attestation = true }}\n",
+         tokens.soft = {{ locator = {{ CKA_LABEL = \"travel-hmac\" }}, origin = \"adopt\", attestation = true }}\n",
     ));
     let soft_session = open_session(&soft, "kmtest", "1234");
     soft_session
@@ -616,7 +616,7 @@ fn unwrap_only_keys_are_refused_before_generation() {
     e.config(
         "[objects.u]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
          [specs.u]\nobject = \"u\"\nattributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }\n\
-         tokens.tpm = { locator = { CKA_LABEL = \"refusal-unwrap\" }, binding = \"pop-unwrap\" }\n",
+         tokens.tpm = { locator = { CKA_LABEL = \"refusal-unwrap\" }, origin = \"create\", binding = \"pop-unwrap\" }\n",
     );
     let o = e.km(&["realise", "u", "--token", "tpm", "--no-update-lock"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
@@ -667,7 +667,7 @@ fn tpm2_attestation_refuses_a_store_that_disagrees() {
     e.config(
         "[objects.a]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [specs.a]\nobject = \"a\"\nattributes = { CKA_SIGN = true }\n\
-         tokens.tpm = { locator = { CKA_LABEL = \"store-a\" }, attestation = true, binding = \"token-asserted\" }\n",
+         tokens.tpm = { locator = { CKA_LABEL = \"store-a\" }, origin = \"adopt\", attestation = true, binding = \"token-asserted\" }\n",
     );
     let r = ["realise", "a", "--token", "tpm", "--no-update-lock"];
     let o = e.km(&r);
@@ -735,7 +735,7 @@ fn tpm2_attestation_refuses_a_store_that_disagrees() {
         "[tokens.trans]\nmodule = \"{}\"\ntokenLabel = \"kmtrans\"\npinFile = \"{}\"\n\n\
          [objects.t]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [specs.t]\nobject = \"t\"\nattributes = {{ CKA_SIGN = true }}\n\
-         tokens.trans = {{ locator = {{ CKA_LABEL = \"trans\" }}, attestation = true }}\n",
+         tokens.trans = {{ locator = {{ CKA_LABEL = \"trans\" }}, origin = \"adopt\", attestation = true }}\n",
         e.module,
         e.dir.join("pin").display()
     ));
@@ -754,7 +754,7 @@ fn tpm2_attests_each_key_type() {
         format!(
             "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\n{ty}\n\n[specs.{name}]\nobject = \"{name}\"\n\
              attributes = {{ CKA_SIGN = true }}\n\
-             tokens.tpm = {{ locator = {{ CKA_LABEL = \"types-{name}\" }}, attestation = true{binding} }}\n\n"
+             tokens.tpm = {{ locator = {{ CKA_LABEL = \"types-{name}\" }}, origin = \"create\", attestation = true{binding} }}\n\n"
         )
     };
     e.config(
@@ -788,7 +788,7 @@ fn tpm2_attestation_finds_its_store_and_tpm_as_configured() {
             "[tokens.tpm]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n{options}\n\n\
              [objects.a]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
              [specs.a]\nobject = \"a\"\nattributes = {{ CKA_SIGN = true }}\n\
-             tokens.tpm = {{ locator = {{ CKA_LABEL = \"find-a\" }}, attestation = true }}\n",
+             tokens.tpm = {{ locator = {{ CKA_LABEL = \"find-a\" }}, origin = \"adopt\", attestation = true }}\n",
             e.module,
             e.dir.join("pin").display()
         ));
@@ -865,7 +865,7 @@ fn tpm2_attestation_says_what_it_lacks() {
             "[tokens.tpm]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\n{token}\n\n\
              [objects.a]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
              [specs.a]\nobject = \"a\"\nattributes = {{ CKA_SIGN = true }}\n\
-             tokens.tpm = {{ locator = {{ CKA_LABEL = \"lacks-a\" }}, attestation = true, binding = \"token-asserted\" }}\n",
+             tokens.tpm = {{ locator = {{ CKA_LABEL = \"lacks-a\" }}, origin = \"adopt\", attestation = true, binding = \"token-asserted\" }}\n",
             e.module,
         ));
     };

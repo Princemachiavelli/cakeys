@@ -19,7 +19,17 @@ fixtures=$(dirname "$(realpath "$0")")/../crates/cli/tests/fixtures
 specs=(ec ecpub rsa ed aes hmac wrapped cert data)
 export SOFTHSM2_CONF=$dir/softhsm2.conf
 
-km() { "$bin" --config "$dir/keys.toml" "$@"; }
+config=$dir/keys.toml
+km() { "$bin" --config "$config" --lock "$dir/keys.lock" "$@"; }
+
+# keys.toml states each pair's origin, which builds before 2026-11-15 refuse as an unknown
+# field: such a build reads a copy without it. The lock is the same file either way.
+pick_config() {
+  sed -E 's/, origin = "[a-z]+"//' "$dir/keys.toml" >"$dir/keys.legacy.toml"
+  if "$bin" --config "$dir/keys.toml" validate 2>&1 | grep -q "unknown field .origin."; then
+    config=$dir/keys.legacy.toml
+  fi
+}
 
 record() {
   rm -rf "$dir" && mkdir -p "$dir/tokens"
@@ -74,37 +84,38 @@ class = "CKO_DATA"
 object = "ec"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
 publicAttributes = { CKA_VERIFY = true }
-tokens.soft = { locator = { CKA_LABEL = "ec", CKA_ID = "0e" } }
+tokens.soft = { locator = { CKA_LABEL = "ec", CKA_ID = "0e" }, origin = "create" }
 [specs.ecpub]
 object = "ecpub"
-tokens.soft = { locator = { CKA_LABEL = "ec" } }
+tokens.soft = { locator = { CKA_LABEL = "ec" }, origin = "adopt" }
 [specs.rsa]
 object = "rsa"
 attributes = { CKA_DECRYPT = true }
-tokens.soft = { locator = { CKA_LABEL = "rsa" }, binding = "pop-decrypt" }
+tokens.soft = { locator = { CKA_LABEL = "rsa" }, origin = "create", binding = "pop-decrypt" }
 [specs.ed]
 object = "ed"
 attributes = { CKA_SIGN = true }
-tokens.soft = { locator = { CKA_LABEL = "ed" } }
+tokens.soft = { locator = { CKA_LABEL = "ed" }, origin = "create" }
 [specs.aes]
 object = "aes"
 attributes = { CKA_SIGN = true, CKA_ENCRYPT = true, CKA_EXTRACTABLE = false, CKA_ALLOWED_MECHANISMS = ["CKM_AES_ECB", "CKM_AES_CMAC"] }
-tokens.soft = { locator = { CKA_LABEL = "aes" } }
+tokens.soft = { locator = { CKA_LABEL = "aes" }, origin = "create" }
 [specs.hmac]
 object = "hmac"
 attributes = { CKA_SIGN = true }
-tokens.soft = { locator = { CKA_LABEL = "hmac" } }
+tokens.soft = { locator = { CKA_LABEL = "hmac" }, origin = "create" }
 [specs.wrapped]
 object = "wrapped"
 attributes = { CKA_EXTRACTABLE = true }
-tokens.soft = { locator = { CKA_LABEL = "wrapped" } }
+tokens.soft = { locator = { CKA_LABEL = "wrapped" }, origin = "create" }
 [specs.cert]
 object = "cert"
-tokens.soft = { locator = { CKA_LABEL = "cert" } }
+tokens.soft = { locator = { CKA_LABEL = "cert" }, origin = "adopt" }
 [specs.data]
 object = "data"
-tokens.soft = { locator = { CKA_LABEL = "data" } }
+tokens.soft = { locator = { CKA_LABEL = "data" }, origin = "adopt" }
 EOF
+  pick_config
   # `create` makes the keys (no autoCreate: a build that has dropped it refuses the key).
   km create --token soft >/dev/null
   for s in "${specs[@]}"; do
@@ -121,6 +132,7 @@ check() {
     echo "$dir/base.lock has the lock layout before the observation table; record it with a newer build" >&2
     exit 1
   fi
+  pick_config
   cp "$dir/base.lock" "$dir/keys.lock"
   for s in "${specs[@]}"; do
     km verify "$s" --token soft >/dev/null

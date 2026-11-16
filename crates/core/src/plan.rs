@@ -23,8 +23,6 @@ pub struct Target<'a> {
     pub token_name: &'a str,
     /// The spec's settings for this token.
     pub on_token: &'a SpecTokenCfg,
-    /// The token the object is born on (`createOn`), when keys.toml names one.
-    pub create_on: Option<&'a str>,
     /// This spec is its token's transport key (`transportWith`): the lock records its public key.
     pub transport: bool,
 }
@@ -48,9 +46,8 @@ impl<'a> Target<'a> {
         if !cfg.tokens.contains_key(token_name) {
             return Err(KmError::Validation(format!("unknown token '{token_name}'")));
         }
-        let create_on = cfg.create_on.get(object_name).map(String::as_str);
         let transport = cfg.tokens.get(token_name).and_then(|t| t.transport_with.as_deref()) == Some(spec_name);
-        Ok(Target { spec_name, spec, object_name, object, token_name, on_token, create_on, transport })
+        Ok(Target { spec_name, spec, object_name, object, token_name, on_token, transport })
     }
 
     /// Identity schemes this spec can compute (from the spec alone), in order of preference:
@@ -245,23 +242,6 @@ fn check_declared(t: &Target, class: Class, declared: &BTreeMap<String, AttrValu
     Ok(())
 }
 
-/// Why `cakeys create` cannot make `t`'s object, from the spec alone: a class cakeys adopts
-/// rather than generates, a `publicOnly` adoption, or a `CKA_TRUSTED` key. `None` when it can.
-#[must_use]
-pub fn not_creatable(t: &Target) -> Option<&'static str> {
-    match t.object.class {
-        Class::PublicKey | Class::Data => Some("public keys and data objects are adopted, not created"),
-        Class::Certificate => Some("certificates are adopted, not created"),
-        _ if t.on_token.public_only => Some("publicOnly adopts the public half only; it is never created"),
-        // CKA_TRUSTED is set by the token's security officer (or recorded on an adopted
-        // object), never by generation.
-        _ if t.spec.flag("CKA_TRUSTED") == Some(true) => {
-            Some("CKA_TRUSTED = true cannot be generated; adopt the object instead")
-        }
-        _ => None,
-    }
-}
-
 /// Best identity mode achievable from the spec alone; weak modes need a per-token opt-in.
 ///
 /// # Errors
@@ -443,7 +423,7 @@ mod tests {
     #[test]
     fn a_spec_of_an_undefined_object_is_refused() {
         let cfg: Config = toml::from_str(
-            "[tokens.t]\ntokenLabel = \"t\"\n\n[specs.s]\nobject = \"gone\"\ntokens.t = { locator = { CKA_LABEL = \"x\" } }\n",
+            "[tokens.t]\ntokenLabel = \"t\"\n\n[specs.s]\nobject = \"gone\"\ntokens.t = { locator = { CKA_LABEL = \"x\" }, origin = \"adopt\" }\n",
         )
         .unwrap();
         let e = Target::new(&cfg, "s", "t").err().unwrap();
@@ -459,7 +439,7 @@ mod tests {
             let cfg: Config = toml::from_str(&format!(
                 "[tokens.t]\ntokenLabel = \"t\"\n\n[objects.k]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\n\
                  valueLen = 32\n\n[specs.s]\nobject = \"k\"\nattributes = {{ {attrs} }}\n\
-                 tokens.t = {{ locator = {{ CKA_LABEL = \"x\" }} }}\n"
+                 tokens.t = {{ locator = {{ CKA_LABEL = \"x\" }}, origin = \"adopt\" }}\n"
             ))
             .unwrap();
             let t = Target::new(&cfg, "s", "t").unwrap();

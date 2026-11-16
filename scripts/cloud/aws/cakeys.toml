@@ -56,7 +56,6 @@ modulusBits = 3072
 class = "CKO_PRIVATE_KEY"
 keyType = "CKK_EC"
 curve = "secp256r1"
-createOn = "softhsm"
 
 # Ed25519: a non-FIPS cluster makes it with CKM_EC_KEY_PAIR_GEN and signs with its vendor EdDSA
 # (the aws-cloudhsm provider's stand-ins, the profile's `add` row); a FIPS one refuses it, and
@@ -71,7 +70,6 @@ curve = "edwards25519"
 class = "CKO_PRIVATE_KEY"
 keyType = "CKK_EC_EDWARDS"
 curve = "edwards25519"
-createOn = "softhsm"
 
 # SoftHSM's transport key, for moves out of CloudHSM.
 [objects.softhsm-transport]
@@ -85,81 +83,80 @@ modulusBits = 3072
 class = "CKO_PRIVATE_KEY"
 keyType = "CKK_EC"
 curve = "secp256r1"
-createOn = "cloudhsm"
 
 # pop-sign over ECDSA; the public half is generated without CKA_PRIVATE = false (refused).
 [specs.ec-p256]
 object = "ec-p256"
 attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
-tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-ec-p256" } }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-ec-p256" }, origin = "create" }
 
 # pop-ecdh: raw ECDH (the client's ecdh_without_kdf, set by activate), derived without the
 # template's CKA_EXTRACTABLE = false.
 [specs.ec-p384-derive]
 object = "ec-p384-derive"
 attributes = { CKA_DERIVE = true, CKA_SIGN = false }
-tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-ec-p384-derive" }, binding = "pop-ecdh" }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-ec-p384-derive" }, origin = "create", binding = "pop-ecdh" }
 
 # pop-sign over CKM_SHA256_RSA_PKCS.
 [specs.rsa-sign]
 object = "rsa-sign"
 attributes = { CKA_SIGN = true }
-tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-rsa-sign" } }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-rsa-sign" }, origin = "create" }
 
 # pop-decrypt over RSA-OAEP with SHA-1.
 [specs.rsa-decrypt]
 object = "rsa-decrypt"
 attributes = { CKA_DECRYPT = true, CKA_SIGN = false }
-tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-rsa-decrypt" }, binding = "pop-decrypt" }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-rsa-decrypt" }, origin = "create", binding = "pop-decrypt" }
 
 # AES committed to by CMAC.
 [specs.aes]
 object = "aes"
 attributes = { CKA_SIGN = true }
-tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-aes" } }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-aes" }, origin = "create" }
 
 # A generic secret committed to by HMAC-SHA256.
 [specs.hmac]
 object = "hmac"
 attributes = { CKA_SIGN = true }
-tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-hmac" } }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-hmac" }, origin = "create" }
 
 # pop-unwrap: RSA-OAEP (SHA-1) unwrap of a host secret, then HMAC with it.
 [specs.transport]
 object = "transport"
 attributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false, CKA_SIGN = false, CKA_DECRYPT = false }
-tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-transport" }, binding = "pop-unwrap" }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-transport" }, origin = "create", binding = "pop-unwrap" }
 
 # The same EC key on both tokens: created on SoftHSM, then `camigrate migrate movable --from
 # softhsm --to cloudhsm`; the identity must be the same on both.
 [specs.movable]
 object = "movable"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
-tokens.softhsm = { locator = { CKA_LABEL = "cakeys-movable" } }
-tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-movable" } }
+tokens.softhsm = { locator = { CKA_LABEL = "cakeys-movable" }, origin = "create" }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-movable" }, origin = "import" }
 
 # pop-sign over pure EdDSA; it moves out to SoftHSM, never in (the profile's migration.refuses).
 [specs.ed25519]
 object = "ed25519"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
-tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-ed25519" } }
-tokens.softhsm = { locator = { CKA_LABEL = "cakeys-ed25519" } }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-ed25519" }, origin = "create" }
+tokens.softhsm = { locator = { CKA_LABEL = "cakeys-ed25519" }, origin = "import" }
 
 [specs.ed-in]
 object = "ed-in"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
-tokens.softhsm = { locator = { CKA_LABEL = "cakeys-ed-in" } }
-tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-ed-in" } }
+tokens.softhsm = { locator = { CKA_LABEL = "cakeys-ed-in" }, origin = "create" }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-ed-in" }, origin = "import" }
 
 [specs.softhsm-transport]
 object = "softhsm-transport"
 attributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false, CKA_SIGN = false, CKA_DECRYPT = false }
-tokens.softhsm = { locator = { CKA_LABEL = "cakeys-transport" }, binding = "pop-unwrap" }
+tokens.softhsm = { locator = { CKA_LABEL = "cakeys-transport" }, origin = "create", binding = "pop-unwrap" }
 
 # The reverse: created on CloudHSM, then `camigrate migrate outbound --from cloudhsm --to
 # softhsm`; again one identity on both.
 [specs.outbound]
 object = "outbound"
 attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
-tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-outbound" } }
-tokens.softhsm = { locator = { CKA_LABEL = "cakeys-outbound" } }
+tokens.cloudhsm = { locator = { CKA_LABEL = "cakeys-outbound" }, origin = "create" }
+tokens.softhsm = { locator = { CKA_LABEL = "cakeys-outbound" }, origin = "import" }

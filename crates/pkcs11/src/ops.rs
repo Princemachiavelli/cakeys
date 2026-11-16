@@ -1,8 +1,8 @@
 //! Idempotent verbs with HTTP-like semantics (docs/CAKEYS.md).
 
-use crate::provider::Provider;
+use crate::provider::{Provider, Registry};
 use crate::token::{self as hal, Token};
-use cakeys_core::config::{AttestationRecord, Config, Lock, Mode, Observation, Observed, Origin, Session};
+use cakeys_core::config::{AttestationRecord, Config, KeyOrigin, Lock, Mode, Observation, Observed, Origin, Session};
 use cakeys_core::id::{self, Commit, HmacHash, Scheme};
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
@@ -464,18 +464,17 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
 }
 
 /// PUT If-None-Match: create the object under the declared locator if absent, then
-/// [`realise`] it. The one verb that creates. Every guard of a creation applies: the class
-/// must be one cakeys generates, the lock must not pin the object's material already (D1), and
-/// nothing may sit under the locator; an object already there is found and compared, never
-/// replaced.
+/// [`realise`] it. The one verb that creates, and only on a pair whose `origin` is `create`.
+/// Every guard of a creation applies: the lock must not pin the object's material already
+/// (D1), and nothing may sit under the locator; an object already there is found and compared,
+/// never replaced.
 ///
 /// # Errors
 ///
 /// As [`realise`], and for the creation: `PreconditionFailed` (D1) when the lock already pins
 /// the object's material, `Unavailable` when a session without login cannot see the locator,
-/// `Conflict` when the locator is occupied by another class; `Validation` (17) for an object
-/// cakeys does not create (`plan::not_creatable`) or on a token other than the object's
-/// `createOn`, before the token is touched.
+/// `Conflict` when the locator is occupied by another class; `Validation` (17) on a pair whose
+/// origin is not `create`, before the token is touched.
 pub fn create(
     t: &Target,
     tok: &Token,
@@ -484,34 +483,33 @@ pub fn create(
     notes: &mut Notes,
 ) -> Result<(Resolved, bool)> {
     plan_mode(t)?;
-    if let Some(why) = cakeys_core::plan::not_creatable(t).map(str::to_owned).or_else(|| born_elsewhere(t)) {
+    if let Some(why) = not_origin_create(t) {
         return Err(KmError::Validation(format!("{t}: {why}")));
     }
     realise_as(t, tok, lock, write, true, None, notes)
 }
 
-/// Why `t`'s token may not create its object: keys.toml names another as its `createOn`.
-fn born_elsewhere(t: &Target) -> Option<String> {
-    t.create_on.filter(|born| *born != t.token_name).map(|born| {
-        format!(
-            "object '{}' is created on '{born}' (createOn); import it from there (camigrate migrate {} --from \
-             {born} --to {})",
-            t.object_name, t.object_name, t.token_name
-        )
-    })
+/// Why `create` never makes `t`'s object: its pair's origin is not `create`.
+fn not_origin_create(t: &Target) -> Option<String> {
+    match t.on_token.key_origin() {
+        KeyOrigin::Create => None,
+        KeyOrigin::Import => Some(format!(
+            "origin = \"import\": camigrate brings its material here (camigrate migrate {} --to {}), never `create`",
+            t.object_name, t.token_name
+        )),
+        KeyOrigin::Adopt => Some("origin = \"adopt\": it is found there, never created".into()),
+    }
 }
 
-/// Why `create` without a named pair leaves `t` alone: a class cakeys adopts rather than
-/// generates, a publicOnly adoption, an object born on another token (`createOn`), or an object
-/// whose material the lock already pins (another token then needs that same material, which
-/// only importing or migrating can put there).
+/// Why `create` without a named pair leaves `t` alone: its origin is not `create`, or the lock
+/// already pins its material (another token then needs that same material, which only
+/// importing or migrating can put there).
 fn not_created(t: &Target, lock: &Lock) -> Option<String> {
-    if let Some(why) = cakeys_core::plan::not_creatable(t) {
-        return Some(why.to_owned());
-    }
-    if let Some(why) = born_elsewhere(t) {
-        return Some(why);
-    }
+    not_origin_create(t).or_else(|| pinned(t, lock))
+}
+
+/// Why a pair's object is not created again: the lock already pins its material.
+fn pinned(t: &Target, lock: &Lock) -> Option<String> {
     lock.objects.get(t.object_name).filter(|o| !o.ids.is_empty()).map(|_| {
         format!(
             "the lock already pins object '{}' (`verify` checks it; a token without it needs that same \
@@ -521,8 +519,8 @@ fn not_created(t: &Target, lock: &Lock) -> Option<String> {
     })
 }
 
-/// Whether `create`, naming no pair, would make `t`'s object: it is a class cakeys creates, not
-/// born on another token, and not pinned by the lock. What the static gate checks generation for.
+/// Whether `create` would generate `t`'s object: its origin is `create` and the lock does not
+/// pin it yet. What the static gate asks generation for.
 #[must_use]
 pub fn creates(t: &Target, lock: &Lock) -> bool {
     not_created(t, lock).is_none()
@@ -557,44 +555,93 @@ pub fn create_pairs<'a>(cfg: &'a Config, spec: Option<&str>, token: Option<&str>
         .collect())
 }
 
-/// What `create` over `pairs` would otherwise decide by the order it runs in: an object several
-/// selected specs would create on one token (which spec's policy it is born with), and one it
-/// would create on several tokens without `createOn` (where it is born; and without the lock
-/// written, nothing would pin the first, so each token would get material of its own). Only
-/// the pairs `create` would make count ([`not_created`]), so a pinned object never refuses.
+/// What `create` does with one selected pair ([`plan_create`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    /// Created (or, already there, found and compared).
+    Create,
+    /// Left alone: not created here, or already pinned.
+    Skip,
+    /// The capability profiles say the token cannot make it.
+    Refuse,
+}
+
+impl Action {
+    /// The name `create --dry-run` prints.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Action::Create => "create",
+            Action::Skip => "skip",
+            Action::Refuse => "refuse",
+        }
+    }
+}
+
+/// One selected pair and what `create` does with it, decided before any token is opened.
+pub struct Planned<'a> {
+    /// The spec.
+    pub spec: &'a str,
+    /// The token.
+    pub token: &'a str,
+    /// The object the spec realises.
+    pub object: &'a str,
+    /// What `create` does with it.
+    pub action: Action,
+    /// Why: the skip's reason, the profiles' refusals, or what they leave undecided.
+    pub reasons: Vec<String>,
+}
+
+/// What `create` does with each selected pair ([`create_pairs`]), decided from keys.toml, the
+/// lock and the capability profiles alone, before any token is opened: a pair whose origin is
+/// not `create`, or whose object the lock pins, is skipped (unless both `spec` and `token` name
+/// it); every other pair goes through the static gate ([`crate::gate::check`]), whose *no*
+/// refuses it and whose *unknown* is a reason to try. A token whose profiles are not known
+/// without opening it is not gated here; the live check still refuses before generating.
 ///
 /// # Errors
 ///
-/// `Ambiguous` (12) naming the specs or the tokens, as `Config::pick_spec` does for a reference
-/// several pairs match; `Target::new`'s refusals.
-fn unordered_births(cfg: &Config, pairs: &[(&str, &str)], lock: &Lock) -> Result<()> {
-    use std::collections::BTreeMap;
-    // object -> token -> the specs that would create it there
-    let mut births: BTreeMap<&str, BTreeMap<&str, Vec<&str>>> = BTreeMap::new();
-    for &(spec_name, token_name) in pairs {
+/// [`create_pairs`]' refusals; `Validation` (17) for a named pair whose origin is not
+/// `create`, or a spec `plan_mode` refuses; the gate's own errors.
+pub fn plan_create<'a>(
+    cfg: &'a Config,
+    spec: Option<&str>,
+    token: Option<&str>,
+    lock: &Lock,
+    registry: &Registry,
+) -> Result<Vec<Planned<'a>>> {
+    let named = spec.is_some() && token.is_some();
+    let mut stacks = std::collections::BTreeMap::new();
+    let mut out = Vec::new();
+    for (spec_name, token_name) in create_pairs(cfg, spec, token)? {
         let t = Target::new(cfg, spec_name, token_name)?;
-        if not_created(&t, lock).is_none() {
-            births.entry(t.object_name).or_default().entry(token_name).or_default().push(spec_name);
+        let planned =
+            |action, reasons| Planned { spec: spec_name, token: token_name, object: t.object_name, action, reasons };
+        let mode = plan_mode(&t)?;
+        if named && let Some(why) = not_origin_create(&t) {
+            return Err(KmError::Validation(format!("{t}: {why}")));
         }
+        if !named && let Some(why) = not_created(&t, lock) {
+            out.push(planned(Action::Skip, vec![why]));
+            continue;
+        }
+        if !stacks.contains_key(token_name) {
+            let token_cfg = &cfg.tokens[token_name];
+            stacks.insert(token_name, crate::gate::stack(token_name, token_cfg, lock)?);
+        }
+        out.push(match &stacks[token_name] {
+            Ok(stack) => {
+                let v = crate::gate::check(&t, mode, stack, registry, creates(&t, lock))?;
+                if v.refusals.is_empty() {
+                    planned(Action::Create, v.notes)
+                } else {
+                    planned(Action::Refuse, v.refusals)
+                }
+            }
+            Err(why) => planned(Action::Create, vec![format!("{t}: not checked before opening the token: {why}")]),
+        });
     }
-    for (object, tokens) in &births {
-        if let Some((token, specs)) = tokens.iter().find(|(_, specs)| specs.len() > 1) {
-            return Err(KmError::Ambiguous(format!(
-                "object '{object}' would be created on token '{token}' by several specs ({}), each with its \
-                 own policy: name the one it is created with (`cakeys create <spec>`)",
-                specs.join(", ")
-            )));
-        }
-        if tokens.len() > 1 {
-            return Err(KmError::Ambiguous(format!(
-                "object '{object}' would be created on several tokens ({}), each with material of its own: name \
-                 the one it is born on with createOn, or the pair (`cakeys create <spec> --token <token>`); the \
-                 others get it by import (camigrate migrate)",
-                tokens.keys().copied().collect::<Vec<_>>().join(", ")
-            )));
-        }
-    }
-    Ok(())
+    Ok(out)
 }
 
 /// What [`create_selected`] did.
@@ -608,62 +655,47 @@ pub struct Created {
     pub failed: Option<KmError>,
 }
 
-/// The `create` verb: [`create`] over every selected pair ([`create_pairs`]) whose object the
-/// lock does not pin yet; pinned, adopted-only and publicOnly pairs are skipped with a note,
-/// unless both `spec` and `token` name the pair. Every step of a pair, opening its token
-/// included, ends the run there, reported in [`Created::failed`] beside what was created
-/// before.
+/// The `create` verb: [`create`] over each of `pairs` (what [`plan_create`] decided to create),
+/// in order. Every step of a pair, opening its token included, ends the run there, reported in
+/// [`Created::failed`] beside what was created before.
 ///
 /// At most one token is open at a time: each is closed before the next opens.
 ///
 /// # Errors
 ///
-/// [`create_pairs`]' refusals, and an object only the order of the run would decide (12: one
-/// object created by several specs on one token, or on several tokens without `createOn`)
-/// unless both `spec` and `token` name the pair, before any token is opened.
+/// None of its own: a pair's failure is [`Created::failed`].
 pub fn create_selected(
     cfg: &Config,
-    spec: Option<&str>,
-    token: Option<&str>,
+    pairs: &[(&str, &str)],
     open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
     lock: &mut Lock,
     write: LockWrite,
     notes: &mut Notes,
-) -> Result<Created> {
-    let pairs = create_pairs(cfg, spec, token)?;
-    let named = spec.is_some() && token.is_some();
-    if !named {
-        unordered_births(cfg, &pairs, lock)?;
-    }
+) -> Created {
     let mut out = Created { created: Vec::new(), changed: false, failed: None };
     let mut current: Option<Token> = None;
-    for (spec_name, token_name) in pairs {
-        let mut pair = || -> Result<Option<(Resolved, bool)>> {
+    for &(spec_name, token_name) in pairs {
+        let mut pair = || -> Result<(Resolved, bool)> {
             let t = Target::new(cfg, spec_name, token_name)?;
-            if !named && let Some(why) = not_created(&t, lock) {
-                notes.note(format_args!("create: skipped {t}: {why}"));
-                return Ok(None);
-            }
             // Another token's module is finalized (dropped) before the next open.
             let tok = match current.take().filter(|tok| tok.name == token_name) {
                 Some(tok) => current.insert(tok),
                 None => current.insert(open(token_name, notes)?),
             };
-            create(&t, tok, lock, write, notes).map(Some)
+            create(&t, tok, lock, write, notes)
         };
         match pair() {
-            Ok(Some((r, c))) => {
+            Ok((r, c)) => {
                 out.changed |= c;
                 out.created.push(r);
             }
-            Ok(None) => {}
             Err(e) => {
                 out.failed = Some(e);
                 break;
             }
         }
     }
-    Ok(out)
+    out
 }
 
 /// DELETE + If-Match. Absent is success; only the object identified (and a private key's public
@@ -843,73 +875,4 @@ pub fn check_open(
         }
     }
     Ok((r, tok))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fmt::Write;
-    use std::path::Path;
-
-    fn config(specs: &str) -> Config {
-        let text = format!(
-            "[tokens.a]\ntokenLabel = \"a\"\n[tokens.b]\ntokenLabel = \"b\"\n\n\
-             [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n{specs}"
-        );
-        cakeys_core::config::parse_config_with(&text, Path::new("keys.toml"), &|_| None).unwrap()
-    }
-
-    /// `create` naming no pair refuses (12), before any token is opened, what only the order of
-    /// the run would decide: one object created by several specs on one token (with whose
-    /// policy?), or on several tokens without `createOn` (where?). Naming the spec or the pair,
-    /// `createOn`, or a lock that already pins the object settles it.
-    #[test]
-    fn create_refuses_births_the_order_of_the_run_would_decide() {
-        let spec = |name: &str, tokens: &[&str], sign: bool| {
-            let mut text = format!("\n[specs.{name}]\nobject = \"k\"\nattributes = {{ CKA_SIGN = {sign} }}\n");
-            for t in tokens {
-                let _ = writeln!(text, "tokens.{t} = {{ locator = {{ CKA_LABEL = \"k\" }} }}");
-            }
-            text
-        };
-        let never_open = |_: &str, _: &mut Notes| -> Result<Token> { panic!("a token was opened") };
-        let refused = |cfg: &Config, s: Option<&str>, t: Option<&str>, why: &str| {
-            let r = create_selected(
-                cfg,
-                s,
-                t,
-                &never_open,
-                &mut Lock::default(),
-                LockWrite::Compare,
-                &mut Notes::default(),
-            );
-            let Err(e @ KmError::Ambiguous(_)) = r else { panic!("{s:?} {t:?}: not refused as ambiguous") };
-            assert!(e.to_string().contains(why), "{e}");
-        };
-        let decided = |cfg: &Config, s: Option<&str>, t: Option<&str>, lock: &Lock| {
-            let pairs = create_pairs(cfg, s, t).unwrap();
-            unordered_births(cfg, &pairs, lock).unwrap_or_else(|e| panic!("{s:?} {t:?}: {e}"));
-        };
-
-        // Two specs on one token: whichever ran first would decide the key's policy.
-        let two_specs = config(&(spec("k-sign", &["a"], true) + &spec("k-verify", &["a"], false)));
-        refused(&two_specs, None, None, "on token 'a' by several specs (k-sign, k-verify)");
-        refused(&two_specs, None, Some("a"), "by several specs");
-        decided(&two_specs, Some("k-sign"), None, &Lock::default());
-
-        // One spec on two tokens: each would get material of its own.
-        let two_tokens = config(&spec("k", &["a", "b"], true));
-        refused(&two_tokens, None, None, "on several tokens (a, b)");
-        refused(&two_tokens, Some("k"), None, "name the one it is born on with createOn");
-        decided(&two_tokens, None, Some("a"), &Lock::default());
-        let mut born = config(&spec("k", &["a", "b"], true));
-        born.create_on.insert("k".into(), "a".into());
-        decided(&born, None, None, &Lock::default());
-
-        // Pinned, the object is never created again, so nothing is left to decide.
-        let mut pinned = Lock::default();
-        pinned.objects.entry("k".into()).or_default().ids.insert("rfc7093m4".into(), "sha256-x".into());
-        decided(&two_specs, None, None, &pinned);
-        decided(&two_tokens, None, None, &pinned);
-    }
 }

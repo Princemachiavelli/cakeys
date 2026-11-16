@@ -47,11 +47,11 @@ fn a_key_moves_into_a_piv_slot_through_the_host() {
     drop(s);
     let config = format!(
         "[tokens.softhsm]\nmodule = \"{soft}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n\n{}\n\
-         [objects.pv]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\ncreateOn = \"softhsm\"\n\n\
+         [objects.pv]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [specs.pv-soft]\nobject = \"pv\"\nattributes = {{ CKA_SIGN = true, CKA_EXTRACTABLE = true }}\n\
-         tokens.softhsm = {{ locator = {{ CKA_LABEL = \"piv-import\" }} }}\n\n\
+         tokens.softhsm = {{ locator = {{ CKA_LABEL = \"piv-import\" }}, origin = \"create\" }}\n\n\
          [specs.pv-yk]\nobject = \"pv\"\nattributes = {{ CKA_SIGN = true }}\n\
-         tokens.yubikey = {{ locator = {{ CKA_ID = \"18\" }} }}\n",
+         tokens.yubikey = {{ locator = {{ CKA_ID = \"18\" }}, origin = \"import\" }}\n",
         dir.join("pin").display(),
         yubikey_token(&yk, &pin, &mgm, "")
     );

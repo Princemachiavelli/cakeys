@@ -370,7 +370,7 @@ fn object_matrix_is_the_committed_one() {
                         let w = Workdir::new(&format!("object-matrix-{i}"));
                         w.write_config(&format!(
                             "{}\n[objects.o]\n{}\n\n[specs.m]\nobject = \"o\"\nattributes = {{ {} }}\n\
-                                 tokens.ref = {{ locator = {{ CKA_LABEL = \"m{i}\" }}{} }}\n",
+                                 tokens.ref = {{ locator = {{ CKA_LABEL = \"m{i}\" }}, origin = \"adopt\"{} }}\n",
                             reference_tokens(&e.module, &w.dir),
                             row.kind.object(),
                             row.attributes(),

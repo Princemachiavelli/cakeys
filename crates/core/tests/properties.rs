@@ -29,7 +29,7 @@ curve = "secp256r1"
 [specs.s]
 object = "k"
 attributes = { CKA_SIGN = true }
-tokens.t1 = { locator = { CKA_LABEL = "k" } }
+tokens.t1 = { locator = { CKA_LABEL = "k" }, origin = "adopt" }
 
 [objects.aes]
 class = "CKO_SECRET_KEY"
@@ -39,8 +39,8 @@ valueLen = 32
 [specs.a]
 object = "aes"
 attributes = { CKA_SIGN = true, CKA_ENCRYPT = true, CKA_DECRYPT = true, CKA_WRAP = true }
-tokens.t1 = { locator = { CKA_LABEL = "aes" } }
-tokens.t2 = { locator = { CKA_LABEL = "aes" } }
+tokens.t1 = { locator = { CKA_LABEL = "aes" }, origin = "adopt" }
+tokens.t2 = { locator = { CKA_LABEL = "aes" }, origin = "adopt" }
 "#;
 
 const AES_SCHEMES: [&str; 4] = ["cmac", "kcv-ecb", "kcv-ecb-dec", "kw"];

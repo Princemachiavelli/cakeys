@@ -21,7 +21,7 @@ modulusBits = 2048
 
 [specs.whonix-pk-piv]
 object = "whonix-pk"
-tokens.yubikey = { locator = { CKA_ID = "05" }, publicOnly = true }
+tokens.yubikey = { locator = { CKA_ID = "05" }, origin = "adopt", publicOnly = true }
 
 [objects.whonix-pk-cert]
 class = "CKO_CERTIFICATE"
@@ -30,7 +30,7 @@ certificateType = "CKC_X_509"
 [specs.whonix-pk-cert-piv]
 object = "whonix-pk-cert"
 # CKA_ID 05 is shared with the slot's attestation certificate, so locate by label.
-tokens.yubikey = { locator = { CKA_LABEL = "X.509 Certificate for Retired Key 1" } }
+tokens.yubikey = { locator = { CKA_LABEL = "X.509 Certificate for Retired Key 1" }, origin = "adopt" }
 
 # Retired Key 2 (PIV slot 83): CN=Whonix host KEK
 [objects.whonix-kek]
@@ -40,7 +40,7 @@ modulusBits = 2048
 
 [specs.whonix-kek-piv]
 object = "whonix-kek"
-tokens.yubikey = { locator = { CKA_ID = "06" }, publicOnly = true }
+tokens.yubikey = { locator = { CKA_ID = "06" }, origin = "adopt", publicOnly = true }
 
 [objects.whonix-kek-cert]
 class = "CKO_CERTIFICATE"
@@ -49,7 +49,7 @@ certificateType = "CKC_X_509"
 [specs.whonix-kek-cert-piv]
 object = "whonix-kek-cert"
 # CKA_ID 06 is shared with the slot's attestation certificate, so locate by label.
-tokens.yubikey = { locator = { CKA_LABEL = "X.509 Certificate for Retired Key 2" } }
+tokens.yubikey = { locator = { CKA_LABEL = "X.509 Certificate for Retired Key 2" }, origin = "adopt" }
 
 # Retired Key 3 (PIV slot 84): CN=Whonix host db
 [objects.whonix-db]
@@ -59,7 +59,7 @@ modulusBits = 2048
 
 [specs.whonix-db-piv]
 object = "whonix-db"
-tokens.yubikey = { locator = { CKA_ID = "07" }, publicOnly = true }
+tokens.yubikey = { locator = { CKA_ID = "07" }, origin = "adopt", publicOnly = true }
 
 [objects.whonix-db-cert]
 class = "CKO_CERTIFICATE"
@@ -68,4 +68,4 @@ certificateType = "CKC_X_509"
 [specs.whonix-db-cert-piv]
 object = "whonix-db-cert"
 # CKA_ID 07 is shared with the slot's attestation certificate, so locate by label.
-tokens.yubikey = { locator = { CKA_LABEL = "X.509 Certificate for Retired Key 3" } }
+tokens.yubikey = { locator = { CKA_LABEL = "X.509 Certificate for Retired Key 3" }, origin = "adopt" }
