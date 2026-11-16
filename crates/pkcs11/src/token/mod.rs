@@ -222,7 +222,8 @@ impl Token {
         let module = module_info(ctx, module)?;
         let provider = registry.select(cfg.provider.as_deref(), &module)?;
         provider.check_options(name, &cfg.options)?;
-        let FoundSlot { slot, token, pins, write_protected } = find_slot(ctx, &cfg.token_label, &module.path)?;
+        let FoundSlot { slot, token, pins, write_protected } =
+            find_slot(ctx, &cfg.token_label, cfg.token_serial.as_deref(), &module.path)?;
         // The capability profiles (docs/CAPROBE.md): the module profile follows the
         // provider (D9), the binding layer is always in the stack, a forwarder the module
         // names and the config's extras with it. What the stack subtracts filters the
@@ -640,22 +641,20 @@ struct FoundSlot {
     write_protected: bool,
 }
 
-/// [`FoundSlot`] for `label` among the module's slots with a token.
+/// [`FoundSlot`] for `label`, and `serial` when given, among the module's slots with a token.
 ///
 /// # Errors
 ///
-/// `Ambiguous` when several carry the label, `Unavailable` when none does or a `C_*` call fails.
-fn find_slot(ctx: &Pkcs11, label: &str, module_path: &str) -> Result<FoundSlot> {
-    let mut found = None;
+/// `Ambiguous` when several match, naming their serials; `Unavailable` when none does or a
+/// `C_*` call fails.
+fn find_slot(ctx: &Pkcs11, label: &str, serial: Option<&str>, module_path: &str) -> Result<FoundSlot> {
+    let mut found: Vec<FoundSlot> = Vec::new();
     for slot in ctx.get_slots_with_token().map_err(ck("C_GetSlotList"))? {
         let info = ctx.get_token_info(slot).map_err(ck("C_GetTokenInfo"))?;
-        if info.label() != label {
+        if info.label() != label || serial.is_some_and(|s| info.serial_number().trim() != s) {
             continue;
         }
-        if found.is_some() {
-            return Err(KmError::Ambiguous(format!("several tokens labelled '{label}'")));
-        }
-        found = Some(FoundSlot {
+        found.push(FoundSlot {
             slot,
             token: TokenInfo {
                 model: info.model().trim().to_owned(),
@@ -677,7 +676,18 @@ fn find_slot(ctx: &Pkcs11, label: &str, module_path: &str) -> Result<FoundSlot> 
             write_protected: info.write_protected(),
         });
     }
-    found.ok_or_else(|| KmError::Unavailable(format!("token '{label}' not present in {module_path}")))
+    let named = match serial {
+        Some(s) => format!("token '{label}' with serial '{s}'"),
+        None => format!("token '{label}'"),
+    };
+    match found.len() {
+        0 => Err(KmError::Unavailable(format!("{named} not present in {module_path}"))),
+        1 => Ok(found.remove(0)),
+        _ => Err(KmError::Ambiguous(format!(
+            "several tokens labelled '{label}' (serials {}); name one with tokenSerial",
+            found.iter().map(|f| format!("'{}'", f.token.serial)).collect::<Vec<_>>().join(", ")
+        ))),
+    }
 }
 
 /// The file the dynamic loader mapped for `module`, symlinks resolved — what the lock records as

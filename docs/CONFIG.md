@@ -56,6 +56,9 @@ profileDirs = []
 module = "/run/current-system/sw/lib/softhsm/libsofthsm2.so"
 # Which token of the module: matched against C_GetTokenInfo's label.
 tokenLabel = "main"
+# Optional: its serial number too, when two of the module's tokens carry the label (12 without
+# it, naming their serials). The lock's URI records it either way.
+# tokenSerial = "4f3c2a1b9e8d7c6a"
 # The user PIN, read from a file (or `pinEnv = "VAR"`: the PIN itself from the environment).
 # Without a PIN cakeys opens a public session and sees only public objects.
 pinFile = "/var/lib/softhsm/pin"

@@ -340,6 +340,7 @@ mod tests {
             provider: provider.map(Into::into),
             profiles: profiles.iter().map(|s| (*s).to_owned()).collect(),
             token_label: "t".into(),
+            token_serial: None,
             pin_file: None,
             pin_env: None,
             mgm_key_file: None,

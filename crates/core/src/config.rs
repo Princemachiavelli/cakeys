@@ -53,6 +53,10 @@ pub struct TokenCfg {
     pub profiles: Vec<String>,
     /// The label the token reports (`CK_TOKEN_INFO.label`): which of the module's tokens this is.
     pub token_label: String,
+    /// The serial number the token reports (`CK_TOKEN_INFO.serialNumber`), when two of the
+    /// module's tokens carry one label: with it, only the token with both matches.
+    #[serde(default)]
+    pub token_serial: Option<String>,
     /// A file holding the user PIN (`$NAME` reads the path from the environment). With neither it
     /// nor `pinEnv`, the token is used without logging in.
     pub pin_file: Option<PathBuf>,

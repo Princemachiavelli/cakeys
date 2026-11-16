@@ -195,6 +195,7 @@ fn lockless_token_cfg() -> TokenCfg {
         provider: None,
         profiles: vec![],
         token_label: String::new(),
+        token_serial: None,
         pin_file: None,
         pin_env: None,
         mgm_key_file: None,

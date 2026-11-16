@@ -2652,11 +2652,28 @@ fn tokens_that_cannot_be_opened_as_named_are_refused() {
     });
     assert_eq!(free.is_some(), REF.provider == "softhsm");
     if let Some(slot) = free {
+        let serial_of = |info: cryptoki::slot::TokenInfo| info.serial_number().trim().to_owned();
+        let first = ctx
+            .get_slots_with_token()
+            .unwrap()
+            .into_iter()
+            .map(|s| ctx.get_token_info(s).unwrap())
+            .find(|i| i.label() == "kmtest" && i.token_initialized())
+            .map(serial_of)
+            .unwrap();
         ctx.init_token(slot, &AuthPin::new("5678".into()), "kmtest").unwrap();
+        let second = serial_of(ctx.get_token_info(slot).unwrap());
         ctx.finalize().unwrap();
         let o = e.km(&["realise", "signing-soft", "--token", "ref", "--no-update-lock"]);
         assert_eq!(code(&o), 12, "{}", stderr(&o));
-        assert!(stderr(&o).contains("several tokens labelled 'kmtest'"), "{}", stderr(&o));
+        let said = stderr(&o);
+        assert!(said.contains("several tokens labelled 'kmtest'") && said.contains("tokenSerial"), "{said}");
+        assert!(said.contains(&format!("'{first}'")) && said.contains(&format!("'{second}'")), "{said}");
+        // tokenSerial names one of them: the key is looked for there (and is absent: 11).
+        let config = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
+        e.write_config(&config.replacen("[tokens.ref]\n", &format!("[tokens.ref]\ntokenSerial = \"{first}\"\n"), 1));
+        let o = e.km(&["realise", "signing-soft", "--token", "ref", "--no-update-lock"]);
+        assert_eq!(code(&o), 11, "{}", stderr(&o));
     }
 }
 
