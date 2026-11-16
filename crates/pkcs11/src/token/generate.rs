@@ -69,14 +69,16 @@ impl Token {
         } else {
             self.session.generate_key(&mech, &g.template).map(drop)
         };
-        made.map(|()| None).map_err(|e| self.unsupported(format!("generating key on '{}': {e}", self.name)))
+        made.map(|()| None)
+            .map_err(|e| self.unsupported(format!("generating key on '{}': {} ({e})", self.name, rv_name(&e))))
     }
 
     fn generate(&self, object: &ObjectCfg, spec: &SpecCfg, loc: &Locator) -> Result<Option<String>> {
         let mut common = vec![Attribute::Token(true)];
         common.extend(locator_attrs(loc)?);
         let policy = self.policy_template(&spec.attributes)?;
-        let refused = |e: CkError| self.unsupported(format!("generating key on '{}': {e}", self.name));
+        let refused =
+            |e: CkError| self.unsupported(format!("generating key on '{}': {} ({e})", self.name, rv_name(&e)));
         let private_declared =
             spec.attributes.contains_key("CKA_PRIVATE") || spec.public_attributes.contains_key("CKA_PRIVATE");
         // A key pair, once more without the public half's default `CKA_PRIVATE = false` when the
@@ -137,7 +139,10 @@ impl Token {
                 // PrintableString form. The identity is the same: the SPKI, not the params.
                 let by_oid = pair(&mech, &public_with(curve.params())?, &private);
                 match (by_oid, curve.params_by_name()) {
-                    (Err(e), Some(name)) => pair(&mech, &public_with(name)?, &private).map_err(|_| e),
+                    (Err(e), Some(name)) => pair(&mech, &public_with(name)?, &private).map_err(|_| e).map(|note| {
+                        let said = format!("{}: {BY_NAME} ({})", self.name, curve.name());
+                        Some(note.map_or_else(|| said.clone(), |n| format!("{n}; {said}")))
+                    }),
                     (other, _) => other,
                 }
                 .map_err(refused)
@@ -247,6 +252,10 @@ impl Token {
         })
     }
 }
+
+/// What [`Token::create`]'s note says when the module generated the curve only from its name
+/// (PKCS#11 3.0's `PrintableString` `CKA_EC_PARAMS`), never by OID: ykcs11's edwards25519.
+pub const BY_NAME: &str = "the module takes the curve only by name, as a PrintableString CKA_EC_PARAMS";
 
 /// Make a public key object, alone or as a pair's half, from the template `public`; where the
 /// module calls a value invalid and the spec did not declare `CKA_PRIVATE` (`declared`), once

@@ -30,7 +30,7 @@ mod policy;
 mod possession;
 mod uri;
 
-pub use generate::with_public_default_dropped;
+pub use generate::{BY_NAME, with_public_default_dropped};
 pub use identity::commit_mechanism;
 pub use policy::bool_attr;
 pub use possession::{Derived, ProofSide, derive_any, is_policy_default, proof_refusal, show, template_refusal};
@@ -203,6 +203,27 @@ fn usable_mechanisms(
         }
     }
     Ok(usable)
+}
+
+/// The `CKR_*` name of a module's failure: cryptoki's `Display` is the spec's prose, which
+/// changes with the binding, so a message (and a profile row's evidence) names the return value
+/// by its constant. From `RvError`'s variant (`GeneralError` -> `CKR_GENERAL_ERROR`).
+#[must_use]
+pub fn rv_name(e: &CkError) -> String {
+    match e {
+        CkError::Pkcs11(RvError::VendorDefined(rv) | RvError::UnknownErrorCode(rv), _) => format!("CKR {rv:#x}"),
+        CkError::Pkcs11(rv, _) => {
+            let mut out = String::from("CKR");
+            for c in format!("{rv:?}").chars() {
+                if c.is_ascii_uppercase() {
+                    out.push('_');
+                }
+                out.push(c.to_ascii_uppercase());
+            }
+            out
+        }
+        other => other.to_string(),
+    }
 }
 
 fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {

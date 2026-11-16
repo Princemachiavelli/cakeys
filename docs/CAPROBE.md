@@ -99,7 +99,8 @@ ECDH into a sealed secret and in a read-only session, the moves, and a proof of 
 binding and key (`prove.pop-ecdh.CKK_EC.secp256r1`). The probe measures the proofs with the
 verbs' own code (`Token::prove_binding`) on a token opened with no module profile
 (`Token::unprofiled`), so what it records is what the module does, not what the committed
-profile already says. A new one is a variant
+profile already says; it generates the key types cakeys manages the same way (`Token::create`,
+the provider's create operation), each refusal the row's evidence. A new one is a variant
 there and the operation that tests it; the emitter, the diff and the stack algebra do not
 change. *An absent row is unknown*: never probed, never claimed — a spec-compliant default.
 

@@ -252,6 +252,13 @@ impl Profile {
         self.capabilities.get(c).map(|r| r.answer.yes())
     }
 
+    /// What shows the answer to `c`: its row's evidence, else the note an older profile kept for
+    /// it under `note` (the curve, or `"<key type> at <bits>"`).
+    #[must_use]
+    pub fn evidence(&self, c: &Capability, note: &str) -> Option<String> {
+        self.capabilities.get(c).and_then(|r| r.evidence.clone()).or_else(|| self.notes.get(note).cloned())
+    }
+
     /// Set the answer to `c`, with its evidence and how it succeeded.
     pub fn set(&mut self, c: Capability, answer: Answer, evidence: Option<String>, via: Option<String>) {
         self.capabilities.insert(c, Row { answer, evidence, via });

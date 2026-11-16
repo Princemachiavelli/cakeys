@@ -4,7 +4,13 @@
 //! "unknown" says why it cannot say (D5's conservative answers).
 
 use crate::baseline::Baseline;
+use crate::capability::{Capability, On};
 use crate::profile::Profile;
+
+/// The capability of generating `key_type` on `on`.
+fn generate(key_type: &str, on: On) -> Capability {
+    Capability::Generate { key_type: key_type.to_owned(), on }
+}
 
 /// A query's answer: yes (with who said so), no (with who and why), or unknown (why it
 /// cannot say). No and unknown are different exits (15 and 16), so a check can tell a hard
@@ -149,7 +155,7 @@ impl<'a> Effective<'a> {
             if let Some(item) = item
                 && l.generation(key_type).is_some_and(|row| row.cannot.iter().any(|c| c == item))
             {
-                return Verdict::no(&l.profile, l.notes.get(item).cloned());
+                return Verdict::no(&l.profile, l.evidence(&generate(key_type, On::Item(item.to_owned())), item));
             }
             for r in &l.restrict {
                 if r.operation == "generate"
@@ -171,7 +177,7 @@ impl<'a> Effective<'a> {
             // What the probe saw decides; then the range the module reports; then, for a
             // probed row, only a size between two that generated is yes — the rest of what was
             // never tried is unknown.
-            let size_note = || m.notes.get(&format!("{key_type} at {bits}")).cloned();
+            let size_note = || m.evidence(&generate(key_type, On::Bits(bits)), &format!("{key_type} at {bits}"));
             if row.cannot_bits.contains(&bits) {
                 return Verdict::no(&m.profile, size_note());
             }
@@ -195,10 +201,13 @@ impl<'a> Effective<'a> {
         }
         if let Some(item) = item {
             if row.can.iter().any(|c| c == item) {
-                return Verdict::yes(&m.profile, m.notes.get(item));
+                return Verdict::yes(
+                    &m.profile,
+                    m.evidence(&generate(key_type, On::Item(item.to_owned())), item).as_ref(),
+                );
             }
             if row.cannot.iter().any(|c| c == item) {
-                return Verdict::no(&m.profile, m.notes.get(item).cloned());
+                return Verdict::no(&m.profile, m.evidence(&generate(key_type, On::Item(item.to_owned())), item));
             }
             return Verdict::Unknown {
                 why: format!("module profile {} records neither can nor cannot for it (partial)", m.profile),

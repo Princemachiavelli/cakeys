@@ -9,7 +9,7 @@
 //! a `cannot` row or a `subtract` row carrying the `C_*` failure in its note, and what the
 //! probe cannot reach is named in [`Probed::undetermined`], never guessed.
 
-use cakeys_core::config::{Binding, ObjectCfg, TokenCfg};
+use cakeys_core::config::{AttrValue, Binding, Locator, ObjectCfg, SpecCfg, TokenCfg};
 use cakeys_core::id::Curve;
 use cakeys_core::pop::{self, OaepHash, RsaPadding};
 use cakeys_core::sig::{self, EcdsaHash, Encoding};
@@ -271,6 +271,8 @@ pub(crate) struct Draft {
     unwrap: Refused,
     /// How ECDH derived.
     derive: Derived,
+    /// What shows a generation row's answer: the refusal, or why nothing was tried.
+    evidence: BTreeMap<Capability, String>,
 }
 
 /// OAEP hashes that worked, of the ones tried.
@@ -302,7 +304,13 @@ impl Draft {
             decrypt: Oaep::default(),
             unwrap: Refused::default(),
             derive: Derived::default(),
+            evidence: BTreeMap::new(),
         }
+    }
+
+    /// Record why generating `key_type` on `on` answers as it does.
+    fn generation_evidence(&mut self, key_type: &str, on: On, why: String) {
+        self.evidence.insert(Capability::Generate { key_type: key_type.to_owned(), on }, why);
     }
 
     /// The profile with what the probes recorded as its rows: each OAEP hash tried, each
@@ -331,6 +339,11 @@ impl Draft {
         }
         for (kt, row) in &self.generate {
             p.set_generation(kt, row);
+        }
+        for (c, why) in self.evidence {
+            if let Some(row) = p.capabilities.get_mut(&c) {
+                row.evidence = Some(why);
+            }
         }
         p
     }
@@ -419,6 +432,29 @@ struct Made<'a> {
 /// A generated pair, `(public, private)`, or the module's refusal.
 type Pair = std::result::Result<(ObjectHandle, ObjectHandle), CkError>;
 
+/// A pair `Token::create` made, `(public, private, its note)`, or the module's refusal.
+type Created = std::result::Result<(ObjectHandle, ObjectHandle, Option<String>), KmError>;
+
+/// A probe spec: `CKA_SENSITIVE` and the usage bits `private` and `public` name, true.
+fn spec(private: &[&str], public: &[&str]) -> SpecCfg {
+    let attrs = |names: &[&str]| names.iter().map(|n| ((*n).to_owned(), AttrValue::Bool(true))).collect();
+    SpecCfg {
+        object: "probe".into(),
+        attributes: attrs(&[&["CKA_SENSITIVE"], private].concat()),
+        public_attributes: attrs(public),
+        migrate: cakeys_core::config::SpecMigrateCfg::default(),
+        tokens: BTreeMap::new(),
+    }
+}
+
+/// A refusal `Token::create` reported, as the evidence of a generation row: `CKR_*`, as the
+/// probe has always named it, else what was said.
+fn refused(tok: &Token, e: &KmError) -> String {
+    let said = e.to_string();
+    let rv = said.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).find(|w| w.starts_with("CKR_"));
+    rv.map_or_else(|| evidence(tok, e), str::to_owned)
+}
+
 impl Made<'_> {
     fn label(&mut self) -> String {
         self.n += 1;
@@ -494,6 +530,49 @@ impl Made<'_> {
             key,
             format!("{} on a {half} object: {}; made without it, the object {read}", show(default), ckr(refusal)),
         );
+    }
+
+    /// Generate `object` where the target says, as `spec` declares it, through the verbs' own
+    /// create operation (`Token::create`: the provider's, as Security Officer where the module
+    /// creates only so). The pair and `create`'s note, or the module's refusal as the inner
+    /// error; an SO login failing is the outer one, and stops the probe.
+    fn create(&mut self, object: &ObjectCfg, spec: &SpecCfg) -> Result<Created> {
+        let (loc, label) = match &self.target {
+            Target::Labels => {
+                let label = self.label();
+                (Locator { label: Some(label.clone()), id: None }, Some(label))
+            }
+            Target::Slot(id) => {
+                let hex = id.iter().fold(String::new(), |mut s, b| {
+                    let _ = std::fmt::Write::write_fmt(&mut s, format_args!("{b:02x}"));
+                    s
+                });
+                (Locator { label: None, id: Some(hex) }, None)
+            }
+        };
+        let note = match self.tok.create(object, spec, &loc, None) {
+            Ok(note) => note,
+            Err(KmError::Unavailable(m)) if m.contains("C_Login (SO)") => return Err(KmError::Unavailable(m)),
+            Err(e) => return Ok(Err(e)),
+        };
+        let one = |class| self.tok.find(class, &loc).map(|found| found.first().copied());
+        let (Some(public), Some(private)) = (one(ObjectClass::PUBLIC_KEY)?, one(ObjectClass::PRIVATE_KEY)?) else {
+            return Ok(Err(KmError::NotFound("the key pair it made is not under its locator".into())));
+        };
+        if let Some(label) = label {
+            self.handles.extend([private, public]);
+            self.labels.push(label);
+        }
+        Ok(Ok((public, private, note)))
+    }
+
+    /// [`Self::create`] with the usage the operation probes need, else bare, as a module may
+    /// insist. `Ok((created, usable))`: `usable` when the usage took.
+    fn create_for_use(&mut self, object: &ObjectCfg, usage: &SpecCfg, bare: &SpecCfg) -> Result<(Created, bool)> {
+        match self.create(object, usage)? {
+            Ok(made) => Ok((Ok(made), true)),
+            Err(_) => Ok((self.create(object, bare)?, false)),
+        }
     }
 
     /// Generate with the usage template — what the operation probes need — else the bare one a
@@ -772,8 +851,19 @@ fn probe_curves(made: &mut Made, profile: &mut Draft) -> Result<()> {
         if !listed && !stood_in {
             for (curve, ..) in curves {
                 row.cannot.push(curve.to_owned());
-                profile.notes.insert(curve.to_owned(), format!("not advertised: {keygen}"));
+                let why = format!("not advertised: {keygen}");
+                if kt == "CKK_EC_MONTGOMERY" {
+                    profile.notes.insert(curve.to_owned(), why);
+                } else {
+                    profile.generation_evidence(kt, On::Item(curve.to_owned()), why);
+                }
             }
+            profile.generate.insert(kt.to_owned(), row);
+            continue;
+        }
+        if kt != "CKK_EC_MONTGOMERY" {
+            create_curves(made, profile, kt, &curves, &mut row)?;
+            record_stand_in(profile, stood_in, keygen, made.tok.runnable(mech).mechanism_type(), &row);
             profile.generate.insert(kt.to_owned(), row);
             continue;
         }
@@ -825,20 +915,78 @@ fn probe_curves(made: &mut Made, profile: &mut Draft) -> Result<()> {
                 None => {}
             }
         }
-        if stood_in {
-            let how = format!("not listed; generates through the provider's stand-in, {}", mech.mechanism_type());
-            if row.can.is_empty() {
-                profile
-                    .notes
-                    .insert(keygen.to_string(), "not listed; the provider's stand-in generates nothing".into());
-            } else {
-                profile.add.push(keygen.to_string());
-                profile.notes.insert(keygen.to_string(), how);
-            }
-        }
+        record_stand_in(profile, stood_in, keygen, mech.mechanism_type(), &row);
         profile.generate.insert(kt.to_owned(), row);
     }
     Ok(())
+}
+
+/// Key pairs of a key type cakeys manages (`CKK_EC`, `CKK_EC_EDWARDS`) per curve, generated
+/// as the verbs generate them (`Token::create`): `can`, or `cannot` with the refusal as the
+/// row's evidence, and `by-name` for a curve the module takes only by name. The first key with
+/// its usage gets the operation probes, right away — in a scratch slot the next replaces it.
+fn create_curves(
+    made: &mut Made,
+    profile: &mut Draft,
+    kt: &str,
+    curves: &[CurveForm],
+    row: &mut GenerateRow,
+) -> Result<()> {
+    let key_type = if kt == "CKK_EC" { Kt::Ec } else { Kt::EcEdwards };
+    let usage = if kt == "CKK_EC" { spec(&["CKA_SIGN", "CKA_DERIVE"], &[]) } else { spec(&["CKA_SIGN"], &[]) };
+    let mut probed_ops = false;
+    for (curve, ..) in curves {
+        let object = ObjectCfg {
+            curve: Some((*curve).to_owned()),
+            ..ObjectCfg::new(cakeys_core::types::ObjectClass::PrivateKey, Some(key_type))
+        };
+        match made.create_for_use(&object, &usage, &spec(&[], &[]))? {
+            (Ok((public, private, note)), usable) => {
+                row.can.push((*curve).to_owned());
+                if note.as_deref().is_some_and(|n| n.contains(token::BY_NAME)) {
+                    row.by_name.push((*curve).to_owned());
+                }
+                // The public CKA_PRIVATE = false default the module refused (AWS CloudHSM).
+                if let Some(n) = note.filter(|n| n.contains("CKA_PRIVATE = false")) {
+                    let said = n.split("; ").next().unwrap_or_default().replace(&format!("{}: ", made.tok.name), "");
+                    made.template_notes.entry("template.public.CKA_PRIVATE".into()).or_insert(said);
+                }
+                if !probed_ops {
+                    probed_ops = true;
+                    if usable {
+                        operate(made, profile, kt, curve, public, private);
+                    } else {
+                        made.undetermined.push(format!(
+                            "no operation probes on {kt} keys: the module refused the usage attributes when \
+                             generating on {curve}"
+                        ));
+                    }
+                }
+            }
+            (Err(e), _) => {
+                row.cannot.push((*curve).to_owned());
+                let why = format!("generation refused: {}", refused(made.tok, &e));
+                profile.generation_evidence(kt, On::Item((*curve).to_owned()), why);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A generation mechanism the module does not list but the provider stands in for (`ran`): in
+/// `add` when a curve generated through it, a note either way.
+fn record_stand_in(profile: &mut Draft, stood_in: bool, keygen: MechanismType, ran: MechanismType, row: &GenerateRow) {
+    if !stood_in {
+        return;
+    }
+    if row.can.is_empty() {
+        profile.notes.insert(keygen.to_string(), "not listed; the provider's stand-in generates nothing".into());
+    } else {
+        profile.add.push(keygen.to_string());
+        profile
+            .notes
+            .insert(keygen.to_string(), format!("not listed; generates through the provider's stand-in, {ran}"));
+    }
 }
 
 /// Key pairs per RSA size: `can-bits` and `cannot-bits` beside the range the module reports.
@@ -849,26 +997,22 @@ fn probe_rsa(made: &mut Made, profile: &mut Draft) -> Result<Option<(ObjectHandl
     let mut row = profile.generate.remove("CKK_RSA").unwrap_or_default();
     let mut transport = None;
     for bits in [1024u32, 2048, 3072, 4096] {
-        let public = [
-            Attribute::ModulusBits(u64::from(bits).into()),
-            Attribute::PublicExponent(vec![1, 0, 1]),
-            Attribute::Private(false),
-        ];
-        let plain = [Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Sensitive(true)];
-        // The 2048-bit pair carries every usage the operation and wrap probes need, each
-        // attribute on the half the spec defines it for, since their defaults are the module's
-        // choice. A module refusing the explicit rows gets the bare templates.
+        // Generated as the verbs generate it. The 2048-bit pair carries every usage the
+        // operation and wrap probes need, each attribute on the half the spec defines it for,
+        // since their defaults are the module's choice. A module refusing them gets the bare spec.
+        let object = ObjectCfg {
+            modulus_bits: Some(bits.into()),
+            ..ObjectCfg::new(cakeys_core::types::ObjectClass::PrivateKey, Some(Kt::Rsa))
+        };
+        let bare = spec(&[], &[]);
         let attempt = if bits == 2048 {
-            let mut public_use = public.to_vec();
-            public_use.extend([Attribute::Encrypt(true), Attribute::Wrap(true), Attribute::Verify(true)]);
-            let mut private_use = plain.to_vec();
-            private_use.extend([Attribute::Decrypt(true), Attribute::Unwrap(true), Attribute::Sign(true)]);
-            made.pair_for_use(&Mechanism::RsaPkcsKeyPairGen, (&public_use, &private_use), (&public, &plain))?
+            let usage = spec(&["CKA_DECRYPT", "CKA_UNWRAP", "CKA_SIGN"], &["CKA_ENCRYPT", "CKA_WRAP", "CKA_VERIFY"]);
+            made.create_for_use(&object, &usage, &bare)?
         } else {
-            (made.pair(&Mechanism::RsaPkcsKeyPairGen, &public, &plain)?, false)
+            (made.create(&object, &bare)?, false)
         };
         match attempt {
-            (Ok((public, private)), usable) => {
+            (Ok((public, private, _)), usable) => {
                 if bits == 2048 {
                     if usable {
                         operate(made, profile, "CKK_RSA", "RSA-2048", public, private);
@@ -885,8 +1029,8 @@ fn probe_rsa(made: &mut Made, profile: &mut Draft) -> Result<Option<(ObjectHandl
             }
             (Err(e), _) => {
                 row.cannot_bits.push(bits);
-                // One note per refused size: the last failure must not erase the others.
-                profile.notes.insert(format!("CKK_RSA at {bits}"), format!("modulusBits = {bits}: {}", ckr(&e)));
+                let why = format!("modulusBits = {bits}: {}", refused(made.tok, &e));
+                profile.generation_evidence("CKK_RSA", On::Bits(bits), why);
             }
         }
     }
