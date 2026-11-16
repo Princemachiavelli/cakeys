@@ -43,8 +43,14 @@ pub struct TokenCfg {
     /// (`LD_LIBRARY_PATH`; on NixOS nothing else). The lock records the file actually loaded and
     /// its hash, as provenance only.
     pub module: Option<String>,
-    /// Provider crate handling this module's quirks; auto-detected from `C_GetInfo` if unset.
+    /// Provider crate, or module profile family, handling this module's quirks; auto-detected
+    /// from `C_GetInfo` if unset. A family, never one profile ([`Self::module_profile`]).
     pub provider: Option<String>,
+    /// One module profile by its full name (`aws-cloudhsm/5.18+hsm2m-non-fips`), for profiles
+    /// that tie on every match key (PKCS#11 reports no FIPS mode, docs/CAPROBE.md D12). Its
+    /// family is the provider when `provider` is unset. Not `profiles`, which are delta layers.
+    #[serde(default)]
+    pub module_profile: Option<String>,
     /// Delta capability layers to compose over the module profile (docs/CAPROBE.md), by name
     /// or family: the hardware under the module (`swtpm`), or anything else between cakeys
     /// and it. The cryptoki binding layer is always applied; p11-kit is detected from the
@@ -103,6 +109,15 @@ pub struct TokenCfg {
 pub type Options = toml::Table;
 
 impl TokenCfg {
+    /// The provider keys.toml names: `provider`, else the family of `moduleProfile`
+    /// (`aws-cloudhsm` for `aws-cloudhsm/5.18+hsm2m-non-fips`). `None`: detect it.
+    #[must_use]
+    pub fn named_provider(&self) -> Option<&str> {
+        self.provider
+            .as_deref()
+            .or_else(|| self.module_profile.as_deref().map(|p| p.split_once('/').map_or(p, |(family, _)| family)))
+    }
+
     /// The module to load, its `$NAME` reference resolved by `env` now: resolved when the token
     /// is opened, so an unset one fails only a run that uses this token without `--module`.
     ///
@@ -1112,6 +1127,22 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
         if let Some(m) = t.mgm_key_file.clone() {
             let expanded = env_ref(&m.to_string_lossy(), &format!("token '{name}': mgmKeyFile"), env)?;
             t.mgm_key_file = Some(PathBuf::from(expanded));
+        }
+        // `provider` names a family; one profile of it is `moduleProfile`.
+        if let Some(p) = t.provider.as_deref().filter(|p| p.contains('/')) {
+            return Err(KmError::Validation(format!(
+                "{}: token '{name}': provider = \"{p}\" names one module profile; name its family in provider \
+                 and the profile in moduleProfile = \"{p}\"",
+                path.display()
+            )));
+        }
+        if let (Some(family), Some(profile)) = (t.provider.as_deref(), t.module_profile.as_deref())
+            && profile.split_once('/').map_or(profile, |(f, _)| f) != family
+        {
+            return Err(KmError::Validation(format!(
+                "{}: token '{name}': moduleProfile '{profile}' is not of provider '{family}''s family",
+                path.display()
+            )));
         }
         if let Some(id) = &t.scratch_id
             && crate::hex::decode(id).is_none_or(|b| b.is_empty())

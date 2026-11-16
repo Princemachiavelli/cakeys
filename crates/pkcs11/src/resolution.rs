@@ -133,7 +133,7 @@ pub fn resolve(
 
     // A passthrough hides the module behind it: only a provider named past the passthrough's own
     // family (an observation records the detected one) says what that module is.
-    let named = |l: &Profile| cfg.provider.as_deref().is_some_and(|p| p != l.family() && p != l.profile);
+    let named = |l: &Profile| cfg.named_provider().is_some_and(|p| p != l.family() && p != l.profile);
     if let Some(l) = out.layers.iter().find(|l| l.requires_provider && !named(l)) {
         let why = l.notes.get("requires-provider").map_or("it hides the module behind it", String::as_str);
         out.hidden = Some(format!("{}: {why}", l.profile));
@@ -144,14 +144,9 @@ pub fn resolve(
     //    under it (D9/D10), so it is chosen by the most match keys: the expressed version
     //    first (C_GetInfo; a module hiding it as 0.0 records none), then the token's model and
     //    firmware. Anything short of all of them is flagged in the notes.
-    //    A provider naming one profile of its family takes that one alone.
-    let named = cfg.provider.as_deref().unwrap_or(provider);
-    let (family, pinned) = named.split_once('/').map_or((named, None), |(f, _)| (f, Some(named)));
-    let candidates: Vec<&Profile> = set
-        .all()
-        .iter()
-        .filter(|p| p.mode == Mode::Observed && p.family() == family && pinned.is_none_or(|n| p.profile == n))
-        .collect();
+    //    A `moduleProfile` naming one profile of the family takes that one alone.
+    let family = cfg.named_provider().unwrap_or(provider);
+    let candidates = module_candidates(set, family, cfg.module_profile.as_deref())?;
     let fit = |p: &Profile| Fit::of(p, module, token);
     let Some((chosen, tied, unversioned)) = choose(&candidates, &out.layers, module, token) else { return Ok(out) };
     let mut p = chosen.clone();
@@ -176,7 +171,7 @@ pub fn resolve(
         out.notes.push(format!(
             "module profiles {} fit equally and the hardware is not known here: using {}'s module \
              rows, its generate, wrap, unwrap and decrypt rows are not used (unknown); name the \
-             hardware in tokens.<token>.profiles, or the pair in provider",
+             hardware in tokens.<token>.profiles, or the pair in tokens.<token>.moduleProfile",
             tied.iter().map(|p| p.profile.as_str()).collect::<Vec<_>>().join(", "),
             p.profile
         ));
@@ -224,6 +219,24 @@ pub fn resolve(
     }
     out.module = Some(p);
     Ok(out)
+}
+
+/// The observed module profiles of `family`, or the one `pinned` names (`moduleProfile`).
+///
+/// # Errors
+///
+/// `pinned` names no profile the set has.
+fn module_candidates<'a>(set: &'a Set, family: &str, pinned: Option<&str>) -> Result<Vec<&'a Profile>, String> {
+    if let Some(p) = pinned
+        && !set.all().iter().any(|q| q.mode == Mode::Observed && q.profile == p)
+    {
+        return Err(format!("moduleProfile '{p}' is no module profile this build or a profileDirs entry has"));
+    }
+    Ok(set
+        .all()
+        .iter()
+        .filter(|p| p.mode == Mode::Observed && p.family() == family && pinned.is_none_or(|n| p.profile == n))
+        .collect())
 }
 
 /// The module profile among a family's `candidates`, with the ones that fit it equally well,
@@ -341,6 +354,7 @@ mod tests {
             profiles: profiles.iter().map(|s| (*s).to_owned()).collect(),
             token_label: "t".into(),
             token_serial: None,
+            module_profile: None,
             pin_file: None,
             pin_env: None,
             mgm_key_file: None,
@@ -466,16 +480,23 @@ mod tests {
     }
 
     /// Profiles that tie on every match key (a FIPS and a non-FIPS `CloudHSM` cluster: PKCS#11
-    /// reports no mode, D12) resolve to the first embedded, the stricter; a provider naming the
-    /// other profile takes it.
+    /// reports no mode, D12) resolve to the first embedded, the stricter; `moduleProfile` naming
+    /// the other takes it, with or without the provider named; a name no profile has is refused.
     #[test]
-    fn a_provider_naming_a_profile_takes_that_one() {
+    fn a_module_profile_pin_takes_that_one() {
         let hsm = module("CloudHSM", "5.18");
         let tied = resolve(&cfg(None, &[]), &hsm, None, "aws-cloudhsm").unwrap();
         assert_eq!(tied.module_name(), Some("aws-cloudhsm/5.18+hsm2m-fips"));
-        let named = Some("aws-cloudhsm/5.18+hsm2m-non-fips");
-        let r = resolve(&cfg(named, &[]), &hsm, None, "aws-cloudhsm").unwrap();
-        assert_eq!(r.module_name(), Some("aws-cloudhsm/5.18+hsm2m-non-fips"));
+        let pinned = |provider: Option<&str>, profile: &str| TokenCfg {
+            module_profile: Some(profile.into()),
+            ..cfg(provider, &[])
+        };
+        for provider in [Some("aws-cloudhsm"), None] {
+            let r = resolve(&pinned(provider, "aws-cloudhsm/5.18+hsm2m-non-fips"), &hsm, None, "aws-cloudhsm").unwrap();
+            assert_eq!(r.module_name(), Some("aws-cloudhsm/5.18+hsm2m-non-fips"), "{provider:?}");
+        }
+        let e = resolve(&pinned(None, "aws-cloudhsm/9.9"), &hsm, None, "aws-cloudhsm").unwrap_err();
+        assert!(e.contains("moduleProfile 'aws-cloudhsm/9.9'"), "{e}");
     }
 
     #[test]

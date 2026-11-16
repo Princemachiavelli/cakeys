@@ -49,7 +49,8 @@ pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Res
         }
     };
     let recorded = observed.and_then(|o| Some((o.module.as_ref()?, o.token.as_ref()?)));
-    let Some(provider) = cfg.provider.clone().or_else(|| observed.and_then(|o| o.provider.clone())) else {
+    let Some(provider) = cfg.named_provider().map(str::to_owned).or_else(|| observed.and_then(|o| o.provider.clone()))
+    else {
         return Ok(Err(format!(
             "token '{name}': no provider named and nothing recorded in the lock, so its profile is known \
              only when it opens"

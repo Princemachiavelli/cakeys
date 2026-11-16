@@ -306,7 +306,7 @@ EOF
 
 # The module profile of this cluster's mode for the client package $1: aws-cloudhsm/<major.minor>
 # +hsm2m-fips or -non-fips. The two tie on every match key (PKCS#11 reports no mode, D12), so
-# `cakeys` and `camigrate` name it as the cloudhsm token's provider.
+# `cakeys` and `camigrate` pin it as the cloudhsm token's moduleProfile.
 profile_name() {
   echo "aws-cloudhsm/$(sed -E 's/.*-([0-9]+\.[0-9]+)\.[0-9]+$/\1/' <<<"$1")+hsm2m-$stack"
 }
@@ -382,7 +382,7 @@ tool() {
   wait_runner
   copy "$p11" "$softhsm" "$(dirname "$(dirname "$bin")")"
   runner install -D -m 600 /dev/stdin /run/cakeys/pin <<<"caprobe:$(secret cu)"
-  sed "s|^\[tokens.cloudhsm\]\$|&\nprovider = \"$(profile_name "$p11")\"|" "${CAKEYS_AWS_CONFIG:-$tf/cakeys.toml}" |
+  sed "s|^\[tokens.cloudhsm\]\$|&\nmoduleProfile = \"$(profile_name "$p11")\"|" "${CAKEYS_AWS_CONFIG:-$tf/cakeys.toml}" |
     runner install -D -m 644 /dev/stdin /root/cakeys/keys.toml
   runner bash -s <<EOF
 set -euo pipefail

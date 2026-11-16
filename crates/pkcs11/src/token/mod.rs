@@ -220,7 +220,7 @@ impl Token {
         let module_guard = library(&module)?;
         let ctx = &module_guard.0;
         let module = module_info(ctx, module)?;
-        let provider = registry.select(cfg.provider.as_deref(), &module)?;
+        let provider = registry.select(cfg.named_provider(), &module)?;
         provider.check_options(name, &cfg.options)?;
         let FoundSlot { slot, token, pins, write_protected } =
             find_slot(ctx, &cfg.token_label, cfg.token_serial.as_deref(), &module.path)?;

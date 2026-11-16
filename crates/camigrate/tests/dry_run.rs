@@ -1584,7 +1584,10 @@ fn rsa_aes_key_wrap_stands_in_for_rfc_5649() {
     };
     let body = transport_key(kry) + &transport_key(soft) + &key("in", kry, soft) + &key("out", soft, kry);
     e.config_with(&body, &|r| match r.name {
-        "softhsm" => "transportWith = \"tk-softhsm\"\nprovider = \"softhsm/2.7+no-aes-key-wrap\"\n".into(),
+        "softhsm" => {
+            "transportWith = \"tk-softhsm\"\nprovider = \"softhsm\"\nmoduleProfile = \"softhsm/2.7+no-aes-key-wrap\"\n"
+                .into()
+        }
         "kryoptic" => "transportWith = \"tk-kryoptic\"\n".into(),
         _ => String::new(),
     });

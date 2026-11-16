@@ -343,7 +343,7 @@ impl Run<'_> {
     /// profiles, resolved from keys.toml and the lock. No token is opened.
     fn validate(&self, notes: &mut Notes) -> anyhow::Result<()> {
         for (name, t) in &self.cfg.tokens {
-            let Some(p) = t.provider.as_deref() else { continue };
+            let Some(p) = t.named_provider() else { continue };
             // A named provider checks the token's options here too; an auto-detected one
             // can only be known, and check them, once the token is opened.
             let provider = self.registry.named(p).ok_or_else(|| {

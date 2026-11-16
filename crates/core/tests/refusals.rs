@@ -103,6 +103,16 @@ fn token_and_creation_rules_are_checked_at_load() {
     };
     let with_token =
         |line: &str| keys(EC, SIGN, "").replace("tokenLabel = \"t\"", &format!("tokenLabel = \"t\"\n{line}"));
+    // A provider is a family; one profile of it is moduleProfile, of the same family.
+    refused(
+        with_token("provider = \"aws-cloudhsm/5.18+hsm2m-non-fips\""),
+        "name its family in provider and the profile in moduleProfile",
+    );
+    refused(
+        with_token("provider = \"softhsm\"\nmoduleProfile = \"aws-cloudhsm/5.18+hsm2m-non-fips\""),
+        "is not of provider 'softhsm''s family",
+    );
+    load(&with_token("moduleProfile = \"aws-cloudhsm/5.18+hsm2m-non-fips\"")).unwrap();
     refused(with_token("scratchId = \"zz\""), "is not a hex CKA_ID");
     refused(with_token("scratchId = \"\""), "is not a hex CKA_ID");
     // A transport key: an RSA private key of at least 2048 bits that unwraps and never leaves.
