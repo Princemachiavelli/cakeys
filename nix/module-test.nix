@@ -210,9 +210,9 @@ pkgs.testers.runNixOSTest {
         assert "`cakeys create` makes it" in machine.succeed(
             "journalctl -u cakeys-check-signing.service --no-pager"
         )
-        machine.succeed(f"{km} create signing-soft --token softhsm --update-lock")
+        machine.succeed(f"{km} create --spec signing-soft --token softhsm --update-lock")
         machine.fail("test -e /run/cakeys/signing.pem")
-        machine.succeed(f"{km} realise signing-soft --token softhsm --update-lock")
+        machine.succeed(f"{km} realise --spec signing-soft --token softhsm --update-lock")
         machine.succeed("systemctl start signer.service")
         machine.succeed("systemctl is-active cakeys-check-signing.service")
         # The signer signed through the key file, with the locked key.
@@ -226,10 +226,10 @@ pkgs.testers.runNixOSTest {
             "openssl dgst -sha256 -verify /run/signing.pub -signature /run/signer.sig /etc/km/keys.toml",
         )
         # Key gone: a fresh check fails, and makes no new key.
-        machine.succeed(f"{km} delete signing-soft --token softhsm --no-update-lock")
+        machine.succeed(f"{km} delete --spec signing-soft --token softhsm --no-update-lock")
         machine.succeed("systemctl stop signer.service cakeys-check-signing.service")
         machine.fail("systemctl start signer.service")
-        machine.fail(f"{km} resolve signing-soft --token softhsm")
+        machine.fail(f"{km} resolve --spec signing-soft --token softhsm")
         # No key file outlives the failed check.
         machine.fail("test -e /run/cakeys/signing.pem")
   '';

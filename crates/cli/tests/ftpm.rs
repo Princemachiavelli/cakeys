@@ -73,12 +73,12 @@ fn keys_generate_and_prove_possession_each_way() {
     }
     e.config(&body);
     for (n, _, _, binding) in cases {
-        let o = e.km(&["create", n, "--token", "ftpm", "--update-lock"]);
+        let o = e.km(&["create", "--spec", n, "--token", "ftpm", "--update-lock"]);
         assert_eq!(code(&o), 0, "{n}: {}", stderr(&o));
         assert_eq!(e.lock()["realisations"][n]["ftpm"]["binding"].as_str(), Some(binding), "{n}");
         let profile = e.observation(n, "ftpm")["profile"].clone();
         assert_eq!(profile.as_str(), Some(e.profile.as_str()), "the token resolves its own pair profile");
-        let o = e.km(&["verify", n, "--token", "ftpm"]);
+        let o = e.km(&["verify", "--spec", n, "--token", "ftpm"]);
         assert_eq!(code(&o), 0, "{n}: {}", stderr(&o));
     }
     // What the profile says it cannot do is refused before anything is generated.
@@ -87,7 +87,7 @@ fn keys_generate_and_prove_possession_each_way() {
          [specs.big]\nobject = \"big\"\nattributes = { CKA_SIGN = true }\n\
          tokens.ftpm = { locator = { CKA_LABEL = \"ftpm-big\" }, origin = \"create\" }\n",
     );
-    assert_eq!(e.code(&["create", "big", "--token", "ftpm", "--no-update-lock"]), 15);
+    assert_eq!(e.code(&["create", "--spec", "big", "--token", "ftpm", "--no-update-lock"]), 15);
 }
 
 /// `pop-unwrap` (a transport key's proof, docs/CAMIGRATE.md D3) on the real TPM: tpm2-pkcs11 never
@@ -101,7 +101,7 @@ fn unwrap_only_keys_cannot_prove_possession() {
          [specs.u]\nobject = \"u\"\nattributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }\n\
          tokens.ftpm = { locator = { CKA_LABEL = \"ftpm-unwrap\" }, origin = \"create\", binding = \"pop-unwrap\" }\n",
     );
-    let o = e.km(&["create", "u", "--token", "ftpm", "--update-lock"]);
+    let o = e.km(&["create", "--spec", "u", "--token", "ftpm", "--update-lock"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("never unwraps") && !stderr(&o).contains("created"), "{}", stderr(&o));
 }
@@ -144,13 +144,13 @@ fn keys_attest_their_residence_on_the_real_tpm() {
     );
     // The P-256 key is generated; the HMAC key was imported above and is adopted.
     for (verb, spec) in [("create", "p256"), ("realise", "hmac")] {
-        let o = e.km(&[verb, spec, "--token", "ftpm", "--update-lock"]);
+        let o = e.km(&[verb, "--spec", spec, "--token", "ftpm", "--update-lock"]);
         assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
         let att = &e.lock()["realisations"][spec]["ftpm"]["attestation"];
         assert_eq!(att["kind"].as_str(), Some("tpm-certify"), "{spec}");
-        assert_eq!(e.code(&["verify", spec, "--token", "ftpm"]), 0, "{spec}");
+        assert_eq!(e.code(&["verify", "--spec", spec, "--token", "ftpm"]), 0, "{spec}");
         let got: serde_json::Value =
-            serde_json::from_str(&stdout(&e.km(&["resolve", spec, "--token", "ftpm"]))).unwrap();
+            serde_json::from_str(&stdout(&e.km(&["resolve", "--spec", spec, "--token", "ftpm"]))).unwrap();
         assert_eq!(got["assurance"].as_str(), Some("proof"), "{spec}: {got}");
     }
     // One AK for both: the same anchor pinned beside each attestation.

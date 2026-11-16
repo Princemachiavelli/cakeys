@@ -327,7 +327,7 @@ const ED25519_PARAMS: &[u8] = &[0x06, 0x03, 0x2b, 0x65, 0x70];
 
 /// What realising a row gave: what the lock recorded, or the exit code.
 fn outcome(w: &Workdir, spec: &str) -> Result<String, (i32, String)> {
-    let o = w.km(&["realise", spec, "--token", "ref", "--update-lock"]);
+    let o = w.km(&["realise", "--spec", spec, "--token", "ref", "--update-lock"]);
     if code(&o) != 0 {
         return Err((code(&o), stderr(&o)));
     }

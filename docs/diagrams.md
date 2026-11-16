@@ -68,8 +68,8 @@ flowchart TD
     RECONCILE -- "matches, or first use (default)" --> OK(["exit 0 — resolved JSON printed;<br/>what the lock lacked is recorded<br/>unless --no-update-lock"])
 ```
 
-`verify` is the same walk without the create and the write, and prints the URI; `check` is
-`verify` named by object, in a read-only session, and prints the URI;
+`check` (also `verify`) is the same walk without the write, in a read-only session, and prints
+the URI; every verb names the object first (`<object> [--spec] [--token]`);
 `delete` proves possession once more so If-Match cannot pass on a bystander object; `gc` prints
 lock entries the config no longer names and removes them with `--apply`.
 

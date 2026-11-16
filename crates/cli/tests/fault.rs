@@ -112,9 +112,11 @@ fn a_failing_module_call_is_unavailable() {
     let plan = "[[rule]]\nfn = \"C_FindObjects\"\nrv = \"CKR_DEVICE_ERROR\"\n\n\
                 [[rule]]\nfn = \"C_Login\"\nwhen = \"after\"\nrv = \"CKR_PIN_INCORRECT\"\n";
     let Some((w, plan_path, trace)) = faulted("fault-module-fails", plan) else { return };
-    assert_eq!(w.code(&["create", "k", "--token", "ref", "--update-lock"]), 0, "no plan: transparent");
-    let o =
-        w.km_env(&["verify", "k", "--token", "ref"], &[("P11_FAULT_PLAN", &plan_path), ("P11_FAULT_TRACE", &trace)]);
+    assert_eq!(w.code(&["create", "--spec", "k", "--token", "ref", "--update-lock"]), 0, "no plan: transparent");
+    let o = w.km_env(
+        &["verify", "--spec", "k", "--token", "ref"],
+        &[("P11_FAULT_PLAN", &plan_path), ("P11_FAULT_TRACE", &trace)],
+    );
     assert_eq!(code(&o), 16, "{}", stderr(&o));
     let said = stderr(&o);
     assert!(said.contains("C_Login") && said.contains("PIN is incorrect"), "{said}");
@@ -122,8 +124,10 @@ fn a_failing_module_call_is_unavailable() {
     // Logged in without the refusal, the search fails instead.
     let find_only = w.dir.join("find.toml");
     std::fs::write(&find_only, "[[rule]]\nfn = \"C_FindObjects\"\nrv = \"CKR_DEVICE_ERROR\"\n").unwrap();
-    let o =
-        w.km_env(&["verify", "k", "--token", "ref"], &[("P11_FAULT_PLAN", &find_only), ("P11_FAULT_TRACE", &trace)]);
+    let o = w.km_env(
+        &["verify", "--spec", "k", "--token", "ref"],
+        &[("P11_FAULT_PLAN", &find_only), ("P11_FAULT_TRACE", &trace)],
+    );
     assert_eq!(code(&o), 16, "{}", stderr(&o));
     assert!(stderr(&o).contains("C_FindObjects"), "{}", stderr(&o));
     assert_eq!(fired(&trace).last().unwrap()["rv"].as_str(), Some("CKR_DEVICE_ERROR"));
@@ -156,7 +160,7 @@ fn lying(name: &str) -> Option<Workdir> {
         .concat(),
     );
     for spec in ["k", "d", "r", "u", "a"] {
-        let o = w.km(&["create", spec, "--token", "ref", "--update-lock"]);
+        let o = w.km(&["create", "--spec", spec, "--token", "ref", "--update-lock"]);
         assert_eq!(code(&o), 0, "{spec}, no plan: {}", stderr(&o));
     }
     // The other keys, made on the real module itself.
@@ -189,7 +193,7 @@ fn lying(name: &str) -> Option<Workdir> {
 #[test]
 fn a_lying_module_is_refused() {
     let Some(w) = lying("fault-lies") else { return };
-    let verify = |spec: &'static str| vec!["verify", spec, "--token", "ref"];
+    let verify = |spec: &'static str| vec!["verify", "--spec", spec, "--token", "ref"];
     let point = |change: &str| {
         format!("fn = \"C_GetAttributeValue\"\nof_label = \"k\"\nattribute = \"CKA_EC_POINT\"\n{change}")
     };
@@ -199,7 +203,7 @@ fn a_lying_module_is_refused() {
         // What the token says of itself.
         (
             "fn = \"C_GetTokenInfo\"\nset_flags = [\"CKF_WRITE_PROTECTED\"]".into(),
-            vec!["create", "new", "--token", "ref", "--no-update-lock"],
+            vec!["create", "--spec", "new", "--token", "ref", "--no-update-lock"],
             15,
             "is write-protected",
         ),
@@ -275,7 +279,7 @@ fn a_lying_module_is_refused() {
     assert_eq!(std::fs::read(w.dir.join("keys.lock")).unwrap(), lock, "a refused run changed the lock");
     // With no plan, the same token still verifies: every refusal above was the lie's.
     for spec in ["k", "d", "r", "u", "a"] {
-        assert_eq!(w.code(&["verify", spec, "--token", "ref"]), 0, "{spec}");
+        assert_eq!(w.code(&["verify", "--spec", spec, "--token", "ref"]), 0, "{spec}");
     }
 }
 
@@ -291,7 +295,7 @@ fn a_creation_that_cannot_be_identified_is_undone_or_reported() {
         let (path, trace) = (w.dir.join(format!("{name}.toml")), w.dir.join(format!("{name}.jsonl")));
         std::fs::write(&path, plan).unwrap();
         let o = w.km_env(
-            &["create", "new", "--token", "ref", "--no-update-lock"],
+            &["create", "--spec", "new", "--token", "ref", "--no-update-lock"],
             &[("P11_FAULT_PLAN", &path), ("P11_FAULT_TRACE", &trace)],
         );
         assert_eq!(code(&o), 16, "{}", stderr(&o));
@@ -311,7 +315,8 @@ fn a_creation_that_cannot_be_identified_is_undone_or_reported() {
     // The key gone from every search once made: not found (11), never a second key made.
     let hidden = w.dir.join("hidden.toml");
     std::fs::write(&hidden, "[[rule]]\nfn = \"C_FindObjects\"\nhide_label = \"new\"\n").unwrap();
-    let o = w.km_env(&["create", "new", "--token", "ref", "--no-update-lock"], &[("P11_FAULT_PLAN", &hidden)]);
+    let o =
+        w.km_env(&["create", "--spec", "new", "--token", "ref", "--no-update-lock"], &[("P11_FAULT_PLAN", &hidden)]);
     assert_eq!(code(&o), 11, "{}", stderr(&o));
     assert!(stderr(&o).contains("vanished after creation"), "{}", stderr(&o));
 }

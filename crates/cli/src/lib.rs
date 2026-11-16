@@ -43,38 +43,27 @@ enum Cmd {
     Validate,
     /// Find the object by its locator and print its identity as JSON. Never writes.
     Resolve {
-        spec: String,
-        #[arg(long)]
-        token: String,
-    },
-    /// Resolve, then compare with the lock (If-Match). Prints the PKCS#11 URI.
-    Verify {
-        spec: String,
-        #[arg(long)]
-        token: String,
+        #[command(flatten)]
+        at: Address,
     },
     /// Find the object and compare it with the lock, recording what it lacks (missing hashes,
     /// realisation details) and what changed around it unless --no-update-lock; never
     /// overwriting a hash. Never creates the object: `create` does.
     Realise {
-        spec: String,
-        #[arg(long)]
-        token: String,
+        #[command(flatten)]
+        at: Address,
         #[command(flatten)]
         write: LockWriteArgs,
     },
     /// Create keys, the one verb that does: every selected (spec, token) pair with origin =
     /// "create" whose object the lock does not pin yet, then record them like realise; the other
-    /// pairs are skipped with a note. Before any token is opened, each is checked against the
-    /// capability profiles: a pair they say cannot be made refuses the whole run (15), and
-    /// nothing is created. Naming both SPEC and --token creates that pair or says why not.
-    /// Prints the realised objects as JSON.
+    /// pairs are skipped with a note. Nothing named selects every pair. Before any token is
+    /// opened, each is checked against the capability profiles: a pair they say cannot be made
+    /// refuses the whole run (15), and nothing is created. Naming one pair (an object or --spec,
+    /// and --token) creates it or says why not. Prints the realised objects as JSON.
     Create {
-        /// Only this spec; default: every spec.
-        spec: Option<String>,
-        /// Only this token; default: every token.
-        #[arg(long)]
-        token: Option<String>,
+        #[command(flatten)]
+        at: Address,
         /// Print what would be created, skipped or refused, and why, as JSON; open no token and
         /// write nothing. Exits 15 when a pair is refused (0 with --skip-unsupported).
         #[arg(long)]
@@ -89,9 +78,8 @@ enum Cmd {
     /// Delete by locator if it holds the expected identity, and remove its realisation from the
     /// lock unless --no-update-lock. Absent is success.
     Delete {
-        spec: String,
-        #[arg(long)]
-        token: String,
+        #[command(flatten)]
+        at: Address,
         /// Expected CA-ID; defaults to the locked one.
         #[arg(long)]
         if_match: Option<String>,
@@ -104,14 +92,13 @@ enum Cmd {
         #[arg(long)]
         apply: bool,
     },
-    /// Pseudo-FOD pre-use check: `<object>.id.<scheme>`. Verifies against the lock in a
-    /// read-only session and prints the URI on stdout. Never writes, the lock or the token.
+    /// Pseudo-FOD pre-use check (also `verify`): verifies the object against the lock in a
+    /// read-only session and prints its URI on stdout. `<object>.id.<scheme>` asks for one
+    /// identity scheme, which the lock must pin. Never writes, the lock or the token.
+    #[command(visible_alias = "verify")]
     Check {
-        reference: String,
-        #[arg(long)]
-        token: Option<String>,
-        #[arg(long)]
-        spec: Option<String>,
+        #[command(flatten)]
+        at: Address,
         /// `uri`, or `pkcs11-provider-pem`: pkcs11-provider's key file (what its `uri2pem.py`
         /// writes) wrapping the URI, for programs that take a private key only as a PEM file
         /// and load it through OpenSSL with pkcs11-provider.
@@ -127,6 +114,31 @@ enum Cmd {
         #[arg(long, value_enum)]
         uri_pin: Option<UriPin>,
     },
+}
+
+/// What a verb acts on, the same for every verb (docs/CAKEYS.md): an object, narrowed by the
+/// spec and the token when keys.toml realises it more than once. A name keys.toml lacks is 17.
+#[derive(clap::Args)]
+struct Address {
+    /// The object (`[objects.<name>]`); `check` also takes `<object>.id.<scheme>`. May be left
+    /// out when --spec names it.
+    object: Option<String>,
+    /// The spec realising it, when several do.
+    #[arg(long)]
+    spec: Option<String>,
+    /// The token it is on, when it is on several.
+    #[arg(long)]
+    token: Option<String>,
+}
+
+impl Address {
+    /// The one (spec, token) pair named; `.id.<scheme>` is `check`'s alone.
+    fn pair(&self, cfg: &Config) -> Result<(String, String), KmError> {
+        if let Some(o) = self.object.as_deref().filter(|o| o.contains(".id.")) {
+            return Err(KmError::Validation(format!("'{o}': only check takes <object>.id.<scheme>")));
+        }
+        cfg.address(self.object.as_deref(), self.spec.as_deref(), self.token.as_deref())
+    }
 }
 
 /// What `check` prints.
@@ -222,33 +234,30 @@ impl Run<'_> {
     fn verb(&mut self, cmd: &Cmd, notes: &mut Notes) -> anyhow::Result<()> {
         match cmd {
             Cmd::Validate => self.validate(notes),
-            Cmd::Resolve { spec, token } => {
-                let t = Target::new(&self.cfg, spec, token)?;
-                let tok = self.open(token, Access::Read, notes)?;
+            Cmd::Resolve { at } => {
+                let (spec, token) = at.pair(&self.cfg)?;
+                let t = Target::new(&self.cfg, &spec, &token)?;
+                let tok = self.open(&token, Access::Read, notes)?;
                 let r = ops::resolve(&t, &tok, &self.lock)?
-                    .ok_or_else(|| KmError::NotFound(format!("{spec} on {token}")))?;
+                    .ok_or_else(|| KmError::NotFound(format!("{} on {token}", t.object_name)))?;
                 print(&r)
             }
-            Cmd::Verify { spec, token } => {
-                let t = Target::new(&self.cfg, spec, token)?;
-                let tok = self.open(token, Access::Read, notes)?;
-                println!("{}", ops::verify(&t, &tok, &self.lock, notes)?.uri);
-                Ok(())
-            }
-            Cmd::Realise { spec, token, write } => {
-                let t = Target::new(&self.cfg, spec, token)?;
-                let tok = self.open(token, Access::Write, notes)?;
+            Cmd::Realise { at, write } => {
+                let (spec, token) = at.pair(&self.cfg)?;
+                let t = Target::new(&self.cfg, &spec, &token)?;
+                let tok = self.open(&token, Access::Write, notes)?;
                 let (r, changed) = ops::realise(&t, &tok, &mut self.lock, write.mode(), notes)?;
                 self.save(changed, notes)?;
                 print(&r)
             }
-            Cmd::Create { spec, token, dry_run, skip_unsupported, write } => {
+            Cmd::Create { at, dry_run, skip_unsupported, write } => {
                 let how = CreateHow { dry_run: *dry_run, skip_unsupported: *skip_unsupported, write: write.mode() };
-                self.create(spec.as_deref(), token.as_deref(), how, notes)
+                self.create(at, how, notes)
             }
-            Cmd::Delete { spec, token, if_match, write } => {
-                let t = Target::new(&self.cfg, spec, token)?;
-                let tok = self.open(token, Access::Write, notes)?;
+            Cmd::Delete { at, if_match, write } => {
+                let (spec, token) = at.pair(&self.cfg)?;
+                let t = Target::new(&self.cfg, &spec, &token)?;
+                let tok = self.open(&token, Access::Write, notes)?;
                 let changed = ops::delete(&t, &tok, &mut self.lock, if_match.as_deref(), write.mode(), notes)?;
                 self.save(changed, notes)
             }
@@ -267,28 +276,26 @@ impl Run<'_> {
                 }
                 Ok(())
             }
-            Cmd::Check { reference, token, spec, format, uri_module, uri_pin } => {
-                self.check(reference, token.as_deref(), spec.as_deref(), *format, *uri_module, *uri_pin, notes)
-            }
+            Cmd::Check { at, format, uri_module, uri_pin } => self.check(at, *format, *uri_module, *uri_pin, notes),
         }
     }
 
     /// `check`: the verified URI as the consumer asked for it. The lock's URI stays the bare
     /// locator; the module and PIN are only ever added here, on request.
-    #[expect(clippy::too_many_arguments, reason = "the verb's own flags, passed through once")]
     fn check(
         &mut self,
-        reference: &str,
-        token: Option<&str>,
-        spec: Option<&str>,
+        at: &Address,
         format: Format,
         uri_module: bool,
         uri_pin: Option<UriPin>,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
-        // Refused before any token is opened: what the output cannot carry.
-        let object = reference.split_once(".id.").map_or(reference, |(o, _)| o);
+        let (reference, spec, token) = (at.object.as_deref(), at.spec.as_deref(), at.token.as_deref());
+        // Refused before any token is opened: the address, and what the output cannot carry.
+        let object = reference.map(|r| r.split_once(".id.").map_or(r, |(o, _)| o));
+        let (spec_name, token_name) = cfg.address(object, spec, token)?;
+        let object = &cfg.specs[&spec_name].object;
         let key_file = format == Format::Pkcs11ProviderPem;
         if key_file && cfg.objects.get(object).is_some_and(|o| o.class != ObjectClass::PrivateKey) {
             return Err(KmError::Unsupported(format!(
@@ -298,10 +305,7 @@ impl Run<'_> {
         }
         let pin = match uri_pin {
             None => None,
-            Some(how) => {
-                let (_, t) = cfg.pick_spec(object, spec, token)?;
-                Some(pin_ref(&t, token_cfg(cfg, &t)?, how == UriPin::Value)?)
-            }
+            Some(how) => Some(pin_ref(&token_name, token_cfg(cfg, &token_name)?, how == UriPin::Value)?),
         };
         let open = |name: &str, access| open_quiet(cfg, modules, registry, name, access);
         let (r, tok) = ops::check_open(cfg, reference, spec, token, open, &self.lock, notes)?;
@@ -404,15 +408,13 @@ impl Run<'_> {
     /// ([`ops::plan_create`]); a pair the profiles refuse ends the run there unless
     /// `--skip-unsupported`. Then the pairs to create, and the lock records what was created,
     /// also when a later pair failed — never a key made and lost.
-    fn create(
-        &mut self,
-        spec: Option<&str>,
-        token: Option<&str>,
-        how: CreateHow,
-        notes: &mut Notes,
-    ) -> anyhow::Result<()> {
+    fn create(&mut self, at: &Address, how: CreateHow, notes: &mut Notes) -> anyhow::Result<()> {
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
-        let planned = ops::plan_create(cfg, spec, token, &self.lock, registry)?;
+        if let Some(o) = at.object.as_deref().filter(|o| o.contains(".id.")) {
+            return Err(KmError::Validation(format!("'{o}': only check takes <object>.id.<scheme>")).into());
+        }
+        let (object, spec, token) = (at.object.as_deref(), at.spec.as_deref(), at.token.as_deref());
+        let planned = ops::plan_create(cfg, object, spec, token, &self.lock, registry)?;
         let refused: Vec<&ops::Planned> = planned.iter().filter(|p| p.action == ops::Action::Refuse).collect();
         for p in &planned {
             for r in &p.reasons {

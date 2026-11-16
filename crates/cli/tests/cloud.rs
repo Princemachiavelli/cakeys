@@ -139,25 +139,25 @@ fn aws_cluster(mode: &str) {
     with_cleanup(
         || {
             for (spec, token) in &keys {
-                let o = cakeys(&["create", spec, "--token", token]);
+                let o = cakeys(&["create", "--spec", spec, "--token", token]);
                 assert_eq!(code(&o), Some(0), "{mode}: create {spec} on {token}: {}", text(&o));
                 created.borrow_mut().push((*spec, *token));
             }
             if mode == "FIPS" {
                 // The FIPS profile adds no Ed25519 stand-in: refused before anything is made.
-                let o = cakeys(&["create", "ed25519", "--token", "cloudhsm"]);
+                let o = cakeys(&["create", "--spec", "ed25519", "--token", "cloudhsm"]);
                 assert_eq!(code(&o), Some(UNSUPPORTED), "{mode}: ed25519: {}", text(&o));
                 assert!(text(&o).contains("CKM_EC_EDWARDS_KEY_PAIR_GEN"), "{}", text(&o));
             }
             for (spec, token) in &keys {
-                let o = cakeys(&["verify", spec, "--token", token]);
+                let o = cakeys(&["verify", "--spec", spec, "--token", token]);
                 assert_eq!(code(&o), Some(0), "{mode}: verify {spec} on {token}: {}", text(&o));
             }
             let mut moves = vec![("movable", "softhsm", "cloudhsm"), ("outbound", "cloudhsm", "softhsm")];
             if mode == "NON_FIPS" {
                 // Ed25519 moves out; in, the profile's migration.refuses blocks it in the plan.
                 moves.push(("ed25519", "cloudhsm", "softhsm"));
-                let o = cakeys(&["create", "ed-in", "--token", "softhsm"]);
+                let o = cakeys(&["create", "--spec", "ed-in", "--token", "softhsm"]);
                 assert_eq!(code(&o), Some(0), "{mode}: create ed-in on softhsm: {}", text(&o));
                 created.borrow_mut().push(("ed-in", "softhsm"));
                 let o = camigrate(&["migrate", "ed-in", "--from", "softhsm", "--to", "cloudhsm", "--dry-run"]);
@@ -169,14 +169,14 @@ fn aws_cluster(mode: &str) {
                 assert_eq!(code(&o), Some(0), "{mode}: migrate {key} {from} -> {to}: {}", text(&o));
                 assert!(text(&o).contains("rsa-oaep-sha1+aes-kwp"), "{}", text(&o));
                 created.borrow_mut().push((key, to));
-                let o = cakeys(&["verify", key, "--token", to]);
+                let o = cakeys(&["verify", "--spec", key, "--token", to]);
                 assert_eq!(code(&o), Some(0), "{mode}: verify {key} on {to}: {}", text(&o));
             }
         },
         || {
             // The transport keys last: what was created first goes last.
             for (spec, token) in created.borrow().iter().rev() {
-                let o = cakeys(&["delete", spec, "--token", token]);
+                let o = cakeys(&["delete", "--spec", spec, "--token", token]);
                 if code(&o) != Some(0) {
                     eprintln!("cleanup: delete {spec} on {token} ({mode}) failed: {}", text(&o));
                 }
@@ -207,22 +207,22 @@ fn gcp_cloud_kms_end_to_end() {
     with_cleanup(
         || {
             for spec in ["rsa-pop-decrypt", "aes"] {
-                let o = cakeys(&["create", spec, "--token", "gcp"]);
+                let o = cakeys(&["create", "--spec", spec, "--token", "gcp"]);
                 assert_eq!(code(&o), Some(UNSUPPORTED), "{spec}: {}", text(&o));
             }
             for spec in keys {
-                let o = cakeys(&["create", spec, "--token", "gcp"]);
+                let o = cakeys(&["create", "--spec", spec, "--token", "gcp"]);
                 assert_eq!(code(&o), Some(0), "create {spec}: {}", text(&o));
                 created.borrow_mut().push(spec);
             }
             for spec in keys {
-                let o = cakeys(&["verify", spec, "--token", "gcp"]);
+                let o = cakeys(&["verify", "--spec", spec, "--token", "gcp"]);
                 assert_eq!(code(&o), Some(0), "verify {spec}: {}", text(&o));
             }
         },
         || {
             for spec in created.borrow().iter() {
-                let o = cakeys(&["delete", spec, "--token", "gcp"]);
+                let o = cakeys(&["delete", "--spec", spec, "--token", "gcp"]);
                 if code(&o) != Some(0) {
                     eprintln!("cleanup: delete {spec} failed: {}", text(&o));
                 }

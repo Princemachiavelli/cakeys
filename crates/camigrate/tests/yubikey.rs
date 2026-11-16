@@ -57,7 +57,7 @@ fn a_key_moves_into_a_piv_slot_through_the_host() {
     );
     std::fs::write(dir.join("keys.toml"), config).unwrap();
     let (cakeys, camigrate) = (sibling("cakeys"), PathBuf::from(BIN));
-    let o = run(&cakeys, &dir, &["create", "pv-soft", "--token", "softhsm"]);
+    let o = run(&cakeys, &dir, &["create", "--spec", "pv-soft", "--token", "softhsm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let mv = ["migrate", "pv", "--from", "softhsm", "--to", "yubikey", "--allow-host-plaintext"];
     let o = run(&camigrate, &dir, &[&mv[..], &["--dry-run", "--json"]].concat());
@@ -72,11 +72,11 @@ fn a_key_moves_into_a_piv_slot_through_the_host() {
     let lock: toml::Value = toml::from_str(&std::fs::read_to_string(dir.join("keys.lock")).unwrap()).unwrap();
     let origin = &lock["realisations"]["pv-yk"]["yubikey"]["provenance"]["origin"];
     assert_eq!((origin["method"].as_str(), origin["exposure"].as_str()), (Some("piv-import"), Some("host")));
-    let o = run(&cakeys, &dir, &["verify", "pv-yk", "--token", "yubikey"]);
+    let o = run(&cakeys, &dir, &["verify", "--spec", "pv-yk", "--token", "yubikey"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     // Again, into the now occupied slot under another lock: refused before anything is written.
     std::fs::remove_file(dir.join("keys.lock")).unwrap();
-    let o = run(&cakeys, &dir, &["create", "pv-soft", "--token", "softhsm"]);
+    let o = run(&cakeys, &dir, &["create", "--spec", "pv-soft", "--token", "softhsm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let o = run(&camigrate, &dir, &mv);
     assert_eq!(code(&o), 13, "{}", stderr(&o));

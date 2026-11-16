@@ -130,24 +130,24 @@ tokens.fwd = { locator = { CKA_LABEL = "fwd-hmac" }, origin = "adopt" }
 
     // Generated through the forwarded token, then the same object opened directly: one identity.
     for (k, _) in kinds {
-        assert_eq!(e.code(&["create", k, "--token", "fwd", "--update-lock"]), 0, "{k}");
-        assert_eq!(e.code(&["realise", k, "--token", "direct", "--update-lock"]), 0, "{k}: direct agrees");
+        assert_eq!(e.code(&["create", "--spec", k, "--token", "fwd", "--update-lock"]), 0, "{k}");
+        assert_eq!(e.code(&["realise", "--spec", k, "--token", "direct", "--update-lock"]), 0, "{k}: direct agrees");
         let pubs = format!("{k}-pub");
-        assert_eq!(e.code(&["realise", &pubs, "--token", "fwd-anon", "--update-lock"]), 0, "{k}");
+        assert_eq!(e.code(&["realise", "--spec", &pubs, "--token", "fwd-anon", "--update-lock"]), 0, "{k}");
         assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki(&e.session(&e.direct), k)), "{k}");
     }
 
     // AES: p11-kit forwards CMAC and ECB but not key wrap, so the forwarded path computes two of
     // the three commitments; they still link to the direct path, which computes all three.
-    let o = e.km(&["realise", "aes", "--token", "fwd", "--update-lock"]);
+    let o = e.km(&["realise", "--spec", "aes", "--token", "fwd", "--update-lock"]);
     assert_eq!(code(&o), 0);
     assert_eq!(e.ids(&o).as_object().unwrap().keys().collect::<Vec<_>>(), ["cmac", "kcv-ecb"]);
-    assert_eq!(e.code(&["realise", "aes", "--token", "direct", "--update-lock"]), 0);
+    assert_eq!(e.code(&["realise", "--spec", "aes", "--token", "direct", "--update-lock"]), 0);
     for scheme in ["cmac", "kcv-ecb", "kw"] {
         assert_eq!(e.locked_id("aes", scheme), aes_commitment(&AES_VALUE[..], scheme), "{scheme}");
     }
 
-    assert_eq!(e.code(&["realise", "hmac", "--token", "fwd", "--update-lock"]), 0);
+    assert_eq!(e.code(&["realise", "--spec", "hmac", "--token", "fwd", "--update-lock"]), 0);
     let mut mac = <Hmac<sha2::Sha256> as KeyInit>::new_from_slice(&HMAC_VALUE).unwrap();
     mac.update(b"key-management/v1/commitment/CKK_GENERIC_SECRET/256");
     assert_eq!(e.locked_id("hmac", "commitment"), sri(&mac.finalize().into_bytes()));
@@ -190,7 +190,7 @@ tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-kek" }, origin = "create" }
 "#,
     );
     for (spec, label) in [("ed", "fwd-refused-ed"), ("aes-x", "fwd-refused-aes-x"), ("aes-kek", "fwd-refused-kek")] {
-        let o = e.km(&["create", spec, "--token", "fwd", "--no-update-lock"]);
+        let o = e.km(&["create", "--spec", spec, "--token", "fwd", "--no-update-lock"]);
         assert_eq!(code(&o), 15, "{spec}");
         assert!(stderr(&o).contains("forwarded by p11-kit"), "{spec}: hint");
         let left = e.session(&e.direct).find_objects(&[Attribute::Label(label.as_bytes().to_vec())]).unwrap();
@@ -207,11 +207,11 @@ fn p11kit_login_is_per_client() {
          tokens.fwd-anon = { locator = { CKA_LABEL = \"fwd-login\" }, origin = \"adopt\" }\n\n\
          [specs.k-pub]\nobject = \"k\"\ntokens.fwd-anon = { locator = { CKA_LABEL = \"fwd-login\" }, origin = \"adopt\", publicOnly = true }\n",
     );
-    assert_eq!(e.code(&["create", "k", "--token", "fwd", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "--spec", "k", "--token", "fwd", "--update-lock"]), 0);
     // Another client of the same server holds a logged-in session meanwhile...
     let held = e.session(&e.client);
     // ...yet a client without the PIN still cannot see the private key; the public half works.
-    assert_eq!(e.code(&["realise", "k", "--token", "fwd-anon", "--no-update-lock"]), 11);
-    assert_eq!(e.code(&["realise", "k-pub", "--token", "fwd-anon", "--update-lock"]), 0);
+    assert_eq!(e.code(&["realise", "--spec", "k", "--token", "fwd-anon", "--no-update-lock"]), 11);
+    assert_eq!(e.code(&["realise", "--spec", "k-pub", "--token", "fwd-anon", "--update-lock"]), 0);
     drop(held);
 }

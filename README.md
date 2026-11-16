@@ -75,15 +75,16 @@ tokens.softhsm = { locator = { CKA_LABEL = "signing" }, origin = "create" }
 ```
 
 ```console
-$ cakeys -c keys.toml create signing-soft --token softhsm --no-update-lock
+$ cakeys -c keys.toml create signing --no-update-lock
 created 'signing' (spec 'signing-soft') on token 'softhsm'
 error: first use of 'signing' (spec 'signing-soft') on token 'softhsm': the lock pins no identity for it yet; review, then `realise` records it
      got:    sha256-…            # exit 18, compare only: like a fixed-output derivation
-$ cakeys -c keys.toml realise signing-soft --token softhsm   # record it (the default), print the resolved JSON; review the keys.lock diff
+$ cakeys -c keys.toml realise signing   # record it (the default), print the resolved JSON; review the keys.lock diff
 $ cakeys -c keys.toml check signing     # later: verify, then print the URI (never writes)
 pkcs11:token=main;serial=...;object=signing;type=private
 ```
 
+Every verb names the object; `--spec` and `--token` narrow it where keys.toml realises it more than once.
 Only `create` makes keys, where keys.toml says `origin = "create"`; `realise` and `check` find what is there. `create`, `realise` and
 `delete` write the lock by default, filling gaps only — a locked ID is never overwritten. A realisation that changed (its locator, spec or policy attributes) is re-recorded,
 and each accepted change is printed (`re-recorded …`). Where the lock cannot be written (a Nix build sandbox, a read-only lock or

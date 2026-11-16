@@ -47,7 +47,7 @@ fn export_plans_follow_each_sides_capabilities() {
         + &e.refs.iter().filter(|r| r.name.starts_with("kryoptic")).map(transport_key).collect::<String>();
     names_transport(&e, &body, |r| r.name.starts_with("kryoptic"));
     for (spec, r) in [("movable", soft), ("fixed", soft), ("movable-k", kry)] {
-        assert_eq!(code(&e.cakeys(r, &["create", spec, "--token", r.name])), 0, "{spec}");
+        assert_eq!(code(&e.cakeys(r, &["create", "--spec", spec, "--token", r.name])), 0, "{spec}");
     }
     let plan = |r: &Ref, args: &[&str]| -> (i32, serde_json::Value) {
         let mut a = vec!["export"];
@@ -66,7 +66,7 @@ fn export_plans_follow_each_sides_capabilities() {
     assert_eq!((c, first(&v)), (15, (some("rsa-oaep-sha1+aes-kwp"), some("sealed"), Some(false))), "{v}");
     assert!(v["plans"][0]["reasons"][0].as_str().unwrap().contains("is not realised on 'kryoptic'"), "{v}");
     for r in e.refs.iter().filter(|r| r.name.starts_with("kryoptic")) {
-        let o = e.cakeys(r, &["create", &format!("tk-{}", r.name), "--token", r.name]);
+        let o = e.cakeys(r, &["create", "--spec", &format!("tk-{}", r.name), "--token", r.name]);
         assert_eq!(code(&o), 0, "{}", stderr(&o));
     }
     let (c, v) = plan(soft, &["movable", "--target", "kryoptic"]);
@@ -145,7 +145,7 @@ fn transport_files_carry_the_locked_identity() {
             CREATE,
         );
     e.config(&body);
-    assert_eq!(code(&e.cakeys(kry, &["create", "kek", "--token", "kryoptic"])), 0);
+    assert_eq!(code(&e.cakeys(kry, &["create", "--spec", "kek", "--token", "kryoptic"])), 0);
     let file = e.dir.join("kryoptic.transport.toml");
     let path = file.to_str().unwrap();
     let o = e.km(kry, &["transport", "kek", "--token", "kryoptic", "--out", path]);
@@ -157,10 +157,10 @@ fn transport_files_carry_the_locked_identity() {
     assert_eq!(t["provider"].as_str(), Some("kryoptic"));
     assert_eq!(t["rfc7093m4"], lock["objects"]["kek"]["ids"]["rfc7093m4"], "the locked identity");
     // Only an RSA private key can be a transport key.
-    assert_eq!(code(&e.cakeys(kry, &["create", "ec-k", "--token", "kryoptic"])), 0);
+    assert_eq!(code(&e.cakeys(kry, &["create", "--spec", "ec-k", "--token", "kryoptic"])), 0);
     assert_eq!(code(&e.km(kry, &["transport", "ec-k", "--token", "kryoptic"])), 17);
     // A source plans from the file alone.
-    assert_eq!(code(&e.cakeys(soft, &["create", "movable", "--token", "softhsm"])), 0);
+    assert_eq!(code(&e.cakeys(soft, &["create", "--spec", "movable", "--token", "softhsm"])), 0);
     let o = e.km(soft, &["export", "mv", "--token", "softhsm", "--transport", path, "--dry-run", "--json"]);
     assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
     let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
@@ -321,7 +321,7 @@ fn public_moves_do_what_the_plan_says() {
     for c in &PUBLIC {
         for r in e.refs.iter().filter(|r| holds(r, c)) {
             let spec = format!("{}-src-{}", c.name, r.name);
-            let o = e.cakeys(r, &["realise", &spec, "--token", r.name]);
+            let o = e.cakeys(r, &["realise", "--spec", &spec, "--token", r.name]);
             assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
         }
     }
@@ -356,7 +356,7 @@ fn public_moves_do_what_the_plan_says() {
             let origin = &lock["realisations"][spec.as_str()][d.name]["provenance"]["origin"];
             assert_eq!(origin["from"].as_str(), Some(s.name), "{row}");
             assert_eq!((origin["method"].as_str(), origin["exposure"].as_str()), (Some("public"), Some("public")));
-            let v = e.cakeys(d, &["verify", &spec, "--token", d.name]);
+            let v = e.cakeys(d, &["verify", "--spec", &spec, "--token", d.name]);
             assert_eq!(code(&v), 0, "{row}: cakeys verify: {}", stderr(&v));
             // A re-run moves nothing and changes nothing.
             let again = std::fs::read(&lock_path).unwrap();
@@ -422,7 +422,7 @@ fn objects_sharing_a_locator_move_in_any_order() {
     // A second certificate for the first target label: a collision of its class.
     body += &Env::spec("crt2-kry-a", "crt2", "", &[kry], "sl-a", IMPORT);
     names_transport(&e, &body, |r| r.name == "kryoptic");
-    assert_eq!(code(&e.cakeys(kry, &["create", "tk-kryoptic", "--token", "kryoptic"])), 0);
+    assert_eq!(code(&e.cakeys(kry, &["create", "--spec", "tk-kryoptic", "--token", "kryoptic"])), 0);
     // The keys are made; their public halves and the planted certificates are adopted.
     for (verb, spec) in [
         ("create", "k1-soft"),
@@ -432,14 +432,14 @@ fn objects_sharing_a_locator_move_in_any_order() {
         ("realise", "k2-pub-soft"),
         ("realise", "crt2-soft"),
     ] {
-        let o = e.cakeys(soft, &[verb, spec, "--token", "softhsm"]);
+        let o = e.cakeys(soft, &[verb, "--spec", spec, "--token", "softhsm"]);
         assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
     }
     let on_target = |label: &str| open_session(&kry.module, kry.token_label, "1234").labelled(label).len();
     let mv = |object: &str, spec: &str| {
         let o = e.km(soft, &["migrate", object, "--from", "softhsm", "--to", "kryoptic", "--spec", spec]);
         assert_eq!(code(&o), 0, "{object}: {}", stderr(&o));
-        let v = e.cakeys(kry, &["verify", spec, "--token", "kryoptic"]);
+        let v = e.cakeys(kry, &["verify", "--spec", spec, "--token", "kryoptic"]);
         assert_eq!(code(&v), 0, "{spec}: {}", stderr(&v));
     };
     // The key first: its import creates the public half, which the public key object then is.
@@ -489,7 +489,7 @@ fn private_data_objects_never_move() {
             + &Env::spec("pd-soft", "pd", private, &[soft], "pd-secret", "")
             + &Env::spec("pd-kry", "pd", private, &[kry], "pd-secret", IMPORT)),
     );
-    let o = e.cakeys(soft, &["realise", "pd-soft", "--token", "softhsm"]);
+    let o = e.cakeys(soft, &["realise", "--spec", "pd-soft", "--token", "softhsm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let mv = ["migrate", "pd", "--from", "softhsm", "--to", "kryoptic", "--spec", "pd-kry"];
     let o = e.km(soft, &[&mv[..], &["--dry-run", "--json"]].concat());
@@ -612,13 +612,13 @@ fn sealed_moves_do_what_the_plan_says() {
     };
     provider("softhsm");
     for d in e.refs.iter().filter(|d| unwraps(d)) {
-        let o = e.cakeys(d, &["create", &format!("tk-{}", d.name), "--token", d.name]);
+        let o = e.cakeys(d, &["create", "--spec", &format!("tk-{}", d.name), "--token", d.name]);
         assert_eq!(code(&o), 0, "transport key on {}: {}", d.name, stderr(&o));
     }
     for k in &KEYS {
         for s in e.refs.iter().filter(|s| generates(s, k)) {
             let spec = format!("{}-src", object(k, s));
-            let o = e.cakeys(s, &["create", &spec, "--token", s.name]);
+            let o = e.cakeys(s, &["create", "--spec", &spec, "--token", s.name]);
             assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
         }
     }
@@ -658,7 +658,7 @@ fn sealed_moves_do_what_the_plan_says() {
             let origin = &lock["realisations"][spec.as_str()][d.name]["provenance"]["origin"];
             assert_eq!(origin["from"].as_str(), Some(s.name), "{row}");
             assert_eq!(origin["method"].as_str(), Some(method.as_str()), "{row}");
-            let v = e.cakeys(d, &["verify", &spec, "--token", d.name]);
+            let v = e.cakeys(d, &["verify", "--spec", &spec, "--token", d.name]);
             assert_eq!(code(&v), 0, "{row}: cakeys verify: {}", stderr(&v));
             // An unwrapped private key's public half is made as a generated one: it verifies and
             // is public, whatever the token's own default for an object.
@@ -868,12 +868,12 @@ fn bundle_keys(e: &Env, soft: &Ref, kry: &Ref) {
         + &kept
         + &crt;
     names_transport(e, &body, |r| r.name == "kryoptic");
-    assert_eq!(code(&e.cakeys(kry, &["create", "tk-kryoptic", "--token", "kryoptic"])), 0);
+    assert_eq!(code(&e.cakeys(kry, &["create", "--spec", "tk-kryoptic", "--token", "kryoptic"])), 0);
     for spec in ["ek1-soft", "ek2-soft", "sk1-soft", "sk2-soft", "nx-soft", "nox-soft"] {
-        assert_eq!(code(&e.cakeys(soft, &["create", spec, "--token", "softhsm"])), 0, "{spec}");
+        assert_eq!(code(&e.cakeys(soft, &["create", "--spec", spec, "--token", "softhsm"])), 0, "{spec}");
     }
     // The planted certificate is adopted.
-    assert_eq!(code(&e.cakeys(soft, &["realise", "crt-soft", "--token", "softhsm"])), 0);
+    assert_eq!(code(&e.cakeys(soft, &["realise", "--spec", "crt-soft", "--token", "softhsm"])), 0);
 }
 
 /// `--transport-key` names the transport key and `--lock` the lock file, as `transportWith` and
@@ -940,13 +940,13 @@ fn bundles_carry_every_key_of_an_export() {
     let lock: toml::Value = toml::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
     assert!(lock["realisations"]["ek1-kry"].get("kryoptic").is_some(), "the good key was not recorded");
     assert!(lock["realisations"].get("sk1-kry").is_none(), "the failed key was recorded");
-    assert_eq!(code(&e.cakeys(kry, &["verify", "ek1-kry", "--token", "kryoptic"])), 0);
+    assert_eq!(code(&e.cakeys(kry, &["verify", "--spec", "ek1-kry", "--token", "kryoptic"])), 0);
     // Its public half is made as a generated one: it verifies and is public, undeclared.
     assert_eq!(public_half(kry, "xb-ek1"), (true, false));
     // The whole bundle again: ek1 is already there and verifies, sk1 imports.
     let o = import(&both);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    assert_eq!(code(&e.cakeys(kry, &["verify", "sk1-kry", "--token", "kryoptic"])), 0);
+    assert_eq!(code(&e.cakeys(kry, &["verify", "--spec", "sk1-kry", "--token", "kryoptic"])), 0);
     // Without names, every key that can move: the non-extractable one is warned about, left out.
     let out = e.dir.join("all.bundle.toml");
     let r = e.km(soft, &["export", "--token", "softhsm", "--target", "kryoptic", "--out", out.to_str().unwrap()]);
@@ -963,7 +963,7 @@ fn bundles_carry_every_key_of_an_export() {
     let o = import(&out);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     for spec in ["crt-kry", "ek2-kry", "sk2-kry"] {
-        assert_eq!(code(&e.cakeys(kry, &["verify", spec, "--token", "kryoptic"])), 0, "{spec}");
+        assert_eq!(code(&e.cakeys(kry, &["verify", "--spec", spec, "--token", "kryoptic"])), 0, "{spec}");
     }
     // Named, all or nothing: an object that cannot move fails the export, and no bundle is written.
     let out = e.dir.join("never.bundle.toml");
@@ -1081,7 +1081,7 @@ fn refusals_around_the_plans_and_the_offline_export() {
     refused(&o, 17, "--spec 'ek1-kry' selects nothing");
     let o = e.km(kry, &["import", "--token", "kryoptic", "--in", &sealed]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    assert_eq!(code(&e.cakeys(kry, &["verify", "sk2-kry", "--token", "kryoptic"])), 0);
+    assert_eq!(code(&e.cakeys(kry, &["verify", "--spec", "sk2-kry", "--token", "kryoptic"])), 0);
     // A token the lock records nothing on has nothing to plan.
     if named("p11kit").is_some() {
         let o = e.km(soft, &["export", "--token", "p11kit", "--target", "kryoptic", "--dry-run"]);
@@ -1157,7 +1157,7 @@ fn a_move_lands_only_on_an_import_pair() {
         + &Env::spec("k-soft", "k", movable, &[soft], "xi-k", CREATE)
         + &Env::spec("k-kry", "k", movable, &[kry], "xi-k", "");
     e.config(&body);
-    assert_eq!(code(&e.cakeys(soft, &["create", "k-soft", "--token", "softhsm"])), 0);
+    assert_eq!(code(&e.cakeys(soft, &["create", "--spec", "k-soft", "--token", "softhsm"])), 0);
     let mv = ["migrate", "k", "--from", "softhsm", "--to", "kryoptic", "--allow-host-plaintext"];
     for extra in [&["--dry-run"][..], &[], &["--spec", "k-kry", "--dry-run"], &["--spec", "k-kry"]] {
         let o = e.km(soft, &[&mv[..], extra].concat());
@@ -1201,10 +1201,10 @@ fn transport_keys_are_held_to_what_the_lock_records() {
         + &ec("moves", true);
     e.config(&body);
     for spec in ["signs", "leaves"] {
-        assert_eq!(code(&e.cakeys(kry, &["create", spec, "--token", "kryoptic"])), 0, "{spec}");
+        assert_eq!(code(&e.cakeys(kry, &["create", "--spec", spec, "--token", "kryoptic"])), 0, "{spec}");
     }
     for spec in ["stays", "moves"] {
-        assert_eq!(code(&e.cakeys(soft, &["create", spec, "--token", "softhsm"])), 0, "{spec}");
+        assert_eq!(code(&e.cakeys(soft, &["create", "--spec", spec, "--token", "softhsm"])), 0, "{spec}");
     }
     let refused = |o: &std::process::Output, want: i32, what: &str| {
         assert_eq!(code(o), want, "{what}: {}", stderr(o));
@@ -1251,8 +1251,8 @@ fn exports_to_a_token_need_only_the_lock() {
         );
     // Named, not picked: without transportWith, the plan says how to name one.
     e.config(&body);
-    assert_eq!(code(&e.cakeys(kry, &["create", "tk-kryoptic", "--token", "kryoptic"])), 0);
-    assert_eq!(code(&e.cakeys(soft, &["create", "mv", "--token", "softhsm"])), 0);
+    assert_eq!(code(&e.cakeys(kry, &["create", "--spec", "tk-kryoptic", "--token", "kryoptic"])), 0);
+    assert_eq!(code(&e.cakeys(soft, &["create", "--spec", "mv", "--token", "softhsm"])), 0);
     let o = e.km(soft, &["export", "mv", "--token", "softhsm", "--target", "kryoptic", "--dry-run"]);
     assert_eq!(code(&o), 15, "{}", stdout(&o));
     assert!(stdout(&o).contains("transportWith"), "{}", stdout(&o));
@@ -1276,7 +1276,7 @@ fn exports_to_a_token_need_only_the_lock() {
     let o = e.km(kry, &["transport", "tk-kryoptic", "--token", "kryoptic", "--trusted", "softhsm"]);
     assert_eq!(code(&o), 14, "{}", stderr(&o));
     assert!(stderr(&o).contains("records no public key for transport key"), "{}", stderr(&o));
-    assert_eq!(code(&e.cakeys(kry, &["realise", "tk-kryoptic", "--token", "kryoptic"])), 0);
+    assert_eq!(code(&e.cakeys(kry, &["realise", "--spec", "tk-kryoptic", "--token", "kryoptic"])), 0);
     let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
     let tk = &lock["objects"]["tk-kryoptic"];
     let spki = {
@@ -1397,7 +1397,7 @@ fn sealed_moves_wrap_with_oaep_sha256_between_kryoptic_tokens() {
         + &Env::spec("k-two", "k", attributes, &[two], "xo-k", IMPORT);
     names_transport(&e, &body, |r| r.name == "kryoptic2");
     for (spec, r) in [("tk-kryoptic2", two), ("k-one", kry)] {
-        let o = e.cakeys(r, &["create", spec, "--token", r.name]);
+        let o = e.cakeys(r, &["create", "--spec", spec, "--token", r.name]);
         assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
     }
     let args = ["migrate", "k", "--from", "kryoptic", "--to", "kryoptic2"];
@@ -1406,7 +1406,7 @@ fn sealed_moves_wrap_with_oaep_sha256_between_kryoptic_tokens() {
     assert_eq!(plan["plans"][0]["method"].as_str(), Some("rsa-oaep-sha256+aes-kwp"), "{plan}");
     let o = e.km(kry, &args);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    assert_eq!(code(&e.cakeys(two, &["verify", "k-two", "--token", "kryoptic2"])), 0);
+    assert_eq!(code(&e.cakeys(two, &["verify", "--spec", "k-two", "--token", "kryoptic2"])), 0);
 }
 
 /// A key whose target spec declares `CKA_ALWAYS_AUTHENTICATE` moves as its plan says: kryoptic
@@ -1442,7 +1442,7 @@ fn per_use_pin_targets_move_as_planned() {
         );
     names_transport(&e, &body, |r| r.name == "softhsm");
     for (spec, r) in [("tk-softhsm", soft), ("a-src", kry)] {
-        let o = e.cakeys(r, &["create", spec, "--token", r.name]);
+        let o = e.cakeys(r, &["create", "--spec", spec, "--token", r.name]);
         assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
     }
     // The dry-run twin holds the move to the plan's verdict.
@@ -1450,7 +1450,7 @@ fn per_use_pin_targets_move_as_planned() {
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
     assert_eq!(lock["realisations"]["a-dst"]["softhsm"]["binding"].as_str(), Some("pop-sign-pin"), "{lock}");
-    assert_eq!(code(&e.cakeys(soft, &["verify", "a-dst", "--token", "softhsm"])), 0);
+    assert_eq!(code(&e.cakeys(soft, &["verify", "--spec", "a-dst", "--token", "softhsm"])), 0);
 }
 
 /// `text`, base64, with one byte of what it encodes flipped.
@@ -1496,7 +1496,7 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
         _ => String::new(),
     });
     for (spec, r) in [("tk-kryoptic", kry), ("ek-src", soft), ("sk-src", soft), ("kk-src", kry)] {
-        let o = e.cakeys(r, &["create", spec, "--token", r.name]);
+        let o = e.cakeys(r, &["create", "--spec", spec, "--token", r.name]);
         assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
     }
     let plan = |o: &str, from: &Ref, to: &Ref| -> serde_json::Value {
@@ -1548,7 +1548,7 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
     let o = e.km(kry, &["import", "--token", "kryoptic", "--in", out.to_str().unwrap()]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     for spec in ["ek-dst", "sk-dst"] {
-        assert_eq!(code(&e.cakeys(kry, &["verify", spec, "--token", "kryoptic"])), 0, "{spec}");
+        assert_eq!(code(&e.cakeys(kry, &["verify", "--spec", spec, "--token", "kryoptic"])), 0, "{spec}");
     }
     assert_eq!(public_half(kry, "xe-ek"), (false, false), "the public half as the target spec declares it");
     // kryoptic cannot trust an RSA key: a wrap-with-trusted key there never leaves.
@@ -1600,14 +1600,14 @@ fn rsa_aes_key_wrap_stands_in_for_rfc_5649() {
     let text = std::fs::read_to_string(&config).unwrap();
     std::fs::write(&config, format!("profileDirs = [\"{}\"]\n\n{text}", profiles.display())).unwrap();
     for (spec, r) in [("tk-kryoptic", kry), ("tk-softhsm", soft), ("in-src", kry), ("out-src", soft)] {
-        let o = e.cakeys(r, &["create", spec, "--token", r.name]);
+        let o = e.cakeys(r, &["create", "--spec", spec, "--token", r.name]);
         assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
     }
     // Into the side without RFC 5649: the composed method, unwrapped by CKM_RSA_AES_KEY_WRAP.
     let o = e.km(kry, &["migrate", "in", "--from", "kryoptic", "--to", "softhsm", "--spec", "in-dst"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(stderr(&o).contains("rsa-oaep-sha1+aes-kwp"), "{}", stderr(&o));
-    assert_eq!(code(&e.cakeys(soft, &["verify", "in-dst", "--token", "softhsm"])), 0);
+    assert_eq!(code(&e.cakeys(soft, &["verify", "--spec", "in-dst", "--token", "softhsm"])), 0);
     // Out of it, through a file: the sealed key with its own KEK, no shared one.
     let out = e.dir.join("rsa-aes.bundle.toml");
     let exported =
@@ -1619,7 +1619,7 @@ fn rsa_aes_key_wrap_stands_in_for_rfc_5649() {
     assert_eq!((k["exposure"].as_str(), k.get("kek").is_some()), (Some("sealed"), true), "{k}");
     let o = e.km(kry, &["import", "--token", "kryoptic", "--in", out.to_str().unwrap()]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    assert_eq!(code(&e.cakeys(kry, &["verify", "out-dst", "--token", "kryoptic"])), 0);
+    assert_eq!(code(&e.cakeys(kry, &["verify", "--spec", "out-dst", "--token", "kryoptic"])), 0);
 }
 
 /// `CKA_VERIFY` and `CKA_PRIVATE` of the one public key object labelled `label` on `r`'s token.
@@ -1708,7 +1708,7 @@ fn host_moves_do_what_the_plan_says() {
     for k in &KEYS {
         for s in e.refs.iter().filter(|s| generates(s, k)) {
             let spec = format!("{}-src", object(k, s));
-            let o = e.cakeys(s, &["create", &spec, "--token", s.name]);
+            let o = e.cakeys(s, &["create", "--spec", &spec, "--token", s.name]);
             assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
         }
     }
@@ -1734,7 +1734,7 @@ fn host_moves_do_what_the_plan_says() {
             (Some(method.as_str()), Some("host")),
             "{row}"
         );
-        let v = e.cakeys(d, &["verify", &spec, "--token", d.name]);
+        let v = e.cakeys(d, &["verify", "--spec", &spec, "--token", d.name]);
         assert_eq!(code(&v), 0, "{row}: cakeys verify: {}", stderr(&v));
         // A re-run finds the key there, verifies it and changes nothing.
         let again = std::fs::read(&lock_path).unwrap();
@@ -1783,7 +1783,7 @@ fn host_moves_refuse_what_they_cannot_check() {
         + "[specs.hg-anon]\nobject = \"hg\"\nattributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n\
            tokens.p11kit-anon = { locator = { CKA_LABEL = \"hg-anon\" }, origin = \"import\" }\n\n";
     e.config_with(&body, &|r| if r.name == "p11kit" { "provider = \"softhsm\"\n".into() } else { String::new() });
-    let o = e.cakeys(soft, &["create", "hg-src", "--token", "softhsm"]);
+    let o = e.cakeys(soft, &["create", "--spec", "hg-src", "--token", "softhsm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let migrate = |spec: &str, to: &str| {
         e.km(soft, &["migrate", "hg", "--from", "softhsm", "--to", to, "--spec", spec, "--allow-host-plaintext"])
@@ -1948,7 +1948,7 @@ fn key_files_carry_one_key_and_its_certificate() {
         + &named("kryoptic-der").map_or_else(String::new, |der| Env::spec("fk-der", "fk", key_attrs, &[der], "xf-k2", IMPORT));
     e.config(&body);
     for spec in ["fk-soft", "fc-soft"] {
-        let o = e.cakeys(soft, &["realise", spec, "--token", "softhsm"]);
+        let o = e.cakeys(soft, &["realise", "--spec", spec, "--token", "softhsm"]);
         assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
     }
     let pass = e.dir.join("pass");
@@ -2015,7 +2015,7 @@ fn key_files_carry_one_key_and_its_certificate() {
         (Some("file"), Some("pkcs12"), Some("file"))
     );
     for spec in ["fk-kry", "fc-kry"] {
-        assert_eq!(code(&e.cakeys(kry, &["verify", spec, "--token", "kryoptic"])), 0, "{spec}");
+        assert_eq!(code(&e.cakeys(kry, &["verify", "--spec", spec, "--token", "kryoptic"])), 0, "{spec}");
     }
     let o = import(&p8, &pass);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
@@ -2030,6 +2030,6 @@ fn key_files_carry_one_key_and_its_certificate() {
         let o = e.km(der, &[&args[..], &["--allow-host-plaintext"]].concat());
         assert_eq!(code(&o), 0, "{}", stderr(&o));
         assert!(stderr(&o).contains("the file's certificate is not imported"), "{}", stderr(&o));
-        assert_eq!(code(&e.cakeys(der, &["verify", "fk-der", "--token", "kryoptic-der"])), 0);
+        assert_eq!(code(&e.cakeys(der, &["verify", "--spec", "fk-der", "--token", "kryoptic-der"])), 0);
     }
 }

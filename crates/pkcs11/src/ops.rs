@@ -526,33 +526,24 @@ pub fn creates(t: &Target, lock: &Lock) -> bool {
     not_created(t, lock).is_none()
 }
 
-/// The (spec, token) pairs `create` selects, in config order.
+/// The (spec, token) pairs `create` selects, in config order: [`Config::select`], and a
+/// selection naming a spec or an object that matches nothing is refused like the other verbs
+/// refuse it.
 ///
 /// # Errors
 ///
-/// A name that selects nothing is refused like the other verbs refuse it: an unknown spec
-/// (`NotFound`) or token (`Validation`), or a spec without that token (`NotFound`).
-pub fn create_pairs<'a>(cfg: &'a Config, spec: Option<&str>, token: Option<&str>) -> Result<Vec<(&'a str, &'a str)>> {
-    if let Some(s) = spec
-        && !cfg.specs.contains_key(s)
-    {
-        return Err(KmError::NotFound(format!("spec '{s}'")));
+/// `Validation` (17), as [`Config::select`] and [`Config::address`].
+pub fn create_pairs<'a>(
+    cfg: &'a Config,
+    object: Option<&str>,
+    spec: Option<&str>,
+    token: Option<&str>,
+) -> Result<Vec<(&'a str, &'a str)>> {
+    let pairs = cfg.select(object, spec, token)?;
+    if pairs.is_empty() && (object.is_some() || spec.is_some()) {
+        cfg.address(object, spec, token)?;
     }
-    if let Some(t) = token
-        && !cfg.tokens.contains_key(t)
-    {
-        return Err(KmError::Validation(format!("unknown token '{t}'")));
-    }
-    if let (Some(s), Some(t)) = (spec, token) {
-        Target::new(cfg, s, t)?;
-    }
-    Ok(cfg
-        .specs
-        .iter()
-        .filter(|(n, _)| spec.is_none_or(|s| s == n.as_str()))
-        .flat_map(|(n, s)| s.tokens.keys().map(move |t| (n.as_str(), t.as_str())))
-        .filter(|(_, t)| token.is_none_or(|w| w == *t))
-        .collect())
+    Ok(pairs)
 }
 
 /// What `create` does with one selected pair ([`plan_create`]).
@@ -594,10 +585,11 @@ pub struct Planned<'a> {
 
 /// What `create` does with each selected pair ([`create_pairs`]), decided from keys.toml, the
 /// lock and the capability profiles alone, before any token is opened: a pair whose origin is
-/// not `create`, or whose object the lock pins, is skipped (unless both `spec` and `token` name
-/// it); every other pair goes through the static gate ([`crate::gate::check`]), whose *no*
-/// refuses it and whose *unknown* is a reason to try. A token whose profiles are not known
-/// without opening it is not gated here; the live check still refuses before generating.
+/// not `create`, or whose object the lock pins, is skipped (unless the address names that one
+/// pair: an object or a spec, and a token); every other pair goes through the static gate
+/// ([`crate::gate::check`]), whose *no* refuses it and whose *unknown* is a reason to try. A
+/// token whose profiles are not known without opening it is not gated here; the live check
+/// still refuses before generating.
 ///
 /// # Errors
 ///
@@ -605,15 +597,17 @@ pub struct Planned<'a> {
 /// `create`, or a spec `plan_mode` refuses; the gate's own errors.
 pub fn plan_create<'a>(
     cfg: &'a Config,
+    object: Option<&str>,
     spec: Option<&str>,
     token: Option<&str>,
     lock: &Lock,
     registry: &Registry,
 ) -> Result<Vec<Planned<'a>>> {
-    let named = spec.is_some() && token.is_some();
+    let pairs = create_pairs(cfg, object, spec, token)?;
+    let named = token.is_some() && (object.is_some() || spec.is_some()) && pairs.len() == 1;
     let mut stacks = std::collections::BTreeMap::new();
     let mut out = Vec::new();
-    for (spec_name, token_name) in create_pairs(cfg, spec, token)? {
+    for (spec_name, token_name) in pairs {
         let t = Target::new(cfg, spec_name, token_name)?;
         let planned =
             |action, reasons| Planned { spec: spec_name, token: token_name, object: t.object_name, action, reasons };
@@ -773,7 +767,7 @@ pub fn delete(
     Ok(changed)
 }
 
-/// The pseudo-FOD pre-use check of `reference` (`<object>` or `<object>.id.<scheme>`): pick the
+/// The pseudo-FOD pre-use check of `reference` (`<object>` or `<object>.id.<scheme>`; none with `spec`): pick the
 /// (spec, token) pair and [`verify`] it, in a read-only session. Never writes: neither the lock,
 /// nor the token, nor a TPM's persistent handles; an object that is not there is `NotFound`
 /// (`cakeys create` makes it), one that is there but not locked fails with its `got:` (10).
@@ -785,11 +779,11 @@ pub fn delete(
 /// # Errors
 ///
 /// `Unsupported` (15) for a scheme the spec does not compute on this token; `FirstUse` (18)
-/// when a requested scheme is computed but not locked (its `got:` shows the computed ID); plus `pick_spec`/`Target::new`/`verify` failures — the reference and the pair must
+/// when a requested scheme is computed but not locked (its `got:` shows the computed ID); plus `Config::address`/`Target::new`/`verify` failures — the reference and the pair must
 /// exist, and the realisation must compare clean.
 pub fn check(
     cfg: &Config,
-    reference: &str,
+    reference: Option<&str>,
     spec: Option<&str>,
     token: Option<&str>,
     open: impl FnOnce(&str, hal::Access) -> Result<Token>,
@@ -807,19 +801,21 @@ pub fn check(
 /// As [`check`].
 pub fn check_open(
     cfg: &Config,
-    reference: &str,
+    reference: Option<&str>,
     spec: Option<&str>,
     token: Option<&str>,
     open: impl FnOnce(&str, hal::Access) -> Result<Token>,
     lock: &Lock,
     notes: &mut Notes,
 ) -> Result<(Resolved, Token)> {
-    let (object, requested) = match reference.split_once(".id.") {
-        Some((o, s)) => (o, Some(s)),
-        None => (reference, None),
+    let (object, requested) = match reference.map(|r| r.split_once(".id.").ok_or(r)) {
+        Some(Ok((o, s))) => (Some(o), Some(s)),
+        Some(Err(o)) => (Some(o), None),
+        None => (None, None),
     };
-    let (spec_name, token_name) = cfg.pick_spec(object, spec, token)?;
+    let (spec_name, token_name) = cfg.address(object, spec, token)?;
     let t = Target::new(cfg, &spec_name, &token_name)?;
+    let object = t.object_name;
     let names = |v: &[Scheme]| v.iter().map(|s| s.name()).collect::<Vec<_>>();
     // The schemes the spec can compute; an attestation scheme (§3.7) depends on the token's
     // provider, so only schemes_on below can tell whether this one computes it.

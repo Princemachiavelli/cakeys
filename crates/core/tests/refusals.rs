@@ -88,11 +88,21 @@ fn names_that_select_nothing_are_refused() {
     let said = load(&keys(EC, SIGN, "").replace("object = \"o\"", "object = \"gone\"")).unwrap_err().to_string();
     assert!(said.contains("gone"), "{said}");
     // An object's one (spec, token) pair, or why there is not exactly one.
-    assert_eq!(cfg.pick_spec("o", None, None).unwrap(), ("s".to_owned(), "t".to_owned()));
-    assert!(matches!(cfg.pick_spec("o", None, Some("elsewhere")), Err(KmError::NotFound(_))));
+    // Every part of the address names something keys.toml has, or the run is invalid (17).
+    assert_eq!(cfg.address(Some("o"), None, None).unwrap(), ("s".to_owned(), "t".to_owned()));
+    assert_eq!(cfg.address(None, Some("s"), None).unwrap(), ("s".to_owned(), "t".to_owned()));
+    for (object, spec, token, why) in [
+        (None, None, None, "name an object, or a spec with --spec"),
+        (Some("nope"), None, None, "unknown object 'nope'"),
+        (None, Some("nope"), None, "unknown spec 'nope'"),
+        (Some("o"), None, Some("elsewhere"), "unknown token 'elsewhere'"),
+    ] {
+        let e = cfg.address(object, spec, token).unwrap_err();
+        assert!(matches!(&e, KmError::Validation(m) if m.contains(why)), "{why}: {e}");
+    }
     let two = keys(EC, SIGN, "")
         + "\n[specs.s2]\nobject = \"o\"\ntokens.t = { locator = { CKA_LABEL = \"o2\" }, origin = \"adopt\" }\n";
-    assert!(matches!(load(&two).unwrap().pick_spec("o", None, None), Err(KmError::Ambiguous(_))));
+    assert!(matches!(load(&two).unwrap().address(Some("o"), None, None), Err(KmError::Ambiguous(_))));
 }
 
 #[test]
@@ -482,10 +492,13 @@ fn views_and_picks_say_what_is_there() {
            \n[objects.other]\nclass = \"CKO_DATA\"\n\n[specs.s3]\nobject = \"other\"\ntokens.t = { locator = { CKA_LABEL = \"d\" }, origin = \"adopt\" }\n";
     let cfg = load(&more).unwrap();
     let pair = |spec: &str| (spec.to_owned(), "t".to_owned());
-    assert_eq!(cfg.pick_spec("other", None, None).unwrap(), pair("s3"));
-    assert_eq!(cfg.pick_spec("o", Some("s2"), None).unwrap(), pair("s2"));
-    assert_eq!(cfg.pick_spec("o", Some("s"), Some("t")).unwrap(), pair("s"));
-    assert!(matches!(cfg.pick_spec("o", Some("s3"), None), Err(KmError::NotFound(_))));
+    assert_eq!(cfg.address(Some("other"), None, None).unwrap(), pair("s3"));
+    assert_eq!(cfg.address(Some("o"), Some("s2"), None).unwrap(), pair("s2"));
+    assert_eq!(cfg.address(Some("o"), Some("s"), Some("t")).unwrap(), pair("s"));
+    assert_eq!(cfg.address(None, Some("s2"), Some("t")).unwrap(), pair("s2"));
+    let e = cfg.address(Some("o"), Some("s3"), None).unwrap_err();
+    assert!(matches!(&e, KmError::Validation(m) if m.contains("spec 's3' realises 'other', not 'o'")), "{e}");
+    assert_eq!(cfg.select(Some("o"), None, Some("t")).unwrap(), [("s", "t"), ("s2", "t")]);
 
     assert_eq!(
         [Mode::Direct, Mode::Commitment, Mode::WrapRebind].map(|m| m.to_string()),

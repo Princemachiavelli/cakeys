@@ -16,6 +16,8 @@ set -euo pipefail
 mode=$1 bin=$(realpath "$2") dir=$3
 module=${XV_MODULE:-$(dirname "$(dirname "$(command -v softhsm2-util)")")/lib/softhsm/libsofthsm2.so}
 fixtures=$(dirname "$(realpath "$0")")/../crates/cli/tests/fixtures
+# Each spec is named as its object: builds before 2026-11-15 read a verb's positional as the
+# spec, later ones as the object, and both name the same pair.
 specs=(ec ecpub rsa ed aes hmac wrapped cert data)
 export SOFTHSM2_CONF=$dir/softhsm2.conf
 
