@@ -248,21 +248,13 @@ impl Token {
     /// `Validation` for an attribute cakeys cannot set; `Unsupported` for a mechanism the token
     /// does not offer.
     pub fn policy_template(&self, attrs: &BTreeMap<String, AttrValue>) -> Result<Vec<Attribute>> {
-        attrs
-            .iter()
-            .map(|(name, v)| match v {
-                AttrValue::Bool(b) => bool_attr(name, *b).ok_or_else(|| unsupported_attr(name)),
-                AttrValue::Mechanisms(names) => names
-                    .iter()
-                    .map(|n| {
-                        self.mechanisms.iter().copied().find(|m| mechanism_name(*m) == *n).ok_or_else(|| {
-                            self.unsupported(format!("{name}: token '{}' does not offer {n}", self.name))
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()
-                    .map(Attribute::AllowedMechanisms),
-            })
-            .collect()
+        crate::templates::policy(attrs, &|name, n| {
+            self.mechanisms
+                .iter()
+                .copied()
+                .find(|m| mechanism_name(*m) == *n)
+                .ok_or_else(|| self.unsupported(format!("{name}: token '{}' does not offer {n}", self.name)))
+        })
     }
 }
 

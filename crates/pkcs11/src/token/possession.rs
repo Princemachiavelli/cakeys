@@ -172,9 +172,7 @@ impl Token {
             return Err(self.none_allowed(&[MechanismType::ECDH1_DERIVE]));
         }
         let ch = pop::ecdh_challenge(spki, msg)?;
-        let profile_says_no =
-            self.profiles.module.as_ref().and_then(|p| p.answer(&Capability::DeriveSealed)) == Some(false);
-        if profile_says_no || !self.has(MechanismType::SHA256_HMAC) {
+        if !self.ecdh_seals() {
             return self.prove_ecdh_extractable(h, spki, &ch);
         }
         // The extractable form after the sealed one failed for `why`, which its own failure names.
@@ -457,18 +455,15 @@ impl Token {
     /// unwraps it), as the provider adjusts it: `sealed`, sensitive, never extractable and only
     /// for signing, to MAC with; else the readable secret of
     /// [`Self::prove_ecdh_extractable`].
+    /// Whether a `pop-ecdh` proof derives into a sealed secret first ([`Self::prove_ecdh`]), by
+    /// [`crate::ops::ecdh_seals`], which a plan asks without the token.
+    pub(crate) fn ecdh_seals(&self) -> bool {
+        let derive_sealed = self.profiles.module.as_ref().and_then(|p| p.answer(&Capability::DeriveSealed));
+        crate::ops::ecdh_seals(derive_sealed, Some(self.has(MechanismType::SHA256_HMAC))) == Some(true)
+    }
+
     fn proof_secret(&self, binding: Binding, sealed: bool) -> Result<Vec<Attribute>> {
-        let mut t = vec![
-            Attribute::Token(false),
-            Attribute::Class(ObjectClass::SECRET_KEY),
-            Attribute::KeyType(KeyType::GENERIC_SECRET),
-            Attribute::Sensitive(sealed),
-            Attribute::Extractable(!sealed),
-        ];
-        if sealed {
-            t.push(Attribute::Sign(true));
-        }
-        self.provider.adjusted(&Template::Session(SessionKey::ProofSecret { binding, sealed }), t)
+        self.session_template(SessionKey::ProofSecret { binding, sealed })
     }
 }
 

@@ -501,7 +501,9 @@ impl Run<'_> {
                     if there {
                         return Ok(Some(public::Moved::AlreadyThere));
                     }
-                    sealed::preflight(&bundle, e, &dst, &target, tr.as_ref(), lock, notes).map(|_| None)
+                    sealed::preflight(&bundle, e, &dst, &target, tr.as_ref(), lock, notes)?;
+                    let method = e.method().map_err(KmError::Validation)?;
+                    import_checks(&dst, &target, &method, registry, notes).map(|()| None)
                 })
             } else {
                 sealed::import(&bundle, e, &dst, &target, tr.as_ref(), lock, notes).map(Some)
@@ -717,24 +719,18 @@ impl Run<'_> {
                 p.ready = false;
                 p.reasons.insert(0, why);
             }
-            // The target's `lock` must prove possession of a private key the way its spec says.
-            if let (true, Some(to)) = (p.ready, target_token)
-                && let Ok(dst) = import_target(cfg, &p.object, to, None, MOVE)
-                && let Some(target) = &moves.target
-                && let Some(why) = unprovable(&dst, target)
-            {
-                p.ready = false;
-                p.reasons.push(why);
-            }
-            // An imported PIV key is never attested (docs/CAMIGRATE.md D8): a spec asking for it never holds.
-            if let (true, Some(Method::PivImport), Some(to)) = (p.ready, &p.method, target_token)
-                && import_target(cfg, &p.object, to, None, MOVE).is_ok_and(|dst| dst.on_token.attestation)
-            {
-                p.ready = false;
-                p.reasons.push(format!(
-                    "'{to}' asks for an attestation of '{}', and an imported PIV key has none",
-                    p.object
-                ));
+            match target_token {
+                Some(to) => landing_checks(cfg, p, to, &moves.source, moves.target.as_ref(), registry),
+                // Nothing lands on a token here: the source's export is all the run makes.
+                None => {
+                    if let (true, Some(method)) = (p.ready, &p.method) {
+                        let exposure = p.exposure.unwrap_or(Exposure::Sealed);
+                        if let Err(why) = tokens::source_refusal(method, exposure, &moves.source, registry) {
+                            p.ready = false;
+                            p.reasons.push(why);
+                        }
+                    }
+                }
             }
         }
         // A sealed move wraps under the transport key's spec in keys.toml: one the lock still
@@ -758,6 +754,68 @@ impl Run<'_> {
             show_plans(from, &moves, how.json)?;
         }
         Ok(moves)
+    }
+}
+
+/// What an import's dry run asks of the open `target` before it says ready, as the import asks
+/// before it creates anything: the capability check of the record that follows
+/// (`ops::check_import`), and the target's provider about the templates `method` sends there
+/// ([`tokens::target_refusal`]).
+///
+/// # Errors
+///
+/// What `ops::check_import` refuses; the provider's refusal (15).
+fn import_checks(
+    dst: &Target,
+    target: &cakeys_pkcs11::Token,
+    method: &Method,
+    registry: &Registry,
+    notes: &mut Notes,
+) -> cakeys_core::Result<()> {
+    cakeys_pkcs11::ops::check_import(dst, target)?;
+    match tokens::target_refusal(dst, method, &tokens::side(target)?, registry) {
+        Ok(None) => Ok(()),
+        Ok(Some(note)) => {
+            notes.note(format_args!("{note}"));
+            Ok(())
+        }
+        Err(why) => Err(KmError::Unsupported(why)),
+    }
+}
+
+/// What a ready plan `p` must still pass where it lands on `to`, said in the plan since the run
+/// would refuse it: the target's `lock` must prove possession of a private key the way its spec
+/// says; the providers must take the templates the move sends (`Provider::template`, refused
+/// before anything is created); an imported PIV key is never attested (docs/CAMIGRATE.md D8).
+fn landing_checks(
+    cfg: &Config,
+    p: &mut plan::Plan,
+    to: &str,
+    source: &cakeys_core::migrate::Side,
+    target: Option<&cakeys_core::migrate::Side>,
+    registry: &Registry,
+) {
+    let Ok(dst) = import_target(cfg, &p.object, to, None, MOVE) else { return };
+    let block = |p: &mut plan::Plan, why: String| {
+        p.ready = false;
+        p.reasons.push(why);
+    };
+    if let (true, Some(target)) = (p.ready, target)
+        && let Some(why) = unprovable(&dst, target)
+    {
+        block(p, why);
+    }
+    if let (true, Some(method), Some(target)) = (p.ready, p.method.clone(), target) {
+        let exposure = p.exposure.unwrap_or(Exposure::Sealed);
+        match tokens::template_refusal(&dst, &method, exposure, source, target, registry) {
+            Ok(None) => {}
+            Ok(Some(note)) => p.notes.push(note),
+            Err(why) => block(p, why),
+        }
+    }
+    if p.ready && p.method == Some(Method::PivImport) && dst.on_token.attestation {
+        let why = format!("'{to}' asks for an attestation of '{}', and an imported PIV key has none", p.object);
+        block(p, why);
     }
 }
 
@@ -1086,11 +1144,13 @@ impl Run<'_> {
                 notes.note(format_args!("{dst} is already realised and verifies; nothing to import"));
             } else {
                 host::free_locator(&dst, &target, Some(&spki))?;
+                import_checks(&dst, &target, &read.method, registry, notes)?;
                 println!("{dst}: {object} by {} (file) from {}: ready", read.method, input.display());
             }
             match (&certificate, &cert_target) {
                 (Some(cert), Some(t)) if !public::already_there(t, &target, &self.lock, notes)? => {
                     public::preflight(t, &target, cert)?;
+                    import_checks(t, &target, &Method::Public, registry, notes)?;
                     println!("{t}: its certificate: ready");
                 }
                 (Some(_), None) => notes.note(format_args!(
@@ -1195,7 +1255,7 @@ impl Run<'_> {
                     continue;
                 }
             };
-            match from_its_file(cfg, &dst, &target, &mut self.lock, how, notes) {
+            match from_its_file((cfg, self.registry), &dst, &target, &mut self.lock, how, notes) {
                 Ok(None) => {}
                 Ok(Some(public::Moved::Imported)) => {
                     changed = true;
@@ -1296,7 +1356,7 @@ fn file_passphrase(cfg: &Config, object: &str, over: Option<&Path>) -> cakeys_co
 /// in the lock first, so the token must show exactly them, and the lock is left as it was if it
 /// does not. `None` when the dry run found it ready.
 fn from_its_file(
-    cfg: &Config,
+    (cfg, registry): (&Config, &Registry),
     dst: &Target,
     to: &cakeys_pkcs11::Token,
     lock: &mut Lock,
@@ -1360,6 +1420,7 @@ fn from_its_file(
                 public::preflight(dst, to, &m.bytes)?;
             }
         }
+        import_checks(dst, to, &m.method, registry, notes)?;
         let first = if first_use { "; its first use, the lock pins it from the file" } else { "" };
         println!("{dst}: {} by {} ({}) from {}: ready{first}", dst.object_name, m.method, m.exposure, path.display());
         return Ok(None);

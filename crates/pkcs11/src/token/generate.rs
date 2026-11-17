@@ -73,13 +73,42 @@ impl Token {
             .map_err(|e| self.unsupported(format!("generating key on '{}': {} ({e})", self.name, rv_name(&e))))
     }
 
+    /// cakeys' template for the key `on` generates (a pair's private one), as the provider
+    /// adjusts it.
+    ///
+    /// # Errors
+    ///
+    /// As [`templates::generation_key`]; the provider's refusal.
+    pub(crate) fn generation_key(&self, on: Declared<'_>) -> Result<Vec<Attribute>> {
+        let t = templates::generation_key(on, self.policy_template(&on.spec.attributes)?)?;
+        self.provider.adjusted(&Template::Generate(on, Half::Key), t)
+    }
+
+    /// cakeys' public template for the pair `on` generates, the curve by `ec_params` (else its
+    /// OID), as the provider adjusts it; `None` for a secret key.
+    ///
+    /// # Errors
+    ///
+    /// As [`templates::generation_public`]; the provider's refusal.
+    pub(crate) fn generation_public(
+        &self,
+        on: Declared<'_>,
+        ec_params: Option<&[u8]>,
+    ) -> Result<Option<Vec<Attribute>>> {
+        if !matches!(key_type_of(on.object)?, KeyType::RSA | KeyType::EC | KeyType::EC_EDWARDS) {
+            return Ok(None);
+        }
+        let public_policy = self.policy_template(&on.spec.public_attributes)?;
+        templates::generation_public(on, public_policy, ec_params)?
+            .map(|t| self.provider.adjusted(&Template::Generate(on, Half::Public), t))
+            .transpose()
+    }
+
     fn generate(&self, object: &ObjectCfg, spec: &SpecCfg, loc: &Locator) -> Result<Option<String>> {
-        let mut common = vec![Attribute::Token(true)];
-        common.extend(locator_attrs(loc)?);
-        let policy = self.policy_template(&spec.attributes)?;
         // Each template as the provider adjusts it, before anything is generated.
-        let adjusted =
-            |half, t| self.provider.adjusted(&Template::Generate(Declared { object, spec, locator: loc }, half), t);
+        let on = Declared { object, spec, locator: loc };
+        let key = self.generation_key(on)?;
+        let public = self.generation_public(on, None)?;
         let refused =
             |e: CkError| self.unsupported(format!("generating key on '{}': {} ({e})", self.name, rv_name(&e)));
         let private_declared =
@@ -98,86 +127,41 @@ impl Token {
                     })
                 })
         };
-        // Defaults for the public half of a pair, left out when the declared attributes set the
-        // same type (the template may not carry a type twice); then the provider's adjustment.
-        let public_half = |mut public: Vec<Attribute>| -> Result<Vec<Attribute>> {
-            public.extend(self.policy_template(&spec.public_attributes)?);
-            let declared = |n| spec.attributes.contains_key(n) || spec.public_attributes.contains_key(n);
-            if !declared("CKA_VERIFY") {
-                public.push(Attribute::Verify(true));
-            }
-            if !declared("CKA_PRIVATE") {
-                public.push(Attribute::Private(false));
-            }
-            adjusted(Half::Public, public)
-        };
-        match key_type_of(object)? {
-            KeyType::RSA => {
-                let bits =
-                    object.modulus_bits.ok_or_else(|| KmError::Validation("RSA keys need modulusBits".into()))?;
-                let mut public = common.clone();
-                public.extend([Attribute::ModulusBits(bits.into()), Attribute::PublicExponent(vec![1, 0, 1])]);
-                let public = public_half(public)?;
-                let mut private = common;
-                private.extend(policy);
-                let private = adjusted(Half::Key, private)?;
-                pair(&Mechanism::RsaPkcsKeyPairGen, &public, &private).map_err(refused)
-            }
-            KeyType::EC | KeyType::EC_EDWARDS => {
+        match (key_type_of(object)?, public) {
+            (KeyType::RSA, Some(public)) => pair(&Mechanism::RsaPkcsKeyPairGen, &public, &key).map_err(refused),
+            (KeyType::EC | KeyType::EC_EDWARDS, Some(by_oid_public)) => {
                 let curve = curve_of(object)?;
                 let mech = self.runnable(if curve.edwards() {
                     Mechanism::EccEdwardsKeyPairGen
                 } else {
                     Mechanism::EccKeyPairGen
                 });
-                let public_with = |params: &[u8]| -> Result<Vec<Attribute>> {
-                    let mut public = common.clone();
-                    public.push(Attribute::EcParams(params.to_vec()));
-                    public_half(public)
-                };
-                let mut private = common.clone();
-                private.extend(policy);
-                let private = adjusted(Half::Key, private)?;
-                // Built before the first attempt: a provider's refusal comes before anything is made.
-                let by_oid_public = public_with(curve.params())?;
                 // The OID first; a module that takes the curve only by name (ykcs11's
                 // edwards25519, a profile's `by-name` row [src]) gets PKCS#11 3.0's
                 // PrintableString form. The identity is the same: the SPKI, not the params.
-                let by_oid = pair(&mech, &by_oid_public, &private);
+                let by_oid = pair(&mech, &by_oid_public, &key);
                 match (by_oid, curve.params_by_name()) {
-                    (Err(e), Some(name)) => pair(&mech, &public_with(name)?, &private).map_err(|_| e).map(|note| {
-                        let said = format!("{}: {BY_NAME} ({})", self.name, curve.name());
-                        Some(note.map_or_else(|| said.clone(), |n| format!("{n}; {said}")))
-                    }),
+                    (Err(e), Some(name)) => {
+                        let by_name = self.generation_public(on, Some(name))?.unwrap_or_default();
+                        pair(&mech, &by_name, &key).map_err(|_| e).map(|note| {
+                            let said = format!("{}: {BY_NAME} ({})", self.name, curve.name());
+                            Some(note.map_or_else(|| said.clone(), |n| format!("{n}; {said}")))
+                        })
+                    }
                     (other, _) => other,
                 }
                 .map_err(refused)
             }
-            KeyType::DES3 => {
-                // The key type fixes the length: a template with CKA_VALUE_LEN is inconsistent.
-                let mut t = common;
-                t.extend([Attribute::Class(ObjectClass::SECRET_KEY), Attribute::KeyType(KeyType::DES3)]);
-                t.extend(policy);
-                let t = adjusted(Half::Key, t)?;
-                self.session.generate_key(&Mechanism::Des3KeyGen, &t).map(|_| None).map_err(refused)
+            (KeyType::DES3, _) => {
+                self.session.generate_key(&Mechanism::Des3KeyGen, &key).map(|_| None).map_err(refused)
             }
-            kt => {
-                let len =
-                    object.value_len.ok_or_else(|| KmError::Validation("secret keys need valueLen (bytes)".into()))?;
+            (kt, _) => {
                 let mech = match object.key_type.and_then(hmac_key_gen) {
                     Some(m) => m,
                     None if kt == KeyType::AES => Mechanism::AesKeyGen,
                     None => Mechanism::GenericSecretKeyGen,
                 };
-                let mut t = common;
-                t.extend([
-                    Attribute::Class(ObjectClass::SECRET_KEY),
-                    Attribute::KeyType(kt),
-                    Attribute::ValueLen(len.into()),
-                ]);
-                t.extend(policy);
-                let t = adjusted(Half::Key, t)?;
-                self.session.generate_key(&mech, &t).map(|_| None).map_err(refused)
+                self.session.generate_key(&mech, &key).map(|_| None).map_err(refused)
             }
         }
     }

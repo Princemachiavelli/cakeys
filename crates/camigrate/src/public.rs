@@ -11,8 +11,8 @@ use cakeys_core::migrate::{Exposure, Method};
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
-use cakeys_pkcs11::token::{class_of, locator_attrs, public_key_attrs, public_object_attrs};
-use cakeys_pkcs11::{Template, Token};
+use cakeys_pkcs11::token::{class_of, public_key_attrs, public_object_attrs};
+use cakeys_pkcs11::{Template, Token, templates};
 use cryptoki::object::{Attribute, AttributeType, ObjectHandle};
 use x509_cert::der::Decode as _;
 
@@ -109,6 +109,8 @@ pub(crate) fn create_as(
     if already_there(dst, to, lock, notes)? {
         return Ok(Moved::AlreadyThere);
     }
+    // What the record after it asks, before anything is created.
+    ops::check_import(dst, to)?;
     let template = template(dst, to, bytes)?;
     let public_half = preflight(dst, to, bytes)?;
     let create = || {
@@ -181,15 +183,8 @@ pub(crate) fn preflight(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Option
 /// The creation template from the object's bytes: the class and type, the material, `CKA_TOKEN`,
 /// the target locator and the target spec's declared attributes, as the provider adjusts it.
 fn template(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Vec<Attribute>> {
-    let mut t = vec![Attribute::Token(true)];
-    t.extend(locator_attrs(&dst.on_token.locator)?);
-    t.extend(to.policy_template(&dst.spec.attributes)?);
-    t.extend(public_object_attrs(dst.object, bytes).map_err(|e| prefixed(dst, e))?);
-    // A token's default may make a data object private (SoftHSM does [run]), which one no spec
-    // declares private may not be: said, not left to the token.
-    if dst.object.class == Class::Data && dst.spec.flag("CKA_PRIVATE").is_none() {
-        t.push(Attribute::Private(false));
-    }
+    let material = public_object_attrs(dst.object, bytes).map_err(|e| prefixed(dst, e))?;
+    let t = templates::object(dst.into(), to.policy_template(&dst.spec.attributes)?, Some(material))?;
     to.provider.adjusted(&Template::Object(dst.into()), t)
 }
 

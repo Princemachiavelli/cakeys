@@ -133,10 +133,20 @@ behaviour or reach outside PKCS#11:
   through (`provider::Template` names what it is for: a generation's half, an import by
   `C_CreateObject` or `C_UnwrapKey`, an imported key's public half, a public object, the trusted
   transport copy, or a session key of a proof, a commitment or a move), adjusting it or refusing
-  before anything is created. Secret material is added after it, the fallbacks below run on what
-  it returns, and the probe's imports and moves use it as the verbs do, so a profile measures what
-  they send; `C_FindObjects` templates do not pass through it. No in-tree provider overrides it
-  yet. *Operations* a provider may replace
+  it. Every template is built in one place (`cakeys_pkcs11::templates`) and asked about before
+  anything is created: the proof's and the commitments' session keys, which run once the object
+  exists, by the capability check before it (`ops::check_templates`, and `ops::check_import`
+  before camigrate's imports). A plan asks the same templates without a token (`gate::check`,
+  camigrate's plan of every move: `ops::plan_templates`, `tokens::template_refusal`), each
+  mechanism name mapped by the profiles' dictionary and each "will this step run" decided by
+  the same predicate as the run's from the side's profile; material it has not read (a
+  certificate's value, a public key's points) is absent, and what it cannot know (a mechanism
+  the profiles do not decide) it does not ask. Secret material is added after the hook, and the
+  fallbacks below run on what it returns. The probe's generations, imports, public objects and
+  sealed round trips ask it with the verbs' purposes; its own templates still differ in places
+  (a composed move's KEKs lack camigrate's `CKA_SENSITIVE`), so a row says what the probe sent.
+  `C_FindObjects` templates do not pass through it. No in-tree provider overrides it yet.
+  *Operations* a provider may replace
   whole, each default plain PKCS#11 through a public `Token` method an override wraps:
   `create` (`Token::create_declared`; ykcs11 refuses a locator that is not a PIV slot first),
   `destroy` (`Token::destroy_plain`; ykcs11 refuses a key it would not erase), `import_plaintext`

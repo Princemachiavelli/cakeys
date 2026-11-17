@@ -27,17 +27,7 @@ impl Token {
         let mut kek = Zeroizing::new([0u8; 32]);
         getrandom::fill(kek.as_mut_slice())
             .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}")))?;
-        let mut template = Secret(self.provider.adjusted(
-            &Template::Session(SessionKey::HostKek),
-            vec![
-                Attribute::Class(ObjectClass::SECRET_KEY),
-                Attribute::KeyType(KeyType::AES),
-                Attribute::Token(false),
-                Attribute::Sensitive(true),
-                Attribute::Extractable(false),
-                Attribute::Wrap(true),
-            ],
-        )?);
+        let mut template = Secret(self.session_template(SessionKey::HostKek)?);
         template.0.push(Attribute::Value(kek.to_vec()));
         let refused = |what: &str, e: CkError| self.unsupported(format!("{what} on '{}': {e}", self.name));
         let session_kek =
@@ -126,12 +116,7 @@ impl Token {
     /// certificates only), else the spec's yes.
     #[must_use]
     pub fn accepts_public_key_objects(&self) -> bool {
-        let module = self.profiles.module.as_ref();
-        if let Some(probed) = module.and_then(cakeys_profile::Profile::creates_public_keys) {
-            return probed;
-        }
-        let rows = module.and_then(|p| p.migration.as_ref()).map(|m| &m.public_accepts);
-        rows.is_none_or(|r| r.is_empty() || r.iter().any(|a| a.class == "CKO_PUBLIC_KEY"))
+        accepts_public_keys(self.profiles.module.as_ref())
     }
 
     fn create_secret_template(&self, template: &Secret) -> Result<ObjectHandle> {
@@ -142,6 +127,16 @@ impl Token {
         };
         self.managing("importing a key", create)
     }
+}
+
+/// [`Token::accepts_public_key_objects`] of a module profile, for a plan without the token.
+#[must_use]
+pub fn accepts_public_keys(module: Option<&cakeys_profile::Profile>) -> bool {
+    if let Some(probed) = module.and_then(cakeys_profile::Profile::creates_public_keys) {
+        return probed;
+    }
+    let rows = module.and_then(|p| p.migration.as_ref()).map(|m| &m.public_accepts);
+    rows.is_none_or(|r| r.is_empty() || r.iter().any(|a| a.class == "CKO_PUBLIC_KEY"))
 }
 
 /// A creation template holding plaintext: its secret attributes are zeroized when it is dropped.

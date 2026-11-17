@@ -140,20 +140,30 @@ pub trait Provider: Send + Sync {
     // ── Templates ────────────────────────────────────────────────────────────────────────
 
     /// Adjust `attrs`, cakeys' template for the call `req` names, to one this module takes:
-    /// a vendor attribute set, a default it refuses removed. Every template cakeys builds for
+    /// a vendor attribute set, a default it refuses removed. Every template the verbs build for
     /// `C_GenerateKey(Pair)`, `C_CreateObject`, `C_UnwrapKey` and `C_DeriveKey` passes through
-    /// here, the probe's own import and creation included, so a profile measures what the verbs
-    /// send; `C_FindObjects` search templates do not. Secret material (`CKA_VALUE`, a private
-    /// key's components) is never in `attrs`: cakeys adds it afterwards. Runs before cakeys'
-    /// own fallbacks, which then work on the result (a public `CKA_PRIVATE = false` dropped
-    /// where refused, a curve by name, `C_DeriveKey`'s policy defaults). A module that
+    /// here, and the probe's generations, imports, creations and sealed round trips ask it with
+    /// the same purposes (its own templates still differ in places); `C_FindObjects` search
+    /// templates and the probe's measurement variations do not. Secret material (`CKA_VALUE`, a
+    /// private key's components) is never in `attrs`: cakeys adds it afterwards. Runs before
+    /// cakeys' own fallbacks, which then work on the result (a public `CKA_PRIVATE = false`
+    /// dropped where refused, a curve by name, `C_DeriveKey`'s policy defaults). A module that
     /// generates only from its own template replaces it whole instead ([`Self::generation`]).
     /// The default changes nothing.
+    ///
+    /// Each template is asked about before anything is created: the proof's and the
+    /// commitments' session keys, which run once the object exists, by the capability check
+    /// before it (`ops::check_import` for camigrate's imports). A plan asks too, with no token
+    /// (`gate::check`, camigrate's `--dry-run` and the plan of every move): the same templates
+    /// ([`crate::templates`]), less a public object's value and a public key's material, which
+    /// it has not read. So a refusal should follow from the request (`req`: the object, its
+    /// spec and locator, the purpose), not from material; one that does is made only at the run,
+    /// still before anything is created.
     ///
     /// # Errors
     ///
     /// The provider's refusal of the call, `Unsupported` (15) for an object the module cannot
-    /// take: made before anything of it is created on the token.
+    /// take.
     fn template(&self, _req: &Template<'_>, _attrs: &mut Attributes) -> Result<()> {
         Ok(())
     }
@@ -297,7 +307,7 @@ pub enum Report<'a> {
 
 /// The repaired reads ([`Provider::repair`]): a repair that answers with another variant than
 /// it was asked changes nothing.
-impl dyn Provider {
+impl dyn Provider + '_ {
     /// `CKA_EC_POINT` as `raw` reads, repaired.
     #[must_use]
     pub fn ec_point<'a>(&self, raw: &'a [u8]) -> Cow<'a, [u8]> {

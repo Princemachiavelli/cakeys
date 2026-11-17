@@ -5,6 +5,7 @@ use crate::provider::{
     AttestCtx, AttestationCap, Attested, Create, Declared, Destroy, Generation, Half, Provider, Registry, SessionKey,
     Template, keygen_mechanism,
 };
+use crate::templates;
 use cakeys_core::attrs;
 use cakeys_core::config::{AttrValue, Binding, Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
 pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};
@@ -33,6 +34,7 @@ mod public;
 mod uri;
 
 pub use generate::{BY_NAME, with_public_default_dropped};
+pub use host::accepts_public_keys;
 pub use identity::commit_mechanism;
 pub use policy::bool_attr;
 pub use possession::{
@@ -441,6 +443,15 @@ impl Token {
     #[must_use]
     pub fn runnable<'a>(&self, m: Mechanism<'a>) -> Mechanism<'a> {
         if self.listed.contains(&m.mechanism_type()) { m } else { self.provider.stand_in(&m).unwrap_or(m) }
+    }
+
+    /// The session key `key`'s template ([`templates::session`]), as the provider adjusts it.
+    ///
+    /// # Errors
+    ///
+    /// The provider's refusal.
+    pub fn session_template(&self, key: SessionKey) -> Result<Vec<Attribute>> {
+        self.provider.adjusted(&Template::Session(key), templates::session(key))
     }
 
     /// The key type of `h` as a spec-compliant module would report it: `CKA_KEY_TYPE`, repaired

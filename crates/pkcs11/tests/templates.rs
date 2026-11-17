@@ -1,11 +1,12 @@
 //! `Provider::template` on a real module (`SoftHSM`): the templates cakeys builds for a
 //! generation, a proof of possession and the host's session key each pass through the provider,
-//! what it sets reaches the token, and its refusal comes before anything is made. Skipped
-//! without `CAKEYS_TEST_MODULE`.
+//! what it sets reaches the token, and its refusal comes before anything is made, a proof's
+//! included. Skipped without `CAKEYS_TEST_MODULE`.
 
-use cakeys_core::config::{AttrValue, Binding, Locator, ObjectCfg, SpecCfg, TokenCfg};
+use cakeys_core::config::{AttrValue, Binding, Locator, Lock, ObjectCfg, SpecCfg, TokenCfg};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
+use cakeys_pkcs11::ops;
 use cakeys_pkcs11::token::{Access, ModuleInfo};
 use cakeys_pkcs11::{Attributes, Half, Provider, Registry, SessionKey, Template, Token};
 use cryptoki::mechanism::Mechanism;
@@ -69,20 +70,72 @@ fn at(label: &str) -> Locator {
     Locator { label: Some(label.into()), id: None }
 }
 
-#[test]
-fn templates_pass_through_the_provider() {
+/// The `SoftHSM` reference token as keys.toml's `[tokens.softhsm]` says it, its provider
+/// `provider`, and a PIN file for it; `None` without the module.
+fn token(provider: &str) -> Option<String> {
     let Ok(module) = std::env::var("CAKEYS_TEST_MODULE") else {
         eprintln!("skipping templates: CAKEYS_TEST_MODULE is not set");
-        return;
+        return None;
     };
-    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cakeys-pkcs11-templates");
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("cakeys-pkcs11-templates-{provider}"));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("pin"), "1234\n").unwrap();
-    let cfg: TokenCfg = toml::from_str(&format!(
-        "module = \"{module}\"\nprovider = \"stamp\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n",
+    Some(format!(
+        "module = \"{module}\"\nprovider = \"{provider}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n",
         dir.join("pin").display()
     ))
+}
+
+/// A provider that refuses every proof's session secret.
+struct NoProof;
+
+impl Provider for NoProof {
+    fn name(&self) -> &'static str {
+        "no-proof"
+    }
+
+    fn matches(&self, _: &ModuleInfo) -> bool {
+        false
+    }
+
+    fn template(&self, req: &Template<'_>, _: &mut Attributes) -> Result<()> {
+        match req {
+            Template::Session(SessionKey::ProofSecret { .. }) => Err(KmError::Unsupported("no-proof refuses".into())),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// The proof of possession runs once the key exists; its template is asked before the key is
+/// generated, so a provider refusing it leaves nothing behind (a key on a module that cannot
+/// delete one would stay).
+#[test]
+fn a_refused_proof_template_creates_nothing() {
+    let Some(token) = token("no-proof") else { return };
+    let cfg: cakeys_core::config::Config = toml::from_str(&format!(
+        "[tokens.softhsm]\n{token}\n\
+         [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.s]\nobject = \"k\"\nattributes = {{ CKA_DERIVE = true }}\n\
+         tokens.softhsm = {{ locator = {{ CKA_LABEL = \"tmpl-proof\" }}, origin = \"create\", binding = \"pop-ecdh\" }}\n"
+    ))
     .unwrap();
+    let t = ops::Target::new(&cfg, "s", "softhsm").unwrap();
+    let registry = Registry::new().with(NoProof);
+    let tok = Token::open("softhsm", &cfg.tokens["softhsm"], None, &registry, Access::Write).unwrap();
+    tok.destroy(t.object, &t.on_token.locator).unwrap();
+    let mut lock = Lock { version: cakeys_core::config::LOCK_VERSION, ..Lock::default() };
+    let mut notes = ops::Notes::default();
+    let e = ops::create(&t, &tok, &mut lock, ops::LockWrite::Record, &mut notes).unwrap_err();
+    assert!(matches!(&e, KmError::Unsupported(m) if m.contains("no-proof refuses")), "{e}");
+    // Not generated and removed again (SoftHSM could): never generated.
+    assert_eq!(notes.lines(), [] as [String; 0], "a key was generated");
+    assert_eq!(tok.find_any(&t.on_token.locator).unwrap().len(), 0);
+}
+
+#[test]
+fn templates_pass_through_the_provider() {
+    let Some(table) = token("stamp") else { return };
+    let cfg: TokenCfg = toml::from_str(&table).unwrap();
     let asked = Arc::new(Mutex::new(Vec::new()));
     let registry = Registry::new().with(Stamp(Arc::clone(&asked)));
     let tok = Token::open("softhsm", &cfg, None, &registry, Access::Write).unwrap();

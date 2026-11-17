@@ -85,8 +85,12 @@ pub(crate) fn side_from_transport(t: &Transport, registry: &Registry) -> Option<
 /// drops from a target's unwrap template (`SoftHSM`: `CKA_VALUE_LEN`).
 #[must_use]
 pub(crate) fn unwrap_refusals(tok: &Token) -> Vec<String> {
-    let mut out: Vec<String> =
-        tok.profiles.module.iter().flat_map(|p| p.unwrap_refuse().into_iter().flatten()).collect();
+    refusals_of(tok.profiles.module.as_ref())
+}
+
+/// [`unwrap_refusals`] of a module profile, for a [`Side`] too.
+fn refusals_of(module: Option<&Profile>) -> Vec<String> {
+    let mut out: Vec<String> = module.iter().flat_map(|p| p.unwrap_refuse().into_iter().flatten()).collect();
     out.sort_unstable();
     out.dedup();
     out
@@ -139,7 +143,143 @@ fn side_of(module: &Profile, stack: &Resolved, token: &str, provider: &str, mech
         });
     }
     side.probed = probed_of(module, stack, &side.mechanisms);
+    side.derive_sealed = module.answer(&Capability::DeriveSealed);
+    side.unwrap_refuse = refusals_of(Some(module));
+    side.public_keys = cakeys_pkcs11::token::accepts_public_keys(Some(module));
     Ok(side)
+}
+
+/// What the providers of a move's two sides refuse of the templates its run will send
+/// (`Provider::template`), asked before anything runs: the source's ([`source_refusal`]), then
+/// the target's ([`target_refusal`]). `Err` names the first refusal; `Ok(Some(note))` when the
+/// plan cannot build what the run will send, and only the run asks.
+pub(crate) fn template_refusal(
+    dst: &Target,
+    method: &Method,
+    exposure: cakeys_core::migrate::Exposure,
+    source: &Side,
+    target: &Side,
+    registry: &Registry,
+) -> std::result::Result<Option<String>, String> {
+    source_refusal(method, exposure, source, registry)?;
+    target_refusal(dst, method, target, registry)
+}
+
+/// The provider of `side` asked about one template.
+fn ask(
+    side: &Side,
+    registry: &Registry,
+    req: &cakeys_pkcs11::Template<'_>,
+    t: Vec<cryptoki::object::Attribute>,
+) -> std::result::Result<(), String> {
+    match registry.named(&side.provider) {
+        Some(p) => {
+            p.adjusted(req, t).map(drop).map_err(|e| format!("provider '{}' on '{}': {e}", p.name(), side.token))
+        }
+        None => Ok(()),
+    }
+}
+
+/// The source's part of [`template_refusal`], and all a plan asks where nothing lands on a token
+/// here (a transport file, a key file): the session keys its export makes, under the export's
+/// own conditions ([`shares_kek`], [`side_rfc5649`]): the host's KEK for a key handed over (to
+/// a target, or written to a file), the transport key and the shared KEK for a sealed one.
+///
+/// [`shares_kek`]: crate::sealed::shares_kek
+/// [`side_rfc5649`]: crate::sealed::side_rfc5649
+pub(crate) fn source_refusal(
+    method: &Method,
+    exposure: cakeys_core::migrate::Exposure,
+    source: &Side,
+    registry: &Registry,
+) -> std::result::Result<(), String> {
+    use crate::sealed::{shares_kek, side_rfc5649};
+    use cakeys_pkcs11::templates::session;
+    use cakeys_pkcs11::{SessionKey, Template};
+    let session_key = |key| ask(source, registry, &Template::Session(key), session(key));
+    match method {
+        Method::HostPkcs8
+        | Method::HostRaw
+        | Method::PivImport
+        | Method::Tpm2Ptool
+        | Method::Pkcs8Pbes2
+        | Method::Pkcs12 => session_key(SessionKey::HostKek),
+        Method::RsaOaep(_) | Method::RsaOaepAesKwp(_) => {
+            session_key(SessionKey::TransportKey)?;
+            if shares_kek(method, exposure, side_rfc5649(source), source.has("CKM_AES_KEY_GEN")) {
+                session_key(SessionKey::ExportKek)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The target's part of [`template_refusal`], and what an import's dry run asks of the open
+/// target: the object `method` creates under `dst` (a key by `C_CreateObject` or `C_UnwrapKey`,
+/// a public object), an imported private key's public half where the target makes one, the KEK
+/// a composed unwrap makes there ([`side_rfc5649`]), and the session keys of the proof and
+/// commitments its record makes. A public object's value and a public key's material are not
+/// read yet, so absent.
+///
+/// [`side_rfc5649`]: crate::sealed::side_rfc5649
+pub(crate) fn target_refusal(
+    dst: &Target,
+    method: &Method,
+    target: &Side,
+    registry: &Registry,
+) -> std::result::Result<Option<String>, String> {
+    use crate::sealed::{side_rfc5649, unwrap_declared};
+    use cakeys_pkcs11::templates::{import_key, known_policy, object, public_half, session};
+    use cakeys_pkcs11::{Declared, SessionKey, Template, Via};
+    let ask = |req: Template<'_>, t: Result<Vec<cryptoki::object::Attribute>>| {
+        ask(target, registry, &req, t.map_err(|e| format!("{dst}: {e}"))?)
+    };
+    let known = |attrs| known_policy(attrs).map_err(|e| format!("{dst}: {e}"));
+    let unknown = Some(format!(
+        "{dst}: a mechanism its spec allows is none the profiles name, so the providers are asked about its \
+         templates only when it moves"
+    ));
+    let on = Declared::from(dst);
+    let private = dst.object.class == ObjectClass::PrivateKey;
+    let key = private || dst.object.class == ObjectClass::SecretKey;
+    let (Some(policy), Some(public_policy)) = (known(&dst.spec.attributes)?, known(&dst.spec.public_attributes)?)
+    else {
+        return Ok(unknown);
+    };
+    match method {
+        Method::RsaOaep(_) | Method::RsaOaepAesKwp(_) => {
+            let Some(unwrapped) = known(&unwrap_declared(&dst.spec.attributes, &target.unwrap_refuse))? else {
+                return Ok(unknown);
+            };
+            ask(Template::Import(on, Via::Unwrap), import_key(on, unwrapped))?;
+            if matches!(method, Method::RsaOaepAesKwp(_)) && side_rfc5649(target) {
+                ask(Template::Session(SessionKey::ImportKek), Ok(session(SessionKey::ImportKek)))?;
+            }
+            if private {
+                ask(Template::PublicHalf(on), public_half(on, public_policy, None))?;
+            }
+        }
+        // `tpm2_ptool` imports outside PKCS#11; a provider's own method is its own.
+        Method::Tpm2Ptool | Method::Vendor { .. } => {}
+        // Through the host, from a token or a file: a private or secret key by C_CreateObject,
+        // anything else created as a public object is (a private data object from its file).
+        method if key && *method != Method::Public => {
+            ask(Template::Import(on, Via::CreateObject), import_key(on, policy))?;
+            if private && target.public_keys {
+                ask(Template::PublicHalf(on), public_half(on, public_policy, None))?;
+            }
+        }
+        _ => ask(Template::Object(on), object(on, policy, None))?,
+    }
+    // What the target's `lock` makes once the object is there: its proof's and commitments' keys.
+    let mode = ops::plan_mode(dst).map_err(|e| format!("{dst}: {e}"))?;
+    let has = |m: cryptoki::mechanism::MechanismType| Some(target.has(&m.to_string()));
+    let seals = ops::ecdh_seals(target.derive_sealed, Some(target.has("CKM_SHA256_HMAC")));
+    for (key, t) in ops::session_templates(dst, mode, &has, seals).map_err(|e| format!("{dst}: {e}"))? {
+        ask(Template::Session(key), Ok(t))?;
+    }
+    Ok(None)
 }
 
 /// The probed rows of `module` (`docs/CAPROBE_MIGRATION.md`), by way, each as the objects it
@@ -376,6 +516,8 @@ pub(crate) struct Moves {
     pub source_from: Known,
     pub target_from: Known,
     pub plans: Vec<Plan>,
+    /// The source's capabilities, to check the templates its export will send.
+    pub source: Side,
     /// The target's capabilities (none for a file), to check what its `lock` will need.
     pub target: Option<Side>,
 }
@@ -469,7 +611,7 @@ pub(crate) fn plan_moves(
             p.reasons.push(why.clone());
         }
     }
-    Ok(Moves { to: to_name, source_from, target_from, plans, target })
+    Ok(Moves { to: to_name, source_from, target_from, plans, source, target })
 }
 
 /// A token's capabilities: from the open token, else from what the lock recorded there. A
@@ -648,5 +790,92 @@ mod tests {
             let e = side_of(&profile(row), &Resolved::default(), "t", "m", &[]).unwrap_err();
             assert!(matches!(&e, KmError::Validation(m) if m.contains("module profile m/1") && m.contains(why)), "{e}");
         }
+    }
+
+    /// A provider that records what each template is for, and refuses one purpose.
+    struct Asked(std::sync::Arc<std::sync::Mutex<Vec<String>>>, &'static str);
+
+    impl cakeys_pkcs11::Provider for Asked {
+        fn name(&self) -> &'static str {
+            "asked"
+        }
+        fn matches(&self, _: &cakeys_core::config::ModuleInfo) -> bool {
+            false
+        }
+        fn template(&self, req: &cakeys_pkcs11::Template<'_>, _: &mut cakeys_pkcs11::Attributes) -> Result<()> {
+            use cakeys_pkcs11::Template as T;
+            let asked = match req {
+                T::Generate(_, half) => format!("generate {half:?}"),
+                T::Import(_, via) => format!("import {via:?}"),
+                T::PublicHalf(_) => "public half".into(),
+                T::Object(_) => "object".into(),
+                T::TrustedCopy => "trusted copy".into(),
+                T::Session(key) => format!("{key:?}"),
+            };
+            let refused = asked.starts_with(self.1);
+            self.0.lock().unwrap().push(asked);
+            if refused { Err(KmError::Unsupported("asked refuses".into())) } else { Ok(()) }
+        }
+    }
+
+    /// A move's plan asks the providers about what its run sends, under the run's conditions: the
+    /// source's session keys, the target's object, public half, KEK and the record's proof secret;
+    /// and a refusal is the plan's.
+    #[test]
+    fn a_plan_asks_the_providers_what_the_move_sends() {
+        let cfg: cakeys_core::config::Config = toml::from_str(
+            "[tokens.t]\ntokenLabel = \"t\"\n\n\
+             [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.s]\nobject = \"k\"\nattributes = { CKA_DERIVE = true }\n\
+             tokens.t = { locator = { CKA_LABEL = \"k\" }, origin = \"import\", binding = \"pop-ecdh\" }\n",
+        )
+        .unwrap();
+        let dst = Target::new(&cfg, "s", "t").unwrap();
+        let side = |mechs: &[&str]| Side::pkcs11("t", "asked", mechs.iter().map(|m| (*m).to_owned()));
+        let ask = |method: Method, source: &Side, target: &Side, refuse: &'static str| {
+            let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let registry = Registry::new().with(Asked(std::sync::Arc::clone(&asked), refuse));
+            let out =
+                template_refusal(&dst, &method, cakeys_core::migrate::Exposure::Sealed, source, target, &registry);
+            let asked = asked.lock().unwrap().clone();
+            (out, asked)
+        };
+        let kwp = ["CKM_AES_KEY_WRAP_PAD", "CKM_AES_KEY_GEN", "CKM_SHA256_HMAC"];
+        let composed = Method::RsaOaepAesKwp(OaepHash::Sha256);
+        let (out, asked) = ask(composed.clone(), &side(&kwp), &side(&kwp), "-");
+        assert_eq!(out, Ok(None));
+        assert_eq!(
+            asked,
+            [
+                "TransportKey",
+                "ExportKek",
+                "import Unwrap",
+                "ImportKek",
+                "public half",
+                "ProofSecret { binding: PopEcdh, sealed: true }"
+            ]
+        );
+        // No RFC 5649 on either side: no KEK is made, so none is asked about; no HMAC on the
+        // target: the proof derives into a readable secret.
+        let (_, asked) = ask(composed.clone(), &side(&[]), &side(&[]), "-");
+        assert_eq!(
+            asked,
+            ["TransportKey", "import Unwrap", "public half", "ProofSecret { binding: PopEcdh, sealed: false }"]
+        );
+        // The host path: the source's KEK, the target's import; PIV makes no public half.
+        let piv = Side { public_keys: false, ..side(&kwp) };
+        let (_, asked) = ask(Method::PivImport, &side(&kwp), &piv, "-");
+        assert_eq!(asked, ["HostKek", "import CreateObject", "ProofSecret { binding: PopEcdh, sealed: true }"]);
+        // A refusal blocks the plan, naming the provider and the token.
+        let (out, asked) = ask(composed, &side(&kwp), &side(&kwp), "import");
+        let why = out.unwrap_err();
+        assert!(why.contains("provider 'asked' on 't'") && why.contains("asked refuses"), "{why}");
+        assert_eq!(asked.last().map(String::as_str), Some("import Unwrap"), "the first refusal ends it");
+        // A key file written on the host: the source's KEK alone, refused there.
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let registry = Registry::new().with(Asked(std::sync::Arc::clone(&asked), "HostKek"));
+        let out = source_refusal(&Method::Pkcs12, cakeys_core::migrate::Exposure::File, &side(&kwp), &registry);
+        assert!(out.is_err_and(|why| why.contains("asked refuses")));
+        assert_eq!(*asked.lock().unwrap(), ["HostKek"]);
     }
 }

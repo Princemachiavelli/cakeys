@@ -98,6 +98,134 @@ pub fn own_generation(t: &Target, provider: &dyn Provider) -> Result<bool> {
     Ok(provider.generation(t.object, t.spec, &t.on_token.locator, binding)?.is_some())
 }
 
+/// Whether a `pop-ecdh` proof derives into a sealed secret first (`Token::prove_ecdh`): the token
+/// has HMAC to MAC with, and its module profile does not say it derives only extractable
+/// (`derive.ecdh.sealed`, `derive_sealed`). `None` when that is not known (a plan from profiles
+/// that do not decide HMAC).
+#[must_use]
+pub fn ecdh_seals(derive_sealed: Option<bool>, has_hmac: Option<bool>) -> Option<bool> {
+    if derive_sealed == Some(false) { Some(false) } else { has_hmac }
+}
+
+/// The session keys a verb makes for `t`'s object in `mode`, each with cakeys' template
+/// (`templates::session`), the provider's adjustment not yet asked: the secret its proof of
+/// possession unwraps or derives (`pop-unwrap`, `pop-ecdh`), and its commitments' keys (the
+/// `kw` input, wrap-rebind's KEK and copy). From an open token or from what is known without one:
+/// `has` says whether the token implements a mechanism, `ecdh_seals` how a `pop-ecdh` proof
+/// derives ([`ecdh_seals`]); `None`, not known, leaves out what depends on it, so a plan asks
+/// only about what the run will make.
+///
+/// # Errors
+///
+/// `Unsupported` for a key type cakeys does not manage.
+pub fn session_templates(
+    t: &Target,
+    mode: Mode,
+    has: &dyn Fn(MechanismType) -> Option<bool>,
+    ecdh_seals: Option<bool>,
+) -> Result<Vec<(crate::SessionKey, Vec<cryptoki::object::Attribute>)>> {
+    use crate::SessionKey;
+    use crate::templates::{rebind_copy, session};
+    let mut out = Vec::new();
+    let proof = match cakeys_core::plan::expected_binding(t) {
+        Some(b @ cakeys_core::config::Binding::PopUnwrap) => Some((b, true)),
+        Some(b @ cakeys_core::config::Binding::PopEcdh) => ecdh_seals.map(|sealed| (b, sealed)),
+        _ => None,
+    };
+    if let Some((binding, sealed)) = proof {
+        let key = SessionKey::ProofSecret { binding, sealed };
+        out.push((key, session(key)));
+    }
+    // The commitments the token implements, as `commits` picks them; none when that is not known.
+    let usable: Option<Vec<Commit>> = wanted_commits(t, mode)
+        .into_iter()
+        .map(|c| has(hal::commit_mechanism(c)).map(|yes| yes.then_some(c)))
+        .collect::<Option<Vec<_>>>()
+        .map(|cs| cs.into_iter().flatten().collect());
+    let Some(commits) = usable.filter(|cs| !cs.is_empty()) else { return Ok(out) };
+    if mode == Mode::WrapRebind {
+        out.push((SessionKey::RebindKek, session(SessionKey::RebindKek)));
+        out.push((SessionKey::RebindCopy, rebind_copy(t.object, &commits)?));
+    }
+    if commits.contains(&Commit::Kw) {
+        out.push((SessionKey::KwInput, session(SessionKey::KwInput)));
+    }
+    Ok(out)
+}
+
+/// Every template a verb sends for `t` on `tok` in `mode`, asked of the provider before anything
+/// is made, since the proof and the commitments run only after the object exists (a key a module
+/// cannot delete would stay): the generation's when `generating` from cakeys' own templates, and
+/// [`session_templates`]. Only a refusal counts; the run asks again with what it sends.
+///
+/// # Errors
+///
+/// The provider's refusal; what building a template refuses (a size missing, a mechanism the
+/// token does not offer).
+fn check_templates(t: &Target, tok: &Token, mode: Mode, generating: bool) -> Result<()> {
+    if generating {
+        let on = crate::Declared::from(t);
+        tok.generation_key(on)?;
+        tok.generation_public(on, None)?;
+    }
+    for (key, template) in session_templates(t, mode, &|m| Some(tok.has(m)), Some(tok.ecdh_seals()))? {
+        tok.provider.adjusted(&crate::Template::Session(key), template)?;
+    }
+    Ok(())
+}
+
+/// The capability check's template asks (`check_templates`) with no token, for a plan
+/// (`gate::check`, camigrate's): the same templates, the policy's mechanism names mapped by the
+/// profiles' dictionary (`templates::known_policy`), asked of `provider`. `Ok(Some(why))` when
+/// the plan cannot build what the run will send (a vendor's mechanism name), so only the run
+/// asks.
+///
+/// # Errors
+///
+/// The provider's refusal; what building a template refuses.
+pub fn plan_templates(
+    t: &Target,
+    mode: Mode,
+    generating: bool,
+    provider: &dyn Provider,
+    has: &dyn Fn(MechanismType) -> Option<bool>,
+    ecdh_seals: Option<bool>,
+) -> Result<Option<String>> {
+    use crate::templates::{generation_key, generation_public, known_policy};
+    use crate::{Declared, Half, Template};
+    if generating {
+        let on = Declared::from(t);
+        let (Some(policy), Some(public_policy)) =
+            (known_policy(&t.spec.attributes)?, known_policy(&t.spec.public_attributes)?)
+        else {
+            return Ok(Some(format!(
+                "{t}: a mechanism its spec allows is none the profiles name, so provider '{}' is asked about its \
+                 generation only when it runs",
+                provider.name()
+            )));
+        };
+        provider.adjusted(&Template::Generate(on, Half::Key), generation_key(on, policy)?)?;
+        if let Some(public) = generation_public(on, public_policy, None)? {
+            provider.adjusted(&Template::Generate(on, Half::Public), public)?;
+        }
+    }
+    for (key, template) in session_templates(t, mode, has, ecdh_seals)? {
+        provider.adjusted(&Template::Session(key), template)?;
+    }
+    Ok(None)
+}
+
+/// What an import into `tok` must pass before anything is created there: the capabilities `lock`
+/// asks right after it ([`lock_import`]), the templates of its proof and commitments included.
+/// camigrate's imports ask it first, so a refusal leaves nothing behind.
+///
+/// # Errors
+///
+/// What `lock`'s capability check refuses, the provider's templates included.
+pub fn check_import(t: &Target, tok: &Token) -> Result<()> {
+    check_capabilities(t, tok, plan_mode(t)?, Verb::Lock)
+}
+
 /// [`Needs`] of `t` in `mode`. `creating`, when `create` makes the object: `Some` of
 /// [`own_generation`] (the module generates it from its own template, which may make what a
 /// standard template cannot). Every other verb finds an object that is there.
@@ -183,10 +311,10 @@ fn check_capabilities(t: &Target, tok: &Token, mode: Mode, verb: Verb) -> Result
         return Err(tok.unsupported(lacking(&tok.name, g, mode, t)));
     }
     // The proof the realisation will make, as the spec says it (camigrate's plan asks the same).
-    match cakeys_core::plan::expected_binding(t) {
-        Some(b) => tok.check_proof(t.object, b),
-        None => Ok(()),
+    if let Some(b) = cakeys_core::plan::expected_binding(t) {
+        tok.check_proof(t.object, b)?;
     }
+    check_templates(t, tok, mode, own == Some(false))
 }
 
 /// Whether a run may create the device state an attestation needs (a TPM Attestation Key):

@@ -9,6 +9,7 @@ pub mod ops;
 pub mod provider;
 pub mod providers;
 pub mod resolution;
+pub mod templates;
 pub mod token;
 
 pub use provider::{

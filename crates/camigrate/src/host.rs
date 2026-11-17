@@ -14,9 +14,8 @@ use cakeys_core::plaintext::private_from_pkcs8;
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
-use cakeys_pkcs11::token::{class_of, key_type_of, locator_attrs};
-use cakeys_pkcs11::{Template, Token, Via};
-use cryptoki::object::{Attribute, ObjectHandle};
+use cakeys_pkcs11::{Template, Token, Via, templates};
+use cryptoki::object::ObjectHandle;
 
 /// Move `src`'s key on `from` to `dst` on `to` through the host by `method` (`host-pkcs8` or
 /// `host-raw`), and record it.
@@ -42,6 +41,7 @@ pub(crate) fn import(
     }
     let (h, spki) = source_key(src, from, lock, notes)?;
     // The target first: nothing is in plaintext yet when it refuses.
+    ops::check_import(dst, to)?;
     free_locator(dst, to, spki.as_deref())?;
     let plain = hand_over(from, h)?;
     let origin = origin(src.token_name, method, Exposure::Host);
@@ -99,6 +99,9 @@ pub(crate) fn create_and_record(
             });
         }
     }
+    // What the record after it asks (the proof's and the commitments' templates included), before
+    // anything is created.
+    ops::check_import(dst, to)?;
     let occupied = free_locator(dst, to, spki)?;
     let mut made = Vec::new();
     let created = create(dst, to, plain, spki.filter(|_| occupied.public_half.is_none()), &mut made)
@@ -151,6 +154,7 @@ pub(crate) fn import_ptool(
         return Ok(Moved::AlreadyThere);
     }
     let (h, spki) = source_key(src, from, lock, notes)?;
+    ops::check_import(dst, to)?;
     let occupied = free_locator(dst, to, spki.as_deref())?;
     if occupied.public_half.is_some() {
         return Err(KmError::Conflict(format!(
@@ -181,14 +185,8 @@ pub(crate) fn import_ptool(
 /// Create the key under `dst` from `plain`: a private key's public half first (unless one is
 /// there already), then the key with the target spec's attributes.
 fn create(dst: &Target, to: &Token, plain: &[u8], spki: Option<&[u8]>, made: &mut Vec<ObjectHandle>) -> Result<()> {
-    let mut base = vec![
-        Attribute::Token(true),
-        Attribute::Class(class_of(dst.object)),
-        Attribute::KeyType(key_type_of(dst.object)?),
-    ];
-    base.extend(locator_attrs(&dst.on_token.locator)?);
-    base.extend(to.policy_template(&dst.spec.attributes)?);
     // The key's template as the provider adjusts it, before anything is created.
+    let base = templates::import_key(dst.into(), to.policy_template(&dst.spec.attributes)?)?;
     let base = to.provider.adjusted(&Template::Import(dst.into(), Via::CreateObject), base)?;
     // A module that makes no public key objects (ykcs11: PIV derives the public key from the
     // slot) gets the private key alone.

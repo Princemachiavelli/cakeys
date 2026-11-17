@@ -284,18 +284,7 @@ impl Token {
             Commit::KcvEcb(cipher) => s.encrypt(&ecb(cipher), h, &input).map_err(fail),
             Commit::KcvEcbDecrypt(cipher) => s.decrypt(&ecb(cipher), h, &input).map_err(fail),
             Commit::Kw => {
-                // The fixed key is public, so it is created extractable; the key under test only
-                // has to allow CKA_WRAP.
-                let mut template = self.provider.adjusted(
-                    &Template::Session(SessionKey::KwInput),
-                    vec![
-                        Attribute::Token(false),
-                        Attribute::Class(ObjectClass::SECRET_KEY),
-                        Attribute::KeyType(KeyType::GENERIC_SECRET),
-                        Attribute::Sensitive(false),
-                        Attribute::Extractable(true),
-                    ],
-                )?;
+                let mut template = self.session_template(SessionKey::KwInput)?;
                 template.push(Attribute::Value(input));
                 let fixed = s.create_object(&template).map_err(fail)?;
                 let fixed = SessionObject::new(s, fixed);
@@ -317,46 +306,28 @@ impl Token {
     ) -> Result<Vec<(Commit, Vec<u8>)>> {
         let s = &self.session;
         let fail = |what: &'static str| move |e: CkError| KmError::Unsupported(format!("wrap-rebind {what}: {e}"));
-        let kek_template = self.provider.adjusted(
-            &Template::Session(SessionKey::RebindKek),
-            vec![
-                Attribute::Token(false),
-                Attribute::ValueLen(32.into()),
-                Attribute::Wrap(true),
-                Attribute::Unwrap(true),
-                Attribute::Sensitive(true),
-                Attribute::Extractable(false),
-            ],
-        )?;
+        // Both templates before anything is made.
+        let kek_template = self.session_template(SessionKey::RebindKek)?;
+        let template = self.rebind_copy_template(object, commits)?;
         let kek = s.generate_key(&Mechanism::AesKeyGen, &kek_template).map_err(fail("generating session KEK"))?;
         // Both session objects go when this returns, however it does.
         let kek = SessionObject::new(s, kek);
         let wrap =
             if self.has(MechanismType::AES_KEY_WRAP_PAD) { Mechanism::AesKeyWrapPad } else { Mechanism::AesKeyWrap };
         let blob = s.wrap_key(&wrap, kek.handle(), target).map_err(fail("C_WrapKey"))?;
-        let mut template = vec![
-            Attribute::Token(false),
-            Attribute::Class(ObjectClass::SECRET_KEY),
-            Attribute::KeyType(key_type_of(object)?),
-            Attribute::Sensitive(true),
-            Attribute::Extractable(false),
-        ];
-        for c in commits {
-            let usage = match c {
-                Commit::Hmac(_) | Commit::Cmac => Attribute::Sign(true),
-                Commit::KcvEcb(_) => Attribute::Encrypt(true),
-                Commit::KcvEcbDecrypt(_) => Attribute::Decrypt(true),
-                Commit::Kw => Attribute::Wrap(true),
-            };
-            // A template may not carry an attribute twice.
-            if !template.contains(&usage) {
-                template.push(usage);
-            }
-        }
-        let template = self.provider.adjusted(&Template::Session(SessionKey::RebindCopy), template)?;
         let copy = s.unwrap_key(&wrap, kek.handle(), &blob, &template).map_err(fail("C_UnwrapKey"))?;
         let copy = SessionObject::new(s, copy);
         commits.iter().map(|c| Ok((*c, self.commit(copy.handle(), object, *c, commitment_label)?))).collect()
+    }
+
+    /// wrap-rebind's copy of `object`'s key for `commits` ([`templates::rebind_copy`]), as the
+    /// provider adjusts it.
+    ///
+    /// # Errors
+    ///
+    /// As [`templates::rebind_copy`]; the provider's refusal.
+    pub(crate) fn rebind_copy_template(&self, object: &ObjectCfg, commits: &[Commit]) -> Result<Vec<Attribute>> {
+        self.provider.adjusted(&Template::Session(SessionKey::RebindCopy), templates::rebind_copy(object, commits)?)
     }
 }
 

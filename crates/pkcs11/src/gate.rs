@@ -166,6 +166,22 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates
     let layers: Vec<&cakeys_profile::Profile> = stack.resolved.layers.iter().collect();
     let eff = Effective::new(baseline, stack.resolved.module.as_ref(), &layers);
     let token = t.token_name;
+    // The templates the verb will send, as the provider adjusts them: what it refuses, the run
+    // refuses before anything is created (`ops::plan_templates`). Unknown means not asked.
+    if let Some(p) = registry.named(&stack.provider) {
+        let has = |m: cryptoki::mechanism::MechanismType| match eff.mechanism(&m.to_string()) {
+            Verdict::Yes { .. } => Some(true),
+            Verdict::No { .. } => Some(false),
+            Verdict::Unknown { .. } => None,
+        };
+        let derive_sealed = stack.resolved.module.as_ref().and_then(|m| m.answer(&Capability::DeriveSealed));
+        let seals = ops::ecdh_seals(derive_sealed, has(cryptoki::mechanism::MechanismType::SHA256_HMAC));
+        match ops::plan_templates(t, mode, own == Some(false), p.as_ref(), &has, seals) {
+            Ok(None) => {}
+            Ok(Some(why)) => out.notes.push(why),
+            Err(e) => out.refusals.push(format!("{t}: provider '{}': {e}", p.name())),
+        }
+    }
     let generation = needs.generation.map(|m| vec![m]);
     for group in needs.groups.iter().chain(&generation) {
         let verdicts: Vec<(String, Verdict)> =
@@ -194,4 +210,59 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::{Attributes, Provider, Template};
+    use cakeys_core::config::{Config, ModuleInfo};
+    use std::sync::{Arc, Mutex};
+
+    /// A provider that records the generation templates it is asked about, refusing them when
+    /// it says so.
+    struct Asked(Arc<Mutex<Vec<String>>>, bool);
+
+    impl Provider for Asked {
+        fn name(&self) -> &'static str {
+            "asked"
+        }
+        fn matches(&self, _: &ModuleInfo) -> bool {
+            false
+        }
+        fn template(&self, req: &Template<'_>, _: &mut Attributes) -> Result<()> {
+            if let Template::Generate(_, half) = req {
+                self.0.lock().unwrap().push(format!("{half:?}"));
+                if self.1 {
+                    return Err(KmError::Unsupported("asked refuses".into()));
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// The gate asks the provider about the generation `create` will send, with no token: what it
+    /// refuses is a refusal here; a verb that creates nothing asks nothing.
+    #[test]
+    fn the_gate_asks_the_provider_about_a_generation() {
+        let cfg: Config = toml::from_str(
+            "[tokens.t]\ntokenLabel = \"t\"\n\n\
+             [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.s]\nobject = \"k\"\nattributes = { CKA_SIGN = true, CKA_ALLOWED_MECHANISMS = [\"CKM_ECDSA\"] }\n\
+             tokens.t = { locator = { CKA_LABEL = \"k\" }, origin = \"create\" }\n",
+        )
+        .unwrap();
+        let t = Target::new(&cfg, "s", "t").unwrap();
+        let stack = Stack { resolved: Resolved::default(), provider: "asked".into(), source: "test" };
+        let run = |refuses: bool, creates: bool| {
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            let registry = Registry::new().with(Asked(Arc::clone(&asked), refuses));
+            let v = check(&t, ops::plan_mode(&t).unwrap(), &stack, &registry, creates).unwrap();
+            (v.refusals, asked.lock().unwrap().clone())
+        };
+        assert_eq!(run(false, true), (vec![], vec!["Key".to_owned(), "Public".to_owned()]));
+        let (refusals, _) = run(true, true);
+        assert!(refusals.iter().any(|r| r.contains("provider 'asked'") && r.contains("asked refuses")), "{refusals:?}");
+        assert_eq!(run(true, false), (vec![], vec![]));
+    }
 }

@@ -291,6 +291,15 @@ pub struct Side {
     pub refuses: Vec<Accept>,
     /// What its probed rows say, per object type: they decide before the claims above.
     pub probed: ProbedWays,
+    /// Whether an ECDH proof of possession derives into a sealed secret here, as its module
+    /// profile says (`derive.ecdh.sealed`); `None` when it does not.
+    pub derive_sealed: Option<bool>,
+    /// The attributes its module refuses in an unwrap template (`unwrap.refuse`), left out of an
+    /// unwrapped key's.
+    pub unwrap_refuse: Vec<String>,
+    /// Whether it creates public key objects: an imported private key gets its public half beside
+    /// it (not on PIV, which derives it from the slot).
+    pub public_keys: bool,
 }
 
 impl Side {
@@ -315,6 +324,9 @@ impl Side {
             vendor: vec![],
             refuses: vec![],
             probed: ProbedWays::default(),
+            derive_sealed: None,
+            unwrap_refuse: vec![],
+            public_keys: true,
         }
     }
 
