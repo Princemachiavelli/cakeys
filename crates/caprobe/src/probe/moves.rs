@@ -18,6 +18,7 @@ use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result, id};
 use cakeys_pkcs11::provider::PlaintextKind;
 use cakeys_pkcs11::token::{self, SessionObject, locator_attrs, public_object_attrs};
+use cakeys_pkcs11::{Declared, SessionKey, Template, Via};
 use cakeys_profile::{Answer, Capability, On, Way};
 use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsOaepParams, PkcsOaepSource};
 use cryptoki::mechanism::{Mechanism, MechanismType};
@@ -200,26 +201,13 @@ fn import_private(
     let labels = matches!(made.target, Target::Labels);
     let (loc, label) = made.locator();
     let at = locator_attrs(&loc)?;
+    // Every template as the provider adjusts it for the verbs (`Provider::template`).
+    let probe_spec = spec(&[], &[]);
+    let declared = Declared { object: &key.object, spec: &probe_spec, locator: &loc };
+    let provider = made.tok.provider.clone();
+    let adjusted = |t: Template<'_>, attrs| provider.adjusted(&t, attrs);
     if labels {
-        let public = ObjectCfg { class: Class::PublicKey, ..key.object.clone() };
-        let cap =
-            Capability::Create { class: "CKO_PUBLIC_KEY".into(), key: Some((key.key_type.to_owned(), key.on.clone())) };
-        let mut t = vec![Attribute::Token(true), Attribute::Verify(true)];
-        t.extend(at.iter().cloned());
-        t.extend(public_object_attrs(&public, &spki)?);
-        match made.session.create_object(&t) {
-            Ok(h) => {
-                made.track(h, label.as_ref());
-                match made.tok.material_spki(h) {
-                    Ok(Some(s)) if s == spki => profile.set(cap, Answer::Yes, None, None),
-                    Ok(_) => profile.set(cap, Answer::No, Some("the object holds no key, or another".into()), None),
-                    Err(e) => {
-                        made.undetermined.push(format!("no {cap} row: reading it back: {}", evidence(made.tok, &e)));
-                    }
-                }
-            }
-            Err(e) => profile.set(cap, Answer::No, Some(format!("C_CreateObject: {}", ckr(&e))), None),
-        }
+        public_half(made, profile, key, declared, label.as_ref(), &spki)?;
     }
     let mut base = vec![
         Attribute::Token(true),
@@ -229,17 +217,18 @@ fn import_private(
         Attribute::Sensitive(true),
     ];
     base.extend(at);
+    let import = |t| adjusted(Template::Import(declared, Via::CreateObject), t);
     // Extractable on a scratch token, so the same key proves the exports; a module refusing
     // that gets the key without it, its exports then unprobed.
     let made_key = if labels {
         let extractable = [&base[..], &[Attribute::Extractable(true)]].concat();
-        match made.tok.create_private(&key.object, extractable, &parts) {
+        match import(extractable).and_then(|t| made.tok.create_private(&key.object, t, &parts)) {
             Ok(h) => Ok((h, true)),
             Err(e) if so_login(&e) => return Err(e),
-            Err(_) => made.tok.create_private(&key.object, base, &parts).map(|h| (h, false)),
+            Err(_) => import(base).and_then(|t| made.tok.create_private(&key.object, t, &parts)).map(|h| (h, false)),
         }
     } else {
-        made.tok.create_private(&key.object, base, &parts).map(|h| (h, false))
+        import(base).and_then(|t| made.tok.create_private(&key.object, t, &parts)).map(|h| (h, false))
     };
     let (h, extractable) = match made_key {
         Ok(made_key) => made_key,
@@ -267,17 +256,59 @@ fn import_private(
     let same = |plain: &[u8]| spki_of_pkcs8(plain).and_then(|s| id::spki_canonical(&s)).is_ok_and(|s| s == spki);
     export_host(made, profile, (key.key_type, &key.on), h, &same);
     let template = |label: &str| {
-        vec![
+        let t = vec![
             Attribute::Token(true),
             Attribute::Label(label.as_bytes().to_vec()),
             Attribute::Class(ObjectClass::PRIVATE_KEY),
             Attribute::KeyType(key_type_of(key)),
             Attribute::Sign(true),
             Attribute::Sensitive(true),
-        ]
+        ];
+        let locator = Locator { label: Some(label.to_owned()), id: None };
+        adjusted(Template::Import(Declared { locator: &locator, ..declared }, Via::Unwrap), t)
     };
     let same = |m: &Made, h2| m.tok.prove_binding(h2, &key.object, &spki, Binding::PopSign);
     export_sealed(made, profile, (key.key_type, &key.on), h, false, transport, &template, &same);
+    Ok(())
+}
+
+/// Create `key`'s public half from its canonical `spki` under `on`'s locator
+/// (`create.CKO_PUBLIC_KEY.*`), read back.
+///
+/// # Errors
+///
+/// A locator the probe made that does not map, a public key the host cannot encode.
+fn public_half(
+    made: &mut Made,
+    profile: &mut Draft,
+    key: &PrivateKey,
+    on: Declared<'_>,
+    label: Option<&String>,
+    spki: &[u8],
+) -> Result<()> {
+    let public = ObjectCfg { class: Class::PublicKey, ..key.object.clone() };
+    let cap =
+        Capability::Create { class: "CKO_PUBLIC_KEY".into(), key: Some((key.key_type.to_owned(), key.on.clone())) };
+    let mut t = vec![Attribute::Token(true), Attribute::Verify(true)];
+    t.extend(locator_attrs(on.locator)?);
+    t.extend(public_object_attrs(&public, spki)?);
+    let created = made
+        .tok
+        .provider
+        .adjusted(&Template::PublicHalf(on), t)
+        .map_err(|e| refused(made.tok, &e))
+        .and_then(|t| made.session.create_object(&t).map_err(|e| format!("C_CreateObject: {}", ckr(&e))));
+    match created {
+        Ok(h) => {
+            made.track(h, label);
+            match made.tok.material_spki(h) {
+                Ok(Some(s)) if s == spki => profile.set(cap, Answer::Yes, None, None),
+                Ok(_) => profile.set(cap, Answer::No, Some("the object holds no key, or another".into()), None),
+                Err(e) => made.undetermined.push(format!("no {cap} row: reading it back: {}", evidence(made.tok, &e))),
+            }
+        }
+        Err(why) => profile.set(cap, Answer::No, Some(why), None),
+    }
     Ok(())
 }
 
@@ -413,11 +444,23 @@ fn composed(
     template: &[Attribute],
 ) -> Trip {
     let session = made.session;
-    let aes = |a: &[Attribute]| {
-        [&[Attribute::Token(false), Attribute::Class(ObjectClass::SECRET_KEY), Attribute::KeyType(KeyType::AES)][..], a]
-            .concat()
+    // camigrate's KEK templates, as the provider adjusts them.
+    let aes = |key, a: &[Attribute]| {
+        let aes =
+            [Attribute::Token(false), Attribute::Class(ObjectClass::SECRET_KEY), Attribute::KeyType(KeyType::AES)];
+        made.tok.provider.adjusted(&Template::Session(key), [&aes[..], a].concat())
     };
-    let kek = aes(&[Attribute::ValueLen(32.into()), Attribute::Wrap(true), Attribute::Extractable(true)]);
+    let (kek, back) = match (
+        aes(
+            SessionKey::ExportKek,
+            &[Attribute::ValueLen(32.into()), Attribute::Wrap(true), Attribute::Extractable(true)],
+        ),
+        aes(SessionKey::ImportKek, &[Attribute::Unwrap(true)]),
+    ) {
+        (Ok(kek), Ok(back)) => (kek, back),
+        (Err(e), _) => return Trip::WrapRefused(format!("the KEK: {}", evidence(made.tok, &e))),
+        (_, Err(e)) => return Trip::UnwrapRefused(format!("the KEK: {}", evidence(made.tok, &e))),
+    };
     let kek = match session.generate_key(&Mechanism::AesKeyGen, &kek) {
         Ok(k) => SessionObject::new(session, k),
         Err(e) => return Trip::WrapRefused(format!("the KEK: C_GenerateKey: {}", ckr(&e))),
@@ -436,7 +479,7 @@ fn composed(
             Ok(blob) => blob,
             Err(e) => return Trip::WrapRefused(format!("the KEK: C_WrapKey: {}", ckr(&e))),
         };
-        let back = match session.unwrap_key(&oaep, tpriv, &kek_blob, &aes(&[Attribute::Unwrap(true)])) {
+        let back = match session.unwrap_key(&oaep, tpriv, &kek_blob, &back) {
             Ok(k) => SessionObject::new(session, k),
             Err(e) => return Trip::UnwrapRefused(format!("the KEK: C_UnwrapKey: {}", ckr(&e))),
         };
@@ -462,7 +505,7 @@ fn export_sealed(
     h: ObjectHandle,
     secret: bool,
     transport: Transport,
-    template: &dyn Fn(&str) -> Vec<Attribute>,
+    template: &dyn Fn(&str) -> Result<Vec<Attribute>>,
     same: &dyn Fn(&Made, ObjectHandle) -> Result<()>,
 ) {
     let export = Capability::Export { way: Way::Sealed, key_type: key_type.to_owned(), on: on.clone() };
@@ -474,7 +517,14 @@ fn export_sealed(
     let (mut wrap_refusals, mut unwrap_refusals) = (Vec::new(), Vec::new());
     for way in sealed_ways(profile, secret) {
         let label = made.label();
-        match trip(made, way, transport, h, &template(&label)) {
+        let template = match template(&label) {
+            Ok(t) => t,
+            Err(e) => {
+                unwrap_refusals.push(format!("{}: {}", way.via(), evidence(made.tok, &e)));
+                continue;
+            }
+        };
+        match trip(made, way, transport, h, &template) {
             Trip::WrapRefused(why) => wrap_refusals.push(format!("{}: {why}", way.via())),
             Trip::UnwrapRefused(why) => unwrap_refusals.push(format!("{}: {why}", way.via())),
             Trip::Unwrapped(h2) => {
@@ -542,7 +592,15 @@ fn import_secret(made: &mut Made, profile: &mut Draft, value: &[u8], transport: 
         Attribute::Sensitive(true),
         Attribute::Extractable(true),
     ];
-    let h = match made.tok.create_secret(base, value) {
+    // Every template as the provider adjusts it for the verbs (`Provider::template`).
+    let object = ObjectCfg { value_len: Some(n.into()), ..ObjectCfg::new(Class::SecretKey, Some(Kt::Aes)) };
+    let probe_spec = spec(&[], &[]);
+    let provider = made.tok.provider.clone();
+    let adjusted = |label: &str, via, t| {
+        let locator = Locator { label: Some(label.to_owned()), id: None };
+        provider.adjusted(&Template::Import(Declared { object: &object, spec: &probe_spec, locator: &locator }, via), t)
+    };
+    let h = match adjusted(&label, Via::CreateObject, base).and_then(|t| made.tok.create_secret(t, value)) {
         Ok(h) => h,
         Err(e) => {
             profile.set(cap, Answer::No, Some(refused(made.tok, &e)), None);
@@ -557,13 +615,14 @@ fn import_secret(made: &mut Made, profile: &mut Draft, value: &[u8], transport: 
     profile.set(cap, Answer::Yes, None, Some(PlaintextKind::CreateObject.name().into()));
     export_host(made, profile, ("CKK_AES", &on), h, &|plain| plain == value);
     let template = |label: &str| {
-        vec![
+        let t = vec![
             Attribute::Token(true),
             Attribute::Label(label.as_bytes().to_vec()),
             Attribute::Class(ObjectClass::SECRET_KEY),
             Attribute::KeyType(KeyType::AES),
             Attribute::Encrypt(true),
-        ]
+        ];
+        adjusted(label, Via::Unwrap, t)
     };
     export_sealed(made, profile, ("CKK_AES", &on), h, true, transport, &template, &|m, h2| same_aes(m, h2, value));
 }
@@ -580,9 +639,13 @@ fn create_public(made: &mut Made, profile: &mut Draft, class: Class, bytes: &[u8
     if class == Class::Data {
         t.push(Attribute::Private(false));
     }
+    let probe_spec = spec(&[], &[]);
     let session = made.session;
-    let created = made.tok.managing("the create probe", || {
-        session.create_object(&t).map_err(|e| KmError::Unsupported(format!("C_CreateObject: {}", ckr(&e))))
+    let on = Declared { object: &object, spec: &probe_spec, locator: &loc };
+    let created = made.tok.provider.adjusted(&Template::Object(on), t).and_then(|t| {
+        made.tok.managing("the create probe", || {
+            session.create_object(&t).map_err(|e| KmError::Unsupported(format!("C_CreateObject: {}", ckr(&e))))
+        })
     });
     let h = match created {
         Ok(h) => h,

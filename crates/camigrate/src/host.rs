@@ -13,9 +13,9 @@ use cakeys_core::migrate::{Exposure, Method};
 use cakeys_core::plaintext::private_from_pkcs8;
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
-use cakeys_pkcs11::Token;
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::token::{class_of, key_type_of, locator_attrs};
+use cakeys_pkcs11::{Template, Token, Via};
 use cryptoki::object::{Attribute, ObjectHandle};
 
 /// Move `src`'s key on `from` to `dst` on `to` through the host by `method` (`host-pkcs8` or
@@ -181,11 +181,6 @@ pub(crate) fn import_ptool(
 /// Create the key under `dst` from `plain`: a private key's public half first (unless one is
 /// there already), then the key with the target spec's attributes.
 fn create(dst: &Target, to: &Token, plain: &[u8], spki: Option<&[u8]>, made: &mut Vec<ObjectHandle>) -> Result<()> {
-    // A module that makes no public key objects (ykcs11: PIV derives the public key from the
-    // slot) gets the private key alone.
-    if let Some(spki) = spki.filter(|_| to.accepts_public_key_objects()) {
-        made.push(create_public_half(dst, to, spki)?);
-    }
     let mut base = vec![
         Attribute::Token(true),
         Attribute::Class(class_of(dst.object)),
@@ -193,6 +188,13 @@ fn create(dst: &Target, to: &Token, plain: &[u8], spki: Option<&[u8]>, made: &mu
     ];
     base.extend(locator_attrs(&dst.on_token.locator)?);
     base.extend(to.policy_template(&dst.spec.attributes)?);
+    // The key's template as the provider adjusts it, before anything is created.
+    let base = to.provider.adjusted(&Template::Import(dst.into(), Via::CreateObject), base)?;
+    // A module that makes no public key objects (ykcs11: PIV derives the public key from the
+    // slot) gets the private key alone.
+    if let Some(spki) = spki.filter(|_| to.accepts_public_key_objects()) {
+        made.push(create_public_half(dst, to, spki)?);
+    }
     let key = match dst.object.class {
         Class::PrivateKey => {
             let kt = dst.object.key_type.ok_or_else(|| KmError::Validation(format!("{dst}: no key type")))?;

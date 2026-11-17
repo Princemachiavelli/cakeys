@@ -2,7 +2,8 @@
 //! Module-specific behaviour goes through the selected [`Provider`].
 
 use crate::provider::{
-    AttestCtx, AttestationCap, Attested, Create, Destroy, Generation, Provider, Registry, keygen_mechanism,
+    AttestCtx, AttestationCap, Attested, Create, Declared, Destroy, Generation, Half, Provider, Registry, SessionKey,
+    Template, keygen_mechanism,
 };
 use cakeys_core::attrs;
 use cakeys_core::config::{AttrValue, Binding, Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
@@ -557,19 +558,22 @@ impl Token {
     /// Whatever [`Self::as_so`] refuses; `Unsupported` when the module will not create it
     /// trusted.
     pub fn create_trusted_copy(&self, modulus: Vec<u8>, exponent: Vec<u8>, label: &str) -> Result<ObjectHandle> {
-        let template = [
-            Attribute::Class(ObjectClass::PUBLIC_KEY),
-            Attribute::KeyType(KeyType::RSA),
-            Attribute::Token(true),
-            Attribute::Private(false),
-            Attribute::Modulus(modulus),
-            Attribute::PublicExponent(exponent),
-            Attribute::Wrap(true),
-            Attribute::Encrypt(false),
-            Attribute::Verify(false),
-            Attribute::Trusted(true),
-            Attribute::Label(label.as_bytes().to_vec()),
-        ];
+        let template = self.provider.adjusted(
+            &Template::TrustedCopy,
+            vec![
+                Attribute::Class(ObjectClass::PUBLIC_KEY),
+                Attribute::KeyType(KeyType::RSA),
+                Attribute::Token(true),
+                Attribute::Private(false),
+                Attribute::Modulus(modulus),
+                Attribute::PublicExponent(exponent),
+                Attribute::Wrap(true),
+                Attribute::Encrypt(false),
+                Attribute::Verify(false),
+                Attribute::Trusted(true),
+                Attribute::Label(label.as_bytes().to_vec()),
+            ],
+        )?;
         self.as_so("marking the transport key trusted", || {
             self.session.create_object(&template).map_err(|e| {
                 self.unsupported(format!("token '{}' will not create a CKA_TRUSTED RSA public key: {e}", self.name))

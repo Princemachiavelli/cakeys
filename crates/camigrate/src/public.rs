@@ -10,9 +10,9 @@ use cakeys_core::config::{Lock, Origin};
 use cakeys_core::migrate::{Exposure, Method};
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
-use cakeys_pkcs11::Token;
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::token::{class_of, locator_attrs, public_key_attrs, public_object_attrs};
+use cakeys_pkcs11::{Template, Token};
 use cryptoki::object::{Attribute, AttributeType, ObjectHandle};
 use x509_cert::der::Decode as _;
 
@@ -179,7 +179,7 @@ pub(crate) fn preflight(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Option
 }
 
 /// The creation template from the object's bytes: the class and type, the material, `CKA_TOKEN`,
-/// the target locator and the target spec's declared attributes.
+/// the target locator and the target spec's declared attributes, as the provider adjusts it.
 fn template(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Vec<Attribute>> {
     let mut t = vec![Attribute::Token(true)];
     t.extend(locator_attrs(&dst.on_token.locator)?);
@@ -190,7 +190,7 @@ fn template(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Vec<Attribute>> {
     if dst.object.class == Class::Data && dst.spec.flag("CKA_PRIVATE").is_none() {
         t.push(Attribute::Private(false));
     }
-    Ok(t)
+    to.provider.adjusted(&Template::Object(dst.into()), t)
 }
 
 /// The public key's material from its canonical SPKI, in PKCS#11's encoding

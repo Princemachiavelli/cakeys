@@ -40,7 +40,7 @@ ykcs11/2.7. Only the Nix-built binary carries the patched cryptoki the probe nee
 | What a module shows through PKCS#11 | usable mechanisms; OAEP hashes actually implemented (SoftHSM: SHA-1 only [run]); generatable curves (kryoptic: no secp256k1 [run]); unwrap-template rules; SO-login needs; delete semantics | profile data |
 | Behaviour outside PKCS#11, or that must be rewritten | tpm2's P-521 point repair; PIV attestation and its pinned roots; `TPM2_Certify`; `tpm2_ptool` | provider code |
 
-The `Provider` hooks that rewrite behaviour or reach outside the module (`repair`, `stand_in`, `create`, `destroy`, `attest`,
+The `Provider` hooks that rewrite behaviour or reach outside the module (`repair`, `stand_in`, `template`, `create`, `destroy`, `attest`,
 `check_options`, `import_plaintext`, `bound_keys`, `generation`) stay code. A
 vendor whose module needs no fix-ups needs no Rust. When no code provider claims a module, the
 module profile whose `[match] manufacturer` it reports names its provider by family

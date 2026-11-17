@@ -121,13 +121,22 @@ Module-specific behaviour lives in two places. **Capability profiles** (data,
 open and feed `validate`, `supports` and the migration planner. **Providers** (code) rewrite
 behaviour or reach outside PKCS#11:
 
-- **Seams** (the `Provider` trait; review 2026-11-15 §4): two kinds, and nothing else.
-  *Repairs* make a module's answer what a spec-compliant module's would be: `repair`, one hook
-  for an attribute read (`CKA_EC_POINT`: tpm2-pkcs11's P-521, aws-cloudhsm's Ed25519 SPKI;
-  `CKA_KEY_TYPE`: aws-cloudhsm's Ed25519 as `CKK_EC`; a policy flag: ykcs11's `CKA_DERIVE`), and
-  `stand_in`, one for a mechanism (a standard mechanism the module does not list but runs its
-  own way, used through `Token::runnable` and relied on only where a profile's `add` row says
-  the probe found it working: aws-cloudhsm's Ed25519). *Operations* a provider may replace
+- **Seams** (the `Provider` trait; review 2026-11-15 §4 named the first two): three kinds, and
+  nothing else. *Repairs* make a module's answer what a spec-compliant module's would be:
+  `repair`, one hook for an attribute read (`CKA_EC_POINT`: tpm2-pkcs11's P-521, aws-cloudhsm's
+  Ed25519 SPKI; `CKA_KEY_TYPE`: aws-cloudhsm's Ed25519 as `CKK_EC`; a policy flag: ykcs11's
+  `CKA_DERIVE`), and `stand_in`, one for a mechanism (a standard mechanism the module does not
+  list but runs its own way, used through `Token::runnable` and relied on only where a profile's
+  `add` row says the probe found it working: aws-cloudhsm's Ed25519). *Templates* make cakeys'
+  own template for a call one the module takes: `template`, one hook every template cakeys
+  builds for `C_GenerateKey(Pair)`, `C_CreateObject`, `C_UnwrapKey` and `C_DeriveKey` passes
+  through (`provider::Template` names what it is for: a generation's half, an import by
+  `C_CreateObject` or `C_UnwrapKey`, an imported key's public half, a public object, the trusted
+  transport copy, or a session key of a proof, a commitment or a move), adjusting it or refusing
+  before anything is created. Secret material is added after it, the fallbacks below run on what
+  it returns, and the probe's imports and moves use it as the verbs do, so a profile measures what
+  they send; `C_FindObjects` templates do not pass through it. No in-tree provider overrides it
+  yet. *Operations* a provider may replace
   whole, each default plain PKCS#11 through a public `Token` method an override wraps:
   `create` (`Token::create_declared`; ykcs11 refuses a locator that is not a PIV slot first),
   `destroy` (`Token::destroy_plain`; ykcs11 refuses a key it would not erase), `import_plaintext`

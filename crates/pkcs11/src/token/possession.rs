@@ -188,7 +188,8 @@ impl Token {
         // Unknown means try (review 2026-11-15 §4): where the module refuses to derive into a
         // sealed secret, the extractable one. Only that refusal: what fails after the derivation
         // is the proof's answer.
-        let (derived, rw) = match self.derive_for_proof(h, &ch.peer, &sealed_secret(), ch.secret.len()) {
+        let sealed = self.proof_secret(Binding::PopEcdh, true)?;
+        let (derived, rw) = match self.derive_for_proof(h, &ch.peer, &sealed, ch.secret.len()) {
             Ok(derived) => derived,
             Err(KmError::Conflict(e)) => return Err(KmError::Conflict(e)),
             Err(refusal) => return extractable_after(refusal.to_string()),
@@ -225,18 +226,8 @@ impl Token {
     /// secret it computed itself. The secret belongs to a single-use ephemeral key the host
     /// generated, so reading it reveals nothing the host did not already hold.
     fn prove_ecdh_extractable(&self, h: ObjectHandle, spki: &[u8], ch: &pop::EcdhChallenge) -> Result<()> {
-        let (derived, rw) = self.derive_for_proof(
-            h,
-            &ch.peer,
-            &[
-                Attribute::Token(false),
-                Attribute::Class(ObjectClass::SECRET_KEY),
-                Attribute::KeyType(KeyType::GENERIC_SECRET),
-                Attribute::Sensitive(false),
-                Attribute::Extractable(true),
-            ],
-            ch.secret.len(),
-        )?;
+        let (derived, rw) =
+            self.derive_for_proof(h, &ch.peer, &self.proof_secret(Binding::PopEcdh, false)?, ch.secret.len())?;
         let session = rw.as_ref().unwrap_or(&self.session);
         let derived = SessionObject::new(session, derived);
         let value = session.get_attributes(derived.handle(), &[AttributeType::Value]);
@@ -341,7 +332,7 @@ impl Token {
         if !self.proof_permits(h)(MechanismType::RSA_PKCS_OAEP) {
             return Err(self.none_allowed(&[MechanismType::RSA_PKCS_OAEP]));
         }
-        let template = sealed_secret();
+        let template = self.proof_secret(Binding::PopUnwrap, true)?;
         let failed = self.proof_failed("C_UnwrapKey", "unwrap", "CKA_UNWRAP");
         // Like a derive: a module that keeps session keys as store rows unwraps only read-write.
         // C_UnwrapKey is one call: a hash it refuses began nothing the next try meets.
@@ -461,19 +452,24 @@ impl Token {
             )),
         }
     }
-}
 
-/// The session secret a proof MACs with on the token (`pop-ecdh` derives it, `pop-unwrap`
-/// unwraps it): sensitive, never extractable, and only for signing.
-fn sealed_secret() -> [Attribute; 6] {
-    [
-        Attribute::Token(false),
-        Attribute::Class(ObjectClass::SECRET_KEY),
-        Attribute::KeyType(KeyType::GENERIC_SECRET),
-        Attribute::Sensitive(true),
-        Attribute::Extractable(false),
-        Attribute::Sign(true),
-    ]
+    /// The session secret a proof makes on the token (`pop-ecdh` derives it, `pop-unwrap`
+    /// unwraps it), as the provider adjusts it: `sealed`, sensitive, never extractable and only
+    /// for signing, to MAC with; else the readable secret of
+    /// [`Self::prove_ecdh_extractable`].
+    fn proof_secret(&self, binding: Binding, sealed: bool) -> Result<Vec<Attribute>> {
+        let mut t = vec![
+            Attribute::Token(false),
+            Attribute::Class(ObjectClass::SECRET_KEY),
+            Attribute::KeyType(KeyType::GENERIC_SECRET),
+            Attribute::Sensitive(sealed),
+            Attribute::Extractable(!sealed),
+        ];
+        if sealed {
+            t.push(Attribute::Sign(true));
+        }
+        self.provider.adjusted(&Template::Session(SessionKey::ProofSecret { binding, sealed }), t)
+    }
 }
 
 /// What a token offers a proof of possession, as a live token ([`Token::proof_side`]) or as

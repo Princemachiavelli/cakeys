@@ -5,6 +5,7 @@
 use crate::Token;
 use cakeys_core::config::{Binding, Locator, ModuleInfo, ObjectCfg, Options, SpecCfg, TokenCfg};
 use cakeys_core::id::Scheme;
+use cakeys_core::plan::Target;
 use cakeys_core::types::ObjectClass;
 use cakeys_core::{KmError, Result};
 pub use cakeys_profile::PlaintextKind;
@@ -57,11 +58,13 @@ pub fn keygen_mechanism(keygen: MechanismType) -> Option<(Mechanism<'static>, bo
     })
 }
 
-/// What one family of PKCS#11 modules needs beyond the standard, at two kinds of seam and
-/// nothing else (docs/archive/REVIEW-2026-11-15.md §4):
+/// What one family of PKCS#11 modules needs beyond the standard, at three kinds of seam and
+/// nothing else (docs/archive/REVIEW-2026-11-15.md §4 named the first two):
 ///
 /// - *repairs*, where a module's answer is made what a spec-compliant module's would be: one
 ///   for an attribute read ([`Self::repair`]), one for a mechanism ([`Self::stand_in`]);
+/// - *templates*, where cakeys' own template for a call is made one the module takes: one for
+///   every template cakeys builds, named by what it is for ([`Self::template`]);
 /// - *operations*, which a provider may replace whole, the default being plain PKCS#11 through
 ///   a public [`Token`] method an override can wrap: [`Self::create`], [`Self::destroy`],
 ///   [`Self::import_plaintext`] and [`Self::attest`].
@@ -132,6 +135,27 @@ pub trait Provider: Send + Sync {
     /// what it covers, `stand_ins`). `None`: no stand-in.
     fn stand_in(&self, _m: &Mechanism) -> Option<Mechanism<'static>> {
         None
+    }
+
+    // ── Templates ────────────────────────────────────────────────────────────────────────
+
+    /// Adjust `attrs`, cakeys' template for the call `req` names, to one this module takes:
+    /// a vendor attribute set, a default it refuses removed. Every template cakeys builds for
+    /// `C_GenerateKey(Pair)`, `C_CreateObject`, `C_UnwrapKey` and `C_DeriveKey` passes through
+    /// here, the probe's own import and creation included, so a profile measures what the verbs
+    /// send; `C_FindObjects` search templates do not. Secret material (`CKA_VALUE`, a private
+    /// key's components) is never in `attrs`: cakeys adds it afterwards. Runs before cakeys'
+    /// own fallbacks, which then work on the result (a public `CKA_PRIVATE = false` dropped
+    /// where refused, a curve by name, `C_DeriveKey`'s policy defaults). A module that
+    /// generates only from its own template replaces it whole instead ([`Self::generation`]).
+    /// The default changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// The provider's refusal of the call, `Unsupported` (15) for an object the module cannot
+    /// take: made before anything of it is created on the token.
+    fn template(&self, _req: &Template<'_>, _attrs: &mut Attributes) -> Result<()> {
+        Ok(())
     }
 
     // ── Operations ───────────────────────────────────────────────────────────────────────
@@ -318,6 +342,129 @@ impl dyn Provider {
             Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Pure)),
         ];
         asked.iter().filter(|m| self.stand_in(m).is_some()).map(Mechanism::mechanism_type).collect()
+    }
+
+    /// `template`, cakeys' template for `req`, as the provider adjusts it ([`Provider::template`]).
+    ///
+    /// # Errors
+    ///
+    /// The provider's refusal.
+    pub fn adjusted(&self, req: &Template<'_>, template: Vec<Attribute>) -> Result<Vec<Attribute>> {
+        let mut attrs = Attributes(template);
+        self.template(req, &mut attrs)?;
+        Ok(attrs.0)
+    }
+}
+
+/// What a template cakeys builds is for ([`Provider::template`]).
+pub enum Template<'a> {
+    /// A key generated from cakeys' templates (`create`): one `half` of `on`.
+    Generate(Declared<'a>, Half),
+    /// A key imported (camigrate, and the probe's `import.*` rows): created from plaintext, or
+    /// unwrapped from a bundle; for the unwrap, the attributes the module's profile refuses in one
+    /// (`unwrap.refuse`) already left out.
+    Import(Declared<'a>, Via),
+    /// The public key object made beside an imported private key, from its public key.
+    PublicHalf(Declared<'a>),
+    /// A certificate, data object or public key object created from its value.
+    Object(Declared<'a>),
+    /// The trusted copy of a transport key, made as SO (`camigrate transport --trusted`).
+    TrustedCopy,
+    /// A session object cakeys makes for one step and destroys after it.
+    Session(SessionKey),
+}
+
+/// The object a template makes: `object` as `spec` declares it, under `locator`.
+#[derive(Clone, Copy)]
+pub struct Declared<'a> {
+    /// The object's type.
+    pub object: &'a ObjectCfg,
+    /// The spec it is made by (the probe's own, for its scratch objects).
+    pub spec: &'a SpecCfg,
+    /// Where it goes on the token.
+    pub locator: &'a Locator,
+}
+
+impl<'a> From<&Target<'a>> for Declared<'a> {
+    fn from(t: &Target<'a>) -> Self {
+        Declared { object: t.object, spec: t.spec, locator: &t.on_token.locator }
+    }
+}
+
+/// Which template of a generation ([`Template::Generate`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Half {
+    /// A key pair's public template.
+    Public,
+    /// The key itself: a pair's private template, or a secret key's.
+    Key,
+}
+
+/// How a key is imported ([`Template::Import`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Via {
+    /// `C_CreateObject` from the host's plaintext (`host`).
+    CreateObject,
+    /// `C_UnwrapKey` from a bundle or a transport (`sealed`).
+    Unwrap,
+}
+
+/// A session object cakeys makes for one step ([`Template::Session`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionKey {
+    /// The secret a proof of possession unwraps (`pop-unwrap`) or derives (`pop-ecdh`) and MACs
+    /// with, `sealed`; or, not sealed, the readable secret a `pop-ecdh` derives where the module
+    /// refuses the sealed one.
+    ProofSecret {
+        /// The proof.
+        binding: Binding,
+        /// Sensitive and not extractable; else readable.
+        sealed: bool,
+    },
+    /// wrap-rebind's AES key, which wraps the key under commitment for its copy.
+    RebindKek,
+    /// wrap-rebind's copy of the key under commitment, unwrapped with the uses it commits by.
+    RebindCopy,
+    /// The `kw` commitment's fixed key, which the key under commitment wraps.
+    KwInput,
+    /// The AES key the host draws and creates on the token to take a key out (`host` export).
+    HostKek,
+    /// A sealed export's transport public key, loaded on the source.
+    TransportKey,
+    /// A sealed export's AES key, generated on the source and wrapped to the transport key.
+    ExportKek,
+    /// A sealed import's AES key, unwrapped on the target with the transport key.
+    ImportKek,
+}
+
+/// A template a provider adjusts ([`Provider::template`]): at most one attribute of each type,
+/// as PKCS#11 requires of one.
+pub struct Attributes(Vec<Attribute>);
+
+impl Attributes {
+    /// The attribute of type `t`, if the template has one.
+    #[must_use]
+    pub fn get(&self, t: AttributeType) -> Option<&Attribute> {
+        self.0.iter().find(|a| a.attribute_type() == t)
+    }
+
+    /// Set `a`, replacing the template's attribute of its type where it has one.
+    pub fn set(&mut self, a: Attribute) {
+        match self.0.iter_mut().find(|b| b.attribute_type() == a.attribute_type()) {
+            Some(b) => *b = a,
+            None => self.0.push(a),
+        }
+    }
+
+    /// Remove the attribute of type `t`, returning it.
+    pub fn remove(&mut self, t: AttributeType) -> Option<Attribute> {
+        let i = self.0.iter().position(|a| a.attribute_type() == t)?;
+        Some(self.0.remove(i))
+    }
+
+    /// The template's attributes, in order.
+    pub fn iter(&self) -> impl Iterator<Item = &Attribute> {
+        self.0.iter()
     }
 }
 
@@ -577,6 +724,37 @@ mod tests {
         fn matches(&self, m: &ModuleInfo) -> bool {
             m.manufacturer == "SoftHSM"
         }
+    }
+
+    /// A provider's template keeps one attribute per type: setting replaces in place.
+    #[test]
+    fn attributes_hold_one_of_each_type() {
+        struct Vendor;
+        impl Provider for Vendor {
+            fn name(&self) -> &'static str {
+                "vendor"
+            }
+            fn matches(&self, _: &ModuleInfo) -> bool {
+                false
+            }
+            fn template(&self, _: &Template<'_>, attrs: &mut Attributes) -> Result<()> {
+                attrs.set(Attribute::Sensitive(false));
+                attrs.set(Attribute::Label(b"v".to_vec()));
+                assert_eq!(attrs.remove(AttributeType::Token), Some(Attribute::Token(false)));
+                assert_eq!(attrs.remove(AttributeType::Token), None);
+                assert_eq!(attrs.get(AttributeType::Sensitive), Some(&Attribute::Sensitive(false)));
+                Ok(())
+            }
+        }
+        let p: &dyn Provider = &Vendor;
+        let t = vec![Attribute::Token(false), Attribute::Sensitive(true), Attribute::Wrap(true)];
+        let req = Template::Session(SessionKey::RebindKek);
+        assert_eq!(
+            p.adjusted(&req, t.clone()).unwrap(),
+            [Attribute::Sensitive(false), Attribute::Wrap(true), Attribute::Label(b"v".to_vec())]
+        );
+        let generic: &dyn Provider = &Generic;
+        assert_eq!(generic.adjusted(&req, t.clone()).unwrap(), t, "the default changes nothing");
     }
 
     fn module(manufacturer: &str) -> ModuleInfo {

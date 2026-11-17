@@ -16,9 +16,9 @@ use cakeys_core::migrate::{Exposure, Method};
 use cakeys_core::pop::OaepHash;
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
-use cakeys_pkcs11::Token;
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::token::{SessionObject, class_of, key_type_of, locator_attrs, with_public_default_dropped};
+use cakeys_pkcs11::{SessionKey, Template, Token, Via};
 use cryptoki::mechanism::rsa::PkcsOaepParams;
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, KeyType, ObjectClass, ObjectHandle};
@@ -105,7 +105,8 @@ pub(crate) fn export(
     let refused = |what: &str, e: cryptoki::error::Error| from.unsupported(format!("{what} on '{}': {e}", from.name));
     // The transport public key and the shared KEK are session objects on the source: both go
     // when this returns, however it does.
-    let tpub = session.create_object(&rsa_public(transport)?).map_err(|e| refused("loading the transport key", e))?;
+    let tpub_template = from.provider.adjusted(&Template::Session(SessionKey::TransportKey), rsa_public(transport)?)?;
+    let tpub = session.create_object(&tpub_template).map_err(|e| refused("loading the transport key", e))?;
     let tpub = SessionObject::new(session, tpub);
     // A source with no RFC 5649 of its own (AWS CloudHSM lists one it refuses [run]), or no AES
     // key generation for the KEK, wraps each key by CKM_RSA_AES_KEY_WRAP instead: no shared KEK.
@@ -231,16 +232,20 @@ fn kek<'a>(
     refused: &dyn Fn(&str, cryptoki::error::Error) -> KmError,
 ) -> Result<(SessionObject<'a>, Vec<u8>)> {
     let session = from.raw();
-    let template = [
-        Attribute::Class(ObjectClass::SECRET_KEY),
-        Attribute::KeyType(KeyType::AES),
-        Attribute::ValueLen(32.into()),
-        Attribute::Token(false),
-        Attribute::Wrap(true),
-        // It leaves only wrapped to the transport key: never readable, whatever the module's default.
-        Attribute::Sensitive(true),
-        Attribute::Extractable(true),
-    ];
+    let template = from.provider.adjusted(
+        &Template::Session(SessionKey::ExportKek),
+        vec![
+            Attribute::Class(ObjectClass::SECRET_KEY),
+            Attribute::KeyType(KeyType::AES),
+            Attribute::ValueLen(32.into()),
+            Attribute::Token(false),
+            Attribute::Wrap(true),
+            // It leaves only wrapped to the transport key: never readable, whatever the module's
+            // default.
+            Attribute::Sensitive(true),
+            Attribute::Extractable(true),
+        ],
+    )?;
     let kek = session.generate_key(&Mechanism::AesKeyGen, &template).map_err(|e| refused("making the KEK", e))?;
     let kek = SessionObject::new(session, kek);
     let blob = session.wrap_key(&oaep(hash), tpub, kek.handle()).map_err(|e| refused("wrapping the KEK", e))?;
@@ -509,10 +514,6 @@ fn create(
             to.name
         ))
     };
-    let loc = locator_attrs(&dst.on_token.locator)?;
-    if let Some(spki) = e.public_spki().map_err(KmError::Validation)?.filter(|_| ready.public_half.is_none()) {
-        made.push(create_public_half(dst, to, &spki)?);
-    }
     let refusals = unwrap_refusals(to);
     let declared = dst.spec.attributes.iter().filter(|(n, _)| !refusals.contains(n));
     let mut template = vec![
@@ -520,8 +521,28 @@ fn create(
         Attribute::Class(class_of(dst.object)),
         Attribute::KeyType(key_type_of(dst.object)?),
     ];
-    template.extend(loc);
+    template.extend(locator_attrs(&dst.on_token.locator)?);
     template.extend(to.policy_template(&declared.map(|(n, v)| (n.clone(), v.clone())).collect())?);
+    // The templates as the provider adjusts them, before anything is created.
+    let template = to.provider.adjusted(&Template::Import(dst.into(), Via::Unwrap), template)?;
+    // A KEK only where one is unwrapped on its own: the composed method with RFC 5649 here.
+    let kek_template = match method {
+        Method::RsaOaepAesKwp(_) if rfc5649(to).is_some() => to.provider.adjusted(
+            &Template::Session(SessionKey::ImportKek),
+            vec![
+                Attribute::Class(ObjectClass::SECRET_KEY),
+                Attribute::KeyType(KeyType::AES),
+                Attribute::Token(false),
+                Attribute::Unwrap(true),
+                Attribute::Sensitive(true),
+                Attribute::Extractable(false),
+            ],
+        )?,
+        _ => Vec::new(),
+    };
+    if let Some(spki) = e.public_spki().map_err(KmError::Validation)?.filter(|_| ready.public_half.is_none()) {
+        made.push(create_public_half(dst, to, &spki)?);
+    }
     let key = e.wrapped_key().map_err(KmError::Validation)?;
     match method {
         Method::RsaOaepAesKwp(hash) => {
@@ -546,14 +567,6 @@ fn create(
                 );
                 return Ok(());
             };
-            let kek_template = [
-                Attribute::Class(ObjectClass::SECRET_KEY),
-                Attribute::KeyType(KeyType::AES),
-                Attribute::Token(false),
-                Attribute::Unwrap(true),
-                Attribute::Sensitive(true),
-                Attribute::Extractable(false),
-            ];
             let kek = session
                 .unwrap_key(&oaep(*hash), unwrapping, &kek_blob, &kek_template)
                 .map_err(|e| refused("unwrapping the KEK", e))?;
@@ -595,6 +608,7 @@ pub(crate) fn create_public_half(dst: &Target, to: &Token, spki: &[u8]) -> Resul
     if !declared("CKA_PRIVATE") {
         t.push(Attribute::Private(false));
     }
+    let t = to.provider.adjusted(&Template::PublicHalf(dst.into()), t)?;
     // As `generate`: a module refusing cakeys' own CKA_PRIVATE = false default gets the half
     // without it.
     let create = || {

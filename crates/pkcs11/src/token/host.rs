@@ -27,15 +27,18 @@ impl Token {
         let mut kek = Zeroizing::new([0u8; 32]);
         getrandom::fill(kek.as_mut_slice())
             .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}")))?;
-        let template = Secret(vec![
-            Attribute::Class(ObjectClass::SECRET_KEY),
-            Attribute::KeyType(KeyType::AES),
-            Attribute::Token(false),
-            Attribute::Sensitive(true),
-            Attribute::Extractable(false),
-            Attribute::Wrap(true),
-            Attribute::Value(kek.to_vec()),
-        ]);
+        let mut template = Secret(self.provider.adjusted(
+            &Template::Session(SessionKey::HostKek),
+            vec![
+                Attribute::Class(ObjectClass::SECRET_KEY),
+                Attribute::KeyType(KeyType::AES),
+                Attribute::Token(false),
+                Attribute::Sensitive(true),
+                Attribute::Extractable(false),
+                Attribute::Wrap(true),
+            ],
+        )?);
+        template.0.push(Attribute::Value(kek.to_vec()));
         let refused = |what: &str, e: CkError| self.unsupported(format!("{what} on '{}': {e}", self.name));
         let session_kek =
             self.session.create_object(&template.0).map_err(|e| refused("making the host's session key", e))?;
@@ -55,8 +58,12 @@ impl Token {
     }
 
     /// Create a private key from its `parts`, under `base` (class, key type, `CKA_TOKEN`, the
-    /// locator and the spec's policy attributes). The plaintext copies in the template are
-    /// zeroized after the call.
+    /// locator and the spec's policy attributes), as the provider adjusted it
+    /// ([`Template::Import`] by [`Via::CreateObject`]; the caller adjusts it, so a refusal comes
+    /// before the public half is made). The plaintext copies in the template are zeroized after
+    /// the call.
+    ///
+    /// [`Via::CreateObject`]: crate::provider::Via::CreateObject
     ///
     /// # Errors
     ///
@@ -86,7 +93,7 @@ impl Token {
         self.create_secret_template(&Secret(base))
     }
 
-    /// Create a secret key of `value` under `base` (as [`Self::create_private`]).
+    /// Create a secret key of `value` under `base`, adjusted as [`Self::create_private`]'s.
     ///
     /// # Errors
     ///

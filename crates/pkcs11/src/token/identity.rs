@@ -286,16 +286,18 @@ impl Token {
             Commit::Kw => {
                 // The fixed key is public, so it is created extractable; the key under test only
                 // has to allow CKA_WRAP.
-                let fixed = s
-                    .create_object(&[
+                let mut template = self.provider.adjusted(
+                    &Template::Session(SessionKey::KwInput),
+                    vec![
                         Attribute::Token(false),
                         Attribute::Class(ObjectClass::SECRET_KEY),
                         Attribute::KeyType(KeyType::GENERIC_SECRET),
-                        Attribute::Value(input),
                         Attribute::Sensitive(false),
                         Attribute::Extractable(true),
-                    ])
-                    .map_err(fail)?;
+                    ],
+                )?;
+                template.push(Attribute::Value(input));
+                let fixed = s.create_object(&template).map_err(fail)?;
                 let fixed = SessionObject::new(s, fixed);
                 s.wrap_key(&Mechanism::AesKeyWrap, h, fixed.handle()).map_err(fail)
             }
@@ -315,19 +317,18 @@ impl Token {
     ) -> Result<Vec<(Commit, Vec<u8>)>> {
         let s = &self.session;
         let fail = |what: &'static str| move |e: CkError| KmError::Unsupported(format!("wrap-rebind {what}: {e}"));
-        let kek = s
-            .generate_key(
-                &Mechanism::AesKeyGen,
-                &[
-                    Attribute::Token(false),
-                    Attribute::ValueLen(32.into()),
-                    Attribute::Wrap(true),
-                    Attribute::Unwrap(true),
-                    Attribute::Sensitive(true),
-                    Attribute::Extractable(false),
-                ],
-            )
-            .map_err(fail("generating session KEK"))?;
+        let kek_template = self.provider.adjusted(
+            &Template::Session(SessionKey::RebindKek),
+            vec![
+                Attribute::Token(false),
+                Attribute::ValueLen(32.into()),
+                Attribute::Wrap(true),
+                Attribute::Unwrap(true),
+                Attribute::Sensitive(true),
+                Attribute::Extractable(false),
+            ],
+        )?;
+        let kek = s.generate_key(&Mechanism::AesKeyGen, &kek_template).map_err(fail("generating session KEK"))?;
         // Both session objects go when this returns, however it does.
         let kek = SessionObject::new(s, kek);
         let wrap =
@@ -352,6 +353,7 @@ impl Token {
                 template.push(usage);
             }
         }
+        let template = self.provider.adjusted(&Template::Session(SessionKey::RebindCopy), template)?;
         let copy = s.unwrap_key(&wrap, kek.handle(), &blob, &template).map_err(fail("C_UnwrapKey"))?;
         let copy = SessionObject::new(s, copy);
         commits.iter().map(|c| Ok((*c, self.commit(copy.handle(), object, *c, commitment_label)?))).collect()

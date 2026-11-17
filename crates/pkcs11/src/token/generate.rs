@@ -77,6 +77,9 @@ impl Token {
         let mut common = vec![Attribute::Token(true)];
         common.extend(locator_attrs(loc)?);
         let policy = self.policy_template(&spec.attributes)?;
+        // Each template as the provider adjusts it, before anything is generated.
+        let adjusted =
+            |half, t| self.provider.adjusted(&Template::Generate(Declared { object, spec, locator: loc }, half), t);
         let refused =
             |e: CkError| self.unsupported(format!("generating key on '{}': {} ({e})", self.name, rv_name(&e)));
         let private_declared =
@@ -96,8 +99,8 @@ impl Token {
                 })
         };
         // Defaults for the public half of a pair, left out when the declared attributes set the
-        // same type (the template may not carry a type twice).
-        let public_half = |public: &mut Vec<Attribute>| -> Result<()> {
+        // same type (the template may not carry a type twice); then the provider's adjustment.
+        let public_half = |mut public: Vec<Attribute>| -> Result<Vec<Attribute>> {
             public.extend(self.policy_template(&spec.public_attributes)?);
             let declared = |n| spec.attributes.contains_key(n) || spec.public_attributes.contains_key(n);
             if !declared("CKA_VERIFY") {
@@ -106,7 +109,7 @@ impl Token {
             if !declared("CKA_PRIVATE") {
                 public.push(Attribute::Private(false));
             }
-            Ok(())
+            adjusted(Half::Public, public)
         };
         match key_type_of(object)? {
             KeyType::RSA => {
@@ -114,9 +117,10 @@ impl Token {
                     object.modulus_bits.ok_or_else(|| KmError::Validation("RSA keys need modulusBits".into()))?;
                 let mut public = common.clone();
                 public.extend([Attribute::ModulusBits(bits.into()), Attribute::PublicExponent(vec![1, 0, 1])]);
-                public_half(&mut public)?;
+                let public = public_half(public)?;
                 let mut private = common;
                 private.extend(policy);
+                let private = adjusted(Half::Key, private)?;
                 pair(&Mechanism::RsaPkcsKeyPairGen, &public, &private).map_err(refused)
             }
             KeyType::EC | KeyType::EC_EDWARDS => {
@@ -129,15 +133,17 @@ impl Token {
                 let public_with = |params: &[u8]| -> Result<Vec<Attribute>> {
                     let mut public = common.clone();
                     public.push(Attribute::EcParams(params.to_vec()));
-                    public_half(&mut public)?;
-                    Ok(public)
+                    public_half(public)
                 };
                 let mut private = common.clone();
                 private.extend(policy);
+                let private = adjusted(Half::Key, private)?;
+                // Built before the first attempt: a provider's refusal comes before anything is made.
+                let by_oid_public = public_with(curve.params())?;
                 // The OID first; a module that takes the curve only by name (ykcs11's
                 // edwards25519, a profile's `by-name` row [src]) gets PKCS#11 3.0's
                 // PrintableString form. The identity is the same: the SPKI, not the params.
-                let by_oid = pair(&mech, &public_with(curve.params())?, &private);
+                let by_oid = pair(&mech, &by_oid_public, &private);
                 match (by_oid, curve.params_by_name()) {
                     (Err(e), Some(name)) => pair(&mech, &public_with(name)?, &private).map_err(|_| e).map(|note| {
                         let said = format!("{}: {BY_NAME} ({})", self.name, curve.name());
@@ -152,6 +158,7 @@ impl Token {
                 let mut t = common;
                 t.extend([Attribute::Class(ObjectClass::SECRET_KEY), Attribute::KeyType(KeyType::DES3)]);
                 t.extend(policy);
+                let t = adjusted(Half::Key, t)?;
                 self.session.generate_key(&Mechanism::Des3KeyGen, &t).map(|_| None).map_err(refused)
             }
             kt => {
@@ -169,6 +176,7 @@ impl Token {
                     Attribute::ValueLen(len.into()),
                 ]);
                 t.extend(policy);
+                let t = adjusted(Half::Key, t)?;
                 self.session.generate_key(&mech, &t).map(|_| None).map_err(refused)
             }
         }

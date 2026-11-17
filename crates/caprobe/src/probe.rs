@@ -8,6 +8,11 @@
 //! A probe records observations, never explanations (the analysis's firm line): what fails is
 //! a `cannot` row or a `subtract` row carrying the `C_*` failure in its note, and what the
 //! probe cannot reach is named in [`Probed::undetermined`], never guessed.
+//!
+//! What the verbs do, the probe does with the provider's templates (`Provider::template`):
+//! generation through `Token::create`, and the imports, creations and sealed round trips of
+//! [`moves`]. The templates this file builds itself vary what the module is asked, to measure
+//! it (a bare pair, a derive without a default, a wrap probe's keys), and are sent as they are.
 
 use cakeys_core::config::{AttrValue, Binding, Locator, ObjectCfg, SpecCfg, TokenCfg};
 use cakeys_core::id::Curve;
