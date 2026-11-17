@@ -444,23 +444,13 @@ fn composed(
     template: &[Attribute],
 ) -> Trip {
     let session = made.session;
-    // camigrate's KEK templates, as the provider adjusts them.
-    let aes = |key, a: &[Attribute]| {
-        let aes =
-            [Attribute::Token(false), Attribute::Class(ObjectClass::SECRET_KEY), Attribute::KeyType(KeyType::AES)];
-        made.tok.provider.adjusted(&Template::Session(key), [&aes[..], a].concat())
-    };
-    let (kek, back) = match (
-        aes(
-            SessionKey::ExportKek,
-            &[Attribute::ValueLen(32.into()), Attribute::Wrap(true), Attribute::Extractable(true)],
-        ),
-        aes(SessionKey::ImportKek, &[Attribute::Unwrap(true)]),
-    ) {
-        (Ok(kek), Ok(back)) => (kek, back),
-        (Err(e), _) => return Trip::WrapRefused(format!("the KEK: {}", evidence(made.tok, &e))),
-        (_, Err(e)) => return Trip::UnwrapRefused(format!("the KEK: {}", evidence(made.tok, &e))),
-    };
+    // camigrate's own KEK templates (`templates::session`), as the provider adjusts them.
+    let (kek, back) =
+        match (made.tok.session_template(SessionKey::ExportKek), made.tok.session_template(SessionKey::ImportKek)) {
+            (Ok(kek), Ok(back)) => (kek, back),
+            (Err(e), _) => return Trip::WrapRefused(format!("the KEK: {}", evidence(made.tok, &e))),
+            (_, Err(e)) => return Trip::UnwrapRefused(format!("the KEK: {}", evidence(made.tok, &e))),
+        };
     let kek = match session.generate_key(&Mechanism::AesKeyGen, &kek) {
         Ok(k) => SessionObject::new(session, k),
         Err(e) => return Trip::WrapRefused(format!("the KEK: C_GenerateKey: {}", ckr(&e))),
