@@ -146,8 +146,27 @@ PKCS#12 two objects name is opened twice (its KDF runs twice).
 | `CERTIFICATE` PEM, or X.509 DER | a certificate | `public` |
 | `PUBLIC KEY` PEM, or SPKI DER | a public key | `public` |
 | any bytes (a `CKO_DATA` object) | the value, as it is | `public`, or `raw` for a private data object |
-| raw bytes (a `CKO_SECRET_KEY`) | the key value; its length must be the object's `valueLen` (17, saying "hex? decode it first" when the file is exactly twice that and all hex digits) | `raw` (new) |
+| a `CKO_SECRET_KEY`'s value: its bytes, or hex or base64 text of them | the key value, `valueLen` long; see "Secret-key files" below | `raw` (new), whatever the spelling |
 
+- **Secret-key files** hold the value's bytes, or hex digits (either case) or padded standard
+  base64 of them. Whitespace anywhere in text is ignored, since `xxd -p` and base64 tools wrap
+  their lines.
+  - `migrate.encoding = "raw" | "hex" | "base64"` says which. The value read must then be
+    `valueLen` long, when the object has one.
+  - Without it, the object's `valueLen` decides by length. Exactly `valueLen` bytes are the value,
+    checked first and on the untouched bytes, because a key's bytes may include whitespace.
+    Otherwise the file is hex of `valueLen` bytes (2 × `valueLen` digits) or base64 of them
+    (4 × ⌈`valueLen`/3⌉ characters). Those lengths never coincide, and a refusal (17) names
+    each one.
+  - Load refuses (17) a secret key with `migrate.file` and neither `valueLen` nor `encoding`. A
+    key type's fixed length counts as a `valueLen` (DES3: 24). Without either, nothing tells
+    the spellings apart: a 32-character AES file could be the bytes of an AES-256 key, hex of
+    an AES-128 key or base64 of an AES-192 one. The first file read pins the object's identity
+    (F3), so a guess would be pinned for good.
+  - The method stays `raw`, as a key's PEM and DER both record `pkcs8`. The encoding is in no
+    digest, like `file`.
+  - `encoding` applies to secret keys only (17 elsewhere). A data object's value is its file's
+    bytes, hex text included.
 - **A file with several PEM blocks** (key, leaf, chain) serves each object the block of its
   class.
   - A private key object takes the file's one private key; two keys in one file are 17.
@@ -251,14 +270,16 @@ legacy formats come from the tool that writes them in the field.
 - **PKCS#12 from OpenSSL.** A default `openssl pkcs12 -export`, with its encrypted certificate
   container, imports the key and its certificate. A `-legacy` export is 17, with the re-export
   hint.
-- **Secret keys.** An AES-256 raw file whose host commitments match the token's. A file of 64
-  hex digits gets the hex hint.
+- **Secret keys.** An AES-256 raw file whose host commitments match the token's. The same key
+  as hex and as base64, with and without `encoding`, imports as that key; an encoding said
+  wrongly is 17 (`every_spelling_of_a_secret_key_imports_as_the_same_key`).
 - **Private data objects.** One with `CKA_PRIVATE = true` imports only behind
   `--allow-host-plaintext`, and its `valuehash` is read back under the login.
 - **The file is left alone.** After a run, success or failure, the source file's bytes and mode
   are unchanged.
 - **Load rules.** Each F2 rule's 17, including `create` beside `file`, a `/nix/store` key path,
-  and `file` without `migrate.file`.
+  and `file` without `migrate.file`; and F4's: a secret key's file with neither `valueLen` nor
+  `encoding`, and `encoding` on another class or without `migrate.file`.
 - **Dry run.** For every fixture × {SoftHSM, kryoptic}, the dry-run verdict is the outcome
   (D9's property, extended to a file source).
 
@@ -271,8 +292,12 @@ legacy formats come from the tool that writes them in the field.
    OPEN.md).
 2. **Older PKCS#12 is refused** (17), with the re-export command in the message (F4). A SHA-1
    MAC and RC2 or 3DES bags are not read, not even with a warning.
-3. **Secret-key and data files are bytes only, for now.** There is no `encoding` setting. The
-   hex hint for a secret key stays (F4).
+3. **Secret-key files may be hex or base64; data files are bytes only.** Revised later on
+   2026-11-16. The first answer was bytes only, with no `encoding` setting and a hint for a
+   file of hex digits. Deployments hold keys as text, so a secret key's file is now its bytes,
+   hex or base64, told by `valueLen` or said by `migrate.encoding`, and load requires one of
+   the two (F4, "Secret-key files"). Both stay, though `valueLen` alone always decides: an
+   encoding said outright needs no length.
 4. **camigrate deletes nothing.** It never removes, shreds, moves or rewrites a source file, and
    it does not track one. A deployment that wants the file gone after populating removes it
    itself, or serves it from a secrets manager's runtime path so it is never at rest outside
@@ -293,7 +318,8 @@ Where each part lives:
 - **Formats (F4):** `crates/camigrate/src/keyfile.rs`. In `file.rs`, PKCS#12 now reads
   OpenSSL 3's encrypted certificate container and every certificate bag, and refuses legacy
   schemes with the re-export hint. The new methods are `pkcs8`, `pkcs1`, `sec1` and `raw`
-  (`crates/core/src/migrate.rs`).
+  (`crates/core/src/migrate.rs`). A secret key's hex or base64 file: `secret` and `detect` in
+  `keyfile.rs`, `migrate.encoding` (`Encoding`) and its load rules in `config.rs`.
 - **The verb (F6):** `camigrate import --token <t> [<object> ...]`.
   - `--in` now lands on `file` pairs too.
   - cakeys' `create` passes over `file` pairs.

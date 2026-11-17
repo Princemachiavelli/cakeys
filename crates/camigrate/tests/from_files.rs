@@ -210,3 +210,68 @@ fn every_file_format_imports_as_the_same_key() {
     let spki = cakeys_core::id::spki_canonical(&std::fs::read(fixture("p256.pub.der")).unwrap()).unwrap();
     assert_eq!(lock["objects"]["k"]["ids"]["rfc7093m4"].as_str(), Some(cakeys_core::id::sri(&spki).as_str()));
 }
+
+/// One AES key's file as its bytes, hex digits and base64, in turn, each under a spec of its
+/// own on `SoftHSM`: the bytes are the key's first use, and the hex (told by its length) and the
+/// base64 (told by its length, then said by `migrate.encoding`) must import as that key. A
+/// file whose encoding is said wrongly is refused (17), nothing made.
+#[test]
+fn every_spelling_of_a_secret_key_imports_as_the_same_key() {
+    let Some(e) = env("key-spellings") else { return };
+    let Some(soft) = e.refs.iter().find(|r| r.name == "softhsm") else {
+        eprintln!("skipping key-spellings: needs the softhsm reference");
+        return;
+    };
+    // keys.toml with the AES key `k` read from `file`, and a spec per spelling up to the `last`.
+    let config = |last: usize, file: &str, extra: &str| {
+        let mut body = format!(
+            "[objects.k]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\
+             migrate = {{ file = \"{}\"{extra} }}\n\n",
+            fixture(file).display()
+        );
+        for i in 0..=last {
+            body += &Env::spec(
+                &format!("k{i}"),
+                "k",
+                "attributes = { CKA_ENCRYPT = true, CKA_EXTRACTABLE = false }\n",
+                &[soft],
+                &format!("spell-{i}"),
+                FROM_FILE,
+            );
+        }
+        e.config(&body);
+    };
+    let import = |i: usize| {
+        let spec = format!("k{i}");
+        e.km(soft, &["import", "k", "--token", "softhsm", "--spec", &spec, "--allow-host-plaintext"])
+    };
+
+    let spellings = [
+        ("aes256.key", ""),
+        ("aes256.hex", ""),
+        ("aes256.b64", ""),
+        ("aes256.b64", ", encoding = \"base64\""),
+        ("aes256.hex", ", encoding = \"hex\""),
+    ];
+    for (i, (file, extra)) in spellings.iter().enumerate() {
+        config(i, file, extra);
+        let o = import(i);
+        assert_eq!(code(&o), 0, "{file}{extra}: {}", stderr(&o));
+        let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
+        let origin = &lock["realisations"][format!("k{i}").as_str()]["softhsm"]["provenance"]["origin"];
+        assert_eq!((origin["method"].as_str(), origin["exposure"].as_str()), (Some("raw"), Some("file")), "{file}");
+        let check = ["check", "--spec", &format!("k{i}"), "--token", "softhsm"];
+        assert_eq!(code(&e.cakeys(soft, &check)), 0, "{file}{extra}");
+    }
+
+    // Hex digits said to be base64 spell 48 bytes, not the key's 32.
+    let i = spellings.len();
+    config(i, "aes256.hex", ", encoding = \"base64\"");
+    let o = import(i);
+    assert_eq!(code(&o), 17, "{}", stderr(&o));
+    assert!(stderr(&o).contains("48 bytes of base64, and the key is 32"), "{}", stderr(&o));
+    assert!(
+        open_session(&soft.module, soft.token_label, "1234").labelled(&format!("spell-{i}")).is_empty(),
+        "a refused file left objects"
+    );
+}

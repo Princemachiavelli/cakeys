@@ -42,7 +42,8 @@ openssl pkey -in rsa2048.pkcs1.pem -out rsa2048.pkcs8.pem
 # Ed25519, which only PKCS#8 holds.
 openssl genpkey -algorithm ED25519 -out ed25519.pkcs8.pem
 
-# A secret key and a data object: their bytes; the same key as hex digits, refused.
+# A secret key and a data object: their bytes; the same key as hex digits and as base64.
 openssl rand -out aes256.key 32
 od -An -tx1 -v aes256.key | tr -d ' \n' >aes256.hex
+openssl base64 -in aes256.key -out aes256.b64
 printf 'release 2026-11-16\n' >note.bin

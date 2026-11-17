@@ -93,6 +93,31 @@ pub struct ObjectMigrateCfg {
     pub passphrase_file: Option<String>,
     /// An environment variable holding that passphrase; it wins over `passphraseFile`.
     pub passphrase_env: Option<String>,
+    /// How a secret key's file spells its value; absent, its `valueLen` decides (docs/FILE.md F4).
+    pub encoding: Option<Encoding>,
+}
+
+/// How a secret key's file spells its value (`migrate.encoding`): the bytes themselves, or hex
+/// or base64 text of them, whitespace anywhere ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Encoding {
+    /// The value's bytes, as they are.
+    Raw,
+    /// Hex digits, either case.
+    Hex,
+    /// Standard base64 (RFC 4648 §4), padded.
+    Base64,
+}
+
+impl std::fmt::Display for Encoding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Encoding::Raw => "raw",
+            Encoding::Hex => "hex",
+            Encoding::Base64 => "base64",
+        })
+    }
 }
 
 /// One token (`[tokens.<name>]`): the module that reaches it, its label and credentials, and what
@@ -1580,6 +1605,29 @@ fn check_origins(cfg: &Config) -> std::result::Result<(), String> {
         if m.file.is_none() && (m.passphrase_file.is_some() || m.passphrase_env.is_some()) {
             return Err(format!("object '{object}': migrate.passphraseFile/passphraseEnv without migrate.file"));
         }
+        if let Some(e) = m.encoding {
+            if m.file.is_none() {
+                return Err(format!("object '{object}': migrate.encoding without migrate.file"));
+            }
+            // Any other object's file is taken as it is: a data object's value may well be hex text.
+            if cfg.objects.get(object).is_some_and(|o| o.class != ObjectClass::SecretKey) {
+                return Err(format!(
+                    "object '{object}': migrate.encoding = \"{e}\" applies to secret keys only; any other \
+                     object's file is read for what it holds"
+                ));
+            }
+        }
+        // A secret key's file may hold its value or hex or base64 text of it, and only the length
+        // tells them apart; without one, the file's first read would pin a guess (docs/FILE.md F4).
+        if m.file.is_some()
+            && m.encoding.is_none()
+            && cfg.objects.get(object).is_some_and(|o| o.class == ObjectClass::SecretKey && o.value_len.is_none())
+        {
+            return Err(format!(
+                "object '{object}': a secret key's migrate.file needs the key's valueLen or migrate.encoding = \
+                 \"raw\", \"hex\" or \"base64\": its value, hex and base64 of it are told apart by length alone"
+            ));
+        }
         // A literal path is checked now; a `$NAME` one when camigrate resolves it.
         if let Some(file) = m.file.as_deref().filter(|f| !f.starts_with('$'))
             && let Some(why) = cfg.in_store(object, Path::new(file))
@@ -2207,6 +2255,27 @@ mod tests {
             "without migrate.file",
         );
         refused(load(&(ec.to_owned() + &file("$")), adopt, adopt), "migrate.file");
+        // A secret key's file may say how it spells the value; no other object's may.
+        let aes = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"";
+        let encoded = |e: &str| format!("\nmigrate = {{ file = \"/k\", encoding = \"{e}\" }}");
+        for e in ["raw", "hex", "base64"] {
+            let cfg = load(&(aes.to_owned() + &encoded(e)), from_file, adopt).unwrap();
+            assert_eq!(cfg.object_migrate["k"].encoding.map(|e| e.to_string()).as_deref(), Some(e));
+        }
+        // Without valueLen, the encoding is said; a key type's fixed length is a valueLen.
+        refused(
+            load(&(aes.to_owned() + &file("/k")), from_file, adopt),
+            "needs the key's valueLen or migrate.encoding",
+        );
+        load(&(aes.to_owned() + "\nvalueLen = 16" + &file("/k")), from_file, adopt).unwrap();
+        load(&("class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES3\"".to_owned() + &file("/k")), from_file, adopt)
+            .unwrap();
+        refused(load(&(ec.to_owned() + &encoded("hex")), from_file, adopt), "applies to secret keys only");
+        refused(load(&(aes.to_owned() + &encoded("base32")), from_file, adopt), "unknown variant `base32`");
+        refused(
+            load(&(aes.to_owned() + "\nmigrate = { encoding = \"hex\" }"), adopt, adopt),
+            "migrate.encoding without migrate.file",
+        );
         refused(load(&(ec.to_owned() + "\nmigrate = { path = \"/k\" }"), adopt, adopt), "unknown field `path`");
         refused(
             load(&(ec.to_owned() + &file("/k.pem")), ", publicOnly = true, origin = \"file\"", adopt),

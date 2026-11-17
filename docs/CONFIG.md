@@ -174,7 +174,9 @@ curve = "secp256r1"
 # migrate.file: the file this object's material is born in, for the pairs that say
 # origin = "file" (docs/FILE.md). Only camigrate reads it, and it is no part of the type the lock
 # pins. Any format a deployment holds, told by content: PEM or DER PKCS#8, PKCS#1, SEC1, encrypted
-# PKCS#8, PKCS#12, a certificate or public key; a secret key's or data object's file is its bytes.
+# PKCS#8, PKCS#12, a certificate or public key; a data object's file is its bytes. A secret key's
+# file is its value's bytes, or hex or base64 of them: told by valueLen, or said by
+# migrate.encoding = "raw", "hex" or "base64"; it needs one of the two (17).
 # `$NAME` resolves when camigrate reads it, so hosts that only check need not set it. A key's
 # file may not be in /nix/store (17). An encrypted file names its passphrase as a token names its
 # PIN: passphraseFile or passphraseEnv.

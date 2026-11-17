@@ -2,11 +2,13 @@
 //! the formats deployments hold, into the material a pair that says `origin = "file"` is created
 //! from. Recognised by content, never by extension. Every private-key format is normalised to
 //! PKCS#8 `PrivateKeyInfo`, so a key from a file takes the one host path (`host::create_and_record`).
-//! A secret key or a data object is its file's bytes as they are. Every plaintext buffer is
-//! zeroized; nothing here formats a key or a passphrase.
+//! A data object is its file's bytes as they are; a secret key is its value's bytes, or hex or
+//! base64 text of them. Every plaintext buffer is zeroized; nothing here formats a key or a
+//! passphrase.
 
 use crate::file;
-use cakeys_core::config::ObjectCfg;
+use base64::Engine as _;
+use cakeys_core::config::{Encoding, ObjectCfg};
 use cakeys_core::id::{self, Curve, Scheme};
 use cakeys_core::migrate::{Exposure, Method};
 use cakeys_core::types::{KeyType, ObjectClass as Class};
@@ -53,18 +55,25 @@ const SKIPPED: [&str; 3] = ["EC PARAMETERS", "DH PARAMETERS", "X9.42 DH PARAMETE
 
 /// What `object` takes from the file `bytes`: a private key's PKCS#8, a certificate, a public
 /// key or a value. `private_data` marks a data object a spec declares `CKA_PRIVATE = true`;
-/// `pass` opens an encrypted key file.
+/// `pass` opens an encrypted key file; `encoding` is a secret key's `migrate.encoding`.
 ///
 /// # Errors
 ///
 /// `Validation` (17) for a file that holds no such object, or several where one is meant, an
 /// object of another type than `object`'s, a format refused with the command that converts it,
-/// an encrypted file without a passphrase or one that does not open under it.
-pub(crate) fn read(bytes: &[u8], object: &ObjectCfg, private_data: bool, pass: Option<&str>) -> Result<Material> {
+/// an encrypted file without a passphrase or one that does not open under it, a secret key's
+/// value of another length or in text no `valueLen` or `encoding` says how to read.
+pub(crate) fn read(
+    bytes: &[u8],
+    object: &ObjectCfg,
+    private_data: bool,
+    pass: Option<&str>,
+    encoding: Option<Encoding>,
+) -> Result<Material> {
     let curve = object.curve().ok();
     let entries = |bytes| entries(bytes, pass, curve);
     match object.class {
-        Class::SecretKey => secret(bytes, object),
+        Class::SecretKey => secret(bytes, object, encoding),
         Class::Data => Ok(Material {
             bytes: Zeroizing::new(bytes.to_vec()),
             spki: None,
@@ -125,22 +134,67 @@ pub(crate) fn key_certificate(certificates: &[Vec<u8>], spki: &[u8]) -> Option<V
     certificates.iter().find(|c| id::cert_spki(c).is_ok_and(|s| s == spki)).cloned()
 }
 
-/// A secret key's value: the file's bytes, exactly the object's `valueLen` long.
-fn secret(bytes: &[u8], object: &ObjectCfg) -> Result<Material> {
-    let len = bytes.len() as u64;
-    if len == 0 {
+/// A secret key's value, exactly the object's `valueLen` long when it has one: the file's bytes,
+/// or hex or base64 text of them, as `encoding` says. Without one, the length decides: exactly
+/// `valueLen` bytes are the value, else text that is hex or base64 of that many. Those never
+/// share a length. Load requires one of the two (docs/FILE.md F4): a guess would be pinned as
+/// the object's identity by the first file read (F3).
+fn secret(bytes: &[u8], object: &ObjectCfg, encoding: Option<Encoding>) -> Result<Material> {
+    if bytes.is_empty() {
         return Err(bad("it is empty, and a secret key's file holds its value"));
     }
-    if let Some(want) = object.value_len
+    let want = object.value_len;
+    let value = match (encoding, want) {
+        (Some(e), _) => decode(bytes, e).ok_or_else(|| bad(format!("it is not {e} text, as migrate.encoding says")))?,
+        (None, Some(n)) => detect(bytes, n)?,
+        (None, None) => return Err(bad("neither the key's valueLen nor migrate.encoding says how to read it")),
+    };
+    let len = value.len() as u64;
+    if len == 0 {
+        return Err(bad("it holds no value, and a secret key's file holds its value"));
+    }
+    if let Some(want) = want
         && len != want
     {
-        let hex = len == 2 * want && bytes.iter().all(u8::is_ascii_hexdigit);
-        return Err(bad(format!(
-            "it holds {len} bytes, and the key is {want}{}",
-            if hex { ": hex digits? the file holds the value itself; decode it first (xxd -r -p)" } else { "" }
-        )));
+        let e = encoding.filter(|e| *e != Encoding::Raw).map_or_else(String::new, |e| format!(" of {e}"));
+        return Err(bad(format!("it holds {len} bytes{e}, and the key is {want}")));
     }
-    Ok(Material { bytes: Zeroizing::new(bytes.to_vec()), spki: None, method: Method::Raw, exposure: Exposure::File })
+    Ok(Material { bytes: value, spki: None, method: Method::Raw, exposure: Exposure::File })
+}
+
+/// The value `bytes` spells in `encoding`, whitespace anywhere left out of text: hex dumps and
+/// base64 tools wrap their lines. `None` when it does not spell one.
+fn decode(bytes: &[u8], encoding: Encoding) -> Option<Zeroizing<Vec<u8>>> {
+    let text: Zeroizing<Vec<u8>> = Zeroizing::new(bytes.iter().copied().filter(|b| !b.is_ascii_whitespace()).collect());
+    let value = match encoding {
+        Encoding::Raw => bytes.to_vec(),
+        Encoding::Hex => cakeys_core::hex::decode(std::str::from_utf8(&text).ok()?)?,
+        Encoding::Base64 => base64::engine::general_purpose::STANDARD.decode(&*text).ok()?,
+    };
+    Some(Zeroizing::new(value))
+}
+
+/// A secret key's `n`-byte value from a file that does not say how it spells it ([`secret`]).
+fn detect(bytes: &[u8], n: u64) -> Result<Zeroizing<Vec<u8>>> {
+    // The value itself first, before any whitespace is left out: a key's bytes may be any.
+    if bytes.len() as u64 == n {
+        return Ok(Zeroizing::new(bytes.to_vec()));
+    }
+    let (hex, base64) = (decode(bytes, Encoding::Hex), decode(bytes, Encoding::Base64));
+    let of_n = |v: &Zeroizing<Vec<u8>>| v.len() as u64 == n;
+    let read = match (hex, base64) {
+        (Some(v), _) | (_, Some(v)) if of_n(&v) => return Ok(v),
+        (Some(v), _) => format!("; as hex it is {} bytes", v.len()),
+        (None, Some(v)) => format!("; as base64 it is {} bytes", v.len()),
+        (None, None) => String::new(),
+    };
+    Err(bad(format!(
+        "it holds {} bytes, and the key is {n}: the value itself, or hex ({} digits) or base64 ({} characters) of \
+         it{read}",
+        bytes.len(),
+        2 * n,
+        n.div_ceil(3) * 4
+    )))
 }
 
 /// The file's one private key.
@@ -460,7 +514,7 @@ mod tests {
             ("p256.p12", Method::Pkcs12),
             ("p256.bundle.pem", Method::Sec1),
         ] {
-            let m = read(&fixture(file), &p256(), false, PASS).unwrap_or_else(|e| panic!("{file}: {e}"));
+            let m = read(&fixture(file), &p256(), false, PASS, None).unwrap_or_else(|e| panic!("{file}: {e}"));
             assert_eq!(
                 (m.spki.as_deref(), &m.method, m.exposure),
                 (Some(want.as_slice()), &method, Exposure::File),
@@ -470,14 +524,14 @@ mod tests {
             assert_eq!(host_ids(&p256(), &m), [(Scheme::Rfc7093m4, id::sri(&want))], "{file}");
         }
         let rsa = object(Class::PrivateKey, Some(KeyType::Rsa), None);
-        let spki = |file| read(&fixture(file), &rsa, false, None).unwrap().spki.unwrap();
+        let spki = |file| read(&fixture(file), &rsa, false, None, None).unwrap().spki.unwrap();
         assert_eq!(spki("rsa2048.pkcs1.pem"), spki("rsa2048.pkcs8.pem"));
         assert_eq!(spki("rsa2048.pkcs1.der"), spki("rsa2048.pkcs8.pem"));
-        let m = read(&fixture("rsa2048.pkcs1.pem"), &rsa, false, None).unwrap();
+        let m = read(&fixture("rsa2048.pkcs1.pem"), &rsa, false, None, None).unwrap();
         assert_eq!(m.method, Method::Pkcs1);
         cakeys_core::plaintext::private_from_pkcs8(&m.bytes, KeyType::Rsa, None).unwrap();
         let ed = object(Class::PrivateKey, Some(KeyType::EcEdwards), Some("edwards25519"));
-        assert_eq!(read(&fixture("ed25519.pkcs8.pem"), &ed, false, None).unwrap().method, Method::Pkcs8);
+        assert_eq!(read(&fixture("ed25519.pkcs8.pem"), &ed, false, None, None).unwrap().method, Method::Pkcs8);
     }
 
     /// A SEC1 key that names no curve takes the object's: the key must then be on it.
@@ -489,12 +543,12 @@ mod tests {
         let bare: Vec<AnyRef> = fields.into_iter().filter(|f| f.tag() != sec1_parameters()).collect();
         let bare = bare.to_der().unwrap();
         assert!(bare.len() < der.len());
-        let m = read(&bare, &p256(), false, None).unwrap();
-        assert_eq!(m.spki, read(&der, &p256(), false, None).unwrap().spki);
+        let m = read(&bare, &p256(), false, None, None).unwrap();
+        assert_eq!(m.spki, read(&der, &p256(), false, None, None).unwrap().spki);
         let p384 = object(Class::PrivateKey, Some(KeyType::Ec), Some("secp384r1"));
-        assert!(refusal(read(&bare, &p384, false, None)).contains("the object is"));
+        assert!(refusal(read(&bare, &p384, false, None, None)).contains("the object is"));
         let rsa = object(Class::PrivateKey, Some(KeyType::Rsa), None);
-        assert!(refusal(read(&bare, &rsa, false, None)).contains("names no curve"));
+        assert!(refusal(read(&bare, &rsa, false, None, None)).contains("names no curve"));
     }
 
     /// A certificate object takes its file's one certificate, or the one for the key beside it;
@@ -504,7 +558,7 @@ mod tests {
         let cert = ObjectCfg { certificate_type: Some("CKC_X_509".into()), ..object(Class::Certificate, None, None) };
         let want = fixture("p256.crt.der");
         for file in ["p256.crt.pem", "p256.crt.der", "p256.bundle.pem", "p256.p12"] {
-            let m = read(&fixture(file), &cert, false, PASS).unwrap_or_else(|e| panic!("{file}: {e}"));
+            let m = read(&fixture(file), &cert, false, PASS, None).unwrap_or_else(|e| panic!("{file}: {e}"));
             assert_eq!(
                 (m.bytes.as_slice(), &m.method, m.exposure),
                 (want.as_slice(), &Method::Public, Exposure::Public),
@@ -512,12 +566,12 @@ mod tests {
             );
             assert_eq!(host_ids(&cert, &m), [(Scheme::Certhash, id::sri(&want))]);
         }
-        assert!(refusal(read(&fixture("two-certs.pem"), &cert, false, None)).contains("2 certificates"));
-        assert!(refusal(read(&fixture("p256.pkcs8.pem"), &cert, false, None)).contains("no certificate"));
+        assert!(refusal(read(&fixture("two-certs.pem"), &cert, false, None, None)).contains("2 certificates"));
+        assert!(refusal(read(&fixture("p256.pkcs8.pem"), &cert, false, None, None)).contains("no certificate"));
         let public = object(Class::PublicKey, Some(KeyType::Ec), Some("secp256r1"));
         let want = id::spki_canonical(&fixture("p256.pub.der")).unwrap();
         for file in ["p256.pub.pem", "p256.pub.der", "p256.pkcs8.pem", "p256.sec1.pem"] {
-            let m = read(&fixture(file), &public, false, None).unwrap_or_else(|e| panic!("{file}: {e}"));
+            let m = read(&fixture(file), &public, false, None, None).unwrap_or_else(|e| panic!("{file}: {e}"));
             assert_eq!(m.bytes.as_slice(), want.as_slice(), "{file}");
         }
     }
@@ -539,18 +593,18 @@ mod tests {
             (b"no key here", None, "neither PEM nor"),
         ];
         for (bytes, pass, want) in cases {
-            let got = refusal(read(bytes, &p256, false, pass));
+            let got = refusal(read(bytes, &p256, false, pass, None));
             assert!(got.contains(want), "{want}: {got}");
         }
         // A key of another type than the object's.
         let p384 = object(Class::PrivateKey, Some(KeyType::Ec), Some("secp384r1"));
-        assert!(refusal(read(&fixture("p256.pkcs8.pem"), &p384, false, None)).contains("a key on secp256r1"));
-        assert!(refusal(read(&fixture("rsa2048.pkcs1.pem"), &p256, false, None)).contains("an RSA key"));
+        assert!(refusal(read(&fixture("p256.pkcs8.pem"), &p384, false, None, None)).contains("a key on secp256r1"));
+        assert!(refusal(read(&fixture("rsa2048.pkcs1.pem"), &p256, false, None, None)).contains("an RSA key"));
         let rsa3072 = ObjectCfg { modulus_bits: Some(3072), ..object(Class::PrivateKey, Some(KeyType::Rsa), None) };
-        assert!(refusal(read(&fixture("rsa2048.pkcs1.pem"), &rsa3072, false, None)).contains("2048 bits"));
+        assert!(refusal(read(&fixture("rsa2048.pkcs1.pem"), &rsa3072, false, None, None)).contains("2048 bits"));
         // Two keys in one file.
         let two = [fixture("p256.pkcs8.pem"), fixture("ca.pkcs8.pem")].concat();
-        assert!(refusal(read(&two, &p256, false, None)).contains("more than one private key"));
+        assert!(refusal(read(&two, &p256, false, None, None)).contains("more than one private key"));
     }
 
     /// A file holding a private key, in any format, is told from one that does not before
@@ -574,24 +628,64 @@ mod tests {
         }
     }
 
-    /// A secret key or a data object is its file's bytes as they are; a secret key's are exactly
-    /// its length, and hex digits of it are named as such.
+    /// A secret key is its value: the file's bytes, or hex or base64 of them however they wrap,
+    /// told by the object's `valueLen` or said by `migrate.encoding`; text without either is
+    /// refused, never guessed. A data object is its file's bytes as they are.
     #[test]
-    fn secret_keys_and_data_objects_are_their_bytes() {
+    fn secret_keys_are_their_value_and_data_objects_their_bytes() {
         let aes = ObjectCfg { value_len: Some(32), ..object(Class::SecretKey, Some(KeyType::Aes), None) };
         let key = fixture("aes256.key");
-        let m = read(&key, &aes, false, None).unwrap();
+        let value = |file: &[u8], o: &ObjectCfg, e: Option<Encoding>| read(file, o, false, None, e).map(|m| m.bytes);
+        let m = read(&key, &aes, false, None, None).unwrap();
         assert_eq!((m.bytes.as_slice(), &m.method, m.exposure), (key.as_slice(), &Method::Raw, Exposure::File));
         assert_eq!(host_ids(&aes, &m), []);
-        assert!(refusal(read(&fixture("aes256.hex"), &aes, false, None)).contains("hex digits?"));
-        assert!(refusal(read(&[0; 16], &aes, false, None)).contains("16 bytes, and the key is 32"));
-        assert!(refusal(read(&[], &aes, false, None)).contains("empty"));
+        let hex = fixture("aes256.hex");
+        let wrapped = |text: &[u8], at: usize| text.chunks(at).collect::<Vec<_>>().join(&b"\n"[..]);
+        let spellings = [
+            (hex.clone(), Encoding::Hex),
+            ([&hex[..], b"\n"].concat(), Encoding::Hex),
+            (hex.to_ascii_uppercase(), Encoding::Hex),
+            (wrapped(&hex, 60), Encoding::Hex),
+            (fixture("aes256.b64"), Encoding::Base64),
+            (wrapped(fixture("aes256.b64").trim_ascii(), 16), Encoding::Base64),
+        ];
+        for (text, e) in &spellings {
+            let what = String::from_utf8_lossy(text);
+            assert_eq!(value(text, &aes, None).unwrap().as_slice(), key.as_slice(), "{what}");
+            assert_eq!(value(text, &aes, Some(*e)).unwrap().as_slice(), key.as_slice(), "{what}");
+        }
+        // Exactly valueLen bytes are the value, whitespace bytes and hex digits among them.
+        let ascii = b"0123456789abcdef0123456789abcde\n";
+        assert_eq!(value(ascii, &aes, None).unwrap().as_slice(), ascii);
+        assert_eq!(value(ascii, &aes, Some(Encoding::Raw)).unwrap().as_slice(), ascii);
+        // Hex digits are base64 characters too: read as base64, they spell another length.
+        assert!(refusal(read(&hex, &aes, false, None, Some(Encoding::Base64))).contains("48 bytes of base64"));
+        assert!(refusal(read(&key, &aes, false, None, Some(Encoding::Base64))).contains("not base64 text"));
+        assert!(refusal(read(&key, &aes, false, None, Some(Encoding::Hex))).contains("not hex text"));
+        assert!(refusal(read(&hex, &aes, false, None, Some(Encoding::Raw))).contains("64 bytes, and the key is 32"));
+        assert!(refusal(read(&hex[..30], &aes, false, None, None)).contains("as hex it is 15 bytes"));
+        assert!(refusal(read(&hex[..32], &aes, false, None, Some(Encoding::Hex))).contains("16 bytes of hex"));
+        let short = refusal(read(&[0; 16], &aes, false, None, None));
+        assert!(short.contains("16 bytes, and the key is 32") && short.contains("64 digits") && short.contains("44"));
+        assert!(refusal(read(&[], &aes, false, None, None)).contains("empty"));
+        assert!(refusal(read(b"\n", &aes, false, None, Some(Encoding::Hex))).contains("no value"));
+
+        // Without valueLen the length decides nothing, so encoding says it (load requires one).
+        let any = object(Class::SecretKey, Some(KeyType::GenericSecret), None);
+        assert!(refusal(read(&key, &any, false, None, None)).contains("neither the key's valueLen"));
+        assert_eq!(value(&key, &any, Some(Encoding::Raw)).unwrap().as_slice(), key.as_slice());
+        assert_eq!(value(&hex, &any, Some(Encoding::Hex)).unwrap().as_slice(), key.as_slice());
+        assert_eq!(value(&fixture("aes256.b64"), &any, Some(Encoding::Base64)).unwrap().as_slice(), key.as_slice());
+        assert_eq!(value(b"mysecret", &any, Some(Encoding::Raw)).unwrap().as_slice(), b"mysecret");
+
         let data = object(Class::Data, None, None);
         let note = fixture("note.bin");
-        let m = read(&note, &data, false, None).unwrap();
+        let m = read(&note, &data, false, None, None).unwrap();
         assert_eq!((&m.method, m.exposure), (&Method::Public, Exposure::Public));
         assert_eq!(host_ids(&data, &m), [(Scheme::Valuehash, id::sri(&note))]);
-        let m = read(&note, &data, true, None).unwrap();
+        let m = read(&note, &data, true, None, None).unwrap();
         assert_eq!((&m.method, m.exposure), (&Method::Raw, Exposure::File));
+        let m = read(&hex, &data, false, None, None).unwrap();
+        assert_eq!(m.bytes.as_slice(), hex.as_slice(), "a data object's hex text is its value");
     }
 }

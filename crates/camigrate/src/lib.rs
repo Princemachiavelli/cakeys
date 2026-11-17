@@ -1328,10 +1328,13 @@ fn from_its_file(
         )));
     }
     let pass = file_passphrase(cfg, dst.object_name, how.pass)?;
+    let encoding = cfg.object_migrate.get(dst.object_name).and_then(|m| m.encoding);
     let m =
-        keyfile::read(&bytes, dst.object, private_data, pass.as_ref().map(|p| p.as_str())).map_err(|e| match e {
-            KmError::Validation(why) => KmError::Validation(format!("{}: {why}", path.display())),
-            other => other,
+        keyfile::read(&bytes, dst.object, private_data, pass.as_ref().map(|p| p.as_str()), encoding).map_err(|e| {
+            match e {
+                KmError::Validation(why) => KmError::Validation(format!("{}: {why}", path.display())),
+                other => other,
+            }
         })?;
     drop(bytes);
     let ids = keyfile::host_ids(dst.object, &m);
