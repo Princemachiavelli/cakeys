@@ -78,8 +78,9 @@ pub(crate) unsafe fn find_objects(
     }
     let room = usize::try_from(max).unwrap_or(0);
     // SAFETY: `count` is not null and the real module wrote it; `out` holds `max` handles, of
-    // which the first `*count` are set.
-    let mut found = unsafe { std::slice::from_raw_parts(out, usize::try_from(*count).unwrap_or(0)).to_vec() };
+    // which the first `*count` are set. A module that reports more than `max` is not believed.
+    let set = usize::try_from(unsafe { *count }).unwrap_or(0).min(room);
+    let mut found = unsafe { std::slice::from_raw_parts(out, set).to_vec() };
     let mut fired = None;
     for (i, rule) in shim.plan.matching(call) {
         match &rule.action {
@@ -122,14 +123,19 @@ pub(crate) unsafe fn mechanism_list(
     list: *mut CK_MECHANISM_TYPE,
     count: *mut CK_ULONG,
 ) -> Outcome {
+    // The caller's room, before the real module overwrites `count` with the length.
+    // SAFETY: read only when not null.
+    let room = if count.is_null() { 0 } else { usize::try_from(unsafe { *count }).unwrap_or(0) };
     // SAFETY: the caller's arguments, forwarded unchanged.
     let rv = unsafe { real!(shim, C_GetMechanismList)(slot, list, count) };
     if rv != CKR_OK || list.is_null() || count.is_null() {
         // The length alone: the real module's, which a shorter list may fall short of.
         return Ok((rv, None));
     }
-    // SAFETY: `count` is not null and the real module wrote it and that many mechanisms.
-    let mut listed = unsafe { std::slice::from_raw_parts(list, usize::try_from(*count).unwrap_or(0)).to_vec() };
+    // SAFETY: `count` is not null and the real module wrote it and that many mechanisms; `list`
+    // holds `room`. A module that reports more than `room` is not believed.
+    let written = usize::try_from(unsafe { *count }).unwrap_or(0).min(room);
+    let mut listed = unsafe { std::slice::from_raw_parts(list, written).to_vec() };
     let mut fired = None;
     for (i, rule) in shim.plan.matching(call) {
         if let Action::HideMechanisms(hidden) = &rule.action {

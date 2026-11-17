@@ -99,16 +99,15 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   how notes and warnings reach a binding; whether closing the check-then-use gap is worth tying
   programs to the library's session.
 - **What `create` does with a key that is already there** (2026-11-16). Today it stops with 19
-  and makes nothing, for a named pair and for a run over every pair alike. Flags to choose
-  otherwise are to design: `--only-new` (skip the pairs whose key exists and create the rest,
-  with a note each) is the first candidate; whether a skipped key is also compared with the
-  lock, and what a run over several pairs exits with when some existed, are the open parts.
+  and makes nothing, for a named pair and for a run over every pair alike. **Decided
+  2026-11-17, not built** (ISSUES.md, "`create` flags"): no flag; a key the lock pins that
+  verifies is skipped with a note, one that does not verify fails as a mismatch, one the lock
+  does not pin still stops with 19; exit 0 when nothing failed.
 - **Certificate validity in the PIV attestation chain** (2026-11-16, ISSUES.md B8). The chain is
   verified by signature, issuer name and `basicConstraints`, never by `notBefore`/`notAfter`.
-  Working idea: `check` enforces the validity period, with an override; `lock` and camigrate may
-  have to stay independent of the wall clock (a build host's clock is not evidence, and a lock
-  recorded today must verify tomorrow). Undecided: whether an expired intermediate under a
-  pinned root should fail a `check` of a key attested years ago.
+  **Decided 2026-11-17, not built** (ISSUES.md B8): `check` holds every link to its validity
+  period against the system clock (never `SOURCE_DATE_EPOCH`), with `--at <time>` and
+  `--ignore-validity`; `lock` and camigrate stay clock-free.
 - **Asserting how keys relate**: "A and B are the same key" or "must differ", across locks.
   Options: declarative assertions in keys.toml checked by `validate` and `verify`, or a
   documented Nix pattern over `lib.mkKeys` results (`assert a.id.rfc7093m4 != b.id.rfc7093m4`,
@@ -270,10 +269,11 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   module under the others in one process): the crane check phase runs them under
   `cargo-nextest` with a token set per test (DEVELOPMENT.md), as the regular build and the
   coverage report do; the mutation report runs on one thread against shared tokens. One session per module in
-  `tests/common` would fix the plain run.
+  `tests/common` would fix the plain run. **Decided 2026-11-17, not built:** one initialized
+  context per module for the whole process.
 - **Closing what the reports show** (`packages.coverage`, `packages.mutants`, DEVELOPMENT.md):
-  no unit test in `core` pins the lock's load-time invariants or the transport-key rules (the
-  token suites reach them, a plain `cargo test` does not); the sealed path with OAEP SHA-256
+  the lock's load-time invariants and the transport-key rules are pinned by
+  `crates/core/tests/refusals.rs`, which a plain `cargo test` runs; the sealed path with OAEP SHA-256
   and the host path's occupied-locator and rollback branches run in no test; the YubiKey
   provider and the probe's scratch-slot guard only in the opt-in hardware tests.
 - **Split the reference suite** (`crates/cli/tests/reference/mod.rs`, 3,085 lines, 62 functions
@@ -282,7 +282,10 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   downgrades), proof of possession, and certificates and adoption, with the shared helpers in
   their own module. Each binary (`tests/softhsm.rs`, `tests/kryoptic.rs`) still includes the
   whole suite. `cakeys-pkcs11` (4.5k lines, 16 unit tests) is tested almost only through it.
+  **Decided 2026-11-17, not built:** by verb instead of by theme (3,709 lines, 71 functions by
+  then), the harness staying in `mod.rs`.
 - **Fuzz the remaining parsers**: the PIV chain, the P-521 fix-up, profile emit and parse.
+  **Decided 2026-11-17, not built:** all three; profile emit and parse as a round-trip fixed point.
 - **Design models** (DEVELOPMENT.md): Quint or TLA+ for the lock rules, Alloy for the lock's
   structure and S16, Tamarin for proof of possession and attestation, Kani for small pure
   functions.

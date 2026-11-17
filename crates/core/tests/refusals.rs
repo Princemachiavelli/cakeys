@@ -167,6 +167,11 @@ fn token_and_creation_rules_are_checked_at_load() {
             .replace("migrate = { transportWith = \"s\" }", "migrate = { transportWith = \"nope\" }"),
         "names no spec",
     );
+    // A token's transport key is on that token: another token cannot name it.
+    refused(
+        transport(&rsa(2048), unwraps) + "\n[tokens.u]\ntokenLabel = \"u\"\nmigrate = { transportWith = \"s\" }\n",
+        "token 'u': migrate.transportWith = \"s\", but that spec does not realise it on 'u'",
+    );
     // A key states how it comes to be on its token, and is created once at most.
     refused(keys(EC, SIGN, ", origin = \"made\""), "unknown variant `made`");
     let twice = keys(EC, SIGN, ", origin = \"create\"")

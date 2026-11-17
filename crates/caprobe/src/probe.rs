@@ -827,23 +827,31 @@ fn probe_bound(made: &mut Made, profile: &mut Draft) {
 
 /// What no binding covers, tried with the label alone: libkmsp11 answers before any Cloud KMS
 /// call (`CKR_TEMPLATE_INCOMPLETE`), so nothing is created; anything that does generate is
-/// destroyed with the rest.
+/// destroyed with the rest. A module that generates here is not purely purpose-bound, and the
+/// bare template names no curve or size, so nobody knows which it made: no row is written for
+/// that key type, and the run says so in its undetermined list.
 fn probe_unbound(made: &mut Made, profile: &mut Draft, ec: &mut GenerateRow, rsa: &mut GenerateRow) {
     let session = made.session;
     let bare = [Attribute::Label(b"cakeys-probe-unbound".to_vec())];
-    let unbound = |made: &mut Made, mech: &Mechanism| match session.generate_key_pair(mech, &[], &bare) {
+    // The refusal, or None when the module generated.
+    let unbound = |made: &mut Made, mech: &Mechanism, kt: &str| match session.generate_key_pair(mech, &[], &bare) {
         Ok((public, private)) => {
             made.handles.extend([private, public]);
-            "generated without a binding".to_owned()
+            made.undetermined.push(format!(
+                "no {kt} row for what no binding covers: generated without a binding, so not purely \
+                 purpose-bound, and which curve or size it made is unknown"
+            ));
+            None
         }
-        Err(e) => ckr(&e),
+        Err(e) => Some(ckr(&e)),
     };
-    let ec_refusal = unbound(made, &Mechanism::EccKeyPairGen);
-    for name in CURVES.iter().filter(|n| Curve::from_cfg(Kt::Ec, n).is_some()) {
-        let name = (*name).to_owned();
-        if !ec.can.contains(&name) && !ec.cannot.contains(&name) {
-            profile.notes.insert(name.clone(), format!("no binding for it; without one: {ec_refusal}"));
-            ec.cannot.push(name);
+    if let Some(ec_refusal) = unbound(made, &Mechanism::EccKeyPairGen, "CKK_EC") {
+        for name in CURVES.iter().filter(|n| Curve::from_cfg(Kt::Ec, n).is_some()) {
+            let name = (*name).to_owned();
+            if !ec.can.contains(&name) && !ec.cannot.contains(&name) {
+                profile.notes.insert(name.clone(), format!("no binding for it; without one: {ec_refusal}"));
+                ec.cannot.push(name);
+            }
         }
     }
     let edwards: Vec<String> =
@@ -853,13 +861,13 @@ fn probe_unbound(made: &mut Made, profile: &mut Draft, ec: &mut GenerateRow, rsa
         ("CKK_EC_EDWARDS", Mechanism::EccEdwardsKeyPairGen, edwards),
         ("CKK_EC_MONTGOMERY", Mechanism::EccMontgomeryKeyPairGen, montgomery),
     ] {
-        let refusal = unbound(made, &mech);
+        let Some(refusal) = unbound(made, &mech, kt) else { continue };
         for name in &names {
             profile.notes.insert(name.clone(), format!("no binding for it; without one: {refusal}"));
         }
         profile.generate.insert(kt.into(), GenerateRow { cannot: names, ..GenerateRow::default() });
     }
-    let rsa_refusal = unbound(made, &Mechanism::RsaPkcsKeyPairGen);
+    let Some(rsa_refusal) = unbound(made, &Mechanism::RsaPkcsKeyPairGen, "CKK_RSA") else { return };
     for bits in made.rsa_sizes.clone() {
         if !rsa.can_bits.contains(&bits) && !rsa.cannot_bits.contains(&bits) {
             rsa.cannot_bits.push(bits);

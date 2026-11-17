@@ -1,8 +1,8 @@
 # Code review findings
 
-Review of `origin/main` at `5c2a0bd`, 2026-11-16. The easy items are fixed in the working tree
-("Fixed in this pass", uncommitted); everything under "Bugs and behaviour" and "Poor practices"
-is still open. Evidence tags as in [docs/CAPROBE.md](docs/CAPROBE.md): **[run]**
+Review of `origin/main` at `5c2a0bd`, 2026-11-16. The easy items were fixed in `2120ec1`
+("Fixed in this pass"), and a few more after it ("Fixed since"); everything else under "Bugs and
+behaviour" and "Poor practices" is still open. Evidence tags as in [docs/CAPROBE.md](docs/CAPROBE.md): **[run]**
 reproduced or measured in this review, **[read]** from the code, not run. Every item is [read]
 unless it says otherwise.
 
@@ -29,22 +29,22 @@ Checks at the start of the review: `cargo clippy --workspace --all-targets -- -D
 | | C2, N3: no name grammar, unescaped shell | Fixed: `check_names`, `escapeShellArg` |
 | | C3, C4, C5: tool settings in the core schema, `provider` overloaded, label-only selection | Fixed: `probe`/`migrate`/`nix` tables, `moduleProfile`, `tokenSerial`, `soCredential*` |
 | | N1: the view exposes the unverified URI | Fixed: `uri` removed |
-| | N2: the library re-implements rules | Mostly fixed: view shrunk, lock version asserted. `type` is still raw keys.toml, so `curve = "P-256"` is not canonicalized |
+| | N2: the library re-implements rules | Mostly fixed: view shrunk, lock version asserted. `type` is still raw keys.toml, so `curve = "P-256"` is not canonicalized. Decided 2026-11-17: `type` comes from the lock when it pins the object, keys.toml's only before the first lock |
 | | P1: a missing profile is fatal at open | Fixed: nearest profile with a note |
 | | P2: a profile row picks the ECDH protocol | Fixed: sealed is tried, extractable is the fallback |
 | | §4 (a): collapse the `Provider` trait | Done: two repairs, four operations |
-| | §4 (b): kmsp11 and aws-cloudhsm touch nothing outside their crates | Not verified. kmsp11's refusals have drifted from the generic proof code (B11) |
-| | §4 (c): the probe calls the verbs' operations | Partly: proofs and EC/RSA generation go through `Token::prove_binding` and `Token::create`. `bound_keys`, `scratch_occupant`, `stand_ins` remain, and Montgomery, secret-key and wrap probes keep their own templates |
+| | §4 (b): kmsp11 and aws-cloudhsm touch nothing outside their crates | Holds, checked 2026-11-17 [read]. Both import only `Provider` and core types and implement only its hooks: aws-cloudhsm `repair` and `stand_in`, kmsp11 `hint`, `generation` and `bound_keys`. Outside them, a search finds only their registration (`cli-common`), their embedded profiles and tests. kmsp11's `pop-unwrap` and `pop-ecdh` refusals (`crates/kmsp11/src/lib.rs:290`) are a backstop: `check_reported` refuses the `CKA_UNWRAP = true` or `CKA_DERIVE = true` those bindings need first, since Cloud KMS reports both false. kmsp11 leaves `Provider::template` at its default and replaces the generation template whole, as that hook's documentation allows; what it cannot import is profile data. B11's proofs are still unrun on Cloud KMS ("To test") |
+| | §4 (c): the probe calls the verbs' operations | Partly: proofs and EC/RSA generation go through `Token::prove_binding` and `Token::create`. `bound_keys`, `scratch_occupant`, `stand_ins` remain, and Montgomery, secret-key and wrap probes keep their own templates (about 24 template sites, two `Provider::template` calls, on 2026-11-17). Scheduled 2026-11-17: all of them onto `Provider::template`, then the profiles regenerated |
 | | §4 (d): one capability row type | Done (`Capability`, `Row`). The emitter is still hand-written (Q27) |
 | | §4 (e): per-deployment answers in the lock | Done (`observations.*.capabilities`) |
 | | E1: two tests red under plain `cargo test` | Fixed [run] |
 | PLAN.md A2 | `uri.rs` leaves `/` unescaped | Fixed in this pass (B3) |
-| PUBLISH_REVIEW | Profiles embedded from outside the crate; no `LICENSE` per crate | Not fixed (`publish = false` still) |
-| | READMEs, `keywords`, docs.rs metadata, `pkcs12` rc pin | Not fixed |
-| OPEN.md, Engineering | Split the reference suite | Not done, and it grew: 3,085 to 3,625 lines, 62 to 76 functions |
-| | Token suites crash under a parallel `cargo test` | Not fixed (TODO at `crates/cli/tests/common/mod.rs:683`) |
-| | No unit test in `core` for the lock's load-time invariants or the transport-key rules | Partly: observations are tested (`config.rs:1764`, `:1796`); `check_pairs`, `check_one_object_per_material` and `check_transport_keys` have no unit test a search finds |
-| | Fuzz the remaining parsers (PIV chain, P-521 fix-up, profile emit and parse) | Not done: the seven targets are unchanged |
+| PUBLISH_REVIEW | Profiles embedded from outside the crate; no `LICENSE` per crate | Not fixed (`publish = false` still). Deferred 2026-11-17 to one pass when a release is planned |
+| | READMEs, `keywords`, docs.rs metadata, `pkcs12` rc pin | Not fixed. Deferred with the rest |
+| OPEN.md, Engineering | Split the reference suite | Not done, and it grew: 3,085 to 3,625 lines, 62 to 76 functions (3,709 and 71 on 2026-11-17). Decided 2026-11-17: split by verb, the harness staying in `mod.rs` |
+| | Token suites crash under a parallel `cargo test` | Not fixed (TODO at `crates/cli/tests/common/mod.rs:683`). Decided 2026-11-17: the test helpers share one initialized context per module for the whole process |
+| | No unit test in `core` for the lock's load-time invariants or the transport-key rules | Fixed: the review's search missed `crates/core/tests/refusals.rs`, whose `lock_objects_keep_their_invariants` reaches every branch of `check_pairs` and `check_one_object_per_material`, and whose transport-key cases now reach every branch of `check_transport_keys` |
+| | Fuzz the remaining parsers (PIV chain, P-521 fix-up, profile emit and parse) | Not done: the seven targets are unchanged. Decided 2026-11-17: all three, profile emit and parse as a round-trip fixed point |
 | | `tpm2_ptool` takes the PIN on its command line | Not fixed (accepted for now) |
 
 The lock design review's S-items (`reports/`) were not re-verified one by one; the ones crossed
@@ -52,7 +52,7 @@ on the way (S3, S4, S7, S8, S9, S10, S12) are fixed.
 
 ## Fixed in this pass
 
-Uncommitted, on top of `5c2a0bd`. Checked with clippy, `cargo test --workspace` and
+Committed as `2120ec1`, on top of `5c2a0bd`. Checked with clippy, `cargo test --workspace` and
 `scripts/local-tests.sh` (492 tests, all passing, after the last change) [run]; no Nix check
 was run. B1, B5, B9, B14
 and B17 have no test of their own: no reference token is write-protected or pads a modulus,
@@ -102,6 +102,14 @@ and the others need a second step that fails or a second spelling of a module pa
 Withdrawn: `profile/src/effective.rs` saying no and unknown exit 15 and 16 is correct
 (`caprobe supports` does).
 
+## Fixed since
+
+| Item | Fix |
+|---|---|
+| B13 | `probe_unbound` writes no row for a key type the module generated without a binding, and says so in the probe's undetermined list (`crates/caprobe/src/probe.rs`). No committed profile changes; no test, since no reference module is purpose-bound |
+| p11-fault counts | `find_objects` and `mechanism_list` believe the real module's count only up to the caller's room (`crates/p11-fault/src/hooks.rs`) |
+| Transport keys | The one untested branch of `check_transport_keys`, a token naming a spec not realised on it, has a case in `crates/core/tests/refusals.rs` |
+
 ## To test
 
 - **Key-file timing.** With the PKCS#12 MAC at 600,000 iterations, a debug build takes
@@ -120,27 +128,26 @@ Still open.
 
 - **B8. The PIV attestation chain is verified without a validity-period check.**
   `chain_to_anchor` (`crates/ykcs11/src/attest.rs:210`) checks signatures, the name links and
-  `basicConstraints` with path length, never `notBefore`/`notAfter`. Parked in
-  [docs/OPEN.md](docs/OPEN.md), "To decide": `check` would enforce it with an override; whether
-  `lock` and camigrate may depend on the wall clock is undecided.
+  `basicConstraints` with path length, never `notBefore`/`notAfter`. **Decided 2026-11-17, not
+  built:** `check` holds every link (slot, device f9, pooled intermediates, pinned root) to its
+  validity period against the system clock, never `SOURCE_DATE_EPOCH` (stdenv sets it to 1980);
+  `--at <RFC 3339 time>` judges the chain as of that time, and `--ignore-validity` skips the
+  dates with a note. `lock` and camigrate stay clock-free. The pinned roots and Yubico's
+  intermediates run to 2052 and 9999, so real chains should rarely trip it.
 - **`create` flags** (from B2). `create` now stops with 19 at the first key that exists. A flag
   such as `--only-new`, to skip those and create the rest, is parked in docs/OPEN.md.
-- **B13. `probe_unbound` records `cannot` for a curve that generated.** On a module whose keys
-  are bound to one purpose (libkmsp11), the probe makes one key per binding, then tries a
-  generation with no binding at all to see what the module says about the curves and sizes no
-  binding covers (`crates/caprobe/src/probe.rs:839-877`). It expects a refusal and writes it as
-  the evidence of a `cannot` row for each. If the module instead generates, the "refusal" text
-  becomes "generated without a binding" and the rows are still written `cannot`, each with
-  that sentence as its evidence. libkmsp11 refuses first, so no committed profile has this.
-  A fix has to choose what such a run means. The bare template names only a label, so nobody
-  knows which curve or size was generated: `can` cannot be written for any of them. The honest
-  row is none (unknown), with a line in the probe's "undetermined" list saying the module
-  generated without a binding and is not purely purpose-bound. That is a five-line change;
-  it changes no committed profile.
+  **Decided 2026-11-17, not built:** no flag. A key the lock pins and that verifies (as `check`
+  would) is skipped with a note and the run goes on; one the lock pins that does not verify
+  fails as a mismatch; one the lock does not pin still stops with 19, naming `lock`. Exit 0
+  when nothing failed, skips included; the JSON output says which pairs were created and
+  which skipped.
 - **B18. The by-name curve fallback retries after any failure**
   (`crates/pkcs11/src/token/generate.rs:141`), not only a refusal of the parameters. Left:
   narrowing it needs the return value ykcs11 gives an Edwards OID, which the profile records as
   "by-name" without the code, and the hardware rules keep that from being measured here.
+  **Decided 2026-11-17, not built:** profile-driven. Retry by name only when the token's profile
+  says `via = "by-name"` for the curve, or no profile answers for it; any other failure is
+  reported at once with its own return value. No measurement needed.
 
 ## Poor practices and hard-to-read code
 
@@ -153,21 +160,43 @@ Still open. Each says why it was not done with the rest.
   cutting `CKR_*` and cryptoki's prose out of a formatted `KmError`, and the `create` note
   scanned for `CKA_PRIVATE = false`. Fixing it means `KmError` carries the return value and
   `Token::create` returns a typed note: a change to the public error type and to the
-  `Provider::create` signature.
+  `Provider::create` signature. **Decided 2026-11-17, not built:** `KmError` keeps its variants
+  and gains an optional `CK_RV`, set by the token layer where a module call failed;
+  `Token::create` returns a typed note; the probe matches values, not text.
 - **Q4. `rv_name` derives `CKR_*` names from cryptoki's `Debug` output**, which committed
   profiles pin. cryptoki 0.12 has no conversion from `RvError` back to its number, so the
-  alternative is a hand-kept table of about ninety variants.
+  alternative is a hand-kept table of about ninety variants. **Decided 2026-11-17, not built:**
+  p11-fault's compiler-checked `cryptoki-sys` table (`crates/p11-fault/src/names.rs`) moves to
+  a small shared crate with no cakeys dependencies; an `RvError` finds its `CK_RV` and name by
+  running the table's values through cryptoki's `Rv::from`. An upstream rust-cryptoki PR
+  (`RvError` to `CK_RV`, and a name) goes in parallel; once a release has it, `rv_name` uses it.
 - **Q24. The profile set is process-global and order-dependent** (`Set::activate` after
-  `Set::active` fails; `Registry::named` hides a set that does not parse).
+  `Set::active` fails; `Registry::named` hides a set that does not parse). **Decided
+  2026-11-17, not built:** keep the `OnceLock`; `Set::active` errors when nothing activated it
+  (tests activate explicitly), and `Registry::named` returns a `Result`, so a set that does not
+  parse is reported.
 - **Q27. The profile emitter re-implements taplo's layout** (`crates/caprobe/src/emit.rs`), so
-  generated profiles survive `nix fmt` byte for byte.
+  generated profiles survive `nix fmt` byte for byte. **Accepted 2026-11-17:** the layout test
+  and treefmt's check catch drift.
 - **Q28. String-typed fields kept for forward compatibility**: `Capability`'s `binding` and
-  `key_type`, `Answered::answer`, `Restrict::operation`, `BoundKey::kind`/`on`.
+  `key_type`, `Answered::answer`, `Restrict::operation`, `BoundKey::kind`/`on`. **Decided
+  2026-11-17, not built:** enums (reusing `Binding` and `KeyType` where they fit) with an
+  `Other(String)` variant, so a newer profile still loads and round-trips.
 - **Q20. Key type dispatch by trial parsing** (`spki_canonical`, `spki_of_pkcs8`,
   `ecdh_challenge`, `verify_with`). Dispatching on the OID changes which parser sees a
   malformed key, and with it some error texts and the `public_key` fuzz target's fixed point.
+  **Decided 2026-11-17, not built:** all four dispatch on the OIDs. One shared helper reads the
+  algorithm and curve OIDs and returns a key kind, the four functions match on it, and the
+  error texts and the fuzz target's expectations follow.
 
 ### Refactors left for a pass of their own
+
+**Scheduled 2026-11-17, all seven:** Q18's rest (the public half's defaults in one place, the
+probe's curves from `core::id`), Q15 (one hash type for ECDSA and RSA, such as `HashAlg`; fold
+`OaepSha512` into `Oaep` only if the frozen transport names allow it), Q9 (one mechanism list,
+the other views methods over it), Q13 (`resolve` in named steps), Q2 (a probe key-kind enum,
+built with Q28's enums), Q26 (`Made` split, no `Deref` on `Draft`, `rsa_ops` sized to the key)
+and Q14 (one opener for cakeys and camigrate).
 
 - **Q2. Key types as strings in the probe** (31 `"CKK_*"` literals). Montgomery has no
   `KeyType`, so this needs a probe-local kind enum threaded through `operate`, `prove` and the
@@ -191,9 +220,9 @@ Still open. Each says why it was not done with the rest.
 Every unsafe site is in `p11-fault` (four files, about 80 sites) plus `loaded_path` in
 `crates/pkcs11/src/token/mod.rs` [run]. All four p11-fault files with unsafe code were read;
 nothing a client can trigger was found. Each pointer read is guarded by a null check and a
-length check against the structure's size, and panics stop at `guard`. The one soundness gap is
-that `find_objects` and `mechanism_list` (`crates/p11-fault/src/hooks.rs:82`, `:132`) trust the
-count the real module writes back.
+length check against the structure's size, and panics stop at `guard`. The one soundness gap,
+`find_objects` and `mechanism_list` trusting the count the real module writes back, is closed
+("Fixed since").
 
 RAPx would cover only that crate and needs a pinned nightly: not run. An ASan build of the fuzz
 targets (`checks.fuzz` runs without a sanitizer today) covers the same ground more cheaply.
