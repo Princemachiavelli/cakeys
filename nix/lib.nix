@@ -142,7 +142,8 @@ in
         # before anything is recorded in the lock (the first-use pseudo-FOD flow): `id` is then
         # empty.
         builtins.seq pick {
-          inherit type;
+          # The object's type, as the lock pins it: its `migrate` table (camigrate's) is no part of it.
+          type = removeAttrs type [ "migrate" ];
           inherit (pick) spec token;
           # `pubkeyhash` is an input alias of rfc7093m4 (the lock only uses the scheme name).
           id = ids // (if ids ? rfc7093m4 then { pubkeyhash = ids.rfc7093m4; } else { });

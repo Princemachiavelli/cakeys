@@ -167,6 +167,19 @@ certificateType = "CKC_X_509"
 # lock can test guesses against the hash offline, so declare it only for a random value.
 class = "CKO_DATA"
 
+[objects.web-tls]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+# migrate.file: the file this object's material is born in, for the pairs that say
+# origin = "file" (docs/FILE.md). Only camigrate reads it, and it is no part of the type the lock
+# pins. Any format a deployment holds, told by content: PEM or DER PKCS#8, PKCS#1, SEC1, encrypted
+# PKCS#8, PKCS#12, a certificate or public key; a secret key's or data object's file is its bytes.
+# `$NAME` resolves when camigrate reads it, so hosts that only check need not set it. A key's
+# file may not be in /nix/store (17). An encrypted file names its passphrase as a token names its
+# PIN: passphraseFile or passphraseEnv.
+migrate = { file = "$WEB_TLS_KEY" }
+
 # ── Specs: one use of an object, and where it lives on each token ──────────────────────
 
 [specs.signing-soft]
@@ -187,6 +200,8 @@ publicAttributes = { CKA_VERIFY = true }
 #             occupied one). At most one pair per object: where its material is born, and with
 #             whose policy. Every other verb only finds it.
 #   "import"  camigrate brings the material here from the token that created it.
+#   "file"    camigrate brings it here from the object's migrate.file (`camigrate import
+#             --token <t>`), where the material is born; any number of pairs may say it.
 #   "adopt"   it is already there, put there by something cakeys does not run.
 # Like the locator, it is not part of the spec digest.
 tokens.softhsm = { locator = { CKA_LABEL = "signing", CKA_ID = "0e" }, origin = "create" }
@@ -232,6 +247,13 @@ tokens.yubikey = { locator = { CKA_ID = "05" }, publicOnly = true }
 [specs.release-note]
 object = "release-note"
 tokens.softhsm = { locator = { CKA_LABEL = "release-note" } }
+
+[specs.web-tls]
+object = "web-tls"
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = false }
+# Born in its file: the first import pins its identity from the file, and every other pair and
+# later run must match it (10 otherwise, before anything is written).
+tokens.softhsm = { locator = { CKA_LABEL = "web-tls" }, origin = "file" }
 ```
 
 ## Rules worth knowing
@@ -251,7 +273,8 @@ tokens.softhsm = { locator = { CKA_LABEL = "release-note" } }
 - **One birthplace per object:** at most one pair of an object, across all its specs and
   tokens, says `origin = "create"` (17 at load otherwise). That pair says where the material is
   born and with whose policy, so no order of a run decides either; the other pairs import or
-  adopt it.
+  adopt it. A file is a birthplace too: an object with `migrate.file` has no `create` pair, and
+  `origin = "file"` needs one (17); every pair saying it reads that one file.
 - **`create` checks before it makes anything:** each pair it would create is checked against
   the token's capability profiles before any token is opened. A pair they say cannot be made
   refuses the whole run (15), and nothing is created; `--skip-unsupported` creates the rest and

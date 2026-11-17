@@ -12,23 +12,87 @@ use std::path::{Path, PathBuf};
 /// A parsed `keys.toml` (docs/CONFIG.md): the tokens, the objects, and the specs that realise
 /// objects on tokens.
 #[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "RawConfig")]
 pub struct Config {
     /// The PKCS#11 tokens, by name (`[tokens.<name>]`).
-    #[serde(default)]
     pub tokens: BTreeMap<String, TokenCfg>,
     /// The objects, by name (`[objects.<name>]`): each one's intrinsic type.
-    #[serde(default)]
     pub objects: BTreeMap<String, ObjectCfg>,
+    /// What only camigrate reads of an object (`[objects.<o>.migrate]`), by object name: kept
+    /// apart from [`ObjectCfg`], which is the type the lock pins, so a per-machine path is never
+    /// part of it. Objects without the table have no entry.
+    pub object_migrate: BTreeMap<String, ObjectMigrateCfg>,
     /// The specs, by name (`[specs.<name>]`): an object's policy and the tokens it is realised on.
-    #[serde(default)]
     pub specs: BTreeMap<String, SpecCfg>,
     /// Directories of module profiles to load beside the ones this build embeds
     /// (docs/CAPROBE.md): a new vendor's profile, and with it its provider by family name,
     /// without a rebuild. They only add: one may not replace an embedded profile, a layer or the
     /// baseline. `$NAME` references read the environment, as for `pinFile`.
-    #[serde(default, rename = "profileDirs")]
     pub profile_dirs: Vec<PathBuf>,
+}
+
+/// keys.toml as written: [`Config`] before an object's `migrate` table is split from its type.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConfig {
+    #[serde(default)]
+    tokens: BTreeMap<String, TokenCfg>,
+    #[serde(default)]
+    objects: BTreeMap<String, ObjectEntry>,
+    #[serde(default)]
+    specs: BTreeMap<String, SpecCfg>,
+    #[serde(default, rename = "profileDirs")]
+    profile_dirs: Vec<PathBuf>,
+}
+
+/// One `[objects.<name>]` table: the object's type ([`ObjectCfg`]'s fields) and its `migrate`
+/// table. The fields are spelled out rather than flattened: serde's `flatten` would lose
+/// `deny_unknown_fields`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ObjectEntry {
+    class: ObjectClass,
+    #[serde(default)]
+    key_type: Option<KeyType>,
+    #[serde(default)]
+    certificate_type: Option<String>,
+    #[serde(default)]
+    curve: Option<String>,
+    #[serde(default)]
+    value_len: Option<u64>,
+    #[serde(default)]
+    modulus_bits: Option<u64>,
+    #[serde(default)]
+    migrate: Option<ObjectMigrateCfg>,
+}
+
+impl From<RawConfig> for Config {
+    fn from(raw: RawConfig) -> Config {
+        let mut objects = BTreeMap::new();
+        let mut object_migrate = BTreeMap::new();
+        for (name, o) in raw.objects {
+            if let Some(m) = o.migrate {
+                object_migrate.insert(name.clone(), m);
+            }
+            let ObjectEntry { class, key_type, certificate_type, curve, value_len, modulus_bits, .. } = o;
+            objects.insert(name, ObjectCfg { class, key_type, certificate_type, curve, value_len, modulus_bits });
+        }
+        Config { tokens: raw.tokens, objects, object_migrate, specs: raw.specs, profile_dirs: raw.profile_dirs }
+    }
+}
+
+/// An object's settings for camigrate (`[objects.<o>.migrate]`, docs/FILE.md): the file its
+/// material is born in, for the pairs that say `origin = "file"`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ObjectMigrateCfg {
+    /// The file: a path, or `$NAME`/`${NAME}` read from the environment when camigrate reads it
+    /// ([`Config::object_file`]), so hosts that only check load keys.toml without it.
+    pub file: Option<String>,
+    /// A file holding the passphrase of an encrypted key file (`$NAME` as for `file`).
+    pub passphrase_file: Option<String>,
+    /// An environment variable holding that passphrase; it wins over `passphraseFile`.
+    pub passphrase_env: Option<String>,
 }
 
 /// One token (`[tokens.<name>]`): the module that reaches it, its label and credentials, and what
@@ -530,6 +594,9 @@ pub enum KeyOrigin {
     Import,
     /// It is already here, put there by something cakeys does not run; nothing writes it.
     Adopt,
+    /// camigrate brings it here from the file its object's `migrate.file` names, where the
+    /// material is born (docs/FILE.md). Several pairs may say it: they all read that one file.
+    File,
 }
 
 impl KeyOrigin {
@@ -540,6 +607,7 @@ impl KeyOrigin {
             KeyOrigin::Create => "create",
             KeyOrigin::Import => "import",
             KeyOrigin::Adopt => "adopt",
+            KeyOrigin::File => "file",
         }
     }
 }
@@ -1368,6 +1436,15 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
         }
         check_token(t).map_err(|e| invalid(&format_args!("token '{name}': {e}")))?;
     }
+    // An object's file resolves when camigrate reads it ([`Config::object_file`]); only its form
+    // is checked here, as a module path's.
+    for (name, m) in &cfg.object_migrate {
+        for (what, value) in [("file", &m.file), ("passphraseFile", &m.passphrase_file)] {
+            if let Some(v) = value {
+                env_ref(v, &format!("object '{name}': migrate.{what}"), &|_| Some(String::new()))?;
+            }
+        }
+    }
     // A spec's object reference must name something, also when no token ever uses the spec.
     for (spec, s) in &cfg.specs {
         if !cfg.objects.contains_key(&s.object) {
@@ -1496,10 +1573,24 @@ fn check_transport_keys(cfg: &Config) -> std::result::Result<(), String> {
 /// `publicOnly` adoption, a certificate, a public key and a data object are never created; a
 /// `CKA_TRUSTED` key cannot be generated; and an object is created by at most one pair, which
 /// says where its material is born and with whose policy, so no order of a run decides either.
+/// A file is a birthplace too (docs/FILE.md): `origin = "file"` needs the object's
+/// `migrate.file`, and an object born in a file is never also created on a token.
 fn check_origins(cfg: &Config) -> std::result::Result<(), String> {
+    for (object, m) in &cfg.object_migrate {
+        if m.file.is_none() && (m.passphrase_file.is_some() || m.passphrase_env.is_some()) {
+            return Err(format!("object '{object}': migrate.passphraseFile/passphraseEnv without migrate.file"));
+        }
+        // A literal path is checked now; a `$NAME` one when camigrate resolves it.
+        if let Some(file) = m.file.as_deref().filter(|f| !f.starts_with('$'))
+            && let Some(why) = cfg.in_store(object, Path::new(file))
+        {
+            return Err(why);
+        }
+    }
     let mut created: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for (spec_name, spec) in &cfg.specs {
         let Some(object) = cfg.objects.get(&spec.object) else { continue };
+        let has_file = cfg.object_migrate.get(&spec.object).is_some_and(|m| m.file.is_some());
         for (token, on) in &spec.tokens {
             let what = format!("spec '{spec_name}' on token '{token}'");
             let key = matches!(object.class, ObjectClass::PrivateKey | ObjectClass::SecretKey);
@@ -1507,11 +1598,25 @@ fn check_origins(cfg: &Config) -> std::result::Result<(), String> {
                 (None, true) => {
                     return Err(format!(
                         "{what}: a private or secret key states its origin: \"create\" (`cakeys create` makes it \
-                         here), \"import\" (camigrate brings it) or \"adopt\" (it is already there)"
+                         here), \"import\" (camigrate brings it), \"file\" (camigrate brings it from the object's \
+                         migrate.file) or \"adopt\" (it is already there)"
                     ));
                 }
-                (Some(o @ (KeyOrigin::Create | KeyOrigin::Import)), _) if on.public_only => {
+                (Some(o @ (KeyOrigin::Create | KeyOrigin::Import | KeyOrigin::File)), _) if on.public_only => {
                     return Err(format!("{what}: publicOnly adopts the public half, never origin = \"{o}\""));
+                }
+                (Some(KeyOrigin::File), _) if !has_file => {
+                    return Err(format!(
+                        "{what}: origin = \"file\" reads the object's migrate.file, and object '{}' names none",
+                        spec.object
+                    ));
+                }
+                (Some(KeyOrigin::Create), true) if has_file => {
+                    return Err(format!(
+                        "{what}: object '{}' is born in its migrate.file, so it is never created on a token; \
+                         origin = \"file\", \"import\" or \"adopt\"",
+                        spec.object
+                    ));
                 }
                 (Some(KeyOrigin::Create), false) => {
                     return Err(format!("{what}: {} objects are adopted or imported, never created", object.class));
@@ -1720,6 +1825,65 @@ pub fn gc(cfg: &Config, lock: &mut Lock, remove: bool) -> Vec<String> {
 }
 
 impl Config {
+    /// The file `object`'s material is born in (`[objects.<o>.migrate] file`, docs/FILE.md), its
+    /// `$NAME` reference resolved by `env` now; `None` when the object names none. Resolved at
+    /// use, as a module path is, so hosts that only check load keys.toml without the variable.
+    ///
+    /// # Errors
+    ///
+    /// `Validation` (17) for an unset or malformed `$NAME`, or a secret file under `/nix/store`
+    /// ([`Self::secret_material`]): the store is world-readable.
+    pub fn object_file(&self, object: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<PathBuf>> {
+        let Some(file) = self.object_migrate.get(object).and_then(|m| m.file.as_deref()) else { return Ok(None) };
+        let path = PathBuf::from(env_ref(file, &format!("object '{object}': migrate.file"), env)?);
+        if let Some(why) = self.in_store(object, &path) {
+            return Err(KmError::Validation(why));
+        }
+        Ok(Some(path))
+    }
+
+    /// The file holding the passphrase of `object`'s encrypted key file (`migrate.passphraseFile`),
+    /// `$NAME` resolved by `env`; `None` when it names none.
+    ///
+    /// # Errors
+    ///
+    /// `Validation` (17) for an unset or malformed `$NAME`.
+    pub fn object_passphrase_file(
+        &self,
+        object: &str,
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Option<PathBuf>> {
+        let Some(file) = self.object_migrate.get(object).and_then(|m| m.passphrase_file.as_deref()) else {
+            return Ok(None);
+        };
+        Ok(Some(PathBuf::from(env_ref(file, &format!("object '{object}': migrate.passphraseFile"), env)?)))
+    }
+
+    /// Whether `object`'s material is secret at rest: a private or secret key, or a data object a
+    /// spec declares `CKA_PRIVATE = true`.
+    #[must_use]
+    pub fn secret_material(&self, object: &str) -> bool {
+        match self.objects.get(object).map(|o| o.class) {
+            Some(ObjectClass::PrivateKey | ObjectClass::SecretKey) => true,
+            Some(ObjectClass::Data) => {
+                self.specs.values().any(|s| s.object == object && s.flag("CKA_PRIVATE") == Some(true))
+            }
+            _ => false,
+        }
+    }
+
+    /// Why `path` may not hold `object`'s material: a secret one under the world-readable
+    /// `/nix/store`.
+    fn in_store(&self, object: &str, path: &Path) -> Option<String> {
+        (path.starts_with("/nix/store") && self.secret_material(object)).then(|| {
+            format!(
+                "object '{object}': migrate.file {} is in the Nix store, which anyone on the host can read; keep \
+                 secret material out of it",
+                path.display()
+            )
+        })
+    }
+
     /// The (spec, token) pairs a verb's address selects (`[<object>] [--spec] [--token]`,
     /// docs/CAKEYS.md): each part left out selects every one; an empty result is no error.
     ///
@@ -1990,6 +2154,64 @@ mod tests {
         // The retired keys.
         refused(load(ec, ", autoCreate = true", adopt, ""), "unknown field `autoCreate`");
         refused(load(&format!("{ec}\ncreateOn = \"a\""), create, adopt, ""), "unknown field `createOn`");
+    }
+
+    /// An object born in a file (docs/FILE.md F1, F2): `origin = "file"` on any number of pairs,
+    /// read from the object's `migrate.file`, which is never part of the type the lock pins; a
+    /// file is a birthplace, so the object is never also created; a secret file is kept out of
+    /// the Nix store, a literal path at load and a `$NAME` one when it is read.
+    #[test]
+    fn objects_born_in_files_read_their_migrate_file() {
+        let load = |object: &str, a: &str, b: &str| {
+            let text = format!(
+                "[tokens.a]\ntokenLabel = \"a\"\n[tokens.b]\ntokenLabel = \"b\"\n\n\
+                 [objects.k]\n{object}\n\n\
+                 [specs.k]\nobject = \"k\"\n\
+                 tokens.a = {{ locator = {{ CKA_LABEL = \"k\" }}{a} }}\n\
+                 tokens.b = {{ locator = {{ CKA_LABEL = \"k\" }}{b} }}\n"
+            );
+            parse_config_with(&text, Path::new("keys.toml"), &|_| None)
+        };
+        let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+        let cert = "class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"";
+        let file = |path: &str| format!("\nmigrate = {{ file = \"{path}\" }}");
+        let (from_file, create, adopt) = (", origin = \"file\"", ", origin = \"create\"", ", origin = \"adopt\"");
+        let cfg = load(&(ec.to_owned() + &file("/run/keys/k.pem")), from_file, from_file).unwrap();
+        assert_eq!(cfg.specs["k"].tokens["b"].key_origin(), KeyOrigin::File);
+        assert_eq!(
+            cfg.objects["k"],
+            ObjectCfg { curve: Some("secp256r1".into()), ..ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::Ec)) }
+        );
+        assert_eq!(cfg.object_file("k", &|_| None).unwrap(), Some(PathBuf::from("/run/keys/k.pem")));
+        // A `$NAME` path resolves when it is read: unset, it fails that read, not the load.
+        let cfg = load(&(ec.to_owned() + &file("$KEY_FILE")), from_file, adopt).unwrap();
+        assert!(cfg.object_file("k", &|_| None).is_err());
+        let store = |_: &str| Some("/nix/store/abc-k.pem".to_owned());
+        assert!(cfg.object_file("k", &store).unwrap_err().to_string().contains("Nix store"));
+        // A certificate is no secret: from the store it may come.
+        let cfg = load(&(cert.to_owned() + &file("/nix/store/abc-c.pem")), from_file, "").unwrap();
+        assert!(cfg.object_file("k", &|_| None).unwrap().is_some());
+
+        let refused = |r: Result<Config>, what: &str| {
+            let e = r.unwrap_err();
+            assert!(matches!(e, KmError::Validation(_)) && e.to_string().contains(what), "{e}");
+        };
+        refused(
+            load(ec, from_file, adopt),
+            "origin = \"file\" reads the object's migrate.file, and object 'k' names none",
+        );
+        refused(load(&(ec.to_owned() + &file("/k.pem")), create, adopt), "is born in its migrate.file");
+        refused(load(&(ec.to_owned() + &file("/nix/store/abc-k.pem")), from_file, adopt), "Nix store");
+        refused(
+            load(&(ec.to_owned() + "\nmigrate = { passphraseFile = \"/p\" }"), adopt, adopt),
+            "without migrate.file",
+        );
+        refused(load(&(ec.to_owned() + &file("$")), adopt, adopt), "migrate.file");
+        refused(load(&(ec.to_owned() + "\nmigrate = { path = \"/k\" }"), adopt, adopt), "unknown field `path`");
+        refused(
+            load(&(ec.to_owned() + &file("/k.pem")), ", publicOnly = true, origin = \"file\"", adopt),
+            "never origin = \"file\"",
+        );
     }
 
     /// `$NAME`/`${NAME}` in `pinFile` and `module` read the path from the environment; an unset or

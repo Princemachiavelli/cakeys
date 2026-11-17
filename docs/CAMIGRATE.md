@@ -21,6 +21,8 @@ $ camigrate export <object> --token <source> --to-file pkcs8|pkcs12 --out <file>
     --passphrase-file <file> --allow-host-plaintext
 $ camigrate import --token <target> --in <bundle|file> [--spec <s> ...] [--dry-run] \
     [--passphrase-file <file> --allow-host-plaintext]
+$ camigrate import --token <target> [<object> ...] [--spec <s> ...] [--dry-run] \
+    [--allow-host-plaintext] [--passphrase-file <file>]       # objects born in files (FILE.md)
 $ camigrate migrate [<object> ...] --from <a> --to <b> [--spec <s> ...] [--transport-key <spec>] \
     [--dry-run [--json]] [--allow-host-plaintext]
 ```
@@ -60,17 +62,18 @@ passphrase given: 10 is kept for material that differs from the lock).
 never moves, and `CKA_NEVER_EXTRACTABLE` is an immutable in the lock: once true, a key that
 later claims otherwise was replaced. A key meant to migrate is declared extractable from the
 start, on its one creation pair (`origin = "create"`); `--dry-run` says this first, per
-object. A move lands only on a pair that says `origin = "import"` (17 otherwise).
+object. A move lands only on a pair that says `origin = "import"` (17 otherwise), or, from a
+file, on one that says `origin = "file"` ([FILE.md](FILE.md)).
 
 **D2. Exposure is named honestly, per object, strongest first.** The names are frozen.
 
 | Exposure | What it means |
 |---|---|
-| `public` | Certificates, public keys, public data objects. Nothing secret moves: a private data object (`CKA_PRIVATE = true`) has no method (15, [OPEN.md](OPEN.md)). |
+| `public` | Certificates, public keys, public data objects. Nothing secret moves: a private data object (`CKA_PRIVATE = true`) has no method between tokens (15, [OPEN.md](OPEN.md)); from its own file it is `raw`, exposure `file`. |
 | `enforced` | `sealed`, and the source token allows no other wrapping: the key carries `CKA_WRAP_WITH_TRUSTED`, and the only wrapping key the source trusts is the target's transport key (D3). |
 | `sealed` | The material leaves the source only wrapped under a key that lives on the target, and is unwrapped there. The host never sees it. The default. |
 | `host` | Plaintext in camigrate's memory, never on disk or the wire, zeroized after. Wherever the target imports only plaintext (a YubiKey, `tpm2_ptool`). Only with `--allow-host-plaintext`, and only within `migrate`. |
-| `file` | A passphrase-protected file (PKCS#8 or PKCS#12) for a target camigrate cannot reach. Plaintext-equivalent at rest. Only with `--allow-host-plaintext` and `--passphrase-file`. |
+| `file` | A passphrase-protected file (PKCS#8 or PKCS#12) for a target camigrate cannot reach, or the file an object is born in, plain or encrypted ([FILE.md](FILE.md)). Plaintext-equivalent at rest. Only with `--allow-host-plaintext`; a passphrase only for an encrypted file. |
 | `impossible` | Not extractable, a source that never exports, a type or proof the target lacks. The plan gives the reasons. |
 
 `enforced` is its own level because a key with only `CKA_EXTRACTABLE = true` can be wrapped by
@@ -118,6 +121,8 @@ observed mechanisms for it, else a transport file. The OAEP hash is the stronges
 | `piv-import` | RSA, EC P-256/384, Ed25519 | the host path, then ykcs11 `C_CreateObject` as SO into the slot the locator names |
 | `pkcs8-pbes2` | private keys | the host path, written as an EncryptedPrivateKeyInfo: `file` |
 | `pkcs12` | a private key and its certificate | the host path, written as PKCS#12: `file` |
+| `pkcs8`, `pkcs1`, `sec1` | private keys | read from the file the object is born in, PEM or DER, normalised to PKCS#8, then the host path: `file` ([FILE.md](FILE.md)) |
+| `raw` | secret keys, private data objects | the file's bytes as they are, then `C_CreateObject`: `file` |
 | `tpm-duplicate` | keys for a TPM target | not built: a duplication blob built on the host to the target parent's public key |
 | `vendor:<provider>/<name>` | as the provider declares | a provider crate's own path (D10) |
 

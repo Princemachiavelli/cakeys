@@ -91,6 +91,23 @@ pub(crate) fn create(
     lock: &mut Lock,
     notes: &mut Notes,
 ) -> Result<Moved> {
+    create_as(dst, to, bytes, origin(from, &Method::Public, Exposure::Public), lock, notes)
+}
+
+/// [`create`], recorded with `origin`: a private data object from a file is `raw`, exposure
+/// `file` (docs/FILE.md), though it is created as any data object is.
+///
+/// # Errors
+///
+/// As [`create`].
+pub(crate) fn create_as(
+    dst: &Target,
+    to: &Token,
+    bytes: &[u8],
+    origin: Origin,
+    lock: &mut Lock,
+    notes: &mut Notes,
+) -> Result<Moved> {
     if already_there(dst, to, lock, notes)? {
         return Ok(Moved::AlreadyThere);
     }
@@ -105,7 +122,6 @@ pub(crate) fn create(
         Some(_) => None,
         None => Some(to.managing("importing an object", create)?),
     };
-    let origin = origin(from, &Method::Public, Exposure::Public);
     match ops::lock_import(dst, to, lock, origin, notes) {
         Ok(_) => Ok(Moved::Imported),
         Err(e) => Err(roll_back(dst, to, created.as_slice(), e, notes)),
@@ -185,7 +201,14 @@ fn template(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Vec<Attribute>> {
                 Attribute::Value(bytes.to_vec()),
             ]);
         }
-        Class::Data => t.extend([Attribute::Class(ObjectClass::DATA), Attribute::Value(bytes.to_vec())]),
+        Class::Data => {
+            t.extend([Attribute::Class(ObjectClass::DATA), Attribute::Value(bytes.to_vec())]);
+            // A token's default may make it private (SoftHSM does [run]), which a data object no
+            // spec declares private may not be: said, not left to the token.
+            if dst.spec.flag("CKA_PRIVATE").is_none() {
+                t.push(Attribute::Private(false));
+            }
+        }
         Class::PublicKey => {
             t.push(Attribute::Class(ObjectClass::PUBLIC_KEY));
             t.extend(public_key(dst, bytes)?);

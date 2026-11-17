@@ -370,8 +370,7 @@ fn facts(t: &Target, tok: &Token, r: &Resolved, created: bool) -> Facts {
 /// rejects — `HashMismatch` (10) when the token's IDs differ from the lock,
 /// `PreconditionFailed` (14) for a realisation that moved.
 pub fn verify(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Resolved> {
-    let r = resolve(t, tok, lock)?
-        .ok_or_else(|| KmError::NotFound(format!("{t}: not under its locator; `cakeys create` makes it")))?;
+    let r = resolve(t, tok, lock)?.ok_or_else(|| absent(t))?;
     reconcile::compare(t, &r, lock, &facts(t, tok, &r, false), LockWrite::Compare, notes)?;
     Ok(r)
 }
@@ -420,11 +419,24 @@ fn lock_as(
 ) -> Result<(Resolved, bool)> {
     let mode = plan_mode(t)?;
     check_capabilities(t, tok, mode, Verb::Lock)?;
-    let r = resolve_with(t, tok, lock, Provision::IfMissing)?
-        .ok_or_else(|| KmError::NotFound(format!("{t}: not under its locator; `cakeys create` makes it")))?;
+    let r = resolve_with(t, tok, lock, Provision::IfMissing)?.ok_or_else(|| absent(t))?;
     let facts = Facts { origin, ..facts(t, tok, &r, false) };
     let changed = reconcile::reconcile(t, &r, lock, &facts, write, notes)?;
     Ok((r, changed))
+}
+
+/// `NotFound` for `t`'s object missing under its locator, naming what puts it there: its
+/// pair's origin says which verb.
+fn absent(t: &Target) -> KmError {
+    let what = match t.on_token.key_origin() {
+        KeyOrigin::Create => "`cakeys create` makes it".to_owned(),
+        KeyOrigin::Import => format!("camigrate brings it (camigrate migrate {} --to {})", t.object_name, t.token_name),
+        KeyOrigin::File => {
+            format!("camigrate brings it from its file (camigrate import --token {} {})", t.token_name, t.object_name)
+        }
+        KeyOrigin::Adopt => "it is adopted, and nothing cakeys runs puts it there".to_owned(),
+    };
+    KmError::NotFound(format!("{t}: not under its locator; {what}"))
 }
 
 /// Create `t`'s object, which `resolve` did not find, and resolve it. Refused before anything is
@@ -535,6 +547,11 @@ fn not_origin_create(t: &Target) -> Option<String> {
             t.object_name, t.token_name
         )),
         KeyOrigin::Adopt => Some("origin = \"adopt\": it is found there, never created".into()),
+        KeyOrigin::File => Some(format!(
+            "origin = \"file\": camigrate brings its material here from the object's migrate.file \
+             (camigrate import --token {} {}), never `create`",
+            t.token_name, t.object_name
+        )),
     }
 }
 

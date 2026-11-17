@@ -438,7 +438,11 @@ What may be created and adopted:
   `import`. At most one pair of an object says `create`, which settles where its material is
   born and with whose policy, so no order of a run decides either (17 at load otherwise) —
   `origins_say_how_an_object_comes_to_be_on_a_token`, `create_happens_where_origin_says_create`.
-  Like the locator, it is not part of the object's type or the spec digest.
+  Like the locator, it is not part of the object's type or the spec digest. A fourth, `file`
+  (2026-11-16, [FILE.md](FILE.md)): the material is born in the file the object's
+  `migrate.file` names, and camigrate brings it from there; any number of pairs may say it, and
+  an object born in a file is never also created (17) —
+  `objects_born_in_files_read_their_migrate_file`, `files_populate_tokens_with_their_material`.
 - **`create` checks the profiles before it makes anything:** every pair it would create goes
   through the static gate first, and a profile's *no* refuses the run before any token is opened
   (15), unless `--skip-unsupported` — `create_checks_the_profiles_before_it_makes_anything`.

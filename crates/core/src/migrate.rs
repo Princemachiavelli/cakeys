@@ -70,6 +70,14 @@ pub enum Method {
     Pkcs8Pbes2,
     /// Through the host, written as PKCS#12 beside the key's certificate.
     Pkcs12,
+    /// From a file holding a plain PKCS#8 `PrivateKeyInfo`, PEM or DER (docs/FILE.md).
+    Pkcs8,
+    /// From a file holding a PKCS#1 `RSAPrivateKey`, PEM or DER.
+    Pkcs1,
+    /// From a file holding a SEC1 `ECPrivateKey`, PEM or DER.
+    Sec1,
+    /// From a file holding the raw value: a secret key's, or a private data object's.
+    Raw,
     /// A provider's own method (docs/CAMIGRATE.md D10).
     Vendor {
         /// The provider that declares it.
@@ -98,6 +106,10 @@ impl Method {
             Method::TpmDuplicate => "tpm-duplicate".into(),
             Method::Pkcs8Pbes2 => "pkcs8-pbes2".into(),
             Method::Pkcs12 => "pkcs12".into(),
+            Method::Pkcs8 => "pkcs8".into(),
+            Method::Pkcs1 => "pkcs1".into(),
+            Method::Sec1 => "sec1".into(),
+            Method::Raw => "raw".into(),
             Method::Vendor { provider, name } => format!("vendor:{provider}/{name}"),
         }
     }
@@ -114,7 +126,7 @@ impl Method {
     }
 
     /// Every built-in method, for name lookups and the pinning test.
-    pub const BUILTIN: [Method; 12] = [
+    pub const BUILTIN: [Method; 16] = [
         Method::Public,
         Method::RsaOaepAesKwp(OaepHash::Sha256),
         Method::RsaOaepAesKwp(OaepHash::Sha1),
@@ -127,6 +139,10 @@ impl Method {
         Method::TpmDuplicate,
         Method::Pkcs8Pbes2,
         Method::Pkcs12,
+        Method::Pkcs8,
+        Method::Pkcs1,
+        Method::Sec1,
+        Method::Raw,
     ];
 }
 
@@ -295,6 +311,10 @@ mod tests {
                 "tpm-duplicate",
                 "pkcs8-pbes2",
                 "pkcs12",
+                "pkcs8",
+                "pkcs1",
+                "sec1",
+                "raw",
             ]
         );
         for m in &Method::BUILTIN {

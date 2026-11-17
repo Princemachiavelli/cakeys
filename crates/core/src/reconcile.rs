@@ -4,8 +4,8 @@
 //! schemes) goes into [`Notes`], which the caller prints whether or not the run succeeded.
 
 use crate::config::{
-    AttestationRecord, AttrValue, Binding, Immutables, Lock, LockRealisation, Mode, ModuleInfo, Observation, Observed,
-    Origin, Provenance, Session,
+    AttestationRecord, AttrValue, Binding, Immutables, KeyOrigin, Lock, LockRealisation, Mode, ModuleInfo, Observation,
+    Observed, Origin, Provenance, Session,
 };
 use crate::id::{self, Scheme};
 use crate::plan::Target;
@@ -139,8 +139,12 @@ pub fn reconcile(
     notes: &mut Notes,
 ) -> Result<bool> {
     // An import is checked against the IDs its source recorded: without them it would be a first
-    // use, recording whatever the target holds (docs/CAMIGRATE.md D6).
-    if facts.origin.is_some() && lock.objects.get(t.object_name).is_none_or(|o| o.ids.is_empty()) {
+    // use, recording whatever the target holds (docs/CAMIGRATE.md D6). A pair whose material is
+    // born in a file is that first use (docs/FILE.md F3).
+    if facts.origin.is_some()
+        && t.on_token.key_origin() != KeyOrigin::File
+        && lock.objects.get(t.object_name).is_none_or(|o| o.ids.is_empty())
+    {
         return Err(KmError::PreconditionFailed(format!(
             "{t}: an import needs the IDs the lock pins for object '{}', and it pins none; lock it on \
              its source first",

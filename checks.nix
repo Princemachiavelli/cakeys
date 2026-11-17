@@ -142,12 +142,36 @@
           inherit cakeys;
         })."a b; echo pwned #"
           { };
+      # An object born in a file (docs/FILE.md): its `migrate` table is camigrate's, not its type.
+      fromFile =
+        (self.lib.mkKeys {
+          config = builtins.toFile "from-file.toml" ''
+            [tokens.t]
+            tokenLabel = "t"
+            [objects.k]
+            class = "CKO_PRIVATE_KEY"
+            keyType = "CKK_EC"
+            curve = "secp256r1"
+            migrate = { file = "/run/keys/k.pem" }
+            [specs.k]
+            object = "k"
+            tokens.t = { locator = { CKA_LABEL = "k" }, origin = "file" }
+          '';
+          inherit cakeys;
+        }).k
+          { };
     in
     assert signing.id.rfc7093m4 == "sha256-d3++Ph3T9bppuPnNz6blK4vDij+Swy9RMmKdfQnLmPk=";
     assert signing.id.pubkeyhash == signing.id.rfc7093m4; # input alias
     # The type is the material alone: `origin` sits on the pair, beside the locator.
     assert
       signing.type == {
+        class = "CKO_PRIVATE_KEY";
+        keyType = "CKK_EC";
+        curve = "secp256r1";
+      };
+    assert
+      fromFile.type == {
         class = "CKO_PRIVATE_KEY";
         keyType = "CKK_EC";
         curve = "secp256r1";
