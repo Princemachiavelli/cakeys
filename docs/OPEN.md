@@ -276,14 +276,9 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   `crates/core/tests/refusals.rs`, which a plain `cargo test` runs; the sealed path with OAEP SHA-256
   and the host path's occupied-locator and rollback branches run in no test; the YubiKey
   provider and the probe's scratch-slot guard only in the opt-in hardware tests.
-- **Split the reference suite** (`crates/cli/tests/reference/mod.rs`, 3,085 lines, 62 functions
-  in one module): submodules by theme, e.g. identity and oracles (curves, AES, HMAC, schemes),
-  the lock (invariants, provenance, `gc`, the sidecar lock), conflicts and drift (H1, S3–S8,
-  downgrades), proof of possession, and certificates and adoption, with the shared helpers in
-  their own module. Each binary (`tests/softhsm.rs`, `tests/kryoptic.rs`) still includes the
-  whole suite. `cakeys-pkcs11` (4.5k lines, 16 unit tests) is tested almost only through it.
-  **Decided 2026-11-17, not built:** by verb instead of by theme (3,709 lines, 71 functions by
-  then), the harness staying in `mod.rs`.
+- **Unit tests in `cakeys-pkcs11`** (4.5k lines, 16 unit tests): it is tested almost only
+  through the reference suite (`crates/cli/tests/reference/`, which every reference binary
+  includes whole).
 - **Fuzz the remaining parsers**: the PIV chain, the P-521 fix-up, profile emit and parse.
   **Decided 2026-11-17, not built:** all three; profile emit and parse as a round-trip fixed point.
 - **Design models** (DEVELOPMENT.md): Quint or TLA+ for the lock rules, Alloy for the lock's
