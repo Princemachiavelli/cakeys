@@ -81,6 +81,19 @@ firmware = "5.74"
 "prove.pop-unwrap.CKK_RSA.2048" = { answer = "no", evidence = "unsupported: the token lacks CKM_SHA256_HMAC to prove possession of the private key; opt in with binding = \"token-asserted\"" }
 "prove.pop-unwrap.CKK_RSA.3072" = { answer = "no", evidence = "unsupported: the token lacks CKM_SHA256_HMAC to prove possession of the private key; opt in with binding = \"token-asserted\"" }
 "prove.pop-unwrap.CKK_RSA.4096" = { answer = "no", evidence = "unsupported: the token lacks CKM_SHA256_HMAC to prove possession of the private key; opt in with binding = \"token-asserted\"" }
+"import.CKK_EC.brainpoolP256r1" = { answer = "no", evidence = "CKR_DEVICE_ERROR" }
+"import.CKK_EC.brainpoolP384r1" = { answer = "no", evidence = "CKR_DEVICE_ERROR" }
+"import.CKK_EC.secp256k1" = { answer = "no", evidence = "CKR_DEVICE_ERROR" }
+"import.CKK_EC.secp256r1" = { answer = "yes", via = "piv-import" }
+"import.CKK_EC.secp384r1" = { answer = "yes", via = "piv-import" }
+"import.CKK_EC.secp521r1" = { answer = "no", evidence = "CKR_DEVICE_ERROR" }
+"import.CKK_EC_EDWARDS.edwards25519" = { answer = "no", evidence = "CKR_DEVICE_ERROR" }
+"import.CKK_RSA.1024" = { answer = "no", evidence = "CKR_DEVICE_ERROR" }
+"import.CKK_RSA.1536" = { answer = "no", evidence = "CKR_DEVICE_ERROR" }
+"import.CKK_RSA.2048" = { answer = "no", evidence = "CKR_DEVICE_ERROR" }
+"import.CKK_RSA.3072" = { answer = "no", evidence = "CKR_DEVICE_ERROR" }
+"import.CKK_RSA.4096" = { answer = "no", evidence = "CKR_DEVICE_ERROR" }
+"create.CKO_CERTIFICATE" = { answer = "yes" }
 
 [reported."CKK_RSA"]
 min-bits = 1024

@@ -235,6 +235,25 @@ Where it departs from the plan:
 - **Only the planner, the proof check and `accepts_public_key_objects` read the new rows.**
   `validate` and `create`'s gate do not yet. Nothing reads the `delete.*` rows either, so M4's
   rule (an unknown import refused on a module that cannot delete) is not built.
-- **The YubiKey path is written, not run.** Its import probes run as SO in the scratch slot,
-  never touch PIV data objects, and end by generating a placeholder again. P-f runs it, under
-  docs/DEVELOPMENT.md's hardware rules.
+- **The YubiKey path imports as SO in the scratch slot**, never touches PIV data objects, and
+  ends by generating a placeholder again.
+
+## Hardware (P-f, 2026-11-17)
+
+The YubiKey and the fTPM profiles were regenerated under docs/DEVELOPMENT.md's hardware rules;
+the cloud profiles are still to do.
+
+- **YubiKey 5C NFC FIPS 5.7.4, ykcs11 2.7.3** (PIV in FIPS-approved mode): slot 94 cleared
+  before and after (key and certificate, by yubikit with the management key file); slots
+  82–84 unchanged (fingerprints compared), PIN tries 3/3. P-256 and P-384 import; P-521,
+  secp256k1, brainpool, Ed25519 and RSA 1024–4096 are refused with `CKR_DEVICE_ERROR`; a
+  certificate is created. These rows now decide over the hand-written `plaintext-accepts`,
+  which claimed RSA 1024–4096 and was never run (camigrate's test imports P-256 only). Open:
+  whether Ed25519 fails because cakeys names the curve by OID where the device generates it
+  only by name, and whether RSA is the approved mode's refusal or cakeys' template.
+- **AMD fTPM 3.87, tpm2-pkcs11 1.10** (through `nix/ftpm-test-env.sh`, a transient primary):
+  persistent handles unchanged (0x81000001, 0x81000002, 0x81010001, cakeys' 0x81000016),
+  `TPM2_PT_LOCKOUT_COUNTER` 0 before and after. A certificate is created; a public data object
+  is refused (tpm2-pkcs11 requires `CKA_PRIVATE`). No `delete.*` rows: the leftover count found
+  nothing to count, likely because a failed operation left the session busy; the probe should
+  say so rather than write nothing.
