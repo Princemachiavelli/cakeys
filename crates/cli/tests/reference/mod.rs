@@ -3493,6 +3493,85 @@ tokens.ref = { locator = { CKA_LABEL = "addr-k" }, origin = "create" }
     assert_eq!(e.code(&["delete", "signer"]), 0);
 }
 
+/// [`check_token_checks_every_object_on_it`]'s objects: two keys on `ref`, a third added later.
+const ON_TOKEN: &str = r#"
+[objects.tok-a]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+
+[specs.tok-a-ref]
+object = "tok-a"
+attributes = { CKA_SIGN = true }
+tokens.ref = { locator = { CKA_LABEL = "tok-a" }, origin = "create" }
+
+[objects.tok-b]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+
+[specs.tok-b-ref]
+object = "tok-b"
+attributes = { CKA_SIGN = true }
+tokens.ref = { locator = { CKA_LABEL = "tok-b" }, origin = "create" }
+"#;
+
+const ADDED_ON_TOKEN: &str = r#"
+[objects.tok-c]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+
+[specs.tok-c-ref]
+object = "tok-c"
+attributes = { CKA_SIGN = true }
+tokens.ref = { locator = { CKA_LABEL = "tok-c" }, origin = "create" }
+"#;
+
+/// `check --token` alone checks every object keys.toml places on the token, in one session:
+/// all pass, and it prints the module file the check loaded; any fails, and stdout is empty,
+/// each failure is on stderr led by its own exit code, and the run is 20. A token nothing is
+/// placed on, and a flag that shapes a URI, are 17.
+#[test]
+fn check_token_checks_every_object_on_it() {
+    let Some(e) = env("check_token") else { return };
+    e.session().clear(&["tok-a", "tok-b", "tok-c"]);
+    e.config(ON_TOKEN);
+    assert_eq!(e.code(&["create"]), 0);
+    let all = e.km(&["check", "--token", "ref"]);
+    assert_eq!(code(&all), 0, "{}", stderr(&all));
+    let module = stdout(&all);
+    let module = module.trim_end();
+    assert!(!module.is_empty() && !module.contains('\n'), "{module}");
+    // The same file a URI's `module-path` names.
+    let uri = stdout(&e.km(&["check", "tok-a", "--uri-module"]));
+    assert!(uri.trim_end().ends_with(&format!("?module-path={module}")), "{uri} / {module}");
+
+    // tok-b gone from the token though the lock pins it (11); tok-c there but pinned by nothing
+    // (18). tok-a still passes and is not listed.
+    e.config(&(ON_TOKEN.to_owned() + ADDED_ON_TOKEN));
+    assert_eq!(e.code(&["create", "tok-c", "--no-update-lock"]), 18);
+    assert_eq!(e.code(&["delete", "tok-b", "--no-update-lock"]), 0);
+    let failed = e.km(&["check", "--token", "ref"]);
+    assert_eq!(code(&failed), 20, "{}", stderr(&failed));
+    assert!(stdout(&failed).is_empty(), "{}", stdout(&failed));
+    let err = stderr(&failed);
+    assert!(err.contains("exit 11: 'tok-b' (spec 'tok-b-ref')"), "{err}");
+    assert!(err.contains("exit 18: 'tok-c' (spec 'tok-c-ref')"), "{err}");
+    assert!(!err.contains("'tok-a'"), "{err}");
+    assert!(err.contains("2 of 3 on token 'ref'"), "{err}");
+
+    for args in [
+        &["check", "--token", "ref", "--uri-module"][..],
+        &["check", "--token", "ref", "--uri-pin", "source"],
+        &["check", "--token", "ref", "--format", "pkcs11-provider-pem"],
+        &["check", "--token", "ref-anon"],
+        &["check", "--token", "nope"],
+    ] {
+        assert_eq!(e.code(args), 17, "{args:?}");
+    }
+}
+
 /// A public key object of another key under a private key's locator is a conflict (13) for
 /// every verb that resolves: a consumer selecting the public half by the locator would get it.
 /// `delete` still removes only what it identified — the private key, and its public half only

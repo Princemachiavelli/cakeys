@@ -42,6 +42,10 @@ pub enum KmError {
     /// `create` found its object already under the locator: nothing was made (19).
     #[error("already exists: {0}")]
     Exists(String),
+    /// `check --token`: an object on the token failed its check; each failure is listed with its
+    /// own code (20).
+    #[error("objects failed: {0}")]
+    ObjectsFailed(String),
     /// The token cannot do what the spec needs (15).
     #[error("unsupported: {0}")]
     Unsupported(String),
@@ -71,6 +75,7 @@ impl KmError {
             KmError::Validation(_) => 17,
             KmError::FirstUse { .. } => 18,
             KmError::Exists(_) => 19,
+            KmError::ObjectsFailed(_) => 20,
             KmError::Io(_) => 1,
         }
     }

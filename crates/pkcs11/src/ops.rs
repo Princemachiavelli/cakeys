@@ -926,3 +926,47 @@ pub fn check_open(
     }
     Ok((r, tok))
 }
+
+/// One (spec, token) pair [`check_token`] verified, and how that went.
+pub struct PairCheck {
+    /// The spec realising the object.
+    pub spec: String,
+    /// The object it realises.
+    pub object: String,
+    /// What [`verify`] made of it.
+    pub result: Result<Resolved>,
+}
+
+/// [`check`] of every (spec, token) pair keys.toml places on `token`, in one read-only session:
+/// a failing pair does not stop the others, each one's result is handed back. Never writes.
+/// `open` opens the token.
+///
+/// # Errors
+///
+/// `Validation` (17) for a token keys.toml does not name or that no spec places anything on;
+/// whatever `open` refuses. A pair's own failure is in its [`PairCheck`], never here.
+pub fn check_token(
+    cfg: &Config,
+    token: &str,
+    open: impl FnOnce(&str, hal::Access) -> Result<Token>,
+    lock: &Lock,
+    notes: &mut Notes,
+) -> Result<(Vec<PairCheck>, Token)> {
+    let pairs = cfg.select(None, None, Some(token))?;
+    if pairs.is_empty() {
+        return Err(KmError::Validation(format!("no spec places an object on token '{token}'")));
+    }
+    let tok = open(token, hal::Access::Read)?;
+    if let Some(w) = tok.pin_warning() {
+        notes.warn(w);
+    }
+    let checked = pairs
+        .into_iter()
+        .map(|(spec, _)| {
+            let object = cfg.specs[spec].object.clone();
+            let result = Target::new(cfg, spec, token).and_then(|t| verify(&t, &tok, lock, notes));
+            PairCheck { spec: spec.to_owned(), object, result }
+        })
+        .collect();
+    Ok((checked, tok))
+}

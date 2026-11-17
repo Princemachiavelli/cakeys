@@ -21,7 +21,8 @@ pub use cakeys_cli_common::default_registry;
 /// Exit codes: 0 ok, 10 hash mismatch, 11 not found,
 /// 12 ambiguous, 13 conflict, 14 precondition failed, 15 unsupported, 16 unavailable,
 /// 17 invalid spec, 18 first use (nothing pinned yet: record the `got:` hash), 19 already
-/// exists (`create` on a key that is there), 1 other.
+/// exists (`create` on a key that is there), 20 objects failed (`check --token`: each failure
+/// listed with its own code), 1 other.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -97,7 +98,10 @@ enum Cmd {
     },
     /// Pseudo-FOD pre-use check (also `verify`): verifies the object against the lock in a
     /// read-only session and prints its URI on stdout. `<object>.id.<scheme>` asks for one
-    /// identity scheme, which the lock must pin. Never writes, the lock or the token.
+    /// identity scheme, which the lock must pin. Never writes, the lock or the token. With
+    /// --token alone (no object, no --spec), checks every object keys.toml places on that token
+    /// and prints the token's module file; when any fails, each failure goes to stderr with its
+    /// own exit code and the run exits 20.
     #[command(visible_alias = "verify")]
     Check {
         #[command(flatten)]
@@ -124,7 +128,7 @@ enum Cmd {
 #[derive(clap::Args)]
 struct Address {
     /// The object (`[objects.<name>]`); `check` also takes `<object>.id.<scheme>`. May be left
-    /// out when --spec names it.
+    /// out when --spec names it, or for `check` of every object on --token.
     object: Option<String>,
     /// The spec realising it, when several do.
     #[arg(long)]
@@ -304,6 +308,17 @@ impl Run<'_> {
     ) -> anyhow::Result<()> {
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
         let (reference, spec, token) = (at.object.as_deref(), at.spec.as_deref(), at.token.as_deref());
+        if let (None, None, Some(token)) = (reference, spec, token) {
+            if format != Format::Uri || uri_module || uri_pin.is_some() {
+                return Err(KmError::Validation(
+                    "check --token alone prints the module file, not a URI: --format, --uri-module and --uri-pin \
+                     need an object"
+                        .into(),
+                )
+                .into());
+            }
+            return self.check_token(token, notes);
+        }
         // Refused before any token is opened: the address, and what the output cannot carry.
         let object = reference.map(|r| ops::split_reference(r).0);
         let (spec_name, token_name) = cfg.address(object, spec, token)?;
@@ -339,6 +354,30 @@ impl Run<'_> {
         }
         print!("{}", provider_pem(&uri)?);
         Ok(())
+    }
+
+    /// `check --token`: every object keys.toml places on the token, in one session. All pass:
+    /// the module file the check loaded, on stdout. Any fails: nothing on stdout, each failure on
+    /// stderr led by its own exit code, and 20.
+    fn check_token(&self, token: &str, notes: &mut Notes) -> anyhow::Result<()> {
+        let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
+        let open = |name: &str, access| open_quiet(cfg, modules, registry, name, access);
+        let (checked, tok) = ops::check_token(cfg, token, open, &self.lock, notes)?;
+        let failed: Vec<(&ops::PairCheck, &KmError)> =
+            checked.iter().filter_map(|c| c.result.as_ref().err().map(|e| (c, e))).collect();
+        if failed.is_empty() {
+            println!("{}", tok.module.path);
+            return Ok(());
+        }
+        for (c, e) in &failed {
+            eprintln!("exit {}: '{}' (spec '{}'): {e}", e.exit_code(), c.object, c.spec);
+        }
+        Err(KmError::ObjectsFailed(format!(
+            "{} of {} on token '{token}', each listed above with its exit code",
+            failed.len(),
+            checked.len()
+        ))
+        .into())
     }
 
     fn open(&self, name: &str, access: Access, notes: &mut Notes) -> Result<Token, KmError> {
