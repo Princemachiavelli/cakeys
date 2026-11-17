@@ -7,14 +7,14 @@
 use crate::plan::{Allow, FileFormat, Material, Plan, To, plan};
 use crate::transport::Transport;
 use cakeys_core::config::{AttrValue, Lock, Observation, TokenCfg, TokenObservation};
-use cakeys_core::migrate::{Accept, Method, PlaintextImport, Side};
+use cakeys_core::migrate::{Accept, Method, PlaintextImport, Probed, ProbedWays, Side};
 use cakeys_core::pop::OaepHash;
 use cakeys_core::types::{KeyType, ObjectClass};
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::resolution::{self, Resolved, moduleless_info};
 use cakeys_pkcs11::{Registry, Token};
-use cakeys_profile::{Move, PlaintextKind, Profile};
+use cakeys_profile::{Capability, Move, On, PlaintextKind, Profile, Way};
 use std::collections::BTreeSet;
 use std::str::FromStr;
 
@@ -138,7 +138,62 @@ fn side_of(module: &Profile, stack: &Resolved, token: &str, provider: &str, mech
             PlaintextKind::PivImport => PlaintextImport::PivImport(accepts),
         });
     }
+    side.probed = probed_of(module, stack, &side.mechanisms);
     Ok(side)
+}
+
+/// The probed rows of `module` (`docs/CAPROBE_MIGRATION.md`), by way, each as the objects it
+/// covers. A row of a key type a layer subtracts answers no: the binding cannot name it. A yes
+/// by a mechanism the stack no longer offers (`via`, `usable` the mechanisms left: p11-kit hides
+/// `SoftHSM`'s RFC 5649 key wraps) is left out, as is a row naming a key type, class or curve
+/// this build does not know: unknown, so the claims and the mechanisms decide.
+fn probed_of(module: &Profile, stack: &Resolved, usable: &BTreeSet<String>) -> ProbedWays {
+    let subtracted = stack.subtracted_key_types();
+    let mut ways = ProbedWays::default();
+    for (c, row) in &module.capabilities {
+        let (rows, class, key) = match c {
+            Capability::Import { key_type, on } => (&mut ways.import, None, Some((key_type, on))),
+            Capability::Create { class, key } => {
+                (&mut ways.create, Some(class.as_str()), key.as_ref().map(|(k, o)| (k, o)))
+            }
+            Capability::Export { way: Way::Host, key_type, on } => (&mut ways.export_host, None, Some((key_type, on))),
+            Capability::Export { way: Way::Sealed, key_type, on } => {
+                (&mut ways.export_sealed, None, Some((key_type, on)))
+            }
+            Capability::Unwrap { key_type, on } => (&mut ways.unwrap, None, Some((key_type, on))),
+            _ => continue,
+        };
+        let Some((covers, gone)) = covers_of(class, key, &subtracted) else { continue };
+        let hidden = row.via.as_ref().is_some_and(|v| v.starts_with("CKM_") && !usable.contains(v));
+        if row.answer.yes() && hidden {
+            continue;
+        }
+        rows.push(Probed { covers, yes: row.answer.yes() && !gone, via: row.via.clone() });
+    }
+    ways
+}
+
+/// What a probed row covers: its class (a key's, by its key type, unless named) narrowed to its
+/// key type and curve, RSA size or length; and whether a layer subtracts that key type.
+fn covers_of(class: Option<&str>, key: Option<(&String, &On)>, subtracted: &BTreeSet<&str>) -> Option<(Accept, bool)> {
+    let Some((key_type, on)) = key else {
+        return Some((Accept::class(ObjectClass::from_str(class?).ok()?), false));
+    };
+    let kt = KeyType::from_str(key_type).ok()?;
+    let class = match class {
+        Some(c) => ObjectClass::from_str(c).ok()?,
+        None if matches!(kt, KeyType::Ec | KeyType::EcEdwards | KeyType::Rsa) => ObjectClass::PrivateKey,
+        None => ObjectClass::SecretKey,
+    };
+    let base = Accept::key(class, &[kt]);
+    let covers = match on {
+        On::Item(curve) => {
+            Accept { curves: vec![cakeys_profile::baseline::CURVES.iter().copied().find(|c| c == curve)?], ..base }
+        }
+        On::Bits(bits) => Accept { modulus_bits: Some((*bits, *bits)), ..base },
+        On::Bytes(n) => Accept { value_len: Some(u64::from(*n)), ..base },
+    };
+    Some((covers, subtracted.contains(key_type.as_str())))
 }
 
 /// One migration accept row, as the planner's [`Accept`], or [`None`] when a layer subtracts
@@ -177,6 +232,7 @@ fn accept_of(row: &cakeys_profile::AcceptRow, stack: &Resolved) -> std::result::
             (Some(lo), None) => Some((lo, u32::MAX)),
             (None, None) => None,
         },
+        value_len: None,
     }))
 }
 

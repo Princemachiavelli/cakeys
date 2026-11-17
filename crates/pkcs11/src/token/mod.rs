@@ -28,6 +28,7 @@ mod host;
 mod identity;
 mod policy;
 mod possession;
+mod public;
 mod uri;
 
 pub use generate::{BY_NAME, with_public_default_dropped};
@@ -37,6 +38,7 @@ pub use possession::{
     Derived, OAEP, ProofSide, derive_any, digest_info, is_policy_default, oaep_of, oaep_params, proof_refusal, show,
     template_refusal,
 };
+pub use public::{public_key_attrs, public_object_attrs};
 use uri::pct_all;
 pub use uri::{PinRef, locator_attrs, pin_ref, provider_pem, with_query};
 

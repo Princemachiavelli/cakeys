@@ -184,7 +184,11 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
     for name in ["empty", "placeholder"] {
         let o = w.km(&["probe", "--token", name, "--write", "--rsa-max-bits", "4096"]);
         assert_eq!(code(&o), 0, "{name}: {}", stderr(&o));
-        assert!(stderr(&o).contains("in a scratch slot: no secret-key, wrap or delete probes"), "{}", stderr(&o));
+        assert!(
+            stderr(&o).contains("in a scratch slot: no secret-key, wrap, export or delete probes"),
+            "{}",
+            stderr(&o)
+        );
     }
 }
 

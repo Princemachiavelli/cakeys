@@ -21,6 +21,8 @@ der.workspace = true
 aes-kw.workspace = true
 libc.workspace = true
 getrandom.workspace = true
+rsa.workspace = true
+x509-cert.workspace = true
 
 [features]
 # The single-part C_Sign after C_SignInit (Session::sign_initialized) a CKA_ALWAYS_AUTHENTICATE

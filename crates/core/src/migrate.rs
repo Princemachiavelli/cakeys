@@ -152,8 +152,8 @@ impl std::fmt::Display for Method {
     }
 }
 
-/// Which objects a capability covers: a class, and optionally only some key types, curves or
-/// RSA sizes (empty: any).
+/// Which objects a capability covers: a class, and optionally only some key types, curves,
+/// RSA sizes or secret-key lengths (empty: any).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Accept {
     /// The object class covered.
@@ -164,13 +164,15 @@ pub struct Accept {
     pub curves: Vec<&'static str>,
     /// Inclusive RSA modulus range in bits.
     pub modulus_bits: Option<(u32, u32)>,
+    /// A secret key's length in bytes (`valueLen`).
+    pub value_len: Option<u64>,
 }
 
 impl Accept {
     /// Every object of `class`.
     #[must_use]
     pub fn class(class: ObjectClass) -> Accept {
-        Accept { class, key_types: vec![], curves: vec![], modulus_bits: None }
+        Accept { class, key_types: vec![], curves: vec![], modulus_bits: None, value_len: None }
     }
 
     /// The objects of `class` with one of `key_types`.
@@ -190,6 +192,43 @@ impl Accept {
                 (Some(_), None) => false,
                 (None, _) => true,
             }
+            && self.value_len.is_none_or(|n| ty.value_len == Some(n))
+    }
+}
+
+/// What a probed row (`docs/CAPROBE_MIGRATION.md`) answers for the objects it covers, and how
+/// the operation succeeded where it has more than one way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Probed {
+    /// The objects the row is about: one key type on one curve, size or length.
+    pub covers: Accept,
+    /// Its answer.
+    pub yes: bool,
+    /// How it succeeded: an import's path, an export's method.
+    pub via: Option<String>,
+}
+
+/// A token's probed rows by way (`docs/CAPROBE_MIGRATION.md`, M1): where one covers an object's
+/// type it decides, before a module's claims and the spec-compliant default.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProbedWays {
+    /// `import.*`: a plaintext key brought in.
+    pub import: Vec<Probed>,
+    /// `create.*`: a public object created from its value.
+    pub create: Vec<Probed>,
+    /// `export.host.*`: a key handed to the host.
+    pub export_host: Vec<Probed>,
+    /// `export.sealed.*`: a key wrapped toward another token.
+    pub export_sealed: Vec<Probed>,
+    /// `unwrap.*`: a wrapped key brought in.
+    pub unwrap: Vec<Probed>,
+}
+
+impl ProbedWays {
+    /// The row of `rows` that covers `ty`, if one does.
+    #[must_use]
+    pub fn of<'a>(rows: &'a [Probed], ty: &ObjectCfg) -> Option<&'a Probed> {
+        rows.iter().find(|r| r.covers.covers(ty))
     }
 }
 
@@ -250,6 +289,8 @@ pub struct Side {
     pub vendor: Vec<VendorMethod>,
     /// Keys it takes in by no import at all, as a target (a profile's `migration.refuses`).
     pub refuses: Vec<Accept>,
+    /// What its probed rows say, per object type: they decide before the claims above.
+    pub probed: ProbedWays,
 }
 
 impl Side {
@@ -273,6 +314,7 @@ impl Side {
             plaintext_import: Some(PlaintextImport::CreateObject),
             vendor: vec![],
             refuses: vec![],
+            probed: ProbedWays::default(),
         }
     }
 

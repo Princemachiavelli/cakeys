@@ -15,7 +15,7 @@ use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::Token;
-use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, Create, Destroy, Provider, Report};
+use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, Create, Destroy, PlaintextKind, Provider, Report};
 use cakeys_pkcs11::token::ModuleInfo;
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass};
 use std::sync::LazyLock;
@@ -87,6 +87,11 @@ impl Provider for Ykcs11 {
     /// ykcs11 generates (and deletes) only after `C_Login(CKU_SO)` with the PIV management key.
     fn manages_as_so(&self) -> bool {
         true
+    }
+
+    /// A key comes in by `C_CreateObject` as SO into its PIV slot.
+    fn plaintext_import(&self) -> PlaintextKind {
+        PlaintextKind::PivImport
     }
 
     /// A key goes where its locator says ([`Ykcs11::check_create`]), as SO.

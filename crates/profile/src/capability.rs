@@ -18,14 +18,62 @@ pub const UNWRAP_TEMPLATE: [&str; 1] = ["CKA_VALUE_LEN"];
 /// The proofs of possession (docs/DESIGN.md §3.6) a token can give: what `prove.*` rows can say.
 pub const PROOFS: [&str; 4] = ["pop-sign", "pop-ecdh", "pop-decrypt", "pop-unwrap"];
 
-/// What a generation is of: a curve (or parameter set), or an RSA modulus size.
+/// What a generation, import or export is of: a curve (or parameter set), or a size in the
+/// unit of the key type's own attribute (`docs/CAPROBE_MIGRATION.md`, M1).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum On {
     /// A curve or parameter set, by name.
     Item(String),
-    /// A modulus size, in bits.
+    /// An RSA modulus size, in bits (`CKA_MODULUS_BITS`).
     Bits(u32),
+    /// A secret key's length, in bytes (`CKA_VALUE_LEN`, keys.toml's `valueLen`).
+    Bytes(u32),
 }
+
+impl On {
+    /// What a row's last part names for `key_type`: a size in RSA's bits or a secret key's
+    /// bytes, else a curve.
+    fn parse(key_type: &str, on: &str) -> On {
+        match on.parse() {
+            Ok(n) if key_type == "CKK_RSA" => On::Bits(n),
+            Ok(n) => On::Bytes(n),
+            Err(_) => On::Item(on.to_owned()),
+        }
+    }
+}
+
+impl std::fmt::Display for On {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            On::Item(i) => f.write_str(i),
+            On::Bits(n) | On::Bytes(n) => write!(f, "{n}"),
+        }
+    }
+}
+
+/// Which way a key leaves a token (`export.*`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Way {
+    /// To this process, by RFC 5649 under a key the host drew (`Token::extract`): `export.host.*`.
+    Host,
+    /// Toward another token's RSA key (`CKM_RSA_AES_KEY_WRAP`, or RSA-OAEP for a secret key):
+    /// `export.sealed.*`.
+    Sealed,
+}
+
+impl Way {
+    const ALL: [Way; 2] = [Way::Host, Way::Sealed];
+
+    fn name(self) -> &'static str {
+        match self {
+            Way::Host => "host",
+            Way::Sealed => "sealed",
+        }
+    }
+}
+
+/// The public object classes `create.*` rows name without a key type.
+pub const CREATE_CLASSES: [&str; 2] = ["CKO_CERTIFICATE", "CKO_DATA"];
 
 /// A way keys move (docs/CAMIGRATE.md D2, D10): this repo's claims, never probe output, so the
 /// probe preserves them across regenerations like `[migration]` and the diff never compares
@@ -97,6 +145,49 @@ pub enum Capability {
         /// The curve or size.
         on: On,
     },
+    /// Bringing a key of `key_type` in from the host's plaintext, the token then showing that
+    /// key: `import.CKK_EC.secp256r1`, `import.CKK_AES.32`. `via` is the path that worked:
+    /// `create-object`, or the provider's own (`tpm2-ptool`, `piv-import`).
+    Import {
+        /// The key type, by `CKK_*` name.
+        key_type: String,
+        /// The curve or size.
+        on: On,
+    },
+    /// `C_CreateObject` of a public object from its value: `create.CKO_CERTIFICATE`,
+    /// `create.CKO_DATA`, `create.CKO_PUBLIC_KEY.CKK_EC.secp256r1`.
+    Create {
+        /// The class, by `CKO_*` name.
+        class: String,
+        /// A public key's key type and curve or size.
+        key: Option<(String, On)>,
+    },
+    /// An extractable key of `key_type` leaving `way`, and arriving as the same material:
+    /// `export.host.CKK_EC.secp256r1`, `export.sealed.CKK_RSA.2048`. `via` is the mechanism.
+    Export {
+        /// To the host, or toward another token.
+        way: Way,
+        /// The key type, by `CKK_*` name.
+        key_type: String,
+        /// The curve or size.
+        on: On,
+    },
+    /// `C_UnwrapKey` bringing a key of `key_type` in as the material wrapped:
+    /// `unwrap.CKK_AES.32`. `via` is the mechanism.
+    Unwrap {
+        /// The key type, by `CKK_*` name.
+        key_type: String,
+        /// The curve or size.
+        on: On,
+    },
+    /// `C_DestroyObject` really removing an object of the class (`CKO_*`): `delete.CKO_PRIVATE_KEY`.
+    Delete(String),
+}
+
+/// `<CKK_*>.<curve or size>`, as `generate.*` and the rows like it end.
+fn key_and_on(rest: &str) -> Option<(String, On)> {
+    let (kt, on) = rest.split_once('.').filter(|(k, o)| k.starts_with("CKK_") && !o.is_empty())?;
+    Some((kt.to_owned(), On::parse(kt, on)))
 }
 
 impl Capability {
@@ -110,12 +201,33 @@ impl Capability {
         let (head, rest) = key.split_once('.').ok_or_else(bad)?;
         Ok(match (head, rest) {
             ("generate", rest) => {
-                let (kt, on) = rest.split_once('.').ok_or_else(bad)?;
-                if !kt.starts_with("CKK_") || on.is_empty() {
-                    return Err(bad());
-                }
-                let on = on.parse().map_or_else(|_| On::Item(on.to_owned()), On::Bits);
-                Capability::Generate { key_type: kt.to_owned(), on }
+                let (key_type, on) = key_and_on(rest).ok_or_else(bad)?;
+                Capability::Generate { key_type, on }
+            }
+            ("import", rest) => {
+                let (key_type, on) = key_and_on(rest).ok_or_else(bad)?;
+                Capability::Import { key_type, on }
+            }
+            ("create", "CKO_PUBLIC_KEY") => return Err(bad()),
+            ("create", rest) if CREATE_CLASSES.contains(&rest) => {
+                Capability::Create { class: rest.to_owned(), key: None }
+            }
+            ("create", rest) => {
+                let key = rest.strip_prefix("CKO_PUBLIC_KEY.").and_then(key_and_on).ok_or_else(bad)?;
+                Capability::Create { class: "CKO_PUBLIC_KEY".into(), key: Some(key) }
+            }
+            ("export", rest) => {
+                let (way, rest) = rest.split_once('.').ok_or_else(bad)?;
+                let way = Way::ALL.into_iter().find(|w| w.name() == way).ok_or_else(bad)?;
+                let (key_type, on) = key_and_on(rest).ok_or_else(bad)?;
+                Capability::Export { way, key_type, on }
+            }
+            ("unwrap", rest) if rest.starts_with("CKK_") => {
+                let (key_type, on) = key_and_on(rest).ok_or_else(bad)?;
+                Capability::Unwrap { key_type, on }
+            }
+            ("delete", class) if class.starts_with("CKO_") && !class.contains('.') => {
+                Capability::Delete(class.to_owned())
             }
             // Only what a probe tries: a row naming anything else could never be read.
             ("wrap", rest) => {
@@ -135,10 +247,8 @@ impl Capability {
             ("move", m) => Capability::Move(Move::ALL.into_iter().find(|x| x.name() == m).ok_or_else(bad)?),
             ("prove", rest) => {
                 let (binding, rest) = rest.split_once('.').filter(|(b, _)| PROOFS.contains(b)).ok_or_else(bad)?;
-                let (kt, on) =
-                    rest.split_once('.').filter(|(k, o)| k.starts_with("CKK_") && !o.is_empty()).ok_or_else(bad)?;
-                let on = on.parse().map_or_else(|_| On::Item(on.to_owned()), On::Bits);
-                Capability::Prove { binding: binding.to_owned(), key_type: kt.to_owned(), on }
+                let (key_type, on) = key_and_on(rest).ok_or_else(bad)?;
+                Capability::Prove { binding: binding.to_owned(), key_type, on }
             }
             _ => return Err(bad()),
         })
@@ -155,16 +265,20 @@ impl Capability {
 impl std::fmt::Display for Capability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Capability::Generate { key_type, on: On::Item(i) } => write!(f, "generate.{key_type}.{i}"),
-            Capability::Generate { key_type, on: On::Bits(b) } => write!(f, "generate.{key_type}.{b}"),
+            Capability::Generate { key_type, on } => write!(f, "generate.{key_type}.{on}"),
             Capability::WrapOaep(h) => write!(f, "wrap.rsa-oaep.{h}"),
             Capability::DecryptOaep(h) => write!(f, "decrypt.rsa-oaep.{h}"),
             Capability::UnwrapTemplate(a) => write!(f, "unwrap.template.{a}"),
             Capability::DeriveSealed => f.write_str("derive.ecdh.sealed"),
             Capability::DeriveReadOnly => f.write_str("derive.ecdh.read-only"),
             Capability::Move(m) => write!(f, "move.{}", m.name()),
-            Capability::Prove { binding, key_type, on: On::Item(i) } => write!(f, "prove.{binding}.{key_type}.{i}"),
-            Capability::Prove { binding, key_type, on: On::Bits(b) } => write!(f, "prove.{binding}.{key_type}.{b}"),
+            Capability::Prove { binding, key_type, on } => write!(f, "prove.{binding}.{key_type}.{on}"),
+            Capability::Import { key_type, on } => write!(f, "import.{key_type}.{on}"),
+            Capability::Create { class, key: None } => write!(f, "create.{class}"),
+            Capability::Create { class, key: Some((key_type, on)) } => write!(f, "create.{class}.{key_type}.{on}"),
+            Capability::Export { way, key_type, on } => write!(f, "export.{}.{key_type}.{on}", way.name()),
+            Capability::Unwrap { key_type, on } => write!(f, "unwrap.{key_type}.{on}"),
+            Capability::Delete(class) => write!(f, "delete.{class}"),
         }
     }
 }
@@ -257,6 +371,20 @@ mod tests {
                 on: On::Item("secp256r1".into()),
             },
             Capability::Prove { binding: "pop-unwrap".into(), key_type: "CKK_RSA".into(), on: On::Bits(2048) },
+            Capability::Import { key_type: "CKK_EC".into(), on: On::Item("secp256r1".into()) },
+            Capability::Import { key_type: "CKK_RSA".into(), on: On::Bits(4096) },
+            Capability::Import { key_type: "CKK_AES".into(), on: On::Bytes(32) },
+            Capability::Create { class: "CKO_CERTIFICATE".into(), key: None },
+            Capability::Create { class: "CKO_DATA".into(), key: None },
+            Capability::Create {
+                class: "CKO_PUBLIC_KEY".into(),
+                key: Some(("CKK_EC_EDWARDS".into(), On::Item("edwards25519".into()))),
+            },
+            Capability::Export { way: Way::Host, key_type: "CKK_RSA".into(), on: On::Bits(2048) },
+            Capability::Export { way: Way::Sealed, key_type: "CKK_AES".into(), on: On::Bytes(16) },
+            Capability::Unwrap { key_type: "CKK_AES".into(), on: On::Bytes(24) },
+            Capability::Unwrap { key_type: "CKK_EC".into(), on: On::Item("secp384r1".into()) },
+            Capability::Delete("CKO_PRIVATE_KEY".into()),
         ];
         for c in all {
             assert_eq!(Capability::parse(&c.to_string()), Ok(c.clone()), "{c}");
@@ -272,10 +400,29 @@ mod tests {
             "prove.pop-x.CKK_EC.secp256r1",
             "prove.pop-sign.EC.secp256r1",
             "prove.pop-sign.CKK_EC",
+            "import.CKK_AES",
+            "import.AES.32",
+            "create.CKO_PUBLIC_KEY",
+            "create.CKO_PRIVATE_KEY",
+            "create.CKO_PUBLIC_KEY.CKK_EC",
+            "export.CKK_EC.secp256r1",
+            "export.token.CKK_EC.secp256r1",
+            "unwrap.CKK_AES",
+            "delete.CKK_AES",
+            "delete.CKO_DATA.x",
             "nothing",
         ] {
             assert!(Capability::parse(bad).is_err(), "{bad}");
         }
         assert!(!Capability::Move(Move::Export).probed() && Capability::DeriveSealed.probed());
+        // The key type names the size's unit: RSA in bits, a secret key in bytes.
+        assert_eq!(
+            Capability::parse("import.CKK_RSA.2048"),
+            Ok(Capability::Import { key_type: "CKK_RSA".into(), on: On::Bits(2048) })
+        );
+        assert_eq!(
+            Capability::parse("import.CKK_AES.32"),
+            Ok(Capability::Import { key_type: "CKK_AES".into(), on: On::Bytes(32) })
+        );
     }
 }

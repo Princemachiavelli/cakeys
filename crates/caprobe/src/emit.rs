@@ -1,7 +1,7 @@
 //! The capability-profile emitter (docs/CAPROBE.md): a profile as the committed TOML. Only
 //! `caprobe` writes profiles; `cakeys` reads them (`cakeys_profile`).
 
-use cakeys_profile::profile::{AcceptRow, MatchInfo, Mode, PlaintextKind, Profile, Reported};
+use cakeys_profile::profile::{AcceptRow, MatchInfo, Mode, Profile, Reported};
 use cakeys_profile::{Capability, Row};
 use std::collections::BTreeMap;
 
@@ -183,15 +183,7 @@ pub(crate) fn profile(p: &Profile) -> String {
     if let Some(m) = &p.migration {
         let _ = writeln!(s, "\n[migration]");
         if let Some(k) = m.plaintext_import {
-            let _ = writeln!(
-                s,
-                "plaintext-import = \"{}\"",
-                match k {
-                    PlaintextKind::CreateObject => "create-object",
-                    PlaintextKind::Tpm2Ptool => "tpm2-ptool",
-                    PlaintextKind::PivImport => "piv-import",
-                }
-            );
+            let _ = writeln!(s, "plaintext-import = \"{}\"", k.name());
         }
         for row in &m.public_accepts {
             accept_toml(&mut s, "public-accepts", row, false);

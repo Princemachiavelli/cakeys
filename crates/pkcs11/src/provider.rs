@@ -7,6 +7,7 @@ use cakeys_core::config::{Binding, Locator, ModuleInfo, ObjectCfg, Options, Spec
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass;
 use cakeys_core::{KmError, Result};
+pub use cakeys_profile::PlaintextKind;
 use cakeys_profile::Set;
 use cryptoki::mechanism::eddsa::{EddsaParams, EddsaSignatureScheme};
 use cryptoki::mechanism::{Mechanism, MechanismType};
@@ -191,6 +192,13 @@ pub trait Provider: Send + Sync {
     /// reports.
     fn import_plaintext(&self, _ctx: &ImportCtx<'_>) -> Result<()> {
         Err(KmError::Unsupported(format!("{} imports no plaintext outside PKCS#11", self.name())))
+    }
+
+    /// How plaintext keys get into this module, as a profile's `plaintext-import` and an
+    /// `import.*` row's `via` name it: `C_CreateObject` by default (as SO where the provider
+    /// manages as SO), or the provider's own [`Self::import_plaintext`].
+    fn plaintext_import(&self) -> PlaintextKind {
+        PlaintextKind::CreateObject
     }
 
     /// The attestation commitment this provider can compute (§3.7 of docs/DESIGN.md), if any:

@@ -6,7 +6,7 @@
 )]
 use super::*;
 use cakeys_core::pop;
-use cakeys_profile::{Capability, Move};
+use cakeys_profile::{Capability, Profile};
 use cryptoki::context::Function;
 use cryptoki::mechanism::rsa::PkcsPssParams;
 
@@ -406,7 +406,7 @@ impl Token {
             token: &self.name,
             profile: profile.map(|p| p.profile.as_str()),
             has: Box::new(|m| self.has(m)),
-            unwraps: profile.and_then(|p| p.moves(Move::Unwrap)) != Some(false),
+            unwraps: profile.and_then(Profile::unwraps) != Some(false),
         }
     }
 

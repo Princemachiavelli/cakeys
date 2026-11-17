@@ -332,7 +332,8 @@ impl Nearness {
 }
 
 /// Drop a pair profile's rows that depend on the hardware it was observed on: what generates,
-/// wraps, unwraps and decrypts there answers unknown on other or unknown hardware.
+/// wraps, unwraps, decrypts, imports and exports there answers unknown on other or unknown
+/// hardware.
 fn clear_hardware_rows(p: &mut Profile) {
     p.reported.clear();
     p.capabilities.retain(|c, _| {
@@ -342,6 +343,10 @@ fn clear_hardware_rows(p: &mut Profile) {
                 | Capability::WrapOaep(_)
                 | Capability::UnwrapTemplate(_)
                 | Capability::DecryptOaep(_)
+                | Capability::Import { .. }
+                | Capability::Create { .. }
+                | Capability::Export { .. }
+                | Capability::Unwrap { .. }
         )
     });
 }

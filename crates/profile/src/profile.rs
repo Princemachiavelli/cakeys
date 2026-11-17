@@ -138,6 +138,18 @@ pub enum PlaintextKind {
     PivImport,
 }
 
+impl PlaintextKind {
+    /// The name a profile writes: `plaintext-import`, and an `import.*` row's `via`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            PlaintextKind::CreateObject => "create-object",
+            PlaintextKind::Tpm2Ptool => "tpm2-ptool",
+            PlaintextKind::PivImport => "piv-import",
+        }
+    }
+}
+
 /// One row of what a module's import paths take: a class, and optionally only some key types,
 /// curves, or an inclusive RSA modulus range (empty: any).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
@@ -325,6 +337,27 @@ impl Profile {
         self.answer(&Capability::Move(m))
     }
 
+    /// Whether the module unwraps a key in at all: yes when any probed `unwrap.<key type>` row
+    /// says so, no when they all say no, else its `move.unwrap` claim; `None`: neither.
+    #[must_use]
+    pub fn unwraps(&self) -> Option<bool> {
+        self.any_of(|c| matches!(c, Capability::Unwrap { .. })).or_else(|| self.moves(Move::Unwrap))
+    }
+
+    /// Whether the module creates public key objects at all: yes when any probed
+    /// `create.CKO_PUBLIC_KEY.*` row says so, no when they all say no; `None`: no such row.
+    #[must_use]
+    pub fn creates_public_keys(&self) -> Option<bool> {
+        self.any_of(|c| matches!(c, Capability::Create { class, .. } if class == "CKO_PUBLIC_KEY"))
+    }
+
+    /// Whether any row `matching` picks says yes; `None` when it picks none.
+    fn any_of(&self, matching: impl Fn(&Capability) -> bool) -> Option<bool> {
+        let mut rows = self.capabilities.iter().filter(|(c, _)| matching(c)).peekable();
+        rows.peek()?;
+        Some(rows.any(|(_, r)| r.answer.yes()))
+    }
+
     /// The key types the profile says anything about generating.
     #[must_use]
     pub fn generation_key_types(&self) -> std::collections::BTreeSet<&str> {
@@ -360,6 +393,8 @@ impl Profile {
                 (On::Item(i), Answer::No) => row.cannot.push(i.clone()),
                 (On::Bits(b), Answer::Yes) => row.can_bits.push(*b),
                 (On::Bits(b), Answer::No) => row.cannot_bits.push(*b),
+                // No secret-key generation row is written: a generation row reads sizes in bits.
+                (On::Bytes(_), _) => {}
             }
         }
         any.then_some(row)

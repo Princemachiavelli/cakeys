@@ -91,6 +91,11 @@ mechanisms = ["CKM_AES_KEY_GEN"]
 "prove.pop-unwrap.CKK_RSA.1024" = { answer = "no", evidence = "unsupported: the token refused to unwrap with the private key (CKR_FUNCTION_NOT_SUPPORTED: Function::UnwrapKey); proving possession needs CKA_UNWRAP, or opt in with binding = \"token-asserted\" (hint for tpm2-pkcs11: secret keys cannot be generated through tpm2-pkcs11; create them with `tpm2_ptool addkey` or `tpm2_ptool import` and adopt them (`lock`, never `cakeys create`))" }
 "prove.pop-unwrap.CKK_RSA.2048" = { answer = "no", evidence = "unsupported: the token refused to unwrap with the private key (CKR_FUNCTION_NOT_SUPPORTED: Function::UnwrapKey); proving possession needs CKA_UNWRAP, or opt in with binding = \"token-asserted\" (hint for tpm2-pkcs11: secret keys cannot be generated through tpm2-pkcs11; create them with `tpm2_ptool addkey` or `tpm2_ptool import` and adopt them (`lock`, never `cakeys create`))" }
 "prove.pop-unwrap.CKK_RSA.3072" = { answer = "no", evidence = "unsupported: the token refused to unwrap with the private key (CKR_FUNCTION_NOT_SUPPORTED: Function::UnwrapKey); proving possession needs CKA_UNWRAP, or opt in with binding = \"token-asserted\" (hint for tpm2-pkcs11: secret keys cannot be generated through tpm2-pkcs11; create them with `tpm2_ptool addkey` or `tpm2_ptool import` and adopt them (`lock`, never `cakeys create`))" }
+"create.CKO_CERTIFICATE" = { answer = "yes" }
+"create.CKO_DATA" = { answer = "no", evidence = "unsupported: C_CreateObject: CKR_ATTRIBUTE_VALUE_INVALID" }
+"delete.CKO_CERTIFICATE" = { answer = "yes" }
+"delete.CKO_PRIVATE_KEY" = { answer = "no", evidence = "C_DestroyObject leaves 4 of 6 behind" }
+"delete.CKO_PUBLIC_KEY" = { answer = "yes" }
 
 [reported."CKK_RSA"]
 min-bits = 1024

@@ -114,19 +114,24 @@ impl Token {
         })
     }
 
-    /// Whether the module creates public key objects (`C_CreateObject`): its profile's public
-    /// accept rows, when it has any (ykcs11 takes certificates only), else the spec's yes.
+    /// Whether the module creates public key objects (`C_CreateObject`): its profile's probed
+    /// `create.CKO_PUBLIC_KEY.*` rows, else its public accept rows when it has any (ykcs11 takes
+    /// certificates only), else the spec's yes.
     #[must_use]
     pub fn accepts_public_key_objects(&self) -> bool {
-        let rows = self.profiles.module.as_ref().and_then(|p| p.migration.as_ref()).map(|m| &m.public_accepts);
+        let module = self.profiles.module.as_ref();
+        if let Some(probed) = module.and_then(cakeys_profile::Profile::creates_public_keys) {
+            return probed;
+        }
+        let rows = module.and_then(|p| p.migration.as_ref()).map(|m| &m.public_accepts);
         rows.is_none_or(|r| r.is_empty() || r.iter().any(|a| a.class == "CKO_PUBLIC_KEY"))
     }
 
     fn create_secret_template(&self, template: &Secret) -> Result<ObjectHandle> {
         let create = || {
-            self.session
-                .create_object(&template.0)
-                .map_err(|e| self.unsupported(format!("creating the key on '{}': C_CreateObject: {e}", self.name)))
+            self.session.create_object(&template.0).map_err(|e| {
+                self.unsupported(format!("creating the key on '{}': C_CreateObject: {} ({e})", self.name, rv_name(&e)))
+            })
         };
         self.managing("importing a key", create)
     }

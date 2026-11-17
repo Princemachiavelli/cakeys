@@ -147,6 +147,76 @@ firmware = "1.5"
 "prove.pop-unwrap.CKK_RSA.2048" = { answer = "yes" }
 "prove.pop-unwrap.CKK_RSA.3072" = { answer = "yes" }
 "prove.pop-unwrap.CKK_RSA.4096" = { answer = "yes" }
+"import.CKK_AES.16" = { answer = "yes", via = "create-object" }
+"import.CKK_AES.24" = { answer = "yes", via = "create-object" }
+"import.CKK_AES.32" = { answer = "yes", via = "create-object" }
+"import.CKK_EC.brainpoolP256r1" = { answer = "no", evidence = "CKR_ATTRIBUTE_VALUE_INVALID" }
+"import.CKK_EC.brainpoolP384r1" = { answer = "no", evidence = "CKR_ATTRIBUTE_VALUE_INVALID" }
+"import.CKK_EC.secp256k1" = { answer = "no", evidence = "CKR_ATTRIBUTE_VALUE_INVALID" }
+"import.CKK_EC.secp256r1" = { answer = "yes", via = "create-object" }
+"import.CKK_EC.secp384r1" = { answer = "yes", via = "create-object" }
+"import.CKK_EC.secp521r1" = { answer = "yes", via = "create-object" }
+"import.CKK_EC_EDWARDS.edwards25519" = { answer = "yes", via = "create-object" }
+"import.CKK_RSA.1024" = { answer = "yes", via = "create-object" }
+"import.CKK_RSA.1536" = { answer = "yes", via = "create-object" }
+"import.CKK_RSA.2048" = { answer = "yes", via = "create-object" }
+"import.CKK_RSA.3072" = { answer = "yes", via = "create-object" }
+"import.CKK_RSA.4096" = { answer = "yes", via = "create-object" }
+"create.CKO_CERTIFICATE" = { answer = "yes" }
+"create.CKO_DATA" = { answer = "yes" }
+"create.CKO_PUBLIC_KEY.CKK_EC.brainpoolP256r1" = { answer = "no", evidence = "C_CreateObject: CKR_ATTRIBUTE_VALUE_INVALID" }
+"create.CKO_PUBLIC_KEY.CKK_EC.brainpoolP384r1" = { answer = "no", evidence = "C_CreateObject: CKR_ATTRIBUTE_VALUE_INVALID" }
+"create.CKO_PUBLIC_KEY.CKK_EC.secp256k1" = { answer = "no", evidence = "C_CreateObject: CKR_ATTRIBUTE_VALUE_INVALID" }
+"create.CKO_PUBLIC_KEY.CKK_EC.secp256r1" = { answer = "yes" }
+"create.CKO_PUBLIC_KEY.CKK_EC.secp384r1" = { answer = "yes" }
+"create.CKO_PUBLIC_KEY.CKK_EC.secp521r1" = { answer = "yes" }
+"create.CKO_PUBLIC_KEY.CKK_EC_EDWARDS.edwards25519" = { answer = "yes" }
+"create.CKO_PUBLIC_KEY.CKK_RSA.1024" = { answer = "yes" }
+"create.CKO_PUBLIC_KEY.CKK_RSA.1536" = { answer = "yes" }
+"create.CKO_PUBLIC_KEY.CKK_RSA.2048" = { answer = "yes" }
+"create.CKO_PUBLIC_KEY.CKK_RSA.3072" = { answer = "yes" }
+"create.CKO_PUBLIC_KEY.CKK_RSA.4096" = { answer = "yes" }
+"export.host.CKK_AES.16" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
+"export.host.CKK_AES.24" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
+"export.host.CKK_AES.32" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
+"export.host.CKK_EC.secp256r1" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
+"export.host.CKK_EC.secp384r1" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
+"export.host.CKK_EC.secp521r1" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
+"export.host.CKK_EC_EDWARDS.edwards25519" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
+"export.host.CKK_RSA.1024" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
+"export.host.CKK_RSA.1536" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
+"export.host.CKK_RSA.2048" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
+"export.host.CKK_RSA.3072" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
+"export.host.CKK_RSA.4096" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
+"export.sealed.CKK_AES.16" = { answer = "yes", via = "rsa-oaep-sha256" }
+"export.sealed.CKK_AES.24" = { answer = "yes", via = "rsa-oaep-sha256" }
+"export.sealed.CKK_AES.32" = { answer = "yes", via = "rsa-oaep-sha256" }
+"export.sealed.CKK_EC.secp256r1" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"export.sealed.CKK_EC.secp384r1" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"export.sealed.CKK_EC.secp521r1" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"export.sealed.CKK_EC_EDWARDS.edwards25519" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"export.sealed.CKK_RSA.1024" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"export.sealed.CKK_RSA.1536" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"export.sealed.CKK_RSA.2048" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"export.sealed.CKK_RSA.3072" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"export.sealed.CKK_RSA.4096" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"unwrap.CKK_AES.16" = { answer = "yes", via = "rsa-oaep-sha256" }
+"unwrap.CKK_AES.24" = { answer = "yes", via = "rsa-oaep-sha256" }
+"unwrap.CKK_AES.32" = { answer = "yes", via = "rsa-oaep-sha256" }
+"unwrap.CKK_EC.secp256r1" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"unwrap.CKK_EC.secp384r1" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"unwrap.CKK_EC.secp521r1" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"unwrap.CKK_EC_EDWARDS.edwards25519" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"unwrap.CKK_RSA.1024" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"unwrap.CKK_RSA.1536" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"unwrap.CKK_RSA.2048" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"unwrap.CKK_RSA.3072" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"unwrap.CKK_RSA.4096" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"delete.CKO_CERTIFICATE" = { answer = "yes" }
+"delete.CKO_DATA" = { answer = "yes" }
+"delete.CKO_PRIVATE_KEY" = { answer = "yes" }
+"delete.CKO_PUBLIC_KEY" = { answer = "yes" }
+"delete.CKO_SECRET_KEY" = { answer = "yes" }
 
 [reported."CKK_RSA"]
 min-bits = 1024

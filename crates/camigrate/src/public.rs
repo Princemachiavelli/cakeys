@@ -12,11 +12,9 @@ use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::Token;
 use cakeys_pkcs11::ops::{self, Notes, Target};
-use cakeys_pkcs11::token::{class_of, curve_of, locator_attrs};
-use cryptoki::object::{Attribute, AttributeType, CertificateType, KeyType, ObjectClass, ObjectHandle};
-use rsa::pkcs8::DecodePublicKey as _;
-use rsa::traits::PublicKeyParts as _;
-use x509_cert::der::{Decode as _, Encode as _};
+use cakeys_pkcs11::token::{class_of, locator_attrs, public_key_attrs, public_object_attrs};
+use cryptoki::object::{Attribute, AttributeType, ObjectHandle};
+use x509_cert::der::Decode as _;
 
 /// What moving one object did.
 pub(crate) enum Moved {
@@ -186,62 +184,28 @@ fn template(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Vec<Attribute>> {
     let mut t = vec![Attribute::Token(true)];
     t.extend(locator_attrs(&dst.on_token.locator)?);
     t.extend(to.policy_template(&dst.spec.attributes)?);
-    match dst.object.class {
-        Class::Certificate => {
-            let cert = x509_cert::Certificate::from_der(bytes)
-                .map_err(|e| KmError::Conflict(format!("{dst}: the value is not an X.509 certificate: {e}")))?;
-            let tbs = cert.tbs_certificate();
-            let enc = |r: x509_cert::der::Result<Vec<u8>>| r.map_err(|e| KmError::Conflict(format!("{dst}: {e}")));
-            t.extend([
-                Attribute::Class(ObjectClass::CERTIFICATE),
-                Attribute::CertificateType(CertificateType::X_509),
-                Attribute::Subject(enc(tbs.subject().to_der())?),
-                Attribute::Issuer(enc(tbs.issuer().to_der())?),
-                Attribute::SerialNumber(enc(tbs.serial_number().to_der())?),
-                Attribute::Value(bytes.to_vec()),
-            ]);
-        }
-        Class::Data => {
-            t.extend([Attribute::Class(ObjectClass::DATA), Attribute::Value(bytes.to_vec())]);
-            // A token's default may make it private (SoftHSM does [run]), which a data object no
-            // spec declares private may not be: said, not left to the token.
-            if dst.spec.flag("CKA_PRIVATE").is_none() {
-                t.push(Attribute::Private(false));
-            }
-        }
-        Class::PublicKey => {
-            t.push(Attribute::Class(ObjectClass::PUBLIC_KEY));
-            t.extend(public_key(dst, bytes)?);
-        }
-        class => {
-            return Err(KmError::Validation(format!("{dst}: a {class} is not a public object")));
-        }
+    t.extend(public_object_attrs(dst.object, bytes).map_err(|e| prefixed(dst, e))?);
+    // A token's default may make a data object private (SoftHSM does [run]), which one no spec
+    // declares private may not be: said, not left to the token.
+    if dst.object.class == Class::Data && dst.spec.flag("CKA_PRIVATE").is_none() {
+        t.push(Attribute::Private(false));
     }
     Ok(t)
 }
 
-/// The public key's material from its canonical SPKI, in PKCS#11's encoding: an EC or Edwards
-/// point as a DER OCTET STRING beside the curve's parameters, an RSA key as its modulus and
-/// exponent.
+/// The public key's material from its canonical SPKI, in PKCS#11's encoding
+/// ([`public_key_attrs`]).
 pub(crate) fn public_key(src: &Target, spki: &[u8]) -> Result<Vec<Attribute>> {
-    let bad = |e: &dyn std::fmt::Display| KmError::Conflict(format!("{src}: the locked public key: {e}"));
-    if src.object.key_type == Some(cakeys_core::types::KeyType::Rsa) {
-        let key = rsa::PublicKey::from_public_key_der(spki).map_err(|e| bad(&e))?;
-        return Ok(vec![
-            Attribute::KeyType(KeyType::RSA),
-            Attribute::Modulus(key.n().to_be_bytes_trimmed_vartime().to_vec()),
-            Attribute::PublicExponent(key.e().to_be_bytes_trimmed_vartime().to_vec()),
-        ]);
+    public_key_attrs(src.object, spki).map_err(|e| prefixed(src, e))
+}
+
+/// `e`, its message led by the pair it is about.
+fn prefixed(t: &Target, e: KmError) -> KmError {
+    match e {
+        KmError::Conflict(m) => KmError::Conflict(format!("{t}: {m}")),
+        KmError::Validation(m) => KmError::Validation(format!("{t}: {m}")),
+        other => other,
     }
-    let curve = curve_of(src.object)?;
-    let info = x509_cert::spki::SubjectPublicKeyInfoRef::from_der(spki).map_err(|e| bad(&e))?;
-    let point = info.subject_public_key.as_bytes().ok_or_else(|| bad(&"the key is not whole bytes"))?;
-    let point = x509_cert::der::asn1::OctetStringRef::new(point).and_then(|o| o.to_der()).map_err(|e| bad(&e))?;
-    Ok(vec![
-        Attribute::KeyType(if curve.edwards() { KeyType::EC_EDWARDS } else { KeyType::EC }),
-        Attribute::EcParams(curve.params().to_vec()),
-        Attribute::EcPoint(point),
-    ])
 }
 
 /// The one object of `t`'s class under its locator (verified just before).

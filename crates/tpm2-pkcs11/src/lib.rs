@@ -23,7 +23,7 @@ use cakeys_core::Result;
 use cakeys_core::config::Options;
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass;
-use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, ImportCtx, Provider, Report};
+use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, ImportCtx, PlaintextKind, Provider, Report};
 use cakeys_pkcs11::token::ModuleInfo;
 use std::borrow::Cow;
 
@@ -72,6 +72,10 @@ impl Provider for Tpm2Pkcs11 {
 
     fn import_plaintext(&self, ctx: &ImportCtx<'_>) -> Result<()> {
         ptool::import(ctx)
+    }
+
+    fn plaintext_import(&self) -> PlaintextKind {
+        PlaintextKind::Tpm2Ptool
     }
 }
 

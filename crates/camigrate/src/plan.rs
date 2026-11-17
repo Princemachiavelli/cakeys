@@ -6,7 +6,7 @@
 //! the lock's, in `cakeys_core::migrate`.
 
 use cakeys_core::config::{AttrValue, Immutables, ObjectCfg};
-use cakeys_core::migrate::{Exposure, Method, PlaintextImport, Side};
+use cakeys_core::migrate::{Exposure, Method, PlaintextImport, ProbedWays, Side};
 use cakeys_core::pop::OaepHash;
 use cakeys_core::types::ObjectClass;
 use serde::Serialize;
@@ -116,21 +116,10 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
         );
     }
     if is_public(ty) {
-        return match to {
-            To::Token(dst) if dst.public_import.iter().any(|a| a.covers(ty)) => {
-                Plan::ready(m, Method::Public, Exposure::Public, vec![])
-            }
-            To::Token(dst) => Plan::impossible(m, vec![format!("{} accepts no {} by import", dst.token, describe(ty))]),
-            To::File(_) => {
-                Plan::impossible(m, vec!["files carry private keys; a public object needs no export".into()])
-            }
-        };
+        return public(m, to);
     }
-    if !from.exports {
-        return Plan::impossible(
-            m,
-            vec![format!("{} ({}) never lets a key leave the token", from.token, from.provider)],
-        );
+    if let Some(why) = stays(from, ty) {
+        return Plan::impossible(m, vec![why]);
     }
     if m.flag("CKA_EXTRACTABLE") != Some(true) || m.immutables.never_extractable == Some(true) {
         return Plan::impossible(
@@ -172,7 +161,7 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
         To::File(format) => {
             if trusted_only {
                 ways.block("CKA_WRAP_WITH_TRUSTED: it cannot be written to a file".into());
-            } else if !host_extractable(from) {
+            } else if !host_extractable(from, ty) {
                 ways.block(format!("{} offers no RFC 5649 key wrap to bring it to the host", from.token));
             } else {
                 match format {
@@ -231,6 +220,43 @@ impl Ways {
     }
 }
 
+/// A public object's plan: created from its value where the target's probed `create.*` row
+/// says so, else where its claims accept the class.
+fn public(m: &Material, to: &To) -> Plan {
+    let ty = m.ty;
+    match to {
+        To::Token(dst) => match ProbedWays::of(&dst.probed.create, ty) {
+            Some(r) if r.yes => Plan::ready(m, Method::Public, Exposure::Public, vec![]),
+            Some(_) => Plan::impossible(
+                m,
+                vec![format!("{} creates no {} (its create.* row says no)", dst.token, describe(ty))],
+            ),
+            None if dst.public_import.iter().any(|a| a.covers(ty)) => {
+                Plan::ready(m, Method::Public, Exposure::Public, vec![])
+            }
+            None => Plan::impossible(m, vec![format!("{} accepts no {} by import", dst.token, describe(ty))]),
+        },
+        To::File(_) => Plan::impossible(m, vec!["files carry private keys; a public object needs no export".into()]),
+    }
+}
+
+/// Why a key of type `ty` never leaves `from`, if it does not: its probed `export.*` rows decide
+/// for the type they name, the module's claim for the rest.
+fn stays(from: &Side, ty: &ObjectCfg) -> Option<String> {
+    let leaves =
+        [&from.probed.export_host, &from.probed.export_sealed].map(|rows| ProbedWays::of(rows, ty).map(|r| r.yes));
+    match leaves {
+        [Some(false), Some(false)] => Some(format!(
+            "{} ({}) lets no {} leave the token (its export.host and export.sealed rows say no)",
+            from.token,
+            from.provider,
+            describe(ty)
+        )),
+        l if l.contains(&Some(true)) => None,
+        _ => (!from.exports).then(|| format!("{} ({}) never lets a key leave the token", from.token, from.provider)),
+    }
+}
+
 fn is_public(ty: &ObjectCfg) -> bool {
     matches!(ty.class, ObjectClass::Certificate | ObjectClass::PublicKey | ObjectClass::Data)
 }
@@ -245,8 +271,29 @@ fn describe(ty: &ObjectCfg) -> String {
 
 /// The `sealed` (or `enforced`) methods between two PKCS#11 modules.
 fn sealed(m: &Material, from: &Side, dst: &Side, trusted_only: bool, allow: Allow, ways: &mut Ways) {
-    if !dst.unwraps {
-        ways.block(format!("{} ({}) unwraps nothing", dst.token, dst.provider));
+    match ProbedWays::of(&dst.probed.unwrap, m.ty).map(|r| r.yes) {
+        Some(false) => {
+            ways.block(format!(
+                "{} ({}) does not unwrap a {} (its unwrap.* row says no)",
+                dst.token,
+                dst.provider,
+                describe(m.ty)
+            ));
+            return;
+        }
+        None if !dst.unwraps => {
+            ways.block(format!("{} ({}) unwraps nothing", dst.token, dst.provider));
+            return;
+        }
+        _ => {}
+    }
+    if ProbedWays::of(&from.probed.export_sealed, m.ty).is_some_and(|r| !r.yes) {
+        ways.block(format!(
+            "{} ({}) wraps no {} toward another token (its export.sealed.* row says no)",
+            from.token,
+            from.provider,
+            describe(m.ty)
+        ));
         return;
     }
     if m.ty.class == ObjectClass::SecretKey && !dst.secret_unwraps {
@@ -326,28 +373,42 @@ const OAEP_DIRECT_MAX: u64 = 190;
 
 /// Whether the source can hand the material to the host: wrapped under a session key cakeys
 /// knows, then unwrapped in memory. Every class by RFC 5649, the one wrap `Token::extract`
-/// undoes; RFC 3394 alone (`CKM_AES_KEY_WRAP`) is not taken.
-fn host_extractable(from: &Side) -> bool {
-    from.kwp()
+/// undoes; RFC 3394 alone (`CKM_AES_KEY_WRAP`) is not taken. A probed `export.host.*` row for
+/// the type decides.
+fn host_extractable(from: &Side, ty: &ObjectCfg) -> bool {
+    ProbedWays::of(&from.probed.export_host, ty).map_or_else(|| from.kwp(), |r| r.yes)
 }
 
-/// The `host` methods into a token.
+/// The `host` methods into a token: a probed `import.*` row for the type decides, its `via` the
+/// path; else the module's claimed path.
 fn host(m: &Material, from: &Side, dst: &Side, ways: &mut Ways) {
     let ty = m.ty;
-    let Some(path) = &dst.plaintext_import else {
+    let probed = ProbedWays::of(&dst.probed.import, ty);
+    if probed.is_some_and(|r| !r.yes) {
+        ways.block(format!(
+            "{} ({}) does not import a {} (its import.* row says no)",
+            dst.token,
+            dst.provider,
+            describe(ty)
+        ));
+        return;
+    }
+    if probed.is_none() && dst.plaintext_import.is_none() {
         ways.block(format!("{} ({}) imports no key material", dst.token, dst.provider));
         return;
-    };
-    if !host_extractable(from) {
+    }
+    if !host_extractable(from, ty) {
         ways.block(format!("{} offers no RFC 5649 key wrap to bring it to the host", from.token));
         return;
     }
-    let method = match path {
-        PlaintextImport::CreateObject if ty.class == ObjectClass::PrivateKey => Method::HostPkcs8,
-        PlaintextImport::CreateObject => Method::HostRaw,
-        PlaintextImport::Tpm2Ptool(accepts) if accepts.iter().any(|a| a.covers(ty)) => Method::Tpm2Ptool,
-        PlaintextImport::PivImport(accepts) if accepts.iter().any(|a| a.covers(ty)) => Method::PivImport,
-        PlaintextImport::Tpm2Ptool(_) | PlaintextImport::PivImport(_) => {
+    let create_object = || if ty.class == ObjectClass::PrivateKey { Method::HostPkcs8 } else { Method::HostRaw };
+    let method = match (probed.and_then(|r| r.via.as_deref()), &dst.plaintext_import) {
+        (Some("tpm2-ptool"), _) => Method::Tpm2Ptool,
+        (Some("piv-import"), _) => Method::PivImport,
+        (Some(_), _) | (None, Some(PlaintextImport::CreateObject)) => create_object(),
+        (None, Some(PlaintextImport::Tpm2Ptool(accepts))) if accepts.iter().any(|a| a.covers(ty)) => Method::Tpm2Ptool,
+        (None, Some(PlaintextImport::PivImport(accepts))) if accepts.iter().any(|a| a.covers(ty)) => Method::PivImport,
+        (None, _) => {
             ways.block(format!("{} ({}) cannot import a {}", dst.token, dst.provider, describe(ty)));
             return;
         }
@@ -720,5 +781,72 @@ mod tests {
         assert!(p.notes.iter().any(|n| n.contains("declares the enforced level")), "{p:?}");
         let p = plan_of(&p256(), &ext, &luna(vec!["luna".into()]), &To::Token(&kryoptic()), Allow::default());
         assert!(!p.ready, "not toward a kryoptic target: {p:?}");
+    }
+
+    /// A probed row decides for the type it covers, before the module's claims
+    /// (`docs/CAPROBE_MIGRATION.md`, M4), and only for that type.
+    #[test]
+    fn probed_rows_decide_before_the_claims_for_their_type() {
+        use cakeys_core::migrate::{Probed, ProbedWays};
+        let ext = [("CKA_EXTRACTABLE", true)];
+        let p256_rows = |yes, via: Option<&str>| {
+            vec![Probed {
+                covers: Accept { curves: vec!["secp256r1"], ..Accept::key(ObjectClass::PrivateKey, &[KeyType::Ec]) },
+                yes,
+                via: via.map(str::to_owned),
+            }]
+        };
+        let host = Allow { host_plaintext: true, ..Allow::default() };
+        // The target claims C_CreateObject; its import row for P-256 says no: no host path,
+        // and a P-384 key, which no row covers, still takes the claim.
+        let no_import = Side {
+            unwraps: false,
+            probed: ProbedWays { import: p256_rows(false, None), ..ProbedWays::default() },
+            ..softhsm()
+        };
+        let p = plan_of(&p256(), &ext, &softhsm(), &To::Token(&no_import), host);
+        assert!(!p.ready && p.reasons.iter().any(|r| r.contains("its import.* row says no")), "{p:?}");
+        let p384 = ObjectCfg { curve: Some("secp384r1".into()), ..p256() };
+        let p = plan_of(&p384, &ext, &softhsm(), &To::Token(&no_import), host);
+        assert_eq!((p.method, p.ready), (Some(Method::HostPkcs8), true), "{:?}", p.reasons);
+        // The target claims to unwrap nothing; its unwrap row for P-256 says yes: sealed.
+        let unwraps = Side {
+            unwraps: false,
+            probed: ProbedWays { unwrap: p256_rows(true, Some("rsa-oaep-sha1+aes-kwp")), ..ProbedWays::default() },
+            ..softhsm()
+        };
+        let p = plan_of(&p256(), &ext, &softhsm(), &To::Token(&unwraps), Allow::default());
+        assert_eq!((p.exposure, p.ready), (Some(Exposure::Sealed), true), "{:?}", p.reasons);
+        // An import row's path is the method: a module whose claim is tpm2_ptool for nothing.
+        let ptool = Side {
+            unwraps: false,
+            plaintext_import: Some(PlaintextImport::Tpm2Ptool(vec![])),
+            probed: ProbedWays { import: p256_rows(true, Some("tpm2-ptool")), ..ProbedWays::default() },
+            ..softhsm()
+        };
+        let p = plan_of(&p256(), &ext, &softhsm(), &To::Token(&ptool), host);
+        assert_eq!(p.method, Some(Method::Tpm2Ptool), "{:?}", p.reasons);
+        // The source claims to export; both its export rows for P-256 say no: the key stays.
+        let keeps = Side {
+            probed: ProbedWays {
+                export_host: p256_rows(false, None),
+                export_sealed: p256_rows(false, None),
+                ..ProbedWays::default()
+            },
+            ..softhsm()
+        };
+        let p = plan_of(&p256(), &ext, &keeps, &To::Token(&kryoptic()), host);
+        assert!(!p.ready && p.reasons.iter().any(|r| r.contains("export.host and export.sealed rows say no")), "{p:?}");
+        // A public object: the create row decides over the claimed classes.
+        let cert = obj(ObjectClass::Certificate, None);
+        let no_certs = Side {
+            probed: ProbedWays {
+                create: vec![Probed { covers: Accept::class(ObjectClass::Certificate), yes: false, via: None }],
+                ..ProbedWays::default()
+            },
+            ..softhsm()
+        };
+        let p = plan_of(&cert, &[], &softhsm(), &To::Token(&no_certs), host);
+        assert!(!p.ready && p.reasons.iter().any(|r| r.contains("its create.* row says no")), "{p:?}");
     }
 }

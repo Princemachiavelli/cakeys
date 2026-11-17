@@ -312,7 +312,9 @@ dependencies = [
  "der",
  "getrandom",
  "libc",
+ "rsa",
  "toml",
+ "x509-cert",
  "zeroize",
 ]
 

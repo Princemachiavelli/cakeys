@@ -95,8 +95,14 @@ A capability row is `"<capability>" = { answer, evidence, via }`: `answer` is `y
 `evidence` what shows it, `via` how it succeeded where there is more than one way. The
 capabilities name cakeys' operations (`crates/profile/src/capability.rs`): a generation per key
 type and curve or size, a wrap and a decryption per OAEP hash, an unwrap template attribute,
-ECDH into a sealed secret and in a read-only session, the moves, and a proof of possession per
-binding and key (`prove.pop-ecdh.CKK_EC.secp256r1`). The probe measures the proofs with the
+ECDH into a sealed secret and in a read-only session, the moves, a proof of possession per
+binding and key (`prove.pop-ecdh.CKK_EC.secp256r1`), and per key type and curve or size how a
+key gets in and out: imported from plaintext (`import.CKK_AES.32`, `via` the path), a public
+object created from its value (`create.CKO_CERTIFICATE`), handed to the host or wrapped toward
+another token (`export.host.*`, `export.sealed.*`, `via` camigrate's method), unwrapped
+(`unwrap.*`), and deleted per class (`delete.CKO_PRIVATE_KEY`)
+([CAPROBE_MIGRATION.md](CAPROBE_MIGRATION.md)). A size is in the key type's own unit: RSA in
+bits, a `valueLen` type in bytes. The probe measures the proofs with the
 verbs' own code (`Token::prove_binding`) on a token opened with no module profile
 (`Token::unprofiled`), so what it records is what the module does, not what the committed
 profile already says; it generates the key types cakeys manages the same way (`Token::create`,
@@ -111,7 +117,10 @@ generations `create` made), and those answers decide before the profile's in `va
 means try, except for what cannot be undone.
 
 `[migration]`, the `move.*` rows and `[manual]` are written by hand; the probe preserves them
-and the diff never compares them, so a reader always knows which rows were observed.
+and the diff never compares them, so a reader always knows which rows were observed. Where a
+probed `import.*`, `create.*`, `export.*` or `unwrap.*` row covers an object's type it decides
+before `[migration]` and `move.*`, which answer for the rest until every committed profile
+carries the probed rows ([CAPROBE_MIGRATION.md](CAPROBE_MIGRATION.md) M4).
 
 **Layers** (`mode = "delta"`, `profiles/layers/`, `profiles/hardware/`) forward everything except
 what they subtract:
@@ -219,7 +228,10 @@ generated, never edited, and pinned like the baseline:
   under the RSA key) round-tripped, a `subtract` row only when refused as a mechanism
   (`CKR_MECHANISM_INVALID`, `CKR_FUNCTION_NOT_SUPPORTED`) and a note otherwise — `C_GetMechanismInfo`
   flags are no evidence (AWS CloudHSM [run]); the `CKA_VALUE_LEN` unwrap rule;
-  delete-really-deletes. On the first key of each kind, every signing, ECDH and decryption
+  fixed test keys (`crates/caprobe/fixtures/import`) imported, then handed to the host and
+  wrapped toward the RSA key and back, each checked on the host, and a certificate and a data
+  object created; delete-really-deletes, a `delete.<class>` row per class the probes made. On
+  the first key of each kind, every signing, ECDH and decryption
   mechanism the probe knows, listed or not (on a key bound to some, Cloud KMS, only those),
   checked on the host where cakeys can verify. An advertised mechanism that fails on every key
   is a `subtract` row, a partial failure a note; one the module does not list but runs is an

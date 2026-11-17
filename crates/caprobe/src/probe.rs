@@ -30,6 +30,8 @@ use cryptoki::session::Session;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod moves;
+
 /// The text of a module-supplied string with its C padding removed: PKCS#11's fixed-width
 /// fields are C strings, and a module may NUL-pad them (tpm2-pkcs11's token model comes from
 /// the TPM's four 4-byte vendor-string properties, so swtpm reports `SW` + NULs + `TPM`
@@ -688,18 +690,17 @@ fn write_probes(made: &mut Made, profile: &mut Draft) -> Result<()> {
                         .into(),
                 ),
             }
+            // After the wrap probes: a secret key's sealed export takes an OAEP hash they found.
+            moves::probe_moves(made, profile, transport)?;
         }
-        made.destroy_all();
-        let leftovers = made.leftovers();
-        if !leftovers.is_empty() {
-            profile
-                .notes
-                .insert("destroy".into(), format!("C_DestroyObject leaves objects behind: {}", leftovers.join(", ")));
-        }
+        destroy_all(made, profile);
     } else {
+        if !bound {
+            moves::probe_moves(made, profile, None)?;
+        }
         made.undetermined.push(
-            "in a scratch slot: no secret-key, wrap or delete probes (each needs a second object, \
-             or erasing the slot's key)"
+            "in a scratch slot: no secret-key, wrap, export or delete probes (each needs a second \
+             object, or erasing the slot's key)"
                 .into(),
         );
     }
@@ -708,6 +709,39 @@ fn write_probes(made: &mut Made, profile: &mut Draft) -> Result<()> {
     profile.add.sort();
     profile.add.dedup();
     Ok(())
+}
+
+/// Destroy everything the probes made on a scratch token, and record what `C_DestroyObject`
+/// really removed: a `delete.<class>` row per class the probes made, and a note naming the
+/// labels still there.
+fn destroy_all(made: &Made, profile: &mut Draft) {
+    // Per class, how many objects sit under the probe's labels.
+    let count = |made: &Made| {
+        let mut by_class = BTreeMap::<String, usize>::new();
+        for label in &made.labels {
+            let found = made.session.find_objects(&[Attribute::Label(label.as_bytes().to_vec())]).unwrap_or_default();
+            for h in found {
+                if let Ok([Attribute::Class(c)]) = made.session.get_attributes(h, &[AttributeType::Class]).as_deref() {
+                    *by_class.entry(c.to_string()).or_default() += 1;
+                }
+            }
+        }
+        by_class
+    };
+    let before = count(made);
+    made.destroy_all();
+    let after = count(made);
+    for (class, n) in before {
+        let left = after.get(&class).copied().unwrap_or_default();
+        let why = (left > 0).then(|| format!("C_DestroyObject leaves {left} of {n} behind"));
+        profile.set(Capability::Delete(class), Answer::of(left == 0), why, None);
+    }
+    let leftovers = made.leftovers();
+    if !leftovers.is_empty() {
+        profile
+            .notes
+            .insert("destroy".into(), format!("C_DestroyObject leaves objects behind: {}", leftovers.join(", ")));
+    }
 }
 
 /// A module that binds every key to one purpose at creation ([`BoundKey`], Google Cloud KMS):

@@ -37,6 +37,8 @@ cryptoki.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 getrandom.workspace = true
+# The import probes' AES check value, computed on the host.
+aes.workspace = true
 
 # The integration tests include crates/cli/tests/common (one harness for both tools), and with
 # it its dependencies.
