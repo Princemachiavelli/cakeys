@@ -3,8 +3,8 @@
 # unotify-inject answers its open of the file with what `cakeys check` prints at that moment
 # (a seccomp user notification, a memfd injected as the descriptor), so the key it uses is one
 # cakeys has just verified, and a failed check fails the open. Then the URI as the file's content,
-# the count of opens, and the key swapped behind cakeys' back. Each step states the exit code it
-# expects (examples/lib.sh): checks.examples runs it.
+# the count of opens, several paths from a rules file, and the key swapped behind cakeys' back.
+# Each step states the exit code it expects (examples/lib.sh): checks.examples runs it.
 #
 # Needs TPM2_PKCS11_MODULE, PKCS11_PROVIDER_DIR (pkcs11-provider's ossl-modules), and on PATH
 # cakeys, pkcs11-tool, openssl, python3 and the TPM stack nix/tpm2-test-env.sh starts.
@@ -46,6 +46,25 @@ expect 0 "${inject[@]}" "$work/signing.uri" "$check_uri" 1 -- cat signing.uri
 # it again, where it was due once, both fail the run (125), and the second open is refused.
 expect 125 "${inject[@]}" "$work/signing.uri" "$check_uri" 2 -- cat signing.uri
 expect 125 "${inject[@]}" "$work/signing.uri" "$check_uri" 1 -- sh -c 'cat signing.uri; cat signing.uri'
+
+# Several paths, each with its own command and count, from a rules file: the key file once and
+# the URI twice, in one program. (TOML literal strings: the commands hold quotes of their own.)
+cat >rules.toml <<EOF
+[[inject]]
+path = "$work/signing.pem"
+command = '$check_pem'
+reads = 1
+
+[[inject]]
+path = "$work/signing.uri"
+command = '$check_uri'
+reads = 2
+EOF
+two='openssl req -new -key signing.pem -subj /CN=both -out both.csr && cat signing.uri signing.uri'
+expect 0 "${inject[@]}" --rules rules.toml -- sh -c "$two"
+expect 0 openssl req -in both.csr -verify -noout
+# One rule's count is not another's: the URI read once, where the rules file wants it twice.
+expect 125 "${inject[@]}" --rules rules.toml -- sh -c 'openssl req -new -key signing.pem -subj /CN=one -out one.csr && cat signing.uri'
 
 # Another key under the same label and ID, as a wiped or tampered TPM store would have it. The
 # check says so (10) when the program opens the file; the open fails, the program never holds a

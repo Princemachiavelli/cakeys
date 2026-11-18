@@ -101,7 +101,7 @@ one the check just verified: [`examples/inject/unotify-inject`](../examples/inje
 runs it under a seccomp filter and answers its open of a path with what a command prints, say
 `cakeys check signing --format pkcs11-provider-pem` (or the bare URI, for a program that reads
 that). The command runs at each open, a failed check fails the open and the run with its exit
-code, and the number of opens can be asserted. It is an example, not a sandbox
+code, and the number of opens can be asserted, per path (several, from a rules file). It is an example, not a sandbox
 ([`examples/README.md`](../examples/README.md)).
 
 Today the CLI is the binding. **The check is not the use** (accepted 2026-11-13): a program that

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Run a program that opens a file, and answer the open with what a command prints.
 
-    unotify-inject PATH COMMAND [READS] -- PROGRAM [ARGUMENT…]
+    unotify-inject [--rules FILE]… [PATH COMMAND [READS]] -- PROGRAM [ARGUMENT…]
+
+Each rule is a PATH, a COMMAND and optionally READS: one on the command line, any number in rules
+files (TOML, `[[inject]]` tables with `path`, `command` and optionally `reads`, relative paths
+taken from the working directory). Every path is answered by its own rule, with its own count.
 
 PROGRAM runs under a seccomp filter that sends every open(2), openat(2) and openat2(2) to this
-process (SECCOMP_RET_USER_NOTIF). An open of PATH is not given to the kernel: COMMAND runs (through
+process (SECCOMP_RET_USER_NOTIF). An open of a rule's PATH is not given to the kernel: COMMAND runs (through
 `sh -c`, in this process's environment, not the program's), and what it prints on stdout becomes the
 file, a memfd injected into the program as the descriptor open returns (SECCOMP_IOCTL_NOTIF_ADDFD).
 Every other open is let through. The program needs no change and no pipe or file ever holds the
@@ -15,11 +19,11 @@ COMMAND runs once per open, so what it checks is checked at each use: with
 `cakeys check <object> --format pkcs11-provider-pem` the key file the program reads is a key cakeys
 just verified, and a check that fails fails the open (EACCES) and this command with the check's exit
 code. READS, when given, is the number of opens PATH must get: one more is refused, and one more
-or fewer at the end fails the run. Opens are counted, not reads: the program holds the file and
+or fewer at the end fails the run (each rule counts its own). Opens are counted, not reads: the program holds the file and
 reads it as it likes.
 
-Exit status: COMMAND's, when it failed; 125 when PATH was opened other than READS times; otherwise
-PROGRAM's (128 + the signal when it was killed). PROGRAM's children run under the filter too, and
+Exit status: the first COMMAND's, when one failed; 125 when a PATH was opened other than its READS
+times; otherwise PROGRAM's (128 + the signal when it was killed). PROGRAM's children run under the filter too, and
 the run ends with the last of them.
 
 The filter is no sandbox. Only PATH as the program spells it (made absolute against its working
@@ -39,6 +43,8 @@ import socket
 import struct
 import subprocess
 import sys
+import tomllib
+from dataclasses import dataclass
 from typing import NoReturn
 
 EXIT_READS = 125
@@ -173,15 +179,23 @@ def target_path(pid: int, dirfd: int, raw: bytes) -> str:
     return os.path.normpath(path)
 
 
+@dataclass
+class Rule:
+    path: str
+    command: str
+    reads: int | None = None
+    served: int = 0
+    refused: int = 0
+    failed: int | None = None  # the exit code of the first run of COMMAND that failed
+
+    def __post_init__(self) -> None:
+        self.path = os.path.normpath(os.path.abspath(self.path))
+
+
 class Injector:
-    def __init__(self, listener: int, path: str, command: str, reads: int | None):
+    def __init__(self, listener: int, rules: list[Rule]):
         self.listener = listener
-        self.path = os.path.normpath(os.path.abspath(path))
-        self.command = command
-        self.reads = reads
-        self.served = 0
-        self.refused = 0
-        self.failed: int | None = None  # the exit code of the first COMMAND that failed
+        self.rules = {rule.path: rule for rule in rules}
 
     def respond(self, notif: Notif, error: int = 0, flags: int = 0) -> None:
         try:
@@ -232,23 +246,24 @@ class Injector:
             path = None  # unreadable: the kernel will find the same fault, or the program is gone
         if not self.valid(notif):
             return
-        if path != self.path:
+        rule = self.rules.get(path)
+        if rule is None:
             self.respond(notif, flags=SECCOMP_USER_NOTIF_FLAG_CONTINUE)
         elif flags & (os.O_ACCMODE | os.O_CREAT | os.O_TRUNC) or flags & os.O_DIRECTORY:
             self.respond(notif, error=13)  # EACCES: the file is for reading
-        elif self.reads is not None and self.served >= self.reads:
-            self.refused += 1
-            print(f"unotify-inject: {self.path}: refused an open by {notif.pid}, past {self.reads}", file=sys.stderr)
+        elif rule.reads is not None and rule.served >= rule.reads:
+            rule.refused += 1
+            print(f"unotify-inject: {rule.path}: refused an open by {notif.pid}, past {rule.reads}", file=sys.stderr)
             self.respond(notif, error=13)
         else:
-            self.inject(notif, flags)
+            self.inject(notif, rule, flags)
 
-    def inject(self, notif: Notif, flags: int) -> None:
-        run = subprocess.run(self.command, shell=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
+    def inject(self, notif: Notif, rule: Rule, flags: int) -> None:
+        run = subprocess.run(rule.command, shell=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
         if run.returncode != 0:
-            if self.failed is None:
-                self.failed = run.returncode
-            print(f"unotify-inject: {self.path}: `{self.command}` exited {run.returncode}", file=sys.stderr)
+            if rule.failed is None:
+                rule.failed = run.returncode
+            print(f"unotify-inject: {rule.path}: `{rule.command}` exited {run.returncode}", file=sys.stderr)
             self.respond(notif, error=13)
             return
         memfd = os.memfd_create("unotify-inject", os.MFD_CLOEXEC)
@@ -266,8 +281,8 @@ class Injector:
             return
         finally:
             os.close(readable)
-        self.served += 1
-        print(f"unotify-inject: {self.path}: {len(run.stdout)} bytes to {notif.pid}", file=sys.stderr)
+        rule.served += 1
+        print(f"unotify-inject: {rule.path}: {len(run.stdout)} bytes to {notif.pid}", file=sys.stderr)
 
 
 def usage() -> NoReturn:
@@ -276,15 +291,34 @@ def usage() -> NoReturn:
     sys.exit(2)
 
 
+def load_rules(path: str) -> list[Rule]:
+    """The `[[inject]]` tables of a TOML file; a mistake in it is a usage error."""
+    try:
+        with open(path, "rb") as f:
+            tables = tomllib.load(f).get("inject", [])
+        return [Rule(t["path"], t["command"], t.get("reads")) for t in tables]
+    except (OSError, tomllib.TOMLDecodeError, KeyError, TypeError) as e:
+        sys.exit(f"unotify-inject: {path}: {e!r}")
+
+
 def main(argv: list[str]) -> int:
     if "--" not in argv:
         usage()
     split = argv.index("--")
     head, program = argv[:split], argv[split + 1 :]
-    if len(head) not in (2, 3) or not program or (len(head) == 3 and not head[2].isdigit()):
+    rules: list[Rule] = []
+    while head[:1] == ["--rules"] and len(head) > 1:
+        rules += load_rules(head[1])
+        head = head[2:]
+    if len(head) in (2, 3) and (len(head) == 2 or head[2].isdigit()):
+        rules.append(Rule(head[0], head[1], int(head[2]) if len(head) == 3 else None))
+    elif head:
         usage()
-    path, command = head[0], head[1]
-    reads = int(head[2]) if len(head) == 3 else None
+    if not rules or not program:
+        usage()
+    paths = [rule.path for rule in rules]
+    if len(set(paths)) != len(paths):
+        sys.exit("unotify-inject: a path has two rules")
     if platform.machine() != "x86_64":
         sys.exit("unotify-inject: x86-64 only")
     exe = shutil.which(program[0])  # looked up here: the child must not open anything once filtered
@@ -309,17 +343,22 @@ def main(argv: list[str]) -> int:
     _, fds, _, _ = socket.recv_fds(here, 1, 1)
     if not fds:  # the child could not install the filter, and said why
         return os.waitstatus_to_exitcode(os.waitpid(child, 0)[1])
-    injector = Injector(fds[0], path, command, reads)
+    injector = Injector(fds[0], rules)
     injector.serve()
     code = os.waitstatus_to_exitcode(os.waitpid(child, 0)[1])
-    if injector.failed is not None:
-        return injector.failed
-    if reads is not None and (injector.served != reads or injector.refused):
-        print(
-            f"unotify-inject: {injector.path}: opened {injector.served} times"
-            f" ({injector.refused} more refused), expected {reads}",
-            file=sys.stderr,
-        )
+    for rule in rules:
+        if rule.failed is not None:
+            return rule.failed
+    wrong = False
+    for rule in rules:
+        if rule.reads is not None and (rule.served != rule.reads or rule.refused):
+            print(
+                f"unotify-inject: {rule.path}: opened {rule.served} times"
+                f" ({rule.refused} more refused), expected {rule.reads}",
+                file=sys.stderr,
+            )
+            wrong = True
+    if wrong:
         return EXIT_READS
     return code if code >= 0 else 128 - code
 
