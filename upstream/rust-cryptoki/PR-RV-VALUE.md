@@ -1,10 +1,10 @@
 # Draft PR for parallaxsecond/rust-cryptoki: `RvError` back to its `CK_RV`, and its name
 
 Status: **filed as a draft, parallaxsecond/rust-cryptoki#380** (branch
-`Princemachiavelli:jhoffer/Add-RvError-to-CK_RV`). Its first commit was the two-match version;
-the second (2026-11-17) is this patch: the table and the ten 3.x variants, rustfmt- and
-clippy-clean, against main as of 2e4ff5d (`rv.rs` and `rv_error.rs` as in 0.12.1). The body
-below is the PR's.
+`Princemachiavelli:jhoffer/Add-RvError-to-CK_RV`): one commit, e0b72ec (2026-11-17, the
+two-match first version and the table with the ten 3.x variants squashed), which is this patch,
+rustfmt- and clippy-clean, on main as of 2e4ff5d (`rv.rs` and `rv_error.rs` as in 0.12.1). The
+body below is the PR's.
 
 - cakeys builds with this file as it is, no local copy: `nix/package-common.nix` lists it among
   the cryptoki patches (and `scripts/local-tests.sh` applies it from there), and
