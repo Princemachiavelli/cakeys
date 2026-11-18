@@ -242,6 +242,9 @@
                 clippy
                 rustfmt
                 rust-analyzer
+                # The crate dependency graph: `cargo depgraph --workspace-only | dot -Tsvg`.
+                cargo-depgraph
+                graphviz
                 softhsm
                 kryoptic
                 opensc
