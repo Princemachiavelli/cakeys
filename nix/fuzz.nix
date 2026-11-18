@@ -37,6 +37,8 @@ let
     "piv_chain"
     "p521_point"
     "profile"
+    "hex"
+    "attest_encoding"
   ];
 
   # Seed corpora from the test fixtures: certificates, their and the import keys' SPKIs, a
@@ -47,6 +49,8 @@ let
     for t in ${lib.concatStringsSep " " targets}; do mkdir -p "fuzz/corpus/$t"; done
     cp --update=none "$F"/*.der fuzz/corpus/certificate/
     cp --update=none "$F/keys.lock" fuzz/corpus/lock/
+    # Hex of whole bytes in mixed case, for hex to mutate.
+    [ -e fuzz/corpus/hex/hex ] || printf 0aFF09bc >fuzz/corpus/hex/hex
     cp --update=none "$F/keys.toml" fuzz/corpus/config/
     cp --update=none crates/camigrate/tests/fixtures/sample.bundle.toml fuzz/corpus/bundle/
     cp --update=none crates/tpm2-pkcs11/tests/fixtures/*.yaml fuzz/corpus/tpm_store_row/

@@ -100,8 +100,8 @@ fn is_der_octets(raw: &[u8]) -> bool {
     matches!(raw, [0x04, 0x81, len, rest @ ..] if *len >= 0x80 && rest.len() == usize::from(*len))
 }
 
-/// The property the fuzz target (`fuzz/fuzz_targets/p521_point.rs`) and the bolero harness
-/// below check on any bytes.
+/// The property the fuzz target (`fuzz/fuzz_targets/p521_point.rs`) and the proptest below
+/// check on any bytes.
 pub mod fuzzing {
     use super::fix_ec_point;
     use std::borrow::Cow;
@@ -137,21 +137,24 @@ pub mod fuzzing {
 mod tests {
     use super::*;
 
-    /// `fuzzing::ec_point_fix` on any bytes, and on `04 <len> <len bytes>` built on purpose
-    /// (random bytes rarely have that shape, the one it repairs when `len >= 0x80`): bolero, at
-    /// random and under libFuzzer. Not a Kani proof: the shape needs 130 bytes or more, and the
-    /// repair copies them to the heap at symbolic length, which took more than 8 GB (docs/OPEN.md,
-    /// "Kani, through bolero").
-    #[test]
-    fn ec_point_fix_holds_on_any_bytes() {
-        bolero::check!().with_type::<(bool, u8, Vec<u8>)>().for_each(|(shaped, len, bytes)| {
-            if *shaped {
-                let body = bytes.iter().copied().chain(std::iter::repeat(0)).take(usize::from(*len));
-                fuzzing::ec_point_fix(&[0x04, *len].into_iter().chain(body).collect::<Vec<_>>());
+    proptest::proptest! {
+        /// `fuzzing::ec_point_fix` on any bytes, and on `04 <len> <len bytes>` built on purpose
+        /// (random bytes rarely have that shape, the one it repairs when `len >= 0x80`). Not a
+        /// Kani proof: the shape needs 130 bytes or more, and the repair copies them to the heap
+        /// at symbolic length, which took more than 8 GB (docs/OPEN.md, "Kani and fuzzing").
+        #[test]
+        fn ec_point_fix_holds_on_any_bytes(
+            shaped: bool,
+            len: u8,
+            bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..300),
+        ) {
+            if shaped {
+                let body = bytes.iter().copied().chain(std::iter::repeat(0)).take(usize::from(len));
+                fuzzing::ec_point_fix(&[0x04, len].into_iter().chain(body).collect::<Vec<_>>());
             } else {
-                fuzzing::ec_point_fix(bytes);
+                fuzzing::ec_point_fix(&bytes);
             }
-        });
+        }
     }
 
     #[test]

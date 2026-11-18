@@ -311,7 +311,7 @@
   # Nix files evaluated.
   examples = pkgs.callPackage ./nix/examples.nix { inherit self cakeys; };
 }
-# x86_64-linux only, as Kani is packaged (nix/kani.nix): the bolero harnesses as Kani proofs.
+# x86_64-linux only, as Kani is packaged (nix/kani.nix): the Kani proofs in cakeys_core::fuzzing.
 // pkgs.lib.optionalAttrs (cakeys.kani != null) {
   inherit (cakeys) kani;
 }

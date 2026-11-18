@@ -1,4 +1,4 @@
-# Kani, the bit-precise model checker for Rust (docs/OPEN.md, "Kani, through bolero"), built
+# Kani, the bit-precise model checker for Rust (docs/OPEN.md, "Kani and fuzzing"), built
 # from source: Kani ships prebuilt bundles that its `cargo kani setup` downloads and patchelfs,
 # and fd/nix-kani, the one flake for it, is years behind. This builds what Kani's own release
 # bundle holds, the way `cargo build-dev` builds it in Kani's repository:

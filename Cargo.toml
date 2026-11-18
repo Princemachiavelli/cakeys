@@ -69,9 +69,6 @@ proptest = { version = "1.12", default-features = false, features = ["std"] }
 # Model-based tests (crates/core/tests/lock_mbt.rs): it runs `quint` from PATH, and its `--mbt`
 # trace output is still marked experimental in Quint, hence the exact pin.
 quint-connect = "=0.1.2"
-# Property harnesses that are also Kani proofs (docs/OPEN.md, "Kani, through bolero"): under
-# `cargo test` its random engine; libFuzzer and Kani only under their own cfgs.
-bolero = "0.13"
 thiserror = "2"
 toml = "1"
 getrandom = { version = "0.4", features = ["sys_rng"] }
@@ -110,7 +107,7 @@ unsafe_code = "deny"
 # and then it says what it is.
 missing_docs = "warn"
 unreachable_pub = "warn"
-# `kani`: set when Kani compiles the bolero harnesses as proofs (docs/OPEN.md).
+# `kani`: set when Kani compiles the proofs in cakeys_core::fuzzing (docs/OPEN.md).
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [workspace.lints.clippy]

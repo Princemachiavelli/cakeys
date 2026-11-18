@@ -28,4 +28,4 @@ base64.workspace = true
 
 [dev-dependencies]
 toml.workspace = true
-bolero.workspace = true
+proptest.workspace = true

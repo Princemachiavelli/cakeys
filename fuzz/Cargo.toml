@@ -88,3 +88,17 @@ path = "fuzz_targets/profile.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "hex"
+path = "fuzz_targets/hex.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "attest_encoding"
+path = "fuzz_targets/attest_encoding.rs"
+test = false
+doc = false
+bench = false

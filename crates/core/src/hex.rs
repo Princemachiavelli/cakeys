@@ -16,48 +16,7 @@ pub fn decode(s: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode, encode};
-
-    /// The longest text `only_hex_decodes` generates: 64 bytes at random and under libFuzzer,
-    /// and under Kani the length it proves every text up to.
-    #[cfg(not(kani))]
-    const TEXT_MAX: usize = 64;
-    #[cfg(kani)]
-    const TEXT_MAX: usize = 4;
-
-    /// `encode` gives hex that `decode` reads back, in either case. Not a Kani proof: `encode`
-    /// and `decode` build heap values of symbolic length, which took more than 8 GB at two
-    /// bytes, for what is base16ct's code (docs/OPEN.md, "Kani, through bolero").
-    #[test]
-    fn hex_round_trips() {
-        bolero::check!().with_type::<Vec<u8>>().for_each(|bytes| {
-            assert_eq!(decode(&encode(bytes)).as_deref(), Some(&bytes[..]));
-            assert_eq!(decode(&encode(bytes).to_ascii_uppercase()).as_deref(), Some(&bytes[..]));
-        });
-    }
-
-    /// `decode` takes exactly hex of whole bytes, either case, and `encode` gives its lower-case
-    /// form back: bolero, so the same harness is a Kani proof. The text is bytes that are UTF-8,
-    /// so under Kani every char of up to four bytes is among them; at random, longer texts are
-    /// mostly ASCII (`only_whole_hex_bytes_decode` names non-ASCII ones).
-    ///
-    /// The text is an array and a length to take of it, not bolero's `String`: under Kani that
-    /// is a heap value of symbolic length, which took more than 8 GB here at two bytes, and the
-    /// array 1.2 GB at four. A known cost with no bolero fix as of 2026-11 (bolero #231 made the
-    /// same change for its byte-slice input, not for its generators).
-    #[test]
-    #[cfg_attr(kani, kani::proof, kani::unwind(5))]
-    fn only_hex_decodes() {
-        let text = (bolero::produce::<[u8; TEXT_MAX]>(), 0..=TEXT_MAX);
-        bolero::check!().with_generator(text).for_each(|(b, n)| {
-            let Ok(text) = std::str::from_utf8(&b[..*n]) else { return };
-            let hex = text.len() % 2 == 0 && text.bytes().all(|b| b.is_ascii_hexdigit());
-            match decode(text) {
-                Some(v) => assert!(hex && encode(&v).eq_ignore_ascii_case(text), "{text:?}"),
-                None => assert!(!hex, "{text:?}"),
-            }
-        });
-    }
+    use super::decode;
 
     #[test]
     fn only_whole_hex_bytes_decode() {

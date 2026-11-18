@@ -283,21 +283,24 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   `publicOnly`, recorded commitment labels, deprecated schemes; and an inductive invariant, so
   that Apalache proves the properties for every reachable lock, not only within two steps.
   Then Alloy for the lock's structure and S16, Tamarin for proof of possession and attestation.
-- **Kani, through bolero**: one harness body run as a plain `cargo test` (random inputs), under
-  libFuzzer (`cargo bolero test`) and as a Kani proof (`--engine kani`). It fits only code
-  without FFI or deep parser stacks. The harnesses exist (2026-11-18, DEVELOPMENT.md "Testing")
-  and run under `cargo test`: `hex_round_trips`, `only_hex_decodes`,
-  `attest_encoding_reads_back` (the attestation IDs' length-prefixed encoding before its hash)
-  and `ec_point_fix_holds_on_any_bytes` (`tpm2_pkcs11::fix_ec_point`, whose property the
-  `p521_point` fuzz target now shares). Kani is packaged (`nix/kani.nix`, 0.68.0 from source)
-  and `checks.kani` proves `only_hex_decodes` for every text of up to four bytes (37 s, 1.2 GB;
-  in `nix flake check`, not `checks-crane-only`). The other three do not fit: under Kani a heap
-  value of symbolic length becomes array constraints that took more than 8 GB, and `encode` and
-  `decode`, `attest_encoding` (one byte a field already) and `fix_ec_point` (whose shape needs
-  130 bytes) each build such values. Bolero's `Vec` and `String` generators build them too: a
-  harness meant for Kani takes a fixed array and a length instead, a known cost with no bolero
-  fix as of 2026-11 (bolero #231 did the same for its byte-slice input only). Left: a libFuzzer
-  run of the harnesses (cargo-bolero is in nixpkgs). `Commit::label`'s
+- **Kani and fuzzing**: a property written once as a function that panics when it fails
+  (`cakeys_core::fuzzing`, `cakeys_tpm2_pkcs11::fuzzing`), then checked at random by a
+  proptest, under libFuzzer by a cargo-fuzz target, and for every input up to a bound by a Kani
+  proof where one fits. It fits only code without FFI or deep parser stacks. The properties
+  (2026-11-18, DEVELOPMENT.md "Testing"): hex round-trips and `decode` takes exactly hex (fuzz
+  target `hex`); the attestation IDs' length-prefixed encoding reads back to its fields
+  (`attest_encoding`); `tpm2_pkcs11::fix_ec_point` repairs exactly the malformed short form
+  (`p521_point`). Kani is packaged (`nix/kani.nix`, 0.68.0 from source) and `checks.kani` (in
+  `nix flake check`, not `checks-crane-only`) proves the two hex properties: the round trip for
+  every input of up to two bytes (52 s, 2.5 GB), `decode` for every text of up to four (13 s,
+  0.5 GB). The other two have no proof: under Kani a heap value of symbolic length becomes
+  array constraints that took more than 8 GB, and `attest_encoding` (at one byte a field
+  already) and `fix_ec_point` (whose shape needs 130 bytes) each build such values. So a proof
+  takes a fixed array and a length, never a `Vec` or `String`. The three engines were first
+  bolero's (one harness, `--engine kani`); dropped 2026-11-18: its `Vec` and `String`
+  generators are such values (no fix as of 2026-11; bolero #231 fixed only its byte-slice
+  input), its engine cost the hex round trip more than 8 GB where the plain proof takes 2.5,
+  and the libFuzzer side was never wired while cargo-fuzz is. `Commit::label`'s
   injectivity stays a proptest: Kani handles `format!` badly, and a proof would need a label
   parser written only for it. The other fuzz targets stay cargo-fuzz: tss-esapi's
   unmarshalling is C, and the DER, X.509 and TOML parsers are too deep for a bounded proof.

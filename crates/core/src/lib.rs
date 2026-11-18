@@ -4,6 +4,7 @@
 pub mod attrs;
 pub mod config;
 pub mod error;
+pub mod fuzzing;
 pub mod hex;
 pub mod id;
 pub mod migrate;

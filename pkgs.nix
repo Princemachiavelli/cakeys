@@ -57,8 +57,8 @@ rec {
     inherit advisory-db;
     cargoDeps = pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; };
   };
-  # Kani, from source (nix/kani.nix), x86_64-linux only: checks.kani runs the bolero harnesses
-  # as proofs with it.
+  # Kani, from source (nix/kani.nix), x86_64-linux only: checks.kani runs the proofs in
+  # cakeys_core::fuzzing with it.
   kani = pkgs.callPackage ./nix/kani.nix {
     inherit
       craneLib

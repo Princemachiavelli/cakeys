@@ -248,12 +248,10 @@ craneLib.buildPackage (
             installPhaseCommand = "mkdir -p $out";
           }
         );
-      # The bolero harnesses as Kani proofs (docs/OPEN.md, "Kani, through bolero"), each for
-      # every input up to the bound it sets under cfg(kani). kani-compiler builds the crates and
-      # their dependencies itself, from the same vendored sources: no crane artifacts to reuse.
-      # Not in checks-crane-only (flake.nix). One harness fits: the others build heap values of
-      # symbolic length and took more than 8 GB (docs/OPEN.md), so the check names it.
-      # `only_hex_decodes` (four bytes): 37 s and 1.2 GB.
+      # The Kani proofs in cakeys_core::fuzzing (docs/OPEN.md, "Kani and fuzzing"), each for every
+      # input up to the bound it sets. kani-compiler builds the crate and its dependencies itself,
+      # from the same vendored sources: no crane artifacts to reuse. Not in checks-crane-only
+      # (flake.nix).
       kani = lib.mapNullable (
         kani:
         craneLib.mkCargoDerivation (
@@ -264,7 +262,7 @@ craneLib.buildPackage (
             cargoArtifacts = null;
             buildPhaseCargoCommand = ''
               export HOME=$TMPDIR
-              cargo kani -p cakeys-core --tests --exact --harness hex::tests::only_hex_decodes
+              cargo kani -p cakeys-core
             '';
             doInstallCargoArtifacts = false;
             installPhaseCommand = "mkdir -p $out";
