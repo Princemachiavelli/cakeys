@@ -138,10 +138,11 @@ mod tests {
     use super::*;
 
     /// `fuzzing::ec_point_fix` on any bytes, and on `04 <len> <len bytes>` built on purpose
-    /// (random bytes rarely have that shape, the one it repairs when `len >= 0x80`): bolero, so
-    /// the same harness is a Kani proof (docs/OPEN.md, "Kani, through bolero").
+    /// (random bytes rarely have that shape, the one it repairs when `len >= 0x80`): bolero, at
+    /// random and under libFuzzer. Not a Kani proof: the shape needs 130 bytes or more, and the
+    /// repair copies them to the heap at symbolic length, which took more than 8 GB (docs/OPEN.md,
+    /// "Kani, through bolero").
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn ec_point_fix_holds_on_any_bytes() {
         bolero::check!().with_type::<(bool, u8, Vec<u8>)>().for_each(|(shaped, len, bytes)| {
             if *shaped {

@@ -13,6 +13,8 @@
   quint,
   # The toolchain at Cargo.toml's rust-version (pkgs.nix), for `msrv`.
   msrvToolchain,
+  # Kani (nix/kani.nix), for `kani`; x86_64-linux only, null elsewhere.
+  kani ? null,
   # See nix/package-common.nix.
   withTpm2 ? null,
 }:
@@ -246,6 +248,29 @@ craneLib.buildPackage (
             installPhaseCommand = "mkdir -p $out";
           }
         );
+      # The bolero harnesses as Kani proofs (docs/OPEN.md, "Kani, through bolero"), each for
+      # every input up to the bound it sets under cfg(kani). kani-compiler builds the crates and
+      # their dependencies itself, from the same vendored sources: no crane artifacts to reuse.
+      # Not in checks-crane-only (flake.nix). One harness fits: the others build heap values of
+      # symbolic length and took more than 8 GB (docs/OPEN.md), so the check names it.
+      # `only_hex_decodes` (four bytes): 37 s and 1.2 GB.
+      kani = lib.mapNullable (
+        kani:
+        craneLib.mkCargoDerivation (
+          base
+          // {
+            pnameSuffix = "-kani";
+            nativeBuildInputs = base.nativeBuildInputs ++ [ kani ];
+            cargoArtifacts = null;
+            buildPhaseCargoCommand = ''
+              export HOME=$TMPDIR
+              cargo kani -p cakeys-core --tests --exact --harness hex::tests::only_hex_decodes
+            '';
+            doInstallCargoArtifacts = false;
+            installPhaseCommand = "mkdir -p $out";
+          }
+        )
+      ) kani;
       minimal = craneLib.buildPackage (minimal // { cargoArtifacts = craneLib.buildDepsOnly minimal; });
       # Mutation testing (docs/DEVELOPMENT.md). `mutants` is the code whose own unit and property
       # tests are its tests, no token needed: `nix build .#mutants`. `mutantsOf` takes one scope

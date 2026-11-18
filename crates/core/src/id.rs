@@ -726,9 +726,10 @@ mod tests {
     /// The attestation encoding before its hash determines its fields: they read back from
     /// the left, so two attestations hash the same input only when every field is the same
     /// (`attestation_ids_are_injective` in tests/properties.rs checks the IDs themselves).
-    /// Bolero, so the same harness is a Kani proof (docs/OPEN.md, "Kani, through bolero").
+    /// Bolero, at random and under libFuzzer; not a Kani proof: `attest_encoding` grows a `Vec`
+    /// by fields of symbolic length, which took more than 8 GB at one byte a field (docs/OPEN.md,
+    /// "Kani, through bolero").
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn attest_encoding_reads_back() {
         bolero::check!().with_type::<(Vec<u8>, Vec<u8>, Vec<u8>)>().for_each(|(a, b, c)| {
             let tag = b"cakeys/tpm-certify/v1\0";

@@ -123,16 +123,21 @@
           # What the tests reach, and what they would not notice changing (nix/package-crane.nix):
           # reports, not checks.
           inherit (local.cakeys-crane) coverage mutants;
-          # Every check but the fuzz smoke run, whose build cannot reuse crane's dependencies: the
-          # gate while working (`nix build .#checks-crane-only`); `nix flake check` adds the fuzz run.
+          # Every check but the fuzz smoke run and the Kani proofs, whose builds cannot reuse
+          # crane's dependencies: the gate while working (`nix build .#checks-crane-only`);
+          # `nix flake check` adds those two.
           checks-crane-only = pkgs.linkFarm "checks-crane-only" (
-            builtins.removeAttrs self.checks.${system} [ "fuzz" ]
+            builtins.removeAttrs self.checks.${system} [
+              "fuzz"
+              "kani"
+            ]
           );
-          # Every check that needs no VM and no fuzz run: the light CI workflow
+          # Every check that needs no VM, no fuzz run and no Kani: the light CI workflow
           # (.github/workflows/checks.yml); .github/workflows/flake-check.yml runs them all.
           checks-no-vm = pkgs.linkFarm "checks-no-vm" (
             builtins.removeAttrs self.checks.${system} [
               "fuzz"
+              "kani"
               "vm"
               "module"
               "tpm"

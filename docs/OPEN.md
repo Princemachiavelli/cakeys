@@ -286,12 +286,18 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **Kani, through bolero**: one harness body run as a plain `cargo test` (random inputs), under
   libFuzzer (`cargo bolero test`) and as a Kani proof (`--engine kani`). It fits only code
   without FFI or deep parser stacks. The harnesses exist (2026-11-18, DEVELOPMENT.md "Testing")
-  and run under `cargo test`: `hex_round_trips`, `attest_encoding_reads_back` (the attestation
-  IDs' length-prefixed encoding before its hash) and `ec_point_fix_holds_on_any_bytes`
-  (`tpm2_pkcs11::fix_ec_point`, whose property the `p521_point` fuzz target now shares). Left:
-  packaging Kani (not in nixpkgs: kani-compiler builds against one nightly's `rustc-dev`, and
-  its setup downloads a toolchain and CBMC), then `checks.kani` with each harness's unwind
-  bound, and a libFuzzer run of the harnesses (cargo-bolero is in nixpkgs). `Commit::label`'s
+  and run under `cargo test`: `hex_round_trips`, `only_hex_decodes`,
+  `attest_encoding_reads_back` (the attestation IDs' length-prefixed encoding before its hash)
+  and `ec_point_fix_holds_on_any_bytes` (`tpm2_pkcs11::fix_ec_point`, whose property the
+  `p521_point` fuzz target now shares). Kani is packaged (`nix/kani.nix`, 0.68.0 from source)
+  and `checks.kani` proves `only_hex_decodes` for every text of up to four bytes (37 s, 1.2 GB;
+  in `nix flake check`, not `checks-crane-only`). The other three do not fit: under Kani a heap
+  value of symbolic length becomes array constraints that took more than 8 GB, and `encode` and
+  `decode`, `attest_encoding` (one byte a field already) and `fix_ec_point` (whose shape needs
+  130 bytes) each build such values. Bolero's `Vec` and `String` generators build them too: a
+  harness meant for Kani takes a fixed array and a length instead, a known cost with no bolero
+  fix as of 2026-11 (bolero #231 did the same for its byte-slice input only). Left: a libFuzzer
+  run of the harnesses (cargo-bolero is in nixpkgs). `Commit::label`'s
   injectivity stays a proptest: Kani handles `format!` badly, and a proof would need a label
   parser written only for it. The other fuzz targets stay cargo-fuzz: tss-esapi's
   unmarshalling is C, and the DER, X.509 and TOML parsers are too deep for a bounded proof.

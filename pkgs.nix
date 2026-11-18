@@ -22,7 +22,10 @@ rec {
   cakeys = pkgs.callPackage ./nix/package.nix { };
   # The same build with crane (nix/package-crane.nix): its dependencies built once per
   # Cargo.lock, so the checks (and their clippy and minimal builds) rebuild only cakeys' crates.
-  cakeys-crane = pkgs.callPackage ./nix/package-crane.nix { inherit craneLib msrvToolchain; };
+  cakeys-crane = pkgs.callPackage ./nix/package-crane.nix {
+    inherit craneLib msrvToolchain;
+    kani = if pkgs.stdenv.hostPlatform.system == "x86_64-linux" then kani else null;
+  };
   # The module measurer, the key mover (README.md, "Three tools") and the fault-injecting PKCS#11
   # module (docs/FAULT_SHIM.md): outputs of the same build.
   inherit (cakeys) caprobe camigrate;
