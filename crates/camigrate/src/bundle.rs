@@ -5,8 +5,10 @@
 //! lock pins them and the public key of a private key; for all, the source and the transport
 //! key's identity. One file per (source, target) export; the composed method's key-encryption
 //! key is shared by its keys. Never plaintext: the wrapped blobs are authenticated by RFC 5649
-//! (or OAEP) and each identity recomputed on the target, so a bundle may cross untrusted
-//! channels. Inside a wrapped private key is the PKCS#8 `C_WrapKey` emits; PKCS#12 or a CMS key
+//! (or OAEP) and each identity recomputed and its binding proven on the target, so a bundle may
+//! cross untrusted channels. The transport key is public, so the wrap says nothing of who made
+//! the bundle: a key nothing proves (an EC key under `token-asserted`) is refused from a file
+//! (`sealed::check_carried`). Inside a wrapped private key is the PKCS#8 `C_WrapKey` emits; PKCS#12 or a CMS key
 //! package would need the plaintext key on the host to build.
 
 use base64::Engine as _;

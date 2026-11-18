@@ -11,10 +11,10 @@ use crate::bundle::{BUNDLE_FORMAT, BUNDLE_VERSION, Bundle, Entry, Source, Transp
 use crate::host::free_locator;
 use crate::public::{Moved, already_there, public_key, roll_back};
 use crate::tokens::unwrap_refusals;
-use cakeys_core::config::{AttrValue, Lock, Origin};
+use cakeys_core::config::{AttrValue, Binding, Lock, Origin};
 use cakeys_core::migrate::{Exposure, Method, Side};
 use cakeys_core::pop::OaepHash;
-use cakeys_core::types::ObjectClass as Class;
+use cakeys_core::types::{KeyType, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::token::{SessionObject, with_public_default_dropped};
@@ -417,6 +417,37 @@ pub(crate) fn preflight(
     let spki = e.public_spki().map_err(|e| KmError::Validation(e.into()))?;
     let occupied = free_locator(dst, to, spki.as_deref())?;
     Ok(Preflight { unwrapping: Some(unwrapping), public_half: occupied.public_half })
+}
+
+/// A bundle read from a file (`import --in`) against the binding `dst` records: an EC or Edwards
+/// private key under `token-asserted` is refused (14) before the target is touched.
+///
+/// The transport key is public, so anyone can seal a key of their own to it and set it beside
+/// the lock's IDs and `publicKey`; RFC 5649 authenticates the bytes, not who wrapped them. A
+/// target that keeps no point with an unwrapped EC key (`SoftHSM`) takes the key's identity
+/// from the public half the import creates from that same `publicKey`, so only a `pop-*`
+/// proof ties the unwrapped key to it. An RSA private key carries its modulus, so its identity
+/// is its own; `migrate` makes its bundle in memory from the locked source, so it is not
+/// checked here.
+///
+/// # Errors
+///
+/// `PreconditionFailed` for an EC or Edwards private key whose binding is `token-asserted`.
+pub(crate) fn check_carried(e: &Entry, dst: &Target) -> Result<()> {
+    let own_identity = !matches!(dst.object.key_type, Some(KeyType::Ec | KeyType::EcEdwards));
+    if own_identity || ops::binding(dst) != Some(Binding::TokenAsserted) {
+        return Ok(());
+    }
+    Err(KmError::PreconditionFailed(
+        format!(
+            "{dst}: binding = \"token-asserted\" proves nothing of the {} key '{}' a bundle file carries: its \
+             identity would rest on the public key the bundle itself names; bind it with pop-sign or pop-ecdh \
+             there, or move it with `camigrate migrate`",
+            dst.object.key_type.map_or_else(String::new, |k| k.to_string()),
+            e.object
+        )
+        .into(),
+    ))
 }
 
 /// What [`preflight`] established: the transport key to unwrap with (none for a public object),

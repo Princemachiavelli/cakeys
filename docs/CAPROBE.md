@@ -20,7 +20,11 @@ $ caprobe probe --token <t> [--write] [--out <file>] [--diff <profile>] [--name 
 
 - `supports` asks the profiles alone; no token is touched, and `--profile` needs no keys.toml.
   Answers cite the deciding profile ("no: cryptoki (unpatched build) subtracts it"). Exit 0 yes,
-  15 no, 16 unknown.
+  15 no, 16 unknown. `--token` stacks the token's provider (or `moduleProfile`) under its
+  configured `profiles` layers, from the profiles keys.toml's `profileDirs` add; it never reads
+  keys.lock, so the lock's recorded module and answers are not consulted (`cakeys validate`
+  does). A key type asked without a curve or size is yes when some row of it generated or the
+  module reports it, no when every row says no.
 - `caps` prints a token's provider, its resolved stack of profiles and its usable mechanisms as
   JSON.
 - `probe` generates a token's profile (below). With `--diff`, any difference in the observable
@@ -248,7 +252,8 @@ generated, never edited, and pinned like the baseline:
   generate into. The slot must be empty or hold the provider's own placeholder; anything else is
   refused (17) before a write. No delete or wrap probes there: PIV cannot erase a key.
 - **RSA sizes**: an observed size decides; outside the reported range is no; between two that
-  generated is yes; otherwise unknown.
+  generated, with no size tried between them refused, is yes; otherwise unknown (a TPM
+  generates only its discrete sizes: swtpm's 1024 yes, 1536 no leaves 1280 unknown).
 - **The diff** compares the match keys, `advertise`, `reported`, `subtract`, `add`, `restrict` and every
   probed capability row (answer and `via`); without `--write`, only what a read-only probe sees.
 - **Only the Nix-built binary may write or diff a profile**: an unpatched binding hides

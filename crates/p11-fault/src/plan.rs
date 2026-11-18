@@ -61,6 +61,9 @@ pub enum Action {
     Corrupt,
     /// `C_GetMechanismList`: these mechanisms are not listed.
     HideMechanisms(Vec<CK_MECHANISM_TYPE>),
+    /// The process dies at the call, before it reaches the module (`std::process::abort`): a
+    /// crash, a kill or an OOM between two of a run's writes.
+    Abort,
 }
 
 /// What an attribute rule reports for its attribute.
@@ -134,6 +137,8 @@ struct RuleText {
     corrupt: bool,
     #[serde(default)]
     hide_mechanisms: Vec<Value>,
+    #[serde(default)]
+    abort: bool,
 }
 
 /// A value written by name (`"CKR_DEVICE_ERROR"`) or as a number (`0x30`).
@@ -220,6 +225,12 @@ impl Plan {
     #[must_use]
     pub fn after(&self, call: &Call) -> Option<(CK_RV, usize)> {
         self.rv(call, When::After)
+    }
+
+    /// Whether `call` ends the process: the rule (from 1) that says so.
+    #[must_use]
+    pub fn aborts(&self, call: &Call) -> Option<usize> {
+        self.matching(call).find_map(|(i, r)| (r.action == Action::Abort).then_some(i))
     }
 
     fn rv(&self, call: &Call, at: When) -> Option<(CK_RV, usize)> {
@@ -325,11 +336,14 @@ fn rule(r: RuleText) -> Result<Rule, String> {
         let hidden = r.hide_mechanisms.into_iter().map(|m| m.resolve("mechanism", names::mechanism));
         actions.push(Action::HideMechanisms(hidden.collect::<Result<_, _>>()?));
     }
+    if r.abort {
+        actions.push(Action::Abort);
+    }
     let action = match actions.len() {
         1 => actions.remove(0),
         0 => {
             return Err("nothing to do: give rv, set_flags, clear_flags, attribute, add_label, hide_label, \
-                        use_label, corrupt or hide_mechanisms"
+                        use_label, corrupt, hide_mechanisms or abort"
                 .into());
         }
         _ => return Err("one thing per rule".into()),
@@ -400,6 +414,17 @@ mod tests {
         let call = plan.count(Fn::C_GetTokenInfo);
         assert_eq!((plan.before(&call), plan.after(&call)), (None, None));
         assert_eq!(plan.matching(&call).map(|(i, _)| i).collect::<Vec<_>>(), [1]);
+    }
+
+    /// `abort` ends the process at its call only: no return value, and one thing per rule.
+    #[test]
+    fn abort_ends_the_process_at_its_call() {
+        let plan = Plan::parse("[[rule]]\nfn = \"C_UnwrapKey\"\ncall = 2\nabort = true\n").unwrap();
+        let (first, second) = (plan.count(Fn::C_UnwrapKey), plan.count(Fn::C_UnwrapKey));
+        assert_eq!((plan.aborts(&first), plan.aborts(&second)), (None, Some(1)));
+        assert_eq!((plan.before(&second), plan.after(&second)), (None, None));
+        let two = Plan::parse("[[rule]]\nfn = \"C_UnwrapKey\"\nabort = true\nrv = \"CKR_DEVICE_ERROR\"\n");
+        assert_eq!(two.err().as_deref(), Some("rule 1 (C_UnwrapKey): one thing per rule"));
     }
 
     #[test]

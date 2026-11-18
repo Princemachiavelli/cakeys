@@ -175,6 +175,9 @@ impl Shim {
         observe: impl FnOnce(&mut trace::Detail),
     ) -> Result<CK_RV, Fatal> {
         let call = self.plan.count(function);
+        if self.plan.aborts(&call).is_some() {
+            std::process::abort();
+        }
         let (rv, rule) = if let Some((rv, rule)) = self.plan.before(&call) {
             (rv, Some(rule))
         } else {

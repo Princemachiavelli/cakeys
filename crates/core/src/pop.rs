@@ -202,10 +202,11 @@ pub fn unwrap_challenge(spki: &[u8], msg: &[u8]) -> Result<UnwrapChallenge> {
 ///
 /// As [`unwrap_challenge`].
 pub fn unwrap_challenge_with(spki: &[u8], msg: &[u8], padding: RsaPadding) -> Result<UnwrapChallenge> {
-    let mut secret = [0u8; 32];
-    getrandom::fill(&mut secret)
+    // Wiped when dropped, as the ECDH proof's shared secret is: the key the token unwraps.
+    let mut secret = zeroize::Zeroizing::new([0u8; 32]);
+    getrandom::fill(&mut *secret)
         .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}").into()))?;
-    Ok(UnwrapChallenge { wrapped: rsa_encrypt(spki, padding, &secret)?, mac: mac_sha256(&secret, msg) })
+    Ok(UnwrapChallenge { wrapped: rsa_encrypt(spki, padding, &*secret)?, mac: mac_sha256(&*secret, msg) })
 }
 
 /// The RSA-OAEP hash, with MGF1 of the same hash: a transport wrap's and an OAEP proof's.

@@ -18,7 +18,7 @@ impl Token {
         let class = class_of(object);
         if class == ObjectClass::CERTIFICATE {
             return match self.attr(h, AttributeType::CertificateType)? {
-                Some(Attribute::CertificateType(CertificateType::X_509)) => Ok(()),
+                Some(Attribute::CertificateType(CertificateType::X_509)) => self.check_policy(h, spec),
                 other => Err(KmError::Conflict(format!("CKA_CERTIFICATE_TYPE is {other:?}, not CKC_X_509").into())),
             };
         }

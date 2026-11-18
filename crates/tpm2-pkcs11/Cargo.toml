@@ -29,3 +29,4 @@ base64.workspace = true
 [dev-dependencies]
 toml.workspace = true
 proptest.workspace = true
+p256.workspace = true

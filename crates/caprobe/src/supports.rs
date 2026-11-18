@@ -83,6 +83,9 @@ pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
             })
             .map_err(|e| KmError::Validation(e.into()))
     };
+    // A token's configured layers (`tokens.<t>.profiles`) are in its stack, as token resolution
+    // composes them (`resolution::add_configured`): by name or family, each once.
+    let mut configured: &[String] = &[];
     let module = match (q.profile, q.token) {
         (Some(p), _) => Some(find_module(p, q.layers)?),
         (None, Some(t)) => {
@@ -93,6 +96,7 @@ pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
                     format!("token '{t}' names no provider; set tokens.{t}.provider or pass --profile").into(),
                 )
             })?;
+            configured = &token.profiles;
             Some(find_module(named, &token.profiles)?)
         }
         (None, None) => None,
@@ -101,9 +105,10 @@ pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
     // subtracts is decided by the build this binary runs against, so an explicit `--layer
     // cryptoki/0.12` adds nothing it has not already decided.
     let mut resolved: Vec<Profile> = vec![cakeys_pkcs11::binding::layer().map_err(|e| KmError::Validation(e.into()))?];
-    for l in q.layers {
+    for l in q.layers.iter().chain(configured) {
         let p = find(l)?;
-        if p.profile != cakeys_pkcs11::binding::NAME {
+        let named = |r: &Profile| r.profile == l.as_str() || r.family() == l.as_str() || r.profile == p.profile;
+        if p.profile != cakeys_pkcs11::binding::NAME && !resolved.iter().any(named) {
             resolved.push(p.clone());
         }
     }

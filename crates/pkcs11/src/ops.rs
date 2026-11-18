@@ -223,7 +223,29 @@ pub fn plan_templates(
 ///
 /// What `lock`'s capability check refuses, the provider's templates included.
 pub fn check_import(t: &Target, tok: &Token) -> Result<()> {
+    check_imported_attestation(t, tok.provider.as_ref()).map_err(|m| tok.unsupported(m))?;
     check_capabilities(t, tok, plan_mode(t)?, Verb::Lock)
+}
+
+/// An attestation asked of a key about to be imported, which the provider attests only when the
+/// device made the key (PIV): refused here, before the key is written, since a device such as a
+/// `YubiKey` cannot delete what it imported. Every import path asks [`check_import`] before its
+/// write; camigrate's plan asks this too.
+///
+/// # Errors
+///
+/// The refusal's text.
+pub fn check_imported_attestation(
+    t: &Target,
+    provider: &dyn crate::provider::Provider,
+) -> std::result::Result<(), String> {
+    match provider.attestation() {
+        Some(cap) if t.on_token.attestation && !cap.imported => Err(format!(
+            "{t} asks for an attestation, and provider '{}' attests only keys the device generated, never an imported one",
+            provider.name()
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// [`Needs`] of `t` in `mode`. `creating`, when `create` makes the object: `Some` of
@@ -569,6 +591,23 @@ fn absent(t: &Target) -> KmError {
 /// or anything sits under it; what was created is removed again when its identity cannot be
 /// established.
 fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Resolved> {
+    // If-None-Match: never create over anything else under the locator. On a PIV token,
+    // generating into an occupied slot would silently replace its key. A session without login
+    // sees no private object, so it cannot tell the locator is free — nor that a private or
+    // secret key the lock pins is gone, which D1 below would say.
+    let no_login = || {
+        KmError::Unavailable(
+            format!(
+                "{t}: a session without login cannot see private objects under the locator, so it cannot \
+             tell the locator is free; configure pinFile or pinEnv for token '{}'",
+                t.token_name
+            )
+            .into(),
+        )
+    };
+    if !tok.logged_in && matches!(t.object.class, Class::PrivateKey | Class::SecretKey) {
+        return Err(no_login());
+    }
     // D1: the lock already pins this object's material, so a fresh generation can only end in a
     // mismatch; refuse before anything is created. (Had this token held the same material,
     // resolve would have found it.)
@@ -581,18 +620,8 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
             ids.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
         ).into()));
     }
-    // If-None-Match: never create over anything else under the locator. On a PIV token,
-    // generating into an occupied slot would silently replace its key. A session without login
-    // sees no private object, so it cannot tell the locator is free.
     if !tok.logged_in {
-        return Err(KmError::Unavailable(
-            format!(
-                "{t}: a session without login cannot see private objects under the locator, so it cannot \
-             tell the locator is free; configure pinFile or pinEnv for token '{}'",
-                t.token_name
-            )
-            .into(),
-        ));
+        return Err(no_login());
     }
     // Any class, unlike an import (`Token::occupied`): a certificate already there certifies
     // some other key, never one generated now.
@@ -857,8 +886,7 @@ pub fn plan_create<'a>(
 pub struct Created {
     /// The realised objects, in the order they were created.
     pub created: Vec<Resolved>,
-    /// Whether the lock changed: the caller saves it, also when `failed` is set — never a key
-    /// made and lost.
+    /// Whether the lock changed and `persist` saved it.
     pub changed: bool,
     /// The failure that ended the run, if any.
     pub failed: Option<KmError>,
@@ -867,19 +895,22 @@ pub struct Created {
 /// The `create` verb: [`create`] over each of `pairs` (what [`plan_create`] decided to create or
 /// verify), in order. Every step of a pair, opening its token included, ends the run there,
 /// reported in [`Created::failed`] beside what was created before; a verified key is said in a
-/// note.
+/// note. Each pair that changed `lock` is `persist`ed before the next pair is touched, so a run
+/// killed or failing later never leaves a key on a token the lock file does not record; a
+/// failed save ends the run as a pair's failure does.
 ///
 /// At most one token is open at a time: each is closed before the next opens.
 ///
 /// # Errors
 ///
-/// None of its own: a pair's failure is [`Created::failed`].
+/// None of its own: a pair's failure, or its record's, is [`Created::failed`].
 pub fn create_selected(
     cfg: &Config,
     pairs: &[(&str, &str)],
     open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
     lock: &mut Lock,
     write: LockWrite,
+    persist: &mut dyn FnMut(&Lock) -> Result<()>,
     notes: &mut Notes,
 ) -> Created {
     let mut out = Created { created: Vec::new(), changed: false, failed: None };
@@ -896,8 +927,16 @@ pub fn create_selected(
         };
         match pair() {
             Ok(Made::Created(r, c)) => {
-                out.changed |= c;
+                let saved = if c { persist(lock) } else { Ok(()) };
                 out.created.push(r);
+                if let Err(e) = saved {
+                    notes.say(format!(
+                        "'{spec_name}' on token '{token_name}' was created, but the lock could not record it"
+                    ));
+                    out.failed = Some(e);
+                    break;
+                }
+                out.changed |= c;
             }
             Ok(Made::Verified(_)) => {}
             Err(e) => {

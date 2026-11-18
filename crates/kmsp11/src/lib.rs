@@ -428,6 +428,24 @@ mod tests {
         assert_eq!(keys[0].keygen, MechanismType::ECC_KEY_PAIR_GEN);
     }
 
+    /// Every MAC row serves its key type's HMAC (libkmsp11's `algorithm_details.cc`), so a spec
+    /// declaring that mechanism finds it: `HMAC_SHA256` once listed none, and
+    /// `CKA_ALLOWED_MECHANISMS = ["CKM_SHA256_HMAC"]` matched no algorithm (15).
+    #[test]
+    fn every_mac_row_serves_its_hmac() {
+        let macs: Vec<&Row> = rows().iter().filter(|r| r.purpose == "MAC").collect();
+        assert_eq!(macs.len(), 5);
+        for r in macs {
+            let hmac = r.kind.replacen("CKK_", "CKM_", 1);
+            assert_eq!(r.mechanisms, [hmac], "{}", r.algorithm);
+        }
+        let declared = spec(
+            &[yes("CKA_SIGN"), ("CKA_ALLOWED_MECHANISMS", AttrValue::mechanisms(["CKM_SHA256_HMAC".into()]))],
+            &[],
+        );
+        assert_eq!(pick(&object(Kt::Sha256Hmac, None, None, Some(32)), &declared, None), Ok("HMAC_SHA256".into()));
+    }
+
     #[test]
     fn only_google_is_libkmsp11() {
         let module = |m: &str| ModuleInfo {

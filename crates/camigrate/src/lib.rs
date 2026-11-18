@@ -18,7 +18,7 @@ use bundle::Bundle;
 use cakeys_cli_common::{Opener, print, read_lock, save_changed};
 use cakeys_core::KmError;
 use cakeys_core::config::{
-    ALLOW_NIX_STORE_KEYS, Config, KeyOrigin, Lock, Origin, SpecCfg, SpecTokenCfg, in_nix_build, write_whole,
+    ALLOW_NIX_STORE_KEYS, Config, KeyOrigin, Lock, Origin, SpecCfg, SpecTokenCfg, in_nix_build, save_lock, write_whole,
 };
 use cakeys_core::migrate::{Exposure, Method};
 use cakeys_core::types::ObjectClass as Class;
@@ -250,7 +250,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
             if how.dry_run {
                 // Without names a bundle takes what can move, so its plan fails only when nothing can.
                 let partial = objects.is_empty() && !matches!(dest, Destination::File(_));
-                return run.plan_moves(&objects, token, &dest, how, partial, notes);
+                return run.plan_moves(&objects, token, &dest, &[], how, partial, notes);
             }
             if let Destination::File(_) = &dest {
                 let (Some(out), Some(pass)) = (out, passphrase_file) else {
@@ -273,7 +273,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
         Cmd::Import { token, spec, input: Some(input), dry_run, .. } => run.import(token, spec, input, *dry_run, notes),
         Cmd::Migrate { object, from, to, spec, how } if how.dry_run => {
             specs_import(&run.opener.cfg, spec, to, MOVE)?;
-            run.plan_moves(object.as_deref().as_slice(), from, &Destination::Token(to), how, false, notes)
+            run.plan_moves(object.as_deref().as_slice(), from, &Destination::Token(to), spec, how, false, notes)
         }
         Cmd::Migrate { object, from, to, spec, how } => run.migrate(object.as_deref(), from, to, spec, how, notes),
         Cmd::Transport { object, spec, token, trusted: Some(source), .. } => {
@@ -346,19 +346,29 @@ impl Run<'_> {
         save_changed(&self.lock_path, &self.lock, changed, notes)
     }
 
+    /// Record one object's write at once, before the run touches another (the save is atomic):
+    /// a run killed or failing later never leaves an object on a token the lock does not record,
+    /// and on ykcs11 cakeys cannot remove it. [`Self::save`] says so once, at the end.
+    fn record(&self, what: &dyn std::fmt::Display) -> anyhow::Result<()> {
+        save_lock(&self.lock_path, &self.lock)
+            .with_context(|| format!("{what} is on the token, but the lock could not record it"))
+    }
+
     /// `--dry-run`: plan each object's move from `from` to `dest` and print it (docs/CAMIGRATE.md D9);
     /// 15 when any object cannot move as invoked — or, for a `partial` move (an export without
     /// names, which leaves out what cannot move), when none can: the real run's own verdict.
+    #[expect(clippy::too_many_arguments, reason = "the move command's parts, as the CLI hands them over")]
     fn plan_moves(
         &self,
         objects: &[&str],
         from: &str,
         dest: &Destination,
+        specs: &[String],
         how: &MoveArgs,
         partial: bool,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
-        let moves = self.plan(objects, from, dest, how, true, notes)?;
+        let moves = self.plan(objects, from, dest, specs, how, true, notes)?;
         if partial && moves.plans.iter().any(|p| p.ready) {
             return Ok(());
         }
@@ -381,7 +391,7 @@ impl Run<'_> {
         how: &MoveArgs,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
-        let moves = self.plan(objects, from, dest, how, false, notes)?;
+        let moves = self.plan(objects, from, dest, &[], how, false, notes)?;
         // Named objects are all or nothing; without names, whatever can move does, and what
         // cannot (a key made non-extractable, ...) is warned about and left out.
         if !objects.is_empty() {
@@ -484,20 +494,21 @@ impl Run<'_> {
                 }
             };
             let lock = &mut self.lock;
-            let outcome = if dry_run {
-                // As the import itself: a key already realised there is verified, not refused
-                // for sitting under its own locator.
-                public::already_there(&dst, &target, lock, notes).and_then(|there| {
-                    if there {
-                        return Ok(Some(public::Moved::AlreadyThere));
-                    }
-                    sealed::preflight(&bundle, e, &dst, &target, tr.as_ref(), lock, notes)?;
-                    let method = e.method().map_err(|e| KmError::Validation(e.into()))?;
-                    import_checks(&dst, &target, &method, opener.registry, notes).map(|()| None)
-                })
-            } else {
-                sealed::import(&bundle, e, &dst, &target, tr.as_ref(), lock, notes).map(Some)
-            };
+            // As the import itself: a key already realised there is verified, not refused for
+            // sitting under its own locator. A key it would create must be one a bundle file can
+            // carry under its binding.
+            let outcome = public::already_there(&dst, &target, lock, notes).and_then(|there| {
+                if there {
+                    return Ok(Some(public::Moved::AlreadyThere));
+                }
+                sealed::check_carried(e, &dst)?;
+                if !dry_run {
+                    return sealed::import(&bundle, e, &dst, &target, tr.as_ref(), lock, notes).map(Some);
+                }
+                sealed::preflight(&bundle, e, &dst, &target, tr.as_ref(), lock, notes)?;
+                let method = e.method().map_err(|e| KmError::Validation(e.into()))?;
+                import_checks(&dst, &target, &method, opener.registry, notes).map(|()| None)
+            });
             match outcome {
                 Ok(None) => {
                     println!(
@@ -507,6 +518,7 @@ impl Run<'_> {
                 }
                 Ok(Some(public::Moved::Imported)) => {
                     changed = true;
+                    self.record(&dst)?;
                     notes.say(format!("imported {} from {} into {dst}", e.object, bundle.source.token));
                 }
                 Ok(Some(public::Moved::AlreadyThere)) => {
@@ -538,7 +550,7 @@ impl Run<'_> {
     ) -> anyhow::Result<()> {
         // Before the plan, as the dry run does: both refuse a named target that is no import pair.
         specs_import(&self.opener.cfg, specs, to, MOVE)?;
-        let moves = self.plan(object.as_slice(), from, &Destination::Token(to), how, true, notes)?;
+        let moves = self.plan(object.as_slice(), from, &Destination::Token(to), specs, how, true, notes)?;
         moves.ready()?;
         specs_select(&self.opener.cfg, specs, moves.plans.iter().map(|p| p.object.as_str()), to, MOVE)?;
         let built = |m: &Method| {
@@ -602,6 +614,7 @@ impl Run<'_> {
             match outcome {
                 Ok(public::Moved::Imported) => {
                     changed = true;
+                    self.record(&format_args!("'{}' on token '{to}'", p.object))?;
                     let how = p.method.as_ref().map_or_else(String::new, Method::name);
                     notes.say(format!("moved {} from {from} to {to} ({how})", p.object));
                 }
@@ -638,12 +651,15 @@ impl Run<'_> {
     }
 
     /// Plan each object's move and, with `show`, print the plans, as a table or as JSON (an
-    /// export that writes the bundle to stdout shows none: stdout is the bundle).
+    /// export that writes the bundle to stdout shows none: stdout is the bundle). `specs` are the
+    /// `--spec` names, which pick an object's landing pair on a target token.
+    #[expect(clippy::too_many_arguments, reason = "the move command's parts, as the CLI hands them over")]
     fn plan(
         &self,
         objects: &[&str],
         from: &str,
         dest: &Destination,
+        specs: &[String],
         how: &MoveArgs,
         show: bool,
         notes: &mut Notes,
@@ -710,7 +726,18 @@ impl Run<'_> {
                 p.reasons.insert(0, why);
             }
             match target_token {
-                Some(to) => landing_checks(cfg, p, to, &moves.source, moves.target.as_ref(), opener.registry),
+                Some(to) => match import_target(cfg, &p.object, to, spec_for(cfg, specs, &p.object), MOVE) {
+                    Ok(landing) => landing_checks(p, &landing, &moves.source, moves.target.as_ref(), opener.registry),
+                    // A move must pick its landing pair now: several, and no `--spec` naming
+                    // one, is refused by the run, so by the plan. (An object with none is
+                    // blocked already, by `no_import_pair`.) A bundle lands later, under the
+                    // pair its import picks.
+                    Err(e) if p.ready && !bundle => {
+                        p.ready = false;
+                        p.reasons.push(e.to_string());
+                    }
+                    Err(_) => {}
+                },
                 // Nothing lands on a token here: the source's export is all the run makes.
                 None => {
                     if let (true, Some(method)) = (p.ready, &p.method) {
@@ -776,35 +803,37 @@ fn import_checks(
 /// What a ready plan `p` must still pass where it lands on `to`, said in the plan since the run
 /// would refuse it: the target's `lock` must prove possession of a private key the way its spec
 /// says; the providers must take the templates the move sends (`Provider::template`, refused
-/// before anything is created); an imported PIV key is never attested (docs/CAMIGRATE.md D8).
+/// before anything is created); an imported key is never attested where the provider attests
+/// only what the device made (PIV, docs/CAMIGRATE.md D8), the check the import itself makes.
+/// `dst` is the landing pair, the one `--spec` names.
 fn landing_checks(
-    cfg: &Config,
     p: &mut plan::Plan,
-    to: &str,
+    dst: &Target,
     source: &cakeys_core::migrate::Side,
     target: Option<&cakeys_core::migrate::Side>,
     registry: &Registry,
 ) {
-    let Ok(dst) = import_target(cfg, &p.object, to, None, MOVE) else { return };
     let block = |p: &mut plan::Plan, why: String| {
         p.ready = false;
         p.reasons.push(why);
     };
     if let (true, Some(target)) = (p.ready, target)
-        && let Some(why) = unprovable(&dst, target)
+        && let Some(why) = unprovable(dst, target)
     {
         block(p, why);
     }
     if let (true, Some(method), Some(target)) = (p.ready, p.method.clone(), target) {
         let exposure = p.exposure.unwrap_or(Exposure::Sealed);
-        match tokens::template_refusal(&dst, &method, exposure, source, target, registry) {
+        match tokens::template_refusal(dst, &method, exposure, source, target, registry) {
             Ok(None) => {}
             Ok(Some(note)) => p.notes.push(note),
             Err(why) => block(p, why),
         }
     }
-    if p.ready && p.method == Some(Method::PivImport) && dst.on_token.attestation {
-        let why = format!("'{to}' asks for an attestation of '{}', and an imported PIV key has none", p.object);
+    if let (true, Some(target)) = (p.ready, target)
+        && let Ok(Some(provider)) = registry.named(&target.provider)
+        && let Err(why) = cakeys_pkcs11::ops::check_imported_attestation(dst, provider.as_ref())
+    {
         block(p, why);
     }
 }
@@ -1024,7 +1053,7 @@ impl Run<'_> {
         how: &MoveArgs,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
-        let moves = self.plan(objects, from, dest, how, false, notes)?;
+        let moves = self.plan(objects, from, dest, &[], how, false, notes)?;
         moves.ready()?;
         let [p] = moves.plans.as_slice() else {
             return Err(KmError::Validation(
@@ -1168,7 +1197,10 @@ impl Run<'_> {
         let moved = host::create_and_record(&dst, &target, &mut self.lock, &read.pkcs8, Some(&spki), origin, notes)?;
         let mut changed = matches!(moved, public::Moved::Imported);
         match moved {
-            public::Moved::Imported => notes.say(format!("imported {object} from {} into {dst}", input.display())),
+            public::Moved::Imported => {
+                self.record(&dst)?;
+                notes.say(format!("imported {object} from {} into {dst}", input.display()));
+            }
             public::Moved::AlreadyThere => {
                 notes.note(format_args!("{dst} is already realised and verifies; nothing to import"));
             }
@@ -1256,6 +1288,7 @@ impl Run<'_> {
                 Ok(None) => {}
                 Ok(Some(public::Moved::Imported)) => {
                     changed = true;
+                    self.record(&dst)?;
                     notes.say(format!("imported {object} from its file into {dst}"));
                 }
                 Ok(Some(public::Moved::AlreadyThere)) => {

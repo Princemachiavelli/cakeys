@@ -28,6 +28,28 @@ tokens.ref = { locator = { CKA_LABEL = "occupied" }, origin = "create" }
     assert_eq!(keys, []);
 }
 
+/// A session without login cannot see a private key: `create` on a pair whose key the lock pins,
+/// through a token with no PIN configured, says to configure one (16). It once said the key was
+/// gone and creating it would make other material (14, D1), for a key that was there.
+#[test]
+fn create_without_login_asks_for_a_pin() {
+    let Some(e) = env("create-no-login") else { return };
+    let spec = |token: &str| {
+        format!(
+            "[objects.nl]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.nl]\nobject = \"nl\"\nattributes = {{ CKA_SIGN = true }}\n\
+             tokens.{token} = {{ locator = {{ CKA_LABEL = \"create-nl\" }}, origin = \"create\" }}\n"
+        )
+    };
+    e.config(&spec("ref"));
+    assert_eq!(e.code(&["create", "--spec", "nl", "--token", "ref", "--update-lock"]), 0);
+    e.config(&spec("ref-anon"));
+    let o = e.km(&["create", "--spec", "nl", "--token", "ref-anon", "--no-update-lock"]);
+    let err = stderr(&o);
+    assert_eq!(code(&o), 16, "{err}");
+    assert!(err.contains("configure pinFile or pinEnv") && !err.contains("generate different material"), "{err}");
+}
+
 /// D1: when the lock already pins an object's material, `create` is refused before anything is
 /// created — generated material could never match. The same material adopted (or already under the
 /// locator) still realises through `lock`; `create` there makes nothing and verifies it as

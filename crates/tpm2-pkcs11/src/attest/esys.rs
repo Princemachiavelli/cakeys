@@ -9,7 +9,8 @@
 //!
 //! Everything the host can check, it checks itself: the attestation is verified with `RustCrypto`
 //! against the AK's public key, its Name is recomputed from the store's public blob, and the
-//! key material it names is cross-checked against the object's SPKI. The qualifying data is a
+//! key material that blob holds (never `TPM2_ReadPublic`'s unauthenticated copy) is
+//! cross-checked against the object's SPKI. The qualifying data is a
 //! fresh random nonce, so the response proves the object is *currently loaded in that TPM*.
 
 use super::store::{Parent, Store, TObject};
@@ -515,10 +516,33 @@ fn certify_loaded(
     ak_qualified_name: &Name,
     spki: Option<&[u8]>,
 ) -> Result<Certified> {
-    let (live_public, live_name, live_qn) = read_public(ctx, key)?;
+    let live = read_public(ctx, key)?;
     let (attest, signature) = certify(ctx, key, objauth, ak)?;
-    // Host verification: the AK's signature over the exact attestation bytes, the attested
-    // Names against both the store's public blob and the loaded object, and the signer.
+    verify_certified(&attest, &signature, &tobj.pub_blob, &live, ak_public, ak_qualified_name, spki)
+}
+
+/// The host verification of a certify statement: the AK's signature over the exact attestation
+/// bytes, the attested Names against both the store's public blob and the loaded object (`live`,
+/// what `TPM2_ReadPublic` answered), the signer, and the material cross-check.
+///
+/// The material and attributes come from `pub_blob`, the bytes whose Name was signed. `live`'s
+/// public area is unauthenticated (password sessions, no response HMAC, and ESYS does not
+/// recompute its Name), so it only has to agree: an interposer that answers `ReadPublic` with
+/// another key's public area beside the certified object's Name is refused (13).
+///
+/// # Errors
+///
+/// `Conflict` when the attestation, its signer, its Names or the material disagree.
+fn verify_certified(
+    attest: &Attest,
+    signature: &Signature,
+    pub_blob: &[u8],
+    live: &(Public, Name, Name),
+    ak_public: &Public,
+    ak_qualified_name: &Name,
+    spki: Option<&[u8]>,
+) -> Result<Certified> {
+    let (live_public, live_name, live_qn) = live;
     let certify_info = match attest.attested() {
         AttestInfo::Certify { info } => info,
         info => {
@@ -527,7 +551,7 @@ fn certify_loaded(
     };
     let name = certify_info.name().value().to_vec();
     let qualified_name = certify_info.qualified_name().value().to_vec();
-    if name != recompute_name(&tobj.pub_blob)? {
+    if name != recompute_name(pub_blob)? {
         return Err(KmError::Conflict("the attested Name is not the Name of the public blob in the store".into()));
     }
     if name != live_name.value() || qualified_name != live_qn.value() {
@@ -536,14 +560,21 @@ fn certify_loaded(
     let ak_material = material_of(ak_public)?;
     let ak_spki =
         ak_material.spki.ok_or_else(|| KmError::Conflict("the Attestation Key exposes no public key".into()))?;
-    verify_signature(&signature, &ak_spki, &attest_bytes(&attest)?)?;
+    verify_signature(signature, &ak_spki, &attest_bytes(attest)?)?;
     if attest.qualified_signer().value() != ak_qualified_name.value() {
         return Err(KmError::Conflict("the attestation was signed by another key than the AK".into()));
     }
-    // The material cross-check (§3.7): the attested public area must be the same key the
-    // object's rfc7093m4 hashes — what verifies the identity on any other token. A symmetric
-    // PKCS#11 object backed by an asymmetric TPM object (or the reverse) is a different object.
-    let material = material_of(&live_public)?;
+    // The material cross-check (§3.7): the attested public area — the store blob the signed
+    // Name hashes, never ReadPublic's unauthenticated copy — must be the same key the object's
+    // rfc7093m4 hashes: what verifies the identity on any other token. A symmetric PKCS#11
+    // object backed by an asymmetric TPM object (or the reverse) is a different object.
+    let attested = unmarshal_public(pub_blob)?;
+    if *live_public != attested {
+        return Err(KmError::Conflict(
+            "TPM2_ReadPublic answered another public area than the one the attested Name hashes".into(),
+        ));
+    }
+    let material = material_of(&attested)?;
     match (spki, &material.spki) {
         (Some(want), Some(attested)) if want != attested.as_slice() => {
             return Err(KmError::Conflict(
@@ -653,5 +684,79 @@ mod tests {
         let rsa_sig = RsaSignature::create(HashingAlgorithm::Sha256, PublicKeyRsa::try_from(vec![1; 256]).unwrap());
         let other = verify_signature(&Signature::RsaSsa(rsa_sig.unwrap()), &ak, b"attest");
         assert!(matches!(other, Err(KmError::Unsupported(m)) if m.contains("not ECDSA-SHA256")));
+    }
+
+    /// The fixture's P-256 public blob with its `unique` point replaced by `key`'s.
+    fn blob_of(key: &p256::ecdsa::SigningKey) -> Vec<u8> {
+        use p256::pkcs8::EncodePublicKey;
+        let spki = key.verifying_key().to_public_key_der().unwrap();
+        let point = &spki.as_bytes()[spki.as_bytes().len() - 64..];
+        let mut blob = pub_blob();
+        let n = blob.len();
+        // The blob ends `0020 ‖ x ‖ 0020 ‖ y`.
+        blob[n - 66..n - 34].copy_from_slice(&point[..32]);
+        blob[n - 32..].copy_from_slice(&point[32..]);
+        blob
+    }
+
+    /// A `TPMS_ATTEST` certifying `name`/`qn`, signed by `ak` as the TPM would.
+    fn certify_statement(ak: &p256::ecdsa::SigningKey, ak_qn: &[u8], name: &[u8], qn: &[u8]) -> (Attest, Signature) {
+        use p256::ecdsa::signature::Signer;
+        let tpm2b = |b: &[u8]| [&u16::try_from(b.len()).unwrap().to_be_bytes()[..], b].concat();
+        let bytes = [
+            &0xff54_4347u32.to_be_bytes()[..], // TPM_GENERATED_VALUE
+            &0x8017u16.to_be_bytes(),          // TPM_ST_ATTEST_CERTIFY
+            &tpm2b(ak_qn),
+            &tpm2b(&[5; 32]), // extraData: the nonce, checked by `certify`
+            &[0; 17],         // clockInfo
+            &[0; 8],          // firmwareVersion
+            &tpm2b(name),
+            &tpm2b(qn),
+        ]
+        .concat();
+        let attest = Attest::unmarshall(&bytes).unwrap();
+        let sig: p256::ecdsa::Signature = ak.sign(&attest_bytes(&attest).unwrap());
+        let raw = sig.to_bytes();
+        let (r, s) = raw.split_at(32);
+        let ecc = EccSignature::create(
+            HashingAlgorithm::Sha256,
+            EccParameter::try_from(r.to_vec()).unwrap(),
+            EccParameter::try_from(s.to_vec()).unwrap(),
+        );
+        (attest, Signature::EcDsa(ecc.unwrap()))
+    }
+
+    /// The material and attributes are the store blob's — the bytes the signed Name hashes —
+    /// never `TPM2_ReadPublic`'s public area, which nothing authenticates: an interposer that
+    /// answers `ReadPublic` with a victim key's public area beside the certified object's Names
+    /// is refused, also when the object's SPKI is the victim's (esys.rs F1).
+    #[test]
+    fn the_material_is_the_attested_blobs_not_read_publics() {
+        let ak = p256::ecdsa::SigningKey::from_slice(&[1; 32]).unwrap();
+        let key = p256::ecdsa::SigningKey::from_slice(&[2; 32]).unwrap();
+        let victim = p256::ecdsa::SigningKey::from_slice(&[3; 32]).unwrap();
+        let (ak_public, blob, victim_public) =
+            (unmarshal_public(&blob_of(&ak)).unwrap(), blob_of(&key), unmarshal_public(&blob_of(&victim)).unwrap());
+        let ak_qn = Name::try_from(vec![0x0b; 34]).unwrap();
+        let (name, qn) = (recompute_name(&blob).unwrap(), vec![0x0c; 34]);
+        let (attest, signature) = certify_statement(&ak, ak_qn.value(), &name, &qn);
+        let names = (Name::try_from(name).unwrap(), Name::try_from(qn).unwrap());
+        let spki_of = |p: &Public| material_of(p).unwrap().spki.unwrap();
+        let (key_spki, victim_spki) = (spki_of(&unmarshal_public(&blob).unwrap()), spki_of(&victim_public));
+        let verify = |live: &Public, spki: &[u8]| {
+            let live = (live.clone(), names.0.clone(), names.1.clone());
+            verify_certified(&attest, &signature, &blob, &live, &ak_public, &ak_qn, Some(spki))
+        };
+        // An honest ReadPublic: the blob's key passes, with the blob's signed attributes.
+        let honest = verify(&unmarshal_public(&blob).unwrap(), &key_spki).unwrap();
+        assert_eq!((honest.local, honest.extractable), (true, false));
+        // ReadPublic swapped for the victim's public area: refused, whichever SPKI is asked.
+        for spki in [&victim_spki, &key_spki] {
+            let swapped = verify(&victim_public, spki);
+            assert!(matches!(swapped, Err(KmError::Conflict(m)) if m.contains("ReadPublic")), "{spki:?}");
+        }
+        // The victim's SPKI against the honest blob: the cross-check refuses it.
+        let other = verify(&unmarshal_public(&blob).unwrap(), &victim_spki);
+        assert!(matches!(other, Err(KmError::Conflict(m)) if m.contains("attests the public key")));
     }
 }

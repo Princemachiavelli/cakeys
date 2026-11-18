@@ -398,6 +398,35 @@ fn a_creation_that_cannot_be_identified_is_undone_or_reported() {
     assert!(stderr(&o).contains("vanished after creation"), "{}", stderr(&o));
 }
 
+/// `create` records each key as it is made: killed at the second pair's `C_GenerateKeyPair`,
+/// the run leaves the first key on the token and in the lock file, never on the token alone;
+/// the next run verifies it and makes the second (docs/REVIEW D2, cli lib.rs F1).
+#[test]
+fn a_create_killed_part_way_has_recorded_what_it_made() {
+    let plan = "[[rule]]\nfn = \"C_GenerateKeyPair\"\ncall = 2\nabort = true\n";
+    let Some((w, plan_path, trace)) = faulted("fault-killed-create", plan) else { return };
+    let spec = |n: &str| {
+        format!(
+            "[objects.{n}]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.{n}]\nobject = \"{n}\"\nattributes = {{ CKA_SIGN = true }}\n\
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"killed-{n}\" }}, origin = \"create\" }}\n\n"
+        )
+    };
+    w.write_config(&(reference_tokens(&fault_shim(), &w.dir) + &spec("k1") + &spec("k2")));
+    let real = std::env::var(REF.module_var).unwrap();
+    let on_token = |n: &str| open_session(&real, "kmtest", "1234").labelled(&format!("killed-{n}")).len();
+    let create = ["create", "--token", "ref", "--update-lock"];
+    let o = w.km_env(&create, &[("P11_FAULT_PLAN", &plan_path), ("P11_FAULT_TRACE", &trace)]);
+    assert_eq!(o.status.code(), None, "the plan did not end the run: {}", stderr(&o));
+    assert_eq!((on_token("k1"), on_token("k2")), (2, 0), "the first pair's key, both halves");
+    let lock = w.lock();
+    assert!(lock["realisations"]["k1"].get("ref").is_some(), "made before the kill, not recorded: {lock}");
+    assert!(lock["realisations"].get("k2").is_none(), "{lock}");
+    let o = w.km(&create);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!((on_token("k1"), on_token("k2")), (2, 2));
+}
+
 /// A curve refused by OID is generated once more by name only where the token's profile says
 /// only its name generates it (ykcs11's edwards25519), or nothing is known of it (ISSUES.md
 /// B18). `SoftHSM`'s profile says it generates edwards25519 by OID: its refusal is reported as

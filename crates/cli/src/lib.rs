@@ -481,8 +481,9 @@ impl Run<'_> {
 
     /// `create`: what each selected pair gets is decided before any token is opened
     /// ([`ops::plan_create`]); a pair the profiles refuse ends the run there unless
-    /// `--skip-unsupported`. Then the pairs to create or verify, and the lock records what was
-    /// created, also when a later pair failed — never a key made and lost.
+    /// `--skip-unsupported`. Then the pairs to create or verify; the lock file records each key
+    /// as it is created, so a later pair's failure, a failed save or a killed run never loses
+    /// one made before.
     fn create(&mut self, at: &Address, how: CreateHow, notes: &mut Notes) -> anyhow::Result<()> {
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
         let (object, spec, token) = (at.plain_object()?, at.spec.as_deref(), at.token.as_deref());
@@ -534,9 +535,15 @@ impl Run<'_> {
         }
         let pairs: Vec<(&str, &str)> = planned.iter().filter(|p| p.action.runs()).map(|p| (p.spec, p.token)).collect();
         let open = |name: &str, notes: &mut Notes| opener.open(name, Access::Write, notes);
-        let done = ops::create_selected(cfg, &pairs, &open, &mut self.lock, how.write, notes);
-        self.save(done.changed, notes)?;
+        // Each created key is recorded before the next pair is touched; what was created is
+        // printed whatever ended the run, the only machine-readable record of it.
+        let lock_path = &self.lock_path;
+        let mut persist = |lock: &Lock| save_lock(lock_path, lock);
+        let done = ops::create_selected(cfg, &pairs, &open, &mut self.lock, how.write, &mut persist, notes);
         print(&done.created)?;
+        if done.changed {
+            notes.say(format!("updated {}", lock_path.display()));
+        }
         done.failed.map_or(Ok(()), |e| Err(e.into()))
     }
 }

@@ -127,9 +127,13 @@ observed mechanisms for it, else a transport file. The OAEP hash is the stronges
 | `vendor:<provider>/<name>` | as the provider declares | a provider crate's own path (D10) |
 
 **D5. The bundle is a versioned file, one per export** (a source and a target), never
-plaintext. RFC 5649 authenticates the key bytes and import recomputes every identity on the
-target, so a tampered or swapped blob fails either way, and the bundle may cross untrusted
-channels. A wrapped private key is the PKCS#8 `C_WrapKey` emits; PKCS#12 or a CMS key package
+plaintext. RFC 5649 authenticates the key bytes, not who wrapped them: the transport key is
+public, so anyone can seal a key of their own to it. Import recomputes every identity on the
+target and proves the binding, so a tampered or swapped blob fails, and the bundle may cross
+untrusted channels — except where nothing proves the key: an EC or Edwards private key under
+`binding = "token-asserted"` would take its identity from the public half the bundle's own
+`publicKey` creates (a target such as SoftHSM keeps no point with it), so `import --in` refuses
+it (14). `migrate`, whose bundle never leaves the process, moves it. A wrapped private key is the PKCS#8 `C_WrapKey` emits; PKCS#12 or a CMS key package
 would need the plaintext on the host, which sealed avoids. Named objects export all or nothing;
 without names, export takes what can move and warns about the rest (a spec's `migrate.noExport = true`
 keeps its object home and silences the warning). Import takes each entry on its own, reports

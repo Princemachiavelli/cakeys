@@ -508,6 +508,10 @@ pub struct AttestationCap {
     pub scheme: Scheme,
     /// Object classes the attestation covers.
     pub classes: &'static [ObjectClass],
+    /// Whether it covers a key imported onto the device, not only one the device made: false for
+    /// PIV, whose attestation is of keys generated on the `YubiKey`. An import such an attestation
+    /// cannot cover is refused before the key is written (15), where the device may keep it.
+    pub imported: bool,
 }
 
 /// What [`Provider::import_plaintext`] gets: the token as keys.toml describes it, the key's type

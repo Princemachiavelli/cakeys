@@ -157,3 +157,33 @@ fn a_move_the_module_fails_is_refused_and_undone() {
         assert_eq!(common::code(&o), 0, "{args:?}: {}", stderr(&o));
     }
 }
+
+/// A run records each object as it lands (docs/REVIEW D2, camigrate lib.rs F4): an import of a
+/// bundle carrying `kk` and `crt` into `softhsm`, killed at `crt`'s `C_CreateObject` (the second:
+/// the first is `kk`'s public half), has recorded `kk`, so nothing it made sits on the target
+/// unrecorded; the next run finds `kk` there, verifies it, and imports `crt`.
+#[test]
+fn an_import_killed_part_way_has_recorded_what_it_made() {
+    let Some((e, real)) = tokens("fault-killed") else { return };
+    let bundle = e.dir.join("killed.bundle.toml");
+    let path = bundle.to_str().unwrap();
+    let export = ["export", "kk", "crt", "--token", "kryoptic", "--target", "softhsm", "--out", path];
+    let o = e.km_alone(&e.refs[1], &export);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let import: &[&str] = &["import", "--token", "softhsm", "--in", path];
+    let plan = e.dir.join("killed.toml");
+    std::fs::write(&plan, "[[rule]]\nfn = \"C_CreateObject\"\ncall = 2\nabort = true\n").unwrap();
+    let env: &'static [(&str, &str)] =
+        Box::leak(Box::new([("P11_FAULT_PLAN", &*Box::leak(plan.to_str().unwrap().to_owned().into_boxed_str()))]));
+    let o = e.km_alone(&Ref { env, ..e.refs[0].clone() }, import);
+    assert_eq!(o.status.code(), None, "the plan did not end the run: {}", stderr(&o));
+    let on_target = |label: &str| open_session(&real, "kmtest", "1234").labelled(label).len();
+    assert_eq!((on_target("f-kk"), on_target("f-crt")), (2, 0), "kk and its public half, no certificate");
+    let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
+    assert!(lock["realisations"]["kk-dst"].get("softhsm").is_some(), "made before the kill, not recorded: {lock}");
+    assert!(lock["realisations"].get("crt-dst").is_none(), "{lock}");
+    let o = e.km_alone(&e.refs[0], import);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(stderr(&o).contains("already realised and verifies"), "{}", stderr(&o));
+    assert_eq!(on_target("f-crt"), 1);
+}

@@ -364,6 +364,7 @@ dependencies = [
  "cakeys-pkcs11",
  "cryptoki",
  "getrandom 0.4.3",
+ "p256",
  "proptest",
  "rusqlite",
  "rustix",

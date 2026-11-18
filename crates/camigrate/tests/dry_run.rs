@@ -893,6 +893,56 @@ fn named_transport_key_and_lock(e: &Env, soft: &Ref) {
     assert_eq!(locked(&e.dir.join("absent.lock")), 14);
 }
 
+/// A bundle file's EC key under `binding = "token-asserted"` (sealed.rs F1): the transport key is
+/// public, so anyone can seal a key of their own beside the lock's IDs and `publicKey`, and on a
+/// target that keeps no point with the unwrapped key only a proof ties the two. `import --in`
+/// refuses it (14) before the target is touched, dry run or not, and records nothing; the same
+/// key under `pop-sign` imports, and `migrate`, whose bundle never leaves the process, still
+/// moves the asserted one.
+#[test]
+fn a_bundle_files_unproven_ec_key_is_refused() {
+    let Some(e) = env("carried") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
+    let (Some(soft), Some(kry)) = (named("softhsm"), named("kryoptic")) else {
+        eprintln!("skipping carried: needs the softhsm and kryoptic references");
+        return;
+    };
+    let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+    let attributes = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n";
+    let key = |o: &str, binding: &str| {
+        for r in [soft, kry] {
+            open_session(&r.module, r.token_label, "1234").clear(&[format!("xc-{o}").as_str()]);
+        }
+        format!("[objects.{o}]\n{ec}\n\n")
+            + &Env::spec(&format!("{o}-soft"), o, attributes, &[soft], &format!("xc-{o}"), CREATE)
+            + &Env::spec(&format!("{o}-kry"), o, attributes, &[kry], &format!("xc-{o}"), &format!("{IMPORT}{binding}"))
+    };
+    let body = transport_key(kry) + &key("ta", ", binding = \"token-asserted\"") + &key("tp", "");
+    names_transport(&e, &body, |r| r.name == "kryoptic");
+    assert_eq!(code(&e.cakeys(kry, &["create", "--spec", "tk-kryoptic", "--token", "kryoptic"])), 0);
+    for spec in ["ta-soft", "tp-soft"] {
+        assert_eq!(code(&e.cakeys(soft, &["create", "--spec", spec, "--token", "softhsm"])), 0, "{spec}");
+    }
+    let lock =
+        || -> toml::Value { toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap() };
+    let empty = |label: &str| open_session(&kry.module, kry.token_label, "1234").labelled(label).is_empty();
+    let bundle = export_bundle(&e, soft, &["ta"]);
+    for dry_run in [&["--dry-run"][..], &[]] {
+        let o = e.km(kry, &[&["import", "--token", "kryoptic", "--in", bundle.to_str().unwrap()], dry_run].concat());
+        assert_eq!(code(&o), 14, "{dry_run:?}: {}", stderr(&o));
+        assert!(stderr(&o).contains("token-asserted\" proves nothing"), "{}", stderr(&o));
+        assert!(empty("xc-ta"), "{dry_run:?}: the refused import touched the target");
+    }
+    assert!(lock()["realisations"].get("ta-kry").is_none(), "{}", lock());
+    // Proven, the same kind of key imports from a file.
+    let o = e.km(kry, &["import", "--token", "kryoptic", "--in", export_bundle(&e, soft, &["tp"]).to_str().unwrap()]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    // In one process, nothing but the locked source made the bundle.
+    let o = e.km(soft, &["migrate", "ta", "--from", "softhsm", "--to", "kryoptic", "--spec", "ta-kry"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&e.cakeys(kry, &["verify", "--spec", "ta-kry", "--token", "kryoptic"])), 0);
+}
+
 /// `export` of `objects` from `SoftHSM` to kryoptic, into a bundle file: its path.
 fn export_bundle(e: &Env, soft: &Ref, objects: &[&str]) -> std::path::PathBuf {
     let path = e.dir.join(format!("{}.bundle.toml", objects.join("+")));
@@ -1770,6 +1820,117 @@ fn host_moves_do_what_the_plan_says() {
     if e.refs.iter().any(|r| r.name == "tpm2") {
         assert!(rows.iter().any(|r| r.contains("tpm2-ptool")), "no key moved into tpm2-pkcs11 through tpm2_ptool");
     }
+}
+
+/// `tpm2_ptool import` under a locator that names a `CKA_ID`: the key lands under that ID (the
+/// tool stores the text it is given as the ID's bytes, and once took cakeys' hex for that text,
+/// so the key landed under `30 61` for `0a` and nothing found it), so `cakeys verify` finds it by
+/// label and ID together. An ID the tool cannot take as text is refused (17) before anything
+/// reaches the TPM.
+#[test]
+fn tpm2_ptool_imports_under_the_locator_id() {
+    let Some(e) = env("ptool-id") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
+    let (Some(soft), Some(tpm)) = (named("softhsm"), named("tpm2")) else {
+        eprintln!("skipping ptool-id: needs the softhsm and tpm2 references");
+        return;
+    };
+    let attributes = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n";
+    let target = |spec: &str, id: &str| {
+        format!(
+            "[specs.{spec}]\nobject = \"pid\"\n{attributes}\
+             tokens.tpm2 = {{ locator = {{ CKA_LABEL = \"{spec}\", CKA_ID = \"{id}\" }}, origin = \"import\" }}\n\n"
+        )
+    };
+    let body = "[objects.pid]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n".to_owned()
+        + &Env::spec("pid-src", "pid", attributes, &[soft], "pid-src", CREATE)
+        + &target("pid-tpm", "0a01")
+        + &target("pid-bad", "ff");
+    e.config(&body);
+    let o = e.cakeys(soft, &["create", "--spec", "pid-src", "--token", "softhsm"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let migrate = |spec: &'static str| {
+        ["migrate", "pid", "--from", "softhsm", "--to", "tpm2", "--spec", spec, "--allow-host-plaintext"]
+    };
+    let o = e.km(soft, &migrate("pid-tpm"));
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let v = e.cakeys(tpm, &["verify", "--spec", "pid-tpm", "--token", "tpm2"]);
+    assert_eq!(code(&v), 0, "the key is not under CKA_ID 0a01: {}", stderr(&v));
+    // No text spells the byte ff: refused before the tool runs, so nothing lands under the label.
+    let o = e.km_alone(soft, &migrate("pid-bad"));
+    assert_eq!(code(&o), 17, "{}", stderr(&o));
+    assert!(stderr(&o).contains("takes CKA_ID as text"), "{}", stderr(&o));
+    let lock = std::fs::read_to_string(e.dir.join("keys.lock")).unwrap();
+    assert!(!lock.contains("pid-bad"), "{lock}");
+    let list = std::process::Command::new("pkcs11-tool")
+        .args(["--module", &tpm.module, "--token-label", tpm.token_label, "--login", "--pin", "1234", "--list-objects"])
+        .output()
+        .unwrap();
+    assert!(list.status.success(), "{}", String::from_utf8_lossy(&list.stderr));
+    assert!(!String::from_utf8_lossy(&list.stdout).contains("pid-bad"), "an object was left on the TPM under pid-bad");
+}
+
+/// The landing checks are made on the pair `--spec` picks: an object with two import pairs on
+/// the target once skipped them all (the plan looked for its one pair, found two and asked
+/// nothing), so an attestation the target's provider cannot give of an imported key (PIV) was
+/// not refused before the move wrote the key. kryoptic stands in for the device, its token named
+/// `piv` and bound to the `ykcs11` provider. Without `--spec` the plan says it cannot pick.
+#[test]
+fn landing_checks_follow_the_spec_named() {
+    let Some(e) = env("landing-spec") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
+    let (Some(soft), Some(kry)) = (named("softhsm"), named("kryoptic")) else {
+        eprintln!("skipping landing-spec: needs the softhsm and kryoptic references");
+        return;
+    };
+    let so = e.dir.join("so-pin");
+    std::fs::write(&so, "5678\n").unwrap();
+    let attributes = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n";
+    let landing = |spec: &str, id: &str, extra: &str| {
+        format!(
+            "[specs.{spec}]\nobject = \"ls\"\nattributes = {{ CKA_SIGN = true }}\n\
+             tokens.piv = {{ locator = {{ CKA_ID = \"{id}\", CKA_LABEL = \"{spec}\" }}, origin = \"import\"{extra} }}\n\n"
+        )
+    };
+    let body = format!(
+        "[tokens.piv]\nmodule = \"{}\"\ntokenLabel = \"{}\"\nprovider = \"ykcs11\"\npinFile = \"{}\"\nsoCredentialFile = \"{}\"\n\n",
+        kry.module,
+        kry.token_label,
+        e.dir.join("pin").display(),
+        so.display()
+    ) + "[objects.ls]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n"
+        + &Env::spec("ls-src", "ls", attributes, &[soft], "ls-src", CREATE)
+        + &landing("ls-attested", "17", ", attestation = true")
+        + &landing("ls-plain", "18", "");
+    e.config(&body);
+    let o = e.cakeys(soft, &["create", "--spec", "ls-src", "--token", "softhsm"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let plan = |spec: Option<&str>| {
+        let mut args = vec!["migrate", "ls", "--from", "softhsm", "--to", "piv", "--allow-host-plaintext"];
+        if let Some(s) = spec {
+            args.extend(["--spec", s]);
+        }
+        args.extend(["--dry-run", "--json"]);
+        let o = e.km_alone(soft, &args);
+        let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap_or_default();
+        (code(&o), v["plans"][0]["reasons"].to_string())
+    };
+    let (c, reasons) = plan(Some("ls-attested"));
+    assert_eq!(c, 15, "{reasons}");
+    assert!(reasons.contains("attests only keys the device generated"), "{reasons}");
+    let (c, reasons) = plan(None);
+    assert_eq!(c, 15, "{reasons}");
+    assert!(reasons.contains("several specs"), "{reasons}");
+    // The move itself refuses before anything reaches the target.
+    let o = e.km_alone(
+        soft,
+        &["migrate", "ls", "--from", "softhsm", "--to", "piv", "--spec", "ls-attested", "--allow-host-plaintext"],
+    );
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(
+        open_session(&kry.module, kry.token_label, "1234").labelled("ls-attested").is_empty(),
+        "nothing was imported"
+    );
 }
 
 /// The host path's guards (docs/CAMIGRATE.md D6), into `SoftHSM` behind p11-kit, where the plan

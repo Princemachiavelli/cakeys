@@ -183,6 +183,13 @@ corrupt = true
 [[rule]]
 fn = "C_GetMechanismList"
 hide_mechanisms = ["CKM_ECDH1_DERIVE"]
+
+# The process dies at the call, before it reaches the module (std::process::abort): a crash,
+# a kill or an OOM between two of a run's writes.
+[[rule]]
+fn = "C_UnwrapKey"
+call = 4
+abort = true
 ```
 
 **Failing half of an operation.** `C_Sign` and its like end the operation `C_SignInit` began,

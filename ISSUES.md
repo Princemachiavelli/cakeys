@@ -73,7 +73,7 @@ and the others need a second step that fails or a second spelling of a module pa
 | B5 | The library cache is keyed by the canonical path of a module named by path (`pkcs11/src/token/mod.rs`) |
 | B10 | The PKCS#12 MAC key takes 600,000 iterations, as the encryption does (`camigrate/src/file.rs`) |
 | B11 | kmsp11 no longer refuses `pop-decrypt` or `pop-sign` on PSS and SHA-512 keys; `pop-unwrap` and `pop-ecdh` stay refused. **Not run against Cloud KMS** (see "To test") |
-| B16 | EC and Edwards scalars, the ECDH shared secret and the unwrap secret are wiped (`core/src/plaintext.rs`, `core/src/pop.rs`). The `--userpin=` argument is left: it is on `tpm2_ptool`'s command line either way |
+| B16 | EC and Edwards scalars and the ECDH shared secret are wiped (`core/src/plaintext.rs`, `core/src/pop.rs`). The `--userpin=` argument is left: it is on `tpm2_ptool`'s command line either way. **Corrected:** this row also claimed the unwrap secret, which stayed a plain array, and missed the RSA CRT coefficient's owned copy; both are wiped since (see "Fixed since") |
 | B17 | The RSA size check ignores leading zero bytes (`pkcs11/src/token/policy.rs`) |
 | B19 | A key file's scrypt parameters are bounded (N × r up to 2²³, p up to 16), with a unit test. Verified first: this build's `pkcs5` does decrypt scrypt |
 | Q1 | The dead `CKK_EC`/`CKK_EC_EDWARDS` branches are gone from `probe_curves`; `operate`'s fallthrough message no longer says ECDH |
@@ -109,6 +109,28 @@ Withdrawn: `profile/src/effective.rs` saying no and unknown exit 15 and 16 is co
 | B13 | `probe_unbound` writes no row for a key type the module generated without a binding, and says so in the probe's undetermined list (`crates/caprobe/src/probe.rs`). No committed profile changes; no test, since no reference module is purpose-bound |
 | p11-fault counts | `find_objects` and `mechanism_list` believe the real module's count only up to the caller's room (`crates/p11-fault/src/hooks.rs`) |
 | Transport keys | The one untested branch of `check_transport_keys`, a token naming a spec not realised on it, has a case in `crates/core/tests/refusals.rs` |
+
+From the file-by-file review (`review/`, 2026-11-18). Each fix has a test that fails without it
+(checked by putting the old code back), except where the row says otherwise.
+
+| Item | Fix |
+|---|---|
+| `tpm2_ptool --id` | `tpm2_ptool` stores the `--id` text as the ID's bytes; cakeys passed its hex, so a key meant for `CKA_ID` `0a` landed under `30 61` and nothing found it. The locator's ID is now passed as the text its bytes spell, and an ID that is not UTF-8 text (or holds a NUL) is refused (17) before the tool runs (`tpm2-pkcs11/src/ptool.rs`). Tests: `the_id_is_passed_as_the_text_its_bytes_spell`, camigrate `tpm2_ptool_imports_under_the_locator_id`. Left: camigrate's dry run does not refuse such an ID; the real run does |
+| Attestation of an import | An import asking for an attestation the provider gives only for keys the device generated (PIV) is refused (15) before the write, by `ops::check_import` on every camigrate import path, and by the plan through the same predicate (`AttestationCap::imported`). Tests: camigrate `an_import_the_provider_cannot_attest_is_refused_before_the_write` |
+| Landing checks per spec | camigrate's plan made its landing checks on the pair `--spec` picks: an object with two import pairs on the target skipped them all (`camigrate/src/lib.rs`). Test: `landing_checks_follow_the_spec_named` |
+| Retargeted spec | A spec pointed at another object is judged as that object: `compare` no longer applies the old object's no-downgrade rule, nor `record` its object diff (`core/src/reconcile.rs`). Test: `a_retargeted_spec_is_judged_as_its_new_object`; the Quint model's "left out" list says so |
+| `gc --apply` | Drops the realisations whose recorded object it drops (an object renamed in keys.toml), so the lock it writes loads; `save_lock` refuses (17) a lock that would not load and keeps the old file (`core/src/config.rs`). Test: `gc_and_save_leave_a_lock_that_loads` |
+| Module hashes | `check_observations` checks every observation's module hash, not the first one found (`core/src/config.rs`). Test: a two-observation case in `locks_that_contradict_themselves_are_invalid` |
+| Certificate policy | A certificate's declared attributes (`CKA_TRUSTED`, `CKA_PRIVATE`, …) are checked against the token, as a key's are (`pkcs11/src/token/policy.rs`). Test: `a_certificates_declared_attributes_are_checked` |
+| `create` without login | On a private or secret key, a session without login is `Unavailable` (16, "configure pinFile or pinEnv") before D1, which said the pinned key was gone (14) (`pkcs11/src/ops.rs`). Test: `create_without_login_asks_for_a_pin` |
+| Profile verdicts | A key type asked about without a curve or size is no when every row of it says no (`caprobe supports CKK_EC_EDWARDS --profile tpm2-pkcs11/1.10+swtpm` said yes), and a size between two that generated is unknown when a refused size lies between them (`profile/src/effective.rs`). Tests: `refused_rows_never_add_up_to_yes`, cases in `supports_answers_from_the_embedded_profiles`. `crates/profile/tests/answers.txt`, regenerated, had pinned the wrong answer: `CKK_EC_EDWARDS` and `CKK_EC_MONTGOMERY` yes on every profile whose rows all say no (swtpm, AMD fTPM, Cloud KMS HSM, CloudHSM FIPS; Montgomery on SoftHSM and ykcs11 too) |
+| caprobe's profile set | `supports` and `probe --diff` read keys.toml's `profileDirs`, and `supports --token` stacks the token's configured `profiles` layers, as token resolution does (`caprobe/src/lib.rs`, `supports.rs`); `docs/CAPROBE.md` says so. Test: cases in `supports_asks_by_token_and_refuses_what_it_cannot_ask`; `probe --diff` shares the set, untested. Left: `supports --token` still does not consult the lock's recorded module and answers (caprobe never reads keys.lock; `gate::stack`, which `cakeys validate` uses, does), nor does it detect layers from `C_GetInfo` as an opened token does |
+| kmsp11 `HMAC_SHA256` | Its table row lists `CKM_SHA256_HMAC`, so a spec declaring it finds the algorithm (`kmsp11/src/keys.json`). Test: `every_mac_row_serves_its_hmac` |
+| B16, rest | The unwrap proof's secret and the RSA CRT coefficient's owned copy are wiped (`core/src/pop.rs`, `plaintext.rs`). No test: a wipe is not observable from a test |
+| EFI stub | `checks.examples` takes systemd's stub for the host's EFI architecture, not `linuxx64` alone (`nix/examples.nix`). Not run on aarch64 |
+| TPM attestation material | The SPKI, `CKA_LOCAL` and `CKA_EXTRACTABLE` a `TPM2_Certify` attests are read from the store blob whose Name the TPM signed, no longer from `TPM2_ReadPublic`'s public area, which nothing authenticates (password sessions, no response HMAC); a ReadPublic answer that is not that blob's public area is refused (13). An interposer on the TCTI could otherwise pass the attestation of one key for another's material (`tpm2-pkcs11/src/attest/esys.rs`, split into `verify_certified`). Test: `the_material_is_the_attested_blobs_not_read_publics`, a host-signed `TPMS_ATTEST` with a swapped ReadPublic. Left: the transport is still unauthenticated (an HMAC or salted session, with the EK → AK work) |
+| Bundle files under `token-asserted` | `import --in` refuses (14), before the target is touched, an EC or Edwards private key whose target binding is `token-asserted`: the transport key is public, so anyone can seal a key of their own beside the lock's IDs and `publicKey`, and on a target that keeps no point with an unwrapped EC key (SoftHSM) the identity came from the public half the import made from that same `publicKey` (`camigrate/src/sealed.rs` `check_carried`). RSA keys carry their modulus; `migrate`, whose bundle never leaves the process, still moves such a key. docs/CAMIGRATE.md D5 and the bundle.rs header no longer claim the wrap authenticates the origin. Test: `a_bundle_files_unproven_ec_key_is_refused` (an honest bundle: the old code imported it; a forged one would need SoftHSM as the target) |
+| Lock saved per object | `cakeys create` (`ops::create_selected`'s `persist`) and every camigrate import loop (`import`, `migrate`, `import --in` for a key file or files) save the lock as each object lands, so a run killed, or failing to save, part-way never leaves an object on a token the lock does not record. `create` prints what it created whatever ended the run (cli lib.rs F1). p11-fault gained `abort = true` (the process dies at a call) to test it. Tests: cakeys `a_create_killed_part_way_has_recorded_what_it_made`, camigrate `an_import_killed_part_way_has_recorded_what_it_made`, p11-fault `abort_ends_the_process_at_its_call`. Left: a key killed between its creation and its own record is still unrecorded (one object, not the run); a failed save after `create` has no test (nothing makes the save fail after `read_lock`'s check) |
 
 ## To test
 
@@ -150,10 +172,16 @@ Still open.
   narrowing it needs the return value ykcs11 gives an Edwards OID, which the profile records as
   "by-name" without the code, and the hardware rules keep that from being measured here.
   **Done 2026-11-17:** profile-driven (`Token::retries_by_name`). Retry by name only when the
-  token's module profile (the lock's recorded answers included) says `via = "by-name"` for the
-  curve, or has no row for it; any other refusal is reported at once, with its own return
-  value. `a_refused_curve_is_tried_by_name_only_where_the_profile_says_so` (fault shim,
-  SoftHSM's edwards25519) sees one generation, where the old retry made two.
+  token's module profile says `via = "by-name"` for the curve, or has no row for it; any other
+  refusal is reported at once, with its own return value.
+  `a_refused_curve_is_tried_by_name_only_where_the_profile_says_so` (fault shim, SoftHSM's
+  edwards25519) sees one generation, where the old retry made two. **Corrected 2026-11-18:**
+  this said "the lock's recorded answers included"; they are not. `Token::open` never applies
+  them (`Resolved::with_answers` serves the static gate and camigrate's plan), and it should
+  not as things stand: a by-name generation is recorded as a plain `yes`, without the `via`,
+  so a recorded answer over the profile's `via = "by-name"` row would stop the retry, and a
+  YubiKey's second Ed25519 key would fail. Left: `ops::answers` should record `via = "by-name"` from
+  the `CreateNote`, the precondition for ever applying recorded answers at open.
 
 ## Poor practices and hard-to-read code
 

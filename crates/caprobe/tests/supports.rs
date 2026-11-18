@@ -30,6 +30,15 @@ fn supports_answers_from_the_embedded_profiles() {
     // The same fact, factored out by hand into the swtpm layer.
     assert_eq!(supports(&["--profile", "tpm2-pkcs11", "--layer", "swtpm", "--bits", "4096", "CKK_RSA"]), 15);
     assert_eq!(supports(&["--class", "pq", "--profile", "softhsm/2.7"]), 15);
+    // A key type every probed row refuses is no, never yes for want of a curve or size: the
+    // swtpm profile's only Edwards rows are edwards25519 = no and edwards448 = no (it said yes).
+    assert_eq!(supports(&["--profile", "tpm2-pkcs11/1.10+swtpm", "CKK_EC_EDWARDS"]), 15);
+    assert_eq!(supports(&["--profile", "tpm2-pkcs11/1.10+swtpm", "CKK_EC"]), 0);
+    // Between two sizes that generated only when no size between them was refused: swtpm
+    // generates 1024, refuses 1536, generates 2048 and 3072: 2560 is yes, 1280 unknown (it was yes).
+    assert_eq!(supports(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "2560", "CKK_RSA"]), 0);
+    assert_eq!(supports(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "1280", "CKK_RSA"]), 16);
+    assert_eq!(supports(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "2048", "CKK_RSA"]), 0);
     // A PBKDF2 parameter set names no key type to generate: the profiles cannot decide it.
     assert_eq!(supports(&["--profile", "softhsm/2.7", "CKP_PKCS5_PBKD2_HMAC_SHA1"]), 16);
     // No module profile at all: only the binding layer and the baseline answer.
@@ -70,6 +79,31 @@ fn supports_asks_by_token_and_refuses_what_it_cannot_ask() {
     refused(&["--token", "nope", "secp256r1"], "unknown token 'nope'");
     refused(&["--token", "bare", "secp256r1"], "names no provider");
     refused(&["--token", "soft", "--class", "nope"], "no class 'nope'");
+
+    // The token's own stack: its configured layers (`profiles`), and module profiles keys.toml's
+    // `profileDirs` add, as token resolution and `cakeys validate` use them. `supports --token`
+    // once left both out: yes from SoftHSM's profile behind p11-kit, and 17 for a profile only
+    // `profileDirs` has.
+    let proxied = "[tokens.proxied]\ntokenLabel = \"p\"\nprovider = \"softhsm\"\nprofiles = [\"p11-kit/0.26\"]\n";
+    std::fs::write(&config, format!("{tokens}\n{proxied}")).unwrap();
+    assert_eq!(ask(&["--token", "soft", "CKM_AES_KEY_WRAP"]).0, 0);
+    // In the stack once, though the command line names it too.
+    for args in [&["--token", "proxied"][..], &["--token", "proxied", "--layer", "p11-kit/0.26"]] {
+        let (exit, said) = ask(&[args, &["CKM_AES_KEY_WRAP"]].concat());
+        assert!(exit == 15 && said.contains("layers [cryptoki/0.12, p11-kit/0.26]"), "{args:?}: exit {exit}: {said}");
+    }
+    let profiles = dir.join("profiles");
+    std::fs::create_dir_all(&profiles).unwrap();
+    let committed = std::fs::read_to_string(committed_profile("modules/softhsm/2.7.toml")).unwrap();
+    let renamed = committed.replacen("profile = \"softhsm/2.7\"", "profile = \"softhsm/2.7+site\"", 1);
+    let subtract = "[subtract]\nmechanisms = [\"CKM_AES_KEY_WRAP\"]\n\n[match]\n";
+    std::fs::write(profiles.join("site.toml"), renamed.replacen("[match]\n", subtract, 1)).unwrap();
+    let site = "[tokens.site]\ntokenLabel = \"s\"\nprovider = \"softhsm\"\nmoduleProfile = \"softhsm/2.7+site\"\n";
+    std::fs::write(&config, format!("profileDirs = [\"{}\"]\n\n{site}", profiles.display())).unwrap();
+    let (exit, said) = ask(&["--token", "site", "CKM_AES_KEY_WRAP"]);
+    assert!(exit == 15 && said.contains("softhsm/2.7+site"), "exit {exit}: {said}");
+    assert_eq!(ask(&["--token", "site", "CKM_SHA512_HMAC"]).0, 0);
+
     // `caps` reads a token: without keys.toml it is a usage error.
     let out = Command::new(BIN).env_remove("CAKEYS_CONFIG").args(["caps", "--token", "soft"]).output().unwrap();
     assert_eq!(code(&out), 2, "{}", String::from_utf8_lossy(&out.stderr));

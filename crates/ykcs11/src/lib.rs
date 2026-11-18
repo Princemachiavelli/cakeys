@@ -177,6 +177,8 @@ impl Provider for Ykcs11 {
             // PIV attests the asymmetric keys generated on the device; secret keys, data
             // objects and certificates have none.
             classes: &[Class::PrivateKey, Class::PublicKey],
+            // An imported key has no attestation certificate, and its slot keeps it.
+            imported: false,
         })
     }
 

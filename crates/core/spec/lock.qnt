@@ -15,7 +15,9 @@
 /// observations and `observed` (warnings only); notes; pairs and `publicKey` (no certificate,
 /// public key or transport key in this keys.toml); locators and `publicOnly` (fixed per spec,
 /// so `spec_unchanged` sees only the spec digest); deprecated schemes (there are none);
-/// commitment labels other than the default; attestation on a secret key. A private key always
+/// commitment labels other than the default; attestation on a secret key; a spec pointed at
+/// another object (`compare` judges no downgrade across objects; a unit test in reconcile.rs
+/// covers it). A private key always
 /// arrives with a binding (the planner's precondition, and a load rule of the lock).
 module lock {
   type Write = Compare | Record

@@ -842,6 +842,13 @@ impl Lock {
     /// IDs and label, each realisation against its object, one object per material, and pairs
     /// that list each other.
     fn validate(self, path: &Path) -> Result<Lock> {
+        self.check(path)?;
+        Ok(self)
+    }
+
+    /// The load rules of [`Self::validate`], on a lock in memory: what [`save_lock`] asks before
+    /// it writes, so no verb can save a lock that would not load again.
+    fn check(&self, path: &Path) -> Result<()> {
         if self.version != LOCK_VERSION {
             return Err(KmError::Validation(
                 format!(
@@ -857,8 +864,7 @@ impl Lock {
         self.check_realisations().map_err(invalid)?;
         self.check_observations().map_err(invalid)?;
         self.check_one_object_per_material().map_err(invalid)?;
-        self.check_pairs().map_err(invalid)?;
-        Ok(self)
+        self.check_pairs().map_err(invalid)
     }
 
     /// Each object's IDs are SRI digests under lock scheme names, need a type, and — for
@@ -977,7 +983,7 @@ impl Lock {
             return Err(format!("observation key \"{k}\" is not a sha256 SRI digest"));
         }
         if let Some(h) =
-            self.observations.values().find_map(|o| o.module.as_ref()?.hash.as_ref()).filter(|h| !crate::id::is_sri(h))
+            self.observations.values().filter_map(|o| o.module.as_ref()?.hash.as_ref()).find(|h| !crate::id::is_sri(h))
         {
             return Err(format!("observation module hash \"{h}\" is not a sha256 SRI digest"));
         }
@@ -1790,12 +1796,15 @@ pub fn parse_lock(text: &str, path: &Path) -> Result<Lock> {
 
 /// Write the lock through a temporary file synced before it is renamed over the old one (and the
 /// directory synced after), so a
-/// crash leaves the old lock or the new one, never a truncated one.
+/// crash leaves the old lock or the new one, never a truncated one. A lock that would not load
+/// again is refused, the old one kept.
 ///
 /// # Errors
 ///
-/// `Io` if the lock cannot be encoded, or the temporary write, sync or rename fails.
+/// `Validation` if the lock breaks a load rule (nothing is written); `Io` if the lock cannot be
+/// encoded, or the temporary write, sync or rename fails.
 pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
+    lock.check(path).map_err(|e| KmError::Validation(format!("not writing a lock that would not load: {e}").into()))?;
     let text =
         toml::to_string_pretty(lock).map_err(|e| KmError::Io(format!("encoding {}: {e}", path.display()).into()))?;
     // Created like any new file (0666 under the umask).
@@ -1918,23 +1927,35 @@ fn unwritable(lock_path: &Path, sandboxed: bool) -> Option<String> {
 /// spec or token is gone from keys.toml, and every `[objects.<name>]` absent from it — printed by
 /// `gc` as table names, removed with `--apply`. Live objects keep their `ids` however few specs
 /// use them; only entries whose whole subject is gone are collected, and every
-/// `[observations."<key>"]` no remaining realisation names. With `remove`, exactly the returned
-/// entries are dropped.
+/// `[observations."<key>"]` no remaining realisation names. A realisation of an object keys.toml
+/// no longer defines goes with it (a renamed object, a spec pointed at another one), so what is
+/// left is a lock that loads. With `remove`, exactly the returned entries are dropped.
 pub fn gc(cfg: &Config, lock: &mut Lock, remove: bool) -> Vec<String> {
     let named = |spec: &str, token: &str| cfg.specs.get(spec).is_some_and(|s| s.tokens.contains_key(token));
+    let kept: BTreeSet<(String, String)> = lock
+        .realisations
+        .iter()
+        .flat_map(|(spec, tokens)| {
+            tokens
+                .iter()
+                .filter(|(t, r)| named(spec, t) && cfg.objects.contains_key(&r.object))
+                .map(move |(t, _)| (spec.clone(), t.clone()))
+        })
+        .collect();
+    let keep = |spec: &str, token: &str| kept.contains(&(spec.to_owned(), token.to_owned()));
     let mut stale: Vec<String> = lock
         .realisations
         .iter()
         .flat_map(|(spec, tokens)| {
-            tokens.keys().filter(|t| !named(spec, t)).map(move |t| format!("realisations.{spec}.{t}"))
+            tokens.keys().filter(|t| !keep(spec, t)).map(move |t| format!("realisations.{spec}.{t}"))
         })
         .collect();
     stale.extend(lock.objects.keys().filter(|o| !cfg.objects.contains_key(*o)).map(|o| format!("objects.{o}")));
-    let observations = lock.unreferenced_observations(&named);
+    let observations = lock.unreferenced_observations(&keep);
     stale.extend(observations.iter().map(|k| format!("observations.\"{k}\"")));
     if remove {
         for (spec, tokens) in &mut lock.realisations {
-            tokens.retain(|t, _| named(spec, t));
+            tokens.retain(|t, _| keep(spec, t));
         }
         lock.realisations.retain(|_, tokens| !tokens.is_empty());
         lock.objects.retain(|o, _| cfg.objects.contains_key(o));
@@ -2199,6 +2220,34 @@ mod tests {
         let stale = gc(&cfg, &mut lock, true);
         assert_eq!(stale.len(), 3, "{stale:?}");
         assert!(lock.realisations.is_empty() && lock.observations.is_empty());
+    }
+
+    /// `gc --apply` leaves a lock that loads: an object renamed in keys.toml before `lock` ran
+    /// takes the realisation that still names it along (it once stayed, naming an object `gc`
+    /// had dropped, and every later run refused the lock, `lock` and `gc` included). And no
+    /// lock that would not load is ever written: `save_lock` refuses it and keeps the old one.
+    #[test]
+    fn gc_and_save_leave_a_lock_that_loads() {
+        let path = Path::new("test.lock");
+        let mut lock = attestable_lock();
+        let renamed: Config = toml::from_str(
+            "[objects.renamed]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.s]\nobject = \"renamed\"\ntokens.t = { locator = { CKA_LABEL = \"k\" } }\n",
+        )
+        .unwrap();
+        let stale = gc(&renamed, &mut lock, true);
+        assert!(stale.contains(&"realisations.s.t".to_owned()) && stale.contains(&"objects.k".to_owned()), "{stale:?}");
+        lock.clone().validate(path).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("keys.lock");
+        let mut broken = attestable_lock();
+        broken.objects.clear();
+        let e = save_lock(&file, &broken).unwrap_err();
+        assert!(e.exit_code() == 17 && e.to_string().contains("is not in the lock"), "{e}");
+        assert!(!file.exists(), "an invalid lock was written");
+        save_lock(&file, &attestable_lock()).unwrap();
+        load_lock(&file).unwrap();
     }
 
     /// Object, spec and token names have one grammar, checked at load (17): a reference splits

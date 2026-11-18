@@ -232,6 +232,21 @@ fn locks_that_contradict_themselves_are_invalid() {
         ),
         "module hash",
     );
+    // Every observation's module hash, not only the first one with a hash: a good one sorted
+    // first once let a bad one after it load.
+    let (first, second) = {
+        let (a, b) = (cakeys_core::id::sri(b"a"), cakeys_core::id::sri(b"b"));
+        if a < b { (a, b) } else { (b, a) }
+    };
+    let observation = |key: &str, hash: &str| {
+        format!(
+            "[observations.\"{key}\"]\nmechanisms = []\nmodule = {{ path = \"/m.so\", hash = \"{hash}\", description = \"\", manufacturer = \"\", version = \"\", cryptoki = \"\" }}\n"
+        )
+    };
+    refused(
+        format!("version = 1\n{}{}", observation(&first, &sri), observation(&second, "md5-x")),
+        "module hash \"md5-x\"",
+    );
     refused("version = 1\n[observations.short]\nmechanisms = []\n".into(), "is not a sha256 SRI digest");
     // A directory is no lock file: an I/O error, not an empty lock.
     let e = cakeys_core::config::load_lock(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap_err();

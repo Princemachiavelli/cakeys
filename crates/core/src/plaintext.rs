@@ -151,7 +151,8 @@ fn rsa_parts(der: &[u8]) -> Result<RsaParts> {
         prime_2: be(q),
         exponent_1: be(key.dp().ok_or_else(bad)?),
         exponent_2: be(key.dq().ok_or_else(bad)?),
-        coefficient: be(&key.crt_coefficient().ok_or_else(bad)?),
+        // `crt_coefficient` computes an owned copy: wiped when dropped, like the key's own parts.
+        coefficient: be(&Zeroizing::new(key.crt_coefficient().ok_or_else(bad)?)),
     })
 }
 

@@ -275,3 +275,47 @@ fn every_spelling_of_a_secret_key_imports_as_the_same_key() {
         "a refused file left objects"
     );
 }
+
+/// An attestation a provider gives only of keys its device generated (PIV) is refused (15) on a
+/// key-file import before the key is written: a `YubiKey` keeps what it imported, and a key written
+/// first and refused by the attestation after stayed in its slot (the only guard was the move
+/// planner's, which a key-file import never runs). `SoftHSM` stands in for the device here, its
+/// token named `piv` and bound to the `ykcs11` provider, and nothing may reach it; the dry run
+/// says the same.
+#[test]
+fn an_import_the_provider_cannot_attest_is_refused_before_the_write() {
+    let Some(e) = env("from-files-attest") else { return };
+    let Some(soft) = e.refs.iter().find(|r| r.name == "softhsm") else {
+        eprintln!("skipping from-files-attest: needs the softhsm reference");
+        return;
+    };
+    let so = e.dir.join("so-pin");
+    std::fs::write(&so, "5678\n").unwrap();
+    let body = format!(
+        "[tokens.piv]\nmodule = \"{module}\"\ntokenLabel = \"{label}\"\nprovider = \"ykcs11\"\n\
+         pinFile = \"{pin}\"\nsoCredentialFile = \"{so}\"\n\n\
+         [objects.pk]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\
+         migrate = {{ file = \"{key}\" }}\n\n\
+         [specs.pk]\nobject = \"pk\"\nattributes = {{ CKA_SIGN = true }}\n\
+         tokens.piv = {{ locator = {{ CKA_ID = \"18\", CKA_LABEL = \"ff-attest\" }}, origin = \"file\", attestation = true }}\n",
+        module = soft.module,
+        label = soft.token_label,
+        pin = e.dir.join("pin").display(),
+        so = so.display(),
+        key = fixture("p256.pkcs8.pem").display(),
+    );
+    e.config(&body);
+    for dry_run in [true, false] {
+        let mut args = vec!["import", "pk", "--token", "piv", "--allow-host-plaintext"];
+        if dry_run {
+            args.push("--dry-run");
+        }
+        let o = e.km_alone(soft, &args);
+        assert_eq!(code(&o), 15, "dry run {dry_run}: {}", stderr(&o));
+        assert!(stderr(&o).contains("attests only keys the device generated"), "dry run {dry_run}: {}", stderr(&o));
+    }
+    assert!(
+        open_session(&soft.module, soft.token_label, "1234").labelled("ff-attest").is_empty(),
+        "the refused key reached the token"
+    );
+}

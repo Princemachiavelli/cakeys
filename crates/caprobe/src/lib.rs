@@ -202,11 +202,18 @@ fn dispatch(registry: &Registry, cli: &Cli, notes: &mut Notes) -> anyhow::Result
     }
 }
 
-/// The embedded capability profiles, plus any `--profiles` directory (D11).
-fn profile_set(dir: Option<&Path>) -> anyhow::Result<cakeys_profile::Set> {
-    let set = cakeys_profile::Set::embedded()
+/// The embedded capability profiles, plus keys.toml's `profileDirs` as the active set adds
+/// them, plus any `--profiles` directory (D11), which may also replace.
+fn profile_set(cfg: &Config, dir: Option<&Path>) -> anyhow::Result<cakeys_profile::Set> {
+    let mut set = cakeys_profile::Set::embedded()
         .map_err(|e| KmError::Validation(e.into()))
         .context("the embedded profiles do not parse")?;
+    for d in &cfg.profile_dirs {
+        set = set
+            .adding_dir(d)
+            .map_err(|e| KmError::Validation(e.into()))
+            .with_context(|| format!("profileDirs {}", d.display()))?;
+    }
     match dir {
         Some(dir) => Ok(set
             .with_dir(dir)
@@ -219,7 +226,7 @@ fn profile_set(dir: Option<&Path>) -> anyhow::Result<cakeys_profile::Set> {
 /// The `supports` verb: answers from the capability profiles alone (docs/CAPROBE.md), so it
 /// runs with an empty `cfg` when there is no keys.toml and no `--token` to look up.
 fn run_supports(cfg: &Config, a: &SupportsArgs, notes: &mut Notes) -> anyhow::Result<()> {
-    let set = profile_set(a.profiles_dir.as_deref())?;
+    let set = profile_set(cfg, a.profiles_dir.as_deref())?;
     let ask = match (a.class.as_deref(), a.oaep, a.name.as_deref()) {
         (Some(class), _, _) => supports::Ask::Class(class),
         (None, true, _) => supports::Ask::Oaep,
@@ -251,7 +258,7 @@ fn run_probe(
     notes: &mut Notes,
 ) -> anyhow::Result<()> {
     let tcfg = token_cfg(cfg, &a.token)?;
-    let set = profile_set(a.profiles_dir.as_deref())?;
+    let set = profile_set(cfg, a.profiles_dir.as_deref())?;
     let claimed =
         a.diff.as_deref().map(|name| set.find(name).map_err(|e| KmError::Validation(e.into()))).transpose()?;
     let access = if a.write { Access::Write } else { Access::Read };

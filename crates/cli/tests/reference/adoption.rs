@@ -7,6 +7,34 @@ use super::*;
 const ADOPT_CERTHASH: &str = "sha256-lXNE6ciIfLkwGf6kf84qfibQ08d5fkPuGNKQ5KnyTMM=";
 const ADOPT_PUBKEYHASH: &str = "sha256-8DQBv2fMc+z0Q5uxky0+5t9TS6MAHO07fNMqG9thHtM=";
 
+/// A certificate's declared attributes are held to the token as a key's are: a certificate the
+/// spec says is public but the token holds private is refused (13), and one that agrees passes.
+/// Certificates were checked for their type alone, so any declaration passed, `CKA_TRUSTED`
+/// included.
+#[test]
+fn a_certificates_declared_attributes_are_checked() {
+    let Some(e) = env("cert_policy") else { return };
+    let s = e.session();
+    for (label, private) in [("pub-cert", false), ("priv-cert", true)] {
+        let mut t = cert_object(ADOPT_CERT, label.as_bytes(), None);
+        t.push(Attribute::Private(private));
+        s.create_object(&t).unwrap();
+    }
+    let spec = |name: &str, label: &str| {
+        format!(
+            "[specs.{name}]\nobject = \"{name}\"\nattributes = {{ CKA_PRIVATE = false }}\n\
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"{label}\" }}, origin = \"adopt\" }}\n\n\
+             [objects.{name}]\nclass = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"\n\n"
+        )
+    };
+    e.config(&(spec("agrees", "pub-cert") + &spec("differs", "priv-cert")));
+    assert_eq!(e.code(&["lock", "--spec", "agrees", "--token", "ref", "--update-lock"]), 0);
+    let o = e.km(&["lock", "--spec", "differs", "--token", "ref", "--update-lock"]);
+    assert_eq!(code(&o), 13, "{}", stderr(&o));
+    assert!(stderr(&o).contains("CKA_PRIVATE is true"), "{}", stderr(&o));
+    assert_eq!(e.code(&["check", "--spec", "agrees", "--token", "ref"]), 0);
+}
+
 /// An imported EC private key exposes no public point; when its importer wrote only the
 /// certificate beside it, that certificate stands in for the public half (docs/DESIGN.md §3.2),
 /// and only a certificate of the key's own type and curve does: under `token-asserted` no proof
