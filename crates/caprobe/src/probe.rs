@@ -530,8 +530,16 @@ pub(crate) const RSA_SIZES: [u32; 10] = [512, 1024, 1536, 2048, 3072, 4096, 6144
 /// A generated pair, `(public, private)`, or the module's refusal.
 type Pair = std::result::Result<(ObjectHandle, ObjectHandle), CkError>;
 
-/// A pair `Token::create` made, `(public, private, its note)`, or the module's refusal.
-type Created = std::result::Result<(ObjectHandle, ObjectHandle, Option<token::CreateNote>), KmError>;
+/// What [`Made::create`] got from `Token::create`.
+enum Created {
+    /// The pair `(public, private)` under its locator, and `create`'s note.
+    Made(ObjectHandle, ObjectHandle, Option<token::CreateNote>),
+    /// The module refused the generation: a `cannot` row.
+    Refused(KmError),
+    /// The module said it generated, but the pair is not under its locator: neither a yes nor
+    /// a no, so no row, and a note.
+    Lost(KmError),
+}
 
 /// A probe spec: `CKA_SENSITIVE` and the usage bits `private` and `public` name, true.
 fn spec(private: &[&str], public: &[&str]) -> SpecCfg {
@@ -654,24 +662,30 @@ impl Made<'_> {
         let note = match self.tok.create(object, spec, &loc, None) {
             Ok(note) => note,
             Err(KmError::Unavailable(m)) if m.contains(token::SO_LOGIN) => return Err(KmError::Unavailable(m)),
-            Err(e) => return Ok(Err(e)),
+            Err(e) => return Ok(Created::Refused(e)),
         };
-        let one = |class| self.tok.find(class, &loc).map(|found| found.first().copied());
-        let (Some(public), Some(private)) = (one(ObjectClass::PUBLIC_KEY)?, one(ObjectClass::PRIVATE_KEY)?) else {
-            return Ok(Err(KmError::NotFound("the key pair it made is not under its locator".into())));
-        };
-        if let Some(label) = label {
-            self.scratch.track(&[private, public], &label);
+        // Made: its label is the cleanup's and the leftover check's from here on, whatever the
+        // lookups below find (probe.rs F3).
+        if let Some(label) = &label {
+            self.scratch.track(&[], label);
         }
-        Ok(Ok((public, private, note)))
+        let one = |class| self.tok.find(class, &loc).map(|found| found.first().copied());
+        let (public, private) = (one(ObjectClass::PUBLIC_KEY)?, one(ObjectClass::PRIVATE_KEY)?);
+        if let Some(label) = &label {
+            self.scratch.track(&[public, private].into_iter().flatten().collect::<Vec<_>>(), label);
+        }
+        Ok(match (public, private) {
+            (Some(public), Some(private)) => Created::Made(public, private, note),
+            _ => Created::Lost(KmError::NotFound("the pair it reported made is not under its locator".into())),
+        })
     }
 
     /// [`Self::create`] with the usage the operation probes need, else bare, as a module may
     /// insist. `Ok((created, usable))`: `usable` when the usage took.
     fn create_for_use(&mut self, object: &ObjectCfg, usage: &SpecCfg, bare: &SpecCfg) -> Result<(Created, bool)> {
         match self.create(object, usage)? {
-            Ok(made) => Ok((Ok(made), true)),
-            Err(_) => Ok((self.create(object, bare)?, false)),
+            Created::Refused(_) => Ok((self.create(object, bare)?, false)),
+            made => Ok((made, true)),
         }
     }
 
@@ -1037,7 +1051,7 @@ fn create_curves(
             ..ObjectCfg::new(cakeys_core::types::ObjectClass::PrivateKey, Some(key_type))
         };
         match made.create_for_use(&object, &usage, &spec(&[], &[]))? {
-            (Ok((public, private, note)), usable) => {
+            (Created::Made(public, private, note), usable) => {
                 row.can.push((*curve).to_owned());
                 if note.as_ref().is_some_and(|n| n.by_name.is_some()) {
                     row.by_name.push((*curve).to_owned());
@@ -1063,10 +1077,13 @@ fn create_curves(
                     prove_key(made, profile, kt, curve, public, private);
                 }
             }
-            (Err(e), _) => {
+            (Created::Refused(e), _) => {
                 row.cannot.push((*curve).to_owned());
                 let why = format!("generation refused: {}", refused(made.tok, &e));
                 profile.generation_evidence(kt, On::Item((*curve).to_owned()), why);
+            }
+            (Created::Lost(e), _) => {
+                made.undetermined.push(format!("no generate row for {kt} on {curve}: the module generated, but {e}"));
             }
         }
     }
@@ -1106,7 +1123,7 @@ fn probe_rsa(made: &mut Made, profile: &mut Draft) -> Result<Option<(ObjectHandl
         let usage = spec(&["CKA_DECRYPT", "CKA_UNWRAP", "CKA_SIGN"], &["CKA_ENCRYPT", "CKA_WRAP", "CKA_VERIFY"]);
         let on = format!("RSA-{bits}");
         match made.create_for_use(&object, &usage, &spec(&[], &[]))? {
-            (Ok((public, private, _)), usable) => {
+            (Created::Made(public, private, _), usable) => {
                 match (bits == 2048, usable) {
                     (true, true) => operate(made, profile, &KeyKind::Rsa, &on, public, private),
                     (false, true) => prove_key(made, profile, &KeyKind::Rsa, &on, public, private),
@@ -1119,10 +1136,13 @@ fn probe_rsa(made: &mut Made, profile: &mut Draft) -> Result<Option<(ObjectHandl
                 }
                 row.can_bits.push(bits);
             }
-            (Err(e), _) => {
+            (Created::Refused(e), _) => {
                 row.cannot_bits.push(bits);
                 let why = format!("modulusBits = {bits}: {}", refused(made.tok, &e));
                 profile.generation_evidence(&KeyKind::Rsa, On::Bits(bits), why);
+            }
+            (Created::Lost(e), _) => {
+                made.undetermined.push(format!("no generate row for {on}: the module generated, but {e}"));
             }
         }
     }
@@ -1218,6 +1238,12 @@ fn prove(made: &mut Made, profile: &mut Draft, kt: &KeyKind, on: &str, private: 
         KeyKind::Rsa => (Kt::Rsa, &[Binding::PopSign, Binding::PopDecrypt, Binding::PopUnwrap]),
         _ => return,
     };
+    // A key the host does not compute with has an identity but no proof here: the refusal is
+    // cakeys', and says nothing of the module (as the import rows of a size the host reads not).
+    if key_type == Kt::Rsa && !cakeys_core::pop::rsa_computes_with(spki) {
+        made.undetermined.push(format!("no proofs on {on}: the host computes with no RSA key of that size"));
+        return;
+    }
     let mut object = ObjectCfg::new(cakeys_core::types::ObjectClass::PrivateKey, Some(key_type));
     let size = on.strip_prefix("RSA-").and_then(|b| b.parse::<u32>().ok());
     // A purpose-bound RSA key is named by its binding (several share a size, each proving

@@ -7,10 +7,9 @@
 mod common;
 
 use common::*;
-use std::process::Command;
 
 fn supports(args: &[&str]) -> i32 {
-    let out = Command::new(BIN).arg("supports").args(args).output().unwrap();
+    let out = tool(BIN).arg("supports").args(args).output().unwrap();
     let said = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     eprintln!("$ caprobe supports {}\n  {} {}", args.join(" "), said.0.trim(), said.1.trim());
     code(&out)
@@ -68,7 +67,7 @@ fn supports_asks_by_token_and_refuses_what_it_cannot_ask() {
     let tokens = "[tokens.soft]\ntokenLabel = \"t\"\nprovider = \"softhsm\"\n\n[tokens.bare]\ntokenLabel = \"b\"\n";
     std::fs::write(&config, tokens).unwrap();
     let ask = |args: &[&str]| {
-        let out = Command::new(BIN).arg("--config").arg(&config).arg("supports").args(args).output().unwrap();
+        let out = tool(BIN).arg("--config").arg(&config).arg("supports").args(args).output().unwrap();
         (code(&out), String::from_utf8_lossy(&out.stderr).into_owned())
     };
     assert_eq!(ask(&["--token", "soft", "secp256r1"]).0, 0);
@@ -105,6 +104,6 @@ fn supports_asks_by_token_and_refuses_what_it_cannot_ask() {
     assert_eq!(ask(&["--token", "site", "CKM_SHA512_HMAC"]).0, 0);
 
     // `caps` reads a token: without keys.toml it is a usage error.
-    let out = Command::new(BIN).env_remove("CAKEYS_CONFIG").args(["caps", "--token", "soft"]).output().unwrap();
+    let out = tool(BIN).args(["caps", "--token", "soft"]).output().unwrap();
     assert_eq!(code(&out), 2, "{}", String::from_utf8_lossy(&out.stderr));
 }

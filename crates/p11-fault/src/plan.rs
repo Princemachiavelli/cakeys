@@ -274,8 +274,12 @@ fn rule(r: RuleText) -> Result<Rule, String> {
             Err(format!("{what} is for {}", names.join(", ")))
         }
     };
+    // A flag of the structure the rule's function returns: the slot's and the token's flag words
+    // reuse bit values, so a slot flag on `C_GetTokenInfo` would set another flag (plan.rs F1).
+    let (word, by_name): (_, fn(&str) -> Option<CK_FLAGS>) =
+        if function == Fn::C_GetSlotInfo { ("slot flag", names::slot_flag) } else { ("token flag", names::token_flag) };
     let flags = |values: Vec<Value>| -> Result<CK_FLAGS, String> {
-        values.into_iter().try_fold(0, |all, v| Ok(all | v.resolve("slot or token flag", names::flag)?))
+        values.into_iter().try_fold(0, |all, v| Ok(all | v.resolve(word, by_name)?))
     };
     let mut actions = Vec::new();
     if let Some(rv) = r.rv {
@@ -414,6 +418,10 @@ mod tests {
         let call = plan.count(Fn::C_GetTokenInfo);
         assert_eq!((plan.before(&call), plan.after(&call)), (None, None));
         assert_eq!(plan.matching(&call).map(|(i, _)| i).collect::<Vec<_>>(), [1]);
+        // A slot rule takes the slot's own flag names.
+        let slot =
+            Plan::parse("[[rule]]\nfn = \"C_GetSlotInfo\"\nclear_flags = [\"CKF_TOKEN_PRESENT\", \"CKF_HW_SLOT\"]\n");
+        assert_eq!(slot.unwrap().rules()[0].action, Action::Flags { set: 0, clear: 1 | 4 });
     }
 
     /// `abort` ends the process at its call only: no return value, and one thing per rule.
@@ -443,7 +451,12 @@ mod tests {
                 "[[rule]]\nfn = \"C_Login\"\nset_flags = [\"CKF_WRITE_PROTECTED\"]\n",
                 "is for C_GetTokenInfo, C_GetSlotInfo",
             ),
-            ("[[rule]]\nfn = \"C_GetTokenInfo\"\nset_flags = [\"CKF_RW_SESSION\"]\n", "unknown slot or token flag"),
+            ("[[rule]]\nfn = \"C_GetTokenInfo\"\nset_flags = [\"CKF_RW_SESSION\"]\n", "unknown token flag"),
+            // Each flag word's own names (plan.rs F1): a slot flag on the token's word would set
+            // the token flag of its value (CKF_HW_SLOT is CKF_LOGIN_REQUIRED's 4), and back.
+            ("[[rule]]\nfn = \"C_GetTokenInfo\"\nset_flags = [\"CKF_HW_SLOT\"]\n", "unknown token flag CKF_HW_SLOT"),
+            ("[[rule]]\nfn = \"C_GetTokenInfo\"\nclear_flags = [\"CKF_TOKEN_PRESENT\"]\n", "unknown token flag"),
+            ("[[rule]]\nfn = \"C_GetSlotInfo\"\nset_flags = [\"CKF_LOGIN_REQUIRED\"]\n", "unknown slot flag"),
             ("[[rule]]\nfn = \"C_GetAttributeValue\"\nattribute = \"CKA_NOPE\"\ndrop = true\n", "unknown attribute"),
             ("[[rule]]\nfn = \"C_GetAttributeValue\"\nattribute = \"CKA_ID\"\n", "gives one of"),
             (

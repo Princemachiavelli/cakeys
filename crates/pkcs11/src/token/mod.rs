@@ -197,6 +197,12 @@ fn library(module: &str) -> Result<Arc<Library>> {
         return Ok(library);
     }
     let ctx = Pkcs11::new(module).map_err(ck(&format!("loading {module}")))?;
+    // Loaded, by the file the loader mapped: a bare name and a path to that file are one library
+    // too (token/mod.rs F3). Found open, `ctx` goes uninitialized: only its loader reference.
+    let key = loaded_path(module).unwrap_or(key);
+    if let Some(library) = open.get(&key).and_then(std::sync::Weak::upgrade) {
+        return Ok(library);
+    }
     ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).map_err(ck("C_Initialize"))?;
     let library = Arc::new(Library(ctx));
     open.insert(key, Arc::downgrade(&library));
@@ -798,28 +804,55 @@ impl Token {
             Ok(()) => {
                 let out = step();
                 let logout = self.session.logout().map_err(ck("C_Logout (SO)"));
-                out.and_then(|v| logout.map(|()| v))
+                so_outcome(what, &self.name, out, logout)
             }
             Err(e) => Err(KmError::Unavailable(
                 format!(
-                    "{SO_LOGIN} with soCredentialFile/soCredentialEnv: {e}; it must hold the module's admin \
+                    "{SO_LOGIN} with soCredentialFile/soCredentialEnv: {rv}; it must hold the module's admin \
                  credential (the SO PIN; ykcs11: the PIV management key in hex, or the PIN on a \
-                 device whose management key is PIN-protected)"
+                 device whose management key is PIN-protected)",
+                    rv = rv_name(&e)
                 )
                 .into(),
             )
             .with_rv(rv_of(&e))),
         };
         drop(so);
-        if self.logged_in {
-            let pin =
-                self.pin.as_deref().ok_or_else(|| KmError::Unavailable("no user PIN to log back in with".into()))?;
-            match self.session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
-                Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
-                Err(e) => return Err(KmError::Unavailable(format!("C_Login (back to the user): {e}").into())),
-            }
+        if !self.logged_in {
+            return out;
         }
-        out
+        let back = match self.pin.as_deref() {
+            None => Err(KmError::Unavailable("no user PIN to log back in with".into())),
+            Some(pin) => match self.session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
+                Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => Ok(()),
+                Err(e) => Err(KmError::Unavailable(format!("C_Login (back to the user): {}", rv_name(&e)).into())
+                    .with_rv(rv_of(&e))),
+            },
+        };
+        so_outcome(what, &self.name, out, back)
+    }
+}
+
+/// What [`Token::as_so`] answers once the session is put back (`after`: the SO logout, then the
+/// user's login): the step's own result first. A step that failed is reported as it failed,
+/// never as the session trouble after it; a step that succeeded and a session that could not be
+/// restored is an error that says the step was done, so a caller never takes a key it made (or
+/// a trusted copy) for one that was not.
+fn so_outcome<T>(what: &str, token: &str, step: Result<T>, after: Result<()>) -> Result<T> {
+    match (step, after) {
+        (Ok(v), Ok(())) => Ok(v),
+        (Err(e), _) => Err(e),
+        (Ok(_), Err(e)) => {
+            let rv = e.rv();
+            Err(KmError::Unavailable(
+                format!(
+                    "{what} on '{token}' was done, but the session could not be restored afterwards ({e}): \
+                     what it made or changed is on the token"
+                )
+                .into(),
+            )
+            .with_rv(rv))
+        }
     }
 }
 
@@ -955,7 +988,7 @@ fn session(
         pins.user.guard(name, "user")?;
         match session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
             Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
-            Err(e) => return Err(KmError::Unavailable(format!("C_Login: {e}").into())),
+            Err(e) => return Err(KmError::Unavailable(format!("C_Login: {}", rv_name(&e)).into()).with_rv(rv_of(&e))),
         }
     }
     Ok((session, pin))
@@ -1082,6 +1115,24 @@ fn hmac_key_type(name: Kt, kt: KeyType, raw: std::os::raw::c_ulong) -> Result<Ke
 mod tests {
     use super::*;
     use cryptoki::context::Function;
+
+    /// `as_so` reports the step first (token/mod.rs F2): a step that succeeded is never dropped
+    /// for a failed logout or re-login without saying it was done, and a step that failed is
+    /// never hidden behind the session trouble after it.
+    #[test]
+    fn the_so_step_is_reported_before_the_session_trouble() {
+        let trouble = || Err(KmError::Unavailable("C_Logout (SO): CKR_DEVICE_ERROR".into()));
+        assert_eq!(so_outcome("generating a key", "piv", Ok(7), Ok(())).unwrap(), 7);
+        let done = so_outcome("generating a key", "piv", Ok(7), trouble()).unwrap_err();
+        assert!(
+            matches!(&done, KmError::Unavailable(m) if m.contains("generating a key on 'piv' was done")
+                && m.contains("CKR_DEVICE_ERROR")),
+            "{done}"
+        );
+        let failed =
+            so_outcome::<()>("generating a key", "piv", Err(KmError::Unsupported("refused".into())), trouble());
+        assert!(matches!(failed, Err(KmError::Unsupported(m)) if *m == *"refused"));
+    }
 
     /// Every return value cryptoki has a variant for converts back to itself, and cryptoki's
     /// name for it is the one derived from the variant: a build with `rv-value` and one without

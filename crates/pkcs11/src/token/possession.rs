@@ -145,9 +145,10 @@ impl Token {
             let _ = self.session.sign_final();
             return Err(KmError::Unavailable(
                 format!(
-                    "C_Login(CKU_CONTEXT_SPECIFIC) for the CKA_ALWAYS_AUTHENTICATE key on token '{}': {e}; \
+                    "C_Login(CKU_CONTEXT_SPECIFIC) for the CKA_ALWAYS_AUTHENTICATE key on token '{}': {}; \
                  not retried",
-                    self.name
+                    self.name,
+                    rv_name(&e)
                 )
                 .into(),
             )

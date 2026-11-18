@@ -221,6 +221,66 @@ tokens.ref-anon = { locator = { CKA_LABEL = "rsa-paths" }, origin = "adopt", pub
     assert_eq!(e.code(&["check", "r", "--spec", "r-pub"]), 0);
 }
 
+/// A legacy RSA key outside the `rsa` crate's limits (768 bits) has an identity (core id.rs
+/// F1): adopted, it is locked from its private key and from its public key without login, the
+/// two agree, and it verifies. It was refused as a conflict (13). A proof of possession, which
+/// needs a verifier of its size, is refused on policy (15), naming the size.
+#[test]
+fn a_legacy_rsa_key_has_an_identity() {
+    let Some(e) = env("rsa_legacy") else { return };
+    let label = Attribute::Label(b"rsa-legacy".to_vec());
+    let made = e.session().generate_key_pair(
+        &Mechanism::RsaPkcsKeyPairGen,
+        &[
+            Attribute::Token(true),
+            label.clone(),
+            Attribute::ModulusBits(768.into()),
+            Attribute::PublicExponent(vec![1, 0, 1]),
+            Attribute::Private(false),
+        ],
+        &[Attribute::Token(true), label, Attribute::Sign(true), Attribute::Sensitive(true)],
+    );
+    if let Err(err) = made {
+        // kryoptic makes no RSA key under 1024 bits.
+        eprintln!("skipping rsa_legacy: the module makes no RSA-768 key: {err}");
+        return;
+    }
+    e.config(
+        r#"
+[objects.r]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 768
+
+[specs.r-proved]
+object = "r"
+attributes = { CKA_SIGN = true }
+tokens.ref = { locator = { CKA_LABEL = "rsa-legacy" }, origin = "adopt" }
+
+[specs.r-old]
+object = "r"
+tokens.ref = { locator = { CKA_LABEL = "rsa-legacy" }, origin = "adopt", binding = "token-asserted" }
+
+[specs.r-pub]
+object = "r"
+tokens.ref-anon = { locator = { CKA_LABEL = "rsa-legacy" }, origin = "adopt", publicOnly = true }
+"#,
+    );
+    // No signature verifier of that size: refused on policy (15), by its size, not as a conflict.
+    let o = e.km(&["lock", "--spec", "r-proved", "--token", "ref", "--update-lock"]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("an RSA key of 768 bits"), "{}", stderr(&o));
+    for spec in [
+        &["lock", "--spec", "r-old", "--token", "ref", "--update-lock"][..],
+        &["lock", "--spec", "r-pub", "--token", "ref-anon", "--update-lock"],
+        &["verify", "--spec", "r-old", "--token", "ref"],
+        &["check", "r", "--spec", "r-pub"],
+    ] {
+        let o = e.km(spec);
+        assert_eq!(code(&o), 0, "{spec:?}: {}", stderr(&o));
+    }
+}
+
 #[test]
 #[expect(clippy::format_push_string, reason = "the fixture TOML bodies are appended as += format!(...)")]
 fn adopt_ec_and_edwards_certificates() {

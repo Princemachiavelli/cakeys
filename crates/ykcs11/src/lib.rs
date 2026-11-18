@@ -98,8 +98,11 @@ impl Provider for Ykcs11 {
         "ykcs11"
     }
 
+    /// Yubico's PIV module by its `C_GetInfo` description as well: `yubihsm_pkcs11` (`YubiHSM` 2)
+    /// reports the same manufacturer, "Yubico (www.yubico.com)" \[run\], and is no PIV token
+    /// (ykcs11 lib.rs F1).
     fn matches(&self, m: &ModuleInfo) -> bool {
-        m.manufacturer.starts_with("Yubico")
+        m.manufacturer.starts_with("Yubico") && m.description.starts_with("PKCS#11 PIV Library")
     }
 
     /// ykcs11 generates (and deletes) only after `C_Login(CKU_SO)` with the PIV management key.
@@ -298,6 +301,24 @@ fn find_device_cert(ctx: &AttestCtx<'_>) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ykcs11 claims its own module and no other Yubico one: the `C_GetInfo` strings
+    /// yubico-piv-tool 2.7.3's `libykcs11.so` and yubihsm-shell 2.8.0's `yubihsm_pkcs11.so` carry
+    /// \[run\], padded as `CK_INFO`'s fixed fields are.
+    #[test]
+    fn only_the_piv_module_is_ykcs11() {
+        let module = |manufacturer: &str, description: &str| ModuleInfo {
+            path: String::new(),
+            hash: None,
+            description: format!("{description:<32}"),
+            manufacturer: format!("{manufacturer:<32}"),
+            version: String::new(),
+            cryptoki: String::new(),
+        };
+        assert!(Ykcs11.matches(&module("Yubico (www.yubico.com)", "PKCS#11 PIV Library (SP-800-73)")));
+        assert!(!Ykcs11.matches(&module("Yubico (www.yubico.com)", "YubiHSM PKCS#11 Library")));
+        assert!(!Ykcs11.matches(&module("SoftHSM", "Implementation of PKCS11")));
+    }
 
     /// ykcs11's fixed `CKA_ID` table: 01-04 the four PIV slots, 05-18 the twenty retired slots;
     /// 19 (f9, the device attestation key) and anything else is no key slot to generate into.

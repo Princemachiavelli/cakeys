@@ -37,6 +37,10 @@ stays, unrecorded; the next run reports 19. Fix: since the locator was verified 
 before (`:599-609`), treat any `Err` from `tok.create` as "maybe created": try `tok.destroy`
 under the same notes as `:623-631`, then return the error. [read]
 
+**Fixed (2026-11-18):** `undo_created` runs on a failed `create` as on a failed identity: what is
+under the (empty before) locator is removed, or reported. Test:
+`a_creation_that_fails_after_the_write_is_undone`.
+
 ### F3. The file holds four concerns in 1140 lines — complexity
 
 `crates/pkcs11/src/ops.rs`. The verbs proper (`resolve_with`, `lock_as`, `create`,

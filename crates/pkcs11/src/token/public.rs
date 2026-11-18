@@ -7,7 +7,6 @@
     reason = "the token/ split files work on the parent module's imports (R9); `expect` is not fulfilled on a `use` item"
 )]
 use super::*;
-use rsa::pkcs8::DecodePublicKey as _;
 use rsa::traits::PublicKeyParts as _;
 use x509_cert::der::{Decode as _, Encode as _};
 
@@ -56,7 +55,7 @@ pub fn public_object_attrs(object: &ObjectCfg, bytes: &[u8]) -> Result<Vec<Attri
 pub fn public_key_attrs(object: &ObjectCfg, spki: &[u8]) -> Result<Vec<Attribute>> {
     let bad = |e: &dyn std::fmt::Display| KmError::Conflict(format!("the public key: {e}").into());
     if object.key_type == Some(Kt::Rsa) {
-        let key = rsa::PublicKey::from_public_key_der(spki).map_err(|e| bad(&e))?;
+        let key = cakeys_core::id::rsa_of_spki(spki).map_err(|e| bad(&e))?;
         return Ok(vec![
             Attribute::KeyType(KeyType::RSA),
             Attribute::Modulus(key.n().to_be_bytes_trimmed_vartime().to_vec()),

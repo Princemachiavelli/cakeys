@@ -57,6 +57,9 @@ second copy only has to be self-consistent (`Transport::parse` checks only that 
 Fix: parse the file once in `dispatch` and pass the `Transport` to both, or call `tokens::pinned`
 in `export` before `key()`. [read]
 
+**Fixed (2026-11-18):** `Destination::transport` reads and parses the file once; the export checks
+that parse against the lock (`tokens::pinned`) before it wraps. Test: `the_transport_file_is_read_once`.
+
 ### F4. The lock is saved once per run, after every token write — risk
 
 **Verification:** confirmed. `migrate`'s loop mutates only the in-memory `self.lock` and calls `self.save` once after it (lib.rs:574-617), as `import` does (:521); a kill mid-loop leaves imported objects that `free_locator` (host.rs:122-133) then refuses with 13, and ykcs11 cannot delete keys (ykcs11/src/lib.rs:122). Not in ISSUES.md (B9 covers only the reported-error path). [read]

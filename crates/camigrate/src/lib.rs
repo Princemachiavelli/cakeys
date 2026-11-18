@@ -242,7 +242,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
             let dest = match (target, transport, to_file) {
                 (_, _, Some(FileArg::Pkcs8)) => Destination::File(FileFormat::Pkcs8),
                 (_, _, Some(FileArg::Pkcs12)) => Destination::File(FileFormat::Pkcs12),
-                (_, Some(path), None) => Destination::Transport(path),
+                (_, Some(path), None) => Destination::transport(path)?,
                 (Some(t), None, None) => Destination::Bundle(t),
                 (None, None, None) => unreachable!("clap requires one of --target, --transport, --to-file"),
             };
@@ -335,8 +335,18 @@ enum Destination<'a> {
     Token(&'a str),
     /// A bundle sealed to a token's transport key, by `export --target`.
     Bundle(&'a str),
-    Transport(&'a Path),
+    /// A transport file, read once (by [`Destination::transport`]): the plan checks against the
+    /// lock the very key the export seals to.
+    Transport(&'a Path, Transport),
     File(FileFormat),
+}
+
+impl<'a> Destination<'a> {
+    /// `--transport <path>`: the file read and parsed, once for the run.
+    fn transport(path: &'a Path) -> anyhow::Result<Destination<'a>> {
+        let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        Ok(Destination::Transport(path, Transport::parse(&text, path)?))
+    }
 }
 
 impl Run<'_> {
@@ -436,9 +446,12 @@ impl Run<'_> {
                     tokens::transport(&tr, &target, &self.lock, notes)?.key()?
                 })
             }
-            Destination::Transport(path) => {
-                let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-                Some(Transport::parse(&text, path)?.key()?)
+            // The plan checked this same parsed file against the lock; sealing checks it again,
+            // so nothing wraps to a key the lock does not pin, whatever the plan let through.
+            Destination::Transport(path, t) => {
+                tokens::pinned(&self.lock, t)
+                    .map_err(|why| KmError::PreconditionFailed(format!("{}: {why}", path.display()).into()))?;
+                Some(t.key()?)
             }
             Destination::Token(_) | Destination::File(_) => {
                 unreachable!("an export makes a bundle or a key file, and a file plan is never sealed")
@@ -666,19 +679,15 @@ impl Run<'_> {
     ) -> anyhow::Result<tokens::Moves> {
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
         let open = |name: &str, notes: &mut Notes| opener.open(name, Access::Read, notes);
-        let bundle = matches!(dest, Destination::Bundle(_) | Destination::Transport(_));
-        let transport = match dest {
-            Destination::Transport(path) => {
-                let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-                Some((Transport::parse(&text, path)?, path.display().to_string()))
-            }
-            _ => None,
+        let bundle = matches!(dest, Destination::Bundle(_) | Destination::Transport(..));
+        let shown = match dest {
+            Destination::Transport(path, _) => path.display().to_string(),
+            _ => String::new(),
         };
-        let dest = match (dest, &transport) {
-            (Destination::Token(name) | Destination::Bundle(name), _) => tokens::Dest::Token(name),
-            (Destination::File(f), _) => tokens::Dest::File(*f),
-            (Destination::Transport(_), Some((t, shown))) => tokens::Dest::Transport(t, shown),
-            (Destination::Transport(_), None) => unreachable!("parsed above"),
+        let dest = match dest {
+            Destination::Token(name) | Destination::Bundle(name) => tokens::Dest::Token(name),
+            Destination::File(f) => tokens::Dest::File(*f),
+            Destination::Transport(_, t) => tokens::Dest::Transport(t, &shown),
         };
         let target_token = match dest {
             tokens::Dest::Token(name) => Some(name),

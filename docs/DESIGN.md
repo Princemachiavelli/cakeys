@@ -515,7 +515,8 @@ Annotated, with the reasons behind each table: [`LOCK.md`](LOCK.md).
   mode downgrade (exit 14).
 - **Writes are atomic** (temporary file, then rename), and a run that may update the lock holds an
   advisory exclusive lock on `<lock>.lck` across its read-modify-write (finding M3), so concurrent
-  updaters on different tokens queue instead of losing each other's realisations. Readers never
+  updaters on different tokens queue instead of losing each other's realisations (one that waits
+  says so first: `note: waiting for <lock>.lck`). Readers never
   take it: the rename makes each read a consistent snapshot. A leftover `.lck` is harmless
   (advisory, released when its holder exits) — `update_lock_waits_for_the_sidecar_lock`.
 - **`gc`** collects entries the config no longer names (finding D3): every

@@ -43,6 +43,17 @@ impl Env {
         self.write_config(&(tpm2_tokens(&self.module, &self.dir) + body));
     }
 
+    /// keys.toml as `text`, every test's (it shadows [`Workdir::write_config`]): an attestation
+    /// provisions a persistent Attestation Key, so a keys.toml asking for one is written only
+    /// against the suite's swtpm (review tpm2.rs F1; docs/DEVELOPMENT.md, "Hardware rules").
+    fn write_config(&self, text: &str) {
+        assert!(
+            !text.contains("attestation = true") || on_swtpm(),
+            "an attestation makes a persistent TPM object: only against the suite's swtpm"
+        );
+        self.w.write_config(text);
+    }
+
     /// The attestation a realisation pins (§3.7: per realisation, never in the object's ids).
     fn locked_attestation(&self, spec: &str, token: &str) -> toml::Value {
         self.lock()["realisations"][spec][token]["attestation"].clone()
@@ -389,10 +400,15 @@ fn tpm2_private_data_object_is_identified_by_its_value() {
 
 /// The `tpm-certify` commitment (§3.7 of docs/DESIGN.md): a native `TPM2_Certify` over the
 /// object's Name, host-verified against a provisioned AK, and cross-checked against the
-/// material `rfc7093m4` names.
+/// material `rfc7093m4` names. It provisions persistent objects (the AK, a key at another AK
+/// handle): on the suite's swtpm only (review tpm2.rs F1).
 #[test]
 fn tpm2_keys_attest_their_tpm_residence() {
     let Some(e) = env("attest") else { return };
+    if !on_swtpm() {
+        eprintln!("skipping attest: it makes persistent TPM objects, on the suite's swtpm only");
+        return;
+    }
     // A generated EC key (9a slot style): attested on the TPM, once the AK is provisioned.
     e.config(
         "[objects.p256]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
@@ -443,26 +459,20 @@ fn tpm2_keys_attest_their_tpm_residence() {
     }
     // `check` is a read like verify (DESIGN §3.7): it fails the same way and leaves the TPM's
     // persistent handles as they were, the missing AK included.
-    if on_swtpm() {
-        let before = persistent_handles();
-        for _ in 0..2 {
-            let o = e.km(&["check", "p256.id.tpm-certify", "--token", "tpm"]);
-            assert_eq!(code(&o), 14, "{}", stderr(&o));
-            assert!(stderr(&o).contains("no Attestation Key at 0x81000017"));
-        }
-        assert_eq!(persistent_handles(), before);
-        assert!(!before.contains("0x81000017"), "{before}");
+    let before = persistent_handles();
+    for _ in 0..2 {
+        let o = e.km(&["check", "p256.id.tpm-certify", "--token", "tpm"]);
+        assert_eq!(code(&o), 14, "{}", stderr(&o));
+        assert!(stderr(&o).contains("no Attestation Key at 0x81000017"));
     }
+    assert_eq!(persistent_handles(), before);
+    assert!(!before.contains("0x81000017"), "{before}");
     // A key at the AK handle that is not a restricted signing key is never trusted as the AK:
     // an unrestricted one could sign a forged attestation.
     let ctx = e.dir.join("storage.ctx");
-    for args in [
-        vec!["tpm2_createprimary", "-C", "o", "-G", "ecc", "-c", ctx.to_str().unwrap()],
-        vec!["tpm2_evictcontrol", "-C", "o", "-c", ctx.to_str().unwrap(), "0x81000018"],
-    ] {
-        let out = Command::new(args[0]).args(&args[1..]).output().unwrap();
-        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
-    }
+    let ctx = ctx.to_str().unwrap();
+    tpm2_tool("createprimary", &["-C", "o", "-G", "ecc", "-c", ctx]);
+    tpm2_tool("evictcontrol", &["-C", "o", "-c", ctx, "0x81000018"]);
     std::fs::write(e.dir.join("keys.toml"), alt("0x81000018")).unwrap();
     let o = e.km(&r);
     assert_eq!(code(&o), 13, "{}", stderr(&o));
@@ -470,7 +480,7 @@ fn tpm2_keys_attest_their_tpm_residence() {
     std::fs::write(e.dir.join("keys.toml"), &base).unwrap();
 
     // HMAC keys attest too (TPM2_Certify covers any loaded object), pairing with `commitment`.
-    if cryptoki_hmac_types_fixed(false) {
+    if cryptoki_hmac_types_fixed(std::env::var("CAKEYS_TPM_REQUIRE").is_ok()) {
         let hmac_file = e.dir.join("hmac.bin");
         std::fs::write(&hmac_file, HMAC_VALUE).unwrap();
         e.ptool(&[
@@ -804,9 +814,8 @@ fn tpm2_attestation_finds_its_store_and_tpm_as_configured() {
     let home = e.dir.join("home");
     std::fs::create_dir_all(&home).unwrap();
     std::os::unix::fs::symlink(&store, home.join(".tpm2_pkcs11")).unwrap();
-    let o = Command::new(BIN)
+    let o = tool(BIN)
         .env_remove("TPM2_PKCS11_STORE")
-        .env_remove("NIX_BUILD_TOP")
         .env("HOME", &home)
         .arg("--config")
         .arg(e.dir.join("keys.toml"))
@@ -858,8 +867,35 @@ fn tpm2_object_matrix_is_the_committed_one() {
 /// is named for it). The same suite shape can be pointed at a real TPM (`nix/ftpm-test-env.sh`):
 /// a test that changes TPM state beyond the token's own objects runs only here
 /// (docs/DEVELOPMENT.md, "Hardware rules").
+///
+/// The script says so (`CAKEYS_TPM_SWTPM`), and the TPM agrees: its vendor strings are swtpm's,
+/// "SW  " " TPM" \[run\]. A marker on another TPM is a misconfigured run and fails; so does a
+/// suite that requires the TPM (`CAKEYS_TPM_REQUIRE`) on any other: the steps that change the
+/// TPM are part of what it requires, never skipped quietly (review tpm2.rs F3). It was a D-Bus
+/// address substring, and a renamed bus skipped them with every test passing.
 fn on_swtpm() -> bool {
-    std::env::var("DBUS_SESSION_BUS_ADDRESS").is_ok_and(|a| a.contains("unix:abstract=cakeys-tpm-"))
+    let said = std::env::var_os("CAKEYS_TPM_SWTPM").is_some();
+    let software = said && tpm_is_software();
+    assert!(!said || software, "CAKEYS_TPM_SWTPM is set, but the TPM's vendor strings are not swtpm's");
+    assert!(
+        software || std::env::var_os("CAKEYS_TPM_REQUIRE").is_none(),
+        "CAKEYS_TPM_REQUIRE is set, but this is not the suite's swtpm (nix/tpm2-test-env.sh sets CAKEYS_TPM_SWTPM)"
+    );
+    software
+}
+
+/// Whether the TPM's fixed properties carry swtpm's vendor strings (`TPM2_PT_VENDOR_STRING_1`
+/// and `_2`, "SW  " and " TPM").
+fn tpm_is_software() -> bool {
+    let out = Command::new("tpm2_getcap").arg("properties-fixed").output().unwrap();
+    assert!(out.status.success(), "tpm2_getcap properties-fixed: {}", stderr(&out));
+    let text = stdout(&out);
+    let raw = |name: &str| {
+        let mut lines = text.lines().skip_while(|l| l.trim_end() != format!("{name}:"));
+        lines.nth(1).map(|l| l.trim().to_owned())
+    };
+    raw("TPM2_PT_VENDOR_STRING_1").as_deref() == Some("raw: 0x53572020")
+        && raw("TPM2_PT_VENDOR_STRING_2").as_deref() == Some("raw: 0x2054504D")
 }
 
 /// What `tpm2_getcap handles-persistent` lists: the TPM's persistent handles.
@@ -902,14 +938,7 @@ fn tpm2_attestation_says_what_it_lacks() {
     };
 
     config(&format!("{pin}\noptions = {{ tpm2Store = \"~/no-store\" }}"));
-    let o = Command::new(BIN)
-        .env_remove("HOME")
-        .env_remove("NIX_BUILD_TOP")
-        .arg("--config")
-        .arg(e.dir.join("keys.toml"))
-        .args(r)
-        .output()
-        .unwrap();
+    let o = tool(BIN).env_remove("HOME").arg("--config").arg(e.dir.join("keys.toml")).args(r).output().unwrap();
     refused(&o, 16, "opening tpm2-pkcs11 store ~/no-store");
 
     config(&pin);

@@ -214,13 +214,7 @@ fn update_lock_waits_for_the_sidecar_lock() {
         std::fs::File::options().write(true).create(true).truncate(false).open(e.dir.join("keys.lock.lck")).unwrap();
     held.lock().unwrap();
     let spawn = |args: &[&str]| {
-        std::process::Command::new(env!("CARGO_BIN_EXE_cakeys"))
-            .env_remove("NIX_BUILD_TOP")
-            .arg("--config")
-            .arg(e.dir.join("keys.toml"))
-            .args(args)
-            .spawn()
-            .unwrap()
+        tool(env!("CARGO_BIN_EXE_cakeys")).arg("--config").arg(e.dir.join("keys.toml")).args(args).spawn().unwrap()
     };
     // A reader never takes it: verify finishes while it is held. However slow the build (a debug
     // build behind the fault shim takes over a second): one that waited would never finish.
@@ -237,12 +231,38 @@ fn update_lock_waits_for_the_sidecar_lock() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
     assert!(status.success());
-    // An updater waits: it cannot finish while the lock is held.
-    let mut updater = spawn(&r);
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    assert!(updater.try_wait().unwrap().is_none(), "the updater did not wait for the sidecar lock");
+    // An updater waits, and says so before it blocks: its note is awaited, never a timer, which
+    // a slow build (the fault shim's) outlasted with no lock taken at all (review lockfile.rs F1).
+    let mut updater = tool(env!("CARGO_BIN_EXE_cakeys"))
+        .arg("--config")
+        .arg(e.dir.join("keys.toml"))
+        .args(r)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let lines = std::io::BufRead::lines(std::io::BufReader::new(updater.stderr.take().unwrap()));
+    let (said, heard) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in lines.map_while(Result::ok) {
+            let _ = said.send(line);
+        }
+    });
+    let waiting =
+        format!("note: waiting for {}: another run is updating the lock", e.dir.join("keys.lock.lck").display());
+    let mut before = Vec::new();
+    loop {
+        match heard.recv_timeout(std::time::Duration::from_secs(60)) {
+            Ok(line) if line == waiting => break,
+            Ok(line) => before.push(line),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout | std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("the updater never waited for the sidecar lock; it said {before:?}")
+            }
+        }
+    }
+    assert!(updater.try_wait().unwrap().is_none(), "the updater finished while the lock was held");
     drop(held);
     assert_eq!(updater.wait().unwrap().code(), Some(0));
+    reader.join().unwrap();
     assert_eq!(e.code(&["verify", "--spec", "signing-soft", "--token", "ref"]), 0);
 }
 

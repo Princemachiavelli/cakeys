@@ -21,6 +21,9 @@ key and the test's fired-assertion still passes. `from_label` (`:270`) fails lou
 situation. Return `None` (or a `Fatal`) when nothing is substituted.
 [read]
 
+**Fixed (2026-11-18):** nothing under the label is a `Fatal` (`CKR_GENERAL_ERROR`, no trace line
+claiming the rule). Test: `a_substitution_of_nothing_is_the_plans_mistake`.
+
 ### F2. `corrupt_output` trusts the length the module wrote back — risk
 
 **Verification:** confirmed (downgraded to nit). hooks.rs:168-179 flips `out[*len - 1]` from the post-call `*len` with no record of the caller's room (forward.rs:40-51 captures none), but it runs only on `CKR_OK`, and a module returning `CKR_OK` with `*len` larger than the buffer has already broken the contract (it wrote past the buffer or lied about it). Worth the same one-line cap as the counts fix, but not reachable with a conformant module. [read]

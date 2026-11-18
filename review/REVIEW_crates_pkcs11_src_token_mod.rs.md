@@ -46,6 +46,10 @@ the real cause. Fix: return the step's result and report logout/re-login failure
 note, or an error that keeps both), or have `create_absent` treat any `Err` once `tok.create`
 was entered as "maybe created" and run its cleanup. [read]
 
+**Fixed (2026-11-18):** `so_outcome` puts the step first: done with a failed logout or re-login is
+an error saying it was done. Tests: `the_so_step_is_reported_before_the_session_trouble`,
+`an_so_step_that_was_done_is_said_to_be_done`.
+
 ### F3. The library cache still keys a bare module name apart from a path to the same file — risk
 
 **Verification:** confirmed. The cache key is the canonical path only when the name contains `/`, else the name as written (mod.rs:190-194), and a miss runs `Pkcs11::new` plus `C_Initialize` with any failure, `CKR_CRYPTOKI_ALREADY_INITIALIZED` included, returned as an error (:199-200); bare names are a documented configuration (config.rs:131-132, docs/CONFIG.md:53-54), and the loader maps one object per file, so the second context shares the initialized library. [read]
@@ -56,6 +60,10 @@ get two `Pkcs11` contexts for one mapped library, and the second `C_Initialize` 
 `CKR_CRYPTOKI_ALREADY_INITIALIZED`. Unusual configuration, hence risk. Fix: after
 `Pkcs11::new`, key by `loaded_path(module)` (the loader's answer, already computed for
 provenance) before initializing. [read]
+
+**Fixed (2026-11-18):** after `Pkcs11::new`, the cache is keyed by `loaded_path` (the file the
+loader mapped) and looked up again before `C_Initialize`. Test:
+`a_bare_name_and_a_path_share_one_library`.
 
 ### F4. Login failures and the trusted-copy refusal carry no `CK_RV` — practice
 

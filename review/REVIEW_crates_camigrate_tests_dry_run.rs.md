@@ -27,6 +27,11 @@ all. Fix: run every row as the sealed matrix does (ready → 0, origin, verify; 
 and target unchanged), and add floors for the methods the doc comment promises (`host-pkcs8`
 when p11kit is present). [read]
 
+**Fixed (2026-11-18):** every row runs. The dry run's exit must match its plan; a ready row
+moves and verifies, with `host` exposure exactly when its method is a host method; a blocked
+row is 15 with the lock and target unchanged. Each floor needs a ready row, and `host-pkcs8`
+into p11-kit gained one. The planner blocking `host-pkcs8` now fails the test.
+
 ### F2. `plant_trusted_key` initializes and finalizes the module outside the shared context — risk
 
 **Verification:** confirmed (downgraded to practice). `dry_run.rs:1662-1690` does bypass `common::Module` (`crates/cli/tests/common/mod.rs:644-691`), but its caller (`:1542`) holds no session at that point and every supported runner is nextest, one process per test (`.config/nextest.toml`, `scripts/local-tests.sh:130`); ISSUES.md:45 records that plain `cargo test` with tokens "stays unsupported", so the failure needs an unsupported runner. [read]

@@ -407,6 +407,7 @@ dependencies = [
  "des",
  "getrandom 0.4.3",
  "hmac",
+ "libc",
  "p11-fault",
  "pkcs12",
  "pkcs8",

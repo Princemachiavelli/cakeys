@@ -101,7 +101,16 @@ pub fn verify_with(spki: &[u8], msg: &[u8], sig: &[u8], rsa: RsaSignature) -> Re
                 .into(),
             )
         }),
-        None => Err(of_key(&"its algorithm's own parser does not read it")),
+        // An RSA key of a size `rsa` does not compute with has its identity (id.rs F1), but
+        // no verifier here: the refusal says so, by its size.
+        None => match crate::id::rsa_of_spki(spki) {
+            Ok(key) => Err(of_key(&format_args!(
+                "an RSA key of {} bits, outside the 1024 to 8192 cakeys verifies signatures of (exponent at \
+                 most 2^33 - 1); opt in with binding = \"token-asserted\"",
+                rsa::traits::PublicKeyParts::n(&key).bit_width_vartime()
+            ))),
+            Err(_) => Err(of_key(&"its algorithm's own parser does not read it")),
+        },
     }
 }
 
@@ -259,6 +268,14 @@ pub fn rsa_modulus_len(spki: &[u8]) -> Result<usize> {
     let key = rsa::PublicKey::from_public_key_der(spki)
         .map_err(|e| KmError::Unsupported(format!("an RSA key in this SPKI: {e}").into()))?;
     Ok(rsa::traits::PublicKeyParts::size(&key))
+}
+
+/// Whether the host computes with the RSA key in `spki`: verifies its signatures, encrypts to
+/// it. The `rsa` crate takes 1024 to 8192 bits and an exponent up to 2^33 - 1; a key outside
+/// has an identity (`id::rsa_of_spki`) but no proof of possession here.
+#[must_use]
+pub fn rsa_computes_with(spki: &[u8]) -> bool {
+    rsa::PublicKey::from_public_key_der(spki).is_ok()
 }
 
 /// HMAC-SHA256 over `msg` keyed with `key`; HMAC takes any key length.

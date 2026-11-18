@@ -376,69 +376,112 @@ fn a_key_bound_to_one_signature_proves_in_it() {
     }
 }
 
-/// The `YubiKey` provider's `piv-attestation` lookups, on this token named `provider = "ykcs11"`
-/// with ykcs11's objects planted from the committed fixtures (crates/ykcs11/tests/fixtures/):
-/// slot 9a's public key (`CKA_ID` 01), its attestation certificate under the same `CKA_ID`
-/// and the slot-suffixed label, and the f9 device certificate under the bare label. The chain
-/// ends at a test root, never a pinned Yubico one: refused (13). Without the slot or the device
-/// certificate there is no attestation (15); with two of either, it is ambiguous (12).
-#[test]
-fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
-    let Some(e) = env("piv-attest") else { return };
-    let fixture = |name: &str| {
-        let pem = std::fs::read_to_string(format!("{}/../ykcs11/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR")));
-        x509_cert::der::pem::decode_vec(pem.unwrap().as_bytes()).unwrap().1
-    };
-    let spki = fixture("slotpub.pem");
-    let info = <x509_cert::spki::SubjectPublicKeyInfoOwned as x509_cert::der::Decode>::from_der(&spki).unwrap();
-    let point = info.subject_public_key.raw_bytes().to_vec();
-    let s = e.session();
-    s.create_object(&[
-        Attribute::Class(ObjectClass::PUBLIC_KEY),
-        Attribute::KeyType(cryptoki::object::KeyType::EC),
-        Attribute::EcParams(vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]),
-        Attribute::EcPoint(tlv(0x04, &point)),
-        Attribute::Token(true),
-        Attribute::Verify(true),
-        Attribute::Id(vec![0x01]),
-        Attribute::Label(b"Public key for PIV Authentication".to_vec()),
-    ])
-    .unwrap();
-    let cert = |der: &[u8], label: &str, id: u8| {
+/// ykcs11's slot 9a objects from the committed fixtures (crates/ykcs11/tests/fixtures/): the
+/// public key planted, and its attestation and device certificates planted on request.
+struct Piv<'a> {
+    s: &'a TestSession,
+    slot: Vec<u8>,
+    device: Vec<u8>,
+}
+
+impl<'a> Piv<'a> {
+    const SLOT_LABEL: &'static str = "X.509 Certificate for PIV Attestation 9a";
+    const DEVICE_LABEL: &'static str = "X.509 Certificate for PIV Attestation";
+
+    /// Plant slot 9a's public key (`CKA_ID` 01) and write keys.toml's spec `piv` adopting it on
+    /// token `yk` (`provider = "ykcs11"`) with attestation.
+    fn plant(e: &Env, s: &'a TestSession) -> Piv<'a> {
+        let fixture = |name: &str| {
+            let pem =
+                std::fs::read_to_string(format!("{}/../ykcs11/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR")));
+            x509_cert::der::pem::decode_vec(pem.unwrap().as_bytes()).unwrap().1
+        };
+        let spki = fixture("slotpub.pem");
+        let info = <x509_cert::spki::SubjectPublicKeyInfoOwned as x509_cert::der::Decode>::from_der(&spki).unwrap();
+        let point = info.subject_public_key.raw_bytes().to_vec();
+        s.create_object(&[
+            Attribute::Class(ObjectClass::PUBLIC_KEY),
+            Attribute::KeyType(cryptoki::object::KeyType::EC),
+            Attribute::EcParams(vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]),
+            Attribute::EcPoint(tlv(0x04, &point)),
+            Attribute::Token(true),
+            Attribute::Verify(true),
+            Attribute::Id(vec![0x01]),
+            Attribute::Label(b"Public key for PIV Authentication".to_vec()),
+        ])
+        .unwrap();
+        e.write_config(&format!(
+            "[tokens.yk]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nprovider = \"ykcs11\"\n\n\
+             [objects.piv]\nclass = \"CKO_PUBLIC_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.piv]\nobject = \"piv\"\ntokens.yk = {{ locator = {{ CKA_ID = \"01\" }}, origin = \"adopt\", attestation = true }}\n",
+            e.module,
+            e.dir.join("pin").display()
+        ));
+        Piv { s, slot: fixture("slot.pem"), device: fixture("f9.pem") }
+    }
+
+    fn cert(&self, der: &[u8], label: &str, id: u8) -> cryptoki::object::ObjectHandle {
         let mut t = cert_object(der, label.as_bytes(), Some(id));
         t.retain(|a| !matches!(a, Attribute::Token(_)));
         t.push(Attribute::Token(true));
-        s.create_object(&t).unwrap()
-    };
-    let (slot, device) = (fixture("slot.pem"), fixture("f9.pem"));
-    let slot_label = "X.509 Certificate for PIV Attestation 9a";
-    let device_label = "X.509 Certificate for PIV Attestation";
-    let slot_cert = cert(&slot, slot_label, 0x01);
-    let device_cert = cert(&device, device_label, 0x19);
-    e.write_config(&format!(
-        "[tokens.yk]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nprovider = \"ykcs11\"\n\n\
-         [objects.piv]\nclass = \"CKO_PUBLIC_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
-         [specs.piv]\nobject = \"piv\"\ntokens.yk = {{ locator = {{ CKA_ID = \"01\" }}, origin = \"adopt\", attestation = true }}\n",
-        e.module,
-        e.dir.join("pin").display()
-    ));
+        self.s.create_object(&t).unwrap()
+    }
+
+    /// Slot 9a's attestation certificate, under the key's `CKA_ID` and the slot-suffixed label.
+    fn slot_cert(&self) -> cryptoki::object::ObjectHandle {
+        self.cert(&self.slot, Self::SLOT_LABEL, 0x01)
+    }
+
+    /// The f9 device certificate, under the bare label.
+    fn device_cert(&self) -> cryptoki::object::ObjectHandle {
+        self.cert(&self.device, Self::DEVICE_LABEL, 0x19)
+    }
+}
+
+/// The `YubiKey` provider's `piv-attestation` lookups, on this token named `provider = "ykcs11"`
+/// with ykcs11's objects planted ([`Piv`]): slot 9a's public key (`CKA_ID` 01), its attestation
+/// certificate under the same `CKA_ID` and the slot-suffixed label, and the f9 device
+/// certificate under the bare label. The chain ends at a test root, never a pinned Yubico one:
+/// refused (13). Without the slot or the device certificate there is no attestation (15); with
+/// two of either, it is ambiguous (12). `check --at` holds the chain to that time.
+#[test]
+fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
+    let Some(e) = env("piv-attest") else { return };
+    let s = e.session();
+    let piv = Piv::plant(&e, &s);
+    let slot_cert = piv.slot_cert();
+    let device_cert = piv.device_cert();
     let refused = |exit: i32, why: &str| {
         let o = e.km(&["lock", "--spec", "piv", "--token", "yk", "--no-update-lock"]);
         assert_eq!(code(&o), exit, "{}", stderr(&o));
         assert!(stderr(&o).contains(why), "expected {why:?} in {}", stderr(&o));
     };
     refused(13, "is signed by no pinned root and no pooled PIV intermediate");
-    let second = cert(&slot, slot_label, 0x01);
+    let second = piv.slot_cert();
     refused(12, "2 attestation certificates share the key's CKA_ID");
     s.destroy_object(second).unwrap();
     s.destroy_object(slot_cert).unwrap();
     refused(15, "no attestation certificate for this key");
-    cert(&slot, slot_label, 0x01);
-    let second = cert(&device, device_label, 0x19);
+    piv.slot_cert();
+    let second = piv.device_cert();
     refused(12, "2 objects carry the f9 device certificate label");
     s.destroy_object(second).unwrap();
     s.destroy_object(device_cert).unwrap();
     refused(15, "the device attestation certificate (slot f9) is not exposed");
+
+    // `check --at` reaches the chain (ISSUES.md B8; review check.rs F1): before the device
+    // certificate's notBefore (2026-11-12) the dates refuse first; with `--ignore-validity` the
+    // chain goes on to its root, which no pinned one signed; and now, the same.
+    let device_cert = piv.device_cert();
+    let checked = |more: &[&str], why: &str| {
+        let o = e.km(&[&["check", "piv", "--token", "yk"][..], more].concat());
+        assert_eq!(code(&o), 13, "{more:?}: {}", stderr(&o));
+        assert!(stderr(&o).contains(why), "{more:?}: expected {why:?} in {}", stderr(&o));
+    };
+    checked(&["--at", "2026-01-01T00:00:00Z"], "is not valid at 2026-01-01T00:00:00Z");
+    checked(&["--ignore-validity"], "is signed by no pinned root and no pooled PIV intermediate");
+    checked(&[], "is signed by no pinned root and no pooled PIV intermediate");
+    s.destroy_object(device_cert).unwrap();
 
     // ykcs11 reports CKA_DERIVE false on every private key though it derives with any EC key:
     // the provider records what the key does. And it creates only in an SO session.

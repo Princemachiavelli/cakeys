@@ -23,6 +23,11 @@ green. Fix: `reference/proofs.rs:386-441` already plants ykcs11's fixture chain 
 the date refusal rather than the root refusal, and `--ignore-validity` falling through to "no
 pinned root" (13). [read]
 
+**Fixed (2026-11-18):** `piv_attestations_are_found_by_slot_and_chain_to_yubico` runs
+`check --at` on ykcs11's fixture chain. Before the device certificate's notBefore, the dates
+refuse (13); `--ignore-validity` and the present time reach the root refusal. `check` dropping
+its time fails it.
+
 ### F2. A clap conflict is asserted as "not zero" plus clap's prose — practice
 
 `reference/check.rs:249-251`. `assert_ne!(code, 0)` would also accept a crash or 17. "cannot be

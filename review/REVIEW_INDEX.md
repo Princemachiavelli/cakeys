@@ -96,30 +96,30 @@ recorded answers (`with_answers` is never applied at `Token::open`).
 |---|---|
 | [tpm2-pkcs11 attest/esys.rs](REVIEW_crates_tpm2-pkcs11_src_attest_esys.rs.md) F1 | The SPKI and `CKA_LOCAL`/`CKA_EXTRACTABLE` checks read `TPM2_ReadPublic`'s area, not the store blob whose Name the attestation signs. **Fixed** (ISSUES.md "Fixed since") |
 | [camigrate sealed.rs](REVIEW_crates_camigrate_src_sealed.rs.md) F1 | A forged bundle with a swapped EC private key passes under `token-asserted` on targets that expose no public point. **Fixed**: `import --in` refuses it (ISSUES.md "Fixed since") |
-| [camigrate lib.rs](REVIEW_crates_camigrate_src_lib.rs.md) F3, F4 | A transport file is read twice, only the first read checked; the lock is saved once per run, after all token writes. **F4 fixed** (ISSUES.md "Fixed since"); F3 open |
-| [camigrate host.rs](REVIEW_crates_camigrate_src_host.rs.md) F1 | A failed reopen after `tpm2_ptool import` leaves the key in the TPM, unrecorded |
-| [camigrate keyfile.rs](REVIEW_crates_camigrate_src_keyfile.rs.md) F1 | The plaintext gate and the PEM parser disagree on what a PEM block is |
+| [camigrate lib.rs](REVIEW_crates_camigrate_src_lib.rs.md) F3, F4 | A transport file is read twice, only the first read checked; the lock is saved once per run, after all token writes. **Fixed** (ISSUES.md "Fixed since") |
+| [camigrate host.rs](REVIEW_crates_camigrate_src_host.rs.md) F1 | A failed reopen after `tpm2_ptool import` leaves the key in the TPM, unrecorded. **Fixed** (ISSUES.md "Fixed since") |
+| [camigrate keyfile.rs](REVIEW_crates_camigrate_src_keyfile.rs.md) F1 | The plaintext gate and the PEM parser disagree on what a PEM block is. **Fixed** (ISSUES.md "Fixed since") |
 | [pkcs11 token/mod.rs](REVIEW_crates_pkcs11_src_token_mod.rs.md) F1, [pkcs11 Cargo.toml](REVIEW_crates_pkcs11_Cargo.toml.md) F1, [caprobe Cargo.toml](REVIEW_crates_caprobe_Cargo.toml.md) F1, [caprobe probe.rs](REVIEW_crates_caprobe_src_probe.rs.md) F2 | Without `rv-value`, no error carries its `CK_RV`; the probe's busy-session handling goes dead (one root cause) |
-| [pkcs11 token/mod.rs](REVIEW_crates_pkcs11_src_token_mod.rs.md) F2 | `as_so` turns a step that changed the token into an error when the SO logout or re-login fails |
-| [pkcs11 ops.rs](REVIEW_crates_pkcs11_src_ops.rs.md) F2 | Errors after the module created something skip `create_absent`'s cleanup |
-| [pkcs11 token/mod.rs](REVIEW_crates_pkcs11_src_token_mod.rs.md) F3 | The library cache keys a bare module name apart from a path to the same file |
-| [pkcs11 templates.rs](REVIEW_crates_pkcs11_src_templates.rs.md) F1 | A declared `CKA_PRIVATE` on a private key drops the public half's `CKA_PRIVATE = false` (shows on SoftHSM imports) |
-| [core id.rs](REVIEW_crates_core_src_id.rs.md) F1 | RSA keys outside 1024–8192 bits have no identity and are reported as a conflict (13) |
-| [ykcs11 lib.rs](REVIEW_crates_ykcs11_src_lib.rs.md) F1 | `matches` claims YubiHSM 2's module too (same manufacturer string) |
+| [pkcs11 token/mod.rs](REVIEW_crates_pkcs11_src_token_mod.rs.md) F2 | `as_so` turns a step that changed the token into an error when the SO logout or re-login fails. **Fixed** (ISSUES.md "Fixed since") |
+| [pkcs11 ops.rs](REVIEW_crates_pkcs11_src_ops.rs.md) F2 | Errors after the module created something skip `create_absent`'s cleanup. **Fixed** (ISSUES.md "Fixed since") |
+| [pkcs11 token/mod.rs](REVIEW_crates_pkcs11_src_token_mod.rs.md) F3 | The library cache keys a bare module name apart from a path to the same file. **Fixed** (ISSUES.md "Fixed since") |
+| [pkcs11 templates.rs](REVIEW_crates_pkcs11_src_templates.rs.md) F1 | A declared `CKA_PRIVATE` on a private key drops the public half's `CKA_PRIVATE = false` (shows on SoftHSM imports). **Fixed** (ISSUES.md "Fixed since") |
+| [core id.rs](REVIEW_crates_core_src_id.rs.md) F1 | RSA keys outside 1024–8192 bits have no identity and are reported as a conflict (13). **Fixed** (ISSUES.md "Fixed since") |
+| [ykcs11 lib.rs](REVIEW_crates_ykcs11_src_lib.rs.md) F1 | `matches` claims YubiHSM 2's module too (same manufacturer string). **Fixed** (ISSUES.md "Fixed since") |
 | [profile effective.rs](REVIEW_crates_profile_src_effective.rs.md) F2 | RSA size interpolation ignores a refused size in between [run] |
-| [caprobe probe.rs](REVIEW_crates_caprobe_src_probe.rs.md) F3 | `Made::create` loses track of a key pair it made |
-| [caprobe emit.rs](REVIEW_crates_caprobe_src_emit.rs.md) F1 | Two parseable fields are dropped by the emitter |
+| [caprobe probe.rs](REVIEW_crates_caprobe_src_probe.rs.md) F3 | `Made::create` loses track of a key pair it made. **Fixed** (ISSUES.md "Fixed since") |
+| [caprobe emit.rs](REVIEW_crates_caprobe_src_emit.rs.md) F1 | Two parseable fields are dropped by the emitter. **Fixed** (ISSUES.md "Fixed since") |
 | [cli lib.rs](REVIEW_crates_cli_src_lib.rs.md) F1 | A failed lock save after `create` hides what was created and the pair's own error. **Fixed** with the per-object save (ISSUES.md "Fixed since") |
-| [p11-fault hooks.rs](REVIEW_crates_p11-fault_src_hooks.rs.md) F1, [p11-fault plan.rs](REVIEW_crates_p11-fault_src_plan.rs.md) F1 | `use_label` fires on no match; slot and token flag names collide by value |
+| [p11-fault hooks.rs](REVIEW_crates_p11-fault_src_hooks.rs.md) F1, [p11-fault plan.rs](REVIEW_crates_p11-fault_src_plan.rs.md) F1 | `use_label` fires on no match; slot and token flag names collide by value. **Fixed** (ISSUES.md "Fixed since") |
 | [nix module.nix](REVIEW_nix_module.nix.md) F1, F2; [nix module-test.nix](REVIEW_nix_module-test.nix.md) F1 | The check unit is once per boot (a restart is not re-checked), is not ordered after time sync, and is tested only from a stopped state |
 | [nix deny.nix](REVIEW_nix_deny.nix.md) F1 | No path checks against current advisories |
 | [flake.nix](REVIEW_flake.nix.md) F1, [flake-check.yml](REVIEW_.github_workflows_flake-check.yml.md) F1, [nix package-crane.nix](REVIEW_nix_package-crane.nix.md) F2, [nix package-common.nix](REVIEW_nix_package-common.nix.md) F1 | One system of three built; heavy checks share one runner; Kani unbounded; global test stack a silent fallback (latent) |
 | [scripts cloud/gcp.sh](REVIEW_scripts_cloud_gcp.sh.md) F1, [scripts pkcs11-check.sh](REVIEW_scripts_pkcs11-check.sh.md) F1 | `status` says nothing is billing when gcloud fails; a run can report the previous run's results |
-| [cli tests common/mod.rs](REVIEW_crates_cli_tests_common_mod.rs.md) F1 | No runner clears `CAKEYS_LOCK`, so the suites can write a developer's real lock |
-| [cli tests tpm2.rs](REVIEW_crates_cli_tests_tpm2.rs.md) F1, F3 | Persistent TPM handles made outside the swtpm guard; `on_swtpm()` is a substring test whose failure skips silently |
-| [cli tests common/xref.rs](REVIEW_crates_cli_tests_common_xref.rs.md) F1 | The dry-run twin compares no kryoptic token for runs naming `kryoptic-der` |
-| [cli tests yubikey.rs](REVIEW_crates_cli_tests_yubikey.rs.md) F1, [cli tests reference/lockfile.rs](REVIEW_crates_cli_tests_reference_lockfile.rs.md) F1, [cli tests reference/check.rs](REVIEW_crates_cli_tests_reference_check.rs.md) F1 | Wrong-PIN tests can spend two of three tries; the lock-wait test is weak behind the fault shim; B8's CLI test never reaches an attestation |
-| [caprobe tests ftpm.rs](REVIEW_crates_caprobe_tests_ftpm.rs.md) F1, [camigrate tests dry_run.rs](REVIEW_crates_camigrate_tests_dry_run.rs.md) F1 | The documented command skips the only assertion and passes; the host-move matrix drops non-ready rows |
+| [cli tests common/mod.rs](REVIEW_crates_cli_tests_common_mod.rs.md) F1 | No runner clears `CAKEYS_LOCK`, so the suites can write a developer's real lock. **Fixed** (ISSUES.md "Fixed since") |
+| [cli tests tpm2.rs](REVIEW_crates_cli_tests_tpm2.rs.md) F1, F3 | Persistent TPM handles made outside the swtpm guard; `on_swtpm()` is a substring test whose failure skips silently. **Fixed** (ISSUES.md "Fixed since") |
+| [cli tests common/xref.rs](REVIEW_crates_cli_tests_common_xref.rs.md) F1 | The dry-run twin compares no kryoptic token for runs naming `kryoptic-der`. **Fixed** (ISSUES.md "Fixed since") |
+| [cli tests yubikey.rs](REVIEW_crates_cli_tests_yubikey.rs.md) F1, [cli tests reference/lockfile.rs](REVIEW_crates_cli_tests_reference_lockfile.rs.md) F1, [cli tests reference/check.rs](REVIEW_crates_cli_tests_reference_check.rs.md) F1 | Wrong-PIN tests can spend two of three tries; the lock-wait test is weak behind the fault shim; B8's CLI test never reaches an attestation. **Fixed** (ISSUES.md "Fixed since") |
+| [caprobe tests ftpm.rs](REVIEW_crates_caprobe_tests_ftpm.rs.md) F1, [camigrate tests dry_run.rs](REVIEW_crates_camigrate_tests_dry_run.rs.md) F1 | The documented command skips the only assertion and passes; the host-move matrix drops non-ready rows. **Fixed** (ISSUES.md "Fixed since") |
 
 ### Withdrawn (2)
 

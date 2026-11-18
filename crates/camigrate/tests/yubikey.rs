@@ -13,19 +13,12 @@ mod common;
 
 use common::*;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
-fn run(bin: &Path, dir: &Path, args: &[&str]) -> Output {
-    let out = Command::new(bin)
-        .env_remove("NIX_BUILD_TOP")
-        .env_remove("IN_NIX_SHELL")
-        .arg("--config")
-        .arg(dir.join("keys.toml"))
-        .args(args)
-        .output()
-        .unwrap();
+fn run(turn: &YubikeyTurn, bin: &Path, dir: &Path, args: &[&str]) -> Output {
+    let out = tool(bin).arg("--config").arg(dir.join("keys.toml")).args(args).output().unwrap();
     eprintln!("$ {} {}\n  exit={:?}\n  {}", bin.display(), args.join(" "), out.status.code(), stderr(&out).trim());
-    out
+    turn.checked(out)
 }
 
 #[test]
@@ -38,6 +31,7 @@ fn a_key_moves_into_a_piv_slot_through_the_host() {
         eprintln!("skipping: {} not all set", vars.join(", "));
         return;
     };
+    let turn = YubikeyTurn::take();
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("yubikey-import");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -57,29 +51,29 @@ fn a_key_moves_into_a_piv_slot_through_the_host() {
     );
     std::fs::write(dir.join("keys.toml"), config).unwrap();
     let (cakeys, camigrate) = (sibling("cakeys"), PathBuf::from(BIN));
-    let o = run(&cakeys, &dir, &["create", "--spec", "pv-soft", "--token", "softhsm"]);
+    let o = run(&turn, &cakeys, &dir, &["create", "--spec", "pv-soft", "--token", "softhsm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let mv = ["migrate", "pv", "--from", "softhsm", "--to", "yubikey", "--allow-host-plaintext"];
-    let o = run(&camigrate, &dir, &[&mv[..], &["--dry-run", "--json"]].concat());
+    let o = run(&turn, &camigrate, &dir, &[&mv[..], &["--dry-run", "--json"]].concat());
     let plan: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert_eq!(
         (plan["plans"][0]["method"].as_str(), plan["plans"][0]["ready"].as_bool()),
         (Some("piv-import"), Some(true)),
         "{plan}"
     );
-    let o = run(&camigrate, &dir, &mv);
+    let o = run(&turn, &camigrate, &dir, &mv);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let lock: toml::Value = toml::from_str(&std::fs::read_to_string(dir.join("keys.lock")).unwrap()).unwrap();
     let origin = &lock["realisations"]["pv-yk"]["yubikey"]["provenance"]["origin"];
     assert_eq!((origin["method"].as_str(), origin["exposure"].as_str()), (Some("piv-import"), Some("host")));
-    let o = run(&cakeys, &dir, &["verify", "--spec", "pv-yk", "--token", "yubikey"]);
+    let o = run(&turn, &cakeys, &dir, &["verify", "--spec", "pv-yk", "--token", "yubikey"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     // Again, into the now occupied slot under another lock: refused before anything is written.
     // The source key is still on SoftHSM: the new lock records it (`create` refuses a key that is
     // there and not pinned, 19).
     std::fs::remove_file(dir.join("keys.lock")).unwrap();
-    let o = run(&cakeys, &dir, &["lock", "--spec", "pv-soft", "--token", "softhsm"]);
+    let o = run(&turn, &cakeys, &dir, &["lock", "--spec", "pv-soft", "--token", "softhsm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    let o = run(&camigrate, &dir, &mv);
+    let o = run(&turn, &camigrate, &dir, &mv);
     assert_eq!(code(&o), 13, "{}", stderr(&o));
 }

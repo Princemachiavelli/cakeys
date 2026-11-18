@@ -67,7 +67,14 @@ fn tokens(name: &str) -> Option<(Env, String)> {
             Attribute::Label(b"f-crt".to_vec()),
         ])
         .unwrap();
-    e.config_with(&body, &|r| format!("migrate = {{ transportWith = \"tk-{}\" }}\n", r.name));
+    // SoftHSM's SO, for `transport --trusted` (the runner initialises it with SO PIN 5678).
+    let so_pin = e.dir.join("so-pin");
+    std::fs::write(&so_pin, "5678\n").unwrap();
+    e.config_with(&body, &|r| {
+        let so =
+            if r.name == "softhsm" { format!("soCredentialFile = \"{}\"\n", so_pin.display()) } else { String::new() };
+        format!("migrate = {{ transportWith = \"tk-{}\" }}\n{so}", r.name)
+    });
     // The keys are made where they are born; the planted certificate is adopted.
     for (verb, spec, r) in [
         ("create", "tk-softhsm", soft),
@@ -156,6 +163,24 @@ fn a_move_the_module_fails_is_refused_and_undone() {
         let o = e.km_alone(&e.refs[0], args);
         assert_eq!(common::code(&o), 0, "{args:?}: {}", stderr(&o));
     }
+}
+
+/// An SO step that succeeded is said to have succeeded (token/mod.rs F2): the SO's
+/// `C_Logout` after `transport --trusted` made the trusted copy fails, and the run says the copy
+/// was made, never only the logout's error; the next run finds the copy and has nothing to do.
+#[test]
+fn an_so_step_that_was_done_is_said_to_be_done() {
+    let Some((e, _real)) = tokens("fault-so-logout") else { return };
+    let trust: &[&str] = &["transport", "--spec", "tk-kryoptic", "--token", "kryoptic", "--trusted", "softhsm"];
+    // The user's logout before the SO's login is the first; the SO's own, after the step, the second.
+    let (code, said, fired) =
+        faulted(&e, "so-logout", "[[rule]]\nfn = \"C_Logout\"\ncall = 2\nrv = \"CKR_DEVICE_ERROR\"\n", trust);
+    assert_ne!(code, 0, "{said}");
+    assert_eq!(fired, 1, "{said}");
+    assert!(said.contains("marking the transport key trusted on 'softhsm' was done"), "{said}");
+    let o = e.km_alone(&e.refs[0], trust);
+    assert_eq!(common::code(&o), 0, "{}", stderr(&o));
+    assert!(stderr(&o).contains("already trusts"), "{}", stderr(&o));
 }
 
 /// A run records each object as it lands (docs/REVIEW D2, camigrate lib.rs F4): an import of a

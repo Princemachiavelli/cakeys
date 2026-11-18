@@ -143,7 +143,8 @@ fn = "C_Login"
 when = "after"
 rv = "CKR_PIN_INCORRECT"
 
-# Token and slot flags: the PIN counters, write protection, a removed token.
+# Token and slot flags: the PIN counters, write protection, a removed token. Each function takes
+# its own structure's names (`C_GetSlotInfo` the three slot flags): the two words share bit values.
 [[rule]]
 fn = "C_GetTokenInfo"
 set_flags = ["CKF_USER_PIN_FINAL_TRY"]
@@ -158,7 +159,7 @@ from_label = "other" # or: drop = true | value = "0441…" | length = "unavailab
 
 # Handles: a second object under the locator (added where the real search finds something:
 # a client reads until a call returns nothing), or another key used than the one shown (of
-# the same class).
+# the same class; none under the label fails the call, as `from_label` does).
 [[rule]]
 fn = "C_FindObjects"
 call = 2

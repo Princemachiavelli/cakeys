@@ -2,7 +2,7 @@
 //! reference token whose suite variables are set, one keys.toml naming them all, and runs of
 //! either binary against it.
 
-use super::{BIN, sibling};
+use super::{BIN, sibling, tool};
 use std::fmt::Write;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -97,9 +97,8 @@ impl Env {
     /// [`Self::km`] with `NIX_BUILD_TOP` set, as inside a Nix build sandbox: no dry-run twin,
     /// since the point is what the run itself refuses there. `env` is set on top.
     pub fn km_in_nix_build(&self, r: &Ref, env: &[(&str, &str)], args: &[&str]) -> Output {
-        let out = Command::new(BIN)
+        let out = tool(BIN)
             .env("NIX_BUILD_TOP", "/build")
-            .env_remove("IN_NIX_SHELL")
             .envs(r.env.iter().copied())
             .envs(env.iter().copied())
             .arg("--config")
@@ -146,6 +145,22 @@ impl Env {
         out
     }
 
+    /// The tokens a run naming `args` reaches, each once: a reference that reads another's token
+    /// ([`Plant::Shared`], `kryoptic-der`) stands for that token, never for none (review xref.rs
+    /// F1: a move to `kryoptic-der` compared no token).
+    pub fn compared(&self, args: &[&str]) -> Vec<&Ref> {
+        let mut named: Vec<&Ref> = Vec::new();
+        for t in self.refs.iter().filter(|t| args.contains(&t.name)) {
+            let owns = |o: &&Ref| o.plant != Plant::Shared && o.module == t.module && o.token_label == t.token_label;
+            let owner = if t.plant == Plant::Shared { self.refs.iter().find(owns) } else { Some(t) };
+            let t = owner.unwrap_or_else(|| panic!("{}: shares no reference's token", t.name));
+            if !named.iter().any(|n| n.name == t.name) {
+                named.push(t);
+            }
+        }
+        named
+    }
+
     /// The dry-run twin of a `camigrate` run that moves something: its exit code, after
     /// asserting that it left the lock, the output file and every token the run names as they
     /// were. `None` for any other run.
@@ -157,8 +172,7 @@ impl Env {
         let value = |flag: &str| args.iter().position(|a| *a == flag).and_then(|i| args.get(i + 1)).copied();
         let lock = value("--lock").map_or_else(|| self.dir.join("keys.lock"), PathBuf::from);
         let files = [Some(lock), value("--out").map(PathBuf::from)];
-        let named: Vec<&Ref> =
-            self.refs.iter().filter(|t| args.contains(&t.name) && t.plant != Plant::Shared).collect();
+        let named = self.compared(args);
         // What must not change, each with its name: the files' bytes and each token's objects.
         let state = || -> Vec<(String, String)> {
             let file = |f: &PathBuf| (f.display().to_string(), format!("{:?}", std::fs::read(f).ok()));
@@ -180,9 +194,7 @@ impl Env {
     }
 
     fn run_once(&self, bin: &std::path::Path, r: &Ref, args: &[&str]) -> Output {
-        let out = Command::new(bin)
-            .env_remove("NIX_BUILD_TOP")
-            .env_remove("IN_NIX_SHELL")
+        let out = tool(bin)
             .envs(r.env.iter().copied())
             .arg("--config")
             .arg(self.dir.join("keys.toml"))

@@ -127,8 +127,7 @@ impl Token {
         let refused = |e: CkError| {
             self.unsupported(format!("generating key on '{}': {} ({e})", self.name, rv_name(&e))).with_rv(rv_of(&e))
         };
-        let private_declared =
-            spec.attributes.contains_key("CKA_PRIVATE") || spec.public_attributes.contains_key("CKA_PRIVATE");
+        let private_declared = templates::public_declares(spec, "CKA_PRIVATE");
         // A key pair, once more without the public half's default `CKA_PRIVATE = false` when the
         // module refuses it ([`with_public_default_dropped`]): whether it did.
         let pair = |mech: &Mechanism, public: &[Attribute], private: &[Attribute]| {

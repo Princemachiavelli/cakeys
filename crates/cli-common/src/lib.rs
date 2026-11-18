@@ -198,7 +198,10 @@ pub fn read_lock(path: &Path, writes: bool, instead: &str) -> anyhow::Result<(Lo
         )
         .into());
     }
-    let guard = if writes { Some(lock_for_update(path)?) } else { None };
+    // Said before it blocks: a run waiting on another updater says what it waits for.
+    let waiting =
+        |sidecar: &Path| eprintln!("note: waiting for {}: another run is updating the lock", sidecar.display());
+    let guard = if writes { Some(lock_for_update(path, waiting)?) } else { None };
     Ok((load_lock(path)?, guard))
 }
 

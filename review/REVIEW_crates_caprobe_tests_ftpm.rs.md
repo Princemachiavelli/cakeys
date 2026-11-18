@@ -22,6 +22,12 @@ command, and got `ok` with nothing compared. The `require` argument is a literal
 patch; and change the header to run it through `scripts/coverage-full.sh` (which does,
 `:110-126`) or `scripts/local-tests.sh`. [read]
 
+**Fixed (2026-11-18):** once opted in, the test requires the patched cryptoki
+(`cryptoki_hmac_types_fixed(true)`), and the header runs it through `nix run .#coverage-full`.
+caprobe's two `YubiKey` probes had the same skip and now fail the same way. Test:
+`no_opted_in_suite_skips_an_unpatched_build` refuses a literal `false`, and any local copy of
+the check, in every test source.
+
 ### F2. A partial opt-in is a silent pass — practice
 
 `crates/caprobe/tests/ftpm.rs:31-36`. Setting `CAKEYS_FTPM_MODULE` without

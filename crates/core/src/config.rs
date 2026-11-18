@@ -1850,14 +1850,15 @@ pub struct UpdateGuard(
     #[expect(dead_code, reason = "held, never read: the lock is released when it drops")] std::fs::File,
 );
 
-/// Take the exclusive advisory lock on `<lock>.lck`, waiting for any other updater. The sidecar
-/// file is created if absent; a leftover one is harmless (the lock is advisory and released when
-/// its holder exits).
+/// Take the exclusive advisory lock on `<lock>.lck`, waiting for any other updater; `waiting` is
+/// told the sidecar's path first when another holds it, so a run can say why it stopped. The
+/// sidecar file is created if absent; a leftover one is harmless (the lock is advisory and
+/// released when its holder exits).
 ///
 /// # Errors
 ///
 /// `Io` if the sidecar file cannot be opened or the advisory lock cannot be taken.
-pub fn lock_for_update(lock_path: &Path) -> Result<UpdateGuard> {
+pub fn lock_for_update(lock_path: &Path, waiting: impl FnOnce(&Path)) -> Result<UpdateGuard> {
     let mut sidecar = lock_path.as_os_str().to_os_string();
     sidecar.push(".lck");
     let file = std::fs::File::options()
@@ -1866,7 +1867,15 @@ pub fn lock_for_update(lock_path: &Path) -> Result<UpdateGuard> {
         .truncate(false)
         .open(&sidecar)
         .map_err(KmError::io(format!("opening {}", sidecar.to_string_lossy())))?;
-    file.lock().map_err(KmError::io(format!("locking {}", sidecar.to_string_lossy())))?;
+    let locking = || KmError::io(format!("locking {}", sidecar.to_string_lossy()));
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            waiting(Path::new(&sidecar));
+            file.lock().map_err(locking())?;
+        }
+        Err(std::fs::TryLockError::Error(e)) => return Err(locking()(e)),
+    }
     Ok(UpdateGuard(file))
 }
 

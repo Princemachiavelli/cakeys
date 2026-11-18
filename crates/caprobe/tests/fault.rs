@@ -209,6 +209,20 @@ fn the_probe_notes_which_derive_template_took() {
     probe_cases(&w, cases);
 }
 
+/// A pair the module made but the probe cannot find under its locator (probe.rs F3) is no
+/// refusal: no `cannot` row, no "generation refused" evidence, and a note saying what was seen.
+/// The first probe pair is hidden from every search.
+#[test]
+fn a_pair_made_but_not_found_is_no_refusal() {
+    let Some(w) = scratch("fault-probe-lost") else { return };
+    let (exit, profile, said, fired) =
+        probed(&w, "lost", &rule("fn = \"C_FindObjects\"\nhide_label = \"cakeys-probe-01\""), &[]);
+    assert_eq!(exit, 0, "{said}");
+    assert!(fired > 0, "the rule never fired");
+    assert!(said.contains("no generate row for CKK_EC on secp256r1: the module generated, but"), "{said}");
+    assert!(!profile.contains("not under its locator"), "a refusal row for a pair the module made:\n{profile}");
+}
+
 /// Objects an interrupted probe left under its own labels are removed by the next one, which
 /// says so: they are no row of the profile.
 #[test]

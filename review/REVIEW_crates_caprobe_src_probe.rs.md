@@ -64,6 +64,10 @@ label before the lookups (`scratch.track(&[], &label)` plus whatever handles wer
 record "generated, but the pair is not under its locator" as undetermined rather than a
 refusal. [read]
 
+**Fixed (2026-11-18):** the label is tracked as soon as `create` succeeds, and a pair not found
+under its locator is `Created::Lost`: a note, no `cannot` row. Test:
+`a_pair_made_but_not_found_is_no_refusal`.
+
 ### F4. `keep_claims` grafts any file's hand claims onto the new profile — risk
 
 **Verification:** confirmed (downgraded to nit). `keep_claims` (probe.rs:1884-1897) copies `migration`, `manual` and unprobed rows with no comparison of `old.profile` to the generated name, and `write_profile` (lib.rs:300-313) calls it for any existing `--out`. It needs a wrong `--out` path, and every probed row and the `profile` name then change in the same file, so the mistake shows plainly in the diff; only the grafted claims are subtle. [read]

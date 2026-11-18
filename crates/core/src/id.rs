@@ -636,22 +636,54 @@ pub fn spki_canonical(spki: &[u8]) -> Result<Vec<u8>> {
         KeyAlg::Ec(Curve::Ed448) => {
             encode(&ed448::pkcs8::PublicKeyBytes::from_public_key_der(spki).map_err(|e| bad(&e))?)
         }
-        KeyAlg::Rsa => encode(&rsa::PublicKey::from_public_key_der(spki).map_err(|e| bad(&e))?),
+        KeyAlg::Rsa => encode(&rsa_of_spki(spki).map_err(|e| bad(&e))?),
     }
 }
 
-/// Canonical DER SPKI from `CKA_MODULUS` and `CKA_PUBLIC_EXPONENT` (big-endian).
+/// The RSA public key a DER SPKI holds, whatever its size (`rsa_key`): for what reads a key
+/// without computing with it (its identity, its modulus and exponent, its size). The `rsa`
+/// crate's own parser refuses keys outside its limits.
 ///
 /// # Errors
 ///
-/// `Conflict` if the values are not a valid RSA public key (for instance, an even modulus).
+/// The reason, when it is not an SPKI holding an RSA key at all.
+pub fn rsa_of_spki(spki: &[u8]) -> std::result::Result<rsa::PublicKey, String> {
+    let info = x509_cert::spki::SubjectPublicKeyInfoRef::from_der(spki).map_err(|e| e.to_string())?;
+    let bits = info.subject_public_key.as_bytes().ok_or("the key's bits are not whole bytes")?;
+    let key = rsa::pkcs1::RsaPublicKeyRef::from_der(bits).map_err(|e| e.to_string())?;
+    rsa_key(key.modulus.as_bytes(), key.public_exponent.as_bytes()).map_err(str::to_owned)
+}
+
+/// Canonical DER SPKI from `CKA_MODULUS` and `CKA_PUBLIC_EXPONENT` (big-endian), of any size.
+///
+/// # Errors
+///
+/// `Conflict` if the values are not an RSA public key at all (`rsa_key`).
 pub fn rsa_spki(modulus: &[u8], exponent: &[u8]) -> Result<Vec<u8>> {
-    let key = rsa::PublicKey::new(
-        rsa::BoxedUint::from_be_slice_vartime(modulus),
-        rsa::BoxedUint::from_be_slice_vartime(exponent),
-    )
-    .map_err(|e| KmError::Conflict(format!("invalid RSA public key: {e}").into()))?;
+    let key =
+        rsa_key(modulus, exponent).map_err(|e| KmError::Conflict(format!("invalid RSA public key: {e}").into()))?;
     encode(&key)
+}
+
+/// An RSA public key from its modulus and exponent (big-endian), whatever its size: identity
+/// hashes public bytes and needs no key the `rsa` crate would compute with, so its limits
+/// (1024–8192 bits, e ≤ 2^33−1) are not cakeys' (id.rs F1; a legacy RSA-768 key or an
+/// RSA-16384 one has an identity). Refused only when it is no RSA key: an even (or zero)
+/// modulus, an even exponent or one below 3, or an exponent not below the modulus.
+fn rsa_key(modulus: &[u8], exponent: &[u8]) -> std::result::Result<rsa::PublicKey, &'static str> {
+    // Big-endian: the last byte is the low one (and an empty value is zero, so even).
+    let odd = |v: &[u8]| v.last().is_some_and(|b| b & 1 == 1);
+    let (n, e) = (rsa::BoxedUint::from_be_slice_vartime(modulus), rsa::BoxedUint::from_be_slice_vartime(exponent));
+    if !odd(modulus) {
+        return Err("the modulus is even");
+    }
+    if !odd(exponent) || e < rsa::BoxedUint::from(3u64) {
+        return Err("the exponent is even or below 3");
+    }
+    if e >= n {
+        return Err("the exponent is not below the modulus");
+    }
+    Ok(rsa::PublicKey::new_unchecked(n, e))
 }
 
 /// The curve a DER SPKI's algorithm names: `Some` for an EC (`id-ecPublicKey` with a named curve)
@@ -799,6 +831,42 @@ mod tests {
         let n = [0xc5u8; 256];
         let a = rsa_spki(&n, &[1, 0, 1]).unwrap();
         assert_eq!(spki_canonical(&a).unwrap(), a);
+    }
+
+    /// Every RSA key has an identity, whatever its size or exponent (id.rs F1): from its
+    /// modulus and from its SPKI alike, the same bytes `rsa`'s checked key encodes to where it
+    /// takes one (so no identity changed), and only what is no RSA key at all is refused.
+    #[test]
+    fn rsa_keys_of_any_size_have_an_identity() {
+        let f4 = [1u8, 0, 1];
+        let big_e = [0x08u8, 0, 0, 0, 1]; // 2^35 + 1, above rsa's 2^33 - 1
+        for (bytes, e) in [(64, &f4[..]), (96, &f4), (128, &f4), (256, &f4), (1024, &f4), (2048, &f4), (256, &big_e)] {
+            let n = vec![0xc5u8; bytes];
+            let a = rsa_spki(&n, e).unwrap_or_else(|err| panic!("{} bits: {err}", bytes * 8));
+            assert_eq!(spki_canonical(&a).unwrap(), a, "{} bits", bytes * 8);
+            let checked = rsa::PublicKey::new(
+                rsa::BoxedUint::from_be_slice_vartime(&n),
+                rsa::BoxedUint::from_be_slice_vartime(e),
+            );
+            if let Ok(checked) = checked {
+                assert_eq!(encode(&checked).unwrap(), a, "{} bits: the identity changed", bytes * 8);
+            }
+        }
+        // Leading zero bytes are no part of the key.
+        assert_eq!(
+            rsa_spki(&[&[0u8, 0][..], &[0xc5; 96]].concat(), &[0, 1, 0, 1]).unwrap(),
+            rsa_spki(&[0xc5; 96], &f4).unwrap()
+        );
+        let even = [0xc4u8; 96];
+        for (n, e) in [
+            (&even[..], &f4[..]),
+            (&[0xc5; 96][..], &[1, 0, 0][..]),
+            (&[0xc5; 96][..], &[1][..]),
+            (&[0x03][..], &[3][..]),
+            (&[][..], &f4[..]),
+        ] {
+            assert!(matches!(rsa_spki(n, e), Err(KmError::Conflict(_))), "{n:02x?} {e:02x?}");
+        }
     }
 
     #[test]

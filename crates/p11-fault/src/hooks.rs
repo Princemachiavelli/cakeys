@@ -195,8 +195,14 @@ pub(crate) unsafe fn substitute_key(
             if !is_of(shim, session, key, rule.of_label.as_deref())? {
                 continue;
             }
+            // Nothing under the label is the plan's mistake, as for `from_label`: the caller's own
+            // key run under a rule the trace says fired would pass a test for the wrong reason
+            // (hooks.rs F1).
             let class = class_of(shim, session, key);
-            return Ok((named(shim, session, label, class)?.first().copied().unwrap_or(key), Some(i)));
+            let other = named(shim, session, label, class)?.first().copied().ok_or_else(|| {
+                Fatal(format!("use_label: no object labelled {} of the key's class", String::from_utf8_lossy(label)))
+            })?;
+            return Ok((other, Some(i)));
         }
     }
     Ok((key, None))

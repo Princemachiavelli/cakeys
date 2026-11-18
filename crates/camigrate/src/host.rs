@@ -171,7 +171,17 @@ pub(crate) fn import_ptool(
     let plain = hand_over(from, h)?;
     to.import_plaintext(dst.object, &dst.on_token.locator, &plain)?;
     drop(plain);
-    reopen(target, notes)?;
+    // The key is in the TPM from here on: a reopen that fails leaves it there, unrecorded, and
+    // the next run refuses its locator (13). Say what is there and how to resolve it.
+    if let Err(err) = reopen(target, notes) {
+        notes.say(format!(
+            "{dst}: tpm2_ptool imported the key, but the token could not be opened again to record it: it is \
+             in the TPM under its locator, unrecorded; record it with `cakeys lock --spec {} --token {}`, or \
+             remove it with `tpm2_ptool rmobject`",
+            dst.spec_name, dst.token_name
+        ));
+        return Err(err);
+    }
     let to = target.as_ref().ok_or_else(gone)?;
     let origin = origin(src.token_name, &Method::Tpm2Ptool, Exposure::Host);
     match ops::lock_import(dst, to, lock, origin, notes) {

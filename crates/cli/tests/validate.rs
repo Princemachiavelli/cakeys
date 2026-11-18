@@ -5,13 +5,87 @@
 mod common;
 
 use common::*;
-use std::process::{Command, Output};
+use std::process::Output;
 
 const BIN: &str = env!("CARGO_BIN_EXE_cakeys");
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 fn validate(config: &str) -> Output {
-    Command::new(BIN).arg("--config").arg(format!("{FIXTURES}/{config}")).arg("validate").output().unwrap()
+    tool(BIN).arg("--config").arg(format!("{FIXTURES}/{config}")).arg("validate").output().unwrap()
+}
+
+/// One failed `YubiKey` login stops every later one (review yubikey.rs F1; the PIN has three
+/// tries): a run that reports any `CKR_PIN_*` fails its test and latches the device off, and the
+/// next test's turn refuses before it logs in. Holding the turn, no `YubiKey` test runs while
+/// this one sets and clears the latch; no device is needed.
+#[test]
+fn a_failed_yubikey_login_stops_every_later_one() {
+    use std::os::unix::process::ExitStatusExt as _;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    let turn = YubikeyTurn::take();
+    let ran = |stderr: &str| Output {
+        status: std::process::ExitStatus::from_raw(16 << 8),
+        stdout: vec![],
+        stderr: stderr.into(),
+    };
+    // Other failures are the test's own: no latch.
+    assert!(
+        catch_unwind(AssertUnwindSafe(|| turn.checked(ran("error: unavailable: C_Sign: CKR_DEVICE_ERROR")))).is_ok()
+    );
+    assert!(!yubikey_latch().exists());
+    let failed = catch_unwind(AssertUnwindSafe(|| turn.checked(ran("error: unavailable: C_Login: CKR_PIN_INCORRECT"))));
+    let latched = std::fs::read_to_string(yubikey_latch());
+    let refused = catch_unwind(AssertUnwindSafe(|| turn.refuse_if_latched()));
+    std::fs::remove_file(yubikey_latch()).unwrap();
+    assert!(failed.is_err(), "a failed login passed its test");
+    assert_eq!(latched.unwrap(), "CKR_PIN_INCORRECT\n");
+    assert!(refused.is_err(), "the next test would log in again");
+    turn.refuse_if_latched();
+}
+
+/// No test hands a tool the developer's own keys.toml or lock (review common/mod.rs F1): under
+/// the per-test runner (nix/test-tokens.sh, which sets `CAKEYS_TOKEN_TEMPLATE`) no test process
+/// has them, and every run started by [`tool`] has them removed again.
+#[test]
+fn no_test_run_sees_a_real_keys_toml_or_lock() {
+    if std::env::var_os("CAKEYS_TOKEN_TEMPLATE").is_some() {
+        for var in ["CAKEYS_CONFIG", "CAKEYS_LOCK"] {
+            assert_eq!(std::env::var_os(var), None, "the per-test runner left {var} set");
+        }
+    }
+    let c = tool(BIN);
+    let removed: Vec<_> = c.get_envs().filter(|(_, v)| v.is_none()).map(|(k, _)| k.to_owned()).collect();
+    for var in SCRUBBED {
+        assert!(removed.iter().any(|k| k == var), "{var} reaches the tool");
+    }
+}
+
+/// An opted-in suite never passes with nothing compared (review ftpm.rs F1): every test that
+/// needs the patched cryptoki asks [`cryptoki_hmac_types_fixed`], whose `require` is `true` or
+/// a `*_REQUIRE` variable, never a literal `false`, and none keeps its own check that skips.
+#[test]
+fn no_opted_in_suite_skips_an_unpatched_build() {
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let mut found = vec![];
+    for krate in std::fs::read_dir(crates).unwrap() {
+        let tests = krate.unwrap().path().join("tests");
+        let Ok(files) = std::fs::read_dir(&tests) else { continue };
+        let mut stack: Vec<_> = files.map(|f| f.unwrap().path()).collect();
+        while let Some(path) = stack.pop() {
+            if path.is_dir() {
+                stack.extend(std::fs::read_dir(&path).unwrap().map(|f| f.unwrap().path()));
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let own = format!("{}0x2c", "SHA384_HMAC) == ");
+                if text.contains(&format!("{}(false)", "cryptoki_hmac_types_fixed"))
+                    || (text.contains(&own) && !path.ends_with("common/mod.rs"))
+                {
+                    found.push(path);
+                }
+            }
+        }
+    }
+    assert!(found.is_empty(), "these skip an unpatched build: {found:?}");
 }
 
 /// docs/CAPROBE.md's two static-gate cases, each refused (15) naming the profile that decided

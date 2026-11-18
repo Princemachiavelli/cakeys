@@ -23,6 +23,10 @@ with such a `public-accepts` row: `keep_claims` keeps `[migration]`, and the emi
 loses the bounds. Fix: emit the note whenever present, and either emit bits for public-accepts
 or reject them at parse time (`deny` in the profile crate) so the two agree. [read]
 
+**Fixed (2026-11-18):** a note alone writes `[subtract]`; every accepts row writes its bits. Test:
+`every_optional_field_alone_round_trips` (each optional field alone, through `profile_round_trip`),
+the Design note's test.
+
 ## Design
 
 - The fixed-point property is only as good as the emitter's coverage of the parser's types;

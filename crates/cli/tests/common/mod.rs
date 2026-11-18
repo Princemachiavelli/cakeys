@@ -31,6 +31,20 @@ pub const TOOL: &str = match (option_env!("CARGO_BIN_EXE_cakeys"), option_env!("
     (None, None) => "camigrate",
 };
 
+/// What the tools read from the environment when no flag says it: a developer's real keys.toml
+/// and lock (review common/mod.rs F1), and the Nix build markers, which only a test that sets
+/// them means. The per-test runner (nix/test-tokens.sh) unsets the first two for every test too.
+pub const SCRUBBED: [&str; 4] = ["CAKEYS_CONFIG", "CAKEYS_LOCK", "NIX_BUILD_TOP", "IN_NIX_SHELL"];
+
+/// `bin` to run from a test, with none of [`SCRUBBED`]: every test's run of a tool starts here.
+pub fn tool(bin: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut c = Command::new(bin);
+    for var in SCRUBBED {
+        c.env_remove(var);
+    }
+    c
+}
+
 /// Another binary of this workspace, beside [`BIN`] in the target directory. Cargo gives a test
 /// only its own package's binaries; `cargo test --workspace` (the Nix check phase) builds them
 /// all before any test runs.
@@ -103,6 +117,84 @@ pub fn p11kit_tokens(client: &str, direct: &str, dir: &Path) -> String {
         + &token("direct", direct, "kmp11", &pin)
 }
 
+/// A `YubiKey` test's turn at the device: one test at a time across every test process (an
+/// exclusive lock on a file in the shared target tmpdir), and none after a login failed. The
+/// PIN has three tries, and the hardware rule is to stop after one failed login
+/// (docs/DEVELOPMENT.md, "Hardware rules"): two tests logging in at once with a wrong PIN file
+/// spent two (review yubikey.rs F1). Take it before the test's first run; pass each run's output
+/// through [`YubikeyTurn::checked`].
+pub struct YubikeyTurn {
+    _lock: std::fs::File,
+}
+
+/// The file a failed `YubiKey` login leaves: every later `YubiKey` test refuses to run until a
+/// person has fixed the credential and removed it.
+pub fn yubikey_latch() -> PathBuf {
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("yubikey-login-failed")
+}
+
+impl YubikeyTurn {
+    /// Wait for the device, then refuse if a login has failed since the latch was cleared.
+    ///
+    /// # Panics
+    ///
+    /// When the latch is set.
+    pub fn take() -> YubikeyTurn {
+        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join("yubikey.turn"))
+            .unwrap();
+        file.lock().unwrap();
+        let turn = YubikeyTurn { _lock: file };
+        turn.refuse_if_latched();
+        turn
+    }
+
+    /// Refuse if a login has failed since the latch was cleared.
+    ///
+    /// # Panics
+    ///
+    /// When it has.
+    #[expect(clippy::unused_self, reason = "asked only by the test holding the turn")]
+    pub fn refuse_if_latched(&self) {
+        let latch = yubikey_latch();
+        assert!(
+            !latch.exists(),
+            "a YubiKey login failed in an earlier test: no further login is tried until the credential is \
+             fixed and {} is removed",
+            latch.display()
+        );
+    }
+
+    /// `out`, after latching every later `YubiKey` test off if its login failed (any `CKR_PIN_*`).
+    ///
+    /// # Panics
+    ///
+    /// When it did.
+    #[expect(clippy::unused_self, reason = "a run is checked by the test holding the turn")]
+    pub fn checked(&self, out: Output) -> Output {
+        if let Some(rv) = failed_login(&String::from_utf8_lossy(&out.stderr)) {
+            std::fs::write(yubikey_latch(), format!("{rv}\n")).unwrap();
+            panic!(
+                "a YubiKey login failed ({rv}): latched off at {}; stop and fix the credential",
+                yubikey_latch().display()
+            );
+        }
+        out
+    }
+}
+
+/// The `CKR_PIN_*` a run's stderr reports, if its login failed: the tools name a login's return
+/// value by its constant (cryptoki's prose names none), and `cli/tests/fault.rs` holds them to it.
+pub fn failed_login(said: &str) -> Option<String> {
+    let at = said.find("CKR_PIN_")?;
+    Some(said[at..].chars().take_while(|c| c.is_ascii_uppercase() || *c == '_').collect())
+}
+
 /// A real `YubiKey`: the token with both credentials (file paths), `extra` added to it.
 pub fn yubikey_token(module: &str, pin: &str, mgm: &str, extra: &str) -> String {
     format!(
@@ -130,8 +222,7 @@ pub fn yubikey_label(module: &str) -> String {
 ///
 /// When the run takes longer than `limit`.
 pub fn run_within(config: &Path, args: &[&str], limit: Duration) -> Output {
-    let mut child = Command::new(BIN)
-        .env_remove("NIX_BUILD_TOP")
+    let mut child = tool(BIN)
         .arg("--config")
         .arg(config)
         .args(args)
@@ -369,9 +460,7 @@ impl Workdir {
     /// `cakeys --config keys.toml <args>` with `envs` set, logged for the test's output. The
     /// suites themselves run in a Nix build: only a test that sets `NIX_BUILD_TOP` means it.
     pub fn km_env(&self, args: &[&str], envs: &[(&str, &Path)]) -> Output {
-        let out = Command::new(BIN)
-            .env_remove("NIX_BUILD_TOP")
-            .env_remove("IN_NIX_SHELL")
+        let out = tool(BIN)
             .envs(envs.iter().copied())
             .arg("--config")
             .arg(self.dir.join("keys.toml"))

@@ -23,6 +23,11 @@ which ran the same work while the lock was held (`:227-238`), and assert the upd
 after several times that. Better, have cakeys print a note when it starts waiting for
 `<lock>.lck` and wait for that line. [read]
 
+**Fixed (2026-11-18):** an updater that finds `<lock>.lck` held says
+`note: waiting for <lock>.lck: another run is updating the lock` before it blocks
+(`lock_for_update`'s `waiting`). The test waits for that line, not a timer. An updater that
+never takes the lock now fails in all three binaries, the fault one included.
+
 ### F2. Exit 1 and the `CAKEYS_CONFIG`/`CAKEYS_LOCK` variables are untested — practice
 
 `reference/lockfile.rs:255-302` (the lock-write cases) and `crates/cli/src/lib.rs:30-33`. No test

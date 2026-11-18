@@ -27,6 +27,22 @@ const IMPORT: &str = ", origin = \"import\"";
 /// host, behind the flag; to a file behind the flag; a key made non-extractable never. A sealed
 /// plan needs a transport key realised on the target (docs/CAMIGRATE.md D3), and without --dry-run the
 /// export writes the bundle.
+/// The dry-run twin compares every token a move names (review xref.rs F1): `kryoptic-der` reads
+/// kryoptic's token through another configuration, and a move naming it compares that token,
+/// once. It compared none, so a dry run writing to the target there would have passed.
+#[test]
+fn the_dry_run_twin_compares_every_token_a_move_names() {
+    let Some(e) = env("twin-tokens") else { return };
+    if !e.refs.iter().any(|r| r.name == "kryoptic-der") {
+        eprintln!("skipping twin-tokens: needs the kryoptic references");
+        return;
+    }
+    let names = |args: &[&str]| e.compared(args).iter().map(|r| r.name).collect::<Vec<_>>();
+    assert_eq!(names(&["migrate", "x", "--from", "softhsm", "--to", "kryoptic-der"]), ["softhsm", "kryoptic"]);
+    assert_eq!(names(&["migrate", "x", "--from", "kryoptic", "--to", "kryoptic-der"]), ["kryoptic"]);
+    assert_eq!(names(&["export", "x", "--token", "kryoptic-der", "--target", "softhsm"]), ["softhsm", "kryoptic"]);
+}
+
 #[test]
 fn export_plans_follow_each_sides_capabilities() {
     let Some(e) = env("export-plan") else { return };
@@ -1157,7 +1173,52 @@ fn refusals_around_the_plans_and_the_offline_export() {
         let o = e.km(soft, &["export", "--token", "p11kit", "--target", "kryoptic", "--dry-run"]);
         refused(&o, 14, "the lock records no realisation on token 'p11kit'");
     }
+    the_transport_file_is_read_once(&e, soft, &transport);
     transport_files_and_bundle_entries_are_checked(&e, soft, &transport);
+}
+
+/// A transport file is read once (camigrate lib.rs F3): the plan checks against the lock the
+/// very key the export seals to. Through a FIFO whose first read holds the pinned transport
+/// key's file and any later read a copy naming another object, the bundle names the pinned one.
+fn the_transport_file_is_read_once(e: &Env, soft: &Ref, transport: &str) {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let pinned = std::fs::read_to_string(transport).unwrap();
+    let rogue = pinned.replace("object = \"tk-kryoptic\"", "object = \"ek2\"");
+    assert_ne!(pinned, rogue);
+    let fifo = e.dir.join("once.transport.fifo");
+    let _ = std::fs::remove_file(&fifo);
+    assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let writer = {
+        let fifo = fifo.clone();
+        std::thread::spawn(move || {
+            for (i, text) in [pinned, rogue].into_iter().enumerate() {
+                // Not while the first read is still open: it would take both texts as one. With
+                // no reader left, a nonblocking open for writing fails (ENXIO).
+                if i > 0 {
+                    loop {
+                        match std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&fifo) {
+                            Ok(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                            Err(e) if e.raw_os_error() == Some(libc::ENXIO) => break,
+                            Err(e) => panic!("{e}"),
+                        }
+                    }
+                }
+                let mut w = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+                w.write_all(text.as_bytes()).unwrap();
+            }
+        })
+    };
+    let out = e.dir.join("once.bundle.toml");
+    let (fifo_arg, out_arg) = (fifo.to_str().unwrap(), out.to_str().unwrap());
+    let o = e.km_alone(soft, &["export", "sk2", "--token", "softhsm", "--transport", fifo_arg, "--out", out_arg]);
+    // A run that read once leaves the writer waiting for a second reader: be it, and let it end.
+    let reader = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(&fifo).unwrap();
+    writer.join().unwrap();
+    drop(reader);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let bundle: toml::Value = toml::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(bundle["transport"]["object"].as_str(), Some("tk-kryoptic"), "sealed to a second read: {bundle}");
 }
 
 /// A transport file is input: one of a provider this build does not link has no plan (15), one
@@ -1743,7 +1804,9 @@ fn plant_trusted_key(soft: &Ref) {
 /// `--allow-host-plaintext`, every move the plan sends through the host (`host-pkcs8`,
 /// `host-raw`: a target that cannot unwrap the key, like `SoftHSM` for secret keys or p11-kit
 /// without AES key wrap; `tpm2-ptool` into tpm2-pkcs11) moves, records its `origin` with the
-/// `host` exposure, and `cakeys verify` accepts the key on the target.
+/// `host` exposure, and `cakeys verify` accepts the key on the target. Every other row runs
+/// too: the dry run's exit is its plan's, and a blocked move is 15 with the lock and target
+/// unchanged. Each host method the references allow moves at least one key.
 #[test]
 #[expect(clippy::format_push_string, reason = "the fixture TOML bodies are appended as += format!(...)")]
 fn host_moves_do_what_the_plan_says() {
@@ -1789,21 +1852,29 @@ fn host_moves_do_what_the_plan_says() {
         let args = ["migrate", o.as_str(), "--from", s.name, "--to", d.name, "--spec", &spec, "--allow-host-plaintext"];
         let out = e.km(s, &[&args[..], &["--dry-run", "--json"]].concat());
         let plan: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let ready = plan["plans"][0]["ready"].as_bool().unwrap();
+        assert_eq!(code(&out) == 0, ready, "{spec}: the dry run's exit and its plan disagree");
         let method = plan["plans"][0]["method"].as_str().unwrap_or("-").to_owned();
         let through_host = method.starts_with("host-") || method == "tpm2-ptool";
-        if !through_host || plan["plans"][0]["ready"].as_bool() != Some(true) {
+        let before = std::fs::read(&lock_path).unwrap();
+        let out = e.km(s, &args);
+        let row =
+            format!("{spec}: {method}, plan {}, move exit {}", if ready { "ready" } else { "blocked" }, code(&out));
+        rows.push(row.clone());
+        // Every row runs, as the sealed matrix's do (review dry_run.rs F1): a row the planner
+        // wrongly blocks, or sends another way, fails here instead of being dropped.
+        if !ready {
+            assert_eq!(code(&out), 15, "{row}: {}", stderr(&out));
+            assert_eq!(std::fs::read(&lock_path).unwrap(), before, "{row}: a refused move changed the lock");
+            let left = open_session(&d.module, d.token_label, "1234").labelled(&target_label(k, s, d));
+            assert!(left.is_empty(), "{row}: a refused move left objects on the target");
             continue;
         }
-        let out = e.km(s, &args);
-        let row = format!("{spec}: {method}, move exit {}", code(&out));
         assert_eq!(code(&out), 0, "{row}: {}", stderr(&out));
         let lock: toml::Value = toml::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
         let origin = &lock["realisations"][spec.as_str()][d.name]["provenance"]["origin"];
-        assert_eq!(
-            (origin["method"].as_str(), origin["exposure"].as_str()),
-            (Some(method.as_str()), Some("host")),
-            "{row}"
-        );
+        assert_eq!(origin["method"].as_str(), Some(method.as_str()), "{row}");
+        assert_eq!(origin["exposure"].as_str() == Some("host"), through_host, "{row}: {origin}");
         let v = e.cakeys(d, &["verify", "--spec", &spec, "--token", d.name]);
         assert_eq!(code(&v), 0, "{row}: cakeys verify: {}", stderr(&v));
         // A re-run finds the key there, verifies it and changes nothing.
@@ -1811,14 +1882,25 @@ fn host_moves_do_what_the_plan_says() {
         let out = e.km(s, &args);
         assert_eq!(code(&out), 0, "{row}: the re-run: {}", stderr(&out));
         assert_eq!(std::fs::read(&lock_path).unwrap(), again, "{row}: the re-run changed the lock");
-        rows.push(row);
     }
     eprintln!("host moves:\n  {}", rows.join("\n  "));
     if e.refs.iter().any(|r| r.name == "softhsm") && e.refs.iter().any(|r| r.name == "kryoptic") {
-        assert!(rows.iter().any(|r| r.contains("host-raw")), "no secret key moved through the host into SoftHSM");
+        assert!(
+            rows.iter().any(|r| r.contains("host-raw, plan ready")),
+            "no secret key moved through the host into SoftHSM"
+        );
+    }
+    if e.refs.iter().any(|r| r.name == "p11kit") {
+        assert!(
+            rows.iter().any(|r| r.contains("host-pkcs8, plan ready")),
+            "no private key moved through the host into p11-kit"
+        );
     }
     if e.refs.iter().any(|r| r.name == "tpm2") {
-        assert!(rows.iter().any(|r| r.contains("tpm2-ptool")), "no key moved into tpm2-pkcs11 through tpm2_ptool");
+        assert!(
+            rows.iter().any(|r| r.contains("tpm2-ptool, plan ready")),
+            "no key moved into tpm2-pkcs11 through tpm2_ptool"
+        );
     }
 }
 
@@ -1868,6 +1950,67 @@ fn tpm2_ptool_imports_under_the_locator_id() {
         .unwrap();
     assert!(list.status.success(), "{}", String::from_utf8_lossy(&list.stderr));
     assert!(!String::from_utf8_lossy(&list.stdout).contains("pid-bad"), "an object was left on the TPM under pid-bad");
+}
+
+/// After `tpm2_ptool import`, the token is opened again to see the key (camigrate host.rs F1):
+/// a reopen that fails leaves the key in the TPM, unrecorded, and the run says so and how to
+/// resolve it; `cakeys lock`, as it says, records it. tpm2-pkcs11 sits behind p11-fault, which
+/// answers the reopen's `C_Login` itself (nothing reaches the TPM): the last login of a run,
+/// counted on an unfaulted move of the same shape.
+#[test]
+fn a_failed_reopen_after_ptool_says_what_is_in_the_tpm() {
+    let Some(e) = env("ptool-reopen") else { return };
+    let named = |n: &str| e.refs.iter().find(|r| r.name == n).cloned();
+    let (Some(soft), Some(tpm)) = (named("softhsm"), named("tpm2")) else {
+        eprintln!("skipping ptool-reopen: needs the softhsm and tpm2 references");
+        return;
+    };
+    let shimmed = Ref { module: fault_shim(), ..tpm.clone() };
+    let e = Env { dir: e.dir.clone(), refs: vec![soft.clone(), shimmed] };
+    let attributes = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n";
+    let body = "[objects.pr]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n".to_owned()
+        + &Env::spec("pr-src", "pr", attributes, &[&soft], "pr-src", CREATE)
+        + &Env::spec("pr-a", "pr", attributes, &[&tpm], "pr-a", IMPORT)
+        + &Env::spec("pr-b", "pr", attributes, &[&tpm], "pr-b", IMPORT);
+    e.config(&body);
+    assert_eq!(code(&e.cakeys(&soft, &["create", "--spec", "pr-src", "--token", "softhsm"])), 0);
+    let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+    let faulted = |name: &str, plan: &str, spec: &str| {
+        let (path, trace) = (e.dir.join(format!("{name}.toml")), e.dir.join(format!("{name}.jsonl")));
+        std::fs::write(&path, plan).unwrap();
+        let _ = std::fs::remove_file(&trace);
+        let env: &'static [(&str, &str)] = Box::leak(Box::new([
+            ("P11_FAULT_MODULE", leak(tpm.module.clone())),
+            ("P11_FAULT_PLAN", leak(path.display().to_string())),
+            ("P11_FAULT_TRACE", leak(trace.display().to_string())),
+        ]));
+        let args = ["migrate", "pr", "--from", "softhsm", "--to", "tpm2", "--spec", spec, "--allow-host-plaintext"];
+        let o = e.km_alone(&Ref { env, ..soft.clone() }, &args);
+        let logins =
+            std::fs::read_to_string(&trace).unwrap_or_default().lines().filter(|l| l.contains("\"C_Login\"")).count();
+        (o, logins)
+    };
+    // A rule that never fires: the move goes through, and its logins are counted.
+    let (o, logins) = faulted("count", "[[rule]]\nfn = \"C_Login\"\ncall = 999\nrv = \"CKR_DEVICE_ERROR\"\n", "pr-a");
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(logins >= 2, "the import and the reopen each log in: {logins}");
+    let plan = format!("[[rule]]\nfn = \"C_Login\"\ncall = {logins}\nrv = \"CKR_DEVICE_ERROR\"\n");
+    let (o, _) = faulted("reopen", &plan, "pr-b");
+    assert_ne!(code(&o), 0, "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("tpm2_ptool imported the key, but the token could not be opened again"),
+        "{}",
+        stderr(&o)
+    );
+    assert!(stderr(&o).contains("cakeys lock --spec pr-b --token tpm2"), "{}", stderr(&o));
+    let lock = std::fs::read_to_string(e.dir.join("keys.lock")).unwrap();
+    assert!(!lock.contains("pr-b"), "{lock}");
+    // As the note says: recorded where it is, it verifies (through the shim, with no plan).
+    let env: &'static [(&str, &str)] = Box::leak(Box::new([("P11_FAULT_MODULE", leak(tpm.module.clone()))]));
+    let through = Ref { env, ..tpm.clone() };
+    let o = e.cakeys(&through, &["lock", "--spec", "pr-b", "--token", "tpm2"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&e.cakeys(&through, &["verify", "--spec", "pr-b", "--token", "tpm2"])), 0);
 }
 
 /// The landing checks are made on the pair `--spec` picks: an object with two import pairs on

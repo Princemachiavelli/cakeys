@@ -122,7 +122,9 @@ fn a_failing_module_call_is_unavailable() {
     );
     assert_eq!(code(&o), 16, "{}", stderr(&o));
     let said = stderr(&o);
-    assert!(said.contains("C_Login") && said.contains("PIN is incorrect"), "{said}");
+    // Named by its constant, which the `YubiKey` suites' latch reads (`YubikeyTurn::checked`).
+    assert!(said.contains("C_Login: CKR_PIN_INCORRECT"), "{said}");
+    assert_eq!(failed_login(&said).as_deref(), Some("CKR_PIN_INCORRECT"), "{said}");
     assert_eq!(fired(&trace).last().unwrap()["fn"].as_str(), Some("C_Login"));
     // Logged in without the refusal, the search fails instead.
     let find_only = w.dir.join("find.toml");
@@ -256,7 +258,7 @@ fn a_lying_module_is_refused() {
         ),
         // The per-use login of a CKA_ALWAYS_AUTHENTICATE key refused (the second C_Login of the
         // run): unavailable, and not tried again.
-        ("fn = \"C_Login\"\ncall = 2\nrv = \"CKR_PIN_INCORRECT\"".into(), verify("a"), 16, "not retried"),
+        ("fn = \"C_Login\"\ncall = 2\nrv = \"CKR_PIN_INCORRECT\"".into(), verify("a"), 16, "CKR_PIN_INCORRECT; not retried"),
         // The MAC with the derived or unwrapped secret fails.
         ("fn = \"C_Sign\"\nrv = \"CKR_DEVICE_ERROR\"".into(), verify("d"), 16, "C_Sign (ECDH proof of possession)"),
         ("fn = \"C_Sign\"\nrv = \"CKR_DEVICE_ERROR\"".into(), verify("u"), 16, "C_Sign (unwrap proof of possession)"),
@@ -293,6 +295,26 @@ fn a_lying_module_is_refused() {
     for spec in ["k", "d", "r", "u", "a"] {
         assert_eq!(w.code(&["verify", "--spec", spec, "--token", "ref"]), 0, "{spec}");
     }
+}
+
+/// A rule that does nothing never says it fired (p11-fault hooks.rs F1): `use_label` naming no
+/// object fails the call loudly, as `from_label` does, and no trace line claims the rule; it ran
+/// the caller's own key under a fired rule, so a test of a lie passed with no lie told.
+#[test]
+fn a_substitution_of_nothing_is_the_plans_mistake() {
+    let Some((w, plan, trace)) =
+        faulted("fault-use-nothing", "[[rule]]\nfn = \"C_SignInit\"\nuse_label = \"no-such-key\"\n")
+    else {
+        return;
+    };
+    assert_eq!(w.code(&["create", "--spec", "k", "--token", "ref", "--update-lock"]), 0);
+    let o = w.km_env(
+        &["verify", "--spec", "k", "--token", "ref"],
+        &[("P11_FAULT_PLAN", &plan), ("P11_FAULT_TRACE", &trace)],
+    );
+    assert_ne!(code(&o), 0, "{}", stderr(&o));
+    assert!(stderr(&o).contains("p11-fault: use_label: no object labelled no-such-key"), "{}", stderr(&o));
+    assert_eq!(fired(&trace), [] as [serde_json::Value; 0], "a rule that substituted nothing is traced as fired");
 }
 
 /// Unknown means try (review 2026-11-15 §4): an ECDH proof whose sealed derivation the module
@@ -425,6 +447,27 @@ fn a_create_killed_part_way_has_recorded_what_it_made() {
     let o = w.km(&create);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!((on_token("k1"), on_token("k2")), (2, 2));
+}
+
+/// A module that fails after it made the key (ops.rs F2): `C_GenerateKeyPair` generates and then
+/// answers `CKR_DEVICE_ERROR`. The locator was empty before, so what is under it is this
+/// creation's: removed and said, never left on the token unrecorded for the next run's 19.
+#[test]
+fn a_creation_that_fails_after_the_write_is_undone() {
+    let plan = "[[rule]]\nfn = \"C_GenerateKeyPair\"\nwhen = \"after\"\nrv = \"CKR_DEVICE_ERROR\"\n";
+    let Some((w, plan_path, trace)) = faulted("fault-late-error", plan) else { return };
+    let real = std::env::var(REF.module_var).unwrap();
+    let left = || open_session(&real, "kmtest", "1234").labelled("fault-late-error").len();
+    let create = ["create", "--spec", "k", "--token", "ref", "--update-lock"];
+    let o = w.km_env(&create, &[("P11_FAULT_PLAN", &plan_path), ("P11_FAULT_TRACE", &trace)]);
+    assert_ne!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(fired(&trace).len(), 1, "the generation, once");
+    assert!(stderr(&o).contains("removed 2 object(s) just created"), "{}", stderr(&o));
+    assert_eq!(left(), 0, "the pair the module made is still under the locator");
+    // Nothing left in the way: the next run creates it.
+    let o = w.km(&create);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(left(), 2);
 }
 
 /// A curve refused by OID is generated once more by name only where the token's profile says

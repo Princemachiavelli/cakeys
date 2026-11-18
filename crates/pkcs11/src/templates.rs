@@ -11,7 +11,7 @@
 
 use crate::provider::{Declared, SessionKey};
 use crate::token::{bool_attr, curve_of, key_type_of, locator_attrs};
-use cakeys_core::config::{AttrValue, ObjectCfg};
+use cakeys_core::config::{AttrValue, ObjectCfg, SpecCfg};
 use cakeys_core::id::Commit;
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
@@ -71,15 +71,23 @@ fn token_object(on: Declared<'_>) -> Result<Vec<Attribute>> {
 }
 
 /// A public key's defaults, beside the spec's public `policy`: `CKA_VERIFY`, and public (`CKA_PRIVATE
-/// = false`), each unless the spec declares it (a template may not carry a type twice).
+/// = false`), each unless the public half's template declares it (a template may not carry a
+/// type twice; [`public_declares`]).
 fn public_defaults(on: Declared<'_>, t: &mut Vec<Attribute>) {
-    let declared = |n| on.spec.attributes.contains_key(n) || on.spec.public_attributes.contains_key(n);
-    if !declared("CKA_VERIFY") {
+    if !public_declares(on.spec, "CKA_VERIFY") {
         t.push(Attribute::Verify(true));
     }
-    if !declared("CKA_PRIVATE") {
+    if !public_declares(on.spec, "CKA_PRIVATE") {
         t.push(Attribute::Private(false));
     }
+}
+
+/// Whether a key pair's public half declares the attribute `name`: its `publicAttributes`, the
+/// only ones its template carries. The private key's `attributes` are the private key's: one
+/// declaring `CKA_PRIVATE = true` leaves the public half public (templates.rs F1).
+#[must_use]
+pub fn public_declares(spec: &SpecCfg, name: &str) -> bool {
+    spec.public_attributes.contains_key(name)
 }
 
 /// The key `on` generates, from cakeys' templates: a pair's private template (`CKA_TOKEN`, the
@@ -290,4 +298,48 @@ pub fn rebind_copy(object: &ObjectCfg, commits: &[Commit]) -> Result<Vec<Attribu
         }
     }
     Ok(t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cakeys_core::config::{Locator, SpecMigrateCfg};
+    use cakeys_core::types::KeyType as Kt;
+    use cryptoki::object::AttributeType;
+
+    fn spec(private: &[(&str, bool)], public: &[(&str, bool)]) -> SpecCfg {
+        let attrs = |a: &[(&str, bool)]| a.iter().map(|(n, v)| ((*n).to_owned(), AttrValue::Bool(*v))).collect();
+        SpecCfg {
+            object: "k".into(),
+            attributes: attrs(private),
+            public_attributes: attrs(public),
+            migrate: SpecMigrateCfg::default(),
+            tokens: BTreeMap::new(),
+        }
+    }
+
+    /// The public half's defaults follow its own template's declarations (templates.rs F1): a
+    /// private key declared `CKA_PRIVATE = true` leaves its public half public and verifying,
+    /// generated or imported; only `publicAttributes` naming the attribute removes the default,
+    /// so no type is there twice.
+    #[test]
+    fn the_public_half_takes_its_defaults_from_its_own_declarations() {
+        let object = ObjectCfg { curve: Some("secp256r1".into()), ..ObjectCfg::new(Class::PrivateKey, Some(Kt::Ec)) };
+        let locator = Locator { label: Some("k".into()), id: None };
+        let count = |t: &[Attribute], ty: AttributeType| t.iter().filter(|a| a.attribute_type() == ty).count();
+        for (private, public, carries) in [
+            (&[("CKA_PRIVATE", true), ("CKA_SIGN", true)][..], &[][..], true),
+            (&[][..], &[][..], true),
+            (&[("CKA_PRIVATE", true)][..], &[("CKA_PRIVATE", true), ("CKA_VERIFY", true)][..], false),
+        ] {
+            let s = spec(private, public);
+            let on = Declared { object: &object, spec: &s, locator: &locator };
+            for t in [generation_public(on, vec![], None).unwrap().unwrap(), public_half(on, vec![], None).unwrap()] {
+                assert_eq!(t.contains(&Attribute::Private(false)), carries, "{private:?} {public:?}: {t:?}");
+                assert_eq!(t.contains(&Attribute::Verify(true)), carries, "{private:?} {public:?}: {t:?}");
+                assert!(count(&t, AttributeType::Private) <= 1 && count(&t, AttributeType::Verify) <= 1, "{t:?}");
+            }
+            assert_eq!(public_declares(&s, "CKA_PRIVATE"), !carries);
+        }
+    }
 }

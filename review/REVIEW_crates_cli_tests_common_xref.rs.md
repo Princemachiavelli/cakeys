@@ -19,6 +19,9 @@ token kryoptic-der shares with `kryoptic` is not. `camigrate/tests/dry_run.rs:78
 would pass. Fix: map a `Shared` reference to the reference whose token it reads instead of
 dropping it. [read]
 
+**Fixed (2026-11-18):** `Xref::compared` maps a shared reference (`kryoptic-der`) to the
+reference owning its token. Test: `the_dry_run_twin_compares_every_token_a_move_names`.
+
 ### F2. kryoptic's token is compared by its main database file only — risk
 
 **Verification:** withdrawn. The pinned kryoptic (1.5.4, nixpkgs pkgs/by-name/kr/kryoptic/package.nix:17) issues only `PRAGMA secure_delete = ON`; its library has no `journal_mode`/WAL string, so the database stays in SQLite's default rollback-journal mode, where every commit reaches the main file and the twin's hash (common/xref.rs:224-232) sees it. Each cakeys/camigrate run is a separate process that has exited before the hash is read. [read]

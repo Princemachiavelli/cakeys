@@ -41,6 +41,8 @@ struct Env {
     module: String,
     pin: String,
     mgm: String,
+    /// The device, this test's alone; no login after a failed one.
+    turn: common::YubikeyTurn,
 }
 
 fn env(name: &str) -> Option<Env> {
@@ -52,7 +54,8 @@ fn env(name: &str) -> Option<Env> {
         eprintln!("skipping {name}: CAKEYS_TEST_YUBIKEY_MODULE, _PIN and _MGM (file paths) not all set");
         return None;
     };
-    Some(Env { dir: workdir(name), module, pin, mgm })
+    let turn = common::YubikeyTurn::take();
+    Some(Env { dir: workdir(name), module, pin, mgm, turn })
 }
 
 /// A fresh directory `name` under the integration tests' tmpdir.
@@ -147,7 +150,7 @@ impl Env {
     }
 
     fn km(&self, args: &[&str]) -> Output {
-        common::run_within(&self.dir.join("keys.toml"), args, RUN_LIMIT)
+        self.turn.checked(common::run_within(&self.dir.join("keys.toml"), args, RUN_LIMIT))
     }
 
     /// First use, record, verify, refused delete and idempotent re-lock of `c`: the key is

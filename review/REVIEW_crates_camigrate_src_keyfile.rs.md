@@ -21,6 +21,10 @@ the parser read PEM differently.
 derive its public half, so the plaintext is in memory without the flag. Derive the gate from the
 same scan, i.e. a label-only pass of `pem_entries`' loop. [read]
 
+**Fixed (2026-11-18):** the gate reads the same scan the reader decodes by (`pem_blocks`,
+`der_kind`); an unsplittable PEM file is taken to hold a key. Test:
+`the_gate_sees_every_key_the_reader_decodes` (five manglings of every fixture).
+
 ### F2. Any PKCS#8 decoding error is reported as a type mismatch — nit
 
 `crates/camigrate/src/keyfile.rs:86-88`. `spki_of_pkcs8(&pkcs8).map_err(|_| …)` throws away the

@@ -20,6 +20,9 @@ with 13 ("the lock records no realisation there"), and no message names the stra
 reopen failure, add a note naming what was imported and how to remove it
 (`tpm2_ptool rmobject`), as the `lock_import` failure branch (`:179-186`) already does. [read]
 
+**Fixed (2026-11-18):** a failed reopen says the key is in the TPM, unrecorded, with the
+`cakeys lock` and `tpm2_ptool rmobject` steps. Test: `a_failed_reopen_after_ptool_says_what_is_in_the_tpm`.
+
 ### F2. `import` repeats the checks `create_and_record` makes again — complexity
 
 `crates/camigrate/src/host.rs:39-45` against `:84-105`. `already_there`, `ops::check_import` and

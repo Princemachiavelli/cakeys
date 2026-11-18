@@ -13,6 +13,10 @@
 # environments are the scripts $CAKEYS_P11KIT_ENV_SH and $CAKEYS_TPM_ENV_SH name.
 set -euo pipefail
 
+# The tools take their keys.toml and lock from these when no flag names them: a developer's own
+# would have the suites write their real lock (review common/mod.rs F1). Every test, any binary.
+unset CAKEYS_CONFIG CAKEYS_LOCK
+
 case " $* " in *" --list "*) exec "$@" ;; esac
 [ -n "${CAKEYS_TOKEN_TEMPLATE:-}" ] || exec "$@"
 

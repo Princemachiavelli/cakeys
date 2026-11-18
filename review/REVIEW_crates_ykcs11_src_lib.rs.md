@@ -21,6 +21,9 @@ The user would have to know to set `provider = "generic"`. Also match `C_GetInfo
 description (ykcs11's is, from memory, "PKCS#11 PIV Library (SP-800-73)"; the profile does not
 record it), which `ModuleInfo::description` already carries, or the profile's `model`. [read]
 
+**Fixed (2026-11-18):** `matches` also requires the description "PKCS#11 PIV Library"; both
+libraries' `C_GetInfo` strings read from their binaries [run]. Test: `only_the_piv_module_is_ykcs11`.
+
 ### F2. A failed `CKA_LABEL` read is silently skipped — nit
 
 `crates/ykcs11/src/lib.rs:230-233`. `Err(_) => None` drops the certificate from consideration

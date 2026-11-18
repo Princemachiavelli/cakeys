@@ -613,11 +613,11 @@ pub(crate) fn create_public_half(dst: &Target, to: &Token, spki: &[u8]) -> Resul
     let public_policy = to.policy_template(&dst.spec.public_attributes)?;
     let t = templates::public_half(dst.into(), public_policy, Some(public_key(dst, spki)?))?;
     let t = to.provider.adjusted(&Template::PublicHalf(dst.into()), t)?;
-    let declared = |n| dst.spec.attributes.contains_key(n) || dst.spec.public_attributes.contains_key(n);
     // As `generate`: a module refusing cakeys' own CKA_PRIVATE = false default gets the half
     // without it.
+    let declared = templates::public_declares(dst.spec, "CKA_PRIVATE");
     let create = || {
-        with_public_default_dropped(&t, declared("CKA_PRIVATE"), |p| to.raw().create_object(p))
+        with_public_default_dropped(&t, declared, |p| to.raw().create_object(p))
             .map(|(made, _)| made)
             .map_err(|e| to.unsupported(format!("{dst}: the public half: C_CreateObject: {e}")))
     };

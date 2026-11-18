@@ -27,6 +27,10 @@ keys, so only `CKA_PRIVATE` is affected. Fix: decide the public defaults from
 `spec.public_attributes` alone (and the same in `token::generate`'s `private_declared` and
 camigrate's `sealed.rs:589` `declared("CKA_PRIVATE")`). [read]
 
+**Fixed (2026-11-18):** `templates::public_declares` (the public half's `publicAttributes` alone)
+decides the defaults in the templates, `generate` and `sealed.rs`' `create_public_half`. Test:
+`the_public_half_takes_its_defaults_from_its_own_declarations`.
+
 ### F2. `known_policy` uses `KmError::NotFound("")` as an in-band sentinel — nit
 
 `crates/pkcs11/src/templates.rs:55-62`. The mapper returns an empty `NotFound` for an unknown

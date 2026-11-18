@@ -22,6 +22,11 @@ writes test realisations into that real lock (and `gc --apply` removes its entri
 fails on `Workdir::lock()` reading `dir/keys.lock`. Fix: scrub `CAKEYS_LOCK` and `CAKEYS_CONFIG`
 in one shared runner (see F5), or pass `--lock <dir>/keys.lock` explicitly. [read]
 
+**Fixed (2026-11-18):** nix/test-tokens.sh unsets `CAKEYS_CONFIG` and `CAKEYS_LOCK`, and
+every run the suites start goes through `common::tool`, which removes them (with
+`NIX_BUILD_TOP` and `IN_NIX_SHELL`): `run_within`, `km_env`, xref, validate, tpm2,
+lockfile, and the camigrate and caprobe suites. Test: `no_test_run_sees_a_real_keys_toml_or_lock`.
+
 ### F2. 243 of the 247 tests in the 11 `cakeys` test binaries pass without running anything — risk
 
 **Verification:** confirmed (downgraded to practice). The arithmetic holds (68 `#[test]` under reference/ × softhsm/kryoptic/fault + fault 8, tpm2 16, p11kit 3, references 5, ftpm 3, yubikey 2, cloud 2 = 243; plus surface 1, validate 3). But docs/DEVELOPMENT.md:26-27 documents the skip under plain `cargo test`, and both supported runners set every `*_REQUIRE` the CI-able binaries read (nix/package-common.nix:179-213, nix/test-tokens.sh:78, scripts/local-tests.sh:107-119), so a missing module fails there; the hardware binaries cannot run in CI by design. Of the in-test quiet skips listed, only tpm2.rs's `on_swtpm` ones are a live CI blind spot (REVIEW_crates_cli_tests_tpm2.rs.md F3); identity.rs:349, tpm2.rs:473 and references.rs:405-408 are shadowed by loud failures elsewhere, matrix.rs:12 is a fixed per-binary choice. [read]

@@ -23,6 +23,13 @@ this header does not. Only `scripts/coverage-full.sh`
 `env`, hold a process-wide `Mutex`. Better, have the first login failure set a flag (or file)
 that makes later tests refuse. [read]
 
+**Fixed (2026-11-18):** `common::YubikeyTurn` holds an exclusive lock on a file in the shared
+target tmpdir for each `YubiKey` test (cakeys, caprobe, camigrate), so no two log in at once
+in any process. Any `CKR_PIN_*` in a run's output latches every later test off until a person
+removes the latch. Login failures now name their `CKR_*` (they printed cryptoki's prose, which
+the latch could not read), held by `a_failing_module_call_is_unavailable` on real output. Test:
+`a_failed_yubikey_login_stops_every_later_one` (no device).
+
 ### F2. The "generates" tests silently adopt on every run after the first — practice
 
 `yubikey.rs:165-168`. If `create` gives 19 (a key already in the slot), the test falls back to

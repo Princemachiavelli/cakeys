@@ -9,7 +9,7 @@
 //! is imported, as SO, and the slot ends holding a freshly generated key and its placeholder,
 //! as the generation probes leave it.
 
-use super::{Draft, Made, Target, ckr, evidence, refused, rsa_aes_key_wrap, spec};
+use super::{Created, Draft, Made, Target, ckr, evidence, refused, rsa_aes_key_wrap, spec};
 use cakeys_core::config::{Binding, Locator, ObjectCfg};
 use cakeys_core::migrate::Method;
 use cakeys_core::plaintext::{private_from_pkcs8, spki_of_pkcs8};
@@ -115,7 +115,7 @@ pub(super) fn probe_moves(made: &mut Made, profile: &mut Draft, transport: Trans
         // generated key again, which also puts its placeholder certificate back.
         Target::Slot(_) => {
             let p256 = ObjectCfg { curve: Some("secp256r1".into()), ..ObjectCfg::new(Class::PrivateKey, Some(Kt::Ec)) };
-            if let Err(e) = made.create(&p256, &spec(&[], &[]))? {
+            if let Created::Refused(e) | Created::Lost(e) = made.create(&p256, &spec(&[], &[]))? {
                 made.undetermined.push(format!(
                     "the scratch slot holds the last key the import probes put there: generating over it: {}",
                     evidence(made.tok, &e)

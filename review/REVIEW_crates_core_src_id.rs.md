@@ -27,6 +27,11 @@ refuses such keys earlier on purpose (the RSA size check in `pkcs11/src/token/po
 for declared `modulusBits`); if the refusal is intended, it still needs the 15 code and a
 message. [read]
 
+**Fixed (2026-11-18):** `rsa_key` / `id::rsa_of_spki` take any size and refuse only what is no
+RSA key (Conflict); the public half's material and keyfile's type check use them. Proofs of
+possession still need `rsa`'s limits and refuse (15) naming the size. Tests:
+`rsa_keys_of_any_size_have_an_identity`, `a_legacy_rsa_key_has_an_identity` (SoftHSM RSA-768).
+
 ### F2. `spki_curve` is a second OID dispatcher beside `KeyAlg::of`, with looser rules — complexity
 
 `crates/core/src/id.rs:663-680` vs `:552-575`. Q20 moved five sites onto `KeyAlg`; this one

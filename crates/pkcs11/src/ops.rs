@@ -636,7 +636,13 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
             .into(),
         ));
     }
-    let made_otherwise = tok.create(t.object, t.spec, &t.on_token.locator, cakeys_core::plan::expected_binding(t))?;
+    let made_otherwise = match tok.create(t.object, t.spec, &t.on_token.locator, cakeys_core::plan::expected_binding(t))
+    {
+        Ok(made) => made,
+        // A module may fail after it made the key (an error after the write, or the session
+        // put back after an SO step): what is under the locator now is this creation's.
+        Err(e) => return Err(undo_created(t, tok, e, "the creation failed", notes)),
+    };
     notes.say(format!("created {t}"));
     if let Some(note) = made_otherwise {
         notes.say(note.to_string());
@@ -646,19 +652,28 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
         Ok(None) => KmError::NotFound(format!("{t} vanished after creation").into()),
         Err(e) => e,
     };
-    // The locator was empty before (If-None-Match), so this removes only what we just made: a
-    // refused `lock` leaves nothing behind, unless the module cannot delete keys (ykcs11),
-    // which is then said rather than claimed.
-    match tok.destroy(t.object, &t.on_token.locator) {
-        Ok(n) => {
-            notes.say(format!("removed {n} object(s) just created for {t}: its identity could not be established"));
-        }
-        Err(d) => notes.say(format!(
-            "the key just created for {t} is still on the token (its identity could not be established, \
-             and removing it failed: {d})"
+    Err(undo_created(t, tok, e, "its identity could not be established", notes))
+}
+
+/// After a creation under `t`'s locator that failed (`why`): remove what is there. The locator
+/// was empty before (If-None-Match), so this removes only what the creation made: a refused
+/// creation or `lock` leaves nothing behind, unless the module cannot delete keys (ykcs11),
+/// which is then said rather than claimed. Hands back `err`.
+fn undo_created(t: &Target, tok: &Token, err: KmError, why: &str, notes: &mut Notes) -> KmError {
+    match tok.find_any(&t.on_token.locator) {
+        Ok(found) if found.is_empty() => {}
+        Ok(_) => match tok.destroy(t.object, &t.on_token.locator) {
+            Ok(n) => notes.say(format!("removed {n} object(s) just created for {t}: {why}")),
+            Err(d) => notes.say(format!(
+                "the key just created for {t} is still on the token ({why}, and removing it failed: {d})"
+            )),
+        },
+        Err(f) => notes.say(format!(
+            "{t}: {why}, and what it may have left under the locator cannot be seen ({f}); look before creating it \
+             again"
         )),
     }
-    Err(e)
+    err
 }
 
 /// What [`create`] did with its pair.

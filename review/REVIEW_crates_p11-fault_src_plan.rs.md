@@ -20,6 +20,10 @@ the wrong thing. Split the table into slot and token flags and check the names a
 rule's function.
 [read]
 
+**Fixed (2026-11-18):** the flag names are two tables (`p11_names::SLOT_FLAG`, `TOKEN_FLAG`), and
+a rule takes those of the structure its function returns. Tests: `slot_and_token_flags_are_apart`,
+the plan refusals (`CKF_HW_SLOT` on `C_GetTokenInfo`).
+
 ## Design
 
 None.

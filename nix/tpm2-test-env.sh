@@ -30,10 +30,12 @@ up)
   tpm2-abrmd --session --tcti=swtpm:port="$PORT" --flush-all </dev/null >"$D/abrmd.log" 2>&1 &
   echo $! >"$D/abrmd.pid"
   tcti="$(dirname "$(dirname "$(command -v tpm2-abrmd)")")/lib/libtss2-tcti-tabrmd.so.0:bus_type=session"
+  # CAKEYS_TPM_SWTPM: this is the software TPM, where the tests may change TPM state (tpm2.rs
+  # `on_swtpm`, which also asks the TPM).
   cat >"$D/env" <<E
 export DBUS_SESSION_BUS_ADDRESS='$DBUS_SESSION_BUS_ADDRESS'
 export TPM2TOOLS_TCTI='$tcti' TPM2_PKCS11_TCTI='$tcti' TPM2_PKCS11_STORE='$D/store'
-export TPM2_PKCS11_BACKEND=esysdb TSS2_LOG=all+NONE
+export TPM2_PKCS11_BACKEND=esysdb TSS2_LOG=all+NONE CAKEYS_TPM_SWTPM=1
 E
   # shellcheck source=/dev/null
   . "$D/env"

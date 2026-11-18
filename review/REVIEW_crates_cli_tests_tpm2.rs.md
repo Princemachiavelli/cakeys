@@ -25,6 +25,9 @@ scripts do not do this, since `scripts/coverage-full.sh` runs only `binary(ftpm)
 risk, not a bug. Fix: run both through `tpm2_tool`, which asserts swtpm, or put the rest of the test
 under `if on_swtpm()`. [read]
 
+**Fixed (2026-11-18):** the attestation test, and every `tpm2_tool` step in it, runs only
+on swtpm; the persistent-handle compare runs on every TPM.
+
 ### F2. The HMAC attestation half is skipped without regard to `CAKEYS_TPM_REQUIRE` — risk
 
 **Verification:** confirmed (downgraded to nit). tpm2.rs:473 passes `false`, unlike :243, :505, :554. But the scenario (Nix check with an unpatched cryptoki) cannot be silent: those three calls in the same binary, with `CAKEYS_TPM_REQUIRE=1` (nix/package-common.nix:213), and every reference binary's HMAC test would fail loudly at once. Only this one block's skip is quiet. [read]
@@ -42,6 +45,11 @@ returns early, reported as passed) and `:930` (the AK cases). The detection reli
 the bus or stops using abrmd, the object matrix and the AK cases leave CI silently while
 `CAKEYS_TPM_REQUIRE` is set. Fix: have tpm2-test-env.sh export `CAKEYS_TPM_SWTPM=1` and check
 that; under `CAKEYS_TPM_REQUIRE`, assert `on_swtpm()` instead of skipping. [read]
+
+**Fixed (2026-11-18):** nix/tpm2-test-env.sh exports `CAKEYS_TPM_SWTPM=1`, and `on_swtpm()`
+also needs `tpm2_getcap properties-fixed` to report swtpm's vendor strings. The marker on
+another TPM, or `CAKEYS_TPM_REQUIRE` without swtpm, fails; a config that asks for attestation
+is written only on swtpm. Removing the marker fails 8 tests under `CAKEYS_TPM_REQUIRE`.
 
 ### F4. An upstream module bug is the trigger for the failure test — practice
 
