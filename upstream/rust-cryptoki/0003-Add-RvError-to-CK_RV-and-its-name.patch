@@ -182,8 +182,8 @@
 +                    $(RvError::$variant => $ckr,)*
 +                    RvError::VendorDefined(ck_rv) | RvError::UnknownErrorCode(ck_rv) => ck_rv,
 +                }
-+            }
-+        }
+             }
+         }
 +
 +        impl RvError {
 +            /// The name of the `CKR_*` constant this error stands for, as the specification spells
@@ -193,8 +193,8 @@
 +                    $(RvError::$variant => Some(stringify!($ckr)),)*
 +                    RvError::VendorDefined(_) | RvError::UnknownErrorCode(_) => None,
 +                }
-             }
-         }
++            }
++        }
 +    };
 +}
 +
@@ -313,7 +313,7 @@
      }
  }
  
-@@ -166,4 +213,18 @@
+@@ -166,4 +213,21 @@
          let expected = Rv::Error(RvError::UnknownErrorCode(code));
          assert_eq!(actual, expected);
      }
@@ -324,7 +324,10 @@
 +            let rv = Rv::from(code);
 +            assert_eq!(CK_RV::from(rv), code);
 +            if let Rv::Error(rv_error) = rv {
-+                let named = !matches!(rv_error, RvError::VendorDefined(_) | RvError::UnknownErrorCode(_));
++                let named = !matches!(
++                    rv_error,
++                    RvError::VendorDefined(_) | RvError::UnknownErrorCode(_)
++                );
 +                assert_eq!(rv_error.name().is_some(), named, "{code:#x}");
 +            }
 +        }

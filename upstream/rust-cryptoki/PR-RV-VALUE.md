@@ -1,6 +1,10 @@
 # Draft PR for parallaxsecond/rust-cryptoki: `RvError` back to its `CK_RV`, and its name
 
-Status: **draft, not filed.** Upstream main has only `From<CK_RV> for Rv` (checked 2026-11-17).
+Status: **filed as a draft, parallaxsecond/rust-cryptoki#380** (branch
+`Princemachiavelli:jhoffer/Add-RvError-to-CK_RV`). Its first commit was the two-match version;
+the second (2026-11-17) is this patch: the table and the ten 3.x variants, rustfmt- and
+clippy-clean, against main as of 2e4ff5d (`rv.rs` and `rv_error.rs` as in 0.12.1). The body
+below is the PR's.
 
 - cakeys builds with this file as it is, no local copy: `nix/package-common.nix` lists it among
   the cryptoki patches (and `scripts/local-tests.sh` applies it from there), and
@@ -46,7 +50,8 @@ deriving a `CKR_*` name from `Debug` depends on the variant names matching the c
 
 This PR turns the `From<CK_RV> for Rv` match into a table (`RvError` variant => `CKR_*`
 constant) that a `macro_rules!` expands into that match and the two additions below, so one list
-serves all three. It adds:
+serves all three and they cannot disagree. The generated inverse match is exhaustive: a new
+variant fails to compile until it has a row. It adds:
 
 - `impl From<RvError> for CK_RV` and `impl From<Rv> for CK_RV`, the inverse of
   `From<CK_RV> for Rv`: `VendorDefined` and `UnknownErrorCode` give back the value they carry.
@@ -61,9 +66,9 @@ serves all three. It adds:
   `Display` is the constant's name, as for `NewPinMode` and `NextOtp`, except
   `OperationCancelFailed`, which quotes the specification; it describes none of the others.
 
-Adding variants to `RvError`, which is not `#[non_exhaustive]`, is breaking for a `match` that
-lists every variant without a wildcard; with some ninety variants we expect none does. A caller
-that tested for `UnknownErrorCode` with one of these ten values now gets the named variant.
+Adding variants to `RvError`, which is not `#[non_exhaustive]`, breaks a `match` that lists
+every variant without a wildcard; with some ninety variants we expect none does. A caller that
+tested for `UnknownErrorCode` with one of these ten values now gets the named variant.
 
 The test `round_trip` converts every value below `0x1000` and two vendor-defined ones to `Rv`
 and back, and checks that exactly the named variants have a name.
