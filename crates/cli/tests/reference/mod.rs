@@ -8,7 +8,7 @@
 
 #![expect(clippy::type_complexity, reason = "table-driven cases")]
 
-use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
+use cryptoki::context::Pkcs11;
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use cryptoki::session::Session;

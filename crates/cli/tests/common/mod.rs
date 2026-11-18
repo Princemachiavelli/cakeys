@@ -113,8 +113,7 @@ pub fn yubikey_token(module: &str, pin: &str, mgm: &str, extra: &str) -> String 
 
 /// The label of the first `YubiKey` the module sees, so the config names the right token.
 pub fn yubikey_label(module: &str) -> String {
-    let ctx = Pkcs11::new(module).unwrap();
-    ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();
+    let ctx = Module::open(module);
     let slot = ctx
         .get_slots_with_token()
         .unwrap()
@@ -642,12 +641,59 @@ pub fn des3_commitment(key: &[u8; 24], scheme: &str) -> String {
     sri(&block)
 }
 
-/// A logged-in session on `label` that finalizes the module when dropped. cryptoki >= 0.11 no
-/// longer finalizes on drop, and tests need a fresh `C_Initialize` per session (tpm2-pkcs11 only
-/// sees objects created by other processes after one).
+/// The test process's one initialized context for a module file, shared by every holder at once
+/// (ISSUES.md: sessions on several test threads each initialized and finalized the module, and
+/// one finalized it under another's session, SIGSEGV, under a plain parallel `cargo test`). The
+/// last holder to go finalizes it, under the lock that initializes, so a holder that comes
+/// after initializes afresh: tpm2-pkcs11 sees objects other processes made only after a new
+/// `C_Initialize` (cryptoki >= 0.11 no longer finalizes on drop).
+pub struct Module {
+    path: String,
+    ctx: Pkcs11,
+}
+
+/// The contexts held now, by module file, with how many hold each.
+static MODULES: std::sync::Mutex<std::collections::BTreeMap<String, (Pkcs11, usize)>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+impl Module {
+    /// Hold `path`'s context, initializing the module if nothing holds it.
+    pub fn open(path: &str) -> Module {
+        let mut held = MODULES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (ctx, count) = held.entry(path.to_owned()).or_insert_with(|| {
+            let ctx = Pkcs11::new(path).unwrap();
+            ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();
+            (ctx, 0)
+        });
+        *count += 1;
+        Module { path: path.to_owned(), ctx: ctx.clone() }
+    }
+}
+
+impl std::ops::Deref for Module {
+    type Target = Pkcs11;
+    fn deref(&self) -> &Pkcs11 {
+        &self.ctx
+    }
+}
+
+impl Drop for Module {
+    fn drop(&mut self) {
+        let mut held = MODULES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((ctx, count)) = held.get_mut(&self.path) {
+            *count -= 1;
+            if *count == 0 {
+                let _ = ctx.clone().finalize();
+                held.remove(&self.path);
+            }
+        }
+    }
+}
+
+/// A logged-in session on `label`, on its module's shared context ([`Module`]).
 pub struct TestSession {
     session: Option<Session>,
-    ctx: Option<Pkcs11>,
+    ctx: Option<Module>,
 }
 
 impl std::ops::Deref for TestSession {
@@ -673,18 +719,14 @@ impl TestSession {
 
 impl Drop for TestSession {
     fn drop(&mut self) {
+        // The session before the context it was opened on.
         drop(self.session.take());
-        if let Some(ctx) = self.ctx.take() {
-            let _ = ctx.finalize();
-        }
+        drop(self.ctx.take());
     }
 }
 
-// TODO(docs/OPEN.md, "Engineering"): sessions opened on several test threads finalize the module under
-// each other (SIGSEGV); the Nix builds run each test in a process of its own (nix/test-tokens.sh).
 pub fn open_session(module: &str, label: &str, pin: &str) -> TestSession {
-    let ctx = Pkcs11::new(module).unwrap();
-    ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();
+    let ctx = Module::open(module);
     let slot = ctx
         .get_slots_with_token()
         .unwrap()
@@ -692,6 +734,11 @@ pub fn open_session(module: &str, label: &str, pin: &str) -> TestSession {
         .find(|s| ctx.get_token_info(*s).unwrap().label() == label)
         .unwrap();
     let session = ctx.open_rw_session(slot).unwrap();
-    session.login(UserType::User, Some(&AuthPin::new(pin.into()))).unwrap();
+    // Login state is the application's (PKCS#11 §5.6): another thread's session on the shared
+    // context may have logged in already.
+    match session.login(UserType::User, Some(&AuthPin::new(pin.into()))) {
+        Ok(()) | Err(cryptoki::error::Error::Pkcs11(cryptoki::error::RvError::UserAlreadyLoggedIn, _)) => {}
+        Err(e) => panic!("login to '{label}': {e}"),
+    }
     TestSession { session: Some(session), ctx: Some(ctx) }
 }

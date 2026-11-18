@@ -46,8 +46,7 @@ fn tokens_that_cannot_be_opened_as_named_are_refused() {
 
     // A second token labelled like the first, in a slot the module keeps free (SoftHSM does;
     // kryoptic has the slots its configuration lists).
-    let ctx = Pkcs11::new(&e.module).unwrap();
-    ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();
+    let ctx = Module::open(&e.module);
     let free = ctx.get_all_slots().unwrap().into_iter().find(|slot| {
         ctx.get_slot_info(*slot).unwrap().token_present() && !ctx.get_token_info(*slot).unwrap().token_initialized()
     });
@@ -64,7 +63,7 @@ fn tokens_that_cannot_be_opened_as_named_are_refused() {
             .unwrap();
         ctx.init_token(slot, &AuthPin::new("5678".into()), "kmtest").unwrap();
         let second = serial_of(ctx.get_token_info(slot).unwrap());
-        ctx.finalize().unwrap();
+        drop(ctx);
         let o = e.km(&["lock", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"]);
         assert_eq!(code(&o), 12, "{}", stderr(&o));
         let said = stderr(&o);
@@ -158,8 +157,7 @@ impl Drop for ResetPin<'_> {
 fn pin_counters_stop_cakeys_before_it_spends_a_try() {
     let Some(e) = env("pin-counters") else { return };
     e.config(&EC.replace("ec-lifecycle", "pin-counters"));
-    let ctx = Pkcs11::new(&e.module).unwrap();
-    ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();
+    let ctx = Module::open(&e.module);
     let slot = ctx
         .get_slots_with_token()
         .unwrap()

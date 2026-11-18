@@ -23,9 +23,11 @@ The OS is NixOS: there is no system `cargo`, `python3` or `perl`.
   `.github/workflows/reports.yml` builds `packages.coverage` on each push to `main` and
   `packages.mutants` weekly (both on a manual run), and pushes each one's number (`scripts/badges.sh`: lines covered; mutants
   caught of the viable ones) to the `badges` branch, which the README's badges read.
-- The token suites (SoftHSM, kryoptic, p11-kit, swtpm) run only in the Nix build's check phase;
-  under plain `cargo test` they skip. A change to token behaviour is not tested until a Nix check
-  has run.
+- The token suites (SoftHSM, kryoptic, p11-kit, swtpm) run only in the Nix build's check phase
+  and `scripts/local-tests.sh`; under plain `cargo test` they skip. Run with tokens configured
+  but in one process (plain `cargo test`), they share one token set and do not pass: the token
+  suites need a token set per test, which only the per-test runner gives (OPEN.md,
+  "Engineering"). A change to token behaviour is not tested until a Nix check has run.
 - Both builds (the checks' crane build and `packages.cakeys`) run the tests under
   `cargo-nextest`, one process per test, each through `nix/test-tokens.sh`: a SoftHSM token and
   a kryoptic database of its own (copies of templates), and for the suites that use them its own

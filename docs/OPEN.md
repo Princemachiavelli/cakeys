@@ -255,12 +255,14 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 
 ## Engineering
 
-- **The token suites under a plain parallel `cargo test`** still crash (one test finalizes the
-  module under the others in one process): the crane check phase runs them under
-  `cargo-nextest` with a token set per test (DEVELOPMENT.md), as the regular build and the
-  coverage report do; the mutation report runs on one thread against shared tokens. One session per module in
-  `tests/common` would fix the plain run. **Decided 2026-11-17, not built:** one initialized
-  context per module for the whole process.
+- **The token suites under a plain parallel `cargo test`** no longer crash (since 2026-11-17 the
+  test helpers share one reference-counted context per module, `tests/common`'s `Module`, so no
+  test finalizes the module under another), but they do not pass there: every test of a binary
+  shares one token set, so the tests that change the token (a second `kmtest` token, burnt PIN
+  tries) break the others, and some find no object a CLI run just made, by a cause not
+  established. Unsupported: `scripts/local-tests.sh` (nextest, a token set per test) is the
+  local runner, as the crane check phase, the regular build and the coverage report are; the
+  mutation report runs on one thread against shared tokens.
 - **Closing what the reports show** (`packages.coverage`, `packages.mutants`, DEVELOPMENT.md):
   the lock's load-time invariants and the transport-key rules are pinned by
   `crates/core/tests/refusals.rs`, which a plain `cargo test` runs; the sealed path with OAEP SHA-256
