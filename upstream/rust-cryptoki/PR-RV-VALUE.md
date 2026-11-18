@@ -4,7 +4,7 @@ Status: **filed as a draft, parallaxsecond/rust-cryptoki#380** (branch
 `Princemachiavelli:jhoffer/Add-RvError-to-CK_RV`): one commit, e0b72ec (2026-11-17, the
 two-match first version and the table with the ten 3.x variants squashed), which is this patch,
 rustfmt- and clippy-clean, on main as of 2e4ff5d (`rv.rs` and `rv_error.rs` as in 0.12.1). The
-body below is the PR's.
+title and body below are the PR's, the commit message without its trailers.
 
 - cakeys builds with this file as it is, no local copy: `nix/package-common.nix` lists it among
   the cryptoki patches (and `scripts/local-tests.sh` applies it from there), and
@@ -39,39 +39,25 @@ body below is the PR's.
 
 ---
 
-**Title:** Convert `RvError` and `Rv` back to `CK_RV`, and name the `CKR_*` constant
+**Title:** Convert `RvError` back to `CK_RV`, name it, and add the 3.x return values
 
 **Body:**
 
-`Rv` converts from a `CK_RV`, but not back. A caller that wants the numeric return value of a
-failed call (to log it, compare it with a vendor's documentation, or hand it to another layer
-that speaks `CK_RV`) has only `Debug` or `Display`: `Display` is the specification's prose, and
-deriving a `CKR_*` name from `Debug` depends on the variant names matching the constants.
+`Rv` converts from a `CK_RV` but not back, so a caller that wants a failed call's return value
+or its `CKR_*` name has only `Debug` and `Display`.
 
-This PR turns the `From<CK_RV> for Rv` match into a table (`RvError` variant => `CKR_*`
-constant) that a `macro_rules!` expands into that match and the two additions below, so one list
-serves all three and they cannot disagree. The generated inverse match is exhaustive: a new
-variant fails to compile until it has a row. It adds:
+The `From<CK_RV> for Rv` match becomes a `macro_rules!` table (`RvError` variant => `CKR_*`
+constant) that also generates:
 
-- `impl From<RvError> for CK_RV` and `impl From<Rv> for CK_RV`, the inverse of
-  `From<CK_RV> for Rv`: `VendorDefined` and `UnknownErrorCode` give back the value they carry.
-- `RvError::name(&self) -> Option<&'static str>`: the `CKR_*` constant's name as the
-  specification spells it, `None` for a vendor-defined or unknown value.
-- Variants for the ten return values `cryptoki-sys` already defines but `RvError` lacked, all
-  from PKCS#11 3.x: `AeadDecryptFailed` (`CKR_AEAD_DECRYPT_FAILED`), `TokenResourceExceeded`,
-  `OperationCancelFailed`, `KeyExhausted`, `Pending`, `SessionAsyncNotSupported`,
-  `SeedRandomRequired`, `OperationNotValidated`, `TokenNotInitialized` and
-  `ParameterSetNotSupported` (`CKR_TOKEN_RESOURCE_EXCEEDED` through
-  `CKR_PARAMETER_SET_NOT_SUPPORTED`). They used to come back as `UnknownErrorCode`. Their
-  `Display` is the constant's name, as for `NewPinMode` and `NextOtp`, except
-  `OperationCancelFailed`, which quotes the specification; it describes none of the others.
+- `impl From<RvError> for CK_RV` and `impl From<Rv> for CK_RV`, the inverse;
+  `VendorDefined` and `UnknownErrorCode` give back the value they carry.
+- `RvError::name()`, the constant's name, `None` for a vendor-defined or unknown value.
 
-Adding variants to `RvError`, which is not `#[non_exhaustive]`, breaks a `match` that lists
-every variant without a wildcard; with some ninety variants we expect none does. A caller that
-tested for `UnknownErrorCode` with one of these ten values now gets the named variant.
+One list, so the three cannot disagree, and the generated inverse match is exhaustive.
 
-The test `round_trip` converts every value below `0x1000` and two vendor-defined ones to `Rv`
-and back, and checks that exactly the named variants have a name.
+It also adds `RvError` variants for the ten return values `cryptoki-sys` defines but `RvError`
+lacked, all PKCS#11 3.x: `CKR_AEAD_DECRYPT_FAILED` and `CKR_TOKEN_RESOURCE_EXCEEDED` through
+`CKR_PARAMETER_SET_NOT_SUPPORTED`, which used to convert to `UnknownErrorCode`.
 
-We use the value to keep a module's return code in our errors and the name in messages and in
-recorded evidence, where it must not change with the binding's wording.
+The test `round_trip` converts every value below 0x1000 and two vendor-defined ones to `Rv` and
+back, and checks that exactly the named variants have a name.
