@@ -271,8 +271,6 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **Unit tests in `cakeys-pkcs11`** (4.5k lines, 16 unit tests): it is tested almost only
   through the reference suite (`crates/cli/tests/reference/`, which every reference binary
   includes whole).
-- **Fuzz the remaining parsers**: the PIV chain, the P-521 fix-up, profile emit and parse.
-  **Decided 2026-11-17, not built:** all three; profile emit and parse as a round-trip fixed point.
 - **Design models** (DEVELOPMENT.md): Quint or TLA+ for the lock rules, Alloy for the lock's
   structure and S16, Tamarin for proof of possession and attestation, Kani for small pure
   functions.

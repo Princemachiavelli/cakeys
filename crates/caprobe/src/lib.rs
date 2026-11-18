@@ -28,6 +28,25 @@ use std::process::ExitCode;
 
 pub use cakeys_cli_common::default_registry;
 
+/// Entry points for the fuzz targets (`fuzz/fuzz_targets/profile.rs`): the profile emitter on
+/// whatever the profile parser reads.
+pub mod fuzzing {
+    /// `text` as a profile: one the parser reads is emitted, and the emitted text reads back as
+    /// the same profile and emits to the same text, the round trip a regenerated profile takes.
+    ///
+    /// # Panics
+    ///
+    /// When it does not: what the fuzz target looks for.
+    pub fn profile_round_trip(text: &str) {
+        let Ok(profile) = cakeys_profile::Profile::from_toml(text) else { return };
+        let emitted = crate::emit::profile(&profile);
+        let back = cakeys_profile::Profile::from_toml(&emitted)
+            .unwrap_or_else(|e| panic!("the emitted profile does not read back: {e}\n{emitted}"));
+        assert_eq!(back, profile, "the emitted profile reads back as another\n{emitted}");
+        assert_eq!(crate::emit::profile(&back), emitted, "the emitted profile emits to another text");
+    }
+}
+
 /// Measure PKCS#11 modules: capability profiles, and what a token offers.
 ///
 /// Exit codes: 0 ok, 15 unsupported (a profile's no; drift from --diff), 16 unavailable (a

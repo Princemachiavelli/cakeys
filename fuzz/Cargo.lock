@@ -212,12 +212,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "cakeys-aws-cloudhsm"
+version = "0.1.0"
+dependencies = [
+ "cakeys-core",
+ "cakeys-pkcs11",
+ "cryptoki",
+ "cryptoki-sys",
+]
+
+[[package]]
 name = "cakeys-cli-common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cakeys-aws-cloudhsm",
  "cakeys-core",
+ "cakeys-kmsp11",
  "cakeys-pkcs11",
+ "cakeys-profile",
  "serde",
  "serde_json",
 ]
@@ -261,23 +274,39 @@ version = "0.0.0"
 dependencies = [
  "cakeys-core",
  "cakeys-tpm2-pkcs11",
+ "cakeys-ykcs11",
  "camigrate",
+ "caprobe",
  "libfuzzer-sys",
+]
+
+[[package]]
+name = "cakeys-kmsp11"
+version = "0.1.0"
+dependencies = [
+ "cakeys-core",
+ "cakeys-pkcs11",
+ "cakeys-profile",
+ "cryptoki",
+ "serde_json",
 ]
 
 [[package]]
 name = "cakeys-pkcs11"
 version = "0.1.0"
 dependencies = [
- "aes",
  "aes-kw",
  "cakeys-core",
  "cakeys-profile",
  "cryptoki",
+ "cryptoki-sys",
+ "der",
  "getrandom",
  "libc",
- "sha2",
+ "p11-names",
+ "rsa",
  "toml",
+ "x509-cert",
  "zeroize",
 ]
 
@@ -309,6 +338,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cakeys-ykcs11"
+version = "0.1.0"
+dependencies = [
+ "cakeys-core",
+ "cakeys-pkcs11",
+ "cryptoki",
+ "sha2",
+ "x509-cert",
+]
+
+[[package]]
 name = "camigrate"
 version = "0.1.0"
 dependencies = [
@@ -332,6 +372,23 @@ dependencies = [
  "toml",
  "x509-cert",
  "zeroize",
+]
+
+[[package]]
+name = "caprobe"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "anyhow",
+ "cakeys-cli-common",
+ "cakeys-core",
+ "cakeys-pkcs11",
+ "cakeys-profile",
+ "clap",
+ "cryptoki",
+ "getrandom",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -1011,6 +1068,13 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "p11-names"
+version = "0.1.0"
+dependencies = [
+ "cryptoki-sys",
+]
 
 [[package]]
 name = "p256"

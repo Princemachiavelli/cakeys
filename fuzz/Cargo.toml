@@ -15,6 +15,8 @@ cargo-fuzz = true
 cakeys-core = { path = "../crates/core" }
 camigrate = { path = "../crates/camigrate", default-features = false }
 cakeys-tpm2-pkcs11 = { path = "../crates/tpm2-pkcs11" }
+cakeys-ykcs11 = { path = "../crates/ykcs11" }
+caprobe = { path = "../crates/caprobe", default-features = false }
 libfuzzer-sys = "0.4.13"
 
 [[bin]]
@@ -62,6 +64,27 @@ bench = false
 [[bin]]
 name = "tpms_attest"
 path = "fuzz_targets/tpms_attest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "piv_chain"
+path = "fuzz_targets/piv_chain.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "p521_point"
+path = "fuzz_targets/p521_point.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "profile"
+path = "fuzz_targets/profile.rs"
 test = false
 doc = false
 bench = false

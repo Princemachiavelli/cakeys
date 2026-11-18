@@ -34,10 +34,14 @@ let
     "bundle"
     "tpm_store_row"
     "tpms_attest"
+    "piv_chain"
+    "p521_point"
+    "profile"
   ];
 
   # Seed corpora from the test fixtures: certificates, their and the import keys' SPKIs, a
-  # lock, a config and a bundle. Called from the repository root.
+  # lock, a config, a bundle, the fixture PIV chain, tpm2-pkcs11's malformed P-521 point and the
+  # committed profiles. Called from the repository root.
   seed = ''
     F=crates/cli/tests/fixtures
     for t in ${lib.concatStringsSep " " targets}; do mkdir -p "fuzz/corpus/$t"; done
@@ -46,6 +50,22 @@ let
     cp --update=none "$F/keys.toml" fuzz/corpus/config/
     cp --update=none crates/camigrate/tests/fixtures/sample.bundle.toml fuzz/corpus/bundle/
     cp --update=none crates/tpm2-pkcs11/tests/fixtures/*.yaml fuzz/corpus/tpm_store_row/
+    for p in profiles/modules/*/*.toml profiles/layers/*.toml profiles/hardware/*.toml; do
+      cp --update=none "$p" "fuzz/corpus/profile/$(basename "$(dirname "$p")")-$(basename "$p")"
+    done
+    # The piv_chain input: the slot certificate's DER after its big-endian two-byte length, then
+    # the device certificate's.
+    Y=crates/ykcs11/tests/fixtures
+    if [ ! -e fuzz/corpus/piv_chain/fixture ]; then
+      openssl x509 -in "$Y/slot.pem" -outform DER -out slot.der
+      openssl x509 -in "$Y/f9.pem" -outform DER -out f9.der
+      n=$(wc -c <slot.der)
+      printf "\\x$(printf %02x $((n >> 8)))\\x$(printf %02x $((n & 255)))" >fuzz/corpus/piv_chain/fixture
+      cat slot.der f9.der >>fuzz/corpus/piv_chain/fixture
+      rm slot.der f9.der
+    fi
+    # `04 85 <133 bytes>`: the short-form length tpm2-pkcs11 1.10.1 writes for a P-521 point.
+    { printf '\x04\x85'; head -c 133 /dev/zero | tr '\0' '\4'; } >fuzz/corpus/p521_point/malformed
     for p in "$F"/*.pem; do
       openssl pkey -in "$p" -pubout -outform DER -out "fuzz/corpus/public_key/$(basename "$p" .pem).spki"
     done

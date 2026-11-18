@@ -37,6 +37,21 @@ static INTERMEDIATES: LazyLock<Vec<attest::Cert>> = LazyLock::new(|| {
     piv_pool(pem_certs(include_str!("../roots/yubico-intermediate.pem")).expect("embedded Yubico intermediates parse"))
 });
 
+/// Entry points for the fuzz targets (`fuzz/fuzz_targets/piv_chain.rs`): the PIV attestation
+/// chain on arbitrary certificates, read or refused with an error, never a panic.
+pub mod fuzzing {
+    /// `bytes` as a slot attestation certificate and the device certificate that signed it: a
+    /// big-endian two-byte length, the slot's DER, then the device's; verified as `check`
+    /// verifies a chain, dates included, to Yubico's pinned roots and to the test fixture's.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the chain's verification refuses.
+    pub fn piv_attestation(bytes: &[u8]) -> cakeys_core::Result<()> {
+        super::attest::fuzz_piv_attestation(bytes, &super::ANCHORS, &super::INTERMEDIATES)
+    }
+}
+
 impl Ykcs11 {
     /// ykcs11 generates into the slot the template's `CKA_ID` names and gives each slot fixed
     /// labels, so a key to create is located by `CKA_ID` alone.

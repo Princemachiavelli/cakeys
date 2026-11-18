@@ -203,6 +203,24 @@ pub(crate) fn verify_piv_attestation(
     })
 }
 
+/// The fuzz target's input (`crate::fuzzing::piv_attestation`): a big-endian two-byte length,
+/// the slot certificate's DER, then the device certificate's; verified at a fixed time (2030)
+/// against the slot certificate's own key, to Yubico's pinned roots with their pool and to the
+/// test fixture's root, which a fuzzed chain can reach.
+pub(crate) fn fuzz_piv_attestation(bytes: &[u8], anchors: &[Cert], pool: &[Cert]) -> Result<()> {
+    static FIXTURE_ROOT: std::sync::LazyLock<Vec<Cert>> = std::sync::LazyLock::new(|| {
+        pem_certs(include_str!("../tests/fixtures/root.pem")).expect("the fixture root parses")
+    });
+    let short = || KmError::Validation("shorter than its length prefix".into());
+    let [hi, lo, rest @ ..] = bytes else { return Err(short()) };
+    let (slot, device) = rest.split_at_checked(usize::from(u16::from_be_bytes([*hi, *lo]))).ok_or_else(short)?;
+    let spki = Cert::from_der(slot.to_vec()).and_then(|c| c.spki()).unwrap_or_default();
+    let at = Some(1_893_456_000);
+    verify_piv_attestation(slot, device, anchors, pool, &spki, at)
+        .or_else(|_| verify_piv_attestation(slot, device, &FIXTURE_ROOT, &[], &spki, at))
+        .map(drop)
+}
+
 /// The pooled Yubico intermediates a PIV chain may pass through: the PIV attestation CAs and
 /// the generic "Attestation Intermediate" CAs above them. Yubico's published pool also holds
 /// the FIDO, `OpenPGP`, SD and `YubiHSM` attestation CAs under the same "Yubico Attestation Root
@@ -419,6 +437,17 @@ mod tests {
             verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &[], &[], &spki_of("slotpub.pem"), None)
                 .unwrap_err();
         assert!(err.to_string().contains("signed by no pinned root"), "{err}");
+    }
+
+    /// The fuzz target's input format reaches the whole chain: the fixture chain, length-prefixed
+    /// as `nix/fuzz.nix` seeds it, verifies; a short or cut input is refused, never a panic.
+    #[test]
+    fn the_fuzz_entry_point_reads_the_fixture_chain() {
+        let (slot, device) = (der_of("slot.pem"), der_of("f9.pem"));
+        let input = [&u16::try_from(slot.len()).unwrap().to_be_bytes()[..], &slot, &device].concat();
+        fuzz_piv_attestation(&input, &[], &[]).unwrap();
+        assert!(fuzz_piv_attestation(&input[..1], &[], &[]).is_err());
+        assert!(fuzz_piv_attestation(&input[..40], &[], &[]).is_err());
     }
 
     /// Under `check`, every certificate of the chain is held to its validity period (ISSUES.md
