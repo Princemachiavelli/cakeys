@@ -96,6 +96,14 @@ file for a key without `CKA_ID` signs but cannot give OpenSSL the public key (to
 certificate, say), so `check` warns when the key it verified has none. Activate
 OpenSSL's `default` provider before `pkcs11`: SoftHSM 2.7.0 deadlocks otherwise (OPEN.md).
 
+A program that takes its key as a file and cannot be changed to call `check` can still be given
+one the check just verified: [`examples/inject/unotify-inject`](../examples/inject/unotify-inject)
+runs it under a seccomp filter and answers its open of a path with what a command prints, say
+`cakeys check signing --format pkcs11-provider-pem` (or the bare URI, for a program that reads
+that). The command runs at each open, a failed check fails the open and the run with its exit
+code, and the number of opens can be asserted. It is an example, not a sandbox
+([`examples/README.md`](../examples/README.md)).
+
 Today the CLI is the binding. **The check is not the use** (accepted 2026-11-13): a program that
 runs `check` and then opens the URI uses the key a moment after it was verified, as with a file
 it checks and then opens. What cakeys promises is *verified at check time*; a swap still fails

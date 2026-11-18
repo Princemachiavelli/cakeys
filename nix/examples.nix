@@ -66,7 +66,7 @@ pkgs.runCommand "cakeys-examples"
   ''
     set -o pipefail
     export HOME=$TMPDIR
-    for e in every-object tls secure-boot programs; do
+    for e in every-object tls secure-boot programs inject; do
       echo "━━ examples/$e"
       bash ${../examples}/$e/run.sh
     done 2>&1 | tee $out
