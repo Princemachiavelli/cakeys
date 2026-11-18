@@ -661,7 +661,7 @@ fn warn_module(t: &Target, m: &ModuleInfo, nm: &ModuleInfo, notes: &mut Notes) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, TokenInfo};
+    use crate::config::{Config, Said, TokenInfo};
 
     const SRI_A: &str = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
     const SRI_B: &str = "sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564=";
@@ -951,7 +951,10 @@ mod tests {
         let keys: Vec<&str> = entry.capabilities.keys().map(String::as_str).collect();
         assert_eq!(keys, ["generate.CKK_EC.secp256r1", "prove.pop-sign.CKK_EC.secp256r1"]);
         record(&mut lock, &with(&[("generate.CKK_EC.secp256r1", "no")]));
-        assert_eq!(lock.observations.values().next().unwrap().capabilities["generate.CKK_EC.secp256r1"].answer, "no");
+        assert_eq!(
+            lock.observations.values().next().unwrap().capabilities["generate.CKK_EC.secp256r1"].answer,
+            Said::No
+        );
     }
 
     /// The module file's hash: other content at the same path warns (replaced in place, which a

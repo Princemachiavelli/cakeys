@@ -24,7 +24,7 @@ use cakeys_pkcs11::token::{self, Token, derive_any, is_policy_default, show, tem
 use cakeys_pkcs11::{BoundKey, keygen_mechanism};
 use cakeys_profile::baseline::CURVES;
 use cakeys_profile::capability::{DECRYPT_OAEP, UNWRAP_TEMPLATE, WRAP_OAEP};
-use cakeys_profile::{Answer, Capability, GenerateRow, MatchInfo, Mode, On, Profile};
+use cakeys_profile::{Answer, Capability, GenerateRow, KeyKind, MatchInfo, Mode, On, Profile};
 use cryptoki::error::{Error as CkError, RvError};
 use cryptoki::mechanism::eddsa::{EddsaParams, EddsaSignatureScheme};
 use cryptoki::mechanism::elliptic_curve::{EcKdf, Ecdh1DeriveParams};
@@ -304,7 +304,7 @@ impl Draft {
 
     /// Record why generating `key_type` on `on` answers as it does.
     fn generation_evidence(&mut self, key_type: &str, on: On, why: String) {
-        self.evidence.insert(Capability::Generate { key_type: key_type.to_owned(), on }, why);
+        self.evidence.insert(Capability::Generate { key_type: key_type.into(), on }, why);
     }
 
     /// The profile with what the probes recorded as its rows: each OAEP hash tried, each
@@ -800,14 +800,13 @@ fn probe_bound(made: &mut Made, profile: &mut Draft) {
         } else {
             session.generate_key(&mech, &key.template).map(|s| (None, s))
         };
-        let bits = key.on.parse::<u32>().ok();
         let (public, private) = match generated {
             Ok(keys) => keys,
             Err(e) => {
                 profile.notes.insert(key.name.clone(), format!("generation refused: {}", ckr(&e)));
-                match (key.kind.as_str(), bits) {
-                    ("CKK_EC", _) if !ec.cannot.contains(&key.on) => ec.cannot.push(key.on.clone()),
-                    ("CKK_RSA", Some(b)) if !rsa.cannot_bits.contains(&b) => rsa.cannot_bits.push(b),
+                match (&key.kind, &key.on) {
+                    (KeyKind::Ec, On::Item(curve)) if !ec.cannot.contains(curve) => ec.cannot.push(curve.clone()),
+                    (KeyKind::Rsa, On::Bits(b)) if !rsa.cannot_bits.contains(b) => rsa.cannot_bits.push(*b),
                     _ => {}
                 }
                 continue;
@@ -816,17 +815,20 @@ fn probe_bound(made: &mut Made, profile: &mut Draft) {
         made.handles.extend(public);
         made.handles.push(private);
         made.labels.push(key.label.clone());
-        match (key.kind.as_str(), bits) {
-            ("CKK_EC", _) if !ec.can.contains(&key.on) => ec.can.push(key.on.clone()),
-            ("CKK_RSA", Some(b)) if !rsa.can_bits.contains(&b) => rsa.can_bits.push(b),
+        match (&key.kind, &key.on) {
+            (KeyKind::Ec, On::Item(curve)) if !ec.can.contains(curve) => ec.can.push(curve.clone()),
+            (KeyKind::Rsa, On::Bits(b)) if !rsa.can_bits.contains(b) => rsa.can_bits.push(*b),
             _ => {}
         }
         let Some(public) = public else { continue };
         made.bound = Some(key.mechanisms.iter().map(ToString::to_string).collect());
         // ECDSA's host check needs the curve; an RSA key is named by its binding, so the notes
         // of one size's several keys stay apart.
-        let on = if key.kind == "CKK_EC" { key.on.clone() } else { key.name.clone() };
-        operate(made, profile, &key.kind, &on, public, private);
+        let on = match (&key.kind, &key.on) {
+            (KeyKind::Ec, On::Item(curve)) => curve.clone(),
+            _ => key.name.clone(),
+        };
+        operate(made, profile, key.kind.name(), &on, public, private);
         made.bound = None;
         // Each OAEP key decrypts with its own hash: the row is what any of them did.
         if let Some(works) = profile.decrypt_oaep.take() {
@@ -1221,7 +1223,7 @@ fn prove(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, private: Obje
     let on = size.map_or_else(|| On::Item(on.to_owned()), On::Bits);
     for binding in bindings {
         let outcome = made.tok.prove_binding(private, &object, spki, *binding);
-        let cap = Capability::Prove { binding: binding.to_string(), key_type: kt.to_owned(), on: on.clone() };
+        let cap = Capability::Prove { binding: binding.name().into(), key_type: kt.into(), on: on.clone() };
         match outcome {
             Err(e) if token::rv_is(e.rv(), RvError::OperationActive) => {
                 made.undetermined.push(format!("no {cap} row: {}", evidence(made.tok, &e)));
@@ -1499,7 +1501,7 @@ fn rsa_ops(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[
         getrandom::fill(&mut secret).map_err(|e| e.to_string())?;
         let cipher = pop::rsa_encrypt(spki, padding, &secret).map_err(|e| e.to_string())?;
         let plain = made.session.decrypt(mech, private, &cipher).map_err(|e| ck_refusal(&e))?;
-        if pop::ct_eq(&secret, &plain) { Ok(()) } else { Err("decrypts to something else".to_owned().into()) }
+        if pop::ct_eq(&secret, &plain) { Ok(()) } else { Err("decrypts to something else".into()) }
     };
     if made.tries(MechanismType::RSA_PKCS) {
         let outcome = decrypts(made, &Mechanism::RsaPkcs, RsaPadding::Pkcs1v15);

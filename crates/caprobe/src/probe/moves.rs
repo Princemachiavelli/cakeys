@@ -186,7 +186,7 @@ fn import_private(
     kind: PlaintextKind,
     transport: Transport,
 ) -> Result<()> {
-    let cap = Capability::Import { key_type: key.key_type.to_owned(), on: key.on.clone() };
+    let cap = Capability::Import { key_type: key.key_type.into(), on: key.on.clone() };
     let read = || -> Result<_> {
         let spki = id::spki_canonical(&spki_of_pkcs8(key.der)?)?;
         Ok((spki, private_from_pkcs8(key.der, key.kt, key.object.curve.as_deref())?))
@@ -287,8 +287,7 @@ fn public_half(
     spki: &[u8],
 ) -> Result<()> {
     let public = ObjectCfg { class: Class::PublicKey, ..key.object.clone() };
-    let cap =
-        Capability::Create { class: "CKO_PUBLIC_KEY".into(), key: Some((key.key_type.to_owned(), key.on.clone())) };
+    let cap = Capability::Create { class: "CKO_PUBLIC_KEY".into(), key: Some((key.key_type.into(), key.on.clone())) };
     let mut t = vec![Attribute::Token(true), Attribute::Verify(true)];
     t.extend(locator_attrs(on.locator)?);
     t.extend(public_object_attrs(&public, spki)?);
@@ -339,7 +338,7 @@ fn export_host(
     h: ObjectHandle,
     same: &dyn Fn(&[u8]) -> bool,
 ) {
-    let cap = Capability::Export { way: Way::Host, key_type: key_type.to_owned(), on: on.clone() };
+    let cap = Capability::Export { way: Way::Host, key_type: key_type.into(), on: on.clone() };
     let mut refusals = Vec::new();
     for (mech, name) in host_wraps() {
         match made.tok.extract(h, &mech) {
@@ -498,8 +497,8 @@ fn export_sealed(
     template: &dyn Fn(&str) -> Result<Vec<Attribute>>,
     same: &dyn Fn(&Made, ObjectHandle) -> Result<()>,
 ) {
-    let export = Capability::Export { way: Way::Sealed, key_type: key_type.to_owned(), on: on.clone() };
-    let unwrap = Capability::Unwrap { key_type: key_type.to_owned(), on: on.clone() };
+    let export = Capability::Export { way: Way::Sealed, key_type: key_type.into(), on: on.clone() };
+    let unwrap = Capability::Unwrap { key_type: key_type.into(), on: on.clone() };
     let Some(transport) = transport else {
         made.undetermined.push(format!("no {export} or {unwrap} row: no RSA transport key"));
         return;

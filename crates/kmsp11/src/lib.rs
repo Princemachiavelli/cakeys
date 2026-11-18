@@ -15,6 +15,7 @@ use cakeys_core::config::{AttrValue, Binding, Locator, ModuleInfo, ObjectCfg, Sp
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::{BoundKey, Generation, Provider};
+use cakeys_profile::{KeyKind, On};
 use cryptoki::mechanism::MechanismType;
 use cryptoki::object::{Attribute, AttributeType};
 
@@ -363,14 +364,15 @@ impl Provider for Kmsp11 {
             .filter(|r| r.probe)
             .map(|r| {
                 let label = format!("{LABEL_PREFIX}{}", r.algorithm.to_lowercase().replace('_', "-"));
+                let kind = KeyKind::from(r.kind.as_str());
                 BoundKey {
                     template: r.template(&label),
                     keygen: r.keygen,
                     mechanisms: r.mechanisms.iter().map(|m| mechanism(m)).collect(),
                     name: r.algorithm.clone(),
                     label,
-                    kind: r.kind.clone(),
-                    on: r.on.clone(),
+                    on: On::parse(&kind, &r.on),
+                    kind,
                 }
             })
             .collect()

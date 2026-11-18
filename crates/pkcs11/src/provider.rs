@@ -24,9 +24,9 @@ pub struct BoundKey {
     /// `CKA_LABEL`, part of `template`.
     pub label: String,
     /// The PKCS#11 key type it makes: `CKK_EC`, `CKK_RSA`, `CKK_AES`, ...
-    pub kind: String,
-    /// Its curve name, or its size in bits.
-    pub on: String,
+    pub kind: cakeys_profile::KeyKind,
+    /// Its curve name, or its size (bits for RSA, as [`cakeys_profile::On::parse`] reads it).
+    pub on: cakeys_profile::On,
     /// The generation mechanism (parameterless).
     pub keygen: MechanismType,
     /// The whole template: the private or secret half's; no public template is passed.

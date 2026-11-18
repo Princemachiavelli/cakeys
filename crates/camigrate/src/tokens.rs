@@ -14,7 +14,7 @@ use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::resolution::{self, Resolved, moduleless_info};
 use cakeys_pkcs11::{Registry, Token};
-use cakeys_profile::{Capability, Move, On, PlaintextKind, Profile, Way};
+use cakeys_profile::{Capability, KeyKind, Move, On, PlaintextKind, Profile, Way};
 use std::collections::BTreeSet;
 use std::str::FromStr;
 
@@ -321,11 +321,11 @@ fn probed_of(module: &Profile, stack: &Resolved, usable: &BTreeSet<String>) -> P
 
 /// What a probed row covers: its class (a key's, by its key type, unless named) narrowed to its
 /// key type and curve, RSA size or length; and whether a layer subtracts that key type.
-fn covers_of(class: Option<&str>, key: Option<(&String, &On)>, subtracted: &BTreeSet<&str>) -> Option<(Accept, bool)> {
+fn covers_of(class: Option<&str>, key: Option<(&KeyKind, &On)>, subtracted: &BTreeSet<&str>) -> Option<(Accept, bool)> {
     let Some((key_type, on)) = key else {
         return Some((Accept::class(ObjectClass::from_str(class?).ok()?), false));
     };
-    let kt = KeyType::from_str(key_type).ok()?;
+    let kt = KeyType::from_str(key_type.name()).ok()?;
     let class = match class {
         Some(c) => ObjectClass::from_str(c).ok()?,
         None if matches!(kt, KeyType::Ec | KeyType::EcEdwards | KeyType::Rsa) => ObjectClass::PrivateKey,
@@ -339,7 +339,7 @@ fn covers_of(class: Option<&str>, key: Option<(&String, &On)>, subtracted: &BTre
         On::Bits(bits) => Accept { modulus_bits: Some((*bits, *bits)), ..base },
         On::Bytes(n) => Accept { value_len: Some(u64::from(*n)), ..base },
     };
-    Some((covers, subtracted.contains(key_type.as_str())))
+    Some((covers, subtracted.contains(key_type.name())))
 }
 
 /// One migration accept row, as the planner's [`Accept`], or [`None`] when a layer subtracts

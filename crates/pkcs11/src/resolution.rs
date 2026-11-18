@@ -7,7 +7,7 @@
 //! manufacturer alone, flagged low-evidence (kryoptic reports 0.0 \[run\]).
 
 use crate::binding;
-use cakeys_core::config::{ModuleInfo, Observation, TokenCfg, TokenInfo};
+use cakeys_core::config::{ModuleInfo, Observation, Said, TokenCfg, TokenInfo};
 use cakeys_profile::{Answer, Capability, Mode, Profile, Row, Set};
 use std::collections::BTreeSet;
 
@@ -44,10 +44,10 @@ impl Resolved {
             .capabilities
             .iter()
             .filter_map(|(k, a)| {
-                let answer = match a.answer.as_str() {
-                    "yes" => Answer::Yes,
-                    "no" => Answer::No,
-                    _ => return None,
+                let answer = match a.answer {
+                    Said::Yes => Answer::Yes,
+                    Said::No => Answer::No,
+                    Said::Other(_) => return None,
                 };
                 Some((Capability::parse(k).ok()?, Row { answer, evidence: a.evidence.clone(), via: a.via.clone() }))
             })

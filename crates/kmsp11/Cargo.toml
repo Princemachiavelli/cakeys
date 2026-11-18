@@ -14,5 +14,6 @@ workspace = true
 [dependencies]
 cakeys-core.workspace = true
 cakeys-pkcs11.workspace = true
+cakeys-profile.workspace = true
 cryptoki.workspace = true
 serde_json.workspace = true

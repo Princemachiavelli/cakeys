@@ -66,7 +66,7 @@ impl Token {
     /// no profile answers for it. Any other refusal is the module's answer, reported as given,
     /// and no second generation is tried on the token.
     fn retries_by_name(&self, key_type: &str, curve: &str) -> bool {
-        let row = Capability::Generate { key_type: key_type.to_owned(), on: On::Item(curve.to_owned()) };
+        let row = Capability::Generate { key_type: key_type.into(), on: On::Item(curve.to_owned()) };
         self.profiles
             .module
             .as_ref()

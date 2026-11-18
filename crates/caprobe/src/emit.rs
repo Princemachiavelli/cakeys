@@ -197,8 +197,8 @@ pub(crate) fn profile(p: &Profile) -> String {
     }
     for r in &p.restrict {
         let _ = writeln!(s, "\n[[restrict]]");
-        let _ = writeln!(s, "operation = \"{}\"", toml_str(&r.operation));
-        let _ = writeln!(s, "key-type = \"{}\"", toml_str(&r.key_type));
+        let _ = writeln!(s, "operation = \"{}\"", toml_str(r.operation.name()));
+        let _ = writeln!(s, "key-type = \"{}\"", toml_str(r.key_type.name()));
         if let Some(b) = r.min_bits {
             let _ = writeln!(s, "min-bits = {b}");
         }
@@ -226,6 +226,40 @@ pub(crate) fn profile(p: &Profile) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every committed module profile is what the emitter writes for it, byte for byte, the
+    /// hardware ones included, which no test re-probes; the hand-written layers and hardware
+    /// profile, with their comments, read back the same once emitted. A change to how rows are
+    /// typed, ordered or written that would rewrite one fails here, not at the next
+    /// regeneration.
+    #[test]
+    fn every_committed_profile_is_what_the_emitter_writes() {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../profiles"));
+        for dir in ["layers", "hardware"] {
+            for entry in std::fs::read_dir(root.join(dir)).unwrap() {
+                let path = entry.unwrap().path();
+                let read = Profile::from_toml(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                assert_eq!(Profile::from_toml(&super::profile(&read)).unwrap(), read, "{}", path.display());
+            }
+        }
+        let mut files = Vec::new();
+        for family in std::fs::read_dir(root.join("modules")).unwrap() {
+            for entry in std::fs::read_dir(family.unwrap().path()).unwrap() {
+                files.push(entry.unwrap().path());
+            }
+        }
+        files.sort();
+        assert!(files.len() >= 9, "{files:?}");
+        let differ: Vec<String> = files
+            .iter()
+            .filter(|path| {
+                let text = std::fs::read_to_string(path).unwrap();
+                super::profile(&Profile::from_toml(&text).unwrap()) != text
+            })
+            .map(|path| path.display().to_string())
+            .collect();
+        assert_eq!(differ, [] as [String; 0]);
+    }
 
     #[test]
     fn emitting_and_parsing_round_trips_module_supplied_text() {

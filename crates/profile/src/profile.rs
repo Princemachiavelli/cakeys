@@ -4,6 +4,7 @@
 //! regenerates them and fills the `advertise` lists.
 
 use crate::capability::{Answer, Capability, DECRYPT_OAEP, Move, On, Row, Rows, UNWRAP_TEMPLATE, WRAP_OAEP};
+use crate::names::{KeyKind, Operation};
 use std::collections::BTreeMap;
 
 /// Whether the profile is a module's observed set or a layer's subtraction.
@@ -110,11 +111,12 @@ pub struct GenerateRow {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Restrict {
-    /// What the restriction applies to; only "generate" exists today.
-    pub operation: String,
+    /// What the restriction applies to; only "generate" exists today, and an operation of a
+    /// newer cakeys restricts nothing here.
+    pub operation: Operation,
     /// The key type it restricts (`key-type`).
     #[serde(rename = "key-type")]
-    pub key_type: String,
+    pub key_type: KeyKind,
     /// The smallest size allowed, in bits (`min-bits`).
     #[serde(default, rename = "min-bits")]
     pub min_bits: Option<u32>,
@@ -362,7 +364,7 @@ impl Profile {
     #[must_use]
     pub fn generation_key_types(&self) -> std::collections::BTreeSet<&str> {
         let rows = self.capabilities.keys().filter_map(|c| match c {
-            Capability::Generate { key_type, .. } => Some(key_type.as_str()),
+            Capability::Generate { key_type, .. } => Some(key_type.name()),
             _ => None,
         });
         rows.chain(self.reported.keys().map(String::as_str)).collect()
@@ -404,7 +406,7 @@ impl Profile {
     /// "by-name"` for the curves only their name generates), the reported range apart. `notes`
     /// gives a row its evidence, by the curve or by `"<key type> at <bits>"`.
     pub fn set_generation(&mut self, key_type: &str, row: &GenerateRow) {
-        let generate = |on| Capability::Generate { key_type: key_type.to_owned(), on };
+        let generate = |on| Capability::Generate { key_type: KeyKind::from(key_type), on };
         for i in &row.can {
             let via = row.by_name.contains(i).then(|| "by-name".to_owned());
             self.set(generate(On::Item(i.clone())), Answer::Yes, None, via);

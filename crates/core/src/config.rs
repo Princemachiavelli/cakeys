@@ -1340,12 +1340,51 @@ pub struct Observation {
     pub extra: BTreeMap<String, toml::Value>,
 }
 
+/// What an [`Answered`] says (ISSUES.md Q28): yes or no; any other word, a newer cakeys's, is
+/// kept as read and answers nothing. Written as the word.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(from = "String", into = "String")]
+pub enum Said {
+    /// `yes`.
+    Yes,
+    /// `no`.
+    No,
+    /// Another word, as read.
+    Other(String),
+}
+
+impl From<String> for Said {
+    fn from(word: String) -> Self {
+        match word.as_str() {
+            "yes" => Said::Yes,
+            "no" => Said::No,
+            _ => Said::Other(word),
+        }
+    }
+}
+
+impl From<&str> for Said {
+    fn from(word: &str) -> Self {
+        Said::from(word.to_owned())
+    }
+}
+
+impl From<Said> for String {
+    fn from(said: Said) -> Self {
+        match said {
+            Said::Yes => "yes".into(),
+            Said::No => "no".into(),
+            Said::Other(word) => word,
+        }
+    }
+}
+
 /// One answer a token gave (an [`Observation`]'s `capabilities`): `answer` is `yes` or `no`,
 /// `evidence` what showed it, `via` how it succeeded. A newer cakeys' fields are kept.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Answered {
     /// `yes` or `no`; anything else answers nothing.
-    pub answer: String,
+    pub answer: Said,
     /// What showed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
@@ -1361,7 +1400,7 @@ impl Answered {
     /// A plain yes.
     #[must_use]
     pub fn yes() -> Answered {
-        Answered { answer: "yes".into(), evidence: None, via: None, extra: BTreeMap::new() }
+        Answered { answer: Said::Yes, evidence: None, via: None, extra: BTreeMap::new() }
     }
 }
 

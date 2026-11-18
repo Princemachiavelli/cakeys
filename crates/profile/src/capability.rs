@@ -4,6 +4,7 @@
 //! operation that tests it; the emitter, the diff and the stack algebra do not change. An
 //! absent row is unknown: never probed, never claimed.
 
+use crate::names::{KeyKind, Proof};
 use std::collections::BTreeMap;
 
 /// The OAEP hashes the wrap probe tries: what `wrap.rsa-oaep.*` rows can say.
@@ -33,9 +34,10 @@ pub enum On {
 impl On {
     /// What a row's last part names for `key_type`: a size in RSA's bits or a secret key's
     /// bytes, else a curve.
-    fn parse(key_type: &str, on: &str) -> On {
+    #[must_use]
+    pub fn parse(key_type: &KeyKind, on: &str) -> On {
         match on.parse() {
-            Ok(n) if key_type == "CKK_RSA" => On::Bits(n),
+            Ok(n) if matches!(key_type, KeyKind::Rsa) => On::Bits(n),
             Ok(n) => On::Bytes(n),
             Err(_) => On::Item(on.to_owned()),
         }
@@ -113,7 +115,7 @@ pub enum Capability {
     /// `CKA_EC_PARAMS` naming the curve (PKCS#11 3.0's `PrintableString` form), never by OID.
     Generate {
         /// The key type, by `CKK_*` name.
-        key_type: String,
+        key_type: KeyKind,
         /// The curve, parameter set or size.
         on: On,
     },
@@ -139,9 +141,9 @@ pub enum Capability {
     /// `prove.pop-decrypt.CKK_RSA.2048`.
     Prove {
         /// The proof, by its `binding` name.
-        binding: String,
+        binding: Proof,
         /// The key type, by `CKK_*` name.
-        key_type: String,
+        key_type: KeyKind,
         /// The curve or size.
         on: On,
     },
@@ -150,7 +152,7 @@ pub enum Capability {
     /// `create-object`, or the provider's own (`tpm2-ptool`, `piv-import`).
     Import {
         /// The key type, by `CKK_*` name.
-        key_type: String,
+        key_type: KeyKind,
         /// The curve or size.
         on: On,
     },
@@ -160,7 +162,7 @@ pub enum Capability {
         /// The class, by `CKO_*` name.
         class: String,
         /// A public key's key type and curve or size.
-        key: Option<(String, On)>,
+        key: Option<(KeyKind, On)>,
     },
     /// An extractable key of `key_type` leaving `way`, and arriving as the same material:
     /// `export.host.CKK_EC.secp256r1`, `export.sealed.CKK_RSA.2048`. `via` is the mechanism.
@@ -168,7 +170,7 @@ pub enum Capability {
         /// To the host, or toward another token.
         way: Way,
         /// The key type, by `CKK_*` name.
-        key_type: String,
+        key_type: KeyKind,
         /// The curve or size.
         on: On,
     },
@@ -176,7 +178,7 @@ pub enum Capability {
     /// `unwrap.CKK_AES.32`. `via` is the mechanism.
     Unwrap {
         /// The key type, by `CKK_*` name.
-        key_type: String,
+        key_type: KeyKind,
         /// The curve or size.
         on: On,
     },
@@ -185,9 +187,11 @@ pub enum Capability {
 }
 
 /// `<CKK_*>.<curve or size>`, as `generate.*` and the rows like it end.
-fn key_and_on(rest: &str) -> Option<(String, On)> {
+fn key_and_on(rest: &str) -> Option<(KeyKind, On)> {
     let (kt, on) = rest.split_once('.').filter(|(k, o)| k.starts_with("CKK_") && !o.is_empty())?;
-    Some((kt.to_owned(), On::parse(kt, on)))
+    let kt = KeyKind::from(kt);
+    let on = On::parse(&kt, on);
+    Some((kt, on))
 }
 
 impl Capability {
@@ -248,7 +252,7 @@ impl Capability {
             ("prove", rest) => {
                 let (binding, rest) = rest.split_once('.').filter(|(b, _)| PROOFS.contains(b)).ok_or_else(bad)?;
                 let (key_type, on) = key_and_on(rest).ok_or_else(bad)?;
-                Capability::Prove { binding: binding.to_owned(), key_type, on }
+                Capability::Prove { binding: Proof::from(binding), key_type, on }
             }
             _ => return Err(bad()),
         })

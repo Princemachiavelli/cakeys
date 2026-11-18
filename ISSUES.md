@@ -197,9 +197,16 @@ Still open. Each says why it was not done with the rest.
   generated profiles survive `nix fmt` byte for byte. **Accepted 2026-11-17:** the layout test
   and treefmt's check catch drift.
 - **Q28. String-typed fields kept for forward compatibility**: `Capability`'s `binding` and
-  `key_type`, `Answered::answer`, `Restrict::operation`, `BoundKey::kind`/`on`. **Decided
-  2026-11-17, not built:** enums (reusing `Binding` and `KeyType` where they fit) with an
-  `Other(String)` variant, so a newer profile still loads and round-trips.
+  `key_type`, `Answered::answer`, `Restrict::operation`, `BoundKey::kind`/`on`. **Done
+  2026-11-17:** `cakeys_profile::names` has `KeyKind` (Montgomery included, which
+  `core::KeyType` must not take), `Proof` and `Operation`, each with an `Other(String)` kept as
+  read and compared, hashed and ordered by its name, so rows keep their order; `Capability`'s
+  key types and proof, `Restrict`'s operation and key type and `BoundKey`'s kind use them, and
+  `BoundKey::on` is an `On`. The lock's `Answered::answer` is core's `Said` (yes, no, or a word
+  kept as read that answers nothing), written as the word. The profile crate stays independent
+  of core: `the_profiles_know_every_key_type_and_proof_cakeys_has` (in pkcs11) holds the names
+  together. `every_committed_profile_is_what_the_emitter_writes` now pins every committed
+  module profile byte for byte, the hardware ones no test re-probes included.
 - **Q20. Key type dispatch by trial parsing** (`spki_canonical`, `spki_of_pkcs8`,
   `ecdh_challenge`, `verify_with`). Dispatching on the OID changes which parser sees a
   malformed key, and with it some error texts and the `public_key` fuzz target's fixed point.

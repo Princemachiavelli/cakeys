@@ -5,11 +5,12 @@
 
 use crate::baseline::Baseline;
 use crate::capability::{Capability, On};
+use crate::names::{KeyKind, Operation};
 use crate::profile::Profile;
 
 /// The capability of generating `key_type` on `on`.
 fn generate(key_type: &str, on: On) -> Capability {
-    Capability::Generate { key_type: key_type.to_owned(), on }
+    Capability::Generate { key_type: KeyKind::from(key_type), on }
 }
 
 /// A query's answer: yes (with who said so), no (with who and why), or unknown (why it
@@ -158,7 +159,7 @@ impl<'a> Effective<'a> {
                 return Verdict::no(&l.profile, l.evidence(&generate(key_type, On::Item(item.to_owned())), item));
             }
             for r in &l.restrict {
-                if r.operation == "generate"
+                if matches!(r.operation, Operation::Generate)
                     && r.key_type == key_type
                     && let Some(bits) = bits
                     && (r.max_bits.is_some_and(|max| bits > max) || r.min_bits.is_some_and(|min| bits < min))

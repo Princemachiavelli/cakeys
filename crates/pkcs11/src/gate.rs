@@ -217,8 +217,23 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates
 mod tests {
     use super::*;
     use crate::provider::{Attributes, Provider, Template};
-    use cakeys_core::config::{Config, ModuleInfo};
+    use cakeys_core::config::{Binding, Config, ModuleInfo};
+    use cakeys_profile::{KeyKind, Proof};
     use std::sync::{Arc, Mutex};
+
+    /// The profile crate names key types and proofs on its own (ISSUES.md Q28): every key type
+    /// keys.toml takes and every proof a binding gives is one of its known names, never a name
+    /// it keeps as read, so a row the gate asks about is the row a probe wrote.
+    #[test]
+    fn the_profiles_know_every_key_type_and_proof_cakeys_has() {
+        for kt in cakeys_core::types::KeyType::ALL {
+            assert!(!matches!(KeyKind::from(kt.name()), KeyKind::Other(_)), "{kt}");
+        }
+        let proofs = [Binding::PopSign, Binding::PopSignPin, Binding::PopEcdh, Binding::PopDecrypt, Binding::PopUnwrap];
+        for b in proofs {
+            assert!(!matches!(Proof::from(b.name()), Proof::Other(_)), "{}", b.name());
+        }
+    }
 
     /// A provider that records the generation templates it is asked about, refusing them when
     /// it says so.

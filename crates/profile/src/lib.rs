@@ -17,11 +17,13 @@ pub mod baseline;
 pub mod capability;
 pub mod effective;
 pub mod embedded;
+pub mod names;
 pub mod profile;
 
 pub use baseline::Baseline;
 pub use capability::{Answer, Capability, Move, On, Row, Way};
 pub use effective::{Effective, Verdict};
+pub use names::{KeyKind, Operation, Proof};
 pub use profile::{AcceptRow, GenerateRow, Manual, MatchInfo, Migration, Mode, PlaintextKind, Profile, Reported};
 
 use std::path::Path;
