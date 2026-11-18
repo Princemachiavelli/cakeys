@@ -237,7 +237,11 @@ and Q14 (one opener for cakeys and camigrate).
   in the probe's code.
 - **Q26. The probe's `Made`** (12 fields) and `Draft`'s `Deref` to `Profile`; `rsa_ops` signs a
   fixed 256-byte block whatever the key's size.
-- **Q13. `resolution::resolve` is 127 lines.**
+- **Q13. `resolution::resolve` is 127 lines.** **Done 2026-11-17:** it is the steps by name —
+  the binding layer, `add_forwarders`, `add_configured`, `hidden_module`, `module_profile` —
+  and the module profile's notes are one method each (`nearest_version`, `hardware_unknown`,
+  `weak_match`, `other_hardware`), each dropping the hardware rows where it says so. The
+  notes' texts are unchanged.
 - **Q14. CLI setup is still duplicated** between `cakeys` and `camigrate`: the `Run` struct, the
   load-and-guard prologue, `(cfg, modules, registry)` at each `open_token`. A shared opener
   collides with the `&mut self.lock` both hold across those calls.

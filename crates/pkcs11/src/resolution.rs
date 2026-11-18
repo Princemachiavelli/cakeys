@@ -134,60 +134,85 @@ pub fn resolve(
 ) -> Result<Resolved, String> {
     let set = Set::active()?;
     let mut out = Resolved::default();
-
-    // 1. The binding layer, always: the one between cakeys and every module.
+    // The binding layer, always: the one between cakeys and every module.
     out.layers.push(binding::layer()?);
+    out.add_forwarders(set, module);
+    out.add_configured(set, cfg)?;
+    out.hidden = hidden_module(cfg, &out.layers);
+    out.module = out.module_profile(set, cfg, module, token, provider)?;
+    Ok(out)
+}
 
-    // 2. A forwarder the module itself names (p11-kit's client: C_GetInfo describes it).
-    for p in set.all() {
-        if p.mode == Mode::Delta
-            && p.profile != binding::NAME
-            && p.r#match.manufacturer.as_deref() == Some(module.manufacturer.as_str())
-            && !out.layers.iter().any(|l| l.profile == p.profile)
-        {
-            out.notes.push(format!(
-                "{} is in the path: {} (detected from C_GetInfo)",
-                p.profile,
-                p.r#match.manufacturer.as_deref().unwrap_or_default()
-            ));
-            out.layers.push(p.clone());
+impl Resolved {
+    /// A forwarder the module itself names (p11-kit's client: `C_GetInfo` describes it).
+    fn add_forwarders(&mut self, set: &Set, module: &ModuleInfo) {
+        for p in set.all() {
+            if p.mode == Mode::Delta
+                && p.profile != binding::NAME
+                && p.r#match.manufacturer.as_deref() == Some(module.manufacturer.as_str())
+                && !self.layers.iter().any(|l| l.profile == p.profile)
+            {
+                self.notes.push(format!(
+                    "{} is in the path: {} (detected from C_GetInfo)",
+                    p.profile,
+                    p.r#match.manufacturer.as_deref().unwrap_or_default()
+                ));
+                self.layers.push(p.clone());
+            }
         }
     }
 
-    // 3. The config's extras, by name or family (the hardware under the module, a forwarder
-    //    the module does not name). Explicit means applied, even when nothing detected it.
-    for name in &cfg.profiles {
-        if out.layers.iter().any(|l| l.profile == name.as_str() || l.family() == name.as_str()) {
-            continue;
+    /// The config's extras, by name or family (the hardware under the module, a forwarder the
+    /// module does not name). Explicit means applied, even when nothing detected it.
+    fn add_configured(&mut self, set: &Set, cfg: &TokenCfg) -> Result<(), String> {
+        for name in &cfg.profiles {
+            if self.layers.iter().any(|l| l.profile == name.as_str() || l.family() == name.as_str()) {
+                continue;
+            }
+            self.layers.push(set.find(name)?.clone());
         }
-        let p = set.find(name)?;
-        out.layers.push(p.clone());
+        Ok(())
     }
 
-    // A passthrough hides the module behind it: only a provider named past the passthrough's own
-    // family (an observation records the detected one) says what that module is.
-    let named = |l: &Profile| cfg.named_provider().is_some_and(|p| p != l.family() && p != l.profile);
-    if let Some(l) = out.layers.iter().find(|l| l.requires_provider && !named(l)) {
-        let why = l.notes.get("requires-provider").map_or("it hides the module behind it", String::as_str);
-        out.hidden = Some(format!("{}: {why}", l.profile));
+    /// The module profile: of the configured provider's family, else the selected provider's
+    /// family. A profile is observed on a module and the hardware under it (D9/D10), so it is
+    /// chosen by the most match keys: the expressed version first (`C_GetInfo`; a module hiding
+    /// it as 0.0 records none), then the token's model and firmware. Anything short of all of
+    /// them is noted, and the rows the hardware decides are dropped where it is not known to be
+    /// the observed one. A `moduleProfile` naming one profile of the family takes that one alone.
+    fn module_profile(
+        &mut self,
+        set: &Set,
+        cfg: &TokenCfg,
+        module: &ModuleInfo,
+        token: Option<&TokenInfo>,
+        provider: &str,
+    ) -> Result<Option<Profile>, String> {
+        let family = cfg.named_provider().unwrap_or(provider);
+        let candidates = module_candidates(set, family, cfg.module_profile.as_deref())?;
+        let Some((chosen, tied, unversioned)) = choose(&candidates, &self.layers, module, token) else {
+            return Ok(None);
+        };
+        let mut p = chosen.clone();
+        if unversioned {
+            self.nearest_version(&mut p, family, &candidates, module);
+        }
+        if tied.len() > 1 && token.is_none() {
+            self.hardware_unknown(&mut p, &tied);
+        }
+        let fit = Fit::of(&p, module, token);
+        self.weak_match(&p, &fit, unversioned, module, token);
+        if fit.model == Some(false) || fit.firmware == Some(false) {
+            self.other_hardware(&mut p, token);
+        }
+        Ok(Some(p))
     }
 
-    // 4. The module profile: of the configured provider's family, else
-    //    the selected provider's family. A profile is observed on a module and the hardware
-    //    under it (D9/D10), so it is chosen by the most match keys: the expressed version
-    //    first (C_GetInfo; a module hiding it as 0.0 records none), then the token's model and
-    //    firmware. Anything short of all of them is flagged in the notes.
-    //    A `moduleProfile` naming one profile of the family takes that one alone.
-    let family = cfg.named_provider().unwrap_or(provider);
-    let candidates = module_candidates(set, family, cfg.module_profile.as_deref())?;
-    let fit = |p: &Profile| Fit::of(p, module, token);
-    let Some((chosen, tied, unversioned)) = choose(&candidates, &out.layers, module, token) else { return Ok(out) };
-    let mut p = chosen.clone();
-    if unversioned {
-        // A module version no profile of the family records (an update, typically): the
-        // nearest profile's module rows stand, its hardware rows answer unknown. Never an
-        // error: a missing profile must not stop the token from opening (P1).
-        out.notes.push(format!(
+    /// A module version no profile of the family records (an update, typically): the nearest
+    /// profile's module rows stand, its hardware rows answer unknown. Never an error: a missing
+    /// profile must not stop the token from opening (P1).
+    fn nearest_version(&mut self, p: &mut Profile, family: &str, candidates: &[&Profile], module: &ModuleInfo) {
+        self.notes.push(format!(
             "no module profile for '{family}' ({}) records module version '{}': using the nearest, {}, \
              without its generate, wrap, unwrap and decrypt rows (unknown); profile this module with \
              `caprobe probe` (docs/CAPROBE.md)",
@@ -195,51 +220,64 @@ pub fn resolve(
             module.version,
             p.profile
         ));
-        clear_hardware_rows(&mut p);
+        clear_hardware_rows(p);
     }
-    if tied.len() > 1 && token.is_none() {
-        // Pairs of one module on several kinds of hardware, and no token to tell which: what
-        // the module lists is taken from one of them; what generates, wraps, unwraps and
-        // decrypts depends on the hardware — unknown, as for hardware no pair was observed on.
-        out.notes.push(format!(
+
+    /// Pairs of one module on several kinds of hardware, and no token to tell which: what the
+    /// module lists is taken from one of them; what generates, wraps, unwraps and decrypts
+    /// depends on the hardware — unknown, as for hardware no pair was observed on.
+    fn hardware_unknown(&mut self, p: &mut Profile, tied: &[&Profile]) {
+        self.notes.push(format!(
             "module profiles {} fit equally and the hardware is not known here: using {}'s module \
              rows, its generate, wrap, unwrap and decrypt rows are not used (unknown); name the \
              hardware in tokens.<token>.profiles, or the pair in tokens.<token>.moduleProfile",
             tied.iter().map(|p| p.profile.as_str()).collect::<Vec<_>>().join(", "),
             p.profile
         ));
-        clear_hardware_rows(&mut p);
+        clear_hardware_rows(p);
     }
-    let f = fit(&p);
-    let seen = |x: Option<&String>| x.map_or_else(|| "unrecorded".to_owned(), |x| format!("'{x}'"));
-    match (&p.r#match.module_version, f.firmware) {
-        (Some(_), _) if unversioned => {}
-        (Some(v), _) if f.version == Some(false) => out.notes.push(format!(
-            "module profile {} matched by manufacturer alone: the module reports version '{}' \
-             where the profile records '{v}'",
-            p.profile, module.version
-        )),
-        (None, Some(true)) => out.notes.push(format!(
-            "module profile {} matched by the token's firmware {}: the module reports version \
-             '{}', which says nothing (secondary evidence, D9)",
-            p.profile,
-            seen(p.r#match.firmware.as_ref()),
-            module.version
-        )),
-        (None, _) => out.notes.push(format!(
-            "module profile {} matched by manufacturer alone: the module hides its version and the \
-             token's firmware is {} where the profile records {}",
-            p.profile,
-            seen(token.map(|t| &t.firmware)),
-            seen(p.r#match.firmware.as_ref())
-        )),
-        _ => {}
+
+    /// A module profile matched on less than the module's version: by manufacturer alone, or by
+    /// the token's firmware where the module hides its version. Not where no profile records
+    /// the module's version: [`Self::nearest_version`] said so.
+    fn weak_match(
+        &mut self,
+        p: &Profile,
+        fit: &Fit,
+        unversioned: bool,
+        module: &ModuleInfo,
+        token: Option<&TokenInfo>,
+    ) {
+        match (&p.r#match.module_version, fit.firmware) {
+            (Some(_), _) if unversioned => {}
+            (Some(v), _) if fit.version == Some(false) => self.notes.push(format!(
+                "module profile {} matched by manufacturer alone: the module reports version '{}' \
+                 where the profile records '{v}'",
+                p.profile, module.version
+            )),
+            (None, Some(true)) => self.notes.push(format!(
+                "module profile {} matched by the token's firmware {}: the module reports version \
+                 '{}', which says nothing (secondary evidence, D9)",
+                p.profile,
+                seen(p.r#match.firmware.as_ref()),
+                module.version
+            )),
+            (None, _) => self.notes.push(format!(
+                "module profile {} matched by manufacturer alone: the module hides its version and the \
+                 token's firmware is {} where the profile records {}",
+                p.profile,
+                seen(token.map(|t| &t.firmware)),
+                seen(p.r#match.firmware.as_ref())
+            )),
+            _ => {}
+        }
     }
-    if f.model == Some(false) || f.firmware == Some(false) {
-        // Another kind of hardware under the same module: what the module advertises still
-        // holds, what generates, wraps and unwraps depends on the hardware — unknown, not the
-        // observed hardware's answer.
-        out.notes.push(format!(
+
+    /// Another kind of hardware under the same module: what the module advertises still holds,
+    /// what generates, wraps and unwraps depends on the hardware — unknown, not the observed
+    /// hardware's answer.
+    fn other_hardware(&mut self, p: &mut Profile, token: Option<&TokenInfo>) {
+        self.notes.push(format!(
             "module profile {} was observed on model {} firmware {}, this token is model {} \
              firmware {}: its generate, wrap and unwrap rows are not used (unknown)",
             p.profile,
@@ -248,10 +286,23 @@ pub fn resolve(
             seen(token.map(|t| &t.model)),
             seen(token.map(|t| &t.firmware))
         ));
-        clear_hardware_rows(&mut p);
+        clear_hardware_rows(p);
     }
-    out.module = Some(p);
-    Ok(out)
+}
+
+/// A passthrough hides the module behind it: only a provider named past the passthrough's own
+/// family (an observation records the detected one) says what that module is. The layer's name
+/// and why, for a plan to warn with.
+fn hidden_module(cfg: &TokenCfg, layers: &[Profile]) -> Option<String> {
+    let named = |l: &Profile| cfg.named_provider().is_some_and(|p| p != l.family() && p != l.profile);
+    let l = layers.iter().find(|l| l.requires_provider && !named(l))?;
+    let why = l.notes.get("requires-provider").map_or("it hides the module behind it", String::as_str);
+    Some(format!("{}: {why}", l.profile))
+}
+
+/// A match key as a note quotes it.
+fn seen(x: Option<&String>) -> String {
+    x.map_or_else(|| "unrecorded".to_owned(), |x| format!("'{x}'"))
 }
 
 /// The observed module profiles of `family`, or the one `pinned` names (`moduleProfile`).
