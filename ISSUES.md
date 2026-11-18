@@ -29,7 +29,7 @@ Checks at the start of the review: `cargo clippy --workspace --all-targets -- -D
 | | C2, N3: no name grammar, unescaped shell | Fixed: `check_names`, `escapeShellArg` |
 | | C3, C4, C5: tool settings in the core schema, `provider` overloaded, label-only selection | Fixed: `probe`/`migrate`/`nix` tables, `moduleProfile`, `tokenSerial`, `soCredential*` |
 | | N1: the view exposes the unverified URI | Fixed: `uri` removed |
-| | N2: the library re-implements rules | Mostly fixed: view shrunk, lock version asserted. `type` is still raw keys.toml, so `curve = "P-256"` is not canonicalized. Decided 2026-11-17: `type` comes from the lock when it pins the object, keys.toml's only before the first lock |
+| | N2: the library re-implements rules | Fixed: view shrunk, lock version asserted, and since 2026-11-17 `type` comes from the lock, canonical, once it pins the object (keys.toml's as written before), with no alias table in Nix; `checks.lib` asserts both |
 | | P1: a missing profile is fatal at open | Fixed: nearest profile with a note |
 | | P2: a profile row picks the ECDH protocol | Fixed: sealed is tried, extractable is the fallback |
 | | §4 (a): collapse the `Provider` trait | Done: two repairs, four operations |

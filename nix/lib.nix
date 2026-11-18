@@ -27,7 +27,8 @@ in
 
     The result is plain data, only what evaluation knows without the token:
 
-      type           intrinsic type from keys.toml
+      type           intrinsic type: the lock's canonical one once it pins the object, else
+                     keys.toml's as written
       id.<scheme>    portable material CA-IDs the lock pins (id.rfc7093m4; `pubkeyhash` is an
                      input alias)
       spec / token   the resolved pair
@@ -142,8 +143,10 @@ in
         # before anything is recorded in the lock (the first-use pseudo-FOD flow): `id` is then
         # empty.
         builtins.seq pick {
-          # The object's type, as the lock pins it: its `migrate` table (camigrate's) is no part of it.
-          type = removeAttrs type [ "migrate" ];
+          # The object's type: as the lock pins it, in canonical form (`curve = "secp256r1"`
+          # whatever keys.toml spelled), once it does; before that, keys.toml's, without its
+          # `migrate` table (camigrate's), which is no part of it.
+          type = lk.objects.${obj}.type or (removeAttrs type [ "migrate" ]);
           inherit (pick) spec token;
           # `pubkeyhash` is an input alias of rfc7093m4 (the lock only uses the scheme name).
           id = ids // (if ids ? rfc7093m4 then { pubkeyhash = ids.rfc7093m4; } else { });

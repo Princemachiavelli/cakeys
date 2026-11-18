@@ -176,6 +176,31 @@
         keyType = "CKK_EC";
         curve = "secp256r1";
       };
+    # A curve's alias in keys.toml: the type is the lock's canonical one once the lock pins the
+    # object, keys.toml's as written before (ISSUES.md N2).
+    assert
+      let
+        aliased =
+          lock:
+          (self.lib.mkKeys {
+            inherit lock cakeys;
+            config = p256Alias;
+          }).signing
+            { };
+        p256Alias = builtins.toFile "p256-alias.toml" ''
+          [tokens.softhsm]
+          tokenLabel = "kmtest"
+          [objects.signing]
+          class = "CKO_PRIVATE_KEY"
+          keyType = "CKK_EC"
+          curve = "P-256"
+          [specs.signing-soft]
+          object = "signing"
+          tokens.softhsm = { locator = { CKA_LABEL = "signing" }, origin = "create" }
+        '';
+      in
+      (aliased ./crates/cli/tests/fixtures/keys.lock).type.curve == "secp256r1"
+      && (aliased null).type.curve == "P-256";
     assert signing.spec == "signing-soft" && signing.token == "softhsm";
     assert signing.requiredSystemFeatures == [ "token-softhsm" ];
     # Only what evaluation knows without the token: no URI or observation read from the lock

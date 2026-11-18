@@ -115,7 +115,8 @@ signing = keys.signing { token = "softhsm"; };      # { } when the object has on
 shared  = keys.shared { token = "softhsm"; spec = "shared-sign"; };  # several specs on one token
 ```
 
-- The result carries only what evaluation knows without the token (review N1, N2): `type`,
+- The result carries only what evaluation knows without the token (review N1, N2): `type` (the
+  lock's canonical one once it pins the object, keys.toml's as written before),
   `id.<scheme>` (`pubkeyhash` is an input alias), the resolved `spec`/`token`,
   `requiredSystemFeatures` (`<featurePrefix><token>` unless keys.toml names one) and `check`. No
   URI: the one a consumer uses is the one `check` prints once it has verified the key, never the
