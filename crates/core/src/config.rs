@@ -1874,6 +1874,8 @@ pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
 pub fn write_whole(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
+    // Through a symlink to the file it names, which the rename would otherwise replace.
+    let path = &resolved(path);
     let dir = lock_dir(path);
     // Beside the target (the same filesystem, for the rename), removed if this run fails before
     // the rename.
@@ -1895,6 +1897,16 @@ fn lock_dir(path: &Path) -> &Path {
     path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."))
 }
 
+/// The file `path` names, however it is named (a symlink, `..`): a file not yet written resolves
+/// through its directory, and one that does not resolve stays as given. Writing, checking and
+/// guarding a lock all go to this file, so a symlinked lock is written through, never replaced
+/// by a copy, and two names for it share one guard (review D2, config.rs F7).
+fn resolved(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path)
+        .or_else(|_| std::fs::canonicalize(lock_dir(path)).map(|d| d.join(path.file_name().unwrap_or_default())))
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// The advisory lock held around the lock file's read-modify-write (finding M3). A run that may
 /// update the lock takes it before `load_lock` and drops it after `save_lock`, so two concurrent
 /// runs on different tokens cannot lose each other's realisations. Readers never take it: the
@@ -1912,7 +1924,8 @@ pub struct UpdateGuard(
 ///
 /// `Io` if the sidecar file cannot be opened or the advisory lock cannot be taken.
 pub fn lock_for_update(lock_path: &Path, waiting: impl FnOnce(&Path)) -> Result<UpdateGuard> {
-    let mut sidecar = lock_path.as_os_str().to_os_string();
+    // The lock file's own sidecar, however the run names it ([`resolved`]).
+    let mut sidecar = resolved(lock_path).into_os_string();
     sidecar.push(".lck");
     let file = std::fs::File::options()
         .write(true)
@@ -1975,6 +1988,8 @@ fn unwritable(lock_path: &Path, sandboxed: bool) -> Option<String> {
              it as outside, for throwaway keys only)"
         ));
     }
+    // The file a write would go to: a symlink's target, in the target's directory.
+    let lock_path = &resolved(lock_path);
     if lock_path.exists() && !writable(lock_path) {
         return Some(format!("{} is not writable", lock_path.display()));
     }
@@ -2323,6 +2338,21 @@ mod tests {
         assert!(!file.exists(), "an invalid lock was written");
         save_lock(&file, &attestable_lock()).unwrap();
         load_lock(&file).unwrap();
+    }
+
+    /// A symlinked lock (a NixOS layout: the lock in a checked-out repository) is written through
+    /// to its target, never replaced by a copy the repository never sees (config.rs F7).
+    #[test]
+    fn a_symlinked_lock_is_written_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let (real, link) = (dir.path().join("repo.lock"), dir.path().join("keys.lock"));
+        save_lock(&real, &Lock { version: LOCK_VERSION, ..Default::default() }).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        save_lock(&link, &attestable_lock()).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link was replaced");
+        let text = |p: &Path| std::fs::read_to_string(p).unwrap();
+        assert_eq!(text(&real), toml::to_string_pretty(&attestable_lock()).unwrap(), "the target was not written");
+        assert_eq!(unwritable(&link, false), None);
     }
 
     /// Object, spec and token names have one grammar, checked at load (17): a reference splits

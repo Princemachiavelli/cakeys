@@ -17,6 +17,9 @@ writing a wrapper from the doc would handle the wrong code. Fix the number; cons
 ("the realisation moved", CAKEYS.md) is the right code for a filesystem refusal at all (see
 Design). [read]
 
+**Fixed (2026-11-18):** the doc says 14. Test: `documented_exit_codes_are_the_ones_returned`
+checks every `` `Variant` (NN) `` in the workspace's sources against `KmError::exit_code`.
+
 ### F2. `--module` overrides are not validated — practice
 
 `crates/cli-common/src/lib.rs:83-88`.

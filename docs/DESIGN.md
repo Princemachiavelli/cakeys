@@ -518,7 +518,9 @@ Annotated, with the reasons behind each table: [`LOCK.md`](LOCK.md).
   updaters on different tokens queue instead of losing each other's realisations (one that waits
   says so first: `note: waiting for <lock>.lck`). Readers never
   take it: the rename makes each read a consistent snapshot. A leftover `.lck` is harmless
-  (advisory, released when its holder exits) — `update_lock_waits_for_the_sidecar_lock`.
+  (advisory, released when its holder exits) — `update_lock_waits_for_the_sidecar_lock`. The guard,
+  the write and the writability check go to the file the lock path resolves to: a symlinked lock
+  is written through, and its two names share one guard.
 - **`gc`** collects entries the config no longer names (finding D3): every
   `[realisations.<spec>.<token>]` whose spec dropped the token and every `[objects.<name>]` gone
   from `keys.toml`. It prints the stale table names and removes exactly those with `--apply`; live

@@ -263,6 +263,46 @@ fn update_lock_waits_for_the_sidecar_lock() {
     drop(held);
     assert_eq!(updater.wait().unwrap().code(), Some(0));
     reader.join().unwrap();
+
+    // The sidecar is the lock file's, however the run names it (review D2): an updater through a
+    // symlink waits on the same `<lock>.lck`.
+    let link = e.dir.join("linked.lock");
+    std::os::unix::fs::symlink(e.dir.join("keys.lock"), &link).unwrap();
+    let held =
+        std::fs::File::options().write(true).create(true).truncate(false).open(e.dir.join("keys.lock.lck")).unwrap();
+    held.lock().unwrap();
+    let mut linked = tool(env!("CARGO_BIN_EXE_cakeys"))
+        .arg("--config")
+        .arg(e.dir.join("keys.toml"))
+        .arg("--lock")
+        .arg(&link)
+        .args(r)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut said = String::new();
+    let lines = std::io::BufRead::lines(std::io::BufReader::new(linked.stderr.take().unwrap()));
+    let (tell, heard) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in lines.map_while(Result::ok) {
+            let _ = tell.send(line);
+        }
+    });
+    while let Ok(line) = heard.recv_timeout(std::time::Duration::from_secs(60)) {
+        said += &line;
+        if line == waiting {
+            break;
+        }
+    }
+    let finished = linked.try_wait().unwrap();
+    drop(held);
+    let _ = linked.wait();
+    reader.join().unwrap();
+    assert!(
+        said.contains(&waiting) && finished.is_none(),
+        "through a symlink, the updater took another sidecar: {said}"
+    );
+    assert!(!e.dir.join("linked.lock.lck").exists(), "a sidecar beside the symlink");
     assert_eq!(e.code(&["verify", "--spec", "signing-soft", "--token", "ref"]), 0);
 }
 

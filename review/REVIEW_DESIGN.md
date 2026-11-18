@@ -64,6 +64,15 @@ every verb can use. Tests: `what_loads_is_usable` and the ISSUES.md "Fixed since
 - Exit 14 is overloaded for an unwritable lock, and `cli_common::read_lock`'s doc says 18.
   ([cli-common lib.rs](REVIEW_crates_cli-common_src_lib.rs.md))
 
+**Fixed (2026-11-18):** `save_lock` validates before the rename, and `reconcile` judges a
+retargeted spec against its new object (dc3f102). The guard, the write and the writability
+check go to the file a lock path resolves to, so a symlinked lock is one guarded file, written
+through. A run that waits for the guard says so first. `read_lock`'s doc says 14, and a test
+holds every documented exit code to `KmError::exit_code`. The guard still spans a whole
+`create`: that span is what keeps the run's read-modify-write whole. **Left for a decision:**
+an unwritable lock exits 14, which CAKEYS.md's table now lists; a code of its own would change a
+scripted interface.
+
 ## D3. Build features change run-time behaviour, unchecked
 
 The `CK_RV` value now drives control flow (the probe's busy-session handling, `rv_is`), not only

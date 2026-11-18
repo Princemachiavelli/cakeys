@@ -189,7 +189,7 @@ impl<'a> Opener<'a> {
 ///
 /// # Errors
 ///
-/// `PreconditionFailed` (18) for a lock a writing verb cannot write; whatever
+/// `PreconditionFailed` (14) for a lock a writing verb cannot write; whatever
 /// [`lock_for_update`] or [`load_lock`] refuses.
 pub fn read_lock(path: &Path, writes: bool, instead: &str) -> anyhow::Result<(Lock, Option<UpdateGuard>)> {
     if writes && let Some(why) = lock_unwritable(path) {

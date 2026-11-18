@@ -92,6 +92,10 @@ checked-out repository (a common NixOS deployment layout) is silently replaced b
 the repository's file never changes. Fix: resolve a symlink before choosing the temp
 directory and rename target, or refuse a symlinked lock with a message. [read]
 
+**Fixed (2026-11-18):** `write_whole`, `unwritable` and the `.lck` guard all go to the file
+the path resolves to, so a symlinked lock is written through and its two names share one
+guard. Tests: `a_symlinked_lock_is_written_through`, `update_lock_waits_for_the_sidecar_lock`.
+
 ### F8. Two unit tests share fixed directories under `/tmp` — nit
 
 `crates/core/src/config.rs:2368-2370`, `:2425-2427`. `cakeys-load-config-test` and
