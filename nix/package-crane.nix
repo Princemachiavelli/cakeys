@@ -10,6 +10,7 @@
   stdenv,
   cargo-mutants,
   cargo-nextest,
+  quint,
   # The toolchain at Cargo.toml's rust-version (pkgs.nix), for `msrv`.
   msrvToolchain,
   # See nix/package-common.nix.
@@ -159,7 +160,11 @@ let
         doInstallCargoArtifacts = false;
         nativeBuildInputs =
           base.nativeBuildInputs
-          ++ [ cargo-mutants ]
+          # core's own tests include tests/lock_mbt.rs, which runs quint.
+          ++ [
+            cargo-mutants
+            quint
+          ]
           ++ lib.optionals tokens (common.args.nativeCheckInputs ++ [ cargo-nextest ]);
       }
       // lib.optionalAttrs tokens {

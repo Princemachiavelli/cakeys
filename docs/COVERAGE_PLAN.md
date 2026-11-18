@@ -299,6 +299,26 @@ What no test can catch, and why:
   the code is compiled out. cargo-mutants reports compiled-out mutants as missed, not
   unviable: these 4 appear in every run.
 
+## The lock model (2026-11-18)
+
+cargo-mutants over `crates/core/src/reconcile.rs` with one test at a time
+(`cargo mutants --package cakeys-core --file crates/core/src/reconcile.rs -- --test <test>`), 113
+viable mutants of 122:
+
+- `tests/lock_mbt.rs` alone (the Quint model replayed, DEVELOPMENT.md, "The lock model and the
+  Rust"): 9 missed, each behaviour the model leaves out — notes and warnings (`Notes::say`; the
+  unlisted-pairs note in `compare`; the unrecorded-attestation note in `no_downgrade`;
+  `warn_observed` twice; `warn_module`), the import precondition in `reconcile` (no import in
+  the model), the certificate exception of `record`'s second-name rule (no certificate), and
+  `record_object`'s deprecated-scheme guard (no deprecated scheme exists). A tenth, the
+  `commitment_label` helper, was caught once the driver took the label from it as `ops` does.
+- `tests/properties.rs` alone: 60 missed. Every mutant it catches, `lock_mbt.rs` catches too.
+
+So for `reconcile.rs` the model-based test subsumes the three lock-rule properties of
+`properties.rs` (`recorded_then_compared_and_idempotent`, `a_write_fills_gaps_and_never_overrides`,
+`material_links_only_through_a_shared_scheme`); they stay as the lock rules' only check that
+needs no `quint`. Widening the model (OPEN.md, "Design models") is what closes the 9.
+
 ## Not counted
 
 - Test code inside `#[cfg(test)]` modules shows in the report (the `panic!` arms of

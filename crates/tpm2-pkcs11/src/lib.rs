@@ -80,11 +80,12 @@ impl Provider for Tpm2Pkcs11 {
 }
 
 /// Re-encode exactly the malformed form `04 <len> <len bytes>` with `len >= 0x80` as proper DER
-/// (`04 81 <len> ...`). Anything else is passed through untouched for the strict parser.
+/// (`04 81 <len> ...`). Anything else is passed through untouched for the strict parser — also
+/// `04 81 80 <128 bytes>`, which has that form but is already DER of 128 bytes.
 #[must_use]
 pub fn fix_ec_point(raw: &[u8]) -> Cow<'_, [u8]> {
     match raw {
-        [0x04, len, rest @ ..] if *len >= 0x80 && rest.len() == *len as usize => {
+        [0x04, len, rest @ ..] if *len >= 0x80 && rest.len() == *len as usize && !is_der_octets(raw) => {
             let mut v = Vec::with_capacity(raw.len() + 1);
             v.extend_from_slice(&[0x04, 0x81, *len]);
             v.extend_from_slice(rest);
@@ -94,9 +95,63 @@ pub fn fix_ec_point(raw: &[u8]) -> Cow<'_, [u8]> {
     }
 }
 
+/// `raw` is an OCTET STRING of 128 to 255 bytes in DER: `04 81 <len> <len bytes>`.
+fn is_der_octets(raw: &[u8]) -> bool {
+    matches!(raw, [0x04, 0x81, len, rest @ ..] if *len >= 0x80 && rest.len() == usize::from(*len))
+}
+
+/// The property the fuzz target (`fuzz/fuzz_targets/p521_point.rs`) and the bolero harness
+/// below check on any bytes.
+pub mod fuzzing {
+    use super::fix_ec_point;
+    use std::borrow::Cow;
+
+    /// `fix_ec_point` on `raw`: it repairs exactly the malformed `04 <len> <len bytes>` with
+    /// `len >= 0x80` that is not already DER, what it repairs is DER of the same point, what it
+    /// leaves alone is the input, and a repaired value is left alone.
+    ///
+    /// # Panics
+    ///
+    /// When any of that does not hold.
+    pub fn ec_point_fix(raw: &[u8]) {
+        let short =
+            |raw: &[u8]| matches!(raw, [0x04, len, rest @ ..] if *len >= 0x80 && rest.len() == usize::from(*len));
+        let der = matches!(raw, [0x04, 0x81, len, rest @ ..] if *len >= 0x80 && rest.len() == usize::from(*len));
+        let malformed = short(raw) && !der;
+        let fixed = fix_ec_point(raw);
+        assert_eq!(matches!(fixed, Cow::Owned(_)), malformed, "{raw:02x?}");
+        match fixed {
+            Cow::Borrowed(same) => assert_eq!(same, raw),
+            Cow::Owned(fixed) => {
+                // `04 81 <len> <len bytes>`: the long form of the length the input wrote short.
+                assert_eq!(&fixed[..2], &[0x04, 0x81]);
+                assert_eq!(usize::from(fixed[2]), fixed.len() - 3);
+                assert_eq!(&fixed[3..], &raw[2..]);
+                assert!(matches!(fix_ec_point(&fixed), Cow::Borrowed(_)), "a repaired point is repaired again");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `fuzzing::ec_point_fix` on any bytes, and on `04 <len> <len bytes>` built on purpose
+    /// (random bytes rarely have that shape, the one it repairs when `len >= 0x80`): bolero, so
+    /// the same harness is a Kani proof (docs/OPEN.md, "Kani, through bolero").
+    #[test]
+    #[cfg_attr(kani, kani::proof)]
+    fn ec_point_fix_holds_on_any_bytes() {
+        bolero::check!().with_type::<(bool, u8, Vec<u8>)>().for_each(|(shaped, len, bytes)| {
+            if *shaped {
+                let body = bytes.iter().copied().chain(std::iter::repeat(0)).take(usize::from(*len));
+                fuzzing::ec_point_fix(&[0x04, *len].into_iter().chain(body).collect::<Vec<_>>());
+            } else {
+                fuzzing::ec_point_fix(bytes);
+            }
+        });
+    }
 
     #[test]
     fn fixes_only_the_short_form_overflow() {
@@ -112,5 +167,9 @@ mod tests {
         assert!(matches!(fix_ec_point(&p256), Cow::Borrowed(_)));
         assert!(matches!(fix_ec_point(&point), Cow::Borrowed(_)));
         assert!(matches!(fix_ec_point(&bad[..bad.len() - 1]), Cow::Borrowed(_)));
+        // DER of 128 bytes reads as the short form too (`81`, then 129 bytes): found by
+        // `ec_point_fix_holds_on_any_bytes`, which the fuzz target had never reached.
+        let der128 = [&[0x04, 0x81, 0x80][..], &[0x04; 128]].concat();
+        assert!(matches!(fix_ec_point(&der128), Cow::Borrowed(_)));
     }
 }

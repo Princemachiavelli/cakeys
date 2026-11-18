@@ -42,3 +42,7 @@ tempfile.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# tests/lock_mbt.rs: the lock rules replayed against their Quint model (spec/lock.qnt).
+quint-connect.workspace = true
+anyhow.workspace = true
+bolero.workspace = true

@@ -16,7 +16,24 @@ pub fn decode(s: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::decode;
+    use super::{decode, encode};
+
+    /// `decode` takes exactly hex of whole bytes, either case, and `encode` gives the lower-case
+    /// form back: bolero, so the same harness is a Kani proof (docs/OPEN.md, "Kani, through
+    /// bolero").
+    #[test]
+    #[cfg_attr(kani, kani::proof)]
+    fn hex_round_trips() {
+        bolero::check!().with_type::<(Vec<u8>, String)>().for_each(|(bytes, text)| {
+            assert_eq!(decode(&encode(bytes)).as_deref(), Some(&bytes[..]));
+            assert_eq!(decode(&encode(bytes).to_ascii_uppercase()).as_deref(), Some(&bytes[..]));
+            let hex = text.len() % 2 == 0 && text.bytes().all(|b| b.is_ascii_hexdigit());
+            match decode(text) {
+                Some(v) => assert!(hex && encode(&v) == text.to_ascii_lowercase(), "{text:?}"),
+                None => assert!(!hex, "{text:?}"),
+            }
+        });
+    }
 
     #[test]
     fn only_whole_hex_bytes_decode() {

@@ -708,6 +708,40 @@ mod tests {
     use super::*;
     use crate::config::AttrValue;
 
+    /// The fields `attest_encoding` framed after `tag`, read back from the left; `None` unless
+    /// `v` is exactly `tag` and `n` length-prefixed fields.
+    fn unframe(v: &[u8], tag: &[u8], n: usize) -> Option<Vec<Vec<u8>>> {
+        let mut rest = v.strip_prefix(tag)?;
+        let mut fields = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (len, after) = rest.split_first_chunk::<4>()?;
+            let len = usize::try_from(u32::from_le_bytes(*len)).ok()?;
+            let (field, after) = after.split_at_checked(len)?;
+            fields.push(field.to_vec());
+            rest = after;
+        }
+        rest.is_empty().then_some(fields)
+    }
+
+    /// The attestation encoding before its hash determines its fields: they read back from
+    /// the left, so two attestations hash the same input only when every field is the same
+    /// (`attestation_ids_are_injective` in tests/properties.rs checks the IDs themselves).
+    /// Bolero, so the same harness is a Kani proof (docs/OPEN.md, "Kani, through bolero").
+    #[test]
+    #[cfg_attr(kani, kani::proof)]
+    fn attest_encoding_reads_back() {
+        bolero::check!().with_type::<(Vec<u8>, Vec<u8>, Vec<u8>)>().for_each(|(a, b, c)| {
+            let tag = b"cakeys/tpm-certify/v1\0";
+            assert_eq!(unframe(&attest_encoding(tag, &[a, b]), tag, 2), Some(vec![a.clone(), b.clone()]));
+            let tag = b"cakeys/piv-attestation/v1\0";
+            let fields = [&a[..], b, c, b"", a, c];
+            assert_eq!(
+                unframe(&attest_encoding(tag, &fields), tag, 6),
+                Some(fields.iter().map(|f| f.to_vec()).collect())
+            );
+        });
+    }
+
     /// A key's type comes from its OIDs (ISSUES.md Q20): a P-256 key whose point is off the
     /// curve is refused by P-256's parser, by name, where it used to fall through to RSA's; an
     /// algorithm cakeys does not read is named by its OID; every curve's key reads as itself.

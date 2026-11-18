@@ -276,9 +276,25 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **Unit tests in `cakeys-pkcs11`** (4.5k lines, 16 unit tests): it is tested almost only
   through the reference suite (`crates/cli/tests/reference/`, which every reference binary
   includes whole).
-- **Design models** (DEVELOPMENT.md): Quint or TLA+ for the lock rules, Alloy for the lock's
-  structure and S16, Tamarin for proof of possession and attestation, Kani for small pure
-  functions.
+- **Design models** (DEVELOPMENT.md, "Verification beyond tests"): Quint for the lock rules is
+  begun (2026-11-18: `crates/core/spec/lock.qnt`, `checks.quint`, `crates/core/tests/lock_mbt.rs`).
+  Left for the model: imports and provenance, certificates and public-key objects (pairs, the
+  certificate exception of the second-name rule), transport keys (`publicKey`), locators and
+  `publicOnly`, recorded commitment labels, deprecated schemes; and an inductive invariant, so
+  that Apalache proves the properties for every reachable lock, not only within two steps.
+  Then Alloy for the lock's structure and S16, Tamarin for proof of possession and attestation.
+- **Kani, through bolero**: one harness body run as a plain `cargo test` (random inputs), under
+  libFuzzer (`cargo bolero test`) and as a Kani proof (`--engine kani`). It fits only code
+  without FFI or deep parser stacks. The harnesses exist (2026-11-18, DEVELOPMENT.md "Testing")
+  and run under `cargo test`: `hex_round_trips`, `attest_encoding_reads_back` (the attestation
+  IDs' length-prefixed encoding before its hash) and `ec_point_fix_holds_on_any_bytes`
+  (`tpm2_pkcs11::fix_ec_point`, whose property the `p521_point` fuzz target now shares). Left:
+  packaging Kani (not in nixpkgs: kani-compiler builds against one nightly's `rustc-dev`, and
+  its setup downloads a toolchain and CBMC), then `checks.kani` with each harness's unwind
+  bound, and a libFuzzer run of the harnesses (cargo-bolero is in nixpkgs). `Commit::label`'s
+  injectivity stays a proptest: Kani handles `format!` badly, and a proof would need a label
+  parser written only for it. The other fuzz targets stay cargo-fuzz: tss-esapi's
+  unmarshalling is C, and the DER, X.509 and TOML parsers are too deep for a bounded proof.
 - **More reference tokens**: an OP-TEE PKCS#11 TA in QEMU; a Nitrokey.
 - **Examples on hardware and in the cloud** (2026-11-17): `examples/` runs on software tokens
   and swtpm only. The YubiKey pairs (`every-object`'s imports, `secure-boot`'s attested PK and

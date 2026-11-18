@@ -98,6 +98,9 @@ on. These rules have no exceptions; if a task cannot be done within them, stop a
 |---|---|---|
 | unit | `cargo test --workspace` | digests (pinned), curves and OIDs, SPKI round-trips, registry, P-521 fix-up, hex parsing, proof-of-possession host math (both ECDH MAC sides), the signature verifiers, the deprecation register and scheme names, AES strength order, the observed policy vectors, the attestation scheme definitions and lock invariants, the lock rules (first use, what a write may override, attestation changes, provenance warnings), the PIV chain verifier (fixture chain + Yubico's own roots and intermediates) |
 | `crates/core/tests/properties.rs` | `cargo test --workspace` | proptest: recording then comparing passes and a second write changes nothing; after a recorded realisation, another material is 10 and a weaker binding or replaced object 14 in both modes, drift fails only a compare, and a successful write never overwrites a locked ID; material links only through a shared scheme (disjoint 14, other material 10, else gaps filled); the attestation and commitment-label encodings are injective; `sri`/`is_sri` agree; key and certificate parsers and the loaders never panic. Mutation-checked: disabling the binding-downgrade or the shared-scheme rule fails it |
+| `crates/core/tests/lock_mbt.rs` | package build; `cargo test` with `quint` on `PATH` (`nix develop` has it) | model-based (quint-connect): `quint run` simulates `crates/core/spec/lock.qnt`, 500 traces of 12 runs from a fixed seed, and each trace is replayed against `reconcile`. After every run the lock, projected onto the model's, and the verdict (the exit code, or whether the lock changed) must be the model's, and the lock must load. Mutation-checked: the model without its binding-downgrade rule fails it; alone it leaves 9 of `reconcile.rs`'s 113 viable mutants, all outside the model (COVERAGE_PLAN.md, "The lock model"). "The lock model and the Rust" below |
+| bolero harnesses | `cargo test --workspace` | properties written once for three engines (OPEN.md, "Kani, through bolero"); under `cargo test`, one second of random inputs each (`BOLERO_RANDOM_SEED` replays a failure): `hex::decode` takes exactly hex of whole bytes and `encode` round-trips (`hex_round_trips`); the attestation encoding reads back to its fields (`attest_encoding_reads_back`); tpm2-pkcs11's `fix_ec_point` repairs exactly the malformed short form, which the fuzz target `p521_point` checks too (`ec_point_fix_holds_on_any_bytes`; it found that DER of 128 bytes was "repaired") |
+| `checks.quint` | sandbox | `lock.qnt` typechecks; a fixed-seed simulation (2000 traces of 12 runs) holds every invariant and reaches every rule that can decide a run; Apalache proves the invariants for every run of up to two steps (about two minutes) |
 | `checks.fuzz`, `apps.fuzz` | package build / host | cargo-fuzz targets (`fuzz/`: the key and certificate parsers, the lock and config loaders, the bundle, and tpm2-pkcs11's store rows, `TPMS_ATTEST` and P-521 point fix-up, the PIV attestation chain with its dates, and a profile's emit and parse round trip) on the stable rustc (`RUSTC_BOOTSTRAP=1`, no sanitizer, debug assertions): the check runs 100 000 inputs per target from a fixed seed and the fixtures; `nix run .#fuzz -- <target> [libFuzzer flags]` runs one as long as wanted |
 | `tests/softhsm.rs`, `tests/kryoptic.rs` | package build | one shared suite (`tests/reference/`) against each software reference: lifecycle, every type and scheme against independent oracles (hand-written DER encoder, openssl-hashed fixtures, RustCrypto `hmac`/`cmac`/`aes`/`aes-kw`/`des`); the same verdicts on both, with each token's facts in its `Reference` descriptor (`tests/common/`) |
 | `tests/tpm2.rs` | package build, `nix/tpm2-test-env.sh` | swtpm + tpm2-abrmd + tpm2-pkcs11; the native `tpm-certify` attestation (AK provisioning and validation, reads that never provision, a lost attestation as a downgrade, cross-checks), one material attested on two tokens with an attestation each, and the travel of attested material to SoftHSM through the shared portable scheme |
@@ -135,7 +138,36 @@ module and binding behaviour (ykcs11's delete, tpm2-pkcs11's P-521 point, crypto
 constants, p11-kit's dropped mechanisms), and very few from the pure logic. Only tests against
 real modules catch the second kind; a proof of the Rust code would target the kind with the
 fewest bugs. So the order is: the reference tokens and cross-reference tests (done), proptest
-and cargo-fuzz (done), then models of the design — Quint or TLA+ for the lock rules, Alloy for
-the lock's structure and its merge rule, Tamarin for proof of possession and attestation — and
-Kani harnesses for small pure functions ([OPEN.md](OPEN.md)). Verus or Aeneas only for a
-carved-out kernel, after a model says what it must satisfy.
+and cargo-fuzz (done), then models of the design — Quint for the lock rules (begun, below),
+Alloy for the lock's structure and its merge rule, Tamarin for proof of possession and
+attestation — and Kani harnesses for small pure functions ([OPEN.md](OPEN.md)). Verus or Aeneas
+only for a carved-out kernel, after a model says what it must satisfy.
+
+### The lock model and the Rust
+
+`crates/core/spec/lock.qnt` states what `reconcile`, `compare` and `record` do to an abstract
+lock (objects with their type, IDs and label; realisations with their mode, binding,
+attestation, schemes, policy, immutables and spec digest), one `realise` step per cakeys run,
+and the properties the rules exist for: a failed run or a compare writes nothing; no run
+overwrites a locked ID or type; an object's IDs are all one material; one object per material
+in a class; a realisation's schemes are among its object's IDs; a successful run never lowers a
+recorded mode, binding, attestation, scheme set or immutable; what a write recorded compares
+clean and re-records unchanged. Its header lists what it leaves out (imports and provenance,
+observations, pairs, locators, labels other than the default).
+
+Two different claims, kept apart:
+
+- **The model satisfies its properties.** `checks.quint` simulates it and has Apalache prove
+  them for every run of up to two steps from the empty lock. A proof of the model, bounded.
+- **The Rust behaves like the model.** Tested, not proven: `lock_mbt.rs` replays simulated
+  traces through the real `reconcile` and compares state and verdict after every step. What
+  says the test is worth something: each rule is reached (`checks.quint` fails when a
+  `decidedBy` witness is never seen); a rule taken out of the model fails it; and cargo-mutants
+  over `reconcile.rs` with this test as the only test (COVERAGE_PLAN.md, "The lock model"),
+  where each surviving mutant is either behaviour the model leaves out or a change to no
+  observable behaviour.
+
+The projection (`State::from_driver`) is the trusted part: it maps the lock as serialised onto
+the model's shape, field for field, and refuses anything the model does not name rather than
+dropping it. A change to the lock rules changes the model in the same commit, or
+`lock_mbt.rs` fails.

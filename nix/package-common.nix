@@ -20,6 +20,7 @@
   openssl,
   pkcs11-provider,
   pkg-config,
+  quint,
   # The tpm2 feature (cakeys-tpm2-pkcs11) is Linux only: tss-esapi-sys ships no prebuilt bindings
   # for aarch64-darwin, and tpm2-pkcs11 and its tools are not packaged there, so there is no
   # module for it to attest. Darwin builds the tools with ykcs11 alone; `withTpm2 = false` builds
@@ -157,6 +158,8 @@ in
       p11-kit
       opensc
       openssl
+      # crates/core/tests/lock_mbt.rs simulates crates/core/spec/lock.qnt with it.
+      quint
     ]
     ++ lib.optionals tpm2 [
       swtpm

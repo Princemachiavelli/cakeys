@@ -231,6 +231,8 @@
                 pkg-config
                 local.mezura
                 local.pkcs11-check
+                # crates/core/spec/lock.qnt, and the model-based test that runs it.
+                quint
               ]
               # The TPM stack the tpm2 tests and probes run on (nix/tpm2-test-env.sh).
               ++ lib.optionals isLinux [

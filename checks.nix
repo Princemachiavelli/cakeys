@@ -60,6 +60,48 @@
         bash ${./upstream/softhsm}/repro-834.sh ${softhsm-unwrap-value-len-tested}/lib/softhsm/libsofthsm2.so \
           ${pkgs.pkcs11-provider}/lib/ossl-modules | tee $out
       '';
+  # The lock rules' Quint model, crates/core/spec/lock.qnt (docs/DEVELOPMENT.md, "Verification
+  # beyond tests"): it typechecks; a fixed-seed simulation holds every invariant and reaches
+  # every rule that decides a run (each `decidedBy` witness at least once); and Apalache proves
+  # the invariants for every run of up to two steps. That the Rust agrees with the model is
+  # crates/core/tests/lock_mbt.rs, among the crane build's tests.
+  quint =
+    let
+      spec = ./crates/core/spec/lock.qnt;
+      witnesses = [
+        "Type"
+        "Spec"
+        "Mode"
+        "Binding"
+        "Anchor"
+        "AttestationId"
+        "AttestationLost"
+        "SchemesLost"
+        "Replaced"
+        "Object"
+        "Unlinked"
+        "Mismatch"
+        "FirstUse"
+        "Unrealised"
+        "SecondName"
+        "Compared"
+        "Recorded"
+        "Unchanged"
+      ];
+    in
+    pkgs.runCommand "cakeys-quint" { nativeBuildInputs = [ pkgs.quint ]; } ''
+      export HOME=$TMPDIR
+      quint typecheck ${spec}
+      quint run ${spec} --seed 1 --max-samples 2000 --max-steps 12 --invariant invariants \
+        --witnesses ${pkgs.lib.concatMapStringsSep " " (w: "decidedBy${w}") witnesses} | tee run.txt
+      if grep ' witnessed in 0 trace' run.txt; then
+        echo "a rule no simulated run reaches" >&2
+        exit 1
+      fi
+      quint verify ${spec} --max-steps 2 --invariant invariants | tee verify.txt
+      mkdir $out
+      cp run.txt verify.txt $out/
+    '';
   # The capability-profile query (docs/CAPROBE.md, `caprobe supports`): static answers from the
   # profiles embedded in the binary, no token needed. yes -> 0, no -> 15, unknown -> 16.
   profiles = pkgs.runCommand "cakeys-profiles" { } ''
