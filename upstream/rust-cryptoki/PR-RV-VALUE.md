@@ -8,17 +8,25 @@ Status: **draft, not filed.** Upstream main has only `From<CK_RV> for Rv` (check
   the `rv-value` feature. Without it (plain cargo) a failure is named from its variant, which
   `names_agree` holds equal, and carries no value. When a release has the conversion, drop the
   feature and the patch line. p11-fault keeps `p11-names`' table: its plans name values.
-- Not covered: the eleven PKCS#11 3.x return values cryptoki-sys defines but `RvError` has no
-  variant for (`CKR_TOKEN_NOT_INITIALIZED`, `CKR_PENDING`, ...) stay `UnknownErrorCode`, so
-  `name()` is `None` and cakeys prints them as `CKR 0x…`. Adding variants breaks exhaustive
-  matches downstream (`RvError` is not `#[non_exhaustive]`): a follow-up for a breaking release.
 - The patch: `0003-Add-RvError-to-CK_RV-and-its-name.patch`, against 0.12.1's
-  `cryptoki/src/error/rv.rs`, paths relative to the crate as 0002's are. It turns upstream's one list (the `From<CK_RV> for Rv` match) into
-  a `macro_rules!` table, `Variant => CKR_CONSTANT`, that generates that match, its inverse and
-  `name` (`stringify!` of the constant): one list, so the three cannot disagree, and the file
-  grows by 51 lines rather than two more 100-arm matches. The generated inverse match is
-  exhaustive, so a new variant fails to compile until it has a row. `round_trip` passes against
-  0.12.1 (the crate's own unit tests, run without its dev-dependencies).
+  `cryptoki/src/error/rv.rs` and `rv_error.rs`, paths relative to the crate as 0002's are. It
+  turns upstream's one list (the `From<CK_RV> for Rv` match) into a `macro_rules!` table,
+  `Variant => CKR_CONSTANT`, that generates that match, its inverse and `name` (`stringify!` of
+  the constant): one list, so the three cannot disagree, and `rv.rs` grows by about 50 lines
+  rather than two more 100-arm matches. The generated inverse match is exhaustive, so a new
+  variant fails to compile until it has a row. `round_trip` passes against 0.12.1 (the crate's
+  own unit tests, run without its dev-dependencies).
+- It also adds the ten return values cryptoki-sys 0.5 defines but `RvError` had no variant for,
+  all PKCS#11 3.x: `CKR_AEAD_DECRYPT_FAILED` (0x42) and `CKR_TOKEN_RESOURCE_EXCEEDED` through
+  `CKR_PARAMETER_SET_NOT_SUPPORTED` (0x201–0x209). Until now they arrived as `UnknownErrorCode`.
+  Their doc and `Display` text is the constant's name, as for `NewPinMode` and `NextOtp`,
+  except `OperationCancelFailed`, which quotes PKCS#11 3.1 §5.1.6; 3.1 describes none of the
+  others in §5.1 (v3.2's text not checked).
+- A new variant of a public enum without `#[non_exhaustive]` is a breaking change in principle:
+  a `match` naming every variant and no `_` stops compiling. In practice `RvError` has some
+  ninety variants and its users match a few and fall through, so we expect no one to notice;
+  the PR says so, and a 0.x minor release may break anyway. The one quiet change: a caller
+  testing `UnknownErrorCode(0x208)` now gets `TokenNotInitialized`.
 - Why not derive the name from the variant (`GeneralError` -> `CKR_GENERAL_ERROR`, what
   `derived_name` in cakeys does without the patch): it holds for every variant today
   (`names_agree`), but it gives an allocated `String`, holds only while every
@@ -44,6 +52,18 @@ serves all three. It adds:
   `From<CK_RV> for Rv`: `VendorDefined` and `UnknownErrorCode` give back the value they carry.
 - `RvError::name(&self) -> Option<&'static str>`: the `CKR_*` constant's name as the
   specification spells it, `None` for a vendor-defined or unknown value.
+- Variants for the ten return values `cryptoki-sys` already defines but `RvError` lacked, all
+  from PKCS#11 3.x: `AeadDecryptFailed` (`CKR_AEAD_DECRYPT_FAILED`), `TokenResourceExceeded`,
+  `OperationCancelFailed`, `KeyExhausted`, `Pending`, `SessionAsyncNotSupported`,
+  `SeedRandomRequired`, `OperationNotValidated`, `TokenNotInitialized` and
+  `ParameterSetNotSupported` (`CKR_TOKEN_RESOURCE_EXCEEDED` through
+  `CKR_PARAMETER_SET_NOT_SUPPORTED`). They used to come back as `UnknownErrorCode`. Their
+  `Display` is the constant's name, as for `NewPinMode` and `NextOtp`, except
+  `OperationCancelFailed`, which quotes the specification; it describes none of the others.
+
+Adding variants to `RvError`, which is not `#[non_exhaustive]`, is breaking for a `match` that
+lists every variant without a wildcard; with some ninety variants we expect none does. A caller
+that tested for `UnknownErrorCode` with one of these ten values now gets the named variant.
 
 The test `round_trip` converts every value below `0x1000` and two vendor-defined ones to `Rv`
 and back, and checks that exactly the named variants have a name.

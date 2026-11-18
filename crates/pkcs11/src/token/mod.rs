@@ -1103,8 +1103,11 @@ mod tests {
     fn values_without_a_variant_go_by_their_value() {
         let vendor = CkError::Pkcs11(RvError::VendorDefined(0x8000_0001), Function::Initialize);
         assert_eq!(rv_name(&vendor), "CKR 0x80000001");
-        // CKR_TOKEN_NOT_INITIALIZED (PKCS#11 3.2): cryptoki 0.12 has no variant for it.
-        assert_eq!(rv_value_name(0x208), "CKR 0x208");
+        // A value no constant has.
+        assert_eq!(rv_value_name(0x20f), "CKR 0x20f");
+        // CKR_TOKEN_NOT_INITIALIZED (PKCS#11 3.2): a variant only the patch adds.
+        let expected = if cfg!(feature = "rv-value") { "CKR_TOKEN_NOT_INITIALIZED" } else { "CKR 0x208" };
+        assert_eq!(rv_value_name(0x208), expected);
         assert_eq!(rv_value_name(0x30), "CKR_DEVICE_ERROR");
         assert_eq!(rv_value_name(0), "CKR_OK");
     }
