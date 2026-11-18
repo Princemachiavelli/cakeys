@@ -128,12 +128,15 @@ Still open.
 
 - **B8. The PIV attestation chain is verified without a validity-period check.**
   `chain_to_anchor` (`crates/ykcs11/src/attest.rs:210`) checks signatures, the name links and
-  `basicConstraints` with path length, never `notBefore`/`notAfter`. **Decided 2026-11-17, not
-  built:** `check` holds every link (slot, device f9, pooled intermediates, pinned root) to its
+  `basicConstraints` with path length, never `notBefore`/`notAfter`. **Done 2026-11-17:**
+  `check` holds every link (slot, device f9, pooled intermediates, pinned root) to its
   validity period against the system clock, never `SOURCE_DATE_EPOCH` (stdenv sets it to 1980);
-  `--at <RFC 3339 time>` judges the chain as of that time, and `--ignore-validity` skips the
-  dates with a note. `lock` and camigrate stay clock-free. The pinned roots and Yubico's
-  intermediates run to 2052 and 9999, so real chains should rarely trip it.
+  `--at <YYYY-MM-DDTHH:MM:SSZ>` judges the chain as of that time, and `--ignore-validity` skips
+  the dates with a note (`cakeys_pkcs11::ChainTime`, set on the token `check` opens and passed
+  to the provider in `AttestCtx`). `lock`, `create` and camigrate stay clock-free. The pinned
+  roots and Yubico's intermediates run to 2052 and 9999, so real chains should rarely trip it.
+  Tested on the fixture chain (`check_holds_the_chain_to_its_dates`) and through the CLI on a
+  key without attestation; not run on the YubiKey.
 - **`create` flags** (from B2). `create` now stops with 19 at the first key that exists. A flag
   such as `--only-new`, to skip those and create the rest, is parked in docs/OPEN.md.
   **Done 2026-11-17:** no flag. Every pair whose object the lock pins, named or not, is

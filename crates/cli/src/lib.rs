@@ -121,7 +121,33 @@ enum Cmd {
         /// itself (`pin-value=`) into the output, wherever that goes.
         #[arg(long, value_enum)]
         uri_pin: Option<UriPin>,
+        #[command(flatten)]
+        validity: ValidityArgs,
     },
+}
+
+/// When a key's attestation chain must be valid under `check` (ISSUES.md B8): every
+/// certificate of it, from the slot's to the pinned root, within its validity period.
+#[derive(clap::Args)]
+struct ValidityArgs {
+    /// Judge the attestation chain's certificate dates at this time, not now (a host clock that
+    /// is wrong, or the time the lock was recorded): RFC 3339 in UTC, YYYY-MM-DDTHH:MM:SSZ.
+    #[arg(long, value_name = "TIME", conflicts_with = "ignore_validity")]
+    at: Option<String>,
+    /// Do not check the attestation chain's certificate dates; a note says so.
+    #[arg(long)]
+    ignore_validity: bool,
+}
+
+impl ValidityArgs {
+    /// The time the chain is held to: the system clock's, never `SOURCE_DATE_EPOCH`.
+    fn chain_time(&self, notes: &mut Notes) -> cakeys_core::Result<cakeys_pkcs11::ChainTime> {
+        if self.ignore_validity {
+            notes.note(format_args!("check: the attestation chain's certificate dates are not checked"));
+            return Ok(cakeys_pkcs11::ChainTime::Unchecked);
+        }
+        self.at.as_deref().map_or_else(|| Ok(cakeys_pkcs11::ChainTime::now()), cakeys_pkcs11::ChainTime::parse)
+    }
 }
 
 /// What a verb acts on, the same for every verb (docs/CAKEYS.md): an object, narrowed by the
@@ -187,6 +213,14 @@ impl LockWriteArgs {
     fn mode(&self) -> LockWrite {
         if self.no_update_lock { LockWrite::Compare } else { LockWrite::Record }
     }
+}
+
+/// A token `check` opened, holding attestation chains to `when` ([`ValidityArgs`]).
+fn checked_open(tok: cakeys_core::Result<Token>, when: cakeys_pkcs11::ChainTime) -> cakeys_core::Result<Token> {
+    tok.map(|mut tok| {
+        tok.chain_time = when;
+        tok
+    })
 }
 
 /// The command line's definition: its verbs and flags, for the test that every one of them is
@@ -293,7 +327,10 @@ impl Run<'_> {
                 }
                 Ok(())
             }
-            Cmd::Check { at, format, uri_module, uri_pin } => self.check(at, *format, *uri_module, *uri_pin, notes),
+            Cmd::Check { at, format, uri_module, uri_pin, validity } => {
+                let when = validity.chain_time(notes)?;
+                self.check(at, *format, *uri_module, *uri_pin, when, notes)
+            }
         }
     }
 
@@ -305,6 +342,7 @@ impl Run<'_> {
         format: Format,
         uri_module: bool,
         uri_pin: Option<UriPin>,
+        when: cakeys_pkcs11::ChainTime,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
@@ -318,7 +356,7 @@ impl Run<'_> {
                 )
                 .into());
             }
-            return self.check_token(token, notes);
+            return self.check_token(token, when, notes);
         }
         // Refused before any token is opened: the address, and what the output cannot carry.
         let object = reference.map(|r| ops::split_reference(r).0);
@@ -338,7 +376,7 @@ impl Run<'_> {
             None => None,
             Some(how) => Some(pin_ref(&token_name, token_cfg(cfg, &token_name)?, how == UriPin::Value)?),
         };
-        let open = |name: &str, access| open_quiet(cfg, modules, registry, name, access);
+        let open = |name: &str, access| checked_open(open_quiet(cfg, modules, registry, name, access), when);
         let (r, tok) = ops::check_open(cfg, reference, spec, token, open, &self.lock, notes)?;
         let uri = with_query(&r.uri, uri_module.then_some(tok.module.path.as_str()), pin.as_ref());
         if !key_file {
@@ -363,9 +401,9 @@ impl Run<'_> {
     /// `check --token`: every object keys.toml places on the token, in one session. All pass:
     /// the module file the check loaded, on stdout. Any fails: nothing on stdout, each failure on
     /// stderr led by its own exit code, and 20.
-    fn check_token(&self, token: &str, notes: &mut Notes) -> anyhow::Result<()> {
+    fn check_token(&self, token: &str, when: cakeys_pkcs11::ChainTime, notes: &mut Notes) -> anyhow::Result<()> {
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
-        let open = |name: &str, access| open_quiet(cfg, modules, registry, name, access);
+        let open = |name: &str, access| checked_open(open_quiet(cfg, modules, registry, name, access), when);
         let (checked, tok) = ops::check_token(cfg, token, open, &self.lock, notes)?;
         let failed: Vec<(&ops::PairCheck, &KmError)> =
             checked.iter().filter_map(|c| c.result.as_ref().err().map(|e| (c, e))).collect();

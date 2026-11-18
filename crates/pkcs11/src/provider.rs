@@ -556,6 +556,43 @@ pub struct AttestCtx<'a> {
     /// True only under `lock`: the provider may create the device state it attests with (the
     /// TPM Attestation Key), never on a read.
     pub provision: bool,
+    /// When the attestation's certificates must be valid: under `check` only.
+    pub chain_time: ChainTime,
+}
+
+/// When the certificates of an attestation chain must be valid (ISSUES.md B8). `check` holds
+/// every link to its validity period, at the system clock's time unless told another
+/// (`--at`, `--ignore-validity`); the verbs that record (`lock`, `create`, camigrate) read no
+/// clock, so a lock recorded today verifies tomorrow.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ChainTime {
+    /// The dates are not checked.
+    #[default]
+    Unchecked,
+    /// Valid at this time: seconds since the Unix epoch, UTC.
+    At(u64),
+}
+
+impl ChainTime {
+    /// Now, by the system clock. Never `SOURCE_DATE_EPOCH`: Nix's stdenv sets it to 1980 in
+    /// every build, where every chain would be not yet valid.
+    #[must_use]
+    pub fn now() -> Self {
+        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+        ChainTime::At(since.map_or(0, |d| d.as_secs()))
+    }
+
+    /// An RFC 3339 time in UTC, `YYYY-MM-DDTHH:MM:SSZ` (`check --at`).
+    ///
+    /// # Errors
+    ///
+    /// `Validation` (17) for anything else.
+    pub fn parse(s: &str) -> Result<Self> {
+        let t: der::DateTime = s.parse().map_err(|e| {
+            KmError::Validation(format!("--at {s}: not an RFC 3339 time in UTC (YYYY-MM-DDTHH:MM:SSZ): {e}").into())
+        })?;
+        Ok(ChainTime::At(t.unix_duration().as_secs()))
+    }
 }
 
 impl AttestCtx<'_> {

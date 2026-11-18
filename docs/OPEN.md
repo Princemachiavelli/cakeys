@@ -98,11 +98,6 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   when a consumer asks; a versioned JSON form of `check` (the URI, the IDs, the time verified);
   how notes and warnings reach a binding; whether closing the check-then-use gap is worth tying
   programs to the library's session.
-- **Certificate validity in the PIV attestation chain** (2026-11-16, ISSUES.md B8). The chain is
-  verified by signature, issuer name and `basicConstraints`, never by `notBefore`/`notAfter`.
-  **Decided 2026-11-17, not built** (ISSUES.md B8): `check` holds every link to its validity
-  period against the system clock (never `SOURCE_DATE_EPOCH`), with `--at <time>` and
-  `--ignore-validity`; `lock` and camigrate stay clock-free.
 - **Asserting how keys relate**: "A and B are the same key" or "must differ", across locks.
   Options: declarative assertions in keys.toml checked by `validate` and `verify`, or a
   documented Nix pattern over `lib.mkKeys` results (`assert a.id.rfc7093m4 != b.id.rfc7093m4`,

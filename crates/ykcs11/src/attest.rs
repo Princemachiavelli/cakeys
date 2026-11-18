@@ -14,7 +14,7 @@ use cakeys_core::id;
 use cakeys_core::{KmError, Result};
 use x509_cert::certificate::Certificate;
 use x509_cert::der::asn1::ObjectIdentifier;
-use x509_cert::der::{Decode, Encode, Header, Reader, SliceReader};
+use x509_cert::der::{DateTime, Decode, Encode, Header, Reader, SliceReader};
 
 /// The label prefix ykcs11 gives every slot's attestation certificate (suffix: the slot, e.g.
 /// "9a"); the slot f9 device certificate itself has the bare label without a suffix.
@@ -86,6 +86,32 @@ impl Cert {
         self.parsed.tbs_certificate().issuer().to_der().unwrap_or_default()
     }
 
+    /// Whether `at` (seconds since the Unix epoch) falls within the validity period, both ends
+    /// included (RFC 5280 §4.1.2.5). Asked under `check` only (ISSUES.md B8).
+    fn valid_at(&self, at: u64) -> Result<()> {
+        let validity = self.parsed.tbs_certificate().validity();
+        let (from, to) =
+            (validity.not_before.to_unix_duration().as_secs(), validity.not_after.to_unix_duration().as_secs());
+        if (from..=to).contains(&at) {
+            return Ok(());
+        }
+        let show = |s: u64| {
+            DateTime::from_unix_duration(std::time::Duration::from_secs(s))
+                .map_or_else(|_| s.to_string(), |t| t.to_string())
+        };
+        Err(KmError::Conflict(
+            format!(
+                "attestation chain: '{}' is not valid at {} (valid from {} to {}); `check --at <time>` judges the \
+                 chain at another time, `--ignore-validity` skips the dates",
+                self.parsed.tbs_certificate().subject(),
+                show(at),
+                show(from),
+                show(to)
+            )
+            .into(),
+        ))
+    }
+
     /// The raw `extnValue` of the extension with this OID, empty when absent.
     fn extension(&self, oid: &ObjectIdentifier) -> Vec<u8> {
         self.parsed
@@ -127,18 +153,25 @@ pub(crate) struct PivAttested {
 /// *verifiable as key identity* on a token where no attestation exists. A copy of the key on
 /// another token cannot attest (Yubico attests only keys generated on the device); the shared
 /// `rfc7093m4`, which the attestation's subject is checked against, still links the material.
+///
+/// `at` (seconds since the Unix epoch), under `check` only: every certificate, from the slot's
+/// to the pinned root, must be valid then (ISSUES.md B8).
 pub(crate) fn verify_piv_attestation(
     slot: &[u8],
     device: &[u8],
     anchors: &[Cert],
     pool: &[Cert],
     spki: &[u8],
+    at: Option<u64>,
 ) -> Result<PivAttested> {
     let slot = Cert::from_der(slot.to_vec())?;
     let device = Cert::from_der(device.to_vec())?;
     // The device certificate must chain to a pinned root, and the slot certificate must be
     // signed by that same device attestation key.
-    let anchor = chain_to_anchor(&device, anchors, pool)?;
+    let anchor = chain_to_anchor(&device, anchors, pool, at)?;
+    if let Some(at) = at {
+        slot.valid_at(at)?;
+    }
     verify_signed_by(&slot, &device).map_err(|e| {
         KmError::Conflict(
             format!("the slot attestation certificate is not signed by the device attestation key: {e}").into(),
@@ -216,21 +249,26 @@ impl Cert {
 /// Walk `cert`'s issuer chain through Yubico's pooled intermediates until a pinned anchor is
 /// reached, verifying every signature and every issuer's `basicConstraints` on the host; the
 /// anchor is what the lock pins. Real chains are one link (f9 ← classic root) or three
-/// (f9 ← PIV intermediate ← attestation intermediate ← root, firmware 5.7.4+).
-fn chain_to_anchor<'a>(cert: &Cert, anchors: &'a [Cert], pool: &[Cert]) -> Result<&'a Cert> {
+/// (f9 ← PIV intermediate ← attestation intermediate ← root, firmware 5.7.4+). With `at`,
+/// every certificate of the walk must be valid then, `cert` and the anchor included.
+fn chain_to_anchor<'a>(cert: &Cert, anchors: &'a [Cert], pool: &[Cert], at: Option<u64>) -> Result<&'a Cert> {
     let bad = |what: String| KmError::Conflict(format!("attestation chain: {what}").into());
+    let valid = |c: &Cert| at.map_or(Ok(()), |at| c.valid_at(at));
+    valid(cert)?;
     let mut current = cert;
     // CA certificates below the next issuer, `cert` (the device certificate) included.
     for below in 1..=3 {
         if let Some(issuer) = pool.iter().find(|c| c.issued(current)) {
             issuer.may_issue(below)?;
             verify_signed_by(current, issuer)?;
+            valid(issuer)?;
             current = issuer;
             continue;
         }
         if let Some(anchor) = anchors.iter().find(|a| a.issued(current)) {
             anchor.may_issue(below)?;
             verify_signed_by(current, anchor)?;
+            valid(anchor)?;
             return Ok(anchor);
         }
         return Err(bad(format!(
@@ -312,7 +350,7 @@ mod tests {
         );
         // The whole published pool chains to the pinned roots.
         for c in &pool {
-            chain_to_anchor(c, &anchors, &pool).unwrap();
+            chain_to_anchor(c, &anchors, &pool, None).unwrap();
         }
         // A PIV chain passes only through the PIV CAs and the generic intermediates above them;
         // the other products' CAs (FIDO, OpenPGP, SD, YubiHSM) issue no PIV device certificate.
@@ -354,19 +392,55 @@ mod tests {
     #[test]
     fn fixture_chain_verifies_and_pins() {
         let anchors = pem_certs(&String::from_utf8(fixture("root.pem")).unwrap()).unwrap();
-        let attested =
-            verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &anchors, &[], &spki_of("slotpub.pem"))
-                .unwrap();
+        let attested = verify_piv_attestation(
+            &der_of("slot.pem"),
+            &der_of("f9.pem"),
+            &anchors,
+            &[],
+            &spki_of("slotpub.pem"),
+            None,
+        )
+        .unwrap();
         assert_eq!(attested.id, "sha256-gKyFL3YX9/6UtxWv5JbcU4a5Rj5Ev9IVC0SV25gIQoc=");
         assert_eq!(attested.root, id::sri(&anchors[0].spki().unwrap()));
         // Other material: the attestation names the slot's key, not another key's.
-        let err =
-            verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &anchors, &[], &spki_of("slot2pub.pem"))
-                .unwrap_err();
+        let err = verify_piv_attestation(
+            &der_of("slot.pem"),
+            &der_of("f9.pem"),
+            &anchors,
+            &[],
+            &spki_of("slot2pub.pem"),
+            None,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("the attestation names"), "{err}");
         // No pinned anchor: f9 overwritten with a self-made key, or another vendor's device.
-        let err = verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &[], &[], &spki_of("slotpub.pem"))
-            .unwrap_err();
+        let err =
+            verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &[], &[], &spki_of("slotpub.pem"), None)
+                .unwrap_err();
         assert!(err.to_string().contains("signed by no pinned root"), "{err}");
+    }
+
+    /// Under `check`, every certificate of the chain is held to its validity period (ISSUES.md
+    /// B8): the fixture chain is valid from 2026-11-12 to 2036-11-09, so it verifies in 2030
+    /// and is a conflict before and after, naming the time and the period; without a time
+    /// (`lock`, `create`, camigrate) the dates are not read.
+    #[test]
+    fn check_holds_the_chain_to_its_dates() {
+        let anchors = pem_certs(&String::from_utf8(fixture("root.pem")).unwrap()).unwrap();
+        let at = |s: &str| s.parse::<DateTime>().unwrap().unix_duration().as_secs();
+        let verify = |t| {
+            verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &anchors, &[], &spki_of("slotpub.pem"), t)
+        };
+        verify(Some(at("2030-01-01T00:00:00Z"))).unwrap();
+        for t in ["2020-01-01T00:00:00Z", "2040-01-01T00:00:00Z"] {
+            let err = verify(Some(at(t))).unwrap_err();
+            assert!(
+                matches!(err, KmError::Conflict(_)) && err.to_string().contains(&format!("is not valid at {t}")),
+                "{err}"
+            );
+            assert!(err.to_string().contains("--ignore-validity"), "{err}");
+        }
+        verify(None).unwrap();
     }
 }

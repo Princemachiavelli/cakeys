@@ -13,8 +13,8 @@ pub mod templates;
 pub mod token;
 
 pub use provider::{
-    Attributes, BoundKey, Create, Declared, Destroy, Generation, Generic, Half, Provider, Registry, Report, SessionKey,
-    Template, Via, keygen_mechanism,
+    Attributes, BoundKey, ChainTime, Create, Declared, Destroy, Generation, Generic, Half, Provider, Registry, Report,
+    SessionKey, Template, Via, keygen_mechanism,
 };
 pub use resolution::Resolved;
 pub use token::Token;

@@ -228,3 +228,25 @@ fn check_token_checks_every_object_on_it() {
         assert_eq!(e.code(args), 17, "{args:?}");
     }
 }
+
+/// `check --at` and `--ignore-validity` (ISSUES.md B8) hold a key's attestation chain to its
+/// validity period at another time, or not at all (the chain itself: `attest.rs`'s
+/// `check_holds_the_chain_to_its_dates`); a key with no attestation is checked as ever. A time
+/// that is not RFC 3339 in UTC is invalid (17), and the two together are refused.
+#[test]
+fn check_judges_attestation_dates_at_the_time_asked() {
+    let Some(e) = env("check_validity") else { return };
+    e.session().clear(&["check-validity"]);
+    e.config(&EC.replace("ec-lifecycle", "check-validity"));
+    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 0);
+    assert_eq!(e.code(&["check", "signing", "--at", "2030-01-01T00:00:00Z"]), 0);
+    let o = e.km(&["check", "signing", "--ignore-validity"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(stderr(&o).contains("certificate dates are not checked"), "{}", stderr(&o));
+    let o = e.km(&["check", "signing", "--at", "2030-01-01"]);
+    assert_eq!(code(&o), 17, "{}", stderr(&o));
+    assert!(stderr(&o).contains("not an RFC 3339 time in UTC"), "{}", stderr(&o));
+    let o = e.km(&["check", "signing", "--at", "2030-01-01T00:00:00Z", "--ignore-validity"]);
+    assert_ne!(code(&o), 0, "{}", stderr(&o));
+    assert!(stderr(&o).contains("cannot be used with"), "{}", stderr(&o));
+}

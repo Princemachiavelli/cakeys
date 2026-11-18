@@ -153,6 +153,9 @@ pub struct Token {
     /// (it unseals the token's wrapping key with it) and logging the user back in after an SO
     /// step (`soCredentialFile`/`soCredentialEnv`). Zeroized on drop.
     pin: Option<Zeroizing<String>>,
+    /// When an attestation chain's certificates must be valid: unchecked unless whoever opens
+    /// the token for `check` sets it ([`crate::ChainTime`]).
+    pub chain_time: crate::ChainTime,
     /// Last: fields drop in declaration order, so the session is closed before the module is
     /// finalized.
     library: Arc<Library>,
@@ -413,6 +416,7 @@ impl Token {
             pins,
             pin,
             provider,
+            chain_time: crate::ChainTime::default(),
             library: module_guard,
         })
     }
@@ -571,6 +575,7 @@ impl Token {
             spki,
             pin: self.pin.as_ref().map(|p| p.as_str()),
             provision,
+            chain_time: self.chain_time,
         };
         self.provider.attest(&ctx)
     }
