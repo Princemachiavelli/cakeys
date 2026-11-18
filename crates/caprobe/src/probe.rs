@@ -129,7 +129,7 @@ pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: Option<u32>) -> Result<P
     }
     // The RSA key sizes the module reports: read-only, a claim the write probes then test.
     if let Some((min, max)) = tok.rsa_bits {
-        let row = profile.generate.entry("CKK_RSA".into()).or_default();
+        let row = profile.generate.entry(KeyKind::Rsa).or_default();
         row.min_bits = u32::try_from(min).ok();
         row.max_bits = u32::try_from(max).ok();
     }
@@ -268,7 +268,7 @@ fn check_slot(tok: &Token, id: &[u8]) -> Result<()> {
 pub(crate) struct Draft {
     profile: Profile,
     /// What each key type generated, by curve and by size, and the range the module reports.
-    generate: BTreeMap<String, GenerateRow>,
+    generate: BTreeMap<KeyKind, GenerateRow>,
     /// The OAEP hashes a wrap round-tripped with, of the ones tried; `None`: not probed.
     wrap_oaep: Option<Vec<String>>,
     /// The OAEP hashes the private key decrypted with, of the ones tried; `None`: not probed.
@@ -303,8 +303,8 @@ impl Draft {
     }
 
     /// Record why generating `key_type` on `on` answers as it does.
-    fn generation_evidence(&mut self, key_type: &str, on: On, why: String) {
-        self.evidence.insert(Capability::Generate { key_type: key_type.into(), on }, why);
+    fn generation_evidence(&mut self, key_type: &KeyKind, on: On, why: String) {
+        self.evidence.insert(Capability::Generate { key_type: key_type.clone(), on }, why);
     }
 
     /// The profile with what the probes recorded as its rows: each OAEP hash tried, each
@@ -332,7 +332,7 @@ impl Draft {
             p.set(Capability::DeriveReadOnly, Answer::of(b), None, None);
         }
         for (kt, row) in &self.generate {
-            p.set_generation(kt, row);
+            p.set_generation(kt.name(), row);
         }
         for (c, why) in self.evidence {
             if let Some(row) = p.capabilities.get_mut(&c) {
@@ -788,7 +788,7 @@ fn probe_bound(made: &mut Made, profile: &mut Draft) {
         ),
     );
     let mut ec = GenerateRow::default();
-    let mut rsa = profile.generate.remove("CKK_RSA").unwrap_or_default();
+    let mut rsa = profile.generate.remove(&KeyKind::Rsa).unwrap_or_default();
     let mut oaep: Option<Vec<String>> = None;
     for key in std::mem::take(&mut made.bound_keys) {
         let Some((mech, pair)) = keygen_mechanism(key.keygen) else {
@@ -828,7 +828,7 @@ fn probe_bound(made: &mut Made, profile: &mut Draft) {
             (KeyKind::Ec, On::Item(curve)) => curve.clone(),
             _ => key.name.clone(),
         };
-        operate(made, profile, key.kind.name(), &on, public, private);
+        operate(made, profile, &key.kind, &on, public, private);
         made.bound = None;
         // Each OAEP key decrypts with its own hash: the row is what any of them did.
         if let Some(works) = profile.decrypt_oaep.take() {
@@ -847,8 +847,8 @@ fn probe_bound(made: &mut Made, profile: &mut Draft) {
     probe_unbound(made, profile, &mut ec, &mut rsa);
     rsa.can_bits.sort_unstable();
     rsa.cannot_bits.sort_unstable();
-    profile.generate.insert("CKK_EC".into(), ec);
-    profile.generate.insert("CKK_RSA".into(), rsa);
+    profile.generate.insert(KeyKind::Ec, ec);
+    profile.generate.insert(KeyKind::Rsa, rsa);
 }
 
 /// What no binding covers, tried with the label alone: libkmsp11 answers before any Cloud KMS
@@ -860,7 +860,7 @@ fn probe_unbound(made: &mut Made, profile: &mut Draft, ec: &mut GenerateRow, rsa
     let session = made.session;
     let bare = [Attribute::Label(b"cakeys-probe-unbound".to_vec())];
     // The refusal, or None when the module generated.
-    let unbound = |made: &mut Made, mech: &Mechanism, kt: &str| match session.generate_key_pair(mech, &[], &bare) {
+    let unbound = |made: &mut Made, mech: &Mechanism, kt: &KeyKind| match session.generate_key_pair(mech, &[], &bare) {
         Ok((public, private)) => {
             made.handles.extend([private, public]);
             made.undetermined.push(format!(
@@ -871,7 +871,7 @@ fn probe_unbound(made: &mut Made, profile: &mut Draft, ec: &mut GenerateRow, rsa
         }
         Err(e) => Some(ckr(&e)),
     };
-    if let Some(ec_refusal) = unbound(made, &Mechanism::EccKeyPairGen, "CKK_EC") {
+    if let Some(ec_refusal) = unbound(made, &Mechanism::EccKeyPairGen, &KeyKind::Ec) {
         for name in CURVES.iter().filter(|n| Curve::from_cfg(Kt::Ec, n).is_some()) {
             let name = (*name).to_owned();
             if !ec.can.contains(&name) && !ec.cannot.contains(&name) {
@@ -884,21 +884,21 @@ fn probe_unbound(made: &mut Made, profile: &mut Draft, ec: &mut GenerateRow, rsa
         CURVES.iter().filter(|n| Curve::from_cfg(Kt::EcEdwards, n).is_some()).map(|n| (*n).to_owned()).collect();
     let montgomery: Vec<String> = MONTGOMERY.iter().map(|m| m.0.to_owned()).collect();
     for (kt, mech, names) in [
-        ("CKK_EC_EDWARDS", Mechanism::EccEdwardsKeyPairGen, edwards),
-        ("CKK_EC_MONTGOMERY", Mechanism::EccMontgomeryKeyPairGen, montgomery),
+        (KeyKind::EcEdwards, Mechanism::EccEdwardsKeyPairGen, edwards),
+        (KeyKind::EcMontgomery, Mechanism::EccMontgomeryKeyPairGen, montgomery),
     ] {
-        let Some(refusal) = unbound(made, &mech, kt) else { continue };
+        let Some(refusal) = unbound(made, &mech, &kt) else { continue };
         for name in &names {
             profile.notes.insert(name.clone(), format!("no binding for it; without one: {refusal}"));
         }
-        profile.generate.insert(kt.into(), GenerateRow { cannot: names, ..GenerateRow::default() });
+        profile.generate.insert(kt, GenerateRow { cannot: names, ..GenerateRow::default() });
     }
-    let Some(rsa_refusal) = unbound(made, &Mechanism::RsaPkcsKeyPairGen, "CKK_RSA") else { return };
+    let Some(rsa_refusal) = unbound(made, &Mechanism::RsaPkcsKeyPairGen, &KeyKind::Rsa) else { return };
     for bits in made.rsa_sizes.clone() {
         if !rsa.can_bits.contains(&bits) && !rsa.cannot_bits.contains(&bits) {
             rsa.cannot_bits.push(bits);
             let why = format!("no binding for it; without one: {rsa_refusal}");
-            profile.generation_evidence("CKK_RSA", On::Bits(bits), why);
+            profile.generation_evidence(&KeyKind::Rsa, On::Bits(bits), why);
         }
     }
 }
@@ -925,9 +925,9 @@ fn probe_curves(made: &mut Made, profile: &mut Draft) -> Result<()> {
             .collect()
     };
     let families = [
-        ("CKK_EC", Mechanism::EccKeyPairGen, forms(Kt::Ec)),
-        ("CKK_EC_EDWARDS", Mechanism::EccEdwardsKeyPairGen, forms(Kt::EcEdwards)),
-        ("CKK_EC_MONTGOMERY", Mechanism::EccMontgomeryKeyPairGen, MONTGOMERY.to_vec()),
+        (KeyKind::Ec, Mechanism::EccKeyPairGen, forms(Kt::Ec)),
+        (KeyKind::EcEdwards, Mechanism::EccEdwardsKeyPairGen, forms(Kt::EcEdwards)),
+        (KeyKind::EcMontgomery, Mechanism::EccMontgomeryKeyPairGen, MONTGOMERY.to_vec()),
     ];
     for (kt, mech, curves) in families {
         let mut row = GenerateRow::default();
@@ -938,11 +938,11 @@ fn probe_curves(made: &mut Made, profile: &mut Draft) -> Result<()> {
         let keygen = mech.mechanism_type();
         let listed = made.tok.advertised.contains(&keygen.to_string());
         let stood_in = !listed && made.tok.provider.stand_ins().contains(&keygen);
-        if kt != "CKK_EC_MONTGOMERY" {
-            create_curves(made, profile, kt, &curves, &mut row)?;
+        if !matches!(kt, KeyKind::EcMontgomery) {
+            create_curves(made, profile, &kt, &curves, &mut row)?;
             record_stand_in(profile, stood_in, keygen, made.tok.runnable(mech).mechanism_type(), &row);
             record_unlisted(profile, !listed && !stood_in, keygen, &row);
-            profile.generate.insert(kt.to_owned(), row);
+            profile.generate.insert(kt, row);
             continue;
         }
         // Montgomery keys from here: no keys.toml object, so the probe's own templates.
@@ -973,7 +973,7 @@ fn probe_curves(made: &mut Made, profile: &mut Draft) -> Result<()> {
                     if !probed_ops {
                         probed_ops = true;
                         if usable {
-                            operate(made, profile, kt, curve, public, private);
+                            operate(made, profile, &kt, curve, public, private);
                         } else {
                             made.undetermined.push(format!(
                                 "no operation probes on {kt} keys: the module refused the usage attributes \
@@ -991,7 +991,7 @@ fn probe_curves(made: &mut Made, profile: &mut Draft) -> Result<()> {
         }
         record_stand_in(profile, stood_in, keygen, mech.mechanism_type(), &row);
         record_unlisted(profile, !listed && !stood_in, keygen, &row);
-        profile.generate.insert(kt.to_owned(), row);
+        profile.generate.insert(kt, row);
     }
     Ok(())
 }
@@ -1012,12 +1012,14 @@ fn record_unlisted(profile: &mut Draft, unlisted: bool, keygen: MechanismType, r
 fn create_curves(
     made: &mut Made,
     profile: &mut Draft,
-    kt: &str,
+    kt: &KeyKind,
     curves: &[CurveForm],
     row: &mut GenerateRow,
 ) -> Result<()> {
-    let key_type = if kt == "CKK_EC" { Kt::Ec } else { Kt::EcEdwards };
-    let usage = if kt == "CKK_EC" { spec(&["CKA_SIGN", "CKA_DERIVE"], &[]) } else { spec(&["CKA_SIGN"], &[]) };
+    let (key_type, usage) = match kt {
+        KeyKind::Ec => (Kt::Ec, spec(&["CKA_SIGN", "CKA_DERIVE"], &[])),
+        _ => (Kt::EcEdwards, spec(&["CKA_SIGN"], &[])),
+    };
     let mut probed_ops = false;
     for (curve, ..) in curves {
         let object = ObjectCfg {
@@ -1083,7 +1085,7 @@ fn record_stand_in(profile: &mut Draft, stood_in: bool, keygen: MechanismType, r
 /// wrap probes' transport key: wrapping is encryption, so its public half wraps and its private
 /// half unwraps. In a scratch slot the next size replaces it, so there it is no transport key.
 fn probe_rsa(made: &mut Made, profile: &mut Draft) -> Result<Option<(ObjectHandle, ObjectHandle)>> {
-    let mut row = profile.generate.remove("CKK_RSA").unwrap_or_default();
+    let mut row = profile.generate.remove(&KeyKind::Rsa).unwrap_or_default();
     let mut transport = None;
     for bits in made.rsa_sizes.clone() {
         // Generated as the verbs generate it, with every usage the proofs, the operation and
@@ -1098,8 +1100,8 @@ fn probe_rsa(made: &mut Made, profile: &mut Draft) -> Result<Option<(ObjectHandl
         match made.create_for_use(&object, &usage, &spec(&[], &[]))? {
             (Ok((public, private, _)), usable) => {
                 match (bits == 2048, usable) {
-                    (true, true) => operate(made, profile, "CKK_RSA", &on, public, private),
-                    (false, true) => prove_key(made, profile, "CKK_RSA", &on, public, private),
+                    (true, true) => operate(made, profile, &KeyKind::Rsa, &on, public, private),
+                    (false, true) => prove_key(made, profile, &KeyKind::Rsa, &on, public, private),
                     (_, false) => made.undetermined.push(format!(
                         "no operation probes or proofs on {on}: the module refused the usage attributes"
                     )),
@@ -1112,19 +1114,19 @@ fn probe_rsa(made: &mut Made, profile: &mut Draft) -> Result<Option<(ObjectHandl
             (Err(e), _) => {
                 row.cannot_bits.push(bits);
                 let why = format!("modulusBits = {bits}: {}", refused(made.tok, &e));
-                profile.generation_evidence("CKK_RSA", On::Bits(bits), why);
+                profile.generation_evidence(&KeyKind::Rsa, On::Bits(bits), why);
             }
         }
     }
-    profile.generate.insert("CKK_RSA".into(), row);
+    profile.generate.insert(KeyKind::Rsa, row);
     Ok(transport)
 }
 
 /// The operation probes on one fresh key pair of kind `kt`: every advertised mechanism that
 /// applies to it, verified on the host wherever cakeys can (`sig`, `pop`) — signing, ECDH
 /// derivation and decryption.
-fn operate(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, public: ObjectHandle, private: ObjectHandle) {
-    if kt == "CKK_EC_MONTGOMERY" {
+fn operate(made: &mut Made, profile: &mut Draft, kt: &KeyKind, on: &str, public: ObjectHandle, private: ObjectHandle) {
+    if matches!(kt, KeyKind::EcMontgomery) {
         // No Montgomery SPKI or host X25519 in cakeys yet.
         made.undetermined.push(format!("no operation probes on {on}: ECDH with {kt} keys is not probed yet"));
         return;
@@ -1145,14 +1147,14 @@ fn operate(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, public: Obj
     // refuse the proof's own C_*Init with CKR_OPERATION_ACTIVE.
     prove(made, profile, kt, on, private, &spki);
     match kt {
-        "CKK_EC" => {
+        KeyKind::Ec => {
             let curve = Curve::from_cfg(Kt::Ec, on);
             ec_ops(made, private, &spki, on, curve.and_then(EcdsaHash::for_curve));
             if made.tries(MechanismType::ECDH1_DERIVE) {
                 derive(made, profile, private, &spki, on);
             }
         }
-        "CKK_EC_EDWARDS" => {
+        KeyKind::EcEdwards => {
             let pure = Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Pure));
             let listed = made.advertises(MechanismType::EDDSA);
             if !listed && made.tok.provider.stand_ins().contains(&MechanismType::EDDSA) {
@@ -1179,13 +1181,20 @@ fn operate(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, public: Obj
                 made.record(MechanismType::EDDSA, on, outcome);
             }
         }
-        "CKK_RSA" => rsa_ops(made, profile, private, &spki, on),
+        KeyKind::Rsa => rsa_ops(made, profile, private, &spki, on),
         _ => made.undetermined.push(format!("no operation probes on {on}: none are written for {kt} keys")),
     }
 }
 
 /// [`prove`] on a key pair the operation probes do not take: its public half's SPKI first.
-fn prove_key(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, public: ObjectHandle, private: ObjectHandle) {
+fn prove_key(
+    made: &mut Made,
+    profile: &mut Draft,
+    kt: &KeyKind,
+    on: &str,
+    public: ObjectHandle,
+    private: ObjectHandle,
+) {
     match made.tok.material_spki(public) {
         Ok(Some(spki)) => prove(made, profile, kt, on, private, &spki),
         Ok(None) => made.undetermined.push(format!("no proofs on {on}: its public key carries no material")),
@@ -1198,11 +1207,11 @@ fn prove_key(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, public: O
 /// evidence. The probe's token has no module profile, so each proof tries what it can. A proof
 /// refused because an earlier operation left the session busy says nothing of the key:
 /// undetermined, never a row (tpm2-pkcs11 leaves a failed one active \[run\]).
-fn prove(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, private: ObjectHandle, spki: &[u8]) {
+fn prove(made: &mut Made, profile: &mut Draft, kt: &KeyKind, on: &str, private: ObjectHandle, spki: &[u8]) {
     let (key_type, bindings): (Kt, &[Binding]) = match kt {
-        "CKK_EC" => (Kt::Ec, &[Binding::PopSign, Binding::PopEcdh]),
-        "CKK_EC_EDWARDS" => (Kt::EcEdwards, &[Binding::PopSign]),
-        "CKK_RSA" => (Kt::Rsa, &[Binding::PopSign, Binding::PopDecrypt, Binding::PopUnwrap]),
+        KeyKind::Ec => (Kt::Ec, &[Binding::PopSign, Binding::PopEcdh]),
+        KeyKind::EcEdwards => (Kt::EcEdwards, &[Binding::PopSign]),
+        KeyKind::Rsa => (Kt::Rsa, &[Binding::PopSign, Binding::PopDecrypt, Binding::PopUnwrap]),
         _ => return,
     };
     let mut object = ObjectCfg::new(cakeys_core::types::ObjectClass::PrivateKey, Some(key_type));
@@ -1223,7 +1232,7 @@ fn prove(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, private: Obje
     let on = size.map_or_else(|| On::Item(on.to_owned()), On::Bits);
     for binding in bindings {
         let outcome = made.tok.prove_binding(private, &object, spki, *binding);
-        let cap = Capability::Prove { binding: binding.name().into(), key_type: kt.into(), on: on.clone() };
+        let cap = Capability::Prove { binding: binding.name().into(), key_type: kt.clone(), on: on.clone() };
         match outcome {
             Err(e) if token::rv_is(e.rv(), RvError::OperationActive) => {
                 made.undetermined.push(format!("no {cap} row: {}", evidence(made.tok, &e)));

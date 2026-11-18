@@ -226,7 +226,11 @@ and Q14 (one opener for cakeys and camigrate).
 - **Q2. Key types as strings in the probe** (31 `"CKK_*"` literals). Montgomery has no
   `KeyType`, so this needs a probe-local kind enum threaded through `operate`, `prove` and the
   generation rows; the conformance tests would catch a slip, but it is a rewrite of the
-  probe's spine.
+  probe's spine. **Done 2026-11-17**, with Q28's `cakeys_profile::KeyKind` rather than a
+  probe-local enum: `operate`, `prove`, `prove_key`, `create_curves`, the generation rows
+  (`Draft::generate`), the unbound probe and the import and export tables take it; the curve
+  fixtures name core's `KeyType`, from which their kind follows. No `"CKK_*"` literal is left
+  in the probe's code.
 - **Q26. The probe's `Made`** (12 fields) and `Draft`'s `Deref` to `Profile`; `rsa_ops` signs a
   fixed 256-byte block whatever the key's size.
 - **Q13. `resolution::resolve` is 127 lines.**

@@ -19,7 +19,7 @@ use cakeys_core::{KmError, Result, id};
 use cakeys_pkcs11::provider::PlaintextKind;
 use cakeys_pkcs11::token::{self, SessionObject, locator_attrs, public_object_attrs};
 use cakeys_pkcs11::{Declared, SessionKey, Template, Via};
-use cakeys_profile::{Answer, Capability, On, Way};
+use cakeys_profile::{Answer, Capability, KeyKind, On, Way};
 use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsOaepParams, PkcsOaepSource};
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass, ObjectHandle};
@@ -31,14 +31,14 @@ macro_rules! fixture {
 }
 
 /// The private keys of each curve the host reads (`cakeys_core::plaintext`), as PKCS#8 DER.
-const CURVE_KEYS: [(&str, &str, &[u8]); 7] = [
-    ("CKK_EC", "secp256r1", fixture!("ec-secp256r1.der")),
-    ("CKK_EC", "secp384r1", fixture!("ec-secp384r1.der")),
-    ("CKK_EC", "secp521r1", fixture!("ec-secp521r1.der")),
-    ("CKK_EC", "secp256k1", fixture!("ec-secp256k1.der")),
-    ("CKK_EC", "brainpoolP256r1", fixture!("ec-brainpoolP256r1.der")),
-    ("CKK_EC", "brainpoolP384r1", fixture!("ec-brainpoolP384r1.der")),
-    ("CKK_EC_EDWARDS", "edwards25519", fixture!("ec-edwards25519.der")),
+const CURVE_KEYS: [(Kt, &str, &[u8]); 7] = [
+    (Kt::Ec, "secp256r1", fixture!("ec-secp256r1.der")),
+    (Kt::Ec, "secp384r1", fixture!("ec-secp384r1.der")),
+    (Kt::Ec, "secp521r1", fixture!("ec-secp521r1.der")),
+    (Kt::Ec, "secp256k1", fixture!("ec-secp256k1.der")),
+    (Kt::Ec, "brainpoolP256r1", fixture!("ec-brainpoolP256r1.der")),
+    (Kt::Ec, "brainpoolP384r1", fixture!("ec-brainpoolP384r1.der")),
+    (Kt::EcEdwards, "edwards25519", fixture!("ec-edwards25519.der")),
 ];
 
 /// An RSA private key per size the generation probes try ([`super::RSA_SIZES`]) that the host
@@ -67,7 +67,7 @@ const DATA: &[u8] = b"cakeys probe: a data object";
 struct PrivateKey {
     object: ObjectCfg,
     kt: Kt,
-    key_type: &'static str,
+    key_type: KeyKind,
     on: On,
     der: &'static [u8],
 }
@@ -129,20 +129,17 @@ pub(super) fn probe_moves(made: &mut Made, profile: &mut Draft, transport: Trans
 /// The private keys the probes import: each curve, then each RSA size up to the request's
 /// largest.
 fn private_keys(rsa_sizes: &[u32]) -> Vec<PrivateKey> {
-    let curves = CURVE_KEYS.iter().map(|(key_type, curve, der)| {
-        let kt = if *key_type == "CKK_EC" { Kt::Ec } else { Kt::EcEdwards };
-        PrivateKey {
-            object: ObjectCfg { curve: Some((*curve).to_owned()), ..ObjectCfg::new(Class::PrivateKey, Some(kt)) },
-            kt,
-            key_type,
-            on: On::Item((*curve).to_owned()),
-            der,
-        }
+    let curves = CURVE_KEYS.iter().map(|&(kt, curve, der)| PrivateKey {
+        object: ObjectCfg { curve: Some(curve.to_owned()), ..ObjectCfg::new(Class::PrivateKey, Some(kt)) },
+        kt,
+        key_type: KeyKind::from(kt.name()),
+        on: On::Item(curve.to_owned()),
+        der,
     });
     let rsa = RSA_KEYS.iter().filter(|(bits, _)| rsa_sizes.contains(bits)).map(|(bits, der)| PrivateKey {
         object: ObjectCfg { modulus_bits: Some((*bits).into()), ..ObjectCfg::new(Class::PrivateKey, Some(Kt::Rsa)) },
         kt: Kt::Rsa,
-        key_type: "CKK_RSA",
+        key_type: KeyKind::Rsa,
         on: On::Bits(*bits),
         der,
     });
@@ -186,7 +183,7 @@ fn import_private(
     kind: PlaintextKind,
     transport: Transport,
 ) -> Result<()> {
-    let cap = Capability::Import { key_type: key.key_type.into(), on: key.on.clone() };
+    let cap = Capability::Import { key_type: key.key_type.clone(), on: key.on.clone() };
     let read = || -> Result<_> {
         let spki = id::spki_canonical(&spki_of_pkcs8(key.der)?)?;
         Ok((spki, private_from_pkcs8(key.der, key.kt, key.object.curve.as_deref())?))
@@ -254,7 +251,7 @@ fn import_private(
         return Ok(());
     }
     let same = |plain: &[u8]| spki_of_pkcs8(plain).and_then(|s| id::spki_canonical(&s)).is_ok_and(|s| s == spki);
-    export_host(made, profile, (key.key_type, &key.on), h, &same);
+    export_host(made, profile, (&key.key_type, &key.on), h, &same);
     let template = |label: &str| {
         let t = vec![
             Attribute::Token(true),
@@ -268,7 +265,7 @@ fn import_private(
         adjusted(Template::Import(Declared { locator: &locator, ..declared }, Via::Unwrap), t)
     };
     let same = |m: &Made, h2| m.tok.prove_binding(h2, &key.object, &spki, Binding::PopSign);
-    export_sealed(made, profile, (key.key_type, &key.on), h, false, transport, &template, &same);
+    export_sealed(made, profile, (&key.key_type, &key.on), h, false, transport, &template, &same);
     Ok(())
 }
 
@@ -287,7 +284,7 @@ fn public_half(
     spki: &[u8],
 ) -> Result<()> {
     let public = ObjectCfg { class: Class::PublicKey, ..key.object.clone() };
-    let cap = Capability::Create { class: "CKO_PUBLIC_KEY".into(), key: Some((key.key_type.into(), key.on.clone())) };
+    let cap = Capability::Create { class: "CKO_PUBLIC_KEY".into(), key: Some((key.key_type.clone(), key.on.clone())) };
     let mut t = vec![Attribute::Token(true), Attribute::Verify(true)];
     t.extend(locator_attrs(on.locator)?);
     t.extend(public_object_attrs(&public, spki)?);
@@ -334,11 +331,11 @@ fn host_wraps() -> Vec<(Mechanism<'static>, MechanismType)> {
 fn export_host(
     made: &Made,
     profile: &mut Draft,
-    (key_type, on): (&str, &On),
+    (key_type, on): (&KeyKind, &On),
     h: ObjectHandle,
     same: &dyn Fn(&[u8]) -> bool,
 ) {
-    let cap = Capability::Export { way: Way::Host, key_type: key_type.into(), on: on.clone() };
+    let cap = Capability::Export { way: Way::Host, key_type: key_type.clone(), on: on.clone() };
     let mut refusals = Vec::new();
     for (mech, name) in host_wraps() {
         match made.tok.extract(h, &mech) {
@@ -490,15 +487,15 @@ fn composed(
 fn export_sealed(
     made: &mut Made,
     profile: &mut Draft,
-    (key_type, on): (&str, &On),
+    (key_type, on): (&KeyKind, &On),
     h: ObjectHandle,
     secret: bool,
     transport: Transport,
     template: &dyn Fn(&str) -> Result<Vec<Attribute>>,
     same: &dyn Fn(&Made, ObjectHandle) -> Result<()>,
 ) {
-    let export = Capability::Export { way: Way::Sealed, key_type: key_type.into(), on: on.clone() };
-    let unwrap = Capability::Unwrap { key_type: key_type.into(), on: on.clone() };
+    let export = Capability::Export { way: Way::Sealed, key_type: key_type.clone(), on: on.clone() };
+    let unwrap = Capability::Unwrap { key_type: key_type.clone(), on: on.clone() };
     let Some(transport) = transport else {
         made.undetermined.push(format!("no {export} or {unwrap} row: no RSA transport key"));
         return;
@@ -570,7 +567,7 @@ fn same_aes(made: &Made, h: ObjectHandle, value: &[u8]) -> Result<()> {
 fn import_secret(made: &mut Made, profile: &mut Draft, value: &[u8], transport: Transport) {
     let n = u32::try_from(value.len()).unwrap_or_default();
     let on = On::Bytes(n);
-    let cap = Capability::Import { key_type: "CKK_AES".into(), on: on.clone() };
+    let cap = Capability::Import { key_type: KeyKind::Aes, on: on.clone() };
     let label = made.label();
     let base = vec![
         Attribute::Token(true),
@@ -602,7 +599,7 @@ fn import_secret(made: &mut Made, profile: &mut Draft, value: &[u8], transport: 
         return;
     }
     profile.set(cap, Answer::Yes, None, Some(PlaintextKind::CreateObject.name().into()));
-    export_host(made, profile, ("CKK_AES", &on), h, &|plain| plain == value);
+    export_host(made, profile, (&KeyKind::Aes, &on), h, &|plain| plain == value);
     let template = |label: &str| {
         let t = vec![
             Attribute::Token(true),
@@ -613,7 +610,7 @@ fn import_secret(made: &mut Made, profile: &mut Draft, value: &[u8], transport: 
         ];
         adjusted(label, Via::Unwrap, t)
     };
-    export_sealed(made, profile, ("CKK_AES", &on), h, true, transport, &template, &|m, h2| same_aes(m, h2, value));
+    export_sealed(made, profile, (&KeyKind::Aes, &on), h, true, transport, &template, &|m, h2| same_aes(m, h2, value));
 }
 
 /// Create a certificate or a data object from its value (`create.CKO_*`), read back. In a
