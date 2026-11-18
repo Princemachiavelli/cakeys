@@ -6,7 +6,8 @@
 #   scripts/local-tests.sh [cargo-nextest run arguments...]
 #   scripts/local-tests.sh -E 'test(host_moves)'
 #
-# The patches (nix/patches/cryptoki-*.patch) and the features that use them, both as
+# The patches (nix/patches/cryptoki-*.patch, and upstream/rust-cryptoki/ drafts applied as they
+# are) and the features that use them, both as
 # nix/package-common.nix lists them: the patches are applied to the registry's cryptoki under
 # target/local-tests/, never vendored in the tree, and the features enabled. The run happens in
 # a copy of the working tree, target/local-tests/tree, whose .cargo/config.toml patches
@@ -48,7 +49,8 @@ export PATH=$softhsm/bin:$nextest/bin:$rsync/bin:$gnupatch/bin:$jq/bin:$openssl/
 # The cryptoki the Nix build patches: its version and patch list, read from package-common.nix.
 block=$(sed -n '/^  cryptoki = {$/,/^  };$/p' nix/package-common.nix)
 version=$(sed -n 's/^ *version = "\(.*\)";$/\1/p' <<<"$block")
-mapfile -t patches < <(sed -n 's|^ *\./\(patches/.*\.patch\)$|nix/\1|p' <<<"$block")
+# Paths relative to nix/: ./patches/ (local fixes) and ../upstream/ (drafts applied as they are).
+mapfile -t patches < <(sed -n 's|^ *\(\.\{1,2\}/.*\.patch\)$|nix/\1|p' <<<"$block")
 [ -n "$version" ] && [ "${#patches[@]}" -gt 0 ] || {
   echo "local-tests: no cryptoki version or patches in nix/package-common.nix" >&2
   exit 1

@@ -61,7 +61,7 @@ flowchart TD
     MIG --> CORE
 
     CORE --- RC["RustCrypto: p256/p384/p521/k256/bp256/bp384,<br/>ed25519-dalek, rsa, x509-cert, sha2, hmac, pkcs8"]
-    P11 --- CK["cryptoki 0.12 (+3 local patches)"]
+    P11 --- CK["cryptoki 0.12 (+6 patches)"]
     PROVS --- TSS["tss-esapi, rusqlite (bundled), aes-gcm"]
 ```
 
@@ -206,9 +206,18 @@ the regular and the crane build apply them):
   subtracts them.
 - `cryptoki-aes-key-wrap-kwp.patch`: `CKM_AES_KEY_WRAP_KWP` (kryoptic's RFC 5649 ID).
 - `cryptoki-rsa-aes-key-wrap.patch`: `CKM_RSA_AES_KEY_WRAP` and its parameters (`enforced` moves).
+- `cryptoki-sign-after-init.patch`: a single-part `C_Sign` in an operation `C_SignInit` started,
+  for a `CKA_ALWAYS_AUTHENTICATE` key's per-use login.
+- `cryptoki-allowed-mechanisms-unnamed.patch`: a `CKA_ALLOWED_MECHANISMS` entry cryptoki has no
+  name for kept as its value.
+- `upstream/rust-cryptoki/0003-Add-RvError-to-CK_RV-and-its-name.patch`, the upstream draft
+  itself: an `RvError` back to its `CK_RV`, and its `CKR_*` name, for a module failure's value
+  (`KmError::rv`) and the name messages and profile evidence give it.
 
-The last two add enum variants, so they sit behind camigrate's `kwp` feature: a plain cargo
-build plans without them. Upstream drafts: `upstream/rust-cryptoki/`.
+What only the patched cryptoki compiles sits behind a feature the Nix build turns on: camigrate's
+and caprobe's `kwp` (the two wrap mechanisms), `cakeys-pkcs11/sign-after-init` and
+`cakeys-pkcs11/rv-value`. A plain cargo build plans without the wraps, refuses a per-use-login
+proof, and names a failure without carrying its value. Upstream drafts: `upstream/rust-cryptoki/`.
 
 ## Dependencies
 

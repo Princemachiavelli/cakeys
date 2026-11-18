@@ -314,7 +314,6 @@ dependencies = [
  "der",
  "getrandom",
  "libc",
- "p11-names",
  "rsa",
  "toml",
  "x509-cert",

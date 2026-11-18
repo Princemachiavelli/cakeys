@@ -237,33 +237,45 @@ fn sorted_names(mechanisms: &[MechanismType]) -> Vec<String> {
 
 /// The `CKR_*` name of a module's failure: cryptoki's `Display` is the spec's prose, which
 /// changes with the binding, so a message (and a profile row's evidence) names the return value
-/// by its constant, as `cryptoki-sys` names the value [`rv_value`] finds; `CKR 0x…` for a value
-/// with no name (vendor-defined, or unknown to `cryptoki-sys`).
+/// by its constant: cryptoki's name for it with `rv-value`, else one derived from the variant;
+/// `CKR 0x…` for a vendor-defined value or one cryptoki has no variant for.
 #[must_use]
 pub fn rv_name(e: &CkError) -> String {
     match e {
-        CkError::Pkcs11(rv, _) => match rv_value(*rv) {
-            Some(v) => p11_names::rv_name(v).map_or_else(|| format!("CKR {v:#x}"), str::to_owned),
-            None => derived_name(*rv),
-        },
+        CkError::Pkcs11(rv, _) => rv_error_name(*rv),
         other => other.to_string(),
     }
 }
 
-/// The return value behind cryptoki's `RvError`, which converts only from a value
-/// (`Rv::from`): the value of `cryptoki-sys`'s table that converts to it, or the one a
-/// vendor-defined or unknown error carries. `None` only for a variant whose value the table
-/// lacks (`every_named_value_converts_back`).
+/// The `CKR_*` constant an `RvError` stands for: cryptoki's own name for it (`RvError::name`,
+/// upstream/rust-cryptoki/0003, with `rv-value`), else one derived from the variant
+/// (`GeneralError` -> `CKR_GENERAL_ERROR`), which `names_agree` holds equal; `CKR 0x…` for a
+/// vendor-defined value or one cryptoki has no variant for.
+fn rv_error_name(rv: RvError) -> String {
+    match rv {
+        RvError::VendorDefined(v) | RvError::UnknownErrorCode(v) => format!("CKR {v:#x}"),
+        #[cfg(feature = "rv-value")]
+        rv => rv.name().map_or_else(|| derived_name(rv), str::to_owned),
+        #[cfg(not(feature = "rv-value"))]
+        rv => derived_name(rv),
+    }
+}
+
+/// The return value behind cryptoki's `RvError`: `CK_RV::from` (upstream/rust-cryptoki/0003,
+/// with `rv-value`). Without it, only the value a vendor-defined or unknown error carries.
 #[must_use]
 pub fn rv_value(rv: RvError) -> Option<cryptoki_sys::CK_RV> {
     match rv {
         RvError::VendorDefined(v) | RvError::UnknownErrorCode(v) => Some(v),
-        rv => p11_names::RV.iter().map(|(_, v)| *v).find(|v| Rv::from(*v) == Rv::Error(rv)),
+        #[cfg(feature = "rv-value")]
+        rv => Some(rv.into()),
+        #[cfg(not(feature = "rv-value"))]
+        _ => None,
     }
 }
 
-/// A name from `RvError`'s variant (`GeneralError` -> `CKR_GENERAL_ERROR`), for a variant whose
-/// value the table lacks: what `rv_name` said before it read the table.
+/// A name from `RvError`'s variant (`GeneralError` -> `CKR_GENERAL_ERROR`): every variant is
+/// named after its constant.
 fn derived_name(rv: RvError) -> String {
     let mut out = String::from("CKR");
     for c in format!("{rv:?}").chars() {
@@ -294,7 +306,10 @@ pub fn rv_is(rv: Option<u64>, want: RvError) -> bool {
 /// The `CKR_*` name of a return value an error carries; `CKR 0x…` for one with no name.
 #[must_use]
 pub fn rv_value_name(v: u64) -> String {
-    p11_names::rv_name(v).map_or_else(|| format!("CKR {v:#x}"), str::to_owned)
+    match Rv::from(v) {
+        Rv::Ok => "CKR_OK".to_owned(),
+        Rv::Error(rv) => rv_error_name(rv),
+    }
 }
 
 /// What an SO login that fails says first: a module step that needs the Security Officer
@@ -1068,21 +1083,29 @@ mod tests {
     use super::*;
     use cryptoki::context::Function;
 
-    /// Every value `cryptoki-sys` names converts back to itself through cryptoki, and keeps the
-    /// name the variant gave before the table did: no committed profile's `CKR_*` changes.
+    /// Every return value cryptoki has a variant for converts back to itself, and cryptoki's
+    /// name for it is the one derived from the variant: a build with `rv-value` and one without
+    /// name every module failure alike, so no committed profile's `CKR_*` changes.
+    #[cfg(feature = "rv-value")]
     #[test]
-    fn every_named_value_converts_back() {
-        let mut renamed = Vec::new();
-        for (name, v) in p11_names::RV {
-            let Rv::Error(rv) = Rv::from(*v) else { continue };
-            assert_eq!(rv_value(rv), Some(*v), "{name}");
-            let said = rv_name(&CkError::Pkcs11(rv, Function::Initialize));
-            if !matches!(rv, RvError::VendorDefined(_) | RvError::UnknownErrorCode(_)) && said != derived_name(rv) {
-                renamed.push(format!("{said} was {}", derived_name(rv)));
+    fn names_agree() {
+        for v in 1..0x1000 {
+            let Rv::Error(rv) = Rv::from(v) else { continue };
+            assert_eq!(rv_value(rv), Some(v), "{v:#x}");
+            if let Some(name) = rv.name() {
+                assert_eq!(name, derived_name(rv), "{v:#x}");
+                assert_eq!(rv_value_name(v), name);
             }
         }
-        assert_eq!(renamed, [] as [String; 0]);
+    }
+
+    #[test]
+    fn values_without_a_variant_go_by_their_value() {
         let vendor = CkError::Pkcs11(RvError::VendorDefined(0x8000_0001), Function::Initialize);
         assert_eq!(rv_name(&vendor), "CKR 0x80000001");
+        // CKR_TOKEN_NOT_INITIALIZED (PKCS#11 3.2): cryptoki 0.12 has no variant for it.
+        assert_eq!(rv_value_name(0x208), "CKR 0x208");
+        assert_eq!(rv_value_name(0x30), "CKR_DEVICE_ERROR");
+        assert_eq!(rv_value_name(0), "CKR_OK");
     }
 }

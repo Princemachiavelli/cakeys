@@ -54,7 +54,9 @@ in
   # operation C_SignInit started (Session::sign_initialized), for the context-specific login a
   # CKA_ALWAYS_AUTHENTICATE key needs between the two (docs/DESIGN.md §3.6). The fifth keeps a
   # CKA_ALLOWED_MECHANISMS entry cryptoki has no name for (385 of the 3.2 mechanisms, and every
-  # vendor one) as its value, where 0.12.1 refused the whole attribute (docs/OPEN.md).
+  # vendor one) as its value, where 0.12.1 refused the whole attribute (docs/OPEN.md). The sixth
+  # is the upstream draft itself, not a local copy: an RvError converts back to its CK_RV and
+  # names its CKR_* constant (upstream/rust-cryptoki/PR-RV-VALUE.md).
   cryptoki = {
     version = "0.12.1";
     patches = [
@@ -63,16 +65,19 @@ in
       ./patches/cryptoki-rsa-aes-key-wrap.patch
       ./patches/cryptoki-sign-after-init.patch
       ./patches/cryptoki-allowed-mechanisms-unnamed.patch
+      ../upstream/rust-cryptoki/0003-Add-RvError-to-CK_RV-and-its-name.patch
     ];
   };
 
   # What only the patched cryptoki above has: the mechanisms it names (CKM_AES_KEY_WRAP_KWP,
-  # CKM_RSA_AES_KEY_WRAP), which camigrate uses and caprobe probes only with `kwp`, and the
-  # single-part sign after C_SignInit, which a per-use PIN proof uses only with `sign-after-init`.
+  # CKM_RSA_AES_KEY_WRAP), which camigrate uses and caprobe probes only with `kwp`; the
+  # single-part sign after C_SignInit, which a per-use PIN proof uses only with `sign-after-init`;
+  # and a failure's CK_RV and CKR_* name from cryptoki, with `rv-value`.
   features = [
     "camigrate/kwp"
     "caprobe/kwp"
     "cakeys-pkcs11/sign-after-init"
+    "cakeys-pkcs11/rv-value"
   ]
   ++ lib.optionals (!tpm2) [
     "cakeys/ykcs11"

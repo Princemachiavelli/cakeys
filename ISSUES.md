@@ -185,6 +185,9 @@ Still open. Each says why it was not done with the rest.
   from the table; every named value converts back and keeps the name the variant gave
   (`every_named_value_converts_back`), so no profile changes. The upstream PR (`RvError` to
   `CK_RV`, and `RvError::name`) is drafted, not filed: `upstream/rust-cryptoki/PR-RV-VALUE.md`.
+  **Since 2026-11-17** the build applies that draft itself (`nix/package-common.nix`), and
+  `rv_value`/`rv_name` use it behind `cakeys-pkcs11/rv-value`; the table is p11-fault's alone,
+  and `names_agree` holds cryptoki's names to the ones derived without the patch.
 - **Q24. The profile set is process-global and order-dependent** (`Set::activate` after
   `Set::active` fails; `Registry::named` hides a set that does not parse). **Done
   2026-11-17:** the `OnceLock` stays; `Set::active` errors when nothing activated it, never

@@ -16,7 +16,6 @@ cakeys-core.workspace = true
 cakeys-profile.workspace = true
 cryptoki.workspace = true
 cryptoki-sys.workspace = true
-p11-names.workspace = true
 toml.workspace = true
 zeroize.workspace = true
 der.workspace = true
@@ -31,3 +30,7 @@ x509-cert.workspace = true
 # key's per-use login needs. Needs the patched cryptoki of the Nix build (nix/patches): without
 # it, such a key cannot prove possession, and the proof and camigrate's plan refuse it alike.
 sign-after-init = []
+# A module failure's CK_RV value and CKR_* name from cryptoki itself (CK_RV::from(RvError),
+# RvError::name: upstream/rust-cryptoki/0003, which the Nix build applies). Without it a named
+# failure carries no value, only its name.
+rv-value = []

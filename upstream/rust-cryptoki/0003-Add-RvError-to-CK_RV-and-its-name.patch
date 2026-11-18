@@ -1,5 +1,5 @@
---- a/cryptoki/src/error/rv.rs
-+++ b/cryptoki/src/error/rv.rs
+--- a/src/error/rv.rs
++++ b/src/error/rv.rs
 @@ -17,114 +17,151 @@
      Error(RvError),
  }
