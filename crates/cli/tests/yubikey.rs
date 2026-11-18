@@ -156,10 +156,16 @@ impl Env {
     fn lifecycle(&self, c: &Case) {
         let spec = format!("{}-yubikey", c.name);
         let r = ["create", "--spec", &spec, "--token", "yubikey", "--no-update-lock"];
+        let adopt = ["lock", "--spec", &spec, "--token", "yubikey", "--no-update-lock"];
         let record = ["lock", "--spec", &spec, "--token", "yubikey", "--update-lock"];
 
-        // First use: generated (SO login) or adopted, and identified; nothing is locked yet.
-        let first = self.km(&r);
+        // First use: generated into an empty slot (SO login), or adopted where an earlier run
+        // left a key — `create` refuses a key the lock does not pin (19), `lock` takes it — and
+        // identified; nothing is locked yet.
+        let mut first = self.km(&r);
+        if code(&first) == 19 {
+            first = self.km(&adopt);
+        }
         assert_eq!(code(&first), 18, "{}: {}", c.name, String::from_utf8_lossy(&first.stderr));
         let got = String::from_utf8_lossy(&first.stderr)
             .lines()

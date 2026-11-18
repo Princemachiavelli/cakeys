@@ -75,8 +75,10 @@ fn a_key_moves_into_a_piv_slot_through_the_host() {
     let o = run(&cakeys, &dir, &["verify", "--spec", "pv-yk", "--token", "yubikey"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     // Again, into the now occupied slot under another lock: refused before anything is written.
+    // The source key is still on SoftHSM: the new lock records it (`create` refuses a key that is
+    // there and not pinned, 19).
     std::fs::remove_file(dir.join("keys.lock")).unwrap();
-    let o = run(&cakeys, &dir, &["create", "--spec", "pv-soft", "--token", "softhsm"]);
+    let o = run(&cakeys, &dir, &["lock", "--spec", "pv-soft", "--token", "softhsm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let o = run(&camigrate, &dir, &mv);
     assert_eq!(code(&o), 13, "{}", stderr(&o));
