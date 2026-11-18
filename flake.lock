@@ -16,6 +16,23 @@
         "type": "github"
       }
     },
+    "charon": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1748266566,
+        "narHash": "sha256-J/of5Bdj3fUFud7XPxVZXNtdUx1rMDiqS8fsptQVfQg=",
+        "owner": "AeneasVerif",
+        "repo": "charon",
+        "rev": "b250680abd40ff1aaa07081d0497dc2755ed112e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "AeneasVerif",
+        "repo": "charon",
+        "rev": "b250680abd40ff1aaa07081d0497dc2755ed112e",
+        "type": "github"
+      }
+    },
     "crane": {
       "locked": {
         "lastModified": 1793836618,
@@ -28,6 +45,23 @@
       "original": {
         "owner": "ipetkov",
         "repo": "crane",
+        "type": "github"
+      }
+    },
+    "kani": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1789503837,
+        "narHash": "sha256-6BT2BGgrkeZ5yoLj6ra01kECqbGVJfbkoch1ns7HXH0=",
+        "owner": "model-checking",
+        "repo": "kani",
+        "rev": "0d2328a93f0e0ff66132d6bfa1a7d884877cf862",
+        "type": "github"
+      },
+      "original": {
+        "owner": "model-checking",
+        "ref": "kani-0.68.0",
+        "repo": "kani",
         "type": "github"
       }
     },
@@ -47,7 +81,9 @@
     "root": {
       "inputs": {
         "advisory-db": "advisory-db",
+        "charon": "charon",
         "crane": "crane",
+        "kani": "kani",
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay",
         "treefmt-nix": "treefmt-nix"

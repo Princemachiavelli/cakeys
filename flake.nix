@@ -21,6 +21,16 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Kani and the Charon its compiler names as a path dependency (a submodule at this commit),
+    # built from source by nix/kani.nix: flake inputs, so its Cargo.lock is read at evaluation.
+    kani = {
+      url = "github:model-checking/kani/kani-0.68.0";
+      flake = false;
+    };
+    charon = {
+      url = "github:AeneasVerif/charon/b250680abd40ff1aaa07081d0497dc2755ed112e";
+      flake = false;
+    };
   };
 
   outputs =
@@ -31,6 +41,8 @@
       advisory-db,
       crane,
       rust-overlay,
+      kani,
+      charon,
     }:
     let
       inherit (nixpkgs) lib;
@@ -57,6 +69,8 @@
             inherit pkgs pkgsCloudhsm advisory-db;
             craneLib = crane.mkLib pkgs;
             rustBin = rust-overlay.lib.mkRustBin { } pkgs;
+            kani-src = kani;
+            charon-src = charon;
           };
         in
         {
@@ -126,7 +140,7 @@
           );
         }
         // lib.optionalAttrs (system == "x86_64-linux") {
-          inherit (local) kmsp11 kmsp11-fips;
+          inherit (local) kmsp11 kmsp11-fips kani;
           inherit (local.cloudhsm)
             cloudhsm-pkcs11
             cloudhsm-cli

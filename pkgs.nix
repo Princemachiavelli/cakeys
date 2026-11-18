@@ -6,6 +6,8 @@
   advisory-db,
   craneLib,
   rustBin,
+  kani-src,
+  charon-src,
 }:
 let
   # The toolchain at Cargo.toml's rust-version, for checks.msrv: rust-overlay names releases in
@@ -51,6 +53,16 @@ rec {
   deny = pkgs.callPackage ./nix/deny.nix {
     inherit advisory-db;
     cargoDeps = pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; };
+  };
+  # Kani, from source (nix/kani.nix), x86_64-linux only: checks.kani runs the bolero harnesses
+  # as proofs with it.
+  kani = pkgs.callPackage ./nix/kani.nix {
+    inherit
+      craneLib
+      rustBin
+      kani-src
+      charon-src
+      ;
   };
   # cargo-fuzz (fuzz/): a fixed-seed smoke run in checks.fuzz, and apps.fuzz for long runs.
   fuzz = pkgs.callPackage ./nix/fuzz.nix { };
