@@ -186,10 +186,13 @@ Still open. Each says why it was not done with the rest.
   (`every_named_value_converts_back`), so no profile changes. The upstream PR (`RvError` to
   `CK_RV`, and `RvError::name`) is drafted, not filed: `upstream/rust-cryptoki/PR-RV-VALUE.md`.
 - **Q24. The profile set is process-global and order-dependent** (`Set::activate` after
-  `Set::active` fails; `Registry::named` hides a set that does not parse). **Decided
-  2026-11-17, not built:** keep the `OnceLock`; `Set::active` errors when nothing activated it
-  (tests activate explicitly), and `Registry::named` returns a `Result`, so a set that does not
-  parse is reported.
+  `Set::active` fails; `Registry::named` hides a set that does not parse). **Done
+  2026-11-17:** the `OnceLock` stays; `Set::active` errors when nothing activated it, never
+  building the embedded set behind the caller's back; every tool activates through
+  `cli-common::activate_profiles`, profile directories or not; `Set::activate_embedded` is the
+  repeatable activation for tests (14 in-process tests now call it); `Registry::named` and
+  `knows` return a `Result`, so a missing set is reported, never taken for "no such provider".
+  `the_set_is_activated_before_it_is_asked_for` pins the order.
 - **Q27. The profile emitter re-implements taplo's layout** (`crates/caprobe/src/emit.rs`), so
   generated profiles survive `nix fmt` byte for byte. **Accepted 2026-11-17:** the layout test
   and treefmt's check catch drift.

@@ -55,6 +55,7 @@ mod tests {
     /// tests), the committed subtractions when not (a plain cargo build).
     #[test]
     fn layer_records_the_binding_it_runs_on() {
+        cakeys_profile::Set::activate_embedded().unwrap();
         let layer = layer().unwrap();
         assert_eq!(layer.profile, "cryptoki/0.12");
         if patched() {

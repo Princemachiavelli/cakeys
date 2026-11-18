@@ -127,11 +127,12 @@ pub struct Verdicts {
 ///
 /// # Errors
 ///
-/// [`Set::embedded`]'s parse error (a commit-time bug).
+/// `Validation` (17) when no profile set is active ([`Registry::named`]).
 pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates: bool) -> Result<Verdicts> {
     let mut out = Verdicts::default();
+    let provider = registry.named(&stack.provider)?;
     // A module that generates from its own template refuses what it cannot make (kmsp11).
-    let own = match registry.named(&stack.provider).filter(|_| creates).map(|p| ops::own_generation(t, p.as_ref())) {
+    let own = match provider.as_ref().filter(|_| creates).map(|p| ops::own_generation(t, p.as_ref())) {
         Some(Err(e)) => {
             out.refusals.push(e.to_string());
             return Ok(out);
@@ -146,7 +147,7 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates
             return Ok(out);
         }
     };
-    if let Some(p) = registry.named(&stack.provider)
+    if let Some(p) = &provider
         && let Err(m) = ops::check_attestation(t, p.as_ref())
     {
         out.refusals.push(m);
@@ -168,7 +169,7 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates
     let token = t.token_name;
     // The templates the verb will send, as the provider adjusts them: what it refuses, the run
     // refuses before anything is created (`ops::plan_templates`). Unknown means not asked.
-    if let Some(p) = registry.named(&stack.provider) {
+    if let Some(p) = &provider {
         let has = |m: cryptoki::mechanism::MechanismType| match eff.mechanism(&m.to_string()) {
             Verdict::Yes { .. } => Some(true),
             Verdict::No { .. } => Some(false),
@@ -245,6 +246,7 @@ mod tests {
     /// refuses is a refusal here; a verb that creates nothing asks nothing.
     #[test]
     fn the_gate_asks_the_provider_about_a_generation() {
+        cakeys_profile::Set::activate_embedded().unwrap();
         let cfg: Config = toml::from_str(
             "[tokens.t]\ntokenLabel = \"t\"\n\n\
              [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\

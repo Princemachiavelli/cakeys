@@ -54,7 +54,10 @@ pub(crate) fn side_from_lock(
     resolved.with_answers(token, observed);
     warn_hidden(token, &resolved, notes);
     if resolved.module.is_none() {
-        let name = registry.named(&provider)?.name();
+        let name = match registry.named(&provider) {
+            Ok(p) => p?.name(),
+            Err(e) => return Some(Err(e)),
+        };
         return Some(Ok(Side::pkcs11(token, name, observed.mechanisms.iter().cloned())));
     }
     Some(side_of(resolved.module.as_ref()?, &resolved, token, &provider, &observed.mechanisms))
@@ -77,7 +80,10 @@ pub(crate) fn side_from_transport(t: &Transport, registry: &Registry) -> Option<
     let resolved = resolution::resolve(&lockless_token_cfg(), &moduleless_info(), None, &t.provider).ok()?;
     match resolved.module {
         Some(ref p) => Some(side_of(p, &resolved, &t.token, &t.provider, &t.mechanisms)),
-        None => registry.named(&t.provider).map(|p| Ok(Side::pkcs11(&t.token, p.name(), t.mechanisms.iter().cloned()))),
+        None => registry
+            .named(&t.provider)
+            .transpose()
+            .map(|p| p.map(|p| Side::pkcs11(&t.token, p.name(), t.mechanisms.iter().cloned()))),
     }
 }
 
@@ -172,7 +178,7 @@ fn ask(
     req: &cakeys_pkcs11::Template<'_>,
     t: Vec<cryptoki::object::Attribute>,
 ) -> std::result::Result<(), String> {
-    match registry.named(&side.provider) {
+    match registry.named(&side.provider).map_err(|e| e.to_string())? {
         Some(p) => {
             p.adjusted(req, t).map(drop).map_err(|e| format!("provider '{}' on '{}': {e}", p.name(), side.token))
         }
@@ -826,6 +832,7 @@ mod tests {
     /// and a refusal is the plan's.
     #[test]
     fn a_plan_asks_the_providers_what_the_move_sends() {
+        cakeys_profile::Set::activate_embedded().unwrap();
         let cfg: cakeys_core::config::Config = toml::from_str(
             "[tokens.t]\ntokenLabel = \"t\"\n\n\
              [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\

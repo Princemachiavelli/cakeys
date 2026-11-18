@@ -412,6 +412,7 @@ mod tests {
 
     #[test]
     fn every_stack_carries_the_binding_layer() {
+        cakeys_profile::Set::activate_embedded().unwrap();
         let r = resolve(&cfg(None, &[]), &module("Nobody", "1.0"), None, "generic").unwrap();
         assert!(r.module.is_none());
         assert_eq!(r.layer_names(), ["cryptoki/0.12"]);
@@ -419,6 +420,7 @@ mod tests {
 
     #[test]
     fn the_module_profile_follows_the_provider_family() {
+        cakeys_profile::Set::activate_embedded().unwrap();
         let r = resolve(&cfg(None, &[]), &module("SoftHSM", "2.7"), None, "softhsm").unwrap();
         assert_eq!(r.module_name(), Some("softhsm/2.7"));
         assert_eq!(r.notes.len(), 0); // the expressed version matches
@@ -443,6 +445,7 @@ mod tests {
 
     #[test]
     fn another_kind_of_hardware_keeps_the_advertisement_only() {
+        cakeys_profile::Set::activate_embedded().unwrap();
         // A real TPM under the tpm2-pkcs11 observed on swtpm: what the module lists holds, what
         // it generates, wraps and unwraps depends on the TPM.
         let infineon = TokenInfo { model: "SLB9670".into(), serial: "s".into(), firmware: "7.85".into() };
@@ -458,6 +461,7 @@ mod tests {
 
     #[test]
     fn pairs_of_one_module_resolve_by_their_hardware() {
+        cakeys_profile::Set::activate_embedded().unwrap();
         let tpm2 = module("tpm2-software.github.io", "1.10");
         let resolved = |cfg: &TokenCfg, token: Option<&TokenInfo>| {
             let r = resolve(cfg, &tpm2, token, "tpm2-pkcs11").unwrap();
@@ -483,6 +487,7 @@ mod tests {
     /// Pairs that tie on every key resolve to the first embedded, as with a recorded version.
     #[test]
     fn an_unrecorded_version_resolves_to_the_nearest_profile() {
+        cakeys_profile::Set::activate_embedded().unwrap();
         let amd = TokenInfo { model: "AMD".into(), serial: "s".into(), firmware: "3.87".into() };
         for (manufacturer, version, provider, token, expected) in [
             ("CloudHSM", "5.19", "aws-cloudhsm", None, "aws-cloudhsm/5.18+hsm2m-fips"),
@@ -517,6 +522,7 @@ mod tests {
 
     #[test]
     fn a_forwarder_is_recognised_and_the_hidden_module_can_be_pinned() {
+        cakeys_profile::Set::activate_embedded().unwrap();
         // Behind p11-kit the module says so; the provider pin still selects the module profile.
         let r = resolve(&cfg(Some("softhsm"), &[]), &module("PKCS#11 Kit", "0.26"), None, "p11-kit").unwrap();
         assert_eq!(r.module_name(), Some("softhsm/2.7"));
@@ -530,6 +536,7 @@ mod tests {
     /// the other takes it, with or without the provider named; a name no profile has is refused.
     #[test]
     fn a_module_profile_pin_takes_that_one() {
+        cakeys_profile::Set::activate_embedded().unwrap();
         let hsm = module("CloudHSM", "5.18");
         let tied = resolve(&cfg(None, &[]), &hsm, None, "aws-cloudhsm").unwrap();
         assert_eq!(tied.module_name(), Some("aws-cloudhsm/5.18+hsm2m-fips"));
@@ -547,6 +554,7 @@ mod tests {
 
     #[test]
     fn a_passthrough_hides_its_module_until_a_provider_is_named() {
+        cakeys_profile::Set::activate_embedded().unwrap();
         // Unnamed, or named as the passthrough itself (what an observation records): hidden.
         let p11 = module("PKCS#11 Kit", "0.26");
         for named in [None, Some("p11-kit"), Some("p11-kit/0.26")] {
@@ -561,6 +569,7 @@ mod tests {
 
     #[test]
     fn the_config_names_extra_layers() {
+        cakeys_profile::Set::activate_embedded().unwrap();
         let r =
             resolve(&cfg(None, &["swtpm"]), &module("tpm2-software.github.io", "1.10"), None, "tpm2-pkcs11").unwrap();
         assert_eq!(r.module_name(), Some("tpm2-pkcs11/1.10+swtpm"));

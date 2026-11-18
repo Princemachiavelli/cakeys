@@ -26,16 +26,17 @@ pub fn default_registry() -> Registry {
     registry.with(providers::P11Kit)
 }
 
-/// Load keys.toml's `profileDirs` into the profile set every token open resolves against
-/// (`cakeys_profile::Set::activate`), right after the config is read and before any token is
-/// opened, and say which profiles they added: a profile from outside the build is named as such.
+/// Activate the profile set every token open resolves against (`cakeys_profile::Set::activate`):
+/// the embedded profiles plus keys.toml's `profileDirs`, right after the config is read and
+/// before anything asks for a profile, which nothing else activates (ISSUES.md Q24). Says
+/// which profiles the directories added: a profile from outside the build is named as such.
 ///
 /// # Errors
 ///
 /// `Validation` (17) for a directory that cannot be read or a file it may not add.
 pub fn activate_profiles(cfg: &Config, notes: &mut Notes) -> Result<(), KmError> {
     if cfg.profile_dirs.is_empty() {
-        return Ok(());
+        return cakeys_profile::Set::activate(&[]).map(drop).map_err(|e| KmError::Validation(e.into()));
     }
     let built: Vec<String> = cakeys_profile::Set::embedded()
         .map_err(|e| KmError::Validation(e.into()))?

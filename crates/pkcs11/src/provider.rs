@@ -685,16 +685,24 @@ impl Registry {
     }
 
     /// Whether `name` is a provider this registry can select explicitly.
-    #[must_use]
-    pub fn knows(&self, name: &str) -> bool {
-        self.named(name).is_some()
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::named`].
+    pub fn knows(&self, name: &str) -> Result<bool> {
+        Ok(self.named(name)?.is_some())
     }
 
     /// The provider registered as `name` (or [`Generic`]), else the module profile family of
     /// that name ([`Data`]), without loading any module.
-    #[must_use]
-    pub fn named(&self, name: &str) -> Option<Arc<dyn Provider>> {
-        Set::active().ok().and_then(|set| self.named_in(set, name))
+    ///
+    /// # Errors
+    ///
+    /// `Validation` (17) when no profile set is active: never taken for "no such provider"
+    /// (ISSUES.md Q24).
+    pub fn named(&self, name: &str) -> Result<Option<Arc<dyn Provider>>> {
+        let set = Set::active().map_err(|e| KmError::Validation(e.into()))?;
+        Ok(self.named_in(set, name))
     }
 
     fn named_in(&self, set: &'static Set, name: &str) -> Option<Arc<dyn Provider>> {
@@ -821,13 +829,14 @@ mod tests {
 
     #[test]
     fn selection_explicit_then_detected_then_generic() {
+        Set::activate_embedded().unwrap();
         let r = Registry::new().with(Acme);
         assert_eq!(r.select(None, &module("Acme")).unwrap().name(), "acme");
         assert_eq!(r.select(None, &module("Other")).unwrap().name(), "generic");
         assert_eq!(r.select(Some("generic"), &module("Acme")).unwrap().name(), "generic");
         assert_eq!(r.select(Some("acme"), &module("Other")).unwrap().name(), "acme");
         assert!(matches!(r.select(Some("nope"), &module("Acme")), Err(KmError::Validation(_))));
-        assert!(r.knows("acme") && r.knows("generic") && !r.knows("nope"));
+        assert!(r.knows("acme").unwrap() && r.knows("generic").unwrap() && !r.knows("nope").unwrap());
     }
 
     /// A module no code claims is named by its profiles' family; code providers come first, a

@@ -111,6 +111,7 @@ impl Provider for NoProof {
 /// delete one would stay).
 #[test]
 fn a_refused_proof_template_creates_nothing() {
+    cakeys_profile::Set::activate_embedded().unwrap();
     let Some(token) = token("no-proof") else { return };
     let cfg: cakeys_core::config::Config = toml::from_str(&format!(
         "[tokens.softhsm]\n{token}\n\
@@ -134,6 +135,7 @@ fn a_refused_proof_template_creates_nothing() {
 
 #[test]
 fn templates_pass_through_the_provider() {
+    cakeys_profile::Set::activate_embedded().unwrap();
     let Some(table) = token("stamp") else { return };
     let cfg: TokenCfg = toml::from_str(&table).unwrap();
     let asked = Arc::new(Mutex::new(Vec::new()));

@@ -114,18 +114,20 @@ impl Set {
         Ok(self)
     }
 
-    /// The set every token open resolves against, built once per process: the embedded profiles
-    /// plus what [`Set::activate`] added. Without an activation, the embedded set.
+    /// The set every token open resolves against, built once per process by [`Set::activate`]
+    /// or [`Set::activate_embedded`] (ISSUES.md Q24): never built here behind the caller's back,
+    /// so an activation that comes too late is an error where the set was first wanted, not a
+    /// silently different set.
     ///
     /// # Errors
     ///
-    /// [`Set::embedded`]'s parse error.
+    /// No set activated yet.
     pub fn active() -> Result<&'static Set, String> {
-        if let Some(set) = ACTIVE.get() {
-            return Ok(set);
-        }
-        let set = Set::embedded()?;
-        Ok(ACTIVE.get_or_init(|| set))
+        ACTIVE.get().ok_or_else(|| {
+            "no capability profile set is active: the tool activates it (Set::activate) right after \
+             reading keys.toml, before anything asks for a profile"
+                .to_owned()
+        })
     }
 
     /// Build the active set: the embedded profiles plus every module profile under `dirs`
@@ -141,6 +143,21 @@ impl Set {
         }
         ACTIVE.set(set).map_err(|_| "the profile set is already in use: activate it once, first".to_owned())?;
         Set::active()
+    }
+
+    /// The embedded set as the active one, for a process that loads no profile directory (the
+    /// tests, caprobe): the set already active when there is one, so it may be called more than
+    /// once.
+    ///
+    /// # Errors
+    ///
+    /// [`Set::embedded`]'s parse error.
+    pub fn activate_embedded() -> Result<&'static Set, String> {
+        if let Some(set) = ACTIVE.get() {
+            return Ok(set);
+        }
+        let set = Set::embedded()?;
+        Ok(ACTIVE.get_or_init(|| set))
     }
 
     fn add(&mut self, p: Profile) {
@@ -236,6 +253,19 @@ fn collect(dir: &Path, out: &mut Vec<std::path::PathBuf>) -> std::io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No set is active until one is activated (ISSUES.md Q24): asking first is an error, not a
+    /// silent embedded set that a later activation would then fail against. The embedded
+    /// activation may repeat; a second activation of directories is refused. The only test here
+    /// that activates: this test binary's set is this test's.
+    #[test]
+    fn the_set_is_activated_before_it_is_asked_for() {
+        assert!(Set::active().err().unwrap().contains("no capability profile set is active"));
+        let set = Set::activate_embedded().unwrap();
+        assert!(std::ptr::eq(set, Set::active().unwrap()));
+        assert!(std::ptr::eq(set, Set::activate_embedded().unwrap()), "the embedded activation repeats");
+        assert!(Set::activate(&[]).err().unwrap().contains("already in use"));
+    }
 
     /// The embedded set is the committed state of the world: everything parses, every name is
     /// unique, and the answers the checks rely on hold.

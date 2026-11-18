@@ -442,7 +442,7 @@ impl Run<'_> {
             let Some(p) = t.named_provider() else { continue };
             // A named provider checks the token's options here too; an auto-detected one
             // can only be known, and check them, once the token is opened.
-            let provider = self.registry.named(p).ok_or_else(|| {
+            let provider = self.registry.named(p)?.ok_or_else(|| {
                 KmError::Validation(
                     format!(
                         "token '{name}': unknown provider '{p}' (registered: generic, {})",
