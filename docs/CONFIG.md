@@ -263,8 +263,12 @@ tokens.softhsm = { locator = { CKA_LABEL = "web-tls" }, origin = "file" }
 
 - **Each spec names exactly one object; one spec has at most one realisation per token.** A
   realisation is the pair (spec, token): the lock records one per pair.
-- **References are checked at load (17):** a spec's `object` must exist, even if nothing uses the
-  spec; a `$NAME` path reference must name a set variable.
+- **What loads is usable (17 at load):** a spec's `object` must exist, even if nothing uses the
+  spec; a `$NAME` path reference must name a set variable; every token a spec names is in
+  `[tokens]`; a locator names `CKA_LABEL` or `CKA_ID`, and a `CKA_ID` is hex (stored lower case,
+  so `0A` and `0a` are one locator; an empty one is a real object's ID); an AES `valueLen` is 16,
+  24 or 32 and no secret key's is 0; and every (spec, token) pair plans, the checks `validate`
+  and each verb would otherwise make only when it reached that pair.
 - **A private data object needs `CKA_PRIVATE = true` declared** in its spec, or it is refused
   (15): its `valuehash` would let anyone with the lock test guesses of the value offline
   (DESIGN §8.2). camigrate moves no private data object (15).

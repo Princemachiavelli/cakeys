@@ -254,9 +254,9 @@ unreachable today may be the guard that keeps a later change honest.
 - `caprobe/src/supports.rs`, "name what to ask": removed. `Query` asks one of a name, a class or
   the OAEP hashes (`Ask`), so a query that asks nothing cannot be built; clap's requirement is
   an `unreachable!` where the arguments become a query.
-- `core/src/plan.rs:43`, "unknown token": **kept, and tested**. Loading keys.toml does not
-  check a spec's token names against `[tokens]`, so a spec on an undefined token loads and is
-  refused here (17) when used.
+- `core/src/plan.rs:43`, "unknown token": **kept, and tested**. Loading keys.toml plans every
+  pair through it since 2026-11-18 (review D1), so a spec on an undefined token is refused at
+  load (17); the check stays for a `Config` built otherwise.
 - `core/src/plaintext.rs:58`: removed. The match is on the (key type, curve) pair, so an
   Edwards curve under `CKK_EC` falls to the refusal of a type with no parser.
 - `pkcs11/src/token/identity.rs`: the caller no longer filters out `token-asserted` before

@@ -99,16 +99,48 @@ fn every_object_is_typed_at_load() {
     assert_eq!(kind, ObjectKind::Secret { key_type: KeyType::Des3, value_len: Some(24) });
 }
 
+/// What loads is usable (review D1): every rule that needs only keys.toml is checked at load,
+/// so no verb, `validate` included, meets a spec that loaded and is then refused at every use.
+/// An empty `CKA_ID` is a real object's ID and loads; hex is stored lower case, so `0A` and
+/// `0a` name one object.
+#[test]
+fn what_loads_is_usable() {
+    let at_load = |text: &str, why: &str| {
+        let e = load(text).err().unwrap_or_else(|| panic!("loaded:\n{text}"));
+        assert!(
+            matches!(&e, KmError::Validation(m) if m.starts_with("keys.toml: ") && m.contains(why)),
+            "expected {why:?} at load: {e}"
+        );
+    };
+    let located = |locator: &str| keys(EC, SIGN, "").replace("{ CKA_LABEL = \"o\" }", locator);
+    at_load(&keys(EC, SIGN, "").replace("[tokens.t]", "[tokens.u]"), "unknown token 't'");
+    at_load(&located("{}"), "locator needs CKA_LABEL and/or CKA_ID");
+    at_load(&located("{ CKA_ID = \"zz\" }"), "CKA_ID 'zz' is not hex");
+    at_load(&located("{ CKA_ID = \"0\" }"), "CKA_ID '0' is not hex");
+    for len in [0, 20, 64] {
+        let aes = AES.replace("valueLen = 32", &format!("valueLen = {len}"));
+        at_load(&keys(&aes, SIGN, ""), "an AES key is 16, 24 or 32 bytes");
+    }
+    let generic = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = 0";
+    at_load(&keys(generic, SIGN, ""), "valueLen 0");
+    // The spec's own planning: a binding its class cannot have, and a secret key with no
+    // re-verifiable identity.
+    at_load(&keys(AES, SIGN, ", binding = \"pop-sign\""), "applies to private keys only");
+    at_load(&keys(AES, "attributes = { CKA_SIGN = false }", ""), "no re-verifiable identity");
+
+    let id = |cfg: &Config| cfg.specs["s"].tokens["t"].locator.id.clone();
+    assert_eq!(id(&load(&located("{ CKA_LABEL = \"o\", CKA_ID = \"\" }")).unwrap()), Some(String::new()));
+    assert_eq!(id(&load(&located("{ CKA_ID = \"0A\" }")).unwrap()), Some("0a".into()));
+}
+
 #[test]
 fn names_that_select_nothing_are_refused() {
     let cfg = load(&keys(EC, SIGN, "")).unwrap();
     let e = Target::new(&cfg, "s", "elsewhere").err().unwrap();
     assert!(matches!(&e, KmError::NotFound(m) if m.contains("has no token 'elsewhere'")), "{e}");
     assert!(Target::new(&cfg, "nope", "t").is_err());
-    // A spec realised on a token `[tokens]` does not define loads, and is refused when used.
-    let undefined = load(&keys(EC, SIGN, "").replace("[tokens.t]", "[tokens.u]")).unwrap();
-    let e = Target::new(&undefined, "s", "t").err().unwrap();
-    assert!(matches!(&e, KmError::Validation(m) if m.contains("unknown token 't'")), "{e}");
+    // A spec realised on a token `[tokens]` does not define is refused at load
+    // (`what_loads_is_usable`); planning one still refuses it, for a config built otherwise.
     let said = load(&keys(EC, SIGN, "").replace("object = \"o\"", "object = \"gone\"")).unwrap_err().to_string();
     assert!(said.contains("gone"), "{said}");
     // An object's one (spec, token) pair, or why there is not exactly one.
@@ -125,7 +157,7 @@ fn names_that_select_nothing_are_refused() {
         assert!(matches!(&e, KmError::Validation(m) if m.contains(why)), "{why}: {e}");
     }
     let two = keys(EC, SIGN, "")
-        + "\n[specs.s2]\nobject = \"o\"\ntokens.t = { locator = { CKA_LABEL = \"o2\" }, origin = \"adopt\" }\n";
+        + "\n[specs.s2]\nobject = \"o\"\nattributes = { CKA_SIGN = true }\ntokens.t = { locator = { CKA_LABEL = \"o2\" }, origin = \"adopt\" }\n";
     assert!(matches!(load(&two).unwrap().address(Some("o"), None, None), Err(KmError::Ambiguous(_))));
 }
 
@@ -153,7 +185,8 @@ fn token_and_creation_rules_are_checked_at_load() {
     let rsa = |bits: u32| format!("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = {bits}");
     let unwraps = "attributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }";
     let transport = |object: &str, spec: &str| {
-        keys(object, spec, "").replace("tokenLabel = \"t\"", "tokenLabel = \"t\"\nmigrate = { transportWith = \"s\" }")
+        keys(object, spec, ", binding = \"pop-unwrap\"")
+            .replace("tokenLabel = \"t\"", "tokenLabel = \"t\"\nmigrate = { transportWith = \"s\" }")
     };
     load(&transport(&rsa(2048), unwraps)).unwrap();
     refused(transport(EC, SIGN), "a transport key is an RSA private key");
@@ -532,7 +565,7 @@ fn views_and_picks_say_what_is_there() {
     assert_eq!(alias.objects["o"].curve.as_deref(), Some("secp256r1"));
 
     let more = keys(EC, SIGN, "")
-        + "\n[specs.s2]\nobject = \"o\"\ntokens.t = { locator = { CKA_LABEL = \"o2\" }, origin = \"adopt\" }\n\
+        + "\n[specs.s2]\nobject = \"o\"\nattributes = { CKA_SIGN = true }\ntokens.t = { locator = { CKA_LABEL = \"o2\" }, origin = \"adopt\" }\n\
            \n[objects.other]\nclass = \"CKO_DATA\"\n\n[specs.s3]\nobject = \"other\"\ntokens.t = { locator = { CKA_LABEL = \"d\" }, origin = \"adopt\" }\n";
     let cfg = load(&more).unwrap();
     let pair = |spec: &str| (spec.to_owned(), "t".to_owned());

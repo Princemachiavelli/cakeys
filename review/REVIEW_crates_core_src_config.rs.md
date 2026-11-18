@@ -48,6 +48,12 @@ load for exactly this reason. Fix: in `parse_config_with`, refuse an empty locat
 non-hex or empty `CKA_ID`, store `CKA_ID` in lower case, and check AES lengths beside the DES3
 rule in `check_value_len`. [read]
 
+**Fixed (2026-11-18):** `parse_config_with` refuses a locator with neither field or a non-hex
+`CKA_ID` (an empty one loads: real objects carry it), stores `CKA_ID` lower case in keys.toml and
+the lock, refuses an AES `valueLen` other than 16/24/32 and any secret key's 0, and plans every
+(spec, token) pair, which refuses a spec on an undefined token (the Design note below). Tests:
+`what_loads_is_usable`, `fixture_lock_parses`.
+
 ### F4. The Nix-store guard skips `passphraseFile` and is a plain prefix test — practice
 
 `crates/core/src/config.rs:1678-1682`, `:1970-1979`, `:1996-2004`. `in_store` is applied to

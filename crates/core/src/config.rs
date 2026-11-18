@@ -659,6 +659,27 @@ pub struct Locator {
     pub id: Option<String>,
 }
 
+impl Locator {
+    /// Refuse a locator no search can use, and write its `CKA_ID` in lower case so `0A` and `0a`
+    /// name one object. An empty `CKA_ID` is a real object's ID, and stays.
+    ///
+    /// # Errors
+    ///
+    /// Why, when it names neither `CKA_LABEL` nor `CKA_ID`, or its `CKA_ID` is not hex.
+    pub fn canonicalize(&mut self) -> std::result::Result<(), String> {
+        if self.label.is_none() && self.id.is_none() {
+            return Err("locator needs CKA_LABEL and/or CKA_ID".into());
+        }
+        if let Some(id) = &mut self.id {
+            if crate::hex::decode(id).is_none() {
+                return Err(format!("CKA_ID '{id}' is not hex"));
+            }
+            id.make_ascii_lowercase();
+        }
+        Ok(())
+    }
+}
+
 /// Inline-table form, as keys.toml writes it: `{ CKA_LABEL = "k", CKA_ID = "01" }`.
 impl std::fmt::Display for Locator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1535,8 +1556,25 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
             }
         }
     }
+    for (spec, s) in &mut cfg.specs {
+        for (token, on) in &mut s.tokens {
+            on.locator.canonicalize().map_err(|e| invalid(&format_args!("spec '{spec}' on token '{token}': {e}")))?;
+        }
+    }
     check_origins(&cfg).map_err(|e| invalid(&e))?;
     check_transport_keys(&cfg).map_err(|e| invalid(&e))?;
+    // What loads is usable (review D1): every pair names a token keys.toml defines and plans
+    // (`plan_mode`), so no verb meets a spec that loaded and is refused at every use.
+    for (spec, s) in &cfg.specs {
+        for token in s.tokens.keys() {
+            crate::plan::Target::new(&cfg, spec, token).and_then(|t| crate::plan::plan_mode(&t)).map_err(
+                |e| match e {
+                    KmError::Validation(m) => invalid(&m),
+                    other => other,
+                },
+            )?;
+        }
+    }
     Ok(cfg)
 }
 
@@ -1555,6 +1593,13 @@ fn check_value_len(o: &ObjectCfg) -> std::result::Result<(), String> {
         && len != fixed
     {
         return Err(format!("a {kt} key is {fixed} bytes; leave valueLen out or write {fixed}, not {len}"));
+    }
+    // Lengths no module makes: refused at load rather than by the module at `create` (review D1).
+    if o.class == ObjectClass::SecretKey && o.key_type == Some(KeyType::Aes) && ![16, 24, 32].contains(&len) {
+        return Err(format!("an AES key is 16, 24 or 32 bytes, not {len}"));
+    }
+    if o.class == ObjectClass::SecretKey && len == 0 {
+        return Err("valueLen 0: a secret key has at least one byte".into());
     }
     Ok(())
 }
@@ -1790,6 +1835,14 @@ pub fn parse_lock(text: &str, path: &Path) -> Result<Lock> {
     // Recorded types compare equal to canonicalized keys.toml types.
     for t in lock.objects.values_mut().filter_map(|o| o.object_type.as_mut()) {
         t.canonicalize();
+    }
+    // Recorded locators too: a lock written before keys.toml's were lower-cased still matches.
+    for (spec, on) in &mut lock.realisations {
+        for (token, r) in on {
+            r.locator.canonicalize().map_err(|e| {
+                KmError::Validation(format!("{}: realisation '{spec}' on '{token}': {e}", path.display()).into())
+            })?;
+        }
     }
     lock.validate(path)
 }
@@ -2154,6 +2207,19 @@ mod tests {
         let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/keys.lock"));
         let lock = load_lock(path).unwrap();
         assert_eq!(lock.realisations["signing-soft"]["softhsm"].binding, Some(Binding::PopSign));
+        // A recorded CKA_ID loads in lower case, as keys.toml's does: `0A` and `0a` are one
+        // locator, never a change to review (review D1). A non-hex one is no lock cakeys wrote.
+        let text = std::fs::read_to_string(path).unwrap();
+        let with_id = |id: &str| {
+            text.replace(
+                "locator = { CKA_LABEL = \"signing\" }",
+                &format!("locator = {{ CKA_LABEL = \"signing\", CKA_ID = \"{id}\" }}"),
+            )
+        };
+        let lock = parse_lock(&with_id("0A"), path).unwrap();
+        assert_eq!(lock.realisations["signing-soft"]["softhsm"].locator.id.as_deref(), Some("0a"));
+        let e = parse_lock(&with_id("zz"), path).unwrap_err();
+        assert!(e.to_string().contains("CKA_ID 'zz' is not hex"), "{e}");
     }
 
     /// Observation keys of a newer cakeys load and survive a rewrite (the TUF re-serialization
@@ -2267,7 +2333,7 @@ mod tests {
             let text = format!(
                 "[tokens.\"{token}\"]\ntokenLabel = \"t\"\n\n\
                  [objects.\"{object}\"]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
-                 [specs.\"{spec}\"]\nobject = \"{object}\"\n\
+                 [specs.\"{spec}\"]\nobject = \"{object}\"\nattributes = {{ CKA_SIGN = true }}\n\
                  tokens.\"{token}\" = {{ locator = {{ CKA_LABEL = \"k\" }}, origin = \"adopt\" }}\n"
             );
             parse_config_with(&text, Path::new("keys.toml"), &|_| None)
@@ -2293,10 +2359,16 @@ mod tests {
     #[test]
     fn origins_say_how_an_object_comes_to_be_on_a_token() {
         let load = |class: &str, a: &str, b: &str, second_spec: &str| {
+            // A usage each pair can prove possession by; none for what has no private half.
+            let attributes = if class.contains("CKO_CERTIFICATE") || a.contains("publicOnly") {
+                ""
+            } else {
+                "attributes = { CKA_SIGN = true }\n"
+            };
             let text = format!(
                 "[tokens.a]\ntokenLabel = \"a\"\n[tokens.b]\ntokenLabel = \"b\"\n\n\
                  [objects.k]\n{class}\n\n\
-                 [specs.k]\nobject = \"k\"\n\
+                 [specs.k]\nobject = \"k\"\n{attributes}\
                  tokens.a = {{ locator = {{ CKA_LABEL = \"k\" }}{a} }}\n\
                  tokens.b = {{ locator = {{ CKA_LABEL = \"k\" }}{b} }}\n{second_spec}"
             );
@@ -2345,10 +2417,16 @@ mod tests {
     #[test]
     fn objects_born_in_files_read_their_migrate_file() {
         let load = |object: &str, a: &str, b: &str| {
+            // A usage each pair can prove possession or commit by (DES3 only by encrypting).
+            let attributes = match object {
+                o if o.contains("CKO_CERTIFICATE") => "",
+                o if o.contains("CKK_DES3") => "attributes = { CKA_ENCRYPT = true }\n",
+                _ => "attributes = { CKA_SIGN = true }\n",
+            };
             let text = format!(
                 "[tokens.a]\ntokenLabel = \"a\"\n[tokens.b]\ntokenLabel = \"b\"\n\n\
                  [objects.k]\n{object}\n\n\
-                 [specs.k]\nobject = \"k\"\n\
+                 [specs.k]\nobject = \"k\"\n{attributes}\
                  tokens.a = {{ locator = {{ CKA_LABEL = \"k\" }}{a} }}\n\
                  tokens.b = {{ locator = {{ CKA_LABEL = \"k\" }}{b} }}\n"
             );

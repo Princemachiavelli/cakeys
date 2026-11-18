@@ -35,6 +35,11 @@ performs the write (`host::create_and_record` for imports, `ops::create_absent` 
 generation), and have the planner call that same predicate for its dry run. Move every rule that
 needs only keys.toml into `core::config`'s load, so "loads" means "usable".
 
+**Fixed (2026-11-18):** the attestation refusal sits before the write for every import, and a
+certificate's declared policy is compared (dc3f102). Load now checks locators, AES lengths and
+undefined tokens, and plans every (spec, token) pair (`plan_mode`), so a spec that loads is one
+every verb can use. Tests: `what_loads_is_usable` and the ISSUES.md "Fixed since" rows.
+
 ## D2. The lock: durability, validation on save, and what "previous" means
 
 - `save_lock` never validates; only `load_lock` does. `gc --apply` can drop an object a kept
