@@ -48,7 +48,15 @@ E
   ;;
 down)
   for p in abrmd dbus swtpm; do
-    [ -f "$D/$p.pid" ] && kill "$(cat "$D/$p.pid")" 2>/dev/null || true
+    [ -f "$D/$p.pid" ] || continue
+    pid=$(cat "$D/$p.pid")
+    kill "$pid" 2>/dev/null || continue
+    # Gone before returning, within 5 s: swtpm writes its state on the way out, and the caller
+    # (nix/test-tokens.sh) removes the directory next ("Directory not empty" otherwise).
+    for _ in $(seq 50); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
   done
   ;;
 *)
