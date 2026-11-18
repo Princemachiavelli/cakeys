@@ -291,16 +291,19 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   target `hex`); the attestation IDs' length-prefixed encoding reads back to its fields
   (`attest_encoding`); `tpm2_pkcs11::fix_ec_point` repairs exactly the malformed short form
   (`p521_point`). Kani is packaged (`nix/kani.nix`, 0.68.0 from source) and `checks.kani` (in
-  `nix flake check`, not `checks-crane-only`) proves the two hex properties: the round trip for
-  every input of up to two bytes (52 s, 2.5 GB), `decode` for every text of up to four (13 s,
-  0.5 GB). The other two have no proof: under Kani a heap value of symbolic length becomes
-  array constraints that took more than 8 GB, and `attest_encoding` (at one byte a field
-  already) and `fix_ec_point` (whose shape needs 130 bytes) each build such values. So a proof
-  takes a fixed array and a length, never a `Vec` or `String`. The three engines were first
+  `nix flake check`, not `checks-crane-only`) proves three: the hex round trip for every input
+  of up to two bytes (52 s, 2.5 GB), `decode` for every text of up to four (13 s, 0.5 GB), and
+  `fix_ec_point` for every input of up to 258 bytes, so every shape it repairs or leaves alone
+  (1m42s, 5.7 GB). Under Kani a heap value of symbolic length becomes array constraints, so a
+  proof takes a fixed array and a length, never a `Vec` or `String`, and code that copies
+  symbolic lengths onto the heap is what costs: `fix_ec_point`'s one copy is most of its 5.7 GB,
+  and `attest_encoding`, which copies every field, has no proof — fields of up to one byte ran
+  out of 8 GB, both encodings or `tpm-certify`'s two fields alone. The three engines were first
   bolero's (one harness, `--engine kani`); dropped 2026-11-18: its `Vec` and `String`
   generators are such values (no fix as of 2026-11; bolero #231 fixed only its byte-slice
-  input), its engine cost the hex round trip more than 8 GB where the plain proof takes 2.5,
-  and the libFuzzer side was never wired while cargo-fuzz is. `Commit::label`'s
+  input), its engine took the hex round trip past 8 GB where the plain proof takes 2.5 and
+  `fix_ec_point` past 8 GB where the plain proof takes 5.7, and the libFuzzer side was never
+  wired while cargo-fuzz is. `Commit::label`'s
   injectivity stays a proptest: Kani handles `format!` badly, and a proof would need a label
   parser written only for it. The other fuzz targets stay cargo-fuzz: tss-esapi's
   unmarshalling is C, and the DER, X.509 and TOML parsers are too deep for a bounded proof.

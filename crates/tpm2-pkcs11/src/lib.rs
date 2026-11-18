@@ -101,7 +101,7 @@ fn is_der_octets(raw: &[u8]) -> bool {
 }
 
 /// The property the fuzz target (`fuzz/fuzz_targets/p521_point.rs`) and the proptest below
-/// check on any bytes.
+/// check on any bytes, and the Kani proof in it for every input up to 258 bytes.
 pub mod fuzzing {
     use super::fix_ec_point;
     use std::borrow::Cow;
@@ -131,6 +131,23 @@ pub mod fuzzing {
             }
         }
     }
+
+    /// `ec_point_fix` for every input of up to `04 81 ff` and its 255 bytes, so every shape it
+    /// repairs or leaves alone: 1m42s, 5.7 GB (`checks.kani`). A fixed array and a length, not
+    /// a `Vec`: CBMC turns a heap value of symbolic length into array constraints, and
+    /// `fix_ec_point`'s own copy of the point is already most of the cost (docs/OPEN.md, "Kani
+    /// and fuzzing").
+    #[cfg(kani)]
+    mod proofs {
+        #[kani::proof]
+        #[kani::unwind(260)]
+        fn ec_point_fix() {
+            let b: [u8; 258] = kani::any();
+            let n: usize = kani::any();
+            kani::assume(n <= 258);
+            super::ec_point_fix(&b[..n]);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -139,9 +156,8 @@ mod tests {
 
     proptest::proptest! {
         /// `fuzzing::ec_point_fix` on any bytes, and on `04 <len> <len bytes>` built on purpose
-        /// (random bytes rarely have that shape, the one it repairs when `len >= 0x80`). Not a
-        /// Kani proof: the shape needs 130 bytes or more, and the repair copies them to the heap
-        /// at symbolic length, which took more than 8 GB (docs/OPEN.md, "Kani and fuzzing").
+        /// (random bytes rarely have that shape, the one it repairs when `len >= 0x80`). Longer
+        /// inputs than the Kani proof's in `fuzzing::proofs`.
         #[test]
         fn ec_point_fix_holds_on_any_bytes(
             shaped: bool,

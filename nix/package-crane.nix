@@ -248,10 +248,10 @@ craneLib.buildPackage (
             installPhaseCommand = "mkdir -p $out";
           }
         );
-      # The Kani proofs in cakeys_core::fuzzing (docs/OPEN.md, "Kani and fuzzing"), each for every
-      # input up to the bound it sets. kani-compiler builds the crate and its dependencies itself,
-      # from the same vendored sources: no crane artifacts to reuse. Not in checks-crane-only
-      # (flake.nix).
+      # The Kani proofs in cakeys_core::fuzzing and cakeys_tpm2_pkcs11::fuzzing (docs/OPEN.md, "Kani
+      # and fuzzing"), each for every input up to the bound it sets; fix_ec_point's, at 5.7 GB,
+      # is the largest. kani-compiler builds the crates and their dependencies itself, from the
+      # same vendored sources: no crane artifacts to reuse. Not in checks-crane-only (flake.nix).
       kani = lib.mapNullable (
         kani:
         craneLib.mkCargoDerivation (
@@ -263,6 +263,7 @@ craneLib.buildPackage (
             buildPhaseCargoCommand = ''
               export HOME=$TMPDIR
               cargo kani -p cakeys-core
+              cargo kani -p cakeys-tpm2-pkcs11
             '';
             doInstallCargoArtifacts = false;
             installPhaseCommand = "mkdir -p $out";

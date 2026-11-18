@@ -100,8 +100,9 @@ mod tests {
 /// or `cargo kani -p cakeys-core` with Kani on PATH (`nix build .#kani`). The inputs are a fixed
 /// array and a length to take of it, never a `Vec` or `String`: CBMC turns a heap value of
 /// symbolic length into array constraints that took more than 8 GB even at two bytes.
-/// `attest_encoding_reads_back` has no proof: `attest_encoding` itself grows a `Vec` by fields
-/// of symbolic length, and ran out of 8 GB at one byte a field.
+/// `attest_encoding_reads_back` has no proof: `attest_encoding` itself copies each field into
+/// its `Vec` at symbolic length, and a plain proof of fields up to one byte ran out of 8 GB,
+/// both encodings or `tpm-certify`'s two fields alone.
 #[cfg(kani)]
 mod proofs {
     fn bytes<const N: usize>() -> ([u8; N], usize) {
