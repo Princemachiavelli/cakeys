@@ -30,7 +30,8 @@ tokens.ref = { locator = { CKA_LABEL = "occupied" }, origin = "create" }
 
 /// D1: when the lock already pins an object's material, `create` is refused before anything is
 /// created — generated material could never match. The same material adopted (or already under the
-/// locator) still realises through `lock`; `create` there makes nothing and says the key exists (19).
+/// locator) still realises through `lock`; `create` there makes nothing and verifies it as
+/// `check` does, which wants the realisation recorded first (14).
 #[test]
 fn create_never_fights_a_locked_identity() {
     let Some(e) = env("d1") else { return };
@@ -59,31 +60,35 @@ fn create_never_fights_a_locked_identity() {
     assert!(s.labelled("d1-second").is_empty(), "nothing was created");
 
     // The same material under the locator still realises (like `two_specs_same_material`): the
-    // second spec's `lock` records a second realisation of the one object. `create` never
-    // finds a key: one that is there is 19, and nothing is made.
+    // second spec's `lock` records a second realisation of the one object. `create` never makes
+    // a pinned key again: it verifies the one that is there as `check` does, which refuses a
+    // realisation the lock does not record (14) until `lock` records it; then it passes.
     e.config(&format!(
         "{first}{second}tokens.ref = {{ locator = {{ CKA_LABEL = \"d1-first\" }}, origin = \"create\" }}\n"
     ));
     let o = e.km(&["create", "--spec", "second-slot", "--token", "ref", "--no-update-lock"]);
-    assert_eq!(code(&o), 19, "{}", stderr(&o));
-    assert!(stderr(&o).contains("already under its locator"), "{}", stderr(&o));
+    assert_eq!(code(&o), 14, "{}", stderr(&o));
+    assert!(stderr(&o).contains("the lock records no realisation of spec 'second-slot'"), "{}", stderr(&o));
     assert_eq!(s.labelled("d1-first").len(), 2, "the pair that was there, and no other");
     assert_eq!(e.code(&["lock", "--spec", "second-slot", "--token", "ref", "--update-lock"]), 0);
     let lock = e.lock();
     assert!(lock["realisations"]["second-slot"]["ref"].is_table());
     assert_eq!(lock["realisations"]["second-slot"]["ref"]["object"].as_str(), Some("signing"));
     assert_eq!(e.locked_id("signing", "rfc7093m4"), id, "the object keeps its one identity");
+    assert_eq!(e.code(&["create", "--spec", "second-slot", "--token", "ref"]), 0);
+    assert_eq!(s.labelled("d1-first").len(), 2, "still no other");
 }
 
 /// `cakeys create` is the one verb that makes keys: every unpinned pair, once, with every guard
-/// of a creation — a pinned object absent from its token is refused (14), never regenerated.
+/// of a creation. A pinned key is verified as `check` verifies it, never made again: one that
+/// matches is left alone (0), one that does not fails as `check` fails it (10), one its token
+/// lost is refused (14). An unpinned key already there is never found (19).
 #[test]
 fn create_makes_keys_and_nothing_else_does() {
     let Some(e) = env("create") else { return };
     let s = e.session();
-    s.clear(&["create-ec", "create-aes"]);
-    e.config(
-        "[objects.ec]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+    s.clear(&["create-ec", "create-aes", "create-loose"]);
+    let body = "[objects.ec]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [objects.aes]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
          [specs.ec]\nobject = \"ec\"\nattributes = { CKA_SIGN = true, CKA_DESTROYABLE = true }\n\
          tokens.ref = { locator = { CKA_LABEL = \"create-ec\" }, origin = \"create\" }\n\n\
@@ -92,8 +97,8 @@ fn create_makes_keys_and_nothing_else_does() {
          [objects.cert]\nclass = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"\n\n\
          [specs.cert]\nobject = \"cert\"\ntokens.ref = { locator = { CKA_LABEL = \"create-cert\" } }\n\n\
          [specs.ec-public]\nobject = \"ec\"\n\
-         tokens.ref = { locator = { CKA_LABEL = \"create-ec-public\" }, publicOnly = true }\n",
-    );
+         tokens.ref = { locator = { CKA_LABEL = \"create-ec-public\" }, publicOnly = true }\n";
+    e.config(body);
     // The first-use flow finds nothing and makes nothing.
     assert_eq!(e.code(&["lock", "--spec", "ec", "--token", "ref"]), 11);
     assert_eq!(e.code(&["check", "ec", "--spec", "ec"]), 11);
@@ -112,21 +117,57 @@ fn create_makes_keys_and_nothing_else_does() {
     }
     assert_eq!(e.code(&["verify", "--spec", "ec", "--token", "ref"]), 0);
 
-    // Again: both are pinned now, so nothing is created twice.
-    let o = e.km(&["create", "--token", "ref"]);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
-    assert_eq!(stdout(&o), "[]");
-    assert!(stderr(&o).contains("already pins object 'ec'"));
-    assert_eq!(s.labelled("create-ec").len(), 2);
+    // Again: both are pinned now, so each is verified as `check` verifies it, and nothing is
+    // created twice; named, the same.
+    for args in [&["create", "--token", "ref"][..], &["create", "--spec", "ec", "--token", "ref"]] {
+        let o = e.km(args);
+        assert_eq!(code(&o), 0, "{args:?}: {}", stderr(&o));
+        assert_eq!(stdout(&o), "[]");
+        assert!(stderr(&o).contains("already pins object 'ec'"), "{}", stderr(&o));
+        assert!(stderr(&o).contains("'ec' (spec 'ec') on token 'ref' is already there and matches the lock"));
+        assert_eq!(s.labelled("create-ec").len(), 2, "no second pair");
+    }
+    assert_eq!(e.code(&["create", "--dry-run"]), 0);
+    let plan: serde_json::Value = serde_json::from_str(&stdout(&e.km(&["create", "--dry-run"]))).unwrap();
+    let action = |spec: &str| plan.as_array().unwrap().iter().find(|p| p["spec"] == spec).unwrap()["action"].clone();
+    assert_eq!((action("ec"), action("cert")), ("verify".into(), "skip".into()), "{plan}");
 
-    // A named pair is not skipped: its key is there, so nothing is made (19)...
-    let o = e.km(&["create", "--spec", "ec", "--token", "ref"]);
-    assert_eq!(code(&o), 19, "{}", stderr(&o));
-    assert!(stderr(&o).contains("`cakeys lock` records a key that is there"), "{}", stderr(&o));
-    assert_eq!(s.labelled("create-ec").len(), 2, "no second pair");
-    // ...and refused, never regenerated, when the lock pins material the token lost.
+    // A pinned key that does not match the lock fails as `check` fails it (10), the run with it.
+    let path = e.dir.join("keys.lock");
+    let pinned = std::fs::read_to_string(&path).unwrap();
+    let mut lock = e.lock();
+    for (_, id) in lock["objects"]["aes"]["ids"].as_table_mut().unwrap().iter_mut() {
+        *id = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=".into();
+    }
+    std::fs::write(&path, toml::to_string(&lock).unwrap()).unwrap();
+    for args in [&["create", "--token", "ref"][..], &["create", "--spec", "aes", "--token", "ref"]] {
+        let o = e.km(args);
+        assert_eq!(code(&o), 10, "{args:?}: {}", stderr(&o));
+        assert_eq!(e.code(&["check", "aes"]), 10);
+    }
+    std::fs::write(&path, &pinned).unwrap();
+
+    // A key the lock does not pin, already under its locator, is never found: 19, named or not.
+    e.config(&format!(
+        "{body}\n[objects.loose]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.loose]\nobject = \"loose\"\nattributes = {{ CKA_SIGN = true }}\n\
+         tokens.ref = {{ locator = {{ CKA_LABEL = \"create-loose\" }}, origin = \"create\" }}\n"
+    ));
+    // Made, and not recorded: a first use (18).
+    assert_eq!(e.code(&["create", "--spec", "loose", "--token", "ref", "--no-update-lock"]), 18);
+    for args in [&["create", "--token", "ref"][..], &["create", "--spec", "loose", "--token", "ref"]] {
+        let o = e.km(args);
+        assert_eq!(code(&o), 19, "{args:?}: {}", stderr(&o));
+        assert!(stderr(&o).contains("`cakeys lock` records a key that is there"), "{}", stderr(&o));
+    }
+    assert_eq!(s.labelled("create-loose").len(), 2, "no second pair");
+    s.clear(&["create-loose"]);
+    e.config(body);
+
+    // A pinned key the token lost is refused, never regenerated (14), named or not.
     s.clear(&["create-ec"]);
     assert_eq!(e.code(&["create", "--spec", "ec", "--token", "ref"]), 14);
+    assert_eq!(e.code(&["create", "--token", "ref"]), 14);
     // Named, a pair whose origin is not `create` is still not created (17).
     let o = e.km(&["create", "--spec", "cert", "--token", "ref"]);
     assert_eq!(code(&o), 17, "{}", stderr(&o));

@@ -629,9 +629,20 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
     Err(e)
 }
 
+/// What [`create`] did with its pair.
+#[derive(Debug)]
+pub enum Made {
+    /// Created and recorded; whether the lock changed.
+    Created(Resolved, bool),
+    /// Already there, and the lock pins it: verified as `check` verifies it, nothing made and
+    /// nothing written.
+    Verified(Resolved),
+}
+
 /// PUT If-None-Match: create the object under the declared locator, then record it as [`lock`]
-/// does. The one verb that creates, and only on a pair whose `origin` is `create`. It never
-/// finds: an object already under the locator is `Exists` (19), whatever it holds, before any
+/// does. The one verb that creates, and only on a pair whose `origin` is `create`. A key the
+/// lock pins that is already under the locator is verified as `check` verifies it ([`verify`])
+/// and left alone; one the lock does not pin is `Exists` (19), whatever it holds, before any
 /// capability is asked of the token — `lock` is the verb for a key that is there. Every other
 /// guard of a creation applies: the lock must not pin the object's material already (D1), and
 /// nothing of another class may sit under the locator.
@@ -639,31 +650,32 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
 /// # Errors
 ///
 /// `Validation` (17) on a pair whose origin is not `create`, before the token is touched;
-/// `Exists` (19) when the object is already under its locator, `Ambiguous` when several are;
-/// `plan_mode`/`check_capabilities` rejections, the generation included; `PreconditionFailed`
-/// (D1) when the lock already pins the object's material, `Unavailable` when a session without
-/// login cannot see the locator, `Conflict` when the locator is occupied by another class; and
-/// `compare`'s on the object just made.
-pub fn create(
-    t: &Target,
-    tok: &Token,
-    lock: &mut Lock,
-    write: LockWrite,
-    notes: &mut Notes,
-) -> Result<(Resolved, bool)> {
+/// [`verify`]'s errors for a pinned key that is there (`HashMismatch` (10) for other material,
+/// `PreconditionFailed` (14) for a realisation the lock does not record or that moved);
+/// `Exists` (19) when an unpinned key is already under its locator, `Ambiguous` when several
+/// are; `plan_mode`/`check_capabilities` rejections, the generation included;
+/// `PreconditionFailed` (D1) when the lock pins the object's material and the token lost it,
+/// `Unavailable` when a session without login cannot see the locator, `Conflict` when the
+/// locator is occupied by another class; and `compare`'s on the object just made.
+pub fn create(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes: &mut Notes) -> Result<Made> {
     let mode = plan_mode(t)?;
     if let Some(why) = not_origin_create(t) {
         return Err(KmError::Validation(format!("{t}: {why}")));
     }
     if tok.find_key(t.object, &t.on_token.locator, false)?.is_some() {
-        return Err(KmError::Exists(format!(
-            "{t} is already under its locator: nothing was created; `cakeys lock` records a key that is there"
-        )));
+        if pinned(t, lock).is_none() {
+            return Err(KmError::Exists(format!(
+                "{t} is already under its locator: nothing was created; `cakeys lock` records a key that is there"
+            )));
+        }
+        let r = verify(t, tok, lock, notes)?;
+        notes.say(format!("{t} is already there and matches the lock: nothing created"));
+        return Ok(Made::Verified(r));
     }
     check_capabilities(t, tok, mode, Verb::Create)?;
     let r = create_absent(t, tok, lock, notes)?;
     let changed = reconcile::reconcile(t, &r, lock, &facts(t, tok, &r, true), write, notes)?;
-    Ok((r, changed))
+    Ok(Made::Created(r, changed))
 }
 
 /// Why `create` never makes `t`'s object: its pair's origin is not `create`.
@@ -690,12 +702,13 @@ fn not_created(t: &Target, lock: &Lock) -> Option<String> {
     not_origin_create(t).or_else(|| pinned(t, lock))
 }
 
-/// Why a pair's object is not created again: the lock already pins its material.
+/// Why a pair's object is not created again: the lock already pins its material, so `create`
+/// verifies the key that is there instead.
 fn pinned(t: &Target, lock: &Lock) -> Option<String> {
     lock.objects.get(t.object_name).filter(|o| !o.ids.is_empty()).map(|_| {
         format!(
-            "the lock already pins object '{}' (`verify` checks it; a token without it needs that same \
-             material imported, never a new key)",
+            "the lock already pins object '{}': the run verifies it is there and matches, as `check` \
+             does, and makes nothing",
             t.object_name
         )
     })
@@ -733,7 +746,10 @@ pub fn create_pairs<'a>(
 pub enum Action {
     /// Created; a key already under the locator is `Exists` (19) when the run gets there.
     Create,
-    /// Left alone: not created here, or already pinned.
+    /// The lock pins it: the run verifies the key that is there, as `check` does, and makes
+    /// nothing ([`Made::Verified`]).
+    Verify,
+    /// Left alone: its origin is not `create`.
     Skip,
     /// The capability profiles say the token cannot make it.
     Refuse,
@@ -745,9 +761,16 @@ impl Action {
     pub fn name(self) -> &'static str {
         match self {
             Action::Create => "create",
+            Action::Verify => "verify",
             Action::Skip => "skip",
             Action::Refuse => "refuse",
         }
+    }
+
+    /// Whether the run opens the pair's token: to create it or to verify it.
+    #[must_use]
+    pub fn runs(self) -> bool {
+        matches!(self, Action::Create | Action::Verify)
     }
 }
 
@@ -767,11 +790,11 @@ pub struct Planned<'a> {
 
 /// What `create` does with each selected pair ([`create_pairs`]), decided from keys.toml, the
 /// lock and the capability profiles alone, before any token is opened: a pair whose origin is
-/// not `create`, or whose object the lock pins, is skipped (unless the address names that one
-/// pair: an object or a spec, and a token); every other pair goes through the static gate
-/// ([`crate::gate::check`]), whose *no* refuses it and whose *unknown* is a reason to try. A
-/// token whose profiles are not known without opening it is not gated here; the live check
-/// still refuses before generating.
+/// not `create` is skipped (unless the address names that one pair: an object or a spec, and a
+/// token); one whose object the lock pins is verified, never made again; every other pair goes
+/// through the static gate ([`crate::gate::check`]), whose *no* refuses it and whose *unknown*
+/// is a reason to try. A token whose profiles are not known without opening it is not gated
+/// here; the live check still refuses before generating.
 ///
 /// # Errors
 ///
@@ -794,13 +817,17 @@ pub fn plan_create<'a>(
         let planned =
             |action, reasons| Planned { spec: spec_name, token: token_name, object: t.object_name, action, reasons };
         let mode = plan_mode(&t)?;
-        if named && let Some(why) = not_origin_create(&t) {
-            return Err(KmError::Validation(format!("{t}: {why}")));
-        }
-        if !named && let Some(why) = not_created(&t, lock) {
+        if let Some(why) = not_origin_create(&t) {
+            if named {
+                return Err(KmError::Validation(format!("{t}: {why}")));
+            }
             out.push(planned(Action::Skip, vec![why]));
             continue;
         }
+        let (action, why) = match pinned(&t, lock) {
+            Some(why) => (Action::Verify, vec![why]),
+            None => (Action::Create, Vec::new()),
+        };
         if !stacks.contains_key(token_name) {
             let token_cfg = &cfg.tokens[token_name];
             stacks.insert(token_name, crate::gate::stack(token_name, token_cfg, lock)?);
@@ -809,12 +836,12 @@ pub fn plan_create<'a>(
             Ok(stack) => {
                 let v = crate::gate::check(&t, mode, stack, registry, creates(&t, lock))?;
                 if v.refusals.is_empty() {
-                    planned(Action::Create, v.notes)
+                    planned(action, [why, v.notes].concat())
                 } else {
                     planned(Action::Refuse, v.refusals)
                 }
             }
-            Err(why) => planned(Action::Create, vec![format!("{t}: not checked before opening the token: {why}")]),
+            Err(e) => planned(action, [why, vec![format!("{t}: not checked before opening the token: {e}")]].concat()),
         });
     }
     Ok(out)
@@ -831,9 +858,10 @@ pub struct Created {
     pub failed: Option<KmError>,
 }
 
-/// The `create` verb: [`create`] over each of `pairs` (what [`plan_create`] decided to create),
-/// in order. Every step of a pair, opening its token included, ends the run there, reported in
-/// [`Created::failed`] beside what was created before.
+/// The `create` verb: [`create`] over each of `pairs` (what [`plan_create`] decided to create or
+/// verify), in order. Every step of a pair, opening its token included, ends the run there,
+/// reported in [`Created::failed`] beside what was created before; a verified key is said in a
+/// note.
 ///
 /// At most one token is open at a time: each is closed before the next opens.
 ///
@@ -851,7 +879,7 @@ pub fn create_selected(
     let mut out = Created { created: Vec::new(), changed: false, failed: None };
     let mut current: Option<Token> = None;
     for &(spec_name, token_name) in pairs {
-        let mut pair = || -> Result<(Resolved, bool)> {
+        let mut pair = || -> Result<Made> {
             let t = Target::new(cfg, spec_name, token_name)?;
             // Another token's module is finalized (dropped) before the next open.
             let tok = match current.take().filter(|tok| tok.name == token_name) {
@@ -861,10 +889,11 @@ pub fn create_selected(
             create(&t, tok, lock, write, notes)
         };
         match pair() {
-            Ok((r, c)) => {
+            Ok(Made::Created(r, c)) => {
                 out.changed |= c;
                 out.created.push(r);
             }
+            Ok(Made::Verified(_)) => {}
             Err(e) => {
                 out.failed = Some(e);
                 break;

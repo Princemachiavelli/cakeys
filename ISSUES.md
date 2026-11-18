@@ -136,11 +136,12 @@ Still open.
   intermediates run to 2052 and 9999, so real chains should rarely trip it.
 - **`create` flags** (from B2). `create` now stops with 19 at the first key that exists. A flag
   such as `--only-new`, to skip those and create the rest, is parked in docs/OPEN.md.
-  **Decided 2026-11-17, not built:** no flag. A key the lock pins and that verifies (as `check`
-  would) is skipped with a note and the run goes on; one the lock pins that does not verify
-  fails as a mismatch; one the lock does not pin still stops with 19, naming `lock`. Exit 0
-  when nothing failed, skips included; the JSON output says which pairs were created and
-  which skipped.
+  **Done 2026-11-17:** no flag. Every pair whose object the lock pins, named or not, is
+  verified as `check` verifies it (`ops::verify`) instead of skipped unseen: one that matches
+  is left alone with a note, one that does not fails with `check`'s code, one its token lost is
+  14. A key the lock does not pin still stops the run with 19, naming `lock`. Exit 0 when
+  nothing failed; stdout lists what was created, and `--dry-run` says `verify` for the pinned
+  pairs. A run over every pair now opens each token that holds a pinned pair, logins included.
 - **B18. The by-name curve fallback retries after any failure**
   (`crates/pkcs11/src/token/generate.rs:141`), not only a refusal of the parameters. Left:
   narrowing it needs the return value ykcs11 gives an Edwards OID, which the profile records as

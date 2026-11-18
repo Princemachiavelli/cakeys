@@ -119,14 +119,13 @@ fn admin_credential_is_read_only_by_security_officer_steps() {
         )
     };
     let missing = e.dir.join("never-read");
-    // The key is made under the first credential; under the second it is there (19), which
-    // `create` finds without the credential either.
-    for (admin, created) in [
-        (format!("soCredentialFile = \"{}\"", missing.display()), 0),
-        ("soCredentialEnv = \"KM_E2E_NEVER_SET\"".to_owned(), 19),
-    ] {
+    // The key is made under the first credential; under the second it is there and pinned, and
+    // `create` verifies it without the credential either.
+    for admin in
+        [format!("soCredentialFile = \"{}\"", missing.display()), "soCredentialEnv = \"KM_E2E_NEVER_SET\"".to_owned()]
+    {
         std::fs::write(e.dir.join("keys.toml"), toml(&format!("pinFile = \"{}\"\n{admin}", pin.display()))).unwrap();
-        for (verb, exit) in [("create", created), ("resolve", 0)] {
+        for (verb, exit) in [("create", 0), ("resolve", 0)] {
             let o = e.km(&[verb, "--spec", "signing-soft", "--token", "ref"]);
             assert_eq!(code(&o), exit, "{admin} {verb}: {}", stderr(&o));
         }

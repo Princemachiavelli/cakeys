@@ -21,7 +21,7 @@ pub use cakeys_cli_common::default_registry;
 /// Exit codes: 0 ok, 10 hash mismatch, 11 not found,
 /// 12 ambiguous, 13 conflict, 14 precondition failed, 15 unsupported, 16 unavailable,
 /// 17 invalid spec, 18 first use (nothing pinned yet: record the `got:` hash), 19 already
-/// exists (`create` on a key that is there), 20 objects failed (`check --token`: each failure
+/// exists (`create` on a key that is there and not pinned), 20 objects failed (`check --token`: each failure
 /// listed with its own code), 1 other.
 #[derive(Parser)]
 #[command(version)]
@@ -58,18 +58,19 @@ enum Cmd {
         write: LockWriteArgs,
     },
     /// Create keys, the one verb that does: every selected (spec, token) pair with origin =
-    /// "create" whose object the lock does not pin yet, then record them like `lock`; the other
+    /// "create" whose object the lock does not pin yet, then record them like `lock`; a pair
+    /// whose object the lock pins is verified as `check` verifies it and left alone; the other
     /// pairs are skipped with a note. Nothing named selects every pair. Before any token is
     /// opened, each is checked against the capability profiles: a pair they say cannot be made
     /// refuses the whole run (15), and nothing is created. Naming one pair (an object or --spec,
-    /// and --token) creates it or says why not. A key already under its locator is never found
-    /// and compared: the run stops there (19), and `lock` records it. Prints the realised
-    /// objects as JSON.
+    /// and --token) creates or verifies it, or says why not. A key the lock does not pin already
+    /// under its locator stops the run (19): `lock` records it. Prints the created objects as
+    /// JSON.
     Create {
         #[command(flatten)]
         at: Address,
-        /// Print what would be created, skipped or refused, and why, as JSON; open no token and
-        /// write nothing. Exits 15 when a pair is refused (0 with --skip-unsupported).
+        /// Print what would be created, verified, skipped or refused, and why, as JSON; open no
+        /// token and write nothing. Exits 15 when a pair is refused (0 with --skip-unsupported).
         #[arg(long)]
         dry_run: bool,
         /// Create the pairs the profiles allow and warn about the ones they refuse, instead of
@@ -457,8 +458,8 @@ impl Run<'_> {
 
     /// `create`: what each selected pair gets is decided before any token is opened
     /// ([`ops::plan_create`]); a pair the profiles refuse ends the run there unless
-    /// `--skip-unsupported`. Then the pairs to create, and the lock records what was created,
-    /// also when a later pair failed — never a key made and lost.
+    /// `--skip-unsupported`. Then the pairs to create or verify, and the lock records what was
+    /// created, also when a later pair failed — never a key made and lost.
     fn create(&mut self, at: &Address, how: CreateHow, notes: &mut Notes) -> anyhow::Result<()> {
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
         let (object, spec, token) = (at.plain_object()?, at.spec.as_deref(), at.token.as_deref());
@@ -471,7 +472,7 @@ impl Run<'_> {
                         "create: skipped '{}' (spec '{}') on token '{}': {r}",
                         p.object, p.spec, p.token
                     )),
-                    ops::Action::Create => notes.note(format_args!("create: {r}")),
+                    ops::Action::Create | ops::Action::Verify => notes.note(format_args!("create: {r}")),
                     ops::Action::Refuse if how.skip_unsupported => {
                         notes.warn(format!("create: skipped, unsupported: {r}"));
                     }
@@ -505,8 +506,7 @@ impl Run<'_> {
         if how.dry_run {
             return Ok(());
         }
-        let pairs: Vec<(&str, &str)> =
-            planned.iter().filter(|p| p.action == ops::Action::Create).map(|p| (p.spec, p.token)).collect();
+        let pairs: Vec<(&str, &str)> = planned.iter().filter(|p| p.action.runs()).map(|p| (p.spec, p.token)).collect();
         let open = |name: &str, notes: &mut Notes| open_token(cfg, modules, registry, name, Access::Write, notes);
         let done = ops::create_selected(cfg, &pairs, &open, &mut self.lock, how.write, notes);
         self.save(done.changed, notes)?;

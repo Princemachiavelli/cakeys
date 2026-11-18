@@ -300,8 +300,10 @@ attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = false }
 tokens.soft = { locator = { CKA_LABEL = "fixed" }, origin = "create" }
 EOF
 echo 'Without a spec, create makes every pair keys.toml says it creates (origin = "create") and the'
-echo "lock does not pin yet (signing is pinned, shared adopted, so they are left alone):"
-jqf='.[] | {object, token, rfc7093m4: .ids.rfc7093m4}' expect 0 cakeys create --token soft
+echo "lock does not pin yet, and verifies the ones it pins as verify does (shared is adopted, so it"
+echo "is left alone). signing is still the key planted in act 3: the run makes the new keys, records"
+echo "them, then stops there."
+jqf='.[] | {object, token, rfc7093m4: .ids.rfc7093m4}' expect 10 cakeys create --token soft
 echo 'movable is born on soft (origin = "create"), so kryo can only import it. A sealed move needs the'
 echo "target to name a transport key: an RSA key there that only unwraps and never leaves it."
 expect 15 camigrate export movable --token soft --target kryo --dry-run

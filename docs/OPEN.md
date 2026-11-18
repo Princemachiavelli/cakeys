@@ -98,11 +98,6 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   when a consumer asks; a versioned JSON form of `check` (the URI, the IDs, the time verified);
   how notes and warnings reach a binding; whether closing the check-then-use gap is worth tying
   programs to the library's session.
-- **What `create` does with a key that is already there** (2026-11-16). Today it stops with 19
-  and makes nothing, for a named pair and for a run over every pair alike. **Decided
-  2026-11-17, not built** (ISSUES.md, "`create` flags"): no flag; a key the lock pins that
-  verifies is skipped with a note, one that does not verify fails as a mismatch, one the lock
-  does not pin still stops with 19; exit 0 when nothing failed.
 - **Certificate validity in the PIV attestation chain** (2026-11-16, ISSUES.md B8). The chain is
   verified by signature, issuer name and `basicConstraints`, never by `notBefore`/`notAfter`.
   **Decided 2026-11-17, not built** (ISSUES.md B8): `check` holds every link to its validity
