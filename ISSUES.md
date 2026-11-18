@@ -161,9 +161,16 @@ Still open. Each says why it was not done with the rest.
   cutting `CKR_*` and cryptoki's prose out of a formatted `KmError`, and the `create` note
   scanned for `CKA_PRIVATE = false`. Fixing it means `KmError` carries the return value and
   `Token::create` returns a typed note: a change to the public error type and to the
-  `Provider::create` signature. **Decided 2026-11-17, not built:** `KmError` keeps its variants
-  and gains an optional `CK_RV`, set by the token layer where a module call failed;
-  `Token::create` returns a typed note; the probe matches values, not text.
+  `Provider::create` signature. **Done 2026-11-17:** `KmError` keeps its variants; their
+  message is a `cakeys_core::Msg`, the same text plus an optional `CK_RV`
+  (`KmError::rv`), which the token layer sets where a module call failed (`token::rv_of`: the
+  shared `ck`, the proofs' `proof_failed`, generation, imports, commitments). The probe
+  matches `CKR_OPERATION_ACTIVE` and names a refusal by that value, its operation outcomes
+  carrying it too; `Token::create` returns a typed `CreateNote` (`public_made_private`,
+  `by_name`) whose text is what it said before. Two fault cases pin the busy session by value
+  (mutation-checked: each fails without its value). The SO-login check still reads cakeys'
+  own message, now through one constant (`token::SO_LOGIN`): which login failed is no return
+  value.
 - **Q4. `rv_name` derives `CKR_*` names from cryptoki's `Debug` output**, which committed
   profiles pin. cryptoki 0.12 has no conversion from `RvError` back to its number, so the
   alternative is a hand-kept table of about ninety variants. **Done 2026-11-17:** p11-fault's

@@ -27,7 +27,7 @@ impl Token {
         spec: &SpecCfg,
         loc: &Locator,
         binding: Option<Binding>,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<CreateNote>> {
         self.provider.create(self, &Create { object, spec, locator: loc, binding })
     }
 
@@ -40,7 +40,7 @@ impl Token {
     /// As [`Self::create`].
     ///
     /// [`Provider::create`]: crate::Provider::create
-    pub fn create_declared(&self, req: &Create<'_>) -> Result<Option<String>> {
+    pub fn create_declared(&self, req: &Create<'_>) -> Result<Option<CreateNote>> {
         let own = self.provider.generation(req.object, req.spec, req.locator, req.binding)?;
         self.managing("generating a key", || match &own {
             Some(g) => self.generate_own(g),
@@ -61,7 +61,7 @@ impl Token {
     }
 
     /// The module's own generation: its template alone, no public template.
-    fn generate_own(&self, g: &Generation) -> Result<Option<String>> {
+    fn generate_own(&self, g: &Generation) -> Result<Option<CreateNote>> {
         let (mech, pair) = keygen_mechanism(g.keygen)
             .ok_or_else(|| self.unsupported(format!("generating key on '{}' with {}", self.name, g.keygen)))?;
         let made = if pair {
@@ -69,8 +69,9 @@ impl Token {
         } else {
             self.session.generate_key(&mech, &g.template).map(drop)
         };
-        made.map(|()| None)
-            .map_err(|e| self.unsupported(format!("generating key on '{}': {} ({e})", self.name, rv_name(&e))))
+        made.map(|()| None).map_err(|e| {
+            self.unsupported(format!("generating key on '{}': {} ({e})", self.name, rv_name(&e))).with_rv(rv_of(&e))
+        })
     }
 
     /// cakeys' template for the key `on` generates (a pair's private one), as the provider
@@ -104,31 +105,27 @@ impl Token {
             .transpose()
     }
 
-    fn generate(&self, object: &ObjectCfg, spec: &SpecCfg, loc: &Locator) -> Result<Option<String>> {
+    fn generate(&self, object: &ObjectCfg, spec: &SpecCfg, loc: &Locator) -> Result<Option<CreateNote>> {
         // Each template as the provider adjusts it, before anything is generated.
         let on = Declared { object, spec, locator: loc };
         let key = self.generation_key(on)?;
         let public = self.generation_public(on, None)?;
-        let refused =
-            |e: CkError| self.unsupported(format!("generating key on '{}': {} ({e})", self.name, rv_name(&e)));
+        let refused = |e: CkError| {
+            self.unsupported(format!("generating key on '{}': {} ({e})", self.name, rv_name(&e))).with_rv(rv_of(&e))
+        };
         let private_declared =
             spec.attributes.contains_key("CKA_PRIVATE") || spec.public_attributes.contains_key("CKA_PRIVATE");
         // A key pair, once more without the public half's default `CKA_PRIVATE = false` when the
-        // module refuses it ([`with_public_default_dropped`]).
+        // module refuses it ([`with_public_default_dropped`]): whether it did.
         let pair = |mech: &Mechanism, public: &[Attribute], private: &[Attribute]| {
             with_public_default_dropped(public, private_declared, |p| self.session.generate_key_pair(mech, p, private))
-                .map(|(_, dropped)| {
-                    dropped.then(|| {
-                        format!(
-                            "{}: the module refuses a public key with CKA_PRIVATE = false; generated \
-                             without it, so its public key is private (reading it needs a login)",
-                            self.name
-                        )
-                    })
-                })
+                .map(|(_, dropped)| dropped)
         };
+        let note = |dropped, by_name| CreateNote::of(&self.name, dropped, by_name);
         match (key_type_of(object)?, public) {
-            (KeyType::RSA, Some(public)) => pair(&Mechanism::RsaPkcsKeyPairGen, &public, &key).map_err(refused),
+            (KeyType::RSA, Some(public)) => {
+                pair(&Mechanism::RsaPkcsKeyPairGen, &public, &key).map(|d| note(d, None)).map_err(refused)
+            }
             (KeyType::EC | KeyType::EC_EDWARDS, Some(by_oid_public)) => {
                 let curve = curve_of(object)?;
                 let mech = self.runnable(if curve.edwards() {
@@ -143,12 +140,9 @@ impl Token {
                 match (by_oid, curve.params_by_name()) {
                     (Err(e), Some(name)) => {
                         let by_name = self.generation_public(on, Some(name))?.unwrap_or_default();
-                        pair(&mech, &by_name, &key).map_err(|_| e).map(|note| {
-                            let said = format!("{}: {BY_NAME} ({})", self.name, curve.name());
-                            Some(note.map_or_else(|| said.clone(), |n| format!("{n}; {said}")))
-                        })
+                        pair(&mech, &by_name, &key).map_err(|_| e).map(|d| note(d, Some(curve.name().to_owned())))
                     }
-                    (other, _) => other,
+                    (other, _) => other.map(|d| note(d, None)),
                 }
                 .map_err(refused)
             }
@@ -249,6 +243,53 @@ impl Token {
 /// (PKCS#11 3.0's `PrintableString` `CKA_EC_PARAMS`), never by OID: ykcs11's edwards25519.
 pub const BY_NAME: &str = "the module takes the curve only by name, as a PrintableString CKA_EC_PARAMS";
 
+/// What [`Token::create`]'s note says when the module refused the public half's
+/// `CKA_PRIVATE = false` default and the pair was generated without it (AWS `CloudHSM`).
+pub const PUBLIC_MADE_PRIVATE: &str = "the module refuses a public key with CKA_PRIVATE = false";
+
+/// How [`Token::create`] made a key other than it was asked (ISSUES.md Q3): read as data by
+/// the probe, said on the run as its `Display`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateNote {
+    /// The token's keys.toml name, which each part of the note starts with.
+    token: String,
+    /// The public half was generated without `CKA_PRIVATE = false` ([`PUBLIC_MADE_PRIVATE`]).
+    pub public_made_private: bool,
+    /// The curve the module took only by name ([`BY_NAME`]).
+    pub by_name: Option<String>,
+}
+
+impl CreateNote {
+    /// `Some` when either part says something.
+    fn of(token: &str, public_made_private: bool, by_name: Option<String>) -> Option<Self> {
+        (public_made_private || by_name.is_some()).then(|| CreateNote {
+            token: token.to_owned(),
+            public_made_private,
+            by_name,
+        })
+    }
+}
+
+impl std::fmt::Display for CreateNote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let token = &self.token;
+        if self.public_made_private {
+            write!(
+                f,
+                "{token}: {PUBLIC_MADE_PRIVATE}; generated without it, so its public key is private (reading it \
+                 needs a login)"
+            )?;
+            if self.by_name.is_some() {
+                f.write_str("; ")?;
+            }
+        }
+        if let Some(curve) = &self.by_name {
+            write!(f, "{token}: {BY_NAME} ({curve})")?;
+        }
+        Ok(())
+    }
+}
+
 /// Make a public key object, alone or as a pair's half, from the template `public`; where the
 /// module calls a value invalid and the spec did not declare `CKA_PRIVATE` (`declared`), once
 /// more without cakeys' own `CKA_PRIVATE = false` default. A fallback for every module, not one
@@ -285,6 +326,20 @@ fn retry_without_public_private(refusal: &CkError, declared: bool) -> bool {
 mod tests {
     use super::*;
     use cryptoki::context::Function;
+
+    /// The note says on the run what it said as text before it was typed: each part as its own
+    /// sentence after the token's name, both joined by `; `.
+    #[test]
+    fn a_create_note_says_what_it_said_as_text() {
+        assert_eq!(CreateNote::of("t", false, None), None);
+        let public = "t: the module refuses a public key with CKA_PRIVATE = false; generated without it, so its \
+                      public key is private (reading it needs a login)";
+        let by_name = "t: the module takes the curve only by name, as a PrintableString CKA_EC_PARAMS (edwards25519)";
+        let note = |p, n: Option<&str>| CreateNote::of("t", p, n.map(str::to_owned)).unwrap().to_string();
+        assert_eq!(note(true, None), public);
+        assert_eq!(note(false, Some("edwards25519")), by_name);
+        assert_eq!(note(true, Some("edwards25519")), format!("{public}; {by_name}"));
+    }
 
     #[test]
     fn only_the_default_is_dropped_and_only_for_an_invalid_value() {

@@ -174,7 +174,7 @@ impl Made<'_> {
 
 /// Whether `e` is an SO login failing: it stops the probe, never a row.
 fn so_login(e: &KmError) -> bool {
-    matches!(e, KmError::Unavailable(m) if m.contains("C_Login (SO)"))
+    matches!(e, KmError::Unavailable(m) if m.contains(token::SO_LOGIN))
 }
 
 /// Import `key` as its provider imports (`import.*`), with its public half first on a scratch

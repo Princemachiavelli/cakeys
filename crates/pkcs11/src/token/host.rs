@@ -29,7 +29,8 @@ impl Token {
             .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}").into()))?;
         let mut template = Secret(self.session_template(SessionKey::HostKek)?);
         template.0.push(Attribute::Value(kek.to_vec()));
-        let refused = |what: &str, e: CkError| self.unsupported(format!("{what} on '{}': {e}", self.name));
+        let refused =
+            |what: &str, e: CkError| self.unsupported(format!("{what} on '{}': {e}", self.name)).with_rv(rv_of(&e));
         let session_kek =
             self.session.create_object(&template.0).map_err(|e| refused("making the host's session key", e))?;
         drop(template);
@@ -125,6 +126,7 @@ impl Token {
         let create = || {
             self.session.create_object(&template.0).map_err(|e| {
                 self.unsupported(format!("creating the key on '{}': C_CreateObject: {} ({e})", self.name, rv_name(&e)))
+                    .with_rv(rv_of(&e))
             })
         };
         self.managing("importing a key", create)

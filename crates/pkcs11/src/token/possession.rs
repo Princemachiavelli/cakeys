@@ -130,23 +130,28 @@ impl Token {
         refused: impl Fn(CkError) -> KmError,
     ) -> Result<Vec<u8>> {
         let pin = self.pin.as_deref().ok_or_else(|| {
-            KmError::Unavailable(format!(
-                "token '{}': the private key is CKA_ALWAYS_AUTHENTICATE and needs the user PIN per use; \
+            KmError::Unavailable(
+                format!(
+                    "token '{}': the private key is CKA_ALWAYS_AUTHENTICATE and needs the user PIN per use; \
                  configure pinFile or pinEnv",
-                self.name
+                    self.name
+                )
+                .into(),
             )
-            .into())
         })?;
         self.session.sign_init(mech, h).map_err(&refused)?;
         if let Err(e) = self.session.login(UserType::ContextSpecific, Some(&AuthPin::new(pin.to_owned().into()))) {
             // C_SignFinal always ends the operation: the session stays usable for the next proof.
             let _ = self.session.sign_final();
-            return Err(KmError::Unavailable(format!(
-                "C_Login(CKU_CONTEXT_SPECIFIC) for the CKA_ALWAYS_AUTHENTICATE key on token '{}': {e}; \
+            return Err(KmError::Unavailable(
+                format!(
+                    "C_Login(CKU_CONTEXT_SPECIFIC) for the CKA_ALWAYS_AUTHENTICATE key on token '{}': {e}; \
                  not retried",
-                self.name
+                    self.name
+                )
+                .into(),
             )
-            .into()));
+            .with_rv(rv_of(&e)));
         }
         self.session.sign_initialized(data).map_err(refused)
     }
@@ -210,7 +215,8 @@ impl Token {
             Err(e) => {
                 return Err(KmError::Unavailable(
                     format!("C_Sign (ECDH proof of possession) on token '{}': {e}", self.name).into(),
-                ));
+                )
+                .with_rv(rv_of(&e)));
             }
         };
         drop(derived);
@@ -247,7 +253,8 @@ impl Token {
             Err(e) => {
                 return Err(KmError::Unavailable(
                     format!("C_GetAttributeValue (ECDH proof of possession) on token '{}': {e}", self.name).into(),
-                ));
+                )
+                .with_rv(rv_of(&e)));
             }
         };
         if !pop::ct_eq(&ch.secret, &value) {
@@ -373,6 +380,7 @@ impl Token {
         drop(key);
         let tag = tag.map_err(|e| {
             KmError::Unavailable(format!("C_Sign (unwrap proof of possession) on token '{}': {e}", self.name).into())
+                .with_rv(rv_of(&e))
         })?;
         if !pop::ct_eq(&ch.mac, &tag) {
             return Err(KmError::Conflict(
@@ -437,7 +445,15 @@ impl Token {
     /// key than the one it holds, a `Conflict` (the host encrypted or wrapped it to the public key
     /// the identity names); any other failure is `Unavailable`.
     fn proof_failed(&self, call: &'static str, op: &'static str, attr: &'static str) -> impl Fn(CkError) -> KmError {
-        move |e| match e {
+        move |e| {
+            let rv = rv_of(&e);
+            self.proof_failure(call, op, attr, e).with_rv(rv)
+        }
+    }
+
+    /// [`Self::proof_failed`]'s mapping, before the return value is attached.
+    fn proof_failure(&self, call: &'static str, op: &'static str, attr: &'static str, e: CkError) -> KmError {
+        match e {
             CkError::Pkcs11(
                 RvError::KeyFunctionNotPermitted
                 | RvError::MechanismInvalid

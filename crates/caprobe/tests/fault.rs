@@ -129,6 +129,21 @@ fn the_probe_records_what_a_misbehaving_module_does() {
             &["derives although the key reports CKA_DERIVE = false"],
             "",
         ),
+        // A session an earlier operation left busy decides nothing, by the return value the
+        // module gave (KmError::rv), not by the words of a message: an operation probe, then
+        // the first key's proof of possession.
+        (
+            "an operation meets a busy session",
+            rule(&format!("fn = \"C_SignInit\"\ncall = {}\nrv = \"CKR_OPERATION_ACTIVE\"", SIGN_INITS + 1)),
+            &[],
+            "an earlier operation left the session busy (CKR_OPERATION_ACTIVE)",
+        ),
+        (
+            "a proof meets a busy session",
+            rule("fn = \"C_SignInit\"\ncall = 1\nrv = \"CKR_OPERATION_ACTIVE\""),
+            &[],
+            "no prove.pop-sign.CKK_EC.secp256r1 row",
+        ),
         (
             "wraps but does not unwrap",
             rule("fn = \"C_UnwrapKey\"\nrv = \"CKR_DEVICE_ERROR\""),

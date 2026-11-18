@@ -281,6 +281,7 @@ impl Token {
         let input = c.input(commitment_label, object);
         let fail = |e: CkError| {
             KmError::Unsupported(format!("{} commitment ({}): {e}", c.scheme(), commit_mechanism(c)).into())
+                .with_rv(rv_of(&e))
         };
         match c {
             Commit::Hmac(hash) => {
@@ -318,8 +319,9 @@ impl Token {
         commitment_label: &str,
     ) -> Result<Vec<(Commit, Vec<u8>)>> {
         let s = &self.session;
-        let fail =
-            |what: &'static str| move |e: CkError| KmError::Unsupported(format!("wrap-rebind {what}: {e}").into());
+        let fail = |what: &'static str| {
+            move |e: CkError| KmError::Unsupported(format!("wrap-rebind {what}: {e}").into()).with_rv(rv_of(&e))
+        };
         // Both templates before anything is made.
         let kek_template = self.session_template(SessionKey::RebindKek)?;
         let template = self.rebind_copy_template(object, commits)?;

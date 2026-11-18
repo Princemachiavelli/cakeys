@@ -19,7 +19,7 @@ use cakeys_core::id::Curve;
 use cakeys_core::pop::{self, OaepHash, RsaPadding};
 use cakeys_core::sig::{self, EcdsaHash, Encoding};
 use cakeys_core::types::KeyType as Kt;
-use cakeys_core::{KmError, Result};
+use cakeys_core::{KmError, Msg, Result};
 use cakeys_pkcs11::token::{self, Token, derive_any, is_policy_default, show, template_refusal};
 use cakeys_pkcs11::{BoundKey, keygen_mechanism};
 use cakeys_profile::baseline::CURVES;
@@ -50,6 +50,17 @@ fn clean(s: &str) -> String {
 /// The verbs' own naming (`token::rv_name`), so a note and a refusal spell it alike.
 fn ckr(e: &CkError) -> String {
     token::rv_name(e)
+}
+
+/// A failed module call as an operation's outcome: its `CKR_*` name ([`ckr`]), and the value
+/// code matches on.
+fn ck_refusal(e: &CkError) -> Msg {
+    Msg::from(ckr(e)).with_rv(token::rv_of(e))
+}
+
+/// [`ck_refusal`] after what was being done.
+fn ck_said(what: &str, e: &CkError) -> Msg {
+    Msg::from(format!("{what}: {}", ckr(e))).with_rv(token::rv_of(e))
 }
 
 /// What a probe found: the generated profile, and what it could not decide.
@@ -377,12 +388,12 @@ struct Ops {
 }
 
 impl Ops {
-    fn record(&mut self, mech: MechanismType, on: &str, outcome: std::result::Result<(), String>) {
+    fn record(&mut self, mech: MechanismType, on: &str, outcome: std::result::Result<(), Msg>) {
         match outcome {
             Ok(()) => {
                 self.worked.insert(mech.to_string());
             }
-            Err(e) if e.contains("CKR_OPERATION_ACTIVE") => {
+            Err(e) if token::rv_is(e.rv(), RvError::OperationActive) => {
                 self.busy.push(format!("{mech} on {on}: an earlier operation left the session busy ({e})"));
             }
             Err(e) => self.failed.entry(mech.to_string()).or_default().push(format!("{on}: {e}")),
@@ -459,7 +470,7 @@ pub(crate) const RSA_SIZES: [u32; 10] = [512, 1024, 1536, 2048, 3072, 4096, 6144
 type Pair = std::result::Result<(ObjectHandle, ObjectHandle), CkError>;
 
 /// A pair `Token::create` made, `(public, private, its note)`, or the module's refusal.
-type Created = std::result::Result<(ObjectHandle, ObjectHandle, Option<String>), KmError>;
+type Created = std::result::Result<(ObjectHandle, ObjectHandle, Option<token::CreateNote>), KmError>;
 
 /// A probe spec: `CKA_SENSITIVE` and the usage bits `private` and `public` name, true.
 fn spec(private: &[&str], public: &[&str]) -> SpecCfg {
@@ -473,12 +484,10 @@ fn spec(private: &[&str], public: &[&str]) -> SpecCfg {
     }
 }
 
-/// A refusal `Token::create` reported, as the evidence of a generation row: `CKR_*`, as the
-/// probe has always named it, else what was said.
+/// A refusal `Token::create` reported, as the evidence of a generation row: the `CKR_*` of the
+/// module call that failed, as the probe has always named it, else what was said.
 fn refused(tok: &Token, e: &KmError) -> String {
-    let said = e.to_string();
-    let rv = said.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).find(|w| w.starts_with("CKR_"));
-    rv.map_or_else(|| evidence(tok, e), str::to_owned)
+    e.rv().map_or_else(|| evidence(tok, e), token::rv_value_name)
 }
 
 impl Made<'_> {
@@ -500,7 +509,7 @@ impl Made<'_> {
     }
 
     /// Record what `m` did on `on`, and whether the module lists it.
-    fn record(&mut self, m: MechanismType, on: &str, outcome: std::result::Result<(), String>) {
+    fn record(&mut self, m: MechanismType, on: &str, outcome: std::result::Result<(), Msg>) {
         if !self.tok.advertised.contains(&m.to_string()) {
             self.ops.unlisted.insert(m.to_string());
         }
@@ -587,7 +596,7 @@ impl Made<'_> {
         };
         let note = match self.tok.create(object, spec, &loc, None) {
             Ok(note) => note,
-            Err(KmError::Unavailable(m)) if m.contains("C_Login (SO)") => return Err(KmError::Unavailable(m)),
+            Err(KmError::Unavailable(m)) if m.contains(token::SO_LOGIN) => return Err(KmError::Unavailable(m)),
             Err(e) => return Ok(Err(e)),
         };
         let one = |class| self.tok.find(class, &loc).map(|found| found.first().copied());
@@ -1016,12 +1025,12 @@ fn create_curves(
         match made.create_for_use(&object, &usage, &spec(&[], &[]))? {
             (Ok((public, private, note)), usable) => {
                 row.can.push((*curve).to_owned());
-                if note.as_deref().is_some_and(|n| n.contains(token::BY_NAME)) {
+                if note.as_ref().is_some_and(|n| n.by_name.is_some()) {
                     row.by_name.push((*curve).to_owned());
                 }
                 // The public CKA_PRIVATE = false default the module refused (AWS CloudHSM).
-                if let Some(n) = note.filter(|n| n.contains("CKA_PRIVATE = false")) {
-                    let said = n.split("; ").next().unwrap_or_default().replace(&format!("{}: ", made.tok.name), "");
+                if note.as_ref().is_some_and(|n| n.public_made_private) {
+                    let said = token::PUBLIC_MADE_PRIVATE.to_owned();
                     made.template_notes.entry("template.public.CKA_PRIVATE".into()).or_insert(said);
                 }
                 // The first key with its usage gets the operation probes (and its proofs); each
@@ -1214,7 +1223,7 @@ fn prove(made: &mut Made, profile: &mut Draft, kt: &str, on: &str, private: Obje
         let outcome = made.tok.prove_binding(private, &object, spki, *binding);
         let cap = Capability::Prove { binding: binding.to_string(), key_type: kt.to_owned(), on: on.clone() };
         match outcome {
-            Err(e) if e.to_string().contains("CKR_OPERATION_ACTIVE") => {
+            Err(e) if token::rv_is(e.rv(), RvError::OperationActive) => {
                 made.undetermined.push(format!("no {cap} row: {}", evidence(made.tok, &e)));
             }
             outcome => {
@@ -1267,10 +1276,10 @@ fn sign(
     key: ObjectHandle,
     data: &[u8],
     check: impl FnOnce(&[u8]) -> sig::Verdict,
-) -> std::result::Result<(), String> {
-    let signature = s.sign(mech, key, data).map_err(|e| ckr(&e))?;
+) -> std::result::Result<(), Msg> {
+    let signature = s.sign(mech, key, data).map_err(|e| ck_refusal(&e))?;
     match check(&signature) {
-        Some(Err(e)) => Err(format!("the signature does not verify ({e})")),
+        Some(Err(e)) => Err(format!("the signature does not verify ({e})").into()),
         _ => Ok(()),
     }
 }
@@ -1364,12 +1373,14 @@ fn derive(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[u
             match mac {
                 None => Ok(Ok(())),
                 Some(Ok(tag)) if pop::ct_eq(&ch.mac, &tag) => Ok(Ok(())),
-                Some(Ok(_)) => Ok(Err("the derived secret is not the shared secret".to_owned())),
-                Some(Err(Some(e))) => Err(format!("derives into a sealed secret, but HMAC with it fails: {}", ckr(&e))),
-                Some(Err(None)) => Err(format!("derives only into a secret that is not sealed: it reports {reported}")),
+                Some(Ok(_)) => Ok(Err(Msg::from("the derived secret is not the shared secret"))),
+                Some(Err(Some(e))) => Err(ck_said("derives into a sealed secret, but HMAC with it fails", &e)),
+                Some(Err(None)) => {
+                    Err(format!("derives only into a secret that is not sealed: it reports {reported}").into())
+                }
             }
         }
-        Err(e) => Err(format!("a sealed (non-extractable) derived secret is refused: {}", ckr(&e))),
+        Err(e) => Err(ck_said("a sealed (non-extractable) derived secret is refused", &e)),
     };
     let outcome = match sealed_path {
         Ok(outcome) => {
@@ -1392,14 +1403,15 @@ fn derive(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[u
                 match value {
                     Some(Attribute::Value(v)) if pop::ct_eq(&ch.secret, &v) => {
                         profile.derive.sealed = Some(false);
-                        profile.notes.insert("derive.sealed".into(), why);
+                        profile.notes.insert("derive.sealed".into(), why.into_text());
                         Ok(())
                     }
-                    Some(Attribute::Value(_)) => Err("the derived secret is not the shared secret".to_owned()),
-                    _ => Err(format!("{why}; the extractable derived secret's CKA_VALUE is unreadable")),
+                    Some(Attribute::Value(_)) => Err(Msg::from("the derived secret is not the shared secret")),
+                    _ => Err(Msg::from(format!("{why}; the extractable derived secret's CKA_VALUE is unreadable"))
+                        .with_rv(why.rv())),
                 }
             }
-            Err(e) => Err(format!("{why}; extractable: {}", ckr(&e))),
+            Err(e) => Err(Msg::from(format!("{why}; extractable: {}", ckr(&e))).with_rv(token::rv_of(&e).or(why.rv()))),
         },
     };
     if outcome.is_ok() {
@@ -1482,12 +1494,12 @@ fn rsa_ops(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[
         made.record(MechanismType::RSA_X_509, on, outcome);
     }
     // Decryption: the host encrypts a fresh secret to the key, the token must recover it.
-    let decrypts = |made: &mut Made, mech: &Mechanism, padding| -> std::result::Result<(), String> {
+    let decrypts = |made: &mut Made, mech: &Mechanism, padding| -> std::result::Result<(), Msg> {
         let mut secret = [0u8; 32];
         getrandom::fill(&mut secret).map_err(|e| e.to_string())?;
         let cipher = pop::rsa_encrypt(spki, padding, &secret).map_err(|e| e.to_string())?;
-        let plain = made.session.decrypt(mech, private, &cipher).map_err(|e| ckr(&e))?;
-        if pop::ct_eq(&secret, &plain) { Ok(()) } else { Err("decrypts to something else".to_owned()) }
+        let plain = made.session.decrypt(mech, private, &cipher).map_err(|e| ck_refusal(&e))?;
+        if pop::ct_eq(&secret, &plain) { Ok(()) } else { Err("decrypts to something else".to_owned().into()) }
     };
     if made.tries(MechanismType::RSA_PKCS) {
         let outcome = decrypts(made, &Mechanism::RsaPkcs, RsaPadding::Pkcs1v15);

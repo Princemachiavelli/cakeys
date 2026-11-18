@@ -23,6 +23,13 @@ impl Msg {
     pub fn into_text(self) -> String {
         self.text
     }
+
+    /// The same text, carrying the return value of the module call that failed.
+    #[must_use]
+    pub fn with_rv(mut self, rv: Option<u64>) -> Self {
+        self.rv = rv;
+        self
+    }
 }
 
 impl std::ops::Deref for Msg {
@@ -194,5 +201,23 @@ impl KmError {
             m.rv = rv;
         }
         self
+    }
+
+    /// The message of a variant that has one, return value included.
+    #[must_use]
+    pub fn into_msg(self) -> Option<Msg> {
+        match self {
+            KmError::NotFound(m)
+            | KmError::Ambiguous(m)
+            | KmError::Conflict(m)
+            | KmError::PreconditionFailed(m)
+            | KmError::Exists(m)
+            | KmError::ObjectsFailed(m)
+            | KmError::Unsupported(m)
+            | KmError::Unavailable(m)
+            | KmError::Validation(m)
+            | KmError::Io(m) => Some(m),
+            KmError::HashMismatch { .. } | KmError::FirstUse { .. } => None,
+        }
     }
 }

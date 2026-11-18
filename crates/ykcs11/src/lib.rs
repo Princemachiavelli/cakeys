@@ -98,7 +98,7 @@ impl Provider for Ykcs11 {
     }
 
     /// A key goes where its locator says ([`Ykcs11::check_create`]), as SO.
-    fn create(&self, tok: &Token, req: &Create<'_>) -> Result<Option<String>> {
+    fn create(&self, tok: &Token, req: &Create<'_>) -> Result<Option<cakeys_pkcs11::token::CreateNote>> {
         self.check_create(req.locator)?;
         tok.create_declared(req)
     }

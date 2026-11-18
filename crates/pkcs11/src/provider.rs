@@ -198,7 +198,7 @@ pub trait Provider: Send + Sync {
     /// # Errors
     ///
     /// As [`Token::create_declared`], plus the override's refusals.
-    fn create(&self, tok: &Token, req: &Create<'_>) -> Result<Option<String>> {
+    fn create(&self, tok: &Token, req: &Create<'_>) -> Result<Option<crate::token::CreateNote>> {
         tok.create_declared(req)
     }
 

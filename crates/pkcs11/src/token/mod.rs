@@ -34,7 +34,7 @@ mod possession;
 mod public;
 mod uri;
 
-pub use generate::{BY_NAME, with_public_default_dropped};
+pub use generate::{BY_NAME, CreateNote, PUBLIC_MADE_PRIVATE, with_public_default_dropped};
 pub use host::accepts_public_keys;
 pub use identity::commit_mechanism;
 pub use policy::bool_attr;
@@ -276,8 +276,34 @@ fn derived_name(rv: RvError) -> String {
     out
 }
 
+/// The return value of a failed module call, for [`KmError::with_rv`]: what code matches on
+/// (ISSUES.md Q3), where the message names it for people.
+#[must_use]
+pub fn rv_of(e: &CkError) -> Option<u64> {
+    match e {
+        CkError::Pkcs11(rv, _) => rv_value(*rv),
+        _ => None,
+    }
+}
+
+/// Whether the return value an error carries (`KmError::rv`, `Msg::rv`) is `want`.
+#[must_use]
+pub fn rv_is(rv: Option<u64>, want: RvError) -> bool {
+    rv.is_some_and(|v| Rv::from(v) == Rv::Error(want))
+}
+
+/// The `CKR_*` name of a return value an error carries; `CKR 0x…` for one with no name.
+#[must_use]
+pub fn rv_value_name(v: u64) -> String {
+    p11_names::rv_name(v).map_or_else(|| format!("CKR {v:#x}"), str::to_owned)
+}
+
+/// What an SO login that fails says first: a module step that needs the Security Officer
+/// cannot run, and the probe stops there instead of recording a row.
+pub const SO_LOGIN: &str = "C_Login (SO)";
+
 fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
-    move |e| KmError::Unavailable(format!("{context}: {e}").into())
+    move |e| KmError::Unavailable(format!("{context}: {e}").into()).with_rv(rv_of(&e))
 }
 
 /// A session object cakeys made for one step (a derived secret, a key-encryption key, a
@@ -752,12 +778,13 @@ impl Token {
             }
             Err(e) => Err(KmError::Unavailable(
                 format!(
-                    "C_Login (SO) with soCredentialFile/soCredentialEnv: {e}; it must hold the module's admin \
+                    "{SO_LOGIN} with soCredentialFile/soCredentialEnv: {e}; it must hold the module's admin \
                  credential (the SO PIN; ykcs11: the PIV management key in hex, or the PIN on a \
                  device whose management key is PIN-protected)"
                 )
                 .into(),
-            )),
+            )
+            .with_rv(rv_of(&e))),
         };
         drop(so);
         if self.logged_in {
