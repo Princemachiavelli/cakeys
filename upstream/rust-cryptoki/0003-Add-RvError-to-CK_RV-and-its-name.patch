@@ -1,0 +1,242 @@
+--- a/cryptoki/src/error/rv.rs
++++ b/cryptoki/src/error/rv.rs
+@@ -138,6 +138,220 @@
+     }
+ }
+ 
++impl From<RvError> for CK_RV {
++    /// The return value an error stands for: the inverse of `From<CK_RV> for Rv`.
++    fn from(rv_error: RvError) -> Self {
++        match rv_error {
++            RvError::Cancel => CKR_CANCEL,
++            RvError::HostMemory => CKR_HOST_MEMORY,
++            RvError::SlotIdInvalid => CKR_SLOT_ID_INVALID,
++            RvError::GeneralError => CKR_GENERAL_ERROR,
++            RvError::FunctionFailed => CKR_FUNCTION_FAILED,
++            RvError::ArgumentsBad => CKR_ARGUMENTS_BAD,
++            RvError::NoEvent => CKR_NO_EVENT,
++            RvError::NeedToCreateThreads => CKR_NEED_TO_CREATE_THREADS,
++            RvError::CantLock => CKR_CANT_LOCK,
++            RvError::AttributeReadOnly => CKR_ATTRIBUTE_READ_ONLY,
++            RvError::AttributeSensitive => CKR_ATTRIBUTE_SENSITIVE,
++            RvError::AttributeTypeInvalid => CKR_ATTRIBUTE_TYPE_INVALID,
++            RvError::AttributeValueInvalid => CKR_ATTRIBUTE_VALUE_INVALID,
++            RvError::ActionProhibited => CKR_ACTION_PROHIBITED,
++            RvError::DataInvalid => CKR_DATA_INVALID,
++            RvError::DataLenRange => CKR_DATA_LEN_RANGE,
++            RvError::DeviceError => CKR_DEVICE_ERROR,
++            RvError::DeviceMemory => CKR_DEVICE_MEMORY,
++            RvError::DeviceRemoved => CKR_DEVICE_REMOVED,
++            RvError::EncryptedDataInvalid => CKR_ENCRYPTED_DATA_INVALID,
++            RvError::EncryptedDataLenRange => CKR_ENCRYPTED_DATA_LEN_RANGE,
++            RvError::FunctionCanceled => CKR_FUNCTION_CANCELED,
++            RvError::FunctionNotParallel => CKR_FUNCTION_NOT_PARALLEL,
++            RvError::FunctionNotSupported => CKR_FUNCTION_NOT_SUPPORTED,
++            RvError::CurveNotSupported => CKR_CURVE_NOT_SUPPORTED,
++            RvError::KeyHandleInvalid => CKR_KEY_HANDLE_INVALID,
++            RvError::KeySizeRange => CKR_KEY_SIZE_RANGE,
++            RvError::KeyTypeInconsistent => CKR_KEY_TYPE_INCONSISTENT,
++            RvError::KeyNotNeeded => CKR_KEY_NOT_NEEDED,
++            RvError::KeyChanged => CKR_KEY_CHANGED,
++            RvError::KeyNeeded => CKR_KEY_NEEDED,
++            RvError::KeyIndigestible => CKR_KEY_INDIGESTIBLE,
++            RvError::KeyFunctionNotPermitted => CKR_KEY_FUNCTION_NOT_PERMITTED,
++            RvError::KeyNotWrappable => CKR_KEY_NOT_WRAPPABLE,
++            RvError::KeyUnextractable => CKR_KEY_UNEXTRACTABLE,
++            RvError::MechanismInvalid => CKR_MECHANISM_INVALID,
++            RvError::MechanismParamInvalid => CKR_MECHANISM_PARAM_INVALID,
++            RvError::ObjectHandleInvalid => CKR_OBJECT_HANDLE_INVALID,
++            RvError::OperationActive => CKR_OPERATION_ACTIVE,
++            RvError::OperationNotInitialized => CKR_OPERATION_NOT_INITIALIZED,
++            RvError::PinIncorrect => CKR_PIN_INCORRECT,
++            RvError::PinInvalid => CKR_PIN_INVALID,
++            RvError::PinLenRange => CKR_PIN_LEN_RANGE,
++            RvError::PinExpired => CKR_PIN_EXPIRED,
++            RvError::PinLocked => CKR_PIN_LOCKED,
++            RvError::SessionClosed => CKR_SESSION_CLOSED,
++            RvError::SessionCount => CKR_SESSION_COUNT,
++            RvError::SessionHandleInvalid => CKR_SESSION_HANDLE_INVALID,
++            RvError::SessionParallelNotSupported => CKR_SESSION_PARALLEL_NOT_SUPPORTED,
++            RvError::SessionReadOnly => CKR_SESSION_READ_ONLY,
++            RvError::SessionExists => CKR_SESSION_EXISTS,
++            RvError::SessionReadOnlyExists => CKR_SESSION_READ_ONLY_EXISTS,
++            RvError::SessionReadWriteSoExists => CKR_SESSION_READ_WRITE_SO_EXISTS,
++            RvError::SignatureInvalid => CKR_SIGNATURE_INVALID,
++            RvError::SignatureLenRange => CKR_SIGNATURE_LEN_RANGE,
++            RvError::TemplateIncomplete => CKR_TEMPLATE_INCOMPLETE,
++            RvError::TemplateInconsistent => CKR_TEMPLATE_INCONSISTENT,
++            RvError::TokenNotPresent => CKR_TOKEN_NOT_PRESENT,
++            RvError::TokenNotRecognized => CKR_TOKEN_NOT_RECOGNIZED,
++            RvError::TokenWriteProtected => CKR_TOKEN_WRITE_PROTECTED,
++            RvError::UnwrappingKeyHandleInvalid => CKR_UNWRAPPING_KEY_HANDLE_INVALID,
++            RvError::UnwrappingKeySizeRange => CKR_UNWRAPPING_KEY_SIZE_RANGE,
++            RvError::UnwrappingKeyTypeInconsistent => CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT,
++            RvError::UserAlreadyLoggedIn => CKR_USER_ALREADY_LOGGED_IN,
++            RvError::UserNotLoggedIn => CKR_USER_NOT_LOGGED_IN,
++            RvError::UserPinNotInitialized => CKR_USER_PIN_NOT_INITIALIZED,
++            RvError::UserTypeInvalid => CKR_USER_TYPE_INVALID,
++            RvError::UserAnotherAlreadyLoggedIn => CKR_USER_ANOTHER_ALREADY_LOGGED_IN,
++            RvError::UserTooManyTypes => CKR_USER_TOO_MANY_TYPES,
++            RvError::WrappedKeyInvalid => CKR_WRAPPED_KEY_INVALID,
++            RvError::WrappedKeyLenRange => CKR_WRAPPED_KEY_LEN_RANGE,
++            RvError::WrappingKeyHandleInvalid => CKR_WRAPPING_KEY_HANDLE_INVALID,
++            RvError::WrappingKeySizeRange => CKR_WRAPPING_KEY_SIZE_RANGE,
++            RvError::WrappingKeyTypeInconsistent => CKR_WRAPPING_KEY_TYPE_INCONSISTENT,
++            RvError::RandomSeedNotSupported => CKR_RANDOM_SEED_NOT_SUPPORTED,
++            RvError::RandomNoRng => CKR_RANDOM_NO_RNG,
++            RvError::DomainParamsInvalid => CKR_DOMAIN_PARAMS_INVALID,
++            RvError::BufferTooSmall => CKR_BUFFER_TOO_SMALL,
++            RvError::SavedStateInvalid => CKR_SAVED_STATE_INVALID,
++            RvError::InformationSensitive => CKR_INFORMATION_SENSITIVE,
++            RvError::StateUnsaveable => CKR_STATE_UNSAVEABLE,
++            RvError::CryptokiNotInitialized => CKR_CRYPTOKI_NOT_INITIALIZED,
++            RvError::CryptokiAlreadyInitialized => CKR_CRYPTOKI_ALREADY_INITIALIZED,
++            RvError::MutexBad => CKR_MUTEX_BAD,
++            RvError::MutexNotLocked => CKR_MUTEX_NOT_LOCKED,
++            RvError::NewPinMode => CKR_NEW_PIN_MODE,
++            RvError::NextOtp => CKR_NEXT_OTP,
++            RvError::ExceededMaxIterations => CKR_EXCEEDED_MAX_ITERATIONS,
++            RvError::FipsSelfTestFailed => CKR_FIPS_SELF_TEST_FAILED,
++            RvError::LibraryLoadFailed => CKR_LIBRARY_LOAD_FAILED,
++            RvError::PinTooWeak => CKR_PIN_TOO_WEAK,
++            RvError::PublicKeyInvalid => CKR_PUBLIC_KEY_INVALID,
++            RvError::FunctionRejected => CKR_FUNCTION_REJECTED,
++            RvError::VendorDefined(ck_rv) | RvError::UnknownErrorCode(ck_rv) => ck_rv,
++        }
++    }
++}
++
++impl From<Rv> for CK_RV {
++    fn from(rv: Rv) -> Self {
++        match rv {
++            Rv::Ok => CKR_OK,
++            Rv::Error(rv_error) => rv_error.into(),
++        }
++    }
++}
++
++impl RvError {
++    /// The name of the `CKR_*` constant this error stands for, as the specification spells it;
++    /// `None` for a vendor-defined or unknown return value.
++    pub fn name(&self) -> Option<&'static str> {
++        match self {
++            RvError::Cancel => Some("CKR_CANCEL"),
++            RvError::HostMemory => Some("CKR_HOST_MEMORY"),
++            RvError::SlotIdInvalid => Some("CKR_SLOT_ID_INVALID"),
++            RvError::GeneralError => Some("CKR_GENERAL_ERROR"),
++            RvError::FunctionFailed => Some("CKR_FUNCTION_FAILED"),
++            RvError::ArgumentsBad => Some("CKR_ARGUMENTS_BAD"),
++            RvError::NoEvent => Some("CKR_NO_EVENT"),
++            RvError::NeedToCreateThreads => Some("CKR_NEED_TO_CREATE_THREADS"),
++            RvError::CantLock => Some("CKR_CANT_LOCK"),
++            RvError::AttributeReadOnly => Some("CKR_ATTRIBUTE_READ_ONLY"),
++            RvError::AttributeSensitive => Some("CKR_ATTRIBUTE_SENSITIVE"),
++            RvError::AttributeTypeInvalid => Some("CKR_ATTRIBUTE_TYPE_INVALID"),
++            RvError::AttributeValueInvalid => Some("CKR_ATTRIBUTE_VALUE_INVALID"),
++            RvError::ActionProhibited => Some("CKR_ACTION_PROHIBITED"),
++            RvError::DataInvalid => Some("CKR_DATA_INVALID"),
++            RvError::DataLenRange => Some("CKR_DATA_LEN_RANGE"),
++            RvError::DeviceError => Some("CKR_DEVICE_ERROR"),
++            RvError::DeviceMemory => Some("CKR_DEVICE_MEMORY"),
++            RvError::DeviceRemoved => Some("CKR_DEVICE_REMOVED"),
++            RvError::EncryptedDataInvalid => Some("CKR_ENCRYPTED_DATA_INVALID"),
++            RvError::EncryptedDataLenRange => Some("CKR_ENCRYPTED_DATA_LEN_RANGE"),
++            RvError::FunctionCanceled => Some("CKR_FUNCTION_CANCELED"),
++            RvError::FunctionNotParallel => Some("CKR_FUNCTION_NOT_PARALLEL"),
++            RvError::FunctionNotSupported => Some("CKR_FUNCTION_NOT_SUPPORTED"),
++            RvError::CurveNotSupported => Some("CKR_CURVE_NOT_SUPPORTED"),
++            RvError::KeyHandleInvalid => Some("CKR_KEY_HANDLE_INVALID"),
++            RvError::KeySizeRange => Some("CKR_KEY_SIZE_RANGE"),
++            RvError::KeyTypeInconsistent => Some("CKR_KEY_TYPE_INCONSISTENT"),
++            RvError::KeyNotNeeded => Some("CKR_KEY_NOT_NEEDED"),
++            RvError::KeyChanged => Some("CKR_KEY_CHANGED"),
++            RvError::KeyNeeded => Some("CKR_KEY_NEEDED"),
++            RvError::KeyIndigestible => Some("CKR_KEY_INDIGESTIBLE"),
++            RvError::KeyFunctionNotPermitted => Some("CKR_KEY_FUNCTION_NOT_PERMITTED"),
++            RvError::KeyNotWrappable => Some("CKR_KEY_NOT_WRAPPABLE"),
++            RvError::KeyUnextractable => Some("CKR_KEY_UNEXTRACTABLE"),
++            RvError::MechanismInvalid => Some("CKR_MECHANISM_INVALID"),
++            RvError::MechanismParamInvalid => Some("CKR_MECHANISM_PARAM_INVALID"),
++            RvError::ObjectHandleInvalid => Some("CKR_OBJECT_HANDLE_INVALID"),
++            RvError::OperationActive => Some("CKR_OPERATION_ACTIVE"),
++            RvError::OperationNotInitialized => Some("CKR_OPERATION_NOT_INITIALIZED"),
++            RvError::PinIncorrect => Some("CKR_PIN_INCORRECT"),
++            RvError::PinInvalid => Some("CKR_PIN_INVALID"),
++            RvError::PinLenRange => Some("CKR_PIN_LEN_RANGE"),
++            RvError::PinExpired => Some("CKR_PIN_EXPIRED"),
++            RvError::PinLocked => Some("CKR_PIN_LOCKED"),
++            RvError::SessionClosed => Some("CKR_SESSION_CLOSED"),
++            RvError::SessionCount => Some("CKR_SESSION_COUNT"),
++            RvError::SessionHandleInvalid => Some("CKR_SESSION_HANDLE_INVALID"),
++            RvError::SessionParallelNotSupported => Some("CKR_SESSION_PARALLEL_NOT_SUPPORTED"),
++            RvError::SessionReadOnly => Some("CKR_SESSION_READ_ONLY"),
++            RvError::SessionExists => Some("CKR_SESSION_EXISTS"),
++            RvError::SessionReadOnlyExists => Some("CKR_SESSION_READ_ONLY_EXISTS"),
++            RvError::SessionReadWriteSoExists => Some("CKR_SESSION_READ_WRITE_SO_EXISTS"),
++            RvError::SignatureInvalid => Some("CKR_SIGNATURE_INVALID"),
++            RvError::SignatureLenRange => Some("CKR_SIGNATURE_LEN_RANGE"),
++            RvError::TemplateIncomplete => Some("CKR_TEMPLATE_INCOMPLETE"),
++            RvError::TemplateInconsistent => Some("CKR_TEMPLATE_INCONSISTENT"),
++            RvError::TokenNotPresent => Some("CKR_TOKEN_NOT_PRESENT"),
++            RvError::TokenNotRecognized => Some("CKR_TOKEN_NOT_RECOGNIZED"),
++            RvError::TokenWriteProtected => Some("CKR_TOKEN_WRITE_PROTECTED"),
++            RvError::UnwrappingKeyHandleInvalid => Some("CKR_UNWRAPPING_KEY_HANDLE_INVALID"),
++            RvError::UnwrappingKeySizeRange => Some("CKR_UNWRAPPING_KEY_SIZE_RANGE"),
++            RvError::UnwrappingKeyTypeInconsistent => Some("CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT"),
++            RvError::UserAlreadyLoggedIn => Some("CKR_USER_ALREADY_LOGGED_IN"),
++            RvError::UserNotLoggedIn => Some("CKR_USER_NOT_LOGGED_IN"),
++            RvError::UserPinNotInitialized => Some("CKR_USER_PIN_NOT_INITIALIZED"),
++            RvError::UserTypeInvalid => Some("CKR_USER_TYPE_INVALID"),
++            RvError::UserAnotherAlreadyLoggedIn => Some("CKR_USER_ANOTHER_ALREADY_LOGGED_IN"),
++            RvError::UserTooManyTypes => Some("CKR_USER_TOO_MANY_TYPES"),
++            RvError::WrappedKeyInvalid => Some("CKR_WRAPPED_KEY_INVALID"),
++            RvError::WrappedKeyLenRange => Some("CKR_WRAPPED_KEY_LEN_RANGE"),
++            RvError::WrappingKeyHandleInvalid => Some("CKR_WRAPPING_KEY_HANDLE_INVALID"),
++            RvError::WrappingKeySizeRange => Some("CKR_WRAPPING_KEY_SIZE_RANGE"),
++            RvError::WrappingKeyTypeInconsistent => Some("CKR_WRAPPING_KEY_TYPE_INCONSISTENT"),
++            RvError::RandomSeedNotSupported => Some("CKR_RANDOM_SEED_NOT_SUPPORTED"),
++            RvError::RandomNoRng => Some("CKR_RANDOM_NO_RNG"),
++            RvError::DomainParamsInvalid => Some("CKR_DOMAIN_PARAMS_INVALID"),
++            RvError::BufferTooSmall => Some("CKR_BUFFER_TOO_SMALL"),
++            RvError::SavedStateInvalid => Some("CKR_SAVED_STATE_INVALID"),
++            RvError::InformationSensitive => Some("CKR_INFORMATION_SENSITIVE"),
++            RvError::StateUnsaveable => Some("CKR_STATE_UNSAVEABLE"),
++            RvError::CryptokiNotInitialized => Some("CKR_CRYPTOKI_NOT_INITIALIZED"),
++            RvError::CryptokiAlreadyInitialized => Some("CKR_CRYPTOKI_ALREADY_INITIALIZED"),
++            RvError::MutexBad => Some("CKR_MUTEX_BAD"),
++            RvError::MutexNotLocked => Some("CKR_MUTEX_NOT_LOCKED"),
++            RvError::NewPinMode => Some("CKR_NEW_PIN_MODE"),
++            RvError::NextOtp => Some("CKR_NEXT_OTP"),
++            RvError::ExceededMaxIterations => Some("CKR_EXCEEDED_MAX_ITERATIONS"),
++            RvError::FipsSelfTestFailed => Some("CKR_FIPS_SELF_TEST_FAILED"),
++            RvError::LibraryLoadFailed => Some("CKR_LIBRARY_LOAD_FAILED"),
++            RvError::PinTooWeak => Some("CKR_PIN_TOO_WEAK"),
++            RvError::PublicKeyInvalid => Some("CKR_PUBLIC_KEY_INVALID"),
++            RvError::FunctionRejected => Some("CKR_FUNCTION_REJECTED"),
++            RvError::VendorDefined(_) | RvError::UnknownErrorCode(_) => None,
++        }
++    }
++}
++
+ #[cfg(test)]
+ mod test {
+     use super::{Rv, RvError};
+@@ -166,4 +380,18 @@
+         let expected = Rv::Error(RvError::UnknownErrorCode(code));
+         assert_eq!(actual, expected);
+     }
++
++    #[test]
++    fn round_trip() {
++        for code in (0..0x1000).chain([CKR_VENDOR_DEFINED, CKR_VENDOR_DEFINED + 42]) {
++            let rv = Rv::from(code);
++            assert_eq!(CK_RV::from(rv), code);
++            if let Rv::Error(rv_error) = rv {
++                let named = !matches!(rv_error, RvError::VendorDefined(_) | RvError::UnknownErrorCode(_));
++                assert_eq!(rv_error.name().is_some(), named, "{code:#x}");
++            }
++        }
++        assert_eq!(RvError::GeneralError.name(), Some("CKR_GENERAL_ERROR"));
++        assert_eq!(CK_RV::from(RvError::GeneralError), CKR_GENERAL_ERROR);
++    }
+ }

@@ -13,7 +13,7 @@ use cakeys_core::id::{self, BlockCipher, Commit, Curve, HmacHash, Scheme};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
-use cryptoki::error::{Error as CkError, RvError};
+use cryptoki::error::{Error as CkError, Rv, RvError};
 use cryptoki::mechanism::eddsa::{EddsaParams, EddsaSignatureScheme};
 use cryptoki::mechanism::elliptic_curve::{EcKdf, Ecdh1DeriveParams};
 use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsOaepParams, PkcsOaepSource};
@@ -230,23 +230,42 @@ fn sorted_names(mechanisms: &[MechanismType]) -> Vec<String> {
 
 /// The `CKR_*` name of a module's failure: cryptoki's `Display` is the spec's prose, which
 /// changes with the binding, so a message (and a profile row's evidence) names the return value
-/// by its constant. From `RvError`'s variant (`GeneralError` -> `CKR_GENERAL_ERROR`).
+/// by its constant, as `cryptoki-sys` names the value [`rv_value`] finds; `CKR 0x…` for a value
+/// with no name (vendor-defined, or unknown to `cryptoki-sys`).
 #[must_use]
 pub fn rv_name(e: &CkError) -> String {
     match e {
-        CkError::Pkcs11(RvError::VendorDefined(rv) | RvError::UnknownErrorCode(rv), _) => format!("CKR {rv:#x}"),
-        CkError::Pkcs11(rv, _) => {
-            let mut out = String::from("CKR");
-            for c in format!("{rv:?}").chars() {
-                if c.is_ascii_uppercase() {
-                    out.push('_');
-                }
-                out.push(c.to_ascii_uppercase());
-            }
-            out
-        }
+        CkError::Pkcs11(rv, _) => match rv_value(*rv) {
+            Some(v) => p11_names::rv_name(v).map_or_else(|| format!("CKR {v:#x}"), str::to_owned),
+            None => derived_name(*rv),
+        },
         other => other.to_string(),
     }
+}
+
+/// The return value behind cryptoki's `RvError`, which converts only from a value
+/// (`Rv::from`): the value of `cryptoki-sys`'s table that converts to it, or the one a
+/// vendor-defined or unknown error carries. `None` only for a variant whose value the table
+/// lacks (`every_named_value_converts_back`).
+#[must_use]
+pub fn rv_value(rv: RvError) -> Option<cryptoki_sys::CK_RV> {
+    match rv {
+        RvError::VendorDefined(v) | RvError::UnknownErrorCode(v) => Some(v),
+        rv => p11_names::RV.iter().map(|(_, v)| *v).find(|v| Rv::from(*v) == Rv::Error(rv)),
+    }
+}
+
+/// A name from `RvError`'s variant (`GeneralError` -> `CKR_GENERAL_ERROR`), for a variant whose
+/// value the table lacks: what `rv_name` said before it read the table.
+fn derived_name(rv: RvError) -> String {
+    let mut out = String::from("CKR");
+    for c in format!("{rv:?}").chars() {
+        if c.is_ascii_uppercase() {
+            out.push('_');
+        }
+        out.push(c.to_ascii_uppercase());
+    }
+    out
 }
 
 fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
@@ -976,5 +995,29 @@ fn hmac_key_type(name: Kt, kt: KeyType, raw: std::os::raw::c_ulong) -> Result<Ke
             "{name}: this build's cryptoki maps it to CKK_SHA256_HMAC; build with \
              nix/patches/cryptoki-hmac-key-types.patch applied"
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cryptoki::context::Function;
+
+    /// Every value `cryptoki-sys` names converts back to itself through cryptoki, and keeps the
+    /// name the variant gave before the table did: no committed profile's `CKR_*` changes.
+    #[test]
+    fn every_named_value_converts_back() {
+        let mut renamed = Vec::new();
+        for (name, v) in p11_names::RV {
+            let Rv::Error(rv) = Rv::from(*v) else { continue };
+            assert_eq!(rv_value(rv), Some(*v), "{name}");
+            let said = rv_name(&CkError::Pkcs11(rv, Function::Initialize));
+            if !matches!(rv, RvError::VendorDefined(_) | RvError::UnknownErrorCode(_)) && said != derived_name(rv) {
+                renamed.push(format!("{said} was {}", derived_name(rv)));
+            }
+        }
+        assert_eq!(renamed, [] as [String; 0]);
+        let vendor = CkError::Pkcs11(RvError::VendorDefined(0x8000_0001), Function::Initialize);
+        assert_eq!(rv_name(&vendor), "CKR 0x80000001");
     }
 }

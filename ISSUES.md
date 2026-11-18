@@ -166,11 +166,13 @@ Still open. Each says why it was not done with the rest.
   `Token::create` returns a typed note; the probe matches values, not text.
 - **Q4. `rv_name` derives `CKR_*` names from cryptoki's `Debug` output**, which committed
   profiles pin. cryptoki 0.12 has no conversion from `RvError` back to its number, so the
-  alternative is a hand-kept table of about ninety variants. **Decided 2026-11-17, not built:**
-  p11-fault's compiler-checked `cryptoki-sys` table (`crates/p11-fault/src/names.rs`) moves to
-  a small shared crate with no cakeys dependencies; an `RvError` finds its `CK_RV` and name by
-  running the table's values through cryptoki's `Rv::from`. An upstream rust-cryptoki PR
-  (`RvError` to `CK_RV`, and a name) goes in parallel; once a release has it, `rv_name` uses it.
+  alternative is a hand-kept table of about ninety variants. **Done 2026-11-17:** p11-fault's
+  compiler-checked `cryptoki-sys` table is its own crate, `crates/p11-names` (no cakeys
+  dependency; p11-fault re-exports it as `names`). `token::rv_value` finds an `RvError`'s
+  `CK_RV` by running the table's values through cryptoki's `Rv::from`, and `rv_name` names it
+  from the table; every named value converts back and keeps the name the variant gave
+  (`every_named_value_converts_back`), so no profile changes. The upstream PR (`RvError` to
+  `CK_RV`, and `RvError::name`) is drafted, not filed: `upstream/rust-cryptoki/PR-RV-VALUE.md`.
 - **Q24. The profile set is process-global and order-dependent** (`Set::activate` after
   `Set::active` fails; `Registry::named` hides a set that does not parse). **Decided
   2026-11-17, not built:** keep the `OnceLock`; `Set::active` errors when nothing activated it

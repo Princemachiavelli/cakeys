@@ -1,0 +1,37 @@
+# Draft PR for parallaxsecond/rust-cryptoki: `RvError` back to its `CK_RV`, and its name
+
+Status: **draft, not filed.** Upstream main has only `From<CK_RV> for Rv` (checked 2026-11-17).
+
+- cakeys does not carry this as a local patch: `cakeys_pkcs11::token::rv_value` finds the value
+  by running `p11-names`' `cryptoki-sys` table through `Rv::from` (ISSUES.md Q4). When a release
+  has the conversion, `rv_value` and `rv_name` use it, and only p11-fault keeps the table (its
+  plans name values).
+- The patch: `0003-Add-RvError-to-CK_RV-and-its-name.patch`, against 0.12.1's
+  `cryptoki/src/error/rv.rs`. The match arms are the inverse of `From<CK_RV> for Rv`'s,
+  generated from them, so the two cannot disagree; the match is exhaustive, so a new variant
+  fails to compile until it is added. `round_trip` passes against 0.12.1 (the crate's own unit
+  tests, run without its dev-dependencies).
+
+---
+
+**Title:** Convert `RvError` and `Rv` back to `CK_RV`, and name the `CKR_*` constant
+
+**Body:**
+
+`Rv` converts from a `CK_RV`, but not back. A caller that wants the numeric return value of a
+failed call (to log it, compare it with a vendor's documentation, or hand it to another layer
+that speaks `CK_RV`) has only `Debug` or `Display`: `Display` is the specification's prose, and
+deriving a `CKR_*` name from `Debug` depends on the variant names matching the constants.
+
+This PR adds:
+
+- `impl From<RvError> for CK_RV` and `impl From<Rv> for CK_RV`, the inverse of
+  `From<CK_RV> for Rv`: `VendorDefined` and `UnknownErrorCode` give back the value they carry.
+- `RvError::name(&self) -> Option<&'static str>`: the `CKR_*` constant's name as the
+  specification spells it, `None` for a vendor-defined or unknown value.
+
+The test `round_trip` converts every value below `0x1000` and two vendor-defined ones to `Rv`
+and back, and checks that exactly the named variants have a name.
+
+We use the value to keep a module's return code in our errors and the name in messages and in
+recorded evidence, where it must not change with the binding's wording.

@@ -1,0 +1,15 @@
+[package]
+name = "p11-names"
+description = "PKCS#11 names and their values, as cryptoki-sys defines them (CKR_*, CKA_*, CKM_*, flags)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cryptoki-sys.workspace = true

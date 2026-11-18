@@ -1,5 +1,7 @@
-//! PKCS#11 names a plan and the trace use, with the values `cryptoki-sys` gives them: a plan
-//! says `CKR_DEVICE_ERROR`, never `0x30`, unless the value has no name here.
+//! PKCS#11 names with the values `cryptoki-sys` gives them, compiler-checked: p11-fault's plans
+//! and trace say `CKR_DEVICE_ERROR`, never `0x30`, unless the value has no name here, and
+//! cakeys names a module's failure by its return value's constant (`cakeys_pkcs11`'s
+//! `rv_name`). No cakeys dependency: p11-fault stays a module any client can load.
 
 use cryptoki_sys::{CK_ATTRIBUTE_TYPE, CK_FLAGS, CK_MECHANISM_TYPE, CK_RV};
 

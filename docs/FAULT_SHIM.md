@@ -45,12 +45,15 @@ crates/p11-fault/
   src/forward.rs   the 68 forwarders, generated from one signature list
   src/plan.rs      the plan: parsing, matching, call counting
   src/hooks.rs     what rules do to the outputs of the few functions that need it
-  src/names.rs     CKR_/CKA_/CKF_ names <-> values (the set the plans use; numbers otherwise)
   src/trace.rs     one JSON line per call
+crates/p11-names/
+  src/lib.rs       CKR_/CKA_/CKF_/CKM_ names <-> values (the set the plans use; numbers
+                   otherwise), re-exported as p11_fault::names; cakeys_pkcs11 names return
+                   values with it too
 ```
 
 Dependencies: `cryptoki-sys` (the C types), `libloading`, `serde` and `toml`, all already in
-the tree. About 1–1.5k lines.
+the tree, and `p11-names`, which depends on `cryptoki-sys` alone. About 1–1.5k lines.
 
 ### Loading
 

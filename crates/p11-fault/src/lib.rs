@@ -12,7 +12,7 @@
 
 mod forward;
 mod hooks;
-pub mod names;
+pub use p11_names as names;
 pub mod plan;
 mod trace;
 

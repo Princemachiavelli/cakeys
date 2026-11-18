@@ -19,6 +19,7 @@ workspace = true
 cryptoki-sys.workspace = true
 libloading.workspace = true
 libc.workspace = true
+p11-names.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

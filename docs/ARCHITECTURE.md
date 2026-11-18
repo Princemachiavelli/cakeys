@@ -14,10 +14,13 @@ crates/
   ykcs11/       cakeys-ykcs11    YubiKey PIV provider + piv-attestation (pinned Yubico roots)
   tpm2-pkcs11/  cakeys-tpm2-pkcs11  tpm2-pkcs11 provider + native TPM2_Certify attestation, tpm2_ptool import
   kmsp11/       cakeys-kmsp11    Google Cloud KMS provider: keys bound to one algorithm each
+  aws-cloudhsm/ cakeys-aws-cloudhsm  AWS CloudHSM provider: Ed25519 through vendor mechanisms
   cli-common/   cakeys-cli-common  what the binaries share: provider registry, opening tokens, exit codes
   cli/          cakeys           pin and verify; the integration-test harness (tests/common)
   caprobe/      caprobe          the module measurer: probe, supports, caps; profile emitter and diff
   camigrate/    camigrate        the key mover: export, import, migrate, transport; the planner
+  p11-fault/    p11-fault        a PKCS#11 module that forwards to a real one and misbehaves on request
+  p11-names/    p11-names        PKCS#11 names and values from cryptoki-sys (no cakeys dependency)
 profiles/       capability profiles: the PKCS#11 3.2 baseline (+ vendored OASIS headers), module
                 profiles, layers (cryptoki, p11-kit), hardware (swtpm)
 nix/            packages (regular and crane), lib.mkKeys, NixOS module, sandbox hook, VM/module/TPM

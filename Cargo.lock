@@ -309,9 +309,11 @@ dependencies = [
  "cakeys-core",
  "cakeys-profile",
  "cryptoki",
+ "cryptoki-sys",
  "der",
  "getrandom",
  "libc",
+ "p11-names",
  "rsa",
  "toml",
  "x509-cert",
@@ -1123,9 +1125,17 @@ dependencies = [
  "cryptoki-sys",
  "libc",
  "libloading",
+ "p11-names",
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "p11-names"
+version = "0.1.0"
+dependencies = [
+ "cryptoki-sys",
 ]
 
 [[package]]
