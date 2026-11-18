@@ -17,12 +17,11 @@
 use cakeys_core::config::{AttrValue, Binding, Locator, ObjectCfg, SpecCfg, TokenCfg};
 use cakeys_core::id::Curve;
 use cakeys_core::pop::{self, OaepHash, RsaPadding};
-use cakeys_core::sig::{self, EcdsaHash, Encoding};
+use cakeys_core::sig::{self, Encoding, HashAlg};
 use cakeys_core::types::KeyType as Kt;
 use cakeys_core::{KmError, Msg, Result};
 use cakeys_pkcs11::token::{self, Token, derive_any, is_policy_default, show, template_refusal};
 use cakeys_pkcs11::{BoundKey, keygen_mechanism};
-use cakeys_profile::baseline::CURVES;
 use cakeys_profile::capability::{DECRYPT_OAEP, UNWRAP_TEMPLATE, WRAP_OAEP};
 use cakeys_profile::{Answer, Capability, GenerateRow, KeyKind, MatchInfo, Mode, On, Profile};
 use cryptoki::error::{Error as CkError, RvError};
@@ -110,7 +109,7 @@ pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: Option<u32>) -> Result<P
             model: Some(clean(&tok.token.model)),
             firmware: Some(clean(&tok.token.firmware)),
         },
-        advertise: tok.advertised.clone(),
+        advertise: tok.advertised(),
         ..Profile::new(format!("{}/{}", tok.provider.name(), tok.module.version), Mode::Observed)
     };
     let mut profile = Draft::new(profile);
@@ -118,7 +117,8 @@ pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: Option<u32>) -> Result<P
     // A mechanism listed more than once (libkmsp11 1.9: CKM_RSA_PKCS_KEY_PAIR_GEN 24 times
     // [run]) is advertised once; the repetition is a note.
     let mut counts = BTreeMap::<&str, usize>::new();
-    for m in &tok.advertised {
+    let advertised = tok.advertised();
+    for m in &advertised {
         *counts.entry(m.as_str()).or_default() += 1;
     }
     let repeated: Vec<String> = counts.iter().filter(|(_, n)| **n > 1).map(|(m, n)| format!("{m} {n} times")).collect();
@@ -497,8 +497,7 @@ impl Made<'_> {
     }
 
     fn advertises(&self, m: MechanismType) -> bool {
-        let m = m.to_string();
-        self.tok.advertised.contains(&m) && self.bound.as_ref().is_none_or(|b| b.contains(&m))
+        self.tok.lists(m) && self.bound.as_ref().is_none_or(|b| b.contains(&m.to_string()))
     }
 
     /// Whether the operation probes try `m` on the key at hand: any mechanism, listed or not —
@@ -510,7 +509,7 @@ impl Made<'_> {
 
     /// Record what `m` did on `on`, and whether the module lists it.
     fn record(&mut self, m: MechanismType, on: &str, outcome: std::result::Result<(), Msg>) {
-        if !self.tok.advertised.contains(&m.to_string()) {
+        if !self.tok.lists(m) {
             self.ops.unlisted.insert(m.to_string());
         }
         self.ops.record(m, on, outcome);
@@ -872,16 +871,15 @@ fn probe_unbound(made: &mut Made, profile: &mut Draft, ec: &mut GenerateRow, rsa
         Err(e) => Some(ckr(&e)),
     };
     if let Some(ec_refusal) = unbound(made, &Mechanism::EccKeyPairGen, &KeyKind::Ec) {
-        for name in CURVES.iter().filter(|n| Curve::from_cfg(Kt::Ec, n).is_some()) {
-            let name = (*name).to_owned();
+        for name in Curve::ALL.iter().filter(|c| !c.edwards()).map(|c| c.name()) {
+            let name = name.to_owned();
             if !ec.can.contains(&name) && !ec.cannot.contains(&name) {
                 profile.notes.insert(name.clone(), format!("no binding for it; without one: {ec_refusal}"));
                 ec.cannot.push(name);
             }
         }
     }
-    let edwards: Vec<String> =
-        CURVES.iter().filter(|n| Curve::from_cfg(Kt::EcEdwards, n).is_some()).map(|n| (*n).to_owned()).collect();
+    let edwards: Vec<String> = Curve::ALL.iter().filter(|c| c.edwards()).map(|c| c.name().to_owned()).collect();
     let montgomery: Vec<String> = MONTGOMERY.iter().map(|m| m.0.to_owned()).collect();
     for (kt, mech, names) in [
         (KeyKind::EcEdwards, Mechanism::EccEdwardsKeyPairGen, edwards),
@@ -918,15 +916,17 @@ const MONTGOMERY: [CurveForm; 2] = [
 /// a curve that generates only when named. The first key of each kind gets the operation
 /// probes, right away — in a scratch slot the next generation replaces it.
 fn probe_curves(made: &mut Made, profile: &mut Draft) -> Result<()> {
-    let forms = |kt: Kt| -> Vec<CurveForm> {
-        CURVES
+    // The curves cakeys has a key type for (core's), Weierstrass or Edwards.
+    let forms = |edwards: bool| -> Vec<CurveForm> {
+        Curve::ALL
             .iter()
-            .filter_map(|name| Curve::from_cfg(kt, name).map(|c| (*name, c.params(), c.params_by_name())))
+            .filter(|c| c.edwards() == edwards)
+            .map(|c| (c.name(), c.params(), c.params_by_name()))
             .collect()
     };
     let families = [
-        (KeyKind::Ec, Mechanism::EccKeyPairGen, forms(Kt::Ec)),
-        (KeyKind::EcEdwards, Mechanism::EccEdwardsKeyPairGen, forms(Kt::EcEdwards)),
+        (KeyKind::Ec, Mechanism::EccKeyPairGen, forms(false)),
+        (KeyKind::EcEdwards, Mechanism::EccEdwardsKeyPairGen, forms(true)),
         (KeyKind::EcMontgomery, Mechanism::EccMontgomeryKeyPairGen, MONTGOMERY.to_vec()),
     ];
     for (kt, mech, curves) in families {
@@ -936,7 +936,7 @@ fn probe_curves(made: &mut Made, profile: &mut Draft) -> Result<()> {
         // CloudHSM lists no Edwards one, and makes Ed25519 with CKM_EC_KEY_PAIR_GEN [run]) the
         // stand-in is what is tried. Either way it is in `add` if a curve generates.
         let keygen = mech.mechanism_type();
-        let listed = made.tok.advertised.contains(&keygen.to_string());
+        let listed = made.tok.lists(keygen);
         let stood_in = !listed && made.tok.provider.stand_ins().contains(&keygen);
         if !matches!(kt, KeyKind::EcMontgomery) {
             create_curves(made, profile, &kt, &curves, &mut row)?;
@@ -1149,7 +1149,7 @@ fn operate(made: &mut Made, profile: &mut Draft, kt: &KeyKind, on: &str, public:
     match kt {
         KeyKind::Ec => {
             let curve = Curve::from_cfg(Kt::Ec, on);
-            ec_ops(made, private, &spki, on, curve.and_then(EcdsaHash::for_curve));
+            ec_ops(made, private, &spki, on, curve.and_then(HashAlg::for_curve));
             if made.tries(MechanismType::ECDH1_DERIVE) {
                 derive(made, profile, private, &spki, on);
             }
@@ -1296,18 +1296,17 @@ fn sign(
 }
 
 /// ECDSA, raw and with each hash the module advertises; verified for the hashes `sig` has.
-fn ec_ops(made: &mut Made, private: ObjectHandle, spki: &[u8], on: &str, hash: Option<EcdsaHash>) {
-    let verify =
-        |h: Option<EcdsaHash>| move |s: &[u8]| h.and_then(|h| sig::ecdsa(spki, MSG, s, Encoding::Raw, Some(h)));
+fn ec_ops(made: &mut Made, private: ObjectHandle, spki: &[u8], on: &str, hash: Option<HashAlg>) {
+    let verify = |h: Option<HashAlg>| move |s: &[u8]| h.and_then(|h| sig::ecdsa(spki, MSG, s, Encoding::Raw, Some(h)));
     // Raw ECDSA signs the curve's digest of the message.
     let digest = hash.map_or_else(|| Sha256::digest(MSG).to_vec(), |h| h.digest(MSG));
-    let raw = (Mechanism::Ecdsa, digest, hash.or(Some(EcdsaHash::Sha256)));
+    let raw = (Mechanism::Ecdsa, digest, hash.or(Some(HashAlg::Sha256)));
     let hashed = [
         (Mechanism::EcdsaSha1, MSG.to_vec(), None),
         (Mechanism::EcdsaSha224, MSG.to_vec(), None),
-        (Mechanism::EcdsaSha256, MSG.to_vec(), Some(EcdsaHash::Sha256)),
-        (Mechanism::EcdsaSha384, MSG.to_vec(), Some(EcdsaHash::Sha384)),
-        (Mechanism::EcdsaSha512, MSG.to_vec(), Some(EcdsaHash::Sha512)),
+        (Mechanism::EcdsaSha256, MSG.to_vec(), Some(HashAlg::Sha256)),
+        (Mechanism::EcdsaSha384, MSG.to_vec(), Some(HashAlg::Sha384)),
+        (Mechanism::EcdsaSha512, MSG.to_vec(), Some(HashAlg::Sha512)),
     ];
     for (mech, data, h) in std::iter::once(raw).chain(hashed) {
         let mt = mech.mechanism_type();
@@ -1472,7 +1471,7 @@ fn rsa_ops(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[
     let none = |_: &[u8]| None;
     let pss = |hash, mgf, len: usize| PkcsPssParams { hash_alg: hash, mgf, s_len: (len as u64).into() };
     // What raw `CKM_RSA_PKCS` signs: the digest behind its `DigestInfo` prefix.
-    let digest_info = [token::digest_info(EcdsaHash::Sha256), Sha256::digest(MSG).as_slice()].concat();
+    let digest_info = [token::digest_info(HashAlg::Sha256), Sha256::digest(MSG).as_slice()].concat();
     // Raw RSA signs one modulus-sized block; a leading zero keeps it below any modulus.
     let block = [&[0u8][..], &[0x5a; 255]].concat();
     let sha256 = Sha256::digest(MSG).to_vec();
@@ -1543,7 +1542,7 @@ fn probe_secrets(made: &mut Made, profile: &mut Draft) -> Option<ObjectHandle> {
         (Mechanism::GenericSecretKeyGen, "CKM_GENERIC_SECRET_KEY_GEN", KeyType::GENERIC_SECRET),
     ] {
         let name = name.to_owned();
-        if !made.tok.advertised.contains(&name) {
+        if !made.tok.lists(mech.mechanism_type()) {
             continue;
         }
         let label = made.label();
@@ -1707,7 +1706,7 @@ fn probe_key_wraps(made: &mut Made, profile: &mut Draft, transport: (ObjectHandl
         wraps.push(("CKM_RSA_AES_KEY_WRAP", hashes.into(), transport.0, transport.1));
     }
     for (name, variants, wraps_with, unwraps_with) in wraps {
-        if !made.tok.advertised.iter().any(|a| a == name) {
+        if !made.tok.advertised().iter().any(|a| a == name) {
             continue;
         }
         let mut refusals = Vec::new();

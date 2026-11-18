@@ -71,14 +71,14 @@ impl Token {
         let permits = self.proof_permits(h);
         let usable = |m: MechanismType| self.has(m) && permits(m);
         let none_allowed = |ms: &[MechanismType]| self.none_allowed(ms);
-        let mut rsa = pop::RsaSignature::Pkcs1v15(pop::EcdsaHash::Sha256);
+        let mut rsa = pop::RsaSignature::Pkcs1v15(pop::HashAlg::Sha256);
         let (mech, data) = match key_type_of(object)? {
             KeyType::EC => {
                 let hash = ecdsa_hash(object)?;
                 let hashed = match hash {
-                    pop::EcdsaHash::Sha256 => Mechanism::EcdsaSha256,
-                    pop::EcdsaHash::Sha384 => Mechanism::EcdsaSha384,
-                    pop::EcdsaHash::Sha512 => Mechanism::EcdsaSha512,
+                    pop::HashAlg::Sha256 => Mechanism::EcdsaSha256,
+                    pop::HashAlg::Sha384 => Mechanism::EcdsaSha384,
+                    pop::HashAlg::Sha512 => Mechanism::EcdsaSha512,
                 };
                 let raw = MechanismType::ECDSA;
                 if usable(hashed.mechanism_type()) {
@@ -557,7 +557,7 @@ pub fn proof_refusal(object: &ObjectCfg, binding: Binding, side: &ProofSide<'_>)
 /// same signature either way); the other v1.5 hashes; then PSS, hashed by the token or over the
 /// host's digest. A raw mechanism's hash here is its default ([`rsa_signature`]).
 const RSA_SIGN: [(MechanismType, pop::RsaSignature); 8] = {
-    use pop::EcdsaHash::{Sha256, Sha384, Sha512};
+    use pop::HashAlg::{Sha256, Sha384, Sha512};
     use pop::RsaSignature::{Pkcs1v15, Pss};
     [
         (MechanismType::SHA256_RSA_PKCS, Pkcs1v15(Sha256)),
@@ -599,7 +599,7 @@ fn rsa_signature(
 /// message itself for a hashed mechanism, the host's digest (in its `DigestInfo` for v1.5) for a
 /// raw one. PSS asks a salt as long as the hash, which the host's verifier expects.
 fn rsa_sign(m: MechanismType, scheme: pop::RsaSignature, msg: &[u8]) -> (Mechanism<'static>, Vec<u8>) {
-    use pop::EcdsaHash::{Sha256, Sha384, Sha512};
+    use pop::HashAlg::{Sha256, Sha384, Sha512};
     match scheme {
         pop::RsaSignature::Pkcs1v15(h) if m == MechanismType::RSA_PKCS => {
             (Mechanism::RsaPkcs, [digest_info(h), h.digest(msg).as_slice()].concat())
@@ -633,7 +633,7 @@ fn rsa_sign(m: MechanismType, scheme: pop::RsaSignature, msg: &[u8]) -> (Mechani
 /// `CKM_SHA*_RSA_PKCS` puts before the hash it computes, so raw `CKM_RSA_PKCS` over it and the
 /// host's hash signs the same PKCS #1 v1.5 signature.
 #[must_use]
-pub fn digest_info(h: pop::EcdsaHash) -> &'static [u8] {
+pub fn digest_info(h: pop::HashAlg) -> &'static [u8] {
     const SHA256: [u8; 19] = [
         0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04,
         0x20,
@@ -647,9 +647,9 @@ pub fn digest_info(h: pop::EcdsaHash) -> &'static [u8] {
         0x40,
     ];
     match h {
-        pop::EcdsaHash::Sha256 => &SHA256,
-        pop::EcdsaHash::Sha384 => &SHA384,
-        pop::EcdsaHash::Sha512 => &SHA512,
+        pop::HashAlg::Sha256 => &SHA256,
+        pop::HashAlg::Sha384 => &SHA384,
+        pop::HashAlg::Sha512 => &SHA512,
     }
 }
 
@@ -701,8 +701,8 @@ fn oaep_hash_refused(e: &CkError, init: Function) -> bool {
 }
 
 /// The hash ECDSA signs a proof with on `object`'s curve.
-fn ecdsa_hash(object: &ObjectCfg) -> Result<pop::EcdsaHash> {
-    pop::EcdsaHash::for_curve(curve_of(object)?)
+fn ecdsa_hash(object: &ObjectCfg) -> Result<pop::HashAlg> {
+    pop::HashAlg::for_curve(curve_of(object)?)
         .ok_or_else(|| KmError::Unsupported(format!("ECDSA on {}", object.curve.as_deref().unwrap_or("?")).into()))
 }
 
@@ -722,9 +722,9 @@ fn proof_mechanisms(object: &ObjectCfg, binding: Binding) -> Result<Vec<Vec<Mech
         Binding::PopSign | Binding::PopSignPin => match key_type_of(object)? {
             KeyType::EC => {
                 let hashed = match ecdsa_hash(object)? {
-                    pop::EcdsaHash::Sha256 => MechanismType::ECDSA_SHA256,
-                    pop::EcdsaHash::Sha384 => MechanismType::ECDSA_SHA384,
-                    pop::EcdsaHash::Sha512 => MechanismType::ECDSA_SHA512,
+                    pop::HashAlg::Sha256 => MechanismType::ECDSA_SHA256,
+                    pop::HashAlg::Sha384 => MechanismType::ECDSA_SHA384,
+                    pop::HashAlg::Sha512 => MechanismType::ECDSA_SHA512,
                 };
                 vec![vec![hashed, MechanismType::ECDSA]]
             }
@@ -826,7 +826,7 @@ pub fn derive_any(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pop::EcdsaHash::{Sha256, Sha512};
+    use pop::HashAlg::{Sha256, Sha512};
     use pop::RsaSignature::{Pkcs1v15, Pss};
 
     /// The RSA signature a proof asks for: with no allowed list what it always did (v1.5 over

@@ -361,7 +361,7 @@ pub fn attest_bytes(attest: &Attest) -> Result<Vec<u8>> {
 /// `Unsupported` when the AK signed with something other than ECDSA-SHA256; `Conflict` when
 /// the signature does not verify against the pinned AK, or a component is too long for P-256.
 pub fn verify_signature(signature: &Signature, ak_spki: &[u8], bytes: &[u8]) -> Result<()> {
-    use cakeys_core::sig::{self, EcdsaHash, Encoding};
+    use cakeys_core::sig::{self, Encoding, HashAlg};
     let (r, s) = match signature {
         Signature::EcDsa(ecc) => (ecc.signature_r().value().to_vec(), ecc.signature_s().value().to_vec()),
         s => return Err(KmError::Unsupported(format!("the AK signed with {s:?}, not ECDSA-SHA256").into())),
@@ -375,7 +375,7 @@ pub fn verify_signature(signature: &Signature, ak_spki: &[u8], bytes: &[u8]) -> 
         })?;
         half[at..].copy_from_slice(v);
     }
-    match sig::ecdsa(ak_spki, bytes, &raw, Encoding::Raw, Some(EcdsaHash::Sha256)) {
+    match sig::ecdsa(ak_spki, bytes, &raw, Encoding::Raw, Some(HashAlg::Sha256)) {
         Some(Ok(())) => Ok(()),
         Some(Err(_)) => {
             Err(KmError::Conflict("the attestation signature does not verify against the pinned AK".into()))

@@ -269,7 +269,7 @@ fn every_curve_parses_from_pkcs8() {
     assert!(matches!(&e, KmError::Unsupported(m) if m.contains("on secp256r1")), "{e}");
     assert!(matches!(spki_of_pkcs8(b"no key at all"), Err(KmError::Unsupported(_))));
     // An Edwards curve has no ECDSA hash: its proof is EdDSA.
-    assert!(cakeys_core::pop::EcdsaHash::for_curve(cakeys_core::id::Curve::Ed25519).is_none());
+    assert!(cakeys_core::pop::HashAlg::for_curve(cakeys_core::id::Curve::Ed25519).is_none());
 }
 
 /// A proof of possession needs a verifier for the key's type: Ed448 has none, and bytes that
@@ -560,7 +560,7 @@ fn views_and_picks_say_what_is_there() {
 #[test]
 fn types_name_their_hash_and_curve() {
     use cakeys_core::id::{Curve, HmacHash};
-    use cakeys_core::pop::EcdsaHash;
+    use cakeys_core::pop::HashAlg;
     use cakeys_core::types::ObjectClass;
     let hmac = [
         (KeyType::GenericSecret, Some(HmacHash::Sha256), false),
@@ -576,14 +576,14 @@ fn types_name_their_hash_and_curve() {
         assert_eq!((HmacHash::for_key_type(kt), kt.is_hash_bound_hmac()), (hash, bound), "{kt:?}");
     }
     let curves = [
-        (Curve::P256, Some(EcdsaHash::Sha256), false, None),
-        (Curve::P384, Some(EcdsaHash::Sha384), false, None),
-        (Curve::P521, Some(EcdsaHash::Sha512), false, None),
+        (Curve::P256, Some(HashAlg::Sha256), false, None),
+        (Curve::P384, Some(HashAlg::Sha384), false, None),
+        (Curve::P521, Some(HashAlg::Sha512), false, None),
         (Curve::Ed25519, None, true, Some(&b"\x13\x0cedwards25519"[..])),
         (Curve::Ed448, None, true, Some(&b"\x13\x0aedwards448"[..])),
     ];
     for (curve, hash, edwards, by_name) in curves {
-        let got = (EcdsaHash::for_curve(curve), curve.edwards(), curve.params_by_name());
+        let got = (HashAlg::for_curve(curve), curve.edwards(), curve.params_by_name());
         assert_eq!(got, (hash, edwards, by_name), "{curve:?}");
     }
     assert!(cakeys_core::attrs::has_allowed_mechanisms(ObjectClass::PrivateKey));

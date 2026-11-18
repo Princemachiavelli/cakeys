@@ -301,14 +301,14 @@ fn chain_to_anchor<'a>(cert: &Cert, anchors: &'a [Cert], pool: &[Cert], at: Opti
 /// `signer`'s key, with the signature algorithm the certificate names: ECDSA (DER) with the
 /// hash the algorithm names, whatever the curve, or RSA PKCS#1 v1.5 (`cakeys_core::sig`).
 fn verify_signed_by(cert: &Cert, signer: &Cert) -> Result<()> {
-    use cakeys_core::sig::{self, EcdsaHash, Encoding};
+    use cakeys_core::sig::{self, Encoding, HashAlg};
     let spki = signer.spki()?;
     let (tbs, s) = (cert.tbs()?, cert.signature());
     let ecdsa = |hash| sig::ecdsa(&spki, tbs, s, Encoding::Der, Some(hash));
     let verdict = match cert.parsed.signature_algorithm().oid {
-        ECDSA_SHA256 => ecdsa(EcdsaHash::Sha256),
-        ECDSA_SHA384 => ecdsa(EcdsaHash::Sha384),
-        ECDSA_SHA512 => ecdsa(EcdsaHash::Sha512),
+        ECDSA_SHA256 => ecdsa(HashAlg::Sha256),
+        ECDSA_SHA384 => ecdsa(HashAlg::Sha384),
+        ECDSA_SHA512 => ecdsa(HashAlg::Sha512),
         RSA_SHA256 => sig::rsa_pkcs1v15::<sha2::Sha256>(&spki, tbs, s),
         RSA_SHA384 => sig::rsa_pkcs1v15::<sha2::Sha384>(&spki, tbs, s),
         RSA_SHA512 => sig::rsa_pkcs1v15::<sha2::Sha512>(&spki, tbs, s),

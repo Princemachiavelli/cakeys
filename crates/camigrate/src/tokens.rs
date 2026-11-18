@@ -28,8 +28,8 @@ use std::str::FromStr;
 /// does not know: a commit-time bug in the profile, named with its profile.
 pub(crate) fn side(tok: &Token) -> Result<Side> {
     match &tok.profiles.module {
-        Some(p) => side_of(p, &tok.profiles, &tok.name, tok.provider.name(), tok.mechanism_names()),
-        None => Ok(Side::pkcs11(&tok.name, tok.provider.name(), tok.mechanism_names().iter().cloned())),
+        Some(p) => side_of(p, &tok.profiles, &tok.name, tok.provider.name(), &tok.mechanism_names()),
+        None => Ok(Side::pkcs11(&tok.name, tok.provider.name(), tok.mechanism_names())),
     }
 }
 
@@ -460,7 +460,7 @@ pub(crate) fn transport(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes)
         .find_key(t.object, &t.on_token.locator, false)?
         .ok_or_else(|| KmError::NotFound(format!("{t}: the transport key").into()))?;
     let spki = tok.spki(h, &t.on_token.locator)?;
-    Transport::new(&tok.name, tok.provider.name(), t.object_name, &spki, tok.mechanism_names())
+    Transport::new(&tok.name, tok.provider.name(), t.object_name, &spki, &tok.mechanism_names())
 }
 
 /// Where `export` or `migrate` sends the material.

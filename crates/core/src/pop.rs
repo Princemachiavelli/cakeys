@@ -10,7 +10,7 @@
 use crate::error::{KmError, Result};
 use crate::id::{Curve, KeyAlg};
 use crate::sig;
-pub use crate::sig::EcdsaHash;
+pub use crate::sig::HashAlg;
 use elliptic_curve::sec1::ToSec1Point;
 use elliptic_curve::{Generate, PublicKey, ecdh::EphemeralSecret};
 use hmac::{Hmac, KeyInit, Mac};
@@ -44,13 +44,13 @@ pub fn challenge(spki: &[u8]) -> Result<Vec<u8>> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RsaSignature {
     /// PKCS#1 v1.5.
-    Pkcs1v15(EcdsaHash),
+    Pkcs1v15(HashAlg),
     /// PSS.
-    Pss(EcdsaHash),
+    Pss(HashAlg),
 }
 
 /// Verify `sig` over `msg` with the key in `spki`, as the token produced it (`crate::sig`):
-/// - ECDSA: raw `r ‖ s` (PKCS#11) over the curve's hash of `msg` (`EcdsaHash::for_curve`);
+/// - ECDSA: raw `r ‖ s` (PKCS#11) over the curve's hash of `msg` (`HashAlg::for_curve`);
 /// - Ed25519: pure `EdDSA` over `msg`;
 /// - RSA: PKCS#1 v1.5 with SHA-256 over `msg`.
 ///
@@ -58,7 +58,7 @@ pub enum RsaSignature {
 ///
 /// As [`verify_with`].
 pub fn verify(spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
-    verify_with(spki, msg, sig, RsaSignature::Pkcs1v15(EcdsaHash::Sha256))
+    verify_with(spki, msg, sig, RsaSignature::Pkcs1v15(HashAlg::Sha256))
 }
 
 /// [`verify`], with an RSA key's signature made as `rsa` says.
@@ -83,12 +83,12 @@ pub fn verify_with(spki: &[u8], msg: &[u8], sig: &[u8], rsa: RsaSignature) -> Re
         }
         KeyAlg::Ec(_) => sig::ecdsa(spki, msg, sig, sig::Encoding::Raw, None),
         KeyAlg::Rsa => match rsa {
-            RsaSignature::Pkcs1v15(EcdsaHash::Sha256) => sig::rsa_pkcs1v15::<Sha256>(spki, msg, sig),
-            RsaSignature::Pkcs1v15(EcdsaHash::Sha384) => sig::rsa_pkcs1v15::<sha2::Sha384>(spki, msg, sig),
-            RsaSignature::Pkcs1v15(EcdsaHash::Sha512) => sig::rsa_pkcs1v15::<sha2::Sha512>(spki, msg, sig),
-            RsaSignature::Pss(EcdsaHash::Sha256) => sig::rsa_pss::<Sha256>(spki, msg, sig),
-            RsaSignature::Pss(EcdsaHash::Sha384) => sig::rsa_pss::<sha2::Sha384>(spki, msg, sig),
-            RsaSignature::Pss(EcdsaHash::Sha512) => sig::rsa_pss::<sha2::Sha512>(spki, msg, sig),
+            RsaSignature::Pkcs1v15(HashAlg::Sha256) => sig::rsa_pkcs1v15::<Sha256>(spki, msg, sig),
+            RsaSignature::Pkcs1v15(HashAlg::Sha384) => sig::rsa_pkcs1v15::<sha2::Sha384>(spki, msg, sig),
+            RsaSignature::Pkcs1v15(HashAlg::Sha512) => sig::rsa_pkcs1v15::<sha2::Sha512>(spki, msg, sig),
+            RsaSignature::Pss(HashAlg::Sha256) => sig::rsa_pss::<Sha256>(spki, msg, sig),
+            RsaSignature::Pss(HashAlg::Sha384) => sig::rsa_pss::<sha2::Sha384>(spki, msg, sig),
+            RsaSignature::Pss(HashAlg::Sha512) => sig::rsa_pss::<sha2::Sha512>(spki, msg, sig),
         },
     };
     match verdict {
@@ -288,7 +288,7 @@ mod tests {
         let k2 = SigningKey::from_slice(&[2u8; 32]).unwrap();
         let spki = k1.verifying_key().to_public_key_der().unwrap();
         let msg = message(spki.as_bytes(), &[0u8; 32]);
-        let digest = EcdsaHash::Sha256.digest(&msg);
+        let digest = HashAlg::Sha256.digest(&msg);
         let good: Signature = k1.sign_prehash(&digest).unwrap();
         let other: Signature = k2.sign_prehash(&digest).unwrap();
         verify(spki.as_bytes(), &msg, &good.to_bytes()).unwrap();
@@ -369,12 +369,12 @@ mod tests {
             .try_sign_with_rng(&mut getrandom::SysRng, b"message")
             .unwrap()
             .to_vec();
-        verify_with(spki, b"message", &pss, RsaSignature::Pss(EcdsaHash::Sha256)).unwrap();
-        for other in [RsaSignature::Pss(EcdsaHash::Sha512), RsaSignature::Pkcs1v15(EcdsaHash::Sha256)] {
+        verify_with(spki, b"message", &pss, RsaSignature::Pss(HashAlg::Sha256)).unwrap();
+        for other in [RsaSignature::Pss(HashAlg::Sha512), RsaSignature::Pkcs1v15(HashAlg::Sha256)] {
             assert!(matches!(verify_with(spki, b"message", &pss, other), Err(KmError::Conflict(_))), "{other:?}");
         }
         let v15 = rsa::pkcs1v15::SigningKey::<sha2::Sha512>::new(private.clone()).sign(b"message").to_vec();
-        verify_with(spki, b"message", &v15, RsaSignature::Pkcs1v15(EcdsaHash::Sha512)).unwrap();
+        verify_with(spki, b"message", &v15, RsaSignature::Pkcs1v15(HashAlg::Sha512)).unwrap();
         assert!(matches!(verify(spki, b"message", &v15), Err(KmError::Conflict(_))), "verify is v1.5 over SHA-256");
         // The unwrap challenge in the OAEP hash a key is bound to.
         let ch = unwrap_challenge_with(spki, b"m", RsaPadding::OaepSha512).unwrap();

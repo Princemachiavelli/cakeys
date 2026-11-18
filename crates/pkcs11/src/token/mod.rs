@@ -123,12 +123,8 @@ pub struct Token {
     /// subtract (the module's advertised-but-broken rows and every layer's), else minus
     /// what the provider's override drops.
     pub mechanisms: Vec<MechanismType>,
-    /// Their names, sorted: what the lock records and `caps` prints.
-    mechanism_names: Vec<String>,
-    /// What `C_GetMechanismList` returned, sorted: the drift baseline the probe records as
-    /// a profile's `advertise` list (D2).
-    pub advertised: Vec<String>,
-    /// The same list, as the module returned it: what [`Token::unprofiled`] filters anew.
+    /// What `C_GetMechanismList` returned, as the module returned it: what
+    /// [`Token::unprofiled`] filters anew, and [`Token::advertised`] names.
     listed: Vec<MechanismType>,
     /// The RSA key-pair generation's key-size range as `C_GetMechanismInfo` reports it, when
     /// the module advertises `CKM_RSA_PKCS_KEY_PAIR_GEN`: the probe's reported bounds.
@@ -389,14 +385,12 @@ impl Token {
         let profiles = crate::resolution::resolve(cfg, &module, Some(&token), provider.name())
             .map_err(|e| KmError::Validation(e.into()))?;
         let advertised = ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?;
-        let advertised_names = sorted_names(&advertised);
         let rsa_bits = advertised
             .contains(&MechanismType::RSA_PKCS_KEY_PAIR_GEN)
             .then(|| ctx.get_mechanism_info(slot, MechanismType::RSA_PKCS_KEY_PAIR_GEN).ok())
             .flatten()
             .map(|i| (i.min_key_size() as u64, i.max_key_size() as u64));
         let mechanisms = usable_mechanisms(&advertised, &profiles)?;
-        let mechanism_names = sorted_names(&mechanisms);
         let (session, pin) = session(ctx, slot, name, cfg, access, write_protected, pins)?;
         Ok(Token {
             name: name.to_owned(),
@@ -404,9 +398,7 @@ impl Token {
             module,
             token,
             mechanisms,
-            mechanism_names,
             listed: advertised,
-            advertised: advertised_names,
             rsa_bits,
             profiles,
             session,
@@ -440,7 +432,6 @@ impl Token {
                 self.mechanisms.push(m);
             }
         }
-        self.mechanism_names = sorted_names(&self.mechanisms);
         Ok(self)
     }
 
@@ -536,8 +527,21 @@ impl Token {
     }
 
     /// The usable mechanisms, by `CKM_*` name.
-    pub fn mechanism_names(&self) -> &[String] {
-        &self.mechanism_names
+    pub fn mechanism_names(&self) -> Vec<String> {
+        sorted_names(&self.mechanisms)
+    }
+
+    /// What `C_GetMechanismList` returned, by name, sorted, repetitions kept: the drift baseline
+    /// the probe records as a profile's `advertise` list (D2).
+    #[must_use]
+    pub fn advertised(&self) -> Vec<String> {
+        sorted_names(&self.listed)
+    }
+
+    /// Whether `C_GetMechanismList` listed `m`, whatever the profiles subtract.
+    #[must_use]
+    pub fn lists(&self, m: MechanismType) -> bool {
+        self.listed.contains(&m)
     }
 
     /// The provider's attestation capability for `object`'s class, when the spec opted in:

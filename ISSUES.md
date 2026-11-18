@@ -241,12 +241,24 @@ and Q14 (one opener for cakeys and camigrate).
 - **Q14. CLI setup is still duplicated** between `cakeys` and `camigrate`: the `Run` struct, the
   load-and-guard prologue, `(cfg, modules, registry)` at each `open_token`. A shared opener
   collides with the `&mut self.lock` both hold across those calls.
-- **Q9. `Token` still keeps four views of the mechanism list.**
+- **Q9. `Token` still keeps four views of the mechanism list.** **Done 2026-11-17:** it keeps
+  two, what `C_GetMechanismList` listed and what the profiles leave usable, which differ by
+  design; the sorted names of each are methods (`mechanism_names()`, `advertised()`), and
+  `lists(m)` asks the listed one by type, as the probe now does instead of comparing names.
 - **Q18, the rest.** The public half's defaults are written in `generate.rs` and `sealed.rs`;
   curve lists live in `core::id`, `profile::baseline` (independent by design) and the probe.
+  **Done 2026-11-17:** the library writes the public half's defaults once
+  (`templates::public_defaults`; generation and the sealed import share
+  `with_public_default_dropped`); the probe's own templates still spell them, which §4(c)
+  moves onto `Provider::template`. The probe generates on `Curve::ALL`, core's list, not the
+  baseline's names filtered through `Curve::from_cfg`; the baseline keeps its own spellings,
+  and `the_profiles_name_every_curve_cakeys_has` holds them to core's.
 - **Q15. Naming**: `EcdsaHash` is also the RSA hash type (about forty uses);
   `RsaPadding::OaepSha512` sits beside `Oaep(OaepHash)` because `OaepHash` names frozen
-  transport methods.
+  transport methods. **Done 2026-11-17, in part:** `EcdsaHash` is `HashAlg`. `OaepSha512`
+  stays: folding it into `OaepHash` would give camigrate's transport-method parser
+  (`tokens::oaep_hash`, the bundle's frozen `rsa-oaep-sha1`/`-sha256` names) and the probe's
+  wrap loop a hash no transport uses, each to be refused by hand.
 
 ## Unsafe code and other tools
 

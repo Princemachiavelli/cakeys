@@ -224,6 +224,15 @@ mod tests {
     /// The profile crate names key types and proofs on its own (ISSUES.md Q28): every key type
     /// keys.toml takes and every proof a binding gives is one of its known names, never a name
     /// it keeps as read, so a row the gate asks about is the row a probe wrote.
+    /// The profiles' curve names are their own (`cakeys_profile::baseline::CURVES`, which a
+    /// query validates against), and name every curve cakeys has a key type for.
+    #[test]
+    fn the_profiles_name_every_curve_cakeys_has() {
+        for c in cakeys_core::id::Curve::ALL {
+            assert!(cakeys_profile::baseline::CURVES.contains(&c.name()), "{}", c.name());
+        }
+    }
+
     #[test]
     fn the_profiles_know_every_key_type_and_proof_cakeys_has() {
         for kt in cakeys_core::types::KeyType::ALL {

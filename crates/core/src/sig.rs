@@ -13,9 +13,10 @@ use sha2::{Digest, Sha256, Sha384, Sha512};
 /// `Some(Ok(()))` verified; `Some(Err(why))` not; `None` the key is of another kind.
 pub type Verdict = Option<Result<(), String>>;
 
-/// Hash for ECDSA on each Weierstrass curve: the one matching its strength (FIPS 186-5).
+/// A SHA-2 hash a signature is made over: ECDSA's on each Weierstrass curve, the one matching
+/// its strength (FIPS 186-5, [`HashAlg::for_curve`]), and an RSA PKCS#1 v1.5 or PSS signature's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EcdsaHash {
+pub enum HashAlg {
     /// SHA-256: P-256, secp256k1, brainpoolP256r1.
     Sha256,
     /// SHA-384: P-384, brainpoolP384r1.
@@ -24,15 +25,15 @@ pub enum EcdsaHash {
     Sha512,
 }
 
-impl EcdsaHash {
+impl HashAlg {
     /// The hash for ECDSA on `curve`; `None` for an Edwards curve, which hashes inside the
     /// signature.
     #[must_use]
-    pub fn for_curve(curve: Curve) -> Option<EcdsaHash> {
+    pub fn for_curve(curve: Curve) -> Option<HashAlg> {
         match curve {
-            Curve::P256 | Curve::Secp256k1 | Curve::BrainpoolP256r1 => Some(EcdsaHash::Sha256),
-            Curve::P384 | Curve::BrainpoolP384r1 => Some(EcdsaHash::Sha384),
-            Curve::P521 => Some(EcdsaHash::Sha512),
+            Curve::P256 | Curve::Secp256k1 | Curve::BrainpoolP256r1 => Some(HashAlg::Sha256),
+            Curve::P384 | Curve::BrainpoolP384r1 => Some(HashAlg::Sha384),
+            Curve::P521 => Some(HashAlg::Sha512),
             Curve::Ed25519 | Curve::Ed448 => None,
         }
     }
@@ -41,9 +42,9 @@ impl EcdsaHash {
     #[must_use]
     pub fn digest(self, msg: &[u8]) -> Vec<u8> {
         match self {
-            EcdsaHash::Sha256 => Sha256::digest(msg).to_vec(),
-            EcdsaHash::Sha384 => Sha384::digest(msg).to_vec(),
-            EcdsaHash::Sha512 => Sha512::digest(msg).to_vec(),
+            HashAlg::Sha256 => Sha256::digest(msg).to_vec(),
+            HashAlg::Sha384 => Sha384::digest(msg).to_vec(),
+            HashAlg::Sha512 => Sha512::digest(msg).to_vec(),
         }
     }
 }
@@ -61,7 +62,7 @@ pub enum Encoding {
 /// hashed with `hash`, or with the curve's own hash when `None`. Either `s` is accepted:
 /// secp256k1's verifier insists on the low one, so it is normalized first.
 #[must_use]
-pub fn ecdsa(spki: &[u8], msg: &[u8], sig: &[u8], encoding: Encoding, hash: Option<EcdsaHash>) -> Verdict {
+pub fn ecdsa(spki: &[u8], msg: &[u8], sig: &[u8], encoding: Encoding, hash: Option<HashAlg>) -> Verdict {
     macro_rules! curve {
         ($curve:ty, $own:expr) => {{
             let k = match p256::elliptic_curve::PublicKey::<$curve>::from_public_key_der(spki) {
@@ -82,12 +83,12 @@ pub fn ecdsa(spki: &[u8], msg: &[u8], sig: &[u8], encoding: Encoding, hash: Opti
     }
     // The curve the key's OIDs name (ISSUES.md Q20); any other key is no ECDSA key.
     match KeyAlg::of_spki(spki).ok()? {
-        KeyAlg::Ec(Curve::P256) => curve!(p256::NistP256, EcdsaHash::Sha256),
-        KeyAlg::Ec(Curve::P384) => curve!(p384::NistP384, EcdsaHash::Sha384),
-        KeyAlg::Ec(Curve::P521) => curve!(p521::NistP521, EcdsaHash::Sha512),
-        KeyAlg::Ec(Curve::Secp256k1) => curve!(k256::Secp256k1, EcdsaHash::Sha256),
-        KeyAlg::Ec(Curve::BrainpoolP256r1) => curve!(bp256::BrainpoolP256r1, EcdsaHash::Sha256),
-        KeyAlg::Ec(Curve::BrainpoolP384r1) => curve!(bp384::BrainpoolP384r1, EcdsaHash::Sha384),
+        KeyAlg::Ec(Curve::P256) => curve!(p256::NistP256, HashAlg::Sha256),
+        KeyAlg::Ec(Curve::P384) => curve!(p384::NistP384, HashAlg::Sha384),
+        KeyAlg::Ec(Curve::P521) => curve!(p521::NistP521, HashAlg::Sha512),
+        KeyAlg::Ec(Curve::Secp256k1) => curve!(k256::Secp256k1, HashAlg::Sha256),
+        KeyAlg::Ec(Curve::BrainpoolP256r1) => curve!(bp256::BrainpoolP256r1, HashAlg::Sha256),
+        KeyAlg::Ec(Curve::BrainpoolP384r1) => curve!(bp384::BrainpoolP384r1, HashAlg::Sha384),
         KeyAlg::Ec(Curve::Ed25519 | Curve::Ed448) | KeyAlg::Rsa => None,
     }
 }
@@ -144,14 +145,14 @@ mod tests {
         use p256::pkcs8::EncodePublicKey;
         let k = SigningKey::from_slice(&[3u8; 32]).unwrap();
         let spki = k.verifying_key().to_public_key_der().unwrap();
-        let s: Signature = k.sign_prehash(&EcdsaHash::Sha384.digest(b"m")).unwrap();
-        assert_eq!(ecdsa(spki.as_bytes(), b"m", &s.to_bytes(), Encoding::Raw, Some(EcdsaHash::Sha384)), Some(Ok(())));
+        let s: Signature = k.sign_prehash(&HashAlg::Sha384.digest(b"m")).unwrap();
+        assert_eq!(ecdsa(spki.as_bytes(), b"m", &s.to_bytes(), Encoding::Raw, Some(HashAlg::Sha384)), Some(Ok(())));
         assert_eq!(
-            ecdsa(spki.as_bytes(), b"m", s.to_der().as_bytes(), Encoding::Der, Some(EcdsaHash::Sha384)),
+            ecdsa(spki.as_bytes(), b"m", s.to_der().as_bytes(), Encoding::Der, Some(HashAlg::Sha384)),
             Some(Ok(()))
         );
         assert!(matches!(
-            ecdsa(spki.as_bytes(), b"x", &s.to_bytes(), Encoding::Raw, Some(EcdsaHash::Sha384)),
+            ecdsa(spki.as_bytes(), b"x", &s.to_bytes(), Encoding::Raw, Some(HashAlg::Sha384)),
             Some(Err(_))
         ));
         assert!(

@@ -408,21 +408,23 @@ pub enum Curve {
     Ed448,
 }
 
-const ALL_CURVES: [Curve; 8] = [
-    Curve::P256,
-    Curve::P384,
-    Curve::P521,
-    Curve::Secp256k1,
-    Curve::BrainpoolP256r1,
-    Curve::BrainpoolP384r1,
-    Curve::Ed25519,
-    Curve::Ed448,
-];
-
 /// Named curves tokens offer that have no `RustCrypto` crate to validate and encode them with.
 pub const CURVES_WITHOUT_CRATE: [&str; 1] = ["brainpoolP512r1"];
 
 impl Curve {
+    /// Every curve cakeys has a key type for, Weierstrass then Edwards: the curves keys.toml
+    /// takes, and the ones the probe generates on (beside the Montgomery curves it measures).
+    pub const ALL: [Curve; 8] = [
+        Curve::P256,
+        Curve::P384,
+        Curve::P521,
+        Curve::Secp256k1,
+        Curve::BrainpoolP256r1,
+        Curve::BrainpoolP384r1,
+        Curve::Ed25519,
+        Curve::Ed448,
+    ];
+
     /// `curve` in keys.toml, for the given `keyType`.
     #[must_use]
     pub fn from_cfg(key_type: KeyType, name: &str) -> Option<Curve> {
@@ -488,7 +490,7 @@ impl Curve {
     /// The curve named by a token's `CKA_EC_PARAMS`.
     #[must_use]
     pub fn from_params(params: &[u8]) -> Option<Curve> {
-        ALL_CURVES.into_iter().find(|c| c.params() == params || c.params_by_name() == Some(params))
+        Curve::ALL.into_iter().find(|c| c.params() == params || c.params_by_name() == Some(params))
     }
 
     /// The name a message gives it: `P-256`, `Ed25519`.
@@ -842,7 +844,7 @@ mod tests {
         assert_eq!(Curve::BrainpoolP384r1.params(), oid(bp384::BrainpoolP384r1::OID));
         assert_eq!(Curve::Ed25519.params(), oid(ed25519_dalek::pkcs8::ALGORITHM_OID));
         assert_eq!(Curve::Ed448.params(), oid(ed448::pkcs8::ALGORITHM_OID));
-        for c in ALL_CURVES {
+        for c in Curve::ALL {
             assert_eq!(Curve::from_params(c.params()), Some(c));
         }
         assert_eq!(Curve::from_params(b"\x13\x0cedwards25519"), Some(Curve::Ed25519));

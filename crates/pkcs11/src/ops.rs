@@ -477,7 +477,7 @@ fn facts(t: &Target, tok: &Token, r: &Resolved, created: bool) -> Facts {
             provider: Some(tok.provider.name().to_owned()),
             cakeys_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
             profile: tok.profiles.module_name().map(str::to_owned),
-            mechanisms: tok.mechanism_names().to_vec(),
+            mechanisms: tok.mechanism_names(),
             module: Some(tok.module.clone()),
             token: Some(tok.token.clone()),
             capabilities: answers(t, r, created),
