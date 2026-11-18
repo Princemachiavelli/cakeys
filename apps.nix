@@ -8,6 +8,8 @@
   deny,
   fuzz,
   pcsc-probe,
+  pkcs11-check,
+  softhsm-unwrap-value-len,
 }:
 let
   inherit (pkgs.stdenv.hostPlatform) system;
@@ -77,6 +79,40 @@ in
 }
 # The PC/SC probes check pcscd's socket from the host and from the Linux build sandbox.
 // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+  # pkcs11-check on a reference module's throwaway token, beside its caprobe profile
+  # (scripts/pkcs11-check.sh): nix run .#pkcs11-check-compare -- kryoptic [main|destructive|vectors]
+  pkcs11-check-compare = {
+    type = "app";
+    meta.description = "Run pkcs11-check on SoftHSM, kryoptic or tpm2-pkcs11 (swtpm) and summarise it against the caprobe profile";
+    program = pkgs.lib.getExe (
+      pkgs.writeShellApplication {
+        name = "pkcs11-check-compare";
+        runtimeInputs = with pkgs; [
+          pkcs11-check
+          softhsm-unwrap-value-len
+          opensc
+          python3
+          swtpm
+          dbus
+          tpm2-abrmd
+          tpm2-tools
+          tpm2-pkcs11
+          coreutils
+        ];
+        runtimeEnv = {
+          # The builds the profiles were probed on (scripts/regen-profiles.sh).
+          SOFTHSM_MODULE = "${softhsm-unwrap-value-len}/lib/softhsm/libsofthsm2.so";
+          KRYOPTIC_MODULE = "${pkgs.kryoptic}/lib/libkryoptic_pkcs11.so";
+          TPM2_PKCS11_MODULE = "${pkgs.tpm2-pkcs11}/lib/libtpm2_pkcs11.so";
+          TPM2_TEST_ENV = ./nix/tpm2-test-env.sh;
+          PROFILES = ./profiles/modules;
+          TESTCASES = "${pkcs11-check}/${pkgs.python3.sitePackages}/pkcs11_check/testcases";
+          COMPARE = ./scripts/pkcs11-check-compare.py;
+        };
+        text = ''exec bash ${./scripts/pkcs11-check.sh} "$@"'';
+      }
+    );
+  };
   # Host-side PC/SC check.
   pcsc-probe = {
     type = "app";

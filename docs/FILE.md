@@ -96,7 +96,10 @@ Load rules (17):
   world-readable. A literal path is checked at load (17). A `$NAME` path is checked when
   camigrate resolves it, with the same exit code. The Nix library must pass the path as a
   string, never as a Nix path, which it would copy into the store. A certificate, public key
-  or public data object from the store is fine.
+  or public data object from the store is fine. `CAKEYS_ALLOW_NIX_STORE_KEYS=1` lifts the
+  rule for throwaway keys a Nix build makes and uses (a test, a VM image), never a
+  deployment's; it also makes no run count as inside a Nix build sandbox, so the sandbox
+  refusals (a lock write, camigrate's admin operations, D8) are lifted with it.
 - Unchanged: certificates, public keys and data objects default to `adopt`. They may now also
   say `file`.
 

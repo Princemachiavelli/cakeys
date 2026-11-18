@@ -618,7 +618,10 @@ impl Made<'_> {
     }
 
     /// Note, once per attribute and half, a policy default the module refused while it made the
-    /// object without it: the refusal, and what the object it made reports instead.
+    /// object without it: the refusal, and what the object it made reports instead. `half` is
+    /// the key pair's half whose template held the default, `public` or `private`
+    /// (`C_GenerateKeyPair` takes a template for each), and `made` that half's object; it names
+    /// the note in the profile (`template.<half>.<attribute>`).
     fn note_dropped(&mut self, half: &str, default: &Attribute, refusal: &CkError, made: ObjectHandle) {
         let ty = default.attribute_type();
         let key = format!("template.{half}.{ty}");

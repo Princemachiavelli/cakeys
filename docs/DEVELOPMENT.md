@@ -55,6 +55,12 @@ are pinned by tests (`scheme_definitions_are_pinned`, `method_names_are_pinned_a
 **Git.** Work on a branch; the user decides what is pushed and merged. Match the surrounding
 code's style and comment density.
 
+**Built-in material.** Every trust anchor or key a build embeds or verifies with is pinned by
+its SHA-256 in the code that uses it, not trusted to git: Yubico's roots in
+`crates/ykcs11/build.rs` (a changed file fails the build), Google's kmsp11 release key in
+`nix/kmsp11.nix` (fails evaluation). A new one gets the same pin, its hash taken from the
+publisher's copy, not the repository's. Test fixtures need none.
+
 ## Hardware rules
 
 Two real devices are attached to the development machine, and both hold things the user depends
@@ -109,6 +115,7 @@ on. These rules have no exceptions; if a task cannot be done within them, stop a
 | `tests/yubikey.rs` | opt-in, never in the Nix build (`CAKEYS_TEST_YUBIKEY_MODULE`, `_PIN`, `_MGM` — file paths; the secrets are only ever read from them) | a real YubiKey, read-write: generate into the scratch PIV slot `0x95` in an SO step, then (back as the user) attest it and prove possession by signing, record, verify; `delete` refused (15) with the realisation kept; re-lock idempotent — each CLI run bounded, so a touch or PIN prompt fails instead of waiting (`rw_lifecycle_generates_attests_proves_and_refuses_delete_without_touch`) |
 | `checks.vm` / `test-nspawn` | QEMU / systemd-nspawn | the CLI flow; in the VM also the pseudo-FOD consumer built in the guest sandbox |
 | `checks.module`, `checks.tpm`, `checks.lib` | QEMU / eval | module, hook, pcscd, TPM ACL, Nix library |
+| `checks.examples` | sandbox, Linux | every `examples/*/run.sh` on throwaway tokens (SoftHSM, kryoptic, tpm2-pkcs11 on swtpm), each step's exit code required: creating every object kind and moving it to every token kind, a TLS handshake and an EFI signature through pkcs11-provider on a TPM key, a Python program signing through the checked URI; `examples/tls/configuration.nix`'s units and `examples/secure-boot/sign.nix` evaluated. Runs with `CAKEYS_ALLOW_NIX_STORE_KEYS=1` |
 | `checks.minimal` | package build | the CLI without its `tpm2`/`ykcs11` features builds without tpm2-tss and sqlite |
 | `checks.doc` | package build | rustdoc over every crate, private items included, with `-D warnings`: no doc link that does not resolve. An evidence tag in a doc comment is written `\[run\]`, or rustdoc reads it as a link |
 | `checks.msrv` | package build | `cargo check --all-targets` with the toolchain at `Cargo.toml`'s `rust-version` (rust-overlay), the dependencies built with it too |

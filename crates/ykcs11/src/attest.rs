@@ -51,6 +51,9 @@ impl Cert {
 
     /// The bytes the signature was computed over: the `tbsCertificate` sliced from the
     /// certificate's original DER, never re-encoded, so verification is exact.
+    /// `self.parsed.tbs_certificate()` is the decoded structure, whose bytes would come from
+    /// `to_der()`: those equal the signed bytes only when decoding lost nothing, and der 0.8
+    /// accepts an explicitly encoded DEFAULT (a `version [0] v1`) that its encoder then omits.
     fn tbs(&self) -> Result<&[u8]> {
         // Certificate is SEQUENCE { tbsCertificate, signatureAlgorithm, signature }: the first
         // TLV after the outer header, header included.

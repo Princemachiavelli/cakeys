@@ -1,0 +1,18 @@
+# A key a program in any language uses (sign.py, in Python). The program names the cakeys
+# object; `cakeys check` verifies it against keys.lock and hands back the URI, which the program
+# opens with its own PKCS#11 library (docs/CAKEYS.md, "The contract with programs").
+
+[tokens.soft]
+module = "$SOFTHSM_MODULE"
+tokenLabel = "programs"
+pinFile = "$PROGRAMS_PIN_FILE"
+
+[objects.signing]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+
+[specs.signing]
+object = "signing"
+attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
+tokens.soft = { locator = { CKA_LABEL = "signing", CKA_ID = "01" }, origin = "create" }

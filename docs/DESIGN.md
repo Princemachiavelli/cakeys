@@ -200,7 +200,7 @@ alone can compute, such as a TPM Name). If they return, they get their own names
 - **Where the lock cannot be written, a writing run is refused (14) before any token is
   touched** — never a key created and then not recorded — naming `--no-update-lock`: inside a
   Nix build sandbox (`NIX_BUILD_TOP` set without `IN_NIX_SHELL`, which `nix develop` also
-  sets), where a write would be lost with the build, or when the lock file or its directory is
+  sets, and without `CAKEYS_ALLOW_NIX_STORE_KEYS=1`, docs/FILE.md), where a write would be lost with the build, or when the lock file or its directory is
   not writable (`access(2)`). `check`, `verify` and `resolve` never write and are unaffected —
   `lock_is_written_by_default_and_refused_where_it_cannot_be`.
 - **A computed scheme missing from an otherwise matching lock is a note.** This happens, for

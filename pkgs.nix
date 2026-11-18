@@ -27,6 +27,8 @@ rec {
   p11-fault = cakeys.p11fault;
   pcsc-probe = pkgs.callPackage ./nix/pcsc-probe.nix { };
   mezura = pkgs.callPackage ./nix/mezura.nix { };
+  # A second opinion on the reference modules beside caprobe's profiles (docs/PLAN.md A6).
+  pkcs11-check = pkgs.callPackage ./nix/pkcs11-check.nix { };
   # OpenTofu and the AWS CLI for scripts/cloud/aws.sh (docs/CLOUD_HSM.md).
   cloud-tools = pkgs.callPackage ./nix/cloud-tools.nix { };
   # Google's Cloud KMS PKCS#11 library, and its FIPS build, x86_64-linux only.

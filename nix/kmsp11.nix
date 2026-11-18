@@ -14,6 +14,18 @@
   autoPatchelfHook,
   fips ? false,
 }:
+let
+  # Pinned by its SHA-256 (docs/DEVELOPMENT.md, "Built-in material"): a key file that changed under
+  # this expression fails evaluation before it verifies anything.
+  releaseKey =
+    lib.throwIfNot
+      (
+        builtins.hashFile "sha256" ./kmsp11-release-key.pem
+        == "25d87b5c4ebcc0e9f75d19432172c115056cadb3998f4b9bf224971cf797ddd0"
+      )
+      "nix/kmsp11-release-key.pem is not the pinned release key: compare it with the user guide's before changing either"
+      ./kmsp11-release-key.pem;
+in
 stdenv.mkDerivation rec {
   pname = if fips then "kmsp11-fips" else "kmsp11";
   version = "1.9";
@@ -32,7 +44,7 @@ stdenv.mkDerivation rec {
 
   installPhase = ''
     runHook preInstall
-    openssl dgst -sha384 -verify ${./kmsp11-release-key.pem} -signature libkmsp11.so.sig libkmsp11.so
+    openssl dgst -sha384 -verify ${releaseKey} -signature libkmsp11.so.sig libkmsp11.so
     install -Dm555 libkmsp11.so $out/lib/libkmsp11.so
     install -Dm444 kmsp11.h $out/include/kmsp11.h
     install -Dm444 LICENSE $out/share/doc/kmsp11/LICENSE

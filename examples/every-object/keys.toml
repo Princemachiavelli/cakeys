@@ -1,0 +1,264 @@
+# Every kind of object cakeys pins, born once and imported onto every other kind of token.
+#
+# run.sh plays it on throwaway tokens (SoftHSM, kryoptic, tpm2-pkcs11 over swtpm), and
+# checks.examples runs that, so this file stays true. The YubiKey pairs are validated only
+# (`cakeys validate`): run.sh never opens a real device.
+#
+#   soft  SoftHSM: where every key is born (`cakeys create`), and where the objects born in
+#         files arrive first (`camigrate import`). Its keys are extractable: a key that is to
+#         move is declared so on its one creation pair (docs/CAMIGRATE.md D1).
+#   kryo  kryoptic: everything moves here sealed, wrapped to kryo's transport key, so the
+#         host never sees a secret.
+#   tpm   tpm2-pkcs11: imports only plaintext (`tpm2_ptool import`), so keys come through the
+#         host (`--allow-host-plaintext`), and only what a TPM holds: EC (not P-521) and RSA
+#         keys, and public certificates. Secret keys it stores without CKA_VALUE_LEN, which
+#         cakeys refuses (15).
+#   piv   a YubiKey's PIV slots: plaintext import too (`piv-import`, as SO), of RSA, EC
+#         P-256/P-384 and Ed25519 keys, and certificates.
+#
+# What each line means: docs/CONFIG.md. Where a key may go: docs/CAMIGRATE.md, "Methods".
+
+[tokens.soft]
+module = "$SOFTHSM_MODULE"
+# Naming the provider lets `validate` check every pair against its profiles before any token
+# opens; left out, it is detected when the token opens.
+provider = "softhsm"
+tokenLabel = "every-object"
+pinFile = "$EXAMPLE_PIN_FILE"
+
+[tokens.kryo]
+module = "$KRYOPTIC_MODULE"
+provider = "kryoptic"
+tokenLabel = "every-object"
+pinFile = "$EXAMPLE_PIN_FILE"
+# Sealed moves to kryo wrap to this key (below), and to no other.
+migrate = { transportWith = "transport-kryo" }
+
+[tokens.tpm]
+module = "$TPM2_PKCS11_MODULE"
+provider = "tpm2-pkcs11"
+# swtpm's capability layer (it generates RSA up to 3072 bits); a real TPM leaves it out.
+profiles = ["swtpm"]
+tokenLabel = "every-object"
+pinFile = "$EXAMPLE_PIN_FILE"
+
+[tokens.piv]
+# The module is given per run: `--module piv=<path>/lib/libykcs11.so`.
+provider = "ykcs11"
+tokenLabel = "YubiKey PIV #00000000"
+pinFile = "/run/secrets/piv-pin"
+# PIV imports as the Security Officer: the management key, in hex.
+soCredentialFile = "/run/secrets/piv-mgm"
+
+# ── kryo's transport key ────────────────────────────────────────────────────────────────
+
+[objects.transport-kryo]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 3072
+
+[specs.transport-kryo]
+object = "transport-kryo"
+# Unwraps, never leaves kryo, proves possession by unwrapping; its public key goes in the lock,
+# so any host can seal to kryo from the lock alone.
+attributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }
+tokens.kryo = { locator = { CKA_LABEL = "transport" }, origin = "create", binding = "pop-unwrap" }
+
+# ── Private keys: an identity by the public key (rfc7093m4), possession by a signature ──
+
+[objects.p256]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+
+[objects.p384]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp384r1"
+
+[objects.p521]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp521r1"
+
+[objects.ed25519]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC_EDWARDS"
+curve = "edwards25519"
+
+[objects.ed448]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC_EDWARDS"
+curve = "edwards448"
+
+[objects.rsa2048]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 2048
+
+[objects.rsa4096]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 4096
+
+# One spec per key for the software tokens, where it stays extractable: born on soft, moved
+# sealed to kryo.
+[specs.p256]
+object = "p256"
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
+tokens.soft = { locator = { CKA_LABEL = "p256", CKA_ID = "01" }, origin = "create" }
+tokens.kryo = { locator = { CKA_LABEL = "p256", CKA_ID = "01" }, origin = "import" }
+
+[specs.p384]
+object = "p384"
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
+tokens.soft = { locator = { CKA_LABEL = "p384", CKA_ID = "02" }, origin = "create" }
+tokens.kryo = { locator = { CKA_LABEL = "p384", CKA_ID = "02" }, origin = "import" }
+
+[specs.p521]
+object = "p521"
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
+tokens.soft = { locator = { CKA_LABEL = "p521", CKA_ID = "03" }, origin = "create" }
+tokens.kryo = { locator = { CKA_LABEL = "p521", CKA_ID = "03" }, origin = "import" }
+
+[specs.ed25519]
+object = "ed25519"
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
+tokens.soft = { locator = { CKA_LABEL = "ed25519", CKA_ID = "04" }, origin = "create" }
+tokens.kryo = { locator = { CKA_LABEL = "ed25519", CKA_ID = "04" }, origin = "import" }
+
+[specs.ed448]
+object = "ed448"
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
+# cakeys has no Ed448 verifier to check a signature with, so possession is not proven, and the
+# binding says so (token-asserted) rather than passing silently.
+tokens.soft = { locator = { CKA_LABEL = "ed448", CKA_ID = "05" }, origin = "create", binding = "token-asserted" }
+tokens.kryo = { locator = { CKA_LABEL = "ed448", CKA_ID = "05" }, origin = "import", binding = "token-asserted" }
+
+[specs.rsa2048]
+object = "rsa2048"
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
+tokens.soft = { locator = { CKA_LABEL = "rsa2048", CKA_ID = "06" }, origin = "create" }
+tokens.kryo = { locator = { CKA_LABEL = "rsa2048", CKA_ID = "06" }, origin = "import" }
+
+[specs.rsa4096]
+object = "rsa4096"
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
+tokens.soft = { locator = { CKA_LABEL = "rsa4096", CKA_ID = "07" }, origin = "create" }
+tokens.kryo = { locator = { CKA_LABEL = "rsa4096", CKA_ID = "07" }, origin = "import" }
+
+# And one for the hardware tokens, where an imported key never leaves again: the same material
+# (the same identity), another policy. A PIV slot is named by its CKA_ID (retired slots 93-95).
+[specs.p256-hw]
+object = "p256"
+attributes = { CKA_SIGN = true }
+tokens.tpm = { locator = { CKA_LABEL = "p256" }, origin = "import" }
+tokens.piv = { locator = { CKA_ID = "18" }, origin = "import" }
+
+[specs.p384-hw]
+object = "p384"
+attributes = { CKA_SIGN = true }
+tokens.tpm = { locator = { CKA_LABEL = "p384" }, origin = "import" }
+
+[specs.ed25519-hw]
+object = "ed25519"
+attributes = { CKA_SIGN = true }
+tokens.piv = { locator = { CKA_ID = "17" }, origin = "import" }
+
+[specs.rsa2048-hw]
+object = "rsa2048"
+attributes = { CKA_SIGN = true }
+tokens.tpm = { locator = { CKA_LABEL = "rsa2048" }, origin = "import" }
+tokens.piv = { locator = { CKA_ID = "16" }, origin = "import" }
+
+# ── Secret keys: an identity by what the declared usage lets the token compute ─────────
+
+[objects.aes256]
+class = "CKO_SECRET_KEY"
+keyType = "CKK_AES"
+valueLen = 32
+
+[objects.generic]
+class = "CKO_SECRET_KEY"
+keyType = "CKK_GENERIC_SECRET"
+valueLen = 32
+
+[objects.hmac-sha256]
+# SoftHSM cannot generate an HMAC-typed key (no CKM_SHA256_KEY_GEN: `validate` says so), so this
+# one is born in a file, as an application's HMAC secret often is: 32 random bytes, which every
+# token's pair reads (origin = "file"). valueLen tells the bytes from hex or base64 of them.
+class = "CKO_SECRET_KEY"
+keyType = "CKK_SHA256_HMAC"
+valueLen = 32
+migrate = { file = "$EXAMPLE_HMAC" }
+
+[objects.des3]
+class = "CKO_SECRET_KEY"
+keyType = "CKK_DES3"
+
+[specs.aes256]
+object = "aes256"
+# CKA_SIGN gives the `cmac` identity, CKA_WRAP would add `kw`, CKA_ENCRYPT `kcv-ecb`.
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
+tokens.soft = { locator = { CKA_LABEL = "aes256" }, origin = "create" }
+tokens.kryo = { locator = { CKA_LABEL = "aes256" }, origin = "import" }
+
+[specs.generic]
+object = "generic"
+# An HMAC commitment (`hmac-sha256`).
+attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }
+tokens.soft = { locator = { CKA_LABEL = "generic" }, origin = "create" }
+tokens.kryo = { locator = { CKA_LABEL = "generic" }, origin = "import" }
+
+[specs.hmac-sha256]
+object = "hmac-sha256"
+attributes = { CKA_SIGN = true }
+tokens.soft = { locator = { CKA_LABEL = "hmac-sha256" }, origin = "file" }
+tokens.kryo = { locator = { CKA_LABEL = "hmac-sha256" }, origin = "file" }
+# Not on tpm: tpm2-pkcs11 stores an imported secret key without CKA_VALUE_LEN, so its length
+# cannot be checked, and camigrate removes it again (15; docs/OPEN.md, "Upstream").
+
+[specs.des3]
+object = "des3"
+# A check value: CKA_ENCRYPT gives `kcv-ecb`. It stays on soft: kryoptic and tpm2-pkcs11 have no
+# DES at all, and a YubiKey's PIV holds no secret keys.
+attributes = { CKA_ENCRYPT = true }
+tokens.soft = { locator = { CKA_LABEL = "des3" }, origin = "create" }
+
+# ── Born in files: a certificate, a public key and a data object ───────────────────────
+# Nothing creates these on a token: `camigrate import --token soft` brings each from its file
+# (origin = "file"), then they move like the keys. run.sh makes the three files and names them.
+
+[objects.cert]
+class = "CKO_CERTIFICATE"
+certificateType = "CKC_X_509"
+migrate = { file = "$EXAMPLE_CERT" }
+
+[objects.pubkey]
+class = "CKO_PUBLIC_KEY"
+keyType = "CKK_EC"
+curve = "secp384r1"
+migrate = { file = "$EXAMPLE_PUBKEY" }
+
+[objects.note]
+# A public data object: identified by the SHA-256 of its value.
+class = "CKO_DATA"
+migrate = { file = "$EXAMPLE_NOTE" }
+
+[specs.cert]
+object = "cert"
+tokens.soft = { locator = { CKA_LABEL = "cert" }, origin = "file" }
+tokens.kryo = { locator = { CKA_LABEL = "cert" }, origin = "import" }
+tokens.tpm = { locator = { CKA_LABEL = "cert" }, origin = "import" }
+tokens.piv = { locator = { CKA_LABEL = "X.509 Certificate for Retired Key 20" }, origin = "import" }
+
+[specs.pubkey]
+object = "pubkey"
+tokens.soft = { locator = { CKA_LABEL = "pubkey" }, origin = "file" }
+tokens.kryo = { locator = { CKA_LABEL = "pubkey" }, origin = "import" }
+
+[specs.note]
+object = "note"
+attributes = { CKA_PRIVATE = false }
+tokens.soft = { locator = { CKA_LABEL = "note" }, origin = "file" }
+tokens.kryo = { locator = { CKA_LABEL = "note" }, origin = "import" }

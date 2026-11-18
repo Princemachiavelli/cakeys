@@ -95,12 +95,13 @@ impl Env {
     }
 
     /// [`Self::km`] with `NIX_BUILD_TOP` set, as inside a Nix build sandbox: no dry-run twin,
-    /// since the point is what the run itself refuses there.
-    pub fn km_in_nix_build(&self, r: &Ref, args: &[&str]) -> Output {
+    /// since the point is what the run itself refuses there. `env` is set on top.
+    pub fn km_in_nix_build(&self, r: &Ref, env: &[(&str, &str)], args: &[&str]) -> Output {
         let out = Command::new(BIN)
             .env("NIX_BUILD_TOP", "/build")
             .env_remove("IN_NIX_SHELL")
             .envs(r.env.iter().copied())
+            .envs(env.iter().copied())
             .arg("--config")
             .arg(self.dir.join("keys.toml"))
             .args(args)

@@ -136,6 +136,11 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   erase a key, so `cakeys delete` refuses and an import refuses an occupied slot.
 - **`tpm2_ptool` takes the user PIN on its command line** (allowed for now): other local users
   can read it while the import runs.
+- **A secret key into tpm2-pkcs11 is refused only after it is written** (2026-11-17,
+  `examples/every-object` [run]): `camigrate import <hmac key> --token tpm` from its file runs
+  `tpm2_ptool import`, then finds no `CKA_VALUE_LEN` on the result, removes it and exits 15 (the
+  module's defect under "Upstream"). The plan could refuse it first, from a profile row saying
+  the module drops the length of what it imports, as `move.secret-unwrap` does for SoftHSM.
 
 ## Capability profiles (CAPROBE.md)
 
@@ -275,3 +280,8 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   structure and S16, Tamarin for proof of possession and attestation, Kani for small pure
   functions.
 - **More reference tokens**: an OP-TEE PKCS#11 TA in QEMU; a Nitrokey.
+- **Examples on hardware and in the cloud** (2026-11-17): `examples/` runs on software tokens
+  and swtpm only. The YubiKey pairs (`every-object`'s imports, `secure-boot`'s attested PK and
+  KEK) are validated against the ykcs11 profile, never run; Cloud KMS and CloudHSM have no
+  example. `examples/tls/configuration.nix` and `examples/secure-boot/sign.nix` are evaluated, not
+  deployed: no VM test boots the TLS unit pair or builds the signing derivation on a TPM host.

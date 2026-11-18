@@ -265,4 +265,7 @@
     inherit pkgs cakeys;
     module = self.nixosModules.default;
   };
+  # examples/: each example's run.sh on throwaway tokens (a software TPM among them), and its
+  # Nix files evaluated.
+  examples = pkgs.callPackage ./nix/examples.nix { inherit self cakeys; };
 }

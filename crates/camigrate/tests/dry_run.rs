@@ -8,6 +8,7 @@
 #[path = "../../cli/tests/common/mod.rs"]
 mod common;
 
+use cakeys_core::config::ALLOW_NIX_STORE_KEYS;
 use common::xref::{Env, Plant, Ref, env};
 use common::*;
 use cryptoki::object::{Attribute, CertificateType, KeyType, ObjectClass};
@@ -1039,9 +1040,13 @@ fn refusals_around_the_plans_and_the_offline_export() {
         (&["migrate", "crt", "--from", "softhsm", "--to", "kryoptic"], "cannot write the lock"),
     ];
     for (a, what) in admin {
-        refused(&e.km_in_nix_build(soft, a), 14, what);
+        refused(&e.km_in_nix_build(soft, &[], a), 14, what);
     }
     assert!(!std::path::Path::new(&bundle).exists(), "a refused export wrote a bundle");
+    // A build that makes and uses throwaway keys says so, and runs as outside one.
+    let o = e.km_in_nix_build(soft, &[(ALLOW_NIX_STORE_KEYS, "1")], admin[0].0);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    std::fs::remove_file(&bundle).unwrap();
 
     // A key file: its flags and its passphrase are input, wrong before any plan.
     let o = e.km_alone(soft, &["export", "ek1", "--token", "softhsm", "--to-file", "pkcs8", "--allow-host-plaintext"]);

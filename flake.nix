@@ -104,6 +104,7 @@
             p11-fault
             softhsm-unwrap-value-len
             cloud-tools
+            pkcs11-check
             ;
           # What the tests reach, and what they would not notice changing (nix/package-crane.nix):
           # reports, not checks.
@@ -173,6 +174,8 @@
             deny
             fuzz
             pcsc-probe
+            pkcs11-check
+            softhsm-unwrap-value-len
             ;
         }
       );
@@ -227,6 +230,7 @@
                 pcsc-tools
                 pkg-config
                 local.mezura
+                local.pkcs11-check
               ]
               # The TPM stack the tpm2 tests and probes run on (nix/tpm2-test-env.sh).
               ++ lib.optionals isLinux [

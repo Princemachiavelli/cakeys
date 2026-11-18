@@ -23,13 +23,13 @@ $ camigrate import --token <target> --in <bundle|file> [--spec <s> ...] [--dry-r
     [--passphrase-file <file> --allow-host-plaintext]
 $ camigrate import --token <target> [<object> ...] [--spec <s> ...] [--dry-run] \
     [--allow-host-plaintext] [--passphrase-file <file>]       # objects born in files (FILE.md)
-$ camigrate migrate [<object> ...] --from <a> --to <b> [--spec <s> ...] [--transport-key <spec>] \
+$ camigrate migrate [<object>] --from <a> --to <b> [--spec <s> ...] [--transport-key <spec>] \
     [--dry-run [--json]] [--allow-host-plaintext]
 ```
 
 - `migrate` is export then import in one process, the bundle in memory, when both tokens are
-  reachable from this host. Without objects it plans every object the source holds a
-  realisation of.
+  reachable from this host. It moves one object, or without one plans every object the source
+  holds a realisation of.
 - `--dry-run` prints the plan (a table, or JSON) and changes nothing. The real run executes the
   same plan (D9), and exits as the dry run did: an `export` without names takes what can move,
   so its dry run is 15 only when nothing can. On `import` it checks the bundle, or the key file, against the lock and the
@@ -156,7 +156,8 @@ provenance, never a verdict. The source's entry is unchanged: the lock records s
 events.
 
 **D8. Export and import are admin operations.** Refused inside the Nix build sandbox, like a
-lock write. A YubiKey import needs the admin credential and can never carry an attestation, so
+lock write, unless the build says its keys are throwaway (`CAKEYS_ALLOW_NIX_STORE_KEYS=1`,
+docs/FILE.md). A YubiKey import needs the admin credential and can never carry an attestation, so
 `attestation = true` on that target is refused at planning. A TPM import attests residence, not
 generation (`CKA_LOCAL` is false).
 

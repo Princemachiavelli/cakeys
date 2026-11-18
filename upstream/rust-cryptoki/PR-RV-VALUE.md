@@ -7,10 +7,17 @@ Status: **draft, not filed.** Upstream main has only `From<CK_RV> for Rv` (check
   has the conversion, `rv_value` and `rv_name` use it, and only p11-fault keeps the table (its
   plans name values).
 - The patch: `0003-Add-RvError-to-CK_RV-and-its-name.patch`, against 0.12.1's
-  `cryptoki/src/error/rv.rs`. The match arms are the inverse of `From<CK_RV> for Rv`'s,
-  generated from them, so the two cannot disagree; the match is exhaustive, so a new variant
-  fails to compile until it is added. `round_trip` passes against 0.12.1 (the crate's own unit
-  tests, run without its dev-dependencies).
+  `cryptoki/src/error/rv.rs`. It turns upstream's one list (the `From<CK_RV> for Rv` match) into
+  a `macro_rules!` table, `Variant => CKR_CONSTANT`, that generates that match, its inverse and
+  `name` (`stringify!` of the constant): one list, so the three cannot disagree, and the file
+  grows by 51 lines rather than two more 100-arm matches. The generated inverse match is
+  exhaustive, so a new variant fails to compile until it has a row. `round_trip` passes against
+  0.12.1 (the crate's own unit tests, run without its dev-dependencies).
+- Why not derive the name from the variant (`GeneralError` -> `CKR_GENERAL_ERROR`, what
+  `derived_name` in cakeys does where the table lacks a value): it holds for every variant today
+  (`every_named_value_converts_back`), but it gives an allocated `String`, holds only while every
+  variant is named after its constant, and cannot give the value back; the table gives all three
+  from the constant itself.
 
 ---
 
@@ -23,7 +30,9 @@ failed call (to log it, compare it with a vendor's documentation, or hand it to 
 that speaks `CK_RV`) has only `Debug` or `Display`: `Display` is the specification's prose, and
 deriving a `CKR_*` name from `Debug` depends on the variant names matching the constants.
 
-This PR adds:
+This PR turns the `From<CK_RV> for Rv` match into a table (`RvError` variant => `CKR_*`
+constant) that a `macro_rules!` expands into that match and the two additions below, so one list
+serves all three. It adds:
 
 - `impl From<RvError> for CK_RV` and `impl From<Rv> for CK_RV`, the inverse of
   `From<CK_RV> for Rv`: `VendorDefined` and `UnknownErrorCode` give back the value they carry.

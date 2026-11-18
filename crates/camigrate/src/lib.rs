@@ -17,7 +17,9 @@ use anyhow::Context as _;
 use bundle::Bundle;
 use cakeys_cli_common::{Opener, print, read_lock, save_changed};
 use cakeys_core::KmError;
-use cakeys_core::config::{Config, KeyOrigin, Lock, Origin, SpecCfg, SpecTokenCfg, in_nix_build, write_whole};
+use cakeys_core::config::{
+    ALLOW_NIX_STORE_KEYS, Config, KeyOrigin, Lock, Origin, SpecCfg, SpecTokenCfg, in_nix_build, write_whole,
+};
 use cakeys_core::migrate::{Exposure, Method};
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_pkcs11::Registry;
@@ -222,7 +224,11 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
             _ => "transport --trusted",
         };
         return Err(KmError::PreconditionFailed(
-            format!("{verb} is an admin operation (docs/CAMIGRATE.md D8), refused inside a Nix build").into(),
+            format!(
+                "{verb} is an admin operation (docs/CAMIGRATE.md D8), refused inside a Nix build \
+                 ({ALLOW_NIX_STORE_KEYS}=1 runs it as outside, for throwaway keys only)"
+            )
+            .into(),
         )
         .into());
     }

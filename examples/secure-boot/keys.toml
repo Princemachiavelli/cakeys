@@ -1,0 +1,59 @@
+# UEFI Secure Boot's three keys, made where each one's job puts it:
+#
+#   pk, kek  generated on a YubiKey, attested: the lock records that the device made them, so a
+#            key imported from elsewhere can never pass for them. They sign rarely (enrolling
+#            KEK and db, updating dbx), with a person at the machine.
+#   db       generated in the build host's TPM, never leaving it: it signs every unified kernel
+#            image a Nix build makes there, unattended (sign.nix), and the build checks it first.
+#
+# RSA 2048 throughout: what every firmware's Secure Boot verifies. The certificates (PK
+# self-signed, KEK by PK, db by KEK) are made once from these keys through pkcs11-provider
+# (run.sh does db's), enrolled into the firmware, and kept as reviewed files beside this one.
+# For keys already on a YubiKey, made by something else, examples/yubikey-secureboot.toml adopts
+# them instead.
+
+[tokens.yubikey]
+provider = "ykcs11"
+tokenLabel = "YubiKey PIV #12345678"
+pinFile = "/run/secrets/piv-pin"
+# Generating into a PIV slot is the Security Officer's: the management key, in hex.
+soCredentialFile = "/run/secrets/piv-mgm"
+
+[tokens.tpm]
+provider = "tpm2-pkcs11"
+tokenLabel = "secure-boot"
+# A build sets it to a PIN file the host grants its sandbox (sign.nix).
+pinFile = "$SB_TPM_PIN_FILE"
+
+[objects.pk]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 2048
+
+[objects.kek]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 2048
+
+[objects.db]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 2048
+
+[specs.pk]
+object = "pk"
+attributes = { CKA_SIGN = true }
+# Retired slot 85 (CKA_ID 08). attestation = true pins Yubico's attestation of the slot: the
+# key was generated on this device, under Yubico's roots (docs/DESIGN.md §3.7).
+tokens.yubikey = { locator = { CKA_ID = "08" }, origin = "create", attestation = true }
+
+[specs.kek]
+object = "kek"
+attributes = { CKA_SIGN = true }
+tokens.yubikey = { locator = { CKA_ID = "09" }, origin = "create", attestation = true }
+
+[specs.db]
+object = "db"
+# tpm2-pkcs11 makes RSA keys only with both usages; the TPM never lets it out.
+attributes = { CKA_SIGN = true, CKA_DECRYPT = true, CKA_EXTRACTABLE = false }
+tokens.tpm = { locator = { CKA_LABEL = "db", CKA_ID = "01" }, origin = "create" }

@@ -178,7 +178,8 @@ curve = "secp256r1"
 # file is its value's bytes, or hex or base64 of them: told by valueLen, or said by
 # migrate.encoding = "raw", "hex" or "base64"; it needs one of the two (17).
 # `$NAME` resolves when camigrate reads it, so hosts that only check need not set it. A key's
-# file may not be in /nix/store (17). An encrypted file names its passphrase as a token names its
+# file may not be in /nix/store (17), unless CAKEYS_ALLOW_NIX_STORE_KEYS=1 says the keys are
+# throwaway (docs/FILE.md). An encrypted file names its passphrase as a token names its
 # PIN: passphraseFile or passphraseEnv.
 migrate = { file = "$WEB_TLS_KEY" }
 
@@ -292,4 +293,6 @@ tokens.softhsm = { locator = { CKA_LABEL = "web-tls" }, origin = "file" }
   true`. Otherwise the spec is invalid (17); DESIGN §3.4 says why, and what may change.
 
 For the lock that `lock` writes from this, see [`LOCK.md`](LOCK.md). A real, small pair of
-files is [`examples/yubikey-secureboot.toml`](../examples/yubikey-secureboot.toml) and its lock.
+files is [`examples/yubikey-secureboot.toml`](../examples/yubikey-secureboot.toml) and its lock;
+[`examples/`](../examples/README.md) has runnable ones, among them every kind of object on every
+kind of token.

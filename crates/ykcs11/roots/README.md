@@ -20,5 +20,6 @@ Not pinned (documented gap): the pre-2018 "piv-attestation-ca-old.pem" root and 
 U2F Attestation CA that signed YubiKey 4 devices manufactured before mid-2017. Cakeys refuses
 those devices' attestations as unanchored; pin them the same way if one matters to you.
 
-The unit test `the_yubico_roots_are_pinned` pins every embedded certificate's SPKI digest, so
-updating this directory is a deliberate diff.
+`../build.rs` pins each file's SHA-256 (checked against Yubico's copies on 2026-11-17), so a
+file that differs fails the build; the unit test `the_yubico_roots_are_pinned` also pins every
+embedded certificate's SPKI digest. Updating this directory is a deliberate diff of both.

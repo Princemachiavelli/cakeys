@@ -1,0 +1,27 @@
+# A TLS server's private key, born in the host's TPM and never leaving it. The server reads
+# it through OpenSSL and pkcs11-provider from the key file `cakeys check` writes, and does not
+# start unless the TPM holds the pinned key (configuration.nix).
+#
+# The certificate is not here: it is public, and it rotates with every renewal (ACME: every
+# 60 to 90 days), while the key is what must not change under the server. A CSR is made from
+# the pinned key (run.sh shows one) and handed to the CA; the server reads the certificate the
+# CA returns from a file, as it always has.
+
+[tokens.tpm]
+# NixOS: services.cakeys.checks.<n>.modules.tpm gives the module path (configuration.nix);
+# by hand, `--module tpm=<path>/lib/libtpm2_pkcs11.so`.
+provider = "tpm2-pkcs11"
+tokenLabel = "web"
+pinFile = "$WEB_TPM_PIN_FILE"
+
+[objects.web-tls]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+
+[specs.web-tls]
+object = "web-tls"
+# Signs (the TLS handshake), never leaves the TPM. CKA_ID is what pkcs11-provider finds the
+# public half by, which OpenSSL needs to match the key to its certificate.
+attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
+tokens.tpm = { locator = { CKA_LABEL = "web-tls", CKA_ID = "01" }, origin = "create" }

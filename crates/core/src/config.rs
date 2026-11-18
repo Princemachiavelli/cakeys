@@ -1676,56 +1676,59 @@ fn check_origins(cfg: &Config) -> std::result::Result<(), String> {
         }
         // A literal path is checked now; a `$NAME` one when camigrate resolves it.
         if let Some(file) = m.file.as_deref().filter(|f| !f.starts_with('$'))
-            && let Some(why) = cfg.in_store(object, Path::new(file))
+            && let Some(why) = cfg.in_store(object, Path::new(file), nix_store_keys_allowed())
         {
             return Err(why);
         }
     }
+    // Every (spec, token) pair's origin on its own, then across pairs: at most one creates each object.
     let mut created: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for (spec_name, spec) in &cfg.specs {
         let Some(object) = cfg.objects.get(&spec.object) else { continue };
+        let key = matches!(object.class, ObjectClass::PrivateKey | ObjectClass::SecretKey);
         let has_file = cfg.object_migrate.get(&spec.object).is_some_and(|m| m.file.is_some());
         for (token, on) in &spec.tokens {
             let what = format!("spec '{spec_name}' on token '{token}'");
-            let key = matches!(object.class, ObjectClass::PrivateKey | ObjectClass::SecretKey);
-            match (on.origin, key && !on.public_only) {
-                (None, true) => {
+            let Some(origin) = on.origin else {
+                // Unset means "adopt", except for a key's private or secret material, which must say.
+                if key && !on.public_only {
                     return Err(format!(
                         "{what}: a private or secret key states its origin: \"create\" (`cakeys create` makes it \
                          here), \"import\" (camigrate brings it), \"file\" (camigrate brings it from the object's \
                          migrate.file) or \"adopt\" (it is already there)"
                     ));
                 }
-                (Some(o @ (KeyOrigin::Create | KeyOrigin::Import | KeyOrigin::File)), _) if on.public_only => {
-                    return Err(format!("{what}: publicOnly adopts the public half, never origin = \"{o}\""));
-                }
-                (Some(KeyOrigin::File), _) if !has_file => {
-                    return Err(format!(
-                        "{what}: origin = \"file\" reads the object's migrate.file, and object '{}' names none",
-                        spec.object
-                    ));
-                }
-                (Some(KeyOrigin::Create), true) if has_file => {
-                    return Err(format!(
-                        "{what}: object '{}' is born in its migrate.file, so it is never created on a token; \
-                         origin = \"file\", \"import\" or \"adopt\"",
-                        spec.object
-                    ));
-                }
-                (Some(KeyOrigin::Create), false) => {
-                    return Err(format!("{what}: {} objects are adopted or imported, never created", object.class));
-                }
-                (Some(KeyOrigin::Create), true) if spec.flag("CKA_TRUSTED") == Some(true) => {
-                    return Err(format!(
-                        "{what}: CKA_TRUSTED = true cannot be generated (the token's security officer sets it): \
-                         origin = \"adopt\" or \"import\""
-                    ));
-                }
-                (Some(KeyOrigin::Create), true) => {
-                    created.entry(spec.object.as_str()).or_default().push(what);
-                }
-                _ => {}
+                continue;
+            };
+            if on.public_only && origin != KeyOrigin::Adopt {
+                return Err(format!("{what}: publicOnly adopts the public half, never origin = \"{origin}\""));
             }
+            if origin == KeyOrigin::File && !has_file {
+                return Err(format!(
+                    "{what}: origin = \"file\" reads the object's migrate.file, and object '{}' names none",
+                    spec.object
+                ));
+            }
+            if origin != KeyOrigin::Create {
+                continue;
+            }
+            if !key {
+                return Err(format!("{what}: {} objects are adopted or imported, never created", object.class));
+            }
+            if has_file {
+                return Err(format!(
+                    "{what}: object '{}' is born in its migrate.file, so it is never created on a token; \
+                     origin = \"file\", \"import\" or \"adopt\"",
+                    spec.object
+                ));
+            }
+            if spec.flag("CKA_TRUSTED") == Some(true) {
+                return Err(format!(
+                    "{what}: CKA_TRUSTED = true cannot be generated (the token's security officer sets it): \
+                     origin = \"adopt\" or \"import\""
+                ));
+            }
+            created.entry(spec.object.as_str()).or_default().push(what);
         }
     }
     if let Some((object, pairs)) = created.iter().find(|(_, pairs)| pairs.len() > 1) {
@@ -1872,17 +1875,34 @@ pub fn lock_unwritable(lock_path: &Path) -> Option<String> {
 }
 
 /// Inside a Nix build sandbox: `NIX_BUILD_TOP` set and `IN_NIX_SHELL` not (`nix develop` sets
-/// both). Where a lock write is lost, and an admin operation (docs/CAMIGRATE.md D8) refused.
+/// both), and [`ALLOW_NIX_STORE_KEYS`] not set. Where a lock write is lost, and an admin
+/// operation (docs/CAMIGRATE.md D8) refused.
 #[must_use]
 pub fn in_nix_build() -> bool {
-    std::env::var_os("NIX_BUILD_TOP").is_some() && std::env::var_os("IN_NIX_SHELL").is_none()
+    std::env::var_os("NIX_BUILD_TOP").is_some()
+        && std::env::var_os("IN_NIX_SHELL").is_none()
+        && !nix_store_keys_allowed()
+}
+
+/// `CAKEYS_ALLOW_NIX_STORE_KEYS=1`: for throwaway keys a Nix build makes and uses (a test, a VM
+/// image), never a deployment's. A secret `migrate.file` may then be under `/nix/store`, and no
+/// run counts as inside a Nix build sandbox ([`in_nix_build`]): what a sandboxed run would have
+/// refused, it does, and a lock it writes is lost with the build unless the build keeps it.
+pub const ALLOW_NIX_STORE_KEYS: &str = "CAKEYS_ALLOW_NIX_STORE_KEYS";
+
+/// Whether [`ALLOW_NIX_STORE_KEYS`] is set to `1`.
+fn nix_store_keys_allowed() -> bool {
+    std::env::var_os(ALLOW_NIX_STORE_KEYS).is_some_and(|v| v == "1")
 }
 
 /// [`lock_unwritable`], with whether this run is inside a Nix build sandbox given.
 fn unwritable(lock_path: &Path, sandboxed: bool) -> Option<String> {
     let writable = |p: &Path| rustix::fs::access(p, rustix::fs::Access::WRITE_OK).is_ok();
     if sandboxed {
-        return Some("this run is inside a Nix build sandbox, where a lock write would be lost".into());
+        return Some(format!(
+            "this run is inside a Nix build sandbox, where a lock write would be lost ({ALLOW_NIX_STORE_KEYS}=1 runs \
+             it as outside, for throwaway keys only)"
+        ));
     }
     if lock_path.exists() && !writable(lock_path) {
         return Some(format!("{} is not writable", lock_path.display()));
@@ -1935,7 +1955,7 @@ impl Config {
     pub fn object_file(&self, object: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<PathBuf>> {
         let Some(file) = self.object_migrate.get(object).and_then(|m| m.file.as_deref()) else { return Ok(None) };
         let path = PathBuf::from(env_ref(file, &format!("object '{object}': migrate.file"), env)?);
-        if let Some(why) = self.in_store(object, &path) {
+        if let Some(why) = self.in_store(object, &path, nix_store_keys_allowed()) {
             return Err(KmError::Validation(why.into()));
         }
         Ok(Some(path))
@@ -1972,12 +1992,12 @@ impl Config {
     }
 
     /// Why `path` may not hold `object`'s material: a secret one under the world-readable
-    /// `/nix/store`.
-    fn in_store(&self, object: &str, path: &Path) -> Option<String> {
-        (path.starts_with("/nix/store") && self.secret_material(object)).then(|| {
+    /// `/nix/store`, unless `allowed` ([`ALLOW_NIX_STORE_KEYS`]).
+    fn in_store(&self, object: &str, path: &Path, allowed: bool) -> Option<String> {
+        (!allowed && path.starts_with("/nix/store") && self.secret_material(object)).then(|| {
             format!(
                 "object '{object}': migrate.file {} is in the Nix store, which anyone on the host can read; keep \
-                 secret material out of it",
+                 secret material out of it ({ALLOW_NIX_STORE_KEYS}=1 allows it, for throwaway keys only)",
                 path.display()
             )
         })
@@ -2292,6 +2312,8 @@ mod tests {
         assert!(cfg.object_file("k", &|_| None).is_err());
         let store = |_: &str| Some("/nix/store/abc-k.pem".to_owned());
         assert!(cfg.object_file("k", &store).unwrap_err().to_string().contains("Nix store"));
+        // Unless the run allows throwaway keys there (CAKEYS_ALLOW_NIX_STORE_KEYS=1).
+        assert_eq!(cfg.in_store("k", Path::new("/nix/store/abc-k.pem"), true), None);
         // A certificate is no secret: from the store it may come.
         let cfg = load(&(cert.to_owned() + &file("/nix/store/abc-c.pem")), from_file, "").unwrap();
         assert!(cfg.object_file("k", &|_| None).unwrap().is_some());
