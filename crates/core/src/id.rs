@@ -491,6 +491,89 @@ impl Curve {
         ALL_CURVES.into_iter().find(|c| c.params() == params || c.params_by_name() == Some(params))
     }
 
+    /// The name a message gives it: `P-256`, `Ed25519`.
+    #[must_use]
+    pub fn display(self) -> &'static str {
+        match self {
+            Curve::P256 => "P-256",
+            Curve::P384 => "P-384",
+            Curve::P521 => "P-521",
+            Curve::Secp256k1 => "secp256k1",
+            Curve::BrainpoolP256r1 => "brainpoolP256r1",
+            Curve::BrainpoolP384r1 => "brainpoolP384r1",
+            Curve::Ed25519 => "Ed25519",
+            Curve::Ed448 => "Ed448",
+        }
+    }
+}
+
+/// What a key is, by its `AlgorithmIdentifier` (ISSUES.md Q20): a key on a curve (Edwards
+/// included) or RSA. The one parser that reads it is chosen by these OIDs, never by trying each
+/// in turn, so a malformed key is reported by the parser of its own type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyAlg {
+    /// `id-ecPublicKey` on a named curve, or `id-Ed25519` / `id-Ed448` (RFC 8410).
+    Ec(Curve),
+    /// `rsaEncryption`.
+    Rsa,
+}
+
+/// `id-ecPublicKey` (RFC 5480).
+const EC_PUBLIC_KEY: p256::pkcs8::ObjectIdentifier = p256::pkcs8::ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
+/// `rsaEncryption` (RFC 8017).
+const RSA_ENCRYPTION: p256::pkcs8::ObjectIdentifier = p256::pkcs8::ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
+
+impl KeyAlg {
+    /// The key a `SubjectPublicKeyInfo` holds.
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` for bytes that are no `SubjectPublicKeyInfo`, or a key of an algorithm or
+    /// curve cakeys does not read.
+    pub fn of_spki(spki: &[u8]) -> Result<KeyAlg> {
+        let info = p256::pkcs8::SubjectPublicKeyInfoRef::from_der(spki)
+            .map_err(|e| KmError::Unsupported(format!("not a SubjectPublicKeyInfo: {e}").into()))?;
+        KeyAlg::of(&info.algorithm)
+    }
+
+    /// The key a PKCS#8 `PrivateKeyInfo` holds.
+    ///
+    /// # Errors
+    ///
+    /// As [`KeyAlg::of_spki`], for a `PrivateKeyInfo`.
+    pub fn of_pkcs8(der: &[u8]) -> Result<KeyAlg> {
+        let info = p256::pkcs8::PrivateKeyInfoRef::from_der(der)
+            .map_err(|e| KmError::Unsupported(format!("not a PKCS#8 PrivateKeyInfo: {e}").into()))?;
+        KeyAlg::of(&info.algorithm)
+    }
+
+    fn of(alg: &p256::pkcs8::AlgorithmIdentifierRef<'_>) -> Result<KeyAlg> {
+        let unread = |what: String| KmError::Unsupported(format!("{what}, which cakeys does not read").into());
+        if alg.oid == RSA_ENCRYPTION {
+            return Ok(KeyAlg::Rsa);
+        }
+        if alg.oid == EC_PUBLIC_KEY {
+            let params = alg.parameters.and_then(|p| p.to_der().ok());
+            return params
+                .as_deref()
+                .and_then(Curve::from_params)
+                .filter(|c| !c.edwards())
+                .map(KeyAlg::Ec)
+                .ok_or_else(|| unread("an EC key on another curve".into()));
+        }
+        // An Edwards key's algorithm OID is its curve's (RFC 8410), what `Curve::params` holds.
+        alg.oid
+            .to_der()
+            .ok()
+            .as_deref()
+            .and_then(Curve::from_params)
+            .filter(|c| c.edwards())
+            .map(KeyAlg::Ec)
+            .ok_or_else(|| unread(format!("a key of algorithm {}", alg.oid)))
+    }
+}
+
+impl Curve {
     /// Canonical DER SPKI from `CKA_EC_POINT`. That is normally a DER OCTET STRING wrapping the
     /// point (SEC1 for Weierstrass curves, RFC 8032 for Edwards); some providers return it raw.
     ///
@@ -527,39 +610,32 @@ impl Curve {
 ///
 /// # Errors
 ///
-/// `Unsupported` if the input is a syntactically valid SPKI of no key type cakeys hashes.
+/// `Unsupported` for no SPKI, one of a key type cakeys does not hash ([`KeyAlg::of_spki`]), or
+/// one its algorithm's own parser refuses, which names the error.
 pub fn spki_canonical(spki: &[u8]) -> Result<Vec<u8>> {
-    if let Ok(k) = p256::PublicKey::from_public_key_der(spki) {
-        return encode(&k);
+    let alg = KeyAlg::of_spki(spki)?;
+    let bad = |e: &dyn std::fmt::Display| {
+        let what = match alg {
+            KeyAlg::Ec(c) => c.display(),
+            KeyAlg::Rsa => "RSA",
+        };
+        KmError::Unsupported(format!("SPKI of a {what} key: {e}").into())
+    };
+    match alg {
+        KeyAlg::Ec(Curve::P256) => encode(&p256::PublicKey::from_public_key_der(spki).map_err(|e| bad(&e))?),
+        KeyAlg::Ec(Curve::P384) => encode(&p384::PublicKey::from_public_key_der(spki).map_err(|e| bad(&e))?),
+        KeyAlg::Ec(Curve::P521) => encode(&p521::PublicKey::from_public_key_der(spki).map_err(|e| bad(&e))?),
+        KeyAlg::Ec(Curve::Secp256k1) => encode(&k256::PublicKey::from_public_key_der(spki).map_err(|e| bad(&e))?),
+        KeyAlg::Ec(Curve::BrainpoolP256r1) => encode(&Bp256::from_public_key_der(spki).map_err(|e| bad(&e))?),
+        KeyAlg::Ec(Curve::BrainpoolP384r1) => encode(&Bp384::from_public_key_der(spki).map_err(|e| bad(&e))?),
+        KeyAlg::Ec(Curve::Ed25519) => {
+            encode(&ed25519_dalek::VerifyingKey::from_public_key_der(spki).map_err(|e| bad(&e))?)
+        }
+        KeyAlg::Ec(Curve::Ed448) => {
+            encode(&ed448::pkcs8::PublicKeyBytes::from_public_key_der(spki).map_err(|e| bad(&e))?)
+        }
+        KeyAlg::Rsa => encode(&rsa::PublicKey::from_public_key_der(spki).map_err(|e| bad(&e))?),
     }
-    if let Ok(k) = p384::PublicKey::from_public_key_der(spki) {
-        return encode(&k);
-    }
-    if let Ok(k) = p521::PublicKey::from_public_key_der(spki) {
-        return encode(&k);
-    }
-    if let Ok(k) = k256::PublicKey::from_public_key_der(spki) {
-        return encode(&k);
-    }
-    if let Ok(k) = Bp256::from_public_key_der(spki) {
-        return encode(&k);
-    }
-    if let Ok(k) = Bp384::from_public_key_der(spki) {
-        return encode(&k);
-    }
-    if let Ok(k) = ed25519_dalek::VerifyingKey::from_public_key_der(spki) {
-        return encode(&k);
-    }
-    if let Ok(k) = ed448::pkcs8::PublicKeyBytes::from_public_key_der(spki) {
-        return encode(&k);
-    }
-    let key = rsa::PublicKey::from_public_key_der(spki).map_err(|e| {
-        KmError::Unsupported(
-            format!("SPKI is not P-256/P-384/P-521, secp256k1, brainpoolP256r1/P384r1, Ed25519/Ed448 or RSA: {e}")
-                .into(),
-        )
-    })?;
-    encode(&key)
 }
 
 /// Canonical DER SPKI from `CKA_MODULUS` and `CKA_PUBLIC_EXPONENT` (big-endian).
@@ -629,6 +705,30 @@ fn encode(key: &impl EncodePublicKey) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::config::AttrValue;
+
+    /// A key's type comes from its OIDs (ISSUES.md Q20): a P-256 key whose point is off the
+    /// curve is refused by P-256's parser, by name, where it used to fall through to RSA's; an
+    /// algorithm cakeys does not read is named by its OID; every curve's key reads as itself.
+    #[test]
+    fn a_key_is_read_by_the_parser_its_oids_name() {
+        let good = p256::SecretKey::from_slice(&[1u8; 32]).unwrap().public_key().to_public_key_der().unwrap();
+        assert_eq!(KeyAlg::of_spki(good.as_bytes()).unwrap(), KeyAlg::Ec(Curve::P256));
+        let mut off_curve = good.as_bytes().to_vec();
+        *off_curve.last_mut().unwrap() ^= 1;
+        let e = spki_canonical(&off_curve).unwrap_err();
+        assert!(matches!(&e, KmError::Unsupported(m) if m.starts_with("SPKI of a P-256 key")), "{e}");
+        // X25519 (1.3.101.110): a Montgomery key, which no identity scheme reads.
+        let x25519 = [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00]
+            .into_iter()
+            .chain([9u8; 32])
+            .collect::<Vec<u8>>();
+        let e = spki_canonical(&x25519).unwrap_err();
+        assert!(e.to_string().contains("a key of algorithm 1.3.101.110, which cakeys does not read"), "{e}");
+        assert!(KeyAlg::of_spki(b"junk").unwrap_err().to_string().contains("not a SubjectPublicKeyInfo"));
+        let ed = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]).verifying_key().to_public_key_der().unwrap();
+        assert_eq!(KeyAlg::of_spki(ed.as_bytes()).unwrap(), KeyAlg::Ec(Curve::Ed25519));
+        assert_eq!(spki_canonical(ed.as_bytes()).unwrap(), ed.as_bytes());
+    }
 
     /// An object type from its PKCS#11 names (`""`: no key type).
     fn cfg(class: &str, key_type: &str) -> ObjectCfg {

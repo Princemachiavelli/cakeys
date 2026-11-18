@@ -210,9 +210,13 @@ Still open. Each says why it was not done with the rest.
 - **Q20. Key type dispatch by trial parsing** (`spki_canonical`, `spki_of_pkcs8`,
   `ecdh_challenge`, `verify_with`). Dispatching on the OID changes which parser sees a
   malformed key, and with it some error texts and the `public_key` fuzz target's fixed point.
-  **Decided 2026-11-17, not built:** all four dispatch on the OIDs. One shared helper reads the
-  algorithm and curve OIDs and returns a key kind, the four functions match on it, and the
-  error texts and the fuzz target's expectations follow.
+  **Done 2026-11-17:** `id::KeyAlg` (`of_spki`, `of_pkcs8`) reads the algorithm and curve OIDs
+  (an Edwards key's algorithm OID is its curve's), and `spki_canonical`, `spki_of_pkcs8`,
+  `ecdh_challenge`, `verify_with` and `sig::ecdsa`, the fifth of the kind, match on it. A
+  malformed key is refused by its own type's parser, by name (`SPKI of a P-256 key: …`); an
+  algorithm cakeys does not read is named by its OID; junk is "not a
+  SubjectPublicKeyInfo". The `public_key` fuzz target's fixed point holds unchanged: only the
+  error texts moved.
 
 ### Refactors left for a pass of their own
 

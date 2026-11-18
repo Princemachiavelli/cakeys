@@ -93,29 +93,41 @@ pub fn private_from_pkcs8(der: &[u8], key_type: KeyType, curve: Option<&str>) ->
 ///
 /// # Errors
 ///
-/// `Unsupported` for a key no parser here takes.
+/// `Unsupported` for a key no parser here takes, or one its algorithm's own parser refuses
+/// (ISSUES.md Q20: the parser is chosen by the key's OIDs).
 pub fn spki_of_pkcs8(der: &[u8]) -> Result<Vec<u8>> {
+    use crate::id::{Curve, KeyAlg};
     use ed25519_dalek::pkcs8::{DecodePrivateKey as _, EncodePublicKey as _};
+    let alg = KeyAlg::of_pkcs8(der).map_err(|e| {
+        let said = e.into_msg().map_or_else(String::new, crate::Msg::into_text);
+        KmError::Unsupported(format!("the key file's key: {said}").into())
+    })?;
+    let bad = |e: &dyn std::fmt::Display| {
+        let what = match alg {
+            KeyAlg::Ec(c) => c.display(),
+            KeyAlg::Rsa => "RSA",
+        };
+        KmError::Unsupported(format!("the key file's {what} private key: {e}").into())
+    };
     macro_rules! ec {
         ($key:ty) => {
-            if let Ok(k) = <$key>::from_pkcs8_der(der) {
-                return k.public_key().to_public_key_der().map(|d| d.as_bytes().to_vec()).map_err(spki_err);
-            }
+            <$key>::from_pkcs8_der(der).map_err(|e| bad(&e))?.public_key().to_public_key_der()
         };
     }
-    ec!(p256::SecretKey);
-    ec!(p384::SecretKey);
-    ec!(p521::SecretKey);
-    ec!(k256::SecretKey);
-    ec!(bp256::r1::SecretKey);
-    ec!(bp384::r1::SecretKey);
-    if let Ok(k) = ed25519_dalek::SigningKey::from_pkcs8_der(der) {
-        return k.verifying_key().to_public_key_der().map(|d| d.as_bytes().to_vec()).map_err(spki_err);
-    }
-    if let Ok(k) = rsa::PrivateKey::from_pkcs8_der(der) {
-        return k.to_public_key().to_public_key_der().map(|d| d.as_bytes().to_vec()).map_err(spki_err);
-    }
-    Err(KmError::Unsupported("the key file holds no EC, Ed25519 or RSA private key cakeys reads".into()))
+    let spki = match alg {
+        KeyAlg::Ec(Curve::P256) => ec!(p256::SecretKey),
+        KeyAlg::Ec(Curve::P384) => ec!(p384::SecretKey),
+        KeyAlg::Ec(Curve::P521) => ec!(p521::SecretKey),
+        KeyAlg::Ec(Curve::Secp256k1) => ec!(k256::SecretKey),
+        KeyAlg::Ec(Curve::BrainpoolP256r1) => ec!(bp256::r1::SecretKey),
+        KeyAlg::Ec(Curve::BrainpoolP384r1) => ec!(bp384::r1::SecretKey),
+        KeyAlg::Ec(Curve::Ed25519) => {
+            ed25519_dalek::SigningKey::from_pkcs8_der(der).map_err(|e| bad(&e))?.verifying_key().to_public_key_der()
+        }
+        KeyAlg::Ec(Curve::Ed448) => return Err(bad(&"no Ed448 private key is read here")),
+        KeyAlg::Rsa => rsa::PrivateKey::from_pkcs8_der(der).map_err(|e| bad(&e))?.to_public_key().to_public_key_der(),
+    };
+    spki.map(|d| d.as_bytes().to_vec()).map_err(spki_err)
 }
 
 fn spki_err(e: impl std::fmt::Display) -> KmError {

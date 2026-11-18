@@ -4,7 +4,7 @@
 //! try the next algorithm; `Some(Err(why))` covers a malformed signature and one that does not
 //! verify alike. Callers word their own errors.
 
-use crate::id::Curve;
+use crate::id::{Curve, KeyAlg};
 use ecdsa::signature::Verifier;
 use ecdsa::signature::hazmat::PrehashVerifier;
 use p256::pkcs8::DecodePublicKey;
@@ -63,30 +63,33 @@ pub enum Encoding {
 #[must_use]
 pub fn ecdsa(spki: &[u8], msg: &[u8], sig: &[u8], encoding: Encoding, hash: Option<EcdsaHash>) -> Verdict {
     macro_rules! curve {
-        ($curve:ty, $own:expr) => {
-            if let Ok(k) = p256::elliptic_curve::PublicKey::<$curve>::from_public_key_der(spki) {
-                let sig = match encoding {
-                    Encoding::Raw => ecdsa::Signature::<$curve>::from_slice(sig),
-                    Encoding::Der => ecdsa::Signature::<$curve>::from_der(sig),
-                };
-                let sig = match sig {
-                    Ok(s) => s.normalize_s(),
-                    Err(e) => return Some(Err(e.to_string())),
-                };
-                let digest = hash.unwrap_or($own).digest(msg);
-                return Some(
-                    ecdsa::VerifyingKey::<$curve>::from(k).verify_prehash(&digest, &sig).map_err(|e| e.to_string()),
-                );
-            }
-        };
+        ($curve:ty, $own:expr) => {{
+            let k = match p256::elliptic_curve::PublicKey::<$curve>::from_public_key_der(spki) {
+                Ok(k) => k,
+                Err(e) => return Some(Err(format!("the public key: {e}"))),
+            };
+            let sig = match encoding {
+                Encoding::Raw => ecdsa::Signature::<$curve>::from_slice(sig),
+                Encoding::Der => ecdsa::Signature::<$curve>::from_der(sig),
+            };
+            let sig = match sig {
+                Ok(s) => s.normalize_s(),
+                Err(e) => return Some(Err(e.to_string())),
+            };
+            let digest = hash.unwrap_or($own).digest(msg);
+            Some(ecdsa::VerifyingKey::<$curve>::from(k).verify_prehash(&digest, &sig).map_err(|e| e.to_string()))
+        }};
     }
-    curve!(p256::NistP256, EcdsaHash::Sha256);
-    curve!(p384::NistP384, EcdsaHash::Sha384);
-    curve!(p521::NistP521, EcdsaHash::Sha512);
-    curve!(k256::Secp256k1, EcdsaHash::Sha256);
-    curve!(bp256::BrainpoolP256r1, EcdsaHash::Sha256);
-    curve!(bp384::BrainpoolP384r1, EcdsaHash::Sha384);
-    None
+    // The curve the key's OIDs name (ISSUES.md Q20); any other key is no ECDSA key.
+    match KeyAlg::of_spki(spki).ok()? {
+        KeyAlg::Ec(Curve::P256) => curve!(p256::NistP256, EcdsaHash::Sha256),
+        KeyAlg::Ec(Curve::P384) => curve!(p384::NistP384, EcdsaHash::Sha384),
+        KeyAlg::Ec(Curve::P521) => curve!(p521::NistP521, EcdsaHash::Sha512),
+        KeyAlg::Ec(Curve::Secp256k1) => curve!(k256::Secp256k1, EcdsaHash::Sha256),
+        KeyAlg::Ec(Curve::BrainpoolP256r1) => curve!(bp256::BrainpoolP256r1, EcdsaHash::Sha256),
+        KeyAlg::Ec(Curve::BrainpoolP384r1) => curve!(bp384::BrainpoolP384r1, EcdsaHash::Sha384),
+        KeyAlg::Ec(Curve::Ed25519 | Curve::Ed448) | KeyAlg::Rsa => None,
+    }
 }
 
 /// Pure Ed25519 over `msg` (strict verification).

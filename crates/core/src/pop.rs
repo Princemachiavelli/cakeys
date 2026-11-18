@@ -8,6 +8,7 @@
 //! Verification uses the `RustCrypto` crates; no proof value is ever stored.
 
 use crate::error::{KmError, Result};
+use crate::id::{Curve, KeyAlg};
 use crate::sig;
 pub use crate::sig::EcdsaHash;
 use elliptic_curve::sec1::ToSec1Point;
@@ -66,18 +67,30 @@ pub fn verify(spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
 ///
 /// `Conflict` when the signature does not verify: the private key is not the one the identity
 /// names. `Unsupported` for an Ed448 key (no verifier yet: opt in with
-/// `binding = "token-asserted"`) or a key that is none of the three above.
+/// `binding = "token-asserted"`), a key that is none of the three above, or one its
+/// algorithm's own parser does not read.
 pub fn verify_with(spki: &[u8], msg: &[u8], sig: &[u8], rsa: RsaSignature) -> Result<()> {
-    let verdict = sig::ecdsa(spki, msg, sig, sig::Encoding::Raw, None)
-        .or_else(|| sig::ed25519(spki, msg, sig))
-        .or_else(|| match rsa {
+    let of_key = |what: &dyn std::fmt::Display| {
+        KmError::Unsupported(format!("proof of possession for the public key {}: {what}", crate::id::sri(spki)).into())
+    };
+    // The verifier the key's own algorithm takes (ISSUES.md Q20), never the first that parses.
+    let verdict = match KeyAlg::of_spki(spki).map_err(|e| of_key(&e))? {
+        KeyAlg::Ec(Curve::Ed25519) => sig::ed25519(spki, msg, sig),
+        KeyAlg::Ec(Curve::Ed448) => {
+            return Err(KmError::Unsupported(
+                "no Ed448 signature verifier to prove possession with; opt in with binding = \"token-asserted\"".into(),
+            ));
+        }
+        KeyAlg::Ec(_) => sig::ecdsa(spki, msg, sig, sig::Encoding::Raw, None),
+        KeyAlg::Rsa => match rsa {
             RsaSignature::Pkcs1v15(EcdsaHash::Sha256) => sig::rsa_pkcs1v15::<Sha256>(spki, msg, sig),
             RsaSignature::Pkcs1v15(EcdsaHash::Sha384) => sig::rsa_pkcs1v15::<sha2::Sha384>(spki, msg, sig),
             RsaSignature::Pkcs1v15(EcdsaHash::Sha512) => sig::rsa_pkcs1v15::<sha2::Sha512>(spki, msg, sig),
             RsaSignature::Pss(EcdsaHash::Sha256) => sig::rsa_pss::<Sha256>(spki, msg, sig),
             RsaSignature::Pss(EcdsaHash::Sha384) => sig::rsa_pss::<sha2::Sha384>(spki, msg, sig),
             RsaSignature::Pss(EcdsaHash::Sha512) => sig::rsa_pss::<sha2::Sha512>(spki, msg, sig),
-        });
+        },
+    };
     match verdict {
         Some(v) => v.map_err(|e| {
             KmError::Conflict(
@@ -88,16 +101,7 @@ pub fn verify_with(spki: &[u8], msg: &[u8], sig: &[u8], rsa: RsaSignature) -> Re
                 .into(),
             )
         }),
-        None if ed448::pkcs8::PublicKeyBytes::from_public_key_der(spki).is_ok() => Err(KmError::Unsupported(
-            "no Ed448 signature verifier to prove possession with; opt in with binding = \"token-asserted\"".into(),
-        )),
-        None => Err(KmError::Unsupported(
-            format!(
-                "proof of possession for the public key {}: not an ECDSA, Ed25519 or RSA key",
-                crate::id::sri(spki)
-            )
-            .into(),
-        )),
+        None => Err(of_key(&"its algorithm's own parser does not read it")),
     }
 }
 
@@ -125,27 +129,35 @@ pub struct EcdhChallenge {
 /// number generator fails.
 pub fn ecdh_challenge(spki: &[u8], msg: &[u8]) -> Result<EcdhChallenge> {
     let mut rng = getrandom::SysRng;
+    let none = |what: &dyn std::fmt::Display| {
+        KmError::Unsupported(format!("no RustCrypto ECDH for the public key {}: {what}", crate::id::sri(spki)).into())
+    };
     macro_rules! ecdh {
-        ($curve:ty) => {
-            if let Ok(pk) = PublicKey::<$curve>::from_public_key_der(spki) {
-                let eph = EphemeralSecret::<$curve>::try_generate_from_rng(&mut rng)
-                    .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}").into()))?;
-                let shared = eph.diffie_hellman(&pk);
-                return Ok(EcdhChallenge {
-                    peer: eph.public_key().to_sec1_point(false).as_bytes().to_vec(),
-                    mac: mac_sha256(shared.raw_secret_bytes(), msg),
-                    secret: zeroize::Zeroizing::new(shared.raw_secret_bytes().to_vec()),
-                });
-            }
-        };
+        ($curve:ty) => {{
+            let pk = PublicKey::<$curve>::from_public_key_der(spki).map_err(|e| none(&e))?;
+            let eph = EphemeralSecret::<$curve>::try_generate_from_rng(&mut rng)
+                .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}").into()))?;
+            let shared = eph.diffie_hellman(&pk);
+            Ok(EcdhChallenge {
+                peer: eph.public_key().to_sec1_point(false).as_bytes().to_vec(),
+                mac: mac_sha256(shared.raw_secret_bytes(), msg),
+                secret: zeroize::Zeroizing::new(shared.raw_secret_bytes().to_vec()),
+            })
+        }};
     }
-    ecdh!(p256::NistP256);
-    ecdh!(p384::NistP384);
-    ecdh!(p521::NistP521);
-    ecdh!(k256::Secp256k1);
-    ecdh!(bp256::BrainpoolP256r1);
-    ecdh!(bp384::BrainpoolP384r1);
-    Err(KmError::Unsupported(format!("no RustCrypto ECDH for the public key {}", crate::id::sri(spki)).into()))
+    // The curve's own arithmetic, by the key's OIDs (ISSUES.md Q20).
+    match KeyAlg::of_spki(spki).map_err(|e| none(&e))? {
+        KeyAlg::Ec(Curve::P256) => ecdh!(p256::NistP256),
+        KeyAlg::Ec(Curve::P384) => ecdh!(p384::NistP384),
+        KeyAlg::Ec(Curve::P521) => ecdh!(p521::NistP521),
+        KeyAlg::Ec(Curve::Secp256k1) => ecdh!(k256::Secp256k1),
+        KeyAlg::Ec(Curve::BrainpoolP256r1) => ecdh!(bp256::BrainpoolP256r1),
+        KeyAlg::Ec(Curve::BrainpoolP384r1) => ecdh!(bp384::BrainpoolP384r1),
+        KeyAlg::Ec(c @ (Curve::Ed25519 | Curve::Ed448)) => {
+            Err(none(&format_args!("an {} key derives nothing", c.display())))
+        }
+        KeyAlg::Rsa => Err(none(&"an RSA key derives nothing")),
+    }
 }
 
 /// Start a `pop-decrypt` proof of possession: `msg` encrypted to the public key in `spki` with

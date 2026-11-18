@@ -280,7 +280,7 @@ fn proofs_need_a_verifier_for_the_key() {
     let e = cakeys_core::pop::verify(ed448.as_bytes(), b"m", b"s").unwrap_err();
     assert!(matches!(&e, KmError::Unsupported(m) if m.contains("no Ed448 signature verifier")), "{e}");
     let e = cakeys_core::pop::verify(b"junk", b"m", b"s").unwrap_err();
-    assert!(matches!(&e, KmError::Unsupported(m) if m.contains("not an ECDSA, Ed25519 or RSA key")), "{e}");
+    assert!(matches!(&e, KmError::Unsupported(m) if m.contains("not a SubjectPublicKeyInfo")), "{e}");
 }
 
 const RSA: &str = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048";
