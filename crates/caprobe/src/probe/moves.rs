@@ -102,14 +102,14 @@ pub(super) fn probe_moves(made: &mut Made, profile: &mut Draft, transport: Trans
         for key in private_keys(&made.rsa_sizes) {
             import_private(made, profile, &key, kind, transport)?;
         }
-        if matches!(made.target, Target::Labels) {
+        if matches!(made.scratch.target, Target::Labels) {
             for value in AES_KEYS {
                 import_secret(made, profile, value, transport);
             }
         }
     }
     create_public(made, profile, Class::Certificate, CERTIFICATE)?;
-    match made.target {
+    match made.scratch.target {
         Target::Labels => create_public(made, profile, Class::Data, DATA)?,
         // PIV's data objects are the device's own (CHUID, CCC): never written. The slot gets a
         // generated key again, which also puts its placeholder certificate back.
@@ -150,9 +150,9 @@ impl Made<'_> {
     /// Where the next object goes: a fresh probe label, or the scratch slot's `CKA_ID`. The
     /// label, to track what is made under it.
     fn locator(&mut self) -> (Locator, Option<String>) {
-        match &self.target {
+        match &self.scratch.target {
             Target::Labels => {
-                let label = self.label();
+                let label = self.scratch.label();
                 (Locator { label: Some(label.clone()), id: None }, Some(label))
             }
             Target::Slot(id) => (Locator { label: None, id: Some(cakeys_core::hex::encode(id)) }, None),
@@ -161,10 +161,8 @@ impl Made<'_> {
 
     /// Track `h`, made under `label`, for the cleanup and the leftover check.
     fn track(&mut self, h: ObjectHandle, label: Option<&String>) {
-        let Some(label) = label else { return };
-        self.handles.push(h);
-        if !self.labels.contains(label) {
-            self.labels.push(label.clone());
+        if let Some(label) = label {
+            self.scratch.track(&[h], label);
         }
     }
 }
@@ -195,7 +193,7 @@ fn import_private(
             return Ok(());
         }
     };
-    let labels = matches!(made.target, Target::Labels);
+    let labels = matches!(made.scratch.target, Target::Labels);
     let (loc, label) = made.locator();
     let at = locator_attrs(&loc)?;
     // Every template as the provider adjusts it for the verbs (`Provider::template`).
@@ -502,7 +500,7 @@ fn export_sealed(
     };
     let (mut wrap_refusals, mut unwrap_refusals) = (Vec::new(), Vec::new());
     for way in sealed_ways(profile, secret) {
-        let label = made.label();
+        let label = made.scratch.label();
         let template = match template(&label) {
             Ok(t) => t,
             Err(e) => {
@@ -568,7 +566,7 @@ fn import_secret(made: &mut Made, profile: &mut Draft, value: &[u8], transport: 
     let n = u32::try_from(value.len()).unwrap_or_default();
     let on = On::Bytes(n);
     let cap = Capability::Import { key_type: KeyKind::Aes, on: on.clone() };
-    let label = made.label();
+    let label = made.scratch.label();
     let base = vec![
         Attribute::Token(true),
         Attribute::Label(label.as_bytes().to_vec()),

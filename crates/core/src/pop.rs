@@ -248,6 +248,18 @@ pub fn rsa_encrypt(spki: &[u8], padding: RsaPadding, msg: &[u8]) -> Result<Vec<u
     .map_err(|e| KmError::Unavailable(format!("RSA encryption: {e}").into()))
 }
 
+/// The length in bytes of the modulus of the RSA public key in `spki`: the block a raw RSA
+/// operation (`CKM_RSA_X_509`) takes.
+///
+/// # Errors
+///
+/// `Unsupported` if `spki` is not an RSA key.
+pub fn rsa_modulus_len(spki: &[u8]) -> Result<usize> {
+    let key = rsa::PublicKey::from_public_key_der(spki)
+        .map_err(|e| KmError::Unsupported(format!("an RSA key in this SPKI: {e}").into()))?;
+    Ok(rsa::traits::PublicKeyParts::size(&key))
+}
+
 /// HMAC-SHA256 over `msg` keyed with `key`; HMAC takes any key length.
 fn mac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
     let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
@@ -354,6 +366,9 @@ mod tests {
         assert_eq!(private.decrypt(rsa::Oaep::<sha1::Sha1>::new(), &challenge).unwrap(), b"message");
         assert_ne!(oaep_challenge(spki.as_bytes(), b"message").unwrap(), challenge);
         assert!(matches!(oaep_challenge(b"no key", b"message"), Err(KmError::Unsupported(_))));
+
+        assert_eq!(rsa_modulus_len(spki.as_bytes()).unwrap(), 256);
+        assert!(matches!(rsa_modulus_len(b"no key"), Err(KmError::Unsupported(_))));
     }
 
     /// A key bound to another RSA signature proves in it: PSS over SHA-256 (salt as long as the

@@ -236,7 +236,15 @@ and Q14 (one opener for cakeys and camigrate).
   fixtures name core's `KeyType`, from which their kind follows. No `"CKK_*"` literal is left
   in the probe's code.
 - **Q26. The probe's `Made`** (12 fields) and `Draft`'s `Deref` to `Profile`; `rsa_ops` signs a
-  fixed 256-byte block whatever the key's size.
+  fixed 256-byte block whatever the key's size. **Done 2026-11-17:** the scratch objects are
+  `Scratch` (target, handles, labels, the label counter; `label`, `track`, `destroy_all`,
+  `leftovers`, `clear_stale`), and one `track` replaces eight hand-written handle-and-label
+  pushes; `Made` keeps nine fields. The same handles reach the one `destroy_all`, in the same
+  order. `Draft` has no `Deref`: the probes write through `Draft::set` and `Draft::note`, and
+  name `profile.out` for the rest. The raw `CKM_RSA_X_509` block is the key's modulus size
+  (`pop::rsa_modulus_len`): unchanged on the 2048-bit generated key, right on an existing
+  larger one (Cloud KMS's). The SoftHSM, kryoptic and swtpm re-probes still give their
+  committed profiles byte for byte [run].
 - **Q13. `resolution::resolve` is 127 lines.** **Done 2026-11-17:** it is the steps by name —
   the binding layer, `add_forwarders`, `add_configured`, `hidden_module`, `module_profile` —
   and the module profile's notes are one method each (`nearest_version`, `hardware_unknown`,
