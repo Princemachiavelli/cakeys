@@ -49,7 +49,7 @@ impl Support {
         let no: Vec<&str> =
             self.verdicts.iter().filter(|(_, v)| matches!(v, Verdict::No { .. })).map(|(n, _)| n.as_str()).collect();
         if !no.is_empty() {
-            return Err(KmError::Unsupported(format!("not supported: {}", no.join(", "))));
+            return Err(KmError::Unsupported(format!("not supported: {}", no.join(", ")).into()));
         }
         if self.verdicts.iter().any(|(_, v)| matches!(v, Verdict::Unknown { .. })) {
             return Err(KmError::Unavailable(
@@ -68,7 +68,7 @@ impl Support {
 /// `Validation` (17) for an unknown profile, layer, class or token, or a token that names no
 /// provider.
 pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
-    let find = |name: &str| set.find(name).map_err(KmError::Validation);
+    let find = |name: &str| set.find(name).map_err(|e| KmError::Validation(e.into()));
     // A family with pairs on several kinds of hardware (tpm2-pkcs11/1.10+swtpm, +amd-ftpm):
     // the hardware layer asked for names the pair, as in token resolution.
     let find_module = |name: &str, hardware: &[String]| {
@@ -81,15 +81,17 @@ pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
                     .collect();
                 if let [p] = named.as_slice() { Ok(*p) } else { Err(e) }
             })
-            .map_err(KmError::Validation)
+            .map_err(|e| KmError::Validation(e.into()))
     };
     let module = match (q.profile, q.token) {
         (Some(p), _) => Some(find_module(p, q.layers)?),
         (None, Some(t)) => {
-            let token = cfg.tokens.get(t).ok_or_else(|| KmError::Validation(format!("unknown token '{t}'")))?;
+            let token = cfg.tokens.get(t).ok_or_else(|| KmError::Validation(format!("unknown token '{t}'").into()))?;
             // The one profile `moduleProfile` names, else the provider's family.
             let named = token.module_profile.as_deref().or(token.provider.as_deref()).ok_or_else(|| {
-                KmError::Validation(format!("token '{t}' names no provider; set tokens.{t}.provider or pass --profile"))
+                KmError::Validation(
+                    format!("token '{t}' names no provider; set tokens.{t}.provider or pass --profile").into(),
+                )
             })?;
             Some(find_module(named, &token.profiles)?)
         }
@@ -98,7 +100,7 @@ pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
     // The cryptoki binding layer is always in the stack (docs/CAPROBE.md): what it
     // subtracts is decided by the build this binary runs against, so an explicit `--layer
     // cryptoki/0.12` adds nothing it has not already decided.
-    let mut resolved: Vec<Profile> = vec![cakeys_pkcs11::binding::layer().map_err(KmError::Validation)?];
+    let mut resolved: Vec<Profile> = vec![cakeys_pkcs11::binding::layer().map_err(|e| KmError::Validation(e.into()))?];
     for l in q.layers {
         let p = find(l)?;
         if p.profile != cakeys_pkcs11::binding::NAME {
@@ -106,15 +108,18 @@ pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
         }
     }
     let stack: Vec<&Profile> = resolved.iter().collect();
-    let baseline = set.baseline().map_err(KmError::Validation)?;
+    let baseline = set.baseline().map_err(|e| KmError::Validation(e.into()))?;
     let eff = Effective::new(baseline, module, &stack);
     let verdicts = match q.ask {
         Ask::Class(class) => eff.class(class).ok_or_else(|| {
-            KmError::Validation(format!(
-                "no class '{class}' in baseline {} (classes: {})",
-                baseline.baseline,
-                baseline.class.keys().cloned().collect::<Vec<_>>().join(", ")
-            ))
+            KmError::Validation(
+                format!(
+                    "no class '{class}' in baseline {} (classes: {})",
+                    baseline.baseline,
+                    baseline.class.keys().cloned().collect::<Vec<_>>().join(", ")
+                )
+                .into(),
+            )
         })?,
         Ask::Oaep => eff.oaep(),
         Ask::Name(name) => vec![(name.to_owned(), eff.query(name, q.bits))],

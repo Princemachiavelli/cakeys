@@ -19,7 +19,7 @@ impl Token {
         if class == ObjectClass::CERTIFICATE {
             return match self.attr(h, AttributeType::CertificateType)? {
                 Some(Attribute::CertificateType(CertificateType::X_509)) => Ok(()),
-                other => Err(KmError::Conflict(format!("CKA_CERTIFICATE_TYPE is {other:?}, not CKC_X_509"))),
+                other => Err(KmError::Conflict(format!("CKA_CERTIFICATE_TYPE is {other:?}, not CKC_X_509").into())),
             };
         }
         if class == ObjectClass::DATA {
@@ -31,28 +31,30 @@ impl Token {
                 (Some(Attribute::Private(false)), _) | (Some(Attribute::Private(true)), Some(true)) => {
                     self.check_policy(h, spec)
                 }
-                (other, _) => Err(KmError::Unsupported(format!(
-                    "data object is CKA_PRIVATE ({other:?}): its value hash would let anyone with \
+                (other, _) => Err(KmError::Unsupported(
+                    format!(
+                        "data object is CKA_PRIVATE ({other:?}): its value hash would let anyone with \
                      the lock guess the value offline; declare CKA_PRIVATE = true in the spec to \
                      identify it anyway, for a value nobody can guess (a random secret, never a \
                      password or PIN)"
-                ))),
+                    )
+                    .into(),
+                )),
             };
         }
         let Some(kt) = self.key_type(h)? else {
             return Err(KmError::Conflict("object has no CKA_KEY_TYPE".into()));
         };
         if kt != key_type_of(object)? {
-            return Err(KmError::Conflict(format!(
-                "CKA_KEY_TYPE is {kt}, spec object type says {}",
-                object.key_type.map_or("", Kt::name)
-            )));
+            return Err(KmError::Conflict(
+                format!("CKA_KEY_TYPE is {kt}, spec object type says {}", object.key_type.map_or("", Kt::name)).into(),
+            ));
         }
         if kt == KeyType::EC || kt == KeyType::EC_EDWARDS {
             let want = curve_of(object)?;
             match self.attr(h, AttributeType::EcParams)? {
                 Some(Attribute::EcParams(p)) if Curve::from_params(&p) == Some(want) => {}
-                other => return Err(KmError::Conflict(format!("CKA_EC_PARAMS {other:?} is not {want:?}"))),
+                other => return Err(KmError::Conflict(format!("CKA_EC_PARAMS {other:?} is not {want:?}").into())),
             }
         }
         if let Some(bits) = object.modulus_bits {
@@ -65,7 +67,7 @@ impl Token {
                         Attribute::Modulus(m) => Some(size(&m)),
                         _ => None,
                     });
-                    return Err(KmError::Conflict(format!("RSA modulus is {have:?} bits, spec says {bits}")));
+                    return Err(KmError::Conflict(format!("RSA modulus is {have:?} bits, spec says {bits}").into()));
                 }
             }
         }
@@ -74,16 +76,21 @@ impl Token {
             match self.attr(h, AttributeType::ValueLen)? {
                 Some(Attribute::ValueLen(v)) if *v == len => {}
                 Some(Attribute::ValueLen(v)) => {
-                    return Err(KmError::Conflict(format!("CKA_VALUE_LEN is {}, spec says {len}", u64::from(v))));
+                    return Err(KmError::Conflict(
+                        format!("CKA_VALUE_LEN is {}, spec says {len}", u64::from(v)).into(),
+                    ));
                 }
                 // PKCS#11 requires it of the key; a module that stores an imported key without it
                 // (tpm2-pkcs11's C_CreateObject) leaves the type unverifiable, not different.
                 _ => {
-                    return Err(KmError::Unsupported(format!(
-                        "token '{}' reports no CKA_VALUE_LEN for the key, so its length (spec: {len}) cannot be \
+                    return Err(KmError::Unsupported(
+                        format!(
+                            "token '{}' reports no CKA_VALUE_LEN for the key, so its length (spec: {len}) cannot be \
                          checked",
-                        self.name
-                    )));
+                            self.name
+                        )
+                        .into(),
+                    ));
                 }
             }
         }
@@ -101,7 +108,7 @@ impl Token {
     pub fn policy(&self, h: ObjectHandle) -> Result<BTreeMap<String, AttrValue>> {
         let class = match self.attr(h, AttributeType::Class)? {
             Some(Attribute::Class(c)) => {
-                managed_class(c).ok_or_else(|| KmError::Unsupported(format!("object class {c}")))?
+                managed_class(c).ok_or_else(|| KmError::Unsupported(format!("object class {c}").into()))?
             }
             _ => return Err(KmError::Conflict("object has no CKA_CLASS".into())),
         };
@@ -139,11 +146,14 @@ impl Token {
                 Attribute::AllowedMechanisms(m) if !m.is_empty() => Some(m),
                 _ => None,
             })),
-            Err(CkError::NotSupported) => Err(KmError::Unsupported(format!(
-                "CKA_ALLOWED_MECHANISMS on token '{}' names a mechanism this build's cryptoki cannot read \
+            Err(CkError::NotSupported) => Err(KmError::Unsupported(
+                format!(
+                    "CKA_ALLOWED_MECHANISMS on token '{}' names a mechanism this build's cryptoki cannot read \
                  (a build without the cryptoki-allowed-mechanisms-unnamed patch, docs/OPEN.md)",
-                self.name
-            ))),
+                    self.name
+                )
+                .into(),
+            )),
             Err(e) => Err(ck("C_GetAttributeValue")(e)),
         }
     }
@@ -175,11 +185,14 @@ impl Token {
         for (name, want) in attrs {
             let have = self.attr_value(h, name)?;
             if have.as_ref() != Some(want) {
-                return Err(KmError::Conflict(format!(
-                    "{what}{name} is {} on token '{}', spec wants {want}",
-                    have.map_or("unreadable".into(), |v| v.to_string()),
-                    self.name
-                )));
+                return Err(KmError::Conflict(
+                    format!(
+                        "{what}{name} is {} on token '{}', spec wants {want}",
+                        have.map_or("unreadable".into(), |v| v.to_string()),
+                        self.name
+                    )
+                    .into(),
+                ));
             }
         }
         Ok(())
@@ -321,7 +334,7 @@ bool_attrs! {
 }
 
 fn unsupported_attr(name: &str) -> KmError {
-    KmError::Validation(format!("unsupported policy attribute {name}"))
+    KmError::Validation(format!("unsupported policy attribute {name}").into())
 }
 
 /// `CK_UNAVAILABLE_INFORMATION`: the value a token reports for an attribute it cannot give.

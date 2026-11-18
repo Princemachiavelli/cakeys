@@ -35,16 +35,16 @@ impl<'a> Target<'a> {
     /// `NotFound` if keys.toml names no such spec, or the spec no such token; `Validation` if
     /// the spec references an unknown object, or `[tokens]` has no entry named `token_name`.
     pub fn new(cfg: &'a Config, spec_name: &'a str, token_name: &'a str) -> Result<Self> {
-        let spec = cfg.specs.get(spec_name).ok_or_else(|| KmError::NotFound(format!("spec '{spec_name}'")))?;
+        let spec = cfg.specs.get(spec_name).ok_or_else(|| KmError::NotFound(format!("spec '{spec_name}'").into()))?;
         let (object_name, object) = cfg.objects.get_key_value(&spec.object).ok_or_else(|| {
-            KmError::Validation(format!("spec '{spec_name}' references unknown object '{}'", spec.object))
+            KmError::Validation(format!("spec '{spec_name}' references unknown object '{}'", spec.object).into())
         })?;
         let on_token = spec
             .tokens
             .get(token_name)
-            .ok_or_else(|| KmError::NotFound(format!("spec '{spec_name}' has no token '{token_name}'")))?;
+            .ok_or_else(|| KmError::NotFound(format!("spec '{spec_name}' has no token '{token_name}'").into()))?;
         if !cfg.tokens.contains_key(token_name) {
-            return Err(KmError::Validation(format!("unknown token '{token_name}'")));
+            return Err(KmError::Validation(format!("unknown token '{token_name}'").into()));
         }
         let transport = cfg.tokens.get(token_name).and_then(|t| t.migrate.transport_with.as_deref()) == Some(spec_name);
         Ok(Target { spec_name, spec, object_name, object, token_name, on_token, transport })
@@ -151,7 +151,7 @@ pub fn assurance(class: Class, binding: Option<Binding>, attestation_kind: Optio
 
 /// A private key must be able to prove possession, or say explicitly that it does not.
 fn check_binding(t: &Target) -> Result<()> {
-    let invalid = |why: String| Err(KmError::Validation(format!("{t}: {why}")));
+    let invalid = |why: String| Err(KmError::Validation(format!("{t}: {why}").into()));
     match (binding(t), t.on_token.binding) {
         (_, Some(Binding::PopSignPin)) => invalid(
             "binding = \"pop-sign-pin\" is recorded, not configured: write \"pop-sign\" (the default); \
@@ -221,18 +221,18 @@ fn check_declared(t: &Target, class: Class, declared: &BTreeMap<String, AttrValu
     for (name, v) in declared {
         let applies = match v {
             AttrValue::Mechanisms(_) if name != attrs::ALLOWED_MECHANISMS => {
-                return Err(KmError::Validation(format!(
-                    "{t}: {name}: only CKA_ALLOWED_MECHANISMS takes a mechanism list"
-                )));
+                return Err(KmError::Validation(
+                    format!("{t}: {name}: only CKA_ALLOWED_MECHANISMS takes a mechanism list").into(),
+                ));
             }
             AttrValue::Mechanisms(_) => attrs::has_allowed_mechanisms(class),
             AttrValue::Bool(_) if !attrs::is_declarable_bool(name) => {
-                return Err(KmError::Validation(format!("{t}: unsupported policy attribute {name}")));
+                return Err(KmError::Validation(format!("{t}: unsupported policy attribute {name}").into()));
             }
             AttrValue::Bool(_) => attrs::declarable(class, name),
         };
         if !applies {
-            return Err(KmError::Validation(format!("{t}: {name} does not apply to {class} objects")));
+            return Err(KmError::Validation(format!("{t}: {name} does not apply to {class} objects").into()));
         }
     }
     Ok(())
@@ -245,7 +245,7 @@ fn check_declared(t: &Target, class: Class, declared: &BTreeMap<String, AttrValu
 /// `Validation` for a spec whose binding, attributes or identity opt-ins do not fit the
 /// object's class (checked here, so no object is ever created for an unusable spec).
 pub fn plan_mode(t: &Target) -> Result<Mode> {
-    let invalid = |why: &str| Err(KmError::Validation(format!("{t}: {why}")));
+    let invalid = |why: &str| Err(KmError::Validation(format!("{t}: {why}").into()));
     check_binding(t)?;
     // Attribute shapes and names, per class: a private key's `publicAttributes` shape its public
     // key object.
@@ -256,7 +256,7 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
     }
     // The object's type, parsed at load (`ObjectCfg::kind`).
     let kind = t.object.kind().map_err(|e| match e {
-        KmError::Validation(m) => KmError::Validation(format!("{t}: {m}")),
+        KmError::Validation(m) => KmError::Validation(format!("{t}: {m}").into()),
         other => other,
     })?;
     if t.on_token.public_only {
@@ -279,33 +279,37 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
         ObjectKind::Secret { key_type, .. } => key_type,
     };
     let attr = |n: &str| t.spec.flag(n);
-    let mode = if !declared_commits(t).is_empty() {
-        Mode::Commitment
-    } else if attr("CKA_EXTRACTABLE") == Some(true) {
-        Mode::WrapRebind
-    } else {
-        // Usage bits that enable commitments the declared allowed mechanisms all forbid.
-        let enabled = enabled_commits(t);
-        if !enabled.is_empty() {
-            let mechs: Vec<&str> = enabled.iter().map(|c| c.mechanism()).collect();
-            return Err(KmError::Validation(format!(
-                "{t} has no re-verifiable identity: its CKA_ALLOWED_MECHANISMS allows none of the commitments \
+    let mode =
+        if !declared_commits(t).is_empty() {
+            Mode::Commitment
+        } else if attr("CKA_EXTRACTABLE") == Some(true) {
+            Mode::WrapRebind
+        } else {
+            // Usage bits that enable commitments the declared allowed mechanisms all forbid.
+            let enabled = enabled_commits(t);
+            if !enabled.is_empty() {
+                let mechs: Vec<&str> = enabled.iter().map(|c| c.mechanism()).collect();
+                return Err(KmError::Validation(
+                    format!(
+                        "{t} has no re-verifiable identity: its CKA_ALLOWED_MECHANISMS allows none of the commitments \
                  its usage bits enable ({}); allow one of them, or declare CKA_EXTRACTABLE = true",
-                mechs.join(", ")
-            )));
-        }
-        // The weaker modes this leaves out (computed once and never re-checked) are parked:
-        // docs/DESIGN.md §3.4.
-        let bits: Vec<&str> = match block_commits(kt) {
-            Some(all) => all.iter().map(|c| c.usage()).collect(),
-            None => vec!["CKA_SIGN"],
-        };
-        return Err(KmError::Validation(format!(
+                        mechs.join(", ")
+                    )
+                    .into(),
+                ));
+            }
+            // The weaker modes this leaves out (computed once and never re-checked) are parked:
+            // docs/DESIGN.md §3.4.
+            let bits: Vec<&str> = match block_commits(kt) {
+                Some(all) => all.iter().map(|c| c.usage()).collect(),
+                None => vec!["CKA_SIGN"],
+            };
+            return Err(KmError::Validation(format!(
             "{t} has no re-verifiable identity (non-extractable, and no usage bit that commits a {kt} key: {}): \
              declare a usage bit that allows a commitment, or CKA_EXTRACTABLE = true",
             bits.join(", ")
-        )));
-    };
+        ).into()));
+        };
     Ok(mode)
 }
 

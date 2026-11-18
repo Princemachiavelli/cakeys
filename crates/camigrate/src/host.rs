@@ -53,7 +53,7 @@ pub(crate) fn import(
 fn source_key(src: &Target, from: &Token, lock: &Lock, notes: &mut Notes) -> Result<(ObjectHandle, Option<Vec<u8>>)> {
     ops::verify(src, from, lock, notes)?;
     let loc = &src.on_token.locator;
-    let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string()))?;
+    let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string().into()))?;
     let spki = (src.object.class == Class::PrivateKey).then(|| from.spki(h, loc)).transpose()?;
     Ok((h, spki))
 }
@@ -122,11 +122,14 @@ pub(crate) fn create_and_record(
 pub(crate) fn free_locator(dst: &Target, to: &Token, spki: Option<&[u8]>) -> Result<cakeys_pkcs11::token::Occupied> {
     let occupied = to.occupied(dst.object, &dst.on_token.locator, spki)?;
     if occupied.colliding > 0 {
-        return Err(KmError::Conflict(format!(
-            "{} object(s) a {} would collide with already sit under the locator of {dst}, and the lock records \
+        return Err(KmError::Conflict(
+            format!(
+                "{} object(s) a {} would collide with already sit under the locator of {dst}, and the lock records \
              no realisation there; refusing to import over them",
-            occupied.colliding, dst.object.class
-        )));
+                occupied.colliding, dst.object.class
+            )
+            .into(),
+        ));
     }
     Ok(occupied)
 }
@@ -148,7 +151,7 @@ pub(crate) fn import_ptool(
     lock: &mut Lock,
     notes: &mut Notes,
 ) -> Result<Moved> {
-    let gone = || KmError::Unavailable(format!("{dst}: the target token is not open"));
+    let gone = || KmError::Unavailable(format!("{dst}: the target token is not open").into());
     let to = target.as_ref().ok_or_else(gone)?;
     if already_there(dst, to, lock, notes)? {
         return Ok(Moved::AlreadyThere);
@@ -157,10 +160,13 @@ pub(crate) fn import_ptool(
     ops::check_import(dst, to)?;
     let occupied = free_locator(dst, to, spki.as_deref())?;
     if occupied.public_half.is_some() {
-        return Err(KmError::Conflict(format!(
-            "objects already sit under the locator of {dst}, and the lock records no realisation there; \
+        return Err(KmError::Conflict(
+            format!(
+                "objects already sit under the locator of {dst}, and the lock records no realisation there; \
              refusing to import over them"
-        )));
+            )
+            .into(),
+        ));
     }
     let plain = hand_over(from, h)?;
     to.import_plaintext(dst.object, &dst.on_token.locator, &plain)?;
@@ -195,12 +201,12 @@ fn create(dst: &Target, to: &Token, plain: &[u8], spki: Option<&[u8]>, made: &mu
     }
     let key = match dst.object.class {
         Class::PrivateKey => {
-            let kt = dst.object.key_type.ok_or_else(|| KmError::Validation(format!("{dst}: no key type")))?;
+            let kt = dst.object.key_type.ok_or_else(|| KmError::Validation(format!("{dst}: no key type").into()))?;
             let parts = private_from_pkcs8(plain, kt, dst.object.curve.as_deref())?;
             to.create_private(dst.object, base, &parts)?
         }
         Class::SecretKey => to.create_secret(base, plain)?,
-        class => return Err(KmError::Validation(format!("{dst}: a {class} does not take the host path"))),
+        class => return Err(KmError::Validation(format!("{dst}: a {class} does not take the host path").into())),
     };
     made.push(key);
     Ok(())

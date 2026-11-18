@@ -34,7 +34,7 @@ pub fn message(spki: &[u8], nonce: &[u8; 32]) -> Vec<u8> {
 /// `Unavailable` if the OS random number generator fails.
 pub fn challenge(spki: &[u8]) -> Result<Vec<u8>> {
     let mut nonce = [0u8; 32];
-    getrandom::fill(&mut nonce).map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}")))?;
+    getrandom::fill(&mut nonce).map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}").into()))?;
     Ok(message(spki, &nonce))
 }
 
@@ -80,18 +80,24 @@ pub fn verify_with(spki: &[u8], msg: &[u8], sig: &[u8], rsa: RsaSignature) -> Re
         });
     match verdict {
         Some(v) => v.map_err(|e| {
-            KmError::Conflict(format!(
-                "proof of possession failed: the private key did not sign for the public key {} ({e})",
-                crate::id::sri(spki)
-            ))
+            KmError::Conflict(
+                format!(
+                    "proof of possession failed: the private key did not sign for the public key {} ({e})",
+                    crate::id::sri(spki)
+                )
+                .into(),
+            )
         }),
         None if ed448::pkcs8::PublicKeyBytes::from_public_key_der(spki).is_ok() => Err(KmError::Unsupported(
             "no Ed448 signature verifier to prove possession with; opt in with binding = \"token-asserted\"".into(),
         )),
-        None => Err(KmError::Unsupported(format!(
-            "proof of possession for the public key {}: not an ECDSA, Ed25519 or RSA key",
-            crate::id::sri(spki)
-        ))),
+        None => Err(KmError::Unsupported(
+            format!(
+                "proof of possession for the public key {}: not an ECDSA, Ed25519 or RSA key",
+                crate::id::sri(spki)
+            )
+            .into(),
+        )),
     }
 }
 
@@ -123,7 +129,7 @@ pub fn ecdh_challenge(spki: &[u8], msg: &[u8]) -> Result<EcdhChallenge> {
         ($curve:ty) => {
             if let Ok(pk) = PublicKey::<$curve>::from_public_key_der(spki) {
                 let eph = EphemeralSecret::<$curve>::try_generate_from_rng(&mut rng)
-                    .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}")))?;
+                    .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}").into()))?;
                 let shared = eph.diffie_hellman(&pk);
                 return Ok(EcdhChallenge {
                     peer: eph.public_key().to_sec1_point(false).as_bytes().to_vec(),
@@ -139,7 +145,7 @@ pub fn ecdh_challenge(spki: &[u8], msg: &[u8]) -> Result<EcdhChallenge> {
     ecdh!(k256::Secp256k1);
     ecdh!(bp256::BrainpoolP256r1);
     ecdh!(bp384::BrainpoolP384r1);
-    Err(KmError::Unsupported(format!("no RustCrypto ECDH for the public key {}", crate::id::sri(spki))))
+    Err(KmError::Unsupported(format!("no RustCrypto ECDH for the public key {}", crate::id::sri(spki)).into()))
 }
 
 /// Start a `pop-decrypt` proof of possession: `msg` encrypted to the public key in `spki` with
@@ -185,7 +191,8 @@ pub fn unwrap_challenge(spki: &[u8], msg: &[u8]) -> Result<UnwrapChallenge> {
 /// As [`unwrap_challenge`].
 pub fn unwrap_challenge_with(spki: &[u8], msg: &[u8], padding: RsaPadding) -> Result<UnwrapChallenge> {
     let mut secret = [0u8; 32];
-    getrandom::fill(&mut secret).map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}")))?;
+    getrandom::fill(&mut secret)
+        .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}").into()))?;
     Ok(UnwrapChallenge { wrapped: rsa_encrypt(spki, padding, &secret)?, mac: mac_sha256(&secret, msg) })
 }
 
@@ -218,7 +225,7 @@ pub enum RsaPadding {
 /// or the encryption fails (for instance, `msg` is too long for the modulus).
 pub fn rsa_encrypt(spki: &[u8], padding: RsaPadding, msg: &[u8]) -> Result<Vec<u8>> {
     let key = rsa::PublicKey::from_public_key_der(spki)
-        .map_err(|e| KmError::Unsupported(format!("RSA encryption to this SPKI: {e}")))?;
+        .map_err(|e| KmError::Unsupported(format!("RSA encryption to this SPKI: {e}").into()))?;
     let rng = &mut getrandom::SysRng;
     match padding {
         RsaPadding::Pkcs1v15 => key.encrypt(rng, rsa::Pkcs1v15Encrypt, msg),
@@ -226,7 +233,7 @@ pub fn rsa_encrypt(spki: &[u8], padding: RsaPadding, msg: &[u8]) -> Result<Vec<u
         RsaPadding::Oaep(OaepHash::Sha256) => key.encrypt(rng, rsa::Oaep::<Sha256>::new(), msg),
         RsaPadding::OaepSha512 => key.encrypt(rng, rsa::Oaep::<sha2::Sha512>::new(), msg),
     }
-    .map_err(|e| KmError::Unavailable(format!("RSA encryption: {e}")))
+    .map_err(|e| KmError::Unavailable(format!("RSA encryption: {e}").into()))
 }
 
 /// HMAC-SHA256 over `msg` keyed with `key`; HMAC takes any key length.

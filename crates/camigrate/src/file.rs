@@ -43,7 +43,7 @@ pub(crate) struct Read {
 }
 
 fn bad(what: impl std::fmt::Display) -> KmError {
-    KmError::Validation(format!("the key file: {what}"))
+    KmError::Validation(format!("the key file: {what}").into())
 }
 
 /// Why a key file was not opened, by [`decrypt`].
@@ -56,7 +56,7 @@ pub(crate) enum Unopened {
 
 fn random<const N: usize>() -> Result<[u8; N]> {
     let mut b = [0u8; N];
-    getrandom::fill(&mut b).map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}")))?;
+    getrandom::fill(&mut b).map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}").into()))?;
     Ok(b)
 }
 
@@ -64,10 +64,11 @@ fn random<const N: usize>() -> Result<[u8; N]> {
 fn encrypt(pkcs8: &[u8], pass: &str) -> Result<Vec<u8>> {
     let params =
         pbes2::Parameters::generate_pbkdf2_sha256_aes256cbc(PBKDF2_ITERATIONS, &random::<16>()?, random::<16>()?)
-            .map_err(|e| KmError::Unavailable(format!("PBES2 parameters: {e}")))?;
+            .map_err(|e| KmError::Unavailable(format!("PBES2 parameters: {e}").into()))?;
     let info = pkcs8::PrivateKeyInfoRef::try_from(pkcs8).map_err(|_| bad("the key is not PKCS#8"))?;
-    let doc =
-        info.encrypt_with_params(params, pass).map_err(|e| KmError::Unavailable(format!("PBES2 encryption: {e}")))?;
+    let doc = info
+        .encrypt_with_params(params, pass)
+        .map_err(|e| KmError::Unavailable(format!("PBES2 encryption: {e}").into()))?;
     Ok(doc.as_bytes().to_vec())
 }
 
@@ -79,7 +80,7 @@ fn encrypt(pkcs8: &[u8], pass: &str) -> Result<Vec<u8>> {
 pub(crate) fn write_pkcs8(pkcs8: &[u8], pass: &str) -> Result<String> {
     let der = encrypt(pkcs8, pass)?;
     der::pem::encode_string("ENCRYPTED PRIVATE KEY", der::pem::LineEnding::LF, &der)
-        .map_err(|e| KmError::Unavailable(format!("PEM encoding: {e}")))
+        .map_err(|e| KmError::Unavailable(format!("PEM encoding: {e}").into()))
 }
 
 /// `pkcs12`: the key (PBES2, as `write_pkcs8`) beside its `certificate`, both tagged with
@@ -89,7 +90,7 @@ pub(crate) fn write_pkcs8(pkcs8: &[u8], pass: &str) -> Result<String> {
 ///
 /// `Unavailable` when the random number generator, the encryption or the encoding fails.
 pub(crate) fn write_pkcs12(pkcs8: &[u8], certificate: &[u8], pass: &str, local_key_id: &[u8]) -> Result<Vec<u8>> {
-    let enc = |e: der::Error| KmError::Unavailable(format!("PKCS#12 encoding: {e}"));
+    let enc = |e: der::Error| KmError::Unavailable(format!("PKCS#12 encoding: {e}").into());
     let attrs = || -> Result<x509_cert::attr::Attributes> {
         let id = Any::encode_from(&OctetString::new(local_key_id).map_err(enc)?).map_err(enc)?;
         let attr = x509_cert::attr::Attribute { oid: ID_LOCAL_KEY_ID, values: [id].to_vec().try_into().map_err(enc)? };
@@ -139,7 +140,7 @@ pub(crate) fn write_pkcs12(pkcs8: &[u8], certificate: &[u8], pass: &str, local_k
 fn mac(pass: &str, salt: &[u8], iterations: i32, data: &[u8]) -> Result<Vec<u8>> {
     let key = Zeroizing::new(
         derive_key_utf8::<sha2::Sha256>(pass, salt, Pkcs12KeyType::Mac, iterations, 32)
-            .map_err(|e| KmError::Validation(format!("the PKCS#12 MAC key: {e}")))?,
+            .map_err(|e| KmError::Validation(format!("the PKCS#12 MAC key: {e}").into()))?,
     );
     let mut m =
         hmac::Hmac::<sha2::Sha256>::new_from_slice(&key).map_err(|_| KmError::Unavailable("HMAC key".into()))?;
@@ -355,7 +356,7 @@ mod tests {
 
     fn refusal(bytes: &[u8]) -> String {
         match read(bytes, "pass") {
-            Err(KmError::Validation(m)) => m,
+            Err(KmError::Validation(m)) => m.into_text(),
             Err(e) => panic!("not a validation error: {e}"),
             Ok(_) => panic!("the file was read"),
         }

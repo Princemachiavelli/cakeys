@@ -112,7 +112,7 @@ impl Bundle {
     ///
     /// `Validation` (17) for anything malformed or inconsistent.
     pub fn parse(text: &str, path: &std::path::Path) -> Result<Bundle> {
-        let invalid = |msg: String| KmError::Validation(format!("{}: {msg}", path.display()));
+        let invalid = |msg: String| KmError::Validation(format!("{}: {msg}", path.display()).into());
         let mut b: Bundle = toml::from_str(text).map_err(|e| invalid(e.to_string()))?;
         if b.format != BUNDLE_FORMAT || b.version != BUNDLE_VERSION {
             return Err(invalid(format!("not a {BUNDLE_FORMAT} version {BUNDLE_VERSION} file")));
@@ -199,7 +199,7 @@ impl Bundle {
     ///
     /// `Unavailable` when it does not serialize: never an empty file in its place.
     pub fn to_toml(&self) -> Result<String> {
-        toml::to_string(self).map_err(|e| KmError::Unavailable(format!("serializing the bundle: {e}")))
+        toml::to_string(self).map_err(|e| KmError::Unavailable(format!("serializing the bundle: {e}").into()))
     }
 
     /// The wrapped KEK's bytes.

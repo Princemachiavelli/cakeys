@@ -106,7 +106,7 @@ impl Store {
         // Read-only, so a wrong directory is an error — never a fresh empty store the module
         // might pick up later.
         let db = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|e| KmError::Unavailable(format!("opening tpm2-pkcs11 store {}: {e}", path.display())))?;
+            .map_err(|e| KmError::Unavailable(format!("opening tpm2-pkcs11 store {}: {e}", path.display()).into()))?;
         // `sealobjects.tokid` and `tobjects.tokid` reference `tokens.id` (db.c schema), not the
         // primary `tokens.pid` that several tokens may share.
         let (tok_id, config, objauth) = db
@@ -117,10 +117,10 @@ impl Store {
                 |r| Ok((r.get::<_, i64>(0)?, text(r, 1)?, text(r, 2)?)),
             )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    KmError::NotFound(format!("token '{token_label}' in the tpm2-pkcs11 store {}", path.display()))
-                }
-                e => KmError::Unavailable(format!("reading pobjects: {e}")),
+                rusqlite::Error::QueryReturnedNoRows => KmError::NotFound(
+                    format!("token '{token_label}' in the tpm2-pkcs11 store {}", path.display()).into(),
+                ),
+                e => KmError::Unavailable(format!("reading pobjects: {e}").into()),
             })?;
         let parent = parse_parent(&config, &objauth)?;
         // The seal blobs arrive as raw marshaled `TPM2B_`s (sqlite BLOB values), the auth salt
@@ -129,18 +129,18 @@ impl Store {
             .query_row("SELECT userpub, userpriv, userauthsalt FROM sealobjects WHERE tokid = ?1", [tok_id], |r| {
                 Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?, text(r, 2)?))
             })
-            .map_err(|e| KmError::Unavailable(format!("reading sealobjects: {e}")))?;
+            .map_err(|e| KmError::Unavailable(format!("reading sealobjects: {e}").into()))?;
         let seal = Seal { pub_blob: userpub, priv_blob: userpriv, auth_salt: userauthsalt };
         let mut tobjects = Vec::new();
         {
             let mut stmt = db
                 .prepare("SELECT attrs FROM tobjects WHERE tokid = ?1")
-                .map_err(|e| KmError::Unavailable(format!("selecting tobjects: {e}")))?;
+                .map_err(|e| KmError::Unavailable(format!("selecting tobjects: {e}").into()))?;
             let rows = stmt
                 .query_map([tok_id], |r| text(r, 0))
-                .map_err(|e| KmError::Unavailable(format!("reading tobjects: {e}")))?;
+                .map_err(|e| KmError::Unavailable(format!("reading tobjects: {e}").into()))?;
             for attrs in rows {
-                let attrs = attrs.map_err(|e| KmError::Unavailable(format!("reading a tobject: {e}")))?;
+                let attrs = attrs.map_err(|e| KmError::Unavailable(format!("reading a tobject: {e}").into()))?;
                 tobjects.extend(parse_tobject(&attrs)?);
             }
         }
@@ -172,11 +172,11 @@ impl Store {
             .collect();
         match matches.len() {
             1 => Ok(matches[0]),
-            0 => Err(KmError::NotFound(format!(
-                "no certifiable store object of the key's class with CKA_ID {} in the tpm2-pkcs11 store",
-                id()
-            ))),
-            n => Err(KmError::Ambiguous(format!("{n} store rows match the key's CKA_ID {}", id()))),
+            0 => Err(KmError::NotFound(
+                format!("no certifiable store object of the key's class with CKA_ID {} in the tpm2-pkcs11 store", id())
+                    .into(),
+            )),
+            n => Err(KmError::Ambiguous(format!("{n} store rows match the key's CKA_ID {}", id()).into())),
         }
     }
 }
@@ -193,9 +193,9 @@ pub fn store_class(class: ObjectClass) -> Result<i64> {
         // and TPM2_Certify cannot attest a public-only area.
         ObjectClass::PrivateKey => Ok(CLASS_PRIVATE_KEY),
         ObjectClass::SecretKey => Ok(CLASS_SECRET_KEY),
-        c => Err(KmError::Unsupported(format!(
-            "TPM2_Certify attests private and secret keys (TPM-resident, private area loaded), not {c}"
-        ))),
+        c => Err(KmError::Unsupported(
+            format!("TPM2_Certify attests private and secret keys (TPM-resident, private area loaded), not {c}").into(),
+        )),
     }
 }
 
@@ -203,7 +203,7 @@ pub fn store_class(class: ObjectClass) -> Result<i64> {
 /// `TPM2_HANDLE (BE) ‖ TPM2B_NAME ‖ rsrcType (BE, 1 = key) ‖ TPM2B_PUBLIC`. Only the persistent
 /// parent form is supported — transient primaries would need re-derivation from the template.
 pub(crate) fn parse_parent(config: &str, objauth: &str) -> Result<Parent> {
-    let bad = |what: &str| KmError::Unavailable(format!("tpm2-pkcs11 store: primary object: {what}"));
+    let bad = |what: &str| KmError::Unavailable(format!("tpm2-pkcs11 store: primary object: {what}").into());
     let config: BTreeMap<String, Value> = serde_norway::from_str(config).map_err(|e| bad(&e.to_string()))?;
     let Some(esys_tr) = config.get("esys-tr") else {
         return Err(bad(
@@ -265,7 +265,7 @@ impl<'de> serde::Deserialize<'de> for Attrs {
 /// which tpm2-pkcs11 1.10 keeps as a store row even from a `CKA_TOKEN = false` template \[run\] —
 /// never certifiable, and no reason to refuse the rest of the store.
 pub(crate) fn parse_tobject(attrs: &str) -> Result<Option<TObject>> {
-    let bad = |what: &str| KmError::Unavailable(format!("tpm2-pkcs11 store: object attrs: {what}"));
+    let bad = |what: &str| KmError::Unavailable(format!("tpm2-pkcs11 store: object attrs: {what}").into());
     let Attrs(attrs) = serde_norway::from_str(attrs).map_err(|e| bad(&e.to_string()))?;
     let attr = |attr: u64| attrs.get(&attr);
     let bytes = |a| attr(a).and_then(Value::as_str).and_then(|h| hex(h).ok());

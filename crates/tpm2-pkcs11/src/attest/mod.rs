@@ -109,7 +109,7 @@ impl Tpm2Options {
     /// 0x81000000..=0x817FFFFF), else cakeys' default.
     fn ak_handle(&self, token: &str) -> Result<u32> {
         let Some(s) = &self.ak_handle else { return Ok(DEFAULT_AK_HANDLE) };
-        let bad = |why: String| KmError::Validation(format!("tokens.{token}.options.akHandle = {s:?}: {why}"));
+        let bad = |why: String| KmError::Validation(format!("tokens.{token}.options.akHandle = {s:?}: {why}").into());
         let hex = s
             .strip_prefix("0x")
             .or_else(|| s.strip_prefix("0X"))
@@ -155,10 +155,13 @@ pub(crate) fn store_dir_of(token_name: &str, opts: &Tpm2Options) -> Result<PathB
         std::env::current_dir().ok(),
     ];
     candidates.into_iter().flatten().find(|d| Path::new(d).join(store::DB_NAME).is_file()).ok_or_else(|| {
-        KmError::Unavailable(format!(
-            "no tpm2-pkcs11 store for token '{token_name}': set tokens.{token_name}.options.tpm2Store or \
+        KmError::Unavailable(
+            format!(
+                "no tpm2-pkcs11 store for token '{token_name}': set tokens.{token_name}.options.tpm2Store or \
              TPM2_PKCS11_STORE"
-        ))
+            )
+            .into(),
+        )
     })
 }
 
@@ -196,16 +199,19 @@ fn tcti(cfg: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<tss_esapi::Tcti> {
             .into_iter()
             .find_map(|var| std::env::var(var).ok().map(|v| (format!("${var}"), v)))
             .ok_or_else(|| {
-                KmError::Unavailable(format!(
-                    "no TCTI for the TPM attestation of token '{}': set tokens.{}.options.tcti \
+                KmError::Unavailable(
+                    format!(
+                        "no TCTI for the TPM attestation of token '{}': set tokens.{}.options.tcti \
                      (e.g. \"device:/dev/tpmrm0\" or \"tabrmd:bus_type=session\") or TPM2_PKCS11_TCTI",
-                    cfg.token_name, cfg.token_name
-                ))
+                        cfg.token_name, cfg.token_name
+                    )
+                    .into(),
+                )
             })?,
     };
     normalize_tcti(&value)
         .parse()
-        .map_err(|e| KmError::Validation(format!("{source} = {value:?} is not a TCTI tss-esapi can open: {e}")))
+        .map_err(|e| KmError::Validation(format!("{source} = {value:?} is not a TCTI tss-esapi can open: {e}").into()))
 }
 
 /// Run the whole attestation: find the store row for the PKCS#11 object, certify the TPM
@@ -224,7 +230,7 @@ pub fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
     let Some(Attribute::Id(cka_id)) = ctx
         .session
         .get_attributes(ctx.key, &[AttributeType::Id])
-        .map_err(|e| KmError::Unavailable(format!("C_GetAttributeValue (CKA_ID): {e}")))?
+        .map_err(|e| KmError::Unavailable(format!("C_GetAttributeValue (CKA_ID): {e}").into()))?
         .into_iter()
         .next()
     else {
@@ -257,11 +263,14 @@ pub fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
     // reports as CKA_LOCAL/CKA_EXTRACTABLE must be what the TPM certified (13, never a pass).
     let (local, extractable) = module_reports(ctx)?;
     if local != certified.local || extractable != certified.extractable {
-        return Err(KmError::Conflict(format!(
-            "the module reports CKA_LOCAL {} / CKA_EXTRACTABLE {}, but the TPM certified \
+        return Err(KmError::Conflict(
+            format!(
+                "the module reports CKA_LOCAL {} / CKA_EXTRACTABLE {}, but the TPM certified \
              {} / {}: the store does not match what the TPM holds",
-            local, extractable, certified.local, certified.extractable
-        )));
+                local, extractable, certified.local, certified.extractable
+            )
+            .into(),
+        ));
     }
     Ok(Attested {
         scheme: Scheme::TpmCertify,
@@ -285,10 +294,13 @@ pub fn check_version(version: &str) -> Result<()> {
     if TESTED_VERSIONS.contains(&minor.as_str()) {
         return Ok(());
     }
-    Err(KmError::Unsupported(format!(
-        "tpm-certify reads tpm2-pkcs11's store, tested with {}.x only; this module reports {version}",
-        TESTED_VERSIONS.join(".x, ")
-    )))
+    Err(KmError::Unsupported(
+        format!(
+            "tpm-certify reads tpm2-pkcs11's store, tested with {}.x only; this module reports {version}",
+            TESTED_VERSIONS.join(".x, ")
+        )
+        .into(),
+    ))
 }
 
 /// `CKA_LOCAL` and `CKA_EXTRACTABLE` of the live object, as the module reports them.
@@ -296,7 +308,7 @@ fn module_reports(ctx: &AttestCtx<'_>) -> Result<(bool, bool)> {
     let attrs = ctx
         .session
         .get_attributes(ctx.key, &[AttributeType::Local, AttributeType::Extractable])
-        .map_err(|e| KmError::Unavailable(format!("C_GetAttributeValue (CKA_LOCAL/CKA_EXTRACTABLE): {e}")))?;
+        .map_err(|e| KmError::Unavailable(format!("C_GetAttributeValue (CKA_LOCAL/CKA_EXTRACTABLE): {e}").into()))?;
     let mut local = None;
     let mut extractable = None;
     for a in attrs {

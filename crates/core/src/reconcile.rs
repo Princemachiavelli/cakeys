@@ -145,11 +145,14 @@ pub fn reconcile(
         && t.on_token.key_origin() != KeyOrigin::File
         && lock.objects.get(t.object_name).is_none_or(|o| o.ids.is_empty())
     {
-        return Err(KmError::PreconditionFailed(format!(
-            "{t}: an import needs the IDs the lock pins for object '{}', and it pins none; lock it on \
+        return Err(KmError::PreconditionFailed(
+            format!(
+                "{t}: an import needs the IDs the lock pins for object '{}', and it pins none; lock it on \
              its source first",
-            t.object_name
-        )));
+                t.object_name
+            )
+            .into(),
+        ));
     }
     compare(t, r, lock, facts, write, notes)?;
     match write {
@@ -183,11 +186,14 @@ pub fn compare(
     if let Some(locked) = lock.objects.get(t.object_name).and_then(|o| o.object_type.as_ref())
         && locked != t.object
     {
-        return Err(KmError::PreconditionFailed(format!(
-            "the type of object '{}' in keys.toml changed since it was locked: locked {}, now {}; \
+        return Err(KmError::PreconditionFailed(
+            format!(
+                "the type of object '{}' in keys.toml changed since it was locked: locked {}, now {}; \
              different material needs a new object name",
-            t.object_name, locked, t.object
-        )));
+                t.object_name, locked, t.object
+            )
+            .into(),
+        ));
     }
     if let Some(prev) = lock.realisation(t.spec_name, t.token_name) {
         if !update {
@@ -216,12 +222,15 @@ fn spec_unchanged(t: &Target, r: &Resolved, prev: &LockRealisation) -> Result<()
     if diff.is_empty() {
         return Ok(());
     }
-    Err(KmError::PreconditionFailed(format!(
-        "spec '{}' changed in keys.toml since it was realised on '{}' ({}); review the change, then `lock`",
-        t.spec_name,
-        t.token_name,
-        diff.join(", ")
-    )))
+    Err(KmError::PreconditionFailed(
+        format!(
+            "spec '{}' changed in keys.toml since it was realised on '{}' ({}); review the change, then `lock`",
+            t.spec_name,
+            t.token_name,
+            diff.join(", ")
+        )
+        .into(),
+    ))
 }
 
 /// What keys.toml now says of this realisation that the lock does not.
@@ -247,17 +256,16 @@ fn spec_diff(t: &Target, r: &Resolved, prev: &LockRealisation) -> Vec<String> {
 /// object was made.
 fn no_downgrade(t: &Target, r: &Resolved, prev: &LockRealisation, update: bool, notes: &mut Notes) -> Result<()> {
     if r.mode.rank() > prev.mode.rank() {
-        return Err(KmError::PreconditionFailed(format!(
-            "identity downgrade for {}: locked mode '{}', now only '{}'",
-            t, prev.mode, r.mode
-        )));
+        return Err(KmError::PreconditionFailed(
+            format!("identity downgrade for {}: locked mode '{}', now only '{}'", t, prev.mode, r.mode).into(),
+        ));
     }
     if let (Some(was), Some(now)) = (prev.binding, r.binding)
         && now.rank() > was.rank()
     {
-        return Err(KmError::PreconditionFailed(format!(
-            "binding downgrade for {t}: locked binding '{was}', now only '{now}'"
-        )));
+        return Err(KmError::PreconditionFailed(
+            format!("binding downgrade for {t}: locked binding '{was}', now only '{now}'").into(),
+        ));
     }
     // The attestation is compared, even when lock writes the lock (§3.7). A different anchor means
     // a different device (or a re-provisioned TPM) signed the provenance; a different ID
@@ -266,11 +274,14 @@ fn no_downgrade(t: &Target, r: &Resolved, prev: &LockRealisation, update: bool, 
     // attestation is a scheme downgrade.
     match (&prev.attestation, &r.attestation) {
         (Some(was), Some(now)) if was.kind != now.kind || was.root != now.root => {
-            return Err(KmError::PreconditionFailed(format!(
-                "attestation anchor for {} changed since it was realised ({} root {}, now {} root {}); \
+            return Err(KmError::PreconditionFailed(
+                format!(
+                    "attestation anchor for {} changed since it was realised ({} root {}, now {} root {}); \
                  the material needs a new object name",
-                t, was.kind, was.root, now.kind, now.root
-            )));
+                    t, was.kind, was.root, now.kind, now.root
+                )
+                .into(),
+            ));
         }
         (Some(was), Some(now)) if was.id != now.id => {
             return Err(KmError::HashMismatch {
@@ -280,10 +291,13 @@ fn no_downgrade(t: &Target, r: &Resolved, prev: &LockRealisation, update: bool, 
             });
         }
         (Some(was), None) => {
-            return Err(KmError::PreconditionFailed(format!(
-                "identity downgrade for {}: it was realised with a {} attestation, which it no longer computes",
-                t, was.kind
-            )));
+            return Err(KmError::PreconditionFailed(
+                format!(
+                    "identity downgrade for {}: it was realised with a {} attestation, which it no longer computes",
+                    t, was.kind
+                )
+                .into(),
+            ));
         }
         (None, Some(now)) if !update => {
             notes.note(format_args!(
@@ -295,18 +309,21 @@ fn no_downgrade(t: &Target, r: &Resolved, prev: &LockRealisation, update: bool, 
     }
     let lost: Vec<&String> = prev.schemes.iter().filter(|s| !r.ids.contains_key(*s)).collect();
     if !lost.is_empty() {
-        return Err(KmError::PreconditionFailed(format!(
-            "identity downgrade for {t}: it was realised with {lost:?}, which it no longer computes"
-        )));
+        return Err(KmError::PreconditionFailed(
+            format!("identity downgrade for {t}: it was realised with {lost:?}, which it no longer computes").into(),
+        ));
     }
     // Fixed at creation: weaker now means the object was replaced (also when updating).
     let weakened = r.immutables.weakened_since(&prev.immutables);
     if !weakened.is_empty() {
-        return Err(KmError::PreconditionFailed(format!(
-            "{} was replaced since it was realised: {} no longer true; a new object needs a new name",
-            t,
-            weakened.join(", ")
-        )));
+        return Err(KmError::PreconditionFailed(
+            format!(
+                "{} was replaced since it was realised: {} no longer true; a new object needs a new name",
+                t,
+                weakened.join(", ")
+            )
+            .into(),
+        ));
     }
     Ok(())
 }
@@ -316,11 +333,10 @@ fn no_downgrade(t: &Target, r: &Resolved, prev: &LockRealisation, update: bool, 
 fn object_unchanged(t: &Target, r: &Resolved, prev: &LockRealisation, notes: &mut Notes) -> Result<()> {
     let diff = object_diff(r, prev);
     if !diff.is_empty() {
-        return Err(KmError::PreconditionFailed(format!(
-            "{} changed on the token since it was realised ({}); review, then `lock`",
-            t,
-            diff.join(", ")
-        )));
+        return Err(KmError::PreconditionFailed(
+            format!("{} changed on the token since it was realised ({}); review, then `lock`", t, diff.join(", "))
+                .into(),
+        ));
     }
     let new: Vec<&String> = r.policy.keys().filter(|n| !prev.policy.contains_key(*n)).collect();
     if !new.is_empty() {
@@ -364,14 +380,17 @@ fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut 
     if let Some(ids) = locked.filter(|ids| !ids.is_empty())
         && !r.ids.keys().any(|s| ids.contains_key(s))
     {
-        return Err(KmError::PreconditionFailed(format!(
-            "{} computes {:?} but '{}' is locked only by {:?}: nothing shows it is the same \
+        return Err(KmError::PreconditionFailed(
+            format!(
+                "{} computes {:?} but '{}' is locked only by {:?}: nothing shows it is the same \
              material; lock a spec that computes both first",
-            t,
-            r.ids.keys().collect::<Vec<_>>(),
-            t.object_name,
-            ids.keys().collect::<Vec<_>>()
-        )));
+                t,
+                r.ids.keys().collect::<Vec<_>>(),
+                t.object_name,
+                ids.keys().collect::<Vec<_>>()
+            )
+            .into(),
+        ));
     }
     let mut matched = false;
     let mut unlocked = Vec::new();
@@ -394,11 +413,14 @@ fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut 
     // The material matches, but the lock does not say this spec is realised on this token: the
     // lock describes where objects live, not only what they are.
     if !update && lock.realisation(t.spec_name, t.token_name).is_none() {
-        return Err(KmError::PreconditionFailed(format!(
-            "{} matches the locked identity, but the lock records no realisation of spec '{}' on \
+        return Err(KmError::PreconditionFailed(
+            format!(
+                "{} matches the locked identity, but the lock records no realisation of spec '{}' on \
              token '{}'; review, then `lock`",
-            t, t.spec_name, t.token_name
-        )));
+                t, t.spec_name, t.token_name
+            )
+            .into(),
+        ));
     }
     for (scheme, _) in &unlocked {
         notes.note(format_args!("{t} also has a {scheme} identity the lock does not record; `lock` adds it"));
@@ -480,9 +502,10 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
             .iter()
             .find(|(s, v)| !(class == Class::Certificate && *s == Scheme::Rfc7093m4.name()) && o.ids.get(*s) == Some(v))
         {
-            return Err(KmError::PreconditionFailed(format!(
-                "{t} is the same material as object '{name}' ({s}); use that object instead of a second name"
-            )));
+            return Err(KmError::PreconditionFailed(
+                format!("{t} is the same material as object '{name}' ({s}); use that object instead of a second name")
+                    .into(),
+            ));
         }
     }
     changed |= record_object(t, r, lock.objects.entry(t.object_name.into()).or_default(), notes);

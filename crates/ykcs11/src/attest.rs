@@ -44,7 +44,8 @@ pub(crate) struct Cert {
 
 impl Cert {
     pub(crate) fn from_der(der: Vec<u8>) -> Result<Cert> {
-        let parsed = Certificate::from_der(&der).map_err(|e| KmError::Conflict(format!("parsing certificate: {e}")))?;
+        let parsed =
+            Certificate::from_der(&der).map_err(|e| KmError::Conflict(format!("parsing certificate: {e}").into()))?;
         Ok(Cert { der, parsed })
     }
 
@@ -53,10 +54,11 @@ impl Cert {
     fn tbs(&self) -> Result<&[u8]> {
         // Certificate is SEQUENCE { tbsCertificate, signatureAlgorithm, signature }: the first
         // TLV after the outer header, header included.
-        let mut reader = SliceReader::new(&self.der).map_err(|e| KmError::Conflict(format!("certificate DER: {e}")))?;
+        let mut reader =
+            SliceReader::new(&self.der).map_err(|e| KmError::Conflict(format!("certificate DER: {e}").into()))?;
         Header::decode(&mut reader)
             .and_then(|_| reader.tlv_bytes())
-            .map_err(|e| KmError::Conflict(format!("certificate has no tbsCertificate: {e}")))
+            .map_err(|e| KmError::Conflict(format!("certificate has no tbsCertificate: {e}").into()))
     }
 
     /// The raw signature value: the BIT STRING content, minus the unused-bits byte.
@@ -72,7 +74,7 @@ impl Cert {
                 .tbs_certificate()
                 .subject_public_key_info()
                 .to_der()
-                .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}")))?,
+                .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}").into()))?,
         )
     }
 
@@ -102,7 +104,7 @@ impl Cert {
 
 /// Parse every PEM `CERTIFICATE` block of `pem` (the embedded anchor and pool files).
 pub(crate) fn pem_certs(pem: &str) -> Result<Vec<Cert>> {
-    let bad = |e| KmError::Validation(format!("pem certificates: {e}"));
+    let bad = |e| KmError::Validation(format!("pem certificates: {e}").into());
     Certificate::load_pem_chain(pem.as_bytes())
         .map_err(bad)?
         .into_iter()
@@ -138,17 +140,22 @@ pub(crate) fn verify_piv_attestation(
     // signed by that same device attestation key.
     let anchor = chain_to_anchor(&device, anchors, pool)?;
     verify_signed_by(&slot, &device).map_err(|e| {
-        KmError::Conflict(format!("the slot attestation certificate is not signed by the device attestation key: {e}"))
+        KmError::Conflict(
+            format!("the slot attestation certificate is not signed by the device attestation key: {e}").into(),
+        )
     })?;
     // The attested key is the certificate's subject: it must be the material the identity is
     // for, or the attestation attests something else (13, never a pass).
     let subject = slot.spki()?;
     if spki != subject {
-        return Err(KmError::Conflict(format!(
-            "the attestation names the public key {}, but the object's material is {}",
-            id::sri(&subject),
-            id::sri(spki)
-        )));
+        return Err(KmError::Conflict(
+            format!(
+                "the attestation names the public key {}, but the object's material is {}",
+                id::sri(&subject),
+                id::sri(spki)
+            )
+            .into(),
+        ));
     }
     Ok(PivAttested {
         id: id::piv_attestation_id(
@@ -191,14 +198,17 @@ impl Cert {
             .and_then(|ext| ext.iter().find(|e| e.extn_id == BASIC_CONSTRAINTS))
             .map(|e| x509_cert::ext::pkix::BasicConstraints::from_der(e.extn_value.as_bytes()))
             .transpose()
-            .map_err(|e| KmError::Conflict(format!("attestation chain: '{subject}' basicConstraints: {e}")))?;
+            .map_err(|e| KmError::Conflict(format!("attestation chain: '{subject}' basicConstraints: {e}").into()))?;
         match bc {
             Some(bc) if bc.ca && bc.path_len_constraint.is_none_or(|n| n >= below) => Ok(()),
-            Some(bc) if bc.ca => Err(KmError::Conflict(format!(
-                "attestation chain: '{subject}' allows {} CA certificate(s) below it, the chain has {below}",
-                bc.path_len_constraint.unwrap_or_default()
-            ))),
-            _ => Err(KmError::Conflict(format!("attestation chain: '{subject}' is not a CA"))),
+            Some(bc) if bc.ca => Err(KmError::Conflict(
+                format!(
+                    "attestation chain: '{subject}' allows {} CA certificate(s) below it, the chain has {below}",
+                    bc.path_len_constraint.unwrap_or_default()
+                )
+                .into(),
+            )),
+            _ => Err(KmError::Conflict(format!("attestation chain: '{subject}' is not a CA").into())),
         }
     }
 }
@@ -208,7 +218,7 @@ impl Cert {
 /// anchor is what the lock pins. Real chains are one link (f9 ← classic root) or three
 /// (f9 ← PIV intermediate ← attestation intermediate ← root, firmware 5.7.4+).
 fn chain_to_anchor<'a>(cert: &Cert, anchors: &'a [Cert], pool: &[Cert]) -> Result<&'a Cert> {
-    let bad = |what: String| KmError::Conflict(format!("attestation chain: {what}"));
+    let bad = |what: String| KmError::Conflict(format!("attestation chain: {what}").into());
     let mut current = cert;
     // CA certificates below the next issuer, `cert` (the device certificate) included.
     for below in 1..=3 {
@@ -246,15 +256,17 @@ fn verify_signed_by(cert: &Cert, signer: &Cert) -> Result<()> {
         RSA_SHA256 => sig::rsa_pkcs1v15::<sha2::Sha256>(&spki, tbs, s),
         RSA_SHA384 => sig::rsa_pkcs1v15::<sha2::Sha384>(&spki, tbs, s),
         RSA_SHA512 => sig::rsa_pkcs1v15::<sha2::Sha512>(&spki, tbs, s),
-        oid => return Err(KmError::Unsupported(format!("signature algorithm {oid}"))),
+        oid => return Err(KmError::Unsupported(format!("signature algorithm {oid}").into())),
     };
     let sri = id::sri(&spki);
     match verdict {
         Some(Ok(())) => Ok(()),
-        Some(Err(e)) => Err(KmError::Conflict(format!("certificate signature does not verify against {sri}: {e}"))),
-        None => {
-            Err(KmError::Conflict(format!("the signer {sri} holds no key for the certificate's signature algorithm")))
+        Some(Err(e)) => {
+            Err(KmError::Conflict(format!("certificate signature does not verify against {sri}: {e}").into()))
         }
+        None => Err(KmError::Conflict(
+            format!("the signer {sri} holds no key for the certificate's signature algorithm").into(),
+        )),
     }
 }
 

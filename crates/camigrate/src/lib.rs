@@ -226,16 +226,15 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
             (_, true) => "import of a key file",
             _ => "transport --trusted",
         };
-        return Err(KmError::PreconditionFailed(format!(
-            "{verb} is an admin operation (docs/CAMIGRATE.md D8), refused inside a Nix build"
-        ))
+        return Err(KmError::PreconditionFailed(
+            format!("{verb} is an admin operation (docs/CAMIGRATE.md D8), refused inside a Nix build").into(),
+        )
         .into());
     }
     if writes && let Some(why) = lock_unwritable(&lock_path) {
-        return Err(KmError::PreconditionFailed(format!(
-            "cannot write the lock {}: {why}; moving keys records them there",
-            lock_path.display()
-        ))
+        return Err(KmError::PreconditionFailed(
+            format!("cannot write the lock {}: {why}; moving keys records them there", lock_path.display()).into(),
+        )
         .into());
     }
     if let Cmd::Migrate { to: target, .. } | Cmd::Import { token: target, .. } = &cli.cmd {
@@ -316,12 +315,15 @@ fn transport_named(cfg: &Config, object: Option<&str>, spec: Option<&str>, token
     if object.is_some() || spec.is_some() {
         return Ok(cfg.address(object, spec, Some(token))?.0);
     }
-    let t = cfg.tokens.get(token).ok_or_else(|| KmError::Validation(format!("unknown token '{token}'")))?;
+    let t = cfg.tokens.get(token).ok_or_else(|| KmError::Validation(format!("unknown token '{token}'").into()))?;
     t.migrate.transport_with.clone().ok_or_else(|| {
-        KmError::Validation(format!(
-            "no transport key is named for '{token}': set transportWith in [tokens.{token}.migrate], or name its \
+        KmError::Validation(
+            format!(
+                "no transport key is named for '{token}': set transportWith in [tokens.{token}.migrate], or name its \
              object or --spec"
-        ))
+            )
+            .into(),
+        )
     })
 }
 
@@ -418,7 +420,7 @@ impl Run<'_> {
             });
         }
         if items.is_empty() {
-            return Err(KmError::Unsupported(format!("nothing on '{from}' can go into a bundle")).into());
+            return Err(KmError::Unsupported(format!("nothing on '{from}' can go into a bundle").into()).into());
         }
         let source = open_token(cfg, modules, registry, from, Access::Scratch, notes)?;
         let wraps = items.iter().any(|i| i.method != Method::Public);
@@ -502,7 +504,7 @@ impl Run<'_> {
                         return Ok(Some(public::Moved::AlreadyThere));
                     }
                     sealed::preflight(&bundle, e, &dst, &target, tr.as_ref(), lock, notes)?;
-                    let method = e.method().map_err(KmError::Validation)?;
+                    let method = e.method().map_err(|e| KmError::Validation(e.into()))?;
                     import_checks(&dst, &target, &method, registry, notes).map(|()| None)
                 })
             } else {
@@ -569,7 +571,7 @@ impl Run<'_> {
                 "{}: moving by {method} is a later docs/CAMIGRATE.md phase; public objects, sealed keys and the host path into PKCS#11 tokens \
                  move (pass --dry-run for the plan)",
                 p.object
-            ))
+            ).into())
             .into());
         }
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
@@ -593,7 +595,7 @@ impl Run<'_> {
                 }
                 let target = target
                     .as_ref()
-                    .ok_or_else(|| KmError::Unavailable(format!("the target token '{to}' is not open")))?;
+                    .ok_or_else(|| KmError::Unavailable(format!("the target token '{to}' is not open").into()))?;
                 match &p.method {
                     Some(method @ (Method::RsaOaepAesKwp(_) | Method::RsaOaep(_))) => {
                         let tr = transport_target(cfg, lock, to, transport_choice(cfg, to, how))?;
@@ -779,7 +781,7 @@ fn import_checks(
             notes.note(format_args!("{note}"));
             Ok(())
         }
-        Err(why) => Err(KmError::Unsupported(why)),
+        Err(why) => Err(KmError::Unsupported(why.into())),
     }
 }
 
@@ -905,13 +907,16 @@ fn specs_select<'a>(
     let objects: Vec<&str> = objects.collect();
     for name in specs {
         let Some(spec) = cfg.specs.get(name) else {
-            return Err(KmError::Validation(format!("--spec '{name}': keys.toml has no such spec")));
+            return Err(KmError::Validation(format!("--spec '{name}': keys.toml has no such spec").into()));
         };
         if !spec.tokens.contains_key(token) || !objects.contains(&spec.object.as_str()) {
-            return Err(KmError::Validation(format!(
-                "--spec '{name}' selects nothing: it realises '{}', which is not being moved to '{token}' under it",
-                spec.object
-            )));
+            return Err(KmError::Validation(
+                format!(
+                    "--spec '{name}' selects nothing: it realises '{}', which is not being moved to '{token}' under it",
+                    spec.object
+                )
+                .into(),
+            ));
         }
     }
     specs_import(cfg, specs, token, landing)
@@ -936,12 +941,15 @@ fn specs_import(cfg: &Config, specs: &[String], token: &str, landing: &[KeyOrigi
         if let Some(on) = cfg.specs.get(name).and_then(|s| s.tokens.get(token))
             && !landing.contains(&on.key_origin())
         {
-            return Err(KmError::Validation(format!(
-                "--spec '{name}' realises its object on '{token}' with origin = \"{}\": a move lands only where \
+            return Err(KmError::Validation(
+                format!(
+                    "--spec '{name}' realises its object on '{token}' with origin = \"{}\": a move lands only where \
                  keys.toml says {}",
-                on.key_origin(),
-                landing_names(landing)
-            )));
+                    on.key_origin(),
+                    landing_names(landing)
+                )
+                .into(),
+            ));
         }
     }
     Ok(())
@@ -973,14 +981,16 @@ fn import_target<'a>(
                 "spec '{name}' realises object '{object}' on token '{to}' with origin = \"{origin}\": a move lands \
                  only where keys.toml says {}",
                 landing_names(landing)
-            ),
-            (Some(n), None) => format!("spec '{n}' does not realise object '{object}' on token '{to}'"),
-            (None, None) => format!("keys.toml has no spec of object '{object}' on token '{to}' to import it under"),
+            )
+            .into(),
+            (Some(n), None) => format!("spec '{n}' does not realise object '{object}' on token '{to}'").into(),
+            (None, None) => {
+                format!("keys.toml has no spec of object '{object}' on token '{to}' to import it under").into()
+            }
         })),
-        several => Err(KmError::Validation(format!(
-            "object '{object}' has several specs on token '{to}' ({}); pass --spec",
-            several.join(", ")
-        ))),
+        several => Err(KmError::Validation(
+            format!("object '{object}' has several specs on token '{to}' ({}); pass --spec", several.join(", ")).into(),
+        )),
     }
 }
 
@@ -1029,10 +1039,10 @@ impl Run<'_> {
         let moves = self.plan(objects, from, dest, how, false, notes)?;
         moves.ready()?;
         let [p] = moves.plans.as_slice() else {
-            return Err(KmError::Validation(format!(
-                "a key file holds one key, and {} are planned: name the one to export",
-                moves.plans.len()
-            ))
+            return Err(KmError::Validation(
+                format!("a key file holds one key, and {} are planned: name the one to export", moves.plans.len())
+                    .into(),
+            )
             .into());
         };
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
@@ -1042,7 +1052,7 @@ impl Run<'_> {
         cakeys_pkcs11::ops::verify(&src, &source, &self.lock, notes)?;
         let h = source
             .find_key(src.object, &src.on_token.locator, false)?
-            .ok_or_else(|| KmError::NotFound(src.to_string()))?;
+            .ok_or_else(|| KmError::NotFound(src.to_string().into()))?;
         let kwp = sealed::rfc5649(&source)
             .ok_or_else(|| source.unsupported(format!("'{from}' offers no RFC 5649 key wrap to hand the key over")))?;
         let pkcs8 = source.extract(h, &kwp)?;
@@ -1086,7 +1096,7 @@ impl Run<'_> {
         notes: &mut Notes,
     ) -> anyhow::Result<Vec<u8>> {
         let pair = self.paired_certificate_target(object, from).ok_or_else(|| {
-            KmError::PreconditionFailed(format!("the lock pairs no certificate with '{object}' on '{from}'"))
+            KmError::PreconditionFailed(format!("the lock pairs no certificate with '{object}' on '{from}'").into())
         })?;
         let t = source_target(&self.cfg, &self.lock, &pair, from)?;
         Ok(public::material(&t, tok, &self.lock, notes)?)
@@ -1122,10 +1132,9 @@ impl Run<'_> {
             })
             .map(|(name, _)| name.clone())
             .ok_or_else(|| {
-                KmError::PreconditionFailed(format!(
-                    "{}: the lock pins no private key with this key's identity ({id})",
-                    input.display()
-                ))
+                KmError::PreconditionFailed(
+                    format!("{}: the lock pins no private key with this key's identity ({id})", input.display()).into(),
+                )
             })?;
         let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
         let pairs = self.lock.objects.get(&object).map(|o| o.pairs.clone()).unwrap_or_default();
@@ -1222,12 +1231,12 @@ impl Run<'_> {
         };
         for o in objects {
             if !cfg.objects.contains_key(o) {
-                return Err(KmError::Validation(format!("unknown object '{o}'")).into());
+                return Err(KmError::Validation(format!("unknown object '{o}'").into()).into());
             }
             if !from_file(o) {
                 return Err(KmError::Validation(format!(
                     "no spec realises '{o}' on '{token}' with origin = \"file\": nothing brings it from its file there"
-                ))
+                ).into())
                 .into());
             }
         }
@@ -1238,7 +1247,7 @@ impl Run<'_> {
             .filter(|o| from_file(o) && (objects.is_empty() || objects.iter().any(|n| n == o)))
             .collect();
         if wanted.is_empty() {
-            return Err(KmError::Validation(format!("no pair on '{token}' says origin = \"file\"")).into());
+            return Err(KmError::Validation(format!("no pair on '{token}' says origin = \"file\"").into()).into());
         }
         // Keys first: a public key object then finds the public half its key's import made.
         wanted.sort_by_key(|o| !cfg.objects[*o].class.is_key() || cfg.objects[*o].class == Class::PublicKey);
@@ -1279,12 +1288,16 @@ impl Run<'_> {
     /// for it, never a file). Nothing to do when the source already trusts it; any other trusted
     /// object there is warned about, since `enforced` is only as narrow as the trusted set.
     fn trust(&self, spec: &str, token: &str, source: &str, notes: &mut Notes) -> anyhow::Result<()> {
-        let spec = tokens::transport_spec(&self.lock, token, Some(spec)).map_err(KmError::PreconditionFailed)?;
+        let spec =
+            tokens::transport_spec(&self.lock, token, Some(spec)).map_err(|e| KmError::PreconditionFailed(e.into()))?;
         let spki = self.locked_spki(spec, token).ok_or_else(|| {
-            KmError::PreconditionFailed(format!(
-                "the lock records no public key for transport key '{spec}' on '{token}': lock it there with \
+            KmError::PreconditionFailed(
+                format!(
+                    "the lock records no public key for transport key '{spec}' on '{token}': lock it there with \
                  migrate.transportWith naming it"
-            ))
+                )
+                .into(),
+            )
         })?;
         let tok = open_token(&self.cfg, &self.modules, self.registry, source, Access::Write, notes)?;
         let (copy, others) = tok.trusted(&spki)?;
@@ -1319,7 +1332,7 @@ fn read_passphrase(path: &Path) -> cakeys_core::Result<Zeroizing<String>> {
         Zeroizing::new(std::fs::read_to_string(path).map_err(KmError::io(format_args!("reading {}", path.display())))?);
     let line = Zeroizing::new(text.lines().next().unwrap_or_default().to_owned());
     if line.is_empty() {
-        return Err(KmError::Validation(format!("{}: the passphrase is empty", path.display())));
+        return Err(KmError::Validation(format!("{}: the passphrase is empty", path.display()).into()));
     }
     Ok(line)
 }
@@ -1342,7 +1355,9 @@ fn file_passphrase(cfg: &Config, object: &str, over: Option<&Path>) -> cakeys_co
     }
     if let Some(var) = cfg.object_migrate.get(object).and_then(|m| m.passphrase_env.as_deref()) {
         let value = std::env::var(var).map_err(|_| {
-            KmError::Validation(format!("object '{object}': migrate.passphraseEnv names {var}, which is not set"))
+            KmError::Validation(
+                format!("object '{object}': migrate.passphraseEnv names {var}, which is not set").into(),
+            )
         })?;
         return Ok(Some(Zeroizing::new(value)));
     }
@@ -1369,30 +1384,36 @@ fn from_its_file(
     let class = dst.object.class;
     let private_data = class == Class::Data && dst.spec.flag("CKA_PRIVATE") == Some(true);
     if (matches!(class, Class::PrivateKey | Class::SecretKey) || private_data) && !how.plaintext {
-        return Err(KmError::Unsupported(format!(
-            "{dst}: its file's {class} passes through this process's memory as plaintext; pass \
+        return Err(KmError::Unsupported(
+            format!(
+                "{dst}: its file's {class} passes through this process's memory as plaintext; pass \
              --allow-host-plaintext (docs/CAMIGRATE.md D2, file)"
-        )));
+            )
+            .into(),
+        ));
     }
     let env = |name: &str| std::env::var(name).ok();
     let path = cfg
         .object_file(dst.object_name, &env)?
-        .ok_or_else(|| KmError::Validation(format!("object '{}' names no migrate.file", dst.object_name)))?;
+        .ok_or_else(|| KmError::Validation(format!("object '{}' names no migrate.file", dst.object_name).into()))?;
     let bytes = Zeroizing::new(std::fs::read(&path).map_err(KmError::io(format_args!("reading {}", path.display())))?);
     // A certificate or public key beside a private key is found by decoding that key.
     if keyfile::holds_private_key(&bytes) && !how.plaintext {
-        return Err(KmError::Unsupported(format!(
-            "{dst}: {} holds a private key, which reading its {class} decodes in this process's memory; pass \
+        return Err(KmError::Unsupported(
+            format!(
+                "{dst}: {} holds a private key, which reading its {class} decodes in this process's memory; pass \
              --allow-host-plaintext (docs/CAMIGRATE.md D2, file)",
-            path.display()
-        )));
+                path.display()
+            )
+            .into(),
+        ));
     }
     let pass = file_passphrase(cfg, dst.object_name, how.pass)?;
     let encoding = cfg.object_migrate.get(dst.object_name).and_then(|m| m.encoding);
     let m =
         keyfile::read(&bytes, dst.object, private_data, pass.as_ref().map(|p| p.as_str()), encoding).map_err(|e| {
             match e {
-                KmError::Validation(why) => KmError::Validation(format!("{}: {why}", path.display())),
+                KmError::Validation(why) => KmError::Validation(format!("{}: {why}", path.display()).into()),
                 other => other,
             }
         })?;
@@ -1456,9 +1477,9 @@ fn transport_target<'a>(
     token: &'a str,
     chosen: Option<&str>,
 ) -> cakeys_core::Result<Target<'a>> {
-    let spec = tokens::transport_spec(lock, token, chosen).map_err(KmError::PreconditionFailed)?;
+    let spec = tokens::transport_spec(lock, token, chosen).map_err(|e| KmError::PreconditionFailed(e.into()))?;
     let spec = cfg.specs.get_key_value(spec).map(|(name, _)| name.as_str()).ok_or_else(|| {
-        KmError::PreconditionFailed(format!("the transport key's spec '{spec}' is gone from keys.toml"))
+        KmError::PreconditionFailed(format!("the transport key's spec '{spec}' is gone from keys.toml").into())
     })?;
     Target::new(cfg, spec, token)
 }
@@ -1478,9 +1499,9 @@ fn realised_target<'a>(
         .find(|(_, by_token)| by_token.get(token).is_some_and(|r| r.object == object))
         .and_then(|(spec, _)| cfg.specs.get_key_value(spec).map(|(name, _)| name.as_str()))
         .ok_or_else(|| {
-            KmError::PreconditionFailed(format!(
-                "{what} '{object}' has no realisation on '{token}' under a spec keys.toml still names"
-            ))
+            KmError::PreconditionFailed(
+                format!("{what} '{object}' has no realisation on '{token}' under a spec keys.toml still names").into(),
+            )
         })?;
     Target::new(cfg, spec, token)
 }
@@ -1490,10 +1511,13 @@ fn realised_target<'a>(
 /// any plan, by the dry run alike.
 fn needs_login(cfg: &Config, token: &str) -> cakeys_core::Result<()> {
     match cfg.tokens.get(token) {
-        Some(t) if t.pin_file.is_none() && t.pin_env.is_none() => Err(KmError::Unavailable(format!(
-            "token '{token}' has no user PIN, and a session without login cannot tell a target locator is free; \
+        Some(t) if t.pin_file.is_none() && t.pin_env.is_none() => Err(KmError::Unavailable(
+            format!(
+                "token '{token}' has no user PIN, and a session without login cannot tell a target locator is free; \
              configure pinFile or pinEnv"
-        ))),
+            )
+            .into(),
+        )),
         _ => Ok(()),
     }
 }

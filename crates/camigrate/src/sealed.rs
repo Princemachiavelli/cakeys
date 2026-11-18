@@ -64,10 +64,9 @@ pub(crate) fn export(
     let wraps = found.iter().any(|f| matches!(f.held, Held::Key(..)));
     let Some(transport) = transport.filter(|_| wraps) else {
         if wraps {
-            return Err(KmError::PreconditionFailed(format!(
-                "exporting keys from '{}' needs the target's transport key to wrap them to",
-                from.name
-            )));
+            return Err(KmError::PreconditionFailed(
+                format!("exporting keys from '{}' needs the target's transport key to wrap them to", from.name).into(),
+            ));
         }
         // Public objects only: nothing to wrap, so no transport key and nothing made on the source.
         let keys = found.iter().map(|f| entry(f, None));
@@ -82,25 +81,26 @@ pub(crate) fn export(
     };
     // An enforced key wraps only under the transport key's trusted copy (`transport --trusted`),
     // the composed method by CKM_RSA_AES_KEY_WRAP: the source trusts no key-encryption key.
-    let trusted = if items.iter().any(|i| i.exposure == Exposure::Enforced) {
-        let (copy, others) = from.trusted(&transport.spki)?;
-        if others > 0 {
-            notes.warn(format_args!(
+    let trusted =
+        if items.iter().any(|i| i.exposure == Exposure::Enforced) {
+            let (copy, others) = from.trusted(&transport.spki)?;
+            if others > 0 {
+                notes.warn(format_args!(
                 "{others} other object(s) on '{}' are CKA_TRUSTED: a CKA_WRAP_WITH_TRUSTED key there wraps under any \
                  of them, so `enforced` is only as narrow as that set",
                 from.name
             ));
-        }
-        Some(copy.ok_or_else(|| {
-            KmError::PreconditionFailed(format!(
+            }
+            Some(copy.ok_or_else(|| {
+                KmError::PreconditionFailed(format!(
                 "'{}' holds no trusted copy of transport key '{}': `camigrate transport <spec> --token <target> \
                  --trusted {}`",
                 from.name, transport.object, from.name
-            ))
-        })?)
-    } else {
-        None
-    };
+            ).into())
+            })?)
+        } else {
+            None
+        };
     let modulus = rsa_parts(&transport.spki)?.0.len();
     let session = from.raw();
     let refused = |what: &str, e: cryptoki::error::Error| from.unsupported(format!("{what} on '{}': {e}", from.name));
@@ -200,16 +200,18 @@ fn hold<'a>(items: &'a [Item<'a>], from: &Token, lock: &'a Lock, notes: &mut Not
             None
         };
         let locked = lock.objects.get(src.object_name).filter(|o| !o.ids.is_empty()).ok_or_else(|| {
-            KmError::PreconditionFailed(format!("{src}: the lock pins no IDs for object '{}'", src.object_name))
+            KmError::PreconditionFailed(format!("{src}: the lock pins no IDs for object '{}'", src.object_name).into())
         })?;
         let object_type = locked.object_type.clone().ok_or_else(|| {
-            KmError::PreconditionFailed(format!("{src}: the lock records no type for object '{}'", src.object_name))
+            KmError::PreconditionFailed(
+                format!("{src}: the lock records no type for object '{}'", src.object_name).into(),
+            )
         })?;
         let held = if let Some(bytes) = public {
             Held::Public(bytes)
         } else {
             let loc = &src.on_token.locator;
-            let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string()))?;
+            let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string().into()))?;
             Held::Key(h, (src.object.class == Class::PrivateKey).then(|| from.spki(h, loc)).transpose()?)
         };
         found.push(Found { item, locked, object_type, held });
@@ -267,11 +269,9 @@ fn wrap(
             let blob = rsa_aes_wrap(from, w.tpub, h, *hash)
                 .map_err(|e| refused("wrapping the key (CKM_RSA_AES_KEY_WRAP)", e))?;
             if blob.len() <= w.modulus {
-                return Err(KmError::Unsupported(format!(
-                    "'{}': CKM_RSA_AES_KEY_WRAP returned {} bytes",
-                    from.name,
-                    blob.len()
-                )));
+                return Err(KmError::Unsupported(
+                    format!("'{}': CKM_RSA_AES_KEY_WRAP returned {} bytes", from.name, blob.len()).into(),
+                ));
             }
             let (kek, key) = blob.split_at(w.modulus);
             Ok(Wrapped { own_kek: Some(kek.to_vec()), blob: key.to_vec() })
@@ -285,7 +285,7 @@ fn wrap(
         (Method::RsaOaep(hash), _) => {
             session.wrap_key(&oaep(*hash), w.tpub, h).map(shared).map_err(|e| refused("wrapping the key", e))
         }
-        (other, _) => Err(KmError::Unsupported(format!("{other} is not a sealed method"))),
+        (other, _) => Err(KmError::Unsupported(format!("{other} is not a sealed method").into())),
     }
 }
 
@@ -366,14 +366,14 @@ pub(crate) fn import(
     }
     if e.method == Method::Public.name() {
         check_against_lock(b, e, dst, tr, lock)?;
-        let bytes = e.public_value().map_err(KmError::Validation)?;
+        let bytes = e.public_value().map_err(|e| KmError::Validation(e.into()))?;
         return crate::public::create(dst, to, &bytes, &b.source.token, lock, notes);
     }
     // What the record after it asks (the proof's and the commitments' templates included), before
     // anything is created.
     ops::check_import(dst, to)?;
     let ready = preflight(b, e, dst, to, tr, lock, notes)?;
-    let method = e.method().map_err(KmError::Validation)?;
+    let method = e.method().map_err(|e| KmError::Validation(e.into()))?;
     let mut made = Vec::new();
     let created = create(b, e, dst, to, &ready, &method, &mut made).and_then(|()| {
         let origin =
@@ -404,17 +404,17 @@ pub(crate) fn preflight(
 ) -> Result<Preflight> {
     check_against_lock(b, e, dst, tr, lock)?;
     if e.method == Method::Public.name() {
-        crate::public::preflight(dst, to, &e.public_value().map_err(KmError::Validation)?)?;
+        crate::public::preflight(dst, to, &e.public_value().map_err(|e| KmError::Validation(e.into()))?)?;
         return Ok(Preflight { unwrapping: None, public_half: None });
     }
     let tr = tr.ok_or_else(|| no_transport(dst))?;
     ops::verify(tr, to, lock, notes)?;
     let unwrapping = to
         .find_key(tr.object, &tr.on_token.locator, false)?
-        .ok_or_else(|| KmError::NotFound(format!("{tr}: the transport key")))?;
+        .ok_or_else(|| KmError::NotFound(format!("{tr}: the transport key").into()))?;
     // Per class (`Token::occupied`): a certificate beside the key is no collision, and a public
     // key object already holding the bundle's public key is the key's public half, reused.
-    let spki = e.public_spki().map_err(KmError::Validation)?;
+    let spki = e.public_spki().map_err(|e| KmError::Validation(e.into()))?;
     let occupied = free_locator(dst, to, spki.as_deref())?;
     Ok(Preflight { unwrapping: Some(unwrapping), public_half: occupied.public_half })
 }
@@ -428,10 +428,13 @@ pub(crate) struct Preflight {
 
 /// A wrapped key in a bundle whose transport key is not realised on the target.
 fn no_transport(dst: &Target) -> KmError {
-    KmError::PreconditionFailed(format!(
-        "{dst}: the bundle's transport key is not realised on '{}' under a spec keys.toml names",
-        dst.token_name
-    ))
+    KmError::PreconditionFailed(
+        format!(
+            "{dst}: the bundle's transport key is not realised on '{}' under a spec keys.toml names",
+            dst.token_name
+        )
+        .into(),
+    )
 }
 
 /// The bundle's key `e` against the lock: the same type, IDs and commitment label, and — for a
@@ -439,17 +442,19 @@ fn no_transport(dst: &Target) -> KmError {
 /// import picks it by that name).
 fn check_against_lock(b: &Bundle, e: &Entry, dst: &Target, tr: Option<&Target>, lock: &Lock) -> Result<()> {
     let locked = lock.objects.get(dst.object_name).filter(|o| !o.ids.is_empty()).ok_or_else(|| {
-        KmError::PreconditionFailed(format!(
-            "{dst}: the lock pins no IDs for object '{}', so nothing could check the imported material; \
+        KmError::PreconditionFailed(
+            format!(
+                "{dst}: the lock pins no IDs for object '{}', so nothing could check the imported material; \
              lock it on its source first",
-            dst.object_name
-        ))
+                dst.object_name
+            )
+            .into(),
+        )
     })?;
     if locked.object_type.as_ref() != Some(&e.object_type) || dst.object != &e.object_type {
-        return Err(KmError::PreconditionFailed(format!(
-            "{dst}: the bundle carries a {}, the lock and keys.toml another type",
-            e.object_type
-        )));
+        return Err(KmError::PreconditionFailed(
+            format!("{dst}: the bundle carries a {}, the lock and keys.toml another type", e.object_type).into(),
+        ));
     }
     let mismatch = |what: &str, expected: String, got: String| KmError::HashMismatch {
         what: format!("{dst}: the bundle's {what}"),
@@ -496,13 +501,13 @@ fn create(
 ) -> Result<()> {
     let unwrapping = ready
         .unwrapping
-        .ok_or_else(|| KmError::Validation(format!("{dst}: a public object is created, not unwrapped")))?;
+        .ok_or_else(|| KmError::Validation(format!("{dst}: a public object is created, not unwrapped").into()))?;
     let session = to.raw();
     let refused = |what: &str, e: cryptoki::error::Error| {
-        KmError::Conflict(format!(
-            "{dst}: {what} on '{}': {e} (the bundle was tampered with, or wrapped to another key)",
-            to.name
-        ))
+        KmError::Conflict(
+            format!("{dst}: {what} on '{}': {e} (the bundle was tampered with, or wrapped to another key)", to.name)
+                .into(),
+        )
     };
     // The templates as the provider adjusts them, before anything is created.
     let template = templates::import_key(
@@ -515,16 +520,18 @@ fn create(
         Method::RsaOaepAesKwp(_) if rfc5649(to).is_some() => to.session_template(SessionKey::ImportKek)?,
         _ => Vec::new(),
     };
-    if let Some(spki) = e.public_spki().map_err(KmError::Validation)?.filter(|_| ready.public_half.is_none()) {
+    if let Some(spki) =
+        e.public_spki().map_err(|e| KmError::Validation(e.into()))?.filter(|_| ready.public_half.is_none())
+    {
         made.push(create_public_half(dst, to, &spki)?);
     }
-    let key = e.wrapped_key().map_err(KmError::Validation)?;
+    let key = e.wrapped_key().map_err(|e| KmError::Validation(e.into()))?;
     match method {
         Method::RsaOaepAesKwp(hash) => {
             // An enforced key carries its own (CKM_RSA_AES_KEY_WRAP's); the others share the bundle's.
-            let kek_blob = match e.wrapped_kek().map_err(KmError::Validation)? {
+            let kek_blob = match e.wrapped_kek().map_err(|e| KmError::Validation(e.into()))? {
                 Some(own) => own,
-                None => b.wrapped_kek().map_err(KmError::Validation)?.unwrap_or_default(),
+                None => b.wrapped_kek().map_err(|e| KmError::Validation(e.into()))?.unwrap_or_default(),
             };
             // A target with no RFC 5649 of its own (AWS CloudHSM lists one it refuses [run])
             // unwraps both in one CKM_RSA_AES_KEY_WRAP: its input is the same two blobs, joined.
@@ -561,7 +568,7 @@ fn create(
             );
             Ok(())
         }
-        other => Err(KmError::Unsupported(format!("{other} is not a sealed method"))),
+        other => Err(KmError::Unsupported(format!("{other} is not a sealed method").into())),
     }
 }
 
@@ -640,9 +647,9 @@ pub(crate) const TRANSPORT_MIN_BITS: usize = 2048;
 pub(crate) fn check_transport_size(spki: &[u8]) -> Result<()> {
     let bits = rsa_parts(spki)?.0.len() * 8;
     if bits < TRANSPORT_MIN_BITS {
-        return Err(KmError::Validation(format!(
-            "a transport key is an RSA key of at least {TRANSPORT_MIN_BITS} bits; this one has {bits}"
-        )));
+        return Err(KmError::Validation(
+            format!("a transport key is an RSA key of at least {TRANSPORT_MIN_BITS} bits; this one has {bits}").into(),
+        ));
     }
     Ok(())
 }
@@ -654,7 +661,7 @@ pub(crate) fn check_transport_size(spki: &[u8]) -> Result<()> {
 /// `Validation` for an SPKI that is no RSA key.
 pub(crate) fn rsa_parts(spki: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     let key = rsa::PublicKey::from_public_key_der(spki)
-        .map_err(|e| KmError::Validation(format!("the transport key is no RSA public key: {e}")))?;
+        .map_err(|e| KmError::Validation(format!("the transport key is no RSA public key: {e}").into()))?;
     Ok((key.n().to_be_bytes_trimmed_vartime().to_vec(), key.e().to_be_bytes_trimmed_vartime().to_vec()))
 }
 

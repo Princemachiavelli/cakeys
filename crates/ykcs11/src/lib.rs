@@ -54,11 +54,14 @@ impl Ykcs11 {
         }
         match loc.id.as_deref().and_then(piv_slot) {
             Some(_) => Ok(()),
-            None => Err(KmError::Validation(format!(
-                "ykcs11 generates into the PIV slot named by CKA_ID; {:?} names none (01-04: slots \
+            None => Err(KmError::Validation(
+                format!(
+                    "ykcs11 generates into the PIV slot named by CKA_ID; {:?} names none (01-04: slots \
                  9a/9c/9d/9e, 05-18: retired slots 82-95)",
-                loc.id.as_deref().unwrap_or("")
-            ))),
+                    loc.id.as_deref().unwrap_or("")
+                )
+                .into(),
+            )),
         }
     }
 
@@ -104,7 +107,9 @@ impl Provider for Ykcs11 {
     fn destroy(&self, tok: &Token, req: &Destroy<'_>) -> Result<usize> {
         if req.object.class.is_key() {
             let advice = self.keeps_destroyed_keys(req.locator);
-            return Err(KmError::Unsupported(format!("deleting {} on '{}': {advice}", req.object.class, tok.name)));
+            return Err(KmError::Unsupported(
+                format!("deleting {} on '{}': {advice}", req.object.class, tok.name).into(),
+            ));
         }
         tok.destroy_plain(req)
     }
@@ -167,7 +172,7 @@ impl Provider for Ykcs11 {
         let Some(Attribute::Id(id)) = ctx
             .session
             .get_attributes(ctx.key, &[AttributeType::Id])
-            .map_err(|e| KmError::Unavailable(format!("C_GetAttributeValue (CKA_ID): {e}")))?
+            .map_err(|e| KmError::Unavailable(format!("C_GetAttributeValue (CKA_ID): {e}").into()))?
             .into_iter()
             .next()
         else {
@@ -200,7 +205,7 @@ fn find_attestation_cert(ctx: &AttestCtx<'_>, id: &[u8]) -> Result<Vec<u8>> {
     let found = ctx
         .session
         .find_objects(&[Attribute::Class(ObjectClass::CERTIFICATE), Attribute::Id(id.to_vec())])
-        .map_err(|e| KmError::Unavailable(format!("C_FindObjects (attestation): {e}")))?;
+        .map_err(|e| KmError::Unavailable(format!("C_FindObjects (attestation): {e}").into()))?;
     let mut certs = Vec::new();
     for h in found {
         let label = match ctx.session.get_attributes(h, &[AttributeType::Label]) {
@@ -217,21 +222,28 @@ fn find_attestation_cert(ctx: &AttestCtx<'_>, id: &[u8]) -> Result<Vec<u8>> {
     }
     match certs.len() {
         1 => Ok(certs.remove(0)),
-        0 => Err(KmError::Unsupported(format!(
-            "no attestation certificate for this key on '{}': Yubico attests only keys generated on \
+        0 => Err(KmError::Unsupported(
+            format!(
+                "no attestation certificate for this key on '{}': Yubico attests only keys generated on \
              device (imported keys have none)",
-            ctx.token_name
-        ))),
-        n => Err(KmError::Ambiguous(format!("{n} attestation certificates share the key's CKA_ID"))),
+                ctx.token_name
+            )
+            .into(),
+        )),
+        n => Err(KmError::Ambiguous(format!("{n} attestation certificates share the key's CKA_ID").into())),
     }
 }
 
 /// The DER (`CKA_VALUE`) of the certificate object `h`, named `what` in its errors.
 fn certificate_value(ctx: &AttestCtx<'_>, h: cryptoki::object::ObjectHandle, what: &str) -> Result<Vec<u8>> {
     let read = ctx.session.get_attributes(h, &[AttributeType::Value]);
-    match read.map_err(|e| KmError::Unavailable(format!("C_GetAttributeValue ({what}): {e}")))?.into_iter().next() {
+    match read
+        .map_err(|e| KmError::Unavailable(format!("C_GetAttributeValue ({what}): {e}").into()))?
+        .into_iter()
+        .next()
+    {
         Some(Attribute::Value(der)) => Ok(der),
-        _ => Err(KmError::Unsupported(format!("the {what} certificate has no readable CKA_VALUE"))),
+        _ => Err(KmError::Unsupported(format!("the {what} certificate has no readable CKA_VALUE").into())),
     }
 }
 
@@ -244,18 +256,21 @@ fn find_device_cert(ctx: &AttestCtx<'_>) -> Result<Vec<u8>> {
             Attribute::Class(ObjectClass::CERTIFICATE),
             Attribute::Label(ATTESTATION_LABEL.as_bytes().to_vec()),
         ])
-        .map_err(|e| KmError::Unavailable(format!("C_FindObjects (device attestation): {e}")))?;
+        .map_err(|e| KmError::Unavailable(format!("C_FindObjects (device attestation): {e}").into()))?;
     let mut certs =
         found.into_iter().map(|h| certificate_value(ctx, h, "device attestation")).collect::<Result<Vec<_>>>()?;
     match certs.len() {
         1 => Ok(certs.remove(0)),
-        0 => Err(KmError::Unsupported(format!(
-            "the device attestation certificate (slot f9) is not exposed on '{}'; cakeys \
+        0 => Err(KmError::Unsupported(
+            format!(
+                "the device attestation certificate (slot f9) is not exposed on '{}'; cakeys \
              verifies slot attestations to a pinned Yubico root through it, never to the slot \
              certificate alone",
-            ctx.token_name
-        ))),
-        n => Err(KmError::Ambiguous(format!("{n} objects carry the f9 device certificate label"))),
+                ctx.token_name
+            )
+            .into(),
+        )),
+        n => Err(KmError::Ambiguous(format!("{n} objects carry the f9 device certificate label").into())),
     }
 }
 

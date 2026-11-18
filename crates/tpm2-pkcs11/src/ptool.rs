@@ -27,10 +27,10 @@ pub(crate) fn import(ctx: &ImportCtx<'_>) -> Result<()> {
     let opts = Tpm2Options::of(ctx.token_name, &ctx.cfg.options)?;
     let store = store_dir_of(ctx.token_name, &opts)?;
     let pin = ctx.pin.ok_or_else(|| {
-        KmError::Unavailable(format!(
-            "tpm2_ptool import into '{}' needs the user PIN: configure pinFile or pinEnv",
-            ctx.token_name
-        ))
+        KmError::Unavailable(
+            format!("tpm2_ptool import into '{}' needs the user PIN: configure pinFile or pinEnv", ctx.token_name)
+                .into(),
+        )
     })?;
     let (algorithm, contents) = match (ctx.object.class, ctx.object.key_type) {
         (ObjectClass::PrivateKey, Some(KeyType::Ec)) => ("ecc", pem(ctx.key)),
@@ -42,17 +42,18 @@ pub(crate) fn import(ctx: &ImportCtx<'_>) -> Result<()> {
     };
     let (label, id) = (&ctx.locator.label, &ctx.locator.id);
     if label.is_none() && id.is_none() {
-        return Err(KmError::Validation(format!(
-            "{}: tpm2_ptool imports under CKA_LABEL or CKA_ID, and the locator names neither",
-            ctx.token_name
-        )));
+        return Err(KmError::Validation(
+            format!("{}: tpm2_ptool imports under CKA_LABEL or CKA_ID, and the locator names neither", ctx.token_name)
+                .into(),
+        ));
     }
     // The key never touches a disk: an anonymous in-memory file, open in this process until the
     // tool is done, which (and whose children) open it through /proc.
     let fd = rustix::fs::memfd_create("cakeys-import", rustix::fs::MemfdFlags::CLOEXEC)
-        .map_err(|e| KmError::Unavailable(format!("memfd_create: {e}")))?;
+        .map_err(|e| KmError::Unavailable(format!("memfd_create: {e}").into()))?;
     let mut file = std::fs::File::from(fd);
-    file.write_all(&contents).map_err(|e| KmError::Unavailable(format!("writing the in-memory key file: {e}")))?;
+    file.write_all(&contents)
+        .map_err(|e| KmError::Unavailable(format!("writing the in-memory key file: {e}").into()))?;
     drop(contents);
     let mut cmd = Command::new("tpm2_ptool");
     cmd.arg("import")
@@ -74,14 +75,16 @@ pub(crate) fn import(ctx: &ImportCtx<'_>) -> Result<()> {
         std::io::ErrorKind::NotFound => {
             KmError::Unsupported("tpm2_ptool is not on PATH: the tpm2-ptool import needs it".into())
         }
-        _ => KmError::Unavailable(format!("running tpm2_ptool: {e}")),
+        _ => KmError::Unavailable(format!("running tpm2_ptool: {e}").into()),
     })?;
     drop(file);
     if !out.status.success() {
         let said = String::from_utf8_lossy(&out.stderr);
         // An empty pattern matches between every character.
         let said = if pin.is_empty() { said.into_owned() } else { said.replace(pin, "<pin>") };
-        return Err(KmError::Unavailable(format!("tpm2_ptool import into '{}': {}", ctx.token_name, said.trim())));
+        return Err(KmError::Unavailable(
+            format!("tpm2_ptool import into '{}': {}", ctx.token_name, said.trim()).into(),
+        ));
     }
     Ok(())
 }
@@ -115,10 +118,13 @@ fn hmac(kt: KeyType) -> Option<&'static str> {
 }
 
 fn unsupported(ctx: &ImportCtx<'_>) -> KmError {
-    KmError::Unsupported(format!(
-        "tpm2_ptool imports EC and RSA private keys and HMAC keys, not a {} on '{}'",
-        ctx.object.class, ctx.token_name
-    ))
+    KmError::Unsupported(
+        format!(
+            "tpm2_ptool imports EC and RSA private keys and HMAC keys, not a {} on '{}'",
+            ctx.object.class, ctx.token_name
+        )
+        .into(),
+    )
 }
 
 #[cfg(test)]

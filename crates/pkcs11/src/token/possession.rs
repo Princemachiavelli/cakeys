@@ -28,12 +28,15 @@ impl Token {
             _ if !always => b,
             Binding::PopSign | Binding::PopSignPin => Binding::PopSignPin,
             _ => {
-                return Err(KmError::Unavailable(format!(
-                    "the private key on token '{}' is CKA_ALWAYS_AUTHENTICATE; only binding = \"pop-sign\" \
+                return Err(KmError::Unavailable(
+                    format!(
+                        "the private key on token '{}' is CKA_ALWAYS_AUTHENTICATE; only binding = \"pop-sign\" \
                      proves possession with its per-use PIN; adopt it publicOnly, or opt in with binding = \
                      \"token-asserted\"",
-                    self.name
-                )));
+                        self.name
+                    )
+                    .into(),
+                ));
             }
         }))
     }
@@ -100,7 +103,7 @@ impl Token {
                 rsa = scheme;
                 rsa_sign(m, scheme, msg)
             }
-            kt => return Err(KmError::Unsupported(format!("proof of possession for {kt}"))),
+            kt => return Err(KmError::Unsupported(format!("proof of possession for {kt}").into())),
         };
         let refused = self.proof_failed("C_Sign", "sign", "CKA_SIGN");
         let sig = if binding == Binding::PopSignPin {
@@ -131,7 +134,8 @@ impl Token {
                 "token '{}': the private key is CKA_ALWAYS_AUTHENTICATE and needs the user PIN per use; \
                  configure pinFile or pinEnv",
                 self.name
-            ))
+            )
+            .into())
         })?;
         self.session.sign_init(mech, h).map_err(&refused)?;
         if let Err(e) = self.session.login(UserType::ContextSpecific, Some(&AuthPin::new(pin.to_owned().into()))) {
@@ -141,7 +145,8 @@ impl Token {
                 "C_Login(CKU_CONTEXT_SPECIFIC) for the CKA_ALWAYS_AUTHENTICATE key on token '{}': {e}; \
                  not retried",
                 self.name
-            )));
+            )
+            .into()));
         }
         self.session.sign_initialized(data).map_err(refused)
     }
@@ -178,8 +183,8 @@ impl Token {
         // The extractable form after the sealed one failed for `why`, which its own failure names.
         let extractable_after = |why: String| {
             self.prove_ecdh_extractable(h, spki, &ch).map_err(|e| match e {
-                KmError::Unavailable(m) => KmError::Unavailable(format!("{m} (sealed: {why})")),
-                KmError::Unsupported(m) => KmError::Unsupported(format!("{m} (sealed: {why})")),
+                KmError::Unavailable(m) => KmError::Unavailable(format!("{m} (sealed: {why})").into()),
+                KmError::Unsupported(m) => KmError::Unsupported(format!("{m} (sealed: {why})").into()),
                 other => other,
             })
         };
@@ -203,18 +208,20 @@ impl Token {
                 return extractable_after(format!("C_SignInit with the sealed secret: {e}"));
             }
             Err(e) => {
-                return Err(KmError::Unavailable(format!(
-                    "C_Sign (ECDH proof of possession) on token '{}': {e}",
-                    self.name
-                )));
+                return Err(KmError::Unavailable(
+                    format!("C_Sign (ECDH proof of possession) on token '{}': {e}", self.name).into(),
+                ));
             }
         };
         drop(derived);
         if !pop::ct_eq(&ch.mac, &tag) {
-            return Err(KmError::Conflict(format!(
-                "proof of possession failed: the private key did not derive for the public key {}",
-                id::sri(spki)
-            )));
+            return Err(KmError::Conflict(
+                format!(
+                    "proof of possession failed: the private key did not derive for the public key {}",
+                    id::sri(spki)
+                )
+                .into(),
+            ));
         }
         Ok(())
     }
@@ -233,23 +240,24 @@ impl Token {
         let value = match value.map(|v| v.into_iter().next()) {
             Ok(Some(Attribute::Value(v))) => v,
             Ok(_) => {
-                return Err(KmError::Unavailable(format!(
-                    "token '{}': the derived secret has no CKA_VALUE",
-                    self.name
-                )));
+                return Err(KmError::Unavailable(
+                    format!("token '{}': the derived secret has no CKA_VALUE", self.name).into(),
+                ));
             }
             Err(e) => {
-                return Err(KmError::Unavailable(format!(
-                    "C_GetAttributeValue (ECDH proof of possession) on token '{}': {e}",
-                    self.name
-                )));
+                return Err(KmError::Unavailable(
+                    format!("C_GetAttributeValue (ECDH proof of possession) on token '{}': {e}", self.name).into(),
+                ));
             }
         };
         if !pop::ct_eq(&ch.secret, &value) {
-            return Err(KmError::Conflict(format!(
-                "proof of possession failed: the private key did not derive for the public key {}",
-                id::sri(spki)
-            )));
+            return Err(KmError::Conflict(
+                format!(
+                    "proof of possession failed: the private key did not derive for the public key {}",
+                    id::sri(spki)
+                )
+                .into(),
+            ));
         }
         Ok(())
     }
@@ -305,7 +313,9 @@ impl Token {
                     Err(e) => return Err(failed(e)),
                 }
             }
-            plain.ok_or_else(|| KmError::Unavailable(format!("token '{}': no OAEP hash to decrypt with", self.name)))?
+            plain.ok_or_else(|| {
+                KmError::Unavailable(format!("token '{}': no OAEP hash to decrypt with", self.name).into())
+            })?
         } else if permits(v15) {
             let cipher = pop::rsa_encrypt(spki, pop::RsaPadding::Pkcs1v15, msg)?;
             self.session.decrypt(&Mechanism::RsaPkcs, h, &cipher).map_err(failed)?
@@ -313,10 +323,13 @@ impl Token {
             return Err(self.none_allowed(&[oaep, v15]));
         };
         if !pop::ct_eq(msg, &plain) {
-            return Err(KmError::Conflict(format!(
-                "proof of possession failed: the private key did not decrypt for the public key {}",
-                id::sri(spki)
-            )));
+            return Err(KmError::Conflict(
+                format!(
+                    "proof of possession failed: the private key did not decrypt for the public key {}",
+                    id::sri(spki)
+                )
+                .into(),
+            ));
         }
         Ok(())
     }
@@ -340,7 +353,7 @@ impl Token {
         let mut next = 0;
         let (key, ch) = loop {
             let Some((padding, params)) = OAEP.get(next).and_then(|p| Some((*p, oaep_params(*p)?.0))) else {
-                return Err(KmError::Unavailable(format!("token '{}': no OAEP hash to unwrap with", self.name)));
+                return Err(KmError::Unavailable(format!("token '{}': no OAEP hash to unwrap with", self.name).into()));
             };
             let ch = pop::unwrap_challenge_with(spki, msg, padding)?;
             let session = rw.as_ref().unwrap_or(&self.session);
@@ -359,13 +372,16 @@ impl Token {
         let tag = session.sign(&Mechanism::Sha256Hmac, key.handle(), msg);
         drop(key);
         let tag = tag.map_err(|e| {
-            KmError::Unavailable(format!("C_Sign (unwrap proof of possession) on token '{}': {e}", self.name))
+            KmError::Unavailable(format!("C_Sign (unwrap proof of possession) on token '{}': {e}", self.name).into())
         })?;
         if !pop::ct_eq(&ch.mac, &tag) {
-            return Err(KmError::Conflict(format!(
-                "proof of possession failed: the private key did not unwrap for the public key {}",
-                id::sri(spki)
-            )));
+            return Err(KmError::Conflict(
+                format!(
+                    "proof of possession failed: the private key did not unwrap for the public key {}",
+                    id::sri(spki)
+                )
+                .into(),
+            ));
         }
         Ok(())
     }
@@ -380,11 +396,14 @@ impl Token {
 
     /// A proof refused because the key's `CKA_ALLOWED_MECHANISMS` allows none of `ms`.
     fn none_allowed(&self, ms: &[MechanismType]) -> KmError {
-        KmError::Unsupported(format!(
-            "token '{}': the key's CKA_ALLOWED_MECHANISMS allows none of {} for a proof of possession",
-            self.name,
-            ms.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
-        ))
+        KmError::Unsupported(
+            format!(
+                "token '{}': the key's CKA_ALLOWED_MECHANISMS allows none of {} for a proof of possession",
+                self.name,
+                ms.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+            )
+            .into(),
+        )
     }
 
     /// What this token offers a proof of possession ([`proof_refusal`]): its usable mechanisms,
@@ -437,17 +456,18 @@ impl Token {
                 | RvError::WrappedKeyInvalid
                 | RvError::WrappedKeyLenRange,
                 _,
-            ) => KmError::Conflict(format!(
-                "proof of possession failed: the private key on token '{}' did not {op} what was made for its \
+            ) => KmError::Conflict(
+                format!(
+                    "proof of possession failed: the private key on token '{}' did not {op} what was made for its \
                  public key ({call}: {}: {e})",
-                self.name,
-                rv_name(&e)
-            )),
-            e => KmError::Unavailable(format!(
-                "{call} (proof of possession) on token '{}': {}: {e}",
-                self.name,
-                rv_name(&e)
-            )),
+                    self.name,
+                    rv_name(&e)
+                )
+                .into(),
+            ),
+            e => KmError::Unavailable(
+                format!("{call} (proof of possession) on token '{}': {}: {e}", self.name, rv_name(&e)).into(),
+            ),
         }
     }
 
@@ -667,7 +687,7 @@ fn oaep_hash_refused(e: &CkError, init: Function) -> bool {
 /// The hash ECDSA signs a proof with on `object`'s curve.
 fn ecdsa_hash(object: &ObjectCfg) -> Result<pop::EcdsaHash> {
     pop::EcdsaHash::for_curve(curve_of(object)?)
-        .ok_or_else(|| KmError::Unsupported(format!("ECDSA on {}", object.curve.as_deref().unwrap_or("?"))))
+        .ok_or_else(|| KmError::Unsupported(format!("ECDSA on {}", object.curve.as_deref().unwrap_or("?")).into()))
 }
 
 /// The mechanisms a proof of possession by `binding` uses on a private key of `object`'s type:
@@ -694,7 +714,7 @@ fn proof_mechanisms(object: &ObjectCfg, binding: Binding) -> Result<Vec<Vec<Mech
             }
             KeyType::EC_EDWARDS => vec![vec![MechanismType::EDDSA]],
             KeyType::RSA => vec![RSA_SIGN.map(|(m, _)| m).to_vec()],
-            kt => return Err(KmError::Unsupported(format!("proof of possession for {kt}"))),
+            kt => return Err(KmError::Unsupported(format!("proof of possession for {kt}").into())),
         },
         Binding::PopEcdh => vec![vec![MechanismType::ECDH1_DERIVE]],
         Binding::PopDecrypt => vec![vec![MechanismType::RSA_PKCS_OAEP, MechanismType::RSA_PKCS]],

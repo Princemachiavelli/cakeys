@@ -179,17 +179,23 @@ fn check_reported(row: &Row, declared: &std::collections::BTreeMap<String, AttrV
         match reported.iter().find(|(n, _)| n == name) {
             Some((_, has)) if has == want => {}
             Some((_, has)) => {
-                return Err(KmError::Unsupported(format!(
-                    "Cloud KMS {} keys report {name} = {has}{}, not {want}",
-                    row.algorithm,
-                    if public { " on the public key" } else { "" }
-                )));
+                return Err(KmError::Unsupported(
+                    format!(
+                        "Cloud KMS {} keys report {name} = {has}{}, not {want}",
+                        row.algorithm,
+                        if public { " on the public key" } else { "" }
+                    )
+                    .into(),
+                ));
             }
             None => {
-                return Err(KmError::Unsupported(format!(
-                    "Cloud KMS keys do not report {name}{}: libkmsp11 could not show it as declared",
-                    if public { " on the public key" } else { "" }
-                )));
+                return Err(KmError::Unsupported(
+                    format!(
+                        "Cloud KMS keys do not report {name}{}: libkmsp11 could not show it as declared",
+                        if public { " on the public key" } else { "" }
+                    )
+                    .into(),
+                ));
             }
         }
     }
@@ -206,7 +212,7 @@ fn check_reported(row: &Row, declared: &std::collections::BTreeMap<String, AttrV
 /// SHA-256 for RSA signing, OAEP with SHA-256 for decryption).
 fn algorithm_for(object: &ObjectCfg, spec: &SpecCfg, binding: Option<Binding>) -> Result<&'static Row> {
     let kt = object.checked_key_type()?;
-    let unsupported = |why: String| Err(KmError::Unsupported(why));
+    let unsupported = |why: String| Err(KmError::Unsupported(why.into()));
     let on = match kt {
         Kt::Ec => object.curve.clone().unwrap_or_default(),
         Kt::Rsa => object.modulus_bits.unwrap_or_default().to_string(),
@@ -269,11 +275,14 @@ fn algorithm_for(object: &ObjectCfg, spec: &SpecCfg, binding: Option<Binding>) -
             // A set two algorithms share (OAEP with SHA-256 or SHA-512 at 4096 bits) takes the
             // table's first, the SHA-256 one.
             candidates.into_iter().find(fits).ok_or_else(|| {
-                KmError::Unsupported(format!(
-                    "no Cloud KMS algorithm serves exactly CKA_ALLOWED_MECHANISMS = [{}] (offered: {})",
-                    declared.join(", "),
-                    names.join("; ")
-                ))
+                KmError::Unsupported(
+                    format!(
+                        "no Cloud KMS algorithm serves exactly CKA_ALLOWED_MECHANISMS = [{}] (offered: {})",
+                        declared.join(", "),
+                        names.join("; ")
+                    )
+                    .into(),
+                )
             })?
         }
         _ => candidates[0],

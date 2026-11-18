@@ -60,12 +60,12 @@ pub(crate) fn material(src: &Target, from: &Token, lock: &Lock, notes: &mut Note
         Class::Certificate => {
             let der = value(from, h)?;
             x509_cert::Certificate::from_der(&der)
-                .map_err(|e| KmError::Conflict(format!("{src}: CKA_VALUE is not an X.509 certificate: {e}")))?;
+                .map_err(|e| KmError::Conflict(format!("{src}: CKA_VALUE is not an X.509 certificate: {e}").into()))?;
             Ok(der)
         }
         Class::Data => value(from, h),
         Class::PublicKey => from.spki(h, &src.on_token.locator),
-        class => Err(KmError::Validation(format!("{src}: a {class} is not a public object"))),
+        class => Err(KmError::Validation(format!("{src}: a {class} is not a public object").into())),
     }
 }
 
@@ -171,11 +171,14 @@ pub(crate) fn preflight(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Option
     let spki = (dst.object.class == Class::PublicKey).then_some(bytes);
     let occupied = to.occupied(dst.object, &dst.on_token.locator, spki)?;
     if occupied.colliding > 0 {
-        return Err(KmError::Conflict(format!(
-            "{} object(s) of its class already sit under the locator of {dst}, and the lock records no \
+        return Err(KmError::Conflict(
+            format!(
+                "{} object(s) of its class already sit under the locator of {dst}, and the lock records no \
              realisation there; refusing to import over them",
-            occupied.colliding
-        )));
+                occupied.colliding
+            )
+            .into(),
+        ));
     }
     Ok(occupied.public_half)
 }
@@ -197,8 +200,8 @@ pub(crate) fn public_key(src: &Target, spki: &[u8]) -> Result<Vec<Attribute>> {
 /// `e`, its message led by the pair it is about.
 fn prefixed(t: &Target, e: KmError) -> KmError {
     match e {
-        KmError::Conflict(m) => KmError::Conflict(format!("{t}: {m}")),
-        KmError::Validation(m) => KmError::Validation(format!("{t}: {m}")),
+        KmError::Conflict(m) => KmError::Conflict(format!("{t}: {m}").into()),
+        KmError::Validation(m) => KmError::Validation(format!("{t}: {m}").into()),
         other => other,
     }
 }
@@ -207,15 +210,15 @@ fn prefixed(t: &Target, e: KmError) -> KmError {
 fn one(tok: &Token, t: &Target) -> Result<ObjectHandle> {
     match tok.find(class_of(t.object), &t.on_token.locator)?.as_slice() {
         [h] => Ok(*h),
-        [] => Err(KmError::NotFound(t.to_string())),
-        _ => Err(KmError::Ambiguous(format!("{t}: several objects under the locator"))),
+        [] => Err(KmError::NotFound(t.to_string().into())),
+        _ => Err(KmError::Ambiguous(format!("{t}: several objects under the locator").into())),
     }
 }
 
 /// `CKA_VALUE` of `h`.
 fn value(tok: &Token, h: ObjectHandle) -> Result<Vec<u8>> {
     let read = tok.raw().get_attributes(h, &[AttributeType::Value]);
-    match read.map_err(|e| KmError::Unavailable(format!("C_GetAttributeValue: {e}")))?.as_slice() {
+    match read.map_err(|e| KmError::Unavailable(format!("C_GetAttributeValue: {e}").into()))?.as_slice() {
         [Attribute::Value(v)] => Ok(v.clone()),
         _ => Err(KmError::NotFound("the object has no CKA_VALUE".into())),
     }

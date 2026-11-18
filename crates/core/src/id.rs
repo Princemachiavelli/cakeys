@@ -506,7 +506,8 @@ impl Curve {
     }
 
     fn spki_from_raw(self, point: &[u8]) -> Result<Vec<u8>> {
-        let bad = |e: &dyn std::fmt::Display| KmError::Conflict(format!("CKA_EC_POINT is not a {self:?} point: {e}"));
+        let bad =
+            |e: &dyn std::fmt::Display| KmError::Conflict(format!("CKA_EC_POINT is not a {self:?} point: {e}").into());
         match self {
             Curve::P256 => encode(&p256::PublicKey::from_sec1_bytes(point).map_err(|e| bad(&e))?),
             Curve::P384 => encode(&p384::PublicKey::from_sec1_bytes(point).map_err(|e| bad(&e))?),
@@ -553,9 +554,10 @@ pub fn spki_canonical(spki: &[u8]) -> Result<Vec<u8>> {
         return encode(&k);
     }
     let key = rsa::PublicKey::from_public_key_der(spki).map_err(|e| {
-        KmError::Unsupported(format!(
-            "SPKI is not P-256/P-384/P-521, secp256k1, brainpoolP256r1/P384r1, Ed25519/Ed448 or RSA: {e}"
-        ))
+        KmError::Unsupported(
+            format!("SPKI is not P-256/P-384/P-521, secp256k1, brainpoolP256r1/P384r1, Ed25519/Ed448 or RSA: {e}")
+                .into(),
+        )
     })?;
     encode(&key)
 }
@@ -570,7 +572,7 @@ pub fn rsa_spki(modulus: &[u8], exponent: &[u8]) -> Result<Vec<u8>> {
         rsa::BoxedUint::from_be_slice_vartime(modulus),
         rsa::BoxedUint::from_be_slice_vartime(exponent),
     )
-    .map_err(|e| KmError::Conflict(format!("invalid RSA public key: {e}")))?;
+    .map_err(|e| KmError::Conflict(format!("invalid RSA public key: {e}").into()))?;
     encode(&key)
 }
 
@@ -584,7 +586,7 @@ pub fn spki_curve(spki: &[u8]) -> Result<Option<Curve>> {
     const RSA: &str = "1.2.840.113549.1.1.1";
     const EC: &str = "1.2.840.10045.2.1";
     let info = x509_cert::spki::SubjectPublicKeyInfoRef::from_der(spki)
-        .map_err(|e| KmError::Conflict(format!("not a SubjectPublicKeyInfo: {e}")))?;
+        .map_err(|e| KmError::Conflict(format!("not a SubjectPublicKeyInfo: {e}").into()))?;
     let alg = &info.algorithm;
     let named = match alg.oid.to_string().as_str() {
         RSA => return Ok(None),
@@ -596,7 +598,7 @@ pub fn spki_curve(spki: &[u8]) -> Result<Option<Curve>> {
         .as_deref()
         .and_then(Curve::from_params)
         .map(Some)
-        .ok_or_else(|| KmError::Unsupported(format!("public key algorithm {}", alg.oid)))
+        .ok_or_else(|| KmError::Unsupported(format!("public key algorithm {}", alg.oid).into()))
 }
 
 /// Canonical DER SPKI of a certificate's subject key: links a certificate to its key object.
@@ -607,17 +609,21 @@ pub fn spki_curve(spki: &[u8]) -> Result<Option<Curve>> {
 /// `spki_canonical` refuses (also `Unsupported` in that case).
 pub fn cert_spki(cert: &[u8]) -> Result<Vec<u8>> {
     let cert = x509_cert::Certificate::from_der(cert)
-        .map_err(|e| KmError::Conflict(format!("CKA_VALUE is not an X.509 certificate: {e}")))?;
+        .map_err(|e| KmError::Conflict(format!("CKA_VALUE is not an X.509 certificate: {e}").into()))?;
     let spki = cert
         .tbs_certificate()
         .subject_public_key_info()
         .to_der()
-        .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}")))?;
+        .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}").into()))?;
     spki_canonical(&spki)
 }
 
 fn encode(key: &impl EncodePublicKey) -> Result<Vec<u8>> {
-    Ok(key.to_public_key_der().map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}")))?.as_bytes().to_vec())
+    Ok(key
+        .to_public_key_der()
+        .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}").into()))?
+        .as_bytes()
+        .to_vec())
 }
 #[cfg(test)]
 mod tests {

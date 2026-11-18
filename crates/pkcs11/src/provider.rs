@@ -102,10 +102,9 @@ pub trait Provider: Send + Sync {
     fn check_options(&self, token: &str, options: &Options) -> Result<()> {
         match options.keys().next() {
             None => Ok(()),
-            Some(k) => Err(KmError::Validation(format!(
-                "tokens.{token}.options.{k}: provider {} takes no options",
-                self.name()
-            ))),
+            Some(k) => Err(KmError::Validation(
+                format!("tokens.{token}.options.{k}: provider {} takes no options", self.name()).into(),
+            )),
         }
     }
 
@@ -225,7 +224,7 @@ pub trait Provider: Send + Sync {
     /// `Unsupported` (this default, or a key type the tool cannot take); whatever the tool
     /// reports.
     fn import_plaintext(&self, _ctx: &ImportCtx<'_>) -> Result<()> {
-        Err(KmError::Unsupported(format!("{} imports no plaintext outside PKCS#11", self.name())))
+        Err(KmError::Unsupported(format!("{} imports no plaintext outside PKCS#11", self.name()).into()))
     }
 
     /// How plaintext keys get into this module, as a profile's `plaintext-import` and an
@@ -257,7 +256,7 @@ pub trait Provider: Send + Sync {
     fn attest(&self, _ctx: &AttestCtx<'_>) -> Result<Attested> {
         // Unreachable in practice: the caller checks `attestation()` first. Kept as an error so
         // a provider advertising a capability must actually implement it.
-        Err(KmError::Unsupported(format!("{} exposes no attestation", self.name())))
+        Err(KmError::Unsupported(format!("{} exposes no attestation", self.name()).into()))
     }
 
     // ── Read only by the probe ───────────────────────────────────────────────────────────
@@ -568,10 +567,9 @@ impl AttestCtx<'_> {
     /// `Unsupported` when an asymmetric class has no SPKI to check against.
     pub fn required_spki(&self) -> Result<Option<&[u8]>> {
         match (self.object.class, self.spki) {
-            (c, None) if c.is_asymmetric() => Err(KmError::Unsupported(format!(
-                "attesting a {} needs its material SPKI to cross-check against",
-                self.object.class
-            ))),
+            (c, None) if c.is_asymmetric() => Err(KmError::Unsupported(
+                format!("attesting a {} needs its material SPKI to cross-check against", self.object.class).into(),
+            )),
             (_, spki) => Ok(spki),
         }
     }
@@ -682,17 +680,20 @@ impl Registry {
     /// `Validation` when `explicit` names neither a provider nor a profile family, or when the
     /// module's manufacturer is claimed by the profiles of several families and none is named.
     pub fn select(&self, explicit: Option<&str>, module: &ModuleInfo) -> Result<Arc<dyn Provider>> {
-        self.select_in(Set::active().map_err(KmError::Validation)?, explicit, module)
+        self.select_in(Set::active().map_err(|e| KmError::Validation(e.into()))?, explicit, module)
     }
 
     fn select_in(&self, set: &'static Set, explicit: Option<&str>, module: &ModuleInfo) -> Result<Arc<dyn Provider>> {
         if let Some(name) = explicit {
             return self.named_in(set, name).ok_or_else(|| {
-                KmError::Validation(format!(
-                    "unknown provider '{name}' (registered: generic, {}; profile families: {})",
-                    self.names().join(", "),
-                    set.module_family_names().join(", ")
-                ))
+                KmError::Validation(
+                    format!(
+                        "unknown provider '{name}' (registered: generic, {}; profile families: {})",
+                        self.names().join(", "),
+                        set.module_family_names().join(", ")
+                    )
+                    .into(),
+                )
             });
         }
         if let Some(p) = self.providers.iter().find(|p| p.matches(module)) {
@@ -702,11 +703,14 @@ impl Registry {
         match set.module_families(manufacturer)[..] {
             [] => Ok(Arc::new(Generic)),
             [family] => Ok(Arc::new(Data(family))),
-            ref families => Err(KmError::Validation(format!(
-                "the module's manufacturer '{manufacturer}' is claimed by the profiles of several families \
+            ref families => Err(KmError::Validation(
+                format!(
+                    "the module's manufacturer '{manufacturer}' is claimed by the profiles of several families \
                  ({}): name one in `provider`",
-                families.join(", ")
-            ))),
+                    families.join(", ")
+                )
+                .into(),
+            )),
         }
     }
 }

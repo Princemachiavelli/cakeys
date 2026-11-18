@@ -26,7 +26,7 @@ impl Token {
     pub fn extract(&self, h: ObjectHandle, kwp: &Mechanism) -> Result<Zeroizing<Vec<u8>>> {
         let mut kek = Zeroizing::new([0u8; 32]);
         getrandom::fill(kek.as_mut_slice())
-            .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}")))?;
+            .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}").into()))?;
         let mut template = Secret(self.session_template(SessionKey::HostKek)?);
         template.0.push(Attribute::Value(kek.to_vec()));
         let refused = |what: &str, e: CkError| self.unsupported(format!("{what} on '{}': {e}", self.name));
@@ -41,7 +41,9 @@ impl Token {
         let n = aes_kw::KwpAes256::new_from_slice(kek.as_slice())
             .map_err(|_| KmError::Unavailable("AES-256 key schedule".into()))?
             .unwrap_key(&blob, &mut out)
-            .map_err(|_| KmError::Conflict(format!("'{}': the key wrapped for the host does not unwrap", self.name)))?
+            .map_err(|_| {
+                KmError::Conflict(format!("'{}': the key wrapped for the host does not unwrap", self.name).into())
+            })?
             .len();
         out.truncate(n);
         Ok(out)

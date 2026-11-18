@@ -144,7 +144,7 @@ impl Address {
     fn plain_object(&self) -> Result<Option<&str>, KmError> {
         match self.object.as_deref() {
             Some(o) if ops::split_reference(o).1.is_some() => {
-                Err(KmError::Validation(format!("'{o}': only check takes <object>.id.<scheme>")))
+                Err(KmError::Validation(format!("'{o}': only check takes <object>.id.<scheme>").into()))
             }
             object => Ok(object),
         }
@@ -224,10 +224,10 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     // Refused before any token is touched: never a key created and then not recorded.
     if writes && let Some(why) = lock_unwritable(&lock_path) {
         let opt_out = if matches!(cli.cmd, Cmd::Gc { .. }) { "drop --apply" } else { "pass --no-update-lock" };
-        return Err(KmError::PreconditionFailed(format!(
-            "cannot write the lock {}: {why}; {opt_out} to compare without writing",
-            lock_path.display()
-        ))
+        return Err(KmError::PreconditionFailed(
+            format!("cannot write the lock {}: {why}; {opt_out} to compare without writing", lock_path.display())
+                .into(),
+        )
         .into());
     }
     let _update_guard = if writes { Some(lock_for_update(&lock_path)?) } else { None };
@@ -254,7 +254,7 @@ impl Run<'_> {
                 let t = Target::new(&self.cfg, &spec, &token)?;
                 let tok = self.open(&token, Access::Read, notes)?;
                 let r = ops::resolve(&t, &tok, &self.lock)?
-                    .ok_or_else(|| KmError::NotFound(format!("{} on {token}", t.object_name)))?;
+                    .ok_or_else(|| KmError::NotFound(format!("{} on {token}", t.object_name).into()))?;
                 print(&r)
             }
             Cmd::Lock { at, write } => {
@@ -326,9 +326,12 @@ impl Run<'_> {
         let object = &cfg.specs[&spec_name].object;
         let key_file = format == Format::Pkcs11ProviderPem;
         if key_file && cfg.objects.get(object).is_some_and(|o| o.class != ObjectClass::PrivateKey) {
-            return Err(KmError::Unsupported(format!(
-                "--format pkcs11-provider-pem for '{object}': pkcs11-provider's key files name private keys only"
-            ))
+            return Err(KmError::Unsupported(
+                format!(
+                    "--format pkcs11-provider-pem for '{object}': pkcs11-provider's key files name private keys only"
+                )
+                .into(),
+            )
             .into());
         }
         let pin = match uri_pin {
@@ -373,11 +376,10 @@ impl Run<'_> {
         for (c, e) in &failed {
             eprintln!("exit {}: '{}' (spec '{}'): {e}", e.exit_code(), c.object, c.spec);
         }
-        Err(KmError::ObjectsFailed(format!(
-            "{} of {} on token '{token}', each listed above with its exit code",
-            failed.len(),
-            checked.len()
-        ))
+        Err(KmError::ObjectsFailed(
+            format!("{} of {} on token '{token}', each listed above with its exit code", failed.len(), checked.len())
+                .into(),
+        )
         .into())
     }
 
@@ -403,10 +405,13 @@ impl Run<'_> {
             // A named provider checks the token's options here too; an auto-detected one
             // can only be known, and check them, once the token is opened.
             let provider = self.registry.named(p).ok_or_else(|| {
-                KmError::Validation(format!(
-                    "token '{name}': unknown provider '{p}' (registered: generic, {})",
-                    self.registry.names().join(", ")
-                ))
+                KmError::Validation(
+                    format!(
+                        "token '{name}': unknown provider '{p}' (registered: generic, {})",
+                        self.registry.names().join(", ")
+                    )
+                    .into(),
+                )
             })?;
             provider.check_options(name, &t.options)?;
         }
@@ -447,12 +452,15 @@ impl Run<'_> {
             eprintln!("{r}");
         }
         let one = refusals.len() == 1;
-        Err(KmError::Unsupported(format!(
-            "{} target{} need{} what the capability profiles say the token cannot do",
-            refusals.len(),
-            if one { "" } else { "s" },
-            if one { "s" } else { "" }
-        ))
+        Err(KmError::Unsupported(
+            format!(
+                "{} target{} need{} what the capability profiles say the token cannot do",
+                refusals.len(),
+                if one { "" } else { "s" },
+                if one { "s" } else { "" }
+            )
+            .into(),
+        )
         .into())
     }
 
@@ -494,13 +502,16 @@ impl Run<'_> {
         }
         if !refused.is_empty() && !how.skip_unsupported {
             let one = refused.len() == 1;
-            return Err(KmError::Unsupported(format!(
-                "{} pair{} cannot be created, as the capability profiles say{}; pass --skip-unsupported to create \
+            return Err(KmError::Unsupported(
+                format!(
+                    "{} pair{} cannot be created, as the capability profiles say{}; pass --skip-unsupported to create \
                  the others",
-                refused.len(),
-                if one { "" } else { "s" },
-                if how.dry_run { "" } else { ": nothing was created" }
-            ))
+                    refused.len(),
+                    if one { "" } else { "s" },
+                    if how.dry_run { "" } else { ": nothing was created" }
+                )
+                .into(),
+            )
             .into());
         }
         if how.dry_run {

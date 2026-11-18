@@ -33,9 +33,8 @@ pub fn policy(
     attrs
         .iter()
         .map(|(name, v)| match v {
-            AttrValue::Bool(b) => {
-                bool_attr(name, *b).ok_or_else(|| KmError::Validation(format!("unsupported policy attribute {name}")))
-            }
+            AttrValue::Bool(b) => bool_attr(name, *b)
+                .ok_or_else(|| KmError::Validation(format!("unsupported policy attribute {name}").into())),
             AttrValue::Mechanisms(names) => {
                 names.iter().map(|n| mechanism(name, n)).collect::<Result<Vec<_>>>().map(Attribute::AllowedMechanisms)
             }
@@ -51,8 +50,9 @@ pub fn policy(
 ///
 /// As [`policy`]; the baseline's parse error (a commit-time bug).
 pub fn known_policy(attrs: &BTreeMap<String, AttrValue>) -> Result<Option<Vec<Attribute>>> {
-    let baseline = cakeys_profile::Set::active().and_then(|s| s.baseline()).map_err(KmError::Validation)?;
-    let unknown = || KmError::NotFound(String::new());
+    let baseline =
+        cakeys_profile::Set::active().and_then(|s| s.baseline()).map_err(|e| KmError::Validation(e.into()))?;
+    let unknown = || KmError::NotFound(String::new().into());
     let by_name = |_: &str, n: &str| {
         baseline.mechanisms.get(n).and_then(|id| MechanismType::try_from(*id).ok()).ok_or_else(unknown)
     };

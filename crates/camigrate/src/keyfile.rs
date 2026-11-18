@@ -42,7 +42,7 @@ enum Entry {
 
 /// The refusal a file gets: invalid input (17); the caller names the file.
 fn bad(what: impl std::fmt::Display) -> KmError {
-    KmError::Validation(what.to_string())
+    KmError::Validation(what.to_string().into())
 }
 
 /// What OpenSSL's pre-PKCS#8 encrypted PEM (`Proc-Type: 4,ENCRYPTED`) is refused with.
@@ -494,7 +494,7 @@ mod tests {
 
     fn refusal(r: Result<Material>) -> String {
         match r {
-            Err(KmError::Validation(m)) => m,
+            Err(KmError::Validation(m)) => m.into_text(),
             Err(e) => panic!("not a validation error: {e}"),
             Ok(m) => panic!("read, by {}", m.method),
         }

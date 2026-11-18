@@ -60,20 +60,23 @@ impl Transport {
     /// `Validation` for another format or version, malformed base64, or an identity that is not
     /// the public key's.
     pub(crate) fn parse(text: &str, path: &std::path::Path) -> Result<Transport> {
-        let t: Transport = toml::from_str(text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
+        let t: Transport =
+            toml::from_str(text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display()).into()))?;
         if t.format != TRANSPORT_FORMAT || t.version != TRANSPORT_VERSION {
-            return Err(KmError::Validation(format!(
-                "{}: not a {TRANSPORT_FORMAT} version {TRANSPORT_VERSION} file",
-                path.display()
-            )));
+            return Err(KmError::Validation(
+                format!("{}: not a {TRANSPORT_FORMAT} version {TRANSPORT_VERSION} file", path.display()).into(),
+            ));
         }
         let computed = cakeys_core::id::sri(&t.spki()?);
         if computed != t.rfc7093m4 {
-            return Err(KmError::Validation(format!(
-                "{}: rfc7093m4 {} is not the identity of its public key ({computed})",
-                path.display(),
-                t.rfc7093m4
-            )));
+            return Err(KmError::Validation(
+                format!(
+                    "{}: rfc7093m4 {} is not the identity of its public key ({computed})",
+                    path.display(),
+                    t.rfc7093m4
+                )
+                .into(),
+            ));
         }
         Ok(t)
     }
@@ -84,7 +87,7 @@ impl Transport {
     ///
     /// `Unavailable` when it does not serialize: never an empty file in its place.
     pub(crate) fn to_toml(&self) -> Result<String> {
-        toml::to_string(self).map_err(|e| KmError::Unavailable(format!("serializing the transport file: {e}")))
+        toml::to_string(self).map_err(|e| KmError::Unavailable(format!("serializing the transport file: {e}").into()))
     }
 
     /// The canonical SPKI DER.
@@ -96,7 +99,7 @@ impl Transport {
         use base64::Engine;
         let der = base64::engine::general_purpose::STANDARD
             .decode(&self.spki)
-            .map_err(|e| KmError::Validation(format!("transport key: {e}")))?;
+            .map_err(|e| KmError::Validation(format!("transport key: {e}").into()))?;
         cakeys_core::id::spki_canonical(&der)
     }
 

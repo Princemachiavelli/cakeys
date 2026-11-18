@@ -52,7 +52,7 @@ fn scalar<B: AsRef<[u8]> + zeroize::Zeroize>(bytes: B) -> Zeroizing<Vec<u8>> {
 /// such a key (the message never includes them).
 pub fn private_from_pkcs8(der: &[u8], key_type: KeyType, curve: Option<&str>) -> Result<PrivateParts> {
     use ed25519_dalek::pkcs8::DecodePrivateKey as _;
-    let bad = |what: &str| KmError::Conflict(format!("the source's wrapped key is not a PKCS#8 {what} key"));
+    let bad = |what: &str| KmError::Conflict(format!("the source's wrapped key is not a PKCS#8 {what} key").into());
     let ec = |value| Ok(PrivateParts::Ec(value));
     match (key_type, curve.and_then(|c| Curve::from_cfg(key_type, c))) {
         (KeyType::Ec, Some(Curve::P256)) => {
@@ -78,10 +78,13 @@ pub fn private_from_pkcs8(der: &[u8], key_type: KeyType, curve: Option<&str>) ->
             Ok(PrivateParts::Edwards(scalar(key.to_bytes())))
         }
         (KeyType::Rsa, _) => rsa_parts(der).map(|p| PrivateParts::Rsa(Box::new(p))),
-        (kt, _) => Err(KmError::Unsupported(format!(
-            "no host-path parser for a {kt:?} private key{}",
-            curve.map_or_else(String::new, |c| format!(" on {c}"))
-        ))),
+        (kt, _) => Err(KmError::Unsupported(
+            format!(
+                "no host-path parser for a {kt:?} private key{}",
+                curve.map_or_else(String::new, |c| format!(" on {c}"))
+            )
+            .into(),
+        )),
     }
 }
 
@@ -116,7 +119,7 @@ pub fn spki_of_pkcs8(der: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn spki_err(e: impl std::fmt::Display) -> KmError {
-    KmError::Unavailable(format!("encoding the public key: {e}"))
+    KmError::Unavailable(format!("encoding the public key: {e}").into())
 }
 
 fn rsa_parts(der: &[u8]) -> Result<RsaParts> {

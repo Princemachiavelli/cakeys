@@ -23,9 +23,9 @@ pub fn public_object_attrs(object: &ObjectCfg, bytes: &[u8]) -> Result<Vec<Attri
     match object.class {
         Class::Certificate => {
             let cert = x509_cert::Certificate::from_der(bytes)
-                .map_err(|e| KmError::Conflict(format!("the value is not an X.509 certificate: {e}")))?;
+                .map_err(|e| KmError::Conflict(format!("the value is not an X.509 certificate: {e}").into()))?;
             let tbs = cert.tbs_certificate();
-            let enc = |r: x509_cert::der::Result<Vec<u8>>| r.map_err(|e| KmError::Conflict(e.to_string()));
+            let enc = |r: x509_cert::der::Result<Vec<u8>>| r.map_err(|e| KmError::Conflict(e.to_string().into()));
             Ok(vec![
                 Attribute::Class(ObjectClass::CERTIFICATE),
                 Attribute::CertificateType(CertificateType::X_509),
@@ -41,7 +41,7 @@ pub fn public_object_attrs(object: &ObjectCfg, bytes: &[u8]) -> Result<Vec<Attri
             t.extend(public_key_attrs(object, bytes)?);
             Ok(t)
         }
-        class => Err(KmError::Validation(format!("a {class} is not a public object"))),
+        class => Err(KmError::Validation(format!("a {class} is not a public object").into())),
     }
 }
 
@@ -54,7 +54,7 @@ pub fn public_object_attrs(object: &ObjectCfg, bytes: &[u8]) -> Result<Vec<Attri
 /// `Conflict` when the SPKI is not a key of `object`'s type; `Validation` for an object with no
 /// curve cakeys knows.
 pub fn public_key_attrs(object: &ObjectCfg, spki: &[u8]) -> Result<Vec<Attribute>> {
-    let bad = |e: &dyn std::fmt::Display| KmError::Conflict(format!("the public key: {e}"));
+    let bad = |e: &dyn std::fmt::Display| KmError::Conflict(format!("the public key: {e}").into());
     if object.key_type == Some(Kt::Rsa) {
         let key = rsa::PublicKey::from_public_key_der(spki).map_err(|e| bad(&e))?;
         return Ok(vec![

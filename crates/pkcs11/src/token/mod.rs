@@ -6,6 +6,7 @@ use crate::provider::{
     Template, keygen_mechanism,
 };
 use crate::templates;
+use cakeys_core::Msg;
 use cakeys_core::attrs;
 use cakeys_core::config::{AttrValue, Binding, Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
 pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};
@@ -84,18 +85,24 @@ impl Pin {
     fn guard(self, token: &str, who: &str) -> Result<()> {
         let Pin { locked, final_try, .. } = self;
         if locked {
-            return Err(KmError::Unavailable(format!(
-                "token '{token}': the {who} PIN is locked (CKF_{}_PIN_LOCKED); unlock it with the vendor's tools",
-                who.to_uppercase()
-            )));
+            return Err(KmError::Unavailable(
+                format!(
+                    "token '{token}': the {who} PIN is locked (CKF_{}_PIN_LOCKED); unlock it with the vendor's tools",
+                    who.to_uppercase()
+                )
+                .into(),
+            ));
         }
         if final_try {
-            return Err(KmError::Unavailable(format!(
-                "token '{token}': one {who} PIN try is left before it locks (CKF_{}_PIN_FINAL_TRY); cakeys will \
+            return Err(KmError::Unavailable(
+                format!(
+                    "token '{token}': one {who} PIN try is left before it locks (CKF_{}_PIN_FINAL_TRY); cakeys will \
                  not spend it on a PIN file that may be wrong — log in once by hand with the right PIN to reset \
                  the counter",
-                who.to_uppercase()
-            )));
+                    who.to_uppercase()
+                )
+                .into(),
+            ));
         }
         Ok(())
     }
@@ -211,7 +218,8 @@ fn usable_mechanisms(
     let subtracted = profiles.subtracted_mechanisms();
     let mut usable: Vec<MechanismType> =
         advertised.iter().copied().filter(|m| !subtracted.contains(m.to_string().as_str())).collect();
-    let baseline = cakeys_profile::Set::active().and_then(|s| s.baseline()).map_err(KmError::Validation)?;
+    let baseline =
+        cakeys_profile::Set::active().and_then(|s| s.baseline()).map_err(|e| KmError::Validation(e.into()))?;
     for name in profiles.added_mechanisms() {
         let id = baseline.mechanisms.get(name).and_then(|id| MechanismType::try_from(*id).ok());
         if let Some(m) = id.filter(|m| !usable.contains(m)) {
@@ -269,7 +277,7 @@ fn derived_name(rv: RvError) -> String {
 }
 
 fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
-    move |e| KmError::Unavailable(format!("{context}: {e}"))
+    move |e| KmError::Unavailable(format!("{context}: {e}").into())
 }
 
 /// A session object cakeys made for one step (a derived secret, a key-encryption key, a
@@ -333,7 +341,9 @@ impl Token {
             Some(m) => Some(m.to_owned()),
             None => cfg.module_path(name, &|var| std::env::var(var).ok())?,
         }
-        .ok_or_else(|| KmError::Validation(format!("token '{name}' has no module (set module, or pass --module)")))?;
+        .ok_or_else(|| {
+            KmError::Validation(format!("token '{name}' has no module (set module, or pass --module)").into())
+        })?;
         // From here every return releases the library (finalized with its last token), a failed
         // open too.
         let module_guard = library(&module)?;
@@ -347,8 +357,8 @@ impl Token {
         // provider (D9), the binding layer is always in the stack, a forwarder the module
         // names and the config's extras with it. What the stack subtracts filters the
         // advertisement; a token with no resolved profile keeps the provider's own filter.
-        let profiles =
-            crate::resolution::resolve(cfg, &module, Some(&token), provider.name()).map_err(KmError::Validation)?;
+        let profiles = crate::resolution::resolve(cfg, &module, Some(&token), provider.name())
+            .map_err(|e| KmError::Validation(e.into()))?;
         let advertised = ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?;
         let advertised_names = sorted_names(&advertised);
         let rsa_bits = advertised
@@ -404,12 +414,16 @@ impl Token {
         Ok(self)
     }
 
-    /// An `Unsupported` error carrying the provider's advice, if it has any.
-    pub fn unsupported(&self, msg: String) -> KmError {
+    /// An `Unsupported` error carrying the provider's advice, if it has any, and the return
+    /// value `msg` carries.
+    pub fn unsupported(&self, msg: impl Into<Msg>) -> KmError {
+        let msg = msg.into();
+        let rv = msg.rv();
         match self.provider.hint() {
-            Some(h) => KmError::Unsupported(format!("{msg} (hint for {}: {h})", self.provider.name())),
+            Some(h) => KmError::Unsupported(format!("{msg} (hint for {}: {h})", self.provider.name()).into()),
             None => KmError::Unsupported(msg),
         }
+        .with_rv(rv)
     }
 
     /// A warning for the run when the user PIN counters at open reported a failed login
@@ -653,7 +667,7 @@ impl Token {
         match found.len() {
             0 => Ok(None),
             1 => Ok(Some(found[0])),
-            n => Err(KmError::Ambiguous(format!("{n} objects match locator {loc} on token '{}'", self.name))),
+            n => Err(KmError::Ambiguous(format!("{n} objects match locator {loc} on token '{}'", self.name).into())),
         }
     }
 
@@ -678,12 +692,15 @@ impl Token {
             .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Id(id.clone())])
             .map_err(ck("C_FindObjects"))?;
         if keys.len() > 1 {
-            return Err(KmError::Ambiguous(format!(
-                "{} private keys on token '{}' share CKA_ID {}; a consumer selecting by ID may use another key",
-                keys.len(),
-                self.name,
-                pct_all(&id)
-            )));
+            return Err(KmError::Ambiguous(
+                format!(
+                    "{} private keys on token '{}' share CKA_ID {}; a consumer selecting by ID may use another key",
+                    keys.len(),
+                    self.name,
+                    pct_all(&id)
+                )
+                .into(),
+            ));
         }
         Ok(())
     }
@@ -733,11 +750,14 @@ impl Token {
                 let logout = self.session.logout().map_err(ck("C_Logout (SO)"));
                 out.and_then(|v| logout.map(|()| v))
             }
-            Err(e) => Err(KmError::Unavailable(format!(
-                "C_Login (SO) with soCredentialFile/soCredentialEnv: {e}; it must hold the module's admin \
+            Err(e) => Err(KmError::Unavailable(
+                format!(
+                    "C_Login (SO) with soCredentialFile/soCredentialEnv: {e}; it must hold the module's admin \
                  credential (the SO PIN; ykcs11: the PIV management key in hex, or the PIN on a \
                  device whose management key is PIN-protected)"
-            ))),
+                )
+                .into(),
+            )),
         };
         drop(so);
         if self.logged_in {
@@ -745,7 +765,7 @@ impl Token {
                 self.pin.as_deref().ok_or_else(|| KmError::Unavailable("no user PIN to log back in with".into()))?;
             match self.session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
                 Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
-                Err(e) => return Err(KmError::Unavailable(format!("C_Login (back to the user): {e}"))),
+                Err(e) => return Err(KmError::Unavailable(format!("C_Login (back to the user): {e}").into())),
             }
         }
         out
@@ -815,12 +835,15 @@ fn find_slot(ctx: &Pkcs11, label: &str, serial: Option<&str>, module_path: &str)
         None => format!("token '{label}'"),
     };
     match found.len() {
-        0 => Err(KmError::Unavailable(format!("{named} not present in {module_path}"))),
+        0 => Err(KmError::Unavailable(format!("{named} not present in {module_path}").into())),
         1 => Ok(found.remove(0)),
-        _ => Err(KmError::Ambiguous(format!(
-            "several tokens labelled '{label}' (serials {}); name one with tokenSerial",
-            found.iter().map(|f| format!("'{}'", f.token.serial)).collect::<Vec<_>>().join(", ")
-        ))),
+        _ => Err(KmError::Ambiguous(
+            format!(
+                "several tokens labelled '{label}' (serials {}); name one with tokenSerial",
+                found.iter().map(|f| format!("'{}'", f.token.serial)).collect::<Vec<_>>().join(", ")
+            )
+            .into(),
+        )),
     }
 }
 
@@ -865,10 +888,13 @@ fn session(
     let session = match access {
         Access::Read => ctx.open_ro_session(slot).map_err(ck("C_OpenSession (read-only)"))?,
         Access::Write if write_protected => {
-            return Err(KmError::Unsupported(format!(
-                "token '{name}' is write-protected (CKF_WRITE_PROTECTED): it can be read, never created on or \
+            return Err(KmError::Unsupported(
+                format!(
+                    "token '{name}' is write-protected (CKF_WRITE_PROTECTED): it can be read, never created on or \
                  deleted from"
-            )));
+                )
+                .into(),
+            ));
         }
         Access::Scratch if write_protected => ctx.open_ro_session(slot).map_err(ck("C_OpenSession (read-only)"))?,
         Access::Write | Access::Scratch => ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?,
@@ -878,7 +904,7 @@ fn session(
         pins.user.guard(name, "user")?;
         match session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
             Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
-            Err(e) => return Err(KmError::Unavailable(format!("C_Login: {e}"))),
+            Err(e) => return Err(KmError::Unavailable(format!("C_Login: {e}").into())),
         }
     }
     Ok((session, pin))
@@ -909,13 +935,13 @@ fn read_secret(what: &str, var: Option<&str>, path: Option<&std::path::Path>) ->
     if let Some(var) = var {
         return std::env::var(var)
             .map(|s| Some(Zeroizing::new(s)))
-            .map_err(|_| KmError::Unavailable(format!("{what} env var {var} not set")));
+            .map_err(|_| KmError::Unavailable(format!("{what} env var {var} not set").into()));
     }
     let Some(path) = path else { return Ok(None) };
     std::fs::read_to_string(path)
         .map(Zeroizing::new)
         .map(|s| Some(Zeroizing::new(s.trim_end_matches(['\n', '\r']).to_owned())))
-        .map_err(|e| KmError::Unavailable(format!("{what} file {}: {e}", path.display())))
+        .map_err(|e| KmError::Unavailable(format!("{what} file {}: {e}", path.display()).into()))
 }
 
 /// The `cryptoki` class of a configured object.
@@ -991,10 +1017,13 @@ fn hmac_key_type(name: Kt, kt: KeyType, raw: std::os::raw::c_ulong) -> Result<Ke
     if std::os::raw::c_ulong::from(kt) == raw {
         Ok(kt)
     } else {
-        Err(KmError::Unsupported(format!(
-            "{name}: this build's cryptoki maps it to CKK_SHA256_HMAC; build with \
+        Err(KmError::Unsupported(
+            format!(
+                "{name}: this build's cryptoki maps it to CKK_SHA256_HMAC; build with \
              nix/patches/cryptoki-hmac-key-types.patch applied"
-        )))
+            )
+            .into(),
+        ))
     }
 }
 

@@ -58,7 +58,8 @@ pub enum PinRef {
 /// `Validation` when keys.toml gives the token no PIN; `Unavailable` when `by_value` and the
 /// PIN cannot be read.
 pub fn pin_ref(name: &str, cfg: &TokenCfg, by_value: bool) -> Result<PinRef> {
-    let none = || KmError::Validation(format!("token '{name}' has no PIN to put in the URI (set pinFile or pinEnv)"));
+    let none =
+        || KmError::Validation(format!("token '{name}' has no PIN to put in the URI (set pinFile or pinEnv)").into());
     if by_value {
         return read_pin(cfg)?.map(PinRef::Value).ok_or_else(none);
     }
@@ -68,7 +69,7 @@ pub fn pin_ref(name: &str, cfg: &TokenCfg, by_value: bool) -> Result<PinRef> {
     let file = cfg.pin_file.as_deref().ok_or_else(none)?;
     std::path::absolute(file)
         .map(PinRef::File)
-        .map_err(|e| KmError::Validation(format!("token '{name}': pinFile {}: {e}", file.display())))
+        .map_err(|e| KmError::Validation(format!("token '{name}': pinFile {}: {e}", file.display()).into()))
 }
 
 /// A consumer's view of the locator `uri` ([`Token::uri`]): with `module-path` and the user PIN
@@ -100,7 +101,7 @@ pub fn with_query(uri: &str, module_path: Option<&str>, pin: Option<&PinRef>) ->
 pub fn provider_pem(uri: &str) -> Result<String> {
     use der::Encode as _;
     use der::asn1::{Any, Utf8StringRef};
-    let bad = |e: &dyn std::fmt::Display| KmError::Validation(format!("PEM of {uri}: {e}"));
+    let bad = |e: &dyn std::fmt::Display| KmError::Validation(format!("PEM of {uri}: {e}").into());
     let body = [
         // der 0.8 has no VisibleString type; the description is ASCII.
         Any::new(der::Tag::VisibleString, b"PKCS#11 Provider URI v1.0".as_slice()).and_then(|a| a.to_der()),
@@ -134,7 +135,7 @@ pub fn locator_attrs(loc: &Locator) -> Result<Vec<Attribute>> {
 }
 
 pub(super) fn hex_decode(s: &str) -> Result<Vec<u8>> {
-    cakeys_core::hex::decode(s).ok_or_else(|| KmError::Validation(format!("CKA_ID '{s}' is not hex")))
+    cakeys_core::hex::decode(s).ok_or_else(|| KmError::Validation(format!("CKA_ID '{s}' is not hex").into()))
 }
 
 /// A path attribute's value (`token=`, `serial=`, `object=`): the unreserved characters as they

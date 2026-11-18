@@ -558,7 +558,7 @@ fn same_aes(made: &Made, h: ObjectHandle, value: &[u8]) -> Result<()> {
     let token = made
         .session
         .encrypt(&Mechanism::AesEcb, h, &[0; 16])
-        .map_err(|e| KmError::Unsupported(format!("C_Encrypt (CKM_AES_ECB): {}", ckr(&e))))?;
+        .map_err(|e| KmError::Unsupported(format!("C_Encrypt (CKM_AES_ECB): {}", ckr(&e)).into()))?;
     if Some(token) == host_kcv(value) {
         Ok(())
     } else {
@@ -634,7 +634,7 @@ fn create_public(made: &mut Made, profile: &mut Draft, class: Class, bytes: &[u8
     let on = Declared { object: &object, spec: &probe_spec, locator: &loc };
     let created = made.tok.provider.adjusted(&Template::Object(on), t).and_then(|t| {
         made.tok.managing("the create probe", || {
-            session.create_object(&t).map_err(|e| KmError::Unsupported(format!("C_CreateObject: {}", ckr(&e))))
+            session.create_object(&t).map_err(|e| KmError::Unsupported(format!("C_CreateObject: {}", ckr(&e)).into()))
         })
     });
     let h = match created {

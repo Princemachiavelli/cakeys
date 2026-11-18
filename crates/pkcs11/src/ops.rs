@@ -424,10 +424,9 @@ fn attest(
     let asymmetric = t.object.class.is_asymmetric();
     let spki = if asymmetric { Some(tok.spki(h, &t.on_token.locator)?) } else { None };
     let kind = scheme.attestation_kind().ok_or_else(|| {
-        KmError::Unsupported(format!(
-            "provider '{}' advertises unknown attestation scheme {scheme}",
-            tok.provider.name()
-        ))
+        KmError::Unsupported(
+            format!("provider '{}' advertises unknown attestation scheme {scheme}", tok.provider.name()).into(),
+        )
     })?;
     let a = match tok.attest(h, t.object, spki.as_deref(), provision == Provision::IfMissing) {
         Ok(a) => a,
@@ -437,18 +436,16 @@ fn attest(
                 Some(was) => KmError::PreconditionFailed(format!(
                     "identity downgrade for {}: it was realised with a {} attestation, which it cannot compute now: {e}",
                     t, was.kind
-                )),
+                ).into()),
                 None => e,
             });
         }
         Err(e) => return Err(e),
     };
     if a.scheme != scheme {
-        return Err(KmError::Conflict(format!(
-            "provider '{}' advertises {scheme} but attested {}",
-            tok.provider.name(),
-            a.scheme
-        )));
+        return Err(KmError::Conflict(
+            format!("provider '{}' advertises {scheme} but attested {}", tok.provider.name(), a.scheme).into(),
+        ));
     }
     Ok(AttestationRecord { kind: kind.to_owned(), root: a.root, id: a.id })
 }
@@ -564,7 +561,7 @@ fn absent(t: &Target) -> KmError {
         }
         KeyOrigin::Adopt => "it is adopted, and nothing cakeys runs puts it there".to_owned(),
     };
-    KmError::NotFound(format!("{t}: not under its locator; {what}"))
+    KmError::NotFound(format!("{t}: not under its locator; {what}").into())
 }
 
 /// Create `t`'s object, which `resolve` did not find, and resolve it. Refused before anything is
@@ -582,27 +579,33 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
             t,
             t.object_name,
             ids.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
-        )));
+        ).into()));
     }
     // If-None-Match: never create over anything else under the locator. On a PIV token,
     // generating into an occupied slot would silently replace its key. A session without login
     // sees no private object, so it cannot tell the locator is free.
     if !tok.logged_in {
-        return Err(KmError::Unavailable(format!(
-            "{t}: a session without login cannot see private objects under the locator, so it cannot \
+        return Err(KmError::Unavailable(
+            format!(
+                "{t}: a session without login cannot see private objects under the locator, so it cannot \
              tell the locator is free; configure pinFile or pinEnv for token '{}'",
-            t.token_name
-        )));
+                t.token_name
+            )
+            .into(),
+        ));
     }
     // Any class, unlike an import (`Token::occupied`): a certificate already there certifies
     // some other key, never one generated now.
     let present = tok.find_any(&t.on_token.locator)?;
     if !present.is_empty() {
-        return Err(KmError::Conflict(format!(
-            "{} objects of another class already sit under the locator of {}; refusing to create",
-            present.len(),
-            t
-        )));
+        return Err(KmError::Conflict(
+            format!(
+                "{} objects of another class already sit under the locator of {}; refusing to create",
+                present.len(),
+                t
+            )
+            .into(),
+        ));
     }
     let made_otherwise = tok.create(t.object, t.spec, &t.on_token.locator, cakeys_core::plan::expected_binding(t))?;
     notes.say(format!("created {t}"));
@@ -611,7 +614,7 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
     }
     let e = match resolve_with(t, tok, lock, Provision::IfMissing) {
         Ok(Some(r)) => return Ok(r),
-        Ok(None) => KmError::NotFound(format!("{t} vanished after creation")),
+        Ok(None) => KmError::NotFound(format!("{t} vanished after creation").into()),
         Err(e) => e,
     };
     // The locator was empty before (If-None-Match), so this removes only what we just made: a
@@ -660,13 +663,16 @@ pub enum Made {
 pub fn create(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes: &mut Notes) -> Result<Made> {
     let mode = plan_mode(t)?;
     if let Some(why) = not_origin_create(t) {
-        return Err(KmError::Validation(format!("{t}: {why}")));
+        return Err(KmError::Validation(format!("{t}: {why}").into()));
     }
     if tok.find_key(t.object, &t.on_token.locator, false)?.is_some() {
         if pinned(t, lock).is_none() {
-            return Err(KmError::Exists(format!(
-                "{t} is already under its locator: nothing was created; `cakeys lock` records a key that is there"
-            )));
+            return Err(KmError::Exists(
+                format!(
+                    "{t} is already under its locator: nothing was created; `cakeys lock` records a key that is there"
+                )
+                .into(),
+            ));
         }
         let r = verify(t, tok, lock, notes)?;
         notes.say(format!("{t} is already there and matches the lock: nothing created"));
@@ -819,7 +825,7 @@ pub fn plan_create<'a>(
         let mode = plan_mode(&t)?;
         if let Some(why) = not_origin_create(&t) {
             if named {
-                return Err(KmError::Validation(format!("{t}: {why}")));
+                return Err(KmError::Validation(format!("{t}: {why}").into()));
             }
             out.push(planned(Action::Skip, vec![why]));
             continue;
@@ -921,9 +927,9 @@ pub fn delete(
     notes: &mut Notes,
 ) -> Result<bool> {
     if t.on_token.public_only {
-        return Err(KmError::Unsupported(format!(
-            "{t} is adopted publicOnly; deleting would remove only the public half"
-        )));
+        return Err(KmError::Unsupported(
+            format!("{t} is adopted publicOnly; deleting would remove only the public half").into(),
+        ));
     }
     let loc = &t.on_token.locator;
     // An expected identity is only required when there is something to delete.
@@ -932,21 +938,20 @@ pub fn delete(
         let got = compute_ids(t, tok, lock, h, plan_mode(t)?)?.ids;
         // The schemes computed, in the spec's order of preference: the first is the primary one.
         let computed: Vec<Scheme> = t.schemes().into_iter().filter(|s| got.contains_key(s.name())).collect();
-        let primary = *computed.first().ok_or_else(|| KmError::Unsupported(format!("no identity computed for {t}")))?;
+        let primary =
+            *computed.first().ok_or_else(|| KmError::Unsupported(format!("no identity computed for {t}").into()))?;
         // --if-match names the primary scheme; otherwise the first scheme the lock records.
         let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
         let (scheme, expected) = match if_match {
             Some(want) => (primary, want.to_owned()),
             None => computed.iter().find_map(|s| Some((*s, locked?.get(s.name())?.clone()))).ok_or_else(|| {
-                KmError::PreconditionFailed(format!("no expected {primary} for {t}; pass --if-match"))
+                KmError::PreconditionFailed(format!("no expected {primary} for {t}; pass --if-match").into())
             })?,
         };
         if got.get(scheme.name()) != Some(&expected) {
-            return Err(KmError::PreconditionFailed(format!(
-                "{} holds {:?}, expected {expected}; not deleting",
-                t,
-                got.get(scheme.name())
-            )));
+            return Err(KmError::PreconditionFailed(
+                format!("{} holds {:?}, expected {expected}; not deleting", t, got.get(scheme.name())).into(),
+            ));
         }
         let (n, left) = tok.destroy_identified(h, t.object, loc)?;
         notes.say(format!("destroyed {n} object(s) for {t}"));
@@ -955,11 +960,14 @@ pub fn delete(
                 .note(format_args!("left {left} public key object(s) under the locator of {t}: they hold another key"));
         }
     } else if !tok.logged_in && matches!(t.object.class, Class::PrivateKey | Class::SecretKey) {
-        return Err(KmError::Unavailable(format!(
-            "{t}: a session without login cannot see private objects, so it cannot tell the key is absent; \
+        return Err(KmError::Unavailable(
+            format!(
+                "{t}: a session without login cannot see private objects, so it cannot tell the key is absent; \
              configure pinFile or pinEnv for token '{}'",
-            t.token_name
-        )));
+                t.token_name
+            )
+            .into(),
+        ));
     }
     let mut changed = false;
     if write == LockWrite::Record
@@ -1039,12 +1047,15 @@ pub fn check_open(
         Some(name) => match Scheme::from_input(name) {
             Some(s) if (t.on_token.attestation && s.is_attestation()) || t.schemes().contains(&s) => Some(s),
             _ => {
-                return Err(KmError::Unsupported(format!(
-                    "scheme '{}' for '{object}'; it has {:?}{}",
-                    Scheme::from_input(name).map_or(name, |s| s.name()),
-                    names(&t.schemes()),
-                    if t.on_token.attestation { " plus its token's attestation scheme" } else { "" }
-                )));
+                return Err(KmError::Unsupported(
+                    format!(
+                        "scheme '{}' for '{object}'; it has {:?}{}",
+                        Scheme::from_input(name).map_or(name, |s| s.name()),
+                        names(&t.schemes()),
+                        if t.on_token.attestation { " plus its token's attestation scheme" } else { "" }
+                    )
+                    .into(),
+                ));
             }
         },
     };
@@ -1056,10 +1067,10 @@ pub fn check_open(
     if let Some(s) = scheme {
         let on_token = schemes_on(&t, &tok)?;
         if !on_token.contains(&s) {
-            return Err(KmError::Unsupported(format!(
-                "scheme '{s}' for spec '{spec_name}' on '{token_name}'; it computes {:?}",
-                names(&on_token)
-            )));
+            return Err(KmError::Unsupported(
+                format!("scheme '{s}' for spec '{spec_name}' on '{token_name}'; it computes {:?}", names(&on_token))
+                    .into(),
+            ));
         }
     }
     let r = verify(&t, &tok, lock, notes)?;
@@ -1111,7 +1122,7 @@ pub fn check_token(
 ) -> Result<(Vec<PairCheck>, Token)> {
     let pairs = cfg.select(None, None, Some(token))?;
     if pairs.is_empty() {
-        return Err(KmError::Validation(format!("no spec places an object on token '{token}'")));
+        return Err(KmError::Validation(format!("no spec places an object on token '{token}'").into()));
     }
     let tok = open(token, hal::Access::Read)?;
     if let Some(w) = tok.pin_warning() {

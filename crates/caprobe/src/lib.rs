@@ -174,12 +174,13 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
 
 /// The embedded capability profiles, plus any `--profiles` directory (D11).
 fn profile_set(dir: Option<&Path>) -> anyhow::Result<cakeys_profile::Set> {
-    let set =
-        cakeys_profile::Set::embedded().map_err(KmError::Validation).context("the embedded profiles do not parse")?;
+    let set = cakeys_profile::Set::embedded()
+        .map_err(|e| KmError::Validation(e.into()))
+        .context("the embedded profiles do not parse")?;
     match dir {
         Some(dir) => Ok(set
             .with_dir(dir)
-            .map_err(KmError::Validation)
+            .map_err(|e| KmError::Validation(e.into()))
             .with_context(|| format!("--profiles {}", dir.display()))?),
         None => Ok(set),
     }
@@ -221,7 +222,8 @@ fn run_probe(
 ) -> anyhow::Result<()> {
     let tcfg = token_cfg(cfg, &a.token)?;
     let set = profile_set(a.profiles_dir.as_deref())?;
-    let claimed = a.diff.as_deref().map(|name| set.find(name).map_err(KmError::Validation)).transpose()?;
+    let claimed =
+        a.diff.as_deref().map(|name| set.find(name).map_err(|e| KmError::Validation(e.into()))).transpose()?;
     let access = if a.write { Access::Write } else { Access::Read };
     // Unprofiled: what the probe measures must not be what the committed profile says.
     let tok = open_token(cfg, modules, registry, &a.token, access, notes)?.unprofiled()?;
@@ -248,12 +250,15 @@ fn run_probe(
     for line in &lines {
         eprintln!("{line}");
     }
-    Err(KmError::Unsupported(format!(
-        "{}: {} row{} differ from profile {name}",
-        tok.name,
-        lines.len(),
-        if lines.len() == 1 { "" } else { "s" }
-    ))
+    Err(KmError::Unsupported(
+        format!(
+            "{}: {} row{} differ from profile {name}",
+            tok.name,
+            lines.len(),
+            if lines.len() == 1 { "" } else { "s" }
+        )
+        .into(),
+    )
     .into())
 }
 

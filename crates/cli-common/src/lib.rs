@@ -37,9 +37,13 @@ pub fn activate_profiles(cfg: &Config, notes: &mut Notes) -> Result<(), KmError>
     if cfg.profile_dirs.is_empty() {
         return Ok(());
     }
-    let built: Vec<String> =
-        cakeys_profile::Set::embedded().map_err(KmError::Validation)?.all().iter().map(|p| p.profile.clone()).collect();
-    let set = cakeys_profile::Set::activate(&cfg.profile_dirs).map_err(KmError::Validation)?;
+    let built: Vec<String> = cakeys_profile::Set::embedded()
+        .map_err(|e| KmError::Validation(e.into()))?
+        .all()
+        .iter()
+        .map(|p| p.profile.clone())
+        .collect();
+    let set = cakeys_profile::Set::activate(&cfg.profile_dirs).map_err(|e| KmError::Validation(e.into()))?;
     let added: Vec<&str> =
         set.all().iter().map(|p| p.profile.as_str()).filter(|p| !built.iter().any(|b| b == p)).collect();
     notes.say(format!(
@@ -85,7 +89,7 @@ pub fn module_overrides(args: &[String]) -> anyhow::Result<BTreeMap<String, Stri
 ///
 /// `Validation` (17) when keys.toml has no such token.
 pub fn token_cfg<'a>(cfg: &'a Config, name: &str) -> Result<&'a TokenCfg, KmError> {
-    cfg.tokens.get(name).ok_or_else(|| KmError::Validation(format!("unknown token '{name}'")))
+    cfg.tokens.get(name).ok_or_else(|| KmError::Validation(format!("unknown token '{name}'").into()))
 }
 
 /// Open the token `name` for a verb; a PIN counter that reports an earlier failed login is a

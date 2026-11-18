@@ -14,4 +14,4 @@ pub mod reconcile;
 pub mod sig;
 pub mod types;
 
-pub use error::{KmError, Result};
+pub use error::{KmError, Msg, Result};

@@ -105,7 +105,7 @@ fn refusals_of(module: Option<&Profile>) -> Vec<String> {
 /// The mapping error when a row names a class, key type, curve or hash the baseline does not
 /// know, naming the profile and the row.
 fn side_of(module: &Profile, stack: &Resolved, token: &str, provider: &str, mechanisms: &[String]) -> Result<Side> {
-    let who = |what: &str| KmError::Validation(format!("module profile {}: {what}", module.profile));
+    let who = |what: &str| KmError::Validation(format!("module profile {}: {what}", module.profile).into());
     let mut side = Side::pkcs11(token, provider, mechanisms.iter().cloned());
     // What the stack subtracts: the advertisement's broken rows and every layer's drops.
     side.mechanisms.retain(|m| !stack.subtracted_mechanisms().contains(m.as_str()));
@@ -406,19 +406,19 @@ pub(crate) fn materials<'a>(lock: &'a Lock, token: &str, objects: &[&str]) -> Re
             continue;
         }
         let ty = lock.objects.get(&r.object).and_then(|o| o.object_type.as_ref()).ok_or_else(|| {
-            KmError::PreconditionFailed(format!("the lock records no type for object '{}'", r.object))
+            KmError::PreconditionFailed(format!("the lock records no type for object '{}'", r.object).into())
         })?;
         out.push(Material { object: &r.object, ty, policy: &r.policy, immutables: &r.immutables });
     }
     if let Some(o) = objects.iter().find(|o| !seen.contains(**o)) {
-        return Err(KmError::PreconditionFailed(format!(
-            "object '{o}' has no realisation on token '{token}' in the lock; lock it there first"
-        )));
+        return Err(KmError::PreconditionFailed(
+            format!("object '{o}' has no realisation on token '{token}' in the lock; lock it there first").into(),
+        ));
     }
     if out.is_empty() {
-        return Err(KmError::PreconditionFailed(format!(
-            "the lock records no realisation on token '{token}': nothing to plan"
-        )));
+        return Err(KmError::PreconditionFailed(
+            format!("the lock records no realisation on token '{token}': nothing to plan").into(),
+        ));
     }
     Ok(out)
 }
@@ -433,26 +433,26 @@ pub(crate) fn materials<'a>(lock: &'a Lock, token: &str, objects: &[&str]) -> Re
 /// does not allow `CKA_UNWRAP` or is extractable; whatever `verify` refuses.
 pub(crate) fn transport(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Transport> {
     if t.object.class != ObjectClass::PrivateKey || t.object.key_type != Some(KeyType::Rsa) {
-        return Err(KmError::Validation(format!(
-            "{t}: a transport key is an RSA private key (docs/CAMIGRATE.md D3), not a {}",
-            t.object.class
-        )));
+        return Err(KmError::Validation(
+            format!("{t}: a transport key is an RSA private key (docs/CAMIGRATE.md D3), not a {}", t.object.class)
+                .into(),
+        ));
     }
     ops::verify(t, tok, lock, notes)?;
     let policy = lock.realisation(t.spec_name, t.token_name).map(|r| &r.policy);
     let flag = |name: &str| policy.and_then(|p| p.get(name)) == Some(&AttrValue::Bool(true));
     if !flag("CKA_UNWRAP") {
-        return Err(KmError::PreconditionFailed(format!("{t}: a transport key must allow CKA_UNWRAP")));
+        return Err(KmError::PreconditionFailed(format!("{t}: a transport key must allow CKA_UNWRAP").into()));
     }
     if flag("CKA_EXTRACTABLE") {
-        return Err(KmError::PreconditionFailed(format!(
-            "{t}: a transport key must never leave the token (CKA_EXTRACTABLE = false)"
-        )));
+        return Err(KmError::PreconditionFailed(
+            format!("{t}: a transport key must never leave the token (CKA_EXTRACTABLE = false)").into(),
+        ));
     }
     warn_decrypting(t, lock, notes);
     let h = tok
         .find_key(t.object, &t.on_token.locator, false)?
-        .ok_or_else(|| KmError::NotFound(format!("{t}: the transport key")))?;
+        .ok_or_else(|| KmError::NotFound(format!("{t}: the transport key").into()))?;
     let spki = tok.spki(h, &t.on_token.locator)?;
     Transport::new(&tok.name, tok.provider.name(), t.object_name, &spki, tok.mechanism_names())
 }
@@ -535,12 +535,15 @@ impl Moves {
             return Ok(());
         }
         // With why: the run itself prints no plan, only `--dry-run` does.
-        Err(KmError::Unsupported(format!(
-            "{} of {} objects cannot move as invoked ({})",
-            blocked.len(),
-            self.plans.len(),
-            blocked.join(" | ")
-        )))
+        Err(KmError::Unsupported(
+            format!(
+                "{} of {} objects cannot move as invoked ({})",
+                blocked.len(),
+                self.plans.len(),
+                blocked.join(" | ")
+            )
+            .into(),
+        ))
     }
 }
 
@@ -571,9 +574,9 @@ pub(crate) fn plan_moves(
         Dest::Transport(t, shown) => {
             let side = side_from_transport(t, registry)
                 .ok_or_else(|| {
-                    KmError::Unsupported(format!("{shown}: provider '{}' is not in this build", t.provider))
+                    KmError::Unsupported(format!("{shown}: provider '{}' is not in this build", t.provider).into())
                 })?
-                .map_err(|e| KmError::Validation(format!("{shown}: {e}")))?;
+                .map_err(|e| KmError::Validation(format!("{shown}: {e}").into()))?;
             (Some(side), Known::TransportFile, t.token.clone())
         }
         Dest::File(f) => (None, Known::Nowhere, format!("{f:?} file").to_lowercase()),
@@ -709,7 +712,7 @@ pub(crate) fn locked_transport(
     };
     let spki = base64::engine::general_purpose::STANDARD
         .decode(k)
-        .map_err(|e| KmError::Validation(format!("{t}: the lock's publicKey: {e}")))?;
+        .map_err(|e| KmError::Validation(format!("{t}: the lock's publicKey: {e}").into()))?;
     crate::sealed::check_transport_size(&spki)?;
     Ok(Some(crate::sealed::TransportKey { object: t.object_name.to_owned(), rfc7093m4: id.clone(), spki }))
 }

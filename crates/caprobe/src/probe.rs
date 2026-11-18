@@ -135,10 +135,9 @@ pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: Option<u32>) -> Result<P
     if !tok.logged_in {
         // Without a user login every token-object generation fails with
         // CKR_USER_NOT_LOGGED_IN, which the probes would record as the module's refusals.
-        return Err(KmError::Validation(format!(
-            "token '{}' has no PIN configured: the write probes need a user session",
-            tok.name
-        )));
+        return Err(KmError::Validation(
+            format!("token '{}' has no PIN configured: the write probes need a user session", tok.name).into(),
+        ));
     }
     if let Target::Slot(id) = &target {
         check_slot(tok, id)?;
@@ -166,40 +165,52 @@ pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: Option<u32>) -> Result<P
 fn target(tok: &Token, cfg: &TokenCfg) -> Result<Target> {
     if tok.provider.manages_as_so() {
         let Some(id) = &cfg.probe.scratch_id else {
-            return Err(KmError::Validation(format!(
-                "token '{}': its provider creates keys only in a Security Officer session, into \
+            return Err(KmError::Validation(
+                format!(
+                    "token '{}': its provider creates keys only in a Security Officer session, into \
                  device slots that may hold real keys: name the one slot the write probes may \
                  overwrite with tokens.{}.probe.scratchId (a hex CKA_ID); `scratch` cannot mark the \
                  whole device",
-                tok.name, tok.name
-            )));
+                    tok.name, tok.name
+                )
+                .into(),
+            ));
         };
         if !token::has_admin(cfg) {
-            return Err(KmError::Validation(format!(
-                "token '{}': the write probes generate as Security Officer: set tokens.{}.soCredentialFile \
+            return Err(KmError::Validation(
+                format!(
+                    "token '{}': the write probes generate as Security Officer: set tokens.{}.soCredentialFile \
                  or soCredentialEnv",
-                tok.name, tok.name
-            )));
+                    tok.name, tok.name
+                )
+                .into(),
+            ));
         }
         // The config loader has already validated it.
         let id = cakeys_core::hex::decode(id)
-            .ok_or_else(|| KmError::Validation(format!("probe.scratchId {id:?} is not hex")))?;
+            .ok_or_else(|| KmError::Validation(format!("probe.scratchId {id:?} is not hex").into()))?;
         return Ok(Target::Slot(id));
     }
     if cfg.probe.scratch_id.is_some() {
-        return Err(KmError::Validation(format!(
-            "token '{}': probe.scratchId names a slot for providers that create only as Security Officer \
+        return Err(KmError::Validation(
+            format!(
+                "token '{}': probe.scratchId names a slot for providers that create only as Security Officer \
              into device slots; provider {} creates as the user: mark the token probe.scratch = true",
-            tok.name,
-            tok.provider.name()
-        )));
+                tok.name,
+                tok.provider.name()
+            )
+            .into(),
+        ));
     }
     if !cfg.probe.scratch {
-        return Err(KmError::Validation(format!(
-            "token '{}' is not marked scratch in keys.toml: the write probes would create and \
+        return Err(KmError::Validation(
+            format!(
+                "token '{}' is not marked scratch in keys.toml: the write probes would create and \
              destroy objects on it (tokens.{}.probe.scratch = true)",
-            tok.name, tok.name
-        )));
+                tok.name, tok.name
+            )
+            .into(),
+        ));
     }
     Ok(Target::Labels)
 }
@@ -209,7 +220,8 @@ fn target(tok: &Token, cfg: &TokenCfg) -> Result<Target> {
 /// never overwrite a real key.
 fn check_slot(tok: &Token, id: &[u8]) -> Result<()> {
     let s = tok.raw();
-    let find = |t: &[Attribute]| s.find_objects(t).map_err(|e| KmError::Unavailable(format!("C_FindObjects: {e}")));
+    let find =
+        |t: &[Attribute]| s.find_objects(t).map_err(|e| KmError::Unavailable(format!("C_FindObjects: {e}").into()));
     if find(&[Attribute::Id(id.to_vec())])?.is_empty() {
         return Ok(());
     }
@@ -227,13 +239,16 @@ fn check_slot(tok: &Token, id: &[u8]) -> Result<()> {
         return Ok(());
     }
     let shown = cakeys_core::hex::encode(id);
-    Err(KmError::Validation(format!(
-        "token '{}': probe.scratchId {shown} holds objects that are not {}'s own placeholder from an earlier \
+    Err(KmError::Validation(
+        format!(
+            "token '{}': probe.scratchId {shown} holds objects that are not {}'s own placeholder from an earlier \
          generation, so it may hold a real key: refusing to overwrite it; empty the slot or name \
          another",
-        tok.name,
-        tok.provider.name()
-    )))
+            tok.name,
+            tok.provider.name()
+        )
+        .into(),
+    ))
 }
 
 /// What the probes record as they run: the profile, and the working rows that become its
@@ -1827,12 +1842,13 @@ pub(crate) fn drift(generated: &Profile, claimed: &Profile, write: bool) -> Vec<
 /// write-probe row).
 pub(crate) fn keep_claims(profile: &mut Profile, existing: &str, shown: &str, write: bool) -> Result<()> {
     if !write {
-        return Err(KmError::Validation(format!(
-            "{shown}: a read-only probe would overwrite its generate, wrap and unwrap rows; pass --write"
-        )));
+        return Err(KmError::Validation(
+            format!("{shown}: a read-only probe would overwrite its generate, wrap and unwrap rows; pass --write")
+                .into(),
+        ));
     }
     let old = Profile::from_toml(existing)
-        .map_err(|e| KmError::Validation(format!("{shown}: not a profile, refusing to overwrite: {e}")))?;
+        .map_err(|e| KmError::Validation(format!("{shown}: not a profile, refusing to overwrite: {e}").into()))?;
     profile.migration = old.migration;
     profile.manual = old.manual;
     profile.capabilities.extend(old.capabilities.into_iter().filter(|(c, _)| !c.probed()));

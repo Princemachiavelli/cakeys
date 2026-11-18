@@ -274,7 +274,7 @@ impl TokenCfg {
 ///
 /// `Validation` if the table does not fit `T`: an unknown option name or a bad value.
 pub fn parse_options<T: serde::de::DeserializeOwned>(token: &str, options: &Options) -> Result<T> {
-    options.clone().try_into().map_err(|e| KmError::Validation(format!("tokens.{token}.options: {e}")))
+    options.clone().try_into().map_err(|e| KmError::Validation(format!("tokens.{token}.options: {e}").into()))
 }
 
 /// Intrinsic object type: identical across every spec of the object.
@@ -330,18 +330,22 @@ impl ObjectCfg {
     /// `RustCrypto` crate to validate and encode it, or is not one of the supported ones.
     pub fn curve(&self) -> Result<crate::id::Curve> {
         let kt = self.key_type.map_or("", KeyType::name);
-        let name = self.curve.as_deref().ok_or_else(|| KmError::Validation(format!("{kt} keys need a curve")))?;
+        let name =
+            self.curve.as_deref().ok_or_else(|| KmError::Validation(format!("{kt} keys need a curve").into()))?;
         self.key_type.and_then(|k| crate::id::Curve::from_cfg(k, name)).ok_or_else(|| {
             if crate::id::CURVES_WITHOUT_CRATE.contains(&name) {
-                return KmError::Unsupported(format!(
-                    "curve {name:?}: no RustCrypto crate validates and encodes it yet"
-                ));
+                return KmError::Unsupported(
+                    format!("curve {name:?}: no RustCrypto crate validates and encodes it yet").into(),
+                );
             }
-            KmError::Unsupported(format!(
-                "curve {name:?} for {kt} (supported: secp256r1, secp384r1, secp521r1, secp256k1, \
+            KmError::Unsupported(
+                format!(
+                    "curve {name:?} for {kt} (supported: secp256r1, secp384r1, secp521r1, secp256k1, \
                  brainpoolP256r1, brainpoolP384r1 for CKK_EC; edwards25519, edwards448 for \
                  CKK_EC_EDWARDS)"
-            ))
+                )
+                .into(),
+            )
         })
     }
 
@@ -353,9 +357,9 @@ impl ObjectCfg {
     /// `Unsupported` for a class/key-type pairing cakeys does not manage, and whatever `curve`
     /// rejects for EC and Edwards keys (`Validation` when the object names no curve).
     pub fn checked_key_type(&self) -> Result<KeyType> {
-        self.kind()?
-            .key_type()
-            .ok_or_else(|| KmError::Unsupported(format!("{}/{}", self.class, self.key_type.map_or("", KeyType::name))))
+        self.kind()?.key_type().ok_or_else(|| {
+            KmError::Unsupported(format!("{}/{}", self.class, self.key_type.map_or("", KeyType::name)).into())
+        })
     }
 
     /// What the object is: its class and type fields parsed into one of the combinations
@@ -368,7 +372,7 @@ impl ObjectCfg {
     /// without `certificateType = "CKC_X_509"`; `Unsupported` for a class/key-type pairing
     /// cakeys does not manage, or a curve [`Self::curve`] refuses.
     pub fn kind(&self) -> Result<ObjectKind> {
-        let invalid = |why: &str| Err(KmError::Validation(why.to_owned()));
+        let invalid = |why: &str| Err(KmError::Validation(why.to_owned().into()));
         let class = self.class;
         let ecc = matches!(self.key_type, Some(KeyType::Ec | KeyType::EcEdwards));
         if self.certificate_type.is_some() && class != ObjectClass::Certificate {
@@ -383,7 +387,7 @@ impl ObjectCfg {
         }
         // A key's class and type pair first: a field that fits neither is the lesser news.
         if class.is_key() && self.key_type.is_none_or(|k| k.is_asymmetric() != class.is_asymmetric()) {
-            return Err(KmError::Unsupported(format!("{class}/{}", self.key_type.map_or("", KeyType::name))));
+            return Err(KmError::Unsupported(format!("{class}/{}", self.key_type.map_or("", KeyType::name)).into()));
         }
         if self.curve.is_some() && !(ecc && class.is_asymmetric()) {
             return invalid("curve applies to CKK_EC and CKK_EC_EDWARDS keys only");
@@ -413,7 +417,7 @@ impl ObjectCfg {
             (ObjectClass::SecretKey, Some(k)) if !k.is_asymmetric() => {
                 ObjectKind::Secret { key_type: k, value_len: self.value_len }
             }
-            (c, k) => return Err(KmError::Unsupported(format!("{c}/{}", k.map_or("", KeyType::name)))),
+            (c, k) => return Err(KmError::Unsupported(format!("{c}/{}", k.map_or("", KeyType::name)).into())),
         })
     }
 }
@@ -839,13 +843,16 @@ impl Lock {
     /// that list each other.
     fn validate(self, path: &Path) -> Result<Lock> {
         if self.version != LOCK_VERSION {
-            return Err(KmError::Validation(format!(
-                "{}: lock version {} is not supported (this cakeys reads {LOCK_VERSION})",
-                path.display(),
-                self.version
-            )));
+            return Err(KmError::Validation(
+                format!(
+                    "{}: lock version {} is not supported (this cakeys reads {LOCK_VERSION})",
+                    path.display(),
+                    self.version
+                )
+                .into(),
+            ));
         }
-        let invalid = |msg: String| KmError::Validation(format!("{}: {msg}", path.display()));
+        let invalid = |msg: String| KmError::Validation(format!("{}: {msg}", path.display()).into());
         self.check_objects().map_err(invalid)?;
         self.check_realisations().map_err(invalid)?;
         self.check_observations().map_err(invalid)?;
@@ -1429,7 +1436,7 @@ pub fn load_config_with(path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Re
 ///
 /// `Validation`, as [`load_config_with`].
 pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<Config> {
-    let invalid = |e: &dyn std::fmt::Display| KmError::Validation(format!("{}: {e}", path.display()));
+    let invalid = |e: &dyn std::fmt::Display| KmError::Validation(format!("{}: {e}", path.display()).into());
     let mut cfg: Config = toml::from_str(text).map_err(|e| invalid(&e))?;
     check_names(&cfg).map_err(|e| invalid(&e))?;
     for dir in &mut cfg.profile_dirs {
@@ -1439,8 +1446,8 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
         o.canonicalize();
         // Every object's type, used by a spec or not (review V5); a plan reads it again.
         o.kind().map_err(|e| match e {
-            KmError::Validation(m) => KmError::Validation(format!("{}: object '{name}': {m}", path.display())),
-            KmError::Unsupported(m) => KmError::Unsupported(format!("{}: object '{name}': {m}", path.display())),
+            KmError::Validation(m) => KmError::Validation(format!("{}: object '{name}': {m}", path.display()).into()),
+            KmError::Unsupported(m) => KmError::Unsupported(format!("{}: object '{name}': {m}", path.display()).into()),
             other => other,
         })?;
         check_value_len(o).map_err(|e| invalid(&format_args!("object '{name}': {e}")))?;
@@ -1703,10 +1710,13 @@ fn env_ref(value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>) -> Res
         None => return Ok(value.to_owned()),
     };
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err(KmError::Validation(format!("{what}: \"{value}\" is neither $NAME, ${{NAME}} nor a literal path")));
+        return Err(KmError::Validation(
+            format!("{what}: \"{value}\" is neither $NAME, ${{NAME}} nor a literal path").into(),
+        ));
     }
-    env(name)
-        .ok_or_else(|| KmError::Validation(format!("{what}: environment variable {name} (\"{value}\") is not set")))
+    env(name).ok_or_else(|| {
+        KmError::Validation(format!("{what}: environment variable {name} (\"{value}\") is not set").into())
+    })
 }
 
 /// # Errors
@@ -1727,7 +1737,8 @@ pub fn load_lock(path: &Path) -> Result<Lock> {
 ///
 /// `Validation` if it is not a valid lock of the current schema.
 pub fn parse_lock(text: &str, path: &Path) -> Result<Lock> {
-    let mut lock: Lock = toml::from_str(text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display())))?;
+    let mut lock: Lock =
+        toml::from_str(text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display()).into()))?;
     // Recorded types compare equal to canonicalized keys.toml types.
     for t in lock.objects.values_mut().filter_map(|o| o.object_type.as_mut()) {
         t.canonicalize();
@@ -1743,7 +1754,8 @@ pub fn parse_lock(text: &str, path: &Path) -> Result<Lock> {
 ///
 /// `Io` if the lock cannot be encoded, or the temporary write, sync or rename fails.
 pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
-    let text = toml::to_string_pretty(lock).map_err(|e| KmError::Io(format!("encoding {}: {e}", path.display())))?;
+    let text =
+        toml::to_string_pretty(lock).map_err(|e| KmError::Io(format!("encoding {}: {e}", path.display()).into()))?;
     // Created like any new file (0666 under the umask).
     write_whole(path, text.as_bytes(), 0o666)
 }
@@ -1769,7 +1781,7 @@ pub fn write_whole(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     tmp.write_all(bytes)
         .and_then(|()| tmp.as_file().sync_all())
         .map_err(KmError::io(format!("writing {}", tmp.path().display())))?;
-    tmp.persist(path).map_err(|e| KmError::Io(format!("renaming over {}: {}", path.display(), e.error)))?;
+    tmp.persist(path).map_err(|e| KmError::Io(format!("renaming over {}: {}", path.display(), e.error).into()))?;
     // The rename itself is durable once the directory is synced.
     std::fs::File::open(dir).and_then(|d| d.sync_all()).map_err(KmError::io(format!("syncing {}", dir.display())))
 }
@@ -1885,7 +1897,7 @@ impl Config {
         let Some(file) = self.object_migrate.get(object).and_then(|m| m.file.as_deref()) else { return Ok(None) };
         let path = PathBuf::from(env_ref(file, &format!("object '{object}': migrate.file"), env)?);
         if let Some(why) = self.in_store(object, &path) {
-            return Err(KmError::Validation(why));
+            return Err(KmError::Validation(why.into()));
         }
         Ok(Some(path))
     }
@@ -1943,18 +1955,20 @@ impl Config {
         if let Some(o) = object
             && !self.objects.contains_key(o)
         {
-            return Err(KmError::Validation(format!("unknown object '{o}'")));
+            return Err(KmError::Validation(format!("unknown object '{o}'").into()));
         }
         if let Some(s) = spec {
-            let Some(cfg) = self.specs.get(s) else { return Err(KmError::Validation(format!("unknown spec '{s}'"))) };
+            let Some(cfg) = self.specs.get(s) else {
+                return Err(KmError::Validation(format!("unknown spec '{s}'").into()));
+            };
             if let Some(o) = object.filter(|o| *o != cfg.object) {
-                return Err(KmError::Validation(format!("spec '{s}' realises '{}', not '{o}'", cfg.object)));
+                return Err(KmError::Validation(format!("spec '{s}' realises '{}', not '{o}'", cfg.object).into()));
             }
         }
         if let Some(t) = token
             && !self.tokens.contains_key(t)
         {
-            return Err(KmError::Validation(format!("unknown token '{t}'")));
+            return Err(KmError::Validation(format!("unknown token '{t}'").into()));
         }
         Ok(self
             .specs
@@ -1981,14 +1995,17 @@ impl Config {
         let what = object.map_or_else(|| format!("spec '{}'", spec.unwrap_or_default()), |o| format!("object '{o}'"));
         match pairs.as_slice() {
             [(s, t)] => Ok(((*s).to_owned(), (*t).to_owned())),
-            [] => Err(KmError::Validation(format!(
-                "no spec places {what}{}{}",
-                spec.filter(|_| object.is_some()).map_or_else(String::new, |s| format!(" through spec '{s}'")),
-                token.map_or_else(String::new, |t| format!(" on token '{t}'"))
-            ))),
-            _ => Err(KmError::Ambiguous(format!(
-                "{what} has several (spec, token) pairs {pairs:?}; pass --spec/--token"
-            ))),
+            [] => Err(KmError::Validation(
+                format!(
+                    "no spec places {what}{}{}",
+                    spec.filter(|_| object.is_some()).map_or_else(String::new, |s| format!(" through spec '{s}'")),
+                    token.map_or_else(String::new, |t| format!(" on token '{t}'"))
+                )
+                .into(),
+            )),
+            _ => Err(KmError::Ambiguous(
+                format!("{what} has several (spec, token) pairs {pairs:?}; pass --spec/--token").into(),
+            )),
         }
     }
 }

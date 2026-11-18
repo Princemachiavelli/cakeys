@@ -131,13 +131,16 @@ impl Token {
             return Ok(());
         }
         let name = |c: Option<Curve>| c.map_or("RSA", Curve::name);
-        Err(KmError::Conflict(format!(
-            "token '{}': the public key found for the private key is {} ({}), but the private key is {}",
-            self.name,
-            name(found),
-            id::sri(spki),
-            name(own)
-        )))
+        Err(KmError::Conflict(
+            format!(
+                "token '{}': the public key found for the private key is {} ({}), but the private key is {}",
+                self.name,
+                name(found),
+                id::sri(spki),
+                name(own)
+            )
+            .into(),
+        ))
     }
 
     /// The public key of the single certificate under the locator: the last stand-in [`Self::spki`]
@@ -175,20 +178,26 @@ impl Token {
             match self.held_spki(p) {
                 Some(held) if held == spki => {}
                 Some(held) => {
-                    return Err(KmError::Conflict(format!(
-                        "a public key object under locator {loc} on token '{}' holds another key ({}) than the \
+                    return Err(KmError::Conflict(
+                        format!(
+                            "a public key object under locator {loc} on token '{}' holds another key ({}) than the \
                          private key ({}); a consumer selecting the public half by the locator would get it",
-                        self.name,
-                        id::sri(&held),
-                        id::sri(&spki)
-                    )));
+                            self.name,
+                            id::sri(&held),
+                            id::sri(&spki)
+                        )
+                        .into(),
+                    ));
                 }
                 None => {
-                    return Err(KmError::Conflict(format!(
-                        "a public key object under locator {loc} on token '{}' exposes no key material, so it \
+                    return Err(KmError::Conflict(
+                        format!(
+                            "a public key object under locator {loc} on token '{}' exposes no key material, so it \
                          cannot be told apart from another key's",
-                        self.name
-                    )));
+                            self.name
+                        )
+                        .into(),
+                    ));
                 }
             }
         }
@@ -217,12 +226,15 @@ impl Token {
     /// Fail when the object's `CKA_PUBLIC_KEY_INFO` names a different key than its material.
     fn cross_check(&self, h: ObjectHandle, spki: &[u8]) -> Result<()> {
         match self.public_key_info(h) {
-            Some(Ok(asserted)) if asserted != spki => Err(KmError::Conflict(format!(
-                "token '{}' reports a CKA_PUBLIC_KEY_INFO ({}) that disagrees with the key material ({})",
-                self.name,
-                id::sri(&asserted),
-                id::sri(spki)
-            ))),
+            Some(Ok(asserted)) if asserted != spki => Err(KmError::Conflict(
+                format!(
+                    "token '{}' reports a CKA_PUBLIC_KEY_INFO ({}) that disagrees with the key material ({})",
+                    self.name,
+                    id::sri(&asserted),
+                    id::sri(spki)
+                )
+                .into(),
+            )),
             _ => Ok(()),
         }
     }
@@ -243,7 +255,7 @@ impl Token {
                     .map_err(ck("C_GetAttributeValue"))?;
                 match a.as_slice() {
                     [Attribute::EcParams(params), Attribute::EcPoint(p)] => Curve::from_params(params)
-                        .ok_or_else(|| KmError::Unsupported(format!("CKA_EC_PARAMS {params:02x?}")))?
+                        .ok_or_else(|| KmError::Unsupported(format!("CKA_EC_PARAMS {params:02x?}").into()))?
                         .spki_from_point(&self.provider.ec_point(p))
                         .map(Some),
                     _ => Ok(None),
@@ -259,7 +271,7 @@ impl Token {
                     _ => Ok(None),
                 }
             }
-            kt => Err(KmError::Unsupported(format!("public key of type {kt:?}"))),
+            kt => Err(KmError::Unsupported(format!("public key of type {kt:?}").into())),
         }
     }
 
@@ -267,8 +279,9 @@ impl Token {
     fn commit(&self, h: ObjectHandle, object: &ObjectCfg, c: Commit, commitment_label: &str) -> Result<Vec<u8>> {
         let s = &self.session;
         let input = c.input(commitment_label, object);
-        let fail =
-            |e: CkError| KmError::Unsupported(format!("{} commitment ({}): {e}", c.scheme(), commit_mechanism(c)));
+        let fail = |e: CkError| {
+            KmError::Unsupported(format!("{} commitment ({}): {e}", c.scheme(), commit_mechanism(c)).into())
+        };
         match c {
             Commit::Hmac(hash) => {
                 let m = match hash {
@@ -305,7 +318,8 @@ impl Token {
         commitment_label: &str,
     ) -> Result<Vec<(Commit, Vec<u8>)>> {
         let s = &self.session;
-        let fail = |what: &'static str| move |e: CkError| KmError::Unsupported(format!("wrap-rebind {what}: {e}"));
+        let fail =
+            |what: &'static str| move |e: CkError| KmError::Unsupported(format!("wrap-rebind {what}: {e}").into());
         // Both templates before anything is made.
         let kek_template = self.session_template(SessionKey::RebindKek)?;
         let template = self.rebind_copy_template(object, commits)?;

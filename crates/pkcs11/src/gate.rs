@@ -34,9 +34,9 @@ pub struct Stack {
 /// `Validation` (17) for a profile keys.toml names in `tokens.<t>.profiles` that no loaded
 /// profile set has — a config error, as at token open.
 pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Result<Stack, String>> {
-    let set = Set::active().map_err(KmError::Validation)?;
+    let set = Set::active().map_err(|e| KmError::Validation(e.into()))?;
     for p in &cfg.profiles {
-        set.find(p).map_err(|e| KmError::Validation(format!("token '{name}': {e}")))?;
+        set.find(p).map_err(|e| KmError::Validation(format!("token '{name}': {e}").into()))?;
     }
     let observed = match lock.token_observation(name) {
         TokenObservation::One(o) => Some(o),
@@ -161,8 +161,8 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates
         out.refusals
             .push(format!("{t}: token '{}' cannot prove possession by {cap} ({}{why})", t.token_name, m.profile));
     }
-    let set = Set::active().map_err(KmError::Validation)?;
-    let baseline = set.baseline().map_err(KmError::Validation)?;
+    let set = Set::active().map_err(|e| KmError::Validation(e.into()))?;
+    let baseline = set.baseline().map_err(|e| KmError::Validation(e.into()))?;
     let layers: Vec<&cakeys_profile::Profile> = stack.resolved.layers.iter().collect();
     let eff = Effective::new(baseline, stack.resolved.module.as_ref(), &layers);
     let token = t.token_name;

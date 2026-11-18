@@ -54,7 +54,7 @@ pub struct Certified {
 ///
 /// `Unavailable` when the TCTI connection cannot be made.
 pub fn context(conf: &tss_esapi::Tcti) -> Result<Context> {
-    Context::new(conf.clone()).map_err(|e| KmError::Unavailable(format!("connecting to the TPM: {e}")))
+    Context::new(conf.clone()).map_err(|e| KmError::Unavailable(format!("connecting to the TPM: {e}").into()))
 }
 
 /// Run `f` with the transient object `handle`, then flush it whatever `f` returned. Without a
@@ -82,8 +82,8 @@ fn flushing<T>(ctx: &mut Context, handle: KeyHandle, f: impl FnOnce(&mut Context
 /// is off (or creating/evicting one fails); `Conflict` when the object at the handle is not a
 /// cakeys Attestation Key.
 pub fn attestation_key(ctx: &mut Context, handle: u32, provision: bool) -> Result<(KeyHandle, Public, Name)> {
-    let persistent =
-        PersistentTpmHandle::new(handle).map_err(|e| KmError::Validation(format!("akHandle {handle:#010x}: {e}")))?;
+    let persistent = PersistentTpmHandle::new(handle)
+        .map_err(|e| KmError::Validation(format!("akHandle {handle:#010x}: {e}").into()))?;
     let template = ak_template()?;
     if let Ok(tr) = ctx.tr_from_tpm_public(TpmHandle::Persistent(persistent)) {
         // Already provisioned: read the key where it sits. (Evicting a persistent object again
@@ -94,18 +94,18 @@ pub fn attestation_key(ctx: &mut Context, handle: u32, provision: bool) -> Resul
         return Ok((key, public, qualified_name));
     }
     if !provision {
-        return Err(KmError::Unavailable(format!(
-            "no Attestation Key at {handle:#010x} on this TPM; `lock` provisions it"
-        )));
+        return Err(KmError::Unavailable(
+            format!("no Attestation Key at {handle:#010x} on this TPM; `lock` provisions it").into(),
+        ));
     }
     let transient = ctx
         .execute_with_session(Some(AuthSession::Password), |ctx| {
             ctx.create_primary(Hierarchy::Owner, template, None, None, None, None)
         })
         .map_err(|e| {
-            KmError::Unavailable(format!(
-                "creating the Attestation Key in the owner hierarchy (is owner auth empty?): {e}"
-            ))
+            KmError::Unavailable(
+                format!("creating the Attestation Key in the owner hierarchy (is owner auth empty?): {e}").into(),
+            )
         })?
         .key_handle;
     // The persistent copy is the key from now on; the transient one is flushed either way.
@@ -114,9 +114,9 @@ pub fn attestation_key(ctx: &mut Context, handle: u32, provision: bool) -> Resul
             ctx.evict_control(Provision::Owner, transient.into(), Persistent::Persistent(persistent))
         })
         .map_err(|e| {
-            KmError::Unavailable(format!(
-                "making the Attestation Key persistent at {handle:#010x} (is the handle free?): {e}"
-            ))
+            KmError::Unavailable(
+                format!("making the Attestation Key persistent at {handle:#010x} (is the handle free?): {e}").into(),
+            )
         })
     })?;
     let key = KeyHandle::from(persisted);
@@ -135,7 +135,7 @@ fn ak_template() -> Result<Public> {
         .with_restricted(true)
         .with_key_derivation_function_scheme(KeyDerivationFunctionScheme::Null)
         .build()
-        .map_err(|e| KmError::Validation(format!("AK template: {e}")))?;
+        .map_err(|e| KmError::Validation(format!("AK template: {e}").into()))?;
     let attrs = ObjectAttributesBuilder::new()
         .with_fixed_tpm(true)
         .with_fixed_parent(true)
@@ -145,7 +145,7 @@ fn ak_template() -> Result<Public> {
         .with_decrypt(false)
         .with_restricted(true)
         .build()
-        .map_err(|e| KmError::Validation(format!("AK attributes: {e}")))?;
+        .map_err(|e| KmError::Validation(format!("AK attributes: {e}").into()))?;
     PublicBuilder::new()
         .with_public_algorithm(PublicAlgorithm::Ecc)
         .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
@@ -153,7 +153,7 @@ fn ak_template() -> Result<Public> {
         .with_ecc_parameters(params)
         .with_ecc_unique_identifier(EccPoint::default())
         .build()
-        .map_err(|e| KmError::Validation(format!("AK public area: {e}")))
+        .map_err(|e| KmError::Validation(format!("AK public area: {e}").into()))
 }
 
 /// Whether the key found at the AK handle is one cakeys would have provisioned: everything of
@@ -170,15 +170,18 @@ fn check_ak(public: &Public, template: &Public, handle: u32) -> Result<()> {
     if same {
         return Ok(());
     }
-    Err(KmError::Conflict(format!(
-        "the object at akHandle {handle:#010x} is not a cakeys Attestation Key (a restricted P-256 \
+    Err(KmError::Conflict(
+        format!(
+            "the object at akHandle {handle:#010x} is not a cakeys Attestation Key (a restricted P-256 \
          ECDSA-SHA256 signing key, fixedTPM, empty policy): an unrestricted key could sign forged \
          attestations; free the handle or set tokens.<t>.akHandle to another"
-    )))
+        )
+        .into(),
+    ))
 }
 
 fn read_public(ctx: &mut Context, key: KeyHandle) -> Result<(Public, Name, Name)> {
-    ctx.read_public(key).map_err(|e| KmError::Unavailable(format!("TPM2_ReadPublic: {e}")))
+    ctx.read_public(key).map_err(|e| KmError::Unavailable(format!("TPM2_ReadPublic: {e}").into()))
 }
 
 /// The seal object's auth value: SHA-256(PIN ‖ salt) truncated to 16 bytes, *as the hex string
@@ -203,16 +206,19 @@ fn seal_auth(pin: &[u8], salt: &str) -> Vec<u8> {
 /// practice); `Conflict` when the unsealed payload is not 32 bytes of hex text.
 pub fn wrapping_key(ctx: &mut Context, store: &Store, pin: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     let auth = Auth::try_from(seal_auth(pin, &store.seal.auth_salt))
-        .map_err(|e| KmError::Unavailable(format!("seal auth: {e}")))?;
+        .map_err(|e| KmError::Unavailable(format!("seal auth: {e}").into()))?;
     // `TPM2_Load` needs no session beyond the parent's (empty-auth password), and
     // `Esys_TR_FromTPMPublic` runs `TPM2_ReadPublic`, which takes none at all: keep both
     // outside the unseal's password session.
     let seal = load(ctx, &store.parent, &store.seal.priv_blob, &store.seal.pub_blob)?;
     let unsealed = flushing(ctx, seal, |ctx| {
-        ctx.tr_set_auth(seal.into(), auth).map_err(|e| KmError::Unavailable(format!("setting the seal auth: {e}")))?;
+        ctx.tr_set_auth(seal.into(), auth)
+            .map_err(|e| KmError::Unavailable(format!("setting the seal auth: {e}").into()))?;
         ctx.execute_with_session(Some(AuthSession::Password), |ctx| {
             ctx.unseal(seal.into()).map_err(|e| {
-                KmError::Unavailable(format!("TPM2_Unseal of the token's wrapping key (is the user PIN right?): {e}"))
+                KmError::Unavailable(
+                    format!("TPM2_Unseal of the token's wrapping key (is the user PIN right?): {e}").into(),
+                )
             })
         })
     })?;
@@ -222,7 +228,7 @@ pub fn wrapping_key(ctx: &mut Context, store: &Store, pin: &[u8]) -> Result<Zero
     );
     let key = Zeroizing::new(super::store_hex(&hex)?);
     if key.len() != 32 {
-        return Err(KmError::Conflict(format!("token wrapping key is {} bytes, expected 32", key.len())));
+        return Err(KmError::Conflict(format!("token wrapping key is {} bytes, expected 32", key.len()).into()));
     }
     Ok(key)
 }
@@ -260,23 +266,23 @@ fn load(ctx: &mut Context, parent: &Parent, priv_blob: &[u8], pub_blob: &[u8]) -
     let parent_tr = ctx
         .tr_from_tpm_public(TpmHandle::Persistent(
             PersistentTpmHandle::new(parent.handle)
-                .map_err(|e| KmError::Unavailable(format!("parent handle {:#010x}: {e}", parent.handle)))?,
+                .map_err(|e| KmError::Unavailable(format!("parent handle {:#010x}: {e}", parent.handle).into()))?,
         ))
-        .map_err(|e| KmError::Unavailable(format!("loading the token primary {:#010x}: {e}", parent.handle)))?;
+        .map_err(|e| KmError::Unavailable(format!("loading the token primary {:#010x}: {e}", parent.handle).into()))?;
     let parent_key = KeyHandle::from(parent_tr);
     ctx.tr_set_auth(
         parent_tr,
-        Auth::try_from(parent.auth.clone()).map_err(|e| KmError::Unavailable(format!("parent auth: {e}")))?,
+        Auth::try_from(parent.auth.clone()).map_err(|e| KmError::Unavailable(format!("parent auth: {e}").into()))?,
     )
-    .map_err(|e| KmError::Unavailable(format!("setting the parent auth: {e}")))?;
+    .map_err(|e| KmError::Unavailable(format!("setting the parent auth: {e}").into()))?;
     let (private, public) = blobs(priv_blob, pub_blob)?;
     ctx.execute_with_session(Some(AuthSession::Password), |ctx| ctx.load(parent_key, private, public))
-        .map_err(|e| KmError::Unavailable(format!("TPM2_Load of the object's blob: {e}")))
+        .map_err(|e| KmError::Unavailable(format!("TPM2_Load of the object's blob: {e}").into()))
 }
 
 /// The content of one size-prefixed store blob, with the prefix checked.
 fn blob_content<'a>(blob: &'a [u8], what: &str) -> Result<&'a [u8]> {
-    let truncated = || KmError::Conflict(format!("the store's {what} blob is truncated"));
+    let truncated = || KmError::Conflict(format!("the store's {what} blob is truncated").into());
     let size = u16::from_be_bytes(*blob.first_chunk::<2>().ok_or_else(truncated)?) as usize;
     blob.get(2..2 + size).ok_or_else(truncated)
 }
@@ -285,7 +291,7 @@ fn blob_content<'a>(blob: &'a [u8], what: &str) -> Result<&'a [u8]> {
 /// carry the content without the size prefix, so the prefix is checked and stripped.
 fn blobs(priv_blob: &[u8], pub_blob: &[u8]) -> Result<(Private, Public)> {
     let private = Private::try_from(blob_content(priv_blob, "private")?.to_vec())
-        .map_err(|e| KmError::Conflict(format!("the store's private blob: {e}")))?;
+        .map_err(|e| KmError::Conflict(format!("the store's private blob: {e}").into()))?;
     Ok((private, unmarshal_public(pub_blob)?))
 }
 
@@ -296,8 +302,10 @@ fn blobs(priv_blob: &[u8], pub_blob: &[u8]) -> Result<(Private, Public)> {
 /// `Conflict` when the blob does not unmarshal, or is not a public area tss-esapi accepts.
 pub fn unmarshal_public(pub_blob: &[u8]) -> Result<Public> {
     PublicBuffer::unmarshall(pub_blob)
-        .map_err(|e| KmError::Conflict(format!("the store's public blob does not unmarshal: {e}")))
-        .and_then(|b| Public::try_from(b).map_err(|e| KmError::Conflict(format!("the store's public blob: {e}"))))
+        .map_err(|e| KmError::Conflict(format!("the store's public blob does not unmarshal: {e}").into()))
+        .and_then(|b| {
+            Public::try_from(b).map_err(|e| KmError::Conflict(format!("the store's public blob: {e}").into()))
+        })
 }
 
 /// Certify the loaded `key` with the AK: a fresh random nonce as qualifying data (freshness),
@@ -310,24 +318,23 @@ pub fn unmarshal_public(pub_blob: &[u8]) -> Result<Public> {
 /// replay.
 pub fn certify(ctx: &mut Context, key: KeyHandle, key_auth: &[u8], ak: KeyHandle) -> Result<(Attest, Signature)> {
     let mut nonce = vec![0u8; 32];
-    getrandom::fill(&mut nonce).map_err(|e| KmError::Unavailable(format!("OS RNG: {e}")))?;
+    getrandom::fill(&mut nonce).map_err(|e| KmError::Unavailable(format!("OS RNG: {e}").into()))?;
     ctx.tr_set_auth(
         key.into(),
-        Auth::try_from(key_auth.to_vec()).map_err(|e| KmError::Unavailable(format!("object auth: {e}")))?,
+        Auth::try_from(key_auth.to_vec()).map_err(|e| KmError::Unavailable(format!("object auth: {e}").into()))?,
     )
-    .map_err(|e| KmError::Unavailable(format!("setting the object auth: {e}")))?;
-    let data = Data::try_from(nonce.clone()).map_err(|e| KmError::Unavailable(format!("nonce: {e}")))?;
+    .map_err(|e| KmError::Unavailable(format!("setting the object auth: {e}").into()))?;
+    let data = Data::try_from(nonce.clone()).map_err(|e| KmError::Unavailable(format!("nonce: {e}").into()))?;
     let (attest, signature) = ctx
         .execute_with_sessions((Some(AuthSession::Password), Some(AuthSession::Password), None), |ctx| {
             ctx.certify(key.into(), ak, data, SignatureScheme::Null)
         })
-        .map_err(|e| KmError::Unavailable(format!("TPM2_Certify: {e}")))?;
+        .map_err(|e| KmError::Unavailable(format!("TPM2_Certify: {e}").into()))?;
     // A certify statement for this run's nonce — never another statement or a replay.
     if attest.attestation_type() != AttestationType::Certify {
-        return Err(KmError::Conflict(format!(
-            "the attestation is a {:?}, not a certify statement",
-            attest.attestation_type()
-        )));
+        return Err(KmError::Conflict(
+            format!("the attestation is a {:?}, not a certify statement", attest.attestation_type()).into(),
+        ));
     }
     if attest.extra_data().value() != nonce {
         return Err(KmError::Conflict("the attestation names other qualifying data than this run's nonce".into()));
@@ -343,7 +350,7 @@ pub fn certify(ctx: &mut Context, key: KeyHandle, key_auth: &[u8], ak: KeyHandle
 ///
 /// `Unavailable` if the attestation cannot be re-marshaled (a TPM2 command error code).
 pub fn attest_bytes(attest: &Attest) -> Result<Vec<u8>> {
-    attest.marshall().map_err(|e| KmError::Unavailable(format!("marshaling the attestation: {e}")))
+    attest.marshall().map_err(|e| KmError::Unavailable(format!("marshaling the attestation: {e}").into()))
 }
 
 /// Verify the AK's ECDSA-SHA256 signature over the attestation bytes, on the host: the TPM
@@ -357,14 +364,14 @@ pub fn verify_signature(signature: &Signature, ak_spki: &[u8], bytes: &[u8]) -> 
     use cakeys_core::sig::{self, EcdsaHash, Encoding};
     let (r, s) = match signature {
         Signature::EcDsa(ecc) => (ecc.signature_r().value().to_vec(), ecc.signature_s().value().to_vec()),
-        s => return Err(KmError::Unsupported(format!("the AK signed with {s:?}, not ECDSA-SHA256"))),
+        s => return Err(KmError::Unsupported(format!("the AK signed with {s:?}, not ECDSA-SHA256").into())),
     };
     // r and s are minimal big-endian integers: left-pad each to the 32-byte field size. Longer
     // is no P-256 signature (an error, never a panic).
     let mut raw = [0u8; 64];
     for (half, v) in raw.as_chunks_mut::<32>().0.iter_mut().zip([&r, &s]) {
         let at = 32usize.checked_sub(v.len()).ok_or_else(|| {
-            KmError::Conflict(format!("the AK's signature has a {}-byte component; P-256 has 32", v.len()))
+            KmError::Conflict(format!("the AK's signature has a {}-byte component; P-256 has 32", v.len()).into())
         })?;
         half[at..].copy_from_slice(v);
     }
@@ -401,7 +408,11 @@ pub fn material_of(public: &Public) -> Result<Material> {
                 EccCurve::NistP256 => id::Curve::P256,
                 EccCurve::NistP384 => id::Curve::P384,
                 EccCurve::NistP521 => id::Curve::P521,
-                c => return Err(KmError::Unsupported(format!("TPM curve {c:?} (supported: NIST P-256/P-384/P-521)"))),
+                c => {
+                    return Err(KmError::Unsupported(
+                        format!("TPM curve {c:?} (supported: NIST P-256/P-384/P-521)").into(),
+                    ));
+                }
             };
             let mut point = vec![0x04];
             point.extend_from_slice(unique.x().value());
@@ -441,7 +452,7 @@ pub fn recompute_name(pub_blob: &[u8]) -> Result<Vec<u8>> {
         0x000B => sha2::Sha256::digest(tpmt).to_vec(),
         0x000C => sha2::Sha384::digest(tpmt).to_vec(),
         0x0010 => sha2::Sha512::digest(tpmt).to_vec(),
-        a => return Err(KmError::Unsupported(format!("nameAlg 0x{a:04x} (supported: SHA-256/384/512)"))),
+        a => return Err(KmError::Unsupported(format!("nameAlg 0x{a:04x} (supported: SHA-256/384/512)").into())),
     };
     let mut name = name_alg.to_be_bytes().to_vec();
     name.extend_from_slice(&hash);
@@ -510,7 +521,9 @@ fn certify_loaded(
     // Names against both the store's public blob and the loaded object, and the signer.
     let certify_info = match attest.attested() {
         AttestInfo::Certify { info } => info,
-        info => return Err(KmError::Conflict(format!("the attestation attests {info:?}, not a certify statement"))),
+        info => {
+            return Err(KmError::Conflict(format!("the attestation attests {info:?}, not a certify statement").into()));
+        }
     };
     let name = certify_info.name().value().to_vec();
     let qualified_name = certify_info.qualified_name().value().to_vec();
@@ -533,19 +546,25 @@ fn certify_loaded(
     let material = material_of(&live_public)?;
     match (spki, &material.spki) {
         (Some(want), Some(attested)) if want != attested.as_slice() => {
-            return Err(KmError::Conflict(format!(
-                "the TPM attests the public key {}, but the object's material is {}",
-                id::sri(attested),
-                id::sri(want)
-            )));
+            return Err(KmError::Conflict(
+                format!(
+                    "the TPM attests the public key {}, but the object's material is {}",
+                    id::sri(attested),
+                    id::sri(want)
+                )
+                .into(),
+            ));
         }
         (Some(_), Some(_)) | (None, None) => {}
         (want, _) => {
-            return Err(KmError::Conflict(format!(
-                "the store object is {}, but the PKCS#11 object is {}",
-                if material.spki.is_some() { "an asymmetric key" } else { "a symmetric object" },
-                if want.is_some() { "an asymmetric key" } else { "a secret key" }
-            )));
+            return Err(KmError::Conflict(
+                format!(
+                    "the store object is {}, but the PKCS#11 object is {}",
+                    if material.spki.is_some() { "an asymmetric key" } else { "a symmetric object" },
+                    if want.is_some() { "an asymmetric key" } else { "a secret key" }
+                )
+                .into(),
+            ));
         }
     }
     // The signed attributes, as the module derives its immutables from them (tpm2-pkcs11:
