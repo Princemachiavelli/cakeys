@@ -146,9 +146,11 @@ Still open.
   (`crates/pkcs11/src/token/generate.rs:141`), not only a refusal of the parameters. Left:
   narrowing it needs the return value ykcs11 gives an Edwards OID, which the profile records as
   "by-name" without the code, and the hardware rules keep that from being measured here.
-  **Decided 2026-11-17, not built:** profile-driven. Retry by name only when the token's profile
-  says `via = "by-name"` for the curve, or no profile answers for it; any other failure is
-  reported at once with its own return value. No measurement needed.
+  **Done 2026-11-17:** profile-driven (`Token::retries_by_name`). Retry by name only when the
+  token's module profile (the lock's recorded answers included) says `via = "by-name"` for the
+  curve, or has no row for it; any other refusal is reported at once, with its own return
+  value. `a_refused_curve_is_tried_by_name_only_where_the_profile_says_so` (fault shim,
+  SoftHSM's edwards25519) sees one generation, where the old retry made two.
 
 ## Poor practices and hard-to-read code
 

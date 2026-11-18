@@ -397,3 +397,28 @@ fn a_creation_that_cannot_be_identified_is_undone_or_reported() {
     assert_eq!(code(&o), 11, "{}", stderr(&o));
     assert!(stderr(&o).contains("vanished after creation"), "{}", stderr(&o));
 }
+
+/// A curve refused by OID is generated once more by name only where the token's profile says
+/// only its name generates it (ykcs11's edwards25519), or nothing is known of it (ISSUES.md
+/// B18). `SoftHSM`'s profile says it generates edwards25519 by OID: its refusal is reported as
+/// it was given, with no second generation on the token.
+#[test]
+fn a_refused_curve_is_tried_by_name_only_where_the_profile_says_so() {
+    let refuse = "[[rule]]\nfn = \"C_GenerateKeyPair\"\nrv = \"CKR_DEVICE_ERROR\"\n";
+    let Some((w, plan, trace)) = faulted("fault-by-name", refuse) else { return };
+    w.write_config(
+        &(reference_tokens(&fault_shim(), &w.dir)
+            + "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC_EDWARDS\"\ncurve = \"edwards25519\"\n\n\
+               [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\n\
+               tokens.ref = { locator = { CKA_LABEL = \"fault-by-name\" }, origin = \"create\" }\n"),
+    );
+    let o = w.km_env(
+        &["create", "--spec", "k", "--token", "ref", "--no-update-lock"],
+        &[("P11_FAULT_PLAN", &plan), ("P11_FAULT_TRACE", &trace)],
+    );
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("CKR_DEVICE_ERROR"), "{}", stderr(&o));
+    let text = std::fs::read_to_string(&trace).unwrap();
+    let generations = text.lines().filter(|l| l.contains("\"C_GenerateKeyPair\"")).count();
+    assert_eq!(generations, 1, "{text}");
+}

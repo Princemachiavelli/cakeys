@@ -5,6 +5,7 @@
     reason = "the token/ split files work on the parent module's imports (R9); `expect` is not fulfilled on a `use` item"
 )]
 use super::*;
+use cakeys_profile::{Capability, On};
 
 impl Token {
     /// Create `object` on the token under `loc`, as `spec` declares it. The provider checks the
@@ -58,6 +59,19 @@ impl Token {
     /// [`Provider::manages_as_so`]: crate::Provider::manages_as_so
     pub fn managing<T>(&self, what: &str, step: impl FnOnce() -> Result<T>) -> Result<T> {
         if self.provider.manages_as_so() { self.as_so(what, step) } else { step() }
+    }
+
+    /// Whether a curve the module refused by OID is generated once more by name (ISSUES.md
+    /// B18): when the token's profile says only its name generates it (`via = "by-name"`), or
+    /// no profile answers for it. Any other refusal is the module's answer, reported as given,
+    /// and no second generation is tried on the token.
+    fn retries_by_name(&self, key_type: &str, curve: &str) -> bool {
+        let row = Capability::Generate { key_type: key_type.to_owned(), on: On::Item(curve.to_owned()) };
+        self.profiles
+            .module
+            .as_ref()
+            .and_then(|p| p.capabilities.get(&row))
+            .is_none_or(|r| r.via.as_deref() == Some("by-name"))
     }
 
     /// The module's own generation: its template alone, no public template.
@@ -126,7 +140,7 @@ impl Token {
             (KeyType::RSA, Some(public)) => {
                 pair(&Mechanism::RsaPkcsKeyPairGen, &public, &key).map(|d| note(d, None)).map_err(refused)
             }
-            (KeyType::EC | KeyType::EC_EDWARDS, Some(by_oid_public)) => {
+            (kt @ (KeyType::EC | KeyType::EC_EDWARDS), Some(by_oid_public)) => {
                 let curve = curve_of(object)?;
                 let mech = self.runnable(if curve.edwards() {
                     Mechanism::EccEdwardsKeyPairGen
@@ -138,7 +152,7 @@ impl Token {
                 // PrintableString form. The identity is the same: the SPKI, not the params.
                 let by_oid = pair(&mech, &by_oid_public, &key);
                 match (by_oid, curve.params_by_name()) {
-                    (Err(e), Some(name)) => {
+                    (Err(e), Some(name)) if self.retries_by_name(&kt.to_string(), curve.name()) => {
                         let by_name = self.generation_public(on, Some(name))?.unwrap_or_default();
                         pair(&mech, &by_name, &key).map_err(|_| e).map(|d| note(d, Some(curve.name().to_owned())))
                     }
