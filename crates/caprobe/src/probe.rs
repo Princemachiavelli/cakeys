@@ -18,10 +18,10 @@ use cakeys_core::config::{AttrValue, Binding, Locator, ObjectCfg, SpecCfg, Token
 use cakeys_core::id::Curve;
 use cakeys_core::pop::{self, OaepHash, RsaPadding};
 use cakeys_core::sig::{self, Encoding, HashAlg};
-use cakeys_core::types::KeyType as Kt;
+use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Msg, Result};
 use cakeys_pkcs11::token::{self, Token, derive_any, is_policy_default, show, template_refusal};
-use cakeys_pkcs11::{BoundKey, keygen_mechanism};
+use cakeys_pkcs11::{BoundKey, Declared, Half, Template, keygen_mechanism};
 use cakeys_profile::capability::{DECRYPT_OAEP, UNWRAP_TEMPLATE, WRAP_OAEP};
 use cakeys_profile::{Answer, Capability, GenerateRow, KeyKind, MatchInfo, Mode, On, Profile};
 use cryptoki::error::{Error as CkError, RvError};
@@ -1541,27 +1541,32 @@ fn rsa_ops(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[
 fn probe_secrets(made: &mut Made, profile: &mut Draft) -> Option<ObjectHandle> {
     let session = made.session;
     let mut aes = None;
-    for (mech, name, key_type) in [
-        (Mechanism::AesKeyGen, "CKM_AES_KEY_GEN", KeyType::AES),
-        (Mechanism::GenericSecretKeyGen, "CKM_GENERIC_SECRET_KEY_GEN", KeyType::GENERIC_SECRET),
+    for (mech, name, key_type, kt) in [
+        (Mechanism::AesKeyGen, "CKM_AES_KEY_GEN", KeyType::AES, Kt::Aes),
+        (Mechanism::GenericSecretKeyGen, "CKM_GENERIC_SECRET_KEY_GEN", KeyType::GENERIC_SECRET, Kt::GenericSecret),
     ] {
         let name = name.to_owned();
         if !made.tok.lists(mech.mechanism_type()) {
             continue;
         }
         let label = made.scratch.label();
-        let attempt = session.generate_key(
-            &mech,
-            &[
-                Attribute::Token(true),
-                Attribute::Label(label.as_bytes().to_vec()),
-                Attribute::Class(ObjectClass::SECRET_KEY),
-                Attribute::KeyType(key_type),
-                Attribute::ValueLen(32.into()),
-                Attribute::Extractable(true),
-            ],
-        );
-        match attempt {
+        let template = vec![
+            Attribute::Token(true),
+            Attribute::Label(label.as_bytes().to_vec()),
+            Attribute::Class(ObjectClass::SECRET_KEY),
+            Attribute::KeyType(key_type),
+            Attribute::ValueLen(32.into()),
+            Attribute::Extractable(true),
+        ];
+        let template = match secret_template(made.tok, kt, &label, template) {
+            Ok(t) => t,
+            Err(e) => {
+                // The provider's refusal, not the module's: nothing to subtract.
+                made.undetermined.push(format!("no {name} probe: its template: {}", refused(made.tok, &e)));
+                continue;
+            }
+        };
+        match session.generate_key(&mech, &template) {
             Ok(h) => {
                 if key_type == KeyType::AES && aes.is_none() {
                     aes = Some(h);
@@ -1575,6 +1580,20 @@ fn probe_secrets(made: &mut Made, profile: &mut Draft) -> Option<ObjectHandle> {
         }
     }
     aes
+}
+
+/// `template`, the probe's generation of a 32-byte `key_type` secret key under `label`, as the
+/// provider adjusts a generation's (`Provider::template`): declared as keys.toml would declare
+/// such a key, so the probe measures what the verbs would send.
+///
+/// # Errors
+///
+/// The provider's refusal.
+fn secret_template(tok: &Token, key_type: Kt, label: &str, template: Vec<Attribute>) -> Result<Vec<Attribute>> {
+    let object = ObjectCfg { value_len: Some(32u32.into()), ..ObjectCfg::new(Class::SecretKey, Some(key_type)) };
+    let locator = Locator { label: Some(label.to_owned()), id: None };
+    let declared = Declared { object: &object, spec: &spec(&[], &[]), locator: &locator };
+    tok.provider.adjusted(&Template::Generate(declared, Half::Key), template)
 }
 
 /// The OAEP hashes the module actually implements — wrap the fresh AES key to the fresh RSA
@@ -1668,25 +1687,25 @@ fn probe_wrapping(made: &mut Made, profile: &mut Draft, transport: (ObjectHandle
 fn probe_key_wraps(made: &mut Made, profile: &mut Draft, transport: (ObjectHandle, ObjectHandle), aes: ObjectHandle) {
     let session = made.session;
     let label = made.scratch.label();
-    let kek = session.generate_key(
-        &Mechanism::AesKeyGen,
-        &[
-            Attribute::Token(true),
-            Attribute::Label(label.as_bytes().to_vec()),
-            Attribute::Class(ObjectClass::SECRET_KEY),
-            Attribute::KeyType(KeyType::AES),
-            Attribute::ValueLen(32.into()),
-            Attribute::Wrap(true),
-            Attribute::Unwrap(true),
-        ],
-    );
+    let template = vec![
+        Attribute::Token(true),
+        Attribute::Label(label.as_bytes().to_vec()),
+        Attribute::Class(ObjectClass::SECRET_KEY),
+        Attribute::KeyType(KeyType::AES),
+        Attribute::ValueLen(32.into()),
+        Attribute::Wrap(true),
+        Attribute::Unwrap(true),
+    ];
+    let kek = secret_template(made.tok, Kt::Aes, &label, template)
+        .map_err(|e| refused(made.tok, &e))
+        .and_then(|t| session.generate_key(&Mechanism::AesKeyGen, &t).map_err(|e| ckr(&e)));
     let kek = match kek {
         Ok(h) => {
             made.scratch.track(&[h], &label);
             Some(h)
         }
         Err(e) => {
-            made.undetermined.push(format!("no AES key wrap probes: a wrapping AES key: {}", ckr(&e)));
+            made.undetermined.push(format!("no AES key wrap probes: a wrapping AES key: {e}"));
             None
         }
     };

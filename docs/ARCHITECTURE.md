@@ -145,10 +145,15 @@ behaviour or reach outside PKCS#11:
   the same predicate as the run's from the side's profile; material it has not read (a
   certificate's value, a public key's points) is absent, and what it cannot know (a mechanism
   the profiles do not decide) it does not ask. Secret material is added after the hook, and the
-  fallbacks below run on what it returns. The probe's generations, imports, public objects and
-  sealed round trips ask it with the verbs' purposes; its own templates still differ in places
-  (a composed move's KEKs lack camigrate's `CKA_SENSITIVE`), so a row says what the probe sent.
-  `C_FindObjects` templates do not pass through it. No in-tree provider overrides it yet.
+  fallbacks below run on what it returns. The probe's generations (its scratch AES and generic
+  secret keys and AES-wrap KEK included), imports, public objects and sealed round trips ask it
+  with the verbs' purposes, and a composed move takes camigrate's own KEK templates
+  (`tests/template_hook.rs` holds the probe to it). Three kinds of probe template do not pass
+  through it, each on purpose: a Montgomery pair's (core has no Montgomery key type to declare
+  it by), the unwrap templates `unwrap.refuse` is measured with (the hook filters `Import` by
+  that measurement), and the templates a provider already chose whole (`bound_keys`) or that
+  are bare by design (the unbound probe). `C_FindObjects` templates do not pass through it. No
+  in-tree provider overrides it yet.
   *Operations* a provider may replace
   whole, each default plain PKCS#11 through a public `Token` method an override wraps:
   `create` (`Token::create_declared`; ykcs11 refuses a locator that is not a PIV slot first),

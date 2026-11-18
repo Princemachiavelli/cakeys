@@ -151,12 +151,23 @@ pub fn command() -> clap::Command {
 /// Run the command line with the given providers; maps errors to the documented exit codes.
 #[must_use]
 pub fn main(registry: &Registry) -> ExitCode {
-    cakeys_cli_common::main(|notes| dispatch(registry, notes))
+    main_from(registry, std::env::args_os())
 }
 
-/// Parse the arguments, load keys.toml, and run the verb.
-fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
-    let cli = Cli::parse();
+/// [`main`] on `args`, the program name first, instead of the process's: caprobe run in-process
+/// by a binary or a test.
+#[must_use]
+pub fn main_from<I, T>(registry: &Registry, args: I) -> ExitCode
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let cli = Cli::parse_from(args);
+    cakeys_cli_common::main(|notes| dispatch(registry, &cli, notes))
+}
+
+/// Load keys.toml, and run the verb.
+fn dispatch(registry: &Registry, cli: &Cli, notes: &mut Notes) -> anyhow::Result<()> {
     let cfg = match (&cli.config, &cli.cmd) {
         (Some(path), _) => load_config(path)?,
         // Pure data over the profiles (docs/CAPROBE.md): nothing in keys.toml to read.
