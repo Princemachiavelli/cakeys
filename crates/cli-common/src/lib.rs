@@ -5,11 +5,14 @@
 
 use anyhow::Context as _;
 use cakeys_core::KmError;
-use cakeys_core::config::{Config, TokenCfg};
+use cakeys_core::config::{
+    Config, Lock, TokenCfg, UpdateGuard, load_config, load_lock, lock_for_update, lock_unwritable, save_lock,
+};
 use cakeys_pkcs11::ops::Notes;
 use cakeys_pkcs11::token::Access;
 use cakeys_pkcs11::{Registry, Token, providers};
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::process::ExitCode;
 
 /// The providers this build links, in detection order. Built through the same public API a
@@ -127,6 +130,89 @@ pub fn open_quiet(
     access: Access,
 ) -> Result<Token, KmError> {
     Token::open(name, token_cfg(cfg, name)?, modules.get(name).map(String::as_str), registry, access)
+}
+
+/// What a verb opens tokens with: keys.toml, the `--module` overrides and the providers. Kept
+/// apart from the lock, so a verb opens tokens while it changes the lock (ISSUES.md Q14).
+pub struct Opener<'a> {
+    /// keys.toml.
+    pub cfg: Config,
+    /// `--module TOKEN=PATH` overrides, by token.
+    pub modules: BTreeMap<String, String>,
+    /// The providers this binary links.
+    pub registry: &'a Registry,
+}
+
+impl<'a> Opener<'a> {
+    /// keys.toml at `config`, with the profile set it names activated ([`activate_profiles`]),
+    /// and the `--module` overrides `modules`.
+    ///
+    /// # Errors
+    ///
+    /// A malformed override; whatever [`load_config`] or [`activate_profiles`] refuses.
+    pub fn load(
+        config: &Path,
+        modules: &[String],
+        registry: &'a Registry,
+        notes: &mut Notes,
+    ) -> anyhow::Result<Opener<'a>> {
+        let modules = module_overrides(modules)?;
+        let cfg = load_config(config)?;
+        activate_profiles(&cfg, notes)?;
+        Ok(Opener { cfg, modules, registry })
+    }
+
+    /// [`open_token`] of the token `name`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`open_token`] refuses.
+    pub fn open(&self, name: &str, access: Access, notes: &mut Notes) -> Result<Token, KmError> {
+        open_token(&self.cfg, &self.modules, self.registry, name, access, notes)
+    }
+
+    /// [`open_quiet`] of the token `name`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`open_quiet`] refuses.
+    pub fn open_quiet(&self, name: &str, access: Access) -> Result<Token, KmError> {
+        open_quiet(&self.cfg, &self.modules, self.registry, name, access)
+    }
+}
+
+/// The lock at `path`, for a verb that `writes` it or only reads it. A writing verb is refused
+/// up front when the lock cannot be written (`instead` says what to do), before any token is
+/// touched: never a key created and then not recorded. It holds the lock's advisory sidecar
+/// (M3) for as long as the returned guard lives, across load and save, so concurrent updaters
+/// queue instead of losing each other's writes.
+///
+/// # Errors
+///
+/// `PreconditionFailed` (18) for a lock a writing verb cannot write; whatever
+/// [`lock_for_update`] or [`load_lock`] refuses.
+pub fn read_lock(path: &Path, writes: bool, instead: &str) -> anyhow::Result<(Lock, Option<UpdateGuard>)> {
+    if writes && let Some(why) = lock_unwritable(path) {
+        return Err(KmError::PreconditionFailed(
+            format!("cannot write the lock {}: {why}; {instead}", path.display()).into(),
+        )
+        .into());
+    }
+    let guard = if writes { Some(lock_for_update(path)?) } else { None };
+    Ok((load_lock(path)?, guard))
+}
+
+/// Save `lock` to `path` if the verb `changed` it, and say so.
+///
+/// # Errors
+///
+/// Whatever [`save_lock`] refuses.
+pub fn save_changed(path: &Path, lock: &Lock, changed: bool, notes: &mut Notes) -> anyhow::Result<()> {
+    if changed {
+        save_lock(path, lock)?;
+        notes.say(format!("updated {}", path.display()));
+    }
+    Ok(())
 }
 
 /// Print `v` as pretty JSON on stdout.

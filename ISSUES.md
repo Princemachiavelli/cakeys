@@ -252,7 +252,15 @@ and Q14 (one opener for cakeys and camigrate).
   notes' texts are unchanged.
 - **Q14. CLI setup is still duplicated** between `cakeys` and `camigrate`: the `Run` struct, the
   load-and-guard prologue, `(cfg, modules, registry)` at each `open_token`. A shared opener
-  collides with the `&mut self.lock` both hold across those calls.
+  collides with the `&mut self.lock` both hold across those calls. **Done 2026-11-17:**
+  `cli_common::Opener` holds keys.toml, the `--module` overrides and the providers, loads
+  them (`Opener::load`: overrides, config, profile activation) and opens tokens (`open`,
+  `open_quiet`); `cli_common::read_lock` refuses an unwritable lock for a writing verb, takes
+  the update guard and loads the lock, and `save_changed` saves it. Each `Run` is `{ opener,
+  lock, lock_path }`: a verb borrows `&self.opener` beside `&mut self.lock`, disjoint fields,
+  so the nine `(cfg, modules, registry)` destructurings are gone. caprobe, whose config is
+  optional, keeps the free `open_token` the opener calls. camigrate now asks for the target's
+  login before refusing an unwritable lock; both are refusals before any token is touched.
 - **Q9. `Token` still keeps four views of the mechanism list.** **Done 2026-11-17:** it keeps
   two, what `C_GetMechanismList` listed and what the profiles leave usable, which differ by
   design; the sorted names of each are methods (`mechanism_names()`, `advertised()`), and

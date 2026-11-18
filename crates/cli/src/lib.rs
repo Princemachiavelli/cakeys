@@ -2,9 +2,9 @@
 //! library so a downstream binary can link extra provider crates:
 //! `cakeys::main(&cakeys::default_registry().with(MyProvider))`.
 
-use cakeys_cli_common::{module_overrides, open_quiet, open_token, print, token_cfg};
+use cakeys_cli_common::{Opener, print, read_lock, save_changed, token_cfg};
 use cakeys_core::KmError;
-use cakeys_core::config::{Config, Lock, gc, load_config, load_lock, lock_for_update, lock_unwritable, save_lock};
+use cakeys_core::config::{Config, Lock, gc, save_lock};
 use cakeys_core::types::ObjectClass;
 use cakeys_pkcs11::ops::{self, LockWrite, Notes, Target};
 use cakeys_pkcs11::token::{Access, pin_ref, provider_pem, with_query};
@@ -240,13 +240,8 @@ pub fn main(registry: &Registry) -> ExitCode {
 /// a lock it cannot — and run the verb.
 fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let config = &cli.config;
-    let modules = module_overrides(&cli.modules)?;
-    let cfg = load_config(config)?;
-    cakeys_cli_common::activate_profiles(&cfg, notes)?;
-    let lock_path = cli.lock.clone().unwrap_or_else(|| config.with_extension("lock"));
-    // A run that may write the lock holds its advisory sidecar lock across load and save (M3),
-    // so concurrent updaters queue instead of losing each other's writes. Held to the end of run.
+    let opener = Opener::load(&cli.config, &cli.modules, registry, notes)?;
+    let lock_path = cli.lock.clone().unwrap_or_else(|| cli.config.with_extension("lock"));
     let writes = match &cli.cmd {
         Cmd::Create { dry_run: true, .. } => false,
         Cmd::Lock { write, .. } | Cmd::Create { write, .. } | Cmd::Delete { write, .. } => {
@@ -255,26 +250,16 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
         Cmd::Gc { apply } => *apply,
         _ => false,
     };
-    // Refused before any token is touched: never a key created and then not recorded.
-    if writes && let Some(why) = lock_unwritable(&lock_path) {
-        let opt_out = if matches!(cli.cmd, Cmd::Gc { .. }) { "drop --apply" } else { "pass --no-update-lock" };
-        return Err(KmError::PreconditionFailed(
-            format!("cannot write the lock {}: {why}; {opt_out} to compare without writing", lock_path.display())
-                .into(),
-        )
-        .into());
-    }
-    let _update_guard = if writes { Some(lock_for_update(&lock_path)?) } else { None };
-    let lock = load_lock(&lock_path)?;
-    Run { cfg, modules, registry, lock, lock_path }.verb(&cli.cmd, notes)
+    let opt_out = if matches!(cli.cmd, Cmd::Gc { .. }) { "drop --apply" } else { "pass --no-update-lock" };
+    // Held to the end of the run.
+    let (lock, _update_guard) = read_lock(&lock_path, writes, &format!("{opt_out} to compare without writing"))?;
+    Run { opener, lock, lock_path }.verb(&cli.cmd, notes)
 }
 
 /// What a verb works with once the arguments are parsed: keys.toml, the lock and where it is
 /// saved, and how tokens are opened.
 struct Run<'a> {
-    cfg: Config,
-    modules: BTreeMap<String, String>,
-    registry: &'a Registry,
+    opener: Opener<'a>,
     lock: Lock,
     lock_path: PathBuf,
 }
@@ -284,19 +269,19 @@ impl Run<'_> {
         match cmd {
             Cmd::Validate => self.validate(notes),
             Cmd::Resolve { at } => {
-                let (spec, token) = at.pair(&self.cfg)?;
-                let t = Target::new(&self.cfg, &spec, &token)?;
-                let tok = self.open(&token, Access::Read, notes)?;
+                let (spec, token) = at.pair(&self.opener.cfg)?;
+                let t = Target::new(&self.opener.cfg, &spec, &token)?;
+                let tok = self.opener.open(&token, Access::Read, notes)?;
                 let r = ops::resolve(&t, &tok, &self.lock)?
                     .ok_or_else(|| KmError::NotFound(format!("{} on {token}", t.object_name).into()))?;
                 print(&r)
             }
             Cmd::Lock { at, write } => {
-                let (spec, token) = at.pair(&self.cfg)?;
-                let t = Target::new(&self.cfg, &spec, &token)?;
+                let (spec, token) = at.pair(&self.opener.cfg)?;
+                let t = Target::new(&self.opener.cfg, &spec, &token)?;
                 // Never creates: read-write where the token allows (the session objects a
                 // wrap-rebind copy or a proof makes), read-only on a write-protected one.
-                let tok = self.open(&token, Access::Scratch, notes)?;
+                let tok = self.opener.open(&token, Access::Scratch, notes)?;
                 let (r, changed) = ops::lock(&t, &tok, &mut self.lock, write.mode(), notes)?;
                 self.save(changed, notes)?;
                 print(&r)
@@ -306,14 +291,14 @@ impl Run<'_> {
                 self.create(at, how, notes)
             }
             Cmd::Delete { at, if_match, write } => {
-                let (spec, token) = at.pair(&self.cfg)?;
-                let t = Target::new(&self.cfg, &spec, &token)?;
-                let tok = self.open(&token, Access::Write, notes)?;
+                let (spec, token) = at.pair(&self.opener.cfg)?;
+                let t = Target::new(&self.opener.cfg, &spec, &token)?;
+                let tok = self.opener.open(&token, Access::Write, notes)?;
                 let changed = ops::delete(&t, &tok, &mut self.lock, if_match.as_deref(), write.mode(), notes)?;
                 self.save(changed, notes)
             }
             Cmd::Gc { apply } => {
-                let stale = gc(&self.cfg, &mut self.lock, *apply);
+                let stale = gc(&self.opener.cfg, &mut self.lock, *apply);
                 for entry in &stale {
                     println!("{entry}");
                 }
@@ -345,7 +330,7 @@ impl Run<'_> {
         when: cakeys_pkcs11::ChainTime,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
-        let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
+        let (cfg, opener) = (&self.opener.cfg, &self.opener);
         let (reference, spec, token) = (at.object.as_deref(), at.spec.as_deref(), at.token.as_deref());
         if let (None, None, Some(token)) = (reference, spec, token) {
             if format != Format::Uri || uri_module || uri_pin.is_some() {
@@ -376,7 +361,7 @@ impl Run<'_> {
             None => None,
             Some(how) => Some(pin_ref(&token_name, token_cfg(cfg, &token_name)?, how == UriPin::Value)?),
         };
-        let open = |name: &str, access| checked_open(open_quiet(cfg, modules, registry, name, access), when);
+        let open = |name: &str, access| checked_open(opener.open_quiet(name, access), when);
         let (r, tok) = ops::check_open(cfg, reference, spec, token, open, &self.lock, notes)?;
         let uri = with_query(&r.uri, uri_module.then_some(tok.module.path.as_str()), pin.as_ref());
         if !key_file {
@@ -402,8 +387,8 @@ impl Run<'_> {
     /// the module file the check loaded, on stdout. Any fails: nothing on stdout, each failure on
     /// stderr led by its own exit code, and 20.
     fn check_token(&self, token: &str, when: cakeys_pkcs11::ChainTime, notes: &mut Notes) -> anyhow::Result<()> {
-        let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
-        let open = |name: &str, access| checked_open(open_quiet(cfg, modules, registry, name, access), when);
+        let (cfg, opener) = (&self.opener.cfg, &self.opener);
+        let open = |name: &str, access| checked_open(opener.open_quiet(name, access), when);
         let (checked, tok) = ops::check_token(cfg, token, open, &self.lock, notes)?;
         let failed: Vec<(&ops::PairCheck, &KmError)> =
             checked.iter().filter_map(|c| c.result.as_ref().err().map(|e| (c, e))).collect();
@@ -421,32 +406,24 @@ impl Run<'_> {
         .into())
     }
 
-    fn open(&self, name: &str, access: Access, notes: &mut Notes) -> Result<Token, KmError> {
-        open_token(&self.cfg, &self.modules, self.registry, name, access, notes)
-    }
-
     /// Save the lock if the verb changed it.
     fn save(&self, changed: bool, notes: &mut Notes) -> anyhow::Result<()> {
-        if changed {
-            save_lock(&self.lock_path, &self.lock)?;
-            notes.say(format!("updated {}", self.lock_path.display()));
-        }
-        Ok(())
+        save_changed(&self.lock_path, &self.lock, changed, notes)
     }
 
     /// `validate`: each token's options (with a named provider), then the static gate
     /// (docs/CAPROBE.md) — each target's needs against its token's capability
     /// profiles, resolved from keys.toml and the lock. No token is opened.
     fn validate(&self, notes: &mut Notes) -> anyhow::Result<()> {
-        for (name, t) in &self.cfg.tokens {
+        for (name, t) in &self.opener.cfg.tokens {
             let Some(p) = t.named_provider() else { continue };
             // A named provider checks the token's options here too; an auto-detected one
             // can only be known, and check them, once the token is opened.
-            let provider = self.registry.named(p)?.ok_or_else(|| {
+            let provider = self.opener.registry.named(p)?.ok_or_else(|| {
                 KmError::Validation(
                     format!(
                         "token '{name}': unknown provider '{p}' (registered: generic, {})",
-                        self.registry.names().join(", ")
+                        self.opener.registry.names().join(", ")
                     )
                     .into(),
                 )
@@ -454,7 +431,7 @@ impl Run<'_> {
             provider.check_options(name, &t.options)?;
         }
         let mut stacks = BTreeMap::new();
-        for (name, t) in &self.cfg.tokens {
+        for (name, t) in &self.opener.cfg.tokens {
             match cakeys_pkcs11::gate::stack(name, t, &self.lock)? {
                 Ok(stack) => {
                     stacks.insert(name.as_str(), stack);
@@ -463,14 +440,14 @@ impl Run<'_> {
             }
         }
         let mut refusals = Vec::new();
-        for (spec_name, spec) in &self.cfg.specs {
+        for (spec_name, spec) in &self.opener.cfg.specs {
             for token in spec.tokens.keys() {
-                let t = Target::new(&self.cfg, spec_name, token)?;
+                let t = Target::new(&self.opener.cfg, spec_name, token)?;
                 let mode = ops::plan_mode(&t)?;
                 println!("{spec_name} on {token}: mode {mode}");
                 if let Some(stack) = stacks.get(token.as_str()) {
                     let creates = ops::creates(&t, &self.lock);
-                    let v = cakeys_pkcs11::gate::check(&t, mode, stack, self.registry, creates)?;
+                    let v = cakeys_pkcs11::gate::check(&t, mode, stack, self.opener.registry, creates)?;
                     for n in &v.notes {
                         notes.note(format_args!("validate: {n}"));
                     }
@@ -507,9 +484,9 @@ impl Run<'_> {
     /// `--skip-unsupported`. Then the pairs to create or verify, and the lock records what was
     /// created, also when a later pair failed — never a key made and lost.
     fn create(&mut self, at: &Address, how: CreateHow, notes: &mut Notes) -> anyhow::Result<()> {
-        let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
+        let (cfg, opener) = (&self.opener.cfg, &self.opener);
         let (object, spec, token) = (at.plain_object()?, at.spec.as_deref(), at.token.as_deref());
-        let planned = ops::plan_create(cfg, object, spec, token, &self.lock, registry)?;
+        let planned = ops::plan_create(cfg, object, spec, token, &self.lock, opener.registry)?;
         let refused: Vec<&ops::Planned> = planned.iter().filter(|p| p.action == ops::Action::Refuse).collect();
         for p in &planned {
             for r in &p.reasons {
@@ -556,7 +533,7 @@ impl Run<'_> {
             return Ok(());
         }
         let pairs: Vec<(&str, &str)> = planned.iter().filter(|p| p.action.runs()).map(|p| (p.spec, p.token)).collect();
-        let open = |name: &str, notes: &mut Notes| open_token(cfg, modules, registry, name, Access::Write, notes);
+        let open = |name: &str, notes: &mut Notes| opener.open(name, Access::Write, notes);
         let done = ops::create_selected(cfg, &pairs, &open, &mut self.lock, how.write, notes);
         self.save(done.changed, notes)?;
         print(&done.created)?;

@@ -15,12 +15,9 @@ mod transport;
 
 use anyhow::Context as _;
 use bundle::Bundle;
-use cakeys_cli_common::{module_overrides, open_token, print};
+use cakeys_cli_common::{Opener, print, read_lock, save_changed};
 use cakeys_core::KmError;
-use cakeys_core::config::{
-    Config, KeyOrigin, Lock, Origin, SpecCfg, SpecTokenCfg, in_nix_build, load_config, load_lock, lock_for_update,
-    lock_unwritable, save_lock, write_whole,
-};
+use cakeys_core::config::{Config, KeyOrigin, Lock, Origin, SpecCfg, SpecTokenCfg, in_nix_build, write_whole};
 use cakeys_core::migrate::{Exposure, Method};
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_pkcs11::Registry;
@@ -206,9 +203,7 @@ pub fn main(registry: &Registry) -> ExitCode {
 /// lock it cannot (docs/CAMIGRATE.md D8: never inside a Nix build) — and run the verb.
 fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let modules = module_overrides(&cli.modules)?;
-    let cfg = load_config(&cli.config)?;
-    cakeys_cli_common::activate_profiles(&cfg, notes)?;
+    let opener = Opener::load(&cli.config, &cli.modules, registry, notes)?;
     let lock_path = cli.lock.clone().unwrap_or_else(|| cli.config.with_extension("lock"));
     // A real `migrate` or `import` writes the lock; it holds the advisory sidecar lock across load
     // and save, as cakeys' writing verbs do. A real `export` is an admin operation too (D8).
@@ -231,18 +226,11 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
         )
         .into());
     }
-    if writes && let Some(why) = lock_unwritable(&lock_path) {
-        return Err(KmError::PreconditionFailed(
-            format!("cannot write the lock {}: {why}; moving keys records them there", lock_path.display()).into(),
-        )
-        .into());
-    }
     if let Cmd::Migrate { to: target, .. } | Cmd::Import { token: target, .. } = &cli.cmd {
-        needs_login(&cfg, target)?;
+        needs_login(&opener.cfg, target)?;
     }
-    let _update_guard = if writes { Some(lock_for_update(&lock_path)?) } else { None };
-    let lock = load_lock(&lock_path)?;
-    let mut run = Run { cfg, modules, registry, lock, lock_path };
+    let (lock, _update_guard) = read_lock(&lock_path, writes, "moving keys records them there")?;
+    let mut run = Run { opener, lock, lock_path };
     match &cli.cmd {
         Cmd::Export { objects, token, target, transport, to_file, out, passphrase_file, how } => {
             let dest = match (target, transport, to_file) {
@@ -278,18 +266,18 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
         }
         Cmd::Import { token, spec, input: Some(input), dry_run, .. } => run.import(token, spec, input, *dry_run, notes),
         Cmd::Migrate { object, from, to, spec, how } if how.dry_run => {
-            specs_import(&run.cfg, spec, to, MOVE)?;
+            specs_import(&run.opener.cfg, spec, to, MOVE)?;
             run.plan_moves(object.as_deref().as_slice(), from, &Destination::Token(to), how, false, notes)
         }
         Cmd::Migrate { object, from, to, spec, how } => run.migrate(object.as_deref(), from, to, spec, how, notes),
         Cmd::Transport { object, spec, token, trusted: Some(source), .. } => {
-            let spec = transport_named(&run.cfg, object.as_deref(), spec.as_deref(), token)?;
+            let spec = transport_named(&run.opener.cfg, object.as_deref(), spec.as_deref(), token)?;
             run.trust(&spec, token, source, notes)
         }
         Cmd::Transport { object, spec, token, out, trusted: None } => {
-            let spec = transport_named(&run.cfg, object.as_deref(), spec.as_deref(), token)?;
-            let t = Target::new(&run.cfg, &spec, token)?;
-            let tok = open_token(&run.cfg, &run.modules, registry, token, Access::Read, notes)?;
+            let spec = transport_named(&run.opener.cfg, object.as_deref(), spec.as_deref(), token)?;
+            let t = Target::new(&run.opener.cfg, &spec, token)?;
+            let tok = run.opener.open(token, Access::Read, notes)?;
             let text = tokens::transport(&t, &tok, &run.lock, notes)?.to_toml()?;
             match out {
                 Some(path) => {
@@ -330,9 +318,7 @@ fn transport_named(cfg: &Config, object: Option<&str>, spec: Option<&str>, token
 /// What a verb works with once the arguments are parsed: keys.toml, the lock, and how tokens
 /// are opened.
 struct Run<'a> {
-    cfg: Config,
-    modules: BTreeMap<String, String>,
-    registry: &'a Registry,
+    opener: Opener<'a>,
     lock: Lock,
     lock_path: PathBuf,
 }
@@ -351,11 +337,7 @@ impl Run<'_> {
     /// Save the lock if the verb changed it: also when a later object failed, so what moved is
     /// never left on a token without its realisation.
     fn save(&self, changed: bool, notes: &mut Notes) -> anyhow::Result<()> {
-        if changed {
-            save_lock(&self.lock_path, &self.lock)?;
-            notes.say(format!("updated {}", self.lock_path.display()));
-        }
-        Ok(())
+        save_changed(&self.lock_path, &self.lock, changed, notes)
     }
 
     /// `--dry-run`: plan each object's move from `from` to `dest` and print it (docs/CAMIGRATE.md D9);
@@ -399,7 +381,7 @@ impl Run<'_> {
         if !objects.is_empty() {
             moves.ready()?;
         }
-        let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
+        let (cfg, opener) = (&self.opener.cfg, &self.opener);
         let mut items = Vec::new();
         for p in &moves.plans {
             if !p.ready {
@@ -422,7 +404,7 @@ impl Run<'_> {
         if items.is_empty() {
             return Err(KmError::Unsupported(format!("nothing on '{from}' can go into a bundle").into()).into());
         }
-        let source = open_token(cfg, modules, registry, from, Access::Scratch, notes)?;
+        let source = opener.open(from, Access::Scratch, notes)?;
         let wraps = items.iter().any(|i| i.method != Method::Public);
         let transport = match dest {
             _ if !wraps => None,
@@ -431,7 +413,7 @@ impl Run<'_> {
                 Some(if let Some(key) = tokens::locked_transport(&tr, &self.lock, notes)? {
                     key
                 } else {
-                    let target = open_token(cfg, modules, registry, to, Access::Read, notes)?;
+                    let target = opener.open(to, Access::Read, notes)?;
                     notes.note(format_args!(
                         "{tr}: the lock records no public key for it yet; lock it again to export without '{to}'"
                     ));
@@ -473,14 +455,14 @@ impl Run<'_> {
     ) -> anyhow::Result<()> {
         let text = std::fs::read_to_string(input).with_context(|| format!("reading {}", input.display()))?;
         let bundle = Bundle::parse(&text, input)?;
-        let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
+        let (cfg, opener) = (&self.opener.cfg, &self.opener);
         specs_select(cfg, specs, bundle.keys.iter().map(|e| e.object.as_str()), token, MOVE)?;
         let tr = match &bundle.transport {
             Some(t) => Some(realised_target(cfg, &self.lock, &t.object, token, "the bundle's transport key")?),
             None => None,
         };
         let access = if dry_run { Access::Read } else { Access::Write };
-        let target = open_token(cfg, modules, registry, token, access, notes)?;
+        let target = opener.open(token, access, notes)?;
         let (mut changed, mut failed) = (false, None);
         // Keys first: a public key object then finds the public half its key's import made.
         let public = Method::Public.name();
@@ -505,7 +487,7 @@ impl Run<'_> {
                     }
                     sealed::preflight(&bundle, e, &dst, &target, tr.as_ref(), lock, notes)?;
                     let method = e.method().map_err(|e| KmError::Validation(e.into()))?;
-                    import_checks(&dst, &target, &method, registry, notes).map(|()| None)
+                    import_checks(&dst, &target, &method, opener.registry, notes).map(|()| None)
                 })
             } else {
                 sealed::import(&bundle, e, &dst, &target, tr.as_ref(), lock, notes).map(Some)
@@ -549,10 +531,10 @@ impl Run<'_> {
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
         // Before the plan, as the dry run does: both refuse a named target that is no import pair.
-        specs_import(&self.cfg, specs, to, MOVE)?;
+        specs_import(&self.opener.cfg, specs, to, MOVE)?;
         let moves = self.plan(object.as_slice(), from, &Destination::Token(to), how, true, notes)?;
         moves.ready()?;
-        specs_select(&self.cfg, specs, moves.plans.iter().map(|p| p.object.as_str()), to, MOVE)?;
+        specs_select(&self.opener.cfg, specs, moves.plans.iter().map(|p| p.object.as_str()), to, MOVE)?;
         let built = |m: &Method| {
             matches!(
                 m,
@@ -574,13 +556,13 @@ impl Run<'_> {
             ).into())
             .into());
         }
-        let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
-        let source = open_token(cfg, modules, registry, from, Access::Scratch, notes)?;
-        let mut target = Some(open_token(cfg, modules, registry, to, Access::Write, notes)?);
+        let (cfg, opener) = (&self.opener.cfg, &self.opener);
+        let source = opener.open(from, Access::Scratch, notes)?;
+        let mut target = Some(opener.open(to, Access::Write, notes)?);
         // tpm2-pkcs11 sees what `tpm2_ptool` imported only once opened again: the old one first.
         let reopen = |t: &mut Option<cakeys_pkcs11::Token>, notes: &mut Notes| -> cakeys_core::Result<()> {
             *t = None;
-            *t = Some(open_token(cfg, modules, registry, to, Access::Write, notes)?);
+            *t = Some(opener.open(to, Access::Write, notes)?);
             Ok(())
         };
         let (mut changed, mut failed) = (false, None);
@@ -660,8 +642,8 @@ impl Run<'_> {
         show: bool,
         notes: &mut Notes,
     ) -> anyhow::Result<tokens::Moves> {
-        let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
-        let open = |name: &str, notes: &mut Notes| open_token(cfg, modules, registry, name, Access::Read, notes);
+        let (cfg, opener) = (&self.opener.cfg, &self.opener);
+        let open = |name: &str, notes: &mut Notes| opener.open(name, Access::Read, notes);
         let bundle = matches!(dest, Destination::Bundle(_) | Destination::Transport(_));
         let transport = match dest {
             Destination::Transport(path) => {
@@ -707,7 +689,7 @@ impl Run<'_> {
             transport_key,
             trusted_transport,
         };
-        let mut moves = tokens::plan_moves(&self.lock, registry, &req, &open, notes)?;
+        let mut moves = tokens::plan_moves(&self.lock, opener.registry, &req, &open, notes)?;
         for p in &mut moves.plans {
             if let Some(spec) = no_export(cfg, &p.object, from) {
                 p.ready = false;
@@ -722,12 +704,12 @@ impl Run<'_> {
                 p.reasons.insert(0, why);
             }
             match target_token {
-                Some(to) => landing_checks(cfg, p, to, &moves.source, moves.target.as_ref(), registry),
+                Some(to) => landing_checks(cfg, p, to, &moves.source, moves.target.as_ref(), opener.registry),
                 // Nothing lands on a token here: the source's export is all the run makes.
                 None => {
                     if let (true, Some(method)) = (p.ready, &p.method) {
                         let exposure = p.exposure.unwrap_or(Exposure::Sealed);
-                        if let Err(why) = tokens::source_refusal(method, exposure, &moves.source, registry) {
+                        if let Err(why) = tokens::source_refusal(method, exposure, &moves.source, opener.registry) {
                             p.ready = false;
                             p.reasons.push(why);
                         }
@@ -1045,10 +1027,10 @@ impl Run<'_> {
             )
             .into());
         };
-        let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
+        let (cfg, opener) = (&self.opener.cfg, &self.opener);
         let pass = read_passphrase(pass)?;
         let src = source_target(cfg, &self.lock, &p.object, from)?;
-        let source = open_token(cfg, modules, registry, from, Access::Scratch, notes)?;
+        let source = opener.open(from, Access::Scratch, notes)?;
         cakeys_pkcs11::ops::verify(&src, &source, &self.lock, notes)?;
         let h = source
             .find_key(src.object, &src.on_token.locator, false)?
@@ -1083,7 +1065,7 @@ impl Run<'_> {
         pairs.into_iter().find(|pair| {
             let is_cert = self.lock.objects.get(pair).and_then(|o| o.object_type.as_ref()).map(|t| t.class)
                 == Some(cakeys_core::types::ObjectClass::Certificate);
-            is_cert && source_target(&self.cfg, &self.lock, pair, from).is_ok()
+            is_cert && source_target(&self.opener.cfg, &self.lock, pair, from).is_ok()
         })
     }
 
@@ -1098,7 +1080,7 @@ impl Run<'_> {
         let pair = self.paired_certificate_target(object, from).ok_or_else(|| {
             KmError::PreconditionFailed(format!("the lock pairs no certificate with '{object}' on '{from}'").into())
         })?;
-        let t = source_target(&self.cfg, &self.lock, &pair, from)?;
+        let t = source_target(&self.opener.cfg, &self.lock, &pair, from)?;
         Ok(public::material(&t, tok, &self.lock, notes)?)
     }
 
@@ -1136,7 +1118,7 @@ impl Run<'_> {
                     format!("{}: the lock pins no private key with this key's identity ({id})", input.display()).into(),
                 )
             })?;
-        let (cfg, modules, registry) = (&self.cfg, &self.modules, self.registry);
+        let (cfg, opener) = (&self.opener.cfg, &self.opener);
         let pairs = self.lock.objects.get(&object).map(|o| o.pairs.clone()).unwrap_or_default();
         let objects = std::iter::once(object.as_str()).chain(pairs.iter().map(String::as_str));
         specs_select(cfg, specs, objects, token, KEY_FILE)?;
@@ -1148,18 +1130,18 @@ impl Run<'_> {
         let certificate = keyfile::key_certificate(&read.certificates, &spki);
         if dry_run {
             // Everything the import checks before it creates anything, and nothing more.
-            let target = open_token(cfg, modules, registry, token, Access::Read, notes)?;
+            let target = opener.open(token, Access::Read, notes)?;
             if public::already_there(&dst, &target, &self.lock, notes)? {
                 notes.note(format_args!("{dst} is already realised and verifies; nothing to import"));
             } else {
                 host::free_locator(&dst, &target, Some(&spki))?;
-                import_checks(&dst, &target, &read.method, registry, notes)?;
+                import_checks(&dst, &target, &read.method, opener.registry, notes)?;
                 println!("{dst}: {object} by {} (file) from {}: ready", read.method, input.display());
             }
             match (&certificate, &cert_target) {
                 (Some(cert), Some(t)) if !public::already_there(t, &target, &self.lock, notes)? => {
                     public::preflight(t, &target, cert)?;
-                    import_checks(t, &target, &Method::Public, registry, notes)?;
+                    import_checks(t, &target, &Method::Public, opener.registry, notes)?;
                     println!("{t}: its certificate: ready");
                 }
                 (Some(_), None) => notes.note(format_args!(
@@ -1170,7 +1152,7 @@ impl Run<'_> {
             }
             return Ok(());
         }
-        let target = open_token(cfg, modules, registry, token, Access::Write, notes)?;
+        let target = opener.open(token, Access::Write, notes)?;
         let origin = cakeys_core::config::Origin {
             from: "file".into(),
             method: read.method.name(),
@@ -1223,7 +1205,7 @@ impl Run<'_> {
         how: &FileImport,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
-        let cfg = &self.cfg;
+        let cfg = &self.opener.cfg;
         let from_file = |o: &str| {
             cfg.specs
                 .values()
@@ -1253,7 +1235,7 @@ impl Run<'_> {
         wanted.sort_by_key(|o| !cfg.objects[*o].class.is_key() || cfg.objects[*o].class == Class::PublicKey);
         specs_select(cfg, specs, wanted.iter().copied(), token, FROM_FILE)?;
         let access = if how.dry_run { Access::Read } else { Access::Write };
-        let target = open_token(cfg, &self.modules, self.registry, token, access, notes)?;
+        let target = self.opener.open(token, access, notes)?;
         let (mut changed, mut failed) = (false, None);
         for object in wanted {
             let dst = match import_target(cfg, object, token, spec_for(cfg, specs, object), FROM_FILE) {
@@ -1264,7 +1246,7 @@ impl Run<'_> {
                     continue;
                 }
             };
-            match from_its_file((cfg, self.registry), &dst, &target, &mut self.lock, how, notes) {
+            match from_its_file((cfg, self.opener.registry), &dst, &target, &mut self.lock, how, notes) {
                 Ok(None) => {}
                 Ok(Some(public::Moved::Imported)) => {
                     changed = true;
@@ -1299,7 +1281,7 @@ impl Run<'_> {
                 .into(),
             )
         })?;
-        let tok = open_token(&self.cfg, &self.modules, self.registry, source, Access::Write, notes)?;
+        let tok = self.opener.open(source, Access::Write, notes)?;
         let (copy, others) = tok.trusted(&spki)?;
         if copy.is_some() {
             notes.note(format_args!("'{source}' already trusts transport key '{spec}' of '{token}'"));
