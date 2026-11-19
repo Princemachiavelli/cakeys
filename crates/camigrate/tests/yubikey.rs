@@ -61,7 +61,7 @@ fn a_key_moves_into_a_piv_slot_through_the_host() {
         code(&o),
         13,
         "slot 95 is occupied, by an earlier run's key or another: wipe it first (`ykman piv keys delete 95`, or \
-         scripts/coverage-full.sh with CAKEYS_YUBIKEY_WIPE_95=1): {}",
+         scripts/coverage-full.sh with CAKEYS_YUBIKEY_WIPE=1): {}",
         stderr(&o)
     );
     assert_eq!(code(&o), 0, "{}", stderr(&o));

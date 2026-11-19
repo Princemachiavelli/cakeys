@@ -41,7 +41,14 @@ print "adopted, not generated" when the fallback is taken. Optionally, wipe slot
 `ykman piv keys delete` in coverage-full as it does slot 95, after confirming with the owner that
 those slots are free to wipe. [read]
 
-**Fixed (2026-11-18), the silence:** a run that finds an earlier run's key says it adopts it with `lock`. **Decided:** the slots are not wiped first: PIV cannot erase a key, and only slot 95 may be wiped (docs/DEVELOPMENT.md, hardware rules).
+**Fixed (2026-11-18), the silence:** a run that finds an earlier run's key says it adopts it with `lock`.
+
+**Fixed (2026-11-18), the generation:** the owner cleared slots 90-95 for wiping. A new
+scripts/yubikey-empty-slots.py empties the slots it is given: the test slots 90-95 only, the
+management key alone (the PIN is never tried), and slots 82-84 compared before and after. With
+`CAKEYS_YUBIKEY_WIPE=1` (replacing `_WIPE_95`), coverage-full empties slot 95 before
+camigrate's import and every test slot before cakeys' suite, so each key is generated, by curve
+name for Ed25519 too. Evidence: the run's log has no "adopting it with `lock`" line [run].
 
 ### F3. Local copies of common helpers — complexity
 

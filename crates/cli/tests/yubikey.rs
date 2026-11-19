@@ -20,8 +20,9 @@
 //! | 90 | 13 | RSA-3072, `pop-sign` |
 //!
 //! ykcs11 cannot erase a PIV key (its `C_DestroyObject` clears only the slot's certificate), so
-//! `delete` is refused and each test adopts whatever a previous run left in its slot;
-//! `ykman piv keys delete <slot>` empties one to exercise generation again. Every CLI run is
+//! `delete` is refused, and a test adopts, saying so, whatever a previous run left in its slot;
+//! `scripts/coverage-full.sh` with `CAKEYS_YUBIKEY_WIPE=1` empties the slots first
+//! (scripts/yubikey-empty-slots.py), so every key is generated. Every CLI run is
 //! bounded in time: a touch or a PIN prompt would hang the run and fail the test instead of
 //! waiting for a user.
 
@@ -152,8 +153,8 @@ impl Env {
         // identified; nothing is locked yet.
         let mut first = self.km(&r);
         if code(&first) == 19 {
-            // PIV cannot erase a key, and only slot 95 may be wiped (docs/DEVELOPMENT.md): say
-            // that this run adopts, rather than generates, what the slot holds.
+            // ykcs11 cannot erase a key and the slots were not emptied first (the module doc):
+            // say that this run adopts, rather than generates, what the slot holds.
             eprintln!("{}: the slot holds an earlier run's key; adopting it with `lock`, not generating", c.name);
             first = self.km(&adopt);
         }

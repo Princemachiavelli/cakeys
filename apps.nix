@@ -55,13 +55,17 @@ in
         name = "cakeys-coverage-full";
         runtimeInputs = [
           pkgs.cargo-llvm-cov
-          pkgs.yubikey-manager
         ];
         runtimeEnv = {
           # The llvm-tools of this rustc's own LLVM, as packages.coverage uses them.
           LLVM_COV = "${pkgs.rustc.llvmPackages.llvm}/bin/llvm-cov";
           LLVM_PROFDATA = "${pkgs.rustc.llvmPackages.llvm}/bin/llvm-profdata";
           CAKEYS_YKCS11_MODULE = "${pkgs.yubico-piv-tool}/lib/libykcs11.so";
+          # scripts/yubikey-empty-slots.py's interpreter, with yubikit (yubikey-manager's library):
+          # named, as the test environment's PATH has a python3 of its own.
+          CAKEYS_YUBIKIT_PYTHON = "${
+            pkgs.yubikey-manager.pythonModule.withPackages (_: [ pkgs.yubikey-manager ])
+          }/bin/python3";
         };
         text = ''
           [ -f scripts/coverage-full.sh ] || { echo "run from the repository root" >&2; exit 2; }
