@@ -69,9 +69,10 @@ retargeted spec against its new object (dc3f102). The guard, the write and the w
 check go to the file a lock path resolves to, so a symlinked lock is one guarded file, written
 through. A run that waits for the guard says so first. `read_lock`'s doc says 14, and a test
 holds every documented exit code to `KmError::exit_code`. The guard still spans a whole
-`create`: that span is what keeps the run's read-modify-write whole. **Left for a decision:**
-an unwritable lock exits 14, which CAKEYS.md's table now lists; a code of its own would change a
-scripted interface.
+`create`: that span is what keeps the run's read-modify-write whole. **Decided
+(2026-11-18):** an unwritable lock is `LockUnwritable` (21), both refused up front and a save
+that fails part-way (it was `Io`, 1, though the token may then hold what the lock does not
+record). `the_exit_code_table_lists_every_code` holds CAKEYS.md's table to every code.
 
 ## D3. Build features change run-time behaviour, unchecked
 
@@ -120,9 +121,9 @@ Both can disagree with `cakeys validate`. ([caprobe lib.rs](REVIEW_crates_caprob
 (profile verdicts; `supports_answers_from_the_embedded_profiles`,
 `supports_asks_by_token_and_refuses_what_it_cannot_ask`). Q28: a newer cakeys's proof, OAEP hash
 or template attribute loads as read and answers nothing (`a_newer_cakeys_names_load_and_answer_nothing`,
-the round trip over `Proof::NAMES`). Left: caprobe still builds its own set and composes the
-token's layers itself rather than calling `gate::stack`; the two now agree, and the tests above
-hold them to it.
+the round trip over `Proof::NAMES`). caprobe activates the one profile set (`--profiles` loaded over it) and
+`supports --token` resolves through `gate::stack`: its own composition took a hardware profile
+whole where `validate` drops the hardware's rows (`supports_asks_by_token_and_refuses_what_it_cannot_ask`).
 
 ## D5. Attestation trust boundaries
 
@@ -154,8 +155,9 @@ hold them to it.
   it needs an authenticated session in the attestation path and a TPM to test it on.
 - PIV: `Token::open` takes the `ChainTime` and it has no default, so every open names whether
   the dates are checked; the verbs that record pass `Unchecked`, as B8 decided (a lock recorded
-  today verifies tomorrow). Whether `create`'s verification of a pinned pair should hold the
-  dates too is left for a decision: it would reverse B8 for that verb.
+  today verifies tomorrow). Decided (2026-11-18): the verbs that record judge
+  the dates by the clock too and warn (`ChainTime::Warn`); `check` enforces
+  (`a_chain_out_of_its_dates_warns_where_check_refuses`).
 - Clock: the check unit is ordered after `time-sync.target` and runs again on every start of a
   unit it gates (`checks.module`, restart without a hand stop).
 - Bundles: in dc3f102, `import --in` refuses an EC or Edwards key under `token-asserted`

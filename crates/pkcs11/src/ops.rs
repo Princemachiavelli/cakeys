@@ -364,11 +364,17 @@ enum Verb {
 /// for a wrong type or policy, or — for a private key — a public key object under the locator
 /// that holds another key; `Unsupported`/`Unavailable` when the object cannot be proven or
 /// attested as the spec requires.
-pub fn resolve(t: &Target, tok: &Token, lock: &Lock) -> Result<Option<Resolved>> {
-    resolve_with(t, tok, lock, Provision::Never)
+pub fn resolve(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Option<Resolved>> {
+    resolve_with(t, tok, lock, Provision::Never, notes)
 }
 
-fn resolve_with(t: &Target, tok: &Token, lock: &Lock, provision: Provision) -> Result<Option<Resolved>> {
+fn resolve_with(
+    t: &Target,
+    tok: &Token,
+    lock: &Lock,
+    provision: Provision,
+    notes: &mut Notes,
+) -> Result<Option<Resolved>> {
     let mode = plan_mode(t)?;
     let public_only = t.on_token.public_only;
     let Some(h) = tok.find_key(t.object, &t.on_token.locator, public_only)? else {
@@ -385,7 +391,7 @@ fn resolve_with(t: &Target, tok: &Token, lock: &Lock, provision: Provision) -> R
         tok.check_public_objects(h, &t.on_token.locator)?;
     }
     let attestation = match attestation_scheme(t, tok) {
-        Some(scheme) => Some(attest(t, tok, lock, h, scheme, provision)?),
+        Some(scheme) => Some(attest(t, tok, lock, h, scheme, provision, notes)?),
         None => None,
     };
     Ok(Some(Resolved {
@@ -442,6 +448,7 @@ fn attest(
     h: ObjectHandle,
     scheme: Scheme,
     provision: Provision,
+    notes: &mut Notes,
 ) -> Result<AttestationRecord> {
     let asymmetric = t.object.class.is_asymmetric();
     let spki = if asymmetric { Some(tok.spki(h, &t.on_token.locator)?) } else { None };
@@ -468,6 +475,9 @@ fn attest(
         return Err(KmError::Conflict(
             format!("provider '{}' advertises {scheme} but attested {}", tok.provider.name(), a.scheme).into(),
         ));
+    }
+    if let Some(w) = &a.warning {
+        notes.warn(format!("{t}: its attestation would fail `check` today: {w}"));
     }
     Ok(AttestationRecord { kind: kind.to_owned(), root: a.root, id: a.id })
 }
@@ -517,7 +527,7 @@ fn facts(t: &Target, tok: &Token, r: &Resolved, created: bool) -> Facts {
 /// rejects — `HashMismatch` (10) when the token's IDs differ from the lock,
 /// `PreconditionFailed` (14) for a realisation that moved.
 pub fn verify(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Resolved> {
-    let r = resolve(t, tok, lock)?.ok_or_else(|| absent(t))?;
+    let r = resolve(t, tok, lock, notes)?.ok_or_else(|| absent(t))?;
     reconcile::compare(t, &r, lock, &facts(t, tok, &r, false), LockWrite::Compare, notes)?;
     Ok(r)
 }
@@ -566,7 +576,7 @@ fn lock_as(
 ) -> Result<(Resolved, bool)> {
     let mode = plan_mode(t)?;
     check_capabilities(t, tok, mode, Verb::Lock)?;
-    let r = resolve_with(t, tok, lock, Provision::IfMissing)?.ok_or_else(|| absent(t))?;
+    let r = resolve_with(t, tok, lock, Provision::IfMissing, notes)?.ok_or_else(|| absent(t))?;
     let facts = Facts { origin, ..facts(t, tok, &r, false) };
     let changed = reconcile::reconcile(t, &r, lock, &facts, write, notes)?;
     Ok((r, changed))
@@ -647,7 +657,7 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
     if let Some(note) = made_otherwise {
         notes.say(note.to_string());
     }
-    let e = match resolve_with(t, tok, lock, Provision::IfMissing) {
+    let e = match resolve_with(t, tok, lock, Provision::IfMissing, notes) {
         Ok(Some(r)) => return Ok(r),
         Ok(None) => KmError::NotFound(format!("{t} vanished after creation").into()),
         Err(e) => e,

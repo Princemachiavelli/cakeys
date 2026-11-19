@@ -33,13 +33,20 @@ pub fn default_registry() -> Registry {
 /// the embedded profiles plus keys.toml's `profileDirs`, right after the config is read and
 /// before anything asks for a profile, which nothing else activates (ISSUES.md Q24). Says
 /// which profiles the directories added: a profile from outside the build is named as such.
+/// `replacing` (caprobe's `--profiles`) is loaded over the rest, and may replace.
 ///
 /// # Errors
 ///
 /// `Validation` (17) for a directory that cannot be read or a file it may not add.
-pub fn activate_profiles(cfg: &Config, notes: &mut Notes) -> Result<(), KmError> {
+pub fn activate_profiles(cfg: &Config, replacing: Option<&Path>, notes: &mut Notes) -> Result<(), KmError> {
+    let activate = || {
+        cakeys_profile::Set::activate_replacing(&cfg.profile_dirs, replacing).map_err(|e| {
+            let from = replacing.map(|d| format!(" (or --profiles {})", d.display())).unwrap_or_default();
+            KmError::Validation(format!("profileDirs{from}: {e}").into())
+        })
+    };
     if cfg.profile_dirs.is_empty() {
-        return cakeys_profile::Set::activate(&[]).map(drop).map_err(|e| KmError::Validation(e.into()));
+        return activate().map(drop);
     }
     let built: Vec<String> = cakeys_profile::Set::embedded()
         .map_err(|e| KmError::Validation(e.into()))?
@@ -47,7 +54,7 @@ pub fn activate_profiles(cfg: &Config, notes: &mut Notes) -> Result<(), KmError>
         .iter()
         .map(|p| p.profile.clone())
         .collect();
-    let set = cakeys_profile::Set::activate(&cfg.profile_dirs).map_err(|e| KmError::Validation(e.into()))?;
+    let set = activate()?;
     let added: Vec<&str> =
         set.all().iter().map(|p| p.profile.as_str()).filter(|p| !built.iter().any(|b| b == p)).collect();
     notes.say(format!(
@@ -160,18 +167,18 @@ impl<'a> Opener<'a> {
     ) -> anyhow::Result<Opener<'a>> {
         let modules = module_overrides(modules)?;
         let cfg = load_config(config)?;
-        activate_profiles(&cfg, notes)?;
+        activate_profiles(&cfg, None, notes)?;
         Ok(Opener { cfg, modules, registry })
     }
 
-    /// [`open_token`] of the token `name`, for a verb that records: it reads no clock, so its
-    /// attestation chains are not held to their dates ([`ChainTime`]).
+    /// [`open_token`] of the token `name`, for every verb but `check`: an attestation chain out of
+    /// its dates by the clock is a warning, not a refusal (`check` refuses it; [`ChainTime::Warn`]).
     ///
     /// # Errors
     ///
     /// Whatever [`open_token`] refuses.
     pub fn open(&self, name: &str, access: Access, notes: &mut Notes) -> Result<Token, KmError> {
-        open_token(&self.cfg, &self.modules, self.registry, name, access, ChainTime::Unchecked, notes)
+        open_token(&self.cfg, &self.modules, self.registry, name, access, ChainTime::warn_now(), notes)
     }
 
     /// [`open_quiet`] of the token `name`, holding its attestation chains to `chain_time`
@@ -193,11 +200,11 @@ impl<'a> Opener<'a> {
 ///
 /// # Errors
 ///
-/// `PreconditionFailed` (14) for a lock a writing verb cannot write; whatever
+/// `LockUnwritable` (21) for a lock a writing verb cannot write; whatever
 /// [`lock_for_update`] or [`load_lock`] refuses.
 pub fn read_lock(path: &Path, writes: bool, instead: &str) -> anyhow::Result<(Lock, Option<UpdateGuard>)> {
     if writes && let Some(why) = lock_unwritable(path) {
-        return Err(KmError::PreconditionFailed(
+        return Err(KmError::LockUnwritable(
             format!("cannot write the lock {}: {why}; {instead}", path.display()).into(),
         )
         .into());

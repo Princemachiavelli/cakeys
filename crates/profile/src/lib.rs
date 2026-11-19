@@ -139,9 +139,22 @@ impl Set {
     ///
     /// What loading refuses, or the set already being in use.
     pub fn activate(dirs: &[std::path::PathBuf]) -> Result<&'static Set, String> {
+        Set::activate_replacing(dirs, None)
+    }
+
+    /// [`Set::activate`], then every profile under `replacing` loaded over it
+    /// ([`Set::with_dir`]): caprobe's `--profiles`, which measures profiles not yet committed.
+    ///
+    /// # Errors
+    ///
+    /// What loading refuses, or the set already being in use.
+    pub fn activate_replacing(dirs: &[std::path::PathBuf], replacing: Option<&Path>) -> Result<&'static Set, String> {
         let mut set = Set::embedded()?;
         for dir in dirs {
             set = set.adding_dir(dir)?;
+        }
+        if let Some(dir) = replacing {
+            set = set.with_dir(dir)?;
         }
         ACTIVE.set(set).map_err(|_| "the profile set is already in use: activate it once, first".to_owned())?;
         Set::active()

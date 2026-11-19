@@ -76,7 +76,7 @@ fn supports_asks_by_token_and_refuses_what_it_cannot_ask() {
         assert!(exit == 17 && said.contains(why), "{args:?}: exit {exit}: {said}");
     };
     refused(&["--token", "nope", "secp256r1"], "unknown token 'nope'");
-    refused(&["--token", "bare", "secp256r1"], "names no provider");
+    refused(&["--token", "bare", "secp256r1"], "no provider named");
     refused(&["--token", "soft", "--class", "nope"], "no class 'nope'");
 
     // The token's own stack: its configured layers (`profiles`), and module profiles keys.toml's
@@ -84,7 +84,15 @@ fn supports_asks_by_token_and_refuses_what_it_cannot_ask() {
     // once left both out: yes from SoftHSM's profile behind p11-kit, and 17 for a profile only
     // `profileDirs` has.
     let proxied = "[tokens.proxied]\ntokenLabel = \"p\"\nprovider = \"softhsm\"\nprofiles = [\"p11-kit/0.26\"]\n";
-    std::fs::write(&config, format!("{tokens}\n{proxied}")).unwrap();
+    let tpm = "[tokens.tpm]\ntokenLabel = \"t\"\nprovider = \"tpm2-pkcs11\"\nprofiles = [\"swtpm\"]\n";
+    std::fs::write(&config, format!("{tokens}\n{proxied}\n{tpm}")).unwrap();
+    // The stack `validate` and `create`'s gate resolve (`gate::stack`, review D4): with no module
+    // recorded, the hardware's rows decide nothing, so a size the swtpm profile generated is
+    // unknown for the token, though asking the profile by name says yes. `supports --token` once
+    // composed a stack of its own that took the profile whole, and said yes.
+    let (exit, said) = ask(&["--token", "tpm", "--bits", "2048", "CKK_RSA"]);
+    assert!(exit == 16 && said.contains("chosen by provider alone"), "exit {exit}: {said}");
+    assert_eq!(ask(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "2048", "CKK_RSA"]).0, 0);
     assert_eq!(ask(&["--token", "soft", "CKM_AES_KEY_WRAP"]).0, 0);
     // In the stack once, though the command line names it too.
     for args in [&["--token", "proxied"][..], &["--token", "proxied", "--layer", "p11-kit/0.26"]] {

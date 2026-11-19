@@ -19,6 +19,7 @@ fn code_of(variant: &str) -> Option<u8> {
         "Validation" => KmError::Validation("".into()),
         "Exists" => KmError::Exists("".into()),
         "ObjectsFailed" => KmError::ObjectsFailed("".into()),
+        "LockUnwritable" => KmError::LockUnwritable("".into()),
         "Io" => KmError::Io("".into()),
         _ => return None,
     };
@@ -70,4 +71,53 @@ fn documented_exit_codes_are_the_ones_returned() {
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     assert!(checked > 30, "only {checked} documented codes found: the scan no longer reads the docs");
+}
+
+/// Every variant `KmError::exit_code` maps, with its code, read from its match arms: a new
+/// variant is in every check below without being listed by hand.
+fn variants() -> Vec<(String, u8)> {
+    let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/error.rs")).unwrap();
+    let body = &src[src.find("pub fn exit_code").unwrap()..];
+    let body = &body[..body
+        .find(
+            "
+    }
+",
+        )
+        .unwrap()];
+    let arms: Vec<(String, u8)> = body
+        .lines()
+        .filter_map(|l| {
+            let (pat, code) = l.trim().strip_prefix("KmError::")?.split_once(" => ")?;
+            let name = pat.split(|c: char| !c.is_alphanumeric()).next()?;
+            Some((name.to_owned(), code.trim_end_matches(',').parse().ok()?))
+        })
+        .collect();
+    assert!(arms.len() >= 12, "{arms:?}: the arms of exit_code no longer read");
+    arms
+}
+
+/// Every variant is in [`code_of`], so the documented codes are checked for it too.
+#[test]
+fn every_variant_is_checked() {
+    for (v, c) in variants() {
+        assert_eq!(code_of(&v), Some(c), "{v}: add it to code_of");
+    }
+}
+
+/// docs/CAKEYS.md's exit-code table has a row for every code a verb's error exits with (10 and
+/// up; 1 and 2 are not `KmError`'s alone), and no other.
+#[test]
+fn the_exit_code_table_lists_every_code() {
+    let doc = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/CAKEYS.md");
+    let doc = std::fs::read_to_string(&doc).unwrap_or_else(|e| panic!("{}: {e}", doc.display()));
+    let table: std::collections::BTreeSet<u8> = doc
+        .lines()
+        .filter_map(|l| l.strip_prefix("| ")?.split_once(" |").and_then(|(n, _)| n.parse().ok()))
+        .filter(|n| *n >= 10)
+        .collect();
+    let verbs: Vec<u8> = variants().into_iter().map(|(_, c)| c).filter(|c| *c >= 10).collect();
+    let codes: std::collections::BTreeSet<u8> = verbs.iter().copied().collect();
+    assert_eq!(codes.len(), verbs.len(), "two variants share a code");
+    assert_eq!(table, codes, "docs/CAKEYS.md's exit codes (left) are not the ones returned (right)");
 }

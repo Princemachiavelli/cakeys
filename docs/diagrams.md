@@ -48,7 +48,7 @@ fixed-output derivation, printing the hash to record.
 flowchart TD
     START(["cakeys create | lock &lt;spec&gt; --token &lt;t&gt;"]) --> GUARD
     GUARD["a writing run (the default) takes the exclusive lock<br/>on &lt;lock&gt;.lck for the whole run"]
-    GUARD -- "Nix build sandbox, or the lock<br/>is not writable" --> X14w(["exit 14 before any token is touched:<br/>pass --no-update-lock"])
+    GUARD -- "Nix build sandbox, or the lock<br/>is not writable" --> X21(["exit 21 before any token is touched:<br/>pass --no-update-lock"])
     GUARD --> VAL["validate: mode, binding, attribute shapes,<br/>certificateType, per-class names"]
     VAL -- "invalid spec" --> X17(["exit 17"])
     VAL --> FIND["find by locator<br/>(CKA_LABEL / CKA_ID)"]

@@ -124,6 +124,11 @@ pub enum KmError {
     /// Invalid config, lock, spec or token options (17).
     #[error("invalid spec: {0}")]
     Validation(Msg),
+    /// The lock cannot be written (21): a writing run refused before any token is touched (a
+    /// read-only lock or directory, a Nix build sandbox), or a save that failed part-way, after
+    /// which the token may hold what the lock does not record.
+    #[error("lock cannot be written: {0}")]
+    LockUnwritable(Msg),
     /// Reading or writing a file failed (exit 1, like any other failure outside the verbs).
     #[error("{0}")]
     Io(Msg),
@@ -145,6 +150,7 @@ impl KmError {
             KmError::FirstUse { .. } => 18,
             KmError::Exists(_) => 19,
             KmError::ObjectsFailed(_) => 20,
+            KmError::LockUnwritable(_) => 21,
             KmError::Io(_) => 1,
         }
     }
@@ -168,6 +174,7 @@ impl KmError {
             | KmError::PreconditionFailed(m)
             | KmError::Exists(m)
             | KmError::ObjectsFailed(m)
+            | KmError::LockUnwritable(m)
             | KmError::Unsupported(m)
             | KmError::Unavailable(m)
             | KmError::Validation(m)
@@ -187,6 +194,7 @@ impl KmError {
             | KmError::PreconditionFailed(m)
             | KmError::Exists(m)
             | KmError::ObjectsFailed(m)
+            | KmError::LockUnwritable(m)
             | KmError::Unsupported(m)
             | KmError::Unavailable(m)
             | KmError::Validation(m)
@@ -213,6 +221,7 @@ impl KmError {
             | KmError::PreconditionFailed(m)
             | KmError::Exists(m)
             | KmError::ObjectsFailed(m)
+            | KmError::LockUnwritable(m)
             | KmError::Unsupported(m)
             | KmError::Unavailable(m)
             | KmError::Validation(m)

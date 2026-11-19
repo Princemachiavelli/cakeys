@@ -20,10 +20,11 @@ $ caprobe probe --token <t> [--write] [--out <file>] [--diff <profile>] [--name 
 
 - `supports` asks the profiles alone; no token is touched, and `--profile` needs no keys.toml.
   Answers cite the deciding profile ("no: cryptoki (unpatched build) subtracts it"). Exit 0 yes,
-  15 no, 16 unknown. `--token` stacks the token's provider (or `moduleProfile`) under its
-  configured `profiles` layers, from the profiles keys.toml's `profileDirs` add; it never reads
-  keys.lock, so the lock's recorded module and answers are not consulted (`cakeys validate`
-  does). A key type asked without a curve or size is yes when some row of it generated or the
+  15 no, 16 unknown. `--token` resolves the token's stack as `cakeys validate` and `create`'s
+  gate do (`gate::stack`): its provider (or `moduleProfile`), its configured `profiles` layers,
+  from the one profile set every tool activates (embedded, `profileDirs`, then `--profiles`). It
+  never reads keys.lock, so it answers as `validate` does for a token the lock records nothing
+  of: with no module recorded, the rows the hardware decides are unknown. A key type asked without a curve or size is yes when some row of it generated or the
   module reports it, no when every row says no.
 - `caps` prints a token's provider, its resolved stack of profiles and its usable mechanisms as
   JSON.

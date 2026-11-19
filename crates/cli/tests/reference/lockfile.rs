@@ -308,7 +308,7 @@ fn update_lock_waits_for_the_sidecar_lock() {
 
 /// `lock` and `delete` write the lock by default; `--no-update-lock` compares only (first use
 /// is then 10 and nothing is written). Where the lock cannot be written — a Nix build sandbox, a
-/// read-only lock, a read-only directory — a writing run is refused (14) before the token is
+/// read-only lock, a read-only directory — a writing run is refused (21) before the token is
 /// touched, naming `--no-update-lock`; `check` never writes and is unaffected.
 #[test]
 fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
@@ -320,7 +320,7 @@ fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
     let lock = e.dir.join("keys.lock");
     let refused = |o: &Output, why: &str| {
         let err = stderr(o);
-        assert_eq!(code(o), 14, "{err}");
+        assert_eq!(code(o), 21, "{err}");
         assert!(err.contains(why) && err.contains("--no-update-lock"), "{err}");
     };
 

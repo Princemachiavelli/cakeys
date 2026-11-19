@@ -264,7 +264,7 @@ impl Run<'_> {
                 let (spec, token) = at.pair(&self.opener.cfg)?;
                 let t = Target::new(&self.opener.cfg, &spec, &token)?;
                 let tok = self.opener.open(&token, Access::Read, notes)?;
-                let r = ops::resolve(&t, &tok, &self.lock)?
+                let r = ops::resolve(&t, &tok, &self.lock, notes)?
                     .ok_or_else(|| KmError::NotFound(format!("{} on {token}", t.object_name).into()))?;
                 print(&r)
             }

@@ -456,7 +456,8 @@ mod tests {
     /// Under `check`, every certificate of the chain is held to its validity period (ISSUES.md
     /// B8): the fixture chain is valid from 2026-11-12 to 2036-11-09, so it verifies in 2030
     /// and is a conflict before and after, naming the time and the period; without a time
-    /// (`lock`, `create`, camigrate) the dates are not read.
+    /// (`--ignore-validity`) the dates are not read. Every other verb warns: out of its dates the
+    /// chain verifies, the dated failure its warning (`ChainTime::Warn`).
     #[test]
     fn check_holds_the_chain_to_its_dates() {
         let anchors = pem_certs(&String::from_utf8(fixture("root.pem")).unwrap()).unwrap();
@@ -474,5 +475,11 @@ mod tests {
             assert!(err.to_string().contains("--ignore-validity"), "{err}");
         }
         verify(None).unwrap();
+        let late = at("2040-01-01T00:00:00Z");
+        let (_, warning) = cakeys_pkcs11::ChainTime::Warn(late).verify(verify).unwrap();
+        assert!(warning.as_deref().is_some_and(|w| w.contains("is not valid at 2040-01-01T00:00:00Z")), "{warning:?}");
+        assert!(cakeys_pkcs11::ChainTime::At(late).verify(verify).is_err());
+        let on_time = cakeys_pkcs11::ChainTime::Warn(at("2030-01-01T00:00:00Z")).verify(verify).unwrap();
+        assert_eq!(on_time.1, None);
     }
 }

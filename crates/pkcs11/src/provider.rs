@@ -560,22 +560,25 @@ pub struct AttestCtx<'a> {
     /// True only under `lock`: the provider may create the device state it attests with (the
     /// TPM Attestation Key), never on a read.
     pub provision: bool,
-    /// When the attestation's certificates must be valid: under `check` only.
+    /// When the attestation's certificates must be valid, and whether a fault in their dates refuses.
     pub chain_time: ChainTime,
 }
 
 /// When the certificates of an attestation chain must be valid (ISSUES.md B8). `check` holds
 /// every link to its validity period, at the system clock's time unless told another
-/// (`--at`, `--ignore-validity`); the verbs that record (`lock`, `create`, camigrate) read no
-/// clock, so a lock recorded today verifies tomorrow. There is no default: every token open
-/// names one ([`crate::Token::open`]), so no reader of attestations skips the dates by
-/// forgetting to ask (review D5).
+/// (`--at`, `--ignore-validity`); every other verb (`lock`, `create`, `verify`, camigrate) judges
+/// the dates by the clock too but only warns ([`ChainTime::Warn`]): `check` is what enforces. There is
+/// no default: every token open names one ([`crate::Token::open`]), so no reader of
+/// attestations skips the dates by forgetting to ask (review D5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChainTime {
     /// The dates are not checked.
     Unchecked,
     /// Valid at this time: seconds since the Unix epoch, UTC.
     At(u64),
+    /// Judged at this time, but a chain whose only fault is its dates is accepted with a warning
+    /// ([`Attested::warning`]).
+    Warn(u64),
 }
 
 impl ChainTime {
@@ -583,8 +586,36 @@ impl ChainTime {
     /// every build, where every chain would be not yet valid.
     #[must_use]
     pub fn now() -> Self {
+        ChainTime::At(Self::clock())
+    }
+
+    /// Now, by the system clock, warning only: what every verb but `check` judges dates with.
+    #[must_use]
+    pub fn warn_now() -> Self {
+        ChainTime::Warn(Self::clock())
+    }
+
+    fn clock() -> u64 {
         let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
-        ChainTime::At(since.map_or(0, |d| d.as_secs()))
+        since.map_or(0, |d| d.as_secs())
+    }
+
+    /// Verify a chain by `verify`, given the time to hold its dates to (`None`: unchecked). Under
+    /// [`ChainTime::Warn`], a chain that fails only at that time (it verifies without the dates)
+    /// is accepted, with the dated failure as the warning; any other failure is the undated one.
+    ///
+    /// # Errors
+    ///
+    /// Whatever `verify` returns, as above.
+    pub fn verify<T>(self, verify: impl Fn(Option<u64>) -> Result<T>) -> Result<(T, Option<String>)> {
+        match self {
+            ChainTime::Unchecked => verify(None).map(|v| (v, None)),
+            ChainTime::At(t) => verify(Some(t)).map(|v| (v, None)),
+            ChainTime::Warn(t) => match verify(Some(t)) {
+                Ok(v) => Ok((v, None)),
+                Err(dated) => verify(None).map(|v| (v, Some(dated.to_string()))),
+            },
+        }
     }
 
     /// An RFC 3339 time in UTC, `YYYY-MM-DDTHH:MM:SSZ` (`check --at`).
@@ -628,6 +659,9 @@ pub struct Attested {
     pub id: String,
     /// SRI digest of the anchor the attestation was verified to.
     pub root: String,
+    /// Why the chain would fail `check` though it verified: its dates, under
+    /// [`ChainTime::Warn`].
+    pub warning: Option<String>,
 }
 
 /// Plain PKCS#11, used when no registered provider recognises the module.
@@ -767,6 +801,26 @@ impl Registry {
 
 #[cfg(test)]
 mod tests {
+    /// Every verb but `check` warns about a chain's dates, `check` refuses it, `--ignore-validity`
+    /// skips them; a chain wrong for any other reason is refused under each (review D5).
+    #[test]
+    fn a_chain_out_of_its_dates_warns_where_check_refuses() {
+        use super::ChainTime::{At, Unchecked, Warn};
+        let dated = |at: Option<u64>| match at {
+            Some(t) if t > 100 => Err(KmError::Conflict("'slot' is not valid at 101".into())),
+            _ => Ok("attested"),
+        };
+        assert_eq!(Warn(50).verify(dated).unwrap(), ("attested", None));
+        let (v, warning) = Warn(101).verify(dated).unwrap();
+        assert_eq!((v, warning.as_deref()), ("attested", Some("conflict: 'slot' is not valid at 101")));
+        assert_eq!(At(101).verify(dated).unwrap_err().exit_code(), 13);
+        assert_eq!(Unchecked.verify(dated).unwrap(), ("attested", None));
+        let unpinned = |_: Option<u64>| -> Result<&str> { Err(KmError::Conflict("signed by no pinned root".into())) };
+        for when in [Warn(101), At(101), Unchecked] {
+            assert!(when.verify(unpinned).unwrap_err().to_string().contains("no pinned root"), "{when:?}");
+        }
+    }
+
     use super::*;
 
     struct Acme;

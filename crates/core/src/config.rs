@@ -1855,13 +1855,16 @@ pub fn parse_lock(text: &str, path: &Path) -> Result<Lock> {
 /// # Errors
 ///
 /// `Validation` if the lock breaks a load rule (nothing is written); `Io` if the lock cannot be
-/// encoded, or the temporary write, sync or rename fails.
+/// encoded; `LockUnwritable` (21) if the temporary write, sync or rename fails.
 pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
     lock.check(path).map_err(|e| KmError::Validation(format!("not writing a lock that would not load: {e}").into()))?;
     let text =
         toml::to_string_pretty(lock).map_err(|e| KmError::Io(format!("encoding {}: {e}", path.display()).into()))?;
     // Created like any new file (0666 under the umask).
-    write_whole(path, text.as_bytes(), 0o666)
+    write_whole(path, text.as_bytes(), 0o666).map_err(|e| match e {
+        KmError::Io(m) => KmError::LockUnwritable(m),
+        other => other,
+    })
 }
 
 /// Write `bytes` to `path` whole or not at all, as [`save_lock`] writes the lock: a uniquely
@@ -2338,6 +2341,24 @@ mod tests {
         assert!(!file.exists(), "an invalid lock was written");
         save_lock(&file, &attestable_lock()).unwrap();
         load_lock(&file).unwrap();
+    }
+
+    /// A lock that cannot be saved is `LockUnwritable` (21), whatever stage of the write failed:
+    /// a run that changed the token must say its record is missing, not exit 1 like any I/O.
+    #[test]
+    fn a_lock_that_cannot_be_saved_is_its_own_code() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let ro = dir.path().join("ro");
+        std::fs::create_dir(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Root writes anyway (access(2) and the write both succeed).
+        if std::fs::File::create(ro.join("probe")).is_ok() {
+            return;
+        }
+        let e = save_lock(&ro.join("keys.lock"), &attestable_lock()).unwrap_err();
+        assert_eq!(e.exit_code(), 21, "{e}");
+        assert!(e.to_string().contains("lock cannot be written"), "{e}");
     }
 
     /// A symlinked lock (a NixOS layout: the lock in a checked-out repository) is written through

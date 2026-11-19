@@ -276,6 +276,8 @@ pub fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
         scheme: Scheme::TpmCertify,
         id: cakeys_core::id::tpm_certify_id(&certified.name, &certified.qualified_name),
         root: cakeys_core::id::sri(&certified.ak_spki),
+        // The AK is trusted on first use, with no certificate dates to judge.
+        warning: None,
     })
 }
 

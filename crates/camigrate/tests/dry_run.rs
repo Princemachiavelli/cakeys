@@ -1106,7 +1106,8 @@ fn refusals_around_the_plans_and_the_offline_export() {
         (&["migrate", "crt", "--from", "softhsm", "--to", "kryoptic"], "cannot write the lock"),
     ];
     for (a, what) in admin {
-        refused(&e.km_in_nix_build(soft, &[], a), 14, what);
+        // An admin operation is refused there (14); a lock write cannot happen there (21).
+        refused(&e.km_in_nix_build(soft, &[], a), if what.contains("lock") { 21 } else { 14 }, what);
     }
     assert!(!std::path::Path::new(&bundle).exists(), "a refused export wrote a bundle");
     // A build that makes and uses throwaway keys says so, and runs as outside one.

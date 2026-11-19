@@ -182,7 +182,13 @@ fn dispatch(registry: &Registry, cli: &Cli, notes: &mut Notes) -> anyhow::Result
                 .exit()
         }
     };
-    cakeys_cli_common::activate_profiles(&cfg, notes)?;
+    // One profile set, as the verbs activate it, with `--profiles` loaded over it.
+    let replacing = match &cli.cmd {
+        Cmd::Supports(a) => a.profiles_dir.as_deref(),
+        Cmd::Probe(a) => a.profiles_dir.as_deref(),
+        Cmd::Caps { .. } => None,
+    };
+    cakeys_cli_common::activate_profiles(&cfg, replacing, notes)?;
     let modules = module_overrides(&cli.modules)?;
     match &cli.cmd {
         Cmd::Caps { token } => {
@@ -202,31 +208,16 @@ fn dispatch(registry: &Registry, cli: &Cli, notes: &mut Notes) -> anyhow::Result
     }
 }
 
-/// The embedded capability profiles, plus keys.toml's `profileDirs` as the active set adds
-/// them, plus any `--profiles` directory (D11), which may also replace.
-fn profile_set(cfg: &Config, dir: Option<&Path>) -> anyhow::Result<cakeys_profile::Set> {
-    let mut set = cakeys_profile::Set::embedded()
-        .map_err(|e| KmError::Validation(e.into()))
-        .context("the embedded profiles do not parse")?;
-    for d in &cfg.profile_dirs {
-        set = set
-            .adding_dir(d)
-            .map_err(|e| KmError::Validation(e.into()))
-            .with_context(|| format!("profileDirs {}", d.display()))?;
-    }
-    match dir {
-        Some(dir) => Ok(set
-            .with_dir(dir)
-            .map_err(|e| KmError::Validation(e.into()))
-            .with_context(|| format!("--profiles {}", dir.display()))?),
-        None => Ok(set),
-    }
+/// The active profile set: the embedded profiles, keys.toml's `profileDirs` and any
+/// `--profiles` (D11), activated once in `dispatch` as every verb activates it (review D4).
+fn profile_set() -> anyhow::Result<&'static cakeys_profile::Set> {
+    Ok(cakeys_profile::Set::active().map_err(|e| KmError::Validation(e.into()))?)
 }
 
 /// The `supports` verb: answers from the capability profiles alone (docs/CAPROBE.md), so it
 /// runs with an empty `cfg` when there is no keys.toml and no `--token` to look up.
 fn run_supports(cfg: &Config, a: &SupportsArgs, notes: &mut Notes) -> anyhow::Result<()> {
-    let set = profile_set(cfg, a.profiles_dir.as_deref())?;
+    let set = profile_set()?;
     let ask = match (a.class.as_deref(), a.oaep, a.name.as_deref()) {
         (Some(class), _, _) => supports::Ask::Class(class),
         (None, true, _) => supports::Ask::Oaep,
@@ -240,7 +231,10 @@ fn run_supports(cfg: &Config, a: &SupportsArgs, notes: &mut Notes) -> anyhow::Re
         layers: &a.layers,
         bits: a.bits,
     };
-    let s = supports::supports(cfg, &set, &q)?;
+    let s = supports::supports(cfg, set, &q)?;
+    for n in &s.notes {
+        notes.note(n);
+    }
     notes.note(format_args!("profiles: module {}, layers [{}] (docs/CAPROBE.md)", s.module, s.layers.join(", ")));
     for (n, v) in &s.verdicts {
         println!("{n}: {v}");
@@ -258,7 +252,7 @@ fn run_probe(
     notes: &mut Notes,
 ) -> anyhow::Result<()> {
     let tcfg = token_cfg(cfg, &a.token)?;
-    let set = profile_set(cfg, a.profiles_dir.as_deref())?;
+    let set = profile_set()?;
     let claimed =
         a.diff.as_deref().map(|name| set.find(name).map_err(|e| KmError::Validation(e.into()))).transpose()?;
     let access = if a.write { Access::Write } else { Access::Read };

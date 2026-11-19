@@ -119,6 +119,8 @@ in
         ../spec-coverage
         # cargo-nextest's configuration: the slow-test timeout.
         ../.config/nextest.toml
+        # The exit-code table the tests hold to `KmError::exit_code`.
+        ../docs/CAKEYS.md
       ];
     };
 

@@ -197,7 +197,7 @@ alone can compute, such as a TPM Name). If they return, they get their own names
   the spec does not declare is re-recorded with a warning; to make it a gate, declare it, and a
   declared attribute the token does not show is a conflict (13), never re-recorded. IDs,
   downgrades, immutables, attestations and types stay refused even when the lock is written.
-- **Where the lock cannot be written, a writing run is refused (14) before any token is
+- **Where the lock cannot be written, a writing run is refused (21) before any token is
   touched** — never a key created and then not recorded — naming `--no-update-lock`: inside a
   Nix build sandbox (`NIX_BUILD_TOP` set without `IN_NIX_SHELL`, which `nix develop` also
   sets, and without `CAKEYS_ALLOW_NIX_STORE_KEYS=1`, docs/FILE.md), where a write would be lost with the build, or when the lock file or its directory is
@@ -329,7 +329,7 @@ content-addressed identity — one per token type that can produce it:
 
 | Scheme | Token | Evidence | Anchor pinned in the lock |
 |---|---|---|---|
-| `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen`; under `check`, every certificate also within its validity period (the system clock, `--at`, or `--ignore-validity`), while `lock`, `create` and camigrate read no clock. Yubico attests only keys generated on device; ykcs11 mints the certificate when it lists the slot, with no login | the Yubico root's SPKI |
+| `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen`; under `check`, every certificate also within its validity period (the system clock, `--at`, or `--ignore-validity`), while every other verb only warns about a chain out of its dates. Yubico attests only keys generated on device; ykcs11 mints the certificate when it lists the slot, with no login | the Yubico root's SPKI |
 | `tpm-certify` | tpm2-pkcs11 tokens | a native `TPM2_Certify` (tss-esapi) over the object's Name with a fresh random nonce, host-verified; the object's TPM blobs are read (read-only) from the module's own store — `options.tpm2Store`, else found as the module finds it — and loaded under the token's primary over the module's TCTI (`options.tcti`, else `$TPM2_PKCS11_TCTI`, `$TPM2TOOLS_TCTI`, `$TCTI`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the Attestation Key's SPKI |
 
 - **The commitment hashes asserted content, never signed bytes.** A PIV certificate is minted

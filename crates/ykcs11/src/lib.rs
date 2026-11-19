@@ -202,12 +202,9 @@ impl Provider for Ykcs11 {
             ctx.required_spki()?.ok_or_else(|| KmError::Unsupported("PIV attests asymmetric keys only".into()))?;
         let slot = find_attestation_cert(ctx, &id)?;
         let device = find_device_cert(ctx)?;
-        let at = match ctx.chain_time {
-            cakeys_pkcs11::ChainTime::At(t) => Some(t),
-            cakeys_pkcs11::ChainTime::Unchecked => None,
-        };
-        let a = verify_piv_attestation(&slot, &device, &ANCHORS, &INTERMEDIATES, spki, at)?;
-        Ok(Attested { scheme: Scheme::PivAttestation, id: a.id, root: a.root })
+        let (a, warning) =
+            ctx.chain_time.verify(|at| verify_piv_attestation(&slot, &device, &ANCHORS, &INTERMEDIATES, spki, at))?;
+        Ok(Attested { scheme: Scheme::PivAttestation, id: a.id, root: a.root, warning })
     }
 }
 
