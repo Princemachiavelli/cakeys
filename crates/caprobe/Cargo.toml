@@ -25,6 +25,9 @@ ykcs11 = ["cakeys-cli-common/ykcs11"]
 # Probe the key wraps only the patched cryptoki of the Nix build names (nix/patches):
 # CKM_AES_KEY_WRAP_KWP and CKM_RSA_AES_KEY_WRAP. Without it they go unprobed (camigrate's `kwp`).
 kwp = []
+# Everything the patched cryptoki of the Nix build (nix/patches) makes possible, together: the
+# build that links it names this one feature, never the parts by hand (review D3).
+patched-cryptoki = ["kwp", "cakeys-pkcs11/rv-value", "cakeys-pkcs11/sign-after-init"]
 
 [dependencies]
 cakeys-cli-common.workspace = true

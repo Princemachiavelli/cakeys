@@ -33,6 +33,13 @@ pub fn patched() -> bool {
         && c_ulong::from(KeyType::SHA512_HMAC) == 0x2d
 }
 
+/// Whether a module failure carries its `CK_RV` (`rv-value`): without it the code that branches
+/// on a return value (the probe's busy-session handling) cannot tell one from another (review D3).
+pub const RV_VALUE: bool = cfg!(feature = "rv-value");
+
+/// Whether a `CKA_ALWAYS_AUTHENTICATE` key can prove possession (`sign-after-init`).
+pub const SIGN_AFTER_INIT: bool = cfg!(feature = "sign-after-init");
+
 /// The cryptoki binding layer: the committed subtractions for an unpatched binding
 /// (profiles/layers/cryptoki.toml), or an empty one when [`patched`] says the fix is in.
 ///
@@ -65,14 +72,16 @@ mod tests {
         }
     }
 
-    /// A patched binding (the Nix build's) is built with the `sign-after-init` feature that
-    /// uses it: the patch without the feature would refuse every per-use PIN proof the binding
-    /// can give, and the feature without the patch would not compile.
+    /// A patched binding (the Nix build's) is built with every feature that uses it, which each
+    /// tool's `patched-cryptoki` turns on together (review D3): without `sign-after-init` every
+    /// per-use PIN proof the binding can give is refused; without `rv-value` the probe cannot tell
+    /// a busy session from a refusal. Either feature without the patch would not compile.
     #[test]
-    fn the_sign_after_init_feature_comes_with_the_patched_binding() {
+    fn the_patched_binding_comes_with_its_features() {
         assert!(
-            !patched() || cfg!(feature = "sign-after-init"),
-            "the patched cryptoki is linked without cakeys-pkcs11's `sign-after-init` feature (nix/package-common.nix features)"
+            !patched() || (SIGN_AFTER_INIT && RV_VALUE),
+            "the patched cryptoki is linked without cakeys-pkcs11's `sign-after-init` and `rv-value` (each tool's \
+             `patched-cryptoki` feature; nix/package-common.nix features)"
         );
     }
 }

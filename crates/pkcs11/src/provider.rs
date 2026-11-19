@@ -567,11 +567,12 @@ pub struct AttestCtx<'a> {
 /// When the certificates of an attestation chain must be valid (ISSUES.md B8). `check` holds
 /// every link to its validity period, at the system clock's time unless told another
 /// (`--at`, `--ignore-validity`); the verbs that record (`lock`, `create`, camigrate) read no
-/// clock, so a lock recorded today verifies tomorrow.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// clock, so a lock recorded today verifies tomorrow. There is no default: every token open
+/// names one ([`crate::Token::open`]), so no reader of attestations skips the dates by
+/// forgetting to ask (review D5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChainTime {
     /// The dates are not checked.
-    #[default]
     Unchecked,
     /// Valid at this time: seconds since the Unix epoch, UTC.
     At(u64),

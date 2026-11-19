@@ -165,7 +165,10 @@ forces it. The VM test covers all of this.
   `checks.tpm`, with auto UIDs, uid-range, nixbld, and a stripped-ACL control.
 - **`sandbox.uidRange.enable`:** `auto-allocate-uids` and the `uid-range` feature.
 - **`checks.<n>`:** a oneshot `cakeys-check-<n>` unit running `check`, required by the
-  units that use the key — `checks.module`. `args` are `check`'s own flags, appended as given
+  units that use the key — `checks.module`. It runs again on every start of one of them (a
+  restart included), and is ordered after `time-sync.target` without pulling it in: a PIV
+  chain's dates are judged by the clock, which that target means synchronized only with a
+  service that waits for it (`systemd-time-wait-sync`). `args` are `check`'s own flags, appended as given
   (`[ "--format" "pkcs11-provider-pem" "--uri-pin" "source" ]`). `outputFile` (with
   `outputGroup`) writes what it prints to a file instead of the journal: removed before each
   check, written (0600, or 0640 for the group) only when it passes; `--uri-pin value` requires

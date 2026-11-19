@@ -30,6 +30,13 @@ arm, find the value as ISSUES.md Q4 says the pre-patch `rv_value` did, by search
 range), or from `p11-names`; or make caprobe enable `rv-value` and refuse to build the probe
 without it. [read]
 
+**Fixed (2026-11-18):** each tool has one `patched-cryptoki` feature implying `kwp`, `rv-value`
+and `sign-after-init`, which the Nix builds (package-common.nix `features`, the crane `minimal`
+build) name instead of the parts. `caprobe probe` refuses to write or diff a profile unless the
+binding is patched and both `rv-value` and `kwp` are on (`build_lacks`), and the tests of
+`cakeys-pkcs11` and caprobe fail when the patched binding is linked without them. Tests:
+`a_kept_profile_needs_every_patch_and_feature`, `the_patched_binding_comes_with_its_features`.
+
 ### F2. `as_so` turns a step that changed the token into an error when the SO logout or the user re-login fails — risk
 
 **Verification:** confirmed. `out.and_then(|v| logout.map(|()| v))` drops a successful step's value on a logout error (mod.rs:799-801), and a failed user re-login returns at :819 whatever `out` was, the step's own error included; `create_declared` runs generation inside `managing`→`as_so` for ykcs11 (generate.rs:46,61; ykcs11 lib.rs:106), and `create_absent` propagates with `?` (ops.rs:610). On ykcs11 the rollback could not remove the key anyway (its `destroy` refuses keys, ykcs11 lib.rs:122-128), so the harm is the misleading report, as stated. [read]
@@ -111,6 +118,10 @@ effect depend on whether a module profile exists. Fix: always apply `subtracted_
   `check` does", skips dates, and any future reader of attestations would too unless it
   remembers. Passing the time to `Token::open` (or a private field set by constructor) would make
   the choice explicit at every open.
+  **Fixed (2026-11-18):** `Token::open` takes the `ChainTime`, the field is private and
+  `ChainTime` has no `Default`, so every open names one: `Opener::open` (the verbs that record)
+  passes `Unchecked`, as B8 decided, and `check` passes its time through `Opener::open_quiet`.
+  Enforced by the compiler; behaviour is unchanged, so no test fails without it.
 - PIN counters are read once at open (`pins`, `:146`) and never refreshed; `as_so` guards with
   the open-time SO counters. Harmless today because every caller stops at the first failure, but
   a loop over `managing` steps would spend retries with a wrong SO credential.

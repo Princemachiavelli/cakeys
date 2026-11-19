@@ -113,6 +113,10 @@ profile already says; it generates the key types cakeys manages the same way (`T
 the provider's create operation), each refusal the row's evidence. A new one is a variant
 there and the operation that tests it; the emitter, the diff and the stack algebra do not
 change. *An absent row is unknown*: never probed, never claimed — a spec-compliant default.
+A row naming a key type, proof (`pop-*`), OAEP hash or template attribute (`CKA_*`) this
+cakeys does not know loads as read and answers nothing, so a profile from a newer cakeys loads;
+only a row's shape is refused. A probe from this cakeys never writes such a row, so `--diff`
+reports it and a regeneration drops it.
 
 A shipped profile describes a kind of token; the lock records what each deployment's own token
 answered (docs/LOCK.md, an observation's `capabilities`: the proofs `lock` gave, the

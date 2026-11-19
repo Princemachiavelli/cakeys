@@ -782,13 +782,16 @@ mod tests {
         assert_eq!(side(&p, &unpatched).unwrap().public_import.len(), 2);
     }
 
-    /// A row the baseline does not know is refused (17) with the profile named; an OAEP hash no
-    /// probe tries does not even load.
+    /// A row the baseline does not know is refused (17) with the profile named. An OAEP hash no
+    /// probe tries loads (a newer cakeys's, review D4) and offers no wrap; a row with no hash
+    /// does not load.
     #[test]
     fn rows_the_baseline_does_not_know_are_refused() {
-        let sha3 =
-            "profile = \"m/1\"\nmode = \"observed\"\n[capabilities]\n\"wrap.rsa-oaep.SHA-3\" = { answer = \"yes\" }\n";
-        assert!(Profile::from_toml(sha3).unwrap_err().contains("names no capability"));
+        let head = "profile = \"m/1\"\nmode = \"observed\"\n[capabilities]\n";
+        let sha3 = Profile::from_toml(&format!("{head}\"wrap.rsa-oaep.SHA-3\" = {{ answer = \"yes\" }}\n")).unwrap();
+        assert_eq!(sha3.wrap_oaep(), None);
+        let none = Profile::from_toml(&format!("{head}\"wrap.rsa-oaep.\" = {{ answer = \"yes\" }}\n"));
+        assert!(none.unwrap_err().contains("names no capability"));
         for (row, why) in [
             (
                 "[[migration.public-accepts]]\nclass = \"CKO_PUBLIC_KEY\"\ncurves = [\"curve9\"]\n",

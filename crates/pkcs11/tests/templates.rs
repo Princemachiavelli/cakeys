@@ -8,7 +8,7 @@ use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::ops;
 use cakeys_pkcs11::token::{Access, ModuleInfo};
-use cakeys_pkcs11::{Attributes, Half, Provider, Registry, SessionKey, Template, Token};
+use cakeys_pkcs11::{Attributes, ChainTime, Half, Provider, Registry, SessionKey, Template, Token};
 use cryptoki::mechanism::Mechanism;
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use std::collections::BTreeMap;
@@ -122,7 +122,8 @@ fn a_refused_proof_template_creates_nothing() {
     .unwrap();
     let t = ops::Target::new(&cfg, "s", "softhsm").unwrap();
     let registry = Registry::new().with(NoProof);
-    let tok = Token::open("softhsm", &cfg.tokens["softhsm"], None, &registry, Access::Write).unwrap();
+    let tok =
+        Token::open("softhsm", &cfg.tokens["softhsm"], None, &registry, Access::Write, ChainTime::Unchecked).unwrap();
     tok.destroy(t.object, &t.on_token.locator).unwrap();
     let mut lock = Lock { version: cakeys_core::config::LOCK_VERSION, ..Lock::default() };
     let mut notes = ops::Notes::default();
@@ -140,7 +141,7 @@ fn templates_pass_through_the_provider() {
     let cfg: TokenCfg = toml::from_str(&table).unwrap();
     let asked = Arc::new(Mutex::new(Vec::new()));
     let registry = Registry::new().with(Stamp(Arc::clone(&asked)));
-    let tok = Token::open("softhsm", &cfg, None, &registry, Access::Write).unwrap();
+    let tok = Token::open("softhsm", &cfg, None, &registry, Access::Write, ChainTime::Unchecked).unwrap();
     let taken = || std::mem::take(&mut *asked.lock().unwrap());
 
     // A key pair: both templates asked, the key stamped.

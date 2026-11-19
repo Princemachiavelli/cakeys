@@ -23,6 +23,14 @@ every start of a dependent (a finished oneshot is not "explicitly stopped", so t
 not stopped); uncertain only in that the module-test sequence should be re-run to confirm. Keep
 `outputFile` cleanup as is. [read]
 
+**Fixed (2026-11-18):** the check unit has `RemainAfterExit = false`, so each start of a
+unit in `requiredBy` runs it again, and it is ordered after `time-sync.target` without pulling it
+in (systemd.special(7)); the option and docs/CAKEYS.md say a synchronized clock needs
+`systemd-time-wait-sync`. Test: `checks.module` restarts the signer after deleting the key, with
+no hand stop of the check unit, and expects the restart to fail with the check unit's
+`Result=exit-code` (the signer fails without the key either way); it asserts the passed check
+is inactive with `Result=success`, and `time-sync.target` in `After` but not `Wants`/`Requires`.
+
 ### F2. No ordering after time synchronisation, though `check` now judges certificate dates by the clock — risk
 
 **Verification:** confirmed (low likelihood). The unit orders only after `pcscd.socket` (nix/module.nix:331-332) and docs/CAKEYS.md:40 says `check` judges PIV attestation dates by the system clock (exit 13). Only a `notBefore` later than the boot clock matters; the pinned nixpkgs systemd sets its floor to its release timestamp (pkgs/os-specific/linux/systemd/default.nix:402) and timesyncd restores its saved clock, so it bites mainly a YubiKey manufactured after the systemd release on a host without RTC or saved clock. [read]
@@ -35,6 +43,14 @@ the boot. How often a Yubico slot or f9 certificate's `notBefore` exceeds the fl
 (probably rarely), hence risk. Add `after = [ "time-sync.target" ]` (with `wants`) for checks, and
 note in the docs that `systemd-time-wait-sync` must be enabled for that target to mean anything,
 or pass `--at`/`--ignore-validity` through `args` deliberately. [read]
+
+**Fixed (2026-11-18):** the check unit has `RemainAfterExit = false`, so each start of a
+unit in `requiredBy` runs it again, and it is ordered after `time-sync.target` without pulling it
+in (systemd.special(7)); the option and docs/CAKEYS.md say a synchronized clock needs
+`systemd-time-wait-sync`. Test: `checks.module` restarts the signer after deleting the key, with
+no hand stop of the check unit, and expects the restart to fail with the check unit's
+`Result=exit-code` (the signer fails without the key either way); it asserts the passed check
+is inactive with `Result=success`, and `time-sync.target` in `After` but not `Wants`/`Requires`.
 
 ### F3. The check unit runs as root with no sandboxing — practice
 

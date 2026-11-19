@@ -14,6 +14,9 @@ macro_rules! named {
         }
 
         impl $ty {
+            /// Every name this cakeys knows, one per variant.
+            pub const NAMES: &[&str] = &[$($name),*];
+
             /// The name, as profiles write it.
             #[must_use]
             pub fn name(&self) -> &str {

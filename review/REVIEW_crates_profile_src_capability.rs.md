@@ -27,6 +27,13 @@ from a newer cakeys with a new proof name fails to load as a whole, unlike an un
 unreachable ones; document that only key types are forward compatible.
 [read]
 
+**Fixed (2026-11-18):** a `prove.*` row's proof (any `pop-*`), an OAEP hash and an
+unwrap-template attribute (any `CKA_*`) load as read, as an unknown key type does; only a row's
+shape is refused. `PROOFS` is gone: the round trip runs over `Proof::NAMES`, so a known proof
+can never be refused again. Readers ask only for the names they know, so the new rows answer
+nothing. Tests: `every_capability_reads_back_from_its_key`,
+`a_newer_cakeys_names_load_and_answer_nothing`.
+
 ## Design
 
 None.

@@ -16,6 +16,14 @@ the check unit the signer would start on the earlier pass (REVIEW_nix_module.nix
 case that matters in production: key deleted, `systemctl restart signer.service`, expect failure.
 It fails today, which is the point. [read]
 
+**Fixed (2026-11-18):** the check unit has `RemainAfterExit = false`, so each start of a
+unit in `requiredBy` runs it again, and it is ordered after `time-sync.target` without pulling it
+in (systemd.special(7)); the option and docs/CAKEYS.md say a synchronized clock needs
+`systemd-time-wait-sync`. Test: `checks.module` restarts the signer after deleting the key, with
+no hand stop of the check unit, and expects the restart to fail with the check unit's
+`Result=exit-code` (the signer fails without the key either way); it asserts the passed check
+is inactive with `Result=success`, and `time-sync.target` in `After` but not `Wants`/`Requires`.
+
 ### F2. Setup duplicated with nix/test.nix — complexity
 
 `nix/module-test.nix:18-33` (keys.toml), `:202-207` (softhsm2.conf and token init),

@@ -18,9 +18,9 @@ use anyhow::Context as _;
 use cakeys_cli_common::{module_overrides, open_token, print, token_cfg};
 use cakeys_core::KmError;
 use cakeys_core::config::{Config, load_config};
-use cakeys_pkcs11::Registry;
 use cakeys_pkcs11::ops::Notes;
 use cakeys_pkcs11::token::Access;
+use cakeys_pkcs11::{ChainTime, Registry};
 use clap::{Parser, Subcommand};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -186,7 +186,7 @@ fn dispatch(registry: &Registry, cli: &Cli, notes: &mut Notes) -> anyhow::Result
     let modules = module_overrides(&cli.modules)?;
     match &cli.cmd {
         Cmd::Caps { token } => {
-            let tok = open_token(&cfg, &modules, registry, token, Access::Read, notes)?;
+            let tok = open_token(&cfg, &modules, registry, token, Access::Read, ChainTime::Unchecked, notes)?;
             print(&serde_json::json!({
                 "token": token,
                 "provider": tok.provider.name(),
@@ -263,7 +263,7 @@ fn run_probe(
         a.diff.as_deref().map(|name| set.find(name).map_err(|e| KmError::Validation(e.into()))).transpose()?;
     let access = if a.write { Access::Write } else { Access::Read };
     // Unprofiled: what the probe measures must not be what the committed profile says.
-    let tok = open_token(cfg, modules, registry, &a.token, access, notes)?.unprofiled()?;
+    let tok = open_token(cfg, modules, registry, &a.token, access, ChainTime::Unchecked, notes)?.unprofiled()?;
     let req = probe::Request {
         write: a.write,
         name: a.name.as_deref(),

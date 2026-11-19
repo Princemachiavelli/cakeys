@@ -214,7 +214,13 @@ pkgs.testers.runNixOSTest {
         machine.fail("test -e /run/cakeys/signing.pem")
         machine.succeed(f"{km} lock --spec signing-soft --token softhsm --update-lock")
         machine.succeed("systemctl start signer.service")
-        machine.succeed("systemctl is-active cakeys-check-signing.service")
+        # The check passed and finished: inactive, so the next start of signer runs it again.
+        check = "systemctl show --value -p Result -p ActiveState cakeys-check-signing.service"
+        assert sorted(machine.succeed(check).split()) == ["inactive", "success"], machine.succeed(check)
+        # Ordered after the clock is set, without pulling the target in.
+        unit = "cakeys-check-signing.service"
+        assert "time-sync.target" in machine.succeed(f"systemctl show --value -p After {unit}")
+        assert "time-sync.target" not in machine.succeed(f"systemctl show --value -p Wants -p Requires {unit}")
         # The signer signed through the key file, with the locked key.
         assert machine.succeed("stat -c '%a %G' /run/cakeys/signing.pem").split() == ["640", "signer"]
         assert machine.succeed("head -n1 /run/cakeys/signing.pem").strip() == "-----BEGIN PKCS#11 PROVIDER URI-----"
@@ -225,10 +231,13 @@ pkgs.testers.runNixOSTest {
             " -provider pkcs11 -in /run/cakeys/signing.pem -pubout -out /run/signing.pub",
             "openssl dgst -sha256 -verify /run/signing.pub -signature /run/signer.sig /etc/km/keys.toml",
         )
-        # Key gone: a fresh check fails, and makes no new key.
+        # Key gone: restarting signer runs the check again, which fails and makes no new key.
+        # No hand stop of the check unit: a restart alone must re-check (review D5).
         machine.succeed(f"{km} delete --spec signing-soft --token softhsm --no-update-lock")
-        machine.succeed("systemctl stop signer.service cakeys-check-signing.service")
-        machine.fail("systemctl start signer.service")
+        machine.fail("systemctl restart signer.service")
+        # Refused by the check run again, not only by a signer that could not sign: a check
+        # left active from the earlier pass would still say success.
+        assert machine.succeed(f"systemctl show --value -p Result {unit}").strip() == "exit-code"
         machine.fail(f"{km} resolve --spec signing-soft --token softhsm")
         # No key file outlives the failed check.
         machine.fail("test -e /run/cakeys/signing.pem")

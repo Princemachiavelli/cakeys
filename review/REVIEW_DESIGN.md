@@ -90,6 +90,13 @@ only compiles, so no wrong output reaches a profile.
 Have `caprobe probe` refuse to write a profile unless all of them are on, or make the code
 that branches on `CK_RV` require the feature at compile time.
 
+**Fixed (2026-11-18):** each tool has one `patched-cryptoki` feature implying `kwp`, `rv-value`
+and `sign-after-init`, which the Nix builds (package-common.nix `features`, the crane `minimal`
+build) name instead of the parts. `caprobe probe` refuses to write or diff a profile unless the
+binding is patched and both `rv-value` and `kwp` are on (`build_lacks`), and the tests of
+`cakeys-pkcs11` and caprobe fail when the patched binding is linked without them. Tests:
+`a_kept_profile_needs_every_patch_and_feature`, `the_patched_binding_comes_with_its_features`.
+
 ## D4. "Unknown, never a guess" (DESIGN D5) has two holes in the profile algebra
 
 `profile::effective` answers yes from missing data in two places. A key type whose every probed
@@ -108,6 +115,14 @@ one active set and `gate::stack` the verbs use. As a result, `supports` and `pro
 ignore keys.toml's `profileDirs`, and `supports --token` ignores the token's configured layers.
 Both can disagree with `cakeys validate`. ([caprobe lib.rs](REVIEW_crates_caprobe_src_lib.rs.md),
 [caprobe supports.rs](REVIEW_crates_caprobe_src_supports.rs.md))
+
+**Fixed (2026-11-18):** the two verdict holes and caprobe's `profileDirs` and layers in dc3f102
+(profile verdicts; `supports_answers_from_the_embedded_profiles`,
+`supports_asks_by_token_and_refuses_what_it_cannot_ask`). Q28: a newer cakeys's proof, OAEP hash
+or template attribute loads as read and answers nothing (`a_newer_cakeys_names_load_and_answer_nothing`,
+the round trip over `Proof::NAMES`). Left: caprobe still builds its own set and composes the
+token's layers itself rather than calling `gate::stack`; the two now agree, and the tests above
+hold them to it.
 
 ## D5. Attestation trust boundaries
 
@@ -131,6 +146,22 @@ Both can disagree with `cakeys validate`. ([caprobe lib.rs](REVIEW_crates_caprob
   swapped private key goes undetected. CAMIGRATE.md D5 ("a tampered or swapped blob fails
   either way") overstates this. Sealed import and `token-asserted` should be refused together.
   ([camigrate sealed.rs](REVIEW_crates_camigrate_src_sealed.rs.md))
+
+**Fixed (2026-11-18):**
+
+- TPM: in dc3f102, the material is read from the store blob whose Name the signed `TPMS_ATTEST`
+  carries (`verify_certified`). The transport (a session salted to the AK) is out of scope here:
+  it needs an authenticated session in the attestation path and a TPM to test it on.
+- PIV: `Token::open` takes the `ChainTime` and it has no default, so every open names whether
+  the dates are checked; the verbs that record pass `Unchecked`, as B8 decided (a lock recorded
+  today verifies tomorrow). Whether `create`'s verification of a pinned pair should hold the
+  dates too is left for a decision: it would reverse B8 for that verb.
+- Clock: the check unit is ordered after `time-sync.target` and runs again on every start of a
+  unit it gates (`checks.module`, restart without a hand stop).
+- Bundles: in dc3f102, `import --in` refuses an EC or Edwards key under `token-asserted`
+  (`dry_run.rs`, sealed.rs F1), and CAMIGRATE.md D5 says what the bundle proves. RSA and secret
+  keys take their identity from the target's own material (modulus, check value), so a swapped
+  one fails against the lock.
 
 ## D6. Identity computation carries usage policy
 

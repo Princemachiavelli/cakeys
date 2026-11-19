@@ -17,6 +17,13 @@ nothing), so the right combination lives only in `nix/package-common.nix`'s list
 `kwp`, or a new `patched` feature, enable `cakeys-pkcs11/rv-value`) so the build lists cannot
 diverge, and check it at run time before writing a profile. [read]
 
+**Fixed (2026-11-18):** each tool has one `patched-cryptoki` feature implying `kwp`, `rv-value`
+and `sign-after-init`, which the Nix builds (package-common.nix `features`, the crane `minimal`
+build) name instead of the parts. `caprobe probe` refuses to write or diff a profile unless the
+binding is patched and both `rv-value` and `kwp` are on (`build_lacks`), and the tests of
+`cakeys-pkcs11` and caprobe fail when the patched binding is linked without them. Tests:
+`a_kept_profile_needs_every_patch_and_feature`, `the_patched_binding_comes_with_its_features`.
+
 ### F2. Normal dependencies repeated under dev-dependencies — nit
 
 `crates/caprobe/Cargo.toml:36-41`, `:50`, `:54`, `:56`.

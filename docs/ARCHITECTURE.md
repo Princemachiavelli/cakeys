@@ -214,10 +214,15 @@ the regular and the crane build apply them):
   itself: an `RvError` back to its `CK_RV`, and its `CKR_*` name, for a module failure's value
   (`KmError::rv`) and the name messages and profile evidence give it.
 
-What only the patched cryptoki compiles sits behind a feature the Nix build turns on: camigrate's
-and caprobe's `kwp` (the two wrap mechanisms), `cakeys-pkcs11/sign-after-init` and
-`cakeys-pkcs11/rv-value`. A plain cargo build plans without the wraps, refuses a per-use-login
-proof, and names a failure without carrying its value. Upstream drafts: `upstream/rust-cryptoki/`.
+What only the patched cryptoki compiles sits behind features the Nix build turns on together,
+as each tool's one `patched-cryptoki` feature: camigrate's and caprobe's `kwp` (the two wrap
+mechanisms), `cakeys-pkcs11/sign-after-init` and `cakeys-pkcs11/rv-value`. A plain cargo build
+plans without the wraps, refuses a per-use-login proof, and names a failure without carrying its
+value. caprobe refuses to write or diff a profile without all of them, since each changes rows,
+the tests of `cakeys-pkcs11` and caprobe fail when the patched binding is linked without
+them, and `every_tool_turns_on_what_the_patched_binding_makes_possible` holds each tool's
+feature to its parts. Upstream drafts:
+`upstream/rust-cryptoki/`.
 
 ## Dependencies
 

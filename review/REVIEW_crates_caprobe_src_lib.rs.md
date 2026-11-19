@@ -24,6 +24,10 @@ Fix: start `profile_set` from `Set::active()` (already activated by `dispatch`) 
 `--profiles` over a clone of it, or pass `cfg.profile_dirs` through `adding_dir` before
 `with_dir`. [read]
 
+**Fixed (2026-11-18):** in dc3f102 (profile verdicts; caprobe reads `profileDirs` and the
+token's configured layers), tested by `supports_answers_from_the_embedded_profiles` and
+`supports_asks_by_token_and_refuses_what_it_cannot_ask`.
+
 ### F2. `main_from` exits the host process and works once per process — practice
 
 `crates/caprobe/src/lib.rs:157-167`, `:175-183`; `crates/cli-common/src/lib.rs:42`.

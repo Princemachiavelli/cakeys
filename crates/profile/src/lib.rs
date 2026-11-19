@@ -364,6 +364,23 @@ mod tests {
         assert!(matches!(Effective::new(b, Some(&unprobed), &[]).oaep()[0].1, Verdict::Unknown { .. }));
     }
 
+    /// A profile from a newer cakeys, naming a proof, hashes and a template attribute this one
+    /// does not know, loads (ISSUES.md Q28, review D4), and those rows answer nothing: what this
+    /// cakeys asks is answered as without them.
+    #[test]
+    fn a_newer_cakeys_names_load_and_answer_nothing() {
+        let rows = "[capabilities]\n\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\" }\n\"decrypt.rsa-oaep.SHA-256\" = { answer = \"no\" }\n\"unwrap.template.CKA_VALUE_LEN\" = { answer = \"yes\" }\n";
+        let newer = "\"wrap.rsa-oaep.SHA-384\" = { answer = \"yes\" }\n\"decrypt.rsa-oaep.SHA3-256\" = { answer = \"yes\" }\n\"unwrap.template.CKA_KEY_TYPE\" = { answer = \"no\" }\n\"prove.pop-later.CKK_EC.secp256r1\" = { answer = \"yes\" }\n";
+        let head = "profile = \"m/1\"\nmode = \"observed\"\n";
+        let known = Profile::from_toml(&format!("{head}{rows}")).unwrap();
+        let both = Profile::from_toml(&format!("{head}{rows}{newer}")).unwrap();
+        assert_eq!(both.capabilities.len(), known.capabilities.len() + 4);
+        assert_eq!(both.wrap_oaep(), known.wrap_oaep());
+        assert_eq!(both.decrypt_oaep(), known.decrypt_oaep());
+        assert_eq!(both.unwrap_refuse(), known.unwrap_refuse());
+        assert_eq!(known.wrap_oaep(), Some(vec!["SHA-1".to_owned()]));
+    }
+
     /// A misspelled key in any section is refused, never ignored: a `[match]` that lost its
     /// version would match by manufacturer alone.
     #[test]

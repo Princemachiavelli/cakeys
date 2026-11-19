@@ -6,9 +6,9 @@ use cakeys_cli_common::{Opener, print, read_lock, save_changed, token_cfg};
 use cakeys_core::KmError;
 use cakeys_core::config::{Config, Lock, gc, save_lock};
 use cakeys_core::types::ObjectClass;
+use cakeys_pkcs11::Registry;
 use cakeys_pkcs11::ops::{self, LockWrite, Notes, Target};
 use cakeys_pkcs11::token::{Access, pin_ref, provider_pem, with_query};
-use cakeys_pkcs11::{Registry, Token};
 use clap::{Parser, Subcommand};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -215,14 +215,6 @@ impl LockWriteArgs {
     }
 }
 
-/// A token `check` opened, holding attestation chains to `when` ([`ValidityArgs`]).
-fn checked_open(tok: cakeys_core::Result<Token>, when: cakeys_pkcs11::ChainTime) -> cakeys_core::Result<Token> {
-    tok.map(|mut tok| {
-        tok.chain_time = when;
-        tok
-    })
-}
-
 /// The command line's definition: its verbs and flags, for the test that every one of them is
 /// used by an integration test (`tests/common/surface.rs`).
 #[must_use]
@@ -361,7 +353,7 @@ impl Run<'_> {
             None => None,
             Some(how) => Some(pin_ref(&token_name, token_cfg(cfg, &token_name)?, how == UriPin::Value)?),
         };
-        let open = |name: &str, access| checked_open(opener.open_quiet(name, access), when);
+        let open = |name: &str, access| opener.open_quiet(name, access, when);
         let (r, tok) = ops::check_open(cfg, reference, spec, token, open, &self.lock, notes)?;
         let uri = with_query(&r.uri, uri_module.then_some(tok.module.path.as_str()), pin.as_ref());
         if !key_file {
@@ -388,7 +380,7 @@ impl Run<'_> {
     /// stderr led by its own exit code, and 20.
     fn check_token(&self, token: &str, when: cakeys_pkcs11::ChainTime, notes: &mut Notes) -> anyhow::Result<()> {
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
-        let open = |name: &str, access| checked_open(opener.open_quiet(name, access), when);
+        let open = |name: &str, access| opener.open_quiet(name, access, when);
         let (checked, tok) = ops::check_token(cfg, token, open, &self.lock, notes)?;
         let failed: Vec<(&ops::PairCheck, &KmError)> =
             checked.iter().filter_map(|c| c.result.as_ref().err().map(|e| (c, e))).collect();

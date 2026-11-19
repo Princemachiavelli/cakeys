@@ -1857,25 +1857,48 @@ pub(crate) struct Request<'a> {
 ///
 /// `Validation` (17) when the result would be kept but this build's cryptoki is unpatched;
 /// [`probe`]'s own refusals.
+/// What this build lacks to write or judge a profile, each with why (review D3). The probe
+/// writes what it observes, so each of these changes rows rather than only messages:
+/// - an unpatched cryptoki drops from `C_GetMechanismList` every mechanism it cannot name, so the
+///   advertisement is short (kryoptic's `CKM_AES_KEY_WRAP_KWP` \[run\]);
+/// - without `rv-value` no failure carries its `CK_RV`, so a busy session reads as a refusal and
+///   is written as a definitive no;
+/// - without `kwp` the key wraps only the patched binding names go unprobed.
+fn build_lacks(patched: bool, rv_value: bool, kwp: bool) -> Vec<&'static str> {
+    let mut lacks = Vec::new();
+    if !patched {
+        lacks.push("its cryptoki lacks the Nix patches and drops the mechanisms it cannot name");
+    }
+    if !rv_value {
+        lacks.push("it is built without `rv-value`, so a busy session is not told from a refusal");
+    }
+    if !kwp {
+        lacks.push("it is built without `kwp`, so the RFC 5649 and RSA-AES key wraps go unprobed");
+    }
+    lacks
+}
+
 pub(crate) fn generate(
     tok: &Token,
     cfg: &TokenCfg,
     req: &Request,
     notes: &mut cakeys_pkcs11::ops::Notes,
 ) -> Result<Profile> {
-    // cryptoki drops from C_GetMechanismList every mechanism it cannot name, so through
-    // an unpatched binding the advertisement is short (kryoptic's CKM_AES_KEY_WRAP_KWP
-    // [run]): such a build may print a probe, never write or judge a committed one.
-    if !cakeys_pkcs11::binding::patched() {
+    let lacks = build_lacks(cakeys_pkcs11::binding::patched(), cakeys_pkcs11::binding::RV_VALUE, cfg!(feature = "kwp"));
+    if !lacks.is_empty() {
         if req.kept {
             return Err(KmError::Validation(
-                "this build's cryptoki lacks the Nix patches and drops the mechanisms it \
-                 cannot name from C_GetMechanismList: probe with the Nix-built cakeys to \
-                 write or diff a profile"
-                    .into(),
+                format!(
+                    "this build cannot write or diff a profile: {}; probe with the Nix-built caprobe \
+                     (the `patched-cryptoki` feature)",
+                    lacks.join("; ")
+                )
+                .into(),
             ));
         }
-        notes.note("probe: this build's cryptoki is unpatched: the advertise list may be short");
+        for why in lacks {
+            notes.note(format_args!("probe: {why}: the rows may not be what the module does"));
+        }
     }
     let mut probed = probe(tok, cfg, req.write.then_some(req.rsa_max_bits))?;
     for why in &probed.undetermined {
@@ -1926,6 +1949,35 @@ pub(crate) fn keep_claims(profile: &mut Profile, existing: &str, shown: &str, wr
 mod tests {
     use super::*;
     use cryptoki::context::Function;
+
+    /// A probe writes or diffs a profile only from a build with the patched binding, `rv-value`
+    /// and `kwp` (review D3): each one missing is named, and any one refuses (`generate`).
+    #[test]
+    fn a_kept_profile_needs_every_patch_and_feature() {
+        assert_eq!(build_lacks(true, true, true), Vec::<&str>::new());
+        for (patched, rv_value, kwp, named) in [
+            (false, true, true, "lacks the Nix patches"),
+            (true, false, true, "without `rv-value`"),
+            (true, true, false, "without `kwp`"),
+        ] {
+            let lacks = build_lacks(patched, rv_value, kwp);
+            assert!(lacks.len() == 1 && lacks[0].contains(named), "{lacks:?}");
+        }
+        assert_eq!(build_lacks(false, false, false).len(), 3);
+    }
+
+    /// The patched binding is linked with what uses it (each tool's `patched-cryptoki`): the
+    /// Nix build's probe is one that may write a profile.
+    #[test]
+    fn the_patched_binding_comes_with_its_features() {
+        let (patched, rv, kwp) =
+            (cakeys_pkcs11::binding::patched(), cakeys_pkcs11::binding::RV_VALUE, cfg!(feature = "kwp"));
+        assert!(
+            !patched || build_lacks(patched, rv, kwp).is_empty(),
+            "the patched cryptoki is linked without caprobe's `patched-cryptoki` feature: {:?}",
+            build_lacks(patched, rv, kwp)
+        );
+    }
 
     /// Only the probe's policy defaults are dropped, and only for a template refusal: a type or
     /// usage attribute stays, and a mechanism refusal is the module's answer.

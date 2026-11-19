@@ -10,7 +10,7 @@ use cakeys_core::config::{
 };
 use cakeys_pkcs11::ops::Notes;
 use cakeys_pkcs11::token::Access;
-use cakeys_pkcs11::{Registry, Token, providers};
+use cakeys_pkcs11::{ChainTime, Registry, Token, providers};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::ExitCode;
@@ -108,9 +108,10 @@ pub fn open_token(
     registry: &Registry,
     name: &str,
     access: Access,
+    chain_time: ChainTime,
     notes: &mut Notes,
 ) -> Result<Token, KmError> {
-    let tok = open_quiet(cfg, modules, registry, name, access)?;
+    let tok = open_quiet(cfg, modules, registry, name, access, chain_time)?;
     if let Some(w) = tok.pin_warning() {
         notes.warn(w);
     }
@@ -128,8 +129,9 @@ pub fn open_quiet(
     registry: &Registry,
     name: &str,
     access: Access,
+    chain_time: ChainTime,
 ) -> Result<Token, KmError> {
-    Token::open(name, token_cfg(cfg, name)?, modules.get(name).map(String::as_str), registry, access)
+    Token::open(name, token_cfg(cfg, name)?, modules.get(name).map(String::as_str), registry, access, chain_time)
 }
 
 /// What a verb opens tokens with: keys.toml, the `--module` overrides and the providers. Kept
@@ -162,22 +164,24 @@ impl<'a> Opener<'a> {
         Ok(Opener { cfg, modules, registry })
     }
 
-    /// [`open_token`] of the token `name`.
+    /// [`open_token`] of the token `name`, for a verb that records: it reads no clock, so its
+    /// attestation chains are not held to their dates ([`ChainTime`]).
     ///
     /// # Errors
     ///
     /// Whatever [`open_token`] refuses.
     pub fn open(&self, name: &str, access: Access, notes: &mut Notes) -> Result<Token, KmError> {
-        open_token(&self.cfg, &self.modules, self.registry, name, access, notes)
+        open_token(&self.cfg, &self.modules, self.registry, name, access, ChainTime::Unchecked, notes)
     }
 
-    /// [`open_quiet`] of the token `name`.
+    /// [`open_quiet`] of the token `name`, holding its attestation chains to `chain_time`
+    /// (`check`).
     ///
     /// # Errors
     ///
     /// Whatever [`open_quiet`] refuses.
-    pub fn open_quiet(&self, name: &str, access: Access) -> Result<Token, KmError> {
-        open_quiet(&self.cfg, &self.modules, self.registry, name, access)
+    pub fn open_quiet(&self, name: &str, access: Access, chain_time: ChainTime) -> Result<Token, KmError> {
+        open_quiet(&self.cfg, &self.modules, self.registry, name, access, chain_time)
     }
 }
 

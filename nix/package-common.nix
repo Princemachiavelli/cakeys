@@ -70,15 +70,17 @@ in
     ];
   };
 
-  # What only the patched cryptoki above has: the mechanisms it names (CKM_AES_KEY_WRAP_KWP,
-  # CKM_RSA_AES_KEY_WRAP), which camigrate uses and caprobe probes only with `kwp`; the
-  # single-part sign after C_SignInit, which a per-use PIN proof uses only with `sign-after-init`;
-  # and a failure's CK_RV and CKR_* name from cryptoki, with `rv-value`.
+  # What only the patched cryptoki above has, as each tool's one `patched-cryptoki` feature
+  # (review D3): the mechanisms it names (CKM_AES_KEY_WRAP_KWP, CKM_RSA_AES_KEY_WRAP), which
+  # camigrate uses and caprobe probes (`kwp`); the single-part sign after C_SignInit a per-use
+  # PIN proof needs (`sign-after-init`); and a failure's CK_RV and CKR_* name (`rv-value`), which
+  # the probe's busy-session handling branches on. caprobe refuses to write a profile without
+  # them; tests hold each tool's feature to its parts and fail when the patched binding is linked
+  # without them.
   features = [
-    "camigrate/kwp"
-    "caprobe/kwp"
-    "cakeys-pkcs11/sign-after-init"
-    "cakeys-pkcs11/rv-value"
+    "cakeys/patched-cryptoki"
+    "caprobe/patched-cryptoki"
+    "camigrate/patched-cryptoki"
   ]
   ++ lib.optionals (!tpm2) [
     "cakeys/ykcs11"

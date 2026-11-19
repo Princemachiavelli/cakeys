@@ -149,9 +149,9 @@ pub struct Token {
     /// (it unseals the token's wrapping key with it) and logging the user back in after an SO
     /// step (`soCredentialFile`/`soCredentialEnv`). Zeroized on drop.
     pin: Option<Zeroizing<String>>,
-    /// When an attestation chain's certificates must be valid: unchecked unless whoever opens
-    /// the token for `check` sets it ([`crate::ChainTime`]).
-    pub chain_time: crate::ChainTime,
+    /// When an attestation chain's certificates must be valid, as the open named it
+    /// ([`crate::ChainTime`]).
+    chain_time: crate::ChainTime,
     /// Last: fields drop in declaration order, so the session is closed before the module is
     /// finalized.
     library: Arc<Library>,
@@ -382,6 +382,7 @@ impl Token {
         module_override: Option<&str>,
         registry: &Registry,
         access: Access,
+        chain_time: crate::ChainTime,
     ) -> Result<Token> {
         let module = match module_override {
             Some(m) => Some(m.to_owned()),
@@ -429,7 +430,7 @@ impl Token {
             pins,
             pin,
             provider,
-            chain_time: crate::ChainTime::default(),
+            chain_time,
             library: module_guard,
         })
     }

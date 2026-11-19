@@ -85,8 +85,8 @@ recorded answers (`with_answers` is never applied at `Token::open`).
 | [pkcs11 token/policy.rs](REVIEW_crates_pkcs11_src_token_policy.rs.md) F1 | A certificate's declared policy attributes (`CKA_TRUSTED`, …) are never compared with the token |
 | [pkcs11 ops.rs](REVIEW_crates_pkcs11_src_ops.rs.md) F1 | `create` on a pinned pair without a configured PIN reports the key lost (14) instead of asking for a login |
 | [profile effective.rs](REVIEW_crates_profile_src_effective.rs.md) F1 | A key type whose every probed row says no answers yes when no curve or size is asked (`supports CKK_EC_EDWARDS` on swtpm) [run] |
-| [caprobe lib.rs](REVIEW_crates_caprobe_src_lib.rs.md) F1 | `supports` and `probe --diff` ignore keys.toml's `profileDirs` |
-| [caprobe supports.rs](REVIEW_crates_caprobe_src_supports.rs.md) F1 | `supports --token` leaves out the token's configured profile layers |
+| [caprobe lib.rs](REVIEW_crates_caprobe_src_lib.rs.md) F1 | `supports` and `probe --diff` ignore keys.toml's `profileDirs`. **Fixed** in dc3f102 |
+| [caprobe supports.rs](REVIEW_crates_caprobe_src_supports.rs.md) F1 | `supports --token` leaves out the token's configured profile layers. **Fixed** in dc3f102 |
 | [kmsp11 lib.rs](REVIEW_crates_kmsp11_src_lib.rs.md) F1 | `keys.json`'s `HMAC_SHA256` row lists no mechanisms, so a spec allowing `CKM_SHA256_HMAC` is refused (15) |
 | [nix examples.nix](REVIEW_nix_examples.nix.md) F1 | The EFI stub path is x86_64-only, so `checks.aarch64-linux.examples` fails (CI builds only x86_64) |
 
@@ -99,19 +99,19 @@ recorded answers (`with_answers` is never applied at `Token::open`).
 | [camigrate lib.rs](REVIEW_crates_camigrate_src_lib.rs.md) F3, F4 | A transport file is read twice, only the first read checked; the lock is saved once per run, after all token writes. **Fixed** (ISSUES.md "Fixed since") |
 | [camigrate host.rs](REVIEW_crates_camigrate_src_host.rs.md) F1 | A failed reopen after `tpm2_ptool import` leaves the key in the TPM, unrecorded. **Fixed** (ISSUES.md "Fixed since") |
 | [camigrate keyfile.rs](REVIEW_crates_camigrate_src_keyfile.rs.md) F1 | The plaintext gate and the PEM parser disagree on what a PEM block is. **Fixed** (ISSUES.md "Fixed since") |
-| [pkcs11 token/mod.rs](REVIEW_crates_pkcs11_src_token_mod.rs.md) F1, [pkcs11 Cargo.toml](REVIEW_crates_pkcs11_Cargo.toml.md) F1, [caprobe Cargo.toml](REVIEW_crates_caprobe_Cargo.toml.md) F1, [caprobe probe.rs](REVIEW_crates_caprobe_src_probe.rs.md) F2 | Without `rv-value`, no error carries its `CK_RV`; the probe's busy-session handling goes dead (one root cause) |
+| [pkcs11 token/mod.rs](REVIEW_crates_pkcs11_src_token_mod.rs.md) F1, [pkcs11 Cargo.toml](REVIEW_crates_pkcs11_Cargo.toml.md) F1, [caprobe Cargo.toml](REVIEW_crates_caprobe_Cargo.toml.md) F1, [caprobe probe.rs](REVIEW_crates_caprobe_src_probe.rs.md) F2 | Without `rv-value`, no error carries its `CK_RV`; the probe's busy-session handling goes dead (one root cause). **Fixed** (ISSUES.md "Fixed since") |
 | [pkcs11 token/mod.rs](REVIEW_crates_pkcs11_src_token_mod.rs.md) F2 | `as_so` turns a step that changed the token into an error when the SO logout or re-login fails. **Fixed** (ISSUES.md "Fixed since") |
 | [pkcs11 ops.rs](REVIEW_crates_pkcs11_src_ops.rs.md) F2 | Errors after the module created something skip `create_absent`'s cleanup. **Fixed** (ISSUES.md "Fixed since") |
 | [pkcs11 token/mod.rs](REVIEW_crates_pkcs11_src_token_mod.rs.md) F3 | The library cache keys a bare module name apart from a path to the same file. **Fixed** (ISSUES.md "Fixed since") |
 | [pkcs11 templates.rs](REVIEW_crates_pkcs11_src_templates.rs.md) F1 | A declared `CKA_PRIVATE` on a private key drops the public half's `CKA_PRIVATE = false` (shows on SoftHSM imports). **Fixed** (ISSUES.md "Fixed since") |
 | [core id.rs](REVIEW_crates_core_src_id.rs.md) F1 | RSA keys outside 1024–8192 bits have no identity and are reported as a conflict (13). **Fixed** (ISSUES.md "Fixed since") |
 | [ykcs11 lib.rs](REVIEW_crates_ykcs11_src_lib.rs.md) F1 | `matches` claims YubiHSM 2's module too (same manufacturer string). **Fixed** (ISSUES.md "Fixed since") |
-| [profile effective.rs](REVIEW_crates_profile_src_effective.rs.md) F2 | RSA size interpolation ignores a refused size in between [run] |
+| [profile effective.rs](REVIEW_crates_profile_src_effective.rs.md) F2 | RSA size interpolation ignores a refused size in between [run]. **Fixed** in dc3f102 (profile verdicts) |
 | [caprobe probe.rs](REVIEW_crates_caprobe_src_probe.rs.md) F3 | `Made::create` loses track of a key pair it made. **Fixed** (ISSUES.md "Fixed since") |
 | [caprobe emit.rs](REVIEW_crates_caprobe_src_emit.rs.md) F1 | Two parseable fields are dropped by the emitter. **Fixed** (ISSUES.md "Fixed since") |
 | [cli lib.rs](REVIEW_crates_cli_src_lib.rs.md) F1 | A failed lock save after `create` hides what was created and the pair's own error. **Fixed** with the per-object save (ISSUES.md "Fixed since") |
 | [p11-fault hooks.rs](REVIEW_crates_p11-fault_src_hooks.rs.md) F1, [p11-fault plan.rs](REVIEW_crates_p11-fault_src_plan.rs.md) F1 | `use_label` fires on no match; slot and token flag names collide by value. **Fixed** (ISSUES.md "Fixed since") |
-| [nix module.nix](REVIEW_nix_module.nix.md) F1, F2; [nix module-test.nix](REVIEW_nix_module-test.nix.md) F1 | The check unit is once per boot (a restart is not re-checked), is not ordered after time sync, and is tested only from a stopped state |
+| [nix module.nix](REVIEW_nix_module.nix.md) F1, F2; [nix module-test.nix](REVIEW_nix_module-test.nix.md) F1 | The check unit is once per boot (a restart is not re-checked), is not ordered after time sync, and is tested only from a stopped state. **Fixed** (ISSUES.md "Fixed since") |
 | [nix deny.nix](REVIEW_nix_deny.nix.md) F1 | No path checks against current advisories |
 | [flake.nix](REVIEW_flake.nix.md) F1, [flake-check.yml](REVIEW_.github_workflows_flake-check.yml.md) F1, [nix package-crane.nix](REVIEW_nix_package-crane.nix.md) F2, [nix package-common.nix](REVIEW_nix_package-common.nix.md) F1 | One system of three built; heavy checks share one runner; Kani unbounded; global test stack a silent fallback (latent) |
 | [scripts cloud/gcp.sh](REVIEW_scripts_cloud_gcp.sh.md) F1, [scripts pkcs11-check.sh](REVIEW_scripts_pkcs11-check.sh.md) F1 | `status` says nothing is billing when gcloud fails; a run can report the previous run's results |

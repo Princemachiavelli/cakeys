@@ -248,7 +248,11 @@ in
       description = ''
         Pre-use identity checks: one oneshot `cakeys-check-<name>` unit each, which runs
         `cakeys check` and blocks the units in `requiredBy` unless the token holds the
-        locked identity.
+        locked identity. Every start of one of them runs the check again (a restart, a crash
+        restart), so a token wiped or swapped after boot is caught then. The check is ordered
+        after `time-sync.target`, since it holds a PIV attestation chain to its dates by the
+        system clock; that target means a synchronized clock only where a service waits for one
+        (`services.timesyncd` with `systemd-time-wait-sync.service` enabled).
       '';
     };
   };
@@ -329,10 +333,14 @@ in
           inherit (c) requiredBy environment;
           before = c.requiredBy;
           wants = lib.optional cfg.sandbox.pcscd.enable "pcscd.socket";
-          after = lib.optional cfg.sandbox.pcscd.enable "pcscd.socket";
+          # After the clock is set, never pulling it in (systemd.special(7)): `check` judges
+          # certificate dates by it (review D5).
+          after = [ "time-sync.target" ] ++ lib.optional cfg.sandbox.pcscd.enable "pcscd.socket";
           serviceConfig = {
             Type = "oneshot";
-            RemainAfterExit = true;
+            # Inactive once it has passed, so each start of a unit in requiredBy runs it again;
+            # a finished oneshot is not a stopped dependency, so that unit keeps running (review D5).
+            RemainAfterExit = false;
             # Global options, then `check <object>[.id.<scheme>]` and its options; nulls and
             # false drop out. With an output file, through writeOutput.
             ExecStart = utils.escapeSystemdExecArgs (

@@ -5,7 +5,7 @@
 
 use cakeys_core::config::TokenCfg;
 use cakeys_pkcs11::token::Access;
-use cakeys_pkcs11::{Registry, Token};
+use cakeys_pkcs11::{ChainTime, Registry, Token};
 
 /// Set in the run this test starts of itself, with the loader's search path.
 const CHILD: &str = "CAKEYS_LIBRARY_CHILD";
@@ -39,8 +39,8 @@ fn a_bare_name_and_a_path_share_one_library() {
     let pin = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cakeys-pkcs11-library-pin");
     std::fs::write(&pin, "1234\n").unwrap();
     let registry = Registry::new();
-    let bare = Token::open("bare", &token(name, &pin), None, &registry, Access::Read).unwrap();
-    let pathed = Token::open("pathed", &token(&module, &pin), None, &registry, Access::Read)
+    let bare = Token::open("bare", &token(name, &pin), None, &registry, Access::Read, ChainTime::Unchecked).unwrap();
+    let pathed = Token::open("pathed", &token(&module, &pin), None, &registry, Access::Read, ChainTime::Unchecked)
         .unwrap_or_else(|e| panic!("the module by path, beside it by bare name: {e}"));
     drop((bare, pathed));
 }

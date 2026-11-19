@@ -25,6 +25,10 @@ Fix: build the stack for `--token` with `gate::stack(name, cfg, &lock)` (or the 
 `resolution` steps), adding `--layer`s on top; if keys.toml's layers are deliberately ignored,
 say so in the `--token` help. [read]
 
+**Fixed (2026-11-18):** in dc3f102 (profile verdicts; caprobe reads `profileDirs` and the
+token's configured layers), tested by `supports_answers_from_the_embedded_profiles` and
+`supports_asks_by_token_and_refuses_what_it_cannot_ask`.
+
 ### F2. The hardware-pair fallback matches by name suffix — nit
 
 `crates/caprobe/src/supports.rs:74-85`.
