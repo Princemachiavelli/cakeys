@@ -19,3 +19,7 @@ None.
 
 - `UNTESTED` is empty, and a stale entry would fail. How weak the floor is is in the review of
   common/surface.rs (F1).
+
+## Resolutions (2026-11-18)
+
+- F1 **Fixed (2026-11-18):** plain `mod common;`.

@@ -79,3 +79,7 @@ and `ftpm.rs:126-136`. `env` (`:31-44`) re-implements `suite_var` (see common/mo
   test), and the transient primary leaves no persistent handle (compared on swtpm).
 - 0x81000017/0x81000018 are per-test swtpm handles. The protected 0x81000001/0x81000002/0x81010001
   are never named.
+
+## Resolutions (2026-11-18)
+
+- F4 **Fixed (2026-11-18):** the orphan case truncates a P-256 key's `CKA_EC_POINT` through p11-fault (on token `tpm`, label `orphan-p256`) rather than relying on tpm2-pkcs11's P-521 bug. It expects 13, "removed 2 object(s) just created" and nothing left. Test: `tpm2_identity_failure_after_create_leaves_nothing`. It has not been run on swtpm yet.

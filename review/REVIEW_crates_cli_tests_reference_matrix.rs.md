@@ -19,3 +19,7 @@ None.
 
 - The worker count is capped at 8 and the batch is unbounded (one session) for software tokens;
   tpm2.rs uses 8/4 for tpm2-pkcs11's limits.
+
+## Resolutions (2026-11-18)
+
+- F1 **Fixed (2026-11-18):** the fault-shim return prints a skip line.

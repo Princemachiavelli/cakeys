@@ -26,3 +26,7 @@ None.
 - `adopt_certificate_and_public_only_key`: `pairs` are asserted in both directions, fragments
   rejoin to the full lock byte-equal (`:150`), and a one-sided `pairs` is 17.
 - The fixture hashes are independent (openssl), not produced by cakeys.
+
+## Resolutions (2026-11-18)
+
+- F1 **Fixed (2026-11-18):** the asserts carry messages, and the redundant lock re-read is gone.

@@ -51,3 +51,7 @@ None.
 - Stale `untested` entries (gone from clap, or tested after all) fail (`:58-59`).
 - `help`/`version` are excluded on both the flag and the subcommand side (`:13, 17`).
 - `"--name="` and `"--name "` forms count (`:53`), so `"--module={path}"` is seen.
+
+## Resolutions (2026-11-18)
+
+- F3 **Fixed (2026-11-18):** visible subcommand aliases are part of the surface. Short flags are left out on purpose: each is its long flag's other spelling, parsed by clap. Test: `every_verb_and_flag_is_used_by_a_test`.

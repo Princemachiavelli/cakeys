@@ -38,3 +38,14 @@ None.
 - `xref::env` asserts each module whose require variable is set, so a missing reference under the
   Nix check fails rather than shrinking the comparison.
 - Swapped keys are refused (13) on every reference, not only where the proof runs.
+
+## Resolutions (2026-11-18)
+
+- F2 **Fixed (2026-11-18):** `assert_one_identity` takes a host oracle and checks every scheme it computed, at least one:
+  - `rfc7093m4` from the SPKI;
+  - the AES commitments, and `commitment` for the secret and HMAC keys;
+  - `certhash`;
+  - `valuehash`.
+  Test: the asymmetric, secret, certificate and data tests in references.rs.
+- F1 **Fixed (2026-11-18):** create-on asks for its references through `xref::Env::needs`, and its skip asserts that neither `CAKEYS_TEST_REQUIRE` nor `CAKEYS_KRYOPTIC_REQUIRE` is set.
+- F3 **Fixed (2026-11-18):** `ptool` and the swap setup come from common (`ptool`, `swap_private_key`).

@@ -26,3 +26,7 @@ None.
 - Identities through the RPC equal the direct path's, so an RPC rewrite of attributes shows.
 - `CAKEYS_P11KIT_REQUIRE` is set by the Nix check (`nix/package-common.nix`) and p11-kit is
   started per test by `nix/test-tokens.sh`.
+
+## Resolutions (2026-11-18)
+
+- F2 **Fixed (2026-11-18):** the direct module (`CAKEYS_TEST_MODULE`) goes through `suite_var` under `CAKEYS_P11KIT_REQUIRE`, as the client does, no longer an `expect`. Test: every p11kit test's `env`.

@@ -35,3 +35,8 @@ None.
 - `--test-threads=1` is documented in the header and used by coverage-full (`--test-threads 1`).
 - No persistent handle, NV index or the protected handles are touched outside the opt-in attest
   test.
+
+## Resolutions (2026-11-18)
+
+- F2 **Fixed (2026-11-18):** the opt-in has a require variable (`CAKEYS_FTPM_REQUIRE`, `OptIn::require`); set alone, it fails. Test: `a_half_set_opt_in_fails` (validate.rs).
+- F3 **Fixed (2026-11-18):** the inline `tpm2_ptool` import uses common `ptool`.

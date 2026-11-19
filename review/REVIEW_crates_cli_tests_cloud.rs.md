@@ -37,3 +37,8 @@ None.
 - Labels and lock are per run (`run_id()` plus mode), so two clusters tested at once never meet.
 - `asked` skips inside a Nix build and prints its reason otherwise. No require variable, by design
   (opt-in, billed).
+
+## Resolutions (2026-11-18)
+
+- F1 **Fixed (2026-11-18):** the AWS lock is `dir/keys.lock`, which cleanup removes. Test: `aws_cloudhsm_end_to_end` (not run: cloud).
+- F2 **Fixed (2026-11-18):** each key is pushed for cleanup before its create or migrate. Tests: both cloud tests (not run).

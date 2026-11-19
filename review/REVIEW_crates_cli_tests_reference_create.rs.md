@@ -41,3 +41,8 @@ None.
 - B2 (`create` never finds a key: 19) is tested both named and unnamed.
 - `create_records_what_it_made_before_a_failure` covers both an unopenable module (16) and a
   second session on the same module (16, without "already been initialized").
+
+## Resolutions (2026-11-18)
+
+- F2 **Fixed (2026-11-18):** a passing `create --dry-run` leaves the lock bytes and the token unchanged. Test: `create_makes_keys_and_nothing_else_does`.
+- F3 **Fixed (2026-11-18):** the asserts pin the pair, the profile (`kryoptic/1.5`) and `--skip-unsupported`, not the sentences. Test: `create_checks_the_profiles_before_it_makes_anything`.
