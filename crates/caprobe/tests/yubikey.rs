@@ -5,7 +5,9 @@
 //! `CAKEYS_TEST_YUBIKEY_PIN` and `CAKEYS_TEST_YUBIKEY_MGM` (paths to files holding the PIV PIN
 //! and the admin credential). Skipped when they are unset — never in the Nix build — and the
 //! secrets are only ever read by caprobe from these paths. The write probe replaces only retired
-//! slot 94 (`CKA_ID` 17, `scratchId`).
+//! slot 94 (`CKA_ID` 17, `scratchId`). Opted in, both need the patched cryptoki
+//! (scripts/local-tests.sh, `nix run .#coverage-full`): a plain cargo build fails, naming the
+//! patch.
 
 #[path = "../../cli/tests/common/mod.rs"]
 mod common;
@@ -19,17 +21,6 @@ const PROBE_LIMIT: Duration = Duration::from_secs(300);
 /// Every other run: a touch or PIN prompt would hang it, so the bound turns one into a failure.
 const RUN_LIMIT: Duration = Duration::from_secs(60);
 
-/// Whether this build's cryptoki has the Nix patches the probe needs to write or judge a
-/// profile (an unpatched one drops mechanisms it cannot name); a cargo build here has them only
-/// in the Nix build. By hand: `nix build .#cakeys`, then `result-caprobe/bin/caprobe probe ...`.
-fn patched(what: &str) -> bool {
-    let patched = std::os::raw::c_ulong::from(cryptoki::object::KeyType::SHA384_HMAC) == 0x2c;
-    if !patched {
-        eprintln!("skipping {what}: this build's cryptoki is unpatched");
-    }
-    patched
-}
-
 /// The committed ykcs11/2.7 profile is probe output (docs/CAPROBE.md): a fresh write
 /// probe in the scratch slot conforms, and regenerating the file changes no byte — its
 /// `[migration]` claims and `[manual]` findings preserved. A slot holding anything but ykcs11's own
@@ -39,46 +30,31 @@ fn patched(what: &str) -> bool {
 /// pair.
 #[test]
 fn the_write_probe_conforms_and_regenerates_the_committed_profile() {
-    let (Ok(module), Ok(pin), Ok(mgm)) = (
-        std::env::var("CAKEYS_TEST_YUBIKEY_MODULE"),
-        std::env::var("CAKEYS_TEST_YUBIKEY_PIN"),
-        std::env::var("CAKEYS_TEST_YUBIKEY_MGM"),
-    ) else {
-        eprintln!("skipping the write probe: CAKEYS_TEST_YUBIKEY_MODULE, _PIN and _MGM (file paths) not all set");
-        return;
-    };
-    if !patched("the ykcs11/2.7 write probe") {
-        return;
-    }
+    let Some([module, pin, mgm]) = yubikey_opted_in("the write probe") else { return };
+    // Opted in, an unpatched build fails rather than passing with nothing compared: it drops
+    // mechanisms it cannot name (review ftpm.rs F1). Run through scripts/local-tests.sh.
+    cryptoki_hmac_types_fixed(true);
+    let turn = YubikeyTurn::take();
     let w = Workdir::new("yubikey_write_probe");
     w.write_config(&yubikey_token(&module, &pin, &mgm, "probe = { scratchId = \"17\" }"));
     let config = w.dir.join("keys.toml");
-    let probe = run_within(
-        &config,
-        &["probe", "--token", "yubikey", "--write", "--rsa-max-bits", "4096", "--diff", "ykcs11/2.7"],
-        PROBE_LIMIT,
-    );
-    assert_eq!(code(&probe), 0, "{}", String::from_utf8_lossy(&probe.stderr));
-    let committed = committed_profile("modules/ykcs11/2.7.toml");
-    let copy = w.dir.join("profile.toml");
-    std::fs::copy(&committed, &copy).unwrap();
-    let out = copy.to_str().unwrap();
-    let args =
-        ["probe", "--token", "yubikey", "--write", "--rsa-max-bits", "4096", "--diff", "ykcs11/2.7", "--out", out];
-    assert_eq!(code(&run_within(&config, &args, PROBE_LIMIT)), 0);
-    assert!(
-        std::fs::read(&copy).unwrap() == std::fs::read(&committed).unwrap(),
-        "profiles/modules/ykcs11/2.7.toml is not what the probe generates: regenerate it with `caprobe \
-         probe --token <yk> --write --diff ykcs11/2.7 --out profiles/modules/ykcs11/2.7.toml`, and \
-         put hand findings in [manual]"
+    // The shared conformance check: one write probe, which diffs and regenerates in the same run
+    // (review yubikey.rs F2: two, each every curve and RSA size on the device). Hand findings
+    // belong in the profile's [manual].
+    assert_profile_conforms(
+        |args| turn.checked(run_within(&config, args, PROBE_LIMIT)),
+        "yubikey",
+        "ykcs11/2.7",
+        "modules/ykcs11/2.7.toml",
+        &w.dir.join("profile.toml"),
     );
 }
 
 /// The read-only probe of the device here (docs/CAPROBE.md D10): ykcs11/2.7's match keys,
 /// advertisement and reported RSA range are what this `YubiKey` shows, and the write probes are
 /// refused without a scratch slot — `probe = { scratch = true }` cannot mark a device that holds real keys
-/// beside it. Needs only `CAKEYS_TEST_YUBIKEY_MODULE`: no PIN, nothing written; the diff only
-/// with the patched cryptoki (the Nix build's).
+/// beside it. Needs only `CAKEYS_TEST_YUBIKEY_MODULE`: no PIN, nothing written. The diff needs
+/// the patched cryptoki (the Nix build's); an unpatched build fails.
 #[test]
 fn the_read_only_probe_conforms() {
     let Ok(module) = std::env::var("CAKEYS_TEST_YUBIKEY_MODULE") else {
@@ -93,12 +69,10 @@ fn the_read_only_probe_conforms() {
     ));
     let km = |args: &[&str]| run_within(&w.dir.join("keys.toml"), args, RUN_LIMIT);
     let write = km(&["probe", "--token", "yubikey", "--write", "--rsa-max-bits", "4096"]);
-    assert_eq!(code(&write), 17);
-    assert!(stderr(&write).contains("Security Officer"));
-    assert!(stderr(&write).contains("scratchId"));
-    if !patched("the ykcs11/2.7 read-only diff") {
-        return;
-    }
+    assert_eq!(code(&write), 17, "{}", stderr(&write));
+    assert!(stderr(&write).contains("Security Officer"), "{}", stderr(&write));
+    assert!(stderr(&write).contains("scratchId"), "{}", stderr(&write));
+    cryptoki_hmac_types_fixed(true);
     let out = km(&["probe", "--token", "yubikey", "--diff", "ykcs11/2.7"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
 }

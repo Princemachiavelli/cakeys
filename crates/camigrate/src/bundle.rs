@@ -4,14 +4,18 @@
 //! before it touches the target — per key its type, IDs and commitment label as the source's
 //! lock pins them and the public key of a private key; for all, the source and the transport
 //! key's identity. One file per (source, target) export; the composed method's key-encryption
-//! key is shared by its keys. Never plaintext: the wrapped blobs are authenticated by RFC 5649
-//! (or OAEP) and each identity recomputed on the target, so a bundle may cross untrusted
-//! channels. Inside a wrapped private key is the PKCS#8 `C_WrapKey` emits; PKCS#12 or a CMS key
-//! package would need the plaintext key on the host to build.
+//! key is shared by its keys. Never plaintext, but the wrap authenticates nothing: the
+//! transport key is public, so anyone can seal a key of their own to it, and RFC 5649's
+//! integrity check holds only under a KEK anyone can make (OAEP has none). What a bundle may
+//! cross untrusted channels on is the target: it recomputes each identity and proves its
+//! binding, and refuses a key nothing proves (an EC key under `token-asserted`) from a file
+//! (`sealed::check_carried`). Inside a wrapped private key is the PKCS#8 `C_WrapKey` emits;
+//! PKCS#12 or a CMS key package would need the plaintext key on the host to build.
 
 use base64::Engine as _;
-use cakeys_core::config::ObjectCfg;
+use cakeys_core::config::{Config, ObjectCfg};
 use cakeys_core::migrate::{Exposure, Method};
+use cakeys_core::types::ObjectClass;
 use cakeys_core::{KmError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -105,8 +109,9 @@ impl Bundle {
     /// Read a bundle, checking its form: the format and version, at least one key and each object
     /// once, sealed methods this camigrate knows with the KEK exactly when a composed one needs it
     /// (one OAEP hash for it), a transport key exactly when a key is wrapped, each exposure one
-    /// its method can have, base64 blobs, SRI IDs, and public keys whose hash is the `rfc7093m4`
-    /// they claim. That the IDs are the lock's is the import's check.
+    /// its method can have, base64 blobs, SRI IDs, a commitment label only on a secret key, and
+    /// a public key only on a private key, whose hash is the `rfc7093m4` it claims. That the IDs
+    /// are the lock's is the import's check.
     ///
     /// # Errors
     ///
@@ -128,6 +133,15 @@ impl Bundle {
                 return Err(invalid("listed twice".into()));
             }
             e.object_type.canonicalize();
+            // Each class's own fields: a commitment label only where commitments are (secret
+            // keys), a public key only beside the private key it is the half of.
+            let class = e.object_type.class;
+            if e.commitment_label.is_some() && class != ObjectClass::SecretKey {
+                return Err(invalid(format!("a {class} carries no commitmentLabel")));
+            }
+            if e.public_key.is_some() && class != ObjectClass::PrivateKey {
+                return Err(invalid(format!("a {class} carries no publicKey")));
+            }
             let method = e.method().map_err(invalid)?;
             if e.kek.is_some() && !matches!(method, Method::RsaOaepAesKwp(_)) {
                 return Err(invalid(format!("method {} takes no kek of its own", e.method)));
@@ -191,6 +205,27 @@ impl Bundle {
             _ => {}
         }
         Ok(b)
+    }
+
+    /// The bundle's source against keys.toml: an import records `source.token` as where the key
+    /// came from (`Origin::from`), so it must be a token keys.toml names, never a name a bundle
+    /// file made up (`file`, which reads as a key file's import, or a token that does not exist).
+    ///
+    /// # Errors
+    ///
+    /// `Validation` (17) for a source token `cfg` does not name.
+    pub(crate) fn check_source(&self, cfg: &Config) -> Result<()> {
+        if cfg.tokens.contains_key(&self.source.token) {
+            return Ok(());
+        }
+        Err(KmError::Validation(
+            format!(
+                "the bundle names its source '{}' (provider {}), a token keys.toml does not have: the lock would \
+                 record the key as from it",
+                self.source.token, self.source.provider
+            )
+            .into(),
+        ))
     }
 
     /// The bundle's text.
@@ -333,7 +368,7 @@ mod tests {
     /// without the KEK or a KEK nothing uses, composed methods of two hashes under one KEK, a
     /// method that cannot travel in a bundle, a key without its wrapped bytes or a public object
     /// without its value, wrapped keys without a transport key, an exposure the method cannot
-    /// have, bad base64, a public key `rfc7093m4` does not name.
+    /// have, bad base64, a public key `rfc7093m4` does not name, a field of another class.
     #[test]
     fn malformed_bundles_are_refused() {
         let path = std::path::Path::new("b.toml");
@@ -400,8 +435,37 @@ mod tests {
         Bundle::parse(&Bundle { keys: vec![own], kek: None, ..sample() }.to_toml().unwrap(), path).unwrap();
         let n = [0xc5u8; 256];
         let spki = cakeys_core::id::rsa_spki(&n, &[1, 0, 1]).unwrap();
-        let spoofed = Entry { public_key: Some(encode(&spki)), ..aes("k", "rsa-oaep-sha1+aes-kwp") };
+        let private = Entry {
+            object_type: ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::Rsa)),
+            commitment_label: None,
+            ..aes("k", "rsa-oaep-sha1+aes-kwp")
+        };
+        let spoofed = Entry { public_key: Some(encode(&spki)), ..private.clone() };
         refused(Bundle { keys: vec![spoofed], ..sample() }, "is not the key rfc7093m4 names");
+        // Each class's own fields: a public key only beside a private key, a commitment label
+        // only on a secret key.
+        let half = Entry { public_key: Some(encode(&spki)), ..aes("k", "rsa-oaep-sha1+aes-kwp") };
+        refused(Bundle { keys: vec![half], ..sample() }, "a CKO_SECRET_KEY carries no publicKey");
+        let labelled = Entry { commitment_label: Some("key-management/v1".into()), ..private };
+        refused(Bundle { keys: vec![labelled], ..sample() }, "a CKO_PRIVATE_KEY carries no commitmentLabel");
+    }
+
+    /// A bundle's source goes into the lock as where its keys came from: it must be a token
+    /// keys.toml names (17 otherwise, saying which).
+    #[test]
+    fn the_source_must_be_a_token_keys_toml_names() {
+        let cfg = cakeys_core::config::parse_config_with(
+            "[tokens.softhsm]\ntokenLabel = \"s\"\n",
+            std::path::Path::new("keys.toml"),
+            &|_| None,
+        )
+        .unwrap();
+        sample().check_source(&cfg).unwrap();
+        for token in ["file", "elsewhere"] {
+            let b = Bundle { source: Source { token: token.into(), provider: "softhsm".into() }, ..sample() };
+            let e = b.check_source(&cfg).unwrap_err();
+            assert!(e.exit_code() == 17 && e.to_string().contains(&format!("'{token}'")), "{e}");
+        }
     }
 
     /// The accessors hand back the bytes the bundle carries, and a transport key's identity

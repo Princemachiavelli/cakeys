@@ -47,7 +47,8 @@ in
                      reaches: the build log, a store path.
 
     A call that does not name exactly one pair throws, listing the choices; so does a lock
-    whose `version` this library does not read.
+    whose `version` this library does not read, and a `lock` path that does not exist (`null`
+    is "nothing recorded yet").
 
     `modules.<token>` overrides the token's PKCS#11 module path (pass a store path so the
     module is available inside the build sandbox).
@@ -62,9 +63,13 @@ in
     }:
     let
       cfg = builtins.fromTOML (builtins.readFile config);
-      hasLock = lock != null && builtins.pathExists lock;
+      # `null` is "nothing recorded yet"; a lock path that does not exist (mistyped, or in a git
+      # flake not `git add`ed) is an error, not a silent first use.
+      hasLock = lock != null;
       lk =
-        if hasLock then
+        if hasLock && !builtins.pathExists lock then
+          throw "cakeys: lock ${toString lock} does not exist: pass `lock = null` until cakeys records one (in a git flake, `git add` it)"
+        else if hasLock then
           let
             parsed = builtins.fromTOML (builtins.readFile lock);
           in
@@ -161,8 +166,9 @@ in
                   "${config}"
                 ]
                 ++ (
+                  # Forcing `lk` first: a missing lock throws its own message here too.
                   if hasLock then
-                    [
+                    builtins.seq lk [
                       "--lock"
                       "${lock}"
                     ]

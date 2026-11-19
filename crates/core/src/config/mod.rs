@@ -3,11 +3,17 @@
 //! Our own keys are camelCase (Nix-friendly); PKCS#11 names (`CKA_*`, `CKO_*`, `CKK_*`) are verbatim.
 
 use crate::error::{KmError, Result};
-use crate::id::Scheme;
 use crate::types::{KeyType, ObjectClass};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+
+mod io;
+mod lock;
+mod observe;
+pub use io::*;
+pub use lock::*;
+pub use observe::*;
 
 /// A parsed `keys.toml` (docs/CONFIG.md): the tokens, the objects, and the specs that realise
 /// objects on tokens.
@@ -207,7 +213,9 @@ pub struct TokenMigrateCfg {
     /// The spec of this token's transport key (D3): an RSA private key realised here that may
     /// unwrap and never leaves the token. Sealed moves to this token wrap to it, never to one
     /// picked by what it can do (camigrate `--transport-key` overrides it per run); its
-    /// realisation records the public key in the lock, so any host can export to it.
+    /// realisation records the public key in the lock, so any host can export to it. It never
+    /// leaves the tokens its spec realises it on, as if `migrate.noExport` (camigrate refuses it
+    /// named, 15, and leaves it out without names).
     pub transport_with: Option<String>,
 }
 
@@ -368,9 +376,10 @@ impl ObjectCfg {
     ///
     /// # Errors
     ///
-    /// `Validation` for a field that names nothing on this class or key type, or a certificate
-    /// without `certificateType = "CKC_X_509"`; `Unsupported` for a class/key-type pairing
-    /// cakeys does not manage, or a curve [`Self::curve`] refuses.
+    /// `Validation` for a field that names nothing on this class or key type, a certificate
+    /// without a `certificateType`, or one no PKCS#11 certificate type; `Unsupported` for what
+    /// PKCS#11 has but cakeys does not manage: a class/key-type pairing, a certificate type
+    /// other than `CKC_X_509`, or a curve [`Self::curve`] refuses.
     pub fn kind(&self) -> Result<ObjectKind> {
         let invalid = |why: &str| Err(KmError::Validation(why.to_owned().into()));
         let class = self.class;
@@ -401,7 +410,17 @@ impl ObjectCfg {
         Ok(match (class, self.key_type) {
             (ObjectClass::Certificate, _) => match self.certificate_type.as_deref() {
                 Some("CKC_X_509") => ObjectKind::Certificate,
-                Some(_) => return invalid("certificateType must be CKC_X_509"),
+                Some(t @ ("CKC_X_509_ATTR_CERT" | "CKC_WTLS" | "CKC_VENDOR_DEFINED")) => {
+                    return Err(KmError::Unsupported(
+                        format!("certificateType {t}: cakeys manages CKC_X_509 certificates only").into(),
+                    ));
+                }
+                Some(t) => {
+                    return invalid(&format!(
+                        "certificateType {t:?} is no PKCS#11 certificate type (CKC_X_509, CKC_X_509_ATTR_CERT, \
+                         CKC_WTLS, CKC_VENDOR_DEFINED)"
+                    ));
+                }
                 None => return invalid("certificates need certificateType = \"CKC_X_509\""),
             },
             (ObjectClass::Data, _) => ObjectKind::Data,
@@ -495,8 +514,9 @@ impl std::fmt::Display for ObjectCfg {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SpecMigrateCfg {
     /// The object never leaves the tokens this spec realises it on: `camigrate` refuses to
-    /// export or migrate it from them (15), and an export without names leaves it out without
-    /// the warning a key that cannot move gets.
+    /// export or migrate it from them (15), and an export or migrate without names leaves it out
+    /// without the warning a key that cannot move gets. A token's transport key
+    /// (`transportWith`) is kept so without it.
     #[serde(default)]
     pub no_export: bool,
 }
@@ -659,6 +679,27 @@ pub struct Locator {
     pub id: Option<String>,
 }
 
+impl Locator {
+    /// Refuse a locator no search can use, and write its `CKA_ID` in lower case so `0A` and `0a`
+    /// name one object. An empty `CKA_ID` is a real object's ID, and stays.
+    ///
+    /// # Errors
+    ///
+    /// Why, when it names neither `CKA_LABEL` nor `CKA_ID`, or its `CKA_ID` is not hex.
+    pub fn canonicalize(&mut self) -> std::result::Result<(), String> {
+        if self.label.is_none() && self.id.is_none() {
+            return Err("locator needs CKA_LABEL and/or CKA_ID".into());
+        }
+        if let Some(id) = &mut self.id {
+            if crate::hex::decode(id).is_none() {
+                return Err(format!("CKA_ID '{id}' is not hex"));
+            }
+            id.make_ascii_lowercase();
+        }
+        Ok(())
+    }
+}
+
 /// Inline-table form, as keys.toml writes it: `{ CKA_LABEL = "k", CKA_ID = "01" }`.
 impl std::fmt::Display for Locator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -782,670 +823,6 @@ impl std::fmt::Display for Mode {
     }
 }
 
-/// A parsed `keys.lock` (docs/LOCK.md): each object's IDs and each spec's realisations, as
-/// cakeys recorded them.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Lock {
-    /// The lock format version: a lock of any other than [`LOCK_VERSION`] is refused on load.
-    pub version: u32,
-    /// Each object's identity, by object name.
-    #[serde(default)]
-    pub objects: BTreeMap<String, LockObject>,
-    /// spec name -> token name -> realisation
-    #[serde(default)]
-    pub realisations: BTreeMap<String, BTreeMap<String, LockRealisation>>,
-    /// What realisations saw of their token, each distinct observation once (review A3), keyed
-    /// by [`Observation::digest`]. A realisation names the entry it was recorded with.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub observations: BTreeMap<String, Observation>,
-}
-
-/// One object's identity: the IDs of its material and the type they were computed for, the
-/// same on every token.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct LockObject {
-    /// Label the object's commitment schemes were computed with. Required whenever
-    /// `ids` holds a commitment scheme; verification uses it, never the code default.
-    #[serde(default, rename = "commitmentLabel", skip_serializing_if = "Option::is_none")]
-    pub commitment_label: Option<String>,
-    /// The object type the IDs were computed for (required with `ids`). A `keys.toml` whose type
-    /// differs is refused rather than reported as a hash mismatch.
-    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
-    pub object_type: Option<ObjectCfg>,
-    /// Material CA-IDs: scheme -> SRI hash.
-    #[serde(default)]
-    pub ids: BTreeMap<String, String>,
-    /// Other objects with the same public key (`rfc7093m4`): a key and its certificate, a private
-    /// and a public key object. Recorded by cakeys, symmetric, and checked on load.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub pairs: BTreeSet<String>,
-    /// A transport key's public key (docs/CAMIGRATE.md D3), base64 of the canonical SPKI whose hash is
-    /// `ids.rfc7093m4`: recorded when a token's `transportWith` spec is realised, so a source
-    /// exports to it from the lock alone. Checked against that ID on load.
-    #[serde(default, rename = "publicKey", skip_serializing_if = "Option::is_none")]
-    pub public_key: Option<String>,
-}
-
-impl LockObject {
-    fn has_commitments(&self) -> bool {
-        self.ids.keys().any(|s| Scheme::from_name(s).is_some_and(Scheme::is_commitment))
-    }
-}
-
-/// The lock format version. Unpublished, so its schema changes in place.
-pub const LOCK_VERSION: u32 = 1;
-
-impl Lock {
-    /// Refuse other versions (the version is required), then every lock invariant: each object's
-    /// IDs and label, each realisation against its object, one object per material, and pairs
-    /// that list each other.
-    fn validate(self, path: &Path) -> Result<Lock> {
-        if self.version != LOCK_VERSION {
-            return Err(KmError::Validation(
-                format!(
-                    "{}: lock version {} is not supported (this cakeys reads {LOCK_VERSION})",
-                    path.display(),
-                    self.version
-                )
-                .into(),
-            ));
-        }
-        let invalid = |msg: String| KmError::Validation(format!("{}: {msg}", path.display()).into());
-        self.check_objects().map_err(invalid)?;
-        self.check_realisations().map_err(invalid)?;
-        self.check_observations().map_err(invalid)?;
-        self.check_one_object_per_material().map_err(invalid)?;
-        self.check_pairs().map_err(invalid)?;
-        Ok(self)
-    }
-
-    /// Each object's IDs are SRI digests under lock scheme names, need a type, and — for
-    /// commitments — a printable label.
-    fn check_objects(&self) -> std::result::Result<(), String> {
-        for (name, o) in &self.objects {
-            if o.has_commitments() && o.commitment_label.is_none() {
-                return Err(format!("object '{name}' has commitment IDs but no commitmentLabel"));
-            }
-            if let Some((alias, scheme)) = Scheme::ALIASES.iter().find(|(a, _)| o.ids.contains_key(*a)) {
-                return Err(format!(
-                    "object '{name}' records '{alias}', which is an input alias; the lock uses '{scheme}'"
-                ));
-            }
-            if !o.ids.is_empty() && o.object_type.is_none() {
-                return Err(format!("object '{name}' has IDs but no type"));
-            }
-            if let Some((s, v)) = o.ids.iter().find(|(_, v)| !crate::id::is_sri(v)) {
-                return Err(format!("object '{name}': {s} = \"{v}\" is not a sha256 SRI digest"));
-            }
-            // Attestation IDs are per device (§3.7): the same material attested on two TPMs has
-            // two IDs, so they live on each realisation, never in the object's shared `ids`.
-            if let Some(s) = o.ids.keys().find(|s| Scheme::from_name(s).is_some_and(Scheme::is_attestation)) {
-                return Err(format!(
-                    "object '{name}' records the attestation scheme {s}: an attestation ID is per device \
-                     and belongs to the realisation that computed it (realisations.<spec>.<token>.attestation)"
-                ));
-            }
-            if let Some(l) = o
-                .commitment_label
-                .as_ref()
-                .filter(|l| l.is_empty() || !l.bytes().all(|b| b.is_ascii_graphic() || b == b' '))
-            {
-                return Err(format!("object '{name}': commitmentLabel {l:?} must be non-empty printable ASCII"));
-            }
-            if let Some(k) = &o.public_key {
-                use base64::Engine as _;
-                let der = base64::engine::general_purpose::STANDARD
-                    .decode(k)
-                    .map_err(|e| format!("object '{name}': publicKey is not base64: {e}"))?;
-                match o.ids.get(Scheme::Rfc7093m4.name()) {
-                    Some(id) if *id == crate::id::sri(&der) => {}
-                    Some(id) => {
-                        return Err(format!(
-                            "object '{name}': publicKey hashes to {}, not the {id} its rfc7093m4 pins",
-                            crate::id::sri(&der)
-                        ));
-                    }
-                    None => return Err(format!("object '{name}': publicKey without an rfc7093m4 ID to check it by")),
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Each realisation names an object of the lock and schemes among its IDs, a binding exactly
-    /// when the object is a private key, and attestation evidence of a known kind that never
-    /// stands alone.
-    fn check_realisations(&self) -> std::result::Result<(), String> {
-        for (spec, by_token) in &self.realisations {
-            for (token, r) in by_token {
-                let what = format!("realisation of '{spec}' on '{token}'");
-                if !crate::id::is_sri(&r.spec_digest) {
-                    return Err(format!("{what}: specDigest \"{}\" is not a sha256 SRI digest", r.spec_digest));
-                }
-                let Some(o) = self.objects.get(&r.object) else {
-                    return Err(format!("{what}: object '{}' is not in the lock", r.object));
-                };
-                if let Some(s) = r.schemes.iter().find(|s| !o.ids.contains_key(*s)) {
-                    return Err(format!("{what}: scheme {s} is not among the IDs of '{}'", r.object));
-                }
-                let private = o.object_type.as_ref().is_some_and(|t| t.class == ObjectClass::PrivateKey);
-                if private != r.binding.is_some() {
-                    return Err(format!(
-                        "{what}: binding is {} for private keys and only for them",
-                        if private { "required" } else { "allowed" }
-                    ));
-                }
-                if let Some(o) = r.provenance.as_ref().and_then(|p| p.origin.as_ref())
-                    && crate::migrate::Method::from_name(&o.method).is_none()
-                {
-                    return Err(format!("{what}: provenance origin method '{}' is unknown", o.method));
-                }
-                // Attestation evidence (§3.7): a known kind, SRI digests, and never alone — the
-                // realisation must also have matched a portable scheme, the only thing that links
-                // the same material on another token.
-                let Some(a) = &r.attestation else { continue };
-                if Scheme::from_attestation_kind(&a.kind).is_none() {
-                    return Err(format!(
-                        "{what}: unknown attestation kind '{}' (known: {:?})",
-                        a.kind,
-                        Scheme::ALL.into_iter().filter_map(Scheme::attestation_kind).collect::<Vec<_>>()
-                    ));
-                }
-                if let Some((field, v)) =
-                    [("root", &a.root), ("id", &a.id)].into_iter().find(|(_, v)| !crate::id::is_sri(v))
-                {
-                    return Err(format!("{what}: attestation {field} \"{v}\" is not a sha256 SRI digest"));
-                }
-                if r.schemes.is_empty() {
-                    return Err(format!(
-                        "{what} is locked only by its attestation: an attestation is provenance for one \
-                         device and cannot verify the same material on another token; it needs a portable \
-                         scheme (rfc7093m4, or a commitment for secret keys) beside it"
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Each observation is keyed by an SRI digest, and each realisation names one the lock has.
-    /// The key is not recomputed here: an entry may hold keys of a newer cakeys (`extra`).
-    fn check_observations(&self) -> std::result::Result<(), String> {
-        if let Some(k) = self.observations.keys().find(|k| !crate::id::is_sri(k)) {
-            return Err(format!("observation key \"{k}\" is not a sha256 SRI digest"));
-        }
-        if let Some(h) =
-            self.observations.values().find_map(|o| o.module.as_ref()?.hash.as_ref()).filter(|h| !crate::id::is_sri(h))
-        {
-            return Err(format!("observation module hash \"{h}\" is not a sha256 SRI digest"));
-        }
-        for (spec, by_token) in &self.realisations {
-            for (token, r) in by_token {
-                if let Some(k) = r.observation.as_ref().filter(|k| !self.observations.contains_key(*k)) {
-                    return Err(format!(
-                        "realisation of '{spec}' on '{token}': observation \"{k}\" is not in the lock"
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// The observation the realisations on `token` name (review A3): the token's as far as the
-    /// lock knows, when they all agree.
-    #[must_use]
-    pub fn token_observation(&self, token: &str) -> TokenObservation<'_> {
-        let mut named: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-        for (spec, by_token) in &self.realisations {
-            if let Some(k) = by_token.get(token).and_then(|r| r.observation.as_deref()) {
-                named.entry(k).or_default().push(spec);
-            }
-        }
-        match named.len() {
-            0 => TokenObservation::None,
-            1 => named
-                .keys()
-                .next()
-                .and_then(|k| self.observations.get(*k))
-                .map_or(TokenObservation::None, TokenObservation::One),
-            _ => TokenObservation::Several(
-                named.into_values().map(|specs| specs.into_iter().map(str::to_owned).collect()).collect(),
-            ),
-        }
-    }
-
-    /// Observation keys no realisation names, or none of those `keep` accepts.
-    fn unreferenced_observations(&self, keep: &dyn Fn(&str, &str) -> bool) -> Vec<String> {
-        let named: BTreeSet<&str> = self
-            .realisations
-            .iter()
-            .flat_map(|(spec, by_token)| {
-                by_token.iter().filter(|(t, _)| keep(spec, t)).filter_map(|(_, r)| r.observation.as_deref())
-            })
-            .collect();
-        self.observations.keys().filter(|k| !named.contains(k.as_str())).cloned().collect()
-    }
-
-    /// Drop the observations no realisation names; whether any was dropped.
-    pub fn drop_unreferenced_observations(&mut self) -> bool {
-        let gone = self.unreferenced_observations(&|_, _| true);
-        for k in &gone {
-            self.observations.remove(k);
-        }
-        !gone.is_empty()
-    }
-
-    /// One object per material: two objects of one class with the same ID are the same thing
-    /// under two names. A certificate's rfc7093m4 names its subject key, which several
-    /// certificates may share.
-    fn check_one_object_per_material(&self) -> std::result::Result<(), String> {
-        let mut seen: BTreeMap<(&str, &str, &str), &str> = BTreeMap::new();
-        for (name, o) in &self.objects {
-            let class = o.object_type.as_ref().map_or("", |t| t.class.name());
-            for (s, v) in o
-                .ids
-                .iter()
-                .filter(|(s, _)| !(class == ObjectClass::Certificate.name() && *s == Scheme::Rfc7093m4.name()))
-            {
-                if let Some(other) = seen.insert((s, class, v), name) {
-                    return Err(format!(
-                        "objects '{other}' and '{name}' are the same {class} material ({s} {v}); use one object"
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// A listed partner that is in this file must share the public key and list back; one that is
-    /// not may live in another lock fragment (locks can be split and joined).
-    fn check_pairs(&self) -> std::result::Result<(), String> {
-        for (name, o) in &self.objects {
-            for p in &o.pairs {
-                if p == name {
-                    return Err(format!("object '{name}' lists itself as a pair"));
-                }
-                let Some(other) = self.objects.get(p) else { continue };
-                let shared = o
-                    .ids
-                    .get(Scheme::Rfc7093m4.name())
-                    .is_some_and(|k| other.ids.get(Scheme::Rfc7093m4.name()) == Some(k));
-                if !shared || !other.pairs.contains(name) {
-                    return Err(format!(
-                        "object '{name}' lists '{p}' as a pair, but they {}",
-                        if shared { "do not list each other" } else { "do not share an rfc7093m4" }
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// The realisation of `spec` on `token`, if the lock records one.
-    #[must_use]
-    pub fn realisation(&self, spec: &str, token: &str) -> Option<&LockRealisation> {
-        self.realisations.get(spec)?.get(token)
-    }
-
-    /// Objects in this file that share an rfc7093m4 with `name` but are not listed as its pairs.
-    #[must_use]
-    pub fn unlisted_pairs(&self, name: &str) -> BTreeSet<String> {
-        let listed = self.objects.get(name).map(|o| &o.pairs);
-        self.computed_pairs()
-            .remove(name)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|p| listed.is_none_or(|l| !l.contains(p)))
-            .collect()
-    }
-
-    /// For every object, the other objects with the same public key (`rfc7093m4`).
-    #[must_use]
-    pub fn computed_pairs(&self) -> BTreeMap<String, BTreeSet<String>> {
-        let key = |o: &LockObject| o.ids.get(Scheme::Rfc7093m4.name()).cloned();
-        self.objects
-            .iter()
-            .filter_map(|(name, o)| {
-                let k = key(o)?;
-                let others: BTreeSet<String> = self
-                    .objects
-                    .iter()
-                    .filter(|(n, p)| *n != name && key(p).as_ref() == Some(&k))
-                    .map(|(n, _)| n.clone())
-                    .collect();
-                (!others.is_empty()).then(|| (name.clone(), others))
-            })
-            .collect()
-    }
-}
-
-/// One realisation of a spec on a token. Fields fall in three classes (docs/DESIGN.md §4.2):
-/// - **compared** (top level): verification fails when they differ from keys.toml or the token;
-/// - **`observed`** and **`observation`**: recorded facts about the object and the token (the
-///   latter an entry of the lock's `observations`) that never change a verdict;
-/// - **`provenance`**: the object's history (`origin`); never a verdict either.
-///
-/// Stripping `observed`, `observation`, `provenance` and the `observations` table from a lock
-/// never changes a verdict.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct LockRealisation {
-    /// The object this spec realised and the locator it was found under: a spec pointed at
-    /// another object or locator in keys.toml is a change to review, not a hash mismatch.
-    pub object: String,
-    /// The locator the object was found under (see `object`).
-    pub(crate) locator: Locator,
-    /// SRI digest of the spec (object type and policy attributes) it was recorded under: another
-    /// digest is a spec change.
-    pub(crate) spec_digest: String,
-    /// The identity mode it was established in: a weaker one later is a downgrade (14).
-    pub(crate) mode: Mode,
-    /// The identity schemes this realisation computed and matched: computing fewer later is a
-    /// downgrade. Also shows which realisation established which locked ID.
-    pub schemes: BTreeSet<String>,
-    /// Adopted through its public key object only (`publicOnly`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub(crate) public_only: bool,
-    /// Private keys: how the private object is bound to the identity. Absent: not recorded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binding: Option<Binding>,
-    /// The attestation this realisation pinned (§3.7 of docs/DESIGN.md), when its spec opted in:
-    /// the per-device attestation ID and the *anchor* it was verified against — the Yubico root
-    /// (PIV) or the Attestation Key (TPM). Kept here, not in `objects.<name>.ids`: the same
-    /// material attested on two devices has two IDs, joined through the portable `schemes`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attestation: Option<AttestationRecord>,
-    /// Every boolean attribute the object exposes for its class (`CKA_SIGN = true`, ...), as
-    /// read from the token: declared or not. A drift is a change to review.
-    pub policy: BTreeMap<String, AttrValue>,
-    /// Attributes fixed when the object was made; one that weakens means it was replaced.
-    #[serde(default, skip_serializing_if = "Immutables::is_empty")]
-    pub immutables: Immutables,
-    /// The key of the `observations` entry this realisation was recorded with.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observation: Option<String>,
-    /// What was seen of the object when it was recorded; never compared.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) observed: Option<Observed>,
-    /// The object's history on this token; never compared.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) provenance: Option<Provenance>,
-}
-
-/// Offline-verifiable attestation evidence pinned per realisation (§3.7 of docs/DESIGN.md).
-/// `kind` names the attestation (`yubico-piv`, `tpm-certify` — one per scheme, see
-/// `id::ATTESTATION_KINDS`), `root` is the SRI digest of the trust anchor the chain was verified
-/// to: the pinned Yubico root's SPKI for PIV (never the device's own overwritable slot f9), or
-/// the Attestation Key's SPKI for TPM. `id` is the attestation commitment of this device.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct AttestationRecord {
-    /// The attestation kind (`yubico-piv`, `tpm-certify`).
-    pub kind: String,
-    /// SRI digest of the trust anchor the attestation was verified to.
-    pub root: String,
-    /// This device's attestation commitment.
-    pub id: String,
-}
-
-/// Key attributes the token sets when the key is made, which no later operation can restore
-/// (PKCS#11 3.2 §4.9-4.10): `true` → `false` means the object was replaced, e.g. re-imported.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Immutables {
-    /// `CKA_LOCAL`: the key was generated on the token.
-    #[serde(rename = "CKA_LOCAL", default, skip_serializing_if = "Option::is_none")]
-    pub local: Option<bool>,
-    /// `CKA_NEVER_EXTRACTABLE`: the key has never been extractable.
-    #[serde(rename = "CKA_NEVER_EXTRACTABLE", default, skip_serializing_if = "Option::is_none")]
-    pub never_extractable: Option<bool>,
-    /// `CKA_ALWAYS_SENSITIVE`: the key has always been sensitive.
-    #[serde(rename = "CKA_ALWAYS_SENSITIVE", default, skip_serializing_if = "Option::is_none")]
-    pub always_sensitive: Option<bool>,
-    /// `CKM_...`, absent when the token reports none (an imported key).
-    #[serde(rename = "CKA_KEY_GEN_MECHANISM", default, skip_serializing_if = "Option::is_none")]
-    pub key_gen_mechanism: Option<String>,
-}
-
-impl Immutables {
-    /// Nothing recorded (a class without these attributes): left out of the lock.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        *self == Immutables::default()
-    }
-
-    fn fields(&self) -> Vec<String> {
-        let flag = |n: &str, v: Option<bool>| v.map(|b| format!("{n} = {b}"));
-        [
-            flag("CKA_LOCAL", self.local),
-            flag("CKA_NEVER_EXTRACTABLE", self.never_extractable),
-            flag("CKA_ALWAYS_SENSITIVE", self.always_sensitive),
-            self.key_gen_mechanism.as_ref().map(|m| format!("CKA_KEY_GEN_MECHANISM = {m:?}")),
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
-    }
-
-    /// Flags that were `true` when recorded and are not now.
-    #[must_use]
-    pub fn weakened_since(&self, recorded: &Immutables) -> Vec<&'static str> {
-        [
-            ("CKA_LOCAL", recorded.local, self.local),
-            ("CKA_NEVER_EXTRACTABLE", recorded.never_extractable, self.never_extractable),
-            ("CKA_ALWAYS_SENSITIVE", recorded.always_sensitive, self.always_sensitive),
-        ]
-        .into_iter()
-        .filter(|(_, was, now)| *was == Some(true) && *now != Some(true))
-        .map(|(n, _, _)| n)
-        .collect()
-    }
-}
-
-/// Inline-table form, as the lock writes it.
-impl std::fmt::Display for Immutables {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{{ {} }}", self.fields().join(", "))
-    }
-}
-
-/// Facts about the object and the run at realisation time. Never compared.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct Observed {
-    /// RFC 7512 URI of the object (derived from the token label, serial and locator).
-    pub uri: String,
-    /// Logged in (private objects and duplicate private-key IDs were visible) or not.
-    pub session: Session,
-}
-
-/// The session a realisation was observed in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Session {
-    /// Logged in as the user.
-    User,
-    /// No login: public objects only.
-    Public,
-}
-
-/// One object's history on this token. Never a verdict; re-recording the same object keeps it.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Provenance {
-    /// Where the material came from, when it was imported (docs/CAMIGRATE.md D7).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub origin: Option<Origin>,
-}
-
-/// How an imported object reached this token (docs/CAMIGRATE.md D7, "Frozen names and formats").
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Origin {
-    /// The source token.
-    pub from: String,
-    /// A method name of `migrate::Method`.
-    pub method: String,
-    /// How exposed the material was on the way.
-    pub exposure: crate::migrate::Exposure,
-    /// A vendor method: `exposure` is the level it declared, not one cakeys established.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub declared: bool,
-}
-
-/// What a realisation saw of its token and what handled it (review A3), stored once per
-/// distinct value in the lock's `observations`. Differences warn (module build, token,
-/// provider, a mechanism gone) or note (module file, cakeys version, profile); `lock`
-/// re-binds them. The provider, module and token are absent only in entries recorded before
-/// cakeys wrote them.
-///
-/// The one lock table that takes keys this cakeys does not know: they never change a verdict,
-/// so a lock a newer cakeys wrote still loads, and they are kept (`extra`) when the lock is
-/// rewritten — only re-recording the realisation, which names a fresh entry, drops them.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Observation {
-    /// Provider that handled the module (fix-ups must not change identity).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    /// The cakeys version that recorded it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cakeys_version: Option<String>,
-    /// The module capability profile the token resolved to (docs/CAPROBE.md D8), when one is
-    /// committed for it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile: Option<String>,
-    /// Usable mechanisms (feeds `functions.<token>` in the Nix library). One that has since gone
-    /// from the token is a warning.
-    #[serde(default)]
-    pub mechanisms: Vec<String>,
-    /// PKCS#11 module (`C_GetInfo`, plus the loaded file).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub module: Option<ModuleInfo>,
-    /// Token that holds the objects (`C_GetTokenInfo`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token: Option<TokenInfo>,
-    /// What this deployment's token answered about cakeys' operations, keyed as a capability
-    /// profile's rows are (`prove.pop-sign.CKK_EC.secp256r1`, docs/CAPROBE.md): the proofs and
-    /// generations `lock` and `create` just demonstrated, and what `caprobe probe --record`
-    /// measured. Answers of this token, not of its kind, so they decide before a shipped
-    /// profile does; never a verdict of `check`. Not part of the entry's key, and merged, not
-    /// replaced, as runs record more.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub capabilities: BTreeMap<String, Answered>,
-    /// Keys of a newer cakeys, as read.
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, toml::Value>,
-}
-
-/// What an [`Answered`] says (ISSUES.md Q28): yes or no; any other word, a newer cakeys's, is
-/// kept as read and answers nothing. Written as the word.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(from = "String", into = "String")]
-pub enum Said {
-    /// `yes`.
-    Yes,
-    /// `no`.
-    No,
-    /// Another word, as read.
-    Other(String),
-}
-
-impl From<String> for Said {
-    fn from(word: String) -> Self {
-        match word.as_str() {
-            "yes" => Said::Yes,
-            "no" => Said::No,
-            _ => Said::Other(word),
-        }
-    }
-}
-
-impl From<&str> for Said {
-    fn from(word: &str) -> Self {
-        Said::from(word.to_owned())
-    }
-}
-
-impl From<Said> for String {
-    fn from(said: Said) -> Self {
-        match said {
-            Said::Yes => "yes".into(),
-            Said::No => "no".into(),
-            Said::Other(word) => word,
-        }
-    }
-}
-
-/// One answer a token gave (an [`Observation`]'s `capabilities`): `answer` is `yes` or `no`,
-/// `evidence` what showed it, `via` how it succeeded. A newer cakeys' fields are kept.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub struct Answered {
-    /// `yes` or `no`; anything else answers nothing.
-    pub answer: Said,
-    /// What showed it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub evidence: Option<String>,
-    /// How it succeeded, where there is more than one way.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub via: Option<String>,
-    /// Fields of a newer cakeys, as read.
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, toml::Value>,
-}
-
-impl Answered {
-    /// A plain yes.
-    #[must_use]
-    pub fn yes() -> Answered {
-        Answered { answer: Said::Yes, evidence: None, via: None, extra: BTreeMap::new() }
-    }
-}
-
-impl Observation {
-    /// The entry's key: the SRI SHA-256 of its RFC 8785 (JCS) form, as `id::spec_digest`,
-    /// without its `capabilities` — what the token answered accumulates under one entry.
-    ///
-    /// # Panics
-    ///
-    /// If the entry does not canonicalize, which only `extra` could cause (a float that is not
-    /// finite); cakeys computes keys only for the entries it builds, which have none.
-    #[must_use]
-    pub fn digest(&self) -> String {
-        let bare = Observation { capabilities: BTreeMap::new(), ..self.clone() };
-        let doc = serde_json::to_value(&bare).expect("an observation is plain data");
-        crate::id::sri(serde_jcs::to_string(&doc).expect("an observation of strings canonicalizes").as_bytes())
-    }
-}
-
-/// What the lock knows of one token's module and hardware: [`Lock::token_observation`].
-#[derive(Debug)]
-pub enum TokenObservation<'a> {
-    /// No realisation on the token names an observation.
-    None,
-    /// Every realisation on the token that names one names this.
-    One(&'a Observation),
-    /// Its realisations were recorded with different observations, so which is current is not
-    /// known: the specs, grouped by the entry they name.
-    Several(Vec<Vec<String>>),
-}
-
-impl TokenObservation<'_> {
-    /// The message for [`TokenObservation::Several`]: what differs and how to refresh it.
-    #[must_use]
-    pub fn several(token: &str, groups: &[Vec<String>]) -> String {
-        let groups: Vec<String> = groups.iter().map(|g| g.join(", ")).collect();
-        format!(
-            "the realisations on token '{token}' were recorded with {} different observations of \
-             its module and token ({}); `lock` them to record the current one",
-            groups.len(),
-            groups.join("; ")
-        )
-    }
-}
-
 /// Read and check keys.toml; `$NAME` path references read the process environment.
 ///
 /// # Errors
@@ -1476,19 +853,20 @@ pub fn load_config_with(path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Re
 /// `Validation`, as [`load_config_with`].
 pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<Config> {
     let invalid = |e: &dyn std::fmt::Display| KmError::Validation(format!("{}: {e}", path.display()).into());
+    // A `$NAME` reference's error, named by the file as every other load error is.
+    let env_ref = |value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>| {
+        env_ref(value, what, env).map_err(|e| e.prefixed(path.display()))
+    };
     let mut cfg: Config = toml::from_str(text).map_err(|e| invalid(&e))?;
     check_names(&cfg).map_err(|e| invalid(&e))?;
+    // These paths were TOML strings, so UTF-8: `to_string_lossy` replaces nothing.
     for dir in &mut cfg.profile_dirs {
         *dir = PathBuf::from(env_ref(&dir.to_string_lossy(), "profileDirs", env)?);
     }
     for (name, o) in &mut cfg.objects {
         o.canonicalize();
         // Every object's type, used by a spec or not (review V5); a plan reads it again.
-        o.kind().map_err(|e| match e {
-            KmError::Validation(m) => KmError::Validation(format!("{}: object '{name}': {m}", path.display()).into()),
-            KmError::Unsupported(m) => KmError::Unsupported(format!("{}: object '{name}': {m}", path.display()).into()),
-            other => other,
-        })?;
+        o.kind().map_err(|e| e.prefixed(format_args!("{}: object '{name}'", path.display())))?;
         check_value_len(o).map_err(|e| invalid(&format_args!("object '{name}': {e}")))?;
     }
     for (name, t) in &mut cfg.tokens {
@@ -1516,6 +894,7 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
             }
         }
     }
+    check_secret_files(&cfg).map_err(|e| invalid(&e))?;
     // A spec's object reference must name something, also when no token ever uses the spec.
     for (spec, s) in &cfg.specs {
         if !cfg.objects.contains_key(&s.object) {
@@ -1529,8 +908,25 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
             }
         }
     }
+    for (spec, s) in &mut cfg.specs {
+        for (token, on) in &mut s.tokens {
+            on.locator.canonicalize().map_err(|e| invalid(&format_args!("spec '{spec}' on token '{token}': {e}")))?;
+        }
+    }
     check_origins(&cfg).map_err(|e| invalid(&e))?;
     check_transport_keys(&cfg).map_err(|e| invalid(&e))?;
+    // What loads is usable (review D1): every pair names a token keys.toml defines and plans
+    // (`plan_mode`), so no verb meets a spec that loaded and is refused at every use.
+    for (spec, s) in &cfg.specs {
+        for token in s.tokens.keys() {
+            crate::plan::Target::new(&cfg, spec, token).and_then(|t| crate::plan::plan_mode(&t)).map_err(
+                |e| match e {
+                    KmError::Validation(m) => invalid(&m),
+                    other => other,
+                },
+            )?;
+        }
+    }
     Ok(cfg)
 }
 
@@ -1549,6 +945,13 @@ fn check_value_len(o: &ObjectCfg) -> std::result::Result<(), String> {
         && len != fixed
     {
         return Err(format!("a {kt} key is {fixed} bytes; leave valueLen out or write {fixed}, not {len}"));
+    }
+    // Lengths no module makes: refused at load rather than by the module at `create` (review D1).
+    if o.class == ObjectClass::SecretKey && o.key_type == Some(KeyType::Aes) && ![16, 24, 32].contains(&len) {
+        return Err(format!("an AES key is 16, 24 or 32 bytes, not {len}"));
+    }
+    if o.class == ObjectClass::SecretKey && len == 0 {
+        return Err("valueLen 0: a secret key has at least one byte".into());
     }
     Ok(())
 }
@@ -1584,14 +987,17 @@ fn check_token(t: &TokenCfg) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// Whether `n` is a name: `[A-Za-z0-9][A-Za-z0-9_-]*` ([`check_names`]; a vendor method's parts,
+/// `migrate::Method::from_name`).
+pub(crate) fn is_name(n: &str) -> bool {
+    n.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 /// Object, spec and token names are `[A-Za-z0-9][A-Za-z0-9_-]*`: `check` splits a reference on
 /// `.id.`, the lock and `gc` join names with dots, and the Nix library puts them in a shell
 /// command. Invalid at load (17), before any other rule names them.
 fn check_names(cfg: &Config) -> std::result::Result<(), String> {
-    let valid = |n: &str| {
-        n.starts_with(|c: char| c.is_ascii_alphanumeric())
-            && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    };
     let names = cfg
         .objects
         .keys()
@@ -1600,7 +1006,7 @@ fn check_names(cfg: &Config) -> std::result::Result<(), String> {
         .chain(cfg.tokens.keys().map(|n| ("token", n)))
         .chain(cfg.specs.values().flat_map(|s| s.tokens.keys().map(|n| ("token", n))));
     for (what, name) in names {
-        if !valid(name) {
+        if !is_name(name) {
             return Err(format!(
                 "{what} name {name:?}: names are letters, digits, '-' and '_', starting with a letter or digit"
             ));
@@ -1640,6 +1046,28 @@ fn check_transport_keys(cfg: &Config) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// No file keys.toml names to hold a secret is in the world-readable Nix store
+/// ([`secret_in_store`]): `pinFile` and `soCredentialFile` (their `$NAME` already resolved),
+/// `migrate.passphraseFile`, and `migrate.file` when the object's material is secret
+/// ([`Config::secret_material`]). A `$NAME` migrate path is checked when camigrate resolves it
+/// ([`Config::object_file`], [`Config::object_passphrase_file`]), and every secret file again
+/// when it is read (`secret::read`), so a link changed since load is caught too.
+fn check_secret_files(cfg: &Config) -> std::result::Result<(), String> {
+    let literal = |v: &Option<String>| v.clone().filter(|f| !f.starts_with('$')).map(PathBuf::from);
+    let tokens = cfg.tokens.iter().flat_map(|(name, t)| {
+        [("pinFile", &t.pin_file), ("soCredentialFile", &t.so_credential_file)]
+            .into_iter()
+            .filter_map(move |(what, p)| Some((format!("token '{name}': {what}"), p.clone()?)))
+    });
+    let objects = cfg.object_migrate.iter().flat_map(|(object, m)| {
+        let file = literal(&m.file).filter(|_| cfg.secret_material(object));
+        [("file", file), ("passphraseFile", literal(&m.passphrase_file))]
+            .into_iter()
+            .filter_map(move |(what, p)| Some((format!("object '{object}': migrate.{what}"), p?)))
+    });
+    tokens.chain(objects).find_map(|(what, path)| secret_in_store(&what, &path)).map_or(Ok(()), Err)
+}
+
 /// Each pair's `origin` fits its object (docs/CONFIG.md): a private or secret key states it; a
 /// `publicOnly` adoption, a certificate, a public key and a data object are never created; a
 /// `CKA_TRUSTED` key cannot be generated; and an object is created by at most one pair, which
@@ -1673,12 +1101,6 @@ fn check_origins(cfg: &Config) -> std::result::Result<(), String> {
                 "object '{object}': a secret key's migrate.file needs the key's valueLen or migrate.encoding = \
                  \"raw\", \"hex\" or \"base64\": its value, hex and base64 of it are told apart by length alone"
             ));
-        }
-        // A literal path is checked now; a `$NAME` one when camigrate resolves it.
-        if let Some(file) = m.file.as_deref().filter(|f| !f.starts_with('$'))
-            && let Some(why) = cfg.in_store(object, Path::new(file), nix_store_keys_allowed())
-        {
-            return Err(why);
         }
     }
     // Every (spec, token) pair's origin on its own, then across pairs: at most one creates each object.
@@ -1761,188 +1183,6 @@ fn env_ref(value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>) -> Res
     })
 }
 
-/// # Errors
-///
-/// `Io` if the file exists but cannot be read; `Validation` if it is not a valid lock of the
-/// current schema. An absent file is an empty lock, not an error.
-pub fn load_lock(path: &Path) -> Result<Lock> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => parse_lock(&text, path),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Lock { version: LOCK_VERSION, ..Default::default() }),
-        Err(e) => Err(KmError::io(format!("reading {}", path.display()))(e)),
-    }
-}
-
-/// [`load_lock`] on text already read; `path` only names it in messages.
-///
-/// # Errors
-///
-/// `Validation` if it is not a valid lock of the current schema.
-pub fn parse_lock(text: &str, path: &Path) -> Result<Lock> {
-    let mut lock: Lock =
-        toml::from_str(text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display()).into()))?;
-    // Recorded types compare equal to canonicalized keys.toml types.
-    for t in lock.objects.values_mut().filter_map(|o| o.object_type.as_mut()) {
-        t.canonicalize();
-    }
-    lock.validate(path)
-}
-
-/// Write the lock through a temporary file synced before it is renamed over the old one (and the
-/// directory synced after), so a
-/// crash leaves the old lock or the new one, never a truncated one.
-///
-/// # Errors
-///
-/// `Io` if the lock cannot be encoded, or the temporary write, sync or rename fails.
-pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
-    let text =
-        toml::to_string_pretty(lock).map_err(|e| KmError::Io(format!("encoding {}: {e}", path.display()).into()))?;
-    // Created like any new file (0666 under the umask).
-    write_whole(path, text.as_bytes(), 0o666)
-}
-
-/// Write `bytes` to `path` whole or not at all, as [`save_lock`] writes the lock: a uniquely
-/// named temporary file beside it, created with `mode` under the umask (0600 for a key file),
-/// synced, renamed into place, and the directory synced. What every tool writes a file with.
-///
-/// # Errors
-///
-/// `Io` if the temporary write, sync or rename fails.
-pub fn write_whole(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::PermissionsExt as _;
-    let dir = lock_dir(path);
-    // Beside the target (the same filesystem, for the rename), removed if this run fails before
-    // the rename.
-    let mut tmp = tempfile::Builder::new()
-        .prefix(".cakeys.")
-        .permissions(std::fs::Permissions::from_mode(mode))
-        .tempfile_in(dir)
-        .map_err(KmError::io(format!("creating a temporary file in {}", dir.display())))?;
-    tmp.write_all(bytes)
-        .and_then(|()| tmp.as_file().sync_all())
-        .map_err(KmError::io(format!("writing {}", tmp.path().display())))?;
-    tmp.persist(path).map_err(|e| KmError::Io(format!("renaming over {}: {}", path.display(), e.error).into()))?;
-    // The rename itself is durable once the directory is synced.
-    std::fs::File::open(dir).and_then(|d| d.sync_all()).map_err(KmError::io(format!("syncing {}", dir.display())))
-}
-
-/// The directory a lock file lives in: its parent, or the working directory for a bare name.
-fn lock_dir(path: &Path) -> &Path {
-    path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."))
-}
-
-/// The advisory lock held around the lock file's read-modify-write (finding M3). A run that may
-/// update the lock takes it before `load_lock` and drops it after `save_lock`, so two concurrent
-/// runs on different tokens cannot lose each other's realisations. Readers never take it: the
-/// temporary-file rename makes each read a consistent snapshot.
-pub struct UpdateGuard(
-    #[expect(dead_code, reason = "held, never read: the lock is released when it drops")] std::fs::File,
-);
-
-/// Take the exclusive advisory lock on `<lock>.lck`, waiting for any other updater. The sidecar
-/// file is created if absent; a leftover one is harmless (the lock is advisory and released when
-/// its holder exits).
-///
-/// # Errors
-///
-/// `Io` if the sidecar file cannot be opened or the advisory lock cannot be taken.
-pub fn lock_for_update(lock_path: &Path) -> Result<UpdateGuard> {
-    let mut sidecar = lock_path.as_os_str().to_os_string();
-    sidecar.push(".lck");
-    let file = std::fs::File::options()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&sidecar)
-        .map_err(KmError::io(format!("opening {}", sidecar.to_string_lossy())))?;
-    file.lock().map_err(KmError::io(format!("locking {}", sidecar.to_string_lossy())))?;
-    Ok(UpdateGuard(file))
-}
-
-/// Why this run cannot write the lock at `lock_path`, if it cannot. A run that writes by default
-/// (`lock`, `delete`) asks before it touches a token, so an unwritable lock is a refusal up
-/// front — never a key created and then not recorded — unless `--no-update-lock` was passed.
-/// - Inside a Nix build sandbox (`NIX_BUILD_TOP` set, `IN_NIX_SHELL` not: `nix develop` sets
-///   both) a write is lost: the lock is a read-only store path, or a copy thrown away with the
-///   build.
-/// - Otherwise the lock file, if present, and its directory (temporary file, rename and the
-///   `.lck` sidecar) must be writable by this user (`access(2)`, so a read-only mount counts).
-#[must_use]
-pub fn lock_unwritable(lock_path: &Path) -> Option<String> {
-    unwritable(lock_path, in_nix_build())
-}
-
-/// Inside a Nix build sandbox: `NIX_BUILD_TOP` set and `IN_NIX_SHELL` not (`nix develop` sets
-/// both), and [`ALLOW_NIX_STORE_KEYS`] not set. Where a lock write is lost, and an admin
-/// operation (docs/CAMIGRATE.md D8) refused.
-#[must_use]
-pub fn in_nix_build() -> bool {
-    std::env::var_os("NIX_BUILD_TOP").is_some()
-        && std::env::var_os("IN_NIX_SHELL").is_none()
-        && !nix_store_keys_allowed()
-}
-
-/// `CAKEYS_ALLOW_NIX_STORE_KEYS=1`: for throwaway keys a Nix build makes and uses (a test, a VM
-/// image), never a deployment's. A secret `migrate.file` may then be under `/nix/store`, and no
-/// run counts as inside a Nix build sandbox ([`in_nix_build`]): what a sandboxed run would have
-/// refused, it does, and a lock it writes is lost with the build unless the build keeps it.
-pub const ALLOW_NIX_STORE_KEYS: &str = "CAKEYS_ALLOW_NIX_STORE_KEYS";
-
-/// Whether [`ALLOW_NIX_STORE_KEYS`] is set to `1`.
-fn nix_store_keys_allowed() -> bool {
-    std::env::var_os(ALLOW_NIX_STORE_KEYS).is_some_and(|v| v == "1")
-}
-
-/// [`lock_unwritable`], with whether this run is inside a Nix build sandbox given.
-fn unwritable(lock_path: &Path, sandboxed: bool) -> Option<String> {
-    let writable = |p: &Path| rustix::fs::access(p, rustix::fs::Access::WRITE_OK).is_ok();
-    if sandboxed {
-        return Some(format!(
-            "this run is inside a Nix build sandbox, where a lock write would be lost ({ALLOW_NIX_STORE_KEYS}=1 runs \
-             it as outside, for throwaway keys only)"
-        ));
-    }
-    if lock_path.exists() && !writable(lock_path) {
-        return Some(format!("{} is not writable", lock_path.display()));
-    }
-    let dir = lock_dir(lock_path);
-    if !writable(dir) {
-        return Some(format!("the lock's directory {} is not writable", dir.display()));
-    }
-    None
-}
-
-/// Lock entries `cfg` no longer names (finding D3): every `[realisations.<spec>.<token>]` whose
-/// spec or token is gone from keys.toml, and every `[objects.<name>]` absent from it — printed by
-/// `gc` as table names, removed with `--apply`. Live objects keep their `ids` however few specs
-/// use them; only entries whose whole subject is gone are collected, and every
-/// `[observations."<key>"]` no remaining realisation names. With `remove`, exactly the returned
-/// entries are dropped.
-pub fn gc(cfg: &Config, lock: &mut Lock, remove: bool) -> Vec<String> {
-    let named = |spec: &str, token: &str| cfg.specs.get(spec).is_some_and(|s| s.tokens.contains_key(token));
-    let mut stale: Vec<String> = lock
-        .realisations
-        .iter()
-        .flat_map(|(spec, tokens)| {
-            tokens.keys().filter(|t| !named(spec, t)).map(move |t| format!("realisations.{spec}.{t}"))
-        })
-        .collect();
-    stale.extend(lock.objects.keys().filter(|o| !cfg.objects.contains_key(*o)).map(|o| format!("objects.{o}")));
-    let observations = lock.unreferenced_observations(&named);
-    stale.extend(observations.iter().map(|k| format!("observations.\"{k}\"")));
-    if remove {
-        for (spec, tokens) in &mut lock.realisations {
-            tokens.retain(|t, _| named(spec, t));
-        }
-        lock.realisations.retain(|_, tokens| !tokens.is_empty());
-        lock.objects.retain(|o, _| cfg.objects.contains_key(o));
-        lock.observations.retain(|k, _| !observations.contains(k));
-    }
-    stale
-}
-
 impl Config {
     /// The file `object`'s material is born in (`[objects.<o>.migrate] file`, docs/FILE.md), its
     /// `$NAME` reference resolved by `env` now; `None` when the object names none. Resolved at
@@ -1950,12 +1190,15 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// `Validation` (17) for an unset or malformed `$NAME`, or a secret file under `/nix/store`
-    /// ([`Self::secret_material`]): the store is world-readable.
+    /// `Validation` (17) for an unset or malformed `$NAME`, or a secret file that resolves into
+    /// `/nix/store` ([`Self::secret_material`], `secret_in_store`): the store is world-readable.
     pub fn object_file(&self, object: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<PathBuf>> {
         let Some(file) = self.object_migrate.get(object).and_then(|m| m.file.as_deref()) else { return Ok(None) };
-        let path = PathBuf::from(env_ref(file, &format!("object '{object}': migrate.file"), env)?);
-        if let Some(why) = self.in_store(object, &path, nix_store_keys_allowed()) {
+        let what = format!("object '{object}': migrate.file");
+        let path = PathBuf::from(env_ref(file, &what, env)?);
+        if self.secret_material(object)
+            && let Some(why) = secret_in_store(&what, &path)
+        {
             return Err(KmError::Validation(why.into()));
         }
         Ok(Some(path))
@@ -1966,7 +1209,8 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// `Validation` (17) for an unset or malformed `$NAME`.
+    /// `Validation` (17) for an unset or malformed `$NAME`, or a path that resolves into
+    /// `/nix/store`: a passphrase is a secret whatever it decrypts.
     pub fn object_passphrase_file(
         &self,
         object: &str,
@@ -1975,7 +1219,12 @@ impl Config {
         let Some(file) = self.object_migrate.get(object).and_then(|m| m.passphrase_file.as_deref()) else {
             return Ok(None);
         };
-        Ok(Some(PathBuf::from(env_ref(file, &format!("object '{object}': migrate.passphraseFile"), env)?)))
+        let what = format!("object '{object}': migrate.passphraseFile");
+        let path = PathBuf::from(env_ref(file, &what, env)?);
+        if let Some(why) = secret_in_store(&what, &path) {
+            return Err(KmError::Validation(why.into()));
+        }
+        Ok(Some(path))
     }
 
     /// Whether `object`'s material is secret at rest: a private or secret key, or a data object a
@@ -1989,18 +1238,6 @@ impl Config {
             }
             _ => false,
         }
-    }
-
-    /// Why `path` may not hold `object`'s material: a secret one under the world-readable
-    /// `/nix/store`, unless `allowed` ([`ALLOW_NIX_STORE_KEYS`]).
-    fn in_store(&self, object: &str, path: &Path, allowed: bool) -> Option<String> {
-        (!allowed && path.starts_with("/nix/store") && self.secret_material(object)).then(|| {
-            format!(
-                "object '{object}': migrate.file {} is in the Nix store, which anyone on the host can read; keep \
-                 secret material out of it ({ALLOW_NIX_STORE_KEYS}=1 allows it, for throwaway keys only)",
-                path.display()
-            )
-        })
     }
 
     /// The (spec, token) pairs a verb's address selects (`[<object>] [--spec] [--token]`,
@@ -2124,6 +1361,19 @@ mod tests {
         let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/keys.lock"));
         let lock = load_lock(path).unwrap();
         assert_eq!(lock.realisations["signing-soft"]["softhsm"].binding, Some(Binding::PopSign));
+        // A recorded CKA_ID loads in lower case, as keys.toml's does: `0A` and `0a` are one
+        // locator, never a change to review (review D1). A non-hex one is no lock cakeys wrote.
+        let text = std::fs::read_to_string(path).unwrap();
+        let with_id = |id: &str| {
+            text.replace(
+                "locator = { CKA_LABEL = \"signing\" }",
+                &format!("locator = {{ CKA_LABEL = \"signing\", CKA_ID = \"{id}\" }}"),
+            )
+        };
+        let lock = parse_lock(&with_id("0A"), path).unwrap();
+        assert_eq!(lock.realisations["signing-soft"]["softhsm"].locator.id.as_deref(), Some("0a"));
+        let e = parse_lock(&with_id("zz"), path).unwrap_err();
+        assert!(e.to_string().contains("CKA_ID 'zz' is not hex"), "{e}");
     }
 
     /// Observation keys of a newer cakeys load and survive a rewrite (the TUF re-serialization
@@ -2174,6 +1424,22 @@ mod tests {
         lock.observations.insert(sri.into(), Observation::default());
         lock.observations.insert("sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564=".into(), Observation::default());
         lock.clone().validate(path).unwrap();
+        // Every observation's module hash is checked, not only the first one's (review
+        // config.rs F2): a good one first, a malformed one after.
+        let module = |hash: &str| ModuleInfo {
+            path: "/m.so".into(),
+            hash: Some(hash.into()),
+            description: String::new(),
+            manufacturer: String::new(),
+            version: String::new(),
+            cryptoki: String::new(),
+        };
+        let mut hashed = lock.clone();
+        let mut entries = hashed.observations.values_mut();
+        entries.next().unwrap().module = Some(module(sri));
+        entries.next().unwrap().module = Some(module("sha256-x"));
+        let err = hashed.validate(path).unwrap_err();
+        assert!(err.to_string().contains("module hash \"sha256-x\""), "{err}");
         assert!(matches!(lock.token_observation("t"), TokenObservation::One(_)));
         assert!(matches!(lock.token_observation("other"), TokenObservation::None));
 
@@ -2201,6 +1467,67 @@ mod tests {
         assert!(lock.realisations.is_empty() && lock.observations.is_empty());
     }
 
+    /// `gc --apply` leaves a lock that loads: an object renamed in keys.toml before `lock` ran
+    /// takes the realisation that still names it along (it once stayed, naming an object `gc`
+    /// had dropped, and every later run refused the lock, `lock` and `gc` included). And no
+    /// lock that would not load is ever written: `save_lock` refuses it and keeps the old one.
+    #[test]
+    fn gc_and_save_leave_a_lock_that_loads() {
+        let path = Path::new("test.lock");
+        let mut lock = attestable_lock();
+        let renamed: Config = toml::from_str(
+            "[objects.renamed]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.s]\nobject = \"renamed\"\ntokens.t = { locator = { CKA_LABEL = \"k\" } }\n",
+        )
+        .unwrap();
+        let stale = gc(&renamed, &mut lock, true);
+        assert!(stale.contains(&"realisations.s.t".to_owned()) && stale.contains(&"objects.k".to_owned()), "{stale:?}");
+        lock.clone().validate(path).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("keys.lock");
+        let mut broken = attestable_lock();
+        broken.objects.clear();
+        let e = save_lock(&file, &broken).unwrap_err();
+        assert!(e.exit_code() == 17 && e.to_string().contains("is not in the lock"), "{e}");
+        assert!(!file.exists(), "an invalid lock was written");
+        save_lock(&file, &attestable_lock()).unwrap();
+        load_lock(&file).unwrap();
+    }
+
+    /// A lock that cannot be saved is `LockUnwritable` (21), whatever stage of the write failed:
+    /// a run that changed the token must say its record is missing, not exit 1 like any I/O.
+    #[test]
+    fn a_lock_that_cannot_be_saved_is_its_own_code() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let ro = dir.path().join("ro");
+        std::fs::create_dir(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Root writes anyway (access(2) and the write both succeed).
+        if std::fs::File::create(ro.join("probe")).is_ok() {
+            return;
+        }
+        let e = save_lock(&ro.join("keys.lock"), &attestable_lock()).unwrap_err();
+        assert_eq!(e.exit_code(), 21, "{e}");
+        assert!(e.to_string().contains("lock cannot be written"), "{e}");
+    }
+
+    /// A symlinked lock (a NixOS layout: the lock in a checked-out repository) is written through
+    /// to its target, never replaced by a copy the repository never sees (config.rs F7).
+    #[test]
+    fn a_symlinked_lock_is_written_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let (real, link) = (dir.path().join("repo.lock"), dir.path().join("keys.lock"));
+        save_lock(&real, &Lock { version: LOCK_VERSION, ..Default::default() }).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        save_lock(&link, &attestable_lock()).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link was replaced");
+        let text = |p: &Path| std::fs::read_to_string(p).unwrap();
+        assert_eq!(text(&real), toml::to_string_pretty(&attestable_lock()).unwrap(), "the target was not written");
+        assert_eq!(unwritable(&link, false), None);
+    }
+
     /// Object, spec and token names have one grammar, checked at load (17): a reference splits
     /// on `.id.`, and shell commands are built from them.
     #[test]
@@ -2209,7 +1536,7 @@ mod tests {
             let text = format!(
                 "[tokens.\"{token}\"]\ntokenLabel = \"t\"\n\n\
                  [objects.\"{object}\"]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
-                 [specs.\"{spec}\"]\nobject = \"{object}\"\n\
+                 [specs.\"{spec}\"]\nobject = \"{object}\"\nattributes = {{ CKA_SIGN = true }}\n\
                  tokens.\"{token}\" = {{ locator = {{ CKA_LABEL = \"k\" }}, origin = \"adopt\" }}\n"
             );
             parse_config_with(&text, Path::new("keys.toml"), &|_| None)
@@ -2235,10 +1562,16 @@ mod tests {
     #[test]
     fn origins_say_how_an_object_comes_to_be_on_a_token() {
         let load = |class: &str, a: &str, b: &str, second_spec: &str| {
+            // A usage each pair can prove possession by; none for what has no private half.
+            let attributes = if class.contains("CKO_CERTIFICATE") || a.contains("publicOnly") {
+                ""
+            } else {
+                "attributes = { CKA_SIGN = true }\n"
+            };
             let text = format!(
                 "[tokens.a]\ntokenLabel = \"a\"\n[tokens.b]\ntokenLabel = \"b\"\n\n\
                  [objects.k]\n{class}\n\n\
-                 [specs.k]\nobject = \"k\"\n\
+                 [specs.k]\nobject = \"k\"\n{attributes}\
                  tokens.a = {{ locator = {{ CKA_LABEL = \"k\" }}{a} }}\n\
                  tokens.b = {{ locator = {{ CKA_LABEL = \"k\" }}{b} }}\n{second_spec}"
             );
@@ -2287,10 +1620,16 @@ mod tests {
     #[test]
     fn objects_born_in_files_read_their_migrate_file() {
         let load = |object: &str, a: &str, b: &str| {
+            // A usage each pair can prove possession or commit by (DES3 only by encrypting).
+            let attributes = match object {
+                o if o.contains("CKO_CERTIFICATE") => "",
+                o if o.contains("CKK_DES3") => "attributes = { CKA_ENCRYPT = true }\n",
+                _ => "attributes = { CKA_SIGN = true }\n",
+            };
             let text = format!(
                 "[tokens.a]\ntokenLabel = \"a\"\n[tokens.b]\ntokenLabel = \"b\"\n\n\
                  [objects.k]\n{object}\n\n\
-                 [specs.k]\nobject = \"k\"\n\
+                 [specs.k]\nobject = \"k\"\n{attributes}\
                  tokens.a = {{ locator = {{ CKA_LABEL = \"k\" }}{a} }}\n\
                  tokens.b = {{ locator = {{ CKA_LABEL = \"k\" }}{b} }}\n"
             );
@@ -2312,8 +1651,6 @@ mod tests {
         assert!(cfg.object_file("k", &|_| None).is_err());
         let store = |_: &str| Some("/nix/store/abc-k.pem".to_owned());
         assert!(cfg.object_file("k", &store).unwrap_err().to_string().contains("Nix store"));
-        // Unless the run allows throwaway keys there (CAKEYS_ALLOW_NIX_STORE_KEYS=1).
-        assert_eq!(cfg.in_store("k", Path::new("/nix/store/abc-k.pem"), true), None);
         // A certificate is no secret: from the store it may come.
         let cfg = load(&(cert.to_owned() + &file("/nix/store/abc-c.pem")), from_file, "").unwrap();
         assert!(cfg.object_file("k", &|_| None).unwrap().is_some());
@@ -2361,13 +1698,91 @@ mod tests {
         );
     }
 
+    /// Every file keys.toml names to hold a secret is refused (17) when it resolves into the
+    /// world-readable Nix store: `pinFile`, `soCredentialFile`, `migrate.passphraseFile`, and a
+    /// secret object's `migrate.file`; at load for a literal path (or a `$NAME` pin file, which
+    /// load resolves), when camigrate resolves a `$NAME` migrate path; through a symlink or a
+    /// `..` as directly (review config.rs F4).
+    #[test]
+    fn no_secret_file_is_in_the_nix_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = dir.path().join("result");
+        std::os::unix::fs::symlink("/nix/store", &result).unwrap();
+        let elsewhere = dir.path().join("keys");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let in_store = [
+            "/nix/store/abc-secret".to_owned(),
+            format!("{}/abc-secret", result.display()),
+            format!("{}/../result/abc-secret", elsewhere.display()),
+        ];
+        let outside = [format!("{}/secret", elsewhere.display()), format!("{}/../keys/secret", result.display())];
+        let ec = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n";
+        let fields = [
+            ("[tokens.t]\ntokenLabel = \"t\"\npinFile = \"{}\"\n", "token 't': pinFile"),
+            ("[tokens.t]\ntokenLabel = \"t\"\npinFile = \"/p\"\nsoCredentialFile = \"{}\"\n", "soCredentialFile"),
+            ("{ec}migrate = { file = \"/run/k.p12\", passphraseFile = \"{}\" }\n", "migrate.passphraseFile"),
+            ("{ec}migrate = { file = \"{}\" }\n", "object 'k': migrate.file"),
+        ];
+        let load = |text: &str| parse_config_with(text, Path::new("keys.toml"), &|_| None);
+        for (template, what) in fields {
+            let at = |p: &str| template.replace("{ec}", ec).replace("{}", p);
+            for p in &in_store {
+                let e = load(&at(p)).unwrap_err();
+                assert!(
+                    matches!(&e, KmError::Validation(m) if m.contains(what) && m.contains("Nix store")),
+                    "{what} {p}: {e}"
+                );
+            }
+            for p in &outside {
+                load(&at(p)).unwrap_or_else(|e| panic!("{what} {p}: {e}"));
+            }
+        }
+        // A `$NAME` pin file is resolved at load, and checked there.
+        let pin = parse_config_with(
+            "[tokens.t]\ntokenLabel = \"t\"\npinFile = \"$PIN_FILE\"\n",
+            Path::new("keys.toml"),
+            &|_| Some(in_store[1].clone()),
+        );
+        assert!(matches!(&pin, Err(KmError::Validation(m)) if m.contains("Nix store")), "{:?}", pin.err());
+        // A `$NAME` migrate path is checked when camigrate resolves it, the passphrase's whatever
+        // the object holds.
+        let cfg = load(&format!("{ec}migrate = {{ file = \"$KEY\", passphraseFile = \"$PASS\" }}\n")).unwrap();
+        let store = |_: &str| Some(in_store[2].clone());
+        assert!(cfg.object_file("k", &store).unwrap_err().to_string().contains("Nix store"));
+        assert!(cfg.object_passphrase_file("k", &store).unwrap_err().to_string().contains("Nix store"));
+        let fine = |_: &str| Some(outside[0].clone());
+        assert_eq!(cfg.object_passphrase_file("k", &fine).unwrap(), Some(PathBuf::from(&outside[0])));
+        let cert = "[objects.k]\nclass = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"\n";
+        let cfg = load(&format!("{cert}migrate = {{ file = \"$KEY\", passphraseFile = \"$PASS\" }}\n")).unwrap();
+        assert!(cfg.object_file("k", &store).unwrap().is_some(), "a certificate is no secret");
+        assert!(cfg.object_passphrase_file("k", &store).is_err(), "a passphrase is");
+    }
+
+    /// The store guard compares resolved paths component by component: a link into the root, a
+    /// `..` out of it and a sibling whose name only starts like it are told apart, existing or not.
+    #[test]
+    fn paths_resolve_before_they_compare() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("store");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(dir.path().join("store-not")).unwrap();
+        std::os::unix::fs::symlink(&root, dir.path().join("link")).unwrap();
+        let under = |p: &str| resolves_under(&dir.path().join(p), &root);
+        assert!(under("store/a"));
+        assert!(under("link/a/b"), "through a link, to a file that does not exist");
+        assert!(under("store-not/../store/a"));
+        assert!(!under("store-not/a"), "a string prefix is no parent");
+        assert!(!under("store/../a"));
+        assert!(!under("link/../a"), "the link's target's parent, not the link's");
+        assert!(!under("elsewhere/a"));
+    }
+
     /// `$NAME`/`${NAME}` in `pinFile` and `module` read the path from the environment; an unset or
     /// malformed reference is invalid at load (17), and a spec must reference an existing object.
     #[test]
     fn env_references_and_object_refs_are_checked_at_load() {
-        let dir = std::env::temp_dir().join("cakeys-load-config-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
         let load = |body: &str| {
             let p = dir.join("keys.toml");
             std::fs::write(&p, body).unwrap();
@@ -2390,11 +1805,22 @@ mod tests {
             cfg.tokens["t"].module_path("t", &|_| Some("/env/pin".to_owned())).unwrap().as_deref(),
             Some("/env/pin")
         );
-        // An unset variable fails at load, naming it; so does a malformed reference.
-        let err = load(&format!("{head}pinFile = \"$KM_UNIT_TEST_UNSET\"\n")).unwrap_err();
-        assert!(err.to_string().contains("KM_UNIT_TEST_UNSET"), "{err}");
-        let err = load(&format!("{head}pinFile = \"$HOME/x\"\n")).unwrap_err();
-        assert!(err.to_string().contains("neither $NAME"), "{err}");
+        // An unset variable fails at load, naming it; so does a malformed reference. Each names
+        // the file first, as every other load error does (review config.rs F6).
+        let file = format!("invalid: {}: ", dir.join("keys.toml").display());
+        let err = load(&format!("{head}pinFile = \"$KM_UNIT_TEST_UNSET\"\n")).unwrap_err().to_string();
+        assert!(err.starts_with(&format!("{file}token 't': pinFile")) && err.contains("KM_UNIT_TEST_UNSET"), "{err}");
+        let err = load(&format!("{head}pinFile = \"$HOME/x\"\n")).unwrap_err().to_string();
+        assert!(err.starts_with(&file) && err.contains("neither $NAME"), "{err}");
+        for body in [
+            "profileDirs = [\"$KM_UNIT_TEST_UNSET\"]\n".to_owned(),
+            format!("{head}soCredentialFile = \"$\"\n"),
+            format!("{head}module = \"$HOME/x.so\"\n"),
+            "[objects.o]\nclass = \"CKO_DATA\"\nmigrate = { file = \"${HOME\" }\n".to_owned(),
+        ] {
+            let err = load(&body).unwrap_err().to_string();
+            assert!(err.starts_with(&file), "{body}: {err}");
+        }
         // A module resolves when its token is opened, not at load: an unset variable fails only a
         // run that opens that token without --module (a Nix build sandbox sets none); a
         // malformed reference still fails at load.
@@ -2415,23 +1841,19 @@ mod tests {
         ))
         .unwrap_err();
         assert!(err.to_string().contains("unknown object 'missing'"), "{err}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A class or key type cakeys does not manage is invalid when keys.toml loads (17), not when
     /// a token is first asked for it.
     #[test]
     fn unknown_classes_and_key_types_are_invalid_at_load() {
-        let dir = std::env::temp_dir().join("cakeys-load-types-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("keys.toml");
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("keys.toml");
         for object in ["class = \"CKO_OTP_KEY\"", "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES2\""] {
             std::fs::write(&p, format!("[objects.o]\n{object}\n")).unwrap();
             let err = load_config(&p).unwrap_err();
             assert!(matches!(err, KmError::Validation(_)), "{err}");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A DES3 key is 24 bytes: `valueLen` left out loads as 24 (the same type, spec digest and

@@ -9,9 +9,15 @@
 #   test-tokens.sh <test binary> [args...]
 #
 # Needs $CAKEYS_TOKEN_TEMPLATE (softhsm-tokens/ and kryoptic.sql, nix/package-common.nix);
-# without it, and to list a binary's tests, the binary runs as it is. The p11-kit and TPM
-# environments are the scripts $CAKEYS_P11KIT_ENV_SH and $CAKEYS_TPM_ENV_SH name.
+# without it, and to list a binary's tests, the binary runs as it is. The token setup, the
+# p11-kit and the TPM environments are the scripts $CAKEYS_TOKEN_ENV_SH, $CAKEYS_P11KIT_ENV_SH
+# and $CAKEYS_TPM_ENV_SH name. A suite that uses p11-kit or the TPM is named in the lists below:
+# there is no shared server or TPM to fall back on, so one left out fails.
 set -euo pipefail
+
+# The tools take their keys.toml and lock from these when no flag names them: a developer's own
+# would have the suites write their real lock (review common/mod.rs F1). Every test, any binary.
+unset CAKEYS_CONFIG CAKEYS_LOCK
 
 case " $* " in *" --list "*) exec "$@" ;; esac
 [ -n "${CAKEYS_TOKEN_TEMPLATE:-}" ] || exec "$@"
@@ -25,15 +31,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# shellcheck source=nix/token-env.sh
+. "${CAKEYS_TOKEN_ENV_SH:?the token setup, nix/token-env.sh}"
 cp -r "$CAKEYS_TOKEN_TEMPLATE/softhsm-tokens" "$D/softhsm-tokens"
-printf 'directories.tokendir = %s\nobjectstore.backend = file\nlog.level = ERROR\n' \
-  "$D/softhsm-tokens" >"$D/softhsm2.conf"
-export SOFTHSM2_CONF=$D/softhsm2.conf
-
-# The slot table ends the file: the suite appends a mechanism deny list to it.
+softhsm_conf "$D"
 cp "$CAKEYS_TOKEN_TEMPLATE/kryoptic.sql" "$D/kryoptic.sql"
-printf '[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' "$D/kryoptic.sql" >"$D/kryoptic.conf"
-export KRYOPTIC_CONF=$D/kryoptic.conf
+kryoptic_conf "$D"
 
 # The test binary's name without cargo's hash: which suite this is.
 suite=$(basename "$1")
@@ -45,14 +48,15 @@ suite=${suite%-*}
 # copies are made once per run, and are copies: the loader takes two links to one file for one
 # library, whose settings both would share. The tests that put their own p11-fault in front of a
 # module run untraced: that shim's hooks call the module too, inside the tool's process, and the
-# trace would count those calls as the tool's.
+# trace would count those calls as the tool's. This case is the one list of them; cakeys'
+# `every_test_with_its_own_fault_shim_runs_untraced` fails on one it does not name.
 test=unnamed prev=
 for a in "$@"; do
   [ "$prev" != --exact ] || test=$a
   prev=$a
 done
 case $suite/$test in
-fault/* | tpm2/tpm2_attestation_says_what_it_lacks) untraced=1 ;;
+fault/* | tpm2/tpm2_attestation_says_what_it_lacks | tpm2/tpm2_identity_failure_after_create_leaves_nothing | dry_run/a_failed_reopen_after_ptool_says_what_is_in_the_tpm) untraced=1 ;;
 *) untraced= ;;
 esac
 if [ -n "${CAKEYS_TRACE_DIR:-}" ] && [ -z "$untraced" ]; then
@@ -87,10 +91,24 @@ esac
 case $suite in
 tpm2 | references | dry_run)
   if [ -n "${CAKEYS_TPM_MODULE:-}" ]; then
-    # A port pair of its own: nextest numbers the tests running at once; else by process ID.
-    # CAKEYS_TPM_PORT_BASE moves the range, for two runs on one machine (scripts/local-tests.sh).
-    slot=${NEXTEST_TEST_GLOBAL_SLOT:-$(($$ % 4000))}
-    bash "$CAKEYS_TPM_ENV_SH" up "$D/tpm" $((${CAKEYS_TPM_PORT_BASE:-24000} + 2 * slot)) || {
+    # A port pair of its own: nextest numbers the tests running at once, so its slot is free.
+    # Without nextest nothing numbers them: a random slot, and another one if that pair turns out
+    # taken (a failed `up` stops what it started). CAKEYS_TPM_PORT_BASE moves the range, for two
+    # runs on one machine (scripts/local-tests.sh).
+    if [ -n "${NEXTEST_TEST_GLOBAL_SLOT:-}" ]; then
+      slots=$NEXTEST_TEST_GLOBAL_SLOT
+    else
+      slots="$((RANDOM % 4000)) $((RANDOM % 4000)) $((RANDOM % 4000)) $((RANDOM % 4000))"
+    fi
+    up=
+    for slot in $slots; do
+      rm -rf "$D/tpm"
+      if bash "$CAKEYS_TPM_ENV_SH" up "$D/tpm" $((${CAKEYS_TPM_PORT_BASE:-24000} + 2 * slot)); then
+        up=1
+        break
+      fi
+    done
+    [ -n "$up" ] || {
       tail -n 20 "$D"/tpm/*.log >&2
       exit 1
     }

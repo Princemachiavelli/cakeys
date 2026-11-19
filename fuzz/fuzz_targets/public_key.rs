@@ -14,16 +14,8 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(spki) = id::rsa_spki(modulus, exponent) {
         fixed(spki);
     }
-    for curve in [
-        Curve::P256,
-        Curve::P384,
-        Curve::P521,
-        Curve::Secp256k1,
-        Curve::BrainpoolP256r1,
-        Curve::BrainpoolP384r1,
-        Curve::Ed25519,
-        Curve::Ed448,
-    ] {
+    // Core's list: a curve added there is fuzzed without a change here.
+    for curve in Curve::ALL {
         if let Ok(spki) = curve.spki_from_point(data) {
             fixed(spki);
         }

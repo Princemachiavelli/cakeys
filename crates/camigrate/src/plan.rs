@@ -129,18 +129,9 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     }
     let trusted_only = m.flag("CKA_WRAP_WITH_TRUSTED") == Some(true);
     let mut ways = Ways::default();
-    // Provider methods compete at their declared level (D10).
-    if let To::Token(dst) = to {
-        for v in &from.vendor {
-            if v.objects.iter().any(|a| a.covers(ty)) && (v.targets.is_empty() || v.targets.contains(&dst.provider)) {
-                let method = Method::Vendor { provider: v.provider.clone(), name: v.name.clone() };
-                let note =
-                    format!("{} declares the {} level; cakeys records it, it cannot check it", method, v.exposure);
-                ways.offer_noted(method, v.exposure, note);
-            }
-        }
-    }
     match to {
+        // Before anything is offered: a target that takes the type in by no import takes it by
+        // no vendor method either.
         To::Token(dst) if dst.refuses.iter().any(|a| a.covers(ty)) => ways.block(format!(
             "{} ({}) takes in no {} by any import (its profile's migration.refuses)",
             dst.token,
@@ -148,6 +139,16 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
             describe(ty)
         )),
         To::Token(dst) => {
+            // Provider methods compete at their declared level (D10).
+            for v in &from.vendor {
+                if v.objects.iter().any(|a| a.covers(ty)) && (v.targets.is_empty() || v.targets.contains(&dst.provider))
+                {
+                    let method = Method::Vendor { provider: v.provider.clone(), name: v.name.clone() };
+                    let note =
+                        format!("{} declares the {} level; cakeys records it, it cannot check it", method, v.exposure);
+                    ways.offer_noted(method, v.exposure, note);
+                }
+            }
             sealed(m, from, dst, trusted_only, allow, &mut ways);
             if trusted_only {
                 ways.block(
@@ -182,9 +183,13 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
         return Plan::impossible(m, blocked);
     };
     let mut plan = Plan::ready(m, method, exposure, notes);
-    if matches!(exposure, Exposure::Host | Exposure::File) && !allow.host_plaintext {
-        plan.ready = false;
-        plan.reasons.push(format!("the {exposure} path needs --allow-host-plaintext (docs/CAMIGRATE.md D2)"));
+    if matches!(exposure, Exposure::Host | Exposure::File) {
+        // Why it could not stay sealed: a profile or a mechanism may be the fix, not the flag.
+        plan.notes.extend(blocked.into_iter().map(|why| format!("not sealed: {why}")));
+        if !allow.host_plaintext {
+            plan.ready = false;
+            plan.reasons.push(format!("the {exposure} path needs --allow-host-plaintext (docs/CAMIGRATE.md D2)"));
+        }
     }
     if let To::Token(dst) = to {
         plan.notes.extend(target_notes(dst, &plan));
@@ -781,6 +786,36 @@ mod tests {
         assert!(p.notes.iter().any(|n| n.contains("declares the enforced level")), "{p:?}");
         let p = plan_of(&p256(), &ext, &luna(vec!["luna".into()]), &To::Token(&kryoptic()), Allow::default());
         assert!(!p.ready, "not toward a kryoptic target: {p:?}");
+        // A target whose migration.refuses covers the key takes it by no vendor method either.
+        let refusing = Side { refuses: vec![Accept::key(ObjectClass::PrivateKey, &[KeyType::Ec])], ..kryoptic() };
+        let p = plan_of(&p256(), &ext, &luna(vec![]), &To::Token(&refusing), Allow::default());
+        assert!(!p.ready && p.method.is_none(), "{p:?}");
+        assert!(p.reasons.iter().any(|r| r.contains("migration.refuses")), "{p:?}");
+    }
+
+    /// A key that goes by the host path says why no sealed way would carry it: the fix may be a
+    /// profile or a mechanism rather than --allow-host-plaintext (review plan.rs F2).
+    #[test]
+    fn a_host_plan_says_why_it_is_not_sealed() {
+        let ext = [("CKA_EXTRACTABLE", true)];
+        // A target that unwraps nothing: only the host path, through its create-object import.
+        let plain_only = Side {
+            unwraps: false,
+            plaintext_import: Some(PlaintextImport::CreateObject),
+            ..Side::pkcs11("plain", "plain", ["CKM_AES_KEY_WRAP_PAD".to_owned()])
+        };
+        let p = plan_of(&p256(), &ext, &softhsm(), &To::Token(&plain_only), Allow::default());
+        assert_eq!((p.exposure, p.ready), (Some(Exposure::Host), false), "{p:?}");
+        assert!(p.reasons.iter().any(|r| r.contains("--allow-host-plaintext")), "{p:?}");
+        assert!(p.notes.iter().any(|n| n.starts_with("not sealed: ")), "{p:?}");
+        let allowed = plan_of(
+            &p256(),
+            &ext,
+            &softhsm(),
+            &To::Token(&plain_only),
+            Allow { host_plaintext: true, ..Allow::default() },
+        );
+        assert!(allowed.ready && allowed.notes.iter().any(|n| n.starts_with("not sealed: ")), "{allowed:?}");
     }
 
     /// A probed row decides for the type it covers, before the module's claims

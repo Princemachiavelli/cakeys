@@ -197,7 +197,7 @@ alone can compute, such as a TPM Name). If they return, they get their own names
   the spec does not declare is re-recorded with a warning; to make it a gate, declare it, and a
   declared attribute the token does not show is a conflict (13), never re-recorded. IDs,
   downgrades, immutables, attestations and types stay refused even when the lock is written.
-- **Where the lock cannot be written, a writing run is refused (14) before any token is
+- **Where the lock cannot be written, a writing run is refused (21) before any token is
   touched** — never a key created and then not recorded — naming `--no-update-lock`: inside a
   Nix build sandbox (`NIX_BUILD_TOP` set without `IN_NIX_SHELL`, which `nix develop` also
   sets, and without `CAKEYS_ALLOW_NIX_STORE_KEYS=1`, docs/FILE.md), where a write would be lost with the build, or when the lock file or its directory is
@@ -307,7 +307,8 @@ Outcomes:
 - **Opting out is needed** for keys with no provable capability, Ed448 (no RustCrypto verifier
   or ECDH yet), and tpm2-pkcs11 1.10.1 P-521 keys: its `C_SignInit` parses its own malformed
   `CKA_EC_POINT` and fails (`upstream/tpm2-pkcs11` fixes both).
-- **`publicOnly` implies `token-asserted`.**
+- **`publicOnly` implies `token-asserted`.** A proof configured beside it (`pop-ecdh`,
+  `pop-decrypt`, `pop-unwrap`, `pop-sign`) is invalid (17), never silently overridden.
 - **PIN retries.** A run spends at most one failed PIN attempt, and never the last: the login at
   token open refuses (16) once the token reports `CKF_USER_PIN_LOCKED` or
   `CKF_USER_PIN_FINAL_TRY`, and the context-specific login reuses the PIN that already logged in,
@@ -329,7 +330,7 @@ content-addressed identity — one per token type that can produce it:
 
 | Scheme | Token | Evidence | Anchor pinned in the lock |
 |---|---|---|---|
-| `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen`; under `check`, every certificate also within its validity period (the system clock, `--at`, or `--ignore-validity`), while `lock`, `create` and camigrate read no clock. Yubico attests only keys generated on device; ykcs11 mints the certificate when it lists the slot, with no login | the Yubico root's SPKI |
+| `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen`; under `check`, every certificate also within its validity period (the system clock, `--at`, or `--ignore-validity`), while every other verb only warns about a chain out of its dates. Yubico attests only keys generated on device; ykcs11 mints the certificate when it lists the slot, with no login | the Yubico root's SPKI |
 | `tpm-certify` | tpm2-pkcs11 tokens | a native `TPM2_Certify` (tss-esapi) over the object's Name with a fresh random nonce, host-verified; the object's TPM blobs are read (read-only) from the module's own store — `options.tpm2Store`, else found as the module finds it — and loaded under the token's primary over the module's TCTI (`options.tcti`, else `$TPM2_PKCS11_TCTI`, `$TPM2TOOLS_TCTI`, `$TCTI`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the Attestation Key's SPKI |
 
 - **The commitment hashes asserted content, never signed bytes.** A PIV certificate is minted
@@ -515,9 +516,12 @@ Annotated, with the reasons behind each table: [`LOCK.md`](LOCK.md).
   mode downgrade (exit 14).
 - **Writes are atomic** (temporary file, then rename), and a run that may update the lock holds an
   advisory exclusive lock on `<lock>.lck` across its read-modify-write (finding M3), so concurrent
-  updaters on different tokens queue instead of losing each other's realisations. Readers never
+  updaters on different tokens queue instead of losing each other's realisations (one that waits
+  says so first: `note: waiting for <lock>.lck`). Readers never
   take it: the rename makes each read a consistent snapshot. A leftover `.lck` is harmless
-  (advisory, released when its holder exits) — `update_lock_waits_for_the_sidecar_lock`.
+  (advisory, released when its holder exits) — `update_lock_waits_for_the_sidecar_lock`. The guard,
+  the write and the writability check go to the file the lock path resolves to: a symlinked lock
+  is written through, and its two names share one guard.
 - **`gc`** collects entries the config no longer names (finding D3): every
   `[realisations.<spec>.<token>]` whose spec dropped the token and every `[objects.<name>]` gone
   from `keys.toml`. It prints the stale table names and removes exactly those with `--apply`; live

@@ -199,7 +199,11 @@ pub fn compare(
         if !update {
             spec_unchanged(t, r, prev)?;
         }
-        no_downgrade(t, r, prev, update, notes)?;
+        // A spec pointed at another object (a keys.toml change `lock` re-records) realises that
+        // object afresh: what the old one proved, or was made as, says nothing of the new one.
+        if prev.object == t.object_name {
+            no_downgrade(t, r, prev, update, notes)?;
+        }
         if !update {
             object_unchanged(t, r, prev, notes)?;
         }
@@ -450,8 +454,10 @@ fn record_object(t: &Target, r: &Resolved, entry: &mut crate::config::LockObject
         entry.object_type = Some(t.object.clone());
         changed = true;
     }
+    // A recorded label stays: the IDs the lock holds were computed under it, and a run computes
+    // with it (`commitment_label`), so only a gap is filled.
     if let Some(label) = &r.commitment_label
-        && entry.commitment_label.as_ref().is_none_or(|l| l != label)
+        && entry.commitment_label.is_none()
     {
         entry.commitment_label = Some(label.clone());
         changed = true;
@@ -536,7 +542,8 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
         for d in spec_diff(t, r, prev) {
             notes.note(format_args!("re-recorded {t}: {d} (keys.toml)"));
         }
-        for d in object_diff(r, prev) {
+        // Another object's attributes differ from the old one's by nature, not by a change.
+        for d in object_diff(r, prev).into_iter().filter(|_| prev.object == t.object_name) {
             notes.warn(format_args!("re-recorded {t}: {d} (changed on the token)"));
         }
         for (n, now) in r.policy.iter().filter(|(n, _)| !prev.policy.contains_key(*n)) {
@@ -1060,6 +1067,56 @@ mod tests {
         assert!(matches!(&e, KmError::PreconditionFailed(m) if m.contains("locked mode 'commitment'")), "{e}");
     }
 
+    /// A spec pointed at another object is a keys.toml change: 14 when only comparing, re-recorded
+    /// with a note by a write. The old object's record judges nothing of the new one, so a new
+    /// object that was imported where the old was generated, is unattested where the old was
+    /// attested, and is bound more weakly, is neither a downgrade nor a change on the token (it
+    /// was all three, and `lock` refused the retarget until the lock was edited by hand).
+    #[test]
+    fn a_retargeted_spec_is_judged_as_its_new_object() {
+        let config = |object: &str| -> Config {
+            toml::from_str(&format!(
+                "[tokens.t]\ntokenLabel = \"t\"\n\n\
+                 [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+                 [objects.k2]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+                 [specs.s]\nobject = \"{object}\"\nattributes = {{ CKA_SIGN = true }}\n\
+                 tokens.t = {{ locator = {{ CKA_LABEL = \"k\" }}, origin = \"adopt\" }}\n"
+            ))
+            .unwrap()
+        };
+        let (was, now) = (config("k"), config("k2"));
+        let (a, b) = (Target::new(&was, "s", "t").unwrap(), Target::new(&now, "s", "t").unwrap());
+        let mut lock = empty_lock();
+        let attested = Resolved {
+            attestation: Some(AttestationRecord { kind: "yubico-piv".into(), root: SRI_A.into(), id: SRI_A.into() }),
+            ..resolved(&a)
+        };
+        reconcile(&a, &attested, &mut lock, &facts("1"), LockWrite::Record, &mut Notes::default()).unwrap();
+        let other = Resolved {
+            object: "k2".into(),
+            ids: [("rfc7093m4".to_owned(), SRI_B.to_owned())].into(),
+            binding: Some(Binding::TokenAsserted),
+            immutables: Immutables { local: Some(false), ..Default::default() },
+            ..resolved(&b)
+        };
+        let e = compare(&b, &other, &lock, &facts("1"), LockWrite::Compare, &mut Notes::default()).unwrap_err();
+        assert!(matches!(&e, KmError::PreconditionFailed(m) if m.contains("object 'k' -> 'k2'")), "{e}");
+        let mut notes = Notes::default();
+        assert!(reconcile(&b, &other, &mut lock, &facts("1"), LockWrite::Record, &mut notes).unwrap());
+        let lines = notes.lines();
+        assert!(
+            lines.iter().any(|l| l.starts_with("note: re-recorded") && l.contains("object 'k' -> 'k2'")),
+            "{lines:?}"
+        );
+        assert!(!lines.iter().any(|l| l.starts_with("warning:")), "{lines:?}");
+        assert_eq!(lock.realisation("s", "t").unwrap().object, "k2");
+        compare(&b, &other, &lock, &facts("1"), LockWrite::Compare, &mut Notes::default()).unwrap();
+        // Back on the same object, a weaker mode is still a downgrade.
+        let weaker = Resolved { mode: Mode::WrapRebind, ..other };
+        let e = compare(&b, &weaker, &lock, &facts("1"), LockWrite::Record, &mut Notes::default()).unwrap_err();
+        assert!(matches!(&e, KmError::PreconditionFailed(m) if m.contains("downgrade")), "{e}");
+    }
+
     /// The lock's object entry: the commitment label it records is the one used from then on
     /// (the default until then) and is written once; a line said is a line in the notes.
     #[test]
@@ -1075,8 +1132,9 @@ mod tests {
         assert!(write(&labelled("first"), &mut lock));
         assert_eq!(commitment_label(&t, &lock), "first");
         assert!(!write(&labelled("first"), &mut lock), "the same label is not written again");
-        assert!(write(&labelled("second"), &mut lock));
-        assert_eq!(commitment_label(&t, &lock), "second");
+        // A recorded label is never overwritten: the locked IDs were computed under it.
+        assert!(!write(&labelled("second"), &mut lock), "a recorded label stays");
+        assert_eq!(commitment_label(&t, &lock), "first");
         let mut notes = Notes::default();
         notes.say("created k");
         assert_eq!(notes.lines(), ["created k"]);

@@ -11,7 +11,8 @@ title and body below are the PR's, the commit message without its trailers.
   `cakeys_pkcs11::token`'s `rv_value` and `rv_name` use `CK_RV::from` and `RvError::name` behind
   the `rv-value` feature. Without it (plain cargo) a failure is named from its variant, which
   `names_agree` holds equal, and carries no value. When a release has the conversion, drop the
-  feature and the patch line. p11-fault keeps `p11-names`' table: its plans name values.
+  feature (and it from each tool's `patched-cryptoki`, `patched_cryptoki.rs` and caprobe's
+  `build_lacks`) and the patch line. p11-fault keeps `p11-names`' table: its plans name values.
 - The patch: `0003-Add-RvError-to-CK_RV-and-its-name.patch`, against 0.12.1's
   `cryptoki/src/error/rv.rs` and `rv_error.rs`, paths relative to the crate as 0002's are. It
   turns upstream's one list (the `From<CK_RV> for Rv` match) into a `macro_rules!` table,

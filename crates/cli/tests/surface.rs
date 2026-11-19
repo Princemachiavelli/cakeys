@@ -1,6 +1,5 @@
 //! Every verb and flag of `cakeys` is used by an integration test (tests/common/surface.rs).
 
-#[path = "../../cli/tests/common/mod.rs"]
 mod common;
 
 /// Verbs and flags no integration test uses yet, each with why.

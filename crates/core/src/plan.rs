@@ -3,8 +3,8 @@
 //! pass before any token is opened (exit 17).
 
 use crate::attrs;
-use crate::config::{AttrValue, Binding, Config, Mode, ObjectCfg, ObjectKind, SpecCfg, SpecTokenCfg};
-use crate::id::{BlockCipher, Commit, HmacHash, Scheme};
+use crate::config::{AsymmetricKey, AttrValue, Binding, Config, Mode, ObjectCfg, ObjectKind, SpecCfg, SpecTokenCfg};
+use crate::id::{BlockCipher, Commit, Curve, HmacHash, Scheme};
 use crate::types::{KeyType as Kt, ObjectClass as Class};
 use crate::{KmError, Result};
 use std::collections::BTreeMap;
@@ -149,9 +149,11 @@ pub fn assurance(class: Class, binding: Option<Binding>, attestation_kind: Optio
     }
 }
 
-/// A private key must be able to prove possession, or say explicitly that it does not.
-fn check_binding(t: &Target) -> Result<()> {
+/// A private key must be able to prove possession, or say explicitly that it does not. `kind` is
+/// the object's type as load parsed it.
+fn check_binding(t: &Target, kind: ObjectKind) -> Result<()> {
     let invalid = |why: String| Err(KmError::Validation(format!("{t}: {why}").into()));
+    let ed448 = matches!(kind, ObjectKind::Asymmetric { key: AsymmetricKey::Edwards(Curve::Ed448), .. });
     match (binding(t), t.on_token.binding) {
         (_, Some(Binding::PopSignPin)) => invalid(
             "binding = \"pop-sign-pin\" is recorded, not configured: write \"pop-sign\" (the default); \
@@ -159,15 +161,14 @@ fn check_binding(t: &Target) -> Result<()> {
                 .into(),
         ),
         (None, Some(b)) => invalid(format!("binding = \"{b}\" applies to private keys only")),
-        (Some(Binding::TokenAsserted), Some(Binding::PopSign)) => {
-            invalid("publicOnly cannot prove possession (binding = \"pop-sign\")".into())
+        // publicOnly reads the public key object alone, so it implies "token-asserted": a proof
+        // configured beside it is refused, never silently replaced (docs/DESIGN.md §3.6).
+        (Some(Binding::TokenAsserted), Some(b)) if t.on_token.public_only && b != Binding::TokenAsserted => {
+            invalid(format!("publicOnly cannot prove possession (binding = \"{b}\"): it implies \"token-asserted\""))
         }
-        (Some(Binding::PopSign), _) if t.object.curve.as_deref().is_some_and(|c| c == "edwards448" || c == "Ed448") => {
-            invalid(
-                "cakeys has no Ed448 verifier to prove possession with; opt in with binding = \"token-asserted\""
-                    .into(),
-            )
-        }
+        (Some(Binding::PopSign), _) if ed448 => invalid(
+            "cakeys has no Ed448 verifier to prove possession with; opt in with binding = \"token-asserted\"".into(),
+        ),
         // Only the sign proof has a point for the per-use login (docs/DESIGN.md §3.6).
         (Some(b @ (Binding::PopEcdh | Binding::PopDecrypt | Binding::PopUnwrap)), _)
             if t.spec.flag("CKA_ALWAYS_AUTHENTICATE") == Some(true) =>
@@ -246,7 +247,10 @@ fn check_declared(t: &Target, class: Class, declared: &BTreeMap<String, AttrValu
 /// object's class (checked here, so no object is ever created for an unusable spec).
 pub fn plan_mode(t: &Target) -> Result<Mode> {
     let invalid = |why: &str| Err(KmError::Validation(format!("{t}: {why}").into()));
-    check_binding(t)?;
+    // The object's type, as load parsed it (`ObjectCfg::kind`): what load refuses comes back
+    // here only for a `Config` not made by loading, named the same way whatever its kind.
+    let kind = t.object.kind().map_err(|e| e.prefixed(t))?;
+    check_binding(t, kind)?;
     // Attribute shapes and names, per class: a private key's `publicAttributes` shape its public
     // key object.
     check_declared(t, t.object.class, &t.spec.attributes)?;
@@ -254,11 +258,6 @@ pub fn plan_mode(t: &Target) -> Result<Mode> {
     if !t.spec.public_attributes.is_empty() && t.object.class != Class::PrivateKey {
         return invalid("publicAttributes apply to private keys only");
     }
-    // The object's type, parsed at load (`ObjectCfg::kind`).
-    let kind = t.object.kind().map_err(|e| match e {
-        KmError::Validation(m) => KmError::Validation(format!("{t}: {m}").into()),
-        other => other,
-    })?;
     if t.on_token.public_only {
         if t.object.class != Class::PrivateKey {
             return invalid("publicOnly applies to private keys only");
@@ -414,6 +413,62 @@ mod tests {
         .unwrap();
         let e = Target::new(&cfg, "s", "t").err().unwrap();
         assert!(matches!(&e, KmError::Validation(m) if m.contains("unknown object 'gone'")), "{e}");
+    }
+
+    /// The target `s` on token `t` of an object of type `ty`, with `on` added to its token entry
+    /// and `attrs` as its attributes, planned. Built without load, as a test `Config` may be.
+    fn planned(ty: &str, attrs: &str, on: &str) -> Result<Mode> {
+        let cfg: Config = toml::from_str(&format!(
+            "[tokens.t]\ntokenLabel = \"t\"\n\n[objects.k]\n{ty}\n\n[specs.s]\nobject = \"k\"\nattributes = {{ {attrs} }}\n\
+             tokens.t = {{ locator = {{ CKA_LABEL = \"x\" }}, origin = \"adopt\"{on} }}\n"
+        ))
+        .unwrap();
+        plan_mode(&Target::new(&cfg, "s", "t").unwrap())
+    }
+
+    const EC: &str = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+    const RSA: &str = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"";
+
+    /// publicOnly implies `token-asserted`: every proof configured beside it is refused (17),
+    /// never recorded `token-asserted` in its place (review plan.rs F1); `token-asserted` itself,
+    /// or no binding, plans.
+    #[test]
+    fn public_only_refuses_every_configured_proof() {
+        for (ty, b) in [(EC, "pop-sign"), (EC, "pop-ecdh"), (RSA, "pop-decrypt"), (RSA, "pop-unwrap")] {
+            let e = planned(ty, "", &format!(", publicOnly = true, binding = \"{b}\"")).unwrap_err();
+            assert!(
+                matches!(&e, KmError::Validation(m) if m.contains("publicOnly cannot prove possession")
+                    && m.contains(&format!("binding = \"{b}\""))),
+                "{b}: {e}"
+            );
+        }
+        for on in [", publicOnly = true, binding = \"token-asserted\"", ", publicOnly = true"] {
+            assert_eq!(planned(EC, "", on).unwrap(), Mode::Direct, "{on}");
+        }
+    }
+
+    /// Ed448 has no verifier, whichever of its names keys.toml spells (review plan.rs F2: the
+    /// curve is the parsed one, not a string).
+    #[test]
+    fn ed448_cannot_prove_by_signing() {
+        for curve in ["edwards448", "Ed448"] {
+            let ty = format!("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC_EDWARDS\"\ncurve = \"{curve}\"");
+            let e = planned(&ty, "CKA_SIGN = true", "").unwrap_err();
+            assert!(matches!(&e, KmError::Validation(m) if m.contains("no Ed448 verifier")), "{curve}: {e}");
+            assert_eq!(planned(&ty, "CKA_SIGN = true", ", binding = \"token-asserted\"").unwrap(), Mode::Direct);
+        }
+        let ed25519 = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC_EDWARDS\"\ncurve = \"edwards25519\"";
+        assert_eq!(planned(ed25519, "CKA_SIGN = true", "").unwrap(), Mode::Direct);
+    }
+
+    /// An object type load would refuse names its target, whether it is invalid (17) or
+    /// unsupported (15) (review plan.rs F3).
+    #[test]
+    fn a_refused_object_type_names_its_target() {
+        let unsupported = planned("class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_RSA\"", "", "").unwrap_err();
+        assert!(matches!(&unsupported, KmError::Unsupported(m) if m.starts_with("'k' (spec 's') on token 't': ")));
+        let invalid = planned("class = \"CKO_DATA\"\nvalueLen = 3", "", "").unwrap_err();
+        assert!(matches!(&invalid, KmError::Validation(m) if m.starts_with("'k' (spec 's') on token 't': ")));
     }
 
     /// A declared `CKA_ALLOWED_MECHANISMS` narrows the commitments the usage bits enable to the

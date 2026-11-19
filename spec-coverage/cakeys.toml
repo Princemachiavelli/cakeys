@@ -5,10 +5,10 @@
 baseline = "pkcs11-3.2"
 
 [summary]
-gap = 78
+gap = 77
 out-of-scope = 827
 profile = 10
-used = 182
+used = 183
 
 [functions]
 C_AsyncComplete = "out-of-scope"
@@ -965,7 +965,7 @@ CKR_TOKEN_WRITE_PROTECTED = "out-of-scope"
 CKR_UNWRAPPING_KEY_HANDLE_INVALID = "out-of-scope"
 CKR_UNWRAPPING_KEY_SIZE_RANGE = "out-of-scope"
 CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT = "out-of-scope"
-CKR_USER_ALREADY_LOGGED_IN = "gap"
+CKR_USER_ALREADY_LOGGED_IN = "used"
 CKR_USER_ANOTHER_ALREADY_LOGGED_IN = "out-of-scope"
 CKR_USER_NOT_LOGGED_IN = "used"
 CKR_USER_PIN_NOT_INITIALIZED = "out-of-scope"

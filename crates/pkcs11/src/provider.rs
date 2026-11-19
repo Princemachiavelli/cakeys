@@ -508,6 +508,10 @@ pub struct AttestationCap {
     pub scheme: Scheme,
     /// Object classes the attestation covers.
     pub classes: &'static [ObjectClass],
+    /// Whether it covers a key imported onto the device, not only one the device made: false for
+    /// PIV, whose attestation is of keys generated on the `YubiKey`. An import such an attestation
+    /// cannot cover is refused before the key is written (15), where the device may keep it.
+    pub imported: bool,
 }
 
 /// What [`Provider::import_plaintext`] gets: the token as keys.toml describes it, the key's type
@@ -556,30 +560,82 @@ pub struct AttestCtx<'a> {
     /// True only under `lock`: the provider may create the device state it attests with (the
     /// TPM Attestation Key), never on a read.
     pub provision: bool,
-    /// When the attestation's certificates must be valid: under `check` only.
+    /// When the attestation's certificates must be valid, and whether a fault in their dates refuses.
     pub chain_time: ChainTime,
 }
 
 /// When the certificates of an attestation chain must be valid (ISSUES.md B8). `check` holds
 /// every link to its validity period, at the system clock's time unless told another
-/// (`--at`, `--ignore-validity`); the verbs that record (`lock`, `create`, camigrate) read no
-/// clock, so a lock recorded today verifies tomorrow.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// (`--at`, `--ignore-validity`); every other verb (`lock`, `create`, `verify`, camigrate) judges
+/// the dates by the clock too but only warns ([`ChainTime::Warn`]): `check` is what enforces. There is
+/// no default: every token open names one ([`crate::Token::open`]), so no reader of
+/// attestations skips the dates by forgetting to ask (review D5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChainTime {
     /// The dates are not checked.
-    #[default]
     Unchecked,
     /// Valid at this time: seconds since the Unix epoch, UTC.
     At(u64),
+    /// Judged at this time, but a chain whose only fault is its dates is accepted with a warning
+    /// ([`Attested::warning`]).
+    Warn(u64),
+    /// Asked for now, and the system clock reads before the Unix epoch: there is no time to judge
+    /// the dates by. [`ChainTime::verify`] refuses, naming the clock, or with `warn` (a verb
+    /// other than `check`) verifies the chain without its dates and warns so.
+    NoClock {
+        /// Whether a chain is accepted, with a warning, rather than refused.
+        warn: bool,
+    },
 }
+
+/// What [`ChainTime::NoClock`] says.
+const NO_CLOCK: &str = "the system clock reads before 1970, so the attestation chain's dates cannot be judged: set \
+     the clock, or `check --at <time>` judges them at another time (`--ignore-validity` skips them)";
 
 impl ChainTime {
     /// Now, by the system clock. Never `SOURCE_DATE_EPOCH`: Nix's stdenv sets it to 1980 in
     /// every build, where every chain would be not yet valid.
     #[must_use]
     pub fn now() -> Self {
-        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
-        ChainTime::At(since.map_or(0, |d| d.as_secs()))
+        Self::by_clock(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH), false)
+    }
+
+    /// Now, by the system clock, warning only: what every verb but `check` judges dates with.
+    #[must_use]
+    pub fn warn_now() -> Self {
+        Self::by_clock(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH), true)
+    }
+
+    /// The time the clock's reading `since` the epoch gives, refusing (or with `warn`, warning)
+    /// for a clock before it: never the epoch itself, where every chain is "not yet valid" and
+    /// nothing names the clock (provider.rs F2).
+    fn by_clock(since: std::result::Result<std::time::Duration, std::time::SystemTimeError>, warn: bool) -> Self {
+        match (since, warn) {
+            (Ok(d), false) => ChainTime::At(d.as_secs()),
+            (Ok(d), true) => ChainTime::Warn(d.as_secs()),
+            (Err(_), warn) => ChainTime::NoClock { warn },
+        }
+    }
+
+    /// Verify a chain by `verify`, given the time to hold its dates to (`None`: unchecked). Under
+    /// [`ChainTime::Warn`], a chain that fails only at that time (it verifies without the dates)
+    /// is accepted, with the dated failure as the warning; any other failure is the undated one.
+    /// [`ChainTime::NoClock`] has no time: refused, or (warning) verified without the dates.
+    ///
+    /// # Errors
+    ///
+    /// Whatever `verify` returns, as above; `Unavailable` for [`ChainTime::NoClock`] that refuses.
+    pub fn verify<T>(self, verify: impl Fn(Option<u64>) -> Result<T>) -> Result<(T, Option<String>)> {
+        match self {
+            ChainTime::Unchecked => verify(None).map(|v| (v, None)),
+            ChainTime::At(t) => verify(Some(t)).map(|v| (v, None)),
+            ChainTime::Warn(t) => match verify(Some(t)) {
+                Ok(v) => Ok((v, None)),
+                Err(dated) => verify(None).map(|v| (v, Some(dated.to_string()))),
+            },
+            ChainTime::NoClock { warn: false } => Err(KmError::Unavailable(NO_CLOCK.into())),
+            ChainTime::NoClock { warn: true } => verify(None).map(|v| (v, Some(NO_CLOCK.to_owned()))),
+        }
     }
 
     /// An RFC 3339 time in UTC, `YYYY-MM-DDTHH:MM:SSZ` (`check --at`).
@@ -623,6 +679,9 @@ pub struct Attested {
     pub id: String,
     /// SRI digest of the anchor the attestation was verified to.
     pub root: String,
+    /// Why the chain would fail `check` though it verified: its dates, under
+    /// [`ChainTime::Warn`].
+    pub warning: Option<String>,
 }
 
 /// Plain PKCS#11, used when no registered provider recognises the module.
@@ -640,7 +699,8 @@ impl Provider for Generic {
 
 /// A module that needs no code of its own (docs/CAPROBE.md: no Rust for a module without
 /// fix-ups): recognised by the `[match] manufacturer` of its module profiles, named by their
-/// family, every hook the default. `softhsm`, `kryoptic` and `aws-cloudhsm` are these.
+/// family, every hook the default. `softhsm` and `kryoptic` are these (aws-cloudhsm has a crate
+/// of its own).
 pub struct Data(&'static str);
 
 impl Provider for Data {
@@ -762,6 +822,45 @@ impl Registry {
 
 #[cfg(test)]
 mod tests {
+    /// Every verb but `check` warns about a chain's dates, `check` refuses it, `--ignore-validity`
+    /// skips them; a chain wrong for any other reason is refused under each (review D5).
+    #[test]
+    fn a_chain_out_of_its_dates_warns_where_check_refuses() {
+        use super::ChainTime::{At, Unchecked, Warn};
+        let dated = |at: Option<u64>| match at {
+            Some(t) if t > 100 => Err(KmError::Conflict("'slot' is not valid at 101".into())),
+            _ => Ok("attested"),
+        };
+        assert_eq!(Warn(50).verify(dated).unwrap(), ("attested", None));
+        let (v, warning) = Warn(101).verify(dated).unwrap();
+        assert_eq!((v, warning.as_deref()), ("attested", Some("conflict: 'slot' is not valid at 101")));
+        assert_eq!(At(101).verify(dated).unwrap_err().exit_code(), 13);
+        assert_eq!(Unchecked.verify(dated).unwrap(), ("attested", None));
+        let unpinned = |_: Option<u64>| -> Result<&str> { Err(KmError::Conflict("signed by no pinned root".into())) };
+        for when in [Warn(101), At(101), Unchecked] {
+            assert!(when.verify(unpinned).unwrap_err().to_string().contains("no pinned root"), "{when:?}");
+        }
+    }
+
+    /// A system clock before 1970 is no time to judge dates by (provider.rs F2): `check` refuses
+    /// naming the clock, every other verb verifies without the dates and warns so; never the
+    /// epoch, where every chain is "not yet valid" and nothing says why.
+    #[test]
+    fn a_clock_before_the_epoch_is_named() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let before = UNIX_EPOCH.duration_since(UNIX_EPOCH + Duration::from_secs(1));
+        assert_eq!(ChainTime::by_clock(before.clone(), false), ChainTime::NoClock { warn: false });
+        assert_eq!(ChainTime::by_clock(before, true), ChainTime::NoClock { warn: true });
+        assert_eq!(ChainTime::by_clock(Ok(Duration::from_secs(7)), false), ChainTime::At(7));
+        assert_eq!(ChainTime::by_clock(Ok(Duration::from_secs(7)), true), ChainTime::Warn(7));
+        let dated = |at: Option<u64>| at.map_or(Ok("attested"), |_| Err(KmError::Conflict("not valid at 0".into())));
+        let e = ChainTime::NoClock { warn: false }.verify(dated).unwrap_err();
+        assert!(matches!(&e, KmError::Unavailable(m) if m.contains("system clock reads before 1970")), "{e}");
+        let (v, warning) = ChainTime::NoClock { warn: true }.verify(dated).unwrap();
+        assert_eq!(v, "attested");
+        assert!(warning.is_some_and(|w| w.contains("system clock")));
+    }
+
     use super::*;
 
     struct Acme;

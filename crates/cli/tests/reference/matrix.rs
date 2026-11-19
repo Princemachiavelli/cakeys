@@ -10,6 +10,7 @@ fn object_matrix_is_the_committed_one() {
     let Some(e) = env("object-matrix") else { return };
     // Through p11-fault it would repeat SoftHSM's table.
     if REF.through_fault_shim {
+        eprintln!("skipping object-matrix: through p11-fault it is SoftHSM's table, checked there");
         return;
     }
     object_matrix::check(&object_matrix::Target {

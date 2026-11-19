@@ -44,7 +44,7 @@ tokens.ref = { locator = { CKA_LABEL = "typed" }, origin = "adopt" }
     assert_eq!(e.code(&["lock", "--spec", "k-nosign", "--token", "ref", "--no-update-lock"]), 13);
 
     let s = e.session();
-    let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let ec_params = P256.to_vec();
     for _ in 0..2 {
         let label = Attribute::Label(b"dup".to_vec());
         s.generate_key_pair(
@@ -88,10 +88,13 @@ tokens.ref = { locator = { CKA_LABEL = "downgrade" }, origin = "create" }
 "#,
     );
     assert_eq!(e.code(&["create", "--spec", "d-wrap", "--token", "ref", "--update-lock"]), 0);
-    // Pretend the lock was recorded with a stronger mode than is now achievable.
-    let path = e.dir.join("keys.lock");
-    let text = std::fs::read_to_string(&path).unwrap().replace("\"wrap-rebind\"", "\"commitment\"");
-    std::fs::write(&path, text).unwrap();
+    // Pretend the lock was recorded with a stronger mode than is now achievable: edited as TOML,
+    // so a change of the writer's layout cannot leave it as it was (review drift.rs F1).
+    let mut lock = e.lock();
+    let mode = &mut lock["realisations"]["d-wrap"]["ref"]["mode"];
+    assert_eq!(mode.as_str(), Some("wrap-rebind"), "the realisation's recorded mode");
+    *mode = "commitment".into();
+    e.write_lock(&lock);
     assert_eq!(e.code(&["verify", "--spec", "d-wrap", "--token", "ref"]), 14);
 }
 
@@ -101,7 +104,7 @@ tokens.ref = { locator = { CKA_LABEL = "downgrade" }, origin = "create" }
 fn a_second_private_key_under_the_same_id_is_ambiguous() {
     let Some(e) = env("dup_id") else { return };
     let s = e.session();
-    let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let ec_params = P256.to_vec();
     let generate = |label: &[u8]| {
         let common = [Attribute::Token(true), Attribute::Label(label.to_vec()), Attribute::Id(vec![0x77])];
         s.generate_key_pair(
@@ -197,13 +200,7 @@ fn policy_drift_and_replaced_objects_are_refused() {
 #[test]
 fn allowed_mechanisms_and_public_attributes() {
     let Some(e) = env("attrs") else { return };
-    // The token is shared between runs: remove anything left under the test's locators.
     let s = e.session();
-    for c in [ObjectClass::PRIVATE_KEY, ObjectClass::PUBLIC_KEY] {
-        for h in s.find_objects(&[Attribute::Class(c), Attribute::Label(b"attrs".to_vec())]).unwrap() {
-            s.destroy_object(h).unwrap();
-        }
-    }
     let spec = |mechs: &str, public: &str| {
         format!(
             "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
@@ -261,13 +258,7 @@ fn allowed_mechanisms_and_public_attributes() {
 fn an_undeclared_mechanism_list_is_observed_policy() {
     let Some(e) = env("attrs-drift") else { return };
     let s = e.session();
-    // The token is shared between runs: remove anything left under the test's locators.
-    for c in [ObjectClass::PRIVATE_KEY, ObjectClass::PUBLIC_KEY] {
-        for h in s.find_objects(&[Attribute::Class(c), Attribute::Label(b"attrs-drift".to_vec())]).unwrap() {
-            s.destroy_object(h).unwrap();
-        }
-    }
-    let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let ec_params = P256.to_vec();
     let common = [
         Attribute::Token(true),
         Attribute::Label(b"attrs-drift".to_vec()),
@@ -289,11 +280,10 @@ fn an_undeclared_mechanism_list_is_observed_policy() {
     assert_eq!(policy.get("CKA_ALLOWED_MECHANISMS").map(|m| m.as_array().unwrap().len()), Some(2), "{policy}");
 
     // A lock that does not record the list (e.g. written by an older cakeys) still verifies.
-    let path = e.dir.join("keys.lock");
-    let text = std::fs::read_to_string(&path)
-        .unwrap()
-        .replace("CKA_ALLOWED_MECHANISMS = [\n    \"CKM_ECDSA\",\n    \"CKM_ECDSA_SHA256\",\n]\n", "");
-    std::fs::write(&path, text).unwrap();
+    let mut lock = e.lock();
+    let policy = lock["realisations"]["k"]["ref"]["policy"].as_table_mut().unwrap();
+    assert!(policy.remove("CKA_ALLOWED_MECHANISMS").is_some());
+    e.write_lock(&lock);
     let o = e.km(&["verify", "--spec", "k", "--token", "ref"]);
     assert_eq!(code(&o), 0);
     assert!(stderr(&o).contains("CKA_ALLOWED_MECHANISMS"), "{}", stderr(&o));
@@ -310,25 +300,9 @@ fn h1_a_private_key_beside_an_unbound_public_object_is_a_conflict() {
     e.config(EC.replace("ec-lifecycle", "gap-a").as_str());
     assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref", "--update-lock"]), 0);
     assert_eq!(e.lock()["realisations"]["signing-soft"]["ref"]["binding"].as_str(), Some("pop-sign"));
-    let s = e.session();
-    let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
-    let (_, other_private) = s
-        .generate_key_pair(
-            &Mechanism::EccKeyPairGen,
-            &[Attribute::Token(true), Attribute::Label(b"gap-b".to_vec()), Attribute::EcParams(ec_params)],
-            &[
-                Attribute::Token(true),
-                Attribute::Label(b"gap-b".to_vec()),
-                Attribute::Sign(true),
-                Attribute::Sensitive(true),
-                Attribute::Extractable(false),
-            ],
-        )
-        .unwrap();
-    let original =
-        s.find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"gap-a".to_vec())]).unwrap()[0];
-    s.destroy_object(original).unwrap();
-    s.update_attributes(other_private, &[Attribute::Label(b"gap-a".to_vec())]).unwrap();
+    let usage = [Attribute::Sign(true), Attribute::Sensitive(true), Attribute::Extractable(false)];
+    let p256 = [Attribute::EcParams(P256.to_vec())];
+    swap_private_key(&e.session(), "gap-a", &Mechanism::EccKeyPairGen, &p256, &usage, &[]);
     // Different private key under the locator, same public object.
     assert_swapped_key_conflict(&e.km(&["verify", "--spec", "signing-soft", "--token", "ref"]));
     // So is deleting: If-Match must not pass on the public object alone.
@@ -360,7 +334,7 @@ fn the_live_object_must_be_what_the_spec_says() {
         )
         .unwrap()
     };
-    let p256 = [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let p256 = P256;
     let pair = |mechanism: &Mechanism, name: &str, params: &[u8], usage: Attribute| {
         let public = [Attribute::Token(true), label(name), Attribute::EcParams(params.to_vec())];
         s.generate_key_pair(mechanism, &public, &[Attribute::Token(true), label(name), usage])
@@ -369,10 +343,10 @@ fn the_live_object_must_be_what_the_spec_says() {
     rsa_pair("rsa");
     let aes = [Attribute::Token(true), label("aes"), Attribute::ValueLen(32.into()), Attribute::Encrypt(true)];
     s.generate_key(&Mechanism::AesKeyGen, &aes).unwrap();
-    let (public, _) = ec_pair("ec-alone", &p256).unwrap();
+    let (public, _) = ec_pair("ec-alone", p256).unwrap();
     s.destroy_object(public).unwrap();
-    ec_pair("ec-two", &p256).unwrap();
-    let (other, _) = ec_pair("ec-other", &p256).unwrap();
+    ec_pair("ec-two", p256).unwrap();
+    let (other, _) = ec_pair("ec-other", p256).unwrap();
     s.update_attributes(other, &[label("ec-two")]).unwrap();
     rsa_pair("rsa-odd");
     // A public key cakeys does not read, under the RSA key's locator: P-224 where the module
@@ -454,22 +428,9 @@ fn h1b_a_forged_public_key_info_is_a_conflict() {
     assert_eq!(e.code(&["create", "--spec", "r", "--token", "ref", "--update-lock"]), 0);
     let s = e.session();
     let spki_a = oracle_spki(&s, "h1b");
-    let (_, other) = s
-        .generate_key_pair(
-            &Mechanism::RsaPkcsKeyPairGen,
-            &[
-                Attribute::Token(true),
-                Attribute::Label(b"h1b-other".to_vec()),
-                Attribute::ModulusBits(2048.into()),
-                Attribute::PublicExponent(vec![1, 0, 1]),
-            ],
-            &[Attribute::Token(true), Attribute::Label(b"h1b-other".to_vec()), Attribute::Sign(true)],
-        )
-        .unwrap();
-    let original =
-        s.find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"h1b".to_vec())]).unwrap()[0];
-    s.destroy_object(original).unwrap();
-    s.update_attributes(other, &[Attribute::Label(b"h1b".to_vec()), Attribute::PublicKeyInfo(spki_a)]).unwrap();
+    let rsa = [Attribute::ModulusBits(2048.into()), Attribute::PublicExponent(vec![1, 0, 1])];
+    let forged = [Attribute::PublicKeyInfo(spki_a)];
+    swap_private_key(&s, "h1b", &Mechanism::RsaPkcsKeyPairGen, &rsa, &[Attribute::Sign(true)], &forged);
     drop(s);
     let o = e.km(&["verify", "--spec", "r", "--token", "ref"]);
     assert_eq!(code(&o), 13);

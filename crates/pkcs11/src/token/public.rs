@@ -7,7 +7,7 @@
     reason = "the token/ split files work on the parent module's imports (R9); `expect` is not fulfilled on a `use` item"
 )]
 use super::*;
-use rsa::pkcs8::DecodePublicKey as _;
+use cakeys_core::id::KeyAlg;
 use rsa::traits::PublicKeyParts as _;
 use x509_cert::der::{Decode as _, Encode as _};
 
@@ -47,23 +47,35 @@ pub fn public_object_attrs(object: &ObjectCfg, bytes: &[u8]) -> Result<Vec<Attri
 
 /// A public key's material from its canonical SPKI, in PKCS#11's encoding: an EC or Edwards
 /// point as a DER OCTET STRING beside the curve's parameters, an RSA key as its modulus and
-/// exponent. `object` gives the key type and curve.
+/// exponent. `object` gives the key type and curve, which the SPKI's algorithm (and an EC key's
+/// curve) must be.
 ///
 /// # Errors
 ///
-/// `Conflict` when the SPKI is not a key of `object`'s type; `Validation` for an object with no
-/// curve cakeys knows.
+/// `Conflict` when the SPKI is not a key of `object`'s type and curve; `Validation` for an
+/// object with no curve cakeys knows.
 pub fn public_key_attrs(object: &ObjectCfg, spki: &[u8]) -> Result<Vec<Attribute>> {
     let bad = |e: &dyn std::fmt::Display| KmError::Conflict(format!("the public key: {e}").into());
-    if object.key_type == Some(Kt::Rsa) {
-        let key = rsa::PublicKey::from_public_key_der(spki).map_err(|e| bad(&e))?;
-        return Ok(vec![
-            Attribute::KeyType(KeyType::RSA),
-            Attribute::Modulus(key.n().to_be_bytes_trimmed_vartime().to_vec()),
-            Attribute::PublicExponent(key.e().to_be_bytes_trimmed_vartime().to_vec()),
-        ]);
-    }
-    let curve = curve_of(object)?;
+    let declared = if object.key_type == Some(Kt::Rsa) { KeyAlg::Rsa } else { KeyAlg::Ec(curve_of(object)?) };
+    let held = KeyAlg::of_spki(spki).map_err(|e| bad(&e))?;
+    let curve = match (held, declared) {
+        (KeyAlg::Rsa, KeyAlg::Rsa) => {
+            let key = cakeys_core::id::rsa_of_spki(spki).map_err(|e| bad(&e))?;
+            return Ok(vec![
+                Attribute::KeyType(KeyType::RSA),
+                Attribute::Modulus(key.n().to_be_bytes_trimmed_vartime().to_vec()),
+                Attribute::PublicExponent(key.e().to_be_bytes_trimmed_vartime().to_vec()),
+            ]);
+        }
+        (KeyAlg::Ec(held), KeyAlg::Ec(declared)) if held == declared => declared,
+        _ => {
+            let name = |k: KeyAlg| match k {
+                KeyAlg::Rsa => "an RSA key".to_owned(),
+                KeyAlg::Ec(c) => format!("a {} key", c.display()),
+            };
+            return Err(bad(&format_args!("{}, where the object is {}", name(held), name(declared))));
+        }
+    };
     let info = x509_cert::spki::SubjectPublicKeyInfoRef::from_der(spki).map_err(|e| bad(&e))?;
     let point = info.subject_public_key.as_bytes().ok_or_else(|| bad(&"the key is not whole bytes"))?;
     let point = x509_cert::der::asn1::OctetStringRef::new(point).and_then(|o| o.to_der()).map_err(|e| bad(&e))?;
@@ -72,4 +84,65 @@ pub fn public_key_attrs(object: &ObjectCfg, spki: &[u8]) -> Result<Vec<Attribute
         Attribute::EcParams(curve.params().to_vec()),
         Attribute::EcPoint(point),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use x509_cert::der::asn1::{Any, BitString, ObjectIdentifier};
+    use x509_cert::spki::{AlgorithmIdentifierOwned, SubjectPublicKeyInfoOwned};
+
+    /// An SPKI naming a key on `c`, its algorithm as RFC 5480 and RFC 8410 write it: what
+    /// `KeyAlg::of_spki` reads. The point is any bytes.
+    fn spki_on(c: Curve) -> Vec<u8> {
+        let algorithm = if c.edwards() {
+            AlgorithmIdentifierOwned { oid: ObjectIdentifier::from_der(c.params()).unwrap(), parameters: None }
+        } else {
+            AlgorithmIdentifierOwned {
+                oid: ObjectIdentifier::new_unwrap("1.2.840.10045.2.1"),
+                parameters: Some(Any::from_der(c.params()).unwrap()),
+            }
+        };
+        SubjectPublicKeyInfoOwned { algorithm, subject_public_key: BitString::from_bytes(&[4; 33]).unwrap() }
+            .to_der()
+            .unwrap()
+    }
+
+    fn key_on(c: Curve) -> ObjectCfg {
+        let mut o = ObjectCfg::new(Class::PublicKey, Some(if c.edwards() { Kt::EcEdwards } else { Kt::Ec }));
+        o.curve = Some(c.name().into());
+        o
+    }
+
+    /// A public key's SPKI must be of the object's key type and curve (public.rs F1): every
+    /// curve against every other and RSA, each way, is a conflict (13) naming both, never
+    /// `CKA_EC_PARAMS` of one curve beside another key's point.
+    #[test]
+    fn the_spki_must_be_the_objects_type_and_curve() {
+        let rsa = id::rsa_spki(&[0xc5; 256], &[1, 0, 1]).unwrap();
+        let mut rsa_object = ObjectCfg::new(Class::PublicKey, Some(Kt::Rsa));
+        rsa_object.modulus_bits = Some(2048);
+        assert!(public_key_attrs(&rsa_object, &rsa).is_ok());
+        for declared in Curve::ALL {
+            let object = key_on(declared);
+            for held in Curve::ALL {
+                let made = public_key_attrs(&object, &spki_on(held));
+                if held == declared {
+                    assert!(made.unwrap().contains(&Attribute::EcParams(declared.params().to_vec())));
+                    continue;
+                }
+                let e = made.unwrap_err();
+                assert!(
+                    matches!(&e, KmError::Conflict(m) if m.contains(held.display()) && m.contains(declared.display())),
+                    "{declared:?} given {held:?}: {e}"
+                );
+            }
+            let e = public_key_attrs(&object, &rsa).unwrap_err();
+            assert!(matches!(&e, KmError::Conflict(m) if m.contains("an RSA key")), "{e}");
+            let e = public_key_attrs(&rsa_object, &spki_on(declared)).unwrap_err();
+            assert!(matches!(&e, KmError::Conflict(m) if m.contains(declared.display())), "{e}");
+        }
+        let e = public_key_attrs(&key_on(Curve::P256), b"no SPKI").unwrap_err();
+        assert!(matches!(e, KmError::Conflict(_)), "{e}");
+    }
 }

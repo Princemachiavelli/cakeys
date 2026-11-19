@@ -15,7 +15,7 @@ use crate::{Fatal, guard, hooks, shim};
 use cryptoki_sys::{
     CK_ATTRIBUTE, CK_BBOOL, CK_BYTE, CK_FLAGS, CK_FUNCTION_LIST, CK_INFO, CK_MECHANISM, CK_MECHANISM_INFO,
     CK_MECHANISM_TYPE, CK_NOTIFY, CK_OBJECT_HANDLE, CK_RV, CK_SESSION_HANDLE, CK_SESSION_INFO, CK_SLOT_ID,
-    CK_SLOT_INFO, CK_TOKEN_INFO, CK_ULONG, CK_USER_TYPE, CK_UTF8CHAR,
+    CK_SLOT_INFO, CK_TOKEN_INFO, CK_ULONG, CK_USER_TYPE, CK_UTF8CHAR, CK_VERSION,
 };
 use std::os::raw::c_void;
 
@@ -40,14 +40,12 @@ macro_rules! forward {
     (@body $shim:ident, $call:ident, $name:ident, ($session:ident, $input:ident, $n:ident, $out:ident, $len:ident), corrupt_output) => {{
         let real = forward!(@real $shim, $name);
         // SAFETY: the caller's arguments, forwarded unchanged; then the buffer it gave.
-        let rv = unsafe { real($session, $input, $n, $out, $len) };
-        Ok((rv, unsafe { hooks::corrupt_output($shim, $call, rv, $out, $len) }))
+        Ok(unsafe { hooks::corrupt_output($shim, $call, $out, $len, || real($session, $input, $n, $out, $len)) })
     }};
     (@body $shim:ident, $call:ident, $name:ident, ($session:ident, $out:ident, $len:ident), corrupt_output) => {{
         let real = forward!(@real $shim, $name);
         // SAFETY: the caller's arguments, forwarded unchanged; then the buffer it gave.
-        let rv = unsafe { real($session, $out, $len) };
-        Ok((rv, unsafe { hooks::corrupt_output($shim, $call, rv, $out, $len) }))
+        Ok(unsafe { hooks::corrupt_output($shim, $call, $out, $len, || real($session, $out, $len)) })
     }};
     (@body $shim:ident, $call:ident, $name:ident, ($($arg:ident),*), $hook:ident) => {
         // SAFETY: the caller's arguments; the hook forwards them under the caller's contract.
@@ -96,11 +94,14 @@ macro_rules! forward {
             }
         )*
 
-        /// The shim's table: the real one's version, our forwarder in every slot the real
-        /// module fills, and `NULL` where it leaves one empty.
+        /// The shim's table: the real one's version, but never above 2.40, our forwarder in
+        /// every slot the real module fills, and `NULL` where it leaves one empty. The table
+        /// is the 2.40 one: a 3.x version on it would tell a client that picks the layout by
+        /// version to read 24 slots past its end.
         pub(crate) fn table(real: &CK_FUNCTION_LIST) -> CK_FUNCTION_LIST {
+            let v240 = CK_VERSION { major: 2, minor: 40 };
             CK_FUNCTION_LIST {
-                version: real.version,
+                version: if (real.version.major, real.version.minor) > (2, 40) { v240 } else { real.version },
                 C_GetFunctionList: Some(crate::get_function_list),
                 $($name: if real.$name.is_some() { Some($name) } else { None },)*
             }
@@ -132,11 +133,11 @@ forward! {
     C_CopyObject(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG, arg5: *mut CK_OBJECT_HANDLE) [template(arg3, arg4)];
     C_DestroyObject(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE);
     C_GetObjectSize(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ULONG);
-    C_GetAttributeValue(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG) => attribute_value [template(arg3, arg4)];
+    C_GetAttributeValue(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG) => attribute_value [filled_template(arg3, arg4)];
     C_SetAttributeValue(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG) [template(arg3, arg4)];
-    C_FindObjectsInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_ATTRIBUTE, arg3: CK_ULONG) [template(arg2, arg3)];
+    C_FindObjectsInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_ATTRIBUTE, arg3: CK_ULONG) => find_objects_init [template(arg2, arg3)];
     C_FindObjects(arg1: CK_SESSION_HANDLE, arg2: *mut CK_OBJECT_HANDLE, arg3: CK_ULONG, arg4: *mut CK_ULONG) => find_objects;
-    C_FindObjectsFinal(arg1: CK_SESSION_HANDLE);
+    C_FindObjectsFinal(arg1: CK_SESSION_HANDLE) => find_objects_final;
     C_EncryptInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [mechanism(arg2)];
     C_Encrypt(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG) => corrupt_output;
     C_EncryptUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
@@ -176,4 +177,22 @@ forward! {
     C_GetFunctionStatus(arg1: CK_SESSION_HANDLE);
     C_CancelFunction(arg1: CK_SESSION_HANDLE);
     C_WaitForSlotEvent(arg1: CK_FLAGS, arg2: *mut CK_SLOT_ID, arg3: *mut c_void);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::table;
+    use cryptoki_sys::CK_VERSION;
+
+    /// The shim's table is the 2.40 one, so it says no more than 2.40, whatever the module
+    /// behind it reports; an older version is passed on.
+    #[test]
+    fn the_table_says_no_more_than_2_40() {
+        for ((major, minor), says) in [((3, 0), (2, 40)), ((3, 2), (2, 40)), ((2, 40), (2, 40)), ((2, 20), (2, 20))] {
+            let mut real = crate::empty_table();
+            real.version = CK_VERSION { major, minor };
+            let v = table(&real).version;
+            assert_eq!((v.major, v.minor), says, "a module reporting {major}.{minor}");
+        }
+    }
 }

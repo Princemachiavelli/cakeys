@@ -7,6 +7,10 @@
 # (`tpm2_ptool init` and `addtoken --label web`), its user PIN in /run/secrets/web-tpm-pin, then
 # `cakeys --config keys.toml --module tpm=<path>/lib/libtpm2_pkcs11.so create web-tls` as root,
 # which writes keys.lock (commit it), and a CSR from the key for the CA (run.sh shows one).
+# The setup runs as root, so the store it makes is root's; the server opens the same store as
+# `web`, and tpm2-pkcs11 opens its sqlite database for writing (with its journal beside it), so
+# give the store to the `tss` group, which `web` is in: `chgrp -R tss /var/lib/tpm2-pkcs11` and
+# `chmod -R g+rwX /var/lib/tpm2-pkcs11`. Left root's, the server fails at its first key load.
 { pkgs, ... }:
 let
   module = "${pkgs.tpm2-pkcs11}/lib/libtpm2_pkcs11.so";
@@ -63,8 +67,9 @@ in
   users.users.web = {
     isSystemUser = true;
     group = "web";
-    # The TPM device (security.tpm2's udev rules) and the store. The PIN file the key file
-    # names (pin-source) must be readable by this user too: OpenSSL logs in as the server.
+    # The TPM device (security.tpm2's udev rules), and the store once the setup above gives it
+    # to the group. The PIN file the key file names (pin-source) must be readable by this user
+    # too: OpenSSL logs in as the server.
     extraGroups = [ "tss" ];
   };
 

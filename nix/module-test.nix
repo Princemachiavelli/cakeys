@@ -13,19 +13,12 @@
 let
   inherit (pkgs) lib;
   system = pkgs.stdenv.hostPlatform.system;
-  stateDir = "/var/lib/softhsm";
+  # The token, keys.toml and guest builds nix/test.nix and nix/tpm-test.nix use too.
+  vm = import ./vm-common.nix;
+  inherit (vm) stateDir;
 
   keysToml = pkgs.writeText "keys.toml" ''
-    [tokens.softhsm]
-    module = "${softhsm}/lib/softhsm/libsofthsm2.so"
-    tokenLabel = "kmtest"
-    pinFile = "${stateDir}/pin"
-
-    [objects.signing]
-    class = "CKO_PRIVATE_KEY"
-    keyType = "CKK_EC"
-    curve = "secp256r1"
-
+    ${vm.keysToml "${softhsm}/lib/softhsm/libsofthsm2.so"}
     [specs.signing-soft]
     object = "signing"
     attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
@@ -78,7 +71,10 @@ pkgs.testers.runNixOSTest {
   name = "cakeys-module";
 
   nodes.machine = {
-    imports = [ module ];
+    imports = [
+      module
+      vm.softhsm.config
+    ];
     services.cakeys = {
       package = cakeys;
       sandbox.pcscd.enable = true;
@@ -140,9 +136,8 @@ pkgs.testers.runNixOSTest {
     ];
     environment.etc."km/keys.toml".source = keysToml;
     environment.etc."km/builds.nix".source = guestBuilds;
-    environment.variables.SOFTHSM2_CONF = "${stateDir}/softhsm2.conf";
     systemd.tmpfiles.rules = [
-      "d ${stateDir}/tokens 0700 root root -"
+      "d ${vm.softhsm.tokens} 0700 root root -"
       "d /var/lib/km 0700 root root -"
     ];
     nix.settings.substituters = lib.mkForce [ ];
@@ -155,11 +150,7 @@ pkgs.testers.runNixOSTest {
 
     km = "cakeys --config /etc/km/keys.toml --lock /var/lib/km/keys.lock"
 
-    def guest_build(attr):
-        out = machine.succeed(
-            f"nix-build /etc/km/builds.nix -A {attr} --argstr nonce {attr} --no-out-link 2>&1"
-        ).strip().splitlines()[-1]
-        return machine.succeed(f"cat {out}")
+    ${vm.guestBuild}
 
     start_all()
     machine.wait_for_unit("multi-user.target")
@@ -179,31 +170,28 @@ pkgs.testers.runNixOSTest {
 
     with subtest("pcscd is reachable from the sandbox with auto-allocated build UIDs"):
         for attr in ["pcsc", "structured"]:
-            out = guest_build(attr)
+            out = guest_build(machine, attr, attr)
             print(attr, out)
             assert "SCardEstablishContext: 0x00000000" in out, out
             assert "0x8010002e" in out, out  # connected; the VM simply has no reader
             assert "softhsm-dir=no" in out, out
 
     with subtest("the hook grants token paths only to builds requiring the token's feature"):
-        out = guest_build("softhsm")
+        out = guest_build(machine, "softhsm", "softhsm")
         print(out)
         assert "softhsm-dir=yes" in out and "SCardEstablishContext: 0x00000000" not in out, out
-        out = guest_build("plain")
+        out = guest_build(machine, "plain", "plain")
         print(out)
         assert "softhsm-dir=no" in out and "SCardEstablishContext: 0x00000000" not in out, out
 
     with subtest("uid-range builds run"):
-        out = guest_build("uidRange")
+        out = guest_build(machine, "uidRange", "uidRange")
         print(out)
         assert "uid=0 range=65536" in out, out
 
     with subtest("check unit gates the signer"):
         machine.succeed(
-            "printf 'directories.tokendir = ${stateDir}/tokens\\nobjectstore.backend = file\\nlog.level = ERROR\\n'"
-            " > ${stateDir}/softhsm2.conf",
-            "echo 1234 > ${stateDir}/pin",
-            "softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678",
+            ${vm.softhsm.init}
         )
         # No key yet: the check fails (it never creates one), so does signer.
         machine.fail("systemctl start signer.service")
@@ -214,7 +202,15 @@ pkgs.testers.runNixOSTest {
         machine.fail("test -e /run/cakeys/signing.pem")
         machine.succeed(f"{km} lock --spec signing-soft --token softhsm --update-lock")
         machine.succeed("systemctl start signer.service")
-        machine.succeed("systemctl is-active cakeys-check-signing.service")
+        # The check passed and finished: inactive, so the next start of signer runs it again.
+        check = "systemctl show --value -p Result -p ActiveState cakeys-check-signing.service"
+        assert sorted(machine.succeed(check).split()) == ["inactive", "success"], machine.succeed(check)
+        # A finished oneshot is not a stopped dependency: signer keeps running.
+        machine.succeed("systemctl is-active signer.service")
+        # Ordered after the clock is set, without pulling the target in.
+        unit = "cakeys-check-signing.service"
+        assert "time-sync.target" in machine.succeed(f"systemctl show --value -p After {unit}")
+        assert "time-sync.target" not in machine.succeed(f"systemctl show --value -p Wants -p Requires {unit}")
         # The signer signed through the key file, with the locked key.
         assert machine.succeed("stat -c '%a %G' /run/cakeys/signing.pem").split() == ["640", "signer"]
         assert machine.succeed("head -n1 /run/cakeys/signing.pem").strip() == "-----BEGIN PKCS#11 PROVIDER URI-----"
@@ -225,10 +221,13 @@ pkgs.testers.runNixOSTest {
             " -provider pkcs11 -in /run/cakeys/signing.pem -pubout -out /run/signing.pub",
             "openssl dgst -sha256 -verify /run/signing.pub -signature /run/signer.sig /etc/km/keys.toml",
         )
-        # Key gone: a fresh check fails, and makes no new key.
+        # Key gone: restarting signer runs the check again, which fails and makes no new key.
+        # No hand stop of the check unit: a restart alone must re-check (review D5).
         machine.succeed(f"{km} delete --spec signing-soft --token softhsm --no-update-lock")
-        machine.succeed("systemctl stop signer.service cakeys-check-signing.service")
-        machine.fail("systemctl start signer.service")
+        machine.fail("systemctl restart signer.service")
+        # Refused by the check run again, not only by a signer that could not sign: a check
+        # left active from the earlier pass would still say success.
+        assert machine.succeed(f"systemctl show --value -p Result {unit}").strip() == "exit-code"
         machine.fail(f"{km} resolve --spec signing-soft --token softhsm")
         # No key file outlives the failed check.
         machine.fail("test -e /run/cakeys/signing.pem")

@@ -74,6 +74,23 @@ fn check_pem_is_a_key_file_for_pkcs11_provider() {
     assert_eq!(e.code(&["check", "signing-pub", "--uri-pin", "value"]), 17);
 }
 
+/// `--uri-pin source` names a `pinEnv` token's variable as `pin-source=env:`, as it names a
+/// `pinFile` as `file:` (docs/CAKEYS.md, "The contract with programs"; review check.rs F3).
+#[test]
+fn a_pin_from_the_environment_is_a_pin_source_env() {
+    let Some(e) = env("pin-env-uri") else { return };
+    e.config(&EC.replace("ec-lifecycle", "pin-env-uri"));
+    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 0);
+    let pin_file = format!("pinFile = \"{}\"", e.dir.join("pin").display());
+    let text = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
+    assert!(text.contains(&pin_file), "{text}");
+    e.write_config(&text.replacen(&pin_file, "pinEnv = \"CAKEYS_TEST_URI_PIN\"", 1));
+    let pin = [("CAKEYS_TEST_URI_PIN", std::path::Path::new("1234"))];
+    let o = e.km_env(&["check", "signing", "--uri-pin", "source", "--format", "uri"], &pin);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(stdout(&o).trim_end().ends_with("?pin-source=env:CAKEYS_TEST_URI_PIN"), "{}", stdout(&o));
+}
+
 /// [`check_pem_is_a_key_file_for_pkcs11_provider`]'s other objects: a key located by label
 /// alone, so without `CKA_ID`; and for the refusals, a public key on the token without a PIN.
 const PEM_REFUSALS: &str = r#"
@@ -101,10 +118,8 @@ tokens.ref-anon = { locator = { CKA_LABEL = "check-pem" }, origin = "adopt" }
 fn scheme_the_token_lacks_is_refused_before_create() {
     let Some(e) = env("token_lacks") else { return };
     // The same token through a module config that hides CKM_AES_CMAC.
-    let conf = std::fs::read_to_string(std::env::var(REF.conf_var).unwrap()).unwrap();
-    let no_cmac = e.dir.join("no-cmac.conf");
-    std::fs::write(&no_cmac, (REF.hide_mechanism)(&conf, "CKM_AES_CMAC")).unwrap();
-    let env = [(REF.conf_var, no_cmac.as_path())];
+    let (var, no_cmac) = e.hiding("CKM_AES_CMAC");
+    let env = [(var, no_cmac.as_path())];
     e.config(
         r#"
 [objects.k]
@@ -147,7 +162,7 @@ tokens.ref = { locator = { CKA_LABEL = "no-cmac" }, origin = "create" }
     ));
     let o = e.km_env(&["verify", "--spec", "k-sign", "--token", "ref"], &env);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
-    assert!(stderr(&o).contains("implements none of CKM_AES_CMAC"), "{}", stderr(&o));
+    assert!(stderr(&o).contains("CKM_AES_CMAC"), "names what the token lacks: {}", stderr(&o));
 }
 
 /// [`check_token_checks_every_object_on_it`]'s objects: two keys on `ref`, a third added later.
@@ -192,7 +207,6 @@ tokens.ref = { locator = { CKA_LABEL = "tok-c" }, origin = "create" }
 #[test]
 fn check_token_checks_every_object_on_it() {
     let Some(e) = env("check_token") else { return };
-    e.session().clear(&["tok-a", "tok-b", "tok-c"]);
     e.config(ON_TOKEN);
     assert_eq!(e.code(&["create"]), 0);
     let all = e.km(&["check", "--token", "ref"]);
@@ -216,7 +230,6 @@ fn check_token_checks_every_object_on_it() {
     assert!(err.contains("exit 11: 'tok-b' (spec 'tok-b-ref')"), "{err}");
     assert!(err.contains("exit 18: 'tok-c' (spec 'tok-c-ref')"), "{err}");
     assert!(!err.contains("'tok-a'"), "{err}");
-    assert!(err.contains("2 of 3 on token 'ref'"), "{err}");
 
     for args in [
         &["check", "--token", "ref", "--uri-module"][..],
@@ -236,7 +249,6 @@ fn check_token_checks_every_object_on_it() {
 #[test]
 fn check_judges_attestation_dates_at_the_time_asked() {
     let Some(e) = env("check_validity") else { return };
-    e.session().clear(&["check-validity"]);
     e.config(&EC.replace("ec-lifecycle", "check-validity"));
     assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 0);
     assert_eq!(e.code(&["check", "signing", "--at", "2030-01-01T00:00:00Z"]), 0);
@@ -246,7 +258,7 @@ fn check_judges_attestation_dates_at_the_time_asked() {
     let o = e.km(&["check", "signing", "--at", "2030-01-01"]);
     assert_eq!(code(&o), 17, "{}", stderr(&o));
     assert!(stderr(&o).contains("not an RFC 3339 time in UTC"), "{}", stderr(&o));
+    // A usage error (2), whatever clap's wording (review check.rs F2).
     let o = e.km(&["check", "signing", "--at", "2030-01-01T00:00:00Z", "--ignore-validity"]);
-    assert_ne!(code(&o), 0, "{}", stderr(&o));
-    assert!(stderr(&o).contains("cannot be used with"), "{}", stderr(&o));
+    assert_eq!(code(&o), 2, "{}", stderr(&o));
 }

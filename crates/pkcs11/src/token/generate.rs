@@ -62,16 +62,9 @@ impl Token {
     }
 
     /// Whether a curve the module refused by OID is generated once more by name (ISSUES.md
-    /// B18): when the token's profile says only its name generates it (`via = "by-name"`), or
-    /// no profile answers for it. Any other refusal is the module's answer, reported as given,
-    /// and no second generation is tried on the token.
-    fn retries_by_name(&self, key_type: &str, curve: &str) -> bool {
-        let row = Capability::Generate { key_type: key_type.into(), on: On::Item(curve.to_owned()) };
-        self.profiles
-            .module
-            .as_ref()
-            .and_then(|p| p.capabilities.get(&row))
-            .is_none_or(|r| r.via.as_deref() == Some("by-name"))
+    /// B18), [`by_name_retry`] by the token's module profile.
+    fn retries_by_name(&self, key_type: &str, curve: &str) -> Option<ByName> {
+        by_name_retry(self.profiles.module.as_ref(), key_type, curve)
     }
 
     /// The module's own generation: its template alone, no public template.
@@ -127,8 +120,7 @@ impl Token {
         let refused = |e: CkError| {
             self.unsupported(format!("generating key on '{}': {} ({e})", self.name, rv_name(&e))).with_rv(rv_of(&e))
         };
-        let private_declared =
-            spec.attributes.contains_key("CKA_PRIVATE") || spec.public_attributes.contains_key("CKA_PRIVATE");
+        let private_declared = templates::public_declares(spec, "CKA_PRIVATE");
         // A key pair, once more without the public half's default `CKA_PRIVATE = false` when the
         // module refuses it ([`with_public_default_dropped`]): whether it did.
         let pair = |mech: &Mechanism, public: &[Attribute], private: &[Attribute]| {
@@ -151,14 +143,16 @@ impl Token {
                 // edwards25519, a profile's `by-name` row [src]) gets PKCS#11 3.0's
                 // PrintableString form. The identity is the same: the SPKI, not the params.
                 let by_oid = pair(&mech, &by_oid_public, &key);
-                match (by_oid, curve.params_by_name()) {
-                    (Err(e), Some(name)) if self.retries_by_name(&kt.to_string(), curve.name()) => {
+                let retry = curve.params_by_name().zip(self.retries_by_name(&kt.to_string(), curve.name()));
+                match (by_oid, retry) {
+                    (Err(by_oid), Some((name, why))) => {
                         let by_name = self.generation_public(on, Some(name))?.unwrap_or_default();
-                        pair(&mech, &by_name, &key).map_err(|_| e).map(|d| note(d, Some(curve.name().to_owned())))
+                        pair(&mech, &by_name, &key)
+                            .map(|d| note(d, Some(curve.name().to_owned())))
+                            .map_err(|by_name| self.unsupported(by_name_refused(&self.name, why, &by_oid, &by_name)))
                     }
-                    (other, _) => other.map(|d| note(d, None)),
+                    (other, _) => other.map(|d| note(d, None)).map_err(refused),
                 }
-                .map_err(refused)
             }
             (KeyType::DES3, _) => {
                 self.session.generate_key(&Mechanism::Des3KeyGen, &key).map(|_| None).map_err(refused)
@@ -192,19 +186,26 @@ impl Token {
 
     /// Destroy the object `h`, identified by the caller, and — for a private key — the public key
     /// objects under its locator that hold its public key. A public key object holding another
-    /// key (or none cakeys can read) is left alone. Returns (destroyed, left).
+    /// key (or none cakeys can read) is left alone. Returns (destroyed, left). `spki` is the
+    /// private key's ([`Self::spki`]) where the caller has read it already.
     ///
     /// # Errors
     ///
     /// `Unsupported` (15) when the provider cannot actually erase keys (ykcs11); a failure to
     /// destroy is `Unavailable`, naming the token.
-    pub fn destroy_identified(&self, h: ObjectHandle, object: &ObjectCfg, loc: &Locator) -> Result<(usize, usize)> {
+    pub fn destroy_identified(
+        &self,
+        h: ObjectHandle,
+        object: &ObjectCfg,
+        loc: &Locator,
+        spki: Option<&[u8]>,
+    ) -> Result<(usize, usize)> {
         let mut handles = vec![h];
         let mut left = 0;
         if class_of(object) == ObjectClass::PRIVATE_KEY {
-            let spki = self.spki(h, loc)?;
+            let spki = spki.map_or_else(|| self.spki(h, loc), |s| Ok(s.to_vec()))?;
             for p in self.find(ObjectClass::PUBLIC_KEY, loc)? {
-                if self.held_spki(p).as_ref() == Some(&spki) {
+                if self.held_spki(p)?.as_ref() == Some(&spki) {
                     handles.push(p);
                 } else {
                     left += 1;
@@ -336,10 +337,75 @@ fn retry_without_public_private(refusal: &CkError, declared: bool) -> bool {
     !declared && matches!(refusal, CkError::Pkcs11(RvError::AttributeValueInvalid, _))
 }
 
+/// Why a curve the module refused by OID is generated once more by name ([`by_name_retry`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ByName {
+    /// The module profile says only the curve's name generates it (`via = "by-name"`): the OID
+    /// refusal was expected, the by-name attempt's answer is the module's.
+    Profiled,
+    /// No profile answers for the curve: the OID refusal is the module's own answer, the by-name
+    /// attempt a try.
+    Unprofiled,
+}
+
+/// Whether, and why, a curve the module refused by OID is generated once more by name
+/// (ISSUES.md B18): when the token's `module` profile says only its name generates it, or no
+/// profile answers for it. Any other row is the module's answer, reported as given, and no
+/// second generation is tried on the token.
+fn by_name_retry(module: Option<&cakeys_profile::Profile>, key_type: &str, curve: &str) -> Option<ByName> {
+    let row = Capability::Generate { key_type: key_type.into(), on: On::Item(curve.to_owned()) };
+    match module.and_then(|p| p.capabilities.get(&row)) {
+        None => Some(ByName::Unprofiled),
+        Some(r) if r.via.as_deref() == Some("by-name") => Some(ByName::Profiled),
+        Some(_) => None,
+    }
+}
+
+/// A generation `token` refused by OID (`by_oid`) and then by name (`by_name`): both said, led by
+/// the one that answers (`why`), whose return value it keeps (token/generate.rs F3).
+fn by_name_refused(token: &str, why: ByName, by_oid: &CkError, by_name: &CkError) -> Msg {
+    let (answer, other, other_was) = match why {
+        ByName::Profiled => (by_name, by_oid, "by OID, as the profile expects"),
+        ByName::Unprofiled => (by_oid, by_name, "by name, tried after"),
+    };
+    Msg::from(format!("generating key on '{token}': {} ({answer}); {other_was}: {}", rv_name(answer), rv_name(other)))
+        .with_rv(rv_of(answer))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use cryptoki::context::Function;
+
+    /// A curve refused by OID is retried by name where its profile row says so or no row
+    /// answers; the refusal leads with the attempt that answers, keeps its return value and
+    /// still says the other (token/generate.rs F3): with `via = "by-name"`, the by-name
+    /// attempt's, not the OID refusal the profile expects.
+    #[test]
+    fn the_by_name_retry_reports_the_attempt_that_answers() {
+        use cakeys_profile::{Answer, Mode, Profile, Row};
+        let row = |via: Option<&str>| {
+            let mut p = Profile::new("ykcs11/2.7".into(), Mode::Observed);
+            let generate =
+                Capability::Generate { key_type: "CKK_EC_EDWARDS".into(), on: On::Item("edwards25519".into()) };
+            p.capabilities.insert(generate, Row { answer: Answer::Yes, evidence: None, via: via.map(Into::into) });
+            p
+        };
+        let retry = |p: Option<&Profile>| by_name_retry(p, "CKK_EC_EDWARDS", "edwards25519");
+        assert_eq!(retry(Some(&row(Some("by-name")))), Some(ByName::Profiled));
+        assert_eq!(retry(None), Some(ByName::Unprofiled));
+        assert_eq!(retry(Some(&Profile::new("m".into(), Mode::Observed))), Some(ByName::Unprofiled));
+        assert_eq!(retry(Some(&row(None))), None);
+        let oid = CkError::Pkcs11(RvError::VendorDefined(0x8000_0001), Function::GenerateKeyPair);
+        let name = CkError::Pkcs11(RvError::VendorDefined(0x8000_0002), Function::GenerateKeyPair);
+        let profiled = by_name_refused("yk", ByName::Profiled, &oid, &name);
+        assert_eq!(profiled.rv(), Some(0x8000_0002));
+        assert!(profiled.starts_with("generating key on 'yk': CKR 0x80000002 ("), "{profiled}");
+        assert!(profiled.ends_with("by OID, as the profile expects: CKR 0x80000001"), "{profiled}");
+        let unprofiled = by_name_refused("yk", ByName::Unprofiled, &oid, &name);
+        assert_eq!(unprofiled.rv(), Some(0x8000_0001));
+        assert!(unprofiled.ends_with("by name, tried after: CKR 0x80000002"), "{unprofiled}");
+    }
 
     /// The note says on the run what it said as text before it was typed: each part as its own
     /// sentence after the token's name, both joined by `; `.

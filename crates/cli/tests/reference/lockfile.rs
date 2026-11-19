@@ -213,15 +213,7 @@ fn update_lock_waits_for_the_sidecar_lock() {
     let held =
         std::fs::File::options().write(true).create(true).truncate(false).open(e.dir.join("keys.lock.lck")).unwrap();
     held.lock().unwrap();
-    let spawn = |args: &[&str]| {
-        std::process::Command::new(env!("CARGO_BIN_EXE_cakeys"))
-            .env_remove("NIX_BUILD_TOP")
-            .arg("--config")
-            .arg(e.dir.join("keys.toml"))
-            .args(args)
-            .spawn()
-            .unwrap()
-    };
+    let spawn = |args: &[&str]| e.run().command(args).spawn().unwrap();
     // A reader never takes it: verify finishes while it is held. However slow the build (a debug
     // build behind the fault shim takes over a second): one that waited would never finish.
     let mut reader = spawn(&["verify", "--spec", "signing-soft", "--token", "ref"]);
@@ -237,18 +229,69 @@ fn update_lock_waits_for_the_sidecar_lock() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
     assert!(status.success());
-    // An updater waits: it cannot finish while the lock is held.
-    let mut updater = spawn(&r);
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    assert!(updater.try_wait().unwrap().is_none(), "the updater did not wait for the sidecar lock");
     drop(held);
-    assert_eq!(updater.wait().unwrap().code(), Some(0));
+    // An updater waits, and says so before it blocks: its note is awaited, never a timer, which
+    // a slow build (the fault shim's) outlasted with no lock taken at all (review lockfile.rs F1).
+    let (waited, code) = waits_for_the_sidecar(&e, &r);
+    waited.unwrap_or_else(|said| panic!("the updater did not wait for the sidecar lock: {said}"));
+    assert_eq!(code, Some(0));
+
+    // The sidecar is the lock file's, however the run names it (review D2): an updater through a
+    // symlink waits on the same `<lock>.lck`.
+    let link = e.dir.join("linked.lock");
+    std::os::unix::fs::symlink(e.dir.join("keys.lock"), &link).unwrap();
+    let (waited, _) = waits_for_the_sidecar(&e, &[&["--lock", link.to_str().unwrap()][..], &r[..]].concat());
+    waited.unwrap_or_else(|said| panic!("through a symlink, the updater took another sidecar: {said}"));
+    assert!(!e.dir.join("linked.lock.lck").exists(), "a sidecar beside the symlink");
     assert_eq!(e.code(&["verify", "--spec", "signing-soft", "--token", "ref"]), 0);
+
+    // `gc --apply` writes the lock, so it holds the sidecar too (docs/CAKEYS.md; review
+    // delete.rs F4).
+    let (waited, code) = waits_for_the_sidecar(&e, &["gc", "--apply"]);
+    waited.unwrap_or_else(|said| panic!("gc --apply did not wait for the sidecar lock: {said}"));
+    assert_eq!(code, Some(0));
+}
+
+/// Run `args` while this test holds `keys.lock.lck` as cakeys does (an exclusive file lock):
+/// `Ok` when the run said it waits for it and was still running then, else `Err` with what it
+/// said. The hold is released and the run finishes either way: its exit code is the second.
+fn waits_for_the_sidecar(e: &Suite, args: &[&str]) -> (Result<(), String>, Option<i32>) {
+    use std::sync::mpsc::RecvTimeoutError;
+    let sidecar = e.dir.join("keys.lock.lck");
+    let held = std::fs::File::options().write(true).create(true).truncate(false).open(&sidecar).unwrap();
+    held.lock().unwrap();
+    let mut run = e.run().command(args).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    let lines = std::io::BufRead::lines(std::io::BufReader::new(run.stderr.take().unwrap()));
+    let (tell, heard) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in lines.map_while(Result::ok) {
+            let _ = tell.send(line);
+        }
+    });
+    let waiting = format!("note: waiting for {}: another run is updating the lock", sidecar.display());
+    let mut said = Vec::new();
+    let heard_it = loop {
+        match heard.recv_timeout(std::time::Duration::from_secs(60)) {
+            Ok(line) if line == waiting => break true,
+            Ok(line) => said.push(line),
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break false,
+        }
+    };
+    let running = run.try_wait().unwrap().is_none();
+    drop(held);
+    let status = run.wait().unwrap();
+    reader.join().unwrap();
+    let verdict = if heard_it && running {
+        Ok(())
+    } else {
+        Err(format!("{said:?}, and it {}", if running { "never said it waits" } else { "had finished" }))
+    };
+    (verdict, status.code())
 }
 
 /// `lock` and `delete` write the lock by default; `--no-update-lock` compares only (first use
-/// is then 10 and nothing is written). Where the lock cannot be written — a Nix build sandbox, a
-/// read-only lock, a read-only directory — a writing run is refused (14) before the token is
+/// is then 18 and nothing is written). Where the lock cannot be written — a Nix build sandbox, a
+/// read-only lock, a read-only directory — a writing run is refused (21) before the token is
 /// touched, naming `--no-update-lock`; `check` never writes and is unaffected.
 #[test]
 fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
@@ -260,11 +303,11 @@ fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
     let lock = e.dir.join("keys.lock");
     let refused = |o: &Output, why: &str| {
         let err = stderr(o);
-        assert_eq!(code(o), 14, "{err}");
+        assert_eq!(code(o), 21, "{err}");
         assert!(err.contains(why) && err.contains("--no-update-lock"), "{err}");
     };
 
-    // Compare only: first use is 10 and the lock is not created.
+    // Compare only: first use is 18 and the lock is not created.
     assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"]), 18);
     assert_eq!(e.code(&compare), 18);
     assert!(!lock.exists());
@@ -287,6 +330,8 @@ fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
     if std::fs::OpenOptions::new().append(true).open(&lock).is_err() {
         refused(&e.km(&r), "is not writable");
         assert_eq!(e.code(&compare), 0);
+    } else {
+        eprintln!("skipping the read-only lock: this user writes a mode-444 file");
     }
     std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
 
@@ -299,8 +344,54 @@ fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
         let elsewhere = elsewhere.to_str().unwrap();
         refused(&e.km(&[&["--lock", elsewhere][..], &r[..]].concat()), "directory");
         assert_eq!(e.code(&[&["--lock", elsewhere][..], &compare[..]].concat()), 18);
+    } else {
+        eprintln!("skipping the read-only directory: this user writes into a mode-555 one");
     }
     std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// `CAKEYS_CONFIG` and `CAKEYS_LOCK` stand in for `--config` and `--lock`, the flags winning
+/// over them; a lock that is there but cannot be read is an I/O failure (1), never a first use
+/// (review lockfile.rs F2: neither the variables nor exit 1 had a test).
+#[test]
+fn the_variables_name_the_files_and_an_unreadable_lock_is_an_io_failure() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(e) = env("lock-vars") else { return };
+    e.config(&EC.replace("ec-lifecycle", "lock-vars"));
+    let r = ["lock", "--spec", "signing-soft", "--token", "ref"];
+    let verify = ["verify", "--spec", "signing-soft", "--token", "ref"];
+    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"]), 18);
+    let config = e.dir.join("keys.toml");
+    let elsewhere = e.dir.join("elsewhere.lock");
+
+    // The variables alone (`tool`, not `Run`, which names the config with the flag).
+    let o = tool(BIN).env("CAKEYS_CONFIG", &config).env("CAKEYS_LOCK", &elsewhere).args(r).output().unwrap();
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(elsewhere.is_file(), "no lock where CAKEYS_LOCK names it");
+    assert!(!e.dir.join("keys.lock").exists(), "a lock beside the config, CAKEYS_LOCK ignored");
+
+    // The flags win over variables that name nothing.
+    let o = tool(BIN)
+        .env("CAKEYS_CONFIG", e.dir.join("absent.toml"))
+        .env("CAKEYS_LOCK", e.dir.join("absent.lock"))
+        .arg("--config")
+        .arg(&config)
+        .arg("--lock")
+        .arg(&elsewhere)
+        .args(verify)
+        .output()
+        .unwrap();
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+
+    // A lock this user cannot read (root reads it anyway).
+    std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&elsewhere).is_ok() {
+        eprintln!("skipping the unreadable lock: this user reads a mode-000 file");
+    } else {
+        let o = e.km(&[&["--lock", elsewhere.to_str().unwrap()][..], &verify[..]].concat());
+        assert_eq!(code(&o), 1, "{}", stderr(&o));
+    }
+    std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o644)).unwrap();
 }
 
 #[test]

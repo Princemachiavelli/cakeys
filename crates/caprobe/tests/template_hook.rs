@@ -3,9 +3,16 @@
 //! Run in-process on `SoftHSM` with a provider that refuses every secret-key generation
 //! template: the probe has no AES key, so no wrap rows, where `SoftHSM`'s own provider leaves
 //! the template alone and wraps (`wrap.rsa-oaep.SHA-1`, profiles/modules/softhsm/2.7.toml, which
-//! tests/reference.rs holds to a fresh probe).
+//! tests/reference.rs holds to a fresh probe). The same probe with the default providers, run
+//! beside it, is the control. The move probes' templates (`Import`, `PublicHalf`, `Object`) go
+//! through the provider too.
 //!
 //! Needs the reference suite's `CAKEYS_TEST_MODULE`; skipped without it.
+//!
+//! One test, and one `caprobe::main_from` call, per process: `main_from` activates the
+//! process's profile set, which a second activation refuses (review `template_hook.rs` F2). The
+//! control is a run of the binary for that reason. A second in-process test here needs
+//! `main_from` to take an already active set first (caprobe's lib.rs).
 
 #[path = "../../cli/tests/common/mod.rs"]
 mod common;
@@ -13,11 +20,16 @@ mod common;
 use cakeys_core::KmError;
 use cakeys_core::config::ModuleInfo;
 use cakeys_core::types::ObjectClass;
-use cakeys_pkcs11::{Attributes, Half, Provider, Template};
+use cakeys_pkcs11::{Attributes, Half, Provider, Template, Via};
 use common::*;
 use std::process::ExitCode;
+use std::sync::Mutex;
 
-/// Refuses the template of every secret key cakeys generates, and nothing else.
+/// What each template the provider was asked is for.
+static ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Refuses the template of every secret key cakeys generates, and nothing else; records what
+/// each template is for in [`ASKED`].
 struct RefusesSecrets;
 
 impl Provider for RefusesSecrets {
@@ -30,6 +42,16 @@ impl Provider for RefusesSecrets {
     }
 
     fn template(&self, req: &Template<'_>, _: &mut Attributes) -> cakeys_core::Result<()> {
+        let kind = match req {
+            Template::Generate(..) => "generate",
+            Template::Import(_, Via::CreateObject) => "import create-object",
+            Template::Import(_, Via::Unwrap) => "import unwrap",
+            Template::PublicHalf(_) => "public half",
+            Template::Object(_) => "object",
+            Template::TrustedCopy => "trusted copy",
+            Template::Session(_) => "session",
+        };
+        ASKED.lock().unwrap().push(kind.to_owned());
         match req {
             Template::Generate(d, Half::Key) if d.object.class == ObjectClass::SecretKey => {
                 Err(KmError::Unsupported("the test provider refuses secret-key generation".into()))
@@ -58,4 +80,20 @@ fn the_write_probes_make_their_secret_keys_through_the_provider() {
     assert!(profile.contains("\"prove.pop-unwrap.CKK_RSA.1024\" = { answer = \"yes\" }"), "{profile}");
     // But it made no AES key to wrap.
     assert!(!profile.contains("wrap.rsa-oaep."), "{profile}");
+    // The move probes asked the provider too (review pkcs11 templates.rs F3: no test reached
+    // these hooks with a provider of its own).
+    let asked = ASKED.lock().unwrap().clone();
+    for kind in ["generate", "import create-object", "import unwrap", "public half", "object"] {
+        assert!(asked.iter().any(|a| a == kind), "no {kind} template asked: {asked:?}");
+    }
+
+    // The control: the same probe with the default providers wraps, so the missing rows are
+    // the provider's refusal, not these arguments' (review `template_hook.rs` F1: the absence
+    // alone passed whatever else stopped the wrap probes).
+    w.write_config(&tokens);
+    let control = w.dir.join("control.toml");
+    let o = Run::new(BIN, &config).output(&[&args[3..], &more[..2], &["--out", control.to_str().unwrap()]].concat());
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let profile = std::fs::read_to_string(&control).unwrap();
+    assert!(profile.contains("\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\" }"), "{profile}");
 }

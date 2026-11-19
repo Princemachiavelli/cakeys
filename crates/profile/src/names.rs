@@ -3,6 +3,20 @@
 //! back unchanged. Each compares, hashes and orders by its name, as the text it replaced did:
 //! rows keep their order, and a known name read as text is the known value.
 
+/// A name this cakeys does not know, as read: only `From` makes one, after the known names did
+/// not match, so an `Other` never holds a known name and a pattern on a variant sees every value
+/// of it (review names.rs F1).
+#[derive(Debug, Clone)]
+pub struct Unknown(String);
+
+impl Unknown {
+    /// The name, as read.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 macro_rules! named {
     ($(#[$doc:meta])* $ty:ident { $($variant:ident = $name:literal),* $(,)? }) => {
         $(#[$doc])*
@@ -10,16 +24,19 @@ macro_rules! named {
         pub enum $ty {
             $(#[doc = concat!("`", $name, "`.")] $variant,)*
             /// A name this cakeys does not know, as read.
-            Other(String),
+            Other(Unknown),
         }
 
         impl $ty {
+            /// Every name this cakeys knows, one per variant.
+            pub const NAMES: &[&str] = &[$($name),*];
+
             /// The name, as profiles write it.
             #[must_use]
             pub fn name(&self) -> &str {
                 match self {
                     $($ty::$variant => $name,)*
-                    $ty::Other(name) => name,
+                    $ty::Other(name) => &name.0,
                 }
             }
         }
@@ -28,7 +45,7 @@ macro_rules! named {
             fn from(name: &str) -> Self {
                 match name {
                     $($name => $ty::$variant,)*
-                    other => $ty::Other(other.to_owned()),
+                    other => $ty::Other(Unknown(other.to_owned())),
                 }
             }
         }
@@ -137,7 +154,19 @@ mod tests {
     #[test]
     fn names_are_values_and_order_as_text() {
         assert!(matches!(KeyKind::from("CKK_EC"), KeyKind::Ec));
-        assert_eq!(KeyKind::from("CKK_EC"), KeyKind::Other("CKK_EC".into()), "equal by name");
+        // Every way to a value goes through the known names: a known one is never `Other`.
+        for name in KeyKind::NAMES {
+            assert!(!matches!(KeyKind::from(*name), KeyKind::Other(_)), "{name}");
+            assert!(!matches!(KeyKind::from((*name).to_owned()), KeyKind::Other(_)), "{name}");
+            let read: KeyKind = toml::from_str::<toml::Table>(&format!("k = \"{name}\""))
+                .unwrap()
+                .remove("k")
+                .unwrap()
+                .try_into()
+                .unwrap();
+            assert!(!matches!(read, KeyKind::Other(_)), "{name}");
+        }
+        assert!(matches!(KeyKind::from("CKK_ML_DSA"), KeyKind::Other(u) if u.as_str() == "CKK_ML_DSA"));
         assert_eq!(KeyKind::from("CKK_ML_DSA").name(), "CKK_ML_DSA");
         let mut kinds: Vec<KeyKind> =
             ["CKK_RSA", "CKK_EC_EDWARDS", "CKK_AES", "CKK_ML_DSA", "CKK_EC"].map(KeyKind::from).into();

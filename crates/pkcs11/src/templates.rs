@@ -11,7 +11,7 @@
 
 use crate::provider::{Declared, SessionKey};
 use crate::token::{bool_attr, curve_of, key_type_of, locator_attrs};
-use cakeys_core::config::{AttrValue, ObjectCfg};
+use cakeys_core::config::{AttrValue, ObjectCfg, SpecCfg};
 use cakeys_core::id::Commit;
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
@@ -52,13 +52,18 @@ pub fn policy(
 pub fn known_policy(attrs: &BTreeMap<String, AttrValue>) -> Result<Option<Vec<Attribute>>> {
     let baseline =
         cakeys_profile::Set::active().and_then(|s| s.baseline()).map_err(|e| KmError::Validation(e.into()))?;
-    let unknown = || KmError::NotFound(String::new().into());
-    let by_name = |_: &str, n: &str| {
-        baseline.mechanisms.get(n).and_then(|id| MechanismType::try_from(*id).ok()).ok_or_else(unknown)
+    // Whether the mapper met a name it does not know: the one failure that means "cannot
+    // decide", told apart from any other `policy` refuses by this flag, not by the error's kind.
+    let unknown = std::cell::Cell::new(false);
+    let by_name = |name: &str, n: &str| {
+        baseline.mechanisms.get(n).and_then(|id| MechanismType::try_from(*id).ok()).ok_or_else(|| {
+            unknown.set(true);
+            KmError::Unsupported(format!("{name}: {n} is no mechanism the baseline names").into())
+        })
     };
     match policy(attrs, &by_name) {
         Ok(t) => Ok(Some(t)),
-        Err(KmError::NotFound(_)) => Ok(None),
+        Err(_) if unknown.get() => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -71,15 +76,23 @@ fn token_object(on: Declared<'_>) -> Result<Vec<Attribute>> {
 }
 
 /// A public key's defaults, beside the spec's public `policy`: `CKA_VERIFY`, and public (`CKA_PRIVATE
-/// = false`), each unless the spec declares it (a template may not carry a type twice).
+/// = false`), each unless the public half's template declares it (a template may not carry a
+/// type twice; [`public_declares`]).
 fn public_defaults(on: Declared<'_>, t: &mut Vec<Attribute>) {
-    let declared = |n| on.spec.attributes.contains_key(n) || on.spec.public_attributes.contains_key(n);
-    if !declared("CKA_VERIFY") {
+    if !public_declares(on.spec, "CKA_VERIFY") {
         t.push(Attribute::Verify(true));
     }
-    if !declared("CKA_PRIVATE") {
+    if !public_declares(on.spec, "CKA_PRIVATE") {
         t.push(Attribute::Private(false));
     }
+}
+
+/// Whether a key pair's public half declares the attribute `name`: its `publicAttributes`, the
+/// only ones its template carries. The private key's `attributes` are the private key's: one
+/// declaring `CKA_PRIVATE = true` leaves the public half public (templates.rs F1).
+#[must_use]
+pub fn public_declares(spec: &SpecCfg, name: &str) -> bool {
+    spec.public_attributes.contains_key(name)
 }
 
 /// The key `on` generates, from cakeys' templates: a pair's private template (`CKA_TOKEN`, the
@@ -290,4 +303,71 @@ pub fn rebind_copy(object: &ObjectCfg, commits: &[Commit]) -> Result<Vec<Attribu
         }
     }
     Ok(t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cakeys_core::config::{Locator, SpecMigrateCfg};
+    use cakeys_core::types::KeyType as Kt;
+    use cryptoki::object::AttributeType;
+
+    fn spec(private: &[(&str, bool)], public: &[(&str, bool)]) -> SpecCfg {
+        let attrs = |a: &[(&str, bool)]| a.iter().map(|(n, v)| ((*n).to_owned(), AttrValue::Bool(*v))).collect();
+        SpecCfg {
+            object: "k".into(),
+            attributes: attrs(private),
+            public_attributes: attrs(public),
+            migrate: SpecMigrateCfg::default(),
+            tokens: BTreeMap::new(),
+        }
+    }
+
+    /// The public half's defaults follow its own template's declarations (templates.rs F1): a
+    /// private key declared `CKA_PRIVATE = true` leaves its public half public and verifying,
+    /// generated or imported; only `publicAttributes` naming the attribute removes the default,
+    /// so no type is there twice.
+    #[test]
+    fn the_public_half_takes_its_defaults_from_its_own_declarations() {
+        let object = ObjectCfg { curve: Some("secp256r1".into()), ..ObjectCfg::new(Class::PrivateKey, Some(Kt::Ec)) };
+        let locator = Locator { label: Some("k".into()), id: None };
+        let count = |t: &[Attribute], ty: AttributeType| t.iter().filter(|a| a.attribute_type() == ty).count();
+        for (private, public, carries) in [
+            (&[("CKA_PRIVATE", true), ("CKA_SIGN", true)][..], &[][..], true),
+            (&[][..], &[][..], true),
+            (&[("CKA_PRIVATE", true)][..], &[("CKA_PRIVATE", true), ("CKA_VERIFY", true)][..], false),
+        ] {
+            let s = spec(private, public);
+            let on = Declared { object: &object, spec: &s, locator: &locator };
+            for t in [generation_public(on, vec![], None).unwrap().unwrap(), public_half(on, vec![], None).unwrap()] {
+                assert_eq!(t.contains(&Attribute::Private(false)), carries, "{private:?} {public:?}: {t:?}");
+                assert_eq!(t.contains(&Attribute::Verify(true)), carries, "{private:?} {public:?}: {t:?}");
+                assert!(count(&t, AttributeType::Private) <= 1 && count(&t, AttributeType::Verify) <= 1, "{t:?}");
+            }
+            assert_eq!(public_declares(&s, "CKA_PRIVATE"), !carries);
+        }
+    }
+
+    /// A plan's policy template: a mechanism name the baseline does not know is "cannot decide"
+    /// (`None`), anything else `policy` refuses is the refusal, whatever its kind (templates.rs
+    /// F2: no error stands in for the unknown name).
+    #[test]
+    fn only_an_unknown_mechanism_name_leaves_the_plan_undecided() {
+        cakeys_profile::Set::activate_embedded().unwrap();
+        let attrs = |a: &[(&str, AttrValue)]| a.iter().map(|(n, v)| ((*n).to_owned(), v.clone())).collect();
+        let mechanisms = |names: &[&str]| AttrValue::mechanisms(names.iter().map(|n| (*n).to_owned()));
+        let known = known_policy(&attrs(&[("CKA_ALLOWED_MECHANISMS", mechanisms(&["CKM_ECDSA"]))])).unwrap();
+        assert_eq!(known, Some(vec![Attribute::AllowedMechanisms(vec![MechanismType::ECDSA])]));
+        let vendor = attrs(&[("CKA_ALLOWED_MECHANISMS", mechanisms(&["CKM_VENDOR_THING"]))]);
+        assert_eq!(known_policy(&vendor).unwrap(), None);
+        for refused in [
+            attrs(&[("CKA_NO_SUCH_FLAG", AttrValue::Bool(true))]),
+            attrs(&[
+                ("CKA_ALLOWED_MECHANISMS", mechanisms(&["CKM_ECDSA"])),
+                ("CKA_NO_SUCH_FLAG", AttrValue::Bool(true)),
+            ]),
+        ] {
+            assert!(matches!(known_policy(&refused), Err(KmError::Validation(_))), "{refused:?}");
+        }
+    }
 }

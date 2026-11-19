@@ -21,49 +21,30 @@
 # A fresh store per run: tpm2-pkcs11 leaves objects behind that it cannot destroy, and they
 # change what the next probe can do.
 #
+# The D-Bus, tpm2-abrmd and environment setup, the cleanup of a failed `up` and the waiting
+# `down` are nix/tpm2-test-env.sh's (`device-up`), shared with the software TPM. This script is
+# the one way to reach the real TPM (docs/DEVELOPMENT.md, "Hardware rules"), and runs from a
+# checkout only.
+#
 # Needs dbus-daemon, tpm2-abrmd, tpm2_ptool and tpm2-tools on PATH.
 set -euo pipefail
 
-cmd=$1 D=$2
+usage() {
+  echo "usage: $0 up <absolute dir> [persistent] | down <absolute dir>" >&2
+  exit 2
+}
+cmd=${1:-} D=${2:-}
+# `up` removes <dir>/store: never on an empty or relative <dir> (`up ""` would name /store).
+case $D in
+/?*) ;;
+*) usage ;;
+esac
+env_sh=$(dirname "$(realpath "$0")")/tpm2-test-env.sh
 case $cmd in
 up)
-  rm -rf "$D/store"
-  mkdir -p "$D/store"
-  conf="$(dirname "$(dirname "$(readlink -f "$(command -v dbus-daemon)")")")/share/dbus-1/session.conf"
-  dbus-daemon --config-file="$conf" --address="unix:abstract=cakeys-ftpm-$$" \
-    --fork --print-address=3 --print-pid=4 \
-    3>"$D/dbus.addr" 4>"$D/dbus.pid" </dev/null >/dev/null 2>"$D/dbus.log"
-  DBUS_SESSION_BUS_ADDRESS=$(head -1 "$D/dbus.addr")
-  export DBUS_SESSION_BUS_ADDRESS
-  tpm2-abrmd --session --tcti=device:/dev/tpmrm0 </dev/null >"$D/abrmd.log" 2>&1 &
-  echo $! >"$D/abrmd.pid"
-  tcti="$(dirname "$(dirname "$(command -v tpm2-abrmd)")")/lib/libtss2-tcti-tabrmd.so.0:bus_type=session"
-  cat >"$D/env" <<E
-export DBUS_SESSION_BUS_ADDRESS='$DBUS_SESSION_BUS_ADDRESS'
-export TPM2TOOLS_TCTI='$tcti' TPM2_PKCS11_TCTI='$tcti' TPM2_PKCS11_STORE='$D/store'
-export TPM2_PKCS11_BACKEND=esysdb TSS2_LOG=all+NONE
-E
-  # shellcheck source=/dev/null
-  . "$D/env"
-  for _ in $(seq 50); do
-    timeout 2 tpm2_getcap properties-fixed >/dev/null 2>&1 && break
-    sleep 0.1
-  done
-  timeout 5 tpm2_getcap properties-fixed >/dev/null
-  if [ "${3:-}" = persistent ]; then
-    tpm2_ptool init --primary-handle=0x81000001 --path "$D/store" >/dev/null
-  else
-    tpm2_ptool init --transient-parent tpm2-tools-ecc-default --path "$D/store" >/dev/null
-  fi
-  tpm2_ptool addtoken --pid=1 --label=kmtest --sopin=5678 --userpin=1234 --path "$D/store" >/dev/null
+  case ${3:-} in "" | persistent) ;; *) usage ;; esac
+  exec bash "$env_sh" device-up "$D" ${3:+"$3"}
   ;;
-down)
-  for p in abrmd dbus; do
-    [ -f "$D/$p.pid" ] && kill "$(cat "$D/$p.pid")" 2>/dev/null || true
-  done
-  ;;
-*)
-  echo "usage: $0 up|down <dir>" >&2
-  exit 2
-  ;;
+down) exec bash "$env_sh" down "$D" ;;
+*) usage ;;
 esac

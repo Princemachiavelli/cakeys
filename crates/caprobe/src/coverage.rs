@@ -105,8 +105,9 @@ type Row = (String, String);
 #[derive(Debug, Default)]
 struct Observed {
     rows: BTreeMap<Row, BTreeSet<String>>,
-    /// Numbers no baseline row names (vendor mechanisms), by table.
-    unnamed: BTreeMap<String, BTreeSet<u64>>,
+    /// What no baseline row names, by table: vendor mechanism numbers (hex), vendor return
+    /// values, functions the baseline lacks. Listed in the report, never a row.
+    unnamed: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// A rule of manual.toml.
@@ -203,10 +204,21 @@ fn observe(b: &Baseline, dir: &Path) -> Observed {
             let mut add = |table: &str, name: &str| {
                 seen.rows.entry((table.to_owned(), name.to_owned())).or_default().insert(test.clone());
             };
-            add("functions", call["fn"].as_str().unwrap());
             // How the program loaded the module: the shim answers it itself, untraced.
             add("functions", "C_GetFunctionList");
-            add("return-values", call["rv"].as_str().unwrap());
+            for (table, name) in
+                [("functions", call["fn"].as_str().unwrap()), ("return-values", call["rv"].as_str().unwrap())]
+            {
+                let in_baseline = match table {
+                    "functions" => b.functions.contains(name),
+                    _ => b.return_values.contains_key(name),
+                };
+                if in_baseline {
+                    add(table, name);
+                } else {
+                    seen.unnamed.entry(table.to_owned()).or_default().insert(name.to_owned());
+                }
+            }
             // The names of `table` with `field`'s values, among those starting with `prefix`
             // (a table whose values repeat across uses: CKG_ holds the MGFs and the IV
             // generators, CKZ_ the OAEP and the PBKDF2 sources).
@@ -219,7 +231,7 @@ fn observe(b: &Baseline, dir: &Path) -> Observed {
                     let matching: Vec<&String> =
                         names[table].get(&v).into_iter().flatten().filter(|n| n.starts_with(prefix)).collect();
                     if matching.is_empty() {
-                        seen.unnamed.entry(table.to_owned()).or_default().insert(v);
+                        seen.unnamed.entry(table.to_owned()).or_default().insert(format!("{v:#x}"));
                     }
                     for n in matching {
                         add(table, n);
@@ -250,7 +262,13 @@ fn observe(b: &Baseline, dir: &Path) -> Observed {
     seen
 }
 
-/// Every `CK?_` name the capability profiles under `profiles` mention.
+/// The keys whose values are prose (why, and from where): a `CK?_` name there is mentioned, not
+/// recorded. The `[notes]` and `[manual]` tables' values are prose too; their keys are not.
+const PROSE: [&str; 4] = ["evidence", "finding", "note", "requires-provider"];
+
+/// Every `CK?_` name the capability profiles under `profiles` record: in a row's key, a list
+/// (`advertise`, `add`, `subtract`, `key-types`) or a value (`class`, `via`), never in a
+/// comment or a prose field ([`PROSE`]).
 fn profile_names(profiles: &Path) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for sub in ["modules", "layers", "hardware"] {
@@ -262,17 +280,37 @@ fn profile_names(profiles: &Path) -> BTreeSet<String> {
                     dirs.push(path);
                     continue;
                 }
-                let text = std::fs::read_to_string(&path).unwrap();
-                let word = |c: char| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_';
-                for token in text.split(|c: char| !word(c)) {
-                    if token.len() > 4 && token.starts_with("CK") && token.as_bytes()[3] == b'_' {
-                        names.insert(token.to_owned());
-                    }
-                }
+                let doc: toml::Value =
+                    toml::from_str(&read(&path)).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+                recorded_names(&doc, false, &mut names);
             }
         }
     }
     names
+}
+
+/// The `CK?_` names in `v`'s keys, and in its strings unless they are `prose`.
+fn recorded_names(v: &toml::Value, prose: bool, names: &mut BTreeSet<String>) {
+    match v {
+        toml::Value::String(s) if !prose => names.extend(ck_names(s)),
+        toml::Value::Array(a) => a.iter().for_each(|v| recorded_names(v, prose, names)),
+        toml::Value::Table(t) => {
+            for (k, v) in t {
+                names.extend(ck_names(k));
+                let prose = prose || PROSE.contains(&k.as_str()) || k == "notes" || k == "manual";
+                recorded_names(v, prose, names);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The `CK?_` words of `text`.
+fn ck_names(text: &str) -> impl Iterator<Item = String> + '_ {
+    let word = |c: char| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_';
+    text.split(move |c: char| !word(c))
+        .filter(|t| t.len() > 4 && t.starts_with("CK") && t.as_bytes()[3] == b'_')
+        .map(str::to_owned)
 }
 
 /// The generated file and the rows nothing classifies (each with why not), from the baseline,
@@ -299,6 +337,9 @@ fn generate(
         }
         if !r.pattern.contains('*') && matched.iter().any(|row| used.contains(*row)) {
             problems.push(format!("manual rule {} {} names a used row", r.table, r.pattern));
+        } else if !matched.is_empty() && matched.iter().all(|row| used.contains(*row)) {
+            // A wildcard whose every row is used decides nothing: it names used rows only.
+            problems.push(format!("manual rule {} {} names used rows only", r.table, r.pattern));
         }
     }
     let mut status: BTreeMap<&str, BTreeMap<&str, &str>> = BTreeMap::new();
@@ -390,7 +431,8 @@ fn committed_coverage_is_generated_from_the_trace() {
                     let _ = writeln!(report, "{table} {name}: {}", tests.iter().cloned().collect::<Vec<_>>().join(" "));
                 }
                 for (table, values) in &seen.unnamed {
-                    let _ = writeln!(report, "{table}, no baseline name: {values:#x?}");
+                    let values = values.iter().cloned().collect::<Vec<_>>().join(" ");
+                    let _ = writeln!(report, "{table}, no baseline name: {values}");
                 }
                 std::fs::write(dir.join("coverage-report.txt"), report).unwrap();
             }
@@ -435,4 +477,81 @@ fn patterns_match_whole_names() {
     assert!(glob("*", "C_Login") && glob("C_Login", "C_Login"));
     assert!(!glob("C_Log", "C_Login") && !glob("CKM_A*B*C", "CKM_AB"));
     assert!(glob("CKM_A*B*C", "CKM_AxBxC") && glob("CKM_*ECDSA*", "CKM_ECDSA"));
+}
+
+/// A name a profile only mentions — in a comment, evidence, a finding or a note — is not one it
+/// records: only keys, lists and values give a row the status `profile` (review coverage F1).
+#[test]
+fn profiles_record_names_outside_their_prose() {
+    let doc: toml::Value = toml::from_str(
+        r#"
+        # CKM_IN_A_COMMENT
+        profile = "x/1.0"
+        advertise = ["CKM_LISTED"]
+        [subtract]
+        mechanisms = ["CKM_SUBTRACTED"]
+        note = "drops CKM_IN_A_NOTE"
+        [capabilities]
+        "generate.CKK_IN_A_KEY.secp256r1" = { answer = "no", evidence = "C_GenerateKeyPair: CKR_IN_EVIDENCE" }
+        [[migration.public-accepts]]
+        class = "CKO_IN_A_VALUE"
+        [notes]
+        "CKM_NOTED" = "advertised but refused: CKR_IN_A_NOTE_VALUE"
+        [manual."x"]
+        finding = "CKA_IN_A_FINDING"
+        "#,
+    )
+    .unwrap();
+    let mut names = BTreeSet::new();
+    recorded_names(&doc, false, &mut names);
+    let want = ["CKM_LISTED", "CKM_SUBTRACTED", "CKK_IN_A_KEY", "CKO_IN_A_VALUE", "CKM_NOTED"];
+    assert_eq!(names, want.into_iter().map(str::to_owned).collect());
+}
+
+fn rule(table: &str, pattern: &str) -> Rule {
+    Rule { table: table.into(), pattern: pattern.into(), status: "gap".into(), reason: "why".into() }
+}
+
+/// A wildcard manual rule whose every row is used fails, as a plain name of a used row does:
+/// it decides nothing (review coverage F2).
+#[test]
+fn a_wildcard_rule_over_used_rows_only_fails() {
+    let b = Baseline::from_toml(&read(&repo().join("profiles/baselines/pkcs11-3.2.toml"))).unwrap();
+    let all: BTreeSet<Row> = rows(&b).into_iter().collect();
+    let manual = Manual { rule: vec![rule("functions", "C_Log*")] };
+    assert_eq!(
+        generate(&b, &all, &manual, &BTreeSet::new()).unwrap_err(),
+        ["manual rule functions C_Log* names used rows only"]
+    );
+    // One of its rows not used: the rule decides it.
+    let mut used = all.clone();
+    used.remove(&("functions".to_owned(), "C_Login".to_owned()));
+    assert!(generate(&b, &used, &manual, &BTreeSet::new()).is_ok());
+}
+
+/// A traced function or return value the baseline does not name is listed as unnamed, as a
+/// vendor mechanism is, never a row the report drops (review coverage F3).
+#[test]
+fn traced_names_outside_the_baseline_are_unnamed() {
+    let b = Baseline::from_toml(&read(&repo().join("profiles/baselines/pkcs11-3.2.toml"))).unwrap();
+    let dir = std::env::temp_dir().join(format!("caprobe-coverage-unnamed-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("suite")).unwrap();
+    let lines = [
+        r#"{"exe":"cakeys","fn":"C_Login","rv":"CKR_OK"}"#,
+        r#"{"exe":"cakeys","fn":"C_VendorThing","rv":"0x80000001","mechanism":2147483649}"#,
+    ];
+    std::fs::write(dir.join("suite/test.jsonl"), lines.join("\n")).unwrap();
+    let seen = observe(&b, &dir);
+    std::fs::remove_dir_all(&dir).unwrap();
+    let row = |t: &str, n: &str| (t.to_owned(), n.to_owned());
+    assert!(
+        seen.rows.contains_key(&row("functions", "C_Login")) && seen.rows.contains_key(&row("return-values", "CKR_OK"))
+    );
+    assert!(!seen.rows.contains_key(&row("functions", "C_VendorThing")));
+    assert!(!seen.rows.contains_key(&row("return-values", "0x80000001")));
+    let unnamed = |t: &str| seen.unnamed[t].iter().cloned().collect::<Vec<_>>();
+    assert_eq!(
+        (unnamed("functions"), unnamed("return-values"), unnamed("mechanisms")),
+        (vec!["C_VendorThing".to_owned()], vec!["0x80000001".to_owned()], vec!["0x80000001".to_owned()])
+    );
 }

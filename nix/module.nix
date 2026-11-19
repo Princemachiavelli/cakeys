@@ -111,10 +111,12 @@ let
         token = mkOption {
           type = types.nullOr types.str;
           default = null;
+          description = "Token in keys.toml to check the object on (`--token`); null when the object is on one token only.";
         };
         spec = mkOption {
           type = types.nullOr types.str;
           default = null;
+          description = "Spec in keys.toml to check the object under (`--spec`); null when the object has one spec on the token.";
         };
         modules = mkOption {
           type = types.attrsOf types.str;
@@ -128,12 +130,13 @@ let
           example = {
             SOFTHSM2_CONF = "/var/lib/softhsm/softhsm2.conf";
           };
+          description = "Environment of the check (the module's configuration, a token's `pinEnv`). Public: it is written into the unit file in the Nix store, so it must hold no secret.";
         };
         requiredBy = mkOption {
           type = types.listOf types.str;
           default = [ ];
           example = [ "signer.service" ];
-          description = "Units that must not start unless the identity check passes.";
+          description = "Units that must not start unless the identity check passes. At least one: the check runs only as their requirement, so a check no unit requires would never run.";
         };
         args = mkOption {
           type = types.listOf types.str;
@@ -248,7 +251,11 @@ in
       description = ''
         Pre-use identity checks: one oneshot `cakeys-check-<name>` unit each, which runs
         `cakeys check` and blocks the units in `requiredBy` unless the token holds the
-        locked identity.
+        locked identity. Every start of one of them runs the check again (a restart, a crash
+        restart), so a token wiped or swapped after boot is caught then. The check is ordered
+        after `time-sync.target`, since it holds a PIV attestation chain to its dates by the
+        system clock; that target means a synchronized clock only where a service waits for one
+        (`services.timesyncd` with `systemd-time-wait-sync.service` enabled).
       '';
     };
   };
@@ -318,10 +325,18 @@ in
     })
 
     {
-      assertions = lib.mapAttrsToList (n: c: {
-        assertion = valuePin c.args -> c.outputFile != null;
-        message = "services.cakeys.checks.${n}.args asks for --uri-pin value, which needs outputFile: the PIN would go to the journal";
-      }) cfg.checks;
+      assertions = lib.concatLists (
+        lib.mapAttrsToList (n: c: [
+          {
+            assertion = valuePin c.args -> c.outputFile != null;
+            message = "services.cakeys.checks.${n}.args asks for --uri-pin value, which needs outputFile: the PIN would go to the journal";
+          }
+          {
+            assertion = c.requiredBy != [ ];
+            message = "services.cakeys.checks.${n}.requiredBy is empty: the check runs only when a unit it gates starts, so it would never run";
+          }
+        ]) cfg.checks
+      );
       systemd.services = lib.mapAttrs' (
         name: c:
         lib.nameValuePair "cakeys-check-${name}" {
@@ -329,10 +344,14 @@ in
           inherit (c) requiredBy environment;
           before = c.requiredBy;
           wants = lib.optional cfg.sandbox.pcscd.enable "pcscd.socket";
-          after = lib.optional cfg.sandbox.pcscd.enable "pcscd.socket";
+          # After the clock is set, never pulling it in (systemd.special(7)): `check` judges
+          # certificate dates by it (review D5).
+          after = [ "time-sync.target" ] ++ lib.optional cfg.sandbox.pcscd.enable "pcscd.socket";
           serviceConfig = {
             Type = "oneshot";
-            RemainAfterExit = true;
+            # Inactive once it has passed, so each start of a unit in requiredBy runs it again;
+            # a finished oneshot is not a stopped dependency, so that unit keeps running (review D5).
+            RemainAfterExit = false;
             # Global options, then `check <object>[.id.<scheme>]` and its options; nulls and
             # false drop out. With an output file, through writeOutput.
             ExecStart = utils.escapeSystemdExecArgs (

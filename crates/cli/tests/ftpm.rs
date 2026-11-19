@@ -2,8 +2,8 @@
 //!
 //! Needs `CAKEYS_FTPM_MODULE` (`libtpm2_pkcs11.so`), `CAKEYS_FTPM_PROFILE` (the committed pair
 //! profile of this TPM, e.g. `tpm2-pkcs11/1.10+amd-ftpm`) and the `TPM2_PKCS11_*` environment
-//! of the harness, whose fresh store holds token `kmtest` (user PIN 1234). Skipped when
-//! `CAKEYS_FTPM_MODULE` is unset — never in the Nix build. Run one test at a time
+//! of the harness, whose fresh store holds token `kmtest` (user PIN 1234). Skipped when neither
+//! is set — never in the Nix build — unless `CAKEYS_FTPM_REQUIRE` is. Run one test at a time
 //! (`--test-threads=1`), and only through the harness:
 //!
 //! ```console
@@ -23,32 +23,10 @@ mod common;
 use common::*;
 use std::fmt::Write as _;
 
-struct Env {
-    w: Workdir,
-    module: String,
-    profile: String,
-}
-
-impl std::ops::Deref for Env {
-    type Target = Workdir;
-    fn deref(&self) -> &Workdir {
-        &self.w
-    }
-}
-
-fn env(name: &str) -> Option<Env> {
-    let (Ok(module), Ok(profile)) = (std::env::var("CAKEYS_FTPM_MODULE"), std::env::var("CAKEYS_FTPM_PROFILE")) else {
-        eprintln!("skipping {name}: CAKEYS_FTPM_MODULE and CAKEYS_FTPM_PROFILE not both set");
-        return None;
-    };
-    Some(Env { w: Workdir::new(&format!("ftpm-{name}")), module, profile })
-}
-
-impl Env {
-    /// keys.toml: the suite's token ([`ftpm_tokens`]) and `body`.
-    fn config(&self, body: &str) {
-        self.write_config(&(ftpm_tokens(&self.module, &self.dir) + body));
-    }
+/// The suite for test `name` ([`ftpm_tokens`]) and the TPM's pair profile, or `None` (skipped).
+fn env(name: &str) -> Option<(Suite, String)> {
+    let [module, profile] = opted_in(name, FTPM_OPT_IN)?;
+    Some((Suite::new(&format!("ftpm-{name}"), module, ftpm_tokens), profile))
 }
 
 /// Each proof of possession on the real TPM, unattended: signing (P-256), deriving (P-384,
@@ -56,7 +34,7 @@ impl Env {
 /// decrypting (RSA-2048, OAEP). The resolved profile is this TPM's pair, not swtpm's.
 #[test]
 fn keys_generate_and_prove_possession_each_way() {
-    let Some(e) = env("keys") else { return };
+    let Some((e, pair)) = env("keys") else { return };
     let cases = [
         ("p256", "keyType = \"CKK_EC\"\ncurve = \"secp256r1\"", "CKA_SIGN = true", "pop-sign"),
         ("p384", "keyType = \"CKK_EC\"\ncurve = \"secp384r1\"", "CKA_DERIVE = true", "pop-ecdh"),
@@ -77,7 +55,7 @@ fn keys_generate_and_prove_possession_each_way() {
         assert_eq!(code(&o), 0, "{n}: {}", stderr(&o));
         assert_eq!(e.lock()["realisations"][n]["ftpm"]["binding"].as_str(), Some(binding), "{n}");
         let profile = e.observation(n, "ftpm")["profile"].clone();
-        assert_eq!(profile.as_str(), Some(e.profile.as_str()), "the token resolves its own pair profile");
+        assert_eq!(profile.as_str(), Some(pair.as_str()), "the token resolves its own pair profile");
         let o = e.km(&["verify", "--spec", n, "--token", "ftpm"]);
         assert_eq!(code(&o), 0, "{n}: {}", stderr(&o));
     }
@@ -95,7 +73,7 @@ fn keys_generate_and_prove_possession_each_way() {
 /// false`), so an unwrap-only key is refused as unsupported (15) before anything is generated.
 #[test]
 fn unwrap_only_keys_cannot_prove_possession() {
-    let Some(e) = env("unwrap") else { return };
+    let Some((e, _)) = env("unwrap") else { return };
     e.config(
         "[objects.u]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
          [specs.u]\nobject = \"u\"\nattributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }\n\
@@ -115,25 +93,19 @@ fn unwrap_only_keys_cannot_prove_possession() {
 /// pinned and verified; both resolve as a fresh proof.
 #[test]
 fn keys_attest_their_residence_on_the_real_tpm() {
-    let Some(e) = env("attest") else { return };
+    let Some((e, _)) = env("attest") else { return };
     if std::env::var("CAKEYS_FTPM_ATTEST").as_deref() != Ok("1") {
         eprintln!("skipping attest: CAKEYS_FTPM_ATTEST=1 not set (it creates the AK at 0x81000016)");
         return;
     }
-    let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
     let hmac = e.dir.join("hmac.bin");
     std::fs::write(&hmac, [0x5au8; 32]).unwrap();
-    let out = std::process::Command::new("tpm2_ptool")
-        .args([
-            "import",
-            "--algorithm=hmac:sha256",
-            &format!("--privkey={}", hmac.display()),
-            "--key-label=ftpm-attest-hmac",
-        ])
-        .args(["--label=kmtest", "--userpin=1234", &format!("--path={store}")])
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "tpm2_ptool import: {}", stderr(&out));
+    ptool(&[
+        "import",
+        "--algorithm=hmac:sha256",
+        &format!("--privkey={}", hmac.display()),
+        "--key-label=ftpm-attest-hmac",
+    ]);
     e.config(
         "[objects.p256]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [specs.p256]\nobject = \"p256\"\nattributes = { CKA_SIGN = true }\n\

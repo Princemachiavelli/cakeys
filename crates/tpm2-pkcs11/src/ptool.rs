@@ -40,13 +40,14 @@ pub(crate) fn import(ctx: &ImportCtx<'_>) -> Result<()> {
         }
         _ => return Err(unsupported(ctx)),
     };
-    let (label, id) = (&ctx.locator.label, &ctx.locator.id);
-    if label.is_none() && id.is_none() {
+    let label = &ctx.locator.label;
+    if label.is_none() && ctx.locator.id.is_none() {
         return Err(KmError::Validation(
             format!("{}: tpm2_ptool imports under CKA_LABEL or CKA_ID, and the locator names neither", ctx.token_name)
                 .into(),
         ));
     }
+    let id = ctx.locator.id.as_deref().map(|hex| id_text(ctx.token_name, hex)).transpose()?;
     // The key never touches a disk: an anonymous in-memory file, open in this process until the
     // tool is done, which (and whose children) open it through /proc.
     let fd = rustix::fs::memfd_create("cakeys-import", rustix::fs::MemfdFlags::CLOEXEC)
@@ -87,6 +88,28 @@ pub(crate) fn import(ctx: &ImportCtx<'_>) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// The `--id` that makes `tpm2_ptool` store the `CKA_ID` the locator names (`hex`, the bytes in
+/// hex). The tool stores the text it is given as the ID's bytes (`CKA_ID = hexlify(id.encode())`,
+/// tpm2-pkcs11 1.10's `commandlets_keys.py`), so it is passed the text those bytes spell; bytes
+/// that are no such text (not UTF-8, a NUL, none at all) cannot reach it, and are refused before
+/// it runs.
+fn id_text(token: &str, hex: &str) -> Result<String> {
+    let refuse = |why: &str| {
+        KmError::Validation(
+            format!("{token}: tpm2_ptool takes CKA_ID as text, and the locator's CKA_ID '{hex}' {why}").into(),
+        )
+    };
+    let bytes = cakeys_core::hex::decode(hex).ok_or_else(|| refuse("is not hex"))?;
+    if bytes.is_empty() {
+        return Err(refuse("is empty"));
+    }
+    let text = String::from_utf8(bytes).map_err(|_| refuse("is not UTF-8 text"))?;
+    if text.contains('\0') {
+        return Err(refuse("holds a NUL byte"));
+    }
+    Ok(text)
 }
 
 /// A PKCS#8 key as the PEM `tpm2_ptool` reads.
@@ -139,7 +162,7 @@ mod tests {
     fn imports_are_refused_before_the_tool_runs() {
         let text = "[tokens.t]\ntokenLabel = \"t\"\n[tokens.t.options]\ntpm2Store = \"/nonexistent/store\"\n";
         let cfg = parse_config_with(text, std::path::Path::new("keys.toml"), &|_| None).unwrap();
-        let labelled = Locator { label: Some("k".into()), id: Some("0a".into()) };
+        let labelled = Locator { label: Some("k".into()), id: Some("6b".into()) };
         let nowhere = Locator { label: None, id: None };
         let ec = ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::Ec));
         let run = |pin: Option<&str>, object: &ObjectCfg, locator: &Locator| {
@@ -169,5 +192,38 @@ mod tests {
         assert_eq!(names, [Some("hmac"), Some("hmac:sha1"), Some("hmac:sha384"), Some("hmac:sha512")]);
         assert_eq!(hmac(KeyType::Sha224Hmac), None);
         assert!(pem(&[0u8; 100]).starts_with(b"-----BEGIN PRIVATE KEY-----\n"));
+    }
+
+    /// `--id` is the text the locator's ID bytes spell, as the tool stores its text as the ID
+    /// (the store fixture's `CKA_ID` "3061" is the text "0a"); an ID no text spells is refused
+    /// before the tool runs, never imported under other bytes.
+    #[test]
+    fn the_id_is_passed_as_the_text_its_bytes_spell() {
+        assert_eq!(id_text("t", "3061").unwrap(), "0a");
+        assert_eq!(id_text("t", "6b6579").unwrap(), "key");
+        assert_eq!(id_text("t", "C3A9").unwrap(), "é");
+        assert_eq!(id_text("t", "0a01").unwrap(), "\n\u{1}");
+        for (hex, why) in [("ff", "not UTF-8"), ("6b00", "NUL"), ("", "empty"), ("0", "not hex")] {
+            let e = id_text("t", hex).unwrap_err();
+            assert!(
+                matches!(&e, KmError::Validation(m) if m.contains("takes CKA_ID as text") && m.contains(why)),
+                "{hex}: {e}"
+            );
+        }
+        // Refused in `import` itself, before the tool would run.
+        let text = "[tokens.t]\ntokenLabel = \"t\"\n[tokens.t.options]\ntpm2Store = \"/nonexistent/store\"\n";
+        let cfg = parse_config_with(text, std::path::Path::new("keys.toml"), &|_| None).unwrap();
+        let ec = ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::Ec));
+        let locator = Locator { label: Some("k".into()), id: Some("ff".into()) };
+        let e = import(&ImportCtx {
+            cfg: &cfg.tokens["t"],
+            token_name: "t",
+            pin: Some("987654"),
+            object: &ec,
+            locator: &locator,
+            key: b"not a key",
+        })
+        .unwrap_err();
+        assert!(matches!(&e, KmError::Validation(m) if m.contains("not UTF-8")), "{e}");
     }
 }

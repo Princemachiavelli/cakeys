@@ -72,7 +72,7 @@ let
   minimal = base // {
     pname = "cakeys-minimal";
     buildInputs = [ ];
-    cargoExtraArgs = "--locked --no-default-features --features camigrate/kwp,caprobe/kwp,cakeys-pkcs11/sign-after-init";
+    cargoExtraArgs = "--locked --no-default-features --features cakeys/patched-cryptoki,caprobe/patched-cryptoki,camigrate/patched-cryptoki";
     doCheck = false;
   };
 
@@ -175,7 +175,6 @@ let
       }
       // {
         preBuild = lib.optionalString tokens common.args.preCheck;
-        postBuild = lib.optionalString tokens common.args.postCheck;
         buildPhaseCargoCommand = lib.concatMapStrings run scopes;
         installPhaseCommand = "";
       }
@@ -201,14 +200,14 @@ craneLib.buildPackage (
     # committed. A second pass, not a traced first one: the first keeps every test talking to
     # its module directly (p11-fault exports the 2.40 interface only).
     postCheck = ''
-      # Not traced: the coverage test, and what nix/test-tokens.sh leaves untraced.
+      # Not run: the coverage test, and the fault suites (nix/test-tokens.sh leaves them
+      # untraced, with the other tests it names).
       export CAKEYS_TRACE_DIR=$TMPDIR/coverage-trace
-      ${cargoTestCommandFor "not (binary(fault) | test(tpm2_attestation_says_what_it_lacks) | test(committed_coverage_is_generated_from_the_trace))"}
+      ${cargoTestCommandFor "not (binary(fault) | test(committed_coverage_is_generated_from_the_trace))"}
       unset CAKEYS_TRACE_DIR
       CAKEYS_COVERAGE_TRACE=$TMPDIR/coverage-trace \
         ${cargoTestCommandFor "test(committed_coverage_is_generated_from_the_trace)"}
-    ''
-    + common.args.postCheck;
+    '';
     passthru = {
       # Clippy with -D warnings over every target: the workspace lints (Cargo.toml
       # [workspace.lints]: unsafe_code deny, clippy::pedantic with one blanket allow) travel with
@@ -275,7 +274,7 @@ craneLib.buildPackage (
       # tests are its tests, no token needed: `nix build .#mutants`. `mutantsOf` takes one scope
       # ({ package, files, re ? null }) with the token suites running, for the code only they reach:
       #   nix build --impure --expr \
-      #     '(builtins.getFlake "git+file://$PWD").packages.x86_64-linux.cakeys-crane.mutantsOf { package = "camigrate"; files = [ "crates/camigrate/src/host.rs" ]; }'
+      #     "(builtins.getFlake \"git+file://$PWD\").packages.x86_64-linux.cakeys-crane.mutantsOf { package = \"camigrate\"; files = [ \"crates/camigrate/src/host.rs\" ]; }"
       mutants = mutants {
         scopes = [
           {
@@ -339,9 +338,8 @@ craneLib.buildPackage (
             awk '/^SF:/ { f = substr($0, 4) } /^FNDA:/ { i = index($0, ","); print f "\t" substr($0, 6, i - 6) "\t" substr($0, i + 1) }' $out/lcov.info \
               | sed "s|^$PWD/||" | ${rustc.llvmPackages.llvm}/bin/llvm-cxxfilt \
               | awk -F '\t' '{ n[$1 "\t" $3] += $2 } END { for (k in n) if (n[k] == 0) print k }' \
-              | grep -v '::<_\(, _\)*>$' | sort > $out/uncovered-functions.txt
-          ''
-          + common.args.postCheck;
+              | { grep -v '::<_\(, _\)*>$' || true; } | sort > $out/uncovered-functions.txt
+          '';
         }
       );
     };

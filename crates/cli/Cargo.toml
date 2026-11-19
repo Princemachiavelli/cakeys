@@ -1,6 +1,6 @@
 [package]
 name = "cakeys"
-description = "Content-addressed identity for PKCS#11 (and later TPM) objects"
+description = "Content-addressed identity for PKCS#11 objects, TPM keys (tpm2-pkcs11) and YubiKey PIV slots (ykcs11) among them"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -24,6 +24,9 @@ default = ["tpm2", "ykcs11"]
 tpm2 = ["cakeys-cli-common/tpm2"]
 # ykcs11 provider (YubiKey PIV) with the piv-attestation commitment.
 ykcs11 = ["cakeys-cli-common/ykcs11"]
+# Everything the patched cryptoki of the Nix build (nix/patches) makes possible, together: the
+# build that links it names this one feature, never the parts by hand (review D3).
+patched-cryptoki = ["cakeys-pkcs11/rv-value", "cakeys-pkcs11/sign-after-init"]
 
 [dependencies]
 cakeys-cli-common.workspace = true
@@ -43,7 +46,6 @@ des.workspace = true
 hmac.workspace = true
 sha1.workspace = true
 rsa.workspace = true
-serde_json.workspace = true
 sha2.workspace = true
 toml.workspace = true
 x509-cert.workspace = true

@@ -56,6 +56,8 @@ def names(items) -> str:
 
 
 def main() -> None:
+    if len(sys.argv) != 3:
+        sys.exit(f"usage: {sys.argv[0]} <run dir> <profile.toml>")
     run, profile_path = Path(sys.argv[1]), Path(sys.argv[2])
     profile = tomllib.loads(profile_path.read_text())
     results, coverage = load(run, "results.json"), load(run, "coverage.json")

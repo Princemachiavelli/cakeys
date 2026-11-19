@@ -61,6 +61,9 @@ pub enum Action {
     Corrupt,
     /// `C_GetMechanismList`: these mechanisms are not listed.
     HideMechanisms(Vec<CK_MECHANISM_TYPE>),
+    /// The process dies at the call, before it reaches the module (`std::process::abort`): a
+    /// crash, a kill or an OOM between two of a run's writes.
+    Abort,
 }
 
 /// What an attribute rule reports for its attribute.
@@ -134,6 +137,8 @@ struct RuleText {
     corrupt: bool,
     #[serde(default)]
     hide_mechanisms: Vec<Value>,
+    #[serde(default)]
+    abort: bool,
 }
 
 /// A value written by name (`"CKR_DEVICE_ERROR"`) or as a number (`0x30`).
@@ -222,6 +227,12 @@ impl Plan {
         self.rv(call, When::After)
     }
 
+    /// Whether `call` ends the process: the rule (from 1) that says so.
+    #[must_use]
+    pub fn aborts(&self, call: &Call) -> Option<usize> {
+        self.matching(call).find_map(|(i, r)| (r.action == Action::Abort).then_some(i))
+    }
+
     fn rv(&self, call: &Call, at: When) -> Option<(CK_RV, usize)> {
         self.matching(call).find_map(|(i, r)| match r.action {
             Action::Rv { rv, when } if when == at => Some((rv, i)),
@@ -263,8 +274,12 @@ fn rule(r: RuleText) -> Result<Rule, String> {
             Err(format!("{what} is for {}", names.join(", ")))
         }
     };
+    // A flag of the structure the rule's function returns: the slot's and the token's flag words
+    // reuse bit values, so a slot flag on `C_GetTokenInfo` would set another flag (plan.rs F1).
+    let (word, by_name): (_, fn(&str) -> Option<CK_FLAGS>) =
+        if function == Fn::C_GetSlotInfo { ("slot flag", names::slot_flag) } else { ("token flag", names::token_flag) };
     let flags = |values: Vec<Value>| -> Result<CK_FLAGS, String> {
-        values.into_iter().try_fold(0, |all, v| Ok(all | v.resolve("slot or token flag", names::flag)?))
+        values.into_iter().try_fold(0, |all, v| Ok(all | v.resolve(word, by_name)?))
     };
     let mut actions = Vec::new();
     if let Some(rv) = r.rv {
@@ -325,11 +340,14 @@ fn rule(r: RuleText) -> Result<Rule, String> {
         let hidden = r.hide_mechanisms.into_iter().map(|m| m.resolve("mechanism", names::mechanism));
         actions.push(Action::HideMechanisms(hidden.collect::<Result<_, _>>()?));
     }
+    if r.abort {
+        actions.push(Action::Abort);
+    }
     let action = match actions.len() {
         1 => actions.remove(0),
         0 => {
             return Err("nothing to do: give rv, set_flags, clear_flags, attribute, add_label, hide_label, \
-                        use_label, corrupt or hide_mechanisms"
+                        use_label, corrupt, hide_mechanisms or abort"
                 .into());
         }
         _ => return Err("one thing per rule".into()),
@@ -400,6 +418,21 @@ mod tests {
         let call = plan.count(Fn::C_GetTokenInfo);
         assert_eq!((plan.before(&call), plan.after(&call)), (None, None));
         assert_eq!(plan.matching(&call).map(|(i, _)| i).collect::<Vec<_>>(), [1]);
+        // A slot rule takes the slot's own flag names.
+        let slot =
+            Plan::parse("[[rule]]\nfn = \"C_GetSlotInfo\"\nclear_flags = [\"CKF_TOKEN_PRESENT\", \"CKF_HW_SLOT\"]\n");
+        assert_eq!(slot.unwrap().rules()[0].action, Action::Flags { set: 0, clear: 1 | 4 });
+    }
+
+    /// `abort` ends the process at its call only: no return value, and one thing per rule.
+    #[test]
+    fn abort_ends_the_process_at_its_call() {
+        let plan = Plan::parse("[[rule]]\nfn = \"C_UnwrapKey\"\ncall = 2\nabort = true\n").unwrap();
+        let (first, second) = (plan.count(Fn::C_UnwrapKey), plan.count(Fn::C_UnwrapKey));
+        assert_eq!((plan.aborts(&first), plan.aborts(&second)), (None, Some(1)));
+        assert_eq!((plan.before(&second), plan.after(&second)), (None, None));
+        let two = Plan::parse("[[rule]]\nfn = \"C_UnwrapKey\"\nabort = true\nrv = \"CKR_DEVICE_ERROR\"\n");
+        assert_eq!(two.err().as_deref(), Some("rule 1 (C_UnwrapKey): one thing per rule"));
     }
 
     #[test]
@@ -418,7 +451,12 @@ mod tests {
                 "[[rule]]\nfn = \"C_Login\"\nset_flags = [\"CKF_WRITE_PROTECTED\"]\n",
                 "is for C_GetTokenInfo, C_GetSlotInfo",
             ),
-            ("[[rule]]\nfn = \"C_GetTokenInfo\"\nset_flags = [\"CKF_RW_SESSION\"]\n", "unknown slot or token flag"),
+            ("[[rule]]\nfn = \"C_GetTokenInfo\"\nset_flags = [\"CKF_RW_SESSION\"]\n", "unknown token flag"),
+            // Each flag word's own names (plan.rs F1): a slot flag on the token's word would set
+            // the token flag of its value (CKF_HW_SLOT is CKF_LOGIN_REQUIRED's 4), and back.
+            ("[[rule]]\nfn = \"C_GetTokenInfo\"\nset_flags = [\"CKF_HW_SLOT\"]\n", "unknown token flag CKF_HW_SLOT"),
+            ("[[rule]]\nfn = \"C_GetTokenInfo\"\nclear_flags = [\"CKF_TOKEN_PRESENT\"]\n", "unknown token flag"),
+            ("[[rule]]\nfn = \"C_GetSlotInfo\"\nset_flags = [\"CKF_LOGIN_REQUIRED\"]\n", "unknown slot flag"),
             ("[[rule]]\nfn = \"C_GetAttributeValue\"\nattribute = \"CKA_NOPE\"\ndrop = true\n", "unknown attribute"),
             ("[[rule]]\nfn = \"C_GetAttributeValue\"\nattribute = \"CKA_ID\"\n", "gives one of"),
             (

@@ -20,6 +20,8 @@ path = "src/main.rs"
 
 [features]
 default = ["tpm2", "ykcs11"]
+# The fuzz targets' entry points (fuzz/): never in the product (review D8).
+fuzzing = []
 tpm2 = ["cakeys-cli-common/tpm2"]
 ykcs11 = ["cakeys-cli-common/ykcs11"]
 # RFC 5649 key wrap under CKM_AES_KEY_WRAP_KWP (kryoptic names it so; SoftHSM names it _PAD,
@@ -27,6 +29,9 @@ ykcs11 = ["cakeys-cli-common/ykcs11"]
 # the mechanism: a plain cargo build has no such constant, and plans without it (the unpatched
 # binding layer subtracts it).
 kwp = []
+# Everything the patched cryptoki of the Nix build (nix/patches) makes possible, together: the
+# build that links it names this one feature, never the parts by hand (review D3).
+patched-cryptoki = ["kwp", "cakeys-pkcs11/rv-value", "cakeys-pkcs11/sign-after-init"]
 
 [dependencies]
 cakeys-cli-common.workspace = true
@@ -58,6 +63,6 @@ aes.workspace = true
 aes-kw.workspace = true
 cmac.workspace = true
 des.workspace = true
-sha2.workspace = true
+libc.workspace = true
 # tests/fault.rs loads its cdylib: as a dependency, every build of the tests makes it.
 p11-fault = { path = "../p11-fault" }

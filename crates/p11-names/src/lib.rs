@@ -291,17 +291,25 @@ attribute_names!(
 );
 
 macro_rules! flag_names {
-    ($($name:ident),* $(,)?) => {
-        /// The slot flags (`C_GetSlotInfo`) and token flags (`C_GetTokenInfo`), by name. Other
-        /// `CKF_*` reuse these bit values for other structures and are not flags of these two.
-        pub const FLAG: &[(&str, CK_FLAGS)] = &[$((stringify!($name), cryptoki_sys::$name)),*];
+    ($table:ident, $doc:literal, $($name:ident),* $(,)?) => {
+        #[doc = $doc]
+        pub const $table: &[(&str, CK_FLAGS)] = &[$((stringify!($name), cryptoki_sys::$name)),*];
     };
 }
 
+// Two tables: the two flag words reuse bit values (CKF_HW_SLOT is CKF_LOGIN_REQUIRED's 4), so a
+// name is a flag of one structure only (p11-fault plan.rs F1).
 flag_names!(
+    SLOT_FLAG,
+    "The slot flags (`C_GetSlotInfo`), by name. Other `CKF_*` reuse their bit values.",
     CKF_TOKEN_PRESENT,
     CKF_REMOVABLE_DEVICE,
     CKF_HW_SLOT,
+);
+
+flag_names!(
+    TOKEN_FLAG,
+    "The token flags (`C_GetTokenInfo`), by name. Other `CKF_*` reuse their bit values.",
     CKF_RNG,
     CKF_WRITE_PROTECTED,
     CKF_LOGIN_REQUIRED,
@@ -329,10 +337,16 @@ pub fn attribute(name: &str) -> Option<CK_ATTRIBUTE_TYPE> {
     ATTRIBUTE.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
 }
 
-/// The value of the slot or token flag `name` (`CKF_...`).
+/// The value of the slot flag `name` (`CKF_...`).
 #[must_use]
-pub fn flag(name: &str) -> Option<CK_FLAGS> {
-    FLAG.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
+pub fn slot_flag(name: &str) -> Option<CK_FLAGS> {
+    SLOT_FLAG.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
+}
+
+/// The value of the token flag `name` (`CKF_...`).
+#[must_use]
+pub fn token_flag(name: &str) -> Option<CK_FLAGS> {
+    TOKEN_FLAG.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
 }
 
 macro_rules! mechanism_names {
@@ -854,8 +868,23 @@ mod tests {
         assert_eq!(rv("CKR_NO_SUCH_THING"), None);
         assert_eq!(rv_name(0x7fff_fff0), None);
         assert_eq!(attribute("CKA_EC_POINT"), Some(0x181));
-        assert_eq!(flag("CKF_WRITE_PROTECTED"), Some(2));
-        assert_eq!(flag("CKF_RW_SESSION"), None);
+        assert_eq!(token_flag("CKF_WRITE_PROTECTED"), Some(2));
+        assert_eq!(slot_flag("CKF_REMOVABLE_DEVICE"), Some(2));
+        assert_eq!(token_flag("CKF_RW_SESSION"), None);
         assert_eq!(mechanism("CKM_ECDH1_DERIVE"), Some(0x1050));
+    }
+
+    /// Each flag word has its own names: they share bit values, so a name in both tables, or
+    /// a token name read as a slot one, would set another flag (p11-fault plan.rs F1).
+    #[test]
+    fn slot_and_token_flags_are_apart() {
+        for (name, _) in SLOT_FLAG {
+            assert_eq!(token_flag(name), None, "{name}");
+        }
+        for (name, _) in TOKEN_FLAG {
+            assert_eq!(slot_flag(name), None, "{name}");
+        }
+        assert_eq!(token_flag("CKF_HW_SLOT"), None);
+        assert_eq!(slot_flag("CKF_LOGIN_REQUIRED"), None);
     }
 }

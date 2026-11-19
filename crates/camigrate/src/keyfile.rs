@@ -82,9 +82,10 @@ pub(crate) fn read(
         }),
         Class::PrivateKey => {
             let (pkcs8, method) = one_key(entries(bytes)?)?;
-            // A SEC1 key given the object's curve, of another curve, reads as no key at all.
-            let spki = cakeys_core::plaintext::spki_of_pkcs8(&pkcs8).map_err(|_| {
-                bad(format!("its key does not read as a key of the object's type; the object is {object}"))
+            // A SEC1 key given the object's curve, of another curve, reads as no key at all; a
+            // malformed key or an algorithm cakeys does not read says so too.
+            let spki = cakeys_core::plaintext::spki_of_pkcs8(&pkcs8).map_err(|e| {
+                bad(format!("its key does not read as a key of the object's type ({e}); the object is {object}"))
             })?;
             let spki = id::spki_canonical(&spki)?;
             check_type(&spki, object)?;
@@ -105,14 +106,24 @@ pub(crate) fn read(
 /// Whether the file `bytes` holds a private key, plain or encrypted, told by shape alone and
 /// before anything is decoded: a certificate object taken from a bundle or a PKCS#12 decodes
 /// the key beside it, so its import puts key plaintext in this process's memory too.
+///
+/// The same scan the reader decodes by ([`pem_blocks`], [`der_kind`]), so the two never
+/// disagree on what a file holds; a PEM file the scan cannot split is taken to hold one.
 pub(crate) fn holds_private_key(bytes: &[u8]) -> bool {
-    if let Some(text) = std::str::from_utf8(bytes).ok().filter(|t| t.contains("-----BEGIN ")) {
-        return text.lines().any(|l| l.starts_with("-----BEGIN ") && l.contains("PRIVATE KEY"));
+    match pem_text(bytes) {
+        Some(text) => pem_blocks(text).map_or(true, |blocks| blocks.iter().any(|(label, _)| is_private(label))),
+        None => der_kind(bytes).is_some_and(DerKind::is_private),
     }
-    pkcs8::PrivateKeyInfoRef::try_from(bytes).is_ok()
-        || pkcs8::EncryptedPrivateKeyInfoRef::try_from(bytes).is_ok()
-        || pkcs12::Pfx::from_der(bytes).is_ok()
-        || structure(bytes).is_some()
+}
+
+/// A PEM label that names a private key, in any of its formats (encrypted, OpenSSH, ...).
+fn is_private(label: &str) -> bool {
+    label.contains("PRIVATE KEY")
+}
+
+/// The file as PEM text: UTF-8 holding a BEGIN line; `None` for DER.
+pub(crate) fn pem_text(bytes: &[u8]) -> Option<&str> {
+    std::str::from_utf8(bytes).ok().filter(|t| t.contains("-----BEGIN "))
 }
 
 /// The IDs the host computes from `m`, as the token must show them once it holds the object:
@@ -264,9 +275,8 @@ fn check_type(spki: &[u8], object: &ObjectCfg) -> Result<()> {
     let curve = id::spki_curve(spki).map_err(|e| bad(format!("its key: {e}")))?;
     let fits = match (object.key_type, curve) {
         (Some(KeyType::Rsa), None) => {
-            use rsa::pkcs8::DecodePublicKey as _;
             use rsa::traits::PublicKeyParts as _;
-            let key = rsa::PublicKey::from_public_key_der(spki).map_err(|e| bad(format!("its RSA key: {e}")))?;
+            let key = id::rsa_of_spki(spki).map_err(|e| bad(format!("its RSA key: {e}")))?;
             let bits = u64::from(key.n().bit_width_vartime());
             if let Some(want) = object.modulus_bits.filter(|w| *w != bits) {
                 return Err(bad(format!("its RSA key has {bits} bits, and the object declares {want}")));
@@ -286,16 +296,16 @@ fn check_type(spki: &[u8], object: &ObjectCfg) -> Result<()> {
 /// Everything a PEM or DER file holds, private keys normalised to PKCS#8; `curve` is the
 /// object's, for a SEC1 key that names none.
 fn entries(bytes: &[u8], pass: Option<&str>, curve: Option<Curve>) -> Result<Vec<Entry>> {
-    let text = std::str::from_utf8(bytes).ok().filter(|t| t.contains("-----BEGIN "));
-    match text {
+    match pem_text(bytes) {
         Some(text) => pem_entries(text, pass, curve),
         None => der_entry(bytes, pass, curve),
     }
 }
 
-/// The blocks of a PEM file, each by its label; text between blocks (OpenSSL's `Bag Attributes`)
-/// is skipped.
-fn pem_entries(text: &str, pass: Option<&str>, curve: Option<Curve>) -> Result<Vec<Entry>> {
+/// The blocks of a PEM file, each with its label, wherever on its line a BEGIN starts; text
+/// between blocks (OpenSSL's `Bag Attributes`) is skipped. What [`holds_private_key`] and
+/// [`pem_entries`] both read.
+pub(crate) fn pem_blocks(text: &str) -> Result<Vec<(&str, &str)>> {
     let mut out = Vec::new();
     let mut rest = text;
     while let Some(start) = rest.find("-----BEGIN ") {
@@ -307,6 +317,15 @@ fn pem_entries(text: &str, pass: Option<&str>, curve: Option<Curve>) -> Result<V
         let end = block.find(&end_line).ok_or_else(|| bad(format!("a PEM {label} block without its END line")))?;
         let block = &block[..end + end_line.len()];
         rest = &rest[start + block.len()..];
+        out.push((label, block));
+    }
+    Ok(out)
+}
+
+/// The blocks of a PEM file ([`pem_blocks`]), decoded by their labels.
+fn pem_entries(text: &str, pass: Option<&str>, curve: Option<Curve>) -> Result<Vec<Entry>> {
+    let mut out = Vec::new();
+    for (label, block) in pem_blocks(text)? {
         if block.contains("Proc-Type:") {
             return Err(bad(LEGACY_PEM));
         }
@@ -340,31 +359,65 @@ fn pem_entries(text: &str, pass: Option<&str>, curve: Option<Curve>) -> Result<V
 /// What a DER file holds: a certificate, a public key, a private key in any of its formats,
 /// or a PKCS#12 (its key and certificates).
 fn der_entry(der: &[u8], pass: Option<&str>, curve: Option<Curve>) -> Result<Vec<Entry>> {
-    if x509_cert::Certificate::from_der(der).is_ok() {
-        return Ok(vec![Entry::Certificate(der.to_vec())]);
-    }
-    if x509_cert::spki::SubjectPublicKeyInfoRef::from_der(der).is_ok() {
-        return Ok(vec![Entry::PublicKey(der.to_vec())]);
-    }
-    if pkcs8::PrivateKeyInfoRef::try_from(der).is_ok() {
-        return Ok(vec![Entry::Key(Zeroizing::new(der.to_vec()), Method::Pkcs8)]);
-    }
-    if pkcs8::EncryptedPrivateKeyInfoRef::try_from(der).is_ok() {
-        return Ok(vec![Entry::Key(encrypted(der, pass)?, Method::Pkcs8Pbes2)]);
-    }
-    if pkcs12::Pfx::from_der(der).is_ok() {
-        let pass = pass.ok_or_else(|| bad("a PKCS#12, and no passphrase is given for it"))?;
-        let read = file::read(der, pass)?;
-        let mut out = vec![Entry::Key(read.pkcs8, Method::Pkcs12)];
-        out.extend(read.certificates.into_iter().map(Entry::Certificate));
-        return Ok(out);
-    }
-    match structure(der) {
-        Some(Structure::Pkcs1) => Ok(vec![Entry::Key(from_pkcs1(der)?, Method::Pkcs1)]),
-        Some(Structure::Sec1) => Ok(vec![Entry::Key(from_sec1(der, curve)?, Method::Sec1)]),
+    match der_kind(der) {
+        Some(DerKind::Certificate) => Ok(vec![Entry::Certificate(der.to_vec())]),
+        Some(DerKind::PublicKey) => Ok(vec![Entry::PublicKey(der.to_vec())]),
+        Some(DerKind::Pkcs8) => Ok(vec![Entry::Key(Zeroizing::new(der.to_vec()), Method::Pkcs8)]),
+        Some(DerKind::EncryptedPkcs8) => Ok(vec![Entry::Key(encrypted(der, pass)?, Method::Pkcs8Pbes2)]),
+        Some(DerKind::Pkcs12) => {
+            let pass = pass.ok_or_else(|| bad("a PKCS#12, and no passphrase is given for it"))?;
+            let read = file::read(der, pass)?;
+            let mut out = vec![Entry::Key(read.pkcs8, Method::Pkcs12)];
+            out.extend(read.certificates.into_iter().map(Entry::Certificate));
+            Ok(out)
+        }
+        Some(DerKind::Pkcs1) => Ok(vec![Entry::Key(from_pkcs1(der)?, Method::Pkcs1)]),
+        Some(DerKind::Sec1) => Ok(vec![Entry::Key(from_sec1(der, curve)?, Method::Sec1)]),
         None => {
             Err(bad("neither PEM nor a DER certificate, public key, private key (PKCS#8, PKCS#1, SEC1) or PKCS#12"))
         }
+    }
+}
+
+/// What a DER file is, told by shape in the order [`der_entry`] decodes it; what
+/// [`holds_private_key`] reads too.
+#[derive(Clone, Copy)]
+enum DerKind {
+    Certificate,
+    PublicKey,
+    Pkcs8,
+    EncryptedPkcs8,
+    Pkcs12,
+    Pkcs1,
+    Sec1,
+}
+
+impl DerKind {
+    /// Whether a file of this kind holds a private key (a PKCS#12 carries one).
+    fn is_private(self) -> bool {
+        !matches!(self, DerKind::Certificate | DerKind::PublicKey)
+    }
+}
+
+fn der_kind(der: &[u8]) -> Option<DerKind> {
+    if x509_cert::Certificate::from_der(der).is_ok() {
+        return Some(DerKind::Certificate);
+    }
+    if x509_cert::spki::SubjectPublicKeyInfoRef::from_der(der).is_ok() {
+        return Some(DerKind::PublicKey);
+    }
+    if pkcs8::PrivateKeyInfoRef::try_from(der).is_ok() {
+        return Some(DerKind::Pkcs8);
+    }
+    if pkcs8::EncryptedPrivateKeyInfoRef::try_from(der).is_ok() {
+        return Some(DerKind::EncryptedPkcs8);
+    }
+    if pkcs12::Pfx::from_der(der).is_ok() {
+        return Some(DerKind::Pkcs12);
+    }
+    match structure(der)? {
+        Structure::Pkcs1 => Some(DerKind::Pkcs1),
+        Structure::Sec1 => Some(DerKind::Sec1),
     }
 }
 
@@ -534,6 +587,21 @@ mod tests {
         assert_eq!(read(&fixture("ed25519.pkcs8.pem"), &ed, false, None, None).unwrap().method, Method::Pkcs8);
     }
 
+    /// A PKCS#8 whose key does not decode says why, beside the type it was read as (review
+    /// keyfile.rs F2): an RSA key that is no RSA key is not only "of another type".
+    #[test]
+    fn a_key_that_does_not_decode_says_why() {
+        // PrivateKeyInfo { version 0, rsaEncryption, OCTET STRING 01 02 03 }.
+        let garbage = [
+            0x30, 0x17, 0x02, 0x01, 0x00, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01,
+            0x05, 0x00, 0x04, 0x03, 0x01, 0x02, 0x03,
+        ];
+        let rsa = object(Class::PrivateKey, Some(KeyType::Rsa), None);
+        let said = refusal(read(&garbage, &rsa, false, None, None));
+        assert!(said.contains("does not read as a key of the object's type"), "{said}");
+        assert!(said.contains("RSA private key"), "{said}");
+    }
+
     /// A SEC1 key that names no curve takes the object's: the key must then be on it.
     #[test]
     fn a_sec1_key_without_parameters_takes_the_objects_curve() {
@@ -626,6 +694,58 @@ mod tests {
         for file in ["p256.crt.pem", "p256.crt.der", "p256.pub.der", "two-certs.pem", "note.bin", "aes256.key"] {
             assert!(!holds_private_key(&fixture(file)), "{file}");
         }
+    }
+
+    /// The gate and the reader never disagree (camigrate keyfile.rs F1): whatever the reader
+    /// decodes a private key from, the gate says holds one — for every fixture, and for each
+    /// mangled the ways files arrive: a BEGIN after other text on its line, indented, with CRLF
+    /// line ends, behind a certificate, unterminated. A key the gate missed was decoded without
+    /// `--allow-host-plaintext`.
+    #[test]
+    fn the_gate_sees_every_key_the_reader_decodes() {
+        let files = [
+            "p256.pkcs8.pem",
+            "p256.pkcs8.der",
+            "p256.sec1.der",
+            "p256.enc.pem",
+            "p256.p12",
+            "p256.bundle.pem",
+            "rsa2048.pkcs1.der",
+            "rsa2048.pkcs1.pem",
+            "p256.sec1.pem",
+            "ed25519.pkcs8.pem",
+            "p256.pub.pem",
+            "p256.crt.pem",
+            "p256.crt.der",
+            "p256.pub.der",
+            "two-certs.pem",
+            "note.bin",
+        ];
+        let mangled = |bytes: &[u8]| -> Vec<Vec<u8>> {
+            let Ok(text) = std::str::from_utf8(bytes) else { return vec![bytes.to_vec()] };
+            let cert = String::from_utf8(fixture("p256.crt.pem")).unwrap();
+            vec![
+                text.into(),
+                text.replacen("-----BEGIN ", "pasted: -----BEGIN ", 1).into(),
+                text.replace("-----BEGIN ", "  -----BEGIN ").into(),
+                text.replace('\n', "\r\n").into(),
+                (cert + text).into(),
+                text.replacen("-----END ", "-----FINISH ", 1).into(),
+            ]
+        };
+        let decodes_a_key = |bytes: &[u8]| {
+            entries(bytes, PASS, Some(Curve::P256)).is_ok_and(|e| e.iter().any(|e| matches!(e, Entry::Key(..))))
+        };
+        for file in files {
+            for (i, bytes) in mangled(&fixture(file)).iter().enumerate() {
+                if decodes_a_key(bytes) {
+                    assert!(holds_private_key(bytes), "{file}, mangled #{i}: the reader decodes a key the gate missed");
+                }
+            }
+        }
+        // The case the review found: a BEGIN after text on its line.
+        let pasted = String::from_utf8(fixture("p256.pkcs8.pem")).unwrap().replacen("-----BEGIN", "key: -----BEGIN", 1);
+        assert!(decodes_a_key(pasted.as_bytes()) && holds_private_key(pasted.as_bytes()));
     }
 
     /// A secret key is its value: the file's bytes, or hex or base64 of them however they wrap,

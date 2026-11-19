@@ -21,7 +21,7 @@ fi
 work=$(mktemp -d "${TMPDIR:-/tmp}/cakeys-demo.XXXXXX")
 cleanup() {
   if [ "$keep" = 1 ]; then
-    echo "${dim}kept: $work (SOFTHSM2_CONF=$SOFTHSM2_CONF KRYOPTIC_CONF=$KRYOPTIC_CONF)${reset}"
+    echo "${dim}kept: $work (SOFTHSM2_CONF=${SOFTHSM2_CONF-} KRYOPTIC_CONF=${KRYOPTIC_CONF-})${reset}"
   else
     rm -rf "$work"
   fi
@@ -61,7 +61,15 @@ expect() {
   shift
   if [ -n "${jqf:-}" ]; then
     printf '%s$ %s | jq -c '"'"'%s'"'"'%s\n' "$dim" "$*" "$jqf" "$reset"
-    out=$( ("$@" | jq -c "$jqf") 2>&1) || code=$?
+    # The command's own status when it failed (pipefail would report jq's, which fails too when
+    # an error left no JSON), else jq's.
+    out=$( (
+      set +e
+      "$@" | jq -c "$jqf"
+      s=("${PIPESTATUS[@]}")
+      [ "${s[0]}" = 0 ] || exit "${s[0]}"
+      exit "${s[1]}"
+    ) 2>&1) || code=$?
   else
     printf '%s$ %s%s\n' "$dim" "$*" "$reset"
     out=$("$@" 2>&1) || code=$?
@@ -105,16 +113,13 @@ append() {
 
 # ── Two tokens ──────────────────────────────────────────────────────────────────────────────
 
-export SOFTHSM2_CONF=$work/softhsm2.conf
-mkdir -p "$work/softhsm"
-printf 'directories.tokendir = %s\nobjectstore.backend = file\nlog.level = ERROR\n' "$work/softhsm" >"$SOFTHSM2_CONF"
-softhsm2-util --init-token --free --label demo --pin 1234 --so-pin 5678 >/dev/null
-
-export KRYOPTIC_CONF=$work/kryoptic.conf
-printf '[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' "$work/kryoptic.sql" >"$KRYOPTIC_CONF"
-pkcs11-tool --module "$KRYOPTIC_MODULE" --init-token --slot 1 --so-pin 5678 --label demo >/dev/null
-pkcs11-tool --module "$KRYOPTIC_MODULE" --token-label demo --login --login-type so --so-pin 5678 \
-  --init-pin --pin 1234 >/dev/null
+# The software tokens as every harness sets them up (nix/token-env.sh).
+# shellcheck source=/dev/null
+. "$CAKEYS_TOKEN_ENV_SH"
+softhsm_conf "$work"
+softhsm_init demo
+kryoptic_conf "$work"
+kryoptic_init "$KRYOPTIC_MODULE" demo
 echo 1234 >pin
 export CAKEYS_CONFIG=$work/keys.toml
 

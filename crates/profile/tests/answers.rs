@@ -3,11 +3,13 @@
 //! row a consumer reads directly, for every embedded profile. A change of
 //! the profile format must leave this text unchanged (`tests/answers.txt`); a change of what a
 //! profile says regenerates it with `CAKEYS_WRITE_ANSWERS=1 cargo test -p cakeys-profile --test
-//! answers` and shows in its diff.
+//! answers`, which then fails, so a regenerating run is never a pass: review the diff, then run
+//! again without the variable.
 
 use cakeys_profile::profile::Mode;
-use cakeys_profile::{Capability, Effective, Move, Profile, Set};
+use cakeys_profile::{Capability, Effective, Move, Profile, Set, Verdict};
 use std::fmt::Write as _;
+use std::path::Path;
 
 /// The RSA sizes asked after: the reported ranges' edges and the sizes probes generate.
 const BITS: [u32; 8] = [512, 1024, 2048, 3072, 4096, 8192, 15360, 16384];
@@ -67,16 +69,20 @@ fn answers(set: &Set) -> String {
             Mode::Delta => Effective::new(baseline, None, &layers),
         };
         let _ = writeln!(out, "# {}\n{}", p.profile, rows(p));
-        // A layer alone answers generation only where it subtracts or restricts.
-        let mut answer = |what: String, v: cakeys_profile::Verdict| {
-            if !v.to_string().contains("no module profile selected") {
+        // A layer alone answers generation only where it subtracts or restricts: with no module
+        // profile, every other answer is unknown for that reason alone. Told by the stack and
+        // the variant, not by the verdict's words (review answers.rs F3).
+        let alone = p.mode == Mode::Delta;
+        let mut answer = |what: String, v: Verdict| {
+            if !(alone && matches!(v, Verdict::Unknown { .. })) {
                 let _ = writeln!(out, "  {what}: {v}");
             }
         };
         for kt in baseline.key_types.keys() {
             let bare = eff.generate(kt, None, None);
-            // No row for the key type: each curve and size would say the same.
-            let none = bare.to_string().contains(&format!("records no {kt} generation"));
+            // The module profile has no row for the key type: each curve and size would say the
+            // same.
+            let none = !alone && p.generation(kt).is_none();
             answer(kt.clone(), bare);
             if none {
                 continue;
@@ -98,22 +104,63 @@ fn answers(set: &Set) -> String {
     out
 }
 
+/// Where `got` and `pinned` first differ, said so that either side's extra lines show: the line,
+/// both sides of it, and both line counts. `None` when they are the same text.
+fn first_difference(got: &str, pinned: &str) -> Option<String> {
+    if got == pinned {
+        return None;
+    }
+    let (now, was): (Vec<&str>, Vec<&str>) = (got.lines().collect(), pinned.lines().collect());
+    let Some(n) = (0..now.len().max(was.len())).find(|&i| now.get(i) != was.get(i)) else {
+        return Some("profile answers differ in their line endings only".into());
+    };
+    let at = |lines: &[&str]| lines.get(n).map_or_else(|| "<end>".to_owned(), |l| format!("{l:?}"));
+    Some(format!(
+        "profile answers changed at line {} ({} lines now, {} pinned):\n  now:    {}\n  pinned: {}",
+        n + 1,
+        now.len(),
+        was.len(),
+        at(&now),
+        at(&was)
+    ))
+}
+
+/// Compare `got` with the pinned text at `path`, or with `write`, put `got` there: an error
+/// either way, so a regenerating run never passes (review answers.rs F1: a shell that kept the
+/// variable accepted every change silently).
+fn pinned_or_written(got: &str, path: &Path, write: bool) -> Result<(), String> {
+    if write {
+        std::fs::write(path, got).map_err(|e| format!("{}: {e}", path.display()))?;
+        return Err(format!(
+            "{} rewritten (CAKEYS_WRITE_ANSWERS): review its diff, then run again without the variable",
+            path.display()
+        ));
+    }
+    let pinned = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    first_difference(got, &pinned).map_or(Ok(()), Err)
+}
+
 #[test]
 fn every_profile_answers_as_pinned() {
     let got = answers(&Set::embedded().unwrap());
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/answers.txt");
-    if std::env::var_os("CAKEYS_WRITE_ANSWERS").is_some() {
-        std::fs::write(path, &got).unwrap();
-        return;
+    let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/answers.txt"));
+    if let Err(e) = pinned_or_written(&got, path, std::env::var_os("CAKEYS_WRITE_ANSWERS").is_some()) {
+        panic!("{e}");
     }
-    let pinned = std::fs::read_to_string(path).unwrap();
-    if got != pinned {
-        let (n, (a, b)) = got
-            .lines()
-            .zip(pinned.lines())
-            .enumerate()
-            .find(|(_, (a, b))| a != b)
-            .unwrap_or((got.lines().count().min(pinned.lines().count()), ("<end>", "<end>")));
-        panic!("profile answers changed at line {}:\n  now:    {a}\n  pinned: {b}", n + 1);
-    }
+}
+
+/// Writing the answers fails the run, after writing them; a text that is a prefix of the other
+/// names the side with more lines and its first extra one, never `<end>` against `<end>`.
+#[test]
+fn regenerating_fails_and_a_difference_says_where() {
+    let path = std::env::temp_dir().join(format!("cakeys-answers-{}.txt", std::process::id()));
+    let e = pinned_or_written("a\nb\n", &path, true).unwrap_err();
+    assert!(e.contains("rewritten"), "{e}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\nb\n");
+    assert_eq!(pinned_or_written("a\nb\n", &path, false), Ok(()));
+    let e = pinned_or_written("a\nb\nc\n", &path, false).unwrap_err();
+    assert!(e.contains("line 3 (3 lines now, 2 pinned)") && e.contains("now:    \"c\"\n  pinned: <end>"), "{e}");
+    let e = pinned_or_written("a\n", &path, false).unwrap_err();
+    assert!(e.contains("line 2 (1 lines now, 2 pinned)") && e.contains("now:    <end>\n  pinned: \"b\""), "{e}");
+    std::fs::remove_file(&path).unwrap();
 }

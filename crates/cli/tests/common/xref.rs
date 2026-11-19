@@ -2,7 +2,7 @@
 //! reference token whose suite variables are set, one keys.toml naming them all, and runs of
 //! either binary against it.
 
-use super::{BIN, sibling};
+use super::{BIN, Run, required_var, sibling};
 use std::fmt::Write;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -36,27 +36,38 @@ pub struct Env {
     pub refs: Vec<Ref>,
 }
 
-fn module(var: &str, require: &str) -> Option<String> {
-    let m = std::env::var(var).ok();
-    assert!(m.is_some() || std::env::var(require).is_err(), "{var} is required");
-    m
+/// The variable that requires reference `name` ([`required_var`]): set, a test needing the
+/// reference fails where it would skip ([`Env::needs`]).
+///
+/// # Panics
+///
+/// For a name no reference has: a test needing it would skip on every run.
+pub fn require_var_of(name: &str) -> &'static str {
+    match name {
+        "softhsm" => "CAKEYS_TEST_REQUIRE",
+        "kryoptic" | "kryoptic-der" => "CAKEYS_KRYOPTIC_REQUIRE",
+        "p11kit" => "CAKEYS_P11KIT_REQUIRE",
+        "tpm2" => "CAKEYS_TPM_REQUIRE",
+        other => panic!("no reference is named '{other}'"),
+    }
 }
 
 pub fn env(name: &str) -> Option<Env> {
     let mut refs = Vec::new();
     let r = |name, module, token_label, env, plant, eddsa| Ref { name, module, token_label, env, plant, eddsa };
-    if let Some(m) = module("CAKEYS_TEST_MODULE", "CAKEYS_TEST_REQUIRE") {
+    // Each quiet when unset: a reference left out is no skip, unless fewer than two are left.
+    if let Some(m) = required_var("CAKEYS_TEST_MODULE", require_var_of("softhsm")) {
         refs.push(r("softhsm", m, "kmtest", &[], Plant::Create, true));
     }
-    if let Some(m) = module("CAKEYS_KRYOPTIC_MODULE", "CAKEYS_KRYOPTIC_REQUIRE") {
+    if let Some(m) = required_var("CAKEYS_KRYOPTIC_MODULE", require_var_of("kryoptic")) {
         refs.push(r("kryoptic", m.clone(), "kmtest", &[], Plant::Create, true));
         let der: &[(&str, &str)] = &[("KRYOPTIC_EC_POINT_ENCODING", "DER")];
         refs.push(r("kryoptic-der", m, "kmtest", der, Plant::Shared, true));
     }
-    if let Some(m) = module("CAKEYS_P11KIT_CLIENT", "CAKEYS_P11KIT_REQUIRE") {
+    if let Some(m) = required_var("CAKEYS_P11KIT_CLIENT", require_var_of("p11kit")) {
         refs.push(r("p11kit", m, "kmp11", &[], Plant::Create, false));
     }
-    if let Some(m) = module("CAKEYS_TPM_MODULE", "CAKEYS_TPM_REQUIRE") {
+    if let Some(m) = required_var("CAKEYS_TPM_MODULE", require_var_of("tpm2")) {
         refs.push(r("tpm2", m, "kmtest", &[], Plant::Ptool, false));
     }
     if refs.len() < 2 {
@@ -97,23 +108,11 @@ impl Env {
     /// [`Self::km`] with `NIX_BUILD_TOP` set, as inside a Nix build sandbox: no dry-run twin,
     /// since the point is what the run itself refuses there. `env` is set on top.
     pub fn km_in_nix_build(&self, r: &Ref, env: &[(&str, &str)], args: &[&str]) -> Output {
-        let out = Command::new(BIN)
+        self.command(std::path::Path::new(BIN), r)
+            .note("in a Nix build")
             .env("NIX_BUILD_TOP", "/build")
-            .env_remove("IN_NIX_SHELL")
-            .envs(r.env.iter().copied())
             .envs(env.iter().copied())
-            .arg("--config")
-            .arg(self.dir.join("keys.toml"))
-            .args(args)
-            .output()
-            .unwrap();
-        eprintln!(
-            "$ (in a Nix build) {}\n  exit={:?}\n  stderr={}",
-            args.join(" "),
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-        out
+            .output(args)
     }
 
     /// [`Self::km`] without the dry-run twin, for a run whose input is wrong before any plan
@@ -139,11 +138,32 @@ impl Env {
             let real = out.status.code().unwrap();
             // A refusal the dry run saw is the real run's refusal. A dry run that passed promises
             // only what can be known before anything is created: the real run may still meet
-            // material that is not the locked one (10) or a blob that does not unwrap (13).
-            let kept = if dry == 0 { matches!(real, 0 | 10 | 13) } else { real == dry };
+            // material that is not the locked one (10) or a blob that does not unwrap: 13 where
+            // the module says the data is bad, 16 where it says only that it failed (kryoptic's
+            // CKR_DEVICE_ERROR for a tampered blob [run], said as such). Any other 16 breaks the
+            // promise.
+            let unwrap_failed =
+                real == 16 && String::from_utf8_lossy(&out.stderr).contains("damaged or altered bundle");
+            let kept = if dry == 0 { matches!(real, 0 | 10 | 13) || unwrap_failed } else { real == dry };
             assert!(kept, "camigrate {}: --dry-run exited {dry}, the run itself {real}", args.join(" "));
         }
         out
+    }
+
+    /// The tokens a run naming `args` reaches, each once: a reference that reads another's token
+    /// ([`Plant::Shared`], `kryoptic-der`) stands for that token, never for none (review xref.rs
+    /// F1: a move to `kryoptic-der` compared no token).
+    pub fn compared(&self, args: &[&str]) -> Vec<&Ref> {
+        let mut named: Vec<&Ref> = Vec::new();
+        for t in self.refs.iter().filter(|t| args.contains(&t.name)) {
+            let owns = |o: &&Ref| o.plant != Plant::Shared && o.module == t.module && o.token_label == t.token_label;
+            let owner = if t.plant == Plant::Shared { self.refs.iter().find(owns) } else { Some(t) };
+            let t = owner.unwrap_or_else(|| panic!("{}: shares no reference's token", t.name));
+            if !named.iter().any(|n| n.name == t.name) {
+                named.push(t);
+            }
+        }
+        named
     }
 
     /// The dry-run twin of a `camigrate` run that moves something: its exit code, after
@@ -157,8 +177,7 @@ impl Env {
         let value = |flag: &str| args.iter().position(|a| *a == flag).and_then(|i| args.get(i + 1)).copied();
         let lock = value("--lock").map_or_else(|| self.dir.join("keys.lock"), PathBuf::from);
         let files = [Some(lock), value("--out").map(PathBuf::from)];
-        let named: Vec<&Ref> =
-            self.refs.iter().filter(|t| args.contains(&t.name) && t.plant != Plant::Shared).collect();
+        let named = self.compared(args);
         // What must not change, each with its name: the files' bytes and each token's objects.
         let state = || -> Vec<(String, String)> {
             let file = |f: &PathBuf| (f.display().to_string(), format!("{:?}", std::fs::read(f).ok()));
@@ -180,25 +199,12 @@ impl Env {
     }
 
     fn run_once(&self, bin: &std::path::Path, r: &Ref, args: &[&str]) -> Output {
-        let out = Command::new(bin)
-            .env_remove("NIX_BUILD_TOP")
-            .env_remove("IN_NIX_SHELL")
-            .envs(r.env.iter().copied())
-            .arg("--config")
-            .arg(self.dir.join("keys.toml"))
-            .args(args)
-            .output()
-            .unwrap();
-        eprintln!(
-            "$ {} {} ({})\n  exit={:?}\n  stdout={}\n  stderr={}",
-            bin.file_name().unwrap().to_string_lossy(),
-            args.join(" "),
-            r.name,
-            out.status.code(),
-            String::from_utf8_lossy(&out.stdout).trim(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-        out
+        self.command(bin, r).output(args)
+    }
+
+    /// `bin` on this keys.toml, in reference `r`'s environment.
+    fn command(&self, bin: &std::path::Path, r: &Ref) -> Run {
+        Run::new(bin, &self.dir.join("keys.toml")).envs(r.env.iter().copied()).note(r.name)
     }
 
     pub fn refs(&self, keep: impl Fn(&Ref) -> bool) -> Vec<&Ref> {

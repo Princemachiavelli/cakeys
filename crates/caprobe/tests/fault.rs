@@ -19,29 +19,64 @@ fn scratch(name: &str) -> Option<Workdir> {
     w.write_config(&reference_tokens(&fault_shim(), &w.dir));
     let s = open_session(&real, "kmtest", "1234");
     let label = Attribute::Label(b"decoy".to_vec());
-    let p256 = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
     s.generate_key_pair(
         &Mechanism::EccKeyPairGen,
-        &[Attribute::Token(true), label.clone(), Attribute::EcParams(p256)],
+        &[Attribute::Token(true), label.clone(), Attribute::EcParams(P256.to_vec())],
         &[Attribute::Token(true), label, Attribute::Sign(true), Attribute::Derive(true)],
     )
     .unwrap();
     Some(w)
 }
 
-/// `caprobe probe --token ref --write` under `plan`: the profile, the notes, and the rules fired.
-fn probed(w: &Workdir, name: &str, plan: &str, more: &[&str]) -> (i32, String, String, usize) {
+/// `caprobe probe --token ref --write` under `plan`: the profile, the notes, and how many calls
+/// each rule decided (the trace's `rule`, from 1), in the plan's order.
+fn probed(w: &Workdir, name: &str, plan: &str, more: &[&str]) -> (i32, String, String, Vec<usize>) {
     let (path, trace) = (w.dir.join(format!("{name}.toml")), w.dir.join(format!("{name}.jsonl")));
     std::fs::write(&path, plan).unwrap();
+    let _ = std::fs::remove_file(&trace);
     let args = [&["probe", "--token", "ref", "--write", "--rsa-max-bits", "4096"][..], more].concat();
     let o = w.km_env(&args, &[("P11_FAULT_PLAN", &path), ("P11_FAULT_TRACE", &trace)]);
-    let text = std::fs::read_to_string(&trace).unwrap_or_default();
-    (code(&o), stdout(&o), stderr(&o), text.lines().filter(|l| !l.contains("\"rule\":null")).count())
+    let mut fired = vec![0; rules(plan).len()];
+    for line in std::fs::read_to_string(&trace).unwrap_or_default().lines() {
+        let call: serde_json::Value = serde_json::from_str(line).unwrap();
+        if let Some(rule) = call["rule"].as_u64() {
+            fired[usize::try_from(rule).unwrap() - 1] += 1;
+        }
+    }
+    (code(&o), stdout(&o), stderr(&o), fired)
 }
 
-/// One fault case: its name, the plan, what the profile then holds, and what the probe says it
-/// could not determine.
-type Case<'a> = (&'a str, String, &'a [&'a str], &'a str);
+/// The plan's rules.
+fn rules(plan: &str) -> Vec<toml::Value> {
+    let plan: toml::Value = toml::from_str(plan).unwrap();
+    plan.get("rule").and_then(toml::Value::as_array).cloned().unwrap_or_default()
+}
+
+/// Each rule fired as often as it says: a rule numbered by `call` decides that one call, once
+/// (review fault.rs F2: any firing passed, so a numbered rule could land on another step, or
+/// a plan's second rule never fire); one without `call` decides every call it matches, at least
+/// one.
+fn assert_fired(name: &str, plan: &str, fired: &[usize], said: &str) {
+    for (i, (rule, n)) in rules(plan).iter().zip(fired).enumerate() {
+        if rule.get("call").is_some() {
+            assert_eq!(*n, 1, "{name}: rule {} fired {n} times: {said}", i + 1);
+        } else {
+            assert!(*n > 0, "{name}: rule {} never fired: {said}", i + 1);
+        }
+    }
+}
+
+/// One fault case: its name, the plan, what the profile then holds, what the probe says it
+/// could not determine, and the rows of the committed `SoftHSM` profile (what the honest module
+/// earns) the profile must then not hold.
+type Case<'a> = (&'a str, String, &'a [&'a str], &'a str, &'a [&'a str]);
+
+/// The rows the honest module earns that a case takes away.
+const POP_SIGN: &str = "\"prove.pop-sign.CKK_EC.secp256r1\" = { answer = \"yes\" }";
+const POP_ECDH: &str = "\"prove.pop-ecdh.CKK_EC.secp256r1\" = { answer = \"yes\" }";
+const SEALED: &str = "\"derive.ecdh.sealed\" = { answer = \"yes\" }";
+const READ_ONLY: &str = "\"derive.ecdh.read-only\" = { answer = \"yes\" }";
+const OAEP_SHA1: &str = "\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\" }";
 
 /// The calls the first key's proofs of possession make before the probes of its mechanisms (it
 /// proves first, as the verbs do right after generating): pop-sign's `C_SignInit`, pop-ecdh's
@@ -53,17 +88,25 @@ fn rule(text: &str) -> String {
     format!("[[rule]]\n{text}\n")
 }
 
-/// Probe under each case's plan: the probe succeeds, its rule fired, and the profile and the
-/// notes hold what the case says.
+/// Probe under each case's plan: the probe succeeds, its rule fired, the profile and the notes
+/// hold what the case says, and the profile holds none of the rows the honest module would have
+/// earned (review fault.rs F1: only presence was checked, so a probe that noted the lie and
+/// still wrote the row passed). Each of those is a row of the committed profile, so the check
+/// cannot pass on a row no probe writes.
 fn probe_cases(w: &Workdir, cases: &[Case]) {
-    for (name, plan, rows, undetermined) in cases {
+    let honest = std::fs::read_to_string(committed_profile(SOFTHSM.profile.1)).unwrap();
+    for (name, plan, rows, undetermined, earned) in cases {
         let (exit, profile, said, fired) = probed(w, name, plan, &[]);
         assert_eq!(exit, 0, "{name}: {said}");
-        assert!(fired > 0, "{name}: the rule never fired");
+        assert_fired(name, plan, &fired, &said);
         for row in *rows {
             assert!(profile.contains(row), "{name}: expected {row:?} in\n{profile}");
         }
         assert!(said.contains(undetermined), "{name}: expected {undetermined:?} in {said}");
+        for row in *earned {
+            assert!(honest.contains(row), "{name}: {row:?} is no row of the committed profile");
+            assert!(!profile.contains(row), "{name}: the honest module's {row:?} in\n{profile}");
+        }
     }
 }
 
@@ -85,24 +128,31 @@ fn the_probe_records_what_a_misbehaving_module_does() {
                 .collect(),
             &[],
             "no operation probes on CKK_EC keys: the module refused the usage attributes",
+            &[POP_SIGN, POP_ECDH],
         ),
         (
             "a public key without its point",
             rule("fn = \"C_GetAttributeValue\"\nattribute = \"CKA_EC_POINT\"\ndrop = true"),
             &[],
             "no operation probes on secp256r1: its public key carries no material",
+            &[POP_SIGN, POP_ECDH],
         ),
         (
+            // An operation probe has no row of its own: the mechanism is usable for the keys it
+            // verified on, and the failure is its note (`Ops::record` puts each outcome in one
+            // place). The proofs, before it, are the honest module's.
             "another key signs",
             rule(&format!("fn = \"C_SignInit\"\ncall = {}\nuse_label = \"decoy\"", SIGN_INITS + 1)),
-            &["secp256r1: the signature does not verify"],
+            &["secp256r1: the signature does not verify", POP_SIGN],
             "",
+            &[],
         ),
         (
             "another key derives",
             rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nuse_label = \"decoy\"", DERIVES + 1)),
             &["the derived secret is not the shared secret"],
             "",
+            &[SEALED],
         ),
         (
             // Every try of the sealed template `derive_any` makes: as asked, with CKA_VALUE_LEN,
@@ -116,18 +166,22 @@ fn the_probe_records_what_a_misbehaving_module_does() {
                 "a sealed (non-extractable) derived secret is refused: CKR_ATTRIBUTE_VALUE_INVALID",
             ],
             "",
+            &[SEALED],
         ),
         (
             "no derivation at all",
             rule("fn = \"C_DeriveKey\"\nrv = \"CKR_ATTRIBUTE_VALUE_INVALID\""),
             &["extractable: CKR_ATTRIBUTE_VALUE_INVALID"],
             "",
+            &[SEALED, READ_ONLY, POP_ECDH],
         ),
         (
+            // The key derives, as the honest module's does: its rows stand, the lie is a note.
             "derives while reporting CKA_DERIVE false",
             rule("fn = \"C_GetAttributeValue\"\nattribute = \"CKA_DERIVE\"\nvalue = \"00\""),
             &["derives although the key reports CKA_DERIVE = false"],
             "",
+            &[],
         ),
         // A session an earlier operation left busy decides nothing, by the return value the
         // module gave (KmError::rv), not by the words of a message: an operation probe, then
@@ -137,12 +191,14 @@ fn the_probe_records_what_a_misbehaving_module_does() {
             rule(&format!("fn = \"C_SignInit\"\ncall = {}\nrv = \"CKR_OPERATION_ACTIVE\"", SIGN_INITS + 1)),
             &[],
             "an earlier operation left the session busy (CKR_OPERATION_ACTIVE)",
+            &[],
         ),
         (
             "a proof meets a busy session",
             rule("fn = \"C_SignInit\"\ncall = 1\nrv = \"CKR_OPERATION_ACTIVE\""),
             &[],
             "no prove.pop-sign.CKK_EC.secp256r1 row",
+            &[POP_SIGN],
         ),
         (
             "wraps but does not unwrap",
@@ -152,6 +208,7 @@ fn the_probe_records_what_a_misbehaving_module_does() {
                 "wraps but does not unwrap: CKR_DEVICE_ERROR",
             ],
             "",
+            &[OAEP_SHA1],
         ),
     ];
     probe_cases(&w, cases);
@@ -175,6 +232,7 @@ fn the_probe_notes_which_derive_template_took() {
             rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nrv = \"CKR_TEMPLATE_INCONSISTENT\"", DERIVES + 1)),
             &["the template as asked is refused (CKR_TEMPLATE_INCONSISTENT); derived with CKA_VALUE_LEN = 32 added\""],
             "",
+            &[],
         ),
         (
             "the sealed template takes without CKA_SENSITIVE",
@@ -183,6 +241,7 @@ fn the_probe_notes_which_derive_template_took() {
                 .collect(),
             &["(CKR_TEMPLATE_INCONSISTENT); derived with CKA_SENSITIVE = true dropped\""],
             "",
+            &[],
         ),
         (
             "the sealed template takes with its length and without CKA_SENSITIVE",
@@ -191,12 +250,14 @@ fn the_probe_notes_which_derive_template_took() {
                 .collect(),
             &["(CKR_TEMPLATE_INCONSISTENT); derived with CKA_VALUE_LEN = 32 added, CKA_SENSITIVE = true dropped\""],
             "",
+            &[],
         ),
         (
             "the sealed derivation fails",
             rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nrv = \"CKR_DEVICE_ERROR\"", DERIVES + 1)),
             &["a sealed (non-extractable) derived secret is refused: CKR_DEVICE_ERROR"],
             "",
+            &[SEALED],
         ),
         (
             "the sealed derivation fails after a template refusal",
@@ -204,9 +265,24 @@ fn the_probe_notes_which_derive_template_took() {
                 + &rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nrv = \"CKR_DEVICE_ERROR\"", DERIVES + 2)),
             &["a sealed (non-extractable) derived secret is refused: CKR_DEVICE_ERROR"],
             "",
+            &[SEALED],
         ),
     ];
     probe_cases(&w, cases);
+}
+
+/// A pair the module made but the probe cannot find under its locator (probe.rs F3) is no
+/// refusal: no `cannot` row, no "generation refused" evidence, and a note saying what was seen.
+/// The first probe pair is hidden from every search.
+#[test]
+fn a_pair_made_but_not_found_is_no_refusal() {
+    let Some(w) = scratch("fault-probe-lost") else { return };
+    let plan = rule("fn = \"C_FindObjects\"\nhide_label = \"cakeys-probe-01\"");
+    let (exit, profile, said, fired) = probed(&w, "lost", &plan, &[]);
+    assert_eq!(exit, 0, "{said}");
+    assert_fired("lost", &plan, &fired, &said);
+    assert!(said.contains("no generate row for CKK_EC on secp256r1: the module generated, but"), "{said}");
+    assert!(!profile.contains("not under its locator"), "a refusal row for a pair the module made:\n{profile}");
 }
 
 /// Objects an interrupted probe left under its own labels are removed by the next one, which
@@ -224,4 +300,28 @@ fn the_probe_clears_what_an_interrupted_run_left() {
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(stderr(&o).contains("destroyed objects an interrupted probe left: cakeys-probe-stale"), "{}", stderr(&o));
     assert_eq!(open_session(&real, "kmtest", "1234").labelled("cakeys-probe-stale").len(), 0);
+}
+
+/// A probe that an error ends still destroys what it made (review D7): the first lookup after the
+/// third generation fails with `CKR_DEVICE_ERROR`, which ends the run, and nothing under a probe
+/// label is left. Before, every key made so far stayed for the next run's stale check.
+#[test]
+fn a_probe_an_error_ends_destroys_what_it_made() {
+    let Some(w) = scratch("fault-probe-ends") else { return };
+    let (exit, _, said, _) = probed(&w, "clean", "", &[]);
+    assert_eq!(exit, 0, "{said}");
+    let trace = std::fs::read_to_string(w.dir.join("clean.jsonl")).unwrap();
+    let calls: Vec<serde_json::Value> = trace.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let seq = |c: &serde_json::Value| c["seq"].as_u64().unwrap();
+    let third = calls.iter().filter(|c| c["fn"] == "C_GenerateKeyPair").nth(2).map(seq).unwrap();
+    let after = calls.iter().find(|c| c["fn"] == "C_FindObjects" && seq(c) > third).unwrap();
+    let plan = rule(&format!("fn = \"C_FindObjects\"\ncall = {}\nrv = \"CKR_DEVICE_ERROR\"", after["n"]));
+    let (exit, _, said, fired) = probed(&w, "ends", &plan, &[]);
+    assert_ne!(exit, 0, "{said}");
+    assert_fired("ends", &plan, &fired, &said);
+    let real = std::env::var("P11_FAULT_MODULE").unwrap();
+    let s = open_session(&real, "kmtest", "1234");
+    let left: Vec<String> =
+        (1..=99).map(|n| format!("cakeys-probe-{n:02}")).filter(|l| !s.labelled(l).is_empty()).collect();
+    assert!(left.is_empty(), "left on the token: {left:?}\n{said}");
 }

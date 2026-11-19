@@ -50,11 +50,15 @@ $ camigrate migrate [<object>] --from <a> --to <b> [--spec <s> ...] [--transport
   rules (the `.lck` sidecar lock, written whole or not at all).
 
 Exit codes (the table: [CAKEYS.md](CAKEYS.md#exit-codes)): 0 done; 10 the material's identity
-differs from the lock; 13 the target refused (a tampered bundle, a
-failed proof of possession, an occupied PIV slot); 14 the lock pins no IDs for the object; 15
-an object cannot move as invoked, or the target lacks a capability; 17 invalid input (keys.toml,
+differs from the lock; 11 a token, object or key not found; 12 an ambiguous name; 13 the
+target refused (a bundle whose blobs it finds invalid, tampered or wrapped to another key; a
+failed proof of possession; an occupied locator or PIV slot); 14 the lock pins no IDs for the
+object; 15 an object cannot move as invoked, or the target lacks a capability (an unwrap
+mechanism or template it refuses included); 16 the module or device failed (an unwrap failed so is
+said as what may be a damaged bundle: kryoptic reports a tampered blob as `CKR_DEVICE_ERROR`); 17 invalid input (keys.toml,
 a transport file, a bundle, another key's IDs, a key file that does not open under the
-passphrase given: 10 is kept for material that differs from the lock).
+passphrase given: 10 is kept for material that differs from the lock); 21 a lock a writing run
+cannot write; 1 anything else (IO).
 
 ## Decisions
 
@@ -127,12 +131,17 @@ observed mechanisms for it, else a transport file. The OAEP hash is the stronges
 | `vendor:<provider>/<name>` | as the provider declares | a provider crate's own path (D10) |
 
 **D5. The bundle is a versioned file, one per export** (a source and a target), never
-plaintext. RFC 5649 authenticates the key bytes and import recomputes every identity on the
-target, so a tampered or swapped blob fails either way, and the bundle may cross untrusted
-channels. A wrapped private key is the PKCS#8 `C_WrapKey` emits; PKCS#12 or a CMS key package
+plaintext. RFC 5649 authenticates the key bytes, not who wrapped them: the transport key is
+public, so anyone can seal a key of their own to it. Import recomputes every identity on the
+target and proves the binding, so a tampered or swapped blob fails, and the bundle may cross
+untrusted channels — except where nothing proves the key: an EC or Edwards private key under
+`binding = "token-asserted"` would take its identity from the public half the bundle's own
+`publicKey` creates (a target such as SoftHSM keeps no point with it), so `import --in` refuses
+it (14). `migrate`, whose bundle never leaves the process, moves it. A wrapped private key is the PKCS#8 `C_WrapKey` emits; PKCS#12 or a CMS key package
 would need the plaintext on the host, which sealed avoids. Named objects export all or nothing;
 without names, export takes what can move and warns about the rest (a spec's `migrate.noExport = true`
-keeps its object home and silences the warning). Import takes each entry on its own, reports
+keeps its object home and silences the warning, and a token's transport key is kept home so by
+default). Import takes each entry on its own, reports
 every failure, and exits with the first.
 
 **D6. Import is a `lock` that creates from a bundle.**
@@ -231,7 +240,7 @@ rfc7093m4 = "sha256-..."
 Key files: `pkcs8-pbes2` is a PEM `ENCRYPTED PRIVATE KEY` (PBES2, PBKDF2-HMAC-SHA256 with 600 000
 iterations, AES-256-CBC). `pkcs12` holds the same encrypted key in a shrouded key bag beside the
 certificate the lock pairs with the object, both tagged with one `localKeyId`, under an
-HMAC-SHA256 MAC (PKCS#12 KDF, 10 000 iterations). One key per file, mode 0600. An imported file
+HMAC-SHA256 MAC (PKCS#12 KDF, 600 000 iterations, as many as for the key). One key per file, mode 0600. An imported file
 names no object: the key's `rfc7093m4` finds the locked private key. A file asking for more than
 10 000 000 KDF iterations is refused.
 

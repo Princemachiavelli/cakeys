@@ -11,6 +11,11 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# The entry points the fuzz targets (fuzz/) call: built only for them, the tests and Kani, never
+# into a product (review D8).
+fuzzing = []
+
 [dependencies]
 base16ct.workspace = true
 base64.workspace = true
@@ -29,7 +34,8 @@ rsa.workspace = true
 serde.workspace = true
 serde_jcs.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
+# `zeroize`: an HMAC keyed with a proof secret wipes its hash state on drop (pop.rs).
+sha2 = { workspace = true, features = ["zeroize"] }
 subtle.workspace = true
 thiserror.workspace = true
 toml.workspace = true
@@ -37,6 +43,9 @@ getrandom.workspace = true
 zeroize.workspace = true
 ecdsa.workspace = true
 x509-cert.workspace = true
+# SPKI and PKCS#8 for every key type, by name rather than through one curve crate's re-export.
+pkcs8.workspace = true
+der.workspace = true
 rustix.workspace = true
 tempfile.workspace = true
 

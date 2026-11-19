@@ -136,17 +136,53 @@ fn admin_credential_is_read_only_by_security_officer_steps() {
     assert!(stderr(&o).contains("needs a user PIN"));
 }
 
-/// Resets the user PIN as the SO when dropped (`C_InitPIN` clears the counters and unlocks it):
-/// the regular build runs every test on one token, so a test that spends PIN tries puts them
-/// back, whatever happens in it.
+/// Resets the user PIN as the SO when dropped (`C_InitPIN` clears the counters and unlocks it).
+/// Each test has a token set of its own (nix/test-tokens.sh), so this matters only to a run that
+/// shares one, plain `cargo test`: a test that spends PIN tries puts them back, whatever happens
+/// in it.
 struct ResetPin<'a>(&'a Pkcs11, cryptoki::slot::Slot);
 
-impl Drop for ResetPin<'_> {
-    fn drop(&mut self) {
-        let s = self.0.open_rw_session(self.1).unwrap();
-        s.login(cryptoki::session::UserType::So, Some(&AuthPin::new("5678".into()))).unwrap();
-        s.init_pin(&AuthPin::new("1234".into())).unwrap();
+impl ResetPin<'_> {
+    fn reset(&self) -> cryptoki::error::Result<()> {
+        let s = self.0.open_rw_session(self.1)?;
+        s.login(cryptoki::session::UserType::So, Some(&AuthPin::new("5678".into())))?;
+        s.init_pin(&AuthPin::new("1234".into()))
     }
+}
+
+impl Drop for ResetPin<'_> {
+    /// Says why it could not, never panics: it runs while a failed test unwinds, and a second
+    /// panic aborts the process, losing the first one's message (review tokens.rs F1).
+    fn drop(&mut self) {
+        if let Err(err) = self.reset() {
+            eprintln!("could not reset the user PIN of slot {}: {err}", self.1);
+        }
+    }
+}
+
+/// A [`ResetPin`] that cannot reset says so and returns; the test's own failure stays the one
+/// reported.
+#[test]
+fn a_pin_reset_that_fails_does_not_panic() {
+    let Some(e) = env("pin-reset-fails") else { return };
+    let ctx = Module::open(&e.module);
+    let nowhere = cryptoki::slot::Slot::try_from(0xdead_u64).unwrap();
+    let guard = ResetPin(&ctx, nowhere);
+    assert!(guard.reset().is_err(), "slot 0xdead exists");
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(guard))).is_ok());
+}
+
+/// One module named two ways — its path and a symlink to it — is one library in this process:
+/// both holders share its context (review common/mod.rs F4). Keyed by the name, the second
+/// initialized it again and failed.
+#[test]
+fn a_module_named_two_ways_is_held_once() {
+    let Some(e) = env("module-two-names") else { return };
+    let link = e.dir.join("linked-module.so");
+    std::os::unix::fs::symlink(&e.module, &link).unwrap();
+    let direct = open_session(&e.module, "kmtest", "1234");
+    let linked = open_session(link.to_str().unwrap(), "kmtest", "1234");
+    assert!(direct.find_objects(&[]).is_ok() && linked.find_objects(&[]).is_ok());
 }
 
 /// The PIN counters a module reports (M2), after wrong PINs another program sent: a login that
@@ -181,6 +217,7 @@ fn pin_counters_stop_cakeys_before_it_spends_a_try() {
     assert_eq!(code(&o), 18, "{}", stderr(&o));
     assert!(stderr(&o).contains("a user PIN login failed since the last success"), "{}", stderr(&o));
     if REF.provider != "kryoptic" {
+        eprintln!("{}: reports only the first counter; kryoptic's suite checks the others", REF.provider);
         return;
     }
     assert!(fail_until(&|t| t.user_pin_final_try()));

@@ -49,8 +49,8 @@ yk_pin=${CAKEYS_TEST_YUBIKEY_PIN:-} yk_mgm=${CAKEYS_TEST_YUBIKEY_MGM:-}
 yk_module=${CAKEYS_TEST_YUBIKEY_MODULE:-${CAKEYS_YKCS11_MODULE:-}}
 ftpm_profile=${CAKEYS_FTPM_PROFILE:-} ftpm_attest=${CAKEYS_FTPM_ATTEST:-}
 ftpm_module=${CAKEYS_FTPM_MODULE:-$CAKEYS_TPM_MODULE}
-unset CAKEYS_TEST_YUBIKEY_PIN CAKEYS_TEST_YUBIKEY_MGM CAKEYS_TEST_YUBIKEY_MODULE \
-  CAKEYS_FTPM_PROFILE CAKEYS_FTPM_ATTEST CAKEYS_FTPM_MODULE
+unset CAKEYS_TEST_YUBIKEY_PIN CAKEYS_TEST_YUBIKEY_MGM CAKEYS_TEST_YUBIKEY_MODULE CAKEYS_YUBIKEY_REQUIRE \
+  CAKEYS_FTPM_PROFILE CAKEYS_FTPM_ATTEST CAKEYS_FTPM_MODULE CAKEYS_FTPM_REQUIRE
 
 ran=() failed=()
 # One instrumented nextest run, its profile data added to what the runs before it left.
@@ -74,7 +74,10 @@ if [ -n "$yk_pin" ] && [ -n "$yk_mgm" ]; then
     echo "coverage-full: the YubiKey suites need readable CAKEYS_TEST_YUBIKEY_PIN and _MGM files and libykcs11.so ($yk_module)" >&2
     exit 1
   }
-  export CAKEYS_TEST_YUBIKEY_MODULE=$yk_module CAKEYS_TEST_YUBIKEY_PIN=$yk_pin CAKEYS_TEST_YUBIKEY_MGM=$yk_mgm
+  # CAKEYS_YUBIKEY_REQUIRE: this run means the suites, so one that finds its opt-in unset fails
+  # rather than passing having run nothing (crates/cli/tests/common, review D9).
+  export CAKEYS_TEST_YUBIKEY_MODULE=$yk_module CAKEYS_TEST_YUBIKEY_PIN=$yk_pin CAKEYS_TEST_YUBIKEY_MGM=$yk_mgm \
+    CAKEYS_YUBIKEY_REQUIRE=1
   # The key and its certificate, whichever is there (ykman refuses to delete what is not):
   # ykcs11 shows a certificate left alone as a certificate and a public key under the slot's
   # CKA_ID, which cakeys then refuses to create beside.
@@ -102,7 +105,7 @@ if [ -n "$yk_pin" ] && [ -n "$yk_mgm" ]; then
   if [ ${#failed[@]} -eq 0 ] || [ "${failed[-1]#YubiKey}" = "${failed[-1]}" ]; then
     hardware "YubiKey: cakeys and caprobe" -E 'binary(yubikey) & not package(camigrate)'
   fi
-  unset CAKEYS_TEST_YUBIKEY_MODULE CAKEYS_TEST_YUBIKEY_PIN CAKEYS_TEST_YUBIKEY_MGM
+  unset CAKEYS_TEST_YUBIKEY_MODULE CAKEYS_TEST_YUBIKEY_PIN CAKEYS_TEST_YUBIKEY_MGM CAKEYS_YUBIKEY_REQUIRE
 else
   echo "coverage-full: no YubiKey suites: CAKEYS_TEST_YUBIKEY_PIN and CAKEYS_TEST_YUBIKEY_MGM are not set" >&2
 fi
@@ -112,13 +115,24 @@ if [ -n "$ftpm_profile" ]; then
   # The parent of the store: the platform's storage root key for the attestation, else transient.
   printf '%s\n' "${ran[@]}" >"$F/ran"
   printf '%s\n' "${failed[@]}" >"$F/failed"
+  # The private tpm2-abrmd on the host's TPM goes however this ends: a failed `up` stops what it
+  # started itself, and this covers an exit anywhere below.
+  trap 'bash nix/ftpm-test-env.sh down "$F"' EXIT
   bash nix/ftpm-test-env.sh up "$F" ${ftpm_attest:+persistent}
+  # The `||` after this subshell turns errexit off inside it: each step that must hold says so.
   (
     # shellcheck source=/dev/null
-    . "$F/env"
-    handles() { tpm2_getcap handles-persistent | grep -v 0x81000016 || true; }
-    before=$(handles)
-    export CAKEYS_FTPM_MODULE=$ftpm_module CAKEYS_FTPM_PROFILE=$ftpm_profile
+    . "$F/env" || exit 1
+    # The persistent handles but cakeys' Attestation Key. A failing tpm2_getcap fails it,
+    # rather than reading as an empty list that compares equal to another.
+    handles() {
+      local all
+      all=$(tpm2_getcap handles-persistent) || return 1
+      grep -v 0x81000016 <<<"$all" || true
+    }
+    before=$(handles) || exit 1
+    # As for the YubiKey: required, so a suite that finds no opt-in fails.
+    export CAKEYS_FTPM_MODULE=$ftpm_module CAKEYS_FTPM_PROFILE=$ftpm_profile CAKEYS_FTPM_REQUIRE=1
     [ -z "$ftpm_attest" ] || export CAKEYS_FTPM_ATTEST=$ftpm_attest
     # caprobe first: its probe wants the fresh store.
     hardware "real TPM: caprobe" -E 'package(caprobe) & binary(ftpm)'
@@ -126,11 +140,13 @@ if [ -n "$ftpm_profile" ]; then
       hardware "real TPM: cakeys" -E 'package(cakeys) & binary(ftpm)'
     printf '%s\n' "${ran[@]}" >"$F/ran"
     printf '%s\n' "${failed[@]}" >"$F/failed"
-    after=$(handles)
-    [ "$before" = "$after" ] || {
+    if ! after=$(handles); then
+      echo "coverage-full: THE TPM'S PERSISTENT HANDLES COULD NOT BE READ AFTER THE RUN" >&2
+      echo "real TPM: persistent handles unreadable after the run" >>"$F/failed"
+    elif [ "$before" != "$after" ]; then
       printf 'coverage-full: THE TPM'"'"'S PERSISTENT HANDLES CHANGED\nbefore:\n%s\nafter:\n%s\n' "$before" "$after" >&2
       echo "real TPM: persistent handles changed" >>"$F/failed"
-    }
+    fi
     lockout=$(tpm2_getcap properties-variable | sed -n 's/^TPM2_PT_LOCKOUT_COUNTER: *//p')
     [ "$lockout" = 0x0 ] || {
       echo "coverage-full: THE TPM'S LOCKOUT COUNTER IS $lockout, NOT 0" >&2
@@ -138,6 +154,7 @@ if [ -n "$ftpm_profile" ]; then
     }
   ) || echo "real TPM: the run stopped" >>"$F/failed"
   bash nix/ftpm-test-env.sh down "$F"
+  trap - EXIT
   mapfile -t ran < <(grep . "$F/ran" || true)
   mapfile -t failed < <(grep . "$F/failed" || true)
 else

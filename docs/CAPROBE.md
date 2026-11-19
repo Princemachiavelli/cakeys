@@ -20,7 +20,12 @@ $ caprobe probe --token <t> [--write] [--out <file>] [--diff <profile>] [--name 
 
 - `supports` asks the profiles alone; no token is touched, and `--profile` needs no keys.toml.
   Answers cite the deciding profile ("no: cryptoki (unpatched build) subtracts it"). Exit 0 yes,
-  15 no, 16 unknown.
+  15 no, 16 unknown. `--token` resolves the token's stack as `cakeys validate` and `create`'s
+  gate do (`gate::stack`): its provider (or `moduleProfile`), its configured `profiles` layers,
+  from the one profile set every tool activates (embedded, `profileDirs`, then `--profiles`). It
+  never reads keys.lock, so it answers as `validate` does for a token the lock records nothing
+  of: with no module recorded, the rows the hardware decides are unknown. A key type asked without a curve or size is yes when some row of it generated or the
+  module reports it, no when every row says no.
 - `caps` prints a token's provider, its resolved stack of profiles and its usable mechanisms as
   JSON.
 - `probe` generates a token's profile (below). With `--diff`, any difference in the observable
@@ -109,6 +114,10 @@ profile already says; it generates the key types cakeys manages the same way (`T
 the provider's create operation), each refusal the row's evidence. A new one is a variant
 there and the operation that tests it; the emitter, the diff and the stack algebra do not
 change. *An absent row is unknown*: never probed, never claimed — a spec-compliant default.
+A row naming a key type, proof (`pop-*`), OAEP hash or template attribute (`CKA_*`) this
+cakeys does not know loads as read and answers nothing, so a profile from a newer cakeys loads;
+only a row's shape is refused. A probe from this cakeys never writes such a row, so `--diff`
+reports it and a regeneration drops it.
 
 A shipped profile describes a kind of token; the lock records what each deployment's own token
 answered (docs/LOCK.md, an observation's `capabilities`: the proofs `lock` gave, the
@@ -117,7 +126,9 @@ generations `create` made), and those answers decide before the profile's in `va
 means try, except for what cannot be undone.
 
 `[migration]`, the `move.*` rows and `[manual]` are written by hand; the probe preserves them
-and the diff never compares them, so a reader always knows which rows were observed. Where a
+and the diff never compares them, so a reader always knows which rows were observed. `--out`
+keeps them only from a file of the profile just probed: one of another family is refused (17),
+and one of another name of the family unless `--name` says which it is. Where a
 probed `import.*`, `create.*`, `export.*` or `unwrap.*` row covers an object's type it decides
 before `[migration]` and `move.*`, which answer for the rest until every committed profile
 carries the probed rows ([CAPROBE_MIGRATION.md](CAPROBE_MIGRATION.md) M4).
@@ -153,21 +164,23 @@ generated, never edited, and pinned like the baseline:
 |---|---|
 | `used` | a call of cakeys, caprobe or camigrate reached it in the traced test run |
 | `refused`, `out-of-scope`, `gap` | `spec-coverage/manual.toml`: a hand-kept rule, with its reason (a gap names its OPEN.md item) |
-| `profile` | none of those, but a capability profile records it |
+| `profile` | none of those, but a capability profile records it (a row key, a list or a value; not a comment, note, finding or evidence) |
 
 - **The trace** is the test suites run with every module behind a tracing p11-fault
   (`nix/test-tokens.sh` with `CAKEYS_TRACE_DIR`): each call's function, return value,
   mechanism (with its OAEP or PSS hash and MGF, OAEP source or ECDH KDF), template attribute
   types, object classes, key and certificate types, user type, and the flags it passed or read
   back. Only the tools' own calls count: not a test harness, pkcs11-tool, `p11-kit remote` or
-  OpenSSL. The tests that run their own p11-fault are not traced (their hooks' calls would count
+  OpenSSL. The tests that run their own p11-fault are not traced, nix/test-tokens.sh naming them (their hooks' calls would count
   as the tool's).
 - **The check**: the crane build runs the suites a second time traced, and the coverage test
   (`crates/caprobe/src/coverage.rs`) regenerates the file from that trace; a row without a
-  status, a manual rule that matches nothing or names a used row, or a file that differs fails
+  status, a manual rule that matches nothing or names a used row (by name, or a pattern
+  whose every row is used), or a file that differs fails
   it. Without a trace, the test still checks every other status against the committed file.
 - **Regenerate** with `scripts/coverage-file.sh`, which also writes `coverage-report.txt`
-  beside the trace: the tests behind each used row.
+  beside the trace: the tests behind each used row, and what the trace reached that the baseline
+  does not name (vendor mechanisms, return values, functions).
 - **What it cannot see**: `C_GetInterface` (p11-fault exports the 2.40 entry point only, so the
   traced run uses the 2.40 table); calls only a hardware suite makes (the YubiKey and the real
   TPM are never traced).
@@ -248,7 +261,8 @@ generated, never edited, and pinned like the baseline:
   generate into. The slot must be empty or hold the provider's own placeholder; anything else is
   refused (17) before a write. No delete or wrap probes there: PIV cannot erase a key.
 - **RSA sizes**: an observed size decides; outside the reported range is no; between two that
-  generated is yes; otherwise unknown.
+  generated, with no size tried between them refused, is yes; otherwise unknown (a TPM
+  generates only its discrete sizes: swtpm's 1024 yes, 1536 no leaves 1280 unknown).
 - **The diff** compares the match keys, `advertise`, `reported`, `subtract`, `add`, `restrict` and every
   probed capability row (answer and `via`); without `--write`, only what a read-only probe sees.
 - **Only the Nix-built binary may write or diff a profile**: an unpatched binding hides
@@ -264,7 +278,7 @@ generated, never edited, and pinned like the baseline:
 | `tpm2-pkcs11/1.10+amd-ftpm` | P-256, P-384, RSA up to 2048; SHA-1 and SHA-256 only, so SHA-384/512 ECDSA and RSA-PSS are `subtract` rows, and such a failed `C_Sign` or `C_Decrypt` leaves its operation active on the session (the next `C_SignInit` is `CKR_OPERATION_ACTIVE` [run]: the probe proves possession before its mechanism probes). `pop-sign`, `pop-decrypt` and `pop-ecdh` prove; `pop-unwrap` is `CKR_FUNCTION_NOT_SUPPORTED`. Needs tpm2-abrmd: the kernel resource manager's 3 slots run out on undestroyable objects (`[manual.resource-manager]`) |
 | `ykcs11/2.7` (YubiKey 5C NFC FIPS, 5.7.4) | Reports version 2.73, manufacturer `Yubico (www.yubico.com)`. P-256, P-384, Ed25519 (by name only), RSA 2048–4096; refuses RSA-1024, P-521, secp256k1, brainpool, Ed448, X25519 (its template wants a malformed `PrintableString` [src]). ECDH only into an extractable secret, no HMAC; every key reports `CKA_DERIVE = false` (repaired by its provider's `repair`). OAEP decrypts with SHA-1, SHA-256 and SHA-512. Nothing unwraps: `pop-sign`, `pop-decrypt` and `pop-ecdh` prove, `pop-unwrap` cannot. FIPS mode is a `[manual]` finding until D12 |
 | `aws-cloudhsm/5.18+hsm2m-fips` (AWS CloudHSM, us-west-1, 2026-11-15) | Reports manufacturer `CloudHSM`, model `LS2`, firmware 10.23, Cryptoki 2.40. Refuses a public key with `CKA_PRIVATE = false`: generated without it, the public key reads `CKA_PRIVATE = true` (the probe retries and notes it). P-256, P-384, P-521, secp256k1, RSA 2048–4096; refuses RSA-1024, brainpool, every Edwards and Montgomery curve. OAEP SHA-1 and SHA-256 wrap; SHA-1, SHA-256 and SHA-512 decrypt. `CKM_ECDSA_SHA1` fails: FIPS refuses an 80-bit digest on a 128-bit key (the client's `enable_ecdsa_with_weak_hash`). Raw ECDH needs the client option `ecdh_without_kdf` (`aws.sh activate` sets it); the derived secret refuses `CKA_EXTRACTABLE = false` (dropped, `CKA_VALUE_LEN` added: `derive.template`), reads sensitive and extractable, and MACs (`derive.sealed`); derivation needs a read-write session. `CKM_AES_KEY_WRAP` and `_PAD` are listed with `CKF_WRAP \| CKF_UNWRAP` and refused (`subtract`) [run]; the client option `--aes-key-wrap-mapping` maps the first to a vendor padding [doc], untried; `CKM_RSA_AES_KEY_WRAP` round-trips, and camigrate moves by it. Even a session object needs a read-write session (camigrate's `Access::Scratch`). Vendor mechanisms (EdDSA `0x80001057`, ML-DSA, AES-GCM, `0x8000216F` = RFC 5649, `0x8000210A` = RFC 3394 over PKCS#5 padding) are listed but cryptoki drops vendor IDs from the list [run]. RSA PKCS#1 v1.5 decryption fails. An unwrap template may not carry `CKA_VALUE_LEN`. Regenerated by `scripts/cloud/aws.sh probe` |
-| `aws-cloudhsm/5.18+hsm2m-non-fips` (same, a NON_FIPS cluster) | As the FIPS profile, except that `CKM_ECDSA_SHA1` and RSA PKCS#1 v1.5 decryption work. Ed25519 through the aws-cloudhsm provider's stand-ins, which the probe measures and records in `add` (`CKM_EC_EDWARDS_KEY_PAIR_GEN`, `CKM_EDDSA`): the module lists neither, generates Ed25519 as `CKM_EC_KEY_PAIR_GEN` with the Ed25519 OID, reports `CKK_EC` with the whole SPKI as `CKA_EC_POINT`, and signs pure Ed25519 with the vendor `0x80001057` (no parameters) [run]. It never imports one (`[migration] refuses`: a `CKK_EC_EDWARDS` public half is `CKR_ATTRIBUTE_VALUE_INVALID` [run]); it exports one. The FIPS cluster refuses the stand-in generation (`CKR_ATTRIBUTE_VALUE_INVALID`, "Ed25519 key generation not available"), so its profile adds nothing and cakeys refuses an Ed25519 key there before creating. Its match keys equal the FIPS profile's, since PKCS#11 reports no mode (D12): a tie resolves to the FIPS profile, embedded first, the stricter. A NON_FIPS cluster pins this one with `moduleProfile` (`aws.sh cakeys` and `camigrate` do). `CAKEYS_AWS_MODE=NON_FIPS scripts/cloud/aws.sh probe` |
+| `aws-cloudhsm/5.18+hsm2m-non-fips` (same, a NON_FIPS cluster) | As the FIPS profile, except that `CKM_ECDSA_SHA1` and RSA PKCS#1 v1.5 decryption work. Ed25519 through the aws-cloudhsm provider's stand-ins, which the probe measures and records in `add` (`CKM_EC_EDWARDS_KEY_PAIR_GEN`, `CKM_EDDSA`): the module lists neither, generates Ed25519 as `CKM_EC_KEY_PAIR_GEN` with the Ed25519 OID, reports `CKK_EC` with the whole SPKI as `CKA_EC_POINT`, and signs pure Ed25519 with the vendor `0x80001057` (no parameters) [run]. It never imports one (`[migration] refuses`: a `CKK_EC_EDWARDS` public half is `CKR_ATTRIBUTE_VALUE_INVALID` [run]); it exports one. The FIPS cluster refuses the stand-in generation (`CKR_ATTRIBUTE_VALUE_INVALID`, "Ed25519 key generation not available"), so its profile adds nothing and cakeys refuses an Ed25519 key there before creating. Its match keys equal the FIPS profile's, since PKCS#11 reports no mode (D12): a tie resolves to the FIPS profile, embedded first, the stricter, and the run says so in a note naming both (`caprobe caps` lists it). A NON_FIPS cluster pins this one with `moduleProfile` (`aws.sh cakeys` and `camigrate` do). `CAKEYS_AWS_MODE=NON_FIPS scripts/cloud/aws.sh probe` |
 | `kmsp11/1.9+hsm`, `kmsp11/1.9+hsm-fips` (Google Cloud KMS, HSM protection level, us-west1, 2026-11-15) | Probed through the provider's bound keys: one key per Cloud KMS algorithm, each with its own mechanisms. The FIPS build of the library measures the same, with the same `C_GetInfo` (`Google`, 1.9, `Cloud KMS Token`, firmware 0.0), so it is embedded first and the two tie. P-256 and P-384 (signing only), RSA 2048–4096. RSA-1024, P-521, secp256k1 and brainpool have no algorithm (`CKR_TEMPLATE_INCOMPLETE` without one); Edwards and Montgomery are `CKR_MECHANISM_INVALID`. OAEP decrypts with SHA-256 or SHA-512, each key only with its algorithm's hash (`CKR_MECHANISM_PARAM_INVALID` for the others); there is no wrap, unwrap or derive. `C_GetMechanismList` repeats `CKM_RSA_PKCS_KEY_PAIR_GEN` 24 times. `C_DestroyObject` takes a version out of view. Regenerated by `scripts/cloud/gcp.sh probe --write` |
 | `p11-kit/0.26` (layer) | Hides eight of SoftHSM's mechanisms, plus `CKM_RSA_AES_KEY_WRAP`; reports version 1.1 (detected by manufacturer) |
 

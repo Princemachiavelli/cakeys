@@ -2,14 +2,16 @@
 //! realisations, the injectivity of the identity encodings, and parsers that never panic on
 //! malformed input. The same parsers are fuzz targets under `fuzz/`.
 
+mod common;
+
 use cakeys_core::config::{
-    AttrValue, Binding, Config, Immutables, LOCK_VERSION, Lock, Mode, ModuleInfo, ObjectCfg, Observation, Observed,
-    Session, TokenInfo, parse_config_with, parse_lock,
+    AttrValue, Binding, Config, Immutables, Lock, Mode, ObjectCfg, parse_config_with, parse_lock,
 };
 use cakeys_core::id::{self, BlockCipher, Commit, Curve, HmacHash};
 use cakeys_core::plan::Target;
-use cakeys_core::reconcile::{Facts, LockWrite, Notes, Resolved, compare, reconcile};
+use cakeys_core::reconcile::{LockWrite, Notes, Resolved, compare, reconcile};
 use cakeys_core::types::{KeyType, ObjectClass};
+use common::{empty_lock, facts};
 use proptest::prelude::*;
 use proptest::sample::Index;
 use std::path::Path;
@@ -47,31 +49,6 @@ const AES_SCHEMES: [&str; 4] = ["cmac", "kcv-ecb", "kcv-ecb-dec", "kw"];
 
 fn config() -> Config {
     parse_config_with(CONFIG, Path::new("keys.toml"), &|_| None).unwrap()
-}
-
-fn facts() -> Facts {
-    Facts {
-        observed: Observed { uri: "pkcs11:token=t".into(), session: Session::User },
-        observation: Observation {
-            provider: Some("generic".into()),
-            cakeys_version: Some("0.1.0".into()),
-            module: Some(ModuleInfo {
-                path: "/m.so".into(),
-                hash: None,
-                description: "m".into(),
-                manufacturer: "x".into(),
-                version: "1.0".into(),
-                cryptoki: "3.0".into(),
-            }),
-            token: Some(TokenInfo { model: "m".into(), serial: "1".into(), firmware: "1.0".into() }),
-            ..Observation::default()
-        },
-        origin: None,
-    }
-}
-
-fn empty_lock() -> Lock {
-    Lock { version: LOCK_VERSION, ..Default::default() }
 }
 
 fn snapshot(lock: &Lock) -> String {
@@ -154,6 +131,65 @@ fn aes_schemes() -> impl Strategy<Value = Vec<&'static str>> {
     })
 }
 
+/// Valid material as a token gives it: the fixture certificates and their SPKIs, and a public
+/// key of every curve the parsers take, as an SPKI and as its point, raw and wrapped in the DER
+/// OCTET STRING of `CKA_EC_POINT`.
+fn valid_material() -> Vec<Vec<u8>> {
+    use p256::pkcs8::EncodePublicKey as _;
+    use x509_cert::der::Decode as _;
+    let certs: [&[u8]; 4] = [
+        include_bytes!("../../cli/tests/fixtures/adopt-cert.der"),
+        include_bytes!("../../cli/tests/fixtures/adopt-cert-p384.der"),
+        include_bytes!("../../cli/tests/fixtures/adopt-cert-ed25519.der"),
+        include_bytes!("../../cli/tests/fixtures/tpm-import-p256-cert.der"),
+    ];
+    let scalar = |len: usize| {
+        let mut s = vec![0; len];
+        s[len - 1] = 7;
+        s
+    };
+    let spkis = [
+        p256::SecretKey::from_slice(&scalar(32)).unwrap().public_key().to_public_key_der(),
+        p384::SecretKey::from_slice(&scalar(48)).unwrap().public_key().to_public_key_der(),
+        p521::SecretKey::from_slice(&scalar(66)).unwrap().public_key().to_public_key_der(),
+        k256::SecretKey::from_slice(&scalar(32)).unwrap().public_key().to_public_key_der(),
+        ed25519_dalek::SigningKey::from_bytes(&[7; 32]).verifying_key().to_public_key_der(),
+    ]
+    .map(|der| der.unwrap().as_bytes().to_vec());
+    // `CKA_EC_POINT`: an OCTET STRING around the point.
+    let wrapped = |point: &[u8]| {
+        let len = u8::try_from(point.len()).unwrap();
+        [if len < 0x80 { vec![0x04, len] } else { vec![0x04, 0x81, len] }, point.to_vec()].concat()
+    };
+    let mut out = Vec::new();
+    for cert in certs {
+        out.extend([cert.to_vec(), id::cert_spki(cert).unwrap()]);
+    }
+    for spki in spkis {
+        let info = x509_cert::spki::SubjectPublicKeyInfoRef::from_der(&spki).unwrap();
+        let point = info.subject_public_key.as_bytes().unwrap().to_vec();
+        out.extend([wrapped(&point), point, spki]);
+    }
+    // Ed448: the parser checks the point's length alone.
+    out.extend([vec![7; 57], wrapped(&[7; 57])]);
+    out
+}
+
+/// [`valid_material`] as it is (`true`), or with up to three bytes changed, or any bytes at all.
+fn key_material() -> impl Strategy<Value = (Vec<u8>, bool)> {
+    let edits = proptest::collection::vec((any::<Index>(), 1u8..), 0..4);
+    prop_oneof![
+        (proptest::sample::select(valid_material()), edits).prop_map(|(mut bytes, edits)| {
+            for (at, flip) in &edits {
+                let i = at.index(bytes.len());
+                bytes[i] ^= flip;
+            }
+            (bytes, edits.is_empty())
+        }),
+        proptest::collection::vec(any::<u8>(), 0..160).prop_map(|bytes| (bytes, false)),
+    ]
+}
+
 fn exit(r: &cakeys_core::Result<impl Sized>) -> u8 {
     r.as_ref().err().map_or(0, cakeys_core::KmError::exit_code)
 }
@@ -200,8 +236,12 @@ proptest! {
             || first.immutables != second.immutables;
         let refused = downgrade || replaced || mismatch;
 
+        // A compare refuses what changed before it hashes: a downgrade, a replaced object or
+        // drift is 14 whatever the material; then another material is 10 (review properties.rs
+        // F2: a compare answering 14 for a pure mismatch, or 10 for a downgrade, passed).
         let compared = compare(&t, &r, &lock, &facts(), LockWrite::Compare, &mut Notes::default());
-        prop_assert_eq!(compared.is_ok(), !refused && !drift, "compare: {:?}", compared);
+        let want = if downgrade || replaced || drift { 14 } else if mismatch { 10 } else { 0 };
+        prop_assert_eq!(exit(&compared), want, "compare: {:?}", compared);
         let written = reconcile(&t, &r, &mut lock, &facts(), LockWrite::Record, &mut Notes::default());
         prop_assert_eq!(written.is_ok(), !refused, "write: {:?}", written);
         if downgrade || replaced {
@@ -267,11 +307,13 @@ proptest! {
 
     /// The commitment label `<label>/<scheme>/<keyType>/<bits>` determines its parts: two
     /// different (label, scheme, key type, length) never share a label, whatever `/` the label
-    /// holds, for every length that loads.
+    /// holds, for every length that loads. A length of 0 never loads (`valueLen 0` is refused),
+    /// so the `0` an absent `valueLen` writes stands for that alone; a key always has a
+    /// `keyType` (refused at load without one), so the empty name never reaches a label.
     #[test]
     fn commitment_labels_are_injective(
         l1 in "[a-z/]{0,12}", l2 in "[a-z/]{0,12}",
-        v1 in 0..=u64::from(u32::MAX), v2 in 0..=u64::from(u32::MAX),
+        v1 in proptest::option::of(1..=u64::from(u32::MAX)), v2 in proptest::option::of(1..=u64::from(u32::MAX)),
         c1 in 0usize..5, c2 in 0usize..5,
         k1 in 0usize..2, k2 in 0usize..2,
     ) {
@@ -282,9 +324,9 @@ proptest! {
             Commit::KcvEcbDecrypt(BlockCipher::Aes),
             Commit::Kw,
         ];
-        let object = |k: usize, v: u64| {
+        let object = |k: usize, v: Option<u64>| {
             let mut o = ObjectCfg::new(ObjectClass::SecretKey, Some([KeyType::Aes, KeyType::Des3][k]));
-            o.value_len = Some(v);
+            o.value_len = v;
             o
         };
         prop_assume!((&l1, v1, c1, k1) != (&l2, v2, c2, k2));
@@ -301,20 +343,34 @@ proptest! {
     }
 
     /// Public-key parsers take token bytes: they never panic, and a canonical SPKI is a fixed
-    /// point.
+    /// point. The input is valid material as a token gives it (`valid_material`: a certificate,
+    /// an SPKI, a point raw or wrapped, of every curve), as it is or with bytes changed, or any
+    /// bytes at all: random bytes alone almost never parse, so the fixed point went unchecked for
+    /// the Weierstrass curves (review properties.rs F1). Material taken as it is must parse.
     #[test]
-    fn key_parsers_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..160), exponent in proptest::collection::vec(any::<u8>(), 0..8)) {
-        if let Ok(spki) = id::spki_canonical(&bytes) {
-            prop_assert_eq!(id::spki_canonical(&spki).unwrap(), spki);
+    fn key_parsers_never_panic(input in key_material(), exponent in proptest::collection::vec(any::<u8>(), 0..8)) {
+        let (bytes, valid) = &input;
+        let fixed = |spki: &[u8]| id::spki_canonical(spki).map(|again| again == spki);
+        let spki = id::spki_canonical(bytes);
+        if let Ok(spki) = &spki {
+            prop_assert_eq!(fixed(spki).ok(), Some(true));
         }
-        let _ = id::cert_spki(&bytes);
-        if let Ok(spki) = id::rsa_spki(&bytes, &exponent) {
-            prop_assert_eq!(id::spki_canonical(&spki).unwrap(), spki);
+        let cert = id::cert_spki(bytes);
+        if let Ok(spki) = &cert {
+            prop_assert_eq!(fixed(spki).ok(), Some(true));
         }
+        if let Ok(spki) = id::rsa_spki(bytes, &exponent) {
+            prop_assert_eq!(fixed(&spki).ok(), Some(true));
+        }
+        let mut points = 0;
         for curve in [Curve::P256, Curve::P384, Curve::P521, Curve::Secp256k1, Curve::Ed25519, Curve::Ed448] {
-            if let Ok(spki) = curve.spki_from_point(&bytes) {
-                prop_assert_eq!(id::spki_canonical(&spki).unwrap(), spki);
+            if let Ok(spki) = curve.spki_from_point(bytes) {
+                prop_assert_eq!(fixed(&spki).ok(), Some(true), "{:?}", curve);
+                points += 1;
             }
+        }
+        if *valid {
+            prop_assert!(spki.is_ok() || cert.is_ok() || points > 0, "valid material read as nothing: {:02x?}", bytes);
         }
     }
 
@@ -347,13 +403,15 @@ fn fixtures_load() {
     parse_config_with(FIXTURE_CONFIG, Path::new("keys.toml"), &|_| Some("/x".into())).unwrap();
 }
 
-/// A `valueLen` whose bit count could overflow the commitment label is refused at load (17),
-/// where it would otherwise overflow: over the full `u64` range, `commitment_labels_are_injective`
-/// fails with an overflow panic; its range is now what keys.toml accepts.
+/// The parser property's valid seeds reach every parser's fixed point (review properties.rs
+/// F1): each curve reads a point of its own, each certificate its key, each SPKI itself.
 #[test]
-fn an_out_of_range_value_len_is_refused() {
-    let text = CONFIG.replace("valueLen = 32", "valueLen = 2305843009213693952");
-    let err = parse_config_with(&text, Path::new("keys.toml"), &|_| None).unwrap_err();
-    assert_eq!(err.exit_code(), 17, "{err}");
-    assert!(err.to_string().contains("valueLen 2305843009213693952 bytes is out of range"), "{err}");
+fn the_parser_seeds_reach_every_fixed_point() {
+    let material = valid_material();
+    for curve in [Curve::P256, Curve::P384, Curve::P521, Curve::Secp256k1, Curve::Ed25519, Curve::Ed448] {
+        assert!(material.iter().any(|m| curve.spki_from_point(m).is_ok()), "no point of {curve:?}");
+    }
+    assert_eq!(material.iter().filter(|m| id::cert_spki(m).is_ok()).count(), 4, "the four certificates");
+    // The certificates' four SPKIs and the five keys'.
+    assert_eq!(material.iter().filter(|m| id::spki_canonical(m).is_ok()).count(), 9);
 }

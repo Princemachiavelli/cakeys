@@ -16,7 +16,6 @@ use cryptoki::mechanism::Mechanism;
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass};
 use cryptoki::session::Session;
 use std::collections::BTreeMap;
-use std::process::Command;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 const ADOPT_CERT: &[u8] = include_bytes!("fixtures/adopt-cert.der");
@@ -28,8 +27,10 @@ const DATA_VALUE: &[u8] = b"cakeys cross-reference data object";
 impl Env {
     /// Lock `spec` on every reference into one lock: the first records the identity and each
     /// other must match it (a different one would be 10). Every scheme two references both
-    /// compute reports the same ID, and each then verifies.
-    fn assert_one_identity(&self, spec: &str, refs: &[&Ref]) {
+    /// compute reports the same ID, and each then verifies. The one identity is the host's:
+    /// each `(scheme, ID)` of `oracle` the references computed is that ID, and they computed at
+    /// least one (review references.rs F2: alike everywhere, a shared encoder bug passed).
+    fn assert_one_identity(&self, spec: &str, refs: &[&Ref], oracle: &[(&str, String)]) {
         let mut seen: BTreeMap<String, (serde_json::Value, &str)> = BTreeMap::new();
         for r in refs {
             let o = self.km(r, &["lock", "--spec", spec, "--token", r.name]);
@@ -45,21 +46,26 @@ impl Env {
             }
         }
         assert!(!seen.is_empty(), "{spec}: no identity");
+        let known: Vec<&str> = oracle
+            .iter()
+            .filter_map(|(scheme, want)| {
+                let (got, by) = seen.get(*scheme)?;
+                assert_eq!(got.as_str(), Some(want.as_str()), "{spec}: {scheme} on {by} is not the host's");
+                Some(*scheme)
+            })
+            .collect();
+        assert!(!known.is_empty(), "{spec}: none of {oracle:?} computed, only {:?}", seen.keys().collect::<Vec<_>>());
         for r in refs {
             assert_eq!(code(&self.km(r, &["verify", "--spec", spec, "--token", r.name])), 0, "{spec} on {}", r.name);
         }
     }
 
-    /// `tpm2_ptool <args>` on the tpm2 reference's token.
-    #[expect(clippy::unused_self, reason = "beside the other planting helpers")]
-    fn ptool(&self, args: &[&str]) {
-        let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
-        let out = Command::new("tpm2_ptool")
-            .args(args)
-            .args(["--label=kmtest", "--userpin=1234", &format!("--path={store}")])
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "tpm2_ptool {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    /// The host's `rfc7093m4` of the public key object under `label`, read from the first
+    /// reference that creates objects ([`oracle_spki`]).
+    fn spki_id(&self, label: &str) -> (&'static str, String) {
+        let source = self.refs.iter().find(|r| r.plant == Plant::Create).unwrap();
+        let s = open_session(&source.module, source.token_label, "1234");
+        ("rfc7093m4", sri(&oracle_spki(&s, label)))
     }
 
     /// Plant through `C_CreateObject` on every `Create` reference.
@@ -78,7 +84,7 @@ impl Env {
         self.create(&ec_pair(KeyType::EC, &params, &scalar, &point, label));
         if self.refs.iter().any(|r| r.plant == Plant::Ptool) {
             let pem = format!("--privkey={FIXTURES}/tpm-import-p256.pem");
-            self.ptool(&["import", "--algorithm=ecc", &pem, &format!("--key-label={label}")]);
+            ptool(&["import", "--algorithm=ecc", &pem, &format!("--key-label={label}")]);
         }
     }
 }
@@ -157,9 +163,6 @@ fn secret(kt: KeyType, value: &[u8], label: &str, usage: &[Attribute]) -> Vec<At
     t
 }
 
-const P384_PARAMS: &[u8] = &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22];
-const P521_PARAMS: &[u8] = &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23];
-
 /// Every key type the references share: the P-256 and RSA fixtures (also on tpm2), and P-384,
 /// P-521, Ed25519 and Ed448 keys exported from one reference into the others. Each private key
 /// proves possession where the reference can sign with it, and the public key object is
@@ -199,14 +202,14 @@ fn asymmetric_material_has_one_identity_on_every_reference() {
     e.create(&[private, public]);
     if tpm {
         let pem = format!("--privkey={FIXTURES}/tpm-import-rsa2048.pem");
-        e.ptool(&["import", "--algorithm=rsa", &pem, "--key-label=xref-rsa"]);
+        ptool(&["import", "--algorithm=rsa", &pem, "--key-label=xref-rsa"]);
     }
     // Material without a fixture comes from the first reference that creates objects.
     let source = e.refs.iter().find(|r| r.plant == Plant::Create).unwrap();
     let s = open_session(&source.module, source.token_label, "1234");
     let exported = [
-        ("p384", KeyType::EC, P384_PARAMS, "secp384r1"),
-        ("p521", KeyType::EC, P521_PARAMS, "secp521r1"),
+        ("p384", KeyType::EC, P384, "secp384r1"),
+        ("p521", KeyType::EC, P521, "secp521r1"),
         ("ed25519", KeyType::EC_EDWARDS, ED25519, "edwards25519"),
         ("ed448", KeyType::EC_EDWARDS, ED448, "edwards448"),
     ];
@@ -252,8 +255,17 @@ fn asymmetric_material_has_one_identity_on_every_reference() {
     e.config(&body);
     for (spec, names) in &cases {
         let refs = e.refs(|r| names.contains(&r.name));
-        e.assert_one_identity(spec, &refs);
+        let key = spec.trim_end_matches("-pub");
+        e.assert_one_identity(spec, &refs, &[e.spki_id(&format!("xref-{key}"))]);
     }
+}
+
+/// The host's `commitment` of a 256-bit secret of `key_type` (HMAC-SHA256 of its label).
+fn commitment(key: &[u8], key_type: &str) -> (&'static str, String) {
+    use hmac::Mac as _;
+    let mut mac = <hmac::Hmac<sha2::Sha256> as hmac::KeyInit>::new_from_slice(key).unwrap();
+    mac.update(format!("key-management/v1/commitment/{key_type}/256").as_bytes());
+    ("commitment", sri(&mac.finalize().into_bytes()))
 }
 
 /// Secret keys with known values commit alike: AES (`cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`
@@ -272,7 +284,7 @@ fn secret_material_commits_alike_on_every_reference() {
         let file = e.dir.join("hmac.bin");
         std::fs::write(&file, HMAC_VALUE).unwrap();
         let key = format!("--privkey={}", file.display());
-        e.ptool(&["import", "--algorithm=hmac:sha256", &key, "--key-label=xref-hmac"]);
+        ptool(&["import", "--algorithm=hmac:sha256", &key, "--key-label=xref-hmac"]);
     }
     let created = e.refs(|r| r.plant != Plant::Ptool);
     let all = e.refs(|_| true);
@@ -292,9 +304,10 @@ fn secret_material_commits_alike_on_every_reference() {
         + &object("hmac", "CKK_SHA256_HMAC")
         + &Env::spec("hmac", "hmac", "attributes = { CKA_SIGN = true }\n", &all, "xref-hmac", "");
     e.config(&body);
-    e.assert_one_identity("aes", &created);
-    e.assert_one_identity("secret", &created);
-    e.assert_one_identity("hmac", &all);
+    let aes = ["cmac", "kcv-ecb", "kcv-ecb-dec", "kw"].map(|scheme| (scheme, aes_commitment(AES_VALUE, scheme)));
+    e.assert_one_identity("aes", &created, &aes);
+    e.assert_one_identity("secret", &created, &[commitment(SECRET_VALUE, "CKK_GENERIC_SECRET")]);
+    e.assert_one_identity("hmac", &all, &[commitment(HMAC_VALUE, "CKK_SHA256_HMAC")]);
 }
 
 /// A certificate (`certhash` and its subject key's `rfc7093m4`) and a public data object
@@ -327,8 +340,8 @@ fn certificates_and_data_objects_hash_alike_on_every_reference() {
         + "[objects.data]\nclass = \"CKO_DATA\"\n\n"
         + &Env::spec("data", "data", "", &created, "xref-data", "");
     e.config(&body);
-    e.assert_one_identity("cert", &created);
-    e.assert_one_identity("data", &created);
+    e.assert_one_identity("cert", &created, &[("certhash", sri(ADOPT_CERT))]);
+    e.assert_one_identity("data", &created, &[("valuehash", sri(DATA_VALUE))]);
 }
 
 /// The same scenario, the same verdict on every reference: nothing under the locator (11), two
@@ -371,15 +384,8 @@ fn the_same_scenario_gets_the_same_verdict_on_every_reference() {
     }
     for r in e.refs(|r| r.plant == Plant::Create) {
         let s = open_session(&r.module, r.token_label, "1234");
-        let label = Attribute::Label(b"xref-v-swap".to_vec());
-        let original = s.find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), label.clone()]).unwrap()[0];
-        s.destroy_object(original).unwrap();
-        s.generate_key_pair(
-            &Mechanism::EccKeyPairGen,
-            &[Attribute::Token(false), Attribute::EcParams(EC_P256_PARAMS.to_vec())],
-            &[Attribute::Token(true), label, Attribute::Sign(true), Attribute::Sensitive(true)],
-        )
-        .unwrap();
+        let (p256, usage) = ([Attribute::EcParams(P256.to_vec())], [Attribute::Sign(true), Attribute::Sensitive(true)]);
+        swap_private_key(&s, "xref-v-swap", &Mechanism::EccKeyPairGen, &p256, &usage, &[]);
     }
     let swapped: BTreeMap<&str, (i32, bool)> = created
         .iter()
@@ -393,22 +399,23 @@ fn the_same_scenario_gets_the_same_verdict_on_every_reference() {
     assert!(swapped.values().all(|v| *v == (13, true)), "swap: want 13 everywhere, got {swapped:?}");
 }
 
-const EC_P256_PARAMS: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
-
 /// `origin` (keys.toml): an object on several tokens is born on the pair that says `create`.
 /// `create` makes it there only, says the `import` pair gets it from camigrate, and refuses that
 /// pair by name (17) before touching it.
 #[test]
 fn create_happens_where_origin_says_create() {
     let Some(e) = env("create-on") else { return };
-    let named = |n: &str| e.refs.iter().find(|r| r.name == n);
-    let (Some(soft), Some(kry)) = (named("softhsm"), named("kryoptic")) else {
-        eprintln!("skipping create-on: needs the softhsm and kryoptic references");
+    let Some([soft, kry]) = e.needs("create-on", ["softhsm", "kryoptic"]) else {
+        // Skipped only where neither is required: a run that requires them both (the check
+        // phase) fails here instead of passing with nothing created (review references.rs F1).
+        for require in ["CAKEYS_TEST_REQUIRE", "CAKEYS_KRYOPTIC_REQUIRE"] {
+            assert!(
+                std::env::var_os(require).is_none(),
+                "create-on needs the softhsm and kryoptic references: {require} is set"
+            );
+        }
         return;
     };
-    for r in [soft, kry] {
-        open_session(&r.module, r.token_label, "1234").clear(&["xref-born"]);
-    }
     let body = format!(
         "[objects.born]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [specs.born]\nobject = \"born\"\nattributes = {{ CKA_SIGN = true }}\n\

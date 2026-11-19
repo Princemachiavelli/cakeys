@@ -11,7 +11,7 @@ use cakeys_core::migrate::{Exposure, Method};
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
-use cakeys_pkcs11::token::{class_of, public_key_attrs, public_object_attrs};
+use cakeys_pkcs11::token::{Occupied, class_of, public_key_attrs, public_object_attrs, rv_of};
 use cakeys_pkcs11::{Template, Token, templates};
 use cryptoki::object::{Attribute, AttributeType, ObjectHandle};
 use x509_cert::der::Decode as _;
@@ -159,28 +159,41 @@ pub(crate) fn roll_back(dst: &Target, to: &Token, made: &[ObjectHandle], err: Km
     err
 }
 
-/// If-None-Match before [`create`] (docs/CAMIGRATE.md D6), per class (`Token::occupied`): the key and
-/// certificate a public object usually sits beside are no collision, and a public key object a
-/// key's import already created there is this object (returned: recorded, not created). The
-/// session is logged in, so it sees everything under the locator (`needs_login`).
+/// If-None-Match before [`create`] (docs/CAMIGRATE.md D6): [`free_locator`] for a public object,
+/// whose public key object a key's import already created there is this object (returned:
+/// recorded, not created).
 ///
 /// # Errors
 ///
-/// `Conflict` (13) for an object of its class there.
+/// As [`free_locator`].
 pub(crate) fn preflight(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Option<ObjectHandle>> {
     let spki = (dst.object.class == Class::PublicKey).then_some(bytes);
+    Ok(free_locator(dst, to, spki)?.public_half)
+}
+
+/// If-None-Match before anything is created under `dst` (docs/CAMIGRATE.md D6), the one
+/// occupancy check of every import: nothing an object of its class would collide with may sit
+/// there (`Token::occupied`, per class: the key and certificate a public object usually sits
+/// beside are no collision). The session is logged in, so it sees everything under the locator
+/// (`needs_login`). What is there, with a public key object already holding `spki` (a key's
+/// public half) to reuse.
+///
+/// # Errors
+///
+/// `Conflict` (13) for a colliding object.
+pub(crate) fn free_locator(dst: &Target, to: &Token, spki: Option<&[u8]>) -> Result<Occupied> {
     let occupied = to.occupied(dst.object, &dst.on_token.locator, spki)?;
     if occupied.colliding > 0 {
         return Err(KmError::Conflict(
             format!(
-                "{} object(s) of its class already sit under the locator of {dst}, and the lock records no \
-             realisation there; refusing to import over them",
-                occupied.colliding
+                "{} object(s) a {} would collide with already sit under the locator of {dst}, and the lock records \
+                 no realisation there; refusing to import over them",
+                occupied.colliding, dst.object.class
             )
             .into(),
         ));
     }
-    Ok(occupied.public_half)
+    Ok(occupied)
 }
 
 /// The creation template from the object's bytes: the class and type, the material, `CKA_TOKEN`,
@@ -218,8 +231,31 @@ fn one(tok: &Token, t: &Target) -> Result<ObjectHandle> {
 /// `CKA_VALUE` of `h`.
 fn value(tok: &Token, h: ObjectHandle) -> Result<Vec<u8>> {
     let read = tok.raw().get_attributes(h, &[AttributeType::Value]);
-    match read.map_err(|e| KmError::Unavailable(format!("C_GetAttributeValue: {e}").into()))?.as_slice() {
+    match read.map_err(|e| read_failed(&e))?.as_slice() {
         [Attribute::Value(v)] => Ok(v.clone()),
         _ => Err(KmError::NotFound("the object has no CKA_VALUE".into())),
+    }
+}
+
+/// A `C_GetAttributeValue` that failed: unavailable (16), carrying the module's return value
+/// as every module call's error does (ISSUES.md Q3).
+fn read_failed(e: &cryptoki::error::Error) -> KmError {
+    KmError::Unavailable(format!("C_GetAttributeValue: {e}").into()).with_rv(rv_of(e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cryptoki::context::Function;
+    use cryptoki::error::{Error as CkError, RvError};
+
+    /// A failed read of `CKA_VALUE` is 16 with the module's return value on it (review
+    /// public.rs F2), where the build can name it.
+    #[test]
+    fn a_failed_value_read_carries_its_return_value() {
+        let e = read_failed(&CkError::Pkcs11(RvError::DeviceError, Function::GetAttributeValue));
+        assert_eq!(e.exit_code(), 16);
+        assert_eq!(e.rv(), cakeys_pkcs11::token::rv_value(RvError::DeviceError));
+        assert!(e.to_string().contains("C_GetAttributeValue"), "{e}");
     }
 }

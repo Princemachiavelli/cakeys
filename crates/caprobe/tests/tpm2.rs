@@ -20,10 +20,14 @@ fn env(test: &str) -> Option<Workdir> {
 #[test]
 fn caps_names_the_provider_and_what_the_module_offers() {
     let Some(w) = env("caps") else { return };
-    let caps: serde_json::Value = serde_json::from_str(&stdout(&w.km(&["caps", "--token", "tpm"]))).unwrap();
+    let o = w.km(&["caps", "--token", "tpm"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let caps: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert_eq!(caps["provider"], "tpm2-pkcs11");
-    let mechs = caps["mechanisms"].to_string();
-    assert!(mechs.contains("CKM_EC_KEY_PAIR_GEN") && !mechs.contains("CKM_AES_KEY_GEN"), "{mechs}");
+    // Whole names, not a substring of the list (review tpm2.rs F2).
+    let mechs = caps["mechanisms"].as_array().unwrap();
+    let has = |m: &str| mechs.iter().any(|x| x == m);
+    assert!(has("CKM_EC_KEY_PAIR_GEN") && !has("CKM_AES_KEY_GEN"), "{mechs:?}");
 }
 
 /// The committed pair profile tpm2-pkcs11/1.10+swtpm is probe output (docs/CAPROBE.md
@@ -32,7 +36,7 @@ fn caps_names_the_provider_and_what_the_module_offers() {
 #[test]
 fn the_committed_profile_is_what_the_probe_observes() {
     let Some(w) = env("profile_conformance") else { return };
-    if !cryptoki_hmac_types_fixed(std::env::var("CAKEYS_TPM_REQUIRE").is_ok()) {
+    if !hmac_types_fixed("CAKEYS_TPM_REQUIRE") {
         return;
     }
     let (name, path) = ("tpm2-pkcs11/1.10+swtpm", "modules/tpm2-pkcs11/1.10+swtpm.toml");

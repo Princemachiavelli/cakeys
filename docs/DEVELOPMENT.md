@@ -16,13 +16,17 @@ The OS is NixOS: there is no system `cargo`, `python3` or `perl`.
 - **After a significant change:** `nix build .#checks-crane-only`, every check except the fuzz
   smoke run, on the crane build (its dependencies cached per `Cargo.lock`).
 - **At the end of a piece of work:** `nix flake check`, all checks passing.
-- **CI** (GitHub Actions, on pushes to `main` and pull requests): `.github/workflows/checks.yml`
-  builds `.#checks-no-vm` (every check but the VM tests and the fuzz run);
-  `.github/workflows/flake-check.yml` runs `nix flake check` on a runner with KVM. Both run
-  Determinate Nix (determinate-nix-action, pinned) with the Magic Nix Cache.
+- **CI** (GitHub Actions, on pushes to `main` and pull requests, x86_64 Linux):
+  `.github/workflows/checks.yml` builds every check once, over three runners: `.#checks-no-vm`
+  (every check but the VM tests, the fuzz run and Kani) after `nix flake check --no-build`,
+  `.#checks-vm` (the VM tests and the fuzz run) on a runner with KVM, and Kani on its own. The
+  split is one list in flake.nix (`vmChecks`), and `checks.ci-jobs` holds the workflow to it.
+  The jobs run Determinate Nix (determinate-nix-action, pinned) with the Magic Nix Cache.
   `.github/workflows/reports.yml` builds `packages.coverage` on each push to `main` and
   `packages.mutants` weekly (both on a manual run), and pushes each one's number (`scripts/badges.sh`: lines covered; mutants
-  caught of the viable ones) to the `badges` branch, which the README's badges read.
+  caught of the viable ones) to the `badges` branch, which the README's badges read. The
+  builds run with a read-only token; only a separate publish job per report, which runs no
+  repository code, may push.
 - The token suites (SoftHSM, kryoptic, p11-kit, swtpm) run only in the Nix build's check phase
   and `scripts/local-tests.sh`; under plain `cargo test` they skip. Run with tokens configured
   but in one process (plain `cargo test`), they share one token set and do not pass: the token
@@ -31,7 +35,10 @@ The OS is NixOS: there is no system `cargo`, `python3` or `perl`.
 - Both builds (the checks' crane build and `packages.cakeys`) run the tests under
   `cargo-nextest`, one process per test, each through `nix/test-tokens.sh`: a SoftHSM token and
   a kryoptic database of its own (copies of templates), and for the suites that use them its own
-  `p11-kit server` and swtpm. So the tests run in parallel (268 tests in about 40 s; the
+  `p11-kit server` and swtpm; there is no shared server or swtpm, so a suite the runner's lists
+  leave out fails rather than sharing one. The tokens are set up by one script,
+  `nix/token-env.sh`, which the check phase, the runner, `scripts/local-tests.sh` and the
+  profile, demo and example scripts all source. So the tests run in parallel (268 tests in about 40 s; the
   camigrate suite alone took 130 s on one thread) and none depends on what another left on a
   token. `nix build .#cakeys-crane` is that run alone.
 - `scripts/local-tests.sh [nextest arguments]` is the same run outside Nix, seconds per test:
@@ -98,8 +105,8 @@ on. These rules have no exceptions; if a task cannot be done within them, stop a
 |---|---|---|
 | unit | `cargo test --workspace` | digests (pinned), curves and OIDs, SPKI round-trips, registry, P-521 fix-up, hex parsing, proof-of-possession host math (both ECDH MAC sides), the signature verifiers, the deprecation register and scheme names, AES strength order, the observed policy vectors, the attestation scheme definitions and lock invariants, the lock rules (first use, what a write may override, attestation changes, provenance warnings), the PIV chain verifier (fixture chain + Yubico's own roots and intermediates) |
 | `crates/core/tests/properties.rs` | `cargo test --workspace` | proptest: recording then comparing passes and a second write changes nothing; after a recorded realisation, another material is 10 and a weaker binding or replaced object 14 in both modes, drift fails only a compare, and a successful write never overwrites a locked ID; material links only through a shared scheme (disjoint 14, other material 10, else gaps filled); the attestation and commitment-label encodings are injective; `sri`/`is_sri` agree; key and certificate parsers and the loaders never panic. Mutation-checked: disabling the binding-downgrade or the shared-scheme rule fails it |
-| `crates/core/tests/lock_mbt.rs` | package build; `cargo test` with `quint` on `PATH` (`nix develop` has it) | model-based (quint-connect): `quint run` simulates `crates/core/spec/lock.qnt`, 500 traces of 12 runs from a fixed seed, and each trace is replayed against `reconcile`. After every run the lock, projected onto the model's, and the verdict (the exit code, or whether the lock changed) must be the model's, and the lock must load. Mutation-checked: the model without its binding-downgrade rule fails it; alone it leaves 9 of `reconcile.rs`'s 113 viable mutants, all outside the model (COVERAGE_PLAN.md, "The lock model"). "The lock model and the Rust" below |
-| shared properties | `cargo test --workspace` | properties written once as functions (`cakeys_core::fuzzing`, `cakeys_tpm2_pkcs11::fuzzing`; OPEN.md, "Kani and fuzzing") and run three ways: proptests under `cargo test`, cargo-fuzz targets (`checks.fuzz`) and, where one fits, Kani proofs (`checks.kani`). `hex::decode` takes exactly hex of whole bytes and `encode` round-trips (`fuzzing::tests::only_hex_decodes`, `hex_round_trips`; fuzz target `hex`; both proved in `checks.kani`, every input up to four and two bytes); the attestation encoding reads back to its fields (`attest_encoding_reads_back`; `attest_encoding`); tpm2-pkcs11's `fix_ec_point` repairs exactly the malformed short form (`ec_point_fix_holds_on_any_bytes`; `p521_point`; proved in `checks.kani` for every input up to 258 bytes; it found that DER of 128 bytes was "repaired") |
+| `crates/core/tests/lock_mbt.rs` | package build; `cargo test` with `quint` on `PATH` (`nix develop` has it) | model-based (quint-connect): `quint run` simulates `crates/core/spec/lock.qnt`, 500 traces of 12 runs from a fixed seed, and each trace is replayed against `reconcile`. After every run the lock, projected onto the model's, the verdict (the exit code, or whether the lock changed) and the rule that decided it must be the model's, and the lock must load; the replay must reach every rule the model's `decidedBy` witnesses name. Mutation-checked: the model without its binding-downgrade rule fails it; alone it leaves 9 of `reconcile.rs`'s 113 viable mutants, all outside the model (COVERAGE_PLAN.md, "The lock model"). "The lock model and the Rust" below |
+| shared properties | `cargo test --workspace` | properties written once as functions (`cakeys_core::fuzzing`, `cakeys_tpm2_pkcs11::fuzzing`, `camigrate::fuzzing`; OPEN.md, "Kani and fuzzing") and run three ways: proptests under `cargo test`, cargo-fuzz targets (`checks.fuzz`) and, where one fits, Kani proofs (`checks.kani`). `hex::decode` takes exactly hex of whole bytes and `encode` round-trips (`fuzzing::tests::only_hex_decodes`, `hex_round_trips`; fuzz target `hex`; both proved in `checks.kani`, every input up to four and two bytes); the attestation encoding reads back to its fields (`attest_encoding_reads_back`; `attest_encoding`); a lock that loads, and a bundle that reads, is read back from its own writing as it was (`lock_round_trips`, `bundle_round_trips`, seeded with the repository's locks and the sample bundle; `lock`, `bundle`); a key file is read or refused, and a private key only from a file the shape scan says holds one (`key_file`, seeded with the key-file fixtures; `key_file`); tpm2-pkcs11's `fix_ec_point` repairs exactly the malformed short form (`ec_point_fix_holds_on_any_bytes`; `p521_point`; proved in `checks.kani` for every input up to 258 bytes; it found that DER of 128 bytes was "repaired") |
 | `checks.kani` | `nix flake check` (x86_64-linux) | `cargo kani -p cakeys-core` and `-p cakeys-tpm2-pkcs11` with Kani from `nix/kani.nix`: the proofs in the two `fuzzing` modules, for every input up to each proof's bound; not in `checks-crane-only` |
 | `checks.quint` | sandbox | `lock.qnt` typechecks; a fixed-seed simulation (2000 traces of 12 runs) holds every invariant and reaches every rule that can decide a run; Apalache proves the invariants for every run of up to two steps (about two minutes) |
 | `checks.fuzz`, `apps.fuzz` | package build / host | cargo-fuzz targets (`fuzz/`: the key and certificate parsers, the lock and config loaders, the bundle, and tpm2-pkcs11's store rows, `TPMS_ATTEST` and P-521 point fix-up, the PIV attestation chain with its dates, a profile's emit and parse round trip, and the shared hex and attestation-encoding properties) on the stable rustc (`RUSTC_BOOTSTRAP=1`, no sanitizer, debug assertions): the check runs 100 000 inputs per target from a fixed seed and the fixtures; `nix run .#fuzz -- <target> [libFuzzer flags]` runs one as long as wanted |
@@ -123,6 +130,7 @@ on. These rules have no exceptions; if a task cannot be done within them, stop a
 | `checks.minimal` | package build | the CLI without its `tpm2`/`ykcs11` features builds without tpm2-tss and sqlite |
 | `checks.doc` | package build | rustdoc over every crate, private items included, with `-D warnings`: no doc link that does not resolve. An evidence tag in a doc comment is written `\[run\]`, or rustdoc reads it as a link |
 | `checks.msrv` | package build | `cargo check --all-targets` with the toolchain at `Cargo.toml`'s `rust-version` (rust-overlay), the dependencies built with it too |
+| `checks.doc-references` | sandbox | what the docs cite exists (`nix/doc-references.py`): a test or function named in backticks is a `fn` in `crates/` or `fuzz/`, every `docs/*.md` and Rust source (`crates/…/*.rs`) cited from docs, sources, scripts or Nix is a file, and every relative Markdown link resolves. Names and paths of other software are listed in the script with what they are |
 | `checks.formatting` | treefmt | `nix fmt` would change nothing: the formatters and linters in `treefmt.nix` (rustfmt with `rustfmt.toml`, nixfmt, taplo, shfmt, rumdl, keep-sorted, statix, deadnix, shellcheck, typos) |
 | `scripts/xversion.sh` | by hand, per refactor | a lock recorded by one build verifies, compares and re-records byte-identically with another (every class) |
 
@@ -130,6 +138,16 @@ on. These rules have no exceptions; if a task cannot be done within them, stop a
 opt-in, as is the real-TPM attestation test (`CAKEYS_FTPM_ATTEST=1`, through
 `nix/ftpm-test-env.sh`). `packages.test-nspawn` needs the `uid-range` feature, so it is outside
 `checks`.
+
+A suite whose token is missing skips, unless its `*_REQUIRE` variable is set: then it fails.
+The software tokens' are `CAKEYS_TEST_REQUIRE` (SoftHSM), `CAKEYS_KRYOPTIC_REQUIRE`,
+`CAKEYS_P11KIT_REQUIRE`, `CAKEYS_TPM_REQUIRE` (swtpm) and `CAKEYS_FAULT_REQUIRE`; the Nix builds
+and `scripts/local-tests.sh` set them all. The hardware suites' are `CAKEYS_YUBIKEY_REQUIRE`
+(with `CAKEYS_TEST_YUBIKEY_PIN` and `_MGM`) and `CAKEYS_FTPM_REQUIRE` (with
+`CAKEYS_FTPM_MODULE` and `CAKEYS_FTPM_PROFILE`): a suite's opt-in variables are set all
+together or not at all, and its require variable without them fails rather than passing having
+run nothing. `scripts/coverage-full.sh` sets each beside the suite's variables, and only for that
+suite's pass.
 
 ## Verification beyond tests
 
@@ -161,14 +179,17 @@ Two different claims, kept apart:
 - **The model satisfies its properties.** `checks.quint` simulates it and has Apalache prove
   them for every run of up to two steps from the empty lock. A proof of the model, bounded.
 - **The Rust behaves like the model.** Tested, not proven: `lock_mbt.rs` replays simulated
-  traces through the real `reconcile` and compares state and verdict after every step. What
-  says the test is worth something: each rule is reached (`checks.quint` fails when a
-  `decidedBy` witness is never seen); a rule taken out of the model fails it; and cargo-mutants
+  traces through the real `reconcile` and compares state, verdict and the deciding rule after
+  every step. What says the test is worth something: each rule is reached (`checks.quint` fails
+  when a `decidedBy` witness is never seen, and the test itself when its own 500 traces never
+  reach one); a rule taken out of the model fails it; and cargo-mutants
   over `reconcile.rs` with this test as the only test (COVERAGE_PLAN.md, "The lock model"),
   where each surviving mutant is either behaviour the model leaves out or a change to no
   observable behaviour.
 
 The projection (`State::from_driver`) is the trusted part: it maps the lock as serialised onto
 the model's shape, field for field, and refuses anything the model does not name rather than
-dropping it. A change to the lock rules changes the model in the same commit, or
+dropping it: every field of the lock as serialised is either read or named as one the model
+leaves out (the locator, observations), so a new one fails the test. A refusal maps to its rule
+by a marker only that rule's message has (`rule_of`), exactly one or the step fails. A change to the lock rules changes the model in the same commit, or
 `lock_mbt.rs` fails.

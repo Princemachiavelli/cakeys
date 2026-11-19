@@ -51,7 +51,7 @@ fn scalar<B: AsRef<[u8]> + zeroize::Zeroize>(bytes: B) -> Zeroizing<Vec<u8>> {
 /// `Unsupported` for a key type or curve with no parser here; `Conflict` for bytes that are not
 /// such a key (the message never includes them).
 pub fn private_from_pkcs8(der: &[u8], key_type: KeyType, curve: Option<&str>) -> Result<PrivateParts> {
-    use ed25519_dalek::pkcs8::DecodePrivateKey as _;
+    use pkcs8::DecodePrivateKey as _;
     let bad = |what: &str| KmError::Conflict(format!("the source's wrapped key is not a PKCS#8 {what} key").into());
     let ec = |value| Ok(PrivateParts::Ec(value));
     match (key_type, curve.and_then(|c| Curve::from_cfg(key_type, c))) {
@@ -80,7 +80,7 @@ pub fn private_from_pkcs8(der: &[u8], key_type: KeyType, curve: Option<&str>) ->
         (KeyType::Rsa, _) => rsa_parts(der).map(|p| PrivateParts::Rsa(Box::new(p))),
         (kt, _) => Err(KmError::Unsupported(
             format!(
-                "no host-path parser for a {kt:?} private key{}",
+                "no host-path parser for a {kt} private key{}",
                 curve.map_or_else(String::new, |c| format!(" on {c}"))
             )
             .into(),
@@ -97,7 +97,7 @@ pub fn private_from_pkcs8(der: &[u8], key_type: KeyType, curve: Option<&str>) ->
 /// (ISSUES.md Q20: the parser is chosen by the key's OIDs).
 pub fn spki_of_pkcs8(der: &[u8]) -> Result<Vec<u8>> {
     use crate::id::{Curve, KeyAlg};
-    use ed25519_dalek::pkcs8::{DecodePrivateKey as _, EncodePublicKey as _};
+    use pkcs8::{DecodePrivateKey as _, EncodePublicKey as _};
     let alg = KeyAlg::of_pkcs8(der).map_err(|e| {
         let said = e.into_msg().map_or_else(String::new, crate::Msg::into_text);
         KmError::Unsupported(format!("the key file's key: {said}").into())
@@ -130,19 +130,49 @@ pub fn spki_of_pkcs8(der: &[u8]) -> Result<Vec<u8>> {
     spki.map(|d| d.as_bytes().to_vec()).map_err(spki_err)
 }
 
+/// A key that parsed whose public half does not encode: the key's fault, no token's (13).
 fn spki_err(e: impl std::fmt::Display) -> KmError {
-    KmError::Unavailable(format!("encoding the public key: {e}").into())
+    KmError::Conflict(format!("encoding the public key: {e}").into())
+}
+
+/// A multi-prime RSA key (RFC 8017's `otherPrimeInfos`): PKCS#11 names two primes only.
+fn multi_prime() -> KmError {
+    KmError::Unsupported(
+        "the source's wrapped key is a multi-prime RSA key, which has no PKCS#11 form (CKA_PRIME_1 and \
+         CKA_PRIME_2 only)"
+            .into(),
+    )
+}
+
+/// Whether `der` is a PKCS#8 RSA key with more than two primes: what `rsa`'s decoder refuses
+/// without saying why. Reads structure only, borrowing every part.
+fn is_multi_prime(der: &[u8]) -> bool {
+    use pkcs8::der::Decode as _;
+    pkcs8::PrivateKeyInfoRef::from_der(der)
+        .ok()
+        .and_then(|info| rsa::pkcs1::RsaPrivateKeyRef::from_der(info.private_key.as_bytes()).ok())
+        .is_some_and(|k| k.version() == rsa::pkcs1::Version::Multi)
 }
 
 fn rsa_parts(der: &[u8]) -> Result<RsaParts> {
-    use rsa::pkcs8::DecodePrivateKey as _;
+    use pkcs8::DecodePrivateKey as _;
+    let bad = || KmError::Conflict("the source's wrapped key is not a PKCS#8 RSA key".into());
+    let key =
+        rsa::PrivateKey::from_pkcs8_der(der).map_err(|_| if is_multi_prime(der) { multi_prime() } else { bad() })?;
+    rsa_key_parts(key)
+}
+
+/// The parts of a decoded RSA key: two primes, as PKCS#11 has them.
+fn rsa_key_parts(mut key: rsa::PrivateKey) -> Result<RsaParts> {
     use rsa::traits::{PrivateKeyParts as _, PublicKeyParts as _};
     let bad = || KmError::Conflict("the source's wrapped key is not a PKCS#8 RSA key".into());
-    let mut key = rsa::PrivateKey::from_pkcs8_der(der).map_err(|_| bad())?;
+    if key.primes().len() != 2 {
+        return Err(multi_prime());
+    }
     key.precompute().map_err(|_| bad())?;
     // `into_vec` keeps the allocation: no second, unzeroized copy of a private part.
     let be = |n: &rsa::BoxedUint| Zeroizing::new(n.to_be_bytes_trimmed_vartime().into_vec());
-    let [p, q] = key.primes() else { return Err(bad()) };
+    let [p, q] = key.primes() else { return Err(multi_prime()) };
     Ok(RsaParts {
         modulus: key.n().to_be_bytes_trimmed_vartime().to_vec(),
         public_exponent: key.e().to_be_bytes_trimmed_vartime().to_vec(),
@@ -151,7 +181,8 @@ fn rsa_parts(der: &[u8]) -> Result<RsaParts> {
         prime_2: be(q),
         exponent_1: be(key.dp().ok_or_else(bad)?),
         exponent_2: be(key.dq().ok_or_else(bad)?),
-        coefficient: be(&key.crt_coefficient().ok_or_else(bad)?),
+        // `crt_coefficient` computes an owned copy: wiped when dropped, like the key's own parts.
+        coefficient: be(&Zeroizing::new(key.crt_coefficient().ok_or_else(bad)?)),
     })
 }
 
@@ -162,8 +193,8 @@ mod tests {
     /// Each parser takes what a key's own PKCS#8 encoder writes, and yields its private value.
     #[test]
     fn pkcs8_keys_parse_into_their_parts() {
-        use ed25519_dalek::pkcs8::EncodePrivateKey as _;
-        use rsa::pkcs8::EncodePublicKey as _;
+        use pkcs8::EncodePrivateKey as _;
+        use pkcs8::EncodePublicKey as _;
         use rsa::traits::PublicKeyParts as _;
         let ec = p256::SecretKey::from_slice(&[7u8; 32]).unwrap();
         let der = ec.to_pkcs8_der().unwrap();
@@ -197,5 +228,31 @@ mod tests {
         assert!(
             matches!(private_from_pkcs8(&[1, 2, 3], KeyType::Rsa, None), Err(KmError::Conflict(m)) if !m.contains("010203"))
         );
+        // A type with no parser is named as PKCS#11 names it.
+        let e = private_from_pkcs8(der.as_bytes(), KeyType::Aes, None).err().unwrap();
+        assert!(matches!(&e, KmError::Unsupported(m) if m.contains("a CKK_AES private key")), "{e}");
+    }
+
+    /// A multi-prime RSA key is an RSA key PKCS#11 has no attributes for: unsupported (15),
+    /// saying so, never "not an RSA key" (13).
+    #[test]
+    fn a_multi_prime_rsa_key_is_unsupported() {
+        use pkcs8::EncodePrivateKey as _;
+        use pkcs8::der::{Decode as _, Encode as _, asn1::OctetStringRef};
+        use rsa::pkcs1::{EncodeRsaPrivateKey as _, OtherPrimeInfo, RsaPrivateKeyRef, UintRef};
+        let rsa = rsa::PrivateKey::new(&mut getrandom::SysRng, 1024).unwrap();
+        let two = rsa.to_pkcs1_der().unwrap();
+        let mut key = RsaPrivateKeyRef::from_der(two.as_bytes()).unwrap();
+        let r = UintRef::new(&[7]).unwrap();
+        key.other_prime_infos = Some(vec![OtherPrimeInfo { prime: r, exponent: r, coefficient: r }]);
+        let pkcs1 = key.to_der().unwrap();
+        let p8 = rsa.to_pkcs8_der().unwrap();
+        let mut info = pkcs8::PrivateKeyInfoRef::from_der(p8.as_bytes()).unwrap();
+        info.private_key = OctetStringRef::new(&pkcs1).unwrap();
+        let three = info.to_der().unwrap();
+        let e = private_from_pkcs8(&three, KeyType::Rsa, None).err().unwrap();
+        assert!(matches!(&e, KmError::Unsupported(m) if m.contains("multi-prime RSA key")), "{e}");
+        // Its two-prime original still parses.
+        assert!(private_from_pkcs8(p8.as_bytes(), KeyType::Rsa, None).is_ok());
     }
 }

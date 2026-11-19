@@ -18,7 +18,7 @@
 # no results.
 #
 # Environment (set by the app, apps.nix): SOFTHSM_MODULE, KRYOPTIC_MODULE, TPM2_PKCS11_MODULE,
-# TPM2_TEST_ENV, PROFILES (profiles/modules), TESTCASES (pkcs11-check's testcases directory),
+# CAKEYS_TOKEN_ENV_SH (nix/token-env.sh), TPM2_TEST_ENV, PROFILES (profiles/modules), TESTCASES (pkcs11-check's testcases directory),
 # COMPARE (pkcs11-check-compare.py); on PATH pkcs11-check, softhsm2-util, pkcs11-tool, python3
 # and the TPM stack. TPM_PORT picks swtpm's port (default 24331).
 set -euo pipefail
@@ -36,7 +36,10 @@ out=$PWD/pkcs11-check-$module-$pass
 extra=()
 while [ $# -gt 0 ]; do
   case $1 in
-  --out) out=$(realpath -m "$2") && shift 2 ;;
+  --out)
+    [ $# -ge 2 ] || usage
+    out=$(realpath -m "$2") && shift 2
+    ;;
   --) shift && extra=("$@") && break ;;
   *) usage ;;
   esac
@@ -57,21 +60,22 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$out"
+# What a run writes, removed first: a run that writes nothing must not leave the last run's
+# results for the guard below and the summary to read as this one's.
+rm -f "$out/results.json" "$out/report.jsonl" "$out/coverage.json" "$out/run.log" "$out/summary.md"
 
-# A token labelled kmtest, user PIN 1234, SO PIN 5678, as scripts/regen-profiles.sh sets one up.
+# A token labelled kmtest, user PIN 1234, SO PIN 5678, as scripts/regen-profiles.sh sets one up
+# (nix/token-env.sh).
+# shellcheck source=nix/token-env.sh
+. "$CAKEYS_TOKEN_ENV_SH"
 case $module in
 softhsm)
-  export SOFTHSM2_CONF=$work/softhsm2.conf
-  mkdir "$work/tokens"
-  printf 'directories.tokendir = %s\nobjectstore.backend = file\nlog.level = ERROR\n' "$work/tokens" >"$SOFTHSM2_CONF"
-  softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678 >/dev/null
+  softhsm_conf "$work"
+  softhsm_init kmtest
   ;;
 kryoptic)
-  export KRYOPTIC_CONF=$work/kryoptic.conf
-  printf '[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' "$work/kryoptic.sql" >"$KRYOPTIC_CONF"
-  pkcs11-tool --module "$lib" --init-token --slot 1 --so-pin 5678 --label kmtest >/dev/null
-  pkcs11-tool --module "$lib" --token-label kmtest --login --login-type so --so-pin 5678 \
-    --init-pin --pin 1234 >/dev/null
+  kryoptic_conf "$work"
+  kryoptic_init "$lib" kmtest
   ;;
 tpm2-pkcs11)
   tpm_up=1

@@ -1,7 +1,7 @@
 //! The `supports` query (docs/CAPROBE.md): what the capability profiles say a module
 //! supports. Pure data — no token is touched.
 
-use cakeys_core::config::Config;
+use cakeys_core::config::{Config, LOCK_VERSION, Lock};
 use cakeys_core::{KmError, Result};
 use cakeys_profile::{Effective, Profile, Set, Verdict};
 
@@ -36,6 +36,8 @@ pub(crate) struct Support {
     pub layers: Vec<String>,
     /// One verdict per asked name.
     pub verdicts: Vec<(String, Verdict)>,
+    /// What resolving the token's stack noticed (`gate::stack`).
+    pub notes: Vec<String>,
 }
 
 impl Support {
@@ -60,56 +62,62 @@ impl Support {
     }
 }
 
-/// Answer `q` from `set`: the module profile (named, or through a token's `provider` in
-/// `cfg`), the delta layers on top, and the verdicts.
+/// Answer `q` from `set`: the module profile (named, or a token's stack as `cakeys validate`
+/// resolves it, `gate::stack`), the delta layers on top, and the verdicts. caprobe never reads
+/// keys.lock, so a token's stack is what keys.toml says of it (review D4).
 ///
 /// # Errors
 ///
-/// `Validation` (17) for an unknown profile, layer, class or token, or a token that names no
-/// provider.
+/// `Validation` (17) for an unknown profile, layer, class or token, or a token whose module
+/// keys.toml does not say.
 pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
     let find = |name: &str| set.find(name).map_err(|e| KmError::Validation(e.into()));
     // A family with pairs on several kinds of hardware (tpm2-pkcs11/1.10+swtpm, +amd-ftpm):
-    // the hardware layer asked for names the pair, as in token resolution.
+    // the hardware layer asked for names the pair. That is a naming convention, not a match:
+    // a pair is named `<module>+<hardware profile>` (docs/CAPROBE.md D10), and token
+    // resolution (`resolution::choose`) picks a pair by the same suffix, over the same
+    // resolved layer names, so the two cannot disagree.
     let find_module = |name: &str, hardware: &[String]| {
         set.find(name)
             .or_else(|e| {
+                let layers: Vec<&str> =
+                    hardware.iter().filter_map(|h| set.find(h).ok()).map(|p| p.profile.as_str()).collect();
                 let named: Vec<&Profile> = set
                     .all()
                     .iter()
-                    .filter(|p| p.family() == name && hardware.iter().any(|h| p.profile.ends_with(&format!("+{h}"))))
+                    .filter(|p| p.family() == name && layers.iter().any(|l| p.profile.ends_with(&format!("+{l}"))))
                     .collect();
                 if let [p] = named.as_slice() { Ok(*p) } else { Err(e) }
             })
             .map_err(|e| KmError::Validation(e.into()))
     };
-    let module = match (q.profile, q.token) {
-        (Some(p), _) => Some(find_module(p, q.layers)?),
-        (None, Some(t)) => {
-            let token = cfg.tokens.get(t).ok_or_else(|| KmError::Validation(format!("unknown token '{t}'").into()))?;
-            // The one profile `moduleProfile` names, else the provider's family.
-            let named = token.module_profile.as_deref().or(token.provider.as_deref()).ok_or_else(|| {
-                KmError::Validation(
-                    format!("token '{t}' names no provider; set tokens.{t}.provider or pass --profile").into(),
-                )
-            })?;
-            Some(find_module(named, &token.profiles)?)
-        }
-        (None, None) => None,
-    };
     // The cryptoki binding layer is always in the stack (docs/CAPROBE.md): what it
     // subtracts is decided by the build this binary runs against, so an explicit `--layer
     // cryptoki/0.12` adds nothing it has not already decided.
-    let mut resolved: Vec<Profile> = vec![cakeys_pkcs11::binding::layer().map_err(|e| KmError::Validation(e.into()))?];
+    let binding = || cakeys_pkcs11::binding::layer().map_err(|e| KmError::Validation(e.into()));
+    let (module, mut resolved, notes) = match (q.profile, q.token) {
+        (Some(p), _) => (Some(find_module(p, q.layers)?.clone()), vec![binding()?], Vec::new()),
+        (None, Some(t)) => {
+            let token = cfg.tokens.get(t).ok_or_else(|| KmError::Validation(format!("unknown token '{t}'").into()))?;
+            // The stack `cakeys validate` and `create`'s gate resolve, from keys.toml alone.
+            let lock = Lock { version: LOCK_VERSION, ..Lock::default() };
+            let stack = cakeys_pkcs11::gate::stack(t, token, &lock)?.map_err(|why| {
+                KmError::Validation(format!("{why}; set tokens.{t}.provider or pass --profile").into())
+            })?;
+            (stack.resolved.module, stack.resolved.layers, stack.resolved.notes)
+        }
+        (None, None) => (None, vec![binding()?], Vec::new()),
+    };
     for l in q.layers {
         let p = find(l)?;
-        if p.profile != cakeys_pkcs11::binding::NAME {
+        let named = |r: &Profile| r.profile == l.as_str() || r.family() == l.as_str() || r.profile == p.profile;
+        if p.profile != cakeys_pkcs11::binding::NAME && !resolved.iter().any(named) {
             resolved.push(p.clone());
         }
     }
     let stack: Vec<&Profile> = resolved.iter().collect();
     let baseline = set.baseline().map_err(|e| KmError::Validation(e.into()))?;
-    let eff = Effective::new(baseline, module, &stack);
+    let eff = Effective::new(baseline, module.as_ref(), &stack);
     let verdicts = match q.ask {
         Ask::Class(class) => eff.class(class).ok_or_else(|| {
             KmError::Validation(
@@ -125,8 +133,42 @@ pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
         Ask::Name(name) => vec![(name.to_owned(), eff.query(name, q.bits))],
     };
     Ok(Support {
-        module: module.map_or_else(|| "(none)".to_owned(), |m| m.profile.clone()),
+        module: module.as_ref().map_or_else(|| "(none)".to_owned(), |m| m.profile.clone()),
         layers: resolved.iter().map(|p| p.profile.clone()).collect(),
         verdicts,
+        notes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `--layer` names a hardware pair by the layer's resolved profile name, as token
+    /// resolution does: a hardware layer asked for by family picks the pair named after its
+    /// full name (review supports F2).
+    #[test]
+    fn a_hardware_layer_names_its_pair_by_its_profile_name() {
+        let dir = std::env::temp_dir().join(format!("caprobe-supports-pair-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let files = [
+            ("hw.toml", "profile = \"acmehw/2\"\nmode = \"delta\"\n"),
+            ("a.toml", "profile = \"acme/1+acmehw/2\"\nmode = \"observed\"\nadvertise = [\"CKM_AES_ECB\"]\n"),
+            ("b.toml", "profile = \"acme/1+other\"\nmode = \"observed\"\nadvertise = [\"CKM_AES_CBC\"]\n"),
+        ];
+        for (name, text) in files {
+            std::fs::write(dir.join(name), text).unwrap();
+        }
+        // The binding layer comes from the process's set, activated as `main_from` does.
+        crate::activate(&Config::default(), None, &mut cakeys_pkcs11::ops::Notes::default()).unwrap();
+        let set = Set::embedded().unwrap().with_dir(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let set = set.unwrap();
+        let layers = ["acmehw".to_owned()];
+        let q =
+            Query { ask: Ask::Name("CKM_AES_ECB"), profile: Some("acme"), token: None, layers: &layers, bits: None };
+        let s = supports(&Config::default(), &set, &q).unwrap();
+        assert_eq!(s.module, "acme/1+acmehw/2");
+        assert!(s.layers.iter().any(|l| l == "acmehw/2"), "{:?}", s.layers);
+    }
 }

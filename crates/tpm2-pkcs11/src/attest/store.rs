@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// The store's file name inside its directory (db.c `DB_NAME`).
-pub const DB_NAME: &str = "tpm2_pkcs11.sqlite3";
+pub(crate) const DB_NAME: &str = "tpm2_pkcs11.sqlite3";
 
 /// Vendor attribute types in `tobjects.attrs` (src/lib/attrs.h of tpm2-pkcs11):
 /// `CKA_VENDOR_DEFINED | CKA_VENDOR_TPM2_DEFINED | n`.
@@ -33,7 +33,7 @@ const CLASS_PRIVATE_KEY: i64 = 3;
 const CLASS_SECRET_KEY: i64 = 4;
 
 /// Everything the attestation path needs from one token's store.
-pub struct Store {
+pub(crate) struct Store {
     /// The token's primary parent: a persistent TPM handle (from the serialized `ESYS_TR` in
     /// `pobjects.config`) with its auth value (`pobjects.objauth`, plaintext, empty by default).
     pub parent: Parent,
@@ -41,10 +41,15 @@ pub struct Store {
     pub seal: Seal,
     /// The token's key objects.
     pub tobjects: Vec<TObject>,
+    /// Why each row that could not be read was refused: kept aside, not refusing the token
+    /// (attest/store.rs F1), and said only when no readable row is the one asked for.
+    pub refused: Vec<KmError>,
+    /// The store file, named in what [`Store::find`] reports.
+    pub path: std::path::PathBuf,
 }
 
 /// The token's primary parent (`pobjects`).
-pub struct Parent {
+pub(crate) struct Parent {
     /// Its persistent TPM handle.
     pub(crate) handle: u32,
     /// Its auth value (`pobjects.objauth`).
@@ -52,7 +57,7 @@ pub struct Parent {
 }
 
 /// The token's user seal object (`sealobjects`).
-pub struct Seal {
+pub(crate) struct Seal {
     /// Its public area (`userpub`).
     pub(crate) pub_blob: Vec<u8>,
     /// Its private area (`userpriv`).
@@ -62,7 +67,7 @@ pub struct Seal {
 }
 
 /// One key object of the token (`tobjects`).
-pub struct TObject {
+pub(crate) struct TObject {
     /// `CKA_CLASS`, as the module stores it.
     pub(crate) class: i64,
     /// `CKA_LABEL`, when it has one.
@@ -81,15 +86,19 @@ pub struct TObject {
 
 /// Columns are read as raw values, not by declared type: the module binds its hex strings and
 /// YAML with the sqlite BLOB flag even where the schema says TEXT, and the seal blobs arrive
-/// as blob-flagged hex strings.
+/// as blob-flagged hex strings. Bytes that are not UTF-8 are refused, never replaced
+/// (attest/store.rs F3): a replaced byte would fail later as something else, a salt as a wrong
+/// PIN.
 fn text(row: &rusqlite::Row<'_>, i: usize) -> rusqlite::Result<String> {
-    use rusqlite::types::ValueRef;
-    Ok(match row.get_ref(i)? {
+    use rusqlite::types::{Type, ValueRef};
+    match row.get_ref(i)? {
         // Blob or text: the module binds its hex strings and YAML with the sqlite BLOB flag
         // even where the schema says TEXT; anything else is an unset column.
-        ValueRef::Blob(b) | ValueRef::Text(b) => String::from_utf8_lossy(b).into_owned(),
-        _ => String::new(),
-    })
+        ValueRef::Blob(b) | ValueRef::Text(b) => std::str::from_utf8(b)
+            .map(str::to_owned)
+            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(i, Type::Text, Box::new(e))),
+        _ => Ok(String::new()),
+    }
 }
 
 impl Store {
@@ -98,10 +107,11 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// `Unavailable` when the database cannot be opened, a query fails, or a row's attrs
-    /// cannot be parsed (a wrong directory is an error, never a fresh store the module might
-    /// pick up); `NotFound` when the store holds no token with the label.
-    pub fn open(dir: &Path, token_label: &str) -> Result<Store> {
+    /// `Unavailable` when the database cannot be opened or a query fails (a wrong directory is
+    /// an error, never a fresh store the module might pick up); `NotFound` when the store holds
+    /// no token with the label. A key row whose attrs cannot be parsed refuses no other row: it
+    /// is kept aside ([`Store::refused`]).
+    pub(crate) fn open(dir: &Path, token_label: &str) -> Result<Store> {
         let path = dir.join(DB_NAME);
         // Read-only, so a wrong directory is an error — never a fresh empty store the module
         // might pick up later.
@@ -131,7 +141,7 @@ impl Store {
             })
             .map_err(|e| KmError::Unavailable(format!("reading sealobjects: {e}").into()))?;
         let seal = Seal { pub_blob: userpub, priv_blob: userpriv, auth_salt: userauthsalt };
-        let mut tobjects = Vec::new();
+        let (mut tobjects, mut refused) = (Vec::new(), Vec::new());
         {
             let mut stmt = db
                 .prepare("SELECT attrs FROM tobjects WHERE tokid = ?1")
@@ -140,11 +150,21 @@ impl Store {
                 .query_map([tok_id], |r| text(r, 0))
                 .map_err(|e| KmError::Unavailable(format!("reading tobjects: {e}").into()))?;
             for attrs in rows {
-                let attrs = attrs.map_err(|e| KmError::Unavailable(format!("reading a tobject: {e}").into()))?;
-                tobjects.extend(parse_tobject(&attrs)?);
+                // A row that is not UTF-8 is one bad row; a failing query fails the store.
+                let row = match attrs {
+                    Ok(attrs) => parse_tobject(&attrs),
+                    Err(e @ rusqlite::Error::FromSqlConversionFailure(..)) => {
+                        Err(KmError::Unavailable(format!("tpm2-pkcs11 store: object attrs: {e}").into()))
+                    }
+                    Err(e) => return Err(KmError::Unavailable(format!("reading a tobject: {e}").into())),
+                };
+                match row {
+                    Ok(t) => tobjects.extend(t),
+                    Err(e) => refused.push(e),
+                }
             }
         }
-        Ok(Store { parent, seal, tobjects })
+        Ok(Store { parent, seal, tobjects, refused, path })
     }
 }
 
@@ -156,10 +176,12 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// `NotFound` when no row carries the `CKA_ID`; `Ambiguous` when several do (a label
-    /// narrows it, but never silently picks).
-    pub fn find(&self, cka_id: &[u8], label: Option<&[u8]>, class: i64) -> Result<&TObject> {
+    /// `NotFound` when no row carries the `CKA_ID`, `Unavailable` instead when a row could not
+    /// be read (it may be the one); `Ambiguous` when several do (a label narrows it, but never
+    /// silently picks). Each names the store file.
+    pub(crate) fn find(&self, cka_id: &[u8], label: Option<&[u8]>, class: i64) -> Result<&TObject> {
         let id = || cakeys_core::hex::encode(cka_id);
+        let store = self.path.display();
         let matches: Vec<&TObject> = self
             .tobjects
             .iter()
@@ -170,13 +192,27 @@ impl Store {
                     && label.is_none_or(|l| t.cka_label.as_deref() == Some(l))
             })
             .collect();
-        match matches.len() {
-            1 => Ok(matches[0]),
-            0 => Err(KmError::NotFound(
-                format!("no certifiable store object of the key's class with CKA_ID {} in the tpm2-pkcs11 store", id())
-                    .into(),
+        match (matches.len(), self.refused.first()) {
+            (1, _) => Ok(matches[0]),
+            (0, Some(first)) => Err(KmError::Unavailable(
+                format!(
+                    "no readable store object of the key's class with CKA_ID {} in the tpm2-pkcs11 store {store}, \
+                     and {} row(s) could not be read, the first: {first}",
+                    id(),
+                    self.refused.len()
+                )
+                .into(),
             )),
-            n => Err(KmError::Ambiguous(format!("{n} store rows match the key's CKA_ID {}", id()).into())),
+            (0, None) => Err(KmError::NotFound(
+                format!(
+                    "no certifiable store object of the key's class with CKA_ID {} in the tpm2-pkcs11 store {store}",
+                    id()
+                )
+                .into(),
+            )),
+            (n, _) => {
+                Err(KmError::Ambiguous(format!("{n} rows of the store {store} match the key's CKA_ID {}", id()).into()))
+            }
         }
     }
 }
@@ -187,7 +223,7 @@ impl Store {
 ///
 /// `Unsupported` for a class the store keeps no key rows for (certificates, data objects:
 /// nothing to certify).
-pub fn store_class(class: ObjectClass) -> Result<i64> {
+pub(crate) fn store_class(class: ObjectClass) -> Result<i64> {
     match class {
         // CKO_PUBLIC_KEY objects are the public half of a pair: stored without a private blob,
         // and TPM2_Certify cannot attest a public-only area.
@@ -268,16 +304,26 @@ pub(crate) fn parse_tobject(attrs: &str) -> Result<Option<TObject>> {
     let bad = |what: &str| KmError::Unavailable(format!("tpm2-pkcs11 store: object attrs: {what}").into());
     let Attrs(attrs) = serde_norway::from_str(attrs).map_err(|e| bad(&e.to_string()))?;
     let attr = |attr: u64| attrs.get(&attr);
-    let bytes = |a| attr(a).and_then(Value::as_str).and_then(|h| hex(h).ok());
+    // Absent is `None`; present but no hex string is a damaged row, never taken for absent
+    // (attest/store.rs F2), which would read as "not found" (11) or "no private blob" (15).
+    let bytes = |a: u64| -> Result<Option<Vec<u8>>> {
+        attr(a)
+            .map(|v| v.as_str().and_then(|h| hex(h).ok()).ok_or_else(|| bad(&format!("attribute {a:#x} is not hex"))))
+            .transpose()
+    };
     let class = attr(ATTR_CLASS).and_then(Value::as_i64).ok_or_else(|| bad("no CKA_CLASS"))?;
-    Ok(bytes(ATTR_PUB_BLOB).map(|pub_blob| TObject {
+    let Some(pub_blob) = bytes(ATTR_PUB_BLOB)? else { return Ok(None) };
+    Ok(Some(TObject {
         class,
-        cka_label: bytes(ATTR_LABEL),
-        cka_id: bytes(ATTR_ID),
+        cka_label: bytes(ATTR_LABEL)?,
+        cka_id: bytes(ATTR_ID)?,
         pub_blob,
-        priv_blob: bytes(ATTR_PRIV_BLOB),
+        priv_blob: bytes(ATTR_PRIV_BLOB)?,
         // The value is hex of the ASCII "<iv>:<tag>:<ct>" string.
-        objauth_enc: bytes(ATTR_OBJAUTH_ENC).map(|b| String::from_utf8_lossy(&b).into_owned()),
+        objauth_enc: bytes(ATTR_OBJAUTH_ENC)?
+            .map(String::from_utf8)
+            .transpose()
+            .map_err(|_| bad("CKA_TPM2_OBJAUTH_ENC is not text"))?,
     }))
 }
 
@@ -325,6 +371,43 @@ mod tests {
         }
     }
 
+    /// A value that is there but no hex string is a damaged row (16), never an absent attribute
+    /// (attest/store.rs F2), and an object auth that is no text is refused, never replaced (F3).
+    #[test]
+    fn a_damaged_value_is_not_an_absent_one() {
+        let row = include_str!("../../tests/fixtures/tobject-private.yaml");
+        let id = parse_tobject(row).unwrap().unwrap().cka_id.unwrap();
+        let id_hex = cakeys_core::hex::encode(&id);
+        let quoted = format!("\"{id_hex}\"");
+        assert!(row.contains(&quoted), "the fixture's CKA_ID is the hex {id_hex}");
+        let damaged = parse_tobject(&row.replacen(&quoted, "\"zz\"", 1)).err().unwrap();
+        assert!(matches!(&damaged, KmError::Unavailable(m) if m.contains("0x102 is not hex")), "{damaged}");
+        // An object auth whose hex decodes to bytes that are no text ("\xff").
+        let objauth = format!("? !!int \"{ATTR_OBJAUTH_ENC}\"\n  : !!str \"ff\",\n}}");
+        let not_text = parse_tobject(&row.replacen('}', &format!("  {objauth}"), 1)).err();
+        assert!(not_text.is_some_and(|e| e.to_string().contains("not text")));
+    }
+
+    /// One row that cannot be read refuses no other (attest/store.rs F1): the key asked for is
+    /// found among the readable rows; when none is it, the unread row is the cause said (16),
+    /// not "not found".
+    #[test]
+    fn one_unreadable_row_refuses_no_other() {
+        let bad = parse_tobject("!!map {").err().unwrap();
+        let store = |rows: Vec<TObject>| Store {
+            parent: Parent { handle: 0x8100_0001, auth: Vec::new() },
+            seal: Seal { pub_blob: Vec::new(), priv_blob: Vec::new(), auth_salt: String::new() },
+            tobjects: rows,
+            refused: vec![KmError::Unavailable(bad.to_string().into())],
+            path: "/s/tpm2_pkcs11.sqlite3".into(),
+        };
+        let one = store(vec![private_row(b"k1")]);
+        assert!(one.find(b"0a", Some(b"k1"), CLASS_PRIVATE_KEY).is_ok());
+        let e = one.find(b"0b", None, CLASS_PRIVATE_KEY).err().unwrap();
+        assert!(matches!(&e, KmError::Unavailable(m) if m.contains("1 row(s) could not be read")), "{e}");
+        assert!(e.to_string().contains("/s/tpm2_pkcs11.sqlite3"), "{e}");
+    }
+
     #[test]
     fn the_parent_is_the_persistent_handle_the_store_names() {
         let parent = parse_parent(include_str!("../../tests/fixtures/pobject-config.yaml"), "").unwrap();
@@ -359,11 +442,16 @@ mod tests {
             parent: Parent { handle: 0x8100_0001, auth: Vec::new() },
             seal: Seal { pub_blob: Vec::new(), priv_blob: Vec::new(), auth_salt: String::new() },
             tobjects: vec![private_row(b"k1"), private_row(b"k2")],
+            refused: Vec::new(),
+            path: "/s/tpm2_pkcs11.sqlite3".into(),
         };
         let found = |id: &[u8], label: Option<&[u8]>, class| store.find(id, label, class).map(|t| t.cka_label.clone());
         assert_eq!(found(b"0a", Some(b"k2"), CLASS_PRIVATE_KEY).unwrap().as_deref(), Some(&b"k2"[..]));
         let several = found(b"0a", None, CLASS_PRIVATE_KEY).unwrap_err();
-        assert!(matches!(&several, KmError::Ambiguous(m) if m.contains("2 store rows match")), "{several}");
+        assert!(
+            matches!(&several, KmError::Ambiguous(m) if m.contains("2 rows of the store /s/tpm2_pkcs11.sqlite3 match")),
+            "{several}"
+        );
         for (id, label, class) in [
             (&b"0b"[..], None, CLASS_PRIVATE_KEY),
             (b"0a", Some(&b"k3"[..]), CLASS_PRIVATE_KEY),
@@ -406,11 +494,15 @@ mod tests {
             let attrs = std::fs::read(format!("{}/tests/fixtures/{attrs}", env!("CARGO_MANIFEST_DIR"))).unwrap();
             db.execute("INSERT INTO tobjects VALUES (7, ?1)", [attrs]).unwrap();
         }
+        // A row that is not UTF-8 and one that is no YAML map: kept aside, refusing no other.
+        db.execute("INSERT INTO tobjects VALUES (7, x'ff00')", []).unwrap();
+        db.execute("INSERT INTO tobjects VALUES (7, '- 1')", []).unwrap();
         drop(db);
         let store = Store::open(&dir, "kmtest").unwrap();
         assert_eq!((store.parent.handle, store.parent.auth.len()), (0x8100_0001, 0));
         assert_eq!((store.seal.pub_blob.as_slice(), store.seal.auth_salt.as_str()), (&[0, 1][..], "5a"));
-        assert_eq!(store.tobjects.len(), 2);
+        assert_eq!((store.tobjects.len(), store.refused.len()), (2, 2));
+        assert!(store.refused[0].to_string().contains("invalid utf-8"), "{}", store.refused[0]);
         assert!(store.find(b"0a", Some(b"k1"), CLASS_PRIVATE_KEY).is_ok());
         assert!(matches!(Store::open(&dir, "another"), Err(KmError::NotFound(_))));
         std::fs::remove_dir_all(&dir).unwrap();

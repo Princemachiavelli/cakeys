@@ -17,7 +17,7 @@
   {"algorithm":"RSA_SIGN_RAW_PKCS1_3072","id":29,"purpose":"ASYMMETRIC_SIGN","kind":"CKK_RSA","on":"3072","keygen":"CKM_RSA_PKCS_KEY_PAIR_GEN","mechanisms":["CKM_RSA_PKCS","CKM_SHA256_RSA_PKCS","CKM_SHA512_RSA_PKCS"],"probe":true},
   {"algorithm":"RSA_SIGN_RAW_PKCS1_4096","id":30,"purpose":"ASYMMETRIC_SIGN","kind":"CKK_RSA","on":"4096","keygen":"CKM_RSA_PKCS_KEY_PAIR_GEN","mechanisms":["CKM_RSA_PKCS","CKM_SHA256_RSA_PKCS","CKM_SHA512_RSA_PKCS"],"probe":true},
   {"algorithm":"AES_256_GCM","id":19,"purpose":"RAW_ENCRYPT_DECRYPT","kind":"CKK_AES","on":"256","keygen":"CKM_AES_KEY_GEN","mechanisms":[],"probe":true},
-  {"algorithm":"HMAC_SHA256","id":32,"purpose":"MAC","kind":"CKK_SHA256_HMAC","on":"256","keygen":"CKM_GENERIC_SECRET_KEY_GEN","mechanisms":[],"probe":true},
+  {"algorithm":"HMAC_SHA256","id":32,"purpose":"MAC","kind":"CKK_SHA256_HMAC","on":"256","keygen":"CKM_GENERIC_SECRET_KEY_GEN","mechanisms":["CKM_SHA256_HMAC"],"probe":true},
   {"algorithm":"HMAC_SHA1","id":33,"purpose":"MAC","kind":"CKK_SHA_1_HMAC","on":"160","keygen":"CKM_GENERIC_SECRET_KEY_GEN","mechanisms":["CKM_SHA_1_HMAC"],"probe":false},
   {"algorithm":"HMAC_SHA224","id":36,"purpose":"MAC","kind":"CKK_SHA224_HMAC","on":"224","keygen":"CKM_GENERIC_SECRET_KEY_GEN","mechanisms":["CKM_SHA224_HMAC"],"probe":false},
   {"algorithm":"HMAC_SHA384","id":34,"purpose":"MAC","kind":"CKK_SHA384_HMAC","on":"384","keygen":"CKM_GENERIC_SECRET_KEY_GEN","mechanisms":["CKM_SHA384_HMAC"],"probe":false},

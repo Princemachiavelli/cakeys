@@ -8,6 +8,7 @@ use cakeys_profile::Baseline;
 use cakeys_profile::baseline::{CURVES, ClassMembers, TABLES};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
+use std::path::Path;
 
 /// The `CKP_*` names that are conformance profiles (the PKCS #11 Profiles standard), not
 /// parameter sets. Everything else under `CKP_` in pkcs11t.h is a parameter set: the PQ sets
@@ -69,8 +70,14 @@ fn value(text: &str, defined: &BTreeMap<String, u64>) -> Option<u64> {
 /// pkcs11f.h. Constants of every family in [`FAMILIES`] are taken, by [`value`]; aliases
 /// (`#define CKM_SHA3_256_KEY_DERIVE CKM_SHA3_256_KEY_DERIVATION`) and the
 /// `*_VENDOR_DEFINED` range constants are skipped, so every name maps to its own ID.
-#[must_use]
-fn from_headers(name: &str, types: &str, functions: &str) -> Baseline {
+///
+/// # Errors
+///
+/// The family constants whose value [`value`] cannot read and that are no alias of a constant
+/// defined before them (`(1UL << 31)`, `~0UL`, a name defined later): each `NAME text`. Never
+/// skipped silently: the pinned test compares the committed file with this generator's own
+/// output, so a dropped row would be missing from both.
+fn from_headers(name: &str, types: &str, functions: &str) -> Result<Baseline, Vec<String>> {
     let mut b = Baseline {
         baseline: name.to_owned(),
         mechanisms: BTreeMap::new(),
@@ -97,20 +104,27 @@ fn from_headers(name: &str, types: &str, functions: &str) -> Baseline {
     };
     // Every constant read so far, for the or-expressions that name one.
     let mut defined = BTreeMap::new();
+    let mut unread = Vec::new();
     for line in types.lines() {
         let Some(rest) = line.trim_start().strip_prefix("#define ") else { continue };
         let mut fields = rest.split_whitespace();
         let (Some(name), Some(text)) = (fields.next(), fields.next()) else { continue };
-        let Some(id) = value(text, &defined) else { continue };
-        defined.insert(name.to_owned(), id);
-        if name.ends_with("VENDOR_DEFINED") {
-            continue;
-        }
         let table = if name.starts_with("CKP_") {
             Some(if CONFORMANCE.contains(&name) { "conformance-profiles" } else { "parameter-sets" })
         } else {
             FAMILIES.iter().find(|(prefix, _)| name.starts_with(prefix)).map(|(_, table)| *table)
         };
+        let Some(id) = value(text, &defined) else {
+            // An alias names a constant already read, which keeps its own row.
+            if table.is_some() && !defined.contains_key(text) {
+                unread.push(format!("{name} {text}"));
+            }
+            continue;
+        };
+        defined.insert(name.to_owned(), id);
+        if name.ends_with("VENDOR_DEFINED") {
+            continue;
+        }
         if let Some(map) = table.and_then(|t| b.table_mut(t)) {
             map.insert(name.to_owned(), id);
         }
@@ -122,8 +136,11 @@ fn from_headers(name: &str, types: &str, functions: &str) -> Baseline {
             b.functions.insert(name.to_owned());
         }
     }
+    if !unread.is_empty() {
+        return Err(unread);
+    }
     b.class = curated_classes(&b);
-    b
+    Ok(b)
 }
 
 /// The curated classes ([`from_headers`]'s taxonomy): what `--class` can list.
@@ -215,25 +232,69 @@ const TYPES: &str = include_str!("../../../profiles/baselines/headers/pkcs11-3.2
 const FUNCTIONS: &str = include_str!("../../../profiles/baselines/headers/pkcs11-3.2/pkcs11f.h");
 const COMMITTED: &str = include_str!("../../../profiles/baselines/pkcs11-3.2.toml");
 
+/// The vendored headers' baseline.
+fn vendored() -> Baseline {
+    from_headers("pkcs11-3.2", TYPES, FUNCTIONS)
+        .unwrap_or_else(|unread| panic!("family constants the generator cannot read: {unread:?}"))
+}
+
+/// The baseline text to compare `generated` with: the committed one compiled in, or, when
+/// `update` names the committed file, `generated` written there, so the regenerating run
+/// compares with what it just wrote and passes.
+fn committed_text(generated: &Baseline, update: Option<&Path>) -> String {
+    match update {
+        Some(path) => {
+            let text = to_toml(generated);
+            std::fs::write(path, &text).expect("writing the regenerated baseline");
+            text
+        }
+        None => COMMITTED.to_owned(),
+    }
+}
+
 #[test]
 fn committed_baseline_is_generated_from_the_vendored_headers() {
-    let generated = from_headers("pkcs11-3.2", TYPES, FUNCTIONS);
-    if std::env::var_os("CAKEYS_UPDATE_BASELINE").is_some() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../profiles/baselines/pkcs11-3.2.toml");
-        std::fs::write(path, to_toml(&generated)).expect("writing the regenerated baseline");
-    }
-    let committed = Baseline::from_toml(COMMITTED).expect("the committed baseline parses");
+    let generated = vendored();
+    let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../profiles/baselines/pkcs11-3.2.toml"));
+    let update = std::env::var_os("CAKEYS_UPDATE_BASELINE").is_some().then_some(path);
+    let committed = Baseline::from_toml(&committed_text(&generated, update)).expect("the committed baseline parses");
     assert_eq!(
         committed, generated,
         "profiles/baselines/pkcs11-3.2.toml is not what the vendored headers generate; regenerate with CAKEYS_UPDATE_BASELINE=1"
     );
 }
 
+/// `CAKEYS_UPDATE_BASELINE=1` compares with the file it wrote, not the one compiled in: the
+/// regenerating run passes (review baseline F2).
+#[test]
+fn a_regenerating_run_compares_with_what_it_wrote() {
+    let mut generated = vendored();
+    generated.baseline = "regenerated".to_owned();
+    let path = std::env::temp_dir().join(format!("caprobe-baseline-{}.toml", std::process::id()));
+    let text = committed_text(&generated, Some(&path));
+    let written = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(written, text);
+    assert_eq!(Baseline::from_toml(&text).unwrap(), generated);
+}
+
+/// A family constant written in a form the scanner cannot read fails the generator, naming
+/// it; an alias of a constant read before it is skipped (review baseline F1).
+#[test]
+fn an_unreadable_family_constant_fails_the_generator() {
+    let aliases = "#define CKM_A 0x00000001UL\n#define CKM_B CKM_A\n#define CK_NOT_A_FAMILY (1UL << 2)\n";
+    let b = from_headers("t", aliases, "").unwrap();
+    assert_eq!(b.mechanisms.keys().collect::<Vec<_>>(), ["CKM_A"]);
+    let unread =
+        format!("{aliases}#define CKM_SHIFTED (1UL<<31)\n#define CKA_LATER CKA_NOT_YET\n#define CKA_NOT_YET 2UL\n");
+    assert_eq!(from_headers("t", &unread, "").unwrap_err(), ["CKM_SHIFTED (1UL<<31)", "CKA_LATER CKA_NOT_YET"]);
+}
+
 /// What the generator writes is what the loader reads back: the emitter that
 /// `CAKEYS_UPDATE_BASELINE=1` runs is tested on every run, not only when regenerating.
 #[test]
 fn the_emitted_baseline_parses_back_to_itself() {
-    let generated = from_headers("pkcs11-3.2", TYPES, FUNCTIONS);
+    let generated = vendored();
     let text = to_toml(&generated);
     assert_eq!(Baseline::from_toml(&text).expect("the emitted baseline parses"), generated);
     assert!(text.starts_with("# Generated by caprobe"), "{}", &text[..60]);

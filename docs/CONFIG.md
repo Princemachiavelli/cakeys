@@ -60,7 +60,10 @@ tokenLabel = "main"
 # it, naming their serials). The lock's URI records it either way.
 # tokenSerial = "4f3c2a1b9e8d7c6a"
 # The user PIN, read from a file (or `pinEnv = "VAR"`: the PIN itself from the environment).
-# Without a PIN cakeys opens a public session and sees only public objects.
+# Without a PIN cakeys opens a public session and sees only public objects. A secret's file
+# (PIN, SO credential, a key file's passphrase) holds one line, its trailing line ending
+# dropped: a second line is invalid (17); an unset variable or unreadable file is 16. No secret
+# file may resolve into /nix/store, which anyone on the host can read (17, docs/FILE.md).
 pinFile = "/var/lib/softhsm/pin"
 # What only one tool reads sits in that tool's table, here inline: `probe` (caprobe), `migrate`
 # (camigrate) and `nix` (the Nix library); cakeys reads none of them.
@@ -178,9 +181,10 @@ curve = "secp256r1"
 # file is its value's bytes, or hex or base64 of them: told by valueLen, or said by
 # migrate.encoding = "raw", "hex" or "base64"; it needs one of the two (17).
 # `$NAME` resolves when camigrate reads it, so hosts that only check need not set it. A key's
-# file may not be in /nix/store (17), unless CAKEYS_ALLOW_NIX_STORE_KEYS=1 says the keys are
-# throwaway (docs/FILE.md). An encrypted file names its passphrase as a token names its
-# PIN: passphraseFile or passphraseEnv.
+# file, and any passphraseFile, may not resolve into /nix/store (17), through a symlink or `..`
+# as directly, unless CAKEYS_ALLOW_NIX_STORE_KEYS=1 says the keys are throwaway (docs/FILE.md).
+# An encrypted file names its passphrase as a token names its PIN: passphraseFile or
+# passphraseEnv.
 migrate = { file = "$WEB_TLS_KEY" }
 
 # ── Specs: one use of an object, and where it lives on each token ──────────────────────
@@ -194,8 +198,9 @@ attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
 # Private keys only: the policy of the matching public key object.
 publicAttributes = { CKA_VERIFY = true }
 # migrate.noExport: the object never leaves the tokens this spec realises it on: camigrate refuses to export or
-# migrate it from them (15), and `export` without names leaves it out quietly (an extractable
-# key otherwise moves; a non-extractable one is left out with a warning). Not in the spec digest.
+# migrate it from them (15), and `export` or `migrate` without names leaves it out quietly (an
+# extractable key otherwise moves; a non-extractable one is left out with a warning). A token's
+# transport key (`migrate.transportWith`) is kept so without it. Not in the spec digest.
 # migrate = { noExport = true }
 # Where it lives on `softhsm`: a locator (must match exactly one object, or 12), and how it comes
 # to be there, `origin` (required for private and secret keys):
@@ -244,7 +249,7 @@ tokens.yubikey = { locator = { CKA_LABEL = "X.509 Certificate for Retired Key 1"
 object = "signing"
 # `publicOnly` identifies a private key through its public key object, without logging in
 # (spares PIV PIN retries). It implies `token-asserted` and `origin = "adopt"`, and forbids policy
-# attributes.
+# attributes; a configured proof (`binding = "pop-ecdh"`, …) beside it is invalid (17).
 tokens.yubikey = { locator = { CKA_ID = "05" }, publicOnly = true }
 
 [specs.release-note]
@@ -263,8 +268,12 @@ tokens.softhsm = { locator = { CKA_LABEL = "web-tls" }, origin = "file" }
 
 - **Each spec names exactly one object; one spec has at most one realisation per token.** A
   realisation is the pair (spec, token): the lock records one per pair.
-- **References are checked at load (17):** a spec's `object` must exist, even if nothing uses the
-  spec; a `$NAME` path reference must name a set variable.
+- **What loads is usable (17 at load):** a spec's `object` must exist, even if nothing uses the
+  spec; a `$NAME` path reference must name a set variable; every token a spec names is in
+  `[tokens]`; a locator names `CKA_LABEL` or `CKA_ID`, and a `CKA_ID` is hex (stored lower case,
+  so `0A` and `0a` are one locator; an empty one is a real object's ID); an AES `valueLen` is 16,
+  24 or 32 and no secret key's is 0; and every (spec, token) pair plans, the checks `validate`
+  and each verb would otherwise make only when it reached that pair.
 - **A private data object needs `CKA_PRIVATE = true` declared** in its spec, or it is refused
   (15): its `valuehash` would let anyone with the lock test guesses of the value offline
   (DESIGN §8.2). camigrate moves no private data object (15).

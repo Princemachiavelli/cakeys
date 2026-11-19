@@ -44,6 +44,12 @@ fn clean(s: &str) -> String {
     s.split('\0').filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
+/// A generated profile's name without `--name` or `--diff`: `<provider>/<version>`, the
+/// version [`clean`] as the match key's is.
+fn default_name(provider: &str, version: &str) -> String {
+    format!("{provider}/{}", clean(version))
+}
+
 /// The `CKR_*` name of a failure, for notes: cryptoki's `Display` is the spec's prose, which
 /// changes with the binding and would make a regeneration differ with no behaviour change.
 /// The verbs' own naming (`token::rv_name`), so a note and a refusal spell it alike.
@@ -98,6 +104,7 @@ enum Target {
 /// names a slot holding nothing but the provider's own placeholder; the scratch guard is the
 /// one thing the probe refuses rather than records. `Unavailable` when an SO login fails.
 pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: Option<u32>) -> Result<Probed> {
+    let advertised = tok.advertised();
     let profile = Profile {
         // Every match key there is: the module and the hardware it ran on. No serial — it
         // changes with every token re-initialisation, and a profile must regenerate identically.
@@ -109,15 +116,14 @@ pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: Option<u32>) -> Result<P
             model: Some(clean(&tok.token.model)),
             firmware: Some(clean(&tok.token.firmware)),
         },
-        advertise: tok.advertised(),
-        ..Profile::new(format!("{}/{}", tok.provider.name(), tok.module.version), Mode::Observed)
+        advertise: advertised.clone(),
+        ..Profile::new(default_name(tok.provider.name(), &tok.module.version), Mode::Observed)
     };
     let mut profile = Draft::new(profile);
     profile.note("cryptoki".into(), format!("the module reports Cryptoki {}", tok.module.cryptoki));
     // A mechanism listed more than once (libkmsp11 1.9: CKM_RSA_PKCS_KEY_PAIR_GEN 24 times
     // [run]) is advertised once; the repetition is a note.
     let mut counts = BTreeMap::<&str, usize>::new();
-    let advertised = tok.advertised();
     for m in &advertised {
         *counts.entry(m.as_str()).or_default() += 1;
     }
@@ -486,15 +492,34 @@ impl Scratch {
         }
     }
 
+    /// After a probe failed: destroy what the run made, by handle, then anything still under its
+    /// labels (a pair whose lookup failed is tracked by label alone). Not measured: a run that
+    /// writes no profile records no `delete` row.
+    fn destroy_after_failure(&self, session: &Session) {
+        self.destroy_all(session);
+        for l in &self.labels {
+            for h in session.find_objects(&[Attribute::Label(l.as_bytes().to_vec())]).unwrap_or_default() {
+                let _ = session.destroy_object(h);
+            }
+        }
+    }
+
     /// Which probe labels are still on the token: what `C_DestroyObject` really deleted.
-    fn leftovers(&self, session: &Session) -> Vec<String> {
-        self.labels
-            .iter()
-            .filter(|l| {
-                session.find_objects(&[Attribute::Label(l.as_bytes().to_vec())]).is_ok_and(|found| !found.is_empty())
-            })
-            .cloned()
-            .collect()
+    ///
+    /// # Errors
+    ///
+    /// The failed lookup: a label it could not look up is not gone.
+    fn leftovers(&self, session: &Session) -> std::result::Result<Vec<String>, String> {
+        let mut left = Vec::new();
+        for l in &self.labels {
+            let found = session
+                .find_objects(&[Attribute::Label(l.as_bytes().to_vec())])
+                .map_err(|e| format!("finding {l}: C_FindObjects: {}", ckr(&e)))?;
+            if !found.is_empty() {
+                left.push(l.clone());
+            }
+        }
+        Ok(left)
     }
 
     /// Destroy what an earlier, interrupted run left (`cakeys-probe-NN`, its own labels on a
@@ -530,8 +555,16 @@ pub(crate) const RSA_SIZES: [u32; 10] = [512, 1024, 1536, 2048, 3072, 4096, 6144
 /// A generated pair, `(public, private)`, or the module's refusal.
 type Pair = std::result::Result<(ObjectHandle, ObjectHandle), CkError>;
 
-/// A pair `Token::create` made, `(public, private, its note)`, or the module's refusal.
-type Created = std::result::Result<(ObjectHandle, ObjectHandle, Option<token::CreateNote>), KmError>;
+/// What [`Made::create`] got from `Token::create`.
+enum Created {
+    /// The pair `(public, private)` under its locator, and `create`'s note.
+    Made(ObjectHandle, ObjectHandle, Option<token::CreateNote>),
+    /// The module refused the generation: a `cannot` row.
+    Refused(KmError),
+    /// The module said it generated, but the pair is not under its locator: neither a yes nor
+    /// a no, so no row, and a note.
+    Lost(KmError),
+}
 
 /// A probe spec: `CKA_SENSITIVE` and the usage bits `private` and `public` name, true.
 fn spec(private: &[&str], public: &[&str]) -> SpecCfg {
@@ -654,24 +687,30 @@ impl Made<'_> {
         let note = match self.tok.create(object, spec, &loc, None) {
             Ok(note) => note,
             Err(KmError::Unavailable(m)) if m.contains(token::SO_LOGIN) => return Err(KmError::Unavailable(m)),
-            Err(e) => return Ok(Err(e)),
+            Err(e) => return Ok(Created::Refused(e)),
         };
-        let one = |class| self.tok.find(class, &loc).map(|found| found.first().copied());
-        let (Some(public), Some(private)) = (one(ObjectClass::PUBLIC_KEY)?, one(ObjectClass::PRIVATE_KEY)?) else {
-            return Ok(Err(KmError::NotFound("the key pair it made is not under its locator".into())));
-        };
-        if let Some(label) = label {
-            self.scratch.track(&[private, public], &label);
+        // Made: its label is the cleanup's and the leftover check's from here on, whatever the
+        // lookups below find (probe.rs F3).
+        if let Some(label) = &label {
+            self.scratch.track(&[], label);
         }
-        Ok(Ok((public, private, note)))
+        let one = |class| self.tok.find(class, &loc).map(|found| found.first().copied());
+        let (public, private) = (one(ObjectClass::PUBLIC_KEY)?, one(ObjectClass::PRIVATE_KEY)?);
+        if let Some(label) = &label {
+            self.scratch.track(&[public, private].into_iter().flatten().collect::<Vec<_>>(), label);
+        }
+        Ok(match (public, private) {
+            (Some(public), Some(private)) => Created::Made(public, private, note),
+            _ => Created::Lost(KmError::NotFound("the pair it reported made is not under its locator".into())),
+        })
     }
 
     /// [`Self::create`] with the usage the operation probes need, else bare, as a module may
     /// insist. `Ok((created, usable))`: `usable` when the usage took.
     fn create_for_use(&mut self, object: &ObjectCfg, usage: &SpecCfg, bare: &SpecCfg) -> Result<(Created, bool)> {
         match self.create(object, usage)? {
-            Ok(made) => Ok((Ok(made), true)),
-            Err(_) => Ok((self.create(object, bare)?, false)),
+            Created::Refused(_) => Ok((self.create(object, bare)?, false)),
+            made => Ok((made, true)),
         }
     }
 
@@ -693,7 +732,8 @@ impl Made<'_> {
 /// The write probes: key pairs per curve and RSA size, each operation the module advertises
 /// on the first key of each kind, the secret-key generation it advertises (a refusal is a
 /// `subtract` row), the OAEP hashes it actually implements for wrapping (wrap and unwrap back),
-/// and the unwrap-template rules. On a scratch token every run cleans up after itself, and the
+/// and the unwrap-template rules. On a scratch token every run cleans up after itself, a run a
+/// probe's error ends included (only a crash is left to the next run's stale check), and the
 /// leftover check turns "delete really deletes" into a note.
 fn write_probes(made: &mut Made, profile: &mut Draft) -> Result<()> {
     let labels = matches!(made.scratch.target, Target::Labels);
@@ -704,6 +744,25 @@ fn write_probes(made: &mut Made, profile: &mut Draft) -> Result<()> {
             made.undetermined.push(format!("destroyed objects an interrupted probe left: {}", stale.join(", ")));
         }
     }
+    let probed = probe_writes(made, profile, labels);
+    if labels {
+        match probed {
+            Ok(()) => destroy_all(made, profile),
+            // What the probes made before the error goes too (review D7): it was left for the
+            // next run's stale check, on a token keys.toml lends as scratch.
+            Err(_) => made.scratch.destroy_after_failure(made.session),
+        }
+    }
+    probed?;
+    let busy = std::mem::take(&mut made.ops).finish(profile);
+    made.undetermined.extend(busy);
+    profile.out.add.sort();
+    profile.out.add.dedup();
+    Ok(())
+}
+
+/// [`write_probes`] but its cleanup.
+fn probe_writes(made: &mut Made, profile: &mut Draft, labels: bool) -> Result<()> {
     let bound = !made.bound_keys.is_empty();
     let transport = if bound {
         probe_bound(made, profile);
@@ -734,7 +793,6 @@ fn write_probes(made: &mut Made, profile: &mut Draft) -> Result<()> {
             // After the wrap probes: a secret key's sealed export takes an OAEP hash they found.
             moves::probe_moves(made, profile, transport)?;
         }
-        destroy_all(made, profile);
     } else {
         if !bound {
             moves::probe_moves(made, profile, None)?;
@@ -745,42 +803,77 @@ fn write_probes(made: &mut Made, profile: &mut Draft) -> Result<()> {
                 .into(),
         );
     }
-    let busy = std::mem::take(&mut made.ops).finish(profile);
-    made.undetermined.extend(busy);
-    profile.out.add.sort();
-    profile.out.add.dedup();
     Ok(())
 }
 
 /// Destroy everything the probes made on a scratch token, and record what `C_DestroyObject`
 /// really removed: a `delete.<class>` row per class the probes made, and a note naming the
 /// labels still there.
-fn destroy_all(made: &Made, profile: &mut Draft) {
-    // Per class, how many objects sit under the probe's labels.
-    let count = |made: &Made| {
-        let mut by_class = BTreeMap::<String, usize>::new();
-        for label in &made.scratch.labels {
-            let found = made.session.find_objects(&[Attribute::Label(label.as_bytes().to_vec())]).unwrap_or_default();
-            for h in found {
-                if let Ok([Attribute::Class(c)]) = made.session.get_attributes(h, &[AttributeType::Class]).as_deref() {
-                    *by_class.entry(c.to_string()).or_default() += 1;
-                }
+/// A lookup that fails says nothing about what is there: no `delete` row is written from it
+/// (the strongest yes from an error), only an undetermined line.
+fn destroy_all(made: &mut Made, profile: &mut Draft) {
+    let before = count_by_class(made);
+    made.scratch.destroy_all(made.session);
+    let after = count_by_class(made);
+    match delete_rows(before, after) {
+        Ok(rows) => {
+            for (class, deleted, why) in rows {
+                profile.set(Capability::Delete(class), Answer::of(deleted), why, None);
             }
         }
-        by_class
-    };
-    let before = count(made);
-    made.scratch.destroy_all(made.session);
-    let after = count(made);
-    for (class, n) in before {
-        let left = after.get(&class).copied().unwrap_or_default();
-        let why = (left > 0).then(|| format!("C_DestroyObject leaves {left} of {n} behind"));
-        profile.set(Capability::Delete(class), Answer::of(left == 0), why, None);
+        Err(why) => made.undetermined.push(format!("no delete rows: {why}")),
     }
-    let leftovers = made.scratch.leftovers(made.session);
-    if !leftovers.is_empty() {
-        profile.note("destroy".into(), format!("C_DestroyObject leaves objects behind: {}", leftovers.join(", ")));
+    match made.scratch.leftovers(made.session) {
+        Ok(left) if left.is_empty() => {}
+        Ok(left) => {
+            profile.note("destroy".into(), format!("C_DestroyObject leaves objects behind: {}", left.join(", ")));
+        }
+        Err(why) => made.undetermined.push(format!("no leftover check: {why}")),
     }
+}
+
+/// The `delete.<class>` rows from the per-class counts before and after the destroys: whether
+/// each class is gone, and why not.
+///
+/// # Errors
+///
+/// Either count's failure: rows from a count that was not made would say "deleted".
+fn delete_rows(
+    before: std::result::Result<BTreeMap<String, usize>, String>,
+    after: std::result::Result<BTreeMap<String, usize>, String>,
+) -> std::result::Result<Vec<(String, bool, Option<String>)>, String> {
+    let (before, after) = (before?, after?);
+    Ok(before
+        .into_iter()
+        .map(|(class, n)| {
+            let left = after.get(&class).copied().unwrap_or_default();
+            let why = (left > 0).then(|| format!("C_DestroyObject leaves {left} of {n} behind"));
+            (class, left == 0, why)
+        })
+        .collect())
+}
+
+/// Per class, how many objects sit under the probe's labels.
+///
+/// # Errors
+///
+/// What failed to look them up: a count it could not make is not zero.
+fn count_by_class(made: &Made) -> std::result::Result<BTreeMap<String, usize>, String> {
+    let mut by_class = BTreeMap::<String, usize>::new();
+    for label in &made.scratch.labels {
+        let found = made
+            .session
+            .find_objects(&[Attribute::Label(label.as_bytes().to_vec())])
+            .map_err(|e| format!("finding {label}: C_FindObjects: {}", ckr(&e)))?;
+        for h in found {
+            match made.session.get_attributes(h, &[AttributeType::Class]).as_deref() {
+                Ok([Attribute::Class(c)]) => *by_class.entry(c.to_string()).or_default() += 1,
+                Ok(_) => return Err(format!("an object under {label} reports no CKA_CLASS")),
+                Err(e) => return Err(format!("reading the class of {label}: C_GetAttributeValue: {}", ckr(e))),
+            }
+        }
+    }
+    Ok(by_class)
 }
 
 /// A module that binds every key to one purpose at creation ([`BoundKey`], Google Cloud KMS):
@@ -871,7 +964,8 @@ fn probe_unbound(made: &mut Made, profile: &mut Draft, ec: &mut GenerateRow, rsa
     // The refusal, or None when the module generated.
     let unbound = |made: &mut Made, mech: &Mechanism, kt: &KeyKind| match session.generate_key_pair(mech, &[], &bare) {
         Ok((public, private)) => {
-            made.scratch.handles.extend([private, public]);
+            // Tracked by label too: the delete rows and the leftover check count it.
+            made.scratch.track(&[private, public], "cakeys-probe-unbound");
             made.undetermined.push(format!(
                 "no {kt} row for what no binding covers: generated without a binding, so not purely \
                  purpose-bound, and which curve or size it made is unknown"
@@ -960,7 +1054,8 @@ fn probe_curves(made: &mut Made, profile: &mut Draft) -> Result<()> {
         let mut probed_ops = false;
         for (curve, oid, name) in curves {
             let mut outcome = None;
-            for params in std::iter::once(oid).chain(name) {
+            // The OID first, then the curve name (`by_name` from the second on).
+            for (i, params) in std::iter::once(oid).chain(name).enumerate() {
                 let public = [Attribute::EcParams(params.to_vec()), Attribute::Verify(true), Attribute::Private(false)];
                 let private = [Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Sensitive(true)];
                 // The usage its operation probes need: deriving.
@@ -968,7 +1063,7 @@ fn probe_curves(made: &mut Made, profile: &mut Draft) -> Result<()> {
                 // A Montgomery public key verifies nothing: no CKA_VERIFY on its usage template.
                 let use_public = &public[..1];
                 let (made_pair, usable) = made.pair_for_use(&mech, (use_public, &with_usage), (&public, &private))?;
-                let by_name = !std::ptr::eq(params, oid);
+                let by_name = i > 0;
                 outcome = Some((made_pair, usable, by_name));
                 if matches!(outcome, Some((Ok(_), ..))) {
                     break;
@@ -1037,7 +1132,7 @@ fn create_curves(
             ..ObjectCfg::new(cakeys_core::types::ObjectClass::PrivateKey, Some(key_type))
         };
         match made.create_for_use(&object, &usage, &spec(&[], &[]))? {
-            (Ok((public, private, note)), usable) => {
+            (Created::Made(public, private, note), usable) => {
                 row.can.push((*curve).to_owned());
                 if note.as_ref().is_some_and(|n| n.by_name.is_some()) {
                     row.by_name.push((*curve).to_owned());
@@ -1063,10 +1158,13 @@ fn create_curves(
                     prove_key(made, profile, kt, curve, public, private);
                 }
             }
-            (Err(e), _) => {
+            (Created::Refused(e), _) => {
                 row.cannot.push((*curve).to_owned());
                 let why = format!("generation refused: {}", refused(made.tok, &e));
                 profile.generation_evidence(kt, On::Item((*curve).to_owned()), why);
+            }
+            (Created::Lost(e), _) => {
+                made.undetermined.push(format!("no generate row for {kt} on {curve}: the module generated, but {e}"));
             }
         }
     }
@@ -1095,6 +1193,7 @@ fn record_stand_in(profile: &mut Draft, stood_in: bool, keygen: MechanismType, r
 fn probe_rsa(made: &mut Made, profile: &mut Draft) -> Result<Option<(ObjectHandle, ObjectHandle)>> {
     let mut row = profile.generate.remove(&KeyKind::Rsa).unwrap_or_default();
     let mut transport = None;
+    let mut operated = false;
     for bits in made.rsa_sizes.clone() {
         // Generated as the verbs generate it, with every usage the proofs, the operation and
         // the wrap probes need, each attribute on the half the spec defines it for, since their
@@ -1106,28 +1205,52 @@ fn probe_rsa(made: &mut Made, profile: &mut Draft) -> Result<Option<(ObjectHandl
         let usage = spec(&["CKA_DECRYPT", "CKA_UNWRAP", "CKA_SIGN"], &["CKA_ENCRYPT", "CKA_WRAP", "CKA_VERIFY"]);
         let on = format!("RSA-{bits}");
         match made.create_for_use(&object, &usage, &spec(&[], &[]))? {
-            (Ok((public, private, _)), usable) => {
-                match (bits == 2048, usable) {
-                    (true, true) => operate(made, profile, &KeyKind::Rsa, &on, public, private),
+            (Created::Made(public, private, _), usable) => {
+                match (operates_on(bits, usable, operated), usable) {
+                    (true, _) => {
+                        operated = true;
+                        operate(made, profile, &KeyKind::Rsa, &on, public, private);
+                        if matches!(made.scratch.target, Target::Labels) {
+                            transport = Some((public, private));
+                        }
+                    }
                     (false, true) => prove_key(made, profile, &KeyKind::Rsa, &on, public, private),
-                    (_, false) => made.undetermined.push(format!(
+                    (false, false) => made.undetermined.push(format!(
                         "no operation probes or proofs on {on}: the module refused the usage attributes"
                     )),
                 }
-                if bits == 2048 && matches!(made.scratch.target, Target::Labels) {
-                    transport = Some((public, private));
-                }
                 row.can_bits.push(bits);
             }
-            (Err(e), _) => {
+            (Created::Refused(e), _) => {
                 row.cannot_bits.push(bits);
                 let why = format!("modulusBits = {bits}: {}", refused(made.tok, &e));
                 profile.generation_evidence(&KeyKind::Rsa, On::Bits(bits), why);
             }
+            (Created::Lost(e), _) => {
+                made.undetermined.push(format!("no generate row for {on}: the module generated, but {e}"));
+            }
         }
+    }
+    if !operated {
+        let why = if made.rsa_sizes.iter().any(|b| *b >= 2048) {
+            "the module made none of them usable"
+        } else {
+            "--rsa-max-bits asks for none"
+        };
+        made.undetermined.push(format!(
+            "no RSA operation, wrap or move probes: they run on an RSA key of 2048 bits or more, and {why}"
+        ));
     }
     profile.generate.insert(KeyKind::Rsa, row);
     Ok(transport)
+}
+
+/// Whether the RSA operation probes run on the `bits` key just made (`usable` for them), once
+/// `operated` tells whether they ran: on the 2048-bit key, or the next size up the module makes
+/// usable when it will not make that one so (the operation key is also the wrap probes'
+/// transport key). A smaller key only proves possession.
+fn operates_on(bits: u32, usable: bool, operated: bool) -> bool {
+    usable && !operated && bits >= 2048
 }
 
 /// The operation probes on one fresh key pair of kind `kt`: every advertised mechanism that
@@ -1218,6 +1341,12 @@ fn prove(made: &mut Made, profile: &mut Draft, kt: &KeyKind, on: &str, private: 
         KeyKind::Rsa => (Kt::Rsa, &[Binding::PopSign, Binding::PopDecrypt, Binding::PopUnwrap]),
         _ => return,
     };
+    // A key the host does not compute with has an identity but no proof here: the refusal is
+    // cakeys', and says nothing of the module (as the import rows of a size the host reads not).
+    if key_type == Kt::Rsa && !cakeys_core::pop::rsa_computes_with(spki) {
+        made.undetermined.push(format!("no proofs on {on}: the host computes with no RSA key of that size"));
+        return;
+    }
     let mut object = ObjectCfg::new(cakeys_core::types::ObjectClass::PrivateKey, Some(key_type));
     let size = on.strip_prefix("RSA-").and_then(|b| b.parse::<u32>().ok());
     // A purpose-bound RSA key is named by its binding (several share a size, each proving
@@ -1250,19 +1379,34 @@ fn prove(made: &mut Made, profile: &mut Draft, kt: &KeyKind, on: &str, private: 
 
 /// A refusal as a row's evidence, the same under any keys.toml and any binding: the token's
 /// keys.toml name taken out, and the binding's prose for a `C_*` failure (it changes with the
-/// binding) cut at the function that failed.
+/// binding) replaced by the return value's `CKR_*` name, when the error carries it.
 fn evidence(tok: &Token, e: &KmError) -> String {
-    let said = e
-        .to_string()
-        .replace(&format!(" on token '{}'", tok.name), "")
-        .replace(&format!("token '{}': ", tok.name), "")
-        .replace(&format!("token '{}'", tok.name), "the token")
-        .replace(&format!("'{}'", tok.name), "the token");
+    evidence_text(&tok.name, &e.to_string(), e.rv())
+}
+
+/// [`evidence`] of the message `said`, on the token keys.toml names `token`, with the return
+/// value `rv`. Only the token crate's own forms of the name (`token 'N'`) are taken out: a
+/// quoted word that happens to equal it (an object named like the token) stays.
+fn evidence_text(token: &str, said: &str, rv: Option<u64>) -> String {
+    let said = said
+        .replace(&format!(" on token '{token}'"), "")
+        .replace(&format!("token '{token}': "), "")
+        .replace(&format!("token '{token}'"), "the token");
     // Cryptoki's prose runs from its marker to the end of the parenthesis it sits in, if any
     // (its own parentheses aside).
     let Some((before, prose)) = said.split_once(": PKCS11 error:") else {
         return said;
     };
+    // `<what>: Function::X`, as `<what>: CKR_Y: Function::X` where the value is known (the
+    // form the token crate writes itself), unless the message names it already.
+    let before = match rv.map(token::rv_value_name).filter(|name| !before.contains(name.as_str())) {
+        Some(name) => match before.rsplit_once(": ").filter(|(_, f)| f.starts_with("Function::")) {
+            Some((what, function)) => format!("{what}: {name}: {function}"),
+            None => format!("{before}: {name}"),
+        },
+        None => before.to_owned(),
+    };
+    let before = before.as_str();
     let open = before.matches('(').count() > before.matches(')').count();
     let mut depth = 0usize;
     let close = prose.char_indices().find_map(|(i, c)| match c {
@@ -1333,106 +1477,137 @@ fn derive(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[u
             return;
         }
     };
-    let mech = Mechanism::Ecdh1Derive(Ecdh1DeriveParams::new(EcKdf::null(), &ch.peer));
+    let d = Derivation {
+        mech: Mechanism::Ecdh1Derive(Ecdh1DeriveParams::new(EcKdf::null(), &ch.peer)),
+        private,
+        ch: &ch,
+        on,
+    };
     let base = [
         Attribute::Token(false),
         Attribute::Class(ObjectClass::SECRET_KEY),
         Attribute::KeyType(KeyType::GENERIC_SECRET),
     ];
-    // A derived secret the module will not destroy stays behind (tpm2-pkcs11 persists it):
-    // a note, since `pop-ecdh` derives one per proof.
-    let destroy = |h, path: &str, profile: &mut Draft| {
-        if let Err(e) = s.destroy_object(h) {
-            profile.note(
-                "derive.destroy".into(),
-                format!("{on}: the {path} derived secret cannot be destroyed: {}", ckr(&e)),
-            );
-        }
-    };
-    // The sealed path decides when it MACs right (or the module has no HMAC to MAC with: then
-    // `pop-ecdh` takes the extractable path anyway) or MACs wrong; it falls back to the
-    // extractable path, with why, when the module refuses it or cannot MAC with it.
     let mut sealed =
         [&base[..], &[Attribute::Sensitive(true), Attribute::Extractable(false), Attribute::Sign(true)]].concat();
     let mut open = [&base[..], &[Attribute::Sensitive(false), Attribute::Extractable(true)]].concat();
-    let len = ch.secret.len();
-    let sealed_path = match derive_any(s, &mech, private, &sealed, len) {
-        Ok((h, used, changed)) => {
-            // The sealed path is the one that MACs on the token (what `derive.sealed` tells
-            // pop-ecdh); what the secret reports, when not what was asked, is a note (AWS
-            // CloudHSM: sensitive, but extractable [run]).
-            let reads =
-                s.get_attributes(h, &[AttributeType::Sensitive, AttributeType::Extractable]).unwrap_or_default();
-            let reported = reads.iter().map(show).collect::<Vec<_>>().join(", ");
-            let is_sealed =
-                reads.contains(&Attribute::Sensitive(true)) && reads.contains(&Attribute::Extractable(false));
-            if !is_sealed {
-                profile.note("derive.secret".into(), format!("{on}: the derived secret reports {reported}"));
-            }
-            let mac = made.advertises(MechanismType::SHA256_HMAC).then(|| s.sign(&Mechanism::Sha256Hmac, h, MSG));
-            // With no HMAC to MAC with, the secret itself says whether it is sealed: a template
-            // that took only without its sealing attributes made an extractable one (ykcs11).
-            let mac = match mac {
-                None if !is_sealed => Some(Err(None)),
-                other => other.map(|m| m.map_err(Some)),
-            };
-            destroy(h, "sealed", profile);
-            if let Some((changed, first)) = changed {
-                profile.note(
-                    "derive.template".into(),
-                    format!("{on}: the template as asked is refused ({}); derived with {changed}", ckr(&first)),
-                );
-            }
-            sealed = used;
-            match mac {
-                None => Ok(Ok(())),
-                Some(Ok(tag)) if pop::ct_eq(&ch.mac, &tag) => Ok(Ok(())),
-                Some(Ok(_)) => Ok(Err(Msg::from("the derived secret is not the shared secret"))),
-                Some(Err(Some(e))) => Err(ck_said("derives into a sealed secret, but HMAC with it fails", &e)),
-                Some(Err(None)) => {
-                    Err(format!("derives only into a secret that is not sealed: it reports {reported}").into())
-                }
-            }
+    let outcome = match try_sealed(made, profile, &d, &mut sealed) {
+        SealedPath::Derives => {
+            profile.derive.sealed.get_or_insert(true);
+            Ok(())
         }
-        Err(e) => Err(ck_said("a sealed (non-extractable) derived secret is refused", &e)),
-    };
-    let outcome = match sealed_path {
-        Ok(outcome) => {
-            if outcome.is_ok() {
-                profile.derive.sealed.get_or_insert(true);
-            }
-            outcome
-        }
-        Err(why) => match derive_any(s, &mech, private, &open, len) {
-            Ok((h, used, changed)) => {
-                if let Some((changed, first)) = changed {
-                    profile.note(
-                        "derive.template".into(),
-                        format!("{on}: the template as asked is refused ({}); derived with {changed}", ckr(&first)),
-                    );
-                }
-                open = used;
-                let value = s.get_attributes(h, &[AttributeType::Value]).ok().and_then(|v| v.into_iter().next());
-                destroy(h, "extractable", profile);
-                match value {
-                    Some(Attribute::Value(v)) if pop::ct_eq(&ch.secret, &v) => {
-                        profile.derive.sealed = Some(false);
-                        profile.note("derive.sealed".into(), why.into_text());
-                        Ok(())
-                    }
-                    Some(Attribute::Value(_)) => Err(Msg::from("the derived secret is not the shared secret")),
-                    _ => Err(Msg::from(format!("{why}; the extractable derived secret's CKA_VALUE is unreadable"))
-                        .with_rv(why.rv())),
-                }
-            }
-            Err(e) => Err(Msg::from(format!("{why}; extractable: {}", ckr(&e))).with_rv(token::rv_of(&e).or(why.rv()))),
-        },
+        SealedPath::Wrong(m) => Err(m),
+        SealedPath::Fallback(why) => try_extractable(s, profile, &d, &mut open, why),
     };
     if outcome.is_ok() {
         let template = if profile.derive.sealed == Some(true) { &sealed } else { &open };
-        derived_once(made, profile, &mech, private, template, on);
+        derived_once(made, profile, &d.mech, private, template, on);
     }
     made.record(MechanismType::ECDH1_DERIVE, on, outcome);
+}
+
+/// One ECDH derivation the probe tries: against the host's ephemeral key, with the private key
+/// on the token, for the key named `on`.
+struct Derivation<'a> {
+    mech: Mechanism<'a>,
+    private: ObjectHandle,
+    ch: &'a pop::EcdhChallenge,
+    on: &'a str,
+}
+
+/// What deriving into a sealed secret came to.
+enum SealedPath {
+    /// It derives the shared secret, sealed: its HMAC is right, or the module has no HMAC to
+    /// check it with (then `pop-ecdh` takes the extractable path anyway).
+    Derives,
+    /// It derives a secret that is not the shared one: the outcome, no fallback.
+    Wrong(Msg),
+    /// The module refuses it, cannot MAC with it, or derives only an unsealed secret: why, and
+    /// the extractable path is tried.
+    Fallback(Msg),
+}
+
+/// Derive into a sealed secret and MAC with it, the way `pop-ecdh` proves possession; on
+/// success `template` becomes the template that took. What the secret reports, when not what
+/// was asked, is a note (AWS `CloudHSM`: sensitive, but extractable \[run\]).
+fn try_sealed(made: &Made, profile: &mut Draft, d: &Derivation, template: &mut Vec<Attribute>) -> SealedPath {
+    let s = made.session;
+    let (h, used, changed) = match derive_any(s, &d.mech, d.private, template, d.ch.secret.len()) {
+        Ok(derived) => derived,
+        Err(e) => return SealedPath::Fallback(ck_said("a sealed (non-extractable) derived secret is refused", &e)),
+    };
+    let reads = s.get_attributes(h, &[AttributeType::Sensitive, AttributeType::Extractable]).unwrap_or_default();
+    let reported = reads.iter().map(show).collect::<Vec<_>>().join(", ");
+    let is_sealed = reads.contains(&Attribute::Sensitive(true)) && reads.contains(&Attribute::Extractable(false));
+    if !is_sealed {
+        profile.note("derive.secret".into(), format!("{}: the derived secret reports {reported}", d.on));
+    }
+    let mac = made.advertises(MechanismType::SHA256_HMAC).then(|| s.sign(&Mechanism::Sha256Hmac, h, MSG));
+    destroy_derived(s, h, "sealed", d.on, profile);
+    note_template(profile, d.on, changed);
+    *template = used;
+    match mac {
+        Some(Ok(tag)) if pop::ct_eq(&d.ch.mac, &tag) => SealedPath::Derives,
+        Some(Ok(_)) => SealedPath::Wrong(Msg::from("the derived secret is not the shared secret")),
+        Some(Err(e)) => SealedPath::Fallback(ck_said("derives into a sealed secret, but HMAC with it fails", &e)),
+        // With no HMAC to MAC with, the secret itself says whether it is sealed: a template that
+        // took only without its sealing attributes made an extractable one (ykcs11).
+        None if is_sealed => SealedPath::Derives,
+        None => {
+            SealedPath::Fallback(format!("derives only into a secret that is not sealed: it reports {reported}").into())
+        }
+    }
+}
+
+/// Derive into an extractable secret, read it and compare it with the shared secret, after the
+/// sealed path fell back for `why`; on success `template` becomes the template that took.
+fn try_extractable(
+    s: &Session,
+    profile: &mut Draft,
+    d: &Derivation,
+    template: &mut Vec<Attribute>,
+    why: Msg,
+) -> std::result::Result<(), Msg> {
+    let (h, used, changed) = match derive_any(s, &d.mech, d.private, template, d.ch.secret.len()) {
+        Ok(derived) => derived,
+        Err(e) => {
+            return Err(Msg::from(format!("{why}; extractable: {}", ckr(&e))).with_rv(token::rv_of(&e).or(why.rv())));
+        }
+    };
+    note_template(profile, d.on, changed);
+    *template = used;
+    let value = s.get_attributes(h, &[AttributeType::Value]).ok().and_then(|v| v.into_iter().next());
+    destroy_derived(s, h, "extractable", d.on, profile);
+    match value {
+        Some(Attribute::Value(v)) if pop::ct_eq(&d.ch.secret, &v) => {
+            profile.derive.sealed = Some(false);
+            profile.note("derive.sealed".into(), why.into_text());
+            Ok(())
+        }
+        Some(Attribute::Value(_)) => Err(Msg::from("the derived secret is not the shared secret")),
+        _ => {
+            Err(Msg::from(format!("{why}; the extractable derived secret's CKA_VALUE is unreadable")).with_rv(why.rv()))
+        }
+    }
+}
+
+/// A derivation that took only with a changed template: what changed, and the first refusal.
+fn note_template(profile: &mut Draft, on: &str, changed: Option<(String, CkError)>) {
+    if let Some((changed, first)) = changed {
+        profile.note(
+            "derive.template".into(),
+            format!("{on}: the template as asked is refused ({}); derived with {changed}", ckr(&first)),
+        );
+    }
+}
+
+/// Destroy the secret `h` a `path` derivation made in `session`. One the module will not destroy
+/// stays behind (tpm2-pkcs11 persists it): a note, since `pop-ecdh` derives one per proof.
+fn destroy_derived(session: &Session, h: ObjectHandle, path: &str, on: &str, profile: &mut Draft) {
+    if let Err(e) = session.destroy_object(h) {
+        profile
+            .note("derive.destroy".into(), format!("{on}: the {path} derived secret cannot be destroyed: {}", ckr(&e)));
+    }
 }
 
 /// After a derivation took with `template`: whether it derives the same way in a read-only
@@ -1449,7 +1624,7 @@ fn derived_once(
 ) {
     match made.tok.extra_session(token::Access::Read).map(|ro| (ro.derive_key(mech, private, template), ro)) {
         Ok((Ok(h), ro)) => {
-            let _ = ro.destroy_object(h);
+            destroy_derived(&ro, h, "read-only", on, profile);
             profile.derive.read_only.get_or_insert(true);
         }
         Ok((Err(e), _)) => {
@@ -1648,8 +1823,13 @@ fn probe_wrapping(made: &mut Made, profile: &mut Draft, transport: (ObjectHandle
     let Some((mech, _)) = round_trips.first().map(|(_, hash)| oaep_of(*hash)) else {
         return;
     };
-    let Ok(wrapped) = session.wrap_key(&mech, wraps, aes) else {
-        return;
+    let wrapped = match session.wrap_key(&mech, wraps, aes) {
+        Ok(wrapped) => wrapped,
+        // It wrapped a moment ago: the row stays unprobed, and says why.
+        Err(e) => {
+            profile.note("unwrap-template".into(), format!("CKA_VALUE_LEN: wrapping the key again: {}", ckr(&e)));
+            return;
+        }
     };
     let label = made.scratch.label();
     let with_len = session.unwrap_key(
@@ -1727,8 +1907,9 @@ fn probe_key_wraps(made: &mut Made, profile: &mut Draft, transport: (ObjectHandl
         ];
         wraps.push(("CKM_RSA_AES_KEY_WRAP", hashes.into(), transport.0, transport.1));
     }
+    let advertised = made.tok.advertised();
     for (name, variants, wraps_with, unwraps_with) in wraps {
-        if !made.tok.advertised().iter().any(|a| a == name) {
+        if !advertised.iter().any(|a| a == name) {
             continue;
         }
         let mut refusals = Vec::new();
@@ -1831,25 +2012,48 @@ pub(crate) struct Request<'a> {
 ///
 /// `Validation` (17) when the result would be kept but this build's cryptoki is unpatched;
 /// [`probe`]'s own refusals.
+/// What this build lacks to write or judge a profile, each with why (review D3). The probe
+/// writes what it observes, so each of these changes rows rather than only messages:
+/// - an unpatched cryptoki drops from `C_GetMechanismList` every mechanism it cannot name, so the
+///   advertisement is short (kryoptic's `CKM_AES_KEY_WRAP_KWP` \[run\]);
+/// - without `rv-value` no failure carries its `CK_RV`, so a busy session reads as a refusal and
+///   is written as a definitive no;
+/// - without `kwp` the key wraps only the patched binding names go unprobed.
+fn build_lacks(patched: bool, rv_value: bool, kwp: bool) -> Vec<&'static str> {
+    let mut lacks = Vec::new();
+    if !patched {
+        lacks.push("its cryptoki lacks the Nix patches and drops the mechanisms it cannot name");
+    }
+    if !rv_value {
+        lacks.push("it is built without `rv-value`, so a busy session is not told from a refusal");
+    }
+    if !kwp {
+        lacks.push("it is built without `kwp`, so the RFC 5649 and RSA-AES key wraps go unprobed");
+    }
+    lacks
+}
+
 pub(crate) fn generate(
     tok: &Token,
     cfg: &TokenCfg,
     req: &Request,
     notes: &mut cakeys_pkcs11::ops::Notes,
 ) -> Result<Profile> {
-    // cryptoki drops from C_GetMechanismList every mechanism it cannot name, so through
-    // an unpatched binding the advertisement is short (kryoptic's CKM_AES_KEY_WRAP_KWP
-    // [run]): such a build may print a probe, never write or judge a committed one.
-    if !cakeys_pkcs11::binding::patched() {
+    let lacks = build_lacks(cakeys_pkcs11::binding::patched(), cakeys_pkcs11::binding::RV_VALUE, cfg!(feature = "kwp"));
+    if !lacks.is_empty() {
         if req.kept {
             return Err(KmError::Validation(
-                "this build's cryptoki lacks the Nix patches and drops the mechanisms it \
-                 cannot name from C_GetMechanismList: probe with the Nix-built cakeys to \
-                 write or diff a profile"
-                    .into(),
+                format!(
+                    "this build cannot write or diff a profile: {}; probe with the Nix-built caprobe \
+                     (the `patched-cryptoki` feature)",
+                    lacks.join("; ")
+                )
+                .into(),
             ));
         }
-        notes.note("probe: this build's cryptoki is unpatched: the advertise list may be short");
+        for why in lacks {
+            notes.note(format_args!("probe: {why}: the rows may not be what the module does"));
+        }
     }
     let mut probed = probe(tok, cfg, req.write.then_some(req.rsa_max_bits))?;
     for why in &probed.undetermined {
@@ -1874,14 +2078,22 @@ pub(crate) fn drift(generated: &Profile, claimed: &Profile, write: bool) -> Vec<
 /// Keep, in a generated `profile` about to replace the file with content `existing` (named
 /// `shown` in messages), what the probe does not generate: the file's `[migration]` and
 /// `move.*` claims (docs/CAMIGRATE.md evidence, never probe-observable) and its `[manual]`
-/// findings (made by hand, each with its evidence).
+/// findings (made by hand, each with its evidence). Only the same profile's: the file must hold
+/// the family just probed, and the name just generated unless `renamed` (`--name` given).
 ///
 /// # Errors
 ///
 /// `Validation` (17) for a file that does not parse (regenerating it would silently drop
-/// those sections), and for any existing file from a read-only probe (it would drop every
-/// write-probe row).
-pub(crate) fn keep_claims(profile: &mut Profile, existing: &str, shown: &str, write: bool) -> Result<()> {
+/// those sections), for any existing file from a read-only probe (it would drop every
+/// write-probe row), and for a file holding another family's profile, or another profile of
+/// this family without `renamed`: its claims are not this module's (a wrong `--out`).
+pub(crate) fn keep_claims(
+    profile: &mut Profile,
+    existing: &str,
+    shown: &str,
+    write: bool,
+    renamed: bool,
+) -> Result<()> {
     if !write {
         return Err(KmError::Validation(
             format!("{shown}: a read-only probe would overwrite its generate, wrap and unwrap rows; pass --write")
@@ -1890,6 +2102,18 @@ pub(crate) fn keep_claims(profile: &mut Profile, existing: &str, shown: &str, wr
     }
     let old = Profile::from_toml(existing)
         .map_err(|e| KmError::Validation(format!("{shown}: not a profile, refusing to overwrite: {e}").into()))?;
+    let (was, now) = (&old.profile, &profile.profile);
+    if old.family() != profile.family() {
+        return Err(KmError::Validation(
+            format!("{shown} holds '{was}', not a profile of the probed '{now}': its claims are another module's")
+                .into(),
+        ));
+    }
+    if was != now && !renamed {
+        return Err(KmError::Validation(
+            format!("{shown} holds '{was}', the probe generated '{now}': pass --name to say which it is").into(),
+        ));
+    }
     profile.migration = old.migration;
     profile.manual = old.manual;
     profile.capabilities.extend(old.capabilities.into_iter().filter(|(c, _)| !c.probed()));
@@ -1900,6 +2124,35 @@ pub(crate) fn keep_claims(profile: &mut Profile, existing: &str, shown: &str, wr
 mod tests {
     use super::*;
     use cryptoki::context::Function;
+
+    /// A probe writes or diffs a profile only from a build with the patched binding, `rv-value`
+    /// and `kwp` (review D3): each one missing is named, and any one refuses (`generate`).
+    #[test]
+    fn a_kept_profile_needs_every_patch_and_feature() {
+        assert_eq!(build_lacks(true, true, true), Vec::<&str>::new());
+        for (patched, rv_value, kwp, named) in [
+            (false, true, true, "lacks the Nix patches"),
+            (true, false, true, "without `rv-value`"),
+            (true, true, false, "without `kwp`"),
+        ] {
+            let lacks = build_lacks(patched, rv_value, kwp);
+            assert!(lacks.len() == 1 && lacks[0].contains(named), "{lacks:?}");
+        }
+        assert_eq!(build_lacks(false, false, false).len(), 3);
+    }
+
+    /// The patched binding is linked with what uses it (each tool's `patched-cryptoki`): the
+    /// Nix build's probe is one that may write a profile.
+    #[test]
+    fn the_patched_binding_comes_with_its_features() {
+        let (patched, rv, kwp) =
+            (cakeys_pkcs11::binding::patched(), cakeys_pkcs11::binding::RV_VALUE, cfg!(feature = "kwp"));
+        assert!(
+            !patched || build_lacks(patched, rv, kwp).is_empty(),
+            "the patched cryptoki is linked without caprobe's `patched-cryptoki` feature: {:?}",
+            build_lacks(patched, rv, kwp)
+        );
+    }
 
     /// Only the probe's policy defaults are dropped, and only for a template refusal: a type or
     /// usage attribute stays, and a mechanism refusal is the module's answer.
@@ -1942,5 +2195,109 @@ mod tests {
         // Worked with one hash: usable, the other hash's failure a note only.
         assert_eq!(profile.out.notes["CKM_RSA_PKCS_OAEP"], "RSA-2048 decrypt SHA-256: CKR_ARGUMENTS_BAD");
         assert!(!profile.out.notes.contains_key("CKM_ECDSA"));
+    }
+
+    /// Evidence keeps the module's return value and drops cryptoki's prose and the token's
+    /// keys.toml name, but only the token crate's forms of it: a quoted word that equals the
+    /// name stays (review probe F6).
+    #[test]
+    fn evidence_names_the_return_value_not_the_prose() {
+        let mech_invalid = 0x70; // CKR_MECHANISM_INVALID
+        for (said, rv, want) in [
+            // The token crate's own message names the value already: once, not twice.
+            (
+                "unavailable: C_Sign on token 'probe': CKR_MECHANISM_INVALID: Function::SignInit: PKCS11 error: The mechanism is invalid.",
+                Some(mech_invalid),
+                "unavailable: C_Sign: CKR_MECHANISM_INVALID: Function::SignInit",
+            ),
+            (
+                "unavailable: C_Sign on token 'probe': Function::SignInit: PKCS11 error: The mechanism is invalid.",
+                Some(mech_invalid),
+                "unavailable: C_Sign: CKR_MECHANISM_INVALID: Function::SignInit",
+            ),
+            (
+                "unavailable: C_Sign on token 'probe': Function::SignInit: PKCS11 error: The mechanism is invalid.",
+                None,
+                "unavailable: C_Sign: Function::SignInit",
+            ),
+            (
+                "unsupported: token 'probe' refused it (C_UnwrapKey: Function::UnwrapKey: PKCS11 error: Some (prose).); retry",
+                Some(mech_invalid),
+                "unsupported: the token refused it (C_UnwrapKey: CKR_MECHANISM_INVALID: Function::UnwrapKey); retry",
+            ),
+            ("no object 'probe' on token 'probe'", None, "no object 'probe'"),
+            ("token 'probe': CKR_GENERAL_ERROR", None, "CKR_GENERAL_ERROR"),
+        ] {
+            assert_eq!(evidence_text("probe", said, rv), want, "{said}");
+        }
+    }
+
+    /// A count that failed, before or after the destroys, writes no `delete` row: an error is
+    /// not "deleted" (review probe F5).
+    #[test]
+    fn a_failed_count_writes_no_delete_row() {
+        let counts = |n: usize| Ok(BTreeMap::from([("CKO_PRIVATE_KEY".to_owned(), n)]));
+        assert_eq!(delete_rows(counts(2), Ok(BTreeMap::new())).unwrap(), [("CKO_PRIVATE_KEY".into(), true, None)]);
+        let left = delete_rows(counts(2), counts(1)).unwrap();
+        assert_eq!(left, [("CKO_PRIVATE_KEY".into(), false, Some("C_DestroyObject leaves 1 of 2 behind".into()))]);
+        assert_eq!(
+            delete_rows(counts(2), Err("C_FindObjects: CKR_DEVICE_ERROR".into())).unwrap_err(),
+            "C_FindObjects: CKR_DEVICE_ERROR"
+        );
+        assert!(delete_rows(Err("before".into()), Ok(BTreeMap::new())).is_err());
+    }
+
+    /// A NUL-padded module version names the default profile as it spells the match key
+    /// (review probe F10).
+    #[test]
+    fn the_default_name_cleans_the_version() {
+        assert_eq!(default_name("softhsm", "2.7\0\0"), "softhsm/2.7");
+    }
+
+    /// The RSA operation probes run on the 2048-bit key, or the next usable size up when that
+    /// one is refused or unusable; never twice, never on a smaller key (review probe F10).
+    #[test]
+    fn rsa_operations_run_on_the_first_usable_key_from_2048() {
+        let run = |made: &[(u32, bool)]| {
+            let mut operated = None;
+            for (bits, usable) in made {
+                if operates_on(*bits, *usable, operated.is_some()) {
+                    operated = Some(*bits);
+                }
+            }
+            operated
+        };
+        assert_eq!(run(&[(1024, true), (2048, true), (3072, true)]), Some(2048));
+        assert_eq!(run(&[(1024, true), (3072, true), (4096, true)]), Some(3072), "2048 refused");
+        assert_eq!(run(&[(2048, false), (3072, true)]), Some(3072), "2048 unusable");
+        assert_eq!(run(&[(1024, true), (1536, true)]), None);
+    }
+
+    /// `--out` keeps an existing file's claims only when it holds the profile just probed:
+    /// another family's file is refused, another profile of the family needs `--name`, and the
+    /// same profile keeps its `move.*` row (review probe F4).
+    #[test]
+    fn claims_are_kept_only_from_the_same_profile() {
+        let file = |name: &str| {
+            format!(
+                "profile = \"{name}\"\nmode = \"observed\"\n[capabilities]\n\"move.secret-unwrap\" = {{ answer = \"no\" }}\n"
+            )
+        };
+        let probed = || Profile::from_toml("profile = \"kryoptic/1.5\"\nmode = \"observed\"\n").unwrap();
+        let keep = |existing: &str, renamed: bool| {
+            let mut p = probed();
+            keep_claims(&mut p, existing, "the file", true, renamed).map(|()| p)
+        };
+        for (existing, renamed, why) in
+            [(file("softhsm/2.7"), true, "another module's"), (file("kryoptic/1.4"), false, "pass --name")]
+        {
+            let e = keep(&existing, renamed).unwrap_err();
+            assert!(e.exit_code() == 17 && e.to_string().contains(why), "{e}");
+        }
+        for (existing, renamed) in [(file("kryoptic/1.5"), false), (file("kryoptic/1.4"), true)] {
+            let p = keep(&existing, renamed).unwrap();
+            assert_eq!(p.profile, "kryoptic/1.5");
+            assert!(p.capabilities.keys().any(|c| c.to_string() == "move.secret-unwrap"), "{:?}", p.capabilities);
+        }
     }
 }

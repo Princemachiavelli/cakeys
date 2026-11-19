@@ -38,7 +38,10 @@ impl Resolved {
     /// what its runs demonstrated and the probe measured) over the module profile: the token's
     /// own answer decides before what a shipped profile says of its kind. With no module
     /// profile, the answers stand alone (a partial profile: they say nothing of mechanisms). A
-    /// row this cakeys cannot read answers nothing.
+    /// row this cakeys cannot read answers nothing. A recorded answer that agrees with the
+    /// profile and says nothing of how keeps the profile's `via`: a lock written before cakeys
+    /// recorded `via = "by-name"` still lets a curve generated only by name retry by name
+    /// (ISSUES.md B18).
     pub fn with_answers(&mut self, token: &str, observed: &Observation) {
         let rows: Vec<(Capability, Row)> = observed
             .capabilities
@@ -64,7 +67,14 @@ impl Resolved {
             rows.len(),
             module.profile
         ));
-        module.capabilities.extend(rows);
+        for (capability, mut row) in rows {
+            if row.via.is_none()
+                && let Some(had) = module.capabilities.get(&capability).filter(|had| had.answer == row.answer)
+            {
+                row.via.clone_from(&had.via);
+            }
+            module.capabilities.insert(capability, row);
+        }
     }
 
     /// The layers' names, in order.
@@ -204,8 +214,22 @@ impl Resolved {
         self.weak_match(&p, &fit, unversioned, module, token);
         if fit.model == Some(false) || fit.firmware == Some(false) {
             self.other_hardware(&mut p, token);
+        } else if tied.len() > 1 && token.is_some() {
+            self.tied_on_this_hardware(&p, &tied);
         }
         Ok(Some(p))
+    }
+
+    /// Pairs whose match keys are all the same (a FIPS and a non-FIPS `CloudHSM` cluster: PKCS#11
+    /// reports no mode, D12), and this token fits them alike: the first is used, rows intact, and
+    /// said, so the stack is no silent guess.
+    fn tied_on_this_hardware(&mut self, p: &Profile, tied: &[&Profile]) {
+        self.notes.push(format!(
+            "module profiles {} fit this module and token equally: using {}; name another in \
+             tokens.<token>.moduleProfile",
+            tied.iter().map(|p| p.profile.as_str()).collect::<Vec<_>>().join(", "),
+            p.profile
+        ));
     }
 
     /// A module version no profile of the family records (an update, typically): the nearest
@@ -461,6 +485,35 @@ mod tests {
         }
     }
 
+    /// A lock written before cakeys recorded `via` holds a plain yes for a curve the profile
+    /// says only its name generates: the answer keeps the profile's `via`, so the by-name retry
+    /// still runs (ISSUES.md B18). A recorded `via` is the token's own, and a recorded no says
+    /// nothing of how.
+    #[test]
+    fn a_recorded_answer_keeps_the_profiles_way_unless_it_names_one() {
+        use cakeys_core::config::Answered;
+        let row = Capability::Generate {
+            key_type: "CKK_EC_EDWARDS".into(),
+            on: cakeys_profile::On::Item("edwards25519".into()),
+        };
+        let after = |profile: Option<&str>, recorded: Answered| {
+            let mut module = Profile::new("m".into(), Mode::Observed);
+            module
+                .capabilities
+                .insert(row.clone(), Row { answer: Answer::Yes, evidence: None, via: profile.map(Into::into) });
+            let mut r = Resolved { module: Some(module), ..Resolved::default() };
+            let mut observed = Observation::default();
+            observed.capabilities.insert(row.to_string(), recorded);
+            r.with_answers("t", &observed);
+            r.module.unwrap().capabilities[&row].clone()
+        };
+        let by_name = Some("by-name".to_owned());
+        assert_eq!(after(Some("by-name"), Answered::yes()).via, by_name);
+        assert_eq!(after(None, Answered { via: by_name.clone(), ..Answered::yes() }).via, by_name);
+        let no = after(Some("by-name"), Answered { answer: Said::No, ..Answered::yes() });
+        assert_eq!((no.answer, no.via), (Answer::No, None));
+    }
+
     #[test]
     fn every_stack_carries_the_binding_layer() {
         cakeys_profile::Set::activate_embedded().unwrap();
@@ -601,6 +654,44 @@ mod tests {
         }
         let e = resolve(&pinned(None, "aws-cloudhsm/9.9"), &hsm, None, "aws-cloudhsm").unwrap_err();
         assert!(e.contains("moduleProfile 'aws-cloudhsm/9.9'"), "{e}");
+    }
+
+    /// With the token open, profiles that tie on every match key still resolve to the first,
+    /// rows intact, and the run says that another fit as well (resolution.rs F1): a `NON_FIPS`
+    /// cluster must not be judged by the FIPS profile without a word. A pin decides alone, and
+    /// hardware no pair was observed on says so in its own note.
+    #[test]
+    fn profiles_that_tie_on_the_token_are_said() {
+        cakeys_profile::Set::activate_embedded().unwrap();
+        let ls2 = TokenInfo { model: "LS2".into(), serial: "s".into(), firmware: "10.23".into() };
+        let kms = TokenInfo { model: "Cloud KMS Token".into(), serial: "s".into(), firmware: "0.0".into() };
+        for (manufacturer, version, provider, token, chosen, other) in [
+            (
+                "CloudHSM",
+                "5.18",
+                "aws-cloudhsm",
+                &ls2,
+                "aws-cloudhsm/5.18+hsm2m-fips",
+                "aws-cloudhsm/5.18+hsm2m-non-fips",
+            ),
+            ("Google", "1.9", "kmsp11", &kms, "kmsp11/1.9+hsm-fips", "kmsp11/1.9+hsm"),
+        ] {
+            let r = resolve(&cfg(None, &[]), &module(manufacturer, version), Some(token), provider).unwrap();
+            let m = r.module.as_ref().unwrap();
+            assert_eq!(m.profile, chosen);
+            assert!(!m.generation_key_types().is_empty(), "{provider}: the hardware rows stand");
+            let said: Vec<&String> =
+                r.notes.iter().filter(|n| n.contains("fit this module and token equally")).collect();
+            assert_eq!(said.len(), 1, "{:?}", r.notes);
+            assert!(said[0].contains(chosen) && said[0].contains(other) && said[0].contains("moduleProfile"));
+            let pinned = TokenCfg { module_profile: Some(other.into()), ..cfg(None, &[]) };
+            let r = resolve(&pinned, &module(manufacturer, version), Some(token), provider).unwrap();
+            assert_eq!((r.module_name(), r.notes.len()), (Some(other), 0), "{:?}", r.notes);
+        }
+        let infineon = TokenInfo { model: "SLB9670".into(), serial: "s".into(), firmware: "7.85".into() };
+        let r = resolve(&cfg(None, &[]), &module("tpm2-software.github.io", "1.10"), Some(&infineon), "tpm2-pkcs11")
+            .unwrap();
+        assert!(!r.notes.iter().any(|n| n.contains("fit this module and token equally")), "{:?}", r.notes);
     }
 
     #[test]

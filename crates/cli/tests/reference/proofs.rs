@@ -9,7 +9,6 @@ use super::*;
 fn always_authenticate_keys_prove_possession_with_a_per_use_pin() {
     let Some(e) = env("always-auth-pop") else { return };
     let s = e.session();
-    s.clear(&["always-auth-rsa", "always-auth-ec", "always-auth-raw", "always-auth-ed"]);
     let spec = |key: &str, label: &str, attributes: &str| {
         format!(
             "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\n{key}\n\n[specs.s]\nobject = \"o\"\n\
@@ -86,11 +85,6 @@ fn binding_downgrade_is_refused() {
 #[test]
 fn derive_and_decrypt_only_keys_prove_possession() {
     let Some(e) = env("pop-ecdh") else { return };
-    // The token is shared between runs: remove anything left under the test's locators. A session
-    // opened now sees the leftovers (they predate it); it is dropped before `lock` runs.
-    let cleanup = e.session();
-    cleanup.clear(&["pop-ecdh", "pop-oaep", "pop-unwrap", "pop-ecdh-b"]);
-    drop(cleanup);
     // Shapes: each proof needs its capability declared, and applies to its key type only.
     let ec = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
               [specs.k]\nobject = \"k\"\nattributes = { CKA_DERIVE = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
@@ -98,21 +92,23 @@ fn derive_and_decrypt_only_keys_prove_possession() {
                [specs.r]\nobject = \"r\"\nattributes = { CKA_DECRYPT = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
     let unwrap = "[objects.u]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
                   [specs.u]\nobject = \"u\"\nattributes = { CKA_UNWRAP = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
-    for (body, token) in [
-        (ec, "binding = \"pop-decrypt\""), // RSA proof on an EC key
-        (ec.replace("CKA_DERIVE = true, ", "").as_str(), "binding = \"pop-ecdh\""), // ... without CKA_DERIVE
-        (rsa, "binding = \"pop-ecdh\""),   // EC proof on an RSA key
-        (rsa.replace("CKA_DECRYPT = true, ", "").as_str(), "binding = \"pop-decrypt\""), // ... without CKA_DECRYPT
-        (ec, "binding = \"pop-unwrap\""),  // RSA unwrap proof on an EC key
-        (unwrap.replace("CKA_UNWRAP = true, ", "").as_str(), "binding = \"pop-unwrap\""), // ... without CKA_UNWRAP
+    // Each invalid (17) for its own reason, so a refusal of the shared skeleton cannot pass.
+    for (body, token, why) in [
+        (ec, "binding = \"pop-decrypt\"", "by decrypting: it applies to RSA private keys only"),
+        (ec.replace("CKA_DERIVE = true, ", "").as_str(), "binding = \"pop-ecdh\"", "needs CKA_DERIVE = true"),
+        (rsa, "binding = \"pop-ecdh\"", "by deriving: it applies to EC private keys only"),
+        (rsa.replace("CKA_DECRYPT = true, ", "").as_str(), "binding = \"pop-decrypt\"", "needs CKA_DECRYPT = true"),
+        (ec, "binding = \"pop-unwrap\"", "by unwrapping: it applies to RSA private keys only"),
+        (unwrap.replace("CKA_UNWRAP = true, ", "").as_str(), "binding = \"pop-unwrap\"", "needs CKA_UNWRAP = true"),
     ] {
         e.config(&format!("{body}tokens.ref = {{ locator = {{ CKA_LABEL = \"x\" }}, origin = \"adopt\", {token} }}\n"));
         let o = e.km(&["validate"]);
-        assert_eq!(code(&o), 17, "{token}: {}", stderr(&o));
+        assert!(code(&o) == 17 && stderr(&o).contains(why), "{token}: expected 17 and {why:?}: {}", stderr(&o));
     }
     // The default proof (pop-sign) still needs CKA_SIGN.
     e.config(&format!("{ec}tokens.ref = {{ locator = {{ CKA_LABEL = \"x\" }}, origin = \"adopt\" }}\n"));
-    assert_eq!(e.code(&["validate"]), 17);
+    let o = e.km(&["validate"]);
+    assert!(code(&o) == 17 && stderr(&o).contains("needs CKA_SIGN = true"), "{}", stderr(&o));
 
     // Derive-only EC key, proven by deriving: created, recorded as pop-ecdh, verifies.
     e.config(&format!(
@@ -147,26 +143,15 @@ fn derive_and_decrypt_only_keys_prove_possession() {
     // A different private key under the EC locator fails the derivation proof, like H1. A fresh
     // session: one opened before the `lock` processes does not see objects they created
     // (common/mod.rs), but everything is visible to a session opened after them.
-    let s = e.session();
-    let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
-    let (_, other_private) = s
-        .generate_key_pair(
-            &Mechanism::EccKeyPairGen,
-            &[Attribute::Token(true), Attribute::Label(b"pop-ecdh-b".to_vec()), Attribute::EcParams(ec_params)],
-            &[
-                Attribute::Token(true),
-                Attribute::Label(b"pop-ecdh-b".to_vec()),
-                Attribute::Derive(true),
-                Attribute::Sensitive(true),
-                Attribute::Extractable(false),
-            ],
-        )
-        .unwrap();
-    let original = s
-        .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"pop-ecdh".to_vec())])
-        .unwrap()[0];
-    s.destroy_object(original).unwrap();
-    s.update_attributes(other_private, &[Attribute::Label(b"pop-ecdh".to_vec())]).unwrap();
+    let usage = [Attribute::Derive(true), Attribute::Sensitive(true), Attribute::Extractable(false)];
+    swap_private_key(
+        &e.session(),
+        "pop-ecdh",
+        &Mechanism::EccKeyPairGen,
+        &[Attribute::EcParams(P256.to_vec())],
+        &usage,
+        &[],
+    );
     assert_swapped_key_conflict(&e.km(&["verify", "--spec", "k", "--token", "ref"]));
     assert_eq!(e.code(&["lock", "--spec", "k", "--token", "ref", "--no-update-lock"]), 13);
 }
@@ -193,7 +178,7 @@ fn proofs_the_token_cannot_give_are_refused() {
     // (An object of its own: the lock pins `k`'s material.)
     let s = e.session();
     let label = || Attribute::Label(b"pop-refused-always".to_vec());
-    let p256 = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let p256 = P256.to_vec();
     s.generate_key_pair(
         &Mechanism::EccKeyPairGen,
         &[Attribute::Token(true), label(), Attribute::EcParams(p256)],
@@ -240,25 +225,9 @@ fn proofs_fall_back_to_what_the_token_has() {
         assert_eq!(code(&e.km_env(&["verify", "--spec", spec, "--token", "ref"], &[(var, conf.as_path())])), 0);
     }
     // Another private key under the derive-only locator: the extractable path's comparison fails.
-    let s = e.session();
-    let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
-    let (_, other) = s
-        .generate_key_pair(
-            &Mechanism::EccKeyPairGen,
-            &[Attribute::Token(true), Attribute::EcParams(ec_params)],
-            &[
-                Attribute::Token(true),
-                Attribute::Derive(true),
-                Attribute::Sensitive(true),
-                Attribute::Extractable(false),
-            ],
-        )
-        .unwrap();
-    let label = b"pop-fallback-d".to_vec();
-    let original =
-        s.find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(label.clone())]).unwrap()[0];
-    s.destroy_object(original).unwrap();
-    s.update_attributes(other, &[Attribute::Label(label)]).unwrap();
+    let usage = [Attribute::Derive(true), Attribute::Sensitive(true), Attribute::Extractable(false)];
+    let p256 = [Attribute::EcParams(P256.to_vec())];
+    swap_private_key(&e.session(), "pop-fallback-d", &Mechanism::EccKeyPairGen, &p256, &usage, &[]);
     let (var, conf) = e.hiding("CKM_SHA256_HMAC");
     assert_swapped_key_conflict(&e.km_env(&["verify", "--spec", "d", "--token", "ref"], &[(var, conf.as_path())]));
 }
@@ -287,13 +256,13 @@ fn proofs_the_key_will_not_give_are_refused() {
         let private = [&[Attribute::Token(true), label(name)], private].concat();
         s.generate_key_pair(mechanism, &public, &private)
     };
-    let p256 = [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let p256 = P256;
     // Visible without login (CKA_PRIVATE = false), so `ref-anon` finds it, and wanting the PIN per
     // use: kryoptic makes it, SoftHSM refuses the combination (CKR_TEMPLATE_INCONSISTENT).
     let anon = [Attribute::Private(false), Attribute::Sign(true), Attribute::AlwaysAuthenticate(true)];
-    let anon = plant_ec("anon", &Mechanism::EccKeyPairGen, &p256, &anon).is_ok();
+    let anon = plant_ec("anon", &Mechanism::EccKeyPairGen, p256, &anon).is_ok();
     let derive = [Attribute::Derive(true), Attribute::AllowedMechanisms(vec![MechanismType::ECDSA])];
-    plant_ec("derive", &Mechanism::EccKeyPairGen, &p256, &derive).unwrap();
+    plant_ec("derive", &Mechanism::EccKeyPairGen, p256, &derive).unwrap();
     let plant_rsa = |name: &str, usage: Attribute| {
         let public = [
             Attribute::Token(true),
@@ -376,73 +345,116 @@ fn a_key_bound_to_one_signature_proves_in_it() {
     }
 }
 
-/// The `YubiKey` provider's `piv-attestation` lookups, on this token named `provider = "ykcs11"`
-/// with ykcs11's objects planted from the committed fixtures (crates/ykcs11/tests/fixtures/):
-/// slot 9a's public key (`CKA_ID` 01), its attestation certificate under the same `CKA_ID`
-/// and the slot-suffixed label, and the f9 device certificate under the bare label. The chain
-/// ends at a test root, never a pinned Yubico one: refused (13). Without the slot or the device
-/// certificate there is no attestation (15); with two of either, it is ambiguous (12).
-#[test]
-fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
-    let Some(e) = env("piv-attest") else { return };
-    let fixture = |name: &str| {
-        let pem = std::fs::read_to_string(format!("{}/../ykcs11/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR")));
-        x509_cert::der::pem::decode_vec(pem.unwrap().as_bytes()).unwrap().1
-    };
-    let spki = fixture("slotpub.pem");
-    let info = <x509_cert::spki::SubjectPublicKeyInfoOwned as x509_cert::der::Decode>::from_der(&spki).unwrap();
-    let point = info.subject_public_key.raw_bytes().to_vec();
-    let s = e.session();
-    s.create_object(&[
-        Attribute::Class(ObjectClass::PUBLIC_KEY),
-        Attribute::KeyType(cryptoki::object::KeyType::EC),
-        Attribute::EcParams(vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]),
-        Attribute::EcPoint(tlv(0x04, &point)),
-        Attribute::Token(true),
-        Attribute::Verify(true),
-        Attribute::Id(vec![0x01]),
-        Attribute::Label(b"Public key for PIV Authentication".to_vec()),
-    ])
-    .unwrap();
-    let cert = |der: &[u8], label: &str, id: u8| {
+/// ykcs11's slot 9a objects from the committed fixtures (crates/ykcs11/tests/fixtures/): the
+/// public key planted, and its attestation and device certificates planted on request.
+struct Piv<'a> {
+    s: &'a TestSession,
+    slot: Vec<u8>,
+    device: Vec<u8>,
+}
+
+impl<'a> Piv<'a> {
+    const SLOT_LABEL: &'static str = "X.509 Certificate for PIV Attestation 9a";
+    const DEVICE_LABEL: &'static str = "X.509 Certificate for PIV Attestation";
+
+    /// Plant slot 9a's public key (`CKA_ID` 01) and write keys.toml's spec `piv` adopting it on
+    /// token `yk` (`provider = "ykcs11"`) with attestation.
+    fn plant(e: &Suite, s: &'a TestSession) -> Piv<'a> {
+        let fixture = |name: &str| {
+            let pem =
+                std::fs::read_to_string(format!("{}/../ykcs11/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR")));
+            x509_cert::der::pem::decode_vec(pem.unwrap().as_bytes()).unwrap().1
+        };
+        let spki = fixture("slotpub.pem");
+        let info = <x509_cert::spki::SubjectPublicKeyInfoOwned as x509_cert::der::Decode>::from_der(&spki).unwrap();
+        let point = info.subject_public_key.raw_bytes().to_vec();
+        s.create_object(&[
+            Attribute::Class(ObjectClass::PUBLIC_KEY),
+            Attribute::KeyType(cryptoki::object::KeyType::EC),
+            Attribute::EcParams(P256.to_vec()),
+            Attribute::EcPoint(tlv(0x04, &point)),
+            Attribute::Token(true),
+            Attribute::Verify(true),
+            Attribute::Id(vec![0x01]),
+            Attribute::Label(b"Public key for PIV Authentication".to_vec()),
+        ])
+        .unwrap();
+        e.write_config(&format!(
+            "[tokens.yk]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nprovider = \"ykcs11\"\n\n\
+             [objects.piv]\nclass = \"CKO_PUBLIC_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.piv]\nobject = \"piv\"\ntokens.yk = {{ locator = {{ CKA_ID = \"01\" }}, origin = \"adopt\", attestation = true }}\n",
+            e.module,
+            e.dir.join("pin").display()
+        ));
+        Piv { s, slot: fixture("slot.pem"), device: fixture("f9.pem") }
+    }
+
+    fn cert(&self, der: &[u8], label: &str, id: u8) -> cryptoki::object::ObjectHandle {
         let mut t = cert_object(der, label.as_bytes(), Some(id));
         t.retain(|a| !matches!(a, Attribute::Token(_)));
         t.push(Attribute::Token(true));
-        s.create_object(&t).unwrap()
-    };
-    let (slot, device) = (fixture("slot.pem"), fixture("f9.pem"));
-    let slot_label = "X.509 Certificate for PIV Attestation 9a";
-    let device_label = "X.509 Certificate for PIV Attestation";
-    let slot_cert = cert(&slot, slot_label, 0x01);
-    let device_cert = cert(&device, device_label, 0x19);
-    e.write_config(&format!(
-        "[tokens.yk]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nprovider = \"ykcs11\"\n\n\
-         [objects.piv]\nclass = \"CKO_PUBLIC_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
-         [specs.piv]\nobject = \"piv\"\ntokens.yk = {{ locator = {{ CKA_ID = \"01\" }}, origin = \"adopt\", attestation = true }}\n",
-        e.module,
-        e.dir.join("pin").display()
-    ));
+        self.s.create_object(&t).unwrap()
+    }
+
+    /// Slot 9a's attestation certificate, under the key's `CKA_ID` and the slot-suffixed label.
+    fn slot_cert(&self) -> cryptoki::object::ObjectHandle {
+        self.cert(&self.slot, Self::SLOT_LABEL, 0x01)
+    }
+
+    /// The f9 device certificate, under the bare label.
+    fn device_cert(&self) -> cryptoki::object::ObjectHandle {
+        self.cert(&self.device, Self::DEVICE_LABEL, 0x19)
+    }
+}
+
+/// The `YubiKey` provider's `piv-attestation` lookups, on this token named `provider = "ykcs11"`
+/// with ykcs11's objects planted ([`Piv`]): slot 9a's public key (`CKA_ID` 01), its attestation
+/// certificate under the same `CKA_ID` and the slot-suffixed label, and the f9 device
+/// certificate under the bare label. The chain ends at a test root, never a pinned Yubico one:
+/// refused (13). Without the slot or the device certificate there is no attestation (15); with
+/// two of either, it is ambiguous (12). `check --at` holds the chain to that time.
+#[test]
+fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
+    let Some(e) = env("piv-attest") else { return };
+    let s = e.session();
+    let piv = Piv::plant(&e, &s);
+    let slot_cert = piv.slot_cert();
+    let device_cert = piv.device_cert();
     let refused = |exit: i32, why: &str| {
         let o = e.km(&["lock", "--spec", "piv", "--token", "yk", "--no-update-lock"]);
         assert_eq!(code(&o), exit, "{}", stderr(&o));
         assert!(stderr(&o).contains(why), "expected {why:?} in {}", stderr(&o));
     };
     refused(13, "is signed by no pinned root and no pooled PIV intermediate");
-    let second = cert(&slot, slot_label, 0x01);
+    let second = piv.slot_cert();
     refused(12, "2 attestation certificates share the key's CKA_ID");
     s.destroy_object(second).unwrap();
     s.destroy_object(slot_cert).unwrap();
     refused(15, "no attestation certificate for this key");
-    cert(&slot, slot_label, 0x01);
-    let second = cert(&device, device_label, 0x19);
+    piv.slot_cert();
+    let second = piv.device_cert();
     refused(12, "2 objects carry the f9 device certificate label");
     s.destroy_object(second).unwrap();
     s.destroy_object(device_cert).unwrap();
     refused(15, "the device attestation certificate (slot f9) is not exposed");
 
+    // `check --at` reaches the chain (ISSUES.md B8; review check.rs F1): before the device
+    // certificate's notBefore (2026-11-12) the dates refuse first; with `--ignore-validity` the
+    // chain goes on to its root, which no pinned one signed; and now, the same.
+    let device_cert = piv.device_cert();
+    let checked = |more: &[&str], why: &str| {
+        let o = e.km(&[&["check", "piv", "--token", "yk"][..], more].concat());
+        assert_eq!(code(&o), 13, "{more:?}: {}", stderr(&o));
+        assert!(stderr(&o).contains(why), "{more:?}: expected {why:?} in {}", stderr(&o));
+    };
+    checked(&["--at", "2026-01-01T00:00:00Z"], "is not valid at 2026-01-01T00:00:00Z");
+    checked(&["--ignore-validity"], "is signed by no pinned root and no pooled PIV intermediate");
+    checked(&[], "is signed by no pinned root and no pooled PIV intermediate");
+    s.destroy_object(device_cert).unwrap();
+
     // ykcs11 reports CKA_DERIVE false on every private key though it derives with any EC key:
     // the provider records what the key does. And it creates only in an SO session.
-    let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let ec_params = P256.to_vec();
     let id = || Attribute::Id(vec![0x02]);
     s.generate_key_pair(
         &Mechanism::EccKeyPairGen,

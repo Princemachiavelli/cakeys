@@ -27,8 +27,8 @@
 
 mod common;
 
+use common::{code, got_hash};
 use std::fmt::Write as _;
-use std::path::PathBuf;
 use std::process::Output;
 use std::time::Duration;
 
@@ -37,30 +37,18 @@ use std::time::Duration;
 const RUN_LIMIT: Duration = Duration::from_secs(60);
 
 struct Env {
-    dir: PathBuf,
+    w: common::Workdir,
     module: String,
     pin: String,
     mgm: String,
+    /// The device, this test's alone; no login after a failed one.
+    turn: common::YubikeyTurn,
 }
 
 fn env(name: &str) -> Option<Env> {
-    let (Ok(module), Ok(pin), Ok(mgm)) = (
-        std::env::var("CAKEYS_TEST_YUBIKEY_MODULE"),
-        std::env::var("CAKEYS_TEST_YUBIKEY_PIN"),
-        std::env::var("CAKEYS_TEST_YUBIKEY_MGM"),
-    ) else {
-        eprintln!("skipping {name}: CAKEYS_TEST_YUBIKEY_MODULE, _PIN and _MGM (file paths) not all set");
-        return None;
-    };
-    Some(Env { dir: workdir(name), module, pin, mgm })
-}
-
-/// A fresh directory `name` under the integration tests' tmpdir.
-fn workdir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    let [module, pin, mgm] = common::yubikey_opted_in(name)?;
+    let turn = common::YubikeyTurn::take();
+    Some(Env { w: common::Workdir::new(name), module, pin, mgm, turn })
 }
 
 /// One key the read-write tests generate, attest and prove, in a slot of its own.
@@ -139,15 +127,15 @@ impl Env {
                 binding = c.binding,
             );
         }
-        std::fs::write(self.dir.join("keys.toml"), text).unwrap();
+        self.w.write_config(&text);
     }
 
     fn lock(&self) -> toml::Value {
-        toml::from_str(&std::fs::read_to_string(self.dir.join("keys.lock")).unwrap()).unwrap()
+        self.w.lock()
     }
 
     fn km(&self, args: &[&str]) -> Output {
-        common::run_within(&self.dir.join("keys.toml"), args, RUN_LIMIT)
+        self.turn.checked(self.w.run().within(args, RUN_LIMIT))
     }
 
     /// First use, record, verify, refused delete and idempotent re-lock of `c`: the key is
@@ -164,15 +152,13 @@ impl Env {
         // identified; nothing is locked yet.
         let mut first = self.km(&r);
         if code(&first) == 19 {
+            // PIV cannot erase a key, and only slot 95 may be wiped (docs/DEVELOPMENT.md): say
+            // that this run adopts, rather than generates, what the slot holds.
+            eprintln!("{}: the slot holds an earlier run's key; adopting it with `lock`, not generating", c.name);
             first = self.km(&adopt);
         }
         assert_eq!(code(&first), 18, "{}: {}", c.name, String::from_utf8_lossy(&first.stderr));
-        let got = String::from_utf8_lossy(&first.stderr)
-            .lines()
-            .find_map(|l| l.trim_start().strip_prefix("got:"))
-            .map(str::trim)
-            .expect("a got: hash")
-            .to_owned();
+        let got = got_hash(&first);
         assert!(got.starts_with("sha256-"), "{got}");
 
         // Record it: the proof and the attestation ran in the user session, and are recorded.
@@ -206,10 +192,6 @@ impl Env {
         assert!(!String::from_utf8_lossy(&again.stderr).contains("created"), "nothing generated");
         assert_eq!(self.lock()["objects"][c.name]["ids"]["rfc7093m4"].as_str(), Some(got.as_str()), "same identity");
     }
-}
-
-fn code(o: &Output) -> i32 {
-    o.status.code().unwrap()
 }
 
 /// Read-write on real hardware: generate into the P-256 slot under the SO (management-key)

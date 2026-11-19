@@ -12,7 +12,9 @@ use cryptoki_sys::{
     CK_SESSION_INFO, CK_SLOT_ID, CK_SLOT_INFO, CK_TOKEN_INFO, CK_ULONG, CKA_CLASS, CKA_LABEL, CKF_SERIAL_SESSION,
     CKR_ATTRIBUTE_TYPE_INVALID, CKR_BUFFER_TOO_SMALL, CKR_OK,
 };
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::raw::c_void;
+use std::sync::{Mutex, PoisonError};
 
 /// What a hooked call returns: the caller's value, and the rule that changed something.
 pub(crate) type Outcome = Result<(CK_RV, Option<usize>), Fatal>;
@@ -81,6 +83,9 @@ pub(crate) unsafe fn find_objects(
     // which the first `*count` are set. A module that reports more than `max` is not believed.
     let set = usize::try_from(unsafe { *count }).unwrap_or(0).min(room);
     let mut found = unsafe { std::slice::from_raw_parts(out, set).to_vec() };
+    // What the search returned in earlier batches, where a rule adds to it.
+    let adds = shim.plan.rules().iter().any(|r| matches!(r.action, Action::AddLabel(_)));
+    let earlier = if adds { shim.searches.returned(session) } else { BTreeSet::new() };
     let mut fired = None;
     for (i, rule) in shim.plan.matching(call) {
         match &rule.action {
@@ -96,7 +101,7 @@ pub(crate) unsafe fn find_objects(
             Action::AddLabel(label) if !found.is_empty() => {
                 // SAFETY: real-module calls on the caller's session.
                 for h in unsafe { named(shim, session, label, None)? } {
-                    if found.len() < room && !found.contains(&h) {
+                    if found.len() < room && !found.contains(&h) && !earlier.contains(&h) {
                         found.push(h);
                         fired.get_or_insert(i);
                     }
@@ -112,7 +117,56 @@ pub(crate) unsafe fn find_objects(
             *count = found.len() as CK_ULONG;
         }
     }
+    if adds {
+        shim.searches.add(session, &found);
+    }
     Ok((rv, fired))
+}
+
+/// What each caller session's open search has returned so far, kept while a plan adds objects
+/// to searches (`add_label`): an added object is found once per search, never again in a later
+/// batch, nor when an earlier batch already returned it. PKCS#11 lets a module return a search's
+/// matches over several batches, and a client that reads until a batch comes back empty would
+/// otherwise see the object twice. Forgotten when the session starts or ends a search.
+#[derive(Default)]
+pub(crate) struct Searches(Mutex<BTreeMap<CK_SESSION_HANDLE, BTreeSet<CK_OBJECT_HANDLE>>>);
+
+impl Searches {
+    fn held(&self) -> std::sync::MutexGuard<'_, BTreeMap<CK_SESSION_HANDLE, BTreeSet<CK_OBJECT_HANDLE>>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn returned(&self, session: CK_SESSION_HANDLE) -> BTreeSet<CK_OBJECT_HANDLE> {
+        self.held().get(&session).cloned().unwrap_or_default()
+    }
+
+    fn add(&self, session: CK_SESSION_HANDLE, handles: &[CK_OBJECT_HANDLE]) {
+        self.held().entry(session).or_default().extend(handles);
+    }
+
+    fn end(&self, session: CK_SESSION_HANDLE) {
+        self.held().remove(&session);
+    }
+}
+
+/// `C_FindObjectsInit`: a new search on the session, which has returned nothing yet.
+pub(crate) unsafe fn find_objects_init(
+    shim: &Shim,
+    _call: &Call,
+    session: CK_SESSION_HANDLE,
+    template: *mut CK_ATTRIBUTE,
+    count: CK_ULONG,
+) -> Outcome {
+    shim.searches.end(session);
+    // SAFETY: the caller's arguments, forwarded unchanged.
+    Ok((unsafe { real!(shim, C_FindObjectsInit)(session, template, count) }, None))
+}
+
+/// `C_FindObjectsFinal`: the session's search is over.
+pub(crate) unsafe fn find_objects_final(shim: &Shim, _call: &Call, session: CK_SESSION_HANDLE) -> Outcome {
+    shim.searches.end(session);
+    // SAFETY: the caller's argument, forwarded unchanged.
+    Ok((unsafe { real!(shim, C_FindObjectsFinal)(session) }, None))
 }
 
 /// `C_GetMechanismList`: the mechanisms of a `hide_mechanisms` rule are not listed.
@@ -156,28 +210,40 @@ pub(crate) unsafe fn mechanism_list(
     Ok((rv, fired))
 }
 
-/// After a function returned bytes into the caller's buffer: under a `corrupt` rule, the last
-/// of them is another. The length query (no buffer) is left alone.
+/// A function returning bytes into the caller's buffer `out` of `*len` bytes, forwarded by
+/// `real`: under a `corrupt` rule, the last of the bytes it returned is another. The length
+/// query (no buffer) is left alone, and so is a length the caller's buffer cannot hold: a module
+/// that reports more than the room it was given is not believed, as in `find_objects`.
+///
+/// # Safety
+///
+/// `len` is null or readable and writable, and `out` null or `*len` writable bytes, as the
+/// function's contract requires; `real` makes the real call with them.
 pub(crate) unsafe fn corrupt_output(
     shim: &Shim,
     call: &Call,
-    rv: CK_RV,
     out: *mut u8,
     len: *mut CK_ULONG,
-) -> Option<usize> {
+    real: impl FnOnce() -> CK_RV,
+) -> (CK_RV, Option<usize>) {
+    // The caller's room, before the real module overwrites `len` with the length it wrote.
+    // SAFETY: read only when not null.
+    let room = if len.is_null() { 0 } else { usize::try_from(unsafe { *len }).unwrap_or(0) };
+    let rv = real();
     if rv != CKR_OK || out.is_null() || len.is_null() {
-        return None;
+        return (rv, None);
     }
-    let (i, _) = shim.plan.matching(call).find(|(_, rule)| rule.action == Action::Corrupt)?;
-    // SAFETY: the real module wrote `*len` bytes at `out`, the caller's buffer.
-    unsafe {
-        let n = usize::try_from(*len).unwrap_or(0);
-        if n == 0 {
-            return None;
-        }
-        *out.add(n - 1) ^= 0x01;
+    let Some((i, _)) = shim.plan.matching(call).find(|(_, rule)| rule.action == Action::Corrupt) else {
+        return (rv, None);
+    };
+    // SAFETY: not null; the real module wrote the length there.
+    let n = usize::try_from(unsafe { *len }).unwrap_or(0);
+    if n == 0 || n > room {
+        return (rv, None);
     }
-    Some(i)
+    // SAFETY: `n - 1` is inside the caller's buffer of `room` bytes, which the module filled.
+    unsafe { *out.add(n - 1) ^= 0x01 };
+    (rv, Some(i))
 }
 
 /// The key a key-taking function uses: the caller's, or the object a `use_label` rule names
@@ -195,8 +261,14 @@ pub(crate) unsafe fn substitute_key(
             if !is_of(shim, session, key, rule.of_label.as_deref())? {
                 continue;
             }
+            // Nothing under the label is the plan's mistake, as for `from_label`: the caller's own
+            // key run under a rule the trace says fired would pass a test for the wrong reason
+            // (hooks.rs F1).
             let class = class_of(shim, session, key);
-            return Ok((named(shim, session, label, class)?.first().copied().unwrap_or(key), Some(i)));
+            let other = named(shim, session, label, class)?.first().copied().ok_or_else(|| {
+                Fatal(format!("use_label: no object labelled {} of the key's class", String::from_utf8_lossy(label)))
+            })?;
+            return Ok((other, Some(i)));
         }
     }
     Ok((key, None))
@@ -396,8 +468,10 @@ unsafe fn named(
             return Err(failed("C_OpenSession", rv));
         }
         let mut found = Vec::new();
+        let mut what = "C_FindObjectsInit";
         let mut rv = real!(shim, C_FindObjectsInit)(own, template.as_mut_ptr(), template.len() as CK_ULONG);
         if rv == CKR_OK {
+            what = "C_FindObjects";
             loop {
                 let mut batch = [0 as CK_OBJECT_HANDLE; 16];
                 let mut n = 0;
@@ -410,13 +484,169 @@ unsafe fn named(
             real!(shim, C_FindObjectsFinal)(own);
         }
         real!(shim, C_CloseSession)(own);
-        if rv == CKR_OK { Ok(found) } else { Err(failed("C_FindObjects", rv)) }
+        if rv == CKR_OK { Ok(found) } else { Err(failed(what, rv)) }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Fn, fake};
+    use cryptoki_sys::{CK_FLAGS, CK_NOTIFY, CKR_DEVICE_ERROR};
+    use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
+
+    /// The caller's session, the shim's own (opened to resolve a label), and the one object
+    /// labelled as the rules say.
+    const CALLER: CK_SESSION_HANDLE = 1;
+    const OWN: CK_SESSION_HANDLE = 99;
+    const LABELLED: CK_OBJECT_HANDLE = 7;
+
+    thread_local! {
+        /// The batches the caller's search returns, in turn; then none.
+        static BATCHES: RefCell<VecDeque<Vec<CK_OBJECT_HANDLE>>> = const { RefCell::new(VecDeque::new()) };
+        /// What the shim's own search has still to return.
+        static OWN_LEFT: RefCell<Vec<CK_OBJECT_HANDLE>> = const { RefCell::new(Vec::new()) };
+        /// What `C_FindObjectsInit` on the shim's own session returns.
+        static OWN_INIT: Cell<CK_RV> = const { Cell::new(CKR_OK) };
+    }
+
+    unsafe extern "C" fn get_session_info(_: CK_SESSION_HANDLE, info: *mut CK_SESSION_INFO) -> CK_RV {
+        // SAFETY: the shim's own `CK_SESSION_INFO`.
+        unsafe { (*info).slotID = 0 };
+        CKR_OK
+    }
+
+    unsafe extern "C" fn open_session(
+        _: CK_SLOT_ID,
+        _: CK_FLAGS,
+        _: *mut c_void,
+        _: CK_NOTIFY,
+        out: *mut CK_SESSION_HANDLE,
+    ) -> CK_RV {
+        // SAFETY: the shim's own handle.
+        unsafe { *out = OWN };
+        CKR_OK
+    }
+
+    unsafe extern "C" fn session_ok(_: CK_SESSION_HANDLE) -> CK_RV {
+        CKR_OK
+    }
+
+    unsafe extern "C" fn find_init(session: CK_SESSION_HANDLE, _: *mut CK_ATTRIBUTE, _: CK_ULONG) -> CK_RV {
+        if session != OWN {
+            return CKR_OK;
+        }
+        let rv = OWN_INIT.get();
+        if rv == CKR_OK {
+            OWN_LEFT.set(vec![LABELLED]);
+        }
+        rv
+    }
+
+    unsafe extern "C" fn find(
+        session: CK_SESSION_HANDLE,
+        out: *mut CK_OBJECT_HANDLE,
+        max: CK_ULONG,
+        count: *mut CK_ULONG,
+    ) -> CK_RV {
+        let batch = if session == OWN {
+            OWN_LEFT.take()
+        } else {
+            BATCHES.with_borrow_mut(VecDeque::pop_front).unwrap_or_default()
+        };
+        assert!(batch.len() <= usize::try_from(max).unwrap(), "a batch the test's caller has no room for");
+        // SAFETY: `out` holds `max` handles, at least the batch.
+        unsafe {
+            std::ptr::copy_nonoverlapping(batch.as_ptr(), out, batch.len());
+            *count = batch.len() as CK_ULONG;
+        }
+        CKR_OK
+    }
+
+    /// A module holding the one labelled object, whose caller searches return [`BATCHES`].
+    fn module() -> cryptoki_sys::CK_FUNCTION_LIST {
+        let mut m = crate::empty_table();
+        m.C_GetSessionInfo = Some(get_session_info);
+        m.C_OpenSession = Some(open_session);
+        m.C_CloseSession = Some(session_ok);
+        m.C_FindObjectsInit = Some(find_init);
+        m.C_FindObjects = Some(find);
+        m.C_FindObjectsFinal = Some(session_ok);
+        m
+    }
+
+    /// One whole search by the caller, read until a batch comes back empty, three at a time:
+    /// each batch it got.
+    fn search(shim: &Shim, batches: &[&[CK_OBJECT_HANDLE]]) -> Vec<Vec<CK_OBJECT_HANDLE>> {
+        BATCHES.set(batches.iter().map(|b| b.to_vec()).collect());
+        let mut got = Vec::new();
+        // SAFETY: a search of the fake module, into buffers of ours.
+        unsafe {
+            let init = shim.plan.count(Fn::C_FindObjectsInit);
+            assert_eq!(find_objects_init(shim, &init, CALLER, std::ptr::null_mut(), 0).unwrap().0, CKR_OK);
+            loop {
+                let (mut out, mut n) = ([0; 3], 0);
+                let call = shim.plan.count(Fn::C_FindObjects);
+                assert_eq!(find_objects(shim, &call, CALLER, out.as_mut_ptr(), 3, &raw mut n).unwrap().0, CKR_OK);
+                if n == 0 {
+                    break;
+                }
+                got.push(out[..usize::try_from(n).unwrap()].to_vec());
+            }
+            let fin = shim.plan.count(Fn::C_FindObjectsFinal);
+            assert_eq!(find_objects_final(shim, &fin, CALLER).unwrap().0, CKR_OK);
+        }
+        got
+    }
+
+    /// `add_label` adds its object once per search: a search the module returns over several
+    /// batches gets it in the first that finds anything, not in each; the next search, again.
+    #[test]
+    fn an_added_object_is_found_once_per_search() {
+        let shim = fake(&module(), "[[rule]]\nfn = \"C_FindObjects\"\nadd_label = \"decoy\"\n", None);
+        assert_eq!(search(&shim, &[&[1, 2], &[3]]), [vec![1, 2, LABELLED], vec![3]]);
+        assert_eq!(search(&shim, &[&[4]]), [vec![4, LABELLED]]);
+        // Nor beside the object itself, when an earlier batch of the search returned it.
+        assert_eq!(search(&shim, &[&[LABELLED], &[5]]), [vec![LABELLED], vec![5]]);
+    }
+
+    /// A label that cannot be resolved names the call that failed: the search's start, not its
+    /// batches.
+    #[test]
+    fn a_failed_search_start_is_named_as_such() {
+        let shim = fake(&module(), "[[rule]]\nfn = \"C_FindObjects\"\nhide_label = \"decoy\"\n", None);
+        OWN_INIT.set(CKR_DEVICE_ERROR);
+        BATCHES.set(VecDeque::from([vec![1]]));
+        let (mut out, mut n) = ([0; 3], 0);
+        let call = shim.plan.count(Fn::C_FindObjects);
+        // SAFETY: a search of the fake module, into buffers of ours.
+        let fatal = unsafe { find_objects(&shim, &call, CALLER, out.as_mut_ptr(), 3, &raw mut n) }.unwrap_err();
+        OWN_INIT.set(CKR_OK);
+        assert!(fatal.0.contains("C_FindObjectsInit returned 0x30"), "{}", fatal.0);
+    }
+
+    /// `corrupt` changes the last byte the module returned, inside the caller's buffer; a module
+    /// that reports more bytes than the caller had room for is not believed, and nothing past
+    /// the buffer is touched.
+    #[test]
+    fn corruption_stays_inside_the_callers_buffer() {
+        let shim = fake(&crate::empty_table(), "[[rule]]\nfn = \"C_Sign\"\ncorrupt = true\n", None);
+        for (wrote, fired, buffer) in [(3, Some(1), [0, 0, 1, 0, 0, 0, 0, 0]), (8, None, [0; 8])] {
+            let mut out = [0u8; 8];
+            let mut len: CK_ULONG = 4;
+            let at = &raw mut len;
+            let call = shim.plan.count(Fn::C_Sign);
+            // SAFETY: a buffer of eight bytes, of which the caller offers four.
+            let (rv, rule) = unsafe {
+                corrupt_output(&shim, &call, out.as_mut_ptr(), at, || {
+                    *at = wrote;
+                    CKR_OK
+                })
+            };
+            assert_eq!((rv, rule, out), (CKR_OK, fired, buffer), "a module that wrote {wrote}");
+        }
+    }
 
     /// A ruled attribute is served as PKCS#11 serves any: the length alone without a buffer, the
     /// bytes into one that holds them, and a too-small buffer refused.

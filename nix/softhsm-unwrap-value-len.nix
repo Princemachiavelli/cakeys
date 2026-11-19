@@ -1,3 +1,7 @@
+# SoftHSM as the tests see it, the one SoftHSM this repository tests and probes against (the
+# check phase, scripts/local-tests.sh, scripts/regen-profiles.sh, pkcs11-check-compare): named for
+# its first patch, it carries all four of upstream/softhsm/.
+#
 # SoftHSM 2.7 with upstream/softhsm/ applied: C_UnwrapKey sets CKA_VALUE_LEN (SoftHSMv2 #628);
 # multi-part CKM_ECDSA_SHA* (#857) and no static teardown (#897), both on main after 2.7.0,
 # backported; its own crypto in a private OpenSSL library context (#834), so OpenSSL through

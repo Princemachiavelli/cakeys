@@ -44,9 +44,9 @@ fn toml_array(key: &str, items: &[String]) -> String {
     out
 }
 
-/// One `[[migration.*-accepts]]` entry for [`profile`], with its bits when it has
-/// them.
-fn accept_toml(s: &mut String, what: &str, row: &AcceptRow, bits: bool) {
+/// One `[[migration.*]]` row for [`profile`]: every field it parses, bits included (emit.rs
+/// F1: a `public-accepts` row lost its bounds).
+fn accept_toml(s: &mut String, what: &str, row: &AcceptRow) {
     use std::fmt::Write as _;
     let _ = writeln!(s, "\n[[migration.{what}]]");
     let _ = write!(s, "class = \"{}\"", toml_str(&row.class));
@@ -56,10 +56,10 @@ fn accept_toml(s: &mut String, what: &str, row: &AcceptRow, bits: bool) {
     if !row.curves.is_empty() {
         let _ = write!(s, "\n{}", toml_array("curves", &row.curves));
     }
-    if bits && let Some(b) = row.min_bits {
+    if let Some(b) = row.min_bits {
         let _ = write!(s, "\nmin-bits = {b}");
     }
-    if bits && let Some(b) = row.max_bits {
+    if let Some(b) = row.max_bits {
         let _ = write!(s, "\nmax-bits = {b}");
     }
     let _ = writeln!(s);
@@ -119,10 +119,11 @@ fn reported_toml(reported: &BTreeMap<String, Reported>, s: &mut String) {
     }
 }
 
-/// The subtract section for [`profile`], only when non-empty.
+/// The subtract section for [`profile`], only when non-empty: a note alone is a section too
+/// (emit.rs F1).
 fn filters_toml(p: &Profile, s: &mut String) {
     use std::fmt::Write as _;
-    if !p.subtract.mechanisms.is_empty() || !p.subtract.key_types.is_empty() {
+    if !p.subtract.mechanisms.is_empty() || !p.subtract.key_types.is_empty() || p.subtract.note.is_some() {
         let _ = writeln!(s, "\n[subtract]");
         if !p.subtract.mechanisms.is_empty() {
             let _ = writeln!(s, "{}", toml_array("mechanisms", &p.subtract.mechanisms));
@@ -186,13 +187,13 @@ pub(crate) fn profile(p: &Profile) -> String {
             let _ = writeln!(s, "plaintext-import = \"{}\"", k.name());
         }
         for row in &m.public_accepts {
-            accept_toml(&mut s, "public-accepts", row, false);
+            accept_toml(&mut s, "public-accepts", row);
         }
         for row in &m.plaintext_accepts {
-            accept_toml(&mut s, "plaintext-accepts", row, true);
+            accept_toml(&mut s, "plaintext-accepts", row);
         }
         for row in &m.refuses {
-            accept_toml(&mut s, "refuses", row, true);
+            accept_toml(&mut s, "refuses", row);
         }
     }
     for r in &p.restrict {
@@ -340,6 +341,59 @@ mod tests {
         assert!(text.starts_with("advertise = [\n  \"CKM_MECHANISM_00\",\n"));
         assert!(text.ends_with("  \"CKM_MECHANISM_11\",\n]"));
         assert!(text.lines().all(|l| l.len() <= 120));
+    }
+
+    /// Every optional field the parser reads, each set alone (beside nothing that would make
+    /// the emitter write its section anyway), takes the fuzz target's round trip: a field the
+    /// emitter writes only beside another is lost (emit.rs F1: a `[subtract]` note alone, a
+    /// `public-accepts` row's bits). A field added to the parser belongs here.
+    #[test]
+    fn every_optional_field_alone_round_trips() {
+        let head = "profile = \"m/1\"\nmode = \"observed\"\n";
+        let accepts = |table: &str| {
+            [
+                format!("[migration]\n[[migration.{table}]]\nclass = \"CKO_PRIVATE_KEY\"\n"),
+                format!("[migration]\n[[migration.{table}]]\nclass = \"CKO_PRIVATE_KEY\"\nkey-types = [\"CKK_EC\"]\n"),
+                format!("[migration]\n[[migration.{table}]]\nclass = \"CKO_PRIVATE_KEY\"\ncurves = [\"secp256r1\"]\n"),
+                format!("[migration]\n[[migration.{table}]]\nclass = \"CKO_PRIVATE_KEY\"\nmin-bits = 2048\n"),
+                format!("[migration]\n[[migration.{table}]]\nclass = \"CKO_PRIVATE_KEY\"\nmax-bits = 4096\n"),
+            ]
+        };
+        let mut bodies: Vec<String> = [
+            "partial = true\n",
+            "requires-provider = true\n",
+            "advertise = [\"CKM_EC_KEY_PAIR_GEN\"]\n",
+            "add = [\"CKM_EDDSA\"]\n",
+            "[match]\nmanufacturer = \"m\"\n",
+            "[match]\nmodule-version = \"1.0\"\n",
+            "[match]\nmodel = \"x\"\n",
+            "[match]\nfirmware = \"2\"\n",
+            "[subtract]\nmechanisms = [\"CKM_EDDSA\"]\n",
+            "[subtract]\nkey-types = [\"CKK_EC\"]\n",
+            "[subtract]\nnote = \"why\"\n",
+            "[capabilities]\n\"derive.ecdh.sealed\" = { answer = \"no\" }\n",
+            "[reported.\"CKK_RSA\"]\nmin-bits = 1024\n",
+            "[reported.\"CKK_RSA\"]\nmax-bits = 4096\n",
+            "[migration]\n",
+            "[migration]\nplaintext-import = \"create-object\"\n",
+            "[[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_RSA\"\n",
+            "[[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_RSA\"\nmin-bits = 2048\n",
+            "[[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_RSA\"\nmax-bits = 4096\n",
+            "[[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_RSA\"\nnote = \"by firmware\"\n",
+            "[notes]\ntoken = \"t\"\n",
+            "[manual.x]\nfinding = \"y\"\nevidence = \"[run] z\"\n",
+        ]
+        .map(str::to_owned)
+        .into();
+        for table in ["public-accepts", "plaintext-accepts", "refuses"] {
+            bodies.extend(accepts(table));
+        }
+        for body in bodies {
+            let text = format!("{head}{body}");
+            let parsed = Profile::from_toml(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+            assert_ne!(parsed, Profile::from_toml(head).unwrap(), "the field is not read:\n{text}");
+            crate::fuzzing::profile_round_trip(&text);
+        }
     }
 
     /// Probed with every answer no survives the emitter as that, not as never probed.

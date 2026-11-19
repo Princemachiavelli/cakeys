@@ -78,7 +78,7 @@ aes-kw = "0.3"
 cmac = "0.8"
 # The host oracle of the DES3 check values (crates/cli/tests): Triple DES on the cipher 0.5 line.
 des = "0.9"
-hmac = "0.13"
+hmac = { version = "0.13", features = ["zeroize"] }
 sha1 = "0.11"
 serde_norway = "0.9"
 tss-esapi = "7.7"
@@ -86,9 +86,10 @@ rusqlite = { version = "0.42", features = ["bundled"] }
 aes-gcm = "0.11"
 # Passphrase-protected key files (camigrate, docs/CAMIGRATE.md phase 4b): PKCS#8 EncryptedPrivateKeyInfo
 # under PBES2, and PKCS#12. pkcs12 0.2 and its cms are release candidates of the same RustCrypto
-# line as der 0.8 / x509-cert 0.3 (no second copy of anything).
+# line as der 0.8 / x509-cert 0.3 (no second copy of anything). A release candidate promises no
+# compatibility with the next, so it is pinned exactly: moving to another is a deliberate edit.
 pkcs8 = { version = "0.11", features = ["encryption", "pem"] }
-pkcs12 = { version = "0.2.0-rc.0", default-features = false, features = ["kdf"] }
+pkcs12 = { version = "=0.2.0-rc.0", default-features = false, features = ["kdf"] }
 der = { version = "0.8", features = ["alloc", "pem", "oid"] }
 zeroize = "1"
 libc = "0.2"

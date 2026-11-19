@@ -1,6 +1,9 @@
-# The light gate: every flake check that needs no VM and no fuzz run (packages.checks-no-vm in
-# flake.nix): the crane build with its token suites, clippy, rustdoc, formatting, cargo-deny,
-# MSRV, the demo and the SoftHSM repros. flake-check.yml runs everything.
+# CI: every flake check, split over three runners so none waits on or shares memory with
+# another (flake.nix, `vmChecks`). `light` builds every check that needs no VM, no fuzz run and
+# no Kani (the crane build with its token suites, clippy, rustdoc, formatting, cargo-deny, MSRV,
+# the demo, the SoftHSM repros, ...) and evaluates every output; `vm` the NixOS VM tests and
+# the fuzz smoke run; `kani` the Kani proofs, up to 5.7 GB each (nix/package-crane.nix). x86_64
+# Linux only.
 name: checks
 
 on:
@@ -18,8 +21,19 @@ concurrency:
 
 jobs:
   checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - job: light
+            build: .#checks-no-vm
+          - job: vm
+            build: .#checks-vm
+          - job: kani
+            build: .#checks.x86_64-linux.kani
+    name: ${{ matrix.job }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 300
     steps:
       # The runner image's toolchains the build never uses: room for the Nix store.
       - name: Free disk space
@@ -37,4 +51,14 @@ jobs:
         with:
           use-flakehub: false
           diagnostic-endpoint: ""
-      - run: nix build -L .#checks-no-vm
+      # The VM tests need /dev/kvm, which GitHub's standard Linux runners give public
+      # repositories (determinate-nix-action opens it to the build users). Without it they would
+      # fall back to emulation and crawl into the timeout: fail here instead.
+      - name: KVM is available
+        if: matrix.job == 'vm'
+        run: test -w /dev/kvm
+      # What no check builds still evaluates: packages, apps, the module, the dev shell.
+      - name: Every output evaluates
+        if: matrix.job == 'light'
+        run: nix flake check --no-build
+      - run: nix build -L ${{ matrix.build }}

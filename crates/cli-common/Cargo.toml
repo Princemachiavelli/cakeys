@@ -1,6 +1,6 @@
 [package]
 name = "cakeys-cli-common"
-description = "cakeys: what the cakeys, caprobe and camigrate command lines share (the provider registry, opening tokens, exit codes)"
+description = "cakeys: what the cakeys, caprobe and camigrate command lines share (the provider registry, profile activation, opening tokens, reading and saving the lock, mapping errors to their exit codes)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

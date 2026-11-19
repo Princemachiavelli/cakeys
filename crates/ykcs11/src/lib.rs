@@ -13,7 +13,7 @@ use crate::attest::{ATTESTATION_LABEL, pem_certs, piv_pool, verify_piv_attestati
 use cakeys_core::config::Locator;
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass as Class;
-use cakeys_core::{KmError, Result};
+use cakeys_core::{KmError, Msg, Result};
 use cakeys_pkcs11::Token;
 use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, Create, Destroy, PlaintextKind, Provider, Report};
 use cakeys_pkcs11::token::ModuleInfo;
@@ -39,6 +39,7 @@ static INTERMEDIATES: LazyLock<Vec<attest::Cert>> = LazyLock::new(|| {
 
 /// Entry points for the fuzz targets (`fuzz/fuzz_targets/piv_chain.rs`): the PIV attestation
 /// chain on arbitrary certificates, read or refused with an error, never a panic.
+#[cfg(any(test, feature = "fuzzing", kani))]
 pub mod fuzzing {
     /// `bytes` as a slot attestation certificate and the device certificate that signed it: a
     /// big-endian two-byte length, the slot's DER, then the device's; verified as `check`
@@ -59,7 +60,7 @@ impl Ykcs11 {
     /// # Errors
     ///
     /// `Validation` for a locator with a label, or whose `CKA_ID` names no PIV slot.
-    pub fn check_create(&self, loc: &Locator) -> Result<()> {
+    fn check_create(loc: &Locator) -> Result<()> {
         if loc.label.is_some() {
             return Err(KmError::Validation(
                 "ykcs11 ignores CKA_LABEL when generating and fixes each slot's labels; locate a key \
@@ -84,7 +85,7 @@ impl Ykcs11 {
     /// objects for the rest of the session; the key stays and is listed again by the next one
     /// (verified on a `YubiKey` 5, firmware 5.7.4, ykcs11 2.7.3).
     #[must_use]
-    pub fn keeps_destroyed_keys(&self, loc: &Locator) -> String {
+    fn keeps_destroyed_keys(loc: &Locator) -> String {
         let slot = loc.id.as_deref().and_then(piv_slot).map_or("<slot>".to_owned(), |s| format!("{s:02x}"));
         format!(
             "ykcs11 clears only the slot's certificate and leaves the key in the slot; delete it with \
@@ -98,8 +99,11 @@ impl Provider for Ykcs11 {
         "ykcs11"
     }
 
+    /// Yubico's PIV module by its `C_GetInfo` description as well: `yubihsm_pkcs11` (`YubiHSM` 2)
+    /// reports the same manufacturer, "Yubico (www.yubico.com)" \[run\], and is no PIV token
+    /// (ykcs11 lib.rs F1).
     fn matches(&self, m: &ModuleInfo) -> bool {
-        m.manufacturer.starts_with("Yubico")
+        m.manufacturer.starts_with("Yubico") && m.description.starts_with("PKCS#11 PIV Library")
     }
 
     /// ykcs11 generates (and deletes) only after `C_Login(CKU_SO)` with the PIV management key.
@@ -112,16 +116,16 @@ impl Provider for Ykcs11 {
         PlaintextKind::PivImport
     }
 
-    /// A key goes where its locator says ([`Ykcs11::check_create`]), as SO.
+    /// A key goes where its locator says (by `CKA_ID` alone, a PIV slot), as SO.
     fn create(&self, tok: &Token, req: &Create<'_>) -> Result<Option<cakeys_pkcs11::token::CreateNote>> {
-        self.check_create(req.locator)?;
+        Self::check_create(req.locator)?;
         tok.create_declared(req)
     }
 
-    /// A key is never claimed deleted ([`Ykcs11::keeps_destroyed_keys`]); anything else is, as SO.
+    /// A key is never claimed deleted (ykcs11 keeps it; the advice names `ykman`); anything else is, as SO.
     fn destroy(&self, tok: &Token, req: &Destroy<'_>) -> Result<usize> {
         if req.object.class.is_key() {
-            let advice = self.keeps_destroyed_keys(req.locator);
+            let advice = Self::keeps_destroyed_keys(req.locator);
             return Err(KmError::Unsupported(
                 format!("deleting {} on '{}': {advice}", req.object.class, tok.name).into(),
             ));
@@ -177,6 +181,8 @@ impl Provider for Ykcs11 {
             // PIV attests the asymmetric keys generated on the device; secret keys, data
             // objects and certificates have none.
             classes: &[Class::PrivateKey, Class::PublicKey],
+            // An imported key has no attestation certificate, and its slot keeps it.
+            imported: false,
         })
     }
 
@@ -184,12 +190,8 @@ impl Provider for Ykcs11 {
         // The slot's attestation certificate shares the key's CKA_ID and carries the slot in
         // its label; ykcs11 mints it when it lists the slot's objects, needing no login (seen
         // on a YubiKey 5, firmware 5.7.4).
-        let Some(Attribute::Id(id)) = ctx
-            .session
-            .get_attributes(ctx.key, &[AttributeType::Id])
-            .map_err(|e| KmError::Unavailable(format!("C_GetAttributeValue (CKA_ID): {e}").into()))?
-            .into_iter()
-            .next()
+        let Some(Attribute::Id(id)) =
+            read_attribute("CKA_ID", ctx.session.get_attributes(ctx.key, &[AttributeType::Id]))?
         else {
             return Err(KmError::Unsupported("the key object exposes no CKA_ID to find its attestation by".into()));
         };
@@ -197,12 +199,9 @@ impl Provider for Ykcs11 {
             ctx.required_spki()?.ok_or_else(|| KmError::Unsupported("PIV attests asymmetric keys only".into()))?;
         let slot = find_attestation_cert(ctx, &id)?;
         let device = find_device_cert(ctx)?;
-        let at = match ctx.chain_time {
-            cakeys_pkcs11::ChainTime::At(t) => Some(t),
-            cakeys_pkcs11::ChainTime::Unchecked => None,
-        };
-        let a = verify_piv_attestation(&slot, &device, &ANCHORS, &INTERMEDIATES, spki, at)?;
-        Ok(Attested { scheme: Scheme::PivAttestation, id: a.id, root: a.root })
+        let (a, warning) =
+            ctx.chain_time.verify(|at| verify_piv_attestation(&slot, &device, &ANCHORS, &INTERMEDIATES, spki, at))?;
+        Ok(Attested { scheme: Scheme::PivAttestation, id: a.id, root: a.root, warning })
     }
 }
 
@@ -227,10 +226,7 @@ fn find_attestation_cert(ctx: &AttestCtx<'_>, id: &[u8]) -> Result<Vec<u8>> {
         .map_err(|e| KmError::Unavailable(format!("C_FindObjects (attestation): {e}").into()))?;
     let mut certs = Vec::new();
     for h in found {
-        let label = match ctx.session.get_attributes(h, &[AttributeType::Label]) {
-            Ok(v) => v.into_iter().next(),
-            Err(_) => None,
-        };
+        let label = read_attribute("CKA_LABEL", ctx.session.get_attributes(h, &[AttributeType::Label]))?;
         // The f9 device certificate shares the prefix but not the key's CKA_ID; require a
         // non-empty slot suffix so the two can never be confused.
         if let Some(Attribute::Label(l)) = label
@@ -255,14 +251,29 @@ fn find_attestation_cert(ctx: &AttestCtx<'_>, id: &[u8]) -> Result<Vec<u8>> {
 
 /// The DER (`CKA_VALUE`) of the certificate object `h`, named `what` in its errors.
 fn certificate_value(ctx: &AttestCtx<'_>, h: cryptoki::object::ObjectHandle, what: &str) -> Result<Vec<u8>> {
-    let read = ctx.session.get_attributes(h, &[AttributeType::Value]);
-    match read
-        .map_err(|e| KmError::Unavailable(format!("C_GetAttributeValue ({what}): {e}").into()))?
-        .into_iter()
-        .next()
-    {
+    match read_attribute(what, ctx.session.get_attributes(h, &[AttributeType::Value]))? {
         Some(Attribute::Value(der)) => Ok(der),
         _ => Err(KmError::Unsupported(format!("the {what} certificate has no readable CKA_VALUE").into())),
+    }
+}
+
+/// One attribute read: the attribute, `None` when the module has none to show (absent or
+/// sensitive, which cryptoki leaves out of the result), and any other failure `Unavailable` with
+/// the module's return value. A failed `CKA_LABEL` read is never taken for "no label", which would
+/// pass over the attestation certificate and blame the key's origin (lib.rs F2).
+///
+/// # Errors
+///
+/// `Unavailable` when `C_GetAttributeValue` fails.
+fn read_attribute(
+    what: &str,
+    read: std::result::Result<Vec<Attribute>, cryptoki::error::Error>,
+) -> Result<Option<Attribute>> {
+    match read {
+        Ok(v) => Ok(v.into_iter().next()),
+        Err(e) => Err(KmError::Unavailable(
+            Msg::from(format!("C_GetAttributeValue ({what}): {e}")).with_rv(cakeys_pkcs11::token::rv_of(&e)),
+        )),
     }
 }
 
@@ -297,6 +308,40 @@ fn find_device_cert(ctx: &AttestCtx<'_>) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    /// ykcs11 claims its own module and no other Yubico one: the `C_GetInfo` strings
+    /// yubico-piv-tool 2.7.3's `libykcs11.so` and yubihsm-shell 2.8.0's `yubihsm_pkcs11.so` carry
+    /// \[run\], padded as `CK_INFO`'s fixed fields are.
+    #[test]
+    fn only_the_piv_module_is_ykcs11() {
+        let module = |manufacturer: &str, description: &str| ModuleInfo {
+            path: String::new(),
+            hash: None,
+            description: format!("{description:<32}"),
+            manufacturer: format!("{manufacturer:<32}"),
+            version: String::new(),
+            cryptoki: String::new(),
+        };
+        assert!(Ykcs11.matches(&module("Yubico (www.yubico.com)", "PKCS#11 PIV Library (SP-800-73)")));
+        assert!(!Ykcs11.matches(&module("Yubico (www.yubico.com)", "YubiHSM PKCS#11 Library")));
+        assert!(!Ykcs11.matches(&module("SoftHSM", "Implementation of PKCS11")));
+    }
+
+    /// A failed attribute read is unavailable (16) with the module's return value, never "no
+    /// label", which would pass over the attestation certificate and report the key as imported
+    /// (lib.rs F2); an attribute the module has none of is `None`.
+    #[test]
+    fn a_failed_attribute_read_is_unavailable() {
+        use cryptoki::context::Function;
+        use cryptoki::error::{Error as CkError, RvError};
+        let failed = CkError::Pkcs11(RvError::VendorDefined(0x8000_0001), Function::GetAttributeValue);
+        let e = read_attribute("CKA_LABEL", Err(failed)).unwrap_err();
+        assert!(matches!(&e, KmError::Unavailable(m) if m.contains("CKA_LABEL")), "{e}");
+        assert_eq!(e.rv(), Some(0x8000_0001));
+        assert_eq!(read_attribute("CKA_LABEL", Ok(vec![])).unwrap(), None);
+        let label = Attribute::Label(b"X.509 Certificate for PIV Attestation 9a".to_vec());
+        assert_eq!(read_attribute("CKA_LABEL", Ok(vec![label.clone()])).unwrap(), Some(label));
+    }
+
     /// ykcs11's fixed `CKA_ID` table: 01-04 the four PIV slots, 05-18 the twenty retired slots;
     /// 19 (f9, the device attestation key) and anything else is no key slot to generate into.
     #[test]
@@ -310,10 +355,10 @@ mod tests {
         }
         let loc =
             |label: Option<&str>, id: Option<&str>| Locator { label: label.map(Into::into), id: id.map(Into::into) };
-        assert!(Ykcs11.check_create(&loc(None, Some("01"))).is_ok());
-        assert!(matches!(Ykcs11.check_create(&loc(Some("x"), Some("01"))), Err(KmError::Validation(_))));
-        assert!(matches!(Ykcs11.check_create(&loc(None, Some("19"))), Err(KmError::Validation(_))));
-        assert!(Ykcs11.keeps_destroyed_keys(&loc(None, Some("18"))).contains("ykman piv keys delete 95"));
+        assert!(Ykcs11::check_create(&loc(None, Some("01"))).is_ok());
+        assert!(matches!(Ykcs11::check_create(&loc(Some("x"), Some("01"))), Err(KmError::Validation(_))));
+        assert!(matches!(Ykcs11::check_create(&loc(None, Some("19"))), Err(KmError::Validation(_))));
+        assert!(Ykcs11::keeps_destroyed_keys(&loc(None, Some("18"))).contains("ykman piv keys delete 95"));
     }
 
     /// The DER of a one-certificate PEM fixture.

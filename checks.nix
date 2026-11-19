@@ -27,6 +27,67 @@
   inherit (cakeys) msrv;
   # cargo-deny offline (see `deny` in pkgs.nix): reproducible with the flake.lock.
   deny = deny.check;
+  # Every test and function the docs name is a `fn`, and every docs/*.md cited exists
+  # (nix/doc-references.py). Its own fileset, so a docs edit does not rebuild crane.
+  doc-references =
+    let
+      src = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.unions [
+          ./docs
+          ./ISSUES.md
+          ./README.md
+          ./LICENSE
+          ./Cargo.toml
+          ./examples
+          ./profiles
+          ./crates
+          ./fuzz
+          ./nix
+          ./scripts
+          (pkgs.lib.fileset.fileFilter (f: f.hasExt "nix") ./.)
+        ];
+      };
+    in
+    pkgs.runCommand "cakeys-doc-references" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      python3 -I ${src}/nix/doc-references.py ${src}
+      touch $out
+    '';
+  # The software tokens are set up in one place, nix/token-env.sh (review D9): no other script
+  # writes a SoftHSM configuration or initialises a token by hand, but those its header leaves
+  # out (VM tests, old SoftHSM releases, upstream repros, a cloud host, p11-kit's own token).
+  token-setup =
+    let
+      src = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.fileFilter (f: f.hasExt "sh" || f.hasExt "nix") ./.;
+      };
+    in
+    pkgs.runCommand "cakeys-token-setup" { nativeBuildInputs = [ pkgs.ripgrep ]; } ''
+      cd ${src}
+      if rg -n -e 'directories\.tokendir' -e '--init-token' -g '!nix/token-env.sh' -g '!checks.nix' \
+        -g '!nix/test.nix' -g '!nix/module-test.nix' -g '!scripts/xversion.sh' -g '!upstream/**' \
+        -g '!scripts/cloud/aws.sh' -g '!nix/p11kit-test-env.sh' .; then
+        echo "token-setup: set the tokens up through nix/token-env.sh, or name the script in its header and here" >&2
+        exit 1
+      fi
+      touch $out
+    '';
+  # CI builds the three parts flake.nix splits the checks into, each once
+  # (.github/workflows/checks.yml): a part the workflow stops naming is never built there.
+  ci-jobs = pkgs.runCommand "cakeys-ci-jobs" { nativeBuildInputs = [ pkgs.ripgrep ]; } ''
+    for part in '.#checks-no-vm' '.#checks-vm' '.#checks.x86_64-linux.kani'; do
+      if [ "$(rg -c -F "build: $part" ${./.github/workflows/checks.yml})" != 1 ]; then
+        echo "ci-jobs: .github/workflows/checks.yml should build $part once" >&2
+        exit 1
+      fi
+    done
+    if [ -e ${./.github/workflows}/flake-check.yml ]; then
+      echo "ci-jobs: flake-check.yml would build the checks a second time" >&2
+      exit 1
+    fi
+    touch $out
+  '';
   # nix/demo.sh straight through: every step's expected exit code still holds.
   demo = demo.check;
   # cakeys, caprobe and camigrate without their `tpm2` and `ykcs11` features (nix/package-crane.nix).
@@ -94,10 +155,14 @@
       quint typecheck ${spec}
       quint run ${spec} --seed 1 --max-samples 2000 --max-steps 12 --invariant invariants \
         --witnesses ${pkgs.lib.concatMapStringsSep " " (w: "decidedBy${w}") witnesses} | tee run.txt
-      if grep ' witnessed in 0 trace' run.txt; then
-        echo "a rule no simulated run reaches" >&2
-        exit 1
-      fi
+      # A positive count per witness, not the absence of a zero: a reworded or missing line
+      # fails the check instead of passing it.
+      for w in ${pkgs.lib.concatStringsSep " " witnesses}; do
+        if ! grep -Eq "^decidedBy$w was witnessed in [1-9][0-9]* trace" run.txt; then
+          echo "quint: no simulated run reaches decidedBy$w (or quint no longer reports it)" >&2
+          exit 1
+        fi
+      done
       quint verify ${spec} --max-steps 2 --invariant invariants | tee verify.txt
       mkdir $out
       cp run.txt verify.txt $out/
@@ -269,6 +334,29 @@
         }).signing
           { }
       ).id;
+    # A lock path that does not exist is an error, in `id` and in `check` alike, not a silent
+    # first use; `null` is the lock not yet recorded.
+    assert
+      let
+        missing =
+          (self.lib.mkKeys {
+            inherit cakeys;
+            config = ./crates/cli/tests/fixtures/keys.toml;
+            lock = ./crates/cli/tests/fixtures/no-such.lock;
+          }).signing
+            { };
+      in
+      fails missing.id && fails missing.check;
+    assert
+      !(pkgs.lib.hasInfix "--lock"
+        (
+          (self.lib.mkKeys {
+            inherit cakeys;
+            config = ./crates/cli/tests/fixtures/keys.toml;
+          }).signing
+            { }
+        ).check
+      );
     # No scheme: the CLI verifies every ID the spec computes; a scheme also requires it.
     assert pkgs.lib.hasInfix "check signing-cert --token softhsm" signing-cert.check;
     assert pkgs.lib.hasInfix "check signing-cert.id.certhash"
@@ -310,6 +398,65 @@
   # examples/: each example's run.sh on throwaway tokens (a software TPM among them), and its
   # Nix files evaluated.
   examples = pkgs.callPackage ./nix/examples.nix { inherit self cakeys; };
+  # The NixOS module's assertions, evaluated only (no VM): each configuration it must refuse is
+  # refused with its own message, and a sound one passes them all.
+  module-assertions =
+    let
+      eval =
+        m:
+        (pkgs.nixos {
+          imports = [
+            self.nixosModules.default
+            m
+          ];
+          services.cakeys.package = cakeys;
+        }).config;
+      # The failing assertions of the module's own (the rest of NixOS's minimal configuration
+      # has its own complaints, a missing root file system among them).
+      refused =
+        m:
+        map (a: a.message) (
+          builtins.filter (a: !a.assertion && pkgs.lib.hasPrefix "services.cakeys" a.message)
+            (eval m).assertions
+        );
+      check = extra: {
+        services.cakeys.checks.k = {
+          config = ./crates/cli/tests/fixtures/keys.toml;
+          lock = "/var/lib/cakeys/keys.lock";
+          requiredBy = [ "signer.service" ];
+        }
+        // extra;
+      };
+      says = needle: m: builtins.any (pkgs.lib.hasInfix needle) (refused m);
+    in
+    assert refused (check { }) == [ ];
+    assert says "--uri-pin value" (check {
+      args = [
+        "--uri-pin"
+        "value"
+      ];
+    });
+    assert says "--uri-pin value" (check {
+      args = [ "--uri-pin=value" ];
+    });
+    assert
+      refused (check {
+        args = [
+          "--uri-pin"
+          "value"
+        ];
+        outputFile = "/run/cakeys/k.pem";
+      }) == [ ];
+    assert says "requiredBy is empty" (check {
+      requiredBy = [ ];
+    });
+    assert says "sandbox.pcscd.enable" { services.cakeys.tokens.p.pcscd = true; };
+    assert
+      refused {
+        services.cakeys.sandbox.pcscd.enable = true;
+        services.cakeys.tokens.p.pcscd = true;
+      } == [ ];
+    pkgs.runCommand "cakeys-module-assertions" { } "touch $out";
 }
 # x86_64-linux only, as Kani is packaged (nix/kani.nix): the Kani proofs in cakeys_core::fuzzing.
 // pkgs.lib.optionalAttrs (cakeys.kani != null) {

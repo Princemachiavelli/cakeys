@@ -346,7 +346,7 @@ fn curves_and_rsa_sizes_match_an_independent_der_oracle() {
 fn hmac_key_types_commit_with_their_own_hash() {
     use cryptoki::object::KeyType as K;
     let Some(e) = env("hmac_types") else { return };
-    if !cryptoki_hmac_types_fixed(std::env::var("CAKEYS_TEST_REQUIRE").is_ok()) {
+    if !hmac_types_fixed(REF.require_var) {
         return;
     }
     // SoftHSM wants HMAC keys at least as long as the hash output.
@@ -377,33 +377,21 @@ fn hmac_key_types_commit_with_their_own_hash() {
         assert_eq!(e.code(&["lock", "--spec", name, "--token", "ref", "--update-lock"]), 0, "{name}");
         let label = format!("key-management/v1/commitment/{name}/{}", len * 8);
         let value = &material[..len];
-        let mac = |out: Vec<u8>| sri(&out);
+        // The host's HMAC of the label with the type's own hash, one line per type (review
+        // identity.rs F2: five copies of the same three lines).
+        macro_rules! mac {
+            ($hash:ty) => {{
+                let mut m = <Hmac<$hash> as KeyInit>::new_from_slice(value).unwrap();
+                m.update(label.as_bytes());
+                sri(&m.finalize().into_bytes())
+            }};
+        }
         let want = match name {
-            "CKK_SHA_1_HMAC" => mac({
-                let mut m = <Hmac<sha1::Sha1> as KeyInit>::new_from_slice(value).unwrap();
-                m.update(label.as_bytes());
-                m.finalize().into_bytes().to_vec()
-            }),
-            "CKK_SHA224_HMAC" => mac({
-                let mut m = <Hmac<sha2::Sha224> as KeyInit>::new_from_slice(value).unwrap();
-                m.update(label.as_bytes());
-                m.finalize().into_bytes().to_vec()
-            }),
-            "CKK_SHA256_HMAC" => mac({
-                let mut m = <Hmac<sha2::Sha256> as KeyInit>::new_from_slice(value).unwrap();
-                m.update(label.as_bytes());
-                m.finalize().into_bytes().to_vec()
-            }),
-            "CKK_SHA384_HMAC" => mac({
-                let mut m = <Hmac<sha2::Sha384> as KeyInit>::new_from_slice(value).unwrap();
-                m.update(label.as_bytes());
-                m.finalize().into_bytes().to_vec()
-            }),
-            _ => mac({
-                let mut m = <Hmac<sha2::Sha512> as KeyInit>::new_from_slice(value).unwrap();
-                m.update(label.as_bytes());
-                m.finalize().into_bytes().to_vec()
-            }),
+            "CKK_SHA_1_HMAC" => mac!(sha1::Sha1),
+            "CKK_SHA224_HMAC" => mac!(sha2::Sha224),
+            "CKK_SHA256_HMAC" => mac!(sha2::Sha256),
+            "CKK_SHA384_HMAC" => mac!(sha2::Sha384),
+            _ => mac!(sha2::Sha512),
         };
         assert_eq!(e.locked_id(name, "commitment"), want, "{name}");
     }

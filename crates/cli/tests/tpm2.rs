@@ -16,54 +16,28 @@ use std::process::Command;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
-struct Env {
-    w: Workdir,
-    module: String,
+/// The suite for test `name` ([`tpm2_tokens`]), or `None` (skipped). A tpm2-pkcs11 session sees
+/// only the objects that existed when it opened: take [`Suite::session`] after the run that made
+/// them.
+fn env(name: &str) -> Option<Suite> {
+    let module = suite_var("CAKEYS_TPM_MODULE", "CAKEYS_TPM_REQUIRE", name)?;
+    Some(Suite::new(&format!("tpm2-{name}"), module, tpm2_tokens).checking(no_attestation_off_swtpm))
 }
 
-impl std::ops::Deref for Env {
-    type Target = Workdir;
-    fn deref(&self) -> &Workdir {
-        &self.w
-    }
+/// Every keys.toml a test writes: an attestation provisions a persistent Attestation Key, so one
+/// asking for it is written only against the suite's swtpm (review tpm2.rs F1;
+/// docs/DEVELOPMENT.md, "Hardware rules").
+fn no_attestation_off_swtpm(text: &str) {
+    assert!(
+        !text.contains("attestation = true") || on_swtpm(),
+        "an attestation makes a persistent TPM object: only against the suite's swtpm"
+    );
 }
 
-fn env(name: &str) -> Option<Env> {
-    let Ok(module) = std::env::var("CAKEYS_TPM_MODULE") else {
-        assert!(std::env::var("CAKEYS_TPM_REQUIRE").is_err(), "CAKEYS_TPM_MODULE is required");
-        eprintln!("skipping {name}: CAKEYS_TPM_MODULE not set");
-        return None;
-    };
-    Some(Env { w: Workdir::new(&format!("tpm2-{name}")), module })
-}
-
-impl Env {
-    /// keys.toml: the suite's tokens ([`tpm2_tokens`]) and `body`.
-    fn config(&self, body: &str) {
-        self.write_config(&(tpm2_tokens(&self.module, &self.dir) + body));
-    }
-
+impl Suite {
     /// The attestation a realisation pins (§3.7: per realisation, never in the object's ids).
     fn locked_attestation(&self, spec: &str, token: &str) -> toml::Value {
         self.lock()["realisations"][spec][token]["attestation"].clone()
-    }
-
-    /// `tpm2_ptool <args> --label kmtest --userpin 1234 --path $TPM2_PKCS11_STORE`.
-    #[expect(clippy::unused_self, reason = "the fixture helpers sit in an impl so the call sites read uniformly")]
-    fn ptool(&self, args: &[&str]) {
-        let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
-        let out = Command::new("tpm2_ptool")
-            .args(args)
-            .args(["--label=kmtest", "--userpin=1234", &format!("--path={store}")])
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "tpm2_ptool {args:?}: {}", stderr(&out));
-    }
-
-    /// A fresh session: tpm2-pkcs11 loads the object list when a session opens, so objects
-    /// created by another process afterwards are invisible to it.
-    fn session(&self) -> TestSession {
-        open_session(&self.module, "kmtest", "1234")
     }
 }
 
@@ -83,7 +57,7 @@ fn unwrap_tpm2(v: &[u8]) -> Vec<u8> {
 #[test]
 fn tpm2_provider_refuses_what_the_module_cannot_do() {
     let Some(e) = env("refusals") else { return };
-    e.ptool(&["addkey", "--algorithm=aes256", "--key-label=refusal-aes"]);
+    ptool(&["addkey", "--algorithm=aes256", "--key-label=refusal-aes"]);
     e.config(
         r#"
 [objects.aes-gen]
@@ -201,15 +175,26 @@ fn tpm2_generated_keys_match_der_oracle() {
 #[test]
 fn tpm2_identity_failure_after_create_leaves_nothing() {
     let Some(e) = env("orphan") else { return };
-    // Without the provider, tpm2-pkcs11's P-521 point is rejected after the key was generated.
-    e.config(
-        "[objects.p]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp521r1\"\n\n\
-         [specs.p]\nobject = \"p\"\nattributes = { CKA_SIGN = true }\ntokens.tpm-generic = { locator = { CKA_LABEL = \"orphan-p521\" }, origin = \"create\" }\n",
+    // The key is generated, then its point, read through the fault shim, is cut short: no
+    // identity, so what was made is removed. The shim does it whatever tpm2-pkcs11's version
+    // (review tpm2.rs F4: the trigger was tpm2-pkcs11's own malformed P-521 point).
+    e.write_config(
+        &(tpm2_tokens(&fault_shim(), &e.dir)
+            + "[objects.p]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+               [specs.p]\nobject = \"p\"\nattributes = { CKA_SIGN = true }\n\
+               tokens.tpm = { locator = { CKA_LABEL = \"orphan-p256\" }, origin = \"create\" }\n"),
     );
-    let o = e.km(&["create", "--spec", "p", "--token", "tpm-generic", "--no-update-lock"]);
-    assert_eq!(code(&o), 13);
-    assert!(stderr(&o).contains("removed 2 object(s) just created"));
-    assert_eq!(labelled(&e.session(), "orphan-p521"), 0);
+    let plan = e.dir.join("plan.toml");
+    let rule = "fn = \"C_GetAttributeValue\"\nof_label = \"orphan-p256\"\nattribute = \"CKA_EC_POINT\"\ntruncate = 10";
+    std::fs::write(&plan, format!("[[rule]]\n{rule}\n")).unwrap();
+    let o = e.km_env(
+        &["create", "--spec", "p", "--token", "tpm", "--no-update-lock"],
+        &[("P11_FAULT_MODULE", std::path::Path::new(&e.module)), ("P11_FAULT_PLAN", &plan)],
+    );
+    assert_eq!(code(&o), 13, "{}", stderr(&o));
+    assert!(stderr(&o).contains("is not a P256 point"), "{}", stderr(&o));
+    assert!(stderr(&o).contains("removed 2 object(s) just created"), "{}", stderr(&o));
+    assert_eq!(labelled(&e.session(), "orphan-p256"), 0, "what the failed create made is still there");
 }
 
 /// `pop-ecdh` on tpm2-pkcs11: it derives, but cannot MAC with a sealed derived secret (its
@@ -240,16 +225,11 @@ const HMAC384_VALUE: &[u8; 48] = b"key-management hmac-sha384 test vector, 48 by
 #[test]
 fn tpm2_imported_keys_match_openssl_and_host_hmac() {
     let Some(e) = env("imported") else { return };
-    if !cryptoki_hmac_types_fixed(std::env::var("CAKEYS_TPM_REQUIRE").is_ok()) {
+    if !hmac_types_fixed("CAKEYS_TPM_REQUIRE") {
         return;
     }
-    e.ptool(&[
-        "import",
-        "--algorithm=ecc",
-        &format!("--privkey={FIXTURES}/tpm-import-p256.pem"),
-        "--key-label=imp-p256",
-    ]);
-    e.ptool(&[
+    ptool(&["import", "--algorithm=ecc", &format!("--privkey={FIXTURES}/tpm-import-p256.pem"), "--key-label=imp-p256"]);
+    ptool(&[
         "import",
         "--algorithm=rsa",
         &format!("--privkey={FIXTURES}/tpm-import-rsa2048.pem"),
@@ -257,7 +237,7 @@ fn tpm2_imported_keys_match_openssl_and_host_hmac() {
     ]);
     let hmac_file = e.dir.join("hmac.bin");
     std::fs::write(&hmac_file, HMAC_VALUE).unwrap();
-    e.ptool(&[
+    ptool(&[
         "import",
         "--algorithm=hmac:sha256",
         &format!("--privkey={}", hmac_file.display()),
@@ -265,7 +245,7 @@ fn tpm2_imported_keys_match_openssl_and_host_hmac() {
     ]);
     let hmac384_file = e.dir.join("hmac384.bin");
     std::fs::write(&hmac384_file, HMAC384_VALUE).unwrap();
-    e.ptool(&[
+    ptool(&[
         "import",
         "--algorithm=hmac:sha384",
         &format!("--privkey={}", hmac384_file.display()),
@@ -333,7 +313,7 @@ fn tpm2_aes_key_is_identified_by_its_kcv() {
     let Some(e) = env("aes") else { return };
     // tpm2-pkcs11 cannot import AES keys, so the oracle here is a consistency check: the same
     // block encrypted through a separate session. The independent AES oracle runs on SoftHSM.
-    e.ptool(&["addkey", "--algorithm=aes256", "--key-label=kcv-aes"]);
+    ptool(&["addkey", "--algorithm=aes256", "--key-label=kcv-aes"]);
     e.config(
         "[objects.aes]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
          [specs.aes]\nobject = \"aes\"\nattributes = { CKA_ENCRYPT = true, CKA_SENSITIVE = true }\n\
@@ -389,10 +369,15 @@ fn tpm2_private_data_object_is_identified_by_its_value() {
 
 /// The `tpm-certify` commitment (§3.7 of docs/DESIGN.md): a native `TPM2_Certify` over the
 /// object's Name, host-verified against a provisioned AK, and cross-checked against the
-/// material `rfc7093m4` names.
+/// material `rfc7093m4` names. It provisions persistent objects (the AK, a key at another AK
+/// handle): on the suite's swtpm only (review tpm2.rs F1).
 #[test]
 fn tpm2_keys_attest_their_tpm_residence() {
     let Some(e) = env("attest") else { return };
+    if !on_swtpm() {
+        eprintln!("skipping attest: it makes persistent TPM objects, on the suite's swtpm only");
+        return;
+    }
     // A generated EC key (9a slot style): attested on the TPM, once the AK is provisioned.
     e.config(
         "[objects.p256]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
@@ -443,26 +428,20 @@ fn tpm2_keys_attest_their_tpm_residence() {
     }
     // `check` is a read like verify (DESIGN §3.7): it fails the same way and leaves the TPM's
     // persistent handles as they were, the missing AK included.
-    if on_swtpm() {
-        let before = persistent_handles();
-        for _ in 0..2 {
-            let o = e.km(&["check", "p256.id.tpm-certify", "--token", "tpm"]);
-            assert_eq!(code(&o), 14, "{}", stderr(&o));
-            assert!(stderr(&o).contains("no Attestation Key at 0x81000017"));
-        }
-        assert_eq!(persistent_handles(), before);
-        assert!(!before.contains("0x81000017"), "{before}");
+    let before = persistent_handles();
+    for _ in 0..2 {
+        let o = e.km(&["check", "p256.id.tpm-certify", "--token", "tpm"]);
+        assert_eq!(code(&o), 14, "{}", stderr(&o));
+        assert!(stderr(&o).contains("no Attestation Key at 0x81000017"));
     }
+    assert_eq!(persistent_handles(), before);
+    assert!(!before.contains("0x81000017"), "{before}");
     // A key at the AK handle that is not a restricted signing key is never trusted as the AK:
     // an unrestricted one could sign a forged attestation.
     let ctx = e.dir.join("storage.ctx");
-    for args in [
-        vec!["tpm2_createprimary", "-C", "o", "-G", "ecc", "-c", ctx.to_str().unwrap()],
-        vec!["tpm2_evictcontrol", "-C", "o", "-c", ctx.to_str().unwrap(), "0x81000018"],
-    ] {
-        let out = Command::new(args[0]).args(&args[1..]).output().unwrap();
-        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
-    }
+    let ctx = ctx.to_str().unwrap();
+    tpm2_tool("createprimary", &["-C", "o", "-G", "ecc", "-c", ctx]);
+    tpm2_tool("evictcontrol", &["-C", "o", "-c", ctx, "0x81000018"]);
     std::fs::write(e.dir.join("keys.toml"), alt("0x81000018")).unwrap();
     let o = e.km(&r);
     assert_eq!(code(&o), 13, "{}", stderr(&o));
@@ -470,10 +449,10 @@ fn tpm2_keys_attest_their_tpm_residence() {
     std::fs::write(e.dir.join("keys.toml"), &base).unwrap();
 
     // HMAC keys attest too (TPM2_Certify covers any loaded object), pairing with `commitment`.
-    if cryptoki_hmac_types_fixed(false) {
+    if hmac_types_fixed("CAKEYS_TPM_REQUIRE") {
         let hmac_file = e.dir.join("hmac.bin");
         std::fs::write(&hmac_file, HMAC_VALUE).unwrap();
-        e.ptool(&[
+        ptool(&[
             "import",
             "--algorithm=hmac:sha256",
             &format!("--privkey={}", hmac_file.display()),
@@ -502,26 +481,25 @@ fn tpm2_keys_attest_their_tpm_residence() {
 #[test]
 fn tpm2_each_token_pins_its_own_attestation() {
     let Some(e) = env("attest-two") else { return };
-    if !cryptoki_hmac_types_fixed(std::env::var("CAKEYS_TPM_REQUIRE").is_ok()) {
+    if !hmac_types_fixed("CAKEYS_TPM_REQUIRE") {
         return;
     }
-    let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
-    let ptool = |args: &[&str]| {
-        let out = Command::new("tpm2_ptool").args(args).arg(format!("--path={store}")).output().unwrap();
-        assert!(out.status.success(), "tpm2_ptool {args:?}: {}", stderr(&out));
-    };
-    ptool(&["addtoken", "--pid=1", "--label=kmtest2", "--sopin=5678", "--userpin=1234"]);
+    let store = tpm2_store();
+    ptool_in(&store, &["addtoken", "--pid=1", "--label=kmtest2", "--sopin=5678", "--userpin=1234"]);
     let hmac_file = e.dir.join("hmac.bin");
     std::fs::write(&hmac_file, HMAC_VALUE).unwrap();
     for label in ["kmtest", "kmtest2"] {
-        ptool(&[
-            "import",
-            "--algorithm=hmac:sha256",
-            &format!("--privkey={}", hmac_file.display()),
-            "--key-label=two-hmac",
-            &format!("--label={label}"),
-            "--userpin=1234",
-        ]);
+        ptool_in(
+            &store,
+            &[
+                "import",
+                "--algorithm=hmac:sha256",
+                &format!("--privkey={}", hmac_file.display()),
+                "--key-label=two-hmac",
+                &format!("--label={label}"),
+                "--userpin=1234",
+            ],
+        );
     }
     let pin = e.dir.join("pin").display().to_string();
     e.config(&format!(
@@ -551,16 +529,17 @@ fn tpm2_each_token_pins_its_own_attestation() {
 #[test]
 fn tpm2_attested_material_travels_to_a_second_hsm() {
     let Some(e) = env("attest-travel") else { return };
-    if !cryptoki_hmac_types_fixed(std::env::var("CAKEYS_TPM_REQUIRE").is_ok()) {
+    if !hmac_types_fixed("CAKEYS_TPM_REQUIRE") {
         return;
     }
-    let soft = std::env::var("CAKEYS_TEST_MODULE").expect("the SoftHSM module (harness preCheck)");
+    // SoftHSM beside the TPM: required with it (the harness's preCheck sets both).
+    let Some(soft) = suite_var("CAKEYS_TEST_MODULE", "CAKEYS_TPM_REQUIRE", "attest-travel") else { return };
     let pin = e.dir.join("pin").display().to_string();
     // The same HMAC material on the TPM (imported, attested) and on SoftHSM (planted, not
     // attestable: SoftHSM attests nothing).
     let hmac_file = e.dir.join("hmac.bin");
     std::fs::write(&hmac_file, HMAC_VALUE).unwrap();
-    e.ptool(&[
+    ptool(&[
         "import",
         "--algorithm=hmac:sha256",
         &format!("--privkey={}", hmac_file.display()),
@@ -663,7 +642,7 @@ fn edit_private_row(label: &str, edit: impl FnOnce(&str) -> String) {
 fn tpm2_attestation_refuses_a_store_that_disagrees() {
     let Some(e) = env("attest-store") else { return };
     for label in ["store-a", "store-b"] {
-        e.ptool(&["addkey", "--algorithm=ecc256", &format!("--key-label={label}")]);
+        ptool(&["addkey", "--algorithm=ecc256", &format!("--key-label={label}")]);
     }
     // The proof of possession would see the swap first: this is about the attestation alone.
     e.config(
@@ -706,7 +685,7 @@ fn tpm2_attestation_refuses_a_store_that_disagrees() {
     // An HMAC key's blobs under the EC key's attributes: the TPM certifies a symmetric object.
     let hmac_file = e.dir.join("hmac.bin");
     std::fs::write(&hmac_file, HMAC_VALUE).unwrap();
-    e.ptool(&[
+    ptool(&[
         "import",
         "--algorithm=hmac:sha256",
         &format!("--privkey={}", hmac_file.display()),
@@ -723,15 +702,13 @@ fn tpm2_attestation_refuses_a_store_that_disagrees() {
     refused("the store object is a symmetric object, but the PKCS#11 object is an asymmetric key");
 
     // A second primary, transient, with a token of its own.
-    let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
-    let path = format!("--path={store}");
+    let store = tpm2_store();
     for args in [
-        vec!["init", "--transient-parent=tpm2-tools-default", &path],
-        vec!["addtoken", "--pid=2", "--label=kmtrans", "--sopin=5678", "--userpin=1234", &path],
-        vec!["addkey", "--algorithm=ecc256", "--label=kmtrans", "--userpin=1234", "--key-label=trans", &path],
+        &["init", "--transient-parent=tpm2-tools-default"][..],
+        &["addtoken", "--pid=2", "--label=kmtrans", "--sopin=5678", "--userpin=1234"],
+        &["addkey", "--algorithm=ecc256", "--label=kmtrans", "--userpin=1234", "--key-label=trans"],
     ] {
-        let out = Command::new("tpm2_ptool").args(&args).output().unwrap();
-        assert!(out.status.success(), "tpm2_ptool {args:?}: {}", stderr(&out));
+        ptool_in(&store, args);
     }
     e.write_config(&format!(
         "[tokens.trans]\nmodule = \"{}\"\ntokenLabel = \"kmtrans\"\npinFile = \"{}\"\n\n\
@@ -782,8 +759,8 @@ fn tpm2_attests_each_key_type() {
 #[test]
 fn tpm2_attestation_finds_its_store_and_tpm_as_configured() {
     let Some(e) = env("attest-find") else { return };
-    e.ptool(&["addkey", "--algorithm=ecc256", "--key-label=find-a"]);
-    let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
+    ptool(&["addkey", "--algorithm=ecc256", "--key-label=find-a"]);
+    let store = tpm2_store();
     let tcti = std::env::var("TPM2_PKCS11_TCTI").unwrap();
     let config = |options: &str| {
         e.write_config(&format!(
@@ -804,27 +781,15 @@ fn tpm2_attestation_finds_its_store_and_tpm_as_configured() {
     let home = e.dir.join("home");
     std::fs::create_dir_all(&home).unwrap();
     std::os::unix::fs::symlink(&store, home.join(".tpm2_pkcs11")).unwrap();
-    let o = Command::new(BIN)
-        .env_remove("TPM2_PKCS11_STORE")
-        .env_remove("NIX_BUILD_TOP")
-        .env("HOME", &home)
-        .arg("--config")
-        .arg(e.dir.join("keys.toml"))
-        .args(r)
-        .output()
-        .unwrap();
+    let o = e.run().env_remove("TPM2_PKCS11_STORE").env("HOME", &home).output(&r);
     assert_eq!(code(&o), 18, "the store under $HOME: {}", stderr(&o));
 
     // A store of another token, named in the options.
     let other = e.dir.join("other-store");
-    let path = format!("--path={}", other.display());
     std::fs::create_dir_all(&other).unwrap();
-    for args in
-        [vec!["init", &path], vec!["addtoken", "--pid=1", "--label=other", "--sopin=5678", "--userpin=1234", &path]]
-    {
-        let out = Command::new("tpm2_ptool").args(&args).output().unwrap();
-        assert!(out.status.success(), "tpm2_ptool {args:?}: {}", stderr(&out));
-    }
+    let other_store = other.to_str().unwrap();
+    ptool_in(other_store, &["init"]);
+    ptool_in(other_store, &["addtoken", "--pid=1", "--label=other", "--sopin=5678", "--userpin=1234"]);
     config(&format!("options = {{ tpm2Store = \"{}\" }}", other.display()));
     let o = e.km(&r);
     assert_eq!(code(&o), 11, "{}", stderr(&o));
@@ -858,8 +823,35 @@ fn tpm2_object_matrix_is_the_committed_one() {
 /// is named for it). The same suite shape can be pointed at a real TPM (`nix/ftpm-test-env.sh`):
 /// a test that changes TPM state beyond the token's own objects runs only here
 /// (docs/DEVELOPMENT.md, "Hardware rules").
+///
+/// The script says so (`CAKEYS_TPM_SWTPM`), and the TPM agrees: its vendor strings are swtpm's,
+/// "SW  " " TPM" \[run\]. A marker on another TPM is a misconfigured run and fails; so does a
+/// suite that requires the TPM (`CAKEYS_TPM_REQUIRE`) on any other: the steps that change the
+/// TPM are part of what it requires, never skipped quietly (review tpm2.rs F3). It was a D-Bus
+/// address substring, and a renamed bus skipped them with every test passing.
 fn on_swtpm() -> bool {
-    std::env::var("DBUS_SESSION_BUS_ADDRESS").is_ok_and(|a| a.contains("unix:abstract=cakeys-tpm-"))
+    let said = std::env::var_os("CAKEYS_TPM_SWTPM").is_some();
+    let software = said && tpm_is_software();
+    assert!(!said || software, "CAKEYS_TPM_SWTPM is set, but the TPM's vendor strings are not swtpm's");
+    assert!(
+        software || std::env::var_os("CAKEYS_TPM_REQUIRE").is_none(),
+        "CAKEYS_TPM_REQUIRE is set, but this is not the suite's swtpm (nix/tpm2-test-env.sh sets CAKEYS_TPM_SWTPM)"
+    );
+    software
+}
+
+/// Whether the TPM's fixed properties carry swtpm's vendor strings (`TPM2_PT_VENDOR_STRING_1`
+/// and `_2`, "SW  " and " TPM").
+fn tpm_is_software() -> bool {
+    let out = Command::new("tpm2_getcap").arg("properties-fixed").output().unwrap();
+    assert!(out.status.success(), "tpm2_getcap properties-fixed: {}", stderr(&out));
+    let text = stdout(&out);
+    let raw = |name: &str| {
+        let mut lines = text.lines().skip_while(|l| l.trim_end() != format!("{name}:"));
+        lines.nth(1).map(|l| l.trim().to_owned())
+    };
+    raw("TPM2_PT_VENDOR_STRING_1").as_deref() == Some("raw: 0x53572020")
+        && raw("TPM2_PT_VENDOR_STRING_2").as_deref() == Some("raw: 0x2054504D")
 }
 
 /// What `tpm2_getcap handles-persistent` lists: the TPM's persistent handles.
@@ -884,7 +876,7 @@ fn tpm2_tool(tool: &str, args: &[&str]) {
 #[test]
 fn tpm2_attestation_says_what_it_lacks() {
     let Some(e) = env("attest-lacks") else { return };
-    e.ptool(&["addkey", "--algorithm=ecc256", "--key-label=lacks-a"]);
+    ptool(&["addkey", "--algorithm=ecc256", "--key-label=lacks-a"]);
     let config = |token: &str| {
         e.write_config(&format!(
             "[tokens.tpm]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\n{token}\n\n\
@@ -902,14 +894,7 @@ fn tpm2_attestation_says_what_it_lacks() {
     };
 
     config(&format!("{pin}\noptions = {{ tpm2Store = \"~/no-store\" }}"));
-    let o = Command::new(BIN)
-        .env_remove("HOME")
-        .env_remove("NIX_BUILD_TOP")
-        .arg("--config")
-        .arg(e.dir.join("keys.toml"))
-        .args(r)
-        .output()
-        .unwrap();
+    let o = e.run().env_remove("HOME").output(&r);
     refused(&o, 16, "opening tpm2-pkcs11 store ~/no-store");
 
     config(&pin);

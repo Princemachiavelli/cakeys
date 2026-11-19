@@ -8,13 +8,13 @@
 //! source and target); each is imported, checked and rolled back on its own.
 
 use crate::bundle::{BUNDLE_FORMAT, BUNDLE_VERSION, Bundle, Entry, Source, TransportRef, encode};
-use crate::host::free_locator;
+use crate::public::free_locator;
 use crate::public::{Moved, already_there, public_key, roll_back};
 use crate::tokens::unwrap_refusals;
-use cakeys_core::config::{AttrValue, Lock, Origin};
+use cakeys_core::config::{AttrValue, Binding, Lock, Origin};
 use cakeys_core::migrate::{Exposure, Method, Side};
 use cakeys_core::pop::OaepHash;
-use cakeys_core::types::ObjectClass as Class;
+use cakeys_core::types::{KeyType, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::token::{SessionObject, with_public_default_dropped};
@@ -350,8 +350,11 @@ fn rsa_aes_unwrap(
 /// `PreconditionFailed` (14) when the lock pins no IDs for its object, or another type;
 /// `HashMismatch` (10) for bundle IDs, label or transport key that are not the lock's, and —
 /// after the import — material whose identity is not the locked one; `Conflict` (13) for an
-/// occupied locator or blobs that do not unwrap (tampered, or wrapped to another key);
-/// whatever `ops::lock_import` refuses.
+/// occupied locator or blobs the module finds invalid (tampered, or wrapped to another key);
+/// `Unsupported` (15) for an unwrap whose mechanism or template the target refuses, and
+/// `Unavailable` (16) for one the device or session fails, which some modules also say of a
+/// damaged blob ([`unwrap_failure`]); whatever
+/// `ops::lock_import` refuses.
 pub(crate) fn import(
     b: &Bundle,
     e: &Entry,
@@ -417,6 +420,37 @@ pub(crate) fn preflight(
     let spki = e.public_spki().map_err(|e| KmError::Validation(e.into()))?;
     let occupied = free_locator(dst, to, spki.as_deref())?;
     Ok(Preflight { unwrapping: Some(unwrapping), public_half: occupied.public_half })
+}
+
+/// A bundle read from a file (`import --in`) against the binding `dst` records: an EC or Edwards
+/// private key under `token-asserted` is refused (14) before the target is touched.
+///
+/// The transport key is public, so anyone can seal a key of their own to it and set it beside
+/// the lock's IDs and `publicKey`; RFC 5649 authenticates the bytes, not who wrapped them. A
+/// target that keeps no point with an unwrapped EC key (`SoftHSM`) takes the key's identity
+/// from the public half the import creates from that same `publicKey`, so only a `pop-*`
+/// proof ties the unwrapped key to it. An RSA private key carries its modulus, so its identity
+/// is its own; `migrate` makes its bundle in memory from the locked source, so it is not
+/// checked here.
+///
+/// # Errors
+///
+/// `PreconditionFailed` for an EC or Edwards private key whose binding is `token-asserted`.
+pub(crate) fn check_carried(e: &Entry, dst: &Target) -> Result<()> {
+    let own_identity = !matches!(dst.object.key_type, Some(KeyType::Ec | KeyType::EcEdwards));
+    if own_identity || ops::binding(dst) != Some(Binding::TokenAsserted) {
+        return Ok(());
+    }
+    Err(KmError::PreconditionFailed(
+        format!(
+            "{dst}: binding = \"token-asserted\" proves nothing of the {} key '{}' a bundle file carries: its \
+             identity would rest on the public key the bundle itself names; bind it with pop-sign or pop-ecdh \
+             there, or move it with `camigrate migrate`",
+            dst.object.key_type.map_or_else(String::new, |k| k.to_string()),
+            e.object
+        )
+        .into(),
+    ))
 }
 
 /// What [`preflight`] established: the transport key to unwrap with (none for a public object),
@@ -504,10 +538,7 @@ fn create(
         .ok_or_else(|| KmError::Validation(format!("{dst}: a public object is created, not unwrapped").into()))?;
     let session = to.raw();
     let refused = |what: &str, e: cryptoki::error::Error| {
-        KmError::Conflict(
-            format!("{dst}: {what} on '{}': {e} (the bundle was tampered with, or wrapped to another key)", to.name)
-                .into(),
-        )
+        unwrap_error(&format!("{dst}: {what} on '{}'", to.name), &e, |m| to.unsupported(m))
     };
     // The templates as the provider adjusts them, before anything is created.
     let template = templates::import_key(
@@ -536,7 +567,7 @@ fn create(
             // A target with no RFC 5649 of its own (AWS CloudHSM lists one it refuses [run])
             // unwraps both in one CKM_RSA_AES_KEY_WRAP: its input is the same two blobs, joined.
             let Some(kwp) = rfc5649(to) else {
-                if !to.mechanism_names().iter().any(|m| m == "CKM_RSA_AES_KEY_WRAP") {
+                if !rsa_aes_key_wrap(to) {
                     return Err(to.unsupported(format!(
                         "'{}' offers no RFC 5649 key wrap, nor CKM_RSA_AES_KEY_WRAP, this build can name",
                         to.name
@@ -572,6 +603,81 @@ fn create(
     }
 }
 
+/// What a failed `C_UnwrapKey` says, by the module's return value: only a blob the module finds
+/// invalid says the bundle was tampered with or wrapped to another key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnwrapFailure {
+    /// The wrapped or encrypted data is invalid or of the wrong length (13).
+    Tampered,
+    /// The target refuses the mechanism, its parameters, the unwrapping key or the template (15).
+    Refused,
+    /// The module failed and says no more (`CKR_DEVICE_ERROR`, `CKR_GENERAL_ERROR`,
+    /// `CKR_FUNCTION_FAILED`): 16, said as what may be a damaged blob, since that is how some
+    /// modules report one (kryoptic, a tampered RFC 5649 blob \[run\]).
+    Opaque,
+    /// Anything else: the session, the login (16).
+    Failed,
+}
+
+fn unwrap_failure(e: &cryptoki::error::Error) -> UnwrapFailure {
+    use cryptoki::error::{Error as CkError, RvError};
+    match e {
+        CkError::Pkcs11(
+            RvError::EncryptedDataInvalid
+            | RvError::EncryptedDataLenRange
+            | RvError::WrappedKeyInvalid
+            | RvError::WrappedKeyLenRange,
+            _,
+        ) => UnwrapFailure::Tampered,
+        CkError::Pkcs11(
+            RvError::MechanismInvalid
+            | RvError::MechanismParamInvalid
+            | RvError::FunctionNotSupported
+            | RvError::KeyFunctionNotPermitted
+            | RvError::KeyTypeInconsistent
+            | RvError::KeySizeRange
+            | RvError::CurveNotSupported
+            | RvError::DomainParamsInvalid
+            | RvError::UnwrappingKeyHandleInvalid
+            | RvError::UnwrappingKeySizeRange
+            | RvError::UnwrappingKeyTypeInconsistent
+            | RvError::TemplateIncomplete
+            | RvError::TemplateInconsistent
+            | RvError::AttributeReadOnly
+            | RvError::AttributeTypeInvalid
+            | RvError::AttributeValueInvalid,
+            _,
+        )
+        // A mechanism this build cannot name (`CKM_RSA_AES_KEY_WRAP` without `kwp`).
+        | CkError::NotSupported => UnwrapFailure::Refused,
+        CkError::Pkcs11(RvError::DeviceError | RvError::GeneralError | RvError::FunctionFailed, _) => {
+            UnwrapFailure::Opaque
+        }
+        _ => UnwrapFailure::Failed,
+    }
+}
+
+/// The error of an unwrap `what` that failed with `e` ([`unwrap_failure`]), carrying its return
+/// value; `unsupported` makes the target's refusal (`Token::unsupported`, with its hint).
+fn unwrap_error(what: &str, e: &cryptoki::error::Error, unsupported: impl FnOnce(String) -> KmError) -> KmError {
+    let rv = cakeys_pkcs11::token::rv_of(e);
+    match unwrap_failure(e) {
+        UnwrapFailure::Tampered => {
+            KmError::Conflict(format!("{what}: {e} (the bundle was tampered with, or wrapped to another key)").into())
+        }
+        UnwrapFailure::Refused => unsupported(format!("{what}: {e}")),
+        UnwrapFailure::Opaque => KmError::Unavailable(
+            format!(
+                "{what}: {e} (the module says no more: some report a damaged or altered bundle this way, \
+                 so check that it is the one exported)"
+            )
+            .into(),
+        ),
+        UnwrapFailure::Failed => KmError::Unavailable(format!("{what}: {e}").into()),
+    }
+    .with_rv(rv)
+}
+
 /// A private key's public half under `dst`'s locator, from its canonical SPKI, as `generate`
 /// makes it: the spec's public attributes, `CKA_VERIFY` and public unless declared otherwise.
 ///
@@ -582,11 +688,11 @@ pub(crate) fn create_public_half(dst: &Target, to: &Token, spki: &[u8]) -> Resul
     let public_policy = to.policy_template(&dst.spec.public_attributes)?;
     let t = templates::public_half(dst.into(), public_policy, Some(public_key(dst, spki)?))?;
     let t = to.provider.adjusted(&Template::PublicHalf(dst.into()), t)?;
-    let declared = |n| dst.spec.attributes.contains_key(n) || dst.spec.public_attributes.contains_key(n);
     // As `generate`: a module refusing cakeys' own CKA_PRIVATE = false default gets the half
     // without it.
+    let declared = templates::public_declares(dst.spec, "CKA_PRIVATE");
     let create = || {
-        with_public_default_dropped(&t, declared("CKA_PRIVATE"), |p| to.raw().create_object(p))
+        with_public_default_dropped(&t, declared, |p| to.raw().create_object(p))
             .map(|(made, _)| made)
             .map_err(|e| to.unsupported(format!("{dst}: the public half: C_CreateObject: {e}")))
     };
@@ -602,9 +708,6 @@ fn oaep_params(hash: OaepHash) -> PkcsOaepParams<'static> {
     cakeys_pkcs11::token::oaep_of(hash).0
 }
 
-/// The RFC 5649 key wrap a token offers, under the name it uses (docs/CAMIGRATE.md spike: one format,
-/// two mechanism IDs): `CKM_AES_KEY_WRAP_PAD`, or `CKM_AES_KEY_WRAP_KWP` where this build can name
-/// it (the `kwp` feature, with the Nix build's patched cryptoki).
 /// The spec's declared `attributes` less those the target's profile refuses in an unwrap
 /// template (`unwrap.refuse`, [`unwrap_refusals`]): what an unwrapped key's template declares.
 pub(crate) fn unwrap_declared(
@@ -624,6 +727,9 @@ pub(crate) fn side_rfc5649(side: &Side) -> bool {
     has(MechanismType::AES_KEY_WRAP_PAD)
 }
 
+/// The RFC 5649 key wrap a token offers, under the name it uses (docs/CAMIGRATE.md spike: one format,
+/// two mechanism IDs): `CKM_AES_KEY_WRAP_PAD`, or `CKM_AES_KEY_WRAP_KWP` where this build can name
+/// it (the `kwp` feature, with the Nix build's patched cryptoki).
 pub(crate) fn rfc5649(tok: &Token) -> Option<Mechanism<'static>> {
     if tok.has(MechanismType::AES_KEY_WRAP_PAD) {
         return Some(Mechanism::AesKeyWrapPad);
@@ -633,6 +739,18 @@ pub(crate) fn rfc5649(tok: &Token) -> Option<Mechanism<'static>> {
         return Some(Mechanism::AesKeyWrapKwp);
     }
     None
+}
+
+/// Whether a token offers `CKM_RSA_AES_KEY_WRAP` this build can name (the `kwp` feature), asked
+/// as [`rfc5649`] asks.
+fn rsa_aes_key_wrap(tok: &Token) -> bool {
+    #[cfg(feature = "kwp")]
+    return tok.has(MechanismType::RSA_AES_KEY_WRAP);
+    #[cfg(not(feature = "kwp"))]
+    {
+        let _ = tok;
+        false
+    }
 }
 
 /// The smallest RSA transport key, in bits: what it protects is no better guarded than it, and
@@ -678,4 +796,55 @@ fn rsa_public(transport: &TransportKey) -> Result<Vec<Attribute>> {
 /// `CloudHSM` \[run\]). The export and the plan decide it alike.
 pub(crate) fn shares_kek(method: &Method, exposure: Exposure, rfc5649: bool, aes_key_gen: bool) -> bool {
     matches!(method, Method::RsaOaepAesKwp(_)) && exposure != Exposure::Enforced && rfc5649 && aes_key_gen
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cryptoki::context::Function;
+    use cryptoki::error::{Error as CkError, RvError};
+
+    /// A failed unwrap is 13 ("tampered with") only when the module says the blob is bad; a
+    /// refused mechanism, parameter, unwrapping key or template is the target's 15, and the
+    /// device, session or login failing is 16. A module that fails and says no more is 16 said as
+    /// what may be a damaged bundle (kryoptic's `CKR_DEVICE_ERROR` for a tampered blob \[run\]),
+    /// never a PIN or session error. Each keeps the return value it came with.
+    #[test]
+    fn an_unwrap_failure_is_tampering_only_when_the_data_is_bad() {
+        let unsupported = |m: String| KmError::Unsupported(m.into());
+        let table = [
+            (RvError::EncryptedDataInvalid, 13),
+            (RvError::EncryptedDataLenRange, 13),
+            (RvError::WrappedKeyInvalid, 13),
+            (RvError::WrappedKeyLenRange, 13),
+            (RvError::MechanismInvalid, 15),
+            (RvError::MechanismParamInvalid, 15),
+            (RvError::FunctionNotSupported, 15),
+            (RvError::KeyFunctionNotPermitted, 15),
+            (RvError::UnwrappingKeyTypeInconsistent, 15),
+            (RvError::UnwrappingKeySizeRange, 15),
+            (RvError::TemplateInconsistent, 15),
+            (RvError::TemplateIncomplete, 15),
+            (RvError::AttributeValueInvalid, 15),
+            (RvError::AttributeTypeInvalid, 15),
+            (RvError::CurveNotSupported, 15),
+            (RvError::DeviceError, 16),
+            (RvError::DeviceRemoved, 16),
+            (RvError::GeneralError, 16),
+            (RvError::FunctionFailed, 16),
+            (RvError::SessionHandleInvalid, 16),
+            (RvError::UserNotLoggedIn, 16),
+            (RvError::PinIncorrect, 16),
+        ];
+        let opaque = [RvError::DeviceError, RvError::GeneralError, RvError::FunctionFailed];
+        for (rv, code) in table {
+            let e = unwrap_error("unwrapping the key", &CkError::Pkcs11(rv, Function::UnwrapKey), unsupported);
+            assert_eq!(e.exit_code(), code, "{rv:?}: {e}");
+            assert_eq!(e.to_string().contains("tampered"), code == 13, "{rv:?}: {e}");
+            assert_eq!(e.to_string().contains("damaged or altered bundle"), opaque.contains(&rv), "{rv:?}: {e}");
+            assert_eq!(e.rv(), cakeys_pkcs11::token::rv_value(rv), "{rv:?}");
+        }
+        // A mechanism this build cannot name is the target's refusal, not a tampered bundle.
+        assert_eq!(unwrap_error("x", &CkError::NotSupported, unsupported).exit_code(), 15);
+    }
 }

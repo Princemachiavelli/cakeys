@@ -65,63 +65,77 @@ pkgs.testers.runNixOSTest {
   nodes.auto = node true;
   nodes.nixbld = node false;
 
-  testScript = ''
-    import re
+  # The build GIDs the ACL must list, from the `auto` node's own Nix settings (with Nix's
+  # defaults, as nix/module.nix reads them): a change there moves the expectation with it.
+  testScript =
+    { nodes, ... }:
+    let
+      settings = nodes.auto.nix.settings;
+      startId = settings.start-id or 872415232;
+      idCount = settings.id-count or 8388608;
+      # The UIDs Nix gives each auto-allocated build: fixed in Nix, not a setting.
+      slotSize = 65536;
+      slots = idCount / slotSize;
+    in
+    ''
+      import re
 
-    def build(m, attr, nonce):
-        out = m.succeed(
-            f"nix-build /etc/km/builds.nix -A {attr} --argstr nonce {nonce} --no-out-link 2>&1"
-        ).strip().splitlines()[-1]
-        res = m.succeed(f"cat {out}")
-        print(f"{m.name} {attr}: {res}")
-        return res
+      ${(import ./vm-common.nix).guestBuild}
 
-    start_all()
-    for m in [auto, nixbld]:
-        m.wait_for_unit("multi-user.target")
-        m.wait_until_succeeds("test -e /dev/tpmrm0")
-        m.succeed("udevadm settle")
+      def build(m, attr, nonce):
+          res = guest_build(m, attr, nonce)
+          print(f"{m.name} {attr}: {res}")
+          return res
 
-    with subtest("udev puts the build GIDs on the device ACL"):
-        acl = auto.succeed("getfacl -n /dev/tpmrm0")
-        slots = re.findall(r"^group:(\d+):rw-$", acl, re.M)
-        assert len(slots) == 128, acl
-        assert slots[0] == "872415232" and slots[-1] == str(872415232 + 127 * 65536), slots
-        assert "mask::rw-" in acl, acl
-        acl = nixbld.succeed("getfacl -n /dev/tpmrm0")
-        assert re.search(r"^group:30000:rw-$", acl, re.M), acl
-        assert "crw-rw----+" in auto.succeed("ls -l /dev/tpmrm0")
+      start_id, slot_size, n_slots = ${toString startId}, ${toString slotSize}, ${toString slots}
+      nixbld_gid = ${toString nodes.nixbld.users.groups.nixbld.gid}
 
-    with subtest("auto-allocated UIDs: a build requiring the TPM feature uses the TPM"):
-        out = build(auto, "tpm", "a1")
-        assert "device=present" in out and "tpm=ok" in out, out
-        u = re.search(r"uid_map:\s+1000\s+(\d+)\s+1", out)
-        g = re.search(r"gid_map:\s+100\s+(\d+)\s+1", out)
-        assert u and g, out
-        # Host gid == the slot's first uid: exactly what the ACL lists.
-        assert u.group(1) == g.group(1) and (int(g.group(1)) - 872415232) % 65536 == 0, out
+      start_all()
+      for m in [auto, nixbld]:
+          m.wait_for_unit("multi-user.target")
+          m.wait_until_succeeds("test -e /dev/tpmrm0")
+          m.succeed("udevadm settle")
 
-    with subtest("auto-allocated UIDs: uid-range build (root in the sandbox)"):
-        out = build(auto, "tpmUidRange", "a2")
-        assert "device=present" in out and "tpm=ok" in out, out
+      with subtest("udev puts the build GIDs on the device ACL"):
+          acl = auto.succeed("getfacl -n /dev/tpmrm0")
+          slots = re.findall(r"^group:(\d+):rw-$", acl, re.M)
+          assert len(slots) == n_slots, acl
+          assert slots[0] == str(start_id) and slots[-1] == str(start_id + (n_slots - 1) * slot_size), slots
+          assert "mask::rw-" in acl, acl
+          acl = nixbld.succeed("getfacl -n /dev/tpmrm0")
+          assert re.search(rf"^group:{nixbld_gid}:rw-$", acl, re.M), acl
+          assert "crw-rw----+" in auto.succeed("ls -l /dev/tpmrm0")
 
-    with subtest("a build without the feature does not even see the device"):
-        out = build(auto, "plain", "a3")
-        assert "device=absent" in out and "tpm=ok" not in out, out
+      with subtest("auto-allocated UIDs: a build requiring the TPM feature uses the TPM"):
+          out = build(auto, "tpm", "a1")
+          assert "device=present" in out and "tpm=ok" in out, out
+          u = re.search(r"uid_map:\s+1000\s+(\d+)\s+1", out)
+          g = re.search(r"gid_map:\s+100\s+(\d+)\s+1", out)
+          assert u and g, out
+          # Host gid == the slot's first uid: exactly what the ACL lists.
+          assert u.group(1) == g.group(1) and (int(g.group(1)) - start_id) % slot_size == 0, out
 
-    with subtest("the ACL is what grants access"):
-        auto.succeed("setfacl -b /dev/tpmrm0")
-        out = build(auto, "tpm", "a4")
-        assert "device=present" in out and "tpm=fail" in out, out
-        # A change event re-applies the rule.
-        auto.succeed("udevadm trigger --action=change /sys/class/tpmrm/tpmrm0 && udevadm settle")
-        out = build(auto, "tpm", "a5")
-        assert "tpm=ok" in out, out
+      with subtest("auto-allocated UIDs: uid-range build (root in the sandbox)"):
+          out = build(auto, "tpmUidRange", "a2")
+          assert "device=present" in out and "tpm=ok" in out, out
 
-    with subtest("classic nixbld build users"):
-        out = build(nixbld, "tpm", "n1")
-        assert "device=present" in out and "tpm=ok" in out, out
-        out = build(nixbld, "plain", "n2")
-        assert "device=absent" in out, out
-  '';
+      with subtest("a build without the feature does not even see the device"):
+          out = build(auto, "plain", "a3")
+          assert "device=absent" in out and "tpm=ok" not in out, out
+
+      with subtest("the ACL is what grants access"):
+          auto.succeed("setfacl -b /dev/tpmrm0")
+          out = build(auto, "tpm", "a4")
+          assert "device=present" in out and "tpm=fail" in out, out
+          # A change event re-applies the rule.
+          auto.succeed("udevadm trigger --action=change /sys/class/tpmrm/tpmrm0 && udevadm settle")
+          out = build(auto, "tpm", "a5")
+          assert "tpm=ok" in out, out
+
+      with subtest("classic nixbld build users"):
+          out = build(nixbld, "tpm", "n1")
+          assert "device=present" in out and "tpm=ok" in out, out
+          out = build(nixbld, "plain", "n2")
+          assert "device=absent" in out, out
+    '';
 }

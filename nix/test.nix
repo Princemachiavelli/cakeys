@@ -11,20 +11,13 @@
 let
   inherit (pkgs) lib;
   isVM = kind == "vm";
-  stateDir = "/var/lib/softhsm";
+  # The token, keys.toml and guest builds nix/module-test.nix and nix/tpm-test.nix use too.
+  vm = import ./vm-common.nix;
+  inherit (vm) stateDir;
   softhsmLib = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
 
   keysToml = pkgs.writeText "keys.toml" ''
-    [tokens.softhsm]
-    module = "${softhsmLib}"
-    tokenLabel = "kmtest"
-    pinFile = "${stateDir}/pin"
-
-    [objects.signing]
-    class = "CKO_PRIVATE_KEY"
-    keyType = "CKK_EC"
-    curve = "secp256r1"
-
+    ${vm.keysToml softhsmLib}
     [specs.signing-soft]
     object = "signing"
     attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
@@ -68,6 +61,7 @@ let
   '';
 
   machine = {
+    imports = [ vm.softhsm.config ] ++ lib.optional isVM module;
     environment.systemPackages = [
       cakeys
       pkgs.softhsm
@@ -76,14 +70,16 @@ let
     ];
     environment.etc."km/keys.toml".source = keysToml;
     environment.etc."km/consumer.nix".source = consumer;
-    environment.variables.SOFTHSM2_CONF = "${stateDir}/softhsm2.conf";
-    systemd.tmpfiles.rules = [ "d ${stateDir}/tokens 0777 root root -" ];
+    # World-writable for this test alone: root makes the token and its objects, and the
+    # sandboxed nixbld builder must use the same files (the chmods in testScript too). A token
+    # database inside the build sandbox is what docs/CAKEYS.md ("What real builds may reach")
+    # says never to deploy; this tests the pre-build-hook's grant, not a configuration to copy.
+    systemd.tmpfiles.rules = [ "d ${vm.softhsm.tokens} 0777 root root -" ];
   }
   // lib.optionalAttrs isVM {
     # The consumer gets the token through the module's pre-build-hook, because it requires the
     # token's feature ((keys.signing { token = "softhsm"; }).requiredSystemFeatures, i.e.
     # token-softhsm).
-    imports = [ module ];
     services.cakeys = {
       package = cakeys;
       tokens.softhsm.sandboxPaths = [ stateDir ];
@@ -121,10 +117,7 @@ let
       start_all()
       machine.wait_for_unit("multi-user.target")
       machine.succeed(
-          "printf 'directories.tokendir = ${stateDir}/tokens\\nobjectstore.backend = file\\nlog.level = ERROR\\n'"
-          " > ${stateDir}/softhsm2.conf",
-          "echo 1234 > ${stateDir}/pin",
-          "softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678",
+          ${vm.softhsm.init}
           "chmod -R a+rwX ${stateDir}",
           "cp /etc/km/keys.toml /root/keys.toml",
       )

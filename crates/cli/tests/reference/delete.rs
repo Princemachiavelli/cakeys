@@ -52,20 +52,28 @@ fn ec_lifecycle() {
     let wrong = e.km(&[&del[..], &["--if-match", "sha256-AAAA"]].concat());
     assert_eq!(code(&wrong), 14);
     assert_eq!(e.code(&["verify", "--spec", "signing-soft", "--token", "ref"]), 0);
-    assert_eq!(e.code(&del), 0);
+    // The right one deletes (review delete.rs F1: only a wrong one was tested).
+    let right = e.km(&[&del[..], &["--if-match", &got]].concat());
+    assert_eq!(code(&right), 0, "{}", stderr(&right));
     assert_eq!(e.code(&del), 0, "delete of an absent object succeeds");
     assert_eq!(e.code(&["verify", "--spec", "signing-soft", "--token", "ref"]), 11);
+    // Both halves gone from the token, not only unfound (review delete.rs F3).
+    assert_eq!(e.session().labelled("ec-lifecycle"), []);
     assert!(e.lock().get("realisations").and_then(|r| r.get("signing-soft")).is_none());
 
     // Deleting something that never existed succeeds even with no expected identity anywhere.
     std::fs::remove_file(e.dir.join("keys.lock")).unwrap();
     assert_eq!(e.code(&["delete", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"]), 0);
     // ...but a present object with no expected identity is never deleted blindly.
-    assert_eq!(e.code(&c), 18);
-    assert_eq!(e.code(&["delete", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"]), 14);
+    let fresh = e.km(&c);
+    assert_eq!(code(&fresh), 18);
+    let unlocked = ["delete", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"];
+    assert_eq!(e.code(&unlocked), 14);
     assert_eq!(e.code(&["verify", "--spec", "signing-soft", "--token", "ref"]), 18);
-    assert_eq!(e.code(&recording(&r)), 0);
-    assert_eq!(e.code(&del), 0);
+    // `--if-match` is the expected identity where no lock gives one.
+    let o = e.km(&[&unlocked[..], &["--if-match", &got_hash(&fresh)]].concat());
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(e.session().labelled("ec-lifecycle"), []);
     // Restore the original locked identity for the final check.
     std::fs::write(
         e.dir.join("keys.lock"),
@@ -153,7 +161,6 @@ fn gc_prints_then_removes_stale_entries() {
 fn a_foreign_public_key_conflicts_and_is_never_deleted() {
     let Some(e) = env("delete_identified") else { return };
     let s = e.session();
-    s.clear(&["del-rsa", "del-other"]);
     e.config(
         r#"
 [objects.k]

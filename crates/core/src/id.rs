@@ -7,8 +7,8 @@ use crate::config::{ObjectCfg, SpecCfg};
 use crate::error::{KmError, Result};
 use crate::types::KeyType;
 use base64::Engine;
-use p256::pkcs8::der::{Decode, Encode, asn1::OctetStringRef};
-use p256::pkcs8::{DecodePublicKey, EncodePublicKey};
+use der::{Decode, Encode, asn1::OctetStringRef};
+use pkcs8::{DecodePublicKey, EncodePublicKey};
 use sha2::{Digest, Sha256};
 
 type Bp256 = p256::elliptic_curve::PublicKey<bp256::BrainpoolP256r1>;
@@ -521,9 +521,9 @@ pub enum KeyAlg {
 }
 
 /// `id-ecPublicKey` (RFC 5480).
-const EC_PUBLIC_KEY: p256::pkcs8::ObjectIdentifier = p256::pkcs8::ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
+const EC_PUBLIC_KEY: pkcs8::ObjectIdentifier = pkcs8::ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
 /// `rsaEncryption` (RFC 8017).
-const RSA_ENCRYPTION: p256::pkcs8::ObjectIdentifier = p256::pkcs8::ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
+const RSA_ENCRYPTION: pkcs8::ObjectIdentifier = pkcs8::ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
 
 impl KeyAlg {
     /// The key a `SubjectPublicKeyInfo` holds.
@@ -533,9 +533,15 @@ impl KeyAlg {
     /// `Unsupported` for bytes that are no `SubjectPublicKeyInfo`, or a key of an algorithm or
     /// curve cakeys does not read.
     pub fn of_spki(spki: &[u8]) -> Result<KeyAlg> {
-        let info = p256::pkcs8::SubjectPublicKeyInfoRef::from_der(spki)
+        KeyAlg::read_spki(spki).map(|(alg, _)| alg)
+    }
+
+    /// [`KeyAlg::of_spki`], with the parsed SPKI its key's own parser takes next: the bytes
+    /// are decoded once.
+    pub(crate) fn read_spki(spki: &[u8]) -> Result<(KeyAlg, pkcs8::SubjectPublicKeyInfoRef<'_>)> {
+        let info = pkcs8::SubjectPublicKeyInfoRef::from_der(spki)
             .map_err(|e| KmError::Unsupported(format!("not a SubjectPublicKeyInfo: {e}").into()))?;
-        KeyAlg::of(&info.algorithm)
+        Ok((KeyAlg::of(&info.algorithm)?, info))
     }
 
     /// The key a PKCS#8 `PrivateKeyInfo` holds.
@@ -544,12 +550,12 @@ impl KeyAlg {
     ///
     /// As [`KeyAlg::of_spki`], for a `PrivateKeyInfo`.
     pub fn of_pkcs8(der: &[u8]) -> Result<KeyAlg> {
-        let info = p256::pkcs8::PrivateKeyInfoRef::from_der(der)
+        let info = pkcs8::PrivateKeyInfoRef::from_der(der)
             .map_err(|e| KmError::Unsupported(format!("not a PKCS#8 PrivateKeyInfo: {e}").into()))?;
         KeyAlg::of(&info.algorithm)
     }
 
-    fn of(alg: &p256::pkcs8::AlgorithmIdentifierRef<'_>) -> Result<KeyAlg> {
+    fn of(alg: &pkcs8::AlgorithmIdentifierRef<'_>) -> Result<KeyAlg> {
         let unread = |what: String| KmError::Unsupported(format!("{what}, which cakeys does not read").into());
         if alg.oid == RSA_ENCRYPTION {
             return Ok(KeyAlg::Rsa);
@@ -636,47 +642,69 @@ pub fn spki_canonical(spki: &[u8]) -> Result<Vec<u8>> {
         KeyAlg::Ec(Curve::Ed448) => {
             encode(&ed448::pkcs8::PublicKeyBytes::from_public_key_der(spki).map_err(|e| bad(&e))?)
         }
-        KeyAlg::Rsa => encode(&rsa::PublicKey::from_public_key_der(spki).map_err(|e| bad(&e))?),
+        KeyAlg::Rsa => encode(&rsa_of_spki(spki).map_err(|e| bad(&e))?),
     }
 }
 
-/// Canonical DER SPKI from `CKA_MODULUS` and `CKA_PUBLIC_EXPONENT` (big-endian).
+/// The RSA public key a DER SPKI holds, whatever its size (`rsa_key`): for what reads a key
+/// without computing with it (its identity, its modulus and exponent, its size). The `rsa`
+/// crate's own parser refuses keys outside its limits.
 ///
 /// # Errors
 ///
-/// `Conflict` if the values are not a valid RSA public key (for instance, an even modulus).
+/// The reason, when it is not an SPKI holding an RSA key at all.
+pub fn rsa_of_spki(spki: &[u8]) -> std::result::Result<rsa::PublicKey, String> {
+    let info = pkcs8::spki::SubjectPublicKeyInfoRef::from_der(spki).map_err(|e| e.to_string())?;
+    let bits = info.subject_public_key.as_bytes().ok_or("the key's bits are not whole bytes")?;
+    let key = rsa::pkcs1::RsaPublicKeyRef::from_der(bits).map_err(|e| e.to_string())?;
+    rsa_key(key.modulus.as_bytes(), key.public_exponent.as_bytes()).map_err(str::to_owned)
+}
+
+/// Canonical DER SPKI from `CKA_MODULUS` and `CKA_PUBLIC_EXPONENT` (big-endian), of any size.
+///
+/// # Errors
+///
+/// `Conflict` if the values are not an RSA public key at all (`rsa_key`).
 pub fn rsa_spki(modulus: &[u8], exponent: &[u8]) -> Result<Vec<u8>> {
-    let key = rsa::PublicKey::new(
-        rsa::BoxedUint::from_be_slice_vartime(modulus),
-        rsa::BoxedUint::from_be_slice_vartime(exponent),
-    )
-    .map_err(|e| KmError::Conflict(format!("invalid RSA public key: {e}").into()))?;
+    let key =
+        rsa_key(modulus, exponent).map_err(|e| KmError::Conflict(format!("invalid RSA public key: {e}").into()))?;
     encode(&key)
 }
 
-/// The curve a DER SPKI's algorithm names: `Some` for an EC (`id-ecPublicKey` with a named curve)
-/// or Edwards key of a curve cakeys knows, `None` for RSA.
+/// An RSA public key from its modulus and exponent (big-endian), whatever its size: identity
+/// hashes public bytes and needs no key the `rsa` crate would compute with, so its limits
+/// (1024–8192 bits, e ≤ 2^33−1) are not cakeys' (id.rs F1; a legacy RSA-768 key or an
+/// RSA-16384 one has an identity). Refused only when it is no RSA key: an even (or zero)
+/// modulus, an even exponent or one below 3, or an exponent not below the modulus.
+fn rsa_key(modulus: &[u8], exponent: &[u8]) -> std::result::Result<rsa::PublicKey, &'static str> {
+    // Big-endian: the last byte is the low one (and an empty value is zero, so even).
+    let odd = |v: &[u8]| v.last().is_some_and(|b| b & 1 == 1);
+    let (n, e) = (rsa::BoxedUint::from_be_slice_vartime(modulus), rsa::BoxedUint::from_be_slice_vartime(exponent));
+    if !odd(modulus) {
+        return Err("the modulus is even");
+    }
+    if !odd(exponent) || e < rsa::BoxedUint::from(3u64) {
+        return Err("the exponent is even or below 3");
+    }
+    if e >= n {
+        return Err("the exponent is not below the modulus");
+    }
+    Ok(rsa::PublicKey::new_unchecked(n, e))
+}
+
+/// The curve a DER SPKI's key is on ([`KeyAlg::of_spki`]): `Some` for an EC or Edwards key,
+/// `None` for RSA. It once had a dispatcher of its own that also read an Edwards curve under
+/// `id-ecPublicKey` and a Weierstrass curve's OID as the algorithm (review D6); neither is a
+/// canonical SPKI, and every caller's is one.
 ///
 /// # Errors
 ///
-/// `Unsupported` for another algorithm or an unknown curve; `Conflict` if it is not an SPKI.
+/// As [`KeyAlg::of_spki`].
 pub fn spki_curve(spki: &[u8]) -> Result<Option<Curve>> {
-    const RSA: &str = "1.2.840.113549.1.1.1";
-    const EC: &str = "1.2.840.10045.2.1";
-    let info = x509_cert::spki::SubjectPublicKeyInfoRef::from_der(spki)
-        .map_err(|e| KmError::Conflict(format!("not a SubjectPublicKeyInfo: {e}").into()))?;
-    let alg = &info.algorithm;
-    let named = match alg.oid.to_string().as_str() {
-        RSA => return Ok(None),
-        EC => alg.parameters.as_ref().and_then(|p| p.to_der().ok()),
-        // Ed25519 and Ed448: the algorithm is the curve, and its DER OID is the curve's params.
-        _ => alg.oid.to_der().ok(),
-    };
-    named
-        .as_deref()
-        .and_then(Curve::from_params)
-        .map(Some)
-        .ok_or_else(|| KmError::Unsupported(format!("public key algorithm {}", alg.oid).into()))
+    Ok(match KeyAlg::of_spki(spki)? {
+        KeyAlg::Ec(c) => Some(c),
+        KeyAlg::Rsa => None,
+    })
 }
 
 /// Canonical DER SPKI of a certificate's subject key: links a certificate to its key object.
@@ -801,6 +829,42 @@ mod tests {
         assert_eq!(spki_canonical(&a).unwrap(), a);
     }
 
+    /// Every RSA key has an identity, whatever its size or exponent (id.rs F1): from its
+    /// modulus and from its SPKI alike, the same bytes `rsa`'s checked key encodes to where it
+    /// takes one (so no identity changed), and only what is no RSA key at all is refused.
+    #[test]
+    fn rsa_keys_of_any_size_have_an_identity() {
+        let f4 = [1u8, 0, 1];
+        let big_e = [0x08u8, 0, 0, 0, 1]; // 2^35 + 1, above rsa's 2^33 - 1
+        for (bytes, e) in [(64, &f4[..]), (96, &f4), (128, &f4), (256, &f4), (1024, &f4), (2048, &f4), (256, &big_e)] {
+            let n = vec![0xc5u8; bytes];
+            let a = rsa_spki(&n, e).unwrap_or_else(|err| panic!("{} bits: {err}", bytes * 8));
+            assert_eq!(spki_canonical(&a).unwrap(), a, "{} bits", bytes * 8);
+            let checked = rsa::PublicKey::new(
+                rsa::BoxedUint::from_be_slice_vartime(&n),
+                rsa::BoxedUint::from_be_slice_vartime(e),
+            );
+            if let Ok(checked) = checked {
+                assert_eq!(encode(&checked).unwrap(), a, "{} bits: the identity changed", bytes * 8);
+            }
+        }
+        // Leading zero bytes are no part of the key.
+        assert_eq!(
+            rsa_spki(&[&[0u8, 0][..], &[0xc5; 96]].concat(), &[0, 1, 0, 1]).unwrap(),
+            rsa_spki(&[0xc5; 96], &f4).unwrap()
+        );
+        let even = [0xc4u8; 96];
+        for (n, e) in [
+            (&even[..], &f4[..]),
+            (&[0xc5; 96][..], &[1, 0, 0][..]),
+            (&[0xc5; 96][..], &[1][..]),
+            (&[0x03][..], &[3][..]),
+            (&[][..], &f4[..]),
+        ] {
+            assert!(matches!(rsa_spki(n, e), Err(KmError::Conflict(_))), "{n:02x?} {e:02x?}");
+        }
+    }
+
     #[test]
     fn hmac_commitment_label_is_unchanged() {
         let obj = ObjectCfg { value_len: Some(32), ..cfg("CKO_SECRET_KEY", "CKK_GENERIC_SECRET") };
@@ -835,7 +899,7 @@ mod tests {
     #[test]
     fn curve_params_roundtrip_and_match_the_crates() {
         use p256::elliptic_curve::pkcs8::AssociatedOid;
-        let oid = |o: p256::pkcs8::ObjectIdentifier| o.to_der().unwrap();
+        let oid = |o: pkcs8::ObjectIdentifier| o.to_der().unwrap();
         assert_eq!(Curve::P256.params(), oid(p256::NistP256::OID));
         assert_eq!(Curve::P384.params(), oid(p384::NistP384::OID));
         assert_eq!(Curve::P521.params(), oid(p521::NistP521::OID));
@@ -1063,6 +1127,33 @@ mod tests {
         assert_eq!(curve(fixture!("tpm-import-p256-cert.der")), Some(Curve::P256));
         assert_eq!(curve(fixture!("adopt-cert-p384.der")), Some(Curve::P384));
         assert_eq!(curve(fixture!("adopt-cert-ed25519.der")), Some(Curve::Ed25519));
-        assert!(matches!(spki_curve(b"\x30\x00"), Err(KmError::Conflict(_))));
+    }
+
+    /// The SPKI forms the second dispatcher read and `KeyAlg::of_spki` does not (review D6): each
+    /// is refused alike by `spki_curve` and by `spki_canonical`, which every SPKI a caller passes
+    /// came through, so one dispatcher decides both.
+    #[test]
+    fn spki_curve_reads_what_canonical_spkis_hold() {
+        let tlv = |tag: u8, body: &[&[u8]]| {
+            let body = body.concat();
+            [&[tag, u8::try_from(body.len()).unwrap()][..], &body].concat()
+        };
+        let ec_public_key = [0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
+        let ed25519 = [0x06, 0x03, 0x2b, 0x65, 0x70];
+        let secp384r1 = [0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22];
+        let spki = |alg: &[&[u8]], point: &[u8]| tlv(0x30, &[&tlv(0x30, alg), &tlv(0x03, &[&[0], point])]);
+        let cases: [(&str, Vec<u8>); 4] = [
+            ("an Edwards curve's OID under id-ecPublicKey", spki(&[&ec_public_key, &ed25519], &[7; 32])),
+            (
+                "an Edwards curve by name under id-ecPublicKey",
+                spki(&[&ec_public_key, &tlv(0x13, &[b"edwards25519"])], &[7; 32]),
+            ),
+            ("a Weierstrass curve's OID as the algorithm", spki(&[&secp384r1], &[&[4][..], &[7; 96]].concat())),
+            ("no SubjectPublicKeyInfo", b"\x30\x00".to_vec()),
+        ];
+        for (what, der) in cases {
+            assert!(matches!(spki_curve(&der), Err(KmError::Unsupported(_))), "{what}: {:?}", spki_curve(&der));
+            assert!(matches!(spki_canonical(&der), Err(KmError::Unsupported(_))), "{what}");
+        }
     }
 }

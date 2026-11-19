@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 macro_rules! pkcs11_names {
-    ($(#[$doc:meta])* $ty:ident { $($variant:ident = $name:literal),* $(,)? }) => {
+    ($(#[$doc:meta])* $ty:ident($what:literal) { $($variant:ident = $name:literal),* $(,)? }) => {
         $(#[$doc])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
         pub enum $ty {
@@ -34,7 +34,7 @@ macro_rules! pkcs11_names {
             type Err = String;
 
             fn from_str(s: &str) -> Result<Self, String> {
-                $ty::ALL.iter().copied().find(|v| v.name() == s).ok_or_else(|| format!("unknown {}: {s}", stringify!($ty)))
+                $ty::ALL.iter().copied().find(|v| v.name() == s).ok_or_else(|| format!(concat!("unknown ", $what, ": {}"), s))
             }
         }
     };
@@ -42,7 +42,7 @@ macro_rules! pkcs11_names {
 
 pkcs11_names! {
     /// Object classes (PKCS#11 3.2 §4).
-    ObjectClass {
+    ObjectClass("object class") {
         Data = "CKO_DATA",
         Certificate = "CKO_CERTIFICATE",
         PublicKey = "CKO_PUBLIC_KEY",
@@ -53,7 +53,7 @@ pkcs11_names! {
 
 pkcs11_names! {
     /// Key types (PKCS#11 3.2 §6).
-    KeyType {
+    KeyType("key type") {
         Rsa = "CKK_RSA",
         Ec = "CKK_EC",
         EcEdwards = "CKK_EC_EDWARDS",
@@ -126,8 +126,10 @@ mod tests {
             assert_eq!(k.name().parse::<KeyType>(), Ok(*k));
         }
         // Two-key Triple DES and single DES are not managed (docs/OPEN.md).
-        assert!("CKK_DES2".parse::<KeyType>().is_err());
+        assert_eq!("CKK_DES2".parse::<KeyType>(), Err("unknown key type: CKK_DES2".to_owned()));
         assert!("CKK_DES".parse::<KeyType>().is_err());
+        // The error names the PKCS#11 concept, never the Rust type.
+        assert_eq!("CKO_X".parse::<ObjectClass>(), Err("unknown object class: CKO_X".to_owned()));
     }
 
     #[test]

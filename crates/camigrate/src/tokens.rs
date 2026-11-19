@@ -15,7 +15,7 @@ use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::resolution::{self, Resolved, moduleless_info};
 use cakeys_pkcs11::{Registry, Token};
 use cakeys_profile::{Capability, KeyKind, Move, On, PlaintextKind, Profile, Way};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 /// A token's capabilities, from the open token: its resolved capability profile over its
@@ -49,7 +49,10 @@ pub(crate) fn side_from_lock(
     // about exactly that (the forwarder, the binding layer), like an open would.
     let (module, token_info) = (observed.module.as_ref()?, observed.token.as_ref()?);
     let cfg = TokenCfg { provider: Some(provider.clone()), ..lockless_token_cfg() };
-    let mut resolved = resolution::resolve(&cfg, module, Some(token_info), &provider).ok()?;
+    let mut resolved = match resolved(token, resolution::resolve(&cfg, module, Some(token_info), &provider)) {
+        Ok(r) => r,
+        Err(e) => return Some(Err(e)),
+    };
     // What this token answered decides before the profile of its kind.
     resolved.with_answers(token, observed);
     warn_hidden(token, &resolved, notes);
@@ -61,6 +64,12 @@ pub(crate) fn side_from_lock(
         return Some(Ok(Side::pkcs11(token, name, observed.mechanisms.iter().cloned())));
     }
     Some(side_of(resolved.module.as_ref()?, &resolved, token, &provider, &observed.mechanisms))
+}
+
+/// A resolution of `token`'s profiles that failed is invalid (17), as a token open maps it:
+/// never read as "no provider", which would blame the lock or the build instead.
+fn resolved(token: &str, r: std::result::Result<Resolved, String>) -> Result<Resolved> {
+    r.map_err(|e| KmError::Validation(format!("resolving the profiles of '{token}': {e}").into()))
 }
 
 /// A token behind a passthrough that hides its module (a `requires-provider` layer) is planned
@@ -77,7 +86,11 @@ fn warn_hidden(token: &str, resolved: &Resolved, notes: &mut Notes) {
 /// the file lists (`None`: a provider this build does not link).
 #[must_use]
 pub(crate) fn side_from_transport(t: &Transport, registry: &Registry) -> Option<Result<Side>> {
-    let resolved = resolution::resolve(&lockless_token_cfg(), &moduleless_info(), None, &t.provider).ok()?;
+    let resolved =
+        match resolved(&t.token, resolution::resolve(&lockless_token_cfg(), &moduleless_info(), None, &t.provider)) {
+            Ok(r) => r,
+            Err(e) => return Some(Err(e)),
+        };
     match resolved.module {
         Some(ref p) => Some(side_of(p, &resolved, &t.token, &t.provider, &t.mechanisms)),
         None => registry
@@ -445,15 +458,10 @@ pub(crate) fn transport(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes)
         ));
     }
     ops::verify(t, tok, lock, notes)?;
-    let policy = lock.realisation(t.spec_name, t.token_name).map(|r| &r.policy);
-    let flag = |name: &str| policy.and_then(|p| p.get(name)) == Some(&AttrValue::Bool(true));
-    if !flag("CKA_UNWRAP") {
-        return Err(KmError::PreconditionFailed(format!("{t}: a transport key must allow CKA_UNWRAP").into()));
-    }
-    if flag("CKA_EXTRACTABLE") {
-        return Err(KmError::PreconditionFailed(
-            format!("{t}: a transport key must never leave the token (CKA_EXTRACTABLE = false)").into(),
-        ));
+    let none = BTreeMap::new();
+    let policy = lock.realisation(t.spec_name, t.token_name).map_or(&none, |r| &r.policy);
+    if let Some(why) = transport_fault(true, policy) {
+        return Err(KmError::PreconditionFailed(format!("{t}: a transport key {why}").into()));
     }
     warn_decrypting(t, lock, notes);
     let h = tok
@@ -553,8 +561,11 @@ impl Moves {
     }
 }
 
-/// Plan each object's move as `req` asks, from what the lock pins. `open` opens a token
-/// read-only; one that does not open is planned from what the lock recorded there.
+/// Plan each object's move as `req` asks, from what the lock pins. `source` is the source token
+/// as the caller opened it, once per run; `open` opens a target token, as the caller's run will
+/// use it (read-only to plan, read-write for a `migrate` that writes there). A side that does not
+/// open is planned from what the lock recorded there. The source and target tokens, when they
+/// opened, are handed back for the run to use (review lib.rs F5: the target was opened again).
 ///
 /// # Errors
 ///
@@ -565,16 +576,19 @@ pub(crate) fn plan_moves(
     lock: &Lock,
     registry: &Registry,
     req: &Request,
+    source: Result<Token>,
     open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
     notes: &mut Notes,
-) -> Result<Moves> {
+) -> Result<(Moves, Option<Token>, Option<Token>)> {
     let materials = materials(lock, req.from, req.objects)?;
-    let mut side = |name: &str| side_or_lock(name, lock, registry, open, notes);
-    let (source, source_from) = side(req.from)?;
+    let (source, source_from, source_token) = side_or_lock(req.from, source, lock, registry, notes)?;
     let allow = Allow { host_plaintext: req.host_plaintext, trusted_transport: req.trusted_transport };
+    let mut target_token = None;
     let (target, target_from, to_name) = match &req.dest {
         Dest::Token(name) => {
-            let (side, from) = side(name)?;
+            let opened = open(name, notes);
+            let (side, from, token) = side_or_lock(name, opened, lock, registry, notes)?;
+            target_token = token;
             (Some(side), from, (*name).to_owned())
         }
         Dest::Transport(t, shown) => {
@@ -620,22 +634,23 @@ pub(crate) fn plan_moves(
             p.reasons.push(why.clone());
         }
     }
-    Ok(Moves { to: to_name, source_from, target_from, plans, source, target })
+    Ok((Moves { to: to_name, source_from, target_from, plans, source, target }, source_token, target_token))
 }
 
-/// A token's capabilities: from the open token, else from what the lock recorded there. A
-/// passthrough with no provider named behind it is planned as a spec-compliant module, loudly.
+/// A token's capabilities: from the token `opened`, else from what the lock recorded there,
+/// with the token when it opened. A passthrough with no provider named behind it is planned as
+/// a spec-compliant module, loudly.
 fn side_or_lock(
     name: &str,
+    opened: Result<Token>,
     lock: &Lock,
     registry: &Registry,
-    open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
     notes: &mut Notes,
-) -> Result<(Side, Known)> {
-    let e = match open(name, notes) {
+) -> Result<(Side, Known, Option<Token>)> {
+    let e = match opened {
         Ok(tok) => {
             warn_hidden(name, &tok.profiles, notes);
-            return Ok((side(&tok)?, Known::Token));
+            return Ok((side(&tok)?, Known::Token, Some(tok)));
         }
         Err(e) => e,
     };
@@ -653,7 +668,7 @@ fn side_or_lock(
     match side_from_lock(name, observed, registry, notes) {
         Some(side) => {
             notes.note(format_args!("capabilities of '{name}' come from the lock: the token did not open ({e})"));
-            Ok((side?, Known::Lock))
+            Ok((side?, Known::Lock, None))
         }
         None => Err(e),
     }
@@ -682,19 +697,33 @@ pub(crate) fn transport_spec<'a>(
     else {
         return Err(format!("transport key '{chosen}' is not realised on '{token}' in the lock: lock it there first"));
     };
-    let is_true = |n: &str| r.policy.get(n) == Some(&AttrValue::Bool(true));
     let rsa = lock
         .objects
         .get(&r.object)
         .and_then(|o| o.object_type.as_ref())
         .is_some_and(|t| t.class == ObjectClass::PrivateKey && t.key_type == Some(KeyType::Rsa));
-    if !rsa || !is_true("CKA_UNWRAP") || is_true("CKA_EXTRACTABLE") {
-        return Err(format!(
-            "'{chosen}' on '{token}' is no transport key: an RSA private key that may unwrap (CKA_UNWRAP) and never \
-             leaves the token (CKA_EXTRACTABLE = false), as the lock records it"
-        ));
+    match transport_fault(rsa, &r.policy) {
+        Some(why) => {
+            Err(format!("'{chosen}' on '{token}' is no transport key: a transport key {why}, as the lock records it"))
+        }
+        None => Ok(spec.as_str()),
     }
-    Ok(spec.as_str())
+}
+
+/// Why a key the lock records (`rsa`: an RSA private key; its realisation's `policy`) is no
+/// transport key (docs/CAMIGRATE.md D3): one rule for [`transport`] and [`transport_spec`]
+/// (review D8). keys.toml's own check (`check_transport_keys`) holds the declarations instead.
+fn transport_fault(rsa: bool, policy: &BTreeMap<String, AttrValue>) -> Option<&'static str> {
+    let is_true = |n: &str| policy.get(n) == Some(&AttrValue::Bool(true));
+    if !rsa {
+        Some("must be an RSA private key")
+    } else if !is_true("CKA_UNWRAP") {
+        Some("must allow CKA_UNWRAP")
+    } else if is_true("CKA_EXTRACTABLE") {
+        Some("must never leave the token (CKA_EXTRACTABLE = false)")
+    } else {
+        None
+    }
 }
 
 /// The public key to seal to for the transport key `t`, from the lock alone (`publicKey`, held
@@ -756,6 +785,17 @@ mod tests {
         Profile::from_toml(&format!("profile = \"m/1\"\nmode = \"observed\"\n{migration}")).unwrap()
     }
 
+    /// A resolution that fails is the token's own error (17, naming it and why), never read as
+    /// "no provider" (review tokens.rs F1: a transport file's then said its provider was not
+    /// in this build).
+    #[test]
+    fn a_failed_resolution_is_invalid_not_absent() {
+        let e = resolved("far", Err("two families claim one manufacturer".into())).unwrap_err();
+        assert_eq!(e.exit_code(), 17);
+        assert!(e.to_string().contains("'far'") && e.to_string().contains("two families"), "{e}");
+        assert!(resolved("far", Ok(Resolved::default())).is_ok());
+    }
+
     /// A module profile's migration rows become the planner's side: how plaintext gets in, the
     /// sizes a row leaves open on one end, and a row whose key types a layer subtracts dropped.
     #[test]
@@ -782,13 +822,16 @@ mod tests {
         assert_eq!(side(&p, &unpatched).unwrap().public_import.len(), 2);
     }
 
-    /// A row the baseline does not know is refused (17) with the profile named; an OAEP hash no
-    /// probe tries does not even load.
+    /// A row the baseline does not know is refused (17) with the profile named. An OAEP hash no
+    /// probe tries loads (a newer cakeys's, review D4) and offers no wrap; a row with no hash
+    /// does not load.
     #[test]
     fn rows_the_baseline_does_not_know_are_refused() {
-        let sha3 =
-            "profile = \"m/1\"\nmode = \"observed\"\n[capabilities]\n\"wrap.rsa-oaep.SHA-3\" = { answer = \"yes\" }\n";
-        assert!(Profile::from_toml(sha3).unwrap_err().contains("names no capability"));
+        let head = "profile = \"m/1\"\nmode = \"observed\"\n[capabilities]\n";
+        let sha3 = Profile::from_toml(&format!("{head}\"wrap.rsa-oaep.SHA-3\" = {{ answer = \"yes\" }}\n")).unwrap();
+        assert_eq!(sha3.wrap_oaep(), None);
+        let none = Profile::from_toml(&format!("{head}\"wrap.rsa-oaep.\" = {{ answer = \"yes\" }}\n"));
+        assert!(none.unwrap_err().contains("names no capability"));
         for (row, why) in [
             (
                 "[[migration.public-accepts]]\nclass = \"CKO_PUBLIC_KEY\"\ncurves = [\"curve9\"]\n",

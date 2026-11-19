@@ -141,7 +141,7 @@
   CKK_EC 15360: yes (aws-cloudhsm/5.18+hsm2m-fips)
   CKK_EC 16384: yes (aws-cloudhsm/5.18+hsm2m-fips)
   CKK_ECDSA: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_ECDSA generation
-  CKK_EC_EDWARDS: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_EDWARDS: no — aws-cloudhsm/5.18+hsm2m-fips: refused edwards25519, edwards448
   CKK_EC_EDWARDS brainpoolP256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
@@ -152,15 +152,15 @@
   CKK_EC_EDWARDS secp256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp521r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
-  CKK_EC_EDWARDS 512: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC_EDWARDS 1024: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC_EDWARDS 2048: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC_EDWARDS 3072: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC_EDWARDS 4096: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC_EDWARDS 8192: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC_EDWARDS 15360: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC_EDWARDS 16384: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC_MONTGOMERY: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_EDWARDS 512: no — aws-cloudhsm/5.18+hsm2m-fips: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 1024: no — aws-cloudhsm/5.18+hsm2m-fips: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 2048: no — aws-cloudhsm/5.18+hsm2m-fips: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 3072: no — aws-cloudhsm/5.18+hsm2m-fips: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 4096: no — aws-cloudhsm/5.18+hsm2m-fips: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 8192: no — aws-cloudhsm/5.18+hsm2m-fips: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 15360: no — aws-cloudhsm/5.18+hsm2m-fips: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 16384: no — aws-cloudhsm/5.18+hsm2m-fips: refused edwards25519, edwards448
+  CKK_EC_MONTGOMERY: no — aws-cloudhsm/5.18+hsm2m-fips: refused curve25519, curve448
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY curve25519: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_MECHANISM_INVALID
@@ -171,14 +171,14 @@
   CKK_EC_MONTGOMERY secp256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp521r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY 512: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC_MONTGOMERY 1024: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC_MONTGOMERY 2048: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC_MONTGOMERY 3072: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC_MONTGOMERY 4096: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC_MONTGOMERY 8192: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC_MONTGOMERY 15360: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC_MONTGOMERY 16384: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC_MONTGOMERY 512: no — aws-cloudhsm/5.18+hsm2m-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 1024: no — aws-cloudhsm/5.18+hsm2m-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 2048: no — aws-cloudhsm/5.18+hsm2m-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 3072: no — aws-cloudhsm/5.18+hsm2m-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 4096: no — aws-cloudhsm/5.18+hsm2m-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 8192: no — aws-cloudhsm/5.18+hsm2m-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 15360: no — aws-cloudhsm/5.18+hsm2m-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 16384: no — aws-cloudhsm/5.18+hsm2m-fips: refused curve25519, curve448
   CKK_GENERIC_SECRET: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_GENERIC_SECRET generation
   CKK_GOST28147: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_GOST28147 generation
   CKK_GOSTR3410: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_GOSTR3410 generation
@@ -325,7 +325,7 @@
   CKK_EC_EDWARDS 8192: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   CKK_EC_EDWARDS 15360: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   CKK_EC_EDWARDS 16384: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_EC_MONTGOMERY: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_MONTGOMERY: no — aws-cloudhsm/5.18+hsm2m-non-fips: refused curve25519, curve448
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY curve25519: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_MECHANISM_INVALID
@@ -336,14 +336,14 @@
   CKK_EC_MONTGOMERY secp256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp521r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY 512: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_EC_MONTGOMERY 1024: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_EC_MONTGOMERY 2048: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_EC_MONTGOMERY 3072: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_EC_MONTGOMERY 4096: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_EC_MONTGOMERY 8192: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_EC_MONTGOMERY 15360: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_EC_MONTGOMERY 16384: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC_MONTGOMERY 512: no — aws-cloudhsm/5.18+hsm2m-non-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 1024: no — aws-cloudhsm/5.18+hsm2m-non-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 2048: no — aws-cloudhsm/5.18+hsm2m-non-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 3072: no — aws-cloudhsm/5.18+hsm2m-non-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 4096: no — aws-cloudhsm/5.18+hsm2m-non-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 8192: no — aws-cloudhsm/5.18+hsm2m-non-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 15360: no — aws-cloudhsm/5.18+hsm2m-non-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 16384: no — aws-cloudhsm/5.18+hsm2m-non-fips: refused curve25519, curve448
   CKK_GENERIC_SECRET: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_GENERIC_SECRET generation
   CKK_GOST28147: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_GOST28147 generation
   CKK_GOSTR3410: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_GOSTR3410 generation
@@ -471,7 +471,7 @@
   CKK_EC 15360: yes (kmsp11/1.9+hsm-fips)
   CKK_EC 16384: yes (kmsp11/1.9+hsm-fips)
   CKK_ECDSA: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_ECDSA generation
-  CKK_EC_EDWARDS: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_EDWARDS: no — kmsp11/1.9+hsm-fips: refused edwards25519, edwards448
   CKK_EC_EDWARDS brainpoolP256r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve25519: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
@@ -482,15 +482,15 @@
   CKK_EC_EDWARDS secp256r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp384r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp521r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
-  CKK_EC_EDWARDS 512: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC_EDWARDS 1024: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC_EDWARDS 2048: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC_EDWARDS 3072: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC_EDWARDS 4096: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC_EDWARDS 8192: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC_EDWARDS 15360: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC_EDWARDS 16384: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC_MONTGOMERY: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_EDWARDS 512: no — kmsp11/1.9+hsm-fips: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 1024: no — kmsp11/1.9+hsm-fips: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 2048: no — kmsp11/1.9+hsm-fips: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 3072: no — kmsp11/1.9+hsm-fips: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 4096: no — kmsp11/1.9+hsm-fips: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 8192: no — kmsp11/1.9+hsm-fips: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 15360: no — kmsp11/1.9+hsm-fips: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 16384: no — kmsp11/1.9+hsm-fips: refused edwards25519, edwards448
+  CKK_EC_MONTGOMERY: no — kmsp11/1.9+hsm-fips: refused curve25519, curve448
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY curve25519: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
@@ -501,14 +501,14 @@
   CKK_EC_MONTGOMERY secp256r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp384r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp521r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY 512: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC_MONTGOMERY 1024: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC_MONTGOMERY 2048: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC_MONTGOMERY 3072: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC_MONTGOMERY 4096: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC_MONTGOMERY 8192: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC_MONTGOMERY 15360: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC_MONTGOMERY 16384: yes (kmsp11/1.9+hsm-fips)
+  CKK_EC_MONTGOMERY 512: no — kmsp11/1.9+hsm-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 1024: no — kmsp11/1.9+hsm-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 2048: no — kmsp11/1.9+hsm-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 3072: no — kmsp11/1.9+hsm-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 4096: no — kmsp11/1.9+hsm-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 8192: no — kmsp11/1.9+hsm-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 15360: no — kmsp11/1.9+hsm-fips: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 16384: no — kmsp11/1.9+hsm-fips: refused curve25519, curve448
   CKK_GENERIC_SECRET: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_GENERIC_SECRET generation
   CKK_GOST28147: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_GOST28147 generation
   CKK_GOSTR3410: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_GOSTR3410 generation
@@ -635,7 +635,7 @@
   CKK_EC 15360: yes (kmsp11/1.9+hsm)
   CKK_EC 16384: yes (kmsp11/1.9+hsm)
   CKK_ECDSA: unknown — module profile kmsp11/1.9+hsm records no CKK_ECDSA generation
-  CKK_EC_EDWARDS: yes (kmsp11/1.9+hsm)
+  CKK_EC_EDWARDS: no — kmsp11/1.9+hsm: refused edwards25519, edwards448
   CKK_EC_EDWARDS brainpoolP256r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve25519: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
@@ -646,15 +646,15 @@
   CKK_EC_EDWARDS secp256r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp384r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp521r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
-  CKK_EC_EDWARDS 512: yes (kmsp11/1.9+hsm)
-  CKK_EC_EDWARDS 1024: yes (kmsp11/1.9+hsm)
-  CKK_EC_EDWARDS 2048: yes (kmsp11/1.9+hsm)
-  CKK_EC_EDWARDS 3072: yes (kmsp11/1.9+hsm)
-  CKK_EC_EDWARDS 4096: yes (kmsp11/1.9+hsm)
-  CKK_EC_EDWARDS 8192: yes (kmsp11/1.9+hsm)
-  CKK_EC_EDWARDS 15360: yes (kmsp11/1.9+hsm)
-  CKK_EC_EDWARDS 16384: yes (kmsp11/1.9+hsm)
-  CKK_EC_MONTGOMERY: yes (kmsp11/1.9+hsm)
+  CKK_EC_EDWARDS 512: no — kmsp11/1.9+hsm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 1024: no — kmsp11/1.9+hsm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 2048: no — kmsp11/1.9+hsm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 3072: no — kmsp11/1.9+hsm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 4096: no — kmsp11/1.9+hsm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 8192: no — kmsp11/1.9+hsm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 15360: no — kmsp11/1.9+hsm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 16384: no — kmsp11/1.9+hsm: refused edwards25519, edwards448
+  CKK_EC_MONTGOMERY: no — kmsp11/1.9+hsm: refused curve25519, curve448
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY curve25519: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
@@ -665,14 +665,14 @@
   CKK_EC_MONTGOMERY secp256r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp384r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp521r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY 512: yes (kmsp11/1.9+hsm)
-  CKK_EC_MONTGOMERY 1024: yes (kmsp11/1.9+hsm)
-  CKK_EC_MONTGOMERY 2048: yes (kmsp11/1.9+hsm)
-  CKK_EC_MONTGOMERY 3072: yes (kmsp11/1.9+hsm)
-  CKK_EC_MONTGOMERY 4096: yes (kmsp11/1.9+hsm)
-  CKK_EC_MONTGOMERY 8192: yes (kmsp11/1.9+hsm)
-  CKK_EC_MONTGOMERY 15360: yes (kmsp11/1.9+hsm)
-  CKK_EC_MONTGOMERY 16384: yes (kmsp11/1.9+hsm)
+  CKK_EC_MONTGOMERY 512: no — kmsp11/1.9+hsm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 1024: no — kmsp11/1.9+hsm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 2048: no — kmsp11/1.9+hsm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 3072: no — kmsp11/1.9+hsm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 4096: no — kmsp11/1.9+hsm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 8192: no — kmsp11/1.9+hsm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 15360: no — kmsp11/1.9+hsm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 16384: no — kmsp11/1.9+hsm: refused curve25519, curve448
   CKK_GENERIC_SECRET: unknown — module profile kmsp11/1.9+hsm records no CKK_GENERIC_SECRET generation
   CKK_GOST28147: unknown — module profile kmsp11/1.9+hsm records no CKK_GOST28147 generation
   CKK_GOSTR3410: unknown — module profile kmsp11/1.9+hsm records no CKK_GOSTR3410 generation
@@ -983,7 +983,7 @@
   CKK_EC_EDWARDS 8192: yes (softhsm/2.7)
   CKK_EC_EDWARDS 15360: yes (softhsm/2.7)
   CKK_EC_EDWARDS 16384: yes (softhsm/2.7)
-  CKK_EC_MONTGOMERY: yes (softhsm/2.7)
+  CKK_EC_MONTGOMERY: no — softhsm/2.7: refused curve25519, curve448
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY curve25519: no — softhsm/2.7: generation refused: CKR_MECHANISM_INVALID
@@ -994,14 +994,14 @@
   CKK_EC_MONTGOMERY secp256r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp384r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp521r1: unknown — module profile softhsm/2.7 records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY 512: yes (softhsm/2.7)
-  CKK_EC_MONTGOMERY 1024: yes (softhsm/2.7)
-  CKK_EC_MONTGOMERY 2048: yes (softhsm/2.7)
-  CKK_EC_MONTGOMERY 3072: yes (softhsm/2.7)
-  CKK_EC_MONTGOMERY 4096: yes (softhsm/2.7)
-  CKK_EC_MONTGOMERY 8192: yes (softhsm/2.7)
-  CKK_EC_MONTGOMERY 15360: yes (softhsm/2.7)
-  CKK_EC_MONTGOMERY 16384: yes (softhsm/2.7)
+  CKK_EC_MONTGOMERY 512: no — softhsm/2.7: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 1024: no — softhsm/2.7: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 2048: no — softhsm/2.7: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 3072: no — softhsm/2.7: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 4096: no — softhsm/2.7: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 8192: no — softhsm/2.7: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 15360: no — softhsm/2.7: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 16384: no — softhsm/2.7: refused curve25519, curve448
   CKK_GENERIC_SECRET: unknown — module profile softhsm/2.7 records no CKK_GENERIC_SECRET generation
   CKK_GOST28147: unknown — module profile softhsm/2.7 records no CKK_GOST28147 generation
   CKK_GOSTR3410: unknown — module profile softhsm/2.7 records no CKK_GOSTR3410 generation
@@ -1128,7 +1128,7 @@
   CKK_EC 15360: yes (tpm2-pkcs11/1.10+amd-ftpm)
   CKK_EC 16384: yes (tpm2-pkcs11/1.10+amd-ftpm)
   CKK_ECDSA: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_ECDSA generation
-  CKK_EC_EDWARDS: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_EDWARDS: no — tpm2-pkcs11/1.10+amd-ftpm: refused edwards25519, edwards448
   CKK_EC_EDWARDS brainpoolP256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve25519: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
@@ -1139,15 +1139,15 @@
   CKK_EC_EDWARDS secp256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp521r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
-  CKK_EC_EDWARDS 512: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC_EDWARDS 1024: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC_EDWARDS 2048: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC_EDWARDS 3072: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC_EDWARDS 4096: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC_EDWARDS 8192: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC_EDWARDS 15360: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC_EDWARDS 16384: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC_MONTGOMERY: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_EDWARDS 512: no — tpm2-pkcs11/1.10+amd-ftpm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 1024: no — tpm2-pkcs11/1.10+amd-ftpm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 2048: no — tpm2-pkcs11/1.10+amd-ftpm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 3072: no — tpm2-pkcs11/1.10+amd-ftpm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 4096: no — tpm2-pkcs11/1.10+amd-ftpm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 8192: no — tpm2-pkcs11/1.10+amd-ftpm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 15360: no — tpm2-pkcs11/1.10+amd-ftpm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 16384: no — tpm2-pkcs11/1.10+amd-ftpm: refused edwards25519, edwards448
+  CKK_EC_MONTGOMERY: no — tpm2-pkcs11/1.10+amd-ftpm: refused curve25519, curve448
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY curve25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
@@ -1158,14 +1158,14 @@
   CKK_EC_MONTGOMERY secp256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp521r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY 512: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC_MONTGOMERY 1024: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC_MONTGOMERY 2048: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC_MONTGOMERY 3072: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC_MONTGOMERY 4096: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC_MONTGOMERY 8192: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC_MONTGOMERY 15360: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC_MONTGOMERY 16384: yes (tpm2-pkcs11/1.10+amd-ftpm)
+  CKK_EC_MONTGOMERY 512: no — tpm2-pkcs11/1.10+amd-ftpm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 1024: no — tpm2-pkcs11/1.10+amd-ftpm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 2048: no — tpm2-pkcs11/1.10+amd-ftpm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 3072: no — tpm2-pkcs11/1.10+amd-ftpm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 4096: no — tpm2-pkcs11/1.10+amd-ftpm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 8192: no — tpm2-pkcs11/1.10+amd-ftpm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 15360: no — tpm2-pkcs11/1.10+amd-ftpm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 16384: no — tpm2-pkcs11/1.10+amd-ftpm: refused curve25519, curve448
   CKK_GENERIC_SECRET: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_GENERIC_SECRET generation
   CKK_GOST28147: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_GOST28147 generation
   CKK_GOSTR3410: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_GOSTR3410 generation
@@ -1292,7 +1292,7 @@
   CKK_EC 15360: yes (tpm2-pkcs11/1.10+swtpm)
   CKK_EC 16384: yes (tpm2-pkcs11/1.10+swtpm)
   CKK_ECDSA: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_ECDSA generation
-  CKK_EC_EDWARDS: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_EDWARDS: no — tpm2-pkcs11/1.10+swtpm: refused edwards25519, edwards448
   CKK_EC_EDWARDS brainpoolP256r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve25519: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
@@ -1303,15 +1303,15 @@
   CKK_EC_EDWARDS secp256r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp384r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp521r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
-  CKK_EC_EDWARDS 512: yes (tpm2-pkcs11/1.10+swtpm)
-  CKK_EC_EDWARDS 1024: yes (tpm2-pkcs11/1.10+swtpm)
-  CKK_EC_EDWARDS 2048: yes (tpm2-pkcs11/1.10+swtpm)
-  CKK_EC_EDWARDS 3072: yes (tpm2-pkcs11/1.10+swtpm)
-  CKK_EC_EDWARDS 4096: yes (tpm2-pkcs11/1.10+swtpm)
-  CKK_EC_EDWARDS 8192: yes (tpm2-pkcs11/1.10+swtpm)
-  CKK_EC_EDWARDS 15360: yes (tpm2-pkcs11/1.10+swtpm)
-  CKK_EC_EDWARDS 16384: yes (tpm2-pkcs11/1.10+swtpm)
-  CKK_EC_MONTGOMERY: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_EDWARDS 512: no — tpm2-pkcs11/1.10+swtpm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 1024: no — tpm2-pkcs11/1.10+swtpm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 2048: no — tpm2-pkcs11/1.10+swtpm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 3072: no — tpm2-pkcs11/1.10+swtpm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 4096: no — tpm2-pkcs11/1.10+swtpm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 8192: no — tpm2-pkcs11/1.10+swtpm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 15360: no — tpm2-pkcs11/1.10+swtpm: refused edwards25519, edwards448
+  CKK_EC_EDWARDS 16384: no — tpm2-pkcs11/1.10+swtpm: refused edwards25519, edwards448
+  CKK_EC_MONTGOMERY: no — tpm2-pkcs11/1.10+swtpm: refused curve25519, curve448
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY curve25519: no — tpm2-pkcs11/1.10+swtpm: generation refused: CKR_MECHANISM_INVALID
@@ -1322,14 +1322,14 @@
   CKK_EC_MONTGOMERY secp256r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp384r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp521r1: unknown — module profile tpm2-pkcs11/1.10+swtpm records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY 512: yes (tpm2-pkcs11/1.10+swtpm)
-  CKK_EC_MONTGOMERY 1024: yes (tpm2-pkcs11/1.10+swtpm)
-  CKK_EC_MONTGOMERY 2048: yes (tpm2-pkcs11/1.10+swtpm)
-  CKK_EC_MONTGOMERY 3072: yes (tpm2-pkcs11/1.10+swtpm)
-  CKK_EC_MONTGOMERY 4096: yes (tpm2-pkcs11/1.10+swtpm)
-  CKK_EC_MONTGOMERY 8192: yes (tpm2-pkcs11/1.10+swtpm)
-  CKK_EC_MONTGOMERY 15360: yes (tpm2-pkcs11/1.10+swtpm)
-  CKK_EC_MONTGOMERY 16384: yes (tpm2-pkcs11/1.10+swtpm)
+  CKK_EC_MONTGOMERY 512: no — tpm2-pkcs11/1.10+swtpm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 1024: no — tpm2-pkcs11/1.10+swtpm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 2048: no — tpm2-pkcs11/1.10+swtpm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 3072: no — tpm2-pkcs11/1.10+swtpm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 4096: no — tpm2-pkcs11/1.10+swtpm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 8192: no — tpm2-pkcs11/1.10+swtpm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 15360: no — tpm2-pkcs11/1.10+swtpm: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 16384: no — tpm2-pkcs11/1.10+swtpm: refused curve25519, curve448
   CKK_GENERIC_SECRET: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_GENERIC_SECRET generation
   CKK_GOST28147: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_GOST28147 generation
   CKK_GOSTR3410: unknown — module profile tpm2-pkcs11/1.10+swtpm records no CKK_GOSTR3410 generation
@@ -1475,7 +1475,7 @@
   CKK_EC_EDWARDS 8192: yes (ykcs11/2.7)
   CKK_EC_EDWARDS 15360: yes (ykcs11/2.7)
   CKK_EC_EDWARDS 16384: yes (ykcs11/2.7)
-  CKK_EC_MONTGOMERY: yes (ykcs11/2.7)
+  CKK_EC_MONTGOMERY: no — ykcs11/2.7: refused curve25519, curve448
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY curve25519: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
@@ -1486,14 +1486,14 @@
   CKK_EC_MONTGOMERY secp256r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp384r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp521r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY 512: yes (ykcs11/2.7)
-  CKK_EC_MONTGOMERY 1024: yes (ykcs11/2.7)
-  CKK_EC_MONTGOMERY 2048: yes (ykcs11/2.7)
-  CKK_EC_MONTGOMERY 3072: yes (ykcs11/2.7)
-  CKK_EC_MONTGOMERY 4096: yes (ykcs11/2.7)
-  CKK_EC_MONTGOMERY 8192: yes (ykcs11/2.7)
-  CKK_EC_MONTGOMERY 15360: yes (ykcs11/2.7)
-  CKK_EC_MONTGOMERY 16384: yes (ykcs11/2.7)
+  CKK_EC_MONTGOMERY 512: no — ykcs11/2.7: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 1024: no — ykcs11/2.7: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 2048: no — ykcs11/2.7: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 3072: no — ykcs11/2.7: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 4096: no — ykcs11/2.7: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 8192: no — ykcs11/2.7: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 15360: no — ykcs11/2.7: refused curve25519, curve448
+  CKK_EC_MONTGOMERY 16384: no — ykcs11/2.7: refused curve25519, curve448
   CKK_GENERIC_SECRET: unknown — module profile ykcs11/2.7 records no CKK_GENERIC_SECRET generation
   CKK_GOST28147: unknown — module profile ykcs11/2.7 records no CKK_GOST28147 generation
   CKK_GOSTR3410: unknown — module profile ykcs11/2.7 records no CKK_GOSTR3410 generation

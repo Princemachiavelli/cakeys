@@ -12,7 +12,13 @@
 # Needs softhsm2-util and pkcs11-tool on PATH (the dev shell has both).
 set -euo pipefail
 
+usage() {
+  echo "usage: $0 record|check <cakeys> <dir>" >&2
+  exit 2
+}
+[ $# -eq 3 ] || usage
 mode=$1 bin=$(realpath "$2") dir=$3
+[ -n "$dir" ] || usage
 module=${XV_MODULE:-$(dirname "$(dirname "$(command -v softhsm2-util)")")/lib/softhsm/libsofthsm2.so}
 fixtures=$(dirname "$(realpath "$0")")/../crates/cli/tests/fixtures
 specs=(ec ecpub rsa ed aes hmac wrapped cert data)
@@ -21,6 +27,12 @@ export SOFTHSM2_CONF=$dir/softhsm2.conf
 km() { "$bin" --config "$dir/keys.toml" --lock "$dir/keys.lock" "$@"; }
 
 record() {
+  # Only a directory this script made (it holds base.lock) or an empty one is replaced: a
+  # mistyped <dir> is not deleted.
+  if [ -d "$dir" ] && [ ! -e "$dir/base.lock" ] && [ -n "$(ls -A "$dir")" ]; then
+    echo "xversion: $dir is not empty and holds no base.lock: not an earlier record, so not removed" >&2
+    exit 1
+  fi
   rm -rf "$dir" && mkdir -p "$dir/tokens"
   printf 'directories.tokendir = %s\nobjectstore.backend = file\n' "$dir/tokens" >"$SOFTHSM2_CONF"
   softhsm2-util --init-token --free --label xv --pin 1234 --so-pin 5678 >/dev/null
@@ -121,7 +133,10 @@ check() {
       echo "resolve output of $s changed" >&2
       exit 1
     }
-    km lock --spec "$s" --token soft >/dev/null 2>&1
+    km lock --spec "$s" --token soft >/dev/null || {
+      echo "re-recording $s failed" >&2
+      exit 1
+    }
   done
   diff -u "$dir/base.lock" "$dir/keys.lock" || {
     echo "re-recording changed the lock" >&2
@@ -130,4 +145,8 @@ check() {
   echo "ok: ${#specs[@]} specs verify, compare and re-record byte-identically with $bin"
 }
 
-"$mode"
+case $mode in
+record) record ;;
+check) check ;;
+*) usage ;;
+esac

@@ -7,6 +7,34 @@ use super::*;
 const ADOPT_CERTHASH: &str = "sha256-lXNE6ciIfLkwGf6kf84qfibQ08d5fkPuGNKQ5KnyTMM=";
 const ADOPT_PUBKEYHASH: &str = "sha256-8DQBv2fMc+z0Q5uxky0+5t9TS6MAHO07fNMqG9thHtM=";
 
+/// A certificate's declared attributes are held to the token as a key's are: a certificate the
+/// spec says is public but the token holds private is refused (13), and one that agrees passes.
+/// Certificates were checked for their type alone, so any declaration passed, `CKA_TRUSTED`
+/// included.
+#[test]
+fn a_certificates_declared_attributes_are_checked() {
+    let Some(e) = env("cert_policy") else { return };
+    let s = e.session();
+    for (label, private) in [("pub-cert", false), ("priv-cert", true)] {
+        let mut t = cert_object(ADOPT_CERT, label.as_bytes(), None);
+        t.push(Attribute::Private(private));
+        s.create_object(&t).unwrap();
+    }
+    let spec = |name: &str, label: &str| {
+        format!(
+            "[specs.{name}]\nobject = \"{name}\"\nattributes = {{ CKA_PRIVATE = false }}\n\
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"{label}\" }}, origin = \"adopt\" }}\n\n\
+             [objects.{name}]\nclass = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"\n\n"
+        )
+    };
+    e.config(&(spec("agrees", "pub-cert") + &spec("differs", "priv-cert")));
+    assert_eq!(e.code(&["lock", "--spec", "agrees", "--token", "ref", "--update-lock"]), 0);
+    let o = e.km(&["lock", "--spec", "differs", "--token", "ref", "--update-lock"]);
+    assert_eq!(code(&o), 13, "{}", stderr(&o));
+    assert!(stderr(&o).contains("CKA_PRIVATE is true"), "{}", stderr(&o));
+    assert_eq!(e.code(&["check", "--spec", "agrees", "--token", "ref"]), 0);
+}
+
 /// An imported EC private key exposes no public point; when its importer wrote only the
 /// certificate beside it, that certificate stands in for the public half (docs/DESIGN.md §3.2),
 /// and only a certificate of the key's own type and curve does: under `token-asserted` no proof
@@ -114,7 +142,6 @@ tokens.ref-anon = { locator = { CKA_ID = "42" }, origin = "adopt" }
     let lock = e.lock();
     assert_eq!(lock["objects"]["adopted-cert"]["pairs"].as_array().unwrap(), &vec![toml::Value::from("adopted")]);
     assert_eq!(lock["objects"]["adopted"]["pairs"].as_array().unwrap(), &vec![toml::Value::from("adopted-cert")]);
-    let lock = e.lock();
     assert_eq!(lock["realisations"]["adopted-pub"]["ref-anon"]["publicOnly"].as_bool(), Some(true));
     assert!(lock["realisations"]["adopted-cert"]["ref-anon"].get("publicOnly").is_none());
     let verify = e.km(&["verify", "--spec", "adopted-pub", "--token", "ref-anon"]);
@@ -155,8 +182,8 @@ tokens.ref-anon = { locator = { CKA_ID = "42" }, origin = "adopt" }
     }
     write(&unlisted);
     let o = e.km(&["verify", "--spec", "adopted-pub", "--token", "ref-anon"]);
-    assert_eq!(code(&o), 0);
-    assert!(stderr(&o).contains("not listed as its pairs"));
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(stderr(&o).contains("not listed as its pairs"), "a partner not listing back is warned: {}", stderr(&o));
     assert_eq!(e.code(&["lock", "--spec", "adopted-pub", "--token", "ref-anon", "--update-lock"]), 0);
     assert_eq!(e.lock(), full);
     // A listed partner that is present must list back.
@@ -191,6 +218,72 @@ tokens.ref-anon = { locator = { CKA_LABEL = "rsa-paths" }, origin = "adopt", pub
     // Same material through the public key object, without login: same locked identity.
     assert_eq!(e.code(&["lock", "--spec", "r-pub", "--token", "ref-anon", "--update-lock"]), 0);
     assert_eq!(e.code(&["check", "r", "--spec", "r-pub"]), 0);
+}
+
+/// A legacy RSA key outside the `rsa` crate's limits (768 bits) has an identity (core id.rs
+/// F1): adopted, it is locked from its private key and from its public key without login, the
+/// two agree, and it verifies. It was refused as a conflict (13). A proof of possession, which
+/// needs a verifier of its size, is refused on policy (15), naming the size.
+#[test]
+fn a_legacy_rsa_key_has_an_identity() {
+    let Some(e) = env("rsa_legacy") else { return };
+    let label = Attribute::Label(b"rsa-legacy".to_vec());
+    let made = e.session().generate_key_pair(
+        &Mechanism::RsaPkcsKeyPairGen,
+        &[
+            Attribute::Token(true),
+            label.clone(),
+            Attribute::ModulusBits(768.into()),
+            Attribute::PublicExponent(vec![1, 0, 1]),
+            Attribute::Private(false),
+        ],
+        &[Attribute::Token(true), label, Attribute::Sign(true), Attribute::Sensitive(true)],
+    );
+    // kryoptic makes no RSA key under 1024 bits; any other reference that fails to is a failure,
+    // not a skip (review D9).
+    match made {
+        Err(err) if REF.provider == "kryoptic" => {
+            eprintln!("skipping rsa_legacy: kryoptic makes no RSA-768 key: {err}");
+            return;
+        }
+        made => {
+            made.unwrap();
+        }
+    }
+    e.config(
+        r#"
+[objects.r]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_RSA"
+modulusBits = 768
+
+[specs.r-proved]
+object = "r"
+attributes = { CKA_SIGN = true }
+tokens.ref = { locator = { CKA_LABEL = "rsa-legacy" }, origin = "adopt" }
+
+[specs.r-old]
+object = "r"
+tokens.ref = { locator = { CKA_LABEL = "rsa-legacy" }, origin = "adopt", binding = "token-asserted" }
+
+[specs.r-pub]
+object = "r"
+tokens.ref-anon = { locator = { CKA_LABEL = "rsa-legacy" }, origin = "adopt", publicOnly = true }
+"#,
+    );
+    // No signature verifier of that size: refused on policy (15), by its size, not as a conflict.
+    let o = e.km(&["lock", "--spec", "r-proved", "--token", "ref", "--update-lock"]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("an RSA key of 768 bits"), "{}", stderr(&o));
+    for spec in [
+        &["lock", "--spec", "r-old", "--token", "ref", "--update-lock"][..],
+        &["lock", "--spec", "r-pub", "--token", "ref-anon", "--update-lock"],
+        &["verify", "--spec", "r-old", "--token", "ref"],
+        &["check", "r", "--spec", "r-pub"],
+    ] {
+        let o = e.km(spec);
+        assert_eq!(code(&o), 0, "{spec:?}: {}", stderr(&o));
+    }
 }
 
 #[test]

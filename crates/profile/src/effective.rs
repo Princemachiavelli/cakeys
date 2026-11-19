@@ -97,7 +97,8 @@ impl<'a> Effective<'a> {
 
     /// Whether a mechanism is usable. Layers subtract first (a dropped mechanism is no for
     /// every module behind them), then the module's deltas against its advertisement decide;
-    /// a profile without an `advertise` list (the probe, phase 3) answers unknown.
+    /// a profile without an `advertise` list (the probe, phase 3) answers unknown, except for
+    /// what its `add` records as usable.
     #[must_use]
     pub fn mechanism(&self, name: &str) -> Verdict {
         if !self.baseline.mechanisms.contains_key(name) {
@@ -114,6 +115,11 @@ impl<'a> Effective<'a> {
         if m.subtract.mechanisms.iter().any(|x| x == name) {
             return Verdict::no(&m.profile, m.notes.get(name).cloned());
         }
+        // A mechanism the profile records as usable (`add`) is yes, advertised or not, and also
+        // in a profile that records no advertisement.
+        if m.add.iter().any(|x| x == name) {
+            return Verdict::yes(&m.profile, m.notes.get(name));
+        }
         if m.advertise.is_empty() {
             return Verdict::Unknown {
                 why: format!(
@@ -123,7 +129,7 @@ impl<'a> Effective<'a> {
                 ),
             };
         }
-        if m.advertise.iter().any(|x| x == name) || m.add.iter().any(|x| x == name) {
+        if m.advertise.iter().any(|x| x == name) {
             Verdict::yes(&m.profile, m.notes.get(name))
         } else {
             Verdict::no(&m.profile, m.notes.get(name).cloned().or_else(|| Some("not advertised".into())))
@@ -190,8 +196,11 @@ impl<'a> Effective<'a> {
             }
             let tried = row.can_bits.iter().chain(&row.cannot_bits);
             if tried.clone().next().is_some() {
-                let (lo, hi) = (row.can_bits.iter().min(), row.can_bits.iter().max());
-                if lo.is_some_and(|lo| *lo < bits) && hi.is_some_and(|hi| bits < *hi) {
+                // Between the nearest sizes tried on either side, both of which generated: a
+                // refused size in between (a TPM's discrete sizes) leaves it unknown.
+                let below = tried.clone().filter(|b| **b < bits).max();
+                let above = tried.clone().filter(|b| **b > bits).min();
+                if below.zip(above).is_some_and(|(lo, hi)| row.can_bits.contains(lo) && row.can_bits.contains(hi)) {
                     return Verdict::yes(&m.profile, None);
                 }
                 let mut tried: Vec<u32> = tried.copied().collect();
@@ -216,29 +225,46 @@ impl<'a> Effective<'a> {
                 why: format!("module profile {} records neither can nor cannot for it (partial)", m.profile),
             };
         }
-        Verdict::yes(&m.profile, m.notes.get(key_type))
+        // The key type at all: yes when some curve or size generated, or the module reports
+        // generating it; no when every one tried was refused. Never yes from rows that all say no.
+        if !row.can.is_empty() || !row.can_bits.is_empty() || m.reported.contains_key(key_type) {
+            return Verdict::yes(&m.profile, m.notes.get(key_type));
+        }
+        if !row.cannot.is_empty() || !row.cannot_bits.is_empty() {
+            let tried: Vec<String> =
+                row.cannot.iter().cloned().chain(row.cannot_bits.iter().map(u32::to_string)).collect();
+            let why = m.notes.get(key_type).cloned().unwrap_or_else(|| format!("refused {}", tried.join(", ")));
+            return Verdict::no(&m.profile, Some(why));
+        }
+        Verdict::Unknown { why: format!("module profile {} records no {key_type} generation it can judge", m.profile) }
     }
 
-    /// Whether a curve is generatable, over every key type that has a row: any row's yes wins,
-    /// else any row's no, else unknown (the curve names no key type of this profile).
+    /// Whether a curve is generatable, over every key type that has a row, the module's or a
+    /// layer's: any yes wins, else any no, else unknown (the curve names no key type of this
+    /// stack). A layer's `cannot` row decides no without a module profile, as it does for
+    /// [`Self::generate`].
     #[must_use]
     pub fn curve(&self, name: &str) -> Verdict {
         if !self.baseline.curves.contains(name) {
             return Verdict::Unknown { why: format!("not a curve of baseline {}", self.baseline.baseline) };
         }
-        let Some(m) = self.module else {
-            return Verdict::Unknown { why: "no module profile selected".into() };
+        let key_types: std::collections::BTreeSet<&str> = self
+            .module
+            .into_iter()
+            .chain(self.layers.iter().copied())
+            .flat_map(Profile::generation_key_types)
+            .collect();
+        let verdicts: Vec<Verdict> = key_types.into_iter().map(|kt| self.generate(kt, Some(name), None)).collect();
+        let unknown = match self.module {
+            None => "no module profile selected".to_owned(),
+            Some(m) => format!("no generate row of module profile {} lists the curve", m.profile),
         };
-        let verdicts: Vec<Verdict> =
-            m.generation_key_types().into_iter().map(|kt| self.generate(kt, Some(name), None)).collect();
         verdicts
             .iter()
             .find(|v| matches!(v, Verdict::Yes { .. }))
             .or_else(|| verdicts.iter().find(|v| matches!(v, Verdict::No { .. })))
             .cloned()
-            .unwrap_or(Verdict::Unknown {
-                why: format!("no generate row of module profile {} lists the curve", m.profile),
-            })
+            .unwrap_or(Verdict::Unknown { why: unknown })
     }
 
     /// Ask after a bare name: `CKM_*` a mechanism, `CKK_*` a key type, `CKP_*` a parameter set
@@ -371,6 +397,41 @@ mod tests {
         ));
     }
 
+    /// What a partial profile's `add` records as usable is yes, without an advertisement; the
+    /// rest stays unknown (review effective.rs F3).
+    #[test]
+    fn a_partial_module_profile_answers_its_add() {
+        let b = baseline();
+        let partial = profile("profile = \"m/1\"\nmode = \"observed\"\npartial = true\nadd = [\"CKM_ECDSA\"]");
+        assert!(matches!(eff(&b, Some(&partial), &[]).mechanism("CKM_ECDSA"), Verdict::Yes { by, .. } if by == "m/1"));
+        assert!(matches!(eff(&b, Some(&partial), &[]).mechanism("CKM_SHA512_HMAC"), Verdict::Unknown { .. }));
+        // A layer's subtraction still decides first.
+        let layer = profile("profile = \"l\"\nmode = \"delta\"\n[subtract]\nmechanisms = [\"CKM_ECDSA\"]");
+        assert!(matches!(eff(&b, Some(&partial), &[&layer]).mechanism("CKM_ECDSA"), Verdict::No { .. }));
+    }
+
+    /// A layer's refused curve is no also when no module profile is selected, as a layer's
+    /// refused generation is (review effective.rs F4); what no layer refuses stays unknown.
+    #[test]
+    fn a_layer_refuses_a_curve_without_a_module() {
+        let b = baseline();
+        let hw = profile(
+            "profile = \"hw\"\nmode = \"delta\"\n[capabilities]\n\"generate.CKK_EC.secp256k1\" = { answer = \"no\" }\n",
+        );
+        let layers = [&hw];
+        assert!(matches!(eff(&b, None, &layers).curve("secp256k1"), Verdict::No { by, .. } if by == "hw"));
+        assert!(matches!(
+            eff(&b, None, &layers).curve("secp256r1"),
+            Verdict::Unknown { why } if why == "no module profile selected"
+        ));
+        assert!(matches!(eff(&b, None, &layers).generate("CKK_EC", Some("secp256k1"), None), Verdict::No { .. }));
+        // With a module that generates it, the layer's no still wins.
+        let module = profile(
+            "profile = \"x/1\"\nmode = \"observed\"\n[capabilities]\n\"generate.CKK_EC.secp256k1\" = { answer = \"yes\" }\n",
+        );
+        assert!(matches!(eff(&b, Some(&module), &layers).curve("secp256k1"), Verdict::No { by, .. } if by == "hw"));
+    }
+
     #[test]
     fn a_subtracted_module_mechanism_is_no_with_its_note() {
         let b = baseline();
@@ -470,6 +531,30 @@ mod tests {
         assert!(matches!(stack.generate("CKK_EC", Some("secp256r1"), None), Verdict::Yes { .. }));
         assert!(matches!(stack.generate("CKK_RSA", None, Some(3072)), Verdict::Yes { .. }));
         unknown(stack.generate("CKK_RSA", None, Some(8192)), "probed 2048, 4096 bits only");
+    }
+
+    /// A key type asked about without a curve or size is no when every row of it is a no (it
+    /// was yes: any row at all made it yes), and a size between two that generated is unknown
+    /// when a refused size lies between them (a TPM generates only its discrete sizes).
+    #[test]
+    fn refused_rows_never_add_up_to_yes() {
+        let b = baseline();
+        let tpm = profile(
+            "profile = \"tpm/1\"\nmode = \"observed\"\n[capabilities]\n\
+             \"generate.CKK_EC.secp256r1\" = { answer = \"no\" }\n\"generate.CKK_EC.secp256k1\" = { answer = \"no\" }\n\
+             \"generate.CKK_RSA.1024\" = { answer = \"yes\" }\n\"generate.CKK_RSA.1536\" = { answer = \"no\" }\n\
+             \"generate.CKK_RSA.2048\" = { answer = \"yes\" }\n\"generate.CKK_RSA.3072\" = { answer = \"yes\" }\n",
+        );
+        let stack = eff(&b, Some(&tpm), &[]);
+        let v = stack.generate("CKK_EC", None, None);
+        assert!(matches!(&v, Verdict::No { note: Some(n), .. } if n.contains("secp256k1, secp256r1")), "{v:?}");
+        assert!(matches!(stack.generate("CKK_RSA", None, None), Verdict::Yes { .. }));
+        assert!(matches!(stack.generate("CKK_AES", None, None), Verdict::Unknown { .. }));
+        assert!(matches!(stack.generate("CKK_RSA", None, Some(2560)), Verdict::Yes { .. }));
+        for bits in [1280, 1792] {
+            let v = stack.generate("CKK_RSA", None, Some(bits));
+            assert!(matches!(&v, Verdict::Unknown { why } if why.contains("1024, 1536, 2048, 3072")), "{bits}: {v:?}");
+        }
     }
 
     /// A mechanism is usable when the module advertises it or the profile adds it, and no

@@ -1,13 +1,16 @@
 //! The command-line surface test, shared by the three tools: every verb and every flag clap
 //! defines is used by an integration test of that tool. It reads the test sources, so it says
 //! that a test names the verb or flag, not what the test proves with it: a floor under the
-//! coverage report (docs/DEVELOPMENT.md), cheap enough to run on every build.
+//! coverage report (docs/DEVELOPMENT.md), cheap enough to run on every build. A verb is nearly
+//! always named (`"lock"`, `"check"`); the flags are what it holds to a test.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
-/// The verbs and long flags of `cmd` and its subcommands, as a test would write them
-/// (`lock`, `--dry-run`), less clap's own (`help`, `--help`, `--version`).
+/// The verbs, their visible aliases and the long flags of `cmd` and its subcommands, as a test
+/// would write them (`lock`, `verify`, `--dry-run`), less clap's own (`help`, `--help`,
+/// `--version`). A short flag (`-c`) is its long flag's other spelling, parsed by clap alone: not
+/// a surface of its own.
 fn surface(cmd: &clap::Command, out: &mut BTreeSet<String>) {
     for arg in cmd.get_arguments() {
         if let Some(long) = arg.get_long().filter(|l| !matches!(*l, "help" | "version")) {
@@ -16,25 +19,34 @@ fn surface(cmd: &clap::Command, out: &mut BTreeSet<String>) {
     }
     for sub in cmd.get_subcommands().filter(|s| s.get_name() != "help") {
         out.insert(sub.get_name().to_owned());
+        out.extend(sub.get_visible_aliases().map(str::to_owned));
         surface(sub, out);
     }
 }
 
-/// Every `.rs` file under `dir`, concatenated.
+/// Every `.rs` file under `dir` but the surface tests and the shared harness (`common/`),
+/// concatenated without its comment lines: a flag a comment quotes, or a helper any tool's tests
+/// call spells, is no flag this tool's tests use.
 fn sources(dir: &Path, out: &mut String) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        if path.is_dir() && path.file_name().is_some_and(|n| n != "common") {
             sources(&path, out);
         } else if path.extension().is_some_and(|e| e == "rs") && path.file_name().is_some_and(|n| n != "surface.rs") {
-            out.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            for line in text.lines().filter(|l| !l.trim_start().starts_with("//")) {
+                out.push_str(line);
+                out.push('\n');
+            }
         }
     }
 }
 
 /// Fail when a verb or flag of `cmd` appears as a string literal in no integration test under
-/// `tests` (this tool's `tests/`) or the shared harness. `untested` lists the ones knowingly
+/// `tests`, this tool's `tests/`, the shared harness (cli/tests/common) left out: a flag the
+/// harness spells, as cakeys' own `--module` did for caprobe's, is no tool's test (review D9).
+/// `untested` lists the ones knowingly
 /// left out, each with why; one that is tested after all, or that clap no longer defines, fails
 /// too, so the list cannot go stale.
 ///
@@ -46,7 +58,6 @@ pub fn assert_covered(cmd: &clap::Command, tests: &Path, untested: &[(&str, &str
     surface(cmd, &mut names);
     let mut text = String::new();
     sources(tests, &mut text);
-    sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../cli/tests/common"), &mut text);
     // As an argument of its own (`"--dry-run"`), or the start of one (`"--module={path}"`,
     // `"--label kmtest"`).
     let used = |name: &str| {

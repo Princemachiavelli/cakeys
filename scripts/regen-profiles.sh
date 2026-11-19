@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Regenerate the committed module profiles the reference suites check (docs/CAPROBE.md phase
 # 3): softhsm/2.7, kryoptic/1.5 and tpm2-pkcs11/1.10+swtpm, each probed with --write on a fresh
-# token set up the way the Nix check phase sets it up (nix/package.nix), and written over its
-# committed file — [migration] and [manual] kept. Afterwards `git diff profiles/` is the drift;
-# the build's conformance tests then pass.
+# token set up the way the Nix check phase sets it up (nix/package-common.nix), and written over
+# its committed file — [migration] and [manual] kept. Afterwards `git diff profiles/` is the
+# drift; the build's conformance tests then pass.
 #
 #   scripts/regen-profiles.sh <caprobe> <dir>
 #
@@ -13,39 +13,50 @@
 #   nix build --impure -o /tmp/cakeys --expr \
 #     "((builtins.getFlake \"git+file://$PWD\").packages.x86_64-linux.cakeys.overrideAttrs { doCheck = false; }).caprobe"
 # The tools come from the flake's own nixpkgs, so the probed versions are the build's:
-#   nix shell --inputs-from . nixpkgs#{softhsm,opensc,swtpm,dbus,tpm2-abrmd,tpm2-tools,tpm2-pkcs11} -c \
+#   nix shell --inputs-from . nixpkgs#{opensc,swtpm,dbus,tpm2-abrmd,tpm2-tools,tpm2-pkcs11} -c \
 #     env KRYOPTIC_MODULE=... TPM2_PKCS11_MODULE=... scripts/regen-profiles.sh /tmp/cakeys-caprobe/bin/caprobe <dir>
+# SoftHSM is the flake's own patched build (.#softhsm-unwrap-value-len), which this script
+# builds: the one the conformance test re-probes, and pkcs11-check-compare's (apps.nix).
 set -euo pipefail
 
+[ $# -eq 2 ] || {
+  echo "usage: $0 <caprobe> <dir>" >&2
+  exit 2
+}
 bin=$(realpath "$1") dir=$(realpath -m "$2")
 repo=$(realpath "$(dirname "$(realpath "$0")")/..")
 : "${KRYOPTIC_MODULE:?the path to libkryoptic_pkcs11.so}" "${TPM2_PKCS11_MODULE:?the path to libtpm2_pkcs11.so}"
-softhsm=$(dirname "$(dirname "$(readlink -f "$(command -v softhsm2-util)")")")/lib/softhsm/libsofthsm2.so
+softhsm_pkg=$(nix build --no-link --print-out-paths "$repo#softhsm-unwrap-value-len")
+softhsm=$softhsm_pkg/lib/softhsm/libsofthsm2.so
+# Its softhsm2-util initialises the token (nix/token-env.sh), so module and tool are one build.
+export PATH=$softhsm_pkg/bin:$PATH
 mkdir -p "$dir"
 echo 1234 >"$dir/pin"
 
-export SOFTHSM2_CONF=$dir/softhsm2.conf
-mkdir -p "$dir/softhsm-tokens"
-printf 'directories.tokendir = %s\nobjectstore.backend = file\nlog.level = ERROR\n' \
-  "$dir/softhsm-tokens" >"$SOFTHSM2_CONF"
-softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678 >/dev/null
-
-export KRYOPTIC_CONF=$dir/kryoptic.conf
-printf '[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' "$dir/kryoptic.sql" >"$KRYOPTIC_CONF"
-pkcs11-tool --module "$KRYOPTIC_MODULE" --init-token --slot 1 --so-pin 5678 --label kmtest >/dev/null
-pkcs11-tool --module "$KRYOPTIC_MODULE" --token-label kmtest --login --login-type so \
-  --so-pin 5678 --init-pin --pin 1234 >/dev/null
+# The tokens as the check phase sets them up (nix/token-env.sh).
+# shellcheck source=nix/token-env.sh
+. "$repo/nix/token-env.sh"
+softhsm_conf "$dir"
+softhsm_init kmtest
+kryoptic_conf "$dir"
+kryoptic_init "$KRYOPTIC_MODULE" kmtest
 
 export HOME=$dir
 # Its own port: the harness default (23211) may be another run's.
-bash "$repo/nix/tpm2-test-env.sh" up "$dir/tpm" "${TPM_PORT:-23311}"
+# The trap first: `down` takes whatever PID files there are, so it covers an `up` cut short.
 trap 'bash "$repo/nix/tpm2-test-env.sh" down "$dir/tpm"' EXIT
+bash "$repo/nix/tpm2-test-env.sh" up "$dir/tpm" "${TPM_PORT:-23311}"
 # shellcheck source=/dev/null
 . "$dir/tpm/env"
 
+# A TOML basic string: backslash and quote escaped, so any path reads back as itself.
+toml_string() {
+  local s=${1//\\/\\\\}
+  printf '"%s"' "${s//\"/\\\"}"
+}
 token() {
-  printf '[tokens.%s]\nmodule = "%s"\ntokenLabel = "kmtest"\npinFile = "%s"\nprobe = { scratch = true }\n\n' \
-    "$1" "$2" "$dir/pin"
+  printf '[tokens.%s]\nmodule = %s\ntokenLabel = "kmtest"\npinFile = %s\nprobe = { scratch = true }\n\n' \
+    "$1" "$(toml_string "$2")" "$(toml_string "$dir/pin")"
 }
 {
   token softhsm "$softhsm"

@@ -16,7 +16,6 @@ cakeys-core.workspace = true
 cakeys-profile.workspace = true
 cryptoki.workspace = true
 cryptoki-sys.workspace = true
-toml.workspace = true
 zeroize.workspace = true
 der.workspace = true
 aes-kw.workspace = true
@@ -24,6 +23,9 @@ libc.workspace = true
 getrandom.workspace = true
 rsa.workspace = true
 x509-cert.workspace = true
+
+[dev-dependencies]
+toml.workspace = true
 
 [features]
 # The single-part C_Sign after C_SignInit (Session::sign_initialized) a CKA_ALWAYS_AUTHENTICATE
