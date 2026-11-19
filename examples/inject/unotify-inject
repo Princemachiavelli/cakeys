@@ -1,0 +1,367 @@
+#!/usr/bin/env python3
+"""Run a program that opens a file, and answer the open with what a command prints.
+
+    unotify-inject [--rules FILE]… [PATH COMMAND [READS]] -- PROGRAM [ARGUMENT…]
+
+Each rule is a PATH, a COMMAND and optionally READS: one on the command line, any number in rules
+files (TOML, `[[inject]]` tables with `path`, `command` and optionally `reads`, relative paths
+taken from the working directory). Every path is answered by its own rule, with its own count.
+
+PROGRAM runs under a seccomp filter that sends every open(2), openat(2) and openat2(2) to this
+process (SECCOMP_RET_USER_NOTIF). An open of a rule's PATH is not given to the kernel: COMMAND runs (through
+`sh -c`, in this process's environment, not the program's), and what it prints on stdout becomes the
+file, a memfd injected into the program as the descriptor open returns (SECCOMP_IOCTL_NOTIF_ADDFD).
+Every other open is let through. The program needs no change and no pipe or file ever holds the
+content: PATH on disk is never read. A program that stats it first (OpenSSL does) needs it to exist,
+and the size that stat reports is the placeholder's.
+
+COMMAND runs once per open, so what it checks is checked at each use: with
+`cakeys check <object> --format pkcs11-provider-pem` the key file the program reads is a key cakeys
+just verified, and a check that fails fails the open (EACCES) and this command with the check's exit
+code. READS, when given, is the number of opens PATH must get: one more is refused, and one more
+or fewer at the end fails the run (each rule counts its own). Opens are counted, not reads: the program holds the file and
+reads it as it likes.
+
+Exit status: the first COMMAND's, when one failed; 125 when a PATH was opened other than its READS
+times; otherwise PROGRAM's (128 + the signal when it was killed). PROGRAM's children run under the filter too, and
+the run ends with the last of them.
+
+The filter is no sandbox. Only PATH as the program spells it (made absolute against its working
+directory or descriptor, not resolved through symbolic links) is matched, and an open this process
+lets through is the kernel's to carry out from the program's memory, which a second thread could
+change after it was read here. The matched open never is: it is answered, not continued. Reading the
+program's memory needs the ptrace permission a descendant gives (Yama's ptrace_scope 1 allows it).
+x86-64 only.
+"""
+
+import ctypes
+import os
+import platform
+import select
+import shutil
+import socket
+import struct
+import subprocess
+import sys
+import tomllib
+from dataclasses import dataclass
+from typing import NoReturn
+
+EXIT_READS = 125
+
+X86_64 = 0xC000003E  # AUDIT_ARCH_X86_64
+SYS_OPEN, SYS_OPENAT, SYS_SECCOMP, SYS_OPENAT2 = 2, 257, 317, 437
+
+PR_SET_PDEATHSIG, PR_SET_NO_NEW_PRIVS = 1, 38
+SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_NEW_LISTENER = 1, 8
+SECCOMP_RET_KILL_PROCESS, SECCOMP_RET_USER_NOTIF, SECCOMP_RET_ALLOW = 0x80000000, 0x7FC00000, 0x7FFF0000
+SECCOMP_USER_NOTIF_FLAG_CONTINUE = 1
+SECCOMP_ADDFD_FLAG_SEND = 2
+AT_FDCWD = -100
+
+libc = ctypes.CDLL(None, use_errno=True)
+libc.ioctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_void_p]
+libc.syscall.restype = ctypes.c_long
+
+
+class SeccompData(ctypes.Structure):
+    _fields_ = [
+        ("nr", ctypes.c_int32),
+        ("arch", ctypes.c_uint32),
+        ("instruction_pointer", ctypes.c_uint64),
+        ("args", ctypes.c_uint64 * 6),
+    ]
+
+
+class Notif(ctypes.Structure):
+    _fields_ = [("id", ctypes.c_uint64), ("pid", ctypes.c_uint32), ("flags", ctypes.c_uint32), ("data", SeccompData)]
+
+
+class Resp(ctypes.Structure):
+    _fields_ = [("id", ctypes.c_uint64), ("val", ctypes.c_int64), ("error", ctypes.c_int32), ("flags", ctypes.c_uint32)]
+
+
+class AddFd(ctypes.Structure):
+    _fields_ = [
+        ("id", ctypes.c_uint64),
+        ("flags", ctypes.c_uint32),
+        ("srcfd", ctypes.c_uint32),
+        ("newfd", ctypes.c_uint32),
+        ("newfd_flags", ctypes.c_uint32),
+    ]
+
+
+class Sizes(ctypes.Structure):
+    _fields_ = [("notif", ctypes.c_uint16), ("notif_resp", ctypes.c_uint16), ("data", ctypes.c_uint16)]
+
+
+class SockFilter(ctypes.Structure):
+    _fields_ = [("code", ctypes.c_uint16), ("jt", ctypes.c_uint8), ("jf", ctypes.c_uint8), ("k", ctypes.c_uint32)]
+
+
+class SockFprog(ctypes.Structure):
+    _fields_ = [("len", ctypes.c_uint16), ("filter", ctypes.POINTER(SockFilter))]
+
+
+def ioc(direction: int, nr: int, size: int) -> int:
+    """_IOC for the seccomp ioctls (type '!'); 1 is write, 2 read."""
+    return direction << 30 | size << 16 | ord("!") << 8 | nr
+
+
+NOTIF_RECV = ioc(3, 0, ctypes.sizeof(Notif))
+NOTIF_SEND = ioc(3, 1, ctypes.sizeof(Resp))
+NOTIF_ID_VALID = ioc(1, 2, 8)
+NOTIF_ADDFD = ioc(1, 3, ctypes.sizeof(AddFd))
+
+
+def ioctl(fd: int, request: int, arg) -> int:
+    ret = libc.ioctl(fd, request, ctypes.byref(arg))
+    if ret < 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err))
+    return ret
+
+
+def filter_program() -> SockFprog:
+    """Notify on open, openat and openat2; kill what is not x86-64; allow the rest."""
+    ld, jeq, ret = 0x20, 0x15, 0x06  # BPF_LD|W|ABS, BPF_JMP|JEQ|K, BPF_RET|K
+    code = [
+        SockFilter(ld, 0, 0, 4),  # seccomp_data.arch
+        SockFilter(jeq, 1, 0, X86_64),
+        SockFilter(ret, 0, 0, SECCOMP_RET_KILL_PROCESS),
+        SockFilter(ld, 0, 0, 0),  # seccomp_data.nr
+        SockFilter(jeq, 3, 0, SYS_OPEN),
+        SockFilter(jeq, 2, 0, SYS_OPENAT),
+        SockFilter(jeq, 1, 0, SYS_OPENAT2),
+        SockFilter(ret, 0, 0, SECCOMP_RET_ALLOW),
+        SockFilter(ret, 0, 0, SECCOMP_RET_USER_NOTIF),
+    ]
+    program = (SockFilter * len(code))(*code)
+    fprog = SockFprog(len(code), program)
+    fprog.keepalive = program  # the array must outlive the call
+    return fprog
+
+
+def install_filter() -> int:
+    """In the child, before exec: the filter, and the listener descriptor its notifications arrive on."""
+    libc.prctl(PR_SET_PDEATHSIG, 9, 0, 0, 0)  # a program must not outlive the one answering its opens
+    if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "PR_SET_NO_NEW_PRIVS")
+    fprog = filter_program()
+    fd = libc.syscall(SYS_SECCOMP, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_NEW_LISTENER, ctypes.byref(fprog))
+    if fd < 0:
+        err = ctypes.get_errno()
+        raise OSError(err, f"seccomp: {os.strerror(err)}")
+    return fd
+
+
+def read_cstring(mem: int, address: int) -> bytes:
+    """A NUL-terminated string from the program's memory, a page at a time (the next may be unmapped)."""
+    out = b""
+    while len(out) < 4096:
+        here = address + len(out)
+        chunk = os.pread(mem, 4096 - here % 4096, here)
+        if not chunk:
+            break
+        end = chunk.find(b"\0")
+        if end >= 0:
+            return out + chunk[:end]
+        out += chunk
+    raise OSError(36, "path too long")  # ENAMETOOLONG
+
+
+def target_path(pid: int, dirfd: int, raw: bytes) -> str:
+    """The path as an absolute, normalized one: relative to the program's directory or descriptor."""
+    path = os.fsdecode(raw)
+    if not path.startswith("/"):
+        base = f"/proc/{pid}/cwd" if dirfd == AT_FDCWD else f"/proc/{pid}/fd/{dirfd}"
+        path = os.readlink(base) + "/" + path
+    return os.path.normpath(path)
+
+
+@dataclass
+class Rule:
+    path: str
+    command: str
+    reads: int | None = None
+    served: int = 0
+    refused: int = 0
+    failed: int | None = None  # the exit code of the first run of COMMAND that failed
+
+    def __post_init__(self) -> None:
+        self.path = os.path.normpath(os.path.abspath(self.path))
+
+
+class Injector:
+    def __init__(self, listener: int, rules: list[Rule]):
+        self.listener = listener
+        self.rules = {rule.path: rule for rule in rules}
+
+    def respond(self, notif: Notif, error: int = 0, flags: int = 0) -> None:
+        try:
+            ioctl(self.listener, NOTIF_SEND, Resp(notif.id, 0, -error, flags))
+        except OSError as e:
+            if e.errno != 2:  # ENOENT: the program was interrupted or died, nothing to answer
+                raise
+
+    def valid(self, notif: Notif) -> bool:
+        try:
+            ioctl(self.listener, NOTIF_ID_VALID, ctypes.c_uint64(notif.id))
+        except OSError:
+            return False
+        return True
+
+    def serve(self) -> None:
+        """Answer notifications until no task is left under the filter: the program and what it started."""
+        poll = select.poll()
+        poll.register(self.listener, select.POLLIN)
+        while True:
+            events = dict(poll.poll())
+            if not events.get(self.listener, 0) & select.POLLIN:
+                return  # POLLHUP alone
+            notif = Notif()
+            try:
+                ioctl(self.listener, NOTIF_RECV, notif)
+            except OSError as e:
+                if e.errno in (4, 2):  # EINTR; ENOENT: gone before it was received
+                    continue
+                raise
+            self.handle(notif)
+
+    def handle(self, notif: Notif) -> None:
+        data, args = notif.data, notif.data.args
+        try:
+            with open(f"/proc/{notif.pid}/mem", "rb", buffering=0) as mem:
+                fd = mem.fileno()
+                if data.nr == SYS_OPEN:
+                    dirfd, where, flags = AT_FDCWD, args[0], args[1]
+                elif data.nr == SYS_OPENAT:
+                    dirfd, where, flags = ctypes.c_int32(args[0]).value, args[1], args[2]
+                else:  # openat2: the flags are the first field of its open_how
+                    dirfd, where = ctypes.c_int32(args[0]).value, args[1]
+                    flags = int.from_bytes(os.pread(fd, 8, args[2]), "little")
+                raw = read_cstring(fd, where)
+            path = target_path(notif.pid, dirfd, raw)
+        except OSError:
+            path = None  # unreadable: the kernel will find the same fault, or the program is gone
+        if not self.valid(notif):
+            return
+        rule = self.rules.get(path)
+        if rule is None:
+            self.respond(notif, flags=SECCOMP_USER_NOTIF_FLAG_CONTINUE)
+        elif flags & (os.O_ACCMODE | os.O_CREAT | os.O_TRUNC) or flags & os.O_DIRECTORY:
+            self.respond(notif, error=13)  # EACCES: the file is for reading
+        elif rule.reads is not None and rule.served >= rule.reads:
+            rule.refused += 1
+            print(f"unotify-inject: {rule.path}: refused an open by {notif.pid}, past {rule.reads}", file=sys.stderr)
+            self.respond(notif, error=13)
+        else:
+            self.inject(notif, rule, flags)
+
+    def inject(self, notif: Notif, rule: Rule, flags: int) -> None:
+        run = subprocess.run(rule.command, shell=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
+        if run.returncode != 0:
+            if rule.failed is None:
+                rule.failed = run.returncode
+            print(f"unotify-inject: {rule.path}: `{rule.command}` exited {run.returncode}", file=sys.stderr)
+            self.respond(notif, error=13)
+            return
+        memfd = os.memfd_create("unotify-inject", os.MFD_CLOEXEC)
+        os.write(memfd, run.stdout)
+        # A description of its own at offset 0, read-only: the one written through has its offset
+        # at the end, and every open must get a file that reads from the start.
+        readable = os.open(f"/proc/self/fd/{memfd}", os.O_RDONLY | os.O_CLOEXEC)
+        os.close(memfd)
+        try:
+            cloexec = os.O_CLOEXEC if flags & os.O_CLOEXEC else 0
+            ioctl(self.listener, NOTIF_ADDFD, AddFd(notif.id, SECCOMP_ADDFD_FLAG_SEND, readable, 0, cloexec))
+        except OSError as e:
+            if e.errno != 2:  # ENOENT: the program was interrupted or died
+                raise
+            return
+        finally:
+            os.close(readable)
+        rule.served += 1
+        print(f"unotify-inject: {rule.path}: {len(run.stdout)} bytes to {notif.pid}", file=sys.stderr)
+
+
+def usage() -> NoReturn:
+    print(__doc__.split("\n\n")[0], file=sys.stderr)
+    print("see the top of this file for what it does and its exit status", file=sys.stderr)
+    sys.exit(2)
+
+
+def load_rules(path: str) -> list[Rule]:
+    """The `[[inject]]` tables of a TOML file; a mistake in it is a usage error."""
+    try:
+        with open(path, "rb") as f:
+            tables = tomllib.load(f).get("inject", [])
+        return [Rule(t["path"], t["command"], t.get("reads")) for t in tables]
+    except (OSError, tomllib.TOMLDecodeError, KeyError, TypeError) as e:
+        sys.exit(f"unotify-inject: {path}: {e!r}")
+
+
+def main(argv: list[str]) -> int:
+    if "--" not in argv:
+        usage()
+    split = argv.index("--")
+    head, program = argv[:split], argv[split + 1 :]
+    rules: list[Rule] = []
+    while head[:1] == ["--rules"] and len(head) > 1:
+        rules += load_rules(head[1])
+        head = head[2:]
+    if len(head) in (2, 3) and (len(head) == 2 or head[2].isdigit()):
+        rules.append(Rule(head[0], head[1], int(head[2]) if len(head) == 3 else None))
+    elif head:
+        usage()
+    if not rules or not program:
+        usage()
+    paths = [rule.path for rule in rules]
+    if len(set(paths)) != len(paths):
+        sys.exit("unotify-inject: a path has two rules")
+    if platform.machine() != "x86_64":
+        sys.exit("unotify-inject: x86-64 only")
+    exe = shutil.which(program[0])  # looked up here: the child must not open anything once filtered
+    if exe is None:
+        sys.exit(f"unotify-inject: {program[0]}: not found")
+
+    here, there = socket.socketpair()
+    child = os.fork()
+    if child == 0:
+        here.close()
+        try:
+            listener = install_filter()
+            # Not socket.send_fds: nothing may be imported or opened from here to the exec, since
+            # no one answers yet.
+            there.sendmsg([b"."], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("i", listener))])
+            os.close(listener)
+            os.execv(exe, program)
+        except OSError as e:
+            print(f"unotify-inject: {e}", file=sys.stderr)
+        os._exit(127)
+    there.close()
+    _, fds, _, _ = socket.recv_fds(here, 1, 1)
+    if not fds:  # the child could not install the filter, and said why
+        return os.waitstatus_to_exitcode(os.waitpid(child, 0)[1])
+    injector = Injector(fds[0], rules)
+    injector.serve()
+    code = os.waitstatus_to_exitcode(os.waitpid(child, 0)[1])
+    for rule in rules:
+        if rule.failed is not None:
+            return rule.failed
+    wrong = False
+    for rule in rules:
+        if rule.reads is not None and (rule.served != rule.reads or rule.refused):
+            print(
+                f"unotify-inject: {rule.path}: opened {rule.served} times"
+                f" ({rule.refused} more refused), expected {rule.reads}",
+                file=sys.stderr,
+            )
+            wrong = True
+    if wrong:
+        return EXIT_READS
+    return code if code >= 0 else 128 - code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

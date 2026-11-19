@@ -1,0 +1,20 @@
+# A key for a program that takes it as a file, and is not changed (unotify-inject, run.sh). The
+# program opens a path; `cakeys check` runs at that moment and what it prints is the file. The
+# key is born in the host's TPM and never leaves it.
+
+[tokens.tpm]
+# By hand, `--module tpm=<path>/lib/libtpm2_pkcs11.so`.
+provider = "tpm2-pkcs11"
+tokenLabel = "inject"
+pinFile = "$INJECT_PIN_FILE"
+
+[objects.signing]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+
+[specs.signing]
+object = "signing"
+# CKA_ID is what pkcs11-provider finds the public half by (docs/CAKEYS.md, "The contract with programs").
+attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
+tokens.tpm = { locator = { CKA_LABEL = "signing", CKA_ID = "01" }, origin = "create" }
