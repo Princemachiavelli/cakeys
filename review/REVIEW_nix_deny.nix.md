@@ -20,6 +20,8 @@ online app fetch the database (`cargo deny fetch db` with no `install-db`, then 
 `--offline`), and/or give `FETCH_HEAD` the input's `lastModified` time so the sandbox check fails
 once the pin is 90 days old. [read]
 
+**Decided (2026-11-18):** the first half is already fixed (dfe864e): `apps.deny-online` no longer installs the pin or runs `--offline`, so cargo-deny fetches the current database into its throwaway CARGO_HOME. The staleness guard stays off in the sandbox. Dating FETCH_HEAD from `advisory-db.lastModified` would have cargo-deny compare the pin with the build's clock, so a cached pass and a rebuild of the same inputs could disagree. A deterministic guard needs a second pinned time, such as `self.lastModified` compared with `advisory-db.lastModified` (90 days), and deny.nix is given neither (it would mean threading `self.lastModified` through flake.nix and pkgs.nix). The header comment of `install-db` now says the touch disables the check on purpose and points to deny-online for freshness.
+
 ## Design
 
 - The check's coverage claim ("duplicate crates and sources") is not backed by deny.toml; see

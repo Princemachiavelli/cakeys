@@ -124,6 +124,9 @@ in
         # A YubiKey's lock, the one from real hardware the lock round trip reads
         # (`cakeys_core::fuzzing`).
         ../examples/yubikey-secureboot.lock
+        # The tests' runner: cakeys' validate tests hold its list of untraced tests to the tests
+        # that run their own p11-fault.
+        ../nix/test-tokens.sh
       ];
     };
 

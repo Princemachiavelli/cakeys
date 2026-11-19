@@ -505,9 +505,11 @@ impl Run<'_> {
         how: &MoveArgs,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
-        // The source is opened once, for the plan and the wrap.
+        // The source is opened once, for the plan and the wrap; so is a bundle's token, for the
+        // plan and its transport key (review lib.rs F5).
         let source = self.opener.open(from, Access::Scratch, notes);
-        let (moves, source) = self.plan(objects, from, dest, &[], how, false, source, notes)?;
+        let (moves, source, planned_target) =
+            self.plan_opening(objects, from, dest, &[], how, false, source, Access::Read, notes)?;
         // Named objects are all or nothing; without names, whatever can move does, and what
         // cannot (a key made non-extractable, ...) is warned about and left out.
         if !objects.is_empty() {
@@ -543,7 +545,10 @@ impl Run<'_> {
                 Some(if let Some(key) = tokens::locked_transport(&tr, &self.lock, notes)? {
                     key
                 } else {
-                    let target = opener.open(to, Access::Read, notes)?;
+                    let target = match planned_target {
+                        Some(t) => t,
+                        None => opener.open(to, Access::Read, notes)?,
+                    };
                     notes.note(format_args!(
                         "{tr}: the lock records no public key for it yet; lock it again to export without '{to}'"
                     ));
@@ -668,10 +673,12 @@ impl Run<'_> {
     ) -> anyhow::Result<()> {
         // Before the plan, as the dry run does: both refuse a named target that is no import pair.
         specs_import(&self.opener.cfg, specs, to, MOVE)?;
-        // The source is opened once, for the plan and the moves.
+        // Each side is opened once, for the plan and the moves: the target read-write, as the
+        // moves write there (review lib.rs F5).
         let source = self.opener.open(from, Access::Scratch, notes);
-        let (moves, source) =
-            self.plan(object.as_slice(), from, &Destination::Token(to), specs, how, true, source, notes)?;
+        let dest = Destination::Token(to);
+        let (moves, source, planned) =
+            self.plan_opening(object.as_slice(), from, &dest, specs, how, true, source, Access::Write, notes)?;
         moves.ready()?;
         specs_select(&self.opener.cfg, specs, moves.plans.iter().map(|p| p.object.as_str()), to, MOVE)?;
         let built = |m: &Method| {
@@ -697,7 +704,11 @@ impl Run<'_> {
         }
         let source = self.source(from, source, notes)?;
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
-        let mut target = Some(opener.open(to, Access::Write, notes)?);
+        // The one the plan opened; else opened now, which says why it does not open.
+        let mut target = Some(match planned {
+            Some(t) => t,
+            None => opener.open(to, Access::Write, notes)?,
+        });
         // tpm2-pkcs11 sees what `tpm2_ptool` imported only once opened again: the old one first.
         let reopen = |t: &mut Option<cakeys_pkcs11::Token>, notes: &mut Notes| -> cakeys_core::Result<()> {
             *t = None;
@@ -791,8 +802,28 @@ impl Run<'_> {
         source: cakeys_core::Result<Token>,
         notes: &mut Notes,
     ) -> anyhow::Result<(tokens::Moves, Option<Token>)> {
+        let planned = self.plan_opening(objects, from, dest, specs, how, show, source, Access::Read, notes)?;
+        Ok((planned.0, planned.1))
+    }
+
+    /// [`Self::plan`], opening a target token with `target` access, and handing it back, when it
+    /// opened, beside the source: a `migrate` that writes there opens it once, read-write (review
+    /// lib.rs F5: read-only for the plan, then again for the run).
+    #[expect(clippy::too_many_arguments, reason = "the move command's parts, as the CLI hands them over")]
+    fn plan_opening(
+        &self,
+        objects: &[&str],
+        from: &str,
+        dest: &Destination,
+        specs: &[String],
+        how: &MoveArgs,
+        show: bool,
+        source: cakeys_core::Result<Token>,
+        target: Access,
+        notes: &mut Notes,
+    ) -> anyhow::Result<(tokens::Moves, Option<Token>, Option<Token>)> {
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
-        let open = |name: &str, notes: &mut Notes| opener.open(name, Access::Read, notes);
+        let open = |name: &str, notes: &mut Notes| opener.open(name, target, notes);
         let bundle = matches!(dest, Destination::Bundle(_) | Destination::Transport(..));
         let shown = match dest {
             Destination::Transport(path, _) => path.display().to_string(),
@@ -840,7 +871,7 @@ impl Run<'_> {
             transport_key,
             trusted_transport,
         };
-        let (mut moves, source) = tokens::plan_moves(&self.lock, opener.registry, &req, source, &open, notes)?;
+        let (mut moves, source, target) = tokens::plan_moves(&self.lock, opener.registry, &req, source, &open, notes)?;
         // Without names, what is kept home is left out quietly; named, it is refused (15).
         if objects.is_empty() {
             moves.plans.retain(|p| no_export(cfg, &p.object, from).is_none());
@@ -903,7 +934,7 @@ impl Run<'_> {
         if show {
             show_plans(from, &moves, how.json)?;
         }
-        Ok((moves, source))
+        Ok((moves, source, target))
     }
 
     /// The source token `from` a real run planned with ([`Self::plan`]): the one opened for the

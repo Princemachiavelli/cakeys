@@ -25,6 +25,8 @@ skeleton. Fix: pin a word of each refusal (the binding and the missing bit), as
 
 `reference/proofs.rs:89-93` ("The token is shared between runs ..."): see common/mod.rs F6. [read]
 
+**Fixed (2026-11-18):** the comment is gone (common/mod.rs F6's resolution). No test.
+
 ## Design
 
 - `piv_attestations_are_found_by_slot_and_chain_to_yubico` (`:386-487`) already plants a full

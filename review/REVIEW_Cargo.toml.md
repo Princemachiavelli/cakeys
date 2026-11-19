@@ -24,6 +24,8 @@ make the set one name and keep the lists from diverging. [read]
 no compatibility promise, so a `cargo update` may take a breaking RC. Cargo.lock pins it today;
 `=0.2.0-rc.0` would make the update deliberate (as `quint-connect` is pinned, line 71). [read]
 
+**Fixed (2026-11-18):** `pkcs12 = { version = "=0.2.0-rc.0", … }`, with a comment saying why. `cargo metadata --locked` passes; Cargo.lock and fuzz/Cargo.lock are unchanged.
+
 ## Design
 
 - `default-members` includes p11-fault, so a plain `cargo build` builds the fault shim; the Nix

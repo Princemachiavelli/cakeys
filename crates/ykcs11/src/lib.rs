@@ -13,7 +13,7 @@ use crate::attest::{ATTESTATION_LABEL, pem_certs, piv_pool, verify_piv_attestati
 use cakeys_core::config::Locator;
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass as Class;
-use cakeys_core::{KmError, Result};
+use cakeys_core::{KmError, Msg, Result};
 use cakeys_pkcs11::Token;
 use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, Create, Destroy, PlaintextKind, Provider, Report};
 use cakeys_pkcs11::token::ModuleInfo;
@@ -190,12 +190,8 @@ impl Provider for Ykcs11 {
         // The slot's attestation certificate shares the key's CKA_ID and carries the slot in
         // its label; ykcs11 mints it when it lists the slot's objects, needing no login (seen
         // on a YubiKey 5, firmware 5.7.4).
-        let Some(Attribute::Id(id)) = ctx
-            .session
-            .get_attributes(ctx.key, &[AttributeType::Id])
-            .map_err(|e| KmError::Unavailable(format!("C_GetAttributeValue (CKA_ID): {e}").into()))?
-            .into_iter()
-            .next()
+        let Some(Attribute::Id(id)) =
+            read_attribute("CKA_ID", ctx.session.get_attributes(ctx.key, &[AttributeType::Id]))?
         else {
             return Err(KmError::Unsupported("the key object exposes no CKA_ID to find its attestation by".into()));
         };
@@ -230,10 +226,7 @@ fn find_attestation_cert(ctx: &AttestCtx<'_>, id: &[u8]) -> Result<Vec<u8>> {
         .map_err(|e| KmError::Unavailable(format!("C_FindObjects (attestation): {e}").into()))?;
     let mut certs = Vec::new();
     for h in found {
-        let label = match ctx.session.get_attributes(h, &[AttributeType::Label]) {
-            Ok(v) => v.into_iter().next(),
-            Err(_) => None,
-        };
+        let label = read_attribute("CKA_LABEL", ctx.session.get_attributes(h, &[AttributeType::Label]))?;
         // The f9 device certificate shares the prefix but not the key's CKA_ID; require a
         // non-empty slot suffix so the two can never be confused.
         if let Some(Attribute::Label(l)) = label
@@ -258,14 +251,29 @@ fn find_attestation_cert(ctx: &AttestCtx<'_>, id: &[u8]) -> Result<Vec<u8>> {
 
 /// The DER (`CKA_VALUE`) of the certificate object `h`, named `what` in its errors.
 fn certificate_value(ctx: &AttestCtx<'_>, h: cryptoki::object::ObjectHandle, what: &str) -> Result<Vec<u8>> {
-    let read = ctx.session.get_attributes(h, &[AttributeType::Value]);
-    match read
-        .map_err(|e| KmError::Unavailable(format!("C_GetAttributeValue ({what}): {e}").into()))?
-        .into_iter()
-        .next()
-    {
+    match read_attribute(what, ctx.session.get_attributes(h, &[AttributeType::Value]))? {
         Some(Attribute::Value(der)) => Ok(der),
         _ => Err(KmError::Unsupported(format!("the {what} certificate has no readable CKA_VALUE").into())),
+    }
+}
+
+/// One attribute read: the attribute, `None` when the module has none to show (absent or
+/// sensitive, which cryptoki leaves out of the result), and any other failure `Unavailable` with
+/// the module's return value. A failed `CKA_LABEL` read is never taken for "no label", which would
+/// pass over the attestation certificate and blame the key's origin (lib.rs F2).
+///
+/// # Errors
+///
+/// `Unavailable` when `C_GetAttributeValue` fails.
+fn read_attribute(
+    what: &str,
+    read: std::result::Result<Vec<Attribute>, cryptoki::error::Error>,
+) -> Result<Option<Attribute>> {
+    match read {
+        Ok(v) => Ok(v.into_iter().next()),
+        Err(e) => Err(KmError::Unavailable(
+            Msg::from(format!("C_GetAttributeValue ({what}): {e}")).with_rv(cakeys_pkcs11::token::rv_of(&e)),
+        )),
     }
 }
 
@@ -316,6 +324,22 @@ mod tests {
         assert!(Ykcs11.matches(&module("Yubico (www.yubico.com)", "PKCS#11 PIV Library (SP-800-73)")));
         assert!(!Ykcs11.matches(&module("Yubico (www.yubico.com)", "YubiHSM PKCS#11 Library")));
         assert!(!Ykcs11.matches(&module("SoftHSM", "Implementation of PKCS11")));
+    }
+
+    /// A failed attribute read is unavailable (16) with the module's return value, never "no
+    /// label", which would pass over the attestation certificate and report the key as imported
+    /// (lib.rs F2); an attribute the module has none of is `None`.
+    #[test]
+    fn a_failed_attribute_read_is_unavailable() {
+        use cryptoki::context::Function;
+        use cryptoki::error::{Error as CkError, RvError};
+        let failed = CkError::Pkcs11(RvError::VendorDefined(0x8000_0001), Function::GetAttributeValue);
+        let e = read_attribute("CKA_LABEL", Err(failed)).unwrap_err();
+        assert!(matches!(&e, KmError::Unavailable(m) if m.contains("CKA_LABEL")), "{e}");
+        assert_eq!(e.rv(), Some(0x8000_0001));
+        assert_eq!(read_attribute("CKA_LABEL", Ok(vec![])).unwrap(), None);
+        let label = Attribute::Label(b"X.509 Certificate for PIV Attestation 9a".to_vec());
+        assert_eq!(read_attribute("CKA_LABEL", Ok(vec![label.clone()])).unwrap(), Some(label));
     }
 
     /// ykcs11's fixed `CKA_ID` table: 01-04 the four PIV slots, 05-18 the twenty retired slots;

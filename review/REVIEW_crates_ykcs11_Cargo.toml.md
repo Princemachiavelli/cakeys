@@ -12,6 +12,8 @@ the test-fixture root it embeds (see REVIEW_crates_ykcs11_src_attest.rs.md F1) a
 compiled into the provider. Add `[features] fuzzing = []` and enable it from `fuzz/Cargo.toml`.
 [read]
 
+**Fixed (2026-11-18):** `[features] fuzzing = []` gates `pub mod fuzzing` and the fixture root; fuzz/Cargo.toml enables it. No test.
+
 ## Design
 
 None.

@@ -14,7 +14,7 @@ use cakeys_core::id;
 use cakeys_core::{KmError, Result};
 use x509_cert::certificate::Certificate;
 use x509_cert::der::asn1::ObjectIdentifier;
-use x509_cert::der::{DateTime, Decode, Encode, Header, Reader, SliceReader};
+use x509_cert::der::{DateTime, Decode, Encode, Header, Reader, SliceReader, Tagged};
 
 /// The label prefix ykcs11 gives every slot's attestation certificate (suffix: the slot, e.g.
 /// "9a"); the slot f9 device certificate itself has the bare label without a suffix.
@@ -81,14 +81,6 @@ impl Cert {
         )
     }
 
-    fn subject_der(&self) -> Vec<u8> {
-        self.parsed.tbs_certificate().subject().to_der().unwrap_or_default()
-    }
-
-    fn issuer_der(&self) -> Vec<u8> {
-        self.parsed.tbs_certificate().issuer().to_der().unwrap_or_default()
-    }
-
     /// Whether `at` (seconds since the Unix epoch) falls within the validity period, both ends
     /// included (RFC 5280 §4.1.2.5). Asked under `check` only (ISSUES.md B8).
     fn valid_at(&self, at: u64) -> Result<()> {
@@ -125,20 +117,36 @@ impl Cert {
             .unwrap_or_default()
     }
 
-    /// The name link of the chain: whether this certificate's subject is `cert`'s issuer.
+    /// The name link of the chain: whether this certificate's subject is `cert`'s issuer,
+    /// compared as decoded Names (nothing is re-encoded, so nothing can fail to encode).
     fn issued(&self, cert: &Cert) -> bool {
-        self.subject_der() == cert.issuer_der()
+        self.parsed.tbs_certificate().subject() == cert.parsed.tbs_certificate().issuer()
     }
 }
 
-/// Parse every PEM `CERTIFICATE` block of `pem` (the embedded anchor and pool files).
+/// Parse every PEM `CERTIFICATE` block of `pem` (the embedded anchor and pool files), keeping
+/// each block's decoded bytes as the certificate's DER: a re-encoding could differ from the
+/// bytes the issuer signed (see [`Cert::tbs`]).
 pub(crate) fn pem_certs(pem: &str) -> Result<Vec<Cert>> {
-    let bad = |e| KmError::Validation(format!("pem certificates: {e}").into());
-    Certificate::load_pem_chain(pem.as_bytes())
-        .map_err(bad)?
-        .into_iter()
-        .map(|parsed| Ok(Cert { der: parsed.to_der().map_err(bad)?, parsed }))
-        .collect()
+    let bad = |e: String| KmError::Validation(format!("pem certificates: {e}").into());
+    let mut certs = Vec::new();
+    let mut rest = pem;
+    while let Some(start) = rest.find("-----BEGIN ") {
+        let block = &rest[start..];
+        // The block runs to the dashes closing its END line.
+        let end = block
+            .find("-----END ")
+            .and_then(|e| block[e + 9..].find("-----").map(|close| e + 9 + close + 5))
+            .ok_or_else(|| bad("a BEGIN line without its END line".into()))?;
+        let (label, der) = x509_cert::der::pem::decode_vec(&block.as_bytes()[..end]).map_err(|e| bad(e.to_string()))?;
+        if label != "CERTIFICATE" {
+            return Err(bad(format!("a {label} block, not a CERTIFICATE")));
+        }
+        let parsed = Certificate::from_der(&der).map_err(|e| bad(e.to_string()))?;
+        certs.push(Cert { der, parsed });
+        rest = &block[end..];
+    }
+    Ok(certs)
 }
 
 /// The computed `piv-attestation` commitment: the canonical ID, and the anchor it verified to.
@@ -275,38 +283,81 @@ impl Cert {
 /// (f9 ← PIV intermediate ← attestation intermediate ← root, firmware 5.7.4+). With `at`,
 /// every certificate of the walk must be valid then, `cert` and the anchor included.
 fn chain_to_anchor<'a>(cert: &Cert, anchors: &'a [Cert], pool: &[Cert], at: Option<u64>) -> Result<&'a Cert> {
+    if let Some(at) = at {
+        cert.valid_at(at)?;
+    }
+    issuer_chain(cert, 1, anchors, pool, at)
+}
+
+/// The rest of [`chain_to_anchor`]'s walk above `current`, with `below` CA certificates under
+/// the next issuer (the device certificate included). Every certificate whose subject is
+/// `current`'s issuer is tried, pooled intermediates first, then anchors: one subject may name
+/// two keys (a re-keyed CA), and a chain through the second must not fail on the first one's
+/// signature. When none links, the first candidate's error is the answer.
+fn issuer_chain<'a>(
+    current: &Cert,
+    below: u8,
+    anchors: &'a [Cert],
+    pool: &[Cert],
+    at: Option<u64>,
+) -> Result<&'a Cert> {
     let bad = |what: String| KmError::Conflict(format!("attestation chain: {what}").into());
-    let valid = |c: &Cert| at.map_or(Ok(()), |at| c.valid_at(at));
-    valid(cert)?;
-    let mut current = cert;
-    // CA certificates below the next issuer, `cert` (the device certificate) included.
-    for below in 1..=3 {
-        if let Some(issuer) = pool.iter().find(|c| c.issued(current)) {
-            issuer.may_issue(below)?;
-            verify_signed_by(current, issuer)?;
-            valid(issuer)?;
-            current = issuer;
-            continue;
+    if below > 3 {
+        return Err(bad("longer than 3 links; not a PIV attestation chain".into()));
+    }
+    let link = |issuer: &Cert| -> Result<()> {
+        issuer.may_issue(below)?;
+        verify_signed_by(current, issuer)?;
+        at.map_or(Ok(()), |at| issuer.valid_at(at))
+    };
+    let mut first_error = None;
+    for issuer in pool.iter().filter(|c| c.issued(current)) {
+        match link(issuer).and_then(|()| issuer_chain(issuer, below + 1, anchors, pool, at)) {
+            Ok(anchor) => return Ok(anchor),
+            Err(e) => {
+                first_error.get_or_insert(e);
+            }
         }
-        if let Some(anchor) = anchors.iter().find(|a| a.issued(current)) {
-            anchor.may_issue(below)?;
-            verify_signed_by(current, anchor)?;
-            valid(anchor)?;
-            return Ok(anchor);
+    }
+    for anchor in anchors.iter().filter(|a| a.issued(current)) {
+        match link(anchor) {
+            Ok(()) => return Ok(anchor),
+            Err(e) => {
+                first_error.get_or_insert(e);
+            }
         }
-        return Err(bad(format!(
+    }
+    Err(first_error.unwrap_or_else(|| {
+        bad(format!(
             "'{}' is signed by no pinned root and no pooled PIV intermediate",
             current.parsed.tbs_certificate().subject()
-        )));
-    }
-    Err(bad("longer than 3 links; not a PIV attestation chain".into()))
+        ))
+    }))
 }
 
 /// Verify that `cert`'s signature (over its original `tbsCertificate` bytes) was made by
 /// `signer`'s key, with the signature algorithm the certificate names: ECDSA (DER) with the
-/// hash the algorithm names, whatever the curve, or RSA PKCS#1 v1.5 (`cakeys_core::sig`).
+/// hash the algorithm names, whatever the curve, or RSA PKCS#1 v1.5 (`cakeys_core::sig`). The
+/// unsigned outer `signatureAlgorithm` must equal the signed `tbsCertificate.signature`, OID
+/// and parameters (RFC 5280 §4.1.1.2).
 fn verify_signed_by(cert: &Cert, signer: &Cert) -> Result<()> {
     use cakeys_core::sig::{self, Encoding, HashAlg};
+    let (outer, inner) = (cert.parsed.signature_algorithm(), cert.parsed.tbs_certificate().signature());
+    if outer != inner {
+        let show = |a: &x509_cert::spki::AlgorithmIdentifierOwned| match &a.parameters {
+            None => a.oid.to_string(),
+            Some(p) => format!("{} with {} parameters", a.oid, p.tag()),
+        };
+        return Err(KmError::Conflict(
+            format!(
+                "certificate '{}': its signatureAlgorithm {} is not the signed tbsCertificate.signature {}",
+                cert.parsed.tbs_certificate().subject(),
+                show(outer),
+                show(inner)
+            )
+            .into(),
+        ));
+    }
     let spki = signer.spki()?;
     let (tbs, s) = (cert.tbs()?, cert.signature());
     let ecdsa = |hash| sig::ecdsa(&spki, tbs, s, Encoding::Der, Some(hash));
@@ -442,6 +493,129 @@ mod tests {
             verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &[], &[], &spki_of("slotpub.pem"), None)
                 .unwrap_err();
         assert!(err.to_string().contains("signed by no pinned root"), "{err}");
+    }
+
+    /// A DER TLV: `tag`, the definite length, `body`.
+    fn tlv(tag: u8, body: &[u8]) -> Vec<u8> {
+        let len = body.len();
+        let mut out = vec![tag];
+        match len {
+            0..0x80 => out.push(u8::try_from(len).unwrap()),
+            0x80..0x100 => out.extend([0x81, u8::try_from(len).unwrap()]),
+            _ => out.extend([&[0x82][..], &u16::try_from(len).unwrap().to_be_bytes()].concat()),
+        }
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// A certificate assembled from its three parts: `tbs` and `signature_algorithm` as given,
+    /// and `cert`'s own signature value.
+    fn reassembled(tbs: &[u8], signature_algorithm: &[u8], cert: &Cert) -> Vec<u8> {
+        let signature = cert.parsed.signature().to_der().unwrap();
+        tlv(0x30, &[tbs, signature_algorithm, &signature].concat())
+    }
+
+    /// The outer signatureAlgorithm, which the signature does not cover, must be the signed
+    /// `tbsCertificate.signature`, parameters included: the slot certificate's outer
+    /// ECDSA-SHA256 with added NULL parameters, or with another hash, is refused before any
+    /// signature check (attest.rs F2). Its own outer algorithm still verifies.
+    #[test]
+    fn the_outer_signature_algorithm_is_the_signed_one() {
+        let (slot, device) = (Cert::from_der(der_of("slot.pem")).unwrap(), Cert::from_der(der_of("f9.pem")).unwrap());
+        let tbs = slot.tbs().unwrap().to_vec();
+        let own = slot.parsed.signature_algorithm().to_der().unwrap();
+        let as_is = Cert::from_der(reassembled(&tbs, &own, &slot)).unwrap();
+        verify_signed_by(&as_is, &device).unwrap();
+        // A YubiKey's own slot attestation (slot 95, firmware 5.7.4) passes the comparison.
+        let real = Cert::from_der(der_of("attest95.pem")).unwrap();
+        assert_eq!(real.parsed.signature_algorithm(), real.parsed.tbs_certificate().signature());
+        let with_null = tlv(0x30, &[&ECDSA_SHA256.to_der().unwrap()[..], &[0x05, 0x00]].concat());
+        let other_hash = tlv(0x30, &ECDSA_SHA384.to_der().unwrap());
+        for (outer, shown) in
+            [(with_null, "1.2.840.10045.4.3.2 with NULL parameters"), (other_hash, "1.2.840.10045.4.3.3")]
+        {
+            let swapped = Cert::from_der(reassembled(&tbs, &outer, &slot)).unwrap();
+            let e = verify_signed_by(&swapped, &device).unwrap_err();
+            assert!(
+                matches!(&e, KmError::Conflict(m) if m.contains(&format!("signatureAlgorithm {shown} is not the signed"))),
+                "{e}"
+            );
+        }
+    }
+
+    /// The certificates read from PEM keep the bytes the PEM holds, never a re-encoding: a
+    /// `tbsCertificate` with an explicit `version [0] v1` (a DEFAULT, which DER omits and der's
+    /// encoder drops) keeps it, so its signature is checked over what its issuer signed
+    /// (attest.rs F3). Blocks of another kind are refused.
+    #[test]
+    fn pem_certificates_keep_their_bytes() {
+        let slot = Cert::from_der(der_of("slot.pem")).unwrap();
+        let t = slot.parsed.tbs_certificate();
+        let alg = t.signature().to_der().unwrap();
+        let tbs = tlv(
+            0x30,
+            &[
+                &[0xa0, 0x03, 0x02, 0x01, 0x00][..], // version [0] v1, explicit
+                &t.serial_number().to_der().unwrap(),
+                &alg,
+                &t.issuer().to_der().unwrap(),
+                &t.validity().to_der().unwrap(),
+                &t.subject().to_der().unwrap(),
+                &t.subject_public_key_info().to_der().unwrap(),
+            ]
+            .concat(),
+        );
+        let der = reassembled(&tbs, &alg, &slot);
+        // The precondition: der reads this certificate and re-encodes it differently.
+        assert_ne!(Certificate::from_der(&der).unwrap().to_der().unwrap(), der);
+        let pem = x509_cert::der::pem::encode_string("CERTIFICATE", x509_cert::der::pem::LineEnding::LF, &der).unwrap();
+        let root = String::from_utf8(fixture("root.pem")).unwrap();
+        let certs = pem_certs(&format!("{root}some text between blocks\n{pem}")).unwrap();
+        assert_eq!(certs.len(), 2);
+        assert_eq!(certs[0].der, der_of("root.pem"));
+        assert_eq!(certs[1].der, der);
+        assert_eq!(certs[1].tbs().unwrap(), &tbs[..]);
+        let key = x509_cert::der::pem::encode_string("PRIVATE KEY", x509_cert::der::pem::LineEnding::LF, &[0x05, 0x00]);
+        let e = pem_certs(&format!("{root}{}", key.unwrap())).err().unwrap();
+        assert!(e.to_string().contains("a PRIVATE KEY block"), "{e}");
+    }
+
+    /// The chain's name links compare the decoded Names (attest.rs F4).
+    #[test]
+    fn issuers_are_linked_by_name() {
+        let [root, f9, slot] = ["root.pem", "f9.pem", "slot.pem"].map(|f| Cert::from_der(der_of(f)).unwrap());
+        assert!(root.issued(&f9) && f9.issued(&slot) && root.issued(&root));
+        assert!(!root.issued(&slot) && !slot.issued(&f9) && !f9.issued(&root));
+    }
+
+    /// A CA certificate with the fixture root's subject and another key: the name matches, the
+    /// signature does not.
+    fn decoy_root() -> Cert {
+        let mut der = der_of("root.pem");
+        let root = Cert::from_der(der.clone()).unwrap();
+        let spki = root.parsed.tbs_certificate().subject_public_key_info().to_der().unwrap();
+        let at = der.windows(spki.len()).position(|w| w == spki).unwrap();
+        // A byte in the middle of the RSA modulus.
+        der[at + spki.len() / 2] ^= 0x01;
+        Cert::from_der(der).unwrap()
+    }
+
+    /// Every issuer whose subject matches is tried: a pooled certificate or an earlier anchor
+    /// with the root's subject but another key (a re-keyed CA) does not hide the root that
+    /// signed the chain (attest.rs F5). With only the decoy, its signature error is the answer.
+    #[test]
+    fn every_name_matching_issuer_is_tried() {
+        let root = pem_certs(&String::from_utf8(fixture("root.pem")).unwrap()).unwrap().remove(0);
+        let root_sri = id::sri(&root.spki().unwrap());
+        let verify = |anchors: &[Cert], pool: &[Cert]| {
+            verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), anchors, pool, &spki_of("slotpub.pem"), None)
+        };
+        let anchors = [Cert::from_der(root.der.clone()).unwrap()];
+        assert_eq!(verify(&anchors, &[decoy_root()]).unwrap().root, root_sri);
+        let anchors = [decoy_root(), Cert::from_der(root.der.clone()).unwrap()];
+        assert_eq!(verify(&anchors, &[]).unwrap().root, root_sri);
+        let e = verify(&[decoy_root()], &[]).unwrap_err();
+        assert!(matches!(&e, KmError::Conflict(m) if m.contains("does not verify")), "{e}");
     }
 
     /// The fuzz target's input format reaches the whole chain: the fixture chain, length-prefixed

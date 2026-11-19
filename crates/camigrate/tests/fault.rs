@@ -99,6 +99,16 @@ fn faulted(e: &Env, name: &str, plan: &str, args: &[&str]) -> (i32, String, usiz
     (code(&o), stderr(&o), fired)
 }
 
+/// The sessions run `name` of [`faulted`] opened on the shimmed token, each by its flags.
+fn sessions(e: &Env, name: &str) -> Vec<u64> {
+    let text = std::fs::read_to_string(e.dir.join(format!("{name}.jsonl"))).unwrap_or_default();
+    text.lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .filter(|c| c["fn"] == "C_OpenSession")
+        .map(|c| c["flags"].as_u64().unwrap_or_default())
+        .collect()
+}
+
 /// Every token object on `module`'s token `kmtest`: its class, label, ID and key type, sorted
 /// (an object's handle may differ from one session to the next).
 fn objects(module: &str) -> Vec<String> {
@@ -122,6 +132,8 @@ fn a_move_the_module_fails_is_refused_and_undone() {
     let Some((e, real)) = tokens("fault-moves") else { return };
     let fails =
         |function: &str, more: &str| format!("[[rule]]\nfn = \"{function}\"\n{more}rv = \"CKR_DEVICE_ERROR\"\n");
+    let bad =
+        |function: &str, more: &str| format!("[[rule]]\nfn = \"{function}\"\n{more}rv = \"CKR_WRAPPED_KEY_INVALID\"\n");
     let out: &[&str] = &["migrate", "ek", "--from", "softhsm", "--to", "kryoptic"];
     let into: &[&str] = &["migrate", "kk", "--from", "kryoptic", "--to", "softhsm"];
     let host: &[&str] = &["migrate", "ks", "--from", "kryoptic", "--to", "softhsm", "--allow-host-plaintext"];
@@ -134,12 +146,19 @@ fn a_move_the_module_fails_is_refused_and_undone() {
         // The source (softhsm) wraps: its key-encryption key, the transport key it loads, each wrap.
         ("kek", out, fails("C_GenerateKey", ""), 15, "making the KEK"),
         ("transport", out, fails("C_CreateObject", ""), 15, "loading the transport key"),
+        // `C_WrapKey` too is asked the length first: calls 1 and 2 wrap the KEK to the transport
+        // key (OAEP), 3 is the first of the key's own wrap under the KEK (RFC 5649) [run].
         ("wrap-kek", out, fails("C_WrapKey", "call = 1\n"), 15, "wrapping the KEK"),
         ("wrap-key", out, fails("C_WrapKey", "call = 3\n"), 15, "wrapping the key"),
         // The target (softhsm) unwraps (after its transport key proved possession by unwrapping,
-        // twice), then proves possession of what it unwrapped.
-        ("unwrap-kek", into, fails("C_UnwrapKey", "call = 3\n"), 13, "unwrapping the KEK"),
-        ("unwrap-key", into, fails("C_UnwrapKey", "call = 4\n"), 13, "unwrapping the key"),
+        // twice: calls 1 and 2), then proves possession of what it unwrapped. A module that fails
+        // the unwrap is 16, said as what may be a damaged bundle; one that says the blob is bad,
+        // 13 (review sealed.rs F2: every unwrap failure was 13, "tampered with").
+        ("unwrap-kek", into, fails("C_UnwrapKey", "call = 3\n"), 16, "unwrapping the KEK"),
+        ("unwrap-key", into, fails("C_UnwrapKey", "call = 4\n"), 16, "damaged or altered bundle"),
+        ("unwrap-bad", into, bad("C_UnwrapKey", "call = 4\n"), 13, "the bundle was tampered with"),
+        // Each of the transport key's two proofs signs an HMAC of the secret it unwrapped (calls 1
+        // to 4, the length then the MAC); `kk`'s own proof is then calls 5 and 6 (ECDSA) [run].
         ("proof", into, fails("C_Sign", "call = 6\nwhen = \"after\"\n"), 16, "just imported for 'kk'"),
         // The host path into softhsm: the creation, then the commitment of what was created.
         ("create", host, fails("C_CreateObject", ""), 15, "creating the key"),
@@ -162,11 +181,15 @@ fn a_move_the_module_fails_is_refused_and_undone() {
         assert_eq!(code, *exit, "{name}: {said}");
         assert!(said.contains(why), "{name}: expected {why:?} in {said}");
         assert_eq!(fired, 1, "{name}: the rule fired {fired} times");
+        // The shimmed token, source or target, is opened once per run (review lib.rs F5: a
+        // target was opened read-only for the plan, then again read-write for the move).
+        assert_eq!(sessions(&e, name).len(), 1, "{name}: sessions opened {:?}", sessions(&e, name));
         assert_eq!(on_target(&format!("f-{}", args[1])), 0, "{name}: left objects on the target");
         assert_eq!(tokens(), before, "{name}: left objects on a token");
         assert_eq!(std::fs::read(e.dir.join("keys.lock")).unwrap(), lock, "{name}: changed the lock");
     }
-    // The undoing itself refused: what was imported is still there, and said to be.
+    // The undoing itself refused: what was imported is still there, and said to be. (`call = 6`:
+    // `kk`'s proof, as in "proof".)
     let kept = fails("C_Sign", "call = 6\nwhen = \"after\"\n") + &fails("C_DestroyObject", "");
     let (code, said, _) = faulted(&e, "kept", &kept, into);
     assert_eq!(code, 16, "{said}");
@@ -252,6 +275,25 @@ fn a_transport_key_never_leaves() {
     let on_target = |label: &str| open_session(&real, "kmtest", "1234").labelled(label).len();
     assert_eq!(on_target("tk-kryoptic"), 0);
     assert!(["f-kk", "f-ks", "f-crt"].iter().all(|l| on_target(l) > 0), "the others did not move");
+}
+
+/// An export to a bundle opens its target token once (review lib.rs F5): with no public key of
+/// the transport key in the lock, the plan's session reads it, where the export opened the token
+/// a second time and logged in again (`CKR_USER_ALREADY_LOGGED_IN` in the coverage trace).
+#[test]
+fn an_export_opens_its_target_once() {
+    let Some((e, _)) = tokens("export-opens-once") else { return };
+    let lock = e.dir.join("keys.lock");
+    let mut doc: toml::Table = toml::from_str(&std::fs::read_to_string(&lock).unwrap()).unwrap();
+    let tk = doc["objects"].as_table_mut().and_then(|o| o.get_mut("tk-softhsm")).and_then(toml::Value::as_table_mut);
+    assert!(tk.expect("the lock records tk-softhsm").remove("publicKey").is_some(), "no publicKey to forget");
+    std::fs::write(&lock, toml::to_string(&doc).unwrap()).unwrap();
+    let out = e.dir.join("once.bundle.toml");
+    let args = ["export", "kk", "--token", "kryoptic", "--target", "softhsm", "--out", out.to_str().unwrap()];
+    let (code, said, _) = faulted(&e, "export-once", "", &args);
+    assert_eq!(code, 0, "{said}");
+    assert!(said.contains("the lock records no public key for it yet"), "the token was not read: {said}");
+    assert_eq!(sessions(&e, "export-once").len(), 1, "the export opened its target more than once");
 }
 
 /// Each object of a `migrate` moves on its own, as a bundle's keys import (review D8): the one

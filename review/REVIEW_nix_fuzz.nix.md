@@ -22,7 +22,7 @@ the source tree). [read]
 ISSUES.md already notes an ASan build as the cheaper complement. Listed for completeness, not
 new. [read]
 
-**Decided (2026-11-18):** no ASan smoke. The only C reached is tss2-mu, prebuilt and uninstrumented, so `-s address` would instrument only safe Rust; nixpkgs' rustc ships no sanitizer runtime (no librustc-*_rt.asan.a). Documented in nix/fuzz.nix's header. ISSUES.md:373 still calls ASan the cheaper complement (not this file's).
+**Decided (2026-11-18):** no ASan smoke. The only C reached is tss2-mu, prebuilt and uninstrumented, so `-s address` would instrument only safe Rust; nixpkgs' rustc ships no sanitizer runtime (no librustc-*_rt.asan.a). Documented in nix/fuzz.nix's header. ISSUES.md's "Unsafe code and other tools" says the same.
 
 ## Design
 

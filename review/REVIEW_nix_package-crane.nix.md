@@ -42,11 +42,15 @@ exits 1 when it outputs no line, and stdenv runs with `pipefail`, so a run where
 is entered (or every remaining one is a generic stub) fails `packages.coverage`. Use
 `{ grep -v ... || true; }`. [read]
 
+**Fixed (2026-11-18):** `{ grep -v ... || true; }`, so an empty list is no failure.
+
 ### F4. The `mutantsOf` usage example never expands `$PWD` — nit
 
 `nix/package-crane.nix:277-278`. The expression is in single quotes, so `getFlake
 "git+file://$PWD"` receives a literal `$PWD` and fails. scripts/regen-profiles.sh:13-14 uses
 double quotes correctly. [read]
+
+**Fixed (2026-11-18):** the example is double-quoted, so `$PWD` expands.
 
 ## Design
 

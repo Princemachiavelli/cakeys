@@ -49,8 +49,8 @@ yk_pin=${CAKEYS_TEST_YUBIKEY_PIN:-} yk_mgm=${CAKEYS_TEST_YUBIKEY_MGM:-}
 yk_module=${CAKEYS_TEST_YUBIKEY_MODULE:-${CAKEYS_YKCS11_MODULE:-}}
 ftpm_profile=${CAKEYS_FTPM_PROFILE:-} ftpm_attest=${CAKEYS_FTPM_ATTEST:-}
 ftpm_module=${CAKEYS_FTPM_MODULE:-$CAKEYS_TPM_MODULE}
-unset CAKEYS_TEST_YUBIKEY_PIN CAKEYS_TEST_YUBIKEY_MGM CAKEYS_TEST_YUBIKEY_MODULE \
-  CAKEYS_FTPM_PROFILE CAKEYS_FTPM_ATTEST CAKEYS_FTPM_MODULE
+unset CAKEYS_TEST_YUBIKEY_PIN CAKEYS_TEST_YUBIKEY_MGM CAKEYS_TEST_YUBIKEY_MODULE CAKEYS_YUBIKEY_REQUIRE \
+  CAKEYS_FTPM_PROFILE CAKEYS_FTPM_ATTEST CAKEYS_FTPM_MODULE CAKEYS_FTPM_REQUIRE
 
 ran=() failed=()
 # One instrumented nextest run, its profile data added to what the runs before it left.
@@ -74,7 +74,10 @@ if [ -n "$yk_pin" ] && [ -n "$yk_mgm" ]; then
     echo "coverage-full: the YubiKey suites need readable CAKEYS_TEST_YUBIKEY_PIN and _MGM files and libykcs11.so ($yk_module)" >&2
     exit 1
   }
-  export CAKEYS_TEST_YUBIKEY_MODULE=$yk_module CAKEYS_TEST_YUBIKEY_PIN=$yk_pin CAKEYS_TEST_YUBIKEY_MGM=$yk_mgm
+  # CAKEYS_YUBIKEY_REQUIRE: this run means the suites, so one that finds its opt-in unset fails
+  # rather than passing having run nothing (crates/cli/tests/common, review D9).
+  export CAKEYS_TEST_YUBIKEY_MODULE=$yk_module CAKEYS_TEST_YUBIKEY_PIN=$yk_pin CAKEYS_TEST_YUBIKEY_MGM=$yk_mgm \
+    CAKEYS_YUBIKEY_REQUIRE=1
   # The key and its certificate, whichever is there (ykman refuses to delete what is not):
   # ykcs11 shows a certificate left alone as a certificate and a public key under the slot's
   # CKA_ID, which cakeys then refuses to create beside.
@@ -102,7 +105,7 @@ if [ -n "$yk_pin" ] && [ -n "$yk_mgm" ]; then
   if [ ${#failed[@]} -eq 0 ] || [ "${failed[-1]#YubiKey}" = "${failed[-1]}" ]; then
     hardware "YubiKey: cakeys and caprobe" -E 'binary(yubikey) & not package(camigrate)'
   fi
-  unset CAKEYS_TEST_YUBIKEY_MODULE CAKEYS_TEST_YUBIKEY_PIN CAKEYS_TEST_YUBIKEY_MGM
+  unset CAKEYS_TEST_YUBIKEY_MODULE CAKEYS_TEST_YUBIKEY_PIN CAKEYS_TEST_YUBIKEY_MGM CAKEYS_YUBIKEY_REQUIRE
 else
   echo "coverage-full: no YubiKey suites: CAKEYS_TEST_YUBIKEY_PIN and CAKEYS_TEST_YUBIKEY_MGM are not set" >&2
 fi
@@ -128,7 +131,8 @@ if [ -n "$ftpm_profile" ]; then
       grep -v 0x81000016 <<<"$all" || true
     }
     before=$(handles) || exit 1
-    export CAKEYS_FTPM_MODULE=$ftpm_module CAKEYS_FTPM_PROFILE=$ftpm_profile
+    # As for the YubiKey: required, so a suite that finds no opt-in fails.
+    export CAKEYS_FTPM_MODULE=$ftpm_module CAKEYS_FTPM_PROFILE=$ftpm_profile CAKEYS_FTPM_REQUIRE=1
     [ -z "$ftpm_attest" ] || export CAKEYS_FTPM_ATTEST=$ftpm_attest
     # caprobe first: its probe wants the fresh store.
     hardware "real TPM: caprobe" -E 'package(caprobe) & binary(ftpm)'

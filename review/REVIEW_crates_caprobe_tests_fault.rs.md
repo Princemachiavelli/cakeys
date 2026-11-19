@@ -27,6 +27,18 @@ regression where the probe notes the lie *and* still writes the row as `yes` pas
 `"sign.ecdsa.CKK_EC.secp256r1" = { answer = "yes"` must be absent, and check them in
 `probe_cases`. [read]
 
+**Fixed (2026-11-18):** each `Case` lists the rows the honest module earns that the lie takes
+away, and `probe_cases` asserts each is absent from the profile and present in the committed
+softhsm/2.7 profile, so no check passes on a row no probe writes: pop-sign and pop-ecdh on
+secp256r1 for refused usage and a dropped point, `derive.ecdh.sealed` for another key deriving
+and each failed sealed derivation, both derive rows and pop-ecdh for no derivation, pop-sign
+for a busy proof, `wrap.rsa-oaep.SHA-1` for wrap without unwrap. There is no `sign.ecdsa.*`
+row: an operation probe's outcome is a note or a `subtract`/`add` entry, which `Ops::record`
+keeps apart, so "another key signs", the busy operation and "derives while reporting
+CKA_DERIVE false" (which still derives) have none; "another key signs" now also asserts the
+earlier proof row stands. Test: `the_probe_records_what_a_misbehaving_module_does`,
+`the_probe_notes_which_derive_template_took` [run].
+
 ### F2. `fired > 0` is weaker than camigrate's `fired == 1` — nit
 
 `crates/caprobe/tests/fault.rs:62`. camigrate's fault test requires exactly one firing per
@@ -44,6 +56,8 @@ Fix: give each case its expected count (most are exactly the number of rules in 
 the mechanism probes. A change to the proof order moves every numbered case; the substring
 checks catch most moves, F1's negative checks would catch the rest. Documented in place, so
 only noted. [read]
+
+**Decided (2026-11-18):** only noted. The call order is documented in place (`SIGN_INITS`, `DERIVES` and the doc above them), and each numbered rule must fire exactly once (`assert_fired`), so a moved call fails loudly.
 
 ### F4. P-256 OID literal, another copy — nit
 

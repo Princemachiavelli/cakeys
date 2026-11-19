@@ -362,7 +362,10 @@ mod tests {
         assert_eq!(known_policy(&vendor).unwrap(), None);
         for refused in [
             attrs(&[("CKA_NO_SUCH_FLAG", AttrValue::Bool(true))]),
-            attrs(&[("CKA_ALLOWED_MECHANISMS", mechanisms(&["CKM_ECDSA"])), ("CKA_NO_SUCH_FLAG", AttrValue::Bool(true))]),
+            attrs(&[
+                ("CKA_ALLOWED_MECHANISMS", mechanisms(&["CKM_ECDSA"])),
+                ("CKA_NO_SUCH_FLAG", AttrValue::Bool(true)),
+            ]),
         ] {
             assert!(matches!(known_policy(&refused), Err(KmError::Validation(_))), "{refused:?}");
         }

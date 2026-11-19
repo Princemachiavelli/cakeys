@@ -14,11 +14,15 @@ generation note appears once. It runs everywhere, including plain `cargo test`.
 developer's `CAKEYS_LOCK` decides which lock supplies the observations (`:36-69`), and the result
 depends on the caller's environment. See common/mod.rs F1 and F5. [read]
 
+**Fixed (2026-11-18):** `validate` runs through common's `Run`, whose `tool` removes `CAKEYS_CONFIG`, `CAKEYS_LOCK`, `NIX_BUILD_TOP` and `IN_NIX_SHELL`. Test: `the_harness_helpers_are_written_once` (no run of the binary bypasses `Run`).
+
 ### F2. The profile verdict is pinned with its exact prose — nit
 
 `validate.rs:26, 30`: `"no — kryoptic/1.5"` and `"CKM_AES_KEY_WRAP: no — p11-kit/0.26"`, em dash
 included. The exit (15) is the contract. The profile name is a reasonable pin, but the punctuation
 is not. [read]
+
+**Fixed (2026-11-18):** the asserts pin who refused and the profile that decided (`kryoptic/1.5`; `CKM_AES_KEY_WRAP` and `p11-kit/0.26`), not the sentence or its punctuation. Test: `a_profile_no_refuses_and_names_its_profile`.
 
 ## Design
 

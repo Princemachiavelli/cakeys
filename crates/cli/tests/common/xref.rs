@@ -36,22 +36,38 @@ pub struct Env {
     pub refs: Vec<Ref>,
 }
 
+/// The variable that requires reference `name` ([`required_var`]): set, a test needing the
+/// reference fails where it would skip ([`Env::needs`]).
+///
+/// # Panics
+///
+/// For a name no reference has: a test needing it would skip on every run.
+pub fn require_var_of(name: &str) -> &'static str {
+    match name {
+        "softhsm" => "CAKEYS_TEST_REQUIRE",
+        "kryoptic" | "kryoptic-der" => "CAKEYS_KRYOPTIC_REQUIRE",
+        "p11kit" => "CAKEYS_P11KIT_REQUIRE",
+        "tpm2" => "CAKEYS_TPM_REQUIRE",
+        other => panic!("no reference is named '{other}'"),
+    }
+}
+
 pub fn env(name: &str) -> Option<Env> {
     let mut refs = Vec::new();
     let r = |name, module, token_label, env, plant, eddsa| Ref { name, module, token_label, env, plant, eddsa };
     // Each quiet when unset: a reference left out is no skip, unless fewer than two are left.
-    if let Some(m) = required_var("CAKEYS_TEST_MODULE", "CAKEYS_TEST_REQUIRE") {
+    if let Some(m) = required_var("CAKEYS_TEST_MODULE", require_var_of("softhsm")) {
         refs.push(r("softhsm", m, "kmtest", &[], Plant::Create, true));
     }
-    if let Some(m) = required_var("CAKEYS_KRYOPTIC_MODULE", "CAKEYS_KRYOPTIC_REQUIRE") {
+    if let Some(m) = required_var("CAKEYS_KRYOPTIC_MODULE", require_var_of("kryoptic")) {
         refs.push(r("kryoptic", m.clone(), "kmtest", &[], Plant::Create, true));
         let der: &[(&str, &str)] = &[("KRYOPTIC_EC_POINT_ENCODING", "DER")];
         refs.push(r("kryoptic-der", m, "kmtest", der, Plant::Shared, true));
     }
-    if let Some(m) = required_var("CAKEYS_P11KIT_CLIENT", "CAKEYS_P11KIT_REQUIRE") {
+    if let Some(m) = required_var("CAKEYS_P11KIT_CLIENT", require_var_of("p11kit")) {
         refs.push(r("p11kit", m, "kmp11", &[], Plant::Create, false));
     }
-    if let Some(m) = required_var("CAKEYS_TPM_MODULE", "CAKEYS_TPM_REQUIRE") {
+    if let Some(m) = required_var("CAKEYS_TPM_MODULE", require_var_of("tpm2")) {
         refs.push(r("tpm2", m, "kmtest", &[], Plant::Ptool, false));
     }
     if refs.len() < 2 {
@@ -122,8 +138,13 @@ impl Env {
             let real = out.status.code().unwrap();
             // A refusal the dry run saw is the real run's refusal. A dry run that passed promises
             // only what can be known before anything is created: the real run may still meet
-            // material that is not the locked one (10) or a blob that does not unwrap (13).
-            let kept = if dry == 0 { matches!(real, 0 | 10 | 13) } else { real == dry };
+            // material that is not the locked one (10) or a blob that does not unwrap: 13 where
+            // the module says the data is bad, 16 where it says only that it failed (kryoptic's
+            // CKR_DEVICE_ERROR for a tampered blob [run], said as such). Any other 16 breaks the
+            // promise.
+            let unwrap_failed =
+                real == 16 && String::from_utf8_lossy(&out.stderr).contains("damaged or altered bundle");
+            let kept = if dry == 0 { matches!(real, 0 | 10 | 13) || unwrap_failed } else { real == dry };
             assert!(kept, "camigrate {}: --dry-run exited {dry}, the run itself {real}", args.join(" "));
         }
         out

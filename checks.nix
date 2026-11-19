@@ -349,12 +349,14 @@
       fails missing.id && fails missing.check;
     assert
       !(pkgs.lib.hasInfix "--lock"
-        (self.lib.mkKeys {
-          inherit cakeys;
-          config = ./crates/cli/tests/fixtures/keys.toml;
-        }).signing
-          { }
-      ).check;
+        (
+          (self.lib.mkKeys {
+            inherit cakeys;
+            config = ./crates/cli/tests/fixtures/keys.toml;
+          }).signing
+            { }
+        ).check
+      );
     # No scheme: the CLI verifies every ID the spec computes; a scheme also requires it.
     assert pkgs.lib.hasInfix "check signing-cert --token softhsm" signing-cert.check;
     assert pkgs.lib.hasInfix "check signing-cert.id.certhash"
@@ -414,7 +416,8 @@
       refused =
         m:
         map (a: a.message) (
-          builtins.filter (a: !a.assertion && pkgs.lib.hasPrefix "services.cakeys" a.message) (eval m).assertions
+          builtins.filter (a: !a.assertion && pkgs.lib.hasPrefix "services.cakeys" a.message)
+            (eval m).assertions
         );
       check = extra: {
         services.cakeys.checks.k = {
@@ -433,7 +436,9 @@
         "value"
       ];
     });
-    assert says "--uri-pin value" (check { args = [ "--uri-pin=value" ]; });
+    assert says "--uri-pin value" (check {
+      args = [ "--uri-pin=value" ];
+    });
     assert
       refused (check {
         args = [
@@ -442,7 +447,9 @@
         ];
         outputFile = "/run/cakeys/k.pem";
       }) == [ ];
-    assert says "requiredBy is empty" (check { requiredBy = [ ]; });
+    assert says "requiredBy is empty" (check {
+      requiredBy = [ ];
+    });
     assert says "sandbox.pcscd.enable" { services.cakeys.tokens.p.pcscd = true; };
     assert
       refused {

@@ -24,6 +24,8 @@ wrong. Fix: with no item and no bits, answer yes only if some row of the type sa
 module only reports a range), no if every row says no.
 [read]
 
+**Fixed (2026-11-18):** with no curve or size asked, `generate` answers yes only when some row generated or the module reports the type, and no when every row tried was refused. Test: `refused_rows_never_add_up_to_yes`.
+
 ### F2. Size interpolation ignores a refused size between two that generated — risk
 
 **Verification:** confirmed. effective.rs:191-196 takes only min/max of `can_bits`; `caprobe supports CKK_RSA --bits 2560` and `--bits 1280 --profile tpm2-pkcs11/1.10+swtpm` both printed `yes`, though 1536 is recorded `no` (1.10+swtpm.toml:68) and 1280 lies between a yes and that no. With the suggested fix the gate (gate.rs:205-211) would note "not decided" rather than refuse, so the gain is an honest unknown, not a refusal. [run]
@@ -37,6 +39,8 @@ from `C_GenerateKeyPair` instead of a refusal with evidence. Fix: yes only when 
 tried size below and the nearest above both generated; otherwise unknown.
 [read]
 
+**Fixed (2026-11-18):** a size between two tried ones is yes only when the nearest tried sizes below and above both generated; otherwise unknown, naming the sizes probed. Test: `refused_rows_never_add_up_to_yes`.
+
 ### F3. `add` is ignored for a profile without an advertisement — nit
 
 `crates/profile/src/effective.rs:117-126`. The empty-`advertise` check returns Unknown before
@@ -45,6 +49,8 @@ tried size below and the nearest above both generated; otherwise unknown.
 here; "partial" is inferred from `advertise.is_empty()`. Check `add` before the emptiness test.
 [read]
 
+**Fixed (2026-11-18):** `add` is consulted before the empty-advertisement test. Test: `a_partial_module_profile_answers_its_add`.
+
 ### F4. `curve` does not let a layer decide without a module — nit
 
 `crates/profile/src/effective.rs:229-231`. `mechanism` and `generate` let a layer's
@@ -52,6 +58,8 @@ subtraction or `cannot` row answer *no* with no module profile selected; `curve`
 "no module profile selected" first, so a hardware layer's refused curve is unknown in a
 layer-only query. Minor inconsistency.
 [read]
+
+**Fixed (2026-11-18):** `curve` asks every profile's generate rows, layers included, before it says no module profile is selected, so a layer's refused curve is no. Test: `a_layer_refuses_a_curve_without_a_module`.
 
 ## Design
 

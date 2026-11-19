@@ -12,6 +12,8 @@ hashing, RNG, zeroize, memfd (`rustix`) and base64; dev-dependencies `toml` and 
 (`lib.rs:105`, `attest/mod.rs:11`) are always compiled into the provider; a `fuzzing = []`
 feature enabled from `fuzz/Cargo.toml` would keep them out of the binaries. [read]
 
+**Fixed (2026-11-18):** `[features] fuzzing = []` gates the fuzzing modules (lib.rs, attest/mod.rs); fuzz/Cargo.toml enables it. No test.
+
 ## Design
 
 `rustix` is used for one call (`memfd_create`), Linux-only; the crate is built only with the

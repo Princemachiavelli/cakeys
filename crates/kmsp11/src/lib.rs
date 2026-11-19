@@ -566,7 +566,8 @@ mod tests {
         refused(&ec, &spec(&[yes("CKA_SIGN")], &[yes("CKA_PRIVATE")]), None, "on the public key");
         // The public key's allowed mechanisms are its algorithm's, as the private key's are
         // (kmsp11 lib.rs F2): another set is refused, not passed over.
-        let allowed = |names: &[&str]| ("CKA_ALLOWED_MECHANISMS", AttrValue::mechanisms(names.iter().map(|n| (*n).into())));
+        let allowed =
+            |names: &[&str]| ("CKA_ALLOWED_MECHANISMS", AttrValue::mechanisms(names.iter().map(|n| (*n).into())));
         let public = |names: &[&str]| spec(&[yes("CKA_SIGN")], &[allowed(names)]);
         assert_eq!(pick(&ec, &public(&["CKM_ECDSA_SHA256", "CKM_ECDSA"]), None), Ok("EC_SIGN_P256_SHA256".into()));
         refused(&ec, &public(&["CKM_ECDSA"]), None, "on the public key as on the private");

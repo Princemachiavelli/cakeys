@@ -33,6 +33,8 @@ a malformed *public* key reported as a failed proof. Not reachable from `resolve
 SPKI there was already canonicalized), so practice, not bug. Fix: have the `sig` helpers take
 an already-parsed key, or return the parse error as its own variant. [read]
 
+**Fixed (2026-11-18):** the `sig` helpers answer `Refused::Key(why)` when a key's own parser refuses it, and `verify_with` reports it as unsupported (15) with the parser's reason (an RSA size outside 1024-8192 by its size, with the opt-in), never as a failed proof (13). Test: `a_refused_public_key_is_no_failed_proof`.
+
 ### F3. The HMAC keyed with a proof secret may not be zeroized — nit
 
 `crates/core/src/pop.rs:264-268`. `Hmac::<Sha256>::new_from_slice(key)` keeps key-derived
@@ -44,6 +46,8 @@ hmac 0.13 has no zeroize code of its own: its `zeroize` feature only forwards to
 graph turns `digest/zeroize` on, and whether the sha2 core then wipes its state. Fix: enable
 `hmac/zeroize` and assert `Hmac<Sha256>: ZeroizeOnDrop` at compile time, or note the gap
 beside B16. [read]
+
+**Fixed (2026-11-18):** core's Cargo.toml enables sha2's `zeroize` feature (the workspace's `hmac` enables its own, which wipes only the block buffer), so the two SHA-256 cores of the HMAC state wipe on drop; a compile-time assertion (pop.rs:290) requires `sha2::block_api::Sha256VarCore` to be `ZeroizeOnDrop`. The comment there names what stays unwiped (stack copies in upstream code). No test: the build checks it.
 
 ## Design
 

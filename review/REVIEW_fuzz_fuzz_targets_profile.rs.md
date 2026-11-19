@@ -15,6 +15,8 @@ passes. Adding "every `[capabilities]` key of the input re-displays to itself" (
 against a raw `toml::Value` parse) would catch this class.
 [read]
 
+**Fixed (2026-11-18):** `caprobe::fuzzing::profile_round_trip` first checks every quoted string in the input that `Capability::parse` reads: its capability must display as that same string. A key parse that maps two spellings to one row fails, even when the input holds only one of them. The parser already refuses `02048` and `+2048` (capability.rs F1), and this check keeps that class out. The target's doc comment says so. Mutation-checked by having the check parse a key with its leading `0`/`+` stripped (what the old `On::parse` did): the test fails on `generate.CKK_RSA.0512`. Test: `the_committed_profiles_pass_with_their_sizes_respelt`.
+
 ## Design
 
 - Mutations of TOML text rarely survive `deny_unknown_fields` and capability-key validation,

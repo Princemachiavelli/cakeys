@@ -13,6 +13,8 @@ type predicates. Small and correct.
 lists the variants), so this reaches users only through `FromStr` callers (CLI, tests); the
 wording should be "unknown key type" / "unknown object class". [read]
 
+**Fixed (2026-11-18):** `FromStr` says "unknown key type" / "unknown object class". Test: `names_round_trip_through_serde`.
+
 ## Design
 
 None.

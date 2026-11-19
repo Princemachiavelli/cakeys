@@ -10,6 +10,8 @@ refused (15, nothing created), and each client logs in for itself. Sound tests.
 
 `p11kit.rs:16-43`: see common/mod.rs F5. [read]
 
+**Fixed (2026-11-18):** D9: one `Suite` type replaces each suite's `Env`, `suite_var`/`required_var` are the only skip gates, one `Run` builder starts every tool run, and `ptool`/`ptool_in`/`tpm2_store` and `swap_private_key` replace the copies. Here `env` reads both modules through `suite_var` under `CAKEYS_P11KIT_REQUIRE` and returns a `Suite`; the file's own `Env`/`Deref` is gone. Test: `the_harness_helpers_are_written_once`.
+
 ### F2. The direct path's module is required with `expect`, not through the gate — nit
 
 `p11kit.rs:35`. With `CAKEYS_P11KIT_MODULE` set and `CAKEYS_TEST_MODULE` unset, the test panics

@@ -25,6 +25,8 @@ with a message saying the key would be regenerated, instead of "configure pinFil
 `!tok.logged_in` for private and secret classes as `delete` does (or move `create_absent`'s
 login test before D1). [read]
 
+**Fixed (2026-11-18):** `create` refuses a private or secret key in a session without login before the D1 test, saying to configure `pinFile` or `pinEnv` (16), as `delete` does. Test: `create_without_login_asks_for_a_pin` (cli reference/create.rs).
+
 ### F2. Errors after the module created something skip `create_absent`'s cleanup — risk
 
 **Verification:** confirmed. `tok.create(..)?` (ops.rs:610) returns before the cleanup, which only follows a failed `resolve_with` (:615-631). The one reachable path today is `as_so`'s logout/re-login failure after a successful ykcs11 generation (token/mod.rs:799-819, the same root cause as REVIEW_crates_pkcs11_src_token_mod.rs.md F2); no provider overrides `create` with a post-check (only ykcs11 lib.rs:116, which checks before generating), and ykcs11's `destroy` refuses keys, so the fix there yields an honest "still on the token" note rather than a removal. [read]
@@ -52,6 +54,8 @@ HTTP-like semantics"). `ecdh_seals` and `session_templates` are read by `gate.rs
 `token/possession.rs` as much as by the verbs. Fix: split the capability/template checks
 (`needs.rs`) and the create planner (`create.rs`) out; the verbs then read top to bottom.
 [read]
+
+**Fixed (2026-11-18):** ops.rs is now ops/: the capability and template checks in ops/capabilities.rs, the create planner in ops/planner.rs, the verbs in ops/mod.rs. No test (structure only).
 
 ### F4. `check_open` validates the requested scheme twice with two messages — nit
 

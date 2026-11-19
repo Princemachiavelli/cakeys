@@ -80,13 +80,13 @@ fn flushing<T>(ctx: &mut Context, handle: KeyHandle, f: impl FnOnce(&mut Context
 /// # Errors
 ///
 /// `Validation` for a malformed handle; `Unavailable` when no key sits there and `provision`
-/// is off (or creating/evicting one fails); `Conflict` when the object at the handle is not a
-/// cakeys Attestation Key.
+/// is off, when the TPM cannot be asked what sits there, or when creating/evicting one fails;
+/// `Conflict` when the object at the handle is not a cakeys Attestation Key.
 pub(crate) fn attestation_key(ctx: &mut Context, handle: u32, provision: bool) -> Result<(KeyHandle, Public, Name)> {
     let persistent = PersistentTpmHandle::new(handle)
         .map_err(|e| KmError::Validation(format!("akHandle {handle:#010x}: {e}").into()))?;
     let template = ak_template()?;
-    if let Ok(tr) = ctx.tr_from_tpm_public(TpmHandle::Persistent(persistent)) {
+    if let Some(tr) = ak_at(handle, ctx.tr_from_tpm_public(TpmHandle::Persistent(persistent)))? {
         // Already provisioned: read the key where it sits. (Evicting a persistent object again
         // would be a no-op that retires the handle.)
         let key = KeyHandle::from(tr);
@@ -122,6 +122,25 @@ pub(crate) fn attestation_key(ctx: &mut Context, handle: u32, provision: bool) -
     })?;
     let key = KeyHandle::from(persisted);
     read_public(ctx, key).map(|(public, _name, qualified_name)| (key, public, qualified_name))
+}
+
+/// What `Esys_TR_FromTPMPublic` found at the AK handle: the object, or `None` when the TPM
+/// says no object is there (`TPM_RC_HANDLE`). Any other failure (the transport, a TPM in
+/// failure mode) is no answer, so it is never taken for an empty handle that `lock` would then
+/// provision.
+///
+/// # Errors
+///
+/// `Unavailable` for any failure but `TPM_RC_HANDLE`.
+fn ak_at<T>(handle: u32, found: tss_esapi::Result<T>) -> Result<Option<T>> {
+    use tss_esapi::constants::response_code::Tss2ResponseCodeKind;
+    match found {
+        Ok(object) => Ok(Some(object)),
+        Err(tss_esapi::Error::Tss2Error(rc)) if rc.kind() == Some(Tss2ResponseCodeKind::Handle) => Ok(None),
+        Err(e) => Err(KmError::Unavailable(
+            format!("reading the Attestation Key's handle {handle:#010x} from the TPM: {e}").into(),
+        )),
+    }
 }
 
 /// The Attestation Key's public area as cakeys provisions it (`unique` left for the TPM). A
@@ -188,13 +207,20 @@ fn read_public(ctx: &mut Context, key: KeyHandle) -> Result<(Public, Name, Name)
 /// The seal object's auth value: SHA-256(PIN ‖ salt) truncated to 16 bytes, *as the hex string
 /// encoding them* — tpm2-pkcs11 authorizes with the ASCII hex text, not the raw digest
 /// (utils.c `ssl_util_hash_pass` + `set_esys_auth`).
-fn seal_auth(pin: &[u8], salt: &str) -> Vec<u8> {
+///
+/// It unseals the wrapping key as the PIN does, so the digest is wiped and the hex text is
+/// returned in the one buffer `Zeroizing` wipes.
+fn seal_auth(pin: &[u8], salt: &str) -> Zeroizing<Vec<u8>> {
     use sha2::Digest;
+    use zeroize::Zeroize;
     let mut h = sha2::Sha256::new();
     h.update(pin);
     h.update(salt.as_bytes());
-    let digest = &h.finalize()[..16];
-    cakeys_core::hex::encode(digest).into_bytes()
+    let mut digest = h.finalize();
+    // `into_bytes` keeps the string's buffer: the hex text is never copied.
+    let auth = Zeroizing::new(cakeys_core::hex::encode(&digest[..16]).into_bytes());
+    digest.as_mut_slice().zeroize();
+    auth
 }
 
 /// Load the seal object and unseal the token's wrapping key with the user PIN — the same
@@ -206,7 +232,7 @@ fn seal_auth(pin: &[u8], salt: &str) -> Vec<u8> {
 /// `Unavailable` when the seal object cannot be loaded or the unseal fails (a wrong PIN, in
 /// practice); `Conflict` when the unsealed payload is not 32 bytes of hex text.
 pub(crate) fn wrapping_key(ctx: &mut Context, store: &Store, pin: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
-    let auth = Auth::try_from(seal_auth(pin, &store.seal.auth_salt))
+    let auth = Auth::try_from(seal_auth(pin, &store.seal.auth_salt).as_slice())
         .map_err(|e| KmError::Unavailable(format!("seal auth: {e}").into()))?;
     // `TPM2_Load` needs no session beyond the parent's (empty-auth password), and
     // `Esys_TR_FromTPMPublic` runs `TPM2_ReadPublic`, which takes none at all: keep both
@@ -364,11 +390,19 @@ pub(crate) fn attest_bytes(attest: &Attest) -> Result<Vec<u8>> {
 ///
 /// # Errors
 ///
-/// `Unsupported` when the AK signed with something other than ECDSA-SHA256; `Conflict` when
+/// `Unsupported` when the AK signed with something other than ECDSA-SHA256 (another scheme,
+/// or ECDSA over another hash); `Conflict` when
 /// the signature does not verify against the pinned AK, or a component is too long for P-256.
 pub(crate) fn verify_signature(signature: &Signature, ak_spki: &[u8], bytes: &[u8]) -> Result<()> {
     use cakeys_core::sig::{self, Encoding, HashAlg};
     let (r, s) = match signature {
+        // The AK's restricted scheme makes the TPM sign with SHA-256; a signature naming another
+        // hash would not verify as SHA-256 either, but this says why.
+        Signature::EcDsa(ecc) if ecc.hashing_algorithm() != HashingAlgorithm::Sha256 => {
+            return Err(KmError::Unsupported(
+                format!("the AK signed with ECDSA over {:?}, not ECDSA-SHA256", ecc.hashing_algorithm()).into(),
+            ));
+        }
         Signature::EcDsa(ecc) => (ecc.signature_r().value().to_vec(), ecc.signature_s().value().to_vec()),
         s => return Err(KmError::Unsupported(format!("the AK signed with {s:?}, not ECDSA-SHA256").into())),
     };
@@ -686,9 +720,52 @@ mod tests {
         let rsa_ak = id::rsa_spki(&[0xc5; 256], &[1, 0, 1]).unwrap();
         let not_ec = verify_signature(&ecdsa(vec![1; 32], vec![1; 32]), &rsa_ak, b"attest");
         assert!(matches!(not_ec, Err(KmError::Conflict(m)) if m.contains("not an ECDSA key")));
+        // ECDSA over another hash than the AK's SHA-256: named, not a bare "does not verify".
+        let sha384 = Signature::EcDsa(
+            EccSignature::create(
+                HashingAlgorithm::Sha384,
+                EccParameter::try_from(vec![1; 32]).unwrap(),
+                EccParameter::try_from(vec![1; 32]).unwrap(),
+            )
+            .unwrap(),
+        );
+        let other_hash = verify_signature(&sha384, &ak, b"attest");
+        assert!(
+            matches!(&other_hash, Err(KmError::Unsupported(m)) if m.contains("Sha384") && m.contains("not ECDSA-SHA256")),
+            "{:?}",
+            other_hash.err()
+        );
         let rsa_sig = RsaSignature::create(HashingAlgorithm::Sha256, PublicKeyRsa::try_from(vec![1; 256]).unwrap());
         let other = verify_signature(&Signature::RsaSsa(rsa_sig.unwrap()), &ak, b"attest");
         assert!(matches!(other, Err(KmError::Unsupported(m)) if m.contains("not ECDSA-SHA256")));
+    }
+
+    /// The seal auth is tpm2-pkcs11's: the hex text of SHA-256(PIN ‖ salt)'s first 16 bytes,
+    /// held where it is wiped (esys.rs F2). The known answer was computed apart from the code
+    /// (`printf 123456abcd | sha256sum`).
+    #[test]
+    fn the_seal_auth_is_the_modules_and_wiped() {
+        let auth: Zeroizing<Vec<u8>> = seal_auth(b"123456", "abcd");
+        assert_eq!(auth.as_slice(), b"7eb6640227367c8ff142d877496ca3ec");
+    }
+
+    /// Only the TPM's `TPM_RC_HANDLE` means no AK at the handle (`lock` then provisions one);
+    /// any other failure of `Esys_TR_FromTPMPublic` is unavailable (16), naming the handle and
+    /// the error, never "no AK" (esys.rs F3).
+    #[test]
+    fn only_tpm_rc_handle_means_no_attestation_key() {
+        use tss_esapi::WrapperErrorKind;
+        use tss_esapi::constants::response_code::Tss2ResponseCode;
+        let tss = |rc: u32| Err::<u8, _>(tss_esapi::Error::Tss2Error(Tss2ResponseCode::from(rc)));
+        assert_eq!(ak_at(0x8100_0100, Ok(7u8)).unwrap(), Some(7));
+        // TPM_RC_HANDLE + TPM_RC_1: TPM2_ReadPublic's handle names no object.
+        assert_eq!(ak_at(0x8100_0100, tss(0x18b)).unwrap(), None);
+        // TPM_RC_FAILURE, TPM_RC_RETRY, a TCTI I/O error, and a wrapper error.
+        let wrapper = Err(tss_esapi::Error::WrapperError(WrapperErrorKind::InternalError));
+        for found in [tss(0x101), tss(0x922), tss(0x000a_000a), wrapper] {
+            let e = ak_at(0x8100_0100, found).unwrap_err();
+            assert!(matches!(&e, KmError::Unavailable(m) if m.contains("0x81000100")), "{e}");
+        }
     }
 
     /// The fixture's P-256 public blob with its `unique` point replaced by `key`'s.

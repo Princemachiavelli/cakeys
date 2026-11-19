@@ -107,7 +107,12 @@ fn export_plans_follow_each_sides_capabilities() {
         let (c, v) = plan(soft, &["movable", "--target", "tpm2", "--allow-host-plaintext"]);
         assert_eq!((c, first(&v).2), (15, Some(false)), "{v}");
         assert!(v["plans"][0]["reasons"][0].as_str().unwrap().contains("move it with `camigrate migrate`"), "{v}");
-        assert!(v["plans"][0]["notes"][0].as_str().unwrap().contains("residence"), "{v}");
+        // Its notes: why no sealed way carries it (review plan.rs F2, said first), then what the
+        // target changes about the key. Looked up, not by position.
+        let notes: Vec<&str> =
+            v["plans"][0]["notes"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
+        assert!(notes.iter().any(|n| n.starts_with("not sealed: ")), "{v}");
+        assert!(notes.iter().any(|n| n.contains("residence")), "{v}");
     }
     if named("p11kit").is_some() {
         let (c, v) = plan(soft, &["movable", "--target", "p11kit"]);
@@ -682,10 +687,11 @@ fn sealed_moves_do_what_the_plan_says() {
 
 /// A bundle crosses untrusted channels (docs/CAMIGRATE.md D5, D6): `export --out` writes it and
 /// `import --in` reads it, checked against the lock before the target is touched — another key's
-/// IDs are 17 or 10 — and after: tampered bytes do not unwrap (13), and the blobs of another
-/// key unwrap into material that is not the locked one (a private key fails its proof of possession,
-/// 13; a secret key its commitment, 10). Neither leaves anything
-/// on the target. A transport file for a key the lock does not pin is no channel at all.
+/// IDs are 17 or 10 — and after: tampered bytes do not unwrap (13, or 16 where the module says
+/// only that it failed: [`tampered_unwrap`]), and the blobs of another key unwrap into material
+/// that is not the locked one (a private key fails its proof of possession, 13; a secret key its
+/// commitment, 10). Neither leaves anything on the target. A transport file for a key the lock
+/// does not pin is no channel at all.
 #[test]
 fn bundles_are_checked_against_the_lock() {
     let Some(e) = env("bundles") else { return };
@@ -705,6 +711,7 @@ fn bundles_are_checked_against_the_lock() {
         assert_eq!(code(&o), want, "{what}: {}", stderr(&o));
         assert!(empty("xb-ek1"), "{what}: left objects on the target");
         assert_eq!(std::fs::read(&lock_path).unwrap(), before, "{what}: changed the lock");
+        stderr(&o)
     };
     let b: toml::Value = toml::from_str(&text).unwrap();
     let key_blob = b["keys"][0]["wrapped"].as_str().unwrap();
@@ -734,8 +741,11 @@ fn bundles_are_checked_against_the_lock() {
         assert_eq!(code(&o), 14, "{}", stderr(&o));
         assert!(stderr(&o).contains(why), "{}", stderr(&o));
     }
-    // A flipped byte in the wrapped key: RFC 5649's integrity check refuses it.
-    refused(text.replace(key_blob, &base64_flip(key_blob)), 13, "a tampered blob");
+    // A flipped byte in the wrapped key: RFC 5649's integrity check refuses it, and the run says
+    // so as the module's return value allows (review sealed.rs F2).
+    let (want, said) = tampered_unwrap(kry);
+    let o = refused(text.replace(key_blob, &base64_flip(key_blob)), want, "a tampered blob");
+    assert!(said.iter().all(|s| o.contains(s)), "a tampered blob: expected {said:?} in {o}");
     // The other key's blobs (its KEK and its key), wrapped to the same transport key: unwrapped,
     // then refused by identity and removed again.
     let swap = |into: &toml::Value, from: &toml::Value| {
@@ -765,6 +775,17 @@ fn bundles_are_checked_against_the_lock() {
     let o = e.km(soft, &["export", "ek2", "--token", "softhsm", "--transport", rogue.to_str().unwrap(), "--dry-run"]);
     assert_eq!(code(&o), 15, "{}", stdout(&o));
     assert!(stdout(&o).contains("is not the"), "{}", stdout(&o));
+}
+
+/// What an import into `r` exits with for a tampered RFC 5649 blob, and what it says: 13 and
+/// "tampered with" where the module says the wrapped data is invalid; 16 where it says only that
+/// it failed, said as what may be a damaged bundle — kryoptic's `CKR_DEVICE_ERROR` \[run\].
+fn tampered_unwrap(r: &Ref) -> (i32, &'static [&'static str]) {
+    if r.name.starts_with("kryoptic") {
+        (16, &["CKR_DEVICE_ERROR", "damaged or altered bundle"])
+    } else {
+        (13, &["the bundle was tampered with"])
+    }
 }
 
 /// The bundle's key type is held to the lock and to keys.toml, each on its own: a bundle of
@@ -2266,4 +2287,32 @@ fn key_files_carry_one_key_and_its_certificate() {
         assert!(stderr(&o).contains("the file's certificate is not imported"), "{}", stderr(&o));
         assert_eq!(code(&e.cakeys(der, &["verify", "--spec", "fk-der", "--token", "kryoptic-der"])), 0);
     }
+}
+
+/// `--config` names the keys.toml, and with it the lock: `site.toml`'s is `site.lock` beside it,
+/// unless `--lock` names another. No token is needed: a lock that does not parse stops the run
+/// before any token opens, naming the file it read.
+#[test]
+fn the_lock_follows_the_config_path() {
+    let w = Workdir::new("config-path");
+    let config = w.dir.join("site.toml");
+    let pin = w.dir.join("pin");
+    let token = |t: &str| format!("[tokens.{t}]\nmodule = \"/nonexistent/{t}.so\"\ntokenLabel = \"{t}\"\n");
+    let tokens = format!("{}pinFile = \"{}\"\n\n{}", token("a"), pin.display(), token("b"));
+    std::fs::write(&config, tokens + &format!("pinFile = \"{}\"\n", pin.display())).unwrap();
+    std::fs::write(w.dir.join("site.lock"), "not a lock [").unwrap();
+    std::fs::write(w.dir.join("keys.lock"), "not a lock either [").unwrap();
+    let run = |more: &[&str]| {
+        let at = ["--config", config.to_str().unwrap()];
+        let args = [&at[..], more, &["migrate", "--from", "a", "--to", "b", "--dry-run"]].concat();
+        tool(BIN).args(args).current_dir(&w.dir).output().unwrap()
+    };
+    let o = run(&[]);
+    assert_ne!(code(&o), 0, "{}", stderr(&o));
+    assert!(stderr(&o).contains("site.lock") && !stderr(&o).contains("keys.lock"), "{}", stderr(&o));
+    let other = w.dir.join("other.lock");
+    std::fs::write(&other, "also not a lock [").unwrap();
+    let o = run(&["--lock", other.to_str().unwrap()]);
+    assert_ne!(code(&o), 0, "{}", stderr(&o));
+    assert!(stderr(&o).contains("other.lock") && !stderr(&o).contains("site.lock"), "{}", stderr(&o));
 }

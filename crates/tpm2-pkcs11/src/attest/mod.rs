@@ -153,8 +153,7 @@ pub(crate) fn store_dir_of(token_name: &str, opts: &Tpm2Options) -> Result<PathB
     if env("TPM2_PKCS11_STORE").is_some() {
         return Ok(candidates.into_iter().next().unwrap_or_default());
     }
-    candidates
-        .iter().find(|d| d.join(store::DB_NAME).is_file()).cloned().ok_or_else(|| {
+    candidates.iter().find(|d| d.join(store::DB_NAME).is_file()).cloned().ok_or_else(|| {
         let searched: Vec<String> = candidates.iter().map(|d| d.display().to_string()).collect();
         KmError::Unavailable(
             format!(
@@ -312,7 +311,10 @@ pub(crate) fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
 /// # Errors
 ///
 /// `Unavailable` when `C_GetAttributeValue` fails.
-fn read_attribute(what: &str, read: std::result::Result<Vec<Attribute>, cryptoki::error::Error>) -> Result<Option<Attribute>> {
+fn read_attribute(
+    what: &str,
+    read: std::result::Result<Vec<Attribute>, cryptoki::error::Error>,
+) -> Result<Option<Attribute>> {
     match read {
         Ok(v) => Ok(v.into_iter().next()),
         Err(e) => Err(KmError::Unavailable(

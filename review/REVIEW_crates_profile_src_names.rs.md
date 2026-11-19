@@ -18,6 +18,8 @@ invariant structural (a private newtype inside `Other`) or match on `name()` in 
 places.
 [read]
 
+**Fixed (2026-11-18):** `Other` holds a private `Unknown` that only `From` builds, after the known names did not match, so it never holds a known name. Test: `names_are_values_and_order_as_text`.
+
 ### F2. `Proof::Other` and `Proof::PopSignPin` are unreachable from profile data — nit
 
 See REVIEW capability.rs F2: `prove.*` parsing is gated on `capability::PROOFS`, which lacks
@@ -26,6 +28,8 @@ See REVIEW capability.rs F2: `prove.*` parsing is gated on `capability::PROOFS`,
 only. Also, `gate.rs:241-244`'s test checks `Binding::name()`, while capability rows are keyed
 by `Binding::proof_name()`.
 [read]
+
+**Fixed (2026-11-18):** `prove.*` rows take any proof name (`Proof::from`; an unknown one is kept as `Other`), and gate.rs's test checks `Binding::proof_name()`, the name capability rows are keyed by. Tests: `every_capability_reads_back_from_its_key`, `the_profiles_know_every_key_type_and_proof_cakeys_has` (pkcs11 gate.rs).
 
 ## Design
 

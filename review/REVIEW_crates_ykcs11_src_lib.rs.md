@@ -31,6 +31,11 @@ without saying why; if every read fails the user gets "no attestation certificat
 have none", which misattributes a module error to the key's origin. Map the error to
 `Unavailable` like the other reads in this function. [read]
 
+**Fixed (2026-11-18):** `read_attribute`, as tpm2-pkcs11's attest mod F1, makes a failed
+`CKA_LABEL` read unavailable (16) with the module's `CK_RV`; the `CKA_ID` and `CKA_VALUE` reads
+go through it too, so they now carry the `CK_RV` as well. Test:
+`a_failed_attribute_read_is_unavailable`.
+
 ## Design
 
 - §4(b) holds for this crate: it imports only `cakeys_core`, `cakeys_pkcs11::{Token, provider::*,

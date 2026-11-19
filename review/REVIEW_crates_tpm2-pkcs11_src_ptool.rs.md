@@ -26,6 +26,8 @@ use `--key-label` only). Fix: hex-decode the locator ID and pass it as `--id=<te
 is UTF-8 without NUL (what `tid.encode()` can round-trip); otherwise refuse (17) before running
 the tool, and add an import-with-ID case to the tpm2 tests. [read, src]
 
+**Fixed (2026-11-18):** the locator's hex ID is decoded and passed as `--id=<text>` when its bytes are non-empty UTF-8 text without a NUL; any other ID is refused (17) before the tool runs. Tests: `the_id_is_passed_as_the_text_its_bytes_spell`, `imports_are_refused_before_the_tool_runs`.
+
 ## Design
 
 - `TPM2_PKCS11_TCTI`/`TPM2TOOLS_TCTI` are set from the raw `tcti` option (`:71-73`), while the

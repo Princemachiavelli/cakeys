@@ -562,9 +562,10 @@ impl Moves {
 }
 
 /// Plan each object's move as `req` asks, from what the lock pins. `source` is the source token
-/// as the caller opened it, once per run; `open` opens a target token read-only. A side that
-/// does not open is planned from what the lock recorded there. The source token, when it
-/// opened, is handed back for the run to use.
+/// as the caller opened it, once per run; `open` opens a target token, as the caller's run will
+/// use it (read-only to plan, read-write for a `migrate` that writes there). A side that does not
+/// open is planned from what the lock recorded there. The source and target tokens, when they
+/// opened, are handed back for the run to use (review lib.rs F5: the target was opened again).
 ///
 /// # Errors
 ///
@@ -578,14 +579,16 @@ pub(crate) fn plan_moves(
     source: Result<Token>,
     open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
     notes: &mut Notes,
-) -> Result<(Moves, Option<Token>)> {
+) -> Result<(Moves, Option<Token>, Option<Token>)> {
     let materials = materials(lock, req.from, req.objects)?;
     let (source, source_from, source_token) = side_or_lock(req.from, source, lock, registry, notes)?;
     let allow = Allow { host_plaintext: req.host_plaintext, trusted_transport: req.trusted_transport };
+    let mut target_token = None;
     let (target, target_from, to_name) = match &req.dest {
         Dest::Token(name) => {
             let opened = open(name, notes);
-            let (side, from, _) = side_or_lock(name, opened, lock, registry, notes)?;
+            let (side, from, token) = side_or_lock(name, opened, lock, registry, notes)?;
+            target_token = token;
             (Some(side), from, (*name).to_owned())
         }
         Dest::Transport(t, shown) => {
@@ -631,7 +634,7 @@ pub(crate) fn plan_moves(
             p.reasons.push(why.clone());
         }
     }
-    Ok((Moves { to: to_name, source_from, target_from, plans, source, target }, source_token))
+    Ok((Moves { to: to_name, source_from, target_from, plans, source, target }, source_token, target_token))
 }
 
 /// A token's capabilities: from the token `opened`, else from what the lock recorded there,

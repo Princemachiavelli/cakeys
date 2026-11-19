@@ -30,8 +30,13 @@ let
   db = "advisory-db-3157b0e258782691";
 
   # The database where cargo-deny's db-path looks for it ($CARGO_HOME/advisory-dbs by
-  # default): the pinned tree plus a fresh FETCH_HEAD, whose modification time is what
-  # cargo-deny reads offline to decide the database is not stale (90 days by default).
+  # default): the pinned tree plus a FETCH_HEAD touched now. cargo-deny reads that file's
+  # modification time offline to decide the database is not stale (90 days by default), so
+  # here the staleness check always passes: deliberately. Dating it from the input's
+  # lastModified would measure the pin against the build's clock, so a cached pass and a
+  # rebuild of the same inputs could disagree; a deterministic guard needs a second pinned
+  # time (the flake's own lastModified), which this file is not given. How old the pin may
+  # get is the flake.lock's business; what was published since is apps.deny-online's (below).
   # The copy is made writable: it comes from the read-only store.
   install-db = ''
     db_dir="$CARGO_HOME/advisory-dbs/${db}"

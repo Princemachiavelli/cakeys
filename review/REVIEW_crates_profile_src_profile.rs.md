@@ -18,6 +18,8 @@ treats `Some` as "the module said something" and, with no item or size asked, an
 that land in the `GenerateRow`, or carry byte sizes in it.
 [read]
 
+**Fixed (2026-11-18):** `generation` counts only the rows it keeps, so secret-key-size rows no longer make it `Some`. Test: `generation_speaks_only_for_the_rows_it_keeps`.
+
 ### F2. `set_generation` can write a row that does not read back — nit
 
 `crates/profile/src/profile.rs:417-422` with `capability.rs:38-44`. `can_bits`/`cannot_bits`
@@ -27,11 +29,15 @@ caller (`caprobe/src/probe.rs:343`) fills bits only for RSA, so latent. Debug-as
 type, or build `On` via `On::parse`.
 [read]
 
+**Fixed (2026-11-18):** `set_generation` writes sizes through `On::size`, in the unit the row reads back in. Test: `written_generation_rows_read_back`.
+
 ### F3. `family`'s `unwrap_or` is dead — nit
 
 `crates/profile/src/profile.rs:285`. `split('/').next()` is always `Some`; `split_once('/')
 .map_or(&self.profile, |(f, _)| f)` says the same thing directly.
 [read]
+
+**Fixed (2026-11-18):** `family` is `split_once('/').map_or(..)`. Test: `the_family_is_the_name_before_the_version`.
 
 ## Design
 

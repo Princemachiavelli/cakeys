@@ -35,16 +35,64 @@ pub mod fuzzing {
     /// `text` as a profile: one the parser reads is emitted, and the emitted text reads back as
     /// the same profile and emits to the same text, the round trip a regenerated profile takes.
     ///
+    /// Before that, every quoted string in `text` that reads as a row key is the key its
+    /// capability writes back. The round trip compares parsed profiles, so it cannot see a key
+    /// parse that takes two spellings to one row (review profile.rs F1: `generate.CKK_RSA.02048`
+    /// read as `…2048`); this does, on the input's own keys. A string that is no row key is
+    /// passed over, so the check holds whatever the TOML around it is.
+    ///
     /// # Panics
     ///
     /// When it does not: what the fuzz target looks for.
     pub fn profile_round_trip(text: &str) {
+        for key in text.split(['"', '\'']) {
+            if let Ok(c) = cakeys_profile::Capability::parse(key) {
+                assert_eq!(c.to_string(), key, "the row key {key:?} is written back as another");
+            }
+        }
         let Ok(profile) = cakeys_profile::Profile::from_toml(text) else { return };
         let emitted = crate::emit::profile(&profile);
         let back = cakeys_profile::Profile::from_toml(&emitted)
             .unwrap_or_else(|e| panic!("the emitted profile does not read back: {e}\n{emitted}"));
         assert_eq!(back, profile, "the emitted profile reads back as another\n{emitted}");
         assert_eq!(crate::emit::profile(&back), emitted, "the emitted profile emits to another text");
+    }
+
+    #[cfg(test)]
+    mod tests {
+        /// Every committed profile passes, and so does each with its sizes respelt (`02048`,
+        /// `+2048`): the parser refuses those keys rather than reading them as another's row.
+        /// Were it to read one, the key check above fails here, not only under the fuzzer.
+        #[test]
+        fn the_committed_profiles_pass_with_their_sizes_respelt() {
+            // The quoted row keys ending in `.<digits>`, with `prefix` before the digits.
+            let respell = |text: &str, prefix: &str| {
+                let mut parts: Vec<String> = text.split('"').map(str::to_owned).collect();
+                for part in parts.iter_mut().skip(1).step_by(2) {
+                    if let Some((head, n)) = part.rsplit_once('.')
+                        && cakeys_profile::Capability::parse(part).is_ok()
+                        && !n.is_empty()
+                        && n.bytes().all(|b| b.is_ascii_digit())
+                    {
+                        *part = format!("{head}.{prefix}{n}");
+                    }
+                }
+                parts.join("\"")
+            };
+            let mut respelt_any = false;
+            for (path, text) in cakeys_profile::embedded::PROFILE_FILES {
+                super::profile_round_trip(text);
+                for prefix in ["0", "+"] {
+                    let variant = respell(text, prefix);
+                    if variant != *text {
+                        respelt_any = true;
+                        assert!(cakeys_profile::Profile::from_toml(&variant).is_err(), "{path}: {prefix}");
+                    }
+                    super::profile_round_trip(&variant);
+                }
+            }
+            assert!(respelt_any, "no committed profile has a sized row");
+        }
     }
 }
 
@@ -163,7 +211,7 @@ pub fn main(registry: &Registry) -> ExitCode {
 /// [`main`] on `args`, the program name first, instead of the process's: caprobe run in-process
 /// by a binary or a test. It never exits the process: `--help` and `--version` print and return
 /// 0, a usage error prints and returns clap's 2. The profile set is built once per process
-/// ([`activate`]): a later call reuses it when it names the same profile directories, and is
+/// (`activate`): a later call reuses it when it names the same profile directories, and is
 /// refused (17) when it names others.
 #[must_use]
 pub fn main_from<I, T>(registry: &Registry, args: I) -> ExitCode

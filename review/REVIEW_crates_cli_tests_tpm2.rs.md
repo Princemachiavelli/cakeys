@@ -36,6 +36,8 @@ the require flag is passed. Here, an unpatched cryptoki in the Nix check (for ex
 `Cargo.lock` update drops the patch) silently drops the HMAC `tpm-certify` assertions while the
 test passes. Fix: pass `std::env::var("CAKEYS_TPM_REQUIRE").is_ok()`. [read]
 
+**Fixed (2026-11-18):** every call, the attestation half's included, is `hmac_types_fixed("CAKEYS_TPM_REQUIRE")`. Test: `no_opted_in_suite_skips_an_unpatched_build`.
+
 ### F3. `on_swtpm()` is a D-Bus address substring, and two tests return early on it — risk
 
 **Verification:** confirmed. `on_swtpm` (tpm2.rs:861-863) matches `unix:abstract=cakeys-tpm-`, which only nix/tpm2-test-env.sh:25 produces; every use is a quiet skip (:446, :841, :930) and every `tpm2_tool` call (:937-943) sits after the :930 return, so a rename there drops the object matrix, the AK cases and the handle compare with no failure even under `CAKEYS_TPM_REQUIRE`. [read]
@@ -64,6 +66,8 @@ which does not depend on tpm2-pkcs11's version. `:211` asserts without a message
 `tpm2.rs:807-815` and `:905-912` copy `Workdir::km_env` (`common/mod.rs:371`) only to add
 `env_remove`. `ptool` (`:53-61`) equals `references.rs:55-63`, and inline variants are at `:509-512`
 and `ftpm.rs:126-136`. `env` (`:31-44`) re-implements `suite_var` (see common/mod.rs F5). [read]
+
+**Fixed (2026-11-18):** D9: one `Suite` type replaces each suite's `Env`, `suite_var`/`required_var` are the only skip gates, one `Run` builder starts every tool run, and `ptool`/`ptool_in`/`tpm2_store` and `swap_private_key` replace the copies. Here `env` is `suite_var("CAKEYS_TPM_MODULE", "CAKEYS_TPM_REQUIRE", ..)` returning a `Suite`, every `tpm2_ptool` run is common's `ptool`, and the two hand-rolled `cakeys` runs are gone (runs go through `km_env`). Test: `the_harness_helpers_are_written_once`.
 
 ## Design
 

@@ -386,7 +386,8 @@ mod tests {
         use cakeys_profile::{Answer, Mode, Profile, Row};
         let row = |via: Option<&str>| {
             let mut p = Profile::new("ykcs11/2.7".into(), Mode::Observed);
-            let generate = Capability::Generate { key_type: "CKK_EC_EDWARDS".into(), on: On::Item("edwards25519".into()) };
+            let generate =
+                Capability::Generate { key_type: "CKK_EC_EDWARDS".into(), on: On::Item("edwards25519".into()) };
             p.capabilities.insert(generate, Row { answer: Answer::Yes, evidence: None, via: via.map(Into::into) });
             p
         };

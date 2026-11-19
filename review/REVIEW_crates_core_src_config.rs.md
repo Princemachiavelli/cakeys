@@ -25,6 +25,8 @@ keep an object any surviving realisation names (or collect the realisation too w
 recorded object is gone from keys.toml), and have `save_lock` run `Lock::validate` before
 writing so no verb can persist an invalid lock. [read]
 
+**Fixed (2026-11-18):** `gc` drops a realisation whose recorded object keys.toml no longer defines along with that object, and `save_lock` validates a lock before writing it (17, the old lock kept). Test: `gc_and_save_leave_a_lock_that_loads`.
+
 ### F2. `check_observations` validates only the first module hash — bug
 
 **Verification:** confirmed. `find_map` stops at the first observation that has a module hash and `.filter` judges only that one (config.rs:979-983); a malformed hash in any later entry loads. Impact is as stated: the hash is only compared for the replaced-module warning (reconcile.rs:652). [read]
@@ -34,6 +36,8 @@ takes the *first* observation that has a module hash and checks only that one; a
 `hash` in any later entry loads. Low impact (observations never change a verdict, and a
 malformed hash only weakens the "replaced in place" warning in `reconcile::warn_module`), but
 the check exists to refuse exactly that and silently does not for all but one entry. Fix: `.filter_map(|o| o.module.as_ref()?.hash.as_ref()).find(|h| !is_sri(h))`. [read]
+
+**Fixed (2026-11-18):** `Lock::validate` checks every observation's module hash (`filter_map(..).find(..)`, config/lock.rs). Test: `observations_are_referenced_and_collected`.
 
 ### F3. Locator and secret-key length are checked at token open, not at load — practice
 
@@ -63,6 +67,8 @@ it. The test is `path.starts_with("/nix/store")` on the unresolved path, so `./r
 `/run/current-system/sw/…` or any symlink into the store passes. Fix: apply `in_store` to the
 passphrase file too, and test the canonicalized path when the file exists (at use). [read]
 
+**Fixed (2026-11-18):** every secret file keys.toml names (`pinFile`, `soCredentialFile`, a secret object's `migrate.file` and `migrate.passphraseFile`) is held to `secret_in_store`, which compares resolved paths (links and `..` followed, not a string prefix). The check runs at load, when camigrate resolves an object's `$NAME` paths, and again in `secret::read`. Tests: `no_secret_file_is_in_the_nix_store`, `paths_resolve_before_they_compare`, `a_secret_in_the_nix_store_is_refused`.
+
 ### F5. config.rs holds five concerns in 2,600 lines — complexity
 
 `crates/core/src/config.rs` as a whole. It holds (1) the keys.toml schema and its eleven load
@@ -77,12 +83,16 @@ fs}.rs` with `gc`/`select` beside the lock, and make "everything keys.toml alone
 refused by `parse_config_with`" the rule (call `plan_mode` for every pair at load, as
 `ObjectCfg::kind` is called for every object). [read]
 
+**Fixed (2026-11-18):** config.rs is now config/: the lock schema, its invariants and `gc` in lock.rs, the observation model in observe.rs, file I/O policy in io.rs; mod.rs keeps the keys.toml schema and its load. Load also runs `plan_mode` for every (spec, token) pair, so what keys.toml alone can refuse is refused at load. Test: `what_loads_is_usable` (core/tests/refusals.rs) for the load rule; the split itself has none.
+
 ### F6. `$NAME` errors lack the file name every other load error carries — nit
 
 `crates/core/src/config.rs:1482,1498,1501,1505,1515`. These `env_ref(...)?` calls return
 `Validation("token 't': pinFile: …")` without the `"{path}: "` prefix `invalid` adds to every
 other load error, so the message does not say which keys.toml. `:1482` also converts
 `profileDirs` through `to_string_lossy`, replacing non-UTF-8 bytes in a path. [read]
+
+**Fixed (2026-11-18):** `$NAME` errors carry the keys.toml path prefix like every other load error. The `to_string_lossy` calls stay: those paths were TOML strings, so UTF-8 (comment at config/mod.rs:862). Test: `env_references_and_object_refs_are_checked_at_load`.
 
 ### F7. `write_whole` replaces a symlinked lock with a regular file — nit
 
@@ -102,6 +112,8 @@ guard. Tests: `a_symlinked_lock_is_written_through`, `update_lock_waits_for_the_
 `cakeys-load-types-test` are `remove_dir_all`'d and recreated; two concurrent test runs
 (nextest across worktrees, CI matrix on one host) race. The neighbouring tests already use
 `tempfile::tempdir()`. [read]
+
+**Fixed (2026-11-18):** both tests use `tempfile::tempdir()`; no fixed `/tmp` directory is left in config/. No test of its own.
 
 ## Design
 

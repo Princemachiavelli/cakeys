@@ -21,6 +21,8 @@ fixture PEM ships in every build. Gate `pub mod fuzzing` and this function behin
 cargo feature (or `cfg(fuzzing)`), as test-only anchors should never be linkable from the
 provider. [read]
 
+**Fixed (2026-11-18):** `fuzz_piv_attestation`, its fixture root and `pub mod fuzzing` are compiled only under `cfg(test)`, `kani` or the `fuzzing` feature, which only fuzz/Cargo.toml enables. No test.
+
 ### F2. The outer `signatureAlgorithm` is not compared with `tbsCertificate.signature` — nit
 
 `crates/ykcs11/src/attest.rs:311`. Verification dispatches on the unsigned outer
@@ -29,6 +31,10 @@ provider. [read]
 exploitable (an attacker who can swap the hash under the same key still cannot forge), but a
 strict verifier refuses the mismatch. Compare `tbs_certificate().signature()` with the outer
 algorithm (OID and parameters) before dispatching. [read]
+
+**Fixed (2026-11-18):** `verify_signed_by` refuses (13) a certificate whose outer
+`signatureAlgorithm` is not its `tbsCertificate.signature`, OID and parameters, before any
+signature check. Test: `the_outer_signature_algorithm_is_the_signed_one`.
 
 ### F3. Pool and anchor certificates are re-encoded, against `tbs()`'s own rationale — nit
 
@@ -40,6 +46,11 @@ a future intermediate with an explicit `version` DEFAULT or other non-canonical 
 refused, never accepted. Keep the PEM-decoded bytes (`der::pem::decode_vec` per block) instead of
 re-encoding. [read]
 
+**Fixed (2026-11-18):** `pem_certs` decodes each PEM block itself (`der::pem::decode_vec`) and
+keeps those bytes as the certificate's DER; a block that is not a `CERTIFICATE` is refused.
+Test: `pem_certificates_keep_their_bytes` (an explicit `version [0] v1`, which der re-encodes
+differently, survives).
+
 ### F4. Name comparison treats two encoding failures as equal — nit
 
 `crates/ykcs11/src/attest.rs:84-90, 129-131`. `subject_der`/`issuer_der` fall back to an empty
@@ -47,12 +58,22 @@ re-encoding. [read]
 Re-encoding a just-decoded `Name` should not fail, and the signature check still follows, so
 this is only a misleading shortcut; return `Result` or compare the decoded `Name`s directly. [read]
 
+**Fixed (2026-11-18):** `issued` compares the decoded subject and issuer `Name`s;
+`subject_der`/`issuer_der` and their `unwrap_or_default` are gone. No behaviour a valid
+certificate can reach changes. Test: `issuers_are_linked_by_name`.
+
 ### F5. The walk takes the first name-matching issuer and never backtracks — nit
 
 `crates/ykcs11/src/attest.rs:282, 289`. `pool.iter().find(|c| c.issued(current))` picks the first
 certificate with the right subject; if Yubico ever publishes two intermediates with one subject
 (a re-key), a chain through the second fails with that first one's signature error. Fine for the
 pinned 2025-02-03 pool; worth a comment, or try every name match before failing. [read]
+
+**Fixed (2026-11-18):** the walk (`issuer_chain`) tries every name-matching issuer, pooled
+intermediates first and then anchors, depth-bounded at 3 links; when none links, the first
+candidate's error is returned, so one-candidate chains report exactly as before. Test:
+`every_name_matching_issuer_is_tried` (a decoy with the fixture root's subject and another key,
+in the pool and as an earlier anchor).
 
 ## Design
 

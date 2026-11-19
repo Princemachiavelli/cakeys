@@ -41,15 +41,21 @@ print "adopted, not generated" when the fallback is taken. Optionally, wipe slot
 `ykman piv keys delete` in coverage-full as it does slot 95, after confirming with the owner that
 those slots are free to wipe. [read]
 
+**Fixed (2026-11-18), the silence:** a run that finds an earlier run's key says it adopts it with `lock`. **Decided:** the slots are not wiped first: PIV cannot erase a key, and only slot 95 may be wiped (docs/DEVELOPMENT.md, hardware rules).
+
 ### F3. Local copies of common helpers — complexity
 
 `yubikey.rs:59-64` (`workdir`, without the package prefix `common::test_dir` adds, so caprobe's and
 cakeys' YubiKey suites share `CARGO_TARGET_TMPDIR` names), `:211` (`code`), `:145` (`lock`) and
 `:170-176` (`got:` parsing, `common::got_hash`), while the file declares `mod common`. [read]
 
+**Fixed (2026-11-18):** the local copies are gone: the suite uses common's `Workdir::new` (with the package prefix), `code` and `got_hash`, and `lock` reads through `Workdir::lock`. No test checks these helpers specifically.
+
 ### F4. No require variable — nit
 
 `yubikey.rs:46-56`: see ftpm.rs F2. [read]
+
+**Fixed (2026-11-18):** the opt-in is common's `yubikey_opted_in` through `OptIn`, with the require variable `CAKEYS_YUBIKEY_REQUIRE`: a half-set opt-in, or the require variable alone, fails. Tests: `a_half_set_opt_in_fails`, `every_hardware_suite_opts_in_through_the_harness`.
 
 ## Design
 

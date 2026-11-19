@@ -146,4 +146,6 @@ out at `reference/drift.rs:47, 104, 270, 314, 363`, `reference/proofs.rs:151, 19
   Test: `the_harness_helpers_are_written_once` (validate.rs).
 - F6 **Fixed (2026-11-18):** the start-of-test clears and the "token is shared" comments are gone. Only create.rs keeps its two functional clears.
 - F7 **Fixed (2026-11-18):** added `hmac_types_fixed(require_var)`; cakeys' tests use it. Test: `no_opted_in_suite_skips_an_unpatched_build` rejects a computed flag in cakeys' tests and `false` anywhere. caprobe's three call sites remain.
+- F7 **Fixed (2026-11-18), the rest:** caprobe's reference.rs (both) and tpm2.rs call `hmac_types_fixed` with their suite's variable, and the scan rejects a computed flag in every crate's tests (mutation-checked: one caprobe call reverted fails it). Test: `no_opted_in_suite_skips_an_unpatched_build`.
+- F2 **Fixed (2026-11-18), `xref::Env::needs`:** a missing reference whose `*_REQUIRE` variable is set (`xref::require_var_of`) fails instead of skipping, as `suite_var` does; `xref::env` already failed then, an `Env::over` set did not. A name no reference has fails too. Test: `a_half_set_opt_in_fails` (through `Env::needs_in`).
 - F8 **Fixed (2026-11-18):** `P256`/`P521` sit beside `P384`/`ED25519`; the literals use them. Test: `the_harness_helpers_are_written_once`.

@@ -27,6 +27,8 @@ Cleanup already logs and tolerates a failed `delete`. [read]
 `cloud.rs:25` cites "docs/CLI.md exit codes". There is no docs/CLI.md; the codes are in
 docs/CAKEYS.md. [read]
 
+**Fixed (2026-11-18):** cloud.rs cites docs/CAKEYS.md's exit codes. No test.
+
 ## Design
 
 None.

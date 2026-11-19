@@ -171,7 +171,7 @@ generated, never edited, and pinned like the baseline:
   mechanism (with its OAEP or PSS hash and MGF, OAEP source or ECDH KDF), template attribute
   types, object classes, key and certificate types, user type, and the flags it passed or read
   back. Only the tools' own calls count: not a test harness, pkcs11-tool, `p11-kit remote` or
-  OpenSSL. The tests that run their own p11-fault are not traced (their hooks' calls would count
+  OpenSSL. The tests that run their own p11-fault are not traced, nix/test-tokens.sh naming them (their hooks' calls would count
   as the tool's).
 - **The check**: the crane build runs the suites a second time traced, and the coverage test
   (`crates/caprobe/src/coverage.rs`) regenerates the file from that trace; a row without a

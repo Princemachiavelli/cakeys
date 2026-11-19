@@ -42,6 +42,11 @@ intermediate `String` from `hex::encode` and the `GenericArray` stay in freed me
 the file is careful (`Zeroizing` wrapping key and object auth). Return `Zeroizing<Vec<u8>>`
 and wipe the digest. [read]
 
+**Fixed (2026-11-18):** `seal_auth` returns `Zeroizing<Vec<u8>>` holding the hex text's own
+buffer (`into_bytes`, no copy), wipes the digest, and `wrapping_key` copies it into `Auth` from a
+slice. Test: `the_seal_auth_is_the_modules_and_wiped` (known answer: PIN "123456", salt "abcd"
+→ `7eb6640227367c8ff142d877496ca3ec`, computed with `sha256sum`).
+
 ### F3. Any `TR_FromTPMPublic` failure is taken for "no AK at the handle" — nit
 
 `crates/tpm2-pkcs11/src/attest/esys.rs:88-100`. `if let Ok(tr) = …` swallows the error: a TPM
@@ -49,12 +54,22 @@ communication error is reported as "no Attestation Key … `lock` provisions it"
 locked) on a read, and under `lock` leads to `create_primary` + `EvictControl` and a misleading
 "is the handle free?" failure. Distinguish `TPM_RC_HANDLE` (absent) from other errors. [read]
 
+**Fixed (2026-11-18):** `ak_at` takes only `TPM_RC_HANDLE` for "no AK at the handle"; any other
+`Esys_TR_FromTPMPublic` failure is unavailable (16), naming the handle and the error, and
+`lock` provisions nothing. The swtpm suite's `tpm2_keys_attest_their_tpm_residence` and
+`tpm2_attestation_says_what_it_lacks` pass with it (swtpm answers an empty handle with
+`TPM_RC_HANDLE`) [run]. Test: `only_tpm_rc_handle_means_no_attestation_key`.
+
 ### F4. The signature's hash algorithm is not checked — nit
 
 `crates/tpm2-pkcs11/src/attest/esys.rs:365-378`. `Signature::EcDsa(ecc)` is verified with
 SHA-256 whatever `ecc.hashing_algorithm()` says. The AK's restricted scheme forces SHA-256, and a
 different hash would simply fail to verify, so this only gives a worse message than "the AK
 signed with … not ECDSA-SHA256" which the function promises. Check it. [read]
+
+**Fixed (2026-11-18):** `verify_signature` refuses an ECDSA signature over any hash but SHA-256
+as unsupported (15), naming the hash, before any verification. Test:
+`attestation_signatures_are_verified_on_the_host` (its SHA-384 case).
 
 ## Design
 

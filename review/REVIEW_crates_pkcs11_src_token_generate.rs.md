@@ -19,6 +19,8 @@ public half at the module's default). Here it is moot (no default in the templat
 drop), but the predicate should change with that fix: test only `spec.public_attributes`.
 [read]
 
+**Fixed (2026-11-18):** `private_declared` asks only the public half's declarations (`templates::public_declares`). Test: `the_public_half_takes_its_defaults_from_its_own_declarations` (templates.rs).
+
 ### F2. `answers` records a generation without the `via = "by-name"` the run needed — nit
 
 `crates/pkcs11/src/ops.rs:465-466` with `generate.rs:157`. When the curve generated only by
@@ -30,6 +32,8 @@ static gate and camigrate's plan, which read the answer, not `via`. But ISSUES.m
 (`Token::open` never calls `with_answers`), and if it were, a recorded plain yes would make
 `retries_by_name` return false and the second Ed25519 key on a YubiKey would fail. Fix: record
 `via = "by-name"` from the `CreateNote` in `answers`, and correct the B18 text. [read]
+
+**Fixed (2026-11-18):** by B18. `create` records `via = "by-name"` and opens its tokens with the lock's recorded answers. Tests: `a_curve_the_lock_records_by_name_is_tried_by_name` and `a_recorded_answer_keeps_the_profiles_way_unless_it_names_one`.
 
 ### F3. The by-name retry reports the first refusal even when the second is the more telling — nit
 

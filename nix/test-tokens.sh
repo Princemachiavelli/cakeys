@@ -48,14 +48,15 @@ suite=${suite%-*}
 # copies are made once per run, and are copies: the loader takes two links to one file for one
 # library, whose settings both would share. The tests that put their own p11-fault in front of a
 # module run untraced: that shim's hooks call the module too, inside the tool's process, and the
-# trace would count those calls as the tool's.
+# trace would count those calls as the tool's. This case is the one list of them; cakeys'
+# `every_test_with_its_own_fault_shim_runs_untraced` fails on one it does not name.
 test=unnamed prev=
 for a in "$@"; do
   [ "$prev" != --exact ] || test=$a
   prev=$a
 done
 case $suite/$test in
-fault/* | tpm2/tpm2_attestation_says_what_it_lacks) untraced=1 ;;
+fault/* | tpm2/tpm2_attestation_says_what_it_lacks | tpm2/tpm2_identity_failure_after_create_leaves_nothing | dry_run/a_failed_reopen_after_ptool_says_what_is_in_the_tpm) untraced=1 ;;
 *) untraced= ;;
 esac
 if [ -n "${CAKEYS_TRACE_DIR:-}" ] && [ -z "$untraced" ]; then

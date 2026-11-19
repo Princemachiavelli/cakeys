@@ -15,7 +15,7 @@ use common::*;
 fn committed_profile_is_what_the_probe_observes(r: &Reference, test: &str) {
     let Some(module) = suite_var(r.module_var, r.require_var, test) else { return };
     // Through an unpatched cryptoki the advertisement is short; the probe refuses to judge.
-    if !cryptoki_hmac_types_fixed(std::env::var(r.require_var).is_ok()) {
+    if !hmac_types_fixed(r.require_var) {
         return;
     }
     let w = Workdir::new(test);
@@ -88,7 +88,7 @@ fn p11kit_forwards_a_filtered_view() {
 #[test]
 fn the_forwarder_subtracts_exactly_its_layer() {
     let Some(w) = p11kit("probe_forwarded") else { return };
-    if !cryptoki_hmac_types_fixed(std::env::var("CAKEYS_P11KIT_REQUIRE").is_ok()) {
+    if !hmac_types_fixed("CAKEYS_P11KIT_REQUIRE") {
         return;
     }
     let read = |path: &str| -> toml::Value {

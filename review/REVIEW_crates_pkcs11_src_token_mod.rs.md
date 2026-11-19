@@ -103,6 +103,8 @@ loading the module beside it. Test: `a_library_being_finalized_is_waited_for`.
 `crates/pkcs11/src/token/mod.rs:987-989`. `std::env::var` fails for `NotPresent` and
 `NotUnicode` alike; both become "env var ... not set". Fix: match the `VarError`. [read]
 
+**Fixed (2026-11-18):** the PIN reader moved to cakeys-core's `secret::read` (core/src/secret.rs), which reports a set but non-UTF-8 variable as such (17) and an unset one as not set (16). Test: `a_non_utf8_variable_is_not_unset`.
+
 ### F7. With no module profile, the binding layer's subtraction is skipped — nit
 
 `crates/pkcs11/src/token/mod.rs:214-216`. `usable_mechanisms` returns the advertised list

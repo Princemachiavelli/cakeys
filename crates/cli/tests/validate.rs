@@ -5,6 +5,7 @@
 mod common;
 
 use common::*;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
@@ -86,20 +87,18 @@ fn no_test_run_sees_a_real_keys_toml_or_lock() {
 /// needs the patched cryptoki asks [`cryptoki_hmac_types_fixed`] with `true` (it never skips),
 /// or [`hmac_types_fixed`] with the variable that requires it — never a flag it computes itself,
 /// which was a literal `false` or another suite's variable (review common/mod.rs F7) — and none
-/// keeps its own check that skips. (Other crates' tests may still compute the flag from their
-/// own variable; never `false`.)
+/// keeps its own check that skips. Every crate's tests, not only this one's (caprobe's computed
+/// the flag from `std::env::var` after the fix here).
 #[test]
 fn no_opted_in_suite_skips_an_unpatched_build() {
     let own = format!("{}0x2c", "SHA384_HMAC) == ");
     let call = format!("{}(", "cryptoki_hmac_types_fixed");
-    let ours = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     let found: Vec<_> = workspace_tests()
         .into_iter()
         .filter(|(path, text)| {
             let args = || text.match_indices(&call).map(|(at, _)| &text[at + call.len()..]);
-            let computed = args().any(|a| !a.starts_with("true)")) && path.starts_with(&ours);
-            let never = args().any(|a| a.starts_with("false)"));
-            (computed || never || text.contains(&own)) && !path.ends_with("common/mod.rs")
+            let computed = args().any(|a| !a.starts_with("true)"));
+            (computed || text.contains(&own)) && !path.ends_with("common/mod.rs")
         })
         .map(|(path, _)| path)
         .collect();
@@ -109,7 +108,8 @@ fn no_opted_in_suite_skips_an_unpatched_build() {
 /// A hardware opt-in is all or none (review D9): every variable set runs the suite, none skips
 /// it, and a half-set one fails naming what is missing, where each suite's own check skipped.
 /// Its require variable alone fails too (review ftpm.rs F2): a run that means the suite and
-/// lost its variables passed having run nothing.
+/// lost its variables passed having run nothing. So does a cross-reference test whose missing
+/// reference is required (`xref::Env::needs`, as `suite_var` does).
 #[test]
 fn a_half_set_opt_in_fails() {
     let env = |set: &'static [&'static str]| move |v: &str| set.contains(&v).then(|| format!("{v}-value"));
@@ -119,6 +119,20 @@ fn a_half_set_opt_in_fails() {
     assert_eq!(opt_in(o, &env(&[])), Ok(None));
     assert_eq!(opt_in(o, &env(&["B"])), Err("A, C not set: the opt-in is A, B, C, all or none".into()));
     assert_eq!(opt_in(o, &env(&["R"])), Err("A, B, C not set: the opt-in is A, B, C, all or none; R is set".into()));
+    // A cross-reference test missing a reference skips only while nothing requires that one
+    // (review common/mod.rs: `xref::Env::needs` skipped without asking).
+    let e = common::xref::Env::over("needs-required", vec![created_ref("softhsm", "unused.so".into())]);
+    let set = |vars: &'static [&'static str]| move |v: &str| vars.contains(&v);
+    let names = |r: Option<[&common::xref::Ref; 2]>| r.map(|[a, b]| [a.name, b.name]);
+    assert_eq!(e.needs_in("t", ["softhsm", "kryoptic"], &set(&[])).map(names), Ok(None));
+    assert_eq!(e.needs_in("t", ["softhsm", "kryoptic"], &set(&["CAKEYS_TEST_REQUIRE"])).map(names), Ok(None));
+    assert_eq!(
+        e.needs_in("t", ["softhsm", "kryoptic-der"], &set(&["CAKEYS_KRYOPTIC_REQUIRE"])).map(names),
+        Err("needs the references kryoptic-der (CAKEYS_KRYOPTIC_REQUIRE is set), required but not set up".into())
+    );
+    let e = common::xref::Env::over("needs-required", vec![e.refs[0].clone(), created_ref("kryoptic", "k.so".into())]);
+    let found = e.needs_in("t", ["kryoptic", "softhsm"], &set(&["CAKEYS_KRYOPTIC_REQUIRE"])).map(names);
+    assert_eq!(found, Ok(Some(["kryoptic", "softhsm"])));
 }
 
 /// A bounded run reads its child's output while the child runs (review common/mod.rs F3): one
@@ -167,6 +181,40 @@ fn the_harness_helpers_are_written_once() {
         }
     }
     assert!(found.is_empty(), "written again outside tests/common/:\n{}", found.join("\n"));
+}
+
+/// A test that puts its own p11-fault in front of a module runs untraced (nix/test-tokens.sh's
+/// list): that shim's calls to the module would count as the tool's in the coverage trace, rows
+/// cakeys never reaches (`tpm2_identity_failure_after_create_leaves_nothing`, once it used the
+/// shim, put `C_GetSessionInfo` there). Every such test outside the `fault` suites is listed.
+#[test]
+fn every_test_with_its_own_fault_shim_runs_untraced() {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nix/test-tokens.sh");
+    let script = std::fs::read_to_string(&script).unwrap_or_else(|e| panic!("{}: {e}", script.display()));
+    let case =
+        script.lines().find_map(|l| l.trim().strip_suffix(") untraced=1 ;;")).expect("test-tokens.sh's untraced case");
+    let untraced: BTreeSet<&str> = case.split(" | ").collect();
+    // Spelt here so this file's own text is not a match.
+    let (test_attr, shim) = (format!("{}[test]", '#'), format!("{}()", "fault_shim"));
+    let mut missing = vec![];
+    for (path, text) in workspace_tests() {
+        // A suite is a file directly under tests/; the fault suites are untraced whole.
+        let suite = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+        if suite == "fault" || !path.parent().is_some_and(|p| p.ends_with("tests")) {
+            continue;
+        }
+        for test in text.split(test_attr.as_str()).skip(1) {
+            let name = test.split("fn ").nth(1).and_then(|s| s.split('(').next()).unwrap_or_default();
+            let named = format!("{suite}/{name}");
+            if test.contains(shim.as_str()) && !untraced.contains(named.as_str()) {
+                missing.push(named);
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "these run their own p11-fault, traced (add them to nix/test-tokens.sh's untraced case): {missing:?}"
+    );
 }
 
 /// Every hardware suite opts in through [`opted_in`] (review D9): none reads an opt-in variable

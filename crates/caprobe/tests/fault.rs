@@ -66,9 +66,17 @@ fn assert_fired(name: &str, plan: &str, fired: &[usize], said: &str) {
     }
 }
 
-/// One fault case: its name, the plan, what the profile then holds, and what the probe says it
-/// could not determine.
-type Case<'a> = (&'a str, String, &'a [&'a str], &'a str);
+/// One fault case: its name, the plan, what the profile then holds, what the probe says it
+/// could not determine, and the rows of the committed `SoftHSM` profile (what the honest module
+/// earns) the profile must then not hold.
+type Case<'a> = (&'a str, String, &'a [&'a str], &'a str, &'a [&'a str]);
+
+/// The rows the honest module earns that a case takes away.
+const POP_SIGN: &str = "\"prove.pop-sign.CKK_EC.secp256r1\" = { answer = \"yes\" }";
+const POP_ECDH: &str = "\"prove.pop-ecdh.CKK_EC.secp256r1\" = { answer = \"yes\" }";
+const SEALED: &str = "\"derive.ecdh.sealed\" = { answer = \"yes\" }";
+const READ_ONLY: &str = "\"derive.ecdh.read-only\" = { answer = \"yes\" }";
+const OAEP_SHA1: &str = "\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\" }";
 
 /// The calls the first key's proofs of possession make before the probes of its mechanisms (it
 /// proves first, as the verbs do right after generating): pop-sign's `C_SignInit`, pop-ecdh's
@@ -80,10 +88,14 @@ fn rule(text: &str) -> String {
     format!("[[rule]]\n{text}\n")
 }
 
-/// Probe under each case's plan: the probe succeeds, its rule fired, and the profile and the
-/// notes hold what the case says.
+/// Probe under each case's plan: the probe succeeds, its rule fired, the profile and the notes
+/// hold what the case says, and the profile holds none of the rows the honest module would have
+/// earned (review fault.rs F1: only presence was checked, so a probe that noted the lie and
+/// still wrote the row passed). Each of those is a row of the committed profile, so the check
+/// cannot pass on a row no probe writes.
 fn probe_cases(w: &Workdir, cases: &[Case]) {
-    for (name, plan, rows, undetermined) in cases {
+    let honest = std::fs::read_to_string(committed_profile(SOFTHSM.profile.1)).unwrap();
+    for (name, plan, rows, undetermined, earned) in cases {
         let (exit, profile, said, fired) = probed(w, name, plan, &[]);
         assert_eq!(exit, 0, "{name}: {said}");
         assert_fired(name, plan, &fired, &said);
@@ -91,6 +103,10 @@ fn probe_cases(w: &Workdir, cases: &[Case]) {
             assert!(profile.contains(row), "{name}: expected {row:?} in\n{profile}");
         }
         assert!(said.contains(undetermined), "{name}: expected {undetermined:?} in {said}");
+        for row in *earned {
+            assert!(honest.contains(row), "{name}: {row:?} is no row of the committed profile");
+            assert!(!profile.contains(row), "{name}: the honest module's {row:?} in\n{profile}");
+        }
     }
 }
 
@@ -112,24 +128,31 @@ fn the_probe_records_what_a_misbehaving_module_does() {
                 .collect(),
             &[],
             "no operation probes on CKK_EC keys: the module refused the usage attributes",
+            &[POP_SIGN, POP_ECDH],
         ),
         (
             "a public key without its point",
             rule("fn = \"C_GetAttributeValue\"\nattribute = \"CKA_EC_POINT\"\ndrop = true"),
             &[],
             "no operation probes on secp256r1: its public key carries no material",
+            &[POP_SIGN, POP_ECDH],
         ),
         (
+            // An operation probe has no row of its own: the mechanism is usable for the keys it
+            // verified on, and the failure is its note (`Ops::record` puts each outcome in one
+            // place). The proofs, before it, are the honest module's.
             "another key signs",
             rule(&format!("fn = \"C_SignInit\"\ncall = {}\nuse_label = \"decoy\"", SIGN_INITS + 1)),
-            &["secp256r1: the signature does not verify"],
+            &["secp256r1: the signature does not verify", POP_SIGN],
             "",
+            &[],
         ),
         (
             "another key derives",
             rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nuse_label = \"decoy\"", DERIVES + 1)),
             &["the derived secret is not the shared secret"],
             "",
+            &[SEALED],
         ),
         (
             // Every try of the sealed template `derive_any` makes: as asked, with CKA_VALUE_LEN,
@@ -143,18 +166,22 @@ fn the_probe_records_what_a_misbehaving_module_does() {
                 "a sealed (non-extractable) derived secret is refused: CKR_ATTRIBUTE_VALUE_INVALID",
             ],
             "",
+            &[SEALED],
         ),
         (
             "no derivation at all",
             rule("fn = \"C_DeriveKey\"\nrv = \"CKR_ATTRIBUTE_VALUE_INVALID\""),
             &["extractable: CKR_ATTRIBUTE_VALUE_INVALID"],
             "",
+            &[SEALED, READ_ONLY, POP_ECDH],
         ),
         (
+            // The key derives, as the honest module's does: its rows stand, the lie is a note.
             "derives while reporting CKA_DERIVE false",
             rule("fn = \"C_GetAttributeValue\"\nattribute = \"CKA_DERIVE\"\nvalue = \"00\""),
             &["derives although the key reports CKA_DERIVE = false"],
             "",
+            &[],
         ),
         // A session an earlier operation left busy decides nothing, by the return value the
         // module gave (KmError::rv), not by the words of a message: an operation probe, then
@@ -164,12 +191,14 @@ fn the_probe_records_what_a_misbehaving_module_does() {
             rule(&format!("fn = \"C_SignInit\"\ncall = {}\nrv = \"CKR_OPERATION_ACTIVE\"", SIGN_INITS + 1)),
             &[],
             "an earlier operation left the session busy (CKR_OPERATION_ACTIVE)",
+            &[],
         ),
         (
             "a proof meets a busy session",
             rule("fn = \"C_SignInit\"\ncall = 1\nrv = \"CKR_OPERATION_ACTIVE\""),
             &[],
             "no prove.pop-sign.CKK_EC.secp256r1 row",
+            &[POP_SIGN],
         ),
         (
             "wraps but does not unwrap",
@@ -179,6 +208,7 @@ fn the_probe_records_what_a_misbehaving_module_does() {
                 "wraps but does not unwrap: CKR_DEVICE_ERROR",
             ],
             "",
+            &[OAEP_SHA1],
         ),
     ];
     probe_cases(&w, cases);
@@ -202,6 +232,7 @@ fn the_probe_notes_which_derive_template_took() {
             rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nrv = \"CKR_TEMPLATE_INCONSISTENT\"", DERIVES + 1)),
             &["the template as asked is refused (CKR_TEMPLATE_INCONSISTENT); derived with CKA_VALUE_LEN = 32 added\""],
             "",
+            &[],
         ),
         (
             "the sealed template takes without CKA_SENSITIVE",
@@ -210,6 +241,7 @@ fn the_probe_notes_which_derive_template_took() {
                 .collect(),
             &["(CKR_TEMPLATE_INCONSISTENT); derived with CKA_SENSITIVE = true dropped\""],
             "",
+            &[],
         ),
         (
             "the sealed template takes with its length and without CKA_SENSITIVE",
@@ -218,12 +250,14 @@ fn the_probe_notes_which_derive_template_took() {
                 .collect(),
             &["(CKR_TEMPLATE_INCONSISTENT); derived with CKA_VALUE_LEN = 32 added, CKA_SENSITIVE = true dropped\""],
             "",
+            &[],
         ),
         (
             "the sealed derivation fails",
             rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nrv = \"CKR_DEVICE_ERROR\"", DERIVES + 1)),
             &["a sealed (non-extractable) derived secret is refused: CKR_DEVICE_ERROR"],
             "",
+            &[SEALED],
         ),
         (
             "the sealed derivation fails after a template refusal",
@@ -231,6 +265,7 @@ fn the_probe_notes_which_derive_template_took() {
                 + &rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nrv = \"CKR_DEVICE_ERROR\"", DERIVES + 2)),
             &["a sealed (non-extractable) derived secret is refused: CKR_DEVICE_ERROR"],
             "",
+            &[SEALED],
         ),
     ];
     probe_cases(&w, cases);

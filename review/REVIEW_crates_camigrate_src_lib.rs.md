@@ -107,6 +107,20 @@ of a `migrate` is still opened twice: read-only by the plan, read-write for the 
 can open a token; the token suites' dry-run and migrate tests (dry_run.rs, migrate tests) run
 these paths.
 
+**Fixed (2026-11-18), the target:** `migrate` plans through `Run::plan_opening` with
+`Access::Write`, and `tokens::plan_moves` hands the target it opened back beside the source, so a
+`migrate` opens its target once, read-write, and opens it again only when the plan could not (to
+say why). `--dry-run` and `export` still plan through `Run::plan`, read-only. Test:
+`a_move_the_module_fails_is_refused_and_undone` (camigrate fault.rs) counts the `C_OpenSession`
+calls each run makes on the shimmed token: one, where a move into it made two (read-only, then
+read-write) [run].
+
+**Fixed (2026-11-18), the bundle's token:** `export` too kept only the source from its plan, and
+opened the bundle's token again to read a transport key the lock has no public key of, logging
+in twice (the coverage trace met `CKR_USER_ALREADY_LOGGED_IN`). It keeps the target the plan
+opened. Test: `an_export_opens_its_target_once` (camigrate fault.rs), one session where it made
+two (mutation-checked) [run].
+
 ### F6. The passphrase readers duplicate the PIN reader and differ from it — practice
 
 `crates/camigrate/src/lib.rs:1318-1353` (`read_passphrase`, `file_passphrase`) against

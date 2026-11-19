@@ -152,6 +152,9 @@ impl Env {
         // identified; nothing is locked yet.
         let mut first = self.km(&r);
         if code(&first) == 19 {
+            // PIV cannot erase a key, and only slot 95 may be wiped (docs/DEVELOPMENT.md): say
+            // that this run adopts, rather than generates, what the slot holds.
+            eprintln!("{}: the slot holds an earlier run's key; adopting it with `lock`, not generating", c.name);
             first = self.km(&adopt);
         }
         assert_eq!(code(&first), 18, "{}: {}", c.name, String::from_utf8_lossy(&first.stderr));

@@ -17,6 +17,8 @@ later one wins without a word (TOML only refuses identical keys). The emitter th
 differs from the text read.
 [read]
 
+**Fixed (2026-11-18):** a numeric `on` that does not print back as read (`02048`, `+2048`) is refused, so two spellings of one row cannot collapse. Test: `one_row_has_one_key`.
+
 ### F2. `PROOFS` duplicates `names::Proof` and disagrees with it — nit
 
 `crates/profile/src/capability.rs:20` and `:253`; `names.rs:115-121`. Parsing a `prove.*` key is

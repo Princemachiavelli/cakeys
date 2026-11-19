@@ -20,10 +20,10 @@ if [ -d "$trace" ] && [ ! -d "$trace/shims" ] && [ -n "$(ls -A "$trace")" ]; the
 fi
 rm -rf "$trace"
 mkdir -p "$trace"
-# Not traced: the coverage test (it checks the file it is about to rewrite), and the tests
-# nix/test-tokens.sh leaves untraced (those that run their own p11-fault).
+# Not run: the coverage test (it checks the file it is about to rewrite), and the fault suites
+# (nix/test-tokens.sh leaves them untraced, with the other tests that run their own p11-fault).
 CAKEYS_TRACE_DIR=$trace scripts/local-tests.sh -E \
-  'not (binary(fault) | test(tpm2_attestation_says_what_it_lacks) | test(committed_coverage_is_generated_from_the_trace))'
+  'not (binary(fault) | test(committed_coverage_is_generated_from_the_trace))'
 # The rewrite through local-tests too, so it reuses that build (the same tree copy, features and
 # target directory) instead of building the workspace again here. The test rewrites the file in
 # the tree copy it runs in; it is copied back.

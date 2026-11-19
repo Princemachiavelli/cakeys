@@ -21,11 +21,15 @@ Unverified from reading: whether any reference module returns `CKR_DEVICE_ERROR`
 under this load. If a flake appears, `report.txt` shows the row. A retry of only the rows whose exit
 is 16 (unavailable) would separate contention from a real change. [read]
 
+**Decided (2026-11-18):** withdrawn in verification. The test's session is dropped before any worker starts, tpm2 runs 4 workers behind abrmd, kryoptic's SQLite waits on a 5 s busy timeout, and SoftHSM locks per object; no flake is on record.
+
 ### F2. `CAKEYS_UPDATE_OBJECTS` turns the test into a writer that always passes — nit
 
 `object_matrix/mod.rs:816-819`. This is intended (regenerate, then review the diff), and the
 variable is not set by any check. If it leaked into a CI environment, the comparison would be off
 silently. Print "rewrote <file>, not compared" so a log shows it. [read]
+
+**Fixed (2026-11-18):** under `CAKEYS_UPDATE_OBJECTS` the test prints "rewrote <file>, not compared". Test: `object_matrix_is_the_committed_one`.
 
 ### F3. Workdirs are never removed — nit
 
@@ -34,12 +38,16 @@ and nothing removes it after the test. That is about 1,500 row directories per t
 `CARGO_TARGET_TMPDIR`.
 Fine in the Nix sandbox. In a developer's `target/` it adds up across runs. [read]
 
+**Fixed (2026-11-18):** each row's workdir is removed once its outcome is in the report. Test: `object_matrix_is_the_committed_one`.
+
 ### F4. `names.dedup()` is a no-op — nit
 
 `object_matrix/mod.rs:470`. `dedup` removes only consecutive duplicates, and no `Kind::usage` of a
 secret kind (`:61-68`) contains `CKA_UNWRAP` or `CKA_DERIVE`, so nothing is ever removed. If a kind
 gained one, the duplicate would not be adjacent and a template with the attribute twice would
 follow. Use `sort` + `dedup`, or a `BTreeSet`. [read]
+
+**Fixed (2026-11-18):** `sort_unstable` before `dedup`. Test: `object_matrix_is_the_committed_one`.
 
 ## Design
 

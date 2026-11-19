@@ -129,7 +129,7 @@ pub fn with_query(uri: &str, module_path: Option<&str>, pin: Option<&PinRef>) ->
 /// "PKCS#11 Provider URI v1.0", UTF8String uri }` armored as `PKCS#11 PROVIDER URI`, what its
 /// `tools/uri2pem.py` writes and its decoder reads (`src/pk11_uri.h`, 1.3), for programs that
 /// take a key only as a PEM file. The URI may carry the PIN: the DER is written into one wiped
-/// buffer sized for it, and the PEM is [`PinText`].
+/// buffer sized for it, and the PEM is a `PinText`, wiped when dropped.
 ///
 /// # Errors
 ///
@@ -210,7 +210,9 @@ fn qpct_into(out: &mut String, bytes: &[u8]) {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     for &b in bytes {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => out.push(char::from(b)),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => {
+                out.push(char::from(b));
+            }
             _ => {
                 out.push('%');
                 out.push(char::from(HEX[usize::from(b >> 4)]));

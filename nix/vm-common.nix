@@ -28,19 +28,17 @@ in
 
   # keys.toml's token and its signing key, on SoftHSM module `module`; a test appends its own
   # specs (`signing-soft` names the key there) and further objects.
-  keysToml =
-    module:
-    ''
-      [tokens.softhsm]
-      module = "${module}"
-      tokenLabel = "kmtest"
-      pinFile = "${stateDir}/pin"
+  keysToml = module: ''
+    [tokens.softhsm]
+    module = "${module}"
+    tokenLabel = "kmtest"
+    pinFile = "${stateDir}/pin"
 
-      [objects.signing]
-      class = "CKO_PRIVATE_KEY"
-      keyType = "CKK_EC"
-      curve = "secp256r1"
-    '';
+    [objects.signing]
+    class = "CKO_PRIVATE_KEY"
+    keyType = "CKK_EC"
+    curve = "secp256r1"
+  '';
 
   # testScript: `guest_build(m, attr, nonce)` builds attribute `attr` of /etc/km/builds.nix in
   # guest `m` (a fresh `nonce` makes a new derivation) and returns what the build wrote.

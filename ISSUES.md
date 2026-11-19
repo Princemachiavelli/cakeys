@@ -178,6 +178,7 @@ From the file-by-file review (`review/`, 2026-11-18). Each fix has a test that f
 | caprobe's stack is validate's | `caprobe supports --token` resolves through `gate::stack`, and caprobe activates the one profile set every tool does (`--profiles` loaded over it), instead of a set and a stack composition of its own: with no module recorded it took a hardware profile whole and said yes where `validate` says unknown (review D4). Test: `supports_asks_by_token_and_refuses_what_it_cannot_ask` |
 | A newer cakeys's profile loads | a `prove.*` proof, OAEP hash or unwrap-template attribute this cakeys does not know loads as read and answers nothing, as an unknown key type does (Q28 was partial: the profile failed to load as a whole); the known proofs are `Proof::NAMES`, so `pop-sign-pin` is no longer refused (review D4). Tests: `every_capability_reads_back_from_its_key`, `a_newer_cakeys_names_load_and_answer_nothing`, and `the_committed_profiles_name_only_known_rows` keeps a misspelt name out of the committed profiles |
 | One feature for the patched cryptoki | each tool's `patched-cryptoki` implies `kwp`, `rv-value` and `sign-after-init`, and the Nix builds name only it; `caprobe probe` refuses to write or diff a profile without the patched binding, `rv-value` and `kwp`, since a busy session without `rv-value` would be written as a definitive no (review D3). Tests: `a_kept_profile_needs_every_patch_and_feature`, `the_patched_binding_comes_with_its_features` (in `cakeys-pkcs11` and caprobe), `every_tool_turns_on_what_the_patched_binding_makes_possible` |
+| Product-code findings of the file review | The Nix-store guard covers every secret file keys.toml names (`pinFile`, `soCredentialFile`, `passphraseFile`, a secret's `migrate.file`) and compares resolved paths; `publicOnly` refuses a configured proof instead of overriding it; a sealed unwrap is "tampered with" (13) only when the module's return value says the data is bad, a device error staying 16; camigrate no longer swallows resolution or trust-lookup errors and opens its source once; an EC or Edwards public key's SPKI must be the object's type and curve; the extractable ECDH fallback and the trusted copy keep the module's `CK_RV`; tied profiles are said with a token open; profile directories follow symlinks without looping and a directory's baseline is used or refused; `--module` refuses empty halves, duplicates and unknown tokens (17). Tests: in each review file's Fixed note (review/REVIEW_*.md) |
 | Lock saved per object | `cakeys create` (`ops::create_selected`'s `persist`) and every camigrate import loop (`import`, `migrate`, `import --in` for a key file or files) save the lock as each object lands, so a run killed, or failing to save, part-way never leaves an object on a token the lock does not record. `create` prints what it created whatever ended the run (cli lib.rs F1). p11-fault gained `abort = true` (the process dies at a call) to test it. Tests: cakeys `a_create_killed_part_way_has_recorded_what_it_made`, camigrate `an_import_killed_part_way_has_recorded_what_it_made`, p11-fault `abort_ends_the_process_at_its_call`. Left: a key killed between its creation and its own record is still unrecorded (one object, not the run); a failed save after `create` has no test (nothing makes the save fail after `read_lock`'s check) |
 
 ## To test
@@ -381,8 +382,10 @@ length check against the structure's size, and panics stop at `guard`. The one s
 ("Fixed since").
 
 RAPx would cover only that crate and needs a pinned nightly: not run. An ASan build of the fuzz
-targets (`checks.fuzz` runs without a sanitizer today) covers the same ground more cheaply.
-cargo-machete found the unused dependencies (B7).
+targets is no substitute, and is not run either (nix/fuzz.nix's header): the targets never
+reach p11-fault, the one C they do reach (tpm2-tss's prebuilt libtss2-mu) stays uninstrumented
+under `cargo fuzz -s address`, and nixpkgs' rustc ships no ASan runtime. cargo-machete found
+the unused dependencies (B7).
 
 ## What held up
 

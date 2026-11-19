@@ -70,6 +70,8 @@ keeps `checks.quint` green while the replay silently stops exercising it. Fix: r
 rule name was seen (quint-connect's runner owns the loop, so do it in a `Drop` or a second
 `#[test]` that runs `quint run --witnesses` with this test's exact parameters). [read]
 
+**Fixed (2026-11-18):** the replay records the rule of every step it replays and asserts afterwards that each of the 18 `decidedBy*` witnesses in spec/lock.qnt was reached. Test: `reconcile_refines_the_lock_model`.
+
 ### F4. Fixture code duplicated with properties.rs — complexity
 
 `crates/core/tests/lock_mbt.rs:23-61`, `:255-278`; `crates/core/tests/properties.rs:17-75`.

@@ -218,7 +218,6 @@ dependencies = [
  "cakeys-core",
  "cakeys-pkcs11",
  "cryptoki",
- "cryptoki-sys",
 ]
 
 [[package]]
@@ -243,6 +242,7 @@ dependencies = [
  "base64",
  "bp256",
  "bp384",
+ "der",
  "ecdsa",
  "ed25519-dalek",
  "ed448",
@@ -253,6 +253,7 @@ dependencies = [
  "p256",
  "p384",
  "p521",
+ "pkcs8",
  "rsa",
  "rustix",
  "serde",
@@ -304,7 +305,6 @@ dependencies = [
  "getrandom",
  "libc",
  "rsa",
- "toml",
  "x509-cert",
  "zeroize",
 ]

@@ -14,6 +14,8 @@ The header makes a promise about tpm2.rs that tpm2.rs does not keep.
 see tpm2.rs F1). Someone reading this header could reasonably run `--test tpm2` inside
 `ftpm-test-env.sh`. Fix tpm2.rs, or correct the sentence. [read]
 
+**Fixed (2026-11-18):** the header is now true: tpm2.rs's attestation test runs only on the suite's swtpm (tpm2.rs F1). Test: `tpm2_keys_attest_their_tpm_residence`.
+
 ### F2. No require variable: a misconfigured hardware run passes empty — practice
 
 `ftpm.rs:39-45`. Opt-in by design. `scripts/coverage-full.sh` runs `binary(ftpm)` and records

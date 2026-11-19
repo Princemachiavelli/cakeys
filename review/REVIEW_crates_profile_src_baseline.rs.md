@@ -14,6 +14,8 @@ empty list. The embedded baseline is generated and pinned by caprobe's test, but
 `--profiles` directory loads baselines too (`lib.rs:99`). Add the attribute.
 [read]
 
+**Fixed (2026-11-18):** `Baseline` and `ClassMembers` are `#[serde(deny_unknown_fields)]`. Test: `a_misspelt_baseline_key_is_refused`.
+
 ## Design
 
 - `CURVES` is a third curve list (core's `id::Curve::ALL`, the probe's); ISSUES.md Q18 accepted

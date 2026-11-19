@@ -1398,8 +1398,8 @@ fn evidence_text(token: &str, said: &str, rv: Option<u64>) -> String {
         return said;
     };
     // `<what>: Function::X`, as `<what>: CKR_Y: Function::X` where the value is known (the
-    // form the token crate writes itself).
-    let before = match rv.map(token::rv_value_name) {
+    // form the token crate writes itself), unless the message names it already.
+    let before = match rv.map(token::rv_value_name).filter(|name| !before.contains(name.as_str())) {
         Some(name) => match before.rsplit_once(": ").filter(|(_, f)| f.starts_with("Function::")) {
             Some((what, function)) => format!("{what}: {name}: {function}"),
             None => format!("{before}: {name}"),
@@ -1529,7 +1529,7 @@ enum SealedPath {
 
 /// Derive into a sealed secret and MAC with it, the way `pop-ecdh` proves possession; on
 /// success `template` becomes the template that took. What the secret reports, when not what
-/// was asked, is a note (AWS `CloudHSM`: sensitive, but extractable [run]).
+/// was asked, is a note (AWS `CloudHSM`: sensitive, but extractable \[run\]).
 fn try_sealed(made: &Made, profile: &mut Draft, d: &Derivation, template: &mut Vec<Attribute>) -> SealedPath {
     let s = made.session;
     let (h, used, changed) = match derive_any(s, &d.mech, d.private, template, d.ch.secret.len()) {
@@ -2204,6 +2204,12 @@ mod tests {
     fn evidence_names_the_return_value_not_the_prose() {
         let mech_invalid = 0x70; // CKR_MECHANISM_INVALID
         for (said, rv, want) in [
+            // The token crate's own message names the value already: once, not twice.
+            (
+                "unavailable: C_Sign on token 'probe': CKR_MECHANISM_INVALID: Function::SignInit: PKCS11 error: The mechanism is invalid.",
+                Some(mech_invalid),
+                "unavailable: C_Sign: CKR_MECHANISM_INVALID: Function::SignInit",
+            ),
             (
                 "unavailable: C_Sign on token 'probe': Function::SignInit: PKCS11 error: The mechanism is invalid.",
                 Some(mech_invalid),

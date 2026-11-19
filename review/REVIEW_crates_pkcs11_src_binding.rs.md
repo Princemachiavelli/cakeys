@@ -14,6 +14,8 @@ comes from the same patch set (`nix/package-common.nix:81`) and its absence chan
 flow, not only names (`REVIEW_crates_pkcs11_src_token_mod.rs.md` F1), yet nothing pins it. Fix:
 add `assert!(!patched() || cfg!(feature = "rv-value"))` beside the existing assertion. [read]
 
+**Fixed (2026-11-18):** the assertion requires both `sign-after-init` and `rv-value` with the patched binding. Test: `the_patched_binding_comes_with_its_features`.
+
 ## Design
 
 - `patched()` infers "the Nix patch set is applied" from one of its patches (the HMAC

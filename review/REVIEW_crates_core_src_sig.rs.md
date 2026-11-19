@@ -20,12 +20,16 @@ word "not my kind" and "malformed key" the same way (see REVIEW pop.rs F3). Fix:
 `Result<(), VerifyError>` with a `Key(String)` / `Signature(String)` split, and update the
 module doc. [read]
 
+**Fixed (2026-11-18):** `None` now means only that the SPKI names another kind of key; a key of the function's own kind always gets `Some`, with `Refused::Key` or `Refused::Signature` saying why, and the module doc says so. Tests: `none_is_another_kind_and_a_refused_key_says_why`, `ecdsa_encodings_and_kinds`.
+
 ### F2. `ecdsa` re-parses the SPKI twice — nit
 
 `crates/core/src/sig.rs:68,85`. `KeyAlg::of_spki` parses the SPKI to pick the curve, then
 `PublicKey::from_public_key_der` parses it again. Harmless at these sizes; mentioned only
 because the same double parse is in `pop::ecdh_challenge` and `id::spki_canonical`, and a
 `KeyAlg` that carried the parsed `SubjectPublicKeyInfoRef` would remove all three. [read]
+
+**Fixed (2026-11-18):** `ecdsa` decodes the SPKI once: `KeyAlg::read_spki` returns the parsed info with the curve. Test: `ecdsa_encodings_and_kinds`.
 
 ## Design
 

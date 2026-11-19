@@ -16,9 +16,13 @@ the replacement silently does nothing. `downgrade_is_an_error` would then fail l
 `an_undeclared_mechanism_list_is_observed_policy` would also fail, but only on its stderr check.
 Editing through `toml::Value` (as `reference/lockfile.rs:95-134` does) is robust. [read]
 
+**Fixed (2026-11-18):** the lock is edited as `toml::Value` (`e.lock()` / `e.write_lock`), the field asserted before it is changed. Tests: `downgrade_is_an_error`, `an_undeclared_mechanism_list_is_observed_policy`.
+
 ### F2. Stale "the token is shared between runs" clean-up — nit
 
 `reference/drift.rs:200-206, 264-269`. See common/mod.rs F6. [read]
+
+**Fixed (2026-11-18):** the stale clean-up and its comments are gone (common/mod.rs F6's resolution). No test.
 
 ## Design
 

@@ -1,8 +1,14 @@
 # The README's coverage and mutation badges: `nix build .#coverage` on each push to main,
 # `nix build .#mutants` (hours on a runner) weekly, both on a manual run. Each is a report,
 # never a check (docs/DEVELOPMENT.md, "Testing"): scripts/badges.sh reduces it to a shields.io
-# endpoint file, pushed to the `badges` branch, which holds nothing else. A job that fails
+# endpoint file, pushed to the `badges` branch, which holds nothing else. A report that fails
 # leaves its badge as it was.
+#
+# Each report is two jobs, so the write token never sits beside repository code: the build
+# runs Nix and badges.sh with the read-only token and hands the badge file on as an artifact;
+# its publish job, the only one that may write, downloads that file and pushes it. The reports
+# do not wait for each other: coverage publishes without waiting hours for mutants, so a later
+# run's coverage is never overwritten by an older one published late.
 name: reports
 
 on:
@@ -16,20 +22,16 @@ permissions:
   contents: read
 
 jobs:
-  report:
-    strategy:
-      fail-fast: false
-      matrix:
-        report: ${{ github.event_name == 'push' && fromJSON('["coverage"]') || fromJSON('["coverage", "mutants"]') }}
+  coverage:
     # One run of each report at a time, the newest kept.
     concurrency:
-      group: ${{ github.workflow }}-${{ matrix.report }}
+      group: ${{ github.workflow }}-coverage
       cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 300
-    permissions:
-      contents: write
-    steps:
+    env:
+      REPORT: coverage
+    steps: &build
       # The runner image's toolchains the build never uses: room for the Nix store.
       - name: Free disk space
         run: |
@@ -46,14 +48,47 @@ jobs:
         with:
           use-flakehub: false
           diagnostic-endpoint: ""
-      - run: nix build -L --out-link result .#${{ matrix.report }}
-      - run: bash scripts/badges.sh ${{ matrix.report }} result > "$RUNNER_TEMP/badge.json"
-      # The branch is created by the first run. The other job may push between the fetch and
+      - run: nix build -L --out-link result ".#$REPORT"
+      - run: |
+          mkdir -p "$RUNNER_TEMP/badge"
+          bash scripts/badges.sh "$REPORT" result >"$RUNNER_TEMP/badge/$REPORT.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: badge-${{ env.REPORT }}
+          path: ${{ runner.temp }}/badge/${{ env.REPORT }}.json
+          if-no-files-found: error
+          retention-days: 1
+
+  mutants:
+    if: github.event_name != 'push'
+    concurrency:
+      group: ${{ github.workflow }}-mutants
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      REPORT: mutants
+    steps: *build
+
+  # No checkout and no Nix: nothing of the repository runs next to the write token.
+  publish-coverage:
+    needs: coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      REPORT: coverage
+    steps: &publish
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: badge-${{ env.REPORT }}
+          path: ${{ runner.temp }}/badge
+      # The branch is created by the first run. The other report may push between the fetch and
       # the push: fetch again and retry.
       - name: Push the badge
         env:
           TOKEN: ${{ github.token }}
-          REPORT: ${{ matrix.report }}
         run: |
           auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
           git init -q "$RUNNER_TEMP/badges"
@@ -68,7 +103,7 @@ jobs:
             else
               git checkout -q --orphan "first-$attempt"
             fi
-            cp "$RUNNER_TEMP/badge.json" "$REPORT.json"
+            cp "$RUNNER_TEMP/badge/$REPORT.json" "$REPORT.json"
             git add "$REPORT.json"
             git diff --cached --quiet && exit 0
             git commit -q -m "$REPORT badge for $GITHUB_SHA"
@@ -76,3 +111,13 @@ jobs:
             sleep $((attempt * 5))
           done
           exit 1
+
+  publish-mutants:
+    needs: mutants
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      REPORT: mutants
+    steps: *publish

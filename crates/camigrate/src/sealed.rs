@@ -352,7 +352,8 @@ fn rsa_aes_unwrap(
 /// after the import — material whose identity is not the locked one; `Conflict` (13) for an
 /// occupied locator or blobs the module finds invalid (tampered, or wrapped to another key);
 /// `Unsupported` (15) for an unwrap whose mechanism or template the target refuses, and
-/// `Unavailable` (16) for one the device or session fails ([`unwrap_failure`]); whatever
+/// `Unavailable` (16) for one the device or session fails, which some modules also say of a
+/// damaged blob ([`unwrap_failure`]); whatever
 /// `ops::lock_import` refuses.
 pub(crate) fn import(
     b: &Bundle,
@@ -610,7 +611,11 @@ enum UnwrapFailure {
     Tampered,
     /// The target refuses the mechanism, its parameters, the unwrapping key or the template (15).
     Refused,
-    /// Anything else: the device, the session, the login (16).
+    /// The module failed and says no more (`CKR_DEVICE_ERROR`, `CKR_GENERAL_ERROR`,
+    /// `CKR_FUNCTION_FAILED`): 16, said as what may be a damaged blob, since that is how some
+    /// modules report one (kryoptic, a tampered RFC 5649 blob \[run\]).
+    Opaque,
+    /// Anything else: the session, the login (16).
     Failed,
 }
 
@@ -645,6 +650,9 @@ fn unwrap_failure(e: &cryptoki::error::Error) -> UnwrapFailure {
         )
         // A mechanism this build cannot name (`CKM_RSA_AES_KEY_WRAP` without `kwp`).
         | CkError::NotSupported => UnwrapFailure::Refused,
+        CkError::Pkcs11(RvError::DeviceError | RvError::GeneralError | RvError::FunctionFailed, _) => {
+            UnwrapFailure::Opaque
+        }
         _ => UnwrapFailure::Failed,
     }
 }
@@ -658,6 +666,13 @@ fn unwrap_error(what: &str, e: &cryptoki::error::Error, unsupported: impl FnOnce
             KmError::Conflict(format!("{what}: {e} (the bundle was tampered with, or wrapped to another key)").into())
         }
         UnwrapFailure::Refused => unsupported(format!("{what}: {e}")),
+        UnwrapFailure::Opaque => KmError::Unavailable(
+            format!(
+                "{what}: {e} (the module says no more: some report a damaged or altered bundle this way, \
+                 so check that it is the one exported)"
+            )
+            .into(),
+        ),
         UnwrapFailure::Failed => KmError::Unavailable(format!("{what}: {e}").into()),
     }
     .with_rv(rv)
@@ -791,7 +806,9 @@ mod tests {
 
     /// A failed unwrap is 13 ("tampered with") only when the module says the blob is bad; a
     /// refused mechanism, parameter, unwrapping key or template is the target's 15, and the
-    /// device, session or login failing is 16. Each keeps the return value it came with.
+    /// device, session or login failing is 16. A module that fails and says no more is 16 said as
+    /// what may be a damaged bundle (kryoptic's `CKR_DEVICE_ERROR` for a tampered blob \[run\]),
+    /// never a PIN or session error. Each keeps the return value it came with.
     #[test]
     fn an_unwrap_failure_is_tampering_only_when_the_data_is_bad() {
         let unsupported = |m: String| KmError::Unsupported(m.into());
@@ -814,14 +831,17 @@ mod tests {
             (RvError::DeviceError, 16),
             (RvError::DeviceRemoved, 16),
             (RvError::GeneralError, 16),
+            (RvError::FunctionFailed, 16),
             (RvError::SessionHandleInvalid, 16),
             (RvError::UserNotLoggedIn, 16),
             (RvError::PinIncorrect, 16),
         ];
+        let opaque = [RvError::DeviceError, RvError::GeneralError, RvError::FunctionFailed];
         for (rv, code) in table {
             let e = unwrap_error("unwrapping the key", &CkError::Pkcs11(rv, Function::UnwrapKey), unsupported);
             assert_eq!(e.exit_code(), code, "{rv:?}: {e}");
             assert_eq!(e.to_string().contains("tampered"), code == 13, "{rv:?}: {e}");
+            assert_eq!(e.to_string().contains("damaged or altered bundle"), opaque.contains(&rv), "{rv:?}: {e}");
             assert_eq!(e.rv(), cakeys_pkcs11::token::rv_value(rv), "{rv:?}");
         }
         // A mechanism this build cannot name is the target's refusal, not a tampered bundle.

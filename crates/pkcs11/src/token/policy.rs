@@ -213,7 +213,9 @@ impl Token {
     /// A policy attribute as the spec writes it.
     fn attr_value(&self, h: ObjectHandle, name: &str) -> Result<Option<AttrValue>> {
         if name == "CKA_ALLOWED_MECHANISMS" {
-            return Ok(self.allowed_mechanisms(h)?.map(|m| AttrValue::mechanisms(m.into_iter().map(mechanism_namer()))));
+            return Ok(self
+                .allowed_mechanisms(h)?
+                .map(|m| AttrValue::mechanisms(m.into_iter().map(mechanism_namer()))));
         }
         let t = bool_attr(name, false).ok_or_else(|| unsupported_attr(name))?.attribute_type();
         Ok(self.flag(h, t)?.map(AttrValue::Bool))

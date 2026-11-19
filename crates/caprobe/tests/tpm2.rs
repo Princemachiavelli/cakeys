@@ -36,7 +36,7 @@ fn caps_names_the_provider_and_what_the_module_offers() {
 #[test]
 fn the_committed_profile_is_what_the_probe_observes() {
     let Some(w) = env("profile_conformance") else { return };
-    if !cryptoki_hmac_types_fixed(std::env::var("CAKEYS_TPM_REQUIRE").is_ok()) {
+    if !hmac_types_fixed("CAKEYS_TPM_REQUIRE") {
         return;
     }
     let (name, path) = ("tpm2-pkcs11/1.10+swtpm", "modules/tpm2-pkcs11/1.10+swtpm.toml");

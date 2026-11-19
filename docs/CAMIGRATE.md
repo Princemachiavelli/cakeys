@@ -54,7 +54,8 @@ differs from the lock; 11 a token, object or key not found; 12 an ambiguous name
 target refused (a bundle whose blobs it finds invalid, tampered or wrapped to another key; a
 failed proof of possession; an occupied locator or PIV slot); 14 the lock pins no IDs for the
 object; 15 an object cannot move as invoked, or the target lacks a capability (an unwrap
-mechanism or template it refuses included); 16 the module or device failed; 17 invalid input (keys.toml,
+mechanism or template it refuses included); 16 the module or device failed (an unwrap failed so is
+said as what may be a damaged bundle: kryoptic reports a tampered blob as `CKR_DEVICE_ERROR`); 17 invalid input (keys.toml,
 a transport file, a bundle, another key's IDs, a key file that does not open under the
 passphrase given: 10 is kept for material that differs from the lock); 21 a lock a writing run
 cannot write; 1 anything else (IO).

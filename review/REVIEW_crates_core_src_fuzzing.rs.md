@@ -14,6 +14,8 @@ docs beside the real modules. They must be reachable from the fuzz crate, which 
 `#[cfg(test)]`; `#[doc(hidden)]` on the module, or a `fuzzing` cargo feature the fuzz crate
 enables, would keep them out of the normal API. [read]
 
+**Fixed (2026-11-18):** `pub mod fuzzing` is compiled only under `cfg(test)`, `kani` or the `fuzzing` feature, which only fuzz/Cargo.toml enables. No test.
+
 ## Design
 
 None.

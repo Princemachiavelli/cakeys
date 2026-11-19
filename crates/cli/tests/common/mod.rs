@@ -1116,13 +1116,40 @@ impl xref::Env {
     }
 
     /// The references `names`, in that order, or `None` with a skip message naming them all
-    /// (review camigrate `dry_run.rs` F3: the same lookup and skip, written once per test).
+    /// (review camigrate `dry_run.rs` F3: the same lookup and skip, written once per test). A
+    /// missing one whose variable requires it ([`xref::require_var_of`]) fails instead, as
+    /// [`suite_var`] does: [`xref::env`] already fails then, but an [`Self::over`] or a test's own
+    /// set of references does not.
+    ///
+    /// # Panics
+    ///
+    /// When a missing reference is required, or no reference has one of `names`.
     pub fn needs<const N: usize>(&self, test: &str, names: [&str; N]) -> Option<[&xref::Ref; N]> {
+        self.needs_in(test, names, &|v| std::env::var_os(v).is_some()).unwrap_or_else(|e| panic!("{test}: {e}"))
+    }
+
+    /// [`Self::needs`] in the environment `set` says which variables are set in: `Err` for a
+    /// required reference missing.
+    pub fn needs_in<const N: usize>(
+        &self,
+        test: &str,
+        names: [&str; N],
+        set: &dyn Fn(&str) -> bool,
+    ) -> Result<Option<[&xref::Ref; N]>, String> {
         let found = names.map(|n| self.refs.iter().find(|r| r.name == n));
+        let missing = names.iter().zip(&found).filter(|(_, r)| r.is_none()).map(|(n, _)| *n);
+        let required: Vec<String> = missing
+            .map(|n| (n, xref::require_var_of(n)))
+            .filter(|(_, var)| set(var))
+            .map(|(n, var)| format!("{n} ({var} is set)"))
+            .collect();
+        if !required.is_empty() {
+            return Err(format!("needs the references {}, required but not set up", required.join(", ")));
+        }
         if found.iter().any(Option::is_none) {
             eprintln!("skipping {test}: needs the {} references", names.join(" and "));
-            return None;
+            return Ok(None);
         }
-        Some(found.map(Option::unwrap))
+        Ok(Some(found.map(Option::unwrap)))
     }
 }

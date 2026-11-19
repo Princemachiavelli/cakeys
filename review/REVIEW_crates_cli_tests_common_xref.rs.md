@@ -32,10 +32,14 @@ kryoptic enables WAL was not checked. With the default rollback journal, commits
 file and the comparison holds. Fix: include any `-wal`/`-journal` sibling in the hash, or force a
 checkpoint (`PRAGMA wal_checkpoint`) before reading. [read]
 
+**Decided (2026-11-18):** withdrawn in verification. The pinned kryoptic (1.5.4) keeps SQLite's default rollback journal (no WAL), so every commit reaches the main file the twin hashes, and each run has exited before it is read.
+
 ### F3. `module` duplicates `suite_var`, and `km_in_nix_build` duplicates `run_once` — complexity
 
 `common/xref.rs:39-43` is `common/mod.rs:49-56` without the message; `:99-117` is `:182-202` with
 two environment changes. See common/mod.rs F5 for the shared runner. [read]
+
+**Fixed (2026-11-18):** D9: one `Suite` type replaces each suite's `Env`, `suite_var`/`required_var` are the only skip gates, one `Run` builder starts every tool run, and `ptool`/`ptool_in`/`tpm2_store` and `swap_private_key` replace the copies. Here `module` is gone (the references are read through `required_var`), and `km_in_nix_build` runs through `run_once`. Test: `the_harness_helpers_are_written_once`.
 
 ## Design
 

@@ -1,5 +1,6 @@
-//! A capability profile through caprobe's emitter: what the parser reads emits a text that reads
-//! back as the same profile and emits to the same text.
+//! A capability profile through caprobe's emitter: every row key in the text is the key its
+//! capability writes back, and what the parser reads emits a text that reads back as the same
+//! profile and emits to the same text.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

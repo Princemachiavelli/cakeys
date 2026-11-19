@@ -19,10 +19,14 @@ skip and pass. Kryoptic is the reference that exercises `hmac_key_gen` (`:412-41
 sets both variables, so CI is unaffected today. Fix: `cryptoki_hmac_types_fixed(std::env::var(REF.require_var).is_ok())`,
 as `caprobe/tests/reference.rs:18` does. [read]
 
+**Fixed (2026-11-18):** the test asks `hmac_types_fixed(REF.require_var)`, the running binary's own require variable. Test: `no_opted_in_suite_skips_an_unpatched_build`.
+
 ### F2. Five copies of the HMAC oracle — nit
 
 `reference/identity.rs:381-407` repeats the same three lines per hash. A generic
 `fn hmac<D: ..>(key, label)`, or one macro arm per type, would leave one line each. [read]
+
+**Fixed (2026-11-18):** one `mac!` macro, one line per hash. Test: `hmac_key_types_commit_with_their_own_hash`.
 
 ## Design
 

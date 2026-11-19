@@ -54,6 +54,16 @@ this build cannot name) is `Token::unsupported` (15); anything else (device, ses
 16. Each carries its return value. CAMIGRATE.md's exit codes say so. Test:
 `an_unwrap_failure_is_tampering_only_when_the_data_is_bad`.
 
+**Fixed (2026-11-18), kept and finished:** the rule stays. A module that fails and says no more
+(`CKR_DEVICE_ERROR`, `CKR_GENERAL_ERROR`, `CKR_FUNCTION_FAILED`: `UnwrapFailure::Opaque`) is 16
+said as what may be a damaged or altered bundle, since kryoptic reports a tampered RFC 5649 blob
+that way [run]. A PIN or session error does not say so. The dry-run twin (`xref::Env::run`)
+accepts that 16 after a dry run that passed, and the token tests expect it per module: 16 on
+kryoptic, 13 where the module says the data is bad. Tests:
+`an_unwrap_failure_is_tampering_only_when_the_data_is_bad` (the hint on exactly the opaque
+values), `bundles_are_checked_against_the_lock` (`tampered_unwrap`), and
+`a_move_the_module_fails_is_refused_and_undone` (`unwrap-key` 16, `unwrap-bad` 13) [run].
+
 ### F3. A bundle's `source.token` goes into the lock unchecked — nit
 
 `crates/camigrate/src/sealed.rs:379-381`, `:370`. The provenance `from` is whatever string the

@@ -22,6 +22,8 @@ while `check` reads a public key object exits 13 (a wrong-material verdict) inst
 `Unavailable`. Fix: return `Result<Option<Vec<u8>>>` and let `Unavailable` propagate; keep
 `None` for "readable but no material in a form cakeys reads" (`Unsupported`). [read]
 
+**Fixed (2026-11-18):** `held_spki` returns `Result<Option<_>>` and passes an `Unavailable` read on (16); `None` is kept for a key cakeys does not read. Test: `a_failed_attribute_read_is_never_an_answer` (cli tests/fault.rs).
+
 ### F2. The same SPKI is computed up to four times per resolve — complexity
 
 `crates/pkcs11/src/token/identity.rs:49`, `:176`, and `crates/pkcs11/src/ops.rs:384`, `:425`.

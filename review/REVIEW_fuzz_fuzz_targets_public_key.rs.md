@@ -14,6 +14,8 @@ that read token output.
 `Curve::ALL`.
 [read]
 
+**Fixed (2026-11-18):** the target iterates `Curve::ALL`. No test: the fuzz crate builds (`cargo check --manifest-path fuzz/Cargo.toml`).
+
 ## Design
 
 - The property is idempotence only; it does not check that the SPKI from

@@ -40,6 +40,12 @@ fault to another step. The `fired == 1` and message assertions catch that loudly
 maintenance cost, not a hole; a comment on each case naming which calls come before it (as
 `:123-124` does for unwrap) would make the next fix quicker. [read]
 
+**Fixed (2026-11-18):** each numbered case says which calls come before it, read from the
+trace: `C_WrapKey` is asked the length first, so 1 and 2 wrap the KEK and 3 starts the key's
+wrap; the transport key's two proofs make `C_UnwrapKey` 1 and 2 and `C_Sign` 1 to 4, so `kk`'s
+proof signs at 6 (also the `kept` case). The unwrap cases now expect 16 for a module failure
+and add `unwrap-bad` (13, `CKR_WRAPPED_KEY_INVALID`) for sealed.rs F2.
+
 ### F4. Workdir setup duplicated a third time — complexity
 
 `crates/camigrate/tests/fault.rs:24-27` repeats `test_dir` + `remove_dir_all` + `create_dir_all` +

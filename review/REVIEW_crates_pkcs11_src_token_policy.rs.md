@@ -22,6 +22,8 @@ certificate; the token's certificate is not trusted (or is modifiable when the s
 policy, so the declaration is decorative. Fix: return `self.check_policy(h, spec)` after the
 type test, as the data branch does. [read]
 
+**Fixed (2026-11-18):** an X.509 certificate goes on to `check_policy`, as data objects and keys do. Test: `a_certificates_declared_attributes_are_checked` (cli reference/adoption.rs).
+
 ### F2. `check_public_half` skips the "same key" test when either SPKI is unreadable — nit
 
 `crates/pkcs11/src/token/policy.rs:246-250`. `if let (Some(a), Some(b))` treats an unreadable

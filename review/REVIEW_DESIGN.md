@@ -277,7 +277,12 @@ as refused by both.
   copies clear different environment variables, and none passes `--lock` or clears
   `CAKEYS_LOCK`. A developer with `CAKEYS_LOCK` exported has test realisations written into
   their real lock. (**Fixed** before this pass, the lock half: `tool()` removes `SCRUBBED`,
-  `no_test_run_sees_a_real_keys_toml_or_lock`; the copies themselves remain.)
+  `no_test_run_sees_a_real_keys_toml_or_lock`; the copies themselves remain.) **Fixed
+  (2026-11-18), the copies:** one `Suite` (the suites' `Env`s), `suite_var`/`required_var` the
+  only skip gates, one `Run` builder for every tool run (bounded runs read the pipes as the child
+  writes), one `ptool`/`tpm2_store`, one `swap_private_key` for the five swap setups, and the
+  curve constants; the hardware opt-ins gained `CAKEYS_FTPM_REQUIRE` and
+  `CAKEYS_YUBIKEY_REQUIRE`. `the_harness_helpers_are_written_once` fails on a second copy.
 - The fault suite relies on the trace to show that a rule fired. Two confirmed gaps weaken
   that signal: `use_label` reports a hit when its label matches nothing, and slot and token
   flag names share bit values, so a rule can set a different flag from the one it names.

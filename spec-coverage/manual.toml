@@ -828,12 +828,6 @@ reason = "matched by name (crates/pkcs11/src/token/possession.rs, generate.rs; c
 
 [[rule]]
 table = "return-values"
-match = "CKR_USER_ALREADY_LOGGED_IN"
-status = "gap"
-reason = "matched by name (crates/pkcs11/src/token/mod.rs), met by no test"
-
-[[rule]]
-table = "return-values"
 match = "CKR_WRAPPED_KEY_*"
 status = "gap"
 reason = "matched by name (crates/pkcs11/src/token/possession.rs), met by no test"

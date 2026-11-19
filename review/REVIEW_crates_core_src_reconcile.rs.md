@@ -34,6 +34,8 @@ only when `prev.object == t.object_name`; or decide explicitly that a (spec, tok
 weakens and say so in DESIGN.md, with messages that do not tell the user to rename what they
 already renamed. [read]
 
+**Fixed (2026-11-18):** `compare` runs `no_downgrade` only when the lock's realisation records the same object (`prev.object == t.object_name`); a retargeted spec is a keys.toml change that a write re-records with a note. Test: `a_retargeted_spec_is_judged_as_its_new_object`.
+
 ### F2. `record_object` overwrites a differing `commitmentLabel` — nit
 
 `crates/core/src/reconcile.rs:453-458`. The doc comments (`:445`, `:483-484`) say `record` only
@@ -43,6 +45,8 @@ the only producer (`pkcs11::ops::compute_ids`) takes the label from the lock
 (`reconcile::commitment_label`), and a different label would have failed `compare_ids` first.
 Fix: set it only when `entry.commitment_label.is_none()`, or refuse a change; the unit test
 `the_recorded_label_is_the_label_used` (`:1066`) pins the overwrite and would change with it. [read]
+
+**Fixed (2026-11-18):** `record_object` sets `commitmentLabel` only when the entry has none. Test: `the_recorded_label_is_the_label_used`.
 
 ## Design
 

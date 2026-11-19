@@ -19,7 +19,7 @@ reads: then `check_attestation` and `plan_templates` are skipped without a note,
 `attestation = true` spec passes `validate` to be refused only when the token opens. Fix: push
 a note when the lookup returns `None`. [read]
 
-**Fixed (2026-11-18):** a provider name no registry entry carries is a note ("provider '<p>' is
+**Fixed (2026-11-18):** a provider name no registry entry carries is a note ("provider '`<p>`' is
 not in this build: its attestation and templates are checked only when the token opens"), never
 a silent skip. Test: `a_provider_this_build_lacks_is_said`.
 

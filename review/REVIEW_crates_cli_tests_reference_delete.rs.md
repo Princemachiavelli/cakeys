@@ -19,6 +19,8 @@ of the lock, would pass. [read]
 docs/CAKEYS.md (the `delete` row) names `delete_removes_only_what_it_identified`. The test is
 `a_foreign_public_key_conflicts_and_is_never_deleted` (`reference/delete.rs:153`). [read]
 
+**Fixed (2026-11-18):** docs/CAKEYS.md names `a_foreign_public_key_conflicts_and_is_never_deleted`. Test: `a_foreign_public_key_conflicts_and_is_never_deleted`.
+
 ### F3. `ec_lifecycle` does not check the token after `delete` — nit
 
 `reference/delete.rs:55-57` infers removal from `verify` → 11. It does not check that the public

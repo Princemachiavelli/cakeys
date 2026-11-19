@@ -13,6 +13,8 @@ path, so it only writes the fixtures in place when run from the repository root.
 that a rerun replaces every key (all random), which changes what the profiles' import rows were
 measured with. [read]
 
+**Fixed (2026-11-18):** the header says to run it from the repository root, and that a rerun replaces every key and with them every committed profile's import rows.
+
 ## Design
 
 None.

@@ -24,7 +24,9 @@ The OS is NixOS: there is no system `cargo`, `python3` or `perl`.
   The jobs run Determinate Nix (determinate-nix-action, pinned) with the Magic Nix Cache.
   `.github/workflows/reports.yml` builds `packages.coverage` on each push to `main` and
   `packages.mutants` weekly (both on a manual run), and pushes each one's number (`scripts/badges.sh`: lines covered; mutants
-  caught of the viable ones) to the `badges` branch, which the README's badges read.
+  caught of the viable ones) to the `badges` branch, which the README's badges read. The
+  builds run with a read-only token; only a separate publish job per report, which runs no
+  repository code, may push.
 - The token suites (SoftHSM, kryoptic, p11-kit, swtpm) run only in the Nix build's check phase
   and `scripts/local-tests.sh`; under plain `cargo test` they skip. Run with tokens configured
   but in one process (plain `cargo test`), they share one token set and do not pass: the token
@@ -136,6 +138,16 @@ on. These rules have no exceptions; if a task cannot be done within them, stop a
 opt-in, as is the real-TPM attestation test (`CAKEYS_FTPM_ATTEST=1`, through
 `nix/ftpm-test-env.sh`). `packages.test-nspawn` needs the `uid-range` feature, so it is outside
 `checks`.
+
+A suite whose token is missing skips, unless its `*_REQUIRE` variable is set: then it fails.
+The software tokens' are `CAKEYS_TEST_REQUIRE` (SoftHSM), `CAKEYS_KRYOPTIC_REQUIRE`,
+`CAKEYS_P11KIT_REQUIRE`, `CAKEYS_TPM_REQUIRE` (swtpm) and `CAKEYS_FAULT_REQUIRE`; the Nix builds
+and `scripts/local-tests.sh` set them all. The hardware suites' are `CAKEYS_YUBIKEY_REQUIRE`
+(with `CAKEYS_TEST_YUBIKEY_PIN` and `_MGM`) and `CAKEYS_FTPM_REQUIRE` (with
+`CAKEYS_FTPM_MODULE` and `CAKEYS_FTPM_PROFILE`): a suite's opt-in variables are set all
+together or not at all, and its require variable without them fails rather than passing having
+run nothing. `scripts/coverage-full.sh` sets each beside the suite's variables, and only for that
+suite's pass.
 
 ## Verification beyond tests
 

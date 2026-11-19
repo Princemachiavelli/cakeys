@@ -513,7 +513,7 @@ fn a_refused_curve_is_tried_by_name_only_where_the_profile_says_so() {
 
 /// What the lock recorded of a token decides at open, as in `validate` (ISSUES.md B18): a curve
 /// an earlier run generated only by name is tried by name again, whatever the shipped profile
-/// says, and `create` records `via = "by-name"` for the key it made so. SoftHSM's profile has a
+/// says, and `create` records `via = "by-name"` for the key it made so. The `SoftHSM` profile has a
 /// plain yes for edwards25519; the shim refuses the first generation, by OID.
 #[test]
 fn a_curve_the_lock_records_by_name_is_tried_by_name() {

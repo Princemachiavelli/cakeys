@@ -15,6 +15,8 @@ abort, not an error with exit 17). Unlikely in a Nix store path, possible in a h
 Use `entry.file_type()` (does not follow) or track canonical paths.
 [read]
 
+**Fixed (2026-11-18):** `collect` reads each real directory once, so a link to an ancestor ends and a second link to a directory already read loads nothing twice. Test: `a_symlink_loop_in_a_directory_ends`.
+
 ### F2. A baseline added from a directory is accepted and then never used — practice
 
 `crates/profile/src/lib.rs:95-100` and `:178-180`. `with_dir` (caprobe's `--profiles`) pushes a
@@ -23,6 +25,8 @@ directory's baseline after the embedded one, but `baseline()` always returns the
 embedded one. The doc says selection "comes with phase 2". Either refuse a baseline in `with_dir`
 as `adding_dir` does, or let a loaded baseline replace by name.
 [read]
+
+**Fixed (2026-11-18):** a directory's baseline replaces the loaded one of its name and is the one answered with; one of another name is refused. Test: `a_directory_baseline_is_used_or_refused`.
 
 ## Design
 

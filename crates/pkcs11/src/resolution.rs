@@ -666,7 +666,14 @@ mod tests {
         let ls2 = TokenInfo { model: "LS2".into(), serial: "s".into(), firmware: "10.23".into() };
         let kms = TokenInfo { model: "Cloud KMS Token".into(), serial: "s".into(), firmware: "0.0".into() };
         for (manufacturer, version, provider, token, chosen, other) in [
-            ("CloudHSM", "5.18", "aws-cloudhsm", &ls2, "aws-cloudhsm/5.18+hsm2m-fips", "aws-cloudhsm/5.18+hsm2m-non-fips"),
+            (
+                "CloudHSM",
+                "5.18",
+                "aws-cloudhsm",
+                &ls2,
+                "aws-cloudhsm/5.18+hsm2m-fips",
+                "aws-cloudhsm/5.18+hsm2m-non-fips",
+            ),
             ("Google", "1.9", "kmsp11", &kms, "kmsp11/1.9+hsm-fips", "kmsp11/1.9+hsm"),
         ] {
             let r = resolve(&cfg(None, &[]), &module(manufacturer, version), Some(token), provider).unwrap();

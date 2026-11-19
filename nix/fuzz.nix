@@ -81,8 +81,9 @@ let
     done
   '';
 in
-assert lib.assertMsg (unlisted == [ ])
-  "fuzz/fuzz_targets/ has files no [[bin]] in fuzz/Cargo.toml names: ${toString unlisted}";
+assert lib.assertMsg (
+  unlisted == [ ]
+) "fuzz/fuzz_targets/ has files no [[bin]] in fuzz/Cargo.toml names: ${toString unlisted}";
 {
   inherit targets;
 

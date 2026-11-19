@@ -17,6 +17,8 @@ means anything merged runs next to a write-scoped token. Split into a `build` jo
 (`contents: read`) that uploads `badge.json` as an artifact and a small `publish` job
 (`contents: write`) that only downloads and pushes. [read]
 
+**Fixed (2026-11-18):** a build job and a publish job per report. `coverage` and `mutants` (the latter not on push) run Nix and badges.sh under the workflow's read-only token and upload `<report>.json` as the artifact `badge-<report>`. `publish-coverage` and `publish-mutants` (`contents: write`, each `needs` only its own build) have no checkout and no Nix: they download that one artifact and push it with the same fetch-and-retry loop. Coverage does not wait hours for mutants, so a scheduled run cannot publish its coverage after a newer push's. The steps are shared through YAML anchors. upload-artifact v7.0.2 and download-artifact v8.0.2 are pinned by commit. Checked with actionlint (with shellcheck); a workflow has no test here.
+
 ## Design
 
 - A badge job that fails leaves the old badge in place (stated in the header): the README can
