@@ -193,21 +193,19 @@ behaviour or reach outside PKCS#11:
 | kmsp11 | keys bound to one Cloud KMS algorithm: `generation` chooses it from the spec (kind and size, `CKA_SIGN` or `CKA_DECRYPT`, `CKA_ALLOWED_MECHANISMS`) under a `CKA_LABEL`-only locator, and refuses what cakeys could not prove (`pop-decrypt`, PSS with `pop-sign`, AES, `CKK_GENERIC_SECRET`); `bound_keys` gives the probe one key per algorithm |
 | kryoptic (data) | none to fix (PKCS#11 3.2 reference): Edwards `CKA_EC_POINT` raw (DER with `KRYOPTIC_EC_POINT_ENCODING=DER`; same identity); private keys carry their own `CKA_PUBLIC_KEY_INFO`, so a swapped key is refused (13) by the cross-check before the proof of possession; library version 0.0 in `C_GetInfo`; no secp256k1 or brainpool generation (15); attests nothing |
 | ykcs11 | `CKA_PUBLIC_KEY_INFO` length 0 then `CKR_ARGUMENTS_BAD` (tolerated generically); fixed PIV slot IDs and labels: `create` needs a locator of `CKA_ID` alone naming a key slot (`01`–`04`: 9a/9c/9d/9e, `05`–`18`: 82–95; 17 otherwise) and `soCredentialFile`/`soCredentialEnv` (the management key in hex, or the PIN on a PIN-protected-management-key device), since ykcs11 generates only as SO; **keys cannot be deleted** — `C_DestroyObject` clears only the slot's certificate and the key stays, so `delete` (and the cleanup after a failed `lock`) refuses (15), naming `ykman piv keys delete <slot>`; the `piv-attestation` commitment: per-slot attestation certificates found by their label/`CKA_ID`, chain-verified to the embedded Yubico roots (`roots/`, DESIGN §3.7) |
-| tpm2-pkcs11 | drops `AES_KEY_GEN`/`GENERIC_SECRET_KEY_GEN` (`C_GenerateKey` unsupported); repairs the malformed P-521 `CKA_EC_POINT` (`04 85 …`; upstream draft in `upstream/tpm2-pkcs11/`) — `tpm2_*` tests; the `tpm-certify` commitment: a native `TPM2_Certify` through tss-esapi and the module's sqlite store (DESIGN §3.7) |
+| tpm2-pkcs11 | drops `AES_KEY_GEN`/`GENERIC_SECRET_KEY_GEN` (`C_GenerateKey` unsupported); repairs the malformed P-521 `CKA_EC_POINT` (`04 85 …`; upstream draft in `upstream/tpm2-pkcs11/`) — `tpm2_*` tests; the `tpm-certify` commitment: `TPM2_Certify` through the module's `CKM_TPM2_CERTIFY` vendor mechanism where it has one, else a native one through tss-esapi and the module's sqlite store (DESIGN §3.7) |
 | p11-kit | detects the proxy; the RPC drops AES key wrap and EdDSA/Edwards mechanisms; the module behind it is hidden (set `provider` explicitly) — `p11kit_*` tests; attests nothing itself (what the proxied module exposes decides, but the provider name does not reach it: opt in only against the real module) |
 
 ## cryptoki patches
 
-The Nix build patches cryptoki 0.12.1 in `postPatch` (`nix/package-common.nix` lists them, both
-the regular and the crane build apply them):
+The Nix build patches cryptoki (main at a pinned rev, below) in the vendored copy
+(`nix/package-common.nix` lists them, both the regular and the crane build apply them):
 
 - `cryptoki-hmac-key-types.patch`: cryptoki gives `KeyType::SHA224/384/512_HMAC` the value of
   `CKK_SHA256_HMAC`. Without it those types are refused (`hmac_key_type`), and the binding layer
   subtracts them.
 - `cryptoki-aes-key-wrap-kwp.patch`: `CKM_AES_KEY_WRAP_KWP` (kryoptic's RFC 5649 ID).
 - `cryptoki-rsa-aes-key-wrap.patch`: `CKM_RSA_AES_KEY_WRAP` and its parameters (`enforced` moves).
-- `cryptoki-sign-after-init.patch`: a single-part `C_Sign` in an operation `C_SignInit` started,
-  for a `CKA_ALWAYS_AUTHENTICATE` key's per-use login.
 - `cryptoki-allowed-mechanisms-unnamed.patch`: a `CKA_ALLOWED_MECHANISMS` entry cryptoki has no
   name for kept as its value.
 - `upstream/rust-cryptoki/0003-Add-RvError-to-CK_RV-and-its-name.patch`, the upstream draft
@@ -216,13 +214,20 @@ the regular and the crane build apply them):
 
 What only the patched cryptoki compiles sits behind features the Nix build turns on together,
 as each tool's one `patched-cryptoki` feature: camigrate's and caprobe's `kwp` (the two wrap
-mechanisms), `cakeys-pkcs11/sign-after-init` and `cakeys-pkcs11/rv-value`. A plain cargo build
-plans without the wraps, refuses a per-use-login proof, and names a failure without carrying its
-value. caprobe refuses to write or diff a profile without all of them, since each changes rows,
-the tests of `cakeys-pkcs11` and caprobe fail when the patched binding is linked without
-them, and `every_tool_turns_on_what_the_patched_binding_makes_possible` holds each tool's
-feature to its parts. Upstream drafts:
-`upstream/rust-cryptoki/`.
+mechanisms) and `cakeys-pkcs11/rv-value`. A plain cargo build plans without the wraps and names
+a failure without carrying its value. caprobe refuses to write or diff a profile without all of
+them, since each changes rows, the tests of `cakeys-pkcs11` and caprobe fail when the patched
+binding is linked without them, and `every_tool_turns_on_what_the_patched_binding_makes_possible`
+holds each tool's feature to its parts. Upstream drafts: `upstream/rust-cryptoki/`.
+
+The cryptoki underneath is not a release but parallaxsecond/rust-cryptoki's main at a pinned rev
+(`Cargo.toml`, a git source for `cryptoki` and `cryptoki-sys`, one rev for both), because main has
+what 0.12.1 lacks: vendor mechanisms kept in `C_GetMechanismList` (6cc2278: tpm2-pkcs11's
+`CKM_TPM2_*` reach the provider) and the single-part `Session::sign_single` (d1b283e), which a
+`CKA_ALWAYS_AUTHENTICATE` key's per-use login needs after `C_SignInit`. The patches above are on
+that rev (crane patches its git checkout, `nix/package-crane.nix`; `scripts/local-tests.sh` patches
+a copy of cargo's). Moving the rev is a change to `Cargo.toml` and both lock files; a patch main
+has taken is dropped. When a release has all of it, the dependency goes back to the version.
 
 ## Dependencies
 

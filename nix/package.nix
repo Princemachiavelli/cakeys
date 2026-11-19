@@ -16,7 +16,12 @@ in
 rustPlatform.buildRustPackage (
   common.args
   // {
-    cargoLock.lockFile = ../Cargo.lock;
+    # cryptoki is a git source at a pinned rev (Cargo.toml): fetched by builtins.fetchGit, so no
+    # output hash goes stale when the rev moves.
+    cargoLock = {
+      lockFile = ../Cargo.lock;
+      allowBuiltinFetchGit = true;
+    };
 
     # The cryptoki patches (nix/package-common.nix), on the vendored copy.
     postPatch = ''

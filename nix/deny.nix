@@ -72,14 +72,11 @@ in
         export CARGO_HOME=$PWD/.cargo-home
         mkdir -p $CARGO_HOME
 
-        # cargo metadata offline: the vendored crates in place of crates.io.
-        cat >$CARGO_HOME/config.toml <<EOF
-        [source.crates-io]
-        replace-with = "vendored-sources"
-
-        [source.vendored-sources]
-        directory = "${cargoDeps}"
-        EOF
+        # cargo metadata offline: the vendored crates in place of crates.io, and of the git
+        # source of cryptoki (Cargo.toml). The vendor directory's own config names both, with
+        # its directory relative; it is made absolute.
+        sed 's|directory = "cargo-vendor-dir"|directory = "${cargoDeps}"|' \
+          ${cargoDeps}/.cargo/config.toml >$CARGO_HOME/config.toml
 
         ${install-db}
 

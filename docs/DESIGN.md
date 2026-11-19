@@ -241,11 +241,10 @@ key to its identity:
      On a key the token reports `CKA_ALWAYS_AUTHENTICATE` (declared or not), the same proof runs
      under the key's per-use policy and is recorded as **`pop-sign-pin`**:
      `C_SignInit → C_Login(CKU_CONTEXT_SPECIFIC) → C_Sign`, once, with the PIN that opened the
-     session, never retried. The single-part `C_Sign` after `C_SignInit` is a cryptoki patch
-     (`nix/patches/cryptoki-sign-after-init.patch`, the `sign-after-init` feature); every
-     signing mechanism offers it. A build without the patch has no point for the login, so the
-     proof is refused (15), and so is a move planned onto such a key (camigrate asks the same
-     check, `proof_refusal`). The other proofs have no per-use login: a spec declaring
+     session, never retried. The single-part `C_Sign` after `C_SignInit` is cryptoki's
+     `Session::sign_single` (main, unreleased in 0.12.1); every signing mechanism offers it. A
+     move planned onto such a key asks the same check as the proof (camigrate,
+     `proof_refusal`). The other proofs have no per-use login: a spec declaring
      `CKA_ALWAYS_AUTHENTICATE` with them is invalid (17), and a key the token reports so
      undeclared is unavailable (16).
    - `pop-ecdh` (EC keys that only derive): the host generates an ephemeral key on the same curve
@@ -331,7 +330,7 @@ content-addressed identity — one per token type that can produce it:
 | Scheme | Token | Evidence | Anchor pinned in the lock |
 |---|---|---|---|
 | `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen`; under `check`, every certificate also within its validity period (the system clock, `--at`, or `--ignore-validity`), while every other verb only warns about a chain out of its dates. Yubico attests only keys generated on device; ykcs11 mints the certificate when it lists the slot, with no login | the Yubico root's SPKI |
-| `tpm-certify` | tpm2-pkcs11 tokens | a native `TPM2_Certify` (tss-esapi) over the object's Name with a fresh random nonce, host-verified; the object's TPM blobs are read (read-only) from the module's own store — `options.tpm2Store`, else found as the module finds it — and loaded under the token's primary over the module's TCTI (`options.tcti`, else `$TPM2_PKCS11_TCTI`, `$TPM2TOOLS_TCTI`, `$TCTI`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the EK certificate's root, when one verifies and the AK activates a credential with that EK (§3.7); else the Attestation Key's SPKI |
+| `tpm-certify` | tpm2-pkcs11 tokens | a `TPM2_Certify` over the object's Name with a fresh random nonce, host-verified. A module with the vendor mechanism `CKM_TPM2_CERTIFY` (upstream/tpm2-pkcs11/) runs it itself (`C_Sign` on the object; the signer is a persistent AK by handle, or with `options.akLabel` a token object through `CKM_TPM2_CERTIFY_OBJECT`, which needs no TCTI or store); the object's public area is its `CKA_TPM2_PUB_BLOB`, whose Name the statement must carry. Any other module is attested natively (tss-esapi) as follows: the object's TPM blobs are read (read-only) from the module's own store — `options.tpm2Store`, else found as the module finds it — and loaded under the token's primary over the module's TCTI (`options.tcti`, else `$TPM2_PKCS11_TCTI`, `$TPM2TOOLS_TCTI`, `$TCTI`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the EK certificate's root, when one verifies and the AK activates a credential with that EK (§3.7); else the Attestation Key's SPKI |
 
 - **The commitment hashes asserted content, never signed bytes.** A PIV certificate is minted
   per session with a random serial and a randomized ECDSA signature; a `TPMS_ATTEST` carries a
@@ -389,7 +388,14 @@ content-addressed identity — one per token type that can produce it:
   cakeys' template (restricted sign-only P-256, fixedTPM, empty policy) — anything else is a
   conflict (13), since an unrestricted key there could sign a forged attestation. The handle
   defaults to `0x81000016` (cakeys-tpm2-pkcs11 `DEFAULT_AK_HANDLE`), configurable per token
-  (`options.akHandle`, `0x`-prefixed, owner persistent range).
+  (`options.akHandle`, `0x`-prefixed, owner persistent range). With `options.akLabel` the AK is
+  instead a private key object of the token (a restricted P-256 key the module makes and never
+  releases), found by that label and checked to be restricted and fixed to the TPM and its parent;
+  `lock` makes it, reads never do. Its `qualifiedSigner` is not checked: it is `H(QN(primary) ‖ Name(AK))`, and
+  the host does not have the Name of the module's primary without the TPM or the store, so the
+  signature under the pinned key is what identifies the signer (for the persistent AK, a primary
+  of the owner hierarchy, it is `H(0x40000001 ‖ Name)`, and the host compares it with what the TPM reads). Trust in it is TOFU through the pinned
+  `root`, unless the next paragraph's EK → AK activation chains it to the manufacturer.
 - **EK → AK activation** (review D5). With an Endorsement Key certificate, the AK is proven to
   reside in a TPM its manufacturer certified, on every attestation. The certificate is
   `options.ekCertificate` (a PEM file, leaf then intermediates), else the one the TPM keeps in

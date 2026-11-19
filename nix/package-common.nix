@@ -42,29 +42,33 @@ let
   # through pkcs11-provider, which reads `check --format pkcs11-provider-pem`'s key file,
   # deadlocks in C_Login.
   softhsmForTests = callPackage ./softhsm-unwrap-value-len.nix { inherit softhsm; };
+  # nixpkgs' tpm2-pkcs11 with upstream/tpm2-pkcs11/'s vendor-mechanism patches, the module the
+  # provider's vendor path is tested with; nixpkgs' own tests the store path.
+  tpm2VendorModule = callPackage ./tpm2-pkcs11-vendor.nix { inherit tpm2-pkcs11; };
 in
 {
-  # cryptoki 0.12.1 (and main) gives KeyType::SHA224/384/512_HMAC the value of CKK_SHA256_HMAC, so those key
-  # types can be neither created nor told apart. Minimal local fix until upstream has one
+  # cryptoki is parallaxsecond/rust-cryptoki's main at the rev in Cargo.toml (the crate is 0.12.0
+  # there; main has the vendor mechanisms in C_GetMechanismList, 6cc2278, and the single-part
+  # Session::sign_single, d1b283e, which 0.12.1 lacks), with these patches on it. Main and 0.12.1
+  # alike give KeyType::SHA224/384/512_HMAC the value of CKK_SHA256_HMAC, so those key types can be
+  # neither created nor told apart. Minimal local fix until upstream has one
   # (upstream/rust-cryptoki/). Without it, cakeys refuses those key types. It also has no
   # CKM_AES_KEY_WRAP_KWP (RFC 5649 under its PKCS#11 3.0 ID, which kryoptic offers): the second
   # patch adds it for export and import (docs/CAMIGRATE.md). The third adds CKM_RSA_AES_KEY_WRAP (RSA-OAEP
   # of a fresh AES key, then RFC 5649 under it), the one wrap of a CKA_WRAP_WITH_TRUSTED key whose
   # only trusted key is the transport key (docs/CAMIGRATE.md D2, `enforced`). Both constants and the
-  # parameter struct are already in cryptoki-sys. The fourth adds a single-part C_Sign in an
-  # operation C_SignInit started (Session::sign_initialized), for the context-specific login a
-  # CKA_ALWAYS_AUTHENTICATE key needs between the two (docs/DESIGN.md §3.6). The fifth keeps a
-  # CKA_ALLOWED_MECHANISMS entry cryptoki has no name for (385 of the 3.2 mechanisms, and every
-  # vendor one) as its value, where 0.12.1 refused the whole attribute (docs/OPEN.md). The sixth
-  # is the upstream draft itself, not a local copy: an RvError converts back to its CK_RV and
-  # names its CKR_* constant (upstream/rust-cryptoki/PR-RV-VALUE.md).
+  # parameter struct are already in cryptoki-sys. The fourth keeps a CKA_ALLOWED_MECHANISMS entry
+  # cryptoki has no name for (385 of the 3.2 mechanisms; a vendor one main keeps already) as its
+  # value, where main refuses the whole attribute (docs/OPEN.md). The fifth is the upstream draft
+  # itself, not a local copy: an RvError converts back to its CK_RV and names its CKR_* constant
+  # (upstream/rust-cryptoki/PR-RV-VALUE.md). Drop each as the main in Cargo.toml gets it. The
+  # patches are relative to the crate (cryptoki/), a subdirectory of the vendored git checkout.
   cryptoki = {
-    version = "0.12.1";
+    version = "0.12.0";
     patches = [
       ./patches/cryptoki-hmac-key-types.patch
       ./patches/cryptoki-aes-key-wrap-kwp.patch
       ./patches/cryptoki-rsa-aes-key-wrap.patch
-      ./patches/cryptoki-sign-after-init.patch
       ./patches/cryptoki-allowed-mechanisms-unnamed.patch
       ../upstream/rust-cryptoki/0003-Add-RvError-to-CK_RV-and-its-name.patch
     ];
@@ -72,11 +76,10 @@ in
 
   # What only the patched cryptoki above has, as each tool's one `patched-cryptoki` feature
   # (review D3): the mechanisms it names (CKM_AES_KEY_WRAP_KWP, CKM_RSA_AES_KEY_WRAP), which
-  # camigrate uses and caprobe probes (`kwp`); the single-part sign after C_SignInit a per-use
-  # PIN proof needs (`sign-after-init`); and a failure's CK_RV and CKR_* name (`rv-value`), which
-  # the probe's busy-session handling branches on. caprobe refuses to write a profile without
-  # them; tests hold each tool's feature to its parts and fail when the patched binding is linked
-  # without them.
+  # camigrate uses and caprobe probes (`kwp`); and a failure's CK_RV and CKR_* name (`rv-value`),
+  # which the probe's busy-session handling branches on. caprobe refuses to write a profile
+  # without them; tests hold each tool's feature to its parts and fail when the patched binding
+  # is linked without them.
   features = [
     "cakeys/patched-cryptoki"
     "caprobe/patched-cryptoki"
@@ -174,6 +177,7 @@ in
     ++ lib.optionals tpm2 [
       swtpm
       tpm2-pkcs11
+      tpm2VendorModule
       tpm2-tools
       tpm2-abrmd
       dbus
@@ -214,7 +218,8 @@ in
       ''
       + lib.optionalString tpm2 ''
         export CAKEYS_TPM_MODULE=${lib.getLib tpm2-pkcs11}/lib/libtpm2_pkcs11.so
-        export CAKEYS_TPM_REQUIRE=1
+        export CAKEYS_TPM_VENDOR_MODULE=${lib.getLib tpm2VendorModule}/lib/libtpm2_pkcs11.so
+        export CAKEYS_TPM_REQUIRE=1 CAKEYS_TPM_VENDOR_REQUIRE=1
       ''
     );
 

@@ -39,7 +39,10 @@ wildcards = "deny"
 allow-wildcard-paths = true
 
 [sources]
-# Every locked crate comes from crates.io: anything else (another registry, a git checkout) is
-# a new supply-chain path, decided here first.
+# Every locked crate comes from crates.io (another registry is a new supply-chain path, decided
+# here first), but for one git source: cryptoki and cryptoki-sys at the main rev Cargo.toml pins
+# (unreleased fixes 0.12.1 lacks; docs/ARCHITECTURE.md). Any other git dependency is a change to
+# make here.
 unknown-registry = "deny"
 unknown-git = "deny"
+allow-git = ["https://github.com/parallaxsecond/rust-cryptoki"]

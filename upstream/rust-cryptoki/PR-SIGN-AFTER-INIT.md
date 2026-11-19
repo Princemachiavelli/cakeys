@@ -4,13 +4,14 @@ Status: **not needed, not filed.** Upstream main already has the same call as
 `Session::sign_single` (d1b283ec, "Expose single-part crypto operations", 2026-02-12), not yet in a
 release (0.12.1 lacks it).
 
-- When a release has it, call `sign_single` instead of `sign_initialized`, and drop the patch,
-  its line in `nix/package-common.nix` and the `sign-after-init` feature of `cakeys-pkcs11`, with
-  it each tool's `patched-cryptoki` list and `patched_cryptoki.rs`.
+- Done: cakeys depends on main (the git rev in `Cargo.toml`) and calls `sign_single`; the patch,
+  its line in `nix/package-common.nix`, the `sign-after-init` feature of `cakeys-pkcs11` and its
+  place in each tool's `patched-cryptoki` list and `patched_cryptoki.rs` are gone.
 
 The draft below is kept for the record.
 
-Local equivalent: `nix/patches/cryptoki-sign-after-init.patch`.
+Local equivalent (removed): a `nix/patches/cryptoki-sign-after-init.patch` with the same
+`sign_initialized`, in this repository's history.
 
 ---
 

@@ -41,8 +41,8 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **Upstream cryptoki: keep an unnamed `CKA_ALLOWED_MECHANISMS` entry.** 0.12.1's
   `MechanismType::try_from` refuses any value it has no name for — vendor mechanisms (CloudHSM's
   EdDSA is `0x80001057`, CLOUD_HSM.md) and some 385 standard ones (`CKM_DES3_CBC_PAD`), so the
-  whole read fails. Upstream main accepts vendor values but not unnamed standard ones. Our patch
-  keeps the raw value; a PR candidate, not filed.
+  whole read fails. Upstream main (6cc2278), which cakeys builds against, accepts vendor values
+  but not unnamed standard ones. Our patch keeps the raw value; a PR candidate, not filed.
 - **Weaker identity modes for keys cakeys did not create** (DESIGN §3.4). Non-extractable keys
   with no usage bit a commitment can use (derive-only, unwrap-only, random-IV-only allowed
   mechanisms) are common, especially existing and legacy keys, and are refused today (17).
@@ -207,8 +207,29 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   `tpm-certify` proves "a genuine TPM", not only "the same TPM as at first use".
 - **`tpm-certify` reads tpm2-pkcs11's private sqlite store**, hence its 1.10.x-only version
   guard: odd and fragile. Better: tpm2-pkcs11 exposes what attestation needs as vendor-defined
-  attributes or a vendor mechanism (a `TPM2_Certify`-backed `C_Sign`, or `CKA_TPM2_*` attributes
-  for the blobs), so cakeys never opens the database. Worth an upstream proposal.
+  attributes or a vendor mechanism, so cakeys never opens the database. Drafted: the upstream
+  patch `upstream/tpm2-pkcs11/0002-…CKM_TPM2_CERTIFY.patch` (PR text in `PR-CERTIFY.md`, not filed)
+  adds `CKM_TPM2_CERTIFY`, a `TPM2_Certify` through `C_SignInit`/`C_Sign` signed by a persistent
+  key the caller names, and fixes `CKA_TPM2_PUB_BLOB`, which `C_GetAttributeValue` already returns
+  (verified on 1.10.1 / swtpm). The provider has the mechanism path (`attest/vendor.rs`): it asks
+  `C_GetMechanismInfo` for `CKM_TPM2_CERTIFY` (cryptoki leaves vendor mechanisms out of
+  `C_GetMechanismList`), uses it with no store read, and keeps the store reader (and its 1.10.x
+  guard) for modules without it; the same `tpm_certify_id` and root come out of both, which
+  `tpm2_vendor_module_attests_as_the_store_path_does` checks against a module built with the
+  patches (`nix/tpm2-pkcs11-vendor.nix`, master a5156c5: they do not apply to the 1.10.1 tag). No
+  profile changes: the vendor mechanisms never reach the lists. Not yet: the EK chain
+  (`CKM_TPM2_ACTIVATE_CREDENTIAL`) on the cakeys side, and the real-TPM run. The second upstream PR is drafted too (`0003-…attestation-key….patch`,
+  `PR-AK.md`): `CKM_TPM2_AK_PAIR_GEN` makes the Attestation Key a token object and
+  `CKM_TPM2_CERTIFY_OBJECT` signs with it, so no TCTI is needed here (`options.akLabel`,
+  `tpm2_vendor_token_attestation_key_needs_no_tpm_handle_or_store`); it changes the pinned
+  `attestation.root` (re-lock) and drops the qualified-signer check on that path (a client cannot
+  compute it; the pinned key identifies the signer). The third is drafted as well
+  (`0004-…ACTIVATE_CREDENTIAL….patch`, `PR-ACT.md`): `CKA_TPM2_EK_PUB_BLOB` on the attestation key
+  (the EK public area and certificate, readable after the login only) and `CKM_TPM2_ACTIVATE_CREDENTIAL`
+  (`C_Decrypt`) for the EK chain; the client makes the credential with MakeCredential, no TPM, and
+  checks the certificate chain itself (docs/VENDOR.md, "What the client verifies"). All four tested on swtpm only; the series is on branches
+  `upstream-pr/1-certify`, `upstream-pr/2-attestation-key`, `upstream-pr/3-activate-credential` (one commit each, stacked) of Princemachiavelli/tpm2-pkcs11
+  (not filed). A real TPM's endorsement auth and EK are untested.
 - **A native TPM backend** beside tpm2-pkcs11, for PCR- and policy-bound keys.
 - **Vendor HSM attestation formats** (Luna PKC, Google Cloud HSM, nShield): a scheme each, not
   researched.

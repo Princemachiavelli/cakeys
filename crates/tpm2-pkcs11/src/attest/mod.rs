@@ -6,6 +6,7 @@ pub(crate) mod credential;
 pub(crate) mod ek;
 pub(crate) mod esys;
 pub(crate) mod store;
+pub(crate) mod vendor;
 
 /// Entry points for the fuzz targets (`fuzz/fuzz_targets/tpm_store_row.rs`, `tpms_attest.rs`):
 /// what the attestation path parses from the store and the TPM, on arbitrary input. Each is
@@ -25,8 +26,9 @@ pub(crate) mod fuzzing {
         object.and(parent).map(drop)
     }
 
-    /// `bytes` as a marshalled `TPMS_ATTEST` (its certify statement's Names) and as a
-    /// `TPM2B_PUBLIC` blob (its Name, and its key material).
+    /// `bytes` as a marshalled `TPMS_ATTEST` (its certify statement's Names), as a `TPM2B_PUBLIC`
+    /// blob (its Name, and its key material) and as what `CKM_TPM2_CERTIFY` returns
+    /// (`TPM2B_ATTEST ‖ TPMT_SIGNATURE`).
     ///
     /// # Errors
     ///
@@ -34,6 +36,7 @@ pub(crate) mod fuzzing {
     pub fn tpms_attest(bytes: &[u8]) -> Result<()> {
         use tss_esapi::structures::{Attest, AttestInfo};
         use tss_esapi::traits::UnMarshall as _;
+        let _ = super::vendor::parse_output(bytes);
         if let Ok(attest) = Attest::unmarshall(bytes)
             && let AttestInfo::Certify { info } = attest.attested()
         {
@@ -98,6 +101,13 @@ pub(crate) struct Tpm2Options {
     /// More roots to verify EK certificates to: a PEM file of self-signed CA certificates (or one
     /// DER certificate), for a TPM manufacturer cakeys pins no root for.
     ek_roots: Option<String>,
+    /// `CKA_LABEL` of an Attestation Key that is an object of the token, made by `lock` through
+    /// the module's `CKM_TPM2_AK_PAIR_GEN` and used through `CKM_TPM2_CERTIFY_OBJECT`: then no
+    /// TCTI, TPM handle or store is needed to attest. It is another key than the persistent one
+    /// (`akHandle`), so a lock made with that one pins another `attestation.root`: choosing it
+    /// is re-locking. Only for a module that lists those mechanisms (15 otherwise); not with
+    /// `akHandle`.
+    ak_label: Option<String>,
 }
 
 impl Tpm2Options {
@@ -112,7 +122,38 @@ impl Tpm2Options {
         let o: Tpm2Options = parse_options(token, options)?;
         o.ak_handle(token)?;
         o.tcti_conf(token)?;
+        if let Some(label) = &o.ak_label {
+            if o.ak_handle.is_some() {
+                return Err(KmError::Validation(
+                    format!("tokens.{token}.options: akLabel and akHandle name two Attestation Keys; set one").into(),
+                ));
+            }
+            if label.is_empty() {
+                return Err(KmError::Validation(format!("tokens.{token}.options.akLabel is empty").into()));
+            }
+        }
         Ok(o)
+    }
+
+    /// Refuse (15) `ekCertificate` and `ekRoots` for an attestation the module performs: the
+    /// credential activation is cakeys' own, on the TPM, which that path does not open. Silently
+    /// leaving the AK trusted on first use would pin a weaker anchor than the one asked for.
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` when either option is set.
+    pub(crate) fn refuse_ek_for_module(&self, token: &str) -> Result<()> {
+        if self.ek_certificate.is_some() || self.ek_roots.is_some() {
+            return Err(KmError::Unsupported(
+                format!(
+                    "tokens.{token}.options.ekCertificate/ekRoots chain the Attestation Key to the TPM's \
+                     manufacturer through the TPM itself (tcti); a module that certifies through its own \
+                     vendor mechanisms (or akLabel) is attested without it"
+                )
+                .into(),
+            ));
+        }
+        Ok(())
     }
 
     /// The configured TCTI in tss-esapi's syntax: the one parse the open's check and the
@@ -256,46 +297,28 @@ fn parse_tcti(source: &str, value: &str) -> Result<tss_esapi::Tcti> {
         .map_err(|e| KmError::Validation(format!("{source} = {value:?} is not a TCTI tss-esapi can open: {e}").into()))
 }
 
-/// Run the whole attestation: find the store row for the PKCS#11 object, certify the TPM
-/// object it names, and cross-check the module's story against the TPM's signature.
+/// Run the whole attestation: certify the TPM object behind the PKCS#11 object and cross-check
+/// the module's story against the TPM's signature. A module with `CKM_TPM2_CERTIFY` does the
+/// certify itself ([`vendor`]); one without is read through its store and the TPM ([`esys`]).
 ///
 /// # Errors
 ///
-/// `Unsupported` when the key object exposes no `CKA_ID` to find its store row by;
-/// `Unavailable` when the store cannot be opened or the object's module attributes cannot
-/// be read; `Conflict` when the module's story and the TPM's signature disagree; plus
-/// whatever `certify_key` rejects (PIN, auth, names, material cross-check).
+/// `Unsupported` for `akLabel` on a module without the token-key mechanisms, for an
+/// `ekCertificate` with a module that certifies itself (the activation needs the TPM), and, on
+/// the store path, for a module version it was not tested with and a key object with no `CKA_ID`
+/// to find its store row by; `Unavailable` when the store cannot be opened, the TPM or the
+/// module's mechanism fails, or the object's module attributes cannot be read; `Conflict` when
+/// the module's story and the TPM's signature disagree; plus whatever the certify rejects (PIN,
+/// auth, names, material cross-check, the EK's credential).
 pub(crate) fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
-    check_version(ctx.module_version)?;
-    // The store row is found the way the module finds the object: by the locator's CKA_ID
-    // (and label), within the key's class.
-    let Some(Attribute::Id(cka_id)) =
-        read_attribute("CKA_ID", ctx.session.get_attributes(ctx.key, &[AttributeType::Id]))?
-    else {
-        return Err(KmError::Unsupported("the key object exposes no CKA_ID to find its store row by".into()));
-    };
-    let label = match read_attribute("CKA_LABEL", ctx.session.get_attributes(ctx.key, &[AttributeType::Label]))? {
-        Some(Attribute::Label(l)) => Some(l),
-        _ => None,
-    };
-    let spki = ctx.required_spki()?;
-    let class = store::store_class(ctx.object.class)?;
     let opts = Tpm2Options::of(ctx.token_name, &ctx.cfg.options)?;
-    let store = store::Store::open(&store_dir(ctx, &opts)?, &ctx.cfg.token_label)?;
-    let tobj = store.find(&cka_id, label.as_deref(), class)?;
-    let conf = tcti(ctx, &opts)?;
-    let mut esys_ctx = esys::context(&conf)?;
-    let ek = ek::trusted(ctx.token_name, &opts, ctx.chain_time, &mut esys_ctx)?;
-    let certified = esys::certify_key(
-        &mut esys_ctx,
-        &store,
-        tobj,
-        ctx.pin.map(str::as_bytes),
-        opts.ak_handle(ctx.token_name)?,
-        ctx.provision,
-        spki,
-        ek.as_ref().map(|t| t.spki.as_slice()),
-    )?;
+    let (certified, ek) = match vendor::route(ctx, &opts)? {
+        vendor::Route::Module => {
+            opts.refuse_ek_for_module(ctx.token_name)?;
+            (vendor::certify(ctx, &opts)?, None)
+        }
+        vendor::Route::Store => certify_through_store(ctx, &opts)?,
+    };
     // The module's immutables rest on TPMA_OBJECT bits the attestation signed: what the module
     // reports as CKA_LOCAL/CKA_EXTRACTABLE must be what the TPM certified (13, never a pass).
     let (local, extractable) = module_reports(ctx)?;
@@ -303,7 +326,7 @@ pub(crate) fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
         return Err(KmError::Conflict(
             format!(
                 "the module reports CKA_LOCAL {} / CKA_EXTRACTABLE {}, but the TPM certified \
-             {} / {}: the store does not match what the TPM holds",
+             {} / {}: the module does not report what the TPM holds",
                 local, extractable, certified.local, certified.extractable
             )
             .into(),
@@ -321,6 +344,41 @@ pub(crate) fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
         root: cakeys_core::id::sri(&root),
         warning,
     })
+}
+
+/// The attestation of a module without the vendor mechanisms: the store row for the PKCS#11
+/// object, loaded and certified by cakeys itself, with the EK it was activated against (if any).
+fn certify_through_store(ctx: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<(esys::Certified, Option<ek::Trusted>)> {
+    check_version(ctx.module_version)?;
+    // The store row is found the way the module finds the object: by the locator's CKA_ID
+    // (and label), within the key's class.
+    let Some(Attribute::Id(cka_id)) =
+        read_attribute("CKA_ID", ctx.session.get_attributes(ctx.key, &[AttributeType::Id]))?
+    else {
+        return Err(KmError::Unsupported("the key object exposes no CKA_ID to find its store row by".into()));
+    };
+    let label = match read_attribute("CKA_LABEL", ctx.session.get_attributes(ctx.key, &[AttributeType::Label]))? {
+        Some(Attribute::Label(l)) => Some(l),
+        _ => None,
+    };
+    let spki = ctx.required_spki()?;
+    let class = store::store_class(ctx.object.class)?;
+    let store = store::Store::open(&store_dir(ctx, opts)?, &ctx.cfg.token_label)?;
+    let tobj = store.find(&cka_id, label.as_deref(), class)?;
+    let conf = tcti(ctx, opts)?;
+    let mut esys_ctx = esys::context(&conf)?;
+    let ek = ek::trusted(ctx.token_name, opts, ctx.chain_time, &mut esys_ctx)?;
+    let certified = esys::certify_key(
+        &mut esys_ctx,
+        &store,
+        tobj,
+        ctx.pin.map(str::as_bytes),
+        opts.ak_handle(ctx.token_name)?,
+        ctx.provision,
+        spki,
+        ek.as_ref().map(|t| t.spki.as_slice()),
+    )?;
+    Ok((certified, ek))
 }
 
 /// One attribute read of the key object: the attribute, `None` when the module has none to show
@@ -495,10 +553,13 @@ mod tests {
         let o = opts("tcti = \"device:/dev/tpmrm0\"\ntpm2Store = \"~/s\"\nakHandle = \"0x81000017\"").unwrap();
         assert_eq!(o.ak_handle("tpm").unwrap(), 0x8100_0017);
         assert_eq!(opts("").unwrap().ak_handle("tpm").unwrap(), DEFAULT_AK_HANDLE);
+        assert_eq!(opts("akLabel = \"cakeys-ak\"").unwrap().ak_label.as_deref(), Some("cakeys-ak"));
         for (bad, why) in [
             ("tctl = \"x\"", "unknown field"),
             ("akHandle = \"81000017\"", "0x prefix"),
             ("akHandle = \"0x01\"", "owner range"),
+            ("akLabel = \"ak\"\nakHandle = \"0x81000017\"", "two Attestation Keys"),
+            ("akLabel = \"\"", "akLabel is empty"),
         ] {
             let err = opts(bad).unwrap_err();
             assert!(

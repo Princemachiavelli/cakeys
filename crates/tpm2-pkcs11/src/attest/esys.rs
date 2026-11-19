@@ -1,5 +1,8 @@
 //! The native `TPM2_Certify` attestation path for tpm2-pkcs11 tokens (docs/DESIGN.md §3.7).
 //!
+//! (For a module that has the `CKM_TPM2_CERTIFY` vendor mechanism see [`super::vendor`]: this is
+//! the path for the others, and the one whose checks both share.)
+//!
 //! tpm2-pkcs11 exposes no attestation through PKCS#11, so cakeys reaches the TPM itself:
 //! the object's TPM blobs are read from the module's store, loaded under the token's primary
 //! parent, and certified by an Attestation Key (AK) that cakeys provisions in the owner
@@ -659,10 +662,8 @@ fn verify_certified(
     if attest.qualified_signer().value() != ak_qualified_name.value() {
         return Err(KmError::Conflict("the attestation was signed by another key than the AK".into()));
     }
-    // The material cross-check (§3.7): the attested public area — the store blob the signed
-    // Name hashes, never ReadPublic's unauthenticated copy — must be the same key the object's
-    // rfc7093m4 hashes: what verifies the identity on any other token. A symmetric PKCS#11
-    // object backed by an asymmetric TPM object (or the reverse) is a different object.
+    // The attested public area is the store blob the signed Name hashes, never ReadPublic's
+    // unauthenticated copy: the material cross-check is made on it.
     let attested = unmarshal_public(pub_blob)?;
     if *live_public != attested {
         return Err(KmError::Conflict(
@@ -670,39 +671,52 @@ fn verify_certified(
         ));
     }
     let material = material_of(&attested)?;
+    cross_check(&material, spki)?;
+    Ok(certified(name, qualified_name, ak_spki, &material))
+}
+
+/// The material cross-check (§3.7): the attested public area must be the same key the object's
+/// rfc7093m4 hashes — what verifies the identity on any other token. A symmetric PKCS#11 object
+/// backed by an asymmetric TPM object (or the reverse) is a different object.
+///
+/// # Errors
+///
+/// `Conflict` when the attested material is another key than `spki`, or of another kind.
+pub(crate) fn cross_check(material: &Material, spki: Option<&[u8]>) -> Result<()> {
     match (spki, &material.spki) {
-        (Some(want), Some(attested)) if want != attested.as_slice() => {
-            return Err(KmError::Conflict(
-                format!(
-                    "the TPM attests the public key {}, but the object's material is {}",
-                    id::sri(attested),
-                    id::sri(want)
-                )
-                .into(),
-            ));
-        }
-        (Some(_), Some(_)) | (None, None) => {}
-        (want, _) => {
-            return Err(KmError::Conflict(
-                format!(
-                    "the store object is {}, but the PKCS#11 object is {}",
-                    if material.spki.is_some() { "an asymmetric key" } else { "a symmetric object" },
-                    if want.is_some() { "an asymmetric key" } else { "a secret key" }
-                )
-                .into(),
-            ));
-        }
+        (Some(want), Some(attested)) if want != attested.as_slice() => Err(KmError::Conflict(
+            format!(
+                "the TPM attests the public key {}, but the object's material is {}",
+                id::sri(attested),
+                id::sri(want)
+            )
+            .into(),
+        )),
+        (Some(_), Some(_)) | (None, None) => Ok(()),
+        (want, _) => Err(KmError::Conflict(
+            format!(
+                "the TPM object is {}, but the PKCS#11 object is {}",
+                if material.spki.is_some() { "an asymmetric key" } else { "a symmetric object" },
+                if want.is_some() { "an asymmetric key" } else { "a secret key" }
+            )
+            .into(),
+        )),
     }
-    // The signed attributes, as the module derives its immutables from them (tpm2-pkcs11:
-    // CKA_LOCAL = sensitiveDataOrigin, CKA_EXTRACTABLE = !(fixedTPM|fixedParent)).
+}
+
+/// What a certify run proved, from the Names it attested and the signed attributes, as the module
+/// derives its immutables from them (tpm2-pkcs11: `CKA_LOCAL` = sensitiveDataOrigin,
+/// `CKA_EXTRACTABLE` = !(fixedTPM|fixedParent)).
+#[must_use]
+pub(crate) fn certified(name: Vec<u8>, qualified_name: Vec<u8>, ak_spki: Vec<u8>, material: &Material) -> Certified {
     let attributes = material.attributes;
-    Ok(Certified {
+    Certified {
         name,
         qualified_name,
         ak_spki,
         local: attributes.sensitive_data_origin(),
         extractable: !(attributes.fixed_tpm() || attributes.fixed_parent()),
-    })
+    }
 }
 
 /// The EK certificate the TPM keeps in NV (TCG EK Credential Profile §2.2.1.4): the P-256 one

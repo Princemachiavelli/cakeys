@@ -7,7 +7,7 @@ use std::path::Path;
 #[test]
 fn every_tool_turns_on_what_the_patched_binding_makes_possible() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let binding = ["cakeys-pkcs11/rv-value", "cakeys-pkcs11/sign-after-init"];
+    let binding = ["cakeys-pkcs11/rv-value"];
     for (dir, own) in [("cli", &[][..]), ("caprobe", &["kwp"][..]), ("camigrate", &["kwp"][..])] {
         let path = crates.join(dir).join("Cargo.toml");
         let manifest: toml::Table = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();

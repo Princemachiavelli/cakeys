@@ -1,0 +1,1122 @@
+From bc55809962100000f6cdcf2de003e8fd1a3c1bb0 Mon Sep 17 00:00:00 2001
+From: Josh Hoffer <jhoffer@sansorgan.es>
+Date: Thu, 19 Nov 2026 07:39:10 -0800
+Subject: [PATCH] sign: add the vendor mechanism CKM_TPM2_CERTIFY
+
+TPM2_Certify of a key object, signed by a persistent TPM key the caller
+names, through C_SignInit/C_Sign. A client holding the signer's public
+key verifies, without trusting the module, that a PKCS#11 object is a key
+of that TPM: the statement carries the nonce the client sent, and the
+object's Name, which the client computes from CKA_TPM2_PUB_BLOB.
+
+The module's logged-in session already holds what TPM2_Certify needs (the
+loaded object and its unwrapped auth), so nothing secret leaves the
+module. CKA_SIGN and CKA_ALLOWED_MECHANISMS are not consulted: the
+mechanism signs nothing the key holder chose, and it certifies keys that
+can sign nothing (decrypt-only, AES, HMAC). The signer must have an empty
+auth value; one that does not is CKR_MECHANISM_PARAM_INVALID.
+
+Add src/tpm2-pkcs11-vendor.h, installed, which fixes the numbers of
+CKA_TPM2_PUB_BLOB and CKM_TPM2_CERTIFY and the parameter layout. The
+other CKA_TPM2_* attributes stay unstable and undocumented.
+
+Test: pkcs-certify.int certifies EC, RSA, AES and HMAC keys, one needing a
+context login, verifies the signature with OpenSSL, and checks the
+refusals. docs/VENDOR.md describes the interface.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Signed-off-by: Josh Hoffer <jhoffer@sansorgan.es>
+---
+ CHANGELOG.md                                  |   8 +
+ Makefile-integration.am                       |   7 +-
+ Makefile.am                                   |   3 +
+ docs/README.md                                |   1 +
+ docs/VENDOR.md                                |  89 ++++
+ src/lib/attrs.h                               |   6 +-
+ src/lib/mech.c                                |  18 +-
+ src/lib/sign.c                                |  96 ++++
+ src/lib/tpm.c                                 | 116 +++++
+ src/lib/tpm.h                                 |  25 +
+ src/tpm2-pkcs11-vendor.h                      |  73 +++
+ test/integration/pkcs-certify.int.c           | 439 ++++++++++++++++++
+ test/integration/scripts/create_pkcs_store.sh |  17 +
+ 13 files changed, 893 insertions(+), 5 deletions(-)
+ create mode 100644 docs/VENDOR.md
+ create mode 100644 src/tpm2-pkcs11-vendor.h
+ create mode 100644 test/integration/pkcs-certify.int.c
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e1901c2..e7d491b 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
+ Starting with release 1.8.0, The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+ 
++## [Unreleased]
++### Added:
++- A public header, `tpm2-pkcs11-vendor.h`, installed to `$(includedir)/tpm2-pkcs11/`, fixing the
++  vendor attribute `CKA_TPM2_PUB_BLOB` and the vendor mechanism `CKM_TPM2_CERTIFY`.
++- `CKM_TPM2_CERTIFY`: `TPM2_Certify` of a key object, signed by a persistent TPM key the caller
++  names, so a client can prove with a statement the TPM signed that a PKCS#11 object is a key of
++  that TPM. See docs/VENDOR.md.
++
+ ## [1.10.1] - 2026-08-06
+ ### Fixed:
+ - Revert commit fab314 - "configure: detect --prefix when checking for P11_KIT"
+diff --git a/Makefile-integration.am b/Makefile-integration.am
+index 01c3408..ebc4610 100644
+--- a/Makefile-integration.am
++++ b/Makefile-integration.am
+@@ -43,7 +43,8 @@ check_PROGRAMS += \
+     test/integration/pkcs-keygen.int \
+     test/integration/pkcs-session-state.int \
+     test/integration/pkcs-lockout.int \
+-    test/integration/pkcs-ecdh.int
++    test/integration/pkcs-ecdh.int \
++    test/integration/pkcs-certify.int
+ 
+ # add test scripts
+ check_SCRIPTS += $(integration_scripts)
+@@ -103,6 +104,10 @@ test_integration_pkcs_ecdh_int_CFLAGS  = $(AM_CFLAGS) $(TESTS_CFLAGS)
+ test_integration_pkcs_ecdh_int_LDADD   = $(TESTS_LDADD)  $(SQLITE3_LIBS)
+ test_integration_pkcs_ecdh_int_SOURCES = test/integration/pkcs-ecdh.int.c test/integration/test.c
+ 
++test_integration_pkcs_certify_int_CFLAGS  = $(AM_CFLAGS) $(TESTS_CFLAGS)
++test_integration_pkcs_certify_int_LDADD   = $(TESTS_LDADD)  $(SQLITE3_LIBS)
++test_integration_pkcs_certify_int_SOURCES = test/integration/pkcs-certify.int.c test/integration/test.c
++
+ test_integration_pkcs_session_state_int_CFLAGS  = $(AM_CFLAGS) $(TESTS_CFLAGS)
+ test_integration_pkcs_session_state_int_LDADD   = $(TESTS_LDADD)  $(SQLITE3_LIBS)
+ test_integration_pkcs_session_state_int_SOURCES = test/integration/pkcs-session-state.c test/integration/test.c
+diff --git a/Makefile.am b/Makefile.am
+index 94685e7..e793395 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -47,6 +47,9 @@ CLEANFILES = AUTHORS
+ pkgconfig_DATA =
+ DISTCLEANFILES = $(pkgconfig_DATA)
+ 
++### Vendor-defined PKCS#11 types: attribute and mechanism numbers clients may rely on ###
++pkginclude_HEADERS = src/tpm2-pkcs11-vendor.h
++
+ ### PKCS#11 Library Definition ###
+ libtpm2_pkcs11 = src/libtpm2_pkcs11.la
+ pkgconfig_DATA += lib/tpm2-pkcs11.pc
+diff --git a/docs/README.md b/docs/README.md
+index 8d9a12b..1038674 100644
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -30,4 +30,5 @@ as the cryptographic token.
+ # Advanced Knowledge
+ * [Architecture](/docs/ARCHITECTURE.md) - Internal Overview
+ * [DB Upgrades](/docs/DB_UPGRADE.md) - What happens on a DB Version Upgrade
++* [Vendor interface](/docs/VENDOR.md) - The vendor-defined attributes and mechanisms, `CKM_TPM2_CERTIFY`
+ * [Release Process](/docs/RELEASE.md) - How releases are conducted
+diff --git a/docs/VENDOR.md b/docs/VENDOR.md
+new file mode 100644
+index 0000000..c38c5b4
+--- /dev/null
++++ b/docs/VENDOR.md
+@@ -0,0 +1,89 @@
++# Vendor-defined interface
++
++tpm2-pkcs11 defines a few PKCS#11 attributes and mechanisms of its own, in the vendor ranges
++of the specification. The ones listed in [`src/tpm2-pkcs11-vendor.h`](/src/tpm2-pkcs11-vendor.h)
++are a stable interface, and that header is installed (`$(includedir)/tpm2-pkcs11/`); include it
++after the Cryptoki header. Other vendor attributes (`CKA_TPM2_OBJAUTH_ENC`, `CKA_TPM2_PRIV_BLOB`,
++`CKA_TPM2_ENC_BLOB`, `CKA_TPM2_SERIALIZED_TR`) are the module's own bookkeeping, may be returned by
++`C_GetAttributeValue`, and are not stable: do not use them.
++
++The vendor range is `0x0F000000` within `CKA_VENDOR_DEFINED` (attributes) and
++`CKM_VENDOR_DEFINED` (mechanisms).
++
++## `CKA_TPM2_PUB_BLOB`
++
++The key object's TPM public area, marshaled as a `TPM2B_PUBLIC`: a big-endian 16-bit size, then the
++`TPMT_PUBLIC`. Every key object that lives in the TPM has one (public, private and secret keys), and
++it can be read in any session that can see the object.
++
++The object's TPM Name is the 16-bit name algorithm followed by that algorithm's digest of the
++`TPMT_PUBLIC` (the bytes after the size). A client computes it and compares it with what the TPM
++attested, as below.
++
++## `CKM_TPM2_CERTIFY`
++
++`TPM2_Certify` for a key object, signed by a key of the TPM that the caller names. It answers
++"is this PKCS#11 object a key that sits in this TPM, loaded with the private area the module holds
++for it?" with a statement signed by the TPM itself, which the client verifies without trusting
++the module.
++
++It is used with `C_SignInit` and `C_Sign` (or `C_SignUpdate` and `C_SignFinal`):
++
++| | |
++|---|---|
++| key | the key object to certify: a private or secret key in the TPM. A public key object is refused (`CKR_KEY_TYPE_INCONSISTENT`) |
++| parameter | `CK_TPM2_CERTIFY_PARAMS`: `ulSignerHandle`, the persistent handle (`0x81000000` to `0x81FFFFFF`) of the signing key |
++| data | the qualifying data, a nonce of 0 to 64 bytes the TPM signs into the statement (`CKR_DATA_LEN_RANGE` above that) |
++| output | the marshaled `TPM2B_ATTEST` followed by the marshaled `TPMT_SIGNATURE`. The buffer must hold `CK_TPM2_CERTIFY_MAX_LEN` bytes; a call with a `NULL` output returns that length without using the TPM |
++
++The user must be logged in, and a key with `CKA_ALWAYS_AUTHENTICATE` needs the context login, as for
++any use of it. `CKA_SIGN` and `CKA_ALLOWED_MECHANISMS` of the key object are not consulted: the
++mechanism signs nothing the key holder chose, and it certifies keys that can sign nothing (a
++decrypt-only RSA key, an AES or HMAC key). The mechanism is listed by `C_GetMechanismList` and has
++`CKF_SIGN`, so a client can detect it.
++
++The signer is a key the caller made: an empty auth value and a signing key, in practice a restricted
++signing key (an attestation key), which signs only TPM-generated structures. tpm2-pkcs11 only uses
++it, never creates or changes it. An unknown handle, a key the TPM refuses to sign with, and a key
++whose auth value is not empty are `CKR_MECHANISM_PARAM_INVALID`. A key with an auth value that is not
++marked `noDA` counts that refusal as a failed authorization against the TPM's dictionary-attack
++lockout, so make the signer with an empty auth value. The signature is made with the signer's own
++scheme.
++
++```sh
++# An attestation key at a persistent handle, and its public key for verifying with
++tpm2_createprimary -C o -c primary.ctx
++tpm2_create -C primary.ctx -G ecc256:ecdsa-sha256:null -c ak.ctx \
++    -a 'fixedtpm|fixedparent|sensitivedataorigin|userwithauth|restricted|sign'
++tpm2_evictcontrol -C o -c ak.ctx 0x81000016
++tpm2_readpublic -c 0x81000016 -f pem -o ak.pem
++```
++
++### What the client verifies
++
++The module is not trusted for the statement: a module that lies cannot produce a TPM signature. A
++client checks:
++
++1. The output parses completely: a `TPM2B_ATTEST` (its `attestationData` is a `TPMS_ATTEST`) and a
++   `TPMT_SIGNATURE`, with nothing left over.
++2. The signature is the signer's, over the exact bytes of `attestationData`, under the signer's
++   public key that the client holds.
++3. `magic` is `TPM_GENERATED_VALUE`, `type` is `TPM_ST_ATTEST_CERTIFY`, and `extraData` is the nonce
++   the client sent (a fresh nonce makes the statement a proof of now, not a replay).
++4. The attested Name is the Name of the object's `CKA_TPM2_PUB_BLOB`, and the qualified signer is
++   the signer's qualified Name.
++5. The attested `objectAttributes` are what the client relies on (`fixedTPM`, `fixedParent`,
++   `sensitiveDataOrigin`): the signed bits say whether the key was generated in the TPM and whether it
++   can leave it.
++
++`test/integration/pkcs-certify.int.c` does 1 to 4 with OpenSSL and the TSS marshaling library.
++
++```c
++CK_TPM2_CERTIFY_PARAMS params = { .ulSignerHandle = 0x81000016 };
++CK_MECHANISM mech = { CKM_TPM2_CERTIFY, &params, sizeof(params) };
++CK_BYTE out[CK_TPM2_CERTIFY_MAX_LEN];
++CK_ULONG out_len = sizeof(out);
++
++rv = C_SignInit(session, &mech, key);
++rv = C_Sign(session, nonce, nonce_len, out, &out_len);
++```
+diff --git a/src/lib/attrs.h b/src/lib/attrs.h
+index 42638fa..443bea0 100644
+--- a/src/lib/attrs.h
++++ b/src/lib/attrs.h
+@@ -6,13 +6,13 @@
+ #include <stdlib.h>
+ 
+ #include "pkcs11.h"
++#include "tpm2-pkcs11-vendor.h"
+ 
+ /*
+- * We will allow these to be accessed, but the values are not stable
++ * The vendor attributes in tpm2-pkcs11-vendor.h are stable. These we will allow to be
++ * accessed, but the values are not stable
+  */
+-#define CKA_VENDOR_TPM2_DEFINED  0x0F000000UL
+ #define CKA_TPM2_OBJAUTH_ENC     (CKA_VENDOR_DEFINED|CKA_VENDOR_TPM2_DEFINED|0x1UL)
+-#define CKA_TPM2_PUB_BLOB        (CKA_VENDOR_DEFINED|CKA_VENDOR_TPM2_DEFINED|0x2UL)
+ #define CKA_TPM2_PRIV_BLOB       (CKA_VENDOR_DEFINED|CKA_VENDOR_TPM2_DEFINED|0x3UL)
+ #define CKA_TPM2_ENC_BLOB        (CKA_VENDOR_DEFINED|CKA_VENDOR_TPM2_DEFINED|0x4UL)
+ #define CKA_TPM2_SERIALIZED_TR   (CKA_VENDOR_DEFINED|CKA_VENDOR_TPM2_DEFINED|0x5UL)
+diff --git a/src/lib/mech.c b/src/lib/mech.c
+index 7e4f363..cde4ce3 100644
+--- a/src/lib/mech.c
++++ b/src/lib/mech.c
+@@ -37,6 +37,8 @@ enum mechanism_flags {
+     mf_force_synthetic = 1 << 12,
+     mf_hmac          = 1 << 13,
+     mf_derive        = 1 << 14,
++    /* a vendor mechanism run by the module itself, listed whatever algorithms the TPM has */
++    mf_vendor        = 1 << 15,
+ };
+ 
+ typedef struct mdetail_entry mdetail_entry;
+@@ -199,6 +201,13 @@ static const mdetail_entry _g_mechs_templ[] = {
+     { .type = CKM_SHA256_HMAC, .flags = mf_sign|mf_verify|mf_hmac, .validator = hmac_validator, .get_tpm_opdata = tpm_hmac_sha256_get_opdata },
+     { .type = CKM_SHA384_HMAC, .flags = mf_sign|mf_verify|mf_hmac, .validator = hmac_validator, .get_tpm_opdata = tpm_hmac_sha384_get_opdata },
+     { .type = CKM_SHA512_HMAC, .flags = mf_sign|mf_verify|mf_hmac, .validator = hmac_validator, .get_tpm_opdata = tpm_hmac_sha512_get_opdata },
++
++    /*
++     * vendor (tpm2-pkcs11-vendor.h): TPM2_Certify, run by sign_init/sign_final. No validator, so
++     * CKA_ALLOWED_MECHANISMS is not consulted (see mech_validate); its parameter is checked by
++     * sign_init, which is the only place that takes it.
++     */
++    { .type = CKM_TPM2_CERTIFY, .flags = mf_sign|mf_vendor },
+ };
+ 
+ const rsa_detail _g_rsa_keysizes_templ [] = {
+@@ -1145,7 +1154,8 @@ static bool is_mech_supported(mdetail_entry *d) {
+ 
+     return (f & mf_tpm_supported) ||
+            (f & mf_is_keygen)     ||
+-           (f & mf_is_digester);
++           (f & mf_is_digester)   ||
++           (f & mf_vendor);
+ }
+ 
+ CK_RV mech_get_supported(mdetail *m, CK_MECHANISM_TYPE_PTR mechlist, CK_ULONG_PTR count) {
+@@ -1558,6 +1568,12 @@ CK_RV mech_get_info(mdetail *m, tpm_ctx *tctx,
+         return CKR_OK;
+     }
+ 
++    /* a vendor mechanism has no key sizes: it takes the key as it is */
++    if (d->flags & mf_vendor) {
++        info->flags |= CKF_HW;
++        return CKR_OK;
++    }
++
+     if (d->flags & mf_rsa) {
+         return get_rsa_mechinfo(tctx, info);
+     }
+diff --git a/src/lib/sign.c b/src/lib/sign.c
+index e78c304..911e0fd 100644
+--- a/src/lib/sign.c
++++ b/src/lib/sign.c
+@@ -34,8 +34,74 @@ struct sign_opdata {
+     int padding;
+     EVP_PKEY *pkey;
+     const EVP_MD *md;
++    /* CKM_TPM2_CERTIFY: the persistent TPM handle of the signing key */
++    uint32_t certify_signer;
+ };
+ 
++/*
++ * CKM_TPM2_CERTIFY (tpm2-pkcs11-vendor.h) is not a signature over data: the TPM signs a statement
++ * about the key object, with a key the caller names. The object is certified as it is, so
++ * neither CKA_SIGN nor CKA_ALLOWED_MECHANISMS decides (decrypt-only and HMAC keys are certified
++ * too). The data of the operation is the qualifying data, buffered as for any mechanism that
++ * does not hash.
++ */
++static void sign_opdata_free(sign_opdata **opdata);
++
++static CK_RV certify_init(operation op, session_ctx *ctx, tobject *tobj, CK_MECHANISM_PTR mechanism) {
++
++    CK_RV rv = CKR_OK;
++
++    /* there is nothing to verify: the caller checks the statement */
++    if (op != operation_sign) {
++        rv = CKR_MECHANISM_INVALID;
++        goto error;
++    }
++
++    if (!mechanism->pParameter || mechanism->ulParameterLen != sizeof(CK_TPM2_CERTIFY_PARAMS)) {
++        rv = CKR_MECHANISM_PARAM_INVALID;
++        goto error;
++    }
++
++    CK_TPM2_CERTIFY_PARAMS params;
++    memcpy(&params, mechanism->pParameter, sizeof(params));
++    if (params.ulSignerHandle < 0x81000000UL || params.ulSignerHandle > 0x81FFFFFFUL) {
++        LOGE("CKM_TPM2_CERTIFY signer is not a persistent handle: 0x%lx", params.ulSignerHandle);
++        rv = CKR_MECHANISM_PARAM_INVALID;
++        goto error;
++    }
++
++    /* public key objects are not loaded in the TPM, there is nothing to certify */
++    if (!tobj->priv || !tobj->tpm_esys_tr) {
++        rv = CKR_KEY_TYPE_INCONSISTENT;
++        goto error;
++    }
++
++    sign_opdata *opdata = calloc(1, sizeof(sign_opdata));
++    if (!opdata) {
++        LOGE("oom");
++        rv = CKR_HOST_MEMORY;
++        goto error;
++    }
++
++    opdata->certify_signer = params.ulSignerHandle;
++    memcpy(&opdata->mech, mechanism, sizeof(opdata->mech));
++
++    opdata->crypto_opdata = encrypt_op_data_new();
++    if (!opdata->crypto_opdata) {
++        sign_opdata_free(&opdata);
++        rv = CKR_HOST_MEMORY;
++        goto error;
++    }
++
++    session_ctx_opdata_set(ctx, op, tobj, opdata, (opdata_free_fn)sign_opdata_free);
++
++    return CKR_OK;
++
++error:
++    tobject_user_decrement(tobj);
++    return rv;
++}
++
+ static sign_opdata *sign_opdata_new(operation op, mdetail *mdtl, CK_MECHANISM_PTR mechanism, tobject *tobj) {
+ 
+     int padding = 0;
+@@ -179,6 +245,10 @@ static CK_RV common_init(operation op, session_ctx *ctx, CK_MECHANISM_PTR mechan
+         return rv;
+     }
+ 
++    if (mechanism->mechanism == CKM_TPM2_CERTIFY) {
++        return certify_init(op, ctx, tobj, mechanism);
++    }
++
+     digest_op_data *digest_opdata = NULL;
+     bool is_hashing_needed = false;
+     rv = mech_is_hashing_needed(tok->mdtl,
+@@ -337,6 +407,32 @@ CK_RV sign_final_ex(session_ctx *ctx, CK_BYTE_PTR signature, CK_ULONG_PTR signat
+ 
+     twist digest_buf = NULL;
+ 
++    if (opdata->mech.mechanism == CKM_TPM2_CERTIFY) {
++        /*
++         * A size query, and a buffer too small, never reach the TPM: the output has a fixed
++         * upper bound. The buffered data is the qualifying data, nothing is hashed.
++         */
++        if (!signature) {
++            *signature_len = CK_TPM2_CERTIFY_MAX_LEN;
++            rv = CKR_OK;
++            goto out;
++        }
++
++        if (*signature_len < CK_TPM2_CERTIFY_MAX_LEN) {
++            *signature_len = CK_TPM2_CERTIFY_MAX_LEN;
++            rv = CKR_BUFFER_TOO_SMALL;
++            goto out;
++        }
++
++        rv = tpm_certify(tok->tctx, tobj, opdata->certify_signer,
++                (const CK_BYTE *)opdata->buffer, twist_len(opdata->buffer),
++                signature, signature_len);
++        if (rv != CKR_OK) {
++            goto session_out;
++        }
++        goto out;
++    }
++
+     size_t expected_sig_len = 0;
+     rv = tobject_get_min_buf_size(tobj, &opdata->mech, &expected_sig_len);
+     if (rv != CKR_OK) {
+diff --git a/src/lib/tpm.c b/src/lib/tpm.c
+index 675fc42..209c03f 100644
+--- a/src/lib/tpm.c
++++ b/src/lib/tpm.c
+@@ -1492,6 +1492,122 @@ CK_RV tpm_sign(tpm_op_data *opdata, CK_BYTE_PTR data, CK_ULONG datalen, CK_BYTE_
+     return rv;
+ }
+ 
++/*
++ * Whether rc is the format-one error `err` (handle, key, scheme... with their handle, parameter
++ * or session number masked out), the TPM refusing what the caller named rather than failing.
++ */
++static bool rc_is_fmt1(TSS2_RC rc, TSS2_RC err) {
++    return (rc & (TPM2_RC_FMT1 | 0x3F)) == err;
++}
++
++CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
++        const CK_BYTE *qualifying, CK_ULONG qualifying_len,
++        CK_BYTE_PTR out, CK_ULONG_PTR outlen) {
++    assert(tctx);
++    assert(tobj);
++    assert(outlen);
++
++    if (*outlen < CK_TPM2_CERTIFY_MAX_LEN) {
++        *outlen = CK_TPM2_CERTIFY_MAX_LEN;
++        return CKR_BUFFER_TOO_SMALL;
++    }
++
++    TPM2B_DATA qualifying_data = TPM2B_EMPTY_INIT;
++    if (qualifying_len > sizeof(qualifying_data.buffer)) {
++        return CKR_DATA_LEN_RANGE;
++    }
++    if (qualifying_len) {
++        memcpy(qualifying_data.buffer, qualifying, qualifying_len);
++    }
++    qualifying_data.size = qualifying_len;
++
++    ESYS_CONTEXT *ectx = tctx->esys_ctx;
++
++    ESYS_TR signer = ESYS_TR_NONE;
++    TSS2_RC rc = Esys_TR_FromTPMPublic(ectx, signer_handle,
++            ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, &signer);
++    if (rc != TSS2_RC_SUCCESS) {
++        LOGE("Esys_TR_FromTPMPublic(0x%x): %s", signer_handle, Tss2_RC_Decode(rc));
++        return rc_is_fmt1(rc, TPM2_RC_HANDLE) ?
++                CKR_MECHANISM_PARAM_INVALID : CKR_GENERAL_ERROR;
++    }
++
++    CK_RV rv = CKR_GENERAL_ERROR;
++    TPM2B_ATTEST *certify_info = NULL;
++    TPMT_SIGNATURE *signature = NULL;
++    /* the signer's own scheme: a signing key with one in its template uses it */
++    TPMT_SIG_SCHEME scheme = { .scheme = TPM2_ALG_NULL };
++    size_t offset = 0;
++
++    /* the signer has an empty auth value, which a password session sends as it is */
++    bool result = set_esys_auth(ectx, signer, NULL);
++    if (!result) {
++        goto out;
++    }
++
++    result = set_esys_auth(ectx, tobj->tpm_esys_tr, tobj->unsealed_auth);
++    if (!result) {
++        goto out;
++    }
++
++    /*
++     * The nonce is not secret and may be empty (which a session cannot encrypt), and the
++     * statement is not either: neither direction is encrypted.
++     */
++    flags_turndown(tctx, TPMA_SESSION_ENCRYPT | TPMA_SESSION_DECRYPT);
++    rc = Esys_Certify(
++            ectx,
++            tobj->tpm_esys_tr,
++            signer,
++            tctx->hmac_session,
++            ESYS_TR_PASSWORD,
++            ESYS_TR_NONE,
++            &qualifying_data,
++            &scheme,
++            &certify_info,
++            &signature);
++    flags_restore(tctx);
++    if (rc != TSS2_RC_SUCCESS) {
++        LOGE("Esys_Certify: %s", Tss2_RC_Decode(rc));
++        /*
++         * What is wrong with the signer: not a signing key, or its auth value is not the empty
++         * one (the second authorization, the password session, failed). The object's own
++         * authorization is the first, and not the caller's to get wrong.
++         */
++        bool signer_auth_failed = (rc_is_fmt1(rc, TPM2_RC_AUTH_FAIL) || rc_is_fmt1(rc, TPM2_RC_BAD_AUTH))
++                && (rc & TPM2_RC_N_MASK) == TPM2_RC_S + TPM2_RC_2;
++        if (rc_is_fmt1(rc, TPM2_RC_KEY) || rc_is_fmt1(rc, TPM2_RC_SCHEME)
++                || rc_is_fmt1(rc, TPM2_RC_TYPE) || rc_is_fmt1(rc, TPM2_RC_ATTRIBUTES)
++                || signer_auth_failed) {
++            rv = CKR_MECHANISM_PARAM_INVALID;
++        }
++        goto out;
++    }
++
++    rc = Tss2_MU_TPM2B_ATTEST_Marshal(certify_info, out, *outlen, &offset);
++    if (rc != TSS2_RC_SUCCESS) {
++        LOGE("Tss2_MU_TPM2B_ATTEST_Marshal: %s", Tss2_RC_Decode(rc));
++        goto out;
++    }
++
++    rc = Tss2_MU_TPMT_SIGNATURE_Marshal(signature, out, *outlen, &offset);
++    if (rc != TSS2_RC_SUCCESS) {
++        LOGE("Tss2_MU_TPMT_SIGNATURE_Marshal: %s", Tss2_RC_Decode(rc));
++        goto out;
++    }
++
++    *outlen = offset;
++    rv = CKR_OK;
++
++out:
++    Esys_Free(certify_info);
++    Esys_Free(signature);
++    /* a persistent object: only the ESYS_TR is released, nothing is flushed from the TPM */
++    Esys_TR_Close(ectx, &signer);
++
++    return rv;
++}
++
+ CK_RV tpm_verify(tpm_op_data *opdata, CK_BYTE_PTR data, CK_ULONG datalen, CK_BYTE_PTR sig, CK_ULONG siglen) {
+     assert(opdata);
+ 
+diff --git a/src/lib/tpm.h b/src/lib/tpm.h
+index 2424608..10ac863 100644
+--- a/src/lib/tpm.h
++++ b/src/lib/tpm.h
+@@ -104,6 +104,31 @@ bool tpm_contextload_handle(tpm_ctx *ctx, twist handle_blob, uint32_t *handle);
+ CK_RV tpm_sign(tpm_op_data *opdata, CK_BYTE_PTR data, CK_ULONG datalen, CK_BYTE_PTR sig, CK_ULONG_PTR siglen);
+ CK_RV tpm_verify(tpm_op_data *opdata, CK_BYTE_PTR data, CK_ULONG datalen, CK_BYTE_PTR sig, CK_ULONG siglen);
+ 
++/**
++ * CKM_TPM2_CERTIFY (tpm2-pkcs11-vendor.h): TPM2_Certify of a loaded object, signed by the
++ * persistent key at signer_handle, which must have an empty auth value.
++ * @param tctx
++ *  The tpm context.
++ * @param tobj
++ *  The key object to certify, loaded in the TPM by token_load_object().
++ * @param signer_handle
++ *  The persistent TPM handle of the signing key.
++ * @param qualifying
++ *  The qualifying data (the nonce), qualifying_len bytes, at most CK_TPM2_CERTIFY_MAX_QUALIFYING_LEN.
++ * @param out
++ *  Receives the marshaled TPM2B_ATTEST followed by the marshaled TPMT_SIGNATURE.
++ * @param outlen
++ *  On entry the size of out, which must be at least CK_TPM2_CERTIFY_MAX_LEN; on success the
++ *  size of what was written.
++ * @return
++ *  CKR_OK on success, CKR_DATA_LEN_RANGE for too long a nonce, CKR_BUFFER_TOO_SMALL,
++ *  CKR_MECHANISM_PARAM_INVALID when the TPM refuses the signer (no such handle, not a
++ *  signing key), CKR_GENERAL_ERROR otherwise.
++ */
++CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
++        const CK_BYTE *qualifying, CK_ULONG qualifying_len,
++        CK_BYTE_PTR out, CK_ULONG_PTR outlen);
++
+ CK_RV tpm_rsa_pkcs_get_opdata(mdetail *m, tpm_ctx *tctx, CK_MECHANISM_PTR mech, tobject *tobj, tpm_op_data **opdata);
+ CK_RV tpm_rsa_oaep_get_opdata(mdetail *m, tpm_ctx *tctx, CK_MECHANISM_PTR mech, tobject *tobj, tpm_op_data **opdata);
+ CK_RV tpm_rsa_pss_get_opdata(mdetail *m, tpm_ctx *tctx, CK_MECHANISM_PTR mech, tobject *tobj, tpm_op_data **outdata);
+diff --git a/src/tpm2-pkcs11-vendor.h b/src/tpm2-pkcs11-vendor.h
+new file mode 100644
+index 0000000..0c056e8
+--- /dev/null
++++ b/src/tpm2-pkcs11-vendor.h
+@@ -0,0 +1,73 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/*
++ * Vendor-defined PKCS#11 types of tpm2-pkcs11: the attribute and mechanism numbers, and the
++ * mechanism parameter structures, that clients may rely on.
++ *
++ * Include this after a Cryptoki header (pkcs11.h). Everything here is a stable interface: a
++ * number or a layout listed here does not change in a release of the same major version.
++ *
++ * Vendor attributes not listed here (CKA_TPM2_OBJAUTH_ENC, CKA_TPM2_PRIV_BLOB,
++ * CKA_TPM2_ENC_BLOB, CKA_TPM2_SERIALIZED_TR) exist in the module's object store, can be
++ * returned by C_GetAttributeValue as a side effect, and are NOT stable: do not use them.
++ */
++#ifndef SRC_TPM2_PKCS11_VENDOR_H_
++#define SRC_TPM2_PKCS11_VENDOR_H_
++
++/* The vendor range of tpm2-pkcs11, shared by its attributes and mechanisms. */
++#define CKA_VENDOR_TPM2_DEFINED  0x0F000000UL
++#define CKM_VENDOR_TPM2_DEFINED  0x0F000000UL
++
++/*
++ * CKA_TPM2_PUB_BLOB: the object's TPM public area, marshaled as a TPM2B_PUBLIC (a big-endian
++ * 16-bit size, then the TPMT_PUBLIC). Present on every key object that lives in the TPM
++ * (public, private and secret keys), readable in any session that can see the object. The
++ * object's TPM Name is its name algorithm's identifier followed by that algorithm's digest of
++ * the TPMT_PUBLIC (the bytes after the size), so a client can compute it and compare it with
++ * what CKM_TPM2_CERTIFY attests.
++ */
++#define CKA_TPM2_PUB_BLOB        (CKA_VENDOR_DEFINED|CKA_VENDOR_TPM2_DEFINED|0x2UL)
++
++/*
++ * CKM_TPM2_CERTIFY: TPM2_Certify, with a key of the TPM as the signer, over the key object the
++ * operation is initialised with. A vendor mechanism for C_SignInit / C_Sign (or the
++ * C_SignUpdate / C_SignFinal form: the parts are concatenated).
++ *
++ *   C_SignInit   hKey       the key object to certify: a private or secret key in the TPM.
++ *                           CKA_SIGN and CKA_ALLOWED_MECHANISMS are not consulted: the
++ *                           mechanism signs nothing the key holder chose, and certifies keys
++ *                           that can sign nothing (decrypt-only, derive-only, HMAC).
++ *                pParameter CK_TPM2_CERTIFY_PARAMS.
++ *   C_Sign       pData      the qualifying data: a caller-chosen nonce of 0 to 64 bytes, signed
++ *                           into the statement (CKR_DATA_LEN_RANGE above that).
++ *                pSignature TPM2B_ATTEST || TPMT_SIGNATURE, each as the TPM marshals it. The
++ *                           buffer must hold CK_TPM2_CERTIFY_MAX_LEN bytes (a call with a NULL
++ *                           pSignature returns that length without touching the TPM);
++ *                           *pulSignatureLen is the length of what was written.
++ *
++ * The signature is the signer's own scheme (TPMT_SIG_SCHEME TPM2_ALG_NULL: a signing key with
++ * a scheme in its template uses it). The user must be logged in, as for any use of a key.
++ *
++ * The caller verifies everything: that the signature verifies under the signer's public key,
++ * that extraData is the nonce it sent, that the attested name is the Name of CKA_TPM2_PUB_BLOB
++ * and the qualified signer the signer's.
++ */
++#define CKM_TPM2_CERTIFY         (CKM_VENDOR_DEFINED|CKM_VENDOR_TPM2_DEFINED|0x1UL)
++
++/* An upper bound of the output of CKM_TPM2_CERTIFY (an attest of a certified key and a 4096-bit RSA signature). */
++#define CK_TPM2_CERTIFY_MAX_LEN  1024UL
++
++/* The longest qualifying data CKM_TPM2_CERTIFY takes (sizeof(TPM2B_DATA.buffer)). */
++#define CK_TPM2_CERTIFY_MAX_QUALIFYING_LEN 64UL
++
++typedef struct CK_TPM2_CERTIFY_PARAMS {
++    /*
++     * The persistent TPM handle of the signing key (0x81000000 to 0x81FFFFFF): a key the caller
++     * made, with an empty auth value and a signing capability (a restricted signing key, an
++     * attestation key, is the intended signer). The module only uses it.
++     */
++    CK_ULONG ulSignerHandle;
++} CK_TPM2_CERTIFY_PARAMS;
++
++typedef CK_TPM2_CERTIFY_PARAMS *CK_TPM2_CERTIFY_PARAMS_PTR;
++
++#endif /* SRC_TPM2_PKCS11_VENDOR_H_ */
+diff --git a/test/integration/pkcs-certify.int.c b/test/integration/pkcs-certify.int.c
+new file mode 100644
+index 0000000..08ca6cb
+--- /dev/null
++++ b/test/integration/pkcs-certify.int.c
+@@ -0,0 +1,439 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++
++#include <openssl/bn.h>
++#include <openssl/ecdsa.h>
++#include <openssl/evp.h>
++#include <openssl/pem.h>
++#include <openssl/sha.h>
++
++#include <tss2/tss2_mu.h>
++
++#include "test.h"
++#include "tpm2-pkcs11-vendor.h"
++
++/*
++ * CKM_TPM2_CERTIFY (tpm2-pkcs11-vendor.h): the TPM signs a statement about a key object with a
++ * key the caller names. The signer is created by scripts/create_pkcs_store.sh, as a restricted
++ * ECDSA P-256 signing key at this persistent handle; its public key is $TPM2_PKCS11_STORE/ak.pem.
++ */
++#define SIGNER_HANDLE 0x81000F01UL
++/* A persistent key of the TPM that is no signing key, also from create_pkcs_store.sh. */
++#define NOT_A_SIGNER_HANDLE 0x81000F02UL
++/* A signing key with an auth value, which the mechanism cannot use (noDA), likewise. */
++#define SIGNER_WITH_AUTH_HANDLE 0x81000F03UL
++
++struct test_info {
++    CK_SESSION_HANDLE handle;
++    CK_SLOT_ID slot_id;
++};
++
++static int test_setup(void **state) {
++
++    test_info *ti = calloc(1, sizeof(*ti));
++    assert_non_null(ti);
++
++    CK_SLOT_ID slots[6];
++    CK_ULONG count = ARRAY_LEN(slots);
++    CK_RV rv = C_GetSlotList(true, slots, &count);
++    assert_int_equal(rv, CKR_OK);
++    assert_int_equal(count, TOKEN_COUNT);
++
++    ti->slot_id = slots[0];
++
++    rv = C_OpenSession(ti->slot_id, CKF_SERIAL_SESSION, NULL, NULL, &ti->handle);
++    assert_int_equal(rv, CKR_OK);
++
++    *state = ti;
++
++    return 0;
++}
++
++static int test_teardown(void **state) {
++
++    test_info *ti = test_info_from_state(state);
++
++    CK_RV rv = C_CloseAllSessions(ti->slot_id);
++    assert_int_equal(rv, CKR_OK);
++
++    free(ti);
++
++    return 0;
++}
++
++static const CK_BYTE nonce[32] = {
++    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
++    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
++};
++
++static CK_RV certify_init(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key, CK_ULONG signer) {
++
++    CK_TPM2_CERTIFY_PARAMS params = { .ulSignerHandle = signer };
++    CK_MECHANISM mech = { CKM_TPM2_CERTIFY, &params, sizeof(params) };
++
++    return C_SignInit(session, &mech, key);
++}
++
++static CK_RV certify(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key, CK_ULONG signer,
++        const CK_BYTE *data, CK_ULONG data_len, CK_BYTE *out, CK_ULONG *out_len) {
++
++    CK_RV rv = certify_init(session, key, signer);
++    if (rv != CKR_OK) {
++        return rv;
++    }
++
++    return C_Sign(session, (CK_BYTE_PTR)data, data_len, out, out_len);
++}
++
++/* The AK's public key, as the create_pkcs_store.sh wrote it. */
++static EVP_PKEY *signer_pkey(void) {
++
++    const char *store = getenv("TPM2_PKCS11_STORE");
++    assert_non_null(store);
++
++    char path[4096];
++    int n = snprintf(path, sizeof(path), "%s/ak.pem", store);
++    assert_true(n > 0 && (size_t)n < sizeof(path));
++
++    FILE *f = fopen(path, "r");
++    assert_non_null(f);
++    EVP_PKEY *pkey = PEM_read_PUBKEY(f, NULL, NULL, NULL);
++    fclose(f);
++    assert_non_null(pkey);
++
++    return pkey;
++}
++
++/*
++ * Everything a client checks of a CKM_TPM2_CERTIFY statement: the statement parses to the end,
++ * is a certify statement of this nonce, names the object by the Name of its CKA_TPM2_PUB_BLOB,
++ * and carries the signer's valid signature.
++ */
++static void check_statement(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key,
++        const CK_BYTE *data, CK_ULONG data_len, const CK_BYTE *out, CK_ULONG out_len) {
++
++    CK_BYTE pub_blob[1024];
++    CK_ATTRIBUTE pub_attr = { CKA_TPM2_PUB_BLOB, pub_blob, sizeof(pub_blob) };
++    CK_RV rv = C_GetAttributeValue(session, key, &pub_attr, 1);
++    assert_int_equal(rv, CKR_OK);
++    /* a TPM2B_PUBLIC: its size, then the TPMT_PUBLIC the Name is made of */
++    assert_true(pub_attr.ulValueLen > 2);
++    assert_int_equal(pub_attr.ulValueLen, 2 + ((pub_blob[0] << 8) | pub_blob[1]));
++
++    TPM2B_ATTEST attest2b = { 0 };
++    TPMT_SIGNATURE signature = { 0 };
++    size_t off = 0;
++    TSS2_RC rc = Tss2_MU_TPM2B_ATTEST_Unmarshal(out, out_len, &off, &attest2b);
++    assert_int_equal(rc, TSS2_RC_SUCCESS);
++    rc = Tss2_MU_TPMT_SIGNATURE_Unmarshal(out, out_len, &off, &signature);
++    assert_int_equal(rc, TSS2_RC_SUCCESS);
++    assert_int_equal(off, out_len);
++
++    TPMS_ATTEST attest = { 0 };
++    size_t attest_off = 0;
++    rc = Tss2_MU_TPMS_ATTEST_Unmarshal(attest2b.attestationData, attest2b.size, &attest_off, &attest);
++    assert_int_equal(rc, TSS2_RC_SUCCESS);
++    assert_int_equal(attest_off, attest2b.size);
++
++    assert_int_equal(attest.magic, TPM2_GENERATED_VALUE);
++    assert_int_equal(attest.type, TPM2_ST_ATTEST_CERTIFY);
++    assert_int_equal(attest.extraData.size, data_len);
++    assert_memory_equal(attest.extraData.buffer, data, data_len);
++
++    /* the Name: the name algorithm, then its digest of the TPMT_PUBLIC (SHA-256 for tpm2_ptool's keys) */
++    const TPM2B_NAME *name = &attest.attested.certify.name;
++    assert_int_equal(name->size, 2 + SHA256_DIGEST_LENGTH);
++    assert_int_equal((name->name[0] << 8) | name->name[1], TPM2_ALG_SHA256);
++    unsigned char digest[SHA256_DIGEST_LENGTH];
++    SHA256(&pub_blob[2], pub_attr.ulValueLen - 2, digest);
++    assert_memory_equal(&name->name[2], digest, sizeof(digest));
++
++    /* the signer's signature over the statement exactly as the TPM marshaled it */
++    assert_int_equal(signature.sigAlg, TPM2_ALG_ECDSA);
++    assert_int_equal(signature.signature.ecdsa.hash, TPM2_ALG_SHA256);
++    ECDSA_SIG *ecdsa = ECDSA_SIG_new();
++    assert_non_null(ecdsa);
++    BIGNUM *r = BN_bin2bn(signature.signature.ecdsa.signatureR.buffer, signature.signature.ecdsa.signatureR.size, NULL);
++    BIGNUM *s = BN_bin2bn(signature.signature.ecdsa.signatureS.buffer, signature.signature.ecdsa.signatureS.size, NULL);
++    assert_non_null(r);
++    assert_non_null(s);
++    assert_int_equal(ECDSA_SIG_set0(ecdsa, r, s), 1);
++    unsigned char *der = NULL;
++    int der_len = i2d_ECDSA_SIG(ecdsa, &der);
++    ECDSA_SIG_free(ecdsa);
++    assert_true(der_len > 0);
++
++    EVP_PKEY *pkey = signer_pkey();
++    EVP_MD_CTX *md = EVP_MD_CTX_new();
++    assert_non_null(md);
++    assert_int_equal(EVP_DigestVerifyInit(md, NULL, EVP_sha256(), NULL, pkey), 1);
++    int ok = EVP_DigestVerify(md, der, der_len, attest2b.attestationData, attest2b.size);
++    assert_int_equal(ok, 1);
++    EVP_MD_CTX_free(md);
++    EVP_PKEY_free(pkey);
++    OPENSSL_free(der);
++}
++
++static void certify_and_check(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key) {
++
++    CK_BYTE out[CK_TPM2_CERTIFY_MAX_LEN];
++    CK_ULONG out_len = sizeof(out);
++    CK_RV rv = certify(session, key, SIGNER_HANDLE, nonce, sizeof(nonce), out, &out_len);
++    assert_int_equal(rv, CKR_OK);
++    assert_true(out_len < sizeof(out));
++
++    check_statement(session, key, nonce, sizeof(nonce), out, out_len);
++}
++
++/* The mechanism is listed, and is a signing mechanism of the TPM. */
++static void test_certify_is_listed(void **state) {
++
++    test_info *ti = test_info_from_state(state);
++
++    CK_MECHANISM_TYPE mechs[256];
++    CK_ULONG count = ARRAY_LEN(mechs);
++    CK_RV rv = C_GetMechanismList(ti->slot_id, mechs, &count);
++    assert_int_equal(rv, CKR_OK);
++
++    bool found = false;
++    for (CK_ULONG i = 0; i < count; i++) {
++        found |= mechs[i] == CKM_TPM2_CERTIFY;
++    }
++    assert_true(found);
++
++    CK_MECHANISM_INFO info;
++    rv = C_GetMechanismInfo(ti->slot_id, CKM_TPM2_CERTIFY, &info);
++    assert_int_equal(rv, CKR_OK);
++    assert_true(info.flags & CKF_SIGN);
++    assert_true(info.flags & CKF_HW);
++}
++
++/* Private keys of each type are certified, and the statements verify. */
++static void test_certify_private_keys(void **state) {
++
++    test_info *ti = test_info_from_state(state);
++    CK_SESSION_HANDLE session = ti->handle;
++
++    user_login(session);
++
++    CK_KEY_TYPE types[] = { CKK_EC, CKK_RSA };
++    for (size_t i = 0; i < ARRAY_LEN(types); i++) {
++        CK_OBJECT_HANDLE pub, priv;
++        get_keypair(session, types[i], &pub, &priv);
++        certify_and_check(session, priv);
++    }
++}
++
++/*
++ * Secret keys are certified too (the AES and HMAC keys of the token), though none of them lists
++ * CKM_TPM2_CERTIFY in its CKA_ALLOWED_MECHANISMS.
++ */
++static void test_certify_secret_keys(void **state) {
++
++    test_info *ti = test_info_from_state(state);
++    CK_SESSION_HANDLE session = ti->handle;
++
++    user_login(session);
++
++    CK_OBJECT_CLASS key_class = CKO_SECRET_KEY;
++    CK_BBOOL always_authenticate = CK_FALSE;
++    CK_ATTRIBUTE tmpl[] = {
++        { CKA_CLASS, &key_class, sizeof(key_class) },
++        { CKA_ALWAYS_AUTHENTICATE, &always_authenticate, sizeof(always_authenticate) },
++    };
++    CK_RV rv = C_FindObjectsInit(session, tmpl, ARRAY_LEN(tmpl));
++    assert_int_equal(rv, CKR_OK);
++
++    CK_OBJECT_HANDLE keys[16];
++    CK_ULONG count = 0;
++    rv = C_FindObjects(session, keys, ARRAY_LEN(keys), &count);
++    assert_int_equal(rv, CKR_OK);
++    rv = C_FindObjectsFinal(session);
++    assert_int_equal(rv, CKR_OK);
++    /* 2 AES keys and the HMAC key */
++    assert_true(count >= 3);
++
++    for (CK_ULONG i = 0; i < count; i++) {
++        certify_and_check(session, keys[i]);
++    }
++}
++
++/* A key that needs a context login for every use needs it to be certified. */
++static void test_certify_always_authenticate(void **state) {
++
++    test_info *ti = test_info_from_state(state);
++    CK_SESSION_HANDLE session = ti->handle;
++
++    user_login(session);
++
++    CK_OBJECT_CLASS key_class = CKO_PRIVATE_KEY;
++    CK_BBOOL always_authenticate = CK_TRUE;
++    CK_ATTRIBUTE tmpl[] = {
++        { CKA_CLASS, &key_class, sizeof(key_class) },
++        { CKA_ALWAYS_AUTHENTICATE, &always_authenticate, sizeof(always_authenticate) },
++    };
++    CK_RV rv = C_FindObjectsInit(session, tmpl, ARRAY_LEN(tmpl));
++    assert_int_equal(rv, CKR_OK);
++
++    CK_OBJECT_HANDLE key;
++    CK_ULONG count = 0;
++    rv = C_FindObjects(session, &key, 1, &count);
++    assert_int_equal(rv, CKR_OK);
++    assert_int_equal(count, 1);
++    rv = C_FindObjectsFinal(session);
++    assert_int_equal(rv, CKR_OK);
++
++    rv = certify_init(session, key, SIGNER_HANDLE);
++    assert_int_equal(rv, CKR_OK);
++
++    CK_BYTE out[CK_TPM2_CERTIFY_MAX_LEN];
++    CK_ULONG out_len = sizeof(out);
++    rv = C_Sign(session, (CK_BYTE_PTR)nonce, sizeof(nonce), out, &out_len);
++    assert_int_equal(rv, CKR_USER_NOT_LOGGED_IN);
++
++    context_login(session);
++
++    out_len = sizeof(out);
++    rv = C_Sign(session, (CK_BYTE_PTR)nonce, sizeof(nonce), out, &out_len);
++    assert_int_equal(rv, CKR_OK);
++    check_statement(session, key, nonce, sizeof(nonce), out, out_len);
++}
++
++/*
++ * The output length is an upper bound the caller learns without the TPM being used, the buffer
++ * must be that long, and the part form of the operation certifies as C_Sign does.
++ */
++static void test_certify_sizes_and_parts(void **state) {
++
++    test_info *ti = test_info_from_state(state);
++    CK_SESSION_HANDLE session = ti->handle;
++
++    user_login(session);
++
++    CK_OBJECT_HANDLE pub, priv;
++    get_keypair(session, CKK_EC, &pub, &priv);
++
++    CK_RV rv = certify_init(session, priv, SIGNER_HANDLE);
++    assert_int_equal(rv, CKR_OK);
++
++    CK_ULONG out_len = 0;
++    rv = C_Sign(session, (CK_BYTE_PTR)nonce, sizeof(nonce), NULL, &out_len);
++    assert_int_equal(rv, CKR_OK);
++    assert_int_equal(out_len, CK_TPM2_CERTIFY_MAX_LEN);
++
++    /* a buffer shorter than the bound is refused, keeping the operation */
++    CK_BYTE out[CK_TPM2_CERTIFY_MAX_LEN];
++    out_len = CK_TPM2_CERTIFY_MAX_LEN - 1;
++    rv = C_Sign(session, (CK_BYTE_PTR)nonce, sizeof(nonce), out, &out_len);
++    assert_int_equal(rv, CKR_BUFFER_TOO_SMALL);
++    assert_int_equal(out_len, CK_TPM2_CERTIFY_MAX_LEN);
++
++    /* the same operation, in two parts of the nonce */
++    rv = C_SignUpdate(session, (CK_BYTE_PTR)nonce, 10);
++    assert_int_equal(rv, CKR_OK);
++    rv = C_SignUpdate(session, (CK_BYTE_PTR)&nonce[10], sizeof(nonce) - 10);
++    assert_int_equal(rv, CKR_OK);
++    out_len = sizeof(out);
++    rv = C_SignFinal(session, out, &out_len);
++    assert_int_equal(rv, CKR_OK);
++    check_statement(session, priv, nonce, sizeof(nonce), out, out_len);
++
++    /* no nonce at all */
++    out_len = sizeof(out);
++    rv = certify(session, priv, SIGNER_HANDLE, nonce, 0, out, &out_len);
++    assert_int_equal(rv, CKR_OK);
++    check_statement(session, priv, nonce, 0, out, out_len);
++
++    /* a nonce of the longest length, and the operation ends: the next one is not "active" */
++    CK_BYTE longest[CK_TPM2_CERTIFY_MAX_QUALIFYING_LEN] = { 0xa5 };
++    out_len = sizeof(out);
++    rv = certify(session, priv, SIGNER_HANDLE, longest, sizeof(longest), out, &out_len);
++    assert_int_equal(rv, CKR_OK);
++    check_statement(session, priv, longest, sizeof(longest), out, out_len);
++}
++
++/*
++ * What is refused, each leaving the session fit to certify: a session without the user, the
++ * verify operations, a parameter that is not a persistent handle of a signing key, too long a
++ * nonce, and an object that is not in the TPM with a private area (a public key).
++ */
++static void test_certify_refusals(void **state) {
++
++    test_info *ti = test_info_from_state(state);
++    CK_SESSION_HANDLE session = ti->handle;
++
++    user_login(session);
++
++    CK_OBJECT_HANDLE pub, priv;
++    get_keypair(session, CKK_EC, &pub, &priv);
++
++    CK_BYTE out[CK_TPM2_CERTIFY_MAX_LEN];
++    CK_ULONG out_len;
++    CK_RV rv;
++
++    CK_TPM2_CERTIFY_PARAMS params = { .ulSignerHandle = SIGNER_HANDLE };
++    CK_MECHANISM mech = { CKM_TPM2_CERTIFY, &params, sizeof(params) };
++
++    /* it signs; there is nothing to verify */
++    rv = C_VerifyInit(session, &mech, priv);
++    assert_int_equal(rv, CKR_MECHANISM_INVALID);
++
++    /* the parameter: missing, of another length */
++    mech.pParameter = NULL;
++    mech.ulParameterLen = 0;
++    rv = C_SignInit(session, &mech, priv);
++    assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
++    mech.pParameter = &params;
++    mech.ulParameterLen = sizeof(params) - 1;
++    rv = C_SignInit(session, &mech, priv);
++    assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
++
++    /* a signer that is no persistent handle, one with no object, one that is no signing key */
++    out_len = sizeof(out);
++    rv = certify(session, priv, 0x80000001UL, nonce, sizeof(nonce), out, &out_len);
++    assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
++    rv = certify(session, priv, 0x81000FFEUL, nonce, sizeof(nonce), out, &out_len);
++    assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
++    out_len = sizeof(out);
++    rv = certify(session, priv, NOT_A_SIGNER_HANDLE, nonce, sizeof(nonce), out, &out_len);
++    assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
++    out_len = sizeof(out);
++    rv = certify(session, priv, SIGNER_WITH_AUTH_HANDLE, nonce, sizeof(nonce), out, &out_len);
++    assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
++
++    /* too long a nonce */
++    CK_BYTE too_long[CK_TPM2_CERTIFY_MAX_QUALIFYING_LEN + 1] = { 0 };
++    rv = certify(session, priv, SIGNER_HANDLE, too_long, sizeof(too_long), out, &out_len);
++    assert_int_equal(rv, CKR_DATA_LEN_RANGE);
++
++    /* a public key object is not in the TPM with a private area */
++    rv = certify_init(session, pub, SIGNER_HANDLE);
++    assert_int_equal(rv, CKR_KEY_TYPE_INCONSISTENT);
++
++    /* none of it left an operation active */
++    certify_and_check(session, priv);
++
++    /* the user must be logged in */
++    logout(session);
++    rv = certify_init(session, priv, SIGNER_HANDLE);
++    assert_int_equal(rv, CKR_USER_NOT_LOGGED_IN);
++}
++
++int main() {
++
++    const struct CMUnitTest tests[] = {
++        cmocka_unit_test_setup_teardown(test_certify_is_listed,
++            test_setup, test_teardown),
++        cmocka_unit_test_setup_teardown(test_certify_private_keys,
++            test_setup, test_teardown),
++        cmocka_unit_test_setup_teardown(test_certify_secret_keys,
++            test_setup, test_teardown),
++        cmocka_unit_test_setup_teardown(test_certify_always_authenticate,
++            test_setup, test_teardown),
++        cmocka_unit_test_setup_teardown(test_certify_sizes_and_parts,
++            test_setup, test_teardown),
++        cmocka_unit_test_setup_teardown(test_certify_refusals,
++            test_setup, test_teardown),
++    };
++
++    return cmocka_run_group_tests(tests, group_setup, group_teardown);
++}
+diff --git a/test/integration/scripts/create_pkcs_store.sh b/test/integration/scripts/create_pkcs_store.sh
+index 89884b7..9c68cc8 100755
+--- a/test/integration/scripts/create_pkcs_store.sh
++++ b/test/integration/scripts/create_pkcs_store.sh
+@@ -153,6 +153,23 @@ echo "Adding 1 HMAC:SHA256 key under token \"label\""
+ tpm2_ptool addkey --algorithm=hmac:sha256 --label="label" --key-label="hmac0" --userpin=myuserpin --path=$TPM2_PKCS11_STORE
+ echo "Added HMAC Key"
+ 
++# The signer of the CKM_TPM2_CERTIFY test (pkcs-certify.int.c): a restricted ECDSA P-256 signing
++# key with an empty auth value at a persistent handle, its public key in ak.pem.
++tpm2_createprimary -C o -c "$TPM2_PKCS11_STORE/ak-primary.ctx"
++tpm2_create -C "$TPM2_PKCS11_STORE/ak-primary.ctx" -G ecc256:ecdsa-sha256:null \
++    -a 'fixedtpm|fixedparent|sensitivedataorigin|userwithauth|restricted|sign' \
++    -c "$TPM2_PKCS11_STORE/ak.ctx"
++tpm2_evictcontrol -C o -c "$TPM2_PKCS11_STORE/ak.ctx" 0x81000F01
++tpm2_readpublic -c 0x81000F01 -f pem -o "$TPM2_PKCS11_STORE/ak.pem"
++# A key that is no signing key (a storage primary), the signer the test must see refused.
++tpm2_evictcontrol -C o -c "$TPM2_PKCS11_STORE/ak-primary.ctx" 0x81000F02
++# A signing key with an auth value, which the mechanism cannot use. noDA: a wrong auth does not
++# count against the TPM's lockout.
++tpm2_create -C "$TPM2_PKCS11_STORE/ak-primary.ctx" -G ecc256:ecdsa-sha256:null -p signerauth \
++    -a 'fixedtpm|fixedparent|sensitivedataorigin|userwithauth|restricted|sign|noda' \
++    -c "$TPM2_PKCS11_STORE/ak-auth.ctx"
++tpm2_evictcontrol -C o -c "$TPM2_PKCS11_STORE/ak-auth.ctx" 0x81000F03
++
+ #
+ # generate cert
+ #
+-- 
+2.56.0
+

@@ -107,14 +107,20 @@ provider = "tpm2-pkcs11"
 nix = { systemFeature = "token-tpm" }
 
 # The provider's own settings. Each provider checks its own; one that takes none refuses any
-# (17). tpm2-pkcs11's (`tcti`, `tpm2Store`, `akHandle`, `ekCertificate`, `ekRoots`) serve its
-# native TPM2_Certify attestation path (§3.7). `ekCertificate` names the TPM's EK certificate
-# and its intermediates (PEM): every attestation then proves the AK is in that TPM, and the
-# lock pins the manufacturer's root. It must verify to a built-in root (AMD fTPM) or to
-# `ekRoots` (a PEM file of extra roots).
+# (17). tpm2-pkcs11's (`tcti`, `tpm2Store`, `akHandle`, `akLabel`, `ekCertificate`, `ekRoots`)
+# serve its TPM2_Certify attestation (§3.7). A module that has the CKM_TPM2_CERTIFY vendor
+# mechanism certifies for us (no `tpm2Store`); an older one is read through its store, with
+# `tcti`. `akHandle` is the persistent Attestation Key (the default); `akLabel` instead names an
+# Attestation Key that is an object of the token, made by `lock` (CKM_TPM2_AK_PAIR_GEN) and used
+# without `tcti` or `tpm2Store` (a module with CKM_TPM2_CERTIFY_OBJECT only, 15 otherwise). It is
+# another key, so another `attestation.root`: switching to it is re-locking. Not both.
+# `ekCertificate` names the TPM's EK certificate and its intermediates (PEM): every attestation
+# then proves the AK is in that TPM, and the lock pins the manufacturer's root. It must verify
+# to a built-in root (AMD fTPM) or to `ekRoots` (a PEM file of extra roots).
 [tokens.tpm.options]
 tcti = "device:/dev/tpmrm0"
 akHandle = "0x81000016"
+# akLabel = "cakeys-ak"
 ekCertificate = "/etc/cakeys/ek.pem"
 
 [tokens.yubikey]

@@ -37,9 +37,6 @@ pub fn patched() -> bool {
 /// on a return value (the probe's busy-session handling) cannot tell one from another (review D3).
 pub const RV_VALUE: bool = cfg!(feature = "rv-value");
 
-/// Whether a `CKA_ALWAYS_AUTHENTICATE` key can prove possession (`sign-after-init`).
-pub const SIGN_AFTER_INIT: bool = cfg!(feature = "sign-after-init");
-
 /// The cryptoki binding layer: the committed subtractions for an unpatched binding
 /// (profiles/layers/cryptoki.toml), or an empty one when [`patched`] says the fix is in.
 ///
@@ -73,14 +70,14 @@ mod tests {
     }
 
     /// A patched binding (the Nix build's) is built with every feature that uses it, which each
-    /// tool's `patched-cryptoki` turns on together (review D3): without `sign-after-init` every
-    /// per-use PIN proof the binding can give is refused; without `rv-value` the probe cannot tell
-    /// a busy session from a refusal. Either feature without the patch would not compile.
+    /// tool's `patched-cryptoki` turns on together (review D3): without `rv-value` the probe
+    /// cannot tell a busy session from a refusal, and the feature without the patch would not
+    /// compile.
     #[test]
     fn the_patched_binding_comes_with_its_features() {
         assert!(
-            !patched() || (SIGN_AFTER_INIT && RV_VALUE),
-            "the patched cryptoki is linked without cakeys-pkcs11's `sign-after-init` and `rv-value` (each tool's \
+            !patched() || RV_VALUE,
+            "the patched cryptoki is linked without cakeys-pkcs11's `rv-value` (each tool's \
              `patched-cryptoki` feature; nix/package-common.nix features)"
         );
     }

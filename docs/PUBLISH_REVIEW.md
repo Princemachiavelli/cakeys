@@ -49,9 +49,15 @@ crates.io for the workspace's own unpublished crates and fails at the first bina
 2. **No crate ships `LICENSE`.** BSD-3-Clause requires the notice to travel with redistributed
    source, and a crate tarball is that. Fix: a copy (or symlink, which cargo follows) per crate.
 
-The patched cryptoki does not block packaging: no default feature needs it. A registry build
-does less (see "Patches"): `kwp` and `sign-after-init` do not compile if enabled, and without
-the HMAC key-type fix SHA-224/384/512 HMAC keys are refused.
+The cryptoki dependency does block packaging as it stands: the workspace depends on
+`cryptoki` and `cryptoki-sys` as git sources at a pinned rev of rust-cryptoki's main (it has
+`sign_single` and the vendor mechanisms in the list, which 0.12.1 lacks), and crates.io refuses a
+crate with a git dependency without a version beside it. Publishing waits for a cryptoki release
+that has both (the dependency goes back to the version), or the dependency becomes
+`version = "0.12", git = ...` (cargo publishes the version) with the code needing `sign_single`
+and the vendor arm behind features. The patches are not a block: no default feature needs them.
+A registry build does less (see "Patches"): `kwp` does not compile if enabled, and without the
+HMAC key-type fix SHA-224/384/512 HMAC keys are refused.
 
 ## Smaller gaps
 
@@ -76,14 +82,14 @@ A published crate cannot ask for a patched dependency. The ways out:
 1. **Upstream** (preferred). rust-cryptoki [#373](https://github.com/parallaxsecond/rust-cryptoki/pull/373)
    (HMAC key types), [#376](https://github.com/parallaxsecond/rust-cryptoki/pull/376)
    (`CKM_AES_KEY_WRAP_KWP`) and [#377](https://github.com/parallaxsecond/rust-cryptoki/pull/377)
-   (`CKM_RSA_AES_KEY_WRAP`, draft) are open; `Session::sign_single` on main replaces
-   `sign-after-init` once released (upstream/rust-cryptoki/).
+   (`CKM_RSA_AES_KEY_WRAP`, draft) are open; `Session::sign_single` and the vendor arm are on
+   main already and cakeys uses them (upstream/rust-cryptoki/).
 2. **A renamed fork** depended on with `cryptoki = { package = "..." }`. Its types would not
    interoperate with any other crate using `cryptoki`; avoid.
-3. **The current design**, which already suits a registry: `kwp` and `sign-after-init` are off
-   by default, so a stock build compiles and does less. Document on each feature that it needs
-   the patched cryptoki. The HMAC fix cannot be a feature, so stock builds refuse those key
-   types until #373 is released.
+3. **The current design**, which suits a registry once cryptoki has a release with main's
+   changes: `kwp` is off by default, so a stock build compiles and does less. Document on the
+   feature that it needs the patched cryptoki. The HMAC fix cannot be a feature, so stock builds
+   refuse those key types until #373 is released.
 
 ## How many crates
 

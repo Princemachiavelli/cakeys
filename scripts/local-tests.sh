@@ -8,12 +8,13 @@
 #
 # The patches (nix/patches/cryptoki-*.patch, and upstream/rust-cryptoki/ drafts applied as they
 # are) and the features that use them, both as the Nix build has them (nix/package-common.nix,
-# evaluated through `.#cakeys.patchedCryptoki`): the patches are applied to the registry's cryptoki under
+# evaluated through `.#cakeys.patchedCryptoki`): the patches are applied to a copy of cargo's
+# checkout of the rust-cryptoki repository (the git source Cargo.toml names) under
 # target/local-tests/, never vendored in the tree, and the features enabled. The run happens in
 # a copy of the working tree, target/local-tests/tree, whose .cargo/config.toml patches
-# cryptoki to that copy, so the repository's Cargo.lock is never touched. It refuses to run
-# unless the build resolves cryptoki to the patched copy, and the reference suites run with
-# their *_REQUIRE variables set, so a test needing the patch fails instead of skipping.
+# cryptoki and cryptoki-sys to that copy, so the repository's Cargo.lock is never touched. It
+# refuses to run unless the build resolves cryptoki to the patched copy, and the reference suites
+# run with their *_REQUIRE variables set, so a test needing the patch fails instead of skipping.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -23,7 +24,7 @@ work=$repo/target/local-tests
 mkdir -p "$work"
 
 # The modules and tools the check phase uses: the flake's own packages and nixpkgs.
-mapfile -t paths < <(nix build --no-link --print-out-paths --inputs-from . .#softhsm-unwrap-value-len \
+mapfile -t paths < <(nix build --no-link --print-out-paths --inputs-from . .#softhsm-unwrap-value-len .#tpm2-pkcs11-vendor.out \
   nixpkgs#kryoptic nixpkgs#p11-kit.out nixpkgs#tpm2-pkcs11.out nixpkgs#cargo-nextest nixpkgs#rsync nixpkgs#gnupatch nixpkgs#jq \
   nixpkgs#openssl.bin nixpkgs#pkcs11-provider)
 path_of() {
@@ -37,7 +38,8 @@ path_of() {
 softhsm=$(path_of softhsm-unwrap-value-len)
 kryoptic=$(path_of kryoptic)
 p11kit=$(path_of p11-kit)
-tpm2=$(path_of tpm2-pkcs11)
+tpm2=$(path_of tpm2-pkcs11-1)
+tpm2_vendor=$(path_of tpm2-pkcs11-vendor)
 nextest=$(path_of cargo-nextest)
 rsync=$(path_of rsync)
 gnupatch=$(path_of patch)
@@ -63,31 +65,41 @@ locked=$(cargo metadata --format-version 1 --locked |
   echo "local-tests: Cargo.lock has cryptoki ${locked%% *}, nix/package-common.nix patches $version" >&2
   exit 1
 }
-source_dir=$(dirname "${locked#* }")
-# Keyed by the version and the patches' contents: a changed patch is applied afresh.
-stamp=$( (echo "$version" && cat "${patches[@]}") | sha256sum | cut -c1-16)
+# cryptoki is a git source (Cargo.toml): cargo's checkout of the whole rust-cryptoki repository,
+# of which the crate is the cryptoki/ subdirectory (cryptoki-sys next to it).
+crate_dir=$(dirname "${locked#* }")
+checkout=$(dirname "$crate_dir")
+# Keyed by the checkout, the version and the patches' contents: a changed patch is applied afresh.
+stamp=$( (echo "$checkout $version" && cat "${patches[@]}") | sha256sum | cut -c1-16)
 patched=$work/cryptoki-$version-$stamp
 if [ ! -f "$patched/.patched" ]; then
-  rsync -a --delete --chmod=u+w "$source_dir/" "$patched/"
+  rsync -a --delete --chmod=u+w --exclude /.git "$checkout/" "$patched/"
   for p in "${patches[@]}"; do
-    patch --batch --forward --silent -d "$patched" -p1 <"$p" || {
+    patch --batch --forward --silent -d "$patched/cryptoki" -p1 <"$p" || {
       echo "local-tests: $p does not apply to cryptoki $version" >&2
       exit 1
     }
   done
   touch "$patched/.patched"
 fi
+# The URL the workspace names the source by, to patch it (Cargo.toml).
+git_url=$(sed -n 's|^cryptoki = { git = "\([^"]*\)".*|\1|p' Cargo.toml)
+[ -n "$git_url" ] || {
+  echo "local-tests: no git source for cryptoki in Cargo.toml" >&2
+  exit 1
+}
 
 tree=$work/tree
 # Not the tree: build output, git's own, and other sessions' worktrees (.claude), which change underfoot.
 rsync -a --delete --exclude /target --exclude /.git --exclude '/result*' --exclude /.cargo --exclude /.claude "$repo/" "$tree/"
 mkdir -p "$tree/.cargo"
-printf '[patch.crates-io]\ncryptoki = { path = "%s" }\n' "$patched" >"$tree/.cargo/config.toml"
+printf '[patch."%s"]\ncryptoki = { path = "%s/cryptoki" }\ncryptoki-sys = { path = "%s/cryptoki-sys" }\n' \
+  "$git_url" "$patched" "$patched" >"$tree/.cargo/config.toml"
 cd "$tree"
 export CARGO_TARGET_DIR=$work/target
 resolved=$(cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == "cryptoki") | .manifest_path')
-[ "$resolved" = "$patched/Cargo.toml" ] || {
-  echo "local-tests: cryptoki resolves to $resolved, not the patched $patched" >&2
+[ "$resolved" = "$patched/cryptoki/Cargo.toml" ] || {
+  echo "local-tests: cryptoki resolves to $resolved, not the patched $patched/cryptoki" >&2
   exit 1
 }
 
@@ -110,6 +122,7 @@ cp -r "$T/softhsm-tokens" "$T/kryoptic.sql" "$CAKEYS_TOKEN_TEMPLATE/"
 export CAKEYS_P11KIT_ENV_SH=$tree/nix/p11kit-test-env.sh CAKEYS_TPM_ENV_SH=$tree/nix/tpm2-test-env.sh
 export CAKEYS_P11KIT_CLIENT=$p11kit/lib/pkcs11/p11-kit-client.so CAKEYS_P11KIT_REQUIRE=1
 export CAKEYS_TPM_MODULE=$tpm2/lib/libtpm2_pkcs11.so CAKEYS_TPM_REQUIRE=1
+export CAKEYS_TPM_VENDOR_MODULE=$tpm2_vendor/lib/libtpm2_pkcs11.so CAKEYS_TPM_VENDOR_REQUIRE=1
 # A swtpm port range of this run's own, above the check phase's 24000 and below the kernel's
 # ephemeral ports (32768 on), which a client's own connections take: two local runs at once (two
 # worktrees) would otherwise take the same ports (nix/test-tokens.sh).

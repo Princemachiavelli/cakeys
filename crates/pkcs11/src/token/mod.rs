@@ -691,10 +691,12 @@ impl Token {
         spki: Option<&[u8]>,
         provision: bool,
     ) -> Result<Attested> {
+        let has_mechanism = |m: MechanismType| self.library.0.get_mechanism_info(self.slot, m).is_ok();
         let ctx = AttestCtx {
             session: &self.session,
             cfg: &self.cfg,
             module_version: &self.module.version,
+            has_mechanism: &has_mechanism,
             token_name: &self.name,
             key,
             object,

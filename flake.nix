@@ -162,7 +162,7 @@
             ;
         }
         // lib.optionalAttrs isLinux {
-          inherit (local) pcsc-probe;
+          inherit (local) pcsc-probe tpm2-pkcs11-vendor;
           # systemd-nspawn variant of the integration test. Needs the `uid-range` system feature
           # (nix.conf: `system-features = ... uid-range` and `auto-allocate-uids = true`).
           test-nspawn = mkTest "container";

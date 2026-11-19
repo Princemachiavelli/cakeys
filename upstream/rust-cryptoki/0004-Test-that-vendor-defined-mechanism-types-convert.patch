@@ -1,0 +1,47 @@
+From 3f2613f7ce5cfdb2699d979f9883c77640f2dce1 Mon Sep 17 00:00:00 2001
+From: Josh Hoffer <jhoffer@sansorgan.es>
+Date: Thu, 19 Nov 2026 08:33:48 -0800
+Subject: [PATCH] Test that vendor-defined mechanism types convert
+
+`TryFrom<CK_MECHANISM_TYPE> for MechanismType` accepts a value in the
+vendor range since 6cc2278, which keeps a vendor's mechanism in the list
+`Pkcs11::get_mechanism_list` returns instead of dropping it. Nothing tests
+it: without the arm, the call quietly returns a shorter list.
+
+The test converts a vendor-range value and checks that it keeps its value
+and equals what `new_vendor_defined` makes, and that a value below the
+range with no name is still refused.
+
+Signed-off-by: Josh Hoffer <jhoffer@sansorgan.es>
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ cryptoki/src/mechanism/mod.rs | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/cryptoki/src/mechanism/mod.rs b/cryptoki/src/mechanism/mod.rs
+index 5db0e73..ff00f7e 100644
+--- a/cryptoki/src/mechanism/mod.rs
++++ b/cryptoki/src/mechanism/mod.rs
+@@ -1647,3 +1647,19 @@ impl MessageParam<'_> {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod vendor_defined_tests {
++    use super::*;
++
++    /// A value in the vendor range converts to a `MechanismType` that keeps it, as
++    /// `new_vendor_defined` makes; one below it that the crate has no name for is still refused.
++    #[test]
++    fn vendor_defined_values_are_kept() {
++        let vendor = CKM_VENDOR_DEFINED | 0x0F00_0001;
++        let ty = MechanismType::try_from(vendor).unwrap();
++        assert_eq!(CK_MECHANISM_TYPE::from(ty), vendor);
++        assert_eq!(ty, MechanismType::new_vendor_defined(vendor).unwrap());
++        assert!(MechanismType::try_from(CKM_VENDOR_DEFINED - 1).is_err());
++    }
++}
+-- 
+2.56.0
+
