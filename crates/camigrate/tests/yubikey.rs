@@ -23,14 +23,9 @@ fn run(turn: &YubikeyTurn, bin: &Path, dir: &Path, args: &[&str]) -> Output {
 
 #[test]
 fn a_key_moves_into_a_piv_slot_through_the_host() {
-    let vars =
-        ["CAKEYS_TEST_YUBIKEY_MODULE", "CAKEYS_TEST_YUBIKEY_PIN", "CAKEYS_TEST_YUBIKEY_MGM", "CAKEYS_TEST_MODULE"];
-    let Ok([yk, pin, mgm, soft]) =
-        vars.map(std::env::var).into_iter().collect::<Result<Vec<_>, _>>().map(|v| <[String; 4]>::try_from(v).unwrap())
-    else {
-        eprintln!("skipping: {} not all set", vars.join(", "));
-        return;
-    };
+    let Some([yk, pin, mgm]) = yubikey_opted_in("a_key_moves_into_a_piv_slot_through_the_host") else { return };
+    // SoftHSM is the harness's own, set for every run; opted in here, it is required.
+    let soft = std::env::var("CAKEYS_TEST_MODULE").expect("CAKEYS_TEST_MODULE (SoftHSM) is required with the YubiKey");
     let turn = YubikeyTurn::take();
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("yubikey-import");
     let _ = std::fs::remove_dir_all(&dir);

@@ -32,6 +32,7 @@ let
     "lock"
     "config"
     "bundle"
+    "key_file"
     "tpm_store_row"
     "tpms_attest"
     "piv_chain"
@@ -42,7 +43,7 @@ let
   ];
 
   # Seed corpora from the test fixtures: certificates, their and the import keys' SPKIs, a
-  # lock, a config, a bundle, the fixture PIV chain, tpm2-pkcs11's malformed P-521 point and the
+  # lock, a config, a bundle, the key files, the fixture PIV chain, tpm2-pkcs11's malformed P-521 point and the
   # committed profiles. Called from the repository root.
   seed = ''
     F=crates/cli/tests/fixtures
@@ -53,6 +54,7 @@ let
     [ -e fuzz/corpus/hex/hex ] || printf 0aFF09bc >fuzz/corpus/hex/hex
     cp --update=none "$F/keys.toml" fuzz/corpus/config/
     cp --update=none crates/camigrate/tests/fixtures/sample.bundle.toml fuzz/corpus/bundle/
+    cp --update=none crates/camigrate/tests/fixtures/keyfiles/* fuzz/corpus/key_file/
     cp --update=none crates/tpm2-pkcs11/tests/fixtures/*.yaml fuzz/corpus/tpm_store_row/
     for p in profiles/modules/*/*.toml profiles/layers/*.toml profiles/hardware/*.toml; do
       cp --update=none "$p" "fuzz/corpus/profile/$(basename "$(dirname "$p")")-$(basename "$p")"

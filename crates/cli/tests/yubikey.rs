@@ -46,14 +46,7 @@ struct Env {
 }
 
 fn env(name: &str) -> Option<Env> {
-    let (Ok(module), Ok(pin), Ok(mgm)) = (
-        std::env::var("CAKEYS_TEST_YUBIKEY_MODULE"),
-        std::env::var("CAKEYS_TEST_YUBIKEY_PIN"),
-        std::env::var("CAKEYS_TEST_YUBIKEY_MGM"),
-    ) else {
-        eprintln!("skipping {name}: CAKEYS_TEST_YUBIKEY_MODULE, _PIN and _MGM (file paths) not all set");
-        return None;
-    };
+    let [module, pin, mgm] = common::yubikey_opted_in(name)?;
     let turn = common::YubikeyTurn::take();
     Some(Env { dir: workdir(name), module, pin, mgm, turn })
 }

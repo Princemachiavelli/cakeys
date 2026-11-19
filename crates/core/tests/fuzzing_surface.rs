@@ -46,8 +46,8 @@ fn every_fuzzing_module_is_gated() {
             }
         }
     }
-    // core, caprobe, tpm2-pkcs11 (and its attestation's), ykcs11.
-    assert_eq!(modules, 5, "the scan found the modules it guards");
+    // core, caprobe, camigrate, tpm2-pkcs11 (and its attestation's), ykcs11.
+    assert_eq!(modules, 6, "the scan found the modules it guards");
 }
 
 #[test]

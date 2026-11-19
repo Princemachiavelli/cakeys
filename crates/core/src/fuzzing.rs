@@ -47,6 +47,26 @@ pub fn attest_encoding_reads_back(a: &[u8], b: &[u8], c: &[u8]) {
     assert_eq!(unframe(&attest_encoding(tag, &fields), tag, 6).as_deref(), Some(&fields[..]));
 }
 
+/// keys.lock text cakeys reads is written back as cakeys reads it again, and writing that gives
+/// the same text (review D9): what `save_lock` writes, the next run loads unchanged. Text that
+/// does not load is refused as invalid (17), never a panic.
+///
+/// # Panics
+///
+/// When a lock that loads does not survive its own write.
+pub fn lock_round_trips(text: &str) {
+    let path = std::path::Path::new("keys.lock");
+    let lock = match crate::config::parse_lock(text, path) {
+        Ok(lock) => lock,
+        Err(e) => return assert_eq!(e.exit_code(), 17, "{e}"),
+    };
+    let written = toml::to_string_pretty(&lock).expect("a lock that loads serializes");
+    let again = crate::config::parse_lock(&written, path).unwrap_or_else(|e| panic!("{e}\n{written}"));
+    // Every field, as read: a field the write drops is lost here, though both writes agree.
+    assert_eq!(format!("{again:?}"), format!("{lock:?}"), "the lock read back differs:\n{written}");
+    assert_eq!(toml::to_string_pretty(&again).unwrap(), written, "the lock changed on its second write");
+}
+
 /// The fields `attest_encoding` framed after `tag`, read back from the left; `None` unless `v`
 /// is exactly `tag` and `n` length-prefixed fields.
 fn unframe<'a>(v: &'a [u8], tag: &[u8], n: usize) -> Option<Vec<&'a [u8]>> {
@@ -74,6 +94,17 @@ mod tests {
         prop_oneof![any::<String>(), nearly_hex]
     }
 
+    /// The locks the repository holds round-trip: random text rarely loads.
+    #[test]
+    fn the_repository_locks_round_trip() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+        for lock in ["crates/cli/tests/fixtures/keys.lock", "examples/yubikey-secureboot.lock"] {
+            let text = std::fs::read_to_string(format!("{root}/{lock}")).unwrap();
+            crate::config::parse_lock(&text, std::path::Path::new(lock)).unwrap();
+            super::lock_round_trips(&text);
+        }
+    }
+
     proptest! {
         #[test]
         fn hex_round_trips(bytes in vec(any::<u8>(), 0..64)) {
@@ -83,6 +114,11 @@ mod tests {
         #[test]
         fn only_hex_decodes(text in text()) {
             super::only_hex_decodes(&text);
+        }
+
+        #[test]
+        fn lock_round_trips(text in text()) {
+            super::lock_round_trips(&text);
         }
 
         #[test]

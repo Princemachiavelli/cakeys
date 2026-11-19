@@ -263,7 +263,8 @@ as refused by both.
 - The skip gate, the `Env` wrapper and the binary runner are copied four to eight times; the
   copies clear different environment variables, and none passes `--lock` or clears
   `CAKEYS_LOCK`. A developer with `CAKEYS_LOCK` exported has test realisations written into
-  their real lock.
+  their real lock. (**Fixed** before this pass, the lock half: `tool()` removes `SCRUBBED`,
+  `no_test_run_sees_a_real_keys_toml_or_lock`; the copies themselves remain.)
 - The fault suite relies on the trace to show that a rule fired. Two confirmed gaps weaken
   that signal: `use_label` reports a hit when its label matches nothing, and slot and token
   flag names share bit values, so a rule can set a different flag from the one it names.
@@ -271,11 +272,21 @@ as refused by both.
   [p11-fault plan.rs](REVIEW_crates_p11-fault_src_plan.rs.md)) ([p11-fault hooks.rs](REVIEW_crates_p11-fault_src_hooks.rs.md))
 - Half the fuzz targets check only "no panic". `lock` and `bundle` are files cakeys writes and
   reads back, yet neither target checks the round trip. camigrate's key-file reader (PKCS#12,
-  encrypted PKCS#8, the B19 bounds) takes operator-supplied files and has no target.
+  encrypted PKCS#8, the B19 bounds) takes operator-supplied files and has no target. **Fixed
+  (2026-11-18):** `lock_round_trips` and `bundle_round_trips` (what is read back from the
+  writing is what was read, every field), and a `key_file` target whose property ties the
+  reader to `holds_private_key`; each run on the repository's fixtures by `cargo test`.
 - Hardware opt-in skips are written by hand in each file. A half-set opt-in, or a build
   without the patched cryptoki, passes silently (caprobe `ftpm.rs` calls its only check with
   `require = false`; both `yubikey.rs` suites), and `pkcs11/tests/templates.rs` ignores
-  `CAKEYS_TEST_REQUIRE`. One shared all-or-none helper would cover every suite.
+  `CAKEYS_TEST_REQUIRE`. One shared all-or-none helper would cover every suite. **Fixed
+  (2026-11-18):** `opted_in` (common/mod.rs), a pure `opt_in` of the environment: every
+  variable set runs the suite, none skips it, a half-set one fails naming what is missing. The
+  ftpm suites opt in by module and profile, the `YubiKey` suites that log in by the PIN and
+  management-key files (the module alone stays the read-only probe's). templates.rs honours
+  `CAKEYS_TEST_REQUIRE`. `every_hardware_suite_opts_in_through_the_harness` keeps a suite from
+  reading an opt-in variable itself. The unpatched-build half was fixed before
+  (`no_opted_in_suite_skips_an_unpatched_build`).
   ([caprobe tests ftpm.rs](REVIEW_crates_caprobe_tests_ftpm.rs.md))
 - The lock's model-based test compares exit codes only (as docs/DEVELOPMENT.md says), so the
   order among the twelve rules that exit 14 is untested. The projection type `Written` drops

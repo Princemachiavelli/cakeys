@@ -28,12 +28,7 @@ use common::*;
 /// patched cryptoki (the Nix build's): opted in, an unpatched build fails.
 #[test]
 fn a_fresh_probe_is_the_committed_profile() {
-    let (Ok(module), Ok(profile)) = (std::env::var("CAKEYS_FTPM_MODULE"), std::env::var("CAKEYS_FTPM_PROFILE")) else {
-        eprintln!(
-            "skipping a_fresh_probe_is_the_committed_profile: CAKEYS_FTPM_MODULE and CAKEYS_FTPM_PROFILE not both set"
-        );
-        return;
-    };
+    let Some([module, profile]) = opted_in("a_fresh_probe_is_the_committed_profile", FTPM_OPT_IN) else { return };
     cryptoki_hmac_types_fixed(true);
     let w = Workdir::new("ftpm-probe");
     w.write_config(&ftpm_tokens(&module, &w.dir));

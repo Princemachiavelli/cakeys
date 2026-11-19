@@ -121,6 +121,9 @@ in
         ../.config/nextest.toml
         # The exit-code table the tests hold to `KmError::exit_code`.
         ../docs/CAKEYS.md
+        # A YubiKey's lock, the one from real hardware the lock round trip reads
+        # (`cakeys_core::fuzzing`).
+        ../examples/yubikey-secureboot.lock
       ];
     };
 

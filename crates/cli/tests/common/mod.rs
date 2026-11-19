@@ -69,6 +69,53 @@ pub fn suite_var(var: &str, require: &str, test: &str) -> Option<String> {
     Some(v)
 }
 
+/// The ftpm suites' opt-in: the module and its pair profile, both or neither.
+pub const FTPM_OPT_IN: [&str; 2] = ["CAKEYS_FTPM_MODULE", "CAKEYS_FTPM_PROFILE"];
+/// The opt-in of the `YubiKey` suites that log in: the PIN and management-key files, both or
+/// neither. The module alone is the read-only probe's (caprobe).
+pub const YUBIKEY_OPT_IN: [&str; 2] = ["CAKEYS_TEST_YUBIKEY_PIN", "CAKEYS_TEST_YUBIKEY_MGM"];
+
+/// A `YubiKey` suite that logs in: the module, the PIN file and the management-key file, opted
+/// in by [`YUBIKEY_OPT_IN`]; with them, a missing module fails.
+pub fn yubikey_opted_in(test: &str) -> Option<[String; 3]> {
+    let [pin, mgm] = opted_in(test, YUBIKEY_OPT_IN)?;
+    let module = std::env::var("CAKEYS_TEST_YUBIKEY_MODULE")
+        .unwrap_or_else(|_| panic!("{test}: the PIN and management key are set, CAKEYS_TEST_YUBIKEY_MODULE is not"));
+    Some([module, pin, mgm])
+}
+
+/// A hardware suite's opt-in (review D9), read through `env`: every one of `vars` set, their
+/// values; none, `None` (the suite is skipped). Some but not all is an error naming the missing
+/// ones: setting any says the run wants the suite, and a half-set one must not pass empty.
+///
+/// # Errors
+///
+/// The message for a half-set opt-in.
+pub fn opt_in<const N: usize>(
+    vars: [&str; N],
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Option<[String; N]>, String> {
+    let got = vars.map(env);
+    let missing: Vec<&str> = vars.iter().zip(&got).filter(|(_, v)| v.is_none()).map(|(n, _)| *n).collect();
+    match missing.len() {
+        0 => Ok(Some(got.map(Option::unwrap_or_default))),
+        n if n == N => Ok(None),
+        _ => Err(format!("{} not set: the opt-in is {}, all or none", missing.join(", "), vars.join(", "))),
+    }
+}
+
+/// [`opt_in`] on the process's environment: `None` with a skip message, a failure when half set.
+pub fn opted_in<const N: usize>(test: &str, vars: [&str; N]) -> Option<[String; N]> {
+    match opt_in(vars, &|v| std::env::var(v).ok()) {
+        Ok(Some(values)) => Some(values),
+        Ok(None) => {
+            eprintln!("skipping {test}: {} not set", vars.join(", "));
+            None
+        }
+        Err(e) => panic!("{test}: {e}"),
+    }
+}
+
 /// The reference suite's tokens: `ref` (scratch: the token is created for the run and thrown
 /// away, which is exactly what the probe's write probes demand, docs/CAPROBE.md) and
 /// `ref-anon`, the same token without a PIN: it sees only public objects, like a PIV token used

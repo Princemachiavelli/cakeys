@@ -74,6 +74,8 @@ fn at(label: &str) -> Locator {
 /// `provider`, and a PIN file for it; `None` without the module.
 fn token(provider: &str) -> Option<String> {
     let Ok(module) = std::env::var("CAKEYS_TEST_MODULE") else {
+        // As every token suite (`common::suite_var`): required where the harness says so.
+        assert!(std::env::var("CAKEYS_TEST_REQUIRE").is_err(), "CAKEYS_TEST_MODULE is required");
         eprintln!("skipping templates: CAKEYS_TEST_MODULE is not set");
         return None;
     };

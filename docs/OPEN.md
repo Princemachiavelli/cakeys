@@ -284,13 +284,14 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   that Apalache proves the properties for every reachable lock, not only within two steps.
   Then Alloy for the lock's structure and S16, Tamarin for proof of possession and attestation.
 - **Kani and fuzzing**: a property written once as a function that panics when it fails
-  (`cakeys_core::fuzzing`, `cakeys_tpm2_pkcs11::fuzzing`), then checked at random by a
+  (`cakeys_core::fuzzing`, `cakeys_tpm2_pkcs11::fuzzing`, `camigrate::fuzzing`), then checked at random by a
   proptest, under libFuzzer by a cargo-fuzz target, and for every input up to a bound by a Kani
   proof where one fits. It fits only code without FFI or deep parser stacks. The properties
   (2026-11-18, DEVELOPMENT.md "Testing"): hex round-trips and `decode` takes exactly hex (fuzz
   target `hex`); the attestation IDs' length-prefixed encoding reads back to its fields
   (`attest_encoding`); `tpm2_pkcs11::fix_ec_point` repairs exactly the malformed short form
-  (`p521_point`). Kani is packaged (`nix/kani.nix`, 0.68.0 from source) and `checks.kani` (in
+  (`p521_point`); the lock and the bundle read back from their own writing (`lock`, `bundle`);
+  a key file yields a private key only where the shape scan sees one (`key_file`). Kani is packaged (`nix/kani.nix`, 0.68.0 from source) and `checks.kani` (in
   `nix flake check`, not `checks-crane-only`) proves three: the hex round trip for every input
   of up to two bytes (52 s, 2.5 GB), `decode` for every text of up to four (13 s, 0.5 GB), and
   `fix_ec_point` for every input of up to 258 bytes, so every shape it repairs or leaves alone

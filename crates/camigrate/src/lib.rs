@@ -37,6 +37,76 @@ use zeroize::Zeroizing;
 
 pub use cakeys_cli_common::default_registry;
 
+/// Entry points for the fuzz targets (`fuzz/fuzz_targets/bundle.rs`, `key_file.rs`): what
+/// camigrate reads from the files it is handed, on arbitrary input (review D9).
+#[cfg(any(test, feature = "fuzzing", kani))]
+pub mod fuzzing {
+    use cakeys_core::config::ObjectCfg;
+    use cakeys_core::types::{KeyType, ObjectClass as Class};
+
+    /// A bundle's text: read or refused as invalid (17), never a panic; and a bundle that reads
+    /// is read back from its own writing as it was: what `export` writes, `import` reads.
+    ///
+    /// # Panics
+    ///
+    /// When either does not hold.
+    pub fn bundle_round_trips(text: &str) {
+        let path = std::path::Path::new("bundle.toml");
+        let bundle = match crate::bundle::Bundle::parse(text, path) {
+            Ok(b) => b,
+            Err(e) => return assert_eq!(e.exit_code(), 17, "{e}"),
+        };
+        let written = bundle.to_toml().expect("a bundle that reads serializes");
+        let again = crate::bundle::Bundle::parse(&written, path).unwrap_or_else(|e| panic!("{e}\n{written}"));
+        assert_eq!(again, bundle, "the bundle read back differs:\n{written}");
+    }
+
+    /// A key file's bytes as each kind of object reads them, with the fixtures' passphrase: read
+    /// or refused as invalid (17) or unsupported (15), never a panic; and a private key read from
+    /// a file is one the shape scan (`holds_private_key`) says the file holds, the scan that
+    /// keeps a certificate's import from decoding a key without `--allow-host-plaintext`.
+    ///
+    /// # Panics
+    ///
+    /// When either does not hold.
+    pub fn key_file(bytes: &[u8]) {
+        let p256 = |class| ObjectCfg { curve: Some("secp256r1".into()), ..ObjectCfg::new(class, Some(KeyType::Ec)) };
+        let aes = ObjectCfg { value_len: Some(32), ..ObjectCfg::new(Class::SecretKey, Some(KeyType::Aes)) };
+        let objects = [
+            p256(Class::PrivateKey),
+            p256(Class::PublicKey),
+            ObjectCfg::new(Class::Certificate, None),
+            aes,
+            ObjectCfg::new(Class::Data, None),
+        ];
+        for object in &objects {
+            match crate::keyfile::read(bytes, object, false, Some("pass phrase"), None) {
+                Ok(_) if object.class == Class::PrivateKey => {
+                    assert!(
+                        crate::keyfile::holds_private_key(bytes),
+                        "a key read from a file the scan says holds none"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => assert!(matches!(e.exit_code(), 15 | 17), "{object}: {e}"),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        /// The fixtures, every key file and the sample bundle: random bytes rarely read.
+        #[test]
+        fn the_fixtures_hold_the_properties() {
+            let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+            super::bundle_round_trips(&std::fs::read_to_string(fixtures.join("sample.bundle.toml")).unwrap());
+            for file in std::fs::read_dir(fixtures.join("keyfiles")).unwrap() {
+                super::key_file(&std::fs::read(file.unwrap().path()).unwrap());
+            }
+        }
+    }
+}
+
 /// Move keys between PKCS#11 tokens, checked against keys.lock (docs/CAMIGRATE.md).
 ///
 /// Exit codes: 0 ok, 11 not found, 14 precondition failed, 15 unsupported (an object cannot

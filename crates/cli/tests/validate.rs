@@ -88,6 +88,42 @@ fn no_opted_in_suite_skips_an_unpatched_build() {
     assert!(found.is_empty(), "these skip an unpatched build: {found:?}");
 }
 
+/// A hardware opt-in is all or none (review D9): every variable set runs the suite, none skips
+/// it, and a half-set one fails naming what is missing, where each suite's own check skipped.
+#[test]
+fn a_half_set_opt_in_fails() {
+    let env = |set: &'static [&'static str]| move |v: &str| set.contains(&v).then(|| format!("{v}-value"));
+    let vars = ["A", "B", "C"];
+    assert_eq!(opt_in(vars, &env(&["A", "B", "C"])), Ok(Some(["A-value", "B-value", "C-value"].map(String::from))));
+    assert_eq!(opt_in(vars, &env(&[])), Ok(None));
+    assert_eq!(opt_in(vars, &env(&["B"])), Err("A, C not set: the opt-in is A, B, C, all or none".into()));
+}
+
+/// Every hardware suite opts in through [`opted_in`] (review D9): none reads an opt-in variable
+/// itself, which is how a half-set opt-in passed silently.
+#[test]
+fn every_hardware_suite_opts_in_through_the_harness() {
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let mut found = vec![];
+    for krate in std::fs::read_dir(crates).unwrap() {
+        let Ok(files) = std::fs::read_dir(krate.unwrap().path().join("tests")) else { continue };
+        let mut stack: Vec<_> = files.map(|f| f.unwrap().path()).collect();
+        while let Some(path) = stack.pop() {
+            if path.is_dir() {
+                stack.extend(std::fs::read_dir(&path).unwrap().map(|f| f.unwrap().path()));
+            } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("common/mod.rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                for var in FTPM_OPT_IN.iter().chain(&YUBIKEY_OPT_IN) {
+                    if text.contains(&format!("var(\"{var}\")")) {
+                        found.push(format!("{}: {var}", path.display()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(found.is_empty(), "these read an opt-in variable themselves: {found:?}");
+}
+
 /// docs/CAPROBE.md's two static-gate cases, each refused (15) naming the profile that decided
 /// it: kryoptic asked to generate secp256k1 (`origin = "create"`), and a `kw` commitment through
 /// p11-kit. A token nothing is known about is skipped with a note.

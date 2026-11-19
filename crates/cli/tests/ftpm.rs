@@ -37,10 +37,7 @@ impl std::ops::Deref for Env {
 }
 
 fn env(name: &str) -> Option<Env> {
-    let (Ok(module), Ok(profile)) = (std::env::var("CAKEYS_FTPM_MODULE"), std::env::var("CAKEYS_FTPM_PROFILE")) else {
-        eprintln!("skipping {name}: CAKEYS_FTPM_MODULE and CAKEYS_FTPM_PROFILE not both set");
-        return None;
-    };
+    let [module, profile] = opted_in(name, FTPM_OPT_IN)?;
     Some(Env { w: Workdir::new(&format!("ftpm-{name}")), module, profile })
 }
 

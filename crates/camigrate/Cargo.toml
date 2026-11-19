@@ -20,6 +20,8 @@ path = "src/main.rs"
 
 [features]
 default = ["tpm2", "ykcs11"]
+# The fuzz targets' entry points (fuzz/): never in the product (review D8).
+fuzzing = []
 tpm2 = ["cakeys-cli-common/tpm2"]
 ykcs11 = ["cakeys-cli-common/ykcs11"]
 # RFC 5649 key wrap under CKM_AES_KEY_WRAP_KWP (kryoptic names it so; SoftHSM names it _PAD,

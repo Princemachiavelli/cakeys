@@ -30,14 +30,7 @@ const RUN_LIMIT: Duration = Duration::from_secs(60);
 /// pair.
 #[test]
 fn the_write_probe_conforms_and_regenerates_the_committed_profile() {
-    let (Ok(module), Ok(pin), Ok(mgm)) = (
-        std::env::var("CAKEYS_TEST_YUBIKEY_MODULE"),
-        std::env::var("CAKEYS_TEST_YUBIKEY_PIN"),
-        std::env::var("CAKEYS_TEST_YUBIKEY_MGM"),
-    ) else {
-        eprintln!("skipping the write probe: CAKEYS_TEST_YUBIKEY_MODULE, _PIN and _MGM (file paths) not all set");
-        return;
-    };
+    let Some([module, pin, mgm]) = yubikey_opted_in("the write probe") else { return };
     // Opted in, an unpatched build fails rather than passing with nothing compared: it drops
     // mechanisms it cannot name (review ftpm.rs F1). Run through scripts/local-tests.sh.
     cryptoki_hmac_types_fixed(true);
