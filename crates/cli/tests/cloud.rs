@@ -22,7 +22,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-/// Unsupported: what cakeys refuses before creating anything (docs/CLI.md exit codes).
+/// Unsupported: what cakeys refuses before creating anything (docs/CAKEYS.md, exit codes).
 const UNSUPPORTED: i32 = 15;
 
 fn scripts() -> PathBuf {

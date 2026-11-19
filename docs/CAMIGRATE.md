@@ -235,7 +235,7 @@ rfc7093m4 = "sha256-..."
 Key files: `pkcs8-pbes2` is a PEM `ENCRYPTED PRIVATE KEY` (PBES2, PBKDF2-HMAC-SHA256 with 600 000
 iterations, AES-256-CBC). `pkcs12` holds the same encrypted key in a shrouded key bag beside the
 certificate the lock pairs with the object, both tagged with one `localKeyId`, under an
-HMAC-SHA256 MAC (PKCS#12 KDF, 10 000 iterations). One key per file, mode 0600. An imported file
+HMAC-SHA256 MAC (PKCS#12 KDF, 600 000 iterations, as many as for the key). One key per file, mode 0600. An imported file
 names no object: the key's `rfc7093m4` finds the locked private key. A file asking for more than
 10 000 000 KDF iterations is refused.
 

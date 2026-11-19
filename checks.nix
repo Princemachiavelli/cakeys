@@ -27,6 +27,32 @@
   inherit (cakeys) msrv;
   # cargo-deny offline (see `deny` in pkgs.nix): reproducible with the flake.lock.
   deny = deny.check;
+  # Every test and function the docs name is a `fn`, and every docs/*.md cited exists
+  # (nix/doc-references.py). Its own fileset, so a docs edit does not rebuild crane.
+  doc-references =
+    let
+      src = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.unions [
+          ./docs
+          ./ISSUES.md
+          ./README.md
+          ./LICENSE
+          ./Cargo.toml
+          ./examples
+          ./profiles
+          ./crates
+          ./fuzz
+          ./nix
+          ./scripts
+          (pkgs.lib.fileset.fileFilter (f: f.hasExt "nix") ./.)
+        ];
+      };
+    in
+    pkgs.runCommand "cakeys-doc-references" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      python3 -I ${src}/nix/doc-references.py ${src}
+      touch $out
+    '';
   # nix/demo.sh straight through: every step's expected exit code still holds.
   demo = demo.check;
   # cakeys, caprobe and camigrate without their `tpm2` and `ykcs11` features (nix/package-crane.nix).

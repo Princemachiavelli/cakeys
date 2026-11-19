@@ -274,3 +274,10 @@ crates.io, and warns on duplicate versions. The CI items are left for now.
 - ISSUES.md B18 says the by-name retry reads "the lock's recorded answers included"; the code
   never applies `with_answers` at `Token::open`.
 - ISSUES.md B16 is marked fixed; the `pop-unwrap` secret is still not wiped.
+
+**Fixed (2026-11-18):** the iteration count, the test name (now
+`a_foreign_public_key_conflicts_and_is_never_deleted`) and the CLI.md citation; B18 was
+corrected earlier the same day; B16 goes with D7's zeroization. `checks.doc-references` holds
+the docs to the tests, functions and docs files they cite; it found one more (ISSUES.md's
+`every_named_value_converts_back`, now `token::tests::names_agree`). A number such as an
+iteration count is outside it.
