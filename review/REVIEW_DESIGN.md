@@ -261,6 +261,11 @@ accepts encodings the other refuses. ([core id.rs](REVIEW_crates_core_src_id.rs.
   advisories newer than the pin are never seen. `deny.toml` has no `[bans]` or `[sources]`.
 - The two gate workflows duplicate work; Kani shares a 16 GB runner with the VM tests.
 
+**Fixed (2026-11-18), the deny half:** `nix run .#deny-online` checks against the current
+advisory database (cargo-deny fetches it; the pin stays in the sandbox's `checks.deny`) as
+well as yanked releases, and deny.toml denies wildcard requirements and any source but
+crates.io, and warns on duplicate versions. The CI items are left for now.
+
 ## Documentation drift found on the way
 
 - docs/CAMIGRATE.md:234: the PKCS#12 MAC takes 600,000 iterations, not 10,000.

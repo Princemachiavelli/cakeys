@@ -5,12 +5,13 @@
 #   graph vendored from Cargo.lock, the database from the advisory-db flake input. Nothing
 #   is fetched at build time, so the check is reproducible with the flake.lock.
 #
-# - `online`: the one part that needs the network — yanked releases. Yanked-ness is
-#   crates.io registry metadata, not a RustSec advisory, so the database input cannot carry
-#   it; cargo-deny reads it from cargo's index cache, which only `cargo fetch` fills with
-#   the current flags. The app (apps.deny-online) runs on the host: a throwaway CARGO_HOME,
-#   `cargo fetch --locked` for the live index, the pinned database, and the same check with
-#   --deny yanked. Like the YubiKey suite, it cannot run in the sandbox.
+# - `online`: what the sandbox cannot see, against the network as it is now. The advisories
+#   published since the advisory-db pin (review D10: the check never sees them), and yanked
+#   releases (crates.io registry metadata, not a RustSec advisory, which cargo-deny reads from
+#   cargo's index cache, filled only by `cargo fetch`). The app (apps.deny-online) runs on the
+#   host: a throwaway CARGO_HOME, `cargo fetch --locked` for the live index, cargo-deny's own
+#   fetch of the current database, and the same check with --deny yanked. Like the YubiKey
+#   suite, it cannot run in the sandbox.
 {
   lib,
   cargo,
@@ -31,8 +32,7 @@ let
   # The database where cargo-deny's db-path looks for it ($CARGO_HOME/advisory-dbs by
   # default): the pinned tree plus a fresh FETCH_HEAD, whose modification time is what
   # cargo-deny reads offline to decide the database is not stale (90 days by default).
-  # The copy is made writable: it comes from the read-only store, and the online app
-  # cleans its CARGO_HOME up afterwards.
+  # The copy is made writable: it comes from the read-only store.
   install-db = ''
     db_dir="$CARGO_HOME/advisory-dbs/${db}"
     mkdir -p "$db_dir/.git"
@@ -113,12 +113,12 @@ in
       # effect; --locked keeps Cargo.lock untouched.
       cargo fetch --locked --manifest-path "$dir/Cargo.toml" >/dev/null
 
-      ${install-db}
-
       # Same check as the sandbox's checks.deny, minus the vendoring (fetch downloaded the
-      # crates), with the yanked level deny.toml leaves at allow offline raised to deny.
+      # crates), against the current advisory database (cargo-deny clones it into the
+      # throwaway CARGO_HOME: never the pin), with the yanked level deny.toml leaves at allow
+      # offline raised to deny.
       cd "$dir"
-      cargo deny --offline check --deny yanked
+      cargo deny check --deny yanked
     '';
   };
 }

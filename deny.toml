@@ -12,7 +12,8 @@
 # the advisory-db input, and the sandbox has no network to read the live index from. Here
 # (offline) the level is allow; the yanked check is the one thing that needs the network,
 # so it is an app instead: `nix run .#deny-online` reads the current index for every locked
-# crate and re-runs this check with --deny yanked.
+# crate and re-runs this check with --deny yanked, against the current advisory database
+# rather than the pin (advisories published since the pin are seen there).
 yanked = "allow"
 
 [licenses]
@@ -28,3 +29,17 @@ allow = [
   "Unicode-3.0",                    # unicode-ident, beside MIT OR Apache-2.0
   "Zlib",                           # foldhash
 ]
+
+[bans]
+# A crate in two versions is noted, not refused: the RustCrypto 0.10/0.11 transition and the
+# provider SDKs carry some, and each is a review item, not a defect.
+multiple-versions = "warn"
+# A `*` requirement could resolve to anything; the workspace's own path dependencies are exact.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+# Every locked crate comes from crates.io: anything else (another registry, a git checkout) is
+# a new supply-chain path, decided here first.
+unknown-registry = "deny"
+unknown-git = "deny"
