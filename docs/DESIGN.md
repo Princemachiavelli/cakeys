@@ -330,7 +330,7 @@ content-addressed identity — one per token type that can produce it:
 | Scheme | Token | Evidence | Anchor pinned in the lock |
 |---|---|---|---|
 | `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen`; under `check`, every certificate also within its validity period (the system clock, `--at`, or `--ignore-validity`), while `lock`, `create` and camigrate read no clock. Yubico attests only keys generated on device; ykcs11 mints the certificate when it lists the slot, with no login | the Yubico root's SPKI |
-| `tpm-certify` | tpm2-pkcs11 tokens | a native `TPM2_Certify` (tss-esapi) over the object's Name with a fresh random nonce, host-verified; the object's TPM blobs are read (read-only) from the module's own store — `options.tpm2Store`, else found as the module finds it — and loaded under the token's primary over the module's TCTI (`options.tcti`, else `$TPM2_PKCS11_TCTI`, `$TPM2TOOLS_TCTI`, `$TCTI`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the Attestation Key's SPKI |
+| `tpm-certify` | tpm2-pkcs11 tokens | a `TPM2_Certify` over the object's Name with a fresh random nonce, host-verified. A module with the vendor mechanism `CKM_TPM2_CERTIFY` (upstream/tpm2-pkcs11/) runs it itself (`C_Sign` on the object; the signer is a persistent AK by handle, or with `options.akLabel` a token object through `CKM_TPM2_CERTIFY_OBJECT`, which needs no TCTI or store); the object's public area is its `CKA_TPM2_PUB_BLOB`, whose Name the statement must carry. Any other module is attested natively (tss-esapi) as follows: the object's TPM blobs are read (read-only) from the module's own store — `options.tpm2Store`, else found as the module finds it — and loaded under the token's primary over the module's TCTI (`options.tcti`, else `$TPM2_PKCS11_TCTI`, `$TPM2TOOLS_TCTI`, `$TCTI`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the Attestation Key's SPKI |
 
 - **The commitment hashes asserted content, never signed bytes.** A PIV certificate is minted
   per session with a random serial and a randomized ECDSA signature; a `TPMS_ATTEST` carries a
@@ -388,7 +388,13 @@ content-addressed identity — one per token type that can produce it:
   cakeys' template (restricted sign-only P-256, fixedTPM, empty policy) — anything else is a
   conflict (13), since an unrestricted key there could sign a forged attestation. The handle
   defaults to `0x81000016` (cakeys-tpm2-pkcs11 `DEFAULT_AK_HANDLE`), configurable per token
-  (`options.akHandle`, `0x`-prefixed, owner persistent range). Trust in it is TOFU through the pinned
+  (`options.akHandle`, `0x`-prefixed, owner persistent range). With `options.akLabel` the AK is
+  instead a private key object of the token (a restricted P-256 key the module makes and never
+  releases), found by that label and checked to be restricted and fixed to the TPM and its parent;
+  `lock` makes it, reads never do. Its `qualifiedSigner` is not checked: only the TPM knows the
+  path of the module's primary, so the signature under the pinned key is what identifies the
+  signer (for the persistent AK, a primary of the owner hierarchy, the host reads it from the TPM
+  and compares it). Trust in it is TOFU through the pinned
   `root`; **chaining it to the Endorsement Key certificate (EK → AK via
   MakeCredential/ActivateCredential) is not implemented yet** — until it is, the AK proves
   "this TPM", not "this genuine TPM".

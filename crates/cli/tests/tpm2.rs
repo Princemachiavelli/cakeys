@@ -720,7 +720,7 @@ fn tpm2_attestation_refuses_a_store_that_disagrees() {
     edit_private_row("store-a", |attrs| {
         tpm_attrs.iter().zip(&mac_values).fold(attrs.to_owned(), |a, (t, b)| a.replace(&row_value(&a, *t), b))
     });
-    refused("the store object is a symmetric object, but the PKCS#11 object is an asymmetric key");
+    refused("the TPM object is a symmetric object, but the PKCS#11 object is an asymmetric key");
 
     // A second primary, transient, with a token of its own.
     let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
@@ -774,6 +774,133 @@ fn tpm2_attests_each_key_type() {
         assert_eq!(e.locked_attestation(spec, "tpm")["kind"].as_str(), Some("tpm-certify"), "{spec}");
         assert_eq!(e.code(&["verify", "--spec", spec, "--token", "tpm"]), 0, "{spec}");
     }
+}
+
+/// The module with tpm2-pkcs11's vendor mechanisms (`CAKEYS_TPM_VENDOR_MODULE`: nixpkgs' with the
+/// patches of upstream/tpm2-pkcs11/, nix/tpm2-pkcs11-vendor.nix), beside `env`'s, which has none.
+fn vendor_env(name: &str) -> Option<Env> {
+    let Ok(module) = std::env::var("CAKEYS_TPM_VENDOR_MODULE") else {
+        assert!(std::env::var("CAKEYS_TPM_VENDOR_REQUIRE").is_err(), "CAKEYS_TPM_VENDOR_MODULE is required");
+        eprintln!("skipping {name}: CAKEYS_TPM_VENDOR_MODULE not set");
+        return None;
+    };
+    Some(Env { w: Workdir::new(&format!("tpm2-{name}")), module })
+}
+
+/// `[tokens.<name>]` on `module` and the suite's token `kmtest`, logged in, with `extra` lines.
+fn token_of(e: &Env, name: &str, module: &str, extra: &str) -> String {
+    format!(
+        "[tokens.{name}]\nmodule = \"{module}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nprobe = {{ scratch = true }}\n{extra}\n\n",
+        e.dir.join("pin").display()
+    )
+}
+
+/// One P-256 key `label`, created on token `tpm` (and adopted on `others`), attested.
+fn p256_spec(label: &str, others: &[&str]) -> String {
+    let head = format!(
+        "[objects.p256]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.p256]\nobject = \"p256\"\nattributes = {{ CKA_SIGN = true }}\n\
+         tokens.tpm = {{ locator = {{ CKA_LABEL = \"{label}\" }}, origin = \"create\", attestation = true }}\n"
+    );
+    let adopted = others.iter().map(|t| {
+        format!("tokens.{t} = {{ locator = {{ CKA_LABEL = \"{label}\" }}, origin = \"adopt\", attestation = true }}\n")
+    });
+    head + &adopted.collect::<String>()
+}
+
+/// A module with `CKM_TPM2_CERTIFY` certifies the key itself, and the attestation is the one the
+/// store path makes of the same key: the same ID, the same root (the persistent Attestation Key
+/// stays the signer). The vendor token is told no store exists, so reading one would fail; the
+/// `store` token is nixpkgs' module, without the mechanism, on the same TPM and store.
+#[test]
+fn tpm2_vendor_module_attests_as_the_store_path_does() {
+    let Some(e) = vendor_env("vendor-same") else { return };
+    let store_module = std::env::var("CAKEYS_TPM_MODULE").unwrap();
+    e.write_config(
+        &(token_of(&e, "tpm", &e.module, "options = { tpm2Store = \"/nonexistent\" }")
+            + &token_of(&e, "store", &store_module, "")
+            + &p256_spec("vendor-p256", &["store"])),
+    );
+    let first = e.km(&["create", "--spec", "p256", "--token", "tpm", "--no-update-lock"]);
+    assert_eq!(code(&first), 18, "{}", stderr(&first));
+    let resolve = |token: &str| -> serde_json::Value {
+        let o = e.km(&["resolve", "--spec", "p256", "--token", token]);
+        assert_eq!(code(&o), 0, "{token}: {}", stderr(&o));
+        serde_json::from_str(&stdout(&o)).unwrap()
+    };
+    let (vendor, store) = (resolve("tpm"), resolve("store"));
+    assert!(vendor["attestation"]["id"].as_str().unwrap().starts_with("sha256-"));
+    assert_eq!(vendor["attestation"]["id"], store["attestation"]["id"], "one key, one attestation ID");
+    assert_eq!(vendor["attestation"]["root"], store["attestation"]["root"], "the same persistent AK signed");
+    // Each realisation, locked through its own path, verifies: the same ID and root were pinned.
+    for token in ["tpm", "store"] {
+        assert_eq!(e.code(&recording(&["lock", "--spec", "p256", "--token", token, "--no-update-lock"])), 0, "{token}");
+    }
+    assert_eq!(e.locked_attestation("p256", "tpm"), e.locked_attestation("p256", "store"));
+    for token in ["tpm", "store"] {
+        assert_eq!(e.code(&["verify", "--spec", "p256", "--token", token]), 0, "{token}");
+    }
+}
+
+/// An Attestation Key that is an object of the token (`akLabel`, `CKM_TPM2_AK_PAIR_GEN`): made by
+/// `lock`, never by a read, and the attestation needs no TCTI, no TPM handle and no store (the token
+/// is told none exists). Another key than the persistent one, so another root; a key that is no
+/// Attestation Key is never trusted as one, and a module without the mechanisms is said so.
+#[test]
+fn tpm2_vendor_token_attestation_key_needs_no_tpm_handle_or_store() {
+    let Some(e) = vendor_env("vendor-ak") else { return };
+    let none = "tcti = \"device:/nonexistent\", tpm2Store = \"/nonexistent\"";
+    let config = |options: &str| {
+        e.write_config(
+            &(token_of(&e, "tpm", &e.module, &format!("options = {{ {options} }}"))
+                + &p256_spec("vendor-ak-p256", &[])),
+        );
+    };
+    config(&format!("akLabel = \"cakeys-ak\", {none}"));
+    let before = on_swtpm().then(persistent_handles);
+    let first = e.km(&["create", "--spec", "p256", "--token", "tpm", "--no-update-lock"]);
+    assert_eq!(code(&first), 18, "{}", stderr(&first));
+    assert_eq!(e.code(&recording(&["lock", "--spec", "p256", "--token", "tpm", "--no-update-lock"])), 0);
+    let att = e.locked_attestation("p256", "tpm");
+    assert_eq!(att["kind"].as_str(), Some("tpm-certify"));
+    for _ in 0..2 {
+        assert_eq!(e.code(&["verify", "--spec", "p256", "--token", "tpm"]), 0);
+        assert_eq!(e.code(&["check", "p256.id.tpm-certify", "--token", "tpm"]), 0);
+    }
+    // No persistent AK was made: the TPM's handles are as they were.
+    assert_eq!(before.map(|b| b == persistent_handles()), on_swtpm().then_some(true));
+    // The Attestation Key is on the token, and the next run reuses it (a stable root).
+    assert!(labelled(&e.session(), "cakeys-ak") >= 1);
+    let again = e.km(&["resolve", "--spec", "p256", "--token", "tpm"]);
+    let got: serde_json::Value = serde_json::from_str(&stdout(&again)).unwrap();
+    assert_eq!(got["attestation"]["root"].as_str(), att["root"].as_str());
+
+    // Reads never make one: another label is a downgrade (14), naming it.
+    config(&format!("akLabel = \"other-ak\", {none}"));
+    for _ in 0..2 {
+        let o = e.km(&["verify", "--spec", "p256", "--token", "tpm"]);
+        assert_eq!(code(&o), 14, "{}", stderr(&o));
+        assert!(stderr(&o).contains("no Attestation Key labelled \"other-ak\""), "{}", stderr(&o));
+    }
+    // An ordinary key is no Attestation Key: it could sign a forged statement (13).
+    config(&format!("akLabel = \"vendor-ak-p256\", {none}"));
+    let o = e.km(&["verify", "--spec", "p256", "--token", "tpm"]);
+    assert_eq!(code(&o), 13, "{}", stderr(&o));
+    assert!(stderr(&o).contains("is not a cakeys Attestation Key"), "{}", stderr(&o));
+    // Both Attestation Keys at once are two answers to one question (17).
+    config("akLabel = \"cakeys-ak\", akHandle = \"0x81000017\"");
+    assert_eq!(e.code(&["verify", "--spec", "p256", "--token", "tpm"]), 17);
+
+    // nixpkgs' module has no such mechanism: asked for, it is said so, not read around — an
+    // attestation that cannot be computed is a downgrade of the locked one (14).
+    let store_module = std::env::var("CAKEYS_TPM_MODULE").unwrap();
+    e.write_config(
+        &(token_of(&e, "tpm", &store_module, "options = { akLabel = \"cakeys-ak\" }")
+            + &p256_spec("vendor-ak-p256", &[])),
+    );
+    let o = e.km(&["verify", "--spec", "p256", "--token", "tpm"]);
+    assert_eq!(code(&o), 14, "{}", stderr(&o));
+    assert!(stderr(&o).contains("CKM_TPM2_AK_PAIR_GEN"), "{}", stderr(&o));
 }
 
 /// Where the attestation finds the store and the TPM: a TCTI named in the token's options, and

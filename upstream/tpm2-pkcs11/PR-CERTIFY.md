@@ -2,13 +2,10 @@
 
 Status: **draft, not filed.** The patch is `0002-sign-add-the-vendor-mechanism-CKM_TPM2_CERTIFY.patch`
 (on master `a5156c5`, independent of the P-521 patch). Signed off in ~/srcs/tpm2-pkcs11.certify, branch
-`tpm2-certify-mechanism`. Before opening it:
+`pr/certify` (one commit on master, pushed to Princemachiavelli/tpm2-pkcs11). Before opening it:
 
 - Upstream requires the PR to pass their CI. The checks below ran through nixpkgs' build
   environment with `--enable-unit --enable-integration` (swtpm), not their Docker image.
-- The pushed branch has two commits (the mechanism, then a review fix); the patch file is their
-  squash, which is what to submit (the follow-up patches 0003 and 0004 are on top of the branch's
-  tree, which is the same).
 - The PR body below carries no AI attribution lines (the commit has the Co-Authored-By line).
 
 Why cakeys wants it: `tpm-certify` reads the module's private sqlite store (schema, YAML attributes,

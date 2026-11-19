@@ -42,6 +42,9 @@ let
   # through pkcs11-provider, which reads `check --format pkcs11-provider-pem`'s key file,
   # deadlocks in C_Login.
   softhsmForTests = callPackage ./softhsm-unwrap-value-len.nix { inherit softhsm; };
+  # nixpkgs' tpm2-pkcs11 with upstream/tpm2-pkcs11/'s vendor-mechanism patches, the module the
+  # provider's vendor path is tested with; nixpkgs' own tests the store path.
+  tpm2VendorModule = callPackage ./tpm2-pkcs11-vendor.nix { inherit tpm2-pkcs11; };
 in
 {
   # cryptoki 0.12.1 (and main) gives KeyType::SHA224/384/512_HMAC the value of CKK_SHA256_HMAC, so those key
@@ -164,6 +167,7 @@ in
     ++ lib.optionals tpm2 [
       swtpm
       tpm2-pkcs11
+      tpm2VendorModule
       tpm2-tools
       tpm2-abrmd
       dbus
@@ -210,7 +214,8 @@ in
         bash ${./tpm2-test-env.sh} up $TMPDIR/tpm || { tail -n 20 $TMPDIR/tpm/*.log; exit 1; }
         . $TMPDIR/tpm/env
         export CAKEYS_TPM_MODULE=${lib.getLib tpm2-pkcs11}/lib/libtpm2_pkcs11.so
-        export CAKEYS_TPM_REQUIRE=1
+        export CAKEYS_TPM_VENDOR_MODULE=${lib.getLib tpm2VendorModule}/lib/libtpm2_pkcs11.so
+        export CAKEYS_TPM_REQUIRE=1 CAKEYS_TPM_VENDOR_REQUIRE=1
       ''
     );
     postCheck = lib.optionalString canCheck (

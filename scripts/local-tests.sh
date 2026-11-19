@@ -23,7 +23,7 @@ work=$repo/target/local-tests
 mkdir -p "$work"
 
 # The modules and tools the check phase uses: the flake's own packages and nixpkgs.
-mapfile -t paths < <(nix build --no-link --print-out-paths --inputs-from . .#softhsm-unwrap-value-len \
+mapfile -t paths < <(nix build --no-link --print-out-paths --inputs-from . .#softhsm-unwrap-value-len .#tpm2-pkcs11-vendor.out \
   nixpkgs#kryoptic nixpkgs#p11-kit.out nixpkgs#tpm2-pkcs11.out nixpkgs#cargo-nextest nixpkgs#rsync nixpkgs#gnupatch nixpkgs#jq \
   nixpkgs#openssl.bin nixpkgs#pkcs11-provider)
 path_of() {
@@ -37,7 +37,8 @@ path_of() {
 softhsm=$(path_of softhsm-unwrap-value-len)
 kryoptic=$(path_of kryoptic)
 p11kit=$(path_of p11-kit)
-tpm2=$(path_of tpm2-pkcs11)
+tpm2=$(path_of tpm2-pkcs11-1)
+tpm2_vendor=$(path_of tpm2-pkcs11-vendor)
 nextest=$(path_of cargo-nextest)
 rsync=$(path_of rsync)
 gnupatch=$(path_of patch)
@@ -117,6 +118,7 @@ cp -r "$T/softhsm-tokens" "$T/kryoptic.sql" "$CAKEYS_TOKEN_TEMPLATE/"
 export CAKEYS_P11KIT_ENV_SH=$tree/nix/p11kit-test-env.sh CAKEYS_TPM_ENV_SH=$tree/nix/tpm2-test-env.sh
 export CAKEYS_P11KIT_CLIENT=$p11kit/lib/pkcs11/p11-kit-client.so CAKEYS_P11KIT_REQUIRE=1
 export CAKEYS_TPM_MODULE=$tpm2/lib/libtpm2_pkcs11.so CAKEYS_TPM_REQUIRE=1
+export CAKEYS_TPM_VENDOR_MODULE=$tpm2_vendor/lib/libtpm2_pkcs11.so CAKEYS_TPM_VENDOR_REQUIRE=1
 # A swtpm port range of this run's own, above the check phase's 24000 and below the kernel's
 # ephemeral ports (32768 on), which a client's own connections take: two local runs at once (two
 # worktrees) would otherwise take the same ports (nix/test-tokens.sh).

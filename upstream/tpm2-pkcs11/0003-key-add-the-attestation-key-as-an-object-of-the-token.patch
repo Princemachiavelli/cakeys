@@ -1,6 +1,6 @@
-From 7785bb382453ac5b662905bda3926ba977fa17ec Mon Sep 17 00:00:00 2001
-From: Josh Hoffer <jhoffer@sansorgan.es>
-Date: Thu, 19 Nov 2026 00:39:43 -0800
+From 63816dac789a4bc65582fe8e3669ee69e484932f Mon Sep 17 00:00:00 2001
+From: check <check@example.invalid>
+Date: Thu, 19 Nov 2026 07:19:49 -0800
 Subject: [PATCH] key: add the attestation key as an object of the token
 
 CKM_TPM2_CERTIFY names its signer by a persistent TPM handle, so the

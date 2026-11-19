@@ -31,6 +31,9 @@ rec {
   inherit (cakeys) caprobe camigrate;
   p11-fault = cakeys.p11fault;
   pcsc-probe = pkgs.callPackage ./nix/pcsc-probe.nix { };
+  # nixpkgs' tpm2-pkcs11 with the vendor-mechanism patches of upstream/tpm2-pkcs11/ (the module
+  # the tpm2 provider's vendor path is tested with; nix/package-common.nix).
+  tpm2-pkcs11-vendor = pkgs.callPackage ./nix/tpm2-pkcs11-vendor.nix { };
   mezura = pkgs.callPackage ./nix/mezura.nix { };
   # A second opinion on the reference modules beside caprobe's profiles (docs/PLAN.md A6).
   pkcs11-check = pkgs.callPackage ./nix/pkcs11-check.nix { };

@@ -540,43 +540,53 @@ fn certify_loaded(
     if attest.qualified_signer().value() != ak_qualified_name.value() {
         return Err(KmError::Conflict("the attestation was signed by another key than the AK".into()));
     }
-    // The material cross-check (§3.7): the attested public area must be the same key the
-    // object's rfc7093m4 hashes — what verifies the identity on any other token. A symmetric
-    // PKCS#11 object backed by an asymmetric TPM object (or the reverse) is a different object.
     let material = material_of(&live_public)?;
+    cross_check(&material, spki)?;
+    Ok(certified(name, qualified_name, ak_spki, &material))
+}
+
+/// The material cross-check (§3.7): the attested public area must be the same key the object's
+/// rfc7093m4 hashes — what verifies the identity on any other token. A symmetric PKCS#11 object
+/// backed by an asymmetric TPM object (or the reverse) is a different object.
+///
+/// # Errors
+///
+/// `Conflict` when the attested material is another key than `spki`, or of another kind.
+pub fn cross_check(material: &Material, spki: Option<&[u8]>) -> Result<()> {
     match (spki, &material.spki) {
-        (Some(want), Some(attested)) if want != attested.as_slice() => {
-            return Err(KmError::Conflict(
-                format!(
-                    "the TPM attests the public key {}, but the object's material is {}",
-                    id::sri(attested),
-                    id::sri(want)
-                )
-                .into(),
-            ));
-        }
-        (Some(_), Some(_)) | (None, None) => {}
-        (want, _) => {
-            return Err(KmError::Conflict(
-                format!(
-                    "the store object is {}, but the PKCS#11 object is {}",
-                    if material.spki.is_some() { "an asymmetric key" } else { "a symmetric object" },
-                    if want.is_some() { "an asymmetric key" } else { "a secret key" }
-                )
-                .into(),
-            ));
-        }
+        (Some(want), Some(attested)) if want != attested.as_slice() => Err(KmError::Conflict(
+            format!(
+                "the TPM attests the public key {}, but the object's material is {}",
+                id::sri(attested),
+                id::sri(want)
+            )
+            .into(),
+        )),
+        (Some(_), Some(_)) | (None, None) => Ok(()),
+        (want, _) => Err(KmError::Conflict(
+            format!(
+                "the TPM object is {}, but the PKCS#11 object is {}",
+                if material.spki.is_some() { "an asymmetric key" } else { "a symmetric object" },
+                if want.is_some() { "an asymmetric key" } else { "a secret key" }
+            )
+            .into(),
+        )),
     }
-    // The signed attributes, as the module derives its immutables from them (tpm2-pkcs11:
-    // CKA_LOCAL = sensitiveDataOrigin, CKA_EXTRACTABLE = !(fixedTPM|fixedParent)).
+}
+
+/// What a certify run proved, from the Names it attested and the signed attributes, as the module
+/// derives its immutables from them (tpm2-pkcs11: `CKA_LOCAL` = sensitiveDataOrigin,
+/// `CKA_EXTRACTABLE` = !(fixedTPM|fixedParent)).
+#[must_use]
+pub fn certified(name: Vec<u8>, qualified_name: Vec<u8>, ak_spki: Vec<u8>, material: &Material) -> Certified {
     let attributes = material.attributes;
-    Ok(Certified {
+    Certified {
         name,
         qualified_name,
         ak_spki,
         local: attributes.sensitive_data_origin(),
         extractable: !(attributes.fixed_tpm() || attributes.fixed_parent()),
-    })
+    }
 }
 
 #[cfg(test)]

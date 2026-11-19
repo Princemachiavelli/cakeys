@@ -211,19 +211,24 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   patch `upstream/tpm2-pkcs11/0002-…CKM_TPM2_CERTIFY.patch` (PR text in `PR-CERTIFY.md`, not filed)
   adds `CKM_TPM2_CERTIFY`, a `TPM2_Certify` through `C_SignInit`/`C_Sign` signed by a persistent
   key the caller names, and fixes `CKA_TPM2_PUB_BLOB`, which `C_GetAttributeValue` already returns
-  (verified on 1.10.1 / swtpm). Still to do here: the provider's mechanism path (detect the
-  mechanism in `C_GetMechanismList`, keep the store reader as the fallback for modules without it,
-  same `tpm_certify_id` on both paths, regenerate the tpm2-pkcs11 profiles), run against a module
-  built with the patch. The second upstream PR is drafted too (`0003-…attestation-key….patch`,
+  (verified on 1.10.1 / swtpm). The provider has the mechanism path (`attest/vendor.rs`): it asks
+  `C_GetMechanismInfo` for `CKM_TPM2_CERTIFY` (cryptoki leaves vendor mechanisms out of
+  `C_GetMechanismList`), uses it with no store read, and keeps the store reader (and its 1.10.x
+  guard) for modules without it; the same `tpm_certify_id` and root come out of both, which
+  `tpm2_vendor_module_attests_as_the_store_path_does` checks against a module built with the
+  patches (`nix/tpm2-pkcs11-vendor.nix`, master a5156c5: they do not apply to the 1.10.1 tag). No
+  profile changes: the vendor mechanisms never reach the lists. Not yet: the EK chain
+  (`CKM_TPM2_ACTIVATE_CREDENTIAL`) on the cakeys side, and the real-TPM run. The second upstream PR is drafted too (`0003-…attestation-key….patch`,
   `PR-AK.md`): `CKM_TPM2_AK_PAIR_GEN` makes the Attestation Key a token object and
-  `CKM_TPM2_CERTIFY_OBJECT` signs with it, so no TCTI is needed here; it changes the pinned
+  `CKM_TPM2_CERTIFY_OBJECT` signs with it, so no TCTI is needed here (`options.akLabel`,
+  `tpm2_vendor_token_attestation_key_needs_no_tpm_handle_or_store`); it changes the pinned
   `attestation.root` (re-lock) and drops the qualified-signer check on that path (a client cannot
   compute it; the pinned key identifies the signer). The third is drafted as well
   (`0004-…ACTIVATE_CREDENTIAL….patch`, `PR-ACT.md`): `CKA_TPM2_EK_PUB_BLOB` on the attestation key
   (the EK public area and certificate, readable after the login only) and `CKM_TPM2_ACTIVATE_CREDENTIAL`
   (`C_Decrypt`) for the EK chain; the client makes the credential with MakeCredential, no TPM, and
   checks the certificate chain itself (docs/VENDOR.md, "What the client verifies"). All four tested on swtpm only; the series is on branches
-  `tpm2-certify-mechanism`, `tpm2-ak-object`, `tpm2-activate-credential` of Princemachiavelli/tpm2-pkcs11
+  `pr/certify`, `pr/attestation-key`, `pr/activate-credential` (one commit each, stacked) of Princemachiavelli/tpm2-pkcs11
   (not filed). A real TPM's endorsement auth and EK are untested.
 - **A native TPM backend** beside tpm2-pkcs11, for PCR- and policy-bound keys.
 - **Vendor HSM attestation formats** (Luna PKC, Google Cloud HSM, nShield): a scheme each, not
