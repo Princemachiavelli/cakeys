@@ -314,8 +314,9 @@ as refused by both.
 - The SoftHSM/kryoptic token setup is copied into about ten places (`scripts/local-tests.sh`
   is a hand copy of `preCheck`); `test-tokens.sh` picks its isolated suites from a hard-coded
   list. **Fixed (2026-11-18):** one `nix/token-env.sh`, sourced by the check phase, the runner,
-  local-tests.sh and the profile, demo and example scripts; and no shared p11-kit server or
-  swtpm in the check phase, so a suite the list leaves out fails instead of sharing one.
+  local-tests.sh and the profile, demo and example scripts, held there by `checks.token-setup`;
+  and no shared p11-kit server or swtpm in the check phase, so a suite the list leaves out fails
+  instead of sharing one.
 
 ## D10. Build and CI
 

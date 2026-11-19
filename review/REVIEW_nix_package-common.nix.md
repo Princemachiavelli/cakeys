@@ -42,7 +42,7 @@ matters because the probe's profiles must match what the check phase re-probes. 
 `kryoptic_init`), sourced by preCheck, test-tokens.sh, local-tests.sh, regen-profiles.sh,
 pkcs11-check.sh, demo.sh and examples/lib.sh. Left out, as its header says: the NixOS tests'
 VMs, xversion.sh's older SoftHSM releases, the upstream repros, the cloud host and p11-kit's own
-token.
+token. `checks.token-setup` fails on a new hand-written copy anywhere else.
 
 ## Design
 

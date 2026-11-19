@@ -53,6 +53,26 @@
       python3 -I ${src}/nix/doc-references.py ${src}
       touch $out
     '';
+  # The software tokens are set up in one place, nix/token-env.sh (review D9): no other script
+  # writes a SoftHSM configuration or initialises a token by hand, but those its header leaves
+  # out (VM tests, old SoftHSM releases, upstream repros, a cloud host, p11-kit's own token).
+  token-setup =
+    let
+      src = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.fileFilter (f: f.hasExt "sh" || f.hasExt "nix") ./.;
+      };
+    in
+    pkgs.runCommand "cakeys-token-setup" { nativeBuildInputs = [ pkgs.ripgrep ]; } ''
+      cd ${src}
+      if rg -n -e 'directories\.tokendir' -e '--init-token' -g '!nix/token-env.sh' -g '!checks.nix' \
+        -g '!nix/test.nix' -g '!nix/module-test.nix' -g '!scripts/xversion.sh' -g '!upstream/**' \
+        -g '!scripts/cloud/aws.sh' -g '!nix/p11kit-test-env.sh' .; then
+        echo "token-setup: set the tokens up through nix/token-env.sh, or name the script in its header and here" >&2
+        exit 1
+      fi
+      touch $out
+    '';
   # nix/demo.sh straight through: every step's expected exit code still holds.
   demo = demo.check;
   # cakeys, caprobe and camigrate without their `tpm2` and `ykcs11` features (nix/package-crane.nix).

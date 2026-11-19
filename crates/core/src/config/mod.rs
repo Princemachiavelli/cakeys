@@ -376,9 +376,10 @@ impl ObjectCfg {
     ///
     /// # Errors
     ///
-    /// `Validation` for a field that names nothing on this class or key type, or a certificate
-    /// without `certificateType = "CKC_X_509"`; `Unsupported` for a class/key-type pairing
-    /// cakeys does not manage, or a curve [`Self::curve`] refuses.
+    /// `Validation` for a field that names nothing on this class or key type, a certificate
+    /// without a `certificateType`, or one no PKCS#11 certificate type; `Unsupported` for what
+    /// PKCS#11 has but cakeys does not manage: a class/key-type pairing, a certificate type
+    /// other than `CKC_X_509`, or a curve [`Self::curve`] refuses.
     pub fn kind(&self) -> Result<ObjectKind> {
         let invalid = |why: &str| Err(KmError::Validation(why.to_owned().into()));
         let class = self.class;
@@ -409,7 +410,17 @@ impl ObjectCfg {
         Ok(match (class, self.key_type) {
             (ObjectClass::Certificate, _) => match self.certificate_type.as_deref() {
                 Some("CKC_X_509") => ObjectKind::Certificate,
-                Some(_) => return invalid("certificateType must be CKC_X_509"),
+                Some(t @ ("CKC_X_509_ATTR_CERT" | "CKC_WTLS" | "CKC_VENDOR_DEFINED")) => {
+                    return Err(KmError::Unsupported(
+                        format!("certificateType {t}: cakeys manages CKC_X_509 certificates only").into(),
+                    ));
+                }
+                Some(t) => {
+                    return invalid(&format!(
+                        "certificateType {t:?} is no PKCS#11 certificate type (CKC_X_509, CKC_X_509_ATTR_CERT, \
+                         CKC_WTLS, CKC_VENDOR_DEFINED)"
+                    ));
+                }
                 None => return invalid("certificates need certificateType = \"CKC_X_509\""),
             },
             (ObjectClass::Data, _) => ObjectKind::Data,

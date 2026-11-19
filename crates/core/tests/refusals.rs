@@ -86,7 +86,13 @@ fn specs_that_cannot_hold_are_refused_with_why() {
             17,
             "private keys only",
         ),
-        ("class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_WTLS\"", "", "", 17, "CKC_X_509"),
+        (
+            "class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_WTLS\"",
+            "",
+            "",
+            15,
+            "manages CKC_X_509 certificates only",
+        ),
         (&format!("{EC}\ncertificateType = \"CKC_X_509\""), SIGN, "", 17, "certificates only"),
         (&format!("{CERT}\nkeyType = \"CKK_RSA\""), "", "", 17, "keyType"),
         ("class = \"CKO_DATA\"", "", ", attestation = true", 17, "key objects only"),
@@ -99,8 +105,8 @@ fn specs_that_cannot_hold_are_refused_with_why() {
 }
 
 /// Every object's type is parsed at load (`ObjectCfg::kind`), whether a spec uses it or not:
-/// a field that names nothing on its class or key type is invalid (17), a pairing cakeys does
-/// not manage unsupported (15).
+/// a field that names nothing on its class or key type is invalid (17), what PKCS#11 has but
+/// cakeys does not manage (a class/key-type pairing, a certificate type) unsupported (15).
 #[test]
 fn every_object_is_typed_at_load() {
     let unused = |object: &str| format!("{}\n[objects.unused]\n{object}\n", keys(EC, SIGN, ""));
@@ -110,6 +116,10 @@ fn every_object_is_typed_at_load() {
         ("class = \"CKO_PUBLIC_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"P-256\"\nvalueLen = 32", 17, "valueLen applies"),
         ("class = \"CKO_DATA\"\nkeyType = \"CKK_AES\"", 17, "keyType applies to keys only"),
         ("class = \"CKO_CERTIFICATE\"", 17, "certificates need certificateType"),
+        ("class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X509\"", 17, "is no PKCS#11 certificate type"),
+        ("class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509_ATTR_CERT\"", 15, "CKC_X_509 certificates only"),
+        ("class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_WTLS\"", 15, "CKC_X_509 certificates only"),
+        ("class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_VENDOR_DEFINED\"", 15, "CKC_X_509 certificates only"),
         ("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_AES\"", 15, "CKO_PRIVATE_KEY/CKK_AES"),
         ("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"brainpoolP512r1\"", 15, "no RustCrypto crate"),
     ] {
