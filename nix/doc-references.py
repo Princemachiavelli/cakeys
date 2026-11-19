@@ -30,6 +30,7 @@ FOREIGN_NAMES = {
 # (citing file, cited path): files that are not this repository's, or are cited as gone.
 FOREIGN_PATHS = {
     ("docs/OPEN.md", "docs/PROVIDERS.md"): "a plan named as kept only in git history",
+    ("docs/OPEN.md", "docs/VENDOR.md"): "the tpm2-pkcs11 fork's interface document, in its repository",
     ("docs/PLAN.md", "docs/rv-trace-design.md"): "pkcs11-check's design note, in its repository",
 }
 
