@@ -3,7 +3,6 @@
 //! notes, and the documented exit codes. Each binary is a library over this, so a downstream
 //! binary can link extra provider crates: `cakeys::main(&cakeys::default_registry().with(P))`.
 
-use anyhow::Context as _;
 use cakeys_core::KmError;
 use cakeys_core::config::{
     Config, Lock, TokenCfg, UpdateGuard, load_config, load_lock, lock_for_update, lock_unwritable, save_lock,
@@ -86,12 +85,16 @@ pub fn main(dispatch: impl FnOnce(&mut Notes) -> anyhow::Result<()>) -> ExitCode
 ///
 /// # Errors
 ///
-/// When an override is not of the form `TOKEN=PATH`.
+/// `Validation` (17) when an override is not of the form `TOKEN=PATH`: an invalid option, not
+/// the 1 of an error without a code.
 pub fn module_overrides(args: &[String]) -> anyhow::Result<BTreeMap<String, String>> {
     args.iter()
-        .map(|m| m.split_once('=').map(|(t, p)| (t.to_owned(), p.to_owned())))
-        .collect::<Option<_>>()
-        .context("--module expects TOKEN=PATH")
+        .map(|m| {
+            m.split_once('=')
+                .map(|(t, p)| (t.to_owned(), p.to_owned()))
+                .ok_or_else(|| KmError::Validation(format!("--module {m:?}: expects TOKEN=PATH").into()).into())
+        })
+        .collect()
 }
 
 /// keys.toml's entry for the token `name`.

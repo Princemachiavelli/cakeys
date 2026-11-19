@@ -114,6 +114,22 @@ fn the_forwarder_subtracts_exactly_its_layer() {
     assert_eq!((renamed["profile"].as_str(), probed["profile"].as_str()), (Some("mine/1.0"), Some("p11-kit/1.1")));
 }
 
+/// `--module TOKEN=PATH` replaces a token's module for the run: the reference token's, by a
+/// path that loads nothing, is unavailable (16) naming that path; an override not of that form
+/// is invalid (17), as in every tool (`module_overrides`).
+#[test]
+fn a_module_override_replaces_the_tokens_module() {
+    let test = "module-override";
+    let Some(module) = suite_var(SOFTHSM.module_var, SOFTHSM.require_var, test) else { return };
+    let w = Workdir::new(test);
+    w.write_config(&reference_tokens(&module, &w.dir));
+    let gone = format!("ref={}", w.dir.join("libgone.so").display());
+    let o = w.km(&["--module", &gone, "probe", "--token", "ref"]);
+    assert!(code(&o) == 16 && stderr(&o).contains("libgone.so"), "{}", stderr(&o));
+    let o = w.km(&["--module", "ref", "probe", "--token", "ref"]);
+    assert!(code(&o) == 17 && stderr(&o).contains("expects TOKEN=PATH"), "{}", stderr(&o));
+}
+
 /// The write probes' scratch guard (docs/CAPROBE.md), on the reference token named
 /// `provider = "ykcs11"`: a provider that creates only as Security Officer probes one slot,
 /// named by `scratchId`, with the admin credential; without either it is refused (17), as is a

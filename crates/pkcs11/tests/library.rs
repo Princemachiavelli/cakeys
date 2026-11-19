@@ -18,6 +18,8 @@ fn token(module: &str, pin: &std::path::Path) -> TokenCfg {
 #[test]
 fn a_bare_name_and_a_path_share_one_library() {
     let Ok(module) = std::env::var("CAKEYS_TEST_MODULE") else {
+        // As every token suite: required where the harness says so.
+        assert!(std::env::var("CAKEYS_TEST_REQUIRE").is_err(), "CAKEYS_TEST_MODULE is required");
         eprintln!("skipping library: CAKEYS_TEST_MODULE is not set");
         return;
     };

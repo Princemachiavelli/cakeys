@@ -31,7 +31,10 @@ The OS is NixOS: there is no system `cargo`, `python3` or `perl`.
 - Both builds (the checks' crane build and `packages.cakeys`) run the tests under
   `cargo-nextest`, one process per test, each through `nix/test-tokens.sh`: a SoftHSM token and
   a kryoptic database of its own (copies of templates), and for the suites that use them its own
-  `p11-kit server` and swtpm. So the tests run in parallel (268 tests in about 40 s; the
+  `p11-kit server` and swtpm; there is no shared server or swtpm, so a suite the runner's lists
+  leave out fails rather than sharing one. The tokens are set up by one script,
+  `nix/token-env.sh`, which the check phase, the runner, `scripts/local-tests.sh` and the
+  profile, demo and example scripts all source. So the tests run in parallel (268 tests in about 40 s; the
   camigrate suite alone took 130 s on one thread) and none depends on what another left on a
   token. `nix build .#cakeys-crane` is that run alone.
 - `scripts/local-tests.sh [nextest arguments]` is the same run outside Nix, seconds per test:

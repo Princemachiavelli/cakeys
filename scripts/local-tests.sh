@@ -96,21 +96,19 @@ resolved=$(cargo metadata --format-version 1 | jq -r '.packages[] | select(.name
   exit 1
 }
 
-# The token templates, as preCheck makes them.
+# The token templates, as preCheck makes them (nix/token-env.sh).
 T=$(mktemp -d "${TMPDIR:-/tmp}/local-tests.XXXXXX")
 trap 'rm -rf -- "$T"' EXIT
 export TMPDIR=$T HOME=$T
-export SOFTHSM2_CONF=$T/softhsm2.conf
-mkdir -p "$T/softhsm-tokens"
-printf 'directories.tokendir = %s\nobjectstore.backend = file\nlog.level = ERROR\n' "$T/softhsm-tokens" >"$SOFTHSM2_CONF"
-softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678 >/dev/null
+export CAKEYS_TOKEN_ENV_SH=$tree/nix/token-env.sh
+# shellcheck source=nix/token-env.sh
+. "$CAKEYS_TOKEN_ENV_SH"
+softhsm_conf "$T"
+softhsm_init kmtest
 export CAKEYS_TEST_MODULE=$softhsm/lib/softhsm/libsofthsm2.so CAKEYS_TEST_REQUIRE=1
-export KRYOPTIC_CONF=$T/kryoptic.conf
-printf '[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' "$T/kryoptic.sql" >"$KRYOPTIC_CONF"
+kryoptic_conf "$T"
 export CAKEYS_KRYOPTIC_MODULE=$kryoptic/lib/libkryoptic_pkcs11.so CAKEYS_KRYOPTIC_REQUIRE=1
-pkcs11-tool --module "$CAKEYS_KRYOPTIC_MODULE" --init-token --slot 1 --so-pin 5678 --label kmtest >/dev/null
-pkcs11-tool --module "$CAKEYS_KRYOPTIC_MODULE" --token-label kmtest --login --login-type so \
-  --so-pin 5678 --init-pin --pin 1234 >/dev/null
+kryoptic_init "$CAKEYS_KRYOPTIC_MODULE" kmtest
 export CAKEYS_TOKEN_TEMPLATE=$T/token-template
 mkdir -p "$CAKEYS_TOKEN_TEMPLATE"
 cp -r "$T/softhsm-tokens" "$T/kryoptic.sql" "$CAKEYS_TOKEN_TEMPLATE/"

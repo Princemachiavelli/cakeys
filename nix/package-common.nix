@@ -177,34 +177,30 @@ in
     ];
     preCheck = lib.optionalString canCheck (
       ''
-        export SOFTHSM2_CONF=$TMPDIR/softhsm2.conf
-        mkdir -p $TMPDIR/softhsm-tokens
-        printf 'directories.tokendir = %s\nobjectstore.backend = file\nlog.level = ERROR\n' \
-          $TMPDIR/softhsm-tokens > $SOFTHSM2_CONF
-        softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678
+        # The software tokens, as every harness sets them up (nix/token-env.sh).
+        export CAKEYS_TOKEN_ENV_SH=${./token-env.sh}
+        . $CAKEYS_TOKEN_ENV_SH
+        softhsm_conf $TMPDIR
+        softhsm_init kmtest
         export CAKEYS_TEST_MODULE=${softhsmForTests}/lib/softhsm/libsofthsm2.so
         export CAKEYS_TEST_REQUIRE=1
 
-        # kryoptic (PKCS#11 3.2): the shared reference suite runs against it too. The slot table
-        # ends the file: the suite appends a mechanism deny list to it (tests/common/mod.rs).
-        export KRYOPTIC_CONF=$TMPDIR/kryoptic.conf
-        printf '[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' $TMPDIR/kryoptic.sql > $KRYOPTIC_CONF
+        # kryoptic (PKCS#11 3.2): the shared reference suite runs against it too.
+        kryoptic_conf $TMPDIR
         export CAKEYS_KRYOPTIC_MODULE=${kryoptic}/lib/libkryoptic_pkcs11${sharedLibrary}
-        pkcs11-tool --module $CAKEYS_KRYOPTIC_MODULE --init-token --slot 1 --so-pin 5678 --label kmtest > /dev/null
-        pkcs11-tool --module $CAKEYS_KRYOPTIC_MODULE --token-label kmtest --login --login-type so \
-          --so-pin 5678 --init-pin --pin 1234 > /dev/null
+        kryoptic_init $CAKEYS_KRYOPTIC_MODULE kmtest
         export CAKEYS_KRYOPTIC_REQUIRE=1
 
-        # The templates of a per-test token set (nix/test-tokens.sh, the crane check phase): the
-        # two software tokens as just initialised, before any test or the forwarder touches them.
+        # The templates of a per-test token set (nix/test-tokens.sh, every test's runner): the
+        # two software tokens as just initialised, before any test touches them.
         export CAKEYS_TOKEN_TEMPLATE=$TMPDIR/token-template
         mkdir -p $CAKEYS_TOKEN_TEMPLATE
         cp -r $TMPDIR/softhsm-tokens $TMPDIR/kryoptic.sql $CAKEYS_TOKEN_TEMPLATE/
         export CAKEYS_P11KIT_ENV_SH=${./p11kit-test-env.sh} CAKEYS_TPM_ENV_SH=${./tpm2-test-env.sh}
 
-        # p11-kit forwarding: a second SoftHSM token behind `p11-kit server` (short socket path).
-        SOFTHSM_MODULE=$CAKEYS_TEST_MODULE bash ${./p11kit-test-env.sh} up $TMPDIR/p11
-        . $TMPDIR/p11/env
+        # p11-kit forwarding and the software TPM: test-tokens.sh starts a server and a swtpm
+        # per test for the suites that use them, and there is no shared one to fall back on, so
+        # a suite its lists leave out fails here as under scripts/local-tests.sh (review D9).
         export CAKEYS_P11KIT_CLIENT=${lib.getLib p11-kit}/lib/pkcs11/p11-kit-client.so
         export CAKEYS_P11KIT_REQUIRE=1
 
@@ -214,18 +210,8 @@ in
         export HOME=$TMPDIR
       ''
       + lib.optionalString tpm2 ''
-        bash ${./tpm2-test-env.sh} up $TMPDIR/tpm || { tail -n 20 $TMPDIR/tpm/*.log; exit 1; }
-        . $TMPDIR/tpm/env
         export CAKEYS_TPM_MODULE=${lib.getLib tpm2-pkcs11}/lib/libtpm2_pkcs11.so
         export CAKEYS_TPM_REQUIRE=1
-      ''
-    );
-    postCheck = lib.optionalString canCheck (
-      ''
-        bash ${./p11kit-test-env.sh} down $TMPDIR/p11
-      ''
-      + lib.optionalString tpm2 ''
-        bash ${./tpm2-test-env.sh} down $TMPDIR/tpm
       ''
     );
 

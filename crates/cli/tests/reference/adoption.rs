@@ -240,10 +240,16 @@ fn a_legacy_rsa_key_has_an_identity() {
         ],
         &[Attribute::Token(true), label, Attribute::Sign(true), Attribute::Sensitive(true)],
     );
-    if let Err(err) = made {
-        // kryoptic makes no RSA key under 1024 bits.
-        eprintln!("skipping rsa_legacy: the module makes no RSA-768 key: {err}");
-        return;
+    // kryoptic makes no RSA key under 1024 bits; any other reference that fails to is a failure,
+    // not a skip (review D9).
+    match made {
+        Err(err) if REF.provider == "kryoptic" => {
+            eprintln!("skipping rsa_legacy: kryoptic makes no RSA-768 key: {err}");
+            return;
+        }
+        made => {
+            made.unwrap();
+        }
     }
     e.config(
         r#"

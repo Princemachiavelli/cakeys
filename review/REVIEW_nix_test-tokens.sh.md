@@ -16,6 +16,9 @@ and fails under scripts/local-tests.sh. Starting both lazily for every suite tha
 `CAKEYS_P11KIT_CLIENT`/`CAKEYS_TPM_MODULE` set costs a few hundred ms per test; alternatively keep
 the list but make the global fallback fail. [read]
 
+**Fixed (2026-11-18), the fallback half:** the list stays, and the check phase's shared
+p11-kit server and swtpm are gone, so a suite left out of it fails in both places.
+
 ### F2. Port fallback outside nextest can collide — nit
 
 `nix/test-tokens.sh:92`. Without `NEXTEST_TEST_GLOBAL_SLOT`, `$$ % 4000` can give two concurrent

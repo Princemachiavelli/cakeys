@@ -46,23 +46,20 @@ expect() {
   echo "  → exit $code"
 }
 
+# The software tokens as every harness sets them up.
+# shellcheck source=nix/token-env.sh
+. "${CAKEYS_TOKEN_ENV_SH:-$examples/../nix/token-env.sh}"
+
 # A SoftHSM token labelled $1.
 softhsm_token() {
-  export SOFTHSM2_CONF=$work/softhsm2.conf
-  if [ ! -f "$SOFTHSM2_CONF" ]; then
-    mkdir -p "$work/softhsm"
-    printf 'directories.tokendir = %s\nobjectstore.backend = file\nlog.level = ERROR\n' "$work/softhsm" >"$SOFTHSM2_CONF"
-  fi
-  softhsm2-util --init-token --free --label "$1" --pin 1234 --so-pin 5678 >/dev/null
+  softhsm_conf "$work"
+  softhsm_init "$1"
 }
 
 # A kryoptic token labelled $1 (one per run).
 kryoptic_token() {
-  export KRYOPTIC_CONF=$work/kryoptic.conf
-  printf '[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' "$work/kryoptic.sql" >"$KRYOPTIC_CONF"
-  pkcs11-tool --module "$KRYOPTIC_MODULE" --init-token --slot 1 --so-pin 5678 --label "$1" >/dev/null
-  pkcs11-tool --module "$KRYOPTIC_MODULE" --token-label "$1" --login --login-type so --so-pin 5678 \
-    --init-pin --pin 1234 >/dev/null
+  kryoptic_conf "$work"
+  kryoptic_init "$KRYOPTIC_MODULE" "$1"
 }
 
 # A tpm2-pkcs11 token labelled $1, on a software TPM this run starts (nix/tpm2-test-env.sh).

@@ -9,8 +9,10 @@
 #   test-tokens.sh <test binary> [args...]
 #
 # Needs $CAKEYS_TOKEN_TEMPLATE (softhsm-tokens/ and kryoptic.sql, nix/package-common.nix);
-# without it, and to list a binary's tests, the binary runs as it is. The p11-kit and TPM
-# environments are the scripts $CAKEYS_P11KIT_ENV_SH and $CAKEYS_TPM_ENV_SH name.
+# without it, and to list a binary's tests, the binary runs as it is. The token setup, the
+# p11-kit and the TPM environments are the scripts $CAKEYS_TOKEN_ENV_SH, $CAKEYS_P11KIT_ENV_SH
+# and $CAKEYS_TPM_ENV_SH name. A suite that uses p11-kit or the TPM is named in the lists below:
+# there is no shared server or TPM to fall back on, so one left out fails.
 set -euo pipefail
 
 # The tools take their keys.toml and lock from these when no flag names them: a developer's own
@@ -29,15 +31,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# shellcheck source=nix/token-env.sh
+. "${CAKEYS_TOKEN_ENV_SH:?the token setup, nix/token-env.sh}"
 cp -r "$CAKEYS_TOKEN_TEMPLATE/softhsm-tokens" "$D/softhsm-tokens"
-printf 'directories.tokendir = %s\nobjectstore.backend = file\nlog.level = ERROR\n' \
-  "$D/softhsm-tokens" >"$D/softhsm2.conf"
-export SOFTHSM2_CONF=$D/softhsm2.conf
-
-# The slot table ends the file: the suite appends a mechanism deny list to it.
+softhsm_conf "$D"
 cp "$CAKEYS_TOKEN_TEMPLATE/kryoptic.sql" "$D/kryoptic.sql"
-printf '[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' "$D/kryoptic.sql" >"$D/kryoptic.conf"
-export KRYOPTIC_CONF=$D/kryoptic.conf
+kryoptic_conf "$D"
 
 # The test binary's name without cargo's hash: which suite this is.
 suite=$(basename "$1")

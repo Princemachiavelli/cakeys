@@ -346,7 +346,7 @@ fn curves_and_rsa_sizes_match_an_independent_der_oracle() {
 fn hmac_key_types_commit_with_their_own_hash() {
     use cryptoki::object::KeyType as K;
     let Some(e) = env("hmac_types") else { return };
-    if !cryptoki_hmac_types_fixed(std::env::var("CAKEYS_TEST_REQUIRE").is_ok()) {
+    if !cryptoki_hmac_types_fixed(std::env::var(REF.require_var).is_ok()) {
         return;
     }
     // SoftHSM wants HMAC keys at least as long as the hash output.

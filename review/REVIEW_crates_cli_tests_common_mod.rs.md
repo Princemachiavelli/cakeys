@@ -46,6 +46,14 @@ removes the test from CI silently. Fix: print a machine-readable `SKIPPED` line 
 phase if any appears while a `*_REQUIRE` variable is set. Give the hardware suites
 `CAKEYS_FTPM_REQUIRE`/`CAKEYS_YUBIKEY_REQUIRE`, which `scripts/coverage-full.sh` exports. [read]
 
+**Fixed (2026-11-18), the skips inside tests:** `on_swtpm` fails under `CAKEYS_TPM_REQUIRE`
+(review tpm2.rs F3); identity.rs reads its reference's own require variable; `rsa_legacy`
+skips on kryoptic alone, where the module makes no RSA-768 key, and fails elsewhere; pkcs11's
+library test honours `CAKEYS_TEST_REQUIRE`; the hardware suites opt in all or none
+(`opted_in`). Each software-token skip left fails under its `*_REQUIRE` (`xref::env` asserts
+each module's). No `SKIPPED` count: the check phase skips the hardware and cloud suites by
+design, so a count could not fail on any skip.
+
 ### F3. `run_within` reads the child's pipes only after it exits: a large output hangs, then blames the user — risk
 
 **Verification:** confirmed (downgraded to practice). The mechanism is real: common/mod.rs:138-139 pipes both streams and :146-153 reads them only after `try_wait` reports exit. Its largest caller is caprobe's write probe (crates/caprobe/tests/yubikey.rs:56-59): stdout is the profile (profiles/modules/ykcs11/2.7.toml, 9.3 KB), and stderr carries only notes and, on drift, one line per differing profile row (crates/caprobe/src/lib.rs:274-282; no per-step progress in probe.rs), so both stay far under 64 KiB and nothing hangs today. [read]

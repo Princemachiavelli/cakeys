@@ -51,6 +51,7 @@ pkgs.runCommand "cakeys-examples"
     KRYOPTIC_MODULE = "${pkgs.kryoptic}/lib/libkryoptic_pkcs11${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
     TPM2_PKCS11_MODULE = tpm2Module;
     TPM2_TEST_ENV = ./tpm2-test-env.sh;
+    CAKEYS_TOKEN_ENV_SH = ./token-env.sh;
     PKCS11_PROVIDER_DIR = "${pkgs.pkcs11-provider}/lib/ossl-modules";
     SYSTEMD_SBSIGN = "${pkgs.systemd}/lib/systemd/systemd-sbsign";
     EFI_STUB = efiStub;

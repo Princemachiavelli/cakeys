@@ -424,7 +424,7 @@ The guest needs `secure=on`, which KVM cannot provide, so this is TCG on every h
 three tools, with the `tpm2` and `ykcs11` features, linking the cross tpm2-tss and sqlite; the
 binaries are aarch64 ELF. Not yet run in a guest (S3).
 
-- The test environment in `nix/package-common.nix` (`preCheck`, `postCheck`) now exists only
+- The test environment in `nix/package-common.nix` (`preCheck`) now exists only
   where the build can execute its tests. Before, a cross build depended on every token package
   for the host platform although its check phase was off, and nixpkgs' kryoptic does not
   cross-compile. The native derivations are unchanged by this (same `drvPath`). The module

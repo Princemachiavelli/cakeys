@@ -175,7 +175,6 @@ let
       }
       // {
         preBuild = lib.optionalString tokens common.args.preCheck;
-        postBuild = lib.optionalString tokens common.args.postCheck;
         buildPhaseCargoCommand = lib.concatMapStrings run scopes;
         installPhaseCommand = "";
       }
@@ -207,8 +206,7 @@ craneLib.buildPackage (
       unset CAKEYS_TRACE_DIR
       CAKEYS_COVERAGE_TRACE=$TMPDIR/coverage-trace \
         ${cargoTestCommandFor "test(committed_coverage_is_generated_from_the_trace)"}
-    ''
-    + common.args.postCheck;
+    '';
     passthru = {
       # Clippy with -D warnings over every target: the workspace lints (Cargo.toml
       # [workspace.lints]: unsafe_code deny, clippy::pedantic with one blanket allow) travel with
@@ -340,8 +338,7 @@ craneLib.buildPackage (
               | sed "s|^$PWD/||" | ${rustc.llvmPackages.llvm}/bin/llvm-cxxfilt \
               | awk -F '\t' '{ n[$1 "\t" $3] += $2 } END { for (k in n) if (n[k] == 0) print k }' \
               | grep -v '::<_\(, _\)*>$' | sort > $out/uncovered-functions.txt
-          ''
-          + common.args.postCheck;
+          '';
         }
       );
     };

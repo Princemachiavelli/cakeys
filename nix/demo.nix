@@ -21,6 +21,7 @@ let
       SOFTHSM_MODULE = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
       KRYOPTIC_MODULE = "${pkgs.kryoptic}/lib/libkryoptic_pkcs11${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
       CAKEYS_LIB = ./lib.nix;
+      CAKEYS_TOKEN_ENV_SH = ./token-env.sh;
     };
     text = builtins.readFile ./demo.sh;
   };

@@ -105,16 +105,13 @@ append() {
 
 # ── Two tokens ──────────────────────────────────────────────────────────────────────────────
 
-export SOFTHSM2_CONF=$work/softhsm2.conf
-mkdir -p "$work/softhsm"
-printf 'directories.tokendir = %s\nobjectstore.backend = file\nlog.level = ERROR\n' "$work/softhsm" >"$SOFTHSM2_CONF"
-softhsm2-util --init-token --free --label demo --pin 1234 --so-pin 5678 >/dev/null
-
-export KRYOPTIC_CONF=$work/kryoptic.conf
-printf '[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' "$work/kryoptic.sql" >"$KRYOPTIC_CONF"
-pkcs11-tool --module "$KRYOPTIC_MODULE" --init-token --slot 1 --so-pin 5678 --label demo >/dev/null
-pkcs11-tool --module "$KRYOPTIC_MODULE" --token-label demo --login --login-type so --so-pin 5678 \
-  --init-pin --pin 1234 >/dev/null
+# The software tokens as every harness sets them up (nix/token-env.sh).
+# shellcheck source=/dev/null
+. "$CAKEYS_TOKEN_ENV_SH"
+softhsm_conf "$work"
+softhsm_init demo
+kryoptic_conf "$work"
+kryoptic_init "$KRYOPTIC_MODULE" demo
 echo 1234 >pin
 export CAKEYS_CONFIG=$work/keys.toml
 

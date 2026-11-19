@@ -23,6 +23,9 @@ which starts no global stack, fails it. Today every user is listed (checked with
 start it: with `CAKEYS_TOKEN_TEMPLATE` set, test-tokens.sh always provides its own), so an
 unlisted suite fails loudly in both places. [read]
 
+**Fixed (2026-11-18):** preCheck starts no p11-kit server or swtpm; test-tokens.sh starts them
+per test for the suites it lists, so one left out fails in Nix as under scripts/local-tests.sh.
+
 ### F2. The token setup is copied into about ten scripts — complexity
 
 `nix/package-common.nix:173-189`. The same `softhsm2.conf` printf + `--init-token` and the
@@ -34,6 +37,12 @@ local-tests.sh is an explicit hand copy of this preCheck. A change (a kryoptic o
 setting) must be made in each, and the regen script and the check phase can drift apart, which
 matters because the probe's profiles must match what the check phase re-probes. One
 `nix/token-env.sh init-softhsm|init-kryoptic <dir> <label>` sourced by all would remove it. [read]
+
+**Fixed (2026-11-18):** `nix/token-env.sh` (`softhsm_conf`, `kryoptic_conf`, `softhsm_init`,
+`kryoptic_init`), sourced by preCheck, test-tokens.sh, local-tests.sh, regen-profiles.sh,
+pkcs11-check.sh, demo.sh and examples/lib.sh. Left out, as its header says: the NixOS tests'
+VMs, xversion.sh's older SoftHSM releases, the upstream repros, the cloud host and p11-kit's own
+token.
 
 ## Design
 

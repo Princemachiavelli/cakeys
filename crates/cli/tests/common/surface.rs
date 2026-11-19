@@ -1,7 +1,8 @@
 //! The command-line surface test, shared by the three tools: every verb and every flag clap
 //! defines is used by an integration test of that tool. It reads the test sources, so it says
 //! that a test names the verb or flag, not what the test proves with it: a floor under the
-//! coverage report (docs/DEVELOPMENT.md), cheap enough to run on every build.
+//! coverage report (docs/DEVELOPMENT.md), cheap enough to run on every build. A verb is nearly
+//! always named (`"lock"`, `"check"`); the flags are what it holds to a test.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -20,7 +21,8 @@ fn surface(cmd: &clap::Command, out: &mut BTreeSet<String>) {
     }
 }
 
-/// Every `.rs` file under `dir`, concatenated.
+/// Every `.rs` file under `dir` but the surface tests, concatenated without its comment lines:
+/// a flag a comment quotes is no flag a test uses.
 fn sources(dir: &Path, out: &mut String) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
@@ -28,13 +30,19 @@ fn sources(dir: &Path, out: &mut String) {
         if path.is_dir() {
             sources(&path, out);
         } else if path.extension().is_some_and(|e| e == "rs") && path.file_name().is_some_and(|n| n != "surface.rs") {
-            out.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            for line in text.lines().filter(|l| !l.trim_start().starts_with("//")) {
+                out.push_str(line);
+                out.push('\n');
+            }
         }
     }
 }
 
 /// Fail when a verb or flag of `cmd` appears as a string literal in no integration test under
-/// `tests` (this tool's `tests/`) or the shared harness. `untested` lists the ones knowingly
+/// `tests`, this tool's `tests/`. The shared harness (cli/tests/common) counts for cakeys alone,
+/// whose `tests/` holds it: another tool's flag the harness spells, for cakeys' own `--module`,
+/// is not that tool's test (review D9). `untested` lists the ones knowingly
 /// left out, each with why; one that is tested after all, or that clap no longer defines, fails
 /// too, so the list cannot go stale.
 ///
@@ -46,7 +54,6 @@ pub fn assert_covered(cmd: &clap::Command, tests: &Path, untested: &[(&str, &str
     surface(cmd, &mut names);
     let mut text = String::new();
     sources(tests, &mut text);
-    sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../cli/tests/common"), &mut text);
     // As an argument of its own (`"--dry-run"`), or the start of one (`"--module={path}"`,
     // `"--label kmtest"`).
     let used = |name: &str| {

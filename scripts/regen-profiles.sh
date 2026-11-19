@@ -24,17 +24,13 @@ softhsm=$(dirname "$(dirname "$(readlink -f "$(command -v softhsm2-util)")")")/l
 mkdir -p "$dir"
 echo 1234 >"$dir/pin"
 
-export SOFTHSM2_CONF=$dir/softhsm2.conf
-mkdir -p "$dir/softhsm-tokens"
-printf 'directories.tokendir = %s\nobjectstore.backend = file\nlog.level = ERROR\n' \
-  "$dir/softhsm-tokens" >"$SOFTHSM2_CONF"
-softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678 >/dev/null
-
-export KRYOPTIC_CONF=$dir/kryoptic.conf
-printf '[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' "$dir/kryoptic.sql" >"$KRYOPTIC_CONF"
-pkcs11-tool --module "$KRYOPTIC_MODULE" --init-token --slot 1 --so-pin 5678 --label kmtest >/dev/null
-pkcs11-tool --module "$KRYOPTIC_MODULE" --token-label kmtest --login --login-type so \
-  --so-pin 5678 --init-pin --pin 1234 >/dev/null
+# The tokens as the check phase sets them up (nix/token-env.sh).
+# shellcheck source=nix/token-env.sh
+. "$repo/nix/token-env.sh"
+softhsm_conf "$dir"
+softhsm_init kmtest
+kryoptic_conf "$dir"
+kryoptic_init "$KRYOPTIC_MODULE" kmtest
 
 export HOME=$dir
 # Its own port: the harness default (23211) may be another run's.

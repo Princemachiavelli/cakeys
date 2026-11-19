@@ -255,11 +255,16 @@ as refused by both.
   turns the skips into failures for the software tokens, so this is practice rather than risk;
   the hardware suites (ftpm, yubikey, cloud) and a few skips inside tests stay outside it, and
   nothing counts skips. ([cli tests common/mod.rs](REVIEW_crates_cli_tests_common_mod.rs.md))
+  **Fixed (2026-11-18):** each skip inside a test fails under its suite's `*_REQUIRE` or is a
+  fact of one reference (`rsa_legacy` on kryoptic), and the hardware suites opt in all or none.
+  Skips are not counted: the check phase skips the hardware and cloud suites by design.
 - `on_swtpm()` is a substring match on the D-Bus address. If `nix/tpm2-test-env.sh` renamed
   it, the object matrix and the attestation-key cases would skip without failing CI, even
   under `CAKEYS_TPM_REQUIRE`. The same test file makes persistent TPM handles (one through
   `cakeys create`, one through a raw `tpm2_evictcontrol`) outside any swtpm guard.
-  ([cli tests tpm2.rs](REVIEW_crates_cli_tests_tpm2.rs.md))
+  ([cli tests tpm2.rs](REVIEW_crates_cli_tests_tpm2.rs.md)) (**Fixed** before this pass:
+  `on_swtpm` reads the script's marker and the TPM's vendor strings, and fails under
+  `CAKEYS_TPM_REQUIRE` off swtpm.)
 - The skip gate, the `Env` wrapper and the binary runner are copied four to eight times; the
   copies clear different environment variables, and none passes `--lock` or clears
   `CAKEYS_LOCK`. A developer with `CAKEYS_LOCK` exported has test realisations written into
@@ -269,7 +274,9 @@ as refused by both.
   that signal: `use_label` reports a hit when its label matches nothing, and slot and token
   flag names share bit values, so a rule can set a different flag from the one it names.
   ([p11-fault hooks.rs](REVIEW_crates_p11-fault_src_hooks.rs.md),
-  [p11-fault plan.rs](REVIEW_crates_p11-fault_src_plan.rs.md)) ([p11-fault hooks.rs](REVIEW_crates_p11-fault_src_hooks.rs.md))
+  [p11-fault plan.rs](REVIEW_crates_p11-fault_src_plan.rs.md)) (**Fixed** before this pass:
+  `use_label` naming nothing fails the call as the plan's mistake, and slot and token flags are
+  two tables, each function taking its own; ISSUES.md "p11-fault plan mistakes".)
 - Half the fuzz targets check only "no panic". `lock` and `bundle` are files cakeys writes and
   reads back, yet neither target checks the round trip. camigrate's key-file reader (PKCS#12,
   encrypted PKCS#8, the B19 bounds) takes operator-supplied files and has no target. **Fixed
@@ -301,10 +308,14 @@ as refused by both.
   cases refused for another rule than the one they named (a private key without `CKA_SIGN`);
   their skeleton is fixed.
 - The surface check counts flag literals across the whole shared harness, so a flag can count
-  as tested because another tool's helper spells it.
+  as tested because another tool's helper spells it. **Fixed (2026-11-18):** a tool's own
+  tests count, without comment lines; caprobe's `--module` had been counted by cakeys' helper,
+  and its new test found a malformed override exiting 1, now 17.
 - The SoftHSM/kryoptic token setup is copied into about ten places (`scripts/local-tests.sh`
   is a hand copy of `preCheck`); `test-tokens.sh` picks its isolated suites from a hard-coded
-  list.
+  list. **Fixed (2026-11-18):** one `nix/token-env.sh`, sourced by the check phase, the runner,
+  local-tests.sh and the profile, demo and example scripts; and no shared p11-kit server or
+  swtpm in the check phase, so a suite the list leaves out fails instead of sharing one.
 
 ## D10. Build and CI
 

@@ -105,6 +105,7 @@ in
           KRYOPTIC_MODULE = "${pkgs.kryoptic}/lib/libkryoptic_pkcs11.so";
           TPM2_PKCS11_MODULE = "${pkgs.tpm2-pkcs11}/lib/libtpm2_pkcs11.so";
           TPM2_TEST_ENV = ./nix/tpm2-test-env.sh;
+          CAKEYS_TOKEN_ENV_SH = ./nix/token-env.sh;
           PROFILES = ./profiles/modules;
           TESTCASES = "${pkcs11-check}/${pkgs.python3.sitePackages}/pkcs11_check/testcases";
           COMPARE = ./scripts/pkcs11-check-compare.py;
