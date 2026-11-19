@@ -474,6 +474,157 @@ fn tpm2_keys_attest_their_tpm_residence() {
     }
 }
 
+/// EK→AK activation (review D5): with `ekCertificate`, every attestation proves the AK resides in
+/// the TPM the certificate names (a credential made on the host to the EK, bound to the AK's
+/// Name, which only that TPM activates), and the lock pins the CA the certificate verifies to,
+/// here a test CA named by `ekRoots`, rather than the AK. Refused: a CA nothing names (13), a
+/// certificate over another key than the TPM's EK (13), and a change of anchor either way (14):
+/// a lock made on first use until its attestation is dropped, and a locked activation that is
+/// then lost. The RSA and the P-256 EK both activate.
+#[test]
+fn tpm2_attestation_activates_a_credential_to_the_certified_ek() {
+    let Some(e) = env("activate") else { return };
+    if !on_swtpm() {
+        eprintln!("skipping activate: it makes persistent TPM objects, on the suite's swtpm only");
+        return;
+    }
+    let path = |name: &str| e.dir.join(name).to_str().unwrap().to_owned();
+    test_ek_certificates(&e.dir);
+
+    ptool(&["addkey", "--algorithm=ecc256", "--key-label=activate-a"]);
+    let pin = format!("pinFile = \"{}\"", e.dir.join("pin").display());
+    let config = |options: &str| {
+        e.write_config(&format!(
+            "[tokens.tpm]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\n{pin}\n{options}\n\n\
+             [objects.a]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.a]\nobject = \"a\"\nattributes = {{ CKA_SIGN = true }}\n\
+             tokens.tpm = {{ locator = {{ CKA_LABEL = \"activate-a\" }}, origin = \"adopt\", attestation = true, binding = \"token-asserted\" }}\n",
+            e.module,
+        ));
+    };
+    let ek = |cert: &str, roots: &str| {
+        config(&format!("options = {{ ekCertificate = \"{}\", ekRoots = \"{}\" }}", path(cert), path(roots)));
+    };
+    let refused = |o: &std::process::Output, want: i32, why: &str| {
+        assert_eq!(code(o), want, "{why}: {}", stderr(o));
+        assert!(stderr(o).contains(why), "expected {why:?} in {}", stderr(o));
+    };
+    let lock = ["lock", "--spec", "a", "--token", "tpm", "--update-lock"];
+    let verify = ["verify", "--spec", "a", "--token", "tpm"];
+
+    // First use, as before the EK certificate: the AK's own key is the anchor.
+    config("");
+    assert_eq!(e.code(&lock), 0);
+    let first_use = e.locked_attestation("a", "tpm")["root"].clone();
+    ek("ek-ecc.pem", "other-ca.pem");
+    refused(&e.km(&lock), 13, "signed by no pinned root");
+    // Anchoring that attestation at the manufacturer changes its anchor, which even `lock`
+    // refuses (14). Dropping the locked attestation, a reviewed edit of keys.lock, lets `lock`
+    // record the new one (docs/DESIGN.md §3.7).
+    ek("ek-ecc.pem", "ca.pem");
+    refused(&e.km(&lock), 14, "attestation anchor");
+    let mut edited = e.lock();
+    edited["realisations"]["a"]["tpm"].as_table_mut().unwrap().remove("attestation").unwrap();
+    e.write_lock(&edited);
+    assert_eq!(e.code(&lock), 0);
+    // The lock pins the test CA's key, the anchor the EK certificate verified to.
+    let ca_spki =
+        Command::new("openssl").args(["pkey", "-in", &path("ca.key"), "-pubout", "-outform", "DER"]).output().unwrap();
+    let att = e.locked_attestation("a", "tpm");
+    assert_eq!(att["root"].as_str(), Some(cakeys_core::id::sri(&ca_spki.stdout).as_str()), "{att}");
+    assert_ne!(att["root"], first_use);
+    let handles = persistent_handles();
+    assert_eq!(e.code(&verify), 0);
+    assert_eq!(e.code(&["check", "a.id.tpm-certify", "--token", "tpm"]), 0);
+    // The RSA EK, certified by the same CA, activates as well: the same anchor.
+    ek("ek-rsa.pem", "ca.pem");
+    assert_eq!(e.code(&verify), 0);
+    // A certificate the CA issued for a key that is not this TPM's EK.
+    ek("ek-stranger.pem", "ca.pem");
+    refused(&e.km(&verify), 13, "the EK certificate names another key than this TPM's endorsement key");
+    // No EK certificate (the swtpm keeps none in NV): the AK on first use, another anchor than
+    // the locked one.
+    config("");
+    refused(&e.km(&verify), 14, "anchor");
+    // Activation leaves nothing persistent behind: the EK is recreated and flushed every time.
+    assert_eq!(persistent_handles(), handles);
+}
+
+/// In `dir`, for [`tpm2_attestation_activates_a_credential_to_the_certified_ek`]: two test CAs
+/// (`ca.pem`, and `other-ca.pem` that nothing trusts), and certificates from `ca` for the
+/// swtpm's default P-256 and RSA EKs (`ek-ecc.pem`, `ek-rsa.pem`) and for a key that is no EK of
+/// this TPM (`ek-stranger.pem`).
+fn test_ek_certificates(dir: &std::path::Path) {
+    let path = |name: &str| dir.join(name).to_str().unwrap().to_owned();
+    let openssl = |args: &[&str]| {
+        let out = Command::new("openssl").args(args).output().unwrap();
+        assert!(out.status.success(), "openssl {args:?}: {}", stderr(&out));
+    };
+    std::fs::write(
+        dir.join("ca.cnf"),
+        "[req]\ndistinguished_name = dn\nx509_extensions = ca\nprompt = no\n[dn]\nCN = cakeys test\n\
+         [ca]\nbasicConstraints = critical, CA:TRUE\nkeyUsage = critical, keyCertSign\n\
+         subjectKeyIdentifier = hash\n\
+         [ek]\nbasicConstraints = CA:FALSE\nkeyUsage = critical, keyEncipherment\n",
+    )
+    .unwrap();
+    // The CA `ekRoots` names, and one nothing names.
+    for ca in ["ca", "other-ca"] {
+        openssl(&[
+            "req",
+            "-x509",
+            "-config",
+            &path("ca.cnf"),
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:P-256",
+            "-nodes",
+            "-keyout",
+            &path(&format!("{ca}.key")),
+            "-out",
+            &path(&format!("{ca}.pem")),
+            "-subj",
+            &format!("/CN=cakeys test {ca}"),
+            "-days",
+            "2",
+        ]);
+    }
+    // An EK certificate from `ca` for the public key in `public` (PEM).
+    let issue = |public: &str, out: &str| {
+        openssl(&[
+            "x509",
+            "-new",
+            "-subj",
+            "/CN=cakeys test EK",
+            "-force_pubkey",
+            &path(public),
+            "-CA",
+            &path("ca.pem"),
+            "-CAkey",
+            &path("ca.key"),
+            "-days",
+            "2",
+            "-extfile",
+            &path("ca.cnf"),
+            "-extensions",
+            "ek",
+            "-out",
+            &path(out),
+        ]);
+    };
+    for alg in ["ecc", "rsa"] {
+        tpm2_tool(
+            "createek",
+            &["-G", alg, "-c", &path(&format!("ek-{alg}.ctx")), "-u", &path(&format!("ek-{alg}.pub.pem")), "-f", "pem"],
+        );
+        issue(&format!("ek-{alg}.pub.pem"), &format!("ek-{alg}.pem"));
+    }
+    openssl(&["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", &path("stranger.key")]);
+    openssl(&["pkey", "-in", &path("stranger.key"), "-pubout", "-out", &path("stranger.pub.pem")]);
+    issue("stranger.pub.pem", "ek-stranger.pem");
+}
+
 /// The same material attested on two TPM tokens (§3.7): each attestation is per device — the
 /// imported HMAC's Name differs per import (a fresh seedValue), and the qualified Name per
 /// hierarchy — so each realisation pins its own, and the object links them through its one

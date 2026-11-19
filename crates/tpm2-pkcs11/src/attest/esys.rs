@@ -13,6 +13,7 @@
 //! cross-checked against the object's SPKI. The qualifying data is a
 //! fresh random nonce, so the response proves the object is *currently loaded in that TPM*.
 
+use super::credential;
 use super::store::{Parent, Store, TObject};
 use cakeys_core::id;
 use cakeys_core::{KmError, Result};
@@ -20,17 +21,21 @@ use std::convert::TryFrom;
 
 use aes_gcm::aead::{Aead, KeyInit};
 use tss_esapi::Context;
+use tss_esapi::abstraction::{AsymmetricAlgorithmSelection, ek};
 use tss_esapi::attributes::{ObjectAttributes, ObjectAttributesBuilder};
-use tss_esapi::handles::{KeyHandle, PersistentTpmHandle, TpmHandle};
+use tss_esapi::constants::SessionType;
+use tss_esapi::handles::{AuthHandle, KeyHandle, PersistentTpmHandle, SessionHandle, TpmHandle};
 use tss_esapi::interface_types::algorithm::{HashingAlgorithm, PublicAlgorithm};
 use tss_esapi::interface_types::dynamic_handles::Persistent;
 use tss_esapi::interface_types::ecc::EccCurve;
+use tss_esapi::interface_types::key_bits::RsaKeyBits;
 use tss_esapi::interface_types::resource_handles::{Hierarchy, Provision};
-use tss_esapi::interface_types::session_handles::AuthSession;
+use tss_esapi::interface_types::session_handles::{AuthSession, PolicySession};
 use tss_esapi::interface_types::structure_tags::AttestationType;
 use tss_esapi::structures::{
-    Attest, AttestInfo, Auth, Data, EccPoint, EccScheme, HashScheme, KeyDerivationFunctionScheme, Name, Private,
-    Public, PublicBuffer, PublicBuilder, PublicEccParametersBuilder, Signature, SignatureScheme,
+    Attest, AttestInfo, Auth, Data, Digest, EccPoint, EccScheme, EncryptedSecret, HashScheme, IdObject,
+    KeyDerivationFunctionScheme, Name, Nonce, Private, Public, PublicBuffer, PublicBuilder, PublicEccParametersBuilder,
+    Signature, SignatureScheme, SymmetricDefinition,
 };
 use tss_esapi::traits::{Marshall, UnMarshall};
 use zeroize::Zeroizing;
@@ -41,7 +46,7 @@ pub(crate) struct Certified {
     pub name: Vec<u8>,
     /// The attested qualified Name: where the object sits under the AK's hierarchy.
     pub qualified_name: Vec<u8>,
-    /// The canonical SPKI of the AK: the anchor the lock pins.
+    /// The canonical SPKI of the AK: the anchor the lock pins when no EK certificate verifies.
     pub ak_spki: Vec<u8>,
     /// The signed `objectAttributes`, as the module derives `CKA_LOCAL` and `CKA_EXTRACTABLE`.
     pub local: bool,
@@ -503,13 +508,19 @@ pub(crate) fn recompute_name(pub_blob: &[u8]) -> Result<Vec<u8>> {
 /// PKCS#11 object is being attested. The material SPKI (present exactly for asymmetric keys)
 /// is cross-checked against the attestation — the attested key must be the key the object's
 /// `rfc7093m4` names. `provision` lets a missing Attestation Key be created (`lock` only).
+/// With `ek`, the public key of a verified EK certificate, the AK that signed is then proven to
+/// reside in that EK's TPM ([`activate`]).
 ///
 /// # Errors
 ///
 /// `Unavailable` without a PIN to unseal the object's auth value, or when any TPM call
 /// fails; `Conflict` when the store row or the attestation disagrees (a Name that is not the
-/// blob's, another signer, other material than `spki`); `Unsupported` when the store object
-/// has no private blob to certify.
+/// blob's, another signer, other material than `spki`) or the activation does; `Unsupported`
+/// when the store object has no private blob to certify.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the store row, its PIN, the AK and what to check it against, all from attest()"
+)]
 pub(crate) fn certify_key(
     ctx: &mut Context,
     store: &Store,
@@ -518,6 +529,7 @@ pub(crate) fn certify_key(
     ak_handle: u32,
     provision: bool,
     spki: Option<&[u8]>,
+    ek: Option<&[u8]>,
 ) -> Result<Certified> {
     let pin = pin.ok_or_else(|| {
         KmError::Unavailable(
@@ -537,7 +549,13 @@ pub(crate) fn certify_key(
     // The AK first: it is persistent, so nothing is left to flush if it is missing.
     let (ak, ak_public, ak_qualified_name) = attestation_key(ctx, ak_handle, provision)?;
     let key = load(ctx, &store.parent, priv_blob, &tobj.pub_blob)?;
-    flushing(ctx, key, |ctx| certify_loaded(ctx, key, &objauth, tobj, ak, &ak_public, &ak_qualified_name, spki))
+    let certified =
+        flushing(ctx, key, |ctx| certify_loaded(ctx, key, &objauth, tobj, ak, &ak_public, &ak_qualified_name, spki))?;
+    // The public area whose key verified the certify is the one the credential is bound to.
+    if let Some(ek) = ek {
+        activate(ctx, ak, &ak_public, ek)?;
+    }
+    Ok(certified)
 }
 
 /// The certify and its host verification, for the object `key` loaded from `tobj`.
@@ -647,6 +665,151 @@ fn verify_certified(
         local: attributes.sensitive_data_origin(),
         extractable: !(attributes.fixed_tpm() || attributes.fixed_parent()),
     })
+}
+
+/// The EK certificate the TPM keeps in NV (TCG EK Credential Profile §2.2.1.4): the P-256 one
+/// at 0x01c0000a, else the RSA-2048 one at 0x01c00002; `None` when neither index is defined.
+/// Only read: cakeys never defines or writes an NV index.
+///
+/// # Errors
+///
+/// `Unavailable` when the TPM cannot be asked or an index that exists cannot be read.
+pub(crate) fn nv_ek_certificate(ctx: &mut Context) -> Result<Option<Vec<u8>>> {
+    use tss_esapi::constants::response_code::Tss2ResponseCodeKind;
+    for (alg, index) in [
+        (AsymmetricAlgorithmSelection::Ecc(EccCurve::NistP256), "0x01c0000a"),
+        (AsymmetricAlgorithmSelection::Rsa(RsaKeyBits::Rsa2048), "0x01c00002"),
+    ] {
+        match ek::retrieve_ek_pubcert(ctx, alg) {
+            Ok(der) => return Ok(Some(der)),
+            Err(tss_esapi::Error::Tss2Error(rc)) if rc.kind() == Some(Tss2ResponseCodeKind::Handle) => {}
+            Err(e) => {
+                return Err(KmError::Unavailable(
+                    format!("reading the EK certificate at NV index {index}: {e}").into(),
+                ));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Prove that the AK at `ak` (public area `ak_public`) resides in the TPM whose endorsement key
+/// is `ek_spki` (a verified EK certificate's): recreate the EK from the TCG default template,
+/// make a credential to it on the host bound to the AK's Name ([`credential::make_credential`]),
+/// and have the TPM activate it. Only a TPM holding both that EK and an object of that Name
+/// recovers the secret, and an AK that is fixedTPM (as [`check_ak`] requires) never left it.
+///
+/// # Errors
+///
+/// `Unsupported` for an EK that is neither RSA-2048 nor P-256; `Unavailable` when the EK cannot
+/// be created (endorsement auth not empty) or the TPM cannot be reached; `Conflict` when this
+/// TPM's EK is not the certificate's key, or the TPM refuses or answers the credential wrongly.
+pub(crate) fn activate(ctx: &mut Context, ak: KeyHandle, ak_public: &Public, ek_spki: &[u8]) -> Result<()> {
+    let alg = match id::KeyAlg::of_spki(ek_spki) {
+        Ok(id::KeyAlg::Rsa) => AsymmetricAlgorithmSelection::Rsa(RsaKeyBits::Rsa2048),
+        Ok(id::KeyAlg::Ec(id::Curve::P256)) => AsymmetricAlgorithmSelection::Ecc(EccCurve::NistP256),
+        _ => {
+            return Err(KmError::Unsupported(
+                "an EK certificate for other than the default RSA-2048 or P-256 EK".into(),
+            ));
+        }
+    };
+    let template = ek::create_ek_public_from_default_template_2(alg, None)
+        .map_err(|e| KmError::Validation(format!("EK template: {e}").into()))?;
+    let created = ctx
+        .execute_with_session(Some(AuthSession::Password), |ctx| {
+            ctx.create_primary(Hierarchy::Endorsement, template, None, None, None, None)
+        })
+        .map_err(|e| {
+            KmError::Unavailable(format!("creating the endorsement key (is endorsement auth empty?): {e}").into())
+        })?;
+    let ek = created.key_handle;
+    flushing(ctx, ek, |ctx| {
+        // What CreatePrimary answered is unauthenticated, so this is for the message: a TPM that
+        // holds another EK cannot activate the credential either way.
+        if material_of(&created.out_public)?.spki.as_deref() != Some(ek_spki) {
+            return Err(KmError::Conflict(
+                "the EK certificate names another key than this TPM's endorsement key".into(),
+            ));
+        }
+        let ak_tpmt =
+            ak_public.marshall().map_err(|e| KmError::Conflict(format!("the AK's public area: {e}").into()))?;
+        let mut secret = Zeroizing::new(vec![0u8; 32]);
+        getrandom::fill(&mut secret).map_err(|e| KmError::Unavailable(format!("OS RNG: {e}").into()))?;
+        let cred = credential::make_credential(ek_spki, &ak_tpmt, &secret)?;
+        let recovered = activate_with_ek(ctx, ak, ek, cred)?;
+        if recovered.as_slice() != secret.as_slice() {
+            return Err(KmError::Conflict("the TPM activated the credential to another secret".into()));
+        }
+        Ok(())
+    })
+}
+
+/// `TPM2_ActivateCredential` with the AK (empty auth) and the EK, whose default policy is
+/// `PolicySecret(TPM_RH_ENDORSEMENT)`: a policy session satisfied with the endorsement
+/// hierarchy's (empty) auth, flushed whatever happens.
+fn activate_with_ek(
+    ctx: &mut Context,
+    ak: KeyHandle,
+    ek: KeyHandle,
+    cred: credential::Credential,
+) -> Result<Zeroizing<Vec<u8>>> {
+    use tss_esapi::constants::response_code::Tss2ResponseCodeKind;
+    let unavailable = |what: &str, e: tss_esapi::Error| KmError::Unavailable(format!("{what}: {e}").into());
+    let blob = IdObject::try_from(cred.blob).map_err(|e| unavailable("the credential blob", e))?;
+    let secret = EncryptedSecret::try_from(cred.secret).map_err(|e| unavailable("the credential's secret", e))?;
+    let session = ctx
+        .start_auth_session(
+            None,
+            None,
+            None,
+            SessionType::Policy,
+            SymmetricDefinition::AES_128_CFB,
+            HashingAlgorithm::Sha256,
+        )
+        .map_err(|e| unavailable("starting the EK's policy session", e))?
+        .ok_or_else(|| KmError::Unavailable("the TPM started no policy session for the EK".into()))?;
+    let out = (|| {
+        let policy = PolicySession::try_from(session).map_err(|e| unavailable("the EK's policy session", e))?;
+        ctx.execute_with_session(Some(AuthSession::Password), |ctx| {
+            ctx.policy_secret(
+                policy,
+                AuthHandle::Endorsement,
+                Nonce::default(),
+                Digest::default(),
+                Nonce::default(),
+                None,
+            )
+        })
+        .map_err(|e| unavailable("PolicySecret(endorsement) for the EK (is endorsement auth empty?)", e))?;
+        ctx.execute_with_sessions((Some(AuthSession::Password), Some(session), None), |ctx| {
+            ctx.activate_credential(ak, ek, blob, secret)
+        })
+        .map(|digest| Zeroizing::new(digest.value().to_vec()))
+        .map_err(|e| match e {
+            // The TPM checked the credential and refused it: its HMAC does not hold for the AK's
+            // Name, or its seed was not encrypted to this EK.
+            tss_esapi::Error::Tss2Error(rc)
+                if matches!(
+                    rc.kind(),
+                    Some(
+                        Tss2ResponseCodeKind::Integrity
+                            | Tss2ResponseCodeKind::Value
+                            | Tss2ResponseCodeKind::Size
+                            | Tss2ResponseCodeKind::EccPoint
+                    )
+                ) =>
+            {
+                KmError::Conflict(
+                    format!("the TPM refused the credential: the AK is not in the TPM the EK certificate names ({e})")
+                        .into(),
+                )
+            }
+            e => unavailable("TPM2_ActivateCredential", e),
+        })
+    })();
+    let _ = ctx.flush_context(SessionHandle::from(session).into());
+    out
 }
 
 #[cfg(test)]

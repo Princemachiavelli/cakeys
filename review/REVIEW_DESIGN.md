@@ -161,6 +161,21 @@ whole where `validate` drops the hardware's rows (`supports_asks_by_token_and_re
   issues EK certificates, so the tests need no hardware. This machine's fTPM already holds
   cakeys' AK (0x81000016). Running the flow there needs the endorsement auth known to be empty,
   or it would send a wrong auth, which the hardware rules forbid. That is the user's call.
+  **Fixed 2026-11-18** (the user: endorsementAuthSet is 0). EK→AK activation: the EK
+  certificate (`options.ekCertificate`, else NV) is verified to a built-in AMD fTPM root or to
+  `options.ekRoots`, and every attestation activates a credential made on the host
+  (`attest/credential.rs`) to that EK and bound to the AK's host-computed Name; the lock pins the
+  root, not the AK. The swtpm tests use an openssl CA
+  (`tpm2_attestation_activates_a_credential_to_the_certified_ek`: an untrusted CA and another
+  key are 13, the activation lost is 14; mutating the KDF label, the Name or the OAEP label
+  makes the TPM refuse). The AMD fTPM's EK certificates were fetched from AMD's key
+  distribution server and committed with their roots (crates/tpm2-pkcs11/roots/README.md,
+  cross-checked against Microsoft's TrustedTpm bundle). The core chain walk counted an end-entity
+  starting certificate against its issuer's pathLen; an EK certificate under AMD's `pathlen:0`
+  intermediate showed it, and it now counts the starting certificate only when it is a CA
+  (`the_amd_ftpm_chains_verify_to_the_pinned_roots`). Left: the transport is unauthenticated
+  (a session salted to the EK would close it), and a NV certificate that reaches no anchor
+  leaves first use.
 - PIV: `Token::open` takes the `ChainTime` and it has no default, so every open names whether
   the dates are checked; the verbs that record pass `Unchecked`, as B8 decided (a lock recorded
   today verifies tomorrow). Decided (2026-11-18): the verbs that record judge

@@ -25,6 +25,12 @@ tss-esapi.workspace = true
 rusqlite.workspace = true
 serde_norway.workspace = true
 aes-gcm.workspace = true
+# EK→AK credential activation: the credential made on the host (attest/credential.rs).
+aes.workspace = true
+hmac.workspace = true
+rsa.workspace = true
+elliptic-curve.workspace = true
+p256.workspace = true
 sha2.workspace = true
 getrandom.workspace = true
 zeroize.workspace = true
@@ -34,4 +40,7 @@ base64.workspace = true
 [dev-dependencies]
 toml.workspace = true
 proptest.workspace = true
-p256.workspace = true
+
+[build-dependencies]
+base16ct.workspace = true
+sha2.workspace = true

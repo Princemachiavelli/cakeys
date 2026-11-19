@@ -331,7 +331,7 @@ content-addressed identity — one per token type that can produce it:
 | Scheme | Token | Evidence | Anchor pinned in the lock |
 |---|---|---|---|
 | `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen`; under `check`, every certificate also within its validity period (the system clock, `--at`, or `--ignore-validity`), while every other verb only warns about a chain out of its dates. Yubico attests only keys generated on device; ykcs11 mints the certificate when it lists the slot, with no login | the Yubico root's SPKI |
-| `tpm-certify` | tpm2-pkcs11 tokens | a native `TPM2_Certify` (tss-esapi) over the object's Name with a fresh random nonce, host-verified; the object's TPM blobs are read (read-only) from the module's own store — `options.tpm2Store`, else found as the module finds it — and loaded under the token's primary over the module's TCTI (`options.tcti`, else `$TPM2_PKCS11_TCTI`, `$TPM2TOOLS_TCTI`, `$TCTI`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the Attestation Key's SPKI |
+| `tpm-certify` | tpm2-pkcs11 tokens | a native `TPM2_Certify` (tss-esapi) over the object's Name with a fresh random nonce, host-verified; the object's TPM blobs are read (read-only) from the module's own store — `options.tpm2Store`, else found as the module finds it — and loaded under the token's primary over the module's TCTI (`options.tcti`, else `$TPM2_PKCS11_TCTI`, `$TPM2TOOLS_TCTI`, `$TCTI`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the EK certificate's root, when one verifies and the AK activates a credential with that EK (§3.7); else the Attestation Key's SPKI |
 
 - **The commitment hashes asserted content, never signed bytes.** A PIV certificate is minted
   per session with a random serial and a randomized ECDSA signature; a `TPMS_ATTEST` carries a
@@ -389,10 +389,30 @@ content-addressed identity — one per token type that can produce it:
   cakeys' template (restricted sign-only P-256, fixedTPM, empty policy) — anything else is a
   conflict (13), since an unrestricted key there could sign a forged attestation. The handle
   defaults to `0x81000016` (cakeys-tpm2-pkcs11 `DEFAULT_AK_HANDLE`), configurable per token
-  (`options.akHandle`, `0x`-prefixed, owner persistent range). Trust in it is TOFU through the pinned
-  `root`; **chaining it to the Endorsement Key certificate (EK → AK via
-  MakeCredential/ActivateCredential) is not implemented yet** — until it is, the AK proves
-  "this TPM", not "this genuine TPM".
+  (`options.akHandle`, `0x`-prefixed, owner persistent range).
+- **EK → AK activation** (review D5). With an Endorsement Key certificate, the AK is proven to
+  reside in a TPM its manufacturer certified, on every attestation. The certificate is
+  `options.ekCertificate` (a PEM file, leaf then intermediates), else the one the TPM keeps in
+  NV (0x01c0000a, then 0x01c00002). It must verify to a built-in root
+  (crates/tpm2-pkcs11/roots: AMD fTPM, RSA and ECC) or to `options.ekRoots`, with its dates
+  judged as the PIV chain's are. The host then makes a credential (`TPM2_MakeCredential`'s
+  computation, attest/credential.rs) to the certificate's key, bound to the Name of the AK
+  public area whose key verified the certify, never a Name the TPM reports. cakeys recreates
+  the EK from the TCG default template (empty endorsement auth; its key must be the
+  certificate's) and the TPM activates the credential (`TPM2_ActivateCredential`, the EK's
+  policy satisfied by `PolicySecret(endorsement)`). Only a TPM holding that EK and an object of
+  that Name recovers the secret, and the AK is fixedTPM. The lock's `root` is then the
+  manufacturer root's SPKI digest, not the AK's, so a TPM that loses its certificate, or an AK
+  that cannot activate, no longer matches (14, or 13 for a refused activation). A named
+  `ekCertificate` that does not verify is refused (13). A certificate found only in NV that
+  reaches no anchor (a manufacturer with no built-in root, or intermediates NV does not hold)
+  leaves the AK trusted on first use, pinned by its own SPKI digest as before. A realisation
+  locked on first use keeps its anchor: adding `ekCertificate` later is an anchor change, which
+  even `lock` refuses (14). To move it to the manufacturer, delete that realisation's
+  `attestation` table from `keys.lock` (a reviewed diff), then `lock` records the new root. Nothing
+  persists: the EK and the policy session are flushed. Tests: on swtpm with a test CA
+  (`tpm2_attestation_activates_a_credential_to_the_certified_ek`), on the AMD fTPM with its
+  fetched certificate (`keys_attest_to_the_manufacturer_on_the_real_tpm`).
 - **What each scheme proves, and what it does not.** `tpm-certify` is freshness-bound by the
   nonce: the object was loaded in that TPM *at verify time*, with the certified attributes.
   `piv-attestation` has no verifier nonce (Yubico's certificate carries none), so it proves
@@ -626,10 +646,10 @@ The reviews these come from are archived: `docs/archive/REVIEW-2026-11-11.md` (c
 - **`tpm-certify` is experimental and pending review** (review A8): it reads tpm2-pkcs11's
   private store (sqlite schema, YAML attributes, the sealed wrapping key), which the module
   does not offer as a stable interface; a module version it was not tested with (anything but
-  1.10.x) is refused (15). Without the EK certificate chain it proves **the same TPM as at first
-  use**: the Attestation Key is trusted on first use and pinned in the lock, so a later
-  attestation shows the object still sits in the TPM that held the AK then — not that this TPM
-  is genuine hardware from a known vendor.
+  1.10.x) is refused (15). Without an EK certificate that verifies (§3.7, EK → AK activation)
+  it proves **the same TPM as at first use**: the Attestation Key is trusted on first use and
+  pinned in the lock, so a later attestation shows the object still sits in the TPM that held
+  the AK then — not that this TPM is genuine hardware from a known vendor.
 - **`token-asserted` bindings are unproven.** With the opt-in or `publicOnly`, a private key is
   tied to its identity only by the token's word (H1 is fixed for every `pop-*` proof —
   `h1_a_private_key_beside_an_unbound_public_object_is_a_conflict`,
@@ -642,8 +662,11 @@ The reviews these come from are archived: `docs/archive/REVIEW-2026-11-11.md` (c
 - **`piv-attestation` proves no liveness** (no verifier nonce in Yubico's certificate, §3.7):
   a malicious module could replay an old one. `tpm-certify` is nonce-bound, so it proves the
   object was loaded in that TPM at verify time.
-- **The TPM Attestation Key is TOFU** (§3.7): the AK proves "this TPM", not "this genuine TPM",
-  until it is chained to the Endorsement Key certificate.
+- **The TPM Attestation Key is TOFU without an EK certificate** (§3.7): the AK proves "this
+  TPM", not "this genuine TPM", unless an EK certificate verifies to a known root
+  (`ekCertificate`, NV) and the AK activates a credential with that EK. Built in are AMD's
+  fTPM roots only; other manufacturers need `ekRoots`. The TPM transport is still
+  unauthenticated, so the token's unsealed wrapping key crosses it in the clear.
 - **The PIV path is verified by hand on one YubiKey, not in CI.** On a YubiKey 5C NFC FIPS
   (firmware 5.7.4, ykcs11 2.7.3): ykcs11 exposes the slot attestation certificate by label
   suffix and shared `CKA_ID`, and the f9 certificate by its bare label, with no login at all;

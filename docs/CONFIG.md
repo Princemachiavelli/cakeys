@@ -107,11 +107,15 @@ provider = "tpm2-pkcs11"
 nix = { systemFeature = "token-tpm" }
 
 # The provider's own settings. Each provider checks its own; one that takes none refuses any
-# (17). tpm2-pkcs11's (`tcti`, `tpm2Store`, `akHandle`) serve its native TPM2_Certify
-# attestation path (§3.7).
+# (17). tpm2-pkcs11's (`tcti`, `tpm2Store`, `akHandle`, `ekCertificate`, `ekRoots`) serve its
+# native TPM2_Certify attestation path (§3.7). `ekCertificate` names the TPM's EK certificate
+# and its intermediates (PEM): every attestation then proves the AK is in that TPM, and the
+# lock pins the manufacturer's root. It must verify to a built-in root (AMD fTPM) or to
+# `ekRoots` (a PEM file of extra roots).
 [tokens.tpm.options]
 tcti = "device:/dev/tpmrm0"
 akHandle = "0x81000016"
+ekCertificate = "/etc/cakeys/ek.pem"
 
 [tokens.yubikey]
 tokenLabel = "YubiKey PIV #39189318"

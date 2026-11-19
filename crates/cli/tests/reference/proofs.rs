@@ -425,7 +425,7 @@ fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
         assert_eq!(code(&o), exit, "{}", stderr(&o));
         assert!(stderr(&o).contains(why), "expected {why:?} in {}", stderr(&o));
     };
-    refused(13, "is signed by no pinned root and no pooled PIV intermediate");
+    refused(13, "is signed by no pinned root and no intermediate given");
     let second = piv.slot_cert();
     refused(12, "2 attestation certificates share the key's CKA_ID");
     s.destroy_object(second).unwrap();
@@ -448,8 +448,8 @@ fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
         assert!(stderr(&o).contains(why), "{more:?}: expected {why:?} in {}", stderr(&o));
     };
     checked(&["--at", "2026-01-01T00:00:00Z"], "is not valid at 2026-01-01T00:00:00Z");
-    checked(&["--ignore-validity"], "is signed by no pinned root and no pooled PIV intermediate");
-    checked(&[], "is signed by no pinned root and no pooled PIV intermediate");
+    checked(&["--ignore-validity"], "is signed by no pinned root and no intermediate given");
+    checked(&[], "is signed by no pinned root and no intermediate given");
     s.destroy_object(device_cert).unwrap();
 
     // ykcs11 reports CKA_DERIVE false on every private key though it derives with any EC key:

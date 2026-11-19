@@ -360,14 +360,19 @@ dependencies = [
 name = "cakeys-tpm2-pkcs11"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "aes-gcm",
+ "base16ct",
  "base64",
  "cakeys-core",
  "cakeys-pkcs11",
  "cryptoki",
+ "elliptic-curve",
  "getrandom 0.4.3",
+ "hmac",
  "p256",
  "proptest",
+ "rsa",
  "rusqlite",
  "rustix",
  "serde",

@@ -2,6 +2,8 @@
 //! store row behind the PKCS#11 object, certify it natively, and cross-check everything the
 //! module reports against what the TPM signed.
 
+pub(crate) mod credential;
+pub(crate) mod ek;
 pub(crate) mod esys;
 pub(crate) mod store;
 
@@ -81,10 +83,21 @@ pub(crate) struct Tpm2Options {
     tpm2_store: Option<String>,
     /// Persistent handle of cakeys' Attestation Key (a restricted signing key
     /// in the owner hierarchy, created by `lock` if absent, empty auth, and pinned in the
-    /// lock by the `attestation.root` of the realisation). Defaults to the provider's
+    /// lock by the `attestation.root` of the realisation, unless `ekCertificate` anchors it at
+    /// the manufacturer). Defaults to the provider's
     /// `DEFAULT_AK_HANDLE`; `0x`-prefixed hex in 0x81000000..=0x817FFFFF, e.g. `"0x81000016"`.
     /// An object already there that is not such a key is refused (13).
     ak_handle: Option<String>,
+    /// The TPM's endorsement key certificate: a PEM file of the certificate followed by its
+    /// intermediates, or one DER certificate. With it, every attestation proves the AK resides in
+    /// that TPM (a credential activated with the EK), and the lock pins the manufacturer root the
+    /// certificate verifies to rather than the AK. It must verify to a built-in root (AMD fTPM)
+    /// or to `ekRoots` (13). Without it, the certificate in the TPM's NV is used when one verifies;
+    /// else the AK is trusted on first use.
+    ek_certificate: Option<String>,
+    /// More roots to verify EK certificates to: a PEM file of self-signed CA certificates (or one
+    /// DER certificate), for a TPM manufacturer cakeys pins no root for.
+    ek_roots: Option<String>,
 }
 
 impl Tpm2Options {
@@ -272,6 +285,7 @@ pub(crate) fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
     let tobj = store.find(&cka_id, label.as_deref(), class)?;
     let conf = tcti(ctx, &opts)?;
     let mut esys_ctx = esys::context(&conf)?;
+    let ek = ek::trusted(ctx.token_name, &opts, ctx.chain_time, &mut esys_ctx)?;
     let certified = esys::certify_key(
         &mut esys_ctx,
         &store,
@@ -280,6 +294,7 @@ pub(crate) fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
         opts.ak_handle(ctx.token_name)?,
         ctx.provision,
         spki,
+        ek.as_ref().map(|t| t.spki.as_slice()),
     )?;
     // The module's immutables rest on TPMA_OBJECT bits the attestation signed: what the module
     // reports as CKA_LOCAL/CKA_EXTRACTABLE must be what the TPM certified (13, never a pass).
@@ -294,12 +309,17 @@ pub(crate) fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
             .into(),
         ));
     }
+    let (root, warning) = match ek {
+        // The AK was proven to reside in the certified TPM: the manufacturer's root anchors it.
+        Some(ek) => (ek.anchor_spki, ek.warning),
+        // The AK is trusted on first use, with no certificate dates to judge.
+        None => (certified.ak_spki, None),
+    };
     Ok(Attested {
         scheme: Scheme::TpmCertify,
         id: cakeys_core::id::tpm_certify_id(&certified.name, &certified.qualified_name),
-        root: cakeys_core::id::sri(&certified.ak_spki),
-        // The AK is trusted on first use, with no certificate dates to judge.
-        warning: None,
+        root: cakeys_core::id::sri(&root),
+        warning,
     })
 }
 

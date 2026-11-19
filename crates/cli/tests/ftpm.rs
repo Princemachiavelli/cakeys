@@ -129,3 +129,47 @@ fn keys_attest_their_residence_on_the_real_tpm() {
     let root = |spec: &str| e.lock()["realisations"][spec]["ftpm"]["attestation"]["root"].clone();
     assert_eq!(root("p256"), root("hmac"));
 }
+
+/// `tpm-certify` anchored at the manufacturer (review D5): with `ekCertificate` naming this TPM's
+/// EK certificate and its intermediates (`CAKEYS_FTPM_EK_CERTIFICATE`, e.g. the AMD fTPM bundle
+/// fetched for the development machine, crates/tpm2-pkcs11/tests/fixtures/amd-ftpm-ek-ecc.pem),
+/// every attestation activates a credential with the EK, and the lock pins the built-in AMD root
+/// the certificate verifies to rather than the AK. Needs `CAKEYS_FTPM_ATTEST=1` as
+/// [`keys_attest_their_residence_on_the_real_tpm`] does (the AK it uses); the EK is recreated
+/// from the endorsement hierarchy (empty auth) and flushed, so nothing else persists.
+#[test]
+fn keys_attest_to_the_manufacturer_on_the_real_tpm() {
+    let Some((e, _)) = env("attest-ek") else { return };
+    let (Ok("1"), Ok(certificate)) =
+        (std::env::var("CAKEYS_FTPM_ATTEST").as_deref(), std::env::var("CAKEYS_FTPM_EK_CERTIFICATE"))
+    else {
+        eprintln!("skipping attest-ek: CAKEYS_FTPM_ATTEST=1 and CAKEYS_FTPM_EK_CERTIFICATE are not both set");
+        return;
+    };
+    e.config(
+        "[objects.p256]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.p256]\nobject = \"p256\"\nattributes = { CKA_SIGN = true }\n\
+         tokens.ftpm = { locator = { CKA_LABEL = \"ftpm-attest-ek\" }, origin = \"create\", attestation = true }\n",
+    );
+    let toml = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
+    let with_ek = toml.replacen(
+        "tokenLabel = \"kmtest\"\n",
+        &format!("tokenLabel = \"kmtest\"\noptions = {{ ekCertificate = \"{certificate}\" }}\n"),
+        1,
+    );
+    assert_ne!(with_ek, toml, "the token section names its label");
+    std::fs::write(e.dir.join("keys.toml"), with_ek).unwrap();
+    let o = e.km(&["create", "--spec", "p256", "--token", "ftpm", "--update-lock"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    // The anchor is one of the built-in AMD fTPM roots (crates/tpm2-pkcs11/roots), not the AK.
+    let att = &e.lock()["realisations"]["p256"]["ftpm"]["attestation"];
+    let amd =
+        ["sha256-iZucnW6SbECq776jkFFz8A97Uq1utNLTLm/LGXlxDis=", "sha256-XPGFn/vSzRjBM0XUdpK+pOokZPv7dCmDZPqXnoMyKfY="];
+    assert!(att["root"].as_str().is_some_and(|r| amd.contains(&r)), "{att}");
+    for verb in
+        [&["verify", "--spec", "p256", "--token", "ftpm"][..], &["check", "p256.id.tpm-certify", "--token", "ftpm"]]
+    {
+        let o = e.km(verb);
+        assert_eq!(code(&o), 0, "{verb:?}: {}", stderr(&o));
+    }
+}

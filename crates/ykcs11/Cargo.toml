@@ -21,7 +21,6 @@ cakeys-core.workspace = true
 cakeys-pkcs11.workspace = true
 cryptoki.workspace = true
 x509-cert.workspace = true
-sha2.workspace = true
 
 # build.rs: the embedded roots are pinned by SHA-256.
 [build-dependencies]

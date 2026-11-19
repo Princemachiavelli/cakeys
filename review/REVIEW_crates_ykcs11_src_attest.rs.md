@@ -8,6 +8,12 @@ over the original `tbsCertificate` bytes, every issuer must be a CA within `path
 narrowed to the PIV branch, and the attested SPKI must equal the object's. Findings are hygiene,
 not holes.
 
+**Moved (2026-11-18):** the generic chain machinery (`Cert`, `pem_certs`, `chain_to_anchor`,
+`issuer_chain`, `verify_signed_by`, `may_issue`) now lives in `crates/core/src/chain.rs`, shared
+with tpm2-pkcs11's EK certificate check; F2–F5's fixes and their tests moved with it, and
+`issuers_must_be_cas_within_their_path_length`. The line numbers below are this file's before
+the move.
+
 ## Findings
 
 ### F1. The production crate verifies chains to the test fixture's root — practice

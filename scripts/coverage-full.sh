@@ -21,9 +21,13 @@
 #   CAKEYS_FTPM_PROFILE   the committed pair profile of this host's TPM (e.g.
 #       tpm2-pkcs11/1.10+amd-ftpm): the real-TPM suites, through nix/ftpm-test-env.sh.
 #       CAKEYS_FTPM_ATTEST=1 adds the attestation test (the store under the platform's storage
-#       root key, only read; cakeys' Attestation Key at 0x81000016). The persistent handles are
-#       listed before and after and must be the same (0x81000016 aside), and the lockout
-#       counter must still be 0.
+#       root key, only read; cakeys' Attestation Key at 0x81000016). With it,
+#       CAKEYS_FTPM_EK_CERTIFICATE (this TPM's EK certificate and intermediates, e.g.
+#       crates/tpm2-pkcs11/tests/fixtures/amd-ftpm-ek-ecc.pem on the development machine) adds
+#       the attestation anchored at the manufacturer: a credential activated with the EK, which
+#       is recreated (empty endorsement auth) and flushed. The persistent handles are listed
+#       before and after and must be the same (0x81000016 aside), and the lockout counter must
+#       still be 0.
 #
 # The report is target/coverage-full/: summary.txt, missing.txt, lcov.info, html/index.html.
 # It exits 1 when a test failed; the report is written either way and says what ran.
@@ -49,9 +53,10 @@ out=$CAKEYS_COVERAGE_REPO/target/coverage-full
 yk_pin=${CAKEYS_TEST_YUBIKEY_PIN:-} yk_mgm=${CAKEYS_TEST_YUBIKEY_MGM:-}
 yk_module=${CAKEYS_TEST_YUBIKEY_MODULE:-${CAKEYS_YKCS11_MODULE:-}}
 ftpm_profile=${CAKEYS_FTPM_PROFILE:-} ftpm_attest=${CAKEYS_FTPM_ATTEST:-}
+ftpm_ek=${CAKEYS_FTPM_EK_CERTIFICATE:-}
 ftpm_module=${CAKEYS_FTPM_MODULE:-$CAKEYS_TPM_MODULE}
 unset CAKEYS_TEST_YUBIKEY_PIN CAKEYS_TEST_YUBIKEY_MGM CAKEYS_TEST_YUBIKEY_MODULE CAKEYS_YUBIKEY_REQUIRE \
-  CAKEYS_FTPM_PROFILE CAKEYS_FTPM_ATTEST CAKEYS_FTPM_MODULE CAKEYS_FTPM_REQUIRE
+  CAKEYS_FTPM_PROFILE CAKEYS_FTPM_ATTEST CAKEYS_FTPM_EK_CERTIFICATE CAKEYS_FTPM_MODULE CAKEYS_FTPM_REQUIRE
 
 ran=() failed=()
 # One instrumented nextest run, its profile data added to what the runs before it left.
@@ -127,6 +132,9 @@ if [ -n "$ftpm_profile" ]; then
     # As for the YubiKey: required, so a suite that finds no opt-in fails.
     export CAKEYS_FTPM_MODULE=$ftpm_module CAKEYS_FTPM_PROFILE=$ftpm_profile CAKEYS_FTPM_REQUIRE=1
     [ -z "$ftpm_attest" ] || export CAKEYS_FTPM_ATTEST=$ftpm_attest
+    # A relative path names a file of the repository, not of the tree copy the tests run in.
+    case $ftpm_ek in '' | /*) ;; *) ftpm_ek=$CAKEYS_COVERAGE_REPO/$ftpm_ek ;; esac
+    [ -z "$ftpm_ek" ] || export CAKEYS_FTPM_EK_CERTIFICATE=$ftpm_ek
     # caprobe first: its probe wants the fresh store.
     hardware "real TPM: caprobe" -E 'package(caprobe) & binary(ftpm)'
     [ ${#failed[@]} -gt 0 ] && [ "${failed[-1]}" = "real TPM: caprobe" ] ||

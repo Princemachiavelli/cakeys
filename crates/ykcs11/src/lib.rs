@@ -3,13 +3,15 @@
 //! token layer for every module), and its fixed per-slot `CKA_LABEL`/`CKA_ID` set.
 //!
 //! What lives here is the `piv-attestation` commitment (docs/DESIGN.md §3.7): the provider
-//! finds the module-exposed attestation certificates, and the pure chain verification and
-//! canonical digest are in the private `attest` module — verified against both a fixture chain
-//! and Yubico's own published roots and intermediates.
+//! finds the module-exposed attestation certificates, the private `attest` module checks what
+//! the chain asserts and computes the canonical digest, and the chain walk is
+//! `cakeys_core::chain`'s — verified against both a fixture chain and Yubico's own published
+//! roots and intermediates.
 
 mod attest;
 
-use crate::attest::{ATTESTATION_LABEL, pem_certs, piv_pool, verify_piv_attestation};
+use crate::attest::{ATTESTATION_LABEL, piv_pool, verify_piv_attestation};
+use cakeys_core::chain::{Cert, pem_certs};
 use cakeys_core::config::Locator;
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass as Class;
@@ -25,7 +27,7 @@ pub struct Ykcs11;
 
 /// Anchors: Yubico's pinned PIV roots. The intermediate pool (the untrusted store) is only
 /// needed when a chain uses it, so both are parsed lazily, once per process.
-static ANCHORS: LazyLock<Vec<attest::Cert>> = LazyLock::new(|| {
+static ANCHORS: LazyLock<Vec<Cert>> = LazyLock::new(|| {
     let mut a = pem_certs(include_str!("../roots/yubico-piv-ca-1.pem")).expect("embedded Yubico PIV root parses");
     a.extend(pem_certs(include_str!("../roots/yubico-ca-1.pem")).expect("embedded Yubico attestation root parses"));
     a
@@ -33,7 +35,7 @@ static ANCHORS: LazyLock<Vec<attest::Cert>> = LazyLock::new(|| {
 
 /// The pooled intermediates a PIV chain may use: Yubico's published pool narrowed to the PIV
 /// CAs and the generic intermediates above them (`attest::piv_pool`).
-static INTERMEDIATES: LazyLock<Vec<attest::Cert>> = LazyLock::new(|| {
+static INTERMEDIATES: LazyLock<Vec<Cert>> = LazyLock::new(|| {
     piv_pool(pem_certs(include_str!("../roots/yubico-intermediate.pem")).expect("embedded Yubico intermediates parse"))
 });
 

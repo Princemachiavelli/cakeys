@@ -2,6 +2,7 @@
 //! Touches no token; backends build on it.
 
 pub mod attrs;
+pub mod chain;
 pub mod config;
 pub mod error;
 #[cfg(any(test, feature = "fuzzing", kani))]
