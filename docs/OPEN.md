@@ -214,8 +214,12 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   (verified on 1.10.1 / swtpm). Still to do here: the provider's mechanism path (detect the
   mechanism in `C_GetMechanismList`, keep the store reader as the fallback for modules without it,
   same `tpm_certify_id` on both paths, regenerate the tpm2-pkcs11 profiles), run against a module
-  built with the patch. Then a second upstream PR makes the Attestation Key a token object (no TCTI
-  needed here), and a third `CKM_TPM2_ACTIVATE_CREDENTIAL` for the EK chain.
+  built with the patch. The second upstream PR is drafted too (`0003-…attestation-key….patch`,
+  `PR-AK.md`): `CKM_TPM2_AK_PAIR_GEN` makes the Attestation Key a token object and
+  `CKM_TPM2_CERTIFY_OBJECT` signs with it, so no TCTI is needed here; it changes the pinned
+  `attestation.root` (re-lock) and drops the qualified-signer check on that path (a client cannot
+  compute it; the pinned key identifies the signer). A third, `CKM_TPM2_ACTIVATE_CREDENTIAL` for the
+  EK chain, is next.
 - **A native TPM backend** beside tpm2-pkcs11, for PCR- and policy-bound keys.
 - **Vendor HSM attestation formats** (Luna PKC, Google Cloud HSM, nShield): a scheme each, not
   researched.

@@ -1,0 +1,1337 @@
+From 7785bb382453ac5b662905bda3926ba977fa17ec Mon Sep 17 00:00:00 2001
+From: Josh Hoffer <jhoffer@sansorgan.es>
+Date: Thu, 19 Nov 2026 00:39:43 -0800
+Subject: [PATCH] key: add the attestation key as an object of the token
+
+CKM_TPM2_CERTIFY names its signer by a persistent TPM handle, so the
+caller must have made a key with the TPM tools and needs access to the TPM
+to have one. Make the attestation key an ordinary key pair of the token.
+
+CKM_TPM2_AK_PAIR_GEN (C_GenerateKeyPair, no parameter) makes a restricted
+ECDSA signing key, fixed to the TPM, with the hash of its curve (P-256,
+P-384, P-521). Its private key has CKA_SIGN false and an empty
+CKA_ALLOWED_MECHANISMS, so C_SignInit refuses it in the module: a
+restricted key would fail in the TPM, which wants a hashcheck ticket.
+Templates asking for a usage attribute true, or an extractable key, are
+CKR_TEMPLATE_INCONSISTENT.
+
+CKM_TPM2_CERTIFY_OBJECT is CKM_TPM2_CERTIFY signed by such a key, named by
+its object handle (CK_TPM2_CERTIFY_OBJECT_PARAMS). The key has an auth
+value of the module's, which it proves in an HMAC session of its own:
+the TPM takes no session twice in a command, and a password session
+would put the auth value on the wire. Any other signer is
+CKR_MECHANISM_PARAM_INVALID.
+
+Test: pkcs-attest-key.int generates keys on two curves, checks the
+attributes and the TPM public area, certifies private and secret keys and
+verifies the statements with OpenSSL, checks the refusals, and that the key
+survives C_Finalize/C_Initialize. docs/VENDOR.md describes the interface.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Signed-off-by: Josh Hoffer <jhoffer@sansorgan.es>
+---
+ CHANGELOG.md                           |   3 +
+ Makefile-integration.am                |   7 +-
+ docs/VENDOR.md                         |  50 +++
+ src/lib/attrs.c                        |  18 +-
+ src/lib/key.c                          |   1 +
+ src/lib/mech.c                         |   3 +
+ src/lib/sign.c                         |  82 +++-
+ src/lib/tpm.c                          | 166 ++++++-
+ src/lib/tpm.h                          |  11 +-
+ src/tpm2-pkcs11-vendor.h               |  35 ++
+ test/integration/pkcs-attest-key.int.c | 600 +++++++++++++++++++++++++
+ 11 files changed, 938 insertions(+), 38 deletions(-)
+ create mode 100644 test/integration/pkcs-attest-key.int.c
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e7d491b..e3b04c9 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ - `CKM_TPM2_CERTIFY`: `TPM2_Certify` of a key object, signed by a persistent TPM key the caller
+   names, so a client can prove with a statement the TPM signed that a PKCS#11 object is a key of
+   that TPM. See docs/VENDOR.md.
++- `CKM_TPM2_AK_PAIR_GEN`: `C_GenerateKeyPair` of an attestation key (a restricted ECDSA signing key
++  of the TPM) as an object of the token, and `CKM_TPM2_CERTIFY_OBJECT`, `CKM_TPM2_CERTIFY` signed
++  by such a key, named by its object handle: no TPM handle or TPM access for the client.
+ 
+ ## [1.10.1] - 2026-08-06
+ ### Fixed:
+diff --git a/Makefile-integration.am b/Makefile-integration.am
+index ebc4610..3fff13c 100644
+--- a/Makefile-integration.am
++++ b/Makefile-integration.am
+@@ -44,7 +44,8 @@ check_PROGRAMS += \
+     test/integration/pkcs-session-state.int \
+     test/integration/pkcs-lockout.int \
+     test/integration/pkcs-ecdh.int \
+-    test/integration/pkcs-certify.int
++    test/integration/pkcs-certify.int \
++    test/integration/pkcs-attest-key.int
+ 
+ # add test scripts
+ check_SCRIPTS += $(integration_scripts)
+@@ -108,6 +109,10 @@ test_integration_pkcs_certify_int_CFLAGS  = $(AM_CFLAGS) $(TESTS_CFLAGS)
+ test_integration_pkcs_certify_int_LDADD   = $(TESTS_LDADD)  $(SQLITE3_LIBS)
+ test_integration_pkcs_certify_int_SOURCES = test/integration/pkcs-certify.int.c test/integration/test.c
+ 
++test_integration_pkcs_attest_key_int_CFLAGS  = $(AM_CFLAGS) $(TESTS_CFLAGS)
++test_integration_pkcs_attest_key_int_LDADD   = $(TESTS_LDADD)  $(SQLITE3_LIBS)
++test_integration_pkcs_attest_key_int_SOURCES = test/integration/pkcs-attest-key.int.c test/integration/test.c
++
+ test_integration_pkcs_session_state_int_CFLAGS  = $(AM_CFLAGS) $(TESTS_CFLAGS)
+ test_integration_pkcs_session_state_int_LDADD   = $(TESTS_LDADD)  $(SQLITE3_LIBS)
+ test_integration_pkcs_session_state_int_SOURCES = test/integration/pkcs-session-state.c test/integration/test.c
+diff --git a/docs/VENDOR.md b/docs/VENDOR.md
+index c38c5b4..2d5d760 100644
+--- a/docs/VENDOR.md
++++ b/docs/VENDOR.md
+@@ -87,3 +87,53 @@ CK_ULONG out_len = sizeof(out);
+ rv = C_SignInit(session, &mech, key);
+ rv = C_Sign(session, nonce, nonce_len, out, &out_len);
+ ```
++
++## `CKM_TPM2_AK_PAIR_GEN`
++
++`C_GenerateKeyPair` of an attestation key as an ordinary key pair of the token, so that a client
++needs no TPM handle and no access to the TPM to have one. The mechanism takes no parameter; the
++templates are the EC key pair's (`CKA_EC_PARAMS`, `CKA_TOKEN`, `CKA_PRIVATE`, a label, an id...).
++
++The TPM key is fixed:
++
++- restricted, so it signs only digests of TPM-generated structures such as a certify statement,
++  never data a caller chose; a signing key, with the ECDSA scheme over the curve's hash (P-256 and
++  SHA-256, P-384 and SHA-384, P-521 and SHA-512, `CKR_CURVE_NOT_SUPPORTED` for any other curve);
++- `fixedTPM`, `fixedParent`, `sensitiveDataOrigin`, `userWithAuth`: it never leaves the TPM, and
++  its auth value is the module's own, like any key of the token.
++
++The private key has `CKA_SIGN` false, and a `CKA_ALLOWED_MECHANISMS` with no mechanism in it, so
++`C_SignInit` refuses it in the module instead of failing in the TPM, which asks a restricted key
++for a hashcheck ticket. `CKA_KEY_GEN_MECHANISM` is `CKM_TPM2_AK_PAIR_GEN`. A template that asks for
++`CKA_SIGN`, `CKA_VERIFY`, `CKA_ENCRYPT` or `CKA_DECRYPT` true is `CKR_TEMPLATE_INCONSISTENT`, as is
++one that makes the key extractable. That the key is restricted is in the `TPMA_OBJECT` of its
++`CKA_TPM2_PUB_BLOB`, and a client that trusts the key only if it is checks it there.
++
++## `CKM_TPM2_CERTIFY_OBJECT`
++
++`CKM_TPM2_CERTIFY`, with the signer a private key made by `CKM_TPM2_AK_PAIR_GEN` and named by its
++object handle: parameter `CK_TPM2_CERTIFY_OBJECT_PARAMS`, `hSigner`. The key, the qualifying data,
++the output and the checks are those of `CKM_TPM2_CERTIFY`. Any other signer (an ordinary key of the
++token, a public key object, no object at all, the key itself) is `CKR_MECHANISM_PARAM_INVALID`:
++only an attestation key signs statements about the TPM.
++
++What differs for the client is the signer. It identifies the attestation key by the public key it
++read from the token (`CKA_TPM2_PUB_BLOB`, or `CKA_EC_POINT`) and pinned, and verifies the signature
++under it. The attested qualified signer is the qualified Name of a key under the token's primary
++key, which a client without TPM access cannot compute, so check 4's last half above does not apply:
++the key that signed is the pinned public key, and that it is fixed to this TPM is what the
++`TPMA_OBJECT` of its `CKA_TPM2_PUB_BLOB` says.
++
++```c
++CK_MECHANISM gen = { CKM_TPM2_AK_PAIR_GEN, NULL, 0 };
++rv = C_GenerateKeyPair(session, &gen, pub_template, pub_count, priv_template, priv_count, &ak_pub, &ak_priv);
++
++CK_TPM2_CERTIFY_OBJECT_PARAMS params = { .hSigner = ak_priv };
++CK_MECHANISM mech = { CKM_TPM2_CERTIFY_OBJECT, &params, sizeof(params) };
++rv = C_SignInit(session, &mech, key);
++rv = C_Sign(session, nonce, nonce_len, out, &out_len);
++```
++
++`test/integration/pkcs-attest-key.int.c` generates attestation keys on two curves, certifies private
++and secret keys and verifies the statements with OpenSSL, and checks the refusals and that the key
++survives a restart of the token.
+diff --git a/src/lib/attrs.c b/src/lib/attrs.c
+index 6e12be0..ff6cb80 100644
+--- a/src/lib/attrs.c
++++ b/src/lib/attrs.c
+@@ -978,7 +978,7 @@ error:
+     return rv;
+ }
+ 
+-static CK_RV ecc_gen_mechs(attr_list *new_pub_attrs, attr_list *new_priv_attrs) {
++static CK_RV ecc_gen_mechs(attr_list *new_pub_attrs, attr_list *new_priv_attrs, bool is_ak) {
+ 
+     /* XXX These are hardcoded for now */
+     CK_MECHANISM_TYPE t[] = {
+@@ -990,12 +990,15 @@ static CK_RV ecc_gen_mechs(attr_list *new_pub_attrs, attr_list *new_priv_attrs)
+         CKM_ECDH1_DERIVE,
+     };
+ 
++    /* an attestation key signs what the TPM states, no data the caller hands to C_Sign */
++    CK_ULONG len = is_ak ? 0 : sizeof(t);
++
+     bool r = attr_list_add_int_seq(new_pub_attrs, CKA_ALLOWED_MECHANISMS,
+-            (CK_BYTE_PTR)&t, sizeof(t));
++            (CK_BYTE_PTR)&t, len);
+     goto_error_false(r);
+ 
+     r = attr_list_add_int_seq(new_priv_attrs, CKA_ALLOWED_MECHANISMS,
+-            (CK_BYTE_PTR)&t, sizeof(t));
++            (CK_BYTE_PTR)&t, len);
+     goto_error_false(r);
+ 
+     return CKR_OK;
+@@ -1004,7 +1007,7 @@ error:
+     return CKR_GENERAL_ERROR;
+ }
+ 
+-static CK_RV ecc_add_missing_attrs(attr_list **public_attrs, attr_list **private_attrs) {
++static CK_RV ecc_add_missing_attrs(attr_list **public_attrs, attr_list **private_attrs, bool is_ak) {
+ 
+     CK_RV rv = CKR_HOST_MEMORY;
+ 
+@@ -1031,7 +1034,7 @@ static CK_RV ecc_add_missing_attrs(attr_list **public_attrs, attr_list **private
+             a->pValue, a->ulValueLen);
+     goto_error_false(r);
+ 
+-    rv = ecc_gen_mechs(new_pub_attrs, new_priv_attrs);
++    rv = ecc_gen_mechs(new_pub_attrs, new_priv_attrs, is_ak);
+     if (rv != CKR_OK) {
+         goto error;
+     }
+@@ -1154,6 +1157,7 @@ CK_RV attr_add_missing_attrs(attr_list **public_attrs, attr_list **private_attrs
+     case CKM_RSA_PKCS_KEY_PAIR_GEN:
+         break;
+     case CKM_EC_KEY_PAIR_GEN:
++    case CKM_TPM2_AK_PAIR_GEN:
+         break;
+     default:
+         LOGE("Unsupported keygen mechanism: 0x%lx", mech);
+@@ -1217,7 +1221,9 @@ CK_RV attr_add_missing_attrs(attr_list **public_attrs, attr_list **private_attrs
+         return rsa_add_missing_attrs(public_attrs, private_attrs);
+         break;
+     case CKM_EC_KEY_PAIR_GEN:
+-        return ecc_add_missing_attrs(public_attrs, private_attrs);
++        return ecc_add_missing_attrs(public_attrs, private_attrs, false);
++    case CKM_TPM2_AK_PAIR_GEN:
++        return ecc_add_missing_attrs(public_attrs, private_attrs, true);
+     }
+ 
+     assert(0);
+diff --git a/src/lib/key.c b/src/lib/key.c
+index 417a4e7..60e4d00 100644
+--- a/src/lib/key.c
++++ b/src/lib/key.c
+@@ -129,6 +129,7 @@ static CK_RV check_specific_attrs(CK_MECHANISM_TYPE mech,
+     case CKM_RSA_PKCS_KEY_PAIR_GEN:
+         return CKR_OK;
+     case CKM_EC_KEY_PAIR_GEN:
++    case CKM_TPM2_AK_PAIR_GEN:
+         return ecc_check_attrs(public_key_template, public_key_attribute_count,
+                     private_key_template, private_key_attribute_count);
+     default:
+diff --git a/src/lib/mech.c b/src/lib/mech.c
+index cde4ce3..83430c5 100644
+--- a/src/lib/mech.c
++++ b/src/lib/mech.c
+@@ -208,6 +208,9 @@ static const mdetail_entry _g_mechs_templ[] = {
+      * sign_init, which is the only place that takes it.
+      */
+     { .type = CKM_TPM2_CERTIFY, .flags = mf_sign|mf_vendor },
++    { .type = CKM_TPM2_CERTIFY_OBJECT, .flags = mf_sign|mf_vendor },
++    /* a key pair like CKM_EC_KEY_PAIR_GEN's, with a fixed template: see tpm2_generate_key() */
++    { .type = CKM_TPM2_AK_PAIR_GEN, .flags = mf_is_keygen|mf_vendor },
+ };
+ 
+ const rsa_detail _g_rsa_keysizes_templ [] = {
+diff --git a/src/lib/sign.c b/src/lib/sign.c
+index 911e0fd..573f228 100644
+--- a/src/lib/sign.c
++++ b/src/lib/sign.c
+@@ -36,8 +36,14 @@ struct sign_opdata {
+     const EVP_MD *md;
+     /* CKM_TPM2_CERTIFY: the persistent TPM handle of the signing key */
+     uint32_t certify_signer;
++    /* CKM_TPM2_CERTIFY_OBJECT: the attestation key object, in use until the operation ends */
++    tobject *certify_signer_obj;
+ };
+ 
++static bool is_certify(CK_MECHANISM_TYPE m) {
++    return m == CKM_TPM2_CERTIFY || m == CKM_TPM2_CERTIFY_OBJECT;
++}
++
+ /*
+  * CKM_TPM2_CERTIFY (tpm2-pkcs11-vendor.h) is not a signature over data: the TPM signs a statement
+  * about the key object, with a key the caller names. The object is certified as it is, so
+@@ -47,6 +53,43 @@ struct sign_opdata {
+  */
+ static void sign_opdata_free(sign_opdata **opdata);
+ 
++/*
++ * The signer of CKM_TPM2_CERTIFY_OBJECT: a private key made by CKM_TPM2_AK_PAIR_GEN, and no other
++ * object of the token (an ordinary signing key must not sign statements about the TPM). On success
++ * it is in use, to be released by sign_opdata_free().
++ */
++static CK_RV certify_load_signer(session_ctx *ctx, CK_OBJECT_HANDLE handle, tobject *subject, tobject **signer) {
++
++    token *tok = session_ctx_get_token(ctx);
++    assert(tok);
++
++    tobject *obj = NULL;
++    CK_RV rv = token_load_object(tok, handle, &obj);
++    if (rv != CKR_OK) {
++        /* no such object is the caller's mistake, anything else the module's */
++        return rv == CKR_KEY_HANDLE_INVALID || rv == CKR_OBJECT_HANDLE_INVALID ?
++                CKR_MECHANISM_PARAM_INVALID : rv;
++    }
++
++    CK_ATTRIBUTE_PTR a = attr_get_attribute_by_type(obj->attrs, CKA_KEY_GEN_MECHANISM);
++    CK_ULONG gen = 0;
++    if (!obj->priv || !obj->tpm_esys_tr || !a || attr_CK_ULONG(a, &gen) != CKR_OK
++            || gen != CKM_TPM2_AK_PAIR_GEN) {
++        LOGE("CKM_TPM2_CERTIFY_OBJECT signer 0x%lx is not an attestation key", handle);
++        tobject_user_decrement(obj);
++        return CKR_MECHANISM_PARAM_INVALID;
++    }
++
++    /* an attestation key certifies other keys, not itself */
++    if (obj == subject) {
++        tobject_user_decrement(obj);
++        return CKR_MECHANISM_PARAM_INVALID;
++    }
++
++    *signer = obj;
++    return CKR_OK;
++}
++
+ static CK_RV certify_init(operation op, session_ctx *ctx, tobject *tobj, CK_MECHANISM_PTR mechanism) {
+ 
+     CK_RV rv = CKR_OK;
+@@ -57,17 +100,24 @@ static CK_RV certify_init(operation op, session_ctx *ctx, tobject *tobj, CK_MECH
+         goto error;
+     }
+ 
+-    if (!mechanism->pParameter || mechanism->ulParameterLen != sizeof(CK_TPM2_CERTIFY_PARAMS)) {
++    bool by_object = mechanism->mechanism == CKM_TPM2_CERTIFY_OBJECT;
++    size_t params_len = by_object ? sizeof(CK_TPM2_CERTIFY_OBJECT_PARAMS) : sizeof(CK_TPM2_CERTIFY_PARAMS);
++    if (!mechanism->pParameter || mechanism->ulParameterLen != params_len) {
+         rv = CKR_MECHANISM_PARAM_INVALID;
+         goto error;
+     }
+ 
+-    CK_TPM2_CERTIFY_PARAMS params;
+-    memcpy(&params, mechanism->pParameter, sizeof(params));
+-    if (params.ulSignerHandle < 0x81000000UL || params.ulSignerHandle > 0x81FFFFFFUL) {
+-        LOGE("CKM_TPM2_CERTIFY signer is not a persistent handle: 0x%lx", params.ulSignerHandle);
+-        rv = CKR_MECHANISM_PARAM_INVALID;
+-        goto error;
++    CK_TPM2_CERTIFY_PARAMS params = { 0 };
++    CK_TPM2_CERTIFY_OBJECT_PARAMS obj_params = { 0 };
++    if (by_object) {
++        memcpy(&obj_params, mechanism->pParameter, sizeof(obj_params));
++    } else {
++        memcpy(&params, mechanism->pParameter, sizeof(params));
++        if (params.ulSignerHandle < 0x81000000UL || params.ulSignerHandle > 0x81FFFFFFUL) {
++            LOGE("CKM_TPM2_CERTIFY signer is not a persistent handle: 0x%lx", params.ulSignerHandle);
++            rv = CKR_MECHANISM_PARAM_INVALID;
++            goto error;
++        }
+     }
+ 
+     /* public key objects are not loaded in the TPM, there is nothing to certify */
+@@ -93,6 +143,14 @@ static CK_RV certify_init(operation op, session_ctx *ctx, tobject *tobj, CK_MECH
+         goto error;
+     }
+ 
++    if (by_object) {
++        rv = certify_load_signer(ctx, obj_params.hSigner, tobj, &opdata->certify_signer_obj);
++        if (rv != CKR_OK) {
++            sign_opdata_free(&opdata);
++            goto error;
++        }
++    }
++
+     session_ctx_opdata_set(ctx, op, tobj, opdata, (opdata_free_fn)sign_opdata_free);
+ 
+     return CKR_OK;
+@@ -166,6 +224,10 @@ static void sign_opdata_free(sign_opdata **opdata) {
+         twist_free((*opdata)->buffer);
+     }
+ 
++    if ((*opdata)->certify_signer_obj) {
++        tobject_user_decrement((*opdata)->certify_signer_obj);
++    }
++
+     if ((*opdata)->pkey) {
+         EVP_PKEY_free((*opdata)->pkey);
+     }
+@@ -245,7 +307,7 @@ static CK_RV common_init(operation op, session_ctx *ctx, CK_MECHANISM_PTR mechan
+         return rv;
+     }
+ 
+-    if (mechanism->mechanism == CKM_TPM2_CERTIFY) {
++    if (is_certify(mechanism->mechanism)) {
+         return certify_init(op, ctx, tobj, mechanism);
+     }
+ 
+@@ -407,7 +469,7 @@ CK_RV sign_final_ex(session_ctx *ctx, CK_BYTE_PTR signature, CK_ULONG_PTR signat
+ 
+     twist digest_buf = NULL;
+ 
+-    if (opdata->mech.mechanism == CKM_TPM2_CERTIFY) {
++    if (is_certify(opdata->mech.mechanism)) {
+         /*
+          * A size query, and a buffer too small, never reach the TPM: the output has a fixed
+          * upper bound. The buffered data is the qualifying data, nothing is hashed.
+@@ -424,7 +486,7 @@ CK_RV sign_final_ex(session_ctx *ctx, CK_BYTE_PTR signature, CK_ULONG_PTR signat
+             goto out;
+         }
+ 
+-        rv = tpm_certify(tok->tctx, tobj, opdata->certify_signer,
++        rv = tpm_certify(tok->tctx, tobj, opdata->certify_signer, opdata->certify_signer_obj,
+                 (const CK_BYTE *)opdata->buffer, twist_len(opdata->buffer),
+                 signature, signature_len);
+         if (rv != CKR_OK) {
+diff --git a/src/lib/tpm.c b/src/lib/tpm.c
+index 209c03f..92abab9 100644
+--- a/src/lib/tpm.c
++++ b/src/lib/tpm.c
+@@ -1500,7 +1500,7 @@ static bool rc_is_fmt1(TSS2_RC rc, TSS2_RC err) {
+     return (rc & (TPM2_RC_FMT1 | 0x3F)) == err;
+ }
+ 
+-CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
++CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle, tobject *signer_obj,
+         const CK_BYTE *qualifying, CK_ULONG qualifying_len,
+         CK_BYTE_PTR out, CK_ULONG_PTR outlen) {
+     assert(tctx);
+@@ -1523,13 +1523,23 @@ CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
+ 
+     ESYS_CONTEXT *ectx = tctx->esys_ctx;
+ 
+-    ESYS_TR signer = ESYS_TR_NONE;
+-    TSS2_RC rc = Esys_TR_FromTPMPublic(ectx, signer_handle,
+-            ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, &signer);
+-    if (rc != TSS2_RC_SUCCESS) {
+-        LOGE("Esys_TR_FromTPMPublic(0x%x): %s", signer_handle, Tss2_RC_Decode(rc));
+-        return rc_is_fmt1(rc, TPM2_RC_HANDLE) ?
+-                CKR_MECHANISM_PARAM_INVALID : CKR_GENERAL_ERROR;
++    /*
++     * The signer is an object of the token (loaded; it proves its auth value in a session of its
++     * own: the TPM takes no session twice in a command) or a persistent key of the TPM the
++     * caller made (an empty auth value, which a password session sends as it is).
++     */
++    ESYS_TR signer = signer_obj ? signer_obj->tpm_esys_tr : ESYS_TR_NONE;
++    ESYS_TR signer_session = ESYS_TR_PASSWORD;
++    bool started_signer_session = false;
++    TSS2_RC rc = TSS2_RC_SUCCESS;
++    if (!signer_obj) {
++        rc = Esys_TR_FromTPMPublic(ectx, signer_handle,
++                ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, &signer);
++        if (rc != TSS2_RC_SUCCESS) {
++            LOGE("Esys_TR_FromTPMPublic(0x%x): %s", signer_handle, Tss2_RC_Decode(rc));
++            return rc_is_fmt1(rc, TPM2_RC_HANDLE) ?
++                    CKR_MECHANISM_PARAM_INVALID : CKR_GENERAL_ERROR;
++        }
+     }
+ 
+     CK_RV rv = CKR_GENERAL_ERROR;
+@@ -1539,8 +1549,7 @@ CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
+     TPMT_SIG_SCHEME scheme = { .scheme = TPM2_ALG_NULL };
+     size_t offset = 0;
+ 
+-    /* the signer has an empty auth value, which a password session sends as it is */
+-    bool result = set_esys_auth(ectx, signer, NULL);
++    bool result = set_esys_auth(ectx, signer, signer_obj ? signer_obj->unsealed_auth : NULL);
+     if (!result) {
+         goto out;
+     }
+@@ -1550,6 +1559,26 @@ CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
+         goto out;
+     }
+ 
++    if (signer_obj) {
++        /* unbound and unsalted: the HMAC key is the signer's auth value, which stays off the wire */
++        TPMT_SYM_DEF symmetric = { .algorithm = TPM2_ALG_NULL };
++        rc = Esys_StartAuthSession(ectx, ESYS_TR_NONE, ESYS_TR_NONE,
++                ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, NULL,
++                TPM2_SE_HMAC, &symmetric, TPM2_ALG_SHA256, &signer_session);
++        if (rc != TSS2_RC_SUCCESS) {
++            LOGE("Esys_StartAuthSession: %s", Tss2_RC_Decode(rc));
++            signer_session = ESYS_TR_PASSWORD;
++            goto out;
++        }
++        started_signer_session = true;
++
++        rc = Esys_TRSess_SetAttributes(ectx, signer_session, TPMA_SESSION_CONTINUESESSION, 0xff);
++        if (rc != TSS2_RC_SUCCESS) {
++            LOGE("Esys_TRSess_SetAttributes: %s", Tss2_RC_Decode(rc));
++            goto out;
++        }
++    }
++
+     /*
+      * The nonce is not secret and may be empty (which a session cannot encrypt), and the
+      * statement is not either: neither direction is encrypted.
+@@ -1560,7 +1589,7 @@ CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
+             tobj->tpm_esys_tr,
+             signer,
+             tctx->hmac_session,
+-            ESYS_TR_PASSWORD,
++            signer_session,
+             ESYS_TR_NONE,
+             &qualifying_data,
+             &scheme,
+@@ -1602,8 +1631,16 @@ CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
+ out:
+     Esys_Free(certify_info);
+     Esys_Free(signature);
+-    /* a persistent object: only the ESYS_TR is released, nothing is flushed from the TPM */
+-    Esys_TR_Close(ectx, &signer);
++    if (started_signer_session) {
++        rc = Esys_FlushContext(ectx, signer_session);
++        if (rc != TSS2_RC_SUCCESS) {
++            LOGW("Esys_FlushContext: %s", Tss2_RC_Decode(rc));
++        }
++    }
++    if (!signer_obj) {
++        /* a persistent object: only the ESYS_TR is released, nothing is flushed from the TPM */
++        Esys_TR_Close(ectx, &signer);
++    }
+ 
+     return rv;
+ }
+@@ -3449,10 +3486,13 @@ static CK_RV sanity_check_mech(CK_MECHANISM_PTR mechanism) {
+         case CKM_RSA_PKCS_KEY_PAIR_GEN:
+             /* falls-thru */
+         case CKM_EC_KEY_PAIR_GEN:
++            /* falls-thru */
++        case CKM_TPM2_AK_PAIR_GEN:
+             break;
+         default:
+-            LOGE("Only supports mechanism \"CKM_RSA_PKCS_KEY_PAIR_GEN\" or"
+-                 "\"CKM_EC_KEY_PAIR_GEN\", got: 0x%lx", mechanism->mechanism);
++            LOGE("Only supports mechanism \"CKM_RSA_PKCS_KEY_PAIR_GEN\", "
++                 "\"CKM_EC_KEY_PAIR_GEN\" or \"CKM_TPM2_AK_PAIR_GEN\", got: 0x%lx",
++                 mechanism->mechanism);
+             return CKR_MECHANISM_INVALID;
+     }
+ 
+@@ -3490,6 +3530,78 @@ static const attr_handler tpm_handlers[] = {
+     { CKA_DERIVE,            generic_bbool_any },
+ };
+ 
++/*
++ * The usage attributes an attestation key (CKM_TPM2_AK_PAIR_GEN) cannot have: it signs what the
++ * TPM states, not data.
++ */
++static CK_RV ak_check_usage_attrs(attr_list *attrs) {
++
++    static const CK_ATTRIBUTE_TYPE usage[] = { CKA_SIGN, CKA_VERIFY, CKA_ENCRYPT, CKA_DECRYPT };
++
++    size_t i;
++    for (i = 0; i < ARRAY_LEN(usage); i++) {
++        CK_ATTRIBUTE_PTR a = attr_get_attribute_by_type(attrs, usage[i]);
++        if (!a) {
++            continue;
++        }
++
++        CK_BBOOL value;
++        CK_RV rv = attr_CK_BBOOL(a, &value);
++        if (rv != CKR_OK) {
++            return rv;
++        }
++
++        if (value) {
++            LOGE("An attestation key cannot have %s", attr_get_name(usage[i]));
++            return CKR_TEMPLATE_INCONSISTENT;
++        }
++    }
++
++    return CKR_OK;
++}
++
++/*
++ * What makes the key pair an attestation key: restricted, so the TPM signs only digests of its own
++ * statements, with ECDSA over the curve's hash; fixed to this TPM and its primary.
++ */
++static CK_RV ak_make_template(TPM2B_PUBLIC *pub) {
++
++    TPMT_PUBLIC *p = &pub->publicArea;
++
++    TPM2_ALG_ID hash;
++    switch (p->parameters.eccDetail.curveID) {
++    case TPM2_ECC_NIST_P256:
++        hash = TPM2_ALG_SHA256;
++        break;
++    case TPM2_ECC_NIST_P384:
++        hash = TPM2_ALG_SHA384;
++        break;
++    case TPM2_ECC_NIST_P521:
++        hash = TPM2_ALG_SHA512;
++        break;
++    default:
++        LOGE("An attestation key is P-256, P-384 or P-521");
++        return CKR_CURVE_NOT_SUPPORTED;
++    }
++
++    /*
++     * Whatever the templates asked for beyond that (extractable, sensitive) has already been
++     * applied to the attributes: anything but the defaults is a conflict.
++     */
++    const TPMA_OBJECT wanted = TPMA_OBJECT_FIXEDTPM | TPMA_OBJECT_FIXEDPARENT
++            | TPMA_OBJECT_SENSITIVEDATAORIGIN | TPMA_OBJECT_USERWITHAUTH;
++    if ((p->objectAttributes & ~TPMA_OBJECT_SIGN_ENCRYPT) != wanted) {
++        LOGE("An attestation key is fixed to its TPM, not extractable");
++        return CKR_TEMPLATE_INCONSISTENT;
++    }
++
++    p->objectAttributes = wanted | TPMA_OBJECT_RESTRICTED | TPMA_OBJECT_SIGN_ENCRYPT;
++    p->parameters.eccDetail.scheme.scheme = TPM2_ALG_ECDSA;
++    p->parameters.eccDetail.scheme.details.ecdsa.hashAlg = hash;
++
++    return CKR_OK;
++}
++
+ static CK_RV tpm_data_init(
+         CK_MECHANISM_PTR mechanism,
+         attr_list *pubattrs,
+@@ -3506,6 +3618,17 @@ static CK_RV tpm_data_init(
+         case CKM_EC_KEY_PAIR_GEN:
+             tpmdat->pub = ecc_template;
+             break;
++        case CKM_TPM2_AK_PAIR_GEN: {
++            tpmdat->pub = ecc_template;
++            CK_RV rv = ak_check_usage_attrs(pubattrs);
++            if (rv == CKR_OK) {
++                rv = ak_check_usage_attrs(privattrs);
++            }
++            if (rv != CKR_OK) {
++                return rv;
++            }
++            break;
++        }
+         default:
+             /* should never happen checked at entry */
+             LOGE("Unsupported key pair mechanism: 0x%lx",
+@@ -3526,6 +3649,10 @@ static CK_RV tpm_data_init(
+         return rv;
+     }
+ 
++    if (mechanism->mechanism == CKM_TPM2_AK_PAIR_GEN) {
++        return ak_make_template(&tpmdat->pub);
++    }
++
+     return CKR_OK;
+ }
+ 
+@@ -3915,6 +4042,7 @@ CK_RV tpm2_generate_key(
+         rv = tpm_object_data_populate_rsa(out_pub, objdata);
+         break;
+     case CKM_EC_KEY_PAIR_GEN:
++    case CKM_TPM2_AK_PAIR_GEN:
+         rv = tpm_object_data_populate_ecc(out_pub, objdata);
+         break;
+     default:
+@@ -3949,7 +4077,11 @@ CK_RV tpm2_generate_key(
+     r = attr_list_add_bool(objdata->attrs, CKA_LOCAL, local);
+     goto_error_false(r);
+ 
+-    /* conditional block */
++    /*
++     * conditional block. An attestation key is a TPM signing key, but not one to sign data with:
++     * the usage attributes are false, and the module refuses C_Sign before the TPM would.
++     */
++    bool is_ak = mechanism->mechanism == CKM_TPM2_AK_PAIR_GEN;
+     CK_BBOOL decrypt = !!(objattrs & TPMA_OBJECT_DECRYPT);
+     r = attr_list_add_bool(objdata->attrs, CKA_DECRYPT, decrypt);
+     goto_error_false(r);
+@@ -3958,7 +4090,7 @@ CK_RV tpm2_generate_key(
+     r = attr_list_add_bool(objdata->attrs, CKA_VERIFY, decrypt);
+     goto_error_false(r);
+ 
+-    CK_BBOOL sign = !!(objattrs & TPMA_OBJECT_SIGN_ENCRYPT);
++    CK_BBOOL sign = !is_ak && !!(objattrs & TPMA_OBJECT_SIGN_ENCRYPT);
+     r = attr_list_add_bool(objdata->attrs, CKA_SIGN, sign);
+     goto_error_false(r);
+ 
+diff --git a/src/lib/tpm.h b/src/lib/tpm.h
+index 10ac863..4098a41 100644
+--- a/src/lib/tpm.h
++++ b/src/lib/tpm.h
+@@ -105,14 +105,17 @@ CK_RV tpm_sign(tpm_op_data *opdata, CK_BYTE_PTR data, CK_ULONG datalen, CK_BYTE_
+ CK_RV tpm_verify(tpm_op_data *opdata, CK_BYTE_PTR data, CK_ULONG datalen, CK_BYTE_PTR sig, CK_ULONG siglen);
+ 
+ /**
+- * CKM_TPM2_CERTIFY (tpm2-pkcs11-vendor.h): TPM2_Certify of a loaded object, signed by the
+- * persistent key at signer_handle, which must have an empty auth value.
++ * CKM_TPM2_CERTIFY and CKM_TPM2_CERTIFY_OBJECT (tpm2-pkcs11-vendor.h): TPM2_Certify of a loaded
++ * object, signed by signer_obj if given, else by the persistent key at signer_handle, which must
++ * have an empty auth value.
+  * @param tctx
+  *  The tpm context.
+  * @param tobj
+  *  The key object to certify, loaded in the TPM by token_load_object().
+  * @param signer_handle
+- *  The persistent TPM handle of the signing key.
++ *  The persistent TPM handle of the signing key (used when signer_obj is NULL).
++ * @param signer_obj
++ *  An attestation key object of the token, loaded by token_load_object(), or NULL.
+  * @param qualifying
+  *  The qualifying data (the nonce), qualifying_len bytes, at most CK_TPM2_CERTIFY_MAX_QUALIFYING_LEN.
+  * @param out
+@@ -125,7 +128,7 @@ CK_RV tpm_verify(tpm_op_data *opdata, CK_BYTE_PTR data, CK_ULONG datalen, CK_BYT
+  *  CKR_MECHANISM_PARAM_INVALID when the TPM refuses the signer (no such handle, not a
+  *  signing key), CKR_GENERAL_ERROR otherwise.
+  */
+-CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
++CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle, tobject *signer_obj,
+         const CK_BYTE *qualifying, CK_ULONG qualifying_len,
+         CK_BYTE_PTR out, CK_ULONG_PTR outlen);
+ 
+diff --git a/src/tpm2-pkcs11-vendor.h b/src/tpm2-pkcs11-vendor.h
+index 0c056e8..0196c54 100644
+--- a/src/tpm2-pkcs11-vendor.h
++++ b/src/tpm2-pkcs11-vendor.h
+@@ -53,6 +53,41 @@
+  */
+ #define CKM_TPM2_CERTIFY         (CKM_VENDOR_DEFINED|CKM_VENDOR_TPM2_DEFINED|0x1UL)
+ 
++/*
++ * CKM_TPM2_AK_PAIR_GEN: C_GenerateKeyPair of an attestation key: a restricted ECDSA signing key
++ * that never leaves the TPM (fixedTPM, fixedParent), an ordinary key pair of the token otherwise.
++ * It signs nothing but statements the TPM itself makes, such as CKM_TPM2_CERTIFY_OBJECT's.
++ *
++ *   pMechanism  no parameter.
++ *   public key template   CKA_EC_PARAMS: NIST P-256, P-384 or P-521; the ECDSA hash is the
++ *                         curve's (SHA-256, SHA-384, SHA-512). CKA_TOKEN is true.
++ *   Neither template may set CKA_SIGN, CKA_VERIFY, CKA_ENCRYPT, CKA_DECRYPT, CKA_EXTRACTABLE
++ *   or CKA_SENSITIVE other than as the key is (CKR_TEMPLATE_INCONSISTENT).
++ *
++ * The private key has CKA_SIGN false and no CKA_ALLOWED_MECHANISMS, so C_SignInit refuses it
++ * in the module; CKA_KEY_GEN_MECHANISM is CKM_TPM2_AK_PAIR_GEN. That it is restricted can be
++ * read in the TPMA_OBJECT of its CKA_TPM2_PUB_BLOB.
++ */
++#define CKM_TPM2_AK_PAIR_GEN     (CKM_VENDOR_DEFINED|CKM_VENDOR_TPM2_DEFINED|0x2UL)
++
++/*
++ * CKM_TPM2_CERTIFY_OBJECT: CKM_TPM2_CERTIFY with an attestation key of the token (a private key
++ * made by CKM_TPM2_AK_PAIR_GEN) as the signer, named by its object handle, so that a client
++ * needs no TPM handle and no TPM access. Used as CKM_TPM2_CERTIFY is (same key to certify,
++ * qualifying data and output). A signer that is not such a key is CKR_MECHANISM_PARAM_INVALID.
++ *
++ * The caller checks the signature under the attestation key's public key (its CKA_EC_POINT,
++ * or the CKA_TPM2_PUB_BLOB). The attest names the signer by its qualified Name, which a client
++ * cannot compute: the key that signed is identified by its public key only.
++ */
++#define CKM_TPM2_CERTIFY_OBJECT  (CKM_VENDOR_DEFINED|CKM_VENDOR_TPM2_DEFINED|0x3UL)
++
++typedef struct CK_TPM2_CERTIFY_OBJECT_PARAMS {
++    CK_OBJECT_HANDLE hSigner;
++} CK_TPM2_CERTIFY_OBJECT_PARAMS;
++
++typedef CK_TPM2_CERTIFY_OBJECT_PARAMS *CK_TPM2_CERTIFY_OBJECT_PARAMS_PTR;
++
+ /* An upper bound of the output of CKM_TPM2_CERTIFY (an attest of a certified key and a 4096-bit RSA signature). */
+ #define CK_TPM2_CERTIFY_MAX_LEN  1024UL
+ 
+diff --git a/test/integration/pkcs-attest-key.int.c b/test/integration/pkcs-attest-key.int.c
+new file mode 100644
+index 0000000..82f9cf4
+--- /dev/null
++++ b/test/integration/pkcs-attest-key.int.c
+@@ -0,0 +1,600 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++
++#include <openssl/bn.h>
++#include <openssl/ec.h>
++#include <openssl/ecdsa.h>
++#include <openssl/evp.h>
++#include <openssl/obj_mac.h>
++#include <openssl/sha.h>
++
++#include <tss2/tss2_mu.h>
++
++#include "test.h"
++#include "tpm2-pkcs11-vendor.h"
++
++/*
++ * CKM_TPM2_AK_PAIR_GEN and CKM_TPM2_CERTIFY_OBJECT (tpm2-pkcs11-vendor.h): an attestation key as
++ * an object of the token, and TPM2_Certify signed by it, with no TPM handle in the client's hands.
++ */
++
++struct test_info {
++    CK_SESSION_HANDLE handle;
++    CK_SLOT_ID slot_id;
++};
++
++static int test_setup(void **state) {
++
++    test_info *ti = calloc(1, sizeof(*ti));
++    assert_non_null(ti);
++
++    CK_SLOT_ID slots[6];
++    CK_ULONG count = ARRAY_LEN(slots);
++    CK_RV rv = C_GetSlotList(true, slots, &count);
++    assert_int_equal(rv, CKR_OK);
++    assert_int_equal(count, TOKEN_COUNT);
++
++    ti->slot_id = slots[0];
++
++    rv = C_OpenSession(ti->slot_id, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &ti->handle);
++    assert_int_equal(rv, CKR_OK);
++
++    *state = ti;
++
++    return 0;
++}
++
++static int test_teardown(void **state) {
++
++    test_info *ti = test_info_from_state(state);
++
++    CK_RV rv = C_CloseAllSessions(ti->slot_id);
++    assert_int_equal(rv, CKR_OK);
++
++    free(ti);
++
++    return 0;
++}
++
++static const CK_BYTE nonce[32] = {
++    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
++    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
++};
++
++/* DER of the curve OIDs, as CKA_EC_PARAMS */
++static CK_BYTE p256[] = { 0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07 };
++static CK_BYTE p384[] = { 0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x22 };
++static CK_BYTE p192[] = { 0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x01 };
++
++struct ak {
++    CK_OBJECT_HANDLE pub;
++    CK_OBJECT_HANDLE priv;
++};
++
++/* C_GenerateKeyPair of an attestation key; extra attributes go to the private template. */
++static CK_RV ak_gen(CK_SESSION_HANDLE session, CK_BYTE *ec_params, CK_ULONG ec_params_len,
++        CK_ATTRIBUTE *extra, CK_ULONG extra_len, struct ak *ak) {
++
++    CK_BBOOL ck_true = CK_TRUE;
++    CK_ATTRIBUTE pub[] = {
++        { CKA_EC_PARAMS, ec_params, ec_params_len },
++        { CKA_TOKEN, &ck_true, sizeof(ck_true) },
++    };
++
++    CK_ATTRIBUTE priv[8] = {
++        { CKA_TOKEN, &ck_true, sizeof(ck_true) },
++        { CKA_PRIVATE, &ck_true, sizeof(ck_true) },
++    };
++    assert_true(extra_len <= ARRAY_LEN(priv) - 2);
++    CK_ULONG priv_len = 2;
++    for (CK_ULONG i = 0; i < extra_len; i++) {
++        priv[priv_len++] = extra[i];
++    }
++
++    CK_MECHANISM mech = { CKM_TPM2_AK_PAIR_GEN, NULL, 0 };
++
++    return C_GenerateKeyPair(session, &mech, pub, ARRAY_LEN(pub), priv, priv_len, &ak->pub, &ak->priv);
++}
++
++static void ak_gen_ok(CK_SESSION_HANDLE session, CK_BYTE *ec_params, CK_ULONG ec_params_len,
++        struct ak *ak) {
++
++    CK_RV rv = ak_gen(session, ec_params, ec_params_len, NULL, 0, ak);
++    assert_int_equal(rv, CKR_OK);
++}
++
++/* The TPMT_PUBLIC in an object's CKA_TPM2_PUB_BLOB. */
++static void read_public(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key, TPM2B_PUBLIC *pub,
++        CK_BYTE *blob, CK_ULONG *blob_len) {
++
++    CK_ATTRIBUTE attr = { CKA_TPM2_PUB_BLOB, blob, *blob_len };
++    CK_RV rv = C_GetAttributeValue(session, key, &attr, 1);
++    assert_int_equal(rv, CKR_OK);
++    *blob_len = attr.ulValueLen;
++
++    size_t off = 0;
++    TSS2_RC rc = Tss2_MU_TPM2B_PUBLIC_Unmarshal(blob, *blob_len, &off, pub);
++    assert_int_equal(rc, TSS2_RC_SUCCESS);
++    assert_int_equal(off, *blob_len);
++}
++
++/* The mechanisms are listed: one generates key pairs, the other signs. */
++static void test_ak_is_listed(void **state) {
++
++    test_info *ti = test_info_from_state(state);
++
++    CK_MECHANISM_TYPE mechs[256];
++    CK_ULONG count = ARRAY_LEN(mechs);
++    CK_RV rv = C_GetMechanismList(ti->slot_id, mechs, &count);
++    assert_int_equal(rv, CKR_OK);
++
++    bool gen = false, certify = false;
++    for (CK_ULONG i = 0; i < count; i++) {
++        gen |= mechs[i] == CKM_TPM2_AK_PAIR_GEN;
++        certify |= mechs[i] == CKM_TPM2_CERTIFY_OBJECT;
++    }
++    assert_true(gen);
++    assert_true(certify);
++
++    CK_MECHANISM_INFO info;
++    rv = C_GetMechanismInfo(ti->slot_id, CKM_TPM2_AK_PAIR_GEN, &info);
++    assert_int_equal(rv, CKR_OK);
++    assert_true(info.flags & CKF_GENERATE_KEY_PAIR);
++    assert_true(info.flags & CKF_HW);
++
++    rv = C_GetMechanismInfo(ti->slot_id, CKM_TPM2_CERTIFY_OBJECT, &info);
++    assert_int_equal(rv, CKR_OK);
++    assert_true(info.flags & CKF_SIGN);
++    assert_true(info.flags & CKF_HW);
++}
++
++/*
++ * The key pair is restricted, fixed to the TPM, signs with the curve's hash, and the token
++ * refuses to sign data with it.
++ */
++static void test_ak_generate(void **state) {
++
++    test_info *ti = test_info_from_state(state);
++    CK_SESSION_HANDLE session = ti->handle;
++
++    user_login(session);
++
++    struct {
++        CK_BYTE *params;
++        CK_ULONG params_len;
++        TPM2_ECC_CURVE curve;
++        TPMI_ALG_HASH hash;
++    } curves[] = {
++        { p256, sizeof(p256), TPM2_ECC_NIST_P256, TPM2_ALG_SHA256 },
++        { p384, sizeof(p384), TPM2_ECC_NIST_P384, TPM2_ALG_SHA384 },
++    };
++
++    for (size_t i = 0; i < ARRAY_LEN(curves); i++) {
++        struct ak ak;
++        ak_gen_ok(session, curves[i].params, curves[i].params_len, &ak);
++
++        CK_BBOOL sign = CK_TRUE, verify = CK_TRUE, extractable = CK_TRUE;
++        CK_ULONG gen_mech = 0;
++        CK_BYTE allowed[64];
++        CK_ATTRIBUTE attrs[] = {
++            { CKA_SIGN, &sign, sizeof(sign) },
++            { CKA_EXTRACTABLE, &extractable, sizeof(extractable) },
++            { CKA_KEY_GEN_MECHANISM, &gen_mech, sizeof(gen_mech) },
++            { CKA_ALLOWED_MECHANISMS, allowed, sizeof(allowed) },
++        };
++        CK_RV rv = C_GetAttributeValue(session, ak.priv, attrs, ARRAY_LEN(attrs));
++        assert_int_equal(rv, CKR_OK);
++        assert_int_equal(sign, CK_FALSE);
++        assert_int_equal(extractable, CK_FALSE);
++        assert_int_equal(gen_mech, CKM_TPM2_AK_PAIR_GEN);
++        assert_int_equal(attrs[3].ulValueLen, 0);
++
++        CK_ATTRIBUTE vattr = { CKA_VERIFY, &verify, sizeof(verify) };
++        rv = C_GetAttributeValue(session, ak.pub, &vattr, 1);
++        assert_int_equal(rv, CKR_OK);
++        assert_int_equal(verify, CK_FALSE);
++
++        CK_BYTE blob[1024];
++        CK_ULONG blob_len = sizeof(blob);
++        TPM2B_PUBLIC pub = { 0 };
++        read_public(session, ak.priv, &pub, blob, &blob_len);
++        const TPMT_PUBLIC *p = &pub.publicArea;
++        assert_int_equal(p->type, TPM2_ALG_ECC);
++        assert_int_equal(p->parameters.eccDetail.curveID, curves[i].curve);
++        assert_int_equal(p->parameters.eccDetail.scheme.scheme, TPM2_ALG_ECDSA);
++        assert_int_equal(p->parameters.eccDetail.scheme.details.ecdsa.hashAlg, curves[i].hash);
++        const TPMA_OBJECT want = TPMA_OBJECT_RESTRICTED | TPMA_OBJECT_SIGN_ENCRYPT
++                | TPMA_OBJECT_FIXEDTPM | TPMA_OBJECT_FIXEDPARENT | TPMA_OBJECT_SENSITIVEDATAORIGIN;
++        assert_int_equal(p->objectAttributes & want, want);
++        assert_int_equal(p->objectAttributes & TPMA_OBJECT_DECRYPT, 0);
++
++        /* the module refuses to sign data with it, before the TPM would */
++        CK_MECHANISM ecdsa = { CKM_ECDSA, NULL, 0 };
++        rv = C_SignInit(session, &ecdsa, ak.priv);
++        assert_int_equal(rv, CKR_MECHANISM_INVALID);
++    }
++}
++
++/* What the templates may not ask for, and what the TPM cannot make. */
++static void test_ak_template_refusals(void **state) {
++
++    test_info *ti = test_info_from_state(state);
++    CK_SESSION_HANDLE session = ti->handle;
++
++    user_login(session);
++
++    struct ak ak;
++    CK_BBOOL ck_true = CK_TRUE;
++    CK_BBOOL ck_false = CK_FALSE;
++
++    CK_ULONG usage[] = { CKA_SIGN, CKA_ENCRYPT, CKA_DECRYPT, CKA_VERIFY };
++    for (size_t i = 0; i < ARRAY_LEN(usage); i++) {
++        CK_ATTRIBUTE a = { usage[i], &ck_true, sizeof(ck_true) };
++        CK_RV rv = ak_gen(session, p256, sizeof(p256), &a, 1, &ak);
++        assert_int_equal(rv, CKR_TEMPLATE_INCONSISTENT);
++    }
++
++    /* the private key is sensitive: the module's own check of every key pair refuses it */
++    CK_ATTRIBUTE extractable = { CKA_EXTRACTABLE, &ck_true, sizeof(ck_true) };
++    CK_RV rv = ak_gen(session, p256, sizeof(p256), &extractable, 1, &ak);
++    assert_int_equal(rv, CKR_ATTRIBUTE_VALUE_INVALID);
++
++    /* saying what the key is anyway is fine */
++    CK_ATTRIBUTE not_signing[] = {
++        { CKA_SIGN, &ck_false, sizeof(ck_false) },
++        { CKA_DECRYPT, &ck_false, sizeof(ck_false) },
++    };
++    rv = ak_gen(session, p256, sizeof(p256), not_signing, ARRAY_LEN(not_signing), &ak);
++    assert_int_equal(rv, CKR_OK);
++
++    /* a curve that is not P-256, P-384 or P-521 */
++    rv = ak_gen(session, p192, sizeof(p192), NULL, 0, &ak);
++    assert_int_not_equal(rv, CKR_OK);
++
++    /* a mechanism parameter */
++    CK_BBOOL param = CK_TRUE;
++    CK_MECHANISM mech = { CKM_TPM2_AK_PAIR_GEN, &param, sizeof(param) };
++    CK_ATTRIBUTE pub[] = { { CKA_EC_PARAMS, p256, sizeof(p256) } };
++    CK_ATTRIBUTE priv[] = { { CKA_TOKEN, &ck_true, sizeof(ck_true) } };
++    rv = C_GenerateKeyPair(session, &mech, pub, 1, priv, 1, &ak.pub, &ak.priv);
++    assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
++}
++
++/* The attestation key's public key, from its CKA_TPM2_PUB_BLOB. */
++static EC_KEY *ak_eckey(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE ak, int *nid, TPMI_ALG_HASH *hash) {
++
++    CK_BYTE blob[1024];
++    CK_ULONG blob_len = sizeof(blob);
++    TPM2B_PUBLIC pub = { 0 };
++    read_public(session, ak, &pub, blob, &blob_len);
++
++    *hash = pub.publicArea.parameters.eccDetail.scheme.details.ecdsa.hashAlg;
++    *nid = pub.publicArea.parameters.eccDetail.curveID == TPM2_ECC_NIST_P256 ?
++            NID_X9_62_prime256v1 : NID_secp384r1;
++
++    EC_KEY *key = EC_KEY_new_by_curve_name(*nid);
++    assert_non_null(key);
++    const TPMS_ECC_POINT *pt = &pub.publicArea.unique.ecc;
++    BIGNUM *x = BN_bin2bn(pt->x.buffer, pt->x.size, NULL);
++    BIGNUM *y = BN_bin2bn(pt->y.buffer, pt->y.size, NULL);
++    assert_non_null(x);
++    assert_non_null(y);
++    assert_int_equal(EC_KEY_set_public_key_affine_coordinates(key, x, y), 1);
++    BN_free(x);
++    BN_free(y);
++
++    return key;
++}
++
++static void hash_of(TPMI_ALG_HASH hash, const unsigned char *in, size_t len,
++        unsigned char *out, unsigned int *out_len) {
++
++    const EVP_MD *md = hash == TPM2_ALG_SHA256 ? EVP_sha256() : EVP_sha384();
++    assert_int_equal(EVP_Digest(in, len, out, out_len, md, NULL), 1);
++}
++
++/*
++ * Everything a client checks of a statement: it parses to the end, is a certify statement of this
++ * nonce, names the object by the Name of its CKA_TPM2_PUB_BLOB, and is signed by the attestation
++ * key whose public key the client read from the token.
++ */
++static void check_statement(CK_SESSION_HANDLE session, struct ak *ak, CK_OBJECT_HANDLE key,
++        const CK_BYTE *data, CK_ULONG data_len, const CK_BYTE *out, CK_ULONG out_len) {
++
++    CK_BYTE blob[1024];
++    CK_ULONG blob_len = sizeof(blob);
++    TPM2B_PUBLIC pub = { 0 };
++    read_public(session, key, &pub, blob, &blob_len);
++
++    TPM2B_ATTEST attest2b = { 0 };
++    TPMT_SIGNATURE signature = { 0 };
++    size_t off = 0;
++    TSS2_RC rc = Tss2_MU_TPM2B_ATTEST_Unmarshal(out, out_len, &off, &attest2b);
++    assert_int_equal(rc, TSS2_RC_SUCCESS);
++    rc = Tss2_MU_TPMT_SIGNATURE_Unmarshal(out, out_len, &off, &signature);
++    assert_int_equal(rc, TSS2_RC_SUCCESS);
++    assert_int_equal(off, out_len);
++
++    TPMS_ATTEST attest = { 0 };
++    size_t attest_off = 0;
++    rc = Tss2_MU_TPMS_ATTEST_Unmarshal(attest2b.attestationData, attest2b.size, &attest_off, &attest);
++    assert_int_equal(rc, TSS2_RC_SUCCESS);
++    assert_int_equal(attest_off, attest2b.size);
++
++    assert_int_equal(attest.magic, TPM2_GENERATED_VALUE);
++    assert_int_equal(attest.type, TPM2_ST_ATTEST_CERTIFY);
++    assert_int_equal(attest.extraData.size, data_len);
++    assert_memory_equal(attest.extraData.buffer, data, data_len);
++
++    const TPM2B_NAME *name = &attest.attested.certify.name;
++    assert_int_equal(name->size, 2 + SHA256_DIGEST_LENGTH);
++    assert_int_equal((name->name[0] << 8) | name->name[1], TPM2_ALG_SHA256);
++    unsigned char digest[SHA256_DIGEST_LENGTH];
++    SHA256(&blob[2], blob_len - 2, digest);
++    assert_memory_equal(&name->name[2], digest, sizeof(digest));
++
++    int nid;
++    TPMI_ALG_HASH hash;
++    EC_KEY *eckey = ak_eckey(session, ak->priv, &nid, &hash);
++
++    assert_int_equal(signature.sigAlg, TPM2_ALG_ECDSA);
++    assert_int_equal(signature.signature.ecdsa.hash, hash);
++    unsigned char md[EVP_MAX_MD_SIZE];
++    unsigned int md_len = 0;
++    hash_of(hash, attest2b.attestationData, attest2b.size, md, &md_len);
++
++    ECDSA_SIG *sig = ECDSA_SIG_new();
++    assert_non_null(sig);
++    BIGNUM *r = BN_bin2bn(signature.signature.ecdsa.signatureR.buffer, signature.signature.ecdsa.signatureR.size, NULL);
++    BIGNUM *s = BN_bin2bn(signature.signature.ecdsa.signatureS.buffer, signature.signature.ecdsa.signatureS.size, NULL);
++    assert_non_null(r);
++    assert_non_null(s);
++    assert_int_equal(ECDSA_SIG_set0(sig, r, s), 1);
++    assert_int_equal(ECDSA_do_verify(md, md_len, sig, eckey), 1);
++    ECDSA_SIG_free(sig);
++    EC_KEY_free(eckey);
++}
++
++static CK_RV certify_init(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key, CK_OBJECT_HANDLE signer) {
++
++    CK_TPM2_CERTIFY_OBJECT_PARAMS params = { .hSigner = signer };
++    CK_MECHANISM mech = { CKM_TPM2_CERTIFY_OBJECT, &params, sizeof(params) };
++
++    return C_SignInit(session, &mech, key);
++}
++
++static CK_RV certify(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key, CK_OBJECT_HANDLE signer,
++        const CK_BYTE *data, CK_ULONG data_len, CK_BYTE *out, CK_ULONG *out_len) {
++
++    CK_RV rv = certify_init(session, key, signer);
++    if (rv != CKR_OK) {
++        return rv;
++    }
++
++    return C_Sign(session, (CK_BYTE_PTR)data, data_len, out, out_len);
++}
++
++/*
++ * Keys of the token are certified by an attestation key of the token: private keys of each type,
++ * secret keys, with each curve's attestation key, and the statements verify.
++ */
++static void test_certify_object(void **state) {
++
++    test_info *ti = test_info_from_state(state);
++    CK_SESSION_HANDLE session = ti->handle;
++
++    user_login(session);
++
++    /* the keys to certify, found before the attestation keys exist */
++    CK_OBJECT_HANDLE keys[3];
++    CK_OBJECT_HANDLE pub;
++    get_keypair(session, CKK_EC, &pub, &keys[0]);
++    get_keypair(session, CKK_RSA, &pub, &keys[1]);
++
++    CK_OBJECT_CLASS secret = CKO_SECRET_KEY;
++    CK_BBOOL always_authenticate = CK_FALSE;
++    CK_ATTRIBUTE tmpl[] = {
++        { CKA_CLASS, &secret, sizeof(secret) },
++        { CKA_ALWAYS_AUTHENTICATE, &always_authenticate, sizeof(always_authenticate) },
++    };
++    CK_RV rv = C_FindObjectsInit(session, tmpl, ARRAY_LEN(tmpl));
++    assert_int_equal(rv, CKR_OK);
++    CK_ULONG count = 0;
++    rv = C_FindObjects(session, &keys[2], 1, &count);
++    assert_int_equal(rv, CKR_OK);
++    assert_int_equal(count, 1);
++    rv = C_FindObjectsFinal(session);
++    assert_int_equal(rv, CKR_OK);
++
++    CK_BYTE *curves[] = { p256, p384 };
++    CK_ULONG curves_len[] = { sizeof(p256), sizeof(p384) };
++    for (size_t c = 0; c < ARRAY_LEN(curves); c++) {
++        struct ak ak;
++        ak_gen_ok(session, curves[c], curves_len[c], &ak);
++
++        for (size_t i = 0; i < ARRAY_LEN(keys); i++) {
++            CK_BYTE out[CK_TPM2_CERTIFY_MAX_LEN];
++            CK_ULONG out_len = sizeof(out);
++            rv = certify(session, keys[i], ak.priv, nonce, sizeof(nonce), out, &out_len);
++            assert_int_equal(rv, CKR_OK);
++            check_statement(session, &ak, keys[i], nonce, sizeof(nonce), out, out_len);
++        }
++
++        /* the mechanism's output bound, and the part form, are CKM_TPM2_CERTIFY's */
++        CK_BYTE out[CK_TPM2_CERTIFY_MAX_LEN];
++        CK_ULONG out_len = 0;
++        rv = certify_init(session, keys[0], ak.priv);
++        assert_int_equal(rv, CKR_OK);
++        rv = C_Sign(session, (CK_BYTE_PTR)nonce, sizeof(nonce), NULL, &out_len);
++        assert_int_equal(rv, CKR_OK);
++        assert_int_equal(out_len, CK_TPM2_CERTIFY_MAX_LEN);
++        rv = C_SignUpdate(session, (CK_BYTE_PTR)nonce, 7);
++        assert_int_equal(rv, CKR_OK);
++        out_len = sizeof(out);
++        rv = C_SignFinal(session, out, &out_len);
++        assert_int_equal(rv, CKR_OK);
++        check_statement(session, &ak, keys[0], nonce, 7, out, out_len);
++    }
++}
++
++/*
++ * The signer must be an attestation key of the token; each refusal leaves the session fit to
++ * certify, and the signer in use by no operation.
++ */
++static void test_certify_object_refusals(void **state) {
++
++    test_info *ti = test_info_from_state(state);
++    CK_SESSION_HANDLE session = ti->handle;
++
++    user_login(session);
++
++    CK_OBJECT_HANDLE pub, priv;
++    get_keypair(session, CKK_EC, &pub, &priv);
++
++    struct ak ak;
++    ak_gen_ok(session, p256, sizeof(p256), &ak);
++
++    CK_BYTE out[CK_TPM2_CERTIFY_MAX_LEN];
++    CK_ULONG out_len = sizeof(out);
++
++    /* an ordinary key of the token does not sign statements */
++    CK_RV rv = certify(session, ak.priv, priv, nonce, sizeof(nonce), out, &out_len);
++    assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
++    /* nor a public key object */
++    rv = certify(session, priv, ak.pub, nonce, sizeof(nonce), out, &out_len);
++    assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
++    /* nor something that is no object */
++    rv = certify(session, priv, 0x7fff0000UL, nonce, sizeof(nonce), out, &out_len);
++    assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
++    /* an attestation key does not certify itself */
++    rv = certify(session, ak.priv, ak.priv, nonce, sizeof(nonce), out, &out_len);
++    assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
++
++    /* the parameter: missing, of another length */
++    CK_TPM2_CERTIFY_OBJECT_PARAMS params = { .hSigner = ak.priv };
++    CK_MECHANISM mech = { CKM_TPM2_CERTIFY_OBJECT, NULL, 0 };
++    rv = C_SignInit(session, &mech, priv);
++    assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
++    mech.pParameter = &params;
++    mech.ulParameterLen = sizeof(params) - 1;
++    rv = C_SignInit(session, &mech, priv);
++    assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
++
++    /* it signs; there is nothing to verify */
++    mech.ulParameterLen = sizeof(params);
++    rv = C_VerifyInit(session, &mech, priv);
++    assert_int_equal(rv, CKR_MECHANISM_INVALID);
++
++    /* too long a nonce */
++    CK_BYTE too_long[CK_TPM2_CERTIFY_MAX_QUALIFYING_LEN + 1] = { 0 };
++    out_len = sizeof(out);
++    rv = certify(session, priv, ak.priv, too_long, sizeof(too_long), out, &out_len);
++    assert_int_equal(rv, CKR_DATA_LEN_RANGE);
++
++    /* none of it left an operation active or the attestation key in use */
++    out_len = sizeof(out);
++    rv = certify(session, priv, ak.priv, nonce, sizeof(nonce), out, &out_len);
++    assert_int_equal(rv, CKR_OK);
++    check_statement(session, &ak, priv, nonce, sizeof(nonce), out, out_len);
++
++    /* the user must be logged in */
++    logout(session);
++    rv = certify_init(session, priv, ak.priv);
++    assert_int_equal(rv, CKR_USER_NOT_LOGGED_IN);
++}
++
++/* The attestation key is an object of the token like any other: it is still there after a restart. */
++static void test_ak_persists(void **state) {
++
++    test_info *ti = test_info_from_state(state);
++    CK_SESSION_HANDLE session = ti->handle;
++
++    user_login(session);
++
++    CK_OBJECT_HANDLE pub, priv;
++    get_keypair(session, CKK_EC, &pub, &priv);
++
++    CK_BYTE label[] = "attestation-key";
++    CK_ATTRIBUTE label_attr = { CKA_LABEL, label, sizeof(label) - 1 };
++    struct ak ak;
++    CK_RV rv = ak_gen(session, p256, sizeof(p256), &label_attr, 1, &ak);
++    assert_int_equal(rv, CKR_OK);
++
++    CK_BYTE blob_before[1024];
++    CK_ULONG blob_before_len = sizeof(blob_before);
++    TPM2B_PUBLIC pub_before = { 0 };
++    read_public(session, ak.priv, &pub_before, blob_before, &blob_before_len);
++
++    /* the token is closed and opened again, as a new process would find it */
++    rv = C_Finalize(NULL);
++    assert_int_equal(rv, CKR_OK);
++    rv = C_Initialize(NULL);
++    assert_int_equal(rv, CKR_OK);
++
++    CK_SLOT_ID slots[6];
++    CK_ULONG count = ARRAY_LEN(slots);
++    rv = C_GetSlotList(true, slots, &count);
++    assert_int_equal(rv, CKR_OK);
++    rv = C_OpenSession(slots[0], CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &session);
++    assert_int_equal(rv, CKR_OK);
++    user_login(session);
++    ti->handle = session;
++
++    CK_OBJECT_CLASS class = CKO_PRIVATE_KEY;
++    CK_ATTRIBUTE find[] = {
++        { CKA_CLASS, &class, sizeof(class) },
++        { CKA_LABEL, label, sizeof(label) - 1 },
++    };
++    rv = C_FindObjectsInit(session, find, ARRAY_LEN(find));
++    assert_int_equal(rv, CKR_OK);
++    rv = C_FindObjects(session, &ak.priv, 1, &count);
++    assert_int_equal(rv, CKR_OK);
++    assert_int_equal(count, 1);
++    rv = C_FindObjectsFinal(session);
++    assert_int_equal(rv, CKR_OK);
++
++    /* still the same key, still not a key to sign data with, and still certifying */
++    CK_BYTE blob_after[1024];
++    CK_ULONG blob_after_len = sizeof(blob_after);
++    TPM2B_PUBLIC pub_after = { 0 };
++    read_public(session, ak.priv, &pub_after, blob_after, &blob_after_len);
++    assert_int_equal(blob_after_len, blob_before_len);
++    assert_memory_equal(blob_after, blob_before, blob_before_len);
++
++    CK_BYTE allowed[64];
++    CK_BBOOL sign = CK_TRUE;
++    CK_ATTRIBUTE attrs[] = {
++        { CKA_SIGN, &sign, sizeof(sign) },
++        { CKA_ALLOWED_MECHANISMS, allowed, sizeof(allowed) },
++    };
++    rv = C_GetAttributeValue(session, ak.priv, attrs, ARRAY_LEN(attrs));
++    assert_int_equal(rv, CKR_OK);
++    assert_int_equal(sign, CK_FALSE);
++    assert_int_equal(attrs[1].ulValueLen, 0);
++
++    get_keypair(session, CKK_EC, &pub, &priv);
++    CK_BYTE out[CK_TPM2_CERTIFY_MAX_LEN];
++    CK_ULONG out_len = sizeof(out);
++    rv = certify(session, priv, ak.priv, nonce, sizeof(nonce), out, &out_len);
++    assert_int_equal(rv, CKR_OK);
++    check_statement(session, &ak, priv, nonce, sizeof(nonce), out, out_len);
++}
++
++int main() {
++
++    const struct CMUnitTest tests[] = {
++        cmocka_unit_test_setup_teardown(test_ak_is_listed,
++            test_setup, test_teardown),
++        cmocka_unit_test_setup_teardown(test_ak_generate,
++            test_setup, test_teardown),
++        cmocka_unit_test_setup_teardown(test_ak_template_refusals,
++            test_setup, test_teardown),
++        cmocka_unit_test_setup_teardown(test_certify_object,
++            test_setup, test_teardown),
++        cmocka_unit_test_setup_teardown(test_certify_object_refusals,
++            test_setup, test_teardown),
++        cmocka_unit_test_setup_teardown(test_ak_persists,
++            test_setup, test_teardown),
++    };
++
++    return cmocka_run_group_tests(tests, group_setup, group_teardown);
++}
+-- 
+2.56.0
+
