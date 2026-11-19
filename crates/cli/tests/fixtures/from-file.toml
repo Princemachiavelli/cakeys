@@ -1,0 +1,10 @@
+[tokens.t]
+tokenLabel = "t"
+[objects.k]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+migrate = { file = "/run/keys/k.pem" }
+[specs.k]
+object = "k"
+tokens.t = { locator = { CKA_LABEL = "k" }, origin = "file" }

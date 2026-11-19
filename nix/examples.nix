@@ -24,13 +24,14 @@ let
   };
   # The secure-boot build, evaluated only: building it needs the host's TPM. Its lock is the
   # host's own, which this repository has no host to record: an empty version-1 lock stands in,
-  # so the evaluated check is the one a deployment runs, `--lock` included.
+  # so the evaluated check is the one a deployment runs, `--lock` included. A fixture file, not
+  # `builtins.toFile`, to avoid a possible DetSys Nix parallel-eval issue (checks.nix, `lib`).
   signed = import ../examples/secure-boot/sign.nix {
     inherit pkgs;
     cakeys = self;
     uki = pkgs.runCommand "uki.efi" { } "cp ${efiStub} $out";
     dbCert = pkgs.writeText "db.crt" "";
-    lock = builtins.toFile "keys.lock" "version = 1\n";
+    lock = ../crates/cli/tests/fixtures/empty.lock;
   };
 in
 assert lib.assertMsg (lib.hasInfix " --lock " signed.buildCommand)

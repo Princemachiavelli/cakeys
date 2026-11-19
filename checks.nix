@@ -211,6 +211,11 @@
     cp ${./crates/cli/tests/fixtures/keys.lock} keys.lock
     expect 0 keys.toml
   '';
+  # The configs and locks `mkKeys` reads here are fixture files, not `builtins.toFile` text:
+  # CI's `nix flake check --no-build` ran on Determinate Nix and failed with "path
+  # '/nix/store/...-keys.lock' is not valid" on a `toFile` path read back by `readFile`. We
+  # suspect a parallel-evaluation issue in DetSys Nix (unconfirmed; upstream Nix passes), and
+  # path literals do not hit it.
   lib =
     let
       keys = self.lib.mkKeys {
@@ -235,35 +240,14 @@
       # these names, 17): `check` still quotes every word it builds.
       odd =
         (self.lib.mkKeys {
-          config = builtins.toFile "odd-names.toml" ''
-            [tokens."my token"]
-            tokenLabel = "t"
-            [objects."a b; echo pwned #"]
-            class = "CKO_PRIVATE_KEY"
-            keyType = "CKK_EC"
-            curve = "secp256r1"
-            [specs."it's"]
-            object = "a b; echo pwned #"
-            tokens."my token" = { locator = { CKA_LABEL = "k" } }
-          '';
+          config = ./crates/cli/tests/fixtures/odd-names.toml;
           inherit cakeys;
         })."a b; echo pwned #"
           { };
       # An object born in a file (docs/FILE.md): its `migrate` table is camigrate's, not its type.
       fromFile =
         (self.lib.mkKeys {
-          config = builtins.toFile "from-file.toml" ''
-            [tokens.t]
-            tokenLabel = "t"
-            [objects.k]
-            class = "CKO_PRIVATE_KEY"
-            keyType = "CKK_EC"
-            curve = "secp256r1"
-            migrate = { file = "/run/keys/k.pem" }
-            [specs.k]
-            object = "k"
-            tokens.t = { locator = { CKA_LABEL = "k" }, origin = "file" }
-          '';
+          config = ./crates/cli/tests/fixtures/from-file.toml;
           inherit cakeys;
         }).k
           { };
@@ -294,17 +278,7 @@
             config = p256Alias;
           }).signing
             { };
-        p256Alias = builtins.toFile "p256-alias.toml" ''
-          [tokens.softhsm]
-          tokenLabel = "kmtest"
-          [objects.signing]
-          class = "CKO_PRIVATE_KEY"
-          keyType = "CKK_EC"
-          curve = "P-256"
-          [specs.signing-soft]
-          object = "signing"
-          tokens.softhsm = { locator = { CKA_LABEL = "signing" }, origin = "create" }
-        '';
+        p256Alias = ./crates/cli/tests/fixtures/p256-alias.toml;
       in
       (aliased ./crates/cli/tests/fixtures/keys.lock).type.curve == "secp256r1"
       && (aliased null).type.curve == "P-256";
@@ -330,7 +304,7 @@
       (
         (self.lib.mkKeys {
           config = ./crates/cli/tests/fixtures/keys.toml;
-          lock = builtins.toFile "keys.lock" "version = 99\n";
+          lock = ./crates/cli/tests/fixtures/version-99.lock;
         }).signing
           { }
       ).id;

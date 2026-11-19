@@ -1,0 +1,9 @@
+[tokens.softhsm]
+tokenLabel = "kmtest"
+[objects.signing]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "P-256"
+[specs.signing-soft]
+object = "signing"
+tokens.softhsm = { locator = { CKA_LABEL = "signing" }, origin = "create" }

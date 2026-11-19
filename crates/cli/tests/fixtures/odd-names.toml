@@ -1,0 +1,9 @@
+[tokens."my token"]
+tokenLabel = "t"
+[objects."a b; echo pwned #"]
+class = "CKO_PRIVATE_KEY"
+keyType = "CKK_EC"
+curve = "secp256r1"
+[specs."it's"]
+object = "a b; echo pwned #"
+tokens."my token" = { locator = { CKA_LABEL = "k" } }

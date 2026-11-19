@@ -1007,6 +1007,13 @@ fn vendor_env(name: &str) -> Option<Suite> {
     Some(Suite::new(&format!("tpm2-{name}"), module, tpm2_tokens).checking(no_attestation_off_swtpm))
 }
 
+/// nixpkgs' module (`CAKEYS_TPM_MODULE`), which the vendor suites run beside their own: without
+/// the vendor mechanisms, on the same TPM and store.
+fn store_module(name: &str) -> String {
+    suite_var("CAKEYS_TPM_MODULE", "CAKEYS_TPM_REQUIRE", name)
+        .unwrap_or_else(|| panic!("{name}: the vendor module is set, CAKEYS_TPM_MODULE is not"))
+}
+
 /// `[tokens.<name>]` on `module` and the suite's token `kmtest`, logged in, with `extra` lines.
 fn token_of(e: &Suite, name: &str, module: &str, extra: &str) -> String {
     format!(
@@ -1035,7 +1042,7 @@ fn p256_spec(label: &str, others: &[&str]) -> String {
 #[test]
 fn tpm2_vendor_module_attests_as_the_store_path_does() {
     let Some(e) = vendor_env("vendor-same") else { return };
-    let store_module = std::env::var("CAKEYS_TPM_MODULE").unwrap();
+    let store_module = store_module("vendor-same");
     e.write_config(
         &(token_of(&e, "tpm", &e.module, "options = { tpm2Store = \"/nonexistent\" }")
             + &token_of(&e, "store", &store_module, "")
@@ -1113,7 +1120,7 @@ fn tpm2_vendor_token_attestation_key_needs_no_tpm_handle_or_store() {
 
     // nixpkgs' module has no such mechanism: asked for, it is said so, not read around — an
     // attestation that cannot be computed is a downgrade of the locked one (14).
-    let store_module = std::env::var("CAKEYS_TPM_MODULE").unwrap();
+    let store_module = store_module("vendor-ak");
     e.write_config(
         &(token_of(&e, "tpm", &store_module, "options = { akLabel = \"cakeys-ak\" }")
             + &p256_spec("vendor-ak-p256", &[])),
