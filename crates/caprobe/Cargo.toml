@@ -38,6 +38,7 @@ cakeys-pkcs11.workspace = true
 cakeys-profile.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 cryptoki.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

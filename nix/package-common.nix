@@ -150,6 +150,18 @@ in
       moveToOutput lib/libp11_fault.so "$p11fault"
       # The rlib half of the crate (its unit tests) is no output.
       rm -rf "$out/lib"
+
+      # Tab completion, each tool's own (`COMPLETE=<shell> tool`, clap_complete), in the output
+      # that holds the tool. Written from the output's final place: fish's script names the binary.
+      completions() { # tool output
+        local bin="$2/bin/$1" share="$2/share"
+        COMPLETE=bash "$bin" | install -D /dev/stdin "$share/bash-completion/completions/$1"
+        COMPLETE=zsh "$bin" | install -D /dev/stdin "$share/zsh/site-functions/_$1"
+        COMPLETE=fish "$bin" | install -D /dev/stdin "$share/fish/vendor_completions.d/$1.fish"
+      }
+      completions cakeys "$out"
+      completions caprobe "$caprobe"
+      completions camigrate "$camigrate"
     '';
 
     # tss-esapi (the native TPM2_Certify attestation path of cakeys-tpm2-pkcs11) links

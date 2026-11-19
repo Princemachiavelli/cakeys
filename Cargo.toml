@@ -44,6 +44,10 @@ anyhow = "1"
 base16ct = { version = "1", features = ["alloc"] }
 base64 = "0.23"
 clap = { version = "4", features = ["derive", "env"] }
+# Tab completion from the binaries themselves (`COMPLETE=bash cakeys`): the verbs, flags and value
+# enums come from the clap definition, so there is no list to keep in step. The dynamic engine is
+# the one the derive API supports; upstream still marks the feature unstable, so Cargo.lock holds it.
+clap_complete = { version = "4", features = ["unstable-dynamic"] }
 # parallaxsecond/rust-cryptoki's main, not a release: the vendor mechanisms in
 # C_GetMechanismList (6cc2278) and the single-part Session::sign_single (d1b283e) are unreleased
 # (0.12.1 lacks both), and the Nix build patches the rest (nix/patches, upstream/rust-cryptoki/).
