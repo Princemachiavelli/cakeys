@@ -47,45 +47,39 @@ let
   tpm2VendorModule = callPackage ./tpm2-pkcs11-vendor.nix { inherit tpm2-pkcs11; };
 in
 {
-  # cryptoki 0.12.1 (and main) gives KeyType::SHA224/384/512_HMAC the value of CKK_SHA256_HMAC, so those key
-  # types can be neither created nor told apart. Minimal local fix until upstream has one
+  # cryptoki is parallaxsecond/rust-cryptoki's main at the rev in Cargo.toml (the crate is 0.12.0
+  # there; main has the vendor mechanisms in C_GetMechanismList, 6cc2278, and the single-part
+  # Session::sign_single, d1b283e, which 0.12.1 lacks), with these patches on it. Main and 0.12.1
+  # alike give KeyType::SHA224/384/512_HMAC the value of CKK_SHA256_HMAC, so those key types can be
+  # neither created nor told apart. Minimal local fix until upstream has one
   # (upstream/rust-cryptoki/). Without it, cakeys refuses those key types. It also has no
   # CKM_AES_KEY_WRAP_KWP (RFC 5649 under its PKCS#11 3.0 ID, which kryoptic offers): the second
   # patch adds it for export and import (docs/CAMIGRATE.md). The third adds CKM_RSA_AES_KEY_WRAP (RSA-OAEP
   # of a fresh AES key, then RFC 5649 under it), the one wrap of a CKA_WRAP_WITH_TRUSTED key whose
   # only trusted key is the transport key (docs/CAMIGRATE.md D2, `enforced`). Both constants and the
-  # parameter struct are already in cryptoki-sys. The fourth adds a single-part C_Sign in an
-  # operation C_SignInit started (Session::sign_initialized), for the context-specific login a
-  # CKA_ALWAYS_AUTHENTICATE key needs between the two (docs/DESIGN.md §3.6). The fifth keeps a
-  # CKA_ALLOWED_MECHANISMS entry cryptoki has no name for (385 of the 3.2 mechanisms, and every
-  # vendor one) as its value, where 0.12.1 refused the whole attribute (docs/OPEN.md). The sixth
-  # is the upstream draft itself, not a local copy: an RvError converts back to its CK_RV and
-  # names its CKR_* constant (upstream/rust-cryptoki/PR-RV-VALUE.md). The seventh keeps a vendor
-  # mechanism in the list C_GetMechanismList returns, where 0.12.1 dropped it (it has no name for
-  # it): tpm2-pkcs11's CKM_TPM2_* are listed by the module and were invisible to cakeys. Upstream
-  # main has the same arm (6cc2278, unreleased): drop this patch with the release that has it
-  # (upstream/rust-cryptoki/PR-VENDOR-MECHANISMS.md).
+  # parameter struct are already in cryptoki-sys. The fourth keeps a CKA_ALLOWED_MECHANISMS entry
+  # cryptoki has no name for (385 of the 3.2 mechanisms; a vendor one main keeps already) as its
+  # value, where main refuses the whole attribute (docs/OPEN.md). The fifth is the upstream draft
+  # itself, not a local copy: an RvError converts back to its CK_RV and names its CKR_* constant
+  # (upstream/rust-cryptoki/PR-RV-VALUE.md). Drop each as the main in Cargo.toml gets it. The
+  # patches are relative to the crate (cryptoki/), a subdirectory of the vendored git checkout.
   cryptoki = {
-    version = "0.12.1";
+    version = "0.12.0";
     patches = [
       ./patches/cryptoki-hmac-key-types.patch
       ./patches/cryptoki-aes-key-wrap-kwp.patch
       ./patches/cryptoki-rsa-aes-key-wrap.patch
-      ./patches/cryptoki-sign-after-init.patch
       ./patches/cryptoki-allowed-mechanisms-unnamed.patch
       ../upstream/rust-cryptoki/0003-Add-RvError-to-CK_RV-and-its-name.patch
-      ./patches/cryptoki-vendor-mechanisms.patch
     ];
   };
 
   # What only the patched cryptoki above has: the mechanisms it names (CKM_AES_KEY_WRAP_KWP,
-  # CKM_RSA_AES_KEY_WRAP), which camigrate uses and caprobe probes only with `kwp`; the
-  # single-part sign after C_SignInit, which a per-use PIN proof uses only with `sign-after-init`;
-  # and a failure's CK_RV and CKR_* name from cryptoki, with `rv-value`.
+  # CKM_RSA_AES_KEY_WRAP), which camigrate uses and caprobe probes only with `kwp`; and a
+  # failure's CK_RV and CKR_* name from cryptoki, with `rv-value`.
   features = [
     "camigrate/kwp"
     "caprobe/kwp"
-    "cakeys-pkcs11/sign-after-init"
     "cakeys-pkcs11/rv-value"
   ]
   ++ lib.optionals (!tpm2) [

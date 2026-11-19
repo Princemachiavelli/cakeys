@@ -241,11 +241,10 @@ key to its identity:
      On a key the token reports `CKA_ALWAYS_AUTHENTICATE` (declared or not), the same proof runs
      under the key's per-use policy and is recorded as **`pop-sign-pin`**:
      `C_SignInit → C_Login(CKU_CONTEXT_SPECIFIC) → C_Sign`, once, with the PIN that opened the
-     session, never retried. The single-part `C_Sign` after `C_SignInit` is a cryptoki patch
-     (`nix/patches/cryptoki-sign-after-init.patch`, the `sign-after-init` feature); every
-     signing mechanism offers it. A build without the patch has no point for the login, so the
-     proof is refused (15), and so is a move planned onto such a key (camigrate asks the same
-     check, `proof_refusal`). The other proofs have no per-use login: a spec declaring
+     session, never retried. The single-part `C_Sign` after `C_SignInit` is cryptoki's
+     `Session::sign_single` (main, unreleased in 0.12.1); every signing mechanism offers it. A
+     move planned onto such a key asks the same check as the proof (camigrate,
+     `proof_refusal`). The other proofs have no per-use login: a spec declaring
      `CKA_ALWAYS_AUTHENTICATE` with them is invalid (17), and a key the token reports so
      undeclared is unavailable (16).
    - `pop-ecdh` (EC keys that only derive): the host generates an ephemeral key on the same curve

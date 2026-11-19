@@ -95,7 +95,11 @@ in
       ];
     };
     cargoRoot = "fuzz";
-    cargoLock.lockFile = ../fuzz/Cargo.lock;
+    # cryptoki is a git source at a pinned rev (Cargo.toml), fetched with builtins.fetchGit.
+    cargoLock = {
+      lockFile = ../fuzz/Cargo.lock;
+      allowBuiltinFetchGit = true;
+    };
     # The tpm2-pkcs11 crate (the tpm_store_row and tpms_attest targets) links tpm2-tss's ESAPI
     # and sqlite.
     nativeBuildInputs = [

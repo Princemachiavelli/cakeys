@@ -198,16 +198,14 @@ behaviour or reach outside PKCS#11:
 
 ## cryptoki patches
 
-The Nix build patches cryptoki 0.12.1 in `postPatch` (`nix/package-common.nix` lists them, both
-the regular and the crane build apply them):
+The Nix build patches cryptoki (main at a pinned rev, below) in the vendored copy
+(`nix/package-common.nix` lists them, both the regular and the crane build apply them):
 
 - `cryptoki-hmac-key-types.patch`: cryptoki gives `KeyType::SHA224/384/512_HMAC` the value of
   `CKK_SHA256_HMAC`. Without it those types are refused (`hmac_key_type`), and the binding layer
   subtracts them.
 - `cryptoki-aes-key-wrap-kwp.patch`: `CKM_AES_KEY_WRAP_KWP` (kryoptic's RFC 5649 ID).
 - `cryptoki-rsa-aes-key-wrap.patch`: `CKM_RSA_AES_KEY_WRAP` and its parameters (`enforced` moves).
-- `cryptoki-sign-after-init.patch`: a single-part `C_Sign` in an operation `C_SignInit` started,
-  for a `CKA_ALWAYS_AUTHENTICATE` key's per-use login.
 - `cryptoki-allowed-mechanisms-unnamed.patch`: a `CKA_ALLOWED_MECHANISMS` entry cryptoki has no
   name for kept as its value.
 - `upstream/rust-cryptoki/0003-Add-RvError-to-CK_RV-and-its-name.patch`, the upstream draft
@@ -215,9 +213,18 @@ the regular and the crane build apply them):
   (`KmError::rv`) and the name messages and profile evidence give it.
 
 What only the patched cryptoki compiles sits behind a feature the Nix build turns on: camigrate's
-and caprobe's `kwp` (the two wrap mechanisms), `cakeys-pkcs11/sign-after-init` and
-`cakeys-pkcs11/rv-value`. A plain cargo build plans without the wraps, refuses a per-use-login
-proof, and names a failure without carrying its value. Upstream drafts: `upstream/rust-cryptoki/`.
+and caprobe's `kwp` (the two wrap mechanisms) and `cakeys-pkcs11/rv-value`. A plain cargo build
+plans without the wraps and names a failure without carrying its value. Upstream drafts:
+`upstream/rust-cryptoki/`.
+
+The cryptoki underneath is not a release but parallaxsecond/rust-cryptoki's main at a pinned rev
+(`Cargo.toml`, a git source for `cryptoki` and `cryptoki-sys`, one rev for both), because main has
+what 0.12.1 lacks: vendor mechanisms kept in `C_GetMechanismList` (6cc2278: tpm2-pkcs11's
+`CKM_TPM2_*` reach the provider) and the single-part `Session::sign_single` (d1b283e), which a
+`CKA_ALWAYS_AUTHENTICATE` key's per-use login needs after `C_SignInit`. The patches above are on
+that rev (crane patches its git checkout, `nix/package-crane.nix`; `scripts/local-tests.sh` patches
+a copy of cargo's). Moving the rev is a change to `Cargo.toml` and both lock files; a patch main
+has taken is dropped. When a release has all of it, the dependency goes back to the version.
 
 ## Dependencies
 

@@ -8,12 +8,13 @@
 #
 # The patches (nix/patches/cryptoki-*.patch, and upstream/rust-cryptoki/ drafts applied as they
 # are) and the features that use them, both as
-# nix/package-common.nix lists them: the patches are applied to the registry's cryptoki under
-# target/local-tests/, never vendored in the tree, and the features enabled. The run happens in
+# nix/package-common.nix lists them: the patches are applied to a copy of cargo's checkout of the
+# rust-cryptoki repository (the git source Cargo.toml names) under target/local-tests/, never
+# vendored in the tree, and the features enabled. The run happens in
 # a copy of the working tree, target/local-tests/tree, whose .cargo/config.toml patches
-# cryptoki to that copy, so the repository's Cargo.lock is never touched. It refuses to run
-# unless the build resolves cryptoki to the patched copy, and the reference suites run with
-# their *_REQUIRE variables set, so a test needing the patch fails instead of skipping.
+# cryptoki and cryptoki-sys to that copy, so the repository's Cargo.lock is never touched. It
+# refuses to run unless the build resolves cryptoki to the patched copy, and the reference suites
+# run with their *_REQUIRE variables set, so a test needing the patch fails instead of skipping.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -69,31 +70,41 @@ locked=$(cargo metadata --format-version 1 --locked |
   echo "local-tests: Cargo.lock has cryptoki ${locked%% *}, nix/package-common.nix patches $version" >&2
   exit 1
 }
-source_dir=$(dirname "${locked#* }")
-# Keyed by the version and the patches' contents: a changed patch is applied afresh.
-stamp=$( (echo "$version" && cat "${patches[@]}") | sha256sum | cut -c1-16)
+# cryptoki is a git source (Cargo.toml): cargo's checkout of the whole rust-cryptoki repository,
+# of which the crate is the cryptoki/ subdirectory (cryptoki-sys next to it).
+crate_dir=$(dirname "${locked#* }")
+checkout=$(dirname "$crate_dir")
+# Keyed by the checkout, the version and the patches' contents: a changed patch is applied afresh.
+stamp=$( (echo "$checkout $version" && cat "${patches[@]}") | sha256sum | cut -c1-16)
 patched=$work/cryptoki-$version-$stamp
 if [ ! -f "$patched/.patched" ]; then
-  rsync -a --delete --chmod=u+w "$source_dir/" "$patched/"
+  rsync -a --delete --chmod=u+w --exclude /.git "$checkout/" "$patched/"
   for p in "${patches[@]}"; do
-    patch --batch --forward --silent -d "$patched" -p1 <"$p" || {
+    patch --batch --forward --silent -d "$patched/cryptoki" -p1 <"$p" || {
       echo "local-tests: $p does not apply to cryptoki $version" >&2
       exit 1
     }
   done
   touch "$patched/.patched"
 fi
+# The URL the workspace names the source by, to patch it (Cargo.toml).
+git_url=$(sed -n 's|^cryptoki = { git = "\([^"]*\)".*|\1|p' Cargo.toml)
+[ -n "$git_url" ] || {
+  echo "local-tests: no git source for cryptoki in Cargo.toml" >&2
+  exit 1
+}
 
 tree=$work/tree
 # Not the tree: build output, git's own, and other sessions' worktrees (.claude), which change underfoot.
 rsync -a --delete --exclude /target --exclude /.git --exclude '/result*' --exclude /.cargo --exclude /.claude "$repo/" "$tree/"
 mkdir -p "$tree/.cargo"
-printf '[patch.crates-io]\ncryptoki = { path = "%s" }\n' "$patched" >"$tree/.cargo/config.toml"
+printf '[patch."%s"]\ncryptoki = { path = "%s/cryptoki" }\ncryptoki-sys = { path = "%s/cryptoki-sys" }\n' \
+  "$git_url" "$patched" "$patched" >"$tree/.cargo/config.toml"
 cd "$tree"
 export CARGO_TARGET_DIR=$work/target
 resolved=$(cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == "cryptoki") | .manifest_path')
-[ "$resolved" = "$patched/Cargo.toml" ] || {
-  echo "local-tests: cryptoki resolves to $resolved, not the patched $patched" >&2
+[ "$resolved" = "$patched/cryptoki/Cargo.toml" ] || {
+  echo "local-tests: cryptoki resolves to $resolved, not the patched $patched/cryptoki" >&2
   exit 1
 }
 

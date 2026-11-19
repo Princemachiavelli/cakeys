@@ -119,9 +119,7 @@ impl Token {
     /// signing mechanism offers. The login happens exactly once, never retried: the PIN is the one
     /// that opened the session, so it cannot be wrong and a successful login spends no retry; a
     /// failure (another actor locked the PIN meanwhile) is `Unavailable`. The sign after
-    /// `C_SignInit` is the patched cryptoki's (`sign-after-init`); without it, [`proof_refusal`]
-    /// refuses the proof before it gets here.
-    #[cfg(feature = "sign-after-init")]
+    /// `C_SignInit` is cryptoki's `Session::sign_single`.
     fn sign_with_pin(
         &self,
         mech: &Mechanism,
@@ -153,21 +151,7 @@ impl Token {
             )
             .with_rv(rv_of(&e)));
         }
-        self.session.sign_initialized(data).map_err(refused)
-    }
-
-    /// Without the patched cryptoki there is no sign after the login: [`proof_refusal`] refuses
-    /// a `pop-sign-pin` proof before it signs.
-    #[cfg(not(feature = "sign-after-init"))]
-    #[expect(clippy::unused_self, reason = "the signature of the patched build's per-use sign")]
-    fn sign_with_pin(
-        &self,
-        _: &Mechanism,
-        _: ObjectHandle,
-        _: &[u8],
-        _: impl Fn(CkError) -> KmError,
-    ) -> Result<Vec<u8>> {
-        Err(KmError::Unsupported(NO_SIGN_AFTER_INIT.into()))
+        self.session.sign_single(data).map_err(refused)
     }
 
     /// `pop-ecdh`: the host holds an ephemeral key and the MAC of the challenge under the shared
@@ -516,12 +500,6 @@ pub struct ProofSide<'a> {
     pub unwraps: bool,
 }
 
-/// The refusal of a per-use PIN proof in a build without the patched cryptoki.
-#[cfg(not(feature = "sign-after-init"))]
-const NO_SIGN_AFTER_INIT: &str = "this build's cryptoki has no sign after C_SignInit, where the per-use login of a \
-     CKA_ALWAYS_AUTHENTICATE key goes (nix/patches/cryptoki-sign-after-init.patch, the Nix build's), so the key \
-     cannot prove possession; build with it, or opt in with binding = \"token-asserted\"";
-
 /// Why a proof of possession by `binding` of a private key of `object` cannot run on `side`:
 /// `None` when it can. The one check the proof itself (`Token::prove_binding`), `cakeys`
 /// before it creates a key, and camigrate's plan for a move's target all make, so none promises
@@ -531,10 +509,6 @@ const NO_SIGN_AFTER_INIT: &str = "this build's cryptoki has no sign after C_Sign
 ///
 /// `Unsupported` for a key type or curve no proof is defined for.
 pub fn proof_refusal(object: &ObjectCfg, binding: Binding, side: &ProofSide<'_>) -> Result<Option<String>> {
-    #[cfg(not(feature = "sign-after-init"))]
-    if binding == Binding::PopSignPin {
-        return Ok(Some(NO_SIGN_AFTER_INIT.into()));
-    }
     if binding == Binding::PopUnwrap && !side.unwraps {
         return Ok(Some(format!(
             "token '{}' never unwraps (C_UnwrapKey{}), so binding = \"pop-unwrap\" cannot prove \

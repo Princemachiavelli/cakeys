@@ -58,7 +58,11 @@ rec {
   # registry metadata the sandbox has no network for). Configuration: deny.toml.
   deny = pkgs.callPackage ./nix/deny.nix {
     inherit advisory-db;
-    cargoDeps = pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; };
+    # cryptoki is a git source at a pinned rev (Cargo.toml), fetched with builtins.fetchGit.
+    cargoDeps = pkgs.rustPlatform.importCargoLock {
+      lockFile = ./Cargo.lock;
+      allowBuiltinFetchGit = true;
+    };
   };
   # Kani, from source (nix/kani.nix), x86_64-linux only: checks.kani runs the proofs in
   # cakeys_core::fuzzing with it.

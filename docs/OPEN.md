@@ -41,8 +41,8 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **Upstream cryptoki: keep an unnamed `CKA_ALLOWED_MECHANISMS` entry.** 0.12.1's
   `MechanismType::try_from` refuses any value it has no name for — vendor mechanisms (CloudHSM's
   EdDSA is `0x80001057`, CLOUD_HSM.md) and some 385 standard ones (`CKM_DES3_CBC_PAD`), so the
-  whole read fails. Upstream main accepts vendor values but not unnamed standard ones. Our patch
-  keeps the raw value; a PR candidate, not filed.
+  whole read fails. Upstream main (6cc2278), which cakeys builds against, accepts vendor values
+  but not unnamed standard ones. Our patch keeps the raw value; a PR candidate, not filed.
 - **Weaker identity modes for keys cakeys did not create** (DESIGN §3.4). Non-extractable keys
   with no usage bit a commitment can use (derive-only, unwrap-only, random-IV-only allowed
   mechanisms) are common, especially existing and legacy keys, and are refused today (17).

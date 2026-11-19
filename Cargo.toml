@@ -44,10 +44,15 @@ anyhow = "1"
 base16ct = { version = "1", features = ["alloc"] }
 base64 = "0.23"
 clap = { version = "4", features = ["derive", "env"] }
-cryptoki = "0.12"
+# parallaxsecond/rust-cryptoki's main, not a release: the vendor mechanisms in
+# C_GetMechanismList (6cc2278) and the single-part Session::sign_single (d1b283e) are unreleased
+# (0.12.1 lacks both), and the Nix build patches the rest (nix/patches, upstream/rust-cryptoki/).
+# One rev for both crates: cryptoki-sys must be the one cryptoki uses. When a release has what
+# main has, go back to the version.
+cryptoki = { git = "https://github.com/parallaxsecond/rust-cryptoki", rev = "2e4ff5d717f46f90785496949c08599b589b8e32" }
 # The C types and loader p11-fault forwards with (docs/FAULT_SHIM.md): the versions cryptoki uses.
 # cakeys-aws-cloudhsm reads a mechanism's raw parameter with it too.
-cryptoki-sys = "0.5"
+cryptoki-sys = { git = "https://github.com/parallaxsecond/rust-cryptoki", rev = "2e4ff5d717f46f90785496949c08599b589b8e32" }
 libloading = "0.8"
 rsa = { version = "0.10", default-features = false, features = ["std", "encoding", "pkcs1v15"] }
 x509-cert = { version = "0.3", default-features = false, features = ["std", "pem"] }

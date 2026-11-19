@@ -27,14 +27,20 @@ let
     common.cargoScope ++ lib.optional common.noDefaultFeatures "--no-default-features"
   );
 
-  # The cryptoki patches (nix/package-common.nix), on crane's vendored copy.
+  # The cryptoki patches (nix/package-common.nix), on crane's checkout of the rust-cryptoki
+  # repository the lock names (a git source: the patches are relative to its cryptoki/ crate).
   cargoVendorDir = craneLib.vendorCargoDeps {
     inherit (common.args) src;
-    overrideVendorCargoPackage =
-      p: drv:
-      if p.name == "cryptoki" && p.version == common.cryptoki.version then
+    overrideVendorGitCheckout =
+      ps: drv:
+      if lib.any (p: p.name == "cryptoki" && p.version == common.cryptoki.version) ps then
         drv.overrideAttrs (old: {
           patches = (old.patches or [ ]) ++ common.cryptoki.patches;
+          patchFlags = [
+            "-p1"
+            "-d"
+            "cryptoki"
+          ];
         })
       else
         drv;
@@ -72,7 +78,7 @@ let
   minimal = base // {
     pname = "cakeys-minimal";
     buildInputs = [ ];
-    cargoExtraArgs = "--locked --no-default-features --features camigrate/kwp,caprobe/kwp,cakeys-pkcs11/sign-after-init";
+    cargoExtraArgs = "--locked --no-default-features --features camigrate/kwp,caprobe/kwp";
     doCheck = false;
   };
 

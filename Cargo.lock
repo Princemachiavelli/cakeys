@@ -660,9 +660,8 @@ dependencies = [
 
 [[package]]
 name = "cryptoki"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "625cf4599c43d69a16996ce2573fc80745a0b0300c962f0bfa11d55b6cab2b2d"
+version = "0.12.0"
+source = "git+https://github.com/parallaxsecond/rust-cryptoki?rev=2e4ff5d717f46f90785496949c08599b589b8e32#2e4ff5d717f46f90785496949c08599b589b8e32"
 dependencies = [
  "bitflags",
  "cryptoki-sys",
@@ -674,8 +673,7 @@ dependencies = [
 [[package]]
 name = "cryptoki-sys"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1fd850498411e4057f1cba79e6e2bc7cbe960544c1046ab46d4685c403a1121"
+source = "git+https://github.com/parallaxsecond/rust-cryptoki?rev=2e4ff5d717f46f90785496949c08599b589b8e32#2e4ff5d717f46f90785496949c08599b589b8e32"
 dependencies = [
  "libloading",
 ]

@@ -148,10 +148,9 @@ module behind a p11-kit server with an environment of its own.
     profile's `move.unwrap` row; nothing about the per-use login). They now ask one check,
     `token::proof_refusal`, of the binding the spec implies (`plan::expected_binding`).
     `cakeys` also refused a missing proof mechanism only after generating the key;
-  - the instance: cryptoki gets a single-part `C_Sign` after `C_SignInit`
-    (`nix/patches/cryptoki-sign-after-init.patch`), so the per-use login works for every
-    signing mechanism, Ed25519 and raw ECDSA included (`per_use_pin_targets_move_as_planned`).
-    Without the patch the proof and the plan refuse it alike.
+  - the instance: cryptoki's single-part `C_Sign` after `C_SignInit` (`Session::sign_single`; a
+    patch of ours until main had it), so the per-use login works for every signing mechanism,
+    Ed25519 and raw ECDSA included (`per_use_pin_targets_move_as_planned`).
 
   What still only the move can show: the material (10, 13, which the dry-run twin allows),
   and an attribute the module sets on its own, such as a PIV slot whose PIN policy makes an
@@ -294,10 +293,9 @@ What no test can catch, and why:
   equal sizes are answered a few lines earlier, from the sizes' `generate.CKK_RSA.<bits>` rows.
 - `sealed.rs`, `create_public_half`'s `CKA_PRIVATE = false` default: `SoftHSM` and kryoptic
   already make a public key non-private, so leaving it out changes nothing on them.
-- `possession.rs`' `sign_with_pin` and the branch of `proof_refusal` under
-  `cfg(not(feature = "sign-after-init"))`: the Nix build always has the patched cryptoki, so
-  the code is compiled out. cargo-mutants reports compiled-out mutants as missed, not
-  unviable: these 4 appear in every run.
+- (Removed: the `sign-after-init` feature's compiled-out `sign_with_pin` and `proof_refusal`
+  branch, whose 4 mutants appeared in every run, went with the feature when cryptoki's
+  `sign_single` replaced the patch.)
 
 ## The lock model (2026-11-18)
 
