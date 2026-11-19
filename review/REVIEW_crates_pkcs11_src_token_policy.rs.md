@@ -31,6 +31,10 @@ public object without readable material, but `check_public_half` reads as if it 
 Fix: refuse (as `check_public_objects` does) or say in a comment which later check covers it.
 [read]
 
+**Fixed (2026-11-18):** an unreadable public key object is a conflict (13), never a match;
+the private key's own material is compared where it has any (`same_public_key`). Test:
+`an_unreadable_public_half_is_no_match`.
+
 ### F3. `mechanism_name` scans the baseline linearly per call, and `policy_template` calls it per mechanism per name — nit
 
 `crates/pkcs11/src/token/policy.rs:263-271`, `:277-287`. For each declared mechanism name,
@@ -38,6 +42,10 @@ every usable mechanism is named, and each name cryptoki lacks scans the whole ba
 value. Tens of mechanisms times a few hundred baseline entries per spec: negligible for the
 verbs, but it runs again in every `check_templates`. Fix: build the name map once per token.
 [read]
+
+**Fixed (2026-11-18):** `mechanism_namer` indexes the baseline by value once, on first need;
+`policy_template` names the token's mechanisms once per template. Test:
+`mechanisms_are_named_by_their_constants`.
 
 ## Design
 

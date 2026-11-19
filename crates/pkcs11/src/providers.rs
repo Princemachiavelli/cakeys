@@ -1,6 +1,6 @@
 //! Built-in providers for modules whose quirks need no code of their own beyond detection and
-//! advice. Modules with real fix-ups or native paths (ykcs11, tpm2-pkcs11, kmsp11) are provider
-//! crates; a module with no fix-ups and no advice needs neither: its profiles name and detect it
+//! advice. Modules with real fix-ups or native paths (ykcs11, tpm2-pkcs11, kmsp11, aws-cloudhsm)
+//! are provider crates; a module with no fix-ups and no advice needs neither: its profiles name and detect it
 //! ([`crate::provider::Data`]).
 //!
 //! `softhsm` and `kryoptic` are such data providers. What was observed of them, with no code to

@@ -15,6 +15,8 @@ checks.examples evaluates a check without `--lock` (REVIEW_nix_lib.nix.md F1). F
 the example that is right; for the check it means the evaluated command is not the one a
 deployment runs. [read]
 
+**Fixed (2026-11-18):** `lock` is an argument (the host's own); checks.examples passes a version-1 stand-in.
+
 ## Design
 
 - The build reads the PIN from `/etc/secure-boot/tpm-pin`, granted through the token's

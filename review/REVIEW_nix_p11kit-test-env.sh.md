@@ -13,11 +13,15 @@ server may still be shutting down with its socket and SoftHSM's files open. nix/
 waits (its lines 55-60) for exactly this reason ("Directory not empty"). Wait on the PID the same
 way. [read]
 
+**Fixed (2026-11-18):** `down` waits for the server (SIGKILL after 5 s). Test: local-tests p11kit test passes.
+
 ### F2. Readiness is the socket's existence only — nit
 
 `nix/p11kit-test-env.sh:19-26`. If the server dies after creating the socket the loop still
 succeeds; a `kill -0` check in the loop would report the log at once instead of a later
 connection error. [read]
+
+**Fixed (2026-11-18):** readiness requires the server alive as well as the socket.
 
 ## Design
 

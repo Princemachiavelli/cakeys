@@ -13,6 +13,8 @@ shellcheck.
 has twelve. Say "a cargo-fuzz target (nix/fuzz.nix lists them)" or generate the text from the
 target list. [read]
 
+**Fixed (2026-11-18):** the description lists `fuzz.targets`, nix/fuzz.nix's one list.
+
 ## Design
 
 - `pkcs11-check-compare` pins `SOFTHSM_MODULE` to the patched SoftHSM and says the profiles were

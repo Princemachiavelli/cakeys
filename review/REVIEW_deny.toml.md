@@ -16,6 +16,8 @@ are checked is wrong. Set `[sources] unknown-registry = "deny"`, `unknown-git = 
 `[bans] multiple-versions` deliberately (`deny` with a `skip` list, or keep `warn` and drop the
 claim). [read]
 
+**Fixed (2026-11-18):** Verified fixed (2026-11-18), unmarked until now.
+
 ## Design
 
 - Advisory freshness is decided by the flake.lock's advisory-db input alone; see

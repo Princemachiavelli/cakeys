@@ -12,6 +12,9 @@ pinned by test (the observed vector is part of every lock). No real issues.
 enum" — `Use` is `Both`, `Observed`, `Declared`, and the tables use `Both` and `Declared`.
 Misleading only to the next reader of the exemption. [read]
 
+**Fixed (2026-11-18):** the reason now reads "the tables read as Both/Declared, cakeys' own
+`Use` variants".
+
 ## Design
 
 None.

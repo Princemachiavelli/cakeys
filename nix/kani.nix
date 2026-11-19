@@ -33,9 +33,10 @@
 }:
 let
   version = "0.68.0";
-  # Kani's rust-toolchain.toml.
-  nightly = "nightly-2026-08-21";
-  toolchain = rustBin.nightly."2026-08-21".minimal.override {
+  # Kani's rust-toolchain.toml names the nightly (nightly-<date>): read from it, once, so the
+  # toolchain and the rustup directory name it is linked under cannot disagree.
+  nightly = (lib.importTOML "${kani-src}/rust-toolchain.toml").toolchain.channel;
+  toolchain = rustBin.nightly.${lib.removePrefix "nightly-" nightly}.minimal.override {
     extensions = [
       "rust-src"
       "rustc-dev"

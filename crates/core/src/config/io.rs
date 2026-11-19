@@ -165,14 +165,61 @@ pub fn in_nix_build() -> bool {
 }
 
 /// `CAKEYS_ALLOW_NIX_STORE_KEYS=1`: for throwaway keys a Nix build makes and uses (a test, a VM
-/// image), never a deployment's. A secret `migrate.file` may then be under `/nix/store`, and no
-/// run counts as inside a Nix build sandbox ([`in_nix_build`]): what a sandboxed run would have
-/// refused, it does, and a lock it writes is lost with the build unless the build keeps it.
+/// image), never a deployment's. A secret file (`pinFile`, `soCredentialFile`, a secret
+/// `migrate.file`, `migrate.passphraseFile`) may then be under `/nix/store`, and no run counts as
+/// inside a Nix build sandbox ([`in_nix_build`]): what a sandboxed run would have refused, it
+/// does, and a lock it writes is lost with the build unless the build keeps it.
 pub const ALLOW_NIX_STORE_KEYS: &str = "CAKEYS_ALLOW_NIX_STORE_KEYS";
 
 /// Whether [`ALLOW_NIX_STORE_KEYS`] is set to `1`.
-pub(super) fn nix_store_keys_allowed() -> bool {
+pub(crate) fn nix_store_keys_allowed() -> bool {
     std::env::var_os(ALLOW_NIX_STORE_KEYS).is_some_and(|v| v == "1")
+}
+
+/// The Nix store, which anyone on the host can read.
+const NIX_STORE: &str = "/nix/store";
+
+/// Why `what`, a file holding a secret, may not be read from `path`: it resolves into the
+/// world-readable Nix store, and [`ALLOW_NIX_STORE_KEYS`] is not set. Every secret file keys.toml
+/// names is held to it, at load and again when it is read.
+pub(crate) fn secret_in_store(what: &dyn std::fmt::Display, path: &Path) -> Option<String> {
+    (!nix_store_keys_allowed() && resolves_under(path, Path::new(NIX_STORE))).then(|| {
+        format!(
+            "{what} {} is in the Nix store, which anyone on the host can read; keep secret material out of it \
+             ({ALLOW_NIX_STORE_KEYS}=1 allows it, for throwaway keys only)",
+            path.display()
+        )
+    })
+}
+
+/// Whether `path` is `root` or under it once both are resolved: symlinks followed
+/// (`./result/k.pem`, `/run/current-system/sw/…`) and `..` taken, component by component, never
+/// a string prefix. A path that does not exist (yet) is resolved as far as it does, and the rest
+/// taken as written; a relative one is relative to the working directory, as a read would be.
+pub(crate) fn resolves_under(path: &Path, root: &Path) -> bool {
+    resolve(path).starts_with(resolve(root))
+}
+
+/// `path` made absolute with its longest existing prefix canonicalized and the rest applied
+/// lexically.
+fn resolve(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let path = std::env::current_dir().map_or_else(|_| path.to_owned(), |cwd| cwd.join(path));
+    let parts: Vec<Component> = path.components().collect();
+    for exists in (0..=parts.len()).rev() {
+        let Ok(mut out) = std::fs::canonicalize(parts[..exists].iter().collect::<PathBuf>()) else { continue };
+        for part in &parts[exists..] {
+            match part {
+                Component::ParentDir => {
+                    out.pop();
+                }
+                Component::Normal(name) => out.push(name),
+                Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+            }
+        }
+        return out;
+    }
+    path
 }
 
 /// [`lock_unwritable`], with whether this run is inside a Nix build sandbox given.

@@ -6,6 +6,7 @@
 //! dropped. The import is then recorded through `ops::lock_import`, the lock rules `cakeys
 //! lock` uses, so the identity is checked as for any move; a mismatch removes what was made.
 
+use crate::public::free_locator;
 use crate::public::{Moved, already_there, origin, roll_back};
 use crate::sealed::{create_public_half, rfc5649};
 use cakeys_core::config::{Lock, Origin};
@@ -14,6 +15,7 @@ use cakeys_core::plaintext::private_from_pkcs8;
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
+use cakeys_pkcs11::token::Occupied;
 use cakeys_pkcs11::{Template, Token, Via, templates};
 use cryptoki::object::ObjectHandle;
 
@@ -41,11 +43,45 @@ pub(crate) fn import(
     }
     let (h, spki) = source_key(src, from, lock, notes)?;
     // The target first: nothing is in plaintext yet when it refuses.
-    ops::check_import(dst, to)?;
-    free_locator(dst, to, spki.as_deref())?;
+    let occupied = landing(dst, to, spki.as_deref())?;
     let plain = hand_over(from, h)?;
+    check_identity(dst, lock, &plain)?;
     let origin = origin(src.token_name, method, Exposure::Host);
-    create_and_record(dst, to, lock, &plain, spki.as_deref(), origin, notes)
+    create_landed(dst, to, lock, &plain, spki.as_deref(), &occupied, origin, notes)
+}
+
+/// What `dst` on `to` must be before a key is created there, asked once per import: what the
+/// record after it asks (`ops::check_import`: the proof's and the commitments' templates
+/// included), and a locator nothing would collide with ([`free_locator`]). What is there.
+///
+/// # Errors
+///
+/// What `ops::check_import` refuses; `Conflict` (13) for a colliding object.
+fn landing(dst: &Target, to: &Token, spki: Option<&[u8]>) -> Result<Occupied> {
+    ops::check_import(dst, to)?;
+    free_locator(dst, to, spki)
+}
+
+/// The identity of the plaintext key on the host, before anything is written: a token that
+/// cannot delete what it imported (a `YubiKey`'s PIV slot) must never receive the wrong key.
+///
+/// # Errors
+///
+/// `HashMismatch` (10) for a private key whose `rfc7093m4` is not the locked one.
+fn check_identity(dst: &Target, lock: &Lock, plain: &[u8]) -> Result<()> {
+    if dst.object.class != Class::PrivateKey {
+        return Ok(());
+    }
+    let got = cakeys_core::id::sri(&cakeys_core::id::spki_canonical(&cakeys_core::plaintext::spki_of_pkcs8(plain)?)?);
+    let locked = lock.objects.get(dst.object_name).and_then(|o| o.ids.get(cakeys_core::id::Scheme::Rfc7093m4.name()));
+    if locked != Some(&got) {
+        return Err(KmError::HashMismatch {
+            what: format!("{dst}: the key to import"),
+            expected: locked.cloned().unwrap_or_else(|| "a locked rfc7093m4".into()),
+            got,
+        });
+    }
+    Ok(())
 }
 
 /// The key `src` names on `from`, verified against the lock first: its handle, and a private
@@ -66,8 +102,9 @@ fn hand_over(from: &Token, h: ObjectHandle) -> Result<zeroize::Zeroizing<Vec<u8>
 }
 
 /// Create the key `plain` (a private key's PKCS#8, of the public key `spki`, or a secret key's
-/// value) under `dst` on `to` with `C_CreateObject`, and record it with `origin`: what
-/// [`import`] does once the key is in memory, and what a key file's import does (`file`).
+/// value) under `dst` on `to` with `C_CreateObject`, and record it with `origin`: what a key
+/// file's import does (`file`). [`import`] makes the same checks, the target's before the key
+/// is in memory, and then the same [`create_landed`].
 ///
 /// # Errors
 ///
@@ -84,25 +121,26 @@ pub(crate) fn create_and_record(
     if already_there(dst, to, lock, notes)? {
         return Ok(Moved::AlreadyThere);
     }
-    // The identity on the host first, before anything is written: a token that cannot delete
-    // what it imported (a YubiKey's PIV slot) must never receive the wrong key.
-    if dst.object.class == Class::PrivateKey {
-        let got =
-            cakeys_core::id::sri(&cakeys_core::id::spki_canonical(&cakeys_core::plaintext::spki_of_pkcs8(plain)?)?);
-        let locked =
-            lock.objects.get(dst.object_name).and_then(|o| o.ids.get(cakeys_core::id::Scheme::Rfc7093m4.name()));
-        if locked != Some(&got) {
-            return Err(KmError::HashMismatch {
-                what: format!("{dst}: the key to import"),
-                expected: locked.cloned().unwrap_or_else(|| "a locked rfc7093m4".into()),
-                got,
-            });
-        }
-    }
-    // What the record after it asks (the proof's and the commitments' templates included), before
-    // anything is created.
-    ops::check_import(dst, to)?;
-    let occupied = free_locator(dst, to, spki)?;
+    // The identity on the host first, then the target, before anything is written.
+    check_identity(dst, lock, plain)?;
+    let occupied = landing(dst, to, spki)?;
+    create_landed(dst, to, lock, plain, spki, &occupied, origin, notes)
+}
+
+/// [`create_and_record`] once its checks passed: create the key, record it, and remove what was
+/// made when the record refuses. `occupied` is [`landing`]'s: a public half already there is
+/// reused.
+#[expect(clippy::too_many_arguments, reason = "create_and_record's parts, with what its checks established")]
+fn create_landed(
+    dst: &Target,
+    to: &Token,
+    lock: &mut Lock,
+    plain: &[u8],
+    spki: Option<&[u8]>,
+    occupied: &Occupied,
+    origin: Origin,
+    notes: &mut Notes,
+) -> Result<Moved> {
     let mut made = Vec::new();
     let created = create(dst, to, plain, spki.filter(|_| occupied.public_half.is_none()), &mut made)
         .and_then(|()| ops::lock_import(dst, to, lock, origin, notes));
@@ -110,28 +148,6 @@ pub(crate) fn create_and_record(
         Ok(_) => Ok(Moved::Imported),
         Err(err) => Err(roll_back(dst, to, &made, err, notes)),
     }
-}
-
-/// If-None-Match before a key is created under `dst` (docs/CAMIGRATE.md D6): nothing a key of
-/// its class would collide with may sit there (`Token::occupied`; the session is logged in,
-/// `needs_login` refused the run otherwise). What is there, with the public half to reuse.
-///
-/// # Errors
-///
-/// `Conflict` (13) for a colliding object.
-pub(crate) fn free_locator(dst: &Target, to: &Token, spki: Option<&[u8]>) -> Result<cakeys_pkcs11::token::Occupied> {
-    let occupied = to.occupied(dst.object, &dst.on_token.locator, spki)?;
-    if occupied.colliding > 0 {
-        return Err(KmError::Conflict(
-            format!(
-                "{} object(s) a {} would collide with already sit under the locator of {dst}, and the lock records \
-             no realisation there; refusing to import over them",
-                occupied.colliding, dst.object.class
-            )
-            .into(),
-        ));
-    }
-    Ok(occupied)
 }
 
 /// Move `src`'s key on `from` into the tpm2-pkcs11 token `target` holds by `tpm2_ptool import`
@@ -157,8 +173,7 @@ pub(crate) fn import_ptool(
         return Ok(Moved::AlreadyThere);
     }
     let (h, spki) = source_key(src, from, lock, notes)?;
-    ops::check_import(dst, to)?;
-    let occupied = free_locator(dst, to, spki.as_deref())?;
+    let occupied = landing(dst, to, spki.as_deref())?;
     if occupied.public_half.is_some() {
         return Err(KmError::Conflict(
             format!(

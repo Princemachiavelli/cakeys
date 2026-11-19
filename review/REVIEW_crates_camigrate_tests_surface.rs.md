@@ -21,6 +21,8 @@ such as `"--spec {spec}: {}"` (dry_run.rs:1940). docs/DEVELOPMENT.md already cal
 exercised by a camigrate run". A stronger floor would scan only argument arrays passed to
 `km`/`km_alone`, or record the arguments each run used at runtime. [read]
 
+**Decided (2026-11-18):** the remaining part (the `"{name} "` form counting message literals) is in common/surface.rs, the shared harness, outside this file's owner..
+
 ## Design
 
 - camigrate and caprobe each wrap the one shared implementation with the same 13 lines; that

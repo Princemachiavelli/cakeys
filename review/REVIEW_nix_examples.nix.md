@@ -17,6 +17,8 @@ the evaluation's `uki` build and secure-boot/run.sh's signing step both fail on 
 Not seen because CI builds x86_64 only (REVIEW_flake.nix.md F1). Use
 `linux${pkgs.stdenv.hostPlatform.efiArch}.efi.stub` in both places. [read]
 
+**Fixed (2026-11-18):** Verified fixed (2026-11-18), unmarked until now.
+
 ### F2. The evaluated examples are not the files as written — nit
 
 `nix/examples.nix:21`, `:24-31`. The TLS units are evaluated with `lock` forced to a string, and
@@ -24,9 +26,13 @@ sign.nix with its `./keys.lock`, which does not exist in examples/secure-boot, s
 drops `--lock` silently (lib.nix:65). The comment says so for TLS; for sign.nix the evaluated
 `check` is a lockless one, which a reader of the check would not expect. [read]
 
+**Fixed (2026-11-18):** sign.nix evaluated with a stand-in lock; an assertion requires `--lock` in its check.
+
 ### F3. Redundant `set -o pipefail` — nit
 
 `nix/examples.nix:67`. stdenv already sets it; harmless. [read]
+
+**Fixed (2026-11-18):** removed, with a comment.
 
 ## Design
 

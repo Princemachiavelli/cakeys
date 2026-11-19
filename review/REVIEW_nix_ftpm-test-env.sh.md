@@ -12,11 +12,15 @@ them: nothing is made persistent, no NV write, right PIN only.
 `nix/ftpm-test-env.sh:30`. `set -u` catches a missing `$2` but not an empty one: `up ""` removes
 `/store`. Refuse an empty or relative `D` before the `rm`. [read]
 
+**Fixed (2026-11-18):** an empty or relative <dir> is refused (both scripts) before any rm.
+
 ### F2. `down` does not wait for abrmd to exit — nit
 
 `nix/ftpm-test-env.sh:60-64`. Unlike nix/tpm2-test-env.sh, it returns at once; a caller that
 starts a second `up` immediately (scripts/coverage-full.sh runs one up/down per run, so not today)
 could meet the old abrmd still holding the TPM connection. [read]
+
+**Fixed (2026-11-18):** `down` is tpm2-test-env.sh's waiting stop.
 
 ## Design
 

@@ -12,15 +12,21 @@ diffs it byte for byte. A useful format-drift test the integration suites cannot
 but also `km`, `rm`, or any binary on PATH, with no usage message for a typo. Use a `case` with a
 usage branch. [read]
 
+**Fixed (2026-11-18):** `case` with usage. Test: mode `km` exits 2 (old 127).
+
 ### F2. `record` deletes its directory argument unguarded — nit
 
 `scripts/xversion.sh:24`. `rm -rf "$dir"` on `$3` as given; `scripts/xversion.sh record ./cakeys .`
 removes the working directory. Refuse a non-empty directory that has no `base.lock`. [read]
 
+**Fixed (2026-11-18):** refuses a non-empty dir without base.lock. Test: the dir survives (old: deleted).
+
 ### F3. A failing re-record exits silently — nit
 
 `scripts/xversion.sh:124`. `km lock ... >/dev/null 2>&1` under `set -e`: a failure ends the run
 with no message saying which spec. Keep stderr, as the other steps do. [read]
+
+**Fixed (2026-11-18):** stderr kept, failing spec named.
 
 ## Design
 

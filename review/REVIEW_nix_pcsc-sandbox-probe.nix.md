@@ -12,6 +12,8 @@ sandbox and records `id`, the probe output and its exit code; a nonce makes it r
 wanted even on failure), but the comment should say the code is recorded in the output, not that
 it is the build's result. [read]
 
+**Fixed (2026-11-18):** header says the code is recorded in the output.
+
 ## Design
 
 None.

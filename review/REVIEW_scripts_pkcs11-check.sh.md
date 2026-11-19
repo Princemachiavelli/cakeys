@@ -17,10 +17,14 @@ script exits 0, contrary to its header ("nonzero when the run produced no result
 Remove `results.json`, `report.jsonl` and `coverage.json` from `$out` before the run, or write
 into a fresh directory and move it into place. [read]
 
+**Fixed (2026-11-18):** old results.json, report.jsonl, coverage.json, run.log, summary.md removed before the run. Test: stub pkcs11-check over a stale results.json exits 1 (old: passed the guard).
+
 ### F2. `--out` without a value is an unbound-variable error — nit
 
 `scripts/pkcs11-check.sh:39`. `--out` as the last argument hits `set -u` on `$2` instead of the
 usage text. Check `$# -ge 2` first. [read]
+
+**Fixed (2026-11-18):** `--out` without a value gives usage (old: looped forever on the unbound $2).
 
 ## Design
 

@@ -2,7 +2,7 @@
 //! reference token whose suite variables are set, one keys.toml naming them all, and runs of
 //! either binary against it.
 
-use super::{BIN, sibling, tool};
+use super::{BIN, Run, required_var, sibling};
 use std::fmt::Write;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -36,27 +36,22 @@ pub struct Env {
     pub refs: Vec<Ref>,
 }
 
-fn module(var: &str, require: &str) -> Option<String> {
-    let m = std::env::var(var).ok();
-    assert!(m.is_some() || std::env::var(require).is_err(), "{var} is required");
-    m
-}
-
 pub fn env(name: &str) -> Option<Env> {
     let mut refs = Vec::new();
     let r = |name, module, token_label, env, plant, eddsa| Ref { name, module, token_label, env, plant, eddsa };
-    if let Some(m) = module("CAKEYS_TEST_MODULE", "CAKEYS_TEST_REQUIRE") {
+    // Each quiet when unset: a reference left out is no skip, unless fewer than two are left.
+    if let Some(m) = required_var("CAKEYS_TEST_MODULE", "CAKEYS_TEST_REQUIRE") {
         refs.push(r("softhsm", m, "kmtest", &[], Plant::Create, true));
     }
-    if let Some(m) = module("CAKEYS_KRYOPTIC_MODULE", "CAKEYS_KRYOPTIC_REQUIRE") {
+    if let Some(m) = required_var("CAKEYS_KRYOPTIC_MODULE", "CAKEYS_KRYOPTIC_REQUIRE") {
         refs.push(r("kryoptic", m.clone(), "kmtest", &[], Plant::Create, true));
         let der: &[(&str, &str)] = &[("KRYOPTIC_EC_POINT_ENCODING", "DER")];
         refs.push(r("kryoptic-der", m, "kmtest", der, Plant::Shared, true));
     }
-    if let Some(m) = module("CAKEYS_P11KIT_CLIENT", "CAKEYS_P11KIT_REQUIRE") {
+    if let Some(m) = required_var("CAKEYS_P11KIT_CLIENT", "CAKEYS_P11KIT_REQUIRE") {
         refs.push(r("p11kit", m, "kmp11", &[], Plant::Create, false));
     }
-    if let Some(m) = module("CAKEYS_TPM_MODULE", "CAKEYS_TPM_REQUIRE") {
+    if let Some(m) = required_var("CAKEYS_TPM_MODULE", "CAKEYS_TPM_REQUIRE") {
         refs.push(r("tpm2", m, "kmtest", &[], Plant::Ptool, false));
     }
     if refs.len() < 2 {
@@ -97,22 +92,11 @@ impl Env {
     /// [`Self::km`] with `NIX_BUILD_TOP` set, as inside a Nix build sandbox: no dry-run twin,
     /// since the point is what the run itself refuses there. `env` is set on top.
     pub fn km_in_nix_build(&self, r: &Ref, env: &[(&str, &str)], args: &[&str]) -> Output {
-        let out = tool(BIN)
+        self.command(std::path::Path::new(BIN), r)
+            .note("in a Nix build")
             .env("NIX_BUILD_TOP", "/build")
-            .envs(r.env.iter().copied())
             .envs(env.iter().copied())
-            .arg("--config")
-            .arg(self.dir.join("keys.toml"))
-            .args(args)
-            .output()
-            .unwrap();
-        eprintln!(
-            "$ (in a Nix build) {}\n  exit={:?}\n  stderr={}",
-            args.join(" "),
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-        out
+            .output(args)
     }
 
     /// [`Self::km`] without the dry-run twin, for a run whose input is wrong before any plan
@@ -194,23 +178,12 @@ impl Env {
     }
 
     fn run_once(&self, bin: &std::path::Path, r: &Ref, args: &[&str]) -> Output {
-        let out = tool(bin)
-            .envs(r.env.iter().copied())
-            .arg("--config")
-            .arg(self.dir.join("keys.toml"))
-            .args(args)
-            .output()
-            .unwrap();
-        eprintln!(
-            "$ {} {} ({})\n  exit={:?}\n  stdout={}\n  stderr={}",
-            bin.file_name().unwrap().to_string_lossy(),
-            args.join(" "),
-            r.name,
-            out.status.code(),
-            String::from_utf8_lossy(&out.stdout).trim(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-        out
+        self.command(bin, r).output(args)
+    }
+
+    /// `bin` on this keys.toml, in reference `r`'s environment.
+    fn command(&self, bin: &std::path::Path, r: &Ref) -> Run {
+        Run::new(bin, &self.dir.join("keys.toml")).envs(r.env.iter().copied()).note(r.name)
     }
 
     pub fn refs(&self, keep: impl Fn(&Ref) -> bool) -> Vec<&Ref> {

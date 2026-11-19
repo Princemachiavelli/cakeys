@@ -14,7 +14,7 @@ pub use crate::sig::HashAlg;
 use elliptic_curve::sec1::ToSec1Point;
 use elliptic_curve::{Generate, PublicKey, ecdh::EphemeralSecret};
 use hmac::{Hmac, KeyInit, Mac};
-use p256::pkcs8::DecodePublicKey;
+use pkcs8::DecodePublicKey;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -68,7 +68,8 @@ pub fn verify(spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
 /// `Conflict` when the signature does not verify: the private key is not the one the identity
 /// names. `Unsupported` for an Ed448 key (no verifier yet: opt in with
 /// `binding = "token-asserted"`), a key that is none of the three above, or one its
-/// algorithm's own parser does not read.
+/// algorithm's own parser refuses, with the parser's reason: a malformed public key is no
+/// failed proof.
 pub fn verify_with(spki: &[u8], msg: &[u8], sig: &[u8], rsa: RsaSignature) -> Result<()> {
     let of_key = |what: &dyn std::fmt::Display| {
         KmError::Unsupported(format!("proof of possession for the public key {}: {what}", crate::id::sri(spki)).into())
@@ -92,25 +93,27 @@ pub fn verify_with(spki: &[u8], msg: &[u8], sig: &[u8], rsa: RsaSignature) -> Re
         },
     };
     match verdict {
-        Some(v) => v.map_err(|e| {
-            KmError::Conflict(
-                format!(
-                    "proof of possession failed: the private key did not sign for the public key {} ({e})",
-                    crate::id::sri(spki)
-                )
-                .into(),
+        Some(Ok(())) => Ok(()),
+        Some(Err(sig::Refused::Signature(e))) => Err(KmError::Conflict(
+            format!(
+                "proof of possession failed: the private key did not sign for the public key {} ({e})",
+                crate::id::sri(spki)
             )
-        }),
+            .into(),
+        )),
         // An RSA key of a size `rsa` does not compute with has its identity (id.rs F1), but
-        // no verifier here: the refusal says so, by its size.
-        None => match crate::id::rsa_of_spki(spki) {
+        // no verifier here: the refusal says so, by its size. Any other key its parser refuses
+        // is named with the parser's reason.
+        Some(Err(sig::Refused::Key(why))) => match crate::id::rsa_of_spki(spki) {
             Ok(key) => Err(of_key(&format_args!(
                 "an RSA key of {} bits, outside the 1024 to 8192 cakeys verifies signatures of (exponent at \
-                 most 2^33 - 1); opt in with binding = \"token-asserted\"",
+                 most 2^33 - 1; {why}); opt in with binding = \"token-asserted\"",
                 rsa::traits::PublicKeyParts::n(&key).bit_width_vartime()
             ))),
-            Err(_) => Err(of_key(&"its algorithm's own parser does not read it")),
+            Err(_) => Err(of_key(&format_args!("its algorithm's own parser refuses it: {why}"))),
         },
+        // The verifier was chosen by the key's algorithm, so it never answers "another kind".
+        None => Err(of_key(&"no verifier for its algorithm")),
     }
 }
 
@@ -278,6 +281,17 @@ pub fn rsa_computes_with(spki: &[u8]) -> bool {
     rsa::PublicKey::from_public_key_der(spki).is_ok()
 }
 
+// The HMAC below is keyed with a proof secret (the ECDH shared secret, the unwrap secret); its
+// state is two SHA-256 cores fed with key-derived blocks. hmac 0.13 wipes nothing itself (its
+// `zeroize` feature wipes only the block buffer), so the cores must wipe themselves: sha2's
+// `zeroize` feature, which core's Cargo.toml enables, gives them a wiping `Drop`. This fails to
+// build without it. Not wiped by anything: the key block hmac's `new_from_slice` derives on the
+// stack, and the inner hash `finalize_fixed_core` holds on the stack (upstream code).
+const _: fn() = || {
+    fn wipes_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+    wipes_on_drop::<sha2::block_api::Sha256VarCore>();
+};
+
 /// HMAC-SHA256 over `msg` keyed with `key`; HMAC takes any key length.
 fn mac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
     let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
@@ -313,7 +327,7 @@ mod tests {
     #[test]
     fn a_signature_by_another_key_is_a_conflict() {
         use p256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner};
-        use p256::pkcs8::EncodePublicKey;
+        use pkcs8::EncodePublicKey;
         let k1 = SigningKey::from_slice(&[1u8; 32]).unwrap();
         let k2 = SigningKey::from_slice(&[2u8; 32]).unwrap();
         let spki = k1.verifying_key().to_public_key_der().unwrap();
@@ -325,10 +339,37 @@ mod tests {
         assert!(matches!(verify(spki.as_bytes(), &msg, &other.to_bytes()), Err(KmError::Conflict(_))));
     }
 
+    /// A public key its algorithm's parser refuses is unsupported (15), with the parser's
+    /// reason, never a failed proof (13): a malformed point, an RSA size the host does not
+    /// compute with (named by its size), an even modulus (review pop.rs F2).
+    #[test]
+    fn a_refused_public_key_is_no_failed_proof() {
+        use pkcs8::EncodePublicKey;
+        let ec = p256::ecdsa::SigningKey::from_slice(&[1u8; 32]).unwrap().verifying_key().to_public_key_der().unwrap();
+        let mut off_curve = ec.as_bytes().to_vec();
+        *off_curve.last_mut().unwrap() ^= 1;
+        let rsa768 = crate::id::rsa_spki(&[&[0xc5u8][..], &[0x5a; 94], &[0x01]].concat(), &[1, 0, 1]).unwrap();
+        let cases: [(&[u8], &str); 2] =
+            [(&off_curve, "its algorithm's own parser refuses it: "), (&rsa768, "768 bits")];
+        for (spki, said) in cases {
+            for rsa in [RsaSignature::Pkcs1v15(HashAlg::Sha256), RsaSignature::Pss(HashAlg::Sha384)] {
+                let e = verify_with(spki, b"m", &[0u8; 64], rsa).unwrap_err();
+                assert!(matches!(&e, KmError::Unsupported(m) if m.contains(said)), "{said}: {e}");
+            }
+        }
+        // The parser's own words follow, not a generic "does not read it".
+        let e = verify(&off_curve, b"m", &[0u8; 64]).unwrap_err().to_string();
+        let reason = e.split("refuses it: ").nth(1).unwrap_or_default();
+        assert!(!reason.is_empty(), "{e}");
+        let e = verify(&rsa768, b"m", &[0u8; 64]).unwrap_err().to_string();
+        let reason = e.split("2^33 - 1; ").nth(1).and_then(|r| r.split(')').next()).unwrap_or_default();
+        assert!(!reason.is_empty() && e.contains("token-asserted"), "{e}");
+    }
+
     #[test]
     fn the_ecdh_mac_matches_on_both_sides() {
         use p256::elliptic_curve::{NonZeroScalar, ecdh::diffie_hellman};
-        use p256::pkcs8::EncodePublicKey;
+        use pkcs8::EncodePublicKey;
         // The token side, played on the host: derive with the private key and the challenge's
         // ephemeral point; the MACs must agree.
         let k = p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap();
@@ -346,7 +387,7 @@ mod tests {
 
     #[test]
     fn the_unwrap_mac_matches_on_both_sides() {
-        use rsa::pkcs8::EncodePublicKey;
+        use pkcs8::EncodePublicKey;
         // The token side, played on the host: decrypt the wrapped secret and MAC with it.
         let private = rsa::PrivateKey::new(&mut getrandom::SysRng, 2048).unwrap();
         let spki = private.to_public_key().to_public_key_der().unwrap();
@@ -360,7 +401,7 @@ mod tests {
 
     #[test]
     fn ecdh_needs_a_supported_curve() {
-        use ed25519_dalek::pkcs8::EncodePublicKey;
+        use pkcs8::EncodePublicKey;
         // Edwards keys have no RustCrypto ECDH here: refused, not silently misproven.
         let spki = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]).verifying_key().to_public_key_der().unwrap();
         assert!(matches!(ecdh_challenge(spki.as_bytes(), b"m"), Err(KmError::Unsupported(_))));
@@ -371,7 +412,7 @@ mod tests {
     /// message under the private key, fresh each time.
     #[test]
     fn rsa_proofs_hold_for_the_key_alone() {
-        use rsa::pkcs8::EncodePublicKey;
+        use pkcs8::EncodePublicKey;
         use rsa::signature::{SignatureEncoding as _, Signer as _};
         let private = rsa::PrivateKey::new(&mut getrandom::SysRng, 2048).unwrap();
         let spki = private.to_public_key().to_public_key_der().unwrap();
@@ -393,7 +434,7 @@ mod tests {
     /// hash) and PKCS#1 v1.5 over SHA-512 verify as asked, and not as another scheme or hash.
     #[test]
     fn rsa_signatures_verify_as_the_key_is_bound() {
-        use rsa::pkcs8::EncodePublicKey;
+        use pkcs8::EncodePublicKey;
         use rsa::signature::{RandomizedSigner as _, SignatureEncoding as _, Signer as _};
         let private = rsa::PrivateKey::new(&mut getrandom::SysRng, 2048).unwrap();
         let spki = private.to_public_key().to_public_key_der().unwrap();

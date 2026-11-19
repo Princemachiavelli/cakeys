@@ -13,6 +13,8 @@ current trait (every other hook has a default).
 `<object> [--spec S] [--token T]` (CAKEYS.md), so a positional spec name is refused (17) unless
 it happens to be an object's name too. Write `verify <object> --token acme`. [read]
 
+**Fixed (2026-11-18):** the usage line reads `verify <object> --token acme`.
+
 ## Design
 
 - A provider with no hooks beyond `matches` is what a module profile's `[match] manufacturer`

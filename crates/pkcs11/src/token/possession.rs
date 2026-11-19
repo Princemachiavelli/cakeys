@@ -68,7 +68,9 @@ impl Token {
     /// `binding` `pop-sign-pin`, the signature is authorized by a context-specific login.
     /// An RSA key signs as [`rsa_signature`] chooses for it.
     fn prove_sign(&self, h: ObjectHandle, object: &ObjectCfg, spki: &[u8], msg: &[u8], binding: Binding) -> Result<()> {
-        let permits = self.proof_permits(h)?;
+        // Read once: it narrows the mechanism here and chooses the RSA signature below.
+        let allowed = self.allowed_if_readable(h)?;
+        let permits = |m| permitted(allowed.as_deref(), m);
         let usable = |m: MechanismType| self.has(m) && permits(m);
         let none_allowed = |ms: &[MechanismType]| self.none_allowed(ms);
         let mut rsa = pop::RsaSignature::Pkcs1v15(pop::HashAlg::Sha256);
@@ -96,7 +98,6 @@ impl Token {
                 (self.runnable(Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Pure))), msg.to_vec())
             }
             KeyType::RSA => {
-                let allowed = self.allowed_if_readable(h)?;
                 let Some((m, scheme)) = rsa_signature(allowed.as_deref(), |m| self.has(m)) else {
                     return Err(none_allowed(&RSA_SIGN.map(|(m, _)| m)));
                 };
@@ -187,13 +188,8 @@ impl Token {
             return self.prove_ecdh_extractable(h, spki, &ch);
         }
         // The extractable form after the sealed one failed for `why`, which its own failure names.
-        let extractable_after = |why: String| {
-            self.prove_ecdh_extractable(h, spki, &ch).map_err(|e| match e {
-                KmError::Unavailable(m) => KmError::Unavailable(format!("{m} (sealed: {why})").into()),
-                KmError::Unsupported(m) => KmError::Unsupported(format!("{m} (sealed: {why})").into()),
-                other => other,
-            })
-        };
+        let extractable_after =
+            |why: String| self.prove_ecdh_extractable(h, spki, &ch).map_err(|e| after_sealed(e, &why));
         // Unknown means try (review 2026-11-15 §4): where the module refuses to derive into a
         // sealed secret, the extractable one. Only that refusal: what fails after the derivation
         // is the proof's answer.
@@ -244,8 +240,9 @@ impl Token {
         let derived = SessionObject::new(session, derived);
         let value = session.get_attributes(derived.handle(), &[AttributeType::Value]);
         drop(derived);
+        // Wiped as the host's copy of the same secret is (B16), though it reveals nothing.
         let value = match value.map(|v| v.into_iter().next()) {
-            Ok(Some(Attribute::Value(v))) => v,
+            Ok(Some(Attribute::Value(v))) => Zeroizing::new(v),
             Ok(_) => {
                 return Err(KmError::Unavailable(
                     format!("token '{}': the derived secret has no CKA_VALUE", self.name).into(),
@@ -400,7 +397,7 @@ impl Token {
     /// only its binding, never the mechanism, so choosing per run changes nothing the lock pins.
     fn proof_permits(&self, h: ObjectHandle) -> Result<impl Fn(MechanismType) -> bool> {
         let allowed = self.allowed_if_readable(h)?;
-        Ok(move |m| allowed.as_ref().is_none_or(|a| a.contains(&m)))
+        Ok(move |m| permitted(allowed.as_deref(), m))
     }
 
     /// A proof refused because the key's `CKA_ALLOWED_MECHANISMS` allows none of `ms`.
@@ -488,10 +485,6 @@ impl Token {
         }
     }
 
-    /// The session secret a proof makes on the token (`pop-ecdh` derives it, `pop-unwrap`
-    /// unwraps it), as the provider adjusts it: `sealed`, sensitive, never extractable and only
-    /// for signing, to MAC with; else the readable secret of
-    /// [`Self::prove_ecdh_extractable`].
     /// Whether a `pop-ecdh` proof derives into a sealed secret first ([`Self::prove_ecdh`]), by
     /// [`crate::ops::ecdh_seals`], which a plan asks without the token.
     pub(crate) fn ecdh_seals(&self) -> bool {
@@ -499,6 +492,10 @@ impl Token {
         crate::ops::ecdh_seals(derive_sealed, Some(self.has(MechanismType::SHA256_HMAC))) == Some(true)
     }
 
+    /// The session secret a proof makes on the token (`pop-ecdh` derives it, `pop-unwrap`
+    /// unwraps it), as the provider adjusts it: `sealed`, sensitive, never extractable and only
+    /// for signing, to MAC with; else the readable secret of
+    /// [`Self::prove_ecdh_extractable`].
     fn proof_secret(&self, binding: Binding, sealed: bool) -> Result<Vec<Attribute>> {
         self.session_template(SessionKey::ProofSecret { binding, sealed })
     }
@@ -824,11 +821,55 @@ pub fn derive_any(
     Err(first)
 }
 
+/// Whether a key whose `CKA_ALLOWED_MECHANISMS` reads `allowed` (`None`: absent or unreadable,
+/// which does not narrow) lets a proof use `m`.
+fn permitted(allowed: Option<&[MechanismType]>, m: MechanismType) -> bool {
+    allowed.is_none_or(|a| a.contains(&m))
+}
+
+/// The extractable `pop-ecdh` proof's failure `e`, after the sealed one failed for `why`: a
+/// refusal names both, and keeps the return value of the module call that failed (Q3).
+fn after_sealed(e: KmError, why: &str) -> KmError {
+    match e {
+        KmError::Unavailable(m) => {
+            let rv = m.rv();
+            KmError::Unavailable(Msg::from(format!("{m} (sealed: {why})")).with_rv(rv))
+        }
+        KmError::Unsupported(m) => {
+            let rv = m.rv();
+            KmError::Unsupported(Msg::from(format!("{m} (sealed: {why})")).with_rv(rv))
+        }
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pop::HashAlg::{Sha256, Sha512};
     use pop::RsaSignature::{Pkcs1v15, Pss};
+
+    /// The extractable ECDH proof's refusal after the sealed one names both and keeps the
+    /// module's return value (possession.rs F1); a failed proof is the proof's answer, as given.
+    #[test]
+    fn the_extractable_proofs_refusal_keeps_its_return_value() {
+        let rv = Some(0x8000_0001);
+        let said = |e: KmError| (e.exit_code(), e.rv(), e.to_string());
+        let unavailable = after_sealed(KmError::Unavailable(Msg::from("C_DeriveKey").with_rv(rv)), "refused");
+        assert_eq!(said(unavailable), (16, rv, "unavailable: C_DeriveKey (sealed: refused)".into()));
+        let unsupported = after_sealed(KmError::Unsupported(Msg::from("C_DeriveKey").with_rv(rv)), "refused");
+        assert_eq!(said(unsupported), (15, rv, "unsupported: C_DeriveKey (sealed: refused)".into()));
+        let conflict = after_sealed(KmError::Conflict(Msg::from("did not derive").with_rv(rv)), "refused");
+        assert_eq!(said(conflict), (13, rv, "conflict: did not derive".into()));
+    }
+
+    /// A key's allowed list narrows a proof's mechanism only where it was read.
+    #[test]
+    fn only_a_read_allowed_list_narrows_the_proof() {
+        assert!(permitted(None, MechanismType::ECDSA));
+        assert!(permitted(Some(&[MechanismType::ECDSA]), MechanismType::ECDSA));
+        assert!(!permitted(Some(&[MechanismType::ECDSA_SHA256]), MechanismType::ECDSA));
+    }
 
     /// The RSA signature a proof asks for: with no allowed list what it always did (v1.5 over
     /// SHA-256, hashed where the token offers it, else raw); within a key's list, the first of

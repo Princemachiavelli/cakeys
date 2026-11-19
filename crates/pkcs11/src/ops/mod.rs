@@ -235,10 +235,19 @@ fn attest(
     Ok(AttestationRecord { kind: kind.to_owned(), root: a.root, id: a.id })
 }
 
+/// What a run did with its key, for [`answers`]: found it under its locator, or created it,
+/// with how the module made it when that was other than asked.
+#[derive(Clone, Copy)]
+enum Run<'a> {
+    Found,
+    Created(Option<&'a hal::CreateNote>),
+}
+
 /// What `t`'s run on its token demonstrated, as capability rows (docs/CAPROBE.md): the proof of
-/// possession it gave, and the generation when it created the key (`created`). A run that
-/// failed records nothing, so these are only ever yes.
-fn answers(t: &Target, r: &Resolved, created: bool) -> std::collections::BTreeMap<String, Answered> {
+/// possession it gave, and the generation when it created the key, `via = "by-name"` when the
+/// module took the curve only by name (ISSUES.md B18). A run that failed records nothing, so
+/// these are only ever yes.
+fn answers(t: &Target, r: &Resolved, run: Run<'_>) -> std::collections::BTreeMap<String, Answered> {
     let mut out = std::collections::BTreeMap::new();
     if !t.object.class.is_asymmetric() {
         return out;
@@ -247,15 +256,18 @@ fn answers(t: &Target, r: &Resolved, created: bool) -> std::collections::BTreeMa
     if let Some(proof) = r.binding.and_then(|b| crate::gate::proof_capability(t.object, b)) {
         out.insert(proof.to_string(), Answered::yes());
     }
-    if created && let Some(generated) = crate::gate::generate_capability(t.object) {
-        out.insert(generated.to_string(), Answered::yes());
+    if let Run::Created(note) = run
+        && let Some(generated) = crate::gate::generate_capability(t.object)
+    {
+        let via = note.and_then(|n| n.by_name.as_ref()).map(|_| "by-name".to_owned());
+        out.insert(generated.to_string(), Answered { via, ..Answered::yes() });
     }
     out
 }
 
 /// What this run sees of `tok` (session, mechanisms, profile, module, token), and what `t`'s
 /// run demonstrated ([`answers`]), for the lock to record or compare.
-fn facts(t: &Target, tok: &Token, r: &Resolved, created: bool) -> Facts {
+fn facts(t: &Target, tok: &Token, r: &Resolved, run: Run<'_>) -> Facts {
     Facts {
         observed: Observed { uri: r.uri.clone(), session: if tok.logged_in { Session::User } else { Session::Public } },
         observation: Observation {
@@ -265,7 +277,7 @@ fn facts(t: &Target, tok: &Token, r: &Resolved, created: bool) -> Facts {
             mechanisms: tok.mechanism_names(),
             module: Some(tok.module.clone()),
             token: Some(tok.token.clone()),
-            capabilities: answers(t, r, created),
+            capabilities: answers(t, r, run),
             extra: std::collections::BTreeMap::new(),
         },
         origin: None,
@@ -281,7 +293,7 @@ fn facts(t: &Target, tok: &Token, r: &Resolved, created: bool) -> Facts {
 /// `PreconditionFailed` (14) for a realisation that moved.
 pub fn verify(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Resolved> {
     let r = resolve(t, tok, lock, notes)?.ok_or_else(|| absent(t))?;
-    reconcile::compare(t, &r, lock, &facts(t, tok, &r, false), LockWrite::Compare, notes)?;
+    reconcile::compare(t, &r, lock, &facts(t, tok, &r, Run::Found), LockWrite::Compare, notes)?;
     Ok(r)
 }
 
@@ -330,7 +342,7 @@ fn lock_as(
     let mode = plan_mode(t)?;
     check_capabilities(t, tok, mode, Verb::Lock)?;
     let r = resolve_with(t, tok, lock, Provision::IfMissing, notes)?.ok_or_else(|| absent(t))?;
-    let facts = Facts { origin, ..facts(t, tok, &r, false) };
+    let facts = Facts { origin, ..facts(t, tok, &r, Run::Found) };
     let changed = reconcile::reconcile(t, &r, lock, &facts, write, notes)?;
     Ok((r, changed))
 }
@@ -353,7 +365,13 @@ fn absent(t: &Target) -> KmError {
 /// created when the lock pins the object (D1), a session without login cannot see the locator,
 /// or anything sits under it; what was created is removed again when its identity cannot be
 /// established.
-fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Resolved> {
+/// Returns what was made and how the module made it, when other than asked.
+fn create_absent(
+    t: &Target,
+    tok: &Token,
+    lock: &Lock,
+    notes: &mut Notes,
+) -> Result<(Resolved, Option<hal::CreateNote>)> {
     // If-None-Match: never create over anything else under the locator. On a PIV token,
     // generating into an occupied slot would silently replace its key. A session without login
     // sees no private object, so it cannot tell the locator is free — nor that a private or
@@ -407,11 +425,11 @@ fn create_absent(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Res
         Err(e) => return Err(undo_created(t, tok, e, "the creation failed", notes)),
     };
     notes.say(format!("created {t}"));
-    if let Some(note) = made_otherwise {
+    if let Some(note) = &made_otherwise {
         notes.say(note.to_string());
     }
     let e = match resolve_with(t, tok, lock, Provision::IfMissing, notes) {
-        Ok(Some(r)) => return Ok(r),
+        Ok(Some(r)) => return Ok((r, made_otherwise)),
         Ok(None) => KmError::NotFound(format!("{t} vanished after creation").into()),
         Err(e) => e,
     };
@@ -486,8 +504,8 @@ pub fn create(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes:
         return Ok(Made::Verified(r));
     }
     check_capabilities(t, tok, mode, Verb::Create)?;
-    let r = create_absent(t, tok, lock, notes)?;
-    let changed = reconcile::reconcile(t, &r, lock, &facts(t, tok, &r, true), write, notes)?;
+    let (r, note) = create_absent(t, tok, lock, notes)?;
+    let changed = reconcile::reconcile(t, &r, lock, &facts(t, tok, &r, Run::Created(note.as_ref())), write, notes)?;
     Ok(Made::Created(r, changed))
 }
 
@@ -621,39 +639,15 @@ pub fn check_open(
     let (spec_name, token_name) = cfg.address(object, spec, token)?;
     let t = Target::new(cfg, &spec_name, &token_name)?;
     let object = t.object_name;
-    let names = |v: &[Scheme]| v.iter().map(|s| s.name()).collect::<Vec<_>>();
-    // The schemes the spec can compute; an attestation scheme (§3.7) depends on the token's
-    // provider, so only schemes_on below can tell whether this one computes it.
-    let scheme = match requested {
-        None => None,
-        Some(name) => match Scheme::from_input(name) {
-            Some(s) if (t.on_token.attestation && s.is_attestation()) || t.schemes().contains(&s) => Some(s),
-            _ => {
-                return Err(KmError::Unsupported(
-                    format!(
-                        "scheme '{}' for '{object}'; it has {:?}{}",
-                        Scheme::from_input(name).map_or(name, |s| s.name()),
-                        names(&t.schemes()),
-                        if t.on_token.attestation { " plus its token's attestation scheme" } else { "" }
-                    )
-                    .into(),
-                ));
-            }
-        },
-    };
+    // Refused before the token opens where the spec cannot compute it at all.
+    let scheme = requested.map(|name| requested_scheme(&t, name, None)).transpose()?;
     let tok = open(&token_name, hal::Access::Read)?;
     if let Some(w) = tok.pin_warning() {
         notes.warn(w);
     }
     // The token may lack a mechanism the spec allows: refuse before the object is looked for.
     if let Some(s) = scheme {
-        let on_token = schemes_on(&t, &tok)?;
-        if !on_token.contains(&s) {
-            return Err(KmError::Unsupported(
-                format!("scheme '{s}' for spec '{spec_name}' on '{token_name}'; it computes {:?}", names(&on_token))
-                    .into(),
-            ));
-        }
+        requested_scheme(&t, s.name(), Some(&schemes_on(&t, &tok)?))?;
     }
     let r = verify(&t, &tok, lock, notes)?;
     // An attestation is locked on this realisation (§3.7), not on the object.
@@ -675,6 +669,34 @@ pub fn check_open(
         }
     }
     Ok((r, tok))
+}
+
+/// The scheme `name` a reference asks of `t` (`<object>#<scheme>`), refused (15) in one wording
+/// whether asked before the token opens (`on_token` `None`: the spec's own schemes, and any
+/// attestation scheme where it opted in, which only the provider decides) or after (what the
+/// token computes, [`schemes_on`]): one mistake, one message (ops F4).
+///
+/// # Errors
+///
+/// `Unsupported` for a scheme the spec does not compute there, or no scheme at all.
+fn requested_scheme(t: &Target, name: &str, on_token: Option<&[Scheme]>) -> Result<Scheme> {
+    let scheme = Scheme::from_input(name);
+    let attests = t.on_token.attestation && on_token.is_none();
+    let computes = on_token.map_or_else(|| t.schemes(), <[Scheme]>::to_vec);
+    match scheme {
+        Some(s) if computes.contains(&s) || (attests && s.is_attestation()) => Ok(s),
+        _ => Err(KmError::Unsupported(
+            format!(
+                "scheme '{}' for spec '{}' on '{}'; it computes {:?}{}",
+                scheme.map_or(name, |s| s.name()),
+                t.spec_name,
+                t.token_name,
+                computes.iter().map(|s| s.name()).collect::<Vec<_>>(),
+                if attests { " plus its token's attestation scheme" } else { "" }
+            )
+            .into(),
+        )),
+    }
 }
 
 /// One (spec, token) pair [`check_token`] verified, and how that went.
@@ -719,4 +741,37 @@ pub fn check_token(
         })
         .collect();
     Ok((checked, tok))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scheme a reference asks for is refused in one wording before the token opens and after
+    /// (ops F4): before, by the spec's schemes and (opted in) any attestation scheme; after, by
+    /// what the token computes.
+    #[test]
+    fn a_requested_scheme_is_refused_alike_before_and_after_the_open() {
+        let cfg: Config = toml::from_str(
+            "[tokens.t]\ntokenLabel = \"t\"\n\n\
+             [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.s]\nobject = \"k\"\ntokens.t = { locator = { CKA_LABEL = \"k\" }, attestation = true }\n",
+        )
+        .unwrap();
+        let t = Target::new(&cfg, "s", "t").unwrap();
+        let refused = |name: &str, on_token: Option<&[Scheme]>| match requested_scheme(&t, name, on_token) {
+            Err(KmError::Unsupported(m)) => m.into_text(),
+            other => panic!("{name}: {other:?}"),
+        };
+        assert_eq!(requested_scheme(&t, "rfc7093m4", None).unwrap(), Scheme::Rfc7093m4);
+        assert_eq!(requested_scheme(&t, "piv-attestation", None).unwrap(), Scheme::PivAttestation);
+        let before = refused("cmac", None);
+        assert!(before.starts_with("scheme 'cmac' for spec 's' on 't'; it computes [\"rfc7093m4\""), "{before}");
+        assert!(before.ends_with(" plus its token's attestation scheme"), "{before}");
+        assert!(refused("nope", None).starts_with("scheme 'nope' for spec 's' on 't'; it computes"));
+        let on_token = [Scheme::Rfc7093m4];
+        assert_eq!(requested_scheme(&t, "rfc7093m4", Some(&on_token)).unwrap(), Scheme::Rfc7093m4);
+        let after = refused("piv-attestation", Some(&on_token));
+        assert_eq!(after, "scheme 'piv-attestation' for spec 's' on 't'; it computes [\"rfc7093m4\"]");
+    }
 }

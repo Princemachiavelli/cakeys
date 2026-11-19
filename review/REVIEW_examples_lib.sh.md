@@ -12,6 +12,8 @@ directory, SoftHSM/kryoptic/swtpm token helpers, an OpenSSL config for pkcs11-pr
 host at once (two worktrees) collide, and swtpm's bind error surfaces as a failed `up`. In the
 sandbox there is no problem. Randomise as scripts/local-tests.sh does. [read]
 
+**Fixed (2026-11-18):** random TPM port, retried up to four times.
+
 ## Design
 
 - The token helpers are another copy of the check phase's setup

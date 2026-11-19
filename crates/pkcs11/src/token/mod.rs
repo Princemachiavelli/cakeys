@@ -167,19 +167,54 @@ pub struct Token {
 /// be winding down when `C_Finalize` returns, and unloading under them crashes the process after
 /// its work is done (libkmsp11's gRPC threads \[run\], about one run in twenty, exit 139 in place of
 /// the run's own code). Opening the module again maps the same library and initializes it anew.
-struct Library(Pkcs11);
+///
+/// The second field is its key in [`LIBRARIES`].
+struct Library(Pkcs11, String);
 
 impl Drop for Library {
+    /// Finalized under the registry lock, its entry then removed: until it is, another thread's
+    /// [`library`] for the module waits ([`settled`]) rather than initializing it again before
+    /// this `C_Finalize` (refused, `CKR_CRYPTOKI_ALREADY_INITIALIZED`) or having it torn down
+    /// by this one (token/mod.rs F5). No `Library` is dropped while the lock is held (`library`
+    /// only upgrades, waits and inserts), so this cannot deadlock.
     fn drop(&mut self) {
+        let mut open = LIBRARIES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let _ = self.0.clone().finalize();
         std::mem::forget(self.0.clone());
+        if open.get(&self.1).is_some_and(|w| w.strong_count() == 0) {
+            open.remove(&self.1);
+        }
+        FINALIZED.notify_all();
     }
 }
+
+/// The registry of initialized libraries: by key, the library a token holds.
+type Libraries<T> = BTreeMap<String, std::sync::Weak<T>>;
 
 /// The libraries this process initialized, by module path: a token of a module another open
 /// token already initialized (the two sides of a move between tokens of one module) shares its
 /// library rather than initializing it a second time.
-static LIBRARIES: std::sync::Mutex<BTreeMap<String, std::sync::Weak<Library>>> = std::sync::Mutex::new(BTreeMap::new());
+static LIBRARIES: std::sync::Mutex<Libraries<Library>> = std::sync::Mutex::new(BTreeMap::new());
+
+/// Signalled when a library's entry leaves [`LIBRARIES`], finalized.
+static FINALIZED: std::sync::Condvar = std::sync::Condvar::new();
+
+/// The library under `key` that a token still holds; `None` when there is none. One whose last
+/// holder is finalizing it is waited for (`finalized` signals its removal): its module can be
+/// initialized again only after that.
+fn settled<'a, T>(
+    mut open: std::sync::MutexGuard<'a, Libraries<T>>,
+    finalized: &std::sync::Condvar,
+    key: &str,
+) -> (std::sync::MutexGuard<'a, Libraries<T>>, Option<Arc<T>>) {
+    loop {
+        match open.get(key).map(std::sync::Weak::upgrade) {
+            Some(Some(live)) => return (open, Some(live)),
+            Some(None) => open = finalized.wait(open).unwrap_or_else(std::sync::PoisonError::into_inner),
+            None => return (open, None),
+        }
+    }
+}
 
 /// The initialized library of `module`: the one an open token holds, else newly loaded and
 /// initialized.
@@ -192,19 +227,21 @@ fn library(module: &str) -> Result<Arc<Library>> {
         .then(|| std::fs::canonicalize(module).ok()?.into_os_string().into_string().ok())
         .flatten()
         .unwrap_or_else(|| module.to_owned());
-    let mut open = LIBRARIES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(library) = open.get(&key).and_then(std::sync::Weak::upgrade) {
+    let open = LIBRARIES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (open, found) = settled(open, &FINALIZED, &key);
+    if let Some(library) = found {
         return Ok(library);
     }
     let ctx = Pkcs11::new(module).map_err(ck(&format!("loading {module}")))?;
     // Loaded, by the file the loader mapped: a bare name and a path to that file are one library
     // too (token/mod.rs F3). Found open, `ctx` goes uninitialized: only its loader reference.
     let key = loaded_path(module).unwrap_or(key);
-    if let Some(library) = open.get(&key).and_then(std::sync::Weak::upgrade) {
+    let (mut open, found) = settled(open, &FINALIZED, &key);
+    if let Some(library) = found {
         return Ok(library);
     }
     ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).map_err(ck("C_Initialize"))?;
-    let library = Arc::new(Library(ctx));
+    let library = Arc::new(Library(ctx, key.clone()));
     open.insert(key, Arc::downgrade(&library));
     Ok(library)
 }
@@ -212,20 +249,27 @@ fn library(module: &str) -> Result<Arc<Library>> {
 /// The mechanisms a token may rely on: what the module lists, less what the resolved stack
 /// subtracts (the module profile's advertised-but-broken rows and every layer's), plus what it
 /// adds although the module does not list it (a provider's stand-in the probe found working,
-/// `Provider::stand_in`). With no module profile and only the binding layer, the list itself.
+/// `Provider::stand_in`). Every layer subtracts, the binding's included where no module profile
+/// is resolved (token/mod.rs F7), and by the one spelling of a mechanism's name
+/// ([`policy::mechanism_namer`]): one cryptoki does not name is named by the baseline.
 fn usable_mechanisms(
     advertised: &[MechanismType],
     profiles: &crate::resolution::Resolved,
 ) -> Result<Vec<MechanismType>> {
-    if profiles.module.is_none() && profiles.layers.len() <= 1 {
-        return Ok(advertised.to_vec());
-    }
     let subtracted = profiles.subtracted_mechanisms();
-    let mut usable: Vec<MechanismType> =
-        advertised.iter().copied().filter(|m| !subtracted.contains(m.to_string().as_str())).collect();
+    let mut usable: Vec<MechanismType> = if subtracted.is_empty() {
+        advertised.to_vec()
+    } else {
+        let name = policy::mechanism_namer();
+        advertised.iter().copied().filter(|m| !subtracted.contains(name(*m).as_str())).collect()
+    };
+    let added = profiles.added_mechanisms();
+    if added.is_empty() {
+        return Ok(usable);
+    }
     let baseline =
         cakeys_profile::Set::active().and_then(|s| s.baseline()).map_err(|e| KmError::Validation(e.into()))?;
-    for name in profiles.added_mechanisms() {
+    for name in added {
         let id = baseline.mechanisms.get(name).and_then(|id| MechanismType::try_from(*id).ok());
         if let Some(m) = id.filter(|m| !usable.contains(m)) {
             usable.push(m);
@@ -400,6 +444,17 @@ pub struct Occupied {
 }
 
 impl Token {
+    /// Put what the lock recorded of this token (`observed`) over its module profile, as the
+    /// static gate does ([`crate::gate::stack`]): the answers its own runs demonstrated decide
+    /// before what a shipped profile says of its kind (ISSUES.md B18). Only an observation of
+    /// the module and token this open found: answers recorded on another module or token say
+    /// nothing of this one.
+    pub fn with_answers(&mut self, observed: &cakeys_core::config::Observation) {
+        if observed.module.as_ref() == Some(&self.module) && observed.token.as_ref() == Some(&self.token) {
+            self.profiles.with_answers(&self.name, observed);
+        }
+    }
+
     /// Open the token named `name`: load the module, find the slot whose token label matches,
     /// read its capabilities, and log in as the user when a PIN is configured.
     ///
@@ -721,9 +776,7 @@ impl Token {
             ],
         )?;
         self.as_so("marking the transport key trusted", || {
-            self.session.create_object(&template).map_err(|e| {
-                self.unsupported(format!("token '{}' will not create a CKA_TRUSTED RSA public key: {e}", self.name))
-            })
+            self.session.create_object(&template).map_err(|e| self.unsupported(trusted_copy_refused(&self.name, &e)))
         })
     }
 
@@ -905,6 +958,12 @@ fn so_outcome<T>(what: &str, token: &str, step: Result<T>, after: Result<()>) ->
             .with_rv(rv))
         }
     }
+}
+
+/// Why `token` would not create the trusted copy of a transport key: the module's refusal `e`,
+/// its return value kept for code to match on (Q3).
+fn trusted_copy_refused(token: &str, e: &CkError) -> Msg {
+    Msg::from(format!("token '{token}' will not create a CKA_TRUSTED RSA public key: {e}")).with_rv(rv_of(e))
 }
 
 /// What a module says about itself (`C_GetInfo`), and the file the loader mapped for `module` with
@@ -1168,6 +1227,65 @@ mod tests {
         let failed =
             so_outcome::<()>("generating a key", "piv", Err(KmError::Unsupported("refused".into())), trouble());
         assert!(matches!(failed, Err(KmError::Unsupported(m)) if *m == *"refused"));
+    }
+
+    /// A lookup that finds a library whose last holder is finalizing it waits until its entry is
+    /// gone (token/mod.rs F5): the module is initialized anew only after that `C_Finalize`. A
+    /// library still held is shared; none is none.
+    #[test]
+    fn a_library_being_finalized_is_waited_for() {
+        let open = Arc::new(std::sync::Mutex::new(Libraries::<u8>::new()));
+        let finalized = Arc::new(std::sync::Condvar::new());
+        let held = Arc::new(7);
+        let dying = Arc::new(8);
+        open.lock().unwrap().insert("held".into(), Arc::downgrade(&held));
+        open.lock().unwrap().insert("dying".into(), Arc::downgrade(&dying));
+        assert_eq!(settled(open.lock().unwrap(), &finalized, "held").1.as_deref(), Some(&7));
+        assert!(settled(open.lock().unwrap(), &finalized, "none").1.is_none());
+        // The last holder is gone, its finalize not done: the lookup waits for the removal.
+        drop(dying);
+        let removed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lookup = {
+            let (open, finalized, removed) = (Arc::clone(&open), Arc::clone(&finalized), Arc::clone(&removed));
+            std::thread::spawn(move || {
+                let (_open, found) = settled(open.lock().unwrap(), &finalized, "dying");
+                (found.is_none(), removed.load(std::sync::atomic::Ordering::SeqCst))
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        {
+            let mut libraries = open.lock().unwrap();
+            removed.store(true, std::sync::atomic::Ordering::SeqCst);
+            libraries.remove("dying");
+            finalized.notify_all();
+        }
+        assert_eq!(lookup.join().unwrap(), (true, true), "returned before the finalize was done");
+    }
+
+    /// Every layer's subtraction applies, the binding layer's too when no module profile is
+    /// resolved (token/mod.rs F7): a generic module loses what the binding cannot do, as a
+    /// profiled one does.
+    #[test]
+    fn the_binding_layer_subtracts_without_a_module_profile() {
+        cakeys_profile::Set::activate_embedded().unwrap();
+        let mut layer = cakeys_profile::Profile::new("binding".into(), cakeys_profile::Mode::Delta);
+        layer.subtract.mechanisms = vec!["CKM_SHA_1".into(), "CKM_SHA256".into()];
+        let profiles = crate::resolution::Resolved { layers: vec![layer], ..Default::default() };
+        let advertised = [MechanismType::AES_KEY_WRAP, MechanismType::SHA256, MechanismType::SHA1];
+        assert_eq!(usable_mechanisms(&advertised, &profiles).unwrap(), [MechanismType::AES_KEY_WRAP]);
+        let none = crate::resolution::Resolved::default();
+        assert_eq!(usable_mechanisms(&advertised, &none).unwrap(), advertised);
+    }
+
+    /// The module's refusal of a trusted copy keeps its return value (token/mod.rs F4), which
+    /// `Token::unsupported` carries past a provider's hint. A vendor value: one every build
+    /// carries, `rv-value` or not.
+    #[test]
+    fn a_refused_trusted_copy_keeps_its_return_value() {
+        let e = CkError::Pkcs11(RvError::VendorDefined(0x8000_0001), Function::CreateObject);
+        let m = trusted_copy_refused("hsm", &e);
+        assert_eq!(m.rv(), Some(0x8000_0001));
+        assert!(m.contains("token 'hsm' will not create a CKA_TRUSTED RSA public key"), "{m}");
     }
 
     /// Every return value cryptoki has a variant for converts back to itself, and cryptoki's

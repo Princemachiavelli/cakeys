@@ -35,6 +35,10 @@ before the run's notes rather than with them, and the "updated <lock>" wording d
 other verbs'. Use `self.save(!stale.is_empty() && *apply, notes)` and notes for the two
 messages. [read]
 
+**Fixed (2026-11-18):** `gc` saves through `self.save` (`save_changed`, the `updated <lock>`
+line), and its three messages are the run's notes (`gc: removed N stale entries` before it).
+CAKEYS.md says so. Test: `gc_says_what_it_did_through_the_notes` (crates/cli/tests/offline.rs).
+
 ### F3. `validate` prints per-pair lines on stdout before deciding the run fails — nit
 
 `crates/cli/src/lib.rs:447`, `:466-479`.
@@ -42,6 +46,10 @@ messages. [read]
 (15); CAKEYS.md says "stdout carries only the result". A script reading stdout of a failing
 `validate` gets a partial listing. Either document the listing as `validate`'s output in both
 outcomes or move it to notes. [read]
+
+**Fixed (2026-11-18):** the mode lines are collected and printed only when the run passes. A
+refused run prints nothing on stdout, as `check --token` does. CAKEYS.md documents the listing.
+Test: `validate_prints_the_modes_only_when_it_passes` (crates/cli/tests/offline.rs).
 
 ### F4. `check` takes `&mut self` and re-resolves the address — nit
 
@@ -51,6 +59,10 @@ address with `cfg.address` (348) to validate `--format`/`--uri-pin`, after which
 `ops::check_open` resolves the same reference again. Harmless now; two resolutions of one address
 can drift if either grows a rule. Take `&self`, and pass the resolved pair to `check_open` if its
 signature allows. [read]
+
+**Fixed (2026-11-18):** `check` takes `&self` and hands `check_open` the (spec, token) pair it
+resolved, so the second resolution can only confirm that pair, never pick another. No behaviour
+change, so no new test.
 
 ## Design
 

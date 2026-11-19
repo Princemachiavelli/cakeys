@@ -15,10 +15,14 @@ nothing parseable on stdout (an error before its JSON), jq fails too and `code` 
 the demo reports "exit 5, expected 10" for what was a different cakeys failure. Capture the
 command's status separately (`PIPESTATUS[0]`). [read]
 
+**Fixed (2026-11-18):** the command's status when it failed, else jq's (PIPESTATUS).
+
 ### F2. `--keep` cleanup references variables set later — nit
 
 `nix/demo.sh:22-29`. Under `set -u`, a failure before line 108 makes the trap's `$SOFTHSM2_CONF`
 unbound and the trap itself errors. Use `${SOFTHSM2_CONF-}`. [read]
+
+**Fixed (2026-11-18):** `${VAR-}` in the trap.
 
 ## Design
 

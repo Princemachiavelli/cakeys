@@ -22,6 +22,11 @@ relative to a KEK anyone can make for the public transport key. Only the target'
 recompute and the proof of possession reject a substituted key. See sealed.rs F1 for the case
 neither covers (`token-asserted`). [read]
 
+**Fixed (2026-11-18):** the module comment says the wrap authenticates nothing (the transport
+key is public; RFC 5649's check holds only under a KEK anyone can make; OAEP has none), and that
+the target's identity recompute and binding proof, with `check_carried`, are what a bundle may
+cross untrusted channels on.
+
 ### F2. Fields are not checked against the entry's class — nit
 
 `crates/camigrate/src/bundle.rs:57-64`, `:171-176`. `publicKey` is accepted on any entry, and
@@ -30,11 +35,19 @@ lock, so a `publicKey` on a secret-key entry fails `parse` (no `rfc7093m4` among
 IDs) or `check_against_lock`. Refusing them by class in `parse` would make the form check say
 what it means. [read]
 
+**Fixed (2026-11-18):** `parse` refuses (17) a `commitmentLabel` on anything but a secret key and
+a `publicKey` on anything but a private key. Test: `malformed_bundles_are_refused`.
+
 ### F3. `source.provider` is carried and never used — nit
 
 `crates/camigrate/src/bundle.rs:91`. Import records only `source.token`
 (`sealed.rs:380`). If the provider is meant as provenance, record it; otherwise it is dead weight
 in a frozen format. [read]
+
+**Fixed (2026-11-18):** it is provenance for the reader: `import` names it in its "imported … from
+<token> (<provider>)" note and in the refusal of a source keys.toml does not name
+(`check_source`). The lock records no provider in `Origin` (core's frozen format): the source
+token's own realisation records its provider. Test: `the_source_must_be_a_token_keys_toml_names`.
 
 ## Design
 

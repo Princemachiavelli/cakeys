@@ -19,6 +19,11 @@ is missing from the trace, although its counter was incremented. A test then see
 only, print hook fatals each time (or once per message), and trace the call with its `rv`.
 [read]
 
+**Fixed (2026-11-18):** `Fatal::report` says each message once (`first_time`), so a load failure
+is said once and a later, different fatal still is; `Shim::call` traces a call whose hook failed,
+as the `CKR_GENERAL_ERROR` the caller saw, with the message under `"fatal"`. Tests:
+`each_fatal_is_said_once`, `a_fatal_call_is_traced`.
+
 ### F2. A panic while loading leaves `LOADING` set and later reports a recursion that did not happen — nit
 
 `crates/p11-fault/src/lib.rs:64-68`. If `Shim::load` unwinds, `LOADING.set(false)` is skipped,
@@ -26,6 +31,9 @@ the `OnceLock` stays empty, and `guard` returns `CKR_GENERAL_ERROR` silently (`:
 call on that thread fails with "P11_FAULT_MODULE leads back to this shim". Nothing in `load`
 is expected to panic, so this is about clarity; a drop guard resets it.
 [read]
+
+**Fixed (2026-11-18):** `while_loading` sets `LOADING` and a drop guard clears it however the
+load ends. Test: `a_panic_while_loading_clears_the_mark`.
 
 ## Design
 

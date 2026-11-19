@@ -35,6 +35,8 @@ the check, in every test source.
 can only mean the user wants this test, the half-set case should fail. Same pattern as
 camigrate's yubikey.rs F2. [read]
 
+**Fixed (2026-11-18):** the opt-in is `opted_in(FTPM_OPT_IN)`: half set or required without variables fails (verified FIXED)..
+
 ## Design
 
 - Hardware opt-in skips are hand-written per file; see camigrate's yubikey.rs review (Design).

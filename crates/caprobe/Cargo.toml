@@ -52,13 +52,10 @@ aes.workspace = true
 serde.workspace = true
 # tests/fault.rs loads its cdylib: as a dependency, every build of the tests makes it.
 p11-fault = { path = "../p11-fault" }
-aes.workspace = true
 aes-kw.workspace = true
 base64.workspace = true
 cmac.workspace = true
-cryptoki.workspace = true
 des.workspace = true
-sha2.workspace = true
 toml.workspace = true
 x509-cert.workspace = true
 

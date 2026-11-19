@@ -20,11 +20,15 @@ would pass. This is the guard that protects a real YubiKey's slots, so the stron
 cheap insurance. Fix: after `refused("taken", ...)`, find objects with `CKA_ID = 06` and assert
 the one certificate with the fixture's value remains. [read]
 
+**Fixed (2026-11-18):** after the refusal the slot 06 objects are read back: the one certificate, its fixture value. Test: `softhsm_the_scratch_guard_names_one_slot` (not run).
+
 ### F2. Two refusals assert the code without the output in the message — nit
 
 `crates/caprobe/tests/reference.rs:31-32`, `:80`, `:102-103`, `:111-112`. `assert_eq!(code(&anon), 17)`
 and the bare `assert!(stderr(..).contains(..))` print nothing useful on failure, unlike the rest
 of the file. Add `"{}", stderr(&o)`. [read]
+
+**Fixed (2026-11-18):** the assertions carry stderr..
 
 ### F3. Two write probes on one token in one test — nit
 
@@ -32,6 +36,8 @@ of the file. Add `"{}", stderr(&o)`. [read]
 the same SoftHSM/kryoptic token. `common::assert_profile_conforms` warns that a second write
 probe sees what the first left on modules that cannot destroy everything; harmless on these two
 modules, and only `exit 0` and the scratch-slot note are asserted, so it cannot mislead today. [read]
+
+**Decided (2026-11-18):** both modules destroy what the probe makes and each probe is in its own slot; a comment says so..
 
 ## Design
 

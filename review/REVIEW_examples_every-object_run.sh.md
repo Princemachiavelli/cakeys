@@ -13,6 +13,8 @@ added to keys.toml is created and checked but not migrated, and the plan's expec
 objects stay) would not notice. Derive the lists from the dry run's JSON, or add a comment that
 the loops must follow keys.toml. [read]
 
+**Fixed (2026-11-18):** the loops take the dry run JSON's ready objects and require them to equal the written lists. Test: examples/every-object/run.sh passes locally.
+
 ## Design
 
 None.

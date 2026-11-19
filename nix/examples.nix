@@ -22,14 +22,19 @@ let
     services.cakeys.package = cakeys;
     services.cakeys.checks.web-tls.lock = lib.mkForce "/var/lib/cakeys/keys.lock";
   };
-  # The secure-boot build, evaluated only: building it needs the host's TPM.
+  # The secure-boot build, evaluated only: building it needs the host's TPM. Its lock is the
+  # host's own, which this repository has no host to record: an empty version-1 lock stands in,
+  # so the evaluated check is the one a deployment runs, `--lock` included.
   signed = import ../examples/secure-boot/sign.nix {
     inherit pkgs;
     cakeys = self;
     uki = pkgs.runCommand "uki.efi" { } "cp ${efiStub} $out";
     dbCert = pkgs.writeText "db.crt" "";
+    lock = builtins.toFile "keys.lock" "version = 1\n";
   };
 in
+assert lib.assertMsg (lib.hasInfix " --lock " signed.buildCommand)
+  "examples/secure-boot/sign.nix: the evaluated check has no --lock";
 pkgs.runCommand "cakeys-examples"
   {
     nativeBuildInputs = with pkgs; [
@@ -39,6 +44,7 @@ pkgs.runCommand "cakeys-examples"
       opensc
       openssl
       gawk
+      jq
       swtpm
       dbus
       tpm2-abrmd
@@ -65,7 +71,7 @@ pkgs.runCommand "cakeys-examples"
     signDrv = builtins.unsafeDiscardStringContext signed.drvPath;
   }
   ''
-    set -o pipefail
+    # stdenv's setup runs the builder with pipefail: a failing example fails the `tee`.
     export HOME=$TMPDIR
     for e in every-object tls secure-boot programs; do
       echo "━━ examples/$e"

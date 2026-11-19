@@ -126,7 +126,7 @@ impl Token {
             if let Some(m) = self.allowed_if_readable(h)? {
                 policy.insert(
                     "CKA_ALLOWED_MECHANISMS".to_owned(),
-                    AttrValue::mechanisms(m.iter().copied().map(mechanism_name)),
+                    AttrValue::mechanisms(m.iter().copied().map(mechanism_namer())),
                 );
             }
         }
@@ -213,7 +213,7 @@ impl Token {
     /// A policy attribute as the spec writes it.
     fn attr_value(&self, h: ObjectHandle, name: &str) -> Result<Option<AttrValue>> {
         if name == "CKA_ALLOWED_MECHANISMS" {
-            return Ok(self.allowed_mechanisms(h)?.map(|m| AttrValue::mechanisms(m.into_iter().map(mechanism_name))));
+            return Ok(self.allowed_mechanisms(h)?.map(|m| AttrValue::mechanisms(m.into_iter().map(mechanism_namer()))));
         }
         let t = bool_attr(name, false).ok_or_else(|| unsupported_attr(name))?.attribute_type();
         Ok(self.flag(h, t)?.map(AttrValue::Bool))
@@ -274,11 +274,7 @@ impl Token {
                 }
                 _ => return Err(KmError::Ambiguous("several public key objects share the locator".into())),
             };
-            if let (Some(a), Some(b)) = (self.material_spki(p)?, self.material_spki(h)?)
-                && a != b
-            {
-                return Err(KmError::Conflict("the public key object under the locator holds another key".into()));
-            }
+            same_public_key(self.held_spki(p)?.as_deref(), self.material_spki(h)?.as_deref())?;
             p
         };
         self.check_attrs(p, &spec.public_attributes, "public key object: ")
@@ -292,29 +288,65 @@ impl Token {
     /// `Validation` for an attribute cakeys cannot set; `Unsupported` for a mechanism the token
     /// does not offer.
     pub fn policy_template(&self, attrs: &BTreeMap<String, AttrValue>) -> Result<Vec<Attribute>> {
+        // Named once per template, not once per declared name (policy.rs F3).
+        let named = || {
+            let name = mechanism_namer();
+            self.mechanisms.iter().map(|m| (name(*m), *m)).collect::<BTreeMap<String, MechanismType>>()
+        };
+        let offered = std::cell::OnceCell::new();
         crate::templates::policy(attrs, &|name, n| {
-            self.mechanisms
-                .iter()
+            offered
+                .get_or_init(named)
+                .get(n)
                 .copied()
-                .find(|m| mechanism_name(*m) == *n)
                 .ok_or_else(|| self.unsupported(format!("{name}: token '{}' does not offer {n}", self.name)))
         })
     }
 }
 
-/// A mechanism's `CKM_` name: cryptoki's where it has one, else the spec baseline's for its
-/// value (cryptoki names about 350 of the 3.2 mechanisms), else cryptoki's `unknown …` (a
-/// vendor's). The one spelling keys.toml, the lock and the token's lists are compared in.
-pub(crate) fn mechanism_name(m: MechanismType) -> String {
-    let name = m.to_string();
-    if name.starts_with("CKM_") {
-        return name;
+/// [`Token::check_public_half`]'s "same key": the public key object's public key (`held`) must be
+/// readable, and the private key's own material (`own`), where it has any, must be it. A private
+/// key without its point (`SoftHSM`'s EC keys) takes its SPKI from that very public key object
+/// ([`Token::spki`], which cross-checks it), so there it is the same by construction.
+///
+/// # Errors
+///
+/// `Conflict` for an unreadable public key object (never a match: policy.rs F2) or another key.
+fn same_public_key(held: Option<&[u8]>, own: Option<&[u8]>) -> Result<()> {
+    match (held, own) {
+        (None, _) => Err(KmError::Conflict(
+            "the public key object under the locator exposes no key material, so it cannot be told apart from \
+             another key's"
+                .into(),
+        )),
+        (Some(held), Some(own)) if held != own => {
+            Err(KmError::Conflict("the public key object under the locator holds another key".into()))
+        }
+        _ => Ok(()),
     }
-    let value = *m;
-    cakeys_profile::Set::active()
-        .ok()
-        .and_then(|set| set.baseline().ok()?.mechanisms.iter().find(|(_, id)| **id == value).map(|(n, _)| n.clone()))
-        .unwrap_or(name)
+}
+
+/// What names mechanisms by their `CKM_` name: cryptoki's where it has one, else the spec
+/// baseline's for its value (cryptoki names about 350 of the 3.2 mechanisms), else cryptoki's
+/// `unknown …` (a vendor's). The one spelling keys.toml, the lock and the token's lists are
+/// compared in. The baseline is indexed by value once, when the first mechanism cryptoki does
+/// not name needs it, never scanned per mechanism (policy.rs F3).
+pub(crate) fn mechanism_namer() -> impl Fn(MechanismType) -> String {
+    let by_value = std::cell::OnceCell::new();
+    move |m| {
+        let name = m.to_string();
+        if name.starts_with("CKM_") {
+            return name;
+        }
+        let by_value: &std::collections::HashMap<u64, &'static str> = by_value.get_or_init(|| {
+            cakeys_profile::Set::active()
+                .ok()
+                .and_then(|set| set.baseline().ok())
+                .map(|b| b.mechanisms.iter().map(|(n, id)| (*id, n.as_str())).collect())
+                .unwrap_or_default()
+        });
+        by_value.get(&*m).map_or(name, |n| (*n).to_owned())
+    }
 }
 
 /// Every boolean attribute cakeys reads or sets, by its PKCS#11 name: which class carries which
@@ -389,5 +421,31 @@ mod tests {
             assert_eq!(bool_attr(name, false).as_ref().and_then(attr_bool), Some(false), "{name}");
         }
         assert!(bool_attr("CKA_ALLOWED_MECHANISMS", true).is_none());
+    }
+
+    /// The public half of a pair is the same key only when its public key can be read and the
+    /// private key's own material, where it has any, is that key (policy.rs F2): an unreadable
+    /// public key object is no match, never a pass.
+    #[test]
+    fn an_unreadable_public_half_is_no_match() {
+        let (a, b) = (&b"spki a"[..], &b"spki b"[..]);
+        assert!(same_public_key(Some(a), Some(a)).is_ok());
+        assert!(same_public_key(Some(a), None).is_ok(), "a private key without its point takes the public half's");
+        for (held, own, why) in [(None, Some(a), "exposes no key material"), (None, None, "exposes no key material")] {
+            let e = same_public_key(held, own).unwrap_err();
+            assert!(matches!(&e, KmError::Conflict(m) if m.contains(why)), "{e}");
+        }
+        let e = same_public_key(Some(a), Some(b)).unwrap_err();
+        assert!(matches!(&e, KmError::Conflict(m) if m.contains("holds another key")), "{e}");
+    }
+
+    /// A mechanism is named by its `CKM_` constant, the one spelling of keys.toml and the lock.
+    #[test]
+    fn mechanisms_are_named_by_their_constants() {
+        cakeys_profile::Set::activate_embedded().unwrap();
+        let name = mechanism_namer();
+        for (m, n) in [(MechanismType::ECDSA, "CKM_ECDSA"), (MechanismType::SHA256_HMAC, "CKM_SHA256_HMAC")] {
+            assert_eq!(name(m), n);
+        }
     }
 }

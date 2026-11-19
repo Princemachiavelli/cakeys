@@ -15,6 +15,8 @@ trap; if it fails after starting dbus-daemon and tpm2-abrmd (e.g. `tpm2_getcap` 
 busy TPM), the script exits and leaves a private tpm2-abrmd attached to the host's
 /dev/tpmrm0. Set `trap 'bash nix/ftpm-test-env.sh down "$F"' EXIT` before `up`. [read]
 
+**Fixed (2026-11-18):** EXIT trap runs ftpm down before `up`.
+
 ### F2. `errexit` is off inside the TPM subshell, so its fallback line is dead — nit
 
 `scripts/coverage-full.sh:116-139`. Bash ignores `set -e` inside a command whose status is tested
@@ -23,6 +25,8 @@ or `tpm2_getcap`: the subshell carries on and ends with the status of its last t
 outcomes are still conservative (an empty `after` or `lockout` is reported as a change), but the
 "run stopped" line suggests a guard that is not there. Check the critical steps explicitly
 (`. "$F/env" || exit 1`) inside the subshell. [read]
+
+**Fixed (2026-11-18):** explicit `|| exit 1` on the critical steps; `handles` fails on a failing tpm2_getcap instead of reading empty.
 
 ## Design
 

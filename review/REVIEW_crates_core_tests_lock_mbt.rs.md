@@ -78,12 +78,16 @@ rule name was seen (quint-connect's runner owns the loop, so do it in a `Drop` o
 must be made twice. Fix: a `crates/core/tests/common/mod.rs` with `facts()`, `empty_lock()` and
 the shared keys.toml pieces. [read]
 
+**Fixed (2026-11-18):** the fixtures come from tests/common/mod.rs, shared with properties.rs. Test: `reconcile_refines_the_lock_model`.
+
 ### F5. Policy is projected only for two attributes, with any other a hard failure — nit
 
 `crates/core/tests/lock_mbt.rs:131`, `:435-439`. Correct today, since `Resolved.policy` is
 built from `POLICY` only; noted because a future `record` that adds derived policy attributes
 (e.g. from the spec's declared attributes) would fail here with "policy beyond the model's",
 which is the intended loud failure. No change needed. [read]
+
+**Decided (2026-11-18):** MOOT in verification (nits_02): any other policy attribute failing hard is the intended guard..
 
 ## Design
 

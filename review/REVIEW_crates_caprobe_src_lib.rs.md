@@ -39,12 +39,23 @@ host, and a second call in the same process fails with 17: `activate_profiles` â
 return the clap error's exit code; document the one-call limit, or let `activate_profiles`
 accept an already-active set built from the same directories. [read]
 
+**Fixed (2026-11-18):** `main_from` parses with `try_parse_from` and checks the keys.toml
+requirement before running (`Cli::with_config`); a clap error is printed and its code returned
+(help and version 0, usage 2), never `exit`. caprobe's `activate` builds the profile set once
+per process and records the directories it was built from: a later run naming the same ones
+reuses it, one naming others is refused (17) saying the set is built once per process. Test:
+`main_from_returns_and_runs_again_in_one_process`.
+
 ### F3. The probe's `--profiles` flag has no help text â€” nit
 
 `crates/caprobe/src/lib.rs:135-136`.
 `ProbeArgs::profiles_dir` has no doc comment (the `supports` one does, 112-114), so
 `caprobe probe --help` lists `--profiles` without saying it is only the `--diff` lookup (it does
 not change how the token is opened). [read]
+
+**Fixed (2026-11-18):** `--profiles` of `probe` says it is the `--diff` lookup and that the
+token is probed unprofiled. The `probe` verb and `--write` help also name the scratch settings
+(`probe = { scratch = true }`, `probe.scratchId`).
 
 ## Design
 

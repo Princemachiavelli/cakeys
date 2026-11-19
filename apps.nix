@@ -74,7 +74,7 @@ in
   fuzz = {
     type = "app";
     program = pkgs.lib.getExe fuzz.run;
-    meta.description = "Run a cargo-fuzz target (public_key, certificate, lock, config) from the repository root";
+    meta.description = "Run a cargo-fuzz target (${pkgs.lib.concatStringsSep ", " fuzz.targets}) from the repository root";
   };
 }
 # The PC/SC probes check pcscd's socket from the host and from the Linux build sandbox.

@@ -30,6 +30,7 @@ pub const CURVES: [&str; 10] = [
 
 /// One member group of a baseline class.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClassMembers {
     /// The member mechanisms, by `CKM_*` name.
     #[serde(default)]
@@ -41,6 +42,7 @@ pub struct ClassMembers {
 
 /// One spec revision's members, keyed by name.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Baseline {
     /// The baseline's name, as profiles and queries cite it (e.g. "pkcs11-3.2").
     pub baseline: String,
@@ -173,5 +175,25 @@ impl Baseline {
     /// file's path.
     pub fn from_toml(text: &str) -> Result<Baseline, String> {
         toml::from_str(text).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A misspelt key, at the top or in a class, is refused rather than read as an empty list
+    /// (review baseline.rs F1), as in every profile section; the committed baseline loads.
+    #[test]
+    fn a_misspelt_baseline_key_is_refused() {
+        let committed = crate::embedded::BASELINE_FILES[0].1;
+        Baseline::from_toml(committed).unwrap();
+        let class = committed.replacen("parameter-sets = [", "parameter_sets = [", 1);
+        assert_ne!(class, committed, "the committed baseline has a class with parameter sets");
+        let top = format!("key_types = {{}}\n{committed}");
+        for text in [class, top] {
+            let e = Baseline::from_toml(&text).unwrap_err();
+            assert!(e.contains("unknown field"), "{e}");
+        }
     }
 }

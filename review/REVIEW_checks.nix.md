@@ -15,6 +15,8 @@ Quint release rewords that line, or stops printing per-witness counts, the guard
 vacuously. Count the positive lines instead: one "witnessed in N trace(s)" line per name in
 `witnesses`, each with N > 0. [read]
 
+**Fixed (2026-11-18):** a positive `witnessed in N trace(s)` line, N > 0, per witness; a reworded or missing line fails. Test: the guard run against the stored run.txt, a zeroed count and a reworded line (both fail).
+
 ### F2. `checks.minimal` builds a feature set no other check names — practice
 
 `checks.nix:31-33` -> `nix/package-crane.nix:72-77`. The comment promises "without their `tpm2`
@@ -22,6 +24,8 @@ and `ykcs11` features", but the crane `minimal` list also drops `cakeys-pkcs11/r
 REVIEW_nix_package-crane.nix.md F1). Nothing runs those binaries (no tests, no probe), so the
 effect is only that this check, and no clippy run, compiles the `not(feature = "rv-value")`
 branches. Say so here if it is intended. [read]
+
+**Fixed (2026-11-18):** Verified fixed (2026-11-18), unmarked until now.
 
 ## Design
 

@@ -15,6 +15,9 @@ EdDSA mechanism is pure is read by converting it to a raw `CK_MECHANISM` and tes
 cryptoki's FFI layout; a match on the `Mechanism::Eddsa` parameters (the scheme `Pure`, if
 cryptoki exposes it) would say the same in the safe API. [read]
 
+**Fixed (2026-11-18):** `stand_in` matches `Mechanism::Eddsa(p) if p.inner().is_none()`; the
+`cryptoki-sys` dependency is gone. Test: `pure_eddsa_and_edwards_generation_stand_in`.
+
 ## Design
 
 - §4(b) holds (verified 2026-11-18): imports only `ModuleInfo`, `Provider`, `Report` and cryptoki

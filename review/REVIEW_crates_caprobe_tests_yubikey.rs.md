@@ -20,6 +20,8 @@ a pass. Fix: once the opt-in variables are set, fail with the "unpatched cryptok
 `scripts/local-tests.sh`/coverage-full" message instead of returning (same fix as ftpm.rs F1).
 [read]
 
+**Fixed (2026-11-18):** opted in, `cryptoki_hmac_types_fixed(true)` fails an unpatched build (verified FIXED)..
+
 ### F2. The conformance check is re-implemented, with a redundant first write probe — complexity
 
 `crates/caprobe/tests/yubikey.rs:56-79` vs `common::assert_profile_conforms`
@@ -31,17 +33,23 @@ same run, and says why one is better). The helper takes a `km` closure, so
 "modules/ykcs11/2.7.toml", &copy)` would do the same checks (plus the read-only `--out` refusal)
 with one write probe. [read]
 
+**Fixed (2026-11-18):** `assert_profile_conforms` with a bounded, checked runner: one write probe. Code change only, never run (hardware)..
+
 ### F3. `patched()` duplicates `common::cryptoki_hmac_types_fixed` — complexity
 
 `crates/caprobe/tests/yubikey.rs:25-31` is `cryptoki_hmac_types_fixed(false)`
 (`crates/cli/tests/common/mod.rs:174-181`) with another skip message. Use the shared one (with
 `require = true` once opted in, F1). [read]
 
+**Fixed (2026-11-18):** `patched()` is gone (verified FIXED)..
+
 ### F4. Exit code asserted without the output in the message — nit
 
 `crates/caprobe/tests/yubikey.rs:72`, `:101-103`. On hardware, a failure message without
 stderr means a second run to find out why; `run_within` logs the output, but the assertion
 message should carry it as the others do. [read]
+
+**Fixed (2026-11-18):** the assertions carry stderr..
 
 ## Design
 

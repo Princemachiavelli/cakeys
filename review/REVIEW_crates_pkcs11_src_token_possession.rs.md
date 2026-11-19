@@ -18,6 +18,9 @@ of OAEP retries is handled. Findings are minor.
 unlike every other proof failure. Fix: keep the value, e.g. `.with_rv(m.rv())` on the rebuilt
 error. [read]
 
+**Fixed (2026-11-18):** the extractable fallback's refusal goes through `after_sealed`, which
+keeps the module's `CK_RV`. Test: `the_extractable_proofs_refusal_keeps_its_return_value`.
+
 ### F2. The ECDH secret read back from the token is not wiped — nit
 
 `crates/pkcs11/src/token/possession.rs:244-260`. `prove_ecdh_extractable` reads the derived
@@ -26,17 +29,24 @@ zeroized. B16 wipes the host's copy of the same shared secret (`core/src/pop.rs`
 argues the value reveals nothing (an ephemeral host key), which is true, so this is only an
 inconsistency with B16; wrap it in `Zeroizing` or drop the B16 claim for this secret. [read]
 
+**Fixed (2026-11-18):** the `CKA_VALUE` read back is held in `Zeroizing`.
+
 ### F3. A doc comment belongs to the wrong function — nit
 
 `crates/pkcs11/src/token/possession.rs:490-499`. The doc of `proof_secret` ("The session secret
 a proof makes on the token ...") is fused onto `ecdh_seals`, whose own doc follows it, and
 `proof_secret` (`:501`) has none. Fix: move the first four lines above `proof_secret`. [read]
 
+**Fixed (2026-11-18):** the `proof_secret` doc moved off `ecdh_seals` onto its function.
+
 ### F4. `CKA_ALLOWED_MECHANISMS` is read twice for an RSA `pop-sign` — nit
 
 `crates/pkcs11/src/token/possession.rs:71`, `:99`. `proof_permits(h)` reads it, then the RSA
 branch reads it again for `rsa_signature`. One `C_GetAttributeValue` more per proof. Fix: read it
 once and pass the list to both. [read]
+
+**Fixed (2026-11-18):** `prove_sign` reads the allowed list once and passes it to `permitted`
+and `rsa_signature`. Test: `only_a_read_allowed_list_narrows_the_proof`.
 
 ## Design
 

@@ -13,6 +13,8 @@ not it appeared; a slow start makes `s_client` fail with a connection error that
 cakeys failure. Fail explicitly when the loop times out. The port is fixed (24443) like lib.sh's
 TPM port. [read]
 
+**Fixed (2026-11-18):** fails when the server is not up in 10 s; random port; `-www` instead of `-quiet` (which hid ACCEPT, so the old loop always waited 10 s). Test: examples/tls/run.sh passes locally.
+
 ## Design
 
 None.

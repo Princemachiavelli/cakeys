@@ -82,9 +82,10 @@ pub(crate) fn read(
         }),
         Class::PrivateKey => {
             let (pkcs8, method) = one_key(entries(bytes)?)?;
-            // A SEC1 key given the object's curve, of another curve, reads as no key at all.
-            let spki = cakeys_core::plaintext::spki_of_pkcs8(&pkcs8).map_err(|_| {
-                bad(format!("its key does not read as a key of the object's type; the object is {object}"))
+            // A SEC1 key given the object's curve, of another curve, reads as no key at all; a
+            // malformed key or an algorithm cakeys does not read says so too.
+            let spki = cakeys_core::plaintext::spki_of_pkcs8(&pkcs8).map_err(|e| {
+                bad(format!("its key does not read as a key of the object's type ({e}); the object is {object}"))
             })?;
             let spki = id::spki_canonical(&spki)?;
             check_type(&spki, object)?;
@@ -121,7 +122,7 @@ fn is_private(label: &str) -> bool {
 }
 
 /// The file as PEM text: UTF-8 holding a BEGIN line; `None` for DER.
-fn pem_text(bytes: &[u8]) -> Option<&str> {
+pub(crate) fn pem_text(bytes: &[u8]) -> Option<&str> {
     std::str::from_utf8(bytes).ok().filter(|t| t.contains("-----BEGIN "))
 }
 
@@ -304,7 +305,7 @@ fn entries(bytes: &[u8], pass: Option<&str>, curve: Option<Curve>) -> Result<Vec
 /// The blocks of a PEM file, each with its label, wherever on its line a BEGIN starts; text
 /// between blocks (OpenSSL's `Bag Attributes`) is skipped. What [`holds_private_key`] and
 /// [`pem_entries`] both read.
-fn pem_blocks(text: &str) -> Result<Vec<(&str, &str)>> {
+pub(crate) fn pem_blocks(text: &str) -> Result<Vec<(&str, &str)>> {
     let mut out = Vec::new();
     let mut rest = text;
     while let Some(start) = rest.find("-----BEGIN ") {
@@ -584,6 +585,21 @@ mod tests {
         cakeys_core::plaintext::private_from_pkcs8(&m.bytes, KeyType::Rsa, None).unwrap();
         let ed = object(Class::PrivateKey, Some(KeyType::EcEdwards), Some("edwards25519"));
         assert_eq!(read(&fixture("ed25519.pkcs8.pem"), &ed, false, None, None).unwrap().method, Method::Pkcs8);
+    }
+
+    /// A PKCS#8 whose key does not decode says why, beside the type it was read as (review
+    /// keyfile.rs F2): an RSA key that is no RSA key is not only "of another type".
+    #[test]
+    fn a_key_that_does_not_decode_says_why() {
+        // PrivateKeyInfo { version 0, rsaEncryption, OCTET STRING 01 02 03 }.
+        let garbage = [
+            0x30, 0x17, 0x02, 0x01, 0x00, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01,
+            0x05, 0x00, 0x04, 0x03, 0x01, 0x02, 0x03,
+        ];
+        let rsa = object(Class::PrivateKey, Some(KeyType::Rsa), None);
+        let said = refusal(read(&garbage, &rsa, false, None, None));
+        assert!(said.contains("does not read as a key of the object's type"), "{said}");
+        assert!(said.contains("RSA private key"), "{said}");
     }
 
     /// A SEC1 key that names no curve takes the object's: the key must then be on it.

@@ -97,7 +97,8 @@ impl<'a> Effective<'a> {
 
     /// Whether a mechanism is usable. Layers subtract first (a dropped mechanism is no for
     /// every module behind them), then the module's deltas against its advertisement decide;
-    /// a profile without an `advertise` list (the probe, phase 3) answers unknown.
+    /// a profile without an `advertise` list (the probe, phase 3) answers unknown, except for
+    /// what its `add` records as usable.
     #[must_use]
     pub fn mechanism(&self, name: &str) -> Verdict {
         if !self.baseline.mechanisms.contains_key(name) {
@@ -114,6 +115,11 @@ impl<'a> Effective<'a> {
         if m.subtract.mechanisms.iter().any(|x| x == name) {
             return Verdict::no(&m.profile, m.notes.get(name).cloned());
         }
+        // A mechanism the profile records as usable (`add`) is yes, advertised or not, and also
+        // in a profile that records no advertisement.
+        if m.add.iter().any(|x| x == name) {
+            return Verdict::yes(&m.profile, m.notes.get(name));
+        }
         if m.advertise.is_empty() {
             return Verdict::Unknown {
                 why: format!(
@@ -123,7 +129,7 @@ impl<'a> Effective<'a> {
                 ),
             };
         }
-        if m.advertise.iter().any(|x| x == name) || m.add.iter().any(|x| x == name) {
+        if m.advertise.iter().any(|x| x == name) {
             Verdict::yes(&m.profile, m.notes.get(name))
         } else {
             Verdict::no(&m.profile, m.notes.get(name).cloned().or_else(|| Some("not advertised".into())))
@@ -233,26 +239,32 @@ impl<'a> Effective<'a> {
         Verdict::Unknown { why: format!("module profile {} records no {key_type} generation it can judge", m.profile) }
     }
 
-    /// Whether a curve is generatable, over every key type that has a row: any row's yes wins,
-    /// else any row's no, else unknown (the curve names no key type of this profile).
+    /// Whether a curve is generatable, over every key type that has a row, the module's or a
+    /// layer's: any yes wins, else any no, else unknown (the curve names no key type of this
+    /// stack). A layer's `cannot` row decides no without a module profile, as it does for
+    /// [`Self::generate`].
     #[must_use]
     pub fn curve(&self, name: &str) -> Verdict {
         if !self.baseline.curves.contains(name) {
             return Verdict::Unknown { why: format!("not a curve of baseline {}", self.baseline.baseline) };
         }
-        let Some(m) = self.module else {
-            return Verdict::Unknown { why: "no module profile selected".into() };
+        let key_types: std::collections::BTreeSet<&str> = self
+            .module
+            .into_iter()
+            .chain(self.layers.iter().copied())
+            .flat_map(Profile::generation_key_types)
+            .collect();
+        let verdicts: Vec<Verdict> = key_types.into_iter().map(|kt| self.generate(kt, Some(name), None)).collect();
+        let unknown = match self.module {
+            None => "no module profile selected".to_owned(),
+            Some(m) => format!("no generate row of module profile {} lists the curve", m.profile),
         };
-        let verdicts: Vec<Verdict> =
-            m.generation_key_types().into_iter().map(|kt| self.generate(kt, Some(name), None)).collect();
         verdicts
             .iter()
             .find(|v| matches!(v, Verdict::Yes { .. }))
             .or_else(|| verdicts.iter().find(|v| matches!(v, Verdict::No { .. })))
             .cloned()
-            .unwrap_or(Verdict::Unknown {
-                why: format!("no generate row of module profile {} lists the curve", m.profile),
-            })
+            .unwrap_or(Verdict::Unknown { why: unknown })
     }
 
     /// Ask after a bare name: `CKM_*` a mechanism, `CKK_*` a key type, `CKP_*` a parameter set
@@ -383,6 +395,41 @@ mod tests {
             eff(&b, Some(&softhsm), &[]).mechanism("CKM_SHA512_HMAC"),
             Verdict::Unknown { why, .. } if why.contains("partial")
         ));
+    }
+
+    /// What a partial profile's `add` records as usable is yes, without an advertisement; the
+    /// rest stays unknown (review effective.rs F3).
+    #[test]
+    fn a_partial_module_profile_answers_its_add() {
+        let b = baseline();
+        let partial = profile("profile = \"m/1\"\nmode = \"observed\"\npartial = true\nadd = [\"CKM_ECDSA\"]");
+        assert!(matches!(eff(&b, Some(&partial), &[]).mechanism("CKM_ECDSA"), Verdict::Yes { by, .. } if by == "m/1"));
+        assert!(matches!(eff(&b, Some(&partial), &[]).mechanism("CKM_SHA512_HMAC"), Verdict::Unknown { .. }));
+        // A layer's subtraction still decides first.
+        let layer = profile("profile = \"l\"\nmode = \"delta\"\n[subtract]\nmechanisms = [\"CKM_ECDSA\"]");
+        assert!(matches!(eff(&b, Some(&partial), &[&layer]).mechanism("CKM_ECDSA"), Verdict::No { .. }));
+    }
+
+    /// A layer's refused curve is no also when no module profile is selected, as a layer's
+    /// refused generation is (review effective.rs F4); what no layer refuses stays unknown.
+    #[test]
+    fn a_layer_refuses_a_curve_without_a_module() {
+        let b = baseline();
+        let hw = profile(
+            "profile = \"hw\"\nmode = \"delta\"\n[capabilities]\n\"generate.CKK_EC.secp256k1\" = { answer = \"no\" }\n",
+        );
+        let layers = [&hw];
+        assert!(matches!(eff(&b, None, &layers).curve("secp256k1"), Verdict::No { by, .. } if by == "hw"));
+        assert!(matches!(
+            eff(&b, None, &layers).curve("secp256r1"),
+            Verdict::Unknown { why } if why == "no module profile selected"
+        ));
+        assert!(matches!(eff(&b, None, &layers).generate("CKK_EC", Some("secp256k1"), None), Verdict::No { .. }));
+        // With a module that generates it, the layer's no still wins.
+        let module = profile(
+            "profile = \"x/1\"\nmode = \"observed\"\n[capabilities]\n\"generate.CKK_EC.secp256k1\" = { answer = \"yes\" }\n",
+        );
+        assert!(matches!(eff(&b, Some(&module), &layers).curve("secp256k1"), Verdict::No { by, .. } if by == "hw"));
     }
 
     #[test]

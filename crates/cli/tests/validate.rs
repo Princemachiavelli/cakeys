@@ -5,13 +5,35 @@
 mod common;
 
 use common::*;
+use std::path::{Path, PathBuf};
 use std::process::Output;
 
-const BIN: &str = env!("CARGO_BIN_EXE_cakeys");
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 fn validate(config: &str) -> Output {
-    tool(BIN).arg("--config").arg(format!("{FIXTURES}/{config}")).arg("validate").output().unwrap()
+    Run::new(BIN, Path::new(&format!("{FIXTURES}/{config}"))).output(&["validate"])
+}
+
+/// Every `.rs` file under `dir`, with its text.
+fn sources(dir: &Path) -> Vec<(PathBuf, String)> {
+    let Ok(files) = std::fs::read_dir(dir) else { return vec![] };
+    let mut stack: Vec<_> = files.map(|f| f.unwrap().path()).collect();
+    let mut found = vec![];
+    while let Some(path) = stack.pop() {
+        if path.is_dir() {
+            stack.extend(std::fs::read_dir(&path).unwrap().map(|f| f.unwrap().path()));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            let text = std::fs::read_to_string(&path).unwrap();
+            found.push((path, text));
+        }
+    }
+    found
+}
+
+/// The integration tests of every crate in the workspace, with their text.
+fn workspace_tests() -> Vec<(PathBuf, String)> {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    std::fs::read_dir(crates).unwrap().flat_map(|k| sources(&k.unwrap().path().join("tests"))).collect()
 }
 
 /// One failed `YubiKey` login stops every later one (review yubikey.rs F1; the PIN has three
@@ -61,63 +83,104 @@ fn no_test_run_sees_a_real_keys_toml_or_lock() {
 }
 
 /// An opted-in suite never passes with nothing compared (review ftpm.rs F1): every test that
-/// needs the patched cryptoki asks [`cryptoki_hmac_types_fixed`], whose `require` is `true` or
-/// a `*_REQUIRE` variable, never a literal `false`, and none keeps its own check that skips.
+/// needs the patched cryptoki asks [`cryptoki_hmac_types_fixed`] with `true` (it never skips),
+/// or [`hmac_types_fixed`] with the variable that requires it — never a flag it computes itself,
+/// which was a literal `false` or another suite's variable (review common/mod.rs F7) — and none
+/// keeps its own check that skips. (Other crates' tests may still compute the flag from their
+/// own variable; never `false`.)
 #[test]
 fn no_opted_in_suite_skips_an_unpatched_build() {
-    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-    let mut found = vec![];
-    for krate in std::fs::read_dir(crates).unwrap() {
-        let tests = krate.unwrap().path().join("tests");
-        let Ok(files) = std::fs::read_dir(&tests) else { continue };
-        let mut stack: Vec<_> = files.map(|f| f.unwrap().path()).collect();
-        while let Some(path) = stack.pop() {
-            if path.is_dir() {
-                stack.extend(std::fs::read_dir(&path).unwrap().map(|f| f.unwrap().path()));
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                let text = std::fs::read_to_string(&path).unwrap();
-                let own = format!("{}0x2c", "SHA384_HMAC) == ");
-                if text.contains(&format!("{}(false)", "cryptoki_hmac_types_fixed"))
-                    || (text.contains(&own) && !path.ends_with("common/mod.rs"))
-                {
-                    found.push(path);
-                }
-            }
-        }
-    }
+    let own = format!("{}0x2c", "SHA384_HMAC) == ");
+    let call = format!("{}(", "cryptoki_hmac_types_fixed");
+    let ours = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let found: Vec<_> = workspace_tests()
+        .into_iter()
+        .filter(|(path, text)| {
+            let args = || text.match_indices(&call).map(|(at, _)| &text[at + call.len()..]);
+            let computed = args().any(|a| !a.starts_with("true)")) && path.starts_with(&ours);
+            let never = args().any(|a| a.starts_with("false)"));
+            (computed || never || text.contains(&own)) && !path.ends_with("common/mod.rs")
+        })
+        .map(|(path, _)| path)
+        .collect();
     assert!(found.is_empty(), "these skip an unpatched build: {found:?}");
 }
 
 /// A hardware opt-in is all or none (review D9): every variable set runs the suite, none skips
 /// it, and a half-set one fails naming what is missing, where each suite's own check skipped.
+/// Its require variable alone fails too (review ftpm.rs F2): a run that means the suite and
+/// lost its variables passed having run nothing.
 #[test]
 fn a_half_set_opt_in_fails() {
     let env = |set: &'static [&'static str]| move |v: &str| set.contains(&v).then(|| format!("{v}-value"));
-    let vars = ["A", "B", "C"];
-    assert_eq!(opt_in(vars, &env(&["A", "B", "C"])), Ok(Some(["A-value", "B-value", "C-value"].map(String::from))));
-    assert_eq!(opt_in(vars, &env(&[])), Ok(None));
-    assert_eq!(opt_in(vars, &env(&["B"])), Err("A, C not set: the opt-in is A, B, C, all or none".into()));
+    let o = OptIn { vars: ["A", "B", "C"], require: "R" };
+    assert_eq!(opt_in(o, &env(&["A", "B", "C"])), Ok(Some(["A-value", "B-value", "C-value"].map(String::from))));
+    assert_eq!(opt_in(o, &env(&["A", "B", "C", "R"])), Ok(Some(["A-value", "B-value", "C-value"].map(String::from))));
+    assert_eq!(opt_in(o, &env(&[])), Ok(None));
+    assert_eq!(opt_in(o, &env(&["B"])), Err("A, C not set: the opt-in is A, B, C, all or none".into()));
+    assert_eq!(opt_in(o, &env(&["R"])), Err("A, B, C not set: the opt-in is A, B, C, all or none; R is set".into()));
+}
+
+/// A bounded run reads its child's output while the child runs (review common/mod.rs F3): one
+/// that writes more than a pipe holds finishes. Read only once it had exited, such a child
+/// blocked on its full pipe until the limit, and the failure blamed a touch or PIN prompt.
+#[test]
+fn a_bounded_run_reads_a_large_output_as_it_comes() {
+    let mut big = std::process::Command::new("sh");
+    big.args(["-c", "head -c 300000 /dev/zero; head -c 300000 /dev/zero >&2"]);
+    let out = output_within(big, std::time::Duration::from_secs(20)).expect("the run outlasted its limit");
+    assert!(out.status.success());
+    assert_eq!((out.stdout.len(), out.stderr.len()), (300_000, 300_000));
+    // And a run that does outlast it is ended, not waited for.
+    let mut slow = std::process::Command::new("sleep");
+    slow.arg("30");
+    let started = std::time::Instant::now();
+    assert!(output_within(slow, std::time::Duration::from_millis(200)).is_none());
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+}
+
+/// One copy of each harness helper, in `tests/common/` (review D9: the suite gate, the suite's
+/// `Env` and its `Deref`, `tpm2_ptool`, the P-256 OID and the runs of the binary were each
+/// written several times, and drifted: the runs scrubbed different variables). No other file
+/// of this crate's tests writes one again.
+#[test]
+fn the_harness_helpers_are_written_once() {
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let copies = [
+        ("a suite's own Deref", format!("impl std::ops::{} for", "Deref")),
+        ("a raw tpm2_ptool", format!("Command::new(\"{}\")", "tpm2_ptool")),
+        ("a run of the binary bypassing Run", format!("{}_BIN_EXE_", "CARGO")),
+        ("the P-256 OID", ["0x2a", "0x86", "0x48", "0xce", "0x3d", "0x03", "0x01", "0x07"].join(", ")),
+        ("a suite's module read past the gate", format!("{}(\"CAKEYS_", "std::env::var")),
+    ];
+    let mut found = vec![];
+    for (path, text) in sources(&tests) {
+        if path.starts_with(tests.join("common")) {
+            continue;
+        }
+        for (what, copy) in &copies {
+            let module_var = |at: usize| text[at..].split('"').nth(1).is_some_and(|v| v.ends_with("_MODULE"));
+            let hits = text.match_indices(copy.as_str()).filter(|(at, _)| !what.contains("module") || module_var(*at));
+            for _ in hits {
+                found.push(format!("{}: {what}", path.display()));
+            }
+        }
+    }
+    assert!(found.is_empty(), "written again outside tests/common/:\n{}", found.join("\n"));
 }
 
 /// Every hardware suite opts in through [`opted_in`] (review D9): none reads an opt-in variable
 /// itself, which is how a half-set opt-in passed silently.
 #[test]
 fn every_hardware_suite_opts_in_through_the_harness() {
-    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let mut found = vec![];
-    for krate in std::fs::read_dir(crates).unwrap() {
-        let Ok(files) = std::fs::read_dir(krate.unwrap().path().join("tests")) else { continue };
-        let mut stack: Vec<_> = files.map(|f| f.unwrap().path()).collect();
-        while let Some(path) = stack.pop() {
-            if path.is_dir() {
-                stack.extend(std::fs::read_dir(&path).unwrap().map(|f| f.unwrap().path()));
-            } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("common/mod.rs") {
-                let text = std::fs::read_to_string(&path).unwrap();
-                for var in FTPM_OPT_IN.iter().chain(&YUBIKEY_OPT_IN) {
-                    if text.contains(&format!("var(\"{var}\")")) {
-                        found.push(format!("{}: {var}", path.display()));
-                    }
-                }
+    for (path, text) in workspace_tests() {
+        if path.ends_with("common/mod.rs") {
+            continue;
+        }
+        for var in FTPM_OPT_IN.vars.iter().chain(&YUBIKEY_OPT_IN.vars) {
+            if text.contains(&format!("var(\"{var}\")")) {
+                found.push(format!("{}: {var}", path.display()));
             }
         }
     }
@@ -132,12 +195,12 @@ fn a_profile_no_refuses_and_names_its_profile() {
     let out = validate("gate.toml");
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(code(&out), 15, "{err}");
-    assert!(
-        err.contains("'k1' (spec 'k1-kry') on token 'kry': token 'kry' cannot") && err.contains("no — kryoptic/1.5"),
-        "{err}"
-    );
+    // Who refused and which profile decided, not the sentence around them (review validate.rs F2).
+    let line = |start: &str| err.lines().find(|l| l.contains(start)).unwrap_or_else(|| panic!("{start}: {err}"));
+    assert!(line("'k1' (spec 'k1-kry') on token 'kry': token 'kry' cannot").contains("kryoptic/1.5"), "{err}");
     assert!(err.contains("2 targets need what the capability profiles say"), "{err}");
-    assert!(err.contains("'aes' (spec 'aes-kw')") && err.contains("CKM_AES_KEY_WRAP: no — p11-kit/0.26"), "{err}");
+    let kw = line("'aes' (spec 'aes-kw')");
+    assert!(kw.contains("CKM_AES_KEY_WRAP") && kw.contains("p11-kit/0.26"), "{err}");
     assert!(err.contains("token 'unknown': no provider named"), "{err}");
     // What the profiles allow passes silently: P-256 on kryoptic.
     assert!(!err.contains("'p256' (spec 'p256-kry') on token 'kry'"), "{err}");

@@ -8,61 +8,69 @@ mod common;
 
 use common::*;
 
-fn supports(args: &[&str]) -> i32 {
+/// `caprobe supports <args>`: its exit, and what it said (the verdicts, then the notes).
+fn supports(args: &[&str]) -> (i32, String) {
     let out = tool(BIN).arg("supports").args(args).output().unwrap();
-    let said = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    eprintln!("$ caprobe supports {}\n  {} {}", args.join(" "), said.0.trim(), said.1.trim());
-    code(&out)
+    let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    eprintln!("$ caprobe supports {}\n  {}", args.join(" "), said.trim());
+    (code(&out), said)
+}
+
+fn exit(args: &[&str]) -> i32 {
+    supports(args).0
 }
 
 /// The module profile decides; a layer's subtraction, a hardware pair and a class listing each
 /// answer as the profiles record.
 #[test]
 fn supports_answers_from_the_embedded_profiles() {
-    assert_eq!(supports(&["--profile", "softhsm/2.7", "CKM_SHA512_HMAC"]), 0);
-    assert_eq!(supports(&["--profile", "softhsm/2.7", "secp256r1"]), 0);
-    assert_eq!(supports(&["--profile", "softhsm/2.7", "--oaep"]), 0);
-    assert_eq!(supports(&["--profile", "softhsm/2.7", "CKM_NOT_A_MECHANISM"]), 16);
-    assert_eq!(supports(&["--profile", "softhsm/2.7", "--layer", "p11-kit/0.26", "CKM_AES_KEY_WRAP"]), 15);
-    assert_eq!(supports(&["--profile", "kryoptic/1.5", "secp256k1"]), 15);
-    assert_eq!(supports(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "4096", "CKK_RSA"]), 15);
+    assert_eq!(exit(&["--profile", "softhsm/2.7", "CKM_SHA512_HMAC"]), 0);
+    assert_eq!(exit(&["--profile", "softhsm/2.7", "secp256r1"]), 0);
+    assert_eq!(exit(&["--profile", "softhsm/2.7", "--oaep"]), 0);
+    // Unknown to the profile, not for want of one: the profile consulted is named (review
+    // supports.rs F2: a profile not found at all answers 16 too).
+    let unknown = |args: &[&str], module: &str| {
+        let (exit, said) = supports(args);
+        assert!(exit == 16 && said.contains(&format!("profiles: module {module},")), "{args:?}: exit {exit}: {said}");
+    };
+    unknown(&["--profile", "softhsm/2.7", "CKM_NOT_A_MECHANISM"], "softhsm/2.7");
+    assert_eq!(exit(&["--profile", "softhsm/2.7", "--layer", "p11-kit/0.26", "CKM_AES_KEY_WRAP"]), 15);
+    assert_eq!(exit(&["--profile", "kryoptic/1.5", "secp256k1"]), 15);
+    assert_eq!(exit(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "4096", "CKK_RSA"]), 15);
     // The same fact, factored out by hand into the swtpm layer.
-    assert_eq!(supports(&["--profile", "tpm2-pkcs11", "--layer", "swtpm", "--bits", "4096", "CKK_RSA"]), 15);
-    assert_eq!(supports(&["--class", "pq", "--profile", "softhsm/2.7"]), 15);
+    assert_eq!(exit(&["--profile", "tpm2-pkcs11", "--layer", "swtpm", "--bits", "4096", "CKK_RSA"]), 15);
+    assert_eq!(exit(&["--class", "pq", "--profile", "softhsm/2.7"]), 15);
     // A key type every probed row refuses is no, never yes for want of a curve or size: the
     // swtpm profile's only Edwards rows are edwards25519 = no and edwards448 = no (it said yes).
-    assert_eq!(supports(&["--profile", "tpm2-pkcs11/1.10+swtpm", "CKK_EC_EDWARDS"]), 15);
-    assert_eq!(supports(&["--profile", "tpm2-pkcs11/1.10+swtpm", "CKK_EC"]), 0);
+    assert_eq!(exit(&["--profile", "tpm2-pkcs11/1.10+swtpm", "CKK_EC_EDWARDS"]), 15);
+    assert_eq!(exit(&["--profile", "tpm2-pkcs11/1.10+swtpm", "CKK_EC"]), 0);
     // Between two sizes that generated only when no size between them was refused: swtpm
     // generates 1024, refuses 1536, generates 2048 and 3072: 2560 is yes, 1280 unknown (it was yes).
-    assert_eq!(supports(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "2560", "CKK_RSA"]), 0);
-    assert_eq!(supports(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "1280", "CKK_RSA"]), 16);
-    assert_eq!(supports(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "2048", "CKK_RSA"]), 0);
+    assert_eq!(exit(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "2560", "CKK_RSA"]), 0);
+    unknown(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "1280", "CKK_RSA"], "tpm2-pkcs11/1.10+swtpm");
+    assert_eq!(exit(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "2048", "CKK_RSA"]), 0);
     // A PBKDF2 parameter set names no key type to generate: the profiles cannot decide it.
-    assert_eq!(supports(&["--profile", "softhsm/2.7", "CKP_PKCS5_PBKD2_HMAC_SHA1"]), 16);
+    unknown(&["--profile", "softhsm/2.7", "CKP_PKCS5_PBKD2_HMAC_SHA1"], "softhsm/2.7");
     // No module profile at all: only the binding layer and the baseline answer.
-    assert_eq!(supports(&["CKM_SHA512_HMAC"]), 16);
+    unknown(&["CKM_SHA512_HMAC"], "(none)");
 }
 
 /// `--profiles <dir>` adds profiles to the embedded set: a layer of one's own subtracts.
 #[test]
 fn supports_reads_profiles_from_a_directory() {
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("supports-profiles");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    // The test's own directory (review supports.rs F3: a fixed name, shared by no rule).
+    let dir = Workdir::new("supports-profiles").dir;
     let layer = "profile = \"mine\"\nmode = \"delta\"\n[subtract]\nmechanisms = [\"CKM_SHA512_HMAC\"]\n";
     std::fs::write(dir.join("layer.toml"), layer).unwrap();
     let with = ["--profile", "softhsm/2.7", "--layer", "mine", "--profiles", dir.to_str().unwrap(), "CKM_SHA512_HMAC"];
-    assert_eq!(supports(&with), 15);
+    assert_eq!(exit(&with), 15);
 }
 
 /// `--token` asks about the profile keys.toml's token names by its `provider`; what cannot be
 /// asked is refused (17), and every verb but `supports --profile` needs keys.toml.
 #[test]
 fn supports_asks_by_token_and_refuses_what_it_cannot_ask() {
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("supports-token");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = Workdir::new("supports-token").dir;
     let config = dir.join("keys.toml");
     let tokens = "[tokens.soft]\ntokenLabel = \"t\"\nprovider = \"softhsm\"\n\n[tokens.bare]\ntokenLabel = \"b\"\n";
     std::fs::write(&config, tokens).unwrap();

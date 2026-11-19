@@ -20,15 +20,21 @@ wrong project or an API error, `live_versions` prints nothing: `status` prints "
 versions. Assign the key list to a variable first (`keys=$(gcloud ...)`, which errexit covers) and
 let `versions list` errors through, so the guard fails closed. [read]
 
+**Fixed (2026-11-18):** the key list is assigned first, versions-list errors pass through, callers assign outside conditions. Test: stubbed gcloud failures now fail live_versions (old: empty success).
+
 ### F2. `destroy` shadows the global `state` — nit
 
 `scripts/cloud/gcp.sh:206`. `local name state` reuses the name of the state directory variable
 (line 41). Harmless today (nothing in the loop reads the directory), a trap for the next edit;
 rename the loop variable. [read]
 
+**Fixed (2026-11-18):** loop variables renamed.
+
 ### F3. Roundabout config path — nit
 
 `scripts/cloud/gcp.sh:141`. `"$tf/../gcp/cakeys.toml"` is `$tf/cakeys.toml`. [read]
+
+**Fixed (2026-11-18):** `$tf/cakeys.toml`.
 
 ## Design
 

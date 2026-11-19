@@ -11,6 +11,13 @@
 # Both use the stable rustc: cargo-fuzz's nightly flags are unlocked with RUSTC_BOOTSTRAP=1, and
 # the sanitizer is off (`-s none`): the targets are safe Rust, so libFuzzer's coverage feedback
 # and Rust's own checks (panics, overflow in the debug-assertions build) are what find bugs.
+#
+# No AddressSanitizer run either. The one C the targets reach is tpm2-tss's unmarshalling
+# (libtss2-mu, under tss-esapi in tpms_attest), and `cargo fuzz -s address` instruments only the
+# Rust it compiles: the prebuilt C stays uninstrumented, so ASan would see an overflow there only
+# if it happened to corrupt the allocator. nixpkgs' rustc ships no sanitizer runtime either (no
+# librustc-*_rt.asan.a), so the run would need another toolchain. Finding memory errors in tpm2-tss takes an instrumented tpm2-tss,
+# which is that project's own fuzzing, not this check's.
 {
   lib,
   rustPlatform,
@@ -26,21 +33,14 @@
   coreutils,
 }:
 let
-  targets = [
-    "public_key"
-    "certificate"
-    "lock"
-    "config"
-    "bundle"
-    "key_file"
-    "tpm_store_row"
-    "tpms_attest"
-    "piv_chain"
-    "p521_point"
-    "profile"
-    "hex"
-    "attest_encoding"
-  ];
+  # The targets are fuzz/Cargo.toml's `[[bin]]` entries, the one list. A file under
+  # fuzz/fuzz_targets/ that no entry names would be neither built nor run, so evaluation refuses
+  # it.
+  bins = (lib.importTOML ../fuzz/Cargo.toml).bin;
+  targets = map (b: b.name) bins;
+  unlisted = lib.subtractLists (map (b: baseNameOf b.path) bins) (
+    lib.attrNames (builtins.readDir ../fuzz/fuzz_targets)
+  );
 
   # Seed corpora from the test fixtures: certificates, their and the import keys' SPKIs, a
   # lock, a config, a bundle, the key files, the fixture PIV chain, tpm2-pkcs11's malformed P-521 point and the
@@ -81,7 +81,11 @@ let
     done
   '';
 in
+assert lib.assertMsg (unlisted == [ ])
+  "fuzz/fuzz_targets/ has files no [[bin]] in fuzz/Cargo.toml names: ${toString unlisted}";
 {
+  inherit targets;
+
   smoke = rustPlatform.buildRustPackage {
     pname = "cakeys-fuzz-smoke";
     version = "0.1.0";

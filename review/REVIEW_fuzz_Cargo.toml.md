@@ -21,6 +21,8 @@ never a panic or a hang". Also unfuzzed but cheaper: the signature verifiers tha
 output (`cakeys_core::pop::verify`, `sig::ecdsa`) on arbitrary `(spki, msg, sig)`.
 [read]
 
+**Fixed (2026-11-18):** Verified fixed (2026-11-18), unmarked until now.
+
 ## Design
 
 - Of the 12 targets, 6 assert a property beyond "does not panic" (`attest_encoding`, `hex`,

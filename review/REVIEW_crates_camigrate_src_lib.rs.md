@@ -25,6 +25,10 @@ have none"), and `roll_back` cannot erase it (ykcs11 refuses deletes). The key i
 slot with nothing in the lock. Fix: pass `specs` into `Run::plan` and use `spec_for`. When
 `import_target` fails, block the plan with that error instead of returning. [read]
 
+**Fixed (2026-11-18):** verified in the code: `Run::plan` takes `specs` and lands each object by
+`import_target(…, spec_for(cfg, specs, …), MOVE)`; a landing it cannot pick blocks the plan with
+that error (`Err(e) if p.ready && !bundle`) instead of skipping `landing_checks`.
+
 ### F2. Key-file imports bypass the PIV attestation guard, the only one there is — bug
 
 **Verification:** confirmed. The only `attestation`-on-import check is lib.rs:806; `import_file` (:1131-1166) goes `import_target` → `import_checks` (dry run) / `host::create_and_record` with no attestation test, and `check_import` → `check_attestation` (ops.rs:278-296) passes since ykcs11 attests `PrivateKey` as a class. No load rule exists: `.attestation` is read only at core/src/plan.rs:272 (non-key objects), ops.rs:22/282/1048, despite docs/FILE.md:93 saying load refuses it. [read]
@@ -42,6 +46,11 @@ the provider cannot attest an imported key. No such rule exists in `crates/core/
 F2 are two routes to one gap: the only guard is in `landing_checks`. Fix: move the check into
 `host::create_and_record` (every plaintext path passes there before the irreversible write),
 keyed on the provider or `PlaintextImport::PivImport` rather than the method. [read]
+
+**Fixed (2026-11-18):** verified in the code: `ops::check_import`, which every import path asks
+before its write (`host::landing`, `sealed::import`, `public::create_as`), refuses an attestation
+a provider gives only for keys the device generated (`check_imported_attestation`), keyed on the
+provider; `landing_checks` asks the same predicate for the plan.
 
 ### F3. A transport file is read twice, and only the first read is checked against the lock — risk
 
@@ -87,6 +96,17 @@ logs in. On tokens with slow logins (YubiKey, TPM) this triples the cost. A
 with the misleading hint to run `transport --trusted`. Open each side once per run and pass the
 `Token` to the plan; resolve the transport key once before the loop; propagate the error. [read]
 
+**Fixed (2026-11-18):** each verb opens the source once (`Read` for a dry run, `Scratch` for
+`export`, `export --to-file` and `migrate`) and hands it to `Run::plan`, which asks the trusted
+copy of it, plans from it (`tokens::plan_moves` takes the opened source) and hands it back for the
+run (`Run::source` opens again only when it did not open, to say why). A failed trust lookup on
+an open source is its own error now, never "no trusted copy"; a source that did not open is
+planned from the lock, which records none. `migrate` resolves and verifies the transport key on
+the first sealed object and reuses it (`sealing`), asking again only after a failure. The target
+of a `migrate` is still opened twice: read-only by the plan, read-write for the run. No unit test
+can open a token; the token suites' dry-run and migrate tests (dry_run.rs, migrate tests) run
+these paths.
+
 ### F6. The passphrase readers duplicate the PIN reader and differ from it — practice
 
 `crates/camigrate/src/lib.rs:1318-1353` (`read_passphrase`, `file_passphrase`) against
@@ -99,6 +119,10 @@ but:
 
 One shared `read_secret` with a "first line, non-empty" option would keep credential handling in
 one place (cf. ISSUES.md Q14's direction). [read]
+
+**Fixed (2026-11-18):** verified in the code: `read_passphrase` and `file_passphrase`
+(file_verbs.rs) read through `cakeys_core::secret::read`, the one credential reader the PIN uses
+too; the empty passphrase is refused in one place.
 
 ### F7. Three verbs share one per-object loop, written out three times, in a 1,500-line CLI file — complexity
 
@@ -122,17 +146,26 @@ from files and one file's certificate; `migrate` now goes on past a failure as t
 10 (`HashMismatch`, e.g. `host::create_and_record`), 12 (`Ambiguous`, `transport_named`) and 13
 (`Conflict`, an occupied locator), all of which docs/CAMIGRATE.md documents. [read]
 
+**Fixed (2026-11-18):** `--help` lists 0, 10–17, 21 and 1, and CAMIGRATE.md's list gains 11, 12,
+16, 21 and 1. Test: `the_help_lists_the_documented_exit_codes`.
+
 ### F9. A PKCS#12 export can carry an empty `localKeyId` — nit
 
 `crates/camigrate/src/lib.rs:1050-1057`. `unwrap_or_default()` writes an empty `localKeyId` when
 the lock has no `rfc7093m4`. `ops::verify` just passed, so this is unreachable today, but a
 missing ID should be an error rather than an empty attribute that importers pair on. [read]
 
+**Fixed (2026-11-18):** `local_key_id` (file_verbs.rs) refuses (14) a lock that pins no
+`rfc7093m4`. Test: `a_pkcs12_pairs_by_the_locked_rfc7093m4_or_not_at_all`.
+
 ### F10. `locked_spki` swallows a base64 error — nit
 
 `crates/camigrate/src/lib.rs:1313`. `.ok()` turns a malformed `publicKey` into "the lock records
 no public key" (`trust`, `:1281`). Lock load validates the field, so this is only a wrong message
 should that ever change. [read]
+
+**Fixed (2026-11-18):** `locked_spki` returns the decode error as 17 naming the transport key;
+`trust` and the plan propagate it. Test: `a_locked_public_key_that_does_not_decode_is_invalid`.
 
 ## Design
 

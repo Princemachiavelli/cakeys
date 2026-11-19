@@ -16,6 +16,9 @@ secret key (no SPKI) two rows that differ only by label would turn a module read
 `Ambiguous` (12) that names no cause. Propagate the error as `Unavailable`, as the `CKA_ID`
 read does three lines above. [read]
 
+**Fixed (2026-11-18):** `read_attribute` makes a failed `CKA_LABEL` (and `CKA_ID`) read
+unavailable (16) with the module's `CK_RV`. Test: `a_failed_attribute_read_is_unavailable`.
+
 ### F2. The store-search order is a claim about db.c that nothing pins — nit
 
 `crates/tpm2-pkcs11/src/attest/mod.rs:125-166`. The doc says the order mirrors tpm2-pkcs11's
@@ -25,6 +28,11 @@ change; a mismatch only makes attestation read another store and fail its cross-
 pass: `TPM2_Load` and the Name/SPKI checks bind the row to the live object), so the effect is a
 confusing error. Say in the error which directory was read, and consider `tpm2Store` required
 when the module is not at its default path. [read]
+
+**Fixed (2026-11-18):** the order is the pure `store_candidates`, pinned by a test; the
+not-found error lists every directory searched, and `find`'s errors name the store file.
+`tpm2Store` stays optional: a wrong store fails the cross-checks, never passes them. Test:
+`the_store_is_looked_for_in_the_modules_order`.
 
 ## Design
 

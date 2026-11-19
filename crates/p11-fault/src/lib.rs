@@ -20,22 +20,33 @@ pub use forward::Fn;
 
 use cryptoki_sys::{CK_FUNCTION_LIST, CK_RV, CKR_ARGUMENTS_BAD, CKR_GENERAL_ERROR, CKR_OK};
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::ffi::{CStr, OsStr, OsString};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::{Once, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
-/// Why the shim cannot run: said once on stderr, and every call then fails with
-/// `CKR_GENERAL_ERROR`. A plan with a typo must never become a test of nothing.
+/// Why the shim cannot run, or cannot answer one call: said on stderr, and the call fails with
+/// `CKR_GENERAL_ERROR` (every call, when the shim could not load). A plan with a typo must
+/// never become a test of nothing.
 #[derive(Debug, Clone)]
 pub struct Fatal(String);
 
 impl Fatal {
     fn report(&self) -> CK_RV {
-        static SAID: Once = Once::new();
-        SAID.call_once(|| eprintln!("p11-fault: {}", self.0));
+        if first_time(&self.0) {
+            eprintln!("p11-fault: {}", self.0);
+        }
         CKR_GENERAL_ERROR
     }
+}
+
+/// Whether `message` is said for the first time in this process. Each fatal is said once: a
+/// load failure, which every later call repeats, once; a later, different one (a label that
+/// resolves to nothing) still in its turn.
+fn first_time(message: &str) -> bool {
+    static SAID: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+    SAID.lock().map_or(true, |mut said| said.insert(message.to_owned()))
 }
 
 /// The loaded shim: the real module, its table, the plan, the trace, and the table clients get.
@@ -46,6 +57,8 @@ struct Shim {
     pub(crate) plan: plan::Plan,
     trace: Option<trace::Trace>,
     table: CK_FUNCTION_LIST,
+    /// What each caller session's open search has returned so far (`add_label`).
+    pub(crate) searches: hooks::Searches,
 }
 
 static SHIM: OnceLock<Result<Shim, Fatal>> = OnceLock::new();
@@ -61,14 +74,21 @@ fn shim() -> Result<&'static Shim, Fatal> {
     if LOADING.get() && SHIM.get().is_none() {
         return Err(Fatal(format!("{} leads back to this shim", variable("P11_FAULT_MODULE"))));
     }
-    SHIM.get_or_init(|| {
-        LOADING.set(true);
-        let shim = Shim::load();
-        LOADING.set(false);
-        shim
-    })
-    .as_ref()
-    .map_err(Fatal::clone)
+    SHIM.get_or_init(|| while_loading(Shim::load)).as_ref().map_err(Fatal::clone)
+}
+
+/// `load` with [`LOADING`] set on this thread, cleared however it ends: a panic left it set,
+/// and the thread's next call reported a recursion that never happened.
+fn while_loading<T>(load: impl FnOnce() -> T) -> T {
+    struct Loading;
+    impl Drop for Loading {
+        fn drop(&mut self) {
+            LOADING.set(false);
+        }
+    }
+    LOADING.set(true);
+    let _loading = Loading;
+    load()
 }
 
 /// This library's own file, as the dynamic loader opened it.
@@ -162,12 +182,14 @@ impl Shim {
             &*list
         };
         let table = forward::table(real);
-        Ok(Shim { _library: library, real, plan, trace, table })
+        Ok(Shim { _library: library, real, plan, trace, table, searches: hooks::Searches::default() })
     }
 
     /// One call of `function`: counted, answered by the plan or forwarded by `forward` (which
     /// calls the real module and says which rule, if any, changed what it answered), and traced
-    /// with what `observe` reads from its arguments once it has returned.
+    /// with what `observe` reads from its arguments once it has returned. A `Fatal` from
+    /// `forward` (a hook that cannot do what its rule says) is traced too, as the
+    /// `CKR_GENERAL_ERROR` the caller sees, with its message.
     fn call(
         &self,
         function: Fn,
@@ -178,19 +200,27 @@ impl Shim {
         if self.plan.aborts(&call).is_some() {
             std::process::abort();
         }
-        let (rv, rule) = if let Some((rv, rule)) = self.plan.before(&call) {
-            (rv, Some(rule))
+        // `filled`: the real call ran and succeeded, so its outputs are the module's to read; a
+        // rule that answered before it left them as the caller passed them.
+        let (rv, rule, filled, fatal) = if let Some((rv, rule)) = self.plan.before(&call) {
+            (rv, Some(rule), false, None)
         } else {
-            let (real, fired) = forward(&call)?;
-            self.plan.after(&call).map_or((real, fired), |(rv, rule)| (rv, Some(rule)))
+            match forward(&call) {
+                Ok((real, fired)) => {
+                    let (rv, rule) = self.plan.after(&call).map_or((real, fired), |(rv, rule)| (rv, Some(rule)));
+                    (rv, rule, real == CKR_OK, None)
+                }
+                Err(fatal) => (CKR_GENERAL_ERROR, None, false, Some(fatal)),
+            }
         };
         if let Some(trace) = &self.trace {
             let mut detail = trace::Detail::default();
-            detail.ok = rv == CKR_OK;
+            detail.ok = filled;
+            detail.fatal = fatal.as_ref().map(|f| f.0.clone());
             observe(&mut detail);
             trace.line(&call, rv, rule, &detail);
         }
-        Ok(rv)
+        fatal.map_or(Ok(rv), Err)
     }
 }
 
@@ -235,10 +265,98 @@ pub(crate) unsafe extern "C" fn get_function_list(out: *mut *mut CK_FUNCTION_LIS
     })
 }
 
+/// A shim in front of the module whose table is `real`, under `plan`, tracing to `trace`: for
+/// the unit tests, which give it a table of functions of their own.
+#[cfg(test)]
+pub(crate) fn fake(real: &CK_FUNCTION_LIST, plan: &str, trace: Option<&Path>) -> Shim {
+    let real: &'static CK_FUNCTION_LIST = Box::leak(Box::new(*real));
+    Shim {
+        // Any library will do: the fake module is the test binary's own code.
+        _library: libloading::os::unix::Library::this().into(),
+        real,
+        plan: plan::Plan::parse(plan).unwrap(),
+        trace: trace.map(|p| trace::Trace::open("P11_FAULT_TRACE", p, None).unwrap()),
+        table: forward::table(real),
+        searches: hooks::Searches::default(),
+    }
+}
+
+/// A table with no function in it, for [`fake`].
+#[cfg(test)]
+pub(crate) fn empty_table() -> CK_FUNCTION_LIST {
+    // SAFETY: every field is a version of two bytes or an `Option` of a function pointer, for
+    // which zero is `None`.
+    unsafe { std::mem::zeroed() }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::tag;
-    use std::path::Path;
+    use super::{Fatal, Fn, LOADING, empty_table, fake, first_time, tag, while_loading};
+    use cryptoki_sys::{CK_TOKEN_INFO, CKR_DEVICE_ERROR, CKR_OK};
+    use std::path::{Path, PathBuf};
+
+    /// A fresh trace file for the test `name`.
+    fn trace_file(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("p11-fault-{}-{name}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    fn lines(path: &Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(path).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+    }
+
+    /// Each fatal is said once, and a second, different one is said too: the first no longer
+    /// silences every later one.
+    #[test]
+    fn each_fatal_is_said_once() {
+        assert!(first_time("test: one fatal"));
+        assert!(!first_time("test: one fatal"));
+        assert!(first_time("test: another fatal"));
+    }
+
+    /// A hook that cannot do what its rule says fails the call, and the trace has the call, with
+    /// the value the caller saw and why.
+    #[test]
+    fn a_fatal_call_is_traced() {
+        let path = trace_file("fatal");
+        let shim = fake(&empty_table(), "", Some(&path));
+        let out = shim.call(Fn::C_SignInit, |_| Err(Fatal("use_label: nothing".into())), |_| {});
+        assert!(out.is_err());
+        let [line] = &lines(&path)[..] else { panic!("one line, not {:?}", lines(&path)) };
+        assert_eq!(
+            (&line["fn"], &line["rv"], &line["rule"], &line["fatal"]),
+            (&"C_SignInit".into(), &"CKR_GENERAL_ERROR".into(), &serde_json::Value::Null, &"use_label: nothing".into())
+        );
+    }
+
+    /// An output is read only where the real call filled it: not under a rule that answered
+    /// `CKR_OK` in its place, nor after a real failure an `after` rule turned into `CKR_OK`.
+    #[test]
+    fn outputs_are_read_only_where_the_module_filled_them() {
+        let path = trace_file("outputs");
+        let plan = "[[rule]]\nfn = \"C_GetTokenInfo\"\ncall = 1\nrv = \"CKR_OK\"\n\n\
+                    [[rule]]\nfn = \"C_GetTokenInfo\"\ncall = 2\nrv = \"CKR_OK\"\nwhen = \"after\"\n";
+        let shim = fake(&empty_table(), plan, Some(&path));
+        // SAFETY: zero is a valid `CK_TOKEN_INFO`.
+        let mut info: CK_TOKEN_INFO = unsafe { std::mem::zeroed() };
+        info.flags = 0xdead;
+        let info = &raw const info;
+        let observe = |d: &mut crate::trace::Detail| unsafe { d.token_info(info) };
+        for real in [CKR_OK, CKR_DEVICE_ERROR, CKR_OK] {
+            assert_eq!(shim.call(Fn::C_GetTokenInfo, |_| Ok((real, None)), observe).ok(), Some(CKR_OK));
+        }
+        let flags: Vec<_> = lines(&path).iter().map(|l| l["token_flags"].clone()).collect();
+        assert_eq!(flags, [serde_json::Value::Null, serde_json::Value::Null, 0xdead.into()]);
+    }
+
+    /// A panic while loading leaves the thread able to load again: no recursion reported.
+    #[test]
+    fn a_panic_while_loading_clears_the_mark() {
+        let panicked = std::panic::catch_unwind(|| while_loading(|| panic!("a module that panics")));
+        assert!(panicked.is_err());
+        assert!(!LOADING.get());
+    }
 
     #[test]
     fn a_copy_is_tagged_by_its_file_name() {

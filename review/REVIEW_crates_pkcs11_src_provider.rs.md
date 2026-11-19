@@ -26,6 +26,10 @@ sentence. [read]
 pre-epoch clock is rare; see the design note for the realistic variant. Fix: return an error
 (or a note) naming the system clock. [read]
 
+**Fixed (2026-11-18):** a clock before 1970 is `ChainTime::NoClock`: `check` refuses it (16),
+naming the clock; other verbs verify without the dates and warn so. docs/CAKEYS.md says so.
+Test: `a_clock_before_the_epoch_is_named`.
+
 ## Design
 
 - B8's `check` judges attestation chains by the system clock (`ChainTime::now`). The NixOS

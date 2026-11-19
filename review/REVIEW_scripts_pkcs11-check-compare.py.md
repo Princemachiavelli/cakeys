@@ -11,6 +11,8 @@ invoked, failures and skips grouped by file and normalised reason. Straightforwa
 `scripts/pkcs11-check-compare.py:59`. A missing argument is an `IndexError` traceback; a usage
 line would do. Only called from scripts/pkcs11-check.sh, which always passes both. [read]
 
+**Fixed (2026-11-18):** usage line on a wrong argument count.
+
 ## Design
 
 None.

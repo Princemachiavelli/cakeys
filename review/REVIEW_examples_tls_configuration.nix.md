@@ -16,10 +16,14 @@ may also need write access for its journal). A store left root-only makes the se
 first key load. Uncertain how tpm2-pkcs11 opens the database read-only; name the ownership in the
 setup comment. [read]
 
+**Fixed (2026-11-18):** the setup comment names the store's group ownership for `web`.
+
 ### F2. Inherits the module's restart gap — nit
 
 `examples/tls/configuration.nix:59`. `requiredBy = [ "web.service" ]` is checked once per boot; a
 `systemctl restart web` after a TPM change is not re-checked (REVIEW_nix_module.nix.md F1). [read]
+
+**Fixed (2026-11-18):** Verified fixed (2026-11-18), unmarked until now.
 
 ## Design
 

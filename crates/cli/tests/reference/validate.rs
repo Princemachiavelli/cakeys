@@ -120,8 +120,6 @@ fn attributes_are_validated_per_class() {
     // The extra booleans are settable: the key is created with them, the policy records them, and
     // binding = "token-asserted" replaces the impossible proof of possession.
     let s = e.session();
-    // The token is shared between runs: remove anything left under the test's locator.
-    s.clear(&["always-auth"]);
     e.config(
         "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [specs.s]\nobject = \"o\"\n\
@@ -192,7 +190,6 @@ fn provider_options_are_checked_by_the_provider() {
 #[test]
 fn every_verb_names_the_object_first() {
     let Some(e) = env("address") else { return };
-    e.session().clear(&["addr-k"]);
     e.config(
         r#"
 [objects.signer]
@@ -228,5 +225,30 @@ tokens.ref = { locator = { CKA_LABEL = "addr-k" }, origin = "create" }
     ] {
         assert_eq!(e.code(args), 17, "{args:?}");
     }
-    assert_eq!(e.code(&["delete", "signer"]), 0);
+
+    // Realised twice — the same key under a second token name — the bare object is ambiguous
+    // (12) for every verb, `delete` included, until `--spec` or `--token` narrows it (review
+    // validate.rs F1).
+    let text = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
+    e.write_config(&format!(
+        "{text}\n[tokens.ref2]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n\n\
+         [specs.signer-two]\nobject = \"signer\"\nattributes = {{ CKA_SIGN = true }}\n\
+         tokens.ref2 = {{ locator = {{ CKA_LABEL = \"addr-k\" }}, origin = \"adopt\" }}\n",
+        e.module,
+        e.dir.join("pin").display()
+    ));
+    let made = e.session().labelled("addr-k").len();
+    assert!(made > 0);
+    for verb in ["resolve", "lock", "check", "verify", "delete"] {
+        let o = e.km(&[verb, "signer"]);
+        assert_eq!(code(&o), 12, "{verb}: {}", stderr(&o));
+    }
+    assert_eq!(e.session().labelled("addr-k").len(), made, "an ambiguous delete removed something");
+    assert_eq!(e.code(&["check", "signer", "--spec", "signer-ref"]), 0);
+    assert_eq!(e.code(&["check", "signer", "--token", "ref"]), 0);
+
+    // And the delete removes the key: `check` finds nothing after it (review validate.rs F3).
+    assert_eq!(e.code(&["delete", "signer", "--spec", "signer-ref"]), 0);
+    assert_eq!(e.session().labelled("addr-k"), []);
+    assert_eq!(e.code(&["check", "signer", "--spec", "signer-ref"]), 11);
 }

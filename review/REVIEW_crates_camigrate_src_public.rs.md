@@ -13,11 +13,17 @@ findings.
 `crates/camigrate/src/public.rs:170-184`, `crates/camigrate/src/host.rs:122-135`. See the host.rs
 review, F3. [read]
 
+**Fixed (2026-11-18):** with host.rs F3: `public::free_locator` is the one check, and `preflight`
+calls it.
+
 ### F2. `value` drops the module's return value — nit
 
 `crates/camigrate/src/public.rs:219-224`. A `C_GetAttributeValue` failure becomes a bare
 `Unavailable` with cryptoki's text. The token layer's `ck`/`rv_of` (ISSUES Q3) would carry the
 `CK_RV` as the other module calls do. [read]
+
+**Fixed (2026-11-18):** `read_failed` carries the return value (`rv_of`). Test:
+`a_failed_value_read_carries_its_return_value` (decisive in a build with `rv-value`).
 
 ## Design
 

@@ -15,4 +15,3 @@ workspace = true
 cakeys-core.workspace = true
 cakeys-pkcs11.workspace = true
 cryptoki.workspace = true
-cryptoki-sys.workspace = true

@@ -17,6 +17,12 @@ then sees the token's open error. For a transport file they see "provider '…' 
 build", which is false: the provider is linked, its resolution failed. Return the `Result` and
 only map "no provider" to `None`. [read]
 
+**Fixed (2026-11-18):** `side_from_lock` and `side_from_transport` return a failed resolution as
+`Some(Err(Validation))` naming the token (`resolved`); `None` stays for what the lock does not
+record and a provider this build does not link. Test: `a_failed_resolution_is_invalid_not_absent`
+(the mapping; a resolution failure itself needs an inactive or broken profile set, which a unit
+test process that activates the embedded set cannot stage).
+
 ### F2. The transport-key rule exists in three places — complexity
 
 `crates/camigrate/src/tokens.rs:440-457` (`transport`: RSA private, `CKA_UNWRAP`, not
@@ -38,6 +44,12 @@ token, in spec order) and lib.rs:1484-1488 (`realised_target`: the first such sp
 has). The two agree unless a spec in the lock is gone from keys.toml. Then `materials` plans from
 one realisation's policy, and the move reads the other's. That is unlikely, since one object has
 one material, but the plan and the run could name different specs. [read]
+
+**Decided (2026-11-18):** moot, as verification found: `materials` plans from what the lock
+records of the object (its type and recorded policy), and the run reads the realisation
+keys.toml still names (`realised_target`/`source_target`); a spec gone from keys.toml is refused
+by the run, and every realisation of one object on one token carries the same material, so the
+two choices cannot plan and move different keys.
 
 ## Design
 

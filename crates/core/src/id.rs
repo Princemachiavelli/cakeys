@@ -7,8 +7,8 @@ use crate::config::{ObjectCfg, SpecCfg};
 use crate::error::{KmError, Result};
 use crate::types::KeyType;
 use base64::Engine;
-use p256::pkcs8::der::{Decode, Encode, asn1::OctetStringRef};
-use p256::pkcs8::{DecodePublicKey, EncodePublicKey};
+use der::{Decode, Encode, asn1::OctetStringRef};
+use pkcs8::{DecodePublicKey, EncodePublicKey};
 use sha2::{Digest, Sha256};
 
 type Bp256 = p256::elliptic_curve::PublicKey<bp256::BrainpoolP256r1>;
@@ -521,9 +521,9 @@ pub enum KeyAlg {
 }
 
 /// `id-ecPublicKey` (RFC 5480).
-const EC_PUBLIC_KEY: p256::pkcs8::ObjectIdentifier = p256::pkcs8::ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
+const EC_PUBLIC_KEY: pkcs8::ObjectIdentifier = pkcs8::ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
 /// `rsaEncryption` (RFC 8017).
-const RSA_ENCRYPTION: p256::pkcs8::ObjectIdentifier = p256::pkcs8::ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
+const RSA_ENCRYPTION: pkcs8::ObjectIdentifier = pkcs8::ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
 
 impl KeyAlg {
     /// The key a `SubjectPublicKeyInfo` holds.
@@ -533,9 +533,15 @@ impl KeyAlg {
     /// `Unsupported` for bytes that are no `SubjectPublicKeyInfo`, or a key of an algorithm or
     /// curve cakeys does not read.
     pub fn of_spki(spki: &[u8]) -> Result<KeyAlg> {
-        let info = p256::pkcs8::SubjectPublicKeyInfoRef::from_der(spki)
+        KeyAlg::read_spki(spki).map(|(alg, _)| alg)
+    }
+
+    /// [`KeyAlg::of_spki`], with the parsed SPKI its key's own parser takes next: the bytes
+    /// are decoded once.
+    pub(crate) fn read_spki(spki: &[u8]) -> Result<(KeyAlg, pkcs8::SubjectPublicKeyInfoRef<'_>)> {
+        let info = pkcs8::SubjectPublicKeyInfoRef::from_der(spki)
             .map_err(|e| KmError::Unsupported(format!("not a SubjectPublicKeyInfo: {e}").into()))?;
-        KeyAlg::of(&info.algorithm)
+        Ok((KeyAlg::of(&info.algorithm)?, info))
     }
 
     /// The key a PKCS#8 `PrivateKeyInfo` holds.
@@ -544,12 +550,12 @@ impl KeyAlg {
     ///
     /// As [`KeyAlg::of_spki`], for a `PrivateKeyInfo`.
     pub fn of_pkcs8(der: &[u8]) -> Result<KeyAlg> {
-        let info = p256::pkcs8::PrivateKeyInfoRef::from_der(der)
+        let info = pkcs8::PrivateKeyInfoRef::from_der(der)
             .map_err(|e| KmError::Unsupported(format!("not a PKCS#8 PrivateKeyInfo: {e}").into()))?;
         KeyAlg::of(&info.algorithm)
     }
 
-    fn of(alg: &p256::pkcs8::AlgorithmIdentifierRef<'_>) -> Result<KeyAlg> {
+    fn of(alg: &pkcs8::AlgorithmIdentifierRef<'_>) -> Result<KeyAlg> {
         let unread = |what: String| KmError::Unsupported(format!("{what}, which cakeys does not read").into());
         if alg.oid == RSA_ENCRYPTION {
             return Ok(KeyAlg::Rsa);
@@ -648,7 +654,7 @@ pub fn spki_canonical(spki: &[u8]) -> Result<Vec<u8>> {
 ///
 /// The reason, when it is not an SPKI holding an RSA key at all.
 pub fn rsa_of_spki(spki: &[u8]) -> std::result::Result<rsa::PublicKey, String> {
-    let info = x509_cert::spki::SubjectPublicKeyInfoRef::from_der(spki).map_err(|e| e.to_string())?;
+    let info = pkcs8::spki::SubjectPublicKeyInfoRef::from_der(spki).map_err(|e| e.to_string())?;
     let bits = info.subject_public_key.as_bytes().ok_or("the key's bits are not whole bytes")?;
     let key = rsa::pkcs1::RsaPublicKeyRef::from_der(bits).map_err(|e| e.to_string())?;
     rsa_key(key.modulus.as_bytes(), key.public_exponent.as_bytes()).map_err(str::to_owned)
@@ -893,7 +899,7 @@ mod tests {
     #[test]
     fn curve_params_roundtrip_and_match_the_crates() {
         use p256::elliptic_curve::pkcs8::AssociatedOid;
-        let oid = |o: p256::pkcs8::ObjectIdentifier| o.to_der().unwrap();
+        let oid = |o: pkcs8::ObjectIdentifier| o.to_der().unwrap();
         assert_eq!(Curve::P256.params(), oid(p256::NistP256::OID));
         assert_eq!(Curve::P384.params(), oid(p384::NistP384::OID));
         assert_eq!(Curve::P521.params(), oid(p521::NistP521::OID));

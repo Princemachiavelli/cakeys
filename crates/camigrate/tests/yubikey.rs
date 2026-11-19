@@ -12,14 +12,13 @@
 mod common;
 
 use common::*;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Output;
+use std::time::Duration;
 
-fn run(turn: &YubikeyTurn, bin: &Path, dir: &Path, args: &[&str]) -> Output {
-    let out = tool(bin).arg("--config").arg(dir.join("keys.toml")).args(args).output().unwrap();
-    eprintln!("$ {} {}\n  exit={:?}\n  {}", bin.display(), args.join(" "), out.status.code(), stderr(&out).trim());
-    turn.checked(out)
-}
+/// Each CLI run's bound: a touch or PIN prompt fails the test instead of hanging it (review
+/// `yubikey.rs` F1).
+const RUN_LIMIT: Duration = Duration::from_secs(60);
 
 #[test]
 fn a_key_moves_into_a_piv_slot_through_the_host() {
@@ -27,48 +26,58 @@ fn a_key_moves_into_a_piv_slot_through_the_host() {
     // SoftHSM is the harness's own, set for every run; opted in here, it is required.
     let soft = std::env::var("CAKEYS_TEST_MODULE").expect("CAKEYS_TEST_MODULE (SoftHSM) is required with the YubiKey");
     let turn = YubikeyTurn::take();
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("yubikey-import");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("pin"), "1234\n").unwrap();
+    let w = Workdir::new("yubikey-import");
+    let config = w.dir.join("keys.toml");
+    // Either binary on the test's keys.toml, bounded, its login checked (review `yubikey.rs` F5:
+    // its own unbounded runner and directory set-up).
+    let run = |bin: &Path, args: &[&str]| -> Output { turn.checked(Run::new(bin, &config).within(args, RUN_LIMIT)) };
     let s = open_session(&soft, "kmtest", "1234");
     s.clear(&["piv-import"]);
     drop(s);
-    let config = format!(
+    w.write_config(&format!(
         "[tokens.softhsm]\nmodule = \"{soft}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n\n{}\n\
          [objects.pv]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [specs.pv-soft]\nobject = \"pv\"\nattributes = {{ CKA_SIGN = true, CKA_EXTRACTABLE = true }}\n\
          tokens.softhsm = {{ locator = {{ CKA_LABEL = \"piv-import\" }}, origin = \"create\" }}\n\n\
          [specs.pv-yk]\nobject = \"pv\"\nattributes = {{ CKA_SIGN = true }}\n\
          tokens.yubikey = {{ locator = {{ CKA_ID = \"18\" }}, origin = \"import\" }}\n",
-        dir.join("pin").display(),
+        w.dir.join("pin").display(),
         yubikey_token(&yk, &pin, &mgm, "")
-    );
-    std::fs::write(dir.join("keys.toml"), config).unwrap();
-    let (cakeys, camigrate) = (sibling("cakeys"), PathBuf::from(BIN));
-    let o = run(&turn, &cakeys, &dir, &["create", "--spec", "pv-soft", "--token", "softhsm"]);
+    ));
+    let (cakeys, camigrate) = (sibling("cakeys"), Path::new(BIN));
+    let o = run(&cakeys, &["create", "--spec", "pv-soft", "--token", "softhsm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let mv = ["migrate", "pv", "--from", "softhsm", "--to", "yubikey", "--allow-host-plaintext"];
-    let o = run(&turn, &camigrate, &dir, &[&mv[..], &["--dry-run", "--json"]].concat());
+    let o = run(camigrate, &[&mv[..], &["--dry-run", "--json"]].concat());
     let plan: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert_eq!(
         (plan["plans"][0]["method"].as_str(), plan["plans"][0]["ready"].as_bool()),
         (Some("piv-import"), Some(true)),
         "{plan}"
     );
-    let o = run(&turn, &camigrate, &dir, &mv);
+    let o = run(camigrate, &mv);
+    // An earlier run's key still in the slot (review `yubikey.rs` F4): say how to empty it.
+    assert_ne!(
+        code(&o),
+        13,
+        "slot 95 is occupied, by an earlier run's key or another: wipe it first (`ykman piv keys delete 95`, or \
+         scripts/coverage-full.sh with CAKEYS_YUBIKEY_WIPE_95=1): {}",
+        stderr(&o)
+    );
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    let lock: toml::Value = toml::from_str(&std::fs::read_to_string(dir.join("keys.lock")).unwrap()).unwrap();
-    let origin = &lock["realisations"]["pv-yk"]["yubikey"]["provenance"]["origin"];
+    let origin = &w.lock()["realisations"]["pv-yk"]["yubikey"]["provenance"]["origin"];
     assert_eq!((origin["method"].as_str(), origin["exposure"].as_str()), (Some("piv-import"), Some("host")));
-    let o = run(&turn, &cakeys, &dir, &["verify", "--spec", "pv-yk", "--token", "yubikey"]);
+    let o = run(&cakeys, &["verify", "--spec", "pv-yk", "--token", "yubikey"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     // Again, into the now occupied slot under another lock: refused before anything is written.
     // The source key is still on SoftHSM: the new lock records it (`create` refuses a key that is
     // there and not pinned, 19).
-    std::fs::remove_file(dir.join("keys.lock")).unwrap();
-    let o = run(&turn, &cakeys, &dir, &["lock", "--spec", "pv-soft", "--token", "softhsm"]);
+    std::fs::remove_file(w.dir.join("keys.lock")).unwrap();
+    let o = run(&cakeys, &["lock", "--spec", "pv-soft", "--token", "softhsm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    let o = run(&turn, &camigrate, &dir, &mv);
+    let before = std::fs::read(w.dir.join("keys.lock")).unwrap();
+    let o = run(camigrate, &mv);
     assert_eq!(code(&o), 13, "{}", stderr(&o));
+    // The lock as it was (review `yubikey.rs` F3: the exit alone was checked).
+    assert_eq!(std::fs::read(w.dir.join("keys.lock")).unwrap(), before, "the refused move changed the lock");
 }

@@ -20,12 +20,16 @@ committing. Fix: after writing, `panic!("answers.txt rewritten; review the diff 
 without CAKEYS_WRITE_ANSWERS")`, so a regeneration run is never green; or refuse to write when
 `CI` or `NIX_BUILD_TOP` is set. [read]
 
+**Fixed (2026-11-18):** `pinned_or_written` writes the answers and then fails, so a regenerating run is never a pass. Test: `regenerating_fails_and_a_difference_says_where`.
+
 ### F2. A truncated or extended output reports `<end>` vs `<end>` — nit
 
 `crates/profile/tests/answers.rs:110-117`. When one text is a prefix of the other, `zip` finds no
 differing line and the fallback prints `now: <end>` and `pinned: <end>` at the shorter length,
 not which side has more lines. Fix: print the first extra line of the longer text and both
 line counts. [read]
+
+**Fixed (2026-11-18):** `first_difference` names both line counts and the side with the extra line. Test: `regenerating_fails_and_a_difference_says_where`.
 
 ### F3. Verdicts filtered by their message text — nit
 
@@ -34,6 +38,8 @@ generation" are matched in `Verdict`'s `Display` output to decide what to print 
 the per-curve and per-size questions. A wording change alters the golden output and fails the
 test loudly, so nothing is hidden; a `Verdict` accessor (unknown-because-no-module, no-row) would
 make the intent explicit (cf. ISSUES.md Q3). [read]
+
+**Fixed (2026-11-18):** filtering is by stack and variant (a layer alone, `Verdict::Unknown`; `p.generation(kt).is_none()`), not the message text; answers.txt unchanged. Test: `every_profile_answers_as_pinned`.
 
 ## Design
 

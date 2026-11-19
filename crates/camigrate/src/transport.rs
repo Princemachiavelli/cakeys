@@ -57,8 +57,8 @@ impl Transport {
     ///
     /// # Errors
     ///
-    /// `Validation` for another format or version, malformed base64, or an identity that is not
-    /// the public key's.
+    /// `Validation` for another format or version, malformed base64, a key smaller than a
+    /// transport key may be, or an identity that is not the public key's.
     pub(crate) fn parse(text: &str, path: &std::path::Path) -> Result<Transport> {
         let t: Transport =
             toml::from_str(text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display()).into()))?;
@@ -67,7 +67,11 @@ impl Transport {
                 format!("{}: not a {TRANSPORT_FORMAT} version {TRANSPORT_VERSION} file", path.display()).into(),
             ));
         }
-        let computed = cakeys_core::id::sri(&t.spki()?);
+        let spki = t.spki()?;
+        // Refused on read, as `new` and `key` refuse it: a dry run says so too, not only the export.
+        crate::sealed::check_transport_size(&spki)
+            .map_err(|e| KmError::Validation(format!("{}: {}", path.display(), msg_of(e)).into()))?;
+        let computed = cakeys_core::id::sri(&spki);
         if computed != t.rfc7093m4 {
             return Err(KmError::Validation(
                 format!(
@@ -115,9 +119,15 @@ impl Transport {
     }
 }
 
+/// The text of an error's message, without its class.
+fn msg_of(e: KmError) -> String {
+    e.into_msg().map_or_else(String::new, cakeys_core::Msg::into_text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
 
     /// A transport file round-trips, and one edited to name another key's identity is refused.
     #[test]
@@ -137,5 +147,14 @@ mod tests {
         let small = cakeys_core::id::rsa_spki(&[0xc5u8; 128], &[1, 0, 1]).unwrap();
         let e = Transport::new("kryoptic", "kryoptic", "import-kek", &small, &[]).unwrap_err();
         assert!(e.to_string().contains("at least 2048 bits; this one has 1024"), "{e}");
+        // Nor does a file edited to hold one read, its identity made to match (review
+        // transport.rs F1): the dry run refuses it as the export would.
+        let edited = Transport {
+            spki: base64::engine::general_purpose::STANDARD.encode(&small),
+            rfc7093m4: cakeys_core::id::sri(&cakeys_core::id::spki_canonical(&small).unwrap()),
+            ..t
+        };
+        let e = Transport::parse(&edited.to_toml().unwrap(), path).unwrap_err();
+        assert!(e.exit_code() == 17 && e.to_string().contains("this one has 1024"), "{e}");
     }
 }

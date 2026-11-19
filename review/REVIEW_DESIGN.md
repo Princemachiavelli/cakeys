@@ -133,7 +133,8 @@ whole where `validate` drops the hardware's rows (`supports_asks_by_token_and_re
   host recomputes and compares against the signed `TPMS_ATTEST` comes from the store blob, so
   the material checked and the material attested can differ. Taking the material from the
   store's public blob, whose Name is checked, closes that. A session salted to the AK would
-  close the transport.
+  close the transport. (Corrected 2026-11-18: it cannot be the AK. `TPM2_StartAuthSession`
+  encrypts the salt to a decrypt key, and the AK is a restricted signing key; see below.)
   ([tpm2 attest/esys.rs](REVIEW_crates_tpm2-pkcs11_src_attest_esys.rs.md))
 - **PIV.** The chain checks held up (pathLen, CA flags, slot-to-device signature, SPKI
   cross-check, dates). The dates are only checked where the caller sets `Token::chain_time`;
@@ -151,8 +152,15 @@ whole where `validate` drops the hardware's rows (`supports_asks_by_token_and_re
 **Fixed (2026-11-18):**
 
 - TPM: in dc3f102, the material is read from the store blob whose Name the signed `TPMS_ATTEST`
-  carries (`verify_certified`). The transport (a session salted to the AK) is out of scope here:
-  it needs an authenticated session in the attestation path and a TPM to test it on.
+  carries (`verify_certified`). Left, corrected 2026-11-18: the AK is trusted on first use. Once
+  the lock pins it, a forged `TPM2_Certify` fails its signature, and the material is read from
+  signed data, so what remains is first use itself and the unsealed token key crossing the
+  transport in the clear. A salted session needs a decrypt key (the EK or the SRK, not the AK),
+  and its key read over the same transport is only as trusted as first use. What closes first
+  use is EK→AK credential activation with the EK certificate checked to the manufacturer. swtpm
+  issues EK certificates, so the tests need no hardware. This machine's fTPM already holds
+  cakeys' AK (0x81000016). Running the flow there needs the endorsement auth known to be empty,
+  or it would send a wrong auth, which the hardware rules forbid. That is the user's call.
 - PIV: `Token::open` takes the `ChainTime` and it has no default, so every open names whether
   the dates are checked; the verbs that record pass `Unchecked`, as B8 decided (a lock recorded
   today verifies tomorrow). Decided (2026-11-18): the verbs that record judge

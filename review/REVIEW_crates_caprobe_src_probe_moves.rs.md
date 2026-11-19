@@ -22,6 +22,11 @@ object the earlier probes made on the token (see probe.rs F1). The function's ow
 Fix: treat these like the other host-side failures in this file (`undetermined` with the
 reason), and keep `Err` for `so_login` only. [read]
 
+**Fixed (2026-11-18):** the locator and public-object encodings (`host_encoding`) that fail in
+`import_private`, `public_half` and `create_public` are an undetermined line naming the row;
+only an SO login failing still ends the probe. Test: `the_host_encoding_fails_as_a_value`
+(the encoding as a value; the probe going on past it needs a fixture cakeys cannot encode).
+
 ### F2. A key that leaves but whose unwrap template the provider refuses is reported as an unwrap refusal — practice
 
 `crates/caprobe/src/probe/moves.rs:502-534`.
@@ -36,6 +41,11 @@ refused to unwrap" share one `no`. Fix: keep provider refusals out of the rows (
 and keep the wrong-key case as its own evidence prefix (it already has "not the key wrapped").
 [read]
 
+**Fixed (2026-11-18):** a way the provider will not template is `untried` (`Ways`): it gives no
+`no` row, and while any way is untried with none come back wrong, neither row is written and
+the run names the provider's refusal. The wrong-key case keeps its "not the key wrapped" prefix
+in the unwrap row's evidence. Test: `untried_ways_decide_no_row`.
+
 ### F3. `export_sealed` / `import_private` carry a lot of loose parameters — complexity
 
 `crates/caprobe/src/probe/moves.rs:484-494`, `:177-268`.
@@ -46,6 +56,11 @@ build three templates, two closures over `provider`, and the export calls. A sma
 `import_private` and `import_secret` share the export tail instead of each re-deriving it.
 [read]
 
+**Fixed (2026-11-18):** `TestKey` carries one key's rows (kind, size or curve, handle, secret,
+template builder, sameness check); `exports` is the shared tail (`export_host`, then
+`export_sealed`), and `export_sealed` takes four arguments, its `#[expect]` gone. Behaviour
+unchanged.
+
 ### F4. `same_aes` labels a host-check failure as `Unsupported` — nit
 
 `crates/caprobe/src/probe/moves.rs:551-561`.
@@ -54,6 +69,10 @@ prints; the error kind is never used for an exit code here, but a module that si
 `CKM_AES_ECB` makes every AES import "imported, but its check value: …" undetermined (596), with
 no hint that the check mechanism, not the import, is missing. A note naming the check mechanism
 once would make the undetermined lines readable. [read]
+
+**Fixed (2026-11-18):** the check's failure is `Unavailable` with the return value, and says the
+host's check needs `C_Encrypt` with `CKM_AES_ECB`, so the undetermined line names the check
+mechanism, not the import. Message only; no test.
 
 ### F5. Curves without a fixture get no import row and no undetermined line — nit
 
@@ -64,6 +83,10 @@ named in `undetermined` (94-101); a missing curve is not, so a profile simply la
 `import.CKK_EC_EDWARDS.edwards448` with no explanation, and a future `Curve::ALL` member would
 be skipped the same way. Fix: name the curves of `Curve::ALL` without a fixture in
 `undetermined`, and have `the_test_keys_are_what_their_rows_name` list them explicitly. [read]
+
+**Fixed (2026-11-18):** `unfixtured_curves` (the `Curve::ALL` names with no fixture) are named
+in the run's undetermined list, and the test pins them (`edwards448`). Test:
+`the_test_keys_are_what_their_rows_name`.
 
 ## Design
 

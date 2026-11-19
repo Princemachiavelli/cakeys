@@ -5,7 +5,7 @@
 # states the exit code it expects (examples/lib.sh): checks.examples runs it.
 #
 # Needs SOFTHSM_MODULE, KRYOPTIC_MODULE, TPM2_PKCS11_MODULE, and on PATH cakeys, camigrate,
-# softhsm2-util, pkcs11-tool, openssl and the TPM stack nix/tpm2-test-env.sh starts.
+# softhsm2-util, pkcs11-tool, openssl, jq and the TPM stack nix/tpm2-test-env.sh starts.
 # shellcheck source=examples/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 
@@ -45,13 +45,35 @@ expect 0 camigrate import hmac-sha256 --token kryo --allow-host-plaintext
 # it stays. Some stay (the DES3 key is not extractable, the HMAC key reached kryo from its
 # file), so the plan as a whole is 15; then each object that can go, by name.
 limit=60 expect 15 camigrate migrate --from soft --to kryo --dry-run
-for o in p256 p384 p521 ed25519 ed448 rsa2048 rsa4096 aes256 generic cert pubkey note; do
+# The objects a plan says can go (its JSON's ready ones), sorted: what the loops below move. They
+# must be the ones written here, so an object added to keys.toml, or one a plan stops moving,
+# fails the example instead of going unmigrated without a word.
+movable() {
+  local plan code=0
+  plan=$(camigrate migrate --from soft --to "$1" --dry-run --json "${@:2}") || code=$?
+  [ "$code" = 15 ] || {
+    echo "  → the plan for $1 exited $code, expected 15" >&2
+    exit 1
+  }
+  jq -r '.plans[] | select(.ready) | .object' <<<"$plan" | sort | paste -sd' ' -
+}
+want_movable() {
+  [ "$2" = "$3" ] || {
+    echo "  → the plan for $1 moves: $2; the example expects: $3" >&2
+    exit 1
+  }
+}
+moves=$(movable kryo)
+want_movable kryo "$moves" "aes256 cert ed25519 ed448 generic note p256 p384 p521 pubkey rsa2048 rsa4096"
+for o in $moves; do
   expect 0 camigrate migrate "$o" --from soft --to kryo
 done
 # tpm2-pkcs11 imports only plaintext, so its keys pass through camigrate's memory: said, and
 # allowed per run. A TPM takes fewer types; the plan says which and why.
 limit=60 expect 15 camigrate migrate --from soft --to tpm --dry-run --allow-host-plaintext
-for o in p256 p384 rsa2048 cert; do
+moves=$(movable tpm --allow-host-plaintext)
+want_movable tpm "$moves" "cert p256 p384 rsa2048"
+for o in $moves; do
   expect 0 camigrate migrate "$o" --from soft --to tpm --allow-host-plaintext
 done
 

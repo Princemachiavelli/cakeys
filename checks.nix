@@ -155,10 +155,14 @@
       quint typecheck ${spec}
       quint run ${spec} --seed 1 --max-samples 2000 --max-steps 12 --invariant invariants \
         --witnesses ${pkgs.lib.concatMapStringsSep " " (w: "decidedBy${w}") witnesses} | tee run.txt
-      if grep ' witnessed in 0 trace' run.txt; then
-        echo "a rule no simulated run reaches" >&2
-        exit 1
-      fi
+      # A positive count per witness, not the absence of a zero: a reworded or missing line
+      # fails the check instead of passing it.
+      for w in ${pkgs.lib.concatStringsSep " " witnesses}; do
+        if ! grep -Eq "^decidedBy$w was witnessed in [1-9][0-9]* trace" run.txt; then
+          echo "quint: no simulated run reaches decidedBy$w (or quint no longer reports it)" >&2
+          exit 1
+        fi
+      done
       quint verify ${spec} --max-steps 2 --invariant invariants | tee verify.txt
       mkdir $out
       cp run.txt verify.txt $out/
@@ -330,6 +334,27 @@
         }).signing
           { }
       ).id;
+    # A lock path that does not exist is an error, in `id` and in `check` alike, not a silent
+    # first use; `null` is the lock not yet recorded.
+    assert
+      let
+        missing =
+          (self.lib.mkKeys {
+            inherit cakeys;
+            config = ./crates/cli/tests/fixtures/keys.toml;
+            lock = ./crates/cli/tests/fixtures/no-such.lock;
+          }).signing
+            { };
+      in
+      fails missing.id && fails missing.check;
+    assert
+      !(pkgs.lib.hasInfix "--lock"
+        (self.lib.mkKeys {
+          inherit cakeys;
+          config = ./crates/cli/tests/fixtures/keys.toml;
+        }).signing
+          { }
+      ).check;
     # No scheme: the CLI verifies every ID the spec computes; a scheme also requires it.
     assert pkgs.lib.hasInfix "check signing-cert --token softhsm" signing-cert.check;
     assert pkgs.lib.hasInfix "check signing-cert.id.certhash"
@@ -371,6 +396,60 @@
   # examples/: each example's run.sh on throwaway tokens (a software TPM among them), and its
   # Nix files evaluated.
   examples = pkgs.callPackage ./nix/examples.nix { inherit self cakeys; };
+  # The NixOS module's assertions, evaluated only (no VM): each configuration it must refuse is
+  # refused with its own message, and a sound one passes them all.
+  module-assertions =
+    let
+      eval =
+        m:
+        (pkgs.nixos {
+          imports = [
+            self.nixosModules.default
+            m
+          ];
+          services.cakeys.package = cakeys;
+        }).config;
+      # The failing assertions of the module's own (the rest of NixOS's minimal configuration
+      # has its own complaints, a missing root file system among them).
+      refused =
+        m:
+        map (a: a.message) (
+          builtins.filter (a: !a.assertion && pkgs.lib.hasPrefix "services.cakeys" a.message) (eval m).assertions
+        );
+      check = extra: {
+        services.cakeys.checks.k = {
+          config = ./crates/cli/tests/fixtures/keys.toml;
+          lock = "/var/lib/cakeys/keys.lock";
+          requiredBy = [ "signer.service" ];
+        }
+        // extra;
+      };
+      says = needle: m: builtins.any (pkgs.lib.hasInfix needle) (refused m);
+    in
+    assert refused (check { }) == [ ];
+    assert says "--uri-pin value" (check {
+      args = [
+        "--uri-pin"
+        "value"
+      ];
+    });
+    assert says "--uri-pin value" (check { args = [ "--uri-pin=value" ]; });
+    assert
+      refused (check {
+        args = [
+          "--uri-pin"
+          "value"
+        ];
+        outputFile = "/run/cakeys/k.pem";
+      }) == [ ];
+    assert says "requiredBy is empty" (check { requiredBy = [ ]; });
+    assert says "sandbox.pcscd.enable" { services.cakeys.tokens.p.pcscd = true; };
+    assert
+      refused {
+        services.cakeys.sandbox.pcscd.enable = true;
+        services.cakeys.tokens.p.pcscd = true;
+      } == [ ];
+    pkgs.runCommand "cakeys-module-assertions" { } "touch $out";
 }
 # x86_64-linux only, as Kani is packaged (nix/kani.nix): the Kani proofs in cakeys_core::fuzzing.
 // pkgs.lib.optionalAttrs (cakeys.kani != null) {

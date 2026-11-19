@@ -14,10 +14,14 @@ Copied into a deployment whose token uses `pinEnv`, the program opens a file nam
 dies with `FileNotFoundError` after the check passed. Handle `env:` (`os.environ[...]`) or state
 the restriction correctly. [read]
 
+**Fixed (2026-11-18):** `env:NAME` read from the environment. Test: examples/programs/run.sh signs with `pinEnv` (old: FileNotFoundError, mutation-checked).
+
 ### F2. A signal-killed `cakeys` gives a negative exit status — nit
 
 `examples/programs/sign.py:25-27`. `sys.exit(run.returncode)` with `-15` exits 241. Map negative
 codes to 128+N or 1. [read]
+
+**Fixed (2026-11-18):** negative return codes exit 128+N.
 
 ## Design
 

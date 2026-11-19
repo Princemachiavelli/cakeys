@@ -38,6 +38,11 @@ which is a naming convention rather than the `[match]`/hardware relation resolut
 names happen to align. Acceptable for a query tool, but a comment pointing at the convention
 (D10: pairs named `<module>+<hardware>`) would help. [read]
 
+**Fixed (2026-11-18):** the fallback matches the suffix against each `--layer`'s resolved
+profile name, as `resolution::choose` does, so a layer given by family names the same pair; the
+comment names the convention (D10) and that resolution shares it. Test:
+`a_hardware_layer_names_its_pair_by_its_profile_name`.
+
 ## Design
 
 - `supports` is the operator's view of what the gate decides; giving it its own reduced

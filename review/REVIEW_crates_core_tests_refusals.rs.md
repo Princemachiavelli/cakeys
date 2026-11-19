@@ -51,6 +51,8 @@ one would pass on any error. Fix: `matches!(e, KmError::NotFound(_))` (or whatev
 `crates/core/tests/refusals.rs:619-626` vs `crates/core/tests/properties.rs:353-359`. Same
 bound; this one is the better test (both edges). See properties.rs F6. [read]
 
+**Fixed (2026-11-18):** the duplicate in properties.rs is gone; this test also asserts exit 17. Test: `the_value_length_bound_is_inclusive`.
+
 ## Design
 
 - Exit codes are the contract (docs/CAKEYS.md, `KmError::exit_code`), messages are not; the

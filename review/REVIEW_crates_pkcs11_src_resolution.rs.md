@@ -22,6 +22,11 @@ documents the tie-break, but the run does not say it happened. Fix: when `tied.l
 note the tie and that `moduleProfile` picks the other; clear the hardware rows only when there is
 no token, as now. [read]
 
+**Fixed (2026-11-18):** with a token open, module profiles that tie on every match key are said
+in a note naming them all and the one used, and how to pin another
+(`tokens.<token>.moduleProfile`); docs/CAPROBE.md's CloudHSM row says so. Test:
+`profiles_that_tie_on_the_token_are_said`.
+
 ## Design
 
 - A family with one module profile and one with several treat an unrecorded module version

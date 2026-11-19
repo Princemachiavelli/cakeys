@@ -15,6 +15,10 @@ entry) makes every key of the token unattestable (16), although `parse_tobject` 
 rows without key material on purpose ("no reason to refuse the rest of the store"). Parse
 lazily in `find`, or keep refused rows aside and report them only if no row matches. [read]
 
+**Fixed (2026-11-18):** an unreadable row is kept aside (`Store::refused`); `find` returns a
+readable match, and with none says the unread rows (16) rather than "not found". Test:
+`one_unreadable_row_refuses_no_other` (and `a_store_file_is_read_or_refused`).
+
 ### F2. Malformed hex in a row is read as "attribute absent" — nit
 
 `crates/tpm2-pkcs11/src/attest/store.rs:271`. `hex(h).ok()` turns a corrupt `CKA_ID`,
@@ -22,12 +26,18 @@ lazily in `find`, or keep refused rows aside and report them only if no row matc
 store object … with CKA_ID" (11) or "carries no private blob" (15) — wrong cause and wrong exit
 code for a damaged store. Distinguish "absent" from "present but not hex" (16). [read]
 
+**Fixed (2026-11-18):** an attribute that is present but not a hex string is a damaged row
+(16), not an absent one. Test: `a_damaged_value_is_not_an_absent_one`.
+
 ### F3. Invalid UTF-8 is replaced, not refused — nit
 
 `crates/tpm2-pkcs11/src/attest/store.rs:85-93, 280`. `String::from_utf8_lossy` silently maps bad
 bytes to U+FFFD in YAML rows, the auth salt and the object-auth string; downstream hex/YAML
 parsing then fails with an unrelated message (or, for the salt, the unseal fails as "is the user
 PIN right?"). Refuse non-UTF-8 with a store error instead. [read]
+
+**Fixed (2026-11-18):** `text` and the object auth refuse non-UTF-8 bytes instead of replacing
+them. Tests: `a_store_file_is_read_or_refused`, `a_damaged_value_is_not_an_absent_one`.
 
 ## Design
 

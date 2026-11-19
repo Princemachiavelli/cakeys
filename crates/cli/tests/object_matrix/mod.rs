@@ -467,6 +467,9 @@ fn usage_attributes(kind: Kind, set: &[&str]) -> Vec<Attribute> {
     if kind.secret() {
         names.extend(["CKA_UNWRAP", "CKA_DERIVE"]);
     }
+    // Each bit once, wherever a kind's own list already has it (review object_matrix F4: a bare
+    // `dedup` removed only neighbours).
+    names.sort_unstable();
     names.dedup();
     names.into_iter().map(|n| usage_attribute(n, set.contains(&n))).collect()
 }
@@ -541,8 +544,8 @@ fn create_import(s: &Session, row: &Import, label: &str) -> Result<(), String> {
             let point = parsed.tbs_certificate().subject_public_key_info().subject_public_key.raw_bytes().to_vec();
             (
                 KeyType::EC_EDWARDS,
-                vec![Attribute::EcParams(ED25519_PARAMS.to_vec()), Attribute::Value(seed)],
-                vec![Attribute::EcParams(ED25519_PARAMS.to_vec()), Attribute::EcPoint(tlv(0x04, &point))],
+                vec![Attribute::EcParams(ED25519.to_vec()), Attribute::Value(seed)],
+                vec![Attribute::EcParams(ED25519.to_vec()), Attribute::EcPoint(tlv(0x04, &point))],
                 cert,
             )
         }
@@ -635,13 +638,10 @@ fn create(s: &Session, row: &Row, label: &str) -> Result<(), String> {
                 Attribute::Verify(row.usage.contains(&"CKA_SIGN")),
             ];
             let (mechanism, public) = match row.kind {
-                Kind::Ec => {
-                    (Mechanism::EccKeyPairGen, [public, vec![Attribute::EcParams(P256_PARAMS.to_vec())]].concat())
+                Kind::Ec => (Mechanism::EccKeyPairGen, [public, vec![Attribute::EcParams(P256.to_vec())]].concat()),
+                Kind::Ed25519 => {
+                    (Mechanism::EccEdwardsKeyPairGen, [public, vec![Attribute::EcParams(ED25519.to_vec())]].concat())
                 }
-                Kind::Ed25519 => (
-                    Mechanism::EccEdwardsKeyPairGen,
-                    [public, vec![Attribute::EcParams(ED25519_PARAMS.to_vec())]].concat(),
-                ),
                 _ => (
                     Mechanism::RsaPkcsKeyPairGen,
                     [public, vec![Attribute::ModulusBits(2048.into()), Attribute::PublicExponent(vec![1, 0, 1])]]
@@ -668,10 +668,6 @@ fn create(s: &Session, row: &Row, label: &str) -> Result<(), String> {
         }
     }
 }
-
-/// The DER `CKA_EC_PARAMS` of the grid's curves: the named curve's OID.
-const P256_PARAMS: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
-const ED25519_PARAMS: &[u8] = &[0x06, 0x03, 0x2b, 0x65, 0x70];
 
 /// What realising a row gave: what the lock recorded, or the exit code. With `immutables`, also
 /// the provenance the lock pins (the immutables that are true): what tells an imported private
@@ -772,13 +768,17 @@ pub fn check(t: &Target<'_>) {
                             token,
                             row.binding(),
                         ));
-                        match outcome(&w, "m", token, matches!(row, Item::Import(_))) {
+                        let got = match outcome(&w, "m", token, matches!(row, Item::Import(_))) {
                             Ok(got) => got,
                             Err((code, said)) => {
                                 report.lock().unwrap().push((i, said));
                                 format!("exit {code}")
                             }
-                        }
+                        };
+                        // What the row said is in the report: its directory goes (review
+                        // object_matrix F3: some 1,500 of them stayed per token and run).
+                        let _ = std::fs::remove_dir_all(&w.dir);
+                        got
                     };
                     results.lock().unwrap()[i] = Some(got);
                 }
@@ -815,7 +815,10 @@ pub fn check(t: &Target<'_>) {
     // (scripts/local-tests.sh runs a copy of the tree).
     if let Some(dir) = std::env::var_os("CAKEYS_UPDATE_OBJECTS") {
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(Path::new(&dir).join(&file), &text).unwrap();
+        let rewritten = Path::new(&dir).join(&file);
+        std::fs::write(&rewritten, &text).unwrap();
+        // Said in the log: a run with the variable set compares nothing (review object_matrix F2).
+        eprintln!("rewrote {}, not compared (CAKEYS_UPDATE_OBJECTS is set)", rewritten.display());
         return;
     }
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec-coverage/objects").join(&file);

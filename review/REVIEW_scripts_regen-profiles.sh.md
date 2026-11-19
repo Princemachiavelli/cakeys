@@ -22,6 +22,8 @@ the memory rule "regenerate, don't drift" assumes they are the same. Build
 `.#softhsm-unwrap-value-len` in the script (as scripts/local-tests.sh:26 does) and drop
 `softhsm` from the instructions. [read]
 
+**Fixed (2026-11-18):** builds and uses `.#softhsm-unwrap-value-len` (module and softhsm2-util); `softhsm` dropped from the instructions.
+
 ### F2. The TPM stack is started before the cleanup trap is set — nit
 
 `scripts/regen-profiles.sh:41-42`. If `tpm2-test-env.sh up` fails after starting swtpm (for
@@ -29,15 +31,21 @@ example on a port in use, the case the comment at line 40 anticipates), the scri
 swtpm, dbus-daemon and tpm2-abrmd left running on the host. Set the trap first; `down` tolerates
 missing PID files. [read]
 
+**Fixed (2026-11-18):** trap set before `up`.
+
 ### F3. Stale reference in the header — nit
 
 `scripts/regen-profiles.sh:4`. "set up the way the Nix check phase sets it up (nix/package.nix)":
 that setup is in nix/package-common.nix. [read]
 
+**Fixed (2026-11-18):** header names nix/package-common.nix.
+
 ### F4. Paths written into TOML unescaped — nit
 
 `scripts/regen-profiles.sh:46-49`. A `<dir>` or module path containing `"` or `\` yields an
 invalid keys.toml. Unlikely for the documented use. [read]
+
+**Fixed (2026-11-18):** paths written as escaped TOML strings (`toml_string`).
 
 ## Design
 

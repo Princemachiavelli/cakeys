@@ -16,6 +16,8 @@ scripts/local-tests.sh:60 (sed-parses the Nix list). One umbrella feature per to
 `patched-cryptoki = ["kwp", "cakeys-pkcs11/sign-after-init", "cakeys-pkcs11/rv-value"]`) would
 make the set one name and keep the lists from diverging. [read]
 
+**Fixed (2026-11-18):** Verified fixed (2026-11-18), unmarked until now.
+
 ### F2. A caret requirement on a release candidate — nit
 
 `Cargo.toml:91`. `pkcs12 = "0.2.0-rc.0"` matches every later `0.2.0-rc.N` and `0.2.x`; RCs carry

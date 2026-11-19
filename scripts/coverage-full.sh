@@ -112,12 +112,22 @@ if [ -n "$ftpm_profile" ]; then
   # The parent of the store: the platform's storage root key for the attestation, else transient.
   printf '%s\n' "${ran[@]}" >"$F/ran"
   printf '%s\n' "${failed[@]}" >"$F/failed"
+  # The private tpm2-abrmd on the host's TPM goes however this ends: a failed `up` stops what it
+  # started itself, and this covers an exit anywhere below.
+  trap 'bash nix/ftpm-test-env.sh down "$F"' EXIT
   bash nix/ftpm-test-env.sh up "$F" ${ftpm_attest:+persistent}
+  # The `||` after this subshell turns errexit off inside it: each step that must hold says so.
   (
     # shellcheck source=/dev/null
-    . "$F/env"
-    handles() { tpm2_getcap handles-persistent | grep -v 0x81000016 || true; }
-    before=$(handles)
+    . "$F/env" || exit 1
+    # The persistent handles but cakeys' Attestation Key. A failing tpm2_getcap fails it,
+    # rather than reading as an empty list that compares equal to another.
+    handles() {
+      local all
+      all=$(tpm2_getcap handles-persistent) || return 1
+      grep -v 0x81000016 <<<"$all" || true
+    }
+    before=$(handles) || exit 1
     export CAKEYS_FTPM_MODULE=$ftpm_module CAKEYS_FTPM_PROFILE=$ftpm_profile
     [ -z "$ftpm_attest" ] || export CAKEYS_FTPM_ATTEST=$ftpm_attest
     # caprobe first: its probe wants the fresh store.
@@ -126,11 +136,13 @@ if [ -n "$ftpm_profile" ]; then
       hardware "real TPM: cakeys" -E 'package(cakeys) & binary(ftpm)'
     printf '%s\n' "${ran[@]}" >"$F/ran"
     printf '%s\n' "${failed[@]}" >"$F/failed"
-    after=$(handles)
-    [ "$before" = "$after" ] || {
+    if ! after=$(handles); then
+      echo "coverage-full: THE TPM'S PERSISTENT HANDLES COULD NOT BE READ AFTER THE RUN" >&2
+      echo "real TPM: persistent handles unreadable after the run" >>"$F/failed"
+    elif [ "$before" != "$after" ]; then
       printf 'coverage-full: THE TPM'"'"'S PERSISTENT HANDLES CHANGED\nbefore:\n%s\nafter:\n%s\n' "$before" "$after" >&2
       echo "real TPM: persistent handles changed" >>"$F/failed"
-    }
+    fi
     lockout=$(tpm2_getcap properties-variable | sed -n 's/^TPM2_PT_LOCKOUT_COUNTER: *//p')
     [ "$lockout" = 0x0 ] || {
       echo "coverage-full: THE TPM'S LOCKOUT COUNTER IS $lockout, NOT 0" >&2
@@ -138,6 +150,7 @@ if [ -n "$ftpm_profile" ]; then
     }
   ) || echo "real TPM: the run stopped" >>"$F/failed"
   bash nix/ftpm-test-env.sh down "$F"
+  trap - EXIT
   mapfile -t ran < <(grep . "$F/ran" || true)
   mapfile -t failed < <(grep . "$F/failed" || true)
 else

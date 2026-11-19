@@ -20,6 +20,8 @@ fail with 17 on a broken config. The last test already does `env_remove("CAKEYS_
 `supports()` too (and in `ask`, which passes `--config` explicitly but could still read other
 `CAKEYS_*` variables). [read]
 
+**Fixed (2026-11-18):** runs go through `common::tool`, which removes `CAKEYS_CONFIG` (verified FIXED)..
+
 ### F2. Codes only; which profile or row answered is not checked — nit
 
 `crates/caprobe/tests/supports.rs:21-36`. Each case asserts the exit code. For most cases a wrong
@@ -29,12 +31,16 @@ the profile were not found at all. docs/CAPROBE.md describes `supports` printing
 asserting one line of stdout for the 16 cases (e.g. that `softhsm/2.7` was the profile
 consulted) would separate "unknown to the profile" from "no profile". [read]
 
+**Fixed (2026-11-18):** the 16 answers assert the profile consulted (`profiles: module <name>,`, `(none)` without one). Test: `supports_answers_from_the_embedded_profiles` [run].
+
 ### F3. Scratch directories bypass `common::test_dir` — nit
 
 `crates/caprobe/tests/supports.rs:43`, `:55`. Fixed names under `CARGO_TARGET_TMPDIR`
 (`supports-profiles`, `supports-token`) rather than `common::test_dir(name)`, which prefixes the
 package and binary so suites never share a directory (`crates/cli/tests/common/mod.rs:343-349`).
 No collision today. [read]
+
+**Fixed (2026-11-18):** the directories are `Workdir::new` (`test_dir`). Test: `supports_reads_profiles_from_a_directory` [run].
 
 ## Design
 

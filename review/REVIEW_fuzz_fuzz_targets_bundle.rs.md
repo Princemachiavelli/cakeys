@@ -17,6 +17,8 @@ between hosts; this target cannot see that. `Bundle` derives `PartialEq`, so the
 direct: for `Ok(b)`, `Bundle::parse(&b.to_toml()?) == Ok(b)`.
 [read]
 
+**Fixed (2026-11-18):** Verified fixed (2026-11-18), unmarked until now.
+
 ## Design
 
 None.

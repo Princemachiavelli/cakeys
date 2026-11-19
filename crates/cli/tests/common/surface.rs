@@ -7,8 +7,10 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-/// The verbs and long flags of `cmd` and its subcommands, as a test would write them
-/// (`lock`, `--dry-run`), less clap's own (`help`, `--help`, `--version`).
+/// The verbs, their visible aliases and the long flags of `cmd` and its subcommands, as a test
+/// would write them (`lock`, `verify`, `--dry-run`), less clap's own (`help`, `--help`,
+/// `--version`). A short flag (`-c`) is its long flag's other spelling, parsed by clap alone: not
+/// a surface of its own.
 fn surface(cmd: &clap::Command, out: &mut BTreeSet<String>) {
     for arg in cmd.get_arguments() {
         if let Some(long) = arg.get_long().filter(|l| !matches!(*l, "help" | "version")) {
@@ -17,6 +19,7 @@ fn surface(cmd: &clap::Command, out: &mut BTreeSet<String>) {
     }
     for sub in cmd.get_subcommands().filter(|s| s.get_name() != "help") {
         out.insert(sub.get_name().to_owned());
+        out.extend(sub.get_visible_aliases().map(str::to_owned));
         surface(sub, out);
     }
 }

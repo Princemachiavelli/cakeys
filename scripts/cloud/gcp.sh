@@ -77,12 +77,15 @@ labels() {
 }
 
 # The versions under any key of the ring that bill: neither destroyed nor scheduled for
-# destruction (the probe's keys and cakeys.toml's).
+# destruction (the probe's keys and cakeys.toml's). A gcloud failure fails it: "nothing bills"
+# is an answer only when every list succeeded. So its callers assign its output in a plain
+# statement, where errexit (and inherit_errexit inside it) holds, never in a condition.
 live_versions() {
-  local key
-  for key in $(gcloud kms keys list --keyring caprobe --location "$location" --format 'value(name.basename())'); do
+  local keys key
+  keys=$(gcloud kms keys list --keyring caprobe --location "$location" --format 'value(name.basename())')
+  for key in $keys; do
     gcloud kms keys versions list --key "$key" --keyring caprobe --location "$location" \
-      --filter 'state!=DESTROYED AND state!=DESTROY_SCHEDULED' --format 'value(name,state)' 2>/dev/null || true
+      --filter 'state!=DESTROYED AND state!=DESTROY_SCHEDULED' --format 'value(name,state)'
   done
 }
 
@@ -138,7 +141,7 @@ cakeys() {
   lib=$(nix build --no-link --print-out-paths "$repo#kmsp11")
   echo unused >"$state/pin"
   KMS_PKCS11_CONFIG=$(kms_config kmsp11) CAKEYS_GCP_PIN=$state/pin "$bin" \
-    --config "$tf/../gcp/cakeys.toml" --lock "${CAKEYS_GCP_LOCK:-$state/cakeys.lock}" --module "gcp=$lib/lib/libkmsp11.so" "$@"
+    --config "$tf/cakeys.toml" --lock "${CAKEYS_GCP_LOCK:-$state/cakeys.lock}" --module "gcp=$lib/lib/libkmsp11.so" "$@"
 }
 
 probe() {
@@ -183,10 +186,14 @@ EOF
     [[ $rc == 0 || $rc == 15 ]] || status=$rc
     echo "wrote $out (exit $rc)"
   done
-  if ((write)) && [[ -n $(live_versions) ]]; then
-    echo "versions still live (billing): run '$0 destroy'" >&2
-    live_versions >&2
-    status=1
+  if ((write)); then
+    local live
+    live=$(live_versions)
+    if [[ -n $live ]]; then
+      echo "versions still live (billing): run '$0 destroy'" >&2
+      echo "$live" >&2
+      status=1
+    fi
   fi
   return "$status"
 }
@@ -203,10 +210,13 @@ status() {
 }
 
 destroy() {
-  local name state
-  live_versions | while read -r name state; do
-    gcloud kms keys versions destroy "$name" --quiet --format 'value(name,state)'
-  done
+  local live version version_state
+  live=$(live_versions)
+  [[ -n $live ]] || return 0
+  while read -r version version_state; do
+    echo "destroying $version ($version_state)"
+    gcloud kms keys versions destroy "$version" --quiet --format 'value(name,state)'
+  done <<<"$live"
 }
 
 (($#)) || usage

@@ -47,6 +47,13 @@ and a session or login problem. Those are 15 or 16 conditions with a misleading 
 by the return value (`token::rv_of`): data or encrypted-data and wrapped-key errors to 13,
 template and mechanism errors to `to.unsupported(…)`. [read]
 
+**Fixed (2026-11-18):** `unwrap_failure` classifies a failed `C_UnwrapKey` by its `CK_RV`: only
+`CKR_ENCRYPTED_DATA_INVALID`/`_LEN_RANGE` and `CKR_WRAPPED_KEY_INVALID`/`_LEN_RANGE` are 13
+("tampered with"); a refused mechanism, parameter, unwrapping key or template (and a mechanism
+this build cannot name) is `Token::unsupported` (15); anything else (device, session, login) is
+16. Each carries its return value. CAMIGRATE.md's exit codes say so. Test:
+`an_unwrap_failure_is_tampering_only_when_the_data_is_bad`.
+
 ### F3. A bundle's `source.token` goes into the lock unchecked — nit
 
 `crates/camigrate/src/sealed.rs:379-381`, `:370`. The provenance `from` is whatever string the
@@ -54,17 +61,26 @@ template and mechanism errors to `to.unsupported(…)`. [read]
 reads like a file import in the lock. Provenance is "never a verdict", but checking the name
 against keys.toml, or saying in the record that the source is claimed, keeps the lock honest. [read]
 
+**Fixed (2026-11-18):** `import` refuses (17) a bundle whose `source.token` keys.toml does not
+name (`Bundle::check_source`), before anything is opened, so `file` or a made-up name never
+reaches `Origin::from`. Test: `the_source_must_be_a_token_keys_toml_names`.
+
 ### F4. `rfc5649`'s doc comment sits on `unwrap_declared` — nit
 
 `crates/camigrate/src/sealed.rs:605-609`. The paragraph "The RFC 5649 key wrap a token offers …"
 runs straight into `unwrap_declared`'s own, so `unwrap_declared` carries two doc paragraphs, the
 first about another function, and `rfc5649` (`:627`) has none. [read]
 
+**Fixed (2026-11-18):** the paragraph is `rfc5649`'s doc comment again.
+
 ### F5. Two ways to ask a token for a mechanism — nit
 
 `crates/camigrate/src/sealed.rs:539`. The fallback looks for `"CKM_RSA_AES_KEY_WRAP"` in
 `to.mechanism_names()`, while `rfc5649` (`:627-636`) asks `to.has(MechanismType::…)`. Both read
 the usable set, but one idiom would keep the two in step. [read]
+
+**Fixed (2026-11-18):** `rsa_aes_key_wrap(to)` asks `to.has(MechanismType::RSA_AES_KEY_WRAP)` as
+`rfc5649` asks (false without `kwp`, where the build cannot name it, which the message says).
 
 ## Design
 

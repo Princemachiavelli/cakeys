@@ -21,6 +21,9 @@ switch on it, was not checked; cryptoki and p11-kit use `C_GetInterface` or trea
 interface exists.
 [read]
 
+**Fixed (2026-11-18):** `table()` passes the real version on only up to 2.40 and says 2.40 above
+it; docs/FAULT_SHIM.md "Loading" says so. Test: `the_table_says_no_more_than_2_40`.
+
 ## Design
 
 - The hook dispatch (`=> hook`) is by convention: a hooked function must forward on its own,

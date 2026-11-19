@@ -30,15 +30,26 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout ca.
 printf 'subjectAltName = DNS:localhost\n' >san.cnf
 expect 0 openssl x509 -req -in web.csr -CA ca.pem -CAkey ca.key -days 1 -extfile san.cnf -out web.pem
 
-# The server: its certificate from a file, its key in the TPM. One connection, then it exits.
-port=${TLS_PORT:-24443}
-openssl s_server -accept "127.0.0.1:$port" -cert web.pem -key web-tls.pem -naccept 1 -quiet >server.log 2>&1 &
+# The server: its certificate from a file, its key in the TPM. One connection, then it exits. A
+# port of this run's own (TLS_PORT, else random), as lib.sh picks the TPM's. A server not up
+# within 10 s is the example's failure, said as such, not a client connection error. `-www`, as
+# configuration.nix runs it: the server answers by itself, so it neither ends the connection at
+# its stdin's EOF nor needs `-quiet` or `-brief` for that, which silence the ACCEPT line that
+# says it listens.
+port=${TLS_PORT:-$((18000 + RANDOM % 2000))}
+openssl s_server -accept "127.0.0.1:$port" -cert web.pem -key web-tls.pem -naccept 1 -www >server.log 2>&1 &
 server=$!
+ready=0
 for _ in $(seq 100); do
-  [[ $(<server.log) == *ACCEPT* ]] && break
+  [[ $(<server.log) == *ACCEPT* ]] && ready=1 && break
   kill -0 "$server" 2>/dev/null || break
   sleep 0.1
 done
+[ "$ready" = 1 ] || {
+  echo "  → the TLS server on port $port did not come up:"
+  sed 's/^/  /' server.log
+  exit 1
+}
 expect 0 openssl s_client -connect "127.0.0.1:$port" -CAfile ca.pem -verify_hostname localhost \
   -verify_return_error -brief </dev/null
 wait "$server" || true

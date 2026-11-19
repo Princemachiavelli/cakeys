@@ -14,12 +14,16 @@ check sets, and the HMAC-fix skip is tied to the same REQUIRE variable. Small an
 but with a JSON parse error instead of the CLI's message and code. Fix: keep the `Output`,
 assert `code == 0` with `stderr` in the message, then parse. [read]
 
+**Fixed (2026-11-18):** `caps` asserts exit 0 with stderr before parsing. Test: `caps_names_the_provider_and_what_the_module_offers` (not run).
+
 ### F2. Mechanism presence checked as a substring of the serialized list — nit
 
 `crates/caprobe/tests/tpm2.rs:25-26`. `caps["mechanisms"].to_string().contains("CKM_AES_KEY_GEN")`
 would also match a longer name such as `CKM_AES_KEY_GEN_SOMETHING` if one were listed; comparing
 array elements (`as_array().iter().any(|m| m == "CKM_AES_KEY_GEN")`) is exact. Harmless with
 today's names. [read]
+
+**Fixed (2026-11-18):** mechanisms compared as whole array elements..
 
 ## Design
 

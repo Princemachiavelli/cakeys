@@ -29,7 +29,7 @@ const COMMON: &[(&str, Use)] = &[
 fn of_class(class: ObjectClass) -> &'static [(&'static str, Use)] {
     #[allow(
         clippy::enum_glob_use,
-        reason = "the tables read as Both/Declared, cakeys' own two-variant enum; `expect` is not fulfilled on a `use` item"
+        reason = "the tables read as Both/Declared, cakeys' own `Use` variants; `expect` is not fulfilled on a `use` item"
     )]
     use Use::*;
     match class {

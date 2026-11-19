@@ -90,10 +90,24 @@ esac
 case $suite in
 tpm2 | references | dry_run)
   if [ -n "${CAKEYS_TPM_MODULE:-}" ]; then
-    # A port pair of its own: nextest numbers the tests running at once; else by process ID.
-    # CAKEYS_TPM_PORT_BASE moves the range, for two runs on one machine (scripts/local-tests.sh).
-    slot=${NEXTEST_TEST_GLOBAL_SLOT:-$(($$ % 4000))}
-    bash "$CAKEYS_TPM_ENV_SH" up "$D/tpm" $((${CAKEYS_TPM_PORT_BASE:-24000} + 2 * slot)) || {
+    # A port pair of its own: nextest numbers the tests running at once, so its slot is free.
+    # Without nextest nothing numbers them: a random slot, and another one if that pair turns out
+    # taken (a failed `up` stops what it started). CAKEYS_TPM_PORT_BASE moves the range, for two
+    # runs on one machine (scripts/local-tests.sh).
+    if [ -n "${NEXTEST_TEST_GLOBAL_SLOT:-}" ]; then
+      slots=$NEXTEST_TEST_GLOBAL_SLOT
+    else
+      slots="$((RANDOM % 4000)) $((RANDOM % 4000)) $((RANDOM % 4000)) $((RANDOM % 4000))"
+    fi
+    up=
+    for slot in $slots; do
+      rm -rf "$D/tpm"
+      if bash "$CAKEYS_TPM_ENV_SH" up "$D/tpm" $((${CAKEYS_TPM_PORT_BASE:-24000} + 2 * slot)); then
+        up=1
+        break
+      fi
+    done
+    [ -n "$up" ] || {
       tail -n 20 "$D"/tpm/*.log >&2
       exit 1
     }

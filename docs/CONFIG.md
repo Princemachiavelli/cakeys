@@ -62,7 +62,8 @@ tokenLabel = "main"
 # The user PIN, read from a file (or `pinEnv = "VAR"`: the PIN itself from the environment).
 # Without a PIN cakeys opens a public session and sees only public objects. A secret's file
 # (PIN, SO credential, a key file's passphrase) holds one line, its trailing line ending
-# dropped: a second line is invalid (17); an unset variable or unreadable file is 16.
+# dropped: a second line is invalid (17); an unset variable or unreadable file is 16. No secret
+# file may resolve into /nix/store, which anyone on the host can read (17, docs/FILE.md).
 pinFile = "/var/lib/softhsm/pin"
 # What only one tool reads sits in that tool's table, here inline: `probe` (caprobe), `migrate`
 # (camigrate) and `nix` (the Nix library); cakeys reads none of them.
@@ -180,9 +181,10 @@ curve = "secp256r1"
 # file is its value's bytes, or hex or base64 of them: told by valueLen, or said by
 # migrate.encoding = "raw", "hex" or "base64"; it needs one of the two (17).
 # `$NAME` resolves when camigrate reads it, so hosts that only check need not set it. A key's
-# file may not be in /nix/store (17), unless CAKEYS_ALLOW_NIX_STORE_KEYS=1 says the keys are
-# throwaway (docs/FILE.md). An encrypted file names its passphrase as a token names its
-# PIN: passphraseFile or passphraseEnv.
+# file, and any passphraseFile, may not resolve into /nix/store (17), through a symlink or `..`
+# as directly, unless CAKEYS_ALLOW_NIX_STORE_KEYS=1 says the keys are throwaway (docs/FILE.md).
+# An encrypted file names its passphrase as a token names its PIN: passphraseFile or
+# passphraseEnv.
 migrate = { file = "$WEB_TLS_KEY" }
 
 # ── Specs: one use of an object, and where it lives on each token ──────────────────────
@@ -247,7 +249,7 @@ tokens.yubikey = { locator = { CKA_LABEL = "X.509 Certificate for Retired Key 1"
 object = "signing"
 # `publicOnly` identifies a private key through its public key object, without logging in
 # (spares PIV PIN retries). It implies `token-asserted` and `origin = "adopt"`, and forbids policy
-# attributes.
+# attributes; a configured proof (`binding = "pop-ecdh"`, …) beside it is invalid (17).
 tokens.yubikey = { locator = { CKA_ID = "05" }, publicOnly = true }
 
 [specs.release-note]

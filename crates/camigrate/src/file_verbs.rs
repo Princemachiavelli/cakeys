@@ -23,7 +23,9 @@ impl Run<'_> {
         how: &MoveArgs,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
-        let moves = self.plan(objects, from, dest, &[], how, false, notes)?;
+        // The source is opened once, for the plan and the hand-over.
+        let source = self.opener.open(from, Access::Scratch, notes);
+        let (moves, source) = self.plan(objects, from, dest, &[], how, false, source, notes)?;
         moves.ready()?;
         let [p] = moves.plans.as_slice() else {
             return Err(KmError::Validation(
@@ -32,10 +34,10 @@ impl Run<'_> {
             )
             .into());
         };
-        let (cfg, opener) = (&self.opener.cfg, &self.opener);
+        let cfg = &self.opener.cfg;
         let pass = read_passphrase(pass)?;
         let src = source_target(cfg, &self.lock, &p.object, from)?;
-        let source = opener.open(from, Access::Scratch, notes)?;
+        let source = self.source(from, source, notes)?;
         cakeys_pkcs11::ops::verify(&src, &source, &self.lock, notes)?;
         let h = source
             .find_key(src.object, &src.on_token.locator, false)?
@@ -46,13 +48,7 @@ impl Run<'_> {
         let bytes = match p.method {
             Some(Method::Pkcs12) => {
                 let cert = self.paired_certificate(&p.object, from, &source, notes)?;
-                let id = self
-                    .lock
-                    .objects
-                    .get(&p.object)
-                    .and_then(|o| o.ids.get(cakeys_core::id::Scheme::Rfc7093m4.name()))
-                    .cloned()
-                    .unwrap_or_default();
+                let id = local_key_id(&self.lock, &p.object)?;
                 file::write_pkcs12(&pkcs8, &cert, &pass, id.as_bytes())?
             }
             _ => file::write_pkcs8(&pkcs8, &pass)?.into_bytes(),
@@ -139,7 +135,7 @@ impl Run<'_> {
             if public::already_there(&dst, &target, &self.lock, notes)? {
                 notes.note(format_args!("{dst} is already realised and verifies; nothing to import"));
             } else {
-                host::free_locator(&dst, &target, Some(&spki))?;
+                public::free_locator(&dst, &target, Some(&spki))?;
                 import_checks(&dst, &target, &read.method, opener.registry, notes)?;
                 println!("{dst}: {object} by {} (file) from {}: ready", read.method, input.display());
             }
@@ -266,6 +262,22 @@ impl Run<'_> {
     }
 }
 
+/// The `localKeyId` a PKCS#12 export pairs the key and its certificate by: the key's locked
+/// `rfc7093m4`, which importers pair on, so never empty.
+///
+/// # Errors
+///
+/// `PreconditionFailed` (14) when the lock pins no `rfc7093m4` for `object`.
+fn local_key_id(lock: &Lock, object: &str) -> cakeys_core::Result<String> {
+    let scheme = cakeys_core::id::Scheme::Rfc7093m4.name();
+    lock.objects.get(object).and_then(|o| o.ids.get(scheme)).cloned().ok_or_else(|| {
+        KmError::PreconditionFailed(
+            format!("the lock pins no {scheme} for '{object}', which a PKCS#12 pairs its key and certificate by")
+                .into(),
+        )
+    })
+}
+
 /// The passphrase in `path` (its one line, [`cakeys_core::secret::read`]), zeroized when dropped.
 /// Never empty.
 fn read_passphrase(path: &Path) -> cakeys_core::Result<Zeroizing<String>> {
@@ -369,7 +381,7 @@ fn from_its_file(
     if how.dry_run {
         match class {
             Class::PrivateKey | Class::SecretKey => {
-                host::free_locator(dst, to, m.spki.as_deref())?;
+                public::free_locator(dst, to, m.spki.as_deref())?;
             }
             _ => {
                 public::preflight(dst, to, &m.bytes)?;
@@ -397,4 +409,26 @@ fn from_its_file(
         *lock = before;
     }
     moved.map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A PKCS#12's `localKeyId` is the key's locked `rfc7093m4`, and a lock that pins none is
+    /// refused (14), never an empty ID importers would pair on.
+    #[test]
+    fn a_pkcs12_pairs_by_the_locked_rfc7093m4_or_not_at_all() {
+        let mut lock = Lock::default();
+        let id = cakeys_core::id::sri(b"spki");
+        let mut object = cakeys_core::config::LockObject::default();
+        object.ids.insert("rfc7093m4".into(), id.clone());
+        lock.objects.insert("k".into(), object);
+        assert_eq!(local_key_id(&lock, "k").unwrap(), id);
+        lock.objects.insert("bare".into(), cakeys_core::config::LockObject::default());
+        for unpinned in ["bare", "absent"] {
+            let e = local_key_id(&lock, unpinned).unwrap_err();
+            assert!(e.exit_code() == 14 && e.to_string().contains(unpinned), "{e}");
+        }
+    }
 }

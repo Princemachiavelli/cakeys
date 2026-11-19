@@ -19,6 +19,10 @@ reads: then `check_attestation` and `plan_templates` are skipped without a note,
 `attestation = true` spec passes `validate` to be refused only when the token opens. Fix: push
 a note when the lookup returns `None`. [read]
 
+**Fixed (2026-11-18):** a provider name no registry entry carries is a note ("provider '<p>' is
+not in this build: its attestation and templates are checked only when the token opens"), never
+a silent skip. Test: `a_provider_this_build_lacks_is_said`.
+
 ### F2. `stack` discards the recorded-answers note when the lock has no module recorded — nit
 
 `crates/pkcs11/src/gate.rs:67-77`. `with_answers` pushes "N answer(s) recorded ... decide
@@ -26,6 +30,9 @@ before profile ..." into `resolved.notes`, then `resolved.notes = vec![...]` rep
 when `recorded` is `None` (an observation with capabilities but no module/token, e.g. an older
 lock). Fix: replace only the notes resolution produced (clear before `with_answers`, or push the
 "chosen by provider alone" note instead of assigning). [read]
+
+**Fixed (2026-11-18):** (lead) `stack` keeps the recorded-answers note when the provider-alone
+note is added. Test: `the_recorded_answers_note_survives_the_provider_alone`.
 
 ## Design
 

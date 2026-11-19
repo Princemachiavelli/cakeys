@@ -172,11 +172,39 @@ fn reported(row: &Row, public: bool) -> Vec<(&'static str, bool)> {
     v
 }
 
-/// Refuse a declared attribute libkmsp11 would report otherwise, or not at all.
+/// Refuse a declared attribute libkmsp11 would report otherwise, or not at all. A key's
+/// `CKA_ALLOWED_MECHANISMS` is its algorithm's set: on the private key it chose the row
+/// ([`algorithm_for`]); on the public key it must be that same set (kmsp11 lib.rs F2), never
+/// passed over.
 fn check_reported(row: &Row, declared: &std::collections::BTreeMap<String, AttrValue>, public: bool) -> Result<()> {
     let reported = reported(row, public);
     for (name, value) in declared {
-        let AttrValue::Bool(want) = value else { continue };
+        let want = match value {
+            AttrValue::Bool(want) => want,
+            AttrValue::Mechanisms(_) if !public && name == "CKA_ALLOWED_MECHANISMS" => continue,
+            AttrValue::Mechanisms(declared) if name == "CKA_ALLOWED_MECHANISMS" => {
+                let mut allowed = row.mechanisms.clone();
+                allowed.sort();
+                if *declared == allowed {
+                    continue;
+                }
+                return Err(KmError::Unsupported(
+                    format!(
+                        "Cloud KMS {} keys allow [{}], on the public key as on the private: not \
+                         CKA_ALLOWED_MECHANISMS = [{}]",
+                        row.algorithm,
+                        allowed.join(", "),
+                        declared.join(", ")
+                    )
+                    .into(),
+                ));
+            }
+            AttrValue::Mechanisms(_) => {
+                return Err(KmError::Unsupported(
+                    format!("Cloud KMS keys do not report {name}: libkmsp11 could not show it as declared").into(),
+                ));
+            }
+        };
         match reported.iter().find(|(n, _)| n == name) {
             Some((_, has)) if has == want => {}
             Some((_, has)) => {
@@ -536,6 +564,14 @@ mod tests {
         refused(&ec, &spec(&[yes("CKA_DERIVE")], &[]), None, "CKA_DERIVE = false");
         refused(&ec, &spec(&[yes("CKA_SIGN"), yes("CKA_EXTRACTABLE")], &[]), None, "CKA_EXTRACTABLE = false");
         refused(&ec, &spec(&[yes("CKA_SIGN")], &[yes("CKA_PRIVATE")]), None, "on the public key");
+        // The public key's allowed mechanisms are its algorithm's, as the private key's are
+        // (kmsp11 lib.rs F2): another set is refused, not passed over.
+        let allowed = |names: &[&str]| ("CKA_ALLOWED_MECHANISMS", AttrValue::mechanisms(names.iter().map(|n| (*n).into())));
+        let public = |names: &[&str]| spec(&[yes("CKA_SIGN")], &[allowed(names)]);
+        assert_eq!(pick(&ec, &public(&["CKM_ECDSA_SHA256", "CKM_ECDSA"]), None), Ok("EC_SIGN_P256_SHA256".into()));
+        refused(&ec, &public(&["CKM_ECDSA"]), None, "on the public key as on the private");
+        let both = spec(&[yes("CKA_SIGN"), allowed(&["CKM_ECDSA", "CKM_ECDSA_SHA256"])], &[allowed(&["CKM_ECDSA"])]);
+        refused(&ec, &both, None, "not CKA_ALLOWED_MECHANISMS = [CKM_ECDSA]");
         refused(&ec, &spec(&[yes("CKA_SIGN")], &[]), Some(Binding::PopEcdh), "do not derive");
         refused(&object(Kt::Aes, None, None, Some(32)), &spec(&[], &[]), None, "CMAC");
         refused(&object(Kt::GenericSecret, None, None, Some(32)), &spec(&[], &[]), None, "typed");

@@ -14,12 +14,19 @@ probed capability row (answer and `via`), one sorted line per difference. Clear,
 (the binding layer does, and layers are not diffed), so nothing drifts unseen now; the doc
 comment's "never compared" list should name it, or the line should be added for symmetry. [read]
 
+**Fixed (2026-11-18):** `diff` compares `subtract.key-types` as it does the mechanisms; the doc
+comment says both are. Test: `key_type_subtractions_and_repeated_restrictions_are_named`.
+
 ### F2. Duplicate `[[restrict]]` rows collapse silently — nit
 
 `crates/caprobe/src/diff.rs:94-96`.
 `restrictions` keys rows by `(operation, key_type)` in a `BTreeMap`, so two rows for the same
 pair on one side compare as the last one only. Profiles do not contain duplicates today; the
 profile parser would be the place to refuse them. [read]
+
+**Fixed (2026-11-18):** a pair listed twice on one side is a drift line of its own
+(`restrict.<op>.<kt>: observed|claimed more than once`). Refusing it in the profile parser
+belongs to the profile crate. Test: `key_type_subtractions_and_repeated_restrictions_are_named`.
 
 ## Design
 

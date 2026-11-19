@@ -8,9 +8,9 @@
 #[path = "../../cli/tests/common/mod.rs"]
 mod common;
 
-use common::xref::{Env, Plant, Ref};
+use common::xref::{Env, Ref};
 use common::*;
-use cryptoki::object::{Attribute, CertificateType, ObjectClass};
+use cryptoki::object::{Attribute, AttributeType, CertificateType, ObjectClass};
 use std::fmt::Write as _;
 use x509_cert::der::{Decode as _, Encode as _};
 
@@ -22,12 +22,7 @@ const CERT: &[u8] = include_bytes!("../../cli/tests/fixtures/adopt-cert.der");
 fn tokens(name: &str) -> Option<(Env, String)> {
     let real = suite_var("P11_FAULT_MODULE", "CAKEYS_FAULT_REQUIRE", name)?;
     let kryoptic = suite_var("CAKEYS_KRYOPTIC_MODULE", "CAKEYS_KRYOPTIC_REQUIRE", name)?;
-    let dir = test_dir(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("pin"), "1234\n").unwrap();
-    let token = |name, module| Ref { name, module, token_label: "kmtest", env: &[], plant: Plant::Create, eddsa: true };
-    let e = Env { dir, refs: vec![token("softhsm", fault_shim()), token("kryoptic", kryoptic)] };
+    let e = Env::over(name, vec![created_ref("softhsm", fault_shim()), created_ref("kryoptic", kryoptic)]);
     let (soft, kry) = (&e.refs[0], &e.refs[1]);
     let moves = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n";
     let transport = |r: &Ref| {
@@ -96,14 +91,27 @@ fn tokens(name: &str) -> Option<(Env, String)> {
 fn faulted(e: &Env, name: &str, plan: &str, args: &[&str]) -> (i32, String, usize) {
     let (path, trace) = (e.dir.join(format!("{name}.toml")), e.dir.join(format!("{name}.jsonl")));
     std::fs::write(&path, plan).unwrap();
-    let leak = |p: &std::path::Path| -> &'static str { Box::leak(p.to_str().unwrap().to_owned().into_boxed_str()) };
-    let env: &'static [(&str, &str)] =
-        Box::leak(Box::new([("P11_FAULT_PLAN", leak(&path)), ("P11_FAULT_TRACE", leak(&trace))]));
+    let env = ref_env(&[("P11_FAULT_PLAN", path.to_str().unwrap()), ("P11_FAULT_TRACE", trace.to_str().unwrap())]);
     let r = Ref { env, ..e.refs[0].clone() };
     let o = e.km_alone(&r, args);
     let text = std::fs::read_to_string(&trace).unwrap_or_default();
     let fired = text.lines().filter(|l| !l.contains("\"rule\":null")).count();
     (code(&o), stderr(&o), fired)
+}
+
+/// Every token object on `module`'s token `kmtest`: its class, label, ID and key type, sorted
+/// (an object's handle may differ from one session to the next).
+fn objects(module: &str) -> Vec<String> {
+    let s = open_session(module, "kmtest", "1234");
+    let kinds = [AttributeType::Class, AttributeType::Label, AttributeType::Id, AttributeType::KeyType];
+    let mut all: Vec<String> = s
+        .find_objects(&[Attribute::Token(true)])
+        .unwrap()
+        .into_iter()
+        .map(|h| format!("{:?}", s.get_attributes(h, &kinds).unwrap()))
+        .collect();
+    all.sort();
+    all
 }
 
 /// A move the module fails part-way: the source's wrap, the target's unwrap, the creation or
@@ -144,12 +152,18 @@ fn a_move_the_module_fails_is_refused_and_undone() {
         let module = if label == "f-ek" { &e.refs[1].module } else { &real };
         open_session(module, "kmtest", "1234").labelled(label).len()
     };
+    // Both tokens, the source's too: a key-encryption key or a loaded transport key the error
+    // path left as a token object would show there (review fault.rs F1: only the target's label
+    // was looked for). `real` is SoftHSM itself, past the shim.
+    let tokens = || (objects(&real), objects(&e.refs[1].module));
+    let before = tokens();
     for (name, args, plan, exit, why) in &cases {
         let (code, said, fired) = faulted(&e, name, plan, args);
         assert_eq!(code, *exit, "{name}: {said}");
         assert!(said.contains(why), "{name}: expected {why:?} in {said}");
         assert_eq!(fired, 1, "{name}: the rule fired {fired} times");
         assert_eq!(on_target(&format!("f-{}", args[1])), 0, "{name}: left objects on the target");
+        assert_eq!(tokens(), before, "{name}: left objects on a token");
         assert_eq!(std::fs::read(e.dir.join("keys.lock")).unwrap(), lock, "{name}: changed the lock");
     }
     // The undoing itself refused: what was imported is still there, and said to be.
@@ -159,10 +173,15 @@ fn a_move_the_module_fails_is_refused_and_undone() {
     assert!(said.contains("is still on the token"), "{said}");
     assert!(on_target("f-kk") > 0);
     assert_eq!(std::fs::read(e.dir.join("keys.lock")).unwrap(), lock, "kept: changed the lock");
-    // Nothing was the moves' own fault: with no plan, the two not left half-done go through.
+    // Nothing was the moves' own fault: with no plan, the three not left half-done go through,
+    // and each lands where it was sent, recorded and verified (review fault.rs F2: exit 0
+    // alone passed a move that recorded nothing).
     for args in [out, host, cert] {
         let o = e.km_alone(&e.refs[0], args);
         assert_eq!(common::code(&o), 0, "{args:?}: {}", stderr(&o));
+        let (spec, to) = (format!("{}-dst", args[1]), args[5]);
+        let o = e.cakeys(&e.refs[0], &["verify", "--spec", &spec, "--token", to]);
+        assert_eq!(common::code(&o), 0, "{spec} on {to}: {}", stderr(&o));
     }
 }
 
@@ -199,8 +218,7 @@ fn an_import_killed_part_way_has_recorded_what_it_made() {
     let import: &[&str] = &["import", "--token", "softhsm", "--in", path];
     let plan = e.dir.join("killed.toml");
     std::fs::write(&plan, "[[rule]]\nfn = \"C_CreateObject\"\ncall = 2\nabort = true\n").unwrap();
-    let env: &'static [(&str, &str)] =
-        Box::leak(Box::new([("P11_FAULT_PLAN", &*Box::leak(plan.to_str().unwrap().to_owned().into_boxed_str()))]));
+    let env = ref_env(&[("P11_FAULT_PLAN", plan.to_str().unwrap())]);
     let o = e.km_alone(&Ref { env, ..e.refs[0].clone() }, import);
     assert_eq!(o.status.code(), None, "the plan did not end the run: {}", stderr(&o));
     let on_target = |label: &str| open_session(&real, "kmtest", "1234").labelled(label).len();
@@ -245,12 +263,7 @@ fn a_failed_move_leaves_the_others_moving() {
     let name = "fault-migrate-rest";
     let Some(real) = suite_var("P11_FAULT_MODULE", "CAKEYS_FAULT_REQUIRE", name) else { return };
     let Some(kryoptic) = suite_var("CAKEYS_KRYOPTIC_MODULE", "CAKEYS_KRYOPTIC_REQUIRE", name) else { return };
-    let dir = test_dir(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("pin"), "1234\n").unwrap();
-    let token = |name, module| Ref { name, module, token_label: "kmtest", env: &[], plant: Plant::Create, eddsa: true };
-    let e = Env { dir, refs: vec![token("softhsm", fault_shim()), token("kryoptic", kryoptic)] };
+    let e = Env::over(name, vec![created_ref("softhsm", fault_shim()), created_ref("kryoptic", kryoptic)]);
     let (soft, kry) = (&e.refs[0], &e.refs[1]);
     let mut body = String::new();
     let session = open_session(&kry.module, "kmtest", "1234");

@@ -32,6 +32,9 @@ error. A malformed RSA key or an unsupported algorithm is reported as "does not 
 the object's type", sending the user after the wrong problem. Keep the type-mismatch text for
 the SEC1 curve case it was written for (the comment at `:85`) and append the original error. [read]
 
+**Fixed (2026-11-18):** the refusal keeps the type-mismatch text and appends the decoder's own
+error. Test: `a_key_that_does_not_decode_says_why`.
+
 ## Design
 
 - Two places decide whether bytes are a private key: `holds_private_key` and `entries`/`der_entry`.

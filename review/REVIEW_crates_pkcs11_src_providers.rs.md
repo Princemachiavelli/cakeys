@@ -11,6 +11,8 @@ hint) and notes on the data providers. Trivial and correct; one stale sentence.
 tpm2-pkcs11, kmsp11) are provider crates": aws-cloudhsm is one too (`crates/aws-cloudhsm`,
 `repair` and `stand_in`). Same drift as `REVIEW_crates_pkcs11_src_provider.rs.md` F1. [read]
 
+**Fixed (2026-11-18):** the module doc lists aws-cloudhsm among the provider crates.
+
 ## Design
 
 None.

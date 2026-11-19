@@ -94,7 +94,11 @@ tf_init() {
   tofu init -input=false -backend-config="path=$state/terraform.tfstate" >/dev/null
 }
 
-out() { tofu output -raw "$1" 2>/dev/null || true; }
+# An output's value, empty when the state has no such output (yet). Read from `output -json`:
+# `output -raw` exits 0 and prints a warning to stdout when the state has no outputs, and fails
+# alike for a missing output and a broken state. A failing OpenTofu (a broken state or backend)
+# is shown and fails, rather than leaving an empty host or ID for a later command to trip over.
+out() { tofu output -json | jq -r --arg name "$1" '.[$name].value // empty'; }
 
 pkg() { nix build --no-link --print-out-paths "$repo#$1"; }
 
@@ -327,6 +331,9 @@ probe() {
   label=$(runner "$opensc/bin/pkcs11-tool" --module "$p11/lib/libcloudhsm_pkcs11.so" -L |
     sed -n 's/^ *token label *: *//p' | sed 's/ *$//;q')
   echo "token label: $label"
+  # The PIN leaves the runner however this ends: a failing step below exits under errexit,
+  # where a RETURN trap or the `rm` after the probe would not run.
+  trap 'runner rm -f /run/caprobe/pin || true' EXIT
   runner install -D -m 600 /dev/stdin /run/caprobe/pin <<<"caprobe:$(secret cu)"
   runner install -D -m 644 /dev/stdin /run/caprobe/keys.toml <<EOF
 [tokens.cloudhsm]
@@ -381,6 +388,8 @@ tool() {
   bin=$(realpath "$bin")
   wait_runner
   copy "$p11" "$softhsm" "$(dirname "$(dirname "$bin")")"
+  # Written for this run and removed when the script exits, whatever happens on the way.
+  trap 'runner rm -f /run/cakeys/pin || true' EXIT
   runner install -D -m 600 /dev/stdin /run/cakeys/pin <<<"caprobe:$(secret cu)"
   sed "s|^\[tokens.cloudhsm\]\$|&\nmoduleProfile = \"$(profile_name "$p11")\"|" "${CAKEYS_AWS_CONFIG:-$tf/cakeys.toml}" |
     runner install -D -m 644 /dev/stdin /root/cakeys/keys.toml

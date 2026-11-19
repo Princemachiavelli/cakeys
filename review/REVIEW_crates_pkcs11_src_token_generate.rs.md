@@ -39,6 +39,10 @@ refusal is the real answer (e.g. a PIN or template problem), yet the user is sho
 OID refusal. Fix: when `retries_by_name` was decided by a profile row (not by the absence of
 one), report the second error. [read]
 
+**Fixed (2026-11-18):** `by_name_retry` says why a retry is made: under a `via = "by-name"` row
+the by-name attempt's refusal leads and keeps its `CK_RV`, with no row the OID refusal does; both
+are said (`by_name_refused`). Test: `the_by_name_retry_reports_the_attempt_that_answers`.
+
 ## Design
 
 - `create_declared` runs both `self.generation_key(on)` and `self.generation_public(on, None)`

@@ -35,6 +35,10 @@ write past the caller's buffer. Capture `*len` before forwarding (as `mechanism_
 `:128`) and corrupt only when `0 < n <= room`.
 [read]
 
+**Fixed (2026-11-18):** `corrupt_output` makes the real call itself, reads the caller's room
+before it, and corrupts only when `0 < n <= room` (a longer length is not believed, and the rule
+does not fire). Test: `corruption_stays_inside_the_callers_buffer`.
+
 ### F3. `add_label` can return the same handle in several batches — risk
 
 **Verification:** confirmed (downgraded to nit). The dedupe is per call (hooks.rs:96-103, `found.contains(&h)` on this batch only), so a module that returns matches over several short batches gets the decoy appended to each. cryptoki 0.12.1's iterator stops after the first short batch (`object_management.rs:157-163`), and an empty batch adds nothing (`!found.is_empty()`), so no client the tests use sees a duplicate; it is a docs/FAULT_SHIM.md:284 wording gap. [read]
@@ -48,11 +52,20 @@ a client that reads until a call returns zero (pkcs11-tool-style) sees the dupli
 added per caller session until `C_FindObjectsFinal`, or add only once per search.
 [read]
 
+**Fixed (2026-11-18):** while a plan has an `add_label` rule, `Searches` keeps what each caller
+session's search has returned, forgotten at its `C_FindObjectsInit` and `C_FindObjectsFinal`
+(both hooked now); an object is added only when no batch of the search returned it.
+docs/FAULT_SHIM.md says "a handle the search already returned". Test:
+`an_added_object_is_found_once_per_search`.
+
 ### F4. A failed `C_FindObjectsInit` is reported as `C_FindObjects` — nit
 
 `crates/p11-fault/src/hooks.rs:399-413`. `rv` from `C_FindObjectsInit` falls through to
 `failed("C_FindObjects", rv)`.
 [read]
+
+**Fixed (2026-11-18):** `named` names the function whose `rv` it reports. Test:
+`a_failed_search_start_is_named_as_such`.
 
 ## Design
 

@@ -18,6 +18,10 @@ key's own SPKI, already identified for that object, so this is not reachable in 
 compare `id::spki_curve(spki)` (or Q20's `KeyAlg::of_spki`) with `curve_of(object)` before
 building the attributes. [read]
 
+**Fixed (2026-11-18):** `public_key_attrs` reads the SPKI's algorithm and curve
+(`KeyAlg::of_spki`) and refuses one that is not the object's declared type and curve (13).
+Test: `the_spki_must_be_the_objects_type_and_curve`.
+
 ## Design
 
 None.

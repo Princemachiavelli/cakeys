@@ -31,35 +31,15 @@ mod proofs;
 mod tokens;
 mod validate;
 
-struct Env {
-    w: Workdir,
-    module: String,
-}
-
-impl std::ops::Deref for Env {
-    type Target = Workdir;
-    fn deref(&self) -> &Workdir {
-        &self.w
-    }
-}
-
-fn env(name: &str) -> Option<Env> {
-    let Ok(module) = std::env::var(REF.module_var) else {
-        assert!(std::env::var(REF.require_var).is_err(), "{} is required", REF.module_var);
-        eprintln!("skipping {name}: {} not set", REF.module_var);
-        return None;
-    };
+/// The reference's suite for test `name` (its tokens: [`reference_tokens`]), or `None` (skipped).
+fn env(name: &str) -> Option<Suite> {
+    let module = suite_var(REF.module_var, REF.require_var, name)?;
     // Through p11-fault, the variable names the module behind it, and the token loads the shim.
     let module = if REF.through_fault_shim { fault_shim() } else { module };
-    Some(Env { w: Workdir::new(name), module })
+    Some(Suite::new(name, module, reference_tokens))
 }
 
-impl Env {
-    /// Write keys.toml: the token header plus the given objects/specs.
-    fn config(&self, body: &str) {
-        self.write_config(&(reference_tokens(&self.module, &self.dir) + body));
-    }
-
+impl Suite {
     /// Replace the lock with a hand-written one, keeping the realisations already recorded and the
     /// observations they name (the part under test is `objects`).
     fn write_lock_keeping_realisations(&self, text: &str) {
@@ -72,10 +52,6 @@ impl Env {
             }
         }
         std::fs::write(self.dir.join("keys.lock"), toml::to_string(&lock).unwrap()).unwrap();
-    }
-
-    fn session(&self) -> TestSession {
-        open_session(&self.module, "kmtest", "1234")
     }
 }
 
@@ -125,7 +101,7 @@ fn assert_swapped_key_conflict(o: &Output) {
     assert!(err.contains("proof of possession failed") || err.contains("disagrees with the key material"), "{err}");
 }
 
-impl Env {
+impl Suite {
     /// This test's copy of the module configuration with `mechanism` hidden, for [`Workdir::km_env`].
     fn hiding(&self, mechanism: &str) -> (&'static str, std::path::PathBuf) {
         let conf = std::fs::read_to_string(std::env::var(REF.conf_var).unwrap()).unwrap();

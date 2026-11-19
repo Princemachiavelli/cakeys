@@ -13,6 +13,8 @@ restores it. A good negative control.
 defaults (lines 24-25, 31). If the module's defaults or the node's `nix.settings` change, the test
 fails for the wrong reason; interpolate them from the node's config. [read]
 
+**Fixed (2026-11-18):** start-id, id-count and the nixbld gid from the node config.
+
 ## Design
 
 None.

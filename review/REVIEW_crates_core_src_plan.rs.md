@@ -17,6 +17,11 @@ and passes `plan_mode`; the realisation is recorded `token-asserted`, `assurance
 author asked for a proof. Fix: refuse any `Some(b)` with `b != TokenAsserted` under
 `publicOnly`, as for `pop-sign`. [read]
 
+**Fixed (2026-11-18):** `check_binding` refuses (17) any configured binding other than
+`token-asserted` beside `publicOnly`, with the message pop-sign already had ("publicOnly cannot
+prove possession (binding = …)"); DESIGN.md and CONFIG.md say so. Test:
+`public_only_refuses_every_configured_proof`.
+
 ### F2. The Ed448 check matches curve strings, one of which can no longer occur — nit
 
 `crates/core/src/plan.rs:165`. `t.object.curve == "edwards448" || == "Ed448"`: keys.toml
@@ -24,12 +29,19 @@ curves are canonicalized at load (`ObjectCfg::canonicalize`), so `"Ed448"` never
 and the check bypasses the `ObjectKind`/`Curve` parse that load already did. Fix: match
 `t.object.kind()` (or `Curve::from_cfg`) against `Curve::Ed448`. [read]
 
+**Fixed (2026-11-18):** the check matches the parsed `ObjectKind` against `Curve::Ed448`.
+Test: `ed448_cannot_prove_by_signing`.
+
 ### F3. `plan_mode` re-parses the object type and re-wraps its error by hand — nit
 
 `crates/core/src/plan.rs:258-261`. `ObjectCfg::kind()` already ran for every object at load;
 here it is called again and its `Validation` re-prefixed, while an `Unsupported` is passed
 through unprefixed. Either store the parsed `ObjectKind` on the object at load, or prefix both
 kinds the same way. [read]
+
+**Fixed (2026-11-18):** `plan_mode` parses the kind once and prefixes any error kind with the
+target (`KmError::prefixed`), then hands the kind to `check_binding`. Test:
+`a_refused_object_type_names_its_target`.
 
 ## Design
 

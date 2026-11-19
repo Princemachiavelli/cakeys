@@ -231,7 +231,17 @@ Still open.
   not as things stand: a by-name generation is recorded as a plain `yes`, without the `via`,
   so a recorded answer over the profile's `via = "by-name"` row would stop the retry, and a
   YubiKey's second Ed25519 key would fail. Left: `ops::answers` should record `via = "by-name"` from
-  the `CreateNote`, the precondition for ever applying recorded answers at open.
+  the `CreateNote`, the precondition for ever applying recorded answers at open. **Done
+  2026-11-18:** `create` records `via = "by-name"` for a key the module took only by name, and
+  `create` opens its tokens with what the lock recorded of them (`Opener::recall`,
+  `Token::with_answers`), as `validate`'s static gate already did; no other verb does, as
+  observations never change their verdicts (docs/LOCK.md), nor caprobe, which measures the
+  module. Only an observation of the module and token the open found applies. A
+  recorded yes that names no `via` (a lock written before) keeps the profile's, so the YubiKey's
+  retry stands. Tests: `a_curve_the_lock_records_by_name_is_tried_by_name` (fault shim,
+  SoftHSM: the lock's by-name answer makes the retry over the profile's plain yes, and the key
+  made so is recorded by name), `a_recorded_answer_keeps_the_profiles_way_unless_it_names_one`;
+  each fails with its half undone.
 
 ## Poor practices and hard-to-read code
 

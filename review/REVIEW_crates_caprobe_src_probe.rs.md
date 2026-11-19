@@ -93,6 +93,10 @@ regeneration script) writes a kryoptic profile carrying SoftHSM's `[migration]` 
 not compared). Fix: refuse when the existing file's family differs from the generated one's
 (after `--name`/`--diff` naming), unless the operator passes the name explicitly. [read]
 
+**Fixed (2026-11-18):** `keep_claims` refuses (17) a file holding another family's profile, and
+one holding another profile of the family unless `--name` was given (`renamed`); CAPROBE.md says
+so. Test: `claims_are_kept_only_from_the_same_profile`.
+
 ### F5. Delete rows read a failed lookup as "deleted" — practice
 
 `crates/caprobe/src/probe.rs:760-779`, `:490-497`.
@@ -102,6 +106,12 @@ example the module's session went bad, the same condition that can stop F1), `af
 every class probed gets `delete.<class> = yes` and no leftover note. An error is reported as the
 strongest positive answer. Fix: on a failed count after destroying, mark the rows undetermined
 (push to `made.undetermined`) instead of writing them. [read]
+
+**Fixed (2026-11-18):** `count_by_class` and `Scratch::leftovers` return the failed lookup
+(`C_FindObjects`, or a class read) as an error; `delete_rows` writes no row from a count that
+failed, before or after the destroys, and the run says why in its undetermined list, as it does
+for a failed leftover check. Test: `a_failed_count_writes_no_delete_row` (the decision); a token
+run with the lookup failing is for the lead's fault suite.
 
 ### F6. Proof and import evidence still cut out of cryptoki's `Display` text — practice
 
@@ -117,6 +127,12 @@ rewords its error prose, or a token named like a word in a message, changes rege
 with no behaviour change. Fix: build evidence from `KmError`'s context plus `rv_value_name(rv)`
 where `rv()` is set (as `refused` does), and add a test over representative messages. [read]
 
+**Fixed (2026-11-18):** `evidence_text` takes out only the token crate's forms of the name
+(`token 'N'`, never a bare quoted word), and where the error carries its return value puts its
+`CKR_*` name in place of cryptoki's prose (`<what>: CKR_X: Function::Y`, the token crate's own
+form); without it the prose is cut as before. No committed profile's evidence has the cut form,
+so none changes. Test: `evidence_names_the_return_value_not_the_prose`.
+
 ### F7. The read-only ECDH probe swallows a failed destroy — practice
 
 `crates/caprobe/src/probe.rs:1452`.
@@ -124,6 +140,10 @@ where `rv()` is set (as `refused` does), and add a test over representative mess
 the same failure as the `derive.destroy` note because tpm2-pkcs11 persists derived secrets.
 The read-only derivation on that module leaves a store row with no note. Fix: route it through
 the same `destroy` closure/note. [read]
+
+**Fixed (2026-11-18):** `destroy_derived` is the one destroy of a derived secret, with its
+`derive.destroy` note, for the sealed, extractable and read-only derivations. Needs a token whose
+module keeps derived secrets (tpm2-pkcs11) to observe; no unit test.
 
 ### F8. `derive` is 110 lines with a four-state result encoded in nested Options — complexity
 
@@ -139,6 +159,12 @@ inline, see the §4(c) note in ISSUES.md for why it stays raw), `probe_bound` (7
 (100-170). The file holds `Draft`, `Ops`, `Scratch`, `Made` and every probe; splitting
 `Draft`/`Ops`/`Scratch` into their own modules would make the probe bodies easier to find. [read]
 
+**Fixed (2026-11-18), `derive`:** `SealedPath` (derives, wrong secret, fall back with why) is the
+sealed attempt's outcome; `try_sealed` and `try_extractable` are the two paths over one
+`Derivation`, `note_template` and `destroy_derived` their shared notes, and `derive` is the
+choice between them. Behaviour unchanged, so no new test. The other long probes and the module
+split are left as the review's suggestion.
+
 ### F9. `cakeys-probe-unbound` is tracked by handle only — nit
 
 `crates/caprobe/src/probe.rs:870-874`.
@@ -146,6 +172,9 @@ inline, see the §4(c) note in ISSUES.md for why it stays raw), `probe_bound` (7
 generate there gets no `delete.*` count or leftover check for that key (only the next run's
 `clear_stale` sees it by prefix). Use `scratch.track(&[private, public], "cakeys-probe-unbound")`.
 [read]
+
+**Fixed (2026-11-18):** `probe_unbound` tracks the pair by its label. Only a purpose-bound
+module that generates there (none known) reaches it; no unit test.
 
 ### F10. Small inconsistencies — nit
 
@@ -160,6 +189,13 @@ generate there gets no `delete.*` count or leftover check for that key (only the
 - `:1110-1119`: only the 2048-bit key gets the RSA operation probes and becomes the transport
   key; a module that refuses 2048 (or `--rsa-max-bits` below it) gets no RSA operation, wrap or
   move probes, with only a generic undetermined line.
+
+**Fixed (2026-11-18):** the default name is `default_name` (the version `clean`ed as the match
+key is); `advertised()` is read once in `probe` and once in `probe_key_wraps`; the by-name curve
+attempt is the second of the iteration (`i > 0`); a failed second `wrap_key` is an
+`unwrap-template` note; the RSA operation probes and transport key take the 2048-bit key, or
+the next usable size up (`operates_on`), and without any the run names why. Tests:
+`the_default_name_cleans_the_version`, `rsa_operations_run_on_the_first_usable_key_from_2048`.
 
 ## Design
 

@@ -8,15 +8,17 @@ pub mod surface;
 pub mod xref;
 
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
+use cryptoki::mechanism::Mechanism;
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use cryptoki::session::{Session, UserType};
 use cryptoki::types::AuthPin;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-/// The binary under test, and its name for the logs: the including package's own (Cargo sets
-/// `CARGO_BIN_EXE_<name>` only for the package's binaries).
+/// The binary under test: the including package's own (Cargo sets `CARGO_BIN_EXE_<name>` only
+/// for the package's binaries).
 pub const BIN: &str = match (
     option_env!("CARGO_BIN_EXE_cakeys"),
     option_env!("CARGO_BIN_EXE_caprobe"),
@@ -25,11 +27,6 @@ pub const BIN: &str = match (
     (Some(b), _, _) | (None, Some(b), _) | (None, None, Some(b)) => b,
     (None, None, None) => panic!("included by a package with no cakeys, caprobe or camigrate binary"),
 };
-pub const TOOL: &str = match (option_env!("CARGO_BIN_EXE_cakeys"), option_env!("CARGO_BIN_EXE_caprobe")) {
-    (Some(_), _) => "cakeys",
-    (None, Some(_)) => "caprobe",
-    (None, None) => "camigrate",
-};
 
 /// What the tools read from the environment when no flag says it: a developer's real keys.toml
 /// and lock (review common/mod.rs F1), and the Nix build markers, which only a test that sets
@@ -37,12 +34,123 @@ pub const TOOL: &str = match (option_env!("CARGO_BIN_EXE_cakeys"), option_env!("
 pub const SCRUBBED: [&str; 4] = ["CAKEYS_CONFIG", "CAKEYS_LOCK", "NIX_BUILD_TOP", "IN_NIX_SHELL"];
 
 /// `bin` to run from a test, with none of [`SCRUBBED`]: every test's run of a tool starts here.
-pub fn tool(bin: impl AsRef<std::ffi::OsStr>) -> Command {
+pub fn tool(bin: impl AsRef<OsStr>) -> Command {
     let mut c = Command::new(bin);
     for var in SCRUBBED {
         c.env_remove(var);
     }
     c
+}
+
+/// A run of a tool on a keys.toml: [`tool`] with `--config`, the environment a test gives it
+/// (variables set and removed), its output logged for the test's own. Every helper that runs a
+/// tool against a keys.toml builds one (review D9: each had its own copy, scrubbing differently).
+pub struct Run {
+    command: Command,
+    /// What the log names the run by: the binary, and a note (xref's reference).
+    name: String,
+}
+
+impl Run {
+    /// `bin --config <config>`.
+    pub fn new(bin: impl AsRef<OsStr>, config: &Path) -> Run {
+        let bin = bin.as_ref();
+        let mut command = tool(bin);
+        command.arg("--config").arg(config);
+        Run { command, name: Path::new(bin).file_name().unwrap_or(bin).to_string_lossy().into_owned() }
+    }
+
+    pub fn env(mut self, var: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Run {
+        self.command.env(var, value);
+        self
+    }
+
+    pub fn envs<K: AsRef<OsStr>, V: AsRef<OsStr>>(mut self, vars: impl IntoIterator<Item = (K, V)>) -> Run {
+        self.command.envs(vars);
+        self
+    }
+
+    pub fn env_remove(mut self, var: impl AsRef<OsStr>) -> Run {
+        self.command.env_remove(var);
+        self
+    }
+
+    /// `note` beside the binary's name in the log.
+    pub fn note(mut self, note: &str) -> Run {
+        self.name = format!("{} ({note})", self.name);
+        self
+    }
+
+    /// The command with `args`, for a test that drives the process itself.
+    pub fn command(mut self, args: &[&str]) -> Command {
+        self.command.args(args);
+        self.command
+    }
+
+    /// Run with `args` to the end.
+    pub fn output(mut self, args: &[&str]) -> Output {
+        let out = self.command.args(args).output().unwrap();
+        log_run(&self.name, args, &out);
+        out
+    }
+
+    /// Run with `args`, bounded in time: on hardware, a touch or PIN prompt fails the test
+    /// instead of hanging it.
+    ///
+    /// # Panics
+    ///
+    /// When the run takes longer than `limit`.
+    pub fn within(mut self, args: &[&str], limit: Duration) -> Output {
+        self.command.args(args);
+        let out = output_within(self.command, limit).unwrap_or_else(|| {
+            panic!(
+                "{} {} did not finish within {limit:?}: user presence (touch or PIN) needed?",
+                self.name,
+                args.join(" ")
+            )
+        });
+        log_run(&self.name, args, &out);
+        out
+    }
+}
+
+fn log_run(name: &str, args: &[&str], out: &Output) {
+    eprintln!(
+        "$ {name} {}\n  exit={:?}\n  stdout={}\n  stderr={}",
+        args.join(" "),
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).trim(),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+}
+
+/// `command`'s output, or `None` (the child killed) when it runs longer than `limit`. Both pipes
+/// are read while it runs: a child that writes more than a pipe holds blocks until someone reads,
+/// and read only after it exited, it never did (review common/mod.rs F3).
+pub fn output_within(mut command: Command, limit: Duration) -> Option<Output> {
+    fn drain(mut pipe: impl std::io::Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = pipe.read_to_end(&mut bytes);
+            bytes
+        })
+    }
+    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let (stdout, stderr) = (drain(child.stdout.take().unwrap()), drain(child.stderr.take().unwrap()));
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if started.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let (stdout, stderr) = (stdout.join().unwrap(), stderr.join().unwrap());
+    status.map(|status| Output { status, stdout, stderr })
 }
 
 /// Another binary of this workspace, beside [`BIN`] in the target directory. Cargo gives a test
@@ -58,22 +166,38 @@ pub fn sibling(name: &str) -> PathBuf {
     path
 }
 
-/// The value of the suite variable `var` (a module path), else `None` with a skip message —
-/// unless `require` is set, which makes a missing one a failure.
+/// The value of `var` (a module path), else `None` — unless `require` is set, which makes a
+/// missing one a failure. Every suite's gate reads its module through this (review D9).
+pub fn required_var(var: &str, require: &str) -> Option<String> {
+    let v = std::env::var(var).ok();
+    assert!(v.is_some() || std::env::var_os(require).is_none(), "{var} is required ({require} is set)");
+    v
+}
+
+/// [`required_var`] for the suite `test` belongs to: `None` says it is skipped.
 pub fn suite_var(var: &str, require: &str, test: &str) -> Option<String> {
-    let Ok(v) = std::env::var(var) else {
-        assert!(std::env::var(require).is_err(), "{var} is required");
+    let v = required_var(var, require);
+    if v.is_none() {
         eprintln!("skipping {test}: {var} not set");
-        return None;
-    };
-    Some(v)
+    }
+    v
+}
+
+/// A hardware suite's opt-in: its variables, all set or none, and the variable that makes it
+/// required (a run that means the suite, `scripts/coverage-full.sh`, sets it beside them).
+#[derive(Clone, Copy)]
+pub struct OptIn<const N: usize> {
+    pub vars: [&'static str; N],
+    pub require: &'static str,
 }
 
 /// The ftpm suites' opt-in: the module and its pair profile, both or neither.
-pub const FTPM_OPT_IN: [&str; 2] = ["CAKEYS_FTPM_MODULE", "CAKEYS_FTPM_PROFILE"];
+pub const FTPM_OPT_IN: OptIn<2> =
+    OptIn { vars: ["CAKEYS_FTPM_MODULE", "CAKEYS_FTPM_PROFILE"], require: "CAKEYS_FTPM_REQUIRE" };
 /// The opt-in of the `YubiKey` suites that log in: the PIN and management-key files, both or
 /// neither. The module alone is the read-only probe's (caprobe).
-pub const YUBIKEY_OPT_IN: [&str; 2] = ["CAKEYS_TEST_YUBIKEY_PIN", "CAKEYS_TEST_YUBIKEY_MGM"];
+pub const YUBIKEY_OPT_IN: OptIn<2> =
+    OptIn { vars: ["CAKEYS_TEST_YUBIKEY_PIN", "CAKEYS_TEST_YUBIKEY_MGM"], require: "CAKEYS_YUBIKEY_REQUIRE" };
 
 /// A `YubiKey` suite that logs in: the module, the PIN file and the management-key file, opted
 /// in by [`YUBIKEY_OPT_IN`]; with them, a missing module fails.
@@ -84,32 +208,39 @@ pub fn yubikey_opted_in(test: &str) -> Option<[String; 3]> {
     Some([module, pin, mgm])
 }
 
-/// A hardware suite's opt-in (review D9), read through `env`: every one of `vars` set, their
-/// values; none, `None` (the suite is skipped). Some but not all is an error naming the missing
-/// ones: setting any says the run wants the suite, and a half-set one must not pass empty.
+/// A hardware suite's opt-in (review D9), read through `env`: every one of its variables set,
+/// their values; none, `None` (the suite is skipped), unless its require variable is set. Some
+/// but not all is an error naming the missing ones: setting any says the run wants the suite,
+/// and a half-set one must not pass empty; so does the require variable alone (review ftpm.rs
+/// F2: a run that meant the suite, without its variables, passed having run nothing).
 ///
 /// # Errors
 ///
-/// The message for a half-set opt-in.
+/// The message for a half-set opt-in, or a required one not set.
 pub fn opt_in<const N: usize>(
-    vars: [&str; N],
+    o: OptIn<N>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Option<[String; N]>, String> {
-    let got = vars.map(env);
-    let missing: Vec<&str> = vars.iter().zip(&got).filter(|(_, v)| v.is_none()).map(|(n, _)| *n).collect();
+    let got = o.vars.map(env);
+    let missing: Vec<&str> = o.vars.iter().zip(&got).filter(|(_, v)| v.is_none()).map(|(n, _)| *n).collect();
+    let required = env(o.require).is_some();
     match missing.len() {
         0 => Ok(Some(got.map(Option::unwrap_or_default))),
-        n if n == N => Ok(None),
-        _ => Err(format!("{} not set: the opt-in is {}, all or none", missing.join(", "), vars.join(", "))),
+        n if n == N && !required => Ok(None),
+        _ => {
+            let why = if required { format!("; {} is set", o.require) } else { String::new() };
+            Err(format!("{} not set: the opt-in is {}, all or none{why}", missing.join(", "), o.vars.join(", ")))
+        }
     }
 }
 
-/// [`opt_in`] on the process's environment: `None` with a skip message, a failure when half set.
-pub fn opted_in<const N: usize>(test: &str, vars: [&str; N]) -> Option<[String; N]> {
-    match opt_in(vars, &|v| std::env::var(v).ok()) {
+/// [`opt_in`] on the process's environment: `None` with a skip message, a failure when half set
+/// or required.
+pub fn opted_in<const N: usize>(test: &str, o: OptIn<N>) -> Option<[String; N]> {
+    match opt_in(o, &|v| std::env::var(v).ok()) {
         Ok(Some(values)) => Some(values),
         Ok(None) => {
-            eprintln!("skipping {test}: {} not set", vars.join(", "));
+            eprintln!("skipping {test}: {} not set", o.vars.join(", "));
             None
         }
         Err(e) => panic!("{test}: {e}"),
@@ -140,6 +271,22 @@ pub fn tpm2_tokens(module: &str, dir: &Path) -> String {
     token("tpm", &format!("pinFile = \"{}\"\nprobe = {{ scratch = true }}", pin.display()))
         + &token("tpm-anon", "")
         + &token("tpm-generic", &format!("pinFile = \"{}\"\nprovider = \"generic\"", pin.display()))
+}
+
+/// The tpm2-pkcs11 store of the TPM harnesses (nix/tpm2-test-env.sh, nix/ftpm-test-env.sh).
+pub fn tpm2_store() -> String {
+    std::env::var("TPM2_PKCS11_STORE").expect("TPM2_PKCS11_STORE: the TPM harness's store")
+}
+
+/// `tpm2_ptool <args> --path <store>`, which must succeed.
+pub fn ptool_in(store: &str, args: &[&str]) {
+    let out = Command::new("tpm2_ptool").args(args).arg(format!("--path={store}")).output().unwrap();
+    assert!(out.status.success(), "tpm2_ptool {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// `tpm2_ptool <args>` on the harness's token `kmtest` ([`tpm2_store`], user PIN 1234).
+pub fn ptool(args: &[&str]) {
+    ptool_in(&tpm2_store(), &[args, &["--label=kmtest", "--userpin=1234"]].concat());
 }
 
 /// The host's real TPM: `ftpm` (logged in, scratch: the harness's store is made for the run).
@@ -262,53 +409,19 @@ pub fn yubikey_label(module: &str) -> String {
     ctx.get_token_info(slot).unwrap().label().to_string()
 }
 
-/// Run the binary on `config` bounded in time: on hardware, a touch or PIN prompt fails the
-/// test instead of hanging it.
+/// The binary on `config`, bounded in time ([`Run::within`]).
 ///
 /// # Panics
 ///
 /// When the run takes longer than `limit`.
 pub fn run_within(config: &Path, args: &[&str], limit: Duration) -> Output {
-    let mut child = tool(BIN)
-        .arg("--config")
-        .arg(config)
-        .args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let started = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            // The child is done; the pipes still hold (and now end) its output.
-            let mut stdout = Vec::new();
-            let mut stderr = Vec::new();
-            if let Some(mut p) = child.stdout.take() {
-                std::io::Read::read_to_end(&mut p, &mut stdout).unwrap();
-            }
-            if let Some(mut p) = child.stderr.take() {
-                std::io::Read::read_to_end(&mut p, &mut stderr).unwrap();
-            }
-            eprintln!(
-                "$ {TOOL} {}\n  exit={:?}\n  stdout={}\n  stderr={}",
-                args.join(" "),
-                status.code(),
-                String::from_utf8_lossy(&stdout).trim(),
-                String::from_utf8_lossy(&stderr).trim()
-            );
-            return Output { status, stdout, stderr };
-        }
-        if started.elapsed() > limit {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("{TOOL} {} did not finish within {limit:?}: user presence (touch or PIN) needed?", args.join(" "));
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    Run::new(BIN, config).within(args, limit)
 }
 
 /// Whether the linked cryptoki has the HMAC key type fix (nix/patches/); the Nix build does.
 /// Without it, tests needing SHA-224/384/512 HMAC keys skip, unless `require` (then they fail).
+/// A suite that may skip says which variable requires it through [`hmac_types_fixed`];
+/// `true` is for one that never skips (a hardware suite, once opted in).
 pub fn cryptoki_hmac_types_fixed(require: bool) -> bool {
     let fixed = std::os::raw::c_ulong::from(cryptoki::object::KeyType::SHA384_HMAC) == 0x2c;
     assert!(fixed || !require, "cryptoki lacks the HMAC key type fix (nix/patches/cryptoki-hmac-key-types.patch)");
@@ -316,6 +429,12 @@ pub fn cryptoki_hmac_types_fixed(require: bool) -> bool {
         eprintln!("skipping: cryptoki lacks the HMAC key type fix; run through the Nix build");
     }
     fixed
+}
+
+/// [`cryptoki_hmac_types_fixed`], required where the suite's `require_var` is set (review
+/// common/mod.rs F7: callers computing the flag passed `false`, or another suite's variable).
+pub fn hmac_types_fixed(require_var: &str) -> bool {
+    cryptoki_hmac_types_fixed(std::env::var_os(require_var).is_some())
 }
 
 /// A software PKCS#11 token the shared suite (`tests/reference/`) runs against: the facts the
@@ -472,8 +591,7 @@ pub fn stderr(o: &Output) -> String {
 }
 
 /// A test's scratch directory — keys.toml, keys.lock and a PIN file holding `1234` — and the
-/// `cakeys` runs against it. Each suite's `Env` holds one (and derefs to it) beside its own
-/// skip/require gate and token header.
+/// runs of the tool against it. A token suite's test holds one in its [`Suite`].
 pub struct Workdir {
     pub dir: PathBuf,
 }
@@ -507,21 +625,12 @@ impl Workdir {
     /// `cakeys --config keys.toml <args>` with `envs` set, logged for the test's output. The
     /// suites themselves run in a Nix build: only a test that sets `NIX_BUILD_TOP` means it.
     pub fn km_env(&self, args: &[&str], envs: &[(&str, &Path)]) -> Output {
-        let out = tool(BIN)
-            .envs(envs.iter().copied())
-            .arg("--config")
-            .arg(self.dir.join("keys.toml"))
-            .args(args)
-            .output()
-            .unwrap();
-        eprintln!(
-            "$ {TOOL} {}\n  exit={:?}\n  stdout={}\n  stderr={}",
-            args.join(" "),
-            out.status.code(),
-            String::from_utf8_lossy(&out.stdout).trim(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-        out
+        self.run().envs(envs.iter().copied()).output(args)
+    }
+
+    /// A run on this keys.toml, for one that removes a variable or is bounded ([`Run`]).
+    pub fn run(&self) -> Run {
+        Run::new(BIN, &self.dir.join("keys.toml"))
     }
 
     /// The exit code of [`Self::km`].
@@ -533,6 +642,11 @@ impl Workdir {
         toml::from_str(&std::fs::read_to_string(self.dir.join("keys.lock")).unwrap()).unwrap()
     }
 
+    /// Replace keys.lock with `lock`: an edit made on the TOML, never on its text.
+    pub fn write_lock(&self, lock: &toml::Value) {
+        std::fs::write(self.dir.join("keys.lock"), toml::to_string(lock).unwrap()).unwrap();
+    }
+
     /// The `observations` entry the realisation of `spec` on `token` names.
     pub fn observation(&self, spec: &str, token: &str) -> toml::Value {
         let lock = self.lock();
@@ -542,6 +656,58 @@ impl Workdir {
 
     pub fn locked_id(&self, object: &str, scheme: &str) -> String {
         self.lock()["objects"][object]["ids"][scheme].as_str().unwrap().to_owned()
+    }
+}
+
+/// A token suite's test (review D9: each suite had its own copy): its [`Workdir`], the module
+/// its tokens load, and the token tables every keys.toml it writes starts with. A suite's gate
+/// makes one once its module is known ([`suite_var`], [`opted_in`]); what one suite alone does
+/// with it is an `impl Suite` in that suite.
+pub struct Suite {
+    w: Workdir,
+    /// The module the suite's tokens load, which the test also opens itself ([`Self::session`]).
+    pub module: String,
+    tokens: String,
+    /// What every keys.toml the test writes is shown first ([`Self::checking`]).
+    check: fn(&str),
+}
+
+impl std::ops::Deref for Suite {
+    type Target = Workdir;
+    fn deref(&self) -> &Workdir {
+        &self.w
+    }
+}
+
+impl Suite {
+    /// Test `name`'s fresh [`Workdir`], its keys.toml starting with `tokens(module, dir)`.
+    pub fn new(name: &str, module: String, tokens: impl FnOnce(&str, &Path) -> String) -> Suite {
+        let w = Workdir::new(name);
+        let tokens = tokens(&module, &w.dir);
+        Suite { w, module, tokens, check: |_| {} }
+    }
+
+    /// The suite with `check` shown every keys.toml before it is written: tpm2's refuses an
+    /// attestation (a persistent TPM object) anywhere but its swtpm.
+    pub fn checking(self, check: fn(&str)) -> Suite {
+        Suite { check, ..self }
+    }
+
+    /// keys.toml: the suite's tokens and `body`.
+    pub fn config(&self, body: &str) {
+        self.write_config(&(self.tokens.clone() + body));
+    }
+
+    /// keys.toml as `text`, once [`Self::checking`]'s check has seen it (it shadows
+    /// [`Workdir::write_config`]).
+    pub fn write_config(&self, text: &str) {
+        (self.check)(text);
+        self.w.write_config(text);
+    }
+
+    /// A logged-in session on the suite's token `kmtest` (PIN 1234).
+    pub fn session(&self) -> TestSession {
+        open_session(&self.module, "kmtest", "1234")
     }
 }
 
@@ -675,10 +841,37 @@ pub fn unwrap_octets(v: &[u8]) -> Vec<u8> {
     v[off..].to_vec()
 }
 
+/// `CKA_EC_PARAMS` (the curve's OID, DER) of each curve the tests name, and the EC key OID.
 pub const EC_PUBLIC_KEY: &[u8] = &[0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
+pub const P256: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
 pub const P384: &[u8] = &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22];
+pub const P521: &[u8] = &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23];
 pub const ED25519: &[u8] = &[0x06, 0x03, 0x2b, 0x65, 0x70];
 pub const ED448: &[u8] = &[0x06, 0x03, 0x2b, 0x65, 0x71];
+
+/// Replace the private key under `label` with another of its kind, as a token that swapped one
+/// would hold (review reference/mod.rs F2: written five times): a pair generated by `mechanism`
+/// from `public` (the curve or modulus) and `private` (usage and policy); its public half a
+/// session object, so the public key object under the label stays the original's. The original
+/// private key is destroyed and the new one takes the label, with `extra` (a forged
+/// `CKA_PUBLIC_KEY_INFO`).
+pub fn swap_private_key(
+    s: &Session,
+    label: &str,
+    mechanism: &Mechanism,
+    public: &[Attribute],
+    private: &[Attribute],
+    extra: &[Attribute],
+) {
+    let labelled = Attribute::Label(label.as_bytes().to_vec());
+    let original = s.find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), labelled.clone()]).unwrap();
+    assert_eq!(original.len(), 1, "one private key under {label}");
+    let public = [&[Attribute::Token(false)], public].concat();
+    let private = [&[Attribute::Token(true)], private].concat();
+    let (_, other) = s.generate_key_pair(mechanism, &public, &private).unwrap();
+    s.destroy_object(original[0]).unwrap();
+    s.update_attributes(other, &[&[labelled], extra].concat()).unwrap();
+}
 
 /// SPKI of the public key object under `label`, built from its raw PKCS#11 attributes.
 pub fn oracle_spki(s: &Session, label: &str) -> Vec<u8> {
@@ -784,25 +977,28 @@ pub fn des3_commitment(key: &[u8; 24], scheme: &str) -> String {
 /// after initializes afresh: tpm2-pkcs11 sees objects other processes made only after a new
 /// `C_Initialize` (cryptoki >= 0.11 no longer finalizes on drop).
 pub struct Module {
-    path: String,
+    path: PathBuf,
     ctx: Pkcs11,
 }
 
-/// The contexts held now, by module file, with how many hold each.
-static MODULES: std::sync::Mutex<std::collections::BTreeMap<String, (Pkcs11, usize)>> =
+/// The contexts held now, by module file (its canonical path), with how many hold each.
+static MODULES: std::sync::Mutex<std::collections::BTreeMap<PathBuf, (Pkcs11, usize)>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 impl Module {
-    /// Hold `path`'s context, initializing the module if nothing holds it.
+    /// Hold `path`'s context, initializing the module if nothing holds it. Keyed by the file, not
+    /// the name: a module named two ways (a symlink, a relative path) is one library in the
+    /// process, and a second `C_Initialize` of it fails (review common/mod.rs F4).
     pub fn open(path: &str) -> Module {
+        let file = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
         let mut held = MODULES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (ctx, count) = held.entry(path.to_owned()).or_insert_with(|| {
-            let ctx = Pkcs11::new(path).unwrap();
+        let (ctx, count) = held.entry(file.clone()).or_insert_with(|| {
+            let ctx = Pkcs11::new(&file).unwrap();
             ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();
             (ctx, 0)
         });
         *count += 1;
-        Module { path: path.to_owned(), ctx: ctx.clone() }
+        Module { path: file, ctx: ctx.clone() }
     }
 }
 
@@ -845,7 +1041,7 @@ impl TestSession {
         self.find_objects(&[Attribute::Label(label.as_bytes().to_vec())]).unwrap()
     }
 
-    /// Destroy every object labelled with one of `labels`: the token is shared between runs.
+    /// Destroy every object labelled with one of `labels`.
     pub fn clear(&self, labels: &[&str]) {
         for h in labels.iter().flat_map(|l| self.labelled(l)) {
             self.destroy_object(h).unwrap();
@@ -877,4 +1073,56 @@ pub fn open_session(module: &str, label: &str, pin: &str) -> TestSession {
         Err(e) => panic!("login to '{label}': {e}"),
     }
     TestSession { session: Some(session), ctx: Some(ctx) }
+}
+
+/// A Security Officer session on `label` (SO PIN `so_pin`), on its module's shared context
+/// ([`Module`]): for a test that plants what only the SO may make (a `CKA_TRUSTED` key), without
+/// initializing and finalizing the module under another holder (review camigrate `dry_run.rs`
+/// F2). No user session of the process may be logged in on the token meanwhile (PKCS#11 §5.6).
+pub fn open_so_session(module: &str, label: &str, so_pin: &str) -> TestSession {
+    let ctx = Module::open(module);
+    let slot = ctx
+        .get_slots_with_token()
+        .unwrap()
+        .into_iter()
+        .find(|s| ctx.get_token_info(*s).unwrap().label() == label)
+        .unwrap();
+    let session = ctx.open_rw_session(slot).unwrap();
+    if let Err(e) = session.login(UserType::So, Some(&AuthPin::new(so_pin.into()))) {
+        panic!("SO login to '{label}': {e}");
+    }
+    TestSession { session: Some(session), ctx: Some(ctx) }
+}
+
+/// A reference whose material is made through its module (`C_CreateObject`) on token `kmtest`,
+/// in no environment of its own: for a test that sets up its own references ([`xref::Env::over`]).
+pub fn created_ref(name: &'static str, module: String) -> xref::Ref {
+    xref::Ref { name, module, token_label: "kmtest", env: &[], plant: xref::Plant::Create, eddsa: true }
+}
+
+/// `vars` as an [`xref::Ref`]'s environment, which is `'static`: leaked, here alone (review
+/// camigrate `dry_run.rs` F8, `fault.rs` F4: each test leaked its own). An owned environment in
+/// `Ref` would remove the leak.
+pub fn ref_env(vars: &[(&'static str, &str)]) -> &'static [(&'static str, &'static str)] {
+    let leak = |v: &str| -> &'static str { Box::leak(v.to_owned().into_boxed_str()) };
+    Box::leak(vars.iter().map(|(k, v)| (*k, leak(v))).collect::<Vec<_>>().into_boxed_slice())
+}
+
+impl xref::Env {
+    /// Test `name`'s fresh [`Workdir`] over `refs`: for a test that needs other references than
+    /// [`xref::env`]'s two or more (review camigrate `from_files.rs` F2, `fault.rs` F4).
+    pub fn over(name: &str, refs: Vec<xref::Ref>) -> xref::Env {
+        xref::Env { dir: Workdir::new(name).dir, refs }
+    }
+
+    /// The references `names`, in that order, or `None` with a skip message naming them all
+    /// (review camigrate `dry_run.rs` F3: the same lookup and skip, written once per test).
+    pub fn needs<const N: usize>(&self, test: &str, names: [&str; N]) -> Option<[&xref::Ref; N]> {
+        let found = names.map(|n| self.refs.iter().find(|r| r.name == n));
+        if found.iter().any(Option::is_none) {
+            eprintln!("skipping {test}: needs the {} references", names.join(" and "));
+            return None;
+        }
+        Some(found.map(Option::unwrap))
+    }
 }

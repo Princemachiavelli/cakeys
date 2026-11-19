@@ -25,6 +25,8 @@ the missing AES key), so the absence is shown to come from the hook; or add a co
 the default registry and the same arguments that does write `wrap.rsa-oaep.SHA-1` (as a
 subprocess of `BIN`, see F2). [read]
 
+**Fixed (2026-11-18):** a control run of the binary with the default providers and the same arguments must write `wrap.rsa-oaep.SHA-1` yes; the provider also records the move probes' templates. Test: `the_write_probes_make_their_secret_keys_through_the_provider` (not run).
+
 ### F2. `main_from` can be called once per process, a trap for the next in-process test — risk
 
 **Verification:** confirmed (downgraded to practice). The chain is as described: `main_from` (`crates/caprobe/src/lib.rs:160-185`) → `activate_profiles` (`crates/cli-common/src/lib.rs:40-43`) → `Set::activate`, whose `ACTIVE.set` fails the second time (`crates/profile/src/lib.rs:141-147`); but `template_hook.rs:54` is the only `main_from` caller in any test, so nothing fails today. A latent trap, the residual edge of ISSUES.md Q24 (marked Done). [read]
@@ -38,6 +40,8 @@ second activation refused with 17), or the reverse depending on which runs first
 `Set::activate_embedded` (ISSUES.md Q24) is repeatable but is not what `main_from` calls. Fix:
 document on `main_from` that it may run once per process, or let `activate_profiles` accept an
 already-active set that equals the one it would build. [read]
+
+**Decided (2026-11-18):** the header documents one `main_from` per process and why the control is a subprocess; the fix belongs in caprobe's lib.rs (another owner)..
 
 ## Design
 

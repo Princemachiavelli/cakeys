@@ -13,6 +13,11 @@ list all ten `Msg`-carrying variants; a new variant must be added to all three (
 `exit_code`). Fix: a `fn msg(&self) -> Option<&Msg>` beside `msg_mut`, with `rv` as
 `self.msg().and_then(Msg::rv)`; `into_msg` stays as the by-value form. [read]
 
+**Fixed (2026-11-18):** one `said!` macro lists the `Msg`-carrying variants once and serves
+by reference, mutable reference and value; a new public `msg()`, `msg_mut`, `into_msg` and
+`rv` (`self.msg().and_then(Msg::rv)`) are built on it, as is a new `prefixed` (prepends a
+subject to the message, used by config and plan). Test: `every_message_carries_its_return_value`.
+
 ### F2. `Validation` displays as "invalid spec:" for lock, config and option errors — nit
 
 `crates/core/src/error.rs:124-126`. Exit 17 covers an invalid keys.toml, an invalid keys.lock
@@ -20,6 +25,10 @@ list all ten `Msg`-carrying variants; a new variant must be added to all three (
 `invalid spec: keys.lock: object 'a' …`. A user reading "invalid spec" for a broken lock looks
 in the wrong file. Fix: `#[error("invalid: {0}")]`, or let the message carry its own subject
 (it already starts with the file name). Changing it touches tests that match on the prefix. [read]
+
+**Fixed (2026-11-18):** `Validation` displays as `invalid: {0}`; the message names its subject
+(keys.toml, keys.lock, an option). No test or doc matched the old prefix. Test:
+`an_invalid_lock_is_not_called_a_spec`.
 
 ## Design
 

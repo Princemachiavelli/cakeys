@@ -111,10 +111,12 @@ let
         token = mkOption {
           type = types.nullOr types.str;
           default = null;
+          description = "Token in keys.toml to check the object on (`--token`); null when the object is on one token only.";
         };
         spec = mkOption {
           type = types.nullOr types.str;
           default = null;
+          description = "Spec in keys.toml to check the object under (`--spec`); null when the object has one spec on the token.";
         };
         modules = mkOption {
           type = types.attrsOf types.str;
@@ -128,12 +130,13 @@ let
           example = {
             SOFTHSM2_CONF = "/var/lib/softhsm/softhsm2.conf";
           };
+          description = "Environment of the check (the module's configuration, a token's `pinEnv`). Public: it is written into the unit file in the Nix store, so it must hold no secret.";
         };
         requiredBy = mkOption {
           type = types.listOf types.str;
           default = [ ];
           example = [ "signer.service" ];
-          description = "Units that must not start unless the identity check passes.";
+          description = "Units that must not start unless the identity check passes. At least one: the check runs only as their requirement, so a check no unit requires would never run.";
         };
         args = mkOption {
           type = types.listOf types.str;
@@ -322,10 +325,18 @@ in
     })
 
     {
-      assertions = lib.mapAttrsToList (n: c: {
-        assertion = valuePin c.args -> c.outputFile != null;
-        message = "services.cakeys.checks.${n}.args asks for --uri-pin value, which needs outputFile: the PIN would go to the journal";
-      }) cfg.checks;
+      assertions = lib.concatLists (
+        lib.mapAttrsToList (n: c: [
+          {
+            assertion = valuePin c.args -> c.outputFile != null;
+            message = "services.cakeys.checks.${n}.args asks for --uri-pin value, which needs outputFile: the PIN would go to the journal";
+          }
+          {
+            assertion = c.requiredBy != [ ];
+            message = "services.cakeys.checks.${n}.requiredBy is empty: the check runs only when a unit it gates starts, so it would never run";
+          }
+        ]) cfg.checks
+      );
       systemd.services = lib.mapAttrs' (
         name: c:
         lib.nameValuePair "cakeys-check-${name}" {

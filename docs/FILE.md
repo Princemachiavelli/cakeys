@@ -93,8 +93,11 @@ Load rules (17):
 - `attestation = true` on a `file` pair is refused when the provider cannot attest an
   imported key (ykcs11), as camigrate D8 already does for imports.
 - A private or secret key's `migrate.file` may not be under `/nix/store`, which is
-  world-readable. A literal path is checked at load (17). A `$NAME` path is checked when
-  camigrate resolves it, with the same exit code. The Nix library must pass the path as a
+  world-readable; nor may any other file holding a secret (`migrate.passphraseFile`, a token's
+  `pinFile` and `soCredentialFile`). The path is resolved first (symlinks and `..`), so a link
+  into the store is refused and a sibling such as `/nix/store-keys` is not. A literal path is
+  checked at load (17). A `$NAME` path is checked when camigrate resolves it, and every secret
+  file again when it is read, with the same exit code. The Nix library must pass the path as a
   string, never as a Nix path, which it would copy into the store. A certificate, public key
   or public data object from the store is fine. `CAKEYS_ALLOW_NIX_STORE_KEYS=1` lifts the
   rule for throwaway keys a Nix build makes and uses (a test, a VM image), never a

@@ -38,24 +38,15 @@ fn the_write_probe_conforms_and_regenerates_the_committed_profile() {
     let w = Workdir::new("yubikey_write_probe");
     w.write_config(&yubikey_token(&module, &pin, &mgm, "probe = { scratchId = \"17\" }"));
     let config = w.dir.join("keys.toml");
-    let probe = turn.checked(run_within(
-        &config,
-        &["probe", "--token", "yubikey", "--write", "--rsa-max-bits", "4096", "--diff", "ykcs11/2.7"],
-        PROBE_LIMIT,
-    ));
-    assert_eq!(code(&probe), 0, "{}", String::from_utf8_lossy(&probe.stderr));
-    let committed = committed_profile("modules/ykcs11/2.7.toml");
-    let copy = w.dir.join("profile.toml");
-    std::fs::copy(&committed, &copy).unwrap();
-    let out = copy.to_str().unwrap();
-    let args =
-        ["probe", "--token", "yubikey", "--write", "--rsa-max-bits", "4096", "--diff", "ykcs11/2.7", "--out", out];
-    assert_eq!(code(&turn.checked(run_within(&config, &args, PROBE_LIMIT))), 0);
-    assert!(
-        std::fs::read(&copy).unwrap() == std::fs::read(&committed).unwrap(),
-        "profiles/modules/ykcs11/2.7.toml is not what the probe generates: regenerate it with `caprobe \
-         probe --token <yk> --write --diff ykcs11/2.7 --out profiles/modules/ykcs11/2.7.toml`, and \
-         put hand findings in [manual]"
+    // The shared conformance check: one write probe, which diffs and regenerates in the same run
+    // (review yubikey.rs F2: two, each every curve and RSA size on the device). Hand findings
+    // belong in the profile's [manual].
+    assert_profile_conforms(
+        |args| turn.checked(run_within(&config, args, PROBE_LIMIT)),
+        "yubikey",
+        "ykcs11/2.7",
+        "modules/ykcs11/2.7.toml",
+        &w.dir.join("profile.toml"),
     );
 }
 
@@ -78,9 +69,9 @@ fn the_read_only_probe_conforms() {
     ));
     let km = |args: &[&str]| run_within(&w.dir.join("keys.toml"), args, RUN_LIMIT);
     let write = km(&["probe", "--token", "yubikey", "--write", "--rsa-max-bits", "4096"]);
-    assert_eq!(code(&write), 17);
-    assert!(stderr(&write).contains("Security Officer"));
-    assert!(stderr(&write).contains("scratchId"));
+    assert_eq!(code(&write), 17, "{}", stderr(&write));
+    assert!(stderr(&write).contains("Security Officer"), "{}", stderr(&write));
+    assert!(stderr(&write).contains("scratchId"), "{}", stderr(&write));
     cryptoki_hmac_types_fixed(true);
     let out = km(&["probe", "--token", "yubikey", "--diff", "ykcs11/2.7"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));

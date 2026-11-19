@@ -15,6 +15,8 @@ satisfy caprobe's surface on their own. They are caprobe's flags and caprobe tes
 helper, so the result is right today, but the check would stay green if caprobe's own tests
 stopped calling it. [read]
 
+**Fixed (2026-11-18):** the shared harness counts toward no tool's surface (verified FIXED)..
+
 ## Design
 
 - None (see camigrate's surface review).

@@ -50,11 +50,14 @@ $ camigrate migrate [<object>] --from <a> --to <b> [--spec <s> ...] [--transport
   rules (the `.lck` sidecar lock, written whole or not at all).
 
 Exit codes (the table: [CAKEYS.md](CAKEYS.md#exit-codes)): 0 done; 10 the material's identity
-differs from the lock; 13 the target refused (a tampered bundle, a
-failed proof of possession, an occupied PIV slot); 14 the lock pins no IDs for the object; 15
-an object cannot move as invoked, or the target lacks a capability; 17 invalid input (keys.toml,
+differs from the lock; 11 a token, object or key not found; 12 an ambiguous name; 13 the
+target refused (a bundle whose blobs it finds invalid, tampered or wrapped to another key; a
+failed proof of possession; an occupied locator or PIV slot); 14 the lock pins no IDs for the
+object; 15 an object cannot move as invoked, or the target lacks a capability (an unwrap
+mechanism or template it refuses included); 16 the module or device failed; 17 invalid input (keys.toml,
 a transport file, a bundle, another key's IDs, a key file that does not open under the
-passphrase given: 10 is kept for material that differs from the lock).
+passphrase given: 10 is kept for material that differs from the lock); 21 a lock a writing run
+cannot write; 1 anything else (IO).
 
 ## Decisions
 

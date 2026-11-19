@@ -24,6 +24,8 @@ target is seeded from fixtures, so the property is covered elsewhere. Fix: gener
 material and mutate (e.g. `prop_oneof![valid_spki_from_fixture().prop_map(flip_bytes), any
 bytes]`), as `fuzzing::tests::text()` does for hex. [read]
 
+**Fixed (2026-11-18):** `key_parsers_never_panic` draws from valid material (the fixture certificates and their SPKIs, a point of every curve raw and DER-wrapped, Ed448), as it is or with bytes changed, or any bytes; material taken as it is must parse. Test: `the_parser_seeds_reach_every_fixed_point`, `key_parsers_never_panic`.
+
 ### F2. The compare half of the downgrade property checks `is_ok` only — practice
 
 `crates/core/tests/properties.rs:182-215`. The doc comment says another material is 10 and a
@@ -35,6 +37,8 @@ a downgrade, passes. The expected compare code is computable from the same boole
 codes, so the gap is covered there. Fix: assert `exit(&compared)` like the write branch, or
 correct the comment. [read]
 
+**Fixed (2026-11-18):** the compare half asserts the exit: 14 for a downgrade, a replaced object or drift, else 10 for other material, else 0 (mutation: swapping the 10/14 order fails it). Test: `a_write_fills_gaps_and_never_overrides`.
+
 ### F3. Generators stay inside the valid space the lock model also covers — nit
 
 `crates/core/tests/properties.rs:81-103`, `:150-155`. `variant()` has policy as `[bool; 2]`
@@ -42,6 +46,8 @@ correct the comment. [read]
 limited to `PopSign`/`PopEcdh`/`TokenAsserted`, material two values. These are reasonable for
 the properties stated, and lock_mbt.rs reaches Unset policy, attestation and the 14 rules; noted
 so nobody reads this file as the coverage of those transitions. [read]
+
+**Decided (2026-11-18):** MOOT in verification: the lock model covers the space outside the generators..
 
 ### F4. `commitment_labels_are_injective` holds by construction for the generated alphabet — nit
 
@@ -53,11 +59,15 @@ give `0` bits, and `key_type: None` gives `""`; the strategy always sets both (`
 those cases cannot reach a commitment (loader refuses them), say so in the comment; otherwise
 add them to the strategy. [read]
 
+**Fixed (2026-11-18):** lengths are `option::of(1..=u32::MAX)`: an absent `valueLen` writes 0, which no loaded length is, and the doc says why the empty key type never reaches a label. Test: `commitment_labels_are_injective`.
+
 ### F5. Fixture code duplicated with lock_mbt.rs — complexity
 
 `crates/core/tests/properties.rs:17-75` vs `crates/core/tests/lock_mbt.rs:23-61`, `:255-278`.
 See lock_mbt.rs F4: `facts()`, `empty_lock()` are identical and the keys.toml constants
 overlap. [read]
+
+**Fixed (2026-11-18):** `facts` and `empty_lock` live in tests/common/mod.rs, shared with lock_mbt.rs. Test: `recorded_then_compared_and_idempotent`.
 
 ### F6. Out-of-range `valueLen` tested twice, once pinning prose — nit
 
@@ -65,6 +75,8 @@ overlap. [read]
 the same bound (2^61 here, `u32::MAX + 1` there); this one also pins the message text
 `"valueLen 2305843009213693952 bytes is out of range"`. The refusals.rs test (both edges of
 the bound) is the better one; this one can go, or keep only the exit code. [read]
+
+**Fixed (2026-11-18):** `an_out_of_range_value_len_is_refused` removed; refusals.rs's bound test asserts 17 and carries the overflow rationale. Test: `the_value_length_bound_is_inclusive`.
 
 ## Design
 

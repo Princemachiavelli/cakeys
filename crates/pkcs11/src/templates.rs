@@ -52,13 +52,18 @@ pub fn policy(
 pub fn known_policy(attrs: &BTreeMap<String, AttrValue>) -> Result<Option<Vec<Attribute>>> {
     let baseline =
         cakeys_profile::Set::active().and_then(|s| s.baseline()).map_err(|e| KmError::Validation(e.into()))?;
-    let unknown = || KmError::NotFound(String::new().into());
-    let by_name = |_: &str, n: &str| {
-        baseline.mechanisms.get(n).and_then(|id| MechanismType::try_from(*id).ok()).ok_or_else(unknown)
+    // Whether the mapper met a name it does not know: the one failure that means "cannot
+    // decide", told apart from any other `policy` refuses by this flag, not by the error's kind.
+    let unknown = std::cell::Cell::new(false);
+    let by_name = |name: &str, n: &str| {
+        baseline.mechanisms.get(n).and_then(|id| MechanismType::try_from(*id).ok()).ok_or_else(|| {
+            unknown.set(true);
+            KmError::Unsupported(format!("{name}: {n} is no mechanism the baseline names").into())
+        })
     };
     match policy(attrs, &by_name) {
         Ok(t) => Ok(Some(t)),
-        Err(KmError::NotFound(_)) => Ok(None),
+        Err(_) if unknown.get() => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -340,6 +345,26 @@ mod tests {
                 assert!(count(&t, AttributeType::Private) <= 1 && count(&t, AttributeType::Verify) <= 1, "{t:?}");
             }
             assert_eq!(public_declares(&s, "CKA_PRIVATE"), !carries);
+        }
+    }
+
+    /// A plan's policy template: a mechanism name the baseline does not know is "cannot decide"
+    /// (`None`), anything else `policy` refuses is the refusal, whatever its kind (templates.rs
+    /// F2: no error stands in for the unknown name).
+    #[test]
+    fn only_an_unknown_mechanism_name_leaves_the_plan_undecided() {
+        cakeys_profile::Set::activate_embedded().unwrap();
+        let attrs = |a: &[(&str, AttrValue)]| a.iter().map(|(n, v)| ((*n).to_owned(), v.clone())).collect();
+        let mechanisms = |names: &[&str]| AttrValue::mechanisms(names.iter().map(|n| (*n).to_owned()));
+        let known = known_policy(&attrs(&[("CKA_ALLOWED_MECHANISMS", mechanisms(&["CKM_ECDSA"]))])).unwrap();
+        assert_eq!(known, Some(vec![Attribute::AllowedMechanisms(vec![MechanismType::ECDSA])]));
+        let vendor = attrs(&[("CKA_ALLOWED_MECHANISMS", mechanisms(&["CKM_VENDOR_THING"]))]);
+        assert_eq!(known_policy(&vendor).unwrap(), None);
+        for refused in [
+            attrs(&[("CKA_NO_SUCH_FLAG", AttrValue::Bool(true))]),
+            attrs(&[("CKA_ALLOWED_MECHANISMS", mechanisms(&["CKM_ECDSA"])), ("CKA_NO_SUCH_FLAG", AttrValue::Bool(true))]),
+        ] {
+            assert!(matches!(known_policy(&refused), Err(KmError::Validation(_))), "{refused:?}");
         }
     }
 }

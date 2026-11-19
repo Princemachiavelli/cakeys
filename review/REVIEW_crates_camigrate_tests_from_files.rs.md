@@ -23,6 +23,8 @@ records the wrong key, and every check passes. The independent oracle exists:
 `lock.objects.kek.ids.kcv-ecb == aes_commitment(&fs::read(fixture("aes256.key")), "kcv-ecb")`,
 and the same for `k` after the spellings loop. [read]
 
+**Fixed (2026-11-18):** `assert_aes_ids_are_the_files` compares every AES commitment recorded for `kek` and for `k` with `aes_commitment` of aes256.key. Test: `files_populate_tokens_with_their_material`, `every_spelling_of_a_secret_key_imports_as_the_same_key` (not run).
+
 ### F2. The tests skip with fewer than two references, though they need only SoftHSM — practice
 
 `crates/camigrate/tests/from_files.rs:5`, `:62-67`, `:145-149`, `:220-224`. All three call
@@ -34,6 +36,8 @@ because no variable is missing. Fix: build the `Env` from the SoftHSM variable a
 single-token tests (an `env_with(name, &["softhsm"])` helper; see dry_run.rs F3), or correct the
 header. [read]
 
+**Fixed (2026-11-18):** a local `env` needs SoftHSM alone (`suite_var`), kryoptic joining when set. Test: the suite (not run).
+
 ### F3. Re-runs and refusals check exit and message, not the lock bytes — nit
 
 `crates/camigrate/tests/from_files.rs:111-113` ("a re-run imports nothing") and `:73-83` (the two
@@ -41,6 +45,8 @@ header. [read]
 dry_run.rs does after each re-run and refusal and as `:129-136` here does for the 10 case. The
 dry-run twin covers the dry run, not the real run. Fix: read the lock before and compare after.
 [read]
+
+**Fixed (2026-11-18):** the refusals leave no lock, and the re-run leaves its bytes. Test: `files_populate_tokens_with_their_material` (not run).
 
 ## Design
 

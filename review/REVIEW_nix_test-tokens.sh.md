@@ -25,6 +25,8 @@ p11-kit server and swtpm are gone, so a suite left out of it fails in both place
 processes the same port pair; swtpm then fails to bind and the test fails with a log tail. Only
 reachable when the runner is used without nextest. [read]
 
+**Fixed (2026-11-18):** without nextest, up to four random slots, retrying when `up` fails (a failed up cleans itself).
+
 ## Design
 
 None.

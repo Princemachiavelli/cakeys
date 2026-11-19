@@ -19,24 +19,51 @@ fn scratch(name: &str) -> Option<Workdir> {
     w.write_config(&reference_tokens(&fault_shim(), &w.dir));
     let s = open_session(&real, "kmtest", "1234");
     let label = Attribute::Label(b"decoy".to_vec());
-    let p256 = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
     s.generate_key_pair(
         &Mechanism::EccKeyPairGen,
-        &[Attribute::Token(true), label.clone(), Attribute::EcParams(p256)],
+        &[Attribute::Token(true), label.clone(), Attribute::EcParams(P256.to_vec())],
         &[Attribute::Token(true), label, Attribute::Sign(true), Attribute::Derive(true)],
     )
     .unwrap();
     Some(w)
 }
 
-/// `caprobe probe --token ref --write` under `plan`: the profile, the notes, and the rules fired.
-fn probed(w: &Workdir, name: &str, plan: &str, more: &[&str]) -> (i32, String, String, usize) {
+/// `caprobe probe --token ref --write` under `plan`: the profile, the notes, and how many calls
+/// each rule decided (the trace's `rule`, from 1), in the plan's order.
+fn probed(w: &Workdir, name: &str, plan: &str, more: &[&str]) -> (i32, String, String, Vec<usize>) {
     let (path, trace) = (w.dir.join(format!("{name}.toml")), w.dir.join(format!("{name}.jsonl")));
     std::fs::write(&path, plan).unwrap();
+    let _ = std::fs::remove_file(&trace);
     let args = [&["probe", "--token", "ref", "--write", "--rsa-max-bits", "4096"][..], more].concat();
     let o = w.km_env(&args, &[("P11_FAULT_PLAN", &path), ("P11_FAULT_TRACE", &trace)]);
-    let text = std::fs::read_to_string(&trace).unwrap_or_default();
-    (code(&o), stdout(&o), stderr(&o), text.lines().filter(|l| !l.contains("\"rule\":null")).count())
+    let mut fired = vec![0; rules(plan).len()];
+    for line in std::fs::read_to_string(&trace).unwrap_or_default().lines() {
+        let call: serde_json::Value = serde_json::from_str(line).unwrap();
+        if let Some(rule) = call["rule"].as_u64() {
+            fired[usize::try_from(rule).unwrap() - 1] += 1;
+        }
+    }
+    (code(&o), stdout(&o), stderr(&o), fired)
+}
+
+/// The plan's rules.
+fn rules(plan: &str) -> Vec<toml::Value> {
+    let plan: toml::Value = toml::from_str(plan).unwrap();
+    plan.get("rule").and_then(toml::Value::as_array).cloned().unwrap_or_default()
+}
+
+/// Each rule fired as often as it says: a rule numbered by `call` decides that one call, once
+/// (review fault.rs F2: any firing passed, so a numbered rule could land on another step, or
+/// a plan's second rule never fire); one without `call` decides every call it matches, at least
+/// one.
+fn assert_fired(name: &str, plan: &str, fired: &[usize], said: &str) {
+    for (i, (rule, n)) in rules(plan).iter().zip(fired).enumerate() {
+        if rule.get("call").is_some() {
+            assert_eq!(*n, 1, "{name}: rule {} fired {n} times: {said}", i + 1);
+        } else {
+            assert!(*n > 0, "{name}: rule {} never fired: {said}", i + 1);
+        }
+    }
 }
 
 /// One fault case: its name, the plan, what the profile then holds, and what the probe says it
@@ -59,7 +86,7 @@ fn probe_cases(w: &Workdir, cases: &[Case]) {
     for (name, plan, rows, undetermined) in cases {
         let (exit, profile, said, fired) = probed(w, name, plan, &[]);
         assert_eq!(exit, 0, "{name}: {said}");
-        assert!(fired > 0, "{name}: the rule never fired");
+        assert_fired(name, plan, &fired, &said);
         for row in *rows {
             assert!(profile.contains(row), "{name}: expected {row:?} in\n{profile}");
         }
@@ -215,10 +242,10 @@ fn the_probe_notes_which_derive_template_took() {
 #[test]
 fn a_pair_made_but_not_found_is_no_refusal() {
     let Some(w) = scratch("fault-probe-lost") else { return };
-    let (exit, profile, said, fired) =
-        probed(&w, "lost", &rule("fn = \"C_FindObjects\"\nhide_label = \"cakeys-probe-01\""), &[]);
+    let plan = rule("fn = \"C_FindObjects\"\nhide_label = \"cakeys-probe-01\"");
+    let (exit, profile, said, fired) = probed(&w, "lost", &plan, &[]);
     assert_eq!(exit, 0, "{said}");
-    assert!(fired > 0, "the rule never fired");
+    assert_fired("lost", &plan, &fired, &said);
     assert!(said.contains("no generate row for CKK_EC on secp256r1: the module generated, but"), "{said}");
     assert!(!profile.contains("not under its locator"), "a refusal row for a pair the module made:\n{profile}");
 }
@@ -255,7 +282,8 @@ fn a_probe_an_error_ends_destroys_what_it_made() {
     let after = calls.iter().find(|c| c["fn"] == "C_FindObjects" && seq(c) > third).unwrap();
     let plan = rule(&format!("fn = \"C_FindObjects\"\ncall = {}\nrv = \"CKR_DEVICE_ERROR\"", after["n"]));
     let (exit, _, said, fired) = probed(&w, "ends", &plan, &[]);
-    assert!(exit != 0 && fired > 0, "exit {exit}, rules fired {fired}: {said}");
+    assert_ne!(exit, 0, "{said}");
+    assert_fired("ends", &plan, &fired, &said);
     let real = std::env::var("P11_FAULT_MODULE").unwrap();
     let s = open_session(&real, "kmtest", "1234");
     let left: Vec<String> =

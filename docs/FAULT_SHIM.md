@@ -59,8 +59,9 @@ the tree, and `p11-names`, which depends on `cryptoki-sys` alone. About 1–1.5k
 
 The first `C_GetFunctionList` loads the real module (`dlopen`, kept for the life of the
 process), asks it for its `CK_FUNCTION_LIST`, reads the plan, and builds the shim's own table:
-the real table's `version`, and the shim's forwarder in every slot the real module fills (a
-slot the real module leaves `NULL` stays `NULL`). Both live in `OnceLock`s. A plan that does not
+the real table's `version`, capped at 2.40 (the table is the 2.40 one: a 3.x version would tell
+a client that picks the layout by version to read past its end), and the shim's forwarder in
+every slot the real module fills (a slot the real module leaves `NULL` stays `NULL`). Both live in `OnceLock`s. A plan that does not
 parse fails that first call with `CKR_GENERAL_ERROR` and a message on stderr: a typo in a fault
 plan must never turn into a test of nothing.
 
@@ -80,7 +81,7 @@ pub unsafe extern "C" fn C_GetFunctionList(out: *mut *mut CK_FUNCTION_LIST) -> C
 fn guard(f: impl FnOnce() -> Result<CK_RV, Fatal>) -> CK_RV {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(Ok(rv)) => rv,
-        Ok(Err(fatal)) => fatal.report(), // stderr once; CKR_GENERAL_ERROR
+        Ok(Err(fatal)) => fatal.report(), // each message once on stderr; CKR_GENERAL_ERROR
         Err(_) => CKR_GENERAL_ERROR,
     }
 }
@@ -217,10 +218,18 @@ writers of a test run interleave whole lines):
 This is PLAN.md A1's trace if `pkcs11-spy` proves too lossy: which functions, mechanisms,
 attribute types and return values cakeys really meets, per reference token.
 
+What a call returns through its arguments (the flags of an info structure, the classes and key
+types of a `C_GetAttributeValue` template) is read only when the real call ran and returned
+`CKR_OK`: a rule that answered in its place filled nothing. A call the shim fails itself (a
+label a rule names resolves to nothing) has its line too, with the `CKR_GENERAL_ERROR` the
+caller saw and the reason under `"fatal"`.
+
 ## Testing the shim itself
 
 1. **Unit tests** (the rlib): plans parse, refuse unknown names and fields, and match the n-th
-   call; an attribute served into a caller's entry.
+   call; an attribute served into a caller's entry; and, against a fake module of the test's
+   own functions, the hooks (`add_label` once per search, `corrupt` inside the caller's
+   buffer), the trace of a failed call, and the table's version.
 2. **Parity**: the reference suite runs a third time, through the shim with no plan, in front of
    SoftHSM (a `tests/fault.rs` like `tests/softhsm.rs`, its `Reference` naming
    `libp11_fault.so`). It must pass exactly as directly. That proves the forwarder transparent
@@ -289,8 +298,8 @@ with `CKR_ATTRIBUTE_TYPE_INVALID` but its entry left untouched (`untouched = tru
 `drop`, which sets the length unavailable as the spec asks; OPEN.md, "rust-cryptoki"), and a
 search that returns only its first match (`first_only = true` on `C_FindObjects`), against
 which the locator's 12 cannot fire. Its other search fault, one key under two handles, the shim
-cannot make (`add_label` skips a handle already found), but a decoy under `add_label` gives
-cakeys the same two handles to refuse.
+cannot make (`add_label` skips a handle the search already returned), but a decoy under
+`add_label` gives cakeys the same two handles to refuse.
 
 ## Nix
 

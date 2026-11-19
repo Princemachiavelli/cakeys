@@ -21,6 +21,10 @@ against the same generator's output, so both sides lack it. On the vendored 3.2 
 skip is a genuine alias (checked below). Fix: collect the skipped family names whose value is
 not a bare earlier-defined name, and fail the generator if any is left. [read]
 
+**Fixed (2026-11-18):** `from_headers` returns the family constants it cannot read that are no
+alias of a constant read before them (`NAME text` each), and the generator fails on any.
+Test: `an_unreadable_family_constant_fails_the_generator`.
+
 ### F2. `CAKEYS_UPDATE_BASELINE=1` rewrites the file but the same run still fails — nit
 
 `crates/caprobe/src/baseline.rs:216`, `:219-229`.
@@ -28,6 +32,10 @@ not a bare earlier-defined name, and fail the generator if any is left. [read]
 (223) it compares `generated` with the old compiled-in text, so the regenerating run fails
 with "not what the vendored headers generate" and only the next build passes. Compare against
 the text just written (or return after writing, as `coverage.rs:405-408` does). [read]
+
+**Fixed (2026-11-18):** `committed_text` writes the regenerated file and returns that text,
+which the run compares with; without the variable it is the compiled-in file. Test:
+`a_regenerating_run_compares_with_what_it_wrote`.
 
 ## Design
 

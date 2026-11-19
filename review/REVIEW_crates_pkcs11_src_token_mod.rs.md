@@ -82,6 +82,9 @@ these three build the `KmError` by hand without `.with_rv(rv_of(&e))`, so a call
 `:803-811` does attach it. Fix: add `.with_rv(rv_of(&e))` (or use `ck`) at the three sites.
 [read]
 
+**Fixed (2026-11-18):** `create_trusted_copy`'s refusal (`trusted_copy_refused`) keeps the
+module's `CK_RV`. Test: `a_refused_trusted_copy_keeps_its_return_value`.
+
 ### F5. `Library::drop` finalizes outside the registry lock — nit
 
 `crates/pkcs11/src/token/mod.rs:172-177`, `:195-203`. The last `Arc<Library>` can be dropping
@@ -90,6 +93,10 @@ initializes again; the new `C_Initialize` can run before the old `C_Finalize` (f
 `CKR_CRYPTOKI_ALREADY_INITIALIZED`), or the finalize can follow and tear down the new context.
 The CLI is single-threaded per module; in-process parallel tests are the exposure. Fix: hold
 `LIBRARIES` across the finalize in `Drop`. [read]
+
+**Fixed (2026-11-18):** `Library` finalizes under the registry lock, removes its own entry and
+signals a `Condvar`; `library()` waits (`settled`) while an entry is being finalized instead of
+loading the module beside it. Test: `a_library_being_finalized_is_waited_for`.
 
 ### F6. `read_secret` reports a non-UTF-8 PIN variable as "not set" — nit
 
@@ -105,6 +112,10 @@ build a generic module keeps it while a profiled one loses it. The doc comment s
 the patched layer is empty, so the Nix build is unaffected; the shortcut just makes the layer's
 effect depend on whether a module profile exists. Fix: always apply `subtracted_mechanisms()`
 (it is empty when patched). [read]
+
+**Fixed (2026-11-18):** `usable_mechanisms` always applies the binding layer's subtraction,
+comparing by `CKM_` name; the baseline is fetched only when something is added. Test:
+`the_binding_layer_subtracts_without_a_module_profile`.
 
 ## Design
 

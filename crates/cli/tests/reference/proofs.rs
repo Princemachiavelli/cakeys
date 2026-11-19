@@ -9,7 +9,6 @@ use super::*;
 fn always_authenticate_keys_prove_possession_with_a_per_use_pin() {
     let Some(e) = env("always-auth-pop") else { return };
     let s = e.session();
-    s.clear(&["always-auth-rsa", "always-auth-ec", "always-auth-raw", "always-auth-ed"]);
     let spec = |key: &str, label: &str, attributes: &str| {
         format!(
             "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\n{key}\n\n[specs.s]\nobject = \"o\"\n\
@@ -86,11 +85,6 @@ fn binding_downgrade_is_refused() {
 #[test]
 fn derive_and_decrypt_only_keys_prove_possession() {
     let Some(e) = env("pop-ecdh") else { return };
-    // The token is shared between runs: remove anything left under the test's locators. A session
-    // opened now sees the leftovers (they predate it); it is dropped before `lock` runs.
-    let cleanup = e.session();
-    cleanup.clear(&["pop-ecdh", "pop-oaep", "pop-unwrap", "pop-ecdh-b"]);
-    drop(cleanup);
     // Shapes: each proof needs its capability declared, and applies to its key type only.
     let ec = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
               [specs.k]\nobject = \"k\"\nattributes = { CKA_DERIVE = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
@@ -149,26 +143,15 @@ fn derive_and_decrypt_only_keys_prove_possession() {
     // A different private key under the EC locator fails the derivation proof, like H1. A fresh
     // session: one opened before the `lock` processes does not see objects they created
     // (common/mod.rs), but everything is visible to a session opened after them.
-    let s = e.session();
-    let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
-    let (_, other_private) = s
-        .generate_key_pair(
-            &Mechanism::EccKeyPairGen,
-            &[Attribute::Token(true), Attribute::Label(b"pop-ecdh-b".to_vec()), Attribute::EcParams(ec_params)],
-            &[
-                Attribute::Token(true),
-                Attribute::Label(b"pop-ecdh-b".to_vec()),
-                Attribute::Derive(true),
-                Attribute::Sensitive(true),
-                Attribute::Extractable(false),
-            ],
-        )
-        .unwrap();
-    let original = s
-        .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"pop-ecdh".to_vec())])
-        .unwrap()[0];
-    s.destroy_object(original).unwrap();
-    s.update_attributes(other_private, &[Attribute::Label(b"pop-ecdh".to_vec())]).unwrap();
+    let usage = [Attribute::Derive(true), Attribute::Sensitive(true), Attribute::Extractable(false)];
+    swap_private_key(
+        &e.session(),
+        "pop-ecdh",
+        &Mechanism::EccKeyPairGen,
+        &[Attribute::EcParams(P256.to_vec())],
+        &usage,
+        &[],
+    );
     assert_swapped_key_conflict(&e.km(&["verify", "--spec", "k", "--token", "ref"]));
     assert_eq!(e.code(&["lock", "--spec", "k", "--token", "ref", "--no-update-lock"]), 13);
 }
@@ -195,7 +178,7 @@ fn proofs_the_token_cannot_give_are_refused() {
     // (An object of its own: the lock pins `k`'s material.)
     let s = e.session();
     let label = || Attribute::Label(b"pop-refused-always".to_vec());
-    let p256 = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let p256 = P256.to_vec();
     s.generate_key_pair(
         &Mechanism::EccKeyPairGen,
         &[Attribute::Token(true), label(), Attribute::EcParams(p256)],
@@ -242,25 +225,9 @@ fn proofs_fall_back_to_what_the_token_has() {
         assert_eq!(code(&e.km_env(&["verify", "--spec", spec, "--token", "ref"], &[(var, conf.as_path())])), 0);
     }
     // Another private key under the derive-only locator: the extractable path's comparison fails.
-    let s = e.session();
-    let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
-    let (_, other) = s
-        .generate_key_pair(
-            &Mechanism::EccKeyPairGen,
-            &[Attribute::Token(true), Attribute::EcParams(ec_params)],
-            &[
-                Attribute::Token(true),
-                Attribute::Derive(true),
-                Attribute::Sensitive(true),
-                Attribute::Extractable(false),
-            ],
-        )
-        .unwrap();
-    let label = b"pop-fallback-d".to_vec();
-    let original =
-        s.find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(label.clone())]).unwrap()[0];
-    s.destroy_object(original).unwrap();
-    s.update_attributes(other, &[Attribute::Label(label)]).unwrap();
+    let usage = [Attribute::Derive(true), Attribute::Sensitive(true), Attribute::Extractable(false)];
+    let p256 = [Attribute::EcParams(P256.to_vec())];
+    swap_private_key(&e.session(), "pop-fallback-d", &Mechanism::EccKeyPairGen, &p256, &usage, &[]);
     let (var, conf) = e.hiding("CKM_SHA256_HMAC");
     assert_swapped_key_conflict(&e.km_env(&["verify", "--spec", "d", "--token", "ref"], &[(var, conf.as_path())]));
 }
@@ -289,13 +256,13 @@ fn proofs_the_key_will_not_give_are_refused() {
         let private = [&[Attribute::Token(true), label(name)], private].concat();
         s.generate_key_pair(mechanism, &public, &private)
     };
-    let p256 = [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let p256 = P256;
     // Visible without login (CKA_PRIVATE = false), so `ref-anon` finds it, and wanting the PIN per
     // use: kryoptic makes it, SoftHSM refuses the combination (CKR_TEMPLATE_INCONSISTENT).
     let anon = [Attribute::Private(false), Attribute::Sign(true), Attribute::AlwaysAuthenticate(true)];
-    let anon = plant_ec("anon", &Mechanism::EccKeyPairGen, &p256, &anon).is_ok();
+    let anon = plant_ec("anon", &Mechanism::EccKeyPairGen, p256, &anon).is_ok();
     let derive = [Attribute::Derive(true), Attribute::AllowedMechanisms(vec![MechanismType::ECDSA])];
-    plant_ec("derive", &Mechanism::EccKeyPairGen, &p256, &derive).unwrap();
+    plant_ec("derive", &Mechanism::EccKeyPairGen, p256, &derive).unwrap();
     let plant_rsa = |name: &str, usage: Attribute| {
         let public = [
             Attribute::Token(true),
@@ -392,7 +359,7 @@ impl<'a> Piv<'a> {
 
     /// Plant slot 9a's public key (`CKA_ID` 01) and write keys.toml's spec `piv` adopting it on
     /// token `yk` (`provider = "ykcs11"`) with attestation.
-    fn plant(e: &Env, s: &'a TestSession) -> Piv<'a> {
+    fn plant(e: &Suite, s: &'a TestSession) -> Piv<'a> {
         let fixture = |name: &str| {
             let pem =
                 std::fs::read_to_string(format!("{}/../ykcs11/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR")));
@@ -404,7 +371,7 @@ impl<'a> Piv<'a> {
         s.create_object(&[
             Attribute::Class(ObjectClass::PUBLIC_KEY),
             Attribute::KeyType(cryptoki::object::KeyType::EC),
-            Attribute::EcParams(vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]),
+            Attribute::EcParams(P256.to_vec()),
             Attribute::EcPoint(tlv(0x04, &point)),
             Attribute::Token(true),
             Attribute::Verify(true),
@@ -487,7 +454,7 @@ fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
 
     // ykcs11 reports CKA_DERIVE false on every private key though it derives with any EC key:
     // the provider records what the key does. And it creates only in an SO session.
-    let ec_params = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let ec_params = P256.to_vec();
     let id = || Attribute::Id(vec![0x02]);
     s.generate_key_pair(
         &Mechanism::EccKeyPairGen,

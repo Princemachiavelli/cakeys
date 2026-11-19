@@ -32,6 +32,12 @@ CAKEYS.md's table would suggest. Fix: reject empty halves and duplicates in a cl
 `value_parser`, and have `Opener::load` refuse (17) an override naming no keys.toml token.
 [read]
 
+**Fixed (2026-11-18):** `module_overrides(args, cfg)` refuses (17), naming why, an override
+without `=`, with an empty token or path, for a token keys.toml does not name, and for a token
+given twice. `Opener::load` (cakeys, camigrate) and caprobe's `dispatch` call it after keys.toml
+is read. CAKEYS.md says so. Tests: `module_overrides_refuse_what_they_cannot_apply` (each case,
+unit), `an_override_that_cannot_apply_is_invalid` (crates/cli/tests/offline.rs, through the CLI).
+
 ### F3. The embedded profile set is parsed twice when `profileDirs` is set — nit
 
 `crates/cli-common/src/lib.rs:44-50`.
@@ -39,6 +45,11 @@ CAKEYS.md's table would suggest. Fix: reject empty halves and duplicates in a cl
 builds it again. Every embedded profile (and the baseline) is parsed twice per run. Return the
 added names from `Set::activate` (or compare against the active set's own provenance) instead.
 [read]
+
+**Fixed (2026-11-18):** the set is activated once and never rebuilt here. The profiles the
+directories added are the ones after the embedded ones, because the set keeps the embedded
+profiles first, one per file, and a profile directory only appends. Test:
+`embedded_profiles_are_one_per_file` pins that count.
 
 ## Design
 

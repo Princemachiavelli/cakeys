@@ -17,6 +17,10 @@ wins. The reason text says the target "takes in no {type} by any import", yet th
 7), so this cannot be reached today. When one does, check `refuses` before offering anything, or
 filter `ways.candidates` there. [read]
 
+**Fixed (2026-11-18):** vendor methods are offered only in the arm of a target that does not
+refuse the type, after the `refuses` check. Test: `vendor_methods_compete_at_their_declared_level`
+(a vendor method into a refusing target is not ready and names `migration.refuses`).
+
 ### F2. A plan blocked only by `--allow-host-plaintext` hides why the sealed ways were refused — nit
 
 `crates/camigrate/src/plan.rs:179-188`. When the best candidate is `host`/`file`, `blocked`
@@ -24,6 +28,9 @@ filter `ways.candidates` there. [read]
 the plan says only "the host path needs --allow-host-plaintext". Users then pass the flag
 without learning that a fix on a profile or mechanism would have kept the key sealed. Add the
 blocked reasons as notes on a host/file plan. [read]
+
+**Fixed (2026-11-18):** a host or file plan carries each blocked reason as a "not sealed: …" note,
+with or without the flag. Test: `a_host_plan_says_why_it_is_not_sealed`.
 
 ## Design
 

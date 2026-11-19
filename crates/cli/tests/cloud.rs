@@ -123,7 +123,7 @@ fn aws_cluster(mode: &str) {
     let config = dir.join("keys.toml");
     let committed = std::fs::read_to_string(scripts().join("aws/cakeys.toml")).unwrap();
     std::fs::write(&config, committed.replace("CKA_LABEL = \"cakeys-", &format!("CKA_LABEL = \"{id}-"))).unwrap();
-    let lock = format!("/tmp/cakeys-{id}.lock");
+    let lock = dir.join("keys.lock").to_str().unwrap().to_owned();
     let config = config.to_str().unwrap().to_owned();
     let env = [("CAKEYS_AWS_MODE", mode), ("CAKEYS_AWS_CONFIG", config.as_str()), ("CAKEYS_AWS_LOCK", lock.as_str())];
     let cakeys = |args: &[&str]| run("aws.sh", &env, &[&["cakeys"], args].concat());
@@ -148,10 +148,12 @@ fn aws_cluster(mode: &str) {
     let created = std::cell::RefCell::new(Vec::new());
     with_cleanup(
         || {
+            // Each named for the cleanup before its run: one that fails part way may have made
+            // (and billed) a key all the same (review cloud.rs F2). Deleting one never made is 0.
             for (spec, token) in &keys {
+                created.borrow_mut().push((*spec, *token));
                 let o = cakeys(&["create", "--spec", spec, "--token", token]);
                 assert_eq!(code(&o), Some(0), "{mode}: create {spec} on {token}: {}", text(&o));
-                created.borrow_mut().push((*spec, *token));
             }
             if mode == "FIPS" {
                 // The FIPS profile adds no Ed25519 stand-in: refused before anything is made.
@@ -167,18 +169,18 @@ fn aws_cluster(mode: &str) {
             if mode == "NON_FIPS" {
                 // Ed25519 moves out; in, the profile's migration.refuses blocks it in the plan.
                 moves.push(("ed25519", "cloudhsm", "softhsm"));
+                created.borrow_mut().push(("ed-in", "softhsm"));
                 let o = cakeys(&["create", "--spec", "ed-in", "--token", "softhsm"]);
                 assert_eq!(code(&o), Some(0), "{mode}: create ed-in on softhsm: {}", text(&o));
-                created.borrow_mut().push(("ed-in", "softhsm"));
                 let o = camigrate(&["migrate", "ed-in", "--from", "softhsm", "--to", "cloudhsm", "--dry-run"]);
                 assert_eq!(code(&o), Some(UNSUPPORTED), "{mode}: ed-in into cloudhsm: {}", text(&o));
                 assert!(text(&o).contains("migration.refuses"), "{}", text(&o));
             }
             for (key, from, to) in moves {
+                created.borrow_mut().push((key, to));
                 let o = camigrate(&["migrate", key, "--from", from, "--to", to]);
                 assert_eq!(code(&o), Some(0), "{mode}: migrate {key} {from} -> {to}: {}", text(&o));
                 assert!(text(&o).contains("rsa-oaep-sha1+aes-kwp"), "{}", text(&o));
-                created.borrow_mut().push((key, to));
                 let o = cakeys(&["verify", "--spec", key, "--token", to]);
                 assert_eq!(code(&o), Some(0), "{mode}: verify {key} on {to}: {}", text(&o));
             }
@@ -221,9 +223,9 @@ fn gcp_cloud_kms_end_to_end() {
                 assert_eq!(code(&o), Some(UNSUPPORTED), "{spec}: {}", text(&o));
             }
             for spec in keys {
+                created.borrow_mut().push(spec);
                 let o = cakeys(&["create", "--spec", spec, "--token", "gcp"]);
                 assert_eq!(code(&o), Some(0), "create {spec}: {}", text(&o));
-                created.borrow_mut().push(spec);
             }
             for spec in keys {
                 let o = cakeys(&["verify", "--spec", spec, "--token", "gcp"]);

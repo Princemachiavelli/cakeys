@@ -17,11 +17,15 @@ on SSH's stdin are well thought out. Findings are minor.
 only from this machine's address, hence nit; a `trap 'runner rm -f ...' RETURN` would make it
 deterministic. [read]
 
+**Fixed (2026-11-18):** EXIT traps remove /run/caprobe/pin and /run/cakeys/pin.
+
 ### F2. `out` swallows OpenTofu errors — nit
 
 `scripts/cloud/aws.sh:97`. `tofu output -raw "$1" 2>/dev/null || true`: a broken state or backend
 yields an empty value, and later commands fail far from the cause (`ssh root@` with no host,
 "no cluster: run create"). Distinguish "no such output" from a failing `tofu`. [read]
+
+**Fixed (2026-11-18):** `out` reads `tofu output -json` with jq: a missing output is empty, a broken state fails and shows the error (`-raw` exits 0 with a warning on stdout when there are no outputs, verified with opentofu 1.13.9). Test: stubbed tofu (ok/missing/broken).
 
 ## Design
 

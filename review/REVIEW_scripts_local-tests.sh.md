@@ -18,6 +18,8 @@ first bracket changes the result silently; the guards only catch an empty result
 --json --file nix/package-common.nix` (with stub arguments) or a `passthru.cargoFeatures` on the
 package would give the same lists exactly. [read]
 
+**Fixed (2026-11-18):** version, patches and features from `nix eval --json .#cakeys.patchedCryptoki` (nix/package.nix passthru). Test: local-tests run with tpm2 and p11kit filters passes.
+
 ### F2. `exec` into `CAKEYS_LOCAL_TESTS_THEN` drops the cleanup trap — nit
 
 `scripts/local-tests.sh:101`, `:127-129`. The EXIT trap that removes `$T` does not survive
@@ -25,12 +27,16 @@ package would give the same lists exactly. [read]
 kryoptic database, and coverage-full's ftpm store under it) in `/tmp`. Run the script as a child
 (`bash "$CAKEYS_LOCAL_TESTS_THEN" ...; exit $?`) instead of `exec`. [read]
 
+**Fixed (2026-11-18):** the THEN script runs as a child, then `exit`.
+
 ### F3. The test runner variable is x86_64-only — nit
 
 `scripts/local-tests.sh:125`. `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER`: on aarch64-linux
 the runner is not used, so every test shares one token set while the `*_REQUIRE` variables demand
 the TPM and p11-kit environments that only the runner starts. Compute the variable from
 `rustc -vV`'s host triple. [read]
+
+**Fixed (2026-11-18):** runner variable from `rustc -vV`'s host triple.
 
 ## Design
 

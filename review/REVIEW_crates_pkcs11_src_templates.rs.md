@@ -39,6 +39,10 @@ produces no other `NotFound`, so it holds; a future error of that kind would be 
 into "the plan cannot decide". Fix: have the mapper return `Option` and thread it, or use a
 private marker type. [read]
 
+**Fixed (2026-11-18):** the mapper sets a flag on an unknown mechanism name; only that is
+"cannot decide" (`None`), every other refusal is returned. Test:
+`only_an_unknown_mechanism_name_leaves_the_plan_undecided`.
+
 ## Design
 
 - The plan's templates (`known_policy`) and the run's (`Token::policy_template`) map mechanism

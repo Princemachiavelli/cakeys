@@ -60,13 +60,14 @@ impl Set {
         Ok(set)
     }
 
-    /// Load every `.toml` under `dir` (recursively) and add it, replacing a loaded profile of
-    /// the same name. The order within the directory is stable (sorted by path), so which file
-    /// replaces which does not depend on filesystem order.
+    /// Load every `.toml` under `dir` (recursively) and add it, replacing a loaded profile, or
+    /// the baseline, of the same name. The order within the directory is stable (sorted by
+    /// path), so which file replaces which does not depend on filesystem order.
     ///
     /// # Errors
     ///
-    /// The IO error reading the directory, or each file's parse error prefixed with its path.
+    /// The IO error reading the directory, each file's parse error prefixed with its path, or a
+    /// baseline of another name than the loaded one.
     pub fn with_dir(self, dir: &Path) -> Result<Set, String> {
         self.load_dir(dir, true)
     }
@@ -96,8 +97,19 @@ impl Set {
                 if !replace {
                     return Err(at(&"a baseline: only the build's own may be loaded"));
                 }
+                // One baseline is used ([`Set::baseline`]): a directory's replaces the one of its
+                // name (a regenerated pkcs11-3.2), and one of another name is refused rather
+                // than loaded and never read.
                 let b = Baseline::from_toml(&text).map_err(|e| at(&e))?;
-                self.baselines.push((path.display().to_string(), b));
+                let Some(slot) = self.baselines.iter_mut().find(|(_, loaded)| loaded.baseline == b.baseline) else {
+                    let loaded: Vec<&str> = self.baselines.iter().map(|(_, l)| l.baseline.as_str()).collect();
+                    return Err(at(&format!(
+                        "baseline '{}': only one baseline is used ({}); a directory may replace it, not add another",
+                        b.baseline,
+                        loaded.join(", ")
+                    )));
+                };
+                *slot = (path.display().to_string(), b);
             } else if value.get("profile").is_some() {
                 let p = Profile::from_toml(&text).map_err(|e| at(&e))?;
                 if !replace {
@@ -182,8 +194,8 @@ impl Set {
         }
     }
 
-    /// The first loaded baseline (the embedded one; a directory may add more, in which case
-    /// [`Set::find`]-style selection comes with phase 2).
+    /// The baseline: the embedded one, or the file of its name a [`Set::with_dir`] directory
+    /// replaced it with (a directory adds no other).
     ///
     /// # Errors
     ///
@@ -252,12 +264,28 @@ impl Set {
     }
 }
 
-/// Every `.toml` file under `dir`, recursively.
+/// Every `.toml` file under `dir`, recursively. Symlinked directories are followed (a Nix
+/// `symlinkJoin` of profile directories is one), each real directory once: a link back to an
+/// ancestor, or a second link to one already read, adds nothing, so a loop ends and no file
+/// loads twice.
 fn collect(dir: &Path, out: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
+    collect_once(dir, out, &mut std::collections::BTreeSet::new())
+}
+
+fn collect_once(
+    dir: &Path,
+    out: &mut Vec<std::path::PathBuf>,
+    seen: &mut std::collections::BTreeSet<std::path::PathBuf>,
+) -> std::io::Result<()> {
+    if !seen.insert(std::fs::canonicalize(dir)?) {
+        return Ok(());
+    }
+    // Sorted, so which of two links to one directory is read does not depend on the filesystem.
+    let mut paths = std::fs::read_dir(dir)?.map(|e| e.map(|e| e.path())).collect::<std::io::Result<Vec<_>>>()?;
+    paths.sort();
+    for path in paths {
         if path.is_dir() {
-            collect(&path, out)?;
+            collect_once(&path, out, seen)?;
         } else if path.extension().is_some_and(|e| e == "toml") {
             out.push(path);
         }
@@ -441,8 +469,50 @@ mod tests {
         }
     }
 
-    /// A `--profiles` directory, read recursively: a baseline is added, a profile of a loaded
-    /// name replaces it, a new one is added, and a file that is neither is refused by name.
+    /// A directory's symlinks to directories are followed, each real directory once: a link to
+    /// an ancestor ends (review lib.rs F1), and a second link to a directory already read loads
+    /// nothing twice.
+    #[test]
+    fn a_symlink_loop_in_a_directory_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let modules = dir.path().join("modules");
+        std::fs::create_dir(&modules).unwrap();
+        std::fs::write(modules.join("m.toml"), "profile = \"m/1\"\nmode = \"observed\"\n").unwrap();
+        std::os::unix::fs::symlink(dir.path(), modules.join("up")).unwrap();
+        std::os::unix::fs::symlink(&modules, dir.path().join("again")).unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::write(elsewhere.path().join("n.toml"), "profile = \"n/1\"\nmode = \"observed\"\n").unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("linked")).unwrap();
+        let mut paths = Vec::new();
+        collect(dir.path(), &mut paths).unwrap();
+        let names: Vec<_> = paths.iter().map(|p| p.strip_prefix(dir.path()).unwrap().to_owned()).collect();
+        assert_eq!(names, [Path::new("again/m.toml"), Path::new("linked/n.toml")]);
+        // Loading it adds each profile once: no "already loaded" from a second path to it.
+        let set = Set::embedded().unwrap().adding_dir(dir.path()).unwrap();
+        assert!(set.find("m/1").is_ok() && set.find("n/1").is_ok());
+    }
+
+    /// A directory's baseline replaces the loaded one of its name and is the one answered with;
+    /// one of another name is refused, never loaded and left unread (review lib.rs F2).
+    #[test]
+    fn a_directory_baseline_is_used_or_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("baseline.toml");
+        let committed = embedded::BASELINE_FILES[0].1;
+        let newer = committed.replacen("[mechanisms]\n", "[mechanisms]\nCKM_FROM_A_DIRECTORY = 0x80000001\n", 1);
+        assert_ne!(newer, committed);
+        std::fs::write(&file, &newer).unwrap();
+        let set = Set::embedded().unwrap().with_dir(dir.path()).unwrap();
+        assert_eq!(set.baselines.len(), 1);
+        assert!(set.baseline().unwrap().mechanisms.contains_key("CKM_FROM_A_DIRECTORY"));
+        std::fs::write(&file, committed.replacen("baseline = \"pkcs11-3.2\"", "baseline = \"pkcs11-9.9\"", 1)).unwrap();
+        let e = Set::embedded().unwrap().with_dir(dir.path()).err().unwrap();
+        assert!(e.contains("baseline 'pkcs11-9.9': only one baseline is used (pkcs11-3.2)"), "{e}");
+    }
+
+    /// A `--profiles` directory, read recursively: a baseline replaces the embedded one, a
+    /// profile of a loaded name replaces it, a new one is added, and a file that is neither is
+    /// refused by name.
     #[test]
     fn a_directory_adds_and_replaces() {
         let dir = std::env::temp_dir().join(format!("cakeys-profile-dir-{}", std::process::id()));
@@ -454,7 +524,8 @@ mod tests {
         std::fs::write(nested.join("m.toml"), "profile = \"m/1\"\nmode = \"observed\"\n").unwrap();
         std::fs::write(nested.join("notes.txt"), "not toml at all").unwrap();
         let set = Set::embedded().unwrap().with_dir(&dir).unwrap();
-        assert_eq!(set.baselines.len(), 2);
+        assert_eq!(set.baselines.len(), 1, "the baseline of its name is replaced");
+        assert!(set.baselines[0].0.ends_with("baseline.toml"));
         assert!(set.find("softhsm/2.7").unwrap().partial);
         assert_eq!(set.all().iter().filter(|p| p.profile == "softhsm/2.7").count(), 1);
         assert!(set.find("m").is_ok());

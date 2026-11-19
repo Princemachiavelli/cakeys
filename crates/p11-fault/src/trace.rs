@@ -36,8 +36,11 @@ pub(crate) struct Trace {
 /// unchanged then, and an output one filled in).
 #[derive(Debug, Default)]
 pub(crate) struct Detail {
-    /// The call returned `CKR_OK`: only then are its outputs read.
+    /// The real call ran and returned `CKR_OK`: only then are its outputs read. A rule that
+    /// answered in its place, or a failure an `after` rule hid, filled nothing.
     pub(crate) ok: bool,
+    /// Why the shim failed the call itself (`Fatal`), if it did.
+    pub(crate) fatal: Option<String>,
     mechanism: Option<CK_MECHANISM_TYPE>,
     /// From the mechanism's parameters: the OAEP or PSS hash, the MGF, the OAEP source, the
     /// ECDH KDF.
@@ -190,6 +193,28 @@ impl Detail {
     /// `template` is null or points to `count` readable `CK_ATTRIBUTE`s, each `pValue` null or
     /// pointing to `ulValueLen` readable bytes, as the call's contract requires.
     pub(crate) unsafe fn template(&mut self, template: *const CK_ATTRIBUTE, count: CK_ULONG) {
+        // SAFETY: the caller's contract, passed on.
+        unsafe { self.read_template(template, count, true) };
+    }
+
+    /// A template the call fills (`C_GetAttributeValue`): every attribute type, and the values of
+    /// [`Detail::template`] only where the call filled them ([`Detail::ok`]); otherwise the
+    /// buffers hold whatever the caller left there.
+    ///
+    /// # Safety
+    ///
+    /// As [`Detail::template`].
+    pub(crate) unsafe fn filled_template(&mut self, template: *const CK_ATTRIBUTE, count: CK_ULONG) {
+        // SAFETY: the caller's contract, passed on.
+        unsafe { self.read_template(template, count, self.ok) };
+    }
+
+    /// [`Detail::template`], reading values only when `values`.
+    ///
+    /// # Safety
+    ///
+    /// As [`Detail::template`].
+    unsafe fn read_template(&mut self, template: *const CK_ATTRIBUTE, count: CK_ULONG, values: bool) {
         let Ok(count) = usize::try_from(count) else { return };
         if template.is_null() || count == 0 {
             return;
@@ -204,7 +229,7 @@ impl Detail {
                 CKA_CERTIFICATE_TYPE => &mut self.certificate_types,
                 _ => continue,
             };
-            if !e.pValue.is_null() && usize::try_from(e.ulValueLen) == Ok(size_of::<CK_ULONG>()) {
+            if values && !e.pValue.is_null() && usize::try_from(e.ulValueLen) == Ok(size_of::<CK_ULONG>()) {
                 // SAFETY: `pValue` holds `ulValueLen` readable bytes, one `CK_ULONG`, perhaps
                 // unaligned.
                 list.push(unsafe { e.pValue.cast::<CK_ULONG>().read_unaligned() });
@@ -241,6 +266,9 @@ impl Trace {
         let fields = line.as_object_mut().expect("a JSON object");
         if let Some(shim) = &self.shim {
             fields.insert("shim".into(), shim.as_str().into());
+        }
+        if let Some(fatal) = &detail.fatal {
+            fields.insert("fatal".into(), fatal.as_str().into());
         }
         let numbers = [
             ("mechanism", detail.mechanism),
@@ -309,5 +337,24 @@ mod tests {
         assert_eq!((&d.classes[..], &d.key_types[..]), (&[CKO_PRIVATE_KEY][..], &[CKK_EC][..]));
         // SAFETY: a null template is no template.
         unsafe { d.template(std::ptr::null(), 3) };
+    }
+
+    /// A template the call fills gives its values only when the call filled it: a failed
+    /// `C_GetAttributeValue` leaves the caller's buffers as they were, garbage to a reader.
+    #[test]
+    fn a_filled_template_gives_values_only_when_filled() {
+        let mut class = CKO_PRIVATE_KEY;
+        let template = [CK_ATTRIBUTE {
+            type_: CKA_CLASS,
+            pValue: (&raw mut class).cast(),
+            ulValueLen: CK_ULONG::try_from(size_of::<CK_ULONG>()).unwrap(),
+        }];
+        for ok in [false, true] {
+            let mut d = Detail { ok, ..Detail::default() };
+            // SAFETY: one entry, its value as long as it says.
+            unsafe { d.filled_template(template.as_ptr(), 1) };
+            assert_eq!(d.attributes, [CKA_CLASS]);
+            assert_eq!(d.classes, if ok { vec![CKO_PRIVATE_KEY] } else { vec![] }, "ok = {ok}");
+        }
     }
 }

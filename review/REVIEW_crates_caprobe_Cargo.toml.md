@@ -30,6 +30,8 @@ binding is patched and both `rv-value` and `kwp` are on (`build_lacks`), and the
 `aes`, `cryptoki` and `sha2` are both dependencies and dev-dependencies; the dev entries add
 nothing. [read]
 
+**Fixed (2026-11-18):** the three dev-dependency entries are gone.
+
 ## Design
 
 None.

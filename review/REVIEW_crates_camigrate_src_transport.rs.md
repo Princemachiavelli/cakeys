@@ -15,6 +15,9 @@ only at `key()`, when the export runs. The lock-pinning check makes this unlikel
 since a key `transport` made is never that small, but checking in `parse` would make a dry run
 refuse it too. [read]
 
+**Fixed (2026-11-18):** `parse` refuses (17) a key smaller than `TRANSPORT_MIN_BITS`, naming the
+file. Test: `transport_files_check_their_identity`.
+
 ## Design
 
 - `provider` and `mechanisms` are outside the identity the file is checked by. See the tokens.rs

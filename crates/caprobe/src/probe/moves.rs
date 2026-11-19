@@ -99,6 +99,11 @@ pub(super) fn probe_moves(made: &mut Made, profile: &mut Draft, transport: Trans
                 unread.join(", ")
             ));
         }
+        let curves = unfixtured_curves();
+        if !curves.is_empty() {
+            made.undetermined
+                .push(format!("no import rows of {}: no test key of that curve the host reads", curves.join(", ")));
+        }
         for key in private_keys(&made.rsa_sizes) {
             import_private(made, profile, &key, kind, transport)?;
         }
@@ -124,6 +129,12 @@ pub(super) fn probe_moves(made: &mut Made, profile: &mut Draft, transport: Trans
         }
     }
     Ok(())
+}
+
+/// The curves cakeys names (`id::Curve::ALL`) with no test key in [`CURVE_KEYS`]: no import
+/// row, and the run says so.
+fn unfixtured_curves() -> Vec<&'static str> {
+    id::Curve::ALL.iter().map(|c| c.name()).filter(|c| !CURVE_KEYS.iter().any(|(_, k, _)| k == c)).collect()
 }
 
 /// The private keys the probes import: each curve, then each RSA size up to the request's
@@ -195,14 +206,21 @@ fn import_private(
     };
     let labels = matches!(made.scratch.target, Target::Labels);
     let (loc, label) = made.locator();
-    let at = locator_attrs(&loc)?;
+    // cakeys' own encoding failing is no answer of the module's, and never ends the probe.
+    let at = match locator_attrs(&loc) {
+        Ok(at) => at,
+        Err(e) => {
+            made.undetermined.push(format!("no {cap} row: the host cannot encode its locator: {e}"));
+            return Ok(());
+        }
+    };
     // Every template as the provider adjusts it for the verbs (`Provider::template`).
     let probe_spec = spec(&[], &[]);
     let declared = Declared { object: &key.object, spec: &probe_spec, locator: &loc };
     let provider = made.tok.provider.clone();
     let adjusted = |t: Template<'_>, attrs| provider.adjusted(&t, attrs);
     if labels {
-        public_half(made, profile, key, declared, label.as_ref(), &spki)?;
+        public_half(made, profile, key, declared, label.as_ref(), &spki);
     }
     let mut base = vec![
         Attribute::Token(true),
@@ -248,8 +266,7 @@ fn import_private(
         }
         return Ok(());
     }
-    let same = |plain: &[u8]| spki_of_pkcs8(plain).and_then(|s| id::spki_canonical(&s)).is_ok_and(|s| s == spki);
-    export_host(made, profile, (&key.key_type, &key.on), h, &same);
+    let host_same = |plain: &[u8]| spki_of_pkcs8(plain).and_then(|s| id::spki_canonical(&s)).is_ok_and(|s| s == spki);
     let template = |label: &str| {
         let t = vec![
             Attribute::Token(true),
@@ -263,16 +280,14 @@ fn import_private(
         adjusted(Template::Import(Declared { locator: &locator, ..declared }, Via::Unwrap), t)
     };
     let same = |m: &Made, h2| m.tok.prove_binding(h2, &key.object, &spki, Binding::PopSign);
-    export_sealed(made, profile, (&key.key_type, &key.on), h, false, transport, &template, &same);
+    let test_key = TestKey { key_type: &key.key_type, on: &key.on, h, secret: false, template: &template, same: &same };
+    exports(made, profile, &test_key, &host_same, transport);
     Ok(())
 }
 
 /// Create `key`'s public half from its canonical `spki` under `on`'s locator
-/// (`create.CKO_PUBLIC_KEY.*`), read back.
-///
-/// # Errors
-///
-/// A locator the probe made that does not map, a public key the host cannot encode.
+/// (`create.CKO_PUBLIC_KEY.*`), read back. A locator or public key the host cannot encode is
+/// undetermined: cakeys' own encoding, not the module's answer.
 fn public_half(
     made: &mut Made,
     profile: &mut Draft,
@@ -280,12 +295,14 @@ fn public_half(
     on: Declared<'_>,
     label: Option<&String>,
     spki: &[u8],
-) -> Result<()> {
+) {
     let public = ObjectCfg { class: Class::PublicKey, ..key.object.clone() };
     let cap = Capability::Create { class: "CKO_PUBLIC_KEY".into(), key: Some((key.key_type.clone(), key.on.clone())) };
     let mut t = vec![Attribute::Token(true), Attribute::Verify(true)];
-    t.extend(locator_attrs(on.locator)?);
-    t.extend(public_object_attrs(&public, spki)?);
+    match host_encoding(on.locator, &public, spki) {
+        Ok(attrs) => t.extend(attrs),
+        Err(e) => return made.undetermined.push(format!("no {cap} row: the host cannot encode it: {e}")),
+    }
     let created = made
         .tok
         .provider
@@ -303,7 +320,18 @@ fn public_half(
         }
         Err(why) => profile.set(cap, Answer::No, Some(why), None),
     }
-    Ok(())
+}
+
+/// The attributes of a public object at `locator` holding `value` (a public key's SPKI, a
+/// certificate, a data object's bytes), as cakeys encodes them.
+///
+/// # Errors
+///
+/// What the host cannot encode: a locator or value cakeys has no attributes for.
+fn host_encoding(locator: &Locator, object: &ObjectCfg, value: &[u8]) -> Result<Vec<Attribute>> {
+    let mut t = locator_attrs(locator)?;
+    t.extend(public_object_attrs(object, value)?);
+    Ok(t)
 }
 
 /// The `CKK_*` of `key`, as PKCS#11 names it.
@@ -481,56 +509,114 @@ fn composed(
 /// the export unprobed. An unwrapped secret key's `CKA_VALUE_LEN` is not read: stock `SoftHSM`
 /// leaves it 0 and the reference suites' carries the fix (upstream #925), so a row reading it
 /// would describe one build only; `move.secret-unwrap` still says it.
-#[expect(clippy::too_many_arguments, reason = "one key's rows: what it is, where it goes, how it is checked")]
-fn export_sealed(
-    made: &mut Made,
-    profile: &mut Draft,
-    (key_type, on): (&KeyKind, &On),
-    h: ObjectHandle,
-    secret: bool,
-    transport: Transport,
-    template: &dyn Fn(&str) -> Result<Vec<Attribute>>,
-    same: &dyn Fn(&Made, ObjectHandle) -> Result<()>,
-) {
-    let export = Capability::Export { way: Way::Sealed, key_type: key_type.clone(), on: on.clone() };
-    let unwrap = Capability::Unwrap { key_type: key_type.clone(), on: on.clone() };
+fn export_sealed(made: &mut Made, profile: &mut Draft, key: &TestKey, transport: Transport) {
+    let export = Capability::Export { way: Way::Sealed, key_type: key.key_type.clone(), on: key.on.clone() };
+    let unwrap = Capability::Unwrap { key_type: key.key_type.clone(), on: key.on.clone() };
     let Some(transport) = transport else {
         made.undetermined.push(format!("no {export} or {unwrap} row: no RSA transport key"));
         return;
     };
-    let (mut wrap_refusals, mut unwrap_refusals) = (Vec::new(), Vec::new());
-    for way in sealed_ways(profile, secret) {
+    let mut ways = Ways::default();
+    for way in sealed_ways(profile, key.secret) {
         let label = made.scratch.label();
-        let template = match template(&label) {
+        // The provider refusing the unwrap template is not the module's answer: nothing was
+        // sent to C_WrapKey or C_UnwrapKey.
+        let template = match (key.template)(&label) {
             Ok(t) => t,
             Err(e) => {
-                unwrap_refusals.push(format!("{}: {}", way.via(), evidence(made.tok, &e)));
+                ways.untried.push(format!("{}: {}", way.via(), evidence(made.tok, &e)));
                 continue;
             }
         };
-        match trip(made, way, transport, h, &template) {
-            Trip::WrapRefused(why) => wrap_refusals.push(format!("{}: {why}", way.via())),
-            Trip::UnwrapRefused(why) => unwrap_refusals.push(format!("{}: {why}", way.via())),
+        match trip(made, way, transport, key.h, &template) {
+            Trip::WrapRefused(why) => ways.wrap_refused.push(format!("{}: {why}", way.via())),
+            Trip::UnwrapRefused(why) => ways.unwrap_refused.push(format!("{}: {why}", way.via())),
             Trip::Unwrapped(h2) => {
                 made.track(h2, Some(&label));
-                match same(made, h2) {
+                match (key.same)(made, h2) {
                     Ok(()) => {
                         profile.set(export, Answer::Yes, None, Some(way.via()));
                         profile.set(unwrap, Answer::Yes, None, Some(way.via()));
                         return;
                     }
-                    Err(e) => {
-                        unwrap_refusals.push(format!("{}: not the key wrapped: {}", way.via(), evidence(made.tok, &e)));
-                    }
+                    Err(e) => ways.unwrap_refused.push(format!(
+                        "{}: not the key wrapped: {}",
+                        way.via(),
+                        evidence(made.tok, &e)
+                    )),
                 }
             }
         }
     }
-    if unwrap_refusals.is_empty() {
-        profile.set(export, Answer::No, Some(wrap_refusals.join("; ")), None);
-    } else {
-        profile.set(unwrap, Answer::No, Some(unwrap_refusals.join("; ")), None);
-        made.undetermined.push(format!("no {export} row: it leaves, but never comes back in here"));
+    match ways.rows() {
+        SealedRows::UnwrapNo(why) => {
+            profile.set(unwrap, Answer::No, Some(why), None);
+            made.undetermined.push(format!("no {export} row: it leaves, but never comes back in here"));
+        }
+        SealedRows::ExportNo(why) => profile.set(export, Answer::No, Some(why), None),
+        SealedRows::Undetermined(why) => {
+            made.undetermined
+                .push(format!("no {export} or {unwrap} row: the provider refuses the unwrap template: {why}"));
+        }
+    }
+}
+
+/// One test key on the token, for its export rows: what it is, whether it is a secret key (the
+/// direct RSA-OAEP way is a secret key's), how the provider templates its unwrapped copy under a
+/// label, and whether an unwrapped copy is the test key.
+struct TestKey<'a> {
+    key_type: &'a KeyKind,
+    on: &'a On,
+    h: ObjectHandle,
+    secret: bool,
+    template: &'a dyn Fn(&str) -> Result<Vec<Attribute>>,
+    same: &'a dyn Fn(&Made, ObjectHandle) -> Result<()>,
+}
+
+/// Hand `key` to the host (`export.host.*`, checked by `host_same` on what arrived), then each
+/// sealed way (`export.sealed.*`, `unwrap.*`).
+fn exports(
+    made: &mut Made,
+    profile: &mut Draft,
+    key: &TestKey,
+    host_same: &dyn Fn(&[u8]) -> bool,
+    transport: Transport,
+) {
+    export_host(made, profile, (key.key_type, key.on), key.h, host_same);
+    export_sealed(made, profile, key, transport);
+}
+
+/// How each sealed way of one key failed.
+#[derive(Default)]
+struct Ways {
+    /// The key did not leave: the module's `C_WrapKey` refusals.
+    wrap_refused: Vec<String>,
+    /// It left but did not come back in, or came back as another key.
+    unwrap_refused: Vec<String>,
+    /// Not tried: the provider refuses the unwrap template.
+    untried: Vec<String>,
+}
+
+/// The rows the failed ways of [`Ways`] give.
+#[derive(Debug, PartialEq)]
+enum SealedRows {
+    /// `unwrap.* = no`: some way left and failed to come back; the export is undetermined.
+    UnwrapNo(String),
+    /// `export.sealed.* = no`: every way was tried, and none left.
+    ExportNo(String),
+    /// Neither row: a way the provider would not template was never tried.
+    Undetermined(String),
+}
+
+impl Ways {
+    fn rows(self) -> SealedRows {
+        if !self.unwrap_refused.is_empty() {
+            SealedRows::UnwrapNo(self.unwrap_refused.join("; "))
+        } else if self.untried.is_empty() {
+            SealedRows::ExportNo(self.wrap_refused.join("; "))
+        } else {
+            SealedRows::Undetermined(self.untried.join("; "))
+        }
     }
 }
 
@@ -548,11 +634,19 @@ fn host_kcv(value: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Whether the AES key `h` computes `value`'s check value.
+///
+/// # Errors
+///
+/// `Unavailable` when the check itself fails: it takes `CKM_AES_ECB`, which the module may
+/// lack while it imports AES keys, so the message names the check, not the import. `Conflict`
+/// for another key's check value.
 fn same_aes(made: &Made, h: ObjectHandle, value: &[u8]) -> Result<()> {
-    let token = made
-        .session
-        .encrypt(&Mechanism::AesEcb, h, &[0; 16])
-        .map_err(|e| KmError::Unsupported(format!("C_Encrypt (CKM_AES_ECB): {}", ckr(&e)).into()))?;
+    let token = made.session.encrypt(&Mechanism::AesEcb, h, &[0; 16]).map_err(|e| {
+        KmError::Unavailable(
+            format!("the host's check of the key needs C_Encrypt with CKM_AES_ECB, which fails: {}", ckr(&e)).into(),
+        )
+        .with_rv(token::rv_of(&e))
+    })?;
     if Some(token) == host_kcv(value) {
         Ok(())
     } else {
@@ -597,7 +691,6 @@ fn import_secret(made: &mut Made, profile: &mut Draft, value: &[u8], transport: 
         return;
     }
     profile.set(cap, Answer::Yes, None, Some(PlaintextKind::CreateObject.name().into()));
-    export_host(made, profile, (&KeyKind::Aes, &on), h, &|plain| plain == value);
     let template = |label: &str| {
         let t = vec![
             Attribute::Token(true),
@@ -608,7 +701,9 @@ fn import_secret(made: &mut Made, profile: &mut Draft, value: &[u8], transport: 
         ];
         adjusted(label, Via::Unwrap, t)
     };
-    export_sealed(made, profile, (&KeyKind::Aes, &on), h, true, transport, &template, &|m, h2| same_aes(m, h2, value));
+    let same = |m: &Made, h2| same_aes(m, h2, value);
+    let test_key = TestKey { key_type: &KeyKind::Aes, on: &on, h, secret: true, template: &template, same: &same };
+    exports(made, profile, &test_key, &|plain| plain == value, transport);
 }
 
 /// Create a certificate or a data object from its value (`create.CKO_*`), read back. In a
@@ -618,8 +713,13 @@ fn create_public(made: &mut Made, profile: &mut Draft, class: Class, bytes: &[u8
     let cap = Capability::Create { class: class.to_string(), key: None };
     let (loc, label) = made.locator();
     let mut t = vec![Attribute::Token(true)];
-    t.extend(locator_attrs(&loc)?);
-    t.extend(public_object_attrs(&object, bytes)?);
+    match host_encoding(&loc, &object, bytes) {
+        Ok(attrs) => t.extend(attrs),
+        Err(e) => {
+            made.undetermined.push(format!("no {cap} row: the host cannot encode it: {e}"));
+            return Ok(());
+        }
+    }
     if class == Class::Data {
         t.push(Attribute::Private(false));
     }
@@ -679,5 +779,37 @@ mod tests {
             assert!(host_kcv(value).is_some());
         }
         assert!(id::cert_spki(CERTIFICATE).is_ok());
+        // The curves cakeys names without a test key: each named in the run's undetermined
+        // list (review moves F5). A new curve without a fixture fails here until it has one or
+        // is listed.
+        assert_eq!(unfixtured_curves(), ["edwards448"]);
+    }
+
+    /// A way the provider will not template was never sent to the module: no `no` row from it,
+    /// and no export `no` while it is untried. A wrong key unwrapped is an unwrap `no`, named
+    /// as such (review moves F2).
+    #[test]
+    fn untried_ways_decide_no_row() {
+        let ways = |wrap: &[&str], unwrap: &[&str], untried: &[&str]| Ways {
+            wrap_refused: wrap.iter().map(|s| (*s).to_owned()).collect(),
+            unwrap_refused: unwrap.iter().map(|s| (*s).to_owned()).collect(),
+            untried: untried.iter().map(|s| (*s).to_owned()).collect(),
+        };
+        assert_eq!(ways(&[], &[], &["a: refused"]).rows(), SealedRows::Undetermined("a: refused".into()));
+        assert_eq!(ways(&["b: C_WrapKey"], &[], &["a: refused"]).rows(), SealedRows::Undetermined("a: refused".into()));
+        assert_eq!(ways(&["b: C_WrapKey"], &[], &[]).rows(), SealedRows::ExportNo("b: C_WrapKey".into()));
+        let wrong = "b: not the key wrapped: another key";
+        assert_eq!(ways(&[], &[wrong], &["a: refused"]).rows(), SealedRows::UnwrapNo(wrong.into()));
+    }
+
+    /// What cakeys cannot encode is an error of the host's, which the probes record as
+    /// undetermined rather than end the run with (review moves F1).
+    #[test]
+    fn the_host_encoding_fails_as_a_value() {
+        let cert = ObjectCfg::new(Class::Certificate, None);
+        let ok = Locator { label: Some("cakeys-probe-01".into()), id: None };
+        assert!(host_encoding(&ok, &cert, CERTIFICATE).is_ok());
+        let odd = Locator { label: None, id: Some("not hex".into()) };
+        assert!(host_encoding(&odd, &cert, CERTIFICATE).is_err());
     }
 }

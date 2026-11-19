@@ -218,9 +218,11 @@ firmware = "2.7"
 "generate.CKK_EC.secp256r1" = { answer = "yes" }
 ```
 
-The `capabilities` are this deployment's own answers: `validate`, `create`'s gate and
-camigrate's planner read them before the module profile of the token's kind (they decide, it
-is a prior), and a recorded *no* refuses there as a profile's does. They are observations
+The `capabilities` are this deployment's own answers: `validate`, `create` (its gate, and the
+generation on the token: a curve recorded `via = "by-name"` is retried by name) and camigrate's
+planner read them before the module profile of the token's kind (they decide, it is a prior),
+and a recorded *no* refuses there as a profile's does. A recorded answer that names no `via`
+keeps the profile's. They are observations
 (DESIGN §3.5): they never change a verdict of `check`, `verify` or `lock`, and a run that
 records none leaves them as they were. Only what a run demonstrated is recorded, so today they
 only ever say *yes*.

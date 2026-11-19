@@ -14,6 +14,8 @@ context handling, ECDSA streaming and teardown. A reader choosing a SoftHSM for 
 regeneration (scripts/regen-profiles.sh, which takes stock SoftHSM) has no hint that this is
 "SoftHSM as the tests see it". Something like `softhsm-patched` would say it. [read]
 
+**Fixed (2026-11-18):** header says it is SoftHSM as the tests see it, all four patches; name kept (31 references).
+
 ## Design
 
 - Deployments run stock 2.7.0 while every suite and the profile conformance test run this build;

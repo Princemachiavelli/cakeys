@@ -853,19 +853,20 @@ pub fn load_config_with(path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Re
 /// `Validation`, as [`load_config_with`].
 pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<Config> {
     let invalid = |e: &dyn std::fmt::Display| KmError::Validation(format!("{}: {e}", path.display()).into());
+    // A `$NAME` reference's error, named by the file as every other load error is.
+    let env_ref = |value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>| {
+        env_ref(value, what, env).map_err(|e| e.prefixed(path.display()))
+    };
     let mut cfg: Config = toml::from_str(text).map_err(|e| invalid(&e))?;
     check_names(&cfg).map_err(|e| invalid(&e))?;
+    // These paths were TOML strings, so UTF-8: `to_string_lossy` replaces nothing.
     for dir in &mut cfg.profile_dirs {
         *dir = PathBuf::from(env_ref(&dir.to_string_lossy(), "profileDirs", env)?);
     }
     for (name, o) in &mut cfg.objects {
         o.canonicalize();
         // Every object's type, used by a spec or not (review V5); a plan reads it again.
-        o.kind().map_err(|e| match e {
-            KmError::Validation(m) => KmError::Validation(format!("{}: object '{name}': {m}", path.display()).into()),
-            KmError::Unsupported(m) => KmError::Unsupported(format!("{}: object '{name}': {m}", path.display()).into()),
-            other => other,
-        })?;
+        o.kind().map_err(|e| e.prefixed(format_args!("{}: object '{name}'", path.display())))?;
         check_value_len(o).map_err(|e| invalid(&format_args!("object '{name}': {e}")))?;
     }
     for (name, t) in &mut cfg.tokens {
@@ -893,6 +894,7 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
             }
         }
     }
+    check_secret_files(&cfg).map_err(|e| invalid(&e))?;
     // A spec's object reference must name something, also when no token ever uses the spec.
     for (spec, s) in &cfg.specs {
         if !cfg.objects.contains_key(&s.object) {
@@ -985,14 +987,17 @@ fn check_token(t: &TokenCfg) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// Whether `n` is a name: `[A-Za-z0-9][A-Za-z0-9_-]*` ([`check_names`]; a vendor method's parts,
+/// `migrate::Method::from_name`).
+pub(crate) fn is_name(n: &str) -> bool {
+    n.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 /// Object, spec and token names are `[A-Za-z0-9][A-Za-z0-9_-]*`: `check` splits a reference on
 /// `.id.`, the lock and `gc` join names with dots, and the Nix library puts them in a shell
 /// command. Invalid at load (17), before any other rule names them.
 fn check_names(cfg: &Config) -> std::result::Result<(), String> {
-    let valid = |n: &str| {
-        n.starts_with(|c: char| c.is_ascii_alphanumeric())
-            && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    };
     let names = cfg
         .objects
         .keys()
@@ -1001,7 +1006,7 @@ fn check_names(cfg: &Config) -> std::result::Result<(), String> {
         .chain(cfg.tokens.keys().map(|n| ("token", n)))
         .chain(cfg.specs.values().flat_map(|s| s.tokens.keys().map(|n| ("token", n))));
     for (what, name) in names {
-        if !valid(name) {
+        if !is_name(name) {
             return Err(format!(
                 "{what} name {name:?}: names are letters, digits, '-' and '_', starting with a letter or digit"
             ));
@@ -1041,6 +1046,28 @@ fn check_transport_keys(cfg: &Config) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// No file keys.toml names to hold a secret is in the world-readable Nix store
+/// ([`secret_in_store`]): `pinFile` and `soCredentialFile` (their `$NAME` already resolved),
+/// `migrate.passphraseFile`, and `migrate.file` when the object's material is secret
+/// ([`Config::secret_material`]). A `$NAME` migrate path is checked when camigrate resolves it
+/// ([`Config::object_file`], [`Config::object_passphrase_file`]), and every secret file again
+/// when it is read (`secret::read`), so a link changed since load is caught too.
+fn check_secret_files(cfg: &Config) -> std::result::Result<(), String> {
+    let literal = |v: &Option<String>| v.clone().filter(|f| !f.starts_with('$')).map(PathBuf::from);
+    let tokens = cfg.tokens.iter().flat_map(|(name, t)| {
+        [("pinFile", &t.pin_file), ("soCredentialFile", &t.so_credential_file)]
+            .into_iter()
+            .filter_map(move |(what, p)| Some((format!("token '{name}': {what}"), p.clone()?)))
+    });
+    let objects = cfg.object_migrate.iter().flat_map(|(object, m)| {
+        let file = literal(&m.file).filter(|_| cfg.secret_material(object));
+        [("file", file), ("passphraseFile", literal(&m.passphrase_file))]
+            .into_iter()
+            .filter_map(move |(what, p)| Some((format!("object '{object}': migrate.{what}"), p?)))
+    });
+    tokens.chain(objects).find_map(|(what, path)| secret_in_store(&what, &path)).map_or(Ok(()), Err)
+}
+
 /// Each pair's `origin` fits its object (docs/CONFIG.md): a private or secret key states it; a
 /// `publicOnly` adoption, a certificate, a public key and a data object are never created; a
 /// `CKA_TRUSTED` key cannot be generated; and an object is created by at most one pair, which
@@ -1074,12 +1101,6 @@ fn check_origins(cfg: &Config) -> std::result::Result<(), String> {
                 "object '{object}': a secret key's migrate.file needs the key's valueLen or migrate.encoding = \
                  \"raw\", \"hex\" or \"base64\": its value, hex and base64 of it are told apart by length alone"
             ));
-        }
-        // A literal path is checked now; a `$NAME` one when camigrate resolves it.
-        if let Some(file) = m.file.as_deref().filter(|f| !f.starts_with('$'))
-            && let Some(why) = cfg.in_store(object, Path::new(file), nix_store_keys_allowed())
-        {
-            return Err(why);
         }
     }
     // Every (spec, token) pair's origin on its own, then across pairs: at most one creates each object.
@@ -1169,12 +1190,15 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// `Validation` (17) for an unset or malformed `$NAME`, or a secret file under `/nix/store`
-    /// ([`Self::secret_material`]): the store is world-readable.
+    /// `Validation` (17) for an unset or malformed `$NAME`, or a secret file that resolves into
+    /// `/nix/store` ([`Self::secret_material`], `secret_in_store`): the store is world-readable.
     pub fn object_file(&self, object: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<PathBuf>> {
         let Some(file) = self.object_migrate.get(object).and_then(|m| m.file.as_deref()) else { return Ok(None) };
-        let path = PathBuf::from(env_ref(file, &format!("object '{object}': migrate.file"), env)?);
-        if let Some(why) = self.in_store(object, &path, nix_store_keys_allowed()) {
+        let what = format!("object '{object}': migrate.file");
+        let path = PathBuf::from(env_ref(file, &what, env)?);
+        if self.secret_material(object)
+            && let Some(why) = secret_in_store(&what, &path)
+        {
             return Err(KmError::Validation(why.into()));
         }
         Ok(Some(path))
@@ -1185,7 +1209,8 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// `Validation` (17) for an unset or malformed `$NAME`.
+    /// `Validation` (17) for an unset or malformed `$NAME`, or a path that resolves into
+    /// `/nix/store`: a passphrase is a secret whatever it decrypts.
     pub fn object_passphrase_file(
         &self,
         object: &str,
@@ -1194,7 +1219,12 @@ impl Config {
         let Some(file) = self.object_migrate.get(object).and_then(|m| m.passphrase_file.as_deref()) else {
             return Ok(None);
         };
-        Ok(Some(PathBuf::from(env_ref(file, &format!("object '{object}': migrate.passphraseFile"), env)?)))
+        let what = format!("object '{object}': migrate.passphraseFile");
+        let path = PathBuf::from(env_ref(file, &what, env)?);
+        if let Some(why) = secret_in_store(&what, &path) {
+            return Err(KmError::Validation(why.into()));
+        }
+        Ok(Some(path))
     }
 
     /// Whether `object`'s material is secret at rest: a private or secret key, or a data object a
@@ -1208,18 +1238,6 @@ impl Config {
             }
             _ => false,
         }
-    }
-
-    /// Why `path` may not hold `object`'s material: a secret one under the world-readable
-    /// `/nix/store`, unless `allowed` ([`ALLOW_NIX_STORE_KEYS`]).
-    fn in_store(&self, object: &str, path: &Path, allowed: bool) -> Option<String> {
-        (!allowed && path.starts_with("/nix/store") && self.secret_material(object)).then(|| {
-            format!(
-                "object '{object}': migrate.file {} is in the Nix store, which anyone on the host can read; keep \
-                 secret material out of it ({ALLOW_NIX_STORE_KEYS}=1 allows it, for throwaway keys only)",
-                path.display()
-            )
-        })
     }
 
     /// The (spec, token) pairs a verb's address selects (`[<object>] [--spec] [--token]`,
@@ -1406,6 +1424,22 @@ mod tests {
         lock.observations.insert(sri.into(), Observation::default());
         lock.observations.insert("sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564=".into(), Observation::default());
         lock.clone().validate(path).unwrap();
+        // Every observation's module hash is checked, not only the first one's (review
+        // config.rs F2): a good one first, a malformed one after.
+        let module = |hash: &str| ModuleInfo {
+            path: "/m.so".into(),
+            hash: Some(hash.into()),
+            description: String::new(),
+            manufacturer: String::new(),
+            version: String::new(),
+            cryptoki: String::new(),
+        };
+        let mut hashed = lock.clone();
+        let mut entries = hashed.observations.values_mut();
+        entries.next().unwrap().module = Some(module(sri));
+        entries.next().unwrap().module = Some(module("sha256-x"));
+        let err = hashed.validate(path).unwrap_err();
+        assert!(err.to_string().contains("module hash \"sha256-x\""), "{err}");
         assert!(matches!(lock.token_observation("t"), TokenObservation::One(_)));
         assert!(matches!(lock.token_observation("other"), TokenObservation::None));
 
@@ -1617,8 +1651,6 @@ mod tests {
         assert!(cfg.object_file("k", &|_| None).is_err());
         let store = |_: &str| Some("/nix/store/abc-k.pem".to_owned());
         assert!(cfg.object_file("k", &store).unwrap_err().to_string().contains("Nix store"));
-        // Unless the run allows throwaway keys there (CAKEYS_ALLOW_NIX_STORE_KEYS=1).
-        assert_eq!(cfg.in_store("k", Path::new("/nix/store/abc-k.pem"), true), None);
         // A certificate is no secret: from the store it may come.
         let cfg = load(&(cert.to_owned() + &file("/nix/store/abc-c.pem")), from_file, "").unwrap();
         assert!(cfg.object_file("k", &|_| None).unwrap().is_some());
@@ -1666,13 +1698,91 @@ mod tests {
         );
     }
 
+    /// Every file keys.toml names to hold a secret is refused (17) when it resolves into the
+    /// world-readable Nix store: `pinFile`, `soCredentialFile`, `migrate.passphraseFile`, and a
+    /// secret object's `migrate.file`; at load for a literal path (or a `$NAME` pin file, which
+    /// load resolves), when camigrate resolves a `$NAME` migrate path; through a symlink or a
+    /// `..` as directly (review config.rs F4).
+    #[test]
+    fn no_secret_file_is_in_the_nix_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = dir.path().join("result");
+        std::os::unix::fs::symlink("/nix/store", &result).unwrap();
+        let elsewhere = dir.path().join("keys");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let in_store = [
+            "/nix/store/abc-secret".to_owned(),
+            format!("{}/abc-secret", result.display()),
+            format!("{}/../result/abc-secret", elsewhere.display()),
+        ];
+        let outside = [format!("{}/secret", elsewhere.display()), format!("{}/../keys/secret", result.display())];
+        let ec = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n";
+        let fields = [
+            ("[tokens.t]\ntokenLabel = \"t\"\npinFile = \"{}\"\n", "token 't': pinFile"),
+            ("[tokens.t]\ntokenLabel = \"t\"\npinFile = \"/p\"\nsoCredentialFile = \"{}\"\n", "soCredentialFile"),
+            ("{ec}migrate = { file = \"/run/k.p12\", passphraseFile = \"{}\" }\n", "migrate.passphraseFile"),
+            ("{ec}migrate = { file = \"{}\" }\n", "object 'k': migrate.file"),
+        ];
+        let load = |text: &str| parse_config_with(text, Path::new("keys.toml"), &|_| None);
+        for (template, what) in fields {
+            let at = |p: &str| template.replace("{ec}", ec).replace("{}", p);
+            for p in &in_store {
+                let e = load(&at(p)).unwrap_err();
+                assert!(
+                    matches!(&e, KmError::Validation(m) if m.contains(what) && m.contains("Nix store")),
+                    "{what} {p}: {e}"
+                );
+            }
+            for p in &outside {
+                load(&at(p)).unwrap_or_else(|e| panic!("{what} {p}: {e}"));
+            }
+        }
+        // A `$NAME` pin file is resolved at load, and checked there.
+        let pin = parse_config_with(
+            "[tokens.t]\ntokenLabel = \"t\"\npinFile = \"$PIN_FILE\"\n",
+            Path::new("keys.toml"),
+            &|_| Some(in_store[1].clone()),
+        );
+        assert!(matches!(&pin, Err(KmError::Validation(m)) if m.contains("Nix store")), "{:?}", pin.err());
+        // A `$NAME` migrate path is checked when camigrate resolves it, the passphrase's whatever
+        // the object holds.
+        let cfg = load(&format!("{ec}migrate = {{ file = \"$KEY\", passphraseFile = \"$PASS\" }}\n")).unwrap();
+        let store = |_: &str| Some(in_store[2].clone());
+        assert!(cfg.object_file("k", &store).unwrap_err().to_string().contains("Nix store"));
+        assert!(cfg.object_passphrase_file("k", &store).unwrap_err().to_string().contains("Nix store"));
+        let fine = |_: &str| Some(outside[0].clone());
+        assert_eq!(cfg.object_passphrase_file("k", &fine).unwrap(), Some(PathBuf::from(&outside[0])));
+        let cert = "[objects.k]\nclass = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"\n";
+        let cfg = load(&format!("{cert}migrate = {{ file = \"$KEY\", passphraseFile = \"$PASS\" }}\n")).unwrap();
+        assert!(cfg.object_file("k", &store).unwrap().is_some(), "a certificate is no secret");
+        assert!(cfg.object_passphrase_file("k", &store).is_err(), "a passphrase is");
+    }
+
+    /// The store guard compares resolved paths component by component: a link into the root, a
+    /// `..` out of it and a sibling whose name only starts like it are told apart, existing or not.
+    #[test]
+    fn paths_resolve_before_they_compare() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("store");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(dir.path().join("store-not")).unwrap();
+        std::os::unix::fs::symlink(&root, dir.path().join("link")).unwrap();
+        let under = |p: &str| resolves_under(&dir.path().join(p), &root);
+        assert!(under("store/a"));
+        assert!(under("link/a/b"), "through a link, to a file that does not exist");
+        assert!(under("store-not/../store/a"));
+        assert!(!under("store-not/a"), "a string prefix is no parent");
+        assert!(!under("store/../a"));
+        assert!(!under("link/../a"), "the link's target's parent, not the link's");
+        assert!(!under("elsewhere/a"));
+    }
+
     /// `$NAME`/`${NAME}` in `pinFile` and `module` read the path from the environment; an unset or
     /// malformed reference is invalid at load (17), and a spec must reference an existing object.
     #[test]
     fn env_references_and_object_refs_are_checked_at_load() {
-        let dir = std::env::temp_dir().join("cakeys-load-config-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
         let load = |body: &str| {
             let p = dir.join("keys.toml");
             std::fs::write(&p, body).unwrap();
@@ -1695,11 +1805,22 @@ mod tests {
             cfg.tokens["t"].module_path("t", &|_| Some("/env/pin".to_owned())).unwrap().as_deref(),
             Some("/env/pin")
         );
-        // An unset variable fails at load, naming it; so does a malformed reference.
-        let err = load(&format!("{head}pinFile = \"$KM_UNIT_TEST_UNSET\"\n")).unwrap_err();
-        assert!(err.to_string().contains("KM_UNIT_TEST_UNSET"), "{err}");
-        let err = load(&format!("{head}pinFile = \"$HOME/x\"\n")).unwrap_err();
-        assert!(err.to_string().contains("neither $NAME"), "{err}");
+        // An unset variable fails at load, naming it; so does a malformed reference. Each names
+        // the file first, as every other load error does (review config.rs F6).
+        let file = format!("invalid: {}: ", dir.join("keys.toml").display());
+        let err = load(&format!("{head}pinFile = \"$KM_UNIT_TEST_UNSET\"\n")).unwrap_err().to_string();
+        assert!(err.starts_with(&format!("{file}token 't': pinFile")) && err.contains("KM_UNIT_TEST_UNSET"), "{err}");
+        let err = load(&format!("{head}pinFile = \"$HOME/x\"\n")).unwrap_err().to_string();
+        assert!(err.starts_with(&file) && err.contains("neither $NAME"), "{err}");
+        for body in [
+            "profileDirs = [\"$KM_UNIT_TEST_UNSET\"]\n".to_owned(),
+            format!("{head}soCredentialFile = \"$\"\n"),
+            format!("{head}module = \"$HOME/x.so\"\n"),
+            "[objects.o]\nclass = \"CKO_DATA\"\nmigrate = { file = \"${HOME\" }\n".to_owned(),
+        ] {
+            let err = load(&body).unwrap_err().to_string();
+            assert!(err.starts_with(&file), "{body}: {err}");
+        }
         // A module resolves when its token is opened, not at load: an unset variable fails only a
         // run that opens that token without --module (a Nix build sandbox sets none); a
         // malformed reference still fails at load.
@@ -1720,23 +1841,19 @@ mod tests {
         ))
         .unwrap_err();
         assert!(err.to_string().contains("unknown object 'missing'"), "{err}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A class or key type cakeys does not manage is invalid when keys.toml loads (17), not when
     /// a token is first asked for it.
     #[test]
     fn unknown_classes_and_key_types_are_invalid_at_load() {
-        let dir = std::env::temp_dir().join("cakeys-load-types-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("keys.toml");
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("keys.toml");
         for object in ["class = \"CKO_OTP_KEY\"", "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES2\""] {
             std::fs::write(&p, format!("[objects.o]\n{object}\n")).unwrap();
             let err = load_config(&p).unwrap_err();
             assert!(matches!(err, KmError::Validation(_)), "{err}");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A DES3 key is 24 bytes: `valueLen` left out loads as 24 (the same type, spec digest and

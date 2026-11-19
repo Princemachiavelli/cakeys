@@ -109,7 +109,6 @@ fn create_never_fights_a_locked_identity() {
 fn create_makes_keys_and_nothing_else_does() {
     let Some(e) = env("create") else { return };
     let s = e.session();
-    s.clear(&["create-ec", "create-aes", "create-loose"]);
     let body = "[objects.ec]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [objects.aes]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
          [specs.ec]\nobject = \"ec\"\nattributes = { CKA_SIGN = true, CKA_DESTROYABLE = true }\n\
@@ -124,6 +123,14 @@ fn create_makes_keys_and_nothing_else_does() {
     // The first-use flow finds nothing and makes nothing.
     assert_eq!(e.code(&["lock", "--spec", "ec", "--token", "ref"]), 11);
     assert_eq!(e.code(&["check", "ec", "--spec", "ec"]), 11);
+
+    // A dry run of a plan that would make keys passes, and makes and writes nothing (review
+    // create.rs F2: only a refused plan's dry run was shown to).
+    let lock_before = std::fs::read(e.dir.join("keys.lock")).ok();
+    let o = e.km(&["create", "--token", "ref", "--dry-run"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(std::fs::read(e.dir.join("keys.lock")).ok(), lock_before, "the dry run wrote the lock");
+    assert_eq!((s.labelled("create-ec"), s.labelled("create-aes")), (vec![], vec![]), "the dry run made a key");
 
     // Every unpinned pair on the token, created and recorded; what is adopted, not made, skipped.
     let o = e.km(&["create", "--token", "ref"]);
@@ -204,7 +211,6 @@ fn create_makes_keys_and_nothing_else_does() {
 #[test]
 fn create_checks_the_profiles_before_it_makes_anything() {
     let Some(e) = env("create_gate") else { return };
-    e.session().clear(&["gate-p256", "gate-k1"]);
     let key = |name: &str, curve: &str| {
         format!(
             "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"{curve}\"\n\n\
@@ -228,22 +234,22 @@ fn create_checks_the_profiles_before_it_makes_anything() {
     let plan: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
     let action = |spec: &str| plan.as_array().unwrap().iter().find(|p| p["spec"] == spec).unwrap()["action"].clone();
     assert_eq!((action("p256"), action("k1")), ("create".into(), "refuse".into()), "{plan}");
-    assert!(
-        stderr(&o).contains("'k1' (spec 'k1') on token 'ref': token 'ref' cannot generate it: no — kryoptic/1.5"),
-        "{}",
-        stderr(&o)
-    );
+    // Which pair, and the profile that decided, not the sentence around them (review create.rs F3).
+    let refusal = stderr(&o);
+    let k1 = refusal.lines().find(|l| l.contains("'k1' (spec 'k1') on token 'ref'")).unwrap_or_default();
+    assert!(k1.contains("kryoptic/1.5"), "{refusal}");
     assert_eq!(e.code(&["create", "--dry-run", "--skip-unsupported"]), 0);
     assert!(nothing_made(), "a dry run makes nothing");
 
     let o = e.km(&["create"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
-    assert!(stderr(&o).contains("nothing was created") && stderr(&o).contains("--skip-unsupported"), "{}", stderr(&o));
+    assert!(stderr(&o).contains("--skip-unsupported"), "names the way past it: {}", stderr(&o));
     assert!(nothing_made(), "a refused run makes nothing");
 
     let o = e.km(&["create", "--skip-unsupported"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    assert!(stderr(&o).contains("warning: create: skipped, unsupported:"), "{}", stderr(&o));
+    let warned = stderr(&o).lines().any(|l| l.starts_with("warning:") && l.contains("'k1' (spec 'k1')"));
+    assert!(warned, "the skipped pair warned: {}", stderr(&o));
     assert!(made("gate-p256") && !made("gate-k1"));
     assert!(e.lock()["realisations"]["p256"]["ref"].is_table());
 }
@@ -255,7 +261,6 @@ fn create_checks_the_profiles_before_it_makes_anything() {
 #[test]
 fn a_tokens_own_answers_decide_before_its_profile() {
     let Some(e) = env("answers") else { return };
-    e.session().clear(&["answers-sign", "answers-derive"]);
     let key = |name: &str, usage: &str| {
         format!(
             "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
@@ -304,8 +309,6 @@ fn a_tokens_own_answers_decide_before_its_profile() {
 #[test]
 fn create_records_what_it_made_before_a_failure() {
     let Some(e) = env("create_failure") else { return };
-    let s = e.session();
-    s.clear(&["create2-one", "create2-two", "create2-second"]);
     // Spec `a-<first>` on `ref` sorts before `b-second` on `second`.
     let body = |first: &str, second: &str| {
         format!(

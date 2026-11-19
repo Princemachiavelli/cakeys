@@ -30,6 +30,8 @@ binding is patched and both `rv-value` and `kwp` are on (`build_lacks`), and the
 dependency, so every consumer builds it for this crate (core pulls it too, so the cost is nil
 today). Fix: move it to `[dev-dependencies]`. [read]
 
+**Fixed (2026-11-18):** `toml` moved to `[dev-dependencies]`.
+
 ## Design
 
 None beyond F1.

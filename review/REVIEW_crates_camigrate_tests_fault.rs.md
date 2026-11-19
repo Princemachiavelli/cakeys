@@ -20,6 +20,8 @@ error path would pass. `SessionObject` should make that impossible (ISSUES.md Q5
 is the test that would show it. Fix: snapshot the source's object list (as
 `common::xref::objects` does for the dry-run twin) before each case and compare after. [read]
 
+**Fixed (2026-11-18):** every refused case compares both tokens' token objects (class, label, ID, key type, sorted, SoftHSM read past the shim) with the snapshot before. Test: `a_move_the_module_fails_is_refused_and_undone` (not run).
+
 ### F2. The no-fault control checks only the exit code — nit
 
 `crates/camigrate/tests/fault.rs:154-158`. "With no plan, the same moves then succeed" asserts
@@ -27,6 +29,8 @@ exit 0, not that the lock now records the realisation or that `cakeys verify` ac
 dry_run.rs does after every ready move. A shim that broke the move silently (exit 0, nothing
 recorded) would pass here, though `tests/fault.rs` in cli covers transparency. Fix: add `cakeys
 verify --spec <o>-dst` per move. [read]
+
+**Fixed (2026-11-18):** each control move is followed by `cakeys verify --spec <o>-dst` on its target. Test: `a_move_the_module_fails_is_refused_and_undone` (not run).
 
 ### F3. Call-number rules depend on the implementation's call count — nit
 
@@ -43,6 +47,8 @@ the PIN file from `common::Workdir::new` (`crates/cli/tests/common/mod.rs:353-35
 `common::xref::env` (`crates/cli/tests/common/xref.rs:66-69`). An `Env::new(name, refs)` in
 `xref.rs` would serve this file and `env()`. The `Box::leak` for the env pairs (`:91-93`) is the
 same workaround as dry_run.rs F8. [read]
+
+**Fixed (2026-11-18):** `Env::over` with `created_ref` sets the tests up; the leaks go through `common::ref_env`. Test: the suite (not run).
 
 ## Design
 

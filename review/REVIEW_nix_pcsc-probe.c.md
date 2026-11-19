@@ -11,6 +11,8 @@ test matches on the printed codes.
 `nix/pcsc-probe.c:8-13`. No `SCardReleaseContext` before returning; harmless in a process that
 exits at once, but pcscd logs an abandoned client. [read]
 
+**Fixed (2026-11-18):** SCardReleaseContext; builds.
+
 ## Design
 
 - `SCardListReaders` failing still exits 0 on purpose: `SCARD_E_NO_READERS_AVAILABLE` is the

@@ -10,5 +10,7 @@ int main(void) {
   if (rc != SCARD_S_SUCCESS) return 2;
   rc = SCardListReaders(ctx, NULL, NULL, &len);
   printf("SCardListReaders:      0x%08lx %s\n", (unsigned long)rc, pcsc_stringify_error(rc));
+  /* Released, so pcscd sees a client that left, not one it abandoned. */
+  SCardReleaseContext(ctx);
   return 0;
 }

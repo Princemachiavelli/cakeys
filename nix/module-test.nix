@@ -13,19 +13,12 @@
 let
   inherit (pkgs) lib;
   system = pkgs.stdenv.hostPlatform.system;
-  stateDir = "/var/lib/softhsm";
+  # The token, keys.toml and guest builds nix/test.nix and nix/tpm-test.nix use too.
+  vm = import ./vm-common.nix;
+  inherit (vm) stateDir;
 
   keysToml = pkgs.writeText "keys.toml" ''
-    [tokens.softhsm]
-    module = "${softhsm}/lib/softhsm/libsofthsm2.so"
-    tokenLabel = "kmtest"
-    pinFile = "${stateDir}/pin"
-
-    [objects.signing]
-    class = "CKO_PRIVATE_KEY"
-    keyType = "CKK_EC"
-    curve = "secp256r1"
-
+    ${vm.keysToml "${softhsm}/lib/softhsm/libsofthsm2.so"}
     [specs.signing-soft]
     object = "signing"
     attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
@@ -78,7 +71,10 @@ pkgs.testers.runNixOSTest {
   name = "cakeys-module";
 
   nodes.machine = {
-    imports = [ module ];
+    imports = [
+      module
+      vm.softhsm.config
+    ];
     services.cakeys = {
       package = cakeys;
       sandbox.pcscd.enable = true;
@@ -140,9 +136,8 @@ pkgs.testers.runNixOSTest {
     ];
     environment.etc."km/keys.toml".source = keysToml;
     environment.etc."km/builds.nix".source = guestBuilds;
-    environment.variables.SOFTHSM2_CONF = "${stateDir}/softhsm2.conf";
     systemd.tmpfiles.rules = [
-      "d ${stateDir}/tokens 0700 root root -"
+      "d ${vm.softhsm.tokens} 0700 root root -"
       "d /var/lib/km 0700 root root -"
     ];
     nix.settings.substituters = lib.mkForce [ ];
@@ -155,11 +150,7 @@ pkgs.testers.runNixOSTest {
 
     km = "cakeys --config /etc/km/keys.toml --lock /var/lib/km/keys.lock"
 
-    def guest_build(attr):
-        out = machine.succeed(
-            f"nix-build /etc/km/builds.nix -A {attr} --argstr nonce {attr} --no-out-link 2>&1"
-        ).strip().splitlines()[-1]
-        return machine.succeed(f"cat {out}")
+    ${vm.guestBuild}
 
     start_all()
     machine.wait_for_unit("multi-user.target")
@@ -179,31 +170,28 @@ pkgs.testers.runNixOSTest {
 
     with subtest("pcscd is reachable from the sandbox with auto-allocated build UIDs"):
         for attr in ["pcsc", "structured"]:
-            out = guest_build(attr)
+            out = guest_build(machine, attr, attr)
             print(attr, out)
             assert "SCardEstablishContext: 0x00000000" in out, out
             assert "0x8010002e" in out, out  # connected; the VM simply has no reader
             assert "softhsm-dir=no" in out, out
 
     with subtest("the hook grants token paths only to builds requiring the token's feature"):
-        out = guest_build("softhsm")
+        out = guest_build(machine, "softhsm", "softhsm")
         print(out)
         assert "softhsm-dir=yes" in out and "SCardEstablishContext: 0x00000000" not in out, out
-        out = guest_build("plain")
+        out = guest_build(machine, "plain", "plain")
         print(out)
         assert "softhsm-dir=no" in out and "SCardEstablishContext: 0x00000000" not in out, out
 
     with subtest("uid-range builds run"):
-        out = guest_build("uidRange")
+        out = guest_build(machine, "uidRange", "uidRange")
         print(out)
         assert "uid=0 range=65536" in out, out
 
     with subtest("check unit gates the signer"):
         machine.succeed(
-            "printf 'directories.tokendir = ${stateDir}/tokens\\nobjectstore.backend = file\\nlog.level = ERROR\\n'"
-            " > ${stateDir}/softhsm2.conf",
-            "echo 1234 > ${stateDir}/pin",
-            "softhsm2-util --init-token --free --label kmtest --pin 1234 --so-pin 5678",
+            ${vm.softhsm.init}
         )
         # No key yet: the check fails (it never creates one), so does signer.
         machine.fail("systemctl start signer.service")

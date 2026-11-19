@@ -454,8 +454,10 @@ fn record_object(t: &Target, r: &Resolved, entry: &mut crate::config::LockObject
         entry.object_type = Some(t.object.clone());
         changed = true;
     }
+    // A recorded label stays: the IDs the lock holds were computed under it, and a run computes
+    // with it (`commitment_label`), so only a gap is filled.
     if let Some(label) = &r.commitment_label
-        && entry.commitment_label.as_ref().is_none_or(|l| l != label)
+        && entry.commitment_label.is_none()
     {
         entry.commitment_label = Some(label.clone());
         changed = true;
@@ -1130,8 +1132,9 @@ mod tests {
         assert!(write(&labelled("first"), &mut lock));
         assert_eq!(commitment_label(&t, &lock), "first");
         assert!(!write(&labelled("first"), &mut lock), "the same label is not written again");
-        assert!(write(&labelled("second"), &mut lock));
-        assert_eq!(commitment_label(&t, &lock), "second");
+        // A recorded label is never overwritten: the locked IDs were computed under it.
+        assert!(!write(&labelled("second"), &mut lock), "a recorded label stays");
+        assert_eq!(commitment_label(&t, &lock), "first");
         let mut notes = Notes::default();
         notes.say("created k");
         assert_eq!(notes.lines(), ["created k"]);

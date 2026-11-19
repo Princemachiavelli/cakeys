@@ -14,11 +14,15 @@ added there and not here is built (`cargo fuzz build`) but never run by checks.f
 to say so. Read the names with `(lib.importTOML ../fuzz/Cargo.toml).bin` (no IFD: the file is in
 the source tree). [read]
 
+**Fixed (2026-11-18):** targets read from fuzz/Cargo.toml's `[[bin]]` (importTOML) and exported; evaluation refuses a file in fuzz/fuzz_targets/ no entry names. Test: an extra fuzz_targets file fails evaluation (mutation-checked).
+
 ### F2. No sanitizer, so memory errors in the C the tpm2 targets link are invisible — nit
 
 `nix/fuzz.nix:11-14`, `:117-125`. `-s none` is argued for safe Rust, and the parsers are Rust;
 ISSUES.md already notes an ASan build as the cheaper complement. Listed for completeness, not
 new. [read]
+
+**Decided (2026-11-18):** no ASan smoke. The only C reached is tss2-mu, prebuilt and uninstrumented, so `-s address` would instrument only safe Rust; nixpkgs' rustc ships no sanitizer runtime (no librustc-*_rt.asan.a). Documented in nix/fuzz.nix's header. ISSUES.md:373 still calls ASan the cheaper complement (not this file's).
 
 ## Design
 

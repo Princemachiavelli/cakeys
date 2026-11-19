@@ -28,8 +28,8 @@ fn committed_profile_is_what_the_probe_observes(r: &Reference, test: &str) {
     assert_eq!(code(&drift), 15, "{}", stderr(&drift));
     assert!(stderr(&drift).contains(&format!("rows differ from profile {other}")), "{}", stderr(&drift));
     let anon = w.km(&["probe", "--token", "ref-anon", "--write", "--rsa-max-bits", "4096"]);
-    assert_eq!(code(&anon), 17);
-    assert!(stderr(&anon).contains("not marked scratch"));
+    assert_eq!(code(&anon), 17, "{}", stderr(&anon));
+    assert!(stderr(&anon).contains("not marked scratch"), "{}", stderr(&anon));
 }
 
 #[test]
@@ -77,7 +77,8 @@ fn p11kit_forwards_a_filtered_view() {
     // Naming the provider behind the proxy applies its behaviour.
     assert_eq!(caps(&w, "fwd-softhsm")["provider"], "softhsm");
     // The server exports only the token in its URI; the same SoftHSM's other token is invisible.
-    assert_eq!(w.code(&["caps", "--token", "fwd-other"]), 16);
+    let other = w.km(&["caps", "--token", "fwd-other"]);
+    assert_eq!(code(&other), 16, "{}", stderr(&other));
 }
 
 /// The p11-kit layer profile against the forwarder itself (docs/CAPROBE.md): probed
@@ -100,7 +101,7 @@ fn the_forwarder_subtracts_exactly_its_layer() {
     let layer = names(&read("layers/p11-kit.toml")["subtract"]["mechanisms"]);
     assert!(layer.is_subset(&module), "the layer subtracts what SoftHSM never advertises");
     let out = w.km(&["probe", "--token", "fwd"]);
-    assert_eq!(code(&out), 0);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
     let probed: toml::Value = toml::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
     let forwarded = names(&probed["advertise"]);
     let expected: std::collections::BTreeSet<String> = module.difference(&layer).cloned().collect();
@@ -109,7 +110,7 @@ fn the_forwarder_subtracts_exactly_its_layer() {
     // `--name` names the generated profile; the default is `<provider>/<version>`, the version
     // p11-kit reports of itself (1.1), not its release.
     let out = w.km(&["probe", "--token", "fwd", "--name", "mine/1.0"]);
-    assert_eq!(code(&out), 0);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
     let renamed: toml::Value = toml::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
     assert_eq!((renamed["profile"].as_str(), probed["profile"].as_str()), (Some("mine/1.0"), Some("p11-kit/1.1")));
 }
@@ -177,12 +178,13 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
     refused("no-pin", "has no PIN configured");
 
     // A real certificate in slot 06, ykcs11's own placeholder in slot 95 (CKA_ID 18).
-    let s = open_session(&module, "kmtest", "1234");
     let fixture = |name: &str| {
         let pem = std::fs::read_to_string(format!("{}/../ykcs11/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR")));
         x509_cert::der::pem::decode_vec(pem.unwrap().as_bytes()).unwrap().1
     };
-    for (der, id) in [(fixture("slot.pem"), 0x06), (fixture("placeholder95.pem"), 0x18)] {
+    let slot = fixture("slot.pem");
+    let s = open_session(&module, "kmtest", "1234");
+    for (der, id) in [(slot.clone(), 0x06), (fixture("placeholder95.pem"), 0x18)] {
         let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(&der).unwrap();
         let subject = x509_cert::der::Encode::to_der(cert.tbs_certificate().subject()).unwrap();
         s.create_object(&[
@@ -197,6 +199,23 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
     }
     drop(s);
     refused("taken", "scratchId 06 holds objects that are not ykcs11's own placeholder");
+    // Never overwritten: the slot holds its one certificate, as it was (review reference.rs F1:
+    // the exit alone passed a probe that cleared the slot and then refused).
+    let s = open_session(&module, "kmtest", "1234");
+    let held: Vec<Vec<u8>> = s
+        .find_objects(&[cryptoki::object::Attribute::Id(vec![0x06])])
+        .unwrap()
+        .into_iter()
+        .map(|h| match &s.get_attributes(h, &[cryptoki::object::AttributeType::Value]).unwrap()[..] {
+            [cryptoki::object::Attribute::Value(v)] => v.clone(),
+            other => panic!("slot 06: {other:?}"),
+        })
+        .collect();
+    assert_eq!(held, [slot], "slot 06 was changed by a refused probe");
+    drop(s);
+    // Two write probes on one token: each in a slot of its own, and these modules destroy what
+    // the probe makes, so the second meets nothing the first left (review reference.rs F3;
+    // `assert_profile_conforms` holds tpm2-pkcs11 to one).
     for name in ["empty", "placeholder"] {
         let o = w.km(&["probe", "--token", name, "--write", "--rsa-max-bits", "4096"]);
         assert_eq!(code(&o), 0, "{name}: {}", stderr(&o));

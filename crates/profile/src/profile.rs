@@ -282,7 +282,7 @@ impl Profile {
     /// The profile's family: `softhsm/2.7` -> `softhsm`, what a keys.toml `provider` names.
     #[must_use]
     pub fn family(&self) -> &str {
-        self.profile.split('/').next().unwrap_or(&self.profile)
+        self.profile.split_once('/').map_or(&self.profile, |(family, _)| family)
     }
 
     /// The answer to `c`, if the profile has one.
@@ -360,18 +360,19 @@ impl Profile {
         Some(rows.any(|(_, r)| r.answer.yes()))
     }
 
-    /// The key types the profile says anything about generating.
+    /// The key types the profile says anything about generating: those [`Self::generation`]
+    /// answers `Some` for.
     #[must_use]
     pub fn generation_key_types(&self) -> std::collections::BTreeSet<&str> {
         let rows = self.capabilities.keys().filter_map(|c| match c {
-            Capability::Generate { key_type, .. } => Some(key_type.name()),
+            Capability::Generate { key_type, on: On::Item(_) | On::Bits(_) } => Some(key_type.name()),
             _ => None,
         });
         rows.chain(self.reported.keys().map(String::as_str)).collect()
     }
 
     /// What it generates of `key_type`, as its rows and reported range say; `None` when it
-    /// says nothing about the key type.
+    /// says nothing about the key type that the row keeps (a secret-key size is not kept).
     #[must_use]
     pub fn generation(&self, key_type: &str) -> Option<GenerateRow> {
         let mut row = GenerateRow::default();
@@ -384,7 +385,8 @@ impl Profile {
             if kt != key_type {
                 continue;
             }
-            any = true;
+            // Only the rows kept below count as saying something.
+            any |= !matches!(on, On::Bytes(_));
             match (on, r.answer) {
                 (On::Item(i), Answer::Yes) => {
                     row.can.push(i.clone());
@@ -406,7 +408,8 @@ impl Profile {
     /// "by-name"` for the curves only their name generates), the reported range apart. `notes`
     /// gives a row its evidence, by the curve or by `"<key type> at <bits>"`.
     pub fn set_generation(&mut self, key_type: &str, row: &GenerateRow) {
-        let generate = |on| Capability::Generate { key_type: KeyKind::from(key_type), on };
+        let kind = KeyKind::from(key_type);
+        let generate = |on| Capability::Generate { key_type: kind.clone(), on };
         for i in &row.can {
             let via = row.by_name.contains(i).then(|| "by-name".to_owned());
             self.set(generate(On::Item(i.clone())), Answer::Yes, None, via);
@@ -414,14 +417,78 @@ impl Profile {
         for i in &row.cannot {
             self.set(generate(On::Item(i.clone())), Answer::No, None, None);
         }
+        // A size in the unit the row reads back in (`On::size`): never a bits row that a re-read
+        // would take for bytes.
         for b in &row.can_bits {
-            self.set(generate(On::Bits(*b)), Answer::Yes, None, None);
+            self.set(generate(On::size(&kind, *b)), Answer::Yes, None, None);
         }
         for b in &row.cannot_bits {
-            self.set(generate(On::Bits(*b)), Answer::No, None, None);
+            self.set(generate(On::size(&kind, *b)), Answer::No, None, None);
         }
         if row.min_bits.is_some() || row.max_bits.is_some() {
             self.reported.insert(key_type.to_owned(), Reported { min_bits: row.min_bits, max_bits: row.max_bits });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile(rows: &str) -> Profile {
+        Profile::from_toml(&format!("profile = \"m/1\"\nmode = \"observed\"\n[capabilities]\n{rows}")).unwrap()
+    }
+
+    /// `generation` is `Some` only for rows it keeps: a key type with secret-key sizes alone says
+    /// nothing about generating it, and is not among the types that say something (review
+    /// profile.rs F1).
+    #[test]
+    fn generation_speaks_only_for_the_rows_it_keeps() {
+        let p = profile(
+            "\"generate.CKK_AES.32\" = { answer = \"yes\" }\n\"generate.CKK_EC.secp256r1\" = { answer = \"no\" }\n",
+        );
+        assert_eq!(p.generation("CKK_AES"), None);
+        assert_eq!(p.generation("CKK_EC").map(|r| r.cannot), Some(vec!["secp256r1".to_owned()]));
+        assert_eq!(p.generation_key_types().into_iter().collect::<Vec<_>>(), ["CKK_EC"]);
+        // Over every committed profile, the two agree.
+        for p in crate::Set::embedded().unwrap().all() {
+            for kt in KeyKind::NAMES {
+                assert_eq!(p.generation(kt).is_some(), p.generation_key_types().contains(kt), "{} {kt}", p.profile);
+            }
+        }
+    }
+
+    /// Every row `set_generation` writes reads back as itself from its key, for any key type:
+    /// a size is in the unit its key type reads (review profile.rs F2).
+    #[test]
+    fn written_generation_rows_read_back() {
+        let row = GenerateRow {
+            can: vec!["a".into()],
+            cannot: vec!["b".into()],
+            can_bits: vec![2048],
+            cannot_bits: vec![1536],
+            by_name: vec!["a".into()],
+            ..GenerateRow::default()
+        };
+        for kt in ["CKK_RSA", "CKK_AES", "CKK_EC", "CKK_ML_DSA"] {
+            let mut p = profile("");
+            p.set_generation(kt, &row);
+            assert_eq!(p.capabilities.len(), 4, "{kt}");
+            for c in p.capabilities.keys() {
+                assert_eq!(Capability::parse(&c.to_string()).as_ref(), Ok(c), "{kt}: {c}");
+            }
+        }
+        let mut rsa = profile("");
+        rsa.set_generation("CKK_RSA", &row);
+        assert_eq!(rsa.generation("CKK_RSA"), Some(row));
+    }
+
+    /// The family is the name before the first `/`, or the whole name without one.
+    #[test]
+    fn the_family_is_the_name_before_the_version() {
+        let named = |n: &str| Profile { profile: n.into(), ..profile("") };
+        assert_eq!(named("softhsm/2.7").family(), "softhsm");
+        assert_eq!(named("aws-cloudhsm/5.18+hsm2m-fips").family(), "aws-cloudhsm");
+        assert_eq!(named("swtpm").family(), "swtpm");
     }
 }

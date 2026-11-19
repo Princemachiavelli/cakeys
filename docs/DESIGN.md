@@ -307,7 +307,8 @@ Outcomes:
 - **Opting out is needed** for keys with no provable capability, Ed448 (no RustCrypto verifier
   or ECDH yet), and tpm2-pkcs11 1.10.1 P-521 keys: its `C_SignInit` parses its own malformed
   `CKA_EC_POINT` and fails (`upstream/tpm2-pkcs11` fixes both).
-- **`publicOnly` implies `token-asserted`.**
+- **`publicOnly` implies `token-asserted`.** A proof configured beside it (`pop-ecdh`,
+  `pop-decrypt`, `pop-unwrap`, `pop-sign`) is invalid (17), never silently overridden.
 - **PIN retries.** A run spends at most one failed PIN attempt, and never the last: the login at
   token open refuses (16) once the token reports `CKF_USER_PIN_LOCKED` or
   `CKF_USER_PIN_FINAL_TRY`, and the context-specific login reuses the PIN that already logged in,

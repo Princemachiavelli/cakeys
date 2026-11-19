@@ -20,6 +20,9 @@ refused (15) "no Cloud KMS algorithm serves exactly …", while the identical sp
 accepted. The probe is unaffected (it never operates bound secret keys, `caprobe/src/probe.rs:831`).
 Fill in the row and add a test that each HMAC type is chosen by its own mechanism. [read]
 
+**Fixed (2026-11-18):** the `HMAC_SHA256` row lists `CKM_SHA256_HMAC`. Test:
+`every_mac_row_serves_its_hmac`.
+
 ### F2. `CKA_ALLOWED_MECHANISMS` in `publicAttributes` is ignored — nit
 
 `crates/kmsp11/src/lib.rs:176-180, 292`. `check_reported` skips every non-boolean value, and
@@ -27,6 +30,11 @@ Fill in the row and add a test that each HMAC type is chosen by its own mechanis
 the public half is neither matched nor refused, unlike every other declared public attribute,
 which is refused when libkmsp11 would not report it. Refuse it (or compare it with the row) so
 the "refused before creating" promise holds for the public half too. [read]
+
+**Fixed (2026-11-18):** `check_reported` compares a public `CKA_ALLOWED_MECHANISMS` with the
+row's set and refuses another (15); any other non-boolean value is refused. That libkmsp11
+reports the set on the public key is not checked on Cloud KMS. Test:
+`what_could_not_be_proven_or_shown_is_refused_before_creating`.
 
 ## Design
 

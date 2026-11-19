@@ -4,7 +4,7 @@
 # (checks.examples). Every token here takes user PIN 1234 and SO PIN 5678.
 #
 # Environment, as the token kinds need: SOFTHSM_MODULE, KRYOPTIC_MODULE, TPM2_PKCS11_MODULE;
-# TPM2_TEST_ENV (default: the repository's nix/tpm2-test-env.sh) and TPM_PORT (default 24321);
+# TPM2_TEST_ENV (default: the repository's nix/tpm2-test-env.sh) and TPM_PORT (default random);
 # KEEP=1 leaves the working directory.
 
 set -euo pipefail
@@ -62,11 +62,24 @@ kryoptic_token() {
   kryoptic_init "$KRYOPTIC_MODULE" "$1"
 }
 
-# A tpm2-pkcs11 token labelled $1, on a software TPM this run starts (nix/tpm2-test-env.sh).
+# A tpm2-pkcs11 token labelled $1, on a software TPM this run starts (nix/tpm2-test-env.sh). Its
+# port pair is TPM_PORT's, else a random one (two runs at once, from two worktrees, would take
+# one fixed pair both), and another random one if that is taken: a failed `up` stops what it
+# started.
 tpm_token() {
   if [ "$tpm_up" = 0 ]; then
     tpm_up=1
-    bash "$tpm_env" up "$work/tpm" "${TPM_PORT:-24321}"
+    local port tries=${TPM_PORT:+1}
+    for _ in $(seq "${tries:-4}"); do
+      port=${TPM_PORT:-$((20000 + 2 * (RANDOM % 2000)))}
+      rm -rf "$work/tpm"
+      bash "$tpm_env" up "$work/tpm" "$port" && break
+      port=
+    done
+    [ -n "$port" ] || {
+      echo "  → no software TPM came up" >&2
+      exit 1
+    }
     # shellcheck source=/dev/null
     . "$work/tpm/env"
   fi

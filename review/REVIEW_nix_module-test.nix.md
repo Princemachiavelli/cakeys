@@ -31,11 +31,15 @@ is inactive with `Result=success`, and `time-sync.target` in `After` but not `Wa
 is in nix/tpm-test.nix:71-77 a third time. A small shared `nix/vm-common.nix` (keys.toml writer,
 SoftHSM init commands, guest build helper) would keep the three in step. [read]
 
+**Fixed (2026-11-18):** nix/vm-common.nix holds the keys.toml head, the token setup (nix/token-env.sh in the guest) and `guest_build`, used by test.nix, module-test.nix and tpm-test.nix. Not run here (VM).
+
 ### F3. The module's assertions are not exercised — nit
 
 `nix/module.nix:321-324`, `:311-314`. Neither "`--uri-pin value` needs `outputFile`" nor "pcscd
 token needs `sandbox.pcscd.enable`" is tested; an evaluation-only check (like checks.lib) with
 `builtins.tryEval` over a failing configuration would cover both cheaply. [read]
+
+**Fixed (2026-11-18):** `checks.module-assertions` evaluates the module's assertions (no VM): both `--uri-pin value` forms without outputFile, empty requiredBy, pcscd without sandbox.pcscd; sound configurations pass. Not built here.
 
 ## Design
 

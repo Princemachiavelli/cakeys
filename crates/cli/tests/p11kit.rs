@@ -4,7 +4,7 @@
 //! Needs `CAKEYS_P11KIT_CLIENT` (p11-kit-client.so), `P11_KIT_SERVER_ADDRESS`, `CAKEYS_TEST_MODULE`
 //! (libsofthsm2.so, for the direct path) and `SOFTHSM2_CONF`; the server must export only
 //! `pkcs11:token=kmp11` (user PIN 1234) while the same `SoftHSM` also holds `kmtest`. Skipped when
-//! `CAKEYS_P11KIT_CLIENT` is unset, unless `CAKEYS_P11KIT_REQUIRE=1`.
+//! `CAKEYS_P11KIT_CLIENT` or `CAKEYS_TEST_MODULE` is unset, unless `CAKEYS_P11KIT_REQUIRE=1`.
 
 mod common;
 
@@ -13,44 +13,24 @@ use cryptoki::object::{Attribute, KeyType, ObjectClass};
 use hmac::{Hmac, KeyInit, Mac};
 use std::process::Output;
 
-struct Env {
-    w: Workdir,
-    client: String,
-    direct: String,
+/// The suite for test `name` ([`p11kit_tokens`]; its module is the client) and the `SoftHSM`
+/// module of the direct path, or `None` (skipped). Both through the gate (review p11kit.rs F2:
+/// the direct one was an `expect`).
+fn env(name: &str) -> Option<(Suite, String)> {
+    let client = suite_var("CAKEYS_P11KIT_CLIENT", "CAKEYS_P11KIT_REQUIRE", name)?;
+    let direct = suite_var("CAKEYS_TEST_MODULE", "CAKEYS_P11KIT_REQUIRE", name)?;
+    let suite = Suite::new(&format!("p11kit-{name}"), client, |client, dir| p11kit_tokens(client, &direct, dir));
+    Some((suite, direct))
 }
 
-impl std::ops::Deref for Env {
-    type Target = Workdir;
-    fn deref(&self) -> &Workdir {
-        &self.w
-    }
+/// A logged-in session on the exported token `kmp11`, through `module` (the client or direct).
+fn session(module: &str) -> TestSession {
+    open_session(module, "kmp11", "1234")
 }
 
-fn env(name: &str) -> Option<Env> {
-    let Ok(client) = std::env::var("CAKEYS_P11KIT_CLIENT") else {
-        assert!(std::env::var("CAKEYS_P11KIT_REQUIRE").is_err(), "CAKEYS_P11KIT_CLIENT is required");
-        eprintln!("skipping {name}: CAKEYS_P11KIT_CLIENT not set");
-        return None;
-    };
-    let direct = std::env::var("CAKEYS_TEST_MODULE").expect("CAKEYS_TEST_MODULE (SoftHSM) for the direct path");
-    Some(Env { w: Workdir::new(&format!("p11kit-{name}")), client, direct })
-}
-
-impl Env {
-    /// keys.toml: the suite's tokens ([`p11kit_tokens`]) and `body`.
-    fn config(&self, body: &str) {
-        self.write_config(&(p11kit_tokens(&self.client, &self.direct, &self.dir) + body));
-    }
-
-    #[expect(clippy::unused_self, reason = "the fixture helpers sit in an impl so the call sites read uniformly")]
-    fn ids(&self, o: &Output) -> serde_json::Value {
-        serde_json::from_str::<serde_json::Value>(&stdout(o)).unwrap()["ids"].clone()
-    }
-
-    #[expect(clippy::unused_self, reason = "the fixture helpers sit in an impl so the call sites read uniformly")]
-    fn session(&self, module: &str) -> TestSession {
-        open_session(module, "kmp11", "1234")
-    }
+/// The IDs a `lock` run printed.
+fn ids(o: &Output) -> serde_json::Value {
+    serde_json::from_str::<serde_json::Value>(&stdout(o)).unwrap()["ids"].clone()
 }
 
 /// A test-only AES-256 value planted on the token, known to the host.
@@ -60,8 +40,8 @@ const HMAC_VALUE: [u8; 32] = *b"p11-kit forwarding hmac vector!!";
 #[test]
 #[expect(clippy::format_push_string, reason = "the fixture TOML bodies are appended as += format!(...)")]
 fn p11kit_and_direct_paths_agree() {
-    let Some(e) = env("agree") else { return };
-    let s = e.session(&e.direct);
+    let Some((e, direct)) = env("agree") else { return };
+    let s = session(&direct);
     s.create_object(&[
         Attribute::Class(ObjectClass::SECRET_KEY),
         Attribute::KeyType(KeyType::AES),
@@ -134,14 +114,14 @@ tokens.fwd = { locator = { CKA_LABEL = "fwd-hmac" }, origin = "adopt" }
         assert_eq!(e.code(&["lock", "--spec", k, "--token", "direct", "--update-lock"]), 0, "{k}: direct agrees");
         let pubs = format!("{k}-pub");
         assert_eq!(e.code(&["lock", "--spec", &pubs, "--token", "fwd-anon", "--update-lock"]), 0, "{k}");
-        assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki(&e.session(&e.direct), k)), "{k}");
+        assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki(&session(&direct), k)), "{k}");
     }
 
     // AES: p11-kit forwards CMAC and ECB but not key wrap, so the forwarded path computes two of
     // the three commitments; they still link to the direct path, which computes all three.
     let o = e.km(&["lock", "--spec", "aes", "--token", "fwd", "--update-lock"]);
     assert_eq!(code(&o), 0);
-    assert_eq!(e.ids(&o).as_object().unwrap().keys().collect::<Vec<_>>(), ["cmac", "kcv-ecb"]);
+    assert_eq!(ids(&o).as_object().unwrap().keys().collect::<Vec<_>>(), ["cmac", "kcv-ecb"]);
     assert_eq!(e.code(&["lock", "--spec", "aes", "--token", "direct", "--update-lock"]), 0);
     for scheme in ["cmac", "kcv-ecb", "kw"] {
         assert_eq!(e.locked_id("aes", scheme), aes_commitment(&AES_VALUE[..], scheme), "{scheme}");
@@ -155,7 +135,7 @@ tokens.fwd = { locator = { CKA_LABEL = "fwd-hmac" }, origin = "adopt" }
 
 #[test]
 fn p11kit_refuses_what_it_cannot_forward_before_creating() {
-    let Some(e) = env("refusals") else { return };
+    let Some((e, direct)) = env("refusals") else { return };
     e.config(
         r#"
 [objects.ed]
@@ -193,14 +173,14 @@ tokens.fwd = { locator = { CKA_LABEL = "fwd-refused-kek" }, origin = "create" }
         let o = e.km(&["create", "--spec", spec, "--token", "fwd", "--no-update-lock"]);
         assert_eq!(code(&o), 15, "{spec}");
         assert!(stderr(&o).contains("forwarded by p11-kit"), "{spec}: hint");
-        let left = e.session(&e.direct).find_objects(&[Attribute::Label(label.as_bytes().to_vec())]).unwrap();
+        let left = session(&direct).find_objects(&[Attribute::Label(label.as_bytes().to_vec())]).unwrap();
         assert!(left.is_empty(), "{spec}: nothing created");
     }
 }
 
 #[test]
 fn p11kit_login_is_per_client() {
-    let Some(e) = env("login") else { return };
+    let Some((e, _)) = env("login") else { return };
     e.config(
         "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [specs.k]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\ntokens.fwd = { locator = { CKA_LABEL = \"fwd-login\" }, origin = \"create\" }\n\
@@ -209,7 +189,7 @@ fn p11kit_login_is_per_client() {
     );
     assert_eq!(e.code(&["create", "--spec", "k", "--token", "fwd", "--update-lock"]), 0);
     // Another client of the same server holds a logged-in session meanwhile...
-    let held = e.session(&e.client);
+    let held = session(&e.module);
     // ...yet a client without the PIN still cannot see the private key; the public half works.
     assert_eq!(e.code(&["lock", "--spec", "k", "--token", "fwd-anon", "--no-update-lock"]), 11);
     assert_eq!(e.code(&["lock", "--spec", "k-pub", "--token", "fwd-anon", "--update-lock"]), 0);

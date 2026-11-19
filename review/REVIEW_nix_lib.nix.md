@@ -16,6 +16,8 @@ empty and `check` runs without `--lock`. It fails closed (cakeys reports first u
 `lock` is a path that does not exist, and accepting `null` for "not yet", would separate the two
 cases; nix/examples.nix and examples/secure-boot/sign.nix currently rely on the silent form. [read]
 
+**Fixed (2026-11-18):** a non-null lock path that does not exist throws (id and check); null is not yet recorded. Test: `checks.lib` assertions.
+
 ## Design
 
 None.

@@ -21,7 +21,7 @@ fi
 work=$(mktemp -d "${TMPDIR:-/tmp}/cakeys-demo.XXXXXX")
 cleanup() {
   if [ "$keep" = 1 ]; then
-    echo "${dim}kept: $work (SOFTHSM2_CONF=$SOFTHSM2_CONF KRYOPTIC_CONF=$KRYOPTIC_CONF)${reset}"
+    echo "${dim}kept: $work (SOFTHSM2_CONF=${SOFTHSM2_CONF-} KRYOPTIC_CONF=${KRYOPTIC_CONF-})${reset}"
   else
     rm -rf "$work"
   fi
@@ -61,7 +61,15 @@ expect() {
   shift
   if [ -n "${jqf:-}" ]; then
     printf '%s$ %s | jq -c '"'"'%s'"'"'%s\n' "$dim" "$*" "$jqf" "$reset"
-    out=$( ("$@" | jq -c "$jqf") 2>&1) || code=$?
+    # The command's own status when it failed (pipefail would report jq's, which fails too when
+    # an error left no JSON), else jq's.
+    out=$( (
+      set +e
+      "$@" | jq -c "$jqf"
+      s=("${PIPESTATUS[@]}")
+      [ "${s[0]}" = 0 ] || exit "${s[0]}"
+      exit "${s[1]}"
+    ) 2>&1) || code=$?
   else
     printf '%s$ %s%s\n' "$dim" "$*" "$reset"
     out=$("$@" 2>&1) || code=$?

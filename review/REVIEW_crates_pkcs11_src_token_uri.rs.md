@@ -16,6 +16,10 @@ printed, so this is inherent to the feature; it only makes the `Zeroizing` on `P
 cosmetic. Fix, if wanted: return `Zeroizing<String>` from both when a value PIN is present.
 [read]
 
+**Fixed (2026-11-18):** `with_query` and `provider_pem` return `PinText` (a wiped
+`Zeroizing<String>`, `Debug` shows nothing); the query and the DER are written into one buffer
+sized up front. Test: `a_pin_value_is_in_one_wiped_buffer` (and `der_lengths_are_short_then_long`).
+
 ## Design
 
 None.

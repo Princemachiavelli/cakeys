@@ -13,6 +13,8 @@ check fails for a reason unrelated to the demo. The examples check uses the docu
 `CAKEYS_ALLOW_NIX_STORE_KEYS=1`, which its comment says lifts the lock-write refusal
 (nix/examples.nix:57-59); use the same here. [read]
 
+**Fixed (2026-11-18):** `CAKEYS_ALLOW_NIX_STORE_KEYS=1` instead of unsetting NIX_BUILD_TOP.
+
 ## Design
 
 - Act 2 (the Nix evaluation) is skipped in the sandbox, so checks.demo never exercises the part of

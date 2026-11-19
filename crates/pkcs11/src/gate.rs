@@ -64,9 +64,6 @@ pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Res
     // the open decides it.
     Ok(match resolution::resolve(cfg, &module, token.as_ref(), &provider) {
         Ok(mut resolved) => {
-            if let Some(o) = observed {
-                resolved.with_answers(name, o);
-            }
             if recorded.is_none() {
                 // Resolution's version notes compare against a module nobody has seen yet.
                 resolved.notes = vec![format!(
@@ -74,6 +71,10 @@ pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Res
                      its version nor its hardware is checked",
                     resolved.module_name().unwrap_or("(none)")
                 )];
+            }
+            // After the notes above, so the one the recorded answers add stays.
+            if let Some(o) = observed {
+                resolved.with_answers(name, o);
             }
             Ok(Stack { resolved, provider, source })
         }
@@ -131,6 +132,16 @@ pub struct Verdicts {
 pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates: bool) -> Result<Verdicts> {
     let mut out = Verdicts::default();
     let provider = registry.named(&stack.provider)?;
+    if provider.is_none() {
+        // A provider this build lacks and no profile names (a downstream one, as in the
+        // custom-provider example): what it attests and how it adjusts templates is known only
+        // when the token opens with it.
+        out.notes.push(format!(
+            "{t}: provider '{}' is not in this build: its attestation and templates are checked only when the \
+             token opens",
+            stack.provider
+        ));
+    }
     // A module that generates from its own template refuses what it cannot make (kmsp11).
     let own = match provider.as_ref().filter(|_| creates).map(|p| ops::own_generation(t, p.as_ref())) {
         Some(Err(e)) => {
@@ -238,10 +249,66 @@ mod tests {
         for kt in cakeys_core::types::KeyType::ALL {
             assert!(!matches!(KeyKind::from(kt.name()), KeyKind::Other(_)), "{kt}");
         }
+        // By the name a capability row is keyed by (`proof_capability`), not the binding's own.
         let proofs = [Binding::PopSign, Binding::PopSignPin, Binding::PopEcdh, Binding::PopDecrypt, Binding::PopUnwrap];
         for b in proofs {
-            assert!(!matches!(Proof::from(b.name()), Proof::Other(_)), "{}", b.name());
+            let name = b.proof_name().unwrap();
+            assert!(!matches!(Proof::from(name), Proof::Other(_)), "{name}");
         }
+    }
+
+    fn create_config() -> Config {
+        toml::from_str(
+            "[tokens.t]\ntokenLabel = \"t\"\n\n\
+             [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.s]\nobject = \"k\"\nattributes = { CKA_SIGN = true, CKA_ALLOWED_MECHANISMS = [\"CKM_ECDSA\"] }\n\
+             tokens.t = { locator = { CKA_LABEL = \"k\" }, origin = \"create\" }\n",
+        )
+        .unwrap()
+    }
+
+    /// A provider this build does not have, and no profile family: the checks only it could make
+    /// are not made, and the gate says so (gate.rs F1), never passes in silence.
+    #[test]
+    fn a_provider_this_build_lacks_is_said() {
+        cakeys_profile::Set::activate_embedded().unwrap();
+        let cfg = create_config();
+        let t = Target::new(&cfg, "s", "t").unwrap();
+        let stack = Stack { resolved: Resolved::default(), provider: "custom".into(), source: "test" };
+        let v = check(&t, ops::plan_mode(&t).unwrap(), &stack, &Registry::new(), true).unwrap();
+        assert!(
+            v.notes.iter().any(|n| n.contains("provider 'custom' is not in this build") && n.contains("token opens")),
+            "{:?}",
+            v.notes
+        );
+        let known = Stack { provider: "softhsm".into(), ..stack };
+        let v = check(&t, ops::plan_mode(&t).unwrap(), &known, &Registry::new(), true).unwrap();
+        assert!(!v.notes.iter().any(|n| n.contains("is not in this build")), "{:?}", v.notes);
+    }
+
+    /// A lock observation that recorded answers but no module or token (an older lock): the
+    /// stack resolves by provider alone, and both notes stand, the recorded answers' too
+    /// (gate.rs F2).
+    #[test]
+    fn the_recorded_answers_note_survives_the_provider_alone() {
+        cakeys_profile::Set::activate_embedded().unwrap();
+        let cfg: Config = toml::from_str(
+            "[tokens.t]\ntokenLabel = \"t\"\nprovider = \"softhsm\"\n\n\
+             [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.s]\nobject = \"k\"\ntokens.t = { locator = { CKA_LABEL = \"k\" } }\n",
+        )
+        .unwrap();
+        let lock: Lock = toml::from_str(
+            "version = 1\n\
+             [realisations.s.t]\nobject = \"k\"\nlocator = { CKA_LABEL = \"k\" }\nspecDigest = \"sha256-x\"\n\
+             mode = \"direct\"\nschemes = []\npolicy = {}\nobservation = \"o\"\n\
+             [observations.o.capabilities]\n\"prove.pop-sign.CKK_EC.secp256r1\" = { answer = \"yes\" }\n",
+        )
+        .unwrap();
+        let stack = stack("t", &cfg.tokens["t"], &lock).unwrap().unwrap();
+        let notes = &stack.resolved.notes;
+        assert!(notes.iter().any(|n| n.contains("answer(s) recorded")), "{notes:?}");
+        assert!(notes.iter().any(|n| n.contains("chosen by provider alone")), "{notes:?}");
     }
 
     /// A provider that records the generation templates it is asked about, refusing them when
@@ -271,13 +338,7 @@ mod tests {
     #[test]
     fn the_gate_asks_the_provider_about_a_generation() {
         cakeys_profile::Set::activate_embedded().unwrap();
-        let cfg: Config = toml::from_str(
-            "[tokens.t]\ntokenLabel = \"t\"\n\n\
-             [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
-             [specs.s]\nobject = \"k\"\nattributes = { CKA_SIGN = true, CKA_ALLOWED_MECHANISMS = [\"CKM_ECDSA\"] }\n\
-             tokens.t = { locator = { CKA_LABEL = \"k\" }, origin = \"create\" }\n",
-        )
-        .unwrap();
+        let cfg = create_config();
         let t = Target::new(&cfg, "s", "t").unwrap();
         let stack = Stack { resolved: Resolved::default(), provider: "asked".into(), source: "test" };
         let run = |refuses: bool, creates: bool| {

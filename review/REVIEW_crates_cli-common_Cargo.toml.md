@@ -12,6 +12,9 @@ linked, ykcs11 and tpm2-pkcs11 optional behind `ykcs11`/`tpm2`.
 cakeys-core; this crate only maps errors to them. Also missing are profile activation and the
 lock read/save it now owns (Q14, Q24). [read]
 
+**Fixed (2026-11-18):** the description lists the provider registry, profile activation,
+opening tokens, reading and saving the lock, and mapping errors to their exit codes.
+
 ## Design
 
 None.

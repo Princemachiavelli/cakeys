@@ -33,8 +33,9 @@ in
     set -o pipefail
     export HOME=$TMPDIR
     # The demo plays a developer at a terminal, who records the lock; inside a build cakeys
-    # refuses lock writes (they would be lost), as the reference suites also unset it.
-    unset NIX_BUILD_TOP
+    # refuses lock writes (they would be lost). Its throwaway tokens are what the documented
+    # switch is for (docs/FILE.md), as checks.examples uses it: not a detection trick.
+    export CAKEYS_ALLOW_NIX_STORE_KEYS=1
     DEMO_PAUSE=0 ${pkgs.lib.getExe demo} 2>&1 | tee $out
   '';
 }

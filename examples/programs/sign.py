@@ -7,6 +7,7 @@ program opens that URI with its own PKCS#11 library (python-pkcs11) and signs. A
 is the program's failure, with cakeys' exit code: the key is not used.
 """
 
+import os
 import subprocess
 import sys
 from urllib.parse import unquote, unquote_to_bytes
@@ -24,7 +25,8 @@ def verified_uri(obj: str) -> str:
     )
     if run.returncode != 0:
         sys.stderr.write(run.stderr)
-        sys.exit(run.returncode)
+        # A cakeys a signal killed has -N here: exit 128+N, as a shell would report it.
+        sys.exit(run.returncode if run.returncode > 0 else 128 - run.returncode)
     return run.stdout.strip()
 
 
@@ -37,7 +39,11 @@ def parse(uri: str) -> tuple[dict[str, bytes], dict[str, str]]:
 
 
 def pin(source: str) -> str:
-    """The PIN `pin-source` names: a file (`file:` or a bare path); cakeys writes no other."""
+    """The PIN `pin-source` names: `env:NAME`, the environment variable (a token's `pinEnv`),
+    else a file (`file:` or a bare path, `pinFile`): the two `cakeys check --uri-pin source`
+    writes (docs/CAKEYS.md)."""
+    if source.startswith("env:"):
+        return os.environ[source.removeprefix("env:")]
     with open(source.removeprefix("file:"), encoding="utf-8") as f:
         return f.readline().rstrip("\n")
 

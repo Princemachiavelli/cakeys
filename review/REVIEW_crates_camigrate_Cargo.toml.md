@@ -11,6 +11,8 @@ and runtime and test dependencies. Every runtime dependency is used in `src/`.
 `crates/camigrate/Cargo.toml:50` and `:61`. It is a normal dependency (file.rs's PKCS#12 MAC),
 so the dev-dependency entry adds nothing. [read]
 
+**Fixed (2026-11-18):** the dev-dependency entry is gone.
+
 ### F2. The `kwp` feature is not tied to the patch it needs — nit
 
 `crates/camigrate/Cargo.toml:29`. Turning on `kwp` without the patched cryptoki fails to compile.
@@ -19,6 +21,9 @@ The reverse case (the patched binding linked without `kwp`) is caught only by a 
 deliberate. Noted only because the same pairing exists for caprobe's `kwp` and
 `cakeys-pkcs11/rv-value`, `sign-after-init`: one workspace-level feature might be simpler to keep
 consistent. [read]
+
+**Fixed (2026-11-18):** each tool has one `patched-cryptoki` feature implying `kwp`,
+`cakeys-pkcs11/rv-value` and `sign-after-init`, which the Nix build names (review D3).
 
 ## Design
 

@@ -32,12 +32,22 @@ when it refuses") and again in `create_and_record`. The second pass costs a few 
 `create_and_record` a `prechecked` variant, or split out an `ensure_landing(dst, to, spki)` that
 both call once. [read]
 
+**Fixed (2026-11-18):** the checks are `landing` (`ops::check_import`, then `free_locator`) and
+`check_identity`, each asked once: `import` runs `landing` before the key is in memory and
+`check_identity` after, then `create_landed`; `create_and_record` (key files) runs
+`check_identity`, `landing`, `create_landed`; `import_ptool` uses `landing` too. A refactor
+with no change in what is refused; the token suites' refusal tests (dry_run.rs "would collide
+with") cover it.
+
 ### F3. `free_locator` duplicates `public::preflight` — nit
 
 `crates/camigrate/src/host.rs:122-135` and `crates/camigrate/src/public.rs:170-184`. Both run
 the same `Token::occupied` call with the same `colliding > 0` refusal, worded slightly
 differently, and return different halves of `Occupied`. One function returning `Occupied` would
 do. [read]
+
+**Fixed (2026-11-18):** `public::free_locator` is the one occupancy check (one message); host,
+sealed and the key-file verbs call it, and `public::preflight` is it for a public object.
 
 ## Design
 

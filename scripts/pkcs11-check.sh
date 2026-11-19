@@ -36,7 +36,10 @@ out=$PWD/pkcs11-check-$module-$pass
 extra=()
 while [ $# -gt 0 ]; do
   case $1 in
-  --out) out=$(realpath -m "$2") && shift 2 ;;
+  --out)
+    [ $# -ge 2 ] || usage
+    out=$(realpath -m "$2") && shift 2
+    ;;
   --) shift && extra=("$@") && break ;;
   *) usage ;;
   esac
@@ -57,6 +60,9 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$out"
+# What a run writes, removed first: a run that writes nothing must not leave the last run's
+# results for the guard below and the summary to read as this one's.
+rm -f "$out/results.json" "$out/report.jsonl" "$out/coverage.json" "$out/run.log" "$out/summary.md"
 
 # A token labelled kmtest, user PIN 1234, SO PIN 5678, as scripts/regen-profiles.sh sets one up
 # (nix/token-env.sh).

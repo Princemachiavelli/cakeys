@@ -69,9 +69,10 @@ impl Provider for AwsCloudHsm {
     /// curve), and pure `EdDSA` by `CKM_CLOUDHSM_EDDSA`. Ed25519ctx, Ed25519ph and Ed448 carry
     /// parameters, which the vendor mechanism takes none of: no stand-in.
     fn stand_in(&self, m: &Mechanism) -> Option<Mechanism<'static>> {
-        match m.mechanism_type() {
-            MechanismType::ECC_EDWARDS_KEY_PAIR_GEN => Some(Mechanism::EccKeyPairGen),
-            MechanismType::EDDSA if cryptoki_sys::CK_MECHANISM::from(m).pParameter.is_null() => {
+        match m {
+            Mechanism::EccEdwardsKeyPairGen => Some(Mechanism::EccKeyPairGen),
+            // No `CK_EDDSA_PARAMS`: pure EdDSA (`Pure`, or `Ed25519` without a context).
+            Mechanism::Eddsa(params) if params.inner().is_none() => {
                 let vendor = MechanismType::new_vendor_defined(CKM_CLOUDHSM_EDDSA).ok()?;
                 Some(Mechanism::VendorDefined(VendorDefinedMechanism::new::<()>(vendor, None)))
             }

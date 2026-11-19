@@ -19,6 +19,8 @@ hard-codes `linuxx64.efi.stub`, see REVIEW_nix_examples.nix.md F1). Add an aarch
 (GitHub has arm64 runners), or at least `nix flake check --no-build --all-systems` so the other
 systems' evaluation errors surface. [read]
 
+**Decided (2026-11-18):** the user decided CI builds x86_64 only.
+
 ## Design
 
 - `nixosModules.default` defaults `services.cakeys.package` to `packages.cakeys`, the regular

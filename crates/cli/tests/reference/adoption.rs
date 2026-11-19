@@ -142,7 +142,6 @@ tokens.ref-anon = { locator = { CKA_ID = "42" }, origin = "adopt" }
     let lock = e.lock();
     assert_eq!(lock["objects"]["adopted-cert"]["pairs"].as_array().unwrap(), &vec![toml::Value::from("adopted")]);
     assert_eq!(lock["objects"]["adopted"]["pairs"].as_array().unwrap(), &vec![toml::Value::from("adopted-cert")]);
-    let lock = e.lock();
     assert_eq!(lock["realisations"]["adopted-pub"]["ref-anon"]["publicOnly"].as_bool(), Some(true));
     assert!(lock["realisations"]["adopted-cert"]["ref-anon"].get("publicOnly").is_none());
     let verify = e.km(&["verify", "--spec", "adopted-pub", "--token", "ref-anon"]);
@@ -183,8 +182,8 @@ tokens.ref-anon = { locator = { CKA_ID = "42" }, origin = "adopt" }
     }
     write(&unlisted);
     let o = e.km(&["verify", "--spec", "adopted-pub", "--token", "ref-anon"]);
-    assert_eq!(code(&o), 0);
-    assert!(stderr(&o).contains("not listed as its pairs"));
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(stderr(&o).contains("not listed as its pairs"), "a partner not listing back is warned: {}", stderr(&o));
     assert_eq!(e.code(&["lock", "--spec", "adopted-pub", "--token", "ref-anon", "--update-lock"]), 0);
     assert_eq!(e.lock(), full);
     // A listed partner that is present must list back.

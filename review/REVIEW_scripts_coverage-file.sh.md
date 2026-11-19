@@ -13,6 +13,8 @@ mistyped argument (`.`, `~`, a source directory) is deleted without a question. 
 directory that exists and does not look like a trace (no `shims/` inside), or only ever write
 under `target/`. [read]
 
+**Fixed (2026-11-18):** refuses a non-empty directory without shims/.
+
 ### F2. The second step builds the workspace again, unpatched — nit
 
 `scripts/coverage-file.sh:21-22`. `cargo test -p caprobe --lib` runs in the repository with the
@@ -20,6 +22,8 @@ default target directory and no features, after the traced run used local-tests'
 `target/local-tests/target`: a second full build. The test does not depend on the patched
 features, so only time is lost; running it through `CAKEYS_LOCAL_TESTS_THEN` or with
 `CARGO_TARGET_DIR=target/local-tests/target` would reuse the build. [read]
+
+**Fixed (2026-11-18):** the rewrite runs through local-tests (same build) and the file is copied back from the tree copy.
 
 ## Design
 

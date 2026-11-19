@@ -1,7 +1,8 @@
-# pcsc-probe run inside the Nix build sandbox; the probe's output and exit code are the build's
-# result. A raw `derivation` over three store paths, so apps.pcsc-sandbox-probe can evaluate it
-# outside the flake, with no nixpkgs and no source tree. A fresh nonce makes a new derivation,
-# so it runs every time.
+# pcsc-probe run inside the Nix build sandbox: its output and exit code (`exit=N`) are recorded
+# in the build's output, and the build itself succeeds either way: a diagnostic, wanted on
+# failure too. A raw `derivation` over three store paths, so apps.pcsc-sandbox-probe can
+# evaluate it outside the flake, with no nixpkgs and no source tree. A fresh nonce makes a new
+# derivation, so it runs every time.
 {
   system,
   bash,

@@ -701,12 +701,15 @@ fn a_certificate_names_its_key_and_an_ed25519_proof_its_signer() {
 }
 
 /// A secret's length is bounded so its commitment label cannot overflow: the largest length
-/// that fits loads, one more is refused.
+/// that fits loads, one more is refused (17). Over the full `u64` range,
+/// `commitment_labels_are_injective` (tests/properties.rs) failed with an overflow panic; its
+/// range is now what keys.toml accepts.
 #[test]
 fn the_value_length_bound_is_inclusive() {
     let secret = |len: u64| format!("class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = {len}");
     let most = u64::from(u32::MAX);
     assert_eq!(load(&keys(&secret(most), SIGN, "")).unwrap().objects["o"].value_len, Some(most));
-    let said = load(&keys(&secret(most + 1), SIGN, "")).unwrap_err().to_string();
-    assert!(said.contains("is out of range"), "{said}");
+    let e = load(&keys(&secret(most + 1), SIGN, "")).unwrap_err();
+    assert_eq!(e.exit_code(), 17, "{e}");
+    assert!(e.to_string().contains("is out of range"), "{e}");
 }

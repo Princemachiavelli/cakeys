@@ -46,6 +46,8 @@ this `finalize` pulls the context from under the other thread. Fix: add an
 `open_so_session(module, label, so_pin)` beside `open_session` in `common/mod.rs` that uses
 `Module::open`, and use it here. [read]
 
+**Fixed (2026-11-18):** `plant_trusted_key` uses `common::open_so_session` on the shared context. Test: `enforced` test (not run).
+
 ### F3. The same skip block and matrix scaffolding repeated across tests — complexity
 
 `crates/camigrate/tests/dry_run.rs:33-37`, `:122-126`, `:387-391`, `:469-473`, `:690-694`,
@@ -57,6 +59,8 @@ helper `env_with(name, &["softhsm", "kryoptic"]) -> Option<(Env, [&Ref; 2])>` in
 `common/xref.rs` and a `matrix(e, generates)` function here would remove about 100 lines and
 the chance that one copy's filter drifts from another's. [read]
 
+**Fixed (2026-11-18):** `Env::needs` (common/mod.rs) replaces the 19 skip blocks; `matrix`, `same_token`, `generates` are written once. Test: the suite (not run).
+
 ### F4. Constants and helpers duplicated with the shared harness, one shadowing it — complexity
 
 `crates/camigrate/tests/dry_run.rs:181-182` (`P384_PARAMS`, `ED25519_PARAMS`) are
@@ -67,6 +71,8 @@ the chance that one copy's filter drifts from another's. [read]
 same name; the local one silently wins in this file. Fix: one set of OID constants in
 `common/mod.rs` (add P-256), and rename the local helper `cert_spki`. [read]
 
+**Fixed (2026-11-18):** the OIDs are common's `P256`/`P384`/`ED25519`; the local helper is `cert_spki`. Test: the suite (not run).
+
 ### F5. `a_move_lands_only_on_an_import_pair` accepts either 15 or 17 for all four runs — practice
 
 `crates/camigrate/tests/dry_run.rs:1182-1187`. Without `--spec` the plan is blocked (15); with
@@ -75,12 +81,16 @@ allows both codes for every variant, so a regression that swaps them, or turns t
 case into a blocked plan, passes. The twin only holds dry and real to the same code. Fix:
 expect `[15, 15, 17, 17]` (or whatever CAMIGRATE.md specifies) per variant. [read]
 
+**Fixed (2026-11-18):** each run asserts its own code: 15, 15, 17, 17 (camigrate lib.rs: a plan block without names, `Validation` naming the adopted pair). Test: `a_move_lands_only_on_an_import_pair` (not run).
+
 ### F6. The dry run's own exit is unchecked in two tests — nit
 
 `crates/camigrate/tests/dry_run.rs:1424-1426` (`oaep-sha256`) and `:1522-1525` (`enforced`'s
 `plan` closure) parse the JSON plan and ignore the exit code; `plans[0].ready` is asserted in
 the latter but not in the former. The real run and twin cover the outcome, so this is only a
 missed cheap check that the dry run's exit and its `ready` agree, as `:337`/`:650` do. [read]
+
+**Fixed (2026-11-18):** both dry runs assert their exit against their plan's `ready`. Test: `sealed_moves_wrap_with_oaep_sha256_between_kryoptic_tokens` (not run).
 
 ### F7. Partial token clean-up suggests shared tokens the supported runner does not have — nit
 
@@ -92,11 +102,15 @@ test has its own token set, so these are dead; under a plain `cargo test` they a
 exit 19). Either drop them and say nextest is required, or clear every label each test makes.
 [read]
 
+**Fixed (2026-11-18):** the dead pre-test clears and the stale comment are gone; the header says each test has its own tokens (nextest) and plain `cargo test` with tokens is unsupported..
+
 ### F8. `Box::leak` to get `'static` env strings — nit
 
 `crates/camigrate/tests/dry_run.rs:1385`, `:1408`. Harmless in a test process, but `Ref::env`
 being `&'static [(&str, &str)]` (`common/xref.rs`) is what forces it; an owned
 `Vec<(String, String)>` would remove the leak. [read]
+
+**Decided (2026-11-18):** `Ref::env` is `&'static` in common/xref.rs, outside this file; the leaks now go through one helper, `common::ref_env`. An owned environment in `Ref` would remove them..
 
 ## Design
 

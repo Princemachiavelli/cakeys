@@ -20,6 +20,12 @@ profile states as a row. Fix: parse each profile and collect names from its stru
 (`advertise`, `add`, `subtract`, capability keys, `reported` keys), or rename the status to say
 "mentioned". [read]
 
+**Fixed (2026-11-18):** `profile_names` parses each profile and takes `CK?_` names from keys,
+lists and values only, never from comments or the prose fields (`evidence`, `finding`, `note`,
+`requires-provider`, the values of `[notes]` and `[manual]`). The committed coverage file is
+unchanged by it. docs/CAPROBE.md's status table says so. Test:
+`profiles_record_names_outside_their_prose`.
+
 ### F2. A wildcard manual rule that only matches used rows is never flagged — nit
 
 `crates/caprobe/src/coverage.rs:296-302`, `:307-310`.
@@ -27,6 +33,12 @@ The "names a used row" check runs only for patterns without `*`; a wildcard rule
 match is now `used` decides nothing yet passes ("matches no row" is false). CAPROBE.md says a
 manual rule that "names a used row … fails". Flag a rule none of whose matches it decides.
 [read]
+
+**Fixed (2026-11-18):** a wildcard rule whose every row is used fails ("names used rows only"),
+as a plain name of a used row does; docs/CAPROBE.md says so. The wider check (a rule each of
+whose rows an earlier rule decides) finds three such rules in spec-coverage/manual.toml today
+(`mechanisms CKM_X9_42_*`, `mechanisms CKM_SHAKE_*`, `sources CKZ_*`), a file outside this
+change: left to whoever owns it. Test: `a_wildcard_rule_over_used_rows_only_fails`.
 
 ### F3. Traced names outside the baseline are dropped from the report — nit
 
@@ -36,6 +48,10 @@ a vendor return value (`CKR 0x8…`) or a function the baseline lacks becomes a 
 that `generate` never looks at (it iterates baseline rows only), and unlike unnamed mechanism
 numbers it is not listed under "no baseline name" in `coverage-report.txt`. Route these into
 `seen.unnamed` too. [read]
+
+**Fixed (2026-11-18):** a traced function or return value the baseline does not name goes to
+`seen.unnamed` (now names, mechanism numbers in hex), never a row, and the report lists it.
+Test: `traced_names_outside_the_baseline_are_unnamed`.
 
 ## Design
 

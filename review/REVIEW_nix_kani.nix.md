@@ -13,6 +13,8 @@ the toolchain's at build time. Careful and self-checking (ldd, `kani --version`)
 that changes one leaves the rpath directory name and the toolchain disagreeing. Derive one from
 the other. [read]
 
+**Fixed (2026-11-18):** the nightly read from kani-src's rust-toolchain.toml; derivation unchanged (same drv path).
+
 ## Design
 
 - Memory: the proofs this tool runs need up to 5.7 GB (nix/package-crane.nix); the package itself

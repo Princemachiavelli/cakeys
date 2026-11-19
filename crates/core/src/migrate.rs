@@ -91,38 +91,46 @@ impl Method {
     /// The frozen name, as a bundle and the lock write it.
     #[must_use]
     pub fn name(&self) -> String {
-        let oaep = |h: &OaepHash| match h {
-            OaepHash::Sha1 => "rsa-oaep-sha1",
-            OaepHash::Sha256 => "rsa-oaep-sha256",
-        };
         match self {
-            Method::Public => "public".into(),
-            Method::RsaOaepAesKwp(h) => format!("{}+aes-kwp", oaep(h)),
-            Method::RsaOaep(h) => oaep(h).into(),
-            Method::HostPkcs8 => "host-pkcs8".into(),
-            Method::HostRaw => "host-raw".into(),
-            Method::Tpm2Ptool => "tpm2-ptool".into(),
-            Method::PivImport => "piv-import".into(),
-            Method::TpmDuplicate => "tpm-duplicate".into(),
-            Method::Pkcs8Pbes2 => "pkcs8-pbes2".into(),
-            Method::Pkcs12 => "pkcs12".into(),
-            Method::Pkcs8 => "pkcs8".into(),
-            Method::Pkcs1 => "pkcs1".into(),
-            Method::Sec1 => "sec1".into(),
-            Method::Raw => "raw".into(),
             Method::Vendor { provider, name } => format!("vendor:{provider}/{name}"),
+            builtin => builtin.builtin_name().unwrap_or_default().to_owned(),
         }
     }
 
-    /// The method a frozen name denotes; `None` for a name this cakeys does not know.
+    /// The frozen name of a built-in method, all in one table; `None` for a vendor's.
+    fn builtin_name(&self) -> Option<&'static str> {
+        Some(match self {
+            Method::Public => "public",
+            Method::RsaOaepAesKwp(OaepHash::Sha1) => "rsa-oaep-sha1+aes-kwp",
+            Method::RsaOaepAesKwp(OaepHash::Sha256) => "rsa-oaep-sha256+aes-kwp",
+            Method::RsaOaep(OaepHash::Sha1) => "rsa-oaep-sha1",
+            Method::RsaOaep(OaepHash::Sha256) => "rsa-oaep-sha256",
+            Method::HostPkcs8 => "host-pkcs8",
+            Method::HostRaw => "host-raw",
+            Method::Tpm2Ptool => "tpm2-ptool",
+            Method::PivImport => "piv-import",
+            Method::TpmDuplicate => "tpm-duplicate",
+            Method::Pkcs8Pbes2 => "pkcs8-pbes2",
+            Method::Pkcs12 => "pkcs12",
+            Method::Pkcs8 => "pkcs8",
+            Method::Pkcs1 => "pkcs1",
+            Method::Sec1 => "sec1",
+            Method::Raw => "raw",
+            Method::Vendor { .. } => return None,
+        })
+    }
+
+    /// The method a frozen name denotes; `None` for a name this cakeys does not know. A vendor
+    /// method is `vendor:<provider>/<name>`, each part a name as keys.toml's are
+    /// (`[A-Za-z0-9][A-Za-z0-9_-]*`): the name is frozen into locks, so it stays one word.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Method> {
         if let Some(rest) = name.strip_prefix("vendor:") {
             let (provider, name) = rest.split_once('/')?;
-            return (!provider.is_empty() && !name.is_empty())
+            return (crate::config::is_name(provider) && crate::config::is_name(name))
                 .then(|| Method::Vendor { provider: provider.into(), name: name.into() });
         }
-        Method::BUILTIN.iter().find(|m| m.name() == name).cloned()
+        Method::BUILTIN.iter().find(|m| m.builtin_name() == Some(name)).cloned()
     }
 
     /// Every built-in method, for name lookups and the pinning test.
@@ -390,6 +398,11 @@ mod tests {
     fn names_print_and_half_named_vendor_methods_are_unknown() {
         assert_eq!(Method::from_name("vendor:/clone"), None);
         assert_eq!(Method::from_name("vendor:luna/"), None);
+        // Each part is one name, as keys.toml's are: no second `/`, space or dot.
+        for name in ["vendor:luna/a/b", "vendor:luna/a b", "vendor:lu.na/clone", "vendor:luna/-clone"] {
+            assert_eq!(Method::from_name(name), None, "{name}");
+        }
+        assert!(Method::from_name("vendor:aws-cloudhsm/key_clone-2").is_some());
         assert_eq!(Method::RsaOaep(OaepHash::Sha256).to_string(), "rsa-oaep-sha256");
         assert_eq!(Method::Vendor { provider: "luna".into(), name: "clone".into() }.to_string(), "vendor:luna/clone");
         assert_eq!(Exposure::Sealed.to_string(), "sealed");

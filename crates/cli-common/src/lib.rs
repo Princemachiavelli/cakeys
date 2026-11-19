@@ -5,7 +5,8 @@
 
 use cakeys_core::KmError;
 use cakeys_core::config::{
-    Config, Lock, TokenCfg, UpdateGuard, load_config, load_lock, lock_for_update, lock_unwritable, save_lock,
+    Config, Lock, Observation, TokenCfg, TokenObservation, UpdateGuard, load_config, load_lock, lock_for_update,
+    lock_unwritable, save_lock,
 };
 use cakeys_pkcs11::ops::Notes;
 use cakeys_pkcs11::token::Access;
@@ -44,24 +45,25 @@ pub fn activate_profiles(cfg: &Config, replacing: Option<&Path>, notes: &mut Not
             KmError::Validation(format!("profileDirs{from}: {e}").into())
         })
     };
-    if cfg.profile_dirs.is_empty() {
-        return activate().map(drop);
-    }
-    let built: Vec<String> = cakeys_profile::Set::embedded()
-        .map_err(|e| KmError::Validation(e.into()))?
-        .all()
-        .iter()
-        .map(|p| p.profile.clone())
-        .collect();
     let set = activate()?;
-    let added: Vec<&str> =
-        set.all().iter().map(|p| p.profile.as_str()).filter(|p| !built.iter().any(|b| b == p)).collect();
+    if cfg.profile_dirs.is_empty() {
+        return Ok(());
+    }
+    let added: Vec<&str> = set.all().iter().skip(embedded_count()).map(|p| p.profile.as_str()).collect();
     notes.say(format!(
         "profiles added from profileDirs ({}): {}",
         cfg.profile_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", "),
         if added.is_empty() { "none".to_owned() } else { added.join(", ") }
     ));
     Ok(())
+}
+
+/// How many profiles the embedded set holds, without parsing it a second time: the set keeps
+/// them first, in file order, one per file (`embedded_profiles_are_one_per_file`), and a
+/// profile directory only appends ([`cakeys_profile::Set::adding_dir`] refuses a name already
+/// loaded), so what follows them is what the directories (and any `--profiles`) added.
+fn embedded_count() -> usize {
+    cakeys_profile::embedded::PROFILE_FILES.len()
 }
 
 /// Run a command line's `dispatch`, print what the run noticed (before the error line, if any:
@@ -81,20 +83,30 @@ pub fn main(dispatch: impl FnOnce(&mut Notes) -> anyhow::Result<()>) -> ExitCode
     }
 }
 
-/// `--module TOKEN=PATH` overrides, by token.
+/// `--module TOKEN=PATH` overrides, by token, each naming a token keys.toml (`cfg`) has.
 ///
 /// # Errors
 ///
-/// `Validation` (17) when an override is not of the form `TOKEN=PATH`: an invalid option, not
-/// the 1 of an error without a code.
-pub fn module_overrides(args: &[String]) -> anyhow::Result<BTreeMap<String, String>> {
-    args.iter()
-        .map(|m| {
-            m.split_once('=')
-                .map(|(t, p)| (t.to_owned(), p.to_owned()))
-                .ok_or_else(|| KmError::Validation(format!("--module {m:?}: expects TOKEN=PATH").into()).into())
-        })
-        .collect()
+/// `Validation` (17), an invalid option rather than the 1 of an error without a code, for an
+/// override not of the form `TOKEN=PATH`, with either half empty, for a token given twice
+/// (which one would win is a guess), or for a token `cfg` does not name: a typo would otherwise
+/// leave keys.toml's module in place without a word.
+pub fn module_overrides(args: &[String], cfg: &Config) -> Result<BTreeMap<String, String>, KmError> {
+    let invalid = |m: &str, why: &str| KmError::Validation(format!("--module {m:?}: {why}").into());
+    let mut modules = BTreeMap::new();
+    for m in args {
+        let (token, path) = m.split_once('=').ok_or_else(|| invalid(m, "expects TOKEN=PATH"))?;
+        if token.is_empty() || path.is_empty() {
+            return Err(invalid(m, "expects TOKEN=PATH, neither of them empty"));
+        }
+        if !cfg.tokens.contains_key(token) {
+            return Err(invalid(m, &format!("keys.toml names no token '{token}'")));
+        }
+        if modules.insert(token.to_owned(), path.to_owned()).is_some() {
+            return Err(invalid(m, &format!("the token '{token}' is given a module twice")));
+        }
+    }
+    Ok(modules)
 }
 
 /// keys.toml's entry for the token `name`.
@@ -153,6 +165,9 @@ pub struct Opener<'a> {
     pub modules: BTreeMap<String, String>,
     /// The providers this binary links.
     pub registry: &'a Registry,
+    /// What the lock recorded of each token ([`Opener::recall`]), put over its profile at
+    /// every open.
+    recorded: BTreeMap<String, Observation>,
 }
 
 impl<'a> Opener<'a> {
@@ -161,17 +176,41 @@ impl<'a> Opener<'a> {
     ///
     /// # Errors
     ///
-    /// A malformed override; whatever [`load_config`] or [`activate_profiles`] refuses.
+    /// Whatever [`load_config`], [`module_overrides`] or [`activate_profiles`] refuses.
     pub fn load(
         config: &Path,
         modules: &[String],
         registry: &'a Registry,
         notes: &mut Notes,
     ) -> anyhow::Result<Opener<'a>> {
-        let modules = module_overrides(modules)?;
         let cfg = load_config(config)?;
+        let modules = module_overrides(modules, &cfg)?;
         activate_profiles(&cfg, None, notes)?;
-        Ok(Opener { cfg, modules, registry })
+        Ok(Opener { cfg, modules, registry, recorded: BTreeMap::new() })
+    }
+
+    /// Open every token from now on with what `lock` recorded of it ([`Token::with_answers`]),
+    /// so a verb decides by the answers the token's own runs demonstrated, as `validate` does
+    /// (ISSUES.md B18). Only for a verb whose verdicts may take an observation (`create`, not
+    /// `check`, `verify` or `lock`: docs/LOCK.md); caprobe never does, as it measures the module.
+    pub fn recall(&mut self, lock: &Lock) {
+        self.recorded = self
+            .cfg
+            .tokens
+            .keys()
+            .filter_map(|name| match lock.token_observation(name) {
+                TokenObservation::One(o) => Some((name.clone(), o.clone())),
+                TokenObservation::None | TokenObservation::Several(_) => None,
+            })
+            .collect();
+    }
+
+    /// `tok` with what the lock recorded of it.
+    fn recalled(&self, mut tok: Token) -> Token {
+        if let Some(o) = self.recorded.get(&tok.name) {
+            tok.with_answers(o);
+        }
+        tok
     }
 
     /// [`open_token`] of the token `name`, for every verb but `check`: an attestation chain out of
@@ -182,6 +221,7 @@ impl<'a> Opener<'a> {
     /// Whatever [`open_token`] refuses.
     pub fn open(&self, name: &str, access: Access, notes: &mut Notes) -> Result<Token, KmError> {
         open_token(&self.cfg, &self.modules, self.registry, name, access, ChainTime::warn_now(), notes)
+            .map(|tok| self.recalled(tok))
     }
 
     /// [`open_quiet`] of the token `name`, holding its attestation chains to `chain_time`
@@ -191,7 +231,7 @@ impl<'a> Opener<'a> {
     ///
     /// Whatever [`open_quiet`] refuses.
     pub fn open_quiet(&self, name: &str, access: Access, chain_time: ChainTime) -> Result<Token, KmError> {
-        open_quiet(&self.cfg, &self.modules, self.registry, name, access, chain_time)
+        open_quiet(&self.cfg, &self.modules, self.registry, name, access, chain_time).map(|tok| self.recalled(tok))
     }
 }
 
@@ -240,4 +280,44 @@ pub fn save_changed(path: &Path, lock: &Lock, changed: bool, notes: &mut Notes) 
 pub fn print<T: serde::Serialize>(v: &T) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(v)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(tokens: &[&str]) -> Config {
+        let text = tokens.iter().map(|t| format!("[tokens.{t}]\ntokenLabel = \"{t}\"\n")).collect::<Vec<_>>().concat();
+        cakeys_core::config::parse_config_with(&text, Path::new("keys.toml"), &|_| None).unwrap()
+    }
+
+    fn overrides(args: &[&str]) -> Result<BTreeMap<String, String>, KmError> {
+        module_overrides(&args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>(), &cfg(&["a", "b"]))
+    }
+
+    /// Every malformed or misdirected `--module` is invalid (17), each saying why; one per
+    /// token of keys.toml is taken as given.
+    #[test]
+    fn module_overrides_refuse_what_they_cannot_apply() {
+        let ok = overrides(&["a=/lib/a.so", "b=/lib/b=c.so"]).unwrap();
+        assert_eq!(ok, BTreeMap::from([("a".into(), "/lib/a.so".into()), ("b".into(), "/lib/b=c.so".into())]));
+        for (args, why) in [
+            (&["a"][..], "expects TOKEN=PATH"),
+            (&["=/lib/a.so"][..], "neither of them empty"),
+            (&["a="][..], "neither of them empty"),
+            (&["typo=/lib/a.so"][..], "keys.toml names no token 'typo'"),
+            (&["a=/lib/one.so", "a=/lib/two.so"][..], "given a module twice"),
+        ] {
+            let e = overrides(args).unwrap_err();
+            assert_eq!(e.exit_code(), 17, "{args:?}: {e}");
+            assert!(e.to_string().contains(why), "{args:?}: {e}");
+        }
+    }
+
+    /// `activate_profiles` names what `profileDirs` added by position, after the embedded
+    /// profiles: that holds only while every embedded file brings a profile of its own name.
+    #[test]
+    fn embedded_profiles_are_one_per_file() {
+        assert_eq!(cakeys_profile::Set::embedded().unwrap().all().len(), embedded_count());
+    }
 }

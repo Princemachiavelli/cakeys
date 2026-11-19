@@ -7,14 +7,16 @@
 //! The model fixes the keys.toml below and keeps to what it names: a lock entry outside it (a
 //! pair, a public key, a provenance, `publicOnly`, another label) fails the projection.
 
+mod common;
+
 use cakeys_core::KmError;
 use cakeys_core::config::{
-    AttestationRecord, AttrValue, Binding, Config, Immutables, LOCK_VERSION, Lock, Mode, ModuleInfo, ObjectCfg,
-    Observation, Observed, Session, TokenInfo, parse_config_with, parse_lock,
+    AttestationRecord, AttrValue, Binding, Config, Immutables, Lock, Mode, ObjectCfg, parse_config_with, parse_lock,
 };
 use cakeys_core::id;
 use cakeys_core::plan::Target;
-use cakeys_core::reconcile::{Facts, LockWrite, Notes, Resolved, commitment_label, reconcile};
+use cakeys_core::reconcile::{LockWrite, Notes, Resolved, commitment_label, reconcile};
+use common::{empty_lock, facts};
 use quint_connect::{Driver, State, Step, switch};
 use serde::Deserialize;
 use std::cell::RefCell;
@@ -321,31 +323,6 @@ impl Default for Mbt {
             rule: String::new(),
             seen: Rc::default(),
         }
-    }
-}
-
-fn empty_lock() -> Lock {
-    Lock { version: LOCK_VERSION, ..Default::default() }
-}
-
-fn facts() -> Facts {
-    Facts {
-        observed: Observed { uri: "pkcs11:token=t".into(), session: Session::User },
-        observation: Observation {
-            provider: Some("generic".into()),
-            cakeys_version: Some("0.1.0".into()),
-            module: Some(ModuleInfo {
-                path: "/m.so".into(),
-                hash: None,
-                description: "m".into(),
-                manufacturer: "x".into(),
-                version: "1.0".into(),
-                cryptoki: "3.0".into(),
-            }),
-            token: Some(TokenInfo { model: "m".into(), serial: "1".into(), firmware: "1.0".into() }),
-            ..Observation::default()
-        },
-        origin: None,
     }
 }
 

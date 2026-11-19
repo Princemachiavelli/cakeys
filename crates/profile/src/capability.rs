@@ -36,14 +36,21 @@ pub enum On {
 
 impl On {
     /// What a row's last part names for `key_type`: a size in RSA's bits or a secret key's
-    /// bytes, else a curve.
+    /// bytes, else a curve. A profile's row keys go through [`Capability::parse`], which also
+    /// refuses a size not written as [`On`] writes it back (`02048`, `+2048`).
     #[must_use]
     pub fn parse(key_type: &KeyKind, on: &str) -> On {
         match on.parse() {
-            Ok(n) if matches!(key_type, KeyKind::Rsa) => On::Bits(n),
-            Ok(n) => On::Bytes(n),
+            Ok(n) => On::size(key_type, n),
             Err(_) => On::Item(on.to_owned()),
         }
+    }
+
+    /// A size of a key of `key_type`, in the unit its attribute takes: bits for RSA
+    /// (`CKA_MODULUS_BITS`), bytes for any other (`CKA_VALUE_LEN`). What a row reads back as.
+    #[must_use]
+    pub fn size(key_type: &KeyKind, n: u32) -> On {
+        if matches!(key_type, KeyKind::Rsa) { On::Bits(n) } else { On::Bytes(n) }
     }
 }
 
@@ -189,12 +196,14 @@ pub enum Capability {
     Delete(String),
 }
 
-/// `<CKK_*>.<curve or size>`, as `generate.*` and the rows like it end.
+/// `<CKK_*>.<curve or size>`, as `generate.*` and the rows like it end. A size is written as
+/// its number alone: `02048` or `+2048` would read as 2048 and be written back as `2048`, so two
+/// keys could name one row.
 fn key_and_on(rest: &str) -> Option<(KeyKind, On)> {
-    let (kt, on) = rest.split_once('.').filter(|(k, o)| k.starts_with("CKK_") && !o.is_empty())?;
+    let (kt, text) = rest.split_once('.').filter(|(k, o)| k.starts_with("CKK_") && !o.is_empty())?;
     let kt = KeyKind::from(kt);
-    let on = On::parse(&kt, on);
-    Some((kt, on))
+    let on = On::parse(&kt, text);
+    (on.to_string() == text).then_some((kt, on))
 }
 
 impl Capability {
@@ -346,15 +355,55 @@ impl Row {
 /// The rows of a profile, by capability.
 pub type Rows = BTreeMap<Capability, Row>;
 
-/// `[capabilities]` as TOML writes it: string keys, parsed into [`Capability`].
+/// `[capabilities]` as TOML writes it: string keys, parsed into [`Capability`]. Two keys that
+/// name one capability are refused, never one silently kept.
 pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Rows, D::Error> {
     let raw: BTreeMap<String, Row> = serde::Deserialize::deserialize(d)?;
-    raw.into_iter().map(|(k, v)| Capability::parse(&k).map(|c| (c, v)).map_err(serde::de::Error::custom)).collect()
+    let mut rows = Rows::new();
+    for (key, row) in raw {
+        let c = Capability::parse(&key).map_err(serde::de::Error::custom)?;
+        if rows.contains_key(&c) {
+            return Err(serde::de::Error::custom(format!("capabilities: {key:?} names {c}, as another key does")));
+        }
+        rows.insert(c, row);
+    }
+    Ok(rows)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A size not written as it reads back is refused, so no two keys of one profile name one
+    /// row; and were they to, the profile is refused rather than one row kept (review
+    /// capability.rs F1).
+    #[test]
+    fn one_row_has_one_key() {
+        for bad in [
+            "generate.CKK_RSA.02048",
+            "generate.CKK_RSA.+2048",
+            "import.CKK_AES.032",
+            "prove.pop-decrypt.CKK_RSA.+2048",
+            "create.CKO_PUBLIC_KEY.CKK_RSA.02048",
+            "export.host.CKK_AES.+16",
+            "unwrap.CKK_AES.00",
+        ] {
+            assert!(Capability::parse(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            Capability::parse("unwrap.CKK_AES.0"),
+            Ok(Capability::Unwrap { key_type: "CKK_AES".into(), on: On::Bytes(0) })
+        );
+        let rows = |a: &str, b: &str| {
+            format!(
+                "profile = \"m/1\"\nmode = \"observed\"\n[capabilities]\n\
+                 \"{a}\" = {{ answer = \"yes\" }}\n\"{b}\" = {{ answer = \"no\" }}\n"
+            )
+        };
+        let e = crate::Profile::from_toml(&rows("generate.CKK_RSA.2048", "generate.CKK_RSA.02048")).unwrap_err();
+        assert!(e.contains("02048"), "{e}");
+        crate::Profile::from_toml(&rows("generate.CKK_RSA.2048", "generate.CKK_RSA.3072")).unwrap();
+    }
 
     #[test]
     fn every_capability_reads_back_from_its_key() {
@@ -439,7 +488,7 @@ mod tests {
             (
                 "prove.pop-later.CKK_EC.secp256r1",
                 Capability::Prove {
-                    binding: Proof::Other("pop-later".into()),
+                    binding: Proof::from("pop-later"),
                     key_type: "CKK_EC".into(),
                     on: On::Item("secp256r1".into()),
                 },

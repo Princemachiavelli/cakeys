@@ -23,9 +23,9 @@ use cakeys_core::config::{
 };
 use cakeys_core::migrate::{Exposure, Method};
 use cakeys_core::types::ObjectClass as Class;
-use cakeys_pkcs11::Registry;
 use cakeys_pkcs11::ops::{Notes, Target};
 use cakeys_pkcs11::token::Access;
+use cakeys_pkcs11::{Registry, Token};
 use clap::{Parser, Subcommand};
 use file_verbs::FileImport;
 use plan::FileFormat;
@@ -109,8 +109,10 @@ pub mod fuzzing {
 
 /// Move keys between PKCS#11 tokens, checked against keys.lock (docs/CAMIGRATE.md).
 ///
-/// Exit codes: 0 ok, 11 not found, 14 precondition failed, 15 unsupported (an object cannot
-/// move as invoked), 16 unavailable, 17 invalid spec, 1 other.
+/// Exit codes: 0 ok, 10 the material differs from the lock, 11 not found, 12 ambiguous, 13
+/// the target refused (a tampered bundle, an occupied locator), 14 precondition failed, 15
+/// unsupported (an object cannot move as invoked), 16 unavailable, 17 invalid input, 21 the
+/// lock cannot be written, 1 other.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -479,7 +481,8 @@ impl Run<'_> {
         partial: bool,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
-        let moves = self.plan(objects, from, dest, specs, how, true, notes)?;
+        let source = self.opener.open(from, Access::Read, notes);
+        let (moves, _) = self.plan(objects, from, dest, specs, how, true, source, notes)?;
         if partial && moves.plans.iter().any(|p| p.ready) {
             return Ok(());
         }
@@ -502,7 +505,9 @@ impl Run<'_> {
         how: &MoveArgs,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
-        let moves = self.plan(objects, from, dest, &[], how, false, notes)?;
+        // The source is opened once, for the plan and the wrap.
+        let source = self.opener.open(from, Access::Scratch, notes);
+        let (moves, source) = self.plan(objects, from, dest, &[], how, false, source, notes)?;
         // Named objects are all or nothing; without names, whatever can move does, and what
         // cannot (a key made non-extractable, ...) is warned about and left out.
         if !objects.is_empty() {
@@ -529,7 +534,7 @@ impl Run<'_> {
         if items.is_empty() {
             return Err(KmError::Unsupported(format!("nothing on '{from}' can go into a bundle").into()).into());
         }
-        let source = opener.open(from, Access::Scratch, notes)?;
+        let source = self.source(from, source, notes)?;
         let wraps = items.iter().any(|i| i.method != Method::Public);
         let transport = match dest {
             _ if !wraps => None,
@@ -584,6 +589,7 @@ impl Run<'_> {
         let text = std::fs::read_to_string(input).with_context(|| format!("reading {}", input.display()))?;
         let bundle = Bundle::parse(&text, input)?;
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
+        bundle.check_source(cfg)?;
         specs_select(cfg, specs, bundle.keys.iter().map(|e| e.object.as_str()), token, MOVE)?;
         let tr = match &bundle.transport {
             Some(t) => Some(realised_target(cfg, &self.lock, &t.object, token, "the bundle's transport key")?),
@@ -630,7 +636,10 @@ impl Run<'_> {
                 Ok(Some(public::Moved::Imported)) => {
                     tally.moved();
                     self.record(&dst)?;
-                    notes.say(format!("imported {} from {} into {dst}", e.object, bundle.source.token));
+                    notes.say(format!(
+                        "imported {} from {} ({}) into {dst}",
+                        e.object, bundle.source.token, bundle.source.provider
+                    ));
                 }
                 Ok(Some(public::Moved::AlreadyThere)) => {
                     notes.note(format_args!("{dst} is already realised and verifies; nothing to import"));
@@ -659,7 +668,10 @@ impl Run<'_> {
     ) -> anyhow::Result<()> {
         // Before the plan, as the dry run does: both refuse a named target that is no import pair.
         specs_import(&self.opener.cfg, specs, to, MOVE)?;
-        let moves = self.plan(object.as_slice(), from, &Destination::Token(to), specs, how, true, notes)?;
+        // The source is opened once, for the plan and the moves.
+        let source = self.opener.open(from, Access::Scratch, notes);
+        let (moves, source) =
+            self.plan(object.as_slice(), from, &Destination::Token(to), specs, how, true, source, notes)?;
         moves.ready()?;
         specs_select(&self.opener.cfg, specs, moves.plans.iter().map(|p| p.object.as_str()), to, MOVE)?;
         let built = |m: &Method| {
@@ -683,8 +695,8 @@ impl Run<'_> {
             ).into())
             .into());
         }
+        let source = self.source(from, source, notes)?;
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
-        let source = opener.open(from, Access::Scratch, notes)?;
         let mut target = Some(opener.open(to, Access::Write, notes)?);
         // tpm2-pkcs11 sees what `tpm2_ptool` imported only once opened again: the old one first.
         let reopen = |t: &mut Option<cakeys_pkcs11::Token>, notes: &mut Notes| -> cakeys_core::Result<()> {
@@ -693,11 +705,16 @@ impl Run<'_> {
             Ok(())
         };
         let mut tally = Tally::default();
+        // The transport key every sealed move wraps to, checked on the target once
+        // (`tokens::transport` verifies it, its proof included); after a failure, the next
+        // sealed move asks again and fails on its own.
+        let mut sealing: Option<(Target, sealed::TransportKey)> = None;
         for p in &moves.plans {
             let pair = source_target(cfg, &self.lock, &p.object, from)
                 .and_then(|src| Ok((src, import_target(cfg, &p.object, to, spec_for(cfg, specs, &p.object), MOVE)?)));
             let lock = &mut self.lock;
             let target = &mut target;
+            let sealing = &mut sealing;
             let outcome = pair.and_then(|(src, dst)| {
                 if p.method == Some(Method::Tpm2Ptool) {
                     return host::import_ptool(&src, &source, &dst, target, &reopen, lock, notes);
@@ -707,12 +724,16 @@ impl Run<'_> {
                     .ok_or_else(|| KmError::Unavailable(format!("the target token '{to}' is not open").into()))?;
                 match &p.method {
                     Some(method @ (Method::RsaOaepAesKwp(_) | Method::RsaOaep(_))) => {
-                        let tr = transport_target(cfg, lock, to, transport_choice(cfg, to, how))?;
-                        let key = tokens::transport(&tr, target, lock, notes)?.key()?;
+                        if sealing.is_none() {
+                            let tr = transport_target(cfg, lock, to, transport_choice(cfg, to, how))?;
+                            let key = tokens::transport(&tr, target, lock, notes)?.key()?;
+                            *sealing = Some((tr, key));
+                        }
+                        let Some((tr, key)) = sealing.as_ref() else { unreachable!("set just above") };
                         let exposure = p.exposure.unwrap_or(Exposure::Sealed);
                         let item = sealed::Item { src, method: method.clone(), exposure };
-                        let bundle = sealed::export(&[item], &source, lock, Some(&key), notes)?;
-                        sealed::import(&bundle, &bundle.keys[0], &dst, target, Some(&tr), lock, notes)
+                        let bundle = sealed::export(&[item], &source, lock, Some(key), notes)?;
+                        sealed::import(&bundle, &bundle.keys[0], &dst, target, Some(tr), lock, notes)
                     }
                     Some(method @ (Method::HostPkcs8 | Method::HostRaw | Method::PivImport)) => {
                         host::import(&src, &source, &dst, target, lock, method, notes)
@@ -767,8 +788,9 @@ impl Run<'_> {
         specs: &[String],
         how: &MoveArgs,
         show: bool,
+        source: cakeys_core::Result<Token>,
         notes: &mut Notes,
-    ) -> anyhow::Result<tokens::Moves> {
+    ) -> anyhow::Result<(tokens::Moves, Option<Token>)> {
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
         let open = |name: &str, notes: &mut Notes| opener.open(name, Access::Read, notes);
         let bundle = matches!(dest, Destination::Bundle(_) | Destination::Transport(..));
@@ -794,16 +816,22 @@ impl Run<'_> {
             _ => how.transport_key.as_deref(),
         };
         let spki = match &dest {
-            tokens::Dest::Token(name) => tokens::transport_spec(&self.lock, name, transport_key)
-                .ok()
-                .and_then(|spec| self.locked_spki(spec, name)),
+            // No transport key named is the plan's own reason (`plan_moves`); a recorded one that
+            // does not decode is an error.
+            tokens::Dest::Token(name) => match tokens::transport_spec(&self.lock, name, transport_key) {
+                Ok(spec) => locked_spki(&self.lock, spec, name)?,
+                Err(_) => None,
+            },
             tokens::Dest::Transport(t, _) => t.spki().ok(),
             tokens::Dest::File(_) => None,
         };
-        // Whether the source's SO made a trusted copy of that key (`transport --trusted`).
-        let trusted_transport = spki.is_some_and(|spki| {
-            open(from, notes).and_then(|tok| tok.trusted(&spki)).is_ok_and(|(copy, _)| copy.is_some())
-        });
+        // Whether the source's SO made a trusted copy of that key (`transport --trusted`). A
+        // source that did not open is planned from the lock, which records no trusted copy; a
+        // lookup that fails on an open one is its own error, never "no copy".
+        let trusted_transport = match (spki, &source) {
+            (Some(spki), Ok(tok)) => tok.trusted(&spki)?.0.is_some(),
+            _ => false,
+        };
         let req = tokens::Request {
             objects,
             from,
@@ -812,7 +840,7 @@ impl Run<'_> {
             transport_key,
             trusted_transport,
         };
-        let mut moves = tokens::plan_moves(&self.lock, opener.registry, &req, &open, notes)?;
+        let (mut moves, source) = tokens::plan_moves(&self.lock, opener.registry, &req, source, &open, notes)?;
         // Without names, what is kept home is left out quietly; named, it is refused (15).
         if objects.is_empty() {
             moves.plans.retain(|p| no_export(cfg, &p.object, from).is_none());
@@ -875,7 +903,13 @@ impl Run<'_> {
         if show {
             show_plans(from, &moves, how.json)?;
         }
-        Ok(moves)
+        Ok((moves, source))
+    }
+
+    /// The source token `from` a real run planned with ([`Self::plan`]): the one opened for the
+    /// plan, else opened now, which says why it does not open.
+    fn source(&self, from: &str, planned: Option<Token>, notes: &mut Notes) -> cakeys_core::Result<Token> {
+        planned.map_or_else(|| self.opener.open(from, Access::Scratch, notes), Ok)
     }
 }
 
@@ -1159,7 +1193,7 @@ impl Run<'_> {
     fn trust(&self, spec: &str, token: &str, source: &str, notes: &mut Notes) -> anyhow::Result<()> {
         let spec =
             tokens::transport_spec(&self.lock, token, Some(spec)).map_err(|e| KmError::PreconditionFailed(e.into()))?;
-        let spki = self.locked_spki(spec, token).ok_or_else(|| {
+        let spki = locked_spki(&self.lock, spec, token)?.ok_or_else(|| {
             KmError::PreconditionFailed(
                 format!(
                     "the lock records no public key for transport key '{spec}' on '{token}': lock it there with \
@@ -1185,14 +1219,23 @@ impl Run<'_> {
         }
         Ok(())
     }
+}
 
-    /// The public key the lock records for the transport key realised as `spec` on `token`.
-    fn locked_spki(&self, spec: &str, token: &str) -> Option<Vec<u8>> {
-        use base64::Engine as _;
-        let object = &self.lock.realisation(spec, token)?.object;
-        let key = self.lock.objects.get(object)?.public_key.as_ref()?;
-        base64::engine::general_purpose::STANDARD.decode(key).ok()
-    }
+/// The public key `lock` records for the transport key realised as `spec` on `token`, if any.
+///
+/// # Errors
+///
+/// `Validation` (17) for a recorded public key that is not base64: never read as none.
+fn locked_spki(lock: &Lock, spec: &str, token: &str) -> cakeys_core::Result<Option<Vec<u8>>> {
+    use base64::Engine as _;
+    let Some(key) =
+        lock.realisation(spec, token).and_then(|r| lock.objects.get(&r.object)).and_then(|o| o.public_key.as_ref())
+    else {
+        return Ok(None);
+    };
+    base64::engine::general_purpose::STANDARD.decode(key).map(Some).map_err(|e| {
+        KmError::Validation(format!("the lock's publicKey of transport key '{spec}' on '{token}': {e}").into())
+    })
 }
 
 /// The transport key to seal to on `to`: `--transport-key`, else the token's `transportWith`.
@@ -1263,5 +1306,35 @@ mod tests {
             !cakeys_pkcs11::binding::patched() || cfg!(feature = "kwp"),
             "the patched cryptoki is linked without camigrate's `kwp` feature (nix/package.nix buildFeatures)"
         );
+    }
+
+    /// The transport key's recorded public key: none where the lock records none, the bytes
+    /// where it does, and 17 for one that does not decode, never "none" (review lib.rs F10).
+    #[test]
+    fn a_locked_public_key_that_does_not_decode_is_invalid() {
+        use cakeys_core::config::{Lock, LockObject};
+        let text = "version = 1\n[objects.t]\npublicKey = \"AAEC\"\n\
+                    [realisations.tr.tok]\nobject = \"t\"\nspecDigest = \"sha256-x\"\nmode = \"direct\"\n\
+                    schemes = []\nlocator = { CKA_LABEL = \"t\" }\npolicy = {}\n";
+        let mut lock: Lock = toml::from_str(text).unwrap();
+        assert_eq!(super::locked_spki(&lock, "tr", "tok").unwrap(), Some(vec![0, 1, 2]));
+        assert_eq!(super::locked_spki(&lock, "tr", "other").unwrap(), None);
+        lock.objects.insert("t".into(), LockObject { public_key: Some("!".into()), ..LockObject::default() });
+        let e = super::locked_spki(&lock, "tr", "tok").unwrap_err();
+        assert!(e.exit_code() == 17 && e.to_string().contains("publicKey"), "{e}");
+    }
+
+    /// The numbers of a text that are whole words: what an exit-code list names.
+    fn codes(text: &str) -> std::collections::BTreeSet<u8> {
+        text.split(|c: char| !c.is_ascii_alphanumeric()).filter_map(|w| w.parse().ok()).collect()
+    }
+
+    /// `--help` lists the exit codes camigrate returns, as docs/CAMIGRATE.md does (review lib.rs
+    /// F8: it left out 10, 12, 13 and 21).
+    #[test]
+    fn the_help_lists_the_documented_exit_codes() {
+        let help = super::command().get_long_about().map(ToString::to_string).unwrap_or_default();
+        let help = &help[help.find("Exit codes:").expect("the help lists exit codes")..];
+        assert_eq!(codes(help), [0, 1, 10, 11, 12, 13, 14, 15, 16, 17, 21].into(), "{help}");
     }
 }

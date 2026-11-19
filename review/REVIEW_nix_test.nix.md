@@ -15,6 +15,8 @@ the configuration docs/CAKEYS.md ("What real builds may reach") says never to de
 database inside the sandbox), and not the recommended p11-kit socket. A comment saying so would
 stop it being copied. [read]
 
+**Fixed (2026-11-18):** comment: test-only, not a configuration to copy.
+
 ## Design
 
 - Duplicated setup with nix/module-test.nix and nix/tpm-test.nix: see

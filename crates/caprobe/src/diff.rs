@@ -11,12 +11,13 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Never compared: the profiles' names (the probe names by provider and expressed version, a
 /// module that hides it names differently), `partial` (whether the probe has filled the rows
 /// is not a claim), the notes, each row's evidence and the `[manual]` findings (human
-/// evidence), and what no probe observes — `[migration]`, the `move.*` capabilities (this
-/// repo's claims) and the layer subtractions.
+/// evidence), and what no probe observes — `[migration]` and the `move.*` capabilities (this
+/// repo's claims). Both subtractions are compared, mechanisms and key types.
 #[must_use]
 pub(crate) fn diff(generated: &Profile, claimed: &Profile) -> Vec<String> {
     let mut out = read_only(generated, claimed);
     sets("subtract.mechanisms", &generated.subtract.mechanisms, &claimed.subtract.mechanisms, &mut out);
+    sets("subtract.key-types", &generated.subtract.key_types, &claimed.subtract.key_types, &mut out);
     sets("add", &generated.add, &claimed.add, &mut out);
     restrictions(generated, claimed, &mut out);
     let probed = |p: &Profile| -> BTreeMap<Capability, Row> {
@@ -89,12 +90,20 @@ fn optional(what: &str, generated: Option<&String>, claimed: Option<&String>, ou
 }
 
 /// The numeric restrictions (a hardware layer's generation bounds), keyed by operation and key
-/// type.
+/// type. Two rows for one pair on one side are a line of their own, never one of them
+/// compared as if it were the only one.
 fn restrictions(generated: &Profile, claimed: &Profile, out: &mut Vec<String>) {
-    let key = |p: &Profile| -> BTreeMap<(Operation, KeyKind), (Option<u32>, Option<u32>)> {
-        p.restrict.iter().map(|r| ((r.operation.clone(), r.key_type.clone()), (r.min_bits, r.max_bits))).collect()
+    let mut key = |p: &Profile, side: &str| -> BTreeMap<(Operation, KeyKind), (Option<u32>, Option<u32>)> {
+        let mut rows = BTreeMap::new();
+        for r in &p.restrict {
+            let k = (r.operation.clone(), r.key_type.clone());
+            if rows.insert(k, (r.min_bits, r.max_bits)).is_some() {
+                out.push(format!("restrict.{}.{}: {side} more than once", r.operation, r.key_type));
+            }
+        }
+        rows
     };
-    let (g, c) = (key(generated), key(claimed));
+    let (g, c) = (key(generated, "observed"), key(claimed, "claimed"));
     for (k, gv) in &g {
         let what = format!("restrict.{}.{}", k.0, k.1);
         match c.get(k) {
@@ -243,6 +252,25 @@ mod tests {
         ] {
             assert!(lines.iter().any(|l| l == want), "missing {want:?} in {lines:#?}");
         }
+    }
+
+    /// Key-type subtractions are compared as mechanism ones are, and a restriction listed
+    /// twice on one side is drift of its own (review diff F1, F2).
+    #[test]
+    fn key_type_subtractions_and_repeated_restrictions_are_named() {
+        let rsa =
+            |bits: u32| format!("[[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_RSA\"\nmax-bits = {bits}\n");
+        let generated =
+            profile("m/probe", &format!("[subtract]\nkey-types = [\"CKK_SHA224_HMAC\"]\n{}{}", rsa(2048), rsa(3072)));
+        let claimed = profile("m/1", &format!("[subtract]\nkey-types = [\"CKK_DES3\"]\n{}", rsa(3072)));
+        assert_eq!(
+            diff(&generated, &claimed),
+            [
+                "restrict.generate.CKK_RSA: observed more than once",
+                "subtract.key-types: only claimed: CKK_DES3",
+                "subtract.key-types: only observed: CKK_SHA224_HMAC",
+            ]
+        );
     }
 
     #[test]

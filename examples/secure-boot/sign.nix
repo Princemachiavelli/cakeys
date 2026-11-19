@@ -5,7 +5,11 @@
 # the same two commands, in the same environment, on a software TPM; checks.examples evaluates
 # this file.
 #
-#   signed = pkgs.callPackage ./sign.nix { inherit cakeys; uki = ...; dbCert = ./db.crt; };
+#   signed = pkgs.callPackage ./sign.nix { inherit cakeys; uki = ...; dbCert = ./db.crt; lock = ./keys.lock; };
+#
+# The lock is the host's own: `cakeys create db --token tpm` records db there, and it is committed
+# beside keys.toml (in a git flake, `git add`ed: lib.mkKeys refuses a lock path it cannot see).
+# This repository has no host, so it holds none; checks.examples passes one in.
 #
 # The host (cakeys' NixOS module):
 #
@@ -20,13 +24,14 @@
   # The image to sign, and db's certificate (issued once from the TPM key; run.sh shows how).
   uki,
   dbCert,
+  # The host's keys.lock, with db recorded.
+  lock,
 }:
 let
   module = "${pkgs.tpm2-pkcs11}/lib/libtpm2_pkcs11.so";
   keys = cakeys.lib.mkKeys {
+    inherit lock;
     config = ./keys.toml;
-    # Recorded by `cakeys create db --token tpm` on the host, and committed.
-    lock = ./keys.lock;
     cakeys = cakeys.packages.${pkgs.stdenv.hostPlatform.system}.cakeys;
     modules.tpm = module;
   };

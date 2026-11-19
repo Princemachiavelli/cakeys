@@ -21,6 +21,8 @@ different evidence than the regular build. Derive the list instead:
 `lib.filter (f: !lib.hasSuffix "/ykcs11" f && !lib.hasSuffix "/tpm2" f) common.features`, or, if
 compiling the no-`rv-value` branches is the point, say so in the comment. [read]
 
+**Fixed (2026-11-18):** Verified fixed (2026-11-18), unmarked until now.
+
 ### F2. Kani runs with no memory bound beside the VM tests — risk
 
 **Verification:** confirmed (risk, unquantified). nix/package-crane.nix:256-272 runs `cargo kani` with no limit and no dependency on the crane artifacts, so it may build alongside everything in `nix flake check` (flake-check.yml:44); peak 5.7 GB per docs/OPEN.md:297. "Three VMs 2 GB each" is overstated: only nix/module-test.nix:150 sets 2048, the vm and tpm tests use the 1 GB default. Duplicate of REVIEW_.github_workflows_flake-check.yml.md F1. [read]

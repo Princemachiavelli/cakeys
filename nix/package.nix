@@ -42,5 +42,16 @@ rustPlatform.buildRustPackage (
     cargoTestFlags = common.cargoScope;
     buildNoDefaultFeatures = common.noDefaultFeatures;
     buildFeatures = common.features;
+
+    # The cryptoki version and patches, and the features that need them, for builds outside Nix:
+    # scripts/local-tests.sh reads them with `nix eval --json .#cakeys.patchedCryptoki`, so its
+    # lists are these, not a copy.
+    # Each patch interpolated: a store path of its own, which `nix eval` copies there, where a
+    # path value would print as a place in the flake's source that need not exist on disk.
+    passthru.patchedCryptoki = {
+      inherit (common.cryptoki) version;
+      patches = map (p: "${p}") common.cryptoki.patches;
+      inherit (common) features;
+    };
   }
 )

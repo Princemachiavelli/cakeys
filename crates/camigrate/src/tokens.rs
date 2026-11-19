@@ -49,7 +49,10 @@ pub(crate) fn side_from_lock(
     // about exactly that (the forwarder, the binding layer), like an open would.
     let (module, token_info) = (observed.module.as_ref()?, observed.token.as_ref()?);
     let cfg = TokenCfg { provider: Some(provider.clone()), ..lockless_token_cfg() };
-    let mut resolved = resolution::resolve(&cfg, module, Some(token_info), &provider).ok()?;
+    let mut resolved = match resolved(token, resolution::resolve(&cfg, module, Some(token_info), &provider)) {
+        Ok(r) => r,
+        Err(e) => return Some(Err(e)),
+    };
     // What this token answered decides before the profile of its kind.
     resolved.with_answers(token, observed);
     warn_hidden(token, &resolved, notes);
@@ -61,6 +64,12 @@ pub(crate) fn side_from_lock(
         return Some(Ok(Side::pkcs11(token, name, observed.mechanisms.iter().cloned())));
     }
     Some(side_of(resolved.module.as_ref()?, &resolved, token, &provider, &observed.mechanisms))
+}
+
+/// A resolution of `token`'s profiles that failed is invalid (17), as a token open maps it:
+/// never read as "no provider", which would blame the lock or the build instead.
+fn resolved(token: &str, r: std::result::Result<Resolved, String>) -> Result<Resolved> {
+    r.map_err(|e| KmError::Validation(format!("resolving the profiles of '{token}': {e}").into()))
 }
 
 /// A token behind a passthrough that hides its module (a `requires-provider` layer) is planned
@@ -77,7 +86,11 @@ fn warn_hidden(token: &str, resolved: &Resolved, notes: &mut Notes) {
 /// the file lists (`None`: a provider this build does not link).
 #[must_use]
 pub(crate) fn side_from_transport(t: &Transport, registry: &Registry) -> Option<Result<Side>> {
-    let resolved = resolution::resolve(&lockless_token_cfg(), &moduleless_info(), None, &t.provider).ok()?;
+    let resolved =
+        match resolved(&t.token, resolution::resolve(&lockless_token_cfg(), &moduleless_info(), None, &t.provider)) {
+            Ok(r) => r,
+            Err(e) => return Some(Err(e)),
+        };
     match resolved.module {
         Some(ref p) => Some(side_of(p, &resolved, &t.token, &t.provider, &t.mechanisms)),
         None => registry
@@ -548,8 +561,10 @@ impl Moves {
     }
 }
 
-/// Plan each object's move as `req` asks, from what the lock pins. `open` opens a token
-/// read-only; one that does not open is planned from what the lock recorded there.
+/// Plan each object's move as `req` asks, from what the lock pins. `source` is the source token
+/// as the caller opened it, once per run; `open` opens a target token read-only. A side that
+/// does not open is planned from what the lock recorded there. The source token, when it
+/// opened, is handed back for the run to use.
 ///
 /// # Errors
 ///
@@ -560,16 +575,17 @@ pub(crate) fn plan_moves(
     lock: &Lock,
     registry: &Registry,
     req: &Request,
+    source: Result<Token>,
     open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
     notes: &mut Notes,
-) -> Result<Moves> {
+) -> Result<(Moves, Option<Token>)> {
     let materials = materials(lock, req.from, req.objects)?;
-    let mut side = |name: &str| side_or_lock(name, lock, registry, open, notes);
-    let (source, source_from) = side(req.from)?;
+    let (source, source_from, source_token) = side_or_lock(req.from, source, lock, registry, notes)?;
     let allow = Allow { host_plaintext: req.host_plaintext, trusted_transport: req.trusted_transport };
     let (target, target_from, to_name) = match &req.dest {
         Dest::Token(name) => {
-            let (side, from) = side(name)?;
+            let opened = open(name, notes);
+            let (side, from, _) = side_or_lock(name, opened, lock, registry, notes)?;
             (Some(side), from, (*name).to_owned())
         }
         Dest::Transport(t, shown) => {
@@ -615,22 +631,23 @@ pub(crate) fn plan_moves(
             p.reasons.push(why.clone());
         }
     }
-    Ok(Moves { to: to_name, source_from, target_from, plans, source, target })
+    Ok((Moves { to: to_name, source_from, target_from, plans, source, target }, source_token))
 }
 
-/// A token's capabilities: from the open token, else from what the lock recorded there. A
-/// passthrough with no provider named behind it is planned as a spec-compliant module, loudly.
+/// A token's capabilities: from the token `opened`, else from what the lock recorded there,
+/// with the token when it opened. A passthrough with no provider named behind it is planned as
+/// a spec-compliant module, loudly.
 fn side_or_lock(
     name: &str,
+    opened: Result<Token>,
     lock: &Lock,
     registry: &Registry,
-    open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
     notes: &mut Notes,
-) -> Result<(Side, Known)> {
-    let e = match open(name, notes) {
+) -> Result<(Side, Known, Option<Token>)> {
+    let e = match opened {
         Ok(tok) => {
             warn_hidden(name, &tok.profiles, notes);
-            return Ok((side(&tok)?, Known::Token));
+            return Ok((side(&tok)?, Known::Token, Some(tok)));
         }
         Err(e) => e,
     };
@@ -648,7 +665,7 @@ fn side_or_lock(
     match side_from_lock(name, observed, registry, notes) {
         Some(side) => {
             notes.note(format_args!("capabilities of '{name}' come from the lock: the token did not open ({e})"));
-            Ok((side?, Known::Lock))
+            Ok((side?, Known::Lock, None))
         }
         None => Err(e),
     }
@@ -763,6 +780,17 @@ mod tests {
 
     fn profile(migration: &str) -> Profile {
         Profile::from_toml(&format!("profile = \"m/1\"\nmode = \"observed\"\n{migration}")).unwrap()
+    }
+
+    /// A resolution that fails is the token's own error (17, naming it and why), never read as
+    /// "no provider" (review tokens.rs F1: a transport file's then said its provider was not
+    /// in this build).
+    #[test]
+    fn a_failed_resolution_is_invalid_not_absent() {
+        let e = resolved("far", Err("two families claim one manufacturer".into())).unwrap_err();
+        assert_eq!(e.exit_code(), 17);
+        assert!(e.to_string().contains("'far'") && e.to_string().contains("two families"), "{e}");
+        assert!(resolved("far", Ok(Resolved::default())).is_ok());
     }
 
     /// A module profile's migration rows become the planner's side: how plaintext gets in, the

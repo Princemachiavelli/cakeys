@@ -35,6 +35,8 @@ accepts a `call`-less rule (e.g. `"no derivation at all"`, `:121-124`) matching 
 is intended there, but also a numbered rule landing on a different step than the comment says.
 Fix: give each case its expected count (most are exactly the number of rules in its plan). [read]
 
+**Fixed (2026-11-18):** each rule's firings are counted from the trace's `rule` index: a `call` rule exactly once, a call-less one at least once. Test: `the_probe_records_what_a_misbehaving_module_does` and the others [run].
+
 ### F3. Call numbers derived from the probe's internal order — nit
 
 `crates/caprobe/tests/fault.rs:46-50`, `:97`, `:103`, `:111`, `:137`. `SIGN_INITS = 2` and
@@ -47,6 +49,8 @@ only noted. [read]
 
 `crates/caprobe/tests/fault.rs:22`. See dry_run.rs F4: the same 10 bytes are in four other test
 files; `common/mod.rs` has P-384/Edwards OIDs but no P-256 one. [read]
+
+**Fixed (2026-11-18):** the decoy uses `common::P256`..
 
 ## Design
 

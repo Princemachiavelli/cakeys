@@ -20,6 +20,8 @@ to_string_pretty(&lock)`; `parse_lock(&text)` succeeds and re-serialises to `tex
 (`config.rs:2576`).
 [read]
 
+**Fixed (2026-11-18):** Verified fixed (2026-11-18), unmarked until now.
+
 ## Design
 
 None.

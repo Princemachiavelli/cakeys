@@ -26,6 +26,10 @@ const MAC_ITERATIONS: i32 = 600_000;
 /// The most KDF iterations a key file read here may ask for: a file is input, and its count is
 /// otherwise how long this process hangs.
 const MAX_ITERATIONS: u32 = 10_000_000;
+/// The most encrypted containers a PKCS#12 read here may hold: each runs a KDF of up to
+/// [`MAX_ITERATIONS`], so this bounds a file's work beside its MAC's and its key's. OpenSSL
+/// writes one (the certificates).
+const MAX_ENCRYPTED_CONTAINERS: usize = 2;
 const ID_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.1");
 const ID_ENCRYPTED_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.6");
 const ID_SHA256: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.1");
@@ -153,18 +157,25 @@ fn mac(pass: &str, salt: &[u8], iterations: i32, data: &[u8]) -> Result<Vec<u8>>
 ///
 /// # Errors
 ///
-/// `Validation` (17) for a file that is neither, a PKCS#12 without a MAC or with another MAC
-/// digest than SHA-256, without exactly one key, with an encrypted (rather than plain) bag
-/// container, with an iteration count out of range, or for a wrong passphrase (the MAC, or the
+/// `Validation` (17) for a file that is neither (a PEM file holding anything but one
+/// `ENCRYPTED PRIVATE KEY` block), a PKCS#12 without a MAC or with another MAC digest than
+/// SHA-256, without exactly one key, with more than [`MAX_ENCRYPTED_CONTAINERS`] encrypted
+/// containers or a legacy-encrypted one, with a certificate bag that is not X.509, with an
+/// iteration count out of range, or for a wrong passphrase (the MAC, or the
 /// padding check): bad input, never the "other material than the lock pins" that 10 means.
 pub(crate) fn read(bytes: &[u8], pass: &str) -> Result<Read> {
     use cakeys_core::migrate::Method;
-    if bytes.starts_with(b"-----BEGIN ENCRYPTED PRIVATE KEY-----") {
-        let text = std::str::from_utf8(bytes).map_err(bad)?;
-        let (label, der) = der::pem::decode_vec(text.as_bytes()).map_err(bad)?;
-        if label != "ENCRYPTED PRIVATE KEY" {
-            return Err(bad(format!("a PEM {label}")));
-        }
+    // PEM wherever its block starts, as an object's own file is read (`keyfile::pem_blocks`):
+    // after a byte-order mark, a blank line or OpenSSL's `Bag Attributes` text too.
+    if let Some(text) = crate::keyfile::pem_text(bytes) {
+        let blocks = crate::keyfile::pem_blocks(text)
+            .map_err(|e| bad(e.into_msg().map_or_else(String::new, cakeys_core::Msg::into_text)))?;
+        let block = match blocks.as_slice() {
+            [("ENCRYPTED PRIVATE KEY", block)] => *block,
+            [(label, _)] => return Err(bad(format!("a PEM {label}, not an ENCRYPTED PRIVATE KEY"))),
+            _ => return Err(bad(format!("{} PEM blocks, where one ENCRYPTED PRIVATE KEY is meant", blocks.len()))),
+        };
+        let (_, der) = der::pem::decode_vec(block.as_bytes()).map_err(bad)?;
         let pkcs8 = decrypt_pkcs8(&der, pass)?;
         return Ok(Read { pkcs8, certificates: Vec::new(), method: Method::Pkcs8Pbes2 });
     }
@@ -182,7 +193,16 @@ pub(crate) fn read(bytes: &[u8], pass: &str) -> Result<Read> {
         return Err(wrong());
     }
     let (mut pkcs8, mut certificates) = (None, Vec::new());
-    for info in Vec::<ContentInfo>::from_der(&auth_safe).map_err(bad)? {
+    let infos = Vec::<ContentInfo>::from_der(&auth_safe).map_err(bad)?;
+    // Each encrypted container runs a KDF of its own: bounded per file, not only per KDF.
+    let encrypted = infos.iter().filter(|i| i.content_type == ID_ENCRYPTED_DATA).count();
+    if encrypted > MAX_ENCRYPTED_CONTAINERS {
+        return Err(bad(format!(
+            "a PKCS#12 of {encrypted} encrypted containers, each its own key derivation (at most \
+             {MAX_ENCRYPTED_CONTAINERS} are read)"
+        )));
+    }
+    for info in infos {
         let bags = if info.content_type == ID_ENCRYPTED_DATA { encrypted_octets(&info, pass)? } else { octets(&info)? };
         for bag in Vec::<SafeBag>::from_der(&bags).map_err(bad)? {
             let value = ContextSpecific::<Any>::from_der(&bag.bag_value).map_err(bad)?.value.to_der().map_err(bad)?;
@@ -192,7 +212,11 @@ pub(crate) fn read(bytes: &[u8], pass: &str) -> Result<Read> {
                 }
                 pkcs8 = Some(decrypt_pkcs8(&value, pass)?);
             } else if bag.bag_id == pkcs12::PKCS_12_CERT_BAG_OID {
-                certificates.push(CertBag::from_der(&value).map_err(bad)?.cert_value.as_bytes().to_vec());
+                let cert = CertBag::from_der(&value).map_err(bad)?;
+                if cert.cert_id != pkcs12::PKCS_12_X509_CERT_OID {
+                    return Err(bad(format!("a certificate bag of type {}, not an X.509 certificate", cert.cert_id)));
+                }
+                certificates.push(cert.cert_value.as_bytes().to_vec());
             }
         }
     }
@@ -416,7 +440,44 @@ mod tests {
                 .unwrap(),
             bag_attributes: None,
         };
-        let chain = pfx(safe(vec![cert_bag(b"leaf"), cert_bag(b"issuer"), key_bag]), sha256);
+        let chain = pfx(safe(vec![cert_bag(b"leaf"), cert_bag(b"issuer"), key_bag.clone()]), sha256);
         assert_eq!(read(&chain, "pass").unwrap().certificates, [b"leaf".to_vec(), b"issuer".to_vec()]);
+
+        // A certificate bag of another type than X.509 (an SDSI certificate) is refused by name,
+        // not read as DER (review file.rs F3).
+        let sdsi = SafeBag {
+            bag_value: CertBag {
+                cert_id: ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.22.2"),
+                cert_value: OctetString::new(b"(certificate)".as_slice()).unwrap(),
+            }
+            .to_der()
+            .unwrap(),
+            ..cert_bag(b"")
+        };
+        let got = refusal(&pfx(safe(vec![sdsi, key_bag]), sha256));
+        assert!(got.contains("not an X.509 certificate"), "{got}");
+
+        // Every encrypted container runs a KDF: past MAX_ENCRYPTED_CONTAINERS the file is
+        // refused before any of them runs (review file.rs F2).
+        let encrypted = ContentInfo { content_type: ID_ENCRYPTED_DATA, ..data(vec![]) };
+        let many = vec![encrypted; MAX_ENCRYPTED_CONTAINERS + 1];
+        let got = refusal(&pfx(data(many.to_der().unwrap()), sha256));
+        assert!(got.contains("3 encrypted containers"), "{got}");
+    }
+
+    /// An encrypted PKCS#8 PEM reads wherever its block starts: after a byte-order mark, a blank
+    /// line or OpenSSL's `Bag Attributes` text (review file.rs F4). Another PEM, or several
+    /// blocks, is refused by name.
+    #[test]
+    fn an_encrypted_pem_reads_wherever_its_block_starts() {
+        let key = p256_pkcs8();
+        let pem = write_pkcs8(&key, "pass").unwrap();
+        for lead in ["\u{feff}", "\n", "Bag Attributes\n    localKeyId: 01 02\nKey Attributes: <No Attributes>\n"] {
+            let read = read(format!("{lead}{pem}").as_bytes(), "pass").unwrap_or_else(|e| panic!("{lead:?}: {e}"));
+            assert_eq!(*read.pkcs8, key, "{lead:?}");
+        }
+        let cert = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+        assert!(refusal(cert.as_bytes()).contains("a PEM CERTIFICATE, not an ENCRYPTED PRIVATE KEY"));
+        assert!(refusal(format!("{cert}{pem}").as_bytes()).contains("2 PEM blocks"));
     }
 }

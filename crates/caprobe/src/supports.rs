@@ -73,14 +73,19 @@ impl Support {
 pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
     let find = |name: &str| set.find(name).map_err(|e| KmError::Validation(e.into()));
     // A family with pairs on several kinds of hardware (tpm2-pkcs11/1.10+swtpm, +amd-ftpm):
-    // the hardware layer asked for names the pair, as in token resolution.
+    // the hardware layer asked for names the pair. That is a naming convention, not a match:
+    // a pair is named `<module>+<hardware profile>` (docs/CAPROBE.md D10), and token
+    // resolution (`resolution::choose`) picks a pair by the same suffix, over the same
+    // resolved layer names, so the two cannot disagree.
     let find_module = |name: &str, hardware: &[String]| {
         set.find(name)
             .or_else(|e| {
+                let layers: Vec<&str> =
+                    hardware.iter().filter_map(|h| set.find(h).ok()).map(|p| p.profile.as_str()).collect();
                 let named: Vec<&Profile> = set
                     .all()
                     .iter()
-                    .filter(|p| p.family() == name && hardware.iter().any(|h| p.profile.ends_with(&format!("+{h}"))))
+                    .filter(|p| p.family() == name && layers.iter().any(|l| p.profile.ends_with(&format!("+{l}"))))
                     .collect();
                 if let [p] = named.as_slice() { Ok(*p) } else { Err(e) }
             })
@@ -133,4 +138,37 @@ pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
         verdicts,
         notes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `--layer` names a hardware pair by the layer's resolved profile name, as token
+    /// resolution does: a hardware layer asked for by family picks the pair named after its
+    /// full name (review supports F2).
+    #[test]
+    fn a_hardware_layer_names_its_pair_by_its_profile_name() {
+        let dir = std::env::temp_dir().join(format!("caprobe-supports-pair-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let files = [
+            ("hw.toml", "profile = \"acmehw/2\"\nmode = \"delta\"\n"),
+            ("a.toml", "profile = \"acme/1+acmehw/2\"\nmode = \"observed\"\nadvertise = [\"CKM_AES_ECB\"]\n"),
+            ("b.toml", "profile = \"acme/1+other\"\nmode = \"observed\"\nadvertise = [\"CKM_AES_CBC\"]\n"),
+        ];
+        for (name, text) in files {
+            std::fs::write(dir.join(name), text).unwrap();
+        }
+        // The binding layer comes from the process's set, activated as `main_from` does.
+        crate::activate(&Config::default(), None, &mut cakeys_pkcs11::ops::Notes::default()).unwrap();
+        let set = Set::embedded().unwrap().with_dir(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let set = set.unwrap();
+        let layers = ["acmehw".to_owned()];
+        let q =
+            Query { ask: Ask::Name("CKM_AES_ECB"), profile: Some("acme"), token: None, layers: &layers, bits: None };
+        let s = supports(&Config::default(), &set, &q).unwrap();
+        assert_eq!(s.module, "acme/1+acmehw/2");
+        assert!(s.layers.iter().any(|l| l == "acmehw/2"), "{:?}", s.layers);
+    }
 }

@@ -30,12 +30,20 @@ turns a valid three-prime key into `Conflict` (13) with a message saying it is n
 PKCS#11 has no attributes for more than two primes, so refusing is right; the code and text
 should say so (`Unsupported`, "multi-prime RSA keys have no PKCS#11 form"). [read]
 
+**Fixed (2026-11-18):** a multi-prime key is `Unsupported` (15), "a multi-prime RSA key, which
+has no PKCS#11 form". It is detected from the PKCS#8's PKCS#1 version, because rsa's decoder
+refuses such a key before `primes()` is reached; the `[p, q]` arm says the same. Test:
+`a_multi_prime_rsa_key_is_unsupported`.
+
 ### F3. Error kinds and texts — nit
 
 `crates/core/src/plaintext.rs:83` formats the key type with `{kt:?}` ("a Ec private key")
 where every other message uses the PKCS#11 name (`{kt}` → `CKK_EC`); `:133-135` maps an SPKI
 *encoding* failure to `Unavailable` (16, "the token cannot be used now"), though no token is
 involved — `Conflict` or `Io`-like exit 1 fits better. [read]
+
+**Fixed (2026-11-18):** the key type is printed by its PKCS#11 name (`{kt}`), and an SPKI
+encoding failure is `Conflict`. Test: `pkcs8_keys_parse_into_their_parts`.
 
 ## Design
 

@@ -20,6 +20,11 @@ own bytes), but a test reading them gets garbage. Read outputs only when the rea
 succeeded.
 [read]
 
+**Fixed (2026-11-18):** `Detail::ok` is set from the real call's own `rv` (false when a rule
+answered before it), and `C_GetAttributeValue` reads its template through `filled_template`,
+which takes the types always and the values only when `ok`. Tests:
+`outputs_are_read_only_where_the_module_filled_them`, `a_filled_template_gives_values_only_when_filled`.
+
 ## Design
 
 None.

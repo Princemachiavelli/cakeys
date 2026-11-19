@@ -61,6 +61,8 @@ and writes `outputFile`; `ProtectSystem = "strict"` with `ReadWritePaths` for th
 and the token stores (tpm2-pkcs11's sqlite store, SoftHSM's directory), plus the cheap flags,
 would contain a misbehaving vendor module. [read]
 
+**Decided (2026-11-18):** the user decided the NixOS module is for testing only, not a service for real users.
+
 ### F4. Secrets can only reach the check through `environment`, which is world-readable in the store — practice
 
 `nix/module.nix:125-131`, `:329`. `environment` becomes `Environment=` lines in a unit file under
@@ -69,15 +71,21 @@ would contain a misbehaving vendor module. [read]
 `environmentFile` (mapped to `EnvironmentFile=`) or systemd credentials, and say in the
 description that `environment` is public. [read]
 
+**Decided (2026-11-18):** the user decided the NixOS module is for testing only; `environment`'s description now says it is public (in the store).
+
 ### F5. A check with no `requiredBy` never runs — nit
 
 `nix/module.nix:132-136`. The default is `[ ]` and the unit has no `wantedBy`, so such a check is
 defined but never started, silently. Assert `requiredBy != [ ]`, or add `wantedBy =
 [ "multi-user.target" ]` so it at least runs and logs. [read]
 
+**Fixed (2026-11-18):** an assertion refuses a check with empty `requiredBy`. Test: `checks.module-assertions`.
+
 ### F6. Options without descriptions — nit
 
 `nix/module.nix:111-131`: `token`, `spec`, `environment`. [read]
+
+**Fixed (2026-11-18):** `token`, `spec` and `environment` have descriptions.
 
 ## Design
 

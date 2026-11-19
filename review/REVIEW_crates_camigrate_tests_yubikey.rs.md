@@ -20,6 +20,8 @@ test hangs until nextest's ten-minute kill (`.config/nextest.toml`) or forever u
 test`. Fix: replace `run` with `run_within(&dir.join("keys.toml"), args, limit)`, which needs a
 `bin` parameter to call `cakeys` as well as camigrate (it uses `BIN` only today). [read]
 
+**Fixed (2026-11-18):** every run is `Run::within` (pipes drained) with a 60 s bound, through `turn.checked`. Code change only, never run (hardware)..
+
 ### F2. A partial opt-in is a silent pass — risk
 
 **Verification:** confirmed (downgraded to practice). The skip at `yubikey.rs:33-40` is real, but the documented runner sets all four: `scripts/local-tests.sh:107` exports `CAKEYS_TEST_MODULE`, and `scripts/coverage-full.sh:72-77` checks the PIN/MGM files and module are readable (exit 1 otherwise) before exporting the three YubiKey variables; only an ad hoc shell run can skip silently. [read]
@@ -31,12 +33,16 @@ Fix: skip only when none of the YubiKey variables is set, and fail when some but
 or mark the test `#[ignore = "needs a YubiKey: CAKEYS_TEST_YUBIKEY_*"]` so runners report it as
 skipped, and have `scripts/coverage-full.sh` pass `--run-ignored`. [read]
 
+**Fixed (2026-11-18):** the opt-in is `yubikey_opted_in` (verified FIXED)..
+
 ### F3. The second move's refusal checks the exit only — nit
 
 `crates/camigrate/tests/yubikey.rs:77-84`. The comment says "refused before anything is
 written", but the test asserts exit 13 only, not that the new `keys.lock` is unchanged by the
 refused move (the slot cannot be checked, it is occupied by design). Fix: compare the lock bytes
 before and after the refused `migrate`. [read]
+
+**Fixed (2026-11-18):** the lock bytes are compared around the refused second move. Never run (hardware)..
 
 ### F4. The test leaves slot 95 occupied, so a second run fails at the first move — nit
 
@@ -45,11 +51,15 @@ before and after the refused `migrate`. [read]
 with 13 at `:71` with no hint. A pre-check that slot 95 is empty, failing with "wipe slot 95
 first (ykman piv keys delete 95)", would make the cause obvious. [read]
 
+**Fixed (2026-11-18):** a 13 at the first move fails with how to wipe slot 95. Never run (hardware)..
+
 ### F5. Its own runner duplicates the harness's — complexity
 
 `crates/camigrate/tests/yubikey.rs:18-29` and `:41-44` duplicate `common::Workdir::km_env` and
 `Workdir::new` (`crates/cli/tests/common/mod.rs:351-389`), except that it can call either binary.
 A `Workdir::run(bin, args)` (bounded, F1) would serve this file and caprobe's yubikey.rs. [read]
+
+**Fixed (2026-11-18):** `Workdir::new` and the harness's `Run` replace its own runner. Never run (hardware)..
 
 ## Design
 

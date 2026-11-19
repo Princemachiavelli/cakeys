@@ -19,6 +19,10 @@ structure a name belongs to. This is what lets REVIEW p11-fault plan.rs F1 happe
 (`SLOT_FLAG`, `TOKEN_FLAG`) would let the plan refuse the wrong kind.
 [read]
 
+**Fixed (2026-11-18):** the one `FLAG` table is two, `SLOT_FLAG` and `TOKEN_FLAG`, looked up by
+`slot_flag` and `token_flag`; p11-fault's plan reads each flag word from its own table. Test:
+`slot_and_token_flags_are_apart`.
+
 ## Design
 
 - Aliases are in the name tables (`CKA_SUB_PRIME_BITS`, `CKA_ECDSA_PARAMS`,

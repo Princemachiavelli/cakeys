@@ -60,6 +60,9 @@ attestation scheme when `attestation = true`, the second (after) narrows to `sch
 produce `Unsupported` with differently worded messages for what a user sees as one mistake. Fine
 behaviour; the duplication could be one function taking `Option<&Token>`. [read]
 
+**Fixed (2026-11-18):** one `requested_scheme` check runs before and after the open, with one
+message. Test: `a_requested_scheme_is_refused_alike_before_and_after_the_open`.
+
 ## Design
 
 - `resolve_with` (`:349-386`) computes the key's SPKI up to four times (identities, public

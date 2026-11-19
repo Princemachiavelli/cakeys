@@ -121,8 +121,9 @@ pub enum KmError {
     /// The token cannot be used now: absent, its PIN locked, its module not loadable (16).
     #[error("unavailable: {0}")]
     Unavailable(Msg),
-    /// Invalid config, lock, spec or token options (17).
-    #[error("invalid spec: {0}")]
+    /// Invalid config, lock, spec or token options (17). The message names which: every
+    /// keys.toml and keys.lock error starts with its file.
+    #[error("invalid: {0}")]
     Validation(Msg),
     /// The lock cannot be written (21): a writing run refused before any token is touched (a
     /// read-only lock or directory, a Nix build sandbox), or a save that failed part-way, after
@@ -159,15 +160,12 @@ impl KmError {
 /// A result whose error is a [`KmError`].
 pub type Result<T, E = KmError> = std::result::Result<T, E>;
 
-impl KmError {
-    /// An I/O error, with what was being done: `.map_err(KmError::io(format!("reading {p}")))`.
-    pub fn io(what: impl std::fmt::Display) -> impl FnOnce(std::io::Error) -> KmError {
-        move |e| KmError::Io(format!("{what}: {e}").into())
-    }
-
-    /// What it says, when it is one of the variants that say something in their own words.
-    fn msg_mut(&mut self) -> Option<&mut Msg> {
-        match self {
+/// `Some` of the [`Msg`] of a variant that says something in its own words, `None` for the two
+/// that format their own fields: the one list of those variants, matched by reference, by
+/// mutable reference or by value as `$e` is.
+macro_rules! said {
+    ($e:expr) => {
+        match $e {
             KmError::NotFound(m)
             | KmError::Ambiguous(m)
             | KmError::Conflict(m)
@@ -181,25 +179,39 @@ impl KmError {
             | KmError::Io(m) => Some(m),
             KmError::HashMismatch { .. } | KmError::FirstUse { .. } => None,
         }
+    };
+}
+
+impl KmError {
+    /// An I/O error, with what was being done: `.map_err(KmError::io(format!("reading {p}")))`.
+    pub fn io(what: impl std::fmt::Display) -> impl FnOnce(std::io::Error) -> KmError {
+        move |e| KmError::Io(format!("{what}: {e}").into())
+    }
+
+    /// What it says, when it is one of the variants that say something in their own words.
+    #[must_use]
+    pub fn msg(&self) -> Option<&Msg> {
+        said!(self)
+    }
+
+    fn msg_mut(&mut self) -> Option<&mut Msg> {
+        said!(self)
+    }
+
+    /// The same error, its message led by `what` (`"<what>: <message>"`): one way to say where
+    /// an error arose, whatever its kind. The two variants that format their own fields stay.
+    #[must_use]
+    pub fn prefixed(mut self, what: impl std::fmt::Display) -> Self {
+        if let Some(m) = self.msg_mut() {
+            m.text = format!("{what}: {}", m.text);
+        }
+        self
     }
 
     /// The PKCS#11 return value of the module call that failed, where the token layer set it.
     #[must_use]
     pub fn rv(&self) -> Option<u64> {
-        match self {
-            KmError::HashMismatch { .. } | KmError::FirstUse { .. } => None,
-            KmError::NotFound(m)
-            | KmError::Ambiguous(m)
-            | KmError::Conflict(m)
-            | KmError::PreconditionFailed(m)
-            | KmError::Exists(m)
-            | KmError::ObjectsFailed(m)
-            | KmError::LockUnwritable(m)
-            | KmError::Unsupported(m)
-            | KmError::Unavailable(m)
-            | KmError::Validation(m)
-            | KmError::Io(m) => m.rv,
-        }
+        self.msg().and_then(Msg::rv)
     }
 
     /// The same error, carrying the return value of the module call that failed.
@@ -214,19 +226,57 @@ impl KmError {
     /// The message of a variant that has one, return value included.
     #[must_use]
     pub fn into_msg(self) -> Option<Msg> {
-        match self {
-            KmError::NotFound(m)
-            | KmError::Ambiguous(m)
-            | KmError::Conflict(m)
-            | KmError::PreconditionFailed(m)
-            | KmError::Exists(m)
-            | KmError::ObjectsFailed(m)
-            | KmError::LockUnwritable(m)
-            | KmError::Unsupported(m)
-            | KmError::Unavailable(m)
-            | KmError::Validation(m)
-            | KmError::Io(m) => Some(m),
-            KmError::HashMismatch { .. } | KmError::FirstUse { .. } => None,
+        said!(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every variant that says something in its own words carries a return value through
+    /// `with_rv`, `rv`, `msg` and `into_msg` alike; the two that format their own fields carry
+    /// none.
+    #[test]
+    fn every_message_carries_its_return_value() {
+        let m = || Msg::from("said");
+        let said = [
+            KmError::NotFound(m()),
+            KmError::Ambiguous(m()),
+            KmError::Conflict(m()),
+            KmError::PreconditionFailed(m()),
+            KmError::Exists(m()),
+            KmError::ObjectsFailed(m()),
+            KmError::Unsupported(m()),
+            KmError::Unavailable(m()),
+            KmError::Validation(m()),
+            KmError::LockUnwritable(m()),
+            KmError::Io(m()),
+        ];
+        for e in said {
+            let code = e.exit_code();
+            let e = e.with_rv(Some(0x30)).prefixed("where");
+            assert_eq!(e.exit_code(), code, "prefixing keeps the kind");
+            assert_eq!((e.rv(), e.msg().map(|m| &**m)), (Some(0x30), Some("where: said")), "{code}");
+            assert_eq!(e.into_msg().and_then(|m| m.rv()), Some(0x30), "{code}");
         }
+        let fields = [
+            KmError::HashMismatch { what: "w".into(), expected: "e".into(), got: "g".into() },
+            KmError::FirstUse { what: "w".into(), got: "g".into() },
+        ];
+        for e in fields {
+            let e = e.with_rv(Some(0x30)).prefixed("where");
+            assert!(!e.to_string().contains("where"));
+            assert_eq!((e.rv(), e.msg().is_none()), (None, true));
+            assert!(e.into_msg().is_none());
+        }
+    }
+
+    /// Exit 17 covers keys.toml, keys.lock, token options and addresses alike: its prefix names
+    /// none of them, and the message says which (review error.rs F2).
+    #[test]
+    fn an_invalid_lock_is_not_called_a_spec() {
+        let e = KmError::Validation("keys.lock: object 'a' is not in the lock".into());
+        assert_eq!(e.to_string(), "invalid: keys.lock: object 'a' is not in the lock");
     }
 }

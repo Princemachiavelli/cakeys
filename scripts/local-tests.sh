@@ -7,8 +7,8 @@
 #   scripts/local-tests.sh -E 'test(host_moves)'
 #
 # The patches (nix/patches/cryptoki-*.patch, and upstream/rust-cryptoki/ drafts applied as they
-# are) and the features that use them, both as
-# nix/package-common.nix lists them: the patches are applied to the registry's cryptoki under
+# are) and the features that use them, both as the Nix build has them (nix/package-common.nix,
+# evaluated through `.#cakeys.patchedCryptoki`): the patches are applied to the registry's cryptoki under
 # target/local-tests/, never vendored in the tree, and the features enabled. The run happens in
 # a copy of the working tree, target/local-tests/tree, whose .cargo/config.toml patches
 # cryptoki to that copy, so the repository's Cargo.lock is never touched. It refuses to run
@@ -46,20 +46,15 @@ openssl=$(path_of openssl)
 provider=$(path_of pkcs11-provider)
 export PATH=$softhsm/bin:$nextest/bin:$rsync/bin:$gnupatch/bin:$jq/bin:$openssl/bin:$PATH
 
-# The cryptoki the Nix build patches: its version and patch list, read from package-common.nix.
-block=$(sed -n '/^  cryptoki = {$/,/^  };$/p' nix/package-common.nix)
-version=$(sed -n 's/^ *version = "\(.*\)";$/\1/p' <<<"$block")
-# Paths relative to nix/: ./patches/ (local fixes) and ../upstream/ (drafts applied as they are).
-mapfile -t patches < <(sed -n 's|^ *\(\.\{1,2\}/.*\.patch\)$|nix/\1|p' <<<"$block")
-[ -n "$version" ] && [ "${#patches[@]}" -gt 0 ] || {
-  echo "local-tests: no cryptoki version or patches in nix/package-common.nix" >&2
-  exit 1
-}
-# The features the Nix build enables with the patches (package-common.nix `features`, before
-# its `++` additions for a build without tpm2): what only the patched cryptoki compiles.
-features=$(sed -n '/^  features = \[$/,/^  \]$/s/^ *"\(.*\)"$/\1/p' nix/package-common.nix | paste -sd, -)
-[ -n "$features" ] || {
-  echo "local-tests: no features in nix/package-common.nix" >&2
+# The cryptoki the Nix build patches (its version and patches, as store paths) and the features
+# it enables with them, as the build itself has them (nix/package.nix `patchedCryptoki`, from
+# nix/package-common.nix): evaluated, not read from the Nix source.
+build=$(nix eval --json .#cakeys.patchedCryptoki)
+version=$(jq -r .version <<<"$build")
+mapfile -t patches < <(jq -r '.patches[]' <<<"$build")
+features=$(jq -r '.features | join(",")' <<<"$build")
+[ -n "$version" ] && [ "${#patches[@]}" -gt 0 ] && [ -n "$features" ] || {
+  echo "local-tests: .#cakeys.patchedCryptoki has no cryptoki version, patches or features: $build" >&2
   exit 1
 }
 locked=$(cargo metadata --format-version 1 --locked |
@@ -120,9 +115,20 @@ export CAKEYS_TPM_MODULE=$tpm2/lib/libtpm2_pkcs11.so CAKEYS_TPM_REQUIRE=1
 # worktrees) would otherwise take the same ports (nix/test-tokens.sh).
 export CAKEYS_TPM_PORT_BASE=${CAKEYS_TPM_PORT_BASE:-$((24256 + RANDOM % 60 * 128))}
 export CAKEYS_PKCS11_PROVIDER_DIR=$provider/lib/ossl-modules
-export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="bash $tree/nix/test-tokens.sh"
-# A script named here takes the place of the test run, in this environment (scripts/coverage-full.sh).
+# cargo's target runner for the host's triple (CARGO_TARGET_<TRIPLE>_RUNNER), as the Nix build
+# names it: on any other triple's variable cargo would not use it, and every test would share
+# one token set while the *_REQUIRE variables demand what only the runner starts.
+host=$(rustc -vV | sed -n 's/^host: //p')
+[ -n "$host" ] || {
+  echo "local-tests: rustc -vV names no host triple" >&2
+  exit 1
+}
+host=${host^^}
+export "CARGO_TARGET_${host//-/_}_RUNNER=bash $tree/nix/test-tokens.sh"
+# A script named here takes the place of the test run, in this environment
+# (scripts/coverage-full.sh). A child, not exec: this script's EXIT trap removes $T afterwards.
 if [ -n "${CAKEYS_LOCAL_TESTS_THEN:-}" ]; then
-  exec bash "$CAKEYS_LOCAL_TESTS_THEN" "$features" "$@"
+  bash "$CAKEYS_LOCAL_TESTS_THEN" "$features" "$@"
+  exit
 fi
 cargo nextest run --workspace --features "$features" --no-fail-fast "$@"

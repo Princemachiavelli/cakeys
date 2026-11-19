@@ -14,6 +14,8 @@ Careful code with good tests. The findings are minor.
 docs/CAMIGRATE.md:234, "HMAC-SHA256 MAC (PKCS#12 KDF, 10 000 iterations)". The frozen-format
 section describes files camigrate no longer writes. [read]
 
+**Fixed (2026-11-18):** CAMIGRATE.md gives 600 000 iterations for the MAC, as many as for the key.
+
 ### F2. KDF work is bounded per KDF, not per file — nit
 
 `crates/camigrate/src/file.rs:185-187`. Each `encryptedData` container is decrypted with up to
@@ -22,6 +24,10 @@ This only happens after the MAC verifies, so it needs the passphrase. Someone wh
 make a file take N × (seconds) to open. A total budget across the file, or a cap on containers
 (OpenSSL writes two), would close it. [read]
 
+**Fixed (2026-11-18):** a PKCS#12 with more than `MAX_ENCRYPTED_CONTAINERS` (2) encrypted
+containers is refused (17) before any of their KDFs runs, so a file's KDF work is at most its
+MAC's, two containers' and its key's. Test: `key_files_of_another_shape_are_refused`.
+
 ### F3. Certificate bags are not checked to be X.509 — nit
 
 `crates/camigrate/src/file.rs:194-196`. `cert_id` is not compared with
@@ -29,11 +35,18 @@ make a file take N × (seconds) to open. A total budget across the file, or a ca
 `id::cert_spki`/`key_certificate` with a parse message rather than "not an X.509 certificate
 bag". [read]
 
+**Fixed (2026-11-18):** a certificate bag whose `certId` is not X.509 is refused (17) by name.
+Test: `key_files_of_another_shape_are_refused`.
+
 ### F4. An encrypted PKCS#8 PEM is recognised only at byte 0 — nit
 
 `crates/camigrate/src/file.rs:162`. A leading BOM, blank line or OpenSSL `Bag Attributes` text
 sends the file to the PKCS#12 parser, which fails with "neither an encrypted PKCS#8 PEM nor
 PKCS#12". keyfile.rs finds PEM blocks anywhere. `import --in` could use the same scanner. [read]
+
+**Fixed (2026-11-18):** `read` takes PEM text by `keyfile::pem_text`/`pem_blocks`, the scanner an
+object's own file is read by: one `ENCRYPTED PRIVATE KEY` block wherever it starts; another
+label, or several blocks, is refused by name. Test: `an_encrypted_pem_reads_wherever_its_block_starts`.
 
 ## Design
 
