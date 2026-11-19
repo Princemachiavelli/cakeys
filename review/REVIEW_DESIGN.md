@@ -216,7 +216,11 @@ as refused by both.
 
 - `core/src/config.rs` (2,615 lines) holds five concerns: keys.toml rules, lock invariants,
   the observation model, file I/O and locking, and `gc`/address selection. `pkcs11/src/ops.rs`
-  mixes the verbs, the capability and template checks, and the create planner.
+  mixes the verbs, the capability and template checks, and the create planner. **Fixed
+  (2026-11-18), pure moves:** `config/` (`mod.rs` keys.toml and its rules, `lock.rs`, `observe.rs`,
+  `io.rs`), `ops/` (`mod.rs` the verbs, `capabilities.rs`, `planner.rs`), and camigrate's
+  `file_verbs.rs`; every public path is re-exported where it was. `checks.doc-references` now
+  holds Rust source paths the docs cite, which a split leaves behind.
 - The provider crates' public surface is wider than the `Provider` trait (`pub mod attest`,
   `esys`, `store`, `fuzzing`; `pub` helpers on `Ykcs11`). Fuzzing entry points, and in ykcs11 a
   test root, are built into production; put them behind a feature. **Fixed (2026-11-18):**

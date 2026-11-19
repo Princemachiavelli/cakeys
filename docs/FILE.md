@@ -16,7 +16,7 @@ in this repo's source, **[todo]** not verified yet.
 ## Where things stand
 
 - `origin` is per pair (spec × token) and has three values: `create`, `import` and `adopt`
-  (`KeyOrigin`, `crates/core/src/config.rs`). At most one pair per object says `create`, which
+  (`KeyOrigin`, `crates/core/src/config/mod.rs`). At most one pair per object says `create`, which
   makes it the object's birthplace (`check_origins`) [src].
 - camigrate already reads key files. `camigrate import --in <file> --passphrase-file` reads two
   formats: an encrypted PKCS#8 PEM (`pkcs8-pbes2`) and a PKCS#12 (`pkcs12`)
@@ -313,7 +313,7 @@ Where each part lives:
 - **Config (F1, F2):** `KeyOrigin::File`, `ObjectMigrateCfg` and `Config::object_migrate`, kept
   apart from `ObjectCfg` by a keys.toml-only `ObjectEntry`. `Config::object_file` resolves the
   path and keeps secret material out of `/nix/store`; `check_origins` holds the load rules
-  (`crates/core/src/config.rs`).
+  (`crates/core/src/config/mod.rs`).
 - **First use (F3):** `reconcile` lets a `file` pair's import be a first use. camigrate puts
   the IDs the host computes from the file into the lock before the token is written, so the
   token must show exactly them. The lock is restored when it does not (`from_its_file`,
@@ -327,7 +327,7 @@ Where each part lives:
   - `--in` now lands on `file` pairs too.
   - cakeys' `create` passes over `file` pairs.
   - When a `file` pair's object is missing, `lock` and `check` name the command that brings it
-    (`absent`, `crates/pkcs11/src/ops.rs`).
+    (`absent`, `crates/pkcs11/src/ops/mod.rs`).
 
 Found by running it: SoftHSM makes a data object private unless told otherwise [run]. So a
 data object whose spec declares no `CKA_PRIVATE` is now created with `CKA_PRIVATE = false`

@@ -123,7 +123,7 @@ on. These rules have no exceptions; if a task cannot be done within them, stop a
 | `checks.minimal` | package build | the CLI without its `tpm2`/`ykcs11` features builds without tpm2-tss and sqlite |
 | `checks.doc` | package build | rustdoc over every crate, private items included, with `-D warnings`: no doc link that does not resolve. An evidence tag in a doc comment is written `\[run\]`, or rustdoc reads it as a link |
 | `checks.msrv` | package build | `cargo check --all-targets` with the toolchain at `Cargo.toml`'s `rust-version` (rust-overlay), the dependencies built with it too |
-| `checks.doc-references` | sandbox | what the docs cite exists (`nix/doc-references.py`): a test or function named in backticks is a `fn` in `crates/` or `fuzz/`, every `docs/*.md` cited from docs, sources, scripts or Nix is a file, and every relative Markdown link resolves. Names and paths of other software are listed in the script with what they are |
+| `checks.doc-references` | sandbox | what the docs cite exists (`nix/doc-references.py`): a test or function named in backticks is a `fn` in `crates/` or `fuzz/`, every `docs/*.md` and Rust source (`crates/…/*.rs`) cited from docs, sources, scripts or Nix is a file, and every relative Markdown link resolves. Names and paths of other software are listed in the script with what they are |
 | `checks.formatting` | treefmt | `nix fmt` would change nothing: the formatters and linters in `treefmt.nix` (rustfmt with `rustfmt.toml`, nixfmt, taplo, shfmt, rumdl, keep-sorted, statix, deadnix, shellcheck, typos) |
 | `scripts/xversion.sh` | by hand, per refactor | a lock recorded by one build verifies, compares and re-records byte-identically with another (every class) |
 

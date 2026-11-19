@@ -3,7 +3,8 @@
 - A test or function the docs name in backticks (`a_name_of_four_or_more_words`, a path's last
   segment, `()` allowed) is a `fn` of that name somewhere in the Rust sources. A rename that
   leaves the docs naming the old test fails here.
-- A `docs/*.md` file cited anywhere (docs, Rust sources, scripts, Nix) exists.
+- A `docs/*.md` file or a Rust source (`crates/…/*.rs`, `fuzz/fuzz_targets/*.rs`) cited anywhere
+  (docs, Rust sources, scripts, Nix) exists.
 - A relative Markdown link in a document resolves to a file.
 
 A name or file that is not ours (another project's option or path, a file named as gone) is
@@ -52,6 +53,9 @@ name = re.compile(r"`(?:[A-Za-z0-9_]+::)*([a-z][a-z0-9]*(?:_[a-z0-9]+){3,})(?:\(
 # Not part of a URL or of another path.
 doc_path = re.compile(r"(?<![\w/.-])docs/[A-Za-z0-9_./-]+?\.md\b")
 link = re.compile(r"\]\(([^)#\s]+)(?:#[^)]*)?\)")
+# A Rust source: `crates/core/src/config/mod.rs`, `core/src/config/lock.rs` (under crates/),
+# `fuzz/fuzz_targets/lock.rs`. A split or a rename that leaves the citation behind fails here.
+source_path = re.compile(r"(?<![\w/.-])((?:crates/)?[a-z0-9_-]+/(?:src|tests|fuzz_targets)/[A-Za-z0-9_./-]*?\.rs)\b")
 
 for p in docs:
     text = p.read_text()
@@ -73,6 +77,10 @@ for p in cites:
         for m in doc_path.finditer(line):
             if not (root / m.group(0)).exists() and (str(rel), m.group(0)) not in FOREIGN_PATHS:
                 misses.append(f"{rel}:{n}: cites {m.group(0)}, which does not exist")
+        for m in source_path.finditer(line):
+            cited = m.group(1)
+            if not any((root / base / cited).exists() for base in (".", "crates")):
+                misses.append(f"{rel}:{n}: cites {cited}, which does not exist")
 
 for m in misses:
     print(m)

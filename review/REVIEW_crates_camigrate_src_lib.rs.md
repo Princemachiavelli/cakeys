@@ -113,8 +113,8 @@ module for the key-file verbs, leaving lib.rs as parsing plus routing. [read]
 
 **Fixed (2026-11-18), the loop:** `Tally` is the one bookkeeping of `import`, `migrate`, `import`
 from files and one file's certificate; `migrate` now goes on past a failure as the others do
-(`a_failed_move_leaves_the_others_moving`). The `files` module and `dispatch` are left to the
-splits.
+(`a_failed_move_leaves_the_others_moving`). The key-file verbs are `file_verbs.rs` (beside
+`file.rs`, the formats written, and `keyfile.rs`, the files read); `dispatch` is left as it is.
 
 ### F8. The help text's exit-code list leaves out codes camigrate returns — nit
 
