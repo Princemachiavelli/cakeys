@@ -36,7 +36,7 @@ use tss_esapi::traits::{Marshall, UnMarshall};
 use zeroize::Zeroizing;
 
 /// What a certify run proved, host-verified.
-pub struct Certified {
+pub(crate) struct Certified {
     /// The attested Name (`nameAlg ‖ H(TPMT_PUBLIC)`), as the commitment hashes it.
     pub name: Vec<u8>,
     /// The attested qualified Name: where the object sits under the AK's hierarchy.
@@ -54,7 +54,7 @@ pub struct Certified {
 /// # Errors
 ///
 /// `Unavailable` when the TCTI connection cannot be made.
-pub fn context(conf: &tss_esapi::Tcti) -> Result<Context> {
+pub(crate) fn context(conf: &tss_esapi::Tcti) -> Result<Context> {
     Context::new(conf.clone()).map_err(|e| KmError::Unavailable(format!("connecting to the TPM: {e}").into()))
 }
 
@@ -82,7 +82,7 @@ fn flushing<T>(ctx: &mut Context, handle: KeyHandle, f: impl FnOnce(&mut Context
 /// `Validation` for a malformed handle; `Unavailable` when no key sits there and `provision`
 /// is off (or creating/evicting one fails); `Conflict` when the object at the handle is not a
 /// cakeys Attestation Key.
-pub fn attestation_key(ctx: &mut Context, handle: u32, provision: bool) -> Result<(KeyHandle, Public, Name)> {
+pub(crate) fn attestation_key(ctx: &mut Context, handle: u32, provision: bool) -> Result<(KeyHandle, Public, Name)> {
     let persistent = PersistentTpmHandle::new(handle)
         .map_err(|e| KmError::Validation(format!("akHandle {handle:#010x}: {e}").into()))?;
     let template = ak_template()?;
@@ -205,7 +205,7 @@ fn seal_auth(pin: &[u8], salt: &str) -> Vec<u8> {
 ///
 /// `Unavailable` when the seal object cannot be loaded or the unseal fails (a wrong PIN, in
 /// practice); `Conflict` when the unsealed payload is not 32 bytes of hex text.
-pub fn wrapping_key(ctx: &mut Context, store: &Store, pin: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+pub(crate) fn wrapping_key(ctx: &mut Context, store: &Store, pin: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     let auth = Auth::try_from(seal_auth(pin, &store.seal.auth_salt))
         .map_err(|e| KmError::Unavailable(format!("seal auth: {e}").into()))?;
     // `TPM2_Load` needs no session beyond the parent's (empty-auth password), and
@@ -241,7 +241,7 @@ pub fn wrapping_key(ctx: &mut Context, store: &Store, pin: &[u8]) -> Result<Zero
 ///
 /// `Conflict` when the value is not `<iv>:<tag>:<ct>` with the right lengths, or does not
 /// decrypt under the token's wrapping key.
-pub fn unwrap_objauth(wrapping_key: &[u8], wrapped: &str) -> Result<Zeroizing<Vec<u8>>> {
+pub(crate) fn unwrap_objauth(wrapping_key: &[u8], wrapped: &str) -> Result<Zeroizing<Vec<u8>>> {
     let bad = || KmError::Conflict("CKA_TPM2_OBJAUTH_ENC is not <iv>:<tag>:<ct>".into());
     let mut parts = wrapped.split(':');
     let iv = super::store_hex(parts.next().ok_or_else(bad)?)?;
@@ -301,7 +301,7 @@ fn blobs(priv_blob: &[u8], pub_blob: &[u8]) -> Result<(Private, Public)> {
 /// # Errors
 ///
 /// `Conflict` when the blob does not unmarshal, or is not a public area tss-esapi accepts.
-pub fn unmarshal_public(pub_blob: &[u8]) -> Result<Public> {
+pub(crate) fn unmarshal_public(pub_blob: &[u8]) -> Result<Public> {
     PublicBuffer::unmarshall(pub_blob)
         .map_err(|e| KmError::Conflict(format!("the store's public blob does not unmarshal: {e}").into()))
         .and_then(|b| {
@@ -317,7 +317,12 @@ pub fn unmarshal_public(pub_blob: &[u8]) -> Result<Public> {
 /// `Unavailable` when the OS RNG, the auth setup or `TPM2_Certify` fails; `Conflict` when the
 /// response is not a certify statement for this run's nonce — never another statement or a
 /// replay.
-pub fn certify(ctx: &mut Context, key: KeyHandle, key_auth: &[u8], ak: KeyHandle) -> Result<(Attest, Signature)> {
+pub(crate) fn certify(
+    ctx: &mut Context,
+    key: KeyHandle,
+    key_auth: &[u8],
+    ak: KeyHandle,
+) -> Result<(Attest, Signature)> {
     let mut nonce = vec![0u8; 32];
     getrandom::fill(&mut nonce).map_err(|e| KmError::Unavailable(format!("OS RNG: {e}").into()))?;
     ctx.tr_set_auth(
@@ -350,7 +355,7 @@ pub fn certify(ctx: &mut Context, key: KeyHandle, key_auth: &[u8], ak: KeyHandle
 /// # Errors
 ///
 /// `Unavailable` if the attestation cannot be re-marshaled (a TPM2 command error code).
-pub fn attest_bytes(attest: &Attest) -> Result<Vec<u8>> {
+pub(crate) fn attest_bytes(attest: &Attest) -> Result<Vec<u8>> {
     attest.marshall().map_err(|e| KmError::Unavailable(format!("marshaling the attestation: {e}").into()))
 }
 
@@ -361,7 +366,7 @@ pub fn attest_bytes(attest: &Attest) -> Result<Vec<u8>> {
 ///
 /// `Unsupported` when the AK signed with something other than ECDSA-SHA256; `Conflict` when
 /// the signature does not verify against the pinned AK, or a component is too long for P-256.
-pub fn verify_signature(signature: &Signature, ak_spki: &[u8], bytes: &[u8]) -> Result<()> {
+pub(crate) fn verify_signature(signature: &Signature, ak_spki: &[u8], bytes: &[u8]) -> Result<()> {
     use cakeys_core::sig::{self, Encoding, HashAlg};
     let (r, s) = match signature {
         Signature::EcDsa(ecc) => (ecc.signature_r().value().to_vec(), ecc.signature_s().value().to_vec()),
@@ -388,7 +393,7 @@ pub fn verify_signature(signature: &Signature, ak_spki: &[u8], bytes: &[u8]) -> 
 /// The canonical SPKI of a TPM public area plus the `objectAttributes` it carries (for the
 /// cross-check against what the module reports): ECC points from `unique`, RSA modulus and
 /// exponent (0 meaning 65537, TPM 2.0 §12.2.3.4).
-pub struct Material {
+pub(crate) struct Material {
     /// The canonical SPKI; `None` for a secret key.
     pub(crate) spki: Option<Vec<u8>>,
     /// The `objectAttributes` of the public area.
@@ -402,7 +407,7 @@ pub struct Material {
 ///
 /// `Unsupported` for a TPM curve cakeys encodes no SPKI for; `Conflict` when the unique field
 /// is not a valid point or RSA key.
-pub fn material_of(public: &Public) -> Result<Material> {
+pub(crate) fn material_of(public: &Public) -> Result<Material> {
     match public {
         Public::Ecc { object_attributes, parameters, unique, .. } => {
             let curve = match parameters.ecc_curve() {
@@ -443,7 +448,7 @@ pub fn material_of(public: &Public) -> Result<Material> {
 ///
 /// `Conflict` when the blob is truncated (a size prefix past its end); `Unsupported` for a
 /// `nameAlg` that is not SHA-256/384/512.
-pub fn recompute_name(pub_blob: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn recompute_name(pub_blob: &[u8]) -> Result<Vec<u8>> {
     use sha2::Digest;
     let truncated = || KmError::Conflict("the store's public blob is truncated".into());
     let size = u16::from_be_bytes(*pub_blob.first_chunk::<2>().ok_or_else(truncated)?) as usize;
@@ -471,7 +476,7 @@ pub fn recompute_name(pub_blob: &[u8]) -> Result<Vec<u8>> {
 /// fails; `Conflict` when the store row or the attestation disagrees (a Name that is not the
 /// blob's, another signer, other material than `spki`); `Unsupported` when the store object
 /// has no private blob to certify.
-pub fn certify_key(
+pub(crate) fn certify_key(
     ctx: &mut Context,
     store: &Store,
     tobj: &TObject,

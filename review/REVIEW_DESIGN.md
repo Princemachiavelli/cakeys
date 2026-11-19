@@ -219,7 +219,11 @@ as refused by both.
   mixes the verbs, the capability and template checks, and the create planner.
 - The provider crates' public surface is wider than the `Provider` trait (`pub mod attest`,
   `esys`, `store`, `fuzzing`; `pub` helpers on `Ykcs11`). Fuzzing entry points, and in ykcs11 a
-  test root, are built into production; put them behind a feature.
+  test root, are built into production; put them behind a feature. **Fixed (2026-11-18):**
+  every `mod fuzzing` is `#[cfg(any(test, feature = "fuzzing", kani))]`, only fuzz/ turns the
+  feature on (`fuzzing_surface.rs` holds both), tpm2-pkcs11's `attest` is private (its fuzzing
+  entry points re-exported from the crate's own `fuzzing`), and `Ykcs11`'s helpers are private.
+  The linker had dropped the fixture root from the binary already; the API is what changed.
 - `provider.rs` still lists `aws-cloudhsm` as a data provider. **Fixed (2026-11-18).**
 - Q14's remaining duplication: the transport-key rule is written three times (camigrate
   `tokens.rs` twice, core config) (**fixed 2026-11-18** for camigrate's two readers of the lock:

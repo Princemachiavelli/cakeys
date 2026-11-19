@@ -39,6 +39,7 @@ static INTERMEDIATES: LazyLock<Vec<attest::Cert>> = LazyLock::new(|| {
 
 /// Entry points for the fuzz targets (`fuzz/fuzz_targets/piv_chain.rs`): the PIV attestation
 /// chain on arbitrary certificates, read or refused with an error, never a panic.
+#[cfg(any(test, feature = "fuzzing", kani))]
 pub mod fuzzing {
     /// `bytes` as a slot attestation certificate and the device certificate that signed it: a
     /// big-endian two-byte length, the slot's DER, then the device's; verified as `check`
@@ -59,7 +60,7 @@ impl Ykcs11 {
     /// # Errors
     ///
     /// `Validation` for a locator with a label, or whose `CKA_ID` names no PIV slot.
-    pub fn check_create(&self, loc: &Locator) -> Result<()> {
+    fn check_create(loc: &Locator) -> Result<()> {
         if loc.label.is_some() {
             return Err(KmError::Validation(
                 "ykcs11 ignores CKA_LABEL when generating and fixes each slot's labels; locate a key \
@@ -84,7 +85,7 @@ impl Ykcs11 {
     /// objects for the rest of the session; the key stays and is listed again by the next one
     /// (verified on a `YubiKey` 5, firmware 5.7.4, ykcs11 2.7.3).
     #[must_use]
-    pub fn keeps_destroyed_keys(&self, loc: &Locator) -> String {
+    fn keeps_destroyed_keys(loc: &Locator) -> String {
         let slot = loc.id.as_deref().and_then(piv_slot).map_or("<slot>".to_owned(), |s| format!("{s:02x}"));
         format!(
             "ykcs11 clears only the slot's certificate and leaves the key in the slot; delete it with \
@@ -115,16 +116,16 @@ impl Provider for Ykcs11 {
         PlaintextKind::PivImport
     }
 
-    /// A key goes where its locator says ([`Ykcs11::check_create`]), as SO.
+    /// A key goes where its locator says (by `CKA_ID` alone, a PIV slot), as SO.
     fn create(&self, tok: &Token, req: &Create<'_>) -> Result<Option<cakeys_pkcs11::token::CreateNote>> {
-        self.check_create(req.locator)?;
+        Self::check_create(req.locator)?;
         tok.create_declared(req)
     }
 
-    /// A key is never claimed deleted ([`Ykcs11::keeps_destroyed_keys`]); anything else is, as SO.
+    /// A key is never claimed deleted (ykcs11 keeps it; the advice names `ykman`); anything else is, as SO.
     fn destroy(&self, tok: &Token, req: &Destroy<'_>) -> Result<usize> {
         if req.object.class.is_key() {
-            let advice = self.keeps_destroyed_keys(req.locator);
+            let advice = Self::keeps_destroyed_keys(req.locator);
             return Err(KmError::Unsupported(
                 format!("deleting {} on '{}': {advice}", req.object.class, tok.name).into(),
             ));
@@ -330,10 +331,10 @@ mod tests {
         }
         let loc =
             |label: Option<&str>, id: Option<&str>| Locator { label: label.map(Into::into), id: id.map(Into::into) };
-        assert!(Ykcs11.check_create(&loc(None, Some("01"))).is_ok());
-        assert!(matches!(Ykcs11.check_create(&loc(Some("x"), Some("01"))), Err(KmError::Validation(_))));
-        assert!(matches!(Ykcs11.check_create(&loc(None, Some("19"))), Err(KmError::Validation(_))));
-        assert!(Ykcs11.keeps_destroyed_keys(&loc(None, Some("18"))).contains("ykman piv keys delete 95"));
+        assert!(Ykcs11::check_create(&loc(None, Some("01"))).is_ok());
+        assert!(matches!(Ykcs11::check_create(&loc(Some("x"), Some("01"))), Err(KmError::Validation(_))));
+        assert!(matches!(Ykcs11::check_create(&loc(None, Some("19"))), Err(KmError::Validation(_))));
+        assert!(Ykcs11::keeps_destroyed_keys(&loc(None, Some("18"))).contains("ykman piv keys delete 95"));
     }
 
     /// The DER of a one-certificate PEM fixture.

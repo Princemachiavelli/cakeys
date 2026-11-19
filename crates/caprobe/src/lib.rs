@@ -30,6 +30,7 @@ pub use cakeys_cli_common::default_registry;
 
 /// Entry points for the fuzz targets (`fuzz/fuzz_targets/profile.rs`): the profile emitter on
 /// whatever the profile parser reads.
+#[cfg(any(test, feature = "fuzzing", kani))]
 pub mod fuzzing {
     /// `text` as a profile: one the parser reads is emitted, and the emitted text reads back as
     /// the same profile and emits to the same text, the round trip a regenerated profile takes.

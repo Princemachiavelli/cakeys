@@ -209,7 +209,9 @@ pub(crate) fn verify_piv_attestation(
 /// The fuzz target's input (`crate::fuzzing::piv_attestation`): a big-endian two-byte length,
 /// the slot certificate's DER, then the device certificate's; verified at a fixed time (2030)
 /// against the slot certificate's own key, to Yubico's pinned roots with their pool and to the
-/// test fixture's root, which a fuzzed chain can reach.
+/// test fixture's root, which a fuzzed chain can reach. Never in a product: the fixture root is
+/// a test key.
+#[cfg(any(test, feature = "fuzzing", kani))]
 pub(crate) fn fuzz_piv_attestation(bytes: &[u8], anchors: &[Cert], pool: &[Cert]) -> Result<()> {
     static FIXTURE_ROOT: std::sync::LazyLock<Vec<Cert>> = std::sync::LazyLock::new(|| {
         pem_certs(include_str!("../tests/fixtures/root.pem")).expect("the fixture root parses")

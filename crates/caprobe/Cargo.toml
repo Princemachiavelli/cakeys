@@ -20,6 +20,8 @@ path = "src/main.rs"
 
 [features]
 default = ["tpm2", "ykcs11"]
+# The fuzz targets' entry points (fuzz/): never in the product (review D8).
+fuzzing = []
 tpm2 = ["cakeys-cli-common/tpm2"]
 ykcs11 = ["cakeys-cli-common/ykcs11"]
 # Probe the key wraps only the patched cryptoki of the Nix build names (nix/patches):

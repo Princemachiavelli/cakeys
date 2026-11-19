@@ -11,6 +11,11 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# The entry points the fuzz targets (fuzz/) call: built only for them, the tests and Kani, never
+# into a product (review D8).
+fuzzing = []
+
 [dependencies]
 base16ct.workspace = true
 base64.workspace = true

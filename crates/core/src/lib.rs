@@ -4,6 +4,7 @@
 pub mod attrs;
 pub mod config;
 pub mod error;
+#[cfg(any(test, feature = "fuzzing", kani))]
 pub mod fuzzing;
 pub mod hex;
 pub mod id;

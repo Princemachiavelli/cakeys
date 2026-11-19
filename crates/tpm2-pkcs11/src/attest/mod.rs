@@ -2,13 +2,14 @@
 //! store row behind the PKCS#11 object, certify it natively, and cross-check everything the
 //! module reports against what the TPM signed.
 
-pub mod esys;
-pub mod store;
+pub(crate) mod esys;
+pub(crate) mod store;
 
 /// Entry points for the fuzz targets (`fuzz/fuzz_targets/tpm_store_row.rs`, `tpms_attest.rs`):
 /// what the attestation path parses from the store and the TPM, on arbitrary input. Each is
 /// read or refused with an error, never a panic.
-pub mod fuzzing {
+#[cfg(any(test, feature = "fuzzing", kani))]
+pub(crate) mod fuzzing {
     use cakeys_core::Result;
 
     /// A `tobjects.attrs` row and a `pobjects.config` row, both from `text`.
@@ -52,21 +53,21 @@ use std::path::{Path, PathBuf};
 /// cakeys' Attestation Key, provisioned at this persistent handle on first attest when
 /// `tokens.<t>.options.akHandle` does not name one. Deliberately outside the 0x81000001..0A range the
 /// common tools take (tpm2-pkcs11's primary sits at 0x81000001); change it if yours collides.
-pub const DEFAULT_AK_HANDLE: u32 = 0x8100_0016;
+pub(crate) const DEFAULT_AK_HANDLE: u32 = 0x8100_0016;
 
 /// One hex-text attribute, shared by the store and the unsealed wrapping key.
 ///
 /// # Errors
 ///
 /// `Validation` if the value is not even-length hex.
-pub fn store_hex(s: &str) -> Result<Vec<u8>> {
+pub(crate) fn store_hex(s: &str) -> Result<Vec<u8>> {
     store::hex(s)
 }
 
 /// The tpm2-pkcs11 provider's `[tokens.<t>.options]`, for the native attestation path.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct Tpm2Options {
+pub(crate) struct Tpm2Options {
     /// TCTI connection string for the native attestation path (`TPM2_Certify`),
     /// in tss-esapi `TctiNameConf` syntax (`"device:/dev/tpmrm0"`, `"tabrmd:bus_type=session"`)
     /// or a TCTI library name (`"libtss2-tcti-tabrmd.so.0:bus_type=session"`). Defaults to the
@@ -94,7 +95,7 @@ impl Tpm2Options {
     ///
     /// `Validation` for an unknown option name or a `akHandle`/`tcti`/`tpm2Store` value
     /// that cannot be used.
-    pub fn of(token: &str, options: &Options) -> Result<Tpm2Options> {
+    pub(crate) fn of(token: &str, options: &Options) -> Result<Tpm2Options> {
         let o: Tpm2Options = parse_options(token, options)?;
         o.ak_handle(token)?;
         o.tcti_conf(token)?;
@@ -235,7 +236,7 @@ fn parse_tcti(source: &str, value: &str) -> Result<tss_esapi::Tcti> {
 /// `Unavailable` when the store cannot be opened or the object's module attributes cannot
 /// be read; `Conflict` when the module's story and the TPM's signature disagree; plus
 /// whatever `certify_key` rejects (PIN, auth, names, material cross-check).
-pub fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
+pub(crate) fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
     check_version(ctx.module_version)?;
     // The store row is found the way the module finds the object: by the locator's CKA_ID
     // (and label), within the key's class.
@@ -296,14 +297,14 @@ pub fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
 /// The tpm2-pkcs11 versions the store reader was tested with (review A8): the sqlite schema and
 /// the YAML of its rows are the module's own, unversioned, so another release is refused rather
 /// than read as if it were one of these.
-pub const TESTED_VERSIONS: &[&str] = &["1.10"];
+pub(crate) const TESTED_VERSIONS: &[&str] = &["1.10"];
 
 /// Refuse (15) a module version the store reader was not tested with, naming it.
 ///
 /// # Errors
 ///
 /// `Unsupported` for any version but [`TESTED_VERSIONS`] (major.minor, as `C_GetInfo` reports).
-pub fn check_version(version: &str) -> Result<()> {
+pub(crate) fn check_version(version: &str) -> Result<()> {
     let minor = version.split('.').take(2).collect::<Vec<_>>().join(".");
     if TESTED_VERSIONS.contains(&minor.as_str()) {
         return Ok(());

@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// The store's file name inside its directory (db.c `DB_NAME`).
-pub const DB_NAME: &str = "tpm2_pkcs11.sqlite3";
+pub(crate) const DB_NAME: &str = "tpm2_pkcs11.sqlite3";
 
 /// Vendor attribute types in `tobjects.attrs` (src/lib/attrs.h of tpm2-pkcs11):
 /// `CKA_VENDOR_DEFINED | CKA_VENDOR_TPM2_DEFINED | n`.
@@ -33,7 +33,7 @@ const CLASS_PRIVATE_KEY: i64 = 3;
 const CLASS_SECRET_KEY: i64 = 4;
 
 /// Everything the attestation path needs from one token's store.
-pub struct Store {
+pub(crate) struct Store {
     /// The token's primary parent: a persistent TPM handle (from the serialized `ESYS_TR` in
     /// `pobjects.config`) with its auth value (`pobjects.objauth`, plaintext, empty by default).
     pub parent: Parent,
@@ -44,7 +44,7 @@ pub struct Store {
 }
 
 /// The token's primary parent (`pobjects`).
-pub struct Parent {
+pub(crate) struct Parent {
     /// Its persistent TPM handle.
     pub(crate) handle: u32,
     /// Its auth value (`pobjects.objauth`).
@@ -52,7 +52,7 @@ pub struct Parent {
 }
 
 /// The token's user seal object (`sealobjects`).
-pub struct Seal {
+pub(crate) struct Seal {
     /// Its public area (`userpub`).
     pub(crate) pub_blob: Vec<u8>,
     /// Its private area (`userpriv`).
@@ -62,7 +62,7 @@ pub struct Seal {
 }
 
 /// One key object of the token (`tobjects`).
-pub struct TObject {
+pub(crate) struct TObject {
     /// `CKA_CLASS`, as the module stores it.
     pub(crate) class: i64,
     /// `CKA_LABEL`, when it has one.
@@ -101,7 +101,7 @@ impl Store {
     /// `Unavailable` when the database cannot be opened, a query fails, or a row's attrs
     /// cannot be parsed (a wrong directory is an error, never a fresh store the module might
     /// pick up); `NotFound` when the store holds no token with the label.
-    pub fn open(dir: &Path, token_label: &str) -> Result<Store> {
+    pub(crate) fn open(dir: &Path, token_label: &str) -> Result<Store> {
         let path = dir.join(DB_NAME);
         // Read-only, so a wrong directory is an error — never a fresh empty store the module
         // might pick up later.
@@ -158,7 +158,7 @@ impl Store {
     ///
     /// `NotFound` when no row carries the `CKA_ID`; `Ambiguous` when several do (a label
     /// narrows it, but never silently picks).
-    pub fn find(&self, cka_id: &[u8], label: Option<&[u8]>, class: i64) -> Result<&TObject> {
+    pub(crate) fn find(&self, cka_id: &[u8], label: Option<&[u8]>, class: i64) -> Result<&TObject> {
         let id = || cakeys_core::hex::encode(cka_id);
         let matches: Vec<&TObject> = self
             .tobjects
@@ -187,7 +187,7 @@ impl Store {
 ///
 /// `Unsupported` for a class the store keeps no key rows for (certificates, data objects:
 /// nothing to certify).
-pub fn store_class(class: ObjectClass) -> Result<i64> {
+pub(crate) fn store_class(class: ObjectClass) -> Result<i64> {
     match class {
         // CKO_PUBLIC_KEY objects are the public half of a pair: stored without a private blob,
         // and TPM2_Certify cannot attest a public-only area.

@@ -14,9 +14,9 @@
 //! the point repair, and the one module with usable attestation reachable outside PKCS#11,
 //! the `tpm-certify` commitment (docs/DESIGN.md §3.7) — the module itself exposes no
 //! attestation, so `attest` reaches the TPM through tss-esapi and the module's sqlite store
-//! (see [`attest`]).
+//! (see `attest`).
 
-pub mod attest;
+mod attest;
 mod ptool;
 
 use cakeys_core::Result;
@@ -103,8 +103,12 @@ fn is_der_octets(raw: &[u8]) -> bool {
 }
 
 /// The property the fuzz target (`fuzz/fuzz_targets/p521_point.rs`) and the proptest below
-/// check on any bytes, and the Kani proof in it for every input up to 258 bytes.
+/// check on any bytes, and the Kani proof in it for every input up to 258 bytes; and the
+/// attestation's parsers on arbitrary input (`tpm_store_row.rs`, `tpms_attest.rs`).
+#[cfg(any(test, feature = "fuzzing", kani))]
 pub mod fuzzing {
+    pub use crate::attest::fuzzing::{store_row, tpms_attest};
+
     use super::fix_ec_point;
     use std::borrow::Cow;
 
