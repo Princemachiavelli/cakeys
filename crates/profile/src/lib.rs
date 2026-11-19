@@ -364,6 +364,37 @@ mod tests {
         assert!(matches!(Effective::new(b, Some(&unprobed), &[]).oaep()[0].1, Verdict::Unknown { .. }));
     }
 
+    /// The committed profiles name only what this cakeys knows (review D4): a profile from a newer
+    /// cakeys loads with names this one does not, so a misspelt name in a committed one would load
+    /// too, and answer nothing.
+    #[test]
+    fn the_committed_profiles_name_only_known_rows() {
+        use crate::capability::{DECRYPT_OAEP, UNWRAP_TEMPLATE, WRAP_OAEP};
+        let set = Set::embedded().unwrap();
+        let mut seen = 0;
+        for p in set.all() {
+            for c in p.capabilities.keys() {
+                let known = match c {
+                    Capability::Prove { binding, key_type, .. } => {
+                        !matches!(binding, Proof::Other(_)) && !matches!(key_type, KeyKind::Other(_))
+                    }
+                    Capability::WrapOaep(h) => WRAP_OAEP.contains(&h.as_str()),
+                    Capability::DecryptOaep(h) => DECRYPT_OAEP.contains(&h.as_str()),
+                    Capability::UnwrapTemplate(a) => UNWRAP_TEMPLATE.contains(&a.as_str()),
+                    Capability::Generate { key_type, .. }
+                    | Capability::Import { key_type, .. }
+                    | Capability::Export { key_type, .. }
+                    | Capability::Unwrap { key_type, .. }
+                    | Capability::Create { key: Some((key_type, _)), .. } => !matches!(key_type, KeyKind::Other(_)),
+                    _ => true,
+                };
+                assert!(known, "{}: {c} names what this cakeys does not know", p.profile);
+                seen += 1;
+            }
+        }
+        assert!(seen > 100, "{seen} rows");
+    }
+
     /// A profile from a newer cakeys, naming a proof, hashes and a template attribute this one
     /// does not know, loads (ISSUES.md Q28, review D4), and those rows answer nothing: what this
     /// cakeys asks is answered as without them.

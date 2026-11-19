@@ -217,6 +217,8 @@ pkgs.testers.runNixOSTest {
         # The check passed and finished: inactive, so the next start of signer runs it again.
         check = "systemctl show --value -p Result -p ActiveState cakeys-check-signing.service"
         assert sorted(machine.succeed(check).split()) == ["inactive", "success"], machine.succeed(check)
+        # A finished oneshot is not a stopped dependency: signer keeps running.
+        machine.succeed("systemctl is-active signer.service")
         # Ordered after the clock is set, without pulling the target in.
         unit = "cakeys-check-signing.service"
         assert "time-sync.target" in machine.succeed(f"systemctl show --value -p After {unit}")

@@ -5,7 +5,8 @@ Status: **not needed, not filed.** Upstream main already has the same call as
 release (0.12.1 lacks it).
 
 - When a release has it, call `sign_single` instead of `sign_initialized`, and drop the patch,
-  its line in `nix/package-common.nix` and the `sign-after-init` feature of `cakeys-pkcs11`.
+  its line in `nix/package-common.nix` and the `sign-after-init` feature of `cakeys-pkcs11`, with
+  it each tool's `patched-cryptoki` list and `patched_cryptoki.rs`.
 
 The draft below is kept for the record.
 

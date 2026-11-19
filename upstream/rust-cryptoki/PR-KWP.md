@@ -8,7 +8,8 @@ Status: **filed** as [#376](https://github.com/parallaxsecond/rust-cryptoki/pull
   (PR-RSA-AES-KEY-WRAP.md), skipped where the token does not list it (SoftHSM names RFC 5649
   `CKM_AES_KEY_WRAP_PAD`; kryoptic offers `_KWP`).
 - When a release with it is out, drop `nix/patches/cryptoki-aes-key-wrap-kwp.patch` and its line
-  in `nix/package-common.nix`.
+  in `nix/package-common.nix`; `kwp` then stays only if a build without the wraps still needs it
+  (it sits in caprobe's and camigrate's `patched-cryptoki`, `patched_cryptoki.rs` and `build_lacks`).
 
 Local equivalent: `nix/patches/cryptoki-aes-key-wrap-kwp.patch`.
 
