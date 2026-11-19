@@ -207,8 +207,15 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   `tpm-certify` proves "a genuine TPM", not only "the same TPM as at first use".
 - **`tpm-certify` reads tpm2-pkcs11's private sqlite store**, hence its 1.10.x-only version
   guard: odd and fragile. Better: tpm2-pkcs11 exposes what attestation needs as vendor-defined
-  attributes or a vendor mechanism (a `TPM2_Certify`-backed `C_Sign`, or `CKA_TPM2_*` attributes
-  for the blobs), so cakeys never opens the database. Worth an upstream proposal.
+  attributes or a vendor mechanism, so cakeys never opens the database. Drafted: the upstream
+  patch `upstream/tpm2-pkcs11/0002-…CKM_TPM2_CERTIFY.patch` (PR text in `PR-CERTIFY.md`, not filed)
+  adds `CKM_TPM2_CERTIFY`, a `TPM2_Certify` through `C_SignInit`/`C_Sign` signed by a persistent
+  key the caller names, and fixes `CKA_TPM2_PUB_BLOB`, which `C_GetAttributeValue` already returns
+  (verified on 1.10.1 / swtpm). Still to do here: the provider's mechanism path (detect the
+  mechanism in `C_GetMechanismList`, keep the store reader as the fallback for modules without it,
+  same `tpm_certify_id` on both paths, regenerate the tpm2-pkcs11 profiles), run against a module
+  built with the patch. Then a second upstream PR makes the Attestation Key a token object (no TCTI
+  needed here), and a third `CKM_TPM2_ACTIVATE_CREDENTIAL` for the EK chain.
 - **A native TPM backend** beside tpm2-pkcs11, for PCR- and policy-bound keys.
 - **Vendor HSM attestation formats** (Luna PKC, Google Cloud HSM, nShield): a scheme each, not
   researched.
