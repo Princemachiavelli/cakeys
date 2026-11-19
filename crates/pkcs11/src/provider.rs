@@ -679,7 +679,8 @@ impl Provider for Generic {
 
 /// A module that needs no code of its own (docs/CAPROBE.md: no Rust for a module without
 /// fix-ups): recognised by the `[match] manufacturer` of its module profiles, named by their
-/// family, every hook the default. `softhsm`, `kryoptic` and `aws-cloudhsm` are these.
+/// family, every hook the default. `softhsm` and `kryoptic` are these (aws-cloudhsm has a crate
+/// of its own).
 pub struct Data(&'static str);
 
 impl Provider for Data {

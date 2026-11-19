@@ -27,6 +27,10 @@ the lock), and `crates/core/src/config.rs:1614-1640` (`check_transport_keys`, fr
 `tokens::transport`. One `is_transport_key(lock, spec, token)` used by both, with
 `transport` calling it, would keep the camigrate copies in step. [read]
 
+**Fixed (2026-11-18):** `transport_fault(rsa, policy)` is the one rule for `transport` and
+`transport_spec`, each saying which part failed; `transport_keys_are_held_to_what_the_lock_records`
+covers both. `check_transport_keys` stays: it holds keys.toml's declarations, not the lock.
+
 ### F3. "Which realisation is the source" is decided twice — nit
 
 `crates/camigrate/src/tokens.rs:409-418` (`materials`: the first realisation of the object on the

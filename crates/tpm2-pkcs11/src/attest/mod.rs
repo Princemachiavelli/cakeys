@@ -87,8 +87,8 @@ pub struct Tpm2Options {
 }
 
 impl Tpm2Options {
-    /// Parse and check `token`'s options: unknown names and a malformed `akHandle` are invalid
-    /// (17) when the token is opened, not first at attestation.
+    /// Parse and check `token`'s options: unknown names, a malformed `akHandle` and a `tcti`
+    /// tss-esapi cannot read are invalid (17) when the token is opened, not first at attestation.
     ///
     /// # Errors
     ///
@@ -97,7 +97,14 @@ impl Tpm2Options {
     pub fn of(token: &str, options: &Options) -> Result<Tpm2Options> {
         let o: Tpm2Options = parse_options(token, options)?;
         o.ak_handle(token)?;
+        o.tcti_conf(token)?;
         Ok(o)
+    }
+
+    /// The configured TCTI in tss-esapi's syntax: the one parse the open's check and the
+    /// attestation's connection share (review D8); `tpm2_ptool` is handed the string as written.
+    fn tcti_conf(&self, token: &str) -> Result<Option<tss_esapi::Tcti>> {
+        self.tcti.as_deref().map(|s| parse_tcti(&format!("tokens.{token}.options.tcti"), s)).transpose()
     }
 
     /// The configured TCTI, as written (for `tpm2_ptool`, which reads the same string).
@@ -193,23 +200,28 @@ fn normalize_tcti(s: &str) -> String {
 /// `$TCTI`). In tss-esapi syntax — `"device:/dev/tpmrm0"`, `"tabrmd:bus_type=session"`,
 /// `"swtpm:port=2321"` — or a TCTI library name, which is reduced to it.
 fn tcti(cfg: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<tss_esapi::Tcti> {
-    let (source, value) = match &opts.tcti {
-        Some(s) => (format!("tokens.{}.options.tcti", cfg.token_name), s.clone()),
-        None => ["TPM2_PKCS11_TCTI", "TPM2TOOLS_TCTI", "TCTI"]
-            .into_iter()
-            .find_map(|var| std::env::var(var).ok().map(|v| (format!("${var}"), v)))
-            .ok_or_else(|| {
-                KmError::Unavailable(
-                    format!(
-                        "no TCTI for the TPM attestation of token '{}': set tokens.{}.options.tcti \
+    if let Some(t) = opts.tcti_conf(cfg.token_name)? {
+        return Ok(t);
+    }
+    let (source, value) = ["TPM2_PKCS11_TCTI", "TPM2TOOLS_TCTI", "TCTI"]
+        .into_iter()
+        .find_map(|var| std::env::var(var).ok().map(|v| (format!("${var}"), v)))
+        .ok_or_else(|| {
+            KmError::Unavailable(
+                format!(
+                    "no TCTI for the TPM attestation of token '{}': set tokens.{}.options.tcti \
                      (e.g. \"device:/dev/tpmrm0\" or \"tabrmd:bus_type=session\") or TPM2_PKCS11_TCTI",
-                        cfg.token_name, cfg.token_name
-                    )
-                    .into(),
+                    cfg.token_name, cfg.token_name
                 )
-            })?,
-    };
-    normalize_tcti(&value)
+                .into(),
+            )
+        })?;
+    parse_tcti(&source, &value)
+}
+
+/// `value`, from `source`, as a TCTI tss-esapi opens ([`normalize_tcti`]).
+fn parse_tcti(source: &str, value: &str) -> Result<tss_esapi::Tcti> {
+    normalize_tcti(value)
         .parse()
         .map_err(|e| KmError::Validation(format!("{source} = {value:?} is not a TCTI tss-esapi can open: {e}").into()))
 }
@@ -357,6 +369,11 @@ mod tests {
         assert!(dir.ends_with("store") && !dir.starts_with("~"), "{}", dir.display());
         assert!(Tpm2Options::of("t", &options("akHandle = \"0x40000001\"")).is_err());
         assert!(Tpm2Options::of("t", &options("noSuchOption = 1")).is_err());
+        // A TCTI tss-esapi cannot read is refused at open, as its attestation would (review D8);
+        // a library name is the TCTI it names.
+        let err = Tpm2Options::of("t", &options("tcti = \"no-such-tcti:x\"")).unwrap_err();
+        assert!(matches!(err, KmError::Validation(_)) && err.to_string().contains("tokens.t.options.tcti"), "{err}");
+        Tpm2Options::of("t", &options("tcti = \"libtss2-tcti-swtpm.so:port=2321\"")).unwrap();
     }
 
     /// The store reader reads only the versions it was tested with (15 otherwise, naming it).

@@ -32,6 +32,8 @@ while `check` reads a public key object exits 13 (a wrong-material verdict) inst
 trip. Fix: compute it once in `compute_ids` and pass it on (it is the identity being checked,
 so it should be one value). [read]
 
+**Fixed (2026-11-18):** as suggested, `delete` included (`a_resolve_reads_the_public_key_once`).
+
 ## Design
 
 - `material_spki` and `check_kind` read the raw `CKA_KEY_TYPE` (not `Token::key_type`, the

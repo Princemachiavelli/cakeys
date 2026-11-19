@@ -495,6 +495,34 @@ fn a_refused_curve_is_tried_by_name_only_where_the_profile_says_so() {
     assert_eq!(generations, 1, "{text}");
 }
 
+/// One resolve reads the key's public key once (review D8): its identity, the check of the public
+/// objects under its locator, its attestation and a transport key's `publicKey` all name that one
+/// value. Counted on the trace: the `C_GetAttributeValue` calls for `CKA_EC_PARAMS` and
+/// `CKA_EC_POINT` together, which only the SPKI makes. cryptoki reads a present value in two
+/// calls (its length, then it), so one SPKI of an EC private key is three (its own pair: no
+/// point, one call; its public object's: two), and the check of the one public object under the
+/// locator two more. It was eight: the SPKI read again by that check.
+#[test]
+fn a_resolve_reads_the_public_key_once() {
+    let Some(w) = lying("fault-spki-once") else { return };
+    let (plan, trace) = (w.dir.join("plan.toml"), w.dir.join("trace.jsonl"));
+    std::fs::write(&plan, "").unwrap();
+    for (args, want) in
+        [(&["verify", "--spec", "k", "--token", "ref"][..], 5), (&["check", "k", "--token", "ref"][..], 5)]
+    {
+        let _ = std::fs::remove_file(&trace);
+        let o = w.km_env(args, &[("P11_FAULT_PLAN", &plan), ("P11_FAULT_TRACE", &trace)]);
+        assert_eq!(code(&o), 0, "{args:?}: {}", stderr(&o));
+        let text = std::fs::read_to_string(&trace).unwrap();
+        let point_reads = text
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .filter(|c| c["fn"] == "C_GetAttributeValue" && c["attributes"] == serde_json::json!([0x180, 0x181]))
+            .count();
+        assert_eq!(point_reads, want, "{args:?}");
+    }
+}
+
 /// A failed attribute read is unavailable (16) wherever in the run it falls, never read as an
 /// answer. Each `C_GetAttributeValue` of `verify`, `check` and `lock` fails in turn with
 /// `CKR_DEVICE_ERROR` until the rule no longer fires, and every run exits 16: before, a policy

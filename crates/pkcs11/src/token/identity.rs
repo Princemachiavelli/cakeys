@@ -18,6 +18,7 @@ impl Token {
     /// public half the object's identity needs is absent or duplicated under the locator;
     /// `Unsupported` for an unimplemented mode, unreadable material or a curve/mechanism the
     /// token exposes but cakeys cannot use.
+    /// `spki` is the key's own ([`Self::spki`]) where the caller has read it already.
     #[expect(clippy::too_many_arguments, reason = "one caller (`ops::compute_ids`), the one place they meet")]
     pub fn ids(
         &self,
@@ -28,6 +29,7 @@ impl Token {
         commits: &[Commit],
         commitment_label: &str,
         binding: Option<Binding>,
+        spki: Option<&[u8]>,
     ) -> Result<BTreeMap<String, String>> {
         let mut ids = BTreeMap::new();
         match mode {
@@ -46,7 +48,7 @@ impl Token {
                 ids.insert(Scheme::Valuehash.name().into(), id::sri(&value));
             }
             Mode::Direct => {
-                let spki = self.spki(h, loc)?;
+                let spki = spki.map_or_else(|| self.spki(h, loc), |s| Ok(s.to_vec()))?;
                 if let Some(b) = binding {
                     self.prove_binding(h, object, &spki, b)?;
                 }
@@ -165,15 +167,14 @@ impl Token {
     }
 
     /// Consumers may select a key's public half by the locator alone (`pkcs11:object=…;type=public`):
-    /// every public key object under the locator of the private key `h` must hold `h`'s own
-    /// public key. Checked on every resolve, declared `publicAttributes` or not.
+    /// every public key object under the locator of a private key must hold its public key,
+    /// `spki` ([`Self::spki`]). Checked on every resolve, declared `publicAttributes` or not.
     ///
     /// # Errors
     ///
     /// `Conflict` (13) for a public key object holding another key, or exposing no key material
-    /// to compare; whatever [`Self::spki`] refuses for `h`.
-    pub fn check_public_objects(&self, h: ObjectHandle, loc: &Locator) -> Result<()> {
-        let spki = self.spki(h, loc)?;
+    /// to compare; `Unavailable` when a read fails.
+    pub fn check_public_objects(&self, spki: &[u8], loc: &Locator) -> Result<()> {
         for p in self.find(ObjectClass::PUBLIC_KEY, loc)? {
             match self.held_spki(p)? {
                 Some(held) if held == spki => {}
@@ -184,7 +185,7 @@ impl Token {
                          private key ({}); a consumer selecting the public half by the locator would get it",
                             self.name,
                             id::sri(&held),
-                            id::sri(&spki)
+                            id::sri(spki)
                         )
                         .into(),
                     ));

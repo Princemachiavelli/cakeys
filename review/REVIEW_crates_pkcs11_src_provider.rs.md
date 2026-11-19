@@ -17,6 +17,8 @@ provider, never `Data("aws-cloudhsm")`. The unit test at `:850` selecting `Data`
 right only because that registry has no aws-cloudhsm provider. Fix: drop aws-cloudhsm from the
 sentence. [read]
 
+**Fixed (2026-11-18):** the sentence names `softhsm` and `kryoptic`.
+
 ### F2. `ChainTime::now` takes a clock before 1970 as the epoch, silently — nit
 
 `crates/pkcs11/src/provider.rs:580-583`. `duration_since(UNIX_EPOCH)` failing becomes

@@ -15,7 +15,7 @@ use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::resolution::{self, Resolved, moduleless_info};
 use cakeys_pkcs11::{Registry, Token};
 use cakeys_profile::{Capability, KeyKind, Move, On, PlaintextKind, Profile, Way};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 /// A token's capabilities, from the open token: its resolved capability profile over its
@@ -445,15 +445,10 @@ pub(crate) fn transport(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes)
         ));
     }
     ops::verify(t, tok, lock, notes)?;
-    let policy = lock.realisation(t.spec_name, t.token_name).map(|r| &r.policy);
-    let flag = |name: &str| policy.and_then(|p| p.get(name)) == Some(&AttrValue::Bool(true));
-    if !flag("CKA_UNWRAP") {
-        return Err(KmError::PreconditionFailed(format!("{t}: a transport key must allow CKA_UNWRAP").into()));
-    }
-    if flag("CKA_EXTRACTABLE") {
-        return Err(KmError::PreconditionFailed(
-            format!("{t}: a transport key must never leave the token (CKA_EXTRACTABLE = false)").into(),
-        ));
+    let none = BTreeMap::new();
+    let policy = lock.realisation(t.spec_name, t.token_name).map_or(&none, |r| &r.policy);
+    if let Some(why) = transport_fault(true, policy) {
+        return Err(KmError::PreconditionFailed(format!("{t}: a transport key {why}").into()));
     }
     warn_decrypting(t, lock, notes);
     let h = tok
@@ -682,19 +677,33 @@ pub(crate) fn transport_spec<'a>(
     else {
         return Err(format!("transport key '{chosen}' is not realised on '{token}' in the lock: lock it there first"));
     };
-    let is_true = |n: &str| r.policy.get(n) == Some(&AttrValue::Bool(true));
     let rsa = lock
         .objects
         .get(&r.object)
         .and_then(|o| o.object_type.as_ref())
         .is_some_and(|t| t.class == ObjectClass::PrivateKey && t.key_type == Some(KeyType::Rsa));
-    if !rsa || !is_true("CKA_UNWRAP") || is_true("CKA_EXTRACTABLE") {
-        return Err(format!(
-            "'{chosen}' on '{token}' is no transport key: an RSA private key that may unwrap (CKA_UNWRAP) and never \
-             leaves the token (CKA_EXTRACTABLE = false), as the lock records it"
-        ));
+    match transport_fault(rsa, &r.policy) {
+        Some(why) => {
+            Err(format!("'{chosen}' on '{token}' is no transport key: a transport key {why}, as the lock records it"))
+        }
+        None => Ok(spec.as_str()),
     }
-    Ok(spec.as_str())
+}
+
+/// Why a key the lock records (`rsa`: an RSA private key; its realisation's `policy`) is no
+/// transport key (docs/CAMIGRATE.md D3): one rule for [`transport`] and [`transport_spec`]
+/// (review D8). keys.toml's own check (`check_transport_keys`) holds the declarations instead.
+fn transport_fault(rsa: bool, policy: &BTreeMap<String, AttrValue>) -> Option<&'static str> {
+    let is_true = |n: &str| policy.get(n) == Some(&AttrValue::Bool(true));
+    if !rsa {
+        Some("must be an RSA private key")
+    } else if !is_true("CKA_UNWRAP") {
+        Some("must allow CKA_UNWRAP")
+    } else if is_true("CKA_EXTRACTABLE") {
+        Some("must never leave the token (CKA_EXTRACTABLE = false)")
+    } else {
+        None
+    }
 }
 
 /// The public key to seal to for the transport key `t`, from the lock alone (`publicKey`, held

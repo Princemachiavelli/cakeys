@@ -191,17 +191,24 @@ impl Token {
 
     /// Destroy the object `h`, identified by the caller, and — for a private key — the public key
     /// objects under its locator that hold its public key. A public key object holding another
-    /// key (or none cakeys can read) is left alone. Returns (destroyed, left).
+    /// key (or none cakeys can read) is left alone. Returns (destroyed, left). `spki` is the
+    /// private key's ([`Self::spki`]) where the caller has read it already.
     ///
     /// # Errors
     ///
     /// `Unsupported` (15) when the provider cannot actually erase keys (ykcs11); a failure to
     /// destroy is `Unavailable`, naming the token.
-    pub fn destroy_identified(&self, h: ObjectHandle, object: &ObjectCfg, loc: &Locator) -> Result<(usize, usize)> {
+    pub fn destroy_identified(
+        &self,
+        h: ObjectHandle,
+        object: &ObjectCfg,
+        loc: &Locator,
+        spki: Option<&[u8]>,
+    ) -> Result<(usize, usize)> {
         let mut handles = vec![h];
         let mut left = 0;
         if class_of(object) == ObjectClass::PRIVATE_KEY {
-            let spki = self.spki(h, loc)?;
+            let spki = spki.map_or_else(|| self.spki(h, loc), |s| Ok(s.to_vec()))?;
             for p in self.find(ObjectClass::PUBLIC_KEY, loc)? {
                 if self.held_spki(p)?.as_ref() == Some(&spki) {
                     handles.push(p);

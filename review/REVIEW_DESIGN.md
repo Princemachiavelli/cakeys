@@ -220,15 +220,22 @@ as refused by both.
 - The provider crates' public surface is wider than the `Provider` trait (`pub mod attest`,
   `esys`, `store`, `fuzzing`; `pub` helpers on `Ykcs11`). Fuzzing entry points, and in ykcs11 a
   test root, are built into production; put them behind a feature.
-- `provider.rs` still lists `aws-cloudhsm` as a data provider.
+- `provider.rs` still lists `aws-cloudhsm` as a data provider. **Fixed (2026-11-18).**
 - Q14's remaining duplication: the transport-key rule is written three times (camigrate
-  `tokens.rs` twice, core config), the passphrase readers duplicate `read_secret` with
+  `tokens.rs` twice, core config) (**fixed 2026-11-18** for camigrate's two readers of the lock:
+  `transport_fault`; keys.toml's check holds declarations, a rule of its own), the passphrase readers duplicate `read_secret` with
   different semantics, and the per-object loop is copied across three verbs. camigrate's
   `keyfile` has two PEM scanners that can disagree, so a certificate import can decode a
   private key without `--allow-host-plaintext`.
-- `tpm2_ptool` and the attestation parse the `tcti` option separately.
+- `tpm2_ptool` and the attestation parse the `tcti` option separately. **Fixed (2026-11-18):**
+  `Tpm2Options::of` parses it at open (17 there, as its doc already claimed), and the
+  attestation's connection takes that parse; `tpm2_ptool` is handed the string as written, which
+  its TCTI loader reads in every form.
 - One resolve computes the same SPKI up to four times, a network round trip each on Cloud KMS
-  and CloudHSM.
+  and CloudHSM. **Fixed (2026-11-18):** `compute_ids` reads it once and hands it to the
+  identity, the check of the public objects, the attestation, a transport key's `publicKey` and
+  `delete`'s `destroy_identified`. `a_resolve_reads_the_public_key_once` counts the trace's
+  point reads: 8 before, 5 now (one SPKI, and the comparison with the one public object).
 
 ## D9. Test architecture
 

@@ -385,13 +385,19 @@ fn resolve_with(
         tok.check_unique_private_id(h)?;
     }
     tok.check_public_half(h, t.spec, &t.on_token.locator, public_only)?;
-    let Computed { ids, binding, commitment_label } = compute_ids(t, tok, lock, h, mode)?;
+    let Computed { ids, binding, commitment_label, spki } = compute_ids(t, tok, lock, h, mode)?;
+    // The key's public key, read once (review D8): every check below compares with the value its
+    // identity hashed. A key identified another way reads it where it is needed.
+    let spki = || spki.clone().map_or_else(|| tok.spki(h, &t.on_token.locator), Ok);
     // After the IDs, so a swapped private key still reports its failed proof first.
     if t.object.class == Class::PrivateKey && !public_only {
-        tok.check_public_objects(h, &t.on_token.locator)?;
+        tok.check_public_objects(&spki()?, &t.on_token.locator)?;
     }
     let attestation = match attestation_scheme(t, tok) {
-        Some(scheme) => Some(attest(t, tok, lock, h, scheme, provision, notes)?),
+        Some(scheme) => {
+            let spki = if t.object.class.is_asymmetric() { Some(spki()?) } else { None };
+            Some(attest(t, tok, lock, h, spki.as_deref(), scheme, provision, notes)?)
+        }
         None => None,
     };
     Ok(Some(Resolved {
@@ -409,7 +415,7 @@ fn resolve_with(
         immutables: tok.immutables(h)?,
         commitment_label,
         attestation,
-        public_key: if t.transport { Some(tok.spki(h, &t.on_token.locator)?) } else { None },
+        public_key: if t.transport { Some(spki()?) } else { None },
     }))
 }
 
@@ -421,6 +427,8 @@ struct Computed {
     binding: Option<cakeys_core::config::Binding>,
     /// The label the commitments were computed with, when there are any.
     commitment_label: Option<String>,
+    /// The key's canonical SPKI, where its identity is one (an asymmetric key, `Direct`).
+    spki: Option<Vec<u8>>,
 }
 
 /// The material IDs of `t`'s object `h` on `tok` in `mode` — a private key proving possession
@@ -429,8 +437,12 @@ fn compute_ids(t: &Target, tok: &Token, lock: &Lock, h: ObjectHandle, mode: Mode
     let commits = commits(t, tok, mode)?;
     let label = commitment_label(t, lock);
     let binding = tok.recorded_binding(h, binding(t))?;
-    let ids = tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding)?;
-    Ok(Computed { ids, binding, commitment_label: (!commits.is_empty()).then_some(label) })
+    let spki = match mode {
+        Mode::Direct if t.object.class.is_asymmetric() => Some(tok.spki(h, &t.on_token.locator)?),
+        _ => None,
+    };
+    let ids = tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding, spki.as_deref())?;
+    Ok(Computed { ids, binding, commitment_label: (!commits.is_empty()).then_some(label), spki })
 }
 
 /// The attestation commitment (§3.7): per-device identity from signed provenance. The material
@@ -441,23 +453,23 @@ fn compute_ids(t: &Target, tok: &Token, lock: &Lock, h: ObjectHandle, mode: Mode
 /// unreachable, no PIN, no attestation certificate — is a scheme downgrade (14), like any
 /// scheme a realisation stops computing. Conflicts (13) and ambiguity (12) keep their codes:
 /// they say the evidence is wrong, not absent.
+#[expect(clippy::too_many_arguments, reason = "one caller, `resolve_with`, which holds them all")]
 fn attest(
     t: &Target,
     tok: &Token,
     lock: &Lock,
     h: ObjectHandle,
+    spki: Option<&[u8]>,
     scheme: Scheme,
     provision: Provision,
     notes: &mut Notes,
 ) -> Result<AttestationRecord> {
-    let asymmetric = t.object.class.is_asymmetric();
-    let spki = if asymmetric { Some(tok.spki(h, &t.on_token.locator)?) } else { None };
     let kind = scheme.attestation_kind().ok_or_else(|| {
         KmError::Unsupported(
             format!("provider '{}' advertises unknown attestation scheme {scheme}", tok.provider.name()).into(),
         )
     })?;
-    let a = match tok.attest(h, t.object, spki.as_deref(), provision == Provision::IfMissing) {
+    let a = match tok.attest(h, t.object, spki, provision == Provision::IfMissing) {
         Ok(a) => a,
         Err(e @ (KmError::Unavailable(_) | KmError::Unsupported(_) | KmError::NotFound(_))) => {
             let locked = lock.realisation(t.spec_name, t.token_name).and_then(|r| r.attestation.as_ref());
@@ -999,7 +1011,7 @@ pub fn delete(
     // An expected identity is only required when there is something to delete.
     if let Some(h) = tok.find_key(t.object, loc, false)? {
         // Proven like `resolve`: If-Match must not pass on a public object beside another key.
-        let got = compute_ids(t, tok, lock, h, plan_mode(t)?)?.ids;
+        let Computed { ids: got, spki, .. } = compute_ids(t, tok, lock, h, plan_mode(t)?)?;
         // The schemes computed, in the spec's order of preference: the first is the primary one.
         let computed: Vec<Scheme> = t.schemes().into_iter().filter(|s| got.contains_key(s.name())).collect();
         let primary =
@@ -1017,7 +1029,7 @@ pub fn delete(
                 format!("{} holds {:?}, expected {expected}; not deleting", t, got.get(scheme.name())).into(),
             ));
         }
-        let (n, left) = tok.destroy_identified(h, t.object, loc)?;
+        let (n, left) = tok.destroy_identified(h, t.object, loc, spki.as_deref())?;
         notes.say(format!("destroyed {n} object(s) for {t}"));
         if left > 0 {
             notes
