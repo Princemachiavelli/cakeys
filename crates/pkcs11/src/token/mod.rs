@@ -896,7 +896,7 @@ impl Token {
     /// the logout or the return to the user session fails, or the PIN counters refuse a login;
     /// else whatever `step` returns.
     pub fn as_so<T>(&self, what: &str, step: impl FnOnce() -> Result<T>) -> Result<T> {
-        let so = read_so_credential(&self.cfg)?.ok_or_else(|| {
+        let so = read_so_credential(&self.name, &self.cfg)?.ok_or_else(|| {
             self.unsupported(format!(
                 "{what} on '{}' needs a Security Officer session: set tokens.{}.soCredentialFile or soCredentialEnv",
                 self.name, self.name
@@ -1095,7 +1095,7 @@ fn session(
         Access::Scratch if write_protected => ctx.open_ro_session(slot).map_err(ck("C_OpenSession (read-only)"))?,
         Access::Write | Access::Scratch => ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?,
     };
-    let pin = read_pin(cfg)?;
+    let pin = read_pin(name, cfg)?;
     if let Some(pin) = pin.as_deref() {
         pins.user.guard(name, "user")?;
         match session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
@@ -1106,9 +1106,11 @@ fn session(
     Ok((session, pin))
 }
 
-/// The user PIN (`pinEnv`, else `pinFile`).
-fn read_pin(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
-    cakeys_core::secret::read("PIN", cfg.pin_env.as_deref(), cfg.pin_file.as_deref())
+/// The user PIN (`pinEnv`, else `pinFile`, its `$NAME` resolved now).
+fn read_pin(name: &str, cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
+    // `pinEnv` wins: an unset `pinFile` variable is no error then.
+    let file = if cfg.pin_env.is_some() { None } else { cfg.pin_path(name, &|var| std::env::var(var).ok())? };
+    cakeys_core::secret::read("PIN", cfg.pin_env.as_deref(), file.as_deref())
 }
 
 /// Whether keys.toml gives the token an admin (Security Officer) credential, which [`Token::as_so`]
@@ -1121,8 +1123,13 @@ pub fn has_admin(cfg: &TokenCfg) -> bool {
 /// The admin credential (`soCredentialEnv`, else `soCredentialFile`), read only for an SO step. The format
 /// is the module's: ykcs11 takes the PIV management key in hex, or the PIN on devices whose
 /// management key is PIN-protected.
-fn read_so_credential(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
-    cakeys_core::secret::read("SO credential", cfg.so_credential_env.as_deref(), cfg.so_credential_file.as_deref())
+fn read_so_credential(name: &str, cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
+    let file = if cfg.so_credential_env.is_some() {
+        None
+    } else {
+        cfg.so_credential_path(name, &|var| std::env::var(var).ok())?
+    };
+    cakeys_core::secret::read("SO credential", cfg.so_credential_env.as_deref(), file.as_deref())
 }
 
 /// The `cryptoki` class of a configured object.

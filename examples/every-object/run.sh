@@ -28,7 +28,9 @@ export CAKEYS_CONFIG=$work/keys.toml
 
 # ── Born ──────────────────────────────────────────────────────────────────────────────────
 
-# Every pair checked against its token's profiles, no token opened: the YubiKey's too.
+# Every pair checked against its token's profiles, no token opened: the YubiKey's too. So no
+# PIN file is read, and the variable naming it need not be set.
+expect 0 env -u EXAMPLE_PIN_FILE cakeys validate
 expect 0 cakeys validate
 # Every key whose pair on soft says origin = "create", made and recorded; then kryo's
 # transport key, whose public half the lock records for sealing to it.

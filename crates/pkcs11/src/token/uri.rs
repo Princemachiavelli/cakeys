@@ -61,13 +61,13 @@ pub fn pin_ref(name: &str, cfg: &TokenCfg, by_value: bool) -> Result<PinRef> {
     let none =
         || KmError::Validation(format!("token '{name}' has no PIN to put in the URI (set pinFile or pinEnv)").into());
     if by_value {
-        return read_pin(cfg)?.map(PinRef::Value).ok_or_else(none);
+        return read_pin(name, cfg)?.map(PinRef::Value).ok_or_else(none);
     }
     if let Some(var) = &cfg.pin_env {
         return Ok(PinRef::Env(var.clone()));
     }
-    let file = cfg.pin_file.as_deref().ok_or_else(none)?;
-    std::path::absolute(file)
+    let file = cfg.pin_path(name, &|var| std::env::var(var).ok())?.ok_or_else(none)?;
+    std::path::absolute(&file)
         .map(PinRef::File)
         .map_err(|e| KmError::Validation(format!("token '{name}': pinFile {}: {e}", file.display()).into()))
 }

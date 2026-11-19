@@ -444,9 +444,10 @@ Annotated, with the reasons behind each table: [`CONFIG.md`](CONFIG.md).
 What may be created and adopted:
 
 - **References are checked at load** (exit 17): a spec's `object` must name an `[objects.<name>]`
-  table — also when nothing uses the spec — and a `$NAME`/`${NAME}` path reference (in `pinFile`
-  or `module`) must name a set environment variable; one shared `keys.toml` can then carry
-  machine-specific paths. `pinEnv = "VAR"` remains the way to pass the *PIN itself* through the
+  table — also when nothing uses the spec — and a `$NAME`/`${NAME}` path reference (in `pinFile`,
+  `soCredentialFile` or `module`) must be well formed; it must name a set environment variable
+  where the path is used (a login, a token's open), so a check that opens no token needs none
+  of them, and one shared `keys.toml` can carry machine-specific paths. `pinEnv = "VAR"` remains the way to pass the *PIN itself* through the
   environment — `env_references_and_object_refs_are_checked_at_load`,
   `pin_file_path_can_come_from_the_environment`.
 - **The admin credential (`soCredentialFile`/`soCredentialEnv`) is read only by a step that needs the SO.** A
