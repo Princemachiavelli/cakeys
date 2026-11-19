@@ -21,13 +21,14 @@ fn surface(cmd: &clap::Command, out: &mut BTreeSet<String>) {
     }
 }
 
-/// Every `.rs` file under `dir` but the surface tests, concatenated without its comment lines:
-/// a flag a comment quotes is no flag a test uses.
+/// Every `.rs` file under `dir` but the surface tests and the shared harness (`common/`),
+/// concatenated without its comment lines: a flag a comment quotes, or a helper any tool's tests
+/// call spells, is no flag this tool's tests use.
 fn sources(dir: &Path, out: &mut String) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        if path.is_dir() && path.file_name().is_some_and(|n| n != "common") {
             sources(&path, out);
         } else if path.extension().is_some_and(|e| e == "rs") && path.file_name().is_some_and(|n| n != "surface.rs") {
             let text = std::fs::read_to_string(&path).unwrap_or_default();
@@ -40,9 +41,9 @@ fn sources(dir: &Path, out: &mut String) {
 }
 
 /// Fail when a verb or flag of `cmd` appears as a string literal in no integration test under
-/// `tests`, this tool's `tests/`. The shared harness (cli/tests/common) counts for cakeys alone,
-/// whose `tests/` holds it: another tool's flag the harness spells, for cakeys' own `--module`,
-/// is not that tool's test (review D9). `untested` lists the ones knowingly
+/// `tests`, this tool's `tests/`, the shared harness (cli/tests/common) left out: a flag the
+/// harness spells, as cakeys' own `--module` did for caprobe's, is no tool's test (review D9).
+/// `untested` lists the ones knowingly
 /// left out, each with why; one that is tested after all, or that clap no longer defines, fails
 /// too, so the list cannot go stale.
 ///
