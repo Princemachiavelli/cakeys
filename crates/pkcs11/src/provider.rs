@@ -543,8 +543,9 @@ pub struct AttestCtx<'a> {
     /// The module's version as `C_GetInfo` reports it ("1.10").
     pub module_version: &'a str,
     /// Whether the module has a mechanism (`C_GetMechanismInfo` answers): how a provider finds
-    /// the vendor mechanisms its module has (tpm2-pkcs11's `CKM_TPM2_*`), which cryptoki leaves
-    /// out of the list `C_GetMechanismList` returns because it has no name for them.
+    /// the vendor mechanisms its module has (tpm2-pkcs11's `CKM_TPM2_*`), which an unpatched
+    /// cryptoki leaves out of the list `C_GetMechanismList` returns because it has no name for them
+    /// (nix/patches/cryptoki-vendor-mechanisms.patch keeps them; this works with either).
     pub has_mechanism: &'a dyn Fn(MechanismType) -> bool,
     /// The token's name in keys.toml.
     pub token_name: &'a str,

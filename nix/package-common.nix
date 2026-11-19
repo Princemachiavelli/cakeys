@@ -60,7 +60,9 @@ in
   # CKA_ALLOWED_MECHANISMS entry cryptoki has no name for (385 of the 3.2 mechanisms, and every
   # vendor one) as its value, where 0.12.1 refused the whole attribute (docs/OPEN.md). The sixth
   # is the upstream draft itself, not a local copy: an RvError converts back to its CK_RV and
-  # names its CKR_* constant (upstream/rust-cryptoki/PR-RV-VALUE.md).
+  # names its CKR_* constant (upstream/rust-cryptoki/PR-RV-VALUE.md). The seventh keeps a vendor
+  # mechanism in the list C_GetMechanismList returns, where 0.12.1 dropped it (it has no name for
+  # it): tpm2-pkcs11's CKM_TPM2_* are listed by the module and were invisible to cakeys.
   cryptoki = {
     version = "0.12.1";
     patches = [
@@ -70,6 +72,7 @@ in
       ./patches/cryptoki-sign-after-init.patch
       ./patches/cryptoki-allowed-mechanisms-unnamed.patch
       ../upstream/rust-cryptoki/0003-Add-RvError-to-CK_RV-and-its-name.patch
+      ./patches/cryptoki-vendor-mechanisms.patch
     ];
   };
 

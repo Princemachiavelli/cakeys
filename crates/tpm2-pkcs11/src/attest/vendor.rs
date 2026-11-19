@@ -44,8 +44,8 @@ fn mechanism_type(n: c_ulong) -> Result<MechanismType> {
     MechanismType::new_vendor_defined(n).map_err(|e| KmError::Unavailable(format!("mechanism {n:#x}: {e}").into()))
 }
 
-/// Whether the module has the vendor mechanism `n` (`C_GetMechanismInfo`: cryptoki cannot name
-/// it, so it is not in the list `C_GetMechanismList` returns to cakeys).
+/// Whether the module has the vendor mechanism `n` (`C_GetMechanismInfo`: an unpatched cryptoki
+/// cannot name it, so it is not in the list `C_GetMechanismList` returns to cakeys).
 fn lists(ctx: &AttestCtx<'_>, n: c_ulong) -> bool {
     mechanism_type(n).is_ok_and(|m| (ctx.has_mechanism)(m))
 }
