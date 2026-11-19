@@ -14,6 +14,12 @@ and the crane build. An OOM kill fails the job with an unhelpful log. Uncertain:
 max-jobs and timing. Splitting Kani (and perhaps fuzz) into its own job would make the failure
 modes separate and the runs shorter. [read]
 
+**Fixed (2026-11-18):** one workflow, checks.yml, with three jobs that split the checks
+between them (flake.nix `vmChecks`): `light` (`checks-no-vm`, after `nix flake check
+--no-build`), `vm` (`checks-vm`: the VM tests and the fuzz run) and `kani`, on a runner of its
+own. flake-check.yml is gone; `checks.ci-jobs` fails when the workflow stops building a part, or
+when a second workflow builds them again.
+
 ## Design
 
 - `nix flake check` builds only the runner's system (x86_64-linux); aarch64-linux and

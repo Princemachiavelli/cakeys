@@ -31,6 +31,8 @@ there fails CI with no pointer to the cause. Uncertain: depends on the runner's 
 with `systemd-run --scope -p MemoryMax=8G` where available, or give it `requiredSystemFeatures =
 [ "big-parallel" ]`/schedule it in its own CI job. [read]
 
+**Fixed (2026-11-18):** Kani is CI's `kani` job, alone on its runner (checks.yml).
+
 ### F3. The uncovered-functions pipeline fails the build when nothing is uncovered — nit
 
 `nix/package-crane.nix:339-342`. `... | grep -v '::<_\(, _\)*>$' | sort > ...`: `grep -v`

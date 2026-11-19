@@ -108,6 +108,17 @@
           mkTest,
           ...
         }:
+        let
+          # CI's jobs split the checks (.github/workflows/checks.yml): these need a VM or are the
+          # fuzz run; Kani has a runner of its own; every other check, a new one included, is
+          # checks-no-vm's.
+          vmChecks = [
+            "fuzz"
+            "vm"
+            "module"
+            "tpm"
+          ];
+        in
         {
           default = local.cakeys;
           inherit (local)
@@ -132,16 +143,13 @@
               "kani"
             ]
           );
-          # Every check that needs no VM, no fuzz run and no Kani: the light CI workflow
-          # (.github/workflows/checks.yml); .github/workflows/flake-check.yml runs them all.
+          # Every check that needs no VM, no fuzz run and no Kani, and the VM tests with the fuzz
+          # run: two of CI's three jobs, Kani the third.
           checks-no-vm = pkgs.linkFarm "checks-no-vm" (
-            builtins.removeAttrs self.checks.${system} [
-              "fuzz"
-              "kani"
-              "vm"
-              "module"
-              "tpm"
-            ]
+            builtins.removeAttrs self.checks.${system} (vmChecks ++ [ "kani" ])
+          );
+          checks-vm = pkgs.linkFarm "checks-vm" (
+            lib.filterAttrs (name: _: builtins.elem name vmChecks) self.checks.${system}
           );
         }
         // lib.optionalAttrs (system == "x86_64-linux") {

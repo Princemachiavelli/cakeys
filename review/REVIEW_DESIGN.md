@@ -329,7 +329,9 @@ as refused by both.
 **Fixed (2026-11-18), the deny half:** `nix run .#deny-online` checks against the current
 advisory database (cargo-deny fetches it; the pin stays in the sandbox's `checks.deny`) as
 well as yanked releases, and deny.toml denies wildcard requirements and any source but
-crates.io, and warns on duplicate versions. The CI items are left for now.
+crates.io, and warns on duplicate versions. **Fixed (2026-11-18), the CI half:** one workflow
+whose three jobs build each check once (`light`, `vm`, `kani`), Kani on a runner of its own;
+`checks.ci-jobs` holds the workflow to flake.nix's split. CI stays x86_64 Linux, by decision.
 
 ## Documentation drift found on the way
 

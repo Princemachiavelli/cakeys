@@ -73,6 +73,21 @@
       fi
       touch $out
     '';
+  # CI builds the three parts flake.nix splits the checks into, each once
+  # (.github/workflows/checks.yml): a part the workflow stops naming is never built there.
+  ci-jobs = pkgs.runCommand "cakeys-ci-jobs" { nativeBuildInputs = [ pkgs.ripgrep ]; } ''
+    for part in '.#checks-no-vm' '.#checks-vm' '.#checks.x86_64-linux.kani'; do
+      if [ "$(rg -c -F "build: $part" ${./.github/workflows/checks.yml})" != 1 ]; then
+        echo "ci-jobs: .github/workflows/checks.yml should build $part once" >&2
+        exit 1
+      fi
+    done
+    if [ -e ${./.github/workflows}/flake-check.yml ]; then
+      echo "ci-jobs: flake-check.yml would build the checks a second time" >&2
+      exit 1
+    fi
+    touch $out
+  '';
   # nix/demo.sh straight through: every step's expected exit code still holds.
   demo = demo.check;
   # cakeys, caprobe and camigrate without their `tpm2` and `ykcs11` features (nix/package-crane.nix).

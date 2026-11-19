@@ -15,10 +15,18 @@ tests the crane build twice in parallel (magic-nix-cache only helps once one of 
 If the light gate is meant as fast feedback, have flake-check `needs:` it (one workflow, two
 jobs), or run flake-check only on main and on a label. [read]
 
+**Fixed (2026-11-18):** one workflow, checks.yml, with three jobs that split the checks
+between them (flake.nix `vmChecks`): `light` (`checks-no-vm`, after `nix flake check
+--no-build`), `vm` (`checks-vm`: the VM tests and the fuzz run) and `kani`, on a runner of its
+own. flake-check.yml is gone; `checks.ci-jobs` fails when the workflow stops building a part, or
+when a second workflow builds them again.
+
 ### F2. The header's list of what runs is incomplete — nit
 
 `.github/workflows/checks.yml:1-3`. `checks-no-vm` also includes `examples`, `quint`, `profiles`,
 `lib` and `minimal` (flake.nix:137-145 subtracts only fuzz, kani and the VMs). [read]
+
+**Fixed (2026-11-18):** the header names the three jobs and says the list is an example.
 
 ## Design
 

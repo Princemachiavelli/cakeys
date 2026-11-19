@@ -16,10 +16,12 @@ The OS is NixOS: there is no system `cargo`, `python3` or `perl`.
 - **After a significant change:** `nix build .#checks-crane-only`, every check except the fuzz
   smoke run, on the crane build (its dependencies cached per `Cargo.lock`).
 - **At the end of a piece of work:** `nix flake check`, all checks passing.
-- **CI** (GitHub Actions, on pushes to `main` and pull requests): `.github/workflows/checks.yml`
-  builds `.#checks-no-vm` (every check but the VM tests and the fuzz run);
-  `.github/workflows/flake-check.yml` runs `nix flake check` on a runner with KVM. Both run
-  Determinate Nix (determinate-nix-action, pinned) with the Magic Nix Cache.
+- **CI** (GitHub Actions, on pushes to `main` and pull requests, x86_64 Linux):
+  `.github/workflows/checks.yml` builds every check once, over three runners: `.#checks-no-vm`
+  (every check but the VM tests, the fuzz run and Kani) after `nix flake check --no-build`,
+  `.#checks-vm` (the VM tests and the fuzz run) on a runner with KVM, and Kani on its own. The
+  split is one list in flake.nix (`vmChecks`), and `checks.ci-jobs` holds the workflow to it.
+  The jobs run Determinate Nix (determinate-nix-action, pinned) with the Magic Nix Cache.
   `.github/workflows/reports.yml` builds `packages.coverage` on each push to `main` and
   `packages.mutants` weekly (both on a manual run), and pushes each one's number (`scripts/badges.sh`: lines covered; mutants
   caught of the viable ones) to the `badges` branch, which the README's badges read.
