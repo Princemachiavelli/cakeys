@@ -173,9 +173,13 @@ whole where `validate` drops the hardware's rows (`supports_asks_by_token_and_re
   cross-checked against Microsoft's TrustedTpm bundle). The core chain walk counted an end-entity
   starting certificate against its issuer's pathLen; an EK certificate under AMD's `pathlen:0`
   intermediate showed it, and it now counts the starting certificate only when it is a CA
-  (`the_amd_ftpm_chains_verify_to_the_pinned_roots`). Left: the transport is unauthenticated
-  (a session salted to the EK would close it), and a NV certificate that reaches no anchor
-  leaves first use.
+  (`the_amd_ftpm_chains_verify_to_the_pinned_roots`). The transport, also 2026-11-18: with a
+  verified EK every authorization goes through an HMAC session salted to it (`esys::salted_session`),
+  so the seal and object auths never cross, the unsealed wrapping key crosses encrypted, and the
+  responses are authenticated (`tpm2_the_salted_session_keeps_the_token_secrets_off_the_wire`,
+  on swtpm's traffic log, with password sessions as its control; mutations: password sessions,
+  no response encryption, an unsalted session). Left: without a verified EK (no certificate, or
+  a NV one that reaches no anchor), first use and password sessions.
 - PIV: `Token::open` takes the `ChainTime` and it has no default, so every open names whether
   the dates are checked; the verbs that record pass `Unchecked`, as B8 decided (a lock recorded
   today verifies tomorrow). Decided (2026-11-18): the verbs that record judge

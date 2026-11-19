@@ -22,7 +22,7 @@ use std::convert::TryFrom;
 use aes_gcm::aead::{Aead, KeyInit};
 use tss_esapi::Context;
 use tss_esapi::abstraction::{AsymmetricAlgorithmSelection, ek};
-use tss_esapi::attributes::{ObjectAttributes, ObjectAttributesBuilder};
+use tss_esapi::attributes::{ObjectAttributes, ObjectAttributesBuilder, SessionAttributesBuilder};
 use tss_esapi::constants::SessionType;
 use tss_esapi::handles::{AuthHandle, KeyHandle, PersistentTpmHandle, SessionHandle, TpmHandle};
 use tss_esapi::interface_types::algorithm::{HashingAlgorithm, PublicAlgorithm};
@@ -230,29 +230,38 @@ fn seal_auth(pin: &[u8], salt: &str) -> Zeroizing<Vec<u8>> {
 
 /// Load the seal object and unseal the token's wrapping key with the user PIN — the same
 /// protocol the module runs at login (`token_unseal_wrapping_key`): the sealed payload is the
-/// wrapping key *as a hex string*, the AES key is its 32 decoded bytes.
+/// wrapping key *as a hex string*, the AES key is its 32 decoded bytes. Through `auth`: a
+/// salted session encrypts the unsealed key on its way back.
 ///
 /// # Errors
 ///
 /// `Unavailable` when the seal object cannot be loaded or the unseal fails (a wrong PIN, in
 /// practice); `Conflict` when the unsealed payload is not 32 bytes of hex text.
-pub(crate) fn wrapping_key(ctx: &mut Context, store: &Store, pin: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+pub(crate) fn wrapping_key(
+    ctx: &mut Context,
+    store: &Store,
+    pin: &[u8],
+    auth: AuthSession,
+) -> Result<Zeroizing<Vec<u8>>> {
+    let session = auth;
     let auth = Auth::try_from(seal_auth(pin, &store.seal.auth_salt).as_slice())
         .map_err(|e| KmError::Unavailable(format!("seal auth: {e}").into()))?;
-    // `TPM2_Load` needs no session beyond the parent's (empty-auth password), and
-    // `Esys_TR_FromTPMPublic` runs `TPM2_ReadPublic`, which takes none at all: keep both
-    // outside the unseal's password session.
-    let seal = load(ctx, &store.parent, &store.seal.priv_blob, &store.seal.pub_blob)?;
+    // `TPM2_Load` needs no session beyond the parent's, and `Esys_TR_FromTPMPublic` runs
+    // `TPM2_ReadPublic`, which takes none at all: keep both outside the unseal's session.
+    let seal = load(ctx, &store.parent, &store.seal.priv_blob, &store.seal.pub_blob, session)?;
     let unsealed = flushing(ctx, seal, |ctx| {
         ctx.tr_set_auth(seal.into(), auth)
             .map_err(|e| KmError::Unavailable(format!("setting the seal auth: {e}").into()))?;
-        ctx.execute_with_session(Some(AuthSession::Password), |ctx| {
+        session_attributes(ctx, session, true)?;
+        let unsealed = ctx.execute_with_session(Some(session), |ctx| {
             ctx.unseal(seal.into()).map_err(|e| {
                 KmError::Unavailable(
                     format!("TPM2_Unseal of the token's wrapping key (is the user PIN right?): {e}").into(),
                 )
             })
-        })
+        });
+        session_attributes(ctx, session, false)?;
+        unsealed
     })?;
     let hex = Zeroizing::new(
         String::from_utf8(unsealed.value().to_vec())
@@ -292,9 +301,9 @@ pub(crate) fn unwrap_objauth(wrapping_key: &[u8], wrapped: &str) -> Result<Zeroi
         .map_err(|_| KmError::Conflict("the object's authValue does not decrypt under the token wrapping key".into()))
 }
 
-/// `TPM2_Load` a key blob under the token's primary parent. The parent's password session is
-/// enough: tpm2-pkcs11's default primary has an empty auth value.
-fn load(ctx: &mut Context, parent: &Parent, priv_blob: &[u8], pub_blob: &[u8]) -> Result<KeyHandle> {
+/// `TPM2_Load` a key blob under the token's primary parent, the parent authorized through
+/// `auth` (tpm2-pkcs11's default primary has an empty auth value).
+fn load(ctx: &mut Context, parent: &Parent, priv_blob: &[u8], pub_blob: &[u8], auth: AuthSession) -> Result<KeyHandle> {
     let parent_tr = ctx
         .tr_from_tpm_public(TpmHandle::Persistent(
             PersistentTpmHandle::new(parent.handle)
@@ -308,7 +317,7 @@ fn load(ctx: &mut Context, parent: &Parent, priv_blob: &[u8], pub_blob: &[u8]) -
     )
     .map_err(|e| KmError::Unavailable(format!("setting the parent auth: {e}").into()))?;
     let (private, public) = blobs(priv_blob, pub_blob)?;
-    ctx.execute_with_session(Some(AuthSession::Password), |ctx| ctx.load(parent_key, private, public))
+    ctx.execute_with_session(Some(auth), |ctx| ctx.load(parent_key, private, public))
         .map_err(|e| KmError::Unavailable(format!("TPM2_Load of the object's blob: {e}").into()))
 }
 
@@ -341,7 +350,7 @@ pub(crate) fn unmarshal_public(pub_blob: &[u8]) -> Result<Public> {
 }
 
 /// Certify the loaded `key` with the AK: a fresh random nonce as qualifying data (freshness),
-/// both authorizations by password.
+/// the object's authorization through `auth`, the AK's (empty) by password.
 ///
 /// # Errors
 ///
@@ -353,6 +362,7 @@ pub(crate) fn certify(
     key: KeyHandle,
     key_auth: &[u8],
     ak: KeyHandle,
+    auth: AuthSession,
 ) -> Result<(Attest, Signature)> {
     let mut nonce = vec![0u8; 32];
     getrandom::fill(&mut nonce).map_err(|e| KmError::Unavailable(format!("OS RNG: {e}").into()))?;
@@ -363,7 +373,7 @@ pub(crate) fn certify(
     .map_err(|e| KmError::Unavailable(format!("setting the object auth: {e}").into()))?;
     let data = Data::try_from(nonce.clone()).map_err(|e| KmError::Unavailable(format!("nonce: {e}").into()))?;
     let (attest, signature) = ctx
-        .execute_with_sessions((Some(AuthSession::Password), Some(AuthSession::Password), None), |ctx| {
+        .execute_with_sessions((Some(auth), Some(AuthSession::Password), None), |ctx| {
             ctx.certify(key.into(), ak, data, SignatureScheme::Null)
         })
         .map_err(|e| KmError::Unavailable(format!("TPM2_Certify: {e}").into()))?;
@@ -508,8 +518,11 @@ pub(crate) fn recompute_name(pub_blob: &[u8]) -> Result<Vec<u8>> {
 /// PKCS#11 object is being attested. The material SPKI (present exactly for asymmetric keys)
 /// is cross-checked against the attestation — the attested key must be the key the object's
 /// `rfc7093m4` names. `provision` lets a missing Attestation Key be created (`lock` only).
-/// With `ek`, the public key of a verified EK certificate, the AK that signed is then proven to
-/// reside in that EK's TPM ([`activate`]).
+/// With `ek`, the public key of a verified EK certificate, every authorization of the run goes
+/// through a session salted to that EK ([`salted_session`]: the auth values never cross the
+/// transport, the unsealed wrapping key crosses it encrypted, and the responses are
+/// authenticated), and the AK that signed is then proven to reside in that EK's TPM
+/// ([`activate`]). Without one, password sessions, as before.
 ///
 /// # Errors
 ///
@@ -536,7 +549,39 @@ pub(crate) fn certify_key(
             "TPM2_Certify needs the token's user PIN to unseal the object's auth value (pinFile/pinEnv)".into(),
         )
     })?;
-    let wrapping = wrapping_key(ctx, store, pin)?;
+    let Some(ek_spki) = ek else {
+        return certify_under(ctx, store, tobj, pin, ak_handle, provision, spki, AuthSession::Password)
+            .map(|(certified, ..)| certified);
+    };
+    let ek = endorsement_key(ctx, ek_spki)?;
+    flushing(ctx, ek, |ctx| {
+        let session = salted_session(ctx, ek)?;
+        let out = certify_under(ctx, store, tobj, pin, ak_handle, provision, spki, session).and_then(
+            |(certified, ak, ak_public)| {
+                // The public area whose key verified the certify is the one the credential is
+                // bound to.
+                activate(ctx, ak, &ak_public, ek, ek_spki).map(|()| certified)
+            },
+        );
+        let _ = ctx.flush_context(SessionHandle::from(session).into());
+        out
+    })
+}
+
+/// [`certify_key`]'s run, every authorization of the token's objects through `auth`: the AK's
+/// handle and public area too, for the activation.
+#[expect(clippy::too_many_arguments, reason = "certify_key's arguments, and the session it chose")]
+fn certify_under(
+    ctx: &mut Context,
+    store: &Store,
+    tobj: &TObject,
+    pin: &[u8],
+    ak_handle: u32,
+    provision: bool,
+    spki: Option<&[u8]>,
+    auth: AuthSession,
+) -> Result<(Certified, KeyHandle, Public)> {
+    let wrapping = wrapping_key(ctx, store, pin, auth)?;
     let objauth_enc = tobj
         .objauth_enc
         .as_deref()
@@ -548,33 +593,26 @@ pub(crate) fn certify_key(
         .ok_or_else(|| KmError::Unsupported("the store object carries no private blob to certify".into()))?;
     // The AK first: it is persistent, so nothing is left to flush if it is missing.
     let (ak, ak_public, ak_qualified_name) = attestation_key(ctx, ak_handle, provision)?;
-    let key = load(ctx, &store.parent, priv_blob, &tobj.pub_blob)?;
-    let certified =
-        flushing(ctx, key, |ctx| certify_loaded(ctx, key, &objauth, tobj, ak, &ak_public, &ak_qualified_name, spki))?;
-    // The public area whose key verified the certify is the one the credential is bound to.
-    if let Some(ek) = ek {
-        activate(ctx, ak, &ak_public, ek)?;
-    }
-    Ok(certified)
+    let key = load(ctx, &store.parent, priv_blob, &tobj.pub_blob, auth)?;
+    let certified = flushing(ctx, key, |ctx| {
+        certify_loaded(ctx, key, &objauth, tobj, auth, (ak, &ak_public, &ak_qualified_name), spki)
+    })?;
+    Ok((certified, ak, ak_public))
 }
 
-/// The certify and its host verification, for the object `key` loaded from `tobj`.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the loaded key, its auth, the store object and the AK triple, all from one caller"
-)]
+/// The certify and its host verification, for the object `key` loaded from `tobj`, authorized
+/// through `auth`; `ak` is the AK's handle, public area and qualified Name.
 fn certify_loaded(
     ctx: &mut Context,
     key: KeyHandle,
     objauth: &[u8],
     tobj: &TObject,
-    ak: KeyHandle,
-    ak_public: &Public,
-    ak_qualified_name: &Name,
+    auth: AuthSession,
+    (ak, ak_public, ak_qualified_name): (KeyHandle, &Public, &Name),
     spki: Option<&[u8]>,
 ) -> Result<Certified> {
     let live = read_public(ctx, key)?;
-    let (attest, signature) = certify(ctx, key, objauth, ak)?;
+    let (attest, signature) = certify(ctx, key, objauth, ak, auth)?;
     verify_certified(&attest, &signature, &tobj.pub_blob, &live, ak_public, ak_qualified_name, spki)
 }
 
@@ -583,7 +621,7 @@ fn certify_loaded(
 /// what `TPM2_ReadPublic` answered), the signer, and the material cross-check.
 ///
 /// The material and attributes come from `pub_blob`, the bytes whose Name was signed. `live`'s
-/// public area is unauthenticated (password sessions, no response HMAC, and ESYS does not
+/// public area is unauthenticated (no session covers `ReadPublic`, and ESYS does not
 /// recompute its Name), so it only has to agree: an interposer that answers `ReadPublic` with
 /// another key's public area beside the certified object's Name is refused (13).
 ///
@@ -693,18 +731,16 @@ pub(crate) fn nv_ek_certificate(ctx: &mut Context) -> Result<Option<Vec<u8>>> {
     Ok(None)
 }
 
-/// Prove that the AK at `ak` (public area `ak_public`) resides in the TPM whose endorsement key
-/// is `ek_spki` (a verified EK certificate's): recreate the EK from the TCG default template,
-/// make a credential to it on the host bound to the AK's Name ([`credential::make_credential`]),
-/// and have the TPM activate it. Only a TPM holding both that EK and an object of that Name
-/// recovers the secret, and an AK that is fixedTPM (as [`check_ak`] requires) never left it.
+/// The TPM's endorsement key, recreated from the TCG default template (empty endorsement auth)
+/// for the key of a verified EK certificate, `ek_spki`. Its public area must be that key: ESYS
+/// encrypts the session salt ([`salted_session`]) to the public area `CreatePrimary` answered, so
+/// one the certificate does not name would salt the session to whoever answered.
 ///
 /// # Errors
 ///
 /// `Unsupported` for an EK that is neither RSA-2048 nor P-256; `Unavailable` when the EK cannot
-/// be created (endorsement auth not empty) or the TPM cannot be reached; `Conflict` when this
-/// TPM's EK is not the certificate's key, or the TPM refuses or answers the credential wrongly.
-pub(crate) fn activate(ctx: &mut Context, ak: KeyHandle, ak_public: &Public, ek_spki: &[u8]) -> Result<()> {
+/// be created (endorsement auth not empty); `Conflict` when its key is not the certificate's.
+pub(crate) fn endorsement_key(ctx: &mut Context, ek_spki: &[u8]) -> Result<KeyHandle> {
     let alg = match id::KeyAlg::of_spki(ek_spki) {
         Ok(id::KeyAlg::Rsa) => AsymmetricAlgorithmSelection::Rsa(RsaKeyBits::Rsa2048),
         Ok(id::KeyAlg::Ec(id::Curve::P256)) => AsymmetricAlgorithmSelection::Ecc(EccCurve::NistP256),
@@ -724,25 +760,79 @@ pub(crate) fn activate(ctx: &mut Context, ak: KeyHandle, ak_public: &Public, ek_
             KmError::Unavailable(format!("creating the endorsement key (is endorsement auth empty?): {e}").into())
         })?;
     let ek = created.key_handle;
-    flushing(ctx, ek, |ctx| {
-        // What CreatePrimary answered is unauthenticated, so this is for the message: a TPM that
-        // holds another EK cannot activate the credential either way.
-        if material_of(&created.out_public)?.spki.as_deref() != Some(ek_spki) {
-            return Err(KmError::Conflict(
-                "the EK certificate names another key than this TPM's endorsement key".into(),
-            ));
-        }
-        let ak_tpmt =
-            ak_public.marshall().map_err(|e| KmError::Conflict(format!("the AK's public area: {e}").into()))?;
-        let mut secret = Zeroizing::new(vec![0u8; 32]);
-        getrandom::fill(&mut secret).map_err(|e| KmError::Unavailable(format!("OS RNG: {e}").into()))?;
-        let cred = credential::make_credential(ek_spki, &ak_tpmt, &secret)?;
-        let recovered = activate_with_ek(ctx, ak, ek, cred)?;
-        if recovered.as_slice() != secret.as_slice() {
-            return Err(KmError::Conflict("the TPM activated the credential to another secret".into()));
-        }
-        Ok(())
-    })
+    if material_of(&created.out_public).map(|m| m.spki).ok().flatten().as_deref() != Some(ek_spki) {
+        let _ = ctx.flush_context(ek.into());
+        return Err(KmError::Conflict("the EK certificate names another key than this TPM's endorsement key".into()));
+    }
+    Ok(ek)
+}
+
+/// An HMAC session salted to the endorsement key `ek` (from [`endorsement_key`], so salted to
+/// the certificate's key): only the TPM holding that EK learns the session key. Its
+/// authorizations never send an auth value (the PIN-derived seal auth, the object's auth), every
+/// response it covers carries an HMAC ESYS checks, and with `encrypt` set (the unseal) the
+/// response parameter is encrypted (AES-128-CFB). Flushed by the caller.
+///
+/// # Errors
+///
+/// `Unavailable` when the TPM starts no session (it cannot decrypt the salt: another EK).
+pub(crate) fn salted_session(ctx: &mut Context, ek: KeyHandle) -> Result<AuthSession> {
+    let session = ctx
+        .start_auth_session(
+            Some(ek),
+            None,
+            None,
+            SessionType::Hmac,
+            SymmetricDefinition::AES_128_CFB,
+            HashingAlgorithm::Sha256,
+        )
+        .map_err(|e| KmError::Unavailable(format!("starting the session salted to the EK: {e}").into()))?
+        .ok_or_else(|| KmError::Unavailable("the TPM started no session salted to the EK".into()))?;
+    if let Err(e) = session_attributes(ctx, session, false) {
+        let _ = ctx.flush_context(SessionHandle::from(session).into());
+        return Err(e);
+    }
+    Ok(session)
+}
+
+/// Set `session`'s attributes: continued, and response encryption as `encrypt` says (the unseal
+/// takes it; a command with no response parameter to encrypt must not ask). A password session
+/// has none to set.
+fn session_attributes(ctx: &mut Context, session: AuthSession, encrypt: bool) -> Result<()> {
+    if session == AuthSession::Password {
+        return Ok(());
+    }
+    let (attributes, mask) = SessionAttributesBuilder::new().with_continue_session(true).with_encrypt(encrypt).build();
+    ctx.tr_sess_set_attributes(session, attributes, mask)
+        .map_err(|e| KmError::Unavailable(format!("setting the salted session's attributes: {e}").into()))
+}
+
+/// Prove that the AK at `ak` (public area `ak_public`) resides in the TPM whose endorsement key
+/// is `ek_spki` (a verified EK certificate's), loaded at `ek` ([`endorsement_key`]): make a
+/// credential to it on the host bound to the AK's Name ([`credential::make_credential`]), and
+/// have the TPM activate it. Only a TPM holding both that EK and an object of that Name recovers
+/// the secret, and an AK that is fixedTPM (as [`check_ak`] requires) never left it.
+///
+/// # Errors
+///
+/// `Unavailable` when the TPM cannot be reached; `Conflict` when the TPM refuses or answers the
+/// credential wrongly.
+pub(crate) fn activate(
+    ctx: &mut Context,
+    ak: KeyHandle,
+    ak_public: &Public,
+    ek: KeyHandle,
+    ek_spki: &[u8],
+) -> Result<()> {
+    let ak_tpmt = ak_public.marshall().map_err(|e| KmError::Conflict(format!("the AK's public area: {e}").into()))?;
+    let mut secret = Zeroizing::new(vec![0u8; 32]);
+    getrandom::fill(&mut secret).map_err(|e| KmError::Unavailable(format!("OS RNG: {e}").into()))?;
+    let cred = credential::make_credential(ek_spki, &ak_tpmt, &secret)?;
+    let recovered = activate_with_ek(ctx, ak, ek, cred)?;
+    if recovered.as_slice() != secret.as_slice() {
+        return Err(KmError::Conflict("the TPM activated the credential to another secret".into()));
+    }
+    Ok(())
 }
 
 /// `TPM2_ActivateCredential` with the AK (empty auth) and the EK, whose default policy is

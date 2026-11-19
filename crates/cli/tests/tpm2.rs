@@ -550,6 +550,102 @@ fn tpm2_attestation_activates_a_credential_to_the_certified_ek() {
     assert_eq!(persistent_handles(), handles);
 }
 
+/// The session salted to the EK (review D5's transport), on the wire: swtpm's log (level 20,
+/// nix/tpm2-test-env.sh) holds every command and response. With the EK certificate, neither the
+/// PIN-derived seal auth (an HMAC session never sends it) nor the unsealed wrapping key (64
+/// ASCII hex characters, encrypted in the response) crosses; without it, password sessions as
+/// before, both do — the control that shows the capture sees them. The lockout counter stays 0:
+/// no authorization of the salted session failed.
+#[test]
+fn tpm2_the_salted_session_keeps_the_token_secrets_off_the_wire() {
+    let Some(e) = env("salted") else { return };
+    if !on_swtpm() {
+        eprintln!("skipping salted: it reads the suite's swtpm log, and makes the AK");
+        return;
+    }
+    test_ek_certificates(&e.dir);
+    ptool(&["addkey", "--algorithm=ecc256", "--key-label=salted-a"]);
+    let store = std::path::PathBuf::from(tpm2_store());
+    let log = store.parent().unwrap().join("swtpm.log");
+    let salt: Vec<u8> = rusqlite::Connection::open(store.join("tpm2_pkcs11.sqlite3"))
+        .unwrap()
+        .query_row("SELECT userauthsalt FROM sealobjects", [], |r| r.get(0))
+        .unwrap();
+    // tpm2-pkcs11's seal auth: the hex text of SHA-256(PIN ‖ salt)'s first 16 bytes.
+    let seal_auth = {
+        use sha2::Digest as _;
+        let digest = sha2::Sha256::digest([b"1234".as_slice(), &salt].concat());
+        cakeys_core::hex::encode(&digest[..16]).into_bytes()
+    };
+    let path = |name: &str| e.dir.join(name).to_str().unwrap().to_owned();
+    let config = |options: &str| {
+        e.write_config(&format!(
+            "[tokens.tpm]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n{options}\n\n\
+             [objects.a]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.a]\nobject = \"a\"\nattributes = {{ CKA_SIGN = true }}\n\
+             tokens.tpm = {{ locator = {{ CKA_LABEL = \"salted-a\" }}, origin = \"adopt\", attestation = true, binding = \"token-asserted\" }}\n",
+            e.module,
+            e.dir.join("pin").display(),
+        ));
+    };
+    // The bytes that crossed the transport during `run`: every hex dump line swtpm logged.
+    let wire = |run: &dyn Fn()| {
+        let before = std::fs::metadata(&log).unwrap().len();
+        run();
+        let text = std::fs::read(&log).unwrap();
+        let text = String::from_utf8_lossy(&text[usize::try_from(before).unwrap()..]).into_owned();
+        let mut bytes = Vec::new();
+        for line in text.lines() {
+            let pairs: Vec<&str> = line.split_whitespace().collect();
+            if !pairs.is_empty() && pairs.iter().all(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit())) {
+                bytes.extend(pairs.iter().map(|p| u8::from_str_radix(p, 16).unwrap()));
+            }
+        }
+        assert!(!bytes.is_empty(), "swtpm logged no traffic: is its log level 20?");
+        bytes
+    };
+    let resolve = || {
+        let o = e.km(&["resolve", "--spec", "a", "--token", "tpm"]);
+        assert_eq!(code(&o), 0, "{}", stderr(&o));
+    };
+    let has = |bytes: &[u8], needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+    // A run of 64 ASCII hex digits: the unsealed wrapping key, as tpm2-pkcs11 seals it.
+    let has_key_text = |bytes: &[u8]| bytes.windows(64).any(|w| w.iter().all(u8::is_ascii_hexdigit));
+
+    config(&format!("options = {{ ekCertificate = \"{}\", ekRoots = \"{}\" }}", path("ek-ecc.pem"), path("ca.pem")));
+    assert_eq!(e.code(&["lock", "--spec", "a", "--token", "tpm", "--update-lock"]), 0);
+    let salted = wire(&resolve);
+    assert!(!has(&salted, &seal_auth), "the seal auth crossed the transport in the clear");
+    assert!(!has_key_text(&salted), "the wrapping key crossed the transport in the clear");
+    assert!(salted_session_started(&salted), "no TPM2_StartAuthSession salted to a loaded key");
+
+    config("");
+    let plain = wire(&resolve);
+    assert!(has(&plain, &seal_auth), "the control: a password session sends the seal auth");
+    assert!(has_key_text(&plain), "the control: an unencrypted unseal returns the wrapping key's text");
+
+    let props = Command::new("tpm2_getcap").arg("properties-variable").output().unwrap();
+    assert!(stdout(&props).contains("TPM2_PT_LOCKOUT_COUNTER: 0x0"), "{}", stdout(&props));
+}
+
+/// Whether `wire` holds a `TPM2_StartAuthSession` command salted to a loaded key: its `tpmKey`
+/// a transient object (0x80......, the EK) rather than `TPM_RH_NULL`, and a non-empty
+/// `encryptedSalt`. An unsalted HMAC session would keep the auth values off the wire too, but
+/// its session key is computable from the nonces anyone on the transport sees.
+fn salted_session_started(wire: &[u8]) -> bool {
+    let be16 = |b: &[u8]| usize::from(u16::from_be_bytes([b[0], b[1]]));
+    (0..wire.len().saturating_sub(22)).any(|i| {
+        let w = &wire[i..];
+        // TPM_ST_NO_SESSIONS, a size, TPM_CC_StartAuthSession.
+        if w[..2] != [0x80, 0x01] || w[6..10] != [0x00, 0x00, 0x01, 0x76] || w[10] != 0x80 {
+            return false;
+        }
+        // tpmKey (4), bind (4), nonceCaller (TPM2B), then encryptedSalt (TPM2B).
+        let nonce = be16(&w[18..]);
+        w.get(20 + nonce..22 + nonce).is_some_and(|s| be16(s) > 0)
+    })
+}
+
 /// In `dir`, for [`tpm2_attestation_activates_a_credential_to_the_certified_ek`]: two test CAs
 /// (`ca.pem`, and `other-ca.pem` that nothing trusts), and certificates from `ca` for the
 /// swtpm's default P-256 and RSA EKs (`ek-ecc.pem`, `ek-rsa.pem`) and for a key that is no EK of

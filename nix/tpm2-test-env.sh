@@ -91,10 +91,12 @@ up)
   trap 'stop "$D"' EXIT
   # The TPM profile is pinned, not left to swtpm's default: it sets what the TPM generates
   # (default-v1 caps RSA at 3072, default-v2 allows 4096), and profiles/hardware/swtpm.toml and
-  # the tpm2-pkcs11/1.10+swtpm pair were measured on default-v1.
+  # the tpm2-pkcs11/1.10+swtpm pair were measured on default-v1. Log level 20 dumps every command
+  # and response in hex: tpm2.rs `tpm2_the_salted_session_keeps_the_token_secrets_off_the_wire`
+  # reads what crossed the transport.
   swtpm socket --tpmstate dir="$D/state" --tpm2 --profile name=default-v1 \
     --server type=tcp,port="$PORT" --ctrl type=tcp,port=$((PORT + 1)) \
-    --flags not-need-init,startup-clear --daemon --pid file="$D/swtpm.pid" --log file="$D/swtpm.log"
+    --flags not-need-init,startup-clear --daemon --pid file="$D/swtpm.pid" --log file="$D/swtpm.log",level=20
   # CAKEYS_TPM_SWTPM: this is the software TPM, where the tests may change TPM state (tpm2.rs
   # `on_swtpm`, which also asks the TPM).
   abrmd_up "$D" swtpm:port="$PORT" "cakeys-tpm-$$-$PORT" " CAKEYS_TPM_SWTPM=1" --flush-all

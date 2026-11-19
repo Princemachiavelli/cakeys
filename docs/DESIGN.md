@@ -406,7 +406,14 @@ content-addressed identity — one per token type that can produce it:
   that cannot activate, no longer matches (14, or 13 for a refused activation). A named
   `ekCertificate` that does not verify is refused (13). A certificate found only in NV that
   reaches no anchor (a manufacturer with no built-in root, or intermediates NV does not hold)
-  leaves the AK trusted on first use, pinned by its own SPKI digest as before. A realisation
+  leaves the AK trusted on first use, pinned by its own SPKI digest as before. With a verified
+  EK, the run's authorizations also go through an HMAC session salted to it: ESYS encrypts the
+  salt to the EK public area `CreatePrimary` answered, which must be the certificate's key, so
+  only that TPM learns the session key. The PIN-derived seal auth and the object's auth never
+  cross the transport (an HMAC, not a password), the unsealed wrapping key crosses it encrypted
+  (`encrypt` on the unseal), and every response the session covers carries an HMAC ESYS checks
+  (`tpm2_the_salted_session_keeps_the_token_secrets_off_the_wire` reads swtpm's log of the
+  traffic). Without one, password sessions, as before. A realisation
   locked on first use keeps its anchor: adding `ekCertificate` later is an anchor change, which
   even `lock` refuses (14). To move it to the manufacturer, delete that realisation's
   `attestation` table from `keys.lock` (a reviewed diff), then `lock` records the new root. Nothing
@@ -665,8 +672,8 @@ The reviews these come from are archived: `docs/archive/REVIEW-2026-11-11.md` (c
 - **The TPM Attestation Key is TOFU without an EK certificate** (§3.7): the AK proves "this
   TPM", not "this genuine TPM", unless an EK certificate verifies to a known root
   (`ekCertificate`, NV) and the AK activates a credential with that EK. Built in are AMD's
-  fTPM roots only; other manufacturers need `ekRoots`. The TPM transport is still
-  unauthenticated, so the token's unsealed wrapping key crosses it in the clear.
+  fTPM roots only; other manufacturers need `ekRoots`. Without a verified EK the TPM transport
+  is unauthenticated too: password sessions, the token's unsealed wrapping key in the clear.
 - **The PIV path is verified by hand on one YubiKey, not in CI.** On a YubiKey 5C NFC FIPS
   (firmware 5.7.4, ykcs11 2.7.3): ykcs11 exposes the slot attestation certificate by label
   suffix and shared `CKA_ID`, and the f9 certificate by its bare label, with no login at all;
