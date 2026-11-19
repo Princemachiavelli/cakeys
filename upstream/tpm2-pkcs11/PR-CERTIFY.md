@@ -6,6 +6,9 @@ Status: **draft, not filed.** The patch is `0002-sign-add-the-vendor-mechanism-C
 
 - Upstream requires the PR to pass their CI. The checks below ran through nixpkgs' build
   environment with `--enable-unit --enable-integration` (swtpm), not their Docker image.
+- The pushed branch has two commits (the mechanism, then a review fix); the patch file is their
+  squash, which is what to submit (the follow-up patches 0003 and 0004 are on top of the branch's
+  tree, which is the same).
 - The PR body below carries no AI attribution lines (the commit has the Co-Authored-By line).
 
 Why cakeys wants it: `tpm-certify` reads the module's private sqlite store (schema, YAML attributes,
