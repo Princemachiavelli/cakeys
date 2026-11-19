@@ -65,7 +65,7 @@ enum Cmd {
     /// written.
     Export {
         /// The objects to export; default: every object realised on --token that can move (the
-        /// others warned about, except a spec's `noExport`).
+        /// others warned about, except a spec's `noExport` and a token's transport key).
         objects: Vec<String>,
         /// The source token.
         #[arg(long)]
@@ -349,6 +349,35 @@ impl<'a> Destination<'a> {
     }
 }
 
+/// A verb's run over its objects (review D8: `import`, `migrate` and `import` from files each
+/// kept their own): each object on its own, so one that fails leaves nothing and the others
+/// still move. Whether any changed the lock, and the first failure, which the run exits with
+/// once the lock is saved.
+#[derive(Default)]
+struct Tally {
+    changed: bool,
+    failed: Option<KmError>,
+}
+
+impl Tally {
+    /// An object written: the lock changed.
+    fn moved(&mut self) {
+        self.changed = true;
+    }
+
+    /// `what` failed with `err`: said now, and kept when it is the run's first failure.
+    fn fail(&mut self, what: impl std::fmt::Display, err: KmError, notes: &mut Notes) {
+        notes.say(format!("{what}: {err}"));
+        self.failed.get_or_insert(err);
+    }
+
+    /// Save the lock if anything moved, then exit with the first failure.
+    fn finish(self, run: &Run<'_>, notes: &mut Notes) -> anyhow::Result<()> {
+        run.save(self.changed, notes)?;
+        self.failed.map_or(Ok(()), |e| Err(e.into()))
+    }
+}
+
 impl Run<'_> {
     /// Save the lock if the verb changed it: also when a later object failed, so what moved is
     /// never left on a token without its realisation.
@@ -411,10 +440,8 @@ impl Run<'_> {
         let mut items = Vec::new();
         for p in &moves.plans {
             if !p.ready {
-                // Meant never to leave (noExport): left out quietly.
-                if no_export(cfg, &p.object, from).is_none() {
-                    notes.warn(format_args!("{}: left out of the bundle: {}", p.object, p.reasons.join("; ")));
-                }
+                // What is meant never to leave is not planned at all (`plan`).
+                notes.warn(format_args!("{}: left out of the bundle: {}", p.object, p.reasons.join("; ")));
                 continue;
             }
             // Ready means a method a bundle carries (`limit_bundle_plans`).
@@ -492,7 +519,7 @@ impl Run<'_> {
         };
         let access = if dry_run { Access::Read } else { Access::Write };
         let target = opener.open(token, access, notes)?;
-        let (mut changed, mut failed) = (false, None);
+        let mut tally = Tally::default();
         // Keys first: a public key object then finds the public half its key's import made.
         let public = Method::Public.name();
         let entries =
@@ -501,8 +528,7 @@ impl Run<'_> {
             let dst = match import_target(cfg, &e.object, token, spec_for(cfg, specs, &e.object), MOVE) {
                 Ok(dst) => dst,
                 Err(err) => {
-                    notes.say(format!("{}: not imported: {err}", e.object));
-                    failed.get_or_insert(err);
+                    tally.fail(format_args!("{}: not imported", e.object), err, notes);
                     continue;
                 }
             };
@@ -530,28 +556,26 @@ impl Run<'_> {
                     );
                 }
                 Ok(Some(public::Moved::Imported)) => {
-                    changed = true;
+                    tally.moved();
                     self.record(&dst)?;
                     notes.say(format!("imported {} from {} into {dst}", e.object, bundle.source.token));
                 }
                 Ok(Some(public::Moved::AlreadyThere)) => {
                     notes.note(format_args!("{dst} is already realised and verifies; nothing to import"));
                 }
-                Err(err) => {
-                    notes.say(format!("{dst}: not imported: {err}"));
-                    failed.get_or_insert(err);
-                }
+                Err(err) => tally.fail(format_args!("{dst}: not imported"), err, notes),
             }
         }
-        self.save(changed, notes)?;
-        failed.map_or(Ok(()), |e| Err(e.into()))
+        tally.finish(self, notes)
     }
 
     /// `migrate` for real: plan and print as `--dry-run` does, refuse (15) before anything moves
     /// when an object cannot move or needs a method not built yet, then move each object and
     /// record it: a public object as it is (phase 2), a key sealed to the target's transport key,
-    /// the bundle in memory (phase 3). What moved before a failure is still recorded, never a
-    /// copy left on the target without its realisation.
+    /// the bundle in memory (phase 3). Each object on its own: one that fails is undone and
+    /// said, the others still move and are recorded, and the run exits with the first failure
+    /// (it stopped there until review D8). Never a copy left on the target without its
+    /// realisation.
     fn migrate(
         &mut self,
         object: Option<&str>,
@@ -596,7 +620,7 @@ impl Run<'_> {
             *t = Some(opener.open(to, Access::Write, notes)?);
             Ok(())
         };
-        let (mut changed, mut failed) = (false, None);
+        let mut tally = Tally::default();
         for p in &moves.plans {
             let pair = source_target(cfg, &self.lock, &p.object, from)
                 .and_then(|src| Ok((src, import_target(cfg, &p.object, to, spec_for(cfg, specs, &p.object), MOVE)?)));
@@ -626,7 +650,7 @@ impl Run<'_> {
             });
             match outcome {
                 Ok(public::Moved::Imported) => {
-                    changed = true;
+                    tally.moved();
                     self.record(&format_args!("'{}' on token '{to}'", p.object))?;
                     let how = p.method.as_ref().map_or_else(String::new, Method::name);
                     notes.say(format!("moved {} from {from} to {to} ({how})", p.object));
@@ -634,14 +658,10 @@ impl Run<'_> {
                 Ok(public::Moved::AlreadyThere) => {
                     notes.note(format_args!("{} is already on {to} and verifies; nothing to move", p.object));
                 }
-                Err(e) => {
-                    failed = Some(e);
-                    break;
-                }
+                Err(e) => tally.fail(format_args!("{}: not moved", p.object), e, notes),
             }
         }
-        self.save(changed, notes)?;
-        failed.map_or(Ok(()), |e| Err(e.into()))
+        tally.finish(self, notes)
     }
 
     /// A key file holds one key, and a PKCS#12 the certificate the lock pairs with it on the
@@ -721,10 +741,14 @@ impl Run<'_> {
             trusted_transport,
         };
         let mut moves = tokens::plan_moves(&self.lock, opener.registry, &req, &open, notes)?;
+        // Without names, what is kept home is left out quietly; named, it is refused (15).
+        if objects.is_empty() {
+            moves.plans.retain(|p| no_export(cfg, &p.object, from).is_none());
+        }
         for p in &mut moves.plans {
-            if let Some(spec) = no_export(cfg, &p.object, from) {
+            if let Some(why) = no_export(cfg, &p.object, from) {
                 p.ready = false;
-                p.reasons.insert(0, format!("migrate.noExport in spec '{spec}': it never leaves '{from}'"));
+                p.reasons.insert(0, format!("{why}: it never leaves '{from}'"));
             }
             // A move lands only on a pair that says `origin = "import"`: an object realised on
             // the target by no such pair cannot move there, whatever else would carry it.
@@ -1039,12 +1063,20 @@ fn unprovable(dst: &Target, target: &cakeys_core::migrate::Side) -> Option<Strin
     }
 }
 
-/// The spec that keeps `object` on `from` (`noExport`), if one does.
-fn no_export<'a>(cfg: &'a Config, object: &str, from: &str) -> Option<&'a str> {
-    cfg.specs
-        .iter()
-        .find(|(_, s)| s.migrate.no_export && s.object == object && s.tokens.contains_key(from))
-        .map(|(name, _)| name.as_str())
+/// What keeps `object` on `from`, if anything does: a spec's `noExport`, or being a token's
+/// transport key (`transportWith`), which never leaves by default. A transport key is
+/// non-extractable already (keys.toml refuses one that does not say so), so it cannot move;
+/// this says why plainly and keeps a move without names from stopping at it.
+fn no_export(cfg: &Config, object: &str, from: &str) -> Option<String> {
+    let realises = |s: &SpecCfg| s.object == object && s.tokens.contains_key(from);
+    if let Some((name, _)) = cfg.specs.iter().find(|(_, s)| s.migrate.no_export && realises(s)) {
+        return Some(format!("migrate.noExport in spec '{name}'"));
+    }
+    cfg.tokens.iter().find_map(|(token, t)| {
+        let spec = t.migrate.transport_with.as_deref()?;
+        realises(cfg.specs.get(spec)?)
+            .then(|| format!("the transport key of token '{token}' (migrate.transportWith = \"{spec}\")"))
+    })
 }
 
 impl Run<'_> {
@@ -1204,9 +1236,10 @@ impl Run<'_> {
             declared: false,
         };
         let moved = host::create_and_record(&dst, &target, &mut self.lock, &read.pkcs8, Some(&spki), origin, notes)?;
-        let mut changed = matches!(moved, public::Moved::Imported);
+        let mut tally = Tally::default();
         match moved {
             public::Moved::Imported => {
+                tally.moved();
                 self.record(&dst)?;
                 notes.say(format!("imported {object} from {} into {dst}", input.display()));
             }
@@ -1216,27 +1249,22 @@ impl Run<'_> {
         }
         // The certificate a PKCS#12 carries, where the lock pairs one with the key on this token.
         // Its failure ends the run only after the lock is saved: the key is on the token by now.
-        let mut failed = None;
         if let Some(cert) = &certificate {
             match cert_target {
                 Some(t) => match public::create(&t, &target, cert, "file", &mut self.lock, notes) {
                     Ok(public::Moved::Imported) => {
-                        changed = true;
+                        tally.moved();
                         notes.say(format!("imported its certificate into {t}"));
                     }
                     Ok(public::Moved::AlreadyThere) => {}
-                    Err(e) => {
-                        notes.say(format!("{t}: its certificate is not imported: {e}"));
-                        failed = Some(e);
-                    }
+                    Err(e) => tally.fail(format_args!("{t}: its certificate is not imported"), e, notes),
                 },
                 None => notes.note(format_args!(
                     "the file's certificate is not imported: the lock pairs no certificate with '{object}' on '{token}'"
                 )),
             }
         }
-        self.save(changed, notes)?;
-        failed.map_or(Ok(()), |e| Err(e.into()))
+        tally.finish(self, notes)
     }
 
     /// `import` without `--in` (docs/FILE.md F6): each object a pair on `token` says is born in a
@@ -1283,34 +1311,29 @@ impl Run<'_> {
         specs_select(cfg, specs, wanted.iter().copied(), token, FROM_FILE)?;
         let access = if how.dry_run { Access::Read } else { Access::Write };
         let target = self.opener.open(token, access, notes)?;
-        let (mut changed, mut failed) = (false, None);
+        let mut tally = Tally::default();
         for object in wanted {
             let dst = match import_target(cfg, object, token, spec_for(cfg, specs, object), FROM_FILE) {
                 Ok(dst) => dst,
                 Err(err) => {
-                    notes.say(format!("{object}: not imported: {err}"));
-                    failed.get_or_insert(err);
+                    tally.fail(format_args!("{object}: not imported"), err, notes);
                     continue;
                 }
             };
             match from_its_file((cfg, self.opener.registry), &dst, &target, &mut self.lock, how, notes) {
                 Ok(None) => {}
                 Ok(Some(public::Moved::Imported)) => {
-                    changed = true;
+                    tally.moved();
                     self.record(&dst)?;
                     notes.say(format!("imported {object} from its file into {dst}"));
                 }
                 Ok(Some(public::Moved::AlreadyThere)) => {
                     notes.note(format_args!("{dst} is already realised and verifies; nothing to import"));
                 }
-                Err(err) => {
-                    notes.say(format!("{dst}: not imported: {err}"));
-                    failed.get_or_insert(err);
-                }
+                Err(err) => tally.fail(format_args!("{dst}: not imported"), err, notes),
             }
         }
-        self.save(changed, notes)?;
-        failed.map_or(Ok(()), |e| Err(e.into()))
+        tally.finish(self, notes)
     }
 
     /// `transport --trusted`: the source's SO makes a `CKA_TRUSTED` copy of the transport key
@@ -1356,15 +1379,14 @@ impl Run<'_> {
     }
 }
 
-/// The passphrase in `path` (its first line), zeroized when dropped. Never empty.
+/// The passphrase in `path` (its one line, [`cakeys_core::secret::read`]), zeroized when dropped.
+/// Never empty.
 fn read_passphrase(path: &Path) -> cakeys_core::Result<Zeroizing<String>> {
-    let text =
-        Zeroizing::new(std::fs::read_to_string(path).map_err(KmError::io(format_args!("reading {}", path.display())))?);
-    let line = Zeroizing::new(text.lines().next().unwrap_or_default().to_owned());
-    if line.is_empty() {
+    let pass = cakeys_core::secret::read("passphrase", None, Some(path))?.unwrap_or_default();
+    if pass.is_empty() {
         return Err(KmError::Validation(format!("{}: the passphrase is empty", path.display()).into()));
     }
-    Ok(line)
+    Ok(pass)
 }
 
 /// How `import` without `--in` reads the objects' files.
@@ -1384,12 +1406,7 @@ fn file_passphrase(cfg: &Config, object: &str, over: Option<&Path>) -> cakeys_co
         return read_passphrase(path).map(Some);
     }
     if let Some(var) = cfg.object_migrate.get(object).and_then(|m| m.passphrase_env.as_deref()) {
-        let value = std::env::var(var).map_err(|_| {
-            KmError::Validation(
-                format!("object '{object}': migrate.passphraseEnv names {var}, which is not set").into(),
-            )
-        })?;
-        return Ok(Some(Zeroizing::new(value)));
+        return cakeys_core::secret::read(&format!("object '{object}': the passphrase"), Some(var), None);
     }
     cfg.object_passphrase_file(object, &|name| std::env::var(name).ok())?.map(|p| read_passphrase(&p)).transpose()
 }

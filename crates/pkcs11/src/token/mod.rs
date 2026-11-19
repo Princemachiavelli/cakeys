@@ -1047,7 +1047,7 @@ fn session(
 
 /// The user PIN (`pinEnv`, else `pinFile`).
 fn read_pin(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
-    read_secret("PIN", cfg.pin_env.as_deref(), cfg.pin_file.as_deref())
+    cakeys_core::secret::read("PIN", cfg.pin_env.as_deref(), cfg.pin_file.as_deref())
 }
 
 /// Whether keys.toml gives the token an admin (Security Officer) credential, which [`Token::as_so`]
@@ -1061,22 +1061,7 @@ pub fn has_admin(cfg: &TokenCfg) -> bool {
 /// is the module's: ykcs11 takes the PIV management key in hex, or the PIN on devices whose
 /// management key is PIN-protected.
 fn read_so_credential(cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
-    read_secret("SO credential", cfg.so_credential_env.as_deref(), cfg.so_credential_file.as_deref())
-}
-
-/// A credential from the environment variable `var`, else the file `path` (its trailing newline
-/// dropped); neither configured is `None`, a configured one that cannot be read `Unavailable`.
-fn read_secret(what: &str, var: Option<&str>, path: Option<&std::path::Path>) -> Result<Option<Zeroizing<String>>> {
-    if let Some(var) = var {
-        return std::env::var(var)
-            .map(|s| Some(Zeroizing::new(s)))
-            .map_err(|_| KmError::Unavailable(format!("{what} env var {var} not set").into()));
-    }
-    let Some(path) = path else { return Ok(None) };
-    std::fs::read_to_string(path)
-        .map(Zeroizing::new)
-        .map(|s| Some(Zeroizing::new(s.trim_end_matches(['\n', '\r']).to_owned())))
-        .map_err(|e| KmError::Unavailable(format!("{what} file {}: {e}", path.display()).into()))
+    cakeys_core::secret::read("SO credential", cfg.so_credential_env.as_deref(), cfg.so_credential_file.as_deref())
 }
 
 /// The `cryptoki` class of a configured object.

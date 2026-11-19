@@ -136,7 +136,8 @@ untrusted channels — except where nothing proves the key: an EC or Edwards pri
 it (14). `migrate`, whose bundle never leaves the process, moves it. A wrapped private key is the PKCS#8 `C_WrapKey` emits; PKCS#12 or a CMS key package
 would need the plaintext on the host, which sealed avoids. Named objects export all or nothing;
 without names, export takes what can move and warns about the rest (a spec's `migrate.noExport = true`
-keeps its object home and silences the warning). Import takes each entry on its own, reports
+keeps its object home and silences the warning, and a token's transport key is kept home so by
+default). Import takes each entry on its own, reports
 every failure, and exits with the first.
 
 **D6. Import is a `lock` that creates from a bundle.**

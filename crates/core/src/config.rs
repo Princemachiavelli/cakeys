@@ -207,7 +207,9 @@ pub struct TokenMigrateCfg {
     /// The spec of this token's transport key (D3): an RSA private key realised here that may
     /// unwrap and never leaves the token. Sealed moves to this token wrap to it, never to one
     /// picked by what it can do (camigrate `--transport-key` overrides it per run); its
-    /// realisation records the public key in the lock, so any host can export to it.
+    /// realisation records the public key in the lock, so any host can export to it. It never
+    /// leaves the tokens its spec realises it on, as if `migrate.noExport` (camigrate refuses it
+    /// named, 15, and leaves it out without names).
     pub transport_with: Option<String>,
 }
 
@@ -495,8 +497,9 @@ impl std::fmt::Display for ObjectCfg {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SpecMigrateCfg {
     /// The object never leaves the tokens this spec realises it on: `camigrate` refuses to
-    /// export or migrate it from them (15), and an export without names leaves it out without
-    /// the warning a key that cannot move gets.
+    /// export or migrate it from them (15), and an export or migrate without names leaves it out
+    /// without the warning a key that cannot move gets. A token's transport key
+    /// (`transportWith`) is kept so without it.
     #[serde(default)]
     pub no_export: bool,
 }

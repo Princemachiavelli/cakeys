@@ -13,6 +13,7 @@ pub mod plaintext;
 pub mod plan;
 pub mod pop;
 pub mod reconcile;
+pub mod secret;
 pub mod sig;
 pub mod types;
 

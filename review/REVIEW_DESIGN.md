@@ -228,7 +228,10 @@ as refused by both.
 - Q14's remaining duplication: the transport-key rule is written three times (camigrate
   `tokens.rs` twice, core config) (**fixed 2026-11-18** for camigrate's two readers of the lock:
   `transport_fault`; keys.toml's check holds declarations, a rule of its own), the passphrase readers duplicate `read_secret` with
-  different semantics, and the per-object loop is copied across three verbs. camigrate's
+  different semantics (**fixed 2026-11-18:** `cakeys_core::secret::read` for both; a decision:
+  the file's one line, a second refused (17), unset or unreadable 16, where a passphrase was the
+  first line and exited 1 or 17), and the per-object loop is copied across three verbs (**fixed
+  2026-11-18:** `Tally`; `migrate` goes on past a failure, as `import` does). camigrate's
   `keyfile` has two PEM scanners that can disagree, so a certificate import can decode a
   private key without `--allow-host-plaintext`.
 - `tpm2_ptool` and the attestation parse the `tcti` option separately. **Fixed (2026-11-18):**

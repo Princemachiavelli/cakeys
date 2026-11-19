@@ -111,6 +111,11 @@ preconditions, and argument routing. The key-file code (`import_file`, `import_f
 the CLI. Suggest: one `for_each_object(… ) -> (changed, first_failure)` helper, and a `files`
 module for the key-file verbs, leaving lib.rs as parsing plus routing. [read]
 
+**Fixed (2026-11-18), the loop:** `Tally` is the one bookkeeping of `import`, `migrate`, `import`
+from files and one file's certificate; `migrate` now goes on past a failure as the others do
+(`a_failed_move_leaves_the_others_moving`). The `files` module and `dispatch` are left to the
+splits.
+
 ### F8. The help text's exit-code list leaves out codes camigrate returns — nit
 
 `crates/camigrate/src/lib.rs:40-41`. It lists 0, 11, 14, 15, 16, 17 and 1. The verbs also return

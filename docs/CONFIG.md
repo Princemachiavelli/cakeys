@@ -60,7 +60,9 @@ tokenLabel = "main"
 # it, naming their serials). The lock's URI records it either way.
 # tokenSerial = "4f3c2a1b9e8d7c6a"
 # The user PIN, read from a file (or `pinEnv = "VAR"`: the PIN itself from the environment).
-# Without a PIN cakeys opens a public session and sees only public objects.
+# Without a PIN cakeys opens a public session and sees only public objects. A secret's file
+# (PIN, SO credential, a key file's passphrase) holds one line, its trailing line ending
+# dropped: a second line is invalid (17); an unset variable or unreadable file is 16.
 pinFile = "/var/lib/softhsm/pin"
 # What only one tool reads sits in that tool's table, here inline: `probe` (caprobe), `migrate`
 # (camigrate) and `nix` (the Nix library); cakeys reads none of them.
@@ -194,8 +196,9 @@ attributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }
 # Private keys only: the policy of the matching public key object.
 publicAttributes = { CKA_VERIFY = true }
 # migrate.noExport: the object never leaves the tokens this spec realises it on: camigrate refuses to export or
-# migrate it from them (15), and `export` without names leaves it out quietly (an extractable
-# key otherwise moves; a non-extractable one is left out with a warning). Not in the spec digest.
+# migrate it from them (15), and `export` or `migrate` without names leaves it out quietly (an
+# extractable key otherwise moves; a non-extractable one is left out with a warning). A token's
+# transport key (`migrate.transportWith`) is kept so without it. Not in the spec digest.
 # migrate = { noExport = true }
 # Where it lives on `softhsm`: a locator (must match exactly one object, or 12), and how it comes
 # to be there, `origin` (required for private and secret keys):

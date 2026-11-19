@@ -11,6 +11,7 @@ mod common;
 use common::xref::{Env, Plant, Ref};
 use common::*;
 use cryptoki::object::{Attribute, CertificateType, ObjectClass};
+use std::fmt::Write as _;
 use x509_cert::der::{Decode as _, Encode as _};
 
 const CERT: &[u8] = include_bytes!("../../cli/tests/fixtures/adopt-cert.der");
@@ -211,4 +212,80 @@ fn an_import_killed_part_way_has_recorded_what_it_made() {
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(stderr(&o).contains("already realised and verifies"), "{}", stderr(&o));
     assert_eq!(on_target("f-crt"), 1);
+}
+
+/// A token's transport key never leaves, as if `noExport` (docs/CONFIG.md): named, a move is
+/// refused (15) and says it is the transport key; without names, an export leaves it out without
+/// a warning and a migrate moves everything else, where it stopped at it (15) before.
+#[test]
+fn a_transport_key_never_leaves() {
+    let Some((e, real)) = tokens("transport-stays") else { return };
+    let soft = &e.refs[0];
+    let o = e.km_alone(soft, &["migrate", "tk-kryoptic", "--from", "kryoptic", "--to", "softhsm", "--dry-run"]);
+    assert_eq!(code(&o), 15, "{}", stdout(&o));
+    assert!(stdout(&o).contains("the transport key of token 'kryoptic'"), "{}", stdout(&o));
+    let out = e.dir.join("all.bundle.toml");
+    let o = e.km_alone(soft, &["export", "--token", "kryoptic", "--target", "softhsm", "--out", out.to_str().unwrap()]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(!stderr(&o).contains("tk-kryoptic"), "{}", stderr(&o));
+    assert!(!std::fs::read_to_string(&out).unwrap().contains("tk-kryoptic"));
+    let o = e.km_alone(soft, &["migrate", "--from", "kryoptic", "--to", "softhsm", "--allow-host-plaintext"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let on_target = |label: &str| open_session(&real, "kmtest", "1234").labelled(label).len();
+    assert_eq!(on_target("tk-kryoptic"), 0);
+    assert!(["f-kk", "f-ks", "f-crt"].iter().all(|l| on_target(l) > 0), "the others did not move");
+}
+
+/// Each object of a `migrate` moves on its own, as a bundle's keys import (review D8): the one
+/// the module fails is undone and the run exits with its failure, the others still move and
+/// the lock records them. Two certificates on kryoptic move into `SoftHSM`, which says the
+/// first is of another type than X.509 once created (13); the second moves.
+#[test]
+fn a_failed_move_leaves_the_others_moving() {
+    let name = "fault-migrate-rest";
+    let Some(real) = suite_var("P11_FAULT_MODULE", "CAKEYS_FAULT_REQUIRE", name) else { return };
+    let Some(kryoptic) = suite_var("CAKEYS_KRYOPTIC_MODULE", "CAKEYS_KRYOPTIC_REQUIRE", name) else { return };
+    let dir = test_dir(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("pin"), "1234\n").unwrap();
+    let token = |name, module| Ref { name, module, token_label: "kmtest", env: &[], plant: Plant::Create, eddsa: true };
+    let e = Env { dir, refs: vec![token("softhsm", fault_shim()), token("kryoptic", kryoptic)] };
+    let (soft, kry) = (&e.refs[0], &e.refs[1]);
+    let mut body = String::new();
+    let session = open_session(&kry.module, "kmtest", "1234");
+    for (o, der) in [
+        ("c1", &include_bytes!("../../cli/tests/fixtures/adopt-cert.der")[..]),
+        ("c2", &include_bytes!("../../cli/tests/fixtures/adopt-cert-p384.der")[..]),
+    ] {
+        writeln!(body, "[objects.{o}]\nclass = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"\n").unwrap();
+        body += &Env::spec(&format!("{o}-src"), o, "", &[kry], &format!("f-{o}"), "");
+        body += &Env::spec(&format!("{o}-dst"), o, "", &[soft], &format!("f-{o}"), ", origin = \"import\"");
+        let cert = x509_cert::Certificate::from_der(der).unwrap();
+        session
+            .create_object(&[
+                Attribute::Class(ObjectClass::CERTIFICATE),
+                Attribute::CertificateType(CertificateType::X_509),
+                Attribute::Subject(cert.tbs_certificate().subject().to_der().unwrap()),
+                Attribute::Value(der.to_vec()),
+                Attribute::Token(true),
+                Attribute::Label(format!("f-{o}").into_bytes()),
+            ])
+            .unwrap();
+    }
+    e.config_with(&body, &|_| String::new());
+    for spec in ["c1-src", "c2-src"] {
+        let o = e.cakeys(kry, &["lock", "--spec", spec, "--token", "kryoptic"]);
+        assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
+    }
+    let lie = "[[rule]]\nfn = \"C_GetAttributeValue\"\nof_label = \"f-c1\"\nattribute = \"CKA_CERTIFICATE_TYPE\"\n\
+               value = \"0100000000000000\"\n";
+    let (code, said, _) = faulted(&e, "rest", lie, &["migrate", "--from", "kryoptic", "--to", "softhsm"]);
+    assert_eq!(code, 13, "{said}");
+    assert!(said.contains("just imported for 'c1'"), "{said}");
+    let on_target = |label: &str| open_session(&real, "kmtest", "1234").labelled(label).len();
+    assert_eq!((on_target("f-c1"), on_target("f-c2")), (0, 1), "{said}");
+    let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
+    let realised = |spec: &str| lock["realisations"].get(spec).is_some_and(|r| r.get("softhsm").is_some());
+    assert_eq!((realised("c1-dst"), realised("c2-dst")), (false, true), "{lock}");
 }
