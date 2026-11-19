@@ -218,8 +218,12 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   `PR-AK.md`): `CKM_TPM2_AK_PAIR_GEN` makes the Attestation Key a token object and
   `CKM_TPM2_CERTIFY_OBJECT` signs with it, so no TCTI is needed here; it changes the pinned
   `attestation.root` (re-lock) and drops the qualified-signer check on that path (a client cannot
-  compute it; the pinned key identifies the signer). A third, `CKM_TPM2_ACTIVATE_CREDENTIAL` for the
-  EK chain, is next.
+  compute it; the pinned key identifies the signer). The third is drafted as well
+  (`0004-…ACTIVATE_CREDENTIAL….patch`, `PR-ACT.md`): `CKA_TPM2_EK_PUB_BLOB` on the attestation key
+  and `CKM_TPM2_ACTIVATE_CREDENTIAL` (`C_Decrypt`) for the EK chain; the client makes the credential
+  with MakeCredential, no TPM. All four tested on swtpm only; the series is on branches
+  `tpm2-certify-mechanism`, `tpm2-ak-object`, `tpm2-activate-credential` of Princemachiavelli/tpm2-pkcs11
+  (not filed). A real TPM's endorsement auth and EK are untested.
 - **A native TPM backend** beside tpm2-pkcs11, for PCR- and policy-bound keys.
 - **Vendor HSM attestation formats** (Luna PKC, Google Cloud HSM, nShield): a scheme each, not
   researched.
