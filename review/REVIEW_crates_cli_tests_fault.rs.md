@@ -52,3 +52,10 @@ the lines, and this could too. `drop(w)` at `:69` is a no-op. [read]
 - `lying()` gates on `P11_FAULT_MODULE` with `CAKEYS_FAULT_REQUIRE`, which `nix/test-tokens.sh:78`
   sets for this binary, and test-tokens.sh leaves `fault/*` untraced so the plan here is the only
   one.
+
+## Resolutions (2026-11-18)
+
+- F1 **Fixed (2026-11-18):** the lock bytes are compared after every row. The write-protected row is `create --update-lock`; three lies also run as `lock --update-lock`. A closing unfaulted `create --update-lock` shows the lock does change on a write. Test: `a_lying_module_is_refused`.
+- F2 **Fixed (2026-11-18):** the hidden case counts one `C_GenerateKeyPair` in the trace and 4 objects labelled `new`. Test: `a_creation_that_cannot_be_identified_is_undone_or_reported`.
+- F3 **Fixed (2026-11-18):** the OAEP and unwrap rules refuse every call. Test: `an_oaep_proof_tries_the_next_hash_only_when_refused_before_it_began`.
+- F4 **Fixed (2026-11-18):** `calls()` parses the trace's JSON, and the no-op `drop(w)` is gone. Test: as F3.

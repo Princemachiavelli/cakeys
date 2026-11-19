@@ -39,3 +39,9 @@ None.
   is never read on SoftHSM's user-session create, and a missing user PIN is 17 at load.
 - `pin_counters_stop_cakeys_before_it_spends_a_try` asserts after the run that the last try was not
   spent (`:190`).
+
+## Resolutions (2026-11-18)
+
+- F1 **Fixed (2026-11-18):** `ResetPin::reset` returns the error; `drop` logs it and never panics. Test: `a_pin_reset_that_fails_does_not_panic`.
+- F2 **Fixed (2026-11-18):** the doc says the guard matters only to a run that shares a token (plain `cargo test`).
+- F3 **Fixed (2026-11-18):** the SoftHSM return says why.

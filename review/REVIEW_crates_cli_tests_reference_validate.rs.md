@@ -44,3 +44,8 @@ None.
   nothing labelled `x` exists afterwards.
 - `provider_options_are_checked_by_the_provider`: refused at open (resolve) and, with the provider
   named, statically by `validate`.
+
+## Resolutions (2026-11-18)
+
+- F1 **Fixed (2026-11-18):** a second realisation (token `ref2`) makes `signer` 12 for resolve, lock, check, verify and delete (nothing deleted); `--spec`/`--token` narrow it to 0. Test: `every_verb_names_the_object_first`.
+- F3 **Fixed (2026-11-18):** after the delete, the token holds no `addr-k` and `check` is 11. Test: same.

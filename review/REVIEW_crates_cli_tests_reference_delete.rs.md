@@ -41,3 +41,9 @@ None.
   the object itself goes only when keys.toml drops it.
 - A present object with no expected identity is never deleted (14), and absent is success even
   without a lock.
+
+## Resolutions (2026-11-18)
+
+- F1 **Fixed (2026-11-18):** `--if-match <locked id>` deletes, and `--if-match` with no lock deletes. Test: `ec_lifecycle`.
+- F3 **Fixed (2026-11-18):** no object labelled `ec-lifecycle` is left after the delete. Test: `ec_lifecycle`.
+- F4 **Fixed (2026-11-18):** `gc --apply` waits for a held `<lock>.lck`. Test: `update_lock_waits_for_the_sidecar_lock` (helper `waits_for_the_sidecar`).

@@ -132,3 +132,18 @@ out at `reference/drift.rs:47, 104, 270, 314, 363`, `reference/proofs.rs:151, 19
 - The DER oracle and the AES/DES3 commitment oracles use RustCrypto directly, not cakeys code.
 - `fault_shim()` fails loudly when the shim is not built.
 - `Set::activate_embedded` (Q24): not used in this batch; not applicable.
+
+## Resolutions (2026-11-18)
+
+- F3 **Fixed (2026-11-18):** `output_within` (behind `Run::within` and `run_within`) drains stdout and stderr on threads from spawn and kills the child at the limit. Test: `a_bounded_run_reads_a_large_output_as_it_comes` (validate.rs).
+- F4 **Fixed (2026-11-18):** `MODULES` is keyed by the module's canonical path, which `Pkcs11::new` also loads. Test: `a_module_named_two_ways_is_held_once` (reference/tokens.rs).
+- F5 **Fixed (2026-11-18):** one copy of each helper in common/:
+  - `Suite` replaces each suite's `Env`/`Deref`;
+  - `suite_var`/`required_var` are the only gates;
+  - the `Run` builder is every run of a binary;
+  - `ptool`/`ptool_in`/`tpm2_store` are the only tpm2_ptool runs;
+  - `swap_private_key` replaces the five swap setups.
+  Test: `the_harness_helpers_are_written_once` (validate.rs).
+- F6 **Fixed (2026-11-18):** the start-of-test clears and the "token is shared" comments are gone. Only create.rs keeps its two functional clears.
+- F7 **Fixed (2026-11-18):** added `hmac_types_fixed(require_var)`; cakeys' tests use it. Test: `no_opted_in_suite_skips_an_unpatched_build` rejects a computed flag in cakeys' tests and `false` anywhere. caprobe's three call sites remain.
+- F8 **Fixed (2026-11-18):** `P256`/`P521` sit beside `P384`/`ED25519`; the literals use them. Test: `the_harness_helpers_are_written_once`.

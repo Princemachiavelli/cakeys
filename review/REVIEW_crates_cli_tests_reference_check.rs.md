@@ -66,3 +66,10 @@ is the contract (the per-object `exit NN:` prefix at `:216-217` is); these two a
   line per failure with its own code, and every documented 17 case.
 - `scheme_the_token_lacks_is_refused_before_create`: the observation proves the hidden
   configuration was the one loaded (`:134-138`), so the 15 is not a coincidence.
+
+## Resolutions (2026-11-18)
+
+- F2 **Fixed (2026-11-18):** the clap conflict is asserted as 2, with no prose. Test: `check_judges_attestation_dates_at_the_time_asked`.
+- F3 **Fixed (2026-11-18):** a `pinEnv` token gives `?pin-source=env:<VAR>`. Test: `a_pin_from_the_environment_is_a_pin_source_env`.
+- F4 **Fixed (2026-11-18):** the "2 of 3" pin is dropped, and the CMAC refusal pins only the mechanism.
+- F5 **Fixed (2026-11-18):** uses `e.hiding("CKM_AES_CMAC")`.

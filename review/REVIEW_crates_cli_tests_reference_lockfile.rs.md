@@ -64,3 +64,9 @@ line. [read]
   too, and `check` and compare still work there.
 - The module path recorded is the canonical file for both a symlink given with `--module` and a
   bare name found through `LD_LIBRARY_PATH`.
+
+## Resolutions (2026-11-18)
+
+- F2 **Fixed (2026-11-18):** `CAKEYS_CONFIG`/`CAKEYS_LOCK` name the files, the flags win over them, and a mode-000 lock is 1. Test: `the_variables_name_the_files_and_an_unreadable_lock_is_an_io_failure`.
+- F3 **Fixed (2026-11-18):** the comments say 18.
+- F4 **Fixed (2026-11-18):** both root branches print a skip line. Test: `lock_is_written_by_default_and_refused_where_it_cannot_be`.
