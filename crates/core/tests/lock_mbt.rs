@@ -7,6 +7,7 @@
 //! The model fixes the keys.toml below and keeps to what it names: a lock entry outside it (a
 //! pair, a public key, a provenance, `publicOnly`, another label) fails the projection.
 
+use cakeys_core::KmError;
 use cakeys_core::config::{
     AttestationRecord, AttrValue, Binding, Config, Immutables, LOCK_VERSION, Lock, Mode, ModuleInfo, ObjectCfg,
     Observation, Observed, Session, TokenInfo, parse_config_with, parse_lock,
@@ -14,10 +15,12 @@ use cakeys_core::config::{
 use cakeys_core::id;
 use cakeys_core::plan::Target;
 use cakeys_core::reconcile::{Facts, LockWrite, Notes, Resolved, commitment_label, reconcile};
-use quint_connect::{Driver, State, Step, quint_run, switch};
+use quint_connect::{Driver, State, Step, switch};
 use serde::Deserialize;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::rc::Rc;
 
 /// The model's keys.toml, `CURVE` being k's curve.
 const CONFIG: &str = r#"
@@ -162,11 +165,47 @@ struct MLock {
     realisations: BTreeMap<String, BTreeMap<String, MRealisation>>,
 }
 
-/// What is compared after each step; the model's ghost variables are not.
+/// What is compared after each step: the lock, the verdict, and the rule that decided it (the
+/// model's `rule` ghost). Twelve rules end in 14, so the exit code alone would let one stand in
+/// for another (review `lock_mbt` F2).
 #[derive(Debug, PartialEq, Eq, Deserialize)]
 struct Compared {
     lock: MLock,
     verdict: Verdict,
+    rule: String,
+}
+
+/// The model's rule a refusal of `reconcile` is, by a marker of its message only that rule's
+/// has: exactly one must match, so a refusal the model does not have, or two rules' messages
+/// grown alike, fails rather than passing for one of them.
+fn rule_of(e: &KmError) -> quint_connect::Result<&'static str> {
+    const MARKERS: [(&str, &str); 12] = [
+        ("type", "in keys.toml changed since it was locked"),
+        ("spec", "changed in keys.toml since it was realised"),
+        ("mode", "locked mode"),
+        ("binding", "binding downgrade"),
+        ("anchor", "attestation anchor for"),
+        ("attestation-lost", "attestation, which it no longer computes"),
+        ("schemes-lost", "], which it no longer computes"),
+        ("replaced", "was replaced since it was realised"),
+        ("object", "changed on the token since it was realised"),
+        ("unlinked", "is locked only by"),
+        ("unrealised", "the lock records no realisation of spec"),
+        ("second-name", "instead of a second name"),
+    ];
+    match e {
+        KmError::HashMismatch { what, .. } if what.ends_with("attestation)") => Ok("attestation-id"),
+        KmError::HashMismatch { .. } => Ok("mismatch"),
+        KmError::FirstUse { .. } => Ok("first-use"),
+        KmError::PreconditionFailed(m) => {
+            let rules: Vec<&str> = MARKERS.iter().filter(|(_, marker)| m.contains(marker)).map(|(r, _)| *r).collect();
+            match rules[..] {
+                [rule] => Ok(rule),
+                _ => anyhow::bail!("{e}: the rules {rules:?}, not one"),
+            }
+        }
+        _ => anyhow::bail!("{e}: no rule of the model"),
+    }
 }
 
 // The model's numbers as the Rust's digests, and back.
@@ -209,9 +248,12 @@ fn unflag(f: Flag) -> Option<bool> {
 }
 
 /// A realisation as the lock writes it: `LockRealisation`'s fields as serialised, since the
-/// projection reads what a keys.lock holds.
+/// projection reads what a keys.lock holds. Every field is named, the ones the model leaves out
+/// too (lock.qnt's header: the locator, observations), so a field added to the lock fails here
+/// until the model or this projection decides about it, never dropped (review `lock_mbt` F1).
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[expect(dead_code, reason = "the fields the model leaves out are named only to be refused when new")]
 struct Written {
     object: String,
     spec_digest: String,
@@ -228,6 +270,26 @@ struct Written {
     immutables: Immutables,
     #[serde(default)]
     provenance: Option<serde_json::Value>,
+    // Outside the model.
+    locator: serde_json::Value,
+    #[serde(default)]
+    observation: Option<String>,
+    #[serde(default)]
+    observed: Option<serde_json::Value>,
+}
+
+/// The fields of a lock or a lock object the projection reads, or leaves out with the model
+/// (`observations`): any other is one it has not decided about.
+fn only_named(what: &str, value: &impl serde::Serialize, named: &[&str]) -> quint_connect::Result {
+    let value = serde_json::to_value(value)?;
+    let unknown: Vec<&String> = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("{what} is no table"))?
+        .keys()
+        .filter(|k| !named.contains(&k.as_str()))
+        .collect();
+    anyhow::ensure!(unknown.is_empty(), "{what}: {unknown:?}, which the projection does not name");
+    Ok(())
 }
 
 struct Mbt {
@@ -237,6 +299,9 @@ struct Mbt {
     types: Vec<(String, ObjectCfg)>,
     lock: Lock,
     verdict: Verdict,
+    rule: String,
+    /// Every rule a replayed step was decided by, for the test to hold to the model's.
+    seen: Rc<RefCell<BTreeSet<String>>>,
 }
 
 impl Default for Mbt {
@@ -248,7 +313,14 @@ impl Default for Mbt {
         let mut types: Vec<(String, ObjectCfg)> =
             configs.iter().map(|(c, cfg)| ((*c).to_owned(), cfg.objects["k"].clone())).collect();
         types.push(("aes".into(), configs["secp256r1"].objects["aes"].clone()));
-        Mbt { configs, types, lock: empty_lock(), verdict: Verdict::Ok(false) }
+        Mbt {
+            configs,
+            types,
+            lock: empty_lock(),
+            verdict: Verdict::Ok(false),
+            rule: String::new(),
+            seen: Rc::default(),
+        }
     }
 }
 
@@ -300,6 +372,7 @@ impl Driver for Mbt {
             init => {
                 self.lock = empty_lock();
                 self.verdict = Verdict::Ok(false);
+                self.rule = String::new();
             },
             realise(
                 target: (String, String),
@@ -385,10 +458,20 @@ impl Mbt {
             MWrite::Compare => LockWrite::Compare,
             MWrite::Record => LockWrite::Record,
         };
-        self.verdict = match reconcile(&t, &r, &mut self.lock, &facts(), write, &mut Notes::default()) {
-            Ok(changed) => Verdict::Ok(changed),
-            Err(e) => Verdict::Exit(e.exit_code().into()),
+        let rule;
+        (self.verdict, rule) = match reconcile(&t, &r, &mut self.lock, &facts(), write, &mut Notes::default()) {
+            Ok(changed) => (
+                Verdict::Ok(changed),
+                match (write, changed) {
+                    (LockWrite::Compare, _) => "compared",
+                    (LockWrite::Record, true) => "recorded",
+                    (LockWrite::Record, false) => "unchanged",
+                },
+            ),
+            Err(e) => (Verdict::Exit(e.exit_code().into()), rule_of(&e)?),
         };
+        rule.clone_into(&mut self.rule);
+        self.seen.borrow_mut().insert(self.rule.clone());
         // Whatever the run left must load: the lock's invariants hold after every write.
         parse_lock(&toml::to_string(&self.lock)?, Path::new("keys.lock"))
             .map_err(|e| anyhow::anyhow!("the lock no longer loads: {e}"))?;
@@ -407,8 +490,10 @@ impl Mbt {
 
 impl State<Mbt> for Compared {
     fn from_driver(d: &Mbt) -> quint_connect::Result<Self> {
+        only_named("the lock", &d.lock, &["version", "objects", "realisations", "observations"])?;
         let mut objects = BTreeMap::new();
         for (name, o) in &d.lock.objects {
+            only_named(name, o, &["commitmentLabel", "type", "ids", "pairs", "publicKey"])?;
             anyhow::ensure!(o.pairs.is_empty() && o.public_key.is_none(), "object '{name}' has pairs or a public key");
             let labelled = match o.commitment_label.as_deref() {
                 None => false,
@@ -477,13 +562,42 @@ impl State<Mbt> for Compared {
                 realisations.entry(spec.clone()).or_default().insert(token.clone(), realisation);
             }
         }
-        Ok(Compared { lock: MLock { objects, realisations }, verdict: d.verdict })
+        Ok(Compared { lock: MLock { objects, realisations }, verdict: d.verdict, rule: d.rule.clone() })
     }
 }
 
 /// Simulated traces of the model, replayed against `reconcile`: a fixed seed, so the check
-/// phase replays the same traces every build.
-#[quint_run(spec = "spec/lock.qnt", max_samples = 500, max_steps = 12, seed = "0x1")]
-fn reconcile_refines_the_lock_model() -> impl Driver {
-    Mbt::default()
+/// phase replays the same traces every build. The replay must reach every rule the model's
+/// witnesses name (review `lock_mbt` F3): `checks.quint` counts them on its own, larger sample,
+/// which says nothing of these 500. `#[quint_run]` expands to this call of quint-connect's
+/// `runner` (doc-hidden; 0.1.2, pinned by Cargo.lock), written out so that what the driver saw
+/// outlives the run.
+#[test]
+fn reconcile_refines_the_lock_model() {
+    let seen = Rc::default();
+    let driver = Mbt { seen: Rc::clone(&seen), ..Mbt::default() };
+    let config = quint_connect::runner::Config {
+        test_name: "reconcile_refines_the_lock_model".into(),
+        gen_config: quint_connect::runner::RunConfig {
+            spec: "spec/lock.qnt".into(),
+            main: None,
+            init: None,
+            step: None,
+            max_samples: Some(500),
+            max_steps: Some(12),
+            seed: "0x1".into(),
+        },
+    };
+    if let Err(e) = quint_connect::runner::run_test(driver, config) {
+        panic!("{e}");
+    }
+    let spec = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/spec/lock.qnt")).unwrap();
+    let rules: BTreeSet<&str> = spec
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("val decidedBy")?.split_once("rule == \"")?.1.strip_suffix('"'))
+        .collect();
+    assert_eq!(rules.len(), 18, "the witnesses the scan reads: {rules:?}");
+    let seen = seen.borrow();
+    let missed: Vec<&&str> = rules.iter().filter(|r| !seen.contains(**r)).collect();
+    assert!(missed.is_empty(), "rules no replayed trace reaches: {missed:?}");
 }

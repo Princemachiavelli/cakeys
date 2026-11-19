@@ -33,23 +33,33 @@ fn adoption_rules_are_validated() {
 #[test]
 fn attributes_are_validated_per_class() {
     let Some(e) = env("attr-class") else { return };
-    for (object, attrs) in [
-        ("certificateType = \"CKC_X_509\"\nclass = \"CKO_CERTIFICATE\"", "attributes = { CKA_SIGN = true }"),
+    // Each invalid (17) for its own reason: the skeleton around it is valid, so a refusal of the
+    // skeleton (a label, origin or locator rule) cannot pass for one of these.
+    for (object, attrs, why) in [
         (
-            "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"",
-            "attributes = { CKA_TRUSTED = true }",
+            "certificateType = \"CKC_X_509\"\nclass = \"CKO_CERTIFICATE\"",
+            "attributes = { CKA_SIGN = true }",
+            "CKA_SIGN does not apply to CKO_CERTIFICATE",
         ),
         (
             "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"",
-            "publicAttributes = { CKA_ALWAYS_AUTHENTICATE = true }",
+            "attributes = { CKA_SIGN = true, CKA_TRUSTED = true }",
+            "CKA_TRUSTED does not apply to CKO_PRIVATE_KEY",
+        ),
+        (
+            "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"",
+            "attributes = { CKA_SIGN = true }\npublicAttributes = { CKA_ALWAYS_AUTHENTICATE = true }",
+            "CKA_ALWAYS_AUTHENTICATE does not apply to CKO_PUBLIC_KEY",
         ),
         (
             "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32",
             "attributes = { CKA_ALWAYS_AUTHENTICATE = true }",
+            "CKA_ALWAYS_AUTHENTICATE does not apply to CKO_SECRET_KEY",
         ),
         (
             "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"",
-            "attributes = { CKA_SIGN = [\"CKM_ECDSA\"] }",
+            "attributes = { CKA_SIGN = true, CKA_DERIVE = [\"CKM_ECDSA\"] }",
+            "only CKA_ALLOWED_MECHANISMS takes a mechanism list",
         ),
     ] {
         e.config(&format!(
@@ -57,7 +67,7 @@ fn attributes_are_validated_per_class() {
              tokens.ref = {{ locator = {{ CKA_LABEL = \"x\" }}, origin = \"adopt\" }}\n"
         ));
         let o = e.km(&["validate"]);
-        assert_eq!(code(&o), 17, "{attrs}: {}", stderr(&o));
+        assert!(code(&o) == 17 && stderr(&o).contains(why), "{attrs}: expected 17 and {why:?}: {}", stderr(&o));
     }
 
     // CKA_ALWAYS_AUTHENTICATE proves possession with a PIN per use (pop-sign, the default)...

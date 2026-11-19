@@ -26,15 +26,24 @@ fn load(text: &str) -> cakeys_core::Result<Config> {
     parse_config_with(text, Path::new("keys.toml"), &|_| None)
 }
 
-/// Why `text` is refused: at load, or when its one target is planned.
-fn refusal(text: &str) -> String {
-    match load(text) {
-        Err(e) => e.to_string(),
+/// How `text` is refused, its exit code and why: at load, or when its one target is planned.
+/// The code is cakeys' contract, the message what tells the rules that share it apart, so a
+/// table pins both (review `refusals.rs` F1).
+fn refusal(text: &str) -> (u8, String) {
+    let e = match load(text) {
+        Err(e) => e,
         Ok(cfg) => match Target::new(&cfg, "s", "t").and_then(|t| plan_mode(&t)) {
-            Err(e) => e.to_string(),
+            Err(e) => e,
             Ok(mode) => panic!("accepted as {mode}:\n{text}"),
         },
-    }
+    };
+    (e.exit_code(), e.to_string())
+}
+
+/// `text` is refused with `code`, saying `why`.
+fn refused_with(text: &str, code: u8, why: &str) {
+    let (got, said) = refusal(text);
+    assert!(got == code && said.contains(why), "expected {code} and {why:?}, got {got}: {said}");
 }
 
 const EC: &str = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
@@ -44,34 +53,48 @@ const SIGN: &str = "attributes = { CKA_SIGN = true }";
 
 #[test]
 fn specs_that_cannot_hold_are_refused_with_why() {
-    let cases: &[(&str, &str, &str, &str)] = &[
-        (AES, SIGN, ", binding = \"pop-sign\"", "applies to private keys only"),
-        (EC, SIGN, ", publicOnly = true, binding = \"pop-sign\"", "publicOnly cannot prove possession"),
+    // An invalid spec is 17; a type cakeys does not manage, 15 (`every_object_is_typed_at_load`).
+    let cases: &[(&str, &str, &str, u8, &str)] = &[
+        (AES, SIGN, ", binding = \"pop-sign\"", 17, "applies to private keys only"),
+        (EC, SIGN, ", publicOnly = true, binding = \"pop-sign\"", 17, "publicOnly cannot prove possession"),
         (
             "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC_EDWARDS\"\ncurve = \"edwards25519\"",
             "attributes = { CKA_DERIVE = true }",
             ", binding = \"pop-ecdh\"",
+            17,
             "Weierstrass EC keys",
         ),
         (
             EC,
             "attributes = { CKA_SIGN = true, CKA_DERIVE = [\"CKM_ECDSA\"] }",
             "",
+            17,
             "only CKA_ALLOWED_MECHANISMS takes a mechanism list",
         ),
-        (EC, "attributes = { CKA_SIGN = true, CKA_BOGUS = true }", "", "unsupported policy attribute CKA_BOGUS"),
-        ("class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"", SIGN, "", "CKO_SECRET_KEY/CKK_EC"),
-        (AES, "attributes = { CKA_SIGN = true }\npublicAttributes = { CKA_VERIFY = true }", "", "private keys only"),
-        ("class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_WTLS\"", "", "", "CKC_X_509"),
-        (&format!("{EC}\ncertificateType = \"CKC_X_509\""), SIGN, "", "certificates only"),
-        (&format!("{CERT}\nkeyType = \"CKK_RSA\""), "", "", "keyType"),
-        ("class = \"CKO_DATA\"", "", ", attestation = true", "key objects only"),
-        ("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp112r1\"", SIGN, "", "secp112r1"),
-        ("class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_RSA\"", SIGN, "", "CKK_RSA"),
+        (EC, "attributes = { CKA_SIGN = true, CKA_BOGUS = true }", "", 17, "unsupported policy attribute CKA_BOGUS"),
+        (
+            "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"",
+            SIGN,
+            "",
+            15,
+            "CKO_SECRET_KEY/CKK_EC",
+        ),
+        (
+            AES,
+            "attributes = { CKA_SIGN = true }\npublicAttributes = { CKA_VERIFY = true }",
+            "",
+            17,
+            "private keys only",
+        ),
+        ("class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_WTLS\"", "", "", 17, "CKC_X_509"),
+        (&format!("{EC}\ncertificateType = \"CKC_X_509\""), SIGN, "", 17, "certificates only"),
+        (&format!("{CERT}\nkeyType = \"CKK_RSA\""), "", "", 17, "keyType"),
+        ("class = \"CKO_DATA\"", "", ", attestation = true", 17, "key objects only"),
+        ("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp112r1\"", SIGN, "", 15, "secp112r1"),
+        ("class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_RSA\"", SIGN, "", 15, "CKK_RSA"),
     ];
-    for (object, spec, on_token, why) in cases {
-        let said = refusal(&keys(object, spec, on_token));
-        assert!(said.contains(why), "expected {why:?} in {said:?}");
+    for (object, spec, on_token, code, why) in cases {
+        refused_with(&keys(object, spec, on_token), *code, why);
     }
 }
 
@@ -138,11 +161,12 @@ fn names_that_select_nothing_are_refused() {
     let cfg = load(&keys(EC, SIGN, "")).unwrap();
     let e = Target::new(&cfg, "s", "elsewhere").err().unwrap();
     assert!(matches!(&e, KmError::NotFound(m) if m.contains("has no token 'elsewhere'")), "{e}");
-    assert!(Target::new(&cfg, "nope", "t").is_err());
+    let e = Target::new(&cfg, "nope", "t").err().unwrap();
+    assert!(matches!(&e, KmError::NotFound(m) if m.contains("'nope'")), "{e}");
     // A spec realised on a token `[tokens]` does not define is refused at load
     // (`what_loads_is_usable`); planning one still refuses it, for a config built otherwise.
-    let said = load(&keys(EC, SIGN, "").replace("object = \"o\"", "object = \"gone\"")).unwrap_err().to_string();
-    assert!(said.contains("gone"), "{said}");
+    let e = load(&keys(EC, SIGN, "").replace("object = \"o\"", "object = \"gone\"")).unwrap_err();
+    assert!(e.exit_code() == 17 && e.to_string().contains("'gone'"), "{e}");
     // An object's one (spec, token) pair, or why there is not exactly one.
     // Every part of the address names something keys.toml has, or the run is invalid (17).
     assert_eq!(cfg.address(Some("o"), None, None).unwrap(), ("s".to_owned(), "t".to_owned()));
@@ -163,9 +187,10 @@ fn names_that_select_nothing_are_refused() {
 
 #[test]
 fn token_and_creation_rules_are_checked_at_load() {
+    // Each invalid config (17) at load, told apart by why.
     let refused = |text: String, why: &str| {
-        let said = load(&text).unwrap_err().to_string();
-        assert!(said.contains(why), "expected {why:?} in {said:?}");
+        let e = load(&text).unwrap_err();
+        assert!(e.exit_code() == 17 && e.to_string().contains(why), "expected 17 and {why:?}: {e}");
     };
     let with_token =
         |line: &str| keys(EC, SIGN, "").replace("tokenLabel = \"t\"", &format!("tokenLabel = \"t\"\n{line}"));
@@ -255,7 +280,10 @@ fn locks_that_contradict_themselves_are_invalid() {
         assert!(e.exit_code() == 17 && e.to_string().contains(why), "expected {why:?} in {e}");
     };
     let object = "version = 1\n[objects.k]\ntype = { class = \"CKO_PRIVATE_KEY\", keyType = \"CKK_EC\", curve = \"secp256r1\" }\n";
-    refused(format!("{object}publicKey = \"AAAA\"\n[objects.k.ids]\ncerthash = \"{sri}\"\n"), "publicKey");
+    refused(
+        format!("{object}publicKey = \"AAAA\"\n[objects.k.ids]\ncerthash = \"{sri}\"\n"),
+        "publicKey without an rfc7093m4 ID",
+    );
     refused(format!("{object}publicKey = \"!\"\n[objects.k.ids]\nrfc7093m4 = \"{sri}\"\n"), "publicKey is not base64");
     refused(format!("{object}publicKey = \"AAAA\"\n[objects.k.ids]\nrfc7093m4 = \"{sri}\"\n"), "publicKey hashes to");
     refused("version = 2\n".into(), "lock version 2 is not supported");
@@ -388,9 +416,9 @@ fn a_binding_fits_its_key_and_usage_or_is_refused() {
         (RSA, flag("CKA_SIGN"), with("pop-unwrap"), "needs CKA_UNWRAP = true"),
         (RSA, "attributes = { CKA_UNWRAP = false }".into(), with("pop-unwrap"), "needs CKA_UNWRAP = true"),
     ];
+    // Each an invalid spec (17), told apart by why.
     for (object, spec, on_token, why) in refused {
-        let said = refusal(&keys(object, spec, on_token));
-        assert!(said.contains(why), "expected {why:?} in {said:?}");
+        refused_with(&keys(object, spec, on_token), 17, why);
     }
     // Other classes have no binding to plan or expect.
     assert_eq!(planned(AES, SIGN, ""), (Mode::Commitment, None, None));
@@ -447,9 +475,9 @@ fn the_identity_mode_follows_the_declared_usage() {
             "CKA_ALLOWED_MECHANISMS does not apply to",
         ),
     ];
+    // Each an invalid spec (17), told apart by why.
     for (object, spec, on_token, why) in cases {
-        let said = refusal(&keys(object, spec, on_token));
-        assert!(said.contains(why), "expected {why:?} in {said:?}");
+        refused_with(&keys(object, spec, on_token), 17, why);
     }
 }
 
@@ -468,8 +496,8 @@ fn what_create_never_makes_cannot_say_origin_create() {
         (EC, "", ", publicOnly = true, origin = \"create\"", "publicOnly adopts the public half, never origin"),
         (AES, trusted, create, "CKA_TRUSTED = true cannot be generated"),
     ] {
-        let said = load(&keys(object, spec, on_token)).unwrap_err().to_string();
-        assert!(said.contains(why), "expected {why:?} in {said:?}");
+        let e = load(&keys(object, spec, on_token)).unwrap_err();
+        assert!(e.exit_code() == 17 && e.to_string().contains(why), "expected 17 and {why:?}: {e}");
         load(&keys(object, spec, &on_token.replace("\"create\"", "\"adopt\""))).unwrap();
     }
     for (object, spec) in [(EC, SIGN), (AES, SIGN), (AES, "attributes = { CKA_WRAP = true, CKA_TRUSTED = false }")] {

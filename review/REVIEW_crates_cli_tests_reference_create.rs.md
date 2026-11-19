@@ -14,6 +14,8 @@ exit code. Thorough. Only small issues.
 `reference/create.rs:281` says a name that selects nothing is refused "(17, 11)", but `:318-321`
 assert only 17. Either assert the 11 case or drop it from the doc. [read]
 
+**Fixed (2026-11-18):** every such name is 17; the doc says so, and each case pins its reason.
+
 ### F2. The `--dry-run` in `create_makes_keys_and_nothing_else_does` is not shown to write nothing — nit
 
 `reference/create.rs:130-133` checks the dry run's exit code and plan but not that the lock and the

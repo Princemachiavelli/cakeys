@@ -98,21 +98,23 @@ fn derive_and_decrypt_only_keys_prove_possession() {
                [specs.r]\nobject = \"r\"\nattributes = { CKA_DECRYPT = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
     let unwrap = "[objects.u]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
                   [specs.u]\nobject = \"u\"\nattributes = { CKA_UNWRAP = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
-    for (body, token) in [
-        (ec, "binding = \"pop-decrypt\""), // RSA proof on an EC key
-        (ec.replace("CKA_DERIVE = true, ", "").as_str(), "binding = \"pop-ecdh\""), // ... without CKA_DERIVE
-        (rsa, "binding = \"pop-ecdh\""),   // EC proof on an RSA key
-        (rsa.replace("CKA_DECRYPT = true, ", "").as_str(), "binding = \"pop-decrypt\""), // ... without CKA_DECRYPT
-        (ec, "binding = \"pop-unwrap\""),  // RSA unwrap proof on an EC key
-        (unwrap.replace("CKA_UNWRAP = true, ", "").as_str(), "binding = \"pop-unwrap\""), // ... without CKA_UNWRAP
+    // Each invalid (17) for its own reason, so a refusal of the shared skeleton cannot pass.
+    for (body, token, why) in [
+        (ec, "binding = \"pop-decrypt\"", "by decrypting: it applies to RSA private keys only"),
+        (ec.replace("CKA_DERIVE = true, ", "").as_str(), "binding = \"pop-ecdh\"", "needs CKA_DERIVE = true"),
+        (rsa, "binding = \"pop-ecdh\"", "by deriving: it applies to EC private keys only"),
+        (rsa.replace("CKA_DECRYPT = true, ", "").as_str(), "binding = \"pop-decrypt\"", "needs CKA_DECRYPT = true"),
+        (ec, "binding = \"pop-unwrap\"", "by unwrapping: it applies to RSA private keys only"),
+        (unwrap.replace("CKA_UNWRAP = true, ", "").as_str(), "binding = \"pop-unwrap\"", "needs CKA_UNWRAP = true"),
     ] {
         e.config(&format!("{body}tokens.ref = {{ locator = {{ CKA_LABEL = \"x\" }}, origin = \"adopt\", {token} }}\n"));
         let o = e.km(&["validate"]);
-        assert_eq!(code(&o), 17, "{token}: {}", stderr(&o));
+        assert!(code(&o) == 17 && stderr(&o).contains(why), "{token}: expected 17 and {why:?}: {}", stderr(&o));
     }
     // The default proof (pop-sign) still needs CKA_SIGN.
     e.config(&format!("{ec}tokens.ref = {{ locator = {{ CKA_LABEL = \"x\" }}, origin = \"adopt\" }}\n"));
-    assert_eq!(e.code(&["validate"]), 17);
+    let o = e.km(&["validate"]);
+    assert!(code(&o) == 17 && stderr(&o).contains("needs CKA_SIGN = true"), "{}", stderr(&o));
 
     // Derive-only EC key, proven by deriving: created, recorded as pop-ecdh, verifies.
     e.config(&format!(

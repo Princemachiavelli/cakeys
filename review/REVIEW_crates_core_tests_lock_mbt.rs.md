@@ -29,6 +29,11 @@ ignored fields (`#[allow(dead_code)] locator: serde_json::Value`, etc.), so a ne
 fails the test until the model or the projection decides about it. The `LockObject` projection
 (`:411-425`) reads named fields and has the same blind spot for a new field. [read]
 
+**Fixed (2026-11-18):** `Written` is `deny_unknown_fields` and names the locator, observation
+and `observed` as fields the model leaves out; the lock's and each object's fields are held to
+the names the projection reads (`only_named`), `observations` among them. Mutation-checked:
+without `locator` in `Written`, or `observations` in the lock's list, the test fails.
+
 ### F2. The verdict is the exit code only, so rules that share 14 are interchangeable — risk
 
 **Verification:** confirmed (downgraded to practice). `Verdict::Exit(i64)` (`lock_mbt.rs:111-114`, `:390`) carries only the code and `rule` is a ghost the test never compares (`lock.qnt:250-252`), so the order among the 14-rules in `compare` (`lock.qnt:179-185`) is untested; but this is documented ("the verdict (the exit code, or whether the lock changed)", docs/DEVELOPMENT.md:101), and the review's own example (no_downgrade skipped in compare) would still differ on single-rule traces, where `object` does not fire and the verdict becomes `Ok(false)`. Only the message is at stake when two 14-rules apply at once. [read]
@@ -43,6 +48,12 @@ same, and the test passes. The message is what tells a user which rule fired. Fi
 `KmError` to a rule name (by a stable marker in `Msg`, or a rule enum on the error if one is
 added) and add `rule` to `Compared`; at minimum, document that the order among the 14s is
 untested. [read]
+
+**Fixed (2026-11-18):** `Compared` carries the model's `rule`, and the driver gives each
+refusal its rule by a marker only that rule's message has (`rule_of`: exactly one matches, or the
+step fails; a refusal outside the model fails too), each success `compared`, `recorded` or
+`unchanged`. Mutation-checked: `replaced` checked before `schemes-lost` in `no_downgrade`, the
+exit code unchanged, passes the old test and fails this one.
 
 ### F3. "Every rule is reached" is checked on a larger sample than the one replayed — risk
 
@@ -100,3 +111,8 @@ which is the intended loud failure. No change needed. [read]
 - `type_name` maps k2's type to "secp256r1" via k's secp256r1 config; equal `ObjectCfg`s, so
   the first match is right.
 - `commitment_label` is set only for `aes`, matching the model's `labelled`.
+
+**Fixed (2026-11-18):** the test calls quint-connect's runner itself (what `#[quint_run]`
+expands to) so the driver's record of the rules outlives the run, then reads the `decidedBy`
+witnesses from lock.qnt (18) and fails naming any rule the 500 replayed traces never reached.
+Mutation-checked: at 20 traces it fails naming `attestation-lost`.

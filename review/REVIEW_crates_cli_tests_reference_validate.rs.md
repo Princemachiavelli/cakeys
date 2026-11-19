@@ -24,6 +24,11 @@ exact skeleton before them, and the reason is never checked. Any refusal unrelat
 under test (a label, origin or locator rule) satisfies them. The second half (`:63-108`) does pin
 reasons. Do the same here. [read]
 
+**Fixed (2026-11-18):** each case pins its reason with 17. Two had passed for the wrong reason:
+`CKA_TRUSTED = true` and a mechanism list on `CKA_SIGN`, on a private key without
+`CKA_SIGN = true`, were refused by the proof-of-possession rule, never their own. The private-key
+cases now declare `CKA_SIGN = true` and the list sits on `CKA_DERIVE`.
+
 ### F3. The final `delete` is not shown to remove anything — nit
 
 `reference/validate.rs:221`: `delete signer` → 0 is also what an absent object gives. Assert

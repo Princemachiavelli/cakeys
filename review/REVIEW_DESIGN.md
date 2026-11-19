@@ -292,10 +292,14 @@ as refused by both.
   order among the twelve rules that exit 14 is untested. The projection type `Written` drops
   lock fields it does not name, where DEVELOPMENT.md says it refuses them. A `quint run` of
   500 traces reached all 18 rules, so there is no coverage hole today, only no assertion
-  guarding it. ([core tests lock_mbt.rs](REVIEW_crates_core_tests_lock_mbt.rs.md))
+  guarding it. ([core tests lock_mbt.rs](REVIEW_crates_core_tests_lock_mbt.rs.md)) **Fixed
+  (2026-11-18):** the rule is compared with the exit code, the projection names every lock
+  field, and the replay fails on a rule it never reached.
 - About 60 refusal cases in `core/tests/refusals.rs`, and several table tests in the CLI
   suite, assert a message substring or exit 17 alone, not the documented code and reason
-  together.
+  together. **Fixed (2026-11-18):** each asserts both. Pinning the reasons found two CLI
+  cases refused for another rule than the one they named (a private key without `CKA_SIGN`);
+  their skeleton is fixed.
 - The surface check counts flag literals across the whole shared harness, so a flag can count
   as tested because another tool's helper spells it.
 - The SoftHSM/kryoptic token setup is copied into about ten places (`scripts/local-tests.sh`

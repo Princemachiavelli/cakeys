@@ -19,6 +19,8 @@ A change that makes the skeleton itself invalid (for example a schema rename of 
 skeleton. Fix: pin a word of each refusal (the binding and the missing bit), as
 `attributes_are_validated_per_class` does for its last cases. [read]
 
+**Fixed (2026-11-18):** each case and the default-proof one pin their reason with 17.
+
 ### F2. Stale comment about a shared token — nit
 
 `reference/proofs.rs:89-93` ("The token is shared between runs ..."): see common/mod.rs F6. [read]

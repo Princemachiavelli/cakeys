@@ -300,7 +300,7 @@ fn a_tokens_own_answers_decide_before_its_profile() {
 
 /// `create` over tokens of one module (`ref` and `ref-anon` share it) opens each in turn; a pair
 /// that fails — opening its token included — leaves what was created before it recorded; and a
-/// name that selects nothing is refused (17, 11), never an empty success.
+/// name that selects nothing is refused (17), never an empty success.
 #[test]
 fn create_records_what_it_made_before_a_failure() {
     let Some(e) = env("create_failure") else { return };
@@ -337,8 +337,13 @@ fn create_records_what_it_made_before_a_failure() {
     assert!(recorded("a-two"), "{}", e.lock());
 
     // An address naming nothing keys.toml has is invalid, as for every verb.
-    assert_eq!(e.code(&["create", "--token", "typo"]), 17);
-    assert_eq!(e.code(&["create", "--spec", "a-two", "--token", "ref-anon"]), 17);
-    assert_eq!(e.code(&["create", "typo"]), 17);
-    assert_eq!(e.code(&["create", "two", "--spec", "b-second"]), 17);
+    for (args, why) in [
+        (&["create", "--token", "typo"][..], "unknown token 'typo'"),
+        (&["create", "--spec", "a-two", "--token", "ref-anon"][..], "no spec places spec 'a-two' on token 'ref-anon'"),
+        (&["create", "typo"][..], "unknown object 'typo'"),
+        (&["create", "two", "--spec", "b-second"][..], "spec 'b-second' realises 'second', not 'two'"),
+    ] {
+        let o = e.km(args);
+        assert!(code(&o) == 17 && stderr(&o).contains(why), "{args:?}: expected 17 and {why:?}: {}", stderr(&o));
+    }
 }

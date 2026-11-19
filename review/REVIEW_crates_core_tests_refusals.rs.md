@@ -24,6 +24,11 @@ load-time from a plan-time refusal, though some rules are documented as load-tim
 `every_object_is_typed_at_load` (`:84-96`) and `lock_objects_keep_their_invariants`
 (`:456-459`) already do; keep a short `why` only where the code is shared by several rules. [read]
 
+**Fixed (2026-11-18):** `refusal` returns the exit code with the message and `refused_with`
+asserts both; the mixed table carries each case's code (17 invalid, 15 a type cakeys does not
+manage), the tables of one code assert it, and `what_create_never_makes_...` checks its
+documented 17. Mutation-checked: the unsupported curve as 17 fails the table.
+
 ### F2. A weak substring makes one lock case match any `publicKey` error — nit
 
 `crates/core/tests/refusals.rs:225`. The case (a `publicKey` with only a `certhash` ID) expects
@@ -32,10 +37,14 @@ base64"`, `"hashes to"`). If the rule "publicKey needs an rfc7093m4 ID" were rem
 value then failed the hash check, this case still passes. Fix: match the rule's own wording
 (whatever `check_public_key` says for a missing `rfc7093m4`). [read]
 
+**Fixed (2026-11-18):** the case matches "publicKey without an rfc7093m4 ID".
+
 ### F3. `Target::new` on an unknown spec checks only `is_err` — nit
 
 `crates/core/tests/refusals.rs:107`. The neighbouring cases match the variant and message; this
 one would pass on any error. Fix: `matches!(e, KmError::NotFound(_))` (or whatever it is). [read]
+
+**Fixed (2026-11-18):** `NotFound` naming the spec; the undefined object's case also asserts 17.
 
 ### F4. `the_value_length_bound_is_inclusive` duplicates properties.rs — nit
 
