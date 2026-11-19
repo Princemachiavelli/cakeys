@@ -406,7 +406,7 @@ fn resolve_with(
         binding,
         assurance: cakeys_core::plan::assurance(t.object.class, binding, attestation.as_ref().map(|a| a.kind.as_str())),
         policy: tok.policy(h)?,
-        immutables: tok.immutables(h),
+        immutables: tok.immutables(h)?,
         commitment_label,
         attestation,
         public_key: if t.transport { Some(tok.spki(h, &t.on_token.locator)?) } else { None },

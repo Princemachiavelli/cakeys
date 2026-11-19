@@ -99,12 +99,13 @@ impl Token {
 
     /// The observed policy vector: every boolean attribute of `h`'s class (PKCS#11 3.2 §4,
     /// `cakeys_core::attrs::observed`) the token reports, declared in the spec or not, plus
-    /// `CKA_ALLOWED_MECHANISMS` on key objects when readable. Unreadable ones are left out.
+    /// `CKA_ALLOWED_MECHANISMS` on key objects when readable. Those the object lacks or the module
+    /// refuses are left out (`if_readable`).
     ///
     /// # Errors
     ///
     /// `Conflict` when the object exposes no `CKA_CLASS`; `Unsupported` for a class cakeys
-    /// does not manage.
+    /// does not manage; `Unavailable` when the device, token or session fails a read.
     pub fn policy(&self, h: ObjectHandle) -> Result<BTreeMap<String, AttrValue>> {
         let class = match self.attr(h, AttributeType::Class)? {
             Some(Attribute::Class(c)) => {
@@ -115,14 +116,14 @@ impl Token {
         let mut policy = BTreeMap::new();
         for name in attrs::observed(class) {
             let Some(t) = bool_attr(name, false).map(|a| a.attribute_type()) else { continue };
-            // Unsupported or unreadable on this token: not part of what it can show.
-            if let Ok(Some(b)) = self.flag(h, t) {
+            // Unsupported or refused on this token: not part of what it can show.
+            if let Some(b) = self.flag_if_readable(h, t)? {
                 policy.insert(name.to_owned(), AttrValue::Bool(b));
             }
         }
         if attrs::has_allowed_mechanisms(class) {
             // An empty list is not reported: it is indistinguishable from absent and means none.
-            if let Ok(Some(m)) = self.allowed_mechanisms(h) {
+            if let Some(m) = self.allowed_if_readable(h)? {
                 policy.insert(
                     "CKA_ALLOWED_MECHANISMS".to_owned(),
                     AttrValue::mechanisms(m.iter().copied().map(mechanism_name)),
@@ -141,11 +142,8 @@ impl Token {
     /// (one without the `cryptoki-allowed-mechanisms-unnamed` patch, docs/OPEN.md), else the
     /// module's error.
     pub(crate) fn allowed_mechanisms(&self, h: ObjectHandle) -> Result<Option<Vec<MechanismType>>> {
-        match self.session.get_attributes(h, &[AttributeType::AllowedMechanisms]) {
-            Ok(attrs) => Ok(attrs.into_iter().find_map(|a| match a {
-                Attribute::AllowedMechanisms(m) if !m.is_empty() => Some(m),
-                _ => None,
-            })),
+        match self.read_allowed(h) {
+            Ok(m) => Ok(m),
             Err(CkError::NotSupported) => Err(KmError::Unsupported(
                 format!(
                     "CKA_ALLOWED_MECHANISMS on token '{}' names a mechanism this build's cryptoki cannot read \
@@ -158,23 +156,37 @@ impl Token {
         }
     }
 
-    /// `CKA_LOCAL`, `CKA_NEVER_EXTRACTABLE`, `CKA_ALWAYS_SENSITIVE` and `CKA_KEY_GEN_MECHANISM` of a
-    /// key (empty for other classes). Unreadable values are left out.
-    pub fn immutables(&self, h: ObjectHandle) -> Immutables {
-        let flag = |t| match self.attr(h, t) {
-            Ok(Some(a)) => attr_bool(&a),
+    /// [`Self::allowed_mechanisms`] where it can be read ([`if_readable`]): `None` too where this
+    /// build's cryptoki cannot name a mechanism in it.
+    pub(crate) fn allowed_if_readable(&self, h: ObjectHandle) -> Result<Option<Vec<MechanismType>>> {
+        if_readable(self.read_allowed(h))
+    }
+
+    fn read_allowed(&self, h: ObjectHandle) -> std::result::Result<Option<Vec<MechanismType>>, CkError> {
+        Ok(self.session.get_attributes(h, &[AttributeType::AllowedMechanisms])?.into_iter().find_map(|a| match a {
+            Attribute::AllowedMechanisms(m) if !m.is_empty() => Some(m),
             _ => None,
-        };
-        Immutables {
-            local: flag(AttributeType::Local),
-            never_extractable: flag(AttributeType::NeverExtractable),
-            always_sensitive: flag(AttributeType::AlwaysSensitive),
-            key_gen_mechanism: match self.attr(h, AttributeType::KeyGenMechanism) {
+        }))
+    }
+
+    /// `CKA_LOCAL`, `CKA_NEVER_EXTRACTABLE`, `CKA_ALWAYS_SENSITIVE` and `CKA_KEY_GEN_MECHANISM` of a
+    /// key (empty for other classes). Those the object lacks or the module refuses are left out.
+    ///
+    /// # Errors
+    ///
+    /// `Unavailable` when the device, token or session fails a read (`if_readable`).
+    pub fn immutables(&self, h: ObjectHandle) -> Result<Immutables> {
+        let flag = |t| Ok::<_, KmError>(self.attr_if_readable(h, t)?.as_ref().and_then(attr_bool));
+        Ok(Immutables {
+            local: flag(AttributeType::Local)?,
+            never_extractable: flag(AttributeType::NeverExtractable)?,
+            always_sensitive: flag(AttributeType::AlwaysSensitive)?,
+            key_gen_mechanism: match self.attr_if_readable(h, AttributeType::KeyGenMechanism)? {
                 // CK_UNAVAILABLE_INFORMATION: no generation mechanism (imported).
-                Ok(Some(Attribute::KeyGenMechanism(m))) if *m != CK_UNAVAILABLE_INFORMATION => Some(m.to_string()),
+                Some(Attribute::KeyGenMechanism(m)) if *m != CK_UNAVAILABLE_INFORMATION => Some(m.to_string()),
                 _ => None,
             },
-        }
+        })
     }
     /// Every declared policy attribute of the spec must match the live object.
     fn check_policy(&self, h: ObjectHandle, spec: &SpecCfg) -> Result<()> {
@@ -210,12 +222,31 @@ impl Token {
     /// A boolean policy attribute as the module reports it, repaired by the provider where the
     /// module misreports it (`Provider::policy_flag`).
     fn flag(&self, h: ObjectHandle, t: AttributeType) -> Result<Option<bool>> {
-        let Some(reported) = self.attr(h, t)?.as_ref().and_then(attr_bool) else { return Ok(None) };
-        let private_key_type = || match self.attr(h, AttributeType::Class) {
-            Ok(Some(Attribute::Class(ObjectClass::PRIVATE_KEY))) => self.key_type(h).ok().flatten(),
-            _ => None,
+        self.repaired(h, t, self.attr(h, t)?.as_ref())
+    }
+
+    /// [`Self::flag`] where it can be read ([`if_readable`]).
+    fn flag_if_readable(&self, h: ObjectHandle, t: AttributeType) -> Result<Option<bool>> {
+        self.repaired(h, t, self.attr_if_readable(h, t)?.as_ref())
+    }
+
+    fn repaired(&self, h: ObjectHandle, t: AttributeType, read: Option<&Attribute>) -> Result<Option<bool>> {
+        let Some(reported) = read.and_then(attr_bool) else { return Ok(None) };
+        // The key's type, for a provider whose repair needs it: read only then, and a failed
+        // device, token or session is the read's error, not "no type".
+        let failed = std::cell::Cell::new(None);
+        let private_key_type = || {
+            let read = || match self.attr_if_readable(h, AttributeType::Class)? {
+                Some(Attribute::Class(ObjectClass::PRIVATE_KEY)) => self.key_type_if_readable(h),
+                _ => Ok(None),
+            };
+            read().unwrap_or_else(|e| {
+                failed.set(Some(e));
+                None
+            })
         };
-        Ok(Some(self.provider.policy_flag(t, reported, &private_key_type)))
+        let flag = self.provider.policy_flag(t, reported, &private_key_type);
+        failed.into_inner().map_or(Ok(Some(flag)), Err)
     }
 
     /// `publicAttributes`, checked on the public key object of the pair: `h` itself when adopting

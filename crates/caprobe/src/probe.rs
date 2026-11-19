@@ -486,6 +486,18 @@ impl Scratch {
         }
     }
 
+    /// After a probe failed: destroy what the run made, by handle, then anything still under its
+    /// labels (a pair whose lookup failed is tracked by label alone). Not measured: a run that
+    /// writes no profile records no `delete` row.
+    fn destroy_after_failure(&self, session: &Session) {
+        self.destroy_all(session);
+        for l in &self.labels {
+            for h in session.find_objects(&[Attribute::Label(l.as_bytes().to_vec())]).unwrap_or_default() {
+                let _ = session.destroy_object(h);
+            }
+        }
+    }
+
     /// Which probe labels are still on the token: what `C_DestroyObject` really deleted.
     fn leftovers(&self, session: &Session) -> Vec<String> {
         self.labels
@@ -707,7 +719,8 @@ impl Made<'_> {
 /// The write probes: key pairs per curve and RSA size, each operation the module advertises
 /// on the first key of each kind, the secret-key generation it advertises (a refusal is a
 /// `subtract` row), the OAEP hashes it actually implements for wrapping (wrap and unwrap back),
-/// and the unwrap-template rules. On a scratch token every run cleans up after itself, and the
+/// and the unwrap-template rules. On a scratch token every run cleans up after itself, a run a
+/// probe's error ends included (only a crash is left to the next run's stale check), and the
 /// leftover check turns "delete really deletes" into a note.
 fn write_probes(made: &mut Made, profile: &mut Draft) -> Result<()> {
     let labels = matches!(made.scratch.target, Target::Labels);
@@ -718,6 +731,25 @@ fn write_probes(made: &mut Made, profile: &mut Draft) -> Result<()> {
             made.undetermined.push(format!("destroyed objects an interrupted probe left: {}", stale.join(", ")));
         }
     }
+    let probed = probe_writes(made, profile, labels);
+    if labels {
+        match probed {
+            Ok(()) => destroy_all(made, profile),
+            // What the probes made before the error goes too (review D7): it was left for the
+            // next run's stale check, on a token keys.toml lends as scratch.
+            Err(_) => made.scratch.destroy_after_failure(made.session),
+        }
+    }
+    probed?;
+    let busy = std::mem::take(&mut made.ops).finish(profile);
+    made.undetermined.extend(busy);
+    profile.out.add.sort();
+    profile.out.add.dedup();
+    Ok(())
+}
+
+/// [`write_probes`] but its cleanup.
+fn probe_writes(made: &mut Made, profile: &mut Draft, labels: bool) -> Result<()> {
     let bound = !made.bound_keys.is_empty();
     let transport = if bound {
         probe_bound(made, profile);
@@ -748,7 +780,6 @@ fn write_probes(made: &mut Made, profile: &mut Draft) -> Result<()> {
             // After the wrap probes: a secret key's sealed export takes an OAEP hash they found.
             moves::probe_moves(made, profile, transport)?;
         }
-        destroy_all(made, profile);
     } else {
         if !bound {
             moves::probe_moves(made, profile, None)?;
@@ -759,10 +790,6 @@ fn write_probes(made: &mut Made, profile: &mut Draft) -> Result<()> {
                 .into(),
         );
     }
-    let busy = std::mem::take(&mut made.ops).finish(profile);
-    made.undetermined.extend(busy);
-    profile.out.add.sort();
-    profile.out.add.dedup();
     Ok(())
 }
 

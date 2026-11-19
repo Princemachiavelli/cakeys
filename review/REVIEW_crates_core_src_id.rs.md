@@ -44,6 +44,11 @@ reaches `spki` through `x509_cert::spki` while the rest of the file uses `p256::
 the stand-in check ("as the stand-in check compares it with the private key's own"). Fix:
 `KeyAlg::of_spki(spki).map(|a| match a { KeyAlg::Ec(c) => Some(c), KeyAlg::Rsa => None })`. [read]
 
+**Fixed (2026-11-18):** as suggested. A non-SPKI is now `Unsupported`, as `spki_canonical` says;
+the table test `spki_curve_reads_what_canonical_spkis_hold` holds the three forms only the old
+dispatcher read (an Edwards curve's OID or name under `id-ecPublicKey`, a Weierstrass OID as the
+algorithm) refused by both.
+
 ## Design
 
 - The identity of a public key is defined as "canonical DER SPKI" but computed through crypto

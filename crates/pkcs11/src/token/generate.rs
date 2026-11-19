@@ -203,7 +203,7 @@ impl Token {
         if class_of(object) == ObjectClass::PRIVATE_KEY {
             let spki = self.spki(h, loc)?;
             for p in self.find(ObjectClass::PUBLIC_KEY, loc)? {
-                if self.held_spki(p).as_ref() == Some(&spki) {
+                if self.held_spki(p)?.as_ref() == Some(&spki) {
                     handles.push(p);
                 } else {
                     left += 1;

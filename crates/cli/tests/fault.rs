@@ -494,3 +494,66 @@ fn a_refused_curve_is_tried_by_name_only_where_the_profile_says_so() {
     let generations = text.lines().filter(|l| l.contains("\"C_GenerateKeyPair\"")).count();
     assert_eq!(generations, 1, "{text}");
 }
+
+/// A failed attribute read is unavailable (16) wherever in the run it falls, never read as an
+/// answer. Each `C_GetAttributeValue` of `verify`, `check` and `lock` fails in turn with
+/// `CKR_DEVICE_ERROR` until the rule no longer fires, and every run exits 16: before, a policy
+/// flag read so was left out (14, "changed since it was realised"; `lock` would record it so) and
+/// a public key object's point read so was "no key material" (13) (review D7). A module that
+/// refuses only the attribute (`CKR_ARGUMENTS_BAD`, as ykcs11 refuses `CKA_PUBLIC_KEY_INFO`)
+/// still leaves an optional one out: there the run passes, and `lock` writes what a clean run does.
+/// (A policy flag refused so is not what the token can show: `lock --update-lock` records that.)
+#[test]
+fn a_failed_attribute_read_is_never_an_answer() {
+    const PUBLIC_KEY_INFO: u64 = 0x129;
+    const ALLOWED_MECHANISMS: u64 = 0x4000_0600;
+    let Some(w) = lying("fault-reads") else { return };
+    let lock = w.dir.join("keys.lock");
+    let before = std::fs::read(&lock).unwrap();
+    let relock = |spec: &'static str| vec!["lock", "--spec", spec, "--token", "ref", "--update-lock"];
+    // What a clean `lock` writes, from the same lock.
+    let clean: Vec<Vec<u8>> = ["k", "r"]
+        .iter()
+        .map(|spec| {
+            std::fs::write(&lock, &before).unwrap();
+            assert_eq!(w.code(&relock(spec)), 0, "{spec}");
+            std::fs::read(&lock).unwrap()
+        })
+        .collect();
+    let mut wrong = Vec::new();
+    for (rv, strict) in [("CKR_DEVICE_ERROR", true), ("CKR_ARGUMENTS_BAD", false)] {
+        for (s, spec) in ["k", "r"].into_iter().enumerate() {
+            let runs: [(&str, Vec<&str>); 3] = [
+                ("verify", vec!["verify", "--spec", spec, "--token", "ref"]),
+                ("check", vec!["check", spec, "--token", "ref"]),
+                ("lock", relock(spec)),
+            ];
+            for (verb, args) in runs {
+                for n in 1.. {
+                    std::fs::write(&lock, &before).unwrap();
+                    let (plan, trace) = (w.dir.join("plan.toml"), w.dir.join(format!("trace-{verb}-{spec}-{n}.jsonl")));
+                    let rule = format!("[[rule]]\nfn = \"C_GetAttributeValue\"\ncall = {n}\nrv = \"{rv}\"\n");
+                    std::fs::write(&plan, rule).unwrap();
+                    let o = w.km_env(&args, &[("P11_FAULT_PLAN", &plan), ("P11_FAULT_TRACE", &trace)]);
+                    let Some(hit) = fired(&trace).pop() else {
+                        assert!(n > 5, "{verb} {spec}: only {n} reads");
+                        break;
+                    };
+                    let read: Vec<u64> =
+                        hit["attributes"].as_array().unwrap().iter().filter_map(serde_json::Value::as_u64).collect();
+                    let optional = matches!(read.as_slice(), [PUBLIC_KEY_INFO | ALLOWED_MECHANISMS]);
+                    let exit = code(&o);
+                    let last = stderr(&o).lines().last().unwrap_or("").to_owned();
+                    let said = format!("{rv} {verb} {spec} call {n} {read:x?}: exit {exit}: {last}");
+                    if (strict && exit != 16) || (!strict && optional && exit != 0) {
+                        wrong.push(said);
+                    } else if verb == "lock" && optional && std::fs::read(&lock).unwrap() != clean[s] {
+                        wrong.push(format!("{said}: the lock is not what a clean run writes"));
+                    }
+                }
+            }
+        }
+    }
+    std::fs::write(&lock, &before).unwrap();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}

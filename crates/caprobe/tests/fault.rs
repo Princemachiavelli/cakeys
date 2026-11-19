@@ -239,3 +239,26 @@ fn the_probe_clears_what_an_interrupted_run_left() {
     assert!(stderr(&o).contains("destroyed objects an interrupted probe left: cakeys-probe-stale"), "{}", stderr(&o));
     assert_eq!(open_session(&real, "kmtest", "1234").labelled("cakeys-probe-stale").len(), 0);
 }
+
+/// A probe that an error ends still destroys what it made (review D7): the first lookup after the
+/// third generation fails with `CKR_DEVICE_ERROR`, which ends the run, and nothing under a probe
+/// label is left. Before, every key made so far stayed for the next run's stale check.
+#[test]
+fn a_probe_an_error_ends_destroys_what_it_made() {
+    let Some(w) = scratch("fault-probe-ends") else { return };
+    let (exit, _, said, _) = probed(&w, "clean", "", &[]);
+    assert_eq!(exit, 0, "{said}");
+    let trace = std::fs::read_to_string(w.dir.join("clean.jsonl")).unwrap();
+    let calls: Vec<serde_json::Value> = trace.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let seq = |c: &serde_json::Value| c["seq"].as_u64().unwrap();
+    let third = calls.iter().filter(|c| c["fn"] == "C_GenerateKeyPair").nth(2).map(seq).unwrap();
+    let after = calls.iter().find(|c| c["fn"] == "C_FindObjects" && seq(c) > third).unwrap();
+    let plan = rule(&format!("fn = \"C_FindObjects\"\ncall = {}\nrv = \"CKR_DEVICE_ERROR\"", after["n"]));
+    let (exit, _, said, fired) = probed(&w, "ends", &plan, &[]);
+    assert!(exit != 0 && fired > 0, "exit {exit}, rules fired {fired}: {said}");
+    let real = std::env::var("P11_FAULT_MODULE").unwrap();
+    let s = open_session(&real, "kmtest", "1234");
+    let left: Vec<String> =
+        (1..=99).map(|n| format!("cakeys-probe-{n:02}")).filter(|l| !s.labelled(l).is_empty()).collect();
+    assert!(left.is_empty(), "left on the token: {left:?}\n{said}");
+}

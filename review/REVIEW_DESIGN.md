@@ -174,23 +174,43 @@ tampering). Point validity belongs in identity; size policy belongs in the gate,
 code. `id::spki_curve` is also a second OID dispatcher beside `KeyAlg::of` (Q20 missed it) and
 accepts encodings the other refuses. ([core id.rs](REVIEW_crates_core_src_id.rs.md))
 
+**Fixed (2026-11-18):** the size half was F1 (dc3f102). `spki_curve` is now `KeyAlg::of_spki`
+mapped: every caller passes a canonical SPKI (`spki_canonical`'s output, a canonicalized key
+file), which never holds the forms only the second dispatcher read, and `spki_canonical`
+refuses them already. `spki_curve_reads_what_canonical_spkis_hold` pins each disputed encoding
+as refused by both.
+
 ## D7. Secrets and cleanup: owners, not end-of-run passes
 
 - `SessionObject` (Q5, Q6) gives the verbs drop-based cleanup. The probe's `Scratch` is still
   one `destroy_all` at the end, which any `?` in `write_probes` or in `moves.rs` skips (the
   next run's `clear_stale` sweeps them, so this is practice), and `Made::create` loses track
-  of a key pair it made when one half is missing (risk).
+  of a key pair it made when one half is missing (risk). **Fixed (2026-11-18):** `Made::create`
+  tracks the label once `create` succeeds (dc3f102); `write_probes` destroys what the run made
+  on either arm, after an error by handle and then by label (`destroy_after_failure`) —
+  `a_probe_an_error_ends_destroys_what_it_made`. A crash is still the next run's.
 - The same "error after a write loses the write" shape appears in four places: `as_so`
   (below), `create_absent`'s `tok.create(..)?` skipping cleanup (`ops.rs:610`), camigrate's
   `reopen(..)?` after `tpm2_ptool import` (`host.rs:172`), and the probe's `Made::create`.
-  Each needs the write recorded or undone before the later error returns.
+  Each needs the write recorded or undone before the later error returns. **Fixed
+  (2026-11-18):** `create_absent` undoes a failed creation (`undo_created`), camigrate says what
+  `tpm2_ptool` left and how to record or remove it, `as_so` reports a done step as done
+  (`so_outcome`), and the probe as above.
 - Zeroization (B16) is incomplete: the `pop-unwrap` secret is a plain `[u8; 32]`, and the RSA
   CRT coefficient is dropped unwiped. ([core pop.rs](REVIEW_crates_core_src_pop.rs.md),
-  [core plaintext.rs](REVIEW_crates_core_src_plaintext.rs.md))
+  [core plaintext.rs](REVIEW_crates_core_src_plaintext.rs.md)) **Fixed (dc3f102):** both are
+  `Zeroizing`.
 - `as_so` drops a step's successful result when the SO logout or user re-login fails. If the
   step generated a key, it is neither cleaned up nor recorded.
-  ([pkcs11 token/mod.rs](REVIEW_crates_pkcs11_src_token_mod.rs.md))
+  ([pkcs11 token/mod.rs](REVIEW_crates_pkcs11_src_token_mod.rs.md)) **Fixed:** F2 there.
 - `held_spki` swallows read errors, so a transient module failure is reported as a conflict.
+  **Fixed (2026-11-18), wider than found:** every optional attribute read (`held_spki`,
+  `policy()`, `immutables()`, `CKA_PUBLIC_KEY_INFO`, `CKA_ALLOWED_MECHANISMS`, the key type a
+  provider repairs a flag by) goes through `if_readable`: a refusal of the attribute is still
+  "absent", but a failed device, token or session is 16. Failing each `C_GetAttributeValue` of
+  `verify`, `check` and `lock` in turn found 13s (a public key object read as "no key material")
+  and 14s (a policy flag left out, read as "changed since it was realised", and recorded so by
+  `lock`) — `a_failed_attribute_read_is_never_an_answer`.
 
 ## D8. Module and crate boundaries
 
@@ -273,7 +293,8 @@ crates.io, and warns on duplicate versions. The CI items are left for now.
 - `crates/cli/tests/cloud.rs:25` cites docs/CLI.md, which does not exist.
 - ISSUES.md B18 says the by-name retry reads "the lock's recorded answers included"; the code
   never applies `with_answers` at `Token::open`.
-- ISSUES.md B16 is marked fixed; the `pop-unwrap` secret is still not wiped.
+- ISSUES.md B16 is marked fixed; the `pop-unwrap` secret is still not wiped. (It is: dc3f102,
+  before this list was written down.)
 
 **Fixed (2026-11-18):** the iteration count, the test name (now
 `a_foreign_public_key_conflicts_and_is_never_deleted`) and the CLI.md citation; B18 was

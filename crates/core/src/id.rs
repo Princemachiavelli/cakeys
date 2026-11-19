@@ -686,29 +686,19 @@ fn rsa_key(modulus: &[u8], exponent: &[u8]) -> std::result::Result<rsa::PublicKe
     Ok(rsa::PublicKey::new_unchecked(n, e))
 }
 
-/// The curve a DER SPKI's algorithm names: `Some` for an EC (`id-ecPublicKey` with a named curve)
-/// or Edwards key of a curve cakeys knows, `None` for RSA.
+/// The curve a DER SPKI's key is on ([`KeyAlg::of_spki`]): `Some` for an EC or Edwards key,
+/// `None` for RSA. It once had a dispatcher of its own that also read an Edwards curve under
+/// `id-ecPublicKey` and a Weierstrass curve's OID as the algorithm (review D6); neither is a
+/// canonical SPKI, and every caller's is one.
 ///
 /// # Errors
 ///
-/// `Unsupported` for another algorithm or an unknown curve; `Conflict` if it is not an SPKI.
+/// As [`KeyAlg::of_spki`].
 pub fn spki_curve(spki: &[u8]) -> Result<Option<Curve>> {
-    const RSA: &str = "1.2.840.113549.1.1.1";
-    const EC: &str = "1.2.840.10045.2.1";
-    let info = x509_cert::spki::SubjectPublicKeyInfoRef::from_der(spki)
-        .map_err(|e| KmError::Conflict(format!("not a SubjectPublicKeyInfo: {e}").into()))?;
-    let alg = &info.algorithm;
-    let named = match alg.oid.to_string().as_str() {
-        RSA => return Ok(None),
-        EC => alg.parameters.as_ref().and_then(|p| p.to_der().ok()),
-        // Ed25519 and Ed448: the algorithm is the curve, and its DER OID is the curve's params.
-        _ => alg.oid.to_der().ok(),
-    };
-    named
-        .as_deref()
-        .and_then(Curve::from_params)
-        .map(Some)
-        .ok_or_else(|| KmError::Unsupported(format!("public key algorithm {}", alg.oid).into()))
+    Ok(match KeyAlg::of_spki(spki)? {
+        KeyAlg::Ec(c) => Some(c),
+        KeyAlg::Rsa => None,
+    })
 }
 
 /// Canonical DER SPKI of a certificate's subject key: links a certificate to its key object.
@@ -1131,6 +1121,33 @@ mod tests {
         assert_eq!(curve(fixture!("tpm-import-p256-cert.der")), Some(Curve::P256));
         assert_eq!(curve(fixture!("adopt-cert-p384.der")), Some(Curve::P384));
         assert_eq!(curve(fixture!("adopt-cert-ed25519.der")), Some(Curve::Ed25519));
-        assert!(matches!(spki_curve(b"\x30\x00"), Err(KmError::Conflict(_))));
+    }
+
+    /// The SPKI forms the second dispatcher read and `KeyAlg::of_spki` does not (review D6): each
+    /// is refused alike by `spki_curve` and by `spki_canonical`, which every SPKI a caller passes
+    /// came through, so one dispatcher decides both.
+    #[test]
+    fn spki_curve_reads_what_canonical_spkis_hold() {
+        let tlv = |tag: u8, body: &[&[u8]]| {
+            let body = body.concat();
+            [&[tag, u8::try_from(body.len()).unwrap()][..], &body].concat()
+        };
+        let ec_public_key = [0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
+        let ed25519 = [0x06, 0x03, 0x2b, 0x65, 0x70];
+        let secp384r1 = [0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22];
+        let spki = |alg: &[&[u8]], point: &[u8]| tlv(0x30, &[&tlv(0x30, alg), &tlv(0x03, &[&[0], point])]);
+        let cases: [(&str, Vec<u8>); 4] = [
+            ("an Edwards curve's OID under id-ecPublicKey", spki(&[&ec_public_key, &ed25519], &[7; 32])),
+            (
+                "an Edwards curve by name under id-ecPublicKey",
+                spki(&[&ec_public_key, &tlv(0x13, &[b"edwards25519"])], &[7; 32]),
+            ),
+            ("a Weierstrass curve's OID as the algorithm", spki(&[&secp384r1], &[&[4][..], &[7; 96]].concat())),
+            ("no SubjectPublicKeyInfo", b"\x30\x00".to_vec()),
+        ];
+        for (what, der) in cases {
+            assert!(matches!(spki_curve(&der), Err(KmError::Unsupported(_))), "{what}: {:?}", spki_curve(&der));
+            assert!(matches!(spki_canonical(&der), Err(KmError::Unsupported(_))), "{what}");
+        }
     }
 }

@@ -19,6 +19,8 @@ is the session key the token unwraps; while it lives it lets anyone reading host
 the token's MAC for this one challenge. Low impact (one use), but it is exactly the class of
 secret B16 set out to wipe. Fix: `let mut secret = zeroize::Zeroizing::new([0u8; 32]);`. [read]
 
+**Fixed (dc3f102):** `let mut secret = zeroize::Zeroizing::new([0u8; 32]);`.
+
 ### F2. `verify_with` loses the reason when an RSA or Ed25519 key's parser refuses it — practice
 
 `crates/core/src/pop.rs:94-105`, with `sig::rsa_pkcs1v15`/`rsa_pss`/`ed25519` returning `None`

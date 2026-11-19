@@ -21,6 +21,8 @@ module doc ("Every secret part is zeroized when dropped") are wrong for this one
 (`BoxedUint: Zeroize` with crypto-bigint's `zeroize` feature, which rsa enables), or use
 `key.qinv()` if a canonical form is available. [read]
 
+**Fixed (dc3f102):** `coefficient: be(&Zeroizing::new(key.crt_coefficient()…?))`.
+
 ### F2. Multi-prime RSA keys are refused as "not a PKCS#8 RSA key" — nit
 
 `crates/core/src/plaintext.rs:145`. `let [p, q] = key.primes() else { return Err(bad()) }`

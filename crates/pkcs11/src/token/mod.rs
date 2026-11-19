@@ -326,6 +326,42 @@ fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
     move |e| KmError::Unavailable(format!("{context}: {e}").into()).with_rv(rv_of(&e))
 }
 
+/// Whether `e` says the device, the token or the session failed, rather than anything of the
+/// object or attribute asked for. Matched on cryptoki's error, not on [`rv_of`], which a build
+/// without `rv-value` leaves empty.
+fn device_failed(e: &CkError) -> bool {
+    matches!(
+        e,
+        CkError::Pkcs11(
+            RvError::DeviceError
+                | RvError::DeviceMemory
+                | RvError::DeviceRemoved
+                | RvError::HostMemory
+                | RvError::GeneralError
+                | RvError::TokenNotPresent
+                | RvError::TokenNotRecognized
+                | RvError::SessionClosed
+                | RvError::SessionHandleInvalid
+                | RvError::CryptokiNotInitialized
+                | RvError::FunctionCanceled,
+            _
+        )
+    )
+}
+
+/// An optional attribute read: `None` where the object lacks the attribute or the module
+/// refuses to read it (ykcs11 refuses `CKA_PUBLIC_KEY_INFO` with `CKR_ARGUMENTS_BAD`, a build
+/// may not name a mechanism). A failure of the device, token or session ([`device_failed`]) is
+/// still unavailable (16), never read as the attribute's absence: a policy flag left out read
+/// as a changed key (14), a public key object's point as another key (13) (review D7).
+fn if_readable<T>(read: std::result::Result<Option<T>, CkError>) -> Result<Option<T>> {
+    match read {
+        Ok(v) => Ok(v),
+        Err(e) if device_failed(&e) => Err(ck("C_GetAttributeValue")(e)),
+        Err(_) => Ok(None),
+    }
+}
+
 /// A session object cakeys made for one step (a derived secret, a key-encryption key, a
 /// wrap-rebind copy), destroyed when this is dropped, whatever the step returned. A destroy
 /// that fails is not an error: the object goes with its session.
@@ -537,9 +573,18 @@ impl Token {
     ///
     /// `Unavailable` when the module refuses `C_GetAttributeValue`.
     pub fn key_type(&self, h: ObjectHandle) -> Result<Option<KeyType>> {
-        let Some(Attribute::KeyType(kt)) = self.attr(h, AttributeType::KeyType)? else { return Ok(None) };
+        self.key_type_by(|t| self.attr(h, t))
+    }
+
+    /// [`Self::key_type`] where it can be read ([`if_readable`]).
+    fn key_type_if_readable(&self, h: ObjectHandle) -> Result<Option<KeyType>> {
+        self.key_type_by(|t| self.attr_if_readable(h, t))
+    }
+
+    fn key_type_by(&self, read: impl Fn(AttributeType) -> Result<Option<Attribute>>) -> Result<Option<KeyType>> {
+        let Some(Attribute::KeyType(kt)) = read(AttributeType::KeyType)? else { return Ok(None) };
         let params = match kt {
-            KeyType::EC => match self.attr(h, AttributeType::EcParams)? {
+            KeyType::EC => match read(AttributeType::EcParams)? {
                 Some(Attribute::EcParams(p)) => Some(p),
                 _ => None,
             },
@@ -641,7 +686,7 @@ impl Token {
         let mut copy = None;
         let mut others = 0;
         for h in found {
-            if copy.is_none() && self.held_spki(h).as_deref() == Some(spki) {
+            if copy.is_none() && self.held_spki(h)?.as_deref() == Some(spki) {
                 copy = Some(h);
             } else {
                 others += 1;
@@ -702,7 +747,7 @@ impl Token {
         if matches!(class, ObjectClass::PRIVATE_KEY | ObjectClass::PUBLIC_KEY) {
             for p in self.find(ObjectClass::PUBLIC_KEY, loc)? {
                 match spki {
-                    Some(s) if out.public_half.is_none() && self.held_spki(p).as_deref() == Some(s) => {
+                    Some(s) if out.public_half.is_none() && self.held_spki(p)?.as_deref() == Some(s) => {
                         out.public_half = Some(p);
                     }
                     _ => out.colliding += 1,
@@ -778,6 +823,11 @@ impl Token {
 
     fn attr(&self, h: ObjectHandle, t: AttributeType) -> Result<Option<Attribute>> {
         Ok(self.session.get_attributes(h, &[t]).map_err(ck("C_GetAttributeValue"))?.into_iter().next())
+    }
+
+    /// `h`'s attribute `t` where it can be read ([`if_readable`]).
+    fn attr_if_readable(&self, h: ObjectHandle, t: AttributeType) -> Result<Option<Attribute>> {
+        if_readable(self.session.get_attributes(h, &[t]).map(|a| a.into_iter().next()))
     }
 
     /// Run `step` in a Security Officer session (`soCredentialFile`/`soCredentialEnv`), for modules that

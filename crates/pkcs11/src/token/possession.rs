@@ -68,7 +68,7 @@ impl Token {
     /// `binding` `pop-sign-pin`, the signature is authorized by a context-specific login.
     /// An RSA key signs as [`rsa_signature`] chooses for it.
     fn prove_sign(&self, h: ObjectHandle, object: &ObjectCfg, spki: &[u8], msg: &[u8], binding: Binding) -> Result<()> {
-        let permits = self.proof_permits(h);
+        let permits = self.proof_permits(h)?;
         let usable = |m: MechanismType| self.has(m) && permits(m);
         let none_allowed = |ms: &[MechanismType]| self.none_allowed(ms);
         let mut rsa = pop::RsaSignature::Pkcs1v15(pop::HashAlg::Sha256);
@@ -96,7 +96,7 @@ impl Token {
                 (self.runnable(Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Pure))), msg.to_vec())
             }
             KeyType::RSA => {
-                let allowed = self.allowed_mechanisms(h).ok().flatten();
+                let allowed = self.allowed_if_readable(h)?;
                 let Some((m, scheme)) = rsa_signature(allowed.as_deref(), |m| self.has(m)) else {
                     return Err(none_allowed(&RSA_SIGN.map(|(m, _)| m)));
                 };
@@ -179,7 +179,7 @@ impl Token {
     /// [`Self::prove_ecdh_extractable`] instead, and so does one that refuses the sealed form
     /// when its profile does not say.
     fn prove_ecdh(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
-        if !self.proof_permits(h)(MechanismType::ECDH1_DERIVE) {
+        if !self.proof_permits(h)?(MechanismType::ECDH1_DERIVE) {
             return Err(self.none_allowed(&[MechanismType::ECDH1_DERIVE]));
         }
         let ch = pop::ecdh_challenge(spki, msg)?;
@@ -302,7 +302,7 @@ impl Token {
     /// key is the one `spki` names. OAEP takes the first of [`OAEP`]'s hashes the token does not
     /// refuse before decrypting.
     fn prove_decrypt(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
-        let permits = self.proof_permits(h);
+        let permits = self.proof_permits(h)?;
         let usable = |m: MechanismType| self.has(m) && permits(m);
         let (oaep, v15) = (MechanismType::RSA_PKCS_OAEP, MechanismType::RSA_PKCS);
         let failed = self.proof_failed("C_Decrypt", "decrypt", "CKA_DECRYPT");
@@ -348,7 +348,7 @@ impl Token {
     /// token, so a transport key proves possession without `CKA_DECRYPT`. OAEP takes the first of
     /// [`OAEP`]'s hashes the token does not refuse.
     fn prove_unwrap(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
-        if !self.proof_permits(h)(MechanismType::RSA_PKCS_OAEP) {
+        if !self.proof_permits(h)?(MechanismType::RSA_PKCS_OAEP) {
             return Err(self.none_allowed(&[MechanismType::RSA_PKCS_OAEP]));
         }
         let template = self.proof_secret(Binding::PopUnwrap, true)?;
@@ -396,11 +396,11 @@ impl Token {
     }
 
     /// Whether the private key's own `CKA_ALLOWED_MECHANISMS` lets a proof use a mechanism. It
-    /// narrows the choice where it can be read (absent or unreadable, it does not). A proof records
+    /// narrows the choice where it can be read (absent or refused, it does not). A proof records
     /// only its binding, never the mechanism, so choosing per run changes nothing the lock pins.
-    fn proof_permits(&self, h: ObjectHandle) -> impl Fn(MechanismType) -> bool {
-        let allowed = self.allowed_mechanisms(h).ok().flatten();
-        move |m| allowed.as_ref().is_none_or(|a| a.contains(&m))
+    fn proof_permits(&self, h: ObjectHandle) -> Result<impl Fn(MechanismType) -> bool> {
+        let allowed = self.allowed_if_readable(h)?;
+        Ok(move |m| allowed.as_ref().is_none_or(|a| a.contains(&m)))
     }
 
     /// A proof refused because the key's `CKA_ALLOWED_MECHANISMS` allows none of `ms`.

@@ -29,6 +29,12 @@ destroys what it made" and ISSUES.md Q26 consolidated the cleanup into one `dest
 Fix: run the probe body in an inner function and call `Scratch::destroy_all` on both arms
 before propagating (or give `Scratch` a guard that destroys on drop unless disarmed). [read]
 
+**Fixed (2026-11-18):** `write_probes` runs the probes in `probe_writes` and destroys what was
+made on either arm: after an error, by handle and then by every tracked label
+(`Scratch::destroy_after_failure`), so a pair whose lookup failed goes too.
+`a_probe_an_error_ends_destroys_what_it_made` (caprobe tests/fault.rs) fails the first lookup
+after the third generation and finds nothing under a probe label.
+
 ### F2. The write probes' `CKR_OPERATION_ACTIVE` handling silently depends on `cakeys-pkcs11/rv-value` — risk
 
 **Verification:** confirmed; same root cause as REVIEW_crates_caprobe_Cargo.toml.md F1. probe.rs:391 and :1241 match only `rv_is(e.rv(), OperationActive)`, which is always false without `rv-value` (token/mod.rs:270-273), and the write/diff guard at probe.rs:1843-1852 checks only `binding::patched()`; the `minimal` crane build is patched but lacks `rv-value`. [read]
