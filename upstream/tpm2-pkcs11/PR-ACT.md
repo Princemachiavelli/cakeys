@@ -2,8 +2,8 @@
 
 Status: **draft, not filed. Depends on PR-AK.md** (and through it PR-CERTIFY.md): the patch is
 `0004-key-add-CKM_TPM2_ACTIVATE_CREDENTIAL-to-chain-an-attestation-key-to-the-EK.patch`, on top of
-0003. Signed off in ~/srcs/tpm2-pkcs11.certify, branch `pr/activate-credential` (one
-commit, on `pr/attestation-key`). Before opening it:
+0003. Signed off in ~/srcs/tpm2-pkcs11.certify, branch `upstream-pr/3-activate-credential` (one
+commit, on `upstream-pr/2-attestation-key`). Before opening it:
 
 - File the other two first and rebase this on what upstream merges.
 - Upstream requires the PR to pass their CI. The checks below ran through nixpkgs' build

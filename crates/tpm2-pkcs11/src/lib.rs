@@ -14,7 +14,8 @@
 //! the point repair, and the one module with usable attestation reachable outside PKCS#11,
 //! the `tpm-certify` commitment (docs/DESIGN.md §3.7) — the module itself exposes no
 //! attestation, so `attest` reaches the TPM through tss-esapi and the module's sqlite store
-//! (see [`attest`]).
+//! (see [`attest`]). A module patched with the `CKM_TPM2_CERTIFY` vendor mechanism
+//! (`upstream/tpm2-pkcs11/`) certifies for us instead, and the store is not opened.
 
 pub mod attest;
 mod ptool;

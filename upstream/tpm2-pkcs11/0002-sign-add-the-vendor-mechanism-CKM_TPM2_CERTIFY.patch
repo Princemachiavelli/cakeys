@@ -1,6 +1,6 @@
-From e6cb26a4fcceed064758befc8a0852c910fda4ec Mon Sep 17 00:00:00 2001
-From: check <check@example.invalid>
-Date: Thu, 19 Nov 2026 07:19:49 -0800
+From bc55809962100000f6cdcf2de003e8fd1a3c1bb0 Mon Sep 17 00:00:00 2001
+From: Josh Hoffer <jhoffer@sansorgan.es>
+Date: Thu, 19 Nov 2026 07:39:10 -0800
 Subject: [PATCH] sign: add the vendor mechanism CKM_TPM2_CERTIFY
 
 TPM2_Certify of a key object, signed by a persistent TPM key the caller

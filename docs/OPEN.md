@@ -228,7 +228,7 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   (the EK public area and certificate, readable after the login only) and `CKM_TPM2_ACTIVATE_CREDENTIAL`
   (`C_Decrypt`) for the EK chain; the client makes the credential with MakeCredential, no TPM, and
   checks the certificate chain itself (docs/VENDOR.md, "What the client verifies"). All four tested on swtpm only; the series is on branches
-  `pr/certify`, `pr/attestation-key`, `pr/activate-credential` (one commit each, stacked) of Princemachiavelli/tpm2-pkcs11
+  `upstream-pr/1-certify`, `upstream-pr/2-attestation-key`, `upstream-pr/3-activate-credential` (one commit each, stacked) of Princemachiavelli/tpm2-pkcs11
   (not filed). A real TPM's endorsement auth and EK are untested.
 - **A native TPM backend** beside tpm2-pkcs11, for PCR- and policy-bound keys.
 - **Vendor HSM attestation formats** (Luna PKC, Google Cloud HSM, nShield): a scheme each, not

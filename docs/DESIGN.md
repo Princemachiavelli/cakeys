@@ -391,10 +391,10 @@ content-addressed identity — one per token type that can produce it:
   (`options.akHandle`, `0x`-prefixed, owner persistent range). With `options.akLabel` the AK is
   instead a private key object of the token (a restricted P-256 key the module makes and never
   releases), found by that label and checked to be restricted and fixed to the TPM and its parent;
-  `lock` makes it, reads never do. Its `qualifiedSigner` is not checked: only the TPM knows the
-  path of the module's primary, so the signature under the pinned key is what identifies the
-  signer (for the persistent AK, a primary of the owner hierarchy, the host reads it from the TPM
-  and compares it). Trust in it is TOFU through the pinned
+  `lock` makes it, reads never do. Its `qualifiedSigner` is not checked: it is `H(QN(primary) ‖ Name(AK))`, and
+  the host does not have the Name of the module's primary without the TPM or the store, so the
+  signature under the pinned key is what identifies the signer (for the persistent AK, a primary
+  of the owner hierarchy, it is `H(0x40000001 ‖ Name)`, and the host compares it with what the TPM reads). Trust in it is TOFU through the pinned
   `root`; **chaining it to the Endorsement Key certificate (EK → AK via
   MakeCredential/ActivateCredential) is not implemented yet** — until it is, the AK proves
   "this TPM", not "this genuine TPM".

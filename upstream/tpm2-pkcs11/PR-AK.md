@@ -2,8 +2,8 @@
 
 Status: **draft, not filed. Depends on PR-CERTIFY.md** (`CKM_TPM2_CERTIFY`, the header, the
 mechanism table entry): the patch is `0003-key-add-the-attestation-key-as-an-object-of-the-token.patch`,
-on top of 0002. Signed off in ~/srcs/tpm2-pkcs11.certify, branch `pr/attestation-key` (one
-commit, on `pr/certify`). Before opening it:
+on top of 0002. Signed off in ~/srcs/tpm2-pkcs11.certify, branch `upstream-pr/2-attestation-key` (one
+commit, on `upstream-pr/1-certify`). Before opening it:
 
 - File PR-CERTIFY first and rebase this on what upstream merges.
 - Upstream requires the PR to pass their CI. The checks below ran through nixpkgs' build

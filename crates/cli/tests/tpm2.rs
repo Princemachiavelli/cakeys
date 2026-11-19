@@ -686,7 +686,7 @@ fn tpm2_attestation_refuses_a_store_that_disagrees() {
         original = attrs.to_owned();
         attrs.replace("? !!int \"354\"\n  : !!bool \"false\"", "? !!int \"354\"\n  : !!bool \"true\"")
     });
-    refused("the store does not match what the TPM holds");
+    refused("the module does not report what the TPM holds");
     edit_private_row("store-a", |_| original.clone());
     assert_eq!(code(&e.km(&r)), 18);
 

@@ -259,7 +259,7 @@ pub fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
         return Err(KmError::Conflict(
             format!(
                 "the module reports CKA_LOCAL {} / CKA_EXTRACTABLE {}, but the TPM certified \
-             {} / {}: the store does not match what the TPM holds",
+             {} / {}: the module does not report what the TPM holds",
                 local, extractable, certified.local, certified.extractable
             )
             .into(),

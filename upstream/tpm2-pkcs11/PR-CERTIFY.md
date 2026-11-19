@@ -2,7 +2,7 @@
 
 Status: **draft, not filed.** The patch is `0002-sign-add-the-vendor-mechanism-CKM_TPM2_CERTIFY.patch`
 (on master `a5156c5`, independent of the P-521 patch). Signed off in ~/srcs/tpm2-pkcs11.certify, branch
-`pr/certify` (one commit on master, pushed to Princemachiavelli/tpm2-pkcs11). Before opening it:
+`upstream-pr/1-certify` (one commit on master, pushed to Princemachiavelli/tpm2-pkcs11). Before opening it:
 
 - Upstream requires the PR to pass their CI. The checks below ran through nixpkgs' build
   environment with `--enable-unit --enable-integration` (swtpm), not their Docker image.

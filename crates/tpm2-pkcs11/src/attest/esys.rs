@@ -1,5 +1,8 @@
 //! The native `TPM2_Certify` attestation path for tpm2-pkcs11 tokens (docs/DESIGN.md §3.7).
 //!
+//! (For a module that has the `CKM_TPM2_CERTIFY` vendor mechanism see [`super::vendor`]: this is
+//! the path for the others, and the one whose checks both share.)
+//!
 //! tpm2-pkcs11 exposes no attestation through PKCS#11, so cakeys reaches the TPM itself:
 //! the object's TPM blobs are read from the module's store, loaded under the token's primary
 //! parent, and certified by an Attestation Key (AK) that cakeys provisions in the owner
