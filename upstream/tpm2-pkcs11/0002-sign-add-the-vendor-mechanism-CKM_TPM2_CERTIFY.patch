@@ -1,6 +1,6 @@
-From 0c5595bce9056d16f478f63e8d4c4a347d07c800 Mon Sep 17 00:00:00 2001
+From b819c6ce738e9badc3efebba799ce2ffe69c738f Mon Sep 17 00:00:00 2001
 From: Josh Hoffer <jhoffer@sansorgan.es>
-Date: Thu, 19 Nov 2026 00:18:25 -0800
+Date: Thu, 19 Nov 2026 00:28:51 -0800
 Subject: [PATCH] sign: add the vendor mechanism CKM_TPM2_CERTIFY
 
 TPM2_Certify of a key object, signed by a persistent TPM key the caller
@@ -13,7 +13,8 @@ The module's logged-in session already holds what TPM2_Certify needs (the
 loaded object and its unwrapped auth), so nothing secret leaves the
 module. CKA_SIGN and CKA_ALLOWED_MECHANISMS are not consulted: the
 mechanism signs nothing the key holder chose, and it certifies keys that
-can sign nothing (decrypt-only, AES, HMAC).
+can sign nothing (decrypt-only, AES, HMAC). The signer must have an empty
+auth value; one that does not is CKR_MECHANISM_PARAM_INVALID.
 
 Add src/tpm2-pkcs11-vendor.h, installed, which fixes the numbers of
 CKA_TPM2_PUB_BLOB and CKM_TPM2_CERTIFY and the parameter layout. The
@@ -30,16 +31,16 @@ Signed-off-by: Josh Hoffer <jhoffer@sansorgan.es>
  Makefile-integration.am                       |   7 +-
  Makefile.am                                   |   3 +
  docs/README.md                                |   1 +
- docs/VENDOR.md                                |  86 ++++
+ docs/VENDOR.md                                |  89 ++++
  src/lib/attrs.h                               |   6 +-
  src/lib/mech.c                                |  18 +-
  src/lib/sign.c                                |  96 ++++
- src/lib/tpm.c                                 | 104 +++++
+ src/lib/tpm.c                                 | 116 +++++
  src/lib/tpm.h                                 |  25 +
  src/tpm2-pkcs11-vendor.h                      |  73 +++
- test/integration/pkcs-certify.int.c           | 428 ++++++++++++++++++
- test/integration/scripts/create_pkcs_store.sh |  11 +
- 13 files changed, 861 insertions(+), 5 deletions(-)
+ test/integration/pkcs-certify.int.c           | 439 ++++++++++++++++++
+ test/integration/scripts/create_pkcs_store.sh |  17 +
+ 13 files changed, 893 insertions(+), 5 deletions(-)
  create mode 100644 docs/VENDOR.md
  create mode 100644 src/tpm2-pkcs11-vendor.h
  create mode 100644 test/integration/pkcs-certify.int.c
@@ -114,10 +115,10 @@ index 8d9a12b..1038674 100644
  * [Release Process](/docs/RELEASE.md) - How releases are conducted
 diff --git a/docs/VENDOR.md b/docs/VENDOR.md
 new file mode 100644
-index 0000000..8ee0561
+index 0000000..c38c5b4
 --- /dev/null
 +++ b/docs/VENDOR.md
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,89 @@
 +# Vendor-defined interface
 +
 +tpm2-pkcs11 defines a few PKCS#11 attributes and mechanisms of its own, in the vendor ranges
@@ -164,8 +165,11 @@ index 0000000..8ee0561
 +
 +The signer is a key the caller made: an empty auth value and a signing key, in practice a restricted
 +signing key (an attestation key), which signs only TPM-generated structures. tpm2-pkcs11 only uses
-+it, never creates or changes it. An unknown handle, or a key the TPM refuses to sign with, is
-+`CKR_MECHANISM_PARAM_INVALID`. The signature is made with the signer's own scheme.
++it, never creates or changes it. An unknown handle, a key the TPM refuses to sign with, and a key
++whose auth value is not empty are `CKR_MECHANISM_PARAM_INVALID`. A key with an auth value that is not
++marked `noDA` counts that refusal as a failed authorization against the TPM's dictionary-attack
++lockout, so make the signer with an empty auth value. The signature is made with the signer's own
++scheme.
 +
 +```sh
 +# An attestation key at a persistent handle, and its public key for verifying with
@@ -399,10 +403,10 @@ index e78c304..911e0fd 100644
      rv = tobject_get_min_buf_size(tobj, &opdata->mech, &expected_sig_len);
      if (rv != CKR_OK) {
 diff --git a/src/lib/tpm.c b/src/lib/tpm.c
-index 675fc42..dfcd889 100644
+index 675fc42..209c03f 100644
 --- a/src/lib/tpm.c
 +++ b/src/lib/tpm.c
-@@ -1492,6 +1492,110 @@ CK_RV tpm_sign(tpm_op_data *opdata, CK_BYTE_PTR data, CK_ULONG datalen, CK_BYTE_
+@@ -1492,6 +1492,122 @@ CK_RV tpm_sign(tpm_op_data *opdata, CK_BYTE_PTR data, CK_ULONG datalen, CK_BYTE_
      return rv;
  }
  
@@ -464,7 +468,11 @@ index 675fc42..dfcd889 100644
 +        goto out;
 +    }
 +
-+    flags_turndown(tctx, TPMA_SESSION_ENCRYPT);
++    /*
++     * The nonce is not secret and may be empty (which a session cannot encrypt), and the
++     * statement is not either: neither direction is encrypted.
++     */
++    flags_turndown(tctx, TPMA_SESSION_ENCRYPT | TPMA_SESSION_DECRYPT);
 +    rc = Esys_Certify(
 +            ectx,
 +            tobj->tpm_esys_tr,
@@ -479,8 +487,16 @@ index 675fc42..dfcd889 100644
 +    flags_restore(tctx);
 +    if (rc != TSS2_RC_SUCCESS) {
 +        LOGE("Esys_Certify: %s", Tss2_RC_Decode(rc));
++        /*
++         * What is wrong with the signer: not a signing key, or its auth value is not the empty
++         * one (the second authorization, the password session, failed). The object's own
++         * authorization is the first, and not the caller's to get wrong.
++         */
++        bool signer_auth_failed = (rc_is_fmt1(rc, TPM2_RC_AUTH_FAIL) || rc_is_fmt1(rc, TPM2_RC_BAD_AUTH))
++                && (rc & TPM2_RC_N_MASK) == TPM2_RC_S + TPM2_RC_2;
 +        if (rc_is_fmt1(rc, TPM2_RC_KEY) || rc_is_fmt1(rc, TPM2_RC_SCHEME)
-+                || rc_is_fmt1(rc, TPM2_RC_TYPE) || rc_is_fmt1(rc, TPM2_RC_ATTRIBUTES)) {
++                || rc_is_fmt1(rc, TPM2_RC_TYPE) || rc_is_fmt1(rc, TPM2_RC_ATTRIBUTES)
++                || signer_auth_failed) {
 +            rv = CKR_MECHANISM_PARAM_INVALID;
 +        }
 +        goto out;
@@ -630,10 +646,10 @@ index 0000000..0c056e8
 +#endif /* SRC_TPM2_PKCS11_VENDOR_H_ */
 diff --git a/test/integration/pkcs-certify.int.c b/test/integration/pkcs-certify.int.c
 new file mode 100644
-index 0000000..1aae8f6
+index 0000000..08ca6cb
 --- /dev/null
 +++ b/test/integration/pkcs-certify.int.c
-@@ -0,0 +1,428 @@
+@@ -0,0 +1,439 @@
 +/* SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include <openssl/bn.h>
@@ -655,6 +671,8 @@ index 0000000..1aae8f6
 +#define SIGNER_HANDLE 0x81000F01UL
 +/* A persistent key of the TPM that is no signing key, also from create_pkcs_store.sh. */
 +#define NOT_A_SIGNER_HANDLE 0x81000F02UL
++/* A signing key with an auth value, which the mechanism cannot use (noDA), likewise. */
++#define SIGNER_WITH_AUTH_HANDLE 0x81000F03UL
 +
 +struct test_info {
 +    CK_SESSION_HANDLE handle;
@@ -971,6 +989,12 @@ index 0000000..1aae8f6
 +    assert_int_equal(rv, CKR_OK);
 +    check_statement(session, priv, nonce, sizeof(nonce), out, out_len);
 +
++    /* no nonce at all */
++    out_len = sizeof(out);
++    rv = certify(session, priv, SIGNER_HANDLE, nonce, 0, out, &out_len);
++    assert_int_equal(rv, CKR_OK);
++    check_statement(session, priv, nonce, 0, out, out_len);
++
 +    /* a nonce of the longest length, and the operation ends: the next one is not "active" */
 +    CK_BYTE longest[CK_TPM2_CERTIFY_MAX_QUALIFYING_LEN] = { 0xa5 };
 +    out_len = sizeof(out);
@@ -1024,6 +1048,9 @@ index 0000000..1aae8f6
 +    out_len = sizeof(out);
 +    rv = certify(session, priv, NOT_A_SIGNER_HANDLE, nonce, sizeof(nonce), out, &out_len);
 +    assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
++    out_len = sizeof(out);
++    rv = certify(session, priv, SIGNER_WITH_AUTH_HANDLE, nonce, sizeof(nonce), out, &out_len);
++    assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
 +
 +    /* too long a nonce */
 +    CK_BYTE too_long[CK_TPM2_CERTIFY_MAX_QUALIFYING_LEN + 1] = { 0 };
@@ -1063,10 +1090,10 @@ index 0000000..1aae8f6
 +    return cmocka_run_group_tests(tests, group_setup, group_teardown);
 +}
 diff --git a/test/integration/scripts/create_pkcs_store.sh b/test/integration/scripts/create_pkcs_store.sh
-index 89884b7..25946a5 100755
+index 89884b7..9c68cc8 100755
 --- a/test/integration/scripts/create_pkcs_store.sh
 +++ b/test/integration/scripts/create_pkcs_store.sh
-@@ -153,6 +153,17 @@ echo "Adding 1 HMAC:SHA256 key under token \"label\""
+@@ -153,6 +153,23 @@ echo "Adding 1 HMAC:SHA256 key under token \"label\""
  tpm2_ptool addkey --algorithm=hmac:sha256 --label="label" --key-label="hmac0" --userpin=myuserpin --path=$TPM2_PKCS11_STORE
  echo "Added HMAC Key"
  
@@ -1080,6 +1107,12 @@ index 89884b7..25946a5 100755
 +tpm2_readpublic -c 0x81000F01 -f pem -o "$TPM2_PKCS11_STORE/ak.pem"
 +# A key that is no signing key (a storage primary), the signer the test must see refused.
 +tpm2_evictcontrol -C o -c "$TPM2_PKCS11_STORE/ak-primary.ctx" 0x81000F02
++# A signing key with an auth value, which the mechanism cannot use. noDA: a wrong auth does not
++# count against the TPM's lockout.
++tpm2_create -C "$TPM2_PKCS11_STORE/ak-primary.ctx" -G ecc256:ecdsa-sha256:null -p signerauth \
++    -a 'fixedtpm|fixedparent|sensitivedataorigin|userwithauth|restricted|sign|noda' \
++    -c "$TPM2_PKCS11_STORE/ak-auth.ctx"
++tpm2_evictcontrol -C o -c "$TPM2_PKCS11_STORE/ak-auth.ctx" 0x81000F03
 +
  #
  # generate cert

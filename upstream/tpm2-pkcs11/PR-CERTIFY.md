@@ -39,7 +39,7 @@ vendor mechanism.
 
 `CKM_TPM2_CERTIFY` is used with `C_SignInit` / `C_Sign` on the key object to certify. Its parameter
 names the signing key by its persistent TPM handle (an attestation key the caller created, with an
-empty auth value); the data is the qualifying data (a nonce of up to 64 bytes); the output is the
+empty auth value; one with an auth value is `CKR_MECHANISM_PARAM_INVALID`); the data is the qualifying data (a nonce of up to 64 bytes); the output is the
 marshaled `TPM2B_ATTEST` followed by the `TPMT_SIGNATURE`. The client checks the signature under the
 signer's public key, the nonce, and that the attested Name is the Name of the object's
 `CKA_TPM2_PUB_BLOB`.
@@ -59,8 +59,8 @@ Design:
 
 Tests: `pkcs-certify.int` certifies EC, RSA, AES and HMAC keys (and one that needs a context login),
 verifies each statement with OpenSSL (signature, nonce, Name), and checks the refusals (no login, a
-verify operation, bad parameters, a signer that is no persistent signing key, too long a nonce, a
-public key object). `create_pkcs_store.sh` makes the signer. docs/VENDOR.md describes the interface.
+verify operation, bad parameters, a signer that is no persistent signing key or has an auth value, too long a nonce, a
+public key object), and an empty nonce. `create_pkcs_store.sh` makes the signers. docs/VENDOR.md describes the interface.
 
 Testing, through nixpkgs' tpm2-pkcs11 build environment (`--enable-unit --enable-integration`,
 swtpm): the six unit tests and the eleven `pkcs-*.int` tests I ran, including the existing

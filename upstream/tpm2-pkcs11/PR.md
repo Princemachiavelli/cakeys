@@ -2,8 +2,10 @@
 
 Status: **draft, not filed.** Before opening it:
 
-- Signed off in ~/srcs/tpm2-pkcs11. Consider adding to the commit message: "The library's own
-  C_SignInit parses it too, so P-521 keys could not sign (CKR_HOST_MEMORY)." (found 2026-11-11).
+- The commit (branch `jhoffer_fix_p521_point` of ~/srcs/tpm2-pkcs11, pushed) is signed off; the
+  patch file is that commit. Its message says nothing of `C_SignInit`, which also parses the point
+  (P-521 keys could not sign, `CKR_HOST_MEMORY`, found 2026-11-11): the PR body below says it, so
+  the pushed commit is not rewritten.
 - Upstream requires the PR to pass their CI. The checks below ran through
   nixpkgs' build with `--enable-integration`, not their Docker image.
 
@@ -32,7 +34,9 @@ where the correct encoding is `04 81 85 04 ...`: `0x85` as a first length
 byte means "five length bytes follow". P-256 (65 bytes) and P-384 (97 bytes)
 points are below the limit and unaffected.
 
-Strict DER parsers reject the attribute. With 1.10.1 on swtpm:
+Strict DER parsers reject the attribute. The library's own `C_SignInit`
+parses the point too, so a P-521 key could not sign (`CKR_HOST_MEMORY`).
+With 1.10.1 on swtpm:
 
     $ pkcs11-tool --module libtpm2_pkcs11.so --login --keypairgen --key-type EC:secp521r1 --label r
     $ pkcs11-tool --module libtpm2_pkcs11.so --login --read-object --type pubkey --label r -o r.der

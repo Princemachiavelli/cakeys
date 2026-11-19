@@ -1,4 +1,4 @@
-From 4c3c5b125a3307235f55bc0eb69e26fd10c2b375 Mon Sep 17 00:00:00 2001
+From 7ae6c809e5f4f07016a8bc80b3d1908e6d7c3b52 Mon Sep 17 00:00:00 2001
 From: Josh Hoffer <jhoffer@sansorgan.es>
 Date: Wed, 11 Nov 2026 18:42:51 -0800
 Subject: [PATCH] tpm: encode the P-521 CKA_EC_POINT as DER
@@ -12,6 +12,7 @@ the long form in tpm2_ptool, and add an integration test that decodes
 the P-521 point with d2i_ASN1_OCTET_STRING.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: Josh Hoffer <jhoffer@sansorgan.es>
 ---
  src/lib/tpm.c                      | 36 +++++++-------
  test/integration/pkcs-keygen.int.c | 75 ++++++++++++++++++++++++++++++
