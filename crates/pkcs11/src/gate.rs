@@ -228,7 +228,31 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates
             v @ Verdict::Unknown { .. } => out.notes.push(format!("{t}: generation not decided: {v}")),
         }
     }
+    // A secret key's commitments: refused only when the profile measured every one the spec
+    // declares and the module cannot compute any (an unmeasured one is the advertised list's).
+    if let Some(refusal) = commitments_refused(t, &eff, token) {
+        out.refusals.push(refusal);
+    }
     Ok(out)
+}
+
+/// The refusal when `t` is a secret key whose every declared commitment the profile measured as
+/// one the module cannot compute.
+fn commitments_refused(t: &Target, eff: &Effective, token: &str) -> Option<String> {
+    let kt = t.object.key_type.filter(|_| t.object.class == cakeys_core::types::ObjectClass::SecretKey)?;
+    let bytes = t.object.value_len.or_else(|| kt.fixed_value_len()).and_then(|b| u32::try_from(b).ok());
+    let verdicts: Vec<(&str, Verdict)> = cakeys_core::plan::declared_commits(t)
+        .iter()
+        .map(|c| {
+            let kind = crate::token::commit_kind(*c);
+            (kind, eff.commit(kind, kt.name(), bytes))
+        })
+        .collect();
+    if verdicts.is_empty() || !verdicts.iter().all(|(_, v)| matches!(v, Verdict::No { .. })) {
+        return None;
+    }
+    let lines: Vec<String> = verdicts.iter().map(|(k, v)| format!("{k}: {v}")).collect();
+    Some(format!("{t}: token '{token}' computes none of its commitments ({})", lines.join("; ")))
 }
 
 #[cfg(test)]

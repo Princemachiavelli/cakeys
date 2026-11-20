@@ -177,10 +177,12 @@ pub(crate) fn profile(p: &Profile) -> String {
     if !p.add.is_empty() {
         let _ = writeln!(s, "{}", toml_array("add", &p.add));
     }
+    untested_toml(p, &mut s);
     match_toml(&p.r#match, &mut s);
     filters_toml(p, &mut s);
     capabilities_toml(&p.capabilities, &mut s);
     reported_toml(&p.reported, &mut s);
+    reported_claims_toml(p, &mut s);
     if let Some(m) = &p.migration {
         let _ = writeln!(s, "\n[migration]");
         if let Some(k) = m.plaintext_import {
@@ -224,6 +226,44 @@ pub(crate) fn profile(p: &Profile) -> String {
     s
 }
 
+/// `[untested]`: each advertised mechanism the probe did not measure, and why.
+fn untested_toml(p: &Profile, s: &mut String) {
+    use std::fmt::Write as _;
+    if p.untested.is_empty() {
+        return;
+    }
+    let _ = writeln!(s, "\n[untested]");
+    for (name, u) in &p.untested {
+        let note = u.note.as_ref().map(|n| format!(", note = \"{}\"", toml_str(n))).unwrap_or_default();
+        let _ = writeln!(s, "\"{}\" = {{ why = \"{}\"{note} }}", toml_str(name), u.why.name());
+    }
+}
+
+/// `[mechanism-info]` and `[claims]`: what the module reports of itself, never compared.
+fn reported_claims_toml(p: &Profile, s: &mut String) {
+    use std::fmt::Write as _;
+    if !p.mechanism_info.is_empty() {
+        let _ = writeln!(s, "\n[mechanism-info]");
+        for (name, i) in &p.mechanism_info {
+            let flags: Vec<String> = i.flags.iter().map(|f| format!("\"{}\"", toml_str(f))).collect();
+            let _ = writeln!(
+                s,
+                "\"{}\" = {{ min = {}, max = {}, flags = [{}] }}",
+                toml_str(name),
+                i.min,
+                i.max,
+                flags.join(", ")
+            );
+        }
+    }
+    if !p.claims.is_empty() {
+        let _ = writeln!(s, "\n[claims]");
+        for (k, v) in &p.claims {
+            let _ = writeln!(s, "\"{}\" = \"{}\"", toml_str(k), toml_str(v));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,6 +300,30 @@ mod tests {
             .map(|path| path.display().to_string())
             .collect();
         assert_eq!(differ, [] as [String; 0]);
+    }
+
+    /// The closing check (`docs/CAPROBE_PROFILE_COVERAGE.md`, Part 0): a committed module profile
+    /// that records `[untested]` names nothing the module does not advertise, nothing a row
+    /// measures and nothing it was found to refuse; and the profiles regenerated for it each have
+    /// the table (an advertised mechanism with neither a row nor an entry is a mechanism no one
+    /// recorded). The profiles it does not yet cover are listed in docs/OPEN.md.
+    #[test]
+    fn untested_entries_are_consistent_and_the_regenerated_profiles_have_them() {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../profiles/modules"));
+        let mut have = Vec::new();
+        for family in std::fs::read_dir(root).unwrap() {
+            for entry in std::fs::read_dir(family.unwrap().path()).unwrap() {
+                let path = entry.unwrap().path();
+                let p = Profile::from_toml(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                assert_eq!(p.untested_problems(), Vec::<String>::new(), "{}", path.display());
+                if !p.untested.is_empty() {
+                    have.push(p.profile.clone());
+                }
+            }
+        }
+        for name in ["softhsm/2.7", "kryoptic/1.5", "tpm2-pkcs11/1.10+swtpm"] {
+            assert!(have.iter().any(|h| h == name), "{name} records no [untested]: regenerate it; have {have:?}");
+        }
     }
 
     #[test]

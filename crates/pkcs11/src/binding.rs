@@ -16,8 +16,14 @@ const PATCHED: &str = r#"
 profile = "cryptoki/0.12"
 mode = "delta"
 
+[subtract]
+mechanisms = ["CKM_AES_CFB128", "CKM_XEDDSA"]
+note = "the pinned cryptoki has no name or parameter type for these, in any build"
+
 [notes]
-binding = "this build's cryptoki maps the SHA-2 HMAC key types correctly (the fix of upstream/rust-cryptoki, applied by the Nix build): the layer subtracts nothing"
+binding = "this build's cryptoki maps the SHA-2 HMAC key types correctly (the fix of upstream/rust-cryptoki, applied by the Nix build): the layer subtracts only what no build names"
+CKM_AES_CFB128 = "the pinned cryptoki has no constant or parameter type for it; a module that lists it is recorded advertised and untested (docs/CAPROBE_PROFILE_COVERAGE.md, Part 0)"
+CKM_XEDDSA = "the pinned cryptoki has no constant or parameter type for it; a module that lists it is recorded advertised and untested (docs/CAPROBE_PROFILE_COVERAGE.md, Part 0)"
 "#;
 
 /// Whether this build's cryptoki maps the SHA-2 HMAC key types correctly. cryptoki 0.12.1
@@ -62,8 +68,12 @@ mod tests {
         cakeys_profile::Set::activate_embedded().unwrap();
         let layer = layer().unwrap();
         assert_eq!(layer.profile, "cryptoki/0.12");
+        // What no build of the binding names is subtracted either way.
+        for m in ["CKM_AES_CFB128", "CKM_XEDDSA"] {
+            assert!(layer.subtract.mechanisms.iter().any(|x| x == m), "{m}");
+        }
         if patched() {
-            assert!(layer.subtract.mechanisms.is_empty() && layer.subtract.key_types.is_empty());
+            assert!(layer.subtract.mechanisms.len() == 2 && layer.subtract.key_types.is_empty());
         } else {
             assert_eq!(layer.subtract.key_types.len(), 3);
         }

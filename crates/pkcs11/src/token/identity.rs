@@ -291,8 +291,13 @@ impl Token {
         }
     }
 
-    /// One commitment (`id::Commit`) on the key `h`.
-    fn commit(&self, h: ObjectHandle, object: &ObjectCfg, c: Commit, commitment_label: &str) -> Result<Vec<u8>> {
+    /// One commitment (`id::Commit`) on the key `h`: what the verbs compute, and the caprobe's
+    /// `commit.*` rows measure.
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` carrying the module's `CK_RV` when it refuses the operation.
+    pub fn commit(&self, h: ObjectHandle, object: &ObjectCfg, c: Commit, commitment_label: &str) -> Result<Vec<u8>> {
         let s = &self.session;
         let input = c.input(commitment_label, object);
         let fail = |e: CkError| {
@@ -363,7 +368,26 @@ impl Token {
     }
 }
 
-/// Mechanism a commitment runs on the token.
+/// The kind a profile's `commit.<kind>.*` rows name this commitment by
+/// (`cakeys_profile::capability::commit_mechanism` maps it back to a mechanism).
+#[must_use]
+pub fn commit_kind(c: Commit) -> &'static str {
+    match c {
+        Commit::Hmac(HmacHash::Sha1) => "hmac-sha1",
+        Commit::Hmac(HmacHash::Sha224) => "hmac-sha224",
+        Commit::Hmac(HmacHash::Sha256) => "hmac-sha256",
+        Commit::Hmac(HmacHash::Sha384) => "hmac-sha384",
+        Commit::Hmac(HmacHash::Sha512) => "hmac-sha512",
+        Commit::Cmac => "cmac",
+        Commit::KcvEcb(BlockCipher::Aes) => "kcv-ecb",
+        Commit::KcvEcbDecrypt(BlockCipher::Aes) => "kcv-ecb-decrypt",
+        Commit::KcvEcb(BlockCipher::Des3) => "kcv-des3-ecb",
+        Commit::KcvEcbDecrypt(BlockCipher::Des3) => "kcv-des3-ecb-decrypt",
+        Commit::Kw => "kw",
+    }
+}
+
+/// The mechanism a commitment computes with.
 #[must_use]
 pub fn commit_mechanism(c: Commit) -> MechanismType {
     match c {

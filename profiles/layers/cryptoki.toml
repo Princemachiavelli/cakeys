@@ -1,18 +1,22 @@
 # The cryptoki binding this cakeys runs against — the one layer between cakeys and every
 # module, applied automatically (docs/CAPROBE.md D3). Its rows are what cryptoki 0.12.1 breaks;
-# a binding with the fix (the Nix patches, or the upstream PRs released) subtracts nothing:
-# cakeys detects that at run time (crates/pkcs11/src/binding.rs), so the layer records the
-# fix as soon as the implementation carries it.
+# a binding with the fix (the Nix patches, or the upstream PRs released) subtracts nothing of
+# that: cakeys detects that at run time (crates/pkcs11/src/binding.rs), so the layer records the
+# fix as soon as the implementation carries it. What no build of the binding names is subtracted
+# either way, and noted: a module that lists it has it recorded advertised and untested
+# (docs/CAPROBE_PROFILE_COVERAGE.md, Part 0).
 profile = "cryptoki/0.12"
 mode = "delta"
 
 [subtract]
-mechanisms = ["CKM_AES_KEY_WRAP_KWP"]
+mechanisms = ["CKM_AES_CFB128", "CKM_AES_KEY_WRAP_KWP", "CKM_XEDDSA"]
 key-types = ["CKK_SHA224_HMAC", "CKK_SHA384_HMAC", "CKK_SHA512_HMAC"]
-note = "cryptoki 0.12.1 without the key-type fix (upstream/rust-cryptoki); a patched binding subtracts nothing"
+note = "cryptoki 0.12.1 without the key-type fix (upstream/rust-cryptoki); a patched binding subtracts nothing of that"
 
 [notes]
 CKK_SHA224_HMAC = "cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart"
 CKK_SHA384_HMAC = "cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart"
 CKK_SHA512_HMAC = "cryptoki 0.12.1 gives it the value of CKK_SHA256_HMAC, so such keys can be neither created nor told apart"
+CKM_AES_CFB128 = "the pinned cryptoki has no constant or parameter type for it; a module that lists it is recorded advertised and untested (docs/CAPROBE_PROFILE_COVERAGE.md, Part 0)"
 CKM_AES_KEY_WRAP_KWP = "cryptoki 0.12.1 has no constant for it; a patched binding names it (nix/patches/cryptoki-aes-key-wrap-kwp.patch)"
+CKM_XEDDSA = "the pinned cryptoki has no constant or parameter type for it; a module that lists it is recorded advertised and untested (docs/CAPROBE_PROFILE_COVERAGE.md, Part 0)"

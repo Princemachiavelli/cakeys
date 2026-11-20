@@ -194,6 +194,72 @@ pub enum Capability {
     },
     /// `C_DestroyObject` really removing an object of the class (`CKO_*`): `delete.CKO_PRIVATE_KEY`.
     Delete(String),
+    /// A secret key's commitment, the operation `kind` names (`hmac-sha256`, `cmac`, `kcv-ecb`,
+    /// `kcv-ecb-decrypt`, `kcv-des3-ecb`, `kw`), working on a key of `key_type` of `bytes`:
+    /// `commit.hmac-sha256.CKK_GENERIC_SECRET.32`.
+    Commit {
+        /// The commitment kind.
+        kind: String,
+        /// The key type, by `CKK_*` name.
+        key_type: KeyKind,
+        /// The key's length in bytes.
+        bytes: u32,
+    },
+    /// A symmetric mode (`CKM_AES_CBC`, `CKM_AES_GCM`...) encrypting and decrypting back on a
+    /// key of `key_type` of `bytes`: `crypt.CKM_AES_CTR.CKK_AES.32`.
+    Crypt {
+        /// The mechanism, by `CKM_*` name.
+        mechanism: String,
+        /// The key type, by `CKK_*` name.
+        key_type: KeyKind,
+        /// The key's length in bytes.
+        bytes: u32,
+    },
+    /// A key derivation (`CKM_HKDF_DERIVE`, `CKM_SP800_108_COUNTER_KDF`...) from a base key of
+    /// `key_type`: `derive.CKM_HKDF_DERIVE.CKK_GENERIC_SECRET`.
+    Kdf {
+        /// The mechanism, by `CKM_*` name.
+        mechanism: String,
+        /// The base key's type, by `CKK_*` name.
+        key_type: KeyKind,
+    },
+    /// ECDH between keys of `key_type` on a curve, beyond the curves `prove.pop-ecdh.*` covers
+    /// (Montgomery): `derive.ecdh.CKK_EC_MONTGOMERY.curve25519`.
+    DeriveEcdh {
+        /// The key type, by `CKK_*` name.
+        key_type: KeyKind,
+        /// The curve.
+        on: On,
+    },
+    /// Signing and verifying back on the token with a mechanism no `prove.*` row stands for
+    /// (post-quantum, XEdDSA): `sign.CKM_ML_DSA.CKK_ML_DSA.CKP_ML_DSA_65`.
+    Sign {
+        /// The mechanism, by `CKM_*` name.
+        mechanism: String,
+        /// The key type, by `CKK_*` name.
+        key_type: KeyKind,
+        /// The parameter set or curve.
+        on: On,
+    },
+    /// `C_EncapsulateKey` then `C_DecapsulateKey` agreeing on a secret:
+    /// `encapsulate.CKK_ML_KEM.CKP_ML_KEM_768`.
+    Encapsulate {
+        /// The key type, by `CKK_*` name.
+        key_type: KeyKind,
+        /// The parameter set.
+        on: On,
+    },
+    /// An attribute the verbs set or read, on a key of `key_type`:
+    /// `attr.set.CKA_ALLOWED_MECHANISMS.CKK_EC` (a template carries it, a read-back shows it) or
+    /// `attr.read.CKA_LOCAL.CKK_AES` (the module returns it, truthfully).
+    Attr {
+        /// Read (the module reports it) rather than set (the template carries it).
+        read: bool,
+        /// The attribute, by `CKA_*` name.
+        attr: String,
+        /// The key type, by `CKK_*` name.
+        key_type: KeyKind,
+    },
 }
 
 /// `<CKK_*>.<curve or size>`, as `generate.*` and the rows like it end. A size is written as
@@ -204,6 +270,70 @@ fn key_and_on(rest: &str) -> Option<(KeyKind, On)> {
     let kt = KeyKind::from(kt);
     let on = On::parse(&kt, text);
     (on.to_string() == text).then_some((kt, on))
+}
+
+/// `CKM_*.<CKK_*>`: a mechanism and a key type, no size.
+fn mechanism_and_key(rest: &str) -> Option<(String, KeyKind)> {
+    let (mechanism, kt) = rest.split_once('.').filter(|(m, k)| m.starts_with("CKM_") && k.starts_with("CKK_"))?;
+    (!kt.contains('.')).then(|| (mechanism.to_owned(), KeyKind::from(kt)))
+}
+
+/// `CKM_*.<CKK_*>.<curve, set or size>`.
+fn mechanism_key_and_on(rest: &str) -> Option<(String, KeyKind, On)> {
+    let (mechanism, rest) = rest.split_once('.').filter(|(m, _)| m.starts_with("CKM_"))?;
+    let (kt, on) = key_and_on(rest)?;
+    Some((mechanism.to_owned(), kt, on))
+}
+
+/// The mechanism that generates a key of `key_type`, as `generate.*` rows measure it.
+#[must_use]
+pub fn generation_mechanism(key_type: &str) -> Option<&'static str> {
+    Some(match key_type {
+        "CKK_RSA" => "CKM_RSA_PKCS_KEY_PAIR_GEN",
+        "CKK_EC" => "CKM_EC_KEY_PAIR_GEN",
+        "CKK_EC_EDWARDS" => "CKM_EC_EDWARDS_KEY_PAIR_GEN",
+        "CKK_EC_MONTGOMERY" => "CKM_EC_MONTGOMERY_KEY_PAIR_GEN",
+        "CKK_AES" => "CKM_AES_KEY_GEN",
+        "CKK_DES3" => "CKM_DES3_KEY_GEN",
+        "CKK_DES2" => "CKM_DES2_KEY_GEN",
+        "CKK_GENERIC_SECRET" => "CKM_GENERIC_SECRET_KEY_GEN",
+        "CKK_HKDF" => "CKM_HKDF_KEY_GEN",
+        "CKK_SHA_1_HMAC" => "CKM_SHA_1_KEY_GEN",
+        "CKK_SHA224_HMAC" => "CKM_SHA224_KEY_GEN",
+        "CKK_SHA256_HMAC" => "CKM_SHA256_KEY_GEN",
+        "CKK_SHA384_HMAC" => "CKM_SHA384_KEY_GEN",
+        "CKK_SHA512_HMAC" => "CKM_SHA512_KEY_GEN",
+        "CKK_ML_DSA" => "CKM_ML_DSA_KEY_PAIR_GEN",
+        "CKK_ML_KEM" => "CKM_ML_KEM_KEY_PAIR_GEN",
+        "CKK_SLH_DSA" => "CKM_SLH_DSA_KEY_PAIR_GEN",
+        _ => return None,
+    })
+}
+
+/// The mechanism a commitment of `kind` computes with.
+#[must_use]
+pub fn commit_mechanism(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "hmac-sha1" => "CKM_SHA_1_HMAC",
+        "hmac-sha224" => "CKM_SHA224_HMAC",
+        "hmac-sha256" => "CKM_SHA256_HMAC",
+        "hmac-sha384" => "CKM_SHA384_HMAC",
+        "hmac-sha512" => "CKM_SHA512_HMAC",
+        "cmac" => "CKM_AES_CMAC",
+        "cmac-des3" => "CKM_DES3_CMAC",
+        "kcv-ecb" | "kcv-ecb-decrypt" => "CKM_AES_ECB",
+        "kcv-des3-ecb" | "kcv-des3-ecb-decrypt" => "CKM_DES3_ECB",
+        "kw" => "CKM_AES_KEY_WRAP",
+        _ => return None,
+    })
+}
+
+/// A key length: bytes, whatever the key type.
+fn bytes_of(on: &On) -> Option<u32> {
+    match on {
+        On::Bytes(n) => Some(*n),
+        _ => None,
+    }
 }
 
 impl Capability {
@@ -257,6 +387,44 @@ impl Capability {
             }
             ("derive", "ecdh.sealed") => Capability::DeriveSealed,
             ("derive", "ecdh.read-only") => Capability::DeriveReadOnly,
+            ("derive", rest) if rest.starts_with("ecdh.") => {
+                let (key_type, on) = key_and_on(&rest["ecdh.".len()..]).ok_or_else(bad)?;
+                Capability::DeriveEcdh { key_type, on }
+            }
+            ("derive", rest) => {
+                let (mechanism, key_type) = mechanism_and_key(rest).ok_or_else(bad)?;
+                Capability::Kdf { mechanism, key_type }
+            }
+            ("commit", rest) => {
+                let (kind, rest) = rest.split_once('.').filter(|(k, _)| !k.is_empty()).ok_or_else(bad)?;
+                let (key_type, on) = key_and_on(rest).ok_or_else(bad)?;
+                Capability::Commit { kind: kind.to_owned(), key_type, bytes: bytes_of(&on).ok_or_else(bad)? }
+            }
+            ("crypt", rest) => {
+                let (mechanism, key_type, on) = mechanism_key_and_on(rest).ok_or_else(bad)?;
+                Capability::Crypt { mechanism, key_type, bytes: bytes_of(&on).ok_or_else(bad)? }
+            }
+            ("sign", rest) => {
+                let (mechanism, key_type, on) = mechanism_key_and_on(rest).ok_or_else(bad)?;
+                Capability::Sign { mechanism, key_type, on }
+            }
+            ("encapsulate", rest) => {
+                let (key_type, on) = key_and_on(rest).ok_or_else(bad)?;
+                Capability::Encapsulate { key_type, on }
+            }
+            ("attr", rest) => {
+                let (way, rest) = rest.split_once('.').ok_or_else(bad)?;
+                let read = match way {
+                    "set" => false,
+                    "read" => true,
+                    _ => return Err(bad()),
+                };
+                let (attr, kt) = rest
+                    .split_once('.')
+                    .filter(|(a, k)| a.starts_with("CKA_") && a.len() > 4 && k.starts_with("CKK_") && !k.contains('.'))
+                    .ok_or_else(bad)?;
+                Capability::Attr { read, attr: attr.to_owned(), key_type: KeyKind::from(kt) }
+            }
             ("move", m) => Capability::Move(Move::ALL.into_iter().find(|x| x.name() == m).ok_or_else(bad)?),
             ("prove", rest) => {
                 let (binding, rest) =
@@ -266,6 +434,33 @@ impl Capability {
             }
             _ => return Err(bad()),
         })
+    }
+
+    /// The mechanisms this row is the measurement of: what an `[untested]` entry must not
+    /// name, and what the probe counts as tried. `via` is the mechanism an export, unwrap or
+    /// import took, where it is one.
+    #[must_use]
+    pub fn mechanisms(&self, via: Option<&str>) -> Vec<String> {
+        let mut m: Vec<String> = match self {
+            Capability::Generate { key_type, .. } => {
+                generation_mechanism(key_type.name()).into_iter().map(str::to_owned).collect()
+            }
+            Capability::WrapOaep(_) | Capability::DecryptOaep(_) => vec!["CKM_RSA_PKCS_OAEP".into()],
+            Capability::DeriveSealed | Capability::DeriveReadOnly | Capability::DeriveEcdh { .. } => {
+                vec!["CKM_ECDH1_DERIVE".into()]
+            }
+            Capability::Prove { binding, .. } if binding.name() == "pop-ecdh" => vec!["CKM_ECDH1_DERIVE".into()],
+            Capability::Commit { kind, .. } => commit_mechanism(kind).map(str::to_owned).into_iter().collect(),
+            Capability::Crypt { mechanism, .. }
+            | Capability::Kdf { mechanism, .. }
+            | Capability::Sign { mechanism, .. } => {
+                vec![mechanism.clone()]
+            }
+            Capability::Encapsulate { .. } => vec!["CKM_ML_KEM".into()],
+            _ => Vec::new(),
+        };
+        m.extend(via.filter(|v| v.starts_with("CKM_")).map(str::to_owned));
+        m
     }
 
     /// Whether the probe measures it: a [`Capability::Move`] is a claim, preserved across
@@ -293,6 +488,15 @@ impl std::fmt::Display for Capability {
             Capability::Export { way, key_type, on } => write!(f, "export.{}.{key_type}.{on}", way.name()),
             Capability::Unwrap { key_type, on } => write!(f, "unwrap.{key_type}.{on}"),
             Capability::Delete(class) => write!(f, "delete.{class}"),
+            Capability::Commit { kind, key_type, bytes } => write!(f, "commit.{kind}.{key_type}.{bytes}"),
+            Capability::Crypt { mechanism, key_type, bytes } => write!(f, "crypt.{mechanism}.{key_type}.{bytes}"),
+            Capability::Kdf { mechanism, key_type } => write!(f, "derive.{mechanism}.{key_type}"),
+            Capability::DeriveEcdh { key_type, on } => write!(f, "derive.ecdh.{key_type}.{on}"),
+            Capability::Sign { mechanism, key_type, on } => write!(f, "sign.{mechanism}.{key_type}.{on}"),
+            Capability::Encapsulate { key_type, on } => write!(f, "encapsulate.{key_type}.{on}"),
+            Capability::Attr { read, attr, key_type } => {
+                write!(f, "attr.{}.{attr}.{key_type}", if *read { "read" } else { "set" })
+            }
         }
     }
 }
@@ -406,6 +610,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn every_capability_reads_back_from_its_key() {
         let all = [
             Capability::Generate { key_type: "CKK_EC".into(), on: On::Item("secp256r1".into()) },
@@ -439,6 +644,18 @@ mod tests {
             Capability::Unwrap { key_type: "CKK_AES".into(), on: On::Bytes(24) },
             Capability::Unwrap { key_type: "CKK_EC".into(), on: On::Item("secp384r1".into()) },
             Capability::Delete("CKO_PRIVATE_KEY".into()),
+            Capability::Commit { kind: "hmac-sha256".into(), key_type: "CKK_GENERIC_SECRET".into(), bytes: 32 },
+            Capability::Crypt { mechanism: "CKM_AES_CTR".into(), key_type: "CKK_AES".into(), bytes: 32 },
+            Capability::Kdf { mechanism: "CKM_HKDF_DERIVE".into(), key_type: "CKK_GENERIC_SECRET".into() },
+            Capability::DeriveEcdh { key_type: "CKK_EC_MONTGOMERY".into(), on: On::Item("curve25519".into()) },
+            Capability::Sign {
+                mechanism: "CKM_ML_DSA".into(),
+                key_type: "CKK_ML_DSA".into(),
+                on: On::Item("CKP_ML_DSA_65".into()),
+            },
+            Capability::Encapsulate { key_type: "CKK_ML_KEM".into(), on: On::Item("CKP_ML_KEM_768".into()) },
+            Capability::Attr { read: false, attr: "CKA_ALLOWED_MECHANISMS".into(), key_type: "CKK_EC".into() },
+            Capability::Attr { read: true, attr: "CKA_LOCAL".into(), key_type: "CKK_AES".into() },
         ];
         for c in all {
             assert_eq!(Capability::parse(&c.to_string()), Ok(c.clone()), "{c}");
@@ -467,6 +684,13 @@ mod tests {
             "unwrap.CKK_AES",
             "delete.CKK_AES",
             "delete.CKO_DATA.x",
+            "commit.cmac.CKK_AES",
+            "commit.cmac.CKK_RSA.2048",
+            "crypt.CKM_AES_CTR.CKK_AES",
+            "derive.CKM_HKDF_DERIVE",
+            "derive.HKDF.CKK_AES",
+            "attr.write.CKA_LOCAL.CKK_AES",
+            "attr.read.LOCAL.CKK_AES",
             "nothing",
         ] {
             assert!(Capability::parse(bad).is_err(), "{bad}");
