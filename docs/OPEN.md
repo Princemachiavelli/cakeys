@@ -183,9 +183,19 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   every curve): `pop-sign` on secp521r1 fails at `C_SignInit`, deterministically, while
   `pop-ecdh` on the same key proves. A module defect or a P-521 limit of swtpm's TPM; the
   profile records the "no". To read in tpm2-pkcs11's sign path and report upstream.
-- **More probes**: PQ parameter sets, AES-KW/KWP round trips, the HMAC key types,
-  `C_GetMechanismInfo` beyond RSA, attribute defaults, existing-object encodings, ECDH with
-  Montgomery keys, SHA-224 RSA-PSS (no binding variant), delete in a scratch slot.
+- **Profiles still to regenerate for the secret-key sweep** (2026-11-19): `softhsm/2.7`,
+  `kryoptic/1.5` and `tpm2-pkcs11/1.10+swtpm` were regenerated; four are not, and drift from a
+  fresh probe. `tpm2-pkcs11/1.10+amd-ftpm` would gain the six `generate.CKK_AES.*` no rows swtpm
+  got (the module refuses AES generation before it asks the TPM): it is probed on the real TPM
+  only through the hardware rules' harness (`CAKEYS_FTPM_PROFILE=tpm2-pkcs11/1.10+amd-ftpm nix run
+  .#coverage-full`, handles and lockout counter compared), so its opt-in conformance test fails
+  until the user regenerates it. `aws-cloudhsm/5.18+hsm2m-*` and `kmsp11/1.9+hsm*` need their
+  clouds (`scripts/cloud/aws.sh probe`); until then `validate` says "records no CKK_AES
+  generation" for a secret key `create` makes there. ykcs11 lists no secret key generation and
+  probes in a scratch slot: unaffected.
+- **More probes**: PQ parameter sets, AES-KW/KWP round trips, `C_GetMechanismInfo` beyond RSA,
+  attribute defaults, existing-object encodings, ECDH with Montgomery keys, SHA-224 RSA-PSS (no
+  binding variant), delete in a scratch slot.
 - **haskoki as a reference token** (PLAN.md A0b), parked: it implements everything cakeys uses,
   but beside kryoptic it is one more OpenSSL-backed software token, and it is packaged for
   Docker, not nixpkgs (Haskell, pinned OpenSSL 4). Take it up with PQ key types, where a second
