@@ -186,21 +186,18 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   `pop-ecdh` on the same key proves. A module defect or a P-521 limit of swtpm's TPM; the
   profile records the "no". To read in tpm2-pkcs11's sign path and report upstream.
 - **Profiles still to regenerate for the secret-key sweep** (2026-11-19): `softhsm/2.7`,
-  `kryoptic/1.5` and `tpm2-pkcs11/1.10+swtpm` were regenerated; four are not, and drift from a
-  fresh probe. `tpm2-pkcs11/1.10+amd-ftpm` would gain the six `generate.CKK_AES.*` no rows swtpm
-  got (the module refuses AES generation before it asks the TPM): it is probed on the real TPM
-  only through the hardware rules' harness (`CAKEYS_FTPM_PROFILE=tpm2-pkcs11/1.10+amd-ftpm nix run
-  .#coverage-full`, handles and lockout counter compared), so its opt-in conformance test fails
-  until the user regenerates it. `aws-cloudhsm/5.18+hsm2m-*` and `kmsp11/1.9+hsm*` need their
-  clouds (`scripts/cloud/aws.sh probe`); until then `validate` says "records no CKK_AES
-  generation" for a secret key `create` makes there. ykcs11 lists no secret key generation and
-  probes in a scratch slot: unaffected.
+  `kryoptic/1.5`, `tpm2-pkcs11/1.10+swtpm` and (2026-11-19, through `nix/ftpm-test-env.sh`,
+  persistent handles and lockout counter compared and unchanged) `tpm2-pkcs11/1.10+amd-ftpm` were
+  regenerated; `aws-cloudhsm/5.18+hsm2m-*` and `kmsp11/1.9+hsm*` are not, and drift from a fresh
+  probe: they need their clouds (`scripts/cloud/aws.sh probe`); until then `validate` says
+  "records no CKK_AES generation" for a secret key `create` makes there. ykcs11 lists no secret
+  key generation and probes in a scratch slot: unaffected.
 - **Profiles still to regenerate for the coverage plan** (2026-11-19,
-  [CAPROBE_PROFILE_COVERAGE.md](CAPROBE_PROFILE_COVERAGE.md)): `tpm2-pkcs11/1.10+amd-ftpm`,
-  `aws-cloudhsm/5.18+hsm2m-*` and `kmsp11/1.9+hsm*`, as above, also lack the `commit.*`,
-  `crypt.*`, `derive.CKM_*`, `attr.*` rows, `[untested]`, `[mechanism-info]` and `[claims]` that
-  softhsm, kryoptic, swtpm and ykcs11 have (ykcs11 was probed in scratch slot 94 only: it gained
-  `[untested]`, `[mechanism-info]` and `[claims]`, no row changed).
+  [CAPROBE_PROFILE_COVERAGE.md](CAPROBE_PROFILE_COVERAGE.md)): `aws-cloudhsm/5.18+hsm2m-*` and
+  `kmsp11/1.9+hsm*`, as above, also lack the `commit.*`, `crypt.*`, `derive.CKM_*`, `attr.*`
+  rows, `[untested]`, `[mechanism-info]` and `[claims]` that softhsm, kryoptic, swtpm, amd-ftpm and
+  ykcs11 have (ykcs11 was probed in scratch slot 94 only, and the fTPM has no AES generation: both
+  gained `[untested]`, `[mechanism-info]` and `[claims]`, and the fTPM its six AES "no" rows).
 - **More probes**: the SP 800-108 KBKDFs and `CKM_HKDF_DATA`, AES-KW/KWP round trips, attribute
   defaults, existing-object encodings, SHA-224 RSA-PSS (no binding variant), delete in a scratch
   slot, Ed448 and RSA-512 import, tpm2-pkcs11 import, a measured session limit, `CKO_OTP_KEY`,

@@ -1181,13 +1181,24 @@
   derive.read-only Some(false)
   migration exports Some(false) unwraps Some(false) secret-unwraps None trusted-wrap None plaintext Some(Tpm2Ptool)
   migration accepts [AcceptRow { class: "CKO_CERTIFICATE", key_types: [], curves: [], min_bits: None, max_bits: None }, AcceptRow { class: "CKO_PUBLIC_KEY", key_types: ["CKK_RSA"], curves: [], min_bits: None, max_bits: None }] [AcceptRow { class: "CKO_PRIVATE_KEY", key_types: ["CKK_EC"], curves: ["secp256r1", "secp384r1"], min_bits: None, max_bits: None }, AcceptRow { class: "CKO_PRIVATE_KEY", key_types: ["CKK_RSA"], curves: [], min_bits: Some(1024), max_bits: Some(2048) }, AcceptRow { class: "CKO_SECRET_KEY", key_types: ["CKK_SHA_1_HMAC", "CKK_SHA256_HMAC"], curves: [], min_bits: None, max_bits: None }] []
+  generate CKK_AES: can [] cannot [] bits None..None can [] cannot [] by-name [] bytes can [] cannot [8, 16, 24, 32, 48, 64]
   generate CKK_EC: can ["secp256r1", "secp384r1"] cannot ["brainpoolP256r1", "brainpoolP384r1", "secp256k1", "secp521r1"] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
   generate CKK_EC_EDWARDS: can [] cannot ["edwards25519", "edwards448"] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
   generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
   generate CKK_RSA: can [] cannot [] bits Some(1024)..Some(2048) can [1024, 2048] cannot [512, 1536, 3072, 4096] by-name [] bytes can [] cannot []
 
   CKK_ACTI: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_ACTI generation
-  CKK_AES: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_AES generation
+  CKK_AES: no — tpm2-pkcs11/1.10+amd-ftpm: refused 8, 16, 24, 32, 48, 64 bytes
+  CKK_AES 1 bytes: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm probed 8, 16, 24, 32, 48, 64 bytes only
+  CKK_AES 8 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 8: CKR_FUNCTION_NOT_SUPPORTED
+  CKK_AES 16 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 16: CKR_FUNCTION_NOT_SUPPORTED
+  CKK_AES 24 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 24: CKR_FUNCTION_NOT_SUPPORTED
+  CKK_AES 32 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 32: CKR_FUNCTION_NOT_SUPPORTED
+  CKK_AES 48 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 48: CKR_FUNCTION_NOT_SUPPORTED
+  CKK_AES 64 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 64: CKR_FUNCTION_NOT_SUPPORTED
+  CKK_AES 128 bytes: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm probed 8, 16, 24, 32, 48, 64 bytes only
+  CKK_AES 1024 bytes: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm probed 8, 16, 24, 32, 48, 64 bytes only
+  CKK_AES 4096 bytes: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm probed 8, 16, 24, 32, 48, 64 bytes only
   CKK_AES_XTS: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_AES_XTS generation
   CKK_ARIA: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_ARIA generation
   CKK_BATON: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_BATON generation
