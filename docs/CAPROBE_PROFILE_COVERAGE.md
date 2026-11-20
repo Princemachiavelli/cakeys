@@ -478,7 +478,7 @@ PQ part is the longest (18 hash variants times a parameter set).
 ## Built
 
 Parts 0 to 8 are implemented in one pass, for the well-known surface; the profiles for softhsm,
-kryoptic and swtpm are regenerated with it.
+kryoptic, swtpm and ykcs11 (scratch slot 94 only) are regenerated with it.
 
 - **Part 0.** `[untested]` (`Why`: cryptoki, vendor, hardware, cloud, scope, unprobed) is computed
   by the probe from what `Ops` tried, emitted, compared by `diff`, and read by `Effective`: an
@@ -510,5 +510,5 @@ kryoptic and swtpm are regenerated with it.
 (`[untested]`, `unprobed`); `CKM_XEDDSA` and `CKM_AES_CFB128` (`cryptoki`); Ed448 and RSA-512
 import; SHA-224 RSA-PSS; the tpm2-pkcs11 import (needs `tpm2_ptool`); delete rows; a measured
 session limit; `CKO_OTP_KEY`, `CKO_DOMAIN_PARAMETERS` and `CKO_TRUST`; the host-side check of the
-hashed PQ variants. The amd-ftpm, aws-cloudhsm, kmsp11 and ykcs11 profiles are not regenerated:
-the hardware ones are the user's, by the rules above.
+hashed PQ variants. The amd-ftpm, aws-cloudhsm and kmsp11 profiles are not regenerated: the
+fTPM is the user's, by the rules above, and the two cloud ones need an AWS or GCP account.

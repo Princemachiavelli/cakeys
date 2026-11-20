@@ -37,6 +37,12 @@ advertise = [
 ]
 add = ["CKM_ECDSA_SHA224"]
 
+[untested]
+"CKM_SHA256" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
+"CKM_SHA384" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
+"CKM_SHA512" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
+"CKM_SHA_1" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
+
 [match]
 manufacturer = "Yubico (www.yubico.com)"
 module-version = "2.73"
@@ -98,6 +104,45 @@ firmware = "5.74"
 [reported."CKK_RSA"]
 min-bits = 1024
 max-bits = 4096
+
+[mechanism-info]
+"CKM_ECDH1_DERIVE" = { min = 256, max = 384, flags = ["hardware", "derive"] }
+"CKM_ECDSA" = { min = 256, max = 384, flags = ["hardware", "sign", "verify"] }
+"CKM_ECDSA_SHA1" = { min = 256, max = 384, flags = ["hardware", "sign", "verify"] }
+"CKM_ECDSA_SHA256" = { min = 256, max = 384, flags = ["hardware", "sign", "verify"] }
+"CKM_ECDSA_SHA384" = { min = 256, max = 384, flags = ["hardware", "sign", "verify"] }
+"CKM_ECDSA_SHA512" = { min = 256, max = 384, flags = ["hardware", "sign", "verify"] }
+"CKM_EC_EDWARDS_KEY_PAIR_GEN" = { min = 255, max = 255, flags = ["hardware", "generate-key-pair"] }
+"CKM_EC_KEY_PAIR_GEN" = { min = 256, max = 384, flags = ["hardware", "generate-key-pair"] }
+"CKM_EC_MONTGOMERY_KEY_PAIR_GEN" = { min = 255, max = 255, flags = ["hardware", "generate-key-pair"] }
+"CKM_EDDSA" = { min = 255, max = 255, flags = ["hardware", "sign", "verify"] }
+"CKM_RSA_PKCS" = { min = 1024, max = 4096, flags = ["hardware", "encrypt", "decrypt", "sign", "verify"] }
+"CKM_RSA_PKCS_KEY_PAIR_GEN" = { min = 1024, max = 4096, flags = ["hardware", "generate-key-pair"] }
+"CKM_RSA_PKCS_OAEP" = { min = 1024, max = 4096, flags = ["hardware", "encrypt", "decrypt"] }
+"CKM_RSA_PKCS_PSS" = { min = 1024, max = 4096, flags = ["hardware", "sign", "verify"] }
+"CKM_RSA_X_509" = { min = 1024, max = 4096, flags = ["hardware", "encrypt", "decrypt", "sign", "verify"] }
+"CKM_SHA1_RSA_PKCS" = { min = 1024, max = 4096, flags = ["hardware", "sign", "verify"] }
+"CKM_SHA1_RSA_PKCS_PSS" = { min = 1024, max = 4096, flags = ["hardware", "sign", "verify"] }
+"CKM_SHA256" = { min = 0, max = 0, flags = [] }
+"CKM_SHA256_RSA_PKCS" = { min = 1024, max = 4096, flags = ["hardware", "sign", "verify"] }
+"CKM_SHA256_RSA_PKCS_PSS" = { min = 1024, max = 4096, flags = ["hardware", "sign", "verify"] }
+"CKM_SHA384" = { min = 0, max = 0, flags = [] }
+"CKM_SHA384_RSA_PKCS" = { min = 1024, max = 4096, flags = ["hardware", "sign", "verify"] }
+"CKM_SHA384_RSA_PKCS_PSS" = { min = 1024, max = 4096, flags = ["hardware", "sign", "verify"] }
+"CKM_SHA512" = { min = 0, max = 0, flags = [] }
+"CKM_SHA512_RSA_PKCS" = { min = 1024, max = 4096, flags = ["hardware", "sign", "verify"] }
+"CKM_SHA512_RSA_PKCS_PSS" = { min = 1024, max = 4096, flags = ["hardware", "sign", "verify"] }
+"CKM_SHA_1" = { min = 0, max = 0, flags = [] }
+
+[claims]
+"interface" = "Cryptoki 3.0"
+"objects.hardware-features" = "0"
+"objects.profiles" = "0"
+"objects.validation" = "0"
+"token.flags" = "rng, login-required, token-initialized"
+"token.max-rw-sessions" = "Max(16)"
+"token.max-sessions" = "Max(16)"
+"token.pin-length" = "6-64"
 
 [migration]
 plaintext-import = "piv-import"

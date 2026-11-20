@@ -196,9 +196,11 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   generation" for a secret key `create` makes there. ykcs11 lists no secret key generation and
   probes in a scratch slot: unaffected.
 - **Profiles still to regenerate for the coverage plan** (2026-11-19,
-  [CAPROBE_PROFILE_COVERAGE.md](CAPROBE_PROFILE_COVERAGE.md)): the same four, now also lacking
-  the `commit.*`, `crypt.*`, `derive.CKM_*`, `attr.*` rows, `[untested]`, `[mechanism-info]` and
-  `[claims]` that softhsm, kryoptic and swtpm have.
+  [CAPROBE_PROFILE_COVERAGE.md](CAPROBE_PROFILE_COVERAGE.md)): `tpm2-pkcs11/1.10+amd-ftpm`,
+  `aws-cloudhsm/5.18+hsm2m-*` and `kmsp11/1.9+hsm*`, as above, also lack the `commit.*`,
+  `crypt.*`, `derive.CKM_*`, `attr.*` rows, `[untested]`, `[mechanism-info]` and `[claims]` that
+  softhsm, kryoptic, swtpm and ykcs11 have (ykcs11 was probed in scratch slot 94 only: it gained
+  `[untested]`, `[mechanism-info]` and `[claims]`, no row changed).
 - **More probes**: the SP 800-108 KBKDFs and `CKM_HKDF_DATA`, AES-KW/KWP round trips, attribute
   defaults, existing-object encodings, SHA-224 RSA-PSS (no binding variant), delete in a scratch
   slot, Ed448 and RSA-512 import, tpm2-pkcs11 import, a measured session limit, `CKO_OTP_KEY`,
