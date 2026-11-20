@@ -59,7 +59,7 @@ advertise = [
 add = ["CKM_ECDSA_SHA224", "CKM_SHA224_RSA_PKCS"]
 
 [untested]
-"CKM_RSA_AES_KEY_WRAP" = { why = "unprobed", note = "no probe tries it yet" }
+"CKM_RSA_AES_KEY_WRAP" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
 "CKM_SHA256" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
 "CKM_SHA384" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
 "CKM_SHA512" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }

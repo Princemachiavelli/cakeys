@@ -24,7 +24,7 @@
   {"algorithm":"HMAC_SHA512","id":35,"purpose":"MAC","kind":"CKK_SHA512_HMAC","on":"512","keygen":"CKM_GENERIC_SECRET_KEY_GEN","mechanisms":["CKM_SHA512_HMAC"],"probe":false},
   {"algorithm":"AES_128_GCM","id":41,"purpose":"RAW_ENCRYPT_DECRYPT","kind":"CKK_AES","on":"128","keygen":"CKM_AES_KEY_GEN","mechanisms":[],"probe":false},
   {"algorithm":"AES_128_CBC","id":42,"purpose":"RAW_ENCRYPT_DECRYPT","kind":"CKK_AES","on":"128","keygen":"CKM_AES_KEY_GEN","mechanisms":["CKM_AES_CBC","CKM_AES_CBC_PAD"],"probe":false},
-  {"algorithm":"AES_256_CBC","id":43,"purpose":"RAW_ENCRYPT_DECRYPT","kind":"CKK_AES","on":"256","keygen":"CKM_AES_KEY_GEN","mechanisms":["CKM_AES_CBC","CKM_AES_CBC_PAD"],"probe":false},
+  {"algorithm":"AES_256_CBC","id":43,"purpose":"RAW_ENCRYPT_DECRYPT","kind":"CKK_AES","on":"256","keygen":"CKM_AES_KEY_GEN","mechanisms":["CKM_AES_CBC","CKM_AES_CBC_PAD"],"probe":true},
   {"algorithm":"AES_128_CTR","id":44,"purpose":"RAW_ENCRYPT_DECRYPT","kind":"CKK_AES","on":"128","keygen":"CKM_AES_KEY_GEN","mechanisms":["CKM_AES_CTR"],"probe":false},
-  {"algorithm":"AES_256_CTR","id":45,"purpose":"RAW_ENCRYPT_DECRYPT","kind":"CKK_AES","on":"256","keygen":"CKM_AES_KEY_GEN","mechanisms":["CKM_AES_CTR"],"probe":false}
+  {"algorithm":"AES_256_CTR","id":45,"purpose":"RAW_ENCRYPT_DECRYPT","kind":"CKK_AES","on":"256","keygen":"CKM_AES_KEY_GEN","mechanisms":["CKM_AES_CTR"],"probe":true}
 ]

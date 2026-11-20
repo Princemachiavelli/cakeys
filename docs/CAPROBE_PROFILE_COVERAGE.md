@@ -478,8 +478,9 @@ PQ part is the longest (18 hash variants times a parameter set).
 ## Built
 
 Parts 0 to 8 are implemented in one pass, for the well-known surface; the profiles for softhsm,
-kryoptic, swtpm, the AMD fTPM (through the harness, handles and lockout counter unchanged) and
-ykcs11 (scratch slot 94 only) are regenerated with it.
+kryoptic, swtpm, the AMD fTPM (through the harness, handles and lockout counter unchanged),
+ykcs11 (scratch slot 94 only), aws-cloudhsm (both modes) and kmsp11 (both builds) are regenerated
+with it.
 
 - **Part 0.** `[untested]` (`Why`: cryptoki, vendor, hardware, cloud, scope, unprobed) is computed
   by the probe from what `Ops` tried, emitted, compared by `diff`, and read by `Effective`: an
@@ -509,7 +510,10 @@ ykcs11 (scratch slot 94 only) are regenerated with it.
 
 **Not done, and where it stands** (also OPEN.md): the SP 800-108 KBKDFs and `CKM_HKDF_DATA`
 (`[untested]`, `unprobed`); `CKM_XEDDSA` and `CKM_AES_CFB128` (`cryptoki`); Ed448 and RSA-512
-import; SHA-224 RSA-PSS; the tpm2-pkcs11 import (needs `tpm2_ptool`); delete rows; a measured
+import; SHA-224 RSA-PSS; **TODO** the tpm2-pkcs11 import (through `tpm2_ptool`, then a reopen of
+the token: OPEN.md, "TODO: probe the tpm2-pkcs11 import"); delete rows; a measured
 session limit; `CKO_OTP_KEY`, `CKO_DOMAIN_PARAMETERS` and `CKO_TRUST`; the host-side check of the
-hashed PQ variants. The aws-cloudhsm and kmsp11 profiles are not regenerated: they need an
-AWS or GCP account.
+hashed PQ variants. Parameter variants beyond AES CTR (GCM, PSS salt, HKDF, ECDH, RSA-AES wrap)
+are listed in OPEN.md. Every profile is regenerated, the aws-cloudhsm and kmsp11 ones through
+their clouds; a purpose-bound module (kmsp11) is probed on the AES keys its bindings make, for
+CBC, CBC-PAD and CTR.

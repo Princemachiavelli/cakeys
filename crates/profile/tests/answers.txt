@@ -70,13 +70,26 @@
   derive.read-only Some(false)
   migration exports None unwraps None secret-unwraps None trusted-wrap None plaintext None
   migration accepts [] [] []
+  generate CKK_AES: can [] cannot [] bits None..None can [] cannot [] by-name [] bytes can [16, 24, 32] cannot [8, 48, 64]
+  generate CKK_DES3: can [] cannot [] bits None..None can [] cannot [] by-name [] bytes can [] cannot [24]
   generate CKK_EC: can ["secp256k1", "secp256r1", "secp384r1", "secp521r1"] cannot ["brainpoolP256r1", "brainpoolP384r1"] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
   generate CKK_EC_EDWARDS: can [] cannot ["edwards25519", "edwards448"] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
   generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
+  generate CKK_GENERIC_SECRET: can [] cannot [] bits None..None can [] cannot [] by-name [] bytes can [16, 32, 64, 128, 256, 512] cannot [1, 1024]
   generate CKK_RSA: can [] cannot [] bits Some(2048)..Some(4096) can [2048, 3072, 4096] cannot [512, 1024, 1536, 6144, 8192, 12288, 16384] by-name [] bytes can [] cannot []
 
   CKK_ACTI: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_ACTI generation
-  CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_AES generation
+  CKK_AES: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_AES 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 8, 16, 24, 32, 48, 64 bytes only
+  CKK_AES 8 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 8: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_AES 48 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 48: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_AES 64 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 64: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_AES 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 8, 16, 24, 32, 48, 64 bytes only
+  CKK_AES 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 8, 16, 24, 32, 48, 64 bytes only
+  CKK_AES 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 8, 16, 24, 32, 48, 64 bytes only
   CKK_AES_XTS: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_AES_XTS generation
   CKK_ARIA: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_ARIA generation
   CKK_BATON: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_BATON generation
@@ -94,7 +107,17 @@
   CKK_CHACHA20: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_CHACHA20 generation
   CKK_DES: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_DES generation
   CKK_DES2: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_DES2 generation
-  CKK_DES3: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_DES3 generation
+  CKK_DES3: no — aws-cloudhsm/5.18+hsm2m-fips: refused 24 bytes
+  CKK_DES3 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 24 bytes only
+  CKK_DES3 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 24 bytes only
+  CKK_DES3 16 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 24 bytes only
+  CKK_DES3 24 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 24: CKR_FUNCTION_FAILED
+  CKK_DES3 32 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 24 bytes only
+  CKK_DES3 48 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 24 bytes only
+  CKK_DES3 64 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 24 bytes only
+  CKK_DES3 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 24 bytes only
+  CKK_DES3 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 24 bytes only
+  CKK_DES3 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 24 bytes only
   CKK_DH: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_DH generation
   CKK_DSA: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_DSA generation
   CKK_EC: yes (aws-cloudhsm/5.18+hsm2m-fips)
@@ -155,7 +178,17 @@
   CKK_EC_MONTGOMERY 8192: no — aws-cloudhsm/5.18+hsm2m-fips: refused curve25519, curve448
   CKK_EC_MONTGOMERY 15360: no — aws-cloudhsm/5.18+hsm2m-fips: refused curve25519, curve448
   CKK_EC_MONTGOMERY 16384: no — aws-cloudhsm/5.18+hsm2m-fips: refused curve25519, curve448
-  CKK_GENERIC_SECRET: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_GENERIC_SECRET generation
+  CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_GENERIC_SECRET 1 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 1: CKR_FUNCTION_FAILED
+  CKK_GENERIC_SECRET 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 1, 16, 32, 64, 128, 256, 512, 1024 bytes only
+  CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_GENERIC_SECRET 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_GENERIC_SECRET 48 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_GENERIC_SECRET 128 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_GENERIC_SECRET 1024 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 1024: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_GENERIC_SECRET 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 1, 16, 32, 64, 128, 256, 512, 1024 bytes only
   CKK_GOST28147: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_GOST28147 generation
   CKK_GOSTR3410: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_GOSTR3410 generation
   CKK_GOSTR3411: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_GOSTR3411 generation
@@ -235,13 +268,26 @@
   derive.read-only Some(false)
   migration exports None unwraps None secret-unwraps None trusted-wrap None plaintext None
   migration accepts [] [] [AcceptRow { class: "CKO_PRIVATE_KEY", key_types: ["CKK_EC_EDWARDS"], curves: [], min_bits: None, max_bits: None }]
+  generate CKK_AES: can [] cannot [] bits None..None can [] cannot [] by-name [] bytes can [16, 24, 32] cannot [8, 48, 64]
+  generate CKK_DES3: can [] cannot [] bits None..None can [] cannot [] by-name [] bytes can [24] cannot []
   generate CKK_EC: can ["secp256k1", "secp256r1", "secp384r1", "secp521r1"] cannot ["brainpoolP256r1", "brainpoolP384r1"] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
   generate CKK_EC_EDWARDS: can ["edwards25519"] cannot ["edwards448"] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
   generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
+  generate CKK_GENERIC_SECRET: can [] cannot [] bits None..None can [] cannot [] by-name [] bytes can [1, 16, 32, 64, 128, 256, 512] cannot [1024]
   generate CKK_RSA: can [] cannot [] bits Some(2048)..Some(4096) can [2048, 3072, 4096] cannot [512, 1024, 1536, 6144, 8192, 12288, 16384] by-name [] bytes can [] cannot []
 
   CKK_ACTI: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_ACTI generation
-  CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_AES generation
+  CKK_AES: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_AES 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 8, 16, 24, 32, 48, 64 bytes only
+  CKK_AES 8 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: valueLen = 8: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_AES 48 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: valueLen = 48: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_AES 64 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: valueLen = 64: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_AES 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 8, 16, 24, 32, 48, 64 bytes only
+  CKK_AES 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 8, 16, 24, 32, 48, 64 bytes only
+  CKK_AES 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 8, 16, 24, 32, 48, 64 bytes only
   CKK_AES_XTS: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_AES_XTS generation
   CKK_ARIA: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_ARIA generation
   CKK_BATON: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_BATON generation
@@ -259,7 +305,17 @@
   CKK_CHACHA20: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_CHACHA20 generation
   CKK_DES: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_DES generation
   CKK_DES2: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_DES2 generation
-  CKK_DES3: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_DES3 generation
+  CKK_DES3: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_DES3 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 24 bytes only
+  CKK_DES3 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 24 bytes only
+  CKK_DES3 16 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 24 bytes only
+  CKK_DES3 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_DES3 32 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 24 bytes only
+  CKK_DES3 48 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 24 bytes only
+  CKK_DES3 64 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 24 bytes only
+  CKK_DES3 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 24 bytes only
+  CKK_DES3 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 24 bytes only
+  CKK_DES3 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 24 bytes only
   CKK_DH: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_DH generation
   CKK_DSA: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_DSA generation
   CKK_EC: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
@@ -320,7 +376,17 @@
   CKK_EC_MONTGOMERY 8192: no — aws-cloudhsm/5.18+hsm2m-non-fips: refused curve25519, curve448
   CKK_EC_MONTGOMERY 15360: no — aws-cloudhsm/5.18+hsm2m-non-fips: refused curve25519, curve448
   CKK_EC_MONTGOMERY 16384: no — aws-cloudhsm/5.18+hsm2m-non-fips: refused curve25519, curve448
-  CKK_GENERIC_SECRET: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_GENERIC_SECRET generation
+  CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_GENERIC_SECRET 1 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_GENERIC_SECRET 8 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_GENERIC_SECRET 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_GENERIC_SECRET 48 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_GENERIC_SECRET 128 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_GENERIC_SECRET 1024 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: valueLen = 1024: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_GENERIC_SECRET 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 1, 16, 32, 64, 128, 256, 512, 1024 bytes only
   CKK_GOST28147: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_GOST28147 generation
   CKK_GOSTR3410: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_GOSTR3410 generation
   CKK_GOSTR3411: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_GOSTR3411 generation
@@ -400,13 +466,24 @@
   derive.read-only None
   migration exports None unwraps None secret-unwraps None trusted-wrap None plaintext None
   migration accepts [] [] []
+  generate CKK_AES: can [] cannot [] bits None..None can [] cannot [] by-name [] bytes can [32] cannot []
   generate CKK_EC: can ["secp256r1", "secp384r1"] cannot ["brainpoolP256r1", "brainpoolP384r1", "secp256k1", "secp521r1"] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
   generate CKK_EC_EDWARDS: can [] cannot ["edwards25519", "edwards448"] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
   generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
   generate CKK_RSA: can [] cannot [] bits Some(2048)..Some(4096) can [2048, 3072, 4096] cannot [512, 1024, 1536, 6144, 8192, 12288, 16384] by-name [] bytes can [] cannot []
 
   CKK_ACTI: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_ACTI generation
-  CKK_AES: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_AES generation
+  CKK_AES: yes (kmsp11/1.9+hsm-fips)
+  CKK_AES 1 bytes: unknown — module profile kmsp11/1.9+hsm-fips probed 32 bytes only
+  CKK_AES 8 bytes: unknown — module profile kmsp11/1.9+hsm-fips probed 32 bytes only
+  CKK_AES 16 bytes: unknown — module profile kmsp11/1.9+hsm-fips probed 32 bytes only
+  CKK_AES 24 bytes: unknown — module profile kmsp11/1.9+hsm-fips probed 32 bytes only
+  CKK_AES 32 bytes: yes (kmsp11/1.9+hsm-fips)
+  CKK_AES 48 bytes: unknown — module profile kmsp11/1.9+hsm-fips probed 32 bytes only
+  CKK_AES 64 bytes: unknown — module profile kmsp11/1.9+hsm-fips probed 32 bytes only
+  CKK_AES 128 bytes: unknown — module profile kmsp11/1.9+hsm-fips probed 32 bytes only
+  CKK_AES 1024 bytes: unknown — module profile kmsp11/1.9+hsm-fips probed 32 bytes only
+  CKK_AES 4096 bytes: unknown — module profile kmsp11/1.9+hsm-fips probed 32 bytes only
   CKK_AES_XTS: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_AES_XTS generation
   CKK_ARIA: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_ARIA generation
   CKK_BATON: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_BATON generation
@@ -564,13 +641,24 @@
   derive.read-only None
   migration exports None unwraps None secret-unwraps None trusted-wrap None plaintext None
   migration accepts [] [] []
+  generate CKK_AES: can [] cannot [] bits None..None can [] cannot [] by-name [] bytes can [32] cannot []
   generate CKK_EC: can ["secp256r1", "secp384r1"] cannot ["brainpoolP256r1", "brainpoolP384r1", "secp256k1", "secp521r1"] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
   generate CKK_EC_EDWARDS: can [] cannot ["edwards25519", "edwards448"] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
   generate CKK_EC_MONTGOMERY: can [] cannot ["curve25519", "curve448"] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
   generate CKK_RSA: can [] cannot [] bits Some(2048)..Some(4096) can [2048, 3072, 4096] cannot [512, 1024, 1536, 6144, 8192, 12288, 16384] by-name [] bytes can [] cannot []
 
   CKK_ACTI: unknown — module profile kmsp11/1.9+hsm records no CKK_ACTI generation
-  CKK_AES: unknown — module profile kmsp11/1.9+hsm records no CKK_AES generation
+  CKK_AES: yes (kmsp11/1.9+hsm)
+  CKK_AES 1 bytes: unknown — module profile kmsp11/1.9+hsm probed 32 bytes only
+  CKK_AES 8 bytes: unknown — module profile kmsp11/1.9+hsm probed 32 bytes only
+  CKK_AES 16 bytes: unknown — module profile kmsp11/1.9+hsm probed 32 bytes only
+  CKK_AES 24 bytes: unknown — module profile kmsp11/1.9+hsm probed 32 bytes only
+  CKK_AES 32 bytes: yes (kmsp11/1.9+hsm)
+  CKK_AES 48 bytes: unknown — module profile kmsp11/1.9+hsm probed 32 bytes only
+  CKK_AES 64 bytes: unknown — module profile kmsp11/1.9+hsm probed 32 bytes only
+  CKK_AES 128 bytes: unknown — module profile kmsp11/1.9+hsm probed 32 bytes only
+  CKK_AES 1024 bytes: unknown — module profile kmsp11/1.9+hsm probed 32 bytes only
+  CKK_AES 4096 bytes: unknown — module profile kmsp11/1.9+hsm probed 32 bytes only
   CKK_AES_XTS: unknown — module profile kmsp11/1.9+hsm records no CKK_AES_XTS generation
   CKK_ARIA: unknown — module profile kmsp11/1.9+hsm records no CKK_ARIA generation
   CKK_BATON: unknown — module profile kmsp11/1.9+hsm records no CKK_BATON generation

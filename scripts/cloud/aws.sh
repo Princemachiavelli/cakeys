@@ -395,7 +395,7 @@ tool() {
     runner install -D -m 644 /dev/stdin /root/cakeys/keys.toml
   runner bash -s <<EOF
 set -euo pipefail
-mkdir -p /root/softhsm/tokens
+mkdir -p /root/softhsm/tokens "$(dirname "${CAKEYS_AWS_LOCK:-/root/cakeys/keys.lock}")"
 echo 1234 >/root/softhsm/pin
 printf 'directories.tokendir = /root/softhsm/tokens\nobjectstore.backend = file\nlog.level = ERROR\n' >/root/softhsm/softhsm2.conf
 export SOFTHSM2_CONF=/root/softhsm/softhsm2.conf

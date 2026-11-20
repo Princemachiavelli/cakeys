@@ -41,17 +41,17 @@ advertise = [
 add = ["CKM_SHA384_RSA_PKCS", "CKM_SHA512_RSA_PKCS"]
 
 [untested]
-"CKM_AES_CBC" = { why = "unprobed", note = "no probe tries it yet" }
-"CKM_AES_CBC_PAD" = { why = "unprobed", note = "no probe tries it yet" }
+"CKM_AES_CBC" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
+"CKM_AES_CBC_PAD" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
 "CKM_AES_CFB128" = { why = "cryptoki", note = "the pinned cryptoki has no name or parameter type for it; see profiles/layers/cryptoki.toml" }
-"CKM_AES_CTR" = { why = "unprobed", note = "no probe tries it yet" }
-"CKM_AES_ECB" = { why = "unprobed", note = "no probe tries it yet" }
+"CKM_AES_CTR" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
+"CKM_AES_ECB" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
 "CKM_SHA256" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
-"CKM_SHA256_HMAC" = { why = "unprobed", note = "no probe tries it yet" }
+"CKM_SHA256_HMAC" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
 "CKM_SHA384" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
 "CKM_SHA512" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
 "CKM_SHA_1" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
-"CKM_SHA_1_HMAC" = { why = "unprobed", note = "no probe tries it yet" }
+"CKM_SHA_1_HMAC" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
 
 [match]
 manufacturer = "tpm2-software.github.io"

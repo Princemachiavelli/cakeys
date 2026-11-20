@@ -186,23 +186,24 @@ pub(super) fn probe_modes(made: &mut Made, profile: &mut Draft) -> Result<()> {
     let iv16 = [7u8; 16];
     let iv8 = [7u8; 8];
     let mut gcm_iv = [9u8; 12];
-    let mut modes: Vec<(Kt, u32, Mechanism, usize)> = vec![
-        (Kt::Aes, 32, Mechanism::AesCbc(iv16), 32),
-        (Kt::Aes, 32, Mechanism::AesCbcPad(iv16), 21),
-        (Kt::Des3, 24, Mechanism::Des3Cbc(iv8), 16),
-        (Kt::Des3, 24, Mechanism::Des3CbcPad(iv8), 13),
+    let mut modes: Vec<(Kt, u32, Variants, usize)> = vec![
+        (Kt::Aes, 32, fixed(Mechanism::AesCbc(iv16)), 32),
+        (Kt::Aes, 32, fixed(Mechanism::AesCbcPad(iv16)), 21),
+        (Kt::Des3, 24, fixed(Mechanism::Des3Cbc(iv8)), 16),
+        (Kt::Des3, 24, fixed(Mechanism::Des3CbcPad(iv8)), 13),
     ];
-    if let Ok(ctr) = AesCtrParams::new(32, iv16) {
-        modes.push((Kt::Aes, 32, Mechanism::AesCtr(ctr), 21));
+    let ctr = ctr_variants(iv16);
+    if !ctr.is_empty() {
+        modes.push((Kt::Aes, 32, ctr, 21));
     }
     if let Ok(gcm) = GcmParams::new(&mut gcm_iv, &[1, 2, 3], 128.into()) {
-        modes.push((Kt::Aes, 32, Mechanism::AesGcm(gcm), 21));
+        modes.push((Kt::Aes, 32, fixed(Mechanism::AesGcm(gcm)), 21));
     }
     let plain: Vec<u8> = (0u8..64).collect();
     for kt in [Kt::Aes, Kt::Des3] {
         let Some(bytes) = modes.iter().find(|m| m.0 == kt).map(|m| m.1) else { continue };
         if !generated(profile, kt).contains(&bytes)
-            || !modes.iter().any(|m| m.0 == kt && made.tok.lists(m.2.mechanism_type()))
+            || !modes.iter().any(|m| m.0 == kt && made.tok.lists(m.2[0].0.mechanism_type()))
         {
             continue;
         }
@@ -217,23 +218,97 @@ pub(super) fn probe_modes(made: &mut Made, profile: &mut Draft) -> Result<()> {
                 continue;
             }
         };
-        for (_, _, m, len) in modes.iter().filter(|m| m.0 == kt) {
-            let mt = m.mechanism_type();
-            if !made.tok.lists(mt) {
+        for (_, _, variants, len) in modes.iter().filter(|m| m.0 == kt) {
+            if !made.tok.lists(variants[0].0.mechanism_type()) {
                 continue;
             }
-            let cap = Capability::Crypt { mechanism: mt.to_string(), key_type: KeyKind::from(kt.name()), bytes };
-            match round_trip(made.session, key, m, &plain[..*len]) {
-                Ok(()) => profile.set(cap, Answer::Yes, None, None),
-                Err(e) if token::rv_is(e.rv(), RvError::OperationActive) => {
-                    made.undetermined.push(format!("no {cap} row: an earlier operation left the session busy"));
-                }
-                Err(e) if e.rv().is_some() => profile.set(cap, Answer::No, Some(e.to_string()), None),
-                Err(e) => profile.set(cap, Answer::No, Some(e.to_string()), None),
-            }
+            crypt_row(made, profile, key, &KeyKind::from(kt.name()), bytes, variants, &plain[..*len]);
         }
     }
     Ok(())
+}
+
+/// One mechanism with the parameter choices to try, in order, each with the words naming it (empty
+/// for a mechanism whose parameters are fixed): a module that answers `CKR_MECHANISM_PARAM_INVALID`
+/// to one choice may take another, and that refusal is about the call, not the mechanism.
+type Variants<'a> = Vec<(Mechanism<'a>, String)>;
+
+/// A mechanism with one fixed parameter choice.
+fn fixed(m: Mechanism<'_>) -> Variants<'_> {
+    vec![(m, String::new())]
+}
+
+/// AES CTR with a 32-bit counter, then with the whole block as the counter: Cloud KMS takes only
+/// the latter, and a token that takes either answers to the first.
+fn ctr_variants<'a>(iv: [u8; 16]) -> Variants<'a> {
+    [32u8, 128]
+        .into_iter()
+        .filter_map(|bits| {
+            AesCtrParams::new(bits, iv).ok().map(|p| (Mechanism::AesCtr(p), format!("a {bits}-bit counter")))
+        })
+        .collect()
+}
+
+/// One `crypt.*` row: the first of `variants` the module takes, round-tripped on `key`: yes when
+/// the plaintext comes back, no with the module's `CKR_*` when it refuses every choice. Only
+/// `CKR_MECHANISM_PARAM_INVALID` moves on to the next choice, and a yes on any but the first
+/// says which one worked. A session an earlier operation left busy says nothing.
+fn crypt_row(
+    made: &mut Made,
+    profile: &mut Draft,
+    key: ObjectHandle,
+    key_type: &KeyKind,
+    bytes: u32,
+    variants: &Variants<'_>,
+    plain: &[u8],
+) {
+    let Some(mechanism) = variants.first().map(|v| v.0.mechanism_type().to_string()) else { return };
+    let cap = Capability::Crypt { mechanism, key_type: key_type.clone(), bytes };
+    for (i, (m, label)) in variants.iter().enumerate() {
+        match round_trip(made.session, key, m, plain) {
+            Ok(()) => {
+                if i > 0 {
+                    profile.note(
+                        cap.to_string(),
+                        format!("refused the first parameters tried (CKR_MECHANISM_PARAM_INVALID); works with {label}"),
+                    );
+                }
+                profile.set(cap, Answer::Yes, None, None);
+            }
+            Err(e) if token::rv_is(e.rv(), RvError::OperationActive) => {
+                made.undetermined.push(format!("no {cap} row: an earlier operation left the session busy"));
+            }
+            Err(e) if token::rv_is(e.rv(), RvError::MechanismParamInvalid) && i + 1 < variants.len() => continue,
+            Err(e) => profile.set(cap, Answer::No, Some(e.to_string()), None),
+        }
+        return;
+    }
+}
+
+/// The modes of a bound AES key (a purpose-bound module's, such as kmsp11's): each of CBC, CBC
+/// with padding and CTR the key's binding serves, on the key the module generated for it, the
+/// same round trip as the unbound probe. `bytes` is the key's length.
+pub(super) fn probe_bound_aes(
+    made: &mut Made,
+    profile: &mut Draft,
+    serves: &[MechanismType],
+    bytes: u32,
+    key: ObjectHandle,
+) {
+    let iv = [7u8; 16];
+    let mut modes: Vec<(Variants, usize)> =
+        vec![(fixed(Mechanism::AesCbc(iv)), 32), (fixed(Mechanism::AesCbcPad(iv)), 21)];
+    let ctr = ctr_variants(iv);
+    if !ctr.is_empty() {
+        modes.push((ctr, 21));
+    }
+    let plain: Vec<u8> = (0u8..64).collect();
+    for (variants, len) in &modes {
+        let mt = variants[0].0.mechanism_type();
+        if serves.contains(&mt) && made.tok.lists(mt) {
+            crypt_row(made, profile, key, &KeyKind::Aes, bytes, variants, &plain[..*len]);
+        }
+    }
 }
 
 /// The base value every derivation starts from.
