@@ -20,6 +20,17 @@ pub(crate) fn diff(generated: &Profile, claimed: &Profile) -> Vec<String> {
     sets("subtract.key-types", &generated.subtract.key_types, &claimed.subtract.key_types, &mut out);
     sets("add", &generated.add, &claimed.add, &mut out);
     restrictions(generated, claimed, &mut out);
+    let names: BTreeSet<&String> = generated.untested.keys().chain(claimed.untested.keys()).collect();
+    for name in names {
+        match (generated.untested.get(name), claimed.untested.get(name)) {
+            (Some(g), Some(c)) if g.why != c.why => {
+                out.push(format!("untested.{name}: observed {}, claimed {}", g.why.name(), c.why.name()));
+            }
+            (Some(g), None) => out.push(format!("untested.{name}: only observed: {}", g.why.name())),
+            (None, Some(c)) => out.push(format!("untested.{name}: only claimed: {}", c.why.name())),
+            _ => {}
+        }
+    }
     let probed = |p: &Profile| -> BTreeMap<Capability, Row> {
         p.capabilities.iter().filter(|(c, _)| c.probed()).map(|(c, r)| (c.clone(), r.clone())).collect()
     };

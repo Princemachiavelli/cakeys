@@ -15,9 +15,11 @@ use std::path::Path;
 const BITS: [u32; 8] = [512, 1024, 2048, 3072, 4096, 8192, 15360, 16384];
 
 /// The secret key types cakeys generates, which a generation row reads in bytes.
-const SECRET_KEYS: [&str; 8] = [
+const SECRET_KEYS: [&str; 10] = [
     "CKK_AES",
+    "CKK_DES2",
     "CKK_DES3",
+    "CKK_HKDF",
     "CKK_GENERIC_SECRET",
     "CKK_SHA_1_HMAC",
     "CKK_SHA224_HMAC",
@@ -25,6 +27,10 @@ const SECRET_KEYS: [&str; 8] = [
     "CKK_SHA384_HMAC",
     "CKK_SHA512_HMAC",
 ];
+
+/// The post-quantum key types, which a generation row reads by parameter set, never by curve or
+/// bits: asked once, as the key type.
+const PARAMETER_SET_KEYS: [&str; 3] = ["CKK_ML_DSA", "CKK_ML_KEM", "CKK_SLH_DSA"];
 
 /// The secret-key lengths asked after: the three AES lengths, the edges and the lengths between
 /// and beyond those the probes generate.
@@ -112,7 +118,7 @@ fn answers(set: &Set) -> String {
             // same.
             let none = !alone && p.generation(kt).is_none();
             answer(kt.clone(), bare);
-            if none {
+            if none || PARAMETER_SET_KEYS.contains(&kt.as_str()) {
                 continue;
             }
             for c in &baseline.curves {

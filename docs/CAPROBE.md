@@ -131,7 +131,13 @@ keeps them only from a file of the profile just probed: one of another family is
 and one of another name of the family unless `--name` says which it is. Where a
 probed `import.*`, `create.*`, `export.*` or `unwrap.*` row covers an object's type it decides
 before `[migration]` and `move.*`, which answer for the rest until every committed profile
-carries the probed rows ([CAPROBE_MIGRATION.md](CAPROBE_MIGRATION.md) M4).
+carries the probed rows ([CAPROBE_MIGRATION.md](CAPROBE_MIGRATION.md) M4). A mechanism the
+module advertises that no row measures is listed in `[untested]` with a reason (`cryptoki`,
+`vendor`, `hardware`, `cloud`, `scope`, `unprobed`) and reads *unknown*, never *yes*; the
+commitments cakeys computes (`commit.*`), the symmetric modes (`crypt.*`), key derivations
+(`derive.CKM_*`), attributes (`attr.*`) and post-quantum rows are probed beside the rest, and
+`[mechanism-info]` and `[claims]` record what the module reports of itself, never compared. What
+was built and what is open: [CAPROBE_PROFILE_COVERAGE.md](CAPROBE_PROFILE_COVERAGE.md).
 
 **Layers** (`mode = "delta"`, `profiles/layers/`, `profiles/hardware/`) forward everything except
 what they subtract:

@@ -24,7 +24,10 @@ pub use baseline::Baseline;
 pub use capability::{Answer, Capability, Move, On, Row, Way};
 pub use effective::{Effective, Verdict};
 pub use names::{KeyKind, Operation, Proof};
-pub use profile::{AcceptRow, GenerateRow, Manual, MatchInfo, Migration, Mode, PlaintextKind, Profile, Reported};
+pub use profile::{
+    AcceptRow, GenerateRow, Manual, MatchInfo, MechanismInfo, Migration, Mode, PlaintextKind, Profile, Reported,
+    Untested, Why,
+};
 
 use std::path::Path;
 use std::sync::OnceLock;

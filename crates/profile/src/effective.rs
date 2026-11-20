@@ -6,7 +6,7 @@
 use crate::baseline::Baseline;
 use crate::capability::{Capability, On};
 use crate::names::{KeyKind, Operation};
-use crate::profile::Profile;
+use crate::profile::{Profile, Why};
 
 /// The capability of generating `key_type` on `on`.
 fn generate(key_type: &str, on: On) -> Capability {
@@ -130,6 +130,18 @@ impl<'a> Effective<'a> {
             };
         }
         if m.advertise.iter().any(|x| x == name) {
+            // Advertised and never tried: not yes. A mechanism the tools never use (`scope`)
+            // is not asked about, and keeps its advertised answer.
+            if let Some(u) = m.untested.get(name).filter(|u| u.why != Why::Scope) {
+                return Verdict::Unknown {
+                    why: format!(
+                        "module profile {} advertises it but did not test it ({}){}",
+                        m.profile,
+                        u.why.name(),
+                        u.note.as_ref().map(|n| format!(": {n}")).unwrap_or_default()
+                    ),
+                };
+            }
             Verdict::yes(&m.profile, m.notes.get(name))
         } else {
             Verdict::no(&m.profile, m.notes.get(name).cloned().or_else(|| Some("not advertised".into())))
@@ -216,6 +228,50 @@ impl<'a> Effective<'a> {
             return Verdict::no(&m.profile, Some(why));
         }
         Verdict::Unknown { why: format!("module profile {} records no {key_type} generation it can judge", m.profile) }
+    }
+
+    /// Whether a module computes the commitment `kind` (`hmac-sha256`, `cmac`, `kcv-ecb`...) on a
+    /// secret key of `key_type`, `bytes` long when the length is known. The module's
+    /// `commit.*` row for the length decides; for a key type whose length is free, any length
+    /// that did stands for one between two that did, and any other length is unknown. A profile
+    /// with no such rows is unknown: the advertised mechanism is all it knows.
+    #[must_use]
+    pub fn commit(&self, kind: &str, key_type: &str, bytes: Option<u32>) -> Verdict {
+        let Some(m) = self.module else {
+            return Verdict::Unknown { why: "no module profile selected".into() };
+        };
+        let kt = KeyKind::from(key_type);
+        let rows: Vec<(u32, bool)> = m
+            .capabilities
+            .iter()
+            .filter_map(|(c, r)| match c {
+                Capability::Commit { kind: k, key_type: t, bytes: b } if k == kind && *t == kt => {
+                    Some((*b, r.answer.yes()))
+                }
+                _ => None,
+            })
+            .collect();
+        if rows.is_empty() {
+            return Verdict::Unknown { why: format!("module profile {} records no {kind} commitment", m.profile) };
+        }
+        let row = |b: u32| Capability::Commit { kind: kind.to_owned(), key_type: kt.clone(), bytes: b };
+        if let Some(n) = bytes
+            && let Some((_, yes)) = rows.iter().find(|(b, _)| *b == n)
+        {
+            return if *yes {
+                Verdict::yes(&m.profile, None)
+            } else {
+                Verdict::no(&m.profile, m.evidence(&row(n), &format!("{kind} on {key_type} at {n} bytes")))
+            };
+        }
+        if rows.iter().all(|(_, yes)| !yes) {
+            return Verdict::no(&m.profile, m.evidence(&row(rows[0].0), &format!("{kind} on {key_type}")));
+        }
+        let free = !matches!(kt, KeyKind::Aes | KeyKind::Des3);
+        if free && rows.iter().any(|(_, yes)| *yes) {
+            return Verdict::yes(&m.profile, None);
+        }
+        Verdict::Unknown { why: format!("module profile {} probed {kind} at other lengths only", m.profile) }
     }
 
     /// Whether a module generates a key of `key_type`, optionally with one item (a curve, or a
@@ -449,6 +505,23 @@ mod tests {
             Verdict::No { by, .. } if by == "p11-kit/0.26"
         ));
         assert!(matches!(eff(&b, None, &[&p11]).mechanism("CKM_AES_KEY_WRAP"), Verdict::No { .. }));
+    }
+
+    /// An advertised mechanism the probe did not try is unknown, never yes, unless the tools
+    /// never use it (`scope`); the table's own faults are named.
+    #[test]
+    fn an_untested_mechanism_is_unknown_not_yes() {
+        let b = baseline();
+        let m = profile(
+            "profile = \"m/1\"\nmode = \"observed\"\nadvertise = [\"CKM_AES_KEY_WRAP\", \"CKM_SHA512_HMAC\", \"CKM_X\"]\n\
+             [untested]\n\"CKM_AES_KEY_WRAP\" = { why = \"cryptoki\", note = \"no name\" }\n\
+             \"CKM_SHA512_HMAC\" = { why = \"scope\" }\n\"CKM_GONE\" = { why = \"vendor\" }\n",
+        );
+        let e = eff(&b, Some(&m), &[]);
+        let Verdict::Unknown { why } = e.mechanism("CKM_AES_KEY_WRAP") else { panic!() };
+        assert!(why.contains("did not test it (cryptoki): no name"), "{why}");
+        assert!(matches!(e.mechanism("CKM_SHA512_HMAC"), Verdict::Yes { .. }));
+        assert_eq!(m.untested_problems(), ["[untested] CKM_GONE: the module does not advertise it"]);
     }
 
     #[test]

@@ -94,6 +94,19 @@ advertise = [
 ]
 add = ["CKM_ECDSA_SHA224", "CKM_SHA224_RSA_PKCS"]
 
+[untested]
+"CKM_AES_CFB128" = { why = "cryptoki", note = "the pinned cryptoki has no name or parameter type for it; see profiles/layers/cryptoki.toml" }
+"CKM_HASH_ML_DSA" = { why = "unprobed", note = "no probe tries it yet" }
+"CKM_HASH_SLH_DSA" = { why = "unprobed", note = "no probe tries it yet" }
+"CKM_HKDF_DATA" = { why = "unprobed", note = "no probe tries it yet" }
+"CKM_SHA256" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
+"CKM_SHA384" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
+"CKM_SHA512" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
+"CKM_SHA_1" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
+"CKM_SP800_108_COUNTER_KDF" = { why = "unprobed", note = "no probe tries it yet" }
+"CKM_SP800_108_FEEDBACK_KDF" = { why = "unprobed", note = "no probe tries it yet" }
+"unknown 8007678c" = { why = "vendor", note = "a vendor mechanism the baseline does not name: no known parameters or semantics to call it with" }
+
 [match]
 manufacturer = "Kryoptic"
 model = "v1"
@@ -124,6 +137,13 @@ firmware = "1.5"
 "generate.CKK_GENERIC_SECRET.256" = { answer = "yes" }
 "generate.CKK_GENERIC_SECRET.512" = { answer = "yes" }
 "generate.CKK_GENERIC_SECRET.1024" = { answer = "yes" }
+"generate.CKK_HKDF.32" = { answer = "yes" }
+"generate.CKK_ML_DSA.CKP_ML_DSA_44" = { answer = "yes" }
+"generate.CKK_ML_DSA.CKP_ML_DSA_65" = { answer = "yes" }
+"generate.CKK_ML_DSA.CKP_ML_DSA_87" = { answer = "yes" }
+"generate.CKK_ML_KEM.CKP_ML_KEM_1024" = { answer = "yes" }
+"generate.CKK_ML_KEM.CKP_ML_KEM_512" = { answer = "yes" }
+"generate.CKK_ML_KEM.CKP_ML_KEM_768" = { answer = "yes" }
 "generate.CKK_RSA.512" = { answer = "no", evidence = "modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID" }
 "generate.CKK_RSA.1024" = { answer = "yes" }
 "generate.CKK_RSA.1536" = { answer = "yes" }
@@ -170,6 +190,18 @@ firmware = "1.5"
 "generate.CKK_SHA_1_HMAC.256" = { answer = "yes" }
 "generate.CKK_SHA_1_HMAC.512" = { answer = "yes" }
 "generate.CKK_SHA_1_HMAC.1024" = { answer = "yes" }
+"generate.CKK_SLH_DSA.CKP_SLH_DSA_SHA2_128F" = { answer = "yes" }
+"generate.CKK_SLH_DSA.CKP_SLH_DSA_SHA2_128S" = { answer = "yes" }
+"generate.CKK_SLH_DSA.CKP_SLH_DSA_SHA2_192F" = { answer = "yes" }
+"generate.CKK_SLH_DSA.CKP_SLH_DSA_SHA2_192S" = { answer = "yes" }
+"generate.CKK_SLH_DSA.CKP_SLH_DSA_SHA2_256F" = { answer = "yes" }
+"generate.CKK_SLH_DSA.CKP_SLH_DSA_SHA2_256S" = { answer = "yes" }
+"generate.CKK_SLH_DSA.CKP_SLH_DSA_SHAKE_128F" = { answer = "yes" }
+"generate.CKK_SLH_DSA.CKP_SLH_DSA_SHAKE_128S" = { answer = "yes" }
+"generate.CKK_SLH_DSA.CKP_SLH_DSA_SHAKE_192F" = { answer = "yes" }
+"generate.CKK_SLH_DSA.CKP_SLH_DSA_SHAKE_192S" = { answer = "yes" }
+"generate.CKK_SLH_DSA.CKP_SLH_DSA_SHAKE_256F" = { answer = "yes" }
+"generate.CKK_SLH_DSA.CKP_SLH_DSA_SHAKE_256S" = { answer = "yes" }
 "wrap.rsa-oaep.SHA-1" = { answer = "yes" }
 "wrap.rsa-oaep.SHA-256" = { answer = "yes" }
 "decrypt.rsa-oaep.SHA-1" = { answer = "yes" }
@@ -205,6 +237,7 @@ firmware = "1.5"
 "import.CKK_AES.16" = { answer = "yes", via = "create-object" }
 "import.CKK_AES.24" = { answer = "yes", via = "create-object" }
 "import.CKK_AES.32" = { answer = "yes", via = "create-object" }
+"import.CKK_DES3.24" = { answer = "no", evidence = "CKR_ATTRIBUTE_VALUE_INVALID" }
 "import.CKK_EC.brainpoolP256r1" = { answer = "no", evidence = "CKR_ATTRIBUTE_VALUE_INVALID" }
 "import.CKK_EC.brainpoolP384r1" = { answer = "no", evidence = "CKR_ATTRIBUTE_VALUE_INVALID" }
 "import.CKK_EC.secp256k1" = { answer = "no", evidence = "CKR_ATTRIBUTE_VALUE_INVALID" }
@@ -212,11 +245,17 @@ firmware = "1.5"
 "import.CKK_EC.secp384r1" = { answer = "yes", via = "create-object" }
 "import.CKK_EC.secp521r1" = { answer = "yes", via = "create-object" }
 "import.CKK_EC_EDWARDS.edwards25519" = { answer = "yes", via = "create-object" }
+"import.CKK_GENERIC_SECRET.32" = { answer = "yes", via = "create-object" }
 "import.CKK_RSA.1024" = { answer = "yes", via = "create-object" }
 "import.CKK_RSA.1536" = { answer = "yes", via = "create-object" }
 "import.CKK_RSA.2048" = { answer = "yes", via = "create-object" }
 "import.CKK_RSA.3072" = { answer = "yes", via = "create-object" }
 "import.CKK_RSA.4096" = { answer = "yes", via = "create-object" }
+"import.CKK_SHA224_HMAC.32" = { answer = "no", evidence = "CKR_ATTRIBUTE_VALUE_INVALID" }
+"import.CKK_SHA256_HMAC.32" = { answer = "yes", via = "create-object" }
+"import.CKK_SHA384_HMAC.48" = { answer = "yes", via = "create-object" }
+"import.CKK_SHA512_HMAC.64" = { answer = "yes", via = "create-object" }
+"import.CKK_SHA_1_HMAC.32" = { answer = "no", evidence = "CKR_ATTRIBUTE_VALUE_INVALID" }
 "create.CKO_CERTIFICATE" = { answer = "yes" }
 "create.CKO_DATA" = { answer = "yes" }
 "create.CKO_PUBLIC_KEY.CKK_EC.brainpoolP256r1" = { answer = "no", evidence = "C_CreateObject: CKR_ATTRIBUTE_VALUE_INVALID" }
@@ -238,11 +277,15 @@ firmware = "1.5"
 "export.host.CKK_EC.secp384r1" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
 "export.host.CKK_EC.secp521r1" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
 "export.host.CKK_EC_EDWARDS.edwards25519" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
+"export.host.CKK_GENERIC_SECRET.32" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
 "export.host.CKK_RSA.1024" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
 "export.host.CKK_RSA.1536" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
 "export.host.CKK_RSA.2048" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
 "export.host.CKK_RSA.3072" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
 "export.host.CKK_RSA.4096" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
+"export.host.CKK_SHA256_HMAC.32" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
+"export.host.CKK_SHA384_HMAC.48" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
+"export.host.CKK_SHA512_HMAC.64" = { answer = "yes", via = "CKM_AES_KEY_WRAP_KWP" }
 "export.sealed.CKK_AES.16" = { answer = "yes", via = "rsa-oaep-sha256" }
 "export.sealed.CKK_AES.24" = { answer = "yes", via = "rsa-oaep-sha256" }
 "export.sealed.CKK_AES.32" = { answer = "yes", via = "rsa-oaep-sha256" }
@@ -250,11 +293,15 @@ firmware = "1.5"
 "export.sealed.CKK_EC.secp384r1" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
 "export.sealed.CKK_EC.secp521r1" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
 "export.sealed.CKK_EC_EDWARDS.edwards25519" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"export.sealed.CKK_GENERIC_SECRET.32" = { answer = "yes", via = "rsa-oaep-sha256" }
 "export.sealed.CKK_RSA.1024" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
 "export.sealed.CKK_RSA.1536" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
 "export.sealed.CKK_RSA.2048" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
 "export.sealed.CKK_RSA.3072" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
 "export.sealed.CKK_RSA.4096" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"export.sealed.CKK_SHA256_HMAC.32" = { answer = "yes", via = "rsa-oaep-sha256" }
+"export.sealed.CKK_SHA384_HMAC.48" = { answer = "yes", via = "rsa-oaep-sha256" }
+"export.sealed.CKK_SHA512_HMAC.64" = { answer = "yes", via = "rsa-oaep-sha256" }
 "unwrap.CKK_AES.16" = { answer = "yes", via = "rsa-oaep-sha256" }
 "unwrap.CKK_AES.24" = { answer = "yes", via = "rsa-oaep-sha256" }
 "unwrap.CKK_AES.32" = { answer = "yes", via = "rsa-oaep-sha256" }
@@ -262,25 +309,204 @@ firmware = "1.5"
 "unwrap.CKK_EC.secp384r1" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
 "unwrap.CKK_EC.secp521r1" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
 "unwrap.CKK_EC_EDWARDS.edwards25519" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"unwrap.CKK_GENERIC_SECRET.32" = { answer = "yes", via = "rsa-oaep-sha256" }
 "unwrap.CKK_RSA.1024" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
 "unwrap.CKK_RSA.1536" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
 "unwrap.CKK_RSA.2048" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
 "unwrap.CKK_RSA.3072" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
 "unwrap.CKK_RSA.4096" = { answer = "yes", via = "rsa-oaep-sha256+aes-kwp" }
+"unwrap.CKK_SHA256_HMAC.32" = { answer = "yes", via = "rsa-oaep-sha256" }
+"unwrap.CKK_SHA384_HMAC.48" = { answer = "yes", via = "rsa-oaep-sha256" }
+"unwrap.CKK_SHA512_HMAC.64" = { answer = "yes", via = "rsa-oaep-sha256" }
 "delete.CKO_CERTIFICATE" = { answer = "yes" }
 "delete.CKO_DATA" = { answer = "yes" }
 "delete.CKO_PRIVATE_KEY" = { answer = "yes" }
 "delete.CKO_PUBLIC_KEY" = { answer = "yes" }
 "delete.CKO_SECRET_KEY" = { answer = "yes" }
+"commit.cmac.CKK_AES.16" = { answer = "yes" }
+"commit.cmac.CKK_AES.24" = { answer = "yes" }
+"commit.cmac.CKK_AES.32" = { answer = "yes" }
+"commit.hmac-sha1.CKK_GENERIC_SECRET.16" = { answer = "yes" }
+"commit.hmac-sha1.CKK_GENERIC_SECRET.32" = { answer = "yes" }
+"commit.hmac-sha1.CKK_GENERIC_SECRET.64" = { answer = "yes" }
+"commit.hmac-sha1.CKK_SHA_1_HMAC.16" = { answer = "yes" }
+"commit.hmac-sha1.CKK_SHA_1_HMAC.32" = { answer = "yes" }
+"commit.hmac-sha1.CKK_SHA_1_HMAC.64" = { answer = "yes" }
+"commit.hmac-sha224.CKK_GENERIC_SECRET.16" = { answer = "yes" }
+"commit.hmac-sha224.CKK_GENERIC_SECRET.32" = { answer = "yes" }
+"commit.hmac-sha224.CKK_GENERIC_SECRET.64" = { answer = "yes" }
+"commit.hmac-sha224.CKK_SHA224_HMAC.16" = { answer = "yes" }
+"commit.hmac-sha224.CKK_SHA224_HMAC.32" = { answer = "yes" }
+"commit.hmac-sha224.CKK_SHA224_HMAC.64" = { answer = "yes" }
+"commit.hmac-sha256.CKK_GENERIC_SECRET.16" = { answer = "yes" }
+"commit.hmac-sha256.CKK_GENERIC_SECRET.32" = { answer = "yes" }
+"commit.hmac-sha256.CKK_GENERIC_SECRET.64" = { answer = "yes" }
+"commit.hmac-sha256.CKK_SHA256_HMAC.16" = { answer = "yes" }
+"commit.hmac-sha256.CKK_SHA256_HMAC.32" = { answer = "yes" }
+"commit.hmac-sha256.CKK_SHA256_HMAC.64" = { answer = "yes" }
+"commit.hmac-sha384.CKK_GENERIC_SECRET.16" = { answer = "yes" }
+"commit.hmac-sha384.CKK_GENERIC_SECRET.32" = { answer = "yes" }
+"commit.hmac-sha384.CKK_GENERIC_SECRET.64" = { answer = "yes" }
+"commit.hmac-sha384.CKK_SHA384_HMAC.16" = { answer = "yes" }
+"commit.hmac-sha384.CKK_SHA384_HMAC.32" = { answer = "yes" }
+"commit.hmac-sha384.CKK_SHA384_HMAC.64" = { answer = "yes" }
+"commit.hmac-sha512.CKK_GENERIC_SECRET.16" = { answer = "yes" }
+"commit.hmac-sha512.CKK_GENERIC_SECRET.32" = { answer = "yes" }
+"commit.hmac-sha512.CKK_GENERIC_SECRET.64" = { answer = "yes" }
+"commit.hmac-sha512.CKK_SHA512_HMAC.16" = { answer = "yes" }
+"commit.hmac-sha512.CKK_SHA512_HMAC.32" = { answer = "yes" }
+"commit.hmac-sha512.CKK_SHA512_HMAC.64" = { answer = "yes" }
+"commit.kcv-ecb.CKK_AES.16" = { answer = "yes" }
+"commit.kcv-ecb.CKK_AES.24" = { answer = "yes" }
+"commit.kcv-ecb.CKK_AES.32" = { answer = "yes" }
+"commit.kcv-ecb-decrypt.CKK_AES.16" = { answer = "yes" }
+"commit.kcv-ecb-decrypt.CKK_AES.24" = { answer = "yes" }
+"commit.kcv-ecb-decrypt.CKK_AES.32" = { answer = "yes" }
+"commit.kw.CKK_AES.16" = { answer = "yes" }
+"commit.kw.CKK_AES.24" = { answer = "yes" }
+"commit.kw.CKK_AES.32" = { answer = "yes" }
+"crypt.CKM_AES_CBC.CKK_AES.32" = { answer = "yes" }
+"crypt.CKM_AES_CBC_PAD.CKK_AES.32" = { answer = "yes" }
+"crypt.CKM_AES_CTR.CKK_AES.32" = { answer = "yes" }
+"crypt.CKM_AES_GCM.CKK_AES.32" = { answer = "yes" }
+"derive.CKM_AES_CBC_ENCRYPT_DATA.CKK_AES" = { answer = "yes" }
+"derive.CKM_CONCATENATE_BASE_AND_DATA.CKK_GENERIC_SECRET" = { answer = "yes" }
+"derive.CKM_CONCATENATE_BASE_AND_KEY.CKK_GENERIC_SECRET" = { answer = "yes" }
+"derive.CKM_CONCATENATE_DATA_AND_BASE.CKK_GENERIC_SECRET" = { answer = "yes" }
+"derive.CKM_EXTRACT_KEY_FROM_KEY.CKK_GENERIC_SECRET" = { answer = "yes" }
+"derive.CKM_HKDF_DERIVE.CKK_GENERIC_SECRET" = { answer = "yes" }
+"derive.CKM_XOR_BASE_AND_DATA.CKK_GENERIC_SECRET" = { answer = "yes" }
+"derive.ecdh.CKK_EC_MONTGOMERY.curve25519" = { answer = "yes" }
+"sign.CKM_HASH_ML_DSA_SHA224.CKK_ML_DSA.CKP_ML_DSA_44" = { answer = "yes" }
+"sign.CKM_HASH_ML_DSA_SHA256.CKK_ML_DSA.CKP_ML_DSA_44" = { answer = "yes" }
+"sign.CKM_HASH_ML_DSA_SHA384.CKK_ML_DSA.CKP_ML_DSA_44" = { answer = "yes" }
+"sign.CKM_HASH_ML_DSA_SHA3_224.CKK_ML_DSA.CKP_ML_DSA_44" = { answer = "yes" }
+"sign.CKM_HASH_ML_DSA_SHA3_256.CKK_ML_DSA.CKP_ML_DSA_44" = { answer = "yes" }
+"sign.CKM_HASH_ML_DSA_SHA3_384.CKK_ML_DSA.CKP_ML_DSA_44" = { answer = "yes" }
+"sign.CKM_HASH_ML_DSA_SHA3_512.CKK_ML_DSA.CKP_ML_DSA_44" = { answer = "yes" }
+"sign.CKM_HASH_ML_DSA_SHA512.CKK_ML_DSA.CKP_ML_DSA_44" = { answer = "yes" }
+"sign.CKM_HASH_SLH_DSA_SHA224.CKK_SLH_DSA.CKP_SLH_DSA_SHA2_128S" = { answer = "yes" }
+"sign.CKM_HASH_SLH_DSA_SHA256.CKK_SLH_DSA.CKP_SLH_DSA_SHA2_128S" = { answer = "yes" }
+"sign.CKM_HASH_SLH_DSA_SHA384.CKK_SLH_DSA.CKP_SLH_DSA_SHA2_128S" = { answer = "yes" }
+"sign.CKM_HASH_SLH_DSA_SHA3_224.CKK_SLH_DSA.CKP_SLH_DSA_SHA2_128S" = { answer = "yes" }
+"sign.CKM_HASH_SLH_DSA_SHA3_256.CKK_SLH_DSA.CKP_SLH_DSA_SHA2_128S" = { answer = "yes" }
+"sign.CKM_HASH_SLH_DSA_SHA3_384.CKK_SLH_DSA.CKP_SLH_DSA_SHA2_128S" = { answer = "yes" }
+"sign.CKM_HASH_SLH_DSA_SHA3_512.CKK_SLH_DSA.CKP_SLH_DSA_SHA2_128S" = { answer = "yes" }
+"sign.CKM_HASH_SLH_DSA_SHA512.CKK_SLH_DSA.CKP_SLH_DSA_SHA2_128S" = { answer = "yes" }
+"sign.CKM_ML_DSA.CKK_ML_DSA.CKP_ML_DSA_44" = { answer = "yes" }
+"sign.CKM_SLH_DSA.CKK_SLH_DSA.CKP_SLH_DSA_SHA2_128S" = { answer = "yes" }
+"encapsulate.CKK_ML_KEM.CKP_ML_KEM_512" = { answer = "yes" }
+"attr.set.CKA_ALLOWED_MECHANISMS.CKK_AES" = { answer = "yes", via = "enforced" }
+"attr.read.CKA_ALWAYS_SENSITIVE.CKK_AES" = { answer = "yes" }
+"attr.read.CKA_KEY_GEN_MECHANISM.CKK_AES" = { answer = "yes" }
+"attr.read.CKA_LOCAL.CKK_AES" = { answer = "yes" }
+"attr.read.CKA_NEVER_EXTRACTABLE.CKK_AES" = { answer = "yes" }
 
 [reported."CKK_RSA"]
 min-bits = 1024
 max-bits = 16384
 
+[mechanism-info]
+"CKM_AES_CBC" = { min = 16, max = 32, flags = ["encrypt", "decrypt", "wrap", "unwrap"] }
+"CKM_AES_CBC_ENCRYPT_DATA" = { min = 16, max = 32, flags = ["derive"] }
+"CKM_AES_CBC_PAD" = { min = 16, max = 32, flags = ["encrypt", "decrypt", "wrap", "unwrap"] }
+"CKM_AES_CFB128" = { min = 16, max = 32, flags = ["encrypt", "decrypt"] }
+"CKM_AES_CMAC" = { min = 16, max = 32, flags = ["sign", "verify"] }
+"CKM_AES_CTR" = { min = 16, max = 32, flags = ["encrypt", "decrypt", "wrap", "unwrap"] }
+"CKM_AES_ECB" = { min = 16, max = 32, flags = ["encrypt", "decrypt", "wrap", "unwrap"] }
+"CKM_AES_GCM" = { min = 16, max = 32, flags = ["encrypt", "decrypt", "wrap", "unwrap"] }
+"CKM_AES_KEY_GEN" = { min = 16, max = 32, flags = ["generate"] }
+"CKM_AES_KEY_WRAP" = { min = 16, max = 32, flags = ["encrypt", "decrypt", "wrap", "unwrap"] }
+"CKM_AES_KEY_WRAP_KWP" = { min = 16, max = 32, flags = ["encrypt", "decrypt", "wrap", "unwrap"] }
+"CKM_CONCATENATE_BASE_AND_DATA" = { min = 0, max = 4294967295, flags = ["derive"] }
+"CKM_CONCATENATE_BASE_AND_KEY" = { min = 0, max = 4294967295, flags = ["derive"] }
+"CKM_CONCATENATE_DATA_AND_BASE" = { min = 0, max = 4294967295, flags = ["derive"] }
+"CKM_ECDH1_DERIVE" = { min = 256, max = 521, flags = ["derive"] }
+"CKM_ECDSA" = { min = 256, max = 521, flags = ["sign", "verify"] }
+"CKM_ECDSA_SHA1" = { min = 256, max = 521, flags = ["sign", "verify"] }
+"CKM_ECDSA_SHA256" = { min = 256, max = 521, flags = ["sign", "verify"] }
+"CKM_ECDSA_SHA384" = { min = 256, max = 521, flags = ["sign", "verify"] }
+"CKM_ECDSA_SHA512" = { min = 256, max = 521, flags = ["sign", "verify"] }
+"CKM_EC_EDWARDS_KEY_PAIR_GEN" = { min = 256, max = 456, flags = ["generate-key-pair"] }
+"CKM_EC_KEY_PAIR_GEN" = { min = 256, max = 521, flags = ["generate-key-pair"] }
+"CKM_EC_MONTGOMERY_KEY_PAIR_GEN" = { min = 256, max = 448, flags = ["generate-key-pair"] }
+"CKM_EDDSA" = { min = 256, max = 456, flags = ["sign", "verify"] }
+"CKM_EXTRACT_KEY_FROM_KEY" = { min = 0, max = 4294967295, flags = ["derive"] }
+"CKM_GENERIC_SECRET_KEY_GEN" = { min = 0, max = 0, flags = ["generate"] }
+"CKM_HASH_ML_DSA" = { min = 1312, max = 2592, flags = ["sign", "verify"] }
+"CKM_HASH_ML_DSA_SHA224" = { min = 1312, max = 2592, flags = ["sign", "verify"] }
+"CKM_HASH_ML_DSA_SHA256" = { min = 1312, max = 2592, flags = ["sign", "verify"] }
+"CKM_HASH_ML_DSA_SHA384" = { min = 1312, max = 2592, flags = ["sign", "verify"] }
+"CKM_HASH_ML_DSA_SHA3_224" = { min = 1312, max = 2592, flags = ["sign", "verify"] }
+"CKM_HASH_ML_DSA_SHA3_256" = { min = 1312, max = 2592, flags = ["sign", "verify"] }
+"CKM_HASH_ML_DSA_SHA3_384" = { min = 1312, max = 2592, flags = ["sign", "verify"] }
+"CKM_HASH_ML_DSA_SHA3_512" = { min = 1312, max = 2592, flags = ["sign", "verify"] }
+"CKM_HASH_ML_DSA_SHA512" = { min = 1312, max = 2592, flags = ["sign", "verify"] }
+"CKM_HASH_SLH_DSA" = { min = 32, max = 64, flags = ["sign", "verify"] }
+"CKM_HASH_SLH_DSA_SHA224" = { min = 32, max = 64, flags = ["sign", "verify"] }
+"CKM_HASH_SLH_DSA_SHA256" = { min = 32, max = 64, flags = ["sign", "verify"] }
+"CKM_HASH_SLH_DSA_SHA384" = { min = 32, max = 64, flags = ["sign", "verify"] }
+"CKM_HASH_SLH_DSA_SHA3_224" = { min = 32, max = 64, flags = ["sign", "verify"] }
+"CKM_HASH_SLH_DSA_SHA3_256" = { min = 32, max = 64, flags = ["sign", "verify"] }
+"CKM_HASH_SLH_DSA_SHA3_384" = { min = 32, max = 64, flags = ["sign", "verify"] }
+"CKM_HASH_SLH_DSA_SHA3_512" = { min = 32, max = 64, flags = ["sign", "verify"] }
+"CKM_HASH_SLH_DSA_SHA512" = { min = 32, max = 64, flags = ["sign", "verify"] }
+"CKM_HKDF_DATA" = { min = 0, max = 4294967295, flags = ["derive"] }
+"CKM_HKDF_DERIVE" = { min = 0, max = 4294967295, flags = ["derive"] }
+"CKM_HKDF_KEY_GEN" = { min = 0, max = 0, flags = ["generate"] }
+"CKM_ML_DSA" = { min = 1312, max = 2592, flags = ["sign", "verify"] }
+"CKM_ML_DSA_KEY_PAIR_GEN" = { min = 1312, max = 2592, flags = ["generate-key-pair"] }
+"CKM_ML_KEM" = { min = 800, max = 1568, flags = [] }
+"CKM_ML_KEM_KEY_PAIR_GEN" = { min = 800, max = 1568, flags = ["generate-key-pair"] }
+"CKM_RSA_PKCS" = { min = 1024, max = 16384, flags = ["encrypt", "decrypt", "sign", "verify", "wrap", "unwrap"] }
+"CKM_RSA_PKCS_KEY_PAIR_GEN" = { min = 1024, max = 16384, flags = ["generate-key-pair"] }
+"CKM_RSA_PKCS_OAEP" = { min = 1024, max = 16384, flags = ["encrypt", "decrypt", "wrap", "unwrap"] }
+"CKM_RSA_PKCS_PSS" = { min = 1024, max = 16384, flags = ["sign", "verify"] }
+"CKM_RSA_X_509" = { min = 1024, max = 16384, flags = ["encrypt", "decrypt", "sign", "verify", "wrap", "unwrap"] }
+"CKM_SHA1_RSA_PKCS" = { min = 1024, max = 16384, flags = ["sign", "verify"] }
+"CKM_SHA1_RSA_PKCS_PSS" = { min = 1024, max = 16384, flags = ["sign", "verify"] }
+"CKM_SHA224_HMAC" = { min = 0, max = 0, flags = ["sign", "verify"] }
+"CKM_SHA224_KEY_GEN" = { min = 0, max = 0, flags = ["generate"] }
+"CKM_SHA256" = { min = 0, max = 0, flags = [] }
+"CKM_SHA256_HMAC" = { min = 0, max = 0, flags = ["sign", "verify"] }
+"CKM_SHA256_KEY_GEN" = { min = 0, max = 0, flags = ["generate"] }
+"CKM_SHA256_RSA_PKCS" = { min = 1024, max = 16384, flags = ["sign", "verify"] }
+"CKM_SHA256_RSA_PKCS_PSS" = { min = 1024, max = 16384, flags = ["sign", "verify"] }
+"CKM_SHA384" = { min = 0, max = 0, flags = [] }
+"CKM_SHA384_HMAC" = { min = 0, max = 0, flags = ["sign", "verify"] }
+"CKM_SHA384_KEY_GEN" = { min = 0, max = 0, flags = ["generate"] }
+"CKM_SHA384_RSA_PKCS" = { min = 1024, max = 16384, flags = ["sign", "verify"] }
+"CKM_SHA384_RSA_PKCS_PSS" = { min = 1024, max = 16384, flags = ["sign", "verify"] }
+"CKM_SHA512" = { min = 0, max = 0, flags = [] }
+"CKM_SHA512_HMAC" = { min = 0, max = 0, flags = ["sign", "verify"] }
+"CKM_SHA512_KEY_GEN" = { min = 0, max = 0, flags = ["generate"] }
+"CKM_SHA512_RSA_PKCS" = { min = 1024, max = 16384, flags = ["sign", "verify"] }
+"CKM_SHA512_RSA_PKCS_PSS" = { min = 1024, max = 16384, flags = ["sign", "verify"] }
+"CKM_SHA_1" = { min = 0, max = 0, flags = [] }
+"CKM_SHA_1_HMAC" = { min = 0, max = 0, flags = ["sign", "verify"] }
+"CKM_SHA_1_KEY_GEN" = { min = 0, max = 0, flags = ["generate"] }
+"CKM_SLH_DSA" = { min = 32, max = 64, flags = ["sign", "verify"] }
+"CKM_SLH_DSA_KEY_PAIR_GEN" = { min = 32, max = 64, flags = ["generate-key-pair"] }
+"CKM_SP800_108_COUNTER_KDF" = { min = 0, max = 4294967295, flags = ["derive"] }
+"CKM_SP800_108_FEEDBACK_KDF" = { min = 0, max = 4294967295, flags = ["derive"] }
+"CKM_XOR_BASE_AND_DATA" = { min = 0, max = 4294967295, flags = ["derive"] }
+"unknown 8007678c" = { min = 0, max = 4294967295, flags = ["derive"] }
+
+[claims]
+"interface" = "Cryptoki 3.2"
+"objects.hardware-features" = "0"
+"objects.profiles" = "0"
+"objects.validation" = "0"
+"token.flags" = "rng, login-required, token-initialized"
+"token.max-rw-sessions" = "Infinite"
+"token.max-sessions" = "Infinite"
+"token.pin-length" = "8-0"
+
 [notes]
 "CKM_ECDSA_SHA224" = "not listed; works"
 "CKM_SHA224_RSA_PKCS" = "not listed; works"
 "cryptoki" = "the module reports Cryptoki 3.2"
+"mechanism-info.CKM_AES_KEY_GEN" = "generates 8, 48, 64 bytes, outside the 16..32 it reports"
 
 [manual."trusted-wrap"]
 finding = "A CKA_WRAP_WITH_TRUSTED key is refused under any untrusted wrapping key (CKR_WRAPPING_KEY_HANDLE_INVALID), and the SO can create a CKA_TRUSTED AES key, but no RSA public key can carry CKA_TRUSTED (CKR_ATTRIBUTE_TYPE_INVALID when the SO creates one; CKR_ACTION_PROHIBITED when set later), and there is no CKM_RSA_AES_KEY_WRAP. A trusted key-encryption key could never leave toward a transport key, so such a key cannot move from kryoptic at all: `enforced` is impossible with it as the source."

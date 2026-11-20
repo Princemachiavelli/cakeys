@@ -36,7 +36,7 @@ mod uri;
 
 pub use generate::{BY_NAME, CreateNote, PUBLIC_MADE_PRIVATE, with_public_default_dropped};
 pub use host::accepts_public_keys;
-pub use identity::commit_mechanism;
+pub use identity::{commit_kind, commit_mechanism};
 pub use policy::bool_attr;
 pub use possession::{
     Derived, OAEP, ProofSide, derive_any, digest_info, is_policy_default, oaep_of, oaep_params, proof_refusal, show,
@@ -664,6 +664,64 @@ impl Token {
     #[must_use]
     pub fn lists(&self, m: MechanismType) -> bool {
         self.listed.contains(&m)
+    }
+
+    /// What `C_GetMechanismInfo` reports for `m`: the key-size range (bits for RSA and EC, bytes
+    /// for the symmetric ones, as the module counts them) and the names of the operations it
+    /// flags. A claim, never evidence.
+    #[must_use]
+    pub fn mechanism_info(&self, m: MechanismType) -> Option<(usize, usize, Vec<&'static str>)> {
+        let i = self.library.0.get_mechanism_info(self.slot, m).ok()?;
+        let flags = [
+            ("hardware", i.hardware()),
+            ("encrypt", i.encrypt()),
+            ("decrypt", i.decrypt()),
+            ("sign", i.sign()),
+            ("verify", i.verify()),
+            ("generate", i.generate()),
+            ("generate-key-pair", i.generate_key_pair()),
+            ("wrap", i.wrap()),
+            ("unwrap", i.unwrap()),
+            ("derive", i.derive()),
+        ];
+        Some((i.min_key_size(), i.max_key_size(), flags.into_iter().filter(|(_, on)| *on).map(|(n, _)| n).collect()))
+    }
+
+    /// [`Self::mechanism_info`] of every mechanism the module lists, by name, each once.
+    #[must_use]
+    pub fn mechanism_infos(&self) -> Vec<(String, usize, usize, Vec<&'static str>)> {
+        let mut seen = std::collections::BTreeSet::new();
+        self.listed
+            .iter()
+            .filter(|m| seen.insert(m.to_string()))
+            .filter_map(|m| self.mechanism_info(*m).map(|(min, max, flags)| (m.to_string(), min, max, flags)))
+            .collect()
+    }
+
+    /// What `C_GetTokenInfo` reports of the token's state and limits, as `name -> value` claims
+    /// (`[claims]` in a profile): the flags that are set, the session and PIN limits.
+    #[must_use]
+    pub fn token_claims(&self) -> Vec<(String, String)> {
+        let Ok(t) = self.library.0.get_token_info(self.slot) else { return Vec::new() };
+        let flags = [
+            ("write-protected", t.write_protected()),
+            ("rng", t.rng()),
+            ("login-required", t.login_required()),
+            ("clock-on-token", t.clock_on_token()),
+            ("protected-authentication-path", t.protected_authentication_path()),
+            ("dual-crypto-operations", t.dual_crypto_operations()),
+            ("token-initialized", t.token_initialized()),
+            ("so-pin-count-low", t.so_pin_count_low()),
+            ("so-pin-final-try", t.so_pin_final_try()),
+            ("error-state", t.error_state()),
+        ];
+        let set: Vec<&str> = flags.into_iter().filter(|(_, on)| *on).map(|(n, _)| n).collect();
+        vec![
+            ("token.flags".into(), set.join(", ")),
+            ("token.max-sessions".into(), format!("{:?}", t.max_session_count())),
+            ("token.max-rw-sessions".into(), format!("{:?}", t.max_rw_session_count())),
+            ("token.pin-length".into(), format!("{}-{}", t.min_pin_length(), t.max_pin_length())),
+        ]
     }
 
     /// The provider's attestation capability for `object`'s class, when the spec opted in:

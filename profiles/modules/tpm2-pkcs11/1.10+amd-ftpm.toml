@@ -40,6 +40,19 @@ advertise = [
 ]
 add = ["CKM_SHA384_RSA_PKCS", "CKM_SHA512_RSA_PKCS"]
 
+[untested]
+"CKM_AES_CBC" = { why = "unprobed", note = "no probe tries it yet" }
+"CKM_AES_CBC_PAD" = { why = "unprobed", note = "no probe tries it yet" }
+"CKM_AES_CFB128" = { why = "cryptoki", note = "the pinned cryptoki has no name or parameter type for it; see profiles/layers/cryptoki.toml" }
+"CKM_AES_CTR" = { why = "unprobed", note = "no probe tries it yet" }
+"CKM_AES_ECB" = { why = "unprobed", note = "no probe tries it yet" }
+"CKM_SHA256" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
+"CKM_SHA256_HMAC" = { why = "unprobed", note = "no probe tries it yet" }
+"CKM_SHA384" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
+"CKM_SHA512" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
+"CKM_SHA_1" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
+"CKM_SHA_1_HMAC" = { why = "unprobed", note = "no probe tries it yet" }
+
 [match]
 manufacturer = "tpm2-software.github.io"
 module-version = "1.10"
@@ -56,6 +69,12 @@ mechanisms = [
 ]
 
 [capabilities]
+"generate.CKK_AES.8" = { answer = "no", evidence = "valueLen = 8: CKR_FUNCTION_NOT_SUPPORTED" }
+"generate.CKK_AES.16" = { answer = "no", evidence = "valueLen = 16: CKR_FUNCTION_NOT_SUPPORTED" }
+"generate.CKK_AES.24" = { answer = "no", evidence = "valueLen = 24: CKR_FUNCTION_NOT_SUPPORTED" }
+"generate.CKK_AES.32" = { answer = "no", evidence = "valueLen = 32: CKR_FUNCTION_NOT_SUPPORTED" }
+"generate.CKK_AES.48" = { answer = "no", evidence = "valueLen = 48: CKR_FUNCTION_NOT_SUPPORTED" }
+"generate.CKK_AES.64" = { answer = "no", evidence = "valueLen = 64: CKR_FUNCTION_NOT_SUPPORTED" }
 "generate.CKK_EC.brainpoolP256r1" = { answer = "no", evidence = "generation refused: CKR_CURVE_NOT_SUPPORTED" }
 "generate.CKK_EC.brainpoolP384r1" = { answer = "no", evidence = "generation refused: CKR_CURVE_NOT_SUPPORTED" }
 "generate.CKK_EC.secp256k1" = { answer = "no", evidence = "generation refused: CKR_CURVE_NOT_SUPPORTED" }
@@ -95,6 +114,48 @@ mechanisms = [
 [reported."CKK_RSA"]
 min-bits = 1024
 max-bits = 2048
+
+[mechanism-info]
+"CKM_AES_CBC" = { min = 16, max = 32, flags = ["hardware", "encrypt", "decrypt"] }
+"CKM_AES_CBC_PAD" = { min = 16, max = 32, flags = ["hardware", "encrypt", "decrypt"] }
+"CKM_AES_CFB128" = { min = 16, max = 32, flags = ["hardware", "encrypt", "decrypt"] }
+"CKM_AES_CTR" = { min = 16, max = 32, flags = ["hardware", "encrypt", "decrypt"] }
+"CKM_AES_ECB" = { min = 16, max = 32, flags = ["hardware", "encrypt", "decrypt"] }
+"CKM_AES_KEY_GEN" = { min = 16, max = 32, flags = ["hardware", "generate"] }
+"CKM_ECDH1_DERIVE" = { min = 256, max = 384, flags = ["hardware"] }
+"CKM_ECDSA" = { min = 256, max = 384, flags = ["hardware", "sign", "verify"] }
+"CKM_ECDSA_SHA1" = { min = 256, max = 384, flags = ["hardware", "sign", "verify"] }
+"CKM_ECDSA_SHA256" = { min = 256, max = 384, flags = ["hardware", "sign", "verify"] }
+"CKM_ECDSA_SHA384" = { min = 256, max = 384, flags = ["hardware", "sign", "verify"] }
+"CKM_ECDSA_SHA512" = { min = 256, max = 384, flags = ["hardware", "sign", "verify"] }
+"CKM_EC_KEY_PAIR_GEN" = { min = 256, max = 384, flags = ["hardware", "generate-key-pair"] }
+"CKM_RSA_PKCS" = { min = 1024, max = 2048, flags = ["hardware", "encrypt", "decrypt", "sign", "verify"] }
+"CKM_RSA_PKCS_KEY_PAIR_GEN" = { min = 1024, max = 2048, flags = ["hardware", "generate-key-pair"] }
+"CKM_RSA_PKCS_OAEP" = { min = 1024, max = 2048, flags = ["hardware", "encrypt", "decrypt"] }
+"CKM_RSA_PKCS_PSS" = { min = 1024, max = 2048, flags = ["hardware", "sign", "verify"] }
+"CKM_RSA_X_509" = { min = 1024, max = 2048, flags = ["hardware", "encrypt", "decrypt", "sign", "verify"] }
+"CKM_SHA1_RSA_PKCS" = { min = 1024, max = 2048, flags = ["hardware", "sign", "verify"] }
+"CKM_SHA1_RSA_PKCS_PSS" = { min = 1024, max = 2048, flags = ["hardware", "sign", "verify"] }
+"CKM_SHA256" = { min = 0, max = 0, flags = [] }
+"CKM_SHA256_HMAC" = { min = 32, max = 32, flags = ["hardware", "sign", "verify"] }
+"CKM_SHA256_RSA_PKCS" = { min = 1024, max = 2048, flags = ["hardware", "sign", "verify"] }
+"CKM_SHA256_RSA_PKCS_PSS" = { min = 1024, max = 2048, flags = ["hardware", "sign", "verify"] }
+"CKM_SHA384" = { min = 0, max = 0, flags = [] }
+"CKM_SHA384_RSA_PKCS_PSS" = { min = 1024, max = 2048, flags = ["hardware", "sign", "verify"] }
+"CKM_SHA512" = { min = 0, max = 0, flags = [] }
+"CKM_SHA512_RSA_PKCS_PSS" = { min = 1024, max = 2048, flags = ["hardware", "sign", "verify"] }
+"CKM_SHA_1" = { min = 0, max = 0, flags = [] }
+"CKM_SHA_1_HMAC" = { min = 20, max = 20, flags = ["hardware", "sign", "verify"] }
+
+[claims]
+"interface" = "Cryptoki 2.40"
+"objects.hardware-features" = "0"
+"objects.profiles" = "0"
+"objects.validation" = "0"
+"token.flags" = "rng, login-required, token-initialized"
+"token.max-rw-sessions" = "Max(1024)"
+"token.max-sessions" = "Max(1024)"
+"token.pin-length" = "0-128"
 
 [migration]
 plaintext-import = "tpm2-ptool"

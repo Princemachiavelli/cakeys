@@ -69,6 +69,66 @@ pub struct Manual {
     pub evidence: String,
 }
 
+/// Why an advertised mechanism has no measured row (`[untested]`, `docs/CAPROBE_PROFILE_COVERAGE.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Why {
+    /// The binding has no constant or parameter type for it, and the probe cannot build the call
+    /// by hand; the cryptoki layer carries the same note.
+    Cryptoki,
+    /// A mechanism ID the baseline does not name: no known parameters, so no meaningful call.
+    Vendor,
+    /// Testing needs state or a risk the probe's rules forbid (a scratch slot, the real TPM).
+    Hardware,
+    /// Testing needs a service that was not run for this profile.
+    Cloud,
+    /// Decided out of scope: the tools never use it (`spec-coverage/manual.toml`).
+    Scope,
+    /// No probe tries it yet.
+    Unprobed,
+}
+
+impl Why {
+    /// The word the table writes.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Why::Cryptoki => "cryptoki",
+            Why::Vendor => "vendor",
+            Why::Hardware => "hardware",
+            Why::Cloud => "cloud",
+            Why::Scope => "scope",
+            Why::Unprobed => "unprobed",
+        }
+    }
+}
+
+/// One advertised mechanism the probe did not try (`[untested]`): probe output, regenerated
+/// with the profile, never a claim.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Untested {
+    /// Why it was not tried.
+    pub why: Why,
+    /// What to know of it: the reason in words.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// What `C_GetMechanismInfo` reports for one mechanism (`[mechanism-info."CKM_X"]`): a claim the
+/// probe records and checks against what it measured, never evidence.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MechanismInfo {
+    /// The smallest key size it reports (bits or bytes, as the module counts).
+    pub min: u64,
+    /// The largest.
+    pub max: u64,
+    /// The operations it flags.
+    #[serde(default)]
+    pub flags: Vec<String>,
+}
+
 /// The key sizes a module reports for one key type (`[reported."CKK_RSA"]`): the inclusive range
 /// `C_GetMechanismInfo` gives, or a hand claim. What the module did with a size is a
 /// [`Capability::Generate`] row.
@@ -224,6 +284,10 @@ pub struct Profile {
     /// What `C_GetMechanismList` returns; the drift baseline once the probe records it.
     #[serde(default)]
     pub advertise: Vec<String>,
+    /// What it advertises that the probe did not try, and why (`[untested]`): an answer for
+    /// one of these is unknown, never yes.
+    #[serde(default)]
+    pub untested: BTreeMap<String, Untested>,
     /// What it subtracts (`[subtract]`).
     #[serde(default)]
     pub subtract: Subtract,
@@ -237,6 +301,15 @@ pub struct Profile {
     /// The key sizes the module reports, per key type (`[reported."CKK_RSA"]`).
     #[serde(default)]
     pub reported: BTreeMap<String, Reported>,
+    /// What `C_GetMechanismInfo` reports, per mechanism the probe has rows for
+    /// (`[mechanism-info."CKM_X"]`): claims, never compared.
+    #[serde(default, rename = "mechanism-info")]
+    pub mechanism_info: BTreeMap<String, MechanismInfo>,
+    /// What the module and token report of themselves, `name -> value` (`[claims]`): token
+    /// flags and limits, the interface version, the hardware features and profiles objects.
+    /// Reported, never probed, never compared.
+    #[serde(default)]
+    pub claims: BTreeMap<String, String>,
     /// What the module's import paths take (docs/CAMIGRATE.md), when it deviates from a
     /// spec-compliant module.
     #[serde(default)]
@@ -263,10 +336,13 @@ impl Profile {
             requires_provider: false,
             r#match: MatchInfo::default(),
             advertise: Vec::new(),
+            untested: BTreeMap::new(),
             subtract: Subtract::default(),
             add: Vec::new(),
             capabilities: BTreeMap::new(),
             reported: BTreeMap::new(),
+            mechanism_info: BTreeMap::new(),
+            claims: BTreeMap::new(),
             migration: None,
             restrict: Vec::new(),
             notes: BTreeMap::new(),
@@ -282,6 +358,30 @@ impl Profile {
     /// file's path.
     pub fn from_toml(text: &str) -> Result<Profile, String> {
         toml::from_str(text).map_err(|e| e.to_string())
+    }
+
+    /// What is wrong with the `[untested]` table, one line each: an entry the module does not
+    /// advertise, one a row measures, or one the module was found to refuse. A profile that
+    /// records `[untested]` at all (the probe writes it whole) is closed by it: every advertised
+    /// name is measured or listed, so what the table lacks, the rows and the operation probes
+    /// decided.
+    #[must_use]
+    pub fn untested_problems(&self) -> Vec<String> {
+        let measured: std::collections::BTreeSet<String> =
+            self.capabilities.iter().flat_map(|(c, r)| c.mechanisms(r.via.as_deref())).collect();
+        let mut out = Vec::new();
+        for name in self.untested.keys() {
+            if !self.advertise.iter().any(|a| a == name) {
+                out.push(format!("[untested] {name}: the module does not advertise it"));
+            }
+            if self.subtract.mechanisms.iter().any(|a| a == name) {
+                out.push(format!("[untested] {name}: also subtracted, so it was tried"));
+            }
+            if measured.contains(name) {
+                out.push(format!("[untested] {name}: a capability row measures it"));
+            }
+        }
+        out
     }
 
     /// The profile's family: `softhsm/2.7` -> `softhsm`, what a keys.toml `provider` names.

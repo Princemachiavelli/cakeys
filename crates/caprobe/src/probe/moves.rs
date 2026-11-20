@@ -109,7 +109,10 @@ pub(super) fn probe_moves(made: &mut Made, profile: &mut Draft, transport: Trans
         }
         if matches!(made.scratch.target, Target::Labels) {
             for value in AES_KEYS {
-                import_secret(made, profile, value, transport);
+                import_secret(made, profile, Kt::Aes, value, transport);
+            }
+            for (kt, n) in OTHER_SECRETS {
+                import_secret(made, profile, kt, &secret_value(n), transport);
             }
         }
     }
@@ -656,22 +659,41 @@ fn same_aes(made: &Made, h: ObjectHandle, value: &[u8]) -> Result<()> {
 
 /// Import an AES `value` with `C_CreateObject` (`import.CKK_AES.<bytes>`), extractable, then
 /// export it each way.
-fn import_secret(made: &mut Made, profile: &mut Draft, value: &[u8], transport: Transport) {
+fn import_secret(made: &mut Made, profile: &mut Draft, kt: Kt, value: &[u8], transport: Transport) {
     let n = u32::try_from(value.len()).unwrap_or_default();
     let on = On::Bytes(n);
-    let cap = Capability::Import { key_type: KeyKind::Aes, on: on.clone() };
+    let key_kind = KeyKind::from(kt.name());
+    let cap = Capability::Import { key_type: key_kind.clone(), on: on.clone() };
     let label = made.scratch.label();
+    // Every template as the provider adjusts it for the verbs (`Provider::template`).
+    let object = super::secrets::secret_object(kt, n);
+    let key_type = match token::key_type_of(&object) {
+        Ok(t) => t,
+        Err(e) => {
+            made.undetermined.push(format!("no {cap} row: {}", evidence(made.tok, &e)));
+            return;
+        }
+    };
+    // What the key is checked by: AES by its host-computed check value; any other type by its
+    // own commitment, which the export round trip then shows is the value that was imported.
+    let commit = match kt {
+        Kt::Aes => None,
+        Kt::Des3 => Some(id::Commit::KcvEcb(id::BlockCipher::Des3)),
+        _ => id::HmacHash::for_key_type(kt).map(id::Commit::Hmac),
+    };
+    let usage = match commit {
+        Some(id::Commit::KcvEcb(_)) | None => Attribute::Encrypt(true),
+        Some(_) => Attribute::Sign(true),
+    };
     let base = vec![
         Attribute::Token(true),
         Attribute::Label(label.as_bytes().to_vec()),
         Attribute::Class(ObjectClass::SECRET_KEY),
-        Attribute::KeyType(KeyType::AES),
-        Attribute::Encrypt(true),
+        Attribute::KeyType(key_type),
+        usage.clone(),
         Attribute::Sensitive(true),
         Attribute::Extractable(true),
     ];
-    // Every template as the provider adjusts it for the verbs (`Provider::template`).
-    let object = ObjectCfg { value_len: Some(n.into()), ..ObjectCfg::new(Class::SecretKey, Some(Kt::Aes)) };
     let probe_spec = spec(&[], &[]);
     let provider = made.tok.provider.clone();
     let adjusted = |label: &str, via, t| {
@@ -686,24 +708,57 @@ fn import_secret(made: &mut Made, profile: &mut Draft, value: &[u8], transport: 
         }
     };
     made.track(h, Some(&label));
-    if let Err(e) = same_aes(made, h, value) {
-        made.undetermined.push(format!("no {cap} row: imported, but its check value: {}", evidence(made.tok, &e)));
-        return;
-    }
+    // The imported key's commitment, which a copy that comes back must give too.
+    let checked = match commit {
+        Some(c) => made.tok.commit(h, &object, c, "cakeys probe: import").map(Some).map_err(|e| ("commitment", e)),
+        None => same_aes(made, h, value).map(|()| None).map_err(|e| ("check value", e)),
+    };
+    let first = match checked {
+        Ok(v) => v,
+        Err((what, e)) => {
+            made.undetermined.push(format!("no {cap} row: imported, but its {what}: {}", evidence(made.tok, &e)));
+            return;
+        }
+    };
     profile.set(cap, Answer::Yes, None, Some(PlaintextKind::CreateObject.name().into()));
     let template = |label: &str| {
         let t = vec![
             Attribute::Token(true),
             Attribute::Label(label.as_bytes().to_vec()),
             Attribute::Class(ObjectClass::SECRET_KEY),
-            Attribute::KeyType(KeyType::AES),
-            Attribute::Encrypt(true),
+            Attribute::KeyType(key_type),
+            usage.clone(),
         ];
         adjusted(label, Via::Unwrap, t)
     };
-    let same = |m: &Made, h2| same_aes(m, h2, value);
-    let test_key = TestKey { key_type: &KeyKind::Aes, on: &on, h, secret: true, template: &template, same: &same };
+    let same = |m: &Made, h2| match (commit, &first) {
+        (Some(c), Some(first)) => match m.tok.commit(h2, &object, c, "cakeys probe: import") {
+            Ok(v) if &v == first => Ok(()),
+            Ok(_) => Err(KmError::Conflict("its commitment is another key's".into())),
+            Err(e) => Err(e),
+        },
+        _ => same_aes(m, h2, value),
+    };
+    let test_key = TestKey { key_type: &key_kind, on: &on, h, secret: true, template: &template, same: &same };
     exports(made, profile, &test_key, &|plain| plain == value, transport);
+}
+
+/// The secret key types, other than AES, whose import and export are probed, with the length
+/// of the value each is imported at: a value whose bytes the host knows, so what leaves is
+/// checked against it.
+const OTHER_SECRETS: [(Kt, u32); 7] = [
+    (Kt::GenericSecret, 32),
+    (Kt::Sha1Hmac, 32),
+    (Kt::Sha224Hmac, 32),
+    (Kt::Sha256Hmac, 32),
+    (Kt::Sha384Hmac, 48),
+    (Kt::Sha512Hmac, 64),
+    (Kt::Des3, 24),
+];
+
+/// A value of `n` bytes the host knows.
+fn secret_value(n: u32) -> Vec<u8> {
+    (0..n).map(|i| u8::try_from(i % 251).unwrap_or(0).wrapping_mul(29).wrapping_add(7)).collect()
 }
 
 /// Create a certificate or a data object from its value (`create.CKO_*`), read back. In a

@@ -23,7 +23,7 @@ use cakeys_core::{KmError, Msg, Result};
 use cakeys_pkcs11::token::{self, Token, derive_any, is_policy_default, show, template_refusal};
 use cakeys_pkcs11::{BoundKey, Declared, Half, Template, keygen_mechanism};
 use cakeys_profile::capability::{DECRYPT_OAEP, UNWRAP_TEMPLATE, WRAP_OAEP};
-use cakeys_profile::{Answer, Capability, GenerateRow, KeyKind, MatchInfo, Mode, On, Profile};
+use cakeys_profile::{Answer, Capability, GenerateRow, KeyKind, MatchInfo, Mode, On, Profile, Untested, Why};
 use cryptoki::error::{Error as CkError, RvError};
 use cryptoki::mechanism::eddsa::{EddsaParams, EddsaSignatureScheme};
 use cryptoki::mechanism::elliptic_curve::{EcKdf, Ecdh1DeriveParams};
@@ -34,7 +34,9 @@ use cryptoki::session::Session;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod extras;
 mod moves;
+mod secrets;
 
 /// The text of a module-supplied string with its C padding removed: PKCS#11's fixed-width
 /// fields are C strings, and a module may NUL-pad them (tpm2-pkcs11's token model comes from
@@ -133,6 +135,8 @@ pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: Option<u32>) -> Result<P
         let mut seen = BTreeSet::new();
         profile.out.advertise.retain(|m| seen.insert(m.clone()));
     }
+    // What the module and token report of themselves: claims, never compared.
+    extras::record_claims(tok, &mut profile);
     // The RSA key sizes the module reports: read-only, a claim the write probes then test.
     if let Some((min, max)) = tok.rsa_bits {
         let row = profile.generate.entry(KeyKind::Rsa).or_default();
@@ -283,6 +287,12 @@ pub(crate) struct Draft {
     derive: Derived,
     /// What shows a generation row's answer: the refusal, or why nothing was tried.
     evidence: BTreeMap<Capability, String>,
+    /// The mechanisms the operation probes tried; `None` for a read-only probe, which tries
+    /// none and so records no `[untested]` table.
+    tried: Option<BTreeSet<String>>,
+    /// Whether the probes wrote into one scratch slot (a device that makes keys only as
+    /// Security Officer): what an untried mechanism is then put down to.
+    slot: bool,
 }
 
 /// How ECDH derived: into a sealed secret, and in a read-only session. (A base key that
@@ -303,6 +313,8 @@ impl Draft {
             unwrap_refused: None,
             derive: Derived::default(),
             evidence: BTreeMap::new(),
+            tried: None,
+            slot: false,
         }
     }
 
@@ -365,7 +377,63 @@ impl Draft {
                 row.evidence = Some(why);
             }
         }
+        if let Some(tried) = self.tried {
+            let measured: BTreeSet<String> =
+                p.capabilities.iter().flat_map(|(c, r)| c.mechanisms(r.via.as_deref())).collect();
+            for m in &p.advertise {
+                if tried.contains(m) || measured.contains(m) || p.subtract.mechanisms.contains(m) || p.add.contains(m) {
+                    continue;
+                }
+                let (why, note) = untested_why(m, self.slot);
+                p.untested.insert(m.clone(), Untested { why, note: Some(note.into()) });
+            }
+        }
         p
+    }
+}
+
+/// The mechanisms the baseline names that are digests alone: the tools hash on the host, so a
+/// module's digest is never asked of it (`spec-coverage/manual.toml`).
+const DIGESTS: [&str; 18] = [
+    "CKM_MD2",
+    "CKM_MD5",
+    "CKM_RIPEMD128",
+    "CKM_RIPEMD160",
+    "CKM_SHA_1",
+    "CKM_SHA224",
+    "CKM_SHA256",
+    "CKM_SHA384",
+    "CKM_SHA512",
+    "CKM_SHA512_224",
+    "CKM_SHA512_256",
+    "CKM_SHA512_T",
+    "CKM_SHA3_224",
+    "CKM_SHA3_256",
+    "CKM_SHA3_384",
+    "CKM_SHA3_512",
+    "CKM_SHAKE_128",
+    "CKM_SHAKE_256",
+];
+
+/// Mechanisms the pinned cryptoki has no name for and the probe builds no call to by hand: the
+/// cryptoki layer (`profiles/layers/cryptoki.toml`) carries the same entries.
+pub(crate) const CRYPTOKI_LACKS: [&str; 2] = ["CKM_XEDDSA", "CKM_AES_CFB128"];
+
+/// Why an advertised mechanism no probe tried was not tried, and the words for it.
+fn untested_why(mechanism: &str, slot: bool) -> (Why, &'static str) {
+    if mechanism.starts_with("unknown ") {
+        (Why::Vendor, "a vendor mechanism the baseline does not name: no known parameters or semantics to call it with")
+    } else if DIGESTS.contains(&mechanism) {
+        (Why::Scope, "the tools hash on the host, so a module's digest is never asked of it")
+    } else if CRYPTOKI_LACKS.contains(&mechanism) {
+        (Why::Cryptoki, "the pinned cryptoki has no name or parameter type for it; see profiles/layers/cryptoki.toml")
+    } else if slot {
+        (
+            Why::Hardware,
+            "the probes write into one scratch slot of a device that makes keys only as Security Officer: no secret-key, wrap or derive probe runs there",
+        )
+    } else {
+        (Why::Unprobed, "no probe tries it yet")
     }
 }
 
@@ -783,7 +851,11 @@ fn write_probes(made: &mut Made, profile: &mut Draft) -> Result<()> {
         }
     }
     probed?;
-    let busy = std::mem::take(&mut made.ops).finish(profile);
+    extras::check_reported_ranges(profile);
+    let ops = std::mem::take(&mut made.ops);
+    profile.tried = Some(ops.worked.iter().chain(ops.failed.keys()).chain(ops.unlisted.iter()).cloned().collect());
+    profile.slot = matches!(made.scratch.target, Target::Slot(_));
+    let busy = ops.finish(profile);
     made.undetermined.extend(busy);
     profile.out.add.sort();
     profile.out.add.dedup();
@@ -821,6 +893,12 @@ fn probe_writes(made: &mut Made, profile: &mut Draft, labels: bool) -> Result<()
             }
             // After the wrap probes: a secret key's sealed export takes an OAEP hash they found.
             moves::probe_moves(made, profile, transport)?;
+            // The secret keys' operations (docs/CAPROBE_PROFILE_COVERAGE.md): commitments,
+            // symmetric modes and derivations, then the attributes and key types beyond cakeys'.
+            secrets::probe_commits(made, profile)?;
+            secrets::probe_modes(made, profile)?;
+            secrets::probe_kdfs(made, profile);
+            extras::probe_extras(made, profile);
         }
     } else {
         if !bound {
@@ -1287,8 +1365,14 @@ fn operates_on(bits: u32, usable: bool, operated: bool) -> bool {
 /// derivation and decryption.
 fn operate(made: &mut Made, profile: &mut Draft, kt: &KeyKind, on: &str, public: ObjectHandle, private: ObjectHandle) {
     if matches!(kt, KeyKind::EcMontgomery) {
-        // No Montgomery SPKI or host X25519 in cakeys yet.
-        made.undetermined.push(format!("no operation probes on {on}: ECDH with {kt} keys is not probed yet"));
+        // No Montgomery SPKI or host X25519 in cakeys: ECDH between two pairs on the token.
+        match MONTGOMERY.iter().find(|m| m.0 == on) {
+            Some((_, oid, name)) => {
+                let forms: Vec<&[u8]> = std::iter::once(*oid).chain(*name).collect();
+                extras::montgomery_ecdh(made, profile, on, &forms, (public, private));
+            }
+            None => made.undetermined.push(format!("no operation probes on {on}: unknown curve")),
+        }
         return;
     }
     let spki = match made.tok.material_spki(public) {
