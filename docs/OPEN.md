@@ -178,7 +178,9 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   checked on the host by `reference/identity.rs`, which generates only the SHA-384 one on a
   token. kryoptic generates AES at 8, 48 and 64 bytes (softhsm refuses them,
   `CKR_ATTRIBUTE_VALUE_INVALID`): a module quirk, harmless while keys.toml takes only the three
-  AES lengths, and recorded.
+  AES lengths, and recorded. Planned, with everything else a module advertises or the tools use
+  and no profile row records, in [CAPROBE_PROFILE_COVERAGE.md](CAPROBE_PROFILE_COVERAGE.md): a
+  secret key has commitment rows in place of the `prove` rows an asymmetric key has.
 - **tpm2-pkcs11 over swtpm: P-521 signs with `CKR_HOST_MEMORY`** (2026-11-15, the proofs at
   every curve): `pop-sign` on secp521r1 fails at `C_SignInit`, deterministically, while
   `pop-ecdh` on the same key proves. A module defect or a P-521 limit of swtpm's TPM; the

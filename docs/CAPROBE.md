@@ -131,7 +131,9 @@ keeps them only from a file of the profile just probed: one of another family is
 and one of another name of the family unless `--name` says which it is. Where a
 probed `import.*`, `create.*`, `export.*` or `unwrap.*` row covers an object's type it decides
 before `[migration]` and `move.*`, which answer for the rest until every committed profile
-carries the probed rows ([CAPROBE_MIGRATION.md](CAPROBE_MIGRATION.md) M4).
+carries the probed rows ([CAPROBE_MIGRATION.md](CAPROBE_MIGRATION.md) M4). What the tools use
+and a module advertises that no row yet records, and the `[untested]` marker for what the probe
+cannot try, are planned in [CAPROBE_PROFILE_COVERAGE.md](CAPROBE_PROFILE_COVERAGE.md).
 
 **Layers** (`mode = "delta"`, `profiles/layers/`, `profiles/hardware/`) forward everything except
 what they subtract:
