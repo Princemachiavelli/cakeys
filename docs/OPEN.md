@@ -200,8 +200,16 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   gained `[untested]`, `[mechanism-info]` and `[claims]`, and the fTPM its six AES "no" rows).
 - **More probes**: the SP 800-108 KBKDFs and `CKM_HKDF_DATA`, AES-KW/KWP round trips, attribute
   defaults, existing-object encodings, SHA-224 RSA-PSS (no binding variant), delete in a scratch
-  slot, Ed448 and RSA-512 import, tpm2-pkcs11 import, a measured session limit, `CKO_OTP_KEY`,
+  slot, Ed448 and RSA-512 import, a measured session limit, `CKO_OTP_KEY`,
   `CKO_DOMAIN_PARAMETERS` and `CKO_TRUST`.
+- **TODO: probe the tpm2-pkcs11 import.** The module creates keys from values only through
+  `tpm2_ptool import`, which writes its store out of band, so a `C_CreateObject` probe would
+  measure a refusal and the probe records no `import.*` rows on swtpm or the fTPM. Nothing stops
+  using the tool: `crates/tpm2-pkcs11/src/ptool.rs` already imports EC, RSA and HMAC keys, and
+  camigrate's `import_ptool` does the reopen the module needs (it loads its objects at
+  initialisation). The probe would import each fixture, reopen the token, check the key by its
+  commitment, and record `import.*` rows with `via = "tpm2-ptool"`; the fTPM only through
+  `nix/ftpm-test-env.sh`.
 - **haskoki as a reference token** (PLAN.md A0b), parked: it implements everything cakeys uses,
   but beside kryoptic it is one more OpenSSL-backed software token, and it is packaged for
   Docker, not nixpkgs (Haskell, pinned OpenSSL 4). Take it up with PQ key types, where a second

@@ -509,7 +509,8 @@ ykcs11 (scratch slot 94 only) are regenerated with it.
 
 **Not done, and where it stands** (also OPEN.md): the SP 800-108 KBKDFs and `CKM_HKDF_DATA`
 (`[untested]`, `unprobed`); `CKM_XEDDSA` and `CKM_AES_CFB128` (`cryptoki`); Ed448 and RSA-512
-import; SHA-224 RSA-PSS; the tpm2-pkcs11 import (needs `tpm2_ptool`); delete rows; a measured
+import; SHA-224 RSA-PSS; **TODO** the tpm2-pkcs11 import (through `tpm2_ptool`, then a reopen of
+the token: OPEN.md, "TODO: probe the tpm2-pkcs11 import"); delete rows; a measured
 session limit; `CKO_OTP_KEY`, `CKO_DOMAIN_PARAMETERS` and `CKO_TRUST`; the host-side check of the
 hashed PQ variants. The aws-cloudhsm and kmsp11 profiles are not regenerated: they need an
 AWS or GCP account.

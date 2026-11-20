@@ -86,6 +86,9 @@ pub(super) fn probe_moves(made: &mut Made, profile: &mut Draft, transport: Trans
     if kind == PlaintextKind::Tpm2Ptool {
         // tpm2_ptool writes the module's store, which this open token reads only once opened
         // again: no row rather than a refusal of the path the provider really takes.
+        // TODO: import each fixture through `tpm2_ptool` (as camigrate's `import_ptool` does),
+        // reopen the token, check the key by its commitment and record `import.*` rows with
+        // `via = "tpm2-ptool"`; see docs/OPEN.md, "More probes".
         made.undetermined.push(format!(
             "no import rows: {} imports keys through tpm2_ptool, which the probe does not run yet",
             made.tok.provider.name()
