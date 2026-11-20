@@ -433,7 +433,10 @@ fn untested_why(mechanism: &str, slot: bool) -> (Why, &'static str) {
             "the probes write into one scratch slot of a device that makes keys only as Security Officer: no secret-key, wrap or derive probe runs there",
         )
     } else {
-        (Why::Unprobed, "no probe tries it yet")
+        (
+            Why::Unprobed,
+            "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token",
+        )
     }
 }
 
@@ -868,8 +871,9 @@ fn probe_writes(made: &mut Made, profile: &mut Draft, labels: bool) -> Result<()
     let transport = if bound {
         probe_bound(made, profile);
         made.undetermined.push(
-            "no secret-key or wrap probes beyond generation: the module's keys serve only their \
-             binding's mechanisms"
+            "no import, wrap, derive, commitment or attribute probes: the module's keys are made \
+             from its own templates and serve only their binding's mechanisms (a bound AES key's \
+             modes are probed)"
                 .into(),
         );
         None
@@ -999,6 +1003,7 @@ fn probe_bound(made: &mut Made, profile: &mut Draft) {
     );
     let mut ec = GenerateRow::default();
     let mut rsa = profile.generate.remove(&KeyKind::Rsa).unwrap_or_default();
+    let mut aes = GenerateRow::default();
     let mut oaep: Option<Vec<String>> = None;
     for key in std::mem::take(&mut made.bound_keys) {
         let Some((mech, pair)) = keygen_mechanism(key.keygen) else {
@@ -1017,6 +1022,7 @@ fn probe_bound(made: &mut Made, profile: &mut Draft) {
                 match (&key.kind, &key.on) {
                     (KeyKind::Ec, On::Item(curve)) if !ec.cannot.contains(curve) => ec.cannot.push(curve.clone()),
                     (KeyKind::Rsa, On::Bits(b)) if !rsa.cannot_bits.contains(b) => rsa.cannot_bits.push(*b),
+                    (KeyKind::Aes, On::Bytes(n)) if !aes.cannot_bytes.contains(n) => aes.cannot_bytes.push(*n),
                     _ => {}
                 }
                 continue;
@@ -1027,7 +1033,13 @@ fn probe_bound(made: &mut Made, profile: &mut Draft) {
         match (&key.kind, &key.on) {
             (KeyKind::Ec, On::Item(curve)) if !ec.can.contains(curve) => ec.can.push(curve.clone()),
             (KeyKind::Rsa, On::Bits(b)) if !rsa.can_bits.contains(b) => rsa.can_bits.push(*b),
+            (KeyKind::Aes, On::Bytes(n)) if !aes.can_bytes.contains(n) => aes.can_bytes.push(*n),
             _ => {}
+        }
+        // A bound secret key: its modes, on the mechanisms its binding serves.
+        if let (None, KeyKind::Aes, On::Bytes(n)) = (&public, &key.kind, &key.on) {
+            secrets::probe_bound_aes(made, profile, &key.mechanisms, *n, private);
+            continue;
         }
         let Some(public) = public else { continue };
         made.bound = Some(key.mechanisms.iter().map(ToString::to_string).collect());
@@ -1056,6 +1068,12 @@ fn probe_bound(made: &mut Made, profile: &mut Draft) {
     probe_unbound(made, profile, &mut ec, &mut rsa);
     rsa.can_bits.sort_unstable();
     rsa.cannot_bits.sort_unstable();
+    aes.can_bytes.sort_unstable();
+    aes.cannot_bytes.sort_unstable();
+    aes.cannot_bytes.retain(|n| !aes.can_bytes.contains(n));
+    if !aes.can_bytes.is_empty() || !aes.cannot_bytes.is_empty() {
+        profile.generate.insert(KeyKind::Aes, aes);
+    }
     profile.generate.insert(KeyKind::Ec, ec);
     profile.generate.insert(KeyKind::Rsa, rsa);
 }

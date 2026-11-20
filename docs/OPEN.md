@@ -185,19 +185,27 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   every curve): `pop-sign` on secp521r1 fails at `C_SignInit`, deterministically, while
   `pop-ecdh` on the same key proves. A module defect or a P-521 limit of swtpm's TPM; the
   profile records the "no". To read in tpm2-pkcs11's sign path and report upstream.
-- **Profiles still to regenerate for the secret-key sweep** (2026-11-19): `softhsm/2.7`,
-  `kryoptic/1.5`, `tpm2-pkcs11/1.10+swtpm` and (2026-11-19, through `nix/ftpm-test-env.sh`,
-  persistent handles and lockout counter compared and unchanged) `tpm2-pkcs11/1.10+amd-ftpm` were
-  regenerated; `aws-cloudhsm/5.18+hsm2m-*` and `kmsp11/1.9+hsm*` are not, and drift from a fresh
-  probe: they need their clouds (`scripts/cloud/aws.sh probe`); until then `validate` says
-  "records no CKK_AES generation" for a secret key `create` makes there. ykcs11 lists no secret
-  key generation and probes in a scratch slot: unaffected.
-- **Profiles still to regenerate for the coverage plan** (2026-11-19,
-  [CAPROBE_PROFILE_COVERAGE.md](CAPROBE_PROFILE_COVERAGE.md)): `aws-cloudhsm/5.18+hsm2m-*` and
-  `kmsp11/1.9+hsm*`, as above, also lack the `commit.*`, `crypt.*`, `derive.CKM_*`, `attr.*`
-  rows, `[untested]`, `[mechanism-info]` and `[claims]` that softhsm, kryoptic, swtpm, amd-ftpm and
-  ykcs11 have (ykcs11 was probed in scratch slot 94 only, and the fTPM has no AES generation: both
-  gained `[untested]`, `[mechanism-info]` and `[claims]`, and the fTPM its six AES "no" rows).
+- **Every profile is regenerated for the coverage plan** (2026-11-19,
+  [CAPROBE_PROFILE_COVERAGE.md](CAPROBE_PROFILE_COVERAGE.md)): softhsm, kryoptic, swtpm, the AMD
+  fTPM (through `nix/ftpm-test-env.sh`, handles and lockout counter unchanged), ykcs11 (scratch
+  slot 94 only), `aws-cloudhsm/5.18+hsm2m-*` (both clusters) and `kmsp11/1.9+hsm*`. kmsp11's keys are
+  purpose-bound, so only the AES keys of its CBC and CTR bindings are probed beyond generation
+  (`probe: true` for `AES_256_CBC` and `AES_256_CTR` in `keys.json`, two more key versions per
+  run); its other secret-key probes (import, wrap, derive, commitments, attributes) cannot run on
+  it and say so in a note.
+- **Parameter variants: a refusal may be about the call, not the mechanism.** The probe fixes one
+  parameter choice per mechanism, so `CKR_MECHANISM_PARAM_INVALID` can be recorded as a "no" the
+  module would not give with other parameters. Found and fixed for AES CTR (a 32-bit counter, then
+  the whole block, which is what Cloud KMS takes; the row notes the width that worked). Still
+  fixed: **AES GCM** (a caller-supplied 12-byte IV, 128-bit tag; both AWS profiles record a "no"
+  with `CKR_MECHANISM_PARAM_INVALID`, probably because CloudHSM generates the IV itself: not
+  verified), **RSA-PSS** (hash and MGF matching, salt as long as the digest), **HKDF** (hash, salt,
+  info), **ECDH1_DERIVE** (no KDF, no shared data), **RSA_AES_KEY_WRAP** (a 256-bit AES key) and
+  **OAEP** (MGF matching the hash, empty label; a refused hash is its own row, not a "no" for the
+  mechanism). `crypt_row` in `crates/caprobe/src/probe/secrets.rs` takes a list of variants and
+  moves on only for that one return value: the other mechanisms can use it.
+- **Cloud tests**: `aws.sh` creates the lock's directory on the runner (the AWS test passes it a
+  local path); before that the AWS end-to-end test could not create a key.
 - **More probes**: the SP 800-108 KBKDFs and `CKM_HKDF_DATA`, AES-KW/KWP round trips, attribute
   defaults, existing-object encodings, SHA-224 RSA-PSS (no binding variant), delete in a scratch
   slot, Ed448 and RSA-512 import, a measured session limit, `CKO_OTP_KEY`,

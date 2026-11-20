@@ -29,7 +29,17 @@ advertise = [
   "CKM_SHA512_RSA_PKCS",
   "CKM_SHA512_RSA_PKCS_PSS",
   "CKM_SHA_1_HMAC",
+  "unknown 8001e101",
 ]
+
+[untested]
+"CKM_GENERIC_SECRET_KEY_GEN" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
+"CKM_SHA224_HMAC" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
+"CKM_SHA256_HMAC" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
+"CKM_SHA384_HMAC" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
+"CKM_SHA512_HMAC" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
+"CKM_SHA_1_HMAC" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
+"unknown 8001e101" = { why = "vendor", note = "a vendor mechanism the baseline does not name: no known parameters or semantics to call it with" }
 
 [match]
 manufacturer = "Google"
@@ -38,6 +48,7 @@ model = "Cloud KMS Token"
 firmware = "0.0"
 
 [capabilities]
+"generate.CKK_AES.32" = { answer = "yes" }
 "generate.CKK_EC.brainpoolP256r1" = { answer = "no" }
 "generate.CKK_EC.brainpoolP384r1" = { answer = "no" }
 "generate.CKK_EC.secp256k1" = { answer = "no" }
@@ -110,10 +121,51 @@ firmware = "0.0"
 "prove.pop-unwrap.CKK_RSA.RSA_SIGN_RAW_PKCS1_2048" = { answer = "no", evidence = "unsupported: the key's CKA_ALLOWED_MECHANISMS allows none of CKM_RSA_PKCS_OAEP for a proof of possession" }
 "prove.pop-unwrap.CKK_RSA.RSA_SIGN_RAW_PKCS1_3072" = { answer = "no", evidence = "unsupported: the key's CKA_ALLOWED_MECHANISMS allows none of CKM_RSA_PKCS_OAEP for a proof of possession" }
 "prove.pop-unwrap.CKK_RSA.RSA_SIGN_RAW_PKCS1_4096" = { answer = "no", evidence = "unsupported: the key's CKA_ALLOWED_MECHANISMS allows none of CKM_RSA_PKCS_OAEP for a proof of possession" }
+"delete.CKO_PRIVATE_KEY" = { answer = "yes" }
+"delete.CKO_PUBLIC_KEY" = { answer = "yes" }
+"delete.CKO_SECRET_KEY" = { answer = "yes" }
+"crypt.CKM_AES_CBC.CKK_AES.32" = { answer = "yes" }
+"crypt.CKM_AES_CBC_PAD.CKK_AES.32" = { answer = "yes" }
+"crypt.CKM_AES_CTR.CKK_AES.32" = { answer = "yes" }
 
 [reported."CKK_RSA"]
 min-bits = 2048
 max-bits = 4096
+
+[mechanism-info]
+"CKM_AES_CBC" = { min = 16, max = 32, flags = ["encrypt", "decrypt"] }
+"CKM_AES_CBC_PAD" = { min = 16, max = 32, flags = ["encrypt", "decrypt"] }
+"CKM_AES_CTR" = { min = 16, max = 32, flags = ["encrypt", "decrypt"] }
+"CKM_AES_KEY_GEN" = { min = 16, max = 32, flags = ["encrypt", "decrypt"] }
+"CKM_ECDSA" = { min = 256, max = 384, flags = ["sign", "verify"] }
+"CKM_ECDSA_SHA256" = { min = 256, max = 256, flags = ["sign", "verify"] }
+"CKM_ECDSA_SHA384" = { min = 384, max = 384, flags = ["sign", "verify"] }
+"CKM_EC_KEY_PAIR_GEN" = { min = 256, max = 384, flags = ["hardware", "generate-key-pair"] }
+"CKM_GENERIC_SECRET_KEY_GEN" = { min = 160, max = 256, flags = ["hardware", "generate"] }
+"CKM_RSA_PKCS" = { min = 2048, max = 4096, flags = ["sign", "verify"] }
+"CKM_RSA_PKCS_KEY_PAIR_GEN" = { min = 2048, max = 4096, flags = ["hardware", "generate-key-pair"] }
+"CKM_RSA_PKCS_OAEP" = { min = 2048, max = 4096, flags = ["encrypt", "decrypt"] }
+"CKM_RSA_PKCS_PSS" = { min = 2048, max = 4096, flags = ["sign", "verify"] }
+"CKM_SHA224_HMAC" = { min = 28, max = 28, flags = ["sign", "verify"] }
+"CKM_SHA256_HMAC" = { min = 32, max = 32, flags = ["sign", "verify"] }
+"CKM_SHA256_RSA_PKCS" = { min = 2048, max = 4096, flags = ["sign", "verify"] }
+"CKM_SHA256_RSA_PKCS_PSS" = { min = 2048, max = 4096, flags = ["sign", "verify"] }
+"CKM_SHA384_HMAC" = { min = 48, max = 48, flags = ["sign", "verify"] }
+"CKM_SHA512_HMAC" = { min = 48, max = 48, flags = ["sign", "verify"] }
+"CKM_SHA512_RSA_PKCS" = { min = 2048, max = 4096, flags = ["sign", "verify"] }
+"CKM_SHA512_RSA_PKCS_PSS" = { min = 4096, max = 4096, flags = ["sign", "verify"] }
+"CKM_SHA_1_HMAC" = { min = 20, max = 20, flags = ["sign", "verify"] }
+"unknown 8001e101" = { min = 16, max = 32, flags = ["encrypt", "decrypt"] }
+
+[claims]
+"interface" = "Cryptoki 2.40"
+"objects.hardware-features" = "0"
+"objects.profiles" = "0"
+"objects.validation" = "0"
+"token.flags" = "rng, token-initialized"
+"token.max-rw-sessions" = "Infinite"
+"token.max-sessions" = "Infinite"
+"token.pin-length" = "0-0"
 
 [notes]
 "CKM_RSA_PKCS" = "RSA_SIGN_PKCS1_2048_SHA256 decrypt: CKR_MECHANISM_INVALID; RSA_SIGN_PKCS1_3072_SHA256 decrypt: CKR_MECHANISM_INVALID; RSA_SIGN_PKCS1_4096_SHA256 decrypt: CKR_MECHANISM_INVALID; RSA_SIGN_PKCS1_4096_SHA512: CKR_DATA_INVALID; RSA_SIGN_PKCS1_4096_SHA512 decrypt: CKR_MECHANISM_INVALID; RSA_SIGN_RAW_PKCS1_2048 decrypt: CKR_MECHANISM_INVALID; RSA_SIGN_RAW_PKCS1_3072 decrypt: CKR_MECHANISM_INVALID; RSA_SIGN_RAW_PKCS1_4096 decrypt: CKR_MECHANISM_INVALID"
@@ -121,6 +173,7 @@ max-bits = 4096
 "CKM_RSA_PKCS_PSS" = "RSA_SIGN_PSS_4096_SHA512: CKR_MECHANISM_PARAM_INVALID"
 "brainpoolP256r1" = "no binding for it; without one: CKR_TEMPLATE_INCOMPLETE"
 "brainpoolP384r1" = "no binding for it; without one: CKR_TEMPLATE_INCOMPLETE"
+"crypt.CKM_AES_CTR.CKK_AES.32" = "refused the first parameters tried (CKR_MECHANISM_PARAM_INVALID); works with a 128-bit counter"
 "cryptoki" = "the module reports Cryptoki 2.40"
 "curve25519" = "no binding for it; without one: CKR_MECHANISM_INVALID"
 "curve448" = "no binding for it; without one: CKR_MECHANISM_INVALID"

@@ -96,15 +96,15 @@ add = ["CKM_ECDSA_SHA224", "CKM_SHA224_RSA_PKCS"]
 
 [untested]
 "CKM_AES_CFB128" = { why = "cryptoki", note = "the pinned cryptoki has no name or parameter type for it; see profiles/layers/cryptoki.toml" }
-"CKM_HASH_ML_DSA" = { why = "unprobed", note = "no probe tries it yet" }
-"CKM_HASH_SLH_DSA" = { why = "unprobed", note = "no probe tries it yet" }
-"CKM_HKDF_DATA" = { why = "unprobed", note = "no probe tries it yet" }
+"CKM_HASH_ML_DSA" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
+"CKM_HASH_SLH_DSA" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
+"CKM_HKDF_DATA" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
 "CKM_SHA256" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
 "CKM_SHA384" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
 "CKM_SHA512" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
 "CKM_SHA_1" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
-"CKM_SP800_108_COUNTER_KDF" = { why = "unprobed", note = "no probe tries it yet" }
-"CKM_SP800_108_FEEDBACK_KDF" = { why = "unprobed", note = "no probe tries it yet" }
+"CKM_SP800_108_COUNTER_KDF" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
+"CKM_SP800_108_FEEDBACK_KDF" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
 "unknown 8007678c" = { why = "vendor", note = "a vendor mechanism the baseline does not name: no known parameters or semantics to call it with" }
 
 [match]

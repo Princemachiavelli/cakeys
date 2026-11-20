@@ -90,7 +90,7 @@ impl Row {
 
 /// The table, in its file's order: the first row of a kind, size and purpose is the default.
 /// Parsed once; the file is this crate's own, so a row that does not read is a build-time bug
-/// (`the_table_parses_and_its_probe_rows_are_the_nineteen`).
+/// (`the_table_parses_and_its_probe_rows_are_the_twenty_one`).
 fn rows() -> &'static [Row] {
     static ROWS: std::sync::LazyLock<Vec<Row>> = std::sync::LazyLock::new(parse_rows);
     &ROWS
@@ -399,7 +399,11 @@ impl Provider for Kmsp11 {
                     mechanisms: r.mechanisms.iter().map(|m| mechanism(m)).collect(),
                     name: r.algorithm.clone(),
                     label,
-                    on: On::parse(&kind, &r.on),
+                    // The table gives an AES key's size in bits; a profile row counts its bytes.
+                    on: match (&kind, r.on.parse::<u32>()) {
+                        (KeyKind::Aes, Ok(bits)) => On::Bytes(bits / 8),
+                        _ => On::parse(&kind, &r.on),
+                    },
                     kind,
                 }
             })
@@ -441,10 +445,10 @@ mod tests {
     }
 
     #[test]
-    fn the_table_parses_and_its_probe_rows_are_the_nineteen() {
+    fn the_table_parses_and_its_probe_rows_are_the_twenty_one() {
         let keys = Kmsp11.bound_keys();
         assert_eq!(rows().len(), 28);
-        assert_eq!(keys.len(), 19);
+        assert_eq!(keys.len(), 21);
         let mut labels: Vec<_> = keys.iter().map(|k| k.label.clone()).collect();
         for l in &labels {
             assert!(is_crypto_key_id(l), "{l}");
