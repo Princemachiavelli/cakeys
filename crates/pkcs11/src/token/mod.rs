@@ -1197,6 +1197,18 @@ pub fn hmac_key_gen(kt: Kt) -> Option<Mechanism<'static>> {
     })
 }
 
+/// The mechanism that generates a secret key of type `kt`: its own `CKM_SHA*_KEY_GEN` for a
+/// hash-bound HMAC type ([`hmac_key_gen`]), `CKM_DES3_KEY_GEN`, `CKM_AES_KEY_GEN`, else
+/// `CKM_GENERIC_SECRET_KEY_GEN`. What `create` runs and the probe measures.
+#[must_use]
+pub fn secret_key_gen(kt: Kt) -> Mechanism<'static> {
+    hmac_key_gen(kt).unwrap_or(match kt {
+        Kt::Aes => Mechanism::AesKeyGen,
+        Kt::Des3 => Mechanism::Des3KeyGen,
+        _ => Mechanism::GenericSecretKeyGen,
+    })
+}
+
 /// cryptoki 0.12.1 (and main) gives `SHA224/384/512_HMAC` the value of `CKK_SHA256_HMAC` (0x2b), so such
 /// keys could be neither created nor told apart. The Nix build patches it
 /// (nix/patches/cryptoki-hmac-key-types.patch); refuse rather than misidentify without the patch.

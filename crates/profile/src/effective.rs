@@ -136,6 +136,88 @@ impl<'a> Effective<'a> {
         }
     }
 
+    /// The no a layer gives to generating `key_type`, with `item` and a size in bits: it
+    /// subtracts the key type, its hardware refuses the curve (D10; its `can` rows mean nothing
+    /// in delta mode, where the module decides the rest), or a `restrict` row bounds the size.
+    fn layers_refuse(&self, key_type: &str, item: Option<&str>, bits: Option<u32>) -> Option<Verdict> {
+        for l in self.layers {
+            if l.subtract.key_types.iter().any(|k| k == key_type) {
+                return Some(Verdict::no(&l.profile, l.notes.get(key_type).cloned().or(l.subtract.note.clone())));
+            }
+            if let Some(item) = item
+                && l.generation(key_type).is_some_and(|row| row.cannot.iter().any(|c| c == item))
+            {
+                return Some(Verdict::no(&l.profile, l.evidence(&generate(key_type, On::Item(item.to_owned())), item)));
+            }
+            for r in &l.restrict {
+                if matches!(r.operation, Operation::Generate)
+                    && r.key_type == key_type
+                    && let Some(bits) = bits
+                    && (r.max_bits.is_some_and(|max| bits > max) || r.min_bits.is_some_and(|min| bits < min))
+                {
+                    return Some(Verdict::no(&l.profile, r.note.clone()));
+                }
+            }
+        }
+        None
+    }
+
+    /// Whether a module generates a secret key of `key_type`, `bytes` long when the size is
+    /// known (`CKA_VALUE_LEN`: `valueLen`, or what the key type fixes). As [`Self::generate`]: layers
+    /// subtract the key type and bound the size (their `restrict` rows are in bits, so the
+    /// length times eight), then the module's rows decide. A length the probe tried decides;
+    /// one between two that generated is yes only for a key type whose length is free (a
+    /// generic secret, an HMAC key), never for AES, whose lengths are the three it defines;
+    /// anything else answers unknown, never a guess.
+    #[must_use]
+    pub fn generate_secret(&self, key_type: &str, bytes: Option<u32>) -> Verdict {
+        if !self.baseline.key_types.contains_key(key_type) {
+            return Verdict::Unknown { why: format!("not a key type of baseline {}", self.baseline.baseline) };
+        }
+        if let Some(refused) = self.layers_refuse(key_type, None, bytes.map(|b| b.saturating_mul(8))) {
+            return refused;
+        }
+        let Some(m) = self.module else {
+            return Verdict::Unknown { why: "no module profile selected".into() };
+        };
+        let Some(row) = m.generation(key_type) else {
+            return Verdict::Unknown { why: format!("module profile {} records no {key_type} generation", m.profile) };
+        };
+        if let Some(n) = bytes {
+            let size_note = || m.evidence(&generate(key_type, On::Bytes(n)), &format!("{key_type} at {n} bytes"));
+            if row.cannot_bytes.contains(&n) {
+                return Verdict::no(&m.profile, size_note());
+            }
+            if row.can_bytes.contains(&n) {
+                return Verdict::yes(&m.profile, None);
+            }
+            let free = !matches!(KeyKind::from(key_type), KeyKind::Aes | KeyKind::Des3);
+            let (below, above) =
+                (row.can_bytes.iter().filter(|b| **b < n).max(), row.can_bytes.iter().filter(|b| **b > n).min());
+            if free && below.is_some() && above.is_some() {
+                return Verdict::yes(&m.profile, None);
+            }
+            let mut tried: Vec<u32> = row.can_bytes.iter().chain(&row.cannot_bytes).copied().collect();
+            if !tried.is_empty() {
+                tried.sort_unstable();
+                let tried: Vec<String> = tried.iter().map(u32::to_string).collect();
+                return Verdict::Unknown {
+                    why: format!("module profile {} probed {} bytes only", m.profile, tried.join(", ")),
+                };
+            }
+        }
+        // The key type at all: yes when some length generated; no when every one tried was refused.
+        if !row.can_bytes.is_empty() {
+            return Verdict::yes(&m.profile, m.notes.get(key_type));
+        }
+        if !row.cannot_bytes.is_empty() {
+            let tried: Vec<String> = row.cannot_bytes.iter().map(u32::to_string).collect();
+            let why = m.notes.get(key_type).cloned().unwrap_or_else(|| format!("refused {} bytes", tried.join(", ")));
+            return Verdict::no(&m.profile, Some(why));
+        }
+        Verdict::Unknown { why: format!("module profile {} records no {key_type} generation it can judge", m.profile) }
+    }
+
     /// Whether a module generates a key of `key_type`, optionally with one item (a curve, or a
     /// parameter set for the PQ types) and a modulus size. Layers subtract key types and
     /// intersect size bounds first, then the module's `generate` row decides: what is in
@@ -153,26 +235,8 @@ impl<'a> Effective<'a> {
                 why: format!("not a curve or parameter set of baseline {}", self.baseline.baseline),
             };
         }
-        for l in self.layers {
-            if l.subtract.key_types.iter().any(|k| k == key_type) {
-                return Verdict::no(&l.profile, l.notes.get(key_type).cloned().or(l.subtract.note.clone()));
-            }
-            // A layer's `cannot` rows (the hardware under the module refusing a curve, D10);
-            // its `can` rows mean nothing in delta mode, where the module decides the rest.
-            if let Some(item) = item
-                && l.generation(key_type).is_some_and(|row| row.cannot.iter().any(|c| c == item))
-            {
-                return Verdict::no(&l.profile, l.evidence(&generate(key_type, On::Item(item.to_owned())), item));
-            }
-            for r in &l.restrict {
-                if matches!(r.operation, Operation::Generate)
-                    && r.key_type == key_type
-                    && let Some(bits) = bits
-                    && (r.max_bits.is_some_and(|max| bits > max) || r.min_bits.is_some_and(|min| bits < min))
-                {
-                    return Verdict::no(&l.profile, r.note.clone());
-                }
-            }
+        if let Some(refused) = self.layers_refuse(key_type, item, bits) {
+            return refused;
         }
         let Some(m) = self.module else {
             return Verdict::Unknown { why: "no module profile selected".into() };

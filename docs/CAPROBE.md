@@ -235,8 +235,14 @@ generated, never edited, and pinned like the baseline:
   over a minute, so the committed reference profiles stop there too, and the gate answers
   unknown above). A curve family whose generation mechanism the module does not list is tried
   all the same, an `add` row where it generates. Each key that generates with its usage proves
-  possession by every binding of its kind, a `prove.*` row each. The
-  advertised secret-key generation; RSA-OAEP SHA-1 and SHA-256, counted only when the key unwraps
+  possession by every binding of its kind, a `prove.*` row each. Every secret key type cakeys
+  manages (AES, generic secret, Triple DES, the five hash-bound HMAC types) the module lists a
+  generation mechanism for, made as the verbs make it (`Token::create`) at a sweep of lengths in
+  bytes, `generate.<key type>.<bytes>`, yes or no: AES at 8, 16, 24, 32, 48 and 64 (the three it
+  defines, and lengths a module should refuse), a generic secret and an HMAC key at 1 to 1024,
+  Triple DES at the 24 its type fixes. The gate answers for a length it tried, and for a length
+  between two that generated only where the length is free (never AES). A mechanism that
+  generates no length is a `subtract` row; RSA-OAEP SHA-1 and SHA-256, counted only when the key unwraps
   back; each advertised key wrap (`CKM_AES_KEY_WRAP`, `_PAD`, `_KWP`, and `CKM_RSA_AES_KEY_WRAP`
   under the RSA key) round-tripped, a `subtract` row only when refused as a mechanism
   (`CKR_MECHANISM_INVALID`, `CKR_FUNCTION_NOT_SUPPORTED`) and a note otherwise — `C_GetMechanismInfo`
@@ -272,8 +278,8 @@ generated, never edited, and pinned like the baseline:
 
 | Profile | Findings |
 |---|---|
-| `softhsm/2.7` | OAEP SHA-1 only, for wrapping and decryption (SHA-256 is `CKR_ARGUMENTS_BAD`); every baseline curve generates; RSA 512–16384 reported. An unwrapped secret key's `CKA_VALUE_LEN` reads 0 (`move.secret-unwrap` no, an upstream issue to file). Offers `CKM_RSA_AES_KEY_WRAP`; the SO can create a trusted RSA public key |
-| `kryoptic/1.5` | Reports module version 0.0, matched by firmware (its real version). OAEP SHA-1 and SHA-256; secp256k1 and brainpool refused; advertises the 3.2 PQ mechanisms (not yet probed). Cannot make an RSA public key trusted (`move.trusted-wrap` no) |
+| `softhsm/2.7` | OAEP SHA-1 only, for wrapping and decryption (SHA-256 is `CKR_ARGUMENTS_BAD`); every baseline curve generates; RSA 512–16384 reported. AES generates at 16, 24 and 32 bytes, refuses 8, 48 and 64 (`CKR_ATTRIBUTE_VALUE_INVALID`); a generic secret at 1 to 1024; Triple DES at 24; no `CKM_SHA*_KEY_GEN`, so no hash-bound HMAC key. An unwrapped secret key's `CKA_VALUE_LEN` reads 0 (`move.secret-unwrap` no, an upstream issue to file). Offers `CKM_RSA_AES_KEY_WRAP`; the SO can create a trusted RSA public key |
+| `kryoptic/1.5` | Reports module version 0.0, matched by firmware (its real version). OAEP SHA-1 and SHA-256; secp256k1 and brainpool refused; advertises the 3.2 PQ mechanisms (not yet probed). Generates every secret key type it lists, the five hash-bound HMAC types included, at 1 to 1024 bytes, and AES at 8, 16, 24, 32, 48 and 64 bytes alike (no length check; softhsm refuses the three AES does not define); no Triple DES. Cannot make an RSA public key trusted (`move.trusted-wrap` no) |
 | `tpm2-pkcs11/1.10+swtpm` | Reports Cryptoki 2.40. `CKM_AES_KEY_GEN` advertised but `CKR_FUNCTION_NOT_SUPPORTED`; no Edwards; RSA 1024–3072. Derived secrets cannot sign (no `CKA_ALLOWED_MECHANISMS`), leak a reference and stay as store rows, so `pop-ecdh` takes the extractable path (`derive.sealed = false`) in a read-write session (`derive.read-only = false`). Never wraps or unwraps |
 | `tpm2-pkcs11/1.10+amd-ftpm` | P-256, P-384, RSA up to 2048; SHA-1 and SHA-256 only, so SHA-384/512 ECDSA and RSA-PSS are `subtract` rows, and such a failed `C_Sign` or `C_Decrypt` leaves its operation active on the session (the next `C_SignInit` is `CKR_OPERATION_ACTIVE` [run]: the probe proves possession before its mechanism probes). `pop-sign`, `pop-decrypt` and `pop-ecdh` prove; `pop-unwrap` is `CKR_FUNCTION_NOT_SUPPORTED`. Needs tpm2-abrmd: the kernel resource manager's 3 slots run out on undestroyable objects (`[manual.resource-manager]`) |
 | `ykcs11/2.7` (YubiKey 5C NFC FIPS, 5.7.4) | Reports version 2.73, manufacturer `Yubico (www.yubico.com)`. P-256, P-384, Ed25519 (by name only), RSA 2048–4096; refuses RSA-1024, P-521, secp256k1, brainpool, Ed448, X25519 (its template wants a malformed `PrintableString` [src]). ECDH only into an extractable secret, no HMAC; every key reports `CKA_DERIVE = false` (repaired by its provider's `repair`). OAEP decrypts with SHA-1, SHA-256 and SHA-512. Nothing unwraps: `pop-sign`, `pop-decrypt` and `pop-ecdh` prove, `pop-unwrap` cannot. FIPS mode is a `[manual]` finding until D12 |

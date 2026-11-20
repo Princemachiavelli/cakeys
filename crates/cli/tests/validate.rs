@@ -269,8 +269,9 @@ fn the_lock_resolves_a_token_keys_toml_does_not_name() {
     assert!(err.contains("`lock` them") && !err.contains("softhsm/2.7"), "{err}");
 
     let w = Workdir::new("validate-one-observation");
-    // One object the lock does not pin yet, so `create` would make it there.
-    let fresh = "\n[objects.fresh]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = 32\n\n\
+    // One object the lock does not pin yet, so `create` would make it there, of a length beyond
+    // those the profile's probe generated: its generation is not decided.
+    let fresh = "\n[objects.fresh]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = 4096\n\n\
                  [specs.fresh]\nobject = \"fresh\"\nattributes = { CKA_SIGN = true }\n\
                  tokens.softhsm = { locator = { CKA_LABEL = \"fresh\" }, origin = \"create\" }\n";
     w.write_config(&(std::fs::read_to_string(format!("{FIXTURES}/keys.toml")).unwrap() + fresh));
@@ -288,6 +289,47 @@ fn the_lock_resolves_a_token_keys_toml_does_not_name() {
     assert!(err.contains(fresh), "{err}");
     // The lock pins every other object: `create` would make none of them, so no generation is asked.
     assert_eq!(err.lines().filter(|l| l.contains("generation")).count(), 1, "{err}");
+}
+
+/// A secret key to create is decided by the lengths the module profile recorded, in bytes: AES at
+/// 32, Triple DES at the 24 its type fixes and a generic secret between the lengths tried generate
+/// with no note; a generic secret longer than any tried is left open, a note, never a guess.
+#[test]
+fn a_secret_key_to_create_is_decided_by_its_recorded_lengths() {
+    let w = Workdir::new("validate-secret-lengths");
+    let object = |name: &str, key_type: &str, len: Option<u32>| {
+        let len = len.map_or(String::new(), |n| format!("valueLen = {n}\n"));
+        format!("[objects.{name}]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"{key_type}\"\n{len}\n")
+    };
+    let spec = |name: &str, usage: &str| {
+        format!(
+            "[specs.{name}]\nobject = \"{name}\"\nattributes = {{ {usage} = true }}\n\
+             tokens.soft = {{ locator = {{ CKA_LABEL = \"{name}\" }}, origin = \"create\" }}\n\n"
+        )
+    };
+    let text = [
+        "[tokens.soft]\ntokenLabel = \"soft\"\nprovider = \"softhsm\"\n\n".to_owned(),
+        object("aes", "CKK_AES", Some(32)),
+        object("des3", "CKK_DES3", None),
+        object("mac", "CKK_GENERIC_SECRET", Some(48)),
+        object("huge", "CKK_GENERIC_SECRET", Some(4096)),
+        spec("aes", "CKA_SIGN"),
+        spec("des3", "CKA_ENCRYPT"),
+        spec("mac", "CKA_SIGN"),
+        spec("huge", "CKA_SIGN"),
+    ]
+    .concat();
+    w.write_config(&text);
+    let out = w.km(&["validate"]);
+    let err = stderr(&out);
+    assert_eq!(code(&out), 0, "{err}");
+    let decided =
+        |object: &str| err.lines().any(|l| l.contains(&format!("'{object}' (spec")) && l.contains("generation"));
+    for object in ["aes", "des3", "mac"] {
+        assert!(!decided(object), "{object}: {err}");
+    }
+    assert!(decided("huge"), "{err}");
+    assert!(err.contains("probed 1, 16, 32, 64, 128, 256, 512, 1024 bytes only"), "{err}");
 }
 
 /// What the gate refuses or leaves open, from keys.toml alone: a hash-bound HMAC key to

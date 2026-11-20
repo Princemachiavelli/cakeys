@@ -14,6 +14,22 @@ use std::path::Path;
 /// The RSA sizes asked after: the reported ranges' edges and the sizes probes generate.
 const BITS: [u32; 8] = [512, 1024, 2048, 3072, 4096, 8192, 15360, 16384];
 
+/// The secret key types cakeys generates, which a generation row reads in bytes.
+const SECRET_KEYS: [&str; 8] = [
+    "CKK_AES",
+    "CKK_DES3",
+    "CKK_GENERIC_SECRET",
+    "CKK_SHA_1_HMAC",
+    "CKK_SHA224_HMAC",
+    "CKK_SHA256_HMAC",
+    "CKK_SHA384_HMAC",
+    "CKK_SHA512_HMAC",
+];
+
+/// The secret-key lengths asked after: the three AES lengths, the edges and the lengths between
+/// and beyond those the probes generate.
+const BYTES: [u32; 10] = [1, 8, 16, 24, 32, 48, 64, 128, 1024, 4096];
+
 /// A list as a set: no consumer reads these lists' order.
 fn sorted<T: Ord + Clone + std::fmt::Debug>(v: &[T]) -> String {
     let mut v = v.to_vec();
@@ -46,14 +62,16 @@ fn rows(p: &Profile) -> String {
         let g = p.generation(kt).unwrap();
         let _ = writeln!(
             out,
-            "  generate {kt}: can {} cannot {} bits {:?}..{:?} can {} cannot {} by-name {}",
+            "  generate {kt}: can {} cannot {} bits {:?}..{:?} can {} cannot {} by-name {} bytes can {} cannot {}",
             sorted(&g.can),
             sorted(&g.cannot),
             g.min_bits,
             g.max_bits,
             sorted(&g.can_bits),
             sorted(&g.cannot_bits),
-            sorted(&g.by_name)
+            sorted(&g.by_name),
+            sorted(&g.can_bytes),
+            sorted(&g.cannot_bytes)
         );
     }
     out
@@ -79,6 +97,16 @@ fn answers(set: &Set) -> String {
             }
         };
         for kt in baseline.key_types.keys() {
+            // A secret key type is asked by length in bytes, never by curve or bits.
+            if SECRET_KEYS.contains(&kt.as_str()) {
+                answer(kt.clone(), eff.generate_secret(kt, None));
+                if alone || p.generation(kt).is_some() {
+                    for n in BYTES {
+                        answer(format!("{kt} {n} bytes"), eff.generate_secret(kt, Some(n)));
+                    }
+                }
+                continue;
+            }
             let bare = eff.generate(kt, None, None);
             // The module profile has no row for the key type: each curve and size would say the
             // same.
