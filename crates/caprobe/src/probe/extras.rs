@@ -477,9 +477,19 @@ fn kem_row(made: &mut Made, profile: &mut Draft, set: &str, public: ObjectHandle
         Ok(Some(Attribute::Value(v))) => Some(v),
         _ => None,
     };
+    // A call the binding or the interface in use cannot make (a 2.40 function list has no
+    // C_EncapsulateKey) says nothing of the module: no row, only the module's `CKR_*` is a no.
+    let from_module = |e: &cryptoki::error::Error| matches!(e, cryptoki::error::Error::Pkcs11(..));
     match s.encapsulate_key(&mech, public, &template) {
+        Err(e) if !from_module(&e) => {
+            made.undetermined.push(format!("no {cap} row: C_EncapsulateKey cannot be called: {e}"));
+        }
         Err(e) => profile.set(cap, Answer::No, Some(format!("C_EncapsulateKey: {}", ckr(&e))), None),
         Ok((ciphertext, encapsulated)) => match s.decapsulate_key(&mech, private, &template, &ciphertext) {
+            Err(e) if !from_module(&e) => {
+                made.undetermined.push(format!("no {cap} row: C_DecapsulateKey cannot be called: {e}"));
+                let _ = s.destroy_object(encapsulated);
+            }
             Err(e) => {
                 profile.set(cap, Answer::No, Some(format!("C_DecapsulateKey: {}", ckr(&e))), None);
                 let _ = s.destroy_object(encapsulated);

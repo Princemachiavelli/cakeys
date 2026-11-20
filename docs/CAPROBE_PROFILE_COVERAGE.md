@@ -477,4 +477,38 @@ PQ part is the longest (18 hash variants times a parameter set).
 
 ## Built
 
-Nothing yet.
+Parts 0 to 8 are implemented in one pass, for the well-known surface; the profiles for softhsm,
+kryoptic and swtpm are regenerated with it.
+
+- **Part 0.** `[untested]` (`Why`: cryptoki, vendor, hardware, cloud, scope, unprobed) is computed
+  by the probe from what `Ops` tried, emitted, compared by `diff`, and read by `Effective`: an
+  untested mechanism is *unknown*, never *yes*, except `scope` (digests the tools hash on the
+  host). `Profile::untested_problems` and an emitter test keep it consistent. cryptoki's limits
+  (`CKM_AES_CFB128`, `CKM_XEDDSA`, `CKM_AES_KEY_WRAP_KWP`) are notes and subtractions in
+  `profiles/layers/cryptoki.toml`, and the patched-binding layer in `binding.rs`.
+- **Part 1.** `commit.<kind>.<key type>.<bytes>` rows, computed with the verbs' own
+  `Token::commit`, twice, and on a second key for distinctness; `Effective::commit` and the gate
+  (refused only when every commitment the spec declares is measured *no*). `CKM_DES3_CMAC` is
+  called through `VendorDefined`; no reference module lists it yet, so it has no row.
+- **Part 2.** Import, export and unwrap rows for generic secret, the five HMAC types and Triple
+  DES, checked by commitment (AES by its host check value).
+- **Parts 3 and 8.** `[mechanism-info]` (`C_GetMechanismInfo`) and `[claims]` (token flags,
+  session limits, PIN length, interface version, hardware-feature, profile and validation object
+  counts) as reported claims, never compared; a generation outside the reported range is a note.
+  `attr.read.*` (`CKA_LOCAL`, `CKA_ALWAYS_SENSITIVE`, `CKA_NEVER_EXTRACTABLE`,
+  `CKA_KEY_GEN_MECHANISM`) and `attr.set.CKA_ALLOWED_MECHANISMS` (with `via = "enforced"`).
+- **Part 4.** `crypt.*`: AES CBC, CBC-PAD, CTR and GCM, Triple DES CBC and CBC-PAD, a round trip
+  on the token.
+- **Part 5.** `derive.CKM_*`: HKDF, the three concatenations, XOR, extract-key-from-key and
+  AES-CBC-encrypt-data, each compared with what the host computes.
+- **Part 6.** Montgomery ECDH (two pairs on the token, equal secrets), `CKK_DES2` and `CKK_HKDF`
+  generation.
+- **Part 7.** ML-DSA, ML-KEM and SLH-DSA generation per parameter set, signing with every listed
+  pure and hashed variant (verified on the token) on the first pair, and encapsulate/decapsulate.
+
+**Not done, and where it stands** (also OPEN.md): the SP 800-108 KBKDFs and `CKM_HKDF_DATA`
+(`[untested]`, `unprobed`); `CKM_XEDDSA` and `CKM_AES_CFB128` (`cryptoki`); Ed448 and RSA-512
+import; SHA-224 RSA-PSS; the tpm2-pkcs11 import (needs `tpm2_ptool`); delete rows; a measured
+session limit; `CKO_OTP_KEY`, `CKO_DOMAIN_PARAMETERS` and `CKO_TRUST`; the host-side check of the
+hashed PQ variants. The amd-ftpm, aws-cloudhsm, kmsp11 and ykcs11 profiles are not regenerated:
+the hardware ones are the user's, by the rules above.

@@ -733,12 +733,16 @@
   generate CKK_EC_EDWARDS: can ["edwards25519", "edwards448"] cannot [] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
   generate CKK_EC_MONTGOMERY: can ["curve25519", "curve448"] cannot [] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
   generate CKK_GENERIC_SECRET: can [] cannot [] bits None..None can [] cannot [] by-name [] bytes can [1, 16, 32, 64, 128, 256, 512, 1024] cannot []
+  generate CKK_HKDF: can [] cannot [] bits None..None can [] cannot [] by-name [] bytes can [32] cannot []
+  generate CKK_ML_DSA: can ["CKP_ML_DSA_44", "CKP_ML_DSA_65", "CKP_ML_DSA_87"] cannot [] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
+  generate CKK_ML_KEM: can ["CKP_ML_KEM_1024", "CKP_ML_KEM_512", "CKP_ML_KEM_768"] cannot [] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
   generate CKK_RSA: can [] cannot [] bits Some(1024)..Some(16384) can [1024, 1536, 2048, 3072, 4096] cannot [512] by-name [] bytes can [] cannot []
   generate CKK_SHA224_HMAC: can [] cannot [] bits None..None can [] cannot [] by-name [] bytes can [1, 16, 32, 64, 128, 256, 512, 1024] cannot []
   generate CKK_SHA256_HMAC: can [] cannot [] bits None..None can [] cannot [] by-name [] bytes can [1, 16, 32, 64, 128, 256, 512, 1024] cannot []
   generate CKK_SHA384_HMAC: can [] cannot [] bits None..None can [] cannot [] by-name [] bytes can [1, 16, 32, 64, 128, 256, 512, 1024] cannot []
   generate CKK_SHA512_HMAC: can [] cannot [] bits None..None can [] cannot [] by-name [] bytes can [1, 16, 32, 64, 128, 256, 512, 1024] cannot []
   generate CKK_SHA_1_HMAC: can [] cannot [] bits None..None can [] cannot [] by-name [] bytes can [1, 16, 32, 64, 128, 256, 512, 1024] cannot []
+  generate CKK_SLH_DSA: can ["CKP_SLH_DSA_SHA2_128F", "CKP_SLH_DSA_SHA2_128S", "CKP_SLH_DSA_SHA2_192F", "CKP_SLH_DSA_SHA2_192S", "CKP_SLH_DSA_SHA2_256F", "CKP_SLH_DSA_SHA2_256S", "CKP_SLH_DSA_SHAKE_128F", "CKP_SLH_DSA_SHAKE_128S", "CKP_SLH_DSA_SHAKE_192F", "CKP_SLH_DSA_SHAKE_192S", "CKP_SLH_DSA_SHAKE_256F", "CKP_SLH_DSA_SHAKE_256S"] cannot [] bits None..None can [] cannot [] by-name [] bytes can [] cannot []
 
   CKK_ACTI: unknown — module profile kryoptic/1.5 records no CKK_ACTI generation
   CKK_AES: yes (kryoptic/1.5)
@@ -844,15 +848,25 @@
   CKK_GOST28147: unknown — module profile kryoptic/1.5 records no CKK_GOST28147 generation
   CKK_GOSTR3410: unknown — module profile kryoptic/1.5 records no CKK_GOSTR3410 generation
   CKK_GOSTR3411: unknown — module profile kryoptic/1.5 records no CKK_GOSTR3411 generation
-  CKK_HKDF: unknown — module profile kryoptic/1.5 records no CKK_HKDF generation
+  CKK_HKDF: yes (kryoptic/1.5)
+  CKK_HKDF 1 bytes: unknown — module profile kryoptic/1.5 probed 32 bytes only
+  CKK_HKDF 8 bytes: unknown — module profile kryoptic/1.5 probed 32 bytes only
+  CKK_HKDF 16 bytes: unknown — module profile kryoptic/1.5 probed 32 bytes only
+  CKK_HKDF 24 bytes: unknown — module profile kryoptic/1.5 probed 32 bytes only
+  CKK_HKDF 32 bytes: yes (kryoptic/1.5)
+  CKK_HKDF 48 bytes: unknown — module profile kryoptic/1.5 probed 32 bytes only
+  CKK_HKDF 64 bytes: unknown — module profile kryoptic/1.5 probed 32 bytes only
+  CKK_HKDF 128 bytes: unknown — module profile kryoptic/1.5 probed 32 bytes only
+  CKK_HKDF 1024 bytes: unknown — module profile kryoptic/1.5 probed 32 bytes only
+  CKK_HKDF 4096 bytes: unknown — module profile kryoptic/1.5 probed 32 bytes only
   CKK_HOTP: unknown — module profile kryoptic/1.5 records no CKK_HOTP generation
   CKK_HSS: unknown — module profile kryoptic/1.5 records no CKK_HSS generation
   CKK_IDEA: unknown — module profile kryoptic/1.5 records no CKK_IDEA generation
   CKK_JUNIPER: unknown — module profile kryoptic/1.5 records no CKK_JUNIPER generation
   CKK_KEA: unknown — module profile kryoptic/1.5 records no CKK_KEA generation
   CKK_MD5_HMAC: unknown — module profile kryoptic/1.5 records no CKK_MD5_HMAC generation
-  CKK_ML_DSA: unknown — module profile kryoptic/1.5 records no CKK_ML_DSA generation
-  CKK_ML_KEM: unknown — module profile kryoptic/1.5 records no CKK_ML_KEM generation
+  CKK_ML_DSA: yes (kryoptic/1.5)
+  CKK_ML_KEM: yes (kryoptic/1.5)
   CKK_POLY1305: unknown — module profile kryoptic/1.5 records no CKK_POLY1305 generation
   CKK_RC2: unknown — module profile kryoptic/1.5 records no CKK_RC2 generation
   CKK_RC4: unknown — module profile kryoptic/1.5 records no CKK_RC4 generation
@@ -944,7 +958,7 @@
   CKK_SHA_1_HMAC 1024 bytes: yes (kryoptic/1.5)
   CKK_SHA_1_HMAC 4096 bytes: unknown — module profile kryoptic/1.5 probed 1, 16, 32, 64, 128, 256, 512, 1024 bytes only
   CKK_SKIPJACK: unknown — module profile kryoptic/1.5 records no CKK_SKIPJACK generation
-  CKK_SLH_DSA: unknown — module profile kryoptic/1.5 records no CKK_SLH_DSA generation
+  CKK_SLH_DSA: yes (kryoptic/1.5)
   CKK_TWOFISH: unknown — module profile kryoptic/1.5 records no CKK_TWOFISH generation
   CKK_X2RATCHET: unknown — module profile kryoptic/1.5 records no CKK_X2RATCHET generation
   CKK_X9_42_DH: unknown — module profile kryoptic/1.5 records no CKK_X9_42_DH generation

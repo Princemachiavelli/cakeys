@@ -161,12 +161,6 @@ reason = "OPEN.md, \"Post-quantum key types\""
 
 [[rule]]
 table = "mechanisms"
-match = "CKM_*ML_KEM*"
-status = "gap"
-reason = "OPEN.md, \"Post-quantum key types\""
-
-[[rule]]
-table = "mechanisms"
 match = "CKM_HSS*"
 status = "out-of-scope"
 reason = "stateful hash-based signatures (HSS/LMS): a key that counts its uses cannot sign a challenge per check"
@@ -878,12 +872,6 @@ reason = "two-key Triple DES, common in payment HSMs (OPEN.md)"
 
 [[rule]]
 table = "key-types"
-match = "CKK_HKDF"
-status = "gap"
-reason = "derive-only secret keys: OPEN.md, \"Weaker identity modes\"; PLAN.md A5"
-
-[[rule]]
-table = "key-types"
 match = "CKK_HSS"
 status = "out-of-scope"
 reason = "stateful hash-based signature keys: a key that counts its uses cannot sign a challenge per check"
@@ -931,18 +919,6 @@ table = "objects"
 match = "CKO_TRUST"
 status = "out-of-scope"
 reason = "trust objects (3.2): a certificate is pinned by its hash; cakeys reads no trust settings"
-
-[[rule]]
-table = "objects"
-match = "CKO_VALIDATION"
-status = "out-of-scope"
-reason = "validation objects (3.2): provenance comes from the module and token info (LOCK.md)"
-
-[[rule]]
-table = "objects"
-match = "CKO_PROFILE"
-status = "out-of-scope"
-reason = "profile objects: caprobe measures what a module does, not what it claims (CAPROBE.md)"
 
 [[rule]]
 table = "objects"

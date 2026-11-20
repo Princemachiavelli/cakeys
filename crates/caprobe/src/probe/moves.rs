@@ -751,8 +751,8 @@ const OTHER_SECRETS: [(Kt, u32); 7] = [
     (Kt::Sha1Hmac, 32),
     (Kt::Sha224Hmac, 32),
     (Kt::Sha256Hmac, 32),
-    (Kt::Sha384Hmac, 32),
-    (Kt::Sha512Hmac, 32),
+    (Kt::Sha384Hmac, 48),
+    (Kt::Sha512Hmac, 64),
     (Kt::Des3, 24),
 ];
 

@@ -124,6 +124,11 @@ named! {
         Sha384Hmac = "CKK_SHA384_HMAC",
         Sha512Hmac = "CKK_SHA512_HMAC",
         Des3 = "CKK_DES3",
+        Des2 = "CKK_DES2",
+        Hkdf = "CKK_HKDF",
+        MlDsa = "CKK_ML_DSA",
+        MlKem = "CKK_ML_KEM",
+        SlhDsa = "CKK_SLH_DSA",
     }
 }
 
@@ -166,13 +171,13 @@ mod tests {
                 .unwrap();
             assert!(!matches!(read, KeyKind::Other(_)), "{name}");
         }
-        assert!(matches!(KeyKind::from("CKK_ML_DSA"), KeyKind::Other(u) if u.as_str() == "CKK_ML_DSA"));
-        assert_eq!(KeyKind::from("CKK_ML_DSA").name(), "CKK_ML_DSA");
+        assert!(matches!(KeyKind::from("CKK_FUTURE"), KeyKind::Other(u) if u.as_str() == "CKK_FUTURE"));
+        assert_eq!(KeyKind::from("CKK_FUTURE").name(), "CKK_FUTURE");
         let mut kinds: Vec<KeyKind> =
-            ["CKK_RSA", "CKK_EC_EDWARDS", "CKK_AES", "CKK_ML_DSA", "CKK_EC"].map(KeyKind::from).into();
+            ["CKK_RSA", "CKK_EC_EDWARDS", "CKK_AES", "CKK_FUTURE", "CKK_EC"].map(KeyKind::from).into();
         kinds.sort();
         let names: Vec<&str> = kinds.iter().map(KeyKind::name).collect();
-        assert_eq!(names, ["CKK_AES", "CKK_EC", "CKK_EC_EDWARDS", "CKK_ML_DSA", "CKK_RSA"]);
+        assert_eq!(names, ["CKK_AES", "CKK_EC", "CKK_EC_EDWARDS", "CKK_FUTURE", "CKK_RSA"]);
         assert_eq!(Proof::from("pop-ecdh").to_string(), "pop-ecdh");
         assert!(matches!(Operation::from("generate"), Operation::Generate));
     }

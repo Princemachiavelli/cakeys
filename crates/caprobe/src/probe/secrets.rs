@@ -243,16 +243,19 @@ fn base_value(n: u8) -> Vec<u8> {
 
 /// A readable (not sensitive, extractable) base key of known value: the derivations' input.
 fn base_key(s: &Session, key_type: KeyType, value: &[u8]) -> std::result::Result<ObjectHandle, Msg> {
-    let template = [
+    let mut template = vec![
         Attribute::Token(false),
         Attribute::Class(ObjectClass::SECRET_KEY),
         Attribute::KeyType(key_type),
         Attribute::Value(value.to_vec()),
         Attribute::Derive(true),
-        Attribute::Encrypt(true),
         Attribute::Sensitive(false),
         Attribute::Extractable(true),
     ];
+    // Only a block cipher's key encrypts: a HKDF key refuses the attribute.
+    if key_type == KeyType::AES {
+        template.push(Attribute::Encrypt(true));
+    }
     s.create_object(&template).map_err(|e| ck_said("C_CreateObject of the base key", &e))
 }
 

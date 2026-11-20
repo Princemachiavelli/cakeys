@@ -195,9 +195,14 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   clouds (`scripts/cloud/aws.sh probe`); until then `validate` says "records no CKK_AES
   generation" for a secret key `create` makes there. ykcs11 lists no secret key generation and
   probes in a scratch slot: unaffected.
-- **More probes**: PQ parameter sets, AES-KW/KWP round trips, `C_GetMechanismInfo` beyond RSA,
-  attribute defaults, existing-object encodings, ECDH with Montgomery keys, SHA-224 RSA-PSS (no
-  binding variant), delete in a scratch slot.
+- **Profiles still to regenerate for the coverage plan** (2026-11-19,
+  [CAPROBE_PROFILE_COVERAGE.md](CAPROBE_PROFILE_COVERAGE.md)): the same four, now also lacking
+  the `commit.*`, `crypt.*`, `derive.CKM_*`, `attr.*` rows, `[untested]`, `[mechanism-info]` and
+  `[claims]` that softhsm, kryoptic and swtpm have.
+- **More probes**: the SP 800-108 KBKDFs and `CKM_HKDF_DATA`, AES-KW/KWP round trips, attribute
+  defaults, existing-object encodings, SHA-224 RSA-PSS (no binding variant), delete in a scratch
+  slot, Ed448 and RSA-512 import, tpm2-pkcs11 import, a measured session limit, `CKO_OTP_KEY`,
+  `CKO_DOMAIN_PARAMETERS` and `CKO_TRUST`.
 - **haskoki as a reference token** (PLAN.md A0b), parked: it implements everything cakeys uses,
   but beside kryoptic it is one more OpenSSL-backed software token, and it is packaged for
   Docker, not nixpkgs (Haskell, pinned OpenSSL 4). Take it up with PQ key types, where a second
