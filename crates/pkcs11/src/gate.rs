@@ -212,8 +212,15 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates
     if needs.generation.is_some()
         && let Some(kt) = t.object.key_type
     {
-        let bits = t.object.modulus_bits.and_then(|b| u32::try_from(b).ok());
-        match eff.generate(kt.name(), t.object.curve.as_deref(), bits) {
+        let verdict = if kt.is_asymmetric() {
+            let bits = t.object.modulus_bits.and_then(|b| u32::try_from(b).ok());
+            eff.generate(kt.name(), t.object.curve.as_deref(), bits)
+        } else {
+            // A secret key's length: keys.toml's `valueLen`, or what its type fixes.
+            let bytes = t.object.value_len.or_else(|| kt.fixed_value_len());
+            eff.generate_secret(kt.name(), bytes.and_then(|b| u32::try_from(b).ok()))
+        };
+        match verdict {
             Verdict::Yes { .. } => {}
             v @ Verdict::No { .. } => {
                 out.refusals.push(format!("{t}: token '{token}' cannot generate it: {v}"));

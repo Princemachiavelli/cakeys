@@ -77,8 +77,9 @@ fn tokens_that_cannot_be_opened_as_named_are_refused() {
     }
 }
 
-/// `pinFile = "$NAME"` reads the pin file's path from the environment: unset, the config is
-/// invalid (17) before any token is opened; set, the PIN loads and a private-key `lock` works.
+/// `pinFile = "$NAME"` reads the pin file's path from the environment when the PIN is read:
+/// unset, `validate` (which opens no token) still passes and a verb that logs in is invalid (17)
+/// naming the variable; set, the PIN loads and a private-key `lock` works.
 #[test]
 fn pin_file_path_can_come_from_the_environment() {
     let Some(e) = env("pin-env") else { return };
@@ -91,9 +92,12 @@ fn pin_file_path_can_come_from_the_environment() {
         ),
     )
     .unwrap();
-    // Unset: refused at load, naming the variable.
+    // Unset: `validate` touches no token, so it needs no PIN; a verb that logs in is refused,
+    // naming the variable.
     let o = e.km(&["validate"]);
-    assert_eq!(code(&o), 17);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let o = e.km(&["create", "--spec", "signing-soft", "--token", "ref", "--update-lock"]);
+    assert_eq!(code(&o), 17, "{}", stderr(&o));
     assert!(stderr(&o).contains("KM_E2E_PIN"), "{}", stderr(&o));
     // Set: the pin file loads, the login works, the private key is made and realised.
     let pin = e.dir.join("pin");

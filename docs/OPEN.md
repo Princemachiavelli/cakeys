@@ -161,17 +161,41 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   raw `CKM_ECDSA` fallback [src]. Take it up if cakeys is to pin keychain keys.
 - **The probe tests everything it can, the rest of it** (2026-11-15). RSA sizes 512–16384,
   unlisted curve families and operation mechanisms, and proofs at every size and curve are
-  done (CAPROBE.md, write probes). Still only what the module advertises: the secret-key
-  generation (`probe_secrets`) and the key wraps (`probe_key_wraps`). Cryptoki is the limit: it
-  drops what it cannot name from `C_GetMechanismList`, and what it has no type for cannot be
-  asked.
+  done (CAPROBE.md, write probes), and so is every secret key type's generation at a sweep of
+  lengths (2026-11-19, `probe_secrets`: AES, generic secret, Triple DES, the five hash-bound HMAC
+  types). Still only what the module advertises: the key wraps (`probe_key_wraps`). Cryptoki is
+  the limit: it drops what it cannot name from `C_GetMechanismList`, and what it has no type
+  for cannot be asked.
+- **Secret keys the probe still does not measure** (2026-11-19): import, export and unwrap rows
+  (`moves.rs`) exist for AES only, at 16, 24 and 32 bytes; a generic secret, Triple DES and the
+  hash-bound HMAC types have none, though camigrate moves them. The commitments' operations
+  `CKM_AES_CMAC`, `CKM_DES3_ECB` and HMAC over the label with each hash are decided by the
+  advertised list alone: nothing signs or encrypts with a probe key of those types, as
+  `rsa_ops` and `ec_ops` do for pairs (only AES key wrap and an AES-ECB check value run, inside
+  the wrap and import probes, and `CKM_SHA256_HMAC` on a derived secret), and no `prove` row
+  exists for a secret key. The object matrix (`spec-coverage/objects`) makes one HMAC type
+  (SHA-256) beside AES, Triple DES and a generic secret; the five HMAC types' commitments are
+  checked on the host by `reference/identity.rs`, which generates only the SHA-384 one on a
+  token. kryoptic generates AES at 8, 48 and 64 bytes (softhsm refuses them,
+  `CKR_ATTRIBUTE_VALUE_INVALID`): a module quirk, harmless while keys.toml takes only the three
+  AES lengths, and recorded.
 - **tpm2-pkcs11 over swtpm: P-521 signs with `CKR_HOST_MEMORY`** (2026-11-15, the proofs at
   every curve): `pop-sign` on secp521r1 fails at `C_SignInit`, deterministically, while
   `pop-ecdh` on the same key proves. A module defect or a P-521 limit of swtpm's TPM; the
   profile records the "no". To read in tpm2-pkcs11's sign path and report upstream.
-- **More probes**: PQ parameter sets, AES-KW/KWP round trips, the HMAC key types,
-  `C_GetMechanismInfo` beyond RSA, attribute defaults, existing-object encodings, ECDH with
-  Montgomery keys, SHA-224 RSA-PSS (no binding variant), delete in a scratch slot.
+- **Profiles still to regenerate for the secret-key sweep** (2026-11-19): `softhsm/2.7`,
+  `kryoptic/1.5` and `tpm2-pkcs11/1.10+swtpm` were regenerated; four are not, and drift from a
+  fresh probe. `tpm2-pkcs11/1.10+amd-ftpm` would gain the six `generate.CKK_AES.*` no rows swtpm
+  got (the module refuses AES generation before it asks the TPM): it is probed on the real TPM
+  only through the hardware rules' harness (`CAKEYS_FTPM_PROFILE=tpm2-pkcs11/1.10+amd-ftpm nix run
+  .#coverage-full`, handles and lockout counter compared), so its opt-in conformance test fails
+  until the user regenerates it. `aws-cloudhsm/5.18+hsm2m-*` and `kmsp11/1.9+hsm*` need their
+  clouds (`scripts/cloud/aws.sh probe`); until then `validate` says "records no CKK_AES
+  generation" for a secret key `create` makes there. ykcs11 lists no secret key generation and
+  probes in a scratch slot: unaffected.
+- **More probes**: PQ parameter sets, AES-KW/KWP round trips, `C_GetMechanismInfo` beyond RSA,
+  attribute defaults, existing-object encodings, ECDH with Montgomery keys, SHA-224 RSA-PSS (no
+  binding variant), delete in a scratch slot.
 - **haskoki as a reference token** (PLAN.md A0b), parked: it implements everything cakeys uses,
   but beside kryoptic it is one more OpenSSL-backed software token, and it is packaged for
   Docker, not nixpkgs (Haskell, pinned OpenSSL 4). Take it up with PQ key types, where a second

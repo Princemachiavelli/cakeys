@@ -705,6 +705,35 @@ impl Made<'_> {
         })
     }
 
+    /// [`Self::create`] for a secret key: `object` generated under a fresh probe label, through
+    /// the verbs' own create operation, and the key found under it. The inner error is the
+    /// module's refusal when it carries a `CKR_*` ([`KmError::rv`]); without one the probe could
+    /// not ask (a provider's refusal, a cryptoki without the HMAC key types), which says nothing
+    /// of the module. An SO login failing is the outer one, and stops the probe.
+    fn create_secret(
+        &mut self,
+        object: &ObjectCfg,
+        spec: &SpecCfg,
+    ) -> Result<std::result::Result<ObjectHandle, KmError>> {
+        let label = self.scratch.label();
+        let loc = Locator { label: Some(label.clone()), id: None };
+        match self.tok.create(object, spec, &loc, None) {
+            Ok(_) => {}
+            Err(KmError::Unavailable(m)) if m.contains(token::SO_LOGIN) => return Err(KmError::Unavailable(m)),
+            Err(e) => return Ok(Err(e)),
+        }
+        // Made: its label is the cleanup's from here on, whatever the lookup finds.
+        self.scratch.track(&[], &label);
+        let found = self.tok.find(ObjectClass::SECRET_KEY, &loc)?;
+        Ok(match found.first().copied() {
+            Some(h) => {
+                self.scratch.track(&[h], &label);
+                Ok(h)
+            }
+            None => Err(KmError::NotFound("the key it reported made is not under its locator".into())),
+        })
+    }
+
     /// [`Self::create`] with the usage the operation probes need, else bare, as a module may
     /// insist. `Ok((created, usable))`: `usable` when the usage took.
     fn create_for_use(&mut self, object: &ObjectCfg, usage: &SpecCfg, bare: &SpecCfg) -> Result<(Created, bool)> {
@@ -778,7 +807,7 @@ fn probe_writes(made: &mut Made, profile: &mut Draft, labels: bool) -> Result<()
     };
     if labels {
         if !bound {
-            let aes = probe_secrets(made, profile);
+            let aes = probe_secrets(made, profile)?;
             match (transport, aes) {
                 (Some(transport), Some(aes)) => {
                     probe_wrapping(made, profile, transport, aes);
@@ -1713,51 +1742,75 @@ fn rsa_ops(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[
     }
 }
 
-/// The secret-key generation the module advertises: success is implied by the advertise list,
-/// a refusal is a `subtract` row (advertised but broken). Returns the first AES key, the wrap
-/// probes' wrapped key.
-fn probe_secrets(made: &mut Made, profile: &mut Draft) -> Option<ObjectHandle> {
-    let session = made.session;
+/// The AES key lengths the write probes generate, in bytes: the three it defines (16, 24, 32) and
+/// lengths it does not, which a module should refuse. The gate answers only for a length tried:
+/// AES has no length between two that generated.
+pub(crate) const AES_SIZES: [u32; 6] = [8, 16, 24, 32, 48, 64];
+
+/// The lengths of a secret key whose length is free (a generic secret, an HMAC key), in bytes.
+/// The gate answers yes for a length between two that generated, so these cover the range a
+/// module may take.
+pub(crate) const SECRET_SIZES: [u32; 8] = [1, 16, 32, 64, 128, 256, 512, 1024];
+
+/// The lengths, in bytes, the write probes generate a secret key of type `kt` at: each with the
+/// `valueLen` the template carries (`None` for Triple DES, whose type fixes the 24 bytes and
+/// which PKCS#11 gives no `CKA_VALUE_LEN`).
+fn secret_sizes(kt: Kt) -> Vec<(Option<u32>, u32)> {
+    match kt {
+        Kt::Aes => AES_SIZES.iter().map(|n| (Some(*n), *n)).collect(),
+        Kt::Des3 => kt.fixed_value_len().and_then(|n| u32::try_from(n).ok()).map(|n| (None, n)).into_iter().collect(),
+        _ => SECRET_SIZES.iter().map(|n| (Some(*n), *n)).collect(),
+    }
+}
+
+/// The generation of every secret key type cakeys manages, as the verbs make one (`Token::create`,
+/// the mechanism [`token::secret_key_gen`] names) at each length of [`secret_sizes`]: a
+/// `generate.<key type>.<bytes>` row per length, yes or no. A module that generates no length at
+/// all has the mechanism advertised but broken, a `subtract` row. A mechanism the module does not
+/// list is not tried. Returns the first 32-byte AES key, the wrap probes' wrapped key.
+fn probe_secrets(made: &mut Made, profile: &mut Draft) -> Result<Option<ObjectHandle>> {
     let mut aes = None;
-    for (mech, name, key_type, kt) in [
-        (Mechanism::AesKeyGen, "CKM_AES_KEY_GEN", KeyType::AES, Kt::Aes),
-        (Mechanism::GenericSecretKeyGen, "CKM_GENERIC_SECRET_KEY_GEN", KeyType::GENERIC_SECRET, Kt::GenericSecret),
-    ] {
-        let name = name.to_owned();
-        if !made.tok.lists(mech.mechanism_type()) {
+    // Extractable, as the wrap probes need the AES key to be.
+    let usage = spec(&["CKA_EXTRACTABLE"], &[]);
+    for kt in Kt::ALL.iter().copied().filter(|k| !k.is_asymmetric()) {
+        let kind = KeyKind::from(kt.name());
+        let mech = token::secret_key_gen(kt).mechanism_type();
+        if !made.tok.lists(mech) {
             continue;
         }
-        let label = made.scratch.label();
-        let template = vec![
-            Attribute::Token(true),
-            Attribute::Label(label.as_bytes().to_vec()),
-            Attribute::Class(ObjectClass::SECRET_KEY),
-            Attribute::KeyType(key_type),
-            Attribute::ValueLen(32.into()),
-            Attribute::Extractable(true),
-        ];
-        let template = match secret_template(made.tok, kt, &label, template) {
-            Ok(t) => t,
-            Err(e) => {
-                // The provider's refusal, not the module's: nothing to subtract.
-                made.undetermined.push(format!("no {name} probe: its template: {}", refused(made.tok, &e)));
-                continue;
-            }
-        };
-        match session.generate_key(&mech, &template) {
-            Ok(h) => {
-                if key_type == KeyType::AES && aes.is_none() {
-                    aes = Some(h);
+        let mut row = profile.generate.remove(&kind).unwrap_or_default();
+        let mut first_refusal = None;
+        for (value_len, bytes) in secret_sizes(kt) {
+            let object =
+                ObjectCfg { value_len: value_len.map(Into::into), ..ObjectCfg::new(Class::SecretKey, Some(kt)) };
+            match made.create_secret(&object, &usage)? {
+                Ok(h) => {
+                    row.can_bytes.push(bytes);
+                    if kt == Kt::Aes && bytes == 32 && aes.is_none() {
+                        aes = Some(h);
+                    }
                 }
-                made.scratch.track(&[h], &label);
-            }
-            Err(e) => {
-                profile.out.subtract.mechanisms.push(name.clone());
-                profile.note(name, format!("advertised but generation fails: {}", ckr(&e)));
+                Err(e) if e.rv().is_some() => {
+                    row.cannot_bytes.push(bytes);
+                    let said = refused(made.tok, &e);
+                    first_refusal.get_or_insert_with(|| said.clone());
+                    profile.generation_evidence(&kind, On::Bytes(bytes), format!("valueLen = {bytes}: {said}"));
+                }
+                // The probe could not ask: the provider's or this build's refusal, not the module's.
+                Err(e) => made
+                    .undetermined
+                    .push(format!("no generate.{kt}.{bytes} row: its template: {}", evidence(made.tok, &e))),
             }
         }
+        if row.can_bytes.is_empty()
+            && let Some(why) = first_refusal
+        {
+            profile.out.subtract.mechanisms.push(mech.to_string());
+            profile.note(mech.to_string(), format!("advertised but generation fails: {why}"));
+        }
+        profile.generate.insert(kind, row);
     }
-    aes
+    Ok(aes)
 }
 
 /// `template`, the probe's generation of a 32-byte `key_type` secret key under `label`, as the
@@ -2124,6 +2177,23 @@ pub(crate) fn keep_claims(
 mod tests {
     use super::*;
     use cryptoki::context::Function;
+
+    /// Every secret key type cakeys manages is generated at some length, and only Triple DES
+    /// without a `valueLen` (its type fixes the 24 bytes): AES at the three lengths it defines and
+    /// beyond them, the free-length types across the range a module may take.
+    #[test]
+    fn every_secret_key_type_has_lengths_to_generate_at() {
+        for kt in Kt::ALL.iter().copied().filter(|k| !k.is_asymmetric()) {
+            let sizes = secret_sizes(kt);
+            assert!(!sizes.is_empty(), "{kt}");
+            assert!(sizes.iter().all(|(len, bytes)| len.is_none_or(|l| l == *bytes)), "{kt}");
+            assert_eq!(sizes.iter().all(|(len, _)| len.is_none()), kt == Kt::Des3, "{kt}");
+        }
+        assert_eq!(secret_sizes(Kt::Des3), [(None, 24)]);
+        let aes: Vec<u32> = secret_sizes(Kt::Aes).into_iter().map(|(_, n)| n).collect();
+        assert!([16, 24, 32].iter().all(|n| aes.contains(n)) && aes.iter().any(|n| ![16, 24, 32].contains(n)));
+        assert!(secret_sizes(Kt::Sha256Hmac).len() > 3);
+    }
 
     /// A probe writes or diffs a profile only from a build with the patched binding, `rv-value`
     /// and `kwp` (review D3): each one missing is named, and any one refuses (`generate`).

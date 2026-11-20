@@ -158,8 +158,9 @@ pub struct TokenCfg {
     /// module's tokens carry one label: with it, only the token with both matches.
     #[serde(default)]
     pub token_serial: Option<String>,
-    /// A file holding the user PIN (`$NAME` reads the path from the environment). With neither it
-    /// nor `pinEnv`, the token is used without logging in.
+    /// A file holding the user PIN (`$NAME` reads the path from the environment when the PIN is
+    /// read: [`Self::pin_path`]). With neither it nor `pinEnv`, the token is used without
+    /// logging in.
     pub pin_file: Option<PathBuf>,
     /// An environment variable holding the user PIN; it wins over `pinFile`.
     pub pin_env: Option<String>,
@@ -272,6 +273,37 @@ impl TokenCfg {
     /// `Validation` when `module` names an unset variable.
     pub fn module_path(&self, token: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<String>> {
         self.module.as_deref().map(|m| env_ref(m, &format!("token '{token}': module"), env)).transpose()
+    }
+
+    /// The file holding the user PIN (`pinFile`), its `$NAME` reference resolved by `env` now:
+    /// resolved when the PIN is read, so an unset variable fails only a run that logs in to this
+    /// token. `None` when keys.toml names no file.
+    ///
+    /// # Errors
+    ///
+    /// `Validation` (17) when `pinFile` names an unset variable.
+    pub fn pin_path(&self, token: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<PathBuf>> {
+        secret_path(self.pin_file.as_deref(), &format!("token '{token}': pinFile"), env)
+    }
+
+    /// The file holding the admin credential (`soCredentialFile`), resolved as [`Self::pin_path`].
+    ///
+    /// # Errors
+    ///
+    /// `Validation` (17) when `soCredentialFile` names an unset variable.
+    pub fn so_credential_path(&self, token: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<PathBuf>> {
+        secret_path(self.so_credential_file.as_deref(), &format!("token '{token}': soCredentialFile"), env)
+    }
+}
+
+/// A secret file's path with its `$NAME` reference resolved, and refused when that is in the
+/// world-readable Nix store ([`secret_in_store`]): what load could not see of a `$NAME` path.
+fn secret_path(path: Option<&Path>, what: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<PathBuf>> {
+    let Some(path) = path else { return Ok(None) };
+    let path = PathBuf::from(env_ref(&path.to_string_lossy(), what, env)?);
+    match secret_in_store(&what, &path) {
+        Some(why) => Err(KmError::Validation(why.into())),
+        None => Ok(Some(path)),
     }
 }
 
@@ -875,13 +907,13 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
         if let Some(m) = &t.module {
             env_ref(m, &format!("token '{name}': module"), &|_| Some(String::new()))?;
         }
-        if let Some(p) = t.pin_file.clone() {
-            let expanded = env_ref(&p.to_string_lossy(), &format!("token '{name}': pinFile"), env)?;
-            t.pin_file = Some(PathBuf::from(expanded));
-        }
-        if let Some(m) = t.so_credential_file.clone() {
-            let expanded = env_ref(&m.to_string_lossy(), &format!("token '{name}': soCredentialFile"), env)?;
-            t.so_credential_file = Some(PathBuf::from(expanded));
+        // So are the PIN's and the admin credential's files ([`TokenCfg::pin_path`],
+        // [`TokenCfg::so_credential_path`]): a check that opens no token (`validate`, a Nix build
+        // sandbox) needs no PIN variable.
+        for (what, file) in [("pinFile", &t.pin_file), ("soCredentialFile", &t.so_credential_file)] {
+            if let Some(f) = file {
+                env_ref(&f.to_string_lossy(), &format!("token '{name}': {what}"), &|_| Some(String::new()))?;
+            }
         }
         check_token(t).map_err(|e| invalid(&format_args!("token '{name}': {e}")))?;
     }
@@ -1047,17 +1079,20 @@ fn check_transport_keys(cfg: &Config) -> std::result::Result<(), String> {
 }
 
 /// No file keys.toml names to hold a secret is in the world-readable Nix store
-/// ([`secret_in_store`]): `pinFile` and `soCredentialFile` (their `$NAME` already resolved),
-/// `migrate.passphraseFile`, and `migrate.file` when the object's material is secret
-/// ([`Config::secret_material`]). A `$NAME` migrate path is checked when camigrate resolves it
-/// ([`Config::object_file`], [`Config::object_passphrase_file`]), and every secret file again
-/// when it is read (`secret::read`), so a link changed since load is caught too.
+/// ([`secret_in_store`]): `pinFile`, `soCredentialFile`, `migrate.passphraseFile`, and
+/// `migrate.file` when the object's material is secret ([`Config::secret_material`]). A `$NAME`
+/// path is checked when it resolves ([`TokenCfg::pin_path`], [`Config::object_file`],
+/// [`Config::object_passphrase_file`]), and every secret file again when it is read
+/// (`secret::read`), so a link changed since load is caught too.
 fn check_secret_files(cfg: &Config) -> std::result::Result<(), String> {
     let literal = |v: &Option<String>| v.clone().filter(|f| !f.starts_with('$')).map(PathBuf::from);
     let tokens = cfg.tokens.iter().flat_map(|(name, t)| {
-        [("pinFile", &t.pin_file), ("soCredentialFile", &t.so_credential_file)]
-            .into_iter()
-            .filter_map(move |(what, p)| Some((format!("token '{name}': {what}"), p.clone()?)))
+        [("pinFile", &t.pin_file), ("soCredentialFile", &t.so_credential_file)].into_iter().filter_map(
+            move |(what, p)| {
+                let p = p.clone().filter(|p| !p.to_string_lossy().starts_with('$'))?;
+                Some((format!("token '{name}': {what}"), p))
+            },
+        )
     });
     let objects = cfg.object_migrate.iter().flat_map(|(object, m)| {
         let file = literal(&m.file).filter(|_| cfg.secret_material(object));
@@ -1166,8 +1201,10 @@ fn check_origins(cfg: &Config) -> std::result::Result<(), String> {
 /// A whole-value environment reference in a path field: `$NAME` or `${NAME}` becomes the value of
 /// the environment variable `NAME`, so one shared `keys.toml` can carry a machine-specific pin
 /// file or module path. A value with no leading `$` is a literal path. A malformed reference fails
-/// at load (exit 17), and so does an unset one in `pinFile`/`soCredentialFile`; `module` resolves when
-/// its token is opened ([`TokenCfg::module_path`]), so `--module` can stand in for it.
+/// at load (exit 17); an unset one fails where the path is used: `module` when its token is
+/// opened ([`TokenCfg::module_path`], so `--module` can stand in for it), `pinFile` and
+/// `soCredentialFile` when the secret is read ([`TokenCfg::pin_path`]), so a check that touches
+/// no token needs no PIN variable.
 fn env_ref(value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<String> {
     let name = match value.strip_prefix('$') {
         Some(rest) => rest.strip_prefix('{').and_then(|r| r.strip_suffix('}')).unwrap_or(rest),
@@ -1737,13 +1774,12 @@ mod tests {
                 load(&at(p)).unwrap_or_else(|e| panic!("{what} {p}: {e}"));
             }
         }
-        // A `$NAME` pin file is resolved at load, and checked there.
-        let pin = parse_config_with(
-            "[tokens.t]\ntokenLabel = \"t\"\npinFile = \"$PIN_FILE\"\n",
-            Path::new("keys.toml"),
-            &|_| Some(in_store[1].clone()),
-        );
+        // A `$NAME` pin file is checked when it resolves, as a migrate path is.
+        let cfg = load("[tokens.t]\ntokenLabel = \"t\"\npinFile = \"$PIN_FILE\"\n").unwrap();
+        let pin = cfg.tokens["t"].pin_path("t", &|_| Some(in_store[1].clone()));
         assert!(matches!(&pin, Err(KmError::Validation(m)) if m.contains("Nix store")), "{:?}", pin.err());
+        let fine = cfg.tokens["t"].pin_path("t", &|_| Some(outside[0].clone()));
+        assert_eq!(fine.unwrap(), Some(PathBuf::from(&outside[0])));
         // A `$NAME` migrate path is checked when camigrate resolves it, the passphrase's whatever
         // the object holds.
         let cfg = load(&format!("{ec}migrate = {{ file = \"$KEY\", passphraseFile = \"$PASS\" }}\n")).unwrap();
@@ -1777,8 +1813,9 @@ mod tests {
         assert!(!under("elsewhere/a"));
     }
 
-    /// `$NAME`/`${NAME}` in `pinFile` and `module` read the path from the environment; an unset or
-    /// malformed reference is invalid at load (17), and a spec must reference an existing object.
+    /// `$NAME`/`${NAME}` in `pinFile` and `module` read the path from the environment when it is
+    /// used; a malformed reference is invalid at load (17), an unset one where the path is
+    /// resolved (17), and a spec must reference an existing object at load.
     #[test]
     fn env_references_and_object_refs_are_checked_at_load() {
         let dir = tempfile::tempdir().unwrap();
@@ -1793,23 +1830,20 @@ mod tests {
             })
         };
         let head = "[tokens.t]\ntokenLabel = \"x\"\n";
-        // A literal path loads as-is; $NAME and ${NAME} expand.
-        assert_eq!(
-            load(&format!("{head}pinFile = \"/literal/pin\"\n")).unwrap().tokens["t"].pin_file,
-            Some(PathBuf::from("/literal/pin"))
-        );
+        let env = |name: &str| (name == "KM_UNIT_TEST_PIN").then(|| "/env/pin".to_owned());
+        // A literal path is as written; $NAME and ${NAME} expand when the path is resolved.
+        let cfg = load(&format!("{head}pinFile = \"/literal/pin\"\n")).unwrap();
+        assert_eq!(cfg.tokens["t"].pin_path("t", &env).unwrap(), Some(PathBuf::from("/literal/pin")));
         let cfg =
             load(&format!("{head}pinFile = \"$KM_UNIT_TEST_PIN\"\nmodule = \"${{KM_UNIT_TEST_PIN}}\"\n")).unwrap();
-        assert_eq!(cfg.tokens["t"].pin_file, Some(PathBuf::from("/env/pin")));
+        assert_eq!(cfg.tokens["t"].pin_path("t", &env).unwrap(), Some(PathBuf::from("/env/pin")));
         assert_eq!(
             cfg.tokens["t"].module_path("t", &|_| Some("/env/pin".to_owned())).unwrap().as_deref(),
             Some("/env/pin")
         );
-        // An unset variable fails at load, naming it; so does a malformed reference. Each names
-        // the file first, as every other load error does (review config.rs F6).
+        // A malformed reference fails at load, naming the file first, as every other load error
+        // does (review config.rs F6).
         let file = format!("invalid: {}: ", dir.join("keys.toml").display());
-        let err = load(&format!("{head}pinFile = \"$KM_UNIT_TEST_UNSET\"\n")).unwrap_err().to_string();
-        assert!(err.starts_with(&format!("{file}token 't': pinFile")) && err.contains("KM_UNIT_TEST_UNSET"), "{err}");
         let err = load(&format!("{head}pinFile = \"$HOME/x\"\n")).unwrap_err().to_string();
         assert!(err.starts_with(&file) && err.contains("neither $NAME"), "{err}");
         for body in [
@@ -1821,16 +1855,29 @@ mod tests {
             let err = load(&body).unwrap_err().to_string();
             assert!(err.starts_with(&file), "{body}: {err}");
         }
-        // A module resolves when its token is opened, not at load: an unset variable fails only a
-        // run that opens that token without --module (a Nix build sandbox sets none); a
-        // malformed reference still fails at load.
-        let unset = load(&format!("{head}module = \"$KM_UNIT_TEST_UNSET\"\n")).unwrap();
-        let err = unset.tokens["t"].module_path("t", &|_| None).unwrap_err();
-        assert!(err.to_string().contains("KM_UNIT_TEST_UNSET"), "{err}");
+        // A module, a PIN file and a credential file resolve when used, not at load: an unset
+        // variable fails only a run that opens that token (without --module for the module), so
+        // `validate` and a Nix build sandbox, which set none, load the file; a malformed
+        // reference still fails at load.
+        let unset = load(&format!(
+            "{head}module = \"$KM_UNIT_TEST_UNSET\"\npinFile = \"$KM_UNIT_TEST_UNSET\"\n\
+             soCredentialFile = \"$KM_UNIT_TEST_UNSET\"\n"
+        ))
+        .unwrap();
+        let t = &unset.tokens["t"];
+        for err in [
+            t.module_path("t", &|_| None).unwrap_err(),
+            t.pin_path("t", &|_| None).unwrap_err(),
+            t.so_credential_path("t", &|_| None).unwrap_err(),
+        ] {
+            assert!(matches!(err, KmError::Validation(_)), "{err}");
+            assert!(err.to_string().contains("KM_UNIT_TEST_UNSET"), "{err}");
+        }
         assert!(load(&format!("{head}module = \"$HOME/x.so\"\n")).is_err());
         // soCredentialFile expands the same way; an admin credential only comes with a user PIN.
         let cfg = load(&format!("{head}pinFile = \"/p\"\nsoCredentialFile = \"$KM_UNIT_TEST_MGM\"\n")).unwrap();
-        assert_eq!(cfg.tokens["t"].so_credential_file, Some(PathBuf::from("/env/mgm")));
+        let mgm = |name: &str| (name == "KM_UNIT_TEST_MGM").then(|| "/env/mgm".to_owned());
+        assert_eq!(cfg.tokens["t"].so_credential_path("t", &mgm).unwrap(), Some(PathBuf::from("/env/mgm")));
         for admin in ["soCredentialFile = \"/so\"", "soCredentialEnv = \"SO\""] {
             let err = load(&format!("{head}{admin}\n")).unwrap_err();
             assert!(err.to_string().contains("needs a user PIN"), "{err}");

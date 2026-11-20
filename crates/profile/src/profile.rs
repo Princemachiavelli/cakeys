@@ -101,6 +101,11 @@ pub struct GenerateRow {
     pub can_bits: Vec<u32>,
     /// RSA modulus sizes refused.
     pub cannot_bits: Vec<u32>,
+    /// Secret-key lengths that generated, in bytes (`CKA_VALUE_LEN`: the unit the key types
+    /// with a length read, never the bits of an RSA modulus).
+    pub can_bytes: Vec<u32>,
+    /// Secret-key lengths refused, in bytes.
+    pub cannot_bytes: Vec<u32>,
     /// Curves in `can` that generate only when `CKA_EC_PARAMS` names them (PKCS#11 3.0's
     /// `PrintableString` form), never by OID: ykcs11's Edwards and Montgomery curves \[src\].
     pub by_name: Vec<String>,
@@ -365,14 +370,15 @@ impl Profile {
     #[must_use]
     pub fn generation_key_types(&self) -> std::collections::BTreeSet<&str> {
         let rows = self.capabilities.keys().filter_map(|c| match c {
-            Capability::Generate { key_type, on: On::Item(_) | On::Bits(_) } => Some(key_type.name()),
+            Capability::Generate { key_type, on: On::Item(_) | On::Bits(_) | On::Bytes(_) } => Some(key_type.name()),
             _ => None,
         });
         rows.chain(self.reported.keys().map(String::as_str)).collect()
     }
 
     /// What it generates of `key_type`, as its rows and reported range say; `None` when it
-    /// says nothing about the key type that the row keeps (a secret-key size is not kept).
+    /// says nothing about the key type. A secret key's lengths are the `can_bytes` and
+    /// `cannot_bytes`, apart from an RSA modulus's bits.
     #[must_use]
     pub fn generation(&self, key_type: &str) -> Option<GenerateRow> {
         let mut row = GenerateRow::default();
@@ -385,8 +391,7 @@ impl Profile {
             if kt != key_type {
                 continue;
             }
-            // Only the rows kept below count as saying something.
-            any |= !matches!(on, On::Bytes(_));
+            any = true;
             match (on, r.answer) {
                 (On::Item(i), Answer::Yes) => {
                     row.can.push(i.clone());
@@ -397,8 +402,9 @@ impl Profile {
                 (On::Item(i), Answer::No) => row.cannot.push(i.clone()),
                 (On::Bits(b), Answer::Yes) => row.can_bits.push(*b),
                 (On::Bits(b), Answer::No) => row.cannot_bits.push(*b),
-                // No secret-key generation row is written: a generation row reads sizes in bits.
-                (On::Bytes(_), _) => {}
+                // A secret key's length is in bytes, kept apart from an RSA modulus's bits.
+                (On::Bytes(b), Answer::Yes) => row.can_bytes.push(*b),
+                (On::Bytes(b), Answer::No) => row.cannot_bytes.push(*b),
             }
         }
         any.then_some(row)
@@ -425,6 +431,13 @@ impl Profile {
         for b in &row.cannot_bits {
             self.set(generate(On::size(&kind, *b)), Answer::No, None, None);
         }
+        // A secret key's length is bytes whatever the key type (`generate.CKK_AES.32`).
+        for b in &row.can_bytes {
+            self.set(generate(On::Bytes(*b)), Answer::Yes, None, None);
+        }
+        for b in &row.cannot_bytes {
+            self.set(generate(On::Bytes(*b)), Answer::No, None, None);
+        }
         if row.min_bits.is_some() || row.max_bits.is_some() {
             self.reported.insert(key_type.to_owned(), Reported { min_bits: row.min_bits, max_bits: row.max_bits });
         }
@@ -439,17 +452,20 @@ mod tests {
         Profile::from_toml(&format!("profile = \"m/1\"\nmode = \"observed\"\n[capabilities]\n{rows}")).unwrap()
     }
 
-    /// `generation` is `Some` only for rows it keeps: a key type with secret-key sizes alone says
-    /// nothing about generating it, and is not among the types that say something (review
-    /// profile.rs F1).
+    /// `generation` speaks for every row a profile keeps, each size in the unit its key type
+    /// reads: an AES length is bytes, apart from an RSA modulus's bits (review profile.rs F1).
     #[test]
-    fn generation_speaks_only_for_the_rows_it_keeps() {
+    fn generation_speaks_for_the_rows_it_keeps() {
         let p = profile(
-            "\"generate.CKK_AES.32\" = { answer = \"yes\" }\n\"generate.CKK_EC.secp256r1\" = { answer = \"no\" }\n",
+            "\"generate.CKK_AES.32\" = { answer = \"yes\" }\n\"generate.CKK_AES.8\" = { answer = \"no\" }\n\
+             \"generate.CKK_EC.secp256r1\" = { answer = \"no\" }\n",
         );
-        assert_eq!(p.generation("CKK_AES"), None);
+        let aes = p.generation("CKK_AES").unwrap();
+        assert_eq!((aes.can_bytes, aes.cannot_bytes), (vec![32], vec![8]));
+        assert!(aes.can_bits.is_empty() && aes.cannot_bits.is_empty());
         assert_eq!(p.generation("CKK_EC").map(|r| r.cannot), Some(vec!["secp256r1".to_owned()]));
-        assert_eq!(p.generation_key_types().into_iter().collect::<Vec<_>>(), ["CKK_EC"]);
+        assert_eq!(p.generation("CKK_DES3"), None);
+        assert_eq!(p.generation_key_types().into_iter().collect::<Vec<_>>(), ["CKK_AES", "CKK_EC"]);
         // Over every committed profile, the two agree.
         for p in crate::Set::embedded().unwrap().all() {
             for kt in KeyKind::NAMES {
@@ -481,6 +497,18 @@ mod tests {
         let mut rsa = profile("");
         rsa.set_generation("CKK_RSA", &row);
         assert_eq!(rsa.generation("CKK_RSA"), Some(row));
+        // A secret key's lengths are bytes rows (never read as an RSA modulus's bits), for each
+        // secret key type, and read back as bytes.
+        let secret = GenerateRow { can_bytes: vec![16, 32], cannot_bytes: vec![8], ..GenerateRow::default() };
+        for kt in ["CKK_AES", "CKK_GENERIC_SECRET", "CKK_DES3", "CKK_SHA256_HMAC"] {
+            let mut p = profile("");
+            p.set_generation(kt, &secret);
+            assert_eq!(p.capabilities.len(), 3, "{kt}");
+            for c in p.capabilities.keys() {
+                assert_eq!(Capability::parse(&c.to_string()).as_ref(), Ok(c), "{kt}: {c}");
+            }
+            assert_eq!(p.generation(kt), Some(secret.clone()), "{kt}");
+        }
     }
 
     /// The family is the name before the first `/`, or the whole name without one.

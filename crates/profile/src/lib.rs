@@ -561,6 +561,52 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A secret key's generation is decided by the lengths in bytes the probe tried: exactly, never
+    /// by interpolation for AES (its lengths are discrete), between two that generated for a type
+    /// whose length is free; a layer's `restrict` bounds are in bits, so a length times eight;
+    /// and a profile with no row says unknown, never yes from the mechanism alone.
+    #[test]
+    fn a_secret_keys_generation_is_decided_by_lengths_in_bytes() {
+        let set = Set::embedded().unwrap();
+        let b = set.baseline().unwrap();
+        let module = |rows: &str| {
+            Profile::from_toml(&format!("profile = \"m/1\"\nmode = \"observed\"\n[capabilities]\n{rows}")).unwrap()
+        };
+        let aes = module(
+            "\"generate.CKK_AES.8\" = { answer = \"no\" }\n\"generate.CKK_AES.16\" = { answer = \"yes\" }\n\
+             \"generate.CKK_AES.32\" = { answer = \"yes\" }\n",
+        );
+        let eff = Effective::new(b, Some(&aes), &[]);
+        let verdict = |kt: &str, n: Option<u32>| eff.generate_secret(kt, n);
+        assert!(matches!(verdict("CKK_AES", Some(16)), Verdict::Yes { .. }));
+        assert!(matches!(verdict("CKK_AES", Some(8)), Verdict::No { .. }));
+        // Between two that generated, but AES has no length there.
+        assert!(matches!(verdict("CKK_AES", Some(24)), Verdict::Unknown { .. }));
+        // No length asked: some length generated.
+        assert!(matches!(verdict("CKK_AES", None), Verdict::Yes { .. }));
+        // No row for the type at all.
+        assert!(matches!(verdict("CKK_DES3", Some(24)), Verdict::Unknown { .. }));
+        let free = module(
+            "\"generate.CKK_GENERIC_SECRET.16\" = { answer = \"yes\" }\n\
+             \"generate.CKK_GENERIC_SECRET.64\" = { answer = \"yes\" }\n",
+        );
+        let eff = Effective::new(b, Some(&free), &[]);
+        assert!(matches!(eff.generate_secret("CKK_GENERIC_SECRET", Some(32)), Verdict::Yes { .. }));
+        assert!(matches!(eff.generate_secret("CKK_GENERIC_SECRET", Some(128)), Verdict::Unknown { .. }));
+        // Every length refused: the type is no.
+        let none = module("\"generate.CKK_SHA256_HMAC.16\" = { answer = \"no\" }\n");
+        let eff = Effective::new(b, Some(&none), &[]);
+        assert!(matches!(eff.generate_secret("CKK_SHA256_HMAC", None), Verdict::No { .. }));
+        // A layer bounds a size in bits: 32 bytes is 256 bits, 48 bytes is not.
+        let layer =
+            Profile::from_toml("profile = \"l/1\"\nmode = \"delta\"\n[[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_AES\"\nmax-bits = 256\n")
+                .unwrap();
+        let layers = [&layer];
+        let eff = Effective::new(b, Some(&aes), &layers);
+        assert!(matches!(eff.generate_secret("CKK_AES", Some(32)), Verdict::Yes { .. }));
+        assert!(matches!(eff.generate_secret("CKK_AES", Some(48)), Verdict::No { by, .. } if by == "l/1"));
+    }
+
     /// Data detection: the families whose module profiles name a manufacturer; layers (p11-kit)
     /// never count.
     #[test]

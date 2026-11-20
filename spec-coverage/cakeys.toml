@@ -6,9 +6,9 @@ baseline = "pkcs11-3.2"
 
 [summary]
 gap = 77
-out-of-scope = 827
-profile = 10
-used = 183
+out-of-scope = 826
+profile = 7
+used = 187
 
 [functions]
 C_AsyncComplete = "out-of-scope"
@@ -451,14 +451,14 @@ CKM_SHA224 = "out-of-scope"
 CKM_SHA224_HMAC = "used"
 CKM_SHA224_HMAC_GENERAL = "out-of-scope"
 CKM_SHA224_KEY_DERIVATION = "out-of-scope"
-CKM_SHA224_KEY_GEN = "profile"
+CKM_SHA224_KEY_GEN = "used"
 CKM_SHA224_RSA_PKCS = "used"
 CKM_SHA224_RSA_PKCS_PSS = "out-of-scope"
 CKM_SHA256 = "used"
 CKM_SHA256_HMAC = "used"
 CKM_SHA256_HMAC_GENERAL = "out-of-scope"
 CKM_SHA256_KEY_DERIVATION = "out-of-scope"
-CKM_SHA256_KEY_GEN = "profile"
+CKM_SHA256_KEY_GEN = "used"
 CKM_SHA256_RSA_PKCS = "used"
 CKM_SHA256_RSA_PKCS_PSS = "used"
 CKM_SHA384 = "used"
@@ -510,7 +510,7 @@ CKM_SHA512_256_KEY_GEN = "out-of-scope"
 CKM_SHA512_HMAC = "used"
 CKM_SHA512_HMAC_GENERAL = "out-of-scope"
 CKM_SHA512_KEY_DERIVATION = "out-of-scope"
-CKM_SHA512_KEY_GEN = "out-of-scope"
+CKM_SHA512_KEY_GEN = "used"
 CKM_SHA512_RSA_PKCS = "used"
 CKM_SHA512_RSA_PKCS_PSS = "used"
 CKM_SHA512_T = "out-of-scope"
@@ -523,7 +523,7 @@ CKM_SHAKE_256_KEY_DERIVATION = "out-of-scope"
 CKM_SHA_1 = "used"
 CKM_SHA_1_HMAC = "used"
 CKM_SHA_1_HMAC_GENERAL = "out-of-scope"
-CKM_SHA_1_KEY_GEN = "profile"
+CKM_SHA_1_KEY_GEN = "used"
 CKM_SKIPJACK_CBC64 = "out-of-scope"
 CKM_SKIPJACK_CFB16 = "out-of-scope"
 CKM_SKIPJACK_CFB32 = "out-of-scope"

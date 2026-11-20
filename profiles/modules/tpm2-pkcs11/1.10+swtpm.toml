@@ -53,6 +53,12 @@ firmware = "36.37"
 mechanisms = ["CKM_AES_KEY_GEN"]
 
 [capabilities]
+"generate.CKK_AES.8" = { answer = "no", evidence = "valueLen = 8: CKR_FUNCTION_NOT_SUPPORTED" }
+"generate.CKK_AES.16" = { answer = "no", evidence = "valueLen = 16: CKR_FUNCTION_NOT_SUPPORTED" }
+"generate.CKK_AES.24" = { answer = "no", evidence = "valueLen = 24: CKR_FUNCTION_NOT_SUPPORTED" }
+"generate.CKK_AES.32" = { answer = "no", evidence = "valueLen = 32: CKR_FUNCTION_NOT_SUPPORTED" }
+"generate.CKK_AES.48" = { answer = "no", evidence = "valueLen = 48: CKR_FUNCTION_NOT_SUPPORTED" }
+"generate.CKK_AES.64" = { answer = "no", evidence = "valueLen = 64: CKR_FUNCTION_NOT_SUPPORTED" }
 "generate.CKK_EC.brainpoolP256r1" = { answer = "no", evidence = "generation refused: CKR_CURVE_NOT_SUPPORTED" }
 "generate.CKK_EC.brainpoolP384r1" = { answer = "no", evidence = "generation refused: CKR_CURVE_NOT_SUPPORTED" }
 "generate.CKK_EC.secp256k1" = { answer = "no", evidence = "generation refused: CKR_CURVE_NOT_SUPPORTED" }

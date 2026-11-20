@@ -65,6 +65,13 @@ model = "SoftHSM v2"
 firmware = "2.7"
 
 [capabilities]
+"generate.CKK_AES.8" = { answer = "no", evidence = "valueLen = 8: CKR_ATTRIBUTE_VALUE_INVALID" }
+"generate.CKK_AES.16" = { answer = "yes" }
+"generate.CKK_AES.24" = { answer = "yes" }
+"generate.CKK_AES.32" = { answer = "yes" }
+"generate.CKK_AES.48" = { answer = "no", evidence = "valueLen = 48: CKR_ATTRIBUTE_VALUE_INVALID" }
+"generate.CKK_AES.64" = { answer = "no", evidence = "valueLen = 64: CKR_ATTRIBUTE_VALUE_INVALID" }
+"generate.CKK_DES3.24" = { answer = "yes" }
 "generate.CKK_EC.brainpoolP256r1" = { answer = "yes" }
 "generate.CKK_EC.brainpoolP384r1" = { answer = "yes" }
 "generate.CKK_EC.secp256k1" = { answer = "yes" }
@@ -75,6 +82,14 @@ firmware = "2.7"
 "generate.CKK_EC_EDWARDS.edwards448" = { answer = "yes" }
 "generate.CKK_EC_MONTGOMERY.curve25519" = { answer = "no" }
 "generate.CKK_EC_MONTGOMERY.curve448" = { answer = "no" }
+"generate.CKK_GENERIC_SECRET.1" = { answer = "yes" }
+"generate.CKK_GENERIC_SECRET.16" = { answer = "yes" }
+"generate.CKK_GENERIC_SECRET.32" = { answer = "yes" }
+"generate.CKK_GENERIC_SECRET.64" = { answer = "yes" }
+"generate.CKK_GENERIC_SECRET.128" = { answer = "yes" }
+"generate.CKK_GENERIC_SECRET.256" = { answer = "yes" }
+"generate.CKK_GENERIC_SECRET.512" = { answer = "yes" }
+"generate.CKK_GENERIC_SECRET.1024" = { answer = "yes" }
 "generate.CKK_RSA.512" = { answer = "yes" }
 "generate.CKK_RSA.1024" = { answer = "yes" }
 "generate.CKK_RSA.1536" = { answer = "yes" }

@@ -82,7 +82,9 @@ pinFile = "/var/lib/softhsm/pin"
 module = "/run/current-system/sw/lib/libtpm2_pkcs11.so"
 tokenLabel = "host"
 # `$NAME` or `${NAME}` takes the path from the environment, so one keys.toml can serve machines
-# with different paths. An unset variable is refused when the file loads (17), not at login.
+# with different paths. A malformed reference is refused when the file loads (17); an unset
+# variable is refused (17) where the file is read, at login, so `validate`, which opens no token,
+# needs no PIN variable.
 pinFile = "$TPM_PIN_FILE"
 # Optional: the provider (the module's quirks profile, ARCHITECTURE.md "Providers") is normally detected from
 # C_GetInfo; naming it is needed behind p11-kit, which hides the module behind it. A provider with

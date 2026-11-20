@@ -154,15 +154,9 @@ impl Token {
                     (other, _) => other.map(|d| note(d, None)).map_err(refused),
                 }
             }
-            (KeyType::DES3, _) => {
-                self.session.generate_key(&Mechanism::Des3KeyGen, &key).map(|_| None).map_err(refused)
-            }
-            (kt, _) => {
-                let mech = match object.key_type.and_then(hmac_key_gen) {
-                    Some(m) => m,
-                    None if kt == KeyType::AES => Mechanism::AesKeyGen,
-                    None => Mechanism::GenericSecretKeyGen,
-                };
+            // A secret key: the mechanism its key type names.
+            (_, _) => {
+                let mech = object.key_type.map_or(Mechanism::GenericSecretKeyGen, secret_key_gen);
                 self.session.generate_key(&mech, &key).map(|_| None).map_err(refused)
             }
         }
