@@ -126,7 +126,7 @@ fn resolve_with(
         tok.check_unique_private_id(h)?;
     }
     tok.check_public_half(h, t.spec, &t.on_token.locator, public_only)?;
-    let Computed { ids, binding, commitment_label, spki } = compute_ids(t, tok, lock, h, mode)?;
+    let Computed { ids, binding, commitment_label, spki, commits } = compute_ids(t, tok, lock, h, mode)?;
     // The key's public key, read once (review D8): every check below compares with the value its
     // identity hashed. A key identified another way reads it where it is needed.
     let spki = || spki.clone().map_or_else(|| tok.spki(h, &t.on_token.locator), Ok);
@@ -137,7 +137,8 @@ fn resolve_with(
     let attestation = match attestation_scheme(t, tok) {
         Some(scheme) => {
             let spki = if t.object.class.is_asymmetric() { Some(spki()?) } else { None };
-            Some(attest(t, tok, lock, h, spki.as_deref(), scheme, provision, notes)?)
+            let committed = committed(t, &commits, commitment_label.as_deref(), &ids);
+            Some(attest(t, tok, lock, h, spki.as_deref(), &committed, scheme, provision, notes)?)
         }
         None => None,
     };
@@ -170,6 +171,26 @@ struct Computed {
     commitment_label: Option<String>,
     /// The key's canonical SPKI, where its identity is one (an asymmetric key, `Direct`).
     spki: Option<Vec<u8>>,
+    /// The commitments computed (a secret key's), under `commitment_label`.
+    commits: Vec<Commit>,
+}
+
+/// The commitments `commits` computed under `label`, each with its input and the ID it gave
+/// (`ids`): what a secret key's attestation is bound to (review 2026-11-23 B-1).
+fn committed(
+    t: &Target,
+    commits: &[Commit],
+    label: Option<&str>,
+    ids: &std::collections::BTreeMap<String, String>,
+) -> Vec<crate::provider::Commitment> {
+    let Some(label) = label else { return Vec::new() };
+    commits
+        .iter()
+        .filter_map(|c| {
+            let id = ids.get(c.scheme().name())?.clone();
+            Some(crate::provider::Commitment { commit: *c, input: c.input(label, t.object), id })
+        })
+        .collect()
 }
 
 /// The material IDs of `t`'s object `h` on `tok` in `mode` — a private key proving possession
@@ -183,7 +204,7 @@ fn compute_ids(t: &Target, tok: &Token, lock: &Lock, h: ObjectHandle, mode: Mode
         _ => None,
     };
     let ids = tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding, spki.as_deref())?;
-    Ok(Computed { ids, binding, commitment_label: (!commits.is_empty()).then_some(label), spki })
+    Ok(Computed { ids, binding, commitment_label: (!commits.is_empty()).then_some(label), spki, commits })
 }
 
 /// The attestation commitment (§3.7): per-device identity from signed provenance. The material
@@ -201,6 +222,7 @@ fn attest(
     lock: &Lock,
     h: ObjectHandle,
     spki: Option<&[u8]>,
+    commitments: &[crate::provider::Commitment],
     scheme: Scheme,
     provision: Provision,
     notes: &mut Notes,
@@ -210,7 +232,7 @@ fn attest(
             format!("provider '{}' advertises unknown attestation scheme {scheme}", tok.provider.name()).into(),
         )
     })?;
-    let a = match tok.attest(h, t.object, spki, provision == Provision::IfMissing) {
+    let a = match tok.attest(h, t.object, spki, commitments, provision == Provision::IfMissing) {
         Ok(a) => a,
         Err(e @ (KmError::Unavailable(_) | KmError::Unsupported(_) | KmError::NotFound(_))) => {
             let locked = lock.realisation(t.spec_name, t.token_name).and_then(|r| r.attestation.as_ref());

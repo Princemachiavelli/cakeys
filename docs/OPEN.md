@@ -249,6 +249,12 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 
 ## TPM and attestation
 
+- **`tpm-certify` of AES and Triple DES keys, and of secret keys through the vendor mechanism.**
+  A secret key's certify is bound to it by the loaded object computing the key's HMAC
+  commitment again (DESIGN §3.7, review 2026-11-23 B-1), so only HMAC and generic secret keys
+  on the store path are attested. An AES key could be bound the same way by its `kcv-ecb`
+  (`TPM2_EncryptDecrypt2` in ECB mode, where the object's mode allows it); the vendor mechanism
+  would need the module to compute the commitment with the object it certifies.
 - **Chain the Attestation Key to the EK certificate** (MakeCredential/ActivateCredential), so
   `tpm-certify` proves "a genuine TPM", not only "the same TPM as at first use".
 - **`tpm-certify` reads tpm2-pkcs11's private sqlite store**, hence its 1.10.x-only version

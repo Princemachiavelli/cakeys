@@ -576,6 +576,10 @@ pub struct AttestCtx<'a> {
     pub object: &'a ObjectCfg,
     /// The material SPKI the attestation must name: `None` exactly for secret keys.
     pub spki: Option<&'a [u8]>,
+    /// The commitments this run computed of the key through PKCS#11: for a secret key, what the
+    /// attestation must be bound to in place of an SPKI, the device computing one of them with
+    /// the object it attests (review 2026-11-23 B-1). Empty for any other class.
+    pub commitments: &'a [Commitment],
     /// The user PIN, when the token has one (the TPM path unseals the token's wrapping key
     /// with it).
     pub pin: Option<&'a str>,
@@ -584,6 +588,18 @@ pub struct AttestCtx<'a> {
     pub provision: bool,
     /// When the attestation's certificates must be valid, and whether a fault in their dates refuses.
     pub chain_time: ChainTime,
+}
+
+/// One commitment the run computed of the key under attestation ([`AttestCtx::commitments`]):
+/// what the token operated on and the ID its output gave, as the lock records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Commitment {
+    /// Which commitment.
+    pub commit: cakeys_core::id::Commit,
+    /// The bytes the token operated on (`Commit::input`, under the run's commitment label).
+    pub input: Vec<u8>,
+    /// Its ID: the SRI digest of the token's output.
+    pub id: String,
 }
 
 /// When the certificates of an attestation chain must be valid (ISSUES.md B8). `check` holds

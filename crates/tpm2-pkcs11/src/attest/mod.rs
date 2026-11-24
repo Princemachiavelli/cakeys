@@ -228,7 +228,8 @@ pub(crate) fn store_dir_of(token_name: &str, opts: &Tpm2Options) -> Result<PathB
 /// `$XDG_DATA_HOME/tpm2-pkcs11` or `~/.local/share/tpm2-pkcs11`, `~/.tpm2_pkcs11`, then the
 /// working directory. A store read from another directory than the module's fails the
 /// attestation's cross-checks, never passes them: `TPM2_Load` and the Name and SPKI checks bind
-/// the row to the live object.
+/// the row to the live object, and for a secret key the HMAC commitment the loaded object
+/// computes again (`esys::Expected`).
 fn store_candidates(var: impl Fn(&str) -> Option<String>, cwd: Option<PathBuf>) -> Vec<PathBuf> {
     if let Some(dir) = var("TPM2_PKCS11_STORE") {
         return vec![PathBuf::from(dir)];
@@ -306,10 +307,12 @@ fn parse_tcti(source: &str, value: &str) -> Result<tss_esapi::Tcti> {
 /// `Unsupported` for `akLabel` on a module without the token-key mechanisms, for an
 /// `ekCertificate` with a module that certifies itself (the activation needs the TPM), and, on
 /// the store path, for a module version it was not tested with and a key object with no `CKA_ID`
-/// to find its store row by; `Unavailable` when the store cannot be opened, the TPM or the
+/// to find its store row by; `Unsupported` too for a secret key that cannot be bound to the
+/// object certified ([`expected`]), and for any secret key through the module's own certify;
+/// `Unavailable` when the store cannot be opened, the TPM or the
 /// module's mechanism fails, or the object's module attributes cannot be read; `Conflict` when
 /// the module's story and the TPM's signature disagree; plus whatever the certify rejects (PIN,
-/// auth, names, material cross-check, the EK's credential).
+/// auth, names, material cross-check or commitment, the EK's credential).
 pub(crate) fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
     let opts = Tpm2Options::of(ctx.token_name, &ctx.cfg.options)?;
     let route = vendor::route(ctx, &opts)?;
@@ -324,6 +327,16 @@ pub(crate) fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
     let (certified, ek) = match route {
         vendor::Route::Module => {
             opts.refuse_ek_for_module(ctx.token_name)?;
+            // A secret key is bound by the TPM computing its commitment with the object it
+            // certified, which only the store path loads (review 2026-11-23 B-1).
+            if ctx.object.class == cakeys_core::types::ObjectClass::SecretKey {
+                return Err(KmError::Unsupported(
+                    "a secret key's tpm-certify is bound to the key by the TPM computing its HMAC commitment \
+                     with the object certified, which the module's own certify (CKM_TPM2_CERTIFY) never lets \
+                     cakeys load: attest it through a module without the vendor mechanism, or not at all"
+                        .into(),
+                ));
+            }
             (vendor::certify(ctx, &opts)?, None)
         }
         vendor::Route::Store => certify_through_store(ctx, &opts)?,
@@ -371,7 +384,7 @@ fn certify_through_store(ctx: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<(esy
         Some(Attribute::Label(l)) => Some(l),
         _ => None,
     };
-    let spki = ctx.required_spki()?;
+    let want = expected(ctx)?;
     let class = store::store_class(ctx.object.class)?;
     let store = store::Store::open(&store_dir(ctx, opts)?, &ctx.cfg.token_label)?;
     let tobj = store.find(&cka_id, label.as_deref(), class)?;
@@ -385,10 +398,38 @@ fn certify_through_store(ctx: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<(esy
         ctx.pin.map(str::as_bytes),
         opts.ak_handle(ctx.token_name)?,
         ctx.provision,
-        spki,
+        want,
         ek.as_ref().map(|t| t.spki.as_slice()),
     )?;
     Ok((certified, ek))
+}
+
+/// What the certified object must be ([`esys::Expected`]): an asymmetric key's SPKI, or a secret
+/// key's HMAC commitment, which the TPM computes again with the object it certified (review
+/// 2026-11-23 B-1: a secret key's attestation was bound to no material).
+///
+/// # Errors
+///
+/// `Unsupported` for an asymmetric key without its SPKI, and for a secret key without an HMAC
+/// commitment (an AES or Triple DES key, one without `CKA_SIGN`) or with one the TPM cannot
+/// compute (SHA-224).
+fn expected<'a>(ctx: &'a AttestCtx<'_>) -> Result<esys::Expected<'a>> {
+    if let Some(spki) = ctx.required_spki()? {
+        return Ok(esys::Expected::Spki(spki));
+    }
+    let hmac = ctx.commitments.iter().find_map(|c| match c.commit {
+        cakeys_core::id::Commit::Hmac(hash) => Some((hash, c)),
+        _ => None,
+    });
+    let Some((hash, c)) = hmac else {
+        return Err(KmError::Unsupported(
+            "tpm-certify binds a secret key to the TPM object it certifies through the key's HMAC commitment (the \
+             commitment scheme: an HMAC or generic secret key with CKA_SIGN), which the TPM computes again with that \
+             object; this key computes none, so its attestation could name an object that is not it"
+                .into(),
+        ));
+    };
+    Ok(esys::Expected::Commitment(esys::Bind { hash: esys::hmac_algorithm(hash)?, input: &c.input, id: &c.id }))
 }
 
 /// One attribute read of the key object: the attribute, `None` when the module has none to show

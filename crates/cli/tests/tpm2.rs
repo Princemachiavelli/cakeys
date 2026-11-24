@@ -864,8 +864,12 @@ fn row_value(attrs: &str, ty: u64) -> String {
 /// Rewrite the attrs of the private-key row whose `CKA_LABEL` is `label` in the test's store,
 /// as another process (the module) will read them.
 fn edit_private_row(label: &str, edit: impl FnOnce(&str) -> String) {
-    let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
-    let db = rusqlite::Connection::open(std::path::Path::new(&store).join("tpm2_pkcs11.sqlite3")).unwrap();
+    edit_private_row_in(&std::env::var("TPM2_PKCS11_STORE").unwrap(), label, edit);
+}
+
+/// [`edit_private_row`] in the store in directory `store`.
+fn edit_private_row_in(store: &str, label: &str, edit: impl FnOnce(&str) -> String) {
+    let db = rusqlite::Connection::open(std::path::Path::new(store).join("tpm2_pkcs11.sqlite3")).unwrap();
     let hex = label.bytes().fold(String::new(), |hex, b| hex + &format!("{b:02x}"));
     let rows: Vec<(i64, String)> = db
         .prepare("SELECT id, CAST(attrs AS TEXT) FROM tobjects")
@@ -968,6 +972,75 @@ fn tpm2_attestation_refuses_a_store_that_disagrees() {
     let o = e.km(&["lock", "--spec", "t", "--token", "trans", "--no-update-lock"]);
     assert!(stderr(&o).contains("the token's primary is transient"), "{}", stderr(&o));
     assert_eq!(code(&o), 16, "{}", stderr(&o));
+}
+
+/// A secret key's `tpm-certify` is bound to its material (review 2026-11-23 B-1): the TPM
+/// computes the key's HMAC commitment again with the very object it certified, and it must be
+/// the commitment the module computed. A copy of the store (`tpm2Store`) whose row for the key
+/// carries another HMAC key's TPM blobs makes cakeys certify that other key while the module
+/// commits with the real one: refused (13), where that other key's attestation was pinned
+/// before. An AES key has no HMAC commitment for the TPM to compute again: refused (15).
+#[test]
+fn tpm2_a_secret_keys_attestation_is_bound_to_its_material() {
+    let Some(e) = env("attest-bound") else { return };
+    if !hmac_types_fixed("CAKEYS_TPM_REQUIRE") || !on_swtpm() {
+        return;
+    }
+    for (label, value) in [("bound-a", &HMAC_VALUE[..]), ("bound-b", &b"another key-management hmac key!"[..])] {
+        let file = e.dir.join(format!("{label}.bin"));
+        std::fs::write(&file, value).unwrap();
+        ptool(&[
+            "import",
+            "--algorithm=hmac:sha256",
+            &format!("--privkey={}", file.display()),
+            &format!("--key-label={label}"),
+        ]);
+    }
+    ptool(&["addkey", "--algorithm=aes256", "--key-label=bound-aes"]);
+    // The copy: bound-a's row carries bound-b's TPM blobs and auth (CKA_TPM2_OBJAUTH_ENC,
+    // _PUB_BLOB, _PRIV_BLOB); the module reads the original.
+    let copy = e.dir.join("copied-store");
+    std::fs::create_dir_all(&copy).unwrap();
+    let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
+    std::fs::copy(std::path::Path::new(&store).join("tpm2_pkcs11.sqlite3"), copy.join("tpm2_pkcs11.sqlite3")).unwrap();
+    let copy = copy.to_str().unwrap();
+    let tpm_attrs = [0x8F00_0001_u64, 0x8F00_0002, 0x8F00_0003];
+    let mut b_values = Vec::new();
+    edit_private_row_in(copy, "bound-b", |attrs| {
+        b_values = tpm_attrs.iter().map(|t| row_value(attrs, *t)).collect();
+        attrs.to_owned()
+    });
+    edit_private_row_in(copy, "bound-a", |attrs| {
+        tpm_attrs.iter().zip(&b_values).fold(attrs.to_owned(), |a, (t, b)| a.replace(&row_value(&a, *t), b))
+    });
+    let config = |options: &str| {
+        e.write_config(&format!(
+            "[tokens.tpm]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n{options}\n\n\
+             [objects.mac]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_SHA256_HMAC\"\nvalueLen = 32\n\n\
+             [specs.mac]\nobject = \"mac\"\nattributes = {{ CKA_SIGN = true, CKA_EXTRACTABLE = true }}\n\
+             tokens.tpm = {{ locator = {{ CKA_LABEL = \"bound-a\" }}, origin = \"adopt\", attestation = true }}\n\n\
+             [objects.aes]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
+             [specs.aes]\nobject = \"aes\"\nattributes = {{ CKA_ENCRYPT = true }}\n\
+             tokens.tpm = {{ locator = {{ CKA_LABEL = \"bound-aes\" }}, origin = \"adopt\", attestation = true }}\n",
+            e.module,
+            e.dir.join("pin").display()
+        ));
+    };
+    let lock = |spec: &str| e.km(&["lock", "--spec", spec, "--token", "tpm", "--no-update-lock"]);
+    // The module's own store: the certified object computes the key's commitment again.
+    config("");
+    let o = lock("mac");
+    assert_eq!(code(&o), 18, "{}", stderr(&o));
+    // The copy: cakeys certifies bound-b, while the module commits with bound-a.
+    config(&format!("options = {{ tpm2Store = \"{copy}\" }}"));
+    let o = lock("mac");
+    assert_eq!(code(&o), 13, "{}", stderr(&o));
+    assert!(stderr(&o).contains("its HMAC commitment is not the one the key computes"), "{}", stderr(&o));
+    // An AES key: no HMAC commitment to bind its certify to.
+    config("");
+    let o = lock("aes");
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("binds a secret key to the TPM object it certifies"), "{}", stderr(&o));
 }
 
 /// Every key type tpm2-pkcs11 generates is attested with its own public area: P-384, P-521 and

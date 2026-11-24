@@ -733,20 +733,22 @@ impl Token {
     /// Compute the attestation commitment for `key` (§3.7 of docs/DESIGN.md) through the
     /// provider: the module-exposed attestation certificate (PIV) or the native `TPM2_Certify`
     /// path (tpm2-pkcs11), verified on the host. `spki` is the material SPKI the attestation
-    /// must name (`None` for secret keys); `provision` lets the provider create the device
-    /// state it attests with (only `lock` sets it).
+    /// must name (`None` for secret keys), and `commitments` what a secret key's must be bound
+    /// to instead; `provision` lets the provider create the device state it attests with (only
+    /// `lock` sets it).
     ///
     /// # Errors
     ///
     /// Whatever the provider's attestation path cannot establish: `Unsupported` when the
     /// provider attests no class like this, `Unavailable` when the token has none to give
     /// (an imported key, a session that could not attest), `Conflict` when it names other
-    /// material than `spki`.
+    /// material than `spki` or `commitments`.
     pub fn attest(
         &self,
         key: ObjectHandle,
         object: &ObjectCfg,
         spki: Option<&[u8]>,
+        commitments: &[crate::provider::Commitment],
         provision: bool,
     ) -> Result<Attested> {
         let has_mechanism = |m: MechanismType| self.library.0.get_mechanism_info(self.slot, m).is_ok();
@@ -759,6 +761,7 @@ impl Token {
             key,
             object,
             spki,
+            commitments,
             pin: self.pin.as_ref().map(|p| p.as_str()),
             provision,
             chain_time: self.chain_time,

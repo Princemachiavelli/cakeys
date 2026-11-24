@@ -37,8 +37,8 @@ use tss_esapi::interface_types::session_handles::{AuthSession, PolicySession};
 use tss_esapi::interface_types::structure_tags::AttestationType;
 use tss_esapi::structures::{
     Attest, AttestInfo, Auth, Data, Digest, EccPoint, EccScheme, EncryptedSecret, HashScheme, IdObject,
-    KeyDerivationFunctionScheme, Name, Nonce, Private, Public, PublicBuffer, PublicBuilder, PublicEccParametersBuilder,
-    Signature, SignatureScheme, SymmetricDefinition,
+    KeyDerivationFunctionScheme, MaxBuffer, Name, Nonce, Private, Public, PublicBuffer, PublicBuilder,
+    PublicEccParametersBuilder, Signature, SignatureScheme, SymmetricDefinition,
 };
 use tss_esapi::traits::{Marshall, UnMarshall};
 use zeroize::Zeroizing;
@@ -517,10 +517,89 @@ pub(crate) fn recompute_name(pub_blob: &[u8]) -> Result<Vec<u8>> {
     Ok(name)
 }
 
+/// What the certified object must be: the key the object's `rfc7093m4` names (an asymmetric
+/// key, its SPKI cross-checked against the attested public area), or the secret key whose HMAC
+/// commitment the TPM computes again with the object it certified (review 2026-11-23 B-1: a
+/// secret key's attestation was bound to no material).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Expected<'a> {
+    /// The canonical SPKI.
+    Spki(&'a [u8]),
+    /// One HMAC commitment the run computed through PKCS#11.
+    Commitment(Bind<'a>),
+}
+
+impl<'a> Expected<'a> {
+    /// The SPKI the attested public area must hold, `None` for a secret key.
+    fn spki(self) -> Option<&'a [u8]> {
+        match self {
+            Expected::Spki(spki) => Some(spki),
+            Expected::Commitment(_) => None,
+        }
+    }
+}
+
+/// A secret key's HMAC commitment, as the TPM computes it: the hash, the input the token signed
+/// (`Commit::input`), and the ID its output gave through PKCS#11.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Bind<'a> {
+    /// The HMAC's hash ([`hmac_algorithm`]).
+    pub hash: HashingAlgorithm,
+    /// The bytes the commitment covers.
+    pub input: &'a [u8],
+    /// The SRI digest of the commitment's output, as the lock records it.
+    pub id: &'a str,
+}
+
+/// The TPM's name of an HMAC commitment's hash.
+///
+/// # Errors
+///
+/// `Unsupported` for SHA-224, which the TPM does not define.
+pub(crate) fn hmac_algorithm(hash: id::HmacHash) -> Result<HashingAlgorithm> {
+    match hash {
+        id::HmacHash::Sha1 => Ok(HashingAlgorithm::Sha1),
+        id::HmacHash::Sha256 => Ok(HashingAlgorithm::Sha256),
+        id::HmacHash::Sha384 => Ok(HashingAlgorithm::Sha384),
+        id::HmacHash::Sha512 => Ok(HashingAlgorithm::Sha512),
+        id::HmacHash::Sha224 => Err(KmError::Unsupported(
+            "the TPM defines no SHA-224: a CKK_SHA224_HMAC key's commitment cannot be computed in it, so its \
+             attestation could not be bound to it"
+                .into(),
+        )),
+    }
+}
+
+/// The secret key's binding to the certified object: the TPM computes the key's HMAC commitment
+/// with the very object it loaded and certified, `key` (its auth set by [`certify`]), authorized
+/// through `auth`, and the result must be the commitment the run computed through PKCS#11.
+/// Without it, a module or a store row pointing at another TPM object would have that object's
+/// attestation pinned for this key.
+///
+/// # Errors
+///
+/// `Unavailable` when `TPM2_HMAC` fails; `Conflict` when it gives another commitment.
+fn bound(ctx: &mut Context, key: KeyHandle, bind: Bind<'_>, auth: AuthSession) -> Result<()> {
+    let buffer = MaxBuffer::try_from(bind.input.to_vec())
+        .map_err(|e| KmError::Unavailable(format!("the commitment's input: {e}").into()))?;
+    let digest = ctx.execute_with_session(Some(auth), |ctx| ctx.hmac(key.into(), buffer, bind.hash)).map_err(|e| {
+        KmError::Unavailable(format!("TPM2_HMAC of the commitment with the certified object: {e}").into())
+    })?;
+    if id::sri(digest.value()) == bind.id {
+        return Ok(());
+    }
+    Err(KmError::Conflict(
+        "the TPM object certified is another key: its HMAC commitment is not the one the key computes through \
+         PKCS#11"
+            .into(),
+    ))
+}
+
 /// Load, certify, verify and pin one key of the token (§3.7): the store row `tobj` whose
-/// PKCS#11 object is being attested. The material SPKI (present exactly for asymmetric keys)
-/// is cross-checked against the attestation — the attested key must be the key the object's
-/// `rfc7093m4` names. `provision` lets a missing Attestation Key be created (`lock` only).
+/// PKCS#11 object is being attested, held to `want`: an asymmetric key's SPKI is cross-checked
+/// against the attestation (the attested key must be the key the object's `rfc7093m4` names),
+/// and a secret key's HMAC commitment is computed again by the certified object ([`bound`]).
+/// `provision` lets a missing Attestation Key be created (`lock` only).
 /// With `ek`, the public key of a verified EK certificate, every authorization of the run goes
 /// through a session salted to that EK ([`salted_session`]: the auth values never cross the
 /// transport, the unsealed wrapping key crosses it encrypted, and the responses are
@@ -531,7 +610,7 @@ pub(crate) fn recompute_name(pub_blob: &[u8]) -> Result<Vec<u8>> {
 ///
 /// `Unavailable` without a PIN to unseal the object's auth value, or when any TPM call
 /// fails; `Conflict` when the store row or the attestation disagrees (a Name that is not the
-/// blob's, another signer, other material than `spki`) or the activation does; `Unsupported`
+/// blob's, another signer, other material than `want`) or the activation does; `Unsupported`
 /// when the store object has no private blob to certify.
 #[expect(
     clippy::too_many_arguments,
@@ -544,7 +623,7 @@ pub(crate) fn certify_key(
     pin: Option<&[u8]>,
     ak_handle: u32,
     provision: bool,
-    spki: Option<&[u8]>,
+    want: Expected<'_>,
     ek: Option<&[u8]>,
 ) -> Result<Certified> {
     let pin = pin.ok_or_else(|| {
@@ -553,13 +632,13 @@ pub(crate) fn certify_key(
         )
     })?;
     let Some(ek_spki) = ek else {
-        return certify_under(ctx, store, tobj, pin, ak_handle, provision, spki, AuthSession::Password)
+        return certify_under(ctx, store, tobj, pin, ak_handle, provision, want, AuthSession::Password)
             .map(|(certified, ..)| certified);
     };
     let ek = endorsement_key(ctx, ek_spki)?;
     flushing(ctx, ek, |ctx| {
         let session = salted_session(ctx, ek)?;
-        let out = certify_under(ctx, store, tobj, pin, ak_handle, provision, spki, session).and_then(
+        let out = certify_under(ctx, store, tobj, pin, ak_handle, provision, want, session).and_then(
             |(certified, ak, ak_public)| {
                 // The public area whose key verified the certify is the one the credential is
                 // bound to.
@@ -581,7 +660,7 @@ fn certify_under(
     pin: &[u8],
     ak_handle: u32,
     provision: bool,
-    spki: Option<&[u8]>,
+    want: Expected<'_>,
     auth: AuthSession,
 ) -> Result<(Certified, KeyHandle, Public)> {
     let wrapping = wrapping_key(ctx, store, pin, auth)?;
@@ -598,13 +677,14 @@ fn certify_under(
     let (ak, ak_public, ak_qualified_name) = attestation_key(ctx, ak_handle, provision)?;
     let key = load(ctx, &store.parent, priv_blob, &tobj.pub_blob, auth)?;
     let certified = flushing(ctx, key, |ctx| {
-        certify_loaded(ctx, key, &objauth, tobj, auth, (ak, &ak_public, &ak_qualified_name), spki)
+        certify_loaded(ctx, key, &objauth, tobj, auth, (ak, &ak_public, &ak_qualified_name), want)
     })?;
     Ok((certified, ak, ak_public))
 }
 
 /// The certify and its host verification, for the object `key` loaded from `tobj`, authorized
-/// through `auth`; `ak` is the AK's handle, public area and qualified Name.
+/// through `auth`; `ak` is the AK's handle, public area and qualified Name. A secret key's
+/// commitment is computed again by the same loaded object once the statement verified.
 fn certify_loaded(
     ctx: &mut Context,
     key: KeyHandle,
@@ -612,11 +692,16 @@ fn certify_loaded(
     tobj: &TObject,
     auth: AuthSession,
     (ak, ak_public, ak_qualified_name): (KeyHandle, &Public, &Name),
-    spki: Option<&[u8]>,
+    want: Expected<'_>,
 ) -> Result<Certified> {
     let live = read_public(ctx, key)?;
     let (attest, signature) = certify(ctx, key, objauth, ak, auth)?;
-    verify_certified(&attest, &signature, &tobj.pub_blob, &live, ak_public, ak_qualified_name, spki)
+    let certified =
+        verify_certified(&attest, &signature, &tobj.pub_blob, &live, ak_public, ak_qualified_name, want.spki())?;
+    if let Expected::Commitment(bind) = want {
+        bound(ctx, key, bind, auth)?;
+    }
+    Ok(certified)
 }
 
 /// The host verification of a certify statement: the AK's signature over the exact attestation
@@ -926,6 +1011,25 @@ mod tests {
 
     fn pub_blob() -> Vec<u8> {
         crate::attest::store_hex(PUB_BLOB).unwrap()
+    }
+
+    /// A secret key's HMAC commitment is computed again in the TPM by its hash's TPM name;
+    /// SHA-224, which the TPM does not define, would leave the attestation unbound, so it is
+    /// refused (review 2026-11-23 B-1). An `Expected` names an SPKI only for an asymmetric key.
+    #[test]
+    fn a_secret_keys_commitment_names_a_tpm_hash() {
+        for (hash, tpm) in [
+            (id::HmacHash::Sha1, HashingAlgorithm::Sha1),
+            (id::HmacHash::Sha256, HashingAlgorithm::Sha256),
+            (id::HmacHash::Sha384, HashingAlgorithm::Sha384),
+            (id::HmacHash::Sha512, HashingAlgorithm::Sha512),
+        ] {
+            assert_eq!(hmac_algorithm(hash).unwrap(), tpm, "{hash:?}");
+        }
+        assert!(matches!(hmac_algorithm(id::HmacHash::Sha224), Err(KmError::Unsupported(_))));
+        let bind = Bind { hash: HashingAlgorithm::Sha256, input: b"label", id: "sha256-x" };
+        assert_eq!(Expected::Commitment(bind).spki(), None);
+        assert_eq!(Expected::Spki(b"spki").spki(), Some(&b"spki"[..]));
     }
 
     /// The Name is the `nameAlg` and its digest of the public area, for each hash tpm2-pkcs11
