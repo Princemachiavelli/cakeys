@@ -18,8 +18,8 @@ pub(super) fn not_origin_create(t: &Target) -> Option<String> {
         KeyOrigin::Adopt => Some("origin = \"adopt\": it is found there, never created".into()),
         KeyOrigin::File => Some(format!(
             "origin = \"file\": camigrate brings its material here from the object's migrate.file \
-             (camigrate import --token {} {}), never `create`",
-            t.token_name, t.object_name
+             (camigrate import {} --to {}), never `create`",
+            t.object_name, t.token_name
         )),
     }
 }

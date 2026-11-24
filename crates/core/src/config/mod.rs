@@ -168,7 +168,7 @@ pub struct TokenCfg {
     /// SO session — ykcs11: the PIV management key in hex, or the PIN on a device whose
     /// management key is PIN-protected; elsewhere the SO PIN (camigrate's `transport --trusted`).
     /// `pinFile`/`pinEnv` remain the *user* credential. Read just before such a step, never by
-    /// `resolve`, `verify` or `check`; the user session is restored afterwards, so a user PIN is
+    /// `resolve` or `check`; the user session is restored afterwards, so a user PIN is
     /// required. `soCredentialEnv` wins if both are set; `soCredentialFile` may be `$NAME`, like
     /// `pinFile`. Refused on a provider that does not need it.
     pub so_credential_file: Option<PathBuf>,
@@ -195,7 +195,7 @@ pub struct TokenCfg {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ProbeCfg {
     /// Marks the token as expendable: its write probes generate, wrap, unwrap and destroy
-    /// objects, so `probe --write` runs them only here and is refused (17) on any other token.
+    /// objects, so `probe --write-probes` runs them only here and is refused (17) on any other token.
     #[serde(default)]
     pub scratch: bool,
     /// The one `CKA_ID` (hex) the write probes may generate into, on a token whose module
@@ -213,7 +213,7 @@ pub struct ProbeCfg {
 pub struct TokenMigrateCfg {
     /// The spec of this token's transport key (D3): an RSA private key realised here that may
     /// unwrap and never leaves the token. Sealed moves to this token wrap to it, never to one
-    /// picked by what it can do (camigrate `--transport-key` overrides it per run); its
+    /// picked by what it can do (camigrate `--transport-spec` overrides it per run); its
     /// realisation records the public key in the lock, so any host can export to it. It never
     /// leaves the tokens its spec realises it on, as if `migrate.noExport` (camigrate refuses it
     /// named, 15, and leaves it out without names).
@@ -270,7 +270,7 @@ impl TokenCfg {
     ///
     /// # Errors
     ///
-    /// `Validation` when `module` names an unset variable.
+    /// `Unavailable` (16) when `module` names an unset variable.
     pub fn module_path(&self, token: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<String>> {
         self.module.as_deref().map(|m| env_ref(m, &format!("token '{token}': module"), env)).transpose()
     }
@@ -281,7 +281,8 @@ impl TokenCfg {
     ///
     /// # Errors
     ///
-    /// `Validation` (17) when `pinFile` names an unset variable.
+    /// `Unavailable` (16) when `pinFile` names an unset variable; `Validation` (17) for a file in
+    /// the Nix store.
     pub fn pin_path(&self, token: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<PathBuf>> {
         secret_path(self.pin_file.as_deref(), &format!("token '{token}': pinFile"), env)
     }
@@ -290,7 +291,8 @@ impl TokenCfg {
     ///
     /// # Errors
     ///
-    /// `Validation` (17) when `soCredentialFile` names an unset variable.
+    /// `Unavailable` (16) when `soCredentialFile` names an unset variable; `Validation` (17) for
+    /// a file in the Nix store.
     pub fn so_credential_path(&self, token: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<PathBuf>> {
         secret_path(self.so_credential_file.as_deref(), &format!("token '{token}': soCredentialFile"), env)
     }
@@ -898,9 +900,16 @@ pub fn load_config_with(path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Re
 /// `Validation`, as [`load_config_with`].
 pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<Config> {
     let invalid = |e: &dyn std::fmt::Display| KmError::Validation(format!("{}: {e}", path.display()).into());
-    // A `$NAME` reference's error, named by the file as every other load error is.
+    // A `$NAME` reference's error, named by the file as every other load error is: one resolved
+    // at load is keys.toml's own, so unset is invalid here (17).
     let env_ref = |value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>| {
-        env_ref(value, what, env).map_err(|e| e.prefixed(path.display()))
+        env_ref(value, what, env).map_err(|e| {
+            match e {
+                KmError::Unavailable(m) => KmError::Validation(m),
+                e => e,
+            }
+            .prefixed(path.display())
+        })
     };
     let mut cfg: Config = toml::from_str(text).map_err(|e| invalid(&e))?;
     check_names(&cfg).map_err(|e| invalid(&e))?;
@@ -1250,8 +1259,10 @@ fn env_ref(value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>) -> Res
             format!("{what}: \"{value}\" is neither $NAME, ${{NAME}} nor a literal path").into(),
         ));
     }
+    // Unset is this host's environment not providing it, as an unset `pinEnv` is (16); only a
+    // reference that is not one is invalid (review 2026-11-23 A-14).
     env(name).ok_or_else(|| {
-        KmError::Validation(format!("{what}: environment variable {name} (\"{value}\") is not set").into())
+        KmError::Unavailable(format!("{what}: environment variable {name} (\"{value}\") is not set").into())
     })
 }
 
@@ -1262,7 +1273,7 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// `Validation` (17) for an unset or malformed `$NAME`, or a secret file that resolves into
+    /// `Unavailable` (16) for an unset `$NAME`; `Validation` (17) for a secret file that resolves into
     /// `/nix/store` ([`Self::secret_material`], `secret_in_store`): the store is world-readable.
     pub fn object_file(&self, object: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<PathBuf>> {
         let Some(file) = self.object_migrate.get(object).and_then(|m| m.file.as_deref()) else { return Ok(None) };
@@ -1281,7 +1292,7 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// `Validation` (17) for an unset or malformed `$NAME`, or a path that resolves into
+    /// `Unavailable` (16) for an unset `$NAME`; `Validation` (17) for a path that resolves into
     /// `/nix/store`: a passphrase is a secret whatever it decrypts.
     pub fn object_passphrase_file(
         &self,
@@ -1539,7 +1550,7 @@ mod tests {
         assert!(lock.realisations.is_empty() && lock.observations.is_empty());
     }
 
-    /// `gc --apply` leaves a lock that loads: an object renamed in keys.toml before `lock` ran
+    /// `gc` leaves a lock that loads: an object renamed in keys.toml before `lock` ran
     /// takes the realisation that still names it along (it once stayed, naming an object `gc`
     /// had dropped, and every later run refused the lock, `lock` and `gc` included). And no
     /// lock that would not load is ever written: `save_lock` refuses it and keeps the old one.
@@ -1895,7 +1906,8 @@ mod tests {
         // A module, a PIN file and a credential file resolve when used, not at load: an unset
         // variable fails only a run that opens that token (without --module for the module), so
         // `validate` and a Nix build sandbox, which set none, load the file; a malformed
-        // reference still fails at load.
+        // reference still fails at load. Unset at use is the environment's, not the file's: 16
+        // (review 2026-11-23 A-14).
         let unset = load(&format!(
             "{head}module = \"$KM_UNIT_TEST_UNSET\"\npinFile = \"$KM_UNIT_TEST_UNSET\"\n\
              soCredentialFile = \"$KM_UNIT_TEST_UNSET\"\n"
@@ -1907,7 +1919,7 @@ mod tests {
             t.pin_path("t", &|_| None).unwrap_err(),
             t.so_credential_path("t", &|_| None).unwrap_err(),
         ] {
-            assert!(matches!(err, KmError::Validation(_)), "{err}");
+            assert!(matches!(err, KmError::Unavailable(_)), "{err}");
             assert!(err.to_string().contains("KM_UNIT_TEST_UNSET"), "{err}");
         }
         assert!(load(&format!("{head}module = \"$HOME/x.so\"\n")).is_err());

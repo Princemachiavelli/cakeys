@@ -204,7 +204,7 @@ impl Accept {
     }
 }
 
-/// What a probed row (`docs/CAPROBE_MIGRATION.md`) answers for the objects it covers, and how
+/// What a probed row (`docs/archive/CAPROBE_MIGRATION.md`) answers for the objects it covers, and how
 /// the operation succeeded where it has more than one way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Probed {
@@ -216,7 +216,7 @@ pub struct Probed {
     pub via: Option<String>,
 }
 
-/// A token's probed rows by way (`docs/CAPROBE_MIGRATION.md`, M1): where one covers an object's
+/// A token's probed rows by way (`docs/archive/CAPROBE_MIGRATION.md`, M1): where one covers an object's
 /// type it decides, before a module's claims and the spec-compliant default.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProbedWays {

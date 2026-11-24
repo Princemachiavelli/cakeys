@@ -301,7 +301,7 @@ pub(crate) fn target_refusal(
     Ok(None)
 }
 
-/// The probed rows of `module` (`docs/CAPROBE_MIGRATION.md`), by way, each as the objects it
+/// The probed rows of `module` (`docs/archive/CAPROBE_MIGRATION.md`), by way, each as the objects it
 /// covers. A row of a key type a layer subtracts answers no: the binding cannot name it. A yes
 /// by a mechanism the stack no longer offers (`via`, `usable` the mechanisms left: p11-kit hides
 /// `SoftHSM`'s RFC 5649 key wraps) is left out, as is a row naming a key type, class or curve
@@ -675,7 +675,7 @@ fn side_or_lock(
 }
 
 /// The spec of the transport key realised on `token` (docs/CAMIGRATE.md D3): the one `chosen` names —
-/// `--transport-key`, else the token's `transportWith` — never one picked by what it can do. The
+/// `--transport-spec`, else the token's `transportWith` — never one picked by what it can do. The
 /// lock must record it there as an RSA private key that may unwrap and never leaves the token.
 ///
 /// # Errors
@@ -689,7 +689,7 @@ pub(crate) fn transport_spec<'a>(
     let Some(chosen) = chosen else {
         return Err(format!(
             "no transport key is named for '{token}' (docs/CAMIGRATE.md D3): set transportWith in [tokens.{token}.migrate] to the \
-             spec of an RSA key there that may unwrap and never leaves the token, lock it, or pass --transport-key"
+             spec of an RSA key there that may unwrap and never leaves the token, lock it, or pass --transport-spec"
         ));
     };
     let Some((spec, r)) =
@@ -765,7 +765,7 @@ fn warn_decrypting(t: &Target, lock: &Lock, notes: &mut Notes) {
 }
 
 /// A transport file's key is its token's transport key as the lock pins it (docs/CAMIGRATE.md D3:
-/// the lock is the authenticated channel): the spec `chosen` names (`--transport-key`, else the
+/// the lock is the authenticated channel): the spec `chosen` names (`--transport-spec`, else the
 /// file's token's `transportWith`) is realised on the file's token as a transport key
 /// ([`transport_spec`]), on the file's object, whose locked identity is the file's key. Any
 /// other key the lock pins (another token's transport key, a certificate's subject key) is

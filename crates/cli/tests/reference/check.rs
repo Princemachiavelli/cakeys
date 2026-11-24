@@ -21,7 +21,7 @@ fn check_pem_is_a_key_file_for_pkcs11_provider() {
     e.config(
         &(EC.replace(r#"CKA_LABEL = "ec-lifecycle""#, r#"CKA_LABEL = "check-pem", CKA_ID = "c0""#) + PEM_REFUSALS),
     );
-    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 0);
+    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 22);
     let locked = e.locked_id("signing", "rfc7093m4");
 
     let openssl = |args: &[&str]| {
@@ -61,7 +61,7 @@ fn check_pem_is_a_key_file_for_pkcs11_provider() {
 
     // A key without CKA_ID (common among existing keys) still gets its key file, but is warned:
     // OpenSSL may get no public key from it.
-    assert_eq!(e.code(&["create", "--spec", "signing-noid-soft", "--token", "ref"]), 0);
+    assert_eq!(e.code(&["create", "--spec", "signing-noid-soft", "--token", "ref"]), 22);
     let noid = e.km(&["check", "signing-noid", "--format", "pkcs11-provider-pem"]);
     assert_eq!(code(&noid), 0, "{}", stderr(&noid));
     assert!(stdout(&noid).starts_with("-----BEGIN PKCS#11 PROVIDER URI-----"), "{}", stdout(&noid));
@@ -80,7 +80,7 @@ fn check_pem_is_a_key_file_for_pkcs11_provider() {
 fn a_pin_from_the_environment_is_a_pin_source_env() {
     let Some(e) = env("pin-env-uri") else { return };
     e.config(&EC.replace("ec-lifecycle", "pin-env-uri"));
-    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 0);
+    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 22);
     let pin_file = format!("pinFile = \"{}\"", e.dir.join("pin").display());
     let text = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
     assert!(text.contains(&pin_file), "{text}");
@@ -141,9 +141,9 @@ tokens.ref = { locator = { CKA_LABEL = "no-cmac" }, origin = "create" }
     assert_eq!(code(&e.km_env(&["check", "k.id.kw"], &env)), 11);
     assert_eq!(code(&e.km_env(&["create", "--spec", "k", "--token", "ref", "--no-update-lock"], &env)), 18);
     assert_eq!(code(&e.km_env(&["check", "k.id.kw"], &env)), 18);
-    let o = e.km_env(&["lock", "--spec", "k", "--token", "ref", "--update-lock"], &env);
-    assert_eq!(code(&o), 0);
-    let ids: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let o = e.km_env(&["lock", "--spec", "k", "--token", "ref"], &env);
+    assert_eq!(code(&o), 22);
+    let ids = lock_result(&o);
     assert_eq!(ids["ids"].as_object().unwrap().keys().collect::<Vec<_>>(), ["kw"]);
     // The hiding config is what this run saw (the lock's observation records the mechanisms).
     let seen = e.observation("k", "ref")["mechanisms"].to_string();
@@ -152,7 +152,7 @@ tokens.ref = { locator = { CKA_LABEL = "no-cmac" }, origin = "create" }
         "config did not hide CMAC: {seen}"
     );
     // With CMAC back, the same key also yields cmac, linked through the locked kw.
-    assert_eq!(e.code(&["lock", "--spec", "k", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "k", "--token", "ref"]), 22);
     assert!(e.lock()["objects"]["k"]["ids"].get("cmac").is_some());
     // A spec that allows cmac alone, verified where the token hides it: nothing to compute (15).
     let text = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
@@ -160,7 +160,7 @@ tokens.ref = { locator = { CKA_LABEL = "no-cmac" }, origin = "create" }
         "{text}\n[specs.k-sign]\nobject = \"k\"\nattributes = {{ CKA_SIGN = true }}\n\
          tokens.ref = {{ locator = {{ CKA_LABEL = \"no-cmac\" }}, origin = \"adopt\" }}\n"
     ));
-    let o = e.km_env(&["verify", "--spec", "k-sign", "--token", "ref"], &env);
+    let o = e.km_env(&["check", "--spec", "k-sign", "--token", "ref"], &env);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("CKM_AES_CMAC"), "names what the token lacks: {}", stderr(&o));
 }
@@ -208,7 +208,7 @@ tokens.ref = { locator = { CKA_LABEL = "tok-c" }, origin = "create" }
 fn check_token_checks_every_object_on_it() {
     let Some(e) = env("check_token") else { return };
     e.config(ON_TOKEN);
-    assert_eq!(e.code(&["create"]), 0);
+    assert_eq!(e.code(&["create"]), 22);
     let all = e.km(&["check", "--token", "ref"]);
     assert_eq!(code(&all), 0, "{}", stderr(&all));
     let module = stdout(&all);
@@ -222,7 +222,11 @@ fn check_token_checks_every_object_on_it() {
     // (18). tok-a still passes and is not listed.
     e.config(&(ON_TOKEN.to_owned() + ADDED_ON_TOKEN));
     assert_eq!(e.code(&["create", "tok-c", "--no-update-lock"]), 18);
-    assert_eq!(e.code(&["delete", "tok-b", "--no-update-lock"]), 0);
+    // Gone from the token, the lock kept as it was: a delete that records it, then the lock put
+    // back (no verb destroys without recording, review 2026-11-23 C-4).
+    let pinned = std::fs::read(e.dir.join("keys.lock")).unwrap();
+    assert_eq!(e.code(&["delete", "tok-b"]), 22);
+    std::fs::write(e.dir.join("keys.lock"), pinned).unwrap();
     let failed = e.km(&["check", "--token", "ref"]);
     assert_eq!(code(&failed), 20, "{}", stderr(&failed));
     assert!(stdout(&failed).is_empty(), "{}", stdout(&failed));
@@ -250,7 +254,7 @@ fn check_token_checks_every_object_on_it() {
 fn check_judges_attestation_dates_at_the_time_asked() {
     let Some(e) = env("check_validity") else { return };
     e.config(&EC.replace("ec-lifecycle", "check-validity"));
-    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 0);
+    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 22);
     assert_eq!(e.code(&["check", "signing", "--at", "2030-01-01T00:00:00Z"]), 0);
     let o = e.km(&["check", "signing", "--ignore-validity"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));

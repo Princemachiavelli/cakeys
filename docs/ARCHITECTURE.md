@@ -80,7 +80,7 @@ and sqlite.
 | `core::pop`, `core::sig` | Proof-of-possession challenges and host-side verification |
 | `core::migrate`, `core::plaintext` | The frozen method and exposure names and the capability model; PKCS#8 into the parts `C_CreateObject` takes |
 | `pkcs11::token` | One open token: session, login, SO step, find, policy, generate, identity, possession, host import and extraction, URI |
-| `pkcs11::ops` | The verbs: `resolve`, `verify`, `lock`, `create`, `delete`, `check`, and `lock_import` for camigrate |
+| `pkcs11::ops` | The verbs: `resolve`, `lock`, `create`, `delete`, `check` (its `verify`), and `lock_import` for camigrate |
 | `pkcs11::provider` | `Provider` trait, `Registry`, `Generic`, `Data` (providers named by their profiles); the built-in `providers` (p11-kit) |
 | `pkcs11::resolution`, `gate`, `binding` | Which profiles apply to a token, the static `validate` gate, the cryptoki layer |
 | `profile` | Profile data model, the embedded set, the effective-support algebra |
@@ -109,13 +109,13 @@ flowchart LR
 | Verb | Binary | Token | Lock |
 |---|---|---|---|
 | `validate` | `cakeys` | none | read |
-| `resolve`, `verify` | `cakeys` | read | read |
+| `resolve` | `cakeys` | read | read |
 | `check` | `cakeys` | read | read |
 | `lock` | `cakeys` | read (writes only a missing TPM Attestation Key) | write (default) |
 | `create`, `delete` | `cakeys` | write | write (default) |
-| `gc` | `cakeys` | none | write with `--apply` |
-| `caps`, `supports`, `probe` | `caprobe` | read (`probe --write`: scratch only) | none |
-| `export`, `transport` | `camigrate` | read (`transport --trusted`: writes the source as SO) | read |
+| `gc` | `cakeys` | none | write (`--dry-run`: read) |
+| `caps`, `supports`, `probe` | `caprobe` | read (`probe --write-probes`: scratch only) | none |
+| `export`, `transport` | `camigrate` | read (`transport --trust-on`: writes the source as SO) | read |
 | `import`, `migrate` | `camigrate` | write the target | write |
 
 ## Providers

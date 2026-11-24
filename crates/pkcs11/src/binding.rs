@@ -22,8 +22,8 @@ note = "the pinned cryptoki has no name or parameter type for these, in any buil
 
 [notes]
 binding = "this build's cryptoki maps the SHA-2 HMAC key types correctly (the fix of upstream/rust-cryptoki, applied by the Nix build): the layer subtracts only what no build names"
-CKM_AES_CFB128 = "the pinned cryptoki has no constant or parameter type for it; a module that lists it is recorded advertised and untested (docs/CAPROBE_PROFILE_COVERAGE.md, Part 0)"
-CKM_XEDDSA = "the pinned cryptoki has no constant or parameter type for it; a module that lists it is recorded advertised and untested (docs/CAPROBE_PROFILE_COVERAGE.md, Part 0)"
+CKM_AES_CFB128 = "the pinned cryptoki has no constant or parameter type for it; a module that lists it is recorded advertised and untested (docs/archive/CAPROBE_PROFILE_COVERAGE.md, Part 0)"
+CKM_XEDDSA = "the pinned cryptoki has no constant or parameter type for it; a module that lists it is recorded advertised and untested (docs/archive/CAPROBE_PROFILE_COVERAGE.md, Part 0)"
 "#;
 
 /// Whether this build's cryptoki maps the SHA-2 HMAC key types correctly. cryptoki 0.12.1

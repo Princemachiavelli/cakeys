@@ -1,6 +1,6 @@
 # p11-fault: a PKCS#11 module that forwards, and misbehaves on request
 
-Design for [PLAN.md](PLAN.md) A3 and tier 4 of [COVERAGE_PLAN.md](COVERAGE_PLAN.md), written
+Design for [PLAN.md](PLAN.md) A3 and tier 4 of [archive/COVERAGE_PLAN.md](archive/COVERAGE_PLAN.md), written
 2026-11-14. Steps 1 and 2 of the order below are built (`crates/p11-fault`,
 `packages.p11-fault`): the forwarders, every rule kind, the trace, the parity run, the
 `pkcs11-tool` check and the first table of lies.
@@ -247,7 +247,7 @@ the message, on a token holding a signing, a deriving, a decrypting and an unwra
 beside another key of its kind. Every row asserts in the trace that its rule fired, and the
 lock is unchanged at the end. As run on SoftHSM [run]:
 
-| The lie | `verify` gives |
+| The lie | `check` gives |
 |---|---|
 | `CKF_WRITE_PROTECTED` (on a `create`) | 15 |
 | `CKF_USER_PIN_LOCKED`, `CKF_USER_PIN_FINAL_TRY` | 16, before any login |

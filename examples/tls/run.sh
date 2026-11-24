@@ -16,7 +16,7 @@ export CAKEYS_CONFIG=$work/keys.toml
 module=(--module "tpm=$TPM2_PKCS11_MODULE")
 
 # Born in the TPM, recorded in keys.lock: commit the lock beside keys.toml.
-expect 0 cakeys "${module[@]}" create web-tls
+expect 22 cakeys --new-lock "${module[@]}" create web-tls
 # What the server is given: pkcs11-provider's key file, the URI the check verified with the PIN
 # by reference. On NixOS the check unit writes it (configuration.nix).
 expect 0 cakeys "${module[@]}" check web-tls --format pkcs11-provider-pem --uri-pin source

@@ -157,7 +157,7 @@ Exit: the review document exists, each finding has an owner artefact, and OPEN.m
 DEVELOPMENT.md records that most bugs came from module behaviour and the design, not the pure
 logic. Reference tokens only show the misbehaviour they happen to have. A module that
 misbehaves on request makes that class testable on purpose; it is also tier 4 of
-[COVERAGE_PLAN.md](COVERAGE_PLAN.md), where most of the remaining uncovered lines are.
+[archive/COVERAGE_PLAN.md](archive/COVERAGE_PLAN.md), where most of the remaining uncovered lines are.
 
 **How it is built (decided 2026-11-14): a forwarding shim, not a module**, designed in
 [FAULT_SHIM.md](FAULT_SHIM.md). `libp11_fault.so` (`crates/p11-fault`, about 1–1.5k lines,
@@ -176,7 +176,7 @@ outside the cakeys packages. With no plan it is transparent, which a third run o
 reference suite through it proves before any test trusts it to lie.
 
 Each claim in DESIGN §8.1 gets a test stating what a lying module can and cannot make cakeys
-accept, §8.2 is updated with whatever falls out, and each tier-4 line of COVERAGE_PLAN.md
+accept, §8.2 is updated with whatever falls out, and each tier-4 line of archive/COVERAGE_PLAN.md
 becomes one row of a test table.
 
 Not chosen: patching SoftHSM (one module, C, a rebuild per fault), forking `pkcs11-spy` (C,
@@ -413,7 +413,7 @@ platform (`CFG_PKCS11_TA ?= y` [src]). Building on that:
 
 - Run the shared reference suite (`tests/reference/`) against `libckteec.so` in the guest, with
   a `Reference` descriptor for its facts.
-- `caprobe probe --write` produces `profiles/modules/optee-pkcs11/4.7.toml`; add a provider only
+- `caprobe probe --write-probes` produces `profiles/modules/optee-pkcs11/4.7.toml`; add a provider only
   if a fix-up turns out to be needed.
 - Closes OPEN.md's "More reference tokens: an OP-TEE PKCS#11 TA in QEMU".
 
@@ -484,7 +484,7 @@ fTPM's Endorsement Key is a function of the HUK the HSM produced.
 - **EK follows the HUK**: same HUK with wiped fTPM storage gives the same EK; another HUK gives
   another EK. Read from user space with tpm2-tools.
 - **tpm2-pkcs11 on the fTPM**: the cakeys TPM suite and `tpm-certify` in the guest, and a new
-  observed pair `tpm2-pkcs11/1.10+optee-ftpm` from `caprobe probe --write`.
+  observed pair `tpm2-pkcs11/1.10+optee-ftpm` from `caprobe probe --write-probes`.
 - **Manufacturing**: a factory boot reads the EK and the HSM CA of B2 issues its certificate
   into the fTPM's NV. A later boot is verified exactly as in B2. A device given the wrong HUK
   has another EK, so its certificate no longer matches and attestation fails: the HSM is the

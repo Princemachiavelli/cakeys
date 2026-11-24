@@ -320,16 +320,20 @@
             { };
       in
       fails missing.id && fails missing.check;
+    # With `lock = null`, `check` names no lock and reads the absent one as empty (--new-lock): a
+    # first use, never cakeys' refusal of a missing lock (17).
     assert
-      !(pkgs.lib.hasInfix "--lock"
-        (
-          (self.lib.mkKeys {
-            inherit cakeys;
-            config = ./crates/cli/tests/fixtures/keys.toml;
-          }).signing
-            { }
-        ).check
-      );
+      let
+        unlocked =
+          (
+            (self.lib.mkKeys {
+              inherit cakeys;
+              config = ./crates/cli/tests/fixtures/keys.toml;
+            }).signing
+              { }
+          ).check;
+      in
+      !(pkgs.lib.hasInfix "--lock" unlocked) && pkgs.lib.hasInfix " --new-lock " unlocked;
     # No scheme: the CLI verifies every ID the spec computes; a scheme also requires it.
     assert pkgs.lib.hasInfix "check signing-cert --token softhsm" signing-cert.check;
     assert pkgs.lib.hasInfix "check signing-cert.id.certhash"

@@ -106,6 +106,16 @@ pub struct TransportRef {
 }
 
 impl Bundle {
+    /// Whether the file `bytes` is a bundle (TOML whose `format` is [`BUNDLE_FORMAT`]), told by
+    /// what it holds: anything else `import --in` reads as a key file (review 2026-11-23 C-6).
+    #[must_use]
+    pub fn is_bundle(bytes: &[u8]) -> bool {
+        std::str::from_utf8(bytes)
+            .ok()
+            .and_then(|text| text.parse::<toml::Table>().ok())
+            .is_some_and(|t| t.get("format").and_then(toml::Value::as_str) == Some(BUNDLE_FORMAT))
+    }
+
     /// Read a bundle, checking its form: the format and version, at least one key and each object
     /// once, sealed methods this camigrate knows with the KEK exactly when a composed one needs it
     /// (one OAEP hash for it), a transport key exactly when a key is wrapped, each exposure one

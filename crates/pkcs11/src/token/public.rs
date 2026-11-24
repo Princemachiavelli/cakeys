@@ -1,6 +1,6 @@
 //! A public object's attributes from its value: what `C_CreateObject` takes for a certificate, a
 //! data object or a public key. camigrate creates public objects with them (docs/CAMIGRATE.md,
-//! `public`), and caprobe asks a module to create each kind (`docs/CAPROBE_MIGRATION.md`).
+//! `public`), and caprobe asks a module to create each kind (`docs/archive/CAPROBE_MIGRATION.md`).
 
 #[allow(
     clippy::wildcard_imports,

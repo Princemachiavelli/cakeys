@@ -1,7 +1,10 @@
 # Profile coverage: everything the tools use, and everything a module advertises
 
+> Archived 2026-11-23 (review 2026-11-23 D-9): the plan and its log as they stood, not the code as it is;
+> what was built is in [CAPROBE.md](../CAPROBE.md), "What the probe measures", and what is open in [OPEN.md](../OPEN.md), "More probes".
+
 Planned 2026-11-19, against branch `worktree-probe-secrets` at `211e709`, after the secret-key
-sweep ([CAPROBE.md](CAPROBE.md), "The probe"). Nothing here is built yet.
+sweep ([CAPROBE.md](../CAPROBE.md), "The probe"). Nothing here is built yet.
 
 **Goal.** Every operation cakeys and camigrate perform on a token, and every mechanism a module
 advertises, ends in one of two places in that module's profile:
@@ -13,7 +16,7 @@ advertises, ends in one of two places in that module's profile:
 Nothing is left as a bare name in `advertise`. A committed check enforces that (Part 0), so a
 new mechanism in a module's list, or a new operation in the verbs, cannot go unrecorded.
 
-Evidence tags, as in [CAPROBE.md](CAPROBE.md): **[run]** verified in this repo, **[spec]** the
+Evidence tags, as in [CAPROBE.md](../CAPROBE.md): **[run]** verified in this repo, **[spec]** the
 OASIS PKCS #11 standard, **[src]** read in this repo's source or a dependency's, **[todo]** not
 verified yet; each part says which of its claims still are.
 
@@ -214,7 +217,7 @@ no AES commitments); softhsm's `CKM_DES3_ECB` is the one to watch.
 
 ## Part 2. Secret-key moves
 
-camigrate moves AES, generic secret, Triple DES and HMAC keys ([CAMIGRATE.md](CAMIGRATE.md)). The
+camigrate moves AES, generic secret, Triple DES and HMAC keys ([CAMIGRATE.md](../CAMIGRATE.md)). The
 profile measures AES at 16, 24 and 32 bytes only.
 
 **New rows.** `import.CKK_<type>.<bytes>`, `export.host.*`, `export.sealed.*` and
@@ -262,7 +265,7 @@ already exercises (**[todo]**). For the rest, two row families:
   a read-back shows it set. For `CKA_ALLOWED_MECHANISMS`, also that the module *enforces* it:
   a call with a mechanism outside the list is refused (`CKR_KEY_FUNCTION_NOT_PERMITTED`, which
   is one of the six unprobed return codes). tpm2-pkcs11 lacking it is the known case
-  ([CAPROBE.md](CAPROBE.md), the swtpm row).
+  ([CAPROBE.md](../CAPROBE.md), the swtpm row).
 - `attr.read.<CKA>.<CKK or class>`: the module returns it, and truthfully: `CKA_LOCAL` true on a
   generated key and false on an imported one; `CKA_ALWAYS_SENSITIVE` and
   `CKA_NEVER_EXTRACTABLE` consistent with how the key was made; `CKA_KEY_GEN_MECHANISM` equal to
@@ -444,7 +447,7 @@ module refused it, that is a `no` row with the `CKR_*`; if the probe never made 
 Each part is its own commit with its regenerated profiles (softhsm, kryoptic, swtpm; the
 hardware and cloud ones listed above are the user's), `docs/CAPROBE.md` updated, and
 `spec-coverage/cakeys.toml` regenerated with `scripts/coverage-file.sh` (the trace gains the new
-calls). Per [DEVELOPMENT.md](DEVELOPMENT.md), the gate after a part is `nix build .#checks-crane-only`;
+calls). Per [DEVELOPMENT.md](../DEVELOPMENT.md), the gate after a part is `nix build .#checks-crane-only`;
 the full `nix flake check` once at the end. A probe run is minutes on softhsm and kryoptic; the
 PQ part is the longest (18 hash variants times a parameter set).
 

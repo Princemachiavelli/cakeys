@@ -379,7 +379,7 @@ fn absent(t: &Target) -> KmError {
         KeyOrigin::Create => "`cakeys create` makes it".to_owned(),
         KeyOrigin::Import => format!("camigrate brings it (camigrate migrate {} --to {})", t.object_name, t.token_name),
         KeyOrigin::File => {
-            format!("camigrate brings it from its file (camigrate import --token {} {})", t.token_name, t.object_name)
+            format!("camigrate brings it from its file (camigrate import {} --to {})", t.object_name, t.token_name)
         }
         KeyOrigin::Adopt => "it is adopted, and nothing cakeys runs puts it there".to_owned(),
     };
@@ -534,8 +534,34 @@ pub fn create(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes:
     Ok(Made::Created(r, changed))
 }
 
+/// What [`delete`] did with the object under the locator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deleted {
+    /// It held the expected identity and was destroyed.
+    Deleted,
+    /// It holds the expected identity: a run without `dry_run` destroys it.
+    WouldDelete,
+    /// Nothing is under the locator.
+    Absent,
+}
+
+impl Deleted {
+    /// Its name in `cakeys delete`'s output.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Deleted::Deleted => "deleted",
+            Deleted::WouldDelete => "would-delete",
+            Deleted::Absent => "absent",
+        }
+    }
+}
+
 /// DELETE + If-Match. Absent is success; only the object identified (and a private key's public
-/// half holding the same key) is removed: anything else under the locator is left alone.
+/// half holding the same key) is removed: anything else under the locator is left alone, and the
+/// realisation is removed from the lock (its object's `ids` stay: the material may live on other
+/// tokens). `dry_run` identifies and checks If-Match as a delete does, and changes nothing.
+/// Returns what it did, and whether it changed the lock.
 ///
 /// # Errors
 ///
@@ -548,9 +574,9 @@ pub fn delete(
     tok: &Token,
     lock: &mut Lock,
     if_match: Option<&str>,
-    write: LockWrite,
+    dry_run: bool,
     notes: &mut Notes,
-) -> Result<bool> {
+) -> Result<(Deleted, bool)> {
     if t.on_token.public_only {
         return Err(KmError::Unsupported(
             format!("{t} is adopted publicOnly; deleting would remove only the public half").into(),
@@ -558,6 +584,7 @@ pub fn delete(
     }
     let loc = &t.on_token.locator;
     // An expected identity is only required when there is something to delete.
+    let mut outcome = Deleted::Absent;
     if let Some(h) = tok.find_key(t.object, loc, false)? {
         // Proven like `resolve`: If-Match must not pass on a public object beside another key.
         let Computed { ids: got, spki, .. } = compute_ids(t, tok, lock, h, plan_mode(t)?)?;
@@ -578,7 +605,12 @@ pub fn delete(
                 format!("{} holds {:?}, expected {expected}; not deleting", t, got.get(scheme.name())).into(),
             ));
         }
+        if dry_run {
+            notes.say(format!("{t} holds {expected}: a delete would destroy it"));
+            return Ok((Deleted::WouldDelete, false));
+        }
         let (n, left) = tok.destroy_identified(h, t.object, loc, spki.as_deref())?;
+        outcome = Deleted::Deleted;
         notes.say(format!("destroyed {n} object(s) for {t}"));
         if left > 0 {
             notes
@@ -595,16 +627,14 @@ pub fn delete(
         ));
     }
     let mut changed = false;
-    if write == LockWrite::Record
-        && let Some(m) = lock.realisations.get_mut(t.spec_name)
-    {
+    if !dry_run && let Some(m) = lock.realisations.get_mut(t.spec_name) {
         changed = m.remove(t.token_name).is_some();
         if m.is_empty() {
             lock.realisations.remove(t.spec_name);
         }
         changed |= lock.drop_unreferenced_observations();
     }
-    Ok(changed)
+    Ok((outcome, changed))
 }
 
 /// A `check` reference in its parts: the object, and the scheme `<object>.id.<scheme>` asks for.

@@ -554,7 +554,7 @@ pub struct ImportCtx<'a> {
 /// attestation must name (`None` exactly for secret keys, which have none).
 ///
 /// `provision` is true only under `lock`: a provider that keeps device state to attest with
-/// (the TPM Attestation Key) may create it then, never on a read (`resolve`, `verify`).
+/// (the TPM Attestation Key) may create it then, never on a read (`resolve`, `check`).
 pub struct AttestCtx<'a> {
     /// An open session on the token, for the objects the module exposes (attestation
     /// certificates).
@@ -604,7 +604,7 @@ pub struct Commitment {
 
 /// When the certificates of an attestation chain must be valid (ISSUES.md B8). `check` holds
 /// every link to its validity period, at the system clock's time unless told another
-/// (`--at`, `--ignore-validity`); every other verb (`lock`, `create`, `verify`, camigrate) judges
+/// (`--at`, `--ignore-validity`); every other verb (`lock`, `create`, `resolve`, camigrate) judges
 /// the dates by the clock too but only warns ([`ChainTime::Warn`]): `check` is what enforces. There is
 /// no default: every token open names one ([`crate::Token::open`]), so no reader of
 /// attestations skips the dates by forgetting to ask (review D5).

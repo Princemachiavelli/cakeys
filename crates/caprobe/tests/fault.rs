@@ -1,5 +1,5 @@
 //! caprobe against a module that fails or lies (`crates/p11-fault`, `docs/FAULT_SHIM.md`):
-//! `SoftHSM` behind the shim, probed with `--write`. The probe records what it met as the
+//! `SoftHSM` behind the shim, probed with `--write-probes`. The probe records what it met as the
 //! module's behaviour, or says what it could not determine; it never guesses.
 //!
 //! Needs `P11_FAULT_MODULE` naming `SoftHSM`, which the per-test runner (nix/test-tokens.sh)
@@ -28,13 +28,13 @@ fn scratch(name: &str) -> Option<Workdir> {
     Some(w)
 }
 
-/// `caprobe probe --token ref --write` under `plan`: the profile, the notes, and how many calls
+/// `caprobe probe --token ref --write-probes` under `plan`: the profile, the notes, and how many calls
 /// each rule decided (the trace's `rule`, from 1), in the plan's order.
 fn probed(w: &Workdir, name: &str, plan: &str, more: &[&str]) -> (i32, String, String, Vec<usize>) {
     let (path, trace) = (w.dir.join(format!("{name}.toml")), w.dir.join(format!("{name}.jsonl")));
     std::fs::write(&path, plan).unwrap();
     let _ = std::fs::remove_file(&trace);
-    let args = [&["probe", "--token", "ref", "--write", "--rsa-max-bits", "4096"][..], more].concat();
+    let args = [&["probe", "--token", "ref", "--write-probes", "--rsa-max-bits", "4096"][..], more].concat();
     let o = w.km_env(&args, &[("P11_FAULT_PLAN", &path), ("P11_FAULT_TRACE", &trace)]);
     let mut fired = vec![0; rules(plan).len()];
     for line in std::fs::read_to_string(&trace).unwrap_or_default().lines() {
@@ -375,7 +375,7 @@ fn the_probe_clears_what_an_interrupted_run_left() {
         [Attribute::Token(true), Attribute::Label(b"cakeys-probe-stale".to_vec()), Attribute::ValueLen(32.into())];
     s.generate_key(&Mechanism::AesKeyGen, &stale).unwrap();
     drop(s);
-    let o = w.km(&["probe", "--token", "ref", "--write", "--rsa-max-bits", "4096"]);
+    let o = w.km(&["probe", "--token", "ref", "--write-probes", "--rsa-max-bits", "4096"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(stderr(&o).contains("destroyed objects an interrupted probe left: cakeys-probe-stale"), "{}", stderr(&o));
     assert_eq!(open_session(&real, "kmtest", "1234").labelled("cakeys-probe-stale").len(), 0);

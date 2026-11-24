@@ -67,12 +67,12 @@ tokenLabel = "main"
 pinFile = "/var/lib/softhsm/pin"
 # What only one tool reads sits in that tool's table, here inline: `probe` (caprobe), `migrate`
 # (camigrate) and `nix` (the Nix library); cakeys reads none of them.
-# probe.scratch marks the token expendable for `caprobe probe --write` (docs/CAPROBE.md): its
+# probe.scratch marks the token expendable for `caprobe probe --write-probes` (docs/CAPROBE.md): its
 # write probes generate, wrap, unwrap and destroy objects, so they run only on a token marked
 # scratch and are refused (17) on any other. Never on a token holding real keys:
 # probe = { scratch = true }
 # migrate.transportWith is the spec of this token's transport key (docs/CAMIGRATE.md D3): sealed moves to this token wrap to it,
-# never to a key picked by what it can do (`camigrate --transport-key` overrides it per run). It
+# never to a key picked by what it can do (`camigrate --transport-spec` overrides it per run). It
 # must realise an RSA private key here declaring CKA_UNWRAP = true and CKA_EXTRACTABLE = false
 # (else 17); realising it records its public key in the lock, so any host exports to this token
 # from the lock alone. `binding = "pop-unwrap"` proves it without CKA_DECRYPT.
@@ -83,7 +83,7 @@ module = "/run/current-system/sw/lib/libtpm2_pkcs11.so"
 tokenLabel = "host"
 # `$NAME` or `${NAME}` takes the path from the environment, so one keys.toml can serve machines
 # with different paths. A malformed reference is refused when the file loads (17); an unset
-# variable is refused (17) where the file is read, at login, so `validate`, which opens no token,
+# variable is unavailable (16) where the file is read, at login, so `validate`, which opens no token,
 # needs no PIN variable.
 pinFile = "$TPM_PIN_FILE"
 # Optional: the provider (the module's quirks profile, ARCHITECTURE.md "Providers") is normally detected from
@@ -131,13 +131,13 @@ pinFile = "/run/secrets/piv-pin"
 # The Security Officer credential, from a file (or `soCredentialEnv = "VAR"`), read only by a
 # step that needs the SO: create or delete on a module
 # that does those only as SO (ykcs11: the PIV management key in hex, or the PIN when the
-# management key is PIN-protected), and `camigrate transport --trusted` on any module (its SO
+# management key is PIN-protected), and `camigrate transport --trust-on` on any module (its SO
 # PIN; docs/CAMIGRATE.md D2). The hex management key logs in without a PIN verification, so it spends
 # no PIN retry; the PIN does.
 soCredentialFile = "/run/secrets/piv-mgm"
 # A device like this holds real keys beside expendable ones, so probe.scratch cannot mark it. For
 # a module that creates only as SO into slots named by CKA_ID (ykcs11), probe.scratchId names the one
-# slot `probe --write` may overwrite (hex CKA_ID: 17 is retired slot 94). Each probe generation
+# slot `probe --write-probes` may overwrite (hex CKA_ID: 17 is retired slot 94). Each probe generation
 # replaces the slot's key and the last one stays (PIV cannot erase a key). The probe refuses a
 # slot holding anything but ykcs11's own placeholder from an earlier generation (17), so a typo
 # never reaches a real key. No other verb reads it.

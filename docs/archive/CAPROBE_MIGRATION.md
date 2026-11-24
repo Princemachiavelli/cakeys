@@ -1,5 +1,8 @@
 # Probed import and export
 
+> Archived 2026-11-23 (review 2026-11-23 D-9): the plan and its log as they stood, not the code as it is;
+> what was built is in [CAPROBE.md](../CAPROBE.md), "What the probe measures"; its Decisions (M1 to M4) are cited from here.
+
 Planned 2026-11-16, against `origin/main` at `0b433d0`. Built the same day: P-a to P-e. See
 "Built" at the end for where each part lives and where it departs from this plan.
 
@@ -9,7 +12,7 @@ profile's `[migration]` table and its `move.*` rows, are replaced by probe outpu
 is regenerated and diffed like every other probed row. camigrate's planner then reads
 measurements, not claims (`create`'s gate and `validate` are still to follow; "Built").
 
-Evidence tags, as in [CAPROBE.md](CAPROBE.md): **[run]** verified in this repo, **[src]** read
+Evidence tags, as in [CAPROBE.md](../CAPROBE.md): **[run]** verified in this repo, **[src]** read
 in this repo's source, **[todo]** not verified yet.
 
 ## Where things stand

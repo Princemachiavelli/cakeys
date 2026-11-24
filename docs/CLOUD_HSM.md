@@ -97,7 +97,7 @@ What the run settled [run]:
 - **The 24-hour destroy window.** The destroy-scheduled duration is fixed at key creation, and
   `libkmsp11` cannot set it. So OpenTofu pre-creates one key per algorithm with 24 hours and no
   version, and the probe adds versions to them (`experimental_create_multiple_versions`, which
-  refuses an algorithm that differs from the key's). `probe --write` checks every key first.
+  refuses an algorithm that differs from the key's). `probe --write-probes` checks every key first.
 - **One run.** It wrote `kmsp11/1.9+hsm` and `kmsp11/1.9+hsm-fips`, identical. Both builds
   report the same `C_GetInfo`: Google, 1.9, Cloud KMS Token, firmware 0.0. That cost 38 versions
   scheduled for destruction, gone after a day.
@@ -371,7 +371,7 @@ Two layers, because their lifetimes differ.
   backup. One entry point per provider with the same three verbs:
   `scripts/cloud/<provider> up | probe | down`, and `scripts/cloud/status`.
 
-`probe` runs `caprobe probe --token <t> --write --rsa-max-bits 4096 --diff <profile> --out <file>`
+`probe` runs `caprobe probe --token <t> --write-probes --rsa-max-bits 4096 --diff <profile> --out <file>`
 on the runner (or here, for GCP) and copies the generated TOML back.
 
 ### Safety against a leaked bill
@@ -390,7 +390,7 @@ on the runner (or here, for GCP) and copies the generated TOML back.
 | Phase | Work | Exit | Spend |
 |---|---|---|---|
 | 0 | Decisions: runner pattern, budgets, accounts/projects (below) | answers recorded | $0 |
-| 1 | **GCP.** `libkmsp11` derivation. `caprobe probe` read-only against a scratch ring, then `--write`. Throttle and back-off. `libkmsp11/1.9+hsm.toml`, the gated test, the regen script | probe is byte-stable twice in a row; destroy semantics and billing while scheduled recorded | $0.5–2 per run, unless scheduled versions bill for 30 days (spike 3) |
+| 1 | **GCP.** `libkmsp11` derivation. `caprobe probe` read-only against a scratch ring, then `--write-probes`. Throttle and back-off. `libkmsp11/1.9+hsm.toml`, the gated test, the regen script | probe is byte-stable twice in a row; destroy semantics and billing while scheduled recorded | $0.5–2 per run, unless scheduled versions bill for 30 days (spike 3) |
 | 2 | **AWS.** Runner and base layer. `cloudhsm-pkcs11` derivation. Bootstrap once. Spike: zero-HSM restore, then (optional, 1 h) tunnel to `127.0.0.1`. `up`/`probe`/`down`. FIPS profile | parked cycle works twice; `status` is empty after `down`; profile committed | ~$10 |
 | 3 | **Azure.** Gate: user sets a ceiling. Reuse the runner module. Spikes: create time, restore-replaces-activation, driver need. Profile | as Phase 2 | ~$15 per attempt |
 | 4 | **Close-out.** Move the conclusions into CAPROBE.md; record the cloud tokens in CONFIG.md; add what each cloud needs to DEVELOPMENT.md's hardware rules (the cloud credentials, the ceiling) | docs consistent | $0 |

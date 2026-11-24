@@ -213,10 +213,10 @@ machine. What a file-born key shows is recorded like any import: `CKA_LOCAL = fa
 `CKA_ALWAYS_SENSITIVE = false` and `CKA_NEVER_EXTRACTABLE = false` (immutables, never
 declared, `attrs.rs`) [src].
 
-**F6. One verb: `camigrate import --token <t>` without `--in`.**
+**F6. One verb: `camigrate import --to <t>` without `--in`.**
 
 ```console
-$ camigrate import --token <t> [<object> ...] [--spec <s> ...] [--dry-run] \
+$ camigrate import [<object> ...] --to <t> [--spec <s> ...] [--dry-run] \
     [--allow-host-plaintext] [--passphrase-file <file>]
 ```
 
@@ -243,8 +243,8 @@ $ camigrate import --token <t> [<object> ...] [--spec <s> ...] [--dry-run] \
   but only when the bytes come from a file: `migrate` from a token still needs `import`.
 - `cakeys create` passes over `file` pairs, giving a reason as it does for `import` pairs
   (`ops.rs`, the `KeyOrigin` match) [src]. `cakeys lock` and
-  `check` on a `file` pair whose object is missing say what makes it: `camigrate import --token
-  <t> <object>`. Today's NotFound text names `cakeys create`.
+  `check` on a `file` pair whose object is missing say what makes it: `camigrate import
+  <object> --to <t>`. Today's NotFound text names `cakeys create`.
 - Refused inside a Nix build, as is every writing verb (camigrate D8).
 
 ## Stages
@@ -328,7 +328,7 @@ Where each part lives:
   schemes with the re-export hint. The new methods are `pkcs8`, `pkcs1`, `sec1` and `raw`
   (`crates/core/src/migrate.rs`). A secret key's hex or base64 file: `secret` and `detect` in
   `keyfile.rs`, `migrate.encoding` (`Encoding`) and its load rules in `config.rs`.
-- **The verb (F6):** `camigrate import --token <t> [<object> ...]`.
+- **The verb (F6):** `camigrate import [<object> ...] --to <t>`.
   - `--in` now lands on `file` pairs too.
   - cakeys' `create` passes over `file` pairs.
   - When a `file` pair's object is missing, `lock` and `check` name the command that brings it

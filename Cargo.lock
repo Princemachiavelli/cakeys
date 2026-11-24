@@ -277,8 +277,10 @@ dependencies = [
  "cakeys-profile",
  "cakeys-tpm2-pkcs11",
  "cakeys-ykcs11",
+ "clap",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

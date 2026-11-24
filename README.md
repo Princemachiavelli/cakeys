@@ -3,8 +3,8 @@
 [![checks](https://github.com/Princemachiavelli/cakeys/actions/workflows/checks.yml/badge.svg)](https://github.com/Princemachiavelli/cakeys/actions/workflows/checks.yml)
 [![License](https://img.shields.io/github/license/Princemachiavelli/cakeys)](LICENSE)
 [![MSRV](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FPrincemachiavelli%2Fcakeys%2Fmain%2FCargo.toml&query=%24.workspace.package%5B%22rust-version%22%5D&label=MSRV&prefix=rustc%20)](Cargo.toml)
-[![coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FPrincemachiavelli%2Fcakeys%2Fbadges%2Fcoverage.json)](docs/COVERAGE_PLAN.md)
-[![mutants caught](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FPrincemachiavelli%2Fcakeys%2Fbadges%2Fmutants.json)](docs/COVERAGE_PLAN.md#mutation-report-2026-11-15)
+[![coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FPrincemachiavelli%2Fcakeys%2Fbadges%2Fcoverage.json)](docs/DEVELOPMENT.md#testing)
+[![mutants caught](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FPrincemachiavelli%2Fcakeys%2Fbadges%2Fmutants.json)](docs/archive/COVERAGE_PLAN.md#mutation-report-2026-11-15)
 
 Content-addressed identity for PKCS#11 objects, as a Nix flake.
 
@@ -24,7 +24,7 @@ on a YubiKey 5C NFC FIPS and an AMD fTPM. `nix run .#demo` walks through it on t
 
 | Tool | Job | Verbs | Document |
 |---|---|---|---|
-| `cakeys` | Pins and verifies | `validate`, `resolve`, `verify`, `lock`, `create`, `delete`, `gc`, `check`; the Nix library and NixOS module | [docs/CAKEYS.md](docs/CAKEYS.md) |
+| `cakeys` | Pins and verifies | `validate`, `resolve`, `lock`, `create`, `delete`, `gc`, `check`; the Nix library and NixOS module | [docs/CAKEYS.md](docs/CAKEYS.md) |
 | `caprobe` | Measures modules into capability profiles; the only tool that creates scratch objects | `probe`, `supports`, `caps` | [docs/CAPROBE.md](docs/CAPROBE.md) |
 | `camigrate` | Moves keys between tokens; the only tool that handles key material | `export`, `import`, `migrate`, `transport` | [docs/CAMIGRATE.md](docs/CAMIGRATE.md) |
 
@@ -38,7 +38,7 @@ A `cakeys` build carries no probe or migration code.
 - **A key is what the software was tested with.** The spec declares type and policy (sign-only,
   non-extractable, …): another type is refused (13), policy drift reported (14), and a key
   generated on the device tells itself apart from an imported one (`CKA_LOCAL`, attestation).
-- **An old backup still holds the material.** `verify` recomputes every identity from the token;
+- **An old backup still holds the material.** `check` recomputes every identity from the token;
   labels only locate.
 - **A module update changed something.** The lock records the module and token behind each
   entry, and `caprobe probe --diff` compares a token with its committed capability profile.
@@ -76,11 +76,11 @@ tokens.softhsm = { locator = { CKA_LABEL = "signing" }, origin = "create" }
 ```
 
 ```console
-$ cakeys -c keys.toml create signing --no-update-lock
+$ cakeys -c keys.toml --new-lock create signing --no-update-lock   # no keys.lock yet: --new-lock
 created 'signing' (spec 'signing-soft') on token 'softhsm'
 error: first use of 'signing' (spec 'signing-soft') on token 'softhsm': the lock pins no identity for it yet; review, then `lock` records it
      got:    sha256-…            # exit 18, compare only: like a fixed-output derivation
-$ cakeys -c keys.toml lock signing   # record it (the default), print the resolved JSON; review the keys.lock diff
+$ cakeys -c keys.toml --new-lock lock signing   # record it, print the resolved JSON; exit 22: review the keys.lock diff
 $ cakeys -c keys.toml check signing     # later: verify, then print the URI (never writes)
 pkcs11:token=main;serial=...;object=signing;type=private
 ```
@@ -89,7 +89,10 @@ Every verb names the object; `--spec` and `--token` narrow it where keys.toml re
 Only `create` makes keys, where keys.toml says `origin = "create"`; `lock` and `check` find what is there. `create`, `lock` and
 `delete` write the lock by default, filling gaps only — a locked ID is never overwritten. A realisation that changed (its locator, spec or policy attributes) is re-recorded,
 and each accepted change is printed (`re-recorded …`). Where the lock cannot be written (a Nix build sandbox, a read-only lock or
-directory) they refuse up front unless `--no-update-lock` is passed.
+directory) they refuse up front (21) unless told not to write (`lock --dry-run`, `delete --dry-run`,
+`create --no-update-lock`). A run that wrote the lock exits 22, never 0, so a script reviews the
+change on purpose; a lock that is not there is refused (17) unless `--new-lock`, so a mistyped
+`--lock` never starts a second one.
 
 ## Supported objects
 

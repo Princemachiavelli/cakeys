@@ -78,6 +78,7 @@ pub fn env(name: &str) -> Option<Env> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("pin"), "1234\n").unwrap();
+    std::fs::write(dir.join("keys.lock"), super::EMPTY_LOCK).unwrap();
     Some(Env { dir, refs })
 }
 
@@ -137,14 +138,15 @@ impl Env {
         if let Some(dry) = twin {
             let real = out.status.code().unwrap();
             // A refusal the dry run saw is the real run's refusal. A dry run that passed promises
-            // only what can be known before anything is created: the real run may still meet
+            // only what can be known before anything is created: the real run succeeds (0, or 22
+            // where it wrote the lock), or may still meet
             // material that is not the locked one (10) or a blob that does not unwrap: 13 where
             // the module says the data is bad, 16 where it says only that it failed (kryoptic's
             // CKR_DEVICE_ERROR for a tampered blob [run], said as such). Any other 16 breaks the
             // promise.
             let unwrap_failed =
                 real == 16 && String::from_utf8_lossy(&out.stderr).contains("damaged or altered bundle");
-            let kept = if dry == 0 { matches!(real, 0 | 10 | 13) || unwrap_failed } else { real == dry };
+            let kept = if dry == 0 { matches!(real, 0 | 22 | 10 | 13) || unwrap_failed } else { real == dry };
             assert!(kept, "camigrate {}: --dry-run exited {dry}, the run itself {real}", args.join(" "));
         }
         out
@@ -243,8 +245,11 @@ fn objects(r: &Ref) -> String {
         .expect("pkcs11-tool (opensc) lists a reference token's objects for the dry-run twin");
     assert!(out.status.success(), "pkcs11-tool on {}: {}", r.name, String::from_utf8_lossy(&out.stderr));
     // Sorted by line: a module may list its objects in another order each time (kryoptic [run]).
+    // A data object's line carries its handle, which SoftHSM numbers afresh in each process (the
+    // same objects listed twice came out as "Data object 6" and "Data object 8" [run]): left out.
     let text = String::from_utf8_lossy(&out.stdout);
-    let mut lines: Vec<&str> = text.lines().collect();
+    let mut lines: Vec<&str> =
+        text.lines().map(|l| if l.starts_with("Data object ") { "Data object" } else { l }).collect();
     lines.sort_unstable();
     lines.join("\n")
 }

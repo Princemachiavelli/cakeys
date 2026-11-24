@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The fixed test keys caprobe's import probes ask a module to take (docs/CAPROBE_MIGRATION.md
+# The fixed test keys caprobe's import probes ask a module to take (docs/archive/CAPROBE_MIGRATION.md
 # M2): test keys, no secret, embedded so a profile regenerates byte for byte. A rerun replaces
 # every key, and with them every committed profile's import rows: run it only to change the set,
 # from the repository root: `crates/caprobe/fixtures/import/make.sh crates/caprobe/fixtures/import`.

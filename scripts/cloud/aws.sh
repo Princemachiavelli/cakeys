@@ -29,7 +29,7 @@
 #           instead of building one.
 # cakeys    runs cakeys on the runner with scripts/cloud/aws/cakeys.toml, the crypto user's PIN in
 #           tmpfs and a lock kept on the runner, against CloudHSM and a SoftHSM token beside it:
-#           `cakeys create`, `verify ec-p256 --token cloudhsm`, `delete ...`. CAKEYS names a
+#           `cakeys create`, `check ec-p256 --token cloudhsm`, `delete ...`. CAKEYS names a
 #           cakeys binary to use instead of building one; CAKEYS_AWS_CONFIG another keys.toml,
 #           CAKEYS_AWS_LOCK another lock path on the runner (crates/cli/tests/cloud.rs: one per run).
 # camigrate the same for camigrate (CAMIGRATE): `camigrate migrate movable --from softhsm --to
@@ -355,7 +355,7 @@ EOF
     runner install -D -m 644 /dev/stdin /run/caprobe/profile.toml <"$out"
   fi
   runner "$(realpath "$bin")" --config /run/caprobe/keys.toml probe --profiles /run/caprobe/profiles \
-    --token cloudhsm --write --name "$name" "${diff[@]}" --out /run/caprobe/profile.toml || rc=$?
+    --token cloudhsm --write-probes --name "$name" "${diff[@]}" --out /run/caprobe/profile.toml || rc=$?
   runner rm -f /run/caprobe/pin
   # 15 is drift against the committed profile: written anyway, for review.
   [[ $rc == 0 || $rc == 15 ]] || exit "$rc"

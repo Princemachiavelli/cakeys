@@ -69,7 +69,7 @@ fn the_read_only_probe_conforms() {
         yubikey_label(&module)
     ));
     let km = |args: &[&str]| run_within(&w.dir.join("keys.toml"), args, RUN_LIMIT);
-    let write = km(&["probe", "--token", "yubikey", "--write", "--rsa-max-bits", "4096"]);
+    let write = km(&["probe", "--token", "yubikey", "--write-probes", "--rsa-max-bits", "4096"]);
     assert_eq!(code(&write), 17, "{}", stderr(&write));
     assert!(stderr(&write).contains("Security Officer"), "{}", stderr(&write));
     assert!(stderr(&write).contains("scratchId"), "{}", stderr(&write));

@@ -19,12 +19,12 @@ fn always_authenticate_keys_prove_possession_with_a_per_use_pin() {
     let rsa = "keyType = \"CKK_RSA\"\nmodulusBits = 2048";
     let declared = "CKA_SIGN = true, CKA_ALWAYS_AUTHENTICATE = true, CKA_DESTROYABLE = true";
     e.config(&spec(rsa, "always-auth-rsa", declared));
-    let o = e.km(&["create", "--spec", "s", "--token", "ref", "--update-lock"]);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let o = e.km(&["create", "--spec", "s", "--token", "ref"]);
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     let r = &e.lock()["realisations"]["s"]["ref"];
     assert_eq!(r["binding"].as_str(), Some("pop-sign-pin"), "{r}");
     assert_eq!(r["policy"]["CKA_ALWAYS_AUTHENTICATE"].as_bool(), Some(true), "{r}");
-    let o = e.km(&["verify", "--spec", "s", "--token", "ref"]);
+    let o = e.km(&["check", "--spec", "s", "--token", "ref"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
 
     // The module enforces the policy: signing without the context-specific login fails, so the
@@ -49,14 +49,14 @@ fn always_authenticate_keys_prove_possession_with_a_per_use_pin() {
     for (key, label, hidden) in
         [(ec, "always-auth-ec", None), (ec, "always-auth-raw", Some("CKM_ECDSA_SHA256")), (ed, "always-auth-ed", None)]
     {
-        std::fs::remove_file(e.dir.join("keys.lock")).unwrap();
+        std::fs::write(e.dir.join("keys.lock"), EMPTY_LOCK).unwrap();
         e.config(&spec(key, label, declared));
         let hidden = hidden.map(|m| e.hiding(m));
         let envs: Vec<(&str, &std::path::Path)> = hidden.iter().map(|(var, conf)| (*var, conf.as_path())).collect();
-        let o = e.km_env(&["create", "--spec", "s", "--token", "ref", "--update-lock"], &envs);
-        assert_eq!(code(&o), 0, "{label}: {}", stderr(&o));
+        let o = e.km_env(&["create", "--spec", "s", "--token", "ref"], &envs);
+        assert_eq!(code(&o), 22, "{label}: {}", stderr(&o));
         assert_eq!(e.lock()["realisations"]["s"]["ref"]["binding"].as_str(), Some("pop-sign-pin"), "{label}");
-        assert_eq!(code(&e.km_env(&["verify", "--spec", "s", "--token", "ref"], &envs)), 0, "{label}");
+        assert_eq!(code(&e.km_env(&["check", "--spec", "s", "--token", "ref"], &envs)), 0, "{label}");
     }
 }
 
@@ -66,12 +66,12 @@ fn binding_downgrade_is_refused() {
     let Some(e) = env("binding") else { return };
     let body = EC.replace("ec-lifecycle", "binding");
     e.config(&body);
-    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 22);
     let opted_out = body.replace("origin = \"create\" }", "origin = \"create\", binding = \"token-asserted\" }");
     assert_ne!(opted_out, body);
     e.config(&opted_out);
-    assert_eq!(e.code(&["verify", "--spec", "signing-soft", "--token", "ref"]), 14);
-    assert_eq!(e.code(&["lock", "--spec", "signing-soft", "--token", "ref", "--update-lock"]), 14);
+    assert_eq!(e.code(&["check", "--spec", "signing-soft", "--token", "ref"]), 14);
+    assert_eq!(e.code(&["lock", "--spec", "signing-soft", "--token", "ref"]), 14);
     // Without CKA_SIGN and without the opt-in, the spec is invalid.
     e.config(&body.replace("CKA_SIGN = true", "CKA_SIGN = false"));
     assert_eq!(e.code(&["validate"]), 17);
@@ -114,26 +114,26 @@ fn derive_and_decrypt_only_keys_prove_possession() {
     e.config(&format!(
         "{ec}tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-ecdh\" }}, origin = \"create\", binding = \"pop-ecdh\" }}\n"
     ));
-    assert_eq!(e.code(&["create", "--spec", "k", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "--spec", "k", "--token", "ref"]), 22);
     let real = &e.lock()["realisations"]["k"]["ref"];
     assert_eq!(real["binding"].as_str(), Some("pop-ecdh"));
-    assert_eq!(e.code(&["verify", "--spec", "k", "--token", "ref"]), 0);
+    assert_eq!(e.code(&["check", "--spec", "k", "--token", "ref"]), 0);
     assert!(e.lock()["objects"]["k"]["ids"].get("rfc7093m4").is_some(), "the object id was recorded");
 
     // Decrypt-only RSA key, proven by decrypting (OAEP-SHA256).
     e.config(&format!("{rsa}tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-oaep\" }}, origin = \"create\", binding = \"pop-decrypt\" }}\n"));
-    assert_eq!(e.code(&["create", "--spec", "r", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "--spec", "r", "--token", "ref"]), 22);
     assert_eq!(e.lock()["realisations"]["r"]["ref"]["binding"].as_str(), Some("pop-decrypt"));
-    assert_eq!(e.code(&["verify", "--spec", "r", "--token", "ref"]), 0);
+    assert_eq!(e.code(&["check", "--spec", "r", "--token", "ref"]), 0);
 
     // Unwrap-only RSA key, proven by unwrapping: no CKA_DECRYPT, nothing leaves the token.
     e.config(&format!(
         "{unwrap}tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-unwrap\" }}, origin = \"create\", binding = \"pop-unwrap\" }}\n"
     ));
-    let o = e.km(&["create", "--spec", "u", "--token", "ref", "--update-lock"]);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let o = e.km(&["create", "--spec", "u", "--token", "ref"]);
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     assert_eq!(e.lock()["realisations"]["u"]["ref"]["binding"].as_str(), Some("pop-unwrap"));
-    assert_eq!(e.code(&["verify", "--spec", "u", "--token", "ref"]), 0);
+    assert_eq!(e.code(&["check", "--spec", "u", "--token", "ref"]), 0);
 
     // Back to the EC spec for the conflict phase.
     e.config(&format!(
@@ -152,8 +152,8 @@ fn derive_and_decrypt_only_keys_prove_possession() {
         &usage,
         &[],
     );
-    assert_swapped_key_conflict(&e.km(&["verify", "--spec", "k", "--token", "ref"]));
-    assert_eq!(e.code(&["lock", "--spec", "k", "--token", "ref", "--no-update-lock"]), 13);
+    assert_swapped_key_conflict(&e.km(&["check", "--spec", "k", "--token", "ref"]));
+    assert_eq!(e.code(&["lock", "--spec", "k", "--token", "ref", "--dry-run"]), 13);
 }
 
 /// A proof the token cannot give is refused, never skipped: without the proof's mechanism the
@@ -166,10 +166,10 @@ fn proofs_the_token_cannot_give_are_refused() {
               [specs.k]\nobject = \"k\"\nattributes = { CKA_DERIVE = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n\
               tokens.ref = { locator = { CKA_LABEL = \"pop-refused-ec\" }, origin = \"create\", binding = \"pop-ecdh\" }\n\n";
     e.config(ec);
-    assert_eq!(e.code(&["create", "k", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "k"]), 22);
     // The same token through a module configuration that hides the proof's mechanism.
     let (var, hidden) = e.hiding("CKM_ECDH1_DERIVE");
-    let o = e.km_env(&["verify", "k", "--token", "ref"], &[(var, hidden.as_path())]);
+    let o = e.km_env(&["check", "k", "--token", "ref"], &[(var, hidden.as_path())]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     let said = stderr(&o);
     assert!(said.contains("CKM_ECDH1_DERIVE") && said.contains("token-asserted"), "{said}");
@@ -192,7 +192,7 @@ fn proofs_the_token_cannot_give_are_refused() {
         .replace("[specs.k]\nobject = \"k\"", "[specs.a]\nobject = \"a\"")
         .replace(", CKA_SENSITIVE = true, CKA_EXTRACTABLE = false", "");
     e.config(&format!("{ec}{always}"));
-    let o = e.km(&["lock", "a", "--token", "ref", "--no-update-lock"]);
+    let o = e.km(&["lock", "a", "--token", "ref", "--dry-run"]);
     let said = stderr(&o);
     assert!(said.contains("CKA_ALWAYS_AUTHENTICATE") && said.contains("pop-sign"), "{said}");
     assert_eq!(code(&o), 16, "{said}");
@@ -219,17 +219,17 @@ fn proofs_fall_back_to_what_the_token_has() {
     e.config(&(ec("s", "CKA_SIGN", "pop-sign") + &ec("d", "CKA_DERIVE", "pop-ecdh") + &rsa));
     for (spec, mechanism) in [("s", "CKM_ECDSA_SHA256"), ("d", "CKM_SHA256_HMAC"), ("r", "CKM_RSA_PKCS_OAEP")] {
         let (var, conf) = e.hiding(mechanism);
-        let create = ["create", "--spec", spec, "--token", "ref", "--update-lock"];
+        let create = ["create", "--spec", spec, "--token", "ref"];
         let o = e.km_env(&create, &[(var, conf.as_path())]);
-        assert_eq!(code(&o), 0, "{mechanism} hidden: {}", stderr(&o));
-        assert_eq!(code(&e.km_env(&["verify", "--spec", spec, "--token", "ref"], &[(var, conf.as_path())])), 0);
+        assert_eq!(code(&o), 22, "{mechanism} hidden: {}", stderr(&o));
+        assert_eq!(code(&e.km_env(&["check", "--spec", spec, "--token", "ref"], &[(var, conf.as_path())])), 0);
     }
     // Another private key under the derive-only locator: the extractable path's comparison fails.
     let usage = [Attribute::Derive(true), Attribute::Sensitive(true), Attribute::Extractable(false)];
     let p256 = [Attribute::EcParams(P256.to_vec())];
     swap_private_key(&e.session(), "pop-fallback-d", &Mechanism::EccKeyPairGen, &p256, &usage, &[]);
     let (var, conf) = e.hiding("CKM_SHA256_HMAC");
-    assert_swapped_key_conflict(&e.km_env(&["verify", "--spec", "d", "--token", "ref"], &[(var, conf.as_path())]));
+    assert_swapped_key_conflict(&e.km_env(&["check", "--spec", "d", "--token", "ref"], &[(var, conf.as_path())]));
 }
 
 /// What a key cannot give its proof with: a `CKA_ALWAYS_AUTHENTICATE` key on a token with no PIN
@@ -286,19 +286,19 @@ fn proofs_the_key_will_not_give_are_refused() {
     ));
     assert_eq!(anon, REF.provider == "kryoptic");
     if anon {
-        let o = e.km(&["lock", "--spec", "anon", "--token", "ref-anon", "--no-update-lock"]);
+        let o = e.km(&["lock", "--spec", "anon", "--token", "ref-anon", "--dry-run"]);
         assert_eq!(code(&o), 16, "{}", stderr(&o));
         assert!(stderr(&o).contains("needs the user PIN per use"), "{}", stderr(&o));
     }
     for (name, mechanism) in [("derive", "CKM_ECDH1_DERIVE"), ("unwrap", "CKM_RSA_PKCS_OAEP")] {
-        let o = e.km(&["lock", "--spec", name, "--token", "ref", "--no-update-lock"]);
+        let o = e.km(&["lock", "--spec", name, "--token", "ref", "--dry-run"]);
         assert_eq!(code(&o), 15, "{name}: {}", stderr(&o));
         assert!(stderr(&o).contains(&format!("CKA_ALLOWED_MECHANISMS allows none of {mechanism}")), "{}", stderr(&o));
     }
-    assert_eq!(e.code(&["lock", "--spec", "decrypt", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "decrypt", "--token", "ref"]), 22);
     // The same on the extractable derive path (no HMAC for the sealed one).
     let (var, conf) = e.hiding("CKM_SHA256_HMAC");
-    let o = e.km_env(&["lock", "--spec", "derive", "--token", "ref", "--no-update-lock"], &[(var, conf.as_path())]);
+    let o = e.km_env(&["lock", "--spec", "derive", "--token", "ref", "--dry-run"], &[(var, conf.as_path())]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("allows none of CKM_ECDH1_DERIVE"), "{}", stderr(&o));
 }
@@ -339,8 +339,8 @@ fn a_key_bound_to_one_signature_proves_in_it() {
     drop(s);
     e.config(&config);
     for (name, _) in &bound {
-        let o = e.km(&["lock", name, "--token", "ref", "--update-lock"]);
-        assert_eq!(code(&o), 0, "{name}: {}", stderr(&o));
+        let o = e.km(&["lock", name, "--token", "ref"]);
+        assert_eq!(code(&o), 22, "{name}: {}", stderr(&o));
         assert_eq!(e.code(&["check", name, "--token", "ref"]), 0, "{name}");
     }
 }
@@ -421,7 +421,7 @@ fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
     let slot_cert = piv.slot_cert();
     let device_cert = piv.device_cert();
     let refused = |exit: i32, why: &str| {
-        let o = e.km(&["lock", "--spec", "piv", "--token", "yk", "--no-update-lock"]);
+        let o = e.km(&["lock", "--spec", "piv", "--token", "yk", "--dry-run"]);
         assert_eq!(code(&o), exit, "{}", stderr(&o));
         assert!(stderr(&o).contains(why), "expected {why:?} in {}", stderr(&o));
     };
@@ -484,8 +484,8 @@ fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
     assert!(stderr(&o).contains("needs a Security Officer session"), "{}", stderr(&o));
     // ykcs11 clears only a slot's certificate on delete and keeps the key: a delete is refused (15)
     // with the tool that does remove it, never reported as done.
-    assert_eq!(e.code(&["lock", "--spec", "sig", "--token", "yk", "--update-lock"]), 0);
-    let o = e.km(&["delete", "--spec", "sig", "--token", "yk", "--update-lock"]);
+    assert_eq!(e.code(&["lock", "--spec", "sig", "--token", "yk"]), 22);
+    let o = e.km(&["delete", "--spec", "sig", "--token", "yk"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("ykman piv keys delete"), "{}", stderr(&o));
     // An admin credential the module refuses: the SO step is unavailable (16), never retried.

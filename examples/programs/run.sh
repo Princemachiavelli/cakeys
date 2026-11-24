@@ -14,7 +14,7 @@ export PROGRAMS_PIN_FILE=$work/pin
 install -m 644 "$examples/programs/keys.toml" keys.toml
 export CAKEYS_CONFIG=$work/keys.toml
 
-expect 0 cakeys create signing
+expect 22 cakeys --new-lock create signing
 echo "signed from Python" >message
 expect 0 python3 "$examples/programs/sign.py" signing <message
 cp stdout message.sig

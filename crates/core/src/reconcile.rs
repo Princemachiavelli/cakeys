@@ -60,36 +60,68 @@ pub struct Resolved {
     pub public_key: Option<Vec<u8>>,
 }
 
-/// What a run has to say besides its verdict, in order. The caller prints them on success and
-/// on error alike (before the error), so a warning is never lost to a failure after it.
+/// What a run has to say besides its verdict, in order. A command line's notes
+/// ([`Notes::streaming`]) go to stderr as they are said, so a run killed part-way has said
+/// everything up to there, in the order it happened (review 2026-11-23 C-7); a library caller's
+/// and a test's are kept ([`Notes::lines`]).
 #[derive(Debug, Default)]
-pub struct Notes(Vec<String>);
+pub struct Notes {
+    lines: Vec<String>,
+    streaming: bool,
+    lock_written: bool,
+}
 
 impl Notes {
+    /// Notes that are printed to stderr as each is said, and kept as well.
+    #[must_use]
+    pub fn streaming() -> Notes {
+        Notes { streaming: true, ..Notes::default() }
+    }
+
+    fn push(&mut self, line: String) {
+        if self.streaming {
+            eprintln!("{line}");
+        }
+        self.lines.push(line);
+    }
+
     /// A line as is (`created …`, `updated …`).
     pub fn say(&mut self, line: impl Into<String>) {
-        self.0.push(line.into());
+        self.push(line.into());
     }
 
     /// A `note:` line: something worth knowing that changes no verdict.
     pub fn note(&mut self, msg: impl std::fmt::Display) {
-        self.0.push(format!("note: {msg}"));
+        self.push(format!("note: {msg}"));
     }
 
     /// A `warning:` line: drift or a change the run tolerates, but should be looked at.
     pub fn warn(&mut self, msg: impl std::fmt::Display) {
-        self.0.push(format!("warning: {msg}"));
+        self.push(format!("warning: {msg}"));
     }
 
     /// Every line so far, in order.
     #[must_use]
     pub fn lines(&self) -> &[String] {
-        &self.0
+        &self.lines
+    }
+
+    /// The run wrote the lock (created or changed it), at `path`: said, and a run that otherwise
+    /// succeeds exits [`LOCK_WRITTEN`](crate::LOCK_WRITTEN), not 0.
+    pub fn lock_written(&mut self, path: &std::path::Path) {
+        self.lock_written = true;
+        self.say(format!("updated {}", path.display()));
+    }
+
+    /// Whether [`Self::lock_written`] was said.
+    #[must_use]
+    pub fn wrote_lock(&self) -> bool {
+        self.lock_written
     }
 }
 
 /// Whether a run records what the lock lacks (`lock`, `delete` by default) or only compares
-/// (`--no-update-lock`, and always for `verify` and `check`).
+/// (`lock --dry-run`, `create --no-update-lock`, and always for `check`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockWrite {
     /// Only compare with the lock.

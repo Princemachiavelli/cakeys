@@ -107,106 +107,118 @@ pub mod fuzzing {
     }
 }
 
-/// Move keys between PKCS#11 tokens, checked against keys.lock (docs/CAMIGRATE.md).
-///
-/// Exit codes: 0 ok, 10 the material differs from the lock, 11 not found, 12 ambiguous, 13
-/// the target refused (a tampered bundle, an occupied locator), 14 precondition failed, 15
-/// unsupported (an object cannot move as invoked), 16 unavailable, 17 invalid input, 21 the
-/// lock cannot be written, 1 other.
+/// Move keys between PKCS#11 tokens, checked against keys.lock (docs/CAMIGRATE.md). Every verb
+/// names its direction: `--from` the token the objects are on, `--to` where they go.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
     /// Declarative input (keys.toml).
     #[arg(short, long, env = "CAKEYS_CONFIG")]
     config: PathBuf,
-    /// Lock file; defaults to the config path with a `.lock` extension.
+    /// Lock file (keys.lock); defaults to the config path with a `.lock` extension. It must
+    /// exist, unless --new-lock.
     #[arg(short, long, env = "CAKEYS_LOCK")]
     lock: Option<PathBuf>,
     /// Override a token's PKCS#11 module: `<token>=<path>` (repeatable).
     #[arg(long = "module", value_name = "TOKEN=PATH")]
     modules: Vec<String>,
+    /// Start a lock where none is: without it, a lock that is not there is refused (17), so a
+    /// mistyped --lock never becomes a second lock.
+    #[arg(long, global = true)]
+    new_lock: bool,
+    /// Print the reports (the --dry-run plans of `export` and `migrate`) as JSON.
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Export objects realised on a token, shaped for a target (docs/CAMIGRATE.md): with --dry-run, per
-    /// object the method, how exposed the material is on the way, and why not when it cannot
-    /// move; else the keys, sealed to the target's transport key, and the public objects as one
-    /// bundle for `import`.
-    /// Named objects are all or nothing: one that cannot move fails the export and no bundle is
-    /// written.
+    /// Export objects realised on --from, shaped for where they go: a bundle for `import` on
+    /// --to (the keys sealed to its transport key, the public objects as they are), the same
+    /// sealed to the key of a transport file, or one key in a passphrase-protected key file.
+    /// With --dry-run, per object the method, how exposed the material is on the way, and why
+    /// not when it cannot move. Named objects are all or nothing: one that cannot move fails
+    /// the export and nothing is written.
+    #[command(group(clap::ArgGroup::new("destination").args(["to", "to_transport_file", "to_key_file"]).required(true)))]
     Export {
-        /// The objects to export; default: every object realised on --token that can move (the
+        /// The objects to export; default: every object realised on --from that can move (the
         /// others warned about, except a spec's `noExport` and a token's transport key).
         objects: Vec<String>,
-        /// The source token.
-        #[arg(long)]
-        token: String,
-        /// The intended target token in keys.toml: its capabilities are read from the open token,
-        /// else from what the lock recorded there.
-        #[arg(long, required_unless_present_any = ["transport", "to_file"])]
-        target: Option<String>,
-        /// The target's transport file (`camigrate transport`), for a target this host cannot
-        /// reach.
-        #[arg(long, conflicts_with = "target")]
-        transport: Option<PathBuf>,
-        /// Export to a passphrase-protected file instead of a token.
-        #[arg(long, value_enum, conflicts_with_all = ["target", "transport"])]
-        to_file: Option<FileArg>,
-        /// Where to write the bundle (default: stdout), or the key file (required to write one).
-        #[arg(long)]
-        out: Option<PathBuf>,
-        /// The passphrase a key file is encrypted under, read from this file (one line);
-        /// required to write one.
-        #[arg(long, value_name = "FILE")]
-        passphrase_file: Option<PathBuf>,
-        #[command(flatten)]
-        how: MoveArgs,
-    },
-    /// Import a bundle (`export`'s) on a token, each key under the spec that realises its object
-    /// there: checked against the lock before the token is touched, unwrapped with the transport
-    /// key realised there, then recorded with where it came from. Each key on its own: one that
-    /// fails (an identity that is not the locked one is 10) leaves nothing, the others still
-    /// import, and the run exits with the first failure.
-    /// Without --in, import each object a pair on --token says is born in a file
-    /// (`origin = "file"`) from its object's `migrate.file` (docs/FILE.md), each on its own as well.
-    Import {
-        /// Without --in: the objects to import from their files; default: every one a pair on
-        /// --token says `origin = "file"` for.
-        #[arg(conflicts_with = "input")]
-        objects: Vec<String>,
-        #[arg(long)]
-        token: String,
-        /// The spec to realise an object under, when it has several on --token (repeatable).
-        #[arg(long)]
-        spec: Vec<String>,
-        /// The bundle.
-        #[arg(long = "in", value_name = "BUNDLE")]
-        input: Option<PathBuf>,
-        /// Check the bundle, the key file or the objects' files against the lock and the token,
-        /// and import nothing.
-        #[arg(long)]
-        dry_run: bool,
-        /// Read --in as a passphrase-protected key file (`export --to-file`'s: encrypted PKCS#8
-        /// or PKCS#12) under the passphrase in this file, not as a bundle. Without --in, the
-        /// passphrase of every encrypted file, over keys.toml's. Needs --allow-host-plaintext:
-        /// the key is in this process's memory on the way in.
-        #[arg(long, value_name = "FILE", requires = "allow_host_plaintext")]
-        passphrase_file: Option<PathBuf>,
-        /// Allow a key file's plaintext in this process's memory (docs/CAMIGRATE.md D2).
-        #[arg(long)]
-        allow_host_plaintext: bool,
-    },
-    /// Move objects from one token to another, both reachable from this host (docs/CAMIGRATE.md):
-    /// each is created on --to and recorded in the lock with where it came from. Public objects
-    /// move as they are; keys sealed to --to's transport key, through the host only wrapped.
-    Migrate {
-        /// The object to move; default: every object realised on --from.
-        object: Option<String>,
+        /// The token the objects are on.
         #[arg(long)]
         from: String,
+        /// The token in keys.toml the bundle is for: its capabilities are read from the open
+        /// token, else from what the lock recorded there.
+        #[arg(long)]
+        to: Option<String>,
+        /// The transport file (`camigrate transport`) of a token this host cannot reach.
+        #[arg(long, value_name = "FILE")]
+        to_transport_file: Option<PathBuf>,
+        /// One key, to a passphrase-protected key file (needs --out and --passphrase-file).
+        #[arg(long, value_enum)]
+        to_key_file: Option<FileArg>,
+        /// Where to write the bundle (default: stdout), or the key file.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// The passphrase the key file is encrypted under, read from this file (one line).
+        #[arg(long, value_name = "FILE", requires = "to_key_file")]
+        passphrase_file: Option<PathBuf>,
+        /// The transport key's spec on the destination token; default: its `transportWith`.
+        #[arg(long, value_name = "SPEC", conflicts_with = "to_key_file")]
+        transport_spec: Option<String>,
+        /// Allow the key's plaintext in this process's memory, which a key file needs.
+        #[arg(long, requires = "to_key_file")]
+        allow_host_plaintext: bool,
+        /// Print the plan and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Import onto --to: a bundle (`export`'s), each key under the spec that realises its object
+    /// there, unwrapped with the transport key realised there; or a key file, the object the lock
+    /// pins with its key's identity; or, without --in, each object a pair on --to says is born
+    /// in a file (`origin = "file"`), from its object's `migrate.file` (docs/FILE.md). Each
+    /// checked against the lock before the token is touched and recorded with where it came
+    /// from, each on its own: one that fails leaves nothing, the others still import, and the
+    /// run exits with the first failure. Prints each object's outcome, as a JSON array.
+    Import {
+        /// Without --in: the objects to import from their files; default: every one a pair on
+        /// --to says `origin = "file"` for.
+        #[arg(conflicts_with = "input")]
+        objects: Vec<String>,
+        /// The token they go to.
+        #[arg(long)]
+        to: String,
+        /// The spec to realise an object under, when it has several on --to (repeatable).
+        #[arg(long)]
+        spec: Vec<String>,
+        /// A bundle, or a key file (told apart by what the file holds).
+        #[arg(long = "in", value_name = "FILE")]
+        input: Option<PathBuf>,
+        /// The passphrase of an encrypted key file, read from this file; without --in, of every
+        /// encrypted file, over keys.toml's.
+        #[arg(long, value_name = "FILE")]
+        passphrase_file: Option<PathBuf>,
+        /// Allow a key file's plaintext in this process's memory, which a key file needs.
+        #[arg(long)]
+        allow_host_plaintext: bool,
+        /// Check each object against the lock and the token, and import nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Move objects from --from to --to, both reachable from this host: each is created on --to
+    /// and recorded in the lock with where it came from. Public objects move as they are; keys
+    /// sealed to --to's transport key, through the host only wrapped. Each on its own: one that
+    /// fails is undone, the others still move. Prints each object's outcome, as a JSON array
+    /// (with --dry-run, the plan).
+    Migrate {
+        /// The objects to move; default: every object realised on --from.
+        objects: Vec<String>,
+        /// The token they are on.
+        #[arg(long)]
+        from: String,
+        /// The token they go to.
         #[arg(long)]
         to: String,
         /// The spec to realise an object under on --to, when it has several there (repeatable).
@@ -215,43 +227,43 @@ enum Cmd {
         #[command(flatten)]
         how: MoveArgs,
     },
-    /// Write the transport file for a token's transport key (docs/CAMIGRATE.md D3): an RSA private
-    /// key that may unwrap, realised and locked on the target. Exports to this token wrap to it.
-    /// With --trusted, instead make the source's SO trust it (D2, `enforced`).
+    /// Write the transport file of a token's transport key: an RSA private key there that may
+    /// unwrap, realised and locked. Exports to the token seal to it. With --trust-on, instead
+    /// make that token's security officer trust it, so its keys marked wrap-with-trusted wrap
+    /// under it and nothing else.
     Transport {
         /// The transport key's object; default: the token's `migrate.transportWith`.
         object: Option<String>,
         /// The transport key's spec, where the object has several on --token.
         #[arg(long)]
         spec: Option<String>,
-        /// The target token the key is on.
+        /// The token the transport key is on.
         #[arg(long)]
         token: String,
-        /// Where to write it; default: stdout.
-        #[arg(long, conflicts_with = "trusted")]
+        /// Where to write the transport file; default: stdout.
+        #[arg(long, conflicts_with = "trust_on")]
         out: Option<PathBuf>,
-        /// The source token whose SO marks a copy of the transport key `CKA_TRUSTED` (with its
-        /// `soCredentialFile`/`soCredentialEnv`), from the public key the lock records: a key there with
-        /// `CKA_WRAP_WITH_TRUSTED` then wraps under it and nothing else.
+        /// The source token whose security officer marks a copy of the transport key
+        /// `CKA_TRUSTED` (with its `soCredentialFile`/`soCredentialEnv`), from the public key
+        /// the lock records.
         #[arg(long, value_name = "SOURCE")]
-        trusted: Option<String>,
+        trust_on: Option<String>,
     },
 }
 
-/// How `export` and `migrate` may move material.
+/// How `migrate` may move material; `export` takes the same flags.
 #[derive(clap::Args)]
 struct MoveArgs {
     /// Print the plan and move nothing.
     #[arg(long)]
     dry_run: bool,
-    /// The target's transport key, by its spec (docs/CAMIGRATE.md D3); default: the target token's
-    /// `transportWith`. A transport file must name that key of its token.
-    #[arg(long)]
-    transport_key: Option<String>,
-    /// Print the plan as JSON.
-    #[arg(long)]
+    /// The transport key's spec on --to; default: its `transportWith`.
+    #[arg(long, value_name = "SPEC")]
+    transport_spec: Option<String>,
+    /// `--json`, the global flag: the plan as JSON.
+    #[arg(skip)]
     json: bool,
-    /// Allow the `host` and `file` paths: plaintext in this process's memory (docs/CAMIGRATE.md D2).
+    /// Allow the `host` and `file` methods, which put plaintext in this process's memory.
     #[arg(long)]
     allow_host_plaintext: bool,
 }
@@ -262,11 +274,12 @@ enum FileArg {
     Pkcs12,
 }
 
-/// The command line's definition: its verbs and flags, for the test that every one of them is
-/// used by an integration test (`tests/common/surface.rs`).
+/// The command line's definition: its verbs and flags, with the exit codes after its help, for
+/// parsing and for the test that every flag is used by an integration test
+/// (`tests/common/surface.rs`).
 #[must_use]
 pub fn command() -> clap::Command {
-    <Cli as clap::CommandFactory>::command()
+    cakeys_cli_common::with_exit_codes(<Cli as clap::CommandFactory>::command())
 }
 
 /// Run the command line with the given providers; maps errors to the documented exit codes.
@@ -278,83 +291,83 @@ pub fn main(registry: &Registry) -> ExitCode {
 /// Parse the arguments, then load keys.toml and the lock — refusing up front a run that writes a
 /// lock it cannot (docs/CAMIGRATE.md D8: never inside a Nix build) — and run the verb.
 fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let mut cli: Cli = cakeys_cli_common::parse(command());
+    if let Cmd::Migrate { how, .. } = &mut cli.cmd {
+        how.json = cli.json;
+    }
     let opener = Opener::load(&cli.config, &cli.modules, registry, notes)?;
     let lock_path = cli.lock.clone().unwrap_or_else(|| cli.config.with_extension("lock"));
+    // A key file given to `import --in` is told from a bundle by what it holds (review 2026-11-23
+    // C-6), before anything else is decided by it.
+    let key_file = match &cli.cmd {
+        Cmd::Import { input: Some(path), .. } => {
+            let bytes = std::fs::read(path).map_err(KmError::io(format_args!("reading {}", path.display())))?;
+            (!Bundle::is_bundle(&bytes)).then_some(path.as_path())
+        }
+        _ => None,
+    };
     // A real `migrate` or `import` writes the lock; it holds the advisory sidecar lock across load
     // and save, as cakeys' writing verbs do. A real `export` is an admin operation too (D8).
     let writes = matches!(&cli.cmd, Cmd::Migrate { how, .. } if !how.dry_run)
         || matches!(&cli.cmd, Cmd::Import { dry_run: false, .. });
-    let exports = matches!(&cli.cmd, Cmd::Export { how, .. } if !how.dry_run);
+    let exports = matches!(&cli.cmd, Cmd::Export { dry_run: false, .. });
     // A key file is decrypted into this process's memory, also to check it (--dry-run); so is
     // an object's own file, without --in.
-    let reads_key_file =
-        matches!(&cli.cmd, Cmd::Import { passphrase_file: Some(_), .. } | Cmd::Import { input: None, .. });
-    let trusts = matches!(&cli.cmd, Cmd::Transport { trusted: Some(_), .. });
-    if (exports || reads_key_file || trusts) && in_nix_build() {
-        let verb = match (exports, reads_key_file) {
-            (true, _) => "export",
-            (_, true) => "import of a key file",
-            _ => "transport --trusted",
-        };
-        return Err(KmError::PreconditionFailed(
-            format!(
-                "{verb} is an admin operation (docs/CAMIGRATE.md D8), refused inside a Nix build \
-                 ({ALLOW_NIX_STORE_KEYS}=1 runs it as outside, for throwaway keys only)"
-            )
-            .into(),
-        )
-        .into());
-    }
-    if let Cmd::Migrate { to: target, .. } | Cmd::Import { token: target, .. } = &cli.cmd {
+    let reads_key_file = key_file.is_some() || matches!(&cli.cmd, Cmd::Import { input: None, .. });
+    let trusts = matches!(&cli.cmd, Cmd::Transport { trust_on: Some(_), .. });
+    refuse_admin_in_nix_build(exports, reads_key_file, trusts)?;
+    if let Cmd::Migrate { to: target, .. } | Cmd::Import { to: target, .. } = &cli.cmd {
         needs_login(&opener.cfg, target)?;
     }
-    let (lock, _update_guard) = read_lock(&lock_path, writes, "moving keys records them there")?;
+    let instead = "run it outside a Nix build sandbox, or pass --dry-run";
+    let (lock, _update_guard) = read_lock(&lock_path, cli.new_lock, writes, instead)?;
     let mut run = Run { opener, lock, lock_path };
     match &cli.cmd {
-        Cmd::Export { objects, token, target, transport, to_file, out, passphrase_file, how } => {
-            let dest = match (target, transport, to_file) {
-                (_, _, Some(FileArg::Pkcs8)) => Destination::File(FileFormat::Pkcs8),
-                (_, _, Some(FileArg::Pkcs12)) => Destination::File(FileFormat::Pkcs12),
-                (_, Some(path), None) => Destination::transport(path)?,
-                (Some(t), None, None) => Destination::Bundle(t),
-                (None, None, None) => unreachable!("clap requires one of --target, --transport, --to-file"),
-            };
-            let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
-            if how.dry_run {
-                // Without names a bundle takes what can move, so its plan fails only when nothing can.
-                let partial = objects.is_empty() && !matches!(dest, Destination::File(_));
-                return run.plan_moves(&objects, token, &dest, &[], how, partial, notes);
-            }
-            if let Destination::File(_) = &dest {
-                let (Some(out), Some(pass)) = (out, passphrase_file) else {
-                    return Err(
-                        KmError::Validation("writing a key file needs --out and --passphrase-file".into()).into()
-                    );
-                };
-                return run.export_file(&objects, token, &dest, out, pass, how, notes);
-            }
-            run.export(&objects, token, &dest, out.as_deref(), how, notes)
-        }
-        Cmd::Import { objects, token, spec, input: None, dry_run, passphrase_file, allow_host_plaintext } => {
+        Cmd::Export { .. } => run.export_verb(&cli.cmd, cli.json, notes),
+        Cmd::Import { objects, to, spec, input: None, dry_run, passphrase_file, allow_host_plaintext } => {
             let how =
                 FileImport { pass: passphrase_file.as_deref(), plaintext: *allow_host_plaintext, dry_run: *dry_run };
-            run.import_files(token, objects, spec, &how, notes)
+            run.import_files(to, objects, spec, &how, notes)
         }
-        Cmd::Import { token, spec, input: Some(input), dry_run, passphrase_file: Some(pass), .. } => {
-            run.import_file(token, spec, input, pass, *dry_run, notes)
+        Cmd::Import { to, spec, input: Some(input), dry_run, passphrase_file, allow_host_plaintext, .. }
+            if key_file.is_some() =>
+        {
+            if !allow_host_plaintext {
+                return Err(KmError::Unsupported(
+                    format!(
+                        "{} is a key file: its key passes through this process's memory as plaintext; pass \
+                         --allow-host-plaintext (docs/CAMIGRATE.md D2, file)",
+                        input.display()
+                    )
+                    .into(),
+                )
+                .into());
+            }
+            run.import_file(to, spec, input, passphrase_file.as_deref(), *dry_run, notes)
         }
-        Cmd::Import { token, spec, input: Some(input), dry_run, .. } => run.import(token, spec, input, *dry_run, notes),
-        Cmd::Migrate { object, from, to, spec, how } if how.dry_run => {
+        Cmd::Import { to, spec, input: Some(input), dry_run, passphrase_file, .. } => {
+            if passphrase_file.is_some() {
+                return Err(KmError::Validation(
+                    format!("{} is a bundle, which takes no passphrase: its keys are sealed", input.display()).into(),
+                )
+                .into());
+            }
+            run.import(to, spec, input, *dry_run, notes)
+        }
+        Cmd::Migrate { objects, from, to, spec, how } if how.dry_run => {
             specs_import(&run.opener.cfg, spec, to, MOVE)?;
-            run.plan_moves(object.as_deref().as_slice(), from, &Destination::Token(to), spec, how, false, notes)
+            let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+            run.plan_moves(&objects, from, &Destination::Token(to), spec, how, false, notes)
         }
-        Cmd::Migrate { object, from, to, spec, how } => run.migrate(object.as_deref(), from, to, spec, how, notes),
-        Cmd::Transport { object, spec, token, trusted: Some(source), .. } => {
+        Cmd::Migrate { objects, from, to, spec, how } => {
+            let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+            run.migrate(&objects, from, to, spec, how, notes)
+        }
+        Cmd::Transport { object, spec, token, trust_on: Some(source), .. } => {
             let spec = transport_named(&run.opener.cfg, object.as_deref(), spec.as_deref(), token)?;
             run.trust(&spec, token, source, notes)
         }
-        Cmd::Transport { object, spec, token, out, trusted: None } => {
+        Cmd::Transport { object, spec, token, out, trust_on: None } => {
             let spec = transport_named(&run.opener.cfg, object.as_deref(), spec.as_deref(), token)?;
             let t = Target::new(&run.opener.cfg, &spec, token)?;
             let tok = run.opener.open(token, Access::Read, notes)?;
@@ -369,6 +382,79 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+impl Run<'_> {
+    /// `export`: a plan (`--dry-run`), a bundle for a token or a transport file, or one key file.
+    fn export_verb(&mut self, cmd: &Cmd, json: bool, notes: &mut Notes) -> anyhow::Result<()> {
+        let Cmd::Export {
+            objects,
+            from,
+            to,
+            to_transport_file,
+            to_key_file,
+            out,
+            passphrase_file,
+            transport_spec,
+            allow_host_plaintext,
+            dry_run,
+        } = cmd
+        else {
+            unreachable!("export_verb is called for export only")
+        };
+        let dest = match (to, to_transport_file, to_key_file) {
+            (_, _, Some(FileArg::Pkcs8)) => Destination::File(FileFormat::Pkcs8),
+            (_, _, Some(FileArg::Pkcs12)) => Destination::File(FileFormat::Pkcs12),
+            (_, Some(path), None) => Destination::transport(path)?,
+            (Some(t), None, None) => Destination::Bundle(t),
+            (None, None, None) => unreachable!("clap requires one of --to, --to-transport-file, --to-key-file"),
+        };
+        let how = MoveArgs {
+            dry_run: *dry_run,
+            transport_spec: transport_spec.clone(),
+            json,
+            allow_host_plaintext: *allow_host_plaintext,
+        };
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        if how.dry_run {
+            // Without names a bundle takes what can move, so its plan fails only when nothing can.
+            let partial = objects.is_empty() && !matches!(dest, Destination::File(_));
+            return self.plan_moves(&objects, from, &dest, &[], &how, partial, notes);
+        }
+        if json {
+            return Err(KmError::Validation(
+                "--json is the plan's form: a real export writes the bundle or the key file".into(),
+            )
+            .into());
+        }
+        if let Destination::File(_) = &dest {
+            let (Some(out), Some(pass)) = (out, passphrase_file) else {
+                return Err(KmError::Validation("writing a key file needs --out and --passphrase-file".into()).into());
+            };
+            return self.export_file(&objects, from, &dest, out, pass, &how, notes);
+        }
+        self.export(&objects, from, &dest, out.as_deref(), &how, notes)
+    }
+}
+
+/// An admin operation (a real export, a key file read, a trust grant) is refused inside a Nix build
+/// as cakeys refuses a writing run there, with the same code (review 2026-11-23 C-12).
+fn refuse_admin_in_nix_build(exports: bool, reads_key_file: bool, trusts: bool) -> cakeys_core::Result<()> {
+    if !((exports || reads_key_file || trusts) && in_nix_build()) {
+        return Ok(());
+    }
+    let (verb, instead) = match (exports, reads_key_file) {
+        (true, _) => ("export", ", or pass --dry-run to plan it"),
+        (_, true) => ("an import of a key file", ""),
+        _ => ("transport --trust-on", ""),
+    };
+    Err(KmError::LockUnwritable(
+        format!(
+            "{verb} is an admin operation (docs/CAMIGRATE.md D8), refused inside a Nix build: run it outside \
+             the sandbox{instead} ({ALLOW_NIX_STORE_KEYS}=1 runs it as outside, for throwaway keys only)"
+        )
+        .into(),
+    ))
 }
 
 /// The spec of the transport key `transport` names on `token`: the address's pair
@@ -416,7 +502,7 @@ enum Destination<'a> {
 }
 
 impl<'a> Destination<'a> {
-    /// `--transport <path>`: the file read and parsed, once for the run.
+    /// `--to-transport-file <path>`: the file read and parsed, once for the run.
     fn transport(path: &'a Path) -> anyhow::Result<Destination<'a>> {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         Ok(Destination::Transport(path, Transport::parse(&text, path)?))
@@ -425,32 +511,69 @@ impl<'a> Destination<'a> {
 
 /// A verb's run over its objects (review D8: `import`, `migrate` and `import` from files each
 /// kept their own): each object on its own, so one that fails leaves nothing and the others
-/// still move. Whether any changed the lock, and the first failure, which the run exits with
-/// once the lock is saved.
+/// still move. Each object's outcome, printed as the run's result (review 2026-11-23 C-7);
+/// whether any changed the lock; and the first failure, which the run exits with once the lock
+/// is saved.
 #[derive(Default)]
 struct Tally {
     changed: bool,
     failed: Option<KmError>,
+    results: Vec<serde_json::Value>,
+}
+
+/// Which object an outcome is of: its name, the spec it lands under (once known) and the token.
+#[derive(Clone, Copy)]
+struct Of<'a> {
+    object: &'a str,
+    spec: Option<&'a str>,
+    token: &'a str,
+}
+
+impl<'a> Of<'a> {
+    /// The object a pair realises.
+    fn pair(t: &'a Target<'a>) -> Of<'a> {
+        Of { object: t.object_name, spec: Some(t.spec_name), token: t.token_name }
+    }
+
+    /// An object before its landing pair is known.
+    fn object(object: &'a str, token: &'a str) -> Of<'a> {
+        Of { object, spec: None, token }
+    }
 }
 
 impl Tally {
-    /// An object written: the lock changed.
-    fn moved(&mut self) {
-        self.changed = true;
+    /// `of`'s outcome (`imported`, `moved`, `already-there`, `ready`), and the method it moved
+    /// by, if it did.
+    fn done(&mut self, of: Of<'_>, outcome: &str, method: Option<&str>) {
+        self.results.push(serde_json::json!({
+            "object": of.object, "spec": of.spec, "token": of.token, "outcome": outcome, "method": method,
+        }));
     }
 
-    /// `what` failed with `err`: said now, and kept when it is the run's first failure.
-    fn fail(&mut self, what: impl std::fmt::Display, err: KmError, notes: &mut Notes) {
+    /// `of` written (`outcome`, by `method`): the lock changed.
+    fn moved(&mut self, of: Of<'_>, outcome: &str, method: Option<&str>) {
+        self.changed = true;
+        self.done(of, outcome, method);
+    }
+
+    /// `of` failed with `err` (`what` says how): said now, and kept when it is the run's first
+    /// failure.
+    fn fail(&mut self, of: Of<'_>, what: impl std::fmt::Display, err: KmError, notes: &mut Notes) {
         notes.say(format!("{what}: {err}"));
+        self.results.push(serde_json::json!({
+            "object": of.object, "spec": of.spec, "token": of.token, "outcome": "failed",
+            "exit": err.exit_code(), "error": err.to_string(),
+        }));
         self.failed.get_or_insert(err);
     }
 
-    /// Say the lock was updated if anything moved, then exit with the first failure. Each move
-    /// saved it already ([`Run::record`]): never a second write only to say so (review
-    /// 2026-11-23 C-21).
+    /// Print each object's outcome, say the lock was written if anything moved, then exit with
+    /// the first failure. Each move saved it already ([`Run::record`]): never a second write
+    /// only to say so (review 2026-11-23 C-21).
     fn finish(self, run: &Run<'_>, notes: &mut Notes) -> anyhow::Result<()> {
+        print(&self.results)?;
         if self.changed {
-            notes.say(format!("updated {}", run.lock_path.display()));
+            notes.lock_written(&run.lock_path);
         }
         self.failed.map_or(Ok(()), |e| Err(e.into()))
     }
@@ -483,7 +606,7 @@ impl Run<'_> {
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
         let source = self.opener.open(from, Access::Read, notes);
-        let (moves, _) = self.plan(objects, from, dest, specs, how, true, source, notes)?;
+        let (moves, _) = self.plan(objects, from, dest, specs, how, Show::Stdout, source, notes)?;
         if partial && moves.plans.iter().any(|p| p.ready) {
             return Ok(());
         }
@@ -510,7 +633,7 @@ impl Run<'_> {
         // plan and its transport key (review lib.rs F5).
         let source = self.opener.open(from, Access::Scratch, notes);
         let (moves, source, planned_target) =
-            self.plan_opening(objects, from, dest, &[], how, false, source, Access::Read, notes)?;
+            self.plan_opening(objects, from, dest, &[], how, Show::No, source, Access::Read, notes)?;
         // Named objects are all or nothing; without names, whatever can move does, and what
         // cannot (a key made non-extractable, ...) is warned about and left out.
         if !objects.is_empty() {
@@ -612,7 +735,7 @@ impl Run<'_> {
             let dst = match import_target(cfg, &e.object, token, spec_for(cfg, specs, &e.object), MOVE) {
                 Ok(dst) => dst,
                 Err(err) => {
-                    tally.fail(format_args!("{}: not imported", e.object), err, notes);
+                    tally.fail(Of::object(&e.object, token), format_args!("{}: not imported", e.object), err, notes);
                     continue;
                 }
             };
@@ -634,13 +757,14 @@ impl Run<'_> {
             });
             match outcome {
                 Ok(None) => {
-                    println!(
+                    notes.say(format!(
                         "{dst}: {} by {} ({}) from {}: ready",
                         e.object, e.method, e.exposure, bundle.source.token
-                    );
+                    ));
+                    tally.done(Of::pair(&dst), "ready", Some(&e.method));
                 }
                 Ok(Some(public::Moved::Imported)) => {
-                    tally.moved();
+                    tally.moved(Of::pair(&dst), "imported", Some(&e.method));
                     self.record(&dst, &public::unrecorded_hint(&dst))?;
                     notes.say(format!(
                         "imported {} from {} ({}) into {dst}",
@@ -649,8 +773,9 @@ impl Run<'_> {
                 }
                 Ok(Some(public::Moved::AlreadyThere)) => {
                     notes.note(format_args!("{dst} is already realised and verifies; nothing to import"));
+                    tally.done(Of::pair(&dst), "already-there", None);
                 }
-                Err(err) => tally.fail(format_args!("{dst}: not imported"), err, notes),
+                Err(err) => tally.fail(Of::pair(&dst), format_args!("{dst}: not imported"), err, notes),
             }
         }
         tally.finish(self, notes)
@@ -665,7 +790,7 @@ impl Run<'_> {
     /// realisation.
     fn migrate(
         &mut self,
-        object: Option<&str>,
+        objects: &[&str],
         from: &str,
         to: &str,
         specs: &[String],
@@ -679,7 +804,7 @@ impl Run<'_> {
         let source = self.opener.open(from, Access::Scratch, notes);
         let dest = Destination::Token(to);
         let (moves, source, planned) =
-            self.plan_opening(object.as_slice(), from, &dest, specs, how, true, source, Access::Write, notes)?;
+            self.plan_opening(objects, from, &dest, specs, how, Show::Notes, source, Access::Write, notes)?;
         // The plan blocked a method not built yet, and checked every --spec (`plan_opening`).
         moves.ready()?;
         let source = self.source(from, source, notes)?;
@@ -704,6 +829,8 @@ impl Run<'_> {
             let pair = source_target(cfg, &self.lock, &p.object, from)
                 .and_then(|src| Ok((src, import_target(cfg, &p.object, to, spec_for(cfg, specs, &p.object), MOVE)?)));
             let hint = pair.as_ref().map(|(_, dst)| public::unrecorded_hint(dst)).unwrap_or_default();
+            let landed = pair.as_ref().ok().map(|(_, dst)| dst.spec_name.to_owned());
+            let of = Of { object: &p.object, spec: landed.as_deref(), token: to };
             let lock = &mut self.lock;
             let target = &mut target;
             let sealing = &mut sealing;
@@ -733,17 +860,19 @@ impl Run<'_> {
                     _ => public::import(&src, &source, &dst, target, lock, notes),
                 }
             });
+            let method = p.method.as_ref().map(Method::name);
             match outcome {
                 Ok(public::Moved::Imported) => {
-                    tally.moved();
+                    tally.moved(of, "moved", method.as_deref());
                     self.record(&format_args!("'{}' on token '{to}'", p.object), &hint)?;
-                    let how = p.method.as_ref().map_or_else(String::new, Method::name);
+                    let how = method.unwrap_or_default();
                     notes.say(format!("moved {} from {from} to {to} ({how})", p.object));
                 }
                 Ok(public::Moved::AlreadyThere) => {
                     notes.note(format_args!("{} is already on {to} and verifies; nothing to move", p.object));
+                    tally.done(of, "already-there", None);
                 }
-                Err(e) => tally.fail(format_args!("{}: not moved", p.object), e, notes),
+                Err(e) => tally.fail(of, format_args!("{}: not moved", p.object), e, notes),
             }
         }
         tally.finish(self, notes)
@@ -768,8 +897,8 @@ impl Run<'_> {
         }
     }
 
-    /// Plan each object's move and, with `show`, print the plans, as a table or as JSON (an
-    /// export that writes the bundle to stdout shows none: stdout is the bundle). `specs` are the
+    /// Plan each object's move and show the plans where `show` says (an export that writes the
+    /// bundle to stdout shows none: stdout is the bundle). `specs` are the
     /// `--spec` names, which pick an object's landing pair on a target token.
     #[expect(clippy::too_many_arguments, reason = "the move command's parts, as the CLI hands them over")]
     fn plan(
@@ -779,7 +908,7 @@ impl Run<'_> {
         dest: &Destination,
         specs: &[String],
         how: &MoveArgs,
-        show: bool,
+        show: Show,
         source: cakeys_core::Result<Token>,
         notes: &mut Notes,
     ) -> anyhow::Result<(tokens::Moves, Option<Token>)> {
@@ -823,7 +952,7 @@ impl Run<'_> {
         dest: &Destination,
         specs: &[String],
         how: &MoveArgs,
-        show: bool,
+        show: Show,
         source: cakeys_core::Result<Token>,
         target: Access,
         notes: &mut Notes,
@@ -849,11 +978,11 @@ impl Run<'_> {
             _ => None,
         };
         // A transport file is held to its token's transport key, as a target token is (review
-        // 2026-11-23 C-1): the one --transport-key or keys.toml's transportWith names.
+        // 2026-11-23 C-1): the one --transport-spec or keys.toml's transportWith names.
         let transport_key = match dest {
             tokens::Dest::Token(name) => transport_choice(cfg, name, how),
             tokens::Dest::Transport(t, _) => transport_choice(cfg, &t.token, how),
-            tokens::Dest::File(_) => how.transport_key.as_deref(),
+            tokens::Dest::File(_) => how.transport_spec.as_deref(),
         };
         let trusted_transport = self.trusted_transport(&dest, transport_key, &source)?;
         let req = tokens::Request {
@@ -924,8 +1053,14 @@ impl Run<'_> {
             None if bundle => limit_bundle_plans(&mut moves.plans),
             None => limit_token_plans(&mut moves.plans),
         }
-        if show {
-            show_plans(from, &moves, how.json)?;
+        match show {
+            Show::No => {}
+            Show::Stdout => show_plans(from, &moves, how.json)?,
+            Show::Notes => {
+                for line in plan_lines(from, &moves) {
+                    notes.say(line);
+                }
+            }
         }
         // Every --spec selects an object moving to the token, checked where the run checked it:
         // once nothing is blocked (15 first). Here, so the dry run exits as the run does (D9;
@@ -1059,32 +1194,47 @@ fn limit_token_plans(plans: &mut [plan::Plan]) {
     }
 }
 
+/// Where a plan is shown: nowhere (a real export), on stdout as the dry run's result, or with
+/// the notes, on stderr (a real `migrate`, whose stdout is each object's outcome).
+#[derive(Clone, Copy)]
+enum Show {
+    No,
+    Stdout,
+    Notes,
+}
+
 /// Print the plans of one invocation, as a table or as JSON.
 fn show_plans(from: &str, moves: &tokens::Moves, json: bool) -> anyhow::Result<()> {
-    let (to_name, plans) = (&moves.to, &moves.plans);
-    let (source_from, target_from) = (moves.source_from.name(), moves.target_from.name());
     if json {
         return print(&serde_json::json!({
             "from": from,
-            "to": to_name,
-            "capabilities": { "from": source_from, "to": target_from },
-            "plans": plans,
+            "to": moves.to,
+            "capabilities": { "from": moves.source_from.name(), "to": moves.target_from.name() },
+            "plans": moves.plans,
         }));
     }
-    println!("{from} -> {to_name} (capabilities: {from} from the {source_from}, {to_name} from the {target_from})");
+    for line in plan_lines(from, moves) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// The plans of one invocation as a table, line by line.
+fn plan_lines(from: &str, moves: &tokens::Moves) -> Vec<String> {
+    let (to_name, plans) = (&moves.to, &moves.plans);
+    let (source_from, target_from) = (moves.source_from.name(), moves.target_from.name());
+    let mut lines = vec![format!(
+        "{from} -> {to_name} (capabilities: {from} from the {source_from}, {to_name} from the {target_from})"
+    )];
     for p in plans {
         let method = p.method.as_ref().map_or_else(|| "-".to_owned(), Method::name);
         let exposure = p.exposure.map_or("-", Exposure::name);
         let status = if p.ready { "ready" } else { "blocked" };
-        println!("  {:<24} {method:<26} {exposure:<9} {status}", p.object);
-        for r in &p.reasons {
-            println!("      - {r}");
-        }
-        for n in &p.notes {
-            println!("      note: {n}");
-        }
+        lines.push(format!("  {:<24} {method:<26} {exposure:<9} {status}", p.object));
+        lines.extend(p.reasons.iter().map(|r| format!("      - {r}")));
+        lines.extend(p.notes.iter().map(|n| format!("      note: {n}")));
     }
-    Ok(())
+    lines
 }
 
 /// Why `object` cannot move to `to`: specs realise it there, and none says `origin = "import"`.
@@ -1300,9 +1450,9 @@ fn locked_spki(lock: &Lock, spec: &str, token: &str) -> cakeys_core::Result<Opti
     })
 }
 
-/// The transport key to seal to on `to`: `--transport-key`, else the token's `transportWith`.
+/// The transport key to seal to on `to`: `--transport-spec`, else the token's `transportWith`.
 fn transport_choice<'a>(cfg: &'a Config, to: &str, how: &'a MoveArgs) -> Option<&'a str> {
-    how.transport_key.as_deref().or_else(|| cfg.tokens.get(to).and_then(|t| t.migrate.transport_with.as_deref()))
+    how.transport_spec.as_deref().or_else(|| cfg.tokens.get(to).and_then(|t| t.migrate.transport_with.as_deref()))
 }
 
 /// The target `token`'s transport key, as a target: the spec `tokens::transport_spec` finds.
@@ -1391,12 +1541,13 @@ mod tests {
         text.split(|c: char| !c.is_ascii_alphanumeric()).filter_map(|w| w.parse().ok()).collect()
     }
 
-    /// `--help` lists the exit codes camigrate returns, as docs/CAMIGRATE.md does (review lib.rs
-    /// F8: it left out 10, 12, 13 and 21).
+    /// `--help` lists every exit code, from the one table (review lib.rs F8: it left out 10, 12,
+    /// 13 and 21; review 2026-11-23 C-10: each tool had its own list).
     #[test]
     fn the_help_lists_the_documented_exit_codes() {
-        let help = super::command().get_long_about().map(ToString::to_string).unwrap_or_default();
-        let help = &help[help.find("Exit codes:").expect("the help lists exit codes")..];
-        assert_eq!(codes(help), [0, 1, 10, 11, 12, 13, 14, 15, 16, 17, 21].into(), "{help}");
+        let help = super::command().render_help().to_string();
+        let help = &help[help.find("Exit codes").expect("the help lists exit codes")..];
+        let all: std::collections::BTreeSet<u8> = cakeys_core::EXIT_CODES.iter().map(|(c, _)| *c).collect();
+        assert_eq!(codes(help), all, "{help}");
     }
 }

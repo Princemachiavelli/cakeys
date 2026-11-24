@@ -819,7 +819,7 @@ mod tests {
     }
 
     /// A probed row decides for the type it covers, before the module's claims
-    /// (`docs/CAPROBE_MIGRATION.md`, M4), and only for that type.
+    /// (`docs/archive/CAPROBE_MIGRATION.md`, M4), and only for that type.
     #[test]
     fn probed_rows_decide_before_the_claims_for_their_type() {
         use cakeys_core::migrate::{Probed, ProbedWays};

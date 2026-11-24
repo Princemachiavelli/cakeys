@@ -146,7 +146,7 @@ pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: Option<u32>) -> Result<P
     let mut undetermined = Vec::new();
     let Some(rsa_max_bits) = write else {
         undetermined.push(
-            "read-only probes only: pass --write against a token marked scratch in keys.toml to \
+            "read-only probes only: pass --write-probes against a token marked scratch in keys.toml to \
              generate, operate, wrap and delete"
                 .into(),
         );
@@ -935,7 +935,7 @@ fn probe_writes(made: &mut Made, profile: &mut Draft, labels: bool) -> Result<()
             }
             // After the wrap probes: a secret key's sealed export takes an OAEP hash they found.
             moves::probe_moves(made, profile, transport)?;
-            // The secret keys' operations (docs/CAPROBE_PROFILE_COVERAGE.md): commitments,
+            // The secret keys' operations (docs/archive/CAPROBE_PROFILE_COVERAGE.md): commitments,
             // symmetric modes and derivations, then the attributes and key types beyond cakeys'.
             secrets::probe_commits(made, profile)?;
             secrets::probe_modes(made, profile)?;
@@ -1793,7 +1793,7 @@ fn destroy_derived(session: &Session, h: ObjectHandle, path: &str, on: &str, pro
 }
 
 /// After a derivation took with `template`: whether it derives the same way in a read-only
-/// session, where the read-only verbs prove possession (`verify`, `check`), and what the key
+/// session, where the read-only verbs prove possession (`check`, `resolve`), and what the key
 /// that derived says of itself (a spec asking `CKA_DERIVE = true` is checked against this, not
 /// against what the key does).
 fn derived_once(
@@ -2420,8 +2420,10 @@ pub(crate) fn keep_claims(
 ) -> Result<()> {
     if !write {
         return Err(KmError::Validation(
-            format!("{shown}: a read-only probe would overwrite its generate, wrap and unwrap rows; pass --write")
-                .into(),
+            format!(
+                "{shown}: a read-only probe would overwrite its generate, wrap and unwrap rows; pass --write-probes"
+            )
+            .into(),
         ));
     }
     let old = Profile::from_toml(existing)

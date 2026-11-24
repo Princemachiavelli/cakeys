@@ -103,6 +103,25 @@ pub(crate) fn read(
     }
 }
 
+/// A key file's private key (PKCS #8 DER), the certificates beside it, and how it was read.
+pub(crate) type PrivateKey = (Zeroizing<Vec<u8>>, Vec<Vec<u8>>, Method);
+
+/// The one private key the file `bytes` holds, as PKCS#8 and the format it came in, and the
+/// certificates beside it: what `import --in` takes from a key file, which names no object
+/// (the lock's identity of the key says which), in every format [`read`] reads (review
+/// 2026-11-23 C-6). `pass` opens an encrypted one.
+///
+/// # Errors
+///
+/// As [`read`] for a private key.
+pub(crate) fn private_key(bytes: &[u8], pass: Option<&str>) -> Result<PrivateKey> {
+    let entries = entries(bytes, pass, None)?;
+    let certificates =
+        entries.iter().filter_map(|e| if let Entry::Certificate(c) = e { Some(c.clone()) } else { None }).collect();
+    let (pkcs8, method) = one_key(entries)?;
+    Ok((pkcs8, certificates, method))
+}
+
 /// Whether the file `bytes` holds a private key, plain or encrypted, told by shape alone and
 /// before anything is decoded: a certificate object taken from a bundle or a PKCS#12 decodes
 /// the key beside it, so its import puts key plaintext in this process's memory too.

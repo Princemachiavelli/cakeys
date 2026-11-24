@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 /// The verbs, their visible aliases and the long flags of `cmd` and its subcommands, as a test
-/// would write them (`lock`, `verify`, `--dry-run`), less clap's own (`help`, `--help`,
+/// would write them (`lock`, `check`, `--dry-run`), less clap's own (`help`, `--help`,
 /// `--version`). A short flag (`-c`) is its long flag's other spelling, parsed by clap alone: not
 /// a surface of its own.
 fn surface(cmd: &clap::Command, out: &mut BTreeSet<String>) {

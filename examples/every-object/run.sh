@@ -30,16 +30,16 @@ export CAKEYS_CONFIG=$work/keys.toml
 
 # Every pair checked against its token's profiles, no token opened: the YubiKey's too. So no
 # PIN file is read, and the variable naming it need not be set.
-expect 0 env -u EXAMPLE_PIN_FILE cakeys validate
-expect 0 cakeys validate
+expect 0 env -u EXAMPLE_PIN_FILE cakeys --new-lock validate
+expect 0 cakeys --new-lock validate
 # Every key whose pair on soft says origin = "create", made and recorded; then kryo's
 # transport key, whose public half the lock records for sealing to it.
-expect 0 cakeys create --token soft
-expect 0 cakeys create --token kryo
+expect 22 cakeys --new-lock create --token soft
+expect 22 cakeys create --token kryo
 # The objects born in files, onto soft (the HMAC key's file is plaintext: hence the flag), and
 # the HMAC key onto kryo from the same file.
-expect 0 camigrate import --token soft --allow-host-plaintext
-expect 0 camigrate import hmac-sha256 --token kryo --allow-host-plaintext
+expect 22 camigrate import --to soft --allow-host-plaintext
+expect 22 camigrate import hmac-sha256 --to kryo --allow-host-plaintext
 
 # ── Moved ─────────────────────────────────────────────────────────────────────────────────
 
@@ -68,7 +68,7 @@ want_movable() {
 moves=$(movable kryo)
 want_movable kryo "$moves" "aes256 cert ed25519 ed448 generic note p256 p384 p521 pubkey rsa2048 rsa4096"
 for o in $moves; do
-  expect 0 camigrate migrate "$o" --from soft --to kryo
+  expect 22 camigrate migrate "$o" --from soft --to kryo
 done
 # tpm2-pkcs11 imports only plaintext, so its keys pass through camigrate's memory: said, and
 # allowed per run. A TPM takes fewer types; the plan says which and why.
@@ -76,7 +76,7 @@ limit=60 expect 15 camigrate migrate --from soft --to tpm --dry-run --allow-host
 moves=$(movable tpm --allow-host-plaintext)
 want_movable tpm "$moves" "cert p256 p384 rsa2048"
 for o in $moves; do
-  expect 0 camigrate migrate "$o" --from soft --to tpm --allow-host-plaintext
+  expect 22 camigrate migrate "$o" --from soft --to tpm --allow-host-plaintext
 done
 
 # ── Checked ───────────────────────────────────────────────────────────────────────────────

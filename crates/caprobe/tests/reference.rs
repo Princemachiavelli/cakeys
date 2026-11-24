@@ -27,7 +27,7 @@ fn committed_profile_is_what_the_probe_observes(r: &Reference, test: &str) {
     let drift = w.km(&["probe", "--token", "ref", "--diff", other]);
     assert_eq!(code(&drift), 15, "{}", stderr(&drift));
     assert!(stderr(&drift).contains(&format!("rows differ from profile {other}")), "{}", stderr(&drift));
-    let anon = w.km(&["probe", "--token", "ref-anon", "--write", "--rsa-max-bits", "4096"]);
+    let anon = w.km(&["probe", "--token", "ref-anon", "--write-probes", "--rsa-max-bits", "4096"]);
     assert_eq!(code(&anon), 17, "{}", stderr(&anon));
     assert!(stderr(&anon).contains("not marked scratch"), "{}", stderr(&anon));
 }
@@ -172,7 +172,7 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
         .concat(),
     );
     let refused = |name: &str, why: &str| {
-        let o = w.km(&["probe", "--token", name, "--write", "--rsa-max-bits", "4096"]);
+        let o = w.km(&["probe", "--token", name, "--write-probes", "--rsa-max-bits", "4096"]);
         assert_eq!(code(&o), 17, "{name}: {}", stderr(&o));
         assert!(stderr(&o).contains(why), "{name}: expected {why:?} in {}", stderr(&o));
     };
@@ -227,7 +227,7 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
     // the probe makes, so the second meets nothing the first left (review reference.rs F3;
     // `assert_profile_conforms` holds tpm2-pkcs11 to one).
     for name in ["empty", "marked"] {
-        let o = w.km(&["probe", "--token", name, "--write", "--rsa-max-bits", "4096"]);
+        let o = w.km(&["probe", "--token", name, "--write-probes", "--rsa-max-bits", "4096"]);
         assert_eq!(code(&o), 0, "{name}: {}", stderr(&o));
         assert!(
             stderr(&o).contains("in a scratch slot: no secret-key, wrap, export or delete probes"),

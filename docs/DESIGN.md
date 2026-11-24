@@ -182,8 +182,11 @@ alone can compute, such as a TPM Name). If they return, they get their own names
   `lock` is the lock verb: it never creates, and `create` is the one verb that writes keys
   (2026-11-15). Like `nix build` with `flake.lock`: what the lock lacks is recorded (first use included), but a
   locked ID, anchor, binding, type or immutable is never overwritten — those changes fail even
-  when the lock is written. `--no-update-lock` compares only (`--update-lock` names the
-  default). First use is trust on first use, so the review is the `keys.lock` diff.
+  when the lock is written. `lock --dry-run` and `delete --dry-run` compare only, and
+  `create --no-update-lock` creates without recording. First use is trust on first use, so the
+  review is the `keys.lock` diff, and a run that wrote the lock exits 22, never 0, so a caller
+  handles that review on purpose. A lock that is not there is refused (17) unless `--new-lock`:
+  a mistyped `--lock` never starts a second lock (review 2026-11-23, C-4).
 - **A write that replaces a realisation says what it accepted,** one line each (`re-recorded
   …`): what keys.toml changed (locator, object, `publicOnly`, spec digest) and policy
   attributes the lock did not record are notes; a policy attribute or immutable that changed
@@ -198,22 +201,22 @@ alone can compute, such as a TPM Name). If they return, they get their own names
   declared attribute the token does not show is a conflict (13), never re-recorded. IDs,
   downgrades, immutables, attestations and types stay refused even when the lock is written.
 - **Where the lock cannot be written, a writing run is refused (21) before any token is
-  touched** — never a key created and then not recorded — naming `--no-update-lock`: inside a
+  touched** — never a key created and then not recorded — naming `--dry-run`: inside a
   Nix build sandbox (`NIX_BUILD_TOP` set without `IN_NIX_SHELL`, which `nix develop` also
   sets, and without `CAKEYS_ALLOW_NIX_STORE_KEYS=1`, docs/FILE.md), where a write would be lost with the build, or when the lock file or its directory is
-  not writable (`access(2)`). `check`, `verify` and `resolve` never write and are unaffected —
+  not writable (`access(2)`). `check` and `resolve` never write and are unaffected —
   `lock_is_written_by_default_and_refused_where_it_cannot_be`.
 - **A computed scheme missing from an otherwise matching lock is a note.** This happens, for
   example, when a newer version computes more schemes.
-  - With nothing to compare, it is first use: `lock` records it; `--no-update-lock`,
-    `verify` and `check` fail as a first use (exit 18, apart from a mismatch's 10), printing `got:`.
+  - With nothing to compare, it is first use: `lock` records it; `lock --dry-run` and
+    `check` fail as a first use (exit 18, apart from a mismatch's 10), printing `got:`.
   - An explicitly requested `check <obj>.id.<scheme>` needs that scheme locked.
   - Test: `a_new_scheme_missing_from_the_lock_is_a_note_unless_requested`.
 
 ### 3.6 Proof of possession (`binding`)
 
 A private key's identity hashes a public key, which may come from a separate object (§3.2). Each
-time it resolves a private key (`resolve`, `verify`, `lock`, `check`, `delete`), cakeys binds the
+time it resolves a private key (`resolve`, `lock`, `check`, `delete`), cakeys binds the
 key to its identity:
 
 1. The host builds a challenge: `"cakeys/pop/v1\0" ‖ SHA-256(SPKI) ‖ 32-byte nonce` from the OS
@@ -267,14 +270,14 @@ key to its identity:
        (`an_ecdh_proof_falls_back_to_the_extractable_secret`).
      - **Read-write session (an exception to M1).** tpm2-pkcs11 keeps derived secrets as
        store rows, so it refuses `C_DeriveKey` in a read-only session (`derive.ecdh.read-only`
-       no). A read-only verb's (`verify`, `check`) proof then derives in a read-write
+       no). A read-only verb's (`resolve`, `check`) proof then derives in a read-write
        session opened for it, and destroys the row again. That is the one write a read-only
        verb makes. Where the store itself is read-only (a sandbox mounting it so), `pop-ecdh`
        stays unavailable (16) on such a token.
      - **Misreported attribute.** ykcs11 reports `CKA_DERIVE = false` on every key from a
        fixed table while its keys derive. The provider repairs the reported value
        (`Provider::repair`), so `CKA_DERIVE = true` checks and is recorded. A lock
-       recorded before that repair fails `verify` once (14, "CKA_DERIVE false -> true"), and
+       recorded before that repair fails `check` once (14, "CKA_DERIVE false -> true"), and
        `lock` re-records it.
    - `pop-decrypt` (RSA keys that only decrypt): the host encrypts a fresh 32-byte secret (not
      the 78-byte challenge, which OAEP-SHA-256 cannot carry in a 1024-bit key) to the public key
@@ -392,7 +395,7 @@ content-addressed identity — one per token type that can produce it:
 - **The TPM Attestation Key** is a restricted signing key (P-256, ECDSA-SHA256, empty auth,
   owner hierarchy) that cakeys provisions at a persistent handle and never uses for anything
   but certify: a restricted key signs only TPM-generated structures. Only `lock` (and
-  `create`, through it) provisions it; `resolve`, `verify` and `check` never change the TPM, and
+  `create`, through it) provisions it; `resolve` and `check` never change the TPM, and
   fail (16, or 14 once locked) when it is missing — `tpm2_keys_attest_their_tpm_residence`
   compares the persistent handles around a `check`. A key already at the handle is used only if its public area is exactly
   cakeys' template (restricted sign-only P-256, fixedTPM, empty policy) — anything else is a
@@ -468,11 +471,11 @@ What may be created and adopted:
 - **The admin credential (`soCredentialFile`/`soCredentialEnv`) is read only by a step that needs the SO.** A
   provider declares that its module creates and destroys objects only in an SO session
   (ykcs11 does); elsewhere the user creates and deletes, and the credential (the SO PIN) is read
-  only by `camigrate transport --trusted` (CAMIGRATE.md D2) —
+  only by `camigrate transport --trust-on` (CAMIGRATE.md D2) —
   `admin_credential_is_read_only_by_security_officer_steps`.
   Login state is per token, so the step logs the user out, logs in as SO, generates (or
   destroys), logs out and logs the user back in; the SO credential is read just before and
-  zeroized after. `resolve`, `verify` and `check` never read it.
+  zeroized after. `resolve` and `check` never read it.
 - **Only `cakeys create` makes keys,** and only on a pair whose `origin` is `create`; `lock`
   and `check` find what is there (2026-11-15: `check` is a read). Certificates, public keys and
   data objects are adopted or imported, never created —
@@ -540,7 +543,7 @@ Annotated, with the reasons behind each table: [`LOCK.md`](LOCK.md).
   records every attribute the object shows for its class, declared or not — the booleans
   (SoftHSM EC private keys, for example, default to `CKA_DECRYPT`, `CKA_UNWRAP` and
   `CKA_SIGN_RECOVER`) and, on key objects, `CKA_ALLOWED_MECHANISMS` when the token reports a
-  non-empty list. A recorded attribute that changes or becomes unreadable fails `verify` (exit 14)
+  non-empty list. A recorded attribute that changes or becomes unreadable fails `check` (exit 14)
   until `lock`; a newly readable one is a note. With `publicOnly`, this is the
   public object's vector.
 - **Immutables** (`CKA_LOCAL`, `CKA_NEVER_EXTRACTABLE`, `CKA_ALWAYS_SENSITIVE`,
@@ -576,7 +579,7 @@ Annotated, with the reasons behind each table: [`LOCK.md`](LOCK.md).
   (`a_saved_lock_keeps_its_mode_and_a_read_only_sidecar_guards`).
 - **`gc`** collects entries the config no longer names (finding D3): every
   `[realisations.<spec>.<token>]` whose spec dropped the token and every `[objects.<name>]` gone
-  from `keys.toml`. It prints the stale table names and removes exactly those with `--apply`; live
+  from `keys.toml`. It prints the stale table names and removes exactly those (`--dry-run` only prints); live
   objects keep their `ids`, since the same material may live on other tokens or come back.
 - **URIs are pure locators** (RFC 7512), with no `module-path`. They carry the token `serial`
   (tokens may share a label) and always the object `type`.
@@ -598,12 +601,12 @@ Annotated, with the reasons behind each table: [`LOCK.md`](LOCK.md).
   duplicate-free list; `certificateType` and `publicAttributes` take part only when set, under
   their own key. Curves are canonical (`secp256r1`, never an alias), so a curve alias is the same
   type and the same digest. Pinned by `spec_digests_are_pinned`.
-- **A realisation record is required.** `verify`/`check` of a (spec, token) pair the lock does not
+- **A realisation record is required.** `check` of a (spec, token) pair the lock does not
   record fails (exit 14) even when the material matches the locked IDs: the lock describes where
   objects live, not only what they are — `s3_an_unrecorded_token_is_a_precondition_failure`.
   First use, with no locked IDs to compare, is exit 18 with `got:`.
 - **The record is compared** with keys.toml: a different `object`, `locator`, `publicOnly` or spec
-  digest fails `verify`/`check` (exit 14, naming each change) until `lock`
+  digest fails `check` (exit 14, naming each change) until `lock`
   re-records it, like a lockfile that is out of date — `s4_a_public_only_flip_is_a_spec_change`,
   `s8_a_retargeted_spec_is_a_spec_change`. A changed locator or object is never reported as an
   unexplained hash mismatch.
@@ -703,7 +706,7 @@ The reviews these come from are archived: `docs/archive/REVIEW-2026-11-11.md` (c
   (firmware 5.7.4, ykcs11 2.7.3): ykcs11 exposes the slot attestation certificate by label
   suffix and shared `CKA_ID`, and the f9 certificate by its bare label, with no login at all;
   the chains (slot → f9 → `Yubico PIV Attestation B 1` → `Yubico Attestation Intermediate B 1`
-  → `Yubico Attestation Root 1`) verify, also with openssl; `lock`, `verify`
+  → `Yubico Attestation Root 1`) verify, also with openssl; `lock`
   and `check` pass on keys generated on device, a tampered ID is 10, a tampered root or an
   opt-out 14, an imported key under a locked attestation 14 and unlocked 15; creating with
   `soCredentialFile` generates; and `C_DestroyObject` was confirmed to leave the key in the slot. The

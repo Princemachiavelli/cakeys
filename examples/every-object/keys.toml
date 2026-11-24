@@ -226,7 +226,7 @@ attributes = { CKA_ENCRYPT = true }
 tokens.soft = { locator = { CKA_LABEL = "des3" }, origin = "create" }
 
 # ── Born in files: a certificate, a public key and a data object ───────────────────────
-# Nothing creates these on a token: `camigrate import --token soft` brings each from its file
+# Nothing creates these on a token: `camigrate import --to soft` brings each from its file
 # (origin = "file"), then they move like the keys. run.sh makes the three files and names them.
 
 [objects.cert]

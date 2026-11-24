@@ -133,7 +133,7 @@
             ;
           # What the tests reach, and what they would not notice changing (nix/package-crane.nix):
           # reports, not checks.
-          inherit (local.cakeys-crane) coverage mutants;
+          inherit (local.cakeys-crane) coverage mutants spec-coverage;
           # Every check but the fuzz smoke run and the Kani proofs, whose builds cannot reuse
           # crane's dependencies: the gate while working (`nix build .#checks-crane-only`);
           # `nix flake check` adds those two.

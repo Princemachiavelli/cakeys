@@ -1,4 +1,4 @@
-//! The secret-key operation probes (`docs/CAPROBE_PROFILE_COVERAGE.md`, Parts 1, 4 and 5): the
+//! The secret-key operation probes (`docs/archive/CAPROBE_PROFILE_COVERAGE.md`, Parts 1, 4 and 5): the
 //! commitments cakeys computes (`commit.*`), the symmetric modes (`crypt.*`) and the key
 //! derivations (`derive.CKM_*.*`). Each writes a row, yes or no, per key type it tried; a
 //! mechanism the module does not list is not tried, and so is left to `[untested]`.

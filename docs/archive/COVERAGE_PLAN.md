@@ -1,5 +1,8 @@
 # Coverage plan
 
+> Archived 2026-11-23 (review 2026-11-23 D-9): the plan and its log as they stood, not the code as it is;
+> the tests and reports themselves are in [DEVELOPMENT.md](../DEVELOPMENT.md), "Testing", and what is open in [OPEN.md](../OPEN.md).
+
 Where the tests do not reach, and the order in which to get them there. Written 2026-11-14,
 at 89.9% of lines (1,177 of 11,638 uncovered; 83.5% of functions). After tiers 2 and 3, the
 same day: 91.9% (949 of 11,640 uncovered; 84.6% of functions); after the burn-down below,
@@ -15,7 +18,7 @@ is only worth reading once they run it.
 ## Reading the report
 
 `nix build .#coverage` runs every test, the token suites included, in a few minutes
-([DEVELOPMENT.md](DEVELOPMENT.md), "Testing"). In the result:
+([DEVELOPMENT.md](../DEVELOPMENT.md), "Testing"). In the result:
 
 | File | Use |
 |---|---|
@@ -43,7 +46,7 @@ is only worth reading once they run it.
 | 1 | plain `cargo test` | pure code: loaders, planners, emitters, parsers | 89.9% (done) |
 | 2 | the reference tokens (SoftHSM, kryoptic, p11-kit, swtpm) | refusals and paths a well-behaved module can be led into | 91.9%, with tier 3 (done) |
 | 3 | SoftHSM named `provider = "ykcs11"` | the YubiKey provider's lookups and its refusals | (in tier 2's figure; done) |
-| 4 | a module that misbehaves on request ([PLAN.md](PLAN.md) A3) | what only a faulty or lying module triggers | about 96% |
+| 4 | a module that misbehaves on request ([PLAN.md](../PLAN.md) A3) | what only a faulty or lying module triggers | about 96% |
 | 5 | a real YubiKey reached from the Nix sandbox | PIV generation as SO, a real attestation, the probe's scratch slot | the rest that is reachable |
 
 The totals after tier 3 are estimates, not measurements. Several tier 2 items moved to tier 4
@@ -220,7 +223,7 @@ What remains, by kind (about 740 lines):
 
 ## Tier 4: a module that misbehaves on request
 
-[PLAN.md](PLAN.md) A3: a forwarding shim in front of SoftHSM or kryoptic, driven by a fault plan
+[PLAN.md](../PLAN.md) A3: a forwarding shim in front of SoftHSM or kryoptic, driven by a fault plan
 (decided 2026-11-14; about 1–1.5k lines, not a module of its own). What is left after tier 3
 is mostly `map_err` arms on a call that a correct module never fails: `C_FindObjects` failing,
 an attribute read failing after the object was found, a login failing after the session
@@ -236,11 +239,11 @@ counts down, so the burn-down covers both on a reference token
 
 Later, by decision of 2026-11-14: let the checks reach a YubiKey through the build sandbox.
 The NixOS module already grants pcscd to builds that require a token's feature
-(`services.cakeys.sandbox.pcscd`, [CAKEYS.md](CAKEYS.md)); what is missing is a check that
+(`services.cakeys.sandbox.pcscd`, [CAKEYS.md](../CAKEYS.md)); what is missing is a check that
 requires that feature and the opt-in suites wired to it.
 
 - It stays outside `checks`: a build that needs a device is not one every machine can run.
-- The hardware rules bind it ([DEVELOPMENT.md](DEVELOPMENT.md)): scratch slots 90–95 only, the
+- The hardware rules bind it ([DEVELOPMENT.md](../DEVELOPMENT.md)): scratch slots 90–95 only, the
   credentials as granted file paths, never a wrong PIN, slots 82–84 never touched.
 - Reaches: `ykcs11`'s SO-session generation and import, a real `piv-attestation`, the probe's
   `Target::Slot` path (most of `caprobe/src/probe.rs`'s 142 lines), `policy_flag`.

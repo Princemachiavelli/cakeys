@@ -1,4 +1,4 @@
-//! The import, create, export and unwrap probes (`docs/CAPROBE_MIGRATION.md`): fixed test keys
+//! The import, create, export and unwrap probes (`docs/archive/CAPROBE_MIGRATION.md`): fixed test keys
 //! (`fixtures/import`: test keys, no secret, so a profile regenerates byte for byte) brought
 //! into the token each way the module offers and taken out each way. Every row is a round trip
 //! checked on the host: an imported private key proves possession of the test key's public key,

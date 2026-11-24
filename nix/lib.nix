@@ -166,14 +166,16 @@ in
                   "${config}"
                 ]
                 ++ (
-                  # Forcing `lk` first: a missing lock throws its own message here too.
+                  # Forcing `lk` first: a missing lock throws its own message here too. With
+                  # `lock = null`, nothing recorded yet: `--new-lock` reads the absent lock as empty,
+                  # so the check is a first use (18) and never a missing lock (17).
                   if hasLock then
                     builtins.seq lk [
                       "--lock"
                       "${lock}"
                     ]
                   else
-                    [ ]
+                    [ "--new-lock" ]
                 )
                 ++ builtins.concatLists (
                   builtins.attrValues (

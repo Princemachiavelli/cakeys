@@ -157,6 +157,33 @@ impl KmError {
     }
 }
 
+/// A run that did what it was asked and wrote the lock: created it (`--new-lock`) or changed
+/// it. Not 0, so a consumer sees every lock change and reviews and commits it (review 2026-11-23
+/// C-16); never over a failure's own code.
+pub const LOCK_WRITTEN: u8 = 22;
+
+/// Every exit code of the three tools, in order, with what it means: the one table each
+/// `--help` renders (review 2026-11-23 C-10) and docs/CAKEYS.md's "Exit codes" lists
+/// (`the_exit_code_table_lists_every_code`).
+pub const EXIT_CODES: [(u8, &str); 16] = [
+    (0, "ok"),
+    (1, "I/O or other failure"),
+    (2, "command-line usage"),
+    (10, "hash mismatch: the token holds other material than the lock pins"),
+    (11, "not found under the locator"),
+    (12, "ambiguous: several objects match"),
+    (13, "conflict: the object is not what the spec says"),
+    (14, "precondition failed: the realisation moved"),
+    (15, "unsupported: the token cannot do what the spec needs"),
+    (16, "unavailable: the token, or a PIN or passphrase source, cannot be used now"),
+    (17, "invalid config, lock, spec or options"),
+    (18, "first use: the lock pins nothing to compare with yet"),
+    (19, "already exists: create found a key the lock does not pin under the locator"),
+    (20, "objects failed: check --token lists each failure with its own code"),
+    (21, "the lock cannot be written (read-only, or inside a Nix build)"),
+    (LOCK_WRITTEN, "done, and the lock was written: review and commit it"),
+];
+
 /// A result whose error is a [`KmError`].
 pub type Result<T, E = KmError> = std::result::Result<T, E>;
 

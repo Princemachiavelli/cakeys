@@ -69,7 +69,7 @@ pub struct Manual {
     pub evidence: String,
 }
 
-/// Why an advertised mechanism has no measured row (`[untested]`, `docs/CAPROBE_PROFILE_COVERAGE.md`).
+/// Why an advertised mechanism has no measured row (`[untested]`, `docs/archive/CAPROBE_PROFILE_COVERAGE.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Why {

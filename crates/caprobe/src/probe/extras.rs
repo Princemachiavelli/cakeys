@@ -1,4 +1,4 @@
-//! The probes beyond the keys cakeys manages (`docs/CAPROBE_PROFILE_COVERAGE.md`, Parts 3, 6, 7
+//! The probes beyond the keys cakeys manages (`docs/archive/CAPROBE_PROFILE_COVERAGE.md`, Parts 3, 6, 7
 //! and 8): the attributes the verbs read, ECDH on Montgomery keys, the key types cakeys does not
 //! manage (`CKK_DES2`, `CKK_HKDF`), post-quantum generation, signing and encapsulation, and what
 //! the module and token claim of themselves. Every key here is a session object the probe

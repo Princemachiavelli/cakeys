@@ -73,7 +73,7 @@ fn the_write_probes_make_their_secret_keys_through_the_provider() {
     w.write_config(&tokens.replacen("[tokens.ref]\n", "[tokens.ref]\nprovider = \"refuses-secrets\"\n", 1));
     let (config, out) = (w.dir.join("keys.toml"), w.dir.join("profile.toml"));
     let registry = caprobe::default_registry().with(RefusesSecrets);
-    let args = ["caprobe", "--config", config.to_str().unwrap(), "probe", "--token", "ref", "--write"];
+    let args = ["caprobe", "--config", config.to_str().unwrap(), "probe", "--token", "ref", "--write-probes"];
     // 2048 bits: the RSA transport key the wrap probes use.
     let more = ["--rsa-max-bits", "2048", "--out", out.to_str().unwrap()];
     let exit = caprobe::main_from(&registry, args.iter().chain(&more));

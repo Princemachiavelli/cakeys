@@ -99,7 +99,7 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   how notes and warnings reach a binding; whether closing the check-then-use gap is worth tying
   programs to the library's session.
 - **Asserting how keys relate**: "A and B are the same key" or "must differ", across locks.
-  Options: declarative assertions in keys.toml checked by `validate` and `verify`, or a
+  Options: declarative assertions in keys.toml checked by `validate` and `check`, or a
   documented Nix pattern over `lib.mkKeys` results (`assert a.id.rfc7093m4 != b.id.rfc7093m4`,
   which works today but compares only what the locks pin).
 - **Changing an existing object's policy**: a verb that applies the spec's attribute changes with
@@ -115,8 +115,8 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **A published JSON Schema** for keys.toml and keys.lock (`schemars`), for other-language
   readers and editor validation (taplo); cross-field invariants stay in code.
 - **Remote keystores beyond p11-kit forwarding** (KMIP, cloud KMS), as a backend crate if ever.
-- **Dropping `--no-update-lock`**: deferred; `create --no-update-lock` is how a first use is
-  seen before it is recorded.
+- **`--no-update-lock`** stays on `create` alone (review 2026-11-23 C-4: `lock` and `delete`
+  take `--dry-run`): it is how a first use is seen before it is recorded.
 - **Keystores with an `idPrefix`**: an opt-in grouping whose prefix marks managed objects on the
   token (labels only on PIV?), probably outside the spec digest.
 - **One token through two modules** (TODO.md): objects created through a vendor's SO module
@@ -137,7 +137,7 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **`tpm2_ptool` takes the user PIN on its command line** (allowed for now): other local users
   can read it while the import runs.
 - **A secret key into tpm2-pkcs11 is refused only after it is written** (2026-11-17,
-  `examples/every-object` [run]): `camigrate import <hmac key> --token tpm` from its file runs
+  `examples/every-object` [run]): `camigrate import <hmac key> --to tpm` from its file runs
   `tpm2_ptool import`, then finds no `CKA_VALUE_LEN` on the result, removes it and exits 15 (the
   module's defect under "Upstream"). The plan could refuse it first, from a profile row saying
   the module drops the length of what it imports, as `move.secret-unwrap` does for SoftHSM.
@@ -179,14 +179,14 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   token. kryoptic generates AES at 8, 48 and 64 bytes (softhsm refuses them,
   `CKR_ATTRIBUTE_VALUE_INVALID`): a module quirk, harmless while keys.toml takes only the three
   AES lengths, and recorded. Planned, with everything else a module advertises or the tools use
-  and no profile row records, in [CAPROBE_PROFILE_COVERAGE.md](CAPROBE_PROFILE_COVERAGE.md): a
+  and no profile row records, in [archive/CAPROBE_PROFILE_COVERAGE.md](archive/CAPROBE_PROFILE_COVERAGE.md): a
   secret key has commitment rows in place of the `prove` rows an asymmetric key has.
 - **tpm2-pkcs11 over swtpm: P-521 signs with `CKR_HOST_MEMORY`** (2026-11-15, the proofs at
   every curve): `pop-sign` on secp521r1 fails at `C_SignInit`, deterministically, while
   `pop-ecdh` on the same key proves. A module defect or a P-521 limit of swtpm's TPM; the
   profile records the "no". To read in tpm2-pkcs11's sign path and report upstream.
 - **Every profile is regenerated for the coverage plan** (2026-11-19,
-  [CAPROBE_PROFILE_COVERAGE.md](CAPROBE_PROFILE_COVERAGE.md)): softhsm, kryoptic, swtpm, the AMD
+  [archive/CAPROBE_PROFILE_COVERAGE.md](archive/CAPROBE_PROFILE_COVERAGE.md)): softhsm, kryoptic, swtpm, the AMD
   fTPM (through `nix/ftpm-test-env.sh`, handles and lockout counter unchanged), ykcs11 (scratch
   slot 94 only), `aws-cloudhsm/5.18+hsm2m-*` (both clusters) and `kmsp11/1.9+hsm*`. kmsp11's keys are
   purpose-bound, so only the AES keys of its CBC and CTR bindings are probed beyond generation
@@ -381,6 +381,9 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   injectivity stays a proptest: Kani handles `format!` badly, and a proof would need a label
   parser written only for it. The other fuzz targets stay cargo-fuzz: tss-esapi's
   unmarshalling is C, and the DER, X.509 and TOML parsers are too deep for a bounded proof.
+  Kani's use is minimal so far (review 2026-11-23): three proofs, each of a property a proptest
+  already samples, so for these alone the proptests would do. The check stays for the proofs to
+  come; until then it buys only the exhaustiveness up to each bound.
 - **More reference tokens**: an OP-TEE PKCS#11 TA in QEMU; a Nitrokey.
 - **Examples on hardware and in the cloud** (2026-11-17): `examples/` runs on software tokens
   and swtpm only. The YubiKey pairs (`every-object`'s imports, `secure-boot`'s attested PK and

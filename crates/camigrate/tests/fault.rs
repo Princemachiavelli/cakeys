@@ -203,7 +203,7 @@ fn a_move_the_module_fails_is_refused_and_undone() {
         let o = e.km_alone(&e.refs[0], args);
         assert_eq!(common::code(&o), 0, "{args:?}: {}", stderr(&o));
         let (spec, to) = (format!("{}-dst", args[1]), args[5]);
-        let o = e.cakeys(&e.refs[0], &["verify", "--spec", &spec, "--token", to]);
+        let o = e.cakeys(&e.refs[0], &["check", "--spec", &spec, "--token", to]);
         assert_eq!(common::code(&o), 0, "{spec} on {to}: {}", stderr(&o));
     }
 }
@@ -214,7 +214,7 @@ fn a_move_the_module_fails_is_refused_and_undone() {
 #[test]
 fn an_so_step_that_was_done_is_said_to_be_done() {
     let Some((e, _real)) = tokens("fault-so-logout") else { return };
-    let trust: &[&str] = &["transport", "--spec", "tk-kryoptic", "--token", "kryoptic", "--trusted", "softhsm"];
+    let trust: &[&str] = &["transport", "--spec", "tk-kryoptic", "--token", "kryoptic", "--trust-on", "softhsm"];
     // The user's logout before the SO's login is the first; the SO's own, after the step, the second.
     let (code, said, fired) =
         faulted(&e, "so-logout", "[[rule]]\nfn = \"C_Logout\"\ncall = 2\nrv = \"CKR_DEVICE_ERROR\"\n", trust);
@@ -235,10 +235,10 @@ fn an_import_killed_part_way_has_recorded_what_it_made() {
     let Some((e, real)) = tokens("fault-killed") else { return };
     let bundle = e.dir.join("killed.bundle.toml");
     let path = bundle.to_str().unwrap();
-    let export = ["export", "kk", "crt", "--token", "kryoptic", "--target", "softhsm", "--out", path];
+    let export = ["export", "kk", "crt", "--from", "kryoptic", "--to", "softhsm", "--out", path];
     let o = e.km_alone(&e.refs[1], &export);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    let import: &[&str] = &["import", "--token", "softhsm", "--in", path];
+    let import: &[&str] = &["import", "--to", "softhsm", "--in", path];
     let plan = e.dir.join("killed.toml");
     std::fs::write(&plan, "[[rule]]\nfn = \"C_CreateObject\"\ncall = 2\nabort = true\n").unwrap();
     let env = ref_env(&[("P11_FAULT_PLAN", plan.to_str().unwrap())]);
@@ -266,7 +266,7 @@ fn a_transport_key_never_leaves() {
     assert_eq!(code(&o), 15, "{}", stdout(&o));
     assert!(stdout(&o).contains("the transport key of token 'kryoptic'"), "{}", stdout(&o));
     let out = e.dir.join("all.bundle.toml");
-    let o = e.km_alone(soft, &["export", "--token", "kryoptic", "--target", "softhsm", "--out", out.to_str().unwrap()]);
+    let o = e.km_alone(soft, &["export", "--from", "kryoptic", "--to", "softhsm", "--out", out.to_str().unwrap()]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(!stderr(&o).contains("tk-kryoptic"), "{}", stderr(&o));
     assert!(!std::fs::read_to_string(&out).unwrap().contains("tk-kryoptic"));
@@ -289,7 +289,7 @@ fn an_export_opens_its_target_once() {
     assert!(tk.expect("the lock records tk-softhsm").remove("publicKey").is_some(), "no publicKey to forget");
     std::fs::write(&lock, toml::to_string(&doc).unwrap()).unwrap();
     let out = e.dir.join("once.bundle.toml");
-    let args = ["export", "kk", "--token", "kryoptic", "--target", "softhsm", "--out", out.to_str().unwrap()];
+    let args = ["export", "kk", "--from", "kryoptic", "--to", "softhsm", "--out", out.to_str().unwrap()];
     let (code, said, _) = faulted(&e, "export-once", "", &args);
     assert_eq!(code, 0, "{said}");
     assert!(said.contains("the lock records no public key for it yet"), "the token was not read: {said}");

@@ -22,7 +22,7 @@ module=(--module "tpm=$TPM2_PKCS11_MODULE")
 check_pem="cakeys --module tpm=$TPM2_PKCS11_MODULE check signing --format pkcs11-provider-pem --uri-pin source"
 check_uri="cakeys --module tpm=$TPM2_PKCS11_MODULE check signing --uri-pin source"
 
-expect 0 cakeys "${module[@]}" create signing
+expect 22 cakeys --new-lock "${module[@]}" create signing
 openssl_pkcs11 "$TPM2_PKCS11_MODULE"
 
 # The path must exist, as openssl stats it before it opens it; what is in it is never read.

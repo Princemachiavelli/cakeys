@@ -35,8 +35,9 @@ fn an_override_that_cannot_apply_is_invalid() {
     }
 }
 
-/// `validate` that passes prints one `<spec> on <token>: mode <mode>` line per pair on stdout;
-/// one the gate refuses (15) prints nothing there, as stdout carries only a result.
+/// `validate` that passes prints one `<spec> on <token>: mode <mode>` line per pair on stdout,
+/// or with `--json` one `{spec, token, mode}` per pair; one the gate refuses (15) prints nothing
+/// there, as stdout carries only a result.
 #[test]
 fn validate_prints_the_modes_only_when_it_passes() {
     let run = |config: &str| Run::new(BIN, std::path::Path::new(&format!("{FIXTURES}/{config}"))).output(&["validate"]);
@@ -48,30 +49,48 @@ fn validate_prints_the_modes_only_when_it_passes() {
         let (pair, mode) = l.split_once(": mode ").unwrap_or_else(|| panic!("not a mode line: {l:?}"));
         assert!(pair.contains(" on ") && !mode.is_empty(), "{l:?}");
     }
+    let json = Run::new(BIN, std::path::Path::new(&format!("{FIXTURES}/keys.toml"))).output(&["--json", "validate"]);
+    assert_eq!(code(&json), 0, "{}", stderr(&json));
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&json.stdout).unwrap();
+    let as_lines: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            format!(
+                "{} on {}: mode {}",
+                r["spec"].as_str().unwrap(),
+                r["token"].as_str().unwrap(),
+                r["mode"].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert_eq!(as_lines, lines);
     let refused = run("gate.toml");
     assert_eq!(code(&refused), 15, "{}", stderr(&refused));
     assert_eq!(stdout_lines(&refused), Vec::<String>::new());
 }
 
-/// `gc` prints the stale entries on stdout, and says what it did as every writing verb does,
-/// through the run's notes: `--apply` removes them and saves the lock with the same
-/// `updated <lock>` line.
+/// `gc` prints the stale entries on stdout (`--json`: as an array), and says what it did as every
+/// writing verb does, through the run's notes: it removes them and saves the lock with the same
+/// `updated <lock>` line, and exits 22; `--dry-run` only prints them (review 2026-11-23 C-4: `gc`
+/// was the one verb that wrote only when asked).
 #[test]
 fn gc_says_what_it_did_through_the_notes() {
     let w = Workdir::new("gc-notes");
     let lock = w.dir.join("keys.lock");
     std::fs::copy(format!("{FIXTURES}/keys.lock"), &lock).unwrap();
     w.write_config("");
-    let looked = w.km(&["gc"]);
+    let looked = w.km(&["gc", "--dry-run"]);
     assert_eq!(code(&looked), 0, "{}", stderr(&looked));
     let stale = stdout_lines(&looked);
     assert!(stale.iter().any(|l| l == "objects.signing"), "{stale:?}");
     assert_eq!(
         stderr(&looked).lines().collect::<Vec<_>>(),
-        [format!("note: gc: {} stale entries; pass --apply to remove them", stale.len())]
+        [format!("note: gc: {} stale entries; run without --dry-run to remove them", stale.len())]
     );
-    let applied = w.km(&["gc", "--apply"]);
-    assert_eq!(code(&applied), 0, "{}", stderr(&applied));
+    let json = w.km(&["--json", "gc", "--dry-run"]);
+    assert_eq!(serde_json::from_slice::<Vec<String>>(&json.stdout).unwrap(), stale);
+    let applied = w.km(&["gc"]);
+    assert_eq!(code(&applied), 22, "{}", stderr(&applied));
     assert_eq!(stdout_lines(&applied), stale);
     assert_eq!(
         stderr(&applied).lines().collect::<Vec<_>>(),
@@ -80,7 +99,7 @@ fn gc_says_what_it_did_through_the_notes() {
     let left = w.lock();
     let empty = |k: &str| left.get(k).is_none_or(|t| t.as_table().is_some_and(toml::Table::is_empty));
     assert!(empty("objects") && empty("realisations") && empty("observations"), "{left:?}");
-    let again = w.km(&["gc", "--apply"]);
+    let again = w.km(&["gc"]);
     assert_eq!(code(&again), 0);
     assert_eq!(stdout_lines(&again), Vec::<String>::new());
     assert_eq!(

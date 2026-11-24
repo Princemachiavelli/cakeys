@@ -23,7 +23,7 @@ fn oaep_hash(rest: &str) -> Option<String> {
 }
 
 /// What a generation, import or export is of: a curve (or parameter set), or a size in the
-/// unit of the key type's own attribute (`docs/CAPROBE_MIGRATION.md`, M1).
+/// unit of the key type's own attribute (`docs/archive/CAPROBE_MIGRATION.md`, M1).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum On {
     /// A curve or parameter set, by name.

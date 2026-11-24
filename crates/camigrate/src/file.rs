@@ -41,12 +41,11 @@ const ID_KEY_BAG: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.11354
 const LEGACY_P12: &str = "a PKCS#12 from before OpenSSL 3 or `-legacy`; re-export it: \
                           openssl pkcs12 -in old.p12 -legacy -nodes | openssl pkcs12 -export -out new.p12";
 
-/// What a key file held: the private key (PKCS#8), the certificates a PKCS#12 carried (the
-/// first is the key's, as exporters write it), and the method that names the format.
+/// What a key file held: the private key (PKCS#8), and the certificates a PKCS#12 carried (the
+/// first is the key's, as exporters write it). `keyfile` names the format.
 pub(crate) struct Read {
     pub pkcs8: Zeroizing<Vec<u8>>,
     pub certificates: Vec<Vec<u8>>,
-    pub method: cakeys_core::migrate::Method,
 }
 
 fn bad(what: impl std::fmt::Display) -> KmError {
@@ -167,7 +166,6 @@ fn mac(pass: &str, salt: &[u8], iterations: i32, data: &[u8]) -> Result<Vec<u8>>
 /// iteration count out of range, or for a wrong passphrase (the MAC, or the
 /// padding check): bad input, never the "other material than the lock pins" that 10 means.
 pub(crate) fn read(bytes: &[u8], pass: &str) -> Result<Read> {
-    use cakeys_core::migrate::Method;
     // PEM wherever its block starts, as an object's own file is read (`keyfile::pem_blocks`):
     // after a byte-order mark, a blank line or OpenSSL's `Bag Attributes` text too.
     if let Some(text) = crate::keyfile::pem_text(bytes) {
@@ -180,7 +178,7 @@ pub(crate) fn read(bytes: &[u8], pass: &str) -> Result<Read> {
         };
         let (_, der) = der::pem::decode_vec(block.as_bytes()).map_err(bad)?;
         let pkcs8 = decrypt_pkcs8(&der, pass)?;
-        return Ok(Read { pkcs8, certificates: Vec::new(), method: Method::Pkcs8Pbes2 });
+        return Ok(Read { pkcs8, certificates: Vec::new() });
     }
     let pfx = Pfx::from_der(bytes).map_err(|e| bad(format!("neither an encrypted PKCS#8 PEM nor PKCS#12: {e}")))?;
     let auth_safe = octets(&pfx.auth_safe)?;
@@ -234,7 +232,7 @@ pub(crate) fn read(bytes: &[u8], pass: &str) -> Result<Read> {
         }
     }
     let pkcs8 = pkcs8.ok_or_else(|| bad("a PKCS#12 without a shrouded key bag"))?;
-    Ok(Read { pkcs8, certificates, method: Method::Pkcs12 })
+    Ok(Read { pkcs8, certificates })
 }
 
 /// What a wrong passphrase, or a damaged file, is refused with.
@@ -337,10 +335,7 @@ mod tests {
         let pem = write_pkcs8(&key, "pass phrase").unwrap();
         assert!(pem.starts_with("-----BEGIN ENCRYPTED PRIVATE KEY-----"));
         let r = read(pem.as_bytes(), "pass phrase").unwrap();
-        assert_eq!(
-            (r.pkcs8.as_slice(), r.certificates.is_empty(), r.method),
-            (key.as_slice(), true, cakeys_core::migrate::Method::Pkcs8Pbes2)
-        );
+        assert_eq!((r.pkcs8.as_slice(), r.certificates.is_empty()), (key.as_slice(), true));
         assert!(matches!(read(pem.as_bytes(), "other"), Err(KmError::Validation(_))));
         let cert = include_bytes!("../../cli/tests/fixtures/adopt-cert.der");
         let p12 = write_pkcs12(&key, cert, "pass phrase", b"id").unwrap();

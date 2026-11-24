@@ -9,16 +9,16 @@ use super::*;
 fn provider_is_detected_or_named() {
     let Some(e) = env("provider") else { return };
     e.config(EC.replace("ec-lifecycle", "provider").as_str());
-    let lock = ["lock", "--spec", "signing-soft", "--token", "ref", "--update-lock"];
+    let lock = ["lock", "--spec", "signing-soft", "--token", "ref"];
     let provider = || e.observation("signing-soft", "ref")["provider"].as_str().unwrap().to_owned();
-    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 0);
+    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 22);
     assert_eq!(provider(), REF.provider, "auto-detected from C_GetInfo");
     let path = e.dir.join("keys.toml");
     let text = std::fs::read_to_string(&path).unwrap();
     let named =
         |p: &str| text.replacen("tokenLabel = \"kmtest\"", &format!("tokenLabel = \"kmtest\"\nprovider = \"{p}\""), 1);
     std::fs::write(&path, named("generic")).unwrap();
-    assert_eq!(e.code(&lock), 0);
+    assert_eq!(e.code(&lock), 22);
     assert_eq!(provider(), "generic", "explicit choice wins");
     std::fs::write(&path, named("nope")).unwrap();
     assert_eq!(e.code(&["validate"]), 17);
@@ -40,7 +40,7 @@ fn tokens_that_cannot_be_opened_as_named_are_refused() {
             "tokens.env-pin = { locator = { CKA_LABEL = \"token-open\" }, origin = \"adopt\" }\ntokens.ref = "
         ),
     ));
-    let o = e.km(&["lock", "--spec", "signing-soft", "--token", "env-pin", "--no-update-lock"]);
+    let o = e.km(&["lock", "--spec", "signing-soft", "--token", "env-pin", "--dry-run"]);
     assert_eq!(code(&o), 16, "{}", stderr(&o));
     assert!(stderr(&o).contains("env var CAKEYS_TEST_UNSET_PIN not set"), "{}", stderr(&o));
 
@@ -64,7 +64,7 @@ fn tokens_that_cannot_be_opened_as_named_are_refused() {
         ctx.init_token(slot, &AuthPin::new("5678".into()), "kmtest").unwrap();
         let second = serial_of(ctx.get_token_info(slot).unwrap());
         drop(ctx);
-        let o = e.km(&["lock", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"]);
+        let o = e.km(&["lock", "--spec", "signing-soft", "--token", "ref", "--dry-run"]);
         assert_eq!(code(&o), 12, "{}", stderr(&o));
         let said = stderr(&o);
         assert!(said.contains("several tokens labelled 'kmtest'") && said.contains("tokenSerial"), "{said}");
@@ -72,7 +72,7 @@ fn tokens_that_cannot_be_opened_as_named_are_refused() {
         // tokenSerial names one of them: the key is looked for there (and is absent: 11).
         let config = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
         e.write_config(&config.replacen("[tokens.ref]\n", &format!("[tokens.ref]\ntokenSerial = \"{first}\"\n"), 1));
-        let o = e.km(&["lock", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"]);
+        let o = e.km(&["lock", "--spec", "signing-soft", "--token", "ref", "--dry-run"]);
         assert_eq!(code(&o), 11, "{}", stderr(&o));
     }
 }
@@ -93,16 +93,17 @@ fn pin_file_path_can_come_from_the_environment() {
     )
     .unwrap();
     // Unset: `validate` touches no token, so it needs no PIN; a verb that logs in is refused,
-    // naming the variable.
+    // naming the variable: unavailable (16), the environment's lack and not the file's (review
+    // 2026-11-23 A-14).
     let o = e.km(&["validate"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    let o = e.km(&["create", "--spec", "signing-soft", "--token", "ref", "--update-lock"]);
-    assert_eq!(code(&o), 17, "{}", stderr(&o));
+    let o = e.km(&["create", "--spec", "signing-soft", "--token", "ref"]);
+    assert_eq!(code(&o), 16, "{}", stderr(&o));
     assert!(stderr(&o).contains("KM_E2E_PIN"), "{}", stderr(&o));
     // Set: the pin file loads, the login works, the private key is made and realised.
     let pin = e.dir.join("pin");
-    let o = e.km_env(&["create", "--spec", "signing-soft", "--token", "ref", "--update-lock"], &[("KM_E2E_PIN", &pin)]);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let o = e.km_env(&["create", "--spec", "signing-soft", "--token", "ref"], &[("KM_E2E_PIN", &pin)]);
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     assert!(e.lock()["realisations"]["signing-soft"]["ref"].is_table());
 }
 
@@ -124,11 +125,14 @@ fn admin_credential_is_read_only_by_security_officer_steps() {
     let missing = e.dir.join("never-read");
     // The key is made under the first credential; under the second it is there and pinned, and
     // `create` verifies it without the credential either.
-    for admin in
+    for (i, admin) in
         [format!("soCredentialFile = \"{}\"", missing.display()), "soCredentialEnv = \"KM_E2E_NEVER_SET\"".to_owned()]
+            .into_iter()
+            .enumerate()
     {
         std::fs::write(e.dir.join("keys.toml"), toml(&format!("pinFile = \"{}\"\n{admin}", pin.display()))).unwrap();
-        for (verb, exit) in [("create", 0), ("resolve", 0)] {
+        // Made and recorded the first time (22); there and pinned the second (0).
+        for (verb, exit) in [("create", if i == 0 { 22 } else { 0 }), ("resolve", 0)] {
             let o = e.km(&[verb, "--spec", "signing-soft", "--token", "ref"]);
             assert_eq!(code(&o), exit, "{admin} {verb}: {}", stderr(&o));
         }
